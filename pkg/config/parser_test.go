@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/IonutNechita/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 func TestParseBasicService(t *testing.T) {

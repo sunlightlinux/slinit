@@ -4,7 +4,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IonutNechita/slinit/pkg/process"
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 const (

@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IonutNechita/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // ServiceDescription holds the parsed configuration of a service.

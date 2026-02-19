@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/IonutNechita/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // DirLoader loads service descriptions from one or more directories.

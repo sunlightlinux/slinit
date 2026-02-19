@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/IonutNechita/slinit/pkg/config"
-	"github.com/IonutNechita/slinit/pkg/eventloop"
-	"github.com/IonutNechita/slinit/pkg/logging"
-	"github.com/IonutNechita/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/eventloop"
+	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 const (

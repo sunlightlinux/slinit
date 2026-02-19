@@ -5,8 +5,8 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/IonutNechita/slinit/pkg/logging"
-	"github.com/IonutNechita/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // EventLoop is the central event coordinator for slinit.

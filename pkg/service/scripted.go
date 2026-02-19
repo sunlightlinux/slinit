@@ -3,7 +3,7 @@ package service
 import (
 	"time"
 
-	"github.com/IonutNechita/slinit/pkg/process"
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // ScriptedService is a service controlled by external start/stop commands.
