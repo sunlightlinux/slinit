@@ -142,8 +142,29 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 			svc.SetStopTimeout(desc.StopTimeout)
 		}
 		return svc
+	case service.TypeBGProcess:
+		svc := service.NewBGProcessService(dl.set, name)
+		svc.SetCommand(desc.Command)
+		svc.SetStopCommand(desc.StopCommand)
+		svc.SetWorkingDir(desc.WorkingDir)
+		svc.SetEnvFile(desc.EnvFile)
+		svc.SetPIDFile(desc.PIDFile)
+		if desc.StartTimeout > 0 {
+			svc.SetStartTimeout(desc.StartTimeout)
+		}
+		if desc.StopTimeout > 0 {
+			svc.SetStopTimeout(desc.StopTimeout)
+		}
+		if desc.RestartDelay > 0 {
+			svc.SetRestartDelay(desc.RestartDelay)
+		}
+		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
+			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
+		}
+		return svc
+	case service.TypeTriggered:
+		return service.NewTriggeredService(dl.set, name)
 	default:
-		// TypeBGProcess, TypeTriggered → placeholder as internal for now (Phase 3)
 		return service.NewInternalService(dl.set, name)
 	}
 }
