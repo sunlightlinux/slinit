@@ -6,7 +6,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 
 ## Features
 
-- **Service types**: internal, process (long-running), scripted (start/stop commands)
+- **Service types**: internal, process, scripted, bgprocess (self-backgrounding daemons), triggered (externally triggered)
 - **Dependency management**: 6 dependency types (regular, soft/waits-for, milestone, before, after)
 - **Process lifecycle**: SIGTERM with configurable timeout, SIGKILL escalation
 - **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
@@ -57,6 +57,17 @@ depends-on: network
 waits-for: logging
 ```
 
+Example bgprocess service:
+
+```ini
+# /etc/slinit.d/mydaemon
+type = bgprocess
+command = /usr/sbin/mydaemon
+pid-file = /run/mydaemon.pid
+stop-timeout = 15
+depends-on: network
+```
+
 ### Service types
 
 | Type | Description |
@@ -64,8 +75,8 @@ waits-for: logging
 | `process` | Long-running daemon managed by slinit |
 | `scripted` | Service controlled by start/stop commands |
 | `internal` | Milestone service with no associated process |
-| `bgprocess` | Background process (planned) |
-| `triggered` | Triggered service (planned) |
+| `bgprocess` | Self-backgrounding daemon (forks, writes PID file, monitored via polling) |
+| `triggered` | Service that waits for an external trigger before completing startup |
 
 ### Dependency types
 
@@ -104,7 +115,7 @@ slinit/
 
 - [x] **Phase 1**: Foundation - types, state machine, config parser, event loop
 - [x] **Phase 2**: Process services - fork/exec, child monitoring, restart logic
-- [ ] **Phase 3**: Full dependency graph - all 6 dep types, triggered/bgprocess services
+- [x] **Phase 3**: Full dependency graph - all 6 dep types validated, TriggeredService, BGProcessService
 - [ ] **Phase 4**: Control protocol + `slinitctl` CLI
 - [ ] **Phase 5**: PID 1 mode + shutdown sequence
 - [ ] **Phase 6**: Advanced features - socket activation, cgroups, rlimits
