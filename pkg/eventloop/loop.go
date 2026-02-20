@@ -104,6 +104,11 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 	return false
 }
 
+// InitiateShutdown triggers a shutdown from outside the event loop (e.g., control socket).
+func (el *EventLoop) InitiateShutdown(shutdownType service.ShutdownType) {
+	el.initiateShutdown(shutdownType)
+}
+
 func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	if el.shutdownInitiated {
 		return

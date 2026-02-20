@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -80,7 +81,6 @@ func main() {
 	// Determine socket path
 	sock := resolveSocketPath(socketPath, systemMode)
 	logger.Debug("Control socket: %s", sock)
-	_ = sock // Will be used in Phase 4
 
 	// Create service set
 	serviceSet := service.NewServiceSet(logger)
@@ -104,10 +104,24 @@ func main() {
 	serviceSet.StartService(bootSvc)
 	logger.Info("Boot service '%s' started", bootService)
 
+	// Start control socket server
+	ctx := context.Background()
+	ctrlServer := control.NewServer(serviceSet, sock, logger)
+	if err := ctrlServer.Start(ctx); err != nil {
+		logger.Error("Failed to start control socket: %v", err)
+		// Non-fatal: continue without control socket
+	} else {
+		defer ctrlServer.Stop()
+	}
+
 	// Run the event loop
 	loop := eventloop.New(serviceSet, logger)
 
-	ctx := context.Background()
+	// Wire shutdown from control protocol to event loop
+	ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
+		loop.InitiateShutdown(st)
+	}
+
 	if err := loop.Run(ctx); err != nil {
 		if err == context.Canceled {
 			logger.Info("Event loop cancelled")
