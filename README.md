@@ -11,12 +11,15 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Process lifecycle**: SIGTERM with configurable timeout, SIGKILL escalation
 - **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
 - **Dinit-compatible config**: key=value service description files
+- **Control socket**: binary protocol over Unix domain socket for runtime management
+- **slinitctl CLI**: list, start, stop, restart, status, shutdown, trigger, signal
 - **Dual mode**: system init (PID 1) or user-level service manager
 
 ## Building
 
 ```bash
 go build ./cmd/slinit
+go build ./cmd/slinitctl
 ```
 
 ## Running
@@ -88,6 +91,35 @@ depends-on: network
 | `before` | Ordering - this service starts before the named service |
 | `after` | Ordering - this service starts after the named service |
 
+## Control CLI (slinitctl)
+
+`slinitctl` communicates with a running slinit instance via the control socket:
+
+```bash
+# List all loaded services
+slinitctl list
+
+# Start/stop/restart a service
+slinitctl start myservice
+slinitctl stop myservice
+slinitctl restart myservice
+
+# Show detailed service status
+slinitctl status myservice
+
+# Trigger a triggered service
+slinitctl trigger mytrigger
+
+# Send signal to a service process
+slinitctl signal HUP myservice
+
+# Initiate system shutdown
+slinitctl shutdown poweroff
+
+# Use a custom socket path
+slinitctl --socket-path /tmp/test.socket list
+```
+
 ## Architecture
 
 slinit follows Go-idiomatic patterns while preserving dinit's proven service management design:
@@ -96,15 +128,19 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 - **Interface + struct embedding** replaces C++ virtual method dispatch
 - **Two-phase state transitions** (propagation + execution) preserve correctness from dinit
 - **One goroutine per child process** for monitoring, with channel-based notification
+- **Binary control protocol** over Unix domain sockets, goroutine-per-connection
 
 ## Project structure
 
 ```
 slinit/
-├── cmd/slinit/          # Daemon entry point
+├── cmd/
+│   ├── slinit/          # Daemon entry point
+│   └── slinitctl/       # Control CLI
 ├── pkg/
 │   ├── service/         # Service types, state machine, dependency graph
 │   ├── config/          # Dinit-compatible config parser and loader
+│   ├── control/         # Control socket protocol and server
 │   ├── process/         # Process execution and monitoring
 │   ├── eventloop/       # Event loop, signals, timers
 │   └── logging/         # Console logger
@@ -116,7 +152,7 @@ slinit/
 - [x] **Phase 1**: Foundation - types, state machine, config parser, event loop
 - [x] **Phase 2**: Process services - fork/exec, child monitoring, restart logic
 - [x] **Phase 3**: Full dependency graph - all 6 dep types validated, TriggeredService, BGProcessService
-- [ ] **Phase 4**: Control protocol + `slinitctl` CLI
+- [x] **Phase 4**: Control protocol + `slinitctl` CLI
 - [ ] **Phase 5**: PID 1 mode + shutdown sequence
 - [ ] **Phase 6**: Advanced features - socket activation, cgroups, rlimits
 
