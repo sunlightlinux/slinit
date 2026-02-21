@@ -36,25 +36,48 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 
 	// Credential setup (run as different user/group)
 	if params.RunAsUID != 0 || params.RunAsGID != 0 {
-		if cmd.SysProcAttr == nil {
-			cmd.SysProcAttr = &syscall.SysProcAttr{}
-		}
 		cmd.SysProcAttr.Credential = &syscall.Credential{
 			Uid: params.RunAsUID,
 			Gid: params.RunAsGID,
 		}
 	}
 
-	// Console handling
+	// Console handling: open /dev/console, create new session, set controlling terminal
+	var consoleFd *os.File
 	if params.OnConsole {
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		var err error
+		consoleFd, err = os.OpenFile("/dev/console", os.O_RDWR, 0)
+		if err != nil {
+			// Fallback to inherited stdin/stdout/stderr
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		} else {
+			cmd.Stdin = consoleFd
+			cmd.Stdout = consoleFd
+			cmd.Stderr = consoleFd
+			// Create new session and set /dev/console as controlling terminal.
+			// Setsid creates a new session (child becomes session leader).
+			// Setctty + Ctty=0 calls ioctl(TIOCSCTTY) on stdin fd in the child,
+			// making /dev/console the controlling terminal so job control works.
+			cmd.SysProcAttr.Setpgid = false // Setsid implies new pgid
+			cmd.SysProcAttr.Setsid = true
+			cmd.SysProcAttr.Setctty = true
+			cmd.SysProcAttr.Ctty = 0 // fd 0 (stdin) = /dev/console
+		}
 	}
 
 	// Start the process
 	if err := cmd.Start(); err != nil {
+		if consoleFd != nil {
+			consoleFd.Close()
+		}
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
+	}
+
+	// Close our copy of the console fd after fork
+	if consoleFd != nil {
+		consoleFd.Close()
 	}
 
 	pid := cmd.Process.Pid

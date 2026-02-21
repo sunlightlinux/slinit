@@ -89,19 +89,12 @@ func (el *EventLoop) Run(ctx context.Context) error {
 		}
 
 		// Check if all services have stopped
-		if el.services.CountActiveServices() == 0 {
-			if el.shutdownInitiated {
-				el.logger.Info("All services stopped, exiting")
-				if el.OnAllStopped != nil {
-					el.OnAllStopped()
-				}
-				return nil
+		if el.shutdownInitiated && el.services.CountActiveServices() == 0 {
+			el.logger.Info("All services stopped, exiting")
+			if el.OnAllStopped != nil {
+				el.OnAllStopped()
 			}
-			if el.isPID1 {
-				// PID 1: all services stopped without explicit shutdown = boot failure
-				el.logger.Warn("All services stopped without shutdown request (boot failure?)")
-				return nil
-			}
+			return nil
 		}
 	}
 }
@@ -141,10 +134,11 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return false
 
 	case syscall.SIGCHLD:
-		// Reap orphaned child processes (PID 1 duty)
-		if el.isPID1 {
-			el.reapOrphans()
-		}
+		// Note: Go's os/exec runtime handles Wait4 for managed children.
+		// We must NOT call Wait4(-1) here as it would steal managed children,
+		// causing ProcessService goroutines to get ECHILD and misinterpret it
+		// as the service crashing. Orphan reaping will be added in Phase 6
+		// with proper PID tracking to avoid conflicts with os/exec.
 		return false
 	}
 
@@ -173,18 +167,4 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 		default:
 		}
 	}()
-}
-
-// reapOrphans collects exit status from orphaned child processes.
-// When running as PID 1 (or as a child subreaper), orphaned processes
-// reparent to this process. Without explicit reaping, they become zombies.
-func (el *EventLoop) reapOrphans() {
-	for {
-		var status syscall.WaitStatus
-		pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
-		if pid <= 0 || err != nil {
-			break
-		}
-		el.logger.Debug("Reaped orphan process %d (status %v)", pid, status)
-	}
 }

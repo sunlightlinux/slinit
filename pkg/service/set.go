@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"time"
 )
 
 // ServiceLogger is the interface for logging service events.
@@ -46,6 +47,12 @@ type ServiceSet struct {
 
 	// Logger
 	logger ServiceLogger
+
+	// Boot timing
+	bootStartTime   time.Time     // when slinit started (userspace begins)
+	bootReadyTime   time.Time     // when boot service reached STARTED
+	bootServiceName string        // name of the boot target service
+	kernelUptime    time.Duration // kernel uptime at slinit start
 }
 
 // NewServiceSet creates a new ServiceSet.
@@ -220,3 +227,14 @@ func (ss *ServiceSet) IsShuttingDown() bool {
 func (ss *ServiceSet) GetShutdownType() ShutdownType {
 	return ss.shutdownType
 }
+
+// --- Boot timing ---
+
+func (ss *ServiceSet) SetBootStartTime(t time.Time)   { ss.bootStartTime = t }
+func (ss *ServiceSet) SetBootServiceName(name string)  { ss.bootServiceName = name }
+func (ss *ServiceSet) SetKernelUptime(d time.Duration) { ss.kernelUptime = d }
+
+func (ss *ServiceSet) BootStartTime() time.Time   { return ss.bootStartTime }
+func (ss *ServiceSet) BootReadyTime() time.Time    { return ss.bootReadyTime }
+func (ss *ServiceSet) BootServiceName() string     { return ss.bootServiceName }
+func (ss *ServiceSet) KernelUptime() time.Duration { return ss.kernelUptime }

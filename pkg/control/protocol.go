@@ -25,6 +25,7 @@ const (
 	CmdReleaseService uint8 = 6
 	CmdUnpinService  uint8 = 7
 	CmdListServices  uint8 = 8
+	CmdBootTime      uint8 = 9
 	CmdShutdown      uint8 = 10
 	CmdServiceStatus uint8 = 18
 	CmdSetTrigger    uint8 = 19
@@ -43,6 +44,7 @@ const (
 	RplyAlreadySS     uint8 = 61
 	RplySvcInfo       uint8 = 62
 	RplyListDone      uint8 = 63
+	RplyBootTime      uint8 = 64
 	RplyShuttingDown  uint8 = 69
 	RplyServiceStatus uint8 = 70
 	RplySignalNoPID   uint8 = 74
@@ -60,6 +62,7 @@ const (
 	StatusFlagHasPID        uint8 = 1 << 0
 	StatusFlagMarkedActive  uint8 = 1 << 1
 	StatusFlagWaitingDeps   uint8 = 1 << 2
+	StatusFlagHasConsole    uint8 = 1 << 3
 )
 
 // Packet header: 1-byte command/reply + 2-byte payload length (little-endian).
@@ -163,6 +166,12 @@ func EncodeServiceStatus(svc service.Service) []byte {
 	if pid > 0 {
 		flags |= StatusFlagHasPID
 	}
+	if svc.Record().IsMarkedActive() {
+		flags |= StatusFlagMarkedActive
+	}
+	if svc.Record().HasConsole() {
+		flags |= StatusFlagHasConsole
+	}
 	buf[3] = flags
 	binary.LittleEndian.PutUint32(buf[4:], uint32(int32(pid)))
 
@@ -193,21 +202,35 @@ type SvcInfoEntry struct {
 	State       service.ServiceState
 	TargetState service.ServiceState
 	SvcType     service.ServiceType
+	Flags       uint8
 	PID         int32
 }
 
 // EncodeSvcInfo encodes a service info entry for list command.
-// Format: nameLen(2) + name(N) + state(1) + target(1) + type(1) + pid(4).
+// Format: nameLen(2) + name(N) + state(1) + target(1) + type(1) + flags(1) + pid(4).
 func EncodeSvcInfo(svc service.Service) []byte {
 	name := svc.Name()
-	buf := make([]byte, 2+len(name)+7)
+	buf := make([]byte, 2+len(name)+8)
 	binary.LittleEndian.PutUint16(buf, uint16(len(name)))
 	copy(buf[2:], name)
 	off := 2 + len(name)
 	buf[off] = uint8(svc.State())
 	buf[off+1] = uint8(svc.TargetState())
 	buf[off+2] = uint8(svc.Type())
-	binary.LittleEndian.PutUint32(buf[off+3:], uint32(int32(svc.PID())))
+
+	var flags uint8
+	pid := svc.PID()
+	if pid > 0 {
+		flags |= StatusFlagHasPID
+	}
+	if svc.Record().IsMarkedActive() {
+		flags |= StatusFlagMarkedActive
+	}
+	if svc.Record().HasConsole() {
+		flags |= StatusFlagHasConsole
+	}
+	buf[off+3] = flags
+	binary.LittleEndian.PutUint32(buf[off+4:], uint32(int32(pid)))
 	return buf
 }
 
@@ -217,7 +240,7 @@ func DecodeSvcInfo(data []byte) (SvcInfoEntry, int, error) {
 	if err != nil {
 		return SvcInfoEntry{}, 0, err
 	}
-	if len(data) < n+7 {
+	if len(data) < n+8 {
 		return SvcInfoEntry{}, 0, fmt.Errorf("data too short for svc info")
 	}
 	entry := SvcInfoEntry{
@@ -225,7 +248,132 @@ func DecodeSvcInfo(data []byte) (SvcInfoEntry, int, error) {
 		State:       service.ServiceState(data[n]),
 		TargetState: service.ServiceState(data[n+1]),
 		SvcType:     service.ServiceType(data[n+2]),
-		PID:         int32(binary.LittleEndian.Uint32(data[n+3:])),
+		Flags:       data[n+3],
+		PID:         int32(binary.LittleEndian.Uint32(data[n+4:])),
 	}
-	return entry, n + 7, nil
+	return entry, n + 8, nil
+}
+
+// --- Boot timing protocol ---
+
+// BootTimeEntry holds timing data for one service.
+type BootTimeEntry struct {
+	Name      string
+	StartupNs int64 // startup duration in nanoseconds
+	State     service.ServiceState
+	SvcType   service.ServiceType
+	PID       int32
+}
+
+// BootTimeInfo holds the complete boot timing data.
+type BootTimeInfo struct {
+	KernelUptimeNs int64
+	BootStartNs    int64
+	BootReadyNs    int64 // 0 if boot service hasn't reached STARTED yet
+	BootSvcName    string
+	Services       []BootTimeEntry
+}
+
+// EncodeBootTime encodes boot timing info into bytes.
+// Wire format: kernelUptime(8) + bootStart(8) + bootReady(8) +
+// nameLen(2) + name(N) + numSvcs(2) +
+// [per svc: nameLen(2) + name(N) + startupNs(8) + state(1) + type(1) + pid(4)]
+func EncodeBootTime(info BootTimeInfo) []byte {
+	// Calculate total size
+	size := 8 + 8 + 8 + 2 + len(info.BootSvcName) + 2
+	for _, s := range info.Services {
+		size += 2 + len(s.Name) + 8 + 1 + 1 + 4
+	}
+
+	buf := make([]byte, size)
+	off := 0
+
+	binary.LittleEndian.PutUint64(buf[off:], uint64(info.KernelUptimeNs))
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:], uint64(info.BootStartNs))
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:], uint64(info.BootReadyNs))
+	off += 8
+
+	binary.LittleEndian.PutUint16(buf[off:], uint16(len(info.BootSvcName)))
+	off += 2
+	copy(buf[off:], info.BootSvcName)
+	off += len(info.BootSvcName)
+
+	binary.LittleEndian.PutUint16(buf[off:], uint16(len(info.Services)))
+	off += 2
+
+	for _, s := range info.Services {
+		binary.LittleEndian.PutUint16(buf[off:], uint16(len(s.Name)))
+		off += 2
+		copy(buf[off:], s.Name)
+		off += len(s.Name)
+		binary.LittleEndian.PutUint64(buf[off:], uint64(s.StartupNs))
+		off += 8
+		buf[off] = uint8(s.State)
+		off++
+		buf[off] = uint8(s.SvcType)
+		off++
+		binary.LittleEndian.PutUint32(buf[off:], uint32(s.PID))
+		off += 4
+	}
+
+	return buf
+}
+
+// DecodeBootTime decodes boot timing info from bytes.
+func DecodeBootTime(data []byte) (BootTimeInfo, error) {
+	if len(data) < 28 {
+		return BootTimeInfo{}, fmt.Errorf("data too short for boot time header")
+	}
+
+	var info BootTimeInfo
+	off := 0
+
+	info.KernelUptimeNs = int64(binary.LittleEndian.Uint64(data[off:]))
+	off += 8
+	info.BootStartNs = int64(binary.LittleEndian.Uint64(data[off:]))
+	off += 8
+	info.BootReadyNs = int64(binary.LittleEndian.Uint64(data[off:]))
+	off += 8
+
+	if len(data) < off+2 {
+		return BootTimeInfo{}, fmt.Errorf("data too short for boot service name length")
+	}
+	nameLen := int(binary.LittleEndian.Uint16(data[off:]))
+	off += 2
+	if len(data) < off+nameLen {
+		return BootTimeInfo{}, fmt.Errorf("data too short for boot service name")
+	}
+	info.BootSvcName = string(data[off : off+nameLen])
+	off += nameLen
+
+	if len(data) < off+2 {
+		return BootTimeInfo{}, fmt.Errorf("data too short for service count")
+	}
+	numSvcs := int(binary.LittleEndian.Uint16(data[off:]))
+	off += 2
+
+	info.Services = make([]BootTimeEntry, 0, numSvcs)
+	for i := 0; i < numSvcs; i++ {
+		if len(data) < off+2 {
+			return BootTimeInfo{}, fmt.Errorf("data too short for service %d name length", i)
+		}
+		sNameLen := int(binary.LittleEndian.Uint16(data[off:]))
+		off += 2
+		if len(data) < off+sNameLen+14 {
+			return BootTimeInfo{}, fmt.Errorf("data too short for service %d", i)
+		}
+		entry := BootTimeEntry{
+			Name:      string(data[off : off+sNameLen]),
+			StartupNs: int64(binary.LittleEndian.Uint64(data[off+sNameLen:])),
+			State:     service.ServiceState(data[off+sNameLen+8]),
+			SvcType:   service.ServiceType(data[off+sNameLen+9]),
+			PID:       int32(binary.LittleEndian.Uint32(data[off+sNameLen+10:])),
+		}
+		off += sNameLen + 14
+		info.Services = append(info.Services, entry)
+	}
+
+	return info, nil
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"syscall"
+	"time"
 )
 
 // Service is the core interface that all service types implement.
@@ -134,6 +135,11 @@ type ServiceRecord struct {
 
 	// Description source directory
 	serviceDscDir string
+
+	// Boot timing timestamps
+	startRequestTime time.Time // when doStart() was called
+	startedTime      time.Time // when Started() was called (reached STARTED)
+	stoppedTime      time.Time // when Stopped() was called (reached STOPPED)
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -209,6 +215,20 @@ func (sr *ServiceRecord) WasStartSkipped() bool  { return sr.startSkipped }
 func (sr *ServiceRecord) IsLoading() bool        { return sr.isLoading }
 func (sr *ServiceRecord) HasConsole() bool       { return sr.haveConsole }
 func (sr *ServiceRecord) WaitingForConsole() bool { return sr.waitingForConsole }
+
+// Boot timing getters
+func (sr *ServiceRecord) StartRequestTime() time.Time { return sr.startRequestTime }
+func (sr *ServiceRecord) StartedTime() time.Time      { return sr.startedTime }
+func (sr *ServiceRecord) StoppedTime() time.Time       { return sr.stoppedTime }
+
+// StartupDuration returns the time from start request to STARTED state.
+// Returns 0 if the service hasn't reached STARTED yet.
+func (sr *ServiceRecord) StartupDuration() time.Duration {
+	if sr.startedTime.IsZero() || sr.startRequestTime.IsZero() {
+		return 0
+	}
+	return sr.startedTime.Sub(sr.startRequestTime)
+}
 
 // IsFundamentallyStopped returns true if the service is effectively stopped:
 // either in STOPPED state, or STARTING but still waiting for deps.
@@ -486,6 +506,10 @@ func (sr *ServiceRecord) notifyListeners(event ServiceEvent) {
 func (sr *ServiceRecord) doStart() {
 	wasActive := sr.state != StateStopped
 
+	if !wasActive {
+		sr.startRequestTime = time.Now()
+	}
+
 	sr.desired = StateStarted
 
 	if sr.pinnedStopped {
@@ -594,6 +618,13 @@ func (sr *ServiceRecord) Started() {
 		sr.releaseConsole()
 	}
 
+	sr.startedTime = time.Now()
+
+	// Auto-detect boot service reaching STARTED
+	if sr.services.bootServiceName != "" && sr.serviceName == sr.services.bootServiceName && sr.services.bootReadyTime.IsZero() {
+		sr.services.bootReadyTime = time.Now()
+	}
+
 	sr.services.logger.ServiceStarted(sr.serviceName)
 	sr.state = StateStarted
 	sr.notifyListeners(EventStarted)
@@ -614,6 +645,8 @@ func (sr *ServiceRecord) Started() {
 
 // Stopped is called when the service has actually stopped.
 func (sr *ServiceRecord) Stopped() {
+	sr.stoppedTime = time.Now()
+
 	if sr.haveConsole {
 		sr.releaseConsole()
 	}

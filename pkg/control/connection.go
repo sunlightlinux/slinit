@@ -87,6 +87,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleStopService(payload)
 	case CmdListServices:
 		return c.handleListServices()
+	case CmdBootTime:
+		return c.handleBootTime()
 	case CmdServiceStatus:
 		return c.handleServiceStatus(payload)
 	case CmdShutdown:
@@ -305,4 +307,36 @@ func (c *Connection) handleUnpinService(payload []byte) error {
 	svc.Unpin()
 	c.server.services.ProcessQueues()
 	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleBootTime() error {
+	ss := c.server.services
+
+	info := BootTimeInfo{
+		KernelUptimeNs: int64(ss.KernelUptime()),
+		BootSvcName:    ss.BootServiceName(),
+	}
+	if !ss.BootStartTime().IsZero() {
+		info.BootStartNs = ss.BootStartTime().UnixNano()
+	}
+	if !ss.BootReadyTime().IsZero() {
+		info.BootReadyNs = ss.BootReadyTime().UnixNano()
+	}
+
+	for _, svc := range ss.ListServices() {
+		entry := BootTimeEntry{
+			Name:    svc.Name(),
+			State:   svc.State(),
+			SvcType: svc.Type(),
+			PID:     int32(svc.PID()),
+		}
+		dur := svc.Record().StartupDuration()
+		if dur > 0 {
+			entry.StartupNs = int64(dur)
+		}
+		info.Services = append(info.Services, entry)
+	}
+
+	payload := EncodeBootTime(info)
+	return WritePacket(c.conn, RplyBootTime, payload)
 }

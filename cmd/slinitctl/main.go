@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -95,6 +97,8 @@ func main() {
 			fatal("Usage: slinitctl signal <signal> <service>")
 		}
 		err = cmdSignal(conn, cmdArgs[1], cmdArgs[0])
+	case "boot-time", "analyze":
+		err = cmdBootTime(conn)
 	default:
 		fatal("Unknown command: %s", command)
 	}
@@ -121,6 +125,7 @@ Commands:
   shutdown [type]          Initiate shutdown (halt|poweroff|reboot)
   trigger <service>        Trigger a triggered service
   signal <sig> <service>   Send signal to service process
+  boot-time                Show boot timing analysis
 `)
 }
 
@@ -186,9 +191,6 @@ func cmdList(conn net.Conn) error {
 		return err
 	}
 
-	fmt.Printf("%-30s %-12s %-10s %-8s %s\n", "SERVICE", "STATE", "TARGET", "TYPE", "PID")
-	fmt.Println(strings.Repeat("-", 72))
-
 	for {
 		rply, payload, err := control.ReadPacket(conn)
 		if err != nil {
@@ -208,18 +210,102 @@ func cmdList(conn net.Conn) error {
 			return err
 		}
 
-		pidStr := "-"
-		if entry.PID > 0 {
-			pidStr = strconv.Itoa(int(entry.PID))
-		}
+		indicator := formatIndicator(entry)
+		suffix := formatSuffix(entry)
 
-		stateStr := formatState(entry.State)
-		targetStr := formatTarget(entry.TargetState)
-
-		fmt.Printf("%-30s %-12s %-10s %-8s %s\n",
-			entry.Name, stateStr, targetStr, entry.SvcType, pidStr)
+		fmt.Printf("[%s] %s%s\n", indicator, entry.Name, suffix)
 	}
 	return nil
+}
+
+// formatIndicator renders the dinit-style 8-char service state indicator.
+//
+// Layout: 3 chars (started zone) + 2 chars (arrow zone) + 3 chars (stopped zone)
+//
+// Examples:
+//
+//	[+]       started, marked active
+//	{+}       started, dependency only
+//	     {-}  stopped, dependency only
+//	[ ]<<     starting, marked active
+//	{ }<<     starting, dependency only
+//	   >>{ }  stopping, dependency only
+//	   <<{ }  starting, but will stop after
+//	{ }>>     stopping, but will restart
+func formatIndicator(e control.SvcInfoEntry) string {
+	active := e.Flags&control.StatusFlagMarkedActive != 0
+	open, close := byte('{'), byte('}')
+	if active {
+		open, close = '[', ']'
+	}
+
+	var buf [8]byte
+	for i := range buf {
+		buf[i] = ' '
+	}
+
+	switch e.State {
+	case service.StateStarted:
+		// Symbol at left (started) position
+		buf[0] = open
+		buf[1] = '+'
+		buf[2] = close
+
+	case service.StateStopped:
+		// Symbol at right (stopped) position
+		buf[5] = open
+		buf[6] = '-'
+		buf[7] = close
+
+	case service.StateStarting:
+		// Arrow pointing left (<<)
+		buf[3] = '<'
+		buf[4] = '<'
+		if e.TargetState == service.StateStarted {
+			// Target bracket at left (started) position
+			buf[0] = open
+			buf[1] = ' '
+			buf[2] = close
+		} else {
+			// Starting but will stop: target bracket at right (stopped) position
+			buf[5] = open
+			buf[6] = ' '
+			buf[7] = close
+		}
+
+	case service.StateStopping:
+		// Arrow pointing right (>>)
+		buf[3] = '>'
+		buf[4] = '>'
+		if e.TargetState == service.StateStopped {
+			// Target bracket at right (stopped) position
+			buf[5] = open
+			buf[6] = ' '
+			buf[7] = close
+		} else {
+			// Stopping but will restart: target bracket at left (started) position
+			buf[0] = open
+			buf[1] = ' '
+			buf[2] = close
+		}
+	}
+
+	return string(buf[:])
+}
+
+// formatSuffix returns extra info like (pid: N) or (has console).
+func formatSuffix(e control.SvcInfoEntry) string {
+	var parts []string
+	if e.PID > 0 {
+		parts = append(parts, "pid: "+strconv.Itoa(int(e.PID)))
+	}
+	if e.Flags&control.StatusFlagHasConsole != 0 {
+		parts = append(parts, "has console")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 func cmdStart(conn net.Conn, name string) error {
@@ -447,6 +533,84 @@ func cmdSignal(conn net.Conn, svcName string, sigStr string) error {
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
 	return nil
+}
+
+func cmdBootTime(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdBootTime, nil); err != nil {
+		return err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	if rply != control.RplyBootTime {
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+
+	info, err := control.DecodeBootTime(payload)
+	if err != nil {
+		return err
+	}
+
+	kernelTime := time.Duration(info.KernelUptimeNs)
+	bootReady := info.BootReadyNs > 0
+
+	if bootReady {
+		userspaceTime := time.Duration(info.BootReadyNs - info.BootStartNs)
+		totalTime := kernelTime + userspaceTime
+		fmt.Printf("Startup finished in %s (kernel) + %s (userspace) = %s\n",
+			formatDuration(kernelTime),
+			formatDuration(userspaceTime),
+			formatDuration(totalTime))
+		fmt.Printf("%s reached after %s in userspace.\n",
+			info.BootSvcName,
+			formatDuration(userspaceTime))
+	} else {
+		fmt.Printf("Startup in progress: %s (kernel) + ... (userspace)\n",
+			formatDuration(kernelTime))
+		fmt.Printf("Boot service '%s' has not yet reached STARTED.\n",
+			info.BootSvcName)
+	}
+
+	// Collect services with timing data
+	var timed []control.BootTimeEntry
+	for _, entry := range info.Services {
+		if entry.StartupNs > 0 {
+			timed = append(timed, entry)
+		}
+	}
+
+	if len(timed) > 0 {
+		// Sort by startup duration descending (slowest first)
+		sort.Slice(timed, func(i, j int) bool {
+			return timed[i].StartupNs > timed[j].StartupNs
+		})
+
+		fmt.Println()
+		fmt.Println("Service startup times:")
+		for _, entry := range timed {
+			dur := time.Duration(entry.StartupNs)
+			suffix := ""
+			if entry.PID > 0 {
+				suffix = fmt.Sprintf(" (pid: %d)", entry.PID)
+			}
+			fmt.Printf("  %8s %s%s\n", formatDuration(dur), entry.Name, suffix)
+		}
+	}
+
+	return nil
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Millisecond {
+		return fmt.Sprintf("%dus", d.Microseconds())
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.3fs", d.Seconds())
 }
 
 func parseSignal(s string) (syscall.Signal, error) {

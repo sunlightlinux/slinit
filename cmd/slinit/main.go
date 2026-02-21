@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/control"
@@ -27,6 +29,8 @@ const (
 )
 
 func main() {
+	bootStartTime := time.Now()
+
 	// Parse command-line flags
 	var (
 		serviceDirs   string
@@ -88,6 +92,13 @@ func main() {
 
 	// Create service set
 	serviceSet := service.NewServiceSet(logger)
+
+	// Record boot timing
+	serviceSet.SetBootStartTime(bootStartTime)
+	serviceSet.SetBootServiceName(bootService)
+	if uptime, err := readKernelUptime(); err == nil {
+		serviceSet.SetKernelUptime(uptime)
+	}
 
 	// Create and configure the loader
 	loader := config.NewDirLoader(serviceSet, dirs)
@@ -213,6 +224,24 @@ func resolveServiceDirs(flagValue string, systemMode bool) []string {
 		return []string{defaultUserServiceDir}
 	}
 	return []string{home + "/" + defaultUserServiceDir}
+}
+
+// readKernelUptime reads /proc/uptime and returns the system uptime duration.
+// This represents the time from kernel boot to when slinit started.
+func readKernelUptime() (time.Duration, error) {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 1 {
+		return 0, fmt.Errorf("unexpected /proc/uptime format")
+	}
+	secs, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(secs * float64(time.Second)), nil
 }
 
 func resolveSocketPath(flagValue string, systemMode bool) string {

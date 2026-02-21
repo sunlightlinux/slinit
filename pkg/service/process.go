@@ -132,10 +132,10 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
-	// Arm start timeout if configured
-	if s.startTimeout > 0 {
-		s.armTimer(s.startTimeout, timerStartTimeout)
-	}
+	// Note: startProcess() calls Started() immediately (no readiness protocol),
+	// so no start timeout is needed here. If a readiness protocol is added later,
+	// the start timeout should be armed BEFORE startProcess() and cancelled
+	// inside startProcess() when readiness is confirmed.
 
 	return true
 }
