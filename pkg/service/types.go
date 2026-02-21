@@ -223,10 +223,10 @@ func (a AutoRestartMode) String() string {
 type LogType uint8
 
 const (
-	LogNone   LogType = iota // Discard all output
-	LogFile                  // Log to a file
-	LogBuffer                // Log to a memory buffer
-	LogPipe                  // Pipe to another process (service)
+	LogNone      LogType = iota // Discard all output
+	LogToFile                   // Log to a file
+	LogToBuffer                 // Log to a memory buffer
+	LogToPipe                   // Pipe to another process (service)
 )
 
 // ExitStatus holds the exit status of a child process.

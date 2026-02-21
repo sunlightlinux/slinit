@@ -49,6 +49,10 @@ type Service interface {
 	AddListener(ServiceListener)
 	RemoveListener(ServiceListener)
 
+	// Log buffer access (for catlog command)
+	GetLogBuffer() *LogBuffer
+	GetLogType() LogType
+
 	// Internal access to the record (for state machine operations)
 	Record() *ServiceRecord
 }
@@ -215,6 +219,10 @@ func (sr *ServiceRecord) WasStartSkipped() bool  { return sr.startSkipped }
 func (sr *ServiceRecord) IsLoading() bool        { return sr.isLoading }
 func (sr *ServiceRecord) HasConsole() bool       { return sr.haveConsole }
 func (sr *ServiceRecord) WaitingForConsole() bool { return sr.waitingForConsole }
+
+// Default log buffer implementations (overridden by process-based services)
+func (sr *ServiceRecord) GetLogBuffer() *LogBuffer { return nil }
+func (sr *ServiceRecord) GetLogType() LogType      { return LogNone }
 
 // Boot timing getters
 func (sr *ServiceRecord) StartRequestTime() time.Time { return sr.startRequestTime }

@@ -129,6 +129,10 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
+		if desc.LogType == service.LogToBuffer {
+			svc.SetLogType(desc.LogType)
+			svc.SetLogBufMax(desc.LogBufMax)
+		}
 		return svc
 	case service.TypeScripted:
 		svc := service.NewScriptedService(dl.set, name)
@@ -140,6 +144,10 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		}
 		if desc.StopTimeout > 0 {
 			svc.SetStopTimeout(desc.StopTimeout)
+		}
+		if desc.LogType == service.LogToBuffer {
+			svc.SetLogType(desc.LogType)
+			svc.SetLogBufMax(desc.LogBufMax)
 		}
 		return svc
 	case service.TypeBGProcess:
@@ -160,6 +168,10 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		}
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
+		}
+		if desc.LogType == service.LogToBuffer {
+			svc.SetLogType(desc.LogType)
+			svc.SetLogBufMax(desc.LogBufMax)
 		}
 		return svc
 	case service.TypeTriggered:

@@ -65,6 +65,10 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			cmd.SysProcAttr.Setctty = true
 			cmd.SysProcAttr.Ctty = 0 // fd 0 (stdin) = /dev/console
 		}
+	} else if params.OutputPipe != nil {
+		// Capture stdout/stderr to a pipe for log buffering
+		cmd.Stdout = params.OutputPipe
+		cmd.Stderr = params.OutputPipe
 	}
 
 	// Start the process

@@ -29,6 +29,7 @@ const (
 	CmdShutdown      uint8 = 10
 	CmdServiceStatus uint8 = 18
 	CmdSetTrigger    uint8 = 19
+	CmdCatLog        uint8 = 20
 	CmdSignal        uint8 = 21
 	CmdCloseHandle   uint8 = 23
 )
@@ -47,6 +48,7 @@ const (
 	RplyBootTime      uint8 = 64
 	RplyShuttingDown  uint8 = 69
 	RplyServiceStatus uint8 = 70
+	RplySvcLog        uint8 = 73
 	RplySignalNoPID   uint8 = 74
 	RplySignalBadSig  uint8 = 75
 	RplySignalErr     uint8 = 76
@@ -67,7 +69,10 @@ const (
 
 // Packet header: 1-byte command/reply + 2-byte payload length (little-endian).
 // Maximum payload size.
-const MaxPayloadSize = 4096
+const MaxPayloadSize = 65535
+
+// CatLog request flags.
+const CatLogFlagClear uint8 = 1 << 0
 
 // WritePacket writes a packet: [type(1)][payloadLen(2)][payload(N)].
 func WritePacket(w io.Writer, pktType uint8, payload []byte) error {
@@ -376,4 +381,48 @@ func DecodeBootTime(data []byte) (BootTimeInfo, error) {
 	}
 
 	return info, nil
+}
+
+// --- CatLog protocol ---
+
+// EncodeCatLogRequest encodes a catlog request.
+// Wire format: flags(1) + handle(4) = 5 bytes.
+func EncodeCatLogRequest(handle uint32, clear bool) []byte {
+	buf := make([]byte, 5)
+	if clear {
+		buf[0] = CatLogFlagClear
+	}
+	binary.LittleEndian.PutUint32(buf[1:], handle)
+	return buf
+}
+
+// DecodeCatLogRequest decodes a catlog request.
+func DecodeCatLogRequest(data []byte) (flags uint8, handle uint32, err error) {
+	if len(data) < 5 {
+		return 0, 0, fmt.Errorf("data too short for catlog request")
+	}
+	return data[0], binary.LittleEndian.Uint32(data[1:]), nil
+}
+
+// EncodeSvcLog encodes a service log response.
+// Wire format: flags(1) + bufLen(4) + buffer(N).
+func EncodeSvcLog(logData []byte) []byte {
+	buf := make([]byte, 1+4+len(logData))
+	buf[0] = 0 // flags reserved
+	binary.LittleEndian.PutUint32(buf[1:], uint32(len(logData)))
+	copy(buf[5:], logData)
+	return buf
+}
+
+// DecodeSvcLog decodes a service log response.
+func DecodeSvcLog(data []byte) (flags uint8, logData []byte, err error) {
+	if len(data) < 5 {
+		return 0, nil, fmt.Errorf("data too short for svc log")
+	}
+	flags = data[0]
+	bufLen := binary.LittleEndian.Uint32(data[1:])
+	if uint32(len(data)) < 5+bufLen {
+		return 0, nil, fmt.Errorf("data too short for log buffer")
+	}
+	return flags, data[5 : 5+bufLen], nil
 }

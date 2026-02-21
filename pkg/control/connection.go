@@ -89,6 +89,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleListServices()
 	case CmdBootTime:
 		return c.handleBootTime()
+	case CmdCatLog:
+		return c.handleCatLog(payload)
 	case CmdServiceStatus:
 		return c.handleServiceStatus(payload)
 	case CmdShutdown:
@@ -339,4 +341,38 @@ func (c *Connection) handleBootTime() error {
 
 	payload := EncodeBootTime(info)
 	return WritePacket(c.conn, RplyBootTime, payload)
+}
+
+func (c *Connection) handleCatLog(payload []byte) error {
+	flags, handle, err := DecodeCatLogRequest(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	if svc.GetLogType() != service.LogToBuffer {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	logBuf := svc.GetLogBuffer()
+	if logBuf == nil {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	var data []byte
+	if flags&CatLogFlagClear != 0 {
+		data = logBuf.GetBufferAndClear()
+	} else {
+		data = logBuf.GetBuffer()
+	}
+	if data == nil {
+		data = []byte{}
+	}
+
+	reply := EncodeSvcLog(data)
+	return WritePacket(c.conn, RplySvcLog, reply)
 }

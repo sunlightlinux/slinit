@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"syscall"
 	"time"
 
@@ -53,6 +54,11 @@ type ProcessService struct {
 	// State tracking
 	stopIssued       bool
 	doingSmoothRecov bool
+
+	// Log buffering
+	logType   LogType
+	logBufMax int
+	logBuf    *LogBuffer
 
 	// Channels for monitoring goroutine coordination
 	doneCh        chan struct{} // closed when monitoring goroutine should stop
@@ -107,6 +113,21 @@ func (s *ProcessService) SetStopTimeout(d time.Duration) { s.stopTimeout = d }
 
 // SetRestartDelay sets the minimum delay between restarts.
 func (s *ProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d }
+
+// SetLogType sets the log output type.
+func (s *ProcessService) SetLogType(lt LogType) { s.logType = lt }
+
+// SetLogBufMax sets the maximum log buffer size.
+func (s *ProcessService) SetLogBufMax(n int) { s.logBufMax = n }
+
+// GetLogBuffer returns the log buffer (overrides ServiceRecord default).
+func (s *ProcessService) GetLogBuffer() *LogBuffer { return s.logBuf }
+
+// GetLogType returns the log type (overrides ServiceRecord default).
+func (s *ProcessService) GetLogType() LogType { return s.logType }
+
+// SetTestLogBuffer sets the log buffer directly (for testing only).
+func (s *ProcessService) SetTestLogBuffer(lb *LogBuffer) { s.logBuf = lb }
 
 // SetRestartLimits sets the restart rate limiting parameters.
 func (s *ProcessService) SetRestartLimits(interval time.Duration, maxCount int) {
@@ -234,6 +255,23 @@ func (s *ProcessService) startProcess() error {
 	s.stopIssued = false
 	s.exitStatus = ExitStatus{}
 
+	// Set up log buffer pipe if configured
+	var outputPipe *os.File
+	if s.logType == LogToBuffer {
+		if s.logBuf == nil {
+			s.logBuf = NewLogBuffer(s.logBufMax)
+		} else {
+			s.logBuf.AppendRestartMarker()
+		}
+		var pipeErr error
+		outputPipe, pipeErr = s.logBuf.CreatePipe()
+		if pipeErr != nil {
+			s.services.logger.Error("Service '%s': failed to create log pipe: %v",
+				s.serviceName, pipeErr)
+			outputPipe = nil
+		}
+	}
+
 	params := process.ExecParams{
 		Command:           s.command,
 		WorkingDir:        s.workingDir,
@@ -242,11 +280,21 @@ func (s *ProcessService) startProcess() error {
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
 		RunAsUID:          s.runAsUID,
 		RunAsGID:          s.runAsGID,
+		OutputPipe:        outputPipe,
 	}
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
+		if outputPipe != nil {
+			s.logBuf.CloseWriteEnd()
+		}
 		return err
+	}
+
+	// Close parent's write end and start reader goroutine
+	if outputPipe != nil {
+		s.logBuf.CloseWriteEnd()
+		s.logBuf.StartReader()
 	}
 
 	s.pid = pid

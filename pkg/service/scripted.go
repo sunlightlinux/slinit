@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -34,6 +35,11 @@ type ScriptedService struct {
 	// Timer
 	processTimer *time.Timer
 	timerPurpose scriptedTimerPurpose
+
+	// Log buffering
+	logType   LogType
+	logBufMax int
+	logBuf    *LogBuffer
 
 	// Monitoring
 	doneCh        chan struct{}
@@ -73,6 +79,18 @@ func (s *ScriptedService) SetRunAs(uid, gid uint32) {
 	s.runAsGID = gid
 }
 
+// SetLogType sets the log output type.
+func (s *ScriptedService) SetLogType(lt LogType) { s.logType = lt }
+
+// SetLogBufMax sets the maximum log buffer size.
+func (s *ScriptedService) SetLogBufMax(n int) { s.logBufMax = n }
+
+// GetLogBuffer returns the log buffer (overrides ServiceRecord default).
+func (s *ScriptedService) GetLogBuffer() *LogBuffer { return s.logBuf }
+
+// GetLogType returns the log type (overrides ServiceRecord default).
+func (s *ScriptedService) GetLogType() LogType { return s.logType }
+
 // SetStartTimeout sets the start command timeout.
 func (s *ScriptedService) SetStartTimeout(d time.Duration) { s.startTimeout = d }
 
@@ -95,18 +113,42 @@ func (s *ScriptedService) BringUp() bool {
 		return true
 	}
 
+	// Set up log buffer pipe if configured
+	var outputPipe *os.File
+	if s.logType == LogToBuffer {
+		if s.logBuf == nil {
+			s.logBuf = NewLogBuffer(s.logBufMax)
+		}
+		var pipeErr error
+		outputPipe, pipeErr = s.logBuf.CreatePipe()
+		if pipeErr != nil {
+			s.services.logger.Error("Service '%s': failed to create log pipe: %v",
+				s.serviceName, pipeErr)
+			outputPipe = nil
+		}
+	}
+
 	params := process.ExecParams{
 		Command:    s.startCommand,
 		WorkingDir: s.workingDir,
 		RunAsUID:   s.runAsUID,
 		RunAsGID:   s.runAsGID,
+		OutputPipe: outputPipe,
 	}
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
+		if outputPipe != nil {
+			s.logBuf.CloseWriteEnd()
+		}
 		s.services.logger.Error("Service '%s': failed to run start command: %v",
 			s.serviceName, err)
 		return false
+	}
+
+	if outputPipe != nil {
+		s.logBuf.CloseWriteEnd()
+		s.logBuf.StartReader()
 	}
 
 	s.startPID = pid

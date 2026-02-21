@@ -99,6 +99,20 @@ func main() {
 		err = cmdSignal(conn, cmdArgs[1], cmdArgs[0])
 	case "boot-time", "analyze":
 		err = cmdBootTime(conn)
+	case "catlog":
+		clearFlag := false
+		svcName := ""
+		for _, arg := range cmdArgs {
+			if arg == "--clear" {
+				clearFlag = true
+			} else {
+				svcName = arg
+			}
+		}
+		if svcName == "" {
+			fatal("Usage: slinitctl catlog [--clear] <service>")
+		}
+		err = cmdCatLog(conn, svcName, clearFlag)
 	default:
 		fatal("Unknown command: %s", command)
 	}
@@ -126,6 +140,7 @@ Commands:
   trigger <service>        Trigger a triggered service
   signal <sig> <service>   Send signal to service process
   boot-time                Show boot timing analysis
+  catlog [--clear] <svc>   Show buffered service output
 `)
 }
 
@@ -611,6 +626,44 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
 	return fmt.Sprintf("%.3fs", d.Seconds())
+}
+
+func cmdCatLog(conn net.Conn, name string, clear bool) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	payload := control.EncodeCatLogRequest(handle, clear)
+	if err := control.WritePacket(conn, control.CmdCatLog, payload); err != nil {
+		return err
+	}
+
+	rply, rplyPayload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyNAK:
+		return fmt.Errorf("service '%s' is not configured to buffer output (log-type != buffer)", name)
+	case control.RplySvcLog:
+		_, logData, err := control.DecodeSvcLog(rplyPayload)
+		if err != nil {
+			return err
+		}
+		if len(logData) == 0 {
+			fmt.Fprintf(os.Stderr, "(no buffered output for service '%s')\n", name)
+			return nil
+		}
+		os.Stdout.Write(logData)
+		if logData[len(logData)-1] != '\n' {
+			fmt.Println()
+		}
+		return nil
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
 }
 
 func parseSignal(s string) (syscall.Signal, error) {

@@ -300,7 +300,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "logfile":
 		desc.LogFile = value
 		if desc.LogType == service.LogNone {
-			desc.LogType = service.LogFile
+			desc.LogType = service.LogToFile
 		}
 	case "log-type":
 		return applyLogType(desc, value)
@@ -388,11 +388,11 @@ func applyLogType(desc *ServiceDescription, value string) error {
 	case "none":
 		desc.LogType = service.LogNone
 	case "file":
-		desc.LogType = service.LogFile
+		desc.LogType = service.LogToFile
 	case "buffer":
-		desc.LogType = service.LogBuffer
+		desc.LogType = service.LogToBuffer
 	case "pipe":
-		desc.LogType = service.LogPipe
+		desc.LogType = service.LogToPipe
 	default:
 		return fmt.Errorf("unknown log type: %s", value)
 	}

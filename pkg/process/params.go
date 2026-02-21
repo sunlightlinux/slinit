@@ -3,6 +3,7 @@ package process
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 )
 
@@ -82,6 +83,11 @@ type ExecParams struct {
 
 	// SignalProcessOnly: if true, signal only the process, not the group.
 	SignalProcessOnly bool
+
+	// OutputPipe, if non-nil, is the write end of a pipe used to capture
+	// the child's stdout and stderr. The caller must close it after
+	// StartProcess returns. Ignored when OnConsole is true.
+	OutputPipe *os.File
 }
 
 // ChildExit represents the result of a child process termination.

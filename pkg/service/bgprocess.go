@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"syscall"
 	"time"
 
@@ -57,6 +58,11 @@ type BGProcessService struct {
 	stopIssued       bool
 	doingSmoothRecov bool
 
+	// Log buffering
+	logType   LogType
+	logBufMax int
+	logBuf    *LogBuffer
+
 	// Channels for monitoring goroutine coordination
 	doneCh        chan struct{}
 	timerUpdateCh chan struct{}
@@ -96,6 +102,18 @@ func (s *BGProcessService) SetStartTimeout(d time.Duration) { s.startTimeout = d
 func (s *BGProcessService) SetStopTimeout(d time.Duration)  { s.stopTimeout = d }
 func (s *BGProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d }
 
+// SetLogType sets the log output type.
+func (s *BGProcessService) SetLogType(lt LogType) { s.logType = lt }
+
+// SetLogBufMax sets the maximum log buffer size.
+func (s *BGProcessService) SetLogBufMax(n int) { s.logBufMax = n }
+
+// GetLogBuffer returns the log buffer (overrides ServiceRecord default).
+func (s *BGProcessService) GetLogBuffer() *LogBuffer { return s.logBuf }
+
+// GetLogType returns the log type (overrides ServiceRecord default).
+func (s *BGProcessService) GetLogType() LogType { return s.logType }
+
 func (s *BGProcessService) SetRestartLimits(interval time.Duration, maxCount int) {
 	s.restartInterval = interval
 	s.maxRestartCount = maxCount
@@ -131,6 +149,23 @@ func (s *BGProcessService) BringUp() bool {
 	s.exitStatus = ExitStatus{}
 	s.daemonPID = 0
 
+	// Set up log buffer pipe if configured
+	var outputPipe *os.File
+	if s.logType == LogToBuffer {
+		if s.logBuf == nil {
+			s.logBuf = NewLogBuffer(s.logBufMax)
+		} else {
+			s.logBuf.AppendRestartMarker()
+		}
+		var pipeErr error
+		outputPipe, pipeErr = s.logBuf.CreatePipe()
+		if pipeErr != nil {
+			s.services.logger.Error("Service '%s': failed to create log pipe: %v",
+				s.serviceName, pipeErr)
+			outputPipe = nil
+		}
+	}
+
 	params := process.ExecParams{
 		Command:           s.command,
 		WorkingDir:        s.workingDir,
@@ -138,12 +173,21 @@ func (s *BGProcessService) BringUp() bool {
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
 		RunAsUID:          s.runAsUID,
 		RunAsGID:          s.runAsGID,
+		OutputPipe:        outputPipe,
 	}
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
+		if outputPipe != nil {
+			s.logBuf.CloseWriteEnd()
+		}
 		s.services.logger.Error("Service '%s': failed to start launcher: %v", s.serviceName, err)
 		return false
+	}
+
+	if outputPipe != nil {
+		s.logBuf.CloseWriteEnd()
+		s.logBuf.StartReader()
 	}
 
 	s.launcherPID = pid
