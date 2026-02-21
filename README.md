@@ -13,6 +13,9 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Dinit-compatible config**: key=value service description files
 - **Control socket**: binary protocol over Unix domain socket for runtime management
 - **slinitctl CLI**: list, start, stop, restart, status, shutdown, trigger, signal
+- **PID 1 init**: console setup, Ctrl+Alt+Del disable, child subreaper, orphan reaping
+- **Shutdown**: orderly process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff syscalls
+- **Soft-reboot**: restart slinit without rebooting the kernel
 - **Dual mode**: system init (PID 1) or user-level service manager
 
 ## Building
@@ -129,6 +132,7 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 - **Two-phase state transitions** (propagation + execution) preserve correctness from dinit
 - **One goroutine per child process** for monitoring, with channel-based notification
 - **Binary control protocol** over Unix domain sockets, goroutine-per-connection
+- **PID 1 shutdown sequence**: emergency timeout, process cleanup, filesystem sync, reboot syscalls
 
 ## Project structure
 
@@ -141,6 +145,7 @@ slinit/
 │   ├── service/         # Service types, state machine, dependency graph
 │   ├── config/          # Dinit-compatible config parser and loader
 │   ├── control/         # Control socket protocol and server
+│   ├── shutdown/        # PID 1 init, shutdown executor, soft-reboot
 │   ├── process/         # Process execution and monitoring
 │   ├── eventloop/       # Event loop, signals, timers
 │   └── logging/         # Console logger
@@ -153,7 +158,7 @@ slinit/
 - [x] **Phase 2**: Process services - fork/exec, child monitoring, restart logic
 - [x] **Phase 3**: Full dependency graph - all 6 dep types validated, TriggeredService, BGProcessService
 - [x] **Phase 4**: Control protocol + `slinitctl` CLI
-- [ ] **Phase 5**: PID 1 mode + shutdown sequence
+- [x] **Phase 5**: PID 1 mode + shutdown sequence
 - [ ] **Phase 6**: Advanced features - socket activation, cgroups, rlimits
 
 ## Testing
