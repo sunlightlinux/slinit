@@ -17,6 +17,7 @@ func SetupSignals() chan os.Signal {
 		syscall.SIGINT,
 		syscall.SIGQUIT,
 		syscall.SIGHUP,
+		syscall.SIGCHLD, // For PID 1 orphan reaping
 	)
 	return sigCh
 }

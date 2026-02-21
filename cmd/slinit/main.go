@@ -13,6 +13,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/shutdown"
 )
 
 const (
@@ -68,6 +69,9 @@ func main() {
 
 	if isPID1 {
 		logger.Notice("slinit starting as PID 1 (init system mode)")
+		if err := shutdown.InitPID1(logger); err != nil {
+			logger.Error("PID 1 initialization warning: %v", err)
+		}
 	} else if systemMode {
 		logger.Notice("slinit starting in system mode")
 	} else {
@@ -117,6 +121,11 @@ func main() {
 	// Run the event loop
 	loop := eventloop.New(serviceSet, logger)
 
+	// Enable PID 1 mode on event loop (boot failure detection, orphan reaping)
+	if isPID1 {
+		loop.SetPID1Mode(true)
+	}
+
 	// Wire shutdown from control protocol to event loop
 	ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
 		loop.InitiateShutdown(st)
@@ -130,7 +139,46 @@ func main() {
 		}
 	}
 
+	// Handle post-loop shutdown actions
+	shutdownType := loop.GetShutdownType()
+
+	if isPID1 {
+		handlePID1Shutdown(shutdownType, logger)
+		// handlePID1Shutdown does not return
+	}
+
 	logger.Info("slinit shutdown complete")
+}
+
+// handlePID1Shutdown performs the appropriate system action after all services
+// have stopped when running as PID 1. This function does not return.
+func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logger) {
+	switch shutdownType {
+	case service.ShutdownNone:
+		// Boot failure: services stopped without explicit shutdown
+		logger.Error("Boot failure detected, attempting reboot")
+		shutdown.Execute(service.ShutdownReboot, logger)
+
+	case service.ShutdownSoftReboot:
+		logger.Notice("Performing soft reboot")
+		if err := shutdown.SoftReboot(logger); err != nil {
+			logger.Error("Soft reboot failed: %v, falling back to hard reboot", err)
+			shutdown.Execute(service.ShutdownReboot, logger)
+		}
+		// SoftReboot calls exec, should not reach here
+		shutdown.InfiniteHold()
+
+	case service.ShutdownHalt, service.ShutdownPoweroff, service.ShutdownReboot:
+		shutdown.Execute(shutdownType, logger)
+
+	case service.ShutdownRemain:
+		logger.Notice("Shutdown type is REMAIN, staying up with no services")
+		shutdown.InfiniteHold()
+
+	default:
+		logger.Error("Unknown shutdown type: %s, halting", shutdownType)
+		shutdown.Execute(service.ShutdownHalt, logger)
+	}
 }
 
 func parseLogLevel(s string) logging.Level {
