@@ -93,6 +93,14 @@ func (ss *ServiceSet) LoadService(name string) (Service, error) {
 	return nil, &ServiceNotFound{Name: name}
 }
 
+// GetLoader returns the service loader.
+func (ss *ServiceSet) GetLoader() ServiceLoader { return ss.loader }
+
+// ReplaceService atomically replaces an old service with a new one in the set.
+func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) {
+	ss.records[oldSvc.Name()] = newSvc
+}
+
 // AddService adds a service to the set.
 func (ss *ServiceSet) AddService(svc Service) {
 	ss.records[svc.Name()] = svc

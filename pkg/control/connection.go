@@ -103,6 +103,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleSignal(payload)
 	case CmdUnpinService:
 		return c.handleUnpinService(payload)
+	case CmdReloadService:
+		return c.handleReloadService(payload)
 	default:
 		return WritePacket(c.conn, RplyBadReq, nil)
 	}
@@ -375,4 +377,40 @@ func (c *Connection) handleCatLog(payload []byte) error {
 
 	reply := EncodeSvcLog(data)
 	return WritePacket(c.conn, RplySvcLog, reply)
+}
+
+func (c *Connection) handleReloadService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	// Refuse if service is in a transitional state
+	state := svc.State()
+	if state != service.StateStopped && state != service.StateStarted {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	loader := c.server.services.GetLoader()
+	if loader == nil {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	newSvc, err := loader.ReloadService(svc)
+	if err != nil {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	// If service was replaced (type change), update handle mapping
+	if newSvc != svc {
+		c.handles[handle] = newSvc
+	}
+
+	c.server.services.ProcessQueues()
+	return WritePacket(c.conn, RplyACK, nil)
 }

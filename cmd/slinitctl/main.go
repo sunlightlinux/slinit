@@ -99,6 +99,10 @@ func main() {
 		err = cmdSignal(conn, cmdArgs[1], cmdArgs[0])
 	case "boot-time", "analyze":
 		err = cmdBootTime(conn)
+	case "reload":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdReload(conn, name)
+		})
 	case "catlog":
 		clearFlag := false
 		svcName := ""
@@ -139,6 +143,7 @@ Commands:
   shutdown [type]          Initiate shutdown (halt|poweroff|reboot)
   trigger <service>        Trigger a triggered service
   signal <sig> <service>   Send signal to service process
+  reload <service>         Reload service configuration from disk
   boot-time                Show boot timing analysis
   catlog [--clear] <svc>   Show buffered service output
 `)
@@ -626,6 +631,32 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dms", d.Milliseconds())
 	}
 	return fmt.Sprintf("%.3fs", d.Seconds())
+}
+
+func cmdReload(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdReloadService, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Service '%s' reloaded.\n", name)
+	case control.RplyNAK:
+		return fmt.Errorf("could not reload service '%s'; service may be in wrong state or have incompatible changes", name)
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	return nil
 }
 
 func cmdCatLog(conn net.Conn, name string, clear bool) error {

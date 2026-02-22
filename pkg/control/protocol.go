@@ -26,8 +26,9 @@ const (
 	CmdUnpinService  uint8 = 7
 	CmdListServices  uint8 = 8
 	CmdBootTime      uint8 = 9
-	CmdShutdown      uint8 = 10
-	CmdServiceStatus uint8 = 18
+	CmdShutdown       uint8 = 10
+	CmdReloadService  uint8 = 16
+	CmdServiceStatus  uint8 = 18
 	CmdSetTrigger    uint8 = 19
 	CmdCatLog        uint8 = 20
 	CmdSignal        uint8 = 21

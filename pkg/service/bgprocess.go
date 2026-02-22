@@ -97,6 +97,7 @@ func (s *BGProcessService) SetStopCommand(cmd []string)     { s.stopCommand = cm
 func (s *BGProcessService) SetWorkingDir(dir string)        { s.workingDir = dir }
 func (s *BGProcessService) SetEnvFile(path string)          { s.envFile = path }
 func (s *BGProcessService) SetPIDFile(path string)          { s.pidFile = path }
+func (s *BGProcessService) GetPIDFile() string               { return s.pidFile }
 func (s *BGProcessService) SetRunAs(uid, gid uint32)        { s.runAsUID = uid; s.runAsGID = gid }
 func (s *BGProcessService) SetStartTimeout(d time.Duration) { s.startTimeout = d }
 func (s *BGProcessService) SetStopTimeout(d time.Duration)  { s.stopTimeout = d }

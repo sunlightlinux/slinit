@@ -978,3 +978,13 @@ func (sr *ServiceRecord) rmDepByIndex(i int) {
 
 	sr.dependsOn = append(sr.dependsOn[:i], sr.dependsOn[i+1:]...)
 }
+
+// SetDependents replaces the dependents slice (used during reload to transfer dependents).
+func (sr *ServiceRecord) SetDependents(deps []*ServiceDep) {
+	sr.dependents = deps
+}
+
+// ClearDependencies removes all dependencies without updating the target's dependents.
+func (sr *ServiceRecord) ClearDependencies() {
+	sr.dependsOn = nil
+}
