@@ -1,6 +1,7 @@
 package process
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -71,10 +72,44 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Stderr = params.OutputPipe
 	}
 
+	// Set up readiness notification pipe as an extra fd for the child.
+	// ExtraFiles[i] becomes fd 3+i in the child process.
+	var notifyFdNullFiles []*os.File // /dev/null files to close after start
+	if params.NotifyPipe != nil {
+		targetFD := 3 // default: first ExtraFile slot = fd 3
+		if params.ForceNotifyFD >= 3 {
+			targetFD = params.ForceNotifyFD
+		}
+
+		// Fill ExtraFiles up to the target slot
+		slotIndex := targetFD - 3
+		for len(cmd.ExtraFiles) < slotIndex {
+			devNull, err := os.Open("/dev/null")
+			if err != nil {
+				return 0, nil, &ExecError{Stage: StageArrangeFDs, Err: err}
+			}
+			notifyFdNullFiles = append(notifyFdNullFiles, devNull)
+			cmd.ExtraFiles = append(cmd.ExtraFiles, devNull)
+		}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, params.NotifyPipe)
+
+		// Set environment variable with the actual fd number
+		actualFD := 3 + len(cmd.ExtraFiles) - 1
+		if params.NotifyVar != "" {
+			if cmd.Env == nil {
+				cmd.Env = os.Environ()
+			}
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%d", params.NotifyVar, actualFD))
+		}
+	}
+
 	// Start the process
 	if err := cmd.Start(); err != nil {
 		if consoleFd != nil {
 			consoleFd.Close()
+		}
+		for _, f := range notifyFdNullFiles {
+			f.Close()
 		}
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
 	}
@@ -82,6 +117,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// Close our copy of the console fd after fork
 	if consoleFd != nil {
 		consoleFd.Close()
+	}
+
+	// Close /dev/null filler fds after fork
+	for _, f := range notifyFdNullFiles {
+		f.Close()
 	}
 
 	pid := cmd.Process.Pid

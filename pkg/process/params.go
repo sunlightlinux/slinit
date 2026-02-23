@@ -88,6 +88,19 @@ type ExecParams struct {
 	// the child's stdout and stderr. The caller must close it after
 	// StartProcess returns. Ignored when OnConsole is true.
 	OutputPipe *os.File
+
+	// NotifyPipe, if non-nil, is the write end of a readiness notification
+	// pipe. It will be passed to the child process as an extra file descriptor.
+	// The caller must close it after StartProcess returns.
+	NotifyPipe *os.File
+
+	// ForceNotifyFD is the file descriptor number the child expects for
+	// the notification pipe (e.g., 3 for pipefd:3). Set to -1 if unused.
+	ForceNotifyFD int
+
+	// NotifyVar is the environment variable name to set with the actual
+	// notification fd number (for pipevar:VARNAME). Empty if unused.
+	NotifyVar string
 }
 
 // ChildExit represents the result of a child process termination.

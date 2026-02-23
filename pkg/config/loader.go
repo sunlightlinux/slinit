@@ -185,6 +185,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 			s.SetLogType(desc.LogType)
 			s.SetLogBufMax(desc.LogBufMax)
 		}
+		s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 	case *service.ScriptedService:
 		s.SetStartCommand(desc.Command)
 		s.SetStopCommand(desc.StopCommand)
@@ -387,6 +388,14 @@ func (dl *DirLoader) loadServiceImpl(name string) (service.Service, error) {
 		return nil, err
 	}
 
+	// Validate: ready-notification not supported for bgprocess
+	if desc.Type == service.TypeBGProcess && (desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "") {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message:     "ready-notification is not supported for bgprocess services",
+		}
+	}
+
 	// Create the service based on type
 	svc := dl.createService(name, desc)
 
@@ -458,6 +467,9 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.LogType == service.LogToBuffer {
 			svc.SetLogType(desc.LogType)
 			svc.SetLogBufMax(desc.LogBufMax)
+		}
+		if desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" {
+			svc.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 		}
 		return svc
 	case service.TypeScripted:

@@ -55,6 +55,12 @@ type ProcessService struct {
 	stopIssued       bool
 	doingSmoothRecov bool
 
+	// Readiness notification
+	readyNotifyFD  int      // fd number child writes to (-1 if none)
+	readyNotifyVar string   // env var name ("" if none)
+	readyPipeRead  *os.File // read-end of notification pipe (parent watches)
+	readyCh        chan bool // receives true=ready, false=EOF/error
+
 	// Log buffering
 	logType   LogType
 	logBufMax int
@@ -82,6 +88,7 @@ func NewProcessService(set *ServiceSet, name string) *ProcessService {
 		restartDelay:    defaultRestartDelay,
 		restartInterval: defaultRestartInterval,
 		maxRestartCount: defaultMaxRestarts,
+		readyNotifyFD:   -1,
 	}
 	svc.ServiceRecord = *NewServiceRecord(svc, set, name, TypeProcess)
 	return svc
@@ -129,6 +136,19 @@ func (s *ProcessService) GetLogType() LogType { return s.logType }
 // SetTestLogBuffer sets the log buffer directly (for testing only).
 func (s *ProcessService) SetTestLogBuffer(lb *LogBuffer) { s.logBuf = lb }
 
+// SetReadyNotification configures readiness notification.
+// fd is the file descriptor number for pipefd: mode (-1 if unused).
+// varName is the environment variable name for pipevar: mode ("" if unused).
+func (s *ProcessService) SetReadyNotification(fd int, varName string) {
+	s.readyNotifyFD = fd
+	s.readyNotifyVar = varName
+}
+
+// HasReadyNotification returns true if readiness notification is configured.
+func (s *ProcessService) HasReadyNotification() bool {
+	return s.readyNotifyFD >= 0 || s.readyNotifyVar != ""
+}
+
 // SetRestartLimits sets the restart rate limiting parameters.
 func (s *ProcessService) SetRestartLimits(interval time.Duration, maxCount int) {
 	s.restartInterval = interval
@@ -163,6 +183,9 @@ func (s *ProcessService) BringUp() bool {
 
 // BringDown stops the service process.
 func (s *ProcessService) BringDown() {
+	// Close readiness pipe if still open (no longer waiting for readiness)
+	s.closeReadyPipe()
+
 	if s.pid <= 0 {
 		// Process already dead
 		s.cancelTimer()
@@ -272,6 +295,20 @@ func (s *ProcessService) startProcess() error {
 		}
 	}
 
+	// Set up readiness notification pipe if configured
+	var notifyPipeWrite *os.File
+	if s.HasReadyNotification() {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			if outputPipe != nil {
+				s.logBuf.CloseWriteEnd()
+			}
+			return err
+		}
+		s.readyPipeRead = pr
+		notifyPipeWrite = pw
+	}
+
 	params := process.ExecParams{
 		Command:           s.command,
 		WorkingDir:        s.workingDir,
@@ -281,12 +318,20 @@ func (s *ProcessService) startProcess() error {
 		RunAsUID:          s.runAsUID,
 		RunAsGID:          s.runAsGID,
 		OutputPipe:        outputPipe,
+		NotifyPipe:        notifyPipeWrite,
+		ForceNotifyFD:     s.readyNotifyFD,
+		NotifyVar:         s.readyNotifyVar,
 	}
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
 		if outputPipe != nil {
 			s.logBuf.CloseWriteEnd()
+		}
+		if notifyPipeWrite != nil {
+			notifyPipeWrite.Close()
+			s.readyPipeRead.Close()
+			s.readyPipeRead = nil
 		}
 		return err
 	}
@@ -297,24 +342,54 @@ func (s *ProcessService) startProcess() error {
 		s.logBuf.StartReader()
 	}
 
+	// Close parent's write end of notification pipe
+	if notifyPipeWrite != nil {
+		notifyPipeWrite.Close()
+	}
+
 	s.pid = pid
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Start monitoring goroutine
 	s.doneCh = make(chan struct{})
 	s.timerUpdateCh = make(chan struct{}, 1)
-	go s.monitorProcess(exitCh)
 
-	// Process started successfully - mark as started immediately
-	// (In Phase 3, readiness notification will delay this)
-	s.cancelTimer()
-	s.Started()
+	// If readiness notification is configured, start a reader goroutine
+	// on the notification pipe and defer Started() until data arrives.
+	if s.readyPipeRead != nil {
+		s.readyCh = make(chan bool, 1)
+		go s.watchReadyPipe()
+		go s.monitorProcess(exitCh)
+
+		// Arm start timeout while waiting for readiness
+		if s.startTimeout > 0 {
+			s.armTimer(s.startTimeout, timerStartTimeout)
+		}
+	} else {
+		go s.monitorProcess(exitCh)
+
+		// No readiness protocol - mark as started immediately
+		s.cancelTimer()
+		s.Started()
+	}
 
 	return nil
 }
 
-// monitorProcess runs in a goroutine, waiting for the process to exit
-// or for timers to fire.
+// watchReadyPipe monitors the read-end of the readiness notification pipe.
+// Sends true on readyCh if data is received, false if EOF/error.
+func (s *ProcessService) watchReadyPipe() {
+	buf := make([]byte, 128)
+	n, _ := s.readyPipeRead.Read(buf)
+	if n > 0 {
+		s.readyCh <- true
+	} else {
+		s.readyCh <- false
+	}
+}
+
+// monitorProcess runs in a goroutine, waiting for the process to exit,
+// readiness notification, or for timers to fire.
 func (s *ProcessService) monitorProcess(exitCh <-chan process.ChildExit) {
 	for {
 		select {
@@ -324,6 +399,12 @@ func (s *ProcessService) monitorProcess(exitCh <-chan process.ChildExit) {
 			}
 			s.handleChildExit(exit)
 			return
+
+		case ready, ok := <-s.getReadyChan():
+			if !ok {
+				continue
+			}
+			s.handleReadyNotification(ready)
 
 		case <-s.getTimerChan():
 			s.handleTimerExpired()
@@ -338,6 +419,48 @@ func (s *ProcessService) monitorProcess(exitCh <-chan process.ChildExit) {
 	}
 }
 
+// getReadyChan returns the readiness notification channel, or nil if not active.
+func (s *ProcessService) getReadyChan() <-chan bool {
+	return s.readyCh
+}
+
+// handleReadyNotification processes readiness notification from the pipe.
+func (s *ProcessService) handleReadyNotification(ready bool) {
+	// Close the read-end pipe
+	s.closeReadyPipe()
+
+	// Nil the channel so we don't select on it again
+	s.readyCh = nil
+
+	if s.state != StateStarting {
+		// Not in STARTING state; ignore readiness signal
+		return
+	}
+
+	if ready {
+		// Child signaled readiness
+		s.cancelTimer()
+		s.services.logger.Info("Service '%s': readiness notification received", s.serviceName)
+		s.Started()
+		s.services.ProcessQueues()
+	} else {
+		// EOF without data - child closed pipe without writing
+		s.services.logger.Error("Service '%s': readiness pipe closed without notification", s.serviceName)
+		s.cancelTimer()
+		s.stopReason = ReasonFailed
+		s.failedToStart(false, false)
+		s.services.ProcessQueues()
+	}
+}
+
+// closeReadyPipe closes the read-end of the notification pipe if open.
+func (s *ProcessService) closeReadyPipe() {
+	if s.readyPipeRead != nil {
+		s.readyPipeRead.Close()
+		s.readyPipeRead = nil
+	}
+}
+
 // handleChildExit processes a child process termination.
 func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	s.exitStatus = ExitStatus{
@@ -347,6 +470,7 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	s.pid = 0
 	s.procHandle.Clear()
 	s.cancelTimer()
+	s.closeReadyPipe()
 
 	if exit.ExecErr != nil {
 		// Process failed during exec/setup
@@ -415,6 +539,7 @@ func (s *ProcessService) handleUnexpectedTermination() {
 
 // doSmoothRecovery restarts the process without affecting dependents.
 func (s *ProcessService) doSmoothRecovery() {
+	s.closeReadyPipe()
 	s.services.logger.Info("Service '%s': smooth recovery - restarting process",
 		s.serviceName)
 

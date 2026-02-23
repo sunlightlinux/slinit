@@ -54,6 +54,8 @@ type ServiceDescription struct {
 	TermSignal        syscall.Signal
 	PIDFile           string
 	ReadyNotification string
+	ReadyNotifyFD     int    // parsed from pipefd:N (-1 if unset)
+	ReadyNotifyVar    string // parsed from pipevar:VARNAME
 
 	// Credentials
 	RunAs string
@@ -75,12 +77,13 @@ type ServiceDescription struct {
 // NewServiceDescription creates a ServiceDescription with default values.
 func NewServiceDescription(name string) *ServiceDescription {
 	return &ServiceDescription{
-		Name:        name,
-		Type:        service.TypeProcess,
-		TermSignal:  syscall.SIGTERM,
-		StopTimeout: 10 * time.Second,
-		AutoRestart: service.RestartNever,
-		SocketPerms: 0600,
+		Name:          name,
+		Type:          service.TypeProcess,
+		TermSignal:    syscall.SIGTERM,
+		StopTimeout:   10 * time.Second,
+		AutoRestart:   service.RestartNever,
+		SocketPerms:   0600,
+		ReadyNotifyFD: -1,
 	}
 }
 
@@ -316,6 +319,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.PIDFile = value
 	case "ready-notification":
 		desc.ReadyNotification = value
+		if err := parseReadyNotification(desc, value); err != nil {
+			return err
+		}
 	case "run-as":
 		desc.RunAs = value
 
@@ -507,6 +513,29 @@ func parseDuration(value string) (time.Duration, error) {
 		return 0, fmt.Errorf("duration must be non-negative")
 	}
 	return time.Duration(f * float64(time.Second)), nil
+}
+
+// parseReadyNotification parses a ready-notification value.
+// Supported formats: "pipefd:N" or "pipevar:VARNAME".
+func parseReadyNotification(desc *ServiceDescription, value string) error {
+	if strings.HasPrefix(value, "pipefd:") {
+		fdStr := value[7:]
+		fd, err := strconv.Atoi(fdStr)
+		if err != nil || fd < 0 {
+			return fmt.Errorf("invalid pipefd value: %s", fdStr)
+		}
+		desc.ReadyNotifyFD = fd
+		return nil
+	}
+	if strings.HasPrefix(value, "pipevar:") {
+		varName := value[8:]
+		if varName == "" {
+			return fmt.Errorf("empty pipevar variable name")
+		}
+		desc.ReadyNotifyVar = varName
+		return nil
+	}
+	return fmt.Errorf("unrecognised ready-notification setting: %s (expected pipefd:N or pipevar:VARNAME)", value)
 }
 
 // parseSignal parses a signal name or number.
