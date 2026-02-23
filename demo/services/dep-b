@@ -1,0 +1,5 @@
+# dep-b -- middle node in dependency chain
+# Uses waits-for (soft dep): starts even if dep-a fails.
+type = internal
+waits-for: dep-a
+depends-on: system-init

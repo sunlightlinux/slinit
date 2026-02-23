@@ -1,0 +1,13 @@
+# restarter -- restart-on-failure demo
+# Exits with code 1 after 10 seconds, triggering auto-restart.
+# Max 3 restarts within 60 seconds.
+# Try: slinitctl catlog restarter (shows restart markers)
+type = process
+command = /bin/sh -c "echo '[restarter] started (will exit in 10s)'; sleep 10; echo '[restarter] exiting'; exit 1"
+restart = on-failure
+restart-delay = 2
+restart-limit-count = 3
+restart-limit-interval = 60
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

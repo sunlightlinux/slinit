@@ -1,0 +1,3 @@
+# dep-a -- leaf node in dependency chain
+type = internal
+depends-on: system-init

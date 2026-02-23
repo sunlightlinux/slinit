@@ -1,0 +1,9 @@
+# hello -- echo loop for log buffer testing
+# Demonstrates log-type=buffer and slinitctl catlog.
+# Try: slinitctl catlog hello
+type = process
+command = /bin/sh -c "i=0; while true; do i=$((i+1)); echo \"[hello] message $i at $(date +%H:%M:%S)\"; sleep 5; done"
+log-type = buffer
+log-buffer-size = 4096
+restart = on-failure
+depends-on: system-init

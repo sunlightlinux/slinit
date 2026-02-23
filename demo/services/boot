@@ -1,0 +1,10 @@
+# boot -- system boot milestone
+# Default boot target. Depends on essential services,
+# waits for optional services.
+type = internal
+depends-on: system-init
+depends-on: tty
+waits-for: hello
+waits-for: ticker
+waits-for: dep-chain
+waits-for: trigger-test

@@ -1,0 +1,9 @@
+# ticker -- periodic timestamp output
+# Produces output every 2 seconds for catlog demo.
+# Try: slinitctl catlog ticker
+type = process
+command = /bin/sh -c "while true; do echo \"[ticker] $(date '+%Y-%m-%d %H:%M:%S') uptime: $(cat /proc/uptime | cut -d' ' -f1)s\"; sleep 2; done"
+log-type = buffer
+log-buffer-size = 8192
+restart = yes
+depends-on: system-init

@@ -20,6 +20,9 @@ const prSetChildSubreaper = 36
 // This includes setting up /dev/console, disabling Ctrl+Alt+Del, setting
 // the child subreaper flag, and ignoring terminal job control signals.
 func InitPID1(logger *logging.Logger) error {
+	// Mount essential filesystems early (needed before any service starts)
+	mountEarlyFS(logger)
+
 	// Set up /dev/console for stdin/stdout/stderr
 	if err := setupConsole(); err != nil {
 		logger.Debug("Console setup: %v (non-fatal)", err)
@@ -46,6 +49,26 @@ func InitPID1(logger *logging.Logger) error {
 	logger.Debug("Terminal signals ignored (SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE)")
 
 	return nil
+}
+
+// mountEarlyFS mounts devtmpfs and proc if not already mounted.
+// This provides /dev/null, /dev/zero, etc. needed by os/exec before
+// any service starts. Also mounts /proc for kernel info access.
+func mountEarlyFS(logger *logging.Logger) {
+	// Mount devtmpfs on /dev (provides /dev/null, /dev/zero, etc.)
+	if err := syscall.Mount("devtmpfs", "/dev", "devtmpfs", 0, ""); err != nil {
+		logger.Debug("Mount devtmpfs: %v (non-fatal)", err)
+	} else {
+		logger.Debug("Mounted devtmpfs on /dev")
+	}
+
+	// Mount proc on /proc
+	os.MkdirAll("/proc", 0555)
+	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
+		logger.Debug("Mount proc: %v (non-fatal)", err)
+	} else {
+		logger.Debug("Mounted proc on /proc")
+	}
 }
 
 // setupConsole opens /dev/console and redirects stdin, stdout, and stderr to it.

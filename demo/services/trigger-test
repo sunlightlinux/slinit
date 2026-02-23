@@ -1,0 +1,5 @@
+# trigger-test -- externally triggered service
+# Stays in STARTING until triggered via slinitctl.
+# Try: slinitctl trigger trigger-test
+type = triggered
+depends-on: system-init
