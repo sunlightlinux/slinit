@@ -59,24 +59,27 @@ func (lb *LogBuffer) StartReader() {
 	}
 	lb.doneCh = make(chan struct{})
 	lb.running = true
-	go lb.readLoop()
+	// Capture pipeR and doneCh so the goroutine always uses its own references,
+	// even if a restart creates a new pipe/channel before this goroutine finishes.
+	pipeR := lb.pipeR
+	doneCh := lb.doneCh
+	go lb.readLoop(pipeR, doneCh)
 }
 
 // readLoop reads from pipeR into buf, respecting bufMax.
 // When buffer is full, excess data is read and discarded (matching dinit behavior).
-func (lb *LogBuffer) readLoop() {
+func (lb *LogBuffer) readLoop(pipeR *os.File, doneCh chan struct{}) {
 	defer func() {
-		lb.pipeR.Close()
-		lb.pipeR = nil
+		pipeR.Close()
 		lb.mu.Lock()
 		lb.running = false
 		lb.mu.Unlock()
-		close(lb.doneCh)
+		close(doneCh)
 	}()
 
 	tmp := make([]byte, 4096)
 	for {
-		n, err := lb.pipeR.Read(tmp)
+		n, err := pipeR.Read(tmp)
 		if n > 0 {
 			lb.mu.Lock()
 			remaining := lb.bufMax - len(lb.buf)
@@ -150,9 +153,14 @@ func (lb *LogBuffer) Close() {
 	}
 	if lb.pipeR != nil {
 		lb.pipeR.Close()
+		lb.pipeR = nil
 		// readLoop will see EOF and exit
 	}
-	if lb.doneCh != nil && lb.running {
-		<-lb.doneCh
+	lb.mu.Lock()
+	running := lb.running
+	doneCh := lb.doneCh
+	lb.mu.Unlock()
+	if doneCh != nil && running {
+		<-doneCh
 	}
 }
