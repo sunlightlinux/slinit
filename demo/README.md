@@ -24,12 +24,33 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | system-init   | scripted  | Mounts /proc, /sys, /dev, /dev/pts       |
 | tty           | process   | Interactive shell on console             |
 | hello         | process   | Echo loop with log buffer                |
-| ticker        | process   | Periodic timestamp output with log buffer|
+| ticker        | process   | Periodic timestamp output (alias: my-ticker) |
 | trigger-test  | triggered | Externally triggered service             |
 | dep-a         | internal  | Dependency chain leaf                    |
 | dep-b         | internal  | Dependency chain middle (waits-for dep-a)|
 | dep-chain     | internal  | Dependency chain root                    |
 | restarter     | process   | Auto-restart on failure demo             |
+
+## Supported Configuration Options
+
+| Option                | Description                                      |
+|-----------------------|--------------------------------------------------|
+| `type`                | Service type (process, bgprocess, scripted, internal, triggered) |
+| `command`             | Command to run                                   |
+| `stop-command`        | Command to run on stop (scripted)                |
+| `depends-on:`         | Hard dependency                                  |
+| `waits-for:`          | Soft dependency (wait for start/fail)            |
+| `before:`             | Ordering: start before target                    |
+| `after:`              | Ordering: start after target                     |
+| `provides`            | Alias name for service lookup                    |
+| `restart`             | Auto-restart mode (yes, on-failure, no)          |
+| `log-type`            | Output logging (buffer, file, none)              |
+| `ready-notification`  | Readiness protocol (pipefd:N, pipevar:VARNAME)   |
+| `socket-listen`       | Pre-opened Unix socket passed to child (fd 3)    |
+| `socket-permissions`  | Socket file permissions                          |
+| `socket-uid/gid`      | Socket file ownership                            |
+| `options`             | Service flags (runs-on-console, etc.)            |
+| `term-signal`         | Signal for graceful stop                         |
 
 ## Interactive Commands
 
@@ -67,6 +88,18 @@ slinitctl signal HUP hello
 # Reload config (modify /etc/slinit.d/hello, then:)
 slinitctl reload hello
 
+# Unload a stopped service from memory
+slinitctl stop ticker
+slinitctl unload ticker
+slinitctl list                   # ticker gone
+
+# Service aliases (provides) -- ticker has "provides = my-ticker"
+slinitctl status my-ticker       # found by alias
+
+# SysV init compatibility (alternative to slinitctl shutdown)
+init 0                           # poweroff
+init 6                           # reboot
+
 # Clean shutdown (exits QEMU due to -no-reboot)
 slinitctl shutdown reboot
 ```
@@ -87,6 +120,8 @@ boot (internal)
 
 ## Exiting
 
+- `init 0` -- orderly poweroff (SysV compat)
+- `init 6` -- orderly reboot (SysV compat)
 - `slinitctl shutdown reboot` -- orderly shutdown (QEMU exits with -no-reboot)
 - `slinitctl shutdown poweroff` -- orderly poweroff
 - `Ctrl+A, X` -- kill QEMU immediately
