@@ -132,6 +132,9 @@ type ServiceRecord struct {
 	stopReason   StoppedReason
 	chainTo      string // service to start when this one completes
 
+	// Service alias (alternative name for lookup)
+	provides string
+
 	// Queue membership flags
 	InPropQueue bool
 	InStopQueue bool
@@ -207,6 +210,8 @@ func (sr *ServiceRecord) SetServiceDscDir(dir string)         { sr.serviceDscDir
 func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)     { sr.termSignal = sig }
 
 func (sr *ServiceRecord) SetFlags(flags ServiceFlags) { sr.Flags = flags }
+func (sr *ServiceRecord) SetProvides(name string)     { sr.provides = name }
+func (sr *ServiceRecord) Provides() string             { return sr.provides }
 
 func (sr *ServiceRecord) SetSocketDetails(path string, perms int, uid, gid int) {
 	sr.socketPath = path

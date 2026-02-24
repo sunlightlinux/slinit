@@ -73,6 +73,9 @@ var KnownSettings = map[string]OperatorType{
 	// Options (flags)
 	"options": OpEquals | OpPlusEqual,
 
+	// Alias
+	"provides": OpEquals,
+
 	// Consumer
 	"consumer-of": OpColon,
 

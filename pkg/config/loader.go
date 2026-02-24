@@ -606,6 +606,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.SocketPath != "" {
 		rec.SetSocketDetails(desc.SocketPath, desc.SocketPerms, desc.SocketUID, desc.SocketGID)
 	}
+	if desc.Provides != "" {
+		rec.SetProvides(desc.Provides)
+	}
 }
 
 // ServiceLoadError represents a service loading failure.

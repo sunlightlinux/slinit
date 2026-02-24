@@ -33,6 +33,7 @@ func (e *ServiceNotFound) Error() string {
 // ServiceSet manages all loaded services and the processing queues.
 type ServiceSet struct {
 	records        map[string]Service
+	aliases        map[string]Service // provides → service mapping
 	activeServices int
 	restartEnabled bool
 	shutdownType   ShutdownType
@@ -59,6 +60,7 @@ type ServiceSet struct {
 func NewServiceSet(logger ServiceLogger) *ServiceSet {
 	return &ServiceSet{
 		records:        make(map[string]Service),
+		aliases:        make(map[string]Service),
 		restartEnabled: true,
 		logger:         logger,
 	}
@@ -69,12 +71,16 @@ func (ss *ServiceSet) SetLoader(loader ServiceLoader) {
 	ss.loader = loader
 }
 
-// FindService locates an existing service by name.
+// FindService locates an existing service by name or alias (provides).
 // If findPlaceholders is false, placeholder services are excluded.
 func (ss *ServiceSet) FindService(name string, findPlaceholders bool) Service {
 	svc, ok := ss.records[name]
 	if !ok {
-		return nil
+		// Check aliases
+		svc, ok = ss.aliases[name]
+		if !ok {
+			return nil
+		}
 	}
 	if !findPlaceholders && svc.Type() == TypePlaceholder {
 		return nil
@@ -98,17 +104,32 @@ func (ss *ServiceSet) GetLoader() ServiceLoader { return ss.loader }
 
 // ReplaceService atomically replaces an old service with a new one in the set.
 func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) {
+	// Remove old alias
+	if alias := oldSvc.Record().Provides(); alias != "" {
+		delete(ss.aliases, alias)
+	}
 	ss.records[oldSvc.Name()] = newSvc
+	// Register new alias
+	if alias := newSvc.Record().Provides(); alias != "" {
+		ss.aliases[alias] = newSvc
+	}
 }
 
-// AddService adds a service to the set.
+// AddService adds a service to the set. If the service has a provides
+// alias, it is also registered for lookup by alias name.
 func (ss *ServiceSet) AddService(svc Service) {
 	ss.records[svc.Name()] = svc
+	if alias := svc.Record().Provides(); alias != "" {
+		ss.aliases[alias] = svc
+	}
 }
 
 // RemoveService removes a service from the set.
 func (ss *ServiceSet) RemoveService(svc Service) {
 	delete(ss.records, svc.Name())
+	if alias := svc.Record().Provides(); alias != "" {
+		delete(ss.aliases, alias)
+	}
 }
 
 // ListServices returns all loaded services.

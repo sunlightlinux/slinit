@@ -69,6 +69,9 @@ type ServiceDescription struct {
 	// Chaining
 	ChainTo string
 
+	// Alias
+	Provides string
+
 	// Consumer
 	ConsumerOf string
 
@@ -354,6 +357,10 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	// Chaining
 	case "chain-to":
 		desc.ChainTo = value
+
+	// Alias
+	case "provides":
+		desc.Provides = value
 
 	// Consumer
 	case "consumer-of":
