@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -59,6 +60,21 @@ func main() {
 
 	// Determine mode
 	isPID1 := os.Getpid() == 1
+
+	// SysV init compatibility: "init 0" → poweroff, "init 6" → reboot
+	// When not PID 1, numeric arguments trigger shutdown via control socket.
+	if !isPID1 {
+		args := flag.Args()
+		if len(args) > 0 {
+			switch args[0] {
+			case "0":
+				sendShutdownAndExit(socketPath, systemMode, service.ShutdownPoweroff)
+			case "6":
+				sendShutdownAndExit(socketPath, systemMode, service.ShutdownReboot)
+			}
+		}
+	}
+
 	if isPID1 {
 		systemMode = true
 	}
@@ -258,4 +274,38 @@ func resolveSocketPath(flagValue string, systemMode bool) string {
 		return defaultUserSocket
 	}
 	return home + "/" + defaultUserSocket
+}
+
+// sendShutdownAndExit connects to the running slinit instance via the control
+// socket and sends a shutdown command. Used for SysV init compatibility
+// (e.g. "init 0" for poweroff, "init 6" for reboot).
+func sendShutdownAndExit(socketFlag string, systemFlag bool, shutType service.ShutdownType) {
+	// When invoked as "init 0/6", we're typically root targeting the system instance
+	sock := resolveSocketPath(socketFlag, systemFlag || os.Getuid() == 0)
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: cannot connect to %s: %v\n", sock, err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	payload := []byte{uint8(shutType)}
+	if err := control.WritePacket(conn, control.CmdShutdown, payload); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: shutdown request failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: reading shutdown reply: %v\n", err)
+		os.Exit(1)
+	}
+
+	if rply != control.RplyACK {
+		fmt.Fprintf(os.Stderr, "slinit: shutdown not acknowledged (reply: %d)\n", rply)
+		os.Exit(1)
+	}
+
+	os.Exit(0)
 }
