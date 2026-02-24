@@ -63,6 +63,8 @@ type ServiceDescription struct {
 	// Socket activation
 	SocketPath  string
 	SocketPerms int
+	SocketUID   int
+	SocketGID   int
 
 	// Chaining
 	ChainTo string
@@ -83,6 +85,8 @@ func NewServiceDescription(name string) *ServiceDescription {
 		StopTimeout:   10 * time.Second,
 		AutoRestart:   service.RestartNever,
 		SocketPerms:   0600,
+		SocketUID:     -1,
+		SocketGID:     -1,
 		ReadyNotifyFD: -1,
 	}
 }
@@ -334,6 +338,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid socket permissions: %w", err)
 		}
 		desc.SocketPerms = int(perms)
+	case "socket-uid":
+		uid, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid socket uid: %w", err)
+		}
+		desc.SocketUID = uid
+	case "socket-gid":
+		gid, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid socket gid: %w", err)
+		}
+		desc.SocketGID = gid
 
 	// Chaining
 	case "chain-to":
@@ -348,7 +364,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		return applyOptions(desc, value, op == OpPlusEqual)
 
 	// These settings are recognized but not yet implemented (Phase 2+)
-	case "load-options", "socket-uid", "socket-gid",
+	case "load-options",
 		"rlimit-nofile", "rlimit-core", "rlimit-data", "rlimit-as",
 		"cgroup", "nice", "ioprio", "oom-score-adj":
 		// Silently accept for forward compatibility

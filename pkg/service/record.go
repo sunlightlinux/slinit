@@ -127,6 +127,8 @@ type ServiceRecord struct {
 	termSignal   syscall.Signal
 	socketPath   string
 	socketPerms  int
+	socketUID    int
+	socketGID    int
 	stopReason   StoppedReason
 	chainTo      string // service to start when this one completes
 
@@ -206,9 +208,11 @@ func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)     { sr.termSignal =
 
 func (sr *ServiceRecord) SetFlags(flags ServiceFlags) { sr.Flags = flags }
 
-func (sr *ServiceRecord) SetSocketDetails(path string, perms int) {
+func (sr *ServiceRecord) SetSocketDetails(path string, perms int, uid, gid int) {
 	sr.socketPath = path
 	sr.socketPerms = perms
+	sr.socketUID = uid
+	sr.socketGID = gid
 }
 
 func (sr *ServiceRecord) IsMarkedActive() bool   { return sr.startExplicit }

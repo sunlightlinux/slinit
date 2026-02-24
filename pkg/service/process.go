@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+	"net"
 	"os"
 	"syscall"
 	"time"
@@ -54,6 +56,9 @@ type ProcessService struct {
 	// State tracking
 	stopIssued       bool
 	doingSmoothRecov bool
+
+	// Socket activation
+	socketFD *os.File // pre-opened listening socket (nil if no socket-listen)
 
 	// Readiness notification
 	readyNotifyFD  int      // fd number child writes to (-1 if none)
@@ -149,6 +154,87 @@ func (s *ProcessService) HasReadyNotification() bool {
 	return s.readyNotifyFD >= 0 || s.readyNotifyVar != ""
 }
 
+// openSocket creates and binds a Unix listening socket for socket activation.
+func (s *ProcessService) openSocket() error {
+	if s.socketPath == "" || s.socketFD != nil {
+		return nil
+	}
+
+	// Check if file exists at socket path
+	info, err := os.Stat(s.socketPath)
+	if err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("activation socket file exists and is not a socket: %s", s.socketPath)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("error checking activation socket: %v", err)
+	}
+
+	// Remove stale socket file
+	os.Remove(s.socketPath)
+
+	// Create Unix listener
+	addr := &net.UnixAddr{Name: s.socketPath, Net: "unix"}
+	unixListener, err := net.ListenUnix("unix", addr)
+	if err != nil {
+		return fmt.Errorf("error creating activation socket: %v", err)
+	}
+
+	// Don't remove socket file when closing the listener
+	unixListener.SetUnlinkOnClose(false)
+
+	// Extract raw fd (File() returns a dup'd fd)
+	fd, err := unixListener.File()
+	if err != nil {
+		unixListener.Close()
+		return fmt.Errorf("error getting activation socket fd: %v", err)
+	}
+	unixListener.Close() // close the net.Listener; we keep the dup'd fd
+
+	// Set permissions
+	if s.socketPerms != 0 {
+		if err := os.Chmod(s.socketPath, os.FileMode(s.socketPerms)); err != nil {
+			fd.Close()
+			return fmt.Errorf("error setting activation socket permissions: %v", err)
+		}
+	}
+
+	// Set ownership
+	if s.socketUID >= 0 || s.socketGID >= 0 {
+		uid := s.socketUID
+		gid := s.socketGID
+		if uid < 0 {
+			uid = -1 // -1 means don't change
+		}
+		if gid < 0 {
+			gid = -1
+		}
+		if err := os.Chown(s.socketPath, uid, gid); err != nil {
+			fd.Close()
+			return fmt.Errorf("error setting activation socket owner: %v", err)
+		}
+	}
+
+	s.socketFD = fd
+	return nil
+}
+
+// closeSocket closes the activation socket and removes the socket file.
+func (s *ProcessService) closeSocket() {
+	if s.socketFD != nil {
+		s.socketFD.Close()
+		s.socketFD = nil
+	}
+	if s.socketPath != "" {
+		os.Remove(s.socketPath)
+	}
+}
+
+// BecomingInactive is called when the service won't restart. Cleans up socket.
+func (s *ProcessService) BecomingInactive() {
+	s.closeSocket()
+}
+
 // SetRestartLimits sets the restart rate limiting parameters.
 func (s *ProcessService) SetRestartLimits(interval time.Duration, maxCount int) {
 	s.restartInterval = interval
@@ -165,6 +251,12 @@ func (s *ProcessService) GetExitStatus() ExitStatus { return s.exitStatus }
 func (s *ProcessService) BringUp() bool {
 	if len(s.command) == 0 {
 		s.services.logger.Error("Service '%s': no command specified", s.serviceName)
+		return false
+	}
+
+	// Open activation socket before starting the process
+	if err := s.openSocket(); err != nil {
+		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
 		return false
 	}
 
@@ -318,6 +410,7 @@ func (s *ProcessService) startProcess() error {
 		RunAsUID:          s.runAsUID,
 		RunAsGID:          s.runAsGID,
 		OutputPipe:        outputPipe,
+		SocketFD:          s.socketFD,
 		NotifyPipe:        notifyPipeWrite,
 		ForceNotifyFD:     s.readyNotifyFD,
 		NotifyVar:         s.readyNotifyVar,

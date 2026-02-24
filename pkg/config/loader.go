@@ -604,7 +604,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		rec.SetChainTo(desc.ChainTo)
 	}
 	if desc.SocketPath != "" {
-		rec.SetSocketDetails(desc.SocketPath, desc.SocketPerms)
+		rec.SetSocketDetails(desc.SocketPath, desc.SocketPerms, desc.SocketUID, desc.SocketGID)
 	}
 }
 

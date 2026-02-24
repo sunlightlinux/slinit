@@ -72,13 +72,33 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Stderr = params.OutputPipe
 	}
 
-	// Set up readiness notification pipe as an extra fd for the child.
-	// ExtraFiles[i] becomes fd 3+i in the child process.
-	var notifyFdNullFiles []*os.File // /dev/null files to close after start
+	// Set up extra file descriptors for the child process.
+	// ExtraFiles[i] becomes fd 3+i in the child.
+	//
+	// Ordering: socket activation fd MUST be fd 3 (systemd convention),
+	// so socket goes first. Readiness notification pipe follows.
+	var extraFdNullFiles []*os.File // /dev/null files to close after start
+
+	// Socket activation: pre-opened listening socket at fd 3
+	if params.SocketFD != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, params.SocketFD)
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		cmd.Env = append(cmd.Env, "LISTEN_FDS=1")
+	}
+
+	// Readiness notification pipe
 	if params.NotifyPipe != nil {
 		targetFD := 3 // default: first ExtraFile slot = fd 3
 		if params.ForceNotifyFD >= 3 {
 			targetFD = params.ForceNotifyFD
+		}
+
+		// If socket already occupies fd 3, shift notify target up
+		baseOffset := len(cmd.ExtraFiles)
+		if targetFD < 3+baseOffset {
+			targetFD = 3 + baseOffset
 		}
 
 		// Fill ExtraFiles up to the target slot
@@ -88,7 +108,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			if err != nil {
 				return 0, nil, &ExecError{Stage: StageArrangeFDs, Err: err}
 			}
-			notifyFdNullFiles = append(notifyFdNullFiles, devNull)
+			extraFdNullFiles = append(extraFdNullFiles, devNull)
 			cmd.ExtraFiles = append(cmd.ExtraFiles, devNull)
 		}
 		cmd.ExtraFiles = append(cmd.ExtraFiles, params.NotifyPipe)
@@ -108,7 +128,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		if consoleFd != nil {
 			consoleFd.Close()
 		}
-		for _, f := range notifyFdNullFiles {
+		for _, f := range extraFdNullFiles {
 			f.Close()
 		}
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
@@ -120,7 +140,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	}
 
 	// Close /dev/null filler fds after fork
-	for _, f := range notifyFdNullFiles {
+	for _, f := range extraFdNullFiles {
 		f.Close()
 	}
 

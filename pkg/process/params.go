@@ -89,6 +89,12 @@ type ExecParams struct {
 	// StartProcess returns. Ignored when OnConsole is true.
 	OutputPipe *os.File
 
+	// SocketFD, if non-nil, is a pre-opened listening socket to pass to the
+	// child process as fd 3 (systemd socket activation convention).
+	// The caller should NOT close it after StartProcess (socket stays open
+	// for restarts). Environment variable LISTEN_FDS=1 is set automatically.
+	SocketFD *os.File
+
 	// NotifyPipe, if non-nil, is the write end of a readiness notification
 	// pipe. It will be passed to the child process as an extra file descriptor.
 	// The caller must close it after StartProcess returns.
