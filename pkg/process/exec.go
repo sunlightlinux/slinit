@@ -67,9 +67,14 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			cmd.SysProcAttr.Ctty = 0 // fd 0 (stdin) = /dev/console
 		}
 	} else if params.OutputPipe != nil {
-		// Capture stdout/stderr to a pipe for log buffering
+		// Capture stdout/stderr to a pipe for log buffering or piping
 		cmd.Stdout = params.OutputPipe
 		cmd.Stderr = params.OutputPipe
+	}
+
+	// Wire stdin from input pipe (consumer-of)
+	if params.InputPipe != nil && !params.OnConsole {
+		cmd.Stdin = params.InputPipe
 	}
 
 	// Set up extra file descriptors for the child process.

@@ -233,6 +233,7 @@ func (s *ProcessService) closeSocket() {
 // BecomingInactive is called when the service won't restart. Cleans up socket.
 func (s *ProcessService) BecomingInactive() {
 	s.closeSocket()
+	s.CloseOutputPipe()
 }
 
 // SetRestartLimits sets the restart rate limiting parameters.
@@ -370,7 +371,7 @@ func (s *ProcessService) startProcess() error {
 	s.stopIssued = false
 	s.exitStatus = ExitStatus{}
 
-	// Set up log buffer pipe if configured
+	// Set up output pipe based on log type
 	var outputPipe *os.File
 	if s.logType == LogToBuffer {
 		if s.logBuf == nil {
@@ -384,6 +385,22 @@ func (s *ProcessService) startProcess() error {
 			s.services.logger.Error("Service '%s': failed to create log pipe: %v",
 				s.serviceName, pipeErr)
 			outputPipe = nil
+		}
+	} else if s.logType == LogToPipe {
+		if err := s.EnsureOutputPipe(); err != nil {
+			return err
+		}
+		outputPipe = s.outputPipeW
+	}
+
+	// Set up input pipe (consumer-of)
+	var inputPipe *os.File
+	if s.consumerFor != nil {
+		if err := s.consumerFor.Record().EnsureOutputPipe(); err != nil {
+			s.services.logger.Error("Service '%s': failed to get producer pipe: %v",
+				s.serviceName, err)
+		} else {
+			inputPipe = s.consumerFor.Record().OutputPipeR()
 		}
 	}
 
@@ -410,6 +427,7 @@ func (s *ProcessService) startProcess() error {
 		RunAsUID:          s.runAsUID,
 		RunAsGID:          s.runAsGID,
 		OutputPipe:        outputPipe,
+		InputPipe:         inputPipe,
 		SocketFD:          s.socketFD,
 		NotifyPipe:        notifyPipeWrite,
 		ForceNotifyFD:     s.readyNotifyFD,
@@ -429,8 +447,9 @@ func (s *ProcessService) startProcess() error {
 		return err
 	}
 
-	// Close parent's write end and start reader goroutine
-	if outputPipe != nil {
+	// Close parent's write end and start reader goroutine (buffer mode only).
+	// For LogToPipe, the parent keeps both pipe ends open across restarts.
+	if outputPipe != nil && s.logType == LogToBuffer {
 		s.logBuf.CloseWriteEnd()
 		s.logBuf.StartReader()
 	}

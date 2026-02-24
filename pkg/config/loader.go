@@ -85,11 +85,21 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 		// Apply common settings
 		applyToService(newSvc, desc)
 
+		// Transfer pipe fds and consumer links from old to new
+		dl.transferConsumerOf(svc, newSvc)
+
 		// Transfer dependents from old to new
 		dl.transferDependents(svc, newSvc)
 
 		// Remove old deps
 		dl.removeDependencies(svc)
+
+		// Set up consumer-of for new service
+		if desc.ConsumerOf != "" {
+			if err := dl.setupConsumerOf(newSvc, desc); err != nil {
+				return nil, err
+			}
+		}
 
 		// Replace in set
 		dl.set.ReplaceService(svc, newSvc)
@@ -158,6 +168,13 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	// Update common settings
 	applyToService(svc, desc)
 
+	// Update consumer-of relationship
+	if desc.ConsumerOf != "" && svc.Record().ConsumerFor() == nil {
+		if err := dl.setupConsumerOf(svc, desc); err != nil {
+			return nil, err
+		}
+	}
+
 	return svc, nil
 }
 
@@ -181,9 +198,11 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
-		if desc.LogType == service.LogToBuffer {
+		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
 			s.SetLogType(desc.LogType)
-			s.SetLogBufMax(desc.LogBufMax)
+			if desc.LogType == service.LogToBuffer {
+				s.SetLogBufMax(desc.LogBufMax)
+			}
 		}
 		s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 	case *service.ScriptedService:
@@ -196,9 +215,11 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.StopTimeout > 0 {
 			s.SetStopTimeout(desc.StopTimeout)
 		}
-		if desc.LogType == service.LogToBuffer {
+		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
 			s.SetLogType(desc.LogType)
-			s.SetLogBufMax(desc.LogBufMax)
+			if desc.LogType == service.LogToBuffer {
+				s.SetLogBufMax(desc.LogBufMax)
+			}
 		}
 	case *service.BGProcessService:
 		s.SetCommand(desc.Command)
@@ -218,9 +239,11 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
-		if desc.LogType == service.LogToBuffer {
+		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
 			s.SetLogType(desc.LogType)
-			s.SetLogBufMax(desc.LogBufMax)
+			if desc.LogType == service.LogToBuffer {
+				s.SetLogBufMax(desc.LogBufMax)
+			}
 		}
 	}
 }
@@ -253,6 +276,31 @@ func (dl *DirLoader) updateDependencies(svc service.Service, desc *ServiceDescri
 	}
 
 	return nil
+}
+
+// transferConsumerOf transfers pipe fds and consumer-of links from old to new service.
+func (dl *DirLoader) transferConsumerOf(oldSvc, newSvc service.Service) {
+	oldRec := oldSvc.Record()
+
+	// Transfer pipe file descriptors
+	r, w := oldRec.TransferOutputPipe()
+	if r != nil || w != nil {
+		newSvc.Record().SetOutputPipeFDs(r, w)
+	}
+
+	// Transfer consumer link (we are a producer)
+	if consumer := oldRec.LogConsumer(); consumer != nil {
+		oldRec.SetLogConsumer(nil)
+		newSvc.Record().SetLogConsumer(consumer)
+		consumer.Record().SetConsumerFor(newSvc)
+	}
+
+	// Transfer producer link (we are a consumer)
+	if producer := oldRec.ConsumerFor(); producer != nil {
+		oldRec.SetConsumerFor(nil)
+		newSvc.Record().SetConsumerFor(producer)
+		producer.Record().SetLogConsumer(newSvc)
+	}
 }
 
 // transferDependents moves dependents from old service to new service.
@@ -411,6 +459,14 @@ func (dl *DirLoader) loadServiceImpl(name string) (service.Service, error) {
 	// Apply settings to the service record
 	applyToService(svc, desc)
 
+	// Set up consumer-of relationship
+	if desc.ConsumerOf != "" {
+		if err := dl.setupConsumerOf(svc, desc); err != nil {
+			dl.set.RemoveService(svc)
+			return nil, err
+		}
+	}
+
 	return svc, nil
 }
 
@@ -464,9 +520,11 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
-		if desc.LogType == service.LogToBuffer {
+		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
 			svc.SetLogType(desc.LogType)
-			svc.SetLogBufMax(desc.LogBufMax)
+			if desc.LogType == service.LogToBuffer {
+				svc.SetLogBufMax(desc.LogBufMax)
+			}
 		}
 		if desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" {
 			svc.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
@@ -483,9 +541,11 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.StopTimeout > 0 {
 			svc.SetStopTimeout(desc.StopTimeout)
 		}
-		if desc.LogType == service.LogToBuffer {
+		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
 			svc.SetLogType(desc.LogType)
-			svc.SetLogBufMax(desc.LogBufMax)
+			if desc.LogType == service.LogToBuffer {
+				svc.SetLogBufMax(desc.LogBufMax)
+			}
 		}
 		return svc
 	case service.TypeBGProcess:
@@ -507,9 +567,11 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
-		if desc.LogType == service.LogToBuffer {
+		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
 			svc.SetLogType(desc.LogType)
-			svc.SetLogBufMax(desc.LogBufMax)
+			if desc.LogType == service.LogToBuffer {
+				svc.SetLogBufMax(desc.LogBufMax)
+			}
 		}
 		return svc
 	case service.TypeTriggered:
@@ -609,6 +671,65 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.Provides != "" {
 		rec.SetProvides(desc.Provides)
 	}
+}
+
+// setupConsumerOf establishes the consumer-of relationship between services.
+// The consumer's stdin is connected to the producer's stdout/stderr via a pipe.
+func (dl *DirLoader) setupConsumerOf(consumer service.Service, desc *ServiceDescription) error {
+	producerName := desc.ConsumerOf
+
+	// Load the producer service
+	producer, err := dl.LoadService(producerName)
+	if err != nil {
+		return &ServiceLoadError{
+			ServiceName: consumer.Name(),
+			Message:     fmt.Sprintf("consumer-of: failed to load producer '%s': %v", producerName, err),
+		}
+	}
+
+	// Validate: producer must be process, bgprocess, or scripted
+	switch producer.Type() {
+	case service.TypeProcess, service.TypeBGProcess, service.TypeScripted:
+		// OK
+	default:
+		return &ServiceLoadError{
+			ServiceName: consumer.Name(),
+			Message:     fmt.Sprintf("consumer-of: producer '%s' must be process, bgprocess, or scripted", producerName),
+		}
+	}
+
+	// Validate: producer must have log-type = pipe
+	if producer.GetLogType() != service.LogToPipe {
+		return &ServiceLoadError{
+			ServiceName: consumer.Name(),
+			Message:     fmt.Sprintf("consumer-of: producer '%s' must have log-type = pipe", producerName),
+		}
+	}
+
+	// Validate: producer must not already have a consumer
+	if existing := producer.Record().LogConsumer(); existing != nil {
+		return &ServiceLoadError{
+			ServiceName: consumer.Name(),
+			Message:     fmt.Sprintf("consumer-of: producer '%s' already has consumer '%s'", producerName, existing.Name()),
+		}
+	}
+
+	// Validate: consumer must be process, bgprocess, or scripted
+	switch consumer.Type() {
+	case service.TypeProcess, service.TypeBGProcess, service.TypeScripted:
+		// OK
+	default:
+		return &ServiceLoadError{
+			ServiceName: consumer.Name(),
+			Message:     "consumer-of: consumer must be process, bgprocess, or scripted",
+		}
+	}
+
+	// Establish bidirectional links
+	producer.Record().SetLogConsumer(consumer)
+	consumer.Record().SetConsumerFor(producer)
+
+	return nil
 }
 
 // ServiceLoadError represents a service loading failure.

@@ -89,6 +89,11 @@ type ExecParams struct {
 	// StartProcess returns. Ignored when OnConsole is true.
 	OutputPipe *os.File
 
+	// InputPipe, if non-nil, is the read end of a pipe used as the child's
+	// stdin. Used for consumer-of services. The caller should NOT close it
+	// after StartProcess (the pipe persists across restarts).
+	InputPipe *os.File
+
 	// SocketFD, if non-nil, is a pre-opened listening socket to pass to the
 	// child process as fd 3 (systemd socket activation convention).
 	// The caller should NOT close it after StartProcess (socket stays open

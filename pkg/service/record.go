@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"syscall"
 	"time"
 )
@@ -135,6 +136,12 @@ type ServiceRecord struct {
 	// Service alias (alternative name for lookup)
 	provides string
 
+	// Output pipe for log-type=pipe / consumer-of
+	outputPipeR *os.File // read end (consumer uses as stdin)
+	outputPipeW *os.File // write end (producer uses as stdout/stderr)
+	logConsumer Service  // which service consumes our output (set on producer)
+	consumerFor Service  // which service we consume (set on consumer)
+
 	// Queue membership flags
 	InPropQueue bool
 	InStopQueue bool
@@ -212,6 +219,53 @@ func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)     { sr.termSignal =
 func (sr *ServiceRecord) SetFlags(flags ServiceFlags) { sr.Flags = flags }
 func (sr *ServiceRecord) SetProvides(name string)     { sr.provides = name }
 func (sr *ServiceRecord) Provides() string             { return sr.provides }
+
+func (sr *ServiceRecord) SetLogConsumer(svc Service)   { sr.logConsumer = svc }
+func (sr *ServiceRecord) LogConsumer() Service         { return sr.logConsumer }
+func (sr *ServiceRecord) SetConsumerFor(svc Service)   { sr.consumerFor = svc }
+func (sr *ServiceRecord) ConsumerFor() Service         { return sr.consumerFor }
+func (sr *ServiceRecord) OutputPipeW() *os.File        { return sr.outputPipeW }
+func (sr *ServiceRecord) OutputPipeR() *os.File        { return sr.outputPipeR }
+
+// EnsureOutputPipe lazily creates the output pipe for log-type=pipe.
+func (sr *ServiceRecord) EnsureOutputPipe() error {
+	if sr.outputPipeW != nil {
+		return nil
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	sr.outputPipeR = r
+	sr.outputPipeW = w
+	return nil
+}
+
+// CloseOutputPipe closes both ends of the output pipe.
+func (sr *ServiceRecord) CloseOutputPipe() {
+	if sr.outputPipeR != nil {
+		sr.outputPipeR.Close()
+		sr.outputPipeR = nil
+	}
+	if sr.outputPipeW != nil {
+		sr.outputPipeW.Close()
+		sr.outputPipeW = nil
+	}
+}
+
+// TransferOutputPipe returns both pipe fds and clears them from this record.
+func (sr *ServiceRecord) TransferOutputPipe() (r *os.File, w *os.File) {
+	r, w = sr.outputPipeR, sr.outputPipeW
+	sr.outputPipeR = nil
+	sr.outputPipeW = nil
+	return
+}
+
+// SetOutputPipeFDs sets pre-existing pipe fds (from reload transfer).
+func (sr *ServiceRecord) SetOutputPipeFDs(r, w *os.File) {
+	sr.outputPipeR = r
+	sr.outputPipeW = w
+}
 
 func (sr *ServiceRecord) SetSocketDetails(path string, perms int, uid, gid int) {
 	sr.socketPath = path
@@ -1002,6 +1056,9 @@ func (sr *ServiceRecord) ClearDependencies() {
 // the given handleCount (control connection handles). A service can be unloaded
 // only if all its dependents are ordering-only (BEFORE/AFTER).
 func (sr *ServiceRecord) HasLoneRef(handleCount int) bool {
+	if sr.logConsumer != nil {
+		return false
+	}
 	for _, dept := range sr.dependents {
 		if !dept.IsOnlyOrdering() {
 			return false
@@ -1039,4 +1096,14 @@ func (sr *ServiceRecord) PrepareForUnload() {
 		}
 	}
 	sr.dependents = nil
+
+	// Clear consumer-of cross-links
+	if sr.logConsumer != nil {
+		sr.logConsumer.Record().consumerFor = nil
+		sr.logConsumer = nil
+	}
+	if sr.consumerFor != nil {
+		sr.consumerFor.Record().logConsumer = nil
+		sr.consumerFor = nil
+	}
 }

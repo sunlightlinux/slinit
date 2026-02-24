@@ -91,6 +91,11 @@ func (s *ScriptedService) GetLogBuffer() *LogBuffer { return s.logBuf }
 // GetLogType returns the log type (overrides ServiceRecord default).
 func (s *ScriptedService) GetLogType() LogType { return s.logType }
 
+// BecomingInactive is called when the service won't restart. Cleans up pipe.
+func (s *ScriptedService) BecomingInactive() {
+	s.CloseOutputPipe()
+}
+
 // SetStartTimeout sets the start command timeout.
 func (s *ScriptedService) SetStartTimeout(d time.Duration) { s.startTimeout = d }
 
@@ -113,7 +118,7 @@ func (s *ScriptedService) BringUp() bool {
 		return true
 	}
 
-	// Set up log buffer pipe if configured
+	// Set up output pipe based on log type
 	var outputPipe *os.File
 	if s.logType == LogToBuffer {
 		if s.logBuf == nil {
@@ -126,6 +131,24 @@ func (s *ScriptedService) BringUp() bool {
 				s.serviceName, pipeErr)
 			outputPipe = nil
 		}
+	} else if s.logType == LogToPipe {
+		if err := s.EnsureOutputPipe(); err != nil {
+			s.services.logger.Error("Service '%s': failed to create output pipe: %v",
+				s.serviceName, err)
+			return false
+		}
+		outputPipe = s.outputPipeW
+	}
+
+	// Set up input pipe (consumer-of)
+	var inputPipe *os.File
+	if s.consumerFor != nil {
+		if err := s.consumerFor.Record().EnsureOutputPipe(); err != nil {
+			s.services.logger.Error("Service '%s': failed to get producer pipe: %v",
+				s.serviceName, err)
+		} else {
+			inputPipe = s.consumerFor.Record().OutputPipeR()
+		}
 	}
 
 	params := process.ExecParams{
@@ -134,6 +157,7 @@ func (s *ScriptedService) BringUp() bool {
 		RunAsUID:   s.runAsUID,
 		RunAsGID:   s.runAsGID,
 		OutputPipe: outputPipe,
+		InputPipe:  inputPipe,
 	}
 
 	pid, exitCh, err := process.StartProcess(params)
@@ -146,7 +170,7 @@ func (s *ScriptedService) BringUp() bool {
 		return false
 	}
 
-	if outputPipe != nil {
+	if outputPipe != nil && s.logType == LogToBuffer {
 		s.logBuf.CloseWriteEnd()
 		s.logBuf.StartReader()
 	}
