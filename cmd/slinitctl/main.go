@@ -103,6 +103,10 @@ func main() {
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdReload(conn, name)
 		})
+	case "unload":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdUnload(conn, name)
+		})
 	case "catlog":
 		clearFlag := false
 		svcName := ""
@@ -144,6 +148,7 @@ Commands:
   trigger <service>        Trigger a triggered service
   signal <sig> <service>   Send signal to service process
   reload <service>         Reload service configuration from disk
+  unload <service>         Unload a stopped service from memory
   boot-time                Show boot timing analysis
   catlog [--clear] <svc>   Show buffered service output
 `)
@@ -653,6 +658,34 @@ func cmdReload(conn net.Conn, name string) error {
 		fmt.Printf("Service '%s' reloaded.\n", name)
 	case control.RplyNAK:
 		return fmt.Errorf("could not reload service '%s'; service may be in wrong state or have incompatible changes", name)
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	return nil
+}
+
+func cmdUnload(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdUnloadService, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Service '%s' unloaded.\n", name)
+	case control.RplyNotStopped:
+		return fmt.Errorf("could not unload service '%s'; service is not stopped", name)
+	case control.RplyNAK:
+		return fmt.Errorf("could not unload service '%s'; service is a dependency of another service", name)
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}

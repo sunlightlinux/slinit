@@ -997,3 +997,46 @@ func (sr *ServiceRecord) SetDependents(deps []*ServiceDep) {
 func (sr *ServiceRecord) ClearDependencies() {
 	sr.dependsOn = nil
 }
+
+// HasLoneRef returns true if this service has no significant references beyond
+// the given handleCount (control connection handles). A service can be unloaded
+// only if all its dependents are ordering-only (BEFORE/AFTER).
+func (sr *ServiceRecord) HasLoneRef(handleCount int) bool {
+	for _, dept := range sr.dependents {
+		if !dept.IsOnlyOrdering() {
+			return false
+		}
+	}
+	return true
+}
+
+// PrepareForUnload removes all dependency links bidirectionally before the
+// service is removed from the ServiceSet.
+func (sr *ServiceRecord) PrepareForUnload() {
+	// Remove ourselves from each dependency's dependents list
+	for _, dep := range sr.dependsOn {
+		toRec := dep.To.Record()
+		for j, d := range toRec.dependents {
+			if d == dep {
+				toRec.dependents = append(toRec.dependents[:j], toRec.dependents[j+1:]...)
+				break
+			}
+		}
+		if dep.HoldingAcq {
+			dep.To.Record().Release(false)
+		}
+	}
+	sr.dependsOn = nil
+
+	// Remove ourselves from each dependent's dependsOn list
+	for _, dept := range sr.dependents {
+		fromRec := dept.From.Record()
+		for j, d := range fromRec.dependsOn {
+			if d == dept {
+				fromRec.dependsOn = append(fromRec.dependsOn[:j], fromRec.dependsOn[j+1:]...)
+				break
+			}
+		}
+	}
+	sr.dependents = nil
+}

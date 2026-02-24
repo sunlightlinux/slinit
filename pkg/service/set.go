@@ -132,6 +132,13 @@ func (ss *ServiceSet) RemoveService(svc Service) {
 	}
 }
 
+// UnloadService removes a service from the set after cleaning up all dependency links.
+// The service must be STOPPED before calling this.
+func (ss *ServiceSet) UnloadService(svc Service) {
+	svc.Record().PrepareForUnload()
+	ss.RemoveService(svc)
+}
+
 // ListServices returns all loaded services.
 func (ss *ServiceSet) ListServices() []Service {
 	result := make([]Service, 0, len(ss.records))

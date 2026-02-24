@@ -28,6 +28,7 @@ const (
 	CmdBootTime      uint8 = 9
 	CmdShutdown       uint8 = 10
 	CmdReloadService  uint8 = 16
+	CmdUnloadService  uint8 = 17
 	CmdServiceStatus  uint8 = 18
 	CmdSetTrigger    uint8 = 19
 	CmdCatLog        uint8 = 20
@@ -47,6 +48,7 @@ const (
 	RplySvcInfo       uint8 = 62
 	RplyListDone      uint8 = 63
 	RplyBootTime      uint8 = 64
+	RplyNotStopped    uint8 = 65
 	RplyShuttingDown  uint8 = 69
 	RplyServiceStatus uint8 = 70
 	RplySvcLog        uint8 = 73

@@ -105,6 +105,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleUnpinService(payload)
 	case CmdReloadService:
 		return c.handleReloadService(payload)
+	case CmdUnloadService:
+		return c.handleUnloadService(payload)
 	default:
 		return WritePacket(c.conn, RplyBadReq, nil)
 	}
@@ -412,5 +414,47 @@ func (c *Connection) handleReloadService(payload []byte) error {
 	}
 
 	c.server.services.ProcessQueues()
+	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleUnloadService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	// Service must be stopped
+	if svc.State() != service.StateStopped {
+		return WritePacket(c.conn, RplyNotStopped, nil)
+	}
+
+	// Count how many handles in this connection point to the service
+	handleCount := 0
+	for _, s := range c.handles {
+		if s == svc {
+			handleCount++
+		}
+	}
+
+	// Check if service has only ordering dependents (no active non-ordering refs)
+	if !svc.Record().HasLoneRef(handleCount) {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	// Unload: clean up deps and remove from set
+	c.server.services.UnloadService(svc)
+
+	// Remove all handles pointing to this service
+	for h, s := range c.handles {
+		if s == svc {
+			delete(c.handles, h)
+		}
+	}
+
 	return WritePacket(c.conn, RplyACK, nil)
 }
