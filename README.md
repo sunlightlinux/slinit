@@ -6,15 +6,23 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 
 ## Features
 
-- **Service types**: internal, process, scripted, bgprocess (self-backgrounding daemons), triggered (externally triggered)
-- **Dependency management**: 6 dependency types (regular, soft/waits-for, milestone, before, after)
+- **Service types**: process, scripted, bgprocess, internal, triggered
+- **Dependency management**: 6 dependency types (regular, waits-for, milestone, soft, before, after)
 - **Process lifecycle**: SIGTERM with configurable timeout, SIGKILL escalation
 - **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
 - **Dinit-compatible config**: key=value service description files
 - **Control socket**: binary protocol over Unix domain socket for runtime management
-- **slinitctl CLI**: list, start, stop, restart, status, shutdown, trigger, signal
-- **PID 1 init**: console setup, Ctrl+Alt+Del disable, child subreaper, orphan reaping
-- **Shutdown**: orderly process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff syscalls
+- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, catlog, shutdown, boot-time
+- **Service aliases**: `provides` for alternative name lookup
+- **Consumer pipes**: `consumer-of` to pipe output from one service into another
+- **Log output**: buffer (in-memory, catlog), file (logfile with permissions/ownership), pipe (consumer-of)
+- **Ready notification**: pipefd/pipevar readiness protocol for services
+- **Socket activation**: pre-opened Unix listening socket passed to child (fd 3)
+- **Hot reload**: reload service configuration from disk without restart
+- **Service unload**: remove stopped services from memory
+- **PID 1 init**: console setup, Ctrl+Alt+Del handling, child subreaper, orphan reaping
+- **SysV signal compat**: SIGUSR1 (reboot), SIGUSR2 (poweroff), SIGTERM (poweroff)
+- **Shutdown**: orderly service stop, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff
 - **Soft-reboot**: restart slinit without rebooting the kernel
 - **Dual mode**: system init (PID 1) or user-level service manager
 
@@ -57,10 +65,14 @@ type = process
 command = /usr/bin/myservice --config /etc/myservice.conf
 stop-command = /usr/bin/myservice --stop
 stop-timeout = 10
-restart = true
-smooth-recovery = true
+restart = on-failure
+restart-delay = 2
+restart-limit-count = 3
+restart-limit-interval = 60
 depends-on: network
 waits-for: logging
+log-type = buffer
+log-buffer-size = 4096
 ```
 
 Example bgprocess service:
@@ -73,6 +85,70 @@ pid-file = /run/mydaemon.pid
 stop-timeout = 15
 depends-on: network
 ```
+
+Example service with logfile output:
+
+```ini
+# /etc/slinit.d/myapp
+type = process
+command = /usr/bin/myapp
+log-type = file
+logfile = /var/log/myapp.log
+logfile-permissions = 0640
+logfile-uid = 1000
+logfile-gid = 1000
+```
+
+Example consumer pipe (service B reads service A stdout):
+
+```ini
+# /etc/slinit.d/producer
+type = process
+command = /usr/bin/generate-data
+log-type = pipe
+
+# /etc/slinit.d/consumer
+type = process
+command = /usr/bin/process-data
+consumer-of: producer
+```
+
+### Configuration reference
+
+| Option                    | Description                                      |
+|---------------------------|--------------------------------------------------|
+| `type`                    | Service type (process, bgprocess, scripted, internal, triggered) |
+| `command`                 | Command to run                                   |
+| `stop-command`            | Command to run on stop (scripted)                |
+| `depends-on:`             | Hard dependency                                  |
+| `depends-ms:`             | Milestone dependency (must start, then becomes soft) |
+| `waits-for:`              | Soft dependency (wait for start/fail)            |
+| `before:`                 | Ordering: start before target                    |
+| `after:`                  | Ordering: start after target                     |
+| `provides`                | Alias name for service lookup                    |
+| `consumer-of:`            | Pipe output from named service into this one     |
+| `restart`                 | Auto-restart mode (yes, on-failure, no)          |
+| `restart-delay`           | Seconds to wait before restarting                |
+| `restart-limit-count`     | Max restarts within interval                     |
+| `restart-limit-interval`  | Interval (seconds) for restart limit             |
+| `log-type`                | Output logging (buffer, file, pipe, none)        |
+| `logfile`                 | Log file path (when log-type = file)             |
+| `log-buffer-size`         | Log buffer size in bytes (when log-type = buffer)|
+| `logfile-permissions`     | Log file permissions, octal (default 0600)       |
+| `logfile-uid`             | Log file owner UID                               |
+| `logfile-gid`             | Log file owner GID                               |
+| `ready-notification`      | Readiness protocol (pipefd:N, pipevar:VARNAME)   |
+| `socket-listen`           | Pre-opened Unix socket passed to child (fd 3)    |
+| `socket-permissions`      | Socket file permissions                          |
+| `socket-uid/gid`          | Socket file ownership                            |
+| `pid-file`                | PID file path (bgprocess type)                   |
+| `start-timeout`           | Timeout for service start (seconds)              |
+| `stop-timeout`            | Timeout for service stop (seconds)               |
+| `options`                 | Service flags (runs-on-console, etc.)            |
+| `term-signal`             | Signal for graceful stop                         |
+| `working-dir`             | Working directory for the process                |
+| `env-file`                | Environment variables file                       |
+| `chain-to`                | Service to start after this one stops            |
 
 ### Service types
 
@@ -88,11 +164,11 @@ depends-on: network
 
 | Directive | Description |
 |-----------|-------------|
-| `depends-on` | Hard dependency - start required, stop propagates |
-| `depends-ms` | Milestone dependency - like depends-on for milestones |
-| `waits-for` | Soft dependency - waits for start, but failure doesn't propagate |
-| `before` | Ordering - this service starts before the named service |
-| `after` | Ordering - this service starts after the named service |
+| `depends-on` | Hard dependency -- start required, stop propagates |
+| `depends-ms` | Milestone dependency -- must start, then becomes soft |
+| `waits-for` | Soft dependency -- waits for start, but failure doesn't propagate |
+| `before` | Ordering -- this service starts before the named service |
+| `after` | Ordering -- this service starts after the named service |
 
 ## Control CLI (slinitctl)
 
@@ -102,22 +178,41 @@ depends-on: network
 # List all loaded services
 slinitctl list
 
-# Start/stop/restart a service
-slinitctl start myservice
-slinitctl stop myservice
+# Start/stop/restart
+slinitctl start myservice       # start and mark active
+slinitctl wake myservice        # start without marking active
+slinitctl stop myservice        # force stop
+slinitctl release myservice     # unmark active (stop if unrequired)
 slinitctl restart myservice
 
-# Show detailed service status
+# Service status
 slinitctl status myservice
+slinitctl is-started myservice  # exit 0 if started, 1 otherwise
+slinitctl is-failed myservice   # exit 0 if failed, 1 otherwise
 
-# Trigger a triggered service
+# Trigger / untrigger
 slinitctl trigger mytrigger
+slinitctl untrigger mytrigger   # reset trigger state
 
 # Send signal to a service process
 slinitctl signal HUP myservice
 
+# View buffered service output
+slinitctl catlog myservice
+slinitctl catlog --clear myservice
+
+# Reload config from disk (without restart)
+slinitctl reload myservice
+
+# Unload a stopped service from memory
+slinitctl unload myservice
+
+# Boot timing analysis
+slinitctl boot-time
+
 # Initiate system shutdown
 slinitctl shutdown poweroff
+slinitctl shutdown reboot
 
 # Use a custom socket path
 slinitctl --socket-path /tmp/test.socket list
@@ -149,23 +244,40 @@ slinit/
 │   ├── process/         # Process execution and monitoring
 │   ├── eventloop/       # Event loop, signals, timers
 │   └── logging/         # Console logger
-└── internal/util/       # Path and parsing utilities
+├── internal/util/       # Path and parsing utilities
+└── demo/                # QEMU test environment
 ```
-
-## Roadmap
-
-- [x] **Phase 1**: Foundation - types, state machine, config parser, event loop
-- [x] **Phase 2**: Process services - fork/exec, child monitoring, restart logic
-- [x] **Phase 3**: Full dependency graph - all 6 dep types validated, TriggeredService, BGProcessService
-- [x] **Phase 4**: Control protocol + `slinitctl` CLI
-- [x] **Phase 5**: PID 1 mode + shutdown sequence
-- [ ] **Phase 6**: Advanced features - socket activation, cgroups, rlimits
 
 ## Testing
 
 ```bash
 go test ./...
+# 161 tests across 5 packages
 ```
+
+## Roadmap
+
+- [x] **Phase 1**: Foundation -- types, state machine, config parser, event loop
+- [x] **Phase 2**: Process services -- fork/exec, child monitoring, restart logic
+- [x] **Phase 3**: Full dependency graph -- all 6 dep types, TriggeredService, BGProcessService
+- [x] **Phase 4**: Control protocol + `slinitctl` CLI
+- [x] **Phase 5**: PID 1 mode + shutdown sequence
+- [ ] **Phase 6**: Advanced features
+  - [x] catlog (buffered output retrieval)
+  - [x] reload (hot config reload)
+  - [x] ready-notification (pipefd/pipevar)
+  - [x] socket activation
+  - [x] provides (service aliases)
+  - [x] unload (remove stopped services)
+  - [x] consumer-of (pipe between services)
+  - [x] log-type = file (logfile with permissions/ownership)
+  - [x] untrigger (reset trigger state)
+  - [x] wake (start without marking active)
+  - [x] release (unmark active, conditional stop)
+  - [x] is-started / is-failed (exit code status check)
+  - [ ] cgroups
+  - [ ] rlimits
+  - [ ] oom-score-adj
 
 ## License
 
