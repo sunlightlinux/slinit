@@ -90,6 +90,14 @@ func main() {
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdStatus(conn, name)
 		})
+	case "is-started":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdIsStarted(conn, name)
+		})
+	case "is-failed":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdIsFailed(conn, name)
+		})
 	case "shutdown":
 		shutType := "poweroff"
 		if len(cmdArgs) > 0 {
@@ -158,6 +166,8 @@ Commands:
   release <service>        Remove active mark (stop if unrequired)
   restart <service>        Restart a service (stop + start)
   status <service>         Show detailed service status
+  is-started <service>     Exit 0 if started, 1 otherwise
+  is-failed <service>      Exit 0 if failed, 1 otherwise
   shutdown [type]          Initiate shutdown (halt|poweroff|reboot)
   trigger <service>        Trigger a triggered service
   untrigger <service>      Reset trigger state
@@ -529,6 +539,64 @@ func cmdStatus(conn net.Conn, name string) error {
 	}
 	if status.ExitStatus != 0 {
 		fmt.Printf("  Exit:    %d\n", status.ExitStatus)
+	}
+	return nil
+}
+
+// getServiceStatus fetches the status for a service via the control protocol.
+func getServiceStatus(conn net.Conn, name string) (control.ServiceStatusInfo, error) {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return control.ServiceStatusInfo{}, err
+	}
+
+	if err := control.WritePacket(conn, control.CmdServiceStatus, control.EncodeHandle(handle)); err != nil {
+		return control.ServiceStatusInfo{}, err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return control.ServiceStatusInfo{}, err
+	}
+
+	if rply != control.RplyServiceStatus {
+		return control.ServiceStatusInfo{}, fmt.Errorf("unexpected reply: %d", rply)
+	}
+
+	return control.DecodeServiceStatus(payload)
+}
+
+func cmdIsStarted(conn net.Conn, name string) error {
+	status, err := getServiceStatus(conn, name)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(formatState(status.State))
+
+	if status.State != service.StateStarted {
+		os.Exit(1)
+	}
+	return nil
+}
+
+func cmdIsFailed(conn net.Conn, name string) error {
+	status, err := getServiceStatus(conn, name)
+	if err != nil {
+		return err
+	}
+
+	failed := status.Flags&control.StatusFlagStartFailed != 0 ||
+		(status.State == service.StateStopped && status.ExitStatus != 0)
+
+	if failed {
+		fmt.Println("FAILED")
+	} else {
+		fmt.Println(formatState(status.State))
+	}
+
+	if !failed {
+		os.Exit(1)
 	}
 	return nil
 }

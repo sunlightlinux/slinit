@@ -68,6 +68,7 @@ const (
 	StatusFlagMarkedActive  uint8 = 1 << 1
 	StatusFlagWaitingDeps   uint8 = 1 << 2
 	StatusFlagHasConsole    uint8 = 1 << 3
+	StatusFlagStartFailed   uint8 = 1 << 4
 )
 
 // Packet header: 1-byte command/reply + 2-byte payload length (little-endian).
@@ -179,6 +180,9 @@ func EncodeServiceStatus(svc service.Service) []byte {
 	}
 	if svc.Record().HasConsole() {
 		flags |= StatusFlagHasConsole
+	}
+	if svc.Record().DidStartFail() {
+		flags |= StatusFlagStartFailed
 	}
 	buf[3] = flags
 	binary.LittleEndian.PutUint32(buf[4:], uint32(int32(pid)))

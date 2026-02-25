@@ -83,6 +83,10 @@ slinitctl boot-time
 slinitctl status hello
 slinitctl status restarter
 
+# Check status via exit code (for scripting)
+slinitctl is-started hello && echo "running"
+slinitctl is-failed restarter || echo "not failed"
+
 # View log buffers
 slinitctl catlog hello
 slinitctl catlog ticker
