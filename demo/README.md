@@ -98,6 +98,7 @@ slinitctl stop ticker
 slinitctl list
 slinitctl start ticker           # marks active (stays running)
 slinitctl wake ticker             # start without marking active
+slinitctl release ticker          # unmark active (stop if unrequired)
 slinitctl restart hello
 
 # Send signal to a service

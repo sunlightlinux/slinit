@@ -87,6 +87,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleWakeService(payload)
 	case CmdStopService:
 		return c.handleStopService(payload)
+	case CmdReleaseService:
+		return c.handleReleaseService(payload)
 	case CmdListServices:
 		return c.handleListServices()
 	case CmdBootTime:
@@ -228,6 +230,26 @@ func (c *Connection) handleStopService(payload []byte) error {
 	}
 
 	c.server.services.StopService(svc)
+	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleReleaseService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	if svc.State() == service.StateStopped {
+		return WritePacket(c.conn, RplyAlreadySS, nil)
+	}
+
+	svc.Stop(false) // release: remove explicit activation, stop only if unrequired
+	c.server.services.ProcessQueues()
 	return WritePacket(c.conn, RplyACK, nil)
 }
 

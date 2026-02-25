@@ -301,6 +301,109 @@ func TestWakeServiceNoDependents(t *testing.T) {
 	}
 }
 
+func TestReleaseServiceStops(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	// Start a service explicitly (marked active, no dependents)
+	svc := service.NewInternalService(server.services, "release-svc")
+	server.services.AddService(svc)
+	server.services.StartService(svc)
+
+	if svc.State() != service.StateStarted {
+		t.Fatalf("Expected STARTED, got %s", svc.State())
+	}
+	if !svc.Record().IsMarkedActive() {
+		t.Fatal("Expected marked active after start")
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	nameData := EncodeServiceName("release-svc")
+	if err := WritePacket(conn, CmdLoadService, nameData); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	// Release — no other dependents, so service should stop
+	if err := WritePacket(conn, CmdReleaseService, EncodeHandle(handle)); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, _, err = ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	if rply != RplyACK {
+		t.Fatalf("Expected ACK, got %d", rply)
+	}
+
+	if svc.Record().IsMarkedActive() {
+		t.Error("Expected not marked active after release")
+	}
+	if svc.State() != service.StateStopped {
+		t.Errorf("Expected STOPPED (no dependents), got %s", svc.State())
+	}
+}
+
+func TestReleaseServiceStaysRunning(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	// parent depends-on child (hard dep)
+	parent := service.NewInternalService(server.services, "parent")
+	child := service.NewInternalService(server.services, "child")
+	server.services.AddService(parent)
+	server.services.AddService(child)
+	parent.Record().AddDep(child, service.DepRegular)
+
+	// Start parent → child starts as dependency
+	server.services.StartService(parent)
+
+	// Also explicitly start child (mark it active)
+	server.services.StartService(child)
+
+	if !child.Record().IsMarkedActive() {
+		t.Fatal("child should be marked active after explicit start")
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	nameData := EncodeServiceName("child")
+	if err := WritePacket(conn, CmdLoadService, nameData); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	// Release child — parent still requires it, so it should stay running
+	if err := WritePacket(conn, CmdReleaseService, EncodeHandle(handle)); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, _, err = ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	if rply != RplyACK {
+		t.Fatalf("Expected ACK, got %d", rply)
+	}
+
+	if child.Record().IsMarkedActive() {
+		t.Error("child should NOT be marked active after release")
+	}
+	if child.State() != service.StateStarted {
+		t.Errorf("child should remain STARTED (parent still requires it), got %s", child.State())
+	}
+}
+
 func TestListServices(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()

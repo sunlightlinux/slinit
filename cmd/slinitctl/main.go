@@ -78,6 +78,10 @@ func main() {
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdStop(conn, name)
 		})
+	case "release":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdRelease(conn, name)
+		})
 	case "restart":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdRestart(conn, name)
@@ -151,6 +155,7 @@ Commands:
   start <service>          Start a service (marks active)
   wake <service>           Start without marking active
   stop <service>           Stop a service
+  release <service>        Remove active mark (stop if unrequired)
   restart <service>        Restart a service (stop + start)
   status <service>         Show detailed service status
   shutdown [type]          Initiate shutdown (halt|poweroff|reboot)
@@ -395,6 +400,32 @@ func cmdWake(conn net.Conn, name string) error {
 		return fmt.Errorf("service '%s' has no active dependents, cannot wake", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	return nil
+}
+
+func cmdRelease(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdReleaseService, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Service '%s' released.\n", name)
+	case control.RplyAlreadySS:
+		fmt.Printf("Service '%s' is already stopped.\n", name)
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
