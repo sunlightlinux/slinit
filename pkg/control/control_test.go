@@ -389,6 +389,63 @@ func TestSetTrigger(t *testing.T) {
 	}
 }
 
+func TestUntrigger(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewTriggeredService(server.services, "trigger-svc")
+	server.services.AddService(svc)
+
+	// Trigger and start
+	svc.SetTrigger(true)
+	server.services.StartService(svc)
+
+	if svc.State() != service.StateStarted {
+		t.Fatalf("Expected STARTED, got %s", svc.State())
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	// Find the service to get handle
+	nameData := EncodeServiceName("trigger-svc")
+	if err := WritePacket(conn, CmdFindService, nameData); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	if rply != RplyServiceRecord {
+		t.Fatalf("Expected ServiceRecord, got %d", rply)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	// Untrigger (set trigger = false)
+	trigPayload := make([]byte, 5)
+	binary.LittleEndian.PutUint32(trigPayload, handle)
+	trigPayload[4] = 0
+
+	if err := WritePacket(conn, CmdSetTrigger, trigPayload); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, _, err = ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	if rply != RplyACK {
+		t.Fatalf("Expected ACK, got %d", rply)
+	}
+
+	// Service should remain STARTED but trigger flag cleared
+	if svc.State() != service.StateStarted {
+		t.Fatalf("Expected STARTED after untrigger, got %s", svc.State())
+	}
+	if svc.IsTriggered() {
+		t.Fatal("Expected IsTriggered() = false after untrigger")
+	}
+}
+
 func TestCloseHandle(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()

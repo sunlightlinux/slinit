@@ -92,6 +92,10 @@ func main() {
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdTrigger(conn, name)
 		})
+	case "untrigger":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdUntrigger(conn, name)
+		})
 	case "signal":
 		if len(cmdArgs) < 2 {
 			fatal("Usage: slinitctl signal <signal> <service>")
@@ -146,6 +150,7 @@ Commands:
   status <service>         Show detailed service status
   shutdown [type]          Initiate shutdown (halt|poweroff|reboot)
   trigger <service>        Trigger a triggered service
+  untrigger <service>      Reset trigger state
   signal <sig> <service>   Send signal to service process
   reload <service>         Reload service configuration from disk
   unload <service>         Unload a stopped service from memory
@@ -515,6 +520,36 @@ func cmdTrigger(conn net.Conn, name string) error {
 	switch rply {
 	case control.RplyACK:
 		fmt.Printf("Service '%s' triggered.\n", name)
+	case control.RplyNAK:
+		return fmt.Errorf("service '%s' is not a triggered service", name)
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	return nil
+}
+
+func cmdUntrigger(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	payload := make([]byte, 5)
+	binary.LittleEndian.PutUint32(payload, handle)
+	payload[4] = 0 // trigger = false
+
+	if err := control.WritePacket(conn, control.CmdSetTrigger, payload); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Service '%s' untriggered.\n", name)
 	case control.RplyNAK:
 		return fmt.Errorf("service '%s' is not a triggered service", name)
 	default:

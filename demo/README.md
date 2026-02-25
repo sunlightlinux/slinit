@@ -88,9 +88,10 @@ slinitctl catlog hello
 slinitctl catlog ticker
 slinitctl catlog restarter       # shows restart markers
 
-# Trigger the triggered service
+# Trigger / untrigger
 slinitctl trigger trigger-test
 slinitctl list                   # trigger-test now shows [+]
+slinitctl untrigger trigger-test # reset trigger flag
 
 # Service lifecycle
 slinitctl stop ticker

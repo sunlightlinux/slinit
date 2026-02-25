@@ -106,6 +106,42 @@ func TestTriggeredServiceWithDependency(t *testing.T) {
 	}
 }
 
+func TestTriggeredServiceUntrigger(t *testing.T) {
+	set, _ := newTestSet()
+
+	svc := NewTriggeredService(set, "triggered-svc")
+	set.AddService(svc)
+
+	// Trigger and start
+	svc.SetTrigger(true)
+	set.StartService(svc)
+
+	if svc.State() != StateStarted {
+		t.Fatalf("expected STARTED, got %v", svc.State())
+	}
+	if !svc.IsTriggered() {
+		t.Fatal("expected IsTriggered() = true")
+	}
+
+	// Untrigger — service stays STARTED but flag is cleared
+	svc.SetTrigger(false)
+
+	if svc.IsTriggered() {
+		t.Error("expected IsTriggered() = false after untrigger")
+	}
+	if svc.State() != StateStarted {
+		t.Errorf("expected service to remain STARTED after untrigger, got %v", svc.State())
+	}
+
+	// Stop and restart — should stay STARTING (trigger cleared)
+	set.StopService(svc)
+	set.StartService(svc)
+
+	if svc.State() != StateStarting {
+		t.Errorf("expected STARTING after restart without trigger, got %v", svc.State())
+	}
+}
+
 func TestTriggeredServiceCancelStart(t *testing.T) {
 	set, _ := newTestSet()
 
