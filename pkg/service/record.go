@@ -329,6 +329,39 @@ func (sr *ServiceRecord) Start() {
 	sr.doStart()
 }
 
+// Wake re-attaches a service to its active dependents without marking it as
+// explicitly started. If no active dependents hold a non-ordering dependency,
+// returns false (nothing to wake for). Otherwise increments requiredBy via
+// the dependency acquisition and starts the service.
+func (sr *ServiceRecord) Wake() bool {
+	if sr.pinnedStopped {
+		return false
+	}
+
+	found := false
+	for _, dept := range sr.dependents {
+		if dept.IsOnlyOrdering() {
+			continue
+		}
+		from := dept.From
+		fromState := from.State()
+		if fromState == StateStarted || fromState == StateStarting {
+			found = true
+			if !dept.HoldingAcq {
+				dept.HoldingAcq = true
+				sr.requiredBy++
+			}
+		}
+	}
+
+	if !found {
+		return false
+	}
+
+	sr.doStart()
+	return true
+}
+
 // Stop removes explicit activation and optionally stops the service.
 func (sr *ServiceRecord) Stop(bringDown bool) {
 	if sr.startExplicit {

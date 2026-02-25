@@ -210,6 +210,97 @@ func TestStartStopService(t *testing.T) {
 	}
 }
 
+func TestWakeService(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	// parent waits-for child (soft dep — parent stays active if child stops)
+	parent := service.NewInternalService(server.services, "parent")
+	child := service.NewInternalService(server.services, "child")
+	server.services.AddService(parent)
+	server.services.AddService(child)
+	parent.Record().AddDep(child, service.DepWaitsFor)
+
+	// Start parent (child starts too)
+	server.services.StartService(parent)
+	if child.State() != service.StateStarted {
+		t.Fatalf("child expected STARTED, got %s", child.State())
+	}
+
+	// Stop child — parent stays STARTED (soft dep)
+	child.Stop(true)
+	server.services.ProcessQueues()
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	// Load child handle
+	nameData := EncodeServiceName("child")
+	if err := WritePacket(conn, CmdLoadService, nameData); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	if rply != RplyServiceRecord {
+		t.Fatalf("Expected ServiceRecord, got %d", rply)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	// Wake child — parent is still active
+	if err := WritePacket(conn, CmdWakeService, EncodeHandle(handle)); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, _, err = ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	if rply != RplyACK {
+		t.Fatalf("Expected ACK, got %d", rply)
+	}
+
+	if child.State() != service.StateStarted {
+		t.Fatalf("child expected STARTED after wake, got %s", child.State())
+	}
+	if child.Record().IsMarkedActive() {
+		t.Fatal("child should NOT be marked active after wake")
+	}
+}
+
+func TestWakeServiceNoDependents(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "lonely")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	nameData := EncodeServiceName("lonely")
+	if err := WritePacket(conn, CmdLoadService, nameData); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	// Wake with no dependents — should get NAK
+	if err := WritePacket(conn, CmdWakeService, EncodeHandle(handle)); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	rply, _, err = ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("Read error: %v", err)
+	}
+	if rply != RplyNAK {
+		t.Fatalf("Expected NAK for no dependents, got %d", rply)
+	}
+}
+
 func TestListServices(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()

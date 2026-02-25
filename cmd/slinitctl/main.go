@@ -70,6 +70,10 @@ func main() {
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdStart(conn, name)
 		})
+	case "wake":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdWake(conn, name)
+		})
 	case "stop":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdStop(conn, name)
@@ -144,7 +148,8 @@ Options:
 
 Commands:
   list                     List all loaded services
-  start <service>          Start a service
+  start <service>          Start a service (marks active)
+  wake <service>           Start without marking active
   stop <service>           Stop a service
   restart <service>        Restart a service (stop + start)
   status <service>         Show detailed service status
@@ -358,6 +363,36 @@ func cmdStart(conn net.Conn, name string) error {
 		fmt.Printf("Service '%s' started.\n", name)
 	case control.RplyAlreadySS:
 		fmt.Printf("Service '%s' is already started.\n", name)
+	case control.RplyShuttingDown:
+		return fmt.Errorf("system is shutting down")
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	return nil
+}
+
+func cmdWake(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdWakeService, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Service '%s' woken.\n", name)
+	case control.RplyAlreadySS:
+		fmt.Printf("Service '%s' is already started.\n", name)
+	case control.RplyNAK:
+		return fmt.Errorf("service '%s' has no active dependents, cannot wake", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")
 	default:

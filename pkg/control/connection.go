@@ -83,6 +83,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleLoadService(payload)
 	case CmdStartService:
 		return c.handleStartService(payload)
+	case CmdWakeService:
+		return c.handleWakeService(payload)
 	case CmdStopService:
 		return c.handleStopService(payload)
 	case CmdListServices:
@@ -178,6 +180,35 @@ func (c *Connection) handleStartService(payload []byte) error {
 	}
 
 	c.server.services.StartService(svc)
+	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleWakeService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	if c.server.services.IsShuttingDown() {
+		return WritePacket(c.conn, RplyShuttingDown, nil)
+	}
+
+	if svc.State() == service.StateStarted {
+		return WritePacket(c.conn, RplyAlreadySS, nil)
+	}
+
+	if svc.Record().IsStopPinned() {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	if !c.server.services.WakeService(svc) {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
 	return WritePacket(c.conn, RplyACK, nil)
 }
 

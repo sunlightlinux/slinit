@@ -157,6 +157,14 @@ func (ss *ServiceSet) StartService(svc Service) {
 	ss.ProcessQueues()
 }
 
+// WakeService starts a service without marking it active (re-attaches to
+// active dependents). Returns false if no active dependents were found.
+func (ss *ServiceSet) WakeService(svc Service) bool {
+	ok := svc.Record().Wake()
+	ss.ProcessQueues()
+	return ok
+}
+
 // StopService stops a service and processes queues.
 func (ss *ServiceSet) StopService(svc Service) {
 	svc.Stop(true)

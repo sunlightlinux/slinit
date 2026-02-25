@@ -96,7 +96,8 @@ slinitctl untrigger trigger-test # reset trigger flag
 # Service lifecycle
 slinitctl stop ticker
 slinitctl list
-slinitctl start ticker
+slinitctl start ticker           # marks active (stays running)
+slinitctl wake ticker             # start without marking active
 slinitctl restart hello
 
 # Send signal to a service

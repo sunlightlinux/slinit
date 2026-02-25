@@ -287,6 +287,69 @@ func (l *testListener) ServiceEvent(_ Service, event ServiceEvent) {
 	l.events = append(l.events, event)
 }
 
+func TestServiceWakeWithActiveDependents(t *testing.T) {
+	set, _ := newTestSet()
+
+	// parent waits-for child (soft dep — parent stays active if child stops)
+	parent := NewInternalService(set, "parent")
+	child := NewInternalService(set, "child")
+	set.AddService(parent)
+	set.AddService(child)
+
+	parent.Record().AddDep(child, DepWaitsFor)
+
+	// Start parent → child starts too
+	set.StartService(parent)
+
+	if child.State() != StateStarted {
+		t.Fatalf("child expected STARTED, got %v", child.State())
+	}
+	if parent.State() != StateStarted {
+		t.Fatalf("parent expected STARTED, got %v", parent.State())
+	}
+
+	// Stop child — parent stays STARTED (soft dep)
+	child.Stop(true)
+	set.ProcessQueues()
+
+	if child.State() != StateStopped {
+		t.Fatalf("child expected STOPPED, got %v", child.State())
+	}
+	if parent.State() != StateStarted {
+		t.Fatalf("parent should remain STARTED after soft dep stopped, got %v", parent.State())
+	}
+
+	// Now wake child — parent is still active, so wake should succeed
+	ok := set.WakeService(child)
+
+	if !ok {
+		t.Fatal("WakeService should return true when active dependents exist")
+	}
+	if child.State() != StateStarted {
+		t.Errorf("child expected STARTED after wake, got %v", child.State())
+	}
+	if child.Record().IsMarkedActive() {
+		t.Error("child should NOT be marked active after wake")
+	}
+}
+
+func TestServiceWakeNoDependents(t *testing.T) {
+	set, _ := newTestSet()
+
+	svc := NewInternalService(set, "lonely")
+	set.AddService(svc)
+
+	// No dependents at all — wake should fail
+	ok := set.WakeService(svc)
+
+	if ok {
+		t.Fatal("WakeService should return false when no active dependents")
+	}
+	if svc.State() != StateStopped {
+		t.Errorf("service should remain STOPPED, got %v", svc.State())
+	}
+}
+
 func TestServiceListenerNotifications(t *testing.T) {
 	set, _ := newTestSet()
 
