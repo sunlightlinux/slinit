@@ -17,6 +17,8 @@ func SetupSignals() chan os.Signal {
 		syscall.SIGINT,
 		syscall.SIGQUIT,
 		syscall.SIGHUP,
+		syscall.SIGUSR1, // SysV: halt/reboot (busybox reboot)
+		syscall.SIGUSR2, // SysV: poweroff (busybox poweroff)
 		syscall.SIGCHLD, // For PID 1 orphan reaping
 	)
 	return sigCh

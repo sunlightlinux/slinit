@@ -54,6 +54,9 @@ type ServiceSet struct {
 	bootReadyTime   time.Time     // when boot service reached STARTED
 	bootServiceName string        // name of the boot target service
 	kernelUptime    time.Duration // kernel uptime at slinit start
+
+	// Notification channel: signaled when a service becomes inactive
+	inactiveCh chan struct{}
 }
 
 // NewServiceSet creates a new ServiceSet.
@@ -247,11 +250,27 @@ func (ss *ServiceSet) ServiceActive(svc Service) {
 // ServiceInactive decrements the active service count.
 func (ss *ServiceSet) ServiceInactive(svc Service) {
 	ss.activeServices--
+	// Notify event loop that a service became inactive
+	if ss.inactiveCh != nil {
+		select {
+		case ss.inactiveCh <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // CountActiveServices returns the number of active services.
 func (ss *ServiceSet) CountActiveServices() int {
 	return ss.activeServices
+}
+
+// InactiveCh returns a channel that receives a signal when any service
+// becomes inactive. The event loop selects on this to detect shutdown completion.
+func (ss *ServiceSet) InactiveCh() <-chan struct{} {
+	if ss.inactiveCh == nil {
+		ss.inactiveCh = make(chan struct{}, 1)
+	}
+	return ss.inactiveCh
 }
 
 // IsShuttingDown returns true if automatic restart is disabled (shutdown in progress).

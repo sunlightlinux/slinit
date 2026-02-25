@@ -57,9 +57,12 @@ var KnownSettings = map[string]OperatorType{
 	"ready-notification": OpEquals,
 
 	// Logging
-	"logfile":    OpEquals,
-	"log-type":   OpEquals,
-	"log-buffer-size": OpEquals,
+	"logfile":             OpEquals,
+	"log-type":            OpEquals,
+	"log-buffer-size":     OpEquals,
+	"logfile-permissions": OpEquals,
+	"logfile-uid":         OpEquals,
+	"logfile-gid":         OpEquals,
 
 	// Socket activation
 	"socket-listen": OpEquals,

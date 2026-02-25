@@ -125,9 +125,11 @@ func main() {
 	if err != nil {
 		logger.Error("Failed to load boot service '%s': %v", bootService, err)
 		if isPID1 {
-			logger.Error("Cannot proceed without boot service in init mode")
-			// In PID 1 mode, we can't just exit
-			select {}
+			logger.Error("No service files found in %v", dirs)
+			logger.Error("Create at least '%s' in one of the service directories", bootService)
+			logger.Error("Rebooting in 10 seconds...")
+			time.Sleep(10 * time.Second)
+			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 		os.Exit(1)
 	}

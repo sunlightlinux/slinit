@@ -68,6 +68,8 @@ func (el *EventLoop) Run(ctx context.Context) error {
 
 	el.logger.Info("slinit event loop started (PID %d)", os.Getpid())
 
+	inactiveCh := el.services.InactiveCh()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -80,21 +82,21 @@ func (el *EventLoop) Run(ctx context.Context) error {
 
 		case sig := <-el.sigCh:
 			if el.handleSignal(sig) {
-				// Shutdown requested - check if already done
 				if el.services.CountActiveServices() == 0 {
 					el.logger.Info("All services stopped, exiting")
 					return nil
 				}
 			}
-		}
 
-		// Check if all services have stopped
-		if el.shutdownInitiated && el.services.CountActiveServices() == 0 {
-			el.logger.Info("All services stopped, exiting")
-			if el.OnAllStopped != nil {
-				el.OnAllStopped()
+		case <-inactiveCh:
+			// A service became inactive — check if shutdown is complete
+			if el.shutdownInitiated && el.services.CountActiveServices() == 0 {
+				el.logger.Info("All services stopped, exiting")
+				if el.OnAllStopped != nil {
+					el.OnAllStopped()
+				}
+				return nil
 			}
-			return nil
 		}
 	}
 }
@@ -108,14 +110,20 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 
 	switch sysSignal {
 	case syscall.SIGTERM:
-		el.logger.Notice("Received SIGTERM, initiating shutdown")
-		el.initiateShutdown(service.ShutdownHalt)
+		if el.isPID1 {
+			// PID 1: SIGTERM = poweroff (sent by busybox poweroff/halt)
+			el.logger.Notice("Received SIGTERM, initiating poweroff")
+			el.initiateShutdown(service.ShutdownPoweroff)
+		} else {
+			el.logger.Notice("Received SIGTERM, initiating shutdown")
+			el.initiateShutdown(service.ShutdownHalt)
+		}
 		return true
 
 	case syscall.SIGINT:
-		if os.Getpid() == 1 {
-			// PID 1: SIGINT means reboot (Ctrl+Alt+Del)
-			el.logger.Notice("Received SIGINT (PID 1), initiating reboot")
+		if el.isPID1 {
+			// PID 1: SIGINT = reboot (Ctrl+Alt+Del)
+			el.logger.Notice("Received SIGINT, initiating reboot")
 			el.initiateShutdown(service.ShutdownReboot)
 		} else {
 			el.logger.Notice("Received SIGINT, initiating shutdown")
@@ -125,6 +133,18 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 
 	case syscall.SIGQUIT:
 		el.logger.Notice("Received SIGQUIT, initiating poweroff")
+		el.initiateShutdown(service.ShutdownPoweroff)
+		return true
+
+	case syscall.SIGUSR1:
+		// SysV init convention: SIGUSR1 = halt/reboot (sent by busybox reboot)
+		el.logger.Notice("Received SIGUSR1, initiating reboot")
+		el.initiateShutdown(service.ShutdownReboot)
+		return true
+
+	case syscall.SIGUSR2:
+		// SysV init convention: SIGUSR2 = poweroff (sent by busybox poweroff/halt)
+		el.logger.Notice("Received SIGUSR2, initiating poweroff")
 		el.initiateShutdown(service.ShutdownPoweroff)
 		return true
 

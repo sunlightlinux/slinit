@@ -198,12 +198,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
-		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
-			s.SetLogType(desc.LogType)
-			if desc.LogType == service.LogToBuffer {
-				s.SetLogBufMax(desc.LogBufMax)
-			}
-		}
+		applyLogSettings(s, desc)
 		s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 	case *service.ScriptedService:
 		s.SetStartCommand(desc.Command)
@@ -215,12 +210,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.StopTimeout > 0 {
 			s.SetStopTimeout(desc.StopTimeout)
 		}
-		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
-			s.SetLogType(desc.LogType)
-			if desc.LogType == service.LogToBuffer {
-				s.SetLogBufMax(desc.LogBufMax)
-			}
-		}
+		applyLogSettings(s, desc)
 	case *service.BGProcessService:
 		s.SetCommand(desc.Command)
 		s.SetStopCommand(desc.StopCommand)
@@ -239,12 +229,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
-		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
-			s.SetLogType(desc.LogType)
-			if desc.LogType == service.LogToBuffer {
-				s.SetLogBufMax(desc.LogBufMax)
-			}
-		}
+		applyLogSettings(s, desc)
 	}
 }
 
@@ -520,12 +505,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
-		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
-			svc.SetLogType(desc.LogType)
-			if desc.LogType == service.LogToBuffer {
-				svc.SetLogBufMax(desc.LogBufMax)
-			}
-		}
+		applyLogSettings(svc, desc)
 		if desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" {
 			svc.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 		}
@@ -541,12 +521,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.StopTimeout > 0 {
 			svc.SetStopTimeout(desc.StopTimeout)
 		}
-		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
-			svc.SetLogType(desc.LogType)
-			if desc.LogType == service.LogToBuffer {
-				svc.SetLogBufMax(desc.LogBufMax)
-			}
-		}
+		applyLogSettings(svc, desc)
 		return svc
 	case service.TypeBGProcess:
 		svc := service.NewBGProcessService(dl.set, name)
@@ -567,12 +542,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
-		if desc.LogType == service.LogToBuffer || desc.LogType == service.LogToPipe {
-			svc.SetLogType(desc.LogType)
-			if desc.LogType == service.LogToBuffer {
-				svc.SetLogBufMax(desc.LogBufMax)
-			}
-		}
+		applyLogSettings(svc, desc)
 		return svc
 	case service.TypeTriggered:
 		return service.NewTriggeredService(dl.set, name)
@@ -653,6 +623,27 @@ func (dl *DirLoader) loadDepsFromDir(svc service.Service, dir string, depType se
 	}
 
 	return nil
+}
+
+// logSettable is implemented by process-based services that support log configuration.
+type logSettable interface {
+	SetLogType(service.LogType)
+	SetLogBufMax(int)
+	SetLogFileDetails(path string, perms, uid, gid int)
+}
+
+// applyLogSettings applies log type configuration to a process-based service.
+func applyLogSettings(svc logSettable, desc *ServiceDescription) {
+	switch desc.LogType {
+	case service.LogToBuffer:
+		svc.SetLogType(desc.LogType)
+		svc.SetLogBufMax(desc.LogBufMax)
+	case service.LogToPipe:
+		svc.SetLogType(desc.LogType)
+	case service.LogToFile:
+		svc.SetLogType(desc.LogType)
+		svc.SetLogFileDetails(desc.LogFile, desc.LogFilePerms, desc.LogFileUID, desc.LogFileGID)
+	}
 }
 
 // applyToService applies parsed configuration to the service record.

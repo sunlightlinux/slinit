@@ -43,6 +43,9 @@ type ServiceDescription struct {
 	// Logging
 	LogType      service.LogType
 	LogFile      string
+	LogFilePerms int
+	LogFileUID   int
+	LogFileGID   int
 	LogBufMax    int
 
 	// Process management
@@ -87,6 +90,9 @@ func NewServiceDescription(name string) *ServiceDescription {
 		TermSignal:    syscall.SIGTERM,
 		StopTimeout:   10 * time.Second,
 		AutoRestart:   service.RestartNever,
+		LogFilePerms:  0600,
+		LogFileUID:    -1,
+		LogFileGID:    -1,
 		SocketPerms:   0600,
 		SocketUID:     -1,
 		SocketGID:     -1,
@@ -320,6 +326,24 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid buffer size: %w", err)
 		}
 		desc.LogBufMax = n
+	case "logfile-permissions":
+		perms, err := strconv.ParseInt(value, 8, 32)
+		if err != nil {
+			return fmt.Errorf("invalid logfile permissions: %w", err)
+		}
+		desc.LogFilePerms = int(perms)
+	case "logfile-uid":
+		uid, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid logfile uid: %w", err)
+		}
+		desc.LogFileUID = uid
+	case "logfile-gid":
+		gid, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid logfile gid: %w", err)
+		}
+		desc.LogFileGID = gid
 
 	// Process management
 	case "pid-file":

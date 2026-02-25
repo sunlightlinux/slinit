@@ -66,10 +66,14 @@ type ProcessService struct {
 	readyPipeRead  *os.File // read-end of notification pipe (parent watches)
 	readyCh        chan bool // receives true=ready, false=EOF/error
 
-	// Log buffering
-	logType   LogType
-	logBufMax int
-	logBuf    *LogBuffer
+	// Log output
+	logType      LogType
+	logBufMax    int
+	logBuf       *LogBuffer
+	logFile      string
+	logFilePerms int
+	logFileUID   int
+	logFileGID   int
 
 	// Channels for monitoring goroutine coordination
 	doneCh        chan struct{} // closed when monitoring goroutine should stop
@@ -131,6 +135,17 @@ func (s *ProcessService) SetLogType(lt LogType) { s.logType = lt }
 
 // SetLogBufMax sets the maximum log buffer size.
 func (s *ProcessService) SetLogBufMax(n int) { s.logBufMax = n }
+
+// SetLogFileDetails sets the logfile path, permissions, and ownership.
+func (s *ProcessService) SetLogFileDetails(path string, perms, uid, gid int) {
+	s.logFile = path
+	s.logFilePerms = perms
+	s.logFileUID = uid
+	s.logFileGID = gid
+}
+
+// GetLogFile returns the logfile path.
+func (s *ProcessService) GetLogFile() string { return s.logFile }
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
 func (s *ProcessService) GetLogBuffer() *LogBuffer { return s.logBuf }
@@ -391,6 +406,15 @@ func (s *ProcessService) startProcess() error {
 			return err
 		}
 		outputPipe = s.outputPipeW
+	} else if s.logType == LogToFile && s.logFile != "" {
+		f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, os.FileMode(s.logFilePerms))
+		if err != nil {
+			return fmt.Errorf("failed to open logfile '%s': %w", s.logFile, err)
+		}
+		if s.logFileUID >= 0 || s.logFileGID >= 0 {
+			_ = os.Chown(s.logFile, s.logFileUID, s.logFileGID)
+		}
+		outputPipe = f
 	}
 
 	// Set up input pipe (consumer-of)
@@ -409,8 +433,10 @@ func (s *ProcessService) startProcess() error {
 	if s.HasReadyNotification() {
 		pr, pw, err := os.Pipe()
 		if err != nil {
-			if outputPipe != nil {
+			if outputPipe != nil && s.logType == LogToBuffer {
 				s.logBuf.CloseWriteEnd()
+			} else if outputPipe != nil && s.logType == LogToFile {
+				outputPipe.Close()
 			}
 			return err
 		}
@@ -436,8 +462,10 @@ func (s *ProcessService) startProcess() error {
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
-		if outputPipe != nil {
+		if outputPipe != nil && s.logType == LogToBuffer {
 			s.logBuf.CloseWriteEnd()
+		} else if outputPipe != nil && s.logType == LogToFile {
+			outputPipe.Close()
 		}
 		if notifyPipeWrite != nil {
 			notifyPipeWrite.Close()
@@ -447,11 +475,13 @@ func (s *ProcessService) startProcess() error {
 		return err
 	}
 
-	// Close parent's write end and start reader goroutine (buffer mode only).
+	// Close parent's copy of output fd after fork.
 	// For LogToPipe, the parent keeps both pipe ends open across restarts.
 	if outputPipe != nil && s.logType == LogToBuffer {
 		s.logBuf.CloseWriteEnd()
 		s.logBuf.StartReader()
+	} else if outputPipe != nil && s.logType == LogToFile {
+		outputPipe.Close()
 	}
 
 	// Close parent's write end of notification pipe

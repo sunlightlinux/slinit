@@ -58,10 +58,14 @@ type BGProcessService struct {
 	stopIssued       bool
 	doingSmoothRecov bool
 
-	// Log buffering
-	logType   LogType
-	logBufMax int
-	logBuf    *LogBuffer
+	// Log output
+	logType      LogType
+	logBufMax    int
+	logBuf       *LogBuffer
+	logFile      string
+	logFilePerms int
+	logFileUID   int
+	logFileGID   int
 
 	// Channels for monitoring goroutine coordination
 	doneCh        chan struct{}
@@ -113,6 +117,17 @@ func (s *BGProcessService) SetLogType(lt LogType) { s.logType = lt }
 
 // SetLogBufMax sets the maximum log buffer size.
 func (s *BGProcessService) SetLogBufMax(n int) { s.logBufMax = n }
+
+// SetLogFileDetails sets the logfile path, permissions, and ownership.
+func (s *BGProcessService) SetLogFileDetails(path string, perms, uid, gid int) {
+	s.logFile = path
+	s.logFilePerms = perms
+	s.logFileUID = uid
+	s.logFileGID = gid
+}
+
+// GetLogFile returns the logfile path.
+func (s *BGProcessService) GetLogFile() string { return s.logFile }
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
 func (s *BGProcessService) GetLogBuffer() *LogBuffer { return s.logBuf }
@@ -177,6 +192,17 @@ func (s *BGProcessService) BringUp() bool {
 			return false
 		}
 		outputPipe = s.outputPipeW
+	} else if s.logType == LogToFile && s.logFile != "" {
+		f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, os.FileMode(s.logFilePerms))
+		if err != nil {
+			s.services.logger.Error("Service '%s': failed to open logfile '%s': %v",
+				s.serviceName, s.logFile, err)
+			return false
+		}
+		if s.logFileUID >= 0 || s.logFileGID >= 0 {
+			_ = os.Chown(s.logFile, s.logFileUID, s.logFileGID)
+		}
+		outputPipe = f
 	}
 
 	// Set up input pipe (consumer-of)
@@ -203,8 +229,10 @@ func (s *BGProcessService) BringUp() bool {
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
-		if outputPipe != nil {
+		if outputPipe != nil && s.logType == LogToBuffer {
 			s.logBuf.CloseWriteEnd()
+		} else if outputPipe != nil && s.logType == LogToFile {
+			outputPipe.Close()
 		}
 		s.services.logger.Error("Service '%s': failed to start launcher: %v", s.serviceName, err)
 		return false
@@ -213,6 +241,8 @@ func (s *BGProcessService) BringUp() bool {
 	if outputPipe != nil && s.logType == LogToBuffer {
 		s.logBuf.CloseWriteEnd()
 		s.logBuf.StartReader()
+	} else if outputPipe != nil && s.logType == LogToFile {
+		outputPipe.Close()
 	}
 
 	s.launcherPID = pid
