@@ -111,9 +111,9 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 	switch sysSignal {
 	case syscall.SIGTERM:
 		if el.isPID1 {
-			// PID 1: SIGTERM = poweroff (sent by busybox poweroff/halt)
-			el.logger.Notice("Received SIGTERM, initiating poweroff")
-			el.initiateShutdown(service.ShutdownPoweroff)
+			// PID 1: SIGTERM = reboot (sent by busybox reboot)
+			el.logger.Notice("Received SIGTERM, initiating reboot")
+			el.initiateShutdown(service.ShutdownReboot)
 		} else {
 			el.logger.Notice("Received SIGTERM, initiating shutdown")
 			el.initiateShutdown(service.ShutdownHalt)
@@ -137,13 +137,13 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return true
 
 	case syscall.SIGUSR1:
-		// SysV init convention: SIGUSR1 = halt/reboot (sent by busybox reboot)
-		el.logger.Notice("Received SIGUSR1, initiating reboot")
-		el.initiateShutdown(service.ShutdownReboot)
+		// SysV init convention: SIGUSR1 = halt (sent by busybox halt)
+		el.logger.Notice("Received SIGUSR1, initiating shutdown")
+		el.initiateShutdown(service.ShutdownHalt)
 		return true
 
 	case syscall.SIGUSR2:
-		// SysV init convention: SIGUSR2 = poweroff (sent by busybox poweroff/halt)
+		// SysV init convention: SIGUSR2 = poweroff (sent by busybox poweroff)
 		el.logger.Notice("Received SIGUSR2, initiating poweroff")
 		el.initiateShutdown(service.ShutdownPoweroff)
 		return true
