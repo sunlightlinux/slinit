@@ -141,6 +141,38 @@ func main() {
 			fatal("Usage: slinitctl catlog [--clear] <service>")
 		}
 		err = cmdCatLog(conn, svcName, clearFlag)
+	case "setenv":
+		if len(cmdArgs) < 2 {
+			fatal("Usage: slinitctl setenv <service> KEY=VALUE")
+		}
+		err = cmdSetEnv(conn, cmdArgs[0], cmdArgs[1])
+	case "unsetenv":
+		if len(cmdArgs) < 2 {
+			fatal("Usage: slinitctl unsetenv <service> KEY")
+		}
+		err = cmdUnsetEnv(conn, cmdArgs[0], cmdArgs[1])
+	case "getallenv":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdGetAllEnv(conn, name)
+		})
+	case "add-dep":
+		if len(cmdArgs) < 3 {
+			fatal("Usage: slinitctl add-dep <from> <dep-type> <to>")
+		}
+		err = cmdAddDep(conn, cmdArgs[0], cmdArgs[1], cmdArgs[2])
+	case "rm-dep":
+		if len(cmdArgs) < 3 {
+			fatal("Usage: slinitctl rm-dep <from> <dep-type> <to>")
+		}
+		err = cmdRmDep(conn, cmdArgs[0], cmdArgs[1], cmdArgs[2])
+	case "enable":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdEnable(conn, name)
+		})
+	case "disable":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdDisable(conn, name)
+		})
 	default:
 		fatal("Unknown command: %s", command)
 	}
@@ -176,6 +208,13 @@ Commands:
   unload <service>         Unload a stopped service from memory
   boot-time                Show boot timing analysis
   catlog [--clear] <svc>   Show buffered service output
+  setenv <svc> KEY=VALUE   Set environment variable for service
+  unsetenv <svc> KEY       Remove environment variable
+  getallenv <svc>          List all runtime environment variables
+  add-dep <from> <type> <to>  Add runtime dependency
+  rm-dep <from> <type> <to>   Remove runtime dependency
+  enable <service>         Enable service (add waits-for to boot + start)
+  disable <service>        Disable service (remove waits-for from boot + stop)
 `)
 }
 
@@ -953,4 +992,233 @@ func formatTarget(s service.ServiceState) string {
 	default:
 		return fmt.Sprintf("target(%d)", s)
 	}
+}
+
+func cmdSetEnv(conn net.Conn, svcName, kvPair string) error {
+	idx := strings.IndexByte(kvPair, '=')
+	if idx < 0 {
+		return fmt.Errorf("invalid format: expected KEY=VALUE, got %q", kvPair)
+	}
+	key := kvPair[:idx]
+	value := kvPair[idx+1:]
+
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+
+	payload := control.EncodeSetEnv(handle, key, value, false)
+	if err := control.WritePacket(conn, control.CmdSetEnv, payload); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("setenv failed: reply %d", rply)
+	}
+	fmt.Printf("Service '%s': set %s=%s\n", svcName, key, value)
+	return nil
+}
+
+func cmdUnsetEnv(conn net.Conn, svcName, key string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+
+	payload := control.EncodeSetEnv(handle, key, "", true)
+	if err := control.WritePacket(conn, control.CmdSetEnv, payload); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("unsetenv failed: reply %d", rply)
+	}
+	fmt.Printf("Service '%s': unset %s\n", svcName, key)
+	return nil
+}
+
+func cmdGetAllEnv(conn net.Conn, svcName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdGetAllEnv, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyEnvList {
+		return fmt.Errorf("getallenv failed: reply %d", rply)
+	}
+
+	env, err := control.DecodeEnvList(payload)
+	if err != nil {
+		return err
+	}
+
+	if len(env) == 0 {
+		fmt.Printf("Service '%s': no runtime environment variables set.\n", svcName)
+		return nil
+	}
+
+	// Sort keys for stable output
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("%s=%s\n", k, env[k])
+	}
+	return nil
+}
+
+func parseDepType(s string) (service.DependencyType, error) {
+	switch s {
+	case "depends-on", "regular":
+		return service.DepRegular, nil
+	case "waits-for", "soft":
+		return service.DepWaitsFor, nil
+	case "depends-ms", "milestone":
+		return service.DepMilestone, nil
+	case "before":
+		return service.DepBefore, nil
+	case "after":
+		return service.DepAfter, nil
+	default:
+		return 0, fmt.Errorf("unknown dependency type: %s (use depends-on, waits-for, depends-ms, before, after)", s)
+	}
+}
+
+func cmdAddDep(conn net.Conn, fromName, depTypeStr, toName string) error {
+	depType, err := parseDepType(depTypeStr)
+	if err != nil {
+		return err
+	}
+
+	handleFrom, err := loadServiceHandle(conn, fromName)
+	if err != nil {
+		return err
+	}
+	handleTo, err := loadServiceHandle(conn, toName)
+	if err != nil {
+		return err
+	}
+
+	payload := control.EncodeDepRequest(handleFrom, handleTo, uint8(depType))
+	if err := control.WritePacket(conn, control.CmdAddDep, payload); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("add-dep failed: reply %d", rply)
+	}
+	fmt.Printf("Added %s dependency: %s -> %s\n", depTypeStr, fromName, toName)
+	return nil
+}
+
+func cmdRmDep(conn net.Conn, fromName, depTypeStr, toName string) error {
+	depType, err := parseDepType(depTypeStr)
+	if err != nil {
+		return err
+	}
+
+	handleFrom, err := loadServiceHandle(conn, fromName)
+	if err != nil {
+		return err
+	}
+	handleTo, err := loadServiceHandle(conn, toName)
+	if err != nil {
+		return err
+	}
+
+	payload := control.EncodeDepRequest(handleFrom, handleTo, uint8(depType))
+	if err := control.WritePacket(conn, control.CmdRmDep, payload); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Removed %s dependency: %s -> %s\n", depTypeStr, fromName, toName)
+	case control.RplyNAK:
+		return fmt.Errorf("dependency %s -> %s (%s) not found", fromName, toName, depTypeStr)
+	default:
+		return fmt.Errorf("rm-dep failed: reply %d", rply)
+	}
+	return nil
+}
+
+func cmdEnable(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdEnableService, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Service '%s' enabled.\n", name)
+	case control.RplyNAK:
+		return fmt.Errorf("could not enable service '%s': no boot service configured", name)
+	case control.RplyShuttingDown:
+		return fmt.Errorf("system is shutting down")
+	default:
+		return fmt.Errorf("enable failed: reply %d", rply)
+	}
+	return nil
+}
+
+func cmdDisable(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdDisableService, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Service '%s' disabled.\n", name)
+	case control.RplyNAK:
+		return fmt.Errorf("could not disable service '%s': no boot service configured", name)
+	default:
+		return fmt.Errorf("disable failed: reply %d", rply)
+	}
+	return nil
 }

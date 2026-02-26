@@ -111,6 +111,18 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleReloadService(payload)
 	case CmdUnloadService:
 		return c.handleUnloadService(payload)
+	case CmdSetEnv:
+		return c.handleSetEnv(payload)
+	case CmdGetAllEnv:
+		return c.handleGetAllEnv(payload)
+	case CmdAddDep:
+		return c.handleAddDep(payload)
+	case CmdRmDep:
+		return c.handleRmDep(payload)
+	case CmdEnableService:
+		return c.handleEnableService(payload)
+	case CmdDisableService:
+		return c.handleDisableService(payload)
 	default:
 		return WritePacket(c.conn, RplyBadReq, nil)
 	}
@@ -509,5 +521,146 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 		}
 	}
 
+	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleSetEnv(payload []byte) error {
+	handle, key, value, isUnset, err := DecodeSetEnv(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	if isUnset {
+		svc.Record().UnsetEnvVar(key)
+	} else {
+		svc.Record().SetEnvVar(key, value)
+	}
+	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleGetAllEnv(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	env := svc.Record().GetAllEnv()
+	reply := EncodeEnvList(env)
+	return WritePacket(c.conn, RplyEnvList, reply)
+}
+
+func (c *Connection) handleAddDep(payload []byte) error {
+	handleFrom, handleTo, depType, err := DecodeDepRequest(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	from := c.getService(handleFrom)
+	to := c.getService(handleTo)
+	if from == nil || to == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	if depType > 5 {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	from.Record().AddDep(to, service.DependencyType(depType))
+	c.server.services.ProcessQueues()
+	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleRmDep(payload []byte) error {
+	handleFrom, handleTo, depType, err := DecodeDepRequest(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	from := c.getService(handleFrom)
+	to := c.getService(handleTo)
+	if from == nil || to == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	if depType > 5 {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	if !from.Record().RmDep(to, service.DependencyType(depType)) {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+	c.server.services.ProcessQueues()
+	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleEnableService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	if c.server.services.IsShuttingDown() {
+		return WritePacket(c.conn, RplyShuttingDown, nil)
+	}
+
+	// Find boot service
+	bootName := c.server.services.BootServiceName()
+	if bootName == "" {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+	bootSvc, err := c.server.services.LoadService(bootName)
+	if err != nil || bootSvc == nil {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	// Add waits-for dependency from boot to target
+	bootSvc.Record().AddDep(svc, service.DepWaitsFor)
+
+	// Start the target service
+	c.server.services.StartService(svc)
+	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleDisableService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	// Find boot service
+	bootName := c.server.services.BootServiceName()
+	if bootName == "" {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+	bootSvc := c.server.services.FindService(bootName, false)
+	if bootSvc == nil {
+		return WritePacket(c.conn, RplyNAK, nil)
+	}
+
+	// Remove waits-for dependency from boot to target
+	bootSvc.Record().RmDep(svc, service.DepWaitsFor)
+
+	// Stop the target service
+	c.server.services.StopService(svc)
 	return WritePacket(c.conn, RplyACK, nil)
 }

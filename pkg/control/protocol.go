@@ -33,7 +33,13 @@ const (
 	CmdSetTrigger    uint8 = 19
 	CmdCatLog        uint8 = 20
 	CmdSignal        uint8 = 21
-	CmdCloseHandle   uint8 = 23
+	CmdCloseHandle      uint8 = 23
+	CmdSetEnv           uint8 = 24
+	CmdGetAllEnv        uint8 = 25
+	CmdAddDep           uint8 = 26
+	CmdRmDep            uint8 = 27
+	CmdEnableService    uint8 = 28
+	CmdDisableService   uint8 = 29
 )
 
 // Reply codes (server → client).
@@ -55,6 +61,7 @@ const (
 	RplySignalNoPID   uint8 = 74
 	RplySignalBadSig  uint8 = 75
 	RplySignalErr     uint8 = 76
+	RplyEnvList       uint8 = 77
 )
 
 // Info codes (server → client, unsolicited).
@@ -432,4 +439,122 @@ func DecodeSvcLog(data []byte) (flags uint8, logData []byte, err error) {
 		return 0, nil, fmt.Errorf("data too short for log buffer")
 	}
 	return flags, data[5 : 5+bufLen], nil
+}
+
+// --- SetEnv / GetAllEnv protocol ---
+
+// EncodeSetEnv encodes a set-env request.
+// Wire format: handle(4) + nameLen(2) + name + valueLen(2) + value.
+// valueLen==0 means unset the variable.
+func EncodeSetEnv(handle uint32, key, value string, unset bool) []byte {
+	valBytes := []byte(value)
+	if unset {
+		valBytes = nil
+	}
+	buf := make([]byte, 4+2+len(key)+2+len(valBytes))
+	binary.LittleEndian.PutUint32(buf, handle)
+	binary.LittleEndian.PutUint16(buf[4:], uint16(len(key)))
+	copy(buf[6:], key)
+	off := 6 + len(key)
+	binary.LittleEndian.PutUint16(buf[off:], uint16(len(valBytes)))
+	copy(buf[off+2:], valBytes)
+	return buf
+}
+
+// DecodeSetEnv decodes a set-env request.
+// Returns handle, key, value, isUnset.
+func DecodeSetEnv(data []byte) (handle uint32, key, value string, isUnset bool, err error) {
+	if len(data) < 8 {
+		return 0, "", "", false, fmt.Errorf("data too short for set-env")
+	}
+	handle = binary.LittleEndian.Uint32(data)
+	nameLen := int(binary.LittleEndian.Uint16(data[4:]))
+	if len(data) < 6+nameLen+2 {
+		return 0, "", "", false, fmt.Errorf("data too short for set-env key")
+	}
+	key = string(data[6 : 6+nameLen])
+	off := 6 + nameLen
+	valueLen := int(binary.LittleEndian.Uint16(data[off:]))
+	if valueLen == 0 {
+		return handle, key, "", true, nil
+	}
+	if len(data) < off+2+valueLen {
+		return 0, "", "", false, fmt.Errorf("data too short for set-env value")
+	}
+	value = string(data[off+2 : off+2+valueLen])
+	return handle, key, value, false, nil
+}
+
+// EncodeEnvList encodes a getallenv reply.
+// Wire format: count(2) + [nameLen(2) + name + valueLen(2) + value]*N.
+func EncodeEnvList(env map[string]string) []byte {
+	size := 2
+	for k, v := range env {
+		size += 2 + len(k) + 2 + len(v)
+	}
+	buf := make([]byte, size)
+	binary.LittleEndian.PutUint16(buf, uint16(len(env)))
+	off := 2
+	for k, v := range env {
+		binary.LittleEndian.PutUint16(buf[off:], uint16(len(k)))
+		copy(buf[off+2:], k)
+		off += 2 + len(k)
+		binary.LittleEndian.PutUint16(buf[off:], uint16(len(v)))
+		copy(buf[off+2:], v)
+		off += 2 + len(v)
+	}
+	return buf
+}
+
+// DecodeEnvList decodes a getallenv reply.
+func DecodeEnvList(data []byte) (map[string]string, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("data too short for env list")
+	}
+	count := int(binary.LittleEndian.Uint16(data))
+	off := 2
+	env := make(map[string]string, count)
+	for i := 0; i < count; i++ {
+		if len(data) < off+2 {
+			return nil, fmt.Errorf("data too short for env key %d", i)
+		}
+		kLen := int(binary.LittleEndian.Uint16(data[off:]))
+		off += 2
+		if len(data) < off+kLen+2 {
+			return nil, fmt.Errorf("data too short for env key %d value", i)
+		}
+		key := string(data[off : off+kLen])
+		off += kLen
+		vLen := int(binary.LittleEndian.Uint16(data[off:]))
+		off += 2
+		if len(data) < off+vLen {
+			return nil, fmt.Errorf("data too short for env value %d", i)
+		}
+		env[key] = string(data[off : off+vLen])
+		off += vLen
+	}
+	return env, nil
+}
+
+// --- AddDep / RmDep protocol ---
+
+// EncodeDepRequest encodes an add-dep or rm-dep request.
+// Wire format: handleFrom(4) + handleTo(4) + depType(1).
+func EncodeDepRequest(handleFrom, handleTo uint32, depType uint8) []byte {
+	buf := make([]byte, 9)
+	binary.LittleEndian.PutUint32(buf, handleFrom)
+	binary.LittleEndian.PutUint32(buf[4:], handleTo)
+	buf[8] = depType
+	return buf
+}
+
+// DecodeDepRequest decodes an add-dep or rm-dep request.
+func DecodeDepRequest(data []byte) (handleFrom, handleTo uint32, depType uint8, err error) {
+	if len(data) < 9 {
+		return 0, 0, 0, fmt.Errorf("data too short for dep request")
+	}
+	handleFrom = binary.LittleEndian.Uint32(data)
+	handleTo = binary.LittleEndian.Uint32(data[4:])
+	depType = data[8]
+	return handleFrom, handleTo, depType, nil
 }

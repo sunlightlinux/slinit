@@ -776,3 +776,284 @@ func TestBadCommand(t *testing.T) {
 		t.Fatalf("Expected BadReq for invalid command, got %d", rply)
 	}
 }
+
+// --- setenv / unsetenv / getallenv tests ---
+
+func TestSetEnvAndGetAllEnv(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "env-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "env-svc")
+
+	// Set two env vars
+	payload := EncodeSetEnv(handle, "FOO", "bar", false)
+	if err := WritePacket(conn, CmdSetEnv, payload); err != nil {
+		t.Fatal(err)
+	}
+	rply, _, _ := ReadPacket(conn)
+	if rply != RplyACK {
+		t.Fatalf("setenv FOO: expected ACK, got %d", rply)
+	}
+
+	payload = EncodeSetEnv(handle, "BAZ", "qux", false)
+	WritePacket(conn, CmdSetEnv, payload)
+	rply, _, _ = ReadPacket(conn)
+	if rply != RplyACK {
+		t.Fatalf("setenv BAZ: expected ACK, got %d", rply)
+	}
+
+	// GetAllEnv
+	WritePacket(conn, CmdGetAllEnv, EncodeHandle(handle))
+	rply, data, _ := ReadPacket(conn)
+	if rply != RplyEnvList {
+		t.Fatalf("getallenv: expected EnvList, got %d", rply)
+	}
+	env, err := DecodeEnvList(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["FOO"] != "bar" || env["BAZ"] != "qux" {
+		t.Fatalf("unexpected env: %v", env)
+	}
+	if len(env) != 2 {
+		t.Fatalf("expected 2 env vars, got %d", len(env))
+	}
+}
+
+func TestUnsetEnv(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "unset-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "unset-svc")
+
+	// Set then unset
+	WritePacket(conn, CmdSetEnv, EncodeSetEnv(handle, "KEY", "val", false))
+	ReadPacket(conn)
+
+	WritePacket(conn, CmdSetEnv, EncodeSetEnv(handle, "KEY", "", true))
+	rply, _, _ := ReadPacket(conn)
+	if rply != RplyACK {
+		t.Fatalf("unset: expected ACK, got %d", rply)
+	}
+
+	// Verify empty
+	WritePacket(conn, CmdGetAllEnv, EncodeHandle(handle))
+	rply, data, _ := ReadPacket(conn)
+	if rply != RplyEnvList {
+		t.Fatalf("getallenv: expected EnvList, got %d", rply)
+	}
+	env, _ := DecodeEnvList(data)
+	if len(env) != 0 {
+		t.Fatalf("expected 0 env vars after unset, got %d", len(env))
+	}
+}
+
+// --- add-dep / rm-dep tests ---
+
+func TestAddDepAndRmDep(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	parent := service.NewInternalService(server.services, "dep-parent")
+	child := service.NewInternalService(server.services, "dep-child")
+	server.services.AddService(parent)
+	server.services.AddService(child)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	hParent := findHandle(t, conn, "dep-parent")
+	hChild := findHandle(t, conn, "dep-child")
+
+	// Add waits-for dep
+	payload := EncodeDepRequest(hParent, hChild, uint8(service.DepWaitsFor))
+	WritePacket(conn, CmdAddDep, payload)
+	rply, _, _ := ReadPacket(conn)
+	if rply != RplyACK {
+		t.Fatalf("add-dep: expected ACK, got %d", rply)
+	}
+
+	// Verify dep exists
+	deps := parent.Record().Dependencies()
+	found := false
+	for _, d := range deps {
+		if d.To == child && d.DepType == service.DepWaitsFor {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("waits-for dependency not found after add-dep")
+	}
+
+	// Remove dep
+	WritePacket(conn, CmdRmDep, payload)
+	rply, _, _ = ReadPacket(conn)
+	if rply != RplyACK {
+		t.Fatalf("rm-dep: expected ACK, got %d", rply)
+	}
+
+	// Verify dep removed
+	deps = parent.Record().Dependencies()
+	for _, d := range deps {
+		if d.To == child && d.DepType == service.DepWaitsFor {
+			t.Fatal("waits-for dependency should be removed")
+		}
+	}
+}
+
+func TestRmDepNotFound(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc1 := service.NewInternalService(server.services, "rm-a")
+	svc2 := service.NewInternalService(server.services, "rm-b")
+	server.services.AddService(svc1)
+	server.services.AddService(svc2)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	h1 := findHandle(t, conn, "rm-a")
+	h2 := findHandle(t, conn, "rm-b")
+
+	// Try to remove non-existent dep
+	payload := EncodeDepRequest(h1, h2, uint8(service.DepRegular))
+	WritePacket(conn, CmdRmDep, payload)
+	rply, _, _ := ReadPacket(conn)
+	if rply != RplyNAK {
+		t.Fatalf("rm-dep non-existent: expected NAK, got %d", rply)
+	}
+}
+
+// --- enable / disable tests ---
+
+func TestEnableService(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	boot := service.NewInternalService(server.services, "boot")
+	server.services.AddService(boot)
+	server.services.SetBootServiceName("boot")
+	server.services.StartService(boot)
+
+	target := service.NewInternalService(server.services, "target-svc")
+	server.services.AddService(target)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "target-svc")
+
+	// Enable
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
+	rply, _, _ := ReadPacket(conn)
+	if rply != RplyACK {
+		t.Fatalf("enable: expected ACK, got %d", rply)
+	}
+
+	// Verify: boot should have waits-for dep to target
+	deps := boot.Record().Dependencies()
+	found := false
+	for _, d := range deps {
+		if d.To == target && d.DepType == service.DepWaitsFor {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("boot should have waits-for dep to target after enable")
+	}
+
+	// Target should be started
+	if target.State() != service.StateStarted {
+		t.Fatalf("target should be STARTED after enable, got %v", target.State())
+	}
+}
+
+func TestDisableService(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	boot := service.NewInternalService(server.services, "boot")
+	server.services.AddService(boot)
+	server.services.SetBootServiceName("boot")
+	server.services.StartService(boot)
+
+	target := service.NewInternalService(server.services, "target-svc")
+	server.services.AddService(target)
+	server.services.StartService(target)
+
+	// Add waits-for first (simulating enabled state)
+	boot.Record().AddDep(target, service.DepWaitsFor)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "target-svc")
+
+	// Disable
+	WritePacket(conn, CmdDisableService, EncodeHandle(handle))
+	rply, _, _ := ReadPacket(conn)
+	if rply != RplyACK {
+		t.Fatalf("disable: expected ACK, got %d", rply)
+	}
+
+	// Verify: boot should NOT have waits-for dep to target
+	deps := boot.Record().Dependencies()
+	for _, d := range deps {
+		if d.To == target && d.DepType == service.DepWaitsFor {
+			t.Fatal("boot should not have waits-for dep to target after disable")
+		}
+	}
+}
+
+func TestEnableNoBootService(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "no-boot-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "no-boot-svc")
+
+	// Enable without boot service → NAK
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
+	rply, _, _ := ReadPacket(conn)
+	if rply != RplyNAK {
+		t.Fatalf("enable without boot: expected NAK, got %d", rply)
+	}
+}
+
+// findHandle is a test helper that resolves a service name to a handle.
+func findHandle(t *testing.T, conn net.Conn, name string) uint32 {
+	t.Helper()
+	if err := WritePacket(conn, CmdFindService, EncodeServiceName(name)); err != nil {
+		t.Fatalf("find %s: write error: %v", name, err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil {
+		t.Fatalf("find %s: read error: %v", name, err)
+	}
+	if rply != RplyServiceRecord {
+		t.Fatalf("find %s: expected ServiceRecord, got %d", name, rply)
+	}
+	h, err := DecodeHandle(payload[1:]) // skip state byte
+	if err != nil {
+		t.Fatalf("find %s: decode handle: %v", name, err)
+	}
+	return h
+}

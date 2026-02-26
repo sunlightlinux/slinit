@@ -142,6 +142,9 @@ type ServiceRecord struct {
 	logConsumer Service  // which service consumes our output (set on producer)
 	consumerFor Service  // which service we consume (set on consumer)
 
+	// Runtime environment variables (set via control protocol)
+	extraEnv map[string]string
+
 	// Queue membership flags
 	InPropQueue bool
 	InStopQueue bool
@@ -282,6 +285,42 @@ func (sr *ServiceRecord) WasStartSkipped() bool  { return sr.startSkipped }
 func (sr *ServiceRecord) IsLoading() bool        { return sr.isLoading }
 func (sr *ServiceRecord) HasConsole() bool       { return sr.haveConsole }
 func (sr *ServiceRecord) WaitingForConsole() bool { return sr.waitingForConsole }
+
+// --- Environment variable management ---
+
+func (sr *ServiceRecord) SetEnvVar(key, value string) {
+	if sr.extraEnv == nil {
+		sr.extraEnv = make(map[string]string)
+	}
+	sr.extraEnv[key] = value
+}
+
+func (sr *ServiceRecord) UnsetEnvVar(key string) {
+	delete(sr.extraEnv, key)
+}
+
+func (sr *ServiceRecord) GetAllEnv() map[string]string {
+	if sr.extraEnv == nil {
+		return nil
+	}
+	result := make(map[string]string, len(sr.extraEnv))
+	for k, v := range sr.extraEnv {
+		result[k] = v
+	}
+	return result
+}
+
+// BuildEnvSlice converts extraEnv to []string for ExecParams.Env.
+func (sr *ServiceRecord) BuildEnvSlice() []string {
+	if len(sr.extraEnv) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(sr.extraEnv))
+	for k, v := range sr.extraEnv {
+		result = append(result, k+"="+v)
+	}
+	return result
+}
 
 // Default log buffer implementations (overridden by process-based services)
 func (sr *ServiceRecord) GetLogBuffer() *LogBuffer { return nil }

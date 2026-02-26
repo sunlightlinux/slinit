@@ -151,6 +151,23 @@ func (s *BGProcessService) PID() int {
 // GetExitStatus returns the exit status of the last process.
 func (s *BGProcessService) GetExitStatus() ExitStatus { return s.exitStatus }
 
+// buildEnv merges env-file variables and runtime extraEnv into a slice for ExecParams.
+func (s *BGProcessService) buildEnv() []string {
+	var env []string
+	if s.envFile != "" {
+		if fileEnv, err := process.ReadEnvFile(s.envFile); err == nil {
+			for k, v := range fileEnv {
+				env = append(env, k+"="+v)
+			}
+		} else {
+			s.services.logger.Error("Service '%s': failed to read env-file '%s': %v",
+				s.serviceName, s.envFile, err)
+		}
+	}
+	env = append(env, s.Record().BuildEnvSlice()...)
+	return env
+}
+
 // BringUp launches the background process command.
 // Unlike ProcessService, does NOT call Started() immediately.
 // Waits for the launcher to exit and then reads the PID file.
@@ -219,6 +236,7 @@ func (s *BGProcessService) BringUp() bool {
 	params := process.ExecParams{
 		Command:           s.command,
 		WorkingDir:        s.workingDir,
+		Env:               s.buildEnv(),
 		TermSignal:        s.termSignal,
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
 		RunAsUID:          s.runAsUID,

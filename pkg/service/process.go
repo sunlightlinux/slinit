@@ -380,6 +380,23 @@ func (s *ProcessService) CheckRestart() bool {
 	return true
 }
 
+// buildEnv merges env-file variables and runtime extraEnv into a slice for ExecParams.
+func (s *ProcessService) buildEnv() []string {
+	var env []string
+	if s.envFile != "" {
+		if fileEnv, err := process.ReadEnvFile(s.envFile); err == nil {
+			for k, v := range fileEnv {
+				env = append(env, k+"="+v)
+			}
+		} else {
+			s.services.logger.Error("Service '%s': failed to read env-file '%s': %v",
+				s.serviceName, s.envFile, err)
+		}
+	}
+	env = append(env, s.Record().BuildEnvSlice()...)
+	return env
+}
+
 // startProcess forks and execs the service process.
 func (s *ProcessService) startProcess() error {
 	s.lastStartTime = time.Now()
@@ -447,6 +464,7 @@ func (s *ProcessService) startProcess() error {
 	params := process.ExecParams{
 		Command:           s.command,
 		WorkingDir:        s.workingDir,
+		Env:               s.buildEnv(),
 		TermSignal:        s.termSignal,
 		OnConsole:         s.Flags.RunsOnConsole || s.Flags.StartsOnConsole,
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
