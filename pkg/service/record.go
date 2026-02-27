@@ -4,6 +4,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // Service is the core interface that all service types implement.
@@ -144,6 +146,15 @@ type ServiceRecord struct {
 
 	// Runtime environment variables (set via control protocol)
 	extraEnv map[string]string
+
+	// Process attributes (applied post-fork)
+	nice        *int
+	oomScoreAdj *int
+	noNewPrivs  bool
+	ioPrioClass int
+	ioPrioLevel int
+	cgroupPath  string
+	rlimits     []process.Rlimit
 
 	// Queue membership flags
 	InPropQueue bool
@@ -320,6 +331,27 @@ func (sr *ServiceRecord) BuildEnvSlice() []string {
 		result = append(result, k+"="+v)
 	}
 	return result
+}
+
+// --- Process attribute setters ---
+
+func (sr *ServiceRecord) SetNice(n *int)                    { sr.nice = n }
+func (sr *ServiceRecord) SetOOMScoreAdj(n *int)             { sr.oomScoreAdj = n }
+func (sr *ServiceRecord) SetNoNewPrivs(v bool)              { sr.noNewPrivs = v }
+func (sr *ServiceRecord) SetIOPrio(class, level int)        { sr.ioPrioClass = class; sr.ioPrioLevel = level }
+func (sr *ServiceRecord) SetCgroupPath(p string)            { sr.cgroupPath = p }
+func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)    { sr.rlimits = rl }
+func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)       { sr.rlimits = append(sr.rlimits, rl) }
+
+// ApplyProcessAttrs fills ExecParams with process attributes from this record.
+func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
+	params.Nice = sr.nice
+	params.OOMScoreAdj = sr.oomScoreAdj
+	params.NoNewPrivs = sr.noNewPrivs
+	params.IOPrioClass = sr.ioPrioClass
+	params.IOPrioLevel = sr.ioPrioLevel
+	params.CgroupPath = sr.cgroupPath
+	params.Rlimits = sr.rlimits
 }
 
 // Default log buffer implementations (overridden by process-based services)

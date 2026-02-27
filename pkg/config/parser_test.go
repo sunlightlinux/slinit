@@ -277,3 +277,103 @@ func TestSplitCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestParseNice(t *testing.T) {
+	input := `type = process
+command = /bin/true
+nice = 10
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if desc.Nice == nil || *desc.Nice != 10 {
+		t.Errorf("Nice: got %v, expected 10", desc.Nice)
+	}
+}
+
+func TestParseNiceInvalid(t *testing.T) {
+	input := `type = process
+command = /bin/true
+nice = 25
+`
+	_, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err == nil {
+		t.Fatal("expected error for nice=25")
+	}
+}
+
+func TestParseOOMScoreAdj(t *testing.T) {
+	input := `type = process
+command = /bin/true
+oom-score-adj = -500
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if desc.OOMScoreAdj == nil || *desc.OOMScoreAdj != -500 {
+		t.Errorf("OOMScoreAdj: got %v, expected -500", desc.OOMScoreAdj)
+	}
+}
+
+func TestParseIOPrioConfig(t *testing.T) {
+	input := `type = process
+command = /bin/true
+ioprio = be:4
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if desc.IOPrio != "be:4" {
+		t.Errorf("IOPrio: got %q, expected \"be:4\"", desc.IOPrio)
+	}
+}
+
+func TestParseCgroup(t *testing.T) {
+	input := `type = process
+command = /bin/true
+cgroup = /sys/fs/cgroup/myservice
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if desc.CgroupPath != "/sys/fs/cgroup/myservice" {
+		t.Errorf("CgroupPath: got %q, expected \"/sys/fs/cgroup/myservice\"", desc.CgroupPath)
+	}
+}
+
+func TestParseRlimit(t *testing.T) {
+	input := `type = process
+command = /bin/true
+rlimit-nofile = 1024:4096
+rlimit-core = unlimited
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if desc.RlimitNofile == nil || desc.RlimitNofile[0] != 1024 || desc.RlimitNofile[1] != 4096 {
+		t.Errorf("RlimitNofile: got %v, expected [1024, 4096]", desc.RlimitNofile)
+	}
+	maxVal := uint64(^uint64(0))
+	if desc.RlimitCore == nil || desc.RlimitCore[0] != maxVal || desc.RlimitCore[1] != maxVal {
+		t.Errorf("RlimitCore: got %v, expected [unlimited, unlimited]", desc.RlimitCore)
+	}
+}
+
+func TestParseNoNewPrivs(t *testing.T) {
+	input := `type = process
+command = /bin/true
+options = no-new-privs
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if !desc.NoNewPrivs {
+		t.Error("NoNewPrivs: expected true")
+	}
+}

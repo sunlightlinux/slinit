@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -662,6 +666,29 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.Provides != "" {
 		rec.SetProvides(desc.Provides)
 	}
+
+	// Process attributes
+	if desc.Nice != nil {
+		rec.SetNice(desc.Nice)
+	}
+	if desc.OOMScoreAdj != nil {
+		rec.SetOOMScoreAdj(desc.OOMScoreAdj)
+	}
+	if desc.NoNewPrivs {
+		rec.SetNoNewPrivs(true)
+	}
+	if desc.CgroupPath != "" {
+		rec.SetCgroupPath(desc.CgroupPath)
+	}
+	if desc.IOPrio != "" {
+		class, level := parseIOPrio(desc.IOPrio)
+		if class >= 0 {
+			rec.SetIOPrio(class, level)
+		}
+	}
+
+	// Resource limits
+	applyRlimits(rec, desc)
 }
 
 // setupConsumerOf establishes the consumer-of relationship between services.
@@ -731,4 +758,63 @@ type ServiceLoadError struct {
 
 func (e *ServiceLoadError) Error() string {
 	return fmt.Sprintf("service '%s': %s", e.ServiceName, e.Message)
+}
+
+// parseIOPrio parses an ioprio string "class:level" or just "class".
+// Returns (class, level). class is -1 on error.
+// Classes: "realtime"/"rt"=1, "best-effort"/"be"=2, "idle"=3.
+func parseIOPrio(s string) (int, int) {
+	parts := strings.SplitN(s, ":", 2)
+	className := strings.TrimSpace(parts[0])
+
+	var class int
+	switch strings.ToLower(className) {
+	case "realtime", "rt":
+		class = 1
+	case "best-effort", "be":
+		class = 2
+	case "idle":
+		class = 3
+	default:
+		// Try numeric
+		n, err := strconv.Atoi(className)
+		if err != nil || n < 0 || n > 3 {
+			return -1, 0
+		}
+		class = n
+	}
+
+	level := 0
+	if len(parts) == 2 {
+		n, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err == nil && n >= 0 && n <= 7 {
+			level = n
+		}
+	}
+
+	return class, level
+}
+
+// rlimit resource constants from syscall.
+const (
+	rlimitNofile = syscall.RLIMIT_NOFILE // 7
+	rlimitCore   = syscall.RLIMIT_CORE   // 4
+	rlimitData   = syscall.RLIMIT_DATA   // 2
+	rlimitAs     = syscall.RLIMIT_AS     // 9
+)
+
+// applyRlimits adds parsed resource limits to the service record.
+func applyRlimits(rec *service.ServiceRecord, desc *ServiceDescription) {
+	if desc.RlimitNofile != nil {
+		rec.AddRlimit(process.Rlimit{Resource: rlimitNofile, Soft: desc.RlimitNofile[0], Hard: desc.RlimitNofile[1]})
+	}
+	if desc.RlimitCore != nil {
+		rec.AddRlimit(process.Rlimit{Resource: rlimitCore, Soft: desc.RlimitCore[0], Hard: desc.RlimitCore[1]})
+	}
+	if desc.RlimitData != nil {
+		rec.AddRlimit(process.Rlimit{Resource: rlimitData, Soft: desc.RlimitData[0], Hard: desc.RlimitData[1]})
+	}
+	if desc.RlimitAs != nil {
+		rec.AddRlimit(process.Rlimit{Resource: rlimitAs, Soft: desc.RlimitAs[0], Hard: desc.RlimitAs[1]})
+	}
 }

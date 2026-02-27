@@ -112,6 +112,33 @@ type ExecParams struct {
 	// NotifyVar is the environment variable name to set with the actual
 	// notification fd number (for pipevar:VARNAME). Empty if unused.
 	NotifyVar string
+
+	// Nice is the process priority (-20 to 19). nil means don't change.
+	Nice *int
+
+	// OOMScoreAdj is the OOM killer score adjustment (-1000 to 1000). nil means don't change.
+	OOMScoreAdj *int
+
+	// Rlimits holds resource limits to apply after fork.
+	Rlimits []Rlimit
+
+	// IOPrioClass is the I/O scheduling class (0=none, 1=RT, 2=BE, 3=IDLE).
+	// IOPrioLevel is the priority level within the class (0-7).
+	IOPrioClass int
+	IOPrioLevel int
+
+	// CgroupPath is the cgroupv2 path to join (e.g., "/sys/fs/cgroup/myservice").
+	CgroupPath string
+
+	// NoNewPrivs sets PR_SET_NO_NEW_PRIVS on the child process.
+	NoNewPrivs bool
+}
+
+// Rlimit holds a resource limit (soft, hard) for a given resource.
+type Rlimit struct {
+	Resource int    // syscall.RLIMIT_* constant
+	Soft     uint64
+	Hard     uint64
 }
 
 // ChildExit represents the result of a child process termination.

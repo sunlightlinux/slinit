@@ -186,6 +186,7 @@ func (s *ScriptedService) BringUp() bool {
 		OutputPipe: outputPipe,
 		InputPipe:  inputPipe,
 	}
+	s.Record().ApplyProcessAttrs(&params)
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
@@ -237,6 +238,7 @@ func (s *ScriptedService) BringDown() {
 		RunAsUID:   s.runAsUID,
 		RunAsGID:   s.runAsGID,
 	}
+	s.Record().ApplyProcessAttrs(&params)
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {

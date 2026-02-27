@@ -80,6 +80,19 @@ type ServiceDescription struct {
 
 	// Description
 	Description string
+
+	// Process attributes
+	Nice        *int   // -20..19
+	OOMScoreAdj *int   // -1000..1000
+	NoNewPrivs  bool
+	IOPrio      string // "class:level" e.g. "be:4", "idle"
+	CgroupPath  string // run-in-cgroup path
+
+	// Resource limits (soft:hard or just value for both)
+	RlimitNofile *[2]uint64
+	RlimitCore   *[2]uint64
+	RlimitData   *[2]uint64
+	RlimitAs     *[2]uint64
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -394,10 +407,56 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "options":
 		return applyOptions(desc, value, op == OpPlusEqual)
 
-	// These settings are recognized but not yet implemented (Phase 2+)
-	case "load-options",
-		"rlimit-nofile", "rlimit-core", "rlimit-data", "rlimit-as",
-		"cgroup", "nice", "ioprio", "oom-score-adj":
+	// Process attributes
+	case "nice":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < -20 || n > 19 {
+			return fmt.Errorf("invalid nice value: %s (expected -20..19)", value)
+		}
+		desc.Nice = &n
+
+	case "oom-score-adj":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < -1000 || n > 1000 {
+			return fmt.Errorf("invalid oom-score-adj: %s (expected -1000..1000)", value)
+		}
+		desc.OOMScoreAdj = &n
+
+	case "ioprio":
+		desc.IOPrio = value
+
+	case "cgroup":
+		desc.CgroupPath = value
+
+	case "rlimit-nofile":
+		lim, err := parseRlimit(value)
+		if err != nil {
+			return fmt.Errorf("invalid rlimit-nofile: %v", err)
+		}
+		desc.RlimitNofile = lim
+
+	case "rlimit-core":
+		lim, err := parseRlimit(value)
+		if err != nil {
+			return fmt.Errorf("invalid rlimit-core: %v", err)
+		}
+		desc.RlimitCore = lim
+
+	case "rlimit-data":
+		lim, err := parseRlimit(value)
+		if err != nil {
+			return fmt.Errorf("invalid rlimit-data: %v", err)
+		}
+		desc.RlimitData = lim
+
+	case "rlimit-as":
+		lim, err := parseRlimit(value)
+		if err != nil {
+			return fmt.Errorf("invalid rlimit-as: %v", err)
+		}
+		desc.RlimitAs = lim
+
+	case "load-options":
 		// Silently accept for forward compatibility
 	}
 
@@ -476,6 +535,8 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 			desc.Flags.AlwaysChain = true
 		case "kill-all-on-stop":
 			desc.Flags.KillAllOnStop = true
+		case "no-new-privs":
+			desc.NoNewPrivs = true
 		default:
 			return fmt.Errorf("unknown option: %s", opt)
 		}
@@ -583,6 +644,42 @@ func parseReadyNotification(desc *ServiceDescription, value string) error {
 		return nil
 	}
 	return fmt.Errorf("unrecognised ready-notification setting: %s (expected pipefd:N or pipevar:VARNAME)", value)
+}
+
+// parseRlimit parses an rlimit value. Formats: "N" (both soft and hard),
+// "soft:hard", or "unlimited".
+func parseRlimit(value string) (*[2]uint64, error) {
+	const unlimited = ^uint64(0) // RLIM_INFINITY
+
+	parseOne := func(s string) (uint64, error) {
+		s = strings.TrimSpace(s)
+		if strings.ToLower(s) == "unlimited" {
+			return unlimited, nil
+		}
+		n, err := strconv.ParseUint(s, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid rlimit value: %s", s)
+		}
+		return n, nil
+	}
+
+	parts := strings.SplitN(value, ":", 2)
+	if len(parts) == 2 {
+		soft, err := parseOne(parts[0])
+		if err != nil {
+			return nil, err
+		}
+		hard, err := parseOne(parts[1])
+		if err != nil {
+			return nil, err
+		}
+		return &[2]uint64{soft, hard}, nil
+	}
+	v, err := parseOne(value)
+	if err != nil {
+		return nil, err
+	}
+	return &[2]uint64{v, v}, nil
 }
 
 // parseSignal parses a signal name or number.

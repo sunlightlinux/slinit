@@ -477,6 +477,7 @@ func (s *ProcessService) startProcess() error {
 		ForceNotifyFD:     s.readyNotifyFD,
 		NotifyVar:         s.readyNotifyVar,
 	}
+	s.Record().ApplyProcessAttrs(&params)
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {

@@ -150,6 +150,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	}
 
 	pid := cmd.Process.Pid
+
+	// Apply post-fork process attributes.
+	// These are best-effort: failures are logged but don't prevent startup.
+	applyPostForkAttrs(pid, params)
+
 	exitCh := make(chan ChildExit, 1)
 
 	// Goroutine that waits for the process to finish

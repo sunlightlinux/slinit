@@ -244,6 +244,7 @@ func (s *BGProcessService) BringUp() bool {
 		OutputPipe:        outputPipe,
 		InputPipe:         inputPipe,
 	}
+	s.Record().ApplyProcessAttrs(&params)
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
