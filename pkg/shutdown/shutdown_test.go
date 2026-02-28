@@ -111,6 +111,7 @@ func TestShutdownTypeMapping(t *testing.T) {
 		{service.ShutdownHalt, syscall.LINUX_REBOOT_CMD_HALT},
 		{service.ShutdownPoweroff, syscall.LINUX_REBOOT_CMD_POWER_OFF},
 		{service.ShutdownReboot, syscall.LINUX_REBOOT_CMD_RESTART},
+		{service.ShutdownKexec, 0x45584543},                   // LINUX_REBOOT_CMD_KEXEC
 		{service.ShutdownNone, syscall.LINUX_REBOOT_CMD_HALT}, // default fallback
 	}
 

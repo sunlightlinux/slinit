@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -395,6 +396,34 @@ options = runs-on-console unmask-intr
 	}
 }
 
+func TestParseStartsRWFS(t *testing.T) {
+	input := `type = scripted
+command = /bin/mount-rw
+options = starts-rwfs
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if !desc.Flags.RWReady {
+		t.Error("RWReady: expected true")
+	}
+}
+
+func TestParseStartsLog(t *testing.T) {
+	input := `type = process
+command = /usr/sbin/syslogd
+options = starts-log
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if !desc.Flags.LogReady {
+		t.Error("LogReady: expected true")
+	}
+}
+
 func TestParseCapabilities(t *testing.T) {
 	input := `type = process
 command = /bin/true
@@ -420,5 +449,103 @@ securebits = noroot keep-caps
 	}
 	if desc.Securebits != "noroot keep-caps" {
 		t.Errorf("Securebits: got %q", desc.Securebits)
+	}
+}
+
+func TestExpandEnvVars(t *testing.T) {
+	// Set test environment variables
+	os.Setenv("SLINIT_TEST_VAR", "hello")
+	os.Setenv("SLINIT_TEST_DIR", "/opt/myapp")
+	defer os.Unsetenv("SLINIT_TEST_VAR")
+	defer os.Unsetenv("SLINIT_TEST_DIR")
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// No variables
+		{"no vars here", "no vars here"},
+		{"", ""},
+
+		// Simple $VAR
+		{"$SLINIT_TEST_VAR", "hello"},
+		{"prefix-$SLINIT_TEST_VAR-suffix", "prefix-hello-suffix"},
+		{"$SLINIT_TEST_DIR/bin/app", "/opt/myapp/bin/app"},
+
+		// Braced ${VAR}
+		{"${SLINIT_TEST_VAR}", "hello"},
+		{"${SLINIT_TEST_VAR}World", "helloWorld"},
+		{"${SLINIT_TEST_DIR}/bin", "/opt/myapp/bin"},
+
+		// Escaped $$
+		{"$$", "$"},
+		{"cost: $$5", "cost: $5"},
+		{"$$SLINIT_TEST_VAR", "$SLINIT_TEST_VAR"},
+
+		// Unset variable → empty
+		{"$SLINIT_UNSET_VAR", ""},
+		{"${SLINIT_UNSET_VAR}", ""},
+
+		// Multiple variables
+		{"$SLINIT_TEST_DIR/$SLINIT_TEST_VAR", "/opt/myapp/hello"},
+
+		// Trailing dollar
+		{"path$", "path$"},
+
+		// Dollar followed by non-var char
+		{"$!foo", "$!foo"},
+
+		// Unclosed brace
+		{"${SLINIT_TEST_VAR", "${SLINIT_TEST_VAR"},
+	}
+
+	for _, tt := range tests {
+		got := expandEnvVars(tt.input)
+		if got != tt.expected {
+			t.Errorf("expandEnvVars(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestExpandEnvVarsInParsedFields(t *testing.T) {
+	os.Setenv("SLINIT_APP_DIR", "/opt/myapp")
+	os.Setenv("SLINIT_LOG_DIR", "/var/log")
+	defer os.Unsetenv("SLINIT_APP_DIR")
+	defer os.Unsetenv("SLINIT_LOG_DIR")
+
+	input := `type = process
+command = $SLINIT_APP_DIR/bin/server --port 8080
+stop-command = $SLINIT_APP_DIR/bin/server --stop
+working-dir = ${SLINIT_APP_DIR}
+logfile = $SLINIT_LOG_DIR/myapp.log
+pid-file = $SLINIT_APP_DIR/run/app.pid
+socket-listen = $SLINIT_APP_DIR/run/app.sock
+env-file = ${SLINIT_APP_DIR}/env
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if desc.Command[0] != "/opt/myapp/bin/server" {
+		t.Errorf("Command[0]: got %q, want %q", desc.Command[0], "/opt/myapp/bin/server")
+	}
+	if desc.StopCommand[0] != "/opt/myapp/bin/server" {
+		t.Errorf("StopCommand[0]: got %q, want %q", desc.StopCommand[0], "/opt/myapp/bin/server")
+	}
+	if desc.WorkingDir != "/opt/myapp" {
+		t.Errorf("WorkingDir: got %q, want %q", desc.WorkingDir, "/opt/myapp")
+	}
+	if desc.LogFile != "/var/log/myapp.log" {
+		t.Errorf("LogFile: got %q, want %q", desc.LogFile, "/var/log/myapp.log")
+	}
+	if desc.PIDFile != "/opt/myapp/run/app.pid" {
+		t.Errorf("PIDFile: got %q, want %q", desc.PIDFile, "/opt/myapp/run/app.pid")
+	}
+	if desc.SocketPath != "/opt/myapp/run/app.sock" {
+		t.Errorf("SocketPath: got %q, want %q", desc.SocketPath, "/opt/myapp/run/app.sock")
+	}
+	if desc.EnvFile != "/opt/myapp/env" {
+		t.Errorf("EnvFile: got %q, want %q", desc.EnvFile, "/opt/myapp/env")
 	}
 }

@@ -29,6 +29,9 @@ type EventLoop struct {
 	// PID 1 mode enables boot failure detection and orphan reaping
 	isPID1 bool
 
+	// Container mode: SIGINT/SIGTERM trigger graceful halt instead of reboot
+	isContainer bool
+
 	// Channel for forcing event loop exit (emergency timeout)
 	forceExitCh chan struct{}
 
@@ -50,6 +53,13 @@ func New(services *service.ServiceSet, logger *logging.Logger) *EventLoop {
 // - Orphan process reaping on SIGCHLD
 func (el *EventLoop) SetPID1Mode(v bool) {
 	el.isPID1 = v
+}
+
+// SetContainerMode enables container-specific behavior:
+// - SIGINT/SIGTERM trigger graceful halt instead of reboot
+// - Boot failure detection (same as PID 1)
+func (el *EventLoop) SetContainerMode(v bool) {
+	el.isContainer = v
 }
 
 // GetShutdownType returns the shutdown type that was requested.
@@ -115,7 +125,11 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 
 	switch sysSignal {
 	case syscall.SIGTERM:
-		if el.isPID1 {
+		if el.isContainer {
+			// Container mode: SIGTERM = graceful halt (Docker/Podman stop)
+			el.logger.Notice("Received SIGTERM, initiating graceful halt (container mode)")
+			el.initiateShutdown(service.ShutdownHalt)
+		} else if el.isPID1 {
 			// PID 1: SIGTERM = reboot (sent by busybox reboot)
 			el.logger.Notice("Received SIGTERM, initiating reboot")
 			el.initiateShutdown(service.ShutdownReboot)
@@ -126,7 +140,11 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return true
 
 	case syscall.SIGINT:
-		if el.isPID1 {
+		if el.isContainer {
+			// Container mode: SIGINT = graceful halt
+			el.logger.Notice("Received SIGINT, initiating graceful halt (container mode)")
+			el.initiateShutdown(service.ShutdownHalt)
+		} else if el.isPID1 {
 			// PID 1: SIGINT = reboot (Ctrl+Alt+Del)
 			el.logger.Notice("Received SIGINT, initiating reboot")
 			el.initiateShutdown(service.ShutdownReboot)

@@ -461,6 +461,27 @@ func (s *ProcessService) startProcess() error {
 		notifyPipeWrite = pw
 	}
 
+	// Set up control socket pair if pass-cs-fd is enabled
+	var csClientFD *os.File
+	var csServerConn net.Conn
+	if s.Flags.PassCSFD {
+		fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+		if err != nil {
+			s.services.logger.Error("Service '%s': socketpair failed: %v", s.serviceName, err)
+		} else {
+			csClientFD = os.NewFile(uintptr(fds[1]), "cs-client")
+			serverFile := os.NewFile(uintptr(fds[0]), "cs-server")
+			csServerConn, err = net.FileConn(serverFile)
+			serverFile.Close() // FileConn dups the fd
+			if err != nil {
+				s.services.logger.Error("Service '%s': FileConn failed: %v", s.serviceName, err)
+				csClientFD.Close()
+				csClientFD = nil
+				csServerConn = nil
+			}
+		}
+	}
+
 	params := process.ExecParams{
 		Command:           s.command,
 		WorkingDir:        s.workingDir,
@@ -474,6 +495,7 @@ func (s *ProcessService) startProcess() error {
 		OutputPipe:        outputPipe,
 		InputPipe:         inputPipe,
 		SocketFD:          s.socketFD,
+		ControlSocketFD:   csClientFD,
 		NotifyPipe:        notifyPipeWrite,
 		ForceNotifyFD:     s.readyNotifyFD,
 		NotifyVar:         s.readyNotifyVar,
@@ -492,6 +514,12 @@ func (s *ProcessService) startProcess() error {
 			s.readyPipeRead.Close()
 			s.readyPipeRead = nil
 		}
+		if csClientFD != nil {
+			csClientFD.Close()
+		}
+		if csServerConn != nil {
+			csServerConn.Close()
+		}
 		return err
 	}
 
@@ -507,6 +535,17 @@ func (s *ProcessService) startProcess() error {
 	// Close parent's write end of notification pipe
 	if notifyPipeWrite != nil {
 		notifyPipeWrite.Close()
+	}
+
+	// Close parent's copy of the client-end control socket (child has it)
+	if csClientFD != nil {
+		csClientFD.Close()
+	}
+	// Spawn a control connection handler on the server-end socket
+	if csServerConn != nil && s.services.OnPassCSFD != nil {
+		s.services.OnPassCSFD(csServerConn)
+	} else if csServerConn != nil {
+		csServerConn.Close()
 	}
 
 	s.pid = pid

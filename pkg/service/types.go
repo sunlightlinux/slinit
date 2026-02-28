@@ -137,6 +137,7 @@ const (
 	ShutdownPoweroff                       // Power off system
 	ShutdownReboot                         // Reboot system
 	ShutdownSoftReboot                     // Reboot slinit only
+	ShutdownKexec                          // Reboot with kexec (no firmware reinit)
 )
 
 func (s ShutdownType) String() string {
@@ -153,6 +154,8 @@ func (s ShutdownType) String() string {
 		return "reboot"
 	case ShutdownSoftReboot:
 		return "softreboot"
+	case ShutdownKexec:
+		return "kexec"
 	default:
 		return fmt.Sprintf("ShutdownType(%d)", s)
 	}

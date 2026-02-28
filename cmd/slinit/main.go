@@ -36,20 +36,23 @@ func main() {
 
 	// Parse command-line flags
 	var (
-		serviceDirs  string
-		socketPath   string
-		systemMode   bool
-		userMode     bool
-		bootService  string
-		showVersion  bool
-		logLevel     string
-		autoRecovery bool
+		serviceDirs   string
+		socketPath    string
+		systemMode    bool
+		userMode      bool
+		containerMode bool
+		bootService   string
+		showVersion   bool
+		logLevel      string
+		autoRecovery  bool
 	)
 
 	flag.StringVar(&serviceDirs, "services-dir", "", "service description directory (comma-separated for multiple)")
 	flag.StringVar(&socketPath, "socket-path", "", "control socket path")
 	flag.BoolVar(&systemMode, "system", false, "run as system service manager")
 	flag.BoolVar(&userMode, "user", false, "run as user service manager")
+	flag.BoolVar(&containerMode, "o", false, "run in container mode (for Docker/LXC/Podman)")
+	flag.BoolVar(&containerMode, "container", false, "run in container mode (for Docker/LXC/Podman)")
 	flag.StringVar(&bootService, "boot-service", defaultBootService, "name of the boot service to start")
 	flag.BoolVar(&showVersion, "version", false, "show version and exit")
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, notice, warn, error)")
@@ -83,6 +86,9 @@ func main() {
 	if isPID1 {
 		systemMode = true
 	}
+	if containerMode {
+		systemMode = true
+	}
 	if !systemMode && !userMode {
 		// Default to user mode if not PID 1
 		userMode = true
@@ -92,7 +98,12 @@ func main() {
 	level := parseLogLevel(logLevel)
 	logger := logging.New(level)
 
-	if isPID1 {
+	if containerMode {
+		logger.Notice("slinit starting in container mode (PID %d)", os.Getpid())
+		if err := shutdown.InitContainer(logger); err != nil {
+			logger.Error("Container initialization warning: %v", err)
+		}
+	} else if isPID1 {
 		logger.Notice("slinit starting as PID 1 (init system mode)")
 		if err := shutdown.InitPID1(logger); err != nil {
 			logger.Error("PID 1 initialization warning: %v", err)
@@ -129,6 +140,10 @@ func main() {
 	bootSvc, err := serviceSet.LoadService(bootService)
 	if err != nil {
 		logger.Error("Failed to load boot service '%s': %v", bootService, err)
+		if containerMode {
+			logger.Error("Boot service not found, exiting (container mode)")
+			os.Exit(1)
+		}
 		if isPID1 {
 			logger.Error("No service files found in %v", dirs)
 			logger.Error("Create at least '%s' in one of the service directories", bootService)
@@ -152,11 +167,20 @@ func main() {
 		defer ctrlServer.Stop()
 	}
 
+	// Wire pass-cs-fd: when a service creates a socketpair, the server end
+	// becomes a control connection handled by the control server.
+	serviceSet.OnPassCSFD = func(conn net.Conn) {
+		ctrlServer.HandlePassCSFD(conn)
+	}
+
 	// Boot loop: runs the event loop, handles boot failures with recovery
 	for {
 		loop := eventloop.New(serviceSet, logger)
 
-		if isPID1 {
+		if containerMode {
+			loop.SetContainerMode(true)
+			loop.SetPID1Mode(true) // enable boot failure detection
+		} else if isPID1 {
 			loop.SetPID1Mode(true)
 		}
 
@@ -173,6 +197,17 @@ func main() {
 		}
 
 		shutdownType := loop.GetShutdownType()
+
+		// Container mode: exit with appropriate code
+		if containerMode {
+			if shutdownType != service.ShutdownNone {
+				logger.Info("Container shutdown complete")
+				os.Exit(0)
+			}
+			// Boot failure in container mode
+			logger.Error("Boot failure detected (container mode)")
+			os.Exit(1)
+		}
 
 		// Normal shutdown (non-PID1 or explicit shutdown requested)
 		if !isPID1 {
@@ -242,7 +277,7 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logge
 		// SoftReboot calls exec, should not reach here
 		shutdown.InfiniteHold()
 
-	case service.ShutdownHalt, service.ShutdownPoweroff, service.ShutdownReboot:
+	case service.ShutdownHalt, service.ShutdownPoweroff, service.ShutdownReboot, service.ShutdownKexec:
 		shutdown.Execute(shutdownType, logger)
 
 	case service.ShutdownRemain:

@@ -83,6 +83,10 @@ func rebootSystem(shutdownType service.ShutdownType) error {
 		cmd = syscall.LINUX_REBOOT_CMD_POWER_OFF
 	case service.ShutdownReboot:
 		cmd = syscall.LINUX_REBOOT_CMD_RESTART
+	case service.ShutdownKexec:
+		// LINUX_REBOOT_CMD_KEXEC: reboot using a previously loaded kexec kernel.
+		// The constant 0x45584543 is defined in linux/reboot.h but not in Go's syscall package.
+		cmd = 0x45584543
 	default:
 		// For unknown types, default to halt
 		cmd = syscall.LINUX_REBOOT_CMD_HALT

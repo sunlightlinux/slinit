@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"net"
 	"time"
 )
 
@@ -54,6 +55,15 @@ type ServiceSet struct {
 	bootReadyTime   time.Time     // when boot service reached STARTED
 	bootServiceName string        // name of the boot target service
 	kernelUptime    time.Duration // kernel uptime at slinit start
+
+	// Filesystem/logging readiness flags (set by services with starts-rwfs / starts-log)
+	rwReady  bool
+	logReady bool
+
+	// OnPassCSFD is called when a service with pass-cs-fd creates a socketpair.
+	// The callback receives the server-end net.Conn and should spawn a control
+	// connection handler. Set by the control server at startup.
+	OnPassCSFD func(conn net.Conn)
 
 	// Notification channel: signaled when a service becomes inactive
 	inactiveCh chan struct{}
@@ -301,3 +311,15 @@ func (ss *ServiceSet) BootStartTime() time.Time   { return ss.bootStartTime }
 func (ss *ServiceSet) BootReadyTime() time.Time    { return ss.bootReadyTime }
 func (ss *ServiceSet) BootServiceName() string     { return ss.bootServiceName }
 func (ss *ServiceSet) KernelUptime() time.Duration { return ss.kernelUptime }
+
+// RWReady returns true when a service with starts-rwfs has reached STARTED.
+func (ss *ServiceSet) RWReady() bool { return ss.rwReady }
+
+// LogReady returns true when a service with starts-log has reached STARTED.
+func (ss *ServiceSet) LogReady() bool { return ss.logReady }
+
+// SetRWReady marks the filesystem as read-write ready.
+func (ss *ServiceSet) SetRWReady() { ss.rwReady = true }
+
+// SetLogReady marks the logging system as ready.
+func (ss *ServiceSet) SetLogReady() { ss.logReady = true }

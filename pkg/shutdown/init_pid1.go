@@ -160,3 +160,22 @@ func ignoreTerminalSignals() {
 		syscall.SIGPIPE,  // Broken pipe
 	)
 }
+
+// InitContainer performs initialization for container mode (-o / --container).
+// Unlike InitPID1, it skips console setup, devtmpfs/proc mounts, and CAD
+// disabling since the container runtime handles those. It only sets the
+// subreaper flag and ignores terminal signals.
+func InitContainer(logger *logging.Logger) error {
+	// Set child subreaper so orphaned processes reparent to us
+	if err := SetChildSubreaper(); err != nil {
+		logger.Debug("Set child subreaper: %v (non-fatal)", err)
+	} else {
+		logger.Debug("Child subreaper set")
+	}
+
+	// Ignore terminal job control signals
+	ignoreTerminalSignals()
+	logger.Debug("Terminal signals ignored (SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE)")
+
+	return nil
+}

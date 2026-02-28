@@ -138,6 +138,16 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 	}
 
+	// Control socket fd (pass-cs-fd): append after other extra fds
+	if params.ControlSocketFD != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, params.ControlSocketFD)
+		csFD := 3 + len(cmd.ExtraFiles) - 1
+		if cmd.Env == nil {
+			cmd.Env = os.Environ()
+		}
+		cmd.Env = append(cmd.Env, fmt.Sprintf("SLINIT_CS_FD=%d", csFD))
+	}
+
 	// Start the process
 	if err := cmd.Start(); err != nil {
 		if consoleFd != nil {

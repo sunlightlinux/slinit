@@ -806,6 +806,16 @@ func (sr *ServiceRecord) Started() {
 		sr.services.bootReadyTime = time.Now()
 	}
 
+	// Signal filesystem/logging readiness
+	if sr.Flags.RWReady && !sr.services.RWReady() {
+		sr.services.SetRWReady()
+		sr.services.logger.Info("Filesystem is now read-write (service '%s')", sr.serviceName)
+	}
+	if sr.Flags.LogReady && !sr.services.LogReady() {
+		sr.services.SetLogReady()
+		sr.services.logger.Info("Logging system is now ready (service '%s')", sr.serviceName)
+	}
+
 	sr.services.logger.ServiceStarted(sr.serviceName)
 	sr.state = StateStarted
 	sr.notifyListeners(EventStarted)

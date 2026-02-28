@@ -106,6 +106,12 @@ type ExecParams struct {
 	// for restarts). Environment variable LISTEN_FDS=1 is set automatically.
 	SocketFD *os.File
 
+	// ControlSocketFD, if non-nil, is the client end of a Unix socketpair
+	// connected to the control server. It is passed to the child as an extra
+	// fd, and the env var SLINIT_CS_FD is set to its fd number.
+	// The caller must close it after StartProcess returns.
+	ControlSocketFD *os.File
+
 	// NotifyPipe, if non-nil, is the write end of a readiness notification
 	// pipe. It will be passed to the child process as an extra file descriptor.
 	// The caller must close it after StartProcess returns.

@@ -131,4 +131,6 @@ var OptionFlags = map[string]string{
 	"always-chain":        "AlwaysChain",
 	"kill-all-on-stop":    "KillAllOnStop",
 	"unmask-intr":         "UnmaskIntr",
+	"starts-rwfs":         "RWReady",
+	"starts-log":          "LogReady",
 }

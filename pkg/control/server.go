@@ -128,3 +128,22 @@ func (s *Server) removeConnection(c *Connection) {
 	delete(s.conns, c)
 	s.mu.Unlock()
 }
+
+// HandlePassCSFD handles a pre-connected control socket (from pass-cs-fd).
+// It spawns a goroutine to serve commands on the connection, just like a
+// normal control client.
+func (s *Server) HandlePassCSFD(conn net.Conn) {
+	c := newConnection(s, conn)
+	s.mu.Lock()
+	s.conns[c] = struct{}{}
+	s.mu.Unlock()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		c.serve()
+		s.mu.Lock()
+		delete(s.conns, c)
+		s.mu.Unlock()
+	}()
+}

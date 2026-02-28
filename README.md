@@ -25,9 +25,12 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading
 - **Runtime dependencies**: add-dep/rm-dep, enable/disable via control socket
 - **SysV signal compat**: SIGTERM (reboot), SIGUSR1 (halt), SIGUSR2 (poweroff)
-- **Shutdown**: orderly service stop, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff
+- **Shutdown**: orderly service stop, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec
 - **Soft-reboot**: restart slinit without rebooting the kernel
+- **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
 - **Boot failure recovery**: interactive prompt or auto-recovery (`-r`) when all services stop without shutdown
+- **Pass control socket**: `pass-cs-fd` passes a control connection fd to child processes
+- **Readiness signaling**: `starts-rwfs` / `starts-log` flags for filesystem and logging readiness
 - **Dual mode**: system init (PID 1) or user-level service manager
 
 ## Building
@@ -300,7 +303,7 @@ slinit/
 
 ```bash
 go test ./...
-# 183 tests across 5 packages
+# 186 tests across 5 packages
 ```
 
 ## Roadmap
@@ -328,6 +331,11 @@ go test ./...
   - [x] enable / disable (boot service integration)
   - [x] nice, oom-score-adj, ioprio, cgroup, rlimits, no-new-privs
   - [x] capabilities (ambient caps via SysProcAttr) + securebits
+  - [x] unmask-intr (unmask SIGINT on console)
+  - [x] auto-recovery (-r) on boot failure
+  - [x] starts-rwfs / starts-log (filesystem/logging readiness flags)
+  - [x] pass-cs-fd (control socket fd to child)
+  - [x] kexec shutdown type
 
 ## License
 

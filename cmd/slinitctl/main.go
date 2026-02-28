@@ -200,7 +200,7 @@ Commands:
   status <service>         Show detailed service status
   is-started <service>     Exit 0 if started, 1 otherwise
   is-failed <service>      Exit 0 if failed, 1 otherwise
-  shutdown [type]          Initiate shutdown (halt|poweroff|reboot)
+  shutdown [type]          Initiate shutdown (halt|poweroff|reboot|kexec)
   trigger <service>        Trigger a triggered service
   untrigger <service>      Reset trigger state
   signal <sig> <service>   Send signal to service process
@@ -649,8 +649,10 @@ func cmdShutdown(conn net.Conn, shutType string) error {
 		st = service.ShutdownPoweroff
 	case "reboot":
 		st = service.ShutdownReboot
+	case "kexec":
+		st = service.ShutdownKexec
 	default:
-		return fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, or reboot)", shutType)
+		return fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, or kexec)", shutType)
 	}
 
 	payload := []byte{uint8(st)}

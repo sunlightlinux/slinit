@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -253,13 +254,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "description":
 		desc.Description = value
 	case "command":
-		desc.Command = splitCommand(value)
+		desc.Command = splitCommand(expandEnvVars(value))
 	case "stop-command":
-		desc.StopCommand = splitCommand(value)
+		desc.StopCommand = splitCommand(expandEnvVars(value))
 	case "working-dir":
-		desc.WorkingDir = value
+		desc.WorkingDir = expandEnvVars(value)
 	case "env-file":
-		desc.EnvFile = value
+		desc.EnvFile = expandEnvVars(value)
 
 	// Dependencies
 	case "depends-on":
@@ -331,7 +332,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Logging
 	case "logfile":
-		desc.LogFile = value
+		desc.LogFile = expandEnvVars(value)
 		if desc.LogType == service.LogNone {
 			desc.LogType = service.LogToFile
 		}
@@ -364,7 +365,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Process management
 	case "pid-file":
-		desc.PIDFile = value
+		desc.PIDFile = expandEnvVars(value)
 	case "ready-notification":
 		desc.ReadyNotification = value
 		if err := parseReadyNotification(desc, value); err != nil {
@@ -375,7 +376,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Socket
 	case "socket-listen":
-		desc.SocketPath = value
+		desc.SocketPath = expandEnvVars(value)
 	case "socket-permissions":
 		perms, err := strconv.ParseInt(value, 8, 32)
 		if err != nil {
@@ -397,7 +398,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Chaining
 	case "chain-to":
-		desc.ChainTo = value
+		desc.ChainTo = expandEnvVars(value)
 
 	// Alias
 	case "provides":
@@ -547,6 +548,10 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 			desc.Flags.KillAllOnStop = true
 		case "unmask-intr":
 			desc.Flags.UnmaskIntr = true
+		case "starts-rwfs":
+			desc.Flags.RWReady = true
+		case "starts-log":
+			desc.Flags.LogReady = true
 		case "no-new-privs":
 			desc.NoNewPrivs = true
 		default:
@@ -692,6 +697,81 @@ func parseRlimit(value string) (*[2]uint64, error) {
 		return nil, err
 	}
 	return &[2]uint64{v, v}, nil
+}
+
+// expandEnvVars expands environment variable references in a string.
+// Supported syntax: $VAR, ${VAR}, and $$ (literal dollar sign).
+// Unset variables expand to an empty string.
+func expandEnvVars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+
+	i := 0
+	for i < len(s) {
+		if s[i] != '$' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+
+		// We have a '$'
+		i++ // skip '$'
+		if i >= len(s) {
+			// Trailing '$' — keep it literal
+			b.WriteByte('$')
+			break
+		}
+
+		// $$ → literal '$'
+		if s[i] == '$' {
+			b.WriteByte('$')
+			i++
+			continue
+		}
+
+		// ${VAR} syntax
+		if s[i] == '{' {
+			i++ // skip '{'
+			end := strings.IndexByte(s[i:], '}')
+			if end < 0 {
+				// No closing brace — keep literal
+				b.WriteString("${")
+				continue
+			}
+			name := s[i : i+end]
+			b.WriteString(os.Getenv(name))
+			i += end + 1 // skip past '}'
+			continue
+		}
+
+		// $VAR syntax: variable name is [A-Za-z_][A-Za-z0-9_]*
+		start := i
+		for i < len(s) && isVarChar(s[i], i == start) {
+			i++
+		}
+		if i == start {
+			// '$' followed by non-variable char — keep literal '$'
+			b.WriteByte('$')
+			continue
+		}
+		name := s[start:i]
+		b.WriteString(os.Getenv(name))
+	}
+
+	return b.String()
+}
+
+// isVarChar returns true if ch is valid in an environment variable name.
+// The first character must be a letter or underscore; subsequent chars
+// may also be digits.
+func isVarChar(ch byte, first bool) bool {
+	if ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch == '_' {
+		return true
+	}
+	if !first && ch >= '0' && ch <= '9' {
+		return true
+	}
+	return false
 }
 
 // parseSignal parses a signal name or number.
