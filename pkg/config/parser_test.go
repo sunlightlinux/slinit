@@ -378,6 +378,23 @@ options = no-new-privs
 	}
 }
 
+func TestParseUnmaskIntr(t *testing.T) {
+	input := `type = process
+command = /bin/sh
+options = runs-on-console unmask-intr
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if !desc.Flags.RunsOnConsole {
+		t.Error("RunsOnConsole: expected true")
+	}
+	if !desc.Flags.UnmaskIntr {
+		t.Error("UnmaskIntr: expected true")
+	}
+}
+
 func TestParseCapabilities(t *testing.T) {
 	input := `type = process
 command = /bin/true

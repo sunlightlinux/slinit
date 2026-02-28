@@ -545,6 +545,8 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 			desc.Flags.AlwaysChain = true
 		case "kill-all-on-stop":
 			desc.Flags.KillAllOnStop = true
+		case "unmask-intr":
+			desc.Flags.UnmaskIntr = true
 		case "no-new-privs":
 			desc.NoNewPrivs = true
 		default:

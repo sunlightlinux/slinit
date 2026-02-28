@@ -62,7 +62,7 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | `pid-file`            | PID file path (bgprocess type)                   |
 | `start-timeout`       | Timeout for service start (seconds)              |
 | `stop-timeout`        | Timeout for service stop (seconds)               |
-| `options`             | Service flags (runs-on-console, no-new-privs, etc.) |
+| `options`             | Service flags (runs-on-console, unmask-intr, no-new-privs, etc.) |
 | `term-signal`         | Signal for graceful stop                         |
 | `working-dir`         | Working directory for the process                |
 | `run-as`              | Run command as user:group                        |

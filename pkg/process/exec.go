@@ -62,14 +62,19 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			cmd.Stdin = consoleFd
 			cmd.Stdout = consoleFd
 			cmd.Stderr = consoleFd
-			// Create new session and set /dev/console as controlling terminal.
-			// Setsid creates a new session (child becomes session leader).
-			// Setctty + Ctty=0 calls ioctl(TIOCSCTTY) on stdin fd in the child,
-			// making /dev/console the controlling terminal so job control works.
+			// Create new session so the child is session leader.
 			cmd.SysProcAttr.Setpgid = false // Setsid implies new pgid
 			cmd.SysProcAttr.Setsid = true
-			cmd.SysProcAttr.Setctty = true
-			cmd.SysProcAttr.Ctty = 0 // fd 0 (stdin) = /dev/console
+			// Only set /dev/console as controlling terminal when unmask-intr
+			// is enabled. With a controlling terminal, the child receives
+			// terminal-generated signals (SIGINT from Ctrl+C, SIGQUIT, SIGTSTP).
+			// Without it, the child can still read/write the console via fds
+			// but is shielded from keyboard signals — matching dinit's default
+			// behavior of masking SIGINT for console services.
+			if params.UnmaskSigint {
+				cmd.SysProcAttr.Setctty = true
+				cmd.SysProcAttr.Ctty = 0 // fd 0 (stdin) = /dev/console
+			}
 		}
 	} else if params.OutputPipe != nil {
 		// Capture stdout/stderr to a pipe for log buffering or piping

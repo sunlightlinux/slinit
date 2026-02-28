@@ -467,6 +467,7 @@ func (s *ProcessService) startProcess() error {
 		Env:               s.buildEnv(),
 		TermSignal:        s.termSignal,
 		OnConsole:         s.Flags.RunsOnConsole || s.Flags.StartsOnConsole,
+		UnmaskSigint:      s.Flags.UnmaskIntr,
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
 		RunAsUID:          s.runAsUID,
 		RunAsGID:          s.runAsGID,

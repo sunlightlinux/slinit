@@ -130,4 +130,5 @@ var OptionFlags = map[string]string{
 	"signal-process-only": "SignalProcessOnly",
 	"always-chain":        "AlwaysChain",
 	"kill-all-on-stop":    "KillAllOnStop",
+	"unmask-intr":         "UnmaskIntr",
 }

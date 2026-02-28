@@ -272,4 +272,5 @@ type ServiceFlags struct {
 	SignalProcessOnly  bool // Only signal the process, not the process group
 	AlwaysChain        bool // Always chain to the next service
 	KillAllOnStop      bool // Kill all processes in cgroup on stop
+	UnmaskIntr         bool // Unmask SIGINT when running on console
 }

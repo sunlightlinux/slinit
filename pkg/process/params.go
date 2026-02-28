@@ -81,6 +81,12 @@ type ExecParams struct {
 	// OnConsole indicates the process should run on the console.
 	OnConsole bool
 
+	// UnmaskSigint, when true and OnConsole is true, sets /dev/console as the
+	// controlling terminal so the child receives SIGINT from Ctrl+C.
+	// When false, the child can read/write the console but terminal-generated
+	// signals (SIGINT, SIGQUIT, SIGTSTP) are not delivered to it.
+	UnmaskSigint bool
+
 	// SignalProcessOnly: if true, signal only the process, not the group.
 	SignalProcessOnly bool
 
