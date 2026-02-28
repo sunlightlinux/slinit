@@ -97,6 +97,11 @@ func (el *EventLoop) Run(ctx context.Context) error {
 				}
 				return nil
 			}
+			// Boot failure: all services stopped without explicit shutdown (PID 1 only)
+			if !el.shutdownInitiated && el.isPID1 && el.services.CountActiveServices() == 0 {
+				el.logger.Error("All services stopped without shutdown — boot failure")
+				return nil
+			}
 		}
 	}
 }

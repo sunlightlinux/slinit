@@ -185,6 +185,24 @@ other tools:
 When the boot service is not found (no service files in any configured
 directory), slinit logs an error, waits 10 seconds, and reboots automatically.
 
+## Boot Failure Recovery
+
+When running as PID 1 and all services stop without an explicit shutdown, slinit
+detects a **boot failure**. The behavior depends on the `-r` flag:
+
+- **Without `-r`**: an interactive prompt is shown on `/dev/console`:
+  - `(r)eboot` — reboot the system
+  - `r(e)covery` — start a `recovery` service (e.g. root shell)
+  - `re(s)tart boot sequence` — restart the boot service
+  - `(p)ower off` — power off the system
+- **With `-r` / `--auto-recovery`**: automatically starts a `recovery` service.
+  Falls back to reboot if the recovery service cannot be loaded.
+
+To use auto-recovery in the demo, modify `run.sh` to pass `-r`:
+```bash
+slinit --system -r --services-dir /etc/slinit.d
+```
+
 ## Exiting
 
 - `init 0` -- orderly poweroff (sends SIGUSR2 to PID 1)

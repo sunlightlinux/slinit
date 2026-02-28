@@ -27,6 +27,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **SysV signal compat**: SIGTERM (reboot), SIGUSR1 (halt), SIGUSR2 (poweroff)
 - **Shutdown**: orderly service stop, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff
 - **Soft-reboot**: restart slinit without rebooting the kernel
+- **Boot failure recovery**: interactive prompt or auto-recovery (`-r`) when all services stop without shutdown
 - **Dual mode**: system init (PID 1) or user-level service manager
 
 ## Building
@@ -56,6 +57,7 @@ go build ./cmd/slinitctl
 | `--user` | Run as user service manager | `true` |
 | `--boot-service` | Name of the boot service to start | `boot` |
 | `--log-level` | Log level (debug, info, notice, warn, error) | `info` |
+| `-r` / `--auto-recovery` | Auto-start `recovery` service on boot failure (PID 1) | `false` |
 | `--version` | Show version and exit | |
 
 ## Service configuration

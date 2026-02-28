@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
@@ -17,6 +18,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -34,13 +36,14 @@ func main() {
 
 	// Parse command-line flags
 	var (
-		serviceDirs   string
-		socketPath    string
-		systemMode    bool
-		userMode      bool
-		bootService   string
-		showVersion   bool
-		logLevel      string
+		serviceDirs  string
+		socketPath   string
+		systemMode   bool
+		userMode     bool
+		bootService  string
+		showVersion  bool
+		logLevel     string
+		autoRecovery bool
 	)
 
 	flag.StringVar(&serviceDirs, "services-dir", "", "service description directory (comma-separated for multiple)")
@@ -50,6 +53,8 @@ func main() {
 	flag.StringVar(&bootService, "boot-service", defaultBootService, "name of the boot service to start")
 	flag.BoolVar(&showVersion, "version", false, "show version and exit")
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, notice, warn, error)")
+	flag.BoolVar(&autoRecovery, "r", false, "auto-run recovery service on boot failure")
+	flag.BoolVar(&autoRecovery, "auto-recovery", false, "auto-run recovery service on boot failure")
 
 	flag.Parse()
 
@@ -147,47 +152,87 @@ func main() {
 		defer ctrlServer.Stop()
 	}
 
-	// Run the event loop
-	loop := eventloop.New(serviceSet, logger)
+	// Boot loop: runs the event loop, handles boot failures with recovery
+	for {
+		loop := eventloop.New(serviceSet, logger)
 
-	// Enable PID 1 mode on event loop (boot failure detection, orphan reaping)
-	if isPID1 {
-		loop.SetPID1Mode(true)
-	}
-
-	// Wire shutdown from control protocol to event loop
-	ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
-		loop.InitiateShutdown(st)
-	}
-
-	if err := loop.Run(ctx); err != nil {
-		if err == context.Canceled {
-			logger.Info("Event loop cancelled")
-		} else {
-			logger.Error("Event loop error: %v", err)
+		if isPID1 {
+			loop.SetPID1Mode(true)
 		}
-	}
 
-	// Handle post-loop shutdown actions
-	shutdownType := loop.GetShutdownType()
+		ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
+			loop.InitiateShutdown(st)
+		}
 
-	if isPID1 {
-		handlePID1Shutdown(shutdownType, logger)
-		// handlePID1Shutdown does not return
+		if err := loop.Run(ctx); err != nil {
+			if err == context.Canceled {
+				logger.Info("Event loop cancelled")
+			} else {
+				logger.Error("Event loop error: %v", err)
+			}
+		}
+
+		shutdownType := loop.GetShutdownType()
+
+		// Normal shutdown (non-PID1 or explicit shutdown requested)
+		if !isPID1 {
+			break
+		}
+		if shutdownType != service.ShutdownNone {
+			handlePID1Shutdown(shutdownType, logger)
+			// handlePID1Shutdown does not return
+		}
+
+		// Boot failure detected: all services stopped without shutdown
+		logger.Error("Boot failure detected")
+		syscall.Sync() // minimize data loss
+
+		if autoRecovery {
+			logger.Notice("Auto-recovery enabled, attempting to start 'recovery' service")
+			if tryStartService("recovery", serviceSet, loader, logger) {
+				continue // re-enter boot loop
+			}
+			logger.Error("Failed to start recovery service, rebooting")
+			shutdown.Execute(service.ShutdownReboot, logger)
+		}
+
+		// Interactive prompt (no -r flag)
+		action := confirmRestartBoot(logger)
+		switch action {
+		case 'r':
+			logger.Notice("User chose reboot")
+			shutdown.Execute(service.ShutdownReboot, logger)
+		case 'e':
+			logger.Notice("User chose recovery")
+			if tryStartService("recovery", serviceSet, loader, logger) {
+				continue
+			}
+			logger.Error("Failed to start recovery service, rebooting")
+			shutdown.Execute(service.ShutdownReboot, logger)
+		case 's':
+			logger.Notice("User chose restart boot sequence")
+			if tryStartService(bootService, serviceSet, loader, logger) {
+				continue
+			}
+			logger.Error("Failed to restart boot service, rebooting")
+			shutdown.Execute(service.ShutdownReboot, logger)
+		case 'p':
+			logger.Notice("User chose poweroff")
+			shutdown.Execute(service.ShutdownPoweroff, logger)
+		default:
+			logger.Error("Invalid choice, rebooting")
+			shutdown.Execute(service.ShutdownReboot, logger)
+		}
 	}
 
 	logger.Info("slinit shutdown complete")
 }
 
 // handlePID1Shutdown performs the appropriate system action after all services
-// have stopped when running as PID 1. This function does not return.
+// have stopped when running as PID 1. Called only for explicit shutdowns
+// (shutdownType != ShutdownNone). This function does not return.
 func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logger) {
 	switch shutdownType {
-	case service.ShutdownNone:
-		// Boot failure: services stopped without explicit shutdown
-		logger.Error("Boot failure detected, attempting reboot")
-		shutdown.Execute(service.ShutdownReboot, logger)
-
 	case service.ShutdownSoftReboot:
 		logger.Notice("Performing soft reboot")
 		if err := shutdown.SoftReboot(logger); err != nil {
@@ -310,4 +355,73 @@ func sendShutdownAndExit(socketFlag string, systemFlag bool, shutType service.Sh
 	}
 
 	os.Exit(0)
+}
+
+// tryStartService attempts to load and start a named service. Returns true on success.
+// Used by the boot failure recovery loop to restart "boot" or "recovery" services.
+func tryStartService(name string, serviceSet *service.ServiceSet, loader *config.DirLoader, logger *logging.Logger) bool {
+	svc, err := serviceSet.LoadService(name)
+	if err != nil {
+		logger.Error("Failed to load service '%s': %v", name, err)
+		return false
+	}
+	serviceSet.StartService(svc)
+	logger.Info("Service '%s' started for recovery", name)
+	return true
+}
+
+// confirmRestartBoot displays an interactive prompt on /dev/console for the user
+// to choose an action after a boot failure. Returns one of: 'r' (reboot),
+// 'e' (recovery), 's' (restart boot), 'p' (poweroff).
+// Falls back to 'r' (reboot) if the console cannot be opened.
+func confirmRestartBoot(logger *logging.Logger) byte {
+	f, err := os.OpenFile("/dev/console", os.O_RDWR, 0)
+	if err != nil {
+		logger.Error("Cannot open /dev/console for recovery prompt: %v", err)
+		return 'r'
+	}
+	defer f.Close()
+
+	fd := int(f.Fd())
+
+	// Save current terminal settings
+	oldTermios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		logger.Error("Cannot get terminal settings: %v", err)
+		return 'r'
+	}
+
+	// Set raw mode: disable canonical mode and echo
+	rawTermios := *oldTermios
+	rawTermios.Lflag &^= unix.ICANON | unix.ECHO
+	rawTermios.Cc[unix.VMIN] = 1
+	rawTermios.Cc[unix.VTIME] = 0
+
+	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &rawTermios); err != nil {
+		logger.Error("Cannot set raw terminal mode: %v", err)
+		return 'r'
+	}
+
+	// Restore terminal on return
+	defer unix.IoctlSetTermios(fd, unix.TCSETS, oldTermios)
+
+	msg := "\n\nAll services have stopped with no shutdown issued; boot failure?\n" +
+		"Choose: (r)eboot, r(e)covery, re(s)tart boot sequence, (p)ower off? "
+	f.WriteString(msg)
+
+	// Read a single byte
+	buf := make([]byte, 1)
+	for {
+		n, err := f.Read(buf)
+		if err != nil || n == 0 {
+			logger.Error("Failed to read from console: %v", err)
+			return 'r'
+		}
+		ch := buf[0]
+		if ch == 'r' || ch == 'e' || ch == 's' || ch == 'p' {
+			f.WriteString(string(ch) + "\n")
+			return ch
+		}
+		// Ignore invalid keys, re-prompt
+	}
 }
