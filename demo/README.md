@@ -11,7 +11,7 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.26+
 - `qemu-system-x86_64`
 - `curl`, `cpio`, `gzip`
 - KVM recommended (falls back to software emulation)
@@ -62,11 +62,22 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | `pid-file`            | PID file path (bgprocess type)                   |
 | `start-timeout`       | Timeout for service start (seconds)              |
 | `stop-timeout`        | Timeout for service stop (seconds)               |
-| `options`             | Service flags (runs-on-console, etc.)            |
+| `options`             | Service flags (runs-on-console, no-new-privs, etc.) |
 | `term-signal`         | Signal for graceful stop                         |
 | `working-dir`         | Working directory for the process                |
-| `env-file`            | Environment variables file                       |
+| `run-as`              | Run command as user:group                        |
+| `env-file`            | Environment variables file (KEY=VALUE lines)     |
 | `chain-to`            | Service to start after this one stops            |
+| `nice`                | Process scheduling priority (-20..19)            |
+| `oom-score-adj`       | OOM killer score adjustment (-1000..1000)        |
+| `ioprio`              | I/O priority class:level (be:4, rt:0, idle)      |
+| `cgroup`              | Cgroup path for the child process                |
+| `rlimit-nofile`       | File descriptor limit (soft:hard or unlimited)   |
+| `rlimit-core`         | Core dump size limit (soft:hard or unlimited)    |
+| `rlimit-data`         | Data segment size limit (soft:hard or unlimited) |
+| `rlimit-as`           | Address space limit (soft:hard or unlimited)     |
+| `capabilities`        | Ambient capabilities (cap_net_bind_service, etc.)|
+| `securebits`          | Securebits flags (noroot, keep-caps, etc.)       |
 
 ## Interactive Commands
 
@@ -121,9 +132,22 @@ slinitctl list                   # ticker gone
 # Service aliases (provides) -- ticker has "provides = my-ticker"
 slinitctl status my-ticker       # found by alias
 
+# Runtime environment management
+slinitctl setenv hello KEY=VALUE
+slinitctl unsetenv hello KEY
+slinitctl getallenv hello
+
+# Runtime dependency management
+slinitctl add-dep hello depends-on system-init
+slinitctl rm-dep hello waits-for dep-a
+
+# Enable/disable (add/remove waits-for dep on boot service)
+slinitctl enable ticker
+slinitctl disable ticker
+
 # SysV init compatibility (alternative to slinitctl shutdown)
 init 0                           # poweroff  (sends SIGUSR2 to PID 1)
-init 6                           # reboot    (sends SIGUSR1 to PID 1)
+init 6                           # reboot    (sends SIGTERM to PID 1)
 
 # Clean shutdown (exits QEMU due to -no-reboot)
 slinitctl shutdown reboot
@@ -151,10 +175,10 @@ other tools:
 
 | Signal    | Action   | Source                        |
 |-----------|----------|-------------------------------|
-| `SIGTERM` | poweroff | busybox fallback              |
+| `SIGTERM` | reboot   | busybox `reboot`              |
 | `SIGINT`  | reboot   | Ctrl-Alt-Del (via CAD)        |
 | `SIGQUIT` | poweroff | --                            |
-| `SIGUSR1` | reboot   | busybox `reboot`              |
+| `SIGUSR1` | halt     | busybox `halt`                |
 | `SIGUSR2` | poweroff | busybox `poweroff`            |
 | `SIGHUP`  | ignored  | --                            |
 
@@ -164,7 +188,7 @@ directory), slinit logs an error, waits 10 seconds, and reboots automatically.
 ## Exiting
 
 - `init 0` -- orderly poweroff (sends SIGUSR2 to PID 1)
-- `init 6` -- orderly reboot (sends SIGUSR1 to PID 1)
+- `init 6` -- orderly reboot (sends SIGTERM to PID 1)
 - `slinitctl shutdown reboot` -- orderly shutdown via control socket (QEMU exits with -no-reboot)
 - `slinitctl shutdown poweroff` -- orderly poweroff via control socket
 - `Ctrl+A, X` -- kill QEMU immediately
