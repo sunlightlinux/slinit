@@ -689,6 +689,20 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 
 	// Resource limits
 	applyRlimits(rec, desc)
+
+	// Capabilities
+	if desc.Capabilities != "" {
+		caps, err := process.ParseCapabilities(desc.Capabilities)
+		if err == nil && len(caps) > 0 {
+			rec.SetAmbientCaps(caps)
+		}
+	}
+	if desc.Securebits != "" {
+		bits, err := process.ParseSecurebits(desc.Securebits)
+		if err == nil && bits != 0 {
+			rec.SetSecurebits(bits)
+		}
+	}
 }
 
 // setupConsumerOf establishes the consumer-of relationship between services.

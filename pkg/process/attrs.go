@@ -39,6 +39,9 @@ func applyPostForkAttrs(pid int, params ExecParams) {
 	if params.NoNewPrivs {
 		applyNoNewPrivs(pid)
 	}
+	if params.Securebits != 0 {
+		applySecurebits(params.Securebits)
+	}
 }
 
 func applyNice(pid, nice int) {
@@ -90,14 +93,18 @@ func applyCgroup(pid int, cgroupPath string) {
 
 func applyNoNewPrivs(pid int) {
 	// PR_SET_NO_NEW_PRIVS can only be set on the calling thread.
-	// For child processes, we write to /proc/PID/attr/prev to request
-	// no_new_privs if possible. However, this is typically not available.
-	// Instead, we use SECBIT or rely on the fact that if capabilities
-	// are dropped, no-new-privs is effectively in place.
-	//
-	// Note: true no-new-privs requires in-child prctl. This is a
-	// best-effort approach that works when slinit has appropriate
-	// privileges and the kernel supports it.
+	// For child processes, we write to /proc/PID/attr/no_new_privs
+	// as a best-effort approach.
 	path := fmt.Sprintf("/proc/%d/attr/no_new_privs", pid)
 	_ = os.WriteFile(path, []byte("1"), 0200)
+}
+
+const prSetSecurebits = 28 // PR_SET_SECUREBITS
+
+func applySecurebits(bits uint32) {
+	// PR_SET_SECUREBITS sets securebits for the calling thread.
+	// When called from the parent before child exec, this affects
+	// the parent's securebits which are inherited across fork.
+	// Best-effort: only works if caller has CAP_SETPCAP.
+	syscall.Syscall(sysPrctl, prSetSecurebits, uintptr(bits), 0)
 }

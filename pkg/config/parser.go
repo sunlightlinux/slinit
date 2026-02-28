@@ -93,6 +93,10 @@ type ServiceDescription struct {
 	RlimitCore   *[2]uint64
 	RlimitData   *[2]uint64
 	RlimitAs     *[2]uint64
+
+	// Capabilities and securebits
+	Capabilities string // comma/space-separated capability names
+	Securebits   string // space-separated securebits flag names
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -455,6 +459,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid rlimit-as: %v", err)
 		}
 		desc.RlimitAs = lim
+
+	case "capabilities":
+		desc.Capabilities = value
+
+	case "securebits":
+		desc.Securebits = value
 
 	case "load-options":
 		// Silently accept for forward compatibility

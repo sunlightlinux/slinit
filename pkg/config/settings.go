@@ -98,6 +98,10 @@ var KnownSettings = map[string]OperatorType{
 	"nice":   OpEquals,
 	"ioprio": OpEquals,
 	"oom-score-adj": OpEquals,
+
+	// capabilities
+	"capabilities": OpEquals | OpPlusEqual,
+	"securebits":   OpEquals | OpPlusEqual,
 }
 
 // IsKnownSetting returns true if the setting name is recognized.

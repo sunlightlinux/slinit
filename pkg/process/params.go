@@ -132,6 +132,14 @@ type ExecParams struct {
 
 	// NoNewPrivs sets PR_SET_NO_NEW_PRIVS on the child process.
 	NoNewPrivs bool
+
+	// AmbientCaps is the list of ambient capabilities (CAP_* numbers)
+	// to set on the child process via SysProcAttr.AmbientCaps.
+	AmbientCaps []uintptr
+
+	// Securebits is a bitmask of securebits flags to apply post-fork
+	// via prctl(PR_SET_SECUREBITS). Best-effort from parent.
+	Securebits uint32
 }
 
 // Rlimit holds a resource limit (soft, hard) for a given resource.

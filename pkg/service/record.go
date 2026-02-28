@@ -155,6 +155,8 @@ type ServiceRecord struct {
 	ioPrioLevel int
 	cgroupPath  string
 	rlimits     []process.Rlimit
+	ambientCaps []uintptr
+	securebits  uint32
 
 	// Queue membership flags
 	InPropQueue bool
@@ -342,6 +344,8 @@ func (sr *ServiceRecord) SetIOPrio(class, level int)        { sr.ioPrioClass = c
 func (sr *ServiceRecord) SetCgroupPath(p string)            { sr.cgroupPath = p }
 func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)    { sr.rlimits = rl }
 func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)       { sr.rlimits = append(sr.rlimits, rl) }
+func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = caps }
+func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
 
 // ApplyProcessAttrs fills ExecParams with process attributes from this record.
 func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
@@ -352,6 +356,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.IOPrioLevel = sr.ioPrioLevel
 	params.CgroupPath = sr.cgroupPath
 	params.Rlimits = sr.rlimits
+	params.AmbientCaps = sr.ambientCaps
+	params.Securebits = sr.securebits
 }
 
 // Default log buffer implementations (overridden by process-based services)

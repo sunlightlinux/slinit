@@ -12,7 +12,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
 - **Dinit-compatible config**: key=value service description files
 - **Control socket**: binary protocol over Unix domain socket for runtime management
-- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, catlog, shutdown, boot-time
+- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time
 - **Service aliases**: `provides` for alternative name lookup
 - **Consumer pipes**: `consumer-of` to pipe output from one service into another
 - **Log output**: buffer (in-memory, catlog), file (logfile with permissions/ownership), pipe (consumer-of)
@@ -21,7 +21,10 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Hot reload**: reload service configuration from disk without restart
 - **Service unload**: remove stopped services from memory
 - **PID 1 init**: console setup, Ctrl+Alt+Del handling, child subreaper, orphan reaping
-- **SysV signal compat**: SIGUSR1 (reboot), SIGUSR2 (poweroff), SIGTERM (poweroff)
+- **Process attributes**: nice, oom-score-adj, rlimits, ioprio, cgroup, no-new-privs, capabilities, securebits
+- **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading
+- **Runtime dependencies**: add-dep/rm-dep, enable/disable via control socket
+- **SysV signal compat**: SIGTERM (reboot), SIGUSR1 (halt), SIGUSR2 (poweroff)
 - **Shutdown**: orderly service stop, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff
 - **Soft-reboot**: restart slinit without rebooting the kernel
 - **Dual mode**: system init (PID 1) or user-level service manager
@@ -99,6 +102,25 @@ logfile-uid = 1000
 logfile-gid = 1000
 ```
 
+Example service with process attributes and capabilities:
+
+```ini
+# /etc/slinit.d/worker
+type = process
+command = /usr/bin/worker
+nice = 10
+oom-score-adj = 500
+ioprio = be:4
+rlimit-nofile = 1024:4096
+rlimit-core = unlimited
+cgroup = /sys/fs/cgroup/workers
+capabilities = cap_net_bind_service,cap_sys_nice
+securebits = noroot keep-caps
+options = no-new-privs
+env-file = /etc/worker.env
+run-as = worker:worker
+```
+
 Example consumer pipe (service B reads service A stdout):
 
 ```ini
@@ -144,11 +166,22 @@ consumer-of: producer
 | `pid-file`                | PID file path (bgprocess type)                   |
 | `start-timeout`           | Timeout for service start (seconds)              |
 | `stop-timeout`            | Timeout for service stop (seconds)               |
-| `options`                 | Service flags (runs-on-console, etc.)            |
+| `options`                 | Service flags (runs-on-console, no-new-privs, etc.) |
 | `term-signal`             | Signal for graceful stop                         |
 | `working-dir`             | Working directory for the process                |
-| `env-file`                | Environment variables file                       |
+| `run-as`                  | Run command as user:group                        |
+| `env-file`                | Environment variables file (KEY=VALUE lines)     |
 | `chain-to`                | Service to start after this one stops            |
+| `nice`                    | Process scheduling priority (-20..19)            |
+| `oom-score-adj`           | OOM killer score adjustment (-1000..1000)        |
+| `ioprio`                  | I/O priority class:level (be:4, rt:0, idle)      |
+| `cgroup`                  | Cgroup path for the child process                |
+| `rlimit-nofile`           | File descriptor limit (soft:hard or unlimited)   |
+| `rlimit-core`             | Core dump size limit (soft:hard or unlimited)    |
+| `rlimit-data`             | Data segment size limit (soft:hard or unlimited) |
+| `rlimit-as`               | Address space limit (soft:hard or unlimited)     |
+| `capabilities`            | Ambient capabilities (cap_net_bind_service, etc.)|
+| `securebits`              | Securebits flags (noroot, keep-caps, etc.)       |
 
 ### Service types
 
@@ -207,6 +240,19 @@ slinitctl reload myservice
 # Unload a stopped service from memory
 slinitctl unload myservice
 
+# Runtime environment management
+slinitctl setenv myservice KEY=VALUE
+slinitctl unsetenv myservice KEY
+slinitctl getallenv myservice
+
+# Runtime dependency management
+slinitctl add-dep myservice depends-on otherservice
+slinitctl rm-dep myservice waits-for otherservice
+
+# Enable/disable (add/remove waits-for dep on boot service)
+slinitctl enable myservice
+slinitctl disable myservice
+
 # Boot timing analysis
 slinitctl boot-time
 
@@ -252,7 +298,7 @@ slinit/
 
 ```bash
 go test ./...
-# 161 tests across 5 packages
+# 183 tests across 5 packages
 ```
 
 ## Roadmap
@@ -262,7 +308,7 @@ go test ./...
 - [x] **Phase 3**: Full dependency graph -- all 6 dep types, TriggeredService, BGProcessService
 - [x] **Phase 4**: Control protocol + `slinitctl` CLI
 - [x] **Phase 5**: PID 1 mode + shutdown sequence
-- [ ] **Phase 6**: Advanced features
+- [x] **Phase 6**: Advanced features
   - [x] catlog (buffered output retrieval)
   - [x] reload (hot config reload)
   - [x] ready-notification (pipefd/pipevar)
@@ -275,9 +321,11 @@ go test ./...
   - [x] wake (start without marking active)
   - [x] release (unmark active, conditional stop)
   - [x] is-started / is-failed (exit code status check)
-  - [ ] cgroups
-  - [ ] rlimits
-  - [ ] oom-score-adj
+  - [x] setenv / unsetenv / getallenv (runtime environment management)
+  - [x] add-dep / rm-dep (runtime dependency management)
+  - [x] enable / disable (boot service integration)
+  - [x] nice, oom-score-adj, ioprio, cgroup, rlimits, no-new-privs
+  - [x] capabilities (ambient caps via SysProcAttr) + securebits
 
 ## License
 

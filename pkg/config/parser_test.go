@@ -377,3 +377,31 @@ options = no-new-privs
 		t.Error("NoNewPrivs: expected true")
 	}
 }
+
+func TestParseCapabilities(t *testing.T) {
+	input := `type = process
+command = /bin/true
+capabilities = cap_net_bind_service,cap_sys_admin
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if desc.Capabilities != "cap_net_bind_service,cap_sys_admin" {
+		t.Errorf("Capabilities: got %q", desc.Capabilities)
+	}
+}
+
+func TestParseSecurebits(t *testing.T) {
+	input := `type = process
+command = /bin/true
+securebits = noroot keep-caps
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if desc.Securebits != "noroot keep-caps" {
+		t.Errorf("Securebits: got %q", desc.Securebits)
+	}
+}

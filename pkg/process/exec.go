@@ -43,6 +43,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 	}
 
+	// Ambient capabilities (applied in child between fork and exec)
+	if len(params.AmbientCaps) > 0 {
+		cmd.SysProcAttr.AmbientCaps = params.AmbientCaps
+	}
+
 	// Console handling: open /dev/console, create new session, set controlling terminal
 	var consoleFd *os.File
 	if params.OnConsole {
