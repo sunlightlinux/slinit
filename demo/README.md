@@ -44,7 +44,7 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | `before:`             | Ordering: start before target                    |
 | `after:`              | Ordering: start after target                     |
 | `provides`            | Alias name for service lookup                    |
-| `consumer-of:`        | Pipe output from named service into this one     |
+| `consumer-of` / `consumer-of:` | Pipe output from named service into this one (= or :) |
 | `restart`             | Auto-restart mode (yes, on-failure, no)          |
 | `restart-delay`       | Seconds to wait before restarting                |
 | `restart-limit-count` | Max restarts within interval                     |
@@ -76,8 +76,12 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | `rlimit-core`         | Core dump size limit (soft:hard or unlimited)    |
 | `rlimit-data`         | Data segment size limit (soft:hard or unlimited) |
 | `rlimit-as`           | Address space limit (soft:hard or unlimited)     |
+| `rlimit-addrspace`    | Alias for `rlimit-as` (dinit compat)             |
+| `run-in-cgroup`       | Alias for `cgroup` (dinit compat)                |
 | `capabilities`        | Ambient capabilities (cap_net_bind_service, etc.)|
 | `securebits`          | Securebits flags (noroot, keep-caps, etc.)       |
+| `inittab-id`          | UTMPX inittab ID for session tracking            |
+| `inittab-line`        | UTMPX inittab line for session tracking          |
 
 ## Interactive Commands
 
@@ -110,11 +114,14 @@ slinitctl untrigger trigger-test # reset trigger flag
 
 # Service lifecycle
 slinitctl stop ticker
+slinitctl stop --force ticker    # force stop (even with dependents)
 slinitctl list
 slinitctl start ticker           # marks active (stays running)
+slinitctl start --pin ticker     # start and pin in started state
 slinitctl wake ticker             # start without marking active
 slinitctl release ticker          # unmark active (stop if unrequired)
 slinitctl restart hello
+slinitctl unpin ticker            # remove start/stop pins
 
 # Send signal to a service
 slinitctl signal HUP hello
@@ -143,7 +150,12 @@ slinitctl rm-dep hello waits-for dep-a
 
 # Enable/disable (add/remove waits-for dep on boot service)
 slinitctl enable ticker
+slinitctl enable --from boot ticker  # explicit source service
 slinitctl disable ticker
+
+# Offline enable/disable (no daemon needed)
+slinitctl --offline enable ticker
+slinitctl --offline -d /etc/slinit.d disable ticker
 
 # SysV init compatibility (alternative to slinitctl shutdown)
 init 0                           # poweroff  (sends SIGUSR2 to PID 1)
@@ -152,6 +164,11 @@ init 6                           # reboot    (sends SIGTERM to PID 1)
 # Clean shutdown (exits QEMU due to -no-reboot)
 slinitctl shutdown reboot
 slinitctl shutdown poweroff
+slinitctl shutdown softreboot      # restart slinit without kernel reboot
+
+# Connect to system/user instance explicitly
+slinitctl --system list
+slinitctl --user list
 ```
 
 ## Dependency Graph
@@ -201,6 +218,11 @@ detects a **boot failure**. The behavior depends on the `-r` flag:
 To use auto-recovery in the demo, modify `run.sh` to pass `-r`:
 ```bash
 slinit --system -r --services-dir /etc/slinit.d
+```
+
+To start multiple boot services, use `-t`:
+```bash
+slinit --system -t boot -t extra-service --services-dir /etc/slinit.d
 ```
 
 ## Exiting

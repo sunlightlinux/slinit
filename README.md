@@ -12,7 +12,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
 - **Dinit-compatible config**: key=value service description files
 - **Control socket**: binary protocol over Unix domain socket for runtime management
-- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time
+- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, unpin, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time
 - **Service aliases**: `provides` for alternative name lookup
 - **Consumer pipes**: `consumer-of` to pipe output from one service into another
 - **Log output**: buffer (in-memory, catlog), file (logfile with permissions/ownership), pipe (consumer-of)
@@ -25,13 +25,16 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading
 - **Runtime dependencies**: add-dep/rm-dep, enable/disable via control socket
 - **SysV signal compat**: SIGTERM (reboot), SIGUSR1 (halt), SIGUSR2 (poweroff)
-- **Shutdown**: orderly service stop, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec
+- **Shutdown**: orderly service stop, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec/softreboot
 - **Soft-reboot**: restart slinit without rebooting the kernel
 - **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
 - **Boot failure recovery**: interactive prompt or auto-recovery (`-r`) when all services stop without shutdown
+- **Multiple boot services**: `-t svc1 -t svc2` or positional args to start multiple services at boot
 - **Pass control socket**: `pass-cs-fd` passes a control connection fd to child processes
 - **Readiness signaling**: `starts-rwfs` / `starts-log` flags for filesystem and logging readiness
 - **Dual mode**: system init (PID 1) or user-level service manager
+- **Offline enable/disable**: `--offline` mode creates/removes waits-for.d symlinks without a running daemon
+- **Dinit naming compat**: `rlimit-addrspace`, `run-in-cgroup`, `consumer-of =` all supported as aliases
 
 ## Building
 
@@ -48,20 +51,31 @@ go build ./cmd/slinitctl
 
 # System mode
 ./slinit --system --services-dir /etc/slinit.d
+
+# Multiple boot services
+./slinit -t network -t web-server -t database
+
+# Container mode
+./slinit --container -t myapp
 ```
 
-### Command-line options
+### Command-line options (slinit)
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--services-dir` | Service description directory (comma-separated) | `~/.config/slinit.d` (user) or `/etc/slinit.d` (system) |
+| `--services-dir` | Service description directory (comma-separated) | `~/.config/slinit.d` (user) or multiple system dirs |
 | `--socket-path` | Control socket path | `~/.slinitctl` or `/run/slinit.socket` |
 | `--system` | Run as system service manager | `false` |
 | `--user` | Run as user service manager | `true` |
-| `--boot-service` | Name of the boot service to start | `boot` |
+| `-t` / `--service` | Service to start at boot (repeatable, or use positional args) | `boot` |
+| `-o` / `--container` | Run in container mode (Docker/LXC/Podman) | `false` |
 | `--log-level` | Log level (debug, info, notice, warn, error) | `info` |
 | `-r` / `--auto-recovery` | Auto-start `recovery` service on boot failure (PID 1) | `false` |
 | `--version` | Show version and exit | |
+
+Default service directories (when `--services-dir` is not set):
+- **System mode**: `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d`
+- **User mode**: `~/.config/slinit.d`, `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`
 
 ## Service configuration
 
@@ -153,7 +167,7 @@ consumer-of: producer
 | `before:`                 | Ordering: start before target                    |
 | `after:`                  | Ordering: start after target                     |
 | `provides`                | Alias name for service lookup                    |
-| `consumer-of:`            | Pipe output from named service into this one     |
+| `consumer-of` / `consumer-of:` | Pipe output from named service into this one (= or :) |
 | `restart`                 | Auto-restart mode (yes, on-failure, no)          |
 | `restart-delay`           | Seconds to wait before restarting                |
 | `restart-limit-count`     | Max restarts within interval                     |
@@ -185,8 +199,12 @@ consumer-of: producer
 | `rlimit-core`             | Core dump size limit (soft:hard or unlimited)    |
 | `rlimit-data`             | Data segment size limit (soft:hard or unlimited) |
 | `rlimit-as`               | Address space limit (soft:hard or unlimited)     |
+| `rlimit-addrspace`        | Alias for `rlimit-as` (dinit compat)             |
+| `run-in-cgroup`           | Alias for `cgroup` (dinit compat)                |
 | `capabilities`            | Ambient capabilities (cap_net_bind_service, etc.)|
 | `securebits`              | Securebits flags (noroot, keep-caps, etc.)       |
+| `inittab-id`              | UTMPX inittab ID for session tracking            |
+| `inittab-line`            | UTMPX inittab line for session tracking          |
 
 ### Service types
 
@@ -210,27 +228,50 @@ consumer-of: producer
 
 ## Control CLI (slinitctl)
 
-`slinitctl` communicates with a running slinit instance via the control socket:
+`slinitctl` communicates with a running slinit instance via the control socket.
+
+### Global options
+
+| Flag | Description |
+|------|-------------|
+| `--socket-path`, `-p` | Control socket path |
+| `--system`, `-s` | Connect to system service manager |
+| `--user`, `-u` | Connect to user service manager |
+| `--no-wait` | Suppress output (fire-and-forget) |
+| `--pin` | Pin service in started/stopped state (start/stop) |
+| `--force`, `-f` | Force stop even with dependents (stop/restart) |
+| `--ignore-unstarted` | Exit 0 if service already stopped (stop/restart) |
+| `--offline`, `-o` | Offline mode for enable/disable without daemon |
+| `--services-dir`, `-d` | Service directory for offline mode |
+| `--from <service>` | Source service for enable/disable (default: boot) |
+| `--use-passed-cfd` | Use fd from `SLINIT_CS_FD` env var |
+
+### Commands
 
 ```bash
 # List all loaded services
 slinitctl list
 
 # Start/stop/restart
-slinitctl start myservice       # start and mark active
-slinitctl wake myservice        # start without marking active
-slinitctl stop myservice        # force stop
-slinitctl release myservice     # unmark active (stop if unrequired)
+slinitctl start myservice           # start and mark active
+slinitctl start --pin myservice     # start and pin in started state
+slinitctl wake myservice            # start without marking active
+slinitctl stop myservice            # stop
+slinitctl stop --force myservice    # force stop (even with dependents)
+slinitctl stop --pin myservice      # stop and pin in stopped state
+slinitctl release myservice         # unmark active (stop if unrequired)
 slinitctl restart myservice
+slinitctl restart --force myservice # force restart
+slinitctl unpin myservice           # remove start/stop pins
 
 # Service status
 slinitctl status myservice
-slinitctl is-started myservice  # exit 0 if started, 1 otherwise
-slinitctl is-failed myservice   # exit 0 if failed, 1 otherwise
+slinitctl is-started myservice      # exit 0 if started, 1 otherwise
+slinitctl is-failed myservice       # exit 0 if failed, 1 otherwise
 
 # Trigger / untrigger
 slinitctl trigger mytrigger
-slinitctl untrigger mytrigger   # reset trigger state
+slinitctl untrigger mytrigger       # reset trigger state
 
 # Send signal to a service process
 slinitctl signal HUP myservice
@@ -256,7 +297,13 @@ slinitctl rm-dep myservice waits-for otherservice
 
 # Enable/disable (add/remove waits-for dep on boot service)
 slinitctl enable myservice
+slinitctl enable --from mygroup myservice   # enable from a specific service
 slinitctl disable myservice
+
+# Offline enable/disable (without daemon, operates on waits-for.d symlinks)
+slinitctl --offline enable myservice
+slinitctl --offline --services-dir /etc/slinit.d disable myservice
+slinitctl --offline --from mygroup enable myservice
 
 # Boot timing analysis
 slinitctl boot-time
@@ -264,9 +311,12 @@ slinitctl boot-time
 # Initiate system shutdown
 slinitctl shutdown poweroff
 slinitctl shutdown reboot
+slinitctl shutdown softreboot       # restart slinit without kernel reboot
 
-# Use a custom socket path
-slinitctl --socket-path /tmp/test.socket list
+# Connect to system/user instance explicitly
+slinitctl --system list
+slinitctl --user list
+slinitctl -p /tmp/test.socket list  # custom socket path
 ```
 
 ## Architecture
@@ -303,7 +353,7 @@ slinit/
 
 ```bash
 go test ./...
-# 186 tests across 5 packages
+# 199 tests across 7 packages
 ```
 
 ## Roadmap
@@ -336,6 +386,22 @@ go test ./...
   - [x] starts-rwfs / starts-log (filesystem/logging readiness flags)
   - [x] pass-cs-fd (control socket fd to child)
   - [x] kexec shutdown type
+- [x] **Phase 7**: Container mode, env substitution, UTMPX, shutdown hooks
+  - [x] Container mode (`-o`/`--container`)
+  - [x] Environment variable substitution (`$VAR`/`${VAR}`/`$$`) in config
+  - [x] Shutdown hooks (umount/swapoff)
+  - [x] UTMPX support (inittab-id/inittab-line, boot logging)
+- [x] **Phase 8**: CLI flags, dinit compat, multiple boot services
+  - [x] `unpin` command
+  - [x] `shutdown softreboot` in slinitctl
+  - [x] `--system`/`-s`, `--user`/`-u` explicit mode flags
+  - [x] `--no-wait`, `--pin`, `--force`/`-f` (protocol extension)
+  - [x] `--ignore-unstarted` for stop/restart
+  - [x] `--offline`/`-o`, `--services-dir`/`-d` (offline enable/disable)
+  - [x] `--use-passed-cfd`, `--from` (enable/disable)
+  - [x] Multiple default service dirs (4 system, 3 user)
+  - [x] `-t`/`--service` for multiple boot services
+  - [x] Dinit naming aliases (`rlimit-addrspace`, `run-in-cgroup`, `consumer-of =`)
 
 ## License
 
