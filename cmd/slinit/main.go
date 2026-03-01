@@ -32,20 +32,29 @@ const (
 	defaultUserSocket       = ".slinitctl"
 )
 
+// stringSlice implements flag.Value for repeated -t/--service flags.
+type stringSlice []string
+
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
 func main() {
 	bootStartTime := time.Now()
 
 	// Parse command-line flags
 	var (
-		serviceDirs   string
-		socketPath    string
-		systemMode    bool
-		userMode      bool
-		containerMode bool
-		bootService   string
-		showVersion   bool
-		logLevel      string
-		autoRecovery  bool
+		serviceDirs    string
+		socketPath     string
+		systemMode     bool
+		userMode       bool
+		containerMode  bool
+		bootServices   stringSlice
+		showVersion    bool
+		logLevel       string
+		autoRecovery   bool
 	)
 
 	flag.StringVar(&serviceDirs, "services-dir", "", "service description directory (comma-separated for multiple)")
@@ -54,7 +63,8 @@ func main() {
 	flag.BoolVar(&userMode, "user", false, "run as user service manager")
 	flag.BoolVar(&containerMode, "o", false, "run in container mode (for Docker/LXC/Podman)")
 	flag.BoolVar(&containerMode, "container", false, "run in container mode (for Docker/LXC/Podman)")
-	flag.StringVar(&bootService, "boot-service", defaultBootService, "name of the boot service to start")
+	flag.Var(&bootServices, "t", "service to start at boot (can be specified multiple times)")
+	flag.Var(&bootServices, "service", "service to start at boot (can be specified multiple times)")
 	flag.BoolVar(&showVersion, "version", false, "show version and exit")
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, notice, warn, error)")
 	flag.BoolVar(&autoRecovery, "r", false, "auto-run recovery service on boot failure")
@@ -82,6 +92,14 @@ func main() {
 				sendShutdownAndExit(socketPath, systemMode, service.ShutdownReboot)
 			}
 		}
+	}
+
+	// Positional args are also treated as service names (like dinit)
+	bootServices = append(bootServices, flag.Args()...)
+
+	// Default to "boot" if no services specified
+	if len(bootServices) == 0 {
+		bootServices = []string{defaultBootService}
 	}
 
 	if isPID1 {
@@ -139,9 +157,9 @@ func main() {
 		}
 	}
 
-	// Record boot timing
+	// Record boot timing (use first service as the boot timing target)
 	serviceSet.SetBootStartTime(bootStartTime)
-	serviceSet.SetBootServiceName(bootService)
+	serviceSet.SetBootServiceName(bootServices[0])
 	if uptime, err := readKernelUptime(); err == nil {
 		serviceSet.SetKernelUptime(uptime)
 	}
@@ -150,26 +168,33 @@ func main() {
 	loader := config.NewDirLoader(serviceSet, dirs)
 	serviceSet.SetLoader(loader)
 
-	// Load and start the boot service
-	bootSvc, err := serviceSet.LoadService(bootService)
-	if err != nil {
-		logger.Error("Failed to load boot service '%s': %v", bootService, err)
+	// Load and start boot services (-t svc1 -t svc2 ... or positional args)
+	startedAny := false
+	for _, svcName := range bootServices {
+		svc, err := serviceSet.LoadService(svcName)
+		if err != nil {
+			logger.Error("Failed to load service '%s': %v", svcName, err)
+			continue
+		}
+		serviceSet.StartService(svc)
+		logger.Info("Boot service '%s' started", svcName)
+		startedAny = true
+	}
+
+	if !startedAny {
 		if containerMode {
-			logger.Error("Boot service not found, exiting (container mode)")
+			logger.Error("No boot services could be loaded, exiting (container mode)")
 			os.Exit(1)
 		}
 		if isPID1 {
 			logger.Error("No service files found in %v", dirs)
-			logger.Error("Create at least '%s' in one of the service directories", bootService)
+			logger.Error("Create at least '%s' in one of the service directories", bootServices[0])
 			logger.Error("Rebooting in 10 seconds...")
 			time.Sleep(10 * time.Second)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 		os.Exit(1)
 	}
-
-	serviceSet.StartService(bootSvc)
-	logger.Info("Boot service '%s' started", bootService)
 
 	// Start control socket server
 	ctx := context.Background()
@@ -260,10 +285,10 @@ func main() {
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case 's':
 			logger.Notice("User chose restart boot sequence")
-			if tryStartService(bootService, serviceSet, loader, logger) {
+			if tryStartServices(bootServices, serviceSet, loader, logger) {
 				continue
 			}
-			logger.Error("Failed to restart boot service, rebooting")
+			logger.Error("Failed to restart boot services, rebooting")
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case 'p':
 			logger.Notice("User chose poweroff")
@@ -413,6 +438,18 @@ func sendShutdownAndExit(socketFlag string, systemFlag bool, shutType service.Sh
 	}
 
 	os.Exit(0)
+}
+
+// tryStartServices attempts to load and start all named services. Returns true
+// if at least one service was successfully started.
+func tryStartServices(names []string, serviceSet *service.ServiceSet, loader *config.DirLoader, logger *logging.Logger) bool {
+	ok := false
+	for _, name := range names {
+		if tryStartService(name, serviceSet, loader, logger) {
+			ok = true
+		}
+	}
+	return ok
 }
 
 // tryStartService attempts to load and start a named service. Returns true on success.
