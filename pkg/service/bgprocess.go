@@ -440,6 +440,12 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 
 	// PIDResultOK - daemon is running
 	s.daemonPID = pid
+
+	// Create utmp entry for the daemon process
+	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
+		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, pid)
+	}
+
 	s.cancelTimer()
 	s.Started()
 	s.services.ProcessQueues()
@@ -479,6 +485,11 @@ func (s *BGProcessService) monitorDaemon() {
 func (s *BGProcessService) handleDaemonTermination() {
 	s.services.logger.Error("Service '%s': daemon process %d terminated",
 		s.serviceName, s.daemonPID)
+
+	// Clear utmp entry
+	if s.HasUtmp() && s.services.OnUtmpClear != nil {
+		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	}
 
 	s.daemonPID = 0
 	s.cancelTimer()

@@ -666,6 +666,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.Provides != "" {
 		rec.SetProvides(desc.Provides)
 	}
+	if desc.InittabID != "" || desc.InittabLine != "" {
+		rec.SetUtmpDetails(desc.InittabID, desc.InittabLine)
+	}
 
 	// Process attributes
 	if desc.Nice != nil {

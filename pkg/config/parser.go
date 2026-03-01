@@ -98,6 +98,10 @@ type ServiceDescription struct {
 	// Capabilities and securebits
 	Capabilities string // comma/space-separated capability names
 	Securebits   string // space-separated securebits flag names
+
+	// UTMP/WTMP
+	InittabID   string // inittab-id for utmpx
+	InittabLine string // inittab-line for utmpx
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -466,6 +470,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	case "securebits":
 		desc.Securebits = value
+
+	case "inittab-id":
+		desc.InittabID = value
+	case "inittab-line":
+		desc.InittabLine = value
 
 	case "load-options":
 		// Silently accept for forward compatibility

@@ -551,6 +551,11 @@ func (s *ProcessService) startProcess() error {
 	s.pid = pid
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
+	// Create utmp entry if inittab-id or inittab-line is configured
+	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
+		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, pid)
+	}
+
 	// Start monitoring goroutine
 	s.doneCh = make(chan struct{})
 	s.timerUpdateCh = make(chan struct{}, 1)
@@ -668,6 +673,12 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 		WaitStatus: exit.Status,
 		HasStatus:  true,
 	}
+
+	// Clear utmp entry
+	if s.HasUtmp() && s.services.OnUtmpClear != nil {
+		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	}
+
 	s.pid = 0
 	s.procHandle.Clear()
 	s.cancelTimer()

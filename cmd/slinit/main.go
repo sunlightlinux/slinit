@@ -18,6 +18,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
+	"github.com/sunlightlinux/slinit/pkg/utmp"
 	"golang.org/x/sys/unix"
 )
 
@@ -124,6 +125,19 @@ func main() {
 
 	// Create service set
 	serviceSet := service.NewServiceSet(logger)
+
+	// Wire UTMP callbacks (keeps service pkg cgo-free)
+	serviceSet.OnUtmpCreate = func(id, line string, pid int) {
+		utmp.CreateEntry(id, line, pid)
+	}
+	serviceSet.OnUtmpClear = func(id, line string) {
+		utmp.ClearEntry(id, line)
+	}
+	serviceSet.OnRWReady = func() {
+		if utmp.LogBoot() {
+			logger.Info("Boot time logged to utmp/wtmp")
+		}
+	}
 
 	// Record boot timing
 	serviceSet.SetBootStartTime(bootStartTime)

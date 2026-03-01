@@ -210,6 +210,11 @@ func (s *ScriptedService) BringUp() bool {
 	s.startPID = pid
 	s.startHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
+	// Create utmp entry for the start process
+	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
+		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, pid)
+	}
+
 	// Monitor the start command
 	s.doneCh = make(chan struct{})
 	s.timerUpdateCh = make(chan struct{}, 1)
@@ -332,6 +337,11 @@ func (s *ScriptedService) monitorStop(exitCh <-chan process.ChildExit) {
 }
 
 func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
+	// Clear utmp entry
+	if s.HasUtmp() && s.services.OnUtmpClear != nil {
+		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	}
+
 	s.startPID = 0
 	s.startHandle.Clear()
 	s.cancelTimer()

@@ -549,3 +549,21 @@ env-file = ${SLINIT_APP_DIR}/env
 		t.Errorf("EnvFile: got %q, want %q", desc.EnvFile, "/opt/myapp/env")
 	}
 }
+
+func TestParseInittabSettings(t *testing.T) {
+	input := `type = process
+command = /sbin/getty 38400 tty1
+inittab-id = 1
+inittab-line = tty1
+`
+	desc, err := Parse(strings.NewReader(input), "getty", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if desc.InittabID != "1" {
+		t.Errorf("InittabID: got %q, want %q", desc.InittabID, "1")
+	}
+	if desc.InittabLine != "tty1" {
+		t.Errorf("InittabLine: got %q, want %q", desc.InittabLine, "tty1")
+	}
+}

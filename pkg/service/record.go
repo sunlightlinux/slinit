@@ -138,6 +138,10 @@ type ServiceRecord struct {
 	// Service alias (alternative name for lookup)
 	provides string
 
+	// UTMP/WTMP fields
+	inittabID   string
+	inittabLine string
+
 	// Output pipe for log-type=pipe / consumer-of
 	outputPipeR *os.File // read end (consumer uses as stdin)
 	outputPipeW *os.File // write end (producer uses as stdout/stderr)
@@ -289,6 +293,23 @@ func (sr *ServiceRecord) SetSocketDetails(path string, perms int, uid, gid int) 
 	sr.socketUID = uid
 	sr.socketGID = gid
 }
+
+// SetUtmpDetails sets the inittab-id and inittab-line for UTMPX logging.
+func (sr *ServiceRecord) SetUtmpDetails(id, line string) {
+	sr.inittabID = id
+	sr.inittabLine = line
+}
+
+// HasUtmp returns true if either inittab-id or inittab-line is set.
+func (sr *ServiceRecord) HasUtmp() bool {
+	return sr.inittabID != "" || sr.inittabLine != ""
+}
+
+// InittabID returns the inittab-id.
+func (sr *ServiceRecord) InittabID() string { return sr.inittabID }
+
+// InittabLine returns the inittab-line.
+func (sr *ServiceRecord) InittabLine() string { return sr.inittabLine }
 
 func (sr *ServiceRecord) IsMarkedActive() bool   { return sr.startExplicit }
 func (sr *ServiceRecord) IsStartPinned() bool    { return sr.pinnedStarted || sr.deptPinnedStarted }
@@ -810,6 +831,9 @@ func (sr *ServiceRecord) Started() {
 	if sr.Flags.RWReady && !sr.services.RWReady() {
 		sr.services.SetRWReady()
 		sr.services.logger.Info("Filesystem is now read-write (service '%s')", sr.serviceName)
+		if sr.services.OnRWReady != nil {
+			sr.services.OnRWReady()
+		}
 	}
 	if sr.Flags.LogReady && !sr.services.LogReady() {
 		sr.services.SetLogReady()

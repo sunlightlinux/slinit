@@ -65,6 +65,12 @@ type ServiceSet struct {
 	// connection handler. Set by the control server at startup.
 	OnPassCSFD func(conn net.Conn)
 
+	// UTMP callbacks — wired by main.go to utmp package functions.
+	// Keeping these as callbacks avoids a cgo dependency in the service package.
+	OnUtmpCreate func(id, line string, pid int)
+	OnUtmpClear  func(id, line string)
+	OnRWReady    func() // called when starts-rwfs service reaches STARTED
+
 	// Notification channel: signaled when a service becomes inactive
 	inactiveCh chan struct{}
 }

@@ -102,6 +102,10 @@ var KnownSettings = map[string]OperatorType{
 	// capabilities
 	"capabilities": OpEquals | OpPlusEqual,
 	"securebits":   OpEquals | OpPlusEqual,
+
+	// utmp
+	"inittab-id":   OpEquals,
+	"inittab-line": OpEquals,
 }
 
 // IsKnownSetting returns true if the setting name is recognized.
