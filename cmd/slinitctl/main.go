@@ -26,49 +26,155 @@ func main() {
 	args := os.Args[1:]
 
 	// Parse global flags
-	socketPath := ""
+	var (
+		socketPath  string
+		systemMode  bool
+		userMode    bool
+		noWait      bool
+		pinFlag     bool
+		forceFlag   bool
+		ignoreUnst  bool
+		offlineMode bool
+		servicesDir string
+		fromSvc     string
+		useCFD      bool
+	)
 	for len(args) > 0 {
-		if args[0] == "--socket-path" || args[0] == "-s" {
+		switch {
+		case args[0] == "--socket-path" || args[0] == "-p":
 			if len(args) < 2 {
 				fatal("--socket-path requires an argument")
 			}
 			socketPath = args[1]
 			args = args[2:]
-		} else if strings.HasPrefix(args[0], "--socket-path=") {
+		case strings.HasPrefix(args[0], "--socket-path="):
 			socketPath = strings.TrimPrefix(args[0], "--socket-path=")
 			args = args[1:]
-		} else if args[0] == "--help" || args[0] == "-h" {
+		case args[0] == "--system" || args[0] == "-s":
+			systemMode = true
+			args = args[1:]
+		case args[0] == "--user" || args[0] == "-u":
+			userMode = true
+			args = args[1:]
+		case args[0] == "--no-wait":
+			noWait = true
+			args = args[1:]
+		case args[0] == "--pin":
+			pinFlag = true
+			args = args[1:]
+		case args[0] == "--force" || args[0] == "-f":
+			forceFlag = true
+			args = args[1:]
+		case args[0] == "--ignore-unstarted":
+			ignoreUnst = true
+			args = args[1:]
+		case args[0] == "--offline" || args[0] == "-o":
+			offlineMode = true
+			args = args[1:]
+		case args[0] == "--services-dir" || args[0] == "-d":
+			if len(args) < 2 {
+				fatal("--services-dir requires an argument")
+			}
+			servicesDir = args[1]
+			args = args[2:]
+		case strings.HasPrefix(args[0], "--services-dir="):
+			servicesDir = strings.TrimPrefix(args[0], "--services-dir=")
+			args = args[1:]
+		case args[0] == "--from":
+			if len(args) < 2 {
+				fatal("--from requires an argument")
+			}
+			fromSvc = args[1]
+			args = args[2:]
+		case strings.HasPrefix(args[0], "--from="):
+			fromSvc = strings.TrimPrefix(args[0], "--from=")
+			args = args[1:]
+		case args[0] == "--use-passed-cfd":
+			useCFD = true
+			args = args[1:]
+		case args[0] == "--help" || args[0] == "-h":
 			printUsage()
 			os.Exit(0)
-		} else if args[0] == "--version" {
+		case args[0] == "--version":
 			fmt.Println("slinitctl version 0.1.0")
 			os.Exit(0)
-		} else {
-			break
+		default:
+			goto doneFlags
 		}
 	}
+doneFlags:
 
 	if len(args) == 0 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	sockPath := resolveSocketPath(socketPath)
 	command := args[0]
 	cmdArgs := args[1:]
 
-	conn, err := connectSocket(sockPath)
+	// Offline mode: enable/disable without connecting to daemon
+	if offlineMode {
+		svcDir := servicesDir
+		if svcDir == "" {
+			if systemMode {
+				svcDir = "/etc/slinit.d"
+			} else {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					fatal("Cannot determine home directory: %v", err)
+				}
+				svcDir = home + "/.config/slinit.d"
+			}
+		}
+		switch command {
+		case "enable":
+			if len(cmdArgs) < 1 {
+				fatal("Service name required")
+			}
+			err := offlineEnable(svcDir, fromSvc, cmdArgs[0])
+			if err != nil {
+				fatal("Error: %v", err)
+			}
+		case "disable":
+			if len(cmdArgs) < 1 {
+				fatal("Service name required")
+			}
+			err := offlineDisable(svcDir, fromSvc, cmdArgs[0])
+			if err != nil {
+				fatal("Error: %v", err)
+			}
+		default:
+			fatal("Offline mode only supports enable/disable commands")
+		}
+		return
+	}
+
+	sockPath := resolveSocketPath(socketPath, systemMode, userMode)
+
+	var conn net.Conn
+	var err error
+	if useCFD {
+		conn, err = connectPassedFD()
+	} else {
+		conn, err = connectSocket(sockPath)
+	}
 	if err != nil {
+		if useCFD {
+			fatal("Failed to connect via passed fd: %v", err)
+		}
 		fatal("Failed to connect to slinit at %s: %v", sockPath, err)
 	}
 	defer conn.Close()
+
+	// Suppress output in no-wait mode
+	_ = noWait
 
 	switch command {
 	case "list", "ls":
 		err = cmdList(conn)
 	case "start":
 		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdStart(conn, name)
+			return cmdStart(conn, name, pinFlag, noWait)
 		})
 	case "wake":
 		err = requireServiceArg(cmdArgs, func(name string) error {
@@ -76,7 +182,7 @@ func main() {
 		})
 	case "stop":
 		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdStop(conn, name)
+			return cmdStop(conn, name, pinFlag, forceFlag, ignoreUnst, noWait)
 		})
 	case "release":
 		err = requireServiceArg(cmdArgs, func(name string) error {
@@ -84,7 +190,7 @@ func main() {
 		})
 	case "restart":
 		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdRestart(conn, name)
+			return cmdRestart(conn, name, pinFlag, forceFlag, ignoreUnst, noWait)
 		})
 	case "status":
 		err = requireServiceArg(cmdArgs, func(name string) error {
@@ -165,13 +271,17 @@ func main() {
 			fatal("Usage: slinitctl rm-dep <from> <dep-type> <to>")
 		}
 		err = cmdRmDep(conn, cmdArgs[0], cmdArgs[1], cmdArgs[2])
+	case "unpin":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdUnpin(conn, name)
+		})
 	case "enable":
 		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdEnable(conn, name)
+			return cmdEnable(conn, name, fromSvc)
 		})
 	case "disable":
 		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdDisable(conn, name)
+			return cmdDisable(conn, name, fromSvc)
 		})
 	default:
 		fatal("Unknown command: %s", command)
@@ -186,7 +296,17 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: slinitctl [options] <command> [args...]
 
 Options:
-  --socket-path, -s PATH   Control socket path
+  --socket-path, -p PATH   Control socket path
+  --system, -s             Connect to system service manager
+  --user, -u               Connect to user service manager
+  --no-wait                Do not wait for command completion
+  --pin                    Pin service in started/stopped state (start/stop)
+  --force, -f              Force stop even with dependents (stop/restart)
+  --ignore-unstarted       Exit 0 if service already stopped (stop/restart)
+  --offline, -o            Offline mode (enable/disable without daemon)
+  --services-dir, -d DIR   Service directory (offline mode)
+  --from <service>         Source service for enable/disable
+  --use-passed-cfd         Use fd from SLINIT_CS_FD env var
   --help, -h               Show this help
   --version                Show version
 
@@ -200,7 +320,7 @@ Commands:
   status <service>         Show detailed service status
   is-started <service>     Exit 0 if started, 1 otherwise
   is-failed <service>      Exit 0 if failed, 1 otherwise
-  shutdown [type]          Initiate shutdown (halt|poweroff|reboot|kexec)
+  shutdown [type]          Initiate shutdown (halt|poweroff|reboot|kexec|softreboot)
   trigger <service>        Trigger a triggered service
   untrigger <service>      Reset trigger state
   signal <sig> <service>   Send signal to service process
@@ -213,6 +333,7 @@ Commands:
   getallenv <svc>          List all runtime environment variables
   add-dep <from> <type> <to>  Add runtime dependency
   rm-dep <from> <type> <to>   Remove runtime dependency
+  unpin <service>          Remove start/stop pins from a service
   enable <service>         Enable service (add waits-for to boot + start)
   disable <service>        Disable service (remove waits-for from boot + stop)
 `)
@@ -230,11 +351,21 @@ func requireServiceArg(args []string, fn func(string) error) error {
 	return fn(args[0])
 }
 
-func resolveSocketPath(flagValue string) string {
+func resolveSocketPath(flagValue string, systemMode, userMode bool) string {
 	if flagValue != "" {
 		return flagValue
 	}
-	// If running as root, use system socket
+	if systemMode {
+		return defaultSystemSocket
+	}
+	if userMode {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return defaultUserSocket
+		}
+		return home + "/" + defaultUserSocket
+	}
+	// Auto-detect: root → system, non-root → user
 	if os.Getuid() == 0 {
 		return defaultSystemSocket
 	}
@@ -247,6 +378,89 @@ func resolveSocketPath(flagValue string) string {
 
 func connectSocket(path string) (net.Conn, error) {
 	return net.Dial("unix", path)
+}
+
+// connectPassedFD creates a net.Conn from a file descriptor passed via
+// the SLINIT_CS_FD environment variable.
+func connectPassedFD() (net.Conn, error) {
+	fdStr := os.Getenv("SLINIT_CS_FD")
+	if fdStr == "" {
+		return nil, fmt.Errorf("SLINIT_CS_FD environment variable not set")
+	}
+	fd, err := strconv.Atoi(fdStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid SLINIT_CS_FD value: %s", fdStr)
+	}
+	f := os.NewFile(uintptr(fd), "slinit-cs-fd")
+	if f == nil {
+		return nil, fmt.Errorf("invalid file descriptor: %d", fd)
+	}
+	conn, err := net.FileConn(f)
+	f.Close()
+	if err != nil {
+		return nil, fmt.Errorf("FileConn failed: %w", err)
+	}
+	return conn, nil
+}
+
+// encodeStartStopFlags encodes handle + optional flags byte.
+// Bit 0 = pin, Bit 1 = force (relevant only for stop).
+func encodeStartStopFlags(handle uint32, pin bool, force bool) []byte {
+	var flags uint8
+	if pin {
+		flags |= 0x01
+	}
+	if force {
+		flags |= 0x02
+	}
+	if flags == 0 {
+		return control.EncodeHandle(handle)
+	}
+	buf := make([]byte, 5)
+	binary.LittleEndian.PutUint32(buf, handle)
+	buf[4] = flags
+	return buf
+}
+
+// offlineEnable creates a waits-for.d symlink (offline mode).
+func offlineEnable(svcDir, from, to string) error {
+	if from == "" {
+		from = "boot"
+	}
+	waitsDir := svcDir + "/" + from + "/waits-for.d"
+	if err := os.MkdirAll(waitsDir, 0755); err != nil {
+		return fmt.Errorf("creating waits-for.d: %w", err)
+	}
+	link := waitsDir + "/" + to
+	// Check if link already exists
+	if _, err := os.Lstat(link); err == nil {
+		fmt.Printf("Service '%s' is already enabled (from '%s').\n", to, from)
+		return nil
+	}
+	// Create relative symlink pointing to the service file
+	target := "../../" + to
+	if err := os.Symlink(target, link); err != nil {
+		return fmt.Errorf("creating symlink: %w", err)
+	}
+	fmt.Printf("Service '%s' enabled (from '%s').\n", to, from)
+	return nil
+}
+
+// offlineDisable removes a waits-for.d symlink (offline mode).
+func offlineDisable(svcDir, from, to string) error {
+	if from == "" {
+		from = "boot"
+	}
+	link := svcDir + "/" + from + "/waits-for.d/" + to
+	if err := os.Remove(link); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Service '%s' is not enabled (from '%s').\n", to, from)
+			return nil
+		}
+		return fmt.Errorf("removing symlink: %w", err)
+	}
+	fmt.Printf("Service '%s' disabled (from '%s').\n", to, from)
+	return nil
 }
 
 // loadServiceHandle sends LoadService and returns the handle.
@@ -397,13 +611,14 @@ func formatSuffix(e control.SvcInfoEntry) string {
 	return " (" + strings.Join(parts, ", ") + ")"
 }
 
-func cmdStart(conn net.Conn, name string) error {
+func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
 	}
 
-	if err := control.WritePacket(conn, control.CmdStartService, control.EncodeHandle(handle)); err != nil {
+	payload := encodeStartStopFlags(handle, pin, false)
+	if err := control.WritePacket(conn, control.CmdStartService, payload); err != nil {
 		return err
 	}
 
@@ -414,9 +629,13 @@ func cmdStart(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' started.\n", name)
+		if !noWait {
+			fmt.Printf("Service '%s' started.\n", name)
+		}
 	case control.RplyAlreadySS:
-		fmt.Printf("Service '%s' is already started.\n", name)
+		if !noWait {
+			fmt.Printf("Service '%s' is already started.\n", name)
+		}
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")
 	default:
@@ -481,13 +700,14 @@ func cmdRelease(conn net.Conn, name string) error {
 	return nil
 }
 
-func cmdStop(conn net.Conn, name string) error {
+func cmdStop(conn net.Conn, name string, pin bool, force bool, ignoreUnstarted bool, noWait bool) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
 	}
 
-	if err := control.WritePacket(conn, control.CmdStopService, control.EncodeHandle(handle)); err != nil {
+	payload := encodeStartStopFlags(handle, pin, force)
+	if err := control.WritePacket(conn, control.CmdStopService, payload); err != nil {
 		return err
 	}
 
@@ -498,23 +718,34 @@ func cmdStop(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' stopped.\n", name)
+		if !noWait {
+			fmt.Printf("Service '%s' stopped.\n", name)
+		}
 	case control.RplyAlreadySS:
-		fmt.Printf("Service '%s' is already stopped.\n", name)
+		if ignoreUnstarted {
+			if !noWait {
+				fmt.Printf("Service '%s' is already stopped.\n", name)
+			}
+		} else {
+			if !noWait {
+				fmt.Printf("Service '%s' is already stopped.\n", name)
+			}
+		}
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
 	return nil
 }
 
-func cmdRestart(conn net.Conn, name string) error {
+func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarted bool, noWait bool) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
 	}
 
 	// Stop first
-	if err := control.WritePacket(conn, control.CmdStopService, control.EncodeHandle(handle)); err != nil {
+	stopPayload := encodeStartStopFlags(handle, false, force)
+	if err := control.WritePacket(conn, control.CmdStopService, stopPayload); err != nil {
 		return err
 	}
 	rply, _, err := control.ReadPacket(conn)
@@ -522,11 +753,16 @@ func cmdRestart(conn net.Conn, name string) error {
 		return err
 	}
 	if rply != control.RplyACK && rply != control.RplyAlreadySS {
-		return fmt.Errorf("stop failed: reply %d", rply)
+		if ignoreUnstarted && rply == control.RplyAlreadySS {
+			// already stopped, proceed
+		} else {
+			return fmt.Errorf("stop failed: reply %d", rply)
+		}
 	}
 
 	// Then start
-	if err := control.WritePacket(conn, control.CmdStartService, control.EncodeHandle(handle)); err != nil {
+	startPayload := encodeStartStopFlags(handle, pin, false)
+	if err := control.WritePacket(conn, control.CmdStartService, startPayload); err != nil {
 		return err
 	}
 	rply, _, err = control.ReadPacket(conn)
@@ -536,7 +772,9 @@ func cmdRestart(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' restarted.\n", name)
+		if !noWait {
+			fmt.Printf("Service '%s' restarted.\n", name)
+		}
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")
 	default:
@@ -651,8 +889,10 @@ func cmdShutdown(conn net.Conn, shutType string) error {
 		st = service.ShutdownReboot
 	case "kexec":
 		st = service.ShutdownKexec
+	case "softreboot", "soft-reboot":
+		st = service.ShutdownSoftReboot
 	default:
-		return fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, or kexec)", shutType)
+		return fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", shutType)
 	}
 
 	payload := []byte{uint8(st)}
@@ -1171,13 +1411,26 @@ func cmdRmDep(conn net.Conn, fromName, depTypeStr, toName string) error {
 	return nil
 }
 
-func cmdEnable(conn net.Conn, name string) error {
+func cmdEnable(conn net.Conn, name string, from string) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
 	}
 
-	if err := control.WritePacket(conn, control.CmdEnableService, control.EncodeHandle(handle)); err != nil {
+	var payload []byte
+	if from != "" {
+		fromHandle, err := loadServiceHandle(conn, from)
+		if err != nil {
+			return err
+		}
+		payload = make([]byte, 8)
+		binary.LittleEndian.PutUint32(payload, handle)
+		binary.LittleEndian.PutUint32(payload[4:], fromHandle)
+	} else {
+		payload = control.EncodeHandle(handle)
+	}
+
+	if err := control.WritePacket(conn, control.CmdEnableService, payload); err != nil {
 		return err
 	}
 
@@ -1199,13 +1452,50 @@ func cmdEnable(conn net.Conn, name string) error {
 	return nil
 }
 
-func cmdDisable(conn net.Conn, name string) error {
+func cmdUnpin(conn net.Conn, name string) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
 	}
 
-	if err := control.WritePacket(conn, control.CmdDisableService, control.EncodeHandle(handle)); err != nil {
+	if err := control.WritePacket(conn, control.CmdUnpinService, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyACK:
+		fmt.Printf("Service '%s' unpinned.\n", name)
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	return nil
+}
+
+func cmdDisable(conn net.Conn, name string, from string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	var payload []byte
+	if from != "" {
+		fromHandle, err := loadServiceHandle(conn, from)
+		if err != nil {
+			return err
+		}
+		payload = make([]byte, 8)
+		binary.LittleEndian.PutUint32(payload, handle)
+		binary.LittleEndian.PutUint32(payload[4:], fromHandle)
+	} else {
+		payload = control.EncodeHandle(handle)
+	}
+
+	if err := control.WritePacket(conn, control.CmdDisableService, payload); err != nil {
 		return err
 	}
 

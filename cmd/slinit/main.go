@@ -327,15 +327,24 @@ func resolveServiceDirs(flagValue string, systemMode bool) []string {
 	}
 
 	if systemMode {
-		return []string{defaultSystemServiceDir}
+		return []string{
+			"/etc/slinit.d",
+			"/run/slinit.d",
+			"/usr/local/lib/slinit.d",
+			"/lib/slinit.d",
+		}
 	}
 
-	// User mode: ~/.config/slinit.d
+	// User mode: multiple dirs like dinit
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return []string{defaultUserServiceDir}
 	}
-	return []string{home + "/" + defaultUserServiceDir}
+	return []string{
+		home + "/.config/slinit.d",
+		"/etc/slinit.d/user",
+		"/usr/lib/slinit.d/user",
+	}
 }
 
 // readKernelUptime reads /proc/uptime and returns the system uptime duration.

@@ -180,6 +180,13 @@ func (c *Connection) handleStartService(payload []byte) error {
 		return WritePacket(c.conn, RplyBadReq, nil)
 	}
 
+	// Optional flags byte after handle
+	var flags uint8
+	if len(payload) >= 5 {
+		flags = payload[4]
+	}
+	pin := flags&0x01 != 0
+
 	svc := c.getService(handle)
 	if svc == nil {
 		return WritePacket(c.conn, RplyBadReq, nil)
@@ -194,6 +201,9 @@ func (c *Connection) handleStartService(payload []byte) error {
 	}
 
 	c.server.services.StartService(svc)
+	if pin {
+		svc.PinStart()
+	}
 	return WritePacket(c.conn, RplyACK, nil)
 }
 
@@ -232,6 +242,14 @@ func (c *Connection) handleStopService(payload []byte) error {
 		return WritePacket(c.conn, RplyBadReq, nil)
 	}
 
+	// Optional flags byte after handle
+	var flags uint8
+	if len(payload) >= 5 {
+		flags = payload[4]
+	}
+	pin := flags&0x01 != 0
+	force := flags&0x02 != 0
+
 	svc := c.getService(handle)
 	if svc == nil {
 		return WritePacket(c.conn, RplyBadReq, nil)
@@ -241,7 +259,14 @@ func (c *Connection) handleStopService(payload []byte) error {
 		return WritePacket(c.conn, RplyAlreadySS, nil)
 	}
 
-	c.server.services.StopService(svc)
+	if force {
+		c.server.services.ForceStopService(svc)
+	} else {
+		c.server.services.StopService(svc)
+	}
+	if pin {
+		svc.PinStop()
+	}
 	return WritePacket(c.conn, RplyACK, nil)
 }
 
@@ -618,18 +643,26 @@ func (c *Connection) handleEnableService(payload []byte) error {
 		return WritePacket(c.conn, RplyShuttingDown, nil)
 	}
 
-	// Find boot service
-	bootName := c.server.services.BootServiceName()
-	if bootName == "" {
-		return WritePacket(c.conn, RplyNAK, nil)
+	// Determine "from" service: explicit handle or boot service
+	var fromSvc service.Service
+	if len(payload) >= 8 {
+		fromHandle := binary.LittleEndian.Uint32(payload[4:])
+		fromSvc = c.getService(fromHandle)
 	}
-	bootSvc, err := c.server.services.LoadService(bootName)
-	if err != nil || bootSvc == nil {
-		return WritePacket(c.conn, RplyNAK, nil)
+	if fromSvc == nil {
+		bootName := c.server.services.BootServiceName()
+		if bootName == "" {
+			return WritePacket(c.conn, RplyNAK, nil)
+		}
+		var loadErr error
+		fromSvc, loadErr = c.server.services.LoadService(bootName)
+		if loadErr != nil || fromSvc == nil {
+			return WritePacket(c.conn, RplyNAK, nil)
+		}
 	}
 
-	// Add waits-for dependency from boot to target
-	bootSvc.Record().AddDep(svc, service.DepWaitsFor)
+	// Add waits-for dependency from source to target
+	fromSvc.Record().AddDep(svc, service.DepWaitsFor)
 
 	// Start the target service
 	c.server.services.StartService(svc)
@@ -647,18 +680,25 @@ func (c *Connection) handleDisableService(payload []byte) error {
 		return WritePacket(c.conn, RplyBadReq, nil)
 	}
 
-	// Find boot service
-	bootName := c.server.services.BootServiceName()
-	if bootName == "" {
-		return WritePacket(c.conn, RplyNAK, nil)
+	// Determine "from" service: explicit handle or boot service
+	var fromSvc service.Service
+	if len(payload) >= 8 {
+		fromHandle := binary.LittleEndian.Uint32(payload[4:])
+		fromSvc = c.getService(fromHandle)
 	}
-	bootSvc := c.server.services.FindService(bootName, false)
-	if bootSvc == nil {
-		return WritePacket(c.conn, RplyNAK, nil)
+	if fromSvc == nil {
+		bootName := c.server.services.BootServiceName()
+		if bootName == "" {
+			return WritePacket(c.conn, RplyNAK, nil)
+		}
+		fromSvc = c.server.services.FindService(bootName, false)
+		if fromSvc == nil {
+			return WritePacket(c.conn, RplyNAK, nil)
+		}
 	}
 
-	// Remove waits-for dependency from boot to target
-	bootSvc.Record().RmDep(svc, service.DepWaitsFor)
+	// Remove waits-for dependency from source to target
+	fromSvc.Record().RmDep(svc, service.DepWaitsFor)
 
 	// Stop the target service
 	c.server.services.StopService(svc)

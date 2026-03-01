@@ -187,6 +187,12 @@ func (ss *ServiceSet) StopService(svc Service) {
 	ss.ProcessQueues()
 }
 
+// ForceStopService force-stops a service and all its dependents.
+func (ss *ServiceSet) ForceStopService(svc Service) {
+	svc.Record().ForcedStop()
+	ss.ProcessQueues()
+}
+
 // StopAllServices stops all services (for shutdown).
 func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 	ss.restartEnabled = false
