@@ -1,7 +1,7 @@
-//go:build !linux
+//go:build !linux || !cgo
 
 // Package utmp provides utmpx database functions.
-// This is a no-op stub for non-Linux platforms.
+// This is a no-op stub for non-Linux platforms or when cgo is disabled.
 package utmp
 
 // MaxIDLen is the maximum length of an inittab-id value.

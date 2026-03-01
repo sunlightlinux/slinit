@@ -30,7 +30,7 @@ exec qemu-system-x86_64 \
     ${KVM_ARGS} \
     -kernel "${KERNEL}" \
     -initrd "${INITRAMFS}" \
-    -append "console=ttyS0 rdinit=/sbin/init loglevel=4" \
+    -append "console=ttyS0 rdinit=/sbin/init loglevel=7" \
     -m "${MEMORY}" \
     -nographic \
     -no-reboot \

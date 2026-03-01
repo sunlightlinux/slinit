@@ -1,0 +1,10 @@
+# recovery -- emergency shell after boot failure
+# Launched automatically when -r flag is used, or when
+# user selects (e)covery at the boot failure prompt.
+# Provides an interactive shell on the console for debugging.
+type = process
+command = /bin/sh
+options = runs-on-console unmask-intr
+restart = yes
+stop-timeout = 3
+term-signal = SIGHUP

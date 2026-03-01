@@ -1,3 +1,5 @@
+//go:build linux && cgo
+
 // Package utmp provides utmpx database functions for logging boot time
 // and service process entries to /var/run/utmp and /var/log/wtmp.
 // This mirrors dinit's USE_UTMPX functionality.
