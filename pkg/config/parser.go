@@ -434,7 +434,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "ioprio":
 		desc.IOPrio = value
 
-	case "cgroup":
+	case "cgroup", "run-in-cgroup":
 		desc.CgroupPath = value
 
 	case "rlimit-nofile":
@@ -458,7 +458,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.RlimitData = lim
 
-	case "rlimit-as":
+	case "rlimit-as", "rlimit-addrspace":
 		lim, err := parseRlimit(value)
 		if err != nil {
 			return fmt.Errorf("invalid rlimit-as: %v", err)

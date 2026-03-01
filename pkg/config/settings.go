@@ -79,20 +79,22 @@ var KnownSettings = map[string]OperatorType{
 	// Alias
 	"provides": OpEquals,
 
-	// Consumer
-	"consumer-of": OpColon,
+	// Consumer (dinit uses =, slinit originally used :, accept both)
+	"consumer-of": OpEquals | OpColon,
 
 	// Load options
 	"load-options": OpEquals | OpPlusEqual,
 
 	// rlimits
-	"rlimit-nofile":  OpEquals,
-	"rlimit-core":    OpEquals,
-	"rlimit-data":    OpEquals,
-	"rlimit-as":      OpEquals,
+	"rlimit-nofile":     OpEquals,
+	"rlimit-core":       OpEquals,
+	"rlimit-data":       OpEquals,
+	"rlimit-as":         OpEquals,
+	"rlimit-addrspace":  OpEquals, // dinit compat alias for rlimit-as
 
 	// cgroup
-	"cgroup": OpEquals,
+	"cgroup":         OpEquals,
+	"run-in-cgroup":  OpEquals, // dinit compat alias for cgroup
 
 	// nice/ioprio
 	"nice":   OpEquals,
