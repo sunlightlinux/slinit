@@ -123,6 +123,10 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleEnableService(payload)
 	case CmdDisableService:
 		return c.handleDisableService(payload)
+	case CmdQueryServiceName:
+		return c.handleQueryServiceName(payload)
+	case CmdQueryServiceDscDir:
+		return c.handleQueryServiceDscDir()
 	default:
 		return WritePacket(c.conn, RplyBadReq, nil)
 	}
@@ -704,4 +708,43 @@ func (c *Connection) handleDisableService(payload []byte) error {
 	// Stop the target service
 	c.server.services.StopService(svc)
 	return WritePacket(c.conn, RplyACK, nil)
+}
+
+func (c *Connection) handleQueryServiceName(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return WritePacket(c.conn, RplyBadReq, nil)
+	}
+
+	return WritePacket(c.conn, RplyServiceName, EncodeServiceName(svc.Name()))
+}
+
+func (c *Connection) handleQueryServiceDscDir() error {
+	loader := c.server.services.GetLoader()
+	if loader == nil {
+		// No loader configured, return empty list
+		reply := make([]byte, 2)
+		return WritePacket(c.conn, RplyServiceDscDir, reply)
+	}
+
+	dirs := loader.ServiceDirs()
+	// Wire format: count(2) + [dirLen(2) + dir(N)]*
+	size := 2
+	for _, d := range dirs {
+		size += 2 + len(d)
+	}
+	buf := make([]byte, size)
+	binary.LittleEndian.PutUint16(buf, uint16(len(dirs)))
+	off := 2
+	for _, d := range dirs {
+		binary.LittleEndian.PutUint16(buf[off:], uint16(len(d)))
+		copy(buf[off+2:], d)
+		off += 2 + len(d)
+	}
+	return WritePacket(c.conn, RplyServiceDscDir, buf)
 }

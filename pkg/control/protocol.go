@@ -46,6 +46,8 @@ const (
 	CmdRmDep            uint8 = 27
 	CmdEnableService    uint8 = 28
 	CmdDisableService   uint8 = 29
+	CmdQueryServiceName uint8 = 30
+	CmdQueryServiceDscDir uint8 = 31
 )
 
 // Reply codes (server → client).
@@ -68,6 +70,8 @@ const (
 	RplySignalBadSig  uint8 = 75
 	RplySignalErr     uint8 = 76
 	RplyEnvList       uint8 = 77
+	RplyServiceName   uint8 = 78
+	RplyServiceDscDir uint8 = 79
 )
 
 // Info codes (server → client, unsolicited).

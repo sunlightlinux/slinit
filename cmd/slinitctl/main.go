@@ -299,6 +299,12 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdDisable(conn, name, fromSvc)
 		})
+	case "query-name":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdQueryServiceName(conn, name)
+		})
+	case "service-dirs":
+		err = cmdQueryServiceDscDir(conn)
 	default:
 		fatal("Unknown command: %s", command)
 	}
@@ -353,6 +359,8 @@ Commands:
   unpin <service>          Remove start/stop pins from a service
   enable <service>         Enable service (add waits-for to boot + start)
   disable <service>        Disable service (remove waits-for from boot + stop)
+  query-name <service>     Query the canonical name of a service handle
+  service-dirs             List configured service directories
 `)
 }
 
@@ -1586,6 +1594,65 @@ func cmdDisable(conn net.Conn, name string, from string) error {
 		return fmt.Errorf("could not disable service '%s': no boot service configured", name)
 	default:
 		return fmt.Errorf("disable failed: reply %d", rply)
+	}
+	return nil
+}
+
+func cmdQueryServiceName(conn net.Conn, svcName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdQueryServiceName, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyServiceName {
+		return fmt.Errorf("query-name failed: reply %d", rply)
+	}
+
+	name, _, err := control.DecodeServiceName(payload)
+	if err != nil {
+		return err
+	}
+	fmt.Println(name)
+	return nil
+}
+
+func cmdQueryServiceDscDir(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, nil); err != nil {
+		return err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyServiceDscDir {
+		return fmt.Errorf("service-dirs failed: reply %d", rply)
+	}
+
+	if len(payload) < 2 {
+		return fmt.Errorf("response too short")
+	}
+	count := int(binary.LittleEndian.Uint16(payload))
+	off := 2
+	for i := 0; i < count; i++ {
+		if len(payload) < off+2 {
+			return fmt.Errorf("truncated response at dir %d", i)
+		}
+		dirLen := int(binary.LittleEndian.Uint16(payload[off:]))
+		off += 2
+		if len(payload) < off+dirLen {
+			return fmt.Errorf("truncated response at dir %d", i)
+		}
+		fmt.Println(string(payload[off : off+dirLen]))
+		off += dirLen
 	}
 	return nil
 }
