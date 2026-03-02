@@ -22,6 +22,9 @@ const (
 	defaultUserSocket   = ".slinitctl"
 )
 
+// quiet suppresses informational output (set by --quiet/-q).
+var quiet bool
+
 func main() {
 	args := os.Args[1:]
 
@@ -38,6 +41,7 @@ func main() {
 		servicesDir string
 		fromSvc     string
 		useCFD      bool
+		quietMode   bool
 	)
 	for len(args) > 0 {
 		switch {
@@ -91,6 +95,9 @@ func main() {
 			args = args[1:]
 		case args[0] == "--use-passed-cfd":
 			useCFD = true
+			args = args[1:]
+		case args[0] == "--quiet" || args[0] == "-q":
+			quietMode = true
 			args = args[1:]
 		case args[0] == "--help" || args[0] == "-h":
 			printUsage()
@@ -171,8 +178,8 @@ doneFlags:
 		fatal("%v", err)
 	}
 
-	// Suppress output in no-wait mode
-	_ = noWait
+	// Set package-level quiet flag
+	quiet = quietMode || noWait
 
 	switch command {
 	case "list", "ls":
@@ -224,8 +231,12 @@ doneFlags:
 			return cmdUntrigger(conn, name)
 		})
 	case "signal":
+		if len(cmdArgs) >= 1 && (cmdArgs[0] == "--list" || cmdArgs[0] == "-l") {
+			printSignalList()
+			return
+		}
 		if len(cmdArgs) < 2 {
-			fatal("Usage: slinitctl signal <signal> <service>")
+			fatal("Usage: slinitctl signal [-l|--list] <signal> <service>")
 		}
 		err = cmdSignal(conn, cmdArgs[1], cmdArgs[0])
 	case "boot-time", "analyze":
@@ -312,6 +323,7 @@ Options:
   --services-dir, -d DIR   Service directory (offline mode)
   --from <service>         Source service for enable/disable
   --use-passed-cfd         Use fd from SLINIT_CS_FD env var
+  --quiet, -q              Suppress informational output
   --help, -h               Show this help
   --version                Show version
 
@@ -328,7 +340,7 @@ Commands:
   shutdown [type]          Initiate shutdown (halt|poweroff|reboot|kexec|softreboot)
   trigger <service>        Trigger a triggered service
   untrigger <service>      Reset trigger state
-  signal <sig> <service>   Send signal to service process
+  signal [-l] <sig> <svc>  Send signal to service process (-l to list)
   reload <service>         Reload service configuration from disk
   unload <service>         Unload a stopped service from memory
   boot-time                Show boot timing analysis
@@ -347,6 +359,13 @@ Commands:
 func fatal(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "slinitctl: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// info prints an informational message unless quiet mode is active.
+func info(format string, args ...interface{}) {
+	if !quiet {
+		fmt.Printf(format, args...)
+	}
 }
 
 func requireServiceArg(args []string, fn func(string) error) error {
@@ -481,7 +500,7 @@ func offlineEnable(svcDir, from, to string) error {
 	link := waitsDir + "/" + to
 	// Check if link already exists
 	if _, err := os.Lstat(link); err == nil {
-		fmt.Printf("Service '%s' is already enabled (from '%s').\n", to, from)
+		info("Service '%s' is already enabled (from '%s').\n", to, from)
 		return nil
 	}
 	// Create relative symlink pointing to the service file
@@ -489,7 +508,7 @@ func offlineEnable(svcDir, from, to string) error {
 	if err := os.Symlink(target, link); err != nil {
 		return fmt.Errorf("creating symlink: %w", err)
 	}
-	fmt.Printf("Service '%s' enabled (from '%s').\n", to, from)
+	info("Service '%s' enabled (from '%s').\n", to, from)
 	return nil
 }
 
@@ -501,12 +520,12 @@ func offlineDisable(svcDir, from, to string) error {
 	link := svcDir + "/" + from + "/waits-for.d/" + to
 	if err := os.Remove(link); err != nil {
 		if os.IsNotExist(err) {
-			fmt.Printf("Service '%s' is not enabled (from '%s').\n", to, from)
+			info("Service '%s' is not enabled (from '%s').\n", to, from)
 			return nil
 		}
 		return fmt.Errorf("removing symlink: %w", err)
 	}
-	fmt.Printf("Service '%s' disabled (from '%s').\n", to, from)
+	info("Service '%s' disabled (from '%s').\n", to, from)
 	return nil
 }
 
@@ -676,13 +695,9 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 
 	switch rply {
 	case control.RplyACK:
-		if !noWait {
-			fmt.Printf("Service '%s' started.\n", name)
-		}
+		info("Service '%s' started.\n", name)
 	case control.RplyAlreadySS:
-		if !noWait {
-			fmt.Printf("Service '%s' is already started.\n", name)
-		}
+		info("Service '%s' is already started.\n", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")
 	default:
@@ -708,9 +723,9 @@ func cmdWake(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' woken.\n", name)
+		info("Service '%s' woken.\n", name)
 	case control.RplyAlreadySS:
-		fmt.Printf("Service '%s' is already started.\n", name)
+		info("Service '%s' is already started.\n", name)
 	case control.RplyNAK:
 		return fmt.Errorf("service '%s' has no active dependents, cannot wake", name)
 	case control.RplyShuttingDown:
@@ -738,9 +753,9 @@ func cmdRelease(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' released.\n", name)
+		info("Service '%s' released.\n", name)
 	case control.RplyAlreadySS:
-		fmt.Printf("Service '%s' is already stopped.\n", name)
+		info("Service '%s' is already stopped.\n", name)
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
@@ -765,19 +780,9 @@ func cmdStop(conn net.Conn, name string, pin bool, force bool, ignoreUnstarted b
 
 	switch rply {
 	case control.RplyACK:
-		if !noWait {
-			fmt.Printf("Service '%s' stopped.\n", name)
-		}
+		info("Service '%s' stopped.\n", name)
 	case control.RplyAlreadySS:
-		if ignoreUnstarted {
-			if !noWait {
-				fmt.Printf("Service '%s' is already stopped.\n", name)
-			}
-		} else {
-			if !noWait {
-				fmt.Printf("Service '%s' is already stopped.\n", name)
-			}
-		}
+		info("Service '%s' is already stopped.\n", name)
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
@@ -819,9 +824,7 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 
 	switch rply {
 	case control.RplyACK:
-		if !noWait {
-			fmt.Printf("Service '%s' restarted.\n", name)
-		}
+		info("Service '%s' restarted.\n", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")
 	default:
@@ -953,7 +956,7 @@ func cmdShutdown(conn net.Conn, shutType string) error {
 	}
 
 	if rply == control.RplyACK {
-		fmt.Printf("Shutdown (%s) initiated.\n", shutType)
+		info("Shutdown (%s) initiated.\n", shutType)
 	} else {
 		return fmt.Errorf("shutdown failed: reply %d", rply)
 	}
@@ -981,7 +984,7 @@ func cmdTrigger(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' triggered.\n", name)
+		info("Service '%s' triggered.\n", name)
 	case control.RplyNAK:
 		return fmt.Errorf("service '%s' is not a triggered service", name)
 	default:
@@ -1011,7 +1014,7 @@ func cmdUntrigger(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' untriggered.\n", name)
+		info("Service '%s' untriggered.\n", name)
 	case control.RplyNAK:
 		return fmt.Errorf("service '%s' is not a triggered service", name)
 	default:
@@ -1046,7 +1049,7 @@ func cmdSignal(conn net.Conn, svcName string, sigStr string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Signal %s sent to service '%s'.\n", sigStr, svcName)
+		info("Signal %s sent to service '%s'.\n", sigStr, svcName)
 	case control.RplySignalNoPID:
 		return fmt.Errorf("service '%s' has no running process", svcName)
 	case control.RplySignalErr:
@@ -1152,7 +1155,7 @@ func cmdReload(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' reloaded.\n", name)
+		info("Service '%s' reloaded.\n", name)
 	case control.RplyNAK:
 		return fmt.Errorf("could not reload service '%s'; service may be in wrong state or have incompatible changes", name)
 	default:
@@ -1178,7 +1181,7 @@ func cmdUnload(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' unloaded.\n", name)
+		info("Service '%s' unloaded.\n", name)
 	case control.RplyNotStopped:
 		return fmt.Errorf("could not unload service '%s'; service is not stopped", name)
 	case control.RplyNAK:
@@ -1224,6 +1227,31 @@ func cmdCatLog(conn net.Conn, name string, clear bool) error {
 		return nil
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+}
+
+func printSignalList() {
+	signals := []struct {
+		name string
+		num  int
+	}{
+		{"HUP", 1}, {"INT", 2}, {"QUIT", 3}, {"ILL", 4},
+		{"TRAP", 5}, {"ABRT", 6}, {"BUS", 7}, {"FPE", 8},
+		{"KILL", 9}, {"USR1", 10}, {"SEGV", 11}, {"USR2", 12},
+		{"PIPE", 13}, {"ALRM", 14}, {"TERM", 15}, {"STKFLT", 16},
+		{"CHLD", 17}, {"CONT", 18}, {"STOP", 19}, {"TSTP", 20},
+		{"TTIN", 21}, {"TTOU", 22}, {"URG", 23}, {"XCPU", 24},
+		{"XFSZ", 25}, {"VTALRM", 26}, {"PROF", 27}, {"WINCH", 28},
+		{"IO", 29}, {"PWR", 30}, {"SYS", 31},
+	}
+	for _, s := range signals {
+		fmt.Printf("%2d) SIG%-8s", s.num, s.name)
+		if s.num%4 == 0 {
+			fmt.Println()
+		}
+	}
+	if len(signals)%4 != 0 {
+		fmt.Println()
 	}
 }
 
@@ -1308,7 +1336,7 @@ func cmdSetEnv(conn net.Conn, svcName, kvPair string) error {
 	if rply != control.RplyACK {
 		return fmt.Errorf("setenv failed: reply %d", rply)
 	}
-	fmt.Printf("Service '%s': set %s=%s\n", svcName, key, value)
+	info("Service '%s': set %s=%s\n", svcName, key, value)
 	return nil
 }
 
@@ -1330,7 +1358,7 @@ func cmdUnsetEnv(conn net.Conn, svcName, key string) error {
 	if rply != control.RplyACK {
 		return fmt.Errorf("unsetenv failed: reply %d", rply)
 	}
-	fmt.Printf("Service '%s': unset %s\n", svcName, key)
+	info("Service '%s': unset %s\n", svcName, key)
 	return nil
 }
 
@@ -1418,7 +1446,7 @@ func cmdAddDep(conn net.Conn, fromName, depTypeStr, toName string) error {
 	if rply != control.RplyACK {
 		return fmt.Errorf("add-dep failed: reply %d", rply)
 	}
-	fmt.Printf("Added %s dependency: %s -> %s\n", depTypeStr, fromName, toName)
+	info("Added %s dependency: %s -> %s\n", depTypeStr, fromName, toName)
 	return nil
 }
 
@@ -1449,7 +1477,7 @@ func cmdRmDep(conn net.Conn, fromName, depTypeStr, toName string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Removed %s dependency: %s -> %s\n", depTypeStr, fromName, toName)
+		info("Removed %s dependency: %s -> %s\n", depTypeStr, fromName, toName)
 	case control.RplyNAK:
 		return fmt.Errorf("dependency %s -> %s (%s) not found", fromName, toName, depTypeStr)
 	default:
@@ -1488,7 +1516,7 @@ func cmdEnable(conn net.Conn, name string, from string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' enabled.\n", name)
+		info("Service '%s' enabled.\n", name)
 	case control.RplyNAK:
 		return fmt.Errorf("could not enable service '%s': no boot service configured", name)
 	case control.RplyShuttingDown:
@@ -1516,7 +1544,7 @@ func cmdUnpin(conn net.Conn, name string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' unpinned.\n", name)
+		info("Service '%s' unpinned.\n", name)
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
@@ -1553,7 +1581,7 @@ func cmdDisable(conn net.Conn, name string, from string) error {
 
 	switch rply {
 	case control.RplyACK:
-		fmt.Printf("Service '%s' disabled.\n", name)
+		info("Service '%s' disabled.\n", name)
 	case control.RplyNAK:
 		return fmt.Errorf("could not disable service '%s': no boot service configured", name)
 	default:

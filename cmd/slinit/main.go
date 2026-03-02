@@ -54,6 +54,8 @@ func main() {
 		bootServices   stringSlice
 		showVersion    bool
 		logLevel       string
+		consoleLevel   string
+		quietMode      bool
 		autoRecovery   bool
 	)
 
@@ -67,6 +69,9 @@ func main() {
 	flag.Var(&bootServices, "service", "service to start at boot (can be specified multiple times)")
 	flag.BoolVar(&showVersion, "version", false, "show version and exit")
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, notice, warn, error)")
+	flag.StringVar(&consoleLevel, "console-level", "", "minimum level for console output (overrides log-level for console)")
+	flag.BoolVar(&quietMode, "q", false, "suppress all but error output (equivalent to --console-level error)")
+	flag.BoolVar(&quietMode, "quiet", false, "suppress all but error output (equivalent to --console-level error)")
 	flag.BoolVar(&autoRecovery, "r", false, "auto-run recovery service on boot failure")
 	flag.BoolVar(&autoRecovery, "auto-recovery", false, "auto-run recovery service on boot failure")
 
@@ -115,6 +120,12 @@ func main() {
 
 	// Set up logger
 	level := parseLogLevel(logLevel)
+	if consoleLevel != "" {
+		level = parseLogLevel(consoleLevel)
+	}
+	if quietMode {
+		level = logging.LevelError
+	}
 	logger := logging.New(level)
 
 	if containerMode {
