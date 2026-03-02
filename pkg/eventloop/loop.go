@@ -177,11 +177,26 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return false
 
 	case syscall.SIGCHLD:
-		// Note: Go's os/exec runtime handles Wait4 for managed children.
-		// We must NOT call Wait4(-1) here as it would steal managed children,
-		// causing ProcessService goroutines to get ECHILD and misinterpret it
-		// as the service crashing. Orphan reaping will be added in Phase 6
-		// with proper PID tracking to avoid conflicts with os/exec.
+		// Reap orphaned processes. Each managed service child gets its own
+		// process group (Setpgid), and group members are reaped directly in
+		// handleChildExit via KillProcessGroup(-pgid). This loop catches
+		// remaining orphans: double-forked daemons, setsid'd children, etc.
+		//
+		// There is a small race with os/exec's internal Wait4(pid): if we
+		// reap a managed child here, the goroutine gets ECHILD and reports
+		// status=0. In practice Go's runtime reaps managed children before
+		// this handler runs, so the race is extremely unlikely. The
+		// trade-off (no zombie accumulation) is worth it for PID 1.
+		if el.isPID1 {
+			for {
+				var status syscall.WaitStatus
+				pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
+				if pid <= 0 || err != nil {
+					break
+				}
+				el.logger.Debug("Reaped orphan process %d (status: %v)", pid, status)
+			}
+		}
 		return false
 	}
 

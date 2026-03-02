@@ -674,6 +674,12 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 		HasStatus:  true,
 	}
 
+	// Kill any remaining processes in the child's process group
+	// (e.g., orphaned sleep, background scripts spawned by the shell).
+	// The lead process is already reaped; wait4(-pgid) only targets
+	// group members, so this is safe for other managed services.
+	process.KillProcessGroup(exit.PID)
+
 	// Clear utmp entry
 	if s.HasUtmp() && s.services.OnUtmpClear != nil {
 		s.services.OnUtmpClear(s.inittabID, s.inittabLine)

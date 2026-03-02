@@ -337,6 +337,9 @@ func (s *ScriptedService) monitorStop(exitCh <-chan process.ChildExit) {
 }
 
 func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
+	// Kill remaining process group members (orphaned children of the script)
+	process.KillProcessGroup(exit.PID)
+
 	// Clear utmp entry
 	if s.HasUtmp() && s.services.OnUtmpClear != nil {
 		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
@@ -374,6 +377,9 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 }
 
 func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
+	// Kill remaining process group members
+	process.KillProcessGroup(exit.PID)
+
 	s.stopPID = 0
 	s.stopHandle.Clear()
 	s.cancelTimer()

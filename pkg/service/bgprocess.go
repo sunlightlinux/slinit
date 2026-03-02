@@ -388,6 +388,9 @@ func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 
 // handleLauncherExit processes the launcher process termination.
 func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
+	// Kill remaining process group members from the launcher
+	process.KillProcessGroup(exit.PID)
+
 	s.launcherPID = 0
 	s.procHandle.Clear()
 

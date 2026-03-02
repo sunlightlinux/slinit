@@ -211,3 +211,24 @@ func SignalProcess(pid int, sig syscall.Signal, processOnly bool) error {
 	// Signal the process group
 	return syscall.Kill(-pid, sig)
 }
+
+// KillProcessGroup sends SIGKILL to all remaining processes in a process
+// group and reaps their zombie entries. The group leader should already have
+// been reaped by cmd.Wait(). Because each service uses Setpgid, the pgid
+// equals the leader's PID. Using wait4(-pgid) is safe: it only reaps
+// children in this specific group, never other managed service processes.
+func KillProcessGroup(pgid int) {
+	if pgid <= 0 {
+		return
+	}
+	// Kill remaining group members (ESRCH if group is already empty)
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	// Reap zombies from this specific group
+	for {
+		var status syscall.WaitStatus
+		pid, err := syscall.Wait4(-pgid, &status, syscall.WNOHANG, nil)
+		if pid <= 0 || err != nil {
+			break
+		}
+	}
+}
