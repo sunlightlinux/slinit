@@ -102,6 +102,10 @@ type ServiceDescription struct {
 	// UTMP/WTMP
 	InittabID   string // inittab-id for utmpx
 	InittabLine string // inittab-line for utmpx
+
+	// Load options
+	ExportPasswdVars  bool // export USER, LOGNAME, HOME, SHELL, UID, GID from passwd
+	ExportServiceName bool // export DINIT_SERVICE=<name> env var
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -258,9 +262,17 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "description":
 		desc.Description = value
 	case "command":
-		desc.Command = splitCommand(expandEnvVars(value))
+		if op == OpPlusEqual {
+			desc.Command = append(desc.Command, splitCommand(expandEnvVars(value))...)
+		} else {
+			desc.Command = splitCommand(expandEnvVars(value))
+		}
 	case "stop-command":
-		desc.StopCommand = splitCommand(expandEnvVars(value))
+		if op == OpPlusEqual {
+			desc.StopCommand = append(desc.StopCommand, splitCommand(expandEnvVars(value))...)
+		} else {
+			desc.StopCommand = splitCommand(expandEnvVars(value))
+		}
 	case "working-dir":
 		desc.WorkingDir = expandEnvVars(value)
 	case "env-file":
@@ -477,7 +489,16 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.InittabLine = value
 
 	case "load-options":
-		// Silently accept for forward compatibility
+		for _, opt := range strings.Fields(value) {
+			switch opt {
+			case "export-passwd-vars":
+				desc.ExportPasswdVars = true
+			case "export-service-name":
+				desc.ExportServiceName = true
+			case "sub-vars":
+				// Always on in slinit, silently accept
+			}
+		}
 	}
 
 	return nil
@@ -738,7 +759,7 @@ func expandEnvVars(s string) string {
 			continue
 		}
 
-		// ${VAR} syntax
+		// ${VAR}, ${VAR:-default}, ${VAR:+alt} syntax
 		if s[i] == '{' {
 			i++ // skip '{'
 			end := strings.IndexByte(s[i:], '}')
@@ -747,9 +768,32 @@ func expandEnvVars(s string) string {
 				b.WriteString("${")
 				continue
 			}
-			name := s[i : i+end]
-			b.WriteString(os.Getenv(name))
+			expr := s[i : i+end]
 			i += end + 1 // skip past '}'
+
+			if colonIdx := strings.IndexByte(expr, ':'); colonIdx >= 0 && colonIdx+1 < len(expr) {
+				varName := expr[:colonIdx]
+				op := expr[colonIdx+1]
+				operand := expr[colonIdx+2:]
+				val, set := os.LookupEnv(varName)
+				switch op {
+				case '-': // ${VAR:-default} — use default if unset or empty
+					if !set || val == "" {
+						b.WriteString(operand)
+					} else {
+						b.WriteString(val)
+					}
+				case '+': // ${VAR:+alt} — use alt if set and non-empty
+					if set && val != "" {
+						b.WriteString(operand)
+					}
+				default:
+					// Unknown operator, treat as plain var name with colon
+					b.WriteString(os.Getenv(expr))
+				}
+			} else {
+				b.WriteString(os.Getenv(expr))
+			}
 			continue
 		}
 

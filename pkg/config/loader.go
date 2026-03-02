@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -451,6 +452,9 @@ func (dl *DirLoader) loadServiceImpl(name string) (service.Service, error) {
 	// Apply settings to the service record
 	applyToService(svc, desc)
 
+	// Apply load-options
+	applyLoadOptions(svc, desc)
+
 	// Set up consumer-of relationship
 	if desc.ConsumerOf != "" {
 		if err := dl.setupConsumerOf(svc, desc); err != nil {
@@ -768,6 +772,55 @@ func (dl *DirLoader) setupConsumerOf(consumer service.Service, desc *ServiceDesc
 	consumer.Record().SetConsumerFor(producer)
 
 	return nil
+}
+
+// applyLoadOptions processes load-options flags (export-passwd-vars, export-service-name).
+func applyLoadOptions(svc service.Service, desc *ServiceDescription) {
+	rec := svc.Record()
+
+	if desc.ExportServiceName {
+		rec.SetEnvVar("DINIT_SERVICE", svc.Name())
+	}
+
+	if desc.ExportPasswdVars {
+		var u *user.User
+		var err error
+		if desc.RunAs != "" {
+			// Try as username first, then as UID
+			u, err = user.Lookup(desc.RunAs)
+			if err != nil {
+				u, err = user.LookupId(desc.RunAs)
+			}
+		} else {
+			u, err = user.LookupId(fmt.Sprintf("%d", os.Getuid()))
+		}
+		if err == nil {
+			rec.SetEnvVar("USER", u.Username)
+			rec.SetEnvVar("LOGNAME", u.Username)
+			rec.SetEnvVar("HOME", u.HomeDir)
+			rec.SetEnvVar("UID", u.Uid)
+			rec.SetEnvVar("GID", u.Gid)
+			// Shell: os/user doesn't expose shell, read from /etc/passwd
+			if shell := lookupShell(u.Uid); shell != "" {
+				rec.SetEnvVar("SHELL", shell)
+			}
+		}
+	}
+}
+
+// lookupShell reads /etc/passwd to find the shell for a given UID string.
+func lookupShell(uid string) string {
+	data, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 7 && fields[2] == uid {
+			return fields[6]
+		}
+	}
+	return ""
 }
 
 // ServiceLoadError represents a service loading failure.

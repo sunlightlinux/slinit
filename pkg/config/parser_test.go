@@ -550,6 +550,152 @@ env-file = ${SLINIT_APP_DIR}/env
 	}
 }
 
+func TestExpandEnvVarsDefault(t *testing.T) {
+	// Test ${VAR:-default} and ${VAR:+alt} operators
+	os.Setenv("SLINIT_TEST_SET", "value123")
+	os.Unsetenv("SLINIT_TEST_UNSET")
+	os.Setenv("SLINIT_TEST_EMPTY", "")
+	defer os.Unsetenv("SLINIT_TEST_SET")
+	defer os.Unsetenv("SLINIT_TEST_EMPTY")
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// ${VAR:-default} — use default if unset or empty
+		{"${SLINIT_TEST_SET:-fallback}", "value123"},
+		{"${SLINIT_TEST_UNSET:-fallback}", "fallback"},
+		{"${SLINIT_TEST_EMPTY:-fallback}", "fallback"},
+		{"prefix-${SLINIT_TEST_UNSET:-/default/path}-suffix", "prefix-/default/path-suffix"},
+
+		// ${VAR:+alt} — use alt if set and non-empty
+		{"${SLINIT_TEST_SET:+alt}", "alt"},
+		{"${SLINIT_TEST_UNSET:+alt}", ""},
+		{"${SLINIT_TEST_EMPTY:+alt}", ""},
+		{"pre-${SLINIT_TEST_SET:+YES}-post", "pre-YES-post"},
+		{"pre-${SLINIT_TEST_UNSET:+YES}-post", "pre--post"},
+
+		// Combined with plain vars
+		{"$SLINIT_TEST_SET-${SLINIT_TEST_UNSET:-default}", "value123-default"},
+	}
+
+	for _, tt := range tests {
+		got := expandEnvVars(tt.input)
+		if got != tt.expected {
+			t.Errorf("expandEnvVars(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestCommandPlusEqual(t *testing.T) {
+	input := `type = process
+command = /usr/bin/myapp
+command += --verbose
+command += --config /etc/myapp.conf
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	expected := []string{"/usr/bin/myapp", "--verbose", "--config", "/etc/myapp.conf"}
+	if len(desc.Command) != len(expected) {
+		t.Fatalf("Command length: got %d, want %d; command=%v", len(desc.Command), len(expected), desc.Command)
+	}
+	for i, want := range expected {
+		if desc.Command[i] != want {
+			t.Errorf("Command[%d]: got %q, want %q", i, desc.Command[i], want)
+		}
+	}
+}
+
+func TestStopCommandPlusEqual(t *testing.T) {
+	input := `type = process
+command = /usr/bin/myapp
+stop-command = /usr/bin/myapp --stop
+stop-command += --graceful
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	expected := []string{"/usr/bin/myapp", "--stop", "--graceful"}
+	if len(desc.StopCommand) != len(expected) {
+		t.Fatalf("StopCommand length: got %d, want %d; cmd=%v", len(desc.StopCommand), len(expected), desc.StopCommand)
+	}
+	for i, want := range expected {
+		if desc.StopCommand[i] != want {
+			t.Errorf("StopCommand[%d]: got %q, want %q", i, desc.StopCommand[i], want)
+		}
+	}
+}
+
+func TestCommandPlusEqualReplace(t *testing.T) {
+	// Verify that = after += replaces everything
+	input := `type = process
+command = /usr/bin/old
+command += --flag
+command = /usr/bin/new
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if len(desc.Command) != 1 || desc.Command[0] != "/usr/bin/new" {
+		t.Errorf("Command after replace: got %v, want [/usr/bin/new]", desc.Command)
+	}
+}
+
+func TestLoadOptionsExportPasswdVars(t *testing.T) {
+	input := `type = process
+command = /usr/bin/app
+load-options = export-passwd-vars
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if !desc.ExportPasswdVars {
+		t.Error("ExportPasswdVars should be true")
+	}
+	if desc.ExportServiceName {
+		t.Error("ExportServiceName should be false")
+	}
+}
+
+func TestLoadOptionsExportServiceName(t *testing.T) {
+	input := `type = process
+command = /usr/bin/app
+load-options = export-service-name
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if !desc.ExportServiceName {
+		t.Error("ExportServiceName should be true")
+	}
+	if desc.ExportPasswdVars {
+		t.Error("ExportPasswdVars should be false")
+	}
+}
+
+func TestLoadOptionsMultiple(t *testing.T) {
+	input := `type = process
+command = /usr/bin/app
+load-options = export-passwd-vars export-service-name sub-vars
+`
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if !desc.ExportPasswdVars {
+		t.Error("ExportPasswdVars should be true")
+	}
+	if !desc.ExportServiceName {
+		t.Error("ExportServiceName should be true")
+	}
+}
+
 func TestParseInittabSettings(t *testing.T) {
 	input := `type = process
 command = /sbin/getty 38400 tty1

@@ -114,8 +114,20 @@ func main() {
 		}
 	}
 
-	// Positional args are also treated as service names (like dinit)
-	bootServices = append(bootServices, flag.Args()...)
+	// Positional args are treated as service names.
+	// When running as PID 1 on Linux, the kernel passes unrecognized cmdline
+	// args to init, so we only accept known service names ("single") and
+	// ignore everything else — matching dinit behavior.
+	if isPID1 {
+		for _, arg := range flag.Args() {
+			if arg == "single" {
+				bootServices = append(bootServices, arg)
+			}
+			// Other kernel parameters (e.g. "nopti", "auto") are ignored
+		}
+	} else {
+		bootServices = append(bootServices, flag.Args()...)
+	}
 
 	// Default to "boot" if no services specified
 	if len(bootServices) == 0 {

@@ -34,8 +34,8 @@ var KnownSettings = map[string]OperatorType{
 	"after":         OpColon,
 
 	// Commands
-	"command":      OpEquals,
-	"stop-command": OpEquals,
+	"command":      OpEquals | OpPlusEqual,
+	"stop-command": OpEquals | OpPlusEqual,
 
 	// Working directory
 	"working-dir": OpEquals,
