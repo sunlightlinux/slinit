@@ -69,7 +69,17 @@ type ServiceSet struct {
 	// Keeping these as callbacks avoids a cgo dependency in the service package.
 	OnUtmpCreate func(id, line string, pid int)
 	OnUtmpClear  func(id, line string)
-	OnRWReady    func() // called when starts-rwfs service reaches STARTED
+	OnRWReady   func() // called when starts-rwfs service reaches STARTED
+	OnBootReady func() // called when boot service reaches STARTED (for --ready-fd)
+
+	// Global daemon-level environment (from --env-file/-e)
+	globalEnv []string
+
+	// Default cgroup base path (from --cgroup-path/-b)
+	defaultCgroupPath string
+
+	// Ready notification fd (from --ready-fd/-F), -1 if unset
+	readyFD int
 
 	// Notification channel: signaled when a service becomes inactive
 	inactiveCh chan struct{}
@@ -82,6 +92,7 @@ func NewServiceSet(logger ServiceLogger) *ServiceSet {
 		aliases:        make(map[string]Service),
 		restartEnabled: true,
 		logger:         logger,
+		readyFD:        -1,
 	}
 }
 
@@ -323,6 +334,15 @@ func (ss *ServiceSet) BootStartTime() time.Time   { return ss.bootStartTime }
 func (ss *ServiceSet) BootReadyTime() time.Time    { return ss.bootReadyTime }
 func (ss *ServiceSet) BootServiceName() string     { return ss.bootServiceName }
 func (ss *ServiceSet) KernelUptime() time.Duration { return ss.kernelUptime }
+
+// --- Global daemon settings ---
+
+func (ss *ServiceSet) SetGlobalEnv(env []string)       { ss.globalEnv = env }
+func (ss *ServiceSet) GlobalEnv() []string              { return ss.globalEnv }
+func (ss *ServiceSet) SetDefaultCgroupPath(p string)    { ss.defaultCgroupPath = p }
+func (ss *ServiceSet) DefaultCgroupPath() string        { return ss.defaultCgroupPath }
+func (ss *ServiceSet) SetReadyFD(fd int)                { ss.readyFD = fd }
+func (ss *ServiceSet) ReadyFD() int                     { return ss.readyFD }
 
 // RWReady returns true when a service with starts-rwfs has reached STARTED.
 func (ss *ServiceSet) RWReady() bool { return ss.rwReady }

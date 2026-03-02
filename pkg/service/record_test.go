@@ -1,7 +1,10 @@
 package service
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // testLogger is a minimal ServiceLogger for tests.
@@ -369,5 +372,148 @@ func TestServiceListenerNotifications(t *testing.T) {
 
 	if len(listener.events) != 2 || listener.events[1] != EventStopped {
 		t.Errorf("expected [STARTED, STOPPED] events, got %v", listener.events)
+	}
+}
+
+func TestGlobalEnvPropagation(t *testing.T) {
+	set, _ := newTestSet()
+	set.SetGlobalEnv([]string{"GLOBAL_KEY=global_value", "SHARED=from_global"})
+
+	svc := NewInternalService(set, "env-svc")
+	set.AddService(svc)
+
+	// Set per-service env
+	svc.Record().SetEnvVar("LOCAL_KEY", "local_value")
+	svc.Record().SetEnvVar("SHARED", "from_service")
+
+	env := svc.Record().BuildFullEnv()
+
+	hasGlobal := false
+	hasLocal := false
+	for _, e := range env {
+		if e == "GLOBAL_KEY=global_value" {
+			hasGlobal = true
+		}
+		if e == "LOCAL_KEY=local_value" {
+			hasLocal = true
+		}
+	}
+
+	if !hasGlobal {
+		t.Error("expected GLOBAL_KEY in BuildFullEnv")
+	}
+	if !hasLocal {
+		t.Error("expected LOCAL_KEY in BuildFullEnv")
+	}
+}
+
+func TestGlobalEnvEmptyWhenUnset(t *testing.T) {
+	set, _ := newTestSet()
+
+	svc := NewInternalService(set, "no-env")
+	set.AddService(svc)
+
+	env := svc.Record().BuildFullEnv()
+	if len(env) != 0 {
+		t.Errorf("expected empty env, got %v", env)
+	}
+}
+
+func TestDefaultCgroupPath(t *testing.T) {
+	set, _ := newTestSet()
+	set.SetDefaultCgroupPath("/sys/fs/cgroup/slinit")
+
+	svc := NewInternalService(set, "cgroup-svc")
+	set.AddService(svc)
+
+	// No per-service cgroup — should use default
+	params := &process.ExecParams{}
+	svc.Record().ApplyProcessAttrs(params)
+
+	if params.CgroupPath != "/sys/fs/cgroup/slinit" {
+		t.Errorf("expected default cgroup path, got %q", params.CgroupPath)
+	}
+
+	// Set per-service cgroup — should override default
+	svc.Record().SetCgroupPath("/sys/fs/cgroup/custom")
+	params2 := &process.ExecParams{}
+	svc.Record().ApplyProcessAttrs(params2)
+
+	if params2.CgroupPath != "/sys/fs/cgroup/custom" {
+		t.Errorf("expected per-service cgroup, got %q", params2.CgroupPath)
+	}
+}
+
+func TestQueryEnvVarsInjected(t *testing.T) {
+	set, _ := newTestSet()
+
+	svc := NewInternalService(set, "my-service")
+	set.AddService(svc)
+	svc.Record().SetServiceDir("/etc/slinit.d")
+
+	params := &process.ExecParams{}
+	svc.Record().ApplyProcessAttrs(params)
+
+	hasName := false
+	hasDir := false
+	for _, e := range params.Env {
+		if e == "SLINIT_SERVICENAME=my-service" {
+			hasName = true
+		}
+		if e == "SLINIT_SERVICEDSCDIR=/etc/slinit.d" {
+			hasDir = true
+		}
+	}
+
+	if !hasName {
+		t.Errorf("expected SLINIT_SERVICENAME in env, got %v", params.Env)
+	}
+	if !hasDir {
+		t.Errorf("expected SLINIT_SERVICEDSCDIR in env, got %v", params.Env)
+	}
+}
+
+func TestQueryEnvVarsNoDirWhenUnset(t *testing.T) {
+	set, _ := newTestSet()
+
+	svc := NewInternalService(set, "no-dir-svc")
+	set.AddService(svc)
+	// Don't set serviceDir
+
+	params := &process.ExecParams{}
+	svc.Record().ApplyProcessAttrs(params)
+
+	for _, e := range params.Env {
+		if strings.HasPrefix(e, "SLINIT_SERVICEDSCDIR=") {
+			t.Error("SLINIT_SERVICEDSCDIR should not be set when serviceDir is empty")
+		}
+	}
+}
+
+func TestBootReadyCallback(t *testing.T) {
+	set, _ := newTestSet()
+	set.SetBootServiceName("boot")
+
+	called := false
+	set.OnBootReady = func() {
+		called = true
+	}
+
+	svc := NewInternalService(set, "boot")
+	set.AddService(svc)
+	set.StartService(svc)
+
+	if !called {
+		t.Error("OnBootReady callback should have been called")
+	}
+	if set.BootReadyTime().IsZero() {
+		t.Error("bootReadyTime should be set")
+	}
+}
+
+func TestReadyFDDefault(t *testing.T) {
+	set, _ := newTestSet()
+	if set.ReadyFD() != -1 {
+		t.Errorf("expected default readyFD = -1, got %d", set.ReadyFD())
 	}
 }

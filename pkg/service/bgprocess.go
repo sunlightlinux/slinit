@@ -154,6 +154,8 @@ func (s *BGProcessService) GetExitStatus() ExitStatus { return s.exitStatus }
 // buildEnv merges env-file variables and runtime extraEnv into a slice for ExecParams.
 func (s *BGProcessService) buildEnv() []string {
 	var env []string
+	// Global daemon-level env (--env-file/-e) first, can be overridden
+	env = append(env, s.services.GlobalEnv()...)
 	if s.envFile != "" {
 		if fileEnv, err := process.ReadEnvFile(s.envFile); err == nil {
 			for k, v := range fileEnv {

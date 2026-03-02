@@ -16,6 +16,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
@@ -57,11 +58,17 @@ func main() {
 		consoleLevel   string
 		quietMode      bool
 		autoRecovery   bool
+		envFile        string
+		readyFD        int
+		logFile        string
+		cgroupPath     string
 	)
 
 	flag.StringVar(&serviceDirs, "services-dir", "", "service description directory (comma-separated for multiple)")
 	flag.StringVar(&socketPath, "socket-path", "", "control socket path")
 	flag.BoolVar(&systemMode, "system", false, "run as system service manager")
+	flag.BoolVar(&systemMode, "m", false, "run as system manager (even if not PID 1)")
+	flag.BoolVar(&systemMode, "system-mgr", false, "run as system manager (even if not PID 1)")
 	flag.BoolVar(&userMode, "user", false, "run as user service manager")
 	flag.BoolVar(&containerMode, "o", false, "run in container mode (for Docker/LXC/Podman)")
 	flag.BoolVar(&containerMode, "container", false, "run in container mode (for Docker/LXC/Podman)")
@@ -74,6 +81,14 @@ func main() {
 	flag.BoolVar(&quietMode, "quiet", false, "suppress all but error output (equivalent to --console-level error)")
 	flag.BoolVar(&autoRecovery, "r", false, "auto-run recovery service on boot failure")
 	flag.BoolVar(&autoRecovery, "auto-recovery", false, "auto-run recovery service on boot failure")
+	flag.StringVar(&envFile, "e", "", "environment file to load at startup")
+	flag.StringVar(&envFile, "env-file", "", "environment file to load at startup")
+	flag.IntVar(&readyFD, "F", -1, "file descriptor to notify when boot service is ready")
+	flag.IntVar(&readyFD, "ready-fd", -1, "file descriptor to notify when boot service is ready")
+	flag.StringVar(&logFile, "l", "", "log to file instead of console")
+	flag.StringVar(&logFile, "log-file", "", "log to file instead of console")
+	flag.StringVar(&cgroupPath, "b", "", "default cgroup base path for services")
+	flag.StringVar(&cgroupPath, "cgroup-path", "", "default cgroup base path for services")
 
 	flag.Parse()
 
@@ -128,6 +143,17 @@ func main() {
 	}
 	logger := logging.New(level)
 
+	// Redirect log output to file (--log-file/-l)
+	if logFile != "" {
+		lf, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: cannot open log file '%s': %v\n", logFile, err)
+			os.Exit(1)
+		}
+		defer lf.Close()
+		logger.SetOutput(lf)
+	}
+
 	if containerMode {
 		logger.Notice("slinit starting in container mode (PID %d)", os.Getpid())
 		if err := shutdown.InitContainer(logger); err != nil {
@@ -165,6 +191,39 @@ func main() {
 	serviceSet.OnRWReady = func() {
 		if utmp.LogBoot() {
 			logger.Info("Boot time logged to utmp/wtmp")
+		}
+	}
+
+	// Load daemon-level environment file (--env-file/-e)
+	if envFile != "" {
+		if fileEnv, err := process.ReadEnvFile(envFile); err == nil {
+			env := make([]string, 0, len(fileEnv))
+			for k, v := range fileEnv {
+				env = append(env, k+"="+v)
+			}
+			serviceSet.SetGlobalEnv(env)
+			logger.Info("Loaded %d variables from env-file '%s'", len(fileEnv), envFile)
+		} else {
+			logger.Error("Failed to read env-file '%s': %v", envFile, err)
+		}
+	}
+
+	// Set default cgroup base path (--cgroup-path/-b)
+	if cgroupPath != "" {
+		serviceSet.SetDefaultCgroupPath(cgroupPath)
+		logger.Info("Default cgroup path: %s", cgroupPath)
+	}
+
+	// Set ready notification fd (--ready-fd/-F)
+	if readyFD >= 0 {
+		serviceSet.SetReadyFD(readyFD)
+		serviceSet.OnBootReady = func() {
+			f := os.NewFile(uintptr(readyFD), "ready-fd")
+			if _, err := f.Write([]byte("READY=1\n")); err != nil {
+				logger.Error("Failed to write to ready-fd %d: %v", readyFD, err)
+			}
+			f.Close()
+			logger.Info("Readiness notification sent on fd %d", readyFD)
 		}
 	}
 

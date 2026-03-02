@@ -3,6 +3,7 @@ package logging
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 )
@@ -37,12 +38,18 @@ func (l Level) String() string {
 
 // Logger provides structured logging for slinit.
 type Logger struct {
-	level Level
+	level  Level
+	output io.Writer
 }
 
 // New creates a new Logger with the specified minimum level.
 func New(level Level) *Logger {
-	return &Logger{level: level}
+	return &Logger{level: level, output: os.Stderr}
+}
+
+// SetOutput redirects log output to the given writer.
+func (l *Logger) SetOutput(w io.Writer) {
+	l.output = w
 }
 
 // SetLevel changes the minimum logging level.
@@ -56,7 +63,7 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 	}
 	msg := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
-	fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", timestamp, level, msg)
+	fmt.Fprintf(l.output, "[%s] %s: %s\n", timestamp, level, msg)
 }
 
 // Debug logs at debug level.

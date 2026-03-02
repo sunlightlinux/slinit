@@ -180,7 +180,7 @@ func (s *ScriptedService) BringUp() bool {
 	params := process.ExecParams{
 		Command:    s.startCommand,
 		WorkingDir: s.workingDir,
-		Env:        s.Record().BuildEnvSlice(),
+		Env:        s.Record().BuildFullEnv(),
 		RunAsUID:   s.runAsUID,
 		RunAsGID:   s.runAsGID,
 		OutputPipe: outputPipe,
@@ -239,7 +239,7 @@ func (s *ScriptedService) BringDown() {
 	params := process.ExecParams{
 		Command:    s.stopCommand,
 		WorkingDir: s.workingDir,
-		Env:        s.Record().BuildEnvSlice(),
+		Env:        s.Record().BuildFullEnv(),
 		RunAsUID:   s.runAsUID,
 		RunAsGID:   s.runAsGID,
 	}

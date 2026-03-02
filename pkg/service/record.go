@@ -70,6 +70,7 @@ type ServiceListener interface {
 type ServiceRecord struct {
 	self        Service // pointer back to the implementing Service
 	serviceName string
+	serviceDir  string // directory where service description was found
 	recordType  ServiceType
 
 	// State
@@ -194,8 +195,10 @@ func NewServiceRecord(self Service, set *ServiceSet, name string, recordType Ser
 
 // --- Interface implementation methods ---
 
-func (sr *ServiceRecord) Name() string            { return sr.serviceName }
-func (sr *ServiceRecord) Type() ServiceType        { return sr.recordType }
+func (sr *ServiceRecord) Name() string               { return sr.serviceName }
+func (sr *ServiceRecord) ServiceDir() string          { return sr.serviceDir }
+func (sr *ServiceRecord) SetServiceDir(dir string)    { sr.serviceDir = dir }
+func (sr *ServiceRecord) Type() ServiceType           { return sr.recordType }
 func (sr *ServiceRecord) State() ServiceState      { return sr.state }
 func (sr *ServiceRecord) TargetState() ServiceState { return sr.desired }
 func (sr *ServiceRecord) StopReason() StoppedReason { return sr.stopReason }
@@ -356,6 +359,20 @@ func (sr *ServiceRecord) BuildEnvSlice() []string {
 	return result
 }
 
+// BuildFullEnv returns global daemon env + per-service extraEnv combined.
+// Used by service types that don't have their own env-file (e.g., scripted).
+func (sr *ServiceRecord) BuildFullEnv() []string {
+	globalEnv := sr.services.GlobalEnv()
+	extra := sr.BuildEnvSlice()
+	if len(globalEnv) == 0 && len(extra) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(globalEnv)+len(extra))
+	result = append(result, globalEnv...)
+	result = append(result, extra...)
+	return result
+}
+
 // --- Process attribute setters ---
 
 func (sr *ServiceRecord) SetNice(n *int)                    { sr.nice = n }
@@ -376,9 +393,18 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.IOPrioClass = sr.ioPrioClass
 	params.IOPrioLevel = sr.ioPrioLevel
 	params.CgroupPath = sr.cgroupPath
+	if params.CgroupPath == "" {
+		params.CgroupPath = sr.services.DefaultCgroupPath()
+	}
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
 	params.Securebits = sr.securebits
+
+	// Inject dinit-compatible query env vars
+	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)
+	if sr.serviceDir != "" {
+		params.Env = append(params.Env, "SLINIT_SERVICEDSCDIR="+sr.serviceDir)
+	}
 }
 
 // Default log buffer implementations (overridden by process-based services)
@@ -825,6 +851,9 @@ func (sr *ServiceRecord) Started() {
 	// Auto-detect boot service reaching STARTED
 	if sr.services.bootServiceName != "" && sr.serviceName == sr.services.bootServiceName && sr.services.bootReadyTime.IsZero() {
 		sr.services.bootReadyTime = time.Now()
+		if sr.services.OnBootReady != nil {
+			sr.services.OnBootReady()
+		}
 	}
 
 	// Signal filesystem/logging readiness
