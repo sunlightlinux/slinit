@@ -166,6 +166,11 @@ doneFlags:
 	}
 	defer conn.Close()
 
+	// Protocol version handshake
+	if err := versionHandshake(conn); err != nil {
+		fatal("%v", err)
+	}
+
 	// Suppress output in no-wait mode
 	_ = noWait
 
@@ -378,6 +383,48 @@ func resolveSocketPath(flagValue string, systemMode, userMode bool) string {
 
 func connectSocket(path string) (net.Conn, error) {
 	return net.Dial("unix", path)
+}
+
+// versionHandshake performs a two-way protocol version check with the server.
+// Server sends: min_compat_version(2) + actual_version(2).
+// Client checks bidirectional compatibility.
+func versionHandshake(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdQueryVersion, nil); err != nil {
+		return fmt.Errorf("version handshake write: %w", err)
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return fmt.Errorf("version handshake read: %w", err)
+	}
+	if rply != control.RplyCPVersion {
+		return fmt.Errorf("unexpected version reply: %d", rply)
+	}
+
+	if len(payload) >= 4 {
+		// New format: min_compat(2) + actual(2)
+		serverMin := binary.LittleEndian.Uint16(payload[0:])
+		serverActual := binary.LittleEndian.Uint16(payload[2:])
+
+		// Check: server's actual version must be >= our min compat
+		if serverActual < control.MinCompatVersion {
+			return fmt.Errorf("server protocol version %d is too old (need >= %d)", serverActual, control.MinCompatVersion)
+		}
+		// Check: our actual version must be >= server's min compat
+		if control.CPVersion < serverMin {
+			return fmt.Errorf("client protocol version %d is too old for server (server needs >= %d)", control.CPVersion, serverMin)
+		}
+		_ = serverActual // success
+	} else if len(payload) >= 2 {
+		// Legacy format: just version(2) — v1 server
+		serverVer := binary.LittleEndian.Uint16(payload)
+		if serverVer < control.MinCompatVersion {
+			return fmt.Errorf("server protocol version %d is too old (need >= %d)", serverVer, control.MinCompatVersion)
+		}
+	} else {
+		return fmt.Errorf("invalid version reply payload (len=%d)", len(payload))
+	}
+	return nil
 }
 
 // connectPassedFD creates a net.Conn from a file descriptor passed via

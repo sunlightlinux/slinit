@@ -131,8 +131,9 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 // --- Command handlers ---
 
 func (c *Connection) handleQueryVersion() error {
-	payload := make([]byte, 2)
-	binary.LittleEndian.PutUint16(payload, ProtocolVersion)
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint16(payload[0:], MinCompatVersion)
+	binary.LittleEndian.PutUint16(payload[2:], CPVersion)
 	return WritePacket(c.conn, RplyCPVersion, payload)
 }
 

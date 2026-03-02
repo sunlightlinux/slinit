@@ -75,12 +75,20 @@ func TestQueryVersion(t *testing.T) {
 	if rply != RplyCPVersion {
 		t.Fatalf("Expected CPVersion reply, got %d", rply)
 	}
-	if len(payload) < 2 {
-		t.Fatal("Payload too short")
+	if len(payload) < 4 {
+		t.Fatalf("Payload too short: expected 4 bytes, got %d", len(payload))
 	}
-	ver := binary.LittleEndian.Uint16(payload)
-	if ver != ProtocolVersion {
-		t.Fatalf("Expected version %d, got %d", ProtocolVersion, ver)
+	minCompat := binary.LittleEndian.Uint16(payload[0:])
+	actualVer := binary.LittleEndian.Uint16(payload[2:])
+	if minCompat != MinCompatVersion {
+		t.Fatalf("Expected min_compat %d, got %d", MinCompatVersion, minCompat)
+	}
+	if actualVer != CPVersion {
+		t.Fatalf("Expected version %d, got %d", CPVersion, actualVer)
+	}
+	// Verify bidirectional compat: our version >= server's min compat
+	if CPVersion < minCompat {
+		t.Fatal("Client version is below server's min compat")
 	}
 }
 

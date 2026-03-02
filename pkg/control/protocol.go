@@ -11,8 +11,14 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
-// Protocol version for slinit control protocol.
-const ProtocolVersion uint16 = 1
+// Protocol versioning for slinit control protocol.
+// CPVersion is the current protocol version implemented by this build.
+// MinCompatVersion is the minimum version a peer must support.
+// Version reply format: min_compat(2) + actual_version(2) = 4 bytes.
+const (
+	CPVersion        uint16 = 2
+	MinCompatVersion uint16 = 1
+)
 
 // Command codes (client → server).
 const (
