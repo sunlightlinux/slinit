@@ -334,6 +334,7 @@ func main() {
 		if autoRecovery {
 			logger.Notice("Auto-recovery enabled, attempting to start 'recovery' service")
 			if tryStartService("recovery", serviceSet, loader, logger) {
+				serviceSet.ResetBootTiming()
 				continue // re-enter boot loop
 			}
 			logger.Error("Failed to start recovery service, rebooting")
@@ -349,6 +350,7 @@ func main() {
 		case 'e':
 			logger.Notice("User chose recovery")
 			if tryStartService("recovery", serviceSet, loader, logger) {
+				serviceSet.ResetBootTiming()
 				continue
 			}
 			logger.Error("Failed to start recovery service, rebooting")
@@ -356,6 +358,7 @@ func main() {
 		case 's':
 			logger.Notice("User chose restart boot sequence")
 			if tryStartServices(bootServices, serviceSet, loader, logger) {
+				serviceSet.ResetBootTiming()
 				continue
 			}
 			logger.Error("Failed to restart boot services, rebooting")

@@ -734,10 +734,6 @@ func (sr *ServiceRecord) notifyListeners(event ServiceEvent) {
 func (sr *ServiceRecord) doStart() {
 	wasActive := sr.state != StateStopped
 
-	if !wasActive {
-		sr.startRequestTime = time.Now()
-	}
-
 	sr.desired = StateStarted
 
 	if sr.pinnedStopped {
@@ -784,6 +780,7 @@ func (sr *ServiceRecord) doStart() {
 func (sr *ServiceRecord) initiateStart() {
 	sr.startFailed = false
 	sr.startSkipped = false
+	sr.startRequestTime = time.Now()
 	sr.state = StateStarting
 	sr.waitingForDeps = true
 

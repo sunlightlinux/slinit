@@ -335,6 +335,14 @@ func (ss *ServiceSet) BootReadyTime() time.Time    { return ss.bootReadyTime }
 func (ss *ServiceSet) BootServiceName() string     { return ss.bootServiceName }
 func (ss *ServiceSet) KernelUptime() time.Duration { return ss.kernelUptime }
 
+// ResetBootTiming resets boot timing for a fresh boot cycle (e.g., after recovery).
+// Sets bootStartTime to now and clears bootReadyTime so it will be set again
+// when the boot service next reaches STARTED.
+func (ss *ServiceSet) ResetBootTiming() {
+	ss.bootStartTime = time.Now()
+	ss.bootReadyTime = time.Time{}
+}
+
 // --- Global daemon settings ---
 
 func (ss *ServiceSet) SetGlobalEnv(env []string)       { ss.globalEnv = env }
