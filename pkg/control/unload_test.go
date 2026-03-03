@@ -36,10 +36,7 @@ func TestControlUnloadService(t *testing.T) {
 	if err := WritePacket(conn, CmdUnloadService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -84,10 +81,7 @@ func TestControlUnloadNotStopped(t *testing.T) {
 	if err := WritePacket(conn, CmdUnloadService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyNotStopped {
 		t.Fatalf("Expected NotStopped reply, got %d", rply)
 	}

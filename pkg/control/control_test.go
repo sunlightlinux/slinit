@@ -55,6 +55,23 @@ func connectTest(t *testing.T, sockPath string) net.Conn {
 	return nil
 }
 
+// readReply reads packets from conn, skipping any unsolicited info packets
+// (InfoServiceEvent, InfoEnvEvent), and returns the first reply packet.
+func readReply(t *testing.T, conn net.Conn) (uint8, []byte) {
+	t.Helper()
+	for {
+		rply, payload, err := ReadPacket(conn)
+		if err != nil {
+			t.Fatalf("Read error: %v", err)
+		}
+		// Skip unsolicited info packets
+		if rply >= 100 {
+			continue
+		}
+		return rply, payload
+	}
+}
+
 func TestQueryVersion(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()
@@ -176,10 +193,7 @@ func TestStartStopService(t *testing.T) {
 	if err := WritePacket(conn, CmdStartService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -193,10 +207,7 @@ func TestStartStopService(t *testing.T) {
 	if err := WritePacket(conn, CmdStartService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyAlreadySS {
 		t.Fatalf("Expected AlreadySS, got %d", rply)
 	}
@@ -205,10 +216,7 @@ func TestStartStopService(t *testing.T) {
 	if err := WritePacket(conn, CmdStopService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -260,10 +268,7 @@ func TestWakeService(t *testing.T) {
 	if err := WritePacket(conn, CmdWakeService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -300,10 +305,7 @@ func TestWakeServiceNoDependents(t *testing.T) {
 	if err := WritePacket(conn, CmdWakeService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyNAK {
 		t.Fatalf("Expected NAK for no dependents, got %d", rply)
 	}
@@ -342,10 +344,7 @@ func TestReleaseServiceStops(t *testing.T) {
 	if err := WritePacket(conn, CmdReleaseService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -396,10 +395,7 @@ func TestReleaseServiceStaysRunning(t *testing.T) {
 	if err := WritePacket(conn, CmdReleaseService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -432,10 +428,7 @@ func TestListServices(t *testing.T) {
 
 	names := make(map[string]service.ServiceState)
 	for {
-		rply, payload, err := ReadPacket(conn)
-		if err != nil {
-			t.Fatalf("Read error: %v", err)
-		}
+		rply, payload := readReply(t, conn)
 		if rply == RplyListDone {
 			break
 		}
@@ -527,10 +520,7 @@ func TestShutdown(t *testing.T) {
 		t.Fatalf("Write error: %v", err)
 	}
 
-	rply, _, err := ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ := readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -578,10 +568,7 @@ func TestSetTrigger(t *testing.T) {
 	if err := WritePacket(conn, CmdSetTrigger, trigPayload); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -631,10 +618,7 @@ func TestUntrigger(t *testing.T) {
 	if err := WritePacket(conn, CmdSetTrigger, trigPayload); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -676,10 +660,7 @@ func TestCloseHandle(t *testing.T) {
 	if err := WritePacket(conn, CmdCloseHandle, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("Expected ACK, got %d", rply)
 	}
@@ -688,10 +669,7 @@ func TestCloseHandle(t *testing.T) {
 	if err := WritePacket(conn, CmdStartService, EncodeHandle(handle)); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyBadReq {
 		t.Fatalf("Expected BadReq for closed handle, got %d", rply)
 	}
@@ -804,21 +782,22 @@ func TestSetEnvAndGetAllEnv(t *testing.T) {
 	if err := WritePacket(conn, CmdSetEnv, payload); err != nil {
 		t.Fatal(err)
 	}
-	rply, _, _ := ReadPacket(conn)
+	rply, _ := readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("setenv FOO: expected ACK, got %d", rply)
 	}
 
 	payload = EncodeSetEnv(handle, "BAZ", "qux", false)
 	WritePacket(conn, CmdSetEnv, payload)
-	rply, _, _ = ReadPacket(conn)
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("setenv BAZ: expected ACK, got %d", rply)
 	}
 
 	// GetAllEnv
 	WritePacket(conn, CmdGetAllEnv, EncodeHandle(handle))
-	rply, data, _ := ReadPacket(conn)
+	var data []byte
+	rply, data = readReply(t, conn)
 	if rply != RplyEnvList {
 		t.Fatalf("getallenv: expected EnvList, got %d", rply)
 	}
@@ -848,17 +827,18 @@ func TestUnsetEnv(t *testing.T) {
 
 	// Set then unset
 	WritePacket(conn, CmdSetEnv, EncodeSetEnv(handle, "KEY", "val", false))
-	ReadPacket(conn)
+	readReply(t, conn)
 
 	WritePacket(conn, CmdSetEnv, EncodeSetEnv(handle, "KEY", "", true))
-	rply, _, _ := ReadPacket(conn)
+	rply, _ := readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("unset: expected ACK, got %d", rply)
 	}
 
 	// Verify empty
 	WritePacket(conn, CmdGetAllEnv, EncodeHandle(handle))
-	rply, data, _ := ReadPacket(conn)
+	var data []byte
+	rply, data = readReply(t, conn)
 	if rply != RplyEnvList {
 		t.Fatalf("getallenv: expected EnvList, got %d", rply)
 	}
@@ -888,7 +868,7 @@ func TestAddDepAndRmDep(t *testing.T) {
 	// Add waits-for dep
 	payload := EncodeDepRequest(hParent, hChild, uint8(service.DepWaitsFor))
 	WritePacket(conn, CmdAddDep, payload)
-	rply, _, _ := ReadPacket(conn)
+	rply, _ := readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("add-dep: expected ACK, got %d", rply)
 	}
@@ -907,7 +887,7 @@ func TestAddDepAndRmDep(t *testing.T) {
 
 	// Remove dep
 	WritePacket(conn, CmdRmDep, payload)
-	rply, _, _ = ReadPacket(conn)
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("rm-dep: expected ACK, got %d", rply)
 	}
@@ -939,7 +919,7 @@ func TestRmDepNotFound(t *testing.T) {
 	// Try to remove non-existent dep
 	payload := EncodeDepRequest(h1, h2, uint8(service.DepRegular))
 	WritePacket(conn, CmdRmDep, payload)
-	rply, _, _ := ReadPacket(conn)
+	rply, _ := readReply(t, conn)
 	if rply != RplyNAK {
 		t.Fatalf("rm-dep non-existent: expected NAK, got %d", rply)
 	}
@@ -966,7 +946,7 @@ func TestEnableService(t *testing.T) {
 
 	// Enable
 	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
-	rply, _, _ := ReadPacket(conn)
+	rply, _ := readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("enable: expected ACK, got %d", rply)
 	}
@@ -1012,7 +992,7 @@ func TestDisableService(t *testing.T) {
 
 	// Disable
 	WritePacket(conn, CmdDisableService, EncodeHandle(handle))
-	rply, _, _ := ReadPacket(conn)
+	rply, _ := readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("disable: expected ACK, got %d", rply)
 	}
@@ -1040,7 +1020,7 @@ func TestEnableNoBootService(t *testing.T) {
 
 	// Enable without boot service → NAK
 	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
-	rply, _, _ := ReadPacket(conn)
+	rply, _ := readReply(t, conn)
 	if rply != RplyNAK {
 		t.Fatalf("enable without boot: expected NAK, got %d", rply)
 	}

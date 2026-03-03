@@ -58,10 +58,7 @@ func TestReloadStoppedService(t *testing.T) {
 		t.Fatalf("Write error: %v", err)
 	}
 
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("expected ACK, got %d", rply)
 	}
@@ -116,10 +113,7 @@ func TestReloadStartedService(t *testing.T) {
 	if err := WritePacket(conn, CmdReloadService, EncodeHandle(handle)); err != nil {
 		t.Fatal(err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyACK {
 		t.Fatalf("expected ACK for started reload, got %d", rply)
 	}
@@ -166,10 +160,7 @@ func TestReloadWrongState(t *testing.T) {
 	if err := WritePacket(conn, CmdReloadService, EncodeHandle(handle)); err != nil {
 		t.Fatal(err)
 	}
-	rply, _, err = ReadPacket(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
+	rply, _ = readReply(t, conn)
 	if rply != RplyNAK {
 		t.Fatalf("expected NAK for STARTING state, got %d", rply)
 	}
@@ -186,10 +177,7 @@ func TestReloadInvalidHandle(t *testing.T) {
 	if err := WritePacket(conn, CmdReloadService, EncodeHandle(999)); err != nil {
 		t.Fatal(err)
 	}
-	rply, _, err := ReadPacket(conn)
-	if err != nil {
-		t.Fatal(err)
-	}
+	rply, _ := readReply(t, conn)
 	if rply != RplyBadReq {
 		t.Fatalf("expected BadReq for invalid handle, got %d", rply)
 	}

@@ -31,6 +31,11 @@ func (e *ServiceNotFound) Error() string {
 	return fmt.Sprintf("service not found: %s", e.Name)
 }
 
+// EnvListener is notified when the global environment changes (setenv/unsetenv).
+type EnvListener interface {
+	EnvEvent(varString string, override bool)
+}
+
 // ServiceSet manages all loaded services and the processing queues.
 type ServiceSet struct {
 	records        map[string]Service
@@ -80,6 +85,9 @@ type ServiceSet struct {
 
 	// Ready notification fd (from --ready-fd/-F), -1 if unset
 	readyFD int
+
+	// Environment listeners (LISTENENV subscribers)
+	envListeners []EnvListener
 
 	// Notification channel: signaled when a service becomes inactive
 	inactiveCh chan struct{}
@@ -347,6 +355,58 @@ func (ss *ServiceSet) ResetBootTiming() {
 
 func (ss *ServiceSet) SetGlobalEnv(env []string)       { ss.globalEnv = env }
 func (ss *ServiceSet) GlobalEnv() []string              { return ss.globalEnv }
+
+// GlobalSetEnv sets a global environment variable and notifies listeners.
+func (ss *ServiceSet) GlobalSetEnv(key, value string) {
+	varStr := key + "=" + value
+	override := false
+	// Check if this key already exists
+	prefix := key + "="
+	for i, e := range ss.globalEnv {
+		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
+			override = true
+			ss.globalEnv[i] = varStr
+			ss.notifyEnvListeners(varStr, override)
+			return
+		}
+	}
+	ss.globalEnv = append(ss.globalEnv, varStr)
+	ss.notifyEnvListeners(varStr, override)
+}
+
+// GlobalUnsetEnv removes a global environment variable and notifies listeners.
+func (ss *ServiceSet) GlobalUnsetEnv(key string) {
+	prefix := key + "="
+	for i, e := range ss.globalEnv {
+		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
+			ss.globalEnv = append(ss.globalEnv[:i], ss.globalEnv[i+1:]...)
+			ss.notifyEnvListeners(key, true)
+			return
+		}
+	}
+}
+
+// AddEnvListener registers a listener for global env changes.
+func (ss *ServiceSet) AddEnvListener(l EnvListener) {
+	ss.envListeners = append(ss.envListeners, l)
+}
+
+// RemoveEnvListener unregisters a listener for global env changes.
+func (ss *ServiceSet) RemoveEnvListener(l EnvListener) {
+	for i, existing := range ss.envListeners {
+		if existing == l {
+			ss.envListeners = append(ss.envListeners[:i], ss.envListeners[i+1:]...)
+			return
+		}
+	}
+}
+
+func (ss *ServiceSet) notifyEnvListeners(varString string, override bool) {
+	for _, l := range ss.envListeners {
+		l.EnvEvent(varString, override)
+	}
+}
+
 func (ss *ServiceSet) SetDefaultCgroupPath(p string)    { ss.defaultCgroupPath = p }
 func (ss *ServiceSet) DefaultCgroupPath() string        { return ss.defaultCgroupPath }
 func (ss *ServiceSet) SetReadyFD(fd int)                { ss.readyFD = fd }

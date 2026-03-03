@@ -46,8 +46,9 @@ const (
 	CmdRmDep            uint8 = 27
 	CmdEnableService    uint8 = 28
 	CmdDisableService   uint8 = 29
-	CmdQueryServiceName uint8 = 30
+	CmdQueryServiceName   uint8 = 30
 	CmdQueryServiceDscDir uint8 = 31
+	CmdListenEnv          uint8 = 32
 )
 
 // Reply codes (server → client).
@@ -77,6 +78,16 @@ const (
 // Info codes (server → client, unsolicited).
 const (
 	InfoServiceEvent uint8 = 100
+	InfoEnvEvent     uint8 = 102
+)
+
+// ServiceEvent codes (matches service.ServiceEvent).
+const (
+	SvcEventStarted       uint8 = 0
+	SvcEventStopped       uint8 = 1
+	SvcEventFailedStart   uint8 = 2
+	SvcEventStartCancelled uint8 = 3
+	SvcEventStopCancelled uint8 = 4
 )
 
 // Status flags byte bits.
@@ -567,4 +578,60 @@ func DecodeDepRequest(data []byte) (handleFrom, handleTo uint32, depType uint8, 
 	handleTo = binary.LittleEndian.Uint32(data[4:])
 	depType = data[8]
 	return handleFrom, handleTo, depType, nil
+}
+
+// --- ServiceEvent protocol ---
+
+// EncodeServiceEvent encodes a service event notification.
+// Wire format: handle(4) + event(1) + status(12) = 17 bytes.
+func EncodeServiceEvent(handle uint32, event uint8, svc service.Service) []byte {
+	buf := make([]byte, 4+1+12)
+	binary.LittleEndian.PutUint32(buf, handle)
+	buf[4] = event
+	copy(buf[5:], EncodeServiceStatus(svc))
+	return buf
+}
+
+// DecodeServiceEvent decodes a service event notification.
+func DecodeServiceEvent(data []byte) (handle uint32, event uint8, status ServiceStatusInfo, err error) {
+	if len(data) < 17 {
+		return 0, 0, ServiceStatusInfo{}, fmt.Errorf("data too short for service event: need 17, have %d", len(data))
+	}
+	handle = binary.LittleEndian.Uint32(data)
+	event = data[4]
+	status, err = DecodeServiceStatus(data[5:])
+	return handle, event, status, err
+}
+
+// --- EnvEvent protocol ---
+
+// EnvEvent flags.
+const (
+	EnvEventFlagOverride uint8 = 1 // variable overrides a previous value
+)
+
+// EncodeEnvEvent encodes an env change notification.
+// Wire format: flags(1) + varLen(2) + varString(N).
+// varString is "KEY=VALUE" for set, "KEY" for unset.
+func EncodeEnvEvent(varString string, override bool) []byte {
+	buf := make([]byte, 1+2+len(varString))
+	if override {
+		buf[0] = EnvEventFlagOverride
+	}
+	binary.LittleEndian.PutUint16(buf[1:], uint16(len(varString)))
+	copy(buf[3:], varString)
+	return buf
+}
+
+// DecodeEnvEvent decodes an env change notification.
+func DecodeEnvEvent(data []byte) (flags uint8, varString string, err error) {
+	if len(data) < 3 {
+		return 0, "", fmt.Errorf("data too short for env event")
+	}
+	flags = data[0]
+	varLen := int(binary.LittleEndian.Uint16(data[1:]))
+	if len(data) < 3+varLen {
+		return 0, "", fmt.Errorf("data too short for env event value")
+	}
+	return flags, string(data[3 : 3+varLen]), nil
 }
