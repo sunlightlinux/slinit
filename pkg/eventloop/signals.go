@@ -9,9 +9,11 @@ import (
 )
 
 // SetupSignals registers OS signal handlers and returns a channel
-// that receives intercepted signals.
+// that receives intercepted signals. The buffer is sized generously
+// to avoid dropping signals under heavy SIGCHLD load (PID 1 with
+// many orphan processes exiting simultaneously).
 func SetupSignals() chan os.Signal {
-	sigCh := make(chan os.Signal, 8)
+	sigCh := make(chan os.Signal, 32)
 	signal.Notify(sigCh,
 		syscall.SIGTERM,
 		syscall.SIGINT,

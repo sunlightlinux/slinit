@@ -34,7 +34,9 @@ static int c_log_boot(void) {
     record.ut_tv.tv_usec = tv.tv_usec;
 
     // Clear utmp on boot (same as dinit's CLEAR_UTMP_ON_BOOT)
-    truncate(_PATH_UTMPX, 0);
+    if (truncate(_PATH_UTMPX, 0) < 0) {
+        // Best-effort: ignore failure (file may not exist yet)
+    }
 
     // Append to wtmp using utmp struct (Linux-compatible)
     struct utmp wrecord;

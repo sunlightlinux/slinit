@@ -430,6 +430,26 @@ func connectSocket(path string) (net.Conn, error) {
 	return net.Dial("unix", path)
 }
 
+// readReply reads packets from the connection, skipping any unsolicited
+// info/event packets (InfoServiceEvent, InfoServiceEvent5, InfoEnvEvent)
+// that may arrive due to auto-subscription via allocHandle. Returns the
+// first non-info packet.
+func readReply(conn net.Conn) (uint8, []byte, error) {
+	for {
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return 0, nil, err
+		}
+		switch rply {
+		case control.InfoServiceEvent, control.InfoServiceEvent5, control.InfoEnvEvent:
+			// Skip unsolicited push notifications
+			continue
+		default:
+			return rply, payload, nil
+		}
+	}
+}
+
 // versionHandshake performs a two-way protocol version check with the server.
 // Server sends: min_compat_version(2) + actual_version(2).
 // Client checks bidirectional compatibility.
@@ -714,7 +734,7 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -742,7 +762,7 @@ func cmdWake(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -772,7 +792,7 @@ func cmdRelease(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -799,7 +819,7 @@ func cmdStop(conn net.Conn, name string, pin bool, force bool, ignoreUnstarted b
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -826,7 +846,7 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 	if err := control.WritePacket(conn, control.CmdStopService, stopPayload); err != nil {
 		return err
 	}
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -843,7 +863,7 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 	if err := control.WritePacket(conn, control.CmdStartService, startPayload); err != nil {
 		return err
 	}
-	rply, _, err = control.ReadPacket(conn)
+	rply, _, err = readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -869,7 +889,7 @@ func cmdStatus(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -907,7 +927,7 @@ func getServiceStatus(conn net.Conn, name string) (control.ServiceStatusInfo, er
 		return control.ServiceStatusInfo{}, err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return control.ServiceStatusInfo{}, err
 	}
@@ -1003,7 +1023,7 @@ func cmdTrigger(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1033,7 +1053,7 @@ func cmdUntrigger(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1068,7 +1088,7 @@ func cmdSignal(conn net.Conn, svcName string, sigStr string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1174,7 +1194,7 @@ func cmdReload(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1200,7 +1220,7 @@ func cmdUnload(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1229,7 +1249,7 @@ func cmdCatLog(conn net.Conn, name string, clear bool) error {
 		return err
 	}
 
-	rply, rplyPayload, err := control.ReadPacket(conn)
+	rply, rplyPayload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1355,7 +1375,7 @@ func cmdSetEnv(conn net.Conn, svcName, kvPair string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1377,7 +1397,7 @@ func cmdUnsetEnv(conn net.Conn, svcName, key string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1398,7 +1418,7 @@ func cmdGetAllEnv(conn net.Conn, svcName string) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1540,7 +1560,7 @@ func cmdAddDep(conn net.Conn, fromName, depTypeStr, toName string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1571,7 +1591,7 @@ func cmdRmDep(conn net.Conn, fromName, depTypeStr, toName string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1610,7 +1630,7 @@ func cmdEnable(conn net.Conn, name string, from string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1638,7 +1658,7 @@ func cmdUnpin(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1675,7 +1695,7 @@ func cmdDisable(conn net.Conn, name string, from string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1701,7 +1721,7 @@ func cmdQueryServiceName(conn net.Conn, svcName string) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -1822,7 +1842,7 @@ func cmdServiceStatus5(conn net.Conn, svcName string) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}

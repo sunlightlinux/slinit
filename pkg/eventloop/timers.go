@@ -23,10 +23,17 @@ func (t *ServiceTimer) Arm(d time.Duration) {
 	t.armed = true
 }
 
-// Stop disarms the timer.
+// Stop disarms the timer and drains any pending fire so that a
+// subsequent select on Chan() never receives a stale event.
 func (t *ServiceTimer) Stop() {
 	if t.timer != nil {
-		t.timer.Stop()
+		if !t.timer.Stop() {
+			// Timer already fired; drain the channel to prevent a stale read.
+			select {
+			case <-t.timer.C:
+			default:
+			}
+		}
 		t.timer = nil
 	}
 	t.armed = false
