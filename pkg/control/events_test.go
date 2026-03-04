@@ -27,6 +27,24 @@ func readInfoPacket(t *testing.T, conn net.Conn, timeout time.Duration) (uint8, 
 	}
 }
 
+// readSpecificInfoPacket reads packets until it gets an info packet with the
+// specified type code, skipping other info packets and replies.
+func readSpecificInfoPacket(t *testing.T, conn net.Conn, wantType uint8, timeout time.Duration) []byte {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	defer conn.SetReadDeadline(time.Time{})
+	for {
+		rply, payload, err := ReadPacket(conn)
+		if err != nil {
+			t.Fatalf("Read error waiting for info packet %d: %v", wantType, err)
+		}
+		if rply == wantType {
+			return payload
+		}
+		// Skip other info packets and replies
+	}
+}
+
 func TestServiceEventStarted(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()
@@ -55,11 +73,8 @@ func TestServiceEventStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read the info packet (SERVICEEVENT)
-	infoType, infoPayload := readInfoPacket(t, conn, 2*time.Second)
-	if infoType != InfoServiceEvent {
-		t.Fatalf("expected InfoServiceEvent (%d), got %d", InfoServiceEvent, infoType)
-	}
+	// Read the v4 info packet (SERVICEEVENT), skipping v5 event
+	infoPayload := readSpecificInfoPacket(t, conn, InfoServiceEvent, 2*time.Second)
 
 	evtHandle, evtCode, status, err := DecodeServiceEvent(infoPayload)
 	if err != nil {
@@ -99,8 +114,8 @@ func TestServiceEventStopped(t *testing.T) {
 	if err := WritePacket(conn, CmdStartService, EncodeHandle(handle)); err != nil {
 		t.Fatal(err)
 	}
-	// Drain STARTED event + ACK
-	readInfoPacket(t, conn, 2*time.Second)
+	// Drain STARTED events (v5+v4) + ACK
+	readSpecificInfoPacket(t, conn, InfoServiceEvent, 2*time.Second)
 	readReply(t, conn)
 
 	// Stop the service — should trigger EventStopped
@@ -108,10 +123,7 @@ func TestServiceEventStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	infoType, infoPayload := readInfoPacket(t, conn, 2*time.Second)
-	if infoType != InfoServiceEvent {
-		t.Fatalf("expected InfoServiceEvent, got %d", infoType)
-	}
+	infoPayload := readSpecificInfoPacket(t, conn, InfoServiceEvent, 2*time.Second)
 
 	_, evtCode, status, err := DecodeServiceEvent(infoPayload)
 	if err != nil {

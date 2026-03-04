@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -97,6 +98,9 @@ func (c *Connection) ServiceEvent(svc service.Service, event service.ServiceEven
 	if handle == 0 {
 		return
 	}
+	// Send v5 event first, then v4 for backwards compatibility
+	payload5 := EncodeServiceEvent5(handle, uint8(event), svc)
+	c.writePacket(InfoServiceEvent5, payload5) //nolint: errcheck
 	payload := EncodeServiceEvent(handle, uint8(event), svc)
 	c.writePacket(InfoServiceEvent, payload) //nolint: errcheck
 }
@@ -189,6 +193,10 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleQueryServiceDscDir()
 	case CmdListenEnv:
 		return c.handleListenEnv()
+	case CmdListServices5:
+		return c.handleListServices5()
+	case CmdServiceStatus5:
+		return c.handleServiceStatus5(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
@@ -380,6 +388,32 @@ func (c *Connection) handleServiceStatus(payload []byte) error {
 	}
 
 	status := EncodeServiceStatus(svc)
+	return c.writePacket(RplyServiceStatus, status)
+}
+
+func (c *Connection) handleListServices5() error {
+	services := c.server.services.ListServices()
+	for _, svc := range services {
+		info := EncodeSvcInfo5(svc)
+		if err := c.writePacket(RplySvcInfo, info); err != nil {
+			return err
+		}
+	}
+	return c.writePacket(RplyListDone, nil)
+}
+
+func (c *Connection) handleServiceStatus5(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	status := EncodeServiceStatus5(svc)
 	return c.writePacket(RplyServiceStatus, status)
 }
 
@@ -626,15 +660,24 @@ func (c *Connection) handleSetEnv(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	svc := c.getService(handle)
-	if svc == nil {
-		return c.writePacket(RplyBadReq, nil)
-	}
-
-	if isUnset {
-		svc.Record().UnsetEnvVar(key)
+	if handle == 0 {
+		// Global environment
+		if isUnset {
+			c.server.services.GlobalUnsetEnv(key)
+		} else {
+			c.server.services.GlobalSetEnv(key, value)
+		}
 	} else {
-		svc.Record().SetEnvVar(key, value)
+		// Per-service environment
+		svc := c.getService(handle)
+		if svc == nil {
+			return c.writePacket(RplyBadReq, nil)
+		}
+		if isUnset {
+			svc.Record().UnsetEnvVar(key)
+		} else {
+			svc.Record().SetEnvVar(key, value)
+		}
 	}
 	return c.writePacket(RplyACK, nil)
 }
@@ -643,6 +686,19 @@ func (c *Connection) handleGetAllEnv(payload []byte) error {
 	handle, err := DecodeHandle(payload)
 	if err != nil {
 		return c.writePacket(RplyBadReq, nil)
+	}
+
+	if handle == 0 {
+		// Global environment
+		globalEnv := c.server.services.GlobalEnv()
+		env := make(map[string]string, len(globalEnv))
+		for _, entry := range globalEnv {
+			if idx := strings.Index(entry, "="); idx >= 0 {
+				env[entry[:idx]] = entry[idx+1:]
+			}
+		}
+		reply := EncodeEnvList(env)
+		return c.writePacket(RplyEnvList, reply)
 	}
 
 	svc := c.getService(handle)

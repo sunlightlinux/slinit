@@ -16,7 +16,7 @@ import (
 // MinCompatVersion is the minimum version a peer must support.
 // Version reply format: min_compat(2) + actual_version(2) = 4 bytes.
 const (
-	CPVersion        uint16 = 2
+	CPVersion        uint16 = 5
 	MinCompatVersion uint16 = 1
 )
 
@@ -49,6 +49,8 @@ const (
 	CmdQueryServiceName   uint8 = 30
 	CmdQueryServiceDscDir uint8 = 31
 	CmdListenEnv          uint8 = 32
+	CmdListServices5      uint8 = 33
+	CmdServiceStatus5     uint8 = 34
 )
 
 // Reply codes (server → client).
@@ -77,8 +79,9 @@ const (
 
 // Info codes (server → client, unsolicited).
 const (
-	InfoServiceEvent uint8 = 100
-	InfoEnvEvent     uint8 = 102
+	InfoServiceEvent  uint8 = 100
+	InfoServiceEvent5 uint8 = 101
+	InfoEnvEvent      uint8 = 102
 )
 
 // ServiceEvent codes (matches service.ServiceEvent).
@@ -234,6 +237,132 @@ func DecodeServiceStatus(data []byte) (ServiceStatusInfo, error) {
 		PID:         int32(binary.LittleEndian.Uint32(data[4:])),
 		ExitStatus:  int32(binary.LittleEndian.Uint32(data[8:])),
 	}, nil
+}
+
+// --- Protocol v5 extended formats ---
+
+// ServiceStatusInfo5 holds extended status information (v5 protocol).
+type ServiceStatusInfo5 struct {
+	State       service.ServiceState
+	TargetState service.ServiceState
+	Flags       uint8
+	StopReason  uint8
+	ExecStage   uint16
+	SiCode      int32
+	SiStatus    int32
+}
+
+// EncodeServiceStatus5 encodes extended service status into 14 bytes.
+// Format: state(1) + target(1) + flags(1) + stopReason(1) + execStage(2) + siCode(4) + siStatus(4) = 14 bytes.
+func EncodeServiceStatus5(svc service.Service) []byte {
+	buf := make([]byte, 14)
+	buf[0] = uint8(svc.State())
+	buf[1] = uint8(svc.TargetState())
+
+	var flags uint8
+	pid := svc.PID()
+	if pid > 0 {
+		flags |= StatusFlagHasPID
+	}
+	if svc.Record().IsMarkedActive() {
+		flags |= StatusFlagMarkedActive
+	}
+	if svc.Record().HasConsole() {
+		flags |= StatusFlagHasConsole
+	}
+	if svc.Record().DidStartFail() {
+		flags |= StatusFlagStartFailed
+	}
+	buf[2] = flags
+	buf[3] = uint8(svc.StopReason())
+
+	es := svc.GetExitStatus()
+	if es.ExecFailed {
+		binary.LittleEndian.PutUint16(buf[4:], uint16(es.ExecStage))
+		binary.LittleEndian.PutUint32(buf[6:], uint32(es.ExecErrno))
+		// siStatus = 0 for exec failures
+	} else {
+		// execStage = 0
+		binary.LittleEndian.PutUint32(buf[6:], uint32(es.SiCode()))
+		binary.LittleEndian.PutUint32(buf[10:], uint32(es.SiStatus()))
+	}
+
+	return buf
+}
+
+// DecodeServiceStatus5 decodes extended service status from 14 bytes.
+func DecodeServiceStatus5(data []byte) (ServiceStatusInfo5, error) {
+	if len(data) < 14 {
+		return ServiceStatusInfo5{}, fmt.Errorf("data too short for status5: need 14, have %d", len(data))
+	}
+	return ServiceStatusInfo5{
+		State:       service.ServiceState(data[0]),
+		TargetState: service.ServiceState(data[1]),
+		Flags:       data[2],
+		StopReason:  data[3],
+		ExecStage:   binary.LittleEndian.Uint16(data[4:]),
+		SiCode:      int32(binary.LittleEndian.Uint32(data[6:])),
+		SiStatus:    int32(binary.LittleEndian.Uint32(data[10:])),
+	}, nil
+}
+
+// EncodeSvcInfo5 encodes a v5 service info entry for list command.
+// Format: nameLen(2) + name(N) + statusV5(14).
+func EncodeSvcInfo5(svc service.Service) []byte {
+	name := svc.Name()
+	buf := make([]byte, 2+len(name)+14)
+	binary.LittleEndian.PutUint16(buf, uint16(len(name)))
+	copy(buf[2:], name)
+	off := 2 + len(name)
+	copy(buf[off:], EncodeServiceStatus5(svc))
+	return buf
+}
+
+// DecodeSvcInfo5 decodes a v5 service info entry.
+func DecodeSvcInfo5(data []byte) (SvcInfoEntry5, int, error) {
+	name, n, err := DecodeServiceName(data)
+	if err != nil {
+		return SvcInfoEntry5{}, 0, err
+	}
+	if len(data) < n+14 {
+		return SvcInfoEntry5{}, 0, fmt.Errorf("data too short for svc info5")
+	}
+	status, err := DecodeServiceStatus5(data[n:])
+	if err != nil {
+		return SvcInfoEntry5{}, 0, err
+	}
+	return SvcInfoEntry5{
+		Name:   name,
+		Status: status,
+	}, n + 14, nil
+}
+
+// SvcInfoEntry5 holds v5 list info for one service.
+type SvcInfoEntry5 struct {
+	Name   string
+	Status ServiceStatusInfo5
+}
+
+// EncodeServiceEvent5 encodes a v5 service event push notification.
+// Format: handle(4) + event(1) + statusV5(14) = 19 bytes.
+func EncodeServiceEvent5(handle uint32, event uint8, svc service.Service) []byte {
+	buf := make([]byte, 4+1+14)
+	binary.LittleEndian.PutUint32(buf, handle)
+	buf[4] = event
+	copy(buf[5:], EncodeServiceStatus5(svc))
+	return buf
+}
+
+// DecodeServiceEvent5 decodes a v5 service event.
+func DecodeServiceEvent5(data []byte) (handle uint32, event uint8, status ServiceStatusInfo5, err error) {
+	if len(data) < 19 {
+		err = fmt.Errorf("data too short for service event5: need 19, have %d", len(data))
+		return
+	}
+	handle = binary.LittleEndian.Uint32(data)
+	event = data[4]
+	status, err = DecodeServiceStatus5(data[5:])
+	return
 }
 
 // SvcInfoEntry holds list info for one service.

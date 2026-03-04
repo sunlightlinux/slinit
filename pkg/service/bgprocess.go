@@ -396,6 +396,17 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	s.launcherPID = 0
 	s.procHandle.Clear()
 
+	// Record exit status
+	s.exitStatus = ExitStatus{
+		WaitStatus: exit.Status,
+		HasStatus:  true,
+	}
+	if exit.ExecErr != nil {
+		s.exitStatus.ExecFailed = true
+		s.exitStatus.ExecStage = uint8(exit.ExecErr.Stage)
+		s.exitStatus.ExecErrno = extractErrno(exit.ExecErr.Err)
+	}
+
 	if exit.ExecErr != nil {
 		s.services.logger.Error("Service '%s': launcher exec failed: %v",
 			s.serviceName, exit.ExecErr)

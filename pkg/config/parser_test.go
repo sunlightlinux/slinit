@@ -713,3 +713,198 @@ inittab-line = tty1
 		t.Errorf("InittabLine: got %q, want %q", desc.InittabLine, "tty1")
 	}
 }
+
+// --- @include / @include-opt tests ---
+
+func TestIncludeBasic(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write included fragment
+	fragPath := dir + "/common.conf"
+	os.WriteFile(fragPath, []byte("description = included desc\n"), 0644)
+
+	// Write main service file
+	mainPath := dir + "/test-svc"
+	mainContent := "type = internal\n@include " + fragPath + "\n"
+	os.WriteFile(mainPath, []byte(mainContent), 0644)
+
+	f, _ := os.Open(mainPath)
+	defer f.Close()
+
+	desc, err := Parse(f, "test-svc", mainPath)
+	if err != nil {
+		t.Fatalf("parse with include failed: %v", err)
+	}
+	if desc.Type != service.TypeInternal {
+		t.Errorf("expected type Internal, got %v", desc.Type)
+	}
+	if desc.Description != "included desc" {
+		t.Errorf("expected description 'included desc', got %q", desc.Description)
+	}
+}
+
+func TestIncludeRelativePath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write fragment in same directory
+	os.WriteFile(dir+"/extra.conf", []byte("description = relative include\n"), 0644)
+
+	mainPath := dir + "/test-svc"
+	mainContent := "type = internal\n@include extra.conf\n"
+	os.WriteFile(mainPath, []byte(mainContent), 0644)
+
+	f, _ := os.Open(mainPath)
+	defer f.Close()
+
+	desc, err := Parse(f, "test-svc", mainPath)
+	if err != nil {
+		t.Fatalf("parse with relative include failed: %v", err)
+	}
+	if desc.Description != "relative include" {
+		t.Errorf("expected 'relative include', got %q", desc.Description)
+	}
+}
+
+func TestIncludeOptMissing(t *testing.T) {
+	dir := t.TempDir()
+
+	mainPath := dir + "/test-svc"
+	mainContent := "type = internal\n@include-opt /nonexistent/file.conf\ndescription = still works\n"
+	os.WriteFile(mainPath, []byte(mainContent), 0644)
+
+	f, _ := os.Open(mainPath)
+	defer f.Close()
+
+	desc, err := Parse(f, "test-svc", mainPath)
+	if err != nil {
+		t.Fatalf("parse with include-opt of missing file should not fail: %v", err)
+	}
+	if desc.Description != "still works" {
+		t.Errorf("expected 'still works', got %q", desc.Description)
+	}
+}
+
+func TestIncludeMissingFails(t *testing.T) {
+	dir := t.TempDir()
+
+	mainPath := dir + "/test-svc"
+	mainContent := "type = internal\n@include /nonexistent/file.conf\n"
+	os.WriteFile(mainPath, []byte(mainContent), 0644)
+
+	f, _ := os.Open(mainPath)
+	defer f.Close()
+
+	_, err := Parse(f, "test-svc", mainPath)
+	if err == nil {
+		t.Fatal("expected error for missing include file, got nil")
+	}
+}
+
+func TestIncludeNested(t *testing.T) {
+	dir := t.TempDir()
+
+	os.WriteFile(dir+"/level2.conf", []byte("description = deep\n"), 0644)
+	os.WriteFile(dir+"/level1.conf", []byte("@include "+dir+"/level2.conf\n"), 0644)
+
+	mainPath := dir + "/test-svc"
+	mainContent := "type = internal\n@include " + dir + "/level1.conf\n"
+	os.WriteFile(mainPath, []byte(mainContent), 0644)
+
+	f, _ := os.Open(mainPath)
+	defer f.Close()
+
+	desc, err := Parse(f, "test-svc", mainPath)
+	if err != nil {
+		t.Fatalf("nested include failed: %v", err)
+	}
+	if desc.Description != "deep" {
+		t.Errorf("expected 'deep', got %q", desc.Description)
+	}
+}
+
+func TestIncludeDepthLimit(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create chain: file0 -> file1 -> ... -> file11 (exceeds maxIncludeDepth=10)
+	for i := 11; i > 0; i-- {
+		next := dir + "/" + strings.Replace("fileN", "N", string(rune('a'+i)), 1) + ".conf"
+		content := "@include " + next + "\n"
+		if i == 11 {
+			content = "description = unreachable\n"
+		}
+		os.WriteFile(dir+"/"+strings.Replace("fileN", "N", string(rune('a'+i-1)), 1)+".conf", []byte(content), 0644)
+	}
+	os.WriteFile(dir+"/filel.conf", []byte("description = unreachable\n"), 0644)
+
+	// Simpler approach: create a circular include
+	os.WriteFile(dir+"/circ-a.conf", []byte("@include "+dir+"/circ-b.conf\n"), 0644)
+	os.WriteFile(dir+"/circ-b.conf", []byte("@include "+dir+"/circ-a.conf\n"), 0644)
+
+	mainPath := dir + "/test-svc"
+	mainContent := "type = internal\n@include " + dir + "/circ-a.conf\n"
+	os.WriteFile(mainPath, []byte(mainContent), 0644)
+
+	f, _ := os.Open(mainPath)
+	defer f.Close()
+
+	_, err := Parse(f, "test-svc", mainPath)
+	if err == nil {
+		t.Fatal("expected error for circular include, got nil")
+	}
+	if !strings.Contains(err.Error(), "nesting depth") {
+		t.Errorf("expected depth limit error, got: %v", err)
+	}
+}
+
+func TestIncludeOverride(t *testing.T) {
+	dir := t.TempDir()
+
+	os.WriteFile(dir+"/override.conf", []byte("description = overridden\n"), 0644)
+
+	mainPath := dir + "/test-svc"
+	mainContent := "type = internal\ndescription = original\n@include " + dir + "/override.conf\n"
+	os.WriteFile(mainPath, []byte(mainContent), 0644)
+
+	f, _ := os.Open(mainPath)
+	defer f.Close()
+
+	desc, err := Parse(f, "test-svc", mainPath)
+	if err != nil {
+		t.Fatalf("include override failed: %v", err)
+	}
+	if desc.Description != "overridden" {
+		t.Errorf("expected 'overridden', got %q", desc.Description)
+	}
+}
+
+func TestIncludeAdditive(t *testing.T) {
+	dir := t.TempDir()
+
+	os.WriteFile(dir+"/deps.conf", []byte("depends-on: extra-dep\n"), 0644)
+
+	mainPath := dir + "/test-svc"
+	mainContent := "type = internal\ndepends-on: main-dep\n@include " + dir + "/deps.conf\n"
+	os.WriteFile(mainPath, []byte(mainContent), 0644)
+
+	f, _ := os.Open(mainPath)
+	defer f.Close()
+
+	desc, err := Parse(f, "test-svc", mainPath)
+	if err != nil {
+		t.Fatalf("include additive failed: %v", err)
+	}
+	if len(desc.DependsOn) != 2 {
+		t.Fatalf("expected 2 deps, got %d: %v", len(desc.DependsOn), desc.DependsOn)
+	}
+	if desc.DependsOn[0] != "main-dep" || desc.DependsOn[1] != "extra-dep" {
+		t.Errorf("unexpected deps: %v", desc.DependsOn)
+	}
+}
+
+func TestUnknownDirective(t *testing.T) {
+	input := "type = internal\n@unknown stuff\n"
+	_, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err == nil {
+		t.Fatal("expected error for unknown directive")
+	}
+}

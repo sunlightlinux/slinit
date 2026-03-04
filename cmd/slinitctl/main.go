@@ -277,6 +277,18 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdGetAllEnv(conn, name)
 		})
+	case "setenv-global":
+		if len(cmdArgs) < 1 {
+			fatal("Usage: slinitctl setenv-global KEY=VALUE")
+		}
+		err = cmdSetEnvGlobal(conn, cmdArgs[0])
+	case "unsetenv-global":
+		if len(cmdArgs) < 1 {
+			fatal("Usage: slinitctl unsetenv-global KEY")
+		}
+		err = cmdUnsetEnvGlobal(conn, cmdArgs[0])
+	case "getallenv-global":
+		err = cmdGetAllEnvGlobal(conn)
 	case "add-dep":
 		if len(cmdArgs) < 3 {
 			fatal("Usage: slinitctl add-dep <from> <dep-type> <to>")
@@ -305,6 +317,12 @@ doneFlags:
 		})
 	case "service-dirs":
 		err = cmdQueryServiceDscDir(conn)
+	case "list5":
+		err = cmdListServices5(conn)
+	case "status5":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdServiceStatus5(conn, name)
+		})
 	default:
 		fatal("Unknown command: %s", command)
 	}
@@ -1410,6 +1428,81 @@ func cmdGetAllEnv(conn net.Conn, svcName string) error {
 	return nil
 }
 
+func cmdSetEnvGlobal(conn net.Conn, kvPair string) error {
+	idx := strings.IndexByte(kvPair, '=')
+	if idx < 0 {
+		return fmt.Errorf("invalid format: expected KEY=VALUE, got %q", kvPair)
+	}
+	key := kvPair[:idx]
+	value := kvPair[idx+1:]
+
+	payload := control.EncodeSetEnv(0, key, value, false)
+	if err := control.WritePacket(conn, control.CmdSetEnv, payload); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("setenv-global failed: reply %d", rply)
+	}
+	info("Global: set %s=%s\n", key, value)
+	return nil
+}
+
+func cmdUnsetEnvGlobal(conn net.Conn, key string) error {
+	payload := control.EncodeSetEnv(0, key, "", true)
+	if err := control.WritePacket(conn, control.CmdSetEnv, payload); err != nil {
+		return err
+	}
+
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("unsetenv-global failed: reply %d", rply)
+	}
+	info("Global: unset %s\n", key)
+	return nil
+}
+
+func cmdGetAllEnvGlobal(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdGetAllEnv, control.EncodeHandle(0)); err != nil {
+		return err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyEnvList {
+		return fmt.Errorf("getallenv-global failed: reply %d", rply)
+	}
+
+	env, err := control.DecodeEnvList(payload)
+	if err != nil {
+		return err
+	}
+
+	if len(env) == 0 {
+		fmt.Println("No global environment variables set.")
+		return nil
+	}
+
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Printf("%s=%s\n", k, env[k])
+	}
+	return nil
+}
+
 func parseDepType(s string) (service.DependencyType, error) {
 	switch s {
 	case "depends-on", "regular":
@@ -1654,5 +1747,120 @@ func cmdQueryServiceDscDir(conn net.Conn) error {
 		fmt.Println(string(payload[off : off+dirLen]))
 		off += dirLen
 	}
+	return nil
+}
+
+func stopReasonStr(r uint8) string {
+	switch service.StoppedReason(r) {
+	case service.ReasonNormal:
+		return "normal"
+	case service.ReasonDepRestart:
+		return "dependency-restart"
+	case service.ReasonDepFailed:
+		return "dependency-failed"
+	case service.ReasonFailed:
+		return "failed"
+	case service.ReasonExecFailed:
+		return "exec-failed"
+	case service.ReasonTimedOut:
+		return "timed-out"
+	case service.ReasonTerminated:
+		return "terminated"
+	default:
+		return fmt.Sprintf("unknown(%d)", r)
+	}
+}
+
+func cmdListServices5(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdListServices5, nil); err != nil {
+		return err
+	}
+
+	for {
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return err
+		}
+
+		if rply == control.RplyListDone {
+			break
+		}
+
+		if rply != control.RplySvcInfo {
+			return fmt.Errorf("unexpected reply: %d", rply)
+		}
+
+		entry, _, err := control.DecodeSvcInfo5(payload)
+		if err != nil {
+			return err
+		}
+
+		state := service.ServiceState(entry.Status.State).String()
+		target := service.ServiceState(entry.Status.TargetState).String()
+		reason := stopReasonStr(entry.Status.StopReason)
+
+		fmt.Printf("%-20s state=%-10s target=%-10s stop-reason=%-20s",
+			entry.Name, state, target, reason)
+		if entry.Status.Flags&control.StatusFlagHasPID != 0 {
+			fmt.Printf(" [has-pid]")
+		}
+		if entry.Status.ExecStage != 0 {
+			fmt.Printf(" exec-stage=%d", entry.Status.ExecStage)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func cmdServiceStatus5(conn net.Conn, svcName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdServiceStatus5, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyServiceStatus {
+		return fmt.Errorf("status5 failed: reply %d", rply)
+	}
+
+	status, err := control.DecodeServiceStatus5(payload)
+	if err != nil {
+		return err
+	}
+
+	state := service.ServiceState(status.State).String()
+	target := service.ServiceState(status.TargetState).String()
+	reason := stopReasonStr(status.StopReason)
+
+	fmt.Printf("Service: %s\n", svcName)
+	fmt.Printf("  State:       %s\n", state)
+	fmt.Printf("  Target:      %s\n", target)
+	fmt.Printf("  Stop-reason: %s\n", reason)
+	fmt.Printf("  Flags:       0x%02x", status.Flags)
+	if status.Flags&control.StatusFlagHasPID != 0 {
+		fmt.Printf(" [has-pid]")
+	}
+	if status.Flags&control.StatusFlagMarkedActive != 0 {
+		fmt.Printf(" [active]")
+	}
+	if status.Flags&control.StatusFlagHasConsole != 0 {
+		fmt.Printf(" [console]")
+	}
+	if status.Flags&control.StatusFlagStartFailed != 0 {
+		fmt.Printf(" [start-failed]")
+	}
+	fmt.Println()
+	if status.ExecStage != 0 {
+		fmt.Printf("  Exec-stage:  %d\n", status.ExecStage)
+	}
+	fmt.Printf("  si_code:     %d\n", status.SiCode)
+	fmt.Printf("  si_status:   %d\n", status.SiStatus)
 	return nil
 }

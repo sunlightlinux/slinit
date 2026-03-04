@@ -848,6 +848,229 @@ func TestUnsetEnv(t *testing.T) {
 	}
 }
 
+// --- global setenv/unsetenv tests ---
+
+func TestGlobalSetEnvAndGetAllEnv(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	// Set global env with handle=0
+	payload := EncodeSetEnv(0, "GLOBAL_FOO", "gbar", false)
+	if err := WritePacket(conn, CmdSetEnv, payload); err != nil {
+		t.Fatal(err)
+	}
+	rply, _ := readReply(t, conn)
+	if rply != RplyACK {
+		t.Fatalf("global setenv: expected ACK, got %d", rply)
+	}
+
+	payload = EncodeSetEnv(0, "GLOBAL_BAZ", "gqux", false)
+	WritePacket(conn, CmdSetEnv, payload)
+	rply, _ = readReply(t, conn)
+	if rply != RplyACK {
+		t.Fatalf("global setenv BAZ: expected ACK, got %d", rply)
+	}
+
+	// GetAllEnv with handle=0 returns global env
+	WritePacket(conn, CmdGetAllEnv, EncodeHandle(0))
+	var data []byte
+	rply, data = readReply(t, conn)
+	if rply != RplyEnvList {
+		t.Fatalf("global getallenv: expected EnvList, got %d", rply)
+	}
+	env, err := DecodeEnvList(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["GLOBAL_FOO"] != "gbar" || env["GLOBAL_BAZ"] != "gqux" {
+		t.Fatalf("unexpected global env: %v", env)
+	}
+}
+
+func TestGlobalUnsetEnv(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	// Set then unset global
+	WritePacket(conn, CmdSetEnv, EncodeSetEnv(0, "GKEY", "val", false))
+	readReply(t, conn)
+
+	WritePacket(conn, CmdSetEnv, EncodeSetEnv(0, "GKEY", "", true))
+	rply, _ := readReply(t, conn)
+	if rply != RplyACK {
+		t.Fatalf("global unset: expected ACK, got %d", rply)
+	}
+
+	// Verify empty
+	WritePacket(conn, CmdGetAllEnv, EncodeHandle(0))
+	var data []byte
+	rply, data = readReply(t, conn)
+	if rply != RplyEnvList {
+		t.Fatalf("global getallenv: expected EnvList, got %d", rply)
+	}
+	env, _ := DecodeEnvList(data)
+	if _, found := env["GKEY"]; found {
+		t.Fatalf("expected GKEY to be unset, but got: %v", env)
+	}
+}
+
+// --- protocol v5 tests ---
+
+func TestListServices5(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc1 := service.NewInternalService(server.services, "v5-alpha")
+	svc2 := service.NewInternalService(server.services, "v5-beta")
+	server.services.AddService(svc1)
+	server.services.AddService(svc2)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdListServices5, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var names []string
+	for {
+		rply, payload, err := ReadPacket(conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rply == RplyListDone {
+			break
+		}
+		if rply != RplySvcInfo {
+			t.Fatalf("expected SvcInfo, got %d", rply)
+		}
+		entry, _, err := DecodeSvcInfo5(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, entry.Name)
+	}
+
+	if len(names) < 2 {
+		t.Fatalf("expected at least 2 services, got %d", len(names))
+	}
+
+	found := 0
+	for _, n := range names {
+		if n == "v5-alpha" || n == "v5-beta" {
+			found++
+		}
+	}
+	if found != 2 {
+		t.Fatalf("expected both v5-alpha and v5-beta, got names: %v", names)
+	}
+}
+
+func TestServiceStatus5(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "v5-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "v5-svc")
+
+	if err := WritePacket(conn, CmdServiceStatus5, EncodeHandle(handle)); err != nil {
+		t.Fatal(err)
+	}
+
+	rply, payload := readReply(t, conn)
+	if rply != RplyServiceStatus {
+		t.Fatalf("expected ServiceStatus, got %d", rply)
+	}
+
+	status, err := DecodeServiceStatus5(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if status.State != service.ServiceState(service.StateStopped) {
+		t.Fatalf("expected stopped state, got %d", status.State)
+	}
+	if status.StopReason != uint8(service.ReasonNormal) {
+		t.Fatalf("expected normal stop reason, got %d", status.StopReason)
+	}
+}
+
+func TestServiceEvent5Notification(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "event5-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "event5-svc")
+
+	// Start service — triggers events + ACK
+	WritePacket(conn, CmdStartService, EncodeHandle(handle))
+
+	// Read all packets — expect v5 event, v4 event, and ACK in some order
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+
+	var gotV5, gotV4, gotACK bool
+	var v5Payload []byte
+	for i := 0; i < 3; i++ {
+		rply, payload, err := ReadPacket(conn)
+		if err != nil {
+			t.Fatalf("Read error on packet %d: %v", i, err)
+		}
+		switch rply {
+		case InfoServiceEvent5:
+			gotV5 = true
+			v5Payload = payload
+		case InfoServiceEvent:
+			gotV4 = true
+		case RplyACK:
+			gotACK = true
+		default:
+			t.Fatalf("unexpected packet type %d", rply)
+		}
+	}
+
+	if !gotV5 {
+		t.Fatal("did not receive InfoServiceEvent5")
+	}
+	if !gotV4 {
+		t.Fatal("did not receive InfoServiceEvent")
+	}
+	if !gotACK {
+		t.Fatal("did not receive ACK")
+	}
+
+	// Validate v5 payload
+	if len(v5Payload) < 19 {
+		t.Fatalf("v5 event payload too short: %d", len(v5Payload))
+	}
+	h5, evt5, _, err := DecodeServiceEvent5(v5Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h5 != handle {
+		t.Fatalf("wrong handle in v5 event: %d", h5)
+	}
+	if evt5 != SvcEventStarted {
+		t.Fatalf("expected STARTED event, got %d", evt5)
+	}
+}
+
 // --- add-dep / rm-dep tests ---
 
 func TestAddDepAndRmDep(t *testing.T) {

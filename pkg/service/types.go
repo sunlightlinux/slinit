@@ -3,9 +3,26 @@
 package service
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"syscall"
 )
+
+// extractErrno tries to extract a syscall.Errno from an error chain.
+func extractErrno(err error) int32 {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return int32(errno)
+	}
+	var se *os.SyscallError
+	if errors.As(err, &se) {
+		if errors.As(se.Err, &errno) {
+			return int32(errno)
+		}
+	}
+	return -1
+}
 
 // ServiceState represents the current state of a service.
 type ServiceState uint8
@@ -237,6 +254,12 @@ type ExitStatus struct {
 	WaitStatus syscall.WaitStatus
 	// Whether the status has been set
 	HasStatus bool
+	// ExecFailed indicates the process failed during setup (before exec).
+	ExecFailed bool
+	// ExecStage is the stage at which exec failed (valid when ExecFailed is true).
+	ExecStage uint8
+	// ExecErrno is the errno from the failed exec stage (valid when ExecFailed is true).
+	ExecErrno int32
 }
 
 // Exited returns true if the process exited normally.
@@ -260,6 +283,40 @@ func (e ExitStatus) Signaled() bool {
 // Signal returns the signal that killed the process.
 func (e ExitStatus) Signal() syscall.Signal {
 	return e.WaitStatus.Signal()
+}
+
+// SiCode returns the siginfo si_code value for protocol v5 encoding.
+func (e ExitStatus) SiCode() int32 {
+	if !e.HasStatus {
+		return 0
+	}
+	if e.ExecFailed {
+		return 0
+	}
+	if e.WaitStatus.Exited() {
+		return 1 // CLD_EXITED
+	}
+	if e.WaitStatus.Signaled() {
+		if e.WaitStatus.CoreDump() {
+			return 3 // CLD_DUMPED
+		}
+		return 2 // CLD_KILLED
+	}
+	return 0
+}
+
+// SiStatus returns the siginfo si_status value for protocol v5 encoding.
+func (e ExitStatus) SiStatus() int32 {
+	if !e.HasStatus {
+		return 0
+	}
+	if e.WaitStatus.Exited() {
+		return int32(e.WaitStatus.ExitStatus())
+	}
+	if e.WaitStatus.Signaled() {
+		return int32(e.WaitStatus.Signal())
+	}
+	return 0
 }
 
 // ServiceFlags holds behavioral flags for a service.

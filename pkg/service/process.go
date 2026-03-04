@@ -675,6 +675,11 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 		WaitStatus: exit.Status,
 		HasStatus:  true,
 	}
+	if exit.ExecErr != nil {
+		s.exitStatus.ExecFailed = true
+		s.exitStatus.ExecStage = uint8(exit.ExecErr.Stage)
+		s.exitStatus.ExecErrno = extractErrno(exit.ExecErr.Err)
+	}
 
 	// Kill any remaining processes in the child's process group
 	// (e.g., orphaned sleep, background scripts spawned by the shell).

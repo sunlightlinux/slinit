@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -12,6 +13,10 @@ import (
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
+
+// maxIncludeDepth limits the nesting depth of @include directives to prevent
+// infinite recursion from circular includes.
+const maxIncludeDepth = 10
 
 // ServiceDescription holds the parsed configuration of a service.
 type ServiceDescription struct {
@@ -155,6 +160,18 @@ func (e *ParseError) Error() string {
 //   - Value settings use '=' operator
 func Parse(r io.Reader, name string, fileName string) (*ServiceDescription, error) {
 	desc := NewServiceDescription(name)
+	return parseImpl(r, name, fileName, desc, 0)
+}
+
+func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescription, depth int) (*ServiceDescription, error) {
+	if depth > maxIncludeDepth {
+		return nil, &ParseError{
+			ServiceName: name,
+			FileName:    fileName,
+			Message:     fmt.Sprintf("include nesting depth exceeds %d", maxIncludeDepth),
+		}
+	}
+
 	scanner := bufio.NewScanner(r)
 	lineNum := 0
 
@@ -165,6 +182,14 @@ func Parse(r io.Reader, name string, fileName string) (*ServiceDescription, erro
 		// Skip empty lines and comments
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// Handle @include and @include-opt directives
+		if strings.HasPrefix(trimmed, "@") {
+			if err := handleInclude(trimmed, name, fileName, lineNum, desc, depth); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
@@ -219,6 +244,62 @@ func Parse(r io.Reader, name string, fileName string) (*ServiceDescription, erro
 	}
 
 	return desc, nil
+}
+
+// handleInclude processes @include and @include-opt directives.
+func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescription, depth int) error {
+	var optional bool
+	var incPath string
+
+	switch {
+	case strings.HasPrefix(line, "@include-opt "):
+		optional = true
+		incPath = strings.TrimSpace(line[len("@include-opt "):])
+	case strings.HasPrefix(line, "@include "):
+		incPath = strings.TrimSpace(line[len("@include "):])
+	default:
+		return &ParseError{
+			ServiceName: name,
+			FileName:    fileName,
+			Line:        lineNum,
+			Message:     fmt.Sprintf("unknown directive: %s", line),
+		}
+	}
+
+	if incPath == "" {
+		return &ParseError{
+			ServiceName: name,
+			FileName:    fileName,
+			Line:        lineNum,
+			Message:     "include path is empty",
+		}
+	}
+
+	// Perform environment variable substitution on the path
+	incPath = os.ExpandEnv(incPath)
+
+	// Resolve relative paths against the directory of the current file
+	if !filepath.IsAbs(incPath) {
+		dir := filepath.Dir(fileName)
+		incPath = filepath.Join(dir, incPath)
+	}
+
+	f, err := os.Open(incPath)
+	if err != nil {
+		if optional && os.IsNotExist(err) {
+			return nil
+		}
+		return &ParseError{
+			ServiceName: name,
+			FileName:    fileName,
+			Line:        lineNum,
+			Message:     fmt.Sprintf("cannot open include %q: %v", incPath, err),
+		}
+	}
+	defer f.Close()
+
+	_, err = parseImpl(f, name, incPath, desc, depth+1)
+	return err
 }
 
 // parseLine splits a config line into setting, value, and operator.
