@@ -1,0 +1,2 @@
+type = triggered
+depends-on: system-init

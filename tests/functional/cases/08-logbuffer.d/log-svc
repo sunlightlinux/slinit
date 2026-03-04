@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "echo log-test-marker-first; while true; do echo log-test-marker; sleep 2; done"
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

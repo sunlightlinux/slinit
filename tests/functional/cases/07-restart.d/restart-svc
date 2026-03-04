@@ -1,0 +1,7 @@
+type = process
+command = /bin/sh -c "sleep 2; exit 1"
+restart = on-failure
+restart-delay = 1
+restart-limit-count = 5
+restart-limit-interval = 60
+depends-on: system-init

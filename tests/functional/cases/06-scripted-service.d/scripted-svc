@@ -1,0 +1,4 @@
+type = scripted
+command = /bin/sh -c "echo hello > /tmp/scripted-marker"
+stop-command = /bin/sh -c "echo bye > /tmp/scripted-stop-marker"
+depends-on: system-init

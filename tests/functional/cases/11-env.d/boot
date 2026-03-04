@@ -1,0 +1,4 @@
+type = internal
+depends-on: system-init
+depends-on: test-runner
+waits-for: env-svc

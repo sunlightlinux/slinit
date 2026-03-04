@@ -1,0 +1,4 @@
+type = process
+provides = my-alias
+command = /bin/sh -c "while true; do sleep 60; done"
+depends-on: system-init
