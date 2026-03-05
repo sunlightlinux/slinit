@@ -11,8 +11,14 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Process lifecycle**: SIGTERM with configurable timeout, SIGKILL escalation
 - **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
 - **Dinit-compatible config**: key=value service description files
-- **Control socket**: binary protocol over Unix domain socket for runtime management
-- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, unpin, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time
+- **Environment substitution**: `$VAR`, `${VAR}`, `${VAR:-default}`, `${VAR:+alt}`, `$$` escape in config files
+- **Word-splitting expansion**: `$/VAR` splits variable value on whitespace into multiple command args
+- **Service templates**: `name@argument` pattern with `$1` substitution in config
+- **Config includes**: `@include` and `@include-opt` directives for modular config
+- **Control socket**: binary protocol (v5) over Unix domain socket for runtime management
+- **slinitctl CLI**: 31 commands — list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, unpin, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time, dependents, query-load-mech
+- **slinit-check**: offline config linter (validates executables, paths, dependencies)
+- **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
 - **Service aliases**: `provides` for alternative name lookup
 - **Consumer pipes**: `consumer-of` to pipe output from one service into another
 - **Log output**: buffer (in-memory, catlog), file (logfile with permissions/ownership), pipe (consumer-of)
@@ -22,16 +28,20 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Service unload**: remove stopped services from memory
 - **PID 1 init**: console setup, Ctrl+Alt+Del handling, child subreaper, orphan reaping
 - **Process attributes**: nice, oom-score-adj, rlimits, ioprio, cgroup, no-new-privs, capabilities, securebits
-- **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading
+- **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading (with `!clear`/`!unset`/`!import` meta-commands)
 - **Runtime dependencies**: add-dep/rm-dep, enable/disable via control socket
-- **SysV signal compat**: SIGTERM (reboot), SIGUSR1 (halt), SIGUSR2 (poweroff)
-- **Shutdown**: orderly service stop, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec/softreboot
-- **Soft-reboot**: restart slinit without rebooting the kernel
+- **Enable-via**: `@meta enable-via` directive for default enable/disable source service
+- **Push notifications**: SERVICEEVENT/ENVEVENT for real-time state and environment tracking
+- **SIGUSR1 socket reopen**: recover control socket when filesystem becomes writable
+- **Shutdown**: orderly service stop, shutdown hooks, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec/softreboot
+- **Soft-reboot**: restart slinit without rebooting the kernel (with shutdown hooks)
 - **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
+- **Container mode**: `-o`/`--container` for Docker/LXC/Podman (SIGINT/SIGTERM → graceful halt)
 - **Boot failure recovery**: interactive prompt or auto-recovery (`-r`) when all services stop without shutdown
 - **Multiple boot services**: `-t svc1 -t svc2` or positional args to start multiple services at boot
 - **Pass control socket**: `pass-cs-fd` passes a control connection fd to child processes
 - **Readiness signaling**: `starts-rwfs` / `starts-log` flags for filesystem and logging readiness
+- **UTMPX support**: `inittab-id`/`inittab-line` for session tracking, boot logging
 - **Dual mode**: system init (PID 1) or user-level service manager
 - **Offline enable/disable**: `--offline` mode creates/removes waits-for.d symlinks without a running daemon
 - **Dinit naming compat**: `rlimit-addrspace`, `run-in-cgroup`, `consumer-of =` all supported as aliases
@@ -41,6 +51,8 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 ```bash
 go build ./cmd/slinit
 go build ./cmd/slinitctl
+go build ./cmd/slinit-check
+go build ./cmd/slinit-monitor
 ```
 
 ## Running
@@ -65,12 +77,18 @@ go build ./cmd/slinitctl
 |------|-------------|---------|
 | `--services-dir` | Service description directory (comma-separated) | `~/.config/slinit.d` (user) or multiple system dirs |
 | `--socket-path` | Control socket path | `~/.slinitctl` or `/run/slinit.socket` |
-| `--system` | Run as system service manager | `false` |
+| `--system` / `-m` / `--system-mgr` | Run as system service manager | `false` |
 | `--user` | Run as user service manager | `true` |
 | `-t` / `--service` | Service to start at boot (repeatable, or use positional args) | `boot` |
 | `-o` / `--container` | Run in container mode (Docker/LXC/Podman) | `false` |
 | `--log-level` | Log level (debug, info, notice, warn, error) | `info` |
+| `--console-level` | Minimum level for console output | inherits `--log-level` |
+| `-q` / `--quiet` | Suppress all but error output | `false` |
 | `-r` / `--auto-recovery` | Auto-start `recovery` service on boot failure (PID 1) | `false` |
+| `-e` / `--env-file` | Environment file to load at startup | |
+| `-F` / `--ready-fd` | File descriptor to notify when boot service is ready | `-1` |
+| `-l` / `--log-file` | Log to file instead of console | |
+| `-b` / `--cgroup-path` | Default cgroup base path for services | |
 | `--version` | Show version and exit | |
 
 Default service directories (when `--services-dir` is not set):
@@ -154,13 +172,36 @@ command = /usr/bin/process-data
 consumer-of: producer
 ```
 
+Example service template (`myservice@` base file):
+
+```ini
+# /etc/slinit.d/myservice@
+type = process
+command = /usr/bin/myservice --instance $1
+working-dir = /var/lib/myservice/${1}
+depends-on: network
+```
+
+Start with `slinitctl start myservice@web` — `$1` is replaced with `web`.
+
+Example with `@meta enable-via`:
+
+```ini
+# /etc/slinit.d/optional-svc
+type = process
+command = /usr/bin/optional
+@meta enable-via mygroup
+```
+
+`slinitctl enable optional-svc` will add a waits-for dep from `mygroup` instead of `boot`.
+
 ### Configuration reference
 
 | Option                    | Description                                      |
 |---------------------------|--------------------------------------------------|
 | `type`                    | Service type (process, bgprocess, scripted, internal, triggered) |
-| `command`                 | Command to run                                   |
-| `stop-command`            | Command to run on stop (scripted)                |
+| `command`                 | Command to run (supports `+=` to append)         |
+| `stop-command`            | Command to run on stop (scripted, supports `+=`)  |
 | `depends-on:`             | Hard dependency                                  |
 | `depends-ms:`             | Milestone dependency (must start, then becomes soft) |
 | `waits-for:`              | Soft dependency (wait for start/fail)            |
@@ -189,7 +230,7 @@ consumer-of: producer
 | `term-signal`             | Signal for graceful stop                         |
 | `working-dir`             | Working directory for the process                |
 | `run-as`                  | Run command as user:group                        |
-| `env-file`                | Environment variables file (KEY=VALUE lines)     |
+| `env-file`                | Environment variables file (KEY=VALUE, `!clear`, `!unset`, `!import`) |
 | `chain-to`                | Service to start after this one stops            |
 | `nice`                    | Process scheduling priority (-20..19)            |
 | `oom-score-adj`           | OOM killer score adjustment (-1000..1000)        |
@@ -205,6 +246,10 @@ consumer-of: producer
 | `securebits`              | Securebits flags (noroot, keep-caps, etc.)       |
 | `inittab-id`              | UTMPX inittab ID for session tracking            |
 | `inittab-line`            | UTMPX inittab line for session tracking          |
+| `load-options`            | Loader flags (export-passwd-vars, export-service-name) |
+| `@meta enable-via`        | Default "from" service for enable/disable        |
+| `@include`                | Include another config file (error if not found) |
+| `@include-opt`            | Include another config file (ignore if not found)|
 
 ### Service types
 
@@ -226,6 +271,20 @@ consumer-of: producer
 | `before` | Ordering -- this service starts before the named service |
 | `after` | Ordering -- this service starts after the named service |
 
+### Environment variable substitution
+
+Config values support environment variable expansion:
+
+| Syntax | Description |
+|--------|-------------|
+| `$VAR` | Expand variable |
+| `${VAR}` | Expand variable (explicit braces) |
+| `${VAR:-default}` | Use default if VAR is empty/unset |
+| `${VAR:+alt}` | Use alt if VAR is set and non-empty |
+| `$$` | Literal `$` |
+| `$/VAR` | Word-split: expand and split on whitespace into multiple args |
+| `$1` / `${1}` | Service template argument (for `name@arg` services) |
+
 ## Control CLI (slinitctl)
 
 `slinitctl` communicates with a running slinit instance via the control socket.
@@ -243,7 +302,7 @@ consumer-of: producer
 | `--ignore-unstarted` | Exit 0 if service already stopped (stop/restart) |
 | `--offline`, `-o` | Offline mode for enable/disable without daemon |
 | `--services-dir`, `-d` | Service directory for offline mode |
-| `--from <service>` | Source service for enable/disable (default: boot) |
+| `--from <service>` | Source service for enable/disable (default: enable-via or boot) |
 | `--use-passed-cfd` | Use fd from `SLINIT_CS_FD` env var |
 
 ### Commands
@@ -295,7 +354,7 @@ slinitctl getallenv myservice
 slinitctl add-dep myservice depends-on otherservice
 slinitctl rm-dep myservice waits-for otherservice
 
-# Enable/disable (add/remove waits-for dep on boot service)
+# Enable/disable (add/remove waits-for dep on boot or enable-via service)
 slinitctl enable myservice
 slinitctl enable --from mygroup myservice   # enable from a specific service
 slinitctl disable myservice
@@ -305,18 +364,49 @@ slinitctl --offline enable myservice
 slinitctl --offline --services-dir /etc/slinit.d disable myservice
 slinitctl --offline --from mygroup enable myservice
 
+# Query service dependents
+slinitctl dependents myservice
+
+# Query loader mechanism
+slinitctl query-load-mech
+
 # Boot timing analysis
 slinitctl boot-time
 
 # Initiate system shutdown
 slinitctl shutdown poweroff
 slinitctl shutdown reboot
+slinitctl shutdown halt
 slinitctl shutdown softreboot       # restart slinit without kernel reboot
 
 # Connect to system/user instance explicitly
 slinitctl --system list
 slinitctl --user list
 slinitctl -p /tmp/test.socket list  # custom socket path
+```
+
+## Companion Tools
+
+### slinit-check
+
+Offline configuration linter. Validates service files without a running daemon:
+
+```bash
+slinit-check -d /etc/slinit.d myservice
+```
+
+Checks: file existence, type validity, command executability, dependency references, circular dependencies.
+
+### slinit-monitor
+
+Event watcher that subscribes to service state changes and optionally executes commands:
+
+```bash
+# Watch all events
+slinit-monitor
+
+# Execute command on state change (%n=name, %s=state, %v=event)
+slinit-monitor -c 'echo "Service %n changed to %s (event: %v)"'
 ```
 
 ## Architecture
@@ -327,8 +417,21 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 - **Interface + struct embedding** replaces C++ virtual method dispatch
 - **Two-phase state transitions** (propagation + execution) preserve correctness from dinit
 - **One goroutine per child process** for monitoring, with channel-based notification
-- **Binary control protocol** over Unix domain sockets, goroutine-per-connection
-- **PID 1 shutdown sequence**: emergency timeout, process cleanup, filesystem sync, reboot syscalls
+- **Binary control protocol** (v5) over Unix domain sockets, goroutine-per-connection
+- **Push notifications**: SERVICEEVENT5/ENVEVENT for real-time tracking
+- **PID 1 shutdown sequence**: shutdown hooks, process cleanup, filesystem sync, reboot syscalls
+
+### PID 1 Signal Handling
+
+| Signal    | Action                | Source                        |
+|-----------|-----------------------|-------------------------------|
+| `SIGTERM` | reboot                | busybox `reboot`              |
+| `SIGINT`  | reboot                | Ctrl-Alt-Del (via CAD)        |
+| `SIGQUIT` | poweroff              | --                            |
+| `SIGUSR1` | reopen control socket | recovery when fs writable     |
+| `SIGUSR2` | poweroff              | busybox `poweroff`            |
+| `SIGHUP`  | ignored               | --                            |
+| `SIGCHLD` | reap orphans          | child process exit            |
 
 ## Project structure
 
@@ -336,24 +439,31 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 slinit/
 ├── cmd/
 │   ├── slinit/          # Daemon entry point
-│   └── slinitctl/       # Control CLI
+│   ├── slinitctl/       # Control CLI (31 commands)
+│   ├── slinit-check/    # Offline config linter
+│   └── slinit-monitor/  # Event watcher + command executor
 ├── pkg/
 │   ├── service/         # Service types, state machine, dependency graph
 │   ├── config/          # Dinit-compatible config parser and loader
-│   ├── control/         # Control socket protocol and server
+│   ├── control/         # Control socket protocol (v5) and server
 │   ├── shutdown/        # PID 1 init, shutdown executor, soft-reboot
-│   ├── process/         # Process execution and monitoring
+│   ├── process/         # Process execution, monitoring, attrs, caps
 │   ├── eventloop/       # Event loop, signals, timers
-│   └── logging/         # Console logger
+│   ├── logging/         # Console logger
+│   └── utmp/            # UTMPX cgo wrapper
 ├── internal/util/       # Path and parsing utilities
-└── demo/                # QEMU test environment
+├── demo/                # QEMU demo environment
+└── tests/functional/    # 24 QEMU-based integration tests
 ```
 
 ## Testing
 
 ```bash
+# Unit tests (252 tests across 6 packages)
 go test ./...
-# 199 tests across 7 packages
+
+# Functional tests (24 QEMU-based integration tests)
+./tests/functional/run-tests.sh
 ```
 
 ## Roadmap
@@ -363,45 +473,13 @@ go test ./...
 - [x] **Phase 3**: Full dependency graph -- all 6 dep types, TriggeredService, BGProcessService
 - [x] **Phase 4**: Control protocol + `slinitctl` CLI
 - [x] **Phase 5**: PID 1 mode + shutdown sequence
-- [x] **Phase 6**: Advanced features
-  - [x] catlog (buffered output retrieval)
-  - [x] reload (hot config reload)
-  - [x] ready-notification (pipefd/pipevar)
-  - [x] socket activation
-  - [x] provides (service aliases)
-  - [x] unload (remove stopped services)
-  - [x] consumer-of (pipe between services)
-  - [x] log-type = file (logfile with permissions/ownership)
-  - [x] untrigger (reset trigger state)
-  - [x] wake (start without marking active)
-  - [x] release (unmark active, conditional stop)
-  - [x] is-started / is-failed (exit code status check)
-  - [x] setenv / unsetenv / getallenv (runtime environment management)
-  - [x] add-dep / rm-dep (runtime dependency management)
-  - [x] enable / disable (boot service integration)
-  - [x] nice, oom-score-adj, ioprio, cgroup, rlimits, no-new-privs
-  - [x] capabilities (ambient caps via SysProcAttr) + securebits
-  - [x] unmask-intr (unmask SIGINT on console)
-  - [x] auto-recovery (-r) on boot failure
-  - [x] starts-rwfs / starts-log (filesystem/logging readiness flags)
-  - [x] pass-cs-fd (control socket fd to child)
-  - [x] kexec shutdown type
-- [x] **Phase 7**: Container mode, env substitution, UTMPX, shutdown hooks
-  - [x] Container mode (`-o`/`--container`)
-  - [x] Environment variable substitution (`$VAR`/`${VAR}`/`$$`) in config
-  - [x] Shutdown hooks (umount/swapoff)
-  - [x] UTMPX support (inittab-id/inittab-line, boot logging)
-- [x] **Phase 8**: CLI flags, dinit compat, multiple boot services
-  - [x] `unpin` command
-  - [x] `shutdown softreboot` in slinitctl
-  - [x] `--system`/`-s`, `--user`/`-u` explicit mode flags
-  - [x] `--no-wait`, `--pin`, `--force`/`-f` (protocol extension)
-  - [x] `--ignore-unstarted` for stop/restart
-  - [x] `--offline`/`-o`, `--services-dir`/`-d` (offline enable/disable)
-  - [x] `--use-passed-cfd`, `--from` (enable/disable)
-  - [x] Multiple default service dirs (4 system, 3 user)
-  - [x] `-t`/`--service` for multiple boot services
-  - [x] Dinit naming aliases (`rlimit-addrspace`, `run-in-cgroup`, `consumer-of =`)
+- [x] **Phase 6**: Advanced features -- catlog, reload, ready-notification, socket activation, provides, unload, consumer-of, logfile, wake/release, is-started/is-failed, setenv/getallenv, add-dep/rm-dep, enable/disable, nice/oom/ioprio/cgroup/rlimits, capabilities/securebits, unmask-intr, auto-recovery, starts-rwfs/starts-log, pass-cs-fd, kexec
+- [x] **Phase 7**: Container mode, env substitution, shutdown hooks, UTMPX
+- [x] **Phase 8**: CLI flags batch -- unpin, softreboot, --system/-s/--user/-u, --no-wait/--pin/--force, --ignore-unstarted, --offline/-o/--services-dir/-d, --use-passed-cfd/--from, multiple default service dirs
+- [x] **Phase 9**: Daemon flags -- --system-mgr, --env-file, --ready-fd, --log-file, --cgroup-path, SLINIT_SERVICENAME/SLINIT_SERVICEDSCDIR, advanced env substitution, command +=, load-options, kernel cmdline filtering
+- [x] **Phase 10**: Push notifications -- SERVICEEVENT, LISTENENV/ENVEVENT, mutex-serialized writes
+- [x] **Phase 11**: Protocol v5 -- LISTSERVICES5/SERVICESTATUS5/SERVICEEVENT5, slinit-check, slinit-monitor, @include/@include-opt
+- [x] **Phase 12**: Complete dinit parity -- @meta, env-file meta-commands, PINNEDSTOPPED/PINNEDSTARTED, SERVICE_DESC_ERR/SERVICE_LOAD_ERR, PREACK, QUERY_LOAD_MECH, DEPENDENTS, $/NAME word-splitting, service templates (name@arg), @meta enable-via, SIGUSR1 socket reopen, soft-reboot shutdown hooks
 
 ## License
 

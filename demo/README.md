@@ -11,7 +11,7 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 
 ## Requirements
 
-- Go 1.26+
+- Go 1.22+
 - `qemu-system-x86_64`
 - `curl`, `cpio`, `gzip`
 - KVM recommended (falls back to software emulation)
@@ -30,58 +30,6 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | dep-b         | internal  | Dependency chain middle (waits-for dep-a)|
 | dep-chain     | internal  | Dependency chain root                    |
 | restarter     | process   | Auto-restart on failure demo             |
-
-## Supported Configuration Options
-
-| Option                | Description                                      |
-|-----------------------|--------------------------------------------------|
-| `type`                | Service type (process, bgprocess, scripted, internal, triggered) |
-| `command`             | Command to run                                   |
-| `stop-command`        | Command to run on stop (scripted)                |
-| `depends-on:`         | Hard dependency                                  |
-| `depends-ms:`         | Milestone dependency (must start, then becomes soft) |
-| `waits-for:`          | Soft dependency (wait for start/fail)            |
-| `before:`             | Ordering: start before target                    |
-| `after:`              | Ordering: start after target                     |
-| `provides`            | Alias name for service lookup                    |
-| `consumer-of` / `consumer-of:` | Pipe output from named service into this one (= or :) |
-| `restart`             | Auto-restart mode (yes, on-failure, no)          |
-| `restart-delay`       | Seconds to wait before restarting                |
-| `restart-limit-count` | Max restarts within interval                     |
-| `restart-limit-interval` | Interval (seconds) for restart limit          |
-| `log-type`            | Output logging (buffer, file, pipe, none)        |
-| `logfile`             | Log file path (when log-type = file)             |
-| `log-buffer-size`     | Log buffer size in bytes (when log-type = buffer)|
-| `logfile-permissions`  | Log file permissions, octal (default 0600)      |
-| `logfile-uid`         | Log file owner UID                               |
-| `logfile-gid`         | Log file owner GID                               |
-| `ready-notification`  | Readiness protocol (pipefd:N, pipevar:VARNAME)   |
-| `socket-listen`       | Pre-opened Unix socket passed to child (fd 3)    |
-| `socket-permissions`  | Socket file permissions                          |
-| `socket-uid/gid`      | Socket file ownership                            |
-| `pid-file`            | PID file path (bgprocess type)                   |
-| `start-timeout`       | Timeout for service start (seconds)              |
-| `stop-timeout`        | Timeout for service stop (seconds)               |
-| `options`             | Service flags (runs-on-console, unmask-intr, no-new-privs, etc.) |
-| `term-signal`         | Signal for graceful stop                         |
-| `working-dir`         | Working directory for the process                |
-| `run-as`              | Run command as user:group                        |
-| `env-file`            | Environment variables file (KEY=VALUE lines)     |
-| `chain-to`            | Service to start after this one stops            |
-| `nice`                | Process scheduling priority (-20..19)            |
-| `oom-score-adj`       | OOM killer score adjustment (-1000..1000)        |
-| `ioprio`              | I/O priority class:level (be:4, rt:0, idle)      |
-| `cgroup`              | Cgroup path for the child process                |
-| `rlimit-nofile`       | File descriptor limit (soft:hard or unlimited)   |
-| `rlimit-core`         | Core dump size limit (soft:hard or unlimited)    |
-| `rlimit-data`         | Data segment size limit (soft:hard or unlimited) |
-| `rlimit-as`           | Address space limit (soft:hard or unlimited)     |
-| `rlimit-addrspace`    | Alias for `rlimit-as` (dinit compat)             |
-| `run-in-cgroup`       | Alias for `cgroup` (dinit compat)                |
-| `capabilities`        | Ambient capabilities (cap_net_bind_service, etc.)|
-| `securebits`          | Securebits flags (noroot, keep-caps, etc.)       |
-| `inittab-id`          | UTMPX inittab ID for session tracking            |
-| `inittab-line`        | UTMPX inittab line for session tracking          |
 
 ## Interactive Commands
 
@@ -148,7 +96,7 @@ slinitctl getallenv hello
 slinitctl add-dep hello depends-on system-init
 slinitctl rm-dep hello waits-for dep-a
 
-# Enable/disable (add/remove waits-for dep on boot service)
+# Enable/disable (add/remove waits-for dep on boot or enable-via service)
 slinitctl enable ticker
 slinitctl enable --from boot ticker  # explicit source service
 slinitctl disable ticker
@@ -157,6 +105,10 @@ slinitctl disable ticker
 slinitctl --offline enable ticker
 slinitctl --offline -d /etc/slinit.d disable ticker
 
+# Query dependents and loader info
+slinitctl dependents boot
+slinitctl query-load-mech
+
 # SysV init compatibility (alternative to slinitctl shutdown)
 init 0                           # poweroff  (sends SIGUSR2 to PID 1)
 init 6                           # reboot    (sends SIGTERM to PID 1)
@@ -164,6 +116,7 @@ init 6                           # reboot    (sends SIGTERM to PID 1)
 # Clean shutdown (exits QEMU due to -no-reboot)
 slinitctl shutdown reboot
 slinitctl shutdown poweroff
+slinitctl shutdown halt
 slinitctl shutdown softreboot      # restart slinit without kernel reboot
 
 # Connect to system/user instance explicitly
@@ -190,17 +143,14 @@ boot (internal)
 slinit handles SysV init signal conventions for compatibility with busybox and
 other tools:
 
-| Signal    | Action   | Source                        |
-|-----------|----------|-------------------------------|
-| `SIGTERM` | reboot   | busybox `reboot`              |
-| `SIGINT`  | reboot   | Ctrl-Alt-Del (via CAD)        |
-| `SIGQUIT` | poweroff | --                            |
-| `SIGUSR1` | halt     | busybox `halt`                |
-| `SIGUSR2` | poweroff | busybox `poweroff`            |
-| `SIGHUP`  | ignored  | --                            |
-
-When the boot service is not found (no service files in any configured
-directory), slinit logs an error, waits 10 seconds, and reboots automatically.
+| Signal    | Action                | Source                        |
+|-----------|-----------------------|-------------------------------|
+| `SIGTERM` | reboot                | busybox `reboot`              |
+| `SIGINT`  | reboot                | Ctrl-Alt-Del (via CAD)        |
+| `SIGQUIT` | poweroff              | --                            |
+| `SIGUSR1` | reopen control socket | recovery when fs writable     |
+| `SIGUSR2` | poweroff              | busybox `poweroff`            |
+| `SIGHUP`  | ignored               | --                            |
 
 ## Boot Failure Recovery
 
@@ -208,10 +158,10 @@ When running as PID 1 and all services stop without an explicit shutdown, slinit
 detects a **boot failure**. The behavior depends on the `-r` flag:
 
 - **Without `-r`**: an interactive prompt is shown on `/dev/console`:
-  - `(r)eboot` — reboot the system
-  - `r(e)covery` — start a `recovery` service (e.g. root shell)
-  - `re(s)tart boot sequence` — restart the boot service
-  - `(p)ower off` — power off the system
+  - `(r)eboot` -- reboot the system
+  - `r(e)covery` -- start a `recovery` service (e.g. root shell)
+  - `re(s)tart boot sequence` -- restart the boot service
+  - `(p)ower off` -- power off the system
 - **With `-r` / `--auto-recovery`**: automatically starts a `recovery` service.
   Falls back to reboot if the recovery service cannot be loaded.
 
