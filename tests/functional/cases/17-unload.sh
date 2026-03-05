@@ -9,6 +9,10 @@ slinitctl --system stop unload-svc
 wait_for_service "unload-svc" "STOPPED" 10
 assert_service_state "unload-svc" "STOPPED" "unload-svc stopped"
 
+# Remove the waits-for dependency from boot so unload can succeed
+# (a service with dependents cannot be unloaded)
+slinitctl --system rm-dep boot waits-for unload-svc
+
 # Unload it
 output=$(slinitctl --system unload unload-svc 2>&1)
 assert_contains "$output" "unloaded" "unload command succeeded"

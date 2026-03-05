@@ -15,9 +15,8 @@ slinitctl --system release wake-svc
 wait_for_service "wake-svc" "STOPPED" 10
 assert_service_state "wake-svc" "STOPPED" "wake-svc stopped after release"
 
-# Now use wake (start without marking active)
+# Wake without an active dependent should NAK (no one needs it)
 output=$(slinitctl --system wake wake-svc 2>&1)
-# wake without an active dependent should NAK
-assert_contains "$output" "no active dependents\|woken\|already" "wake response received"
+assert_contains "$output" "no active dependents" "wake response received"
 
 test_summary
