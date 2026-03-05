@@ -160,10 +160,18 @@ func (e *ParseError) Error() string {
 //   - Value settings use '=' operator
 func Parse(r io.Reader, name string, fileName string) (*ServiceDescription, error) {
 	desc := NewServiceDescription(name)
-	return parseImpl(r, name, fileName, desc, 0)
+	return parseImpl(r, name, fileName, desc, 0, nil)
 }
 
-func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescription, depth int) (*ServiceDescription, error) {
+// ParseWithArg parses a service description with a service argument ($1 substitution).
+// Used for service templates where name@argument loads the base service
+// file and substitutes $1/${1} with the argument value.
+func ParseWithArg(r io.Reader, name string, fileName string, serviceArg string) (*ServiceDescription, error) {
+	desc := NewServiceDescription(name)
+	return parseImpl(r, name, fileName, desc, 0, &serviceArg)
+}
+
+func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescription, depth int, serviceArg *string) (*ServiceDescription, error) {
 	if depth > maxIncludeDepth {
 		return nil, &ParseError{
 			ServiceName: name,
@@ -187,7 +195,7 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 
 		// Handle @include and @include-opt directives
 		if strings.HasPrefix(trimmed, "@") {
-			if err := handleInclude(trimmed, name, fileName, lineNum, desc, depth); err != nil {
+			if err := handleInclude(trimmed, name, fileName, lineNum, desc, depth, serviceArg); err != nil {
 				return nil, err
 			}
 			continue
@@ -228,7 +236,7 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 			}
 		}
 
-		if err := applySetting(desc, setting, value, op); err != nil {
+		if err := applySetting(desc, setting, value, op, serviceArg); err != nil {
 			return nil, &ParseError{
 				ServiceName: name,
 				FileName:    fileName,
@@ -247,11 +255,14 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 }
 
 // handleInclude processes @include and @include-opt directives.
-func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescription, depth int) error {
+func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescription, depth int, serviceArg *string) error {
 	var optional bool
 	var incPath string
 
 	switch {
+	case strings.HasPrefix(line, "@meta "), line == "@meta":
+		// @meta directives are metadata for external tools; ignored by the daemon.
+		return nil
 	case strings.HasPrefix(line, "@include-opt "):
 		optional = true
 		incPath = strings.TrimSpace(line[len("@include-opt "):])
@@ -298,7 +309,7 @@ func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescri
 	}
 	defer f.Close()
 
-	_, err = parseImpl(f, name, incPath, desc, depth+1)
+	_, err = parseImpl(f, name, incPath, desc, depth+1, serviceArg)
 	return err
 }
 
@@ -336,7 +347,7 @@ func parseLine(line string) (setting string, value string, op OperatorType, err 
 }
 
 // applySetting applies a parsed setting to the service description.
-func applySetting(desc *ServiceDescription, setting, value string, op OperatorType) error {
+func applySetting(desc *ServiceDescription, setting, value string, op OperatorType, serviceArg *string) error {
 	switch setting {
 	case "type":
 		return applyType(desc, value)
@@ -344,38 +355,38 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.Description = value
 	case "command":
 		if op == OpPlusEqual {
-			desc.Command = append(desc.Command, splitCommand(expandEnvVars(value))...)
+			desc.Command = append(desc.Command, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
 		} else {
-			desc.Command = splitCommand(expandEnvVars(value))
+			desc.Command = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
 	case "stop-command":
 		if op == OpPlusEqual {
-			desc.StopCommand = append(desc.StopCommand, splitCommand(expandEnvVars(value))...)
+			desc.StopCommand = append(desc.StopCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
 		} else {
-			desc.StopCommand = splitCommand(expandEnvVars(value))
+			desc.StopCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
 	case "working-dir":
-		desc.WorkingDir = expandEnvVars(value)
+		desc.WorkingDir = expandEnvVars(value, serviceArg)
 	case "env-file":
-		desc.EnvFile = expandEnvVars(value)
+		desc.EnvFile = expandEnvVars(value, serviceArg)
 
 	// Dependencies
 	case "depends-on":
-		desc.DependsOn = append(desc.DependsOn, value)
+		desc.DependsOn = append(desc.DependsOn, expandEnvVars(value, serviceArg))
 	case "depends-ms":
-		desc.DependsMS = append(desc.DependsMS, value)
+		desc.DependsMS = append(desc.DependsMS, expandEnvVars(value, serviceArg))
 	case "waits-for":
-		desc.WaitsFor = append(desc.WaitsFor, value)
+		desc.WaitsFor = append(desc.WaitsFor, expandEnvVars(value, serviceArg))
 	case "before":
-		desc.Before = append(desc.Before, value)
+		desc.Before = append(desc.Before, expandEnvVars(value, serviceArg))
 	case "after":
-		desc.After = append(desc.After, value)
+		desc.After = append(desc.After, expandEnvVars(value, serviceArg))
 	case "depends-on.d":
-		desc.DependsOnD = append(desc.DependsOnD, value)
+		desc.DependsOnD = append(desc.DependsOnD, expandEnvVars(value, serviceArg))
 	case "depends-ms.d":
-		desc.DependsMSD = append(desc.DependsMSD, value)
+		desc.DependsMSD = append(desc.DependsMSD, expandEnvVars(value, serviceArg))
 	case "waits-for.d":
-		desc.WaitsForD = append(desc.WaitsForD, value)
+		desc.WaitsForD = append(desc.WaitsForD, expandEnvVars(value, serviceArg))
 
 	// Restart
 	case "restart":
@@ -429,7 +440,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Logging
 	case "logfile":
-		desc.LogFile = expandEnvVars(value)
+		desc.LogFile = expandEnvVars(value, serviceArg)
 		if desc.LogType == service.LogNone {
 			desc.LogType = service.LogToFile
 		}
@@ -462,7 +473,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Process management
 	case "pid-file":
-		desc.PIDFile = expandEnvVars(value)
+		desc.PIDFile = expandEnvVars(value, serviceArg)
 	case "ready-notification":
 		desc.ReadyNotification = value
 		if err := parseReadyNotification(desc, value); err != nil {
@@ -473,7 +484,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Socket
 	case "socket-listen":
-		desc.SocketPath = expandEnvVars(value)
+		desc.SocketPath = expandEnvVars(value, serviceArg)
 	case "socket-permissions":
 		perms, err := strconv.ParseInt(value, 8, 32)
 		if err != nil {
@@ -495,7 +506,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Chaining
 	case "chain-to":
-		desc.ChainTo = expandEnvVars(value)
+		desc.ChainTo = expandEnvVars(value, serviceArg)
 
 	// Alias
 	case "provides":
@@ -503,7 +514,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Consumer
 	case "consumer-of":
-		desc.ConsumerOf = value
+		desc.ConsumerOf = expandEnvVars(value, serviceArg)
 
 	// Options
 	case "options":
@@ -717,6 +728,15 @@ func splitCommand(cmd string) []string {
 			continue
 		}
 
+		// NUL byte = word-split boundary from $/NAME expansion
+		if ch == wordSplitSep {
+			if current.Len() > 0 {
+				parts = append(parts, current.String())
+				current.Reset()
+			}
+			continue
+		}
+
 		current.WriteByte(ch)
 	}
 
@@ -810,10 +830,26 @@ func parseRlimit(value string) (*[2]uint64, error) {
 	return &[2]uint64{v, v}, nil
 }
 
+// wordSplitSep is a NUL byte used as internal marker for word-split
+// boundaries introduced by the $/NAME expansion syntax.
+const wordSplitSep = '\x00'
+
+// expandEnvVarsForCommand expands environment variables with word-splitting
+// support. The $/NAME and $/{NAME} syntax splits the expanded value on
+// whitespace, inserting NUL byte markers at word boundaries. The caller
+// (splitCommand) treats NUL as a word-split boundary.
+func expandEnvVarsForCommand(s string, serviceArg *string) string {
+	return expandEnvVarsImpl(s, true, serviceArg)
+}
+
 // expandEnvVars expands environment variable references in a string.
-// Supported syntax: $VAR, ${VAR}, and $$ (literal dollar sign).
+// Supported syntax: $VAR, ${VAR}, $1/${1} (service arg), and $$ (literal dollar sign).
 // Unset variables expand to an empty string.
-func expandEnvVars(s string) string {
+func expandEnvVars(s string, serviceArg *string) string {
+	return expandEnvVarsImpl(s, false, serviceArg)
+}
+
+func expandEnvVarsImpl(s string, allowWordSplit bool, serviceArg *string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 
@@ -840,45 +876,107 @@ func expandEnvVars(s string) string {
 			continue
 		}
 
-		// ${VAR}, ${VAR:-default}, ${VAR:+alt} syntax
+		// $1 — service argument substitution (only $1 is valid, not $2+)
+		// Note: $1 is always treated as a service argument, even if followed
+		// by alphanumeric chars (unlike env vars which are greedy).
+		if s[i] == '1' {
+			i++ // skip '1'
+			if serviceArg == nil {
+				// $1 without argument: silently expand to empty
+				continue
+			}
+			b.WriteString(*serviceArg)
+			continue
+		}
+
+		// $/NAME or $/{NAME} — word-splitting expansion
+		wsplit := allowWordSplit && s[i] == '/'
+		if wsplit {
+			i++ // skip '/'
+			if i >= len(s) {
+				b.WriteString("$/")
+				break
+			}
+			// $/1 — word-split service argument
+			if s[i] == '1' && (i+1 >= len(s) || !isVarChar(s[i+1], false)) {
+				i++ // skip '1'
+				if serviceArg != nil {
+					writeWordSplit(&b, *serviceArg)
+				}
+				continue
+			}
+		}
+
+		// ${VAR}, ${VAR:-default}, ${VAR:+alt}, $/{VAR}, $/{1} syntax
 		if s[i] == '{' {
 			i++ // skip '{'
 			end := strings.IndexByte(s[i:], '}')
 			if end < 0 {
 				// No closing brace — keep literal
-				b.WriteString("${")
+				if wsplit {
+					b.WriteString("$/{")
+				} else {
+					b.WriteString("${")
+				}
 				continue
 			}
 			expr := s[i : i+end]
 			i += end + 1 // skip past '}'
 
+			// Resolve variable or service argument ($1)
+			var resolved string
 			if colonIdx := strings.IndexByte(expr, ':'); colonIdx >= 0 && colonIdx+1 < len(expr) {
 				varName := expr[:colonIdx]
 				op := expr[colonIdx+1]
 				operand := expr[colonIdx+2:]
-				val, set := os.LookupEnv(varName)
+				var val string
+				var set bool
+				if varName == "1" {
+					// ${1:-default}, ${1:+alt}
+					if serviceArg != nil {
+						val = *serviceArg
+						set = true
+					}
+				} else {
+					val, set = os.LookupEnv(varName)
+				}
 				switch op {
 				case '-': // ${VAR:-default} — use default if unset or empty
 					if !set || val == "" {
-						b.WriteString(operand)
+						resolved = operand
 					} else {
-						b.WriteString(val)
+						resolved = val
 					}
 				case '+': // ${VAR:+alt} — use alt if set and non-empty
 					if set && val != "" {
-						b.WriteString(operand)
+						resolved = operand
 					}
 				default:
 					// Unknown operator, treat as plain var name with colon
-					b.WriteString(os.Getenv(expr))
+					if varName == "1" && serviceArg != nil {
+						resolved = *serviceArg
+					} else {
+						resolved = os.Getenv(expr)
+					}
+				}
+			} else if expr == "1" {
+				// ${1} — service argument
+				if serviceArg != nil {
+					resolved = *serviceArg
 				}
 			} else {
-				b.WriteString(os.Getenv(expr))
+				resolved = os.Getenv(expr)
+			}
+
+			if wsplit {
+				writeWordSplit(&b, resolved)
+			} else {
+				b.WriteString(resolved)
 			}
 			continue
 		}
 
-		// $VAR syntax: variable name is [A-Za-z_][A-Za-z0-9_]*
+		// $VAR or $/VAR syntax: variable name is [A-Za-z_][A-Za-z0-9_]*
 		start := i
 		for i < len(s) && isVarChar(s[i], i == start) {
 			i++
@@ -886,13 +984,40 @@ func expandEnvVars(s string) string {
 		if i == start {
 			// '$' followed by non-variable char — keep literal '$'
 			b.WriteByte('$')
+			if wsplit {
+				b.WriteByte('/')
+			}
 			continue
 		}
 		name := s[start:i]
-		b.WriteString(os.Getenv(name))
+		resolved := os.Getenv(name)
+		if wsplit {
+			writeWordSplit(&b, resolved)
+		} else {
+			b.WriteString(resolved)
+		}
 	}
 
 	return b.String()
+}
+
+// writeWordSplit writes a word-split expanded value to the builder.
+// Whitespace in the value is replaced with NUL byte markers that splitCommand
+// interprets as forced word boundaries (even mid-token).
+func writeWordSplit(b *strings.Builder, val string) {
+	inWS := true // start in whitespace state to trim leading whitespace
+	for _, ch := range val {
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			if !inWS {
+				b.WriteByte(wordSplitSep)
+				inWS = true
+			}
+		} else {
+			b.WriteRune(ch)
+			inWS = false
+		}
+	}
+	// trailing whitespace is naturally trimmed (no trailing NUL)
 }
 
 // isVarChar returns true if ch is valid in an environment variable name.

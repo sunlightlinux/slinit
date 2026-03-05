@@ -51,6 +51,8 @@ const (
 	CmdListenEnv          uint8 = 32
 	CmdListServices5      uint8 = 33
 	CmdServiceStatus5     uint8 = 34
+	CmdQueryLoadMech      uint8 = 35
+	CmdQueryDependents    uint8 = 36
 )
 
 // Reply codes (server → client).
@@ -58,6 +60,9 @@ const (
 	RplyACK           uint8 = 50
 	RplyNAK           uint8 = 51
 	RplyBadReq        uint8 = 52
+	RplyOOM           uint8 = 53
+	RplyServiceLoadErr uint8 = 54
+	RplyServiceOOM    uint8 = 55
 	RplyCPVersion     uint8 = 58
 	RplyServiceRecord uint8 = 59
 	RplyNoService     uint8 = 60
@@ -66,8 +71,13 @@ const (
 	RplyListDone      uint8 = 63
 	RplyBootTime      uint8 = 64
 	RplyNotStopped    uint8 = 65
+	RplyServiceName2  uint8 = 66  // dinit SERVICENAME reply
+	RplyPinnedStopped uint8 = 67
+	RplyPinnedStarted uint8 = 68
 	RplyShuttingDown  uint8 = 69
 	RplyServiceStatus uint8 = 70
+	RplyServiceDescErr uint8 = 71
+	RplyServiceLoadErr2 uint8 = 72
 	RplySvcLog        uint8 = 73
 	RplySignalNoPID   uint8 = 74
 	RplySignalBadSig  uint8 = 75
@@ -75,6 +85,9 @@ const (
 	RplyEnvList       uint8 = 77
 	RplyServiceName   uint8 = 78
 	RplyServiceDscDir uint8 = 79
+	RplyPreACK        uint8 = 80
+	RplyLoaderMech    uint8 = 81
+	RplyDependents    uint8 = 82
 )
 
 // Info codes (server → client, unsolicited).

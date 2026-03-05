@@ -131,8 +131,10 @@ SVC
     # Concatenate base + overlay (cpio archives are appendable)
     cat "${OUTPUT_DIR}/initramfs-base.cpio.gz" "${overlay_cpio}" > "${test_dir}/initramfs.cpio.gz"
 
-    # Create a Unix socket for virtio-serial result channel
-    local chardev_path="${test_dir}/virtio-serial.sock"
+    # Create a Unix socket for virtio-serial result channel.
+    # Use /tmp to avoid the 108-byte Unix socket path limit.
+    local chardev_path
+    chardev_path=$(mktemp -u "/tmp/slinit-test-${test_name}-XXXXXX.sock")
 
     # Detect KVM
     local kvm_args="-cpu qemu64"
@@ -190,6 +192,9 @@ SVC
     else
         wait "$qemu_pid" 2>/dev/null || true
     fi
+
+    # Cleanup temp socket
+    rm -f "${chardev_path}"
 
     # Evaluate results
     if [ "$got_result" -eq 0 ] || [ ! -s "${result_file}" ]; then

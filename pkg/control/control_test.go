@@ -1268,3 +1268,137 @@ func findHandle(t *testing.T, conn net.Conn, name string) uint32 {
 	}
 	return h
 }
+
+// --- PREACK tests ---
+
+func TestPreACKOnStop(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "preack-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	// Load and start service
+	nameData := EncodeServiceName("preack-svc")
+	WritePacket(conn, CmdLoadService, nameData)
+	_, payload, _ := ReadPacket(conn)
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	WritePacket(conn, CmdStartService, EncodeHandle(handle))
+	readReply(t, conn)
+
+	// Stop with PREACK flag (bit 7 = 0x80) + restart (bit 2 = 0x04)
+	stopPayload := make([]byte, 5)
+	binary.LittleEndian.PutUint32(stopPayload, handle)
+	stopPayload[4] = 0x80 | 0x04 // preack + restart
+	WritePacket(conn, CmdStopService, stopPayload)
+
+	// First reply should be PREACK
+	rply, _, err := ReadPacket(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rply != RplyPreACK {
+		t.Fatalf("expected PREACK (%d), got %d", RplyPreACK, rply)
+	}
+
+	// Then the main ACK (skip any info packets)
+	rply2, _ := readReply(t, conn)
+	if rply2 != RplyACK {
+		t.Fatalf("expected ACK after PREACK, got %d", rply2)
+	}
+}
+
+func TestNoPreACKWithoutFlag(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "no-preack-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	nameData := EncodeServiceName("no-preack-svc")
+	WritePacket(conn, CmdLoadService, nameData)
+	_, payload, _ := ReadPacket(conn)
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	WritePacket(conn, CmdStartService, EncodeHandle(handle))
+	readReply(t, conn)
+
+	// Stop without PREACK flag
+	WritePacket(conn, CmdStopService, EncodeHandle(handle))
+
+	// Should get ACK directly (no PREACK)
+	rply, _ := readReply(t, conn)
+	if rply != RplyACK {
+		t.Fatalf("expected ACK, got %d", rply)
+	}
+}
+
+func TestPinnedStoppedReply(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "pinned-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	nameData := EncodeServiceName("pinned-svc")
+	WritePacket(conn, CmdLoadService, nameData)
+	_, payload, _ := ReadPacket(conn)
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	// Stop with pin
+	stopPayload := make([]byte, 5)
+	binary.LittleEndian.PutUint32(stopPayload, handle)
+	stopPayload[4] = 0x01 // pin
+	WritePacket(conn, CmdStopService, stopPayload)
+	readReply(t, conn) // ACK (already stopped)
+
+	// Pin stop the service
+	svc.PinStop()
+
+	// Try to start — should get PinnedStopped
+	WritePacket(conn, CmdStartService, EncodeHandle(handle))
+	rply, _ := readReply(t, conn)
+	if rply != RplyPinnedStopped {
+		t.Fatalf("expected PinnedStopped (%d), got %d", RplyPinnedStopped, rply)
+	}
+}
+
+func TestPinnedStartedReply(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "pinstart-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	nameData := EncodeServiceName("pinstart-svc")
+	WritePacket(conn, CmdLoadService, nameData)
+	_, payload, _ := ReadPacket(conn)
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	// Start with pin
+	startPayload := make([]byte, 5)
+	binary.LittleEndian.PutUint32(startPayload, handle)
+	startPayload[4] = 0x01 // pin
+	WritePacket(conn, CmdStartService, startPayload)
+	readReply(t, conn) // ACK
+
+	// Try to stop (non-force) — should get PinnedStarted
+	WritePacket(conn, CmdStopService, EncodeHandle(handle))
+	rply, _ := readReply(t, conn)
+	if rply != RplyPinnedStarted {
+		t.Fatalf("expected PinnedStarted (%d), got %d", RplyPinnedStarted, rply)
+	}
+}

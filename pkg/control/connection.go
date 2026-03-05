@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"syscall"
@@ -197,6 +198,10 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleListServices5()
 	case CmdServiceStatus5:
 		return c.handleServiceStatus5(payload)
+	case CmdQueryLoadMech:
+		return c.handleQueryLoadMech()
+	case CmdQueryDependents:
+		return c.handleQueryDependents(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
@@ -238,6 +243,13 @@ func (c *Connection) handleLoadService(payload []byte) error {
 
 	svc, err := c.server.services.LoadService(name)
 	if err != nil {
+		// Distinguish between "not found" and "parse/load error"
+		if strings.Contains(err.Error(), "parse") || strings.Contains(err.Error(), "syntax") {
+			return c.writePacket(RplyServiceDescErr, nil)
+		}
+		if strings.Contains(err.Error(), "load") || strings.Contains(err.Error(), "open") {
+			return c.writePacket(RplyServiceLoadErr2, nil)
+		}
 		return c.writePacket(RplyNoService, nil)
 	}
 
@@ -247,6 +259,17 @@ func (c *Connection) handleLoadService(payload []byte) error {
 	binary.LittleEndian.PutUint32(reply[1:], handle)
 	reply[5] = uint8(svc.TargetState())
 	return c.writePacket(RplyServiceRecord, reply)
+}
+
+// sendPreACK sends a PREACK packet if the pre-ack flag (bit 7) is set.
+// PREACK acts as a synchronization point for clients tracking service events
+// during restart operations — events before PREACK are from old state,
+// events after PREACK are from the command being executed.
+func (c *Connection) sendPreACK(flags uint8) error {
+	if flags&0x80 != 0 {
+		return c.writePacket(RplyPreACK, nil)
+	}
+	return nil
 }
 
 func (c *Connection) handleStartService(payload []byte) error {
@@ -275,6 +298,14 @@ func (c *Connection) handleStartService(payload []byte) error {
 		return c.writePacket(RplyAlreadySS, nil)
 	}
 
+	if svc.Record().IsStopPinned() {
+		return c.writePacket(RplyPinnedStopped, nil)
+	}
+
+	if err := c.sendPreACK(flags); err != nil {
+		return err
+	}
+
 	c.server.services.StartService(svc)
 	if pin {
 		svc.PinStart()
@@ -286,6 +317,11 @@ func (c *Connection) handleWakeService(payload []byte) error {
 	handle, err := DecodeHandle(payload)
 	if err != nil {
 		return c.writePacket(RplyBadReq, nil)
+	}
+
+	var flags uint8
+	if len(payload) >= 5 {
+		flags = payload[4]
 	}
 
 	svc := c.getService(handle)
@@ -303,6 +339,10 @@ func (c *Connection) handleWakeService(payload []byte) error {
 
 	if svc.Record().IsStopPinned() {
 		return c.writePacket(RplyNAK, nil)
+	}
+
+	if err := c.sendPreACK(flags); err != nil {
+		return err
 	}
 
 	if !c.server.services.WakeService(svc) {
@@ -324,6 +364,7 @@ func (c *Connection) handleStopService(payload []byte) error {
 	}
 	pin := flags&0x01 != 0
 	force := flags&0x02 != 0
+	restart := flags&0x04 != 0
 
 	svc := c.getService(handle)
 	if svc == nil {
@@ -332,6 +373,14 @@ func (c *Connection) handleStopService(payload []byte) error {
 
 	if svc.State() == service.StateStopped {
 		return c.writePacket(RplyAlreadySS, nil)
+	}
+
+	if !force && svc.Record().IsStartPinned() {
+		return c.writePacket(RplyPinnedStarted, nil)
+	}
+
+	if err := c.sendPreACK(flags); err != nil {
+		return err
 	}
 
 	if force {
@@ -342,6 +391,13 @@ func (c *Connection) handleStopService(payload []byte) error {
 	if pin {
 		svc.PinStop()
 	}
+	if restart {
+		// Re-start the service after stopping (restart operation)
+		c.server.services.StartService(svc)
+		if pin {
+			svc.PinStart()
+		}
+	}
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -351,6 +407,11 @@ func (c *Connection) handleReleaseService(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
+	var flags uint8
+	if len(payload) >= 5 {
+		flags = payload[4]
+	}
+
 	svc := c.getService(handle)
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
@@ -358,6 +419,10 @@ func (c *Connection) handleReleaseService(payload []byte) error {
 
 	if svc.State() == service.StateStopped {
 		return c.writePacket(RplyAlreadySS, nil)
+	}
+
+	if err := c.sendPreACK(flags); err != nil {
+		return err
 	}
 
 	svc.Stop(false) // release: remove explicit activation, stop only if unrequired
@@ -869,6 +934,63 @@ func (c *Connection) handleQueryServiceDscDir() error {
 		off += 2 + len(d)
 	}
 	return c.writePacket(RplyServiceDscDir, buf)
+}
+
+func (c *Connection) handleQueryDependents(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	dependents := svc.Dependents()
+	// Allocate handles for each dependent and return them
+	// Wire format: count(4) + [handle(4)]*
+	buf := make([]byte, 4+4*len(dependents))
+	binary.LittleEndian.PutUint32(buf, uint32(len(dependents)))
+	off := 4
+	for _, dep := range dependents {
+		depHandle := c.allocHandle(dep.From)
+		binary.LittleEndian.PutUint32(buf[off:], depHandle)
+		off += 4
+	}
+	return c.writePacket(RplyDependents, buf)
+}
+
+func (c *Connection) handleQueryLoadMech() error {
+	loader := c.server.services.GetLoader()
+	cwd, _ := os.Getwd()
+
+	var dirs []string
+	if loader != nil {
+		dirs = loader.ServiceDirs()
+	}
+
+	// Wire format: loaderType(1) + cwdLen(4) + cwd(N) + numDirs(4) + [dirLen(4) + dir(N)]*
+	size := 1 + 4 + len(cwd) + 4
+	for _, d := range dirs {
+		size += 4 + len(d)
+	}
+	buf := make([]byte, size)
+	buf[0] = 1 // SSET_TYPE_DIRLOAD
+	off := 1
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(cwd)))
+	off += 4
+	copy(buf[off:], cwd)
+	off += len(cwd)
+	binary.LittleEndian.PutUint32(buf[off:], uint32(len(dirs)))
+	off += 4
+	for _, d := range dirs {
+		binary.LittleEndian.PutUint32(buf[off:], uint32(len(d)))
+		off += 4
+		copy(buf[off:], d)
+		off += len(d)
+	}
+	return c.writePacket(RplyLoaderMech, buf)
 }
 
 func (c *Connection) handleListenEnv() error {

@@ -317,6 +317,14 @@ doneFlags:
 		})
 	case "service-dirs":
 		err = cmdQueryServiceDscDir(conn)
+	case "query-load-mech", "load-mech":
+		err = cmdQueryLoadMech(conn)
+	case "dependents":
+		if len(args) < 1 {
+			fmt.Fprintf(os.Stderr, "usage: slinitctl dependents <service>\n")
+			os.Exit(1)
+		}
+		err = cmdDependents(conn, args[0])
 	case "list5":
 		err = cmdListServices5(conn)
 	case "status5":
@@ -596,6 +604,12 @@ func loadServiceHandle(conn net.Conn, name string) (uint32, error) {
 		return handle, nil
 	case control.RplyNoService:
 		return 0, fmt.Errorf("service '%s' not found", name)
+	case control.RplyServiceDescErr:
+		return 0, fmt.Errorf("service '%s' has a description error", name)
+	case control.RplyServiceLoadErr2:
+		return 0, fmt.Errorf("service '%s' could not be loaded", name)
+	case control.RplyServiceLoadErr:
+		return 0, fmt.Errorf("service '%s' load error", name)
 	default:
 		return 0, fmt.Errorf("unexpected reply: %d", rply)
 	}
@@ -744,6 +758,8 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 		info("Service '%s' started.\n", name)
 	case control.RplyAlreadySS:
 		info("Service '%s' is already started.\n", name)
+	case control.RplyPinnedStopped:
+		return fmt.Errorf("service '%s' is pinned stopped", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")
 	default:
@@ -829,6 +845,8 @@ func cmdStop(conn net.Conn, name string, pin bool, force bool, ignoreUnstarted b
 		info("Service '%s' stopped.\n", name)
 	case control.RplyAlreadySS:
 		info("Service '%s' is already stopped.\n", name)
+	case control.RplyPinnedStarted:
+		return fmt.Errorf("service '%s' is pinned started", name)
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
@@ -1765,6 +1783,110 @@ func cmdQueryServiceDscDir(conn net.Conn) error {
 			return fmt.Errorf("truncated response at dir %d", i)
 		}
 		fmt.Println(string(payload[off : off+dirLen]))
+		off += dirLen
+	}
+	return nil
+}
+
+func cmdDependents(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdQueryDependents, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyDependents {
+		return fmt.Errorf("dependents query failed: reply %d", rply)
+	}
+
+	if len(payload) < 4 {
+		return fmt.Errorf("response too short")
+	}
+	count := int(binary.LittleEndian.Uint32(payload))
+	off := 4
+
+	if count == 0 {
+		fmt.Printf("Service '%s' has no dependents.\n", name)
+		return nil
+	}
+
+	fmt.Printf("Service '%s' has %d dependent(s):\n", name, count)
+	for i := 0; i < count; i++ {
+		if len(payload) < off+4 {
+			return fmt.Errorf("truncated response at dependent %d", i)
+		}
+		depHandle := binary.LittleEndian.Uint32(payload[off:])
+		off += 4
+
+		// Query the name of each dependent
+		if err := control.WritePacket(conn, control.CmdQueryServiceName, control.EncodeHandle(depHandle)); err != nil {
+			fmt.Printf("  handle=%d (name query failed)\n", depHandle)
+			continue
+		}
+		rply2, payload2, err := control.ReadPacket(conn)
+		if err != nil || rply2 != control.RplyServiceName {
+			fmt.Printf("  handle=%d\n", depHandle)
+			continue
+		}
+		depName, _, _ := control.DecodeServiceName(payload2)
+		fmt.Printf("  %s\n", depName)
+	}
+	return nil
+}
+
+func cmdQueryLoadMech(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdQueryLoadMech, nil); err != nil {
+		return err
+	}
+
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyLoaderMech {
+		return fmt.Errorf("query-load-mech failed: reply %d", rply)
+	}
+
+	// Wire format: loaderType(1) + cwdLen(4) + cwd(N) + numDirs(4) + [dirLen(4) + dir(N)]*
+	if len(payload) < 9 {
+		return fmt.Errorf("response too short")
+	}
+	loaderType := payload[0]
+	off := 1
+	cwdLen := int(binary.LittleEndian.Uint32(payload[off:]))
+	off += 4
+	if len(payload) < off+cwdLen {
+		return fmt.Errorf("truncated cwd")
+	}
+	cwd := string(payload[off : off+cwdLen])
+	off += cwdLen
+
+	if len(payload) < off+4 {
+		return fmt.Errorf("truncated dir count")
+	}
+	numDirs := int(binary.LittleEndian.Uint32(payload[off:]))
+	off += 4
+
+	fmt.Printf("Loader type: %d (directory)\n", loaderType)
+	fmt.Printf("Working dir: %s\n", cwd)
+	fmt.Printf("Service directories (%d):\n", numDirs)
+	for i := 0; i < numDirs; i++ {
+		if len(payload) < off+4 {
+			return fmt.Errorf("truncated dir %d", i)
+		}
+		dirLen := int(binary.LittleEndian.Uint32(payload[off:]))
+		off += 4
+		if len(payload) < off+dirLen {
+			return fmt.Errorf("truncated dir %d", i)
+		}
+		fmt.Printf("  %s\n", string(payload[off:off+dirLen]))
 		off += dirLen
 	}
 	return nil

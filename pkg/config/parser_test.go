@@ -500,7 +500,7 @@ func TestExpandEnvVars(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := expandEnvVars(tt.input)
+		got := expandEnvVars(tt.input, nil)
 		if got != tt.expected {
 			t.Errorf("expandEnvVars(%q) = %q, want %q", tt.input, got, tt.expected)
 		}
@@ -580,7 +580,7 @@ func TestExpandEnvVarsDefault(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := expandEnvVars(tt.input)
+		got := expandEnvVars(tt.input, nil)
 		if got != tt.expected {
 			t.Errorf("expandEnvVars(%q) = %q, want %q", tt.input, got, tt.expected)
 		}
@@ -906,5 +906,204 @@ func TestUnknownDirective(t *testing.T) {
 	_, err := Parse(strings.NewReader(input), "test", "test-file")
 	if err == nil {
 		t.Fatal("expected error for unknown directive")
+	}
+}
+
+func TestWordSplitExpansion(t *testing.T) {
+	os.Setenv("WSPLIT_ARGS", "arg1 arg2  arg3")
+	os.Setenv("WSPLIT_EMPTY", "")
+	os.Setenv("WSPLIT_SINGLE", "one")
+	defer os.Unsetenv("WSPLIT_ARGS")
+	defer os.Unsetenv("WSPLIT_EMPTY")
+	defer os.Unsetenv("WSPLIT_SINGLE")
+
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			"basic word-split",
+			"type = process\ncommand = /bin/test $/WSPLIT_ARGS\n",
+			[]string{"/bin/test", "arg1", "arg2", "arg3"},
+		},
+		{
+			"word-split with braces",
+			"type = process\ncommand = /bin/test $/{WSPLIT_ARGS}\n",
+			[]string{"/bin/test", "arg1", "arg2", "arg3"},
+		},
+		{
+			"word-split empty collapses",
+			"type = process\ncommand = /bin/test $/WSPLIT_EMPTY foo\n",
+			[]string{"/bin/test", "foo"},
+		},
+		{
+			"word-split single value",
+			"type = process\ncommand = /bin/test $/WSPLIT_SINGLE\n",
+			[]string{"/bin/test", "one"},
+		},
+		{
+			"non-split preserves spaces as one arg",
+			"type = process\ncommand = /bin/test \"$WSPLIT_ARGS\"\n",
+			[]string{"/bin/test", "arg1 arg2  arg3"},
+		},
+		{
+			"mixed split and non-split",
+			"type = process\ncommand = /bin/test prefix$/WSPLIT_ARGS suffix\n",
+			[]string{"/bin/test", "prefixarg1", "arg2", "arg3", "suffix"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc, err := Parse(strings.NewReader(tt.input), "test", "test-file")
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			if len(desc.Command) != len(tt.expected) {
+				t.Fatalf("command args: got %v, want %v", desc.Command, tt.expected)
+			}
+			for i, want := range tt.expected {
+				if desc.Command[i] != want {
+					t.Errorf("arg[%d]: got %q, want %q", i, desc.Command[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestMetaDirectiveIgnored(t *testing.T) {
+	input := "type = internal\n@meta enable-via foo\n@meta\ncommand = /bin/true\n"
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("@meta should be silently ignored: %v", err)
+	}
+	if desc.Type != service.TypeInternal {
+		t.Fatalf("expected internal, got %v", desc.Type)
+	}
+}
+
+func TestServiceArgSubstitution(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		arg      string
+		expected []string // expected Command
+	}{
+		{
+			"basic $1 substitution",
+			"type = process\ncommand = /bin/echo $1\n",
+			"hello",
+			[]string{"/bin/echo", "hello"},
+		},
+		{
+			"${1} substitution",
+			"type = process\ncommand = /bin/echo ${1}\n",
+			"world",
+			[]string{"/bin/echo", "world"},
+		},
+		{
+			"$1 in middle of word",
+			"type = process\ncommand = /bin/test prefix$1suffix\n",
+			"mid",
+			[]string{"/bin/test", "prefixmidsuffix"},
+		},
+		{
+			"${1:-default} with arg",
+			"type = process\ncommand = /bin/echo ${1:-fallback}\n",
+			"actual",
+			[]string{"/bin/echo", "actual"},
+		},
+		{
+			"${1:-default} without arg value (empty)",
+			"type = process\ncommand = /bin/echo ${1:-fallback}\n",
+			"",
+			[]string{"/bin/echo", "fallback"},
+		},
+		{
+			"${1:+alt} with arg",
+			"type = process\ncommand = /bin/echo ${1:+present}\n",
+			"something",
+			[]string{"/bin/echo", "present"},
+		},
+		{
+			"${1:+alt} with empty arg",
+			"type = process\ncommand = /bin/echo ${1:+present}\n",
+			"",
+			[]string{"/bin/echo"},
+		},
+		{
+			"$/1 word-split",
+			"type = process\ncommand = /bin/test $/1\n",
+			"arg1 arg2 arg3",
+			[]string{"/bin/test", "arg1", "arg2", "arg3"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desc, err := ParseWithArg(strings.NewReader(tt.input), "test@"+tt.arg, "test-file", tt.arg)
+			if err != nil {
+				t.Fatalf("parse error: %v", err)
+			}
+			if len(desc.Command) != len(tt.expected) {
+				t.Fatalf("command: got %v, want %v", desc.Command, tt.expected)
+			}
+			for i, want := range tt.expected {
+				if desc.Command[i] != want {
+					t.Errorf("arg[%d]: got %q, want %q", i, desc.Command[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceArgInDependencies(t *testing.T) {
+	input := "type = process\ncommand = /bin/true\ndepends-on : base-$1\nwaits-for : opt-${1}\n"
+	desc, err := ParseWithArg(strings.NewReader(input), "svc@myarg", "test-file", "myarg")
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(desc.DependsOn) != 1 || desc.DependsOn[0] != "base-myarg" {
+		t.Errorf("depends-on: got %v, want [base-myarg]", desc.DependsOn)
+	}
+	if len(desc.WaitsFor) != 1 || desc.WaitsFor[0] != "opt-myarg" {
+		t.Errorf("waits-for: got %v, want [opt-myarg]", desc.WaitsFor)
+	}
+}
+
+func TestServiceArgNoArgNil(t *testing.T) {
+	// Without arg, $1 expands to empty string
+	input := "type = process\ncommand = /bin/echo $1\n"
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(desc.Command) != 1 || desc.Command[0] != "/bin/echo" {
+		t.Errorf("command: got %v, want [/bin/echo]", desc.Command)
+	}
+}
+
+func TestTemplateLoaderNameSplit(t *testing.T) {
+	// Test that findAndParse splits name@arg and looks for base name file
+	dir := t.TempDir()
+	// Create a template service file with base name "mysvc"
+	content := "type = process\ncommand = /bin/run $1\n"
+	if err := os.WriteFile(dir+"/mysvc", []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	set := service.NewServiceSet(nil)
+	loader := NewDirLoader(set, []string{dir})
+
+	desc, _, err := loader.findAndParse("mysvc@instance1")
+	if err != nil {
+		t.Fatalf("findAndParse failed: %v", err)
+	}
+	if desc.Name != "mysvc@instance1" {
+		t.Errorf("name: got %q, want 'mysvc@instance1'", desc.Name)
+	}
+	if len(desc.Command) != 2 || desc.Command[1] != "instance1" {
+		t.Errorf("command: got %v, want [/bin/run instance1]", desc.Command)
 	}
 }

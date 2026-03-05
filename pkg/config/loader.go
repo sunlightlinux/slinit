@@ -467,25 +467,47 @@ func (dl *DirLoader) loadServiceImpl(name string) (service.Service, error) {
 }
 
 func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, error) {
-	for _, dir := range dl.dirs {
-		path := filepath.Join(dir, name)
-		f, err := os.Open(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, "", &ServiceLoadError{
-				ServiceName: name,
-				Message:     fmt.Sprintf("error reading %s: %v", path, err),
-			}
-		}
-		defer f.Close()
+	// Extract service argument from name@argument pattern
+	baseName := name
+	var serviceArg *string
+	if idx := strings.IndexByte(name, '@'); idx >= 0 {
+		baseName = name[:idx]
+		arg := name[idx+1:]
+		serviceArg = &arg
+	}
 
-		desc, err := Parse(f, name, path)
-		if err != nil {
-			return nil, "", err
+	// Try full name first, then base name (for templates)
+	searchNames := []string{name}
+	if baseName != name {
+		searchNames = append(searchNames, baseName)
+	}
+
+	for _, dir := range dl.dirs {
+		for _, sn := range searchNames {
+			path := filepath.Join(dir, sn)
+			f, err := os.Open(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, "", &ServiceLoadError{
+					ServiceName: name,
+					Message:     fmt.Sprintf("error reading %s: %v", path, err),
+				}
+			}
+
+			var desc *ServiceDescription
+			if serviceArg != nil {
+				desc, err = ParseWithArg(f, name, path, *serviceArg)
+			} else {
+				desc, err = Parse(f, name, path)
+			}
+			f.Close()
+			if err != nil {
+				return nil, "", err
+			}
+			return desc, path, nil
 		}
-		return desc, path, nil
 	}
 
 	return nil, "", &ServiceLoadError{
