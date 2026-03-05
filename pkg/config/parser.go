@@ -81,6 +81,9 @@ type ServiceDescription struct {
 	// Alias
 	Provides string
 
+	// Enable-via: default "from" service for enable/disable commands
+	EnableVia string
+
 	// Consumer
 	ConsumerOf string
 
@@ -261,7 +264,11 @@ func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescri
 
 	switch {
 	case strings.HasPrefix(line, "@meta "), line == "@meta":
-		// @meta directives are metadata for external tools; ignored by the daemon.
+		// @meta directives: most are metadata for external tools; some are
+		// meaningful to the daemon (e.g. enable-via).
+		if strings.HasPrefix(line, "@meta enable-via ") {
+			desc.EnableVia = strings.TrimSpace(line[len("@meta enable-via "):])
+		}
 		return nil
 	case strings.HasPrefix(line, "@include-opt "):
 		optional = true

@@ -835,19 +835,23 @@ func (c *Connection) handleEnableService(payload []byte) error {
 		return c.writePacket(RplyShuttingDown, nil)
 	}
 
-	// Determine "from" service: explicit handle or boot service
+	// Determine "from" service: explicit handle → enable-via → boot service
 	var fromSvc service.Service
 	if len(payload) >= 8 {
 		fromHandle := binary.LittleEndian.Uint32(payload[4:])
 		fromSvc = c.getService(fromHandle)
 	}
 	if fromSvc == nil {
-		bootName := c.server.services.BootServiceName()
-		if bootName == "" {
+		// Check @meta enable-via on the target service
+		fromName := svc.Record().EnableVia()
+		if fromName == "" {
+			fromName = c.server.services.BootServiceName()
+		}
+		if fromName == "" {
 			return c.writePacket(RplyNAK, nil)
 		}
 		var loadErr error
-		fromSvc, loadErr = c.server.services.LoadService(bootName)
+		fromSvc, loadErr = c.server.services.LoadService(fromName)
 		if loadErr != nil || fromSvc == nil {
 			return c.writePacket(RplyNAK, nil)
 		}
@@ -872,18 +876,22 @@ func (c *Connection) handleDisableService(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	// Determine "from" service: explicit handle or boot service
+	// Determine "from" service: explicit handle → enable-via → boot service
 	var fromSvc service.Service
 	if len(payload) >= 8 {
 		fromHandle := binary.LittleEndian.Uint32(payload[4:])
 		fromSvc = c.getService(fromHandle)
 	}
 	if fromSvc == nil {
-		bootName := c.server.services.BootServiceName()
-		if bootName == "" {
+		// Check @meta enable-via on the target service
+		fromName := svc.Record().EnableVia()
+		if fromName == "" {
+			fromName = c.server.services.BootServiceName()
+		}
+		if fromName == "" {
 			return c.writePacket(RplyNAK, nil)
 		}
-		fromSvc = c.server.services.FindService(bootName, false)
+		fromSvc = c.server.services.FindService(fromName, false)
 		if fromSvc == nil {
 			return c.writePacket(RplyNAK, nil)
 		}

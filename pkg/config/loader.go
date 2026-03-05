@@ -701,6 +701,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.Provides != "" {
 		rec.SetProvides(desc.Provides)
 	}
+	if desc.EnableVia != "" {
+		rec.SetEnableVia(desc.EnableVia)
+	}
 	if desc.InittabID != "" || desc.InittabLine != "" {
 		rec.SetUtmpDetails(desc.InittabID, desc.InittabLine)
 	}

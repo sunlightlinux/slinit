@@ -5,6 +5,7 @@ import (
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // Mockable exec function for testing.
@@ -23,13 +24,17 @@ var execFunc = syscall.Exec
 func SoftReboot(logger *logging.Logger) error {
 	logger.Notice("Performing soft reboot...")
 
-	// Sync before cleanup
-	syncFunc()
-
 	// Kill remaining processes
 	KillAllProcesses(logger)
 
-	// Sync again after killing processes
+	// Run shutdown hook (same as other shutdown types)
+	hookHandledCleanup := runHookFunc(service.ShutdownSoftReboot, logger)
+	if !hookHandledCleanup {
+		swapOff(logger)
+		unmountAll(logger)
+	}
+
+	// Sync filesystems
 	syncFunc()
 
 	// Get the current executable path

@@ -981,6 +981,21 @@ func TestMetaDirectiveIgnored(t *testing.T) {
 	if desc.Type != service.TypeInternal {
 		t.Fatalf("expected internal, got %v", desc.Type)
 	}
+	// enable-via should be parsed
+	if desc.EnableVia != "foo" {
+		t.Fatalf("expected EnableVia='foo', got %q", desc.EnableVia)
+	}
+}
+
+func TestMetaEnableViaEmpty(t *testing.T) {
+	input := "type = internal\n@meta unknown-directive bar\ncommand = /bin/true\n"
+	desc, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err != nil {
+		t.Fatalf("unknown @meta should be silently ignored: %v", err)
+	}
+	if desc.EnableVia != "" {
+		t.Fatalf("expected empty EnableVia, got %q", desc.EnableVia)
+	}
 }
 
 func TestServiceArgSubstitution(t *testing.T) {

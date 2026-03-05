@@ -334,3 +334,40 @@ func TestSoftReboot(t *testing.T) {
 		t.Fatal("Expected non-empty exec path")
 	}
 }
+
+func TestSoftRebootRunsShutdownHook(t *testing.T) {
+	origKill := killFunc
+	origSync := syncFunc
+	origExec := execFunc
+	origHook := runHookFunc
+
+	killFunc = func(pid int, sig syscall.Signal) error { return syscall.ESRCH }
+	syncFunc = func() {}
+	execFunc = func(argv0 string, argv []string, envv []string) error { return nil }
+
+	hookCalled := false
+	var hookShutType service.ShutdownType
+	runHookFunc = func(st service.ShutdownType, l *logging.Logger) bool {
+		hookCalled = true
+		hookShutType = st
+		return true
+	}
+
+	defer func() {
+		killFunc = origKill
+		syncFunc = origSync
+		execFunc = origExec
+		runHookFunc = origHook
+	}()
+
+	err := SoftReboot(testLogger())
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !hookCalled {
+		t.Fatal("Expected shutdown hook to be called during soft reboot")
+	}
+	if hookShutType != service.ShutdownSoftReboot {
+		t.Fatalf("Expected hook type ShutdownSoftReboot, got %v", hookShutType)
+	}
+}

@@ -308,6 +308,11 @@ func main() {
 		ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
 			loop.InitiateShutdown(st)
 		}
+		loop.OnReopenSocket = func() {
+			if err := ctrlServer.Reopen(); err != nil {
+				logger.Error("Failed to reopen control socket: %v", err)
+			}
+		}
 
 		if err := loop.Run(ctx); err != nil {
 			if err == context.Canceled {

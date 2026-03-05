@@ -43,6 +43,9 @@ type EventLoop struct {
 
 	// Callback for when all services have stopped
 	OnAllStopped func()
+
+	// OnReopenSocket is called on SIGUSR1 to reopen the control socket
+	OnReopenSocket func()
 }
 
 // New creates a new EventLoop.
@@ -191,9 +194,11 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return true
 
 	case syscall.SIGUSR1:
-		el.logger.Notice("Received SIGUSR1, initiating shutdown")
-		el.initiateShutdown(service.ShutdownHalt)
-		return true
+		el.logger.Notice("Received SIGUSR1, reopening control socket")
+		if el.OnReopenSocket != nil {
+			el.OnReopenSocket()
+		}
+		return false
 
 	case syscall.SIGUSR2:
 		el.logger.Notice("Received SIGUSR2, initiating poweroff")

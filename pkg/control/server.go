@@ -129,6 +129,37 @@ func (s *Server) removeConnection(c *Connection) {
 	s.mu.Unlock()
 }
 
+// Reopen closes and re-opens the control socket. This is called on
+// SIGUSR1 to recover from situations where the socket was unavailable
+// (e.g. filesystem was read-only during early boot).
+func (s *Server) Reopen() error {
+	// Close existing listener (if any)
+	if s.listener != nil {
+		s.listener.Close()
+	}
+
+	// Remove stale socket file
+	os.Remove(s.sockPath)
+
+	listener, err := net.Listen("unix", s.sockPath)
+	if err != nil {
+		return err
+	}
+
+	if err := os.Chmod(s.sockPath, 0600); err != nil {
+		listener.Close()
+		return err
+	}
+
+	s.listener = listener
+
+	s.wg.Add(1)
+	go s.acceptLoop()
+
+	s.logger.Info("Control socket re-opened on %s", s.sockPath)
+	return nil
+}
+
 // HandlePassCSFD handles a pre-connected control socket (from pass-cs-fd).
 // It spawns a goroutine to serve commands on the connection, just like a
 // normal control client.

@@ -139,6 +139,9 @@ type ServiceRecord struct {
 	// Service alias (alternative name for lookup)
 	provides string
 
+	// Enable-via: default "from" service for enable/disable commands
+	enableVia string
+
 	// UTMP/WTMP fields
 	inittabID   string
 	inittabLine string
@@ -242,6 +245,8 @@ func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)     { sr.termSignal =
 func (sr *ServiceRecord) SetFlags(flags ServiceFlags) { sr.Flags = flags }
 func (sr *ServiceRecord) SetProvides(name string)     { sr.provides = name }
 func (sr *ServiceRecord) Provides() string             { return sr.provides }
+func (sr *ServiceRecord) SetEnableVia(name string)     { sr.enableVia = name }
+func (sr *ServiceRecord) EnableVia() string             { return sr.enableVia }
 
 func (sr *ServiceRecord) SetLogConsumer(svc Service)   { sr.logConsumer = svc }
 func (sr *ServiceRecord) LogConsumer() Service         { return sr.logConsumer }
