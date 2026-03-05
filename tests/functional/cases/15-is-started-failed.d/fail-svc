@@ -1,0 +1,3 @@
+type = scripted
+command = /bin/sh -c "exit 1"
+depends-on: system-init

@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+depends-on: test-runner
+waits-for: chain-a
+waits-for: chain-b

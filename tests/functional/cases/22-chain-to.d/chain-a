@@ -1,0 +1,5 @@
+type = scripted
+command = /bin/sh -c "echo chain-a-ran > /tmp/chain-a-marker"
+stop-command = /bin/true
+chain-to = chain-b
+depends-on: system-init

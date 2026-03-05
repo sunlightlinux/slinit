@@ -1,0 +1,5 @@
+type = scripted
+command = /bin/sh -c "sleep 120"
+stop-command = /bin/true
+start-timeout = 3
+depends-on: system-init
