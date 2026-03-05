@@ -162,6 +162,11 @@ func (ss *ServiceSet) AddService(svc Service) {
 	}
 }
 
+// RegisterAlias registers a provides alias for a service.
+func (ss *ServiceSet) RegisterAlias(alias string, svc Service) {
+	ss.aliases[alias] = svc
+}
+
 // RemoveService removes a service from the set.
 func (ss *ServiceSet) RemoveService(svc Service) {
 	delete(ss.records, svc.Name())

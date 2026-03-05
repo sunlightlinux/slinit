@@ -452,6 +452,12 @@ func (dl *DirLoader) loadServiceImpl(name string) (service.Service, error) {
 	// Apply settings to the service record
 	applyToService(svc, desc)
 
+	// Re-register alias now that provides is set (AddService was called
+	// before applyToService, so the alias wasn't registered yet)
+	if alias := svc.Record().Provides(); alias != "" {
+		dl.set.RegisterAlias(alias, svc)
+	}
+
 	// Apply load-options
 	applyLoadOptions(svc, desc)
 
