@@ -22,6 +22,10 @@ type Server struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 
+	// stopAccept is closed to signal the current acceptLoop to exit.
+	// Replaced on each Reopen() call.
+	stopAccept chan struct{}
+
 	// ShutdownFunc is called when a shutdown command is received.
 	ShutdownFunc func(service.ShutdownType)
 }
@@ -56,9 +60,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.listener = listener
 	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.stopAccept = make(chan struct{})
 
 	s.wg.Add(1)
-	go s.acceptLoop()
+	go s.acceptLoop(s.listener, s.stopAccept)
 
 	s.logger.Info("Control socket listening on %s", s.sockPath)
 	return nil
@@ -69,6 +74,14 @@ func (s *Server) Stop() error {
 	if s.cancel != nil {
 		s.cancel()
 	}
+
+	// Signal acceptLoop to stop
+	s.mu.Lock()
+	if s.stopAccept != nil {
+		close(s.stopAccept)
+		s.stopAccept = nil
+	}
+	s.mu.Unlock()
 
 	var err error
 	if s.listener != nil {
@@ -91,14 +104,16 @@ func (s *Server) Stop() error {
 	return err
 }
 
-func (s *Server) acceptLoop() {
+func (s *Server) acceptLoop(listener net.Listener, stopCh chan struct{}) {
 	defer s.wg.Done()
 
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			select {
 			case <-s.ctx.Done():
+				return
+			case <-stopCh:
 				return
 			default:
 				s.logger.Error("Control socket accept error: %v", err)
@@ -133,6 +148,13 @@ func (s *Server) removeConnection(c *Connection) {
 // SIGUSR1 to recover from situations where the socket was unavailable
 // (e.g. filesystem was read-only during early boot).
 func (s *Server) Reopen() error {
+	// Stop the old acceptLoop before closing the listener
+	s.mu.Lock()
+	if s.stopAccept != nil {
+		close(s.stopAccept)
+	}
+	s.mu.Unlock()
+
 	// Close existing listener (if any)
 	if s.listener != nil {
 		s.listener.Close()
@@ -152,9 +174,13 @@ func (s *Server) Reopen() error {
 	}
 
 	s.listener = listener
+	stopCh := make(chan struct{})
+	s.mu.Lock()
+	s.stopAccept = stopCh
+	s.mu.Unlock()
 
 	s.wg.Add(1)
-	go s.acceptLoop()
+	go s.acceptLoop(listener, stopCh)
 
 	s.logger.Info("Control socket re-opened on %s", s.sockPath)
 	return nil
