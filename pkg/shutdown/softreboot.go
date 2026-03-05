@@ -15,14 +15,26 @@ var execFunc = syscall.Exec
 // arguments. This restarts the init system without rebooting the kernel.
 //
 // The sequence is:
-// 1. Sync filesystems to minimize data loss
-// 2. Kill all remaining processes
-// 3. Re-exec slinit with original arguments
+// 1. Kill all remaining processes
+// 2. Run shutdown hook, swapoff/umount
+// 3. Sync filesystems
+// 4. Re-exec slinit with original arguments
 //
 // If the exec fails, an error is returned and the caller should fall back
 // to a hard reboot.
 func SoftReboot(logger *logging.Logger) error {
 	logger.Notice("Performing soft reboot...")
+
+	// Resolve the executable path NOW, before we kill processes and
+	// unmount filesystems. As PID 1, /proc may not be mounted at
+	// package init time, so we resolve here while it's still available.
+	execPath, err := os.Executable()
+	if err != nil {
+		// Fallback: os.Args[0] — the kernel always passes the absolute
+		// path when launching PID 1.
+		execPath = os.Args[0]
+		logger.Debug("os.Executable() failed (%v), using os.Args[0]=%s", err, execPath)
+	}
 
 	// Kill remaining processes
 	KillAllProcesses(logger)
@@ -36,12 +48,6 @@ func SoftReboot(logger *logging.Logger) error {
 
 	// Sync filesystems
 	syncFunc()
-
-	// Get the current executable path
-	execPath, err := os.Executable()
-	if err != nil {
-		return err
-	}
 
 	logger.Notice("Re-executing %s", execPath)
 
