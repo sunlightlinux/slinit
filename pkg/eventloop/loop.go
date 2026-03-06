@@ -250,7 +250,7 @@ func (el *EventLoop) escalateShutdown(sigName string) bool {
 	count := el.shutdownSignals.Add(1)
 	switch {
 	case count == 2:
-		el.logger.Notice("Received %s again, halving emergency timeout", sigName)
+		el.logger.Notice("Received %s again, reducing emergency timeout to 25%%", sigName)
 		el.resetEmergencyTimer(defaultEmergencyTimeout / 4)
 	case count >= 3:
 		el.logger.Error("Received %s a third time, forcing immediate exit", sigName)
@@ -293,6 +293,8 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 		default:
 		}
 	})
+	// Release mutex before calling StopAllServices to avoid potential
+	// deadlock if service state changes try to signal back to the event loop.
 	el.mu.Unlock()
 
 	el.services.StopAllServices(shutdownType)

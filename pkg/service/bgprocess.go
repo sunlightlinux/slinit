@@ -472,12 +472,23 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 
 // monitorDaemon polls for daemon process existence.
 func (s *BGProcessService) monitorDaemon() {
+	if s.daemonPID <= 0 {
+		s.services.logger.Error("Service '%s': monitorDaemon called with invalid PID %d",
+			s.serviceName, s.daemonPID)
+		s.handleDaemonTermination()
+		return
+	}
+
 	ticker := time.NewTicker(daemonPollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
+			if s.daemonPID <= 0 {
+				s.handleDaemonTermination()
+				return
+			}
 			err := syscall.Kill(s.daemonPID, 0)
 			if err != nil {
 				// Process is gone
@@ -619,7 +630,13 @@ func (s *BGProcessService) armTimer(d time.Duration, purpose bgTimerPurpose) {
 
 func (s *BGProcessService) cancelTimer() {
 	if s.processTimer != nil {
-		s.processTimer.Stop()
+		if !s.processTimer.Stop() {
+			// Drain the channel to prevent stale timer events
+			select {
+			case <-s.processTimer.C:
+			default:
+			}
+		}
 		s.processTimer = nil
 	}
 	s.timerPurpose = bgTimerNone

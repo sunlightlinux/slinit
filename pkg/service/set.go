@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -38,6 +39,7 @@ type EnvListener interface {
 
 // ServiceSet manages all loaded services and the processing queues.
 type ServiceSet struct {
+	mu             sync.RWMutex
 	records        map[string]Service
 	aliases        map[string]Service // provides → service mapping
 	activeServices int
@@ -112,6 +114,8 @@ func (ss *ServiceSet) SetLoader(loader ServiceLoader) {
 // FindService locates an existing service by name or alias (provides).
 // If findPlaceholders is false, placeholder services are excluded.
 func (ss *ServiceSet) FindService(name string, findPlaceholders bool) Service {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
 	svc, ok := ss.records[name]
 	if !ok {
 		// Check aliases
@@ -142,6 +146,8 @@ func (ss *ServiceSet) GetLoader() ServiceLoader { return ss.loader }
 
 // ReplaceService atomically replaces an old service with a new one in the set.
 func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	// Remove old alias
 	if alias := oldSvc.Record().Provides(); alias != "" {
 		delete(ss.aliases, alias)
@@ -156,6 +162,8 @@ func (ss *ServiceSet) ReplaceService(oldSvc, newSvc Service) {
 // AddService adds a service to the set. If the service has a provides
 // alias, it is also registered for lookup by alias name.
 func (ss *ServiceSet) AddService(svc Service) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	ss.records[svc.Name()] = svc
 	if alias := svc.Record().Provides(); alias != "" {
 		ss.aliases[alias] = svc
@@ -164,11 +172,15 @@ func (ss *ServiceSet) AddService(svc Service) {
 
 // RegisterAlias registers a provides alias for a service.
 func (ss *ServiceSet) RegisterAlias(alias string, svc Service) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	ss.aliases[alias] = svc
 }
 
 // RemoveService removes a service from the set.
 func (ss *ServiceSet) RemoveService(svc Service) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
 	delete(ss.records, svc.Name())
 	if alias := svc.Record().Provides(); alias != "" {
 		delete(ss.aliases, alias)
@@ -184,6 +196,8 @@ func (ss *ServiceSet) UnloadService(svc Service) {
 
 // ListServices returns all loaded services.
 func (ss *ServiceSet) ListServices() []Service {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
 	result := make([]Service, 0, len(ss.records))
 	for _, svc := range ss.records {
 		result = append(result, svc)

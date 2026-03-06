@@ -173,7 +173,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 
 	// Apply post-fork process attributes.
 	// These are best-effort: failures are logged but don't prevent startup.
-	applyPostForkAttrs(pid, params)
+	if errs := applyPostForkAttrs(pid, params); len(errs) > 0 {
+		for _, err := range errs {
+			fmt.Fprintf(os.Stderr, "slinit: pid %d: post-fork attr warning: %v\n", pid, err)
+		}
+	}
 
 	exitCh := make(chan ChildExit, 1)
 

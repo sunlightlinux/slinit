@@ -82,21 +82,21 @@ func (c *Connection) getService(handle uint32) service.Service {
 	return c.handles[handle]
 }
 
-// findHandle returns the handle for a given service, or 0 if not found.
-func (c *Connection) findHandle(svc service.Service) uint32 {
+// findHandle returns the handle for a given service, or 0 and false if not found.
+func (c *Connection) findHandle(svc service.Service) (uint32, bool) {
 	for h, s := range c.handles {
 		if s == svc {
-			return h
+			return h, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // ServiceEvent implements service.ServiceListener.
 // Called from service state machine goroutines when state changes occur.
 func (c *Connection) ServiceEvent(svc service.Service, event service.ServiceEvent) {
-	handle := c.findHandle(svc)
-	if handle == 0 {
+	handle, ok := c.findHandle(svc)
+	if !ok {
 		return
 	}
 	// Send v5 event first, then v4 for backwards compatibility
