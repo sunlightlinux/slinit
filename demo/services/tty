@@ -1,8 +1,8 @@
 # tty -- interactive shell on console
-# Runs /bin/sh with console access (job control enabled).
+# Runs bash with console access (job control enabled).
 # Restarts when shell exits.
 type = process
-command = /bin/sh
+command = /bin/bash --login
 options = runs-on-console unmask-intr
 restart = yes
 stop-timeout = 3

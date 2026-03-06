@@ -119,6 +119,16 @@ doneFlags:
 	command := args[0]
 	cmdArgs := args[1:]
 
+	// Commands that don't need a daemon connection
+	if command == "completion" {
+		shell := "bash"
+		if len(cmdArgs) > 0 {
+			shell = cmdArgs[0]
+		}
+		cmdCompletion(shell)
+		return
+	}
+
 	// Offline mode: enable/disable without connecting to daemon
 	if offlineMode {
 		svcDir := servicesDir
@@ -387,6 +397,7 @@ Commands:
   disable <service>        Disable service (remove waits-for from boot + stop)
   query-name <service>     Query the canonical name of a service handle
   service-dirs             List configured service directories
+  completion [shell]       Output shell completion script (bash|zsh|fish)
 `)
 }
 
@@ -2006,3 +2017,211 @@ func cmdServiceStatus5(conn net.Conn, svcName string) error {
 	fmt.Printf("  si_status:   %d\n", status.SiStatus)
 	return nil
 }
+
+// cmdCompletion outputs a shell completion script to stdout.
+func cmdCompletion(shell string) {
+	switch shell {
+	case "bash":
+		fmt.Print(bashCompletion)
+	case "zsh":
+		printZshCompletion()
+	case "fish":
+		printFishCompletion()
+	default:
+		fatal("Unsupported shell: %s (use bash, zsh, or fish)", shell)
+	}
+}
+
+const bashCompletion = `# Bash completion for slinitctl
+# Usage: eval "$(slinitctl completion bash)"
+
+_slinitctl_commands() {
+    echo "list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents completion"
+}
+
+_slinitctl_services() {
+    slinitctl --system list 2>/dev/null | sed 's/^\[.*\] //' | sed 's/ (.*//'
+}
+
+_slinitctl() {
+    local cur prev cmd
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    cmd=""
+    local i
+    for ((i=1; i < COMP_CWORD; i++)); do
+        case "${COMP_WORDS[i]}" in
+            --socket-path|-p|--services-dir|-d|--from) ((i++)) ;;
+            -*) ;;
+            *) cmd="${COMP_WORDS[i]}"; break ;;
+        esac
+    done
+
+    case "$prev" in
+        --socket-path|-p) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
+        --services-dir|-d) COMPREPLY=( $(compgen -d -- "$cur") ); return 0 ;;
+        --from) COMPREPLY=( $(compgen -W "$(_slinitctl_services)" -- "$cur") ); return 0 ;;
+    esac
+
+    if [ -z "$cmd" ]; then
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=( $(compgen -W "--socket-path -p --system -s --user -u --no-wait --pin --force -f --ignore-unstarted --offline -o --services-dir -d --from --use-passed-cfd --quiet -q --help -h --version" -- "$cur") )
+        else
+            COMPREPLY=( $(compgen -W "$(_slinitctl_commands)" -- "$cur") )
+        fi
+        return 0
+    fi
+
+    case "$cmd" in
+        start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|reload|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv)
+            COMPREPLY=( $(compgen -W "$(_slinitctl_services)" -- "$cur") ) ;;
+        shutdown)
+            COMPREPLY=( $(compgen -W "halt poweroff reboot kexec softreboot" -- "$cur") ) ;;
+        signal)
+            local args_after=0
+            for ((i=i+1; i < COMP_CWORD; i++)); do
+                case "${COMP_WORDS[i]}" in -*) ;; *) ((args_after++)) ;; esac
+            done
+            if [ "$args_after" -eq 0 ]; then
+                COMPREPLY=( $(compgen -W "SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM SIGCONT SIGSTOP SIGTSTP --list -l" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -W "$(_slinitctl_services)" -- "$cur") )
+            fi ;;
+        add-dep|rm-dep)
+            local args_after=0
+            for ((i=i+1; i < COMP_CWORD; i++)); do
+                case "${COMP_WORDS[i]}" in -*) ;; *) ((args_after++)) ;; esac
+            done
+            case "$args_after" in
+                0|2) COMPREPLY=( $(compgen -W "$(_slinitctl_services)" -- "$cur") ) ;;
+                1) COMPREPLY=( $(compgen -W "regular waits-for milestone soft before after" -- "$cur") ) ;;
+            esac ;;
+        completion)
+            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") ) ;;
+    esac
+    return 0
+}
+
+complete -F _slinitctl slinitctl
+`
+
+func printZshCompletion() {
+	fmt.Println(`#compdef slinitctl
+# Zsh completion for slinitctl
+# Usage: eval "$(slinitctl completion zsh)"
+
+_slinitctl_services() {
+    local -a services`)
+	fmt.Println("    services=( ${(f)\"$(slinitctl --system list 2>/dev/null | sed 's/^\\[.*\\] //' | sed 's/ (.*//')\"} )")
+	fmt.Println(`    _describe 'service' services
+}
+
+_slinitctl() {
+    local -a commands global_opts
+    commands=(
+        'list:List all loaded services'
+        'ls:List all loaded services'
+        'start:Start a service'
+        'wake:Start without marking active'
+        'stop:Stop a service'
+        'release:Remove active mark'
+        'restart:Restart a service'
+        'status:Show service status'
+        'is-started:Check if started'
+        'is-failed:Check if failed'
+        'shutdown:Initiate shutdown'
+        'trigger:Trigger a service'
+        'untrigger:Reset trigger'
+        'signal:Send signal to service'
+        'reload:Reload service config'
+        'unload:Unload stopped service'
+        'boot-time:Boot timing analysis'
+        'analyze:Boot timing analysis'
+        'catlog:Show service log buffer'
+        'setenv:Set service env var'
+        'unsetenv:Remove service env var'
+        'getallenv:List service env vars'
+        'setenv-global:Set global env var'
+        'unsetenv-global:Remove global env var'
+        'getallenv-global:List global env vars'
+        'add-dep:Add runtime dependency'
+        'rm-dep:Remove runtime dependency'
+        'unpin:Remove pins'
+        'enable:Enable service'
+        'disable:Disable service'
+        'query-name:Query service name'
+        'service-dirs:List service dirs'
+        'load-mech:Query loader mechanism'
+        'dependents:List dependents'
+        'completion:Output shell completion script'
+    )
+    global_opts=(
+        '(-p --socket-path)'{-p,--socket-path}'[Control socket path]:path:_files'
+        '(-s --system)'{-s,--system}'[System service manager]'
+        '(-u --user)'{-u,--user}'[User service manager]'
+        '--no-wait[Do not wait]'
+        '--pin[Pin service state]'
+        '(-f --force)'{-f,--force}'[Force stop]'
+        '--ignore-unstarted[Exit 0 if already stopped]'
+        '(-o --offline)'{-o,--offline}'[Offline mode]'
+        '(-d --services-dir)'{-d,--services-dir}'[Service directory]:dir:_directories'
+        '--from[Source service]:service:_slinitctl_services'
+        '--use-passed-cfd[Use SLINIT_CS_FD]'
+        '(-q --quiet)'{-q,--quiet}'[Suppress output]'
+        '(-h --help)'{-h,--help}'[Show help]'
+        '--version[Show version]'
+    )
+    _arguments -C $global_opts '1:command:->command' '*::arg:->args'
+    case $state in
+        command) _describe 'command' commands ;;
+        args)
+            case ${words[1]} in
+                start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|reload|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv)
+                    _slinitctl_services ;;
+                shutdown) _describe 'type' '(halt poweroff reboot kexec softreboot)' ;;
+                signal) case $CURRENT in 2) _describe 'signal' '(SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM)' ;; 3) _slinitctl_services ;; esac ;;
+                add-dep|rm-dep) case $CURRENT in 2|4) _slinitctl_services ;; 3) _describe 'dep type' '(regular waits-for milestone soft before after)' ;; esac ;;
+                completion) _describe 'shell' '(bash zsh fish)' ;;
+            esac ;;
+    esac
+}
+_slinitctl "$@"`)
+}
+
+func printFishCompletion() {
+	fmt.Println(`# Fish completion for slinitctl
+# Usage: slinitctl completion fish | source
+
+function __slinitctl_services
+    slinitctl --system list 2>/dev/null | string replace -r '^\[.*\] ' '' | string replace -r ' \(.*' ''
+end
+
+set -l cmds list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents completion
+
+complete -c slinitctl -f
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s p -l socket-path -rF -d 'Socket path'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s s -l system -d 'System mode'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s u -l user -d 'User mode'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l no-wait -d 'No wait'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l pin -d 'Pin state'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s f -l force -d 'Force'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s q -l quiet -d 'Quiet'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s h -l help -d 'Help'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l version -d 'Version'
+
+for cmd in list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents completion
+    complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -a $cmd
+end
+
+for cmd in start stop wake release restart status is-started is-failed trigger untrigger reload unload unpin enable disable query-name getallenv catlog dependents setenv unsetenv
+    complete -c slinitctl -n "__fish_seen_subcommand_from $cmd" -a '(__slinitctl_services)'
+end
+
+complete -c slinitctl -n "__fish_seen_subcommand_from shutdown" -a 'halt poweroff reboot kexec softreboot'
+complete -c slinitctl -n "__fish_seen_subcommand_from signal" -a 'SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM SIGCONT SIGSTOP'
+complete -c slinitctl -n "__fish_seen_subcommand_from add-dep rm-dep" -a 'regular waits-for milestone soft before after'
+complete -c slinitctl -n "__fish_seen_subcommand_from completion" -a 'bash zsh fish'`)
+}
+

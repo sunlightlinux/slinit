@@ -1,5 +1,5 @@
 # Build binaries
-slinit
-slinit-static
-slinitctl
-slinitctl-static
+/slinit
+/slinit-static
+/slinitctl
+/slinitctl-static
