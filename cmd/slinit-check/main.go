@@ -101,10 +101,23 @@ func main() {
 		_ = svc
 	}
 
-	// Phase 2: Secondary checks on all loaded services
-	fmt.Println("\nPerforming secondary checks...")
+	// Phase 2: Cycle detection via topological sort + DFS with pruning
+	fmt.Println("\nChecking for dependency cycles...")
 
 	allServices := set.ListServices()
+	cycleErrors := detectCycles(allServices)
+	if cycleErrors > 0 {
+		errors += cycleErrors
+	}
+
+	// Phase 3: Depth check — report services exceeding MaxDepDepth
+	depthErrors := checkDepthLimits(allServices)
+	if depthErrors > 0 {
+		errors += depthErrors
+	}
+
+	// Phase 4: Secondary checks on all loaded services
+	fmt.Println("\nPerforming secondary checks...")
 	for _, svc := range allServices {
 		name := svc.Name()
 
@@ -302,6 +315,166 @@ Options:
   -u, --user                 Use user service directories
   -e, --env-file <file>      Load environment variables from file
   -h, --help                 Show this help message`)
+}
+
+// detectCycles performs DFS-based cycle detection with pruning on the loaded
+// service graph. Returns the number of cycles found (reports only the first).
+func detectCycles(services []service.Service) int {
+	type state int
+	const (
+		unvisited state = iota
+		visiting
+		cycleFree
+	)
+
+	states := make(map[string]state)
+	for _, svc := range services {
+		states[svc.Name()] = unvisited
+	}
+
+	svcMap := make(map[string]service.Service)
+	for _, svc := range services {
+		svcMap[svc.Name()] = svc
+	}
+
+	// DFS with explicit stack: (service, dep-index)
+	type frame struct {
+		svc   service.Service
+		deps  []*service.ServiceDep
+		index int
+	}
+
+	for _, root := range services {
+		if states[root.Name()] != unvisited {
+			continue
+		}
+
+		stack := []frame{{svc: root, deps: root.Record().Dependencies(), index: 0}}
+		states[root.Name()] = visiting
+
+		for len(stack) > 0 {
+			top := &stack[len(stack)-1]
+
+			if top.index >= len(top.deps) {
+				// All deps processed — mark cycle-free
+				states[top.svc.Name()] = cycleFree
+				stack = stack[:len(stack)-1]
+				if len(stack) > 0 {
+					stack[len(stack)-1].index++
+				}
+				continue
+			}
+
+			dep := top.deps[top.index]
+			depName := dep.To.Name()
+			depState := states[depName]
+
+			switch depState {
+			case cycleFree:
+				// Already known cycle-free — prune
+				top.index++
+			case visiting:
+				// Found a cycle — report it
+				fmt.Fprintf(os.Stderr, "  ERROR: dependency cycle detected:\n")
+				// Find cycle start in stack
+				cycleStart := -1
+				for i, f := range stack {
+					if f.svc.Name() == depName {
+						cycleStart = i
+						break
+					}
+				}
+				if cycleStart >= 0 {
+					for i := cycleStart; i < len(stack); i++ {
+						nextIdx := i + 1
+						var nextName string
+						if nextIdx < len(stack) {
+							nextName = stack[nextIdx].svc.Name()
+						} else {
+							nextName = depName
+						}
+						fmt.Fprintf(os.Stderr, "    %s -> %s\n", stack[i].svc.Name(), nextName)
+					}
+				}
+				return 1
+			case unvisited:
+				depSvc := svcMap[depName]
+				if depSvc == nil {
+					top.index++
+					continue
+				}
+				states[depName] = visiting
+				stack = append(stack, frame{svc: depSvc, deps: depSvc.Record().Dependencies(), index: 0})
+			}
+		}
+	}
+
+	return 0
+}
+
+// checkDepthLimits computes the maximum dependency depth for each service
+// using BFS (topological order) and reports any that exceed MaxDepDepth.
+func checkDepthLimits(services []service.Service) int {
+	svcMap := make(map[string]service.Service)
+	inDegree := make(map[string]int)
+	depth := make(map[string]int)
+
+	for _, svc := range services {
+		name := svc.Name()
+		svcMap[name] = svc
+		inDegree[name] = 0
+		depth[name] = 0
+	}
+
+	// Count in-degree (only regular/milestone/waits-for deps)
+	for _, svc := range services {
+		for _, dep := range svc.Record().Dependencies() {
+			dt := dep.DepType
+			if dt == service.DepBefore || dt == service.DepAfter {
+				continue
+			}
+			if _, ok := inDegree[dep.To.Name()]; ok {
+				inDegree[dep.To.Name()]++
+			}
+		}
+	}
+
+	// BFS from roots (in-degree 0)
+	var queue []service.Service
+	for _, svc := range services {
+		if inDegree[svc.Name()] == 0 {
+			queue = append(queue, svc)
+		}
+	}
+
+	errors := 0
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		for _, dep := range cur.Record().Dependencies() {
+			dt := dep.DepType
+			if dt == service.DepBefore || dt == service.DepAfter {
+				continue
+			}
+			depName := dep.To.Name()
+			newDepth := depth[cur.Name()] + 1
+			if newDepth > depth[depName] {
+				depth[depName] = newDepth
+			}
+			inDegree[depName]--
+			if inDegree[depName] == 0 {
+				if newDepth > config.MaxDepDepth {
+					fmt.Fprintf(os.Stderr, "  ERROR: service '%s' exceeds maximum dependency depth (%d)\n",
+						depName, config.MaxDepDepth)
+					errors++
+				}
+				queue = append(queue, svcMap[depName])
+			}
+		}
+	}
+
+	return errors
 }
 
 func fatal(format string, args ...interface{}) {

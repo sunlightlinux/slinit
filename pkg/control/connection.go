@@ -802,7 +802,6 @@ func (c *Connection) handleAddDep(payload []byte) error {
 	}
 
 	from.Record().AddDep(to, service.DependencyType(depType))
-	c.server.services.ProcessQueues()
 	return c.writePacket(RplyACK, nil)
 }
 
