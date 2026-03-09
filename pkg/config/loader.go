@@ -462,8 +462,11 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// Create the service based on type
 	svc := dl.createService(name, desc)
 
-	// Record the directory where the service description was found
+	// Record the directory and modification time of the service description
 	svc.Record().SetServiceDir(filepath.Dir(filePath))
+	if fi, err := os.Stat(filePath); err == nil {
+		svc.Record().SetLoadModTime(fi.ModTime())
+	}
 
 	// Add to set before loading dependencies (allows circular detection)
 	dl.set.AddService(svc)

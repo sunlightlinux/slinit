@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -553,12 +554,23 @@ func encodeStartStopFlags(handle uint32, pin bool, force bool) []byte {
 	return buf
 }
 
+// stripServiceArg returns the base name without the @argument part.
+// For "svc@arg" returns "svc"; for "svc" returns "svc".
+func stripServiceArg(name string) string {
+	if idx := strings.IndexByte(name, '@'); idx >= 0 {
+		return name[:idx]
+	}
+	return name
+}
+
 // offlineEnable creates a waits-for.d symlink (offline mode).
 func offlineEnable(svcDir, from, to string) error {
 	if from == "" {
 		from = "boot"
 	}
-	waitsDir := svcDir + "/" + from + "/waits-for.d"
+	// Strip @arg from "from" for directory lookup
+	fromBase := stripServiceArg(from)
+	waitsDir := svcDir + "/" + fromBase + "/waits-for.d"
 	if err := os.MkdirAll(waitsDir, 0755); err != nil {
 		return fmt.Errorf("creating waits-for.d: %w", err)
 	}
@@ -568,8 +580,8 @@ func offlineEnable(svcDir, from, to string) error {
 		info("Service '%s' is already enabled (from '%s').\n", to, from)
 		return nil
 	}
-	// Create relative symlink pointing to the service file
-	target := "../../" + to
+	// Create relative symlink pointing to the service file (use base name for target)
+	target := "../../" + stripServiceArg(to)
 	if err := os.Symlink(target, link); err != nil {
 		return fmt.Errorf("creating symlink: %w", err)
 	}
@@ -582,7 +594,9 @@ func offlineDisable(svcDir, from, to string) error {
 	if from == "" {
 		from = "boot"
 	}
-	link := svcDir + "/" + from + "/waits-for.d/" + to
+	// Strip @arg from "from" for directory lookup
+	fromBase := stripServiceArg(from)
+	link := svcDir + "/" + fromBase + "/waits-for.d/" + to
 	if err := os.Remove(link); err != nil {
 		if os.IsNotExist(err) {
 			info("Service '%s' is not enabled (from '%s').\n", to, from)
@@ -595,6 +609,66 @@ func offlineDisable(svcDir, from, to string) error {
 }
 
 // loadServiceHandle sends LoadService and returns the handle.
+// warnIfDescriptionChanged queries the service's load-time mod timestamp
+// via protocol v6 and compares it with the current file on disk. If the file
+// has been modified since it was loaded, a warning is printed to stderr.
+func warnIfDescriptionChanged(conn net.Conn, handle uint32, name string) {
+	// Query status6 (includes load mod time)
+	if err := control.WritePacket(conn, control.CmdServiceStatus6, control.EncodeHandle(handle)); err != nil {
+		return
+	}
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil || rply != control.RplyServiceStatus {
+		return
+	}
+	status6, err := control.DecodeServiceStatus6(payload)
+	if err != nil || status6.LoadModTime == 0 {
+		return
+	}
+
+	// Query service description directories to find the file on disk
+	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, nil); err != nil {
+		return
+	}
+	rply, payload, err = control.ReadPacket(conn)
+	if err != nil || rply != control.RplyServiceDscDir || len(payload) < 2 {
+		return
+	}
+	count := int(binary.LittleEndian.Uint16(payload))
+	off := 2
+	// Strip @arg for template lookup
+	baseName := name
+	if idx := strings.IndexByte(name, '@'); idx >= 0 {
+		baseName = name[:idx]
+	}
+	searchNames := []string{name}
+	if baseName != name {
+		searchNames = append(searchNames, baseName)
+	}
+	for i := 0; i < count; i++ {
+		if len(payload) < off+2 {
+			return
+		}
+		dirLen := int(binary.LittleEndian.Uint16(payload[off:]))
+		off += 2
+		if len(payload) < off+dirLen {
+			return
+		}
+		dir := string(payload[off : off+dirLen])
+		off += dirLen
+		for _, sn := range searchNames {
+			fi, err := os.Stat(filepath.Join(dir, sn))
+			if err != nil {
+				continue
+			}
+			if fi.ModTime().Unix() != status6.LoadModTime {
+				fmt.Fprintf(os.Stderr, "Warning: service description for '%s' has changed since it was loaded. Consider 'slinitctl reload %s'.\n", name, name)
+			}
+			return
+		}
+	}
+}
+
 func loadServiceHandle(conn net.Conn, name string) (uint32, error) {
 	nameData := control.EncodeServiceName(name)
 	if err := control.WritePacket(conn, control.CmdLoadService, nameData); err != nil {
@@ -754,6 +828,8 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 		return err
 	}
 
+	warnIfDescriptionChanged(conn, handle, name)
+
 	payload := encodeStartStopFlags(handle, pin, false)
 	if err := control.WritePacket(conn, control.CmdStartService, payload); err != nil {
 		return err
@@ -869,6 +945,8 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 	if err != nil {
 		return err
 	}
+
+	warnIfDescriptionChanged(conn, handle, name)
 
 	// Stop first
 	stopPayload := encodeStartStopFlags(handle, false, force)

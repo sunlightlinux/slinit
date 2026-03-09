@@ -203,6 +203,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleQueryLoadMech()
 	case CmdQueryDependents:
 		return c.handleQueryDependents(payload)
+	case CmdServiceStatus6:
+		return c.handleServiceStatus6(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
@@ -1007,6 +1009,21 @@ func (c *Connection) handleQueryLoadMech() error {
 		off += len(d)
 	}
 	return c.writePacket(RplyLoaderMech, buf)
+}
+
+func (c *Connection) handleServiceStatus6(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	status := EncodeServiceStatus6(svc)
+	return c.writePacket(RplyServiceStatus, status)
 }
 
 func (c *Connection) handleListenEnv() error {

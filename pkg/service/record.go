@@ -176,6 +176,10 @@ type ServiceRecord struct {
 	// Description source directory
 	serviceDscDir string
 
+	// Modification time of the service description file at load time.
+	// Used by protocol v6 to detect stale configurations.
+	loadModTime time.Time
+
 	// Boot timing timestamps
 	startRequestTime time.Time // when doStart() was called
 	startedTime      time.Time // when Started() was called (reached STARTED)
@@ -201,6 +205,8 @@ func NewServiceRecord(self Service, set *ServiceSet, name string, recordType Ser
 func (sr *ServiceRecord) Name() string               { return sr.serviceName }
 func (sr *ServiceRecord) ServiceDir() string          { return sr.serviceDir }
 func (sr *ServiceRecord) SetServiceDir(dir string)    { sr.serviceDir = dir }
+func (sr *ServiceRecord) LoadModTime() time.Time       { return sr.loadModTime }
+func (sr *ServiceRecord) SetLoadModTime(t time.Time)   { sr.loadModTime = t }
 func (sr *ServiceRecord) Type() ServiceType           { return sr.recordType }
 func (sr *ServiceRecord) State() ServiceState      { return sr.state }
 func (sr *ServiceRecord) TargetState() ServiceState { return sr.desired }

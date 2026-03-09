@@ -16,7 +16,7 @@ import (
 // MinCompatVersion is the minimum version a peer must support.
 // Version reply format: min_compat(2) + actual_version(2) = 4 bytes.
 const (
-	CPVersion        uint16 = 5
+	CPVersion        uint16 = 6
 	MinCompatVersion uint16 = 1
 )
 
@@ -53,6 +53,7 @@ const (
 	CmdServiceStatus5     uint8 = 34
 	CmdQueryLoadMech      uint8 = 35
 	CmdQueryDependents    uint8 = 36
+	CmdServiceStatus6     uint8 = 37
 )
 
 // Reply codes (server → client).
@@ -776,4 +777,39 @@ func DecodeEnvEvent(data []byte) (flags uint8, varString string, err error) {
 		return 0, "", fmt.Errorf("data too short for env event value")
 	}
 	return flags, string(data[3 : 3+varLen]), nil
+}
+
+// --- Protocol v6 extended formats ---
+
+// ServiceStatusInfo6 holds extended status with file modification timestamp (v6).
+type ServiceStatusInfo6 struct {
+	ServiceStatusInfo5
+	LoadModTime int64 // Unix timestamp (seconds) of description file at load time
+}
+
+// EncodeServiceStatus6 encodes v6 service status into 22 bytes.
+// Format: statusV5(14) + loadModTime(8) = 22 bytes.
+func EncodeServiceStatus6(svc service.Service) []byte {
+	buf := make([]byte, 22)
+	copy(buf, EncodeServiceStatus5(svc))
+	modTime := svc.Record().LoadModTime()
+	if !modTime.IsZero() {
+		binary.LittleEndian.PutUint64(buf[14:], uint64(modTime.Unix()))
+	}
+	return buf
+}
+
+// DecodeServiceStatus6 decodes v6 service status from 22 bytes.
+func DecodeServiceStatus6(data []byte) (ServiceStatusInfo6, error) {
+	if len(data) < 22 {
+		return ServiceStatusInfo6{}, fmt.Errorf("data too short for status6: need 22, have %d", len(data))
+	}
+	s5, err := DecodeServiceStatus5(data)
+	if err != nil {
+		return ServiceStatusInfo6{}, err
+	}
+	return ServiceStatusInfo6{
+		ServiceStatusInfo5: s5,
+		LoadModTime:        int64(binary.LittleEndian.Uint64(data[14:])),
+	}, nil
 }
