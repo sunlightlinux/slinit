@@ -379,15 +379,35 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Dependencies
 	case "depends-on":
-		desc.DependsOn = append(desc.DependsOn, expandEnvVars(value, serviceArg))
+		depName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(depName); err != nil {
+			return fmt.Errorf("invalid dependency name: %w", err)
+		}
+		desc.DependsOn = append(desc.DependsOn, depName)
 	case "depends-ms":
-		desc.DependsMS = append(desc.DependsMS, expandEnvVars(value, serviceArg))
+		depName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(depName); err != nil {
+			return fmt.Errorf("invalid dependency name: %w", err)
+		}
+		desc.DependsMS = append(desc.DependsMS, depName)
 	case "waits-for":
-		desc.WaitsFor = append(desc.WaitsFor, expandEnvVars(value, serviceArg))
+		depName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(depName); err != nil {
+			return fmt.Errorf("invalid dependency name: %w", err)
+		}
+		desc.WaitsFor = append(desc.WaitsFor, depName)
 	case "before":
-		desc.Before = append(desc.Before, expandEnvVars(value, serviceArg))
+		depName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(depName); err != nil {
+			return fmt.Errorf("invalid dependency name: %w", err)
+		}
+		desc.Before = append(desc.Before, depName)
 	case "after":
-		desc.After = append(desc.After, expandEnvVars(value, serviceArg))
+		depName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(depName); err != nil {
+			return fmt.Errorf("invalid dependency name: %w", err)
+		}
+		desc.After = append(desc.After, depName)
 	case "depends-on.d":
 		desc.DependsOnD = append(desc.DependsOnD, expandEnvVars(value, serviceArg))
 	case "depends-ms.d":
@@ -513,7 +533,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Chaining
 	case "chain-to":
-		desc.ChainTo = expandEnvVars(value, serviceArg)
+		chainName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(chainName); err != nil {
+			return fmt.Errorf("invalid chain-to name: %w", err)
+		}
+		desc.ChainTo = chainName
 
 	// Alias
 	case "provides":
@@ -521,7 +545,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Consumer
 	case "consumer-of":
-		desc.ConsumerOf = expandEnvVars(value, serviceArg)
+		consName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(consName); err != nil {
+			return fmt.Errorf("invalid consumer-of name: %w", err)
+		}
+		desc.ConsumerOf = consName
 
 	// Options
 	case "options":

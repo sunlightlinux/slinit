@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -222,6 +223,10 @@ func (c *Connection) handleFindService(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
+	if err := config.ValidateServiceName(name); err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
 	svc := c.server.services.FindService(name, false)
 	if svc == nil {
 		return c.writePacket(RplyNoService, nil)
@@ -238,6 +243,10 @@ func (c *Connection) handleFindService(payload []byte) error {
 func (c *Connection) handleLoadService(payload []byte) error {
 	name, _, err := DecodeServiceName(payload)
 	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	if err := config.ValidateServiceName(name); err != nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
 

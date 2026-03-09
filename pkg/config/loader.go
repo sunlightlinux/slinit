@@ -15,9 +15,10 @@ import (
 
 // DirLoader loads service descriptions from one or more directories.
 type DirLoader struct {
-	dirs    []string
-	set     *service.ServiceSet
-	loading map[string]bool // tracks loading state for circular dependency detection
+	dirs     []string
+	set      *service.ServiceSet
+	loading  map[string]bool // tracks loading state for circular dependency detection
+	curDepth int             // current recursion depth during loading
 }
 
 // NewDirLoader creates a new directory-based service loader.
@@ -41,7 +42,7 @@ func (dl *DirLoader) LoadService(name string) (service.Service, error) {
 		return svc, nil
 	}
 
-	return dl.loadServiceImpl(name)
+	return dl.loadServiceImpl(name, dl.curDepth)
 }
 
 // ReloadService reloads a service description from file.
@@ -156,19 +157,22 @@ func (dl *DirLoader) reloadStarted(svc service.Service, desc *ServiceDescription
 }
 
 // updateInPlace updates a service's configuration without replacing the record.
+// Dependencies are updated first (may fail), then type-specific fields and
+// common settings (cannot fail), so a dependency error does not leave the
+// service in a partially-updated state.
 func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription, filePath string) (service.Service, error) {
 	// Check for cycles before modifying
 	if err := dl.checkCycle(svc, desc); err != nil {
 		return nil, err
 	}
 
-	// Update type-specific fields
-	dl.updateTypeSpecificFields(svc, desc)
-
-	// Update dependencies
+	// Update dependencies first — this can fail (e.g. missing dep) and has rollback
 	if err := dl.updateDependencies(svc, desc, filePath); err != nil {
 		return nil, err
 	}
+
+	// Update type-specific fields (command, timeouts, etc.)
+	dl.updateTypeSpecificFields(svc, desc)
 
 	// Update common settings
 	applyToService(svc, desc)
@@ -409,7 +413,23 @@ func (dl *DirLoader) validateNewRegularDeps(svc service.Service, desc *ServiceDe
 	return nil
 }
 
-func (dl *DirLoader) loadServiceImpl(name string) (service.Service, error) {
+func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, error) {
+	// Validate service name
+	if err := ValidateServiceName(name); err != nil {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message:     err.Error(),
+		}
+	}
+
+	// Check dependency depth limit
+	if depth >= MaxDepDepth {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message:     fmt.Sprintf("dependency depth exceeds maximum (%d)", MaxDepDepth),
+		}
+	}
+
 	// Check for circular dependency
 	if dl.loading[name] {
 		return nil, &ServiceLoadError{
@@ -419,6 +439,11 @@ func (dl *DirLoader) loadServiceImpl(name string) (service.Service, error) {
 	}
 	dl.loading[name] = true
 	defer delete(dl.loading, name)
+
+	// Set depth for nested LoadService calls via loadDependencies
+	prevDepth := dl.curDepth
+	dl.curDepth = depth + 1
+	defer func() { dl.curDepth = prevDepth }()
 
 	// Find and parse the service description file
 	desc, filePath, err := dl.findAndParse(name)
