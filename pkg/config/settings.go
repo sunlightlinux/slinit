@@ -53,6 +53,7 @@ var KnownSettings = map[string]OperatorType{
 	"restart-limit-interval": OpEquals,
 	"restart-limit-count":    OpEquals,
 	"term-signal":        OpEquals,
+	"termsignal":         OpEquals, // deprecated alias (dinit compat)
 	"pid-file":           OpEquals,
 	"ready-notification": OpEquals,
 

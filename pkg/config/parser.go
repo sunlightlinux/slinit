@@ -458,7 +458,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.RestartLimitCount = n
 
 	// Signal
-	case "term-signal":
+	case "term-signal", "termsignal":
 		sig, err := parseSignal(value)
 		if err != nil {
 			return err
@@ -1070,6 +1070,11 @@ func isVarChar(ch byte, first bool) bool {
 
 // parseSignal parses a signal name or number.
 func parseSignal(value string) (syscall.Signal, error) {
+	// "none" / "NONE" = signal 0 (no signal sent on stop)
+	if strings.EqualFold(value, "none") {
+		return 0, nil
+	}
+
 	signals := map[string]syscall.Signal{
 		"SIGHUP":  syscall.SIGHUP,
 		"SIGINT":  syscall.SIGINT,
