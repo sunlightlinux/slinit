@@ -15,18 +15,22 @@ var execFunc = syscall.Exec
 // arguments. This restarts the init system without rebooting the kernel.
 //
 // The sequence is:
-// 1. Kill all remaining processes
-// 2. Run shutdown hook, swapoff/umount
+// 1. Resolve exec path while /proc is still mounted
+// 2. Run shutdown hook (if any) — hook may do its own cleanup
 // 3. Sync filesystems
 // 4. Re-exec slinit with original arguments
+//
+// Unlike a hard reboot/halt, soft reboot does NOT unmount filesystems or kill
+// all processes. Filesystems must remain mounted and writable so the new slinit
+// instance can create its control socket and load services normally.
 //
 // If the exec fails, an error is returned and the caller should fall back
 // to a hard reboot.
 func SoftReboot(logger *logging.Logger) error {
 	logger.Notice("Performing soft reboot...")
 
-	// Resolve the executable path NOW, before we kill processes and
-	// unmount filesystems. As PID 1, /proc may not be mounted at
+	// Resolve the executable path NOW, before services stop and /proc
+	// may become unavailable. As PID 1, /proc may not be mounted at
 	// package init time, so we resolve here while it's still available.
 	execPath, err := os.Executable()
 	if err != nil {
@@ -36,17 +40,12 @@ func SoftReboot(logger *logging.Logger) error {
 		logger.Debug("os.Executable() failed (%v), using os.Args[0]=%s", err, execPath)
 	}
 
-	// Kill remaining processes
-	KillAllProcesses(logger)
+	// Run shutdown hook if configured. For soft reboot we do NOT unmount
+	// filesystems ourselves — keeping them mounted and writable is required
+	// so the re-exec'd slinit can create its control socket.
+	runHookFunc(service.ShutdownSoftReboot, logger)
 
-	// Run shutdown hook (same as other shutdown types)
-	hookHandledCleanup := runHookFunc(service.ShutdownSoftReboot, logger)
-	if !hookHandledCleanup {
-		swapOff(logger)
-		unmountAll(logger)
-	}
-
-	// Sync filesystems
+	// Sync filesystems to flush any pending writes before re-exec.
 	syncFunc()
 
 	logger.Notice("Re-executing %s", execPath)
