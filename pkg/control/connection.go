@@ -53,9 +53,14 @@ func (c *Connection) close() {
 		c.writeMu.Lock()
 		c.closed = true
 		c.writeMu.Unlock()
-		// Unregister as listener from all services
+		// Unregister as listener from all unique services
+		// (a service may have multiple handles, but we only need to remove once)
+		seen := make(map[service.Service]struct{}, len(c.handles))
 		for _, svc := range c.handles {
-			svc.Record().RemoveListener(c)
+			if _, dup := seen[svc]; !dup {
+				seen[svc] = struct{}{}
+				svc.Record().RemoveListener(c)
+			}
 		}
 		// Unregister env listener
 		if c.listenEnv {
@@ -518,11 +523,22 @@ func (c *Connection) handleCloseHandle(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	// Unregister as listener before removing handle
-	if svc := c.handles[handle]; svc != nil {
-		svc.Record().RemoveListener(c)
-	}
+	svc := c.handles[handle]
 	delete(c.handles, handle)
+
+	// Only remove listener if no other handle references this service
+	if svc != nil {
+		stillReferenced := false
+		for _, s := range c.handles {
+			if s == svc {
+				stillReferenced = true
+				break
+			}
+		}
+		if !stillReferenced {
+			svc.Record().RemoveListener(c)
+		}
+	}
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -723,6 +739,9 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 	if !svc.Record().HasLoneRef(handleCount) {
 		return c.writePacket(RplyNAK, nil)
 	}
+
+	// Unregister as listener before removing handles
+	svc.Record().RemoveListener(c)
 
 	// Unload: clean up deps and remove from set
 	c.server.services.UnloadService(svc)

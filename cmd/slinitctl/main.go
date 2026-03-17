@@ -617,7 +617,7 @@ func warnIfDescriptionChanged(conn net.Conn, handle uint32, name string) {
 	if err := control.WritePacket(conn, control.CmdServiceStatus6, control.EncodeHandle(handle)); err != nil {
 		return
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil || rply != control.RplyServiceStatus {
 		return
 	}
@@ -630,7 +630,7 @@ func warnIfDescriptionChanged(conn net.Conn, handle uint32, name string) {
 	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, nil); err != nil {
 		return
 	}
-	rply, payload, err = control.ReadPacket(conn)
+	rply, payload, err = readReply(conn)
 	if err != nil || rply != control.RplyServiceDscDir || len(payload) < 2 {
 		return
 	}

@@ -22,6 +22,10 @@ type Server struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 
+	// acceptWg tracks only the current acceptLoop goroutine so that
+	// Reopen() can wait for the old loop to exit before starting a new one.
+	acceptWg sync.WaitGroup
+
 	// stopAccept is closed to signal the current acceptLoop to exit.
 	// Replaced on each Reopen() call.
 	stopAccept chan struct{}
@@ -63,6 +67,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.stopAccept = make(chan struct{})
 
 	s.wg.Add(1)
+	s.acceptWg.Add(1)
 	go s.acceptLoop(s.listener, s.stopAccept)
 
 	s.logger.Info("Control socket listening on %s", s.sockPath)
@@ -106,6 +111,7 @@ func (s *Server) Stop() error {
 
 func (s *Server) acceptLoop(listener net.Listener, stopCh chan struct{}) {
 	defer s.wg.Done()
+	defer s.acceptWg.Done()
 
 	for {
 		conn, err := listener.Accept()
@@ -148,17 +154,20 @@ func (s *Server) removeConnection(c *Connection) {
 // SIGUSR1 to recover from situations where the socket was unavailable
 // (e.g. filesystem was read-only during early boot).
 func (s *Server) Reopen() error {
-	// Stop the old acceptLoop before closing the listener
+	// Signal the old acceptLoop to stop
 	s.mu.Lock()
 	if s.stopAccept != nil {
 		close(s.stopAccept)
 	}
 	s.mu.Unlock()
 
-	// Close existing listener (if any)
+	// Close existing listener so Accept() unblocks
 	if s.listener != nil {
 		s.listener.Close()
 	}
+
+	// Wait for the old acceptLoop goroutine to finish before starting a new one
+	s.acceptWg.Wait()
 
 	// Remove stale socket file
 	os.Remove(s.sockPath)
@@ -179,6 +188,7 @@ func (s *Server) Reopen() error {
 	s.stopAccept = stopCh
 	s.mu.Unlock()
 
+	s.acceptWg.Add(1)
 	s.wg.Add(1)
 	go s.acceptLoop(listener, stopCh)
 

@@ -194,8 +194,9 @@ func TestServicePinStart(t *testing.T) {
 		t.Errorf("pinned service should remain STARTED, got %v", svc.State())
 	}
 
-	// Unpin - should now stop
+	// Unpin - should now stop after processing queues
 	svc.Unpin()
+	set.ProcessQueues()
 
 	if svc.State() != StateStopped {
 		t.Errorf("unpinned service should be STOPPED, got %v", svc.State())

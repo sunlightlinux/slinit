@@ -144,7 +144,7 @@ func runEnvMonitor(conn net.Conn, cfg config) {
 	if err := control.WritePacket(conn, control.CmdListenEnv, nil); err != nil {
 		fatal("listen-env: %v", err)
 	}
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readMonitorReply(conn)
 	if err != nil {
 		fatal("listen-env reply: %v", err)
 	}
@@ -157,7 +157,7 @@ func runEnvMonitor(conn net.Conn, cfg config) {
 		if err := control.WritePacket(conn, control.CmdGetAllEnv, control.EncodeHandle(0)); err != nil {
 			fatal("getallenv: %v", err)
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readMonitorReply(conn)
 		if err != nil {
 			fatal("getallenv reply: %v", err)
 		}
@@ -226,7 +226,7 @@ func loadService(conn net.Conn, name string) (handle uint32, state uint8, err er
 		return
 	}
 
-	rply, data, err := control.ReadPacket(conn)
+	rply, data, err := readMonitorReply(conn)
 	if err != nil {
 		return
 	}
@@ -246,6 +246,22 @@ func loadService(conn net.Conn, name string) (handle uint32, state uint8, err er
 	state = data[0]
 	handle = binary.LittleEndian.Uint32(data[1:5])
 	return
+}
+
+// readMonitorReply reads packets, skipping unsolicited info/event packets.
+func readMonitorReply(conn net.Conn) (uint8, []byte, error) {
+	for {
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return 0, nil, err
+		}
+		switch rply {
+		case control.InfoServiceEvent, control.InfoServiceEvent5, control.InfoEnvEvent:
+			continue
+		default:
+			return rply, payload, nil
+		}
+	}
 }
 
 func stateToText(state uint8, cfg config) string {

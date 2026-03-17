@@ -603,7 +603,9 @@ func (sr *ServiceRecord) Unpin() {
 			}
 			if sr.desired == StateStopped || sr.forceStop {
 				sr.doStop(false)
-				sr.services.ProcessQueues()
+				// Note: caller is responsible for draining queues
+				// (e.g. StopAllServices calls processQueuesLocked,
+				// handleUnpinService calls ProcessQueues).
 			}
 		}
 	}
