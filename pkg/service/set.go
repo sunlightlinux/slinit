@@ -88,16 +88,16 @@ type ServiceSet struct {
 	OnBootReady func() // called when boot service reaches STARTED (for --ready-fd)
 
 	// Global daemon-level environment (from --env-file/-e)
-	globalEnv []string
+	// Protected by envMu for concurrent access from control socket goroutines.
+	envMu        sync.Mutex
+	globalEnv    []string
+	envListeners []EnvListener
 
 	// Default cgroup base path (from --cgroup-path/-b)
 	defaultCgroupPath string
 
 	// Ready notification fd (from --ready-fd/-F), -1 if unset
 	readyFD int
-
-	// Environment listeners (LISTENENV subscribers)
-	envListeners []EnvListener
 
 	// Notification channel: signaled when a service becomes inactive
 	inactiveCh chan struct{}
@@ -294,17 +294,24 @@ func (ss *ServiceSet) processQueuesLocked() {
 	for len(ss.propQueue) > 0 || len(ss.stopQueue) > 0 {
 		for len(ss.propQueue) > 0 {
 			svc := ss.propQueue[0]
+			ss.propQueue[0] = nil // allow GC of the Service reference
 			ss.propQueue = ss.propQueue[1:]
 			svc.Record().InPropQueue = false
 			svc.Record().DoPropagation()
 		}
+		// Release backing array once propagation queue is fully drained
+		ss.propQueue = nil
+
 		if len(ss.stopQueue) > 0 {
 			svc := ss.stopQueue[0]
+			ss.stopQueue[0] = nil
 			ss.stopQueue = ss.stopQueue[1:]
 			svc.Record().InStopQueue = false
 			svc.Record().ExecuteTransition()
 		}
 	}
+	// Release backing array once stop queue is fully drained
+	ss.stopQueue = nil
 }
 
 // --- Console queue ---
@@ -400,11 +407,23 @@ func (ss *ServiceSet) ResetBootTiming() {
 
 // --- Global daemon settings ---
 
-func (ss *ServiceSet) SetGlobalEnv(env []string)       { ss.globalEnv = env }
-func (ss *ServiceSet) GlobalEnv() []string              { return ss.globalEnv }
+func (ss *ServiceSet) SetGlobalEnv(env []string) {
+	ss.envMu.Lock()
+	defer ss.envMu.Unlock()
+	ss.globalEnv = env
+}
+
+func (ss *ServiceSet) GlobalEnv() []string {
+	ss.envMu.Lock()
+	defer ss.envMu.Unlock()
+	result := make([]string, len(ss.globalEnv))
+	copy(result, ss.globalEnv)
+	return result
+}
 
 // GlobalSetEnv sets a global environment variable and notifies listeners.
 func (ss *ServiceSet) GlobalSetEnv(key, value string) {
+	ss.envMu.Lock()
 	varStr := key + "=" + value
 	override := false
 	// Check if this key already exists
@@ -413,33 +432,45 @@ func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
 			override = true
 			ss.globalEnv[i] = varStr
-			ss.notifyEnvListeners(varStr, override)
+			listeners := ss.copyEnvListeners()
+			ss.envMu.Unlock()
+			ss.notifyEnvListenersSnapshot(listeners, varStr, override)
 			return
 		}
 	}
 	ss.globalEnv = append(ss.globalEnv, varStr)
-	ss.notifyEnvListeners(varStr, override)
+	listeners := ss.copyEnvListeners()
+	ss.envMu.Unlock()
+	ss.notifyEnvListenersSnapshot(listeners, varStr, override)
 }
 
 // GlobalUnsetEnv removes a global environment variable and notifies listeners.
 func (ss *ServiceSet) GlobalUnsetEnv(key string) {
+	ss.envMu.Lock()
 	prefix := key + "="
 	for i, e := range ss.globalEnv {
 		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
 			ss.globalEnv = append(ss.globalEnv[:i], ss.globalEnv[i+1:]...)
-			ss.notifyEnvListeners(key, true)
+			listeners := ss.copyEnvListeners()
+			ss.envMu.Unlock()
+			ss.notifyEnvListenersSnapshot(listeners, key, true)
 			return
 		}
 	}
+	ss.envMu.Unlock()
 }
 
 // AddEnvListener registers a listener for global env changes.
 func (ss *ServiceSet) AddEnvListener(l EnvListener) {
+	ss.envMu.Lock()
+	defer ss.envMu.Unlock()
 	ss.envListeners = append(ss.envListeners, l)
 }
 
 // RemoveEnvListener unregisters a listener for global env changes.
 func (ss *ServiceSet) RemoveEnvListener(l EnvListener) {
+	ss.envMu.Lock()
+	defer ss.envMu.Unlock()
 	for i, existing := range ss.envListeners {
 		if existing == l {
 			ss.envListeners = append(ss.envListeners[:i], ss.envListeners[i+1:]...)
@@ -448,8 +479,16 @@ func (ss *ServiceSet) RemoveEnvListener(l EnvListener) {
 	}
 }
 
-func (ss *ServiceSet) notifyEnvListeners(varString string, override bool) {
-	for _, l := range ss.envListeners {
+// copyEnvListeners returns a snapshot of the env listeners slice. Caller must hold envMu.
+func (ss *ServiceSet) copyEnvListeners() []EnvListener {
+	snapshot := make([]EnvListener, len(ss.envListeners))
+	copy(snapshot, ss.envListeners)
+	return snapshot
+}
+
+// notifyEnvListenersSnapshot notifies a snapshot of listeners outside the lock.
+func (ss *ServiceSet) notifyEnvListenersSnapshot(listeners []EnvListener, varString string, override bool) {
+	for _, l := range listeners {
 		l.EnvEvent(varString, override)
 	}
 }

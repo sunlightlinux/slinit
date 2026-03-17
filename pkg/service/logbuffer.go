@@ -57,12 +57,14 @@ func (lb *LogBuffer) StartReader() {
 	if lb.pipeR == nil {
 		return
 	}
+	lb.mu.Lock()
 	lb.doneCh = make(chan struct{})
 	lb.running = true
 	// Capture pipeR and doneCh so the goroutine always uses its own references,
 	// even if a restart creates a new pipe/channel before this goroutine finishes.
 	pipeR := lb.pipeR
 	doneCh := lb.doneCh
+	lb.mu.Unlock()
 	go lb.readLoop(pipeR, doneCh)
 }
 
