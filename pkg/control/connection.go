@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -254,14 +255,20 @@ func (c *Connection) handleLoadService(payload []byte) error {
 
 	svc, err := c.server.services.LoadService(name)
 	if err != nil {
-		// Distinguish between "not found" and "parse/load error"
-		if strings.Contains(err.Error(), "parse") || strings.Contains(err.Error(), "syntax") {
+		// Use typed error checks instead of fragile string matching
+		var notFound *service.ServiceNotFound
+		var loadErr *config.ServiceLoadError
+		var parseErr *config.ParseError
+		switch {
+		case errors.As(err, &notFound):
+			return c.writePacket(RplyNoService, nil)
+		case errors.As(err, &parseErr):
 			return c.writePacket(RplyServiceDescErr, nil)
-		}
-		if strings.Contains(err.Error(), "load") || strings.Contains(err.Error(), "open") {
+		case errors.As(err, &loadErr):
 			return c.writePacket(RplyServiceLoadErr2, nil)
+		default:
+			return c.writePacket(RplyServiceLoadErr, nil)
 		}
-		return c.writePacket(RplyNoService, nil)
 	}
 
 	handle := c.allocHandle(svc)

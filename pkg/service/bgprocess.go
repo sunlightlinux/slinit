@@ -109,7 +109,16 @@ func (s *BGProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d
 
 // BecomingInactive is called when the service won't restart. Cleans up pipe.
 func (s *BGProcessService) BecomingInactive() {
+	s.closeDoneCh()
 	s.CloseOutputPipe()
+}
+
+// closeDoneCh signals the monitoring goroutine to stop and resets the channel.
+func (s *BGProcessService) closeDoneCh() {
+	if s.doneCh != nil {
+		close(s.doneCh)
+		s.doneCh = nil
+	}
 }
 
 // SetLogType sets the log output type.
@@ -270,6 +279,7 @@ func (s *BGProcessService) BringUp() bool {
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Start monitoring goroutine for the launcher process
+	s.closeDoneCh()
 	s.doneCh = make(chan struct{})
 	s.timerUpdateCh = make(chan struct{}, 1)
 	go s.monitorLauncher(exitCh)

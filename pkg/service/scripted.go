@@ -108,7 +108,16 @@ func (s *ScriptedService) GetLogType() LogType { return s.logType }
 
 // BecomingInactive is called when the service won't restart. Cleans up pipe.
 func (s *ScriptedService) BecomingInactive() {
+	s.closeDoneCh()
 	s.CloseOutputPipe()
+}
+
+// closeDoneCh signals the monitoring goroutine to stop and resets the channel.
+func (s *ScriptedService) closeDoneCh() {
+	if s.doneCh != nil {
+		close(s.doneCh)
+		s.doneCh = nil
+	}
 }
 
 // SetStartTimeout sets the start command timeout.
@@ -216,6 +225,7 @@ func (s *ScriptedService) BringUp() bool {
 	}
 
 	// Monitor the start command
+	s.closeDoneCh()
 	s.doneCh = make(chan struct{})
 	s.timerUpdateCh = make(chan struct{}, 1)
 	go s.monitorStart(exitCh)
@@ -258,6 +268,7 @@ func (s *ScriptedService) BringDown() {
 	s.stopHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Monitor the stop command
+	s.closeDoneCh()
 	s.doneCh = make(chan struct{})
 	s.timerUpdateCh = make(chan struct{}, 1)
 	go s.monitorStop(exitCh)

@@ -247,8 +247,17 @@ func (s *ProcessService) closeSocket() {
 
 // BecomingInactive is called when the service won't restart. Cleans up socket.
 func (s *ProcessService) BecomingInactive() {
+	s.closeDoneCh()
 	s.closeSocket()
 	s.CloseOutputPipe()
+}
+
+// closeDoneCh signals the monitoring goroutine to stop and resets the channel.
+func (s *ProcessService) closeDoneCh() {
+	if s.doneCh != nil {
+		close(s.doneCh)
+		s.doneCh = nil
+	}
 }
 
 // SetRestartLimits sets the restart rate limiting parameters.
@@ -559,6 +568,7 @@ func (s *ProcessService) startProcess() error {
 	}
 
 	// Start monitoring goroutine
+	s.closeDoneCh()
 	s.doneCh = make(chan struct{})
 	s.timerUpdateCh = make(chan struct{}, 1)
 
