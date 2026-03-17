@@ -432,7 +432,13 @@ func (s *ScriptedService) armTimer(d time.Duration, purpose scriptedTimerPurpose
 
 func (s *ScriptedService) cancelTimer() {
 	if s.processTimer != nil {
-		s.processTimer.Stop()
+		if !s.processTimer.Stop() {
+			// Drain the channel to prevent stale timer events
+			select {
+			case <-s.processTimer.C:
+			default:
+			}
+		}
 		s.processTimer = nil
 	}
 	s.timerPurpose = scriptedTimerNone

@@ -46,6 +46,14 @@ type ServiceSet struct {
 	restartEnabled bool
 	shutdownType   ShutdownType
 
+	// queueMu protects the processing queues, console queue, and
+	// activeServices counter. It is held across entire ProcessQueues
+	// drain loops and at top-level entry points (StartService,
+	// StopService, etc.) so that internal callbacks (AddPropQueue,
+	// AddTransitionQueue, ServiceActive, ServiceInactive) can be
+	// called without re-locking.
+	queueMu sync.Mutex
+
 	// Processing queues
 	propQueue    []Service // propagation queue
 	stopQueue    []Service // transition/stop queue
@@ -207,39 +215,49 @@ func (ss *ServiceSet) ListServices() []Service {
 
 // StartService starts a service and processes queues.
 func (ss *ServiceSet) StartService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
 	svc.Start()
-	ss.ProcessQueues()
+	ss.processQueuesLocked()
 }
 
 // WakeService starts a service without marking it active (re-attaches to
 // active dependents). Returns false if no active dependents were found.
 func (ss *ServiceSet) WakeService(svc Service) bool {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
 	ok := svc.Record().Wake()
-	ss.ProcessQueues()
+	ss.processQueuesLocked()
 	return ok
 }
 
 // StopService stops a service and processes queues.
 func (ss *ServiceSet) StopService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
 	svc.Stop(true)
-	ss.ProcessQueues()
+	ss.processQueuesLocked()
 }
 
 // ForceStopService force-stops a service and all its dependents.
 func (ss *ServiceSet) ForceStopService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
 	svc.Record().ForcedStop()
-	ss.ProcessQueues()
+	ss.processQueuesLocked()
 }
 
 // StopAllServices stops all services (for shutdown).
 func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
 	ss.restartEnabled = false
 	ss.shutdownType = shutdownType
 	for _, svc := range ss.records {
 		svc.Stop(false)
 		svc.Unpin()
 	}
-	ss.ProcessQueues()
+	ss.processQueuesLocked()
 }
 
 // --- Queue management ---
@@ -263,8 +281,16 @@ func (ss *ServiceSet) AddTransitionQueue(svc Service) {
 }
 
 // ProcessQueues drains both propagation and transition queues until empty.
-// This is the core scheduling loop that replaces dinit's processQueues().
+// This is the public entry point — it acquires queueMu. Internal callers
+// that already hold queueMu must use processQueuesLocked instead.
 func (ss *ServiceSet) ProcessQueues() {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	ss.processQueuesLocked()
+}
+
+// processQueuesLocked is the core scheduling loop. Caller must hold queueMu.
+func (ss *ServiceSet) processQueuesLocked() {
 	for len(ss.propQueue) > 0 || len(ss.stopQueue) > 0 {
 		for len(ss.propQueue) > 0 {
 			svc := ss.propQueue[0]
@@ -329,6 +355,8 @@ func (ss *ServiceSet) ServiceInactive(svc Service) {
 
 // CountActiveServices returns the number of active services.
 func (ss *ServiceSet) CountActiveServices() int {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
 	return ss.activeServices
 }
 

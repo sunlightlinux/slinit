@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -124,8 +125,9 @@ type ServiceRecord struct {
 	// The set this service belongs to
 	services *ServiceSet
 
-	// Listeners
-	listeners []ServiceListener
+	// Listeners (protected by listenerMu)
+	listenerMu sync.Mutex
+	listeners  []ServiceListener
 
 	// Process settings (shared across service types)
 	termSignal   syscall.Signal
@@ -228,10 +230,14 @@ func (sr *ServiceRecord) UnrecoverableStop() {
 }
 
 func (sr *ServiceRecord) AddListener(l ServiceListener) {
+	sr.listenerMu.Lock()
+	defer sr.listenerMu.Unlock()
 	sr.listeners = append(sr.listeners, l)
 }
 
 func (sr *ServiceRecord) RemoveListener(l ServiceListener) {
+	sr.listenerMu.Lock()
+	defer sr.listenerMu.Unlock()
 	for i, existing := range sr.listeners {
 		if existing == l {
 			sr.listeners = append(sr.listeners[:i], sr.listeners[i+1:]...)
@@ -737,7 +743,12 @@ func (sr *ServiceRecord) ExecuteTransition() {
 // --- Internal state machine helpers ---
 
 func (sr *ServiceRecord) notifyListeners(event ServiceEvent) {
-	for _, l := range sr.listeners {
+	sr.listenerMu.Lock()
+	snapshot := make([]ServiceListener, len(sr.listeners))
+	copy(snapshot, sr.listeners)
+	sr.listenerMu.Unlock()
+
+	for _, l := range snapshot {
 		l.ServiceEvent(sr.self, event)
 	}
 }
