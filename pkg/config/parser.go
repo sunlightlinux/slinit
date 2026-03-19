@@ -942,7 +942,8 @@ func expandEnvVarsImpl(s string, allowWordSplit bool, serviceArg *string) string
 			}
 		}
 
-		// ${VAR}, ${VAR:-default}, ${VAR:+alt}, $/{VAR}, $/{1} syntax
+		// ${VAR}, ${VAR:-default}, ${VAR:+alt}, ${VAR-default}, ${VAR+alt},
+		// $/{VAR}, $/{1} syntax
 		if s[i] == '{' {
 			i++ // skip '{'
 			end := strings.IndexByte(s[i:], '}')
@@ -961,13 +962,14 @@ func expandEnvVarsImpl(s string, allowWordSplit bool, serviceArg *string) string
 			// Resolve variable or service argument ($1)
 			var resolved string
 			if colonIdx := strings.IndexByte(expr, ':'); colonIdx >= 0 && colonIdx+1 < len(expr) {
+				// Colon variants: ${VAR:-default}, ${VAR:+alt}
+				// Check unset OR empty
 				varName := expr[:colonIdx]
 				op := expr[colonIdx+1]
 				operand := expr[colonIdx+2:]
 				var val string
 				var set bool
 				if varName == "1" {
-					// ${1:-default}, ${1:+alt}
 					if serviceArg != nil {
 						val = *serviceArg
 						set = true
@@ -992,6 +994,31 @@ func expandEnvVarsImpl(s string, allowWordSplit bool, serviceArg *string) string
 						resolved = *serviceArg
 					} else {
 						resolved = os.Getenv(expr)
+					}
+				}
+			} else if varName, op, operand, ok := parseNonColonOp(expr); ok {
+				// Non-colon variants: ${VAR-default}, ${VAR+alt}
+				// Check unset only (empty value is considered "set")
+				var val string
+				var set bool
+				if varName == "1" {
+					if serviceArg != nil {
+						val = *serviceArg
+						set = true
+					}
+				} else {
+					val, set = os.LookupEnv(varName)
+				}
+				switch op {
+				case '-': // ${VAR-default} — use default only if unset
+					if !set {
+						resolved = operand
+					} else {
+						resolved = val
+					}
+				case '+': // ${VAR+alt} — use alt if set (even if empty)
+					if set {
+						resolved = operand
 					}
 				}
 			} else if expr == "1" {
@@ -1066,6 +1093,39 @@ func isVarChar(ch byte, first bool) bool {
 		return true
 	}
 	return false
+}
+
+// parseNonColonOp checks if expr contains a non-colon operator: ${VAR-default}
+// or ${VAR+alt}. Returns the variable name, operator byte, operand, and true
+// if found. The variable name must be a valid identifier (or "1" for service arg).
+func parseNonColonOp(expr string) (varName string, op byte, operand string, ok bool) {
+	for j := 0; j < len(expr); j++ {
+		if expr[j] == '-' || expr[j] == '+' {
+			name := expr[:j]
+			if name == "" {
+				return "", 0, "", false
+			}
+			// Validate that name is a valid variable name or "1"
+			if name != "1" {
+				for k, ch := range []byte(name) {
+					if !isVarChar(ch, k == 0) {
+						return "", 0, "", false
+					}
+				}
+			}
+			return name, expr[j], expr[j+1:], true
+		}
+		// Stop scanning if we hit a char that can't be part of a var name
+		// (and isn't the operator itself)
+		if expr[j] != '_' &&
+			!(expr[j] >= 'A' && expr[j] <= 'Z') &&
+			!(expr[j] >= 'a' && expr[j] <= 'z') &&
+			!(j > 0 && expr[j] >= '0' && expr[j] <= '9') &&
+			expr[j] != '1' {
+			return "", 0, "", false
+		}
+	}
+	return "", 0, "", false
 }
 
 // parseSignal parses a signal name or number.

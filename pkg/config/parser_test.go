@@ -587,6 +587,67 @@ func TestExpandEnvVarsDefault(t *testing.T) {
 	}
 }
 
+func TestExpandEnvVarsNonColonOp(t *testing.T) {
+	// Test ${VAR-default} and ${VAR+alt} (without colon) — check unset only, not empty
+	os.Setenv("SLINIT_TEST_SET", "value123")
+	os.Unsetenv("SLINIT_TEST_UNSET")
+	os.Setenv("SLINIT_TEST_EMPTY", "")
+	defer os.Unsetenv("SLINIT_TEST_SET")
+	defer os.Unsetenv("SLINIT_TEST_EMPTY")
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// ${VAR-default} — use default only if unset (empty is OK)
+		{"${SLINIT_TEST_SET-fallback}", "value123"},
+		{"${SLINIT_TEST_UNSET-fallback}", "fallback"},
+		{"${SLINIT_TEST_EMPTY-fallback}", ""},           // empty is set, so no fallback
+		{"pre-${SLINIT_TEST_UNSET-/path}-suf", "pre-/path-suf"},
+
+		// ${VAR+alt} — use alt if set (even if empty)
+		{"${SLINIT_TEST_SET+alt}", "alt"},
+		{"${SLINIT_TEST_UNSET+alt}", ""},                // unset → no alt
+		{"${SLINIT_TEST_EMPTY+alt}", "alt"},             // empty but set → alt
+		{"pre-${SLINIT_TEST_EMPTY+YES}-post", "pre-YES-post"},
+		{"pre-${SLINIT_TEST_UNSET+YES}-post", "pre--post"},
+
+		// Mix colon and non-colon in same string
+		{"${SLINIT_TEST_EMPTY:-C}/${SLINIT_TEST_EMPTY-N}", "C/"},
+		{"${SLINIT_TEST_EMPTY:+C}/${SLINIT_TEST_EMPTY+N}", "/N"},
+	}
+
+	for _, tt := range tests {
+		got := expandEnvVars(tt.input, nil)
+		if got != tt.expected {
+			t.Errorf("expandEnvVars(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestExpandEnvVarsNonColonServiceArg(t *testing.T) {
+	// Test ${1-default} and ${1+alt} with service argument
+	arg := "myarg"
+
+	tests := []struct {
+		input    string
+		arg      *string
+		expected string
+	}{
+		{"${1-fallback}", &arg, "myarg"},
+		{"${1-fallback}", nil, "fallback"},
+		{"${1+alt}", &arg, "alt"},
+		{"${1+alt}", nil, ""},
+	}
+
+	for _, tt := range tests {
+		got := expandEnvVars(tt.input, tt.arg)
+		if got != tt.expected {
+			t.Errorf("expandEnvVars(%q, arg=%v) = %q, want %q", tt.input, tt.arg, got, tt.expected)
+		}
+	}
+}
+
 func TestCommandPlusEqual(t *testing.T) {
 	input := `type = process
 command = /usr/bin/myapp
