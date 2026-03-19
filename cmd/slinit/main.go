@@ -455,11 +455,19 @@ func resolveServiceDirs(flagValue string, systemMode bool) []string {
 	if err != nil {
 		return []string{defaultUserServiceDir}
 	}
-	return []string{
-		home + "/.config/slinit.d",
+	dirs := []string{}
+	// Prefer $XDG_CONFIG_HOME/slinit.d if set
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		dirs = append(dirs, xdg+"/slinit.d")
+	} else {
+		dirs = append(dirs, home+"/.config/slinit.d")
+	}
+	dirs = append(dirs,
 		"/etc/slinit.d/user",
 		"/usr/lib/slinit.d/user",
-	}
+		"/usr/local/lib/slinit.d/user",
+	)
+	return dirs
 }
 
 // readKernelUptime reads /proc/uptime and returns the system uptime duration.

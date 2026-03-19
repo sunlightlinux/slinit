@@ -292,14 +292,22 @@ func defaultSystemDirs() []string {
 }
 
 func defaultUserDirs() []string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		home = "~"
+	dirs := []string{}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		dirs = append(dirs, filepath.Join(xdg, "slinit.d"))
+	} else {
+		home := os.Getenv("HOME")
+		if home == "" {
+			home = "~"
+		}
+		dirs = append(dirs, filepath.Join(home, ".config", "slinit.d"))
 	}
-	return []string{
-		filepath.Join(home, ".config", "slinit.d"),
-		"/etc/slinit.d",
-	}
+	dirs = append(dirs,
+		"/etc/slinit.d/user",
+		"/usr/lib/slinit.d/user",
+		"/usr/local/lib/slinit.d/user",
+	)
+	return dirs
 }
 
 func printUsage() {

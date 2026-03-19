@@ -137,11 +137,15 @@ doneFlags:
 			if systemMode {
 				svcDir = "/etc/slinit.d"
 			} else {
-				home, err := os.UserHomeDir()
-				if err != nil {
-					fatal("Cannot determine home directory: %v", err)
+				if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+					svcDir = xdg + "/slinit.d"
+				} else {
+					home, err := os.UserHomeDir()
+					if err != nil {
+						fatal("Cannot determine home directory: %v", err)
+					}
+					svcDir = home + "/.config/slinit.d"
 				}
-				svcDir = home + "/.config/slinit.d"
 			}
 		}
 		switch command {

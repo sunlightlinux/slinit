@@ -93,7 +93,7 @@ go build ./cmd/slinit-monitor
 
 Default service directories (when `--services-dir` is not set):
 - **System mode**: `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d`
-- **User mode**: `~/.config/slinit.d`, `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`
+- **User mode**: `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user`
 
 ## Service configuration
 
