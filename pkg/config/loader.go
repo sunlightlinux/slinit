@@ -838,7 +838,10 @@ func applyLoadOptions(svc service.Service, desc *ServiceDescription) {
 	rec := svc.Record()
 
 	if desc.ExportServiceName {
-		rec.SetEnvVar("DINIT_SERVICE", svc.Name())
+		rec.SetEnvVar("DINIT_SERVICENAME", svc.Name())
+		if rec.ServiceDir() != "" {
+			rec.SetEnvVar("DINIT_SERVICEDSCDIR", rec.ServiceDir())
+		}
 	}
 
 	if desc.ExportPasswdVars {

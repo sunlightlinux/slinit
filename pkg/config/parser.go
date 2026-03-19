@@ -113,7 +113,7 @@ type ServiceDescription struct {
 
 	// Load options
 	ExportPasswdVars  bool // export USER, LOGNAME, HOME, SHELL, UID, GID from passwd
-	ExportServiceName bool // export DINIT_SERVICE=<name> env var
+	ExportServiceName bool // export DINIT_SERVICENAME + DINIT_SERVICEDSCDIR env vars
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
