@@ -269,6 +269,27 @@ func (dl *DirLoader) updateDependencies(svc service.Service, desc *ServiceDescri
 		return err
 	}
 
+	// Recalculate dependency depth after dep changes
+	var updater service.DepDepthUpdater
+	updater.AddPotentialUpdate(svc)
+	if err := updater.ProcessUpdates(); err != nil {
+		// Rollback deps on depth overflow
+		for i := len(rec.Dependencies()) - 1; i >= 0; i-- {
+			dep := rec.Dependencies()[i]
+			if dep.DepType != service.DepBefore {
+				rec.RmDep(dep.To, dep.DepType)
+			}
+		}
+		for _, dep := range oldDeps {
+			if dep.DepType != service.DepBefore {
+				rec.AddDep(dep.To, dep.DepType)
+			}
+		}
+		updater.Rollback()
+		return &ServiceLoadError{ServiceName: svc.Name(), Message: err.Error()}
+	}
+	updater.Commit()
+
 	return nil
 }
 
@@ -476,6 +497,9 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		dl.set.RemoveService(svc)
 		return nil, err
 	}
+
+	// Calculate dependency depth
+	svc.Record().SetDepDepth(calcServiceDepth(svc))
 
 	// Apply settings to the service record
 	applyToService(svc, desc)
@@ -952,4 +976,16 @@ func applyRlimits(rec *service.ServiceRecord, desc *ServiceDescription) {
 	if desc.RlimitAs != nil {
 		rec.AddRlimit(process.Rlimit{Resource: rlimitAs, Soft: desc.RlimitAs[0], Hard: desc.RlimitAs[1]})
 	}
+}
+
+// calcServiceDepth computes a service's depth as max(dep.depth + 1) over all deps.
+func calcServiceDepth(svc service.Service) int {
+	depth := 0
+	for _, dep := range svc.Record().Dependencies() {
+		d := dep.To.Record().DepDepth() + 1
+		if d > depth {
+			depth = d
+		}
+	}
+	return depth
 }

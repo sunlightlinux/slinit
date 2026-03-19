@@ -829,7 +829,26 @@ func (c *Connection) handleAddDep(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	from.Record().AddDep(to, service.DependencyType(depType))
+	// Check for circular dependency before adding
+	if service.CheckCircularDep(from, to) {
+		return c.writePacket(RplyNAK, nil)
+	}
+
+	// Add the dependency
+	dep := from.Record().AddDep(to, service.DependencyType(depType))
+
+	// Update dependency depths with rollback on failure
+	var updater service.DepDepthUpdater
+	updater.AddPotentialUpdate(from)
+	if err := updater.ProcessUpdates(); err != nil {
+		// Depth limit exceeded — remove the dep we just added and rollback depths
+		from.Record().RmDep(to, service.DependencyType(depType))
+		updater.Rollback()
+		_ = dep
+		return c.writePacket(RplyNAK, nil)
+	}
+	updater.Commit()
+
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -852,6 +871,20 @@ func (c *Connection) handleRmDep(payload []byte) error {
 	if !from.Record().RmDep(to, service.DependencyType(depType)) {
 		return c.writePacket(RplyNAK, nil)
 	}
+
+	// Recalculate depths after removal
+	var updater service.DepDepthUpdater
+	updater.AddPotentialUpdate(from)
+	// Also queue dependents of from since its depth may decrease
+	for _, dept := range from.Record().Dependents() {
+		updater.AddPotentialUpdate(dept.From)
+	}
+	if err := updater.ProcessUpdates(); err == nil {
+		updater.Commit()
+	}
+	// Depth recalc on remove should never fail (depths only decrease),
+	// but commit anyway to be safe.
+
 	c.server.services.ProcessQueues()
 	return c.writePacket(RplyACK, nil)
 }

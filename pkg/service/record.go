@@ -121,6 +121,7 @@ type ServiceRecord struct {
 	// Dependencies
 	dependsOn  []*ServiceDep // services this one depends on
 	dependents []*ServiceDep // services depending on this one
+	depDepth   int           // max depth of transitive dependency chain
 
 	// The set this service belongs to
 	services *ServiceSet
@@ -216,6 +217,8 @@ func (sr *ServiceRecord) StopReason() StoppedReason { return sr.stopReason }
 func (sr *ServiceRecord) RequiredBy() int          { return sr.requiredBy }
 func (sr *ServiceRecord) Dependencies() []*ServiceDep { return sr.dependsOn }
 func (sr *ServiceRecord) Dependents() []*ServiceDep   { return sr.dependents }
+func (sr *ServiceRecord) DepDepth() int                { return sr.depDepth }
+func (sr *ServiceRecord) SetDepDepth(d int)            { sr.depDepth = d }
 func (sr *ServiceRecord) Record() *ServiceRecord   { return sr }
 func (sr *ServiceRecord) PID() int                 { return -1 }
 func (sr *ServiceRecord) GetExitStatus() ExitStatus { return ExitStatus{} }
