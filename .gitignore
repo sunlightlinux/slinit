@@ -3,3 +3,9 @@
 /slinit-static
 /slinitctl
 /slinitctl-static
+/slinit-check
+/slinit-monitor
+/slinit-shutdown
+/slinit-reboot
+/slinit-halt
+/slinit-soft-reboot

@@ -33,6 +33,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Enable-via**: `@meta enable-via` directive for default enable/disable source service
 - **Push notifications**: SERVICEEVENT/ENVEVENT for real-time state and environment tracking
 - **SIGUSR1 socket reopen**: recover control socket when filesystem becomes writable
+- **slinit-shutdown**: standalone shutdown utility (also invocable as slinit-reboot, slinit-halt, slinit-soft-reboot via symlinks)
 - **Shutdown**: orderly service stop, shutdown hooks, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec/softreboot
 - **Soft-reboot**: restart slinit without rebooting the kernel (with shutdown hooks)
 - **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
@@ -53,6 +54,11 @@ go build ./cmd/slinit
 go build ./cmd/slinitctl
 go build ./cmd/slinit-check
 go build ./cmd/slinit-monitor
+go build ./cmd/slinit-shutdown
+# Optional symlinks for convenience:
+ln -s slinit-shutdown slinit-reboot
+ln -s slinit-shutdown slinit-halt
+ln -s slinit-shutdown slinit-soft-reboot
 ```
 
 ## Running
