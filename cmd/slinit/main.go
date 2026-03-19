@@ -146,14 +146,16 @@ func main() {
 	}
 
 	// Set up logger
-	level := parseLogLevel(logLevel)
+	mainLogLevel := parseLogLevel(logLevel)
+	consLevel := mainLogLevel
 	if consoleLevel != "" {
-		level = parseLogLevel(consoleLevel)
+		consLevel = parseLogLevel(consoleLevel)
 	}
 	if quietMode {
-		level = logging.LevelError
+		consLevel = logging.LevelError
 	}
-	logger := logging.New(level)
+	logger := logging.New(consLevel)
+	logger.SetMainLevel(mainLogLevel)
 
 	// Redirect log output to file (--log-file/-l)
 	if logFile != "" {
@@ -164,6 +166,16 @@ func main() {
 		}
 		defer lf.Close()
 		logger.SetOutput(lf)
+	} else if systemMode {
+		// In system mode without --log-file, use syslog as the main log
+		// facility (like dinit's /dev/log connection).
+		if err := logger.SetSyslog(); err != nil {
+			// Syslog may not be available yet (e.g. read-only rootfs);
+			// this is not fatal — we'll keep logging to console.
+			logger.Debug("syslog not available: %v", err)
+		} else {
+			defer logger.CloseSyslog()
+		}
 	}
 
 	if containerMode {

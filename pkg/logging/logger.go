@@ -4,6 +4,7 @@ package logging
 import (
 	"fmt"
 	"io"
+	"log/syslog"
 	"os"
 	"time"
 )
@@ -36,15 +37,34 @@ func (l Level) String() string {
 	}
 }
 
+func (l Level) syslogPriority() syslog.Priority {
+	switch l {
+	case LevelDebug:
+		return syslog.LOG_DEBUG
+	case LevelInfo:
+		return syslog.LOG_INFO
+	case LevelNotice:
+		return syslog.LOG_NOTICE
+	case LevelWarn:
+		return syslog.LOG_WARNING
+	case LevelError:
+		return syslog.LOG_ERR
+	default:
+		return syslog.LOG_CRIT
+	}
+}
+
 // Logger provides structured logging for slinit.
 type Logger struct {
-	level  Level
-	output io.Writer
+	level    Level
+	output   io.Writer
+	syslogW  *syslog.Writer
+	mainLevel Level // minimum level for main log (syslog/file); defaults to same as level
 }
 
 // New creates a new Logger with the specified minimum level.
 func New(level Level) *Logger {
-	return &Logger{level: level, output: os.Stderr}
+	return &Logger{level: level, output: os.Stderr, mainLevel: level}
 }
 
 // SetOutput redirects log output to the given writer.
@@ -55,15 +75,69 @@ func (l *Logger) SetOutput(w io.Writer) {
 // SetLevel changes the minimum logging level.
 func (l *Logger) SetLevel(level Level) {
 	l.level = level
+	l.mainLevel = level
+}
+
+// SetMainLevel sets the minimum level for the main log (syslog/file) independently
+// of the console level. This mirrors dinit's separate log-level / console-level.
+func (l *Logger) SetMainLevel(level Level) {
+	l.mainLevel = level
+}
+
+// SetSyslog enables syslog output as the main log facility (like dinit's /dev/log).
+// Messages are sent to the daemon facility. Returns an error if the syslog
+// connection cannot be established; in that case the logger continues to work
+// with console output only.
+func (l *Logger) SetSyslog() error {
+	w, err := syslog.New(syslog.LOG_DAEMON|syslog.LOG_NOTICE, "slinit")
+	if err != nil {
+		return err
+	}
+	l.syslogW = w
+	return nil
+}
+
+// CloseSyslog closes the syslog connection if one is open.
+func (l *Logger) CloseSyslog() {
+	if l.syslogW != nil {
+		l.syslogW.Close()
+		l.syslogW = nil
+	}
 }
 
 func (l *Logger) log(level Level, format string, args ...interface{}) {
-	if level < l.level {
+	if level < l.level && level < l.mainLevel {
 		return
 	}
 	msg := fmt.Sprintf(format, args...)
-	timestamp := time.Now().Format("15:04:05")
-	fmt.Fprintf(l.output, "[%s] %s: %s\n", timestamp, level, msg)
+
+	// Console output
+	if level >= l.level {
+		timestamp := time.Now().Format("15:04:05")
+		fmt.Fprintf(l.output, "[%s] %s: %s\n", timestamp, level, msg)
+	}
+
+	// Syslog output (main log)
+	if l.syslogW != nil && level >= l.mainLevel {
+		l.logToSyslog(level, msg)
+	}
+}
+
+func (l *Logger) logToSyslog(level Level, msg string) {
+	switch level {
+	case LevelDebug:
+		l.syslogW.Debug(msg)
+	case LevelInfo:
+		l.syslogW.Info(msg)
+	case LevelNotice:
+		l.syslogW.Notice(msg)
+	case LevelWarn:
+		l.syslogW.Warning(msg)
+	case LevelError:
+		l.syslogW.Err(msg)
+	default:
+		l.syslogW.Crit(msg)
+	}
 }
 
 // Debug logs at debug level.
