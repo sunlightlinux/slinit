@@ -118,7 +118,11 @@ func main() {
 	// When running as PID 1 on Linux, the kernel passes unrecognized cmdline
 	// args to init, so we only accept known service names ("single") and
 	// ignore everything else — matching dinit behavior.
-	if isPID1 {
+	// However, if -m (--system-mgr) or -o (--container) was explicitly given,
+	// the user controls the command line, so accept all args (dinit's
+	// process_sys_args logic: filtering only when PID1+root without -m/-o).
+	processSysArgs := isPID1 && !systemMode && !containerMode
+	if processSysArgs {
 		for _, arg := range flag.Args() {
 			if arg == "single" {
 				bootServices = append(bootServices, arg)

@@ -21,74 +21,80 @@ const (
 )
 
 // Command codes (client → server).
+// Numbers 0–28 match dinit's cp_cmd enum for wire compatibility.
 const (
-	CmdQueryVersion  uint8 = 0
-	CmdFindService   uint8 = 1
-	CmdLoadService   uint8 = 2
-	CmdStartService  uint8 = 3
-	CmdStopService   uint8 = 4
-	CmdWakeService   uint8 = 5
-	CmdReleaseService uint8 = 6
-	CmdUnpinService  uint8 = 7
-	CmdListServices  uint8 = 8
-	CmdBootTime      uint8 = 9
-	CmdShutdown       uint8 = 10
-	CmdReloadService  uint8 = 16
-	CmdUnloadService  uint8 = 17
-	CmdServiceStatus  uint8 = 18
-	CmdSetTrigger    uint8 = 19
-	CmdCatLog        uint8 = 20
-	CmdSignal        uint8 = 21
-	CmdCloseHandle      uint8 = 23
-	CmdSetEnv           uint8 = 24
-	CmdGetAllEnv        uint8 = 25
-	CmdAddDep           uint8 = 26
-	CmdRmDep            uint8 = 27
-	CmdEnableService    uint8 = 28
-	CmdDisableService   uint8 = 29
-	CmdQueryServiceName   uint8 = 30
-	CmdQueryServiceDscDir uint8 = 31
-	CmdListenEnv          uint8 = 32
-	CmdListServices5      uint8 = 33
-	CmdServiceStatus5     uint8 = 34
-	CmdQueryLoadMech      uint8 = 35
-	CmdQueryDependents    uint8 = 36
-	CmdServiceStatus6     uint8 = 37
+	CmdQueryVersion       uint8 = 0
+	CmdFindService        uint8 = 1
+	CmdLoadService        uint8 = 2
+	CmdStartService       uint8 = 3
+	CmdStopService        uint8 = 4
+	CmdWakeService        uint8 = 5
+	CmdReleaseService     uint8 = 6
+	CmdUnpinService       uint8 = 7
+	CmdListServices       uint8 = 8  // deprecated, use CmdListServices5
+	CmdUnloadService      uint8 = 9
+	CmdShutdown           uint8 = 10
+	CmdAddDep             uint8 = 11
+	CmdRmDep              uint8 = 12
+	CmdQueryLoadMech      uint8 = 13
+	CmdEnableService      uint8 = 14
+	CmdQueryServiceName   uint8 = 15
+	CmdReloadService      uint8 = 16
+	CmdSetEnv             uint8 = 17
+	CmdServiceStatus      uint8 = 18 // deprecated, use CmdServiceStatus5
+	CmdSetTrigger         uint8 = 19
+	CmdCatLog             uint8 = 20
+	CmdSignal             uint8 = 21
+	CmdQueryServiceDscDir uint8 = 22
+	CmdCloseHandle        uint8 = 23
+	CmdGetAllEnv          uint8 = 24
+	CmdListServices5      uint8 = 25
+	CmdServiceStatus5     uint8 = 26
+	CmdListenEnv          uint8 = 27
+	CmdServiceStatus6     uint8 = 28
+
+	// slinit extensions (beyond dinit's range)
+	CmdBootTime        uint8 = 40
+	CmdDisableService  uint8 = 41
+	CmdQueryDependents uint8 = 42
 )
 
 // Reply codes (server → client).
+// Numbers 50–79 match dinit's cp_rply enum for wire compatibility.
 const (
-	RplyACK           uint8 = 50
-	RplyNAK           uint8 = 51
-	RplyBadReq        uint8 = 52
-	RplyOOM           uint8 = 53
-	RplyServiceLoadErr uint8 = 54
-	RplyServiceOOM    uint8 = 55
-	RplyCPVersion     uint8 = 58
-	RplyServiceRecord uint8 = 59
-	RplyNoService     uint8 = 60
-	RplyAlreadySS     uint8 = 61
-	RplySvcInfo       uint8 = 62
-	RplyListDone      uint8 = 63
-	RplyBootTime      uint8 = 64
-	RplyNotStopped    uint8 = 65
-	RplyServiceName2  uint8 = 66  // dinit SERVICENAME reply
-	RplyPinnedStopped uint8 = 67
-	RplyPinnedStarted uint8 = 68
-	RplyShuttingDown  uint8 = 69
-	RplyServiceStatus uint8 = 70
-	RplyServiceDescErr uint8 = 71
+	RplyACK             uint8 = 50
+	RplyNAK             uint8 = 51
+	RplyBadReq          uint8 = 52
+	RplyOOM             uint8 = 53
+	RplyServiceLoadErr  uint8 = 54
+	RplyServiceOOM      uint8 = 55
+	RplyCPVersion       uint8 = 58
+	RplyServiceRecord   uint8 = 59
+	RplyNoService       uint8 = 60
+	RplyAlreadySS       uint8 = 61
+	RplySvcInfo         uint8 = 62
+	RplyListDone        uint8 = 63
+	RplyLoaderMech      uint8 = 64 // dinit: LOADER_MECH
+	RplyDependents      uint8 = 65 // dinit: DEPENDENTS
+	RplyServiceName2    uint8 = 66 // dinit: SERVICENAME (from handle)
+	RplyPinnedStopped   uint8 = 67
+	RplyPinnedStarted   uint8 = 68
+	RplyShuttingDown    uint8 = 69
+	RplyServiceStatus   uint8 = 70
+	RplyServiceDescErr  uint8 = 71
 	RplyServiceLoadErr2 uint8 = 72
-	RplySvcLog        uint8 = 73
-	RplySignalNoPID   uint8 = 74
-	RplySignalBadSig  uint8 = 75
-	RplySignalErr     uint8 = 76
-	RplyEnvList       uint8 = 77
-	RplyServiceName   uint8 = 78
-	RplyServiceDscDir uint8 = 79
-	RplyPreACK        uint8 = 80
-	RplyLoaderMech    uint8 = 81
-	RplyDependents    uint8 = 82
+	RplySvcLog          uint8 = 73
+	RplySignalNoPID     uint8 = 74
+	RplySignalBadSig    uint8 = 75
+	RplySignalErr       uint8 = 76
+	RplyServiceDscDir   uint8 = 77 // dinit: SVCDSCDIR
+	RplyEnvList         uint8 = 78 // dinit: ALLENV
+	RplyPreACK          uint8 = 79 // dinit: PREACK
+
+	// slinit extensions (beyond dinit's range)
+	RplyBootTime      uint8 = 90
+	RplyNotStopped    uint8 = 91
+	RplyServiceName   uint8 = 92 // slinit query-name reply
 )
 
 // Info codes (server → client, unsolicited).

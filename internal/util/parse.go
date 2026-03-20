@@ -27,6 +27,9 @@ func ParseSignal(s string) (syscall.Signal, error) {
 		"SIGTERM": syscall.SIGTERM,
 		"SIGUSR1": syscall.SIGUSR1,
 		"SIGUSR2": syscall.SIGUSR2,
+		"SIGCONT": syscall.SIGCONT,
+		"SIGSTOP": syscall.SIGSTOP,
+		// SIGINFO is BSD-only; on Linux it does not exist.
 	}
 
 	upper := strings.ToUpper(s)

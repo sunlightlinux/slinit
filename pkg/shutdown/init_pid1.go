@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"golang.org/x/sys/unix"
 )
 
 // PR_SET_CHILD_SUBREAPER is the prctl constant for setting a process as
@@ -28,6 +29,14 @@ func InitPID1(logger *logging.Logger) error {
 		logger.Debug("Console setup: %v (non-fatal)", err)
 	} else {
 		logger.Debug("Console redirected to /dev/console")
+	}
+
+	// Suppress non-critical kernel messages on console (like dmesg -n 1).
+	// This prevents kernel log noise from interfering with service output.
+	if _, err := unix.Klogctl(6 /* SYSLOG_ACTION_CONSOLE_OFF */, nil); err != nil {
+		logger.Debug("klogctl(6): %v (non-fatal)", err)
+	} else {
+		logger.Debug("Kernel console messages suppressed")
 	}
 
 	// Disable Ctrl+Alt+Del reboot
