@@ -432,16 +432,13 @@ func resolveSocketPath(flagValue string, systemMode, userMode bool) string {
 	if systemMode {
 		return defaultSystemSocket
 	}
-	if userMode {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return defaultUserSocket
-		}
-		return home + "/" + defaultUserSocket
-	}
-	// Auto-detect: root → system, non-root → user
-	if os.Getuid() == 0 {
+	if !userMode && os.Getuid() == 0 {
+		// Auto-detect: root → system
 		return defaultSystemSocket
+	}
+	// User mode: prefer $XDG_RUNTIME_DIR/slinitctl, fall back to $HOME/.slinitctl
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return xdg + "/slinitctl"
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

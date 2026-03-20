@@ -243,15 +243,29 @@ func main() {
 	}
 
 	// Set ready notification fd (--ready-fd/-F)
+	// dinit writes the control socket path to this fd; we do the same.
 	if readyFD >= 0 {
-		serviceSet.SetReadyFD(readyFD)
-		serviceSet.OnBootReady = func() {
-			f := os.NewFile(uintptr(readyFD), "ready-fd")
-			if _, err := f.Write([]byte("READY=1\n")); err != nil {
-				logger.Error("Failed to write to ready-fd %d: %v", readyFD, err)
+		// Validate the fd is actually open (like dinit's fcntl check)
+		if readyFD == 0 {
+			logger.Error("ready-fd cannot be stdin (fd 0)")
+		} else if _, err := unix.FcntlInt(uintptr(readyFD), unix.F_GETFD, 0); err != nil {
+			logger.Error("ready-fd %d is not open: %v", readyFD, err)
+		} else {
+			// Set FD_CLOEXEC to prevent leaking to child processes
+			if readyFD > 2 {
+				unix.CloseOnExec(readyFD)
 			}
-			f.Close()
-			logger.Info("Readiness notification sent on fd %d", readyFD)
+			serviceSet.SetReadyFD(readyFD)
+			readySock := sock // capture resolved socket path
+			serviceSet.OnBootReady = func() {
+				f := os.NewFile(uintptr(readyFD), "ready-fd")
+				// Write socket path + null terminator (dinit compat)
+				if _, err := f.Write(append([]byte(readySock), 0)); err != nil {
+					logger.Error("Failed to write to ready-fd %d: %v", readyFD, err)
+				}
+				f.Close()
+				logger.Info("Readiness notification sent on fd %d (socket: %s)", readyFD, readySock)
+			}
 		}
 	}
 
@@ -513,6 +527,11 @@ func resolveSocketPath(flagValue string, systemMode bool) string {
 		return defaultSystemSocket
 	}
 
+	// User mode: prefer $XDG_RUNTIME_DIR/slinitctl (like dinit),
+	// fall back to $HOME/.slinitctl
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return xdg + "/slinitctl"
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return defaultUserSocket

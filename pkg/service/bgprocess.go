@@ -35,6 +35,7 @@ type BGProcessService struct {
 	// Process state
 	launcherPID int
 	daemonPID   int
+	stopPID     int // PID of stop-command process (0 if none)
 	exitStatus  ExitStatus
 	procHandle  process.ProcessHandle
 
@@ -293,6 +294,7 @@ func (s *BGProcessService) BringUp() bool {
 }
 
 // BringDown stops the daemon process.
+// If a stop-command is configured, it is executed first.
 func (s *BGProcessService) BringDown() {
 	pid := s.daemonPID
 	if pid <= 0 {
@@ -304,8 +306,20 @@ func (s *BGProcessService) BringDown() {
 		return
 	}
 
-	if s.stopIssued {
+	if s.stopPID > 0 || s.stopIssued {
 		return
+	}
+
+	// Try stop-command first
+	if len(s.stopCommand) > 0 {
+		if s.execStopCommand() {
+			s.stopIssued = true
+			if s.stopTimeout > 0 {
+				s.armTimer(s.stopTimeout, bgTimerStopTimeout)
+			}
+			return
+		}
+		// stop-command failed to start; fall through to signal
 	}
 
 	sig := s.termSignal
@@ -328,6 +342,53 @@ func (s *BGProcessService) BringDown() {
 	if s.stopTimeout > 0 {
 		s.armTimer(s.stopTimeout, bgTimerStopTimeout)
 	}
+}
+
+// execStopCommand starts the stop-command process for BGProcessService.
+func (s *BGProcessService) execStopCommand() bool {
+	params := process.ExecParams{
+		Command:    s.stopCommand,
+		WorkingDir: s.workingDir,
+		Env:        s.buildEnv(),
+	}
+	s.Record().ApplyProcessAttrs(&params)
+
+	pid, exitCh, err := process.StartProcess(params)
+	if err != nil {
+		s.services.logger.Error("Service '%s': failed to start stop-command: %v",
+			s.serviceName, err)
+		return false
+	}
+
+	s.stopPID = pid
+	s.services.logger.Info("Service '%s': stop-command started (pid %d)", s.serviceName, pid)
+
+	go func() {
+		exit := <-exitCh
+		s.stopPID = 0
+		process.KillProcessGroup(exit.PID)
+
+		if exit.Exited() && exit.Status.ExitStatus() == 0 {
+			s.services.logger.Info("Service '%s': stop-command completed successfully",
+				s.serviceName)
+		} else {
+			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
+				s.serviceName, exit.Status)
+			daemonPID := s.daemonPID
+			if daemonPID <= 0 {
+				daemonPID = s.launcherPID
+			}
+			if daemonPID > 0 {
+				sig := s.termSignal
+				if sig == 0 {
+					sig = syscall.SIGTERM
+				}
+				process.SignalProcess(daemonPID, sig, true)
+			}
+		}
+	}()
+
+	return true
 }
 
 // CanInterruptStart returns true if the starting process can be interrupted.
@@ -609,6 +670,11 @@ func (s *BGProcessService) handleTimerExpired() {
 			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGKILL",
 				s.serviceName)
 			process.SignalProcess(pid, syscall.SIGKILL, false)
+		}
+		if s.stopPID > 0 {
+			s.services.logger.Error("Service '%s': killing stop-command (pid %d)",
+				s.serviceName, s.stopPID)
+			process.SignalProcess(s.stopPID, syscall.SIGKILL, false)
 		}
 
 	case bgTimerRestartDelay:

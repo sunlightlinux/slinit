@@ -34,6 +34,7 @@ type ProcessService struct {
 
 	// Process state
 	pid        int
+	stopPID    int // PID of stop-command process (0 if none)
 	exitStatus ExitStatus
 	procHandle process.ProcessHandle
 
@@ -299,6 +300,8 @@ func (s *ProcessService) BringUp() bool {
 }
 
 // BringDown stops the service process.
+// If a stop-command is configured, it is executed first. If it fails to
+// start, we fall back to sending the termination signal directly.
 func (s *ProcessService) BringDown() {
 	// Close readiness pipe if still open (no longer waiting for readiness)
 	s.closeReadyPipe()
@@ -310,8 +313,20 @@ func (s *ProcessService) BringDown() {
 		return
 	}
 
-	if s.stopIssued {
+	if s.stopPID > 0 || s.stopIssued {
 		return
+	}
+
+	// Try stop-command first (like dinit's process_service::bring_down)
+	if len(s.stopCommand) > 0 {
+		if s.execStopCommand() {
+			s.stopIssued = true
+			if s.stopTimeout > 0 {
+				s.armTimer(s.stopTimeout, timerStopTimeout)
+			}
+			return
+		}
+		// stop-command failed to start; fall through to signal
 	}
 
 	// Send termination signal
@@ -335,6 +350,54 @@ func (s *ProcessService) BringDown() {
 	if s.stopTimeout > 0 {
 		s.armTimer(s.stopTimeout, timerStopTimeout)
 	}
+}
+
+// execStopCommand starts the stop-command process. Returns true if it was
+// launched successfully. The stop-command runs independently; when it exits,
+// the monitoring goroutine receives the event via stopExitCh and then signals
+// the main process if it is still alive.
+func (s *ProcessService) execStopCommand() bool {
+	params := process.ExecParams{
+		Command:    s.stopCommand,
+		WorkingDir: s.workingDir,
+		Env:        s.buildEnv(),
+	}
+	s.Record().ApplyProcessAttrs(&params)
+
+	pid, exitCh, err := process.StartProcess(params)
+	if err != nil {
+		s.services.logger.Error("Service '%s': failed to start stop-command: %v",
+			s.serviceName, err)
+		return false
+	}
+
+	s.stopPID = pid
+	s.services.logger.Info("Service '%s': stop-command started (pid %d)", s.serviceName, pid)
+
+	// Monitor stop-command in a goroutine
+	go func() {
+		exit := <-exitCh
+		s.stopPID = 0
+		process.KillProcessGroup(exit.PID)
+
+		if exit.Exited() && exit.Status.ExitStatus() == 0 {
+			s.services.logger.Info("Service '%s': stop-command completed successfully",
+				s.serviceName)
+		} else {
+			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
+				s.serviceName, exit.Status)
+			// Stop-command failed — send signal to main process as fallback
+			if s.pid > 0 {
+				sig := s.termSignal
+				if sig == 0 {
+					sig = syscall.SIGTERM
+				}
+				process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+			}
+		}
+	}()
+
+	return true
 }
 
 // CanInterruptStart returns true if the starting process can be interrupted.
@@ -820,6 +883,12 @@ func (s *ProcessService) handleTimerExpired() {
 			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGKILL",
 				s.serviceName)
 			process.SignalProcess(s.pid, syscall.SIGKILL, false) // Always kill group
+		}
+		// Also kill stop-command if still running
+		if s.stopPID > 0 {
+			s.services.logger.Error("Service '%s': killing stop-command (pid %d)",
+				s.serviceName, s.stopPID)
+			process.SignalProcess(s.stopPID, syscall.SIGKILL, false)
 		}
 
 	case timerRestartDelay:
