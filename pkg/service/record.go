@@ -1043,7 +1043,16 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 			sr.inAutoRestart = forRestart
 		} else if sr.autoRestart == RestartOnFailure && sr.desired == StateStarted {
 			exitStatus := sr.self.GetExitStatus()
-			if exitStatus.Signaled() || (exitStatus.Exited() && exitStatus.ExitCode() != 0) {
+			if exitStatus.Signaled() {
+				// Don't auto-restart for administrative signals (matching dinit)
+				sig := exitStatus.Signal()
+				if sig != syscall.SIGHUP && sig != syscall.SIGINT &&
+					sig != syscall.SIGUSR1 && sig != syscall.SIGUSR2 &&
+					sig != syscall.SIGTERM {
+					forRestart = sr.self.CheckRestart()
+					sr.inAutoRestart = forRestart
+				}
+			} else if exitStatus.Exited() && exitStatus.ExitCode() != 0 {
 				forRestart = sr.self.CheckRestart()
 				sr.inAutoRestart = forRestart
 			}
@@ -1123,8 +1132,7 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 			if sr.forceStop {
 				if sr.desired == StateStopped {
 					depFrom.stopReason = ReasonDepFailed
-					depFrom.desired = StateStopped
-					depFrom.ForcedStop()
+					depFrom.UnrecoverableStop()
 				} else {
 					depFrom.ForcedStop()
 				}

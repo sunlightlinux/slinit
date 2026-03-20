@@ -12,12 +12,15 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -26,6 +29,9 @@ func main() {
 	dirs := []string{}
 	services := []string{}
 	var envFile string
+	var socketPath string
+	onlineMode := false
+	userMode := false
 
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
@@ -38,14 +44,24 @@ func main() {
 			dirs = append(dirs, args[i])
 		case "-s", "--system":
 			dirs = defaultSystemDirs()
+			userMode = false
 		case "-u", "--user":
 			dirs = defaultUserDirs()
+			userMode = true
 		case "-e", "--env-file":
 			if i+1 >= len(args) {
 				fatal("missing argument for %s", args[i])
 			}
 			i++
 			envFile = args[i]
+		case "-n", "--online":
+			onlineMode = true
+		case "-p", "--socket-path":
+			if i+1 >= len(args) {
+				fatal("missing argument for %s", args[i])
+			}
+			i++
+			socketPath = args[i]
 		case "--help", "-h":
 			printUsage()
 			os.Exit(0)
@@ -57,6 +73,23 @@ func main() {
 		}
 	}
 
+	if onlineMode {
+		// Online mode: query running daemon for service dirs and environment
+		if socketPath == "" {
+			socketPath = resolveCheckSocketPath(userMode)
+		}
+		remoteDirs, remoteEnv, err := queryDaemon(socketPath)
+		if err != nil {
+			fatal("online mode: %v", err)
+		}
+		if len(remoteDirs) > 0 {
+			dirs = remoteDirs
+		}
+		for k, v := range remoteEnv {
+			os.Setenv(k, v)
+		}
+	}
+
 	if len(dirs) == 0 {
 		dirs = defaultSystemDirs()
 	}
@@ -65,7 +98,7 @@ func main() {
 		services = []string{"boot"}
 	}
 
-	// Load env file if specified
+	// Load env file if specified (offline mode or override)
 	if envFile != "" {
 		envVars, err := readEnvFile(envFile)
 		if err != nil {
@@ -313,7 +346,7 @@ func defaultUserDirs() []string {
 func printUsage() {
 	fmt.Println(`Usage: slinit-check [options] [service-name ...]
 
-Offline configuration linter for slinit service files.
+Configuration linter for slinit service files.
 
 If no service names are given, "boot" is checked by default.
 
@@ -321,8 +354,83 @@ Options:
   -d, --services-dir <dir>   Service directory to search (can be repeated)
   -s, --system               Use system service directories
   -u, --user                 Use user service directories
+  -n, --online               Query running daemon for service dirs and env
+  -p, --socket-path <path>   Socket path for online mode
   -e, --env-file <file>      Load environment variables from file
   -h, --help                 Show this help message`)
+}
+
+const defaultSystemSocket = "/run/slinit.ctl"
+
+func resolveCheckSocketPath(userMode bool) string {
+	if !userMode && os.Getuid() == 0 {
+		return defaultSystemSocket
+	}
+	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
+		return xdg + "/slinitctl"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return defaultSystemSocket
+	}
+	return home + "/.slinitctl"
+}
+
+// queryDaemon connects to a running slinit instance and retrieves
+// service directories and global environment.
+func queryDaemon(socketPath string) ([]string, map[string]string, error) {
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot connect to %s: %v", socketPath, err)
+	}
+	defer conn.Close()
+
+	// Query service directories
+	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, nil); err != nil {
+		return nil, nil, fmt.Errorf("query service dirs: %v", err)
+	}
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read service dirs reply: %v", err)
+	}
+	if rply != control.RplyServiceDscDir || len(payload) < 2 {
+		return nil, nil, fmt.Errorf("unexpected reply for service dirs: %d", rply)
+	}
+
+	count := int(binary.LittleEndian.Uint16(payload))
+	off := 2
+	var dirs []string
+	for i := 0; i < count; i++ {
+		if len(payload) < off+2 {
+			break
+		}
+		dirLen := int(binary.LittleEndian.Uint16(payload[off:]))
+		off += 2
+		if len(payload) < off+dirLen {
+			break
+		}
+		dirs = append(dirs, string(payload[off:off+dirLen]))
+		off += dirLen
+	}
+
+	// Query global environment (handle=0)
+	if err := control.WritePacket(conn, control.CmdGetAllEnv, control.EncodeHandle(0)); err != nil {
+		return dirs, nil, fmt.Errorf("query env: %v", err)
+	}
+	rply, payload, err = control.ReadPacket(conn)
+	if err != nil {
+		return dirs, nil, fmt.Errorf("read env reply: %v", err)
+	}
+	if rply != control.RplyEnvList {
+		return dirs, nil, fmt.Errorf("unexpected reply for env: %d", rply)
+	}
+
+	env, err := control.DecodeEnvList(payload)
+	if err != nil {
+		return dirs, nil, fmt.Errorf("decode env: %v", err)
+	}
+
+	return dirs, env, nil
 }
 
 // detectCycles performs DFS-based cycle detection with pruning on the loaded
