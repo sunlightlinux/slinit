@@ -130,7 +130,13 @@ func main() {
 			// Other kernel parameters (e.g. "nopti", "auto") are ignored
 		}
 	} else {
-		bootServices = append(bootServices, flag.Args()...)
+		for _, arg := range flag.Args() {
+			if len(arg) > 0 && arg[0] == '-' {
+				fmt.Fprintf(os.Stderr, "slinit: unrecognized option: %s\n", arg)
+				os.Exit(1)
+			}
+			bootServices = append(bootServices, arg)
+		}
 	}
 
 	// Default to "boot" if no services specified
