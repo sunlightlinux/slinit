@@ -252,11 +252,20 @@ func (ss *ServiceSet) ForceStopService(svc Service) {
 
 // StopAllServices stops all services (for shutdown).
 func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
+	// Snapshot services under read lock to avoid racing with concurrent
+	// AddService/RemoveService calls from control socket goroutines.
+	ss.mu.RLock()
+	snapshot := make([]Service, 0, len(ss.records))
+	for _, svc := range ss.records {
+		snapshot = append(snapshot, svc)
+	}
+	ss.mu.RUnlock()
+
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
 	ss.restartEnabled = false
 	ss.shutdownType = shutdownType
-	for _, svc := range ss.records {
+	for _, svc := range snapshot {
 		svc.Stop(false)
 		svc.Unpin()
 	}

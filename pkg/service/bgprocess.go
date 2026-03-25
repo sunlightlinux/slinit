@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -554,6 +556,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 }
 
 // monitorDaemon polls for daemon process existence.
+// Uses /proc/PID/stat start time to detect PID recycling.
 func (s *BGProcessService) monitorDaemon() {
 	if s.daemonPID <= 0 {
 		s.services.logger.Error("Service '%s': monitorDaemon called with invalid PID %d",
@@ -561,6 +564,9 @@ func (s *BGProcessService) monitorDaemon() {
 		s.handleDaemonTermination()
 		return
 	}
+
+	// Record the process start time to detect PID recycling.
+	origStartTime := readProcStartTime(s.daemonPID)
 
 	ticker := time.NewTicker(daemonPollInterval)
 	defer ticker.Stop()
@@ -577,6 +583,17 @@ func (s *BGProcessService) monitorDaemon() {
 				// Process is gone
 				s.handleDaemonTermination()
 				return
+			}
+			// Guard against PID recycling: if the start time changed,
+			// a different process now occupies this PID.
+			if origStartTime != "" {
+				curStartTime := readProcStartTime(s.daemonPID)
+				if curStartTime != "" && curStartTime != origStartTime {
+					s.services.logger.Error("Service '%s': PID %d was recycled (start time changed), treating as terminated",
+						s.serviceName, s.daemonPID)
+					s.handleDaemonTermination()
+					return
+				}
 			}
 
 		case <-s.getTimerChan():
@@ -735,4 +752,29 @@ func (s *BGProcessService) getTimerChan() <-chan time.Time {
 		return s.processTimer.C
 	}
 	return nil
+}
+
+// readProcStartTime reads field 22 (starttime) from /proc/PID/stat.
+// This value is the process start time in clock ticks since boot and is
+// unique enough (combined with PID) to detect PID recycling.
+// Returns "" on any error.
+func readProcStartTime(pid int) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return ""
+	}
+	// /proc/PID/stat format: pid (comm) state ... field22 ...
+	// comm can contain spaces and parentheses, so find the last ')'.
+	s := string(data)
+	idx := strings.LastIndex(s, ")")
+	if idx < 0 || idx+2 >= len(s) {
+		return ""
+	}
+	fields := strings.Fields(s[idx+2:])
+	// starttime is field 22 in stat, which is index 19 after (comm)
+	// (fields after ')' start at field 3: state=0, ppid=1, ... starttime=19)
+	if len(fields) < 20 {
+		return ""
+	}
+	return fields[19]
 }

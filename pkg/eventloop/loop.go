@@ -189,6 +189,9 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return true
 
 	case syscall.SIGQUIT:
+		if el.isShuttingDown() {
+			return el.escalateShutdown("SIGQUIT")
+		}
 		el.logger.Notice("Received SIGQUIT, initiating poweroff")
 		el.initiateShutdown(service.ShutdownPoweroff)
 		return true
@@ -201,6 +204,9 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return false
 
 	case syscall.SIGUSR2:
+		if el.isShuttingDown() {
+			return el.escalateShutdown("SIGUSR2")
+		}
 		el.logger.Notice("Received SIGUSR2, initiating poweroff")
 		el.initiateShutdown(service.ShutdownPoweroff)
 		return true

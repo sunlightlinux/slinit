@@ -121,11 +121,16 @@ func applyCgroup(pid int, cgroupPath string) error {
 }
 
 func applyNoNewPrivs(pid int) error {
-	// PR_SET_NO_NEW_PRIVS can only be set on the calling thread.
-	// For child processes, we write to /proc/PID/attr/no_new_privs
-	// as a best-effort approach.
-	path := fmt.Sprintf("/proc/%d/attr/no_new_privs", pid)
-	return os.WriteFile(path, []byte("1"), 0200)
+	// PR_SET_NO_NEW_PRIVS can only be set on the calling thread, not on
+	// another process. The /proc/PID/attr/no_new_privs path does not exist.
+	// This must be set in the child process before exec.
+	//
+	// Since Go's os/exec doesn't provide a pre-exec callback in the child,
+	// this is a known limitation. For most use cases, the combination of
+	// Credential + AmbientCaps in SysProcAttr provides equivalent security.
+	//
+	// TODO: implement via Cloneflags or a small C helper.
+	return fmt.Errorf("no_new_privs cannot be set from parent process (requires child-side prctl)")
 }
 
 func applyCPUAffinity(pid int, cpus []uint) error {
@@ -139,13 +144,18 @@ func applyCPUAffinity(pid int, cpus []uint) error {
 const prSetSecurebits = 28 // PR_SET_SECUREBITS
 
 func applySecurebits(bits uint32) error {
-	// PR_SET_SECUREBITS sets securebits for the calling thread.
-	// When called from the parent before child exec, this affects
-	// the parent's securebits which are inherited across fork.
-	// Best-effort: only works if caller has CAP_SETPCAP.
-	_, _, errno := syscall.Syscall(sysPrctl, prSetSecurebits, uintptr(bits), 0)
-	if errno != 0 {
-		return errno
-	}
-	return nil
+	// NOTE: PR_SET_SECUREBITS affects the calling thread only.
+	// Setting it in the parent is intentionally skipped because it would
+	// permanently alter slinit's own securebits, affecting ALL future
+	// child processes — not just the target service.
+	//
+	// Securebits are inherited across fork, so the correct approach is
+	// to set them in the child before exec. Since Go's os/exec does not
+	// expose a pre-exec hook that runs in the child, this is a known
+	// limitation. The ambient capabilities mechanism (SysProcAttr.AmbientCaps)
+	// handles the most common use case.
+	//
+	// TODO: implement via a small C helper or clone3+CLONE_CLEAR_SIGHAND
+	// to set securebits in the child process.
+	return fmt.Errorf("securebits cannot be safely set from parent process (would affect slinit itself)")
 }

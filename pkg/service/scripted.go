@@ -370,6 +370,15 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	}
 
 	if exit.ExitedClean() {
+		// Start command succeeded — but if a timeout already fired,
+		// the service should still be treated as failed.
+		if s.stopReason == ReasonTimedOut {
+			s.services.logger.Error("Service '%s': start command completed after timeout",
+				s.serviceName)
+			s.failedToStart(false, true)
+			s.services.ProcessQueues()
+			return
+		}
 		// Start command succeeded
 		s.Started()
 		s.services.ProcessQueues()
@@ -381,7 +390,9 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 		}
 		s.services.logger.Error("Service '%s': start command failed (exit code: %d)",
 			s.serviceName, exitCode)
-		s.stopReason = ReasonFailed
+		if s.stopReason != ReasonTimedOut {
+			s.stopReason = ReasonFailed
+		}
 		s.failedToStart(false, true)
 		s.services.ProcessQueues()
 	}
@@ -415,6 +426,14 @@ func (s *ScriptedService) handleTimerExpired() {
 			s.services.logger.Error("Service '%s': start command timeout, sending SIGKILL",
 				s.serviceName)
 			process.SignalProcess(s.startPID, 9, false) // SIGKILL
+		}
+		// Mark as timed out so that handleStartExit (or immediate stop)
+		// records the correct reason. If the process is already gone,
+		// transition to failed immediately.
+		s.stopReason = ReasonTimedOut
+		if s.startPID <= 0 {
+			s.failedToStart(false, true)
+			s.services.ProcessQueues()
 		}
 
 	case scriptedTimerStopTimeout:

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -130,8 +131,17 @@ func (c *Connection) serve() {
 		default:
 		}
 
+		// Set a read deadline so we periodically re-check ctx.Done
+		// instead of blocking indefinitely on a dead connection.
+		if tc, ok := c.conn.(interface{ SetReadDeadline(time.Time) error }); ok {
+			tc.SetReadDeadline(time.Now().Add(30 * time.Second))
+		}
+
 		cmd, payload, err := ReadPacket(c.conn)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue // deadline expired, loop back to check ctx
+			}
 			if err != io.EOF {
 				c.server.logger.Debug("Control connection read error: %v", err)
 			}
@@ -825,6 +835,11 @@ func (c *Connection) handleAddDep(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
+	// Reject self-dependencies
+	if from == to {
+		return c.writePacket(RplyNAK, nil)
+	}
+
 	if depType > 5 {
 		return c.writePacket(RplyBadReq, nil)
 	}
@@ -879,11 +894,13 @@ func (c *Connection) handleRmDep(payload []byte) error {
 	for _, dept := range from.Record().Dependents() {
 		updater.AddPotentialUpdate(dept.From)
 	}
-	if err := updater.ProcessUpdates(); err == nil {
+	if err := updater.ProcessUpdates(); err != nil {
+		// Depth recalc on remove should never fail (depths only decrease),
+		// but commit anyway to be safe.
+		updater.Rollback()
+	} else {
 		updater.Commit()
 	}
-	// Depth recalc on remove should never fail (depths only decrease),
-	// but commit anyway to be safe.
 
 	c.server.services.ProcessQueues()
 	return c.writePacket(RplyACK, nil)
@@ -927,6 +944,9 @@ func (c *Connection) handleEnableService(payload []byte) error {
 	}
 
 	// Add waits-for dependency from source to target
+	if service.CheckCircularDep(fromSvc, svc) {
+		return c.writePacket(RplyNAK, nil)
+	}
 	fromSvc.Record().AddDep(svc, service.DepWaitsFor)
 
 	// Start the target service

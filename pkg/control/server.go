@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -113,6 +114,9 @@ func (s *Server) acceptLoop(listener net.Listener, stopCh chan struct{}) {
 	defer s.wg.Done()
 	defer s.acceptWg.Done()
 
+	var acceptDelay time.Duration
+	const maxAcceptDelay = 1 * time.Second
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -123,9 +127,21 @@ func (s *Server) acceptLoop(listener net.Listener, stopCh chan struct{}) {
 				return
 			default:
 				s.logger.Error("Control socket accept error: %v", err)
+				// Backoff on transient errors (e.g. EMFILE/ENFILE) to
+				// prevent a tight busy-loop that starves the system.
+				if acceptDelay == 0 {
+					acceptDelay = 5 * time.Millisecond
+				} else {
+					acceptDelay *= 2
+				}
+				if acceptDelay > maxAcceptDelay {
+					acceptDelay = maxAcceptDelay
+				}
+				time.Sleep(acceptDelay)
 				continue
 			}
 		}
+		acceptDelay = 0 // reset on successful accept
 
 		c := newConnection(s, conn)
 		s.mu.Lock()
