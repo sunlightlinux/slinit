@@ -304,6 +304,45 @@ nice = 25
 	}
 }
 
+func TestParseCPUAffinity(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []uint
+	}{
+		{"single", "cpu-affinity = 0\n", []uint{0}},
+		{"list spaces", "cpu-affinity = 0 1 2 3\n", []uint{0, 1, 2, 3}},
+		{"list commas", "cpu-affinity = 0,2,4\n", []uint{0, 2, 4}},
+		{"range", "cpu-affinity = 0-3\n", []uint{0, 1, 2, 3}},
+		{"mixed", "cpu-affinity = 0-2 8-9\n", []uint{0, 1, 2, 8, 9}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := "type = process\ncommand = /bin/true\n" + tt.input
+			desc, err := Parse(strings.NewReader(input), "test", "test-file")
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			if len(desc.CPUAffinity) != len(tt.want) {
+				t.Fatalf("CPUAffinity: got %v, want %v", desc.CPUAffinity, tt.want)
+			}
+			for i, c := range desc.CPUAffinity {
+				if c != tt.want[i] {
+					t.Errorf("CPUAffinity[%d]: got %d, want %d", i, c, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseCPUAffinityInvalid(t *testing.T) {
+	input := "type = process\ncommand = /bin/true\ncpu-affinity = abc\n"
+	_, err := Parse(strings.NewReader(input), "test", "test-file")
+	if err == nil {
+		t.Fatal("expected error for invalid cpu-affinity")
+	}
+}
+
 func TestParseOOMScoreAdj(t *testing.T) {
 	input := `type = process
 command = /bin/true

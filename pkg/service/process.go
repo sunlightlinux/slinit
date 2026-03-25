@@ -383,6 +383,14 @@ func (s *ProcessService) execStopCommand() bool {
 		if exit.Exited() && exit.Status.ExitStatus() == 0 {
 			s.services.logger.Info("Service '%s': stop-command completed successfully",
 				s.serviceName)
+			// Stop-command succeeded — now send term signal to main process
+			if s.pid > 0 {
+				sig := s.termSignal
+				if sig == 0 {
+					sig = syscall.SIGTERM
+				}
+				process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+			}
 		} else {
 			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
 				s.serviceName, exit.Status)

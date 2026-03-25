@@ -1,0 +1,10 @@
+# logger -- pipe consumer demo
+# Reads stdout of hello-logged via consumer-of (log-type pipe).
+# Demonstrates log-type=pipe + consumer-of for service log routing.
+# Try: slinitctl catlog logger
+type = process
+consumer-of = hello-logged
+command = /bin/sh -c "while read line; do echo \"[logger] $line\"; done"
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

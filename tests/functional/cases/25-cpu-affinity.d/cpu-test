@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "while true; do sleep 60; done"
+cpu-affinity = 0
+depends-on: system-init

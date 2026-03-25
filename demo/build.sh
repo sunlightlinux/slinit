@@ -61,11 +61,13 @@ for pkg in "${BASH_PKG}" "${READLINE_PKG}" "${LIBNCURSESW_PKG}" "${NCURSES_TERMI
     fi
 done
 
-# Step 4: Build slinit and slinitctl (static)
-echo "[4/7] Building slinit and slinitctl (static)..."
+# Step 4: Build slinit, slinitctl, slinit-check, slinit-monitor (static)
+echo "[4/7] Building slinit toolchain (static)..."
 cd "${PROJECT_DIR}"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit" ./cmd/slinit
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinitctl" ./cmd/slinitctl
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-check" ./cmd/slinit-check
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-monitor" ./cmd/slinit-monitor
 
 # Step 5: Prepare rootfs
 echo "[5/7] Preparing rootfs..."
@@ -86,6 +88,8 @@ rm -rf "${ROOTFS_DIR}/.PKGINFO" "${ROOTFS_DIR}/.SIGN."* "${ROOTFS_DIR}/.post-ins
 # Install slinit binaries
 install -m 755 "${BUILD_DIR}/slinit" "${ROOTFS_DIR}/sbin/slinit"
 install -m 755 "${BUILD_DIR}/slinitctl" "${ROOTFS_DIR}/usr/bin/slinitctl"
+install -m 755 "${BUILD_DIR}/slinit-check" "${ROOTFS_DIR}/usr/bin/slinit-check"
+install -m 755 "${BUILD_DIR}/slinit-monitor" "${ROOTFS_DIR}/usr/bin/slinit-monitor"
 
 # Make slinit the init system
 ln -sf slinit "${ROOTFS_DIR}/sbin/init"

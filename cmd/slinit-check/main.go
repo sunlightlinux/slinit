@@ -360,7 +360,7 @@ Options:
   -h, --help                 Show this help message`)
 }
 
-const defaultSystemSocket = "/run/slinit.ctl"
+const defaultSystemSocket = "/run/slinit.socket"
 
 func resolveCheckSocketPath(userMode bool) string {
 	if !userMode && os.Getuid() == 0 {

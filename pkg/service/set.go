@@ -96,6 +96,9 @@ type ServiceSet struct {
 	// Default cgroup base path (from --cgroup-path/-b)
 	defaultCgroupPath string
 
+	// Default CPU affinity (from --cpu-affinity/-a)
+	defaultCPUAffinity []uint
+
 	// Ready notification fd (from --ready-fd/-F), -1 if unset
 	readyFD int
 
@@ -495,6 +498,8 @@ func (ss *ServiceSet) notifyEnvListenersSnapshot(listeners []EnvListener, varStr
 
 func (ss *ServiceSet) SetDefaultCgroupPath(p string)    { ss.defaultCgroupPath = p }
 func (ss *ServiceSet) DefaultCgroupPath() string        { return ss.defaultCgroupPath }
+func (ss *ServiceSet) SetDefaultCPUAffinity(cpus []uint) { ss.defaultCPUAffinity = cpus }
+func (ss *ServiceSet) DefaultCPUAffinity() []uint       { return ss.defaultCPUAffinity }
 func (ss *ServiceSet) SetReadyFD(fd int)                { ss.readyFD = fd }
 func (ss *ServiceSet) ReadyFD() int                     { return ss.readyFD }
 

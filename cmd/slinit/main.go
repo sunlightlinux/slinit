@@ -62,6 +62,7 @@ func main() {
 		readyFD        int
 		logFile        string
 		cgroupPath     string
+		cpuAffinityStr string
 	)
 
 	flag.StringVar(&serviceDirs, "services-dir", "", "service description directory (comma-separated for multiple)")
@@ -89,6 +90,8 @@ func main() {
 	flag.StringVar(&logFile, "log-file", "", "log to file instead of console")
 	flag.StringVar(&cgroupPath, "b", "", "default cgroup base path for services")
 	flag.StringVar(&cgroupPath, "cgroup-path", "", "default cgroup base path for services")
+	flag.StringVar(&cpuAffinityStr, "cpu-affinity", "", "default CPU affinity for daemon and services (e.g. 0-3)")
+	flag.StringVar(&cpuAffinityStr, "a", "", "default CPU affinity for daemon and services (e.g. 0-3)")
 
 	flag.Parse()
 
@@ -246,6 +249,27 @@ func main() {
 	if cgroupPath != "" {
 		serviceSet.SetDefaultCgroupPath(cgroupPath)
 		logger.Info("Default cgroup path: %s", cgroupPath)
+	}
+
+	// Set global CPU affinity (--cpu-affinity/-a)
+	if cpuAffinityStr != "" {
+		cpus, err := config.ParseCPUAffinity(cpuAffinityStr)
+		if err != nil {
+			logger.Error("Invalid --cpu-affinity %q: %v", cpuAffinityStr, err)
+		} else {
+			// Apply to slinit daemon itself
+			var cpuSet unix.CPUSet
+			for _, c := range cpus {
+				cpuSet.Set(int(c))
+			}
+			if err := unix.SchedSetaffinity(0, &cpuSet); err != nil {
+				logger.Error("Failed to set daemon CPU affinity: %v", err)
+			} else {
+				logger.Info("Daemon CPU affinity set to: %s", cpuAffinityStr)
+			}
+			// Set as default for all child services
+			serviceSet.SetDefaultCPUAffinity(cpus)
+		}
 	}
 
 	// Set ready notification fd (--ready-fd/-F)

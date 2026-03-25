@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (24 tests)
+# Run all tests (29 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -63,11 +63,17 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 22 | chain-to | Service chaining (chain-to directive) |
 | 23 | start-timeout | Start timeout handling |
 | 24 | working-dir | Working directory for service processes |
+| 25 | cpu-affinity | CPU pinning via sched_setaffinity |
+| 26 | stop-command | Stop-command execution before signal |
+| 27 | consumer-of | Pipe logging (log-type=pipe + consumer-of) |
+| 28 | env-file | Environment file loading into service |
+| 29 | slinit-check | Offline and online config linter |
 
 ## How It Works
 
 1. **Build phase**: `build-vm.sh` downloads Alpine Linux minirootfs, cross-compiles
-   slinit + slinitctl, and creates an initramfs with demo services
+   slinit + slinitctl + slinit-check + slinit-monitor, and creates an initramfs
+   with demo services
 2. **Per-test boot**: Each test gets its own QEMU VM boot. The test script is
    injected into the initramfs as a service
 3. **Guest runner**: `lib/guest-runner.sh` runs inside the VM, waits for slinit

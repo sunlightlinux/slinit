@@ -1,0 +1,10 @@
+# env-demo -- environment variable substitution demo
+# Demonstrates env-file loading and $VAR substitution in commands.
+# Try: slinitctl getallenv env-demo
+# Try: slinitctl catlog env-demo
+type = process
+env-file = /etc/slinit.d/env-demo.env
+command = /bin/sh -c "echo \"[env-demo] GREETING=$GREETING, APP_MODE=$APP_MODE\"; echo \"[env-demo] default: ${UNSET_VAR:-fallback_value}\"; while true; do sleep 30; done"
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

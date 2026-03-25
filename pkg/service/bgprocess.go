@@ -371,6 +371,18 @@ func (s *BGProcessService) execStopCommand() bool {
 		if exit.Exited() && exit.Status.ExitStatus() == 0 {
 			s.services.logger.Info("Service '%s': stop-command completed successfully",
 				s.serviceName)
+			// Stop-command succeeded — now send term signal to daemon process
+			daemonPID := s.daemonPID
+			if daemonPID <= 0 {
+				daemonPID = s.launcherPID
+			}
+			if daemonPID > 0 {
+				sig := s.termSignal
+				if sig == 0 {
+					sig = syscall.SIGTERM
+				}
+				process.SignalProcess(daemonPID, sig, true)
+			}
 		} else {
 			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
 				s.serviceName, exit.Status)

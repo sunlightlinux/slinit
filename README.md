@@ -17,7 +17,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Config includes**: `@include` and `@include-opt` directives for modular config
 - **Control socket**: binary protocol (v5) over Unix domain socket for runtime management
 - **slinitctl CLI**: 31 commands — list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, unpin, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time, dependents, query-load-mech
-- **slinit-check**: offline config linter (validates executables, paths, dependencies)
+- **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
 - **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
 - **Service aliases**: `provides` for alternative name lookup
 - **Consumer pipes**: `consumer-of` to pipe output from one service into another
@@ -27,7 +27,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Hot reload**: reload service configuration from disk without restart
 - **Service unload**: remove stopped services from memory
 - **PID 1 init**: console setup, Ctrl+Alt+Del handling, child subreaper, orphan reaping
-- **Process attributes**: nice, oom-score-adj, rlimits, ioprio, cgroup, no-new-privs, capabilities, securebits
+- **Process attributes**: nice, oom-score-adj, rlimits, ioprio, cgroup, cpu-affinity, no-new-privs, capabilities, securebits
 - **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading (with `!clear`/`!unset`/`!import` meta-commands)
 - **Runtime dependencies**: add-dep/rm-dep, enable/disable via control socket
 - **Enable-via**: `@meta enable-via` directive for default enable/disable source service
@@ -154,6 +154,7 @@ command = /usr/bin/worker
 nice = 10
 oom-score-adj = 500
 ioprio = be:4
+cpu-affinity = 0-3
 rlimit-nofile = 1024:4096
 rlimit-core = unlimited
 cgroup = /sys/fs/cgroup/workers
@@ -241,6 +242,7 @@ command = /usr/bin/optional
 | `nice`                    | Process scheduling priority (-20..19)            |
 | `oom-score-adj`           | OOM killer score adjustment (-1000..1000)        |
 | `ioprio`                  | I/O priority class:level (be:4, rt:0, idle)      |
+| `cpu-affinity`            | CPU affinity mask (0-3, 0 1 2, 0,2,4)            |
 | `cgroup`                  | Cgroup path for the child process                |
 | `rlimit-nofile`           | File descriptor limit (soft:hard or unlimited)   |
 | `rlimit-core`             | Core dump size limit (soft:hard or unlimited)    |
@@ -395,13 +397,18 @@ slinitctl -p /tmp/test.socket list  # custom socket path
 
 ### slinit-check
 
-Offline configuration linter. Validates service files without a running daemon:
+Configuration linter. Validates service files offline or using a running daemon's context:
 
 ```bash
+# Offline mode (default)
 slinit-check -d /etc/slinit.d myservice
+
+# Online mode (queries running daemon for service dirs and env)
+slinit-check --online myservice
+slinit-check --online -p /run/slinit.ctl myservice
 ```
 
-Checks: file existence, type validity, command executability, dependency references, circular dependencies.
+Checks: file existence, type validity, command executability, dependency references, circular dependencies, depth limits.
 
 ### slinit-monitor
 
@@ -446,8 +453,9 @@ slinit/
 ├── cmd/
 │   ├── slinit/          # Daemon entry point
 │   ├── slinitctl/       # Control CLI (31 commands)
-│   ├── slinit-check/    # Offline config linter
-│   └── slinit-monitor/  # Event watcher + command executor
+│   ├── slinit-check/    # Config linter (offline + online)
+│   ├── slinit-monitor/  # Event watcher + command executor
+│   └── slinit-shutdown/ # Standalone shutdown utility
 ├── pkg/
 │   ├── service/         # Service types, state machine, dependency graph
 │   ├── config/          # Dinit-compatible config parser and loader
@@ -458,17 +466,18 @@ slinit/
 │   ├── logging/         # Console logger
 │   └── utmp/            # UTMPX cgo wrapper
 ├── internal/util/       # Path and parsing utilities
+├── completions/         # Shell completions (bash, zsh, fish)
 ├── demo/                # QEMU demo environment
-└── tests/functional/    # 24 QEMU-based integration tests
+└── tests/functional/    # 29 QEMU-based integration tests
 ```
 
 ## Testing
 
 ```bash
-# Unit tests (252 tests across 6 packages)
+# Unit tests (282 tests across 6 packages)
 go test ./...
 
-# Functional tests (24 QEMU-based integration tests)
+# Functional tests (29 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 ```
 

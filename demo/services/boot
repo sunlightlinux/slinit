@@ -8,3 +8,8 @@ waits-for: hello
 waits-for: ticker
 waits-for: dep-chain
 waits-for: trigger-test
+waits-for: cpu-pinned
+waits-for: hello-logged
+waits-for: logger
+waits-for: env-demo
+waits-for: graceful-stop

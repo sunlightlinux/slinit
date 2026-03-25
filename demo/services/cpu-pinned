@@ -1,0 +1,11 @@
+# cpu-pinned -- cpu-affinity demo
+# Demonstrates cpu-affinity directive to pin process to CPUs 0-1.
+# Try: slinitctl status cpu-pinned
+# Try: slinitctl catlog cpu-pinned
+type = process
+command = /bin/sh -c "echo '[cpu-pinned] running on CPUs 0-1'; while true; do sleep 10; done"
+cpu-affinity = 0-1
+log-type = buffer
+log-buffer-size = 4096
+restart = on-failure
+depends-on: system-init

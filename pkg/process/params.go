@@ -152,6 +152,10 @@ type ExecParams struct {
 	// Securebits is a bitmask of securebits flags to apply post-fork
 	// via prctl(PR_SET_SECUREBITS). Best-effort from parent.
 	Securebits uint32
+
+	// CPUAffinity is a set of CPU numbers to pin the child process to
+	// via sched_setaffinity(). nil/empty means don't change.
+	CPUAffinity []uint
 }
 
 // Rlimit holds a resource limit (soft, hard) for a given resource.

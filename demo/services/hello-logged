@@ -1,0 +1,8 @@
+# hello-logged -- producer for pipe logging demo
+# Outputs messages that are piped to the "logger" consumer service.
+# Try: slinitctl catlog logger (to see consumed output)
+type = process
+command = /bin/sh -c "i=0; while true; do i=$((i+1)); echo \"message $i at $(date +%H:%M:%S)\"; sleep 3; done"
+log-type = pipe
+restart = on-failure
+depends-on: system-init

@@ -5,6 +5,8 @@ import (
 	"os"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // Linux syscall numbers not in Go's syscall package.
@@ -55,6 +57,11 @@ func applyPostForkAttrs(pid int, params ExecParams) []error {
 	if params.Securebits != 0 {
 		if err := applySecurebits(params.Securebits); err != nil {
 			errs = append(errs, fmt.Errorf("securebits(%d): %w", params.Securebits, err))
+		}
+	}
+	if len(params.CPUAffinity) > 0 {
+		if err := applyCPUAffinity(pid, params.CPUAffinity); err != nil {
+			errs = append(errs, fmt.Errorf("cpu-affinity: %w", err))
 		}
 	}
 	return errs
@@ -119,6 +126,14 @@ func applyNoNewPrivs(pid int) error {
 	// as a best-effort approach.
 	path := fmt.Sprintf("/proc/%d/attr/no_new_privs", pid)
 	return os.WriteFile(path, []byte("1"), 0200)
+}
+
+func applyCPUAffinity(pid int, cpus []uint) error {
+	var set unix.CPUSet
+	for _, cpu := range cpus {
+		set.Set(int(cpu))
+	}
+	return unix.SchedSetaffinity(pid, &set)
 }
 
 const prSetSecurebits = 28 // PR_SET_SECUREBITS

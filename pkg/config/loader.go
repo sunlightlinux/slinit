@@ -796,6 +796,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 			rec.SetSecurebits(bits)
 		}
 	}
+	if len(desc.CPUAffinity) > 0 {
+		rec.SetCPUAffinity(desc.CPUAffinity)
+	}
 }
 
 // setupConsumerOf establishes the consumer-of relationship between services.

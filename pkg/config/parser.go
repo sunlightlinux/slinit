@@ -96,6 +96,7 @@ type ServiceDescription struct {
 	NoNewPrivs  bool
 	IOPrio      string // "class:level" e.g. "be:4", "idle"
 	CgroupPath  string // run-in-cgroup path
+	CPUAffinity []uint // CPU numbers to pin to
 
 	// Resource limits (soft:hard or just value for both)
 	RlimitNofile *[2]uint64
@@ -575,6 +576,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	case "cgroup", "run-in-cgroup":
 		desc.CgroupPath = value
+
+	case "cpu-affinity":
+		cpus, err := ParseCPUAffinity(value)
+		if err != nil {
+			return fmt.Errorf("invalid cpu-affinity: %v", err)
+		}
+		desc.CPUAffinity = cpus
 
 	case "rlimit-nofile":
 		lim, err := parseRlimit(value)
@@ -1167,4 +1175,54 @@ func parseSignal(value string) (syscall.Signal, error) {
 		return 0, fmt.Errorf("unknown signal: %s", value)
 	}
 	return syscall.Signal(n), nil
+}
+
+// ParseCPUAffinity parses a CPU affinity spec like "0 1 2 3", "0-3",
+// "0,2,4", or "0-3 8-11" into a list of CPU numbers.
+func ParseCPUAffinity(value string) ([]uint, error) {
+	// Split on spaces and commas
+	var cpus []uint
+	seen := map[uint]bool{}
+
+	// Normalize: replace commas with spaces
+	value = strings.ReplaceAll(value, ",", " ")
+	tokens := strings.Fields(value)
+
+	for _, tok := range tokens {
+		if idx := strings.Index(tok, "-"); idx > 0 && idx < len(tok)-1 {
+			// Range: "0-3"
+			lo, err := strconv.ParseUint(tok[:idx], 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CPU number %q", tok[:idx])
+			}
+			hi, err := strconv.ParseUint(tok[idx+1:], 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CPU number %q", tok[idx+1:])
+			}
+			if lo > hi {
+				return nil, fmt.Errorf("invalid range %s (start > end)", tok)
+			}
+			for c := lo; c <= hi; c++ {
+				if !seen[uint(c)] {
+					cpus = append(cpus, uint(c))
+					seen[uint(c)] = true
+				}
+			}
+		} else {
+			// Single CPU number
+			c, err := strconv.ParseUint(tok, 10, 32)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CPU number %q", tok)
+			}
+			if !seen[uint(c)] {
+				cpus = append(cpus, uint(c))
+				seen[uint(c)] = true
+			}
+		}
+	}
+
+	if len(cpus) == 0 {
+		return nil, fmt.Errorf("empty CPU list")
+	}
+	return cpus, nil
 }

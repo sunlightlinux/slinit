@@ -1,0 +1,6 @@
+type = process
+consumer-of = pipe-producer
+command = /bin/sh -c "while read line; do echo \"consumed: $line\"; done"
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

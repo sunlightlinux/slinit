@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "i=0; while true; do i=$((i+1)); echo \"pipe-data-$i\"; sleep 1; done"
+log-type = pipe
+depends-on: system-init

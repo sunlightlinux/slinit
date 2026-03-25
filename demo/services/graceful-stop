@@ -1,0 +1,12 @@
+# graceful-stop -- stop-command demo
+# Demonstrates stop-command: runs a custom command before sending
+# the termination signal, allowing graceful cleanup.
+# Try: slinitctl stop graceful-stop
+# Try: slinitctl catlog graceful-stop
+type = process
+command = /bin/sh -c "echo '[graceful-stop] running (PID $$)'; trap 'echo [graceful-stop] got TERM; exit 0' TERM; while true; do sleep 1; done"
+stop-command = /bin/sh -c "echo '[graceful-stop] stop-command: performing cleanup...'; sleep 1; echo '[graceful-stop] cleanup done'"
+stop-timeout = 10
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

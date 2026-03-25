@@ -168,6 +168,7 @@ type ServiceRecord struct {
 	rlimits     []process.Rlimit
 	ambientCaps []uintptr
 	securebits  uint32
+	cpuAffinity []uint
 
 	// Queue membership flags
 	InPropQueue bool
@@ -404,6 +405,7 @@ func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)    { sr.rlimits = rl }
 func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)       { sr.rlimits = append(sr.rlimits, rl) }
 func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = caps }
 func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
+func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
 
 // ApplyProcessAttrs fills ExecParams with process attributes from this record.
 func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
@@ -419,6 +421,10 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
 	params.Securebits = sr.securebits
+	params.CPUAffinity = sr.cpuAffinity
+	if len(params.CPUAffinity) == 0 {
+		params.CPUAffinity = sr.services.DefaultCPUAffinity()
+	}
 
 	// Inject dinit-compatible query env vars
 	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)

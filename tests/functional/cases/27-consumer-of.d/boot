@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: pipe-producer
+waits-for: pipe-consumer
+waits-for: test-runner

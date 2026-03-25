@@ -102,6 +102,9 @@ var KnownSettings = map[string]OperatorType{
 	"ioprio": OpEquals,
 	"oom-score-adj": OpEquals,
 
+	// cpu affinity
+	"cpu-affinity": OpEquals,
+
 	// capabilities
 	"capabilities": OpEquals | OpPlusEqual,
 	"securebits":   OpEquals | OpPlusEqual,

@@ -18,18 +18,24 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 
 ## Demo Services
 
-| Service       | Type      | Description                              |
-|---------------|-----------|------------------------------------------|
-| boot          | internal  | Boot milestone (depends on system-init + tty) |
-| system-init   | scripted  | Mounts /proc, /sys, /dev, /dev/pts       |
-| tty           | process   | Interactive shell on console             |
-| hello         | process   | Echo loop with log buffer                |
-| ticker        | process   | Periodic timestamp output (alias: my-ticker) |
-| trigger-test  | triggered | Externally triggered service             |
-| dep-a         | internal  | Dependency chain leaf                    |
-| dep-b         | internal  | Dependency chain middle (waits-for dep-a)|
-| dep-chain     | internal  | Dependency chain root                    |
-| restarter     | process   | Auto-restart on failure demo             |
+| Service       | Type      | Description                                    |
+|---------------|-----------|------------------------------------------------|
+| boot          | internal  | Boot milestone (depends on system-init + tty)  |
+| system-init   | scripted  | Mounts /proc, /sys, /dev, /dev/pts             |
+| tty           | process   | Interactive shell on console                   |
+| hello         | process   | Echo loop with log buffer                      |
+| ticker        | process   | Periodic timestamp output (alias: my-ticker)   |
+| trigger-test  | triggered | Externally triggered service                   |
+| dep-a         | internal  | Dependency chain leaf                          |
+| dep-b         | internal  | Dependency chain middle (waits-for dep-a)      |
+| dep-chain     | internal  | Dependency chain root                          |
+| restarter     | process   | Auto-restart on failure demo                   |
+| cpu-pinned    | process   | CPU affinity demo (pinned to CPUs 0-1)         |
+| hello-logged  | process   | Pipe logging producer (log-type=pipe)          |
+| logger        | process   | Pipe logging consumer (consumer-of)            |
+| env-demo      | process   | Environment variable substitution + env-file   |
+| graceful-stop | process   | Stop-command demo (graceful cleanup on stop)    |
+| recovery      | process   | Emergency shell after boot failure             |
 
 ## Interactive Commands
 
@@ -54,6 +60,10 @@ slinitctl is-failed restarter || echo "not failed"
 slinitctl catlog hello
 slinitctl catlog ticker
 slinitctl catlog restarter       # shows restart markers
+slinitctl catlog cpu-pinned      # cpu-affinity service logs
+slinitctl catlog logger          # pipe consumer output
+slinitctl catlog env-demo        # env substitution output
+slinitctl catlog graceful-stop
 
 # Trigger / untrigger
 slinitctl trigger trigger-test
@@ -71,6 +81,11 @@ slinitctl release ticker          # unmark active (stop if unrequired)
 slinitctl restart hello
 slinitctl unpin ticker            # remove start/stop pins
 
+# Stop-command demo (graceful-stop runs cleanup before kill)
+slinitctl stop graceful-stop
+slinitctl catlog graceful-stop   # see stop-command output
+slinitctl start graceful-stop
+
 # Send signal to a service
 slinitctl signal HUP hello
 slinitctl signal TERM ticker
@@ -87,10 +102,15 @@ slinitctl list                   # ticker gone
 # Service aliases (provides) -- ticker has "provides = my-ticker"
 slinitctl status my-ticker       # found by alias
 
-# Runtime environment management
+# Runtime environment management (per-service)
 slinitctl setenv hello KEY=VALUE
 slinitctl unsetenv hello KEY
 slinitctl getallenv hello
+
+# Global environment management
+slinitctl setenv-global MY_VAR=test
+slinitctl unsetenv-global MY_VAR
+slinitctl getallenv-global
 
 # Runtime dependency management
 slinitctl add-dep hello depends-on system-init
@@ -108,6 +128,8 @@ slinitctl --offline -d /etc/slinit.d disable ticker
 # Query dependents and loader info
 slinitctl dependents boot
 slinitctl query-load-mech
+slinitctl query-name hello
+slinitctl service-dirs
 
 # SysV init compatibility (alternative to slinitctl shutdown)
 init 0                           # poweroff  (sends SIGUSR2 to PID 1)
@@ -124,6 +146,43 @@ slinitctl --system list
 slinitctl --user list
 ```
 
+## slinit-check (Config Linter)
+
+Offline and online validation of service configuration files.
+
+```bash
+# Offline: check service files from disk
+slinit-check                          # checks "boot" in default dirs
+slinit-check -d /etc/slinit.d hello ticker
+slinit-check --system                 # check all system service dirs
+
+# Online: query running daemon for service dirs and env, then check
+slinit-check --online
+slinit-check --online hello ticker
+slinit-check --online -p /run/slinit.ctl   # explicit socket path
+```
+
+## slinit-monitor (Event Watcher)
+
+Real-time service event monitoring with optional command execution.
+
+```bash
+# Watch all service events
+slinit-monitor
+
+# Watch and execute a command on each event (%n=name, %s=status, %v=event)
+slinit-monitor -c 'echo "Service %n changed to %s (%v)"'
+
+# Watch with initial state dump
+slinit-monitor --initial
+
+# Watch environment changes
+slinit-monitor --env
+
+# Exit after first event
+slinit-monitor --exit
+```
+
 ## Dependency Graph
 
 ```
@@ -135,8 +194,32 @@ boot (internal)
 ├── waits-for: dep-chain (internal)
 │   ├── depends-on: dep-b (internal) ── waits-for: dep-a ── depends-on: system-init
 │   └── waits-for: restarter (process, restart) ── depends-on: system-init
-└── waits-for: trigger-test (triggered) ── depends-on: system-init
+├── waits-for: trigger-test (triggered) ── depends-on: system-init
+├── waits-for: cpu-pinned (process, cpu-affinity) ── depends-on: system-init
+├── waits-for: hello-logged (process, pipe) ── depends-on: system-init
+│   └── logger (process, consumer-of) ── depends-on: system-init
+├── waits-for: env-demo (process, env-file) ── depends-on: system-init
+└── waits-for: graceful-stop (process, stop-command) ── depends-on: system-init
 ```
+
+## Feature Demos
+
+### CPU Affinity
+The `cpu-pinned` service demonstrates `cpu-affinity = 0-1` to pin a process
+to specific CPU cores. Supported formats: `0 1 2`, `0-3`, `0,2,4`, `0-2 8-11`.
+
+### Pipe Logging (consumer-of)
+`hello-logged` produces output with `log-type = pipe`. The `logger` service
+uses `consumer-of = hello-logged` to read that pipe and process the output.
+
+### Environment Substitution
+`env-demo` loads variables from `env-demo.env` via `env-file` and uses
+`$VAR`, `${VAR:-default}`, and `${VAR:+alt}` substitution in its command.
+
+### Stop-Command
+`graceful-stop` demonstrates `stop-command`: when stopped, slinit runs the
+stop-command first (allowing cleanup), then falls back to the termination
+signal if the stop-command fails.
 
 ## PID 1 Signal Handling
 
