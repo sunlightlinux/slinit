@@ -810,17 +810,25 @@ func formatIndicator(e control.SvcInfoEntry) string {
 
 // formatSuffix returns extra info like (pid: N) or (has console).
 func formatSuffix(e control.SvcInfoEntry) string {
-	var parts []string
-	if e.PID > 0 {
-		parts = append(parts, "pid: "+strconv.Itoa(int(e.PID)))
-	}
-	if e.Flags&control.StatusFlagHasConsole != 0 {
-		parts = append(parts, "has console")
-	}
-	if len(parts) == 0 {
+	hasPID := e.PID > 0
+	hasCon := e.Flags&control.StatusFlagHasConsole != 0
+	if !hasPID && !hasCon {
 		return ""
 	}
-	return " (" + strings.Join(parts, ", ") + ")"
+	var b strings.Builder
+	b.WriteString(" (")
+	if hasPID {
+		b.WriteString("pid: ")
+		b.WriteString(strconv.FormatInt(int64(e.PID), 10))
+		if hasCon {
+			b.WriteString(", ")
+		}
+	}
+	if hasCon {
+		b.WriteString("has console")
+	}
+	b.WriteByte(')')
+	return b.String()
 }
 
 func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
@@ -1273,7 +1281,7 @@ func cmdBootTime(conn net.Conn) error {
 			dur := time.Duration(entry.StartupNs)
 			suffix := ""
 			if entry.PID > 0 {
-				suffix = fmt.Sprintf(" (pid: %d)", entry.PID)
+				suffix = " (pid: " + strconv.FormatInt(int64(entry.PID), 10) + ")"
 			}
 			fmt.Printf("  %8s %s%s\n", formatDuration(dur), entry.Name, suffix)
 		}
@@ -1284,12 +1292,12 @@ func cmdBootTime(conn net.Conn) error {
 
 func formatDuration(d time.Duration) string {
 	if d < time.Millisecond {
-		return fmt.Sprintf("%dus", d.Microseconds())
+		return strconv.FormatInt(d.Microseconds(), 10) + "us"
 	}
 	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
+		return strconv.FormatInt(d.Milliseconds(), 10) + "ms"
 	}
-	return fmt.Sprintf("%.3fs", d.Seconds())
+	return strconv.FormatFloat(d.Seconds(), 'f', 3, 64) + "s"
 }
 
 func cmdReload(conn net.Conn, name string) error {

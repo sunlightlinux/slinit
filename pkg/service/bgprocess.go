@@ -745,11 +745,19 @@ func (s *BGProcessService) getTimerChan() <-chan time.Time {
 // unique enough (combined with PID) to detect PID recycling.
 // Returns "" on any error.
 func readProcStartTime(pid int) string {
+	// Build path without fmt.Sprintf; use stack buffer for /proc/PID/stat read
 	path := "/proc/" + strconv.Itoa(pid) + "/stat"
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
+	var buf [512]byte // /proc/PID/stat is typically <400 bytes
+	n, _ := f.Read(buf[:])
+	f.Close()
+	if n <= 0 {
+		return ""
+	}
+	data := buf[:n]
 	// /proc/PID/stat format: pid (comm) state ... field22 ...
 	// comm can contain spaces and parentheses, so find the last ')'.
 	idx := bytes.LastIndexByte(data, ')')

@@ -1258,8 +1258,14 @@ func (sr *ServiceRecord) AcquiredConsole() {
 // AddDep adds a dependency to the service.
 func (sr *ServiceRecord) AddDep(to Service, depType DependencyType) *ServiceDep {
 	dep := NewServiceDep(sr.self, to, depType)
+	if sr.dependsOn == nil {
+		sr.dependsOn = make([]*ServiceDep, 0, 4)
+	}
 	sr.dependsOn = append(sr.dependsOn, dep)
 	toRec := to.Record()
+	if toRec.dependents == nil {
+		toRec.dependents = make([]*ServiceDep, 0, 4)
+	}
 	toRec.dependents = append(toRec.dependents, dep)
 
 	if depType != DepBefore && depType != DepAfter {

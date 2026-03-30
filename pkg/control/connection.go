@@ -18,6 +18,33 @@ import (
 
 var errConnClosed = errors.New("connection closed")
 
+// replyPool provides reusable byte buffers for small reply packets.
+// Most control replies are 4-16 bytes; cap=64 covers all common cases.
+var replyPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 0, 64)
+		return &b
+	},
+}
+
+// getReplyBuf returns a pooled buffer reset to the requested length.
+func getReplyBuf(n int) []byte {
+	bp := replyPool.Get().(*[]byte)
+	b := *bp
+	if cap(b) >= n {
+		return b[:n]
+	}
+	// Rare: requested size exceeds pool cap, allocate fresh
+	return make([]byte, n)
+}
+
+// putReplyBuf returns a buffer to the pool if it fits.
+func putReplyBuf(b []byte) {
+	if cap(b) <= 64 {
+		replyPool.Put(&b)
+	}
+}
+
 // Connection represents a single control client connection.
 // It implements service.ServiceListener and service.EnvListener to receive
 // push notifications about service state changes and environment changes.
@@ -37,8 +64,8 @@ func newConnection(server *Server, conn net.Conn) *Connection {
 	return &Connection{
 		server:     server,
 		conn:       conn,
-		handles:    make(map[uint32]service.Service),
-		revHandles: make(map[service.Service]uint32),
+		handles:    make(map[uint32]service.Service, 8),
+		revHandles: make(map[service.Service]uint32, 8),
 		nextHandle: 1,
 	}
 }
@@ -224,10 +251,12 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 // --- Command handlers ---
 
 func (c *Connection) handleQueryVersion() error {
-	payload := make([]byte, 4)
+	payload := getReplyBuf(4)
 	binary.LittleEndian.PutUint16(payload[0:], MinCompatVersion)
 	binary.LittleEndian.PutUint16(payload[2:], CPVersion)
-	return c.writePacket(RplyCPVersion, payload)
+	err := c.writePacket(RplyCPVersion, payload)
+	putReplyBuf(payload)
+	return err
 }
 
 func (c *Connection) handleFindService(payload []byte) error {
@@ -246,11 +275,13 @@ func (c *Connection) handleFindService(payload []byte) error {
 	}
 
 	handle := c.allocHandle(svc)
-	reply := make([]byte, 6)
+	reply := getReplyBuf(6)
 	reply[0] = uint8(svc.State())
 	binary.LittleEndian.PutUint32(reply[1:], handle)
 	reply[5] = uint8(svc.TargetState())
-	return c.writePacket(RplyServiceRecord, reply)
+	err = c.writePacket(RplyServiceRecord, reply)
+	putReplyBuf(reply)
+	return err
 }
 
 func (c *Connection) handleLoadService(payload []byte) error {
@@ -282,11 +313,13 @@ func (c *Connection) handleLoadService(payload []byte) error {
 	}
 
 	handle := c.allocHandle(svc)
-	reply := make([]byte, 6)
+	reply := getReplyBuf(6)
 	reply[0] = uint8(svc.State())
 	binary.LittleEndian.PutUint32(reply[1:], handle)
 	reply[5] = uint8(svc.TargetState())
-	return c.writePacket(RplyServiceRecord, reply)
+	err = c.writePacket(RplyServiceRecord, reply)
+	putReplyBuf(reply)
+	return err
 }
 
 // sendPreACK sends a PREACK packet if the pre-ack flag (bit 7) is set.
