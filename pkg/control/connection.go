@@ -16,6 +16,8 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
+var errConnClosed = errors.New("connection closed")
+
 // Connection represents a single control client connection.
 // It implements service.ServiceListener and service.EnvListener to receive
 // push notifications about service state changes and environment changes.
@@ -23,6 +25,7 @@ type Connection struct {
 	server     *Server
 	conn       net.Conn
 	handles    map[uint32]service.Service
+	revHandles map[service.Service]uint32 // reverse map for O(1) service→handle lookup
 	nextHandle uint32
 	listenEnv  bool // true if client subscribed to env events
 	writeMu    sync.Mutex // serializes all writes to conn
@@ -35,6 +38,7 @@ func newConnection(server *Server, conn net.Conn) *Connection {
 		server:     server,
 		conn:       conn,
 		handles:    make(map[uint32]service.Service),
+		revHandles: make(map[service.Service]uint32),
 		nextHandle: 1,
 	}
 }
@@ -44,7 +48,7 @@ func (c *Connection) writePacket(pktType uint8, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.closed {
-		return fmt.Errorf("connection closed")
+		return errConnClosed
 	}
 	return WritePacket(c.conn, pktType, payload)
 }
@@ -54,14 +58,10 @@ func (c *Connection) close() {
 		c.writeMu.Lock()
 		c.closed = true
 		c.writeMu.Unlock()
-		// Unregister as listener from all unique services
-		// (a service may have multiple handles, but we only need to remove once)
-		seen := make(map[service.Service]struct{}, len(c.handles))
-		for _, svc := range c.handles {
-			if _, dup := seen[svc]; !dup {
-				seen[svc] = struct{}{}
-				svc.Record().RemoveListener(c)
-			}
+		// Unregister as listener from all unique services using revHandles
+		// (revHandles has one entry per unique service, no dedup needed)
+		for svc := range c.revHandles {
+			svc.Record().RemoveListener(c)
 		}
 		// Unregister env listener
 		if c.listenEnv {
@@ -72,15 +72,14 @@ func (c *Connection) close() {
 }
 
 func (c *Connection) allocHandle(svc service.Service) uint32 {
-	// Check if this service already has a handle
-	for h, s := range c.handles {
-		if s == svc {
-			return h
-		}
+	// O(1) check if this service already has a handle
+	if h, ok := c.revHandles[svc]; ok {
+		return h
 	}
 	h := c.nextHandle
 	c.nextHandle++
 	c.handles[h] = svc
+	c.revHandles[svc] = h
 	// Auto-subscribe as listener for service events
 	svc.Record().AddListener(c)
 	return h
@@ -92,12 +91,8 @@ func (c *Connection) getService(handle uint32) service.Service {
 
 // findHandle returns the handle for a given service, or 0 and false if not found.
 func (c *Connection) findHandle(svc service.Service) (uint32, bool) {
-	for h, s := range c.handles {
-		if s == svc {
-			return h, true
-		}
-	}
-	return 0, false
+	h, ok := c.revHandles[svc]
+	return h, ok
 }
 
 // ServiceEvent implements service.ServiceListener.
@@ -538,16 +533,22 @@ func (c *Connection) handleCloseHandle(payload []byte) error {
 
 	// Only remove listener if no other handle references this service
 	if svc != nil {
-		stillReferenced := false
-		for _, s := range c.handles {
-			if s == svc {
-				stillReferenced = true
-				break
+		if rh, ok := c.revHandles[svc]; ok && rh == handle {
+			// The reverse map pointed to this handle; find another or remove
+			var found bool
+			for h, s := range c.handles {
+				if s == svc {
+					c.revHandles[svc] = h
+					found = true
+					break
+				}
+			}
+			if !found {
+				delete(c.revHandles, svc)
+				svc.Record().RemoveListener(c)
 			}
 		}
-		if !stillReferenced {
-			svc.Record().RemoveListener(c)
-		}
+		// else: revHandles points to a different handle for this service, still referenced
 	}
 	return c.writePacket(RplyACK, nil)
 }
@@ -677,10 +678,6 @@ func (c *Connection) handleCatLog(payload []byte) error {
 	} else {
 		data = logBuf.GetBuffer()
 	}
-	if data == nil {
-		data = []byte{}
-	}
-
 	reply := EncodeSvcLog(data)
 	return c.writePacket(RplySvcLog, reply)
 }
@@ -762,6 +759,7 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 			delete(c.handles, h)
 		}
 	}
+	delete(c.revHandles, svc)
 
 	return c.writePacket(RplyACK, nil)
 }
@@ -805,7 +803,7 @@ func (c *Connection) handleGetAllEnv(payload []byte) error {
 		globalEnv := c.server.services.GlobalEnv()
 		env := make(map[string]string, len(globalEnv))
 		for _, entry := range globalEnv {
-			if idx := strings.Index(entry, "="); idx >= 0 {
+			if idx := strings.IndexByte(entry, '='); idx >= 0 {
 				env[entry[:idx]] = entry[idx+1:]
 			}
 		}

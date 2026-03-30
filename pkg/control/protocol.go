@@ -11,6 +11,24 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
+// encodeStatusFlags returns common status flags for a service.
+func encodeStatusFlags(svc service.Service) uint8 {
+	var flags uint8
+	if svc.PID() > 0 {
+		flags |= StatusFlagHasPID
+	}
+	if svc.Record().IsMarkedActive() {
+		flags |= StatusFlagMarkedActive
+	}
+	if svc.Record().HasConsole() {
+		flags |= StatusFlagHasConsole
+	}
+	if svc.Record().DidStartFail() {
+		flags |= StatusFlagStartFailed
+	}
+	return flags
+}
+
 // Protocol versioning for slinit control protocol.
 // CPVersion is the current protocol version implemented by this build.
 // MinCompatVersion is the minimum version a peer must support.
@@ -130,16 +148,28 @@ const MaxPayloadSize = 65535
 const CatLogFlagClear uint8 = 1 << 0
 
 // WritePacket writes a packet: [type(1)][payloadLen(2)][payload(N)].
+// Uses a single write call for small packets to reduce syscall overhead.
 func WritePacket(w io.Writer, pktType uint8, payload []byte) error {
-	if len(payload) > MaxPayloadSize {
-		return fmt.Errorf("payload too large: %d > %d", len(payload), MaxPayloadSize)
+	pLen := len(payload)
+	if pLen > MaxPayloadSize {
+		return fmt.Errorf("payload too large: %d > %d", pLen, MaxPayloadSize)
+	}
+	// For small packets (<=256 bytes), combine header+payload into one write
+	// to reduce syscall count. Most control packets are well under this limit.
+	if pLen <= 256 {
+		buf := make([]byte, 3+pLen)
+		buf[0] = pktType
+		binary.LittleEndian.PutUint16(buf[1:], uint16(pLen))
+		copy(buf[3:], payload)
+		_, err := w.Write(buf)
+		return err
 	}
 	hdr := [3]byte{pktType}
-	binary.LittleEndian.PutUint16(hdr[1:], uint16(len(payload)))
+	binary.LittleEndian.PutUint16(hdr[1:], uint16(pLen))
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}
-	if len(payload) > 0 {
+	if pLen > 0 {
 		if _, err := w.Write(payload); err != nil {
 			return err
 		}
@@ -217,31 +247,19 @@ type ServiceStatusInfo struct {
 // Format: state(1) + target(1) + type(1) + flags(1) + pid(4) + exitStatus(4) = 12 bytes.
 func EncodeServiceStatus(svc service.Service) []byte {
 	buf := make([]byte, 12)
+	encodeStatusInto(buf, svc)
+	return buf
+}
+
+// encodeStatusInto writes 12-byte status encoding into buf (must be >= 12 bytes).
+func encodeStatusInto(buf []byte, svc service.Service) {
 	buf[0] = uint8(svc.State())
 	buf[1] = uint8(svc.TargetState())
 	buf[2] = uint8(svc.Type())
-
-	var flags uint8
-	pid := svc.PID()
-	if pid > 0 {
-		flags |= StatusFlagHasPID
-	}
-	if svc.Record().IsMarkedActive() {
-		flags |= StatusFlagMarkedActive
-	}
-	if svc.Record().HasConsole() {
-		flags |= StatusFlagHasConsole
-	}
-	if svc.Record().DidStartFail() {
-		flags |= StatusFlagStartFailed
-	}
-	buf[3] = flags
-	binary.LittleEndian.PutUint32(buf[4:], uint32(int32(pid)))
-
+	buf[3] = encodeStatusFlags(svc)
+	binary.LittleEndian.PutUint32(buf[4:], uint32(int32(svc.PID())))
 	es := svc.GetExitStatus()
 	binary.LittleEndian.PutUint32(buf[8:], uint32(es.ExitCode()))
-
-	return buf
 }
 
 // DecodeServiceStatus decodes service status from bytes.
@@ -276,38 +294,26 @@ type ServiceStatusInfo5 struct {
 // Format: state(1) + target(1) + flags(1) + stopReason(1) + execStage(2) + siCode(4) + siStatus(4) = 14 bytes.
 func EncodeServiceStatus5(svc service.Service) []byte {
 	buf := make([]byte, 14)
+	encodeStatus5Into(buf, svc)
+	return buf
+}
+
+// encodeStatus5Into writes 14-byte v5 status encoding into buf (must be >= 14 bytes).
+func encodeStatus5Into(buf []byte, svc service.Service) {
 	buf[0] = uint8(svc.State())
 	buf[1] = uint8(svc.TargetState())
-
-	var flags uint8
-	pid := svc.PID()
-	if pid > 0 {
-		flags |= StatusFlagHasPID
-	}
-	if svc.Record().IsMarkedActive() {
-		flags |= StatusFlagMarkedActive
-	}
-	if svc.Record().HasConsole() {
-		flags |= StatusFlagHasConsole
-	}
-	if svc.Record().DidStartFail() {
-		flags |= StatusFlagStartFailed
-	}
-	buf[2] = flags
+	buf[2] = encodeStatusFlags(svc)
 	buf[3] = uint8(svc.StopReason())
 
 	es := svc.GetExitStatus()
 	if es.ExecFailed {
 		binary.LittleEndian.PutUint16(buf[4:], uint16(es.ExecStage))
 		binary.LittleEndian.PutUint32(buf[6:], uint32(es.ExecErrno))
-		// siStatus = 0 for exec failures
 	} else {
-		// execStage = 0
+		binary.LittleEndian.PutUint16(buf[4:], 0)
 		binary.LittleEndian.PutUint32(buf[6:], uint32(es.SiCode()))
 		binary.LittleEndian.PutUint32(buf[10:], uint32(es.SiStatus()))
 	}
-
-	return buf
 }
 
 // DecodeServiceStatus5 decodes extended service status from 14 bytes.
@@ -333,8 +339,7 @@ func EncodeSvcInfo5(svc service.Service) []byte {
 	buf := make([]byte, 2+len(name)+14)
 	binary.LittleEndian.PutUint16(buf, uint16(len(name)))
 	copy(buf[2:], name)
-	off := 2 + len(name)
-	copy(buf[off:], EncodeServiceStatus5(svc))
+	encodeStatus5Into(buf[2+len(name):], svc)
 	return buf
 }
 
@@ -366,10 +371,10 @@ type SvcInfoEntry5 struct {
 // EncodeServiceEvent5 encodes a v5 service event push notification.
 // Format: handle(4) + event(1) + statusV5(14) = 19 bytes.
 func EncodeServiceEvent5(handle uint32, event uint8, svc service.Service) []byte {
-	buf := make([]byte, 4+1+14)
+	buf := make([]byte, 19)
 	binary.LittleEndian.PutUint32(buf, handle)
 	buf[4] = event
-	copy(buf[5:], EncodeServiceStatus5(svc))
+	encodeStatus5Into(buf[5:], svc)
 	return buf
 }
 
@@ -406,20 +411,8 @@ func EncodeSvcInfo(svc service.Service) []byte {
 	buf[off] = uint8(svc.State())
 	buf[off+1] = uint8(svc.TargetState())
 	buf[off+2] = uint8(svc.Type())
-
-	var flags uint8
-	pid := svc.PID()
-	if pid > 0 {
-		flags |= StatusFlagHasPID
-	}
-	if svc.Record().IsMarkedActive() {
-		flags |= StatusFlagMarkedActive
-	}
-	if svc.Record().HasConsole() {
-		flags |= StatusFlagHasConsole
-	}
-	buf[off+3] = flags
-	binary.LittleEndian.PutUint32(buf[off+4:], uint32(int32(pid)))
+	buf[off+3] = encodeStatusFlags(svc)
+	binary.LittleEndian.PutUint32(buf[off+4:], uint32(int32(svc.PID())))
 	return buf
 }
 
@@ -734,10 +727,10 @@ func DecodeDepRequest(data []byte) (handleFrom, handleTo uint32, depType uint8, 
 // EncodeServiceEvent encodes a service event notification.
 // Wire format: handle(4) + event(1) + status(12) = 17 bytes.
 func EncodeServiceEvent(handle uint32, event uint8, svc service.Service) []byte {
-	buf := make([]byte, 4+1+12)
+	buf := make([]byte, 17)
 	binary.LittleEndian.PutUint32(buf, handle)
 	buf[4] = event
-	copy(buf[5:], EncodeServiceStatus(svc))
+	encodeStatusInto(buf[5:], svc)
 	return buf
 }
 

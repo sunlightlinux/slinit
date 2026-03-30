@@ -155,9 +155,12 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return false
 	}
 
+	// Read shutdown state once (lock-free atomic)
+	shutting := el.isShuttingDown()
+
 	switch sysSignal {
 	case syscall.SIGTERM:
-		if el.isShuttingDown() {
+		if shutting {
 			return el.escalateShutdown("SIGTERM")
 		}
 		if el.isContainer {
@@ -173,7 +176,7 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return true
 
 	case syscall.SIGINT:
-		if el.isShuttingDown() {
+		if shutting {
 			return el.escalateShutdown("SIGINT")
 		}
 		if el.isContainer {
@@ -189,7 +192,7 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return true
 
 	case syscall.SIGQUIT:
-		if el.isShuttingDown() {
+		if shutting {
 			return el.escalateShutdown("SIGQUIT")
 		}
 		el.logger.Notice("Received SIGQUIT, initiating poweroff")
@@ -204,7 +207,7 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		return false
 
 	case syscall.SIGUSR2:
-		if el.isShuttingDown() {
+		if shutting {
 			return el.escalateShutdown("SIGUSR2")
 		}
 		el.logger.Notice("Received SIGUSR2, initiating poweroff")
@@ -268,11 +271,9 @@ func (el *EventLoop) escalateShutdown(sigName string) bool {
 	return true
 }
 
-// isShuttingDown returns the current shutdown state (thread-safe).
+// isShuttingDown returns the current shutdown state (lock-free).
 func (el *EventLoop) isShuttingDown() bool {
-	el.mu.Lock()
-	defer el.mu.Unlock()
-	return el.shutdownInitiated
+	return el.shutdownSignals.Load() > 0
 }
 
 // InitiateShutdown triggers a shutdown from outside the event loop
@@ -291,11 +292,14 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	el.shutdownType = shutdownType
 	el.shutdownSignals.Store(1)
 
-	// Start emergency timeout with a cancellable timer
+	// Start emergency timeout with a cancellable timer.
+	// Capture immutable refs to avoid racing on el fields after mutex release.
+	logger := el.logger
+	forceExitCh := el.forceExitCh
 	el.emergencyTimer = time.AfterFunc(defaultEmergencyTimeout, func() {
-		el.logger.Error("Services did not stop within %v, forcing shutdown", defaultEmergencyTimeout)
+		logger.Error("Services did not stop within %v, forcing shutdown", defaultEmergencyTimeout)
 		select {
-		case el.forceExitCh <- struct{}{}:
+		case forceExitCh <- struct{}{}:
 		default:
 		}
 	})
@@ -323,10 +327,12 @@ func (el *EventLoop) resetEmergencyTimer(d time.Duration) {
 	if el.emergencyTimer != nil {
 		el.emergencyTimer.Stop()
 	}
+	logger := el.logger
+	forceExitCh := el.forceExitCh
 	el.emergencyTimer = time.AfterFunc(d, func() {
-		el.logger.Error("Escalated emergency timeout reached, forcing shutdown")
+		logger.Error("Escalated emergency timeout reached, forcing shutdown")
 		select {
-		case el.forceExitCh <- struct{}{}:
+		case forceExitCh <- struct{}{}:
 		default:
 		}
 	})

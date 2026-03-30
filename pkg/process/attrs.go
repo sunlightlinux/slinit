@@ -3,6 +3,7 @@ package process
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"syscall"
 	"unsafe"
 
@@ -72,8 +73,8 @@ func applyNice(pid, nice int) error {
 }
 
 func applyOOMScoreAdj(pid, adj int) error {
-	path := fmt.Sprintf("/proc/%d/oom_score_adj", pid)
-	return os.WriteFile(path, []byte(fmt.Sprintf("%d", adj)), 0200)
+	path := "/proc/" + strconv.Itoa(pid) + "/oom_score_adj"
+	return os.WriteFile(path, strconv.AppendInt(nil, int64(adj), 10), 0200)
 }
 
 func applyRlimits(pid int, limits []Rlimit) error {
@@ -117,7 +118,7 @@ func applyIOPrio(pid, class, level int) error {
 
 func applyCgroup(pid int, cgroupPath string) error {
 	procsPath := cgroupPath + "/cgroup.procs"
-	return os.WriteFile(procsPath, []byte(fmt.Sprintf("%d", pid)), 0200)
+	return os.WriteFile(procsPath, strconv.AppendInt(nil, int64(pid), 10), 0200)
 }
 
 func applyNoNewPrivs(pid int) error {

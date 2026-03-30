@@ -27,6 +27,7 @@ func NewLogBuffer(maxSize int) *LogBuffer {
 	}
 	return &LogBuffer{
 		bufMax: maxSize,
+		buf:    make([]byte, 0, maxSize),
 	}
 }
 
@@ -123,7 +124,7 @@ func (lb *LogBuffer) GetBufferAndClear() []byte {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
 	result := lb.buf
-	lb.buf = nil
+	lb.buf = make([]byte, 0, lb.bufMax) // re-use pre-allocated capacity
 	return result
 }
 

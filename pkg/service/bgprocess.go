@@ -1,9 +1,9 @@
 package service
 
 import (
-	"fmt"
+	"bytes"
 	"os"
-	"strings"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -163,23 +163,9 @@ func (s *BGProcessService) PID() int {
 // GetExitStatus returns the exit status of the last process.
 func (s *BGProcessService) GetExitStatus() ExitStatus { return s.exitStatus }
 
-// buildEnv merges env-file variables and runtime extraEnv into a slice for ExecParams.
+// buildEnv merges env-file variables and runtime extraEnv into a pre-allocated slice.
 func (s *BGProcessService) buildEnv() []string {
-	var env []string
-	// Global daemon-level env (--env-file/-e) first, can be overridden
-	env = append(env, s.services.GlobalEnv()...)
-	if s.envFile != "" {
-		if fileEnv, err := process.ReadEnvFile(s.envFile); err == nil {
-			for k, v := range fileEnv {
-				env = append(env, k+"="+v)
-			}
-		} else {
-			s.services.logger.Error("Service '%s': failed to read env-file '%s': %v",
-				s.serviceName, s.envFile, err)
-		}
-	}
-	env = append(env, s.Record().BuildEnvSlice()...)
-	return env
+	return s.Record().BuildEnvWithFile(s.envFile)
 }
 
 // BringUp launches the background process command.
@@ -759,22 +745,38 @@ func (s *BGProcessService) getTimerChan() <-chan time.Time {
 // unique enough (combined with PID) to detect PID recycling.
 // Returns "" on any error.
 func readProcStartTime(pid int) string {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	path := "/proc/" + strconv.Itoa(pid) + "/stat"
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
 	// /proc/PID/stat format: pid (comm) state ... field22 ...
 	// comm can contain spaces and parentheses, so find the last ')'.
-	s := string(data)
-	idx := strings.LastIndex(s, ")")
-	if idx < 0 || idx+2 >= len(s) {
+	idx := bytes.LastIndexByte(data, ')')
+	if idx < 0 || idx+2 >= len(data) {
 		return ""
 	}
-	fields := strings.Fields(s[idx+2:])
-	// starttime is field 22 in stat, which is index 19 after (comm)
-	// (fields after ')' start at field 3: state=0, ppid=1, ... starttime=19)
-	if len(fields) < 20 {
-		return ""
+	// Skip past ") " and count fields to index 19 (starttime)
+	rest := data[idx+2:]
+	fieldIdx := 0
+	i := 0
+	for i < len(rest) && fieldIdx < 20 {
+		// Skip whitespace
+		for i < len(rest) && (rest[i] == ' ' || rest[i] == '\t') {
+			i++
+		}
+		if i >= len(rest) {
+			break
+		}
+		start := i
+		// Skip field content
+		for i < len(rest) && rest[i] != ' ' && rest[i] != '\t' && rest[i] != '\n' {
+			i++
+		}
+		if fieldIdx == 19 {
+			return string(rest[start:i])
+		}
+		fieldIdx++
 	}
-	return fields[19]
+	return ""
 }

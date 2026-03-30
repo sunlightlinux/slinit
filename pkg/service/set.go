@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -89,9 +90,14 @@ type ServiceSet struct {
 
 	// Global daemon-level environment (from --env-file/-e)
 	// Protected by envMu for concurrent access from control socket goroutines.
-	envMu        sync.Mutex
-	globalEnv    []string
-	envListeners []EnvListener
+	// globalEnvVer is bumped on every mutation; readers cache (snapshot, ver)
+	// and skip re-copy if version matches.
+	envMu          sync.Mutex
+	globalEnv      []string
+	globalEnvVer   uint64 // monotonically increasing version
+	globalEnvSnap  []string // cached snapshot
+	globalEnvSnapV uint64   // version of cached snapshot
+	envListeners   []EnvListener
 
 	// Default cgroup base path (from --cgroup-path/-b)
 	defaultCgroupPath string
@@ -304,15 +310,15 @@ func (ss *ServiceSet) ProcessQueues() {
 // processQueuesLocked is the core scheduling loop. Caller must hold queueMu.
 func (ss *ServiceSet) processQueuesLocked() {
 	for len(ss.propQueue) > 0 || len(ss.stopQueue) > 0 {
-		for len(ss.propQueue) > 0 {
-			svc := ss.propQueue[0]
-			ss.propQueue[0] = nil // allow GC of the Service reference
-			ss.propQueue = ss.propQueue[1:]
+		// Drain propagation queue using index to avoid reslicing overhead
+		pq := ss.propQueue
+		ss.propQueue = nil
+		for i := range pq {
+			svc := pq[i]
+			pq[i] = nil // allow GC
 			svc.Record().InPropQueue = false
 			svc.Record().DoPropagation()
 		}
-		// Release backing array once propagation queue is fully drained
-		ss.propQueue = nil
 
 		if len(ss.stopQueue) > 0 {
 			svc := ss.stopQueue[0]
@@ -322,7 +328,6 @@ func (ss *ServiceSet) processQueuesLocked() {
 			svc.Record().ExecuteTransition()
 		}
 	}
-	// Release backing array once stop queue is fully drained
 	ss.stopQueue = nil
 }
 
@@ -347,7 +352,10 @@ func (ss *ServiceSet) PullConsoleQueue() {
 func (ss *ServiceSet) UnqueueConsole(svc Service) {
 	for i, s := range ss.consoleQueue {
 		if s == svc {
-			ss.consoleQueue = append(ss.consoleQueue[:i], ss.consoleQueue[i+1:]...)
+			last := len(ss.consoleQueue) - 1
+			ss.consoleQueue[i] = ss.consoleQueue[last]
+			ss.consoleQueue[last] = nil
+			ss.consoleQueue = ss.consoleQueue[:last]
 			return
 		}
 	}
@@ -423,14 +431,22 @@ func (ss *ServiceSet) SetGlobalEnv(env []string) {
 	ss.envMu.Lock()
 	defer ss.envMu.Unlock()
 	ss.globalEnv = env
+	ss.globalEnvVer++
 }
 
+// GlobalEnv returns a snapshot of the global environment.
+// Uses copy-on-write: the snapshot is cached and only rebuilt when the env changes.
 func (ss *ServiceSet) GlobalEnv() []string {
 	ss.envMu.Lock()
 	defer ss.envMu.Unlock()
-	result := make([]string, len(ss.globalEnv))
-	copy(result, ss.globalEnv)
-	return result
+	if ss.globalEnvSnapV == ss.globalEnvVer && ss.globalEnvSnap != nil {
+		return ss.globalEnvSnap
+	}
+	snap := make([]string, len(ss.globalEnv))
+	copy(snap, ss.globalEnv)
+	ss.globalEnvSnap = snap
+	ss.globalEnvSnapV = ss.globalEnvVer
+	return snap
 }
 
 // GlobalSetEnv sets a global environment variable and notifies listeners.
@@ -438,12 +454,11 @@ func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 	ss.envMu.Lock()
 	varStr := key + "=" + value
 	override := false
-	// Check if this key already exists
-	prefix := key + "="
 	for i, e := range ss.globalEnv {
-		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
+		if k, _, ok := strings.Cut(e, "="); ok && k == key {
 			override = true
 			ss.globalEnv[i] = varStr
+			ss.globalEnvVer++
 			listeners := ss.copyEnvListeners()
 			ss.envMu.Unlock()
 			ss.notifyEnvListenersSnapshot(listeners, varStr, override)
@@ -451,6 +466,7 @@ func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 		}
 	}
 	ss.globalEnv = append(ss.globalEnv, varStr)
+	ss.globalEnvVer++
 	listeners := ss.copyEnvListeners()
 	ss.envMu.Unlock()
 	ss.notifyEnvListenersSnapshot(listeners, varStr, override)
@@ -459,10 +475,10 @@ func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 // GlobalUnsetEnv removes a global environment variable and notifies listeners.
 func (ss *ServiceSet) GlobalUnsetEnv(key string) {
 	ss.envMu.Lock()
-	prefix := key + "="
 	for i, e := range ss.globalEnv {
-		if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
+		if k, _, ok := strings.Cut(e, "="); ok && k == key {
 			ss.globalEnv = append(ss.globalEnv[:i], ss.globalEnv[i+1:]...)
+			ss.globalEnvVer++
 			listeners := ss.copyEnvListeners()
 			ss.envMu.Unlock()
 			ss.notifyEnvListenersSnapshot(listeners, key, true)
@@ -485,7 +501,10 @@ func (ss *ServiceSet) RemoveEnvListener(l EnvListener) {
 	defer ss.envMu.Unlock()
 	for i, existing := range ss.envListeners {
 		if existing == l {
-			ss.envListeners = append(ss.envListeners[:i], ss.envListeners[i+1:]...)
+			last := len(ss.envListeners) - 1
+			ss.envListeners[i] = ss.envListeners[last]
+			ss.envListeners[last] = nil
+			ss.envListeners = ss.envListeners[:last]
 			return
 		}
 	}

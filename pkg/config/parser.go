@@ -323,17 +323,17 @@ func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescri
 
 // parseLine splits a config line into setting, value, and operator.
 func parseLine(line string) (setting string, value string, op OperatorType, err error) {
-	// Try += first
-	if idx := strings.Index(line, "+="); idx >= 0 {
-		setting = strings.TrimSpace(line[:idx])
-		value = strings.TrimSpace(line[idx+2:])
+	// Find = and : positions in a single scan approach
+	eqIdx := strings.IndexByte(line, '=')
+	colonIdx := strings.IndexByte(line, ':')
+
+	// Check for += (eqIdx > 0 and previous char is '+')
+	if eqIdx > 0 && line[eqIdx-1] == '+' {
+		setting = strings.TrimSpace(line[:eqIdx-1])
+		value = strings.TrimSpace(line[eqIdx+1:])
 		op = OpPlusEqual
 		return
 	}
-
-	// Try = (but not after :)
-	eqIdx := strings.IndexByte(line, '=')
-	colonIdx := strings.IndexByte(line, ':')
 
 	if colonIdx >= 0 && (eqIdx < 0 || colonIdx < eqIdx) {
 		// Colon comes first
@@ -728,7 +728,8 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 
 // splitCommand splits a command string into parts, respecting quotes.
 func splitCommand(cmd string) []string {
-	var parts []string
+	// Estimate arg count: most commands have <8 args
+	parts := make([]string, 0, 8)
 	var current strings.Builder
 	inQuote := false
 	quoteChar := byte(0)
@@ -854,13 +855,12 @@ func parseRlimit(value string) (*[2]uint64, error) {
 		return n, nil
 	}
 
-	parts := strings.SplitN(value, ":", 2)
-	if len(parts) == 2 {
-		soft, err := parseOne(parts[0])
+	if idx := strings.IndexByte(value, ':'); idx >= 0 {
+		soft, err := parseOne(value[:idx])
 		if err != nil {
 			return nil, err
 		}
-		hard, err := parseOne(parts[1])
+		hard, err := parseOne(value[idx+1:])
 		if err != nil {
 			return nil, err
 		}
@@ -1136,40 +1136,39 @@ func parseNonColonOp(expr string) (varName string, op byte, operand string, ok b
 	return "", 0, "", false
 }
 
+// signalNames maps signal names (uppercase) to their syscall values.
+// Package-level to avoid re-allocating on every parseSignal call.
+var signalNames = map[string]syscall.Signal{
+	"SIGHUP":  syscall.SIGHUP,
+	"SIGINT":  syscall.SIGINT,
+	"SIGQUIT": syscall.SIGQUIT,
+	"SIGKILL": syscall.SIGKILL,
+	"SIGTERM": syscall.SIGTERM,
+	"SIGUSR1": syscall.SIGUSR1,
+	"SIGUSR2": syscall.SIGUSR2,
+	"SIGSTOP": syscall.SIGSTOP,
+	"SIGCONT": syscall.SIGCONT,
+	"HUP":     syscall.SIGHUP,
+	"INT":     syscall.SIGINT,
+	"QUIT":    syscall.SIGQUIT,
+	"KILL":    syscall.SIGKILL,
+	"TERM":    syscall.SIGTERM,
+	"USR1":    syscall.SIGUSR1,
+	"USR2":    syscall.SIGUSR2,
+	"STOP":    syscall.SIGSTOP,
+	"CONT":    syscall.SIGCONT,
+}
+
 // parseSignal parses a signal name or number.
 func parseSignal(value string) (syscall.Signal, error) {
-	// "none" / "NONE" = signal 0 (no signal sent on stop)
 	if strings.EqualFold(value, "none") {
 		return 0, nil
 	}
 
-	signals := map[string]syscall.Signal{
-		"SIGHUP":  syscall.SIGHUP,
-		"SIGINT":  syscall.SIGINT,
-		"SIGQUIT": syscall.SIGQUIT,
-		"SIGKILL": syscall.SIGKILL,
-		"SIGTERM": syscall.SIGTERM,
-		"SIGUSR1": syscall.SIGUSR1,
-		"SIGUSR2": syscall.SIGUSR2,
-		"SIGSTOP": syscall.SIGSTOP,
-		"SIGCONT": syscall.SIGCONT,
-		"HUP":     syscall.SIGHUP,
-		"INT":     syscall.SIGINT,
-		"QUIT":    syscall.SIGQUIT,
-		"KILL":    syscall.SIGKILL,
-		"TERM":    syscall.SIGTERM,
-		"USR1":    syscall.SIGUSR1,
-		"USR2":    syscall.SIGUSR2,
-		"STOP":    syscall.SIGSTOP,
-		"CONT":    syscall.SIGCONT,
-	}
-
-	upper := strings.ToUpper(value)
-	if sig, ok := signals[upper]; ok {
+	if sig, ok := signalNames[strings.ToUpper(value)]; ok {
 		return sig, nil
 	}
 
-	// Try numeric
 	n, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("unknown signal: %s", value)

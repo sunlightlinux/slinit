@@ -25,9 +25,12 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Dir = params.WorkingDir
 	}
 
-	// Environment
+	// Environment: cache os.Environ() once, reuse for all env additions
+	baseEnv := os.Environ()
 	if len(params.Env) > 0 {
-		cmd.Env = append(os.Environ(), params.Env...)
+		cmd.Env = make([]string, 0, len(baseEnv)+len(params.Env)+3)
+		cmd.Env = append(cmd.Env, baseEnv...)
+		cmd.Env = append(cmd.Env, params.Env...)
 	}
 
 	// Set process group so we can signal the group later
@@ -98,9 +101,10 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	if params.SocketFD != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, params.SocketFD)
 		if cmd.Env == nil {
-			cmd.Env = os.Environ()
+			cmd.Env = append(baseEnv[:len(baseEnv):len(baseEnv)], "LISTEN_FDS=1")
+		} else {
+			cmd.Env = append(cmd.Env, "LISTEN_FDS=1")
 		}
-		cmd.Env = append(cmd.Env, "LISTEN_FDS=1")
 	}
 
 	// Readiness notification pipe
@@ -132,7 +136,8 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		actualFD := 3 + len(cmd.ExtraFiles) - 1
 		if params.NotifyVar != "" {
 			if cmd.Env == nil {
-				cmd.Env = os.Environ()
+				cmd.Env = make([]string, len(baseEnv), len(baseEnv)+2)
+				copy(cmd.Env, baseEnv)
 			}
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%d", params.NotifyVar, actualFD))
 		}
@@ -143,7 +148,8 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, params.ControlSocketFD)
 		csFD := 3 + len(cmd.ExtraFiles) - 1
 		if cmd.Env == nil {
-			cmd.Env = os.Environ()
+			cmd.Env = make([]string, len(baseEnv), len(baseEnv)+2)
+			copy(cmd.Env, baseEnv)
 		}
 		cmd.Env = append(cmd.Env, fmt.Sprintf("SLINIT_CS_FD=%d", csFD))
 	}

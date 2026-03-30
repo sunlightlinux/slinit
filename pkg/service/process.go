@@ -460,23 +460,9 @@ func (s *ProcessService) CheckRestart() bool {
 	return true
 }
 
-// buildEnv merges env-file variables and runtime extraEnv into a slice for ExecParams.
+// buildEnv merges env-file variables and runtime extraEnv into a pre-allocated slice.
 func (s *ProcessService) buildEnv() []string {
-	var env []string
-	// Global daemon-level env (--env-file/-e) first, can be overridden
-	env = append(env, s.services.GlobalEnv()...)
-	if s.envFile != "" {
-		if fileEnv, err := process.ReadEnvFile(s.envFile); err == nil {
-			for k, v := range fileEnv {
-				env = append(env, k+"="+v)
-			}
-		} else {
-			s.services.logger.Error("Service '%s': failed to read env-file '%s': %v",
-				s.serviceName, s.envFile, err)
-		}
-	}
-	env = append(env, s.Record().BuildEnvSlice()...)
-	return env
+	return s.Record().BuildEnvWithFile(s.envFile)
 }
 
 // startProcess forks and execs the service process.

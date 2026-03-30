@@ -106,19 +106,20 @@ func (l *Logger) CloseSyslog() {
 }
 
 func (l *Logger) log(level Level, format string, args ...interface{}) {
-	if level < l.level && level < l.mainLevel {
+	consoleOK := level >= l.level
+	syslogOK := l.syslogW != nil && level >= l.mainLevel
+	if !consoleOK && !syslogOK {
 		return
 	}
+
 	msg := fmt.Sprintf(format, args...)
 
-	// Console output
-	if level >= l.level {
+	if consoleOK {
 		timestamp := time.Now().Format("15:04:05")
 		fmt.Fprintf(l.output, "[%s] %s: %s\n", timestamp, level, msg)
 	}
 
-	// Syslog output (main log)
-	if l.syslogW != nil && level >= l.mainLevel {
+	if syslogOK {
 		l.logToSyslog(level, msg)
 	}
 }

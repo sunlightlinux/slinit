@@ -244,7 +244,11 @@ func (sr *ServiceRecord) RemoveListener(l ServiceListener) {
 	defer sr.listenerMu.Unlock()
 	for i, existing := range sr.listeners {
 		if existing == l {
-			sr.listeners = append(sr.listeners[:i], sr.listeners[i+1:]...)
+			// Swap with last element to avoid splice copy
+			last := len(sr.listeners) - 1
+			sr.listeners[i] = sr.listeners[last]
+			sr.listeners[last] = nil // GC hint
+			sr.listeners = sr.listeners[:last]
 			return
 		}
 	}
@@ -375,7 +379,12 @@ func (sr *ServiceRecord) BuildEnvSlice() []string {
 	}
 	result := make([]string, 0, len(sr.extraEnv))
 	for k, v := range sr.extraEnv {
-		result = append(result, k+"="+v)
+		// Pre-size the string to avoid intermediate allocation from k + "=" + v
+		buf := make([]byte, 0, len(k)+1+len(v))
+		buf = append(buf, k...)
+		buf = append(buf, '=')
+		buf = append(buf, v...)
+		result = append(result, string(buf))
 	}
 	return result
 }
@@ -392,6 +401,39 @@ func (sr *ServiceRecord) BuildFullEnv() []string {
 	result = append(result, globalEnv...)
 	result = append(result, extra...)
 	return result
+}
+
+// BuildEnvWithFile returns global env + env-file vars + per-service extraEnv
+// with a single pre-allocated slice. Used by ProcessService and BGProcessService.
+func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
+	globalEnv := sr.services.GlobalEnv()
+	extra := sr.BuildEnvSlice()
+
+	var fileEnv map[string]string
+	if envFile != "" {
+		var err error
+		fileEnv, err = process.ReadEnvFile(envFile)
+		if err != nil {
+			sr.services.logger.Error("Service '%s': failed to read env-file '%s': %v",
+				sr.serviceName, envFile, err)
+		}
+	}
+
+	totalCap := len(globalEnv) + len(fileEnv) + len(extra)
+	if totalCap == 0 {
+		return nil
+	}
+	env := make([]string, 0, totalCap)
+	env = append(env, globalEnv...)
+	for k, v := range fileEnv {
+		buf := make([]byte, 0, len(k)+1+len(v))
+		buf = append(buf, k...)
+		buf = append(buf, '=')
+		buf = append(buf, v...)
+		env = append(env, string(buf))
+	}
+	env = append(env, extra...)
+	return env
 }
 
 // --- Process attribute setters ---
@@ -755,10 +797,21 @@ func (sr *ServiceRecord) ExecuteTransition() {
 
 func (sr *ServiceRecord) notifyListeners(event ServiceEvent) {
 	sr.listenerMu.Lock()
-	snapshot := make([]ServiceListener, len(sr.listeners))
+	n := len(sr.listeners)
+	if n == 0 {
+		sr.listenerMu.Unlock()
+		return
+	}
+	// Fast path: single listener (most common case — one control connection)
+	if n == 1 {
+		l := sr.listeners[0]
+		sr.listenerMu.Unlock()
+		l.ServiceEvent(sr.self, event)
+		return
+	}
+	snapshot := make([]ServiceListener, n)
 	copy(snapshot, sr.listeners)
 	sr.listenerMu.Unlock()
-
 	for _, l := range snapshot {
 		l.ServiceEvent(sr.self, event)
 	}

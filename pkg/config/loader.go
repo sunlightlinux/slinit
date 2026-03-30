@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -897,19 +898,29 @@ func applyLoadOptions(svc service.Service, desc *ServiceDescription) {
 	}
 }
 
-// lookupShell reads /etc/passwd to find the shell for a given UID string.
+// passwdShellCache caches UID→shell mappings from /etc/passwd.
+// Populated once on first lookupShell call.
+var (
+	passwdShellOnce  sync.Once
+	passwdShellCache map[string]string // uid string → shell path
+)
+
+// lookupShell finds the shell for a given UID string, caching /etc/passwd on first call.
 func lookupShell(uid string) string {
-	data, err := os.ReadFile("/etc/passwd")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) >= 7 && fields[2] == uid {
-			return fields[6]
+	passwdShellOnce.Do(func() {
+		passwdShellCache = make(map[string]string)
+		data, err := os.ReadFile("/etc/passwd")
+		if err != nil {
+			return
 		}
-	}
-	return ""
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Split(line, ":")
+			if len(fields) >= 7 {
+				passwdShellCache[fields[2]] = fields[6]
+			}
+		}
+	})
+	return passwdShellCache[uid]
 }
 
 // ServiceLoadError represents a service loading failure.

@@ -94,12 +94,16 @@ func (s *Server) Stop() error {
 		err = s.listener.Close()
 	}
 
-	// Close all active connections
+	// Collect connections under lock, close outside to avoid holding lock during I/O
 	s.mu.Lock()
+	connList := make([]*Connection, 0, len(s.conns))
 	for conn := range s.conns {
-		conn.close()
+		connList = append(connList, conn)
 	}
 	s.mu.Unlock()
+	for _, conn := range connList {
+		conn.close()
+	}
 
 	s.wg.Wait()
 
