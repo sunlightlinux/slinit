@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -11,11 +14,13 @@ import (
 )
 
 const (
-	defaultStopTimeout    = 10 * time.Second
-	defaultStartTimeout   = 60 * time.Second
-	defaultRestartDelay   = 200 * time.Millisecond
-	defaultRestartInterval = 10 * time.Second
-	defaultMaxRestarts    = 3
+	defaultStopTimeout      = 10 * time.Second
+	defaultStartTimeout     = 60 * time.Second
+	defaultRestartDelay     = 200 * time.Millisecond
+	defaultRestartInterval  = 10 * time.Second
+	defaultMaxRestarts      = 3
+	defaultFinishTimeout    = 5 * time.Second
+	defaultReadyCheckInterval = time.Second
 )
 
 // ProcessService manages a long-running process.
@@ -23,10 +28,13 @@ type ProcessService struct {
 	ServiceRecord
 
 	// Command configuration
-	command     []string
-	stopCommand []string
-	workingDir  string
-	envFile     string
+	command           []string
+	stopCommand       []string
+	finishCommand     []string // runs after process exits (before restart decision)
+	readyCheckCommand []string // polls to verify service readiness
+	readyCheckInterval time.Duration // polling interval (default 1s)
+	workingDir        string
+	envFile           string
 
 	// Credentials
 	runAsUID uint32
@@ -109,6 +117,19 @@ func (s *ProcessService) SetCommand(cmd []string) { s.command = cmd }
 
 // SetStopCommand sets the stop command.
 func (s *ProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
+
+// SetFinishCommand sets the finish command (runs after process exits).
+func (s *ProcessService) SetFinishCommand(cmd []string) { s.finishCommand = cmd }
+
+// SetReadyCheckCommand sets the ready-check command and optional interval.
+func (s *ProcessService) SetReadyCheckCommand(cmd []string, interval time.Duration) {
+	s.readyCheckCommand = cmd
+	if interval > 0 {
+		s.readyCheckInterval = interval
+	} else {
+		s.readyCheckInterval = time.Second
+	}
+}
 
 // SetWorkingDir sets the working directory.
 func (s *ProcessService) SetWorkingDir(dir string) { s.workingDir = dir }
@@ -640,6 +661,15 @@ func (s *ProcessService) startProcess() error {
 		if s.startTimeout > 0 {
 			s.armTimer(s.startTimeout, timerStartTimeout)
 		}
+	} else if len(s.readyCheckCommand) > 0 {
+		// Ready-check-command: poll external command until it succeeds
+		s.readyCh = make(chan bool, 1)
+		go s.watchReadyCheck()
+		go s.monitorProcess(exitCh)
+
+		if s.startTimeout > 0 {
+			s.armTimer(s.startTimeout, timerStartTimeout)
+		}
 	} else {
 		go s.monitorProcess(exitCh)
 
@@ -763,6 +793,11 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	s.procHandle.Clear()
 	s.cancelTimer()
 	s.closeReadyPipe()
+
+	// Run finish-command if configured (before restart decision)
+	if len(s.finishCommand) > 0 && exit.ExecErr == nil {
+		s.execFinishCommand(exit)
+	}
 
 	if exit.ExecErr != nil {
 		// Process failed during exec/setup
@@ -934,4 +969,62 @@ func (s *ProcessService) getTimerChan() <-chan time.Time {
 		return s.processTimer.C
 	}
 	return nil
+}
+
+// execFinishCommand runs the finish-command after a process exits.
+// It passes the exit code and signal number as arguments.
+// Runs synchronously with a timeout so it doesn't block forever.
+func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
+	exitCode := "-1"
+	waitStatus := "0"
+	if exit.Exited() {
+		exitCode = strconv.Itoa(exit.Status.ExitStatus())
+	}
+	if exit.Signaled() {
+		waitStatus = strconv.Itoa(int(exit.Status.Signal()))
+	}
+
+	args := make([]string, len(s.finishCommand)-1, len(s.finishCommand)+1)
+	copy(args, s.finishCommand[1:])
+	args = append(args, exitCode, waitStatus)
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultFinishTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, s.finishCommand[0], args...)
+	cmd.Dir = s.workingDir
+	cmd.Env = s.buildEnv()
+
+	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
+	if err := cmd.Run(); err != nil {
+		s.services.logger.Error("Service '%s': finish-command failed: %v",
+			s.serviceName, err)
+	}
+}
+
+// watchReadyCheck polls the ready-check-command until it succeeds or times out.
+// Sends true on readyCh when the command exits 0, false if the doneCh is closed.
+func (s *ProcessService) watchReadyCheck() {
+	interval := s.readyCheckInterval
+	if interval <= 0 {
+		interval = defaultReadyCheckInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.doneCh:
+			s.readyCh <- false
+			return
+		case <-ticker.C:
+			cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
+			cmd.Dir = s.workingDir
+			cmd.Env = s.buildEnv()
+			if err := cmd.Run(); err == nil {
+				s.readyCh <- true
+				return
+			}
+		}
+	}
 }

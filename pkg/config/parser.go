@@ -24,10 +24,13 @@ type ServiceDescription struct {
 	Type service.ServiceType
 
 	// Commands
-	Command     []string
-	StopCommand []string
-	WorkingDir  string
-	EnvFile     string
+	Command           []string
+	StopCommand       []string
+	FinishCommand     []string      // runs after process exits (before restart)
+	ReadyCheckCommand []string      // polls to verify service readiness
+	ReadyCheckInterval time.Duration // polling interval for ready-check (default 1s)
+	WorkingDir        string
+	EnvFile           string
 
 	// Dependencies (by name, resolved by the loader)
 	DependsOn  []string // depends-on (REGULAR)
@@ -383,6 +386,24 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		} else {
 			desc.StopCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
+	case "finish-command":
+		if op == OpPlusEqual {
+			desc.FinishCommand = append(desc.FinishCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.FinishCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+	case "ready-check-command":
+		if op == OpPlusEqual {
+			desc.ReadyCheckCommand = append(desc.ReadyCheckCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.ReadyCheckCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+	case "ready-check-interval":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid ready-check-interval: %w", err)
+		}
+		desc.ReadyCheckInterval = d
 	case "working-dir":
 		desc.WorkingDir = expandEnvVars(value, serviceArg)
 	case "env-file":

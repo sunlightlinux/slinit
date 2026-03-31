@@ -194,6 +194,8 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 	case *service.ProcessService:
 		s.SetCommand(desc.Command)
 		s.SetStopCommand(desc.StopCommand)
+		s.SetFinishCommand(desc.FinishCommand)
+		s.SetReadyCheckCommand(desc.ReadyCheckCommand, desc.ReadyCheckInterval)
 		s.SetWorkingDir(desc.WorkingDir)
 		s.SetEnvFile(desc.EnvFile)
 		if desc.StartTimeout > 0 {
@@ -583,6 +585,8 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc := service.NewProcessService(dl.set, name)
 		svc.SetCommand(desc.Command)
 		svc.SetStopCommand(desc.StopCommand)
+		svc.SetFinishCommand(desc.FinishCommand)
+		svc.SetReadyCheckCommand(desc.ReadyCheckCommand, desc.ReadyCheckInterval)
 		svc.SetWorkingDir(desc.WorkingDir)
 		svc.SetEnvFile(desc.EnvFile)
 		if desc.StartTimeout > 0 {
