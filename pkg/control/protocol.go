@@ -651,20 +651,18 @@ func DecodeSetEnv(data []byte) (handle uint32, key, value string, isUnset bool, 
 // EncodeEnvList encodes a getallenv reply.
 // Wire format: count(2) + [nameLen(2) + name + valueLen(2) + value]*N.
 func EncodeEnvList(env map[string]string) []byte {
-	size := 2
-	for k, v := range env {
-		size += 2 + len(k) + 2 + len(v)
-	}
-	buf := make([]byte, size)
+	// Single-pass: grow buffer as we encode, avoiding double iteration.
+	// Estimate 32 bytes per entry (typical KEY=value).
+	buf := make([]byte, 2, 2+len(env)*32)
 	binary.LittleEndian.PutUint16(buf, uint16(len(env)))
-	off := 2
+	var tmp [2]byte
 	for k, v := range env {
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(k)))
-		copy(buf[off+2:], k)
-		off += 2 + len(k)
-		binary.LittleEndian.PutUint16(buf[off:], uint16(len(v)))
-		copy(buf[off+2:], v)
-		off += 2 + len(v)
+		binary.LittleEndian.PutUint16(tmp[:], uint16(len(k)))
+		buf = append(buf, tmp[:]...)
+		buf = append(buf, k...)
+		binary.LittleEndian.PutUint16(tmp[:], uint16(len(v)))
+		buf = append(buf, tmp[:]...)
+		buf = append(buf, v...)
 	}
 	return buf
 }

@@ -738,9 +738,18 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 
 // splitCommand splits a command string into parts, respecting quotes.
 func splitCommand(cmd string) []string {
-	// Estimate arg count: most commands have <8 args
+	// Fast-path: no quotes, escapes, or NUL separators → use strings.Fields
+	if strings.IndexByte(cmd, '"') < 0 &&
+		strings.IndexByte(cmd, '\'') < 0 &&
+		strings.IndexByte(cmd, '\\') < 0 &&
+		strings.IndexByte(cmd, wordSplitSep) < 0 {
+		return strings.Fields(cmd)
+	}
+
+	// Slow path: handle quotes and escapes
 	parts := make([]string, 0, 8)
 	var current strings.Builder
+	current.Grow(len(cmd) / 4) // estimate average arg length
 	inQuote := false
 	quoteChar := byte(0)
 	escaped := false
