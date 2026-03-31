@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,13 +29,15 @@ type ProcessService struct {
 	ServiceRecord
 
 	// Command configuration
-	command           []string
-	stopCommand       []string
-	finishCommand     []string // runs after process exits (before restart decision)
-	readyCheckCommand []string // polls to verify service readiness
+	command            []string
+	stopCommand        []string
+	finishCommand      []string      // runs after process exits (before restart decision)
+	readyCheckCommand  []string      // polls to verify service readiness
 	readyCheckInterval time.Duration // polling interval (default 1s)
-	workingDir        string
-	envFile           string
+	preStopHook        []string      // runs before SIGTERM in BringDown
+	workingDir         string
+	envFile            string
+	envDir             string // directory with one file per env var
 
 	// Credentials
 	runAsUID uint32
@@ -130,6 +133,12 @@ func (s *ProcessService) SetReadyCheckCommand(cmd []string, interval time.Durati
 		s.readyCheckInterval = time.Second
 	}
 }
+
+// SetPreStopHook sets the pre-stop hook command.
+func (s *ProcessService) SetPreStopHook(cmd []string) { s.preStopHook = cmd }
+
+// SetEnvDir sets the environment directory path.
+func (s *ProcessService) SetEnvDir(dir string) { s.envDir = dir }
 
 // SetWorkingDir sets the working directory.
 func (s *ProcessService) SetWorkingDir(dir string) { s.workingDir = dir }
@@ -321,7 +330,8 @@ func (s *ProcessService) BringUp() bool {
 }
 
 // BringDown stops the service process.
-// If a stop-command is configured, it is executed first. If it fails to
+// If a pre-stop-hook is configured, it runs first (synchronously with timeout).
+// Then if a stop-command is configured, it is executed. If it fails to
 // start, we fall back to sending the termination signal directly.
 func (s *ProcessService) BringDown() {
 	// Close readiness pipe if still open (no longer waiting for readiness)
@@ -336,6 +346,11 @@ func (s *ProcessService) BringDown() {
 
 	if s.stopPID > 0 || s.stopIssued {
 		return
+	}
+
+	// Run pre-stop-hook before any stop action
+	if len(s.preStopHook) > 0 {
+		s.execPreStopHook()
 	}
 
 	// Try stop-command first (like dinit's process_service::bring_down)
@@ -481,9 +496,46 @@ func (s *ProcessService) CheckRestart() bool {
 	return true
 }
 
-// buildEnv merges env-file variables and runtime extraEnv into a pre-allocated slice.
+// buildEnv merges env-file, env-dir, and runtime extraEnv into a single slice.
 func (s *ProcessService) buildEnv() []string {
-	return s.Record().BuildEnvWithFile(s.envFile)
+	env := s.Record().BuildEnvWithFile(s.envFile)
+
+	// Merge env-dir variables (runit-style: one file per variable)
+	if s.envDir != "" {
+		dirEnv, err := process.ReadEnvDir(s.envDir)
+		if err != nil {
+			s.services.logger.Error("Service '%s': failed to read env-dir '%s': %v",
+				s.serviceName, s.envDir, err)
+		} else if len(dirEnv) > 0 {
+			// Apply env-dir on top of existing env
+			for k, v := range dirEnv {
+				if v == "" {
+					// Empty value = unset: remove from env
+					for i := len(env) - 1; i >= 0; i-- {
+						if strings.HasPrefix(env[i], k+"=") {
+							env = append(env[:i], env[i+1:]...)
+							break
+						}
+					}
+				} else {
+					// Set or override
+					found := false
+					entry := k + "=" + v
+					for i, e := range env {
+						if strings.HasPrefix(e, k+"=") {
+							env[i] = entry
+							found = true
+							break
+						}
+					}
+					if !found {
+						env = append(env, entry)
+					}
+				}
+			}
+		}
+	}
+	return env
 }
 
 // startProcess forks and execs the service process.
@@ -1026,5 +1078,27 @@ func (s *ProcessService) watchReadyCheck() {
 				return
 			}
 		}
+	}
+}
+
+// execPreStopHook runs the pre-stop-hook before sending stop signal.
+// Runs synchronously with a timeout. The hook receives the service PID
+// as first argument (like runit's control scripts).
+func (s *ProcessService) execPreStopHook() {
+	args := make([]string, len(s.preStopHook)-1, len(s.preStopHook))
+	copy(args, s.preStopHook[1:])
+	args = append(args, strconv.Itoa(s.pid))
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultFinishTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, s.preStopHook[0], args...)
+	cmd.Dir = s.workingDir
+	cmd.Env = s.buildEnv()
+
+	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
+	if err := cmd.Run(); err != nil {
+		s.services.logger.Error("Service '%s': pre-stop-hook failed: %v",
+			s.serviceName, err)
 	}
 }

@@ -29,8 +29,10 @@ type ServiceDescription struct {
 	FinishCommand     []string      // runs after process exits (before restart)
 	ReadyCheckCommand []string      // polls to verify service readiness
 	ReadyCheckInterval time.Duration // polling interval for ready-check (default 1s)
+	PreStopHook       []string      // runs before SIGTERM in BringDown
 	WorkingDir        string
 	EnvFile           string
+	EnvDir            string // runit-style: directory with one file per env var
 
 	// Dependencies (by name, resolved by the loader)
 	DependsOn  []string // depends-on (REGULAR)
@@ -408,6 +410,14 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.WorkingDir = expandEnvVars(value, serviceArg)
 	case "env-file":
 		desc.EnvFile = expandEnvVars(value, serviceArg)
+	case "env-dir":
+		desc.EnvDir = expandEnvVars(value, serviceArg)
+	case "pre-stop-hook":
+		if op == OpPlusEqual {
+			desc.PreStopHook = append(desc.PreStopHook, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.PreStopHook = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
 
 	// Dependencies
 	case "depends-on":

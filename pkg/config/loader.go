@@ -196,8 +196,10 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetStopCommand(desc.StopCommand)
 		s.SetFinishCommand(desc.FinishCommand)
 		s.SetReadyCheckCommand(desc.ReadyCheckCommand, desc.ReadyCheckInterval)
+		s.SetPreStopHook(desc.PreStopHook)
 		s.SetWorkingDir(desc.WorkingDir)
 		s.SetEnvFile(desc.EnvFile)
+		s.SetEnvDir(desc.EnvDir)
 		if desc.StartTimeout > 0 {
 			s.SetStartTimeout(desc.StartTimeout)
 		}
@@ -587,6 +589,8 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetStopCommand(desc.StopCommand)
 		svc.SetFinishCommand(desc.FinishCommand)
 		svc.SetReadyCheckCommand(desc.ReadyCheckCommand, desc.ReadyCheckInterval)
+		svc.SetPreStopHook(desc.PreStopHook)
+		svc.SetEnvDir(desc.EnvDir)
 		svc.SetWorkingDir(desc.WorkingDir)
 		svc.SetEnvFile(desc.EnvFile)
 		if desc.StartTimeout > 0 {
