@@ -192,8 +192,18 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 		line := scanner.Text()
 
 		// Skip empty lines and comments
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		// Fast-path: most config lines have no leading whitespace
+		trimmed := line
+		if len(line) == 0 {
+			continue
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			trimmed = strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+		}
+		if trimmed[0] == '#' {
 			continue
 		}
 
@@ -893,6 +903,10 @@ func expandEnvVars(s string, serviceArg *string) string {
 }
 
 func expandEnvVarsImpl(s string, allowWordSplit bool, serviceArg *string) string {
+	// Fast path: no dollar signs means no expansion needed
+	if strings.IndexByte(s, '$') < 0 {
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 
@@ -1179,13 +1193,13 @@ func parseSignal(value string) (syscall.Signal, error) {
 // ParseCPUAffinity parses a CPU affinity spec like "0 1 2 3", "0-3",
 // "0,2,4", or "0-3 8-11" into a list of CPU numbers.
 func ParseCPUAffinity(value string) ([]uint, error) {
-	// Split on spaces and commas
 	var cpus []uint
 	seen := map[uint]bool{}
 
-	// Normalize: replace commas with spaces
-	value = strings.ReplaceAll(value, ",", " ")
-	tokens := strings.Fields(value)
+	// Split on spaces and commas in a single pass (avoids ReplaceAll allocation)
+	tokens := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ' ' || r == ',' || r == '\t'
+	})
 
 	for _, tok := range tokens {
 		if idx := strings.Index(tok, "-"); idx > 0 && idx < len(tok)-1 {

@@ -97,6 +97,7 @@ type ServiceSet struct {
 	globalEnvVer   uint64 // monotonically increasing version
 	globalEnvSnap  []string // cached snapshot
 	globalEnvSnapV uint64   // version of cached snapshot
+	globalEnvIdx   map[string]int // key → index in globalEnv for O(1) lookup
 	envListeners   []EnvListener
 
 	// Default cgroup base path (from --cgroup-path/-b)
@@ -431,6 +432,13 @@ func (ss *ServiceSet) SetGlobalEnv(env []string) {
 	ss.envMu.Lock()
 	defer ss.envMu.Unlock()
 	ss.globalEnv = env
+	// Rebuild index map
+	ss.globalEnvIdx = make(map[string]int, len(env))
+	for i, e := range env {
+		if k, _, ok := strings.Cut(e, "="); ok {
+			ss.globalEnvIdx[k] = i
+		}
+	}
 	ss.globalEnvVer++
 }
 
@@ -454,18 +462,16 @@ func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 	ss.envMu.Lock()
 	varStr := key + "=" + value
 	override := false
-	for i, e := range ss.globalEnv {
-		if k, _, ok := strings.Cut(e, "="); ok && k == key {
-			override = true
-			ss.globalEnv[i] = varStr
-			ss.globalEnvVer++
-			listeners := ss.copyEnvListeners()
-			ss.envMu.Unlock()
-			ss.notifyEnvListenersSnapshot(listeners, varStr, override)
-			return
+	if idx, ok := ss.globalEnvIdx[key]; ok {
+		override = true
+		ss.globalEnv[idx] = varStr
+	} else {
+		if ss.globalEnvIdx == nil {
+			ss.globalEnvIdx = make(map[string]int, len(ss.globalEnv)+1)
 		}
+		ss.globalEnvIdx[key] = len(ss.globalEnv)
+		ss.globalEnv = append(ss.globalEnv, varStr)
 	}
-	ss.globalEnv = append(ss.globalEnv, varStr)
 	ss.globalEnvVer++
 	listeners := ss.copyEnvListeners()
 	ss.envMu.Unlock()
@@ -475,17 +481,26 @@ func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 // GlobalUnsetEnv removes a global environment variable and notifies listeners.
 func (ss *ServiceSet) GlobalUnsetEnv(key string) {
 	ss.envMu.Lock()
-	for i, e := range ss.globalEnv {
-		if k, _, ok := strings.Cut(e, "="); ok && k == key {
-			ss.globalEnv = append(ss.globalEnv[:i], ss.globalEnv[i+1:]...)
-			ss.globalEnvVer++
-			listeners := ss.copyEnvListeners()
-			ss.envMu.Unlock()
-			ss.notifyEnvListenersSnapshot(listeners, key, true)
-			return
+	idx, ok := ss.globalEnvIdx[key]
+	if !ok {
+		ss.envMu.Unlock()
+		return
+	}
+	// Swap-with-last removal
+	last := len(ss.globalEnv) - 1
+	if idx != last {
+		ss.globalEnv[idx] = ss.globalEnv[last]
+		// Update index of the moved element
+		if k, _, ok2 := strings.Cut(ss.globalEnv[idx], "="); ok2 {
+			ss.globalEnvIdx[k] = idx
 		}
 	}
+	ss.globalEnv = ss.globalEnv[:last]
+	delete(ss.globalEnvIdx, key)
+	ss.globalEnvVer++
+	listeners := ss.copyEnvListeners()
 	ss.envMu.Unlock()
+	ss.notifyEnvListenersSnapshot(listeners, key, true)
 }
 
 // AddEnvListener registers a listener for global env changes.
