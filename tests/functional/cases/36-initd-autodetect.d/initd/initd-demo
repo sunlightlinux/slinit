@@ -1,0 +1,23 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          initd-demo
+# Required-Start:    system-init
+# Required-Stop:     system-init
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Demo init.d service for testing
+### END INIT INFO
+
+case "$1" in
+  start)
+    echo "initd-demo: started" > /tmp/initd-demo-status
+    ;;
+  stop)
+    echo "initd-demo: stopped" > /tmp/initd-demo-status
+    ;;
+  *)
+    echo "Usage: $0 {start|stop}"
+    exit 1
+    ;;
+esac
+exit 0

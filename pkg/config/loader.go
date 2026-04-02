@@ -14,9 +14,13 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
+// Default init.d directories to search as fallback.
+var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
+
 // DirLoader loads service descriptions from one or more directories.
 type DirLoader struct {
 	dirs     []string
+	initDirs []string // init.d directories for fallback (empty = disabled)
 	set      *service.ServiceSet
 	loading  map[string]bool // tracks loading state for circular dependency detection
 	curDepth int             // current recursion depth during loading
@@ -29,6 +33,13 @@ func NewDirLoader(set *service.ServiceSet, dirs []string) *DirLoader {
 		set:     set,
 		loading: make(map[string]bool),
 	}
+}
+
+// SetInitDDirs configures init.d fallback directories.
+// When set, the loader will search these directories for init.d scripts
+// if a service is not found in the normal service directories.
+func (dl *DirLoader) SetInitDDirs(dirs []string) {
+	dl.initDirs = dirs
 }
 
 // ServiceDirs returns the configured service directories.
@@ -586,6 +597,23 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 				return nil, "", err
 			}
 			return desc, path, nil
+		}
+	}
+
+	// Fallback: search init.d directories for SysV init scripts
+	if len(dl.initDirs) > 0 {
+		for _, dir := range dl.initDirs {
+			path := filepath.Join(dir, name)
+			if IsInitDScript(path) {
+				desc, err := InitDToServiceDescription(path)
+				if err != nil {
+					return nil, "", &ServiceLoadError{
+						ServiceName: name,
+						Message:     fmt.Sprintf("init.d script '%s': %v", path, err),
+					}
+				}
+				return desc, path, nil
+			}
 		}
 	}
 

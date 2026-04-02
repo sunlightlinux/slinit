@@ -308,6 +308,18 @@ func main() {
 
 	// Create and configure the loader
 	loader := config.NewDirLoader(serviceSet, dirs)
+
+	// Enable init.d fallback (auto-detect SysV init scripts)
+	var initDDirs []string
+	for _, d := range config.DefaultInitDDirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			initDDirs = append(initDDirs, d)
+		}
+	}
+	if len(initDDirs) > 0 {
+		loader.SetInitDDirs(initDDirs)
+	}
+
 	serviceSet.SetLoader(loader)
 
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args)

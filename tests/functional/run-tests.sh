@@ -124,6 +124,14 @@ SVC
         cp -r "${services_dir}"/* "${overlay_dir}/etc/slinit.d/" 2>/dev/null || true
     fi
 
+    # Copy init.d scripts if an initd/ subdirectory exists in the test .d dir.
+    if [ -d "${services_dir}/initd" ]; then
+        mkdir -p "${overlay_dir}/etc/init.d"
+        cp -r "${services_dir}/initd"/* "${overlay_dir}/etc/init.d/" 2>/dev/null || true
+        # Remove from slinit.d (it was copied there too)
+        rm -rf "${overlay_dir}/etc/slinit.d/initd" 2>/dev/null || true
+    fi
+
     # Create the overlay cpio and concatenate with base
     local overlay_cpio="${test_dir}/overlay.cpio.gz"
     (cd "${overlay_dir}" && find . | cpio -o -H newc 2>/dev/null | gzip) > "${overlay_cpio}"
