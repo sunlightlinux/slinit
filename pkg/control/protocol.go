@@ -77,6 +77,7 @@ const (
 	CmdQueryDependents uint8 = 42
 	CmdPauseService    uint8 = 43
 	CmdContinueService uint8 = 44
+	CmdOnceService     uint8 = 45
 )
 
 // Reply codes (server → client).

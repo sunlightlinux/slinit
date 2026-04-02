@@ -262,6 +262,10 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdContinue(conn, name)
 		})
+	case "once":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdOnce(conn, name)
+		})
 	case "boot-time", "analyze":
 		err = cmdBootTime(conn)
 	case "reload":
@@ -1269,6 +1273,27 @@ func cmdContinue(conn net.Conn, svcName string) error {
 		return fmt.Errorf("failed to continue service '%s'", svcName)
 	}
 	info("Service '%s' continued.\n", svcName)
+	return nil
+}
+
+func cmdOnce(conn net.Conn, svcName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, handle)
+	if err := control.WritePacket(conn, control.CmdOnceService, payload); err != nil {
+		return err
+	}
+	rply, _, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("failed to start service '%s' once", svcName)
+	}
+	info("Service '%s' started once (no restart).\n", svcName)
 	return nil
 }
 

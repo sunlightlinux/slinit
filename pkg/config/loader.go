@@ -218,6 +218,9 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
 		applyLogSettings(s, desc)
+		s.SetLogRotation(desc.LogMaxSize, desc.LogMaxFiles, desc.LogRotateTime)
+		s.SetLogProcessor(desc.LogProcessor)
+		s.SetLogFilters(desc.LogInclude, desc.LogExclude)
 		s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 	case *service.ScriptedService:
 		s.SetStartCommand(desc.Command)
@@ -514,6 +517,14 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// Apply settings to the service record
 	applyToService(svc, desc)
 
+	// Check for 'down' marker file (runit convention: service starts in stopped state)
+	// If the file exists, override auto-restart to never — service must be
+	// explicitly started via slinitctl.
+	downPath := filepath.Join(filepath.Dir(filePath), "down")
+	if _, err := os.Stat(downPath); err == nil {
+		svc.Record().SetMarkedDown(true)
+	}
+
 	// Re-register alias now that provides is set (AddService was called
 	// before applyToService, so the alias wasn't registered yet)
 	if alias := svc.Record().Provides(); alias != "" {
@@ -616,6 +627,9 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
 		applyLogSettings(svc, desc)
+		svc.SetLogRotation(desc.LogMaxSize, desc.LogMaxFiles, desc.LogRotateTime)
+		svc.SetLogProcessor(desc.LogProcessor)
+		svc.SetLogFilters(desc.LogInclude, desc.LogExclude)
 		if desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" {
 			svc.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 		}

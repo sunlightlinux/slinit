@@ -83,9 +83,10 @@ type ServiceRecord struct {
 	smoothRecovery bool
 
 	// Pins
-	pinnedStopped    bool
-	pinnedStarted    bool
+	pinnedStopped     bool
+	pinnedStarted     bool
 	deptPinnedStarted bool
+	markedDown        bool // 'down' file exists — don't auto-start
 
 	// Waiting flags
 	waitingForDeps    bool
@@ -513,6 +514,11 @@ func (sr *ServiceRecord) Start() {
 		return
 	}
 
+	// Explicit start clears the 'down' marker
+	if sr.markedDown {
+		sr.markedDown = false
+	}
+
 	if !sr.startExplicit {
 		sr.requiredBy++
 		sr.startExplicit = true
@@ -606,6 +612,12 @@ func (sr *ServiceRecord) ForcedStop() {
 }
 
 // PinStart pins the service in started state.
+// SetMarkedDown sets the down-file marker.
+func (sr *ServiceRecord) SetMarkedDown(v bool) { sr.markedDown = v }
+
+// IsMarkedDown returns true if a 'down' file was found for this service.
+func (sr *ServiceRecord) IsMarkedDown() bool { return sr.markedDown }
+
 func (sr *ServiceRecord) PinStart() {
 	if !sr.pinnedStarted {
 		if !sr.deptPinnedStarted {
@@ -826,6 +838,13 @@ func (sr *ServiceRecord) doStart() {
 		if !wasActive {
 			sr.failedToStart(false, false)
 		}
+		return
+	}
+
+	// 'down' marker prevents auto-start (e.g., as dependency)
+	// Explicit Start() clears markedDown before calling doStart()
+	if sr.markedDown {
+		sr.desired = StateStopped
 		return
 	}
 

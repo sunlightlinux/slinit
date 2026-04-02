@@ -245,6 +245,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handlePauseService(payload)
 	case CmdContinueService:
 		return c.handleContinueService(payload)
+	case CmdOnceService:
+		return c.handleOnceService(payload)
 	case CmdServiceStatus6:
 		return c.handleServiceStatus6(payload)
 	default:
@@ -677,6 +679,24 @@ func (c *Connection) handleContinueService(payload []byte) error {
 		return c.writePacket(RplyACK, nil)
 	}
 	return c.writePacket(RplyNAK, nil)
+}
+
+func (c *Connection) handleOnceService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	if c.server.services.IsShuttingDown() {
+		return c.writePacket(RplyShuttingDown, nil)
+	}
+	// Start once: set auto-restart to never, then start
+	svc.Record().SetAutoRestart(service.RestartNever)
+	c.server.services.StartService(svc)
+	return c.writePacket(RplyACK, nil)
 }
 
 func (c *Connection) handleUnpinService(payload []byte) error {

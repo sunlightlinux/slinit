@@ -94,6 +94,15 @@ type ProcessService struct {
 	logFilePerms int
 	logFileUID   int
 	logFileGID   int
+	logRotator   *LogRotator // manages rotation, filtering, processing
+
+	// Log rotation/filtering config
+	logMaxSize    int64
+	logMaxFiles   int
+	logRotateTime time.Duration
+	logProcessor  []string
+	logIncludes   []string
+	logExcludes   []string
 
 	// Channels for monitoring goroutine coordination
 	doneCh        chan struct{} // closed when monitoring goroutine should stop
@@ -204,6 +213,22 @@ func (s *ProcessService) SetLogFileDetails(path string, perms, uid, gid int) {
 
 // GetLogFile returns the logfile path.
 func (s *ProcessService) GetLogFile() string { return s.logFile }
+
+// SetLogRotation configures log rotation parameters.
+func (s *ProcessService) SetLogRotation(maxSize int64, maxFiles int, rotateTime time.Duration) {
+	s.logMaxSize = maxSize
+	s.logMaxFiles = maxFiles
+	s.logRotateTime = rotateTime
+}
+
+// SetLogProcessor sets the log processor command.
+func (s *ProcessService) SetLogProcessor(cmd []string) { s.logProcessor = cmd }
+
+// SetLogFilters sets log include/exclude patterns.
+func (s *ProcessService) SetLogFilters(includes, excludes []string) {
+	s.logIncludes = includes
+	s.logExcludes = excludes
+}
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
 func (s *ProcessService) GetLogBuffer() *LogBuffer { return s.logBuf }
@@ -598,14 +623,45 @@ func (s *ProcessService) startProcess() error {
 		}
 		outputPipe = s.outputPipeW
 	} else if s.logType == LogToFile && s.logFile != "" {
-		f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, os.FileMode(s.logFilePerms))
-		if err != nil {
-			return fmt.Errorf("failed to open logfile '%s': %w", s.logFile, err)
+		// Use LogRotator if rotation, filtering, or processing is configured
+		if s.logMaxSize > 0 || s.logMaxFiles > 0 || s.logRotateTime > 0 ||
+			len(s.logProcessor) > 0 || len(s.logIncludes) > 0 || len(s.logExcludes) > 0 {
+			if s.logRotator != nil {
+				s.logRotator.Close()
+			}
+			var err error
+			s.logRotator, err = NewLogRotator(LogRotatorConfig{
+				FilePath:    s.logFile,
+				FilePerms:   os.FileMode(s.logFilePerms),
+				FileUID:     s.logFileUID,
+				FileGID:     s.logFileGID,
+				MaxSize:     s.logMaxSize,
+				MaxFiles:    s.logMaxFiles,
+				RotateTime:  s.logRotateTime,
+				Processor:   s.logProcessor,
+				Includes:    s.logIncludes,
+				Excludes:    s.logExcludes,
+				ServiceName: s.serviceName,
+				Logger:      s.services.logger,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to create log rotator: %w", err)
+			}
+			var pipeErr error
+			outputPipe, pipeErr = s.logRotator.CreatePipe()
+			if pipeErr != nil {
+				return fmt.Errorf("failed to create log rotator pipe: %w", pipeErr)
+			}
+		} else {
+			f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, os.FileMode(s.logFilePerms))
+			if err != nil {
+				return fmt.Errorf("failed to open logfile '%s': %w", s.logFile, err)
+			}
+			if s.logFileUID >= 0 || s.logFileGID >= 0 {
+				_ = os.Chown(s.logFile, s.logFileUID, s.logFileGID)
+			}
+			outputPipe = f
 		}
-		if s.logFileUID >= 0 || s.logFileGID >= 0 {
-			_ = os.Chown(s.logFile, s.logFileUID, s.logFileGID)
-		}
-		outputPipe = f
 	}
 
 	// Set up input pipe (consumer-of)
@@ -687,7 +743,12 @@ func (s *ProcessService) startProcess() error {
 		if outputPipe != nil && s.logType == LogToBuffer {
 			s.logBuf.CloseWriteEnd()
 		} else if outputPipe != nil && s.logType == LogToFile {
-			outputPipe.Close()
+			if s.logRotator != nil {
+				s.logRotator.Close()
+				s.logRotator = nil
+			} else {
+				outputPipe.Close()
+			}
 		}
 		if notifyPipeWrite != nil {
 			notifyPipeWrite.Close()
@@ -709,7 +770,12 @@ func (s *ProcessService) startProcess() error {
 		s.logBuf.CloseWriteEnd()
 		s.logBuf.StartReader()
 	} else if outputPipe != nil && s.logType == LogToFile {
-		outputPipe.Close()
+		if s.logRotator != nil {
+			s.logRotator.CloseWriteEnd()
+			s.logRotator.StartReader()
+		} else {
+			outputPipe.Close()
+		}
 	}
 
 	// Close parent's write end of notification pipe

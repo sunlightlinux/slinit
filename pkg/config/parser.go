@@ -59,12 +59,18 @@ type ServiceDescription struct {
 	Flags          service.ServiceFlags
 
 	// Logging
-	LogType      service.LogType
-	LogFile      string
-	LogFilePerms int
-	LogFileUID   int
-	LogFileGID   int
-	LogBufMax    int
+	LogType         service.LogType
+	LogFile         string
+	LogFilePerms    int
+	LogFileUID      int
+	LogFileGID      int
+	LogBufMax       int
+	LogMaxSize      int64         // max logfile size before rotation (bytes)
+	LogMaxFiles     int           // max number of rotated log files to keep
+	LogRotateTime   time.Duration // rotate logfile at this interval
+	LogProcessor    []string      // command to run on rotated logfile
+	LogInclude      []string      // include only lines matching these patterns
+	LogExclude      []string      // exclude lines matching these patterns
 
 	// Process management
 	StopTimeout       time.Duration
@@ -574,6 +580,34 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid logfile gid: %w", err)
 		}
 		desc.LogFileGID = gid
+	case "logfile-max-size":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid logfile-max-size: %w", err)
+		}
+		desc.LogMaxSize = n
+	case "logfile-max-files":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid logfile-max-files: %w", err)
+		}
+		desc.LogMaxFiles = n
+	case "logfile-rotate-time":
+		d, err := parseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid logfile-rotate-time: %w", err)
+		}
+		desc.LogRotateTime = d
+	case "log-processor":
+		if op == OpPlusEqual {
+			desc.LogProcessor = append(desc.LogProcessor, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.LogProcessor = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+	case "log-include":
+		desc.LogInclude = append(desc.LogInclude, value)
+	case "log-exclude":
+		desc.LogExclude = append(desc.LogExclude, value)
 
 	// Process management
 	case "pid-file":
