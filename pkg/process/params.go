@@ -156,6 +156,25 @@ type ExecParams struct {
 	// CPUAffinity is a set of CPU numbers to pin the child process to
 	// via sched_setaffinity(). nil/empty means don't change.
 	CPUAffinity []uint
+
+	// Chroot is the directory to chroot into before exec.
+	// Applied via SysProcAttr.Chroot.
+	Chroot string
+
+	// NewSession creates a new session (setsid) for the child process.
+	// When true, overrides the default Setpgid behavior.
+	NewSession bool
+
+	// LockFile is the path to a file to flock(LOCK_EX|LOCK_NB) before exec.
+	// If the lock cannot be acquired, the process fails to start.
+	LockFile string
+
+	// CloseStdin closes fd 0 in the child process.
+	CloseStdin bool
+	// CloseStdout closes fd 1 in the child process.
+	CloseStdout bool
+	// CloseStderr closes fd 2 in the child process.
+	CloseStderr bool
 }
 
 // Rlimit holds a resource limit (soft, hard) for a given resource.

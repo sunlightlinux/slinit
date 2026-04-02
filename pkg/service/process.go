@@ -35,9 +35,16 @@ type ProcessService struct {
 	readyCheckCommand  []string      // polls to verify service readiness
 	readyCheckInterval time.Duration // polling interval (default 1s)
 	preStopHook        []string      // runs before SIGTERM in BringDown
+	controlCommands    map[string][]string // signal name → custom command
 	workingDir         string
 	envFile            string
 	envDir             string // directory with one file per env var
+	chroot             string // chroot before exec
+	lockFile           string // exclusive flock path
+	newSession         bool   // setsid() before exec
+	closeStdin         bool   // close fd 0
+	closeStdout        bool   // close fd 1
+	closeStderr        bool   // close fd 2
 
 	// Credentials
 	runAsUID uint32
@@ -68,6 +75,7 @@ type ProcessService struct {
 	// State tracking
 	stopIssued       bool
 	doingSmoothRecov bool
+	paused           bool // true when service is SIGSTOP'd (pause/continue)
 
 	// Socket activation
 	socketFD *os.File // pre-opened listening socket (nil if no socket-listen)
@@ -139,6 +147,25 @@ func (s *ProcessService) SetPreStopHook(cmd []string) { s.preStopHook = cmd }
 
 // SetEnvDir sets the environment directory path.
 func (s *ProcessService) SetEnvDir(dir string) { s.envDir = dir }
+
+// SetControlCommands sets the custom signal handler commands.
+func (s *ProcessService) SetControlCommands(cmds map[string][]string) { s.controlCommands = cmds }
+
+// SetChroot sets the chroot directory.
+func (s *ProcessService) SetChroot(dir string) { s.chroot = dir }
+
+// SetLockFile sets the exclusive lock file path.
+func (s *ProcessService) SetLockFile(path string) { s.lockFile = path }
+
+// SetNewSession enables setsid() for the child process.
+func (s *ProcessService) SetNewSession(v bool) { s.newSession = v }
+
+// SetCloseFDs sets which standard file descriptors to close.
+func (s *ProcessService) SetCloseFDs(stdin, stdout, stderr bool) {
+	s.closeStdin = stdin
+	s.closeStdout = stdout
+	s.closeStderr = stderr
+}
 
 // SetWorkingDir sets the working directory.
 func (s *ProcessService) SetWorkingDir(dir string) { s.workingDir = dir }
@@ -365,19 +392,25 @@ func (s *ProcessService) BringDown() {
 		// stop-command failed to start; fall through to signal
 	}
 
-	// Send termination signal
+	// Send termination signal (or run control-command if configured)
 	sig := s.termSignal
 	if sig == 0 {
 		sig = syscall.SIGTERM
 	}
 
-	s.services.logger.Info("Service '%s': sending %v to process %d",
-		s.serviceName, sig, s.pid)
+	sigName := signalName(sig)
+	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
+		// Run custom control command instead of raw signal
+		s.execControlCommand(sigName, cmd)
+	} else {
+		s.services.logger.Info("Service '%s': sending %v to process %d",
+			s.serviceName, sig, s.pid)
 
-	err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
-	if err != nil {
-		s.services.logger.Error("Service '%s': failed to signal process: %v",
-			s.serviceName, err)
+		err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+		if err != nil {
+			s.services.logger.Error("Service '%s': failed to signal process: %v",
+				s.serviceName, err)
+		}
 	}
 
 	s.stopIssued = true
@@ -640,6 +673,12 @@ func (s *ProcessService) startProcess() error {
 		NotifyPipe:        notifyPipeWrite,
 		ForceNotifyFD:     s.readyNotifyFD,
 		NotifyVar:         s.readyNotifyVar,
+		Chroot:            s.chroot,
+		NewSession:        s.newSession,
+		LockFile:          s.lockFile,
+		CloseStdin:        s.closeStdin,
+		CloseStdout:       s.closeStdout,
+		CloseStderr:       s.closeStderr,
 	}
 	s.Record().ApplyProcessAttrs(&params)
 
@@ -1102,3 +1141,107 @@ func (s *ProcessService) execPreStopHook() {
 			s.serviceName, err)
 	}
 }
+
+// execControlCommand runs a custom control command for a signal.
+// The command receives the service PID as an appended argument.
+// Runs synchronously with a timeout.
+func (s *ProcessService) execControlCommand(sigName string, command []string) {
+	args := make([]string, len(command)-1, len(command))
+	copy(args, command[1:])
+	args = append(args, strconv.Itoa(s.pid))
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultFinishTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, command[0], args...)
+	cmd.Dir = s.workingDir
+	cmd.Env = s.buildEnv()
+
+	s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
+	if err := cmd.Run(); err != nil {
+		s.services.logger.Error("Service '%s': control-command-%s failed: %v",
+			s.serviceName, sigName, err)
+	}
+}
+
+// signalName returns the uppercase name of a signal (e.g., "TERM", "HUP").
+func signalName(sig syscall.Signal) string {
+	switch sig {
+	case syscall.SIGTERM:
+		return "TERM"
+	case syscall.SIGHUP:
+		return "HUP"
+	case syscall.SIGINT:
+		return "INT"
+	case syscall.SIGQUIT:
+		return "QUIT"
+	case syscall.SIGKILL:
+		return "KILL"
+	case syscall.SIGUSR1:
+		return "USR1"
+	case syscall.SIGUSR2:
+		return "USR2"
+	case syscall.SIGALRM:
+		return "ALRM"
+	case syscall.SIGSTOP:
+		return "STOP"
+	case syscall.SIGCONT:
+		return "CONT"
+	default:
+		return strconv.Itoa(int(sig))
+	}
+}
+
+// SendSignalWithControl sends a signal to the service, using control-command if configured.
+// Returns true if signal was sent (or control command ran).
+func (s *ProcessService) SendSignalWithControl(sig syscall.Signal) bool {
+	if s.pid <= 0 {
+		return false
+	}
+	sigName := signalName(sig)
+	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
+		s.execControlCommand(sigName, cmd)
+		return true
+	}
+	err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+	return err == nil
+}
+
+// Pause suspends the service process with SIGSTOP (or control-command-STOP).
+func (s *ProcessService) Pause() bool {
+	if s.pid <= 0 || s.paused {
+		return false
+	}
+	if cmd, ok := s.controlCommands["STOP"]; ok && len(cmd) > 0 {
+		s.execControlCommand("STOP", cmd)
+	} else {
+		if err := process.SignalProcess(s.pid, syscall.SIGSTOP, s.Flags.SignalProcessOnly); err != nil {
+			s.services.logger.Error("Service '%s': SIGSTOP failed: %v", s.serviceName, err)
+			return false
+		}
+	}
+	s.paused = true
+	s.services.logger.Info("Service '%s': paused", s.serviceName)
+	return true
+}
+
+// Continue resumes a paused service process with SIGCONT (or control-command-CONT).
+func (s *ProcessService) Continue() bool {
+	if s.pid <= 0 || !s.paused {
+		return false
+	}
+	if cmd, ok := s.controlCommands["CONT"]; ok && len(cmd) > 0 {
+		s.execControlCommand("CONT", cmd)
+	} else {
+		if err := process.SignalProcess(s.pid, syscall.SIGCONT, s.Flags.SignalProcessOnly); err != nil {
+			s.services.logger.Error("Service '%s': SIGCONT failed: %v", s.serviceName, err)
+			return false
+		}
+	}
+	s.paused = false
+	s.services.logger.Info("Service '%s': continued", s.serviceName)
+	return true
+}
+
+// IsPaused returns whether the service is currently paused.
+func (s *ProcessService) IsPaused() bool { return s.paused }

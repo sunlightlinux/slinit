@@ -51,6 +51,32 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.SysProcAttr.AmbientCaps = params.AmbientCaps
 	}
 
+	// Chroot support
+	if params.Chroot != "" {
+		cmd.SysProcAttr.Chroot = params.Chroot
+	}
+
+	// New session (setsid) — overrides default Setpgid
+	if params.NewSession && !params.OnConsole {
+		cmd.SysProcAttr.Setpgid = false
+		cmd.SysProcAttr.Setsid = true
+	}
+
+	// Lock file: acquire exclusive non-blocking flock before exec
+	var lockFD *os.File
+	if params.LockFile != "" {
+		var err error
+		lockFD, err = os.OpenFile(params.LockFile, os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			return 0, nil, &ExecError{Stage: StageDoExec, Err: fmt.Errorf("lock-file open: %w", err)}
+		}
+		if err := syscall.Flock(int(lockFD.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			lockFD.Close()
+			return 0, nil, &ExecError{Stage: StageDoExec, Err: fmt.Errorf("lock-file already locked: %s", params.LockFile)}
+		}
+		// lockFD stays open for the lifetime of the process (flock released on close)
+	}
+
 	// Console handling: open /dev/console, create new session, set controlling terminal
 	var consoleFd *os.File
 	if params.OnConsole {
@@ -88,6 +114,29 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// Wire stdin from input pipe (consumer-of)
 	if params.InputPipe != nil && !params.OnConsole {
 		cmd.Stdin = params.InputPipe
+	}
+
+	// Close stdin/stdout/stderr: redirect to /dev/null (runit -0/-1/-2 style)
+	if params.CloseStdin && cmd.Stdin == nil {
+		devNull, err := os.Open("/dev/null")
+		if err == nil {
+			cmd.Stdin = devNull
+			defer devNull.Close()
+		}
+	}
+	if params.CloseStdout && cmd.Stdout == nil {
+		devNull, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
+		if err == nil {
+			cmd.Stdout = devNull
+			defer devNull.Close()
+		}
+	}
+	if params.CloseStderr && cmd.Stderr == nil {
+		devNull, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
+		if err == nil {
+			cmd.Stderr = devNull
+			defer devNull.Close()
+		}
 	}
 
 	// Set up extra file descriptors for the child process.
@@ -162,6 +211,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		for _, f := range extraFdNullFiles {
 			f.Close()
 		}
+		if lockFD != nil {
+			lockFD.Close()
+		}
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
 	}
 
@@ -190,6 +242,10 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// Goroutine that waits for the process to finish
 	go func() {
 		defer close(exitCh)
+		// Release lock file when process exits
+		if lockFD != nil {
+			defer lockFD.Close()
+		}
 
 		err := cmd.Wait()
 

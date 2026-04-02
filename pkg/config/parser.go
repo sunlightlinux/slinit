@@ -30,9 +30,16 @@ type ServiceDescription struct {
 	ReadyCheckCommand []string      // polls to verify service readiness
 	ReadyCheckInterval time.Duration // polling interval for ready-check (default 1s)
 	PreStopHook       []string      // runs before SIGTERM in BringDown
+	ControlCommands   map[string][]string // signal→custom command (runit control/)
 	WorkingDir        string
 	EnvFile           string
 	EnvDir            string // runit-style: directory with one file per env var
+	Chroot            string // chroot directory before exec
+	LockFile          string // exclusive flock file path
+	NewSession        bool   // setsid() before exec
+	CloseStdin        bool   // close fd 0
+	CloseStdout       bool   // close fd 1
+	CloseStderr       bool   // close fd 2
 
 	// Dependencies (by name, resolved by the loader)
 	DependsOn  []string // depends-on (REGULAR)
@@ -418,6 +425,34 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		} else {
 			desc.PreStopHook = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
+	case "chroot":
+		desc.Chroot = expandEnvVars(value, serviceArg)
+	case "lock-file":
+		desc.LockFile = expandEnvVars(value, serviceArg)
+	case "new-session":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.NewSession = b
+	case "close-stdin":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.CloseStdin = b
+	case "close-stdout":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.CloseStdout = b
+	case "close-stderr":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.CloseStderr = b
 
 	// Dependencies
 	case "depends-on":
@@ -675,6 +710,26 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 				// Always on in slinit, silently accept
 			}
 		}
+
+	// Control commands (runit-style custom signal handlers)
+	// Format: control-command-HUP = /path/to/script
+	default:
+		if strings.HasPrefix(setting, "control-command-") {
+			sigName := strings.ToUpper(setting[len("control-command-"):])
+			cmd := splitCommand(expandEnvVarsForCommand(value, serviceArg))
+			if len(cmd) > 0 {
+				if desc.ControlCommands == nil {
+					desc.ControlCommands = make(map[string][]string)
+				}
+				if op == OpPlusEqual {
+					desc.ControlCommands[sigName] = append(desc.ControlCommands[sigName], cmd...)
+				} else {
+					desc.ControlCommands[sigName] = cmd
+				}
+			}
+			return nil
+		}
+		return fmt.Errorf("unknown setting: %s", setting)
 	}
 
 	return nil

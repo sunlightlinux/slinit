@@ -241,6 +241,10 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleQueryLoadMech()
 	case CmdQueryDependents:
 		return c.handleQueryDependents(payload)
+	case CmdPauseService:
+		return c.handlePauseService(payload)
+	case CmdContinueService:
+		return c.handleContinueService(payload)
 	case CmdServiceStatus6:
 		return c.handleServiceStatus6(payload)
 	default:
@@ -635,6 +639,44 @@ func (c *Connection) handleSignal(payload []byte) error {
 		return c.writePacket(RplySignalErr, []byte(fmt.Sprintf("%v", err)))
 	}
 	return c.writePacket(RplyACK, nil)
+}
+
+func (c *Connection) handlePauseService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	ps, ok := svc.(*service.ProcessService)
+	if !ok {
+		return c.writePacket(RplyNAK, nil)
+	}
+	if ps.Pause() {
+		return c.writePacket(RplyACK, nil)
+	}
+	return c.writePacket(RplyNAK, nil)
+}
+
+func (c *Connection) handleContinueService(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	ps, ok := svc.(*service.ProcessService)
+	if !ok {
+		return c.writePacket(RplyNAK, nil)
+	}
+	if ps.Continue() {
+		return c.writePacket(RplyACK, nil)
+	}
+	return c.writePacket(RplyNAK, nil)
 }
 
 func (c *Connection) handleUnpinService(payload []byte) error {

@@ -197,9 +197,14 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetFinishCommand(desc.FinishCommand)
 		s.SetReadyCheckCommand(desc.ReadyCheckCommand, desc.ReadyCheckInterval)
 		s.SetPreStopHook(desc.PreStopHook)
+		s.SetControlCommands(desc.ControlCommands)
 		s.SetWorkingDir(desc.WorkingDir)
 		s.SetEnvFile(desc.EnvFile)
 		s.SetEnvDir(desc.EnvDir)
+		s.SetChroot(desc.Chroot)
+		s.SetLockFile(desc.LockFile)
+		s.SetNewSession(desc.NewSession)
+		s.SetCloseFDs(desc.CloseStdin, desc.CloseStdout, desc.CloseStderr)
 		if desc.StartTimeout > 0 {
 			s.SetStartTimeout(desc.StartTimeout)
 		}
@@ -590,9 +595,14 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetFinishCommand(desc.FinishCommand)
 		svc.SetReadyCheckCommand(desc.ReadyCheckCommand, desc.ReadyCheckInterval)
 		svc.SetPreStopHook(desc.PreStopHook)
+		svc.SetControlCommands(desc.ControlCommands)
 		svc.SetEnvDir(desc.EnvDir)
 		svc.SetWorkingDir(desc.WorkingDir)
 		svc.SetEnvFile(desc.EnvFile)
+		svc.SetChroot(desc.Chroot)
+		svc.SetLockFile(desc.LockFile)
+		svc.SetNewSession(desc.NewSession)
+		svc.SetCloseFDs(desc.CloseStdin, desc.CloseStdout, desc.CloseStderr)
 		if desc.StartTimeout > 0 {
 			svc.SetStartTimeout(desc.StartTimeout)
 		}

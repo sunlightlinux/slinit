@@ -254,6 +254,14 @@ doneFlags:
 			fatal("Usage: slinitctl signal [-l|--list] <signal> <service>")
 		}
 		err = cmdSignal(conn, cmdArgs[1], cmdArgs[0])
+	case "pause":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdPause(conn, name)
+		})
+	case "continue", "cont":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdContinue(conn, name)
+		})
 	case "boot-time", "analyze":
 		err = cmdBootTime(conn)
 	case "reload":
@@ -1219,6 +1227,48 @@ func cmdSignal(conn net.Conn, svcName string, sigStr string) error {
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
+	return nil
+}
+
+func cmdPause(conn net.Conn, svcName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, handle)
+	if err := control.WritePacket(conn, control.CmdPauseService, payload); err != nil {
+		return err
+	}
+	rply, _, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("failed to pause service '%s'", svcName)
+	}
+	info("Service '%s' paused.\n", svcName)
+	return nil
+}
+
+func cmdContinue(conn net.Conn, svcName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, handle)
+	if err := control.WritePacket(conn, control.CmdContinueService, payload); err != nil {
+		return err
+	}
+	rply, _, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("failed to continue service '%s'", svcName)
+	}
+	info("Service '%s' continued.\n", svcName)
 	return nil
 }
 
