@@ -1,0 +1,7 @@
+type = process
+command = /bin/sh -c "echo '[finish-svc] running'; sleep 2; exit 42"
+finish-command = /bin/sh -c "echo \"finish-command: exit=$$0 signal=$$1\" > /tmp/finish-result"
+restart = false
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

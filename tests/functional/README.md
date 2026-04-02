@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (29 tests)
+# Run all tests (35 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -68,11 +68,17 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 27 | consumer-of | Pipe logging (log-type=pipe + consumer-of) |
 | 28 | env-file | Environment file loading into service |
 | 29 | slinit-check | Offline and online config linter |
+| 30 | finish-command | Finish-command runs after process exit with args |
+| 31 | down-file | Down marker file prevents service auto-start |
+| 32 | pause-continue | Pause (SIGSTOP) and continue (SIGCONT) a service |
+| 33 | once | Start once without auto-restart |
+| 34 | env-dir | Runit-style env-dir (one file per variable) |
+| 35 | ready-check | Ready-check-command polling-based readiness |
 
-**Note**: Runit-inspired features (finish-command, ready-check-command, pre-stop-hook,
-control-command, env-dir, chroot, new-session, lock-file, close-fds, log rotation,
-log filtering, log processor, down-file, pause/continue, once) are validated via
-unit tests. Additional functional test cases can be added for integration validation.
+**Note**: Some runit-inspired features (pre-stop-hook, control-command, chroot,
+new-session, lock-file, close-fds, log rotation, log filtering, log processor)
+are validated via unit tests. Additional functional test cases can be added for
+integration validation.
 
 ## How It Works
 

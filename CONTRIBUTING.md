@@ -38,8 +38,8 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (252 tests)
-- **Functional tests**: `./tests/functional/run-tests.sh` (24 QEMU-based tests)
+- **Unit tests**: `go test ./...` (237+ tests)
+- **Functional tests**: `./tests/functional/run-tests.sh` (35 QEMU-based tests)
 - Requires `qemu-system-x86_64` for functional tests
 
 ### Project Structure

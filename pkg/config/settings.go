@@ -1,6 +1,8 @@
 // Package config implements the dinit-compatible service configuration file parser.
 package config
 
+import "strings"
+
 // OperatorType identifies what assignment operators a setting supports.
 type OperatorType uint8
 
@@ -112,21 +114,53 @@ var KnownSettings = map[string]OperatorType{
 	// utmp
 	"inittab-id":   OpEquals,
 	"inittab-line": OpEquals,
+
+	// Runit-inspired features
+	"finish-command":      OpEquals | OpPlusEqual,
+	"ready-check-command": OpEquals | OpPlusEqual,
+	"ready-check-interval": OpEquals,
+	"pre-stop-hook":       OpEquals | OpPlusEqual,
+	"env-dir":             OpEquals,
+	"chroot":              OpEquals,
+	"lock-file":           OpEquals,
+	"new-session":         OpEquals,
+	"close-stdin":         OpEquals,
+	"close-stdout":        OpEquals,
+	"close-stderr":        OpEquals,
+
+	// Log rotation and filtering
+	"logfile-max-size":    OpEquals,
+	"logfile-max-files":   OpEquals,
+	"logfile-rotate-time": OpEquals,
+	"log-processor":       OpEquals | OpPlusEqual,
+	"log-include":         OpEquals,
+	"log-exclude":         OpEquals,
 }
 
 // IsKnownSetting returns true if the setting name is recognized.
 func IsKnownSetting(name string) bool {
 	_, ok := KnownSettings[name]
-	return ok
+	if ok {
+		return true
+	}
+	// Dynamic prefix: control-command-SIGNAL (e.g., control-command-HUP)
+	if strings.HasPrefix(name, "control-command-") {
+		return true
+	}
+	return false
 }
 
 // ValidOperator checks if the given operator is valid for the setting.
 func ValidOperator(setting string, op OperatorType) bool {
 	allowed, ok := KnownSettings[setting]
-	if !ok {
-		return false
+	if ok {
+		return allowed&op != 0
 	}
-	return allowed&op != 0
+	// Dynamic prefix: control-command-SIGNAL accepts = and +=
+	if strings.HasPrefix(setting, "control-command-") {
+		return (OpEquals|OpPlusEqual)&op != 0
+	}
+	return false
 }
 
 // OptionFlags maps option string names to their ServiceFlags field names.

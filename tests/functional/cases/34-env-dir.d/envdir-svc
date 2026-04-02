@@ -1,0 +1,6 @@
+type = process
+command = /bin/sh -c "echo \"MY_HOST=$$MY_HOST\"; echo \"MY_PORT=$$MY_PORT\"; echo \"MY_APP=$$MY_APP\"; while true; do sleep 60; done"
+env-dir = /etc/slinit.d/envdir-svc.env.d
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

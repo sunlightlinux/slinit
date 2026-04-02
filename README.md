@@ -526,7 +526,7 @@ slinit/
 ├── internal/util/       # Path and parsing utilities
 ├── completions/         # Shell completions (bash, zsh, fish)
 ├── demo/                # QEMU demo environment
-└── tests/functional/    # 29 QEMU-based integration tests
+└── tests/functional/    # 35 QEMU-based integration tests
 ```
 
 ## Testing
@@ -535,7 +535,7 @@ slinit/
 # Unit tests (237+ tests across 6 packages)
 go test ./...
 
-# Functional tests (29 QEMU-based integration tests)
+# Functional tests (35 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 ```
 

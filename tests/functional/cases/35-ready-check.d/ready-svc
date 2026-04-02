@@ -1,0 +1,6 @@
+type = process
+command = /bin/sh -c "sleep 3; touch /tmp/ready-marker; echo '[ready-svc] ready'; while true; do sleep 60; done"
+ready-check-command = /bin/sh -c "test -f /tmp/ready-marker"
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

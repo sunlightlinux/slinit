@@ -517,10 +517,10 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// Apply settings to the service record
 	applyToService(svc, desc)
 
-	// Check for 'down' marker file (runit convention: service starts in stopped state)
-	// If the file exists, override auto-restart to never — service must be
-	// explicitly started via slinitctl.
-	downPath := filepath.Join(filepath.Dir(filePath), "down")
+	// Check for 'down' marker file (runit-inspired: service starts in stopped state).
+	// Uses <service-name>.down in the same directory as the service file.
+	// If the file exists, the service must be explicitly started via slinitctl.
+	downPath := filepath.Join(filepath.Dir(filePath), name+".down")
 	if _, err := os.Stat(downPath); err == nil {
 		svc.Record().SetMarkedDown(true)
 	}

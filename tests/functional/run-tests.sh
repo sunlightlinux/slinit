@@ -121,7 +121,7 @@ SVC
     # Copy test-specific services if a .d directory exists.
     # These can override the default boot/system-init definitions above.
     if [ -d "${services_dir}" ]; then
-        cp "${services_dir}"/* "${overlay_dir}/etc/slinit.d/" 2>/dev/null || true
+        cp -r "${services_dir}"/* "${overlay_dir}/etc/slinit.d/" 2>/dev/null || true
     fi
 
     # Create the overlay cpio and concatenate with base
