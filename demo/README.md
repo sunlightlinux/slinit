@@ -91,6 +91,13 @@ slinitctl signal HUP hello
 slinitctl signal TERM ticker
 slinitctl signal USR1 hello
 
+# Pause/continue (SIGSTOP/SIGCONT)
+slinitctl pause hello
+slinitctl continue hello
+
+# Start once (no auto-restart)
+slinitctl once hello
+
 # Reload config (modify /etc/slinit.d/hello, then:)
 slinitctl reload hello
 
@@ -220,6 +227,25 @@ uses `consumer-of = hello-logged` to read that pipe and process the output.
 `graceful-stop` demonstrates `stop-command`: when stopped, slinit runs the
 stop-command first (allowing cleanup), then falls back to the termination
 signal if the stop-command fails.
+
+### Runit-Inspired Features
+
+slinit integrates several features inspired by runit, adapted to dinit's
+config-driven design:
+
+- **finish-command**: post-exit script (receives exit code + signal as args)
+- **ready-check-command**: polling-based readiness check (alternative to pipefd)
+- **pre-stop-hook**: runs before SIGTERM (receives PID as arg)
+- **control-command-SIGNAL**: custom signal handler scripts per signal
+- **env-dir**: runit-style directory where each file = one env var
+- **chroot / new-session / lock-file**: process isolation
+- **close-stdin/stdout/stderr**: redirect fds to /dev/null
+- **Log rotation**: logfile-max-size, logfile-max-files, logfile-rotate-time
+- **Log filtering**: log-include/log-exclude regex patterns
+- **Log processor**: script run on rotated files (e.g., gzip)
+- **down file**: marker file in service dir prevents auto-start
+- **pause/continue**: SIGSTOP/SIGCONT via slinitctl
+- **once**: start service without auto-restart
 
 ## PID 1 Signal Handling
 

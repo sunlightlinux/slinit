@@ -15,20 +15,27 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Word-splitting expansion**: `$/VAR` splits variable value on whitespace into multiple command args
 - **Service templates**: `name@argument` pattern with `$1` substitution in config
 - **Config includes**: `@include` and `@include-opt` directives for modular config
-- **Control socket**: binary protocol (v5) over Unix domain socket for runtime management
-- **slinitctl CLI**: 31 commands — list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, reload, unload, unpin, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time, dependents, query-load-mech
+- **Runit-inspired features**: finish-command, ready-check-command, pre-stop-hook, env-dir, control-command, chroot, new-session, lock-file, close-fds, log rotation/filtering/processor, down-file marker
+- **Control socket**: binary protocol (v6) over Unix domain socket for runtime management
+- **slinitctl CLI**: 35 commands — list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, pause, continue, once, reload, unload, unpin, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time, dependents, query-load-mech
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
 - **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
 - **Service aliases**: `provides` for alternative name lookup
 - **Consumer pipes**: `consumer-of` to pipe output from one service into another
-- **Log output**: buffer (in-memory, catlog), file (logfile with permissions/ownership), pipe (consumer-of)
-- **Ready notification**: pipefd/pipevar readiness protocol for services
+- **Log output**: buffer (in-memory, catlog), file (logfile with permissions/ownership + rotation/filtering), pipe (consumer-of)
+- **Log rotation**: size-based, time-based, max files, log processor script, include/exclude pattern filtering
+- **Ready notification**: pipefd/pipevar readiness protocol for services, ready-check-command polling
 - **Socket activation**: pre-opened Unix listening socket passed to child (fd 3)
 - **Hot reload**: reload service configuration from disk without restart
 - **Service unload**: remove stopped services from memory
 - **PID 1 init**: console setup, Ctrl+Alt+Del handling, child subreaper, orphan reaping
 - **Process attributes**: nice, oom-score-adj, rlimits, ioprio, cgroup, cpu-affinity, no-new-privs, capabilities, securebits
-- **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading (with `!clear`/`!unset`/`!import` meta-commands)
+- **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading (with `!clear`/`!unset`/`!import` meta-commands), env-dir (runit-style directory)
+- **Process isolation**: chroot, new-session (setsid), lock-file (exclusive flock), close-stdin/stdout/stderr
+- **Service lifecycle hooks**: finish-command (post-exit), pre-stop-hook (pre-SIGTERM), control-command (custom signal handlers)
+- **Pause/continue**: SIGSTOP/SIGCONT via `slinitctl pause`/`continue` with control-command override
+- **Down file**: `down` marker file prevents auto-start (cleared by explicit `slinitctl start`)
+- **Once mode**: `slinitctl once` starts a service without auto-restart
 - **Runtime dependencies**: add-dep/rm-dep, enable/disable via control socket
 - **Enable-via**: `@meta enable-via` directive for default enable/disable source service
 - **Push notifications**: SERVICEEVENT/ENVEVENT for real-time state and environment tracking
@@ -165,6 +172,32 @@ env-file = /etc/worker.env
 run-as = worker:worker
 ```
 
+Example service with runit-inspired features:
+
+```ini
+# /etc/slinit.d/webapp
+type = process
+command = /usr/bin/webapp
+finish-command = /usr/local/bin/cleanup.sh
+ready-check-command = /usr/bin/curl -sf http://localhost:8080/health
+ready-check-interval = 0.5
+pre-stop-hook = /usr/local/bin/drain-connections.sh
+control-command-HUP = /usr/local/bin/graceful-reload.sh
+env-dir = /etc/webapp/env.d
+chroot = /srv/webapp
+new-session = true
+lock-file = /run/webapp.lock
+log-type = file
+logfile = /var/log/webapp.log
+logfile-max-size = 10000000
+logfile-max-files = 5
+logfile-rotate-time = 86400
+log-processor = /usr/bin/gzip
+log-exclude = DEBUG
+restart = on-failure
+depends-on: network
+```
+
 Example consumer pipe (service B reads service A stdout):
 
 ```ini
@@ -238,6 +271,24 @@ command = /usr/bin/optional
 | `working-dir`             | Working directory for the process                |
 | `run-as`                  | Run command as user:group                        |
 | `env-file`                | Environment variables file (KEY=VALUE, `!clear`, `!unset`, `!import`) |
+| `env-dir`                 | Runit-style env directory (one file per var)      |
+| `finish-command`          | Command run after process exit (before restart)   |
+| `ready-check-command`     | Polling readiness check (alternative to pipefd)   |
+| `ready-check-interval`    | Polling interval for ready-check (default 1s)     |
+| `pre-stop-hook`           | Command run before SIGTERM (receives PID as arg)  |
+| `control-command-SIGNAL`  | Custom signal handler (e.g., control-command-HUP) |
+| `chroot`                  | Chroot directory before exec                      |
+| `new-session`             | Create new session (setsid) for the process       |
+| `lock-file`               | Exclusive flock file (prevents duplicate instances)|
+| `close-stdin`             | Close stdin (redirect to /dev/null)               |
+| `close-stdout`            | Close stdout (redirect to /dev/null)              |
+| `close-stderr`            | Close stderr (redirect to /dev/null)              |
+| `logfile-max-size`        | Rotate logfile at this size (bytes)               |
+| `logfile-max-files`       | Max rotated log files to keep                     |
+| `logfile-rotate-time`     | Rotate logfile at time interval (seconds)         |
+| `log-processor`           | Command run on each rotated logfile               |
+| `log-include`             | Regex: only write matching lines to log           |
+| `log-exclude`             | Regex: drop matching lines from log               |
 | `chain-to`                | Service to start after this one stops            |
 | `nice`                    | Process scheduling priority (-20..19)            |
 | `oom-score-adj`           | OOM killer score adjustment (-1000..1000)        |
@@ -343,6 +394,13 @@ slinitctl untrigger mytrigger       # reset trigger state
 # Send signal to a service process
 slinitctl signal HUP myservice
 
+# Pause/continue (SIGSTOP/SIGCONT)
+slinitctl pause myservice
+slinitctl continue myservice
+
+# Start once (no auto-restart)
+slinitctl once myservice
+
 # View buffered service output
 slinitctl catlog myservice
 slinitctl catlog --clear myservice
@@ -430,7 +488,7 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 - **Interface + struct embedding** replaces C++ virtual method dispatch
 - **Two-phase state transitions** (propagation + execution) preserve correctness from dinit
 - **One goroutine per child process** for monitoring, with channel-based notification
-- **Binary control protocol** (v5) over Unix domain sockets, goroutine-per-connection
+- **Binary control protocol** (v6) over Unix domain sockets, goroutine-per-connection
 - **Push notifications**: SERVICEEVENT5/ENVEVENT for real-time tracking
 - **PID 1 shutdown sequence**: shutdown hooks, process cleanup, filesystem sync, reboot syscalls
 
@@ -452,14 +510,14 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 slinit/
 ├── cmd/
 │   ├── slinit/          # Daemon entry point
-│   ├── slinitctl/       # Control CLI (31 commands)
+│   ├── slinitctl/       # Control CLI (35 commands)
 │   ├── slinit-check/    # Config linter (offline + online)
 │   ├── slinit-monitor/  # Event watcher + command executor
 │   └── slinit-shutdown/ # Standalone shutdown utility
 ├── pkg/
 │   ├── service/         # Service types, state machine, dependency graph
 │   ├── config/          # Dinit-compatible config parser and loader
-│   ├── control/         # Control socket protocol (v5) and server
+│   ├── control/         # Control socket protocol (v6) and server
 │   ├── shutdown/        # PID 1 init, shutdown executor, soft-reboot
 │   ├── process/         # Process execution, monitoring, attrs, caps
 │   ├── eventloop/       # Event loop, signals, timers
@@ -474,7 +532,7 @@ slinit/
 ## Testing
 
 ```bash
-# Unit tests (282 tests across 6 packages)
+# Unit tests (237+ tests across 6 packages)
 go test ./...
 
 # Functional tests (29 QEMU-based integration tests)
@@ -495,6 +553,7 @@ go test ./...
 - [x] **Phase 10**: Push notifications -- SERVICEEVENT, LISTENENV/ENVEVENT, mutex-serialized writes
 - [x] **Phase 11**: Protocol v5 -- LISTSERVICES5/SERVICESTATUS5/SERVICEEVENT5, slinit-check, slinit-monitor, @include/@include-opt
 - [x] **Phase 12**: Complete dinit parity -- @meta, env-file meta-commands, PINNEDSTOPPED/PINNEDSTARTED, SERVICE_DESC_ERR/SERVICE_LOAD_ERR, PREACK, QUERY_LOAD_MECH, DEPENDENTS, $/NAME word-splitting, service templates (name@arg), @meta enable-via, SIGUSR1 socket reopen, soft-reboot shutdown hooks
+- [x] **Phase 13**: Runit-inspired features -- finish-command, ready-check-command, pre-stop-hook, env-dir, control-command (custom signal handlers), chroot, new-session, lock-file, close-fds, pause/continue, log rotation (size/time/max-files), log filtering (include/exclude regex), log processor, down-file marker, once command
 
 ## License
 

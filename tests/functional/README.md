@@ -69,6 +69,11 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 28 | env-file | Environment file loading into service |
 | 29 | slinit-check | Offline and online config linter |
 
+**Note**: Runit-inspired features (finish-command, ready-check-command, pre-stop-hook,
+control-command, env-dir, chroot, new-session, lock-file, close-fds, log rotation,
+log filtering, log processor, down-file, pause/continue, once) are validated via
+unit tests. Additional functional test cases can be added for integration validation.
+
 ## How It Works
 
 1. **Build phase**: `build-vm.sh` downloads Alpine Linux minirootfs, cross-compiles
