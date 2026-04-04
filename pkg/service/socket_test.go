@@ -186,3 +186,140 @@ func TestSocketNotASocket(t *testing.T) {
 		t.Fatal("expected error when socket path is a regular file")
 	}
 }
+
+func TestMultipleSockets(t *testing.T) {
+	tmpDir := t.TempDir()
+	sock1 := filepath.Join(tmpDir, "s1.sock")
+	sock2 := filepath.Join(tmpDir, "s2.sock")
+
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "multi-sock")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	svc.Record().SetSocketDetails(sock1, 0600, -1, -1)
+	svc.Record().SetSocketPaths([]string{sock1, sock2})
+	set.AddService(svc)
+
+	if err := svc.openSocket(); err != nil {
+		t.Fatalf("openSocket() failed: %v", err)
+	}
+	defer svc.closeSocket()
+
+	// Both sockets should exist
+	for _, p := range []string{sock1, sock2} {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatalf("socket %s not found: %v", p, err)
+		}
+		if info.Mode()&os.ModeSocket == 0 {
+			t.Errorf("%s is not a socket", p)
+		}
+	}
+
+	// Primary socket in socketFD
+	if svc.socketFD == nil {
+		t.Error("socketFD should be set")
+	}
+	// Second socket in socketFDs
+	if len(svc.socketFDs) != 1 {
+		t.Errorf("expected 1 extra socket fd, got %d", len(svc.socketFDs))
+	}
+}
+
+func TestMultipleSocketsCleanup(t *testing.T) {
+	tmpDir := t.TempDir()
+	sock1 := filepath.Join(tmpDir, "s1.sock")
+	sock2 := filepath.Join(tmpDir, "s2.sock")
+
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "multi-sock")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	svc.Record().SetSocketDetails(sock1, 0600, -1, -1)
+	svc.Record().SetSocketPaths([]string{sock1, sock2})
+	set.AddService(svc)
+
+	svc.openSocket()
+	svc.closeSocket()
+
+	for _, p := range []string{sock1, sock2} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("socket %s should be removed after close", p)
+		}
+	}
+}
+
+func TestTCPSocketCreation(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "tcp-sock")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	svc.Record().SetSocketDetails("tcp:127.0.0.1:0", 0, -1, -1)
+	svc.Record().SetSocketPaths([]string{"tcp:127.0.0.1:0"})
+	set.AddService(svc)
+
+	if err := svc.openSocket(); err != nil {
+		t.Fatalf("openSocket(tcp) failed: %v", err)
+	}
+	defer svc.closeSocket()
+
+	if svc.socketFD == nil {
+		t.Error("socketFD should be set for TCP socket")
+	}
+}
+
+func TestMultipleSocketsPassedToChild(t *testing.T) {
+	tmpDir := t.TempDir()
+	sock1 := filepath.Join(tmpDir, "s1.sock")
+	sock2 := filepath.Join(tmpDir, "s2.sock")
+	markerPath := filepath.Join(tmpDir, "marker")
+
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "multi-sock-child")
+	svc.SetCommand([]string{"/bin/sh", "-c",
+		`if [ "$LISTEN_FDS" = "2" ]; then echo ok > ` + markerPath + `; fi; sleep 60`})
+	svc.Record().SetSocketDetails(sock1, 0600, -1, -1)
+	svc.Record().SetSocketPaths([]string{sock1, sock2})
+	set.AddService(svc)
+
+	set.StartService(svc)
+	time.Sleep(500 * time.Millisecond)
+
+	if svc.State() != StateStarted {
+		t.Fatalf("expected STARTED, got %v", svc.State())
+	}
+
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("marker not found — LISTEN_FDS=2 not set: %v", err)
+	}
+	if string(data) != "ok\n" {
+		t.Errorf("unexpected marker: %q", string(data))
+	}
+
+	svc.Stop(true)
+	set.ProcessQueues()
+	time.Sleep(500 * time.Millisecond)
+}
+
+func TestOnDemandWatcherStartStop(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "demand.sock")
+
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "demand-svc")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	svc.Record().SetSocketDetails(sockPath, 0600, -1, -1)
+	svc.SetSocketOnDemand(true)
+	set.AddService(svc)
+
+	// Open socket first (on-demand needs the socket pre-created)
+	if err := svc.openSocket(); err != nil {
+		t.Fatalf("openSocket failed: %v", err)
+	}
+	defer svc.closeSocket()
+
+	// Start watcher
+	svc.startOnDemandWatcher()
+	time.Sleep(100 * time.Millisecond)
+
+	// Stop watcher — should not panic
+	svc.stopOnDemandWatcher()
+}

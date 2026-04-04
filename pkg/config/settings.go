@@ -68,10 +68,11 @@ var KnownSettings = map[string]OperatorType{
 	"logfile-gid":         OpEquals,
 
 	// Socket activation
-	"socket-listen": OpEquals,
-	"socket-permissions": OpEquals,
-	"socket-uid":    OpEquals,
-	"socket-gid":    OpEquals,
+	"socket-listen":      OpEquals | OpPlusEqual, // multiple sockets via +=
+	"socket-permissions":  OpEquals,
+	"socket-uid":          OpEquals,
+	"socket-gid":          OpEquals,
+	"socket-activation":   OpEquals, // "immediate" (default) or "on-demand"
 
 	// Chaining
 	"chain-to": OpEquals,
@@ -127,6 +128,12 @@ var KnownSettings = map[string]OperatorType{
 	"close-stdin":         OpEquals,
 	"close-stdout":        OpEquals,
 	"close-stderr":        OpEquals,
+
+	// Cron-like periodic tasks
+	"cron-command":  OpEquals | OpPlusEqual,
+	"cron-interval": OpEquals,
+	"cron-delay":    OpEquals,
+	"cron-on-error": OpEquals,
 
 	// Log rotation and filtering
 	"logfile-max-size":    OpEquals,

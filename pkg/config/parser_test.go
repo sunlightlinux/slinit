@@ -1222,3 +1222,74 @@ func TestTemplateLoaderNameSplit(t *testing.T) {
 		t.Errorf("command: got %v, want [/bin/run instance1]", desc.Command)
 	}
 }
+
+func TestParseCronSettings(t *testing.T) {
+	input := `
+type = process
+command = /bin/mydaemon
+cron-command = /usr/bin/cleanup --all
+cron-interval = 5m
+cron-delay = 30s
+cron-on-error = stop
+`
+	desc, err := Parse(strings.NewReader(input), "cron-svc", "test-file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(desc.CronCommand) != 2 || desc.CronCommand[0] != "/usr/bin/cleanup" {
+		t.Errorf("CronCommand = %v, want [/usr/bin/cleanup --all]", desc.CronCommand)
+	}
+	if desc.CronInterval.Minutes() != 5 {
+		t.Errorf("CronInterval = %v, want 5m", desc.CronInterval)
+	}
+	if desc.CronDelay.Seconds() != 30 {
+		t.Errorf("CronDelay = %v, want 30s", desc.CronDelay)
+	}
+	if desc.CronOnError != "stop" {
+		t.Errorf("CronOnError = %q, want %q", desc.CronOnError, "stop")
+	}
+}
+
+func TestParseCronIntervalSeconds(t *testing.T) {
+	input := `
+type = process
+command = /bin/mydaemon
+cron-command = /usr/bin/task
+cron-interval = 300
+`
+	desc, err := Parse(strings.NewReader(input), "cron-sec", "test-file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.CronInterval.Seconds() != 300 {
+		t.Errorf("CronInterval = %v, want 300s", desc.CronInterval)
+	}
+}
+
+func TestParseCronOnErrorInvalid(t *testing.T) {
+	input := `
+type = process
+command = /bin/mydaemon
+cron-on-error = restart
+`
+	_, err := Parse(strings.NewReader(input), "bad-cron", "test-file")
+	if err == nil {
+		t.Fatal("expected error for invalid cron-on-error")
+	}
+}
+
+func TestParseCronCommandAppend(t *testing.T) {
+	input := `
+type = process
+command = /bin/mydaemon
+cron-command = /usr/bin/task
+cron-command += --verbose
+`
+	desc, err := Parse(strings.NewReader(input), "append-cron", "test-file")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(desc.CronCommand) != 2 || desc.CronCommand[1] != "--verbose" {
+		t.Errorf("CronCommand = %v, want [/usr/bin/task --verbose]", desc.CronCommand)
+	}
+}

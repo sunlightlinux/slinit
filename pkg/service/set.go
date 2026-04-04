@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -99,6 +100,9 @@ type ServiceSet struct {
 	globalEnvSnapV uint64   // version of cached snapshot
 	globalEnvIdx   map[string]int // key → index in globalEnv for O(1) lookup
 	envListeners   []EnvListener
+
+	// Parallel start limiter (from --parallel-start-limit)
+	startLimiter *StartLimiter
 
 	// Default cgroup base path (from --cgroup-path/-b)
 	defaultCgroupPath string
@@ -402,6 +406,45 @@ func (ss *ServiceSet) IsShuttingDown() bool {
 	return !ss.restartEnabled
 }
 
+// ActiveServiceInfo holds info about a non-stopped service (for shutdown reporting).
+type ActiveServiceInfo struct {
+	Name  string
+	State ServiceState
+	PID   int
+}
+
+// GetActiveServiceInfo returns info about all services not in STOPPED state.
+// Safe for concurrent use (acquires read lock).
+func (ss *ServiceSet) GetActiveServiceInfo() []ActiveServiceInfo {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	var result []ActiveServiceInfo
+	for _, svc := range ss.records {
+		st := svc.State()
+		if st != StateStopped {
+			result = append(result, ActiveServiceInfo{
+				Name:  svc.Name(),
+				State: st,
+				PID:   svc.PID(),
+			})
+		}
+	}
+	return result
+}
+
+// KillActiveServices sends SIGKILL to all services with a valid PID.
+// Used during emergency shutdown escalation.
+func (ss *ServiceSet) KillActiveServices() {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	for _, svc := range ss.records {
+		pid := svc.PID()
+		if pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+}
+
 // GetShutdownType returns the current shutdown type.
 func (ss *ServiceSet) GetShutdownType() ShutdownType {
 	return ss.shutdownType
@@ -538,6 +581,14 @@ func (ss *ServiceSet) notifyEnvListenersSnapshot(listeners []EnvListener, varStr
 		l.EnvEvent(varString, override)
 	}
 }
+
+// SetStartLimiter configures a parallel start limiter.
+func (ss *ServiceSet) SetStartLimiter(max int, slowThreshold time.Duration) {
+	ss.startLimiter = NewStartLimiter(max, slowThreshold)
+}
+
+// StartLimiter returns the start limiter, or nil if not configured.
+func (ss *ServiceSet) GetStartLimiter() *StartLimiter { return ss.startLimiter }
 
 func (ss *ServiceSet) SetDefaultCgroupPath(p string)    { ss.defaultCgroupPath = p }
 func (ss *ServiceSet) DefaultCgroupPath() string        { return ss.defaultCgroupPath }

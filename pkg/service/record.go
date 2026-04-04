@@ -90,9 +90,10 @@ type ServiceRecord struct {
 
 	// Waiting flags
 	waitingForDeps    bool
-	waitingForConsole bool
-	haveConsole       bool
-	startExplicit     bool
+	waitingForConsole  bool
+	haveConsole        bool
+	startExplicit      bool
+	waitingForStartSlot bool // waiting for start limiter slot
 
 	// Propagation flags
 	propRequire bool
@@ -132,11 +133,12 @@ type ServiceRecord struct {
 	listeners  []ServiceListener
 
 	// Process settings (shared across service types)
-	termSignal   syscall.Signal
-	socketPath   string
-	socketPerms  int
-	socketUID    int
-	socketGID    int
+	termSignal    syscall.Signal
+	socketPath    string   // primary socket path (for backwards compat)
+	socketPaths   []string // all socket-listen paths (for multiple sockets)
+	socketPerms   int
+	socketUID     int
+	socketGID     int
 	stopReason   StoppedReason
 	chainTo      string // service to start when this one completes
 
@@ -321,6 +323,11 @@ func (sr *ServiceRecord) SetSocketDetails(path string, perms int, uid, gid int) 
 	sr.socketPerms = perms
 	sr.socketUID = uid
 	sr.socketGID = gid
+}
+
+// SetSocketPaths sets multiple socket-listen paths.
+func (sr *ServiceRecord) SetSocketPaths(paths []string) {
+	sr.socketPaths = paths
 }
 
 // SetUtmpDetails sets the inittab-id and inittab-line for UTMPX logging.
@@ -936,6 +943,27 @@ func (sr *ServiceRecord) allDepsStarted() {
 
 	sr.waitingForDeps = false
 
+	// Check start limiter (skip during shutdown — don't queue services)
+	if limiter := sr.services.GetStartLimiter(); limiter != nil && !sr.services.IsShuttingDown() {
+		ok, waitCh := limiter.Acquire(sr.self)
+		if !ok {
+			sr.waitingForStartSlot = true
+			// Wait for slot in a goroutine to avoid blocking the queue
+			go func() {
+				<-waitCh
+				sr.services.queueMu.Lock()
+				sr.waitingForStartSlot = false
+				if !sr.self.BringUp() {
+					sr.state = StateStopping
+					sr.failedToStart(false, true)
+				}
+				sr.services.processQueuesLocked()
+				sr.services.queueMu.Unlock()
+			}()
+			return
+		}
+	}
+
 	if !sr.self.BringUp() {
 		sr.state = StateStopping
 		sr.failedToStart(false, true)
@@ -944,6 +972,11 @@ func (sr *ServiceRecord) allDepsStarted() {
 
 // Started is called when the service has successfully started.
 func (sr *ServiceRecord) Started() {
+	// Release start limiter slot
+	if limiter := sr.services.GetStartLimiter(); limiter != nil {
+		limiter.Release(sr.self)
+	}
+
 	if sr.haveConsole && !sr.Flags.RunsOnConsole {
 		sr.releaseConsole()
 	}
@@ -1060,6 +1093,16 @@ func (sr *ServiceRecord) Stopped() {
 
 // failedToStart handles start failure.
 func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
+	// Release start limiter slot or cancel waiting
+	if limiter := sr.services.GetStartLimiter(); limiter != nil {
+		if sr.waitingForStartSlot {
+			limiter.CancelWait(sr.self)
+			sr.waitingForStartSlot = false
+		} else {
+			limiter.Release(sr.self)
+		}
+	}
+
 	sr.desired = StateStopped
 
 	if sr.waitingForConsole {

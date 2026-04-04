@@ -103,8 +103,13 @@ type ExecParams struct {
 	// SocketFD, if non-nil, is a pre-opened listening socket to pass to the
 	// child process as fd 3 (systemd socket activation convention).
 	// The caller should NOT close it after StartProcess (socket stays open
-	// for restarts). Environment variable LISTEN_FDS=1 is set automatically.
+	// for restarts). Environment variables LISTEN_FDS=N and LISTEN_PID are
+	// set automatically.
 	SocketFD *os.File
+
+	// ExtraSocketFDs holds additional listening sockets (fd 4, 5, ...).
+	// Combined with SocketFD, LISTEN_FDS is set to 1+len(ExtraSocketFDs).
+	ExtraSocketFDs []*os.File
 
 	// ControlSocketFD, if non-nil, is the client end of a Unix socketpair
 	// connected to the control server. It is passed to the child as an extra

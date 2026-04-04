@@ -78,7 +78,10 @@ type ProcessService struct {
 	paused           bool // true when service is SIGSTOP'd (pause/continue)
 
 	// Socket activation
-	socketFD *os.File // pre-opened listening socket (nil if no socket-listen)
+	socketFD  *os.File   // primary listening socket (fd 3, nil if no socket-listen)
+	socketFDs []*os.File // additional sockets (fd 4, 5, ... for multiple socket-listen)
+	socketOnDemand bool  // start service on first connection (socket-activation = on-demand)
+	socketDemandStop chan struct{} // signal to stop on-demand watcher
 
 	// Readiness notification
 	readyNotifyFD  int      // fd number child writes to (-1 if none)
@@ -103,6 +106,9 @@ type ProcessService struct {
 	logProcessor  []string
 	logIncludes   []string
 	logExcludes   []string
+
+	// Cron-like periodic task
+	cronRunner *CronRunner
 
 	// Channels for monitoring goroutine coordination
 	doneCh        chan struct{} // closed when monitoring goroutine should stop
@@ -170,6 +176,9 @@ func (s *ProcessService) SetLockFile(path string) { s.lockFile = path }
 func (s *ProcessService) SetNewSession(v bool) { s.newSession = v }
 
 // SetCloseFDs sets which standard file descriptors to close.
+// SetSocketOnDemand enables on-demand socket activation (lazy start).
+func (s *ProcessService) SetSocketOnDemand(v bool) { s.socketOnDemand = v }
+
 func (s *ProcessService) SetCloseFDs(stdin, stdout, stderr bool) {
 	s.closeStdin = stdin
 	s.closeStdout = stdout
@@ -224,6 +233,26 @@ func (s *ProcessService) SetLogRotation(maxSize int64, maxFiles int, rotateTime 
 // SetLogProcessor sets the log processor command.
 func (s *ProcessService) SetLogProcessor(cmd []string) { s.logProcessor = cmd }
 
+// SetCronConfig configures the periodic cron task.
+func (s *ProcessService) SetCronConfig(cmd []string, interval, delay time.Duration, onError string) {
+	s.cronRunner = NewCronRunner(s, cmd, interval, delay, onError, s.services.logger)
+}
+
+// startCronIfConfigured starts the cron runner if a cron-command is configured.
+func (s *ProcessService) startCronIfConfigured() {
+	if s.cronRunner != nil {
+		s.services.logger.Info("Service '%s': starting cron task (interval=%v)", s.serviceName, s.cronRunner.interval)
+		s.cronRunner.Start()
+	}
+}
+
+// stopCronRunner stops the cron runner if active.
+func (s *ProcessService) stopCronRunner() {
+	if s.cronRunner != nil {
+		s.cronRunner.Stop()
+	}
+}
+
 // SetLogFilters sets log include/exclude patterns.
 func (s *ProcessService) SetLogFilters(includes, excludes []string) {
 	s.logIncludes = includes
@@ -252,84 +281,220 @@ func (s *ProcessService) HasReadyNotification() bool {
 	return s.readyNotifyFD >= 0 || s.readyNotifyVar != ""
 }
 
-// openSocket creates and binds a Unix listening socket for socket activation.
+// openSocket creates and binds listening sockets for socket activation.
+// Supports Unix sockets (path), TCP (tcp:host:port), and UDP (udp:host:port).
+// Multiple socket-listen directives result in multiple fds (LISTEN_FDS=N).
 func (s *ProcessService) openSocket() error {
-	if s.socketPath == "" || s.socketFD != nil {
+	paths := s.socketPaths
+	if len(paths) == 0 && s.socketPath != "" {
+		paths = []string{s.socketPath}
+	}
+	if len(paths) == 0 || s.socketFD != nil {
 		return nil
 	}
 
-	// Check if file exists at socket path
-	info, err := os.Stat(s.socketPath)
+	for i, path := range paths {
+		fd, err := s.openOneSocket(path)
+		if err != nil {
+			// Clean up already-opened sockets on failure
+			s.closeSocket()
+			return fmt.Errorf("socket-listen[%d] %q: %w", i, path, err)
+		}
+		if i == 0 {
+			s.socketFD = fd
+		} else {
+			s.socketFDs = append(s.socketFDs, fd)
+		}
+	}
+	return nil
+}
+
+// openOneSocket opens a single listening socket. The path format determines
+// the socket type:
+//   - "tcp:host:port" or "tcp4:host:port" or "tcp6:host:port" → TCP
+//   - "udp:host:port" or "udp4:host:port" or "udp6:host:port" → UDP
+//   - anything else → Unix domain socket
+func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
+	// TCP socket
+	if strings.HasPrefix(path, "tcp:") || strings.HasPrefix(path, "tcp4:") || strings.HasPrefix(path, "tcp6:") {
+		parts := strings.SplitN(path, ":", 2)
+		network := parts[0]
+		addr := parts[1]
+		ln, err := net.Listen(network, addr)
+		if err != nil {
+			return nil, fmt.Errorf("tcp listen: %w", err)
+		}
+		fd, err := ln.(*net.TCPListener).File()
+		if err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("tcp fd: %w", err)
+		}
+		ln.Close()
+		return fd, nil
+	}
+
+	// UDP socket
+	if strings.HasPrefix(path, "udp:") || strings.HasPrefix(path, "udp4:") || strings.HasPrefix(path, "udp6:") {
+		parts := strings.SplitN(path, ":", 2)
+		network := parts[0]
+		addr := parts[1]
+		conn, err := net.ListenPacket(network, addr)
+		if err != nil {
+			return nil, fmt.Errorf("udp listen: %w", err)
+		}
+		fd, err := conn.(*net.UDPConn).File()
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("udp fd: %w", err)
+		}
+		conn.Close()
+		return fd, nil
+	}
+
+	// Unix domain socket
+	info, err := os.Stat(path)
 	if err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
-			return fmt.Errorf("activation socket file exists and is not a socket: %s", s.socketPath)
+			return nil, fmt.Errorf("file exists and is not a socket: %s", path)
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("error checking activation socket: %v", err)
+		return nil, fmt.Errorf("stat: %w", err)
 	}
 
-	// Remove stale socket file
-	os.Remove(s.socketPath)
+	os.Remove(path) // remove stale socket
 
-	// Create Unix listener
-	addr := &net.UnixAddr{Name: s.socketPath, Net: "unix"}
+	addr := &net.UnixAddr{Name: path, Net: "unix"}
 	unixListener, err := net.ListenUnix("unix", addr)
 	if err != nil {
-		return fmt.Errorf("error creating activation socket: %v", err)
+		return nil, fmt.Errorf("unix listen: %w", err)
 	}
-
-	// Don't remove socket file when closing the listener
 	unixListener.SetUnlinkOnClose(false)
 
-	// Extract raw fd (File() returns a dup'd fd)
 	fd, err := unixListener.File()
 	if err != nil {
 		unixListener.Close()
-		return fmt.Errorf("error getting activation socket fd: %v", err)
+		return nil, fmt.Errorf("unix fd: %w", err)
 	}
-	unixListener.Close() // close the net.Listener; we keep the dup'd fd
+	unixListener.Close()
 
-	// Set permissions
+	// Set permissions/ownership on Unix socket
 	if s.socketPerms != 0 {
-		if err := os.Chmod(s.socketPath, os.FileMode(s.socketPerms)); err != nil {
+		if err := os.Chmod(path, os.FileMode(s.socketPerms)); err != nil {
 			fd.Close()
-			return fmt.Errorf("error setting activation socket permissions: %v", err)
+			return nil, fmt.Errorf("chmod: %w", err)
 		}
 	}
-
-	// Set ownership
 	if s.socketUID >= 0 || s.socketGID >= 0 {
-		uid := s.socketUID
-		gid := s.socketGID
+		uid, gid := s.socketUID, s.socketGID
 		if uid < 0 {
-			uid = -1 // -1 means don't change
+			uid = -1
 		}
 		if gid < 0 {
 			gid = -1
 		}
-		if err := os.Chown(s.socketPath, uid, gid); err != nil {
+		if err := os.Chown(path, uid, gid); err != nil {
 			fd.Close()
-			return fmt.Errorf("error setting activation socket owner: %v", err)
+			return nil, fmt.Errorf("chown: %w", err)
 		}
 	}
 
-	s.socketFD = fd
-	return nil
+	return fd, nil
 }
 
-// closeSocket closes the activation socket and removes the socket file.
+// closeSocket closes all activation sockets and removes Unix socket files.
 func (s *ProcessService) closeSocket() {
 	if s.socketFD != nil {
 		s.socketFD.Close()
 		s.socketFD = nil
 	}
-	if s.socketPath != "" {
-		os.Remove(s.socketPath)
+	for _, fd := range s.socketFDs {
+		fd.Close()
+	}
+	s.socketFDs = nil
+
+	// Remove Unix socket files
+	paths := s.socketPaths
+	if len(paths) == 0 && s.socketPath != "" {
+		paths = []string{s.socketPath}
+	}
+	for _, p := range paths {
+		if !strings.Contains(p, ":") {
+			os.Remove(p)
+		}
+	}
+}
+
+// startOnDemandWatcher starts a goroutine that watches the primary socket
+// for incoming connections. On first activity, it starts the service.
+// The watcher uses epoll-like polling (Accept with timeout) to detect connections.
+func (s *ProcessService) startOnDemandWatcher() {
+	if s.socketFD == nil || !s.socketOnDemand {
+		return
+	}
+	s.socketDemandStop = make(chan struct{})
+
+	go func() {
+		// Create a net.Listener from the fd (dup'd so we don't consume the original)
+		fdDup, err := syscall.Dup(int(s.socketFD.Fd()))
+		if err != nil {
+			s.services.logger.Error("Service '%s': on-demand socket dup failed: %v", s.serviceName, err)
+			return
+		}
+		f := os.NewFile(uintptr(fdDup), "on-demand-socket")
+		ln, err := net.FileListener(f)
+		f.Close()
+		if err != nil {
+			s.services.logger.Error("Service '%s': on-demand listener failed: %v", s.serviceName, err)
+			return
+		}
+		defer ln.Close()
+
+		// Set a short deadline so we can check stopCh periodically
+		for {
+			select {
+			case <-s.socketDemandStop:
+				return
+			default:
+			}
+
+			if tcpLn, ok := ln.(*net.TCPListener); ok {
+				tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+			} else if unixLn, ok := ln.(*net.UnixListener); ok {
+				unixLn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+			}
+
+			conn, err := ln.Accept()
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue // timeout, retry
+				}
+				// Real error or closed
+				return
+			}
+			// Got a connection! Close it back (the real service will accept it
+			// after being started — the connection stays in the socket backlog).
+			conn.Close()
+
+			s.services.logger.Info("Service '%s': on-demand socket activation triggered", s.serviceName)
+
+			// Start the service via the normal path
+			s.services.StartService(s.self)
+			return
+		}
+	}()
+}
+
+// stopOnDemandWatcher stops the on-demand socket watcher.
+func (s *ProcessService) stopOnDemandWatcher() {
+	if s.socketDemandStop != nil {
+		close(s.socketDemandStop)
+		s.socketDemandStop = nil
 	}
 }
 
 // BecomingInactive is called when the service won't restart. Cleans up socket.
 func (s *ProcessService) BecomingInactive() {
+	s.stopOnDemandWatcher()
 	s.closeDoneCh()
 	s.closeSocket()
 	s.CloseOutputPipe()
@@ -386,6 +551,9 @@ func (s *ProcessService) BringUp() bool {
 // Then if a stop-command is configured, it is executed. If it fails to
 // start, we fall back to sending the termination signal directly.
 func (s *ProcessService) BringDown() {
+	// Stop cron runner if active (waits for in-progress execution)
+	s.stopCronRunner()
+
 	// Close readiness pipe if still open (no longer waiting for readiness)
 	s.closeReadyPipe()
 
@@ -725,6 +893,7 @@ func (s *ProcessService) startProcess() error {
 		OutputPipe:        outputPipe,
 		InputPipe:         inputPipe,
 		SocketFD:          s.socketFD,
+		ExtraSocketFDs:    s.socketFDs,
 		ControlSocketFD:   csClientFD,
 		NotifyPipe:        notifyPipeWrite,
 		ForceNotifyFD:     s.readyNotifyFD,
@@ -833,6 +1002,7 @@ func (s *ProcessService) startProcess() error {
 		// No readiness protocol - mark as started immediately
 		s.cancelTimer()
 		s.Started()
+		s.startCronIfConfigured()
 	}
 
 	return nil
@@ -904,6 +1074,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.cancelTimer()
 		s.services.logger.Info("Service '%s': readiness notification received", s.serviceName)
 		s.Started()
+		s.startCronIfConfigured()
 		s.services.ProcessQueues()
 	} else {
 		// EOF without data - child closed pipe without writing

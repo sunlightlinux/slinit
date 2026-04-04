@@ -146,14 +146,20 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// so socket goes first. Readiness notification pipe follows.
 	var extraFdNullFiles []*os.File // /dev/null files to close after start
 
-	// Socket activation: pre-opened listening socket at fd 3
+	// Socket activation: pre-opened listening sockets starting at fd 3
 	if params.SocketFD != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, params.SocketFD)
-		if cmd.Env == nil {
-			cmd.Env = append(baseEnv[:len(baseEnv):len(baseEnv)], "LISTEN_FDS=1")
-		} else {
-			cmd.Env = append(cmd.Env, "LISTEN_FDS=1")
+		for _, extraFD := range params.ExtraSocketFDs {
+			cmd.ExtraFiles = append(cmd.ExtraFiles, extraFD)
 		}
+		nFDs := 1 + len(params.ExtraSocketFDs)
+		listenEnv := fmt.Sprintf("LISTEN_FDS=%d", nFDs)
+		if cmd.Env == nil {
+			cmd.Env = append(baseEnv[:len(baseEnv):len(baseEnv)], listenEnv)
+		} else {
+			cmd.Env = append(cmd.Env, listenEnv)
+		}
+		// LISTEN_PID will be set after cmd.Start() (see below)
 	}
 
 	// Readiness notification pipe

@@ -93,6 +93,11 @@ func main() {
 	flag.StringVar(&cpuAffinityStr, "cpu-affinity", "", "default CPU affinity for daemon and services (e.g. 0-3)")
 	flag.StringVar(&cpuAffinityStr, "a", "", "default CPU affinity for daemon and services (e.g. 0-3)")
 
+	var parallelStartLimit int
+	var parallelSlowThreshold string
+	flag.IntVar(&parallelStartLimit, "parallel-start-limit", 0, "max concurrent service starts (0=unlimited)")
+	flag.StringVar(&parallelSlowThreshold, "parallel-start-slow-threshold", "10s", "time before a starting service is considered slow")
+
 	flag.Parse()
 
 	if showVersion {
@@ -297,6 +302,17 @@ func main() {
 				logger.Info("Readiness notification sent on fd %d (socket: %s)", readyFD, readySock)
 			}
 		}
+	}
+
+	// Configure parallel start limiter
+	if parallelStartLimit > 0 {
+		slowThresh, err := time.ParseDuration(parallelSlowThreshold)
+		if err != nil {
+			logger.Error("Invalid --parallel-start-slow-threshold: %v, using 10s", err)
+			slowThresh = 10 * time.Second
+		}
+		serviceSet.SetStartLimiter(parallelStartLimit, slowThresh)
+		logger.Info("Parallel start limit: %d (slow threshold: %v)", parallelStartLimit, slowThresh)
 	}
 
 	// Record boot timing (use first service as the boot timing target)

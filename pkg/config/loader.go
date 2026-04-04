@@ -233,6 +233,12 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogProcessor(desc.LogProcessor)
 		s.SetLogFilters(desc.LogInclude, desc.LogExclude)
 		s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
+		if len(desc.CronCommand) > 0 {
+			s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+		}
+		if desc.SocketActivation == "on-demand" {
+			s.SetSocketOnDemand(true)
+		}
 	case *service.ScriptedService:
 		s.SetStartCommand(desc.Command)
 		s.SetStopCommand(desc.StopCommand)
@@ -661,6 +667,12 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" {
 			svc.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 		}
+		if len(desc.CronCommand) > 0 {
+			svc.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+		}
+		if desc.SocketActivation == "on-demand" {
+			svc.SetSocketOnDemand(true)
+		}
 		return svc
 	case service.TypeScripted:
 		svc := service.NewScriptedService(dl.set, name)
@@ -810,6 +822,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	if desc.SocketPath != "" {
 		rec.SetSocketDetails(desc.SocketPath, desc.SocketPerms, desc.SocketUID, desc.SocketGID)
+		if len(desc.SocketPaths) > 0 {
+			rec.SetSocketPaths(desc.SocketPaths)
+		}
 	}
 	if desc.Provides != "" {
 		rec.SetProvides(desc.Provides)

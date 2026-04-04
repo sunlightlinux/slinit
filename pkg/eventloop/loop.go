@@ -2,7 +2,9 @@ package eventloop
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -40,6 +42,9 @@ type EventLoop struct {
 
 	// Channel for forcing event loop exit (emergency timeout)
 	forceExitCh chan struct{}
+
+	// Shutdown reporter: periodically logs which services are blocking shutdown
+	shutdownReporterStop chan struct{}
 
 	// Callback for when all services have stopped
 	OnAllStopped func()
@@ -253,22 +258,70 @@ func (el *EventLoop) reapOrphans() {
 }
 
 // escalateShutdown handles repeated shutdown signals during an ongoing
-// shutdown. The second signal halves the emergency timeout; the third
-// forces immediate exit. Returns true (shutdown already in progress).
+// shutdown. The second signal reduces the timeout and logs blocking services;
+// the third sends SIGKILL to all and forces immediate exit.
 func (el *EventLoop) escalateShutdown(sigName string) bool {
 	count := el.shutdownSignals.Add(1)
 	switch {
 	case count == 2:
 		el.logger.Notice("Received %s again, reducing emergency timeout to 25%%", sigName)
 		el.resetEmergencyTimer(defaultEmergencyTimeout / 4)
+		// Log which services are blocking shutdown
+		el.logBlockingServices()
 	case count >= 3:
-		el.logger.Error("Received %s a third time, forcing immediate exit", sigName)
+		el.logger.Error("Received %s a third time, killing all processes and forcing exit", sigName)
+		el.services.KillActiveServices()
+		el.stopShutdownReporter()
 		select {
 		case el.forceExitCh <- struct{}{}:
 		default:
 		}
 	}
 	return true
+}
+
+// logBlockingServices logs info about services that are not yet stopped.
+func (el *EventLoop) logBlockingServices() {
+	active := el.services.GetActiveServiceInfo()
+	if len(active) == 0 {
+		return
+	}
+	var parts []string
+	for _, info := range active {
+		s := info.Name + " (" + info.State.String()
+		if info.PID > 0 {
+			s += fmt.Sprintf(", pid %d", info.PID)
+		}
+		s += ")"
+		parts = append(parts, s)
+	}
+	el.logger.Notice("Waiting for %d service(s) to stop: %s", len(active), strings.Join(parts, ", "))
+}
+
+// startShutdownReporter launches a goroutine that periodically logs
+// which services are blocking shutdown.
+func (el *EventLoop) startShutdownReporter() {
+	el.shutdownReporterStop = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				el.logBlockingServices()
+			case <-el.shutdownReporterStop:
+				return
+			}
+		}
+	}()
+}
+
+// stopShutdownReporter stops the periodic shutdown reporter.
+func (el *EventLoop) stopShutdownReporter() {
+	if el.shutdownReporterStop != nil {
+		close(el.shutdownReporterStop)
+		el.shutdownReporterStop = nil
+	}
 }
 
 // isShuttingDown returns the current shutdown state (lock-free).
@@ -308,10 +361,14 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	el.mu.Unlock()
 
 	el.services.StopAllServices(shutdownType)
+
+	// Start periodic reporting of blocking services
+	el.startShutdownReporter()
 }
 
 // cancelEmergencyTimer stops the emergency timer if it's running.
 func (el *EventLoop) cancelEmergencyTimer() {
+	el.stopShutdownReporter()
 	el.mu.Lock()
 	defer el.mu.Unlock()
 	if el.emergencyTimer != nil {

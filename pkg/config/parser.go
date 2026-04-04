@@ -88,10 +88,12 @@ type ServiceDescription struct {
 	RunAs string
 
 	// Socket activation
-	SocketPath  string
-	SocketPerms int
-	SocketUID   int
-	SocketGID   int
+	SocketPath       string   // primary socket path (first socket-listen)
+	SocketPaths      []string // all socket-listen paths (for multiple sockets)
+	SocketPerms      int
+	SocketUID        int
+	SocketGID        int
+	SocketActivation string // "immediate" (default) or "on-demand"
 
 	// Chaining
 	ChainTo string
@@ -129,6 +131,12 @@ type ServiceDescription struct {
 	// UTMP/WTMP
 	InittabID   string // inittab-id for utmpx
 	InittabLine string // inittab-line for utmpx
+
+	// Cron-like periodic tasks
+	CronCommand  []string      // command to run periodically while STARTED
+	CronInterval time.Duration // interval between runs (default 60s)
+	CronDelay    time.Duration // initial delay before first run
+	CronOnError  string        // "continue" (default) or "stop"
 
 	// Load options
 	ExportPasswdVars  bool // export USER, LOGNAME, HOME, SHELL, UID, GID from passwd
@@ -460,6 +468,42 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.CloseStderr = b
 
+	// Cron-like periodic tasks
+	case "cron-command":
+		if op == OpPlusEqual {
+			desc.CronCommand = append(desc.CronCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.CronCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+	case "cron-interval":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			// Try as plain seconds
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid cron-interval: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		desc.CronInterval = d
+	case "cron-delay":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid cron-delay: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		desc.CronDelay = d
+	case "cron-on-error":
+		switch value {
+		case "continue", "stop":
+			desc.CronOnError = value
+		default:
+			return fmt.Errorf("invalid cron-on-error: %q (must be 'continue' or 'stop')", value)
+		}
+
 	// Dependencies
 	case "depends-on":
 		depName := expandEnvVars(value, serviceArg)
@@ -622,7 +666,21 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	// Socket
 	case "socket-listen":
-		desc.SocketPath = expandEnvVars(value, serviceArg)
+		path := expandEnvVars(value, serviceArg)
+		if op == OpPlusEqual {
+			desc.SocketPaths = append(desc.SocketPaths, path)
+		} else {
+			desc.SocketPath = path
+			// Reset paths when = is used (override)
+			desc.SocketPaths = []string{path}
+		}
+	case "socket-activation":
+		switch value {
+		case "immediate", "on-demand":
+			desc.SocketActivation = value
+		default:
+			return fmt.Errorf("invalid socket-activation: %q (must be 'immediate' or 'on-demand')", value)
+		}
 	case "socket-permissions":
 		perms, err := strconv.ParseInt(value, 8, 32)
 		if err != nil {
