@@ -1,0 +1,6 @@
+type = internal
+depends-on: system-init
+waits-for: svc-a
+waits-for: svc-b
+waits-for: svc-c
+waits-for: test-runner

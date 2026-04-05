@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "echo started-c > /tmp/limit-c; sleep 60"
+log-type = buffer
+depends-on: system-init

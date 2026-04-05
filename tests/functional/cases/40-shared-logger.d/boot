@@ -1,0 +1,6 @@
+type = internal
+depends-on: system-init
+waits-for: central-logger
+waits-for: app-one
+waits-for: app-two
+waits-for: test-runner

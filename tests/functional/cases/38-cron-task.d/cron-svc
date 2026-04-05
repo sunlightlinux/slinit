@@ -1,0 +1,9 @@
+type = process
+command = /bin/sleep 120
+cron-command = /bin/sh -c "echo tick >> /tmp/cron-ticks"
+cron-interval = 2s
+cron-delay = 1s
+cron-on-error = continue
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

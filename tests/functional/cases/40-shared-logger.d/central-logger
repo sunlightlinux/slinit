@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c 'while read line; do echo "$$line" >> /tmp/shared-log; done'
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

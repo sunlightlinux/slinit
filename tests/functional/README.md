@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (35 tests)
+# Run all tests (40 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -74,6 +74,11 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 33 | once | Start once without auto-restart |
 | 34 | env-dir | Runit-style env-dir (one file per variable) |
 | 35 | ready-check | Ready-check-command polling-based readiness |
+| 36 | initd-autodetect | /etc/init.d auto-detect with LSB headers |
+| 37 | socket-activation | Socket listen, LISTEN_FDS env, socket file |
+| 38 | cron-task | Cron-like periodic task execution |
+| 39 | start-limiter | Soft parallel start limit (all services start) |
+| 40 | shared-logger | Multi-service shared logger (SharedLogMux) |
 
 **Note**: Some runit-inspired features (pre-stop-hook, control-command, chroot,
 new-session, lock-file, close-fds, log rotation, log filtering, log processor)
