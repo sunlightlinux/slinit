@@ -155,6 +155,17 @@ func (s *ScriptedService) BringUp() bool {
 				s.serviceName, pipeErr)
 			outputPipe = nil
 		}
+	} else if s.logType == LogToPipe && s.sharedLoggerName != "" {
+		mux := s.services.GetSharedLogMux(s.sharedLoggerName)
+		if mux != nil {
+			pipeW, err := mux.AddProducer(s.serviceName)
+			if err != nil {
+				s.services.logger.Error("Service '%s': failed to add to shared-logger '%s': %v",
+					s.serviceName, s.sharedLoggerName, err)
+			} else {
+				outputPipe = pipeW
+			}
+		}
 	} else if s.logType == LogToPipe {
 		if err := s.EnsureOutputPipe(); err != nil {
 			s.services.logger.Error("Service '%s': failed to create output pipe: %v",
@@ -175,7 +186,7 @@ func (s *ScriptedService) BringUp() bool {
 		outputPipe = f
 	}
 
-	// Set up input pipe (consumer-of)
+	// Set up input pipe (consumer-of or shared-logger mux)
 	var inputPipe *os.File
 	if s.consumerFor != nil {
 		if err := s.consumerFor.Record().EnsureOutputPipe(); err != nil {
@@ -184,6 +195,8 @@ func (s *ScriptedService) BringUp() bool {
 		} else {
 			inputPipe = s.consumerFor.Record().OutputPipeR()
 		}
+	} else if mux := s.services.GetSharedLogMux(s.serviceName); mux != nil {
+		inputPipe = mux.InputPipe()
 	}
 
 	params := process.ExecParams{

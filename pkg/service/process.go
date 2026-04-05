@@ -785,6 +785,21 @@ func (s *ProcessService) startProcess() error {
 				s.serviceName, pipeErr)
 			outputPipe = nil
 		}
+	} else if s.logType == LogToPipe && s.sharedLoggerName != "" {
+		// Shared logger: output goes through SharedLogMux → logger's stdin
+		mux := s.services.GetSharedLogMux(s.sharedLoggerName)
+		if mux != nil {
+			pipeW, err := mux.AddProducer(s.serviceName)
+			if err != nil {
+				s.services.logger.Error("Service '%s': failed to add to shared-logger '%s': %v",
+					s.serviceName, s.sharedLoggerName, err)
+			} else {
+				outputPipe = pipeW
+			}
+		} else {
+			s.services.logger.Error("Service '%s': shared-logger '%s' mux not found",
+				s.serviceName, s.sharedLoggerName)
+		}
 	} else if s.logType == LogToPipe {
 		if err := s.EnsureOutputPipe(); err != nil {
 			return err
@@ -832,7 +847,7 @@ func (s *ProcessService) startProcess() error {
 		}
 	}
 
-	// Set up input pipe (consumer-of)
+	// Set up input pipe (consumer-of or shared-logger mux)
 	var inputPipe *os.File
 	if s.consumerFor != nil {
 		if err := s.consumerFor.Record().EnsureOutputPipe(); err != nil {
@@ -841,6 +856,9 @@ func (s *ProcessService) startProcess() error {
 		} else {
 			inputPipe = s.consumerFor.Record().OutputPipeR()
 		}
+	} else if mux := s.services.GetSharedLogMux(s.serviceName); mux != nil {
+		// This service IS a shared logger — read from the mux pipe
+		inputPipe = mux.InputPipe()
 	}
 
 	// Set up readiness notification pipe if configured

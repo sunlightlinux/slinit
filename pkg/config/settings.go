@@ -84,7 +84,8 @@ var KnownSettings = map[string]OperatorType{
 	"provides": OpEquals,
 
 	// Consumer (dinit uses =, slinit originally used :, accept both)
-	"consumer-of": OpEquals | OpColon,
+	"consumer-of":    OpEquals | OpColon,
+	"shared-logger":  OpEquals, // name of shared logger service (multi-service log mux)
 
 	// Load options
 	"load-options": OpEquals | OpPlusEqual,

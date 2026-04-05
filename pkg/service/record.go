@@ -158,6 +158,9 @@ type ServiceRecord struct {
 	logConsumer Service  // which service consumes our output (set on producer)
 	consumerFor Service  // which service we consume (set on consumer)
 
+	// Shared logger: multiple producers → single logger service
+	sharedLoggerName string // name of the shared logger service (empty if not used)
+
 	// Runtime environment variables (set via control protocol)
 	extraEnv map[string]string
 
@@ -275,6 +278,8 @@ func (sr *ServiceRecord) SetLogConsumer(svc Service)   { sr.logConsumer = svc }
 func (sr *ServiceRecord) LogConsumer() Service         { return sr.logConsumer }
 func (sr *ServiceRecord) SetConsumerFor(svc Service)   { sr.consumerFor = svc }
 func (sr *ServiceRecord) ConsumerFor() Service         { return sr.consumerFor }
+func (sr *ServiceRecord) SetSharedLoggerName(name string) { sr.sharedLoggerName = name }
+func (sr *ServiceRecord) SharedLoggerName() string        { return sr.sharedLoggerName }
 func (sr *ServiceRecord) OutputPipeW() *os.File        { return sr.outputPipeW }
 func (sr *ServiceRecord) OutputPipeR() *os.File        { return sr.outputPipeR }
 

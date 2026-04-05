@@ -196,6 +196,13 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 		}
 	}
 
+	// Update shared-logger relationship
+	if desc.SharedLogger != "" && svc.Record().SharedLoggerName() == "" {
+		if err := dl.setupSharedLogger(svc, desc); err != nil {
+			return nil, err
+		}
+	}
+
 	return svc, nil
 }
 
@@ -554,6 +561,14 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// Set up consumer-of relationship
 	if desc.ConsumerOf != "" {
 		if err := dl.setupConsumerOf(svc, desc); err != nil {
+			dl.set.RemoveService(svc)
+			return nil, err
+		}
+	}
+
+	// Set up shared-logger relationship
+	if desc.SharedLogger != "" {
+		if err := dl.setupSharedLogger(svc, desc); err != nil {
 			dl.set.RemoveService(svc)
 			return nil, err
 		}
@@ -932,6 +947,56 @@ func (dl *DirLoader) setupConsumerOf(consumer service.Service, desc *ServiceDesc
 	// Establish bidirectional links
 	producer.Record().SetLogConsumer(consumer)
 	consumer.Record().SetConsumerFor(producer)
+
+	return nil
+}
+
+// setupSharedLogger establishes the shared-logger relationship.
+// The producer's output is multiplexed through a SharedLogMux into the logger's stdin.
+func (dl *DirLoader) setupSharedLogger(producer service.Service, desc *ServiceDescription) error {
+	loggerName := desc.SharedLogger
+
+	// Load the logger service (ensures it exists)
+	logger, err := dl.LoadService(loggerName)
+	if err != nil {
+		return &ServiceLoadError{
+			ServiceName: producer.Name(),
+			Message:     fmt.Sprintf("shared-logger: failed to load logger '%s': %v", loggerName, err),
+		}
+	}
+
+	// Logger must be a process-type service
+	switch logger.Type() {
+	case service.TypeProcess, service.TypeBGProcess:
+		// OK
+	default:
+		return &ServiceLoadError{
+			ServiceName: producer.Name(),
+			Message:     fmt.Sprintf("shared-logger: logger '%s' must be process or bgprocess", loggerName),
+		}
+	}
+
+	// Producer must be process, bgprocess, or scripted
+	switch producer.Type() {
+	case service.TypeProcess, service.TypeBGProcess, service.TypeScripted:
+		// OK
+	default:
+		return &ServiceLoadError{
+			ServiceName: producer.Name(),
+			Message:     "shared-logger: producer must be process, bgprocess, or scripted",
+		}
+	}
+
+	// Get or create the mux for this logger
+	if _, err := dl.set.GetOrCreateSharedLogMux(loggerName); err != nil {
+		return &ServiceLoadError{
+			ServiceName: producer.Name(),
+			Message:     fmt.Sprintf("shared-logger: failed to create mux for '%s': %v", loggerName, err),
+		}
+	}
+
+	// Store the logger name on the producer
+	producer.Record().SetSharedLoggerName(loggerName)
 
 	return nil
 }

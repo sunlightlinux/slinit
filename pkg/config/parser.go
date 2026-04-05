@@ -105,7 +105,8 @@ type ServiceDescription struct {
 	EnableVia string
 
 	// Consumer
-	ConsumerOf string
+	ConsumerOf   string
+	SharedLogger string // shared-logger: multiple producers → single logger service
 
 	// Description
 	Description string
@@ -719,6 +720,16 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid consumer-of name: %w", err)
 		}
 		desc.ConsumerOf = consName
+
+	// Shared logger (multi-service → single logger)
+	case "shared-logger":
+		loggerName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(loggerName); err != nil {
+			return fmt.Errorf("invalid shared-logger name: %w", err)
+		}
+		desc.SharedLogger = loggerName
+		// Implicitly set log-type to pipe
+		desc.LogType = service.LogToPipe
 
 	// Options
 	case "options":

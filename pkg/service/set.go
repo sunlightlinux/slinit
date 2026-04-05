@@ -104,6 +104,9 @@ type ServiceSet struct {
 	// Parallel start limiter (from --parallel-start-limit)
 	startLimiter *StartLimiter
 
+	// Shared log multiplexers: logger service name → mux
+	sharedLogMuxes map[string]*SharedLogMux
+
 	// Default cgroup base path (from --cgroup-path/-b)
 	defaultCgroupPath string
 
@@ -122,6 +125,7 @@ func NewServiceSet(logger ServiceLogger) *ServiceSet {
 	return &ServiceSet{
 		records:        make(map[string]Service),
 		aliases:        make(map[string]Service),
+		sharedLogMuxes: make(map[string]*SharedLogMux),
 		restartEnabled: true,
 		logger:         logger,
 		readyFD:        -1,
@@ -589,6 +593,33 @@ func (ss *ServiceSet) SetStartLimiter(max int, slowThreshold time.Duration) {
 
 // StartLimiter returns the start limiter, or nil if not configured.
 func (ss *ServiceSet) GetStartLimiter() *StartLimiter { return ss.startLimiter }
+
+// GetOrCreateSharedLogMux returns the shared log mux for the given logger service,
+// creating one if it doesn't exist yet.
+func (ss *ServiceSet) GetOrCreateSharedLogMux(loggerName string) (*SharedLogMux, error) {
+	if mux, ok := ss.sharedLogMuxes[loggerName]; ok {
+		return mux, nil
+	}
+	mux, err := NewSharedLogMux()
+	if err != nil {
+		return nil, err
+	}
+	ss.sharedLogMuxes[loggerName] = mux
+	return mux, nil
+}
+
+// GetSharedLogMux returns the shared log mux for a logger, or nil if none exists.
+func (ss *ServiceSet) GetSharedLogMux(loggerName string) *SharedLogMux {
+	return ss.sharedLogMuxes[loggerName]
+}
+
+// RemoveSharedLogMux closes and removes the shared log mux for a logger.
+func (ss *ServiceSet) RemoveSharedLogMux(loggerName string) {
+	if mux, ok := ss.sharedLogMuxes[loggerName]; ok {
+		mux.Close()
+		delete(ss.sharedLogMuxes, loggerName)
+	}
+}
 
 func (ss *ServiceSet) SetDefaultCgroupPath(p string)    { ss.defaultCgroupPath = p }
 func (ss *ServiceSet) DefaultCgroupPath() string        { return ss.defaultCgroupPath }
