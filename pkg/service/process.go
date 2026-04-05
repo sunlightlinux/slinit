@@ -110,6 +110,12 @@ type ProcessService struct {
 	// Cron-like periodic task
 	cronRunner *CronRunner
 
+	// Virtual TTY (screen-like attach/detach)
+	vtty           *VirtualTTY
+	vttyEnabled    bool
+	vttyScrollback int
+	vttySockDir    string
+
 	// Channels for monitoring goroutine coordination
 	doneCh        chan struct{} // closed when monitoring goroutine should stop
 	timerUpdateCh chan struct{} // signaled when a new timer is armed
@@ -184,6 +190,16 @@ func (s *ProcessService) SetCloseFDs(stdin, stdout, stderr bool) {
 	s.closeStdout = stdout
 	s.closeStderr = stderr
 }
+
+// SetVTTY enables virtual TTY for this service.
+func (s *ProcessService) SetVTTY(enabled bool, scrollback int, sockDir string) {
+	s.vttyEnabled = enabled
+	s.vttyScrollback = scrollback
+	s.vttySockDir = sockDir
+}
+
+// VTTY returns the virtual TTY instance, or nil if not configured.
+func (s *ProcessService) VTTY() *VirtualTTY { return s.vtty }
 
 // SetWorkingDir sets the working directory.
 func (s *ProcessService) SetWorkingDir(dir string) { s.workingDir = dir }
@@ -498,6 +514,10 @@ func (s *ProcessService) BecomingInactive() {
 	s.closeDoneCh()
 	s.closeSocket()
 	s.CloseOutputPipe()
+	if s.vtty != nil {
+		s.vtty.Close()
+		s.vtty = nil
+	}
 }
 
 // closeDoneCh signals the monitoring goroutine to stop and resets the channel.
@@ -898,6 +918,19 @@ func (s *ProcessService) startProcess() error {
 		}
 	}
 
+	// Set up virtual TTY if enabled
+	var ptySlave string
+	if s.vttyEnabled {
+		if s.vtty != nil {
+			s.vtty.Close()
+		}
+		var err error
+		s.vtty, ptySlave, err = OpenVirtualTTY(s.serviceName, s.vttyScrollback, s.vttySockDir)
+		if err != nil {
+			s.services.logger.Error("Service '%s': failed to open vtty: %v", s.serviceName, err)
+		}
+	}
+
 	params := process.ExecParams{
 		Command:           s.command,
 		WorkingDir:        s.workingDir,
@@ -910,6 +943,7 @@ func (s *ProcessService) startProcess() error {
 		RunAsGID:          s.runAsGID,
 		OutputPipe:        outputPipe,
 		InputPipe:         inputPipe,
+		PTYSlave:          ptySlave,
 		SocketFD:          s.socketFD,
 		ExtraSocketFDs:    s.socketFDs,
 		ControlSocketFD:   csClientFD,

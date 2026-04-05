@@ -130,6 +130,10 @@ var KnownSettings = map[string]OperatorType{
 	"close-stdout":        OpEquals,
 	"close-stderr":        OpEquals,
 
+	// Virtual TTY (screen-like attach/detach)
+	"vtty":            OpEquals, // true/false
+	"vtty-scrollback": OpEquals, // scrollback buffer size in bytes
+
 	// Cron-like periodic tasks
 	"cron-command":  OpEquals | OpPlusEqual,
 	"cron-interval": OpEquals,

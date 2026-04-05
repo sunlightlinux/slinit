@@ -77,9 +77,25 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		// lockFD stays open for the lifetime of the process (flock released on close)
 	}
 
+	// Virtual TTY: open slave PTY as stdin/stdout/stderr, create new session
+	var ptySlaveFd *os.File
+	if params.PTYSlave != "" {
+		var err error
+		ptySlaveFd, err = os.OpenFile(params.PTYSlave, os.O_RDWR|syscall.O_NOCTTY, 0)
+		if err == nil {
+			cmd.Stdin = ptySlaveFd
+			cmd.Stdout = ptySlaveFd
+			cmd.Stderr = ptySlaveFd
+			cmd.SysProcAttr.Setpgid = false
+			cmd.SysProcAttr.Setsid = true
+			cmd.SysProcAttr.Setctty = true
+			cmd.SysProcAttr.Ctty = 0 // fd 0 (stdin) = pty slave
+		}
+	}
+
 	// Console handling: open /dev/console, create new session, set controlling terminal
 	var consoleFd *os.File
-	if params.OnConsole {
+	if params.PTYSlave == "" && params.OnConsole {
 		var err error
 		consoleFd, err = os.OpenFile("/dev/console", os.O_RDWR, 0)
 		if err != nil {
@@ -211,6 +227,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 
 	// Start the process
 	if err := cmd.Start(); err != nil {
+		if ptySlaveFd != nil {
+			ptySlaveFd.Close()
+		}
 		if consoleFd != nil {
 			consoleFd.Close()
 		}
@@ -223,7 +242,10 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
 	}
 
-	// Close our copy of the console fd after fork
+	// Close our copy of PTY slave and console fd after fork
+	if ptySlaveFd != nil {
+		ptySlaveFd.Close()
+	}
 	if consoleFd != nil {
 		consoleFd.Close()
 	}

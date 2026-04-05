@@ -246,6 +246,9 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.SocketActivation == "on-demand" {
 			s.SetSocketOnDemand(true)
 		}
+		if desc.VTTYEnabled {
+			s.SetVTTY(true, desc.VTTYScrollback, "/run/slinit")
+		}
 	case *service.ScriptedService:
 		s.SetStartCommand(desc.Command)
 		s.SetStopCommand(desc.StopCommand)
@@ -687,6 +690,9 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		}
 		if desc.SocketActivation == "on-demand" {
 			svc.SetSocketOnDemand(true)
+		}
+		if desc.VTTYEnabled {
+			svc.SetVTTY(true, desc.VTTYScrollback, "/run/slinit")
 		}
 		return svc
 	case service.TypeScripted:

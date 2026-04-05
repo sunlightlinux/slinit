@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -358,6 +359,15 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdServiceStatus5(conn, name)
 		})
+	case "attach":
+		if len(cmdArgs) < 1 {
+			fatal("Usage: slinitctl attach <service>")
+		}
+		// attach doesn't use the control protocol — connects directly to vtty socket
+		if conn != nil {
+			conn.Close()
+		}
+		err = cmdAttach(cmdArgs[0], socketPath, systemMode)
 	default:
 		fatal("Unknown command: %s", command)
 	}
@@ -2385,5 +2395,111 @@ complete -c slinitctl -n "__fish_seen_subcommand_from shutdown" -a 'halt powerof
 complete -c slinitctl -n "__fish_seen_subcommand_from signal" -a 'SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM SIGCONT SIGSTOP'
 complete -c slinitctl -n "__fish_seen_subcommand_from add-dep rm-dep" -a 'regular waits-for milestone soft before after'
 complete -c slinitctl -n "__fish_seen_subcommand_from completion" -a 'bash zsh fish'`)
+}
+
+// cmdAttach connects to a service's vtty Unix socket for interactive terminal access.
+// Puts the local terminal in raw mode, forwards I/O bidirectionally, and
+// detaches on Ctrl+] (0x1d).
+func cmdAttach(svcName, socketPath string, systemMode bool) error {
+	// Determine vtty socket path
+	vttyDir := "/run/slinit"
+	if !systemMode {
+		home := os.Getenv("HOME")
+		if home != "" {
+			vttyDir = filepath.Join(home, ".slinit")
+		}
+	}
+	vttyPath := filepath.Join(vttyDir, fmt.Sprintf("vtty-%s.sock", svcName))
+
+	conn, err := net.Dial("unix", vttyPath)
+	if err != nil {
+		return fmt.Errorf("cannot attach to '%s': %v (vtty socket: %s)", svcName, err, vttyPath)
+	}
+	defer conn.Close()
+
+	// Save terminal state and set raw mode
+	oldState, err := makeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return fmt.Errorf("failed to set raw mode: %v", err)
+	}
+	defer restoreTerminal(int(os.Stdin.Fd()), oldState)
+
+	fmt.Fprintf(os.Stderr, "\r\n[attached to %s — press Ctrl+] to detach]\r\n", svcName)
+
+	// Forward vtty output → stdout
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		buf := make([]byte, 4096)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				os.Stdout.Write(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Forward stdin → vtty (with Ctrl+] detach detection)
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				conn.Close()
+				return
+			}
+			for i := 0; i < n; i++ {
+				if buf[i] == 0x1d { // Ctrl+]
+					fmt.Fprintf(os.Stderr, "\r\n[detached from %s]\r\n", svcName)
+					conn.Close()
+					return
+				}
+			}
+			conn.Write(buf[:n])
+		}
+	}()
+
+	<-doneCh
+	return nil
+}
+
+// makeRaw sets the terminal to raw mode and returns the old state.
+func makeRaw(fd int) (*syscall.Termios, error) {
+	var oldState syscall.Termios
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
+		uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&oldState)), 0, 0, 0)
+	if errno != 0 {
+		return nil, errno
+	}
+
+	newState := oldState
+	// Disable canonical mode, echo, signals
+	newState.Lflag &^= syscall.ICANON | syscall.ECHO | syscall.ISIG | syscall.IEXTEN
+	// Disable input processing
+	newState.Iflag &^= syscall.BRKINT | syscall.ICRNL | syscall.INPCK | syscall.ISTRIP | syscall.IXON
+	// Disable output processing
+	newState.Oflag &^= syscall.OPOST
+	// Character size mask to 8 bits
+	newState.Cflag &^= syscall.CSIZE | syscall.PARENB
+	newState.Cflag |= syscall.CS8
+	// Read at least 1 byte, no timeout
+	newState.Cc[syscall.VMIN] = 1
+	newState.Cc[syscall.VTIME] = 0
+
+	_, _, errno = syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
+		uintptr(syscall.TCSETS), uintptr(unsafe.Pointer(&newState)), 0, 0, 0)
+	if errno != 0 {
+		return nil, errno
+	}
+	return &oldState, nil
+}
+
+// restoreTerminal restores the terminal to the given state.
+func restoreTerminal(fd int, state *syscall.Termios) {
+	syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
+		uintptr(syscall.TCSETS), uintptr(unsafe.Pointer(state)), 0, 0, 0)
 }
 

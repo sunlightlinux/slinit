@@ -1293,3 +1293,38 @@ cron-command += --verbose
 		t.Errorf("CronCommand = %v, want [/usr/bin/task --verbose]", desc.CronCommand)
 	}
 }
+
+func TestParseVTTYSettings(t *testing.T) {
+	input := `type = process
+command = /bin/myapp
+vtty = true
+vtty-scrollback = 131072
+`
+	desc, err := Parse(strings.NewReader(input), "vtty-svc", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if !desc.VTTYEnabled {
+		t.Error("expected VTTYEnabled = true")
+	}
+	if desc.VTTYScrollback != 131072 {
+		t.Errorf("expected VTTYScrollback = 131072, got %d", desc.VTTYScrollback)
+	}
+}
+
+func TestParseVTTYDefault(t *testing.T) {
+	input := `type = process
+command = /bin/myapp
+vtty = true
+`
+	desc, err := Parse(strings.NewReader(input), "vtty-def", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if !desc.VTTYEnabled {
+		t.Error("expected VTTYEnabled = true")
+	}
+	if desc.VTTYScrollback != 0 {
+		t.Errorf("expected default VTTYScrollback = 0 (uses built-in default), got %d", desc.VTTYScrollback)
+	}
+}

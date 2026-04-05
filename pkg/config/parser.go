@@ -133,6 +133,10 @@ type ServiceDescription struct {
 	InittabID   string // inittab-id for utmpx
 	InittabLine string // inittab-line for utmpx
 
+	// Virtual TTY
+	VTTYEnabled    bool // run attached to a PTY (screen-like)
+	VTTYScrollback int  // scrollback buffer size (default 64KB)
+
 	// Cron-like periodic tasks
 	CronCommand  []string      // command to run periodically while STARTED
 	CronInterval time.Duration // interval between runs (default 60s)
@@ -468,6 +472,20 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.CloseStderr = b
+
+	// Virtual TTY
+	case "vtty":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.VTTYEnabled = b
+	case "vtty-scrollback":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid vtty-scrollback: %s", value)
+		}
+		desc.VTTYScrollback = n
 
 	// Cron-like periodic tasks
 	case "cron-command":

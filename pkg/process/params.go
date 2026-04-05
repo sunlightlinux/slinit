@@ -174,6 +174,12 @@ type ExecParams struct {
 	// If the lock cannot be acquired, the process fails to start.
 	LockFile string
 
+	// PTYSlave, if non-empty, is the path to a PTY slave device.
+	// When set, the child's stdin/stdout/stderr are connected to this PTY
+	// and a new session is created (setsid + TIOCSCTTY) so the PTY becomes
+	// the controlling terminal. Used for virtual TTY (screen-like attach).
+	PTYSlave string
+
 	// CloseStdin closes fd 0 in the child process.
 	CloseStdin bool
 	// CloseStdout closes fd 1 in the child process.
