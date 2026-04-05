@@ -7,7 +7,7 @@ function __slinitctl_services
 end
 
 # Subcommands
-set -l commands list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents
+set -l commands list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue once reload unload boot-time analyze catlog attach setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents
 
 # Disable file completions by default
 complete -c slinitctl -f
@@ -48,6 +48,10 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a unload -
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a boot-time -d 'Boot timing analysis'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a analyze -d 'Boot timing analysis'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a catlog -d 'Show service log buffer'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a attach -d 'Attach to service virtual TTY'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a pause -d 'Pause a service (SIGSTOP)'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a continue -d 'Continue a paused service'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a once -d 'Start without auto-restart'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a setenv -d 'Set service env var'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a unsetenv -d 'Remove service env var'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a getallenv -d 'List service env vars'
@@ -65,7 +69,7 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a load-mec
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a dependents -d 'List dependents'
 
 # Service name completions for commands that take a service argument
-for cmd in start wake stop release restart status is-started is-failed trigger untrigger reload unload unpin enable disable query-name getallenv catlog dependents
+for cmd in start wake stop release restart status is-started is-failed trigger untrigger reload unload unpin enable disable query-name getallenv catlog attach pause continue once dependents
     complete -c slinitctl -n "__fish_seen_subcommand_from $cmd" -a '(__slinitctl_services)' -d 'Service'
 end
 

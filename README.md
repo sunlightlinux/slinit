@@ -17,7 +17,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Config includes**: `@include` and `@include-opt` directives for modular config
 - **Runit-inspired features**: finish-command, ready-check-command, pre-stop-hook, env-dir, control-command, chroot, new-session, lock-file, close-fds, log rotation/filtering/processor, down-file marker
 - **Control socket**: binary protocol (v6) over Unix domain socket for runtime management
-- **slinitctl CLI**: 35 commands — list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, pause, continue, once, reload, unload, unpin, catlog, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time, dependents, query-load-mech
+- **slinitctl CLI**: 36 commands — list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, pause, continue, once, reload, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time, dependents, query-load-mech
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
 - **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
 - **Service aliases**: `provides` for alternative name lookup
@@ -25,7 +25,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Log output**: buffer (in-memory, catlog), file (logfile with permissions/ownership + rotation/filtering), pipe (consumer-of)
 - **Log rotation**: size-based, time-based, max files, log processor script, include/exclude pattern filtering
 - **Ready notification**: pipefd/pipevar readiness protocol for services, ready-check-command polling
-- **Socket activation**: pre-opened Unix listening socket passed to child (fd 3)
+- **Socket activation**: pre-opened listening sockets passed to child (LISTEN_FDS=N convention), supports Unix/TCP/UDP (`tcp:host:port`, `udp:host:port`), multiple sockets via `+=`, on-demand activation
 - **Hot reload**: reload service configuration from disk without restart
 - **Service unload**: remove stopped services from memory
 - **PID 1 init**: console setup, Ctrl+Alt+Del handling, child subreaper, orphan reaping
@@ -50,6 +50,12 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Pass control socket**: `pass-cs-fd` passes a control connection fd to child processes
 - **Readiness signaling**: `starts-rwfs` / `starts-log` flags for filesystem and logging readiness
 - **UTMPX support**: `inittab-id`/`inittab-line` for session tracking, boot logging
+- **/etc/init.d auto-detect**: automatic detection of SysV init scripts with LSB header parsing, BSD rc.d support
+- **Cron-like periodic tasks**: `cron-command` with configurable interval, delay, and on-error behavior
+- **Shutdown info display**: periodic reporter of blocking services during shutdown, escalating force shutdown (2nd signal reduces timeout, 3rd sends SIGKILL)
+- **Parallel start limit**: soft concurrency control for service startup (`--parallel-start-limit`), slow-threshold filtering
+- **Multi-service shared logger**: SharedLogMux multiplexes N service outputs into a single logger stdin with `[service-name]` line prefixes
+- **Virtual TTY**: screen-like attach/detach for services via PTY allocation, ring buffer scrollback, Unix socket client multiplexing (`slinitctl attach`)
 - **Dual mode**: system init (PID 1) or user-level service manager
 - **Offline enable/disable**: `--offline` mode creates/removes waits-for.d symlinks without a running daemon
 - **Dinit naming compat**: `rlimit-addrspace`, `run-in-cgroup`, `consumer-of =` all supported as aliases
@@ -102,6 +108,8 @@ ln -s slinit-shutdown slinit-soft-reboot
 | `-F` / `--ready-fd` | File descriptor to notify when boot service is ready | `-1` |
 | `-l` / `--log-file` | Log to file instead of console | |
 | `-b` / `--cgroup-path` | Default cgroup base path for services | |
+| `--parallel-start-limit` | Max concurrent service starts (0 = unlimited) | `0` |
+| `--parallel-start-slow-threshold` | Seconds before a starting service is considered "slow" | `10` |
 | `--version` | Show version and exit | |
 
 Default service directories (when `--services-dir` is not set):
@@ -224,6 +232,50 @@ depends-on: network
 
 Start with `slinitctl start myservice@web` — `$1` is replaced with `web`.
 
+Example multi-service shared logger:
+
+```ini
+# /etc/slinit.d/central-logger
+type = process
+command = /usr/bin/multilog t ./log
+
+# /etc/slinit.d/app-one
+type = process
+command = /usr/bin/app-one
+shared-logger = central-logger
+
+# /etc/slinit.d/app-two
+type = process
+command = /usr/bin/app-two
+shared-logger = central-logger
+```
+
+Logger receives lines prefixed: `[app-one] ...`, `[app-two] ...`.
+
+Example service with virtual TTY:
+
+```ini
+# /etc/slinit.d/interactive-svc
+type = process
+command = /usr/bin/myapp
+vtty = true
+vtty-scrollback = 131072
+```
+
+Attach with `slinitctl attach interactive-svc` (Ctrl+] to detach).
+
+Example service with cron task:
+
+```ini
+# /etc/slinit.d/worker
+type = process
+command = /usr/bin/worker
+cron-command = /usr/bin/cleanup-temp
+cron-interval = 3600
+cron-delay = 60
+cron-on-error = continue
+```
+
 Example with `@meta enable-via`:
 
 ```ini
@@ -260,7 +312,8 @@ command = /usr/bin/optional
 | `logfile-uid`             | Log file owner UID                               |
 | `logfile-gid`             | Log file owner GID                               |
 | `ready-notification`      | Readiness protocol (pipefd:N, pipevar:VARNAME)   |
-| `socket-listen`           | Pre-opened Unix socket passed to child (fd 3)    |
+| `socket-listen`           | Pre-opened listening socket(s) passed to child (LISTEN_FDS), supports `+=` for multiple, `tcp:`/`udp:` prefix |
+| `socket-activation`       | Activation mode: `immediate` (default) or `on-demand` |
 | `socket-permissions`      | Socket file permissions                          |
 | `socket-uid/gid`          | Socket file ownership                            |
 | `pid-file`                | PID file path (bgprocess type)                   |
@@ -307,6 +360,13 @@ command = /usr/bin/optional
 | `inittab-line`            | UTMPX inittab line for session tracking          |
 | `load-options`            | Loader flags (export-passwd-vars, export-service-name) |
 | `@meta enable-via`        | Default "from" service for enable/disable        |
+| `shared-logger`           | Name of shared logger service (multi-service → single logger) |
+| `vtty`                    | Enable virtual TTY for screen-like attach/detach  |
+| `vtty-scrollback`         | VirtualTTY scrollback buffer size in bytes (default 64KB) |
+| `cron-command`            | Periodic command to execute while service is running |
+| `cron-interval`           | Interval between cron executions (seconds)        |
+| `cron-delay`              | Initial delay before first cron execution (seconds) |
+| `cron-on-error`           | Behavior on cron command failure: `continue` (default) or `stop` |
 | `@include`                | Include another config file (error if not found) |
 | `@include-opt`            | Include another config file (ignore if not found)|
 
@@ -404,6 +464,9 @@ slinitctl once myservice
 # View buffered service output
 slinitctl catlog myservice
 slinitctl catlog --clear myservice
+
+# Attach to service virtual TTY (screen-like, Ctrl+] to detach)
+slinitctl attach myservice
 
 # Reload config from disk (without restart)
 slinitctl reload myservice
@@ -510,7 +573,7 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 slinit/
 ├── cmd/
 │   ├── slinit/          # Daemon entry point
-│   ├── slinitctl/       # Control CLI (35 commands)
+│   ├── slinitctl/       # Control CLI (36 commands, incl. attach)
 │   ├── slinit-check/    # Config linter (offline + online)
 │   ├── slinit-monitor/  # Event watcher + command executor
 │   └── slinit-shutdown/ # Standalone shutdown utility
@@ -526,16 +589,16 @@ slinit/
 ├── internal/util/       # Path and parsing utilities
 ├── completions/         # Shell completions (bash, zsh, fish)
 ├── demo/                # QEMU demo environment
-└── tests/functional/    # 35 QEMU-based integration tests
+└── tests/functional/    # 40 QEMU-based integration tests
 ```
 
 ## Testing
 
 ```bash
-# Unit tests (237+ tests across 6 packages)
+# Unit tests (327+ tests across 6 packages)
 go test ./...
 
-# Functional tests (35 QEMU-based integration tests)
+# Functional tests (40 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 ```
 
@@ -554,6 +617,10 @@ go test ./...
 - [x] **Phase 11**: Protocol v5 -- LISTSERVICES5/SERVICESTATUS5/SERVICEEVENT5, slinit-check, slinit-monitor, @include/@include-opt
 - [x] **Phase 12**: Complete dinit parity -- @meta, env-file meta-commands, PINNEDSTOPPED/PINNEDSTARTED, SERVICE_DESC_ERR/SERVICE_LOAD_ERR, PREACK, QUERY_LOAD_MECH, DEPENDENTS, $/NAME word-splitting, service templates (name@arg), @meta enable-via, SIGUSR1 socket reopen, soft-reboot shutdown hooks
 - [x] **Phase 13**: Runit-inspired features -- finish-command, ready-check-command, pre-stop-hook, env-dir, control-command (custom signal handlers), chroot, new-session, lock-file, close-fds, pause/continue, log rotation (size/time/max-files), log filtering (include/exclude regex), log processor, down-file marker, once command
+- [x] **Phase 14**: /etc/init.d auto-detect with LSB header parsing, BSD rc.d support
+- [x] **Phase 15**: Shutdown info display, escalating force shutdown, cron-like periodic tasks, soft parallel start limit, proper socket activation (multiple sockets, TCP/UDP, on-demand)
+- [x] **Phase 16**: Multi-service shared logger (SharedLogMux -- N producers → single logger, line-prefixed)
+- [x] **Phase 17**: Virtual TTY -- screen-like attach/detach via PTY allocation, ring buffer scrollback, `slinitctl attach`
 
 ## License
 

@@ -44,6 +44,10 @@ _slinitctl() {
         'boot-time:Show boot timing analysis'
         'analyze:Show boot timing analysis (alias)'
         'catlog:Show buffered service output'
+        'attach:Attach to service virtual TTY (Ctrl+] to detach)'
+        'pause:Pause a service (SIGSTOP)'
+        'continue:Continue a paused service (SIGCONT)'
+        'once:Start service without auto-restart'
         'setenv:Set per-service environment variable'
         'unsetenv:Remove per-service environment variable'
         'getallenv:List service environment variables'
@@ -114,7 +118,7 @@ _slinitctl() {
             case ${words[1]} in
                 start|stop|wake|release|restart|status|is-started|is-failed|\
                 trigger|untrigger|reload|unload|unpin|enable|disable|\
-                query-name|getallenv|catlog|dependents)
+                query-name|getallenv|catlog|attach|pause|continue|once|dependents)
                     _slinitctl_services
                     ;;
                 shutdown)
