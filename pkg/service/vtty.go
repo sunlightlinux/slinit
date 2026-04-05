@@ -39,6 +39,7 @@ type VirtualTTY struct {
 
 	// PTY master/slave
 	master    *os.File
+	masterFd  int // cached fd for race-free goroutine access
 	slavePath string
 
 	// Ring buffer for scrollback
@@ -99,6 +100,7 @@ func OpenVirtualTTY(serviceName string, scrollback int, sockDir string) (*Virtua
 
 	vt := &VirtualTTY{
 		master:      master,
+		masterFd:    int(master.Fd()), // cache fd before goroutines start
 		slavePath:   slavePath,
 		ring:        make([]byte, scrollback),
 		ringSize:    scrollback,
@@ -145,7 +147,7 @@ func (vt *VirtualTTY) Close() {
 	close(vt.stopCh)
 	vt.listener.Close()
 	// Set O_NONBLOCK before closing to unblock readLoop's blocking Read
-	syscall.SetNonblock(int(vt.master.Fd()), true)
+	syscall.SetNonblock(vt.masterFd, true)
 	vt.master.Close()
 
 	// Wait for reader goroutine
@@ -222,18 +224,22 @@ func (vt *VirtualTTY) readLoop() {
 
 	dataCh := make(chan readResult, 4)
 
+	// Use cached fd to avoid race with Close() on the os.File
+	fd := vt.masterFd
+
 	// Background reader goroutine — does blocking reads on the PTY master fd.
 	// Exits when the fd is closed (returns EIO or EBADF).
+	// Uses double-buffering: two fixed buffers alternate to avoid per-read allocations.
 	go func() {
 		defer close(dataCh)
-		fd := int(vt.master.Fd())
-		buf := make([]byte, vttyBufSize)
+		bufs := [2][]byte{make([]byte, vttyBufSize), make([]byte, vttyBufSize)}
+		idx := 0
 		for {
+			buf := bufs[idx]
 			n, err := syscall.Read(fd, buf)
 			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				dataCh <- readResult{data: data}
+				dataCh <- readResult{data: buf[:n]}
+				idx ^= 1 // swap to other buffer while consumer uses this one
 			}
 			if err != nil {
 				if err == syscall.EINTR || err == syscall.EAGAIN {
@@ -244,6 +250,9 @@ func (vt *VirtualTTY) readLoop() {
 			}
 		}
 	}()
+
+	// Reusable client snapshot slice — avoids allocation per read
+	var clientsBuf []*vttyClient
 
 	for {
 		select {
@@ -256,13 +265,14 @@ func (vt *VirtualTTY) readLoop() {
 
 			vt.mu.Lock()
 			vt.ringWrite(res.data)
-			clients := make([]*vttyClient, 0, len(vt.clients))
+			// Reuse snapshot slice
+			clientsBuf = clientsBuf[:0]
 			for _, c := range vt.clients {
-				clients = append(clients, c)
+				clientsBuf = append(clientsBuf, c)
 			}
 			vt.mu.Unlock()
 
-			for _, c := range clients {
+			for _, c := range clientsBuf {
 				_, werr := c.conn.Write(res.data)
 				if werr != nil {
 					vt.removeClient(c.id)
@@ -340,15 +350,48 @@ func (vt *VirtualTTY) forwardInput(c *vttyClient) {
 }
 
 // ringWrite appends data to the ring buffer, overwriting oldest data if full.
+// Uses vectorized copy (1-2 memcpy calls) instead of byte-by-byte iteration.
 func (vt *VirtualTTY) ringWrite(data []byte) {
-	for _, b := range data {
-		idx := (vt.ringStart + vt.ringLen) % vt.ringSize
-		vt.ring[idx] = b
-		if vt.ringLen < vt.ringSize {
-			vt.ringLen++
-		} else {
-			vt.ringStart = (vt.ringStart + 1) % vt.ringSize
-		}
+	dLen := len(data)
+	if dLen == 0 {
+		return
+	}
+
+	// If data is larger than ring, only keep the tail
+	if dLen >= vt.ringSize {
+		data = data[dLen-vt.ringSize:]
+		dLen = vt.ringSize
+		copy(vt.ring, data)
+		vt.ringStart = 0
+		vt.ringLen = vt.ringSize
+		return
+	}
+
+	// Write position
+	writePos := (vt.ringStart + vt.ringLen) % vt.ringSize
+	if vt.ringLen >= vt.ringSize {
+		// Buffer is full — we'll overwrite from ringStart
+		writePos = vt.ringStart
+	}
+
+	// Copy in up to 2 segments (wrap-around)
+	firstChunk := vt.ringSize - writePos
+	if firstChunk >= dLen {
+		copy(vt.ring[writePos:], data)
+	} else {
+		copy(vt.ring[writePos:], data[:firstChunk])
+		copy(vt.ring, data[firstChunk:])
+	}
+
+	// Update ring pointers
+	if vt.ringLen+dLen <= vt.ringSize {
+		// No overflow
+		vt.ringLen += dLen
+	} else {
+		// Overflow — advance start past overwritten data
+		overflow := (vt.ringLen + dLen) - vt.ringSize
+		vt.ringStart = (vt.ringStart + overflow) % vt.ringSize
+		vt.ringLen = vt.ringSize
 	}
 }
 

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -174,13 +175,7 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 			// Process data line by line for filtering
 			data := buf[:n]
 			for len(data) > 0 {
-				idx := -1
-				for i, b := range data {
-					if b == '\n' {
-						idx = i
-						break
-					}
-				}
+				idx := bytes.IndexByte(data, '\n')
 				if idx >= 0 {
 					lineBuf = append(lineBuf, data[:idx+1]...)
 					lr.processLine(lineBuf)
@@ -203,18 +198,23 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 }
 
 // processLine filters and writes a single line to the logfile.
+// Uses regexp.Match on raw bytes to avoid string conversion allocations.
 func (lr *LogRotator) processLine(line []byte) {
 	if len(line) == 0 {
 		return
 	}
 
-	lineStr := strings.TrimRight(string(line), "\n")
+	// Trim trailing newline for matching (without allocation)
+	matchLine := line
+	if matchLine[len(matchLine)-1] == '\n' {
+		matchLine = matchLine[:len(matchLine)-1]
+	}
 
 	// Apply include filters (if any, line must match at least one)
 	if len(lr.includes) > 0 {
 		matched := false
 		for _, re := range lr.includes {
-			if re.MatchString(lineStr) {
+			if re.Match(matchLine) {
 				matched = true
 				break
 			}
@@ -226,7 +226,7 @@ func (lr *LogRotator) processLine(line []byte) {
 
 	// Apply exclude filters (if any match, skip the line)
 	for _, re := range lr.excludes {
-		if re.MatchString(lineStr) {
+		if re.Match(matchLine) {
 			return
 		}
 	}

@@ -898,8 +898,8 @@ func (c *Connection) handleGetAllEnv(payload []byte) error {
 		globalEnv := c.server.services.GlobalEnv()
 		env := make(map[string]string, len(globalEnv))
 		for _, entry := range globalEnv {
-			if idx := strings.IndexByte(entry, '='); idx >= 0 {
-				env[entry[:idx]] = entry[idx+1:]
+			if k, v, ok := strings.Cut(entry, "="); ok {
+				env[k] = v
 			}
 		}
 		reply := EncodeEnvList(env)

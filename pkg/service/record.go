@@ -392,12 +392,7 @@ func (sr *ServiceRecord) BuildEnvSlice() []string {
 	}
 	result := make([]string, 0, len(sr.extraEnv))
 	for k, v := range sr.extraEnv {
-		// Pre-size the string to avoid intermediate allocation from k + "=" + v
-		buf := make([]byte, 0, len(k)+1+len(v))
-		buf = append(buf, k...)
-		buf = append(buf, '=')
-		buf = append(buf, v...)
-		result = append(result, string(buf))
+		result = append(result, k+"="+v)
 	}
 	return result
 }
@@ -439,11 +434,7 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 	env := make([]string, 0, totalCap)
 	env = append(env, globalEnv...)
 	for k, v := range fileEnv {
-		buf := make([]byte, 0, len(k)+1+len(v))
-		buf = append(buf, k...)
-		buf = append(buf, '=')
-		buf = append(buf, v...)
-		env = append(env, string(buf))
+		env = append(env, k+"="+v)
 	}
 	env = append(env, extra...)
 	return env

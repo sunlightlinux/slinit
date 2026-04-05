@@ -422,7 +422,7 @@ type ActiveServiceInfo struct {
 func (ss *ServiceSet) GetActiveServiceInfo() []ActiveServiceInfo {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
-	var result []ActiveServiceInfo
+	result := make([]ActiveServiceInfo, 0, len(ss.records))
 	for _, svc := range ss.records {
 		st := svc.State()
 		if st != StateStopped {

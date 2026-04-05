@@ -3,7 +3,6 @@ package service
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 )
@@ -158,12 +157,17 @@ func (m *SharedLogMux) Close() {
 
 // readProducer reads lines from a producer's pipe and writes them prefixed
 // to the logger pipe. Exits when the pipe is closed or stopCh is signaled.
+// Writes the prefix parts directly to avoid per-line string formatting allocation.
 func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 	defer close(p.doneCh)
 
 	scanner := bufio.NewScanner(p.pipeR)
 	// Use a reasonable max line size (64KB)
 	scanner.Buffer(make([]byte, 4096), 64*1024)
+
+	// Pre-build the prefix bytes once: "[name] "
+	prefix := []byte("[" + p.name + "] ")
+	nl := []byte{'\n'}
 
 	for scanner.Scan() {
 		select {
@@ -172,11 +176,16 @@ func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 		default:
 		}
 
-		line := scanner.Text()
-		prefixed := fmt.Sprintf("[%s] %s\n", p.name, line)
+		lineBytes := scanner.Bytes()
 
 		m.writerMu.Lock()
-		_, err := io.WriteString(m.loggerW, prefixed)
+		_, err := m.loggerW.Write(prefix)
+		if err == nil {
+			_, err = m.loggerW.Write(lineBytes)
+		}
+		if err == nil {
+			_, err = m.loggerW.Write(nl)
+		}
 		m.writerMu.Unlock()
 
 		if err != nil {

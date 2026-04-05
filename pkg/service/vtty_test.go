@@ -255,3 +255,65 @@ func TestVirtualTTY_MultipleClients(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 }
 
+// --- Benchmarks ---
+
+func BenchmarkRingWrite_Small(b *testing.B) {
+	vt := &VirtualTTY{
+		ring:     make([]byte, 64*1024),
+		ringSize: 64 * 1024,
+	}
+	data := make([]byte, 128)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vt.ringWrite(data)
+	}
+}
+
+func BenchmarkRingWrite_4KB(b *testing.B) {
+	vt := &VirtualTTY{
+		ring:     make([]byte, 64*1024),
+		ringSize: 64 * 1024,
+	}
+	data := make([]byte, 4096)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vt.ringWrite(data)
+	}
+}
+
+func BenchmarkRingWrite_Wraparound(b *testing.B) {
+	vt := &VirtualTTY{
+		ring:      make([]byte, 1024),
+		ringSize:  1024,
+		ringStart: 900,
+		ringLen:   1024,
+	}
+	data := make([]byte, 256)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		vt.ringWrite(data)
+	}
+}
+
+func BenchmarkRingSnapshot(b *testing.B) {
+	vt := &VirtualTTY{
+		ring:      make([]byte, 64*1024),
+		ringSize:  64 * 1024,
+		ringStart: 50000,
+		ringLen:   64 * 1024,
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = vt.ringSnapshot()
+	}
+}
+
