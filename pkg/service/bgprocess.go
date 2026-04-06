@@ -84,6 +84,18 @@ const (
 	bgTimerRestartDelay
 )
 
+// killCgroupTree sends a signal to all processes in the service's cgroup.
+func (s *BGProcessService) killCgroupTree(sig syscall.Signal) {
+	cgPath := s.EffectiveCgroupPath()
+	if cgPath == "" {
+		return
+	}
+	if err := process.KillCgroup(cgPath, sig); err != nil {
+		s.services.logger.Error("Service '%s': cgroup kill (%v): %v",
+			s.serviceName, sig, err)
+	}
+}
+
 // NewBGProcessService creates a new background process service.
 func NewBGProcessService(set *ServiceSet, name string) *BGProcessService {
 	svc := &BGProcessService{
@@ -340,6 +352,11 @@ func (s *BGProcessService) BringDown() {
 
 	s.stopIssued = true
 
+	// Kill entire cgroup process tree if configured
+	if s.Flags.KillAllOnStop {
+		s.killCgroupTree(sig)
+	}
+
 	if s.stopTimeout > 0 {
 		s.armTimer(s.stopTimeout, bgTimerStopTimeout)
 	}
@@ -476,6 +493,11 @@ func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	// Kill remaining process group members from the launcher
 	process.KillProcessGroup(exit.PID)
+
+	// Kill entire cgroup tree to clean up orphaned processes
+	if s.Flags.KillAllOnStop {
+		s.killCgroupTree(syscall.SIGKILL)
+	}
 
 	s.launcherPID = 0
 	s.procHandle.Clear()
@@ -698,6 +720,10 @@ func (s *BGProcessService) handleTimerExpired() {
 			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGKILL",
 				s.serviceName)
 			process.SignalProcess(pid, syscall.SIGKILL, false)
+		}
+		// Kill entire cgroup tree on SIGKILL escalation
+		if s.Flags.KillAllOnStop {
+			s.killCgroupTree(syscall.SIGKILL)
 		}
 		if s.stopPID > 0 {
 			s.services.logger.Error("Service '%s': killing stop-command (pid %d)",

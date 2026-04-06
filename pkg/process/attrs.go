@@ -121,6 +121,49 @@ func applyCgroup(pid int, cgroupPath string) error {
 	return os.WriteFile(procsPath, strconv.AppendInt(nil, int64(pid), 10), 0200)
 }
 
+// KillCgroup sends a signal to all processes in a cgroup v2 hierarchy.
+// First tries the cgroup.kill interface (kernel 5.14+), then falls back
+// to reading cgroup.procs and signaling each PID individually.
+// This ensures the entire process tree is terminated, not just the leader.
+func KillCgroup(cgroupPath string, sig syscall.Signal) error {
+	if cgroupPath == "" {
+		return nil
+	}
+
+	// Try cgroup.kill (cgroup v2, kernel ≥ 5.14) — sends SIGKILL to all
+	killPath := cgroupPath + "/cgroup.kill"
+	if sig == syscall.SIGKILL {
+		if err := os.WriteFile(killPath, []byte("1"), 0200); err == nil {
+			return nil
+		}
+		// cgroup.kill not available or failed, fall through to manual kill
+	}
+
+	// Fallback: read cgroup.procs and signal each PID
+	data, err := os.ReadFile(cgroupPath + "/cgroup.procs")
+	if err != nil {
+		return fmt.Errorf("read cgroup.procs: %w", err)
+	}
+
+	// Parse PIDs (one per line) and signal each
+	var lastErr error
+	start := 0
+	for i := 0; i <= len(data); i++ {
+		if i == len(data) || data[i] == '\n' {
+			if i > start {
+				pid, err := strconv.Atoi(string(data[start:i]))
+				if err == nil && pid > 0 {
+					if err := syscall.Kill(pid, sig); err != nil && err != syscall.ESRCH {
+						lastErr = err
+					}
+				}
+			}
+			start = i + 1
+		}
+	}
+	return lastErr
+}
+
 func applyNoNewPrivs(pid int) error {
 	// PR_SET_NO_NEW_PRIVS can only be set on the calling thread, not on
 	// another process. The /proc/PID/attr/no_new_privs path does not exist.

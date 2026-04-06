@@ -453,6 +453,15 @@ func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = 
 func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
 func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
 
+// EffectiveCgroupPath returns the cgroup path for this service,
+// falling back to the daemon default. Empty if neither is set.
+func (sr *ServiceRecord) EffectiveCgroupPath() string {
+	if sr.cgroupPath != "" {
+		return sr.cgroupPath
+	}
+	return sr.services.DefaultCgroupPath()
+}
+
 // ApplyProcessAttrs fills ExecParams with process attributes from this record.
 func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.Nice = sr.nice

@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -57,6 +58,18 @@ const (
 	scriptedTimerStartTimeout
 	scriptedTimerStopTimeout
 )
+
+// killCgroupTree sends a signal to all processes in the service's cgroup.
+func (s *ScriptedService) killCgroupTree(sig syscall.Signal) {
+	cgPath := s.EffectiveCgroupPath()
+	if cgPath == "" {
+		return
+	}
+	if err := process.KillCgroup(cgPath, sig); err != nil {
+		s.services.logger.Error("Service '%s': cgroup kill (%v): %v",
+			s.serviceName, sig, err)
+	}
+}
 
 // NewScriptedService creates a new scripted service.
 func NewScriptedService(set *ServiceSet, name string) *ScriptedService {
@@ -364,6 +377,11 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	// Kill remaining process group members (orphaned children of the script)
 	process.KillProcessGroup(exit.PID)
 
+	// Kill entire cgroup tree to clean up orphaned processes
+	if s.Flags.KillAllOnStop {
+		s.killCgroupTree(syscall.SIGKILL)
+	}
+
 	// Clear utmp entry
 	if s.HasUtmp() && s.services.OnUtmpClear != nil {
 		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
@@ -415,6 +433,11 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 	// Kill remaining process group members
 	process.KillProcessGroup(exit.PID)
 
+	// Kill entire cgroup tree to clean up orphaned processes
+	if s.Flags.KillAllOnStop {
+		s.killCgroupTree(syscall.SIGKILL)
+	}
+
 	s.stopPID = 0
 	s.stopHandle.Clear()
 	s.cancelTimer()
@@ -454,6 +477,10 @@ func (s *ScriptedService) handleTimerExpired() {
 			s.services.logger.Error("Service '%s': stop command timeout, sending SIGKILL",
 				s.serviceName)
 			process.SignalProcess(s.stopPID, 9, false) // SIGKILL
+		}
+		// Kill entire cgroup tree on SIGKILL escalation
+		if s.Flags.KillAllOnStop {
+			s.killCgroupTree(syscall.SIGKILL)
 		}
 	}
 }

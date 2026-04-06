@@ -540,6 +540,19 @@ func (s *ProcessService) PID() int { return s.pid }
 // GetExitStatus returns the exit status of the last process.
 func (s *ProcessService) GetExitStatus() ExitStatus { return s.exitStatus }
 
+// killCgroupTree sends a signal to all processes in the service's cgroup.
+// Used when kill-all-on-stop is set to ensure the entire process tree is terminated.
+func (s *ProcessService) killCgroupTree(sig syscall.Signal) {
+	cgPath := s.EffectiveCgroupPath()
+	if cgPath == "" {
+		return
+	}
+	if err := process.KillCgroup(cgPath, sig); err != nil {
+		s.services.logger.Error("Service '%s': cgroup kill (%v): %v",
+			s.serviceName, sig, err)
+	}
+}
+
 // BringUp starts the service process.
 func (s *ProcessService) BringUp() bool {
 	if len(s.command) == 0 {
@@ -627,6 +640,11 @@ func (s *ProcessService) BringDown() {
 	}
 
 	s.stopIssued = true
+
+	// Kill entire cgroup process tree if configured
+	if s.Flags.KillAllOnStop {
+		s.killCgroupTree(sig)
+	}
 
 	// Arm stop timeout for SIGKILL escalation
 	if s.stopTimeout > 0 {
@@ -1164,6 +1182,11 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// group members, so this is safe for other managed services.
 	process.KillProcessGroup(exit.PID)
 
+	// Kill entire cgroup tree to clean up any orphaned processes
+	if s.Flags.KillAllOnStop {
+		s.killCgroupTree(syscall.SIGKILL)
+	}
+
 	// Clear utmp entry
 	if s.HasUtmp() && s.services.OnUtmpClear != nil {
 		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
@@ -1292,6 +1315,10 @@ func (s *ProcessService) handleTimerExpired() {
 			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGKILL",
 				s.serviceName)
 			process.SignalProcess(s.pid, syscall.SIGKILL, false) // Always kill group
+		}
+		// Kill entire cgroup tree on SIGKILL escalation
+		if s.Flags.KillAllOnStop {
+			s.killCgroupTree(syscall.SIGKILL)
 		}
 		// Also kill stop-command if still running
 		if s.stopPID > 0 {
