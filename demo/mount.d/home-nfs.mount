@@ -1,0 +1,9 @@
+# home-nfs — NFS home directories (example)
+# Lazily mounted when /home is accessed, unmounted after 5 minutes idle.
+description = NFS home directories via autofs
+what = fileserver:/export/home
+where = /home
+type = nfs
+options = rw,soft,intr,timeo=30
+timeout = 300
+after: network-online

@@ -1,0 +1,8 @@
+# data-local — local data partition (example)
+# Lazily mounted when /mnt/data is accessed.
+description = Local data partition
+what = /dev/sda2
+where = /mnt/data
+type = ext4
+options = rw,noatime
+timeout = 0

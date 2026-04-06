@@ -1,0 +1,6 @@
+# slinit-mount — autofs lazy mount daemon
+type = process
+command = /usr/sbin/slinit-mount --foreground
+restart = on-failure
+restart-delay = 5
+depends-on: system-init
