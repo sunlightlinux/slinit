@@ -186,6 +186,15 @@ type ExecParams struct {
 	CloseStdout bool
 	// CloseStderr closes fd 2 in the child process.
 	CloseStderr bool
+
+	// Cloneflags specifies Linux clone flags for namespace isolation.
+	// OR'd into SysProcAttr.Cloneflags (e.g. syscall.CLONE_NEWPID).
+	Cloneflags uintptr
+
+	// UidMappings and GidMappings are used when CLONE_NEWUSER is set.
+	// If empty and CLONE_NEWUSER is set, a default 1:1 mapping is created.
+	UidMappings []syscall.SysProcIDMap
+	GidMappings []syscall.SysProcIDMap
 }
 
 // Rlimit holds a resource limit (soft, hard) for a given resource.

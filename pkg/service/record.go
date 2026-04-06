@@ -175,6 +175,7 @@ type ServiceRecord struct {
 	ambientCaps []uintptr
 	securebits  uint32
 	cpuAffinity []uint
+	cloneflags  uintptr // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
 
 	// Queue membership flags
 	InPropQueue bool
@@ -452,6 +453,7 @@ func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)       { sr.rlimits = appen
 func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = caps }
 func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
 func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
+func (sr *ServiceRecord) SetCloneflags(flags uintptr)          { sr.cloneflags = flags }
 
 // EffectiveCgroupPath returns the cgroup path for this service,
 // falling back to the daemon default. Empty if neither is set.
@@ -480,6 +482,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	if len(params.CPUAffinity) == 0 {
 		params.CPUAffinity = sr.services.DefaultCPUAffinity()
 	}
+	params.Cloneflags = sr.cloneflags
 
 	// Inject dinit-compatible query env vars
 	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)

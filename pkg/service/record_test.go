@@ -2,6 +2,7 @@ package service
 
 import (
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -442,6 +443,35 @@ func TestDefaultCgroupPath(t *testing.T) {
 
 	if params2.CgroupPath != "/sys/fs/cgroup/custom" {
 		t.Errorf("expected per-service cgroup, got %q", params2.CgroupPath)
+	}
+}
+
+func TestCloneflagsApplied(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "ns-svc")
+	set.AddService(svc)
+
+	flags := uintptr(syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWNET)
+	svc.Record().SetCloneflags(flags)
+
+	params := &process.ExecParams{}
+	svc.Record().ApplyProcessAttrs(params)
+
+	if params.Cloneflags != flags {
+		t.Errorf("expected Cloneflags = %x, got %x", flags, params.Cloneflags)
+	}
+}
+
+func TestCloneflagsZeroByDefault(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "no-ns-svc")
+	set.AddService(svc)
+
+	params := &process.ExecParams{}
+	svc.Record().ApplyProcessAttrs(params)
+
+	if params.Cloneflags != 0 {
+		t.Errorf("expected Cloneflags = 0, got %x", params.Cloneflags)
 	}
 }
 

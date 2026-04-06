@@ -896,6 +896,33 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if len(desc.CPUAffinity) > 0 {
 		rec.SetCPUAffinity(desc.CPUAffinity)
 	}
+
+	// Namespace isolation (Linux clone flags)
+	var cloneflags uintptr
+	if desc.NamespacePID {
+		cloneflags |= syscall.CLONE_NEWPID
+	}
+	if desc.NamespaceMount {
+		cloneflags |= syscall.CLONE_NEWNS
+	}
+	if desc.NamespaceNet {
+		cloneflags |= syscall.CLONE_NEWNET
+	}
+	if desc.NamespaceUTS {
+		cloneflags |= syscall.CLONE_NEWUTS
+	}
+	if desc.NamespaceIPC {
+		cloneflags |= syscall.CLONE_NEWIPC
+	}
+	if desc.NamespaceUser {
+		cloneflags |= syscall.CLONE_NEWUSER
+	}
+	if desc.NamespaceCgroup {
+		cloneflags |= syscall.CLONE_NEWCGROUP
+	}
+	if cloneflags != 0 {
+		rec.SetCloneflags(cloneflags)
+	}
 }
 
 // setupConsumerOf establishes the consumer-of relationship between services.

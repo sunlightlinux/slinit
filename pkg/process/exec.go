@@ -62,6 +62,29 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.SysProcAttr.Setsid = true
 	}
 
+	// Namespace isolation via clone flags
+	if params.Cloneflags != 0 {
+		cmd.SysProcAttr.Cloneflags = params.Cloneflags
+
+		// User namespace requires UID/GID mappings
+		if params.Cloneflags&syscall.CLONE_NEWUSER != 0 {
+			if len(params.UidMappings) > 0 {
+				cmd.SysProcAttr.UidMappings = params.UidMappings
+			} else {
+				cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{
+					{ContainerID: 0, HostID: os.Getuid(), Size: 1},
+				}
+			}
+			if len(params.GidMappings) > 0 {
+				cmd.SysProcAttr.GidMappings = params.GidMappings
+			} else {
+				cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{
+					{ContainerID: 0, HostID: os.Getgid(), Size: 1},
+				}
+			}
+		}
+	}
+
 	// Lock file: acquire exclusive non-blocking flock before exec
 	var lockFD *os.File
 	if params.LockFile != "" {

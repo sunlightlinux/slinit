@@ -41,6 +41,15 @@ type ServiceDescription struct {
 	CloseStdout       bool   // close fd 1
 	CloseStderr       bool   // close fd 2
 
+	// Namespace isolation (Linux clone flags)
+	NamespacePID    bool // CLONE_NEWPID
+	NamespaceMount  bool // CLONE_NEWNS
+	NamespaceNet    bool // CLONE_NEWNET
+	NamespaceUTS    bool // CLONE_NEWUTS
+	NamespaceIPC    bool // CLONE_NEWIPC
+	NamespaceUser   bool // CLONE_NEWUSER
+	NamespaceCgroup bool // CLONE_NEWCGROUP
+
 	// Dependencies (by name, resolved by the loader)
 	DependsOn  []string // depends-on (REGULAR)
 	DependsMS  []string // depends-ms (MILESTONE)
@@ -454,6 +463,48 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.NewSession = b
+	case "namespace-pid":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.NamespacePID = b
+	case "namespace-mount":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.NamespaceMount = b
+	case "namespace-net":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.NamespaceNet = b
+	case "namespace-uts":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.NamespaceUTS = b
+	case "namespace-ipc":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.NamespaceIPC = b
+	case "namespace-user":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.NamespaceUser = b
+	case "namespace-cgroup":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.NamespaceCgroup = b
 	case "close-stdin":
 		b, err := parseBool(value)
 		if err != nil {

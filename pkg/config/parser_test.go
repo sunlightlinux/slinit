@@ -1328,3 +1328,75 @@ vtty = true
 		t.Errorf("expected default VTTYScrollback = 0 (uses built-in default), got %d", desc.VTTYScrollback)
 	}
 }
+
+func TestParseNamespaceAll(t *testing.T) {
+	input := `type = process
+command = /bin/isolated
+namespace-pid = true
+namespace-mount = yes
+namespace-net = true
+namespace-uts = yes
+namespace-ipc = true
+namespace-user = yes
+namespace-cgroup = true
+`
+	desc, err := Parse(strings.NewReader(input), "ns-all", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	checks := []struct {
+		name string
+		got  bool
+	}{
+		{"NamespacePID", desc.NamespacePID},
+		{"NamespaceMount", desc.NamespaceMount},
+		{"NamespaceNet", desc.NamespaceNet},
+		{"NamespaceUTS", desc.NamespaceUTS},
+		{"NamespaceIPC", desc.NamespaceIPC},
+		{"NamespaceUser", desc.NamespaceUser},
+		{"NamespaceCgroup", desc.NamespaceCgroup},
+	}
+	for _, c := range checks {
+		if !c.got {
+			t.Errorf("expected %s = true", c.name)
+		}
+	}
+}
+
+func TestParseNamespacePartial(t *testing.T) {
+	input := `type = process
+command = /bin/app
+namespace-pid = true
+namespace-mount = true
+`
+	desc, err := Parse(strings.NewReader(input), "ns-partial", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if !desc.NamespacePID {
+		t.Error("expected NamespacePID = true")
+	}
+	if !desc.NamespaceMount {
+		t.Error("expected NamespaceMount = true")
+	}
+	if desc.NamespaceNet {
+		t.Error("expected NamespaceNet = false")
+	}
+	if desc.NamespaceUser {
+		t.Error("expected NamespaceUser = false")
+	}
+}
+
+func TestParseNamespaceDisabled(t *testing.T) {
+	input := `type = process
+command = /bin/app
+namespace-pid = false
+`
+	desc, err := Parse(strings.NewReader(input), "ns-off", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if desc.NamespacePID {
+		t.Error("expected NamespacePID = false")
+	}
+}
