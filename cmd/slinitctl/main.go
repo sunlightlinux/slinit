@@ -412,6 +412,9 @@ Commands:
   trigger <service>        Trigger a triggered service
   untrigger <service>      Reset trigger state
   signal [-l] <sig> <svc>  Send signal to service process (-l to list)
+  pause <service>          Pause (SIGSTOP) a running service
+  continue <service>       Continue (SIGCONT) a paused service
+  once <service>           Start service but don't restart on exit
   reload <service>         Reload service configuration from disk
   unload <service>         Unload a stopped service from memory
   boot-time                Show boot timing analysis
@@ -419,13 +422,22 @@ Commands:
   setenv <svc> KEY=VALUE   Set environment variable for service
   unsetenv <svc> KEY       Remove environment variable
   getallenv <svc>          List all runtime environment variables
+  setenv-global KEY=VALUE  Set global environment variable
+  unsetenv-global KEY      Remove global environment variable
+  getallenv-global         List all global environment variables
   add-dep <from> <type> <to>  Add runtime dependency
   rm-dep <from> <type> <to>   Remove runtime dependency
   unpin <service>          Remove start/stop pins from a service
   enable <service>         Enable service (add waits-for to boot + start)
   disable <service>        Disable service (remove waits-for from boot + stop)
+  graph                    Export dependency graph in DOT format (Graphviz)
+  dependents <service>     List services that depend on a service
   query-name <service>     Query the canonical name of a service handle
   service-dirs             List configured service directories
+  load-mech                Query loader mechanism info
+  list5                    List services (protocol v5, detailed)
+  status5 <service>        Show service status (protocol v5, detailed)
+  attach <service>         Attach to service virtual terminal
   completion [shell]       Output shell completion script (bash|zsh|fish)
 `)
 }
@@ -2406,7 +2418,7 @@ const bashCompletion = `# Bash completion for slinitctl
 # Usage: eval "$(slinitctl completion bash)"
 
 _slinitctl_commands() {
-    echo "list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents completion"
+    echo "list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion"
 }
 
 _slinitctl_services() {
@@ -2445,7 +2457,7 @@ _slinitctl() {
     fi
 
     case "$cmd" in
-        start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|reload|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv)
+        start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv|status5|attach)
             COMPREPLY=( $(compgen -W "$(_slinitctl_services)" -- "$cur") ) ;;
         shutdown)
             COMPREPLY=( $(compgen -W "halt poweroff reboot kexec softreboot" -- "$cur") ) ;;
@@ -2470,6 +2482,8 @@ _slinitctl() {
             esac ;;
         completion)
             COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") ) ;;
+        graph|list5|getallenv-global|boot-time|analyze|service-dirs|load-mech)
+            ;;
     esac
     return 0
 }
@@ -2505,6 +2519,10 @@ _slinitctl() {
         'trigger:Trigger a service'
         'untrigger:Reset trigger'
         'signal:Send signal to service'
+        'pause:Pause (SIGSTOP) a service'
+        'continue:Continue (SIGCONT) a paused service'
+        'cont:Continue (SIGCONT) a paused service'
+        'once:Start service without restart on exit'
         'reload:Reload service config'
         'unload:Unload stopped service'
         'boot-time:Boot timing analysis'
@@ -2521,10 +2539,14 @@ _slinitctl() {
         'unpin:Remove pins'
         'enable:Enable service'
         'disable:Disable service'
+        'graph:Export dependency graph (DOT format)'
+        'dependents:List dependents'
         'query-name:Query service name'
         'service-dirs:List service dirs'
         'load-mech:Query loader mechanism'
-        'dependents:List dependents'
+        'list5:List services (protocol v5)'
+        'status5:Show status (protocol v5)'
+        'attach:Attach to service terminal'
         'completion:Output shell completion script'
     )
     global_opts=(
@@ -2548,7 +2570,7 @@ _slinitctl() {
         command) _describe 'command' commands ;;
         args)
             case ${words[1]} in
-                start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|reload|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv)
+                start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv|status5|attach)
                     _slinitctl_services ;;
                 shutdown) _describe 'type' '(halt poweroff reboot kexec softreboot)' ;;
                 signal) case $CURRENT in 2) _describe 'signal' '(SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM)' ;; 3) _slinitctl_services ;; esac ;;
@@ -2568,7 +2590,7 @@ function __slinitctl_services
     slinitctl --system list 2>/dev/null | string replace -r '^\[.*\] ' '' | string replace -r ' \(.*' ''
 end
 
-set -l cmds list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents completion
+set -l cmds list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
 
 complete -c slinitctl -f
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s p -l socket-path -rF -d 'Socket path'
@@ -2581,11 +2603,11 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s q -l quiet -
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s h -l help -d 'Help'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l version -d 'Version'
 
-for cmd in list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents completion
+for cmd in list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
     complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -a $cmd
 end
 
-for cmd in start stop wake release restart status is-started is-failed trigger untrigger reload unload unpin enable disable query-name getallenv catlog dependents setenv unsetenv
+for cmd in start stop wake release restart status is-started is-failed trigger untrigger pause continue cont once reload unload unpin enable disable query-name getallenv catlog dependents setenv unsetenv status5 attach
     complete -c slinitctl -n "__fish_seen_subcommand_from $cmd" -a '(__slinitctl_services)'
 end
 
