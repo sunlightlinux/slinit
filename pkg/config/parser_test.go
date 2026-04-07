@@ -1400,3 +1400,86 @@ namespace-pid = false
 		t.Error("expected NamespacePID = false")
 	}
 }
+
+func TestParseIDMappingValid(t *testing.T) {
+	m, err := ParseIDMapping("0:1000:65536")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ContainerID != 0 || m.HostID != 1000 || m.Size != 65536 {
+		t.Errorf("got %+v, want {0 1000 65536}", m)
+	}
+}
+
+func TestParseIDMappingSpaces(t *testing.T) {
+	m, err := ParseIDMapping(" 0 : 500 : 1 ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.ContainerID != 0 || m.HostID != 500 || m.Size != 1 {
+		t.Errorf("got %+v", m)
+	}
+}
+
+func TestParseIDMappingInvalid(t *testing.T) {
+	tests := []string{
+		"",
+		"0:1000",
+		"0:1000:0",      // size must be > 0
+		"-1:1000:1",     // negative container id
+		"abc:1000:1",    // non-numeric
+		"0:1000:1:extra", // too many parts (SplitN limits to 3, so "1:extra" fails Atoi)
+	}
+	for _, s := range tests {
+		if _, err := ParseIDMapping(s); err == nil {
+			t.Errorf("ParseIDMapping(%q) should fail", s)
+		}
+	}
+}
+
+func TestParseNamespaceUidGidMap(t *testing.T) {
+	input := `type = process
+command = /bin/app
+namespace-user = true
+namespace-uid-map = 0:1000:65536
+namespace-gid-map = 0:1000:65536
+`
+	desc, err := Parse(strings.NewReader(input), "ns-map", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(desc.NamespaceUidMap) != 1 {
+		t.Fatalf("expected 1 uid map, got %d", len(desc.NamespaceUidMap))
+	}
+	if desc.NamespaceUidMap[0].HostID != 1000 {
+		t.Errorf("uid map host id = %d, want 1000", desc.NamespaceUidMap[0].HostID)
+	}
+	if len(desc.NamespaceGidMap) != 1 {
+		t.Fatalf("expected 1 gid map, got %d", len(desc.NamespaceGidMap))
+	}
+	if desc.NamespaceGidMap[0].Size != 65536 {
+		t.Errorf("gid map size = %d, want 65536", desc.NamespaceGidMap[0].Size)
+	}
+}
+
+func TestParseNamespaceUidMapAppend(t *testing.T) {
+	input := `type = process
+command = /bin/app
+namespace-user = true
+namespace-uid-map = 0:1000:1
+namespace-uid-map += 1:2000:100
+`
+	desc, err := Parse(strings.NewReader(input), "ns-map-multi", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(desc.NamespaceUidMap) != 2 {
+		t.Fatalf("expected 2 uid maps, got %d", len(desc.NamespaceUidMap))
+	}
+	if desc.NamespaceUidMap[0].ContainerID != 0 || desc.NamespaceUidMap[0].HostID != 1000 {
+		t.Errorf("first map: %+v", desc.NamespaceUidMap[0])
+	}
+	if desc.NamespaceUidMap[1].ContainerID != 1 || desc.NamespaceUidMap[1].HostID != 2000 {
+		t.Errorf("second map: %+v", desc.NamespaceUidMap[1])
+	}
+}

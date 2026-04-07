@@ -133,6 +133,8 @@ var KnownSettings = map[string]OperatorType{
 	"namespace-ipc":       OpEquals,
 	"namespace-user":      OpEquals,
 	"namespace-cgroup":    OpEquals,
+	"namespace-uid-map":   OpEquals | OpPlusEqual,
+	"namespace-gid-map":   OpEquals | OpPlusEqual,
 	"close-stdin":         OpEquals,
 	"close-stdout":        OpEquals,
 	"close-stderr":        OpEquals,

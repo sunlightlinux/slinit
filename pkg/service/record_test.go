@@ -462,6 +462,38 @@ func TestCloneflagsApplied(t *testing.T) {
 	}
 }
 
+func TestUidGidMappingsApplied(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "userns-svc")
+	set.AddService(svc)
+
+	uidMaps := []syscall.SysProcIDMap{
+		{ContainerID: 0, HostID: 1000, Size: 65536},
+	}
+	gidMaps := []syscall.SysProcIDMap{
+		{ContainerID: 0, HostID: 1000, Size: 1},
+		{ContainerID: 1, HostID: 2000, Size: 100},
+	}
+	svc.Record().SetUidMappings(uidMaps)
+	svc.Record().SetGidMappings(gidMaps)
+
+	params := &process.ExecParams{}
+	svc.Record().ApplyProcessAttrs(params)
+
+	if len(params.UidMappings) != 1 {
+		t.Fatalf("expected 1 uid mapping, got %d", len(params.UidMappings))
+	}
+	if params.UidMappings[0].HostID != 1000 || params.UidMappings[0].Size != 65536 {
+		t.Errorf("uid mapping = %+v", params.UidMappings[0])
+	}
+	if len(params.GidMappings) != 2 {
+		t.Fatalf("expected 2 gid mappings, got %d", len(params.GidMappings))
+	}
+	if params.GidMappings[1].HostID != 2000 {
+		t.Errorf("second gid mapping = %+v", params.GidMappings[1])
+	}
+}
+
 func TestCloneflagsZeroByDefault(t *testing.T) {
 	set, _ := newTestSet()
 	svc := NewInternalService(set, "no-ns-svc")

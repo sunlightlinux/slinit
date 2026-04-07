@@ -175,7 +175,9 @@ type ServiceRecord struct {
 	ambientCaps []uintptr
 	securebits  uint32
 	cpuAffinity []uint
-	cloneflags  uintptr // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
+	cloneflags  uintptr              // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
+	uidMappings []syscall.SysProcIDMap // user namespace UID mappings
+	gidMappings []syscall.SysProcIDMap // user namespace GID mappings
 
 	// Queue membership flags
 	InPropQueue bool
@@ -454,6 +456,8 @@ func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = 
 func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
 func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
 func (sr *ServiceRecord) SetCloneflags(flags uintptr)          { sr.cloneflags = flags }
+func (sr *ServiceRecord) SetUidMappings(m []syscall.SysProcIDMap) { sr.uidMappings = m }
+func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappings = m }
 
 // EffectiveCgroupPath returns the cgroup path for this service,
 // falling back to the daemon default. Empty if neither is set.
@@ -483,6 +487,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 		params.CPUAffinity = sr.services.DefaultCPUAffinity()
 	}
 	params.Cloneflags = sr.cloneflags
+	params.UidMappings = sr.uidMappings
+	params.GidMappings = sr.gidMappings
 
 	// Inject dinit-compatible query env vars
 	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)

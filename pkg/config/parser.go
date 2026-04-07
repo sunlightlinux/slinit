@@ -18,6 +18,38 @@ import (
 // infinite recursion from circular includes.
 const maxIncludeDepth = 10
 
+// IDMapping represents a user/group ID mapping for user namespaces.
+// Format: ContainerID:HostID:Size (e.g., "0:1000:65536").
+type IDMapping struct {
+	ContainerID int
+	HostID      int
+	Size        int
+}
+
+// ParseIDMapping parses a "container:host:size" string into an IDMapping.
+func ParseIDMapping(s string) (IDMapping, error) {
+	parts := strings.SplitN(s, ":", 3)
+	if len(parts) != 3 {
+		return IDMapping{}, fmt.Errorf("invalid id mapping %q: expected container:host:size", s)
+	}
+	cid, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return IDMapping{}, fmt.Errorf("invalid container id in %q: %w", s, err)
+	}
+	hid, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return IDMapping{}, fmt.Errorf("invalid host id in %q: %w", s, err)
+	}
+	size, err := strconv.Atoi(strings.TrimSpace(parts[2]))
+	if err != nil {
+		return IDMapping{}, fmt.Errorf("invalid size in %q: %w", s, err)
+	}
+	if cid < 0 || hid < 0 || size <= 0 {
+		return IDMapping{}, fmt.Errorf("invalid id mapping %q: ids must be >= 0, size must be > 0", s)
+	}
+	return IDMapping{ContainerID: cid, HostID: hid, Size: size}, nil
+}
+
 // ServiceDescription holds the parsed configuration of a service.
 type ServiceDescription struct {
 	Name string
@@ -49,6 +81,10 @@ type ServiceDescription struct {
 	NamespaceIPC    bool // CLONE_NEWIPC
 	NamespaceUser   bool // CLONE_NEWUSER
 	NamespaceCgroup bool // CLONE_NEWCGROUP
+
+	// User namespace UID/GID mappings (container:host:size format)
+	NamespaceUidMap []IDMapping
+	NamespaceGidMap []IDMapping
 
 	// Dependencies (by name, resolved by the loader)
 	DependsOn  []string // depends-on (REGULAR)
@@ -505,6 +541,26 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.NamespaceCgroup = b
+	case "namespace-uid-map":
+		m, err := ParseIDMapping(value)
+		if err != nil {
+			return err
+		}
+		if op == OpPlusEqual {
+			desc.NamespaceUidMap = append(desc.NamespaceUidMap, m)
+		} else {
+			desc.NamespaceUidMap = []IDMapping{m}
+		}
+	case "namespace-gid-map":
+		m, err := ParseIDMapping(value)
+		if err != nil {
+			return err
+		}
+		if op == OpPlusEqual {
+			desc.NamespaceGidMap = append(desc.NamespaceGidMap, m)
+		} else {
+			desc.NamespaceGidMap = []IDMapping{m}
+		}
 	case "close-stdin":
 		b, err := parseBool(value)
 		if err != nil {

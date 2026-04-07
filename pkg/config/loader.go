@@ -923,6 +923,30 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if cloneflags != 0 {
 		rec.SetCloneflags(cloneflags)
 	}
+
+	// User namespace UID/GID mappings
+	if len(desc.NamespaceUidMap) > 0 {
+		maps := make([]syscall.SysProcIDMap, len(desc.NamespaceUidMap))
+		for i, m := range desc.NamespaceUidMap {
+			maps[i] = syscall.SysProcIDMap{
+				ContainerID: m.ContainerID,
+				HostID:      m.HostID,
+				Size:        m.Size,
+			}
+		}
+		rec.SetUidMappings(maps)
+	}
+	if len(desc.NamespaceGidMap) > 0 {
+		maps := make([]syscall.SysProcIDMap, len(desc.NamespaceGidMap))
+		for i, m := range desc.NamespaceGidMap {
+			maps[i] = syscall.SysProcIDMap{
+				ContainerID: m.ContainerID,
+				HostID:      m.HostID,
+				Size:        m.Size,
+			}
+		}
+		rec.SetGidMappings(maps)
+	}
 }
 
 // setupConsumerOf establishes the consumer-of relationship between services.
