@@ -227,6 +227,47 @@ func main() {
 				warnings++
 			}
 		}
+
+		// Check namespace settings
+		e, w := checkNamespaceConfig(desc, name)
+		errors += e
+		warnings += w
+
+		// Check chroot path
+		if desc.Chroot != "" {
+			if info, err := os.Stat(desc.Chroot); err != nil {
+				fmt.Fprintf(os.Stderr, "  WARNING [%s]: chroot %q: %v\n",
+					name, desc.Chroot, err)
+				warnings++
+			} else if !info.IsDir() {
+				fmt.Fprintf(os.Stderr, "  WARNING [%s]: chroot %q is not a directory\n",
+					name, desc.Chroot)
+				warnings++
+			}
+		}
+
+		// Check lock-file directory
+		if desc.LockFile != "" {
+			dir := filepath.Dir(desc.LockFile)
+			if _, err := os.Stat(dir); err != nil {
+				fmt.Fprintf(os.Stderr, "  WARNING [%s]: lock-file directory %q: %v\n",
+					name, dir, err)
+				warnings++
+			}
+		}
+
+		// Check env-dir
+		if desc.EnvDir != "" {
+			if info, err := os.Stat(desc.EnvDir); err != nil {
+				fmt.Fprintf(os.Stderr, "  WARNING [%s]: env-dir %q: %v\n",
+					name, desc.EnvDir, err)
+				warnings++
+			} else if !info.IsDir() {
+				fmt.Fprintf(os.Stderr, "  WARNING [%s]: env-dir %q is not a directory\n",
+					name, desc.EnvDir)
+				warnings++
+			}
+		}
 	}
 
 	fmt.Println("\nSecondary checks complete.")
@@ -591,6 +632,82 @@ func checkDepthLimits(services []service.Service) int {
 	}
 
 	return errors
+}
+
+// checkNamespaceConfig validates namespace-related settings for consistency.
+// Returns (errors, warnings).
+func checkNamespaceConfig(desc *config.ServiceDescription, name string) (int, int) {
+	var errors, warnings int
+
+	hasAnyNS := desc.NamespacePID || desc.NamespaceMount || desc.NamespaceNet ||
+		desc.NamespaceUTS || desc.NamespaceIPC || desc.NamespaceUser || desc.NamespaceCgroup
+
+	// UID/GID maps without namespace-user is an error
+	if len(desc.NamespaceUidMap) > 0 && !desc.NamespaceUser {
+		fmt.Fprintf(os.Stderr, "  ERROR [%s]: namespace-uid-map set but namespace-user is not enabled\n", name)
+		errors++
+	}
+	if len(desc.NamespaceGidMap) > 0 && !desc.NamespaceUser {
+		fmt.Fprintf(os.Stderr, "  ERROR [%s]: namespace-gid-map set but namespace-user is not enabled\n", name)
+		errors++
+	}
+
+	// User namespace without explicit UID/GID maps — warn (will use default 1:1)
+	if desc.NamespaceUser && len(desc.NamespaceUidMap) == 0 {
+		fmt.Fprintf(os.Stderr, "  WARNING [%s]: namespace-user enabled without namespace-uid-map (default 1:1 mapping will be used)\n", name)
+		warnings++
+	}
+	if desc.NamespaceUser && len(desc.NamespaceGidMap) == 0 {
+		fmt.Fprintf(os.Stderr, "  WARNING [%s]: namespace-user enabled without namespace-gid-map (default 1:1 mapping will be used)\n", name)
+		warnings++
+	}
+
+	// PID namespace without mount namespace — warn (can't mount new /proc)
+	if desc.NamespacePID && !desc.NamespaceMount {
+		fmt.Fprintf(os.Stderr, "  WARNING [%s]: namespace-pid without namespace-mount — process won't have isolated /proc\n", name)
+		warnings++
+	}
+
+	// Overlapping UID/GID ranges — check for overlaps within the map list
+	if len(desc.NamespaceUidMap) > 1 {
+		if overlap := findMappingOverlap(desc.NamespaceUidMap); overlap != "" {
+			fmt.Fprintf(os.Stderr, "  ERROR [%s]: namespace-uid-map: overlapping container ID ranges: %s\n", name, overlap)
+			errors++
+		}
+	}
+	if len(desc.NamespaceGidMap) > 1 {
+		if overlap := findMappingOverlap(desc.NamespaceGidMap); overlap != "" {
+			fmt.Fprintf(os.Stderr, "  ERROR [%s]: namespace-gid-map: overlapping container ID ranges: %s\n", name, overlap)
+			errors++
+		}
+	}
+
+	// Namespace flags on internal/triggered services make no sense
+	if hasAnyNS && (desc.Type == service.TypeInternal || desc.Type == service.TypeTriggered) {
+		fmt.Fprintf(os.Stderr, "  WARNING [%s]: namespace settings on %s service have no effect (no process is forked)\n",
+			name, desc.Type)
+		warnings++
+	}
+
+	return errors, warnings
+}
+
+// findMappingOverlap checks if any two ID mappings have overlapping container ID ranges.
+// Returns a description of the first overlap found, or "" if none.
+func findMappingOverlap(maps []config.IDMapping) string {
+	for i := 0; i < len(maps); i++ {
+		for j := i + 1; j < len(maps); j++ {
+			a, b := maps[i], maps[j]
+			aEnd := a.ContainerID + a.Size
+			bEnd := b.ContainerID + b.Size
+			if a.ContainerID < bEnd && b.ContainerID < aEnd {
+				return fmt.Sprintf("%d:%d:%d overlaps with %d:%d:%d",
+					a.ContainerID, a.HostID, a.Size,
+					b.ContainerID, b.HostID, b.Size)
+			}
+		}
+	}
+	return ""
 }
 
 func fatal(format string, args ...interface{}) {

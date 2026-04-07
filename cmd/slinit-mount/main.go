@@ -32,6 +32,116 @@ type daemonConfig struct {
 	expireInterval int // seconds
 }
 
+type mountInfo struct {
+	am   *autofs.AutofsMount
+	unit *autofs.MountUnit
+}
+
+// mountUnitKey returns the identity key for a mount unit (its Where path).
+func mountUnitKey(mu *autofs.MountUnit) string {
+	return mu.Where
+}
+
+// mountUnitChanged returns true if the unit config differs in a way that
+// requires tearing down and re-establishing the autofs mount.
+func mountUnitChanged(old, new *autofs.MountUnit) bool {
+	return old.What != new.What ||
+		old.Type != new.Type ||
+		old.Options != new.Options ||
+		old.Timeout != new.Timeout ||
+		old.AutofsType != new.AutofsType ||
+		old.DirMode != new.DirMode
+}
+
+// reloadConfig re-reads mount unit files and reconciles the running state:
+// - new units → setup autofs + register with epoll
+// - removed units → tear down + deregister from epoll
+// - changed units → tear down old + setup new
+// - unchanged → keep as-is
+func reloadConfig(cfg *daemonConfig, logger *log.Logger, epfd int,
+	fdMap map[int]*mountInfo, activeMounts *[]*autofs.AutofsMount) {
+
+	logger.Println("reloading mount unit configuration...")
+
+	newUnits, err := autofs.LoadMountUnits(cfg.mountDirs)
+	if err != nil {
+		logger.Printf("reload failed: load mount units: %v", err)
+		return
+	}
+
+	// Index new units by Where path
+	newByKey := make(map[string]*autofs.MountUnit, len(newUnits))
+	for _, u := range newUnits {
+		newByKey[mountUnitKey(u)] = u
+	}
+
+	// Index current mounts by Where path (fd → key mapping for removal)
+	oldByKey := make(map[string]int) // key → pipe fd
+	for fd, mi := range fdMap {
+		oldByKey[mountUnitKey(mi.unit)] = fd
+	}
+
+	// Phase 1: remove units that are gone or changed
+	removedMounts := make(map[*autofs.AutofsMount]bool)
+	for key, fd := range oldByKey {
+		nu, exists := newByKey[key]
+		if !exists || mountUnitChanged(fdMap[fd].unit, nu) {
+			mi := fdMap[fd]
+			removedMounts[mi.am] = true
+			logger.Printf("removing autofs mount: %s (%s)", mi.unit.Name, mi.unit.Where)
+			unix.EpollCtl(epfd, unix.EPOLL_CTL_DEL, fd, nil)
+			if err := mi.am.Close(); err != nil {
+				logger.Printf("close %s: %v", mi.unit.Where, err)
+			}
+			delete(fdMap, fd)
+			delete(oldByKey, key)
+		}
+	}
+
+	// Rebuild activeMounts slice (remove closed entries)
+	if len(removedMounts) > 0 {
+		var kept []*autofs.AutofsMount
+		for _, am := range *activeMounts {
+			if !removedMounts[am] {
+				kept = append(kept, am)
+			}
+		}
+		*activeMounts = kept
+	}
+
+	// Phase 2: add new units and re-add changed units
+	var added int
+	for _, nu := range newUnits {
+		key := mountUnitKey(nu)
+		if _, stillActive := oldByKey[key]; stillActive {
+			continue // unchanged, already running
+		}
+		am, err := autofs.Setup(nu)
+		if err != nil {
+			logger.Printf("WARNING: reload: failed to set up autofs for %s (%s): %v",
+				nu.Name, nu.Where, err)
+			continue
+		}
+		fd := am.PipeFD()
+		event := unix.EpollEvent{
+			Events: unix.EPOLLIN,
+			Fd:     int32(fd),
+		}
+		if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, fd, &event); err != nil {
+			logger.Printf("reload: epoll_ctl add fd %d: %v", fd, err)
+			am.Close()
+			continue
+		}
+		fdMap[fd] = &mountInfo{am: am, unit: nu}
+		*activeMounts = append(*activeMounts, am)
+		logger.Printf("autofs mounted (reload): %s → %s (%s)", nu.Name, nu.Where, nu.Type)
+		added++
+	}
+
+	logger.Printf("reload complete: %d removed/changed, %d added, %d total active",
+		len(removedMounts), added, len(*activeMounts))
+}
+
 func main() {
 	cfg := parseArgs()
 
@@ -59,11 +169,6 @@ func main() {
 	handler := autofs.NewMountHandler(logger)
 
 	// Set up autofs mounts and register pipe fds
-	type mountInfo struct {
-		am   *autofs.AutofsMount
-		unit *autofs.MountUnit
-	}
-
 	fdMap := make(map[int]*mountInfo) // pipe fd → mount info
 	var activeMounts []*autofs.AutofsMount
 
@@ -146,8 +251,11 @@ func main() {
 				select {
 				case sig := <-sigCh:
 					if sig == syscall.SIGHUP {
-						logger.Println("SIGHUP received, reloading config...")
-						// TODO: implement config reload
+						reloadConfig(&cfg, logger, epfd, fdMap, &activeMounts)
+						// Resize events slice in case mount count changed
+						if cap(events) < len(fdMap)+2 {
+							events = make([]unix.EpollEvent, len(fdMap)+2)
+						}
 						continue
 					}
 					logger.Printf("signal %v received, shutting down", sig)
@@ -215,11 +323,14 @@ func main() {
 		select {
 		case sig := <-sigCh:
 			if sig == syscall.SIGHUP {
-				logger.Println("SIGHUP received, reloading config...")
-				continue
+				reloadConfig(&cfg, logger, epfd, fdMap, &activeMounts)
+				if cap(events) < len(fdMap)+2 {
+					events = make([]unix.EpollEvent, len(fdMap)+2)
+				}
+			} else {
+				logger.Printf("signal %v received, shutting down", sig)
+				running = false
 			}
-			logger.Printf("signal %v received, shutting down", sig)
-			running = false
 		default:
 		}
 	}
