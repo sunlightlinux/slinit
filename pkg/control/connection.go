@@ -241,6 +241,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleQueryLoadMech()
 	case CmdQueryDependents:
 		return c.handleQueryDependents(payload)
+	case CmdQueryDependencies:
+		return c.handleQueryDependencies(payload)
 	case CmdPauseService:
 		return c.handlePauseService(payload)
 	case CmdContinueService:
@@ -1149,6 +1151,31 @@ func (c *Connection) handleQueryDependents(payload []byte) error {
 		off += 4
 	}
 	return c.writePacket(RplyDependents, buf)
+}
+
+func (c *Connection) handleQueryDependencies(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	deps := svc.Record().Dependencies()
+	// Wire format: count(4) + [handle(4) + depType(1)]*
+	buf := make([]byte, 4+5*len(deps))
+	binary.LittleEndian.PutUint32(buf, uint32(len(deps)))
+	off := 4
+	for _, dep := range deps {
+		depHandle := c.allocHandle(dep.To)
+		binary.LittleEndian.PutUint32(buf[off:], depHandle)
+		buf[off+4] = uint8(dep.DepType)
+		off += 5
+	}
+	return c.writePacket(RplyDependencies, buf)
 }
 
 func (c *Connection) handleQueryLoadMech() error {

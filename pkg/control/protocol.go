@@ -77,7 +77,8 @@ const (
 	CmdQueryDependents uint8 = 42
 	CmdPauseService    uint8 = 43
 	CmdContinueService uint8 = 44
-	CmdOnceService     uint8 = 45
+	CmdOnceService         uint8 = 45
+	CmdQueryDependencies   uint8 = 46
 )
 
 // Reply codes (server → client).
@@ -115,7 +116,8 @@ const (
 	// slinit extensions (beyond dinit's range)
 	RplyBootTime      uint8 = 90
 	RplyNotStopped    uint8 = 91
-	RplyServiceName   uint8 = 92 // slinit query-name reply
+	RplyServiceName     uint8 = 92 // slinit query-name reply
+	RplyDependencies    uint8 = 93 // forward dependencies (handle + dep type)
 )
 
 // Info codes (server → client, unsolicited).

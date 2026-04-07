@@ -1402,3 +1402,116 @@ func TestPinnedStartedReply(t *testing.T) {
 		t.Fatalf("expected PinnedStarted (%d), got %d", RplyPinnedStarted, rply)
 	}
 }
+
+func TestQueryDependencies(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	parent := service.NewInternalService(server.services, "graph-parent")
+	child1 := service.NewInternalService(server.services, "graph-child1")
+	child2 := service.NewInternalService(server.services, "graph-child2")
+	server.services.AddService(parent)
+	server.services.AddService(child1)
+	server.services.AddService(child2)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	hParent := findHandle(t, conn, "graph-parent")
+	hChild1 := findHandle(t, conn, "graph-child1")
+	hChild2 := findHandle(t, conn, "graph-child2")
+
+	// Add two deps: parent → child1 (regular), parent → child2 (soft)
+	WritePacket(conn, CmdAddDep, EncodeDepRequest(hParent, hChild1, uint8(service.DepRegular)))
+	rply, _ := readReply(t, conn)
+	if rply != RplyACK {
+		t.Fatalf("add-dep regular: expected ACK, got %d", rply)
+	}
+	WritePacket(conn, CmdAddDep, EncodeDepRequest(hParent, hChild2, uint8(service.DepSoft)))
+	rply, _ = readReply(t, conn)
+	if rply != RplyACK {
+		t.Fatalf("add-dep soft: expected ACK, got %d", rply)
+	}
+
+	// Query forward dependencies
+	WritePacket(conn, CmdQueryDependencies, EncodeHandle(hParent))
+	rply, payload := readReply(t, conn)
+	if rply != RplyDependencies {
+		t.Fatalf("expected RplyDependencies (%d), got %d", RplyDependencies, rply)
+	}
+
+	if len(payload) < 4 {
+		t.Fatalf("payload too short: %d", len(payload))
+	}
+	count := int(binary.LittleEndian.Uint32(payload))
+	if count != 2 {
+		t.Fatalf("expected 2 dependencies, got %d", count)
+	}
+
+	// Parse deps: each is handle(4) + depType(1)
+	off := 4
+	type depInfo struct {
+		handle  uint32
+		depType service.DependencyType
+	}
+	var deps []depInfo
+	for i := 0; i < count; i++ {
+		if len(payload) < off+5 {
+			t.Fatalf("truncated at dep %d", i)
+		}
+		h := binary.LittleEndian.Uint32(payload[off:])
+		dt := service.DependencyType(payload[off+4])
+		deps = append(deps, depInfo{handle: h, depType: dt})
+		off += 5
+	}
+
+	// Resolve handle names
+	foundRegular := false
+	foundSoft := false
+	for _, d := range deps {
+		WritePacket(conn, CmdQueryServiceName, EncodeHandle(d.handle))
+		rply, namePayload := readReply(t, conn)
+		if rply != RplyServiceName {
+			continue
+		}
+		name, _, _ := DecodeServiceName(namePayload)
+		if name == "graph-child1" && d.depType == service.DepRegular {
+			foundRegular = true
+		}
+		if name == "graph-child2" && d.depType == service.DepSoft {
+			foundSoft = true
+		}
+	}
+
+	if !foundRegular {
+		t.Error("regular dependency on graph-child1 not found")
+	}
+	if !foundSoft {
+		t.Error("soft dependency on graph-child2 not found")
+	}
+}
+
+func TestQueryDependenciesEmpty(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "no-deps")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "no-deps")
+	WritePacket(conn, CmdQueryDependencies, EncodeHandle(handle))
+	rply, payload := readReply(t, conn)
+	if rply != RplyDependencies {
+		t.Fatalf("expected RplyDependencies, got %d", rply)
+	}
+	if len(payload) < 4 {
+		t.Fatalf("payload too short")
+	}
+	count := binary.LittleEndian.Uint32(payload)
+	if count != 0 {
+		t.Errorf("expected 0 dependencies, got %d", count)
+	}
+}

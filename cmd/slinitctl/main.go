@@ -359,6 +359,8 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdServiceStatus5(conn, name)
 		})
+	case "graph":
+		err = cmdGraph(conn)
 	case "attach":
 		if len(cmdArgs) < 1 {
 			fatal("Usage: slinitctl attach <service>")
@@ -2022,6 +2024,202 @@ func cmdDependents(conn net.Conn, name string) error {
 		fmt.Printf("  %s\n", depName)
 	}
 	return nil
+}
+
+// cmdGraph queries all services and their forward dependencies, then outputs
+// a DOT-format directed graph suitable for Graphviz visualization.
+//
+// Usage: slinitctl graph | dot -Tpng -o services.png
+//        slinitctl graph | dot -Tsvg -o services.svg
+func cmdGraph(conn net.Conn) error {
+	// Phase 1: list all services (collect names + handles)
+	type svcEntry struct {
+		name   string
+		state  service.ServiceState
+		stype  service.ServiceType
+		handle uint32
+	}
+
+	if err := control.WritePacket(conn, control.CmdListServices, nil); err != nil {
+		return err
+	}
+
+	var entries []svcEntry
+	for {
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return err
+		}
+		if rply == control.RplyListDone {
+			break
+		}
+		if rply != control.RplySvcInfo {
+			return fmt.Errorf("unexpected reply: %d", rply)
+		}
+		entry, _, err := control.DecodeSvcInfo(payload)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, svcEntry{
+			name:  entry.Name,
+			state: entry.State,
+			stype: entry.SvcType,
+		})
+	}
+
+	// Phase 2: get handle for each service
+	for i := range entries {
+		namePayload := control.EncodeServiceName(entries[i].name)
+		if err := control.WritePacket(conn, control.CmdFindService, namePayload); err != nil {
+			return err
+		}
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return err
+		}
+		if rply != control.RplyServiceRecord || len(payload) < 5 {
+			continue
+		}
+		entries[i].handle = binary.LittleEndian.Uint32(payload[1:])
+	}
+
+	// Phase 3: query forward dependencies for each service
+	type depEdge struct {
+		from    string
+		to      string
+		depType service.DependencyType
+	}
+
+	handleNames := make(map[uint32]string)
+	for _, e := range entries {
+		handleNames[e.handle] = e.name
+	}
+
+	var edges []depEdge
+	for _, e := range entries {
+		if e.handle == 0 {
+			continue
+		}
+		if err := control.WritePacket(conn, control.CmdQueryDependencies, control.EncodeHandle(e.handle)); err != nil {
+			return err
+		}
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return err
+		}
+		if rply != control.RplyDependencies || len(payload) < 4 {
+			continue
+		}
+
+		count := int(binary.LittleEndian.Uint32(payload))
+		off := 4
+		for j := 0; j < count; j++ {
+			if len(payload) < off+5 {
+				break
+			}
+			depHandle := binary.LittleEndian.Uint32(payload[off:])
+			dt := service.DependencyType(payload[off+4])
+			off += 5
+
+			depName, ok := handleNames[depHandle]
+			if !ok {
+				// Resolve name for newly allocated handle
+				if err := control.WritePacket(conn, control.CmdQueryServiceName, control.EncodeHandle(depHandle)); err != nil {
+					continue
+				}
+				rply2, payload2, err := control.ReadPacket(conn)
+				if err != nil || rply2 != control.RplyServiceName {
+					depName = fmt.Sprintf("handle_%d", depHandle)
+				} else {
+					depName, _, _ = control.DecodeServiceName(payload2)
+				}
+				handleNames[depHandle] = depName
+			}
+
+			edges = append(edges, depEdge{from: e.name, to: depName, depType: dt})
+		}
+	}
+
+	// Phase 4: emit DOT output
+	fmt.Println("digraph services {")
+	fmt.Println("  rankdir=LR;")
+	fmt.Println("  node [fontname=\"sans-serif\" fontsize=10];")
+	fmt.Println("  edge [fontname=\"sans-serif\" fontsize=8];")
+	fmt.Println()
+
+	// Node styling by state and type
+	for _, e := range entries {
+		shape := graphNodeShape(e.stype)
+		color, fillcolor := graphNodeColor(e.state)
+		fmt.Printf("  %q [shape=%s style=filled fillcolor=%q color=%q];\n",
+			e.name, shape, fillcolor, color)
+	}
+	fmt.Println()
+
+	// Edges with dep type styling
+	for _, edge := range edges {
+		style, color, label := graphEdgeStyle(edge.depType)
+		attrs := fmt.Sprintf("style=%s color=%q", style, color)
+		if label != "" {
+			attrs += fmt.Sprintf(" label=%q", label)
+		}
+		fmt.Printf("  %q -> %q [%s];\n", edge.from, edge.to, attrs)
+	}
+
+	fmt.Println("}")
+	return nil
+}
+
+// graphNodeShape returns the DOT shape for a service type.
+func graphNodeShape(t service.ServiceType) string {
+	switch t {
+	case service.TypeInternal:
+		return "diamond"
+	case service.TypeTriggered:
+		return "hexagon"
+	case service.TypeScripted:
+		return "box"
+	case service.TypeBGProcess:
+		return "doubleoctagon"
+	default: // TypeProcess
+		return "ellipse"
+	}
+}
+
+// graphNodeColor returns (border, fill) colors based on service state.
+func graphNodeColor(s service.ServiceState) (string, string) {
+	switch s {
+	case service.StateStarted:
+		return "#2e7d32", "#c8e6c9" // green
+	case service.StateStarting:
+		return "#f9a825", "#fff9c4" // yellow
+	case service.StateStopping:
+		return "#ef6c00", "#ffe0b2" // orange
+	case service.StateStopped:
+		return "#c62828", "#ffcdd2" // red
+	default:
+		return "#616161", "#eeeeee" // grey
+	}
+}
+
+// graphEdgeStyle returns (style, color, label) for a dependency type.
+func graphEdgeStyle(dt service.DependencyType) (string, string, string) {
+	switch dt {
+	case service.DepRegular:
+		return "solid", "#1565c0", "" // blue solid
+	case service.DepSoft:
+		return "dashed", "#7b1fa2", "soft" // purple dashed
+	case service.DepWaitsFor:
+		return "dashed", "#00838f", "waits-for" // teal dashed
+	case service.DepMilestone:
+		return "bold", "#e65100", "milestone" // orange bold
+	case service.DepBefore:
+		return "dotted", "#616161", "before" // grey dotted
+	case service.DepAfter:
+		return "dotted", "#9e9e9e", "after" // light grey dotted
+	default:
+		return "solid", "#000000", ""
+	}
 }
 
 func cmdQueryLoadMech(conn net.Conn) error {
