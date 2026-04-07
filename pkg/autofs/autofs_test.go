@@ -313,3 +313,153 @@ func TestParseMountFlagsBind(t *testing.T) {
 		t.Errorf("flags = %x, want MS_BIND|MS_REC", flags2)
 	}
 }
+
+// --- Extended autofs tests ---
+
+func TestParseMountFlagsAllKnown(t *testing.T) {
+	flags, opts := parseMountFlags("ro,nosuid,nodev,noexec,sync,mand,dirsync,noatime,nodiratime,relatime,strictatime,lazytime,silent")
+	if opts != "" {
+		t.Errorf("all known flags should have empty opts, got %q", opts)
+	}
+	expected := uintptr(unix.MS_RDONLY | unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC |
+		unix.MS_SYNCHRONOUS | unix.MS_MANDLOCK | unix.MS_DIRSYNC | unix.MS_NOATIME |
+		unix.MS_NODIRATIME | unix.MS_RELATIME | unix.MS_STRICTATIME | unix.MS_LAZYTIME | unix.MS_SILENT)
+	if flags != expected {
+		t.Errorf("flags = %x, want %x", flags, expected)
+	}
+}
+
+func TestParseMountFlagsRW(t *testing.T) {
+	// "rw" should produce no flag (default)
+	flags, opts := parseMountFlags("rw")
+	if flags != 0 {
+		t.Errorf("rw should produce flags=0, got %x", flags)
+	}
+	if opts != "" {
+		t.Errorf("rw opts should be empty, got %q", opts)
+	}
+}
+
+func TestLoadMountUnitsMultipleDirs(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	os.WriteFile(filepath.Join(dir1, "data.mount"), []byte(`what = /dev/sda1
+where = /mnt/data
+type = ext4
+`), 0644)
+
+	os.WriteFile(filepath.Join(dir2, "home.mount"), []byte(`what = server:/home
+where = /home
+type = nfs
+`), 0644)
+
+	units, err := LoadMountUnits([]string{dir1, dir2})
+	if err != nil {
+		t.Fatalf("LoadMountUnits: %v", err)
+	}
+	if len(units) != 2 {
+		t.Fatalf("expected 2 units, got %d", len(units))
+	}
+
+	names := map[string]bool{}
+	for _, u := range units {
+		names[u.Name] = true
+	}
+	if !names["data"] || !names["home"] {
+		t.Errorf("units = %v, want data+home", names)
+	}
+}
+
+func TestParseMountUnitAfterMultiple(t *testing.T) {
+	input := `what = /dev/sda1
+where = /mnt
+type = ext4
+after: network-online dns
+after: ntp
+`
+	mu, err := ParseMountUnit(strings.NewReader(input), "multi-after")
+	if err != nil {
+		t.Fatalf("ParseMountUnit: %v", err)
+	}
+	if len(mu.After) != 3 {
+		t.Errorf("After = %v, want 3 entries", mu.After)
+	}
+}
+
+func TestParseMountUnitDefaults(t *testing.T) {
+	input := `what = /dev/sda1
+where = /mnt
+type = ext4
+`
+	mu, err := ParseMountUnit(strings.NewReader(input), "defaults")
+	if err != nil {
+		t.Fatalf("ParseMountUnit: %v", err)
+	}
+	if mu.Timeout != 0 {
+		t.Errorf("default Timeout = %v, want 0", mu.Timeout)
+	}
+	if mu.Options != "" {
+		t.Errorf("default Options = %q, want empty", mu.Options)
+	}
+	if mu.Description != "" {
+		t.Errorf("default Description = %q, want empty", mu.Description)
+	}
+	if len(mu.After) != 0 {
+		t.Errorf("default After = %v, want empty", mu.After)
+	}
+}
+
+func TestValidateMountUnitComplete(t *testing.T) {
+	mu := &MountUnit{
+		Name:       "full",
+		What:       "server:/export",
+		Where:      "/mnt/nfs",
+		Type:       "nfs",
+		Options:    "rw,soft",
+		AutofsType: TypeDirect,
+		DirMode:    0700,
+	}
+	if err := ValidateMountUnit(mu); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadMountUnitsSkipsSubdirectories(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a subdirectory named "foo.mount" — should be skipped
+	os.Mkdir(filepath.Join(dir, "foo.mount"), 0755)
+
+	units, err := LoadMountUnits([]string{dir})
+	if err != nil {
+		t.Fatalf("LoadMountUnits: %v", err)
+	}
+	if len(units) != 0 {
+		t.Errorf("expected 0 units (subdir skipped), got %d", len(units))
+	}
+}
+
+func TestParseMountUnitInvalidTimeout(t *testing.T) {
+	input := `what = /dev/sda1
+where = /mnt
+type = ext4
+timeout = abc
+`
+	_, err := ParseMountUnit(strings.NewReader(input), "bad-timeout")
+	if err == nil {
+		t.Fatal("expected error for invalid timeout")
+	}
+}
+
+func TestParseMountUnitInvalidDirMode(t *testing.T) {
+	input := `what = /dev/sda1
+where = /mnt
+type = ext4
+directory-mode = zzz
+`
+	_, err := ParseMountUnit(strings.NewReader(input), "bad-mode")
+	if err == nil {
+		t.Fatal("expected error for invalid directory-mode")
+	}
+}

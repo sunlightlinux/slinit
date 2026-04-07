@@ -88,3 +88,58 @@ func TestKillCgroupSIGKILLFallback(t *testing.T) {
 		t.Fatalf("KillCgroup SIGKILL fallback should succeed with empty procs, got: %v", err)
 	}
 }
+
+func TestKillCgroupMultiplePIDs(t *testing.T) {
+	dir := t.TempDir()
+
+	// Multiple non-existent PIDs — all get ESRCH, should be ignored
+	procsPath := filepath.Join(dir, "cgroup.procs")
+	err := os.WriteFile(procsPath, []byte("999990\n999991\n999992\n999993\n"), 0644)
+	if err != nil {
+		t.Fatalf("write cgroup.procs: %v", err)
+	}
+
+	err = KillCgroup(dir, syscall.SIGTERM)
+	if err != nil {
+		t.Fatalf("KillCgroup with multiple non-existent PIDs should succeed, got: %v", err)
+	}
+}
+
+func TestKillCgroupEmptyProcsFile(t *testing.T) {
+	dir := t.TempDir()
+
+	procsPath := filepath.Join(dir, "cgroup.procs")
+	if err := os.WriteFile(procsPath, []byte("\n\n"), 0644); err != nil {
+		t.Fatalf("write cgroup.procs: %v", err)
+	}
+
+	err := KillCgroup(dir, syscall.SIGTERM)
+	if err != nil {
+		t.Fatalf("KillCgroup with empty procs should succeed, got: %v", err)
+	}
+}
+
+func TestKillCgroupSIGHUP(t *testing.T) {
+	dir := t.TempDir()
+
+	procsPath := filepath.Join(dir, "cgroup.procs")
+	err := os.WriteFile(procsPath, []byte("999999\n"), 0644)
+	if err != nil {
+		t.Fatalf("write cgroup.procs: %v", err)
+	}
+
+	// SIGHUP should use procs-based kill path (not cgroup.kill)
+	err = KillCgroup(dir, syscall.SIGHUP)
+	if err != nil {
+		t.Fatalf("KillCgroup with SIGHUP should succeed (ESRCH ignored), got: %v", err)
+	}
+}
+
+func TestKillCgroupNoProcsFile(t *testing.T) {
+	dir := t.TempDir()
+	// No cgroup.procs file at all — should return error
+	err := KillCgroup(dir, syscall.SIGTERM)
+	if err == nil {
+		t.Fatal("KillCgroup without cgroup.procs should return error")
+	}
+}
