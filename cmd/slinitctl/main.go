@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/sunlightlinux/slinit/pkg/control"
+	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -122,6 +123,10 @@ doneFlags:
 	cmdArgs := args[1:]
 
 	// Commands that don't need a daemon connection
+	if command == "platform" {
+		cmdPlatform()
+		return
+	}
 	if command == "completion" {
 		shell := "bash"
 		if len(cmdArgs) > 0 {
@@ -438,6 +443,7 @@ Commands:
   list5                    List services (protocol v5, detailed)
   status5 <service>        Show service status (protocol v5, detailed)
   attach <service>         Attach to service virtual terminal
+  platform                 Detect and display virtualization/container platform
   completion [shell]       Output shell completion script (bash|zsh|fish)
 `)
 }
@@ -2401,6 +2407,15 @@ func cmdServiceStatus5(conn net.Conn, svcName string) error {
 }
 
 // cmdCompletion outputs a shell completion script to stdout.
+func cmdPlatform() {
+	detected := platform.Detect()
+	if detected == platform.None {
+		fmt.Println("Platform: bare-metal")
+	} else {
+		fmt.Printf("Platform: %s\n", detected)
+	}
+}
+
 func cmdCompletion(shell string) {
 	switch shell {
 	case "bash":
@@ -2418,7 +2433,7 @@ const bashCompletion = `# Bash completion for slinitctl
 # Usage: eval "$(slinitctl completion bash)"
 
 _slinitctl_commands() {
-    echo "list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion"
+    echo "list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
 }
 
 _slinitctl_services() {

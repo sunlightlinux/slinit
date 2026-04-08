@@ -7,7 +7,7 @@ function __slinitctl_services
 end
 
 # Subcommands
-set -l commands list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue once reload unload boot-time analyze catlog attach setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents
+set -l commands list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue once reload unload boot-time analyze catlog attach setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents platform
 
 # Disable file completions by default
 complete -c slinitctl -f
@@ -67,6 +67,7 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a query-na
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a service-dirs -d 'List service dirs'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a load-mech -d 'Query loader mechanism'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a dependents -d 'List dependents'
+complete -c slinitctl -n "not __fish_seen_subcommand_from $commands" -a platform -d 'Detect platform'
 
 # Service name completions for commands that take a service argument
 for cmd in start wake stop release restart status is-started is-failed trigger untrigger reload unload unpin enable disable query-name getallenv catlog attach pause continue once dependents

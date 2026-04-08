@@ -16,6 +16,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
@@ -95,13 +96,21 @@ func main() {
 
 	var parallelStartLimit int
 	var parallelSlowThreshold string
+	var sysOverride string
 	flag.IntVar(&parallelStartLimit, "parallel-start-limit", 0, "max concurrent service starts (0=unlimited)")
 	flag.StringVar(&parallelSlowThreshold, "parallel-start-slow-threshold", "10s", "time before a starting service is considered slow")
+	flag.StringVar(&sysOverride, "sys", "", "override platform detection (docker, lxc, podman, wsl, xen0, xenu, none)")
+	flag.StringVar(&sysOverride, "S", "", "override platform detection (short for --sys)")
 
 	flag.Parse()
 
 	if showVersion {
-		fmt.Printf("slinit version %s\n", version)
+		detected := platform.Detect()
+		if detected == platform.None {
+			fmt.Printf("slinit version %s (platform: bare-metal)\n", version)
+		} else {
+			fmt.Printf("slinit version %s (platform: %s)\n", version, detected)
+		}
 		os.Exit(0)
 	}
 
@@ -322,8 +331,28 @@ func main() {
 		serviceSet.SetKernelUptime(uptime)
 	}
 
+	// Detect or override platform for keyword-based service filtering
+	var detectedPlatform platform.Type
+	if sysOverride != "" {
+		if sysOverride == "none" {
+			detectedPlatform = platform.None
+		} else if platform.IsValid(sysOverride) {
+			detectedPlatform = platform.Type(strings.ToLower(sysOverride))
+			logger.Info("Platform override: %s", detectedPlatform)
+		} else {
+			logger.Error("Invalid --sys value %q (valid: docker, lxc, podman, wsl, xen0, xenu, openvz, vserver, systemd-nspawn, uml, rkt, none)", sysOverride)
+			os.Exit(1)
+		}
+	} else {
+		detectedPlatform = platform.Detect()
+		if detectedPlatform != platform.None {
+			logger.Info("Detected platform: %s", detectedPlatform)
+		}
+	}
+
 	// Create and configure the loader
 	loader := config.NewDirLoader(serviceSet, dirs)
+	loader.SetPlatform(detectedPlatform)
 
 	// Enable init.d fallback (auto-detect SysV init scripts)
 	var initDDirs []string

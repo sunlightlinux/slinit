@@ -149,6 +149,9 @@ var KnownSettings = map[string]OperatorType{
 	"cron-delay":    OpEquals,
 	"cron-on-error": OpEquals,
 
+	// Platform keywords (OpenRC-compatible)
+	"keyword": OpEquals,
+
 	// Log rotation and filtering
 	"logfile-max-size":    OpEquals,
 	"logfile-max-files":   OpEquals,

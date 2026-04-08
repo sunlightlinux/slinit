@@ -3,7 +3,7 @@
 # Or source this file directly: source completions/slinitctl.bash
 
 _slinitctl_commands() {
-    echo "list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue once reload unload boot-time analyze catlog attach setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents"
+    echo "list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue once reload unload boot-time analyze catlog attach setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents platform"
 }
 
 _slinitctl_global_flags() {
@@ -148,7 +148,7 @@ _slinitctl() {
                 2) COMPREPLY=( $(compgen -W "$(_slinitctl_services)" -- "$cur") ) ;;
             esac
             ;;
-        list|ls|boot-time|analyze|service-dirs|load-mech|\
+        list|ls|boot-time|analyze|service-dirs|load-mech|platform|\
         setenv-global|unsetenv-global|getallenv-global)
             # No further arguments needed
             ;;

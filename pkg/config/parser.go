@@ -191,6 +191,10 @@ type ServiceDescription struct {
 	// Load options
 	ExportPasswdVars  bool // export USER, LOGNAME, HOME, SHELL, UID, GID from passwd
 	ExportServiceName bool // export DINIT_SERVICENAME + DINIT_SERVICEDSCDIR env vars
+
+	// Platform keywords: services with "-docker", "-lxc", etc. are skipped
+	// on matching platforms (OpenRC-compatible keyword directive)
+	Keywords []string
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -287,6 +291,17 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 		if strings.HasPrefix(trimmed, "@") {
 			if err := handleInclude(trimmed, name, fileName, lineNum, desc, depth, serviceArg); err != nil {
 				return nil, err
+			}
+			continue
+		}
+
+		// Handle "keyword -docker -lxc ..." (no operator required, OpenRC compat)
+		// Only match the bare form (no '=' or ':' present), otherwise let
+		// parseLine handle "keyword = ..." via the normal applySetting path.
+		if strings.HasPrefix(trimmed, "keyword ") &&
+			!strings.ContainsAny(trimmed, "=:") {
+			for _, kw := range strings.Fields(trimmed[8:]) {
+				desc.Keywords = append(desc.Keywords, kw)
 			}
 			continue
 		}
@@ -837,6 +852,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	// Alias
 	case "provides":
 		desc.Provides = value
+
+	// Platform keywords (OpenRC-compatible: keyword -docker -lxc ...)
+	case "keyword":
+		for _, kw := range strings.Fields(value) {
+			desc.Keywords = append(desc.Keywords, kw)
+		}
 
 	// Consumer
 	case "consumer-of":

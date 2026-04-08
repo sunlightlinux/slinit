@@ -1483,3 +1483,68 @@ namespace-uid-map += 1:2000:100
 		t.Errorf("second map: %+v", desc.NamespaceUidMap[1])
 	}
 }
+
+func TestParseKeyword(t *testing.T) {
+	input := `type = process
+command = /bin/app
+keyword -docker -lxc -podman
+`
+	desc, err := Parse(strings.NewReader(input), "kw-svc", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(desc.Keywords) != 3 {
+		t.Fatalf("expected 3 keywords, got %d: %v", len(desc.Keywords), desc.Keywords)
+	}
+	want := []string{"-docker", "-lxc", "-podman"}
+	for i, kw := range want {
+		if desc.Keywords[i] != kw {
+			t.Errorf("keyword[%d] = %q, want %q", i, desc.Keywords[i], kw)
+		}
+	}
+}
+
+func TestParseKeywordMultipleLines(t *testing.T) {
+	input := `type = process
+command = /bin/app
+keyword -docker -lxc
+keyword -wsl -xenu
+`
+	desc, err := Parse(strings.NewReader(input), "kw-multi", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(desc.Keywords) != 4 {
+		t.Fatalf("expected 4 keywords, got %d: %v", len(desc.Keywords), desc.Keywords)
+	}
+}
+
+func TestParseKeywordWithEquals(t *testing.T) {
+	input := `type = process
+command = /bin/app
+keyword = -docker -wsl
+`
+	desc, err := Parse(strings.NewReader(input), "kw-eq", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(desc.Keywords) != 2 {
+		t.Fatalf("expected 2 keywords, got %d: %v", len(desc.Keywords), desc.Keywords)
+	}
+	if desc.Keywords[0] != "-docker" || desc.Keywords[1] != "-wsl" {
+		t.Errorf("unexpected keywords: %v", desc.Keywords)
+	}
+}
+
+func TestParseKeywordEmpty(t *testing.T) {
+	input := `type = process
+command = /bin/app
+`
+	desc, err := Parse(strings.NewReader(input), "no-kw", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(desc.Keywords) != 0 {
+		t.Errorf("expected 0 keywords, got %d", len(desc.Keywords))
+	}
+}

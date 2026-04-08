@@ -63,6 +63,7 @@ _slinitctl() {
         'service-dirs:List service directories'
         'load-mech:Query service loader mechanism'
         'dependents:List service dependents'
+        'platform:Detect and display virtualization/container platform'
     )
 
     global_opts=(

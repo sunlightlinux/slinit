@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -19,11 +20,12 @@ var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
 
 // DirLoader loads service descriptions from one or more directories.
 type DirLoader struct {
-	dirs     []string
-	initDirs []string // init.d directories for fallback (empty = disabled)
-	set      *service.ServiceSet
-	loading  map[string]bool // tracks loading state for circular dependency detection
-	curDepth int             // current recursion depth during loading
+	dirs       []string
+	initDirs   []string // init.d directories for fallback (empty = disabled)
+	set        *service.ServiceSet
+	loading    map[string]bool // tracks loading state for circular dependency detection
+	curDepth   int             // current recursion depth during loading
+	platformSys platform.Type  // detected (or overridden) platform for keyword filtering
 }
 
 // NewDirLoader creates a new directory-based service loader.
@@ -33,6 +35,17 @@ func NewDirLoader(set *service.ServiceSet, dirs []string) *DirLoader {
 		set:     set,
 		loading: make(map[string]bool),
 	}
+}
+
+// SetPlatform sets the detected (or manually overridden) platform type.
+// Services with matching keyword directives will be skipped during loading.
+func (dl *DirLoader) SetPlatform(p platform.Type) {
+	dl.platformSys = p
+}
+
+// Platform returns the configured platform type.
+func (dl *DirLoader) Platform() platform.Type {
+	return dl.platformSys
 }
 
 // SetInitDDirs configures init.d fallback directories.
@@ -510,6 +523,15 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	desc, filePath, err := dl.findAndParse(name)
 	if err != nil {
 		return nil, err
+	}
+
+	// Platform keyword filtering: skip services that declare keywords
+	// matching the detected platform (e.g. "keyword -docker -lxc")
+	if dl.platformSys != platform.None && platform.ShouldSkip(desc.Keywords, dl.platformSys) {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message:     fmt.Sprintf("service disabled on platform %q (keyword match)", dl.platformSys),
+		}
 	}
 
 	// Validate: ready-notification not supported for bgprocess
