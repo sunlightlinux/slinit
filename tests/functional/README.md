@@ -106,12 +106,19 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 ## Adding Tests
 
 1. Create `tests/functional/cases/NN-name.sh`
-2. Use assertion helpers from `lib/assert.sh`:
-   - `assert_contains "$output" "expected" "description"`
-   - `assert_service_state "name" "STATE" "description"`
-   - `wait_for_service "name" "STATE" timeout_secs`
-   - `test_summary` (call at end of test)
-3. Exit 0 = pass, non-zero = fail
+2. If the test needs custom services, create a `.d/` directory with the same
+   base name (e.g., `51-clock-guard.d/`) containing service files (`boot` + others)
+3. Use assertion helpers from `lib/assert.sh`:
+   - `assert_eq "$val" "expected" "description"` — exact string match
+   - `assert_contains "$output" "needle" "description"` — substring match
+   - `assert_not_contains "$output" "needle" "description"` — absence check
+   - `assert_exit_code "command" 0 "description"` — run command and check exit code
+   - `assert_service_state "name" "STATE" "description"` — check via slinitctl
+   - `wait_for_service "name" "STATE" timeout_secs` — poll until state reached
+   - `test_summary` (must call at end of every test)
+4. Manual assertions: increment `_TESTS_RUN` and `_TESTS_FAILED` directly for
+   custom checks (see existing tests for examples)
+5. Exit 0 = pass, non-zero = fail
 
 Example:
 
