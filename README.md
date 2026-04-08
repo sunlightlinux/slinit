@@ -56,6 +56,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Parallel start limit**: soft concurrency control for service startup (`--parallel-start-limit`), slow-threshold filtering
 - **Multi-service shared logger**: SharedLogMux multiplexes N service outputs into a single logger stdin with `[service-name]` line prefixes
 - **Virtual TTY**: screen-like attach/detach for services via PTY allocation, ring buffer scrollback, Unix socket client multiplexing (`slinitctl attach`)
+- **Boot-time clock guard**: prevents clock regression on systems without RTC / dead CMOS battery (compile-time floor + persistent timestamp file, similar to systemd-timesyncd)
 - **Dual mode**: system init (PID 1) or user-level service manager
 - **Offline enable/disable**: `--offline` mode creates/removes waits-for.d symlinks without a running daemon
 - **Dinit naming compat**: `rlimit-addrspace`, `run-in-cgroup`, `consumer-of =` all supported as aliases
@@ -581,7 +582,7 @@ slinit/
 │   ├── service/         # Service types, state machine, dependency graph
 │   ├── config/          # Dinit-compatible config parser and loader
 │   ├── control/         # Control socket protocol (v6) and server
-│   ├── shutdown/        # PID 1 init, shutdown executor, soft-reboot
+│   ├── shutdown/        # PID 1 init, shutdown executor, soft-reboot, clock guard
 │   ├── process/         # Process execution, monitoring, attrs, caps
 │   ├── eventloop/       # Event loop, signals, timers
 │   ├── logging/         # Console logger
@@ -589,16 +590,16 @@ slinit/
 ├── internal/util/       # Path and parsing utilities
 ├── completions/         # Shell completions (bash, zsh, fish)
 ├── demo/                # QEMU demo environment
-└── tests/functional/    # 40 QEMU-based integration tests
+└── tests/functional/    # 51 QEMU-based integration tests
 ```
 
 ## Testing
 
 ```bash
-# Unit tests (327+ tests across 6 packages)
+# Unit tests (441 tests across 12 packages)
 go test ./...
 
-# Functional tests (40 QEMU-based integration tests)
+# Functional tests (51 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 ```
 
