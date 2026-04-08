@@ -1,0 +1,6 @@
+type = process
+command = /bin/sh -c "i=0; while true; do echo \"logline-$i-$(dd if=/dev/urandom bs=100 count=1 2>/dev/null | base64 | head -c 80)\"; i=$((i+1)); sleep 0; done"
+logfile = /tmp/logrot-svc.log
+logfile-max-size = 1024
+logfile-max-files = 3
+depends-on: system-init

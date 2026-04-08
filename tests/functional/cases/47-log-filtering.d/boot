@@ -1,0 +1,4 @@
+type = internal
+depends-on: system-init
+waits-for: logfilt-svc
+waits-for: test-runner

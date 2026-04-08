@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: ns-pid-svc
+waits-for: ns-user-svc
+waits-for: test-runner

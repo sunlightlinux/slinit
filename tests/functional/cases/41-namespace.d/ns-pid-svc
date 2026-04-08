@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "echo mypid=$$ > /tmp/ns-pid-result; cat /proc/self/status | grep NSpid >> /tmp/ns-pid-result; while true; do sleep 60; done"
+namespace-pid = true
+namespace-mount = true
+depends-on: system-init

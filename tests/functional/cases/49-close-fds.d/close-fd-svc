@@ -1,0 +1,6 @@
+type = process
+command = /bin/sh -c "ls -la /proc/self/fd > /tmp/close-fd-result 2>&1; while true; do sleep 60; done"
+close-stdin = true
+close-stdout = true
+close-stderr = true
+depends-on: system-init

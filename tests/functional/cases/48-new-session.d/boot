@@ -1,0 +1,4 @@
+type = internal
+depends-on: system-init
+waits-for: sess-svc
+waits-for: test-runner

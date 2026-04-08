@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "while true; do sleep 60; done"
+control-command-HUP = /bin/sh -c "echo hup-handled > /tmp/ctrl-cmd-result"
+depends-on: system-init

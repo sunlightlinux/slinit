@@ -1,0 +1,6 @@
+type = process
+command = /bin/sh -c "i=0; while true; do echo \"INFO: message $i\"; echo \"DEBUG: noise $i\"; echo \"ERROR: problem $i\"; i=$((i+1)); sleep 1; done"
+logfile = /tmp/logfilt-svc.log
+log-include = ^(INFO|ERROR):
+log-exclude = ^DEBUG:
+depends-on: system-init

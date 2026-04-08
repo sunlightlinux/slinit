@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: nice-svc
+waits-for: oom-svc
+waits-for: test-runner

@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "while true; do sleep 60; done"
+pre-stop-hook = /bin/sh -c "echo pre-stop-ran > /tmp/pre-stop-result"
+restart = false
+depends-on: system-init

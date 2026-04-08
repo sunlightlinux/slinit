@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (40 tests)
+# Run all tests (50 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -79,11 +79,16 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 38 | cron-task | Cron-like periodic task execution |
 | 39 | start-limiter | Soft parallel start limit (all services start) |
 | 40 | shared-logger | Multi-service shared logger (SharedLogMux) |
-
-**Note**: Some runit-inspired features (pre-stop-hook, control-command, chroot,
-new-session, lock-file, close-fds, log rotation, log filtering, log processor)
-are validated via unit tests. Additional functional test cases can be added for
-integration validation.
+| 41 | namespace | PID/user namespace isolation with UID/GID mapping |
+| 42 | pre-stop-hook | Pre-stop hook runs before service stop |
+| 43 | control-command | Custom signal handler (control-command-HUP) |
+| 44 | chroot | Chroot filesystem isolation |
+| 45 | lock-file | Exclusive lock file (flock) for services |
+| 46 | log-rotation | Log file rotation by size with max-files limit |
+| 47 | log-filtering | Log include/exclude regex filtering |
+| 48 | new-session | New session (setsid) for service process |
+| 49 | close-fds | Close stdin/stdout/stderr (redirect to /dev/null) |
+| 50 | nice-oom-ioprio | Nice value and OOM score adjustment |
 
 ## How It Works
 

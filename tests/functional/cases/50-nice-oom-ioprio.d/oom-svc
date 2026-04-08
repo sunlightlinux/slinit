@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "while true; do sleep 60; done"
+nice = -5
+oom-score-adj = -100
+depends-on: system-init

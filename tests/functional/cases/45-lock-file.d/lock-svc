@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "echo running > /tmp/lock-svc-status; while true; do sleep 60; done"
+lock-file = /run/lock-svc.lock
+restart = false
+depends-on: system-init

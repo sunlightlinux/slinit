@@ -1,0 +1,6 @@
+type = process
+command = /bin/sh -c "id -u > /tmp/ns-user-result; while true; do sleep 60; done"
+namespace-user = true
+namespace-uid-map = 0:0:65536
+namespace-gid-map = 0:0:65536
+depends-on: system-init
