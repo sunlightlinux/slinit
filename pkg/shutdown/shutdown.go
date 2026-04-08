@@ -56,6 +56,13 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 		unmountAll(logger)
 	}
 
+	// Persist current time for next boot's clock guard
+	if err := WriteClockTimestamp(); err != nil {
+		logger.Debug("Failed to save clock timestamp: %v", err)
+	} else {
+		logger.Debug("Clock timestamp saved for next boot")
+	}
+
 	// Sync filesystems to minimize data loss
 	logger.Info("Syncing filesystems...")
 	syncFunc()

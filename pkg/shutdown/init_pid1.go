@@ -57,6 +57,10 @@ func InitPID1(logger *logging.Logger) error {
 	ignoreTerminalSignals()
 	logger.Debug("Terminal signals ignored (SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE)")
 
+	// Clock guard: advance system clock if it's in the past
+	// (protects against dead CMOS battery / missing RTC resetting to epoch)
+	ClockGuard(logger)
+
 	return nil
 }
 
@@ -185,6 +189,10 @@ func InitContainer(logger *logging.Logger) error {
 	// Ignore terminal job control signals
 	ignoreTerminalSignals()
 	logger.Debug("Terminal signals ignored (SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE)")
+
+	// Clock guard: advance system clock if it's in the past
+	// (containers can inherit a stale clock from the host)
+	ClockGuard(logger)
 
 	return nil
 }

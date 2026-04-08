@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (50 tests)
+# Run all tests (51 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -89,6 +89,7 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 48 | new-session | New session (setsid) for service process |
 | 49 | close-fds | Close stdin/stdout/stderr (redirect to /dev/null) |
 | 50 | nice-oom-ioprio | Nice value and OOM score adjustment |
+| 51 | clock-guard | Boot-time clock protection (floor + timestamp file) |
 
 ## How It Works
 
