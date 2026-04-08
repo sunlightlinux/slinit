@@ -256,6 +256,10 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if len(desc.CronCommand) > 0 {
 			s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
 		}
+		if len(desc.HealthCheckCommand) > 0 {
+			s.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
+				desc.HealthCheckDelay, desc.HealthCheckMaxFail, desc.UnhealthyCommand)
+		}
 		if desc.SocketActivation == "on-demand" {
 			s.SetSocketOnDemand(true)
 		}
@@ -709,6 +713,10 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		}
 		if len(desc.CronCommand) > 0 {
 			svc.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+		}
+		if len(desc.HealthCheckCommand) > 0 {
+			svc.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
+				desc.HealthCheckDelay, desc.HealthCheckMaxFail, desc.UnhealthyCommand)
 		}
 		if desc.SocketActivation == "on-demand" {
 			svc.SetSocketOnDemand(true)

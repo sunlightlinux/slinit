@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -1546,5 +1547,57 @@ command = /bin/app
 	}
 	if len(desc.Keywords) != 0 {
 		t.Errorf("expected 0 keywords, got %d", len(desc.Keywords))
+	}
+}
+
+func TestParseHealthCheckSettings(t *testing.T) {
+	input := `type = process
+command = /usr/bin/myapp
+healthcheck-command = /usr/bin/curl -sf http://localhost:8080/health
+healthcheck-interval = 30
+healthcheck-delay = 10
+healthcheck-max-failures = 5
+unhealthy-command = /usr/local/bin/notify-unhealthy
+`
+	desc, err := Parse(strings.NewReader(input), "hc-svc", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(desc.HealthCheckCommand) == 0 {
+		t.Fatal("expected healthcheck-command to be set")
+	}
+	if desc.HealthCheckCommand[0] != "/usr/bin/curl" {
+		t.Errorf("healthcheck-command[0] = %q, want /usr/bin/curl", desc.HealthCheckCommand[0])
+	}
+	if desc.HealthCheckInterval != 30*time.Second {
+		t.Errorf("healthcheck-interval = %v, want 30s", desc.HealthCheckInterval)
+	}
+	if desc.HealthCheckDelay != 10*time.Second {
+		t.Errorf("healthcheck-delay = %v, want 10s", desc.HealthCheckDelay)
+	}
+	if desc.HealthCheckMaxFail != 5 {
+		t.Errorf("healthcheck-max-failures = %d, want 5", desc.HealthCheckMaxFail)
+	}
+	if len(desc.UnhealthyCommand) == 0 || desc.UnhealthyCommand[0] != "/usr/local/bin/notify-unhealthy" {
+		t.Errorf("unhealthy-command = %v", desc.UnhealthyCommand)
+	}
+}
+
+func TestParseHealthCheckDuration(t *testing.T) {
+	input := `type = process
+command = /bin/app
+healthcheck-command = /bin/true
+healthcheck-interval = 5s
+healthcheck-delay = 1m
+`
+	desc, err := Parse(strings.NewReader(input), "hc-dur", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if desc.HealthCheckInterval != 5*time.Second {
+		t.Errorf("interval = %v, want 5s", desc.HealthCheckInterval)
+	}
+	if desc.HealthCheckDelay != time.Minute {
+		t.Errorf("delay = %v, want 1m", desc.HealthCheckDelay)
 	}
 }

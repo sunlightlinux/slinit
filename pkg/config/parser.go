@@ -188,6 +188,13 @@ type ServiceDescription struct {
 	CronDelay    time.Duration // initial delay before first run
 	CronOnError  string        // "continue" (default) or "stop"
 
+	// Continuous health checking (post-STARTED, OpenRC supervise-daemon inspired)
+	HealthCheckCommand  []string      // command to run periodically (exit 0 = healthy)
+	HealthCheckInterval time.Duration // interval between checks (default 30s)
+	HealthCheckDelay    time.Duration // initial delay before first check
+	HealthCheckMaxFail  int           // consecutive failures before restart (0 = never)
+	UnhealthyCommand    []string      // command to run on each failure
+
 	// Load options
 	ExportPasswdVars  bool // export USER, LOGNAME, HOME, SHELL, UID, GID from passwd
 	ExportServiceName bool // export DINIT_SERVICENAME + DINIT_SERVICEDSCDIR env vars
@@ -643,6 +650,46 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			desc.CronOnError = value
 		default:
 			return fmt.Errorf("invalid cron-on-error: %q (must be 'continue' or 'stop')", value)
+		}
+
+	// Continuous health checking
+	case "healthcheck-command":
+		if op == OpPlusEqual {
+			desc.HealthCheckCommand = append(desc.HealthCheckCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.HealthCheckCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+	case "healthcheck-interval":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid healthcheck-interval: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		desc.HealthCheckInterval = d
+	case "healthcheck-delay":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid healthcheck-delay: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		desc.HealthCheckDelay = d
+	case "healthcheck-max-failures":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("invalid healthcheck-max-failures: %s (must be >= 0)", value)
+		}
+		desc.HealthCheckMaxFail = n
+	case "unhealthy-command":
+		if op == OpPlusEqual {
+			desc.UnhealthyCommand = append(desc.UnhealthyCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.UnhealthyCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
 
 	// Dependencies

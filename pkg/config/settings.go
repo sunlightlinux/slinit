@@ -149,6 +149,13 @@ var KnownSettings = map[string]OperatorType{
 	"cron-delay":    OpEquals,
 	"cron-on-error": OpEquals,
 
+	// Continuous health checking
+	"healthcheck-command":      OpEquals | OpPlusEqual,
+	"healthcheck-interval":     OpEquals,
+	"healthcheck-delay":        OpEquals,
+	"healthcheck-max-failures": OpEquals,
+	"unhealthy-command":        OpEquals | OpPlusEqual,
+
 	// Platform keywords (OpenRC-compatible)
 	"keyword": OpEquals,
 

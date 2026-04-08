@@ -110,6 +110,9 @@ type ProcessService struct {
 	// Cron-like periodic task
 	cronRunner *CronRunner
 
+	// Continuous health checking (post-STARTED)
+	healthChecker *HealthChecker
+
 	// Virtual TTY (screen-like attach/detach)
 	vtty           *VirtualTTY
 	vttyEnabled    bool
@@ -252,6 +255,35 @@ func (s *ProcessService) SetLogProcessor(cmd []string) { s.logProcessor = cmd }
 // SetCronConfig configures the periodic cron task.
 func (s *ProcessService) SetCronConfig(cmd []string, interval, delay time.Duration, onError string) {
 	s.cronRunner = NewCronRunner(s, cmd, interval, delay, onError, s.services.logger)
+}
+
+// SetHealthCheck configures the continuous health checker.
+func (s *ProcessService) SetHealthCheck(cmd []string, interval, delay time.Duration,
+	maxFailures int, unhealthyCmd []string) {
+	onFail := func() {
+		// Trigger a restart by sending SIGTERM to the process.
+		// Auto-restart policy will handle the restart.
+		s.services.logger.Info("Service '%s': health check triggering restart", s.serviceName)
+		s.Stop(false)
+	}
+	s.healthChecker = NewHealthChecker(s, cmd, interval, delay, maxFailures, unhealthyCmd,
+		s.services.logger, onFail)
+}
+
+// startHealthCheckIfConfigured starts the health checker if configured.
+func (s *ProcessService) startHealthCheckIfConfigured() {
+	if s.healthChecker != nil {
+		s.services.logger.Info("Service '%s': starting health check (interval=%v, max-failures=%d)",
+			s.serviceName, s.healthChecker.interval, s.healthChecker.maxFailures)
+		s.healthChecker.Start()
+	}
+}
+
+// stopHealthChecker stops the health checker if active.
+func (s *ProcessService) stopHealthChecker() {
+	if s.healthChecker != nil {
+		s.healthChecker.Stop()
+	}
 }
 
 // startCronIfConfigured starts the cron runner if a cron-command is configured.
@@ -584,7 +616,8 @@ func (s *ProcessService) BringUp() bool {
 // Then if a stop-command is configured, it is executed. If it fails to
 // start, we fall back to sending the termination signal directly.
 func (s *ProcessService) BringDown() {
-	// Stop cron runner if active (waits for in-progress execution)
+	// Stop health checker and cron runner if active
+	s.stopHealthChecker()
 	s.stopCronRunner()
 
 	// Close readiness pipe if still open (no longer waiting for readiness)
@@ -1073,6 +1106,7 @@ func (s *ProcessService) startProcess() error {
 		s.cancelTimer()
 		s.Started()
 		s.startCronIfConfigured()
+		s.startHealthCheckIfConfigured()
 	}
 
 	return nil
@@ -1145,6 +1179,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.services.logger.Info("Service '%s': readiness notification received", s.serviceName)
 		s.Started()
 		s.startCronIfConfigured()
+		s.startHealthCheckIfConfigured()
 		s.services.ProcessQueues()
 	} else {
 		// EOF without data - child closed pipe without writing
