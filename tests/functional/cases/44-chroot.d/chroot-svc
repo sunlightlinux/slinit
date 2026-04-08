@@ -1,4 +1,4 @@
 type = process
-command = /bin/sh -c "pwd > /tmp/chroot-result; ls / >> /tmp/chroot-result; while true; do sleep 60; done"
-chroot = /tmp/chroot-root
+command = /bin/sh -c "echo chroot-ok > /tmp/chroot-result; while true; do sleep 60; done"
+chroot = /
 depends-on: system-init

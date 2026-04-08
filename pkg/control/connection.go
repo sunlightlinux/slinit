@@ -639,6 +639,15 @@ func (c *Connection) handleSignal(payload []byte) error {
 	}
 
 	sig := syscall.Signal(sigNum)
+
+	// Use SendSignalWithControl if available (ProcessService supports control-command-*)
+	if ps, ok := svc.(*service.ProcessService); ok {
+		if ps.SendSignalWithControl(sig) {
+			return c.writePacket(RplyACK, nil)
+		}
+		return c.writePacket(RplySignalErr, []byte("signal failed"))
+	}
+
 	if err := syscall.Kill(pid, sig); err != nil {
 		return c.writePacket(RplySignalErr, []byte(fmt.Sprintf("%v", err)))
 	}

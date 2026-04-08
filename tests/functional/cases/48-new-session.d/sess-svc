@@ -1,4 +1,4 @@
 type = process
-command = /bin/sh -c "cat /proc/self/stat | awk '{print $5}' > /tmp/sess-sid; cat /proc/self/stat | awk '{print $1}' > /tmp/sess-pid; while true; do sleep 60; done"
+command = /bin/sh -c "cat /proc/self/sessionid > /tmp/sess-sid 2>/dev/null || sed 's/.*) //' /proc/self/stat | cut -d' ' -f3 > /tmp/sess-sid; echo $$ > /tmp/sess-pid; while true; do sleep 60; done"
 new-session = true
 depends-on: system-init

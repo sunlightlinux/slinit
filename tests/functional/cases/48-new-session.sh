@@ -4,13 +4,13 @@
 
 wait_for_service "sess-svc" "STARTED" 10
 
-# Give service time to write results
-sleep 2
+# Get PID from slinitctl
+pid=$(slinitctl --system status sess-svc 2>/dev/null | grep 'PID:' | awk '{print $2}')
 
-# In a new session, the session ID should equal the process PID
-# (the process becomes the session leader)
-sid=$(cat /tmp/sess-sid 2>/dev/null)
-pid=$(cat /tmp/sess-pid 2>/dev/null)
+# Read session ID from /proc — parse stat carefully (field 2 has parens)
+# Format: pid (comm) state ppid pgrp session ...
+# Strip through closing paren, then field 4 is session
+sid=$(sed 's/.*) //' /proc/$pid/stat 2>/dev/null | cut -d' ' -f4)
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -n "$sid" ] && [ -n "$pid" ] && [ "$sid" = "$pid" ]; then
