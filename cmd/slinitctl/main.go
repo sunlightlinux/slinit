@@ -135,6 +135,13 @@ doneFlags:
 		cmdCompletion(shell)
 		return
 	}
+	if command == "is-newer-than" || command == "is-older-than" {
+		if len(cmdArgs) != 2 {
+			fatal("Usage: slinitctl %s <file-a> <file-b>", command)
+		}
+		cmdFileCompare(command, cmdArgs[0], cmdArgs[1])
+		return
+	}
 
 	// Offline mode: enable/disable without connecting to daemon
 	if offlineMode {
@@ -513,6 +520,66 @@ func readReply(conn net.Conn) (uint8, []byte, error) {
 	}
 }
 
+// isStderrTTY reports whether stderr is attached to a terminal.
+// Uses TCGETS ioctl — succeeds only on real terminals.
+func isStderrTTY() bool {
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, uintptr(os.Stderr.Fd()),
+		uintptr(syscall.TCGETS), uintptr(unsafe.Pointer(&t)), 0, 0, 0)
+	return errno == 0
+}
+
+// progressGrace is the initial delay before any progress dots are printed.
+// Commands that complete faster than this produce no visual noise.
+var progressGrace = 2 * time.Second
+
+// progressTick is the interval between progress dots.
+var progressTick = 500 * time.Millisecond
+
+// readReplyWithProgress behaves like readReply but, if stderr is a TTY and
+// --quiet is not set, prints a "waiting" line followed by dots while the
+// server is still computing a reply. Silent in non-TTY (scripts, logs).
+func readReplyWithProgress(conn net.Conn, action string) (uint8, []byte, error) {
+	if quiet || !isStderrTTY() {
+		return readReply(conn)
+	}
+
+	type result struct {
+		rply    uint8
+		payload []byte
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		rply, payload, err := readReply(conn)
+		done <- result{rply, payload, err}
+	}()
+
+	grace := time.NewTimer(progressGrace)
+	defer grace.Stop()
+
+	// Wait for either the reply or the grace period.
+	select {
+	case r := <-done:
+		return r.rply, r.payload, r.err
+	case <-grace.C:
+	}
+
+	// Still waiting — start printing dots.
+	fmt.Fprintf(os.Stderr, "%s", action)
+	ticker := time.NewTicker(progressTick)
+	defer ticker.Stop()
+	for {
+		select {
+		case r := <-done:
+			fmt.Fprintln(os.Stderr)
+			return r.rply, r.payload, r.err
+		case <-ticker.C:
+			fmt.Fprint(os.Stderr, ".")
+		}
+	}
+}
+
 // versionHandshake performs a two-way protocol version check with the server.
 // Server sends: min_compat_version(2) + actual_version(2).
 // Client checks bidirectional compatibility.
@@ -886,7 +953,7 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 		return err
 	}
 
-	rply, _, err := readReply(conn)
+	rply, _, err := readReplyWithProgress(conn, fmt.Sprintf("starting %s", name))
 	if err != nil {
 		return err
 	}
@@ -973,7 +1040,7 @@ func cmdStop(conn net.Conn, name string, pin bool, force bool, ignoreUnstarted b
 		return err
 	}
 
-	rply, _, err := readReply(conn)
+	rply, _, err := readReplyWithProgress(conn, fmt.Sprintf("stopping %s", name))
 	if err != nil {
 		return err
 	}
@@ -1004,7 +1071,7 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 	if err := control.WritePacket(conn, control.CmdStopService, stopPayload); err != nil {
 		return err
 	}
-	rply, _, err := readReply(conn)
+	rply, _, err := readReplyWithProgress(conn, fmt.Sprintf("stopping %s", name))
 	if err != nil {
 		return err
 	}
@@ -1021,7 +1088,7 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 	if err := control.WritePacket(conn, control.CmdStartService, startPayload); err != nil {
 		return err
 	}
-	rply, _, err = readReply(conn)
+	rply, _, err = readReplyWithProgress(conn, fmt.Sprintf("starting %s", name))
 	if err != nil {
 		return err
 	}
@@ -1062,6 +1129,9 @@ func cmdStatus(conn net.Conn, name string) error {
 	}
 
 	fmt.Printf("Service: %s\n", name)
+	if desc, err := fetchDescription(conn, handle); err == nil && desc != "" {
+		fmt.Printf("  Description: %s\n", desc)
+	}
 	fmt.Printf("  State:   %s\n", formatState(status.State))
 	fmt.Printf("  Target:  %s\n", formatTarget(status.TargetState))
 	fmt.Printf("  Type:    %s\n", status.SvcType)
@@ -1072,6 +1142,24 @@ func cmdStatus(conn net.Conn, name string) error {
 		fmt.Printf("  Exit:    %d\n", status.ExitStatus)
 	}
 	return nil
+}
+
+// fetchDescription queries the human-readable description for a service handle.
+// Returns empty string if the server does not support the command or the
+// service has no description set.
+func fetchDescription(conn net.Conn, handle uint32) (string, error) {
+	if err := control.WritePacket(conn, control.CmdQueryDescription, control.EncodeHandle(handle)); err != nil {
+		return "", err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return "", err
+	}
+	if rply != control.RplyDescription {
+		return "", fmt.Errorf("unexpected reply: %d", rply)
+	}
+	desc, _, err := control.DecodeServiceName(payload)
+	return desc, err
 }
 
 // getServiceStatus fetches the status for a service via the control protocol.
@@ -2416,6 +2504,56 @@ func cmdPlatform() {
 	}
 }
 
+// evalFileCompare returns the exit code that cmdFileCompare would use for
+// the given operation and two paths. Extracted so it can be unit-tested
+// without process termination.
+//
+// Return codes:
+//
+//	0 — condition is true
+//	1 — condition is false (or a path is missing)
+//	2 — a genuine stat error (other than ENOENT)
+func evalFileCompare(op, a, b string) (int, error) {
+	statA, errA := os.Stat(a)
+	statB, errB := os.Stat(b)
+	if errA != nil || errB != nil {
+		// Match OpenRC semantics: a missing file means the comparison is
+		// false rather than a hard error. Only surface a non-fatal exit 2
+		// for genuine stat errors other than ENOENT, so service scripts
+		// can still branch on the result.
+		if errA != nil && !os.IsNotExist(errA) {
+			return 2, errA
+		}
+		if errB != nil && !os.IsNotExist(errB) {
+			return 2, errB
+		}
+		return 1, nil
+	}
+
+	var result bool
+	switch op {
+	case "is-newer-than":
+		result = statA.ModTime().After(statB.ModTime())
+	case "is-older-than":
+		result = statA.ModTime().Before(statB.ModTime())
+	}
+	if result {
+		return 0, nil
+	}
+	return 1, nil
+}
+
+// cmdFileCompare implements the is-newer-than and is-older-than subcommands,
+// mirroring OpenRC's is_newer_than(1) / is_older_than(1) helpers used by
+// service scripts for conditional restarts when a config file changes.
+func cmdFileCompare(op, a, b string) {
+	code, err := evalFileCompare(op, a, b)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinitctl %s: %v\n", op, err)
+	}
+	os.Exit(code)
+}
+
 func cmdCompletion(shell string) {
 	switch shell {
 	case "bash":
@@ -2433,7 +2571,7 @@ const bashCompletion = `# Bash completion for slinitctl
 # Usage: eval "$(slinitctl completion bash)"
 
 _slinitctl_commands() {
-    echo "list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
+    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
 }
 
 _slinitctl_services() {
@@ -2497,6 +2635,8 @@ _slinitctl() {
             esac ;;
         completion)
             COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") ) ;;
+        is-newer-than|is-older-than)
+            COMPREPLY=( $(compgen -f -- "$cur") ) ;;
         graph|list5|getallenv-global|boot-time|analyze|service-dirs|load-mech)
             ;;
     esac
@@ -2530,6 +2670,8 @@ _slinitctl() {
         'status:Show service status'
         'is-started:Check if started'
         'is-failed:Check if failed'
+        'is-newer-than:Check if file A is newer than file B'
+        'is-older-than:Check if file A is older than file B'
         'shutdown:Initiate shutdown'
         'trigger:Trigger a service'
         'untrigger:Reset trigger'
@@ -2590,6 +2732,7 @@ _slinitctl() {
                 shutdown) _describe 'type' '(halt poweroff reboot kexec softreboot)' ;;
                 signal) case $CURRENT in 2) _describe 'signal' '(SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM)' ;; 3) _slinitctl_services ;; esac ;;
                 add-dep|rm-dep) case $CURRENT in 2|4) _slinitctl_services ;; 3) _describe 'dep type' '(regular waits-for milestone soft before after)' ;; esac ;;
+                is-newer-than|is-older-than) _files ;;
                 completion) _describe 'shell' '(bash zsh fish)' ;;
             esac ;;
     esac
@@ -2605,7 +2748,7 @@ function __slinitctl_services
     slinitctl --system list 2>/dev/null | string replace -r '^\[.*\] ' '' | string replace -r ' \(.*' ''
 end
 
-set -l cmds list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
 
 complete -c slinitctl -f
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s p -l socket-path -rF -d 'Socket path'
@@ -2618,7 +2761,7 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s q -l quiet -
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s h -l help -d 'Help'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l version -d 'Version'
 
-for cmd in list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
     complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -a $cmd
 end
 
@@ -2629,6 +2772,7 @@ end
 complete -c slinitctl -n "__fish_seen_subcommand_from shutdown" -a 'halt poweroff reboot kexec softreboot'
 complete -c slinitctl -n "__fish_seen_subcommand_from signal" -a 'SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM SIGCONT SIGSTOP'
 complete -c slinitctl -n "__fish_seen_subcommand_from add-dep rm-dep" -a 'regular waits-for milestone soft before after'
+complete -c slinitctl -n "__fish_seen_subcommand_from is-newer-than is-older-than" -F
 complete -c slinitctl -n "__fish_seen_subcommand_from completion" -a 'bash zsh fish'`)
 }
 

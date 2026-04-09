@@ -243,6 +243,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleQueryDependents(payload)
 	case CmdQueryDependencies:
 		return c.handleQueryDependencies(payload)
+	case CmdQueryDescription:
+		return c.handleQueryDescription(payload)
 	case CmdPauseService:
 		return c.handlePauseService(payload)
 	case CmdContinueService:
@@ -1110,6 +1112,21 @@ func (c *Connection) handleQueryServiceName(payload []byte) error {
 	}
 
 	return c.writePacket(RplyServiceName, EncodeServiceName(svc.Name()))
+}
+
+func (c *Connection) handleQueryDescription(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	// Reuse the length-prefixed string encoding from EncodeServiceName.
+	return c.writePacket(RplyDescription, EncodeServiceName(svc.Record().Description()))
 }
 
 func (c *Connection) handleQueryServiceDscDir() error {

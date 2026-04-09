@@ -946,6 +946,7 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 // applyToService applies parsed configuration to the service record.
 func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec := svc.Record()
+	rec.SetDescription(desc.Description)
 	rec.SetAutoRestart(desc.AutoRestart)
 	rec.SetSmoothRecovery(desc.SmoothRecovery)
 	rec.SetFlags(desc.Flags)

@@ -79,6 +79,7 @@ const (
 	CmdContinueService uint8 = 44
 	CmdOnceService         uint8 = 45
 	CmdQueryDependencies   uint8 = 46
+	CmdQueryDescription    uint8 = 47 // query human-readable service description
 )
 
 // Reply codes (server → client).
@@ -118,6 +119,7 @@ const (
 	RplyNotStopped    uint8 = 91
 	RplyServiceName     uint8 = 92 // slinit query-name reply
 	RplyDependencies    uint8 = 93 // forward dependencies (handle + dep type)
+	RplyDescription     uint8 = 94 // slinit query-description reply
 )
 
 // Info codes (server → client, unsolicited).

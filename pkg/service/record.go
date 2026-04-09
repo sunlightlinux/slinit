@@ -72,6 +72,7 @@ type ServiceRecord struct {
 	self        Service // pointer back to the implementing Service
 	serviceName string
 	serviceDir  string // directory where service description was found
+	description string // human-readable description for status/list output
 	recordType  ServiceType
 
 	// State
@@ -218,6 +219,8 @@ func NewServiceRecord(self Service, set *ServiceSet, name string, recordType Ser
 func (sr *ServiceRecord) Name() string               { return sr.serviceName }
 func (sr *ServiceRecord) ServiceDir() string          { return sr.serviceDir }
 func (sr *ServiceRecord) SetServiceDir(dir string)    { sr.serviceDir = dir }
+func (sr *ServiceRecord) Description() string         { return sr.description }
+func (sr *ServiceRecord) SetDescription(d string)     { sr.description = d }
 func (sr *ServiceRecord) LoadModTime() time.Time       { return sr.loadModTime }
 func (sr *ServiceRecord) SetLoadModTime(t time.Time)   { sr.loadModTime = t }
 func (sr *ServiceRecord) Type() ServiceType           { return sr.recordType }
