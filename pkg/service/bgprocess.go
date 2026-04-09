@@ -227,6 +227,13 @@ func (s *BGProcessService) BringUp() bool {
 		return false
 	}
 
+	// Fail-fast pre-start check: required_files / required_dirs must exist
+	// before fork/exec. See ProcessService.BringUp.
+	if err := s.CheckRequiredPaths(); err != nil {
+		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+		return false
+	}
+
 	s.lastStartTime = time.Now()
 	s.stopIssued = false
 	s.exitStatus = ExitStatus{}

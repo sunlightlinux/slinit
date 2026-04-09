@@ -204,6 +204,11 @@ type ServiceDescription struct {
 	// Platform keywords: services with "-docker", "-lxc", etc. are skipped
 	// on matching platforms (OpenRC-compatible keyword directive)
 	Keywords []string
+
+	// Pre-start path checks (OpenRC-inspired fail-fast):
+	// the service refuses to start if any required path is missing.
+	RequiredFiles []string // files that must exist and be readable
+	RequiredDirs  []string // directories that must exist
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -747,6 +752,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.DependsMSD = append(desc.DependsMSD, expandEnvVars(value, serviceArg))
 	case "waits-for.d":
 		desc.WaitsForD = append(desc.WaitsForD, expandEnvVars(value, serviceArg))
+
+	// Pre-start fail-fast path checks (OpenRC-inspired)
+	case "required-files":
+		// Accept both one-per-line and space-separated on a single line,
+		// matching OpenRC's shell-array semantics.
+		for _, p := range strings.Fields(expandEnvVars(value, serviceArg)) {
+			desc.RequiredFiles = append(desc.RequiredFiles, p)
+		}
+	case "required-dirs":
+		for _, p := range strings.Fields(expandEnvVars(value, serviceArg)) {
+			desc.RequiredDirs = append(desc.RequiredDirs, p)
+		}
 
 	// Restart
 	case "restart":

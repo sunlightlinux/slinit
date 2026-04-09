@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"syscall"
@@ -198,6 +199,11 @@ type ServiceRecord struct {
 	startRequestTime time.Time // when doStart() was called
 	startedTime      time.Time // when Started() was called (reached STARTED)
 	stoppedTime      time.Time // when Stopped() was called (reached STOPPED)
+
+	// Pre-start fail-fast path checks (OpenRC-inspired):
+	// BringUp refuses to start the service if any of these paths is missing.
+	requiredFiles []string
+	requiredDirs  []string
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -221,6 +227,67 @@ func (sr *ServiceRecord) ServiceDir() string          { return sr.serviceDir }
 func (sr *ServiceRecord) SetServiceDir(dir string)    { sr.serviceDir = dir }
 func (sr *ServiceRecord) Description() string         { return sr.description }
 func (sr *ServiceRecord) SetDescription(d string)     { sr.description = d }
+
+// SetRequiredPaths records files and directories that must exist before
+// the service can start. Copies the slices so the caller may reuse them.
+func (sr *ServiceRecord) SetRequiredPaths(files, dirs []string) {
+	if len(files) > 0 {
+		sr.requiredFiles = append(sr.requiredFiles[:0], files...)
+	} else {
+		sr.requiredFiles = nil
+	}
+	if len(dirs) > 0 {
+		sr.requiredDirs = append(sr.requiredDirs[:0], dirs...)
+	} else {
+		sr.requiredDirs = nil
+	}
+}
+
+// RequiredFiles returns the configured list of required files (for tests/introspection).
+func (sr *ServiceRecord) RequiredFiles() []string { return sr.requiredFiles }
+
+// RequiredDirs returns the configured list of required directories.
+func (sr *ServiceRecord) RequiredDirs() []string { return sr.requiredDirs }
+
+// CheckRequiredPaths verifies all configured required paths exist. Returns
+// the first error encountered with a clear message suitable for logging.
+// The check is deliberately read-only: it does not create or modify anything.
+// Mirrors OpenRC semantics: required_dirs → stat+is-dir, required_files →
+// stat+readable. Symlinks are followed (os.Stat, not os.Lstat) to match the
+// shell test operators [ -d ... ] and [ -r ... ].
+func (sr *ServiceRecord) CheckRequiredPaths() error {
+	for _, d := range sr.requiredDirs {
+		st, err := os.Stat(d)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("required directory %q does not exist", d)
+			}
+			return fmt.Errorf("required directory %q: %w", d, err)
+		}
+		if !st.IsDir() {
+			return fmt.Errorf("required directory %q is not a directory", d)
+		}
+	}
+	for _, f := range sr.requiredFiles {
+		st, err := os.Stat(f)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("required file %q does not exist", f)
+			}
+			return fmt.Errorf("required file %q: %w", f, err)
+		}
+		if st.IsDir() {
+			return fmt.Errorf("required file %q is a directory", f)
+		}
+		// Readability check: open O_RDONLY and immediately close.
+		rf, err := os.Open(f)
+		if err != nil {
+			return fmt.Errorf("required file %q is not readable: %w", f, err)
+		}
+		rf.Close()
+	}
+	return nil
+}
 func (sr *ServiceRecord) LoadModTime() time.Time       { return sr.loadModTime }
 func (sr *ServiceRecord) SetLoadModTime(t time.Time)   { sr.loadModTime = t }
 func (sr *ServiceRecord) Type() ServiceType           { return sr.recordType }

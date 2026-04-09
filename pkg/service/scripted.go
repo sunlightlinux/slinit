@@ -155,6 +155,13 @@ func (s *ScriptedService) BringUp() bool {
 		return true
 	}
 
+	// Fail-fast pre-start check: required_files / required_dirs must exist
+	// before we run the start script. See ProcessService.BringUp.
+	if err := s.CheckRequiredPaths(); err != nil {
+		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+		return false
+	}
+
 	// Set up output pipe based on log type
 	var outputPipe *os.File
 	if s.logType == LogToBuffer {

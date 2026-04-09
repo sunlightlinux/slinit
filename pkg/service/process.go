@@ -628,6 +628,14 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	// Fail-fast pre-start check: required_files / required_dirs must exist
+	// before we even attempt fork/exec. Produces a clear error instead of
+	// a cryptic ENOENT crash from the child.
+	if err := s.CheckRequiredPaths(); err != nil {
+		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+		return false
+	}
+
 	// Open activation socket before starting the process
 	if err := s.openSocket(); err != nil {
 		s.services.logger.Error("Service '%s': %v", s.serviceName, err)

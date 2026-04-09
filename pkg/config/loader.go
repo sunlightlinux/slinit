@@ -947,6 +947,7 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec := svc.Record()
 	rec.SetDescription(desc.Description)
+	rec.SetRequiredPaths(desc.RequiredFiles, desc.RequiredDirs)
 	rec.SetAutoRestart(desc.AutoRestart)
 	rec.SetSmoothRecovery(desc.SmoothRecovery)
 	rec.SetFlags(desc.Flags)

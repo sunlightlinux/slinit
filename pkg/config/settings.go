@@ -141,6 +141,10 @@ var KnownSettings = map[string]OperatorType{
 	"close-stdout":        OpEquals,
 	"close-stderr":        OpEquals,
 
+	// Pre-start fail-fast path checks (OpenRC-inspired)
+	"required-files": OpEquals | OpPlusEqual,
+	"required-dirs":  OpEquals | OpPlusEqual,
+
 	// Virtual TTY (screen-like attach/detach)
 	"vtty":            OpEquals, // true/false
 	"vtty-scrollback": OpEquals, // scrollback buffer size in bytes
