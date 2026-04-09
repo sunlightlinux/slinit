@@ -65,6 +65,11 @@ type ProcessService struct {
 	stopTimeout  time.Duration
 	restartDelay time.Duration
 
+	// Progressive restart backoff (OpenRC-compatible, linear additive)
+	restartDelayStep    time.Duration // increment added per successive restart (0 = disabled)
+	restartDelayCap     time.Duration // max capped delay (0 = no cap, default 60s when step > 0)
+	currentRestartDelay time.Duration // current effective delay, advances on each restart
+
 	// Restart rate limiting
 	restartInterval      time.Duration
 	maxRestartCount      int
@@ -224,6 +229,37 @@ func (s *ProcessService) SetStopTimeout(d time.Duration) { s.stopTimeout = d }
 
 // SetRestartDelay sets the minimum delay between restarts.
 func (s *ProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d }
+
+// SetRestartBackoff configures progressive (linear additive) restart backoff.
+// step > 0 enables the feature: each successive restart adds `step` to the
+// delay, capped at `cap` (or 60s if cap is 0). The backoff resets when the
+// service has been running stably for longer than restartInterval.
+func (s *ProcessService) SetRestartBackoff(step, cap time.Duration) {
+	s.restartDelayStep = step
+	s.restartDelayCap = cap
+}
+
+// nextRestartDelay returns the delay to use for the next restart and advances
+// the progressive backoff counter. When step <= 0, always returns restartDelay.
+func (s *ProcessService) nextRestartDelay() time.Duration {
+	if s.restartDelayStep <= 0 {
+		return s.restartDelay
+	}
+	if s.currentRestartDelay < s.restartDelay {
+		s.currentRestartDelay = s.restartDelay
+	}
+	delay := s.currentRestartDelay
+	next := delay + s.restartDelayStep
+	capDelay := s.restartDelayCap
+	if capDelay <= 0 {
+		capDelay = 60 * time.Second
+	}
+	if next > capDelay {
+		next = capDelay
+	}
+	s.currentRestartDelay = next
+	return delay
+}
 
 // SetLogType sets the log output type.
 func (s *ProcessService) SetLogType(lt LogType) { s.logType = lt }
@@ -769,25 +805,25 @@ func (s *ProcessService) InterruptStart() bool {
 
 // CheckRestart checks if the service should auto-restart (rate limiting).
 func (s *ProcessService) CheckRestart() bool {
-	if s.maxRestartCount <= 0 {
-		return true
-	}
-
 	now := time.Now()
-	elapsed := now.Sub(s.restartIntervalTime)
 
-	if elapsed < s.restartInterval {
-		// Still in the limiting interval
-		if s.restartIntervalCount >= s.maxRestartCount {
-			s.services.logger.Error("Service '%s': restarting too quickly, stopping",
-				s.serviceName)
-			return false
+	if s.maxRestartCount > 0 {
+		elapsed := now.Sub(s.restartIntervalTime)
+
+		if elapsed < s.restartInterval {
+			// Still in the limiting interval
+			if s.restartIntervalCount >= s.maxRestartCount {
+				s.services.logger.Error("Service '%s': restarting too quickly, stopping",
+					s.serviceName)
+				return false
+			}
+			s.restartIntervalCount++
+		} else {
+			// New interval: stable period elapsed, reset progressive backoff
+			s.restartIntervalTime = now
+			s.restartIntervalCount = 1
+			s.currentRestartDelay = s.restartDelay
 		}
-		s.restartIntervalCount++
-	} else {
-		// New interval
-		s.restartIntervalTime = now
-		s.restartIntervalCount = 1
 	}
 
 	return true
@@ -1305,13 +1341,20 @@ func (s *ProcessService) handleUnexpectedTermination() {
 // doSmoothRecovery restarts the process without affecting dependents.
 func (s *ProcessService) doSmoothRecovery() {
 	s.closeReadyPipe()
-	s.services.logger.Info("Service '%s': smooth recovery - restarting process",
-		s.serviceName)
+
+	effectiveDelay := s.nextRestartDelay()
+	if s.restartDelayStep > 0 && effectiveDelay > s.restartDelay {
+		s.services.logger.Info("Service '%s': smooth recovery - restarting process (backoff %v)",
+			s.serviceName, effectiveDelay)
+	} else {
+		s.services.logger.Info("Service '%s': smooth recovery - restarting process",
+			s.serviceName)
+	}
 
 	now := time.Now()
 	elapsed := now.Sub(s.lastStartTime)
 
-	if elapsed >= s.restartDelay {
+	if elapsed >= effectiveDelay {
 		// Can restart immediately
 		if err := s.startProcess(); err != nil {
 			s.services.logger.Error("Service '%s': smooth recovery failed: %v",
@@ -1323,7 +1366,7 @@ func (s *ProcessService) doSmoothRecovery() {
 		}
 	} else {
 		// Need to delay restart
-		delay := s.restartDelay - elapsed
+		delay := effectiveDelay - elapsed
 		s.armTimer(delay, timerRestartDelay)
 	}
 }

@@ -50,6 +50,11 @@ type BGProcessService struct {
 	stopTimeout  time.Duration
 	restartDelay time.Duration
 
+	// Progressive restart backoff (OpenRC-compatible, linear additive)
+	restartDelayStep    time.Duration
+	restartDelayCap     time.Duration
+	currentRestartDelay time.Duration
+
 	// Restart rate limiting
 	restartInterval      time.Duration
 	maxRestartCount      int
@@ -121,6 +126,34 @@ func (s *BGProcessService) SetRunAs(uid, gid uint32)        { s.runAsUID = uid; 
 func (s *BGProcessService) SetStartTimeout(d time.Duration) { s.startTimeout = d }
 func (s *BGProcessService) SetStopTimeout(d time.Duration)  { s.stopTimeout = d }
 func (s *BGProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d }
+
+// SetRestartBackoff configures progressive (linear additive) restart backoff.
+func (s *BGProcessService) SetRestartBackoff(step, cap time.Duration) {
+	s.restartDelayStep = step
+	s.restartDelayCap = cap
+}
+
+// nextRestartDelay returns the delay to use for the next restart and advances
+// the progressive backoff counter. When step <= 0, always returns restartDelay.
+func (s *BGProcessService) nextRestartDelay() time.Duration {
+	if s.restartDelayStep <= 0 {
+		return s.restartDelay
+	}
+	if s.currentRestartDelay < s.restartDelay {
+		s.currentRestartDelay = s.restartDelay
+	}
+	delay := s.currentRestartDelay
+	next := delay + s.restartDelayStep
+	capDelay := s.restartDelayCap
+	if capDelay <= 0 {
+		capDelay = 60 * time.Second
+	}
+	if next > capDelay {
+		next = capDelay
+	}
+	s.currentRestartDelay = next
+	return delay
+}
 
 // BecomingInactive is called when the service won't restart. Cleans up pipe.
 func (s *BGProcessService) BecomingInactive() {
@@ -443,23 +476,24 @@ func (s *BGProcessService) InterruptStart() bool {
 
 // CheckRestart checks if the service should auto-restart (rate limiting).
 func (s *BGProcessService) CheckRestart() bool {
-	if s.maxRestartCount <= 0 {
-		return true
-	}
-
 	now := time.Now()
-	elapsed := now.Sub(s.restartIntervalTime)
 
-	if elapsed < s.restartInterval {
-		if s.restartIntervalCount >= s.maxRestartCount {
-			s.services.logger.Error("Service '%s': restarting too quickly, stopping",
-				s.serviceName)
-			return false
+	if s.maxRestartCount > 0 {
+		elapsed := now.Sub(s.restartIntervalTime)
+
+		if elapsed < s.restartInterval {
+			if s.restartIntervalCount >= s.maxRestartCount {
+				s.services.logger.Error("Service '%s': restarting too quickly, stopping",
+					s.serviceName)
+				return false
+			}
+			s.restartIntervalCount++
+		} else {
+			// Stable period: reset progressive backoff
+			s.restartIntervalTime = now
+			s.restartIntervalCount = 1
+			s.currentRestartDelay = s.restartDelay
 		}
-		s.restartIntervalCount++
-	} else {
-		s.restartIntervalTime = now
-		s.restartIntervalCount = 1
 	}
 
 	return true
@@ -676,13 +710,19 @@ func (s *BGProcessService) handleUnexpectedTermination() {
 
 // doSmoothRecovery restarts the bgprocess without affecting dependents.
 func (s *BGProcessService) doSmoothRecovery() {
-	s.services.logger.Info("Service '%s': smooth recovery - restarting bgprocess",
-		s.serviceName)
+	effectiveDelay := s.nextRestartDelay()
+	if s.restartDelayStep > 0 && effectiveDelay > s.restartDelay {
+		s.services.logger.Info("Service '%s': smooth recovery - restarting bgprocess (backoff %v)",
+			s.serviceName, effectiveDelay)
+	} else {
+		s.services.logger.Info("Service '%s': smooth recovery - restarting bgprocess",
+			s.serviceName)
+	}
 
 	now := time.Now()
 	elapsed := now.Sub(s.lastStartTime)
 
-	if elapsed >= s.restartDelay {
+	if elapsed >= effectiveDelay {
 		if !s.self.BringUp() {
 			s.doingSmoothRecov = false
 			s.handleUnexpectedTermination()
@@ -690,7 +730,7 @@ func (s *BGProcessService) doSmoothRecovery() {
 			s.doingSmoothRecov = false
 		}
 	} else {
-		delay := s.restartDelay - elapsed
+		delay := effectiveDelay - elapsed
 		s.armTimer(delay, bgTimerRestartDelay)
 	}
 }

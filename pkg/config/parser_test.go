@@ -1601,3 +1601,36 @@ healthcheck-delay = 1m
 		t.Errorf("delay = %v, want 1m", desc.HealthCheckDelay)
 	}
 }
+
+func TestParseRestartBackoff(t *testing.T) {
+	input := `type = process
+command = /bin/app
+restart-delay = 500
+restart-delay-step = 2s
+restart-delay-cap = 30s
+`
+	desc, err := Parse(strings.NewReader(input), "bo-svc", "test")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if desc.RestartDelay != 500*time.Second {
+		t.Errorf("restart-delay = %v, want 500s", desc.RestartDelay)
+	}
+	if desc.RestartDelayStep != 2*time.Second {
+		t.Errorf("restart-delay-step = %v, want 2s", desc.RestartDelayStep)
+	}
+	if desc.RestartDelayCap != 30*time.Second {
+		t.Errorf("restart-delay-cap = %v, want 30s", desc.RestartDelayCap)
+	}
+}
+
+func TestParseRestartBackoffNegativeRejected(t *testing.T) {
+	input := `type = process
+command = /bin/app
+restart-delay-step = -1
+`
+	_, err := Parse(strings.NewReader(input), "bo-neg", "test")
+	if err == nil {
+		t.Fatal("expected error for negative restart-delay-step, got nil")
+	}
+}

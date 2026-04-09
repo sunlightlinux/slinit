@@ -121,6 +121,8 @@ type ServiceDescription struct {
 	StopTimeout       time.Duration
 	StartTimeout      time.Duration
 	RestartDelay      time.Duration
+	RestartDelayStep  time.Duration // additive backoff increment per failed restart
+	RestartDelayCap   time.Duration // max capped delay for progressive backoff
 	RestartInterval   time.Duration
 	RestartLimitCount int
 	TermSignal        syscall.Signal
@@ -759,6 +761,32 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.RestartDelay = d
+	case "restart-delay-step":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid restart-delay-step: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		if d < 0 {
+			return fmt.Errorf("restart-delay-step must be >= 0")
+		}
+		desc.RestartDelayStep = d
+	case "restart-delay-cap":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid restart-delay-cap: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		if d < 0 {
+			return fmt.Errorf("restart-delay-cap must be >= 0")
+		}
+		desc.RestartDelayCap = d
 	case "restart-limit-interval":
 		d, err := parseDuration(value)
 		if err != nil {
