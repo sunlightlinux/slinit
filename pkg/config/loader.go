@@ -20,20 +20,25 @@ var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
 
 // DirLoader loads service descriptions from one or more directories.
 type DirLoader struct {
-	dirs       []string
-	initDirs   []string // init.d directories for fallback (empty = disabled)
-	set        *service.ServiceSet
-	loading    map[string]bool // tracks loading state for circular dependency detection
-	curDepth   int             // current recursion depth during loading
-	platformSys platform.Type  // detected (or overridden) platform for keyword filtering
+	dirs        []string
+	initDirs    []string // init.d directories for fallback (empty = disabled)
+	overlayDirs []string // conf.d overlay directories (default: /etc/slinit.conf.d)
+	set         *service.ServiceSet
+	loading     map[string]bool // tracks loading state for circular dependency detection
+	curDepth    int             // current recursion depth during loading
+	platformSys platform.Type   // detected (or overridden) platform for keyword filtering
 }
+
+// defaultOverlayDir is the default conf.d overlay location.
+const defaultOverlayDir = "/etc/slinit.conf.d"
 
 // NewDirLoader creates a new directory-based service loader.
 func NewDirLoader(set *service.ServiceSet, dirs []string) *DirLoader {
 	return &DirLoader{
-		dirs:    dirs,
-		set:     set,
-		loading: make(map[string]bool),
+		dirs:        dirs,
+		set:         set,
+		loading:     make(map[string]bool),
+		overlayDirs: []string{defaultOverlayDir},
 	}
 }
 
@@ -53,6 +58,17 @@ func (dl *DirLoader) Platform() platform.Type {
 // if a service is not found in the normal service directories.
 func (dl *DirLoader) SetInitDDirs(dirs []string) {
 	dl.initDirs = dirs
+}
+
+// SetOverlayDirs configures the conf.d overlay directories. Passing nil or
+// an empty slice disables overlay discovery entirely.
+func (dl *DirLoader) SetOverlayDirs(dirs []string) {
+	dl.overlayDirs = dirs
+}
+
+// OverlayDirs returns the configured overlay directories.
+func (dl *DirLoader) OverlayDirs() []string {
+	return dl.overlayDirs
 }
 
 // ServiceDirs returns the configured service directories.
@@ -652,6 +668,11 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 			if err != nil {
 				return nil, "", err
 			}
+
+			// Apply conf.d overlays (if any) on top of the primary description.
+			if err := dl.applyOverlays(desc, name, baseName, serviceArg); err != nil {
+				return nil, "", err
+			}
 			return desc, path, nil
 		}
 	}
@@ -677,6 +698,55 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 		ServiceName: name,
 		Message:     "service description not found",
 	}
+}
+
+// applyOverlays merges every matching overlay file from overlayDirs into desc.
+// For each configured overlay directory, it tries <dir>/<name> first, then
+// <dir>/<baseName> (template fallback). Missing files are silently ignored.
+// A parse error in any overlay is fatal (returned wrapped in ServiceLoadError).
+func (dl *DirLoader) applyOverlays(desc *ServiceDescription, name, baseName string, serviceArg *string) error {
+	if len(dl.overlayDirs) == 0 {
+		return nil
+	}
+
+	// Search order: full name first, then base name for templates.
+	candidates := []string{name}
+	if baseName != "" && baseName != name {
+		candidates = append(candidates, baseName)
+	}
+
+	// Deduplicate overlay files across (dir, candidate) pairs so a file is
+	// applied at most once even if the same dir matches multiple candidates.
+	applied := make(map[string]bool)
+
+	for _, dir := range dl.overlayDirs {
+		if dir == "" {
+			continue
+		}
+		for _, cand := range candidates {
+			path := filepath.Join(dir, cand)
+			if applied[path] {
+				continue
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return &ServiceLoadError{
+					ServiceName: name,
+					Message:     fmt.Sprintf("error reading overlay %s: %v", path, err),
+				}
+			}
+			parseErr := ParseOverlay(f, name, path, desc, serviceArg)
+			f.Close()
+			if parseErr != nil {
+				return parseErr
+			}
+			applied[path] = true
+		}
+	}
+	return nil
 }
 
 func (dl *DirLoader) createService(name string, desc *ServiceDescription) service.Service {

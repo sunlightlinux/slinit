@@ -97,10 +97,12 @@ func main() {
 	var parallelStartLimit int
 	var parallelSlowThreshold string
 	var sysOverride string
+	var confDir string
 	flag.IntVar(&parallelStartLimit, "parallel-start-limit", 0, "max concurrent service starts (0=unlimited)")
 	flag.StringVar(&parallelSlowThreshold, "parallel-start-slow-threshold", "10s", "time before a starting service is considered slow")
 	flag.StringVar(&sysOverride, "sys", "", "override platform detection (docker, lxc, podman, wsl, xen0, xenu, none)")
 	flag.StringVar(&sysOverride, "S", "", "override platform detection (short for --sys)")
+	flag.StringVar(&confDir, "conf-dir", "", "override conf.d overlay directories (comma-separated; 'none' disables overlays)")
 
 	flag.Parse()
 
@@ -353,6 +355,24 @@ func main() {
 	// Create and configure the loader
 	loader := config.NewDirLoader(serviceSet, dirs)
 	loader.SetPlatform(detectedPlatform)
+
+	// Configure conf.d overlay directories.
+	// Default (--conf-dir not passed) keeps built-in /etc/slinit.conf.d.
+	// --conf-dir=none disables overlays; otherwise comma-separated list.
+	if confDir != "" {
+		if confDir == "none" {
+			loader.SetOverlayDirs(nil)
+		} else {
+			parts := strings.Split(confDir, ",")
+			cleaned := parts[:0]
+			for _, p := range parts {
+				if p = strings.TrimSpace(p); p != "" {
+					cleaned = append(cleaned, p)
+				}
+			}
+			loader.SetOverlayDirs(cleaned)
+		}
+	}
 
 	// Enable init.d fallback (auto-detect SysV init scripts)
 	var initDDirs []string

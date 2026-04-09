@@ -264,6 +264,22 @@ func ParseWithArg(r io.Reader, name string, fileName string, serviceArg string) 
 	return parseImpl(r, name, fileName, desc, 0, &serviceArg)
 }
 
+// ParseOverlay parses an overlay file and merges its settings into an existing
+// ServiceDescription. Overlays reuse the full parser (including +=, @include,
+// depends-on, and every known directive), so scalar settings in the overlay
+// replace those from the main file, while += directives append.
+//
+// Typical use: ops-friendly overrides under /etc/slinit.conf.d/<service>
+// that adjust env, arguments, or dependencies without touching the service
+// file shipped by the distribution.
+func ParseOverlay(r io.Reader, name string, fileName string, desc *ServiceDescription, serviceArg *string) error {
+	if desc == nil {
+		return fmt.Errorf("ParseOverlay: desc must not be nil")
+	}
+	_, err := parseImpl(r, name, fileName, desc, 0, serviceArg)
+	return err
+}
+
 func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescription, depth int, serviceArg *string) (*ServiceDescription, error) {
 	if depth > maxIncludeDepth {
 		return nil, &ParseError{
