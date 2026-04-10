@@ -1004,6 +1004,13 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.CgroupPath != "" {
 		rec.SetCgroupPath(desc.CgroupPath)
 	}
+	if len(desc.CgroupSettings) > 0 {
+		cgSettings := make([]process.CgroupSetting, len(desc.CgroupSettings))
+		for i, cs := range desc.CgroupSettings {
+			cgSettings[i] = process.CgroupSetting{File: cs.File, Value: cs.Value}
+		}
+		rec.SetCgroupSettings(cgSettings)
+	}
 	if desc.IOPrio != "" {
 		class, level := parseIOPrio(desc.IOPrio)
 		if class >= 0 {

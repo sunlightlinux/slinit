@@ -154,6 +154,12 @@ type ExecParams struct {
 	// CgroupPath is the cgroupv2 path to join (e.g., "/sys/fs/cgroup/myservice").
 	CgroupPath string
 
+	// CgroupSettings are key-value pairs written to the cgroup directory
+	// before moving the child process into it. Each entry is {file, value},
+	// e.g., {"memory.max", "536870912"} or {"pids.max", "100"}.
+	// The cgroup directory is created if it does not exist.
+	CgroupSettings []CgroupSetting
+
 	// NoNewPrivs sets PR_SET_NO_NEW_PRIVS on the child process.
 	NoNewPrivs bool
 
@@ -202,6 +208,14 @@ type ExecParams struct {
 	// If empty and CLONE_NEWUSER is set, a default 1:1 mapping is created.
 	UidMappings []syscall.SysProcIDMap
 	GidMappings []syscall.SysProcIDMap
+}
+
+// CgroupSetting is a key-value pair for a cgroup v2 controller knob.
+// File is the filename within the cgroup directory (e.g., "memory.max").
+// Value is the string to write (e.g., "536870912", "max", "100").
+type CgroupSetting struct {
+	File  string
+	Value string
 }
 
 // Rlimit holds a resource limit (soft, hard) for a given resource.

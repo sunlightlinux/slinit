@@ -104,6 +104,21 @@ var KnownSettings = map[string]OperatorType{
 	"cgroup":         OpEquals,
 	"run-in-cgroup":  OpEquals, // dinit compat alias for cgroup
 
+	// cgroup v2 resource limits
+	"cgroup-memory-max":  OpEquals,
+	"cgroup-memory-high": OpEquals,
+	"cgroup-memory-min":  OpEquals,
+	"cgroup-memory-low":  OpEquals,
+	"cgroup-swap-max":    OpEquals,
+	"cgroup-pids-max":    OpEquals,
+	"cgroup-cpu-weight":  OpEquals,
+	"cgroup-cpu-max":     OpEquals,
+	"cgroup-io-weight":   OpEquals,
+	"cgroup-cpuset-cpus": OpEquals,
+	"cgroup-cpuset-mems": OpEquals,
+	"cgroup-hugetlb":     OpEquals,
+	"cgroup-setting":     OpEquals | OpPlusEqual, // generic: file value
+
 	// nice/ioprio
 	"nice":   OpEquals,
 	"ioprio": OpEquals,

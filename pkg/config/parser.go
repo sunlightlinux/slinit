@@ -50,6 +50,13 @@ func ParseIDMapping(s string) (IDMapping, error) {
 	return IDMapping{ContainerID: cid, HostID: hid, Size: size}, nil
 }
 
+// CgroupSetting is a cgroup v2 controller knob: the filename within the
+// cgroup directory and the value to write. For example, {"memory.max", "512M"}.
+type CgroupSetting struct {
+	File  string
+	Value string
+}
+
 // ServiceDescription holds the parsed configuration of a service.
 type ServiceDescription struct {
 	Name string
@@ -167,8 +174,9 @@ type ServiceDescription struct {
 	OOMScoreAdj *int   // -1000..1000
 	NoNewPrivs  bool
 	IOPrio      string // "class:level" e.g. "be:4", "idle"
-	CgroupPath  string // run-in-cgroup path
-	CPUAffinity []uint // CPU numbers to pin to
+	CgroupPath     string // run-in-cgroup path
+	CgroupSettings []CgroupSetting // cgroup v2 controller knobs
+	CPUAffinity    []uint // CPU numbers to pin to
 
 	// Resource limits (soft:hard or just value for both)
 	RlimitNofile *[2]uint64
@@ -1035,6 +1043,53 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	case "cgroup", "run-in-cgroup":
 		desc.CgroupPath = value
+
+	// Cgroup v2 resource limits — dedicated settings for common controllers.
+	// Values are written as-is to the corresponding cgroup v2 knob file.
+	case "cgroup-memory-max":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"memory.max", value})
+	case "cgroup-memory-high":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"memory.high", value})
+	case "cgroup-memory-min":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"memory.min", value})
+	case "cgroup-memory-low":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"memory.low", value})
+	case "cgroup-swap-max":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"memory.swap.max", value})
+	case "cgroup-pids-max":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"pids.max", value})
+	case "cgroup-cpu-weight":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"cpu.weight", value})
+	case "cgroup-cpu-max":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"cpu.max", value})
+	case "cgroup-io-weight":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"io.weight", value})
+	case "cgroup-cpuset-cpus":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"cpuset.cpus", value})
+	case "cgroup-cpuset-mems":
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"cpuset.mems", value})
+	case "cgroup-hugetlb":
+		// Format: "size value" e.g. "2MB 4" → hugetlb.2MB.max = 4
+		parts := strings.SplitN(value, " ", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("cgroup-hugetlb requires 'size value' (e.g., '2MB 4')")
+		}
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{
+			"hugetlb." + strings.TrimSpace(parts[0]) + ".max",
+			strings.TrimSpace(parts[1]),
+		})
+
+	// Generic cgroup v2 setting: write any controller knob.
+	// Format: cgroup-setting = <file> <value>
+	case "cgroup-setting":
+		parts := strings.SplitN(value, " ", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("cgroup-setting requires '<file> <value>'")
+		}
+		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{
+			strings.TrimSpace(parts[0]),
+			strings.TrimSpace(parts[1]),
+		})
 
 	case "cpu-affinity":
 		cpus, err := ParseCPUAffinity(value)

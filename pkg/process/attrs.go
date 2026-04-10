@@ -3,7 +3,9 @@ package process
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -46,6 +48,13 @@ func applyPostForkAttrs(pid int, params ExecParams) []error {
 		}
 	}
 	if params.CgroupPath != "" {
+		// Apply cgroup settings (resource limits) BEFORE moving the process
+		// into the cgroup. This ensures limits are in effect from the start.
+		if len(params.CgroupSettings) > 0 {
+			if err := applyCgroupSettings(params.CgroupPath, params.CgroupSettings); err != nil {
+				errs = append(errs, fmt.Errorf("cgroup-settings: %w", err))
+			}
+		}
 		if err := applyCgroup(pid, params.CgroupPath); err != nil {
 			errs = append(errs, fmt.Errorf("cgroup(%s): %w", params.CgroupPath, err))
 		}
@@ -117,8 +126,65 @@ func applyIOPrio(pid, class, level int) error {
 }
 
 func applyCgroup(pid int, cgroupPath string) error {
+	// Auto-create the cgroup directory if it does not exist.
+	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", cgroupPath, err)
+	}
 	procsPath := cgroupPath + "/cgroup.procs"
 	return os.WriteFile(procsPath, strconv.AppendInt(nil, int64(pid), 10), 0200)
+}
+
+// applyCgroupSettings writes resource limit values to the cgroup directory.
+// It also enables the required subtree controllers on the parent cgroup so
+// that delegation works (e.g., writing "memory.max" requires "+memory" in
+// the parent's cgroup.subtree_control).
+func applyCgroupSettings(cgroupPath string, settings []CgroupSetting) error {
+	// Auto-create the cgroup directory if it does not exist.
+	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", cgroupPath, err)
+	}
+
+	// Enable required controllers on the parent. Extract controller names
+	// from the settings (the part before the dot in the filename).
+	enableSubtreeControllers(cgroupPath, settings)
+
+	var lastErr error
+	for _, s := range settings {
+		path := cgroupPath + "/" + s.File
+		if err := os.WriteFile(path, []byte(s.Value), 0200); err != nil {
+			lastErr = fmt.Errorf("write %s=%s: %w", s.File, s.Value, err)
+		}
+	}
+	return lastErr
+}
+
+// enableSubtreeControllers enables the required controllers on the parent
+// cgroup's subtree_control file. For example, if we need to write
+// "memory.max", the parent must have "+memory" in its cgroup.subtree_control.
+// Errors are silently ignored — the subsequent writes will fail with a clear
+// error if the controller is not available.
+func enableSubtreeControllers(cgroupPath string, settings []CgroupSetting) {
+	parent := filepath.Dir(cgroupPath)
+	if parent == cgroupPath || parent == "/" {
+		return
+	}
+	subtreeCtl := parent + "/cgroup.subtree_control"
+
+	// Collect unique controller names needed.
+	seen := make(map[string]bool)
+	for _, s := range settings {
+		if idx := strings.IndexByte(s.File, '.'); idx > 0 {
+			ctrl := s.File[:idx]
+			if !seen[ctrl] {
+				seen[ctrl] = true
+			}
+		}
+	}
+
+	for ctrl := range seen {
+		// Best-effort: write "+controller" to parent's subtree_control.
+		_ = os.WriteFile(subtreeCtl, []byte("+"+ctrl), 0200)
+	}
 }
 
 // KillCgroup sends a signal to every process in a cgroup v2 subtree.

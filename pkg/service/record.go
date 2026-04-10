@@ -178,8 +178,9 @@ type ServiceRecord struct {
 	noNewPrivs  bool
 	ioPrioClass int
 	ioPrioLevel int
-	cgroupPath  string
-	rlimits     []process.Rlimit
+	cgroupPath     string
+	cgroupSettings []process.CgroupSetting // cgroup v2 resource limits
+	rlimits        []process.Rlimit
 	ambientCaps []uintptr
 	securebits  uint32
 	cpuAffinity []uint
@@ -570,6 +571,7 @@ func (sr *ServiceRecord) SetOOMScoreAdj(n *int)             { sr.oomScoreAdj = n
 func (sr *ServiceRecord) SetNoNewPrivs(v bool)              { sr.noNewPrivs = v }
 func (sr *ServiceRecord) SetIOPrio(class, level int)        { sr.ioPrioClass = class; sr.ioPrioLevel = level }
 func (sr *ServiceRecord) SetCgroupPath(p string)            { sr.cgroupPath = p }
+func (sr *ServiceRecord) SetCgroupSettings(s []process.CgroupSetting) { sr.cgroupSettings = s }
 func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)    { sr.rlimits = rl }
 func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)       { sr.rlimits = append(sr.rlimits, rl) }
 func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = caps }
@@ -599,6 +601,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	if params.CgroupPath == "" {
 		params.CgroupPath = sr.services.DefaultCgroupPath()
 	}
+	params.CgroupSettings = sr.cgroupSettings
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
 	params.Securebits = sr.securebits
