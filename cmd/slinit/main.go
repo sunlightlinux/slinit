@@ -119,6 +119,10 @@ func main() {
 	// Determine mode
 	isPID1 := os.Getpid() == 1
 
+	// Safety net: if slinit panics, catch it and perform emergency cleanup.
+	// PID 1: kill all processes + force reboot. Container: exit(111).
+	defer shutdown.CrashRecovery(isPID1, containerMode)
+
 	// SysV init compatibility: "init 0" → poweroff, "init 6" → reboot
 	// When not PID 1, numeric arguments trigger shutdown via control socket.
 	if !isPID1 {
