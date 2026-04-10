@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -222,6 +223,34 @@ term-signal = 15`, ""},
 		_, err := Parse(strings.NewReader(tt.input), "test", "test-file")
 		if tt.expected == "" && err != nil {
 			t.Errorf("unexpected error for input %q: %v", tt.input, err)
+		}
+	}
+}
+
+// TestParseStopsigAlias verifies that the OpenRC-flavoured "stopsig" name
+// and the dinit-flavoured "termsignal" name both resolve to TermSignal,
+// alongside the canonical "term-signal". Callers migrating from OpenRC
+// should not have to rename this field.
+func TestParseStopsigAlias(t *testing.T) {
+	cases := map[string]string{
+		"canonical": `type = process
+command = /bin/true
+term-signal = SIGUSR2`,
+		"dinit-alias": `type = process
+command = /bin/true
+termsignal = SIGUSR2`,
+		"openrc-alias": `type = process
+command = /bin/true
+stopsig = SIGUSR2`,
+	}
+	for name, input := range cases {
+		desc, err := Parse(strings.NewReader(input), "test", "test-file")
+		if err != nil {
+			t.Errorf("%s: parse: %v", name, err)
+			continue
+		}
+		if desc.TermSignal != syscall.SIGUSR2 {
+			t.Errorf("%s: TermSignal = %v, want SIGUSR2", name, desc.TermSignal)
 		}
 	}
 }

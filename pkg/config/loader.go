@@ -271,6 +271,12 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogRotation(desc.LogMaxSize, desc.LogMaxFiles, desc.LogRotateTime)
 		s.SetLogProcessor(desc.LogProcessor)
 		s.SetLogFilters(desc.LogInclude, desc.LogExclude)
+		if len(desc.OutputLogger) > 0 {
+			s.SetOutputLogger(desc.OutputLogger)
+		}
+		if len(desc.ErrorLogger) > 0 {
+			s.SetErrorLogger(desc.ErrorLogger)
+		}
 		s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 		if len(desc.CronCommand) > 0 {
 			s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
@@ -787,6 +793,12 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetLogRotation(desc.LogMaxSize, desc.LogMaxFiles, desc.LogRotateTime)
 		svc.SetLogProcessor(desc.LogProcessor)
 		svc.SetLogFilters(desc.LogInclude, desc.LogExclude)
+		if len(desc.OutputLogger) > 0 {
+			svc.SetOutputLogger(desc.OutputLogger)
+		}
+		if len(desc.ErrorLogger) > 0 {
+			svc.SetErrorLogger(desc.ErrorLogger)
+		}
 		if desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" {
 			svc.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 		}
@@ -940,6 +952,8 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 	case service.LogToFile:
 		svc.SetLogType(desc.LogType)
 		svc.SetLogFileDetails(desc.LogFile, desc.LogFilePerms, desc.LogFileUID, desc.LogFileGID)
+	case service.LogToCommand:
+		svc.SetLogType(desc.LogType)
 	}
 }
 

@@ -145,9 +145,15 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			}
 		}
 	} else if params.OutputPipe != nil {
-		// Capture stdout/stderr to a pipe for log buffering or piping
+		// Capture stdout/stderr to a pipe for log buffering or piping.
+		// When ErrorPipe is set, stderr goes to a separate pipe (used by
+		// the error-logger feature for piping stderr to a different command).
 		cmd.Stdout = params.OutputPipe
-		cmd.Stderr = params.OutputPipe
+		if params.ErrorPipe != nil {
+			cmd.Stderr = params.ErrorPipe
+		} else {
+			cmd.Stderr = params.OutputPipe
+		}
 	}
 
 	// Wire stdin from input pipe (consumer-of)

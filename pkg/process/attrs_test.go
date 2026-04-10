@@ -16,10 +16,13 @@ func TestKillCgroupEmptyPath(t *testing.T) {
 }
 
 func TestKillCgroupNonExistentPath(t *testing.T) {
-	// Non-existent cgroup path should return an error
+	// A missing cgroup directory is treated as benign: cgroup cleanup is
+	// inherently racy, and by the time we get to kill a subtree the kernel
+	// may already have removed it. Returning nil here mirrors what the
+	// service manager actually wants (teardown is complete).
 	err := KillCgroup("/nonexistent/cgroup/path", syscall.SIGTERM)
-	if err == nil {
-		t.Fatal("KillCgroup with non-existent path should return error")
+	if err != nil {
+		t.Fatalf("KillCgroup with non-existent path should be a no-op, got: %v", err)
 	}
 }
 
@@ -137,9 +140,72 @@ func TestKillCgroupSIGHUP(t *testing.T) {
 
 func TestKillCgroupNoProcsFile(t *testing.T) {
 	dir := t.TempDir()
-	// No cgroup.procs file at all — should return error
+	// No cgroup.procs file at all — the recursive walker treats this as an
+	// empty cgroup (no PIDs to signal). A cgroup directory with no procs
+	// file is the natural state of a freshly-drained leaf; promoting that
+	// to an error would spam the log during teardown.
 	err := KillCgroup(dir, syscall.SIGTERM)
-	if err == nil {
-		t.Fatal("KillCgroup without cgroup.procs should return error")
+	if err != nil {
+		t.Fatalf("KillCgroup without cgroup.procs should be a no-op, got: %v", err)
+	}
+}
+
+// TestKillCgroupRecursiveWalk verifies that the fallback walker signals
+// PIDs in sub-cgroups, not just the root. This is the core behaviour that
+// makes the non-cgroup.kill path safe for services that spawn sub-cgroups
+// (container runtimes, worker pools, etc.).
+func TestKillCgroupRecursiveWalk(t *testing.T) {
+	root := t.TempDir()
+
+	// Build a two-level subtree:
+	//   root/cgroup.procs       (non-existent PID)
+	//   root/child/cgroup.procs (another non-existent PID)
+	//   root/child/grand/cgroup.procs
+	if err := os.WriteFile(filepath.Join(root, "cgroup.procs"), []byte("999990\n"), 0644); err != nil {
+		t.Fatalf("write root procs: %v", err)
+	}
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0755); err != nil {
+		t.Fatalf("mkdir child: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "cgroup.procs"), []byte("999991\n"), 0644); err != nil {
+		t.Fatalf("write child procs: %v", err)
+	}
+	grand := filepath.Join(child, "grand")
+	if err := os.Mkdir(grand, 0755); err != nil {
+		t.Fatalf("mkdir grand: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(grand, "cgroup.procs"), []byte("999992\n"), 0644); err != nil {
+		t.Fatalf("write grand procs: %v", err)
+	}
+
+	// All PIDs are non-existent → kill returns ESRCH → walker ignores it
+	// → overall success. If the walker were non-recursive, this would
+	// still succeed, so the real assertion here is that it does not panic
+	// or mis-parse the sub-cgroup layout.
+	if err := KillCgroup(root, syscall.SIGTERM); err != nil {
+		t.Fatalf("KillCgroup recursive walk: %v", err)
+	}
+}
+
+// TestKillCgroupRecursiveSkipsNonDirs ensures the walker does not try to
+// recurse into regular files like cgroup.procs, cgroup.events, etc.
+func TestKillCgroupRecursiveSkipsNonDirs(t *testing.T) {
+	root := t.TempDir()
+
+	// Plant a handful of typical cgroup v2 pseudo-files. The walker must
+	// treat these as files, not directories, and must not attempt to read
+	// them as cgroup.procs.
+	for _, f := range []string{"cgroup.events", "cgroup.stat", "memory.current"} {
+		if err := os.WriteFile(filepath.Join(root, f), []byte("junk\n"), 0644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "cgroup.procs"), []byte(""), 0644); err != nil {
+		t.Fatalf("write procs: %v", err)
+	}
+
+	if err := KillCgroup(root, syscall.SIGTERM); err != nil {
+		t.Fatalf("KillCgroup: %v", err)
 	}
 }

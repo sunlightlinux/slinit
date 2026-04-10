@@ -112,6 +112,15 @@ type ProcessService struct {
 	logIncludes   []string
 	logExcludes   []string
 
+	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
+	// When set, stdout (and stderr unless errorLogger is set) is piped
+	// to the output-logger command. If errorLogger is set, stderr is
+	// piped to it separately.
+	outputLogger []string   // command + args for stdout logger
+	errorLogger  []string   // command + args for stderr logger (optional)
+	loggerCmd    *exec.Cmd  // running output-logger process
+	errLoggerCmd *exec.Cmd  // running error-logger process
+
 	// Cron-like periodic task
 	cronRunner *CronRunner
 
@@ -287,6 +296,15 @@ func (s *ProcessService) SetLogRotation(maxSize int64, maxFiles int, rotateTime 
 
 // SetLogProcessor sets the log processor command.
 func (s *ProcessService) SetLogProcessor(cmd []string) { s.logProcessor = cmd }
+
+// SetOutputLogger sets the output-logger command (OpenRC OUTPUT_LOGGER).
+// When configured, stdout (and stderr unless an error-logger is set) is
+// piped to this external command.
+func (s *ProcessService) SetOutputLogger(cmd []string) { s.outputLogger = cmd }
+
+// SetErrorLogger sets the error-logger command (OpenRC ERROR_LOGGER).
+// When configured, stderr is piped to this command separately from stdout.
+func (s *ProcessService) SetErrorLogger(cmd []string) { s.errorLogger = cmd }
 
 // SetCronConfig configures the periodic cron task.
 func (s *ProcessService) SetCronConfig(cmd []string, interval, delay time.Duration, onError string) {
@@ -582,6 +600,7 @@ func (s *ProcessService) BecomingInactive() {
 	s.closeDoneCh()
 	s.closeSocket()
 	s.CloseOutputPipe()
+	s.stopLoggerCommands()
 	if s.vtty != nil {
 		s.vtty.Close()
 		s.vtty = nil
@@ -960,6 +979,35 @@ func (s *ProcessService) startProcess() error {
 			}
 			outputPipe = f
 		}
+	} else if s.logType == LogToCommand && len(s.outputLogger) > 0 {
+		// Spawn an external logger command and pipe stdout (+ stderr unless
+		// a separate error-logger is configured) to it. This is the
+		// OpenRC OUTPUT_LOGGER equivalent.
+		var err error
+		outputPipe, s.loggerCmd, err = spawnLoggerCommand(s.outputLogger, s.serviceName, "output-logger")
+		if err != nil {
+			return fmt.Errorf("output-logger: %w", err)
+		}
+	}
+
+	// Optional separate error-logger: stderr goes to a different command.
+	var errorPipe *os.File
+	if s.logType == LogToCommand && len(s.errorLogger) > 0 {
+		var err error
+		errorPipe, s.errLoggerCmd, err = spawnLoggerCommand(s.errorLogger, s.serviceName, "error-logger")
+		if err != nil {
+			// Clean up the output-logger we already started
+			if s.loggerCmd != nil {
+				s.loggerCmd.Process.Kill()
+				s.loggerCmd.Wait()
+				s.loggerCmd = nil
+			}
+			if outputPipe != nil {
+				outputPipe.Close()
+				outputPipe = nil
+			}
+			return fmt.Errorf("error-logger: %w", err)
+		}
 	}
 
 	// Set up input pipe (consumer-of or shared-logger mux)
@@ -1037,6 +1085,7 @@ func (s *ProcessService) startProcess() error {
 		RunAsUID:          s.runAsUID,
 		RunAsGID:          s.runAsGID,
 		OutputPipe:        outputPipe,
+		ErrorPipe:         errorPipe,
 		InputPipe:         inputPipe,
 		PTYSlave:          ptySlave,
 		SocketFD:          s.socketFD,
@@ -1066,6 +1115,15 @@ func (s *ProcessService) startProcess() error {
 				outputPipe.Close()
 			}
 		}
+		if s.logType == LogToCommand {
+			if outputPipe != nil {
+				outputPipe.Close()
+			}
+			if errorPipe != nil {
+				errorPipe.Close()
+			}
+			s.stopLoggerCommands()
+		}
 		if notifyPipeWrite != nil {
 			notifyPipeWrite.Close()
 			s.readyPipeRead.Close()
@@ -1091,6 +1149,14 @@ func (s *ProcessService) startProcess() error {
 			s.logRotator.StartReader()
 		} else {
 			outputPipe.Close()
+		}
+	} else if s.logType == LogToCommand {
+		// Close the write-ends in the parent — the child inherited them.
+		if outputPipe != nil {
+			outputPipe.Close()
+		}
+		if errorPipe != nil {
+			errorPipe.Close()
 		}
 	}
 
@@ -1647,3 +1713,48 @@ func (s *ProcessService) Continue() bool {
 
 // IsPaused returns whether the service is currently paused.
 func (s *ProcessService) IsPaused() bool { return s.paused }
+
+// spawnLoggerCommand starts an external command that reads from a pipe on its
+// stdin. Returns the write-end of the pipe (to be used as the child's stdout
+// or stderr) and the running *exec.Cmd. The caller must close the pipe after
+// passing it to StartProcess.
+func spawnLoggerCommand(cmdArgs []string, svcName, label string) (*os.File, *exec.Cmd, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("pipe: %w", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), cmdArgs[0], cmdArgs[1:]...)
+	cmd.Stdin = r
+	// Logger's own stdout/stderr go to /dev/null to avoid feedback loops.
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		r.Close()
+		w.Close()
+		return nil, nil, fmt.Errorf("start %s for %s: %w", label, svcName, err)
+	}
+
+	// Close the read-end in the parent — the child inherited it via fork.
+	r.Close()
+
+	// Reap the logger process in the background so it doesn't zombie.
+	go cmd.Wait()
+
+	return w, cmd, nil
+}
+
+// stopLoggerCommands kills any running output/error logger processes and
+// cleans up references. Called when the service stops or becomes inactive.
+func (s *ProcessService) stopLoggerCommands() {
+	if s.loggerCmd != nil && s.loggerCmd.Process != nil {
+		s.loggerCmd.Process.Kill()
+		s.loggerCmd = nil
+	}
+	if s.errLoggerCmd != nil && s.errLoggerCmd.Process != nil {
+		s.errLoggerCmd.Process.Kill()
+		s.errLoggerCmd = nil
+	}
+}

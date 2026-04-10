@@ -121,40 +121,99 @@ func applyCgroup(pid int, cgroupPath string) error {
 	return os.WriteFile(procsPath, strconv.AppendInt(nil, int64(pid), 10), 0200)
 }
 
-// KillCgroup sends a signal to all processes in a cgroup v2 hierarchy.
-// First tries the cgroup.kill interface (kernel 5.14+), then falls back
-// to reading cgroup.procs and signaling each PID individually.
-// This ensures the entire process tree is terminated, not just the leader.
+// KillCgroup sends a signal to every process in a cgroup v2 subtree.
+// For SIGKILL it first tries the kernel's cgroup.kill interface
+// (available on Linux ≥ 5.14), which is inherently recursive. When
+// cgroup.kill is not available or the caller is sending a different
+// signal, KillCgroup walks the cgroup subtree and signals every PID
+// listed in each cgroup.procs file it encounters.
+//
+// The recursive walk matters when a service creates its own sub-cgroups
+// (worker pools, container runtimes, etc.). A non-recursive kill would
+// only reach processes in the leaf cgroup, leaving orphans behind that
+// the service manager has no other handle on.
 func KillCgroup(cgroupPath string, sig syscall.Signal) error {
 	if cgroupPath == "" {
 		return nil
 	}
 
-	// Try cgroup.kill (cgroup v2, kernel ≥ 5.14) — sends SIGKILL to all
-	killPath := cgroupPath + "/cgroup.kill"
+	// Try cgroup.kill (cgroup v2, kernel ≥ 5.14) — sends SIGKILL to the
+	// whole subtree in one atomic write. Only valid for SIGKILL per the
+	// kernel interface contract.
 	if sig == syscall.SIGKILL {
+		killPath := cgroupPath + "/cgroup.kill"
 		if err := os.WriteFile(killPath, []byte("1"), 0200); err == nil {
 			return nil
 		}
-		// cgroup.kill not available or failed, fall through to manual kill
+		// cgroup.kill not available or failed; fall through to manual walk
 	}
 
-	// Fallback: read cgroup.procs and signal each PID
+	// Fallback: walk the subtree and signal every PID we find. Errors
+	// from individual cgroups are aggregated but never abort the walk —
+	// a locked sub-cgroup must not prevent cleanup of its siblings.
+	return killCgroupRecursive(cgroupPath, sig)
+}
+
+// killCgroupRecursive walks the cgroup v2 subtree rooted at root and sends
+// sig to every PID listed in each cgroup.procs file encountered. It is a
+// depth-first walk: deepest cgroups are signaled first so parents do not
+// re-spawn children into an already-signaled subtree.
+func killCgroupRecursive(root string, sig syscall.Signal) error {
+	var lastErr error
+
+	// Read direct children first so we can recurse before signaling the
+	// current level. A cgroup is a directory; its children (sub-cgroups)
+	// are the subdirectories, while cgroup.procs / cgroup.kill etc. are
+	// plain files in the same directory.
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		// The cgroup itself may have been removed between our kill calls
+		// (this is a benign race — the subtree is already empty).
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read cgroup %s: %w", root, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		child := root + "/" + e.Name()
+		if err := killCgroupRecursive(child, sig); err != nil {
+			lastErr = err
+		}
+	}
+
+	// Now signal PIDs at this level.
+	if err := killPIDsFromCgroupProcs(root, sig); err != nil {
+		lastErr = err
+	}
+	return lastErr
+}
+
+// killPIDsFromCgroupProcs reads <cgroup>/cgroup.procs and sends sig to
+// each PID listed. A missing procs file is not an error — it simply means
+// there are no processes left in that cgroup.
+func killPIDsFromCgroupProcs(cgroupPath string, sig syscall.Signal) error {
 	data, err := os.ReadFile(cgroupPath + "/cgroup.procs")
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("read cgroup.procs: %w", err)
 	}
 
-	// Parse PIDs (one per line) and signal each
 	var lastErr error
 	start := 0
 	for i := 0; i <= len(data); i++ {
 		if i == len(data) || data[i] == '\n' {
 			if i > start {
-				pid, err := strconv.Atoi(string(data[start:i]))
-				if err == nil && pid > 0 {
-					if err := syscall.Kill(pid, sig); err != nil && err != syscall.ESRCH {
-						lastErr = err
+				pid, perr := strconv.Atoi(string(data[start:i]))
+				if perr == nil && pid > 0 {
+					// ESRCH just means the PID already exited — perfectly
+					// fine during a teardown race.
+					if kerr := syscall.Kill(pid, sig); kerr != nil && kerr != syscall.ESRCH {
+						lastErr = kerr
 					}
 				}
 			}

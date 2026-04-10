@@ -58,6 +58,7 @@ var KnownSettings = map[string]OperatorType{
 	"restart-limit-count":    OpEquals,
 	"term-signal":        OpEquals,
 	"termsignal":         OpEquals, // deprecated alias (dinit compat)
+	"stopsig":            OpEquals, // OpenRC alias
 	"pid-file":           OpEquals,
 	"ready-notification": OpEquals,
 
@@ -164,6 +165,10 @@ var KnownSettings = map[string]OperatorType{
 
 	// Platform keywords (OpenRC-compatible)
 	"keyword": OpEquals,
+
+	// Output/error logger (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
+	"output-logger": OpEquals | OpPlusEqual,
+	"error-logger":  OpEquals | OpPlusEqual,
 
 	// Log rotation and filtering
 	"logfile-max-size":    OpEquals,

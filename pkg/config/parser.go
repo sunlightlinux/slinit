@@ -116,6 +116,8 @@ type ServiceDescription struct {
 	LogProcessor    []string      // command to run on rotated logfile
 	LogInclude      []string      // include only lines matching these patterns
 	LogExclude      []string      // exclude lines matching these patterns
+	OutputLogger    []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
+	ErrorLogger     []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
 	// Process management
 	StopTimeout       time.Duration
@@ -833,8 +835,10 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.RestartLimitCount = n
 
-	// Signal
-	case "term-signal", "termsignal":
+	// Signal — OpenRC uses "stopsig" as the shell var name; slinit's
+	// canonical form is "term-signal", with "termsignal" kept as a dinit
+	// alias and "stopsig" as an OpenRC alias.
+	case "term-signal", "termsignal", "stopsig":
 		sig, err := parseSignal(value)
 		if err != nil {
 			return err
@@ -901,6 +905,26 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.LogInclude = append(desc.LogInclude, value)
 	case "log-exclude":
 		desc.LogExclude = append(desc.LogExclude, value)
+
+	// Output/error logger (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
+	case "output-logger":
+		if op == OpPlusEqual {
+			desc.OutputLogger = append(desc.OutputLogger, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.OutputLogger = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+		if desc.LogType == service.LogNone {
+			desc.LogType = service.LogToCommand
+		}
+	case "error-logger":
+		if op == OpPlusEqual {
+			desc.ErrorLogger = append(desc.ErrorLogger, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.ErrorLogger = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+		if desc.LogType == service.LogNone {
+			desc.LogType = service.LogToCommand
+		}
 
 	// Process management
 	case "pid-file":
@@ -1134,6 +1158,8 @@ func applyLogType(desc *ServiceDescription, value string) error {
 		desc.LogType = service.LogToBuffer
 	case "pipe":
 		desc.LogType = service.LogToPipe
+	case "command":
+		desc.LogType = service.LogToCommand
 	default:
 		return fmt.Errorf("unknown log type: %s", value)
 	}

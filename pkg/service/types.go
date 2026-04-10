@@ -247,6 +247,7 @@ const (
 	LogToFile                   // Log to a file
 	LogToBuffer                 // Log to a memory buffer
 	LogToPipe                   // Pipe to another process (service)
+	LogToCommand                // Pipe to an external command (OpenRC OUTPUT_LOGGER)
 )
 
 // ExitStatus holds the exit status of a child process.

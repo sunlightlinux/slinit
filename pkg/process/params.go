@@ -95,6 +95,13 @@ type ExecParams struct {
 	// StartProcess returns. Ignored when OnConsole is true.
 	OutputPipe *os.File
 
+	// ErrorPipe, if non-nil, is the write end of a pipe used to capture
+	// the child's stderr separately from stdout. When set, OutputPipe
+	// captures only stdout and ErrorPipe captures stderr. Used by the
+	// error-logger feature (OpenRC ERROR_LOGGER). The caller must close
+	// it after StartProcess returns.
+	ErrorPipe *os.File
+
 	// InputPipe, if non-nil, is the read end of a pipe used as the child's
 	// stdin. Used for consumer-of services. The caller should NOT close it
 	// after StartProcess (the pipe persists across restarts).
