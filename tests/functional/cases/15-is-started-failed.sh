@@ -11,7 +11,8 @@ assert_exit_code "slinitctl --system is-started ok-svc" 0 "is-started ok-svc exi
 # is-failed on a running service should exit 1 (not failed)
 assert_exit_code "slinitctl --system is-failed ok-svc" 1 "is-failed ok-svc exits 1"
 
-# fail-svc should have failed to start (scripted with exit 1)
+# fail-svc should have failed to start (scripted with exit 1).
+# Wait for it to reach STOPPED state (it starts, runs "exit 1", and fails).
 sleep 2
 
 # is-started on a failed service should exit 1

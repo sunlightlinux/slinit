@@ -27,9 +27,12 @@ fi
 # Small delay to let boot services settle
 sleep 1
 
-# Run the test script, capturing output
-_output=$( (. "${TEST_SCRIPT}") 2>&1 ) || true
+# Run the test script, capturing output.
+# Capture exit code without letting set -e kill us.
+set +e
+_output=$( (. "${TEST_SCRIPT}") 2>&1 )
 _rc=$?
+set -e
 
 # Write results to virtio-serial port
 {
