@@ -63,6 +63,8 @@ type ServiceDescription struct {
 	ReadyCheckInterval time.Duration // polling interval for ready-check (default 1s)
 	PreStopHook       []string      // runs before SIGTERM in BringDown
 	ControlCommands   map[string][]string // signal→custom command (runit control/)
+	ExtraCommands        map[string][]string // custom actions (available in any state)
+	ExtraStartedCommands map[string][]string // custom actions (only when STARTED)
 	WorkingDir        string
 	EnvFile           string
 	EnvDir            string // runit-style: directory with one file per env var
@@ -1091,6 +1093,32 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 				// Always on in slinit, silently accept
 			}
 		}
+
+	// Extra commands (OpenRC-style custom actions)
+	// Format: extra-command = <action-name> <command> [args...]
+	// The first word is the action name, the rest is the command to run.
+	case "extra-command":
+		parts := strings.Fields(expandEnvVarsForCommand(value, serviceArg))
+		if len(parts) < 2 {
+			return fmt.Errorf("extra-command requires an action name and a command")
+		}
+		actionName := parts[0]
+		cmd := splitCommand(strings.Join(parts[1:], " "))
+		if desc.ExtraCommands == nil {
+			desc.ExtraCommands = make(map[string][]string)
+		}
+		desc.ExtraCommands[actionName] = cmd
+	case "extra-started-command":
+		parts := strings.Fields(expandEnvVarsForCommand(value, serviceArg))
+		if len(parts) < 2 {
+			return fmt.Errorf("extra-started-command requires an action name and a command")
+		}
+		actionName := parts[0]
+		cmd := splitCommand(strings.Join(parts[1:], " "))
+		if desc.ExtraStartedCommands == nil {
+			desc.ExtraStartedCommands = make(map[string][]string)
+		}
+		desc.ExtraStartedCommands[actionName] = cmd
 
 	// Control commands (runit-style custom signal handlers)
 	// Format: control-command-HUP = /path/to/script

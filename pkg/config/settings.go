@@ -120,6 +120,10 @@ var KnownSettings = map[string]OperatorType{
 	"inittab-id":   OpEquals,
 	"inittab-line": OpEquals,
 
+	// Extra commands (OpenRC-style custom actions)
+	"extra-command":         OpEquals,
+	"extra-started-command": OpEquals,
+
 	// Runit-inspired features
 	"finish-command":      OpEquals | OpPlusEqual,
 	"ready-check-command": OpEquals | OpPlusEqual,

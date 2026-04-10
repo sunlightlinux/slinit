@@ -163,6 +163,12 @@ type ServiceRecord struct {
 	// Shared logger: multiple producers → single logger service
 	sharedLoggerName string // name of the shared logger service (empty if not used)
 
+	// Extra commands (OpenRC-style custom actions)
+	// extraCommands are available in any service state.
+	// extraStartedCommands are only available when the service is STARTED.
+	extraCommands        map[string][]string
+	extraStartedCommands map[string][]string
+
 	// Runtime environment variables (set via control protocol)
 	extraEnv map[string]string
 
@@ -353,6 +359,50 @@ func (sr *ServiceRecord) SetConsumerFor(svc Service)   { sr.consumerFor = svc }
 func (sr *ServiceRecord) ConsumerFor() Service         { return sr.consumerFor }
 func (sr *ServiceRecord) SetSharedLoggerName(name string) { sr.sharedLoggerName = name }
 func (sr *ServiceRecord) SharedLoggerName() string        { return sr.sharedLoggerName }
+
+// SetExtraCommands sets custom actions available in any service state.
+func (sr *ServiceRecord) SetExtraCommands(cmds map[string][]string) { sr.extraCommands = cmds }
+
+// SetExtraStartedCommands sets custom actions only available when STARTED.
+func (sr *ServiceRecord) SetExtraStartedCommands(cmds map[string][]string) {
+	sr.extraStartedCommands = cmds
+}
+
+// ExtraCommands returns all extra commands (both always and started-only).
+func (sr *ServiceRecord) ExtraCommands() map[string][]string { return sr.extraCommands }
+func (sr *ServiceRecord) ExtraStartedCommands() map[string][]string { return sr.extraStartedCommands }
+
+// LookupExtraCommand finds an extra command by action name. Returns the command
+// and whether the action was found. If the action is a started-only command and
+// the service is not in STARTED state, returns nil, false.
+func (sr *ServiceRecord) LookupExtraCommand(action string) ([]string, bool) {
+	if cmd, ok := sr.extraCommands[action]; ok {
+		return cmd, true
+	}
+	if cmd, ok := sr.extraStartedCommands[action]; ok {
+		if sr.state == StateStarted {
+			return cmd, true
+		}
+		return nil, false // exists but service not started
+	}
+	return nil, false
+}
+
+// ListExtraActions returns the names of all registered extra commands.
+func (sr *ServiceRecord) ListExtraActions() []string {
+	seen := make(map[string]bool)
+	var actions []string
+	for name := range sr.extraCommands {
+		actions = append(actions, name)
+		seen[name] = true
+	}
+	for name := range sr.extraStartedCommands {
+		if !seen[name] {
+			actions = append(actions, name+"*") // * suffix = started-only
+		}
+	}
+	return actions
+}
 func (sr *ServiceRecord) OutputPipeW() *os.File        { return sr.outputPipeW }
 func (sr *ServiceRecord) OutputPipeR() *os.File        { return sr.outputPipeR }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
@@ -253,6 +254,10 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleOnceService(payload)
 	case CmdServiceStatus6:
 		return c.handleServiceStatus6(payload)
+	case CmdRunAction:
+		return c.handleRunAction(payload)
+	case CmdListActions:
+		return c.handleListActions(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
@@ -1257,4 +1262,58 @@ func (c *Connection) handleListenEnv() error {
 		c.server.services.AddEnvListener(c)
 	}
 	return c.writePacket(RplyACK, nil)
+}
+
+// handleRunAction runs an extra-command action on a service.
+// Payload: handle(4) + actionNameLen(2) + actionName(N)
+func (c *Connection) handleRunAction(payload []byte) error {
+	if len(payload) < 6 {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	handle := binary.LittleEndian.Uint32(payload)
+	actionName, _, err := DecodeServiceName(payload[4:])
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	rec := svc.Record()
+	cmd, ok := rec.LookupExtraCommand(actionName)
+	if !ok {
+		return c.writePacket(RplyNAK, []byte("unknown action: "+actionName))
+	}
+
+	// Execute the action command synchronously and capture output.
+	execCmd := exec.Command(cmd[0], cmd[1:]...)
+	output, execErr := execCmd.CombinedOutput()
+	if execErr != nil {
+		// Return NAK with the error message + any partial output
+		msg := fmt.Sprintf("action '%s' failed: %v\n%s", actionName, execErr, string(output))
+		return c.writePacket(RplyNAK, []byte(msg))
+	}
+
+	// Return the output (may be empty for actions that produce none)
+	return c.writePacket(RplyActionOutput, output)
+}
+
+// handleListActions returns the list of available extra-command actions.
+// Payload: handle(4)
+func (c *Connection) handleListActions(payload []byte) error {
+	if len(payload) < 4 {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	handle := binary.LittleEndian.Uint32(payload)
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	actions := svc.Record().ListExtraActions()
+	result := strings.Join(actions, "\n")
+	return c.writePacket(RplyActionList, []byte(result))
 }

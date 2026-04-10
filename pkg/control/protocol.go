@@ -80,6 +80,8 @@ const (
 	CmdOnceService         uint8 = 45
 	CmdQueryDependencies   uint8 = 46
 	CmdQueryDescription    uint8 = 47 // query human-readable service description
+	CmdRunAction           uint8 = 48 // run an extra-command action
+	CmdListActions         uint8 = 49 // list available extra-command actions
 )
 
 // Reply codes (server → client).
@@ -120,6 +122,8 @@ const (
 	RplyServiceName     uint8 = 92 // slinit query-name reply
 	RplyDependencies    uint8 = 93 // forward dependencies (handle + dep type)
 	RplyDescription     uint8 = 94 // slinit query-description reply
+	RplyActionOutput    uint8 = 95 // output from extra-command action
+	RplyActionList      uint8 = 96 // list of available actions
 )
 
 // Info codes (server → client, unsolicited).

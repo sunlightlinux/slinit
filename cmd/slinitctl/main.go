@@ -382,6 +382,15 @@ doneFlags:
 			conn.Close()
 		}
 		err = cmdAttach(cmdArgs[0], socketPath, systemMode)
+	case "action":
+		if len(cmdArgs) < 2 {
+			fatal("Usage: slinitctl action <service> <action-name>")
+		}
+		err = cmdRunAction(conn, cmdArgs[0], cmdArgs[1])
+	case "list-actions":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdListActions(conn, name)
+		})
 	default:
 		fatal("Unknown command: %s", command)
 	}
@@ -427,6 +436,8 @@ Commands:
   pause <service>          Pause (SIGSTOP) a running service
   continue <service>       Continue (SIGCONT) a paused service
   once <service>           Start service but don't restart on exit
+  action <svc> <action>    Run a custom extra-command action
+  list-actions <service>   List available extra-command actions
   reload <service>         Reload service configuration from disk
   unload <service>         Unload a stopped service from memory
   boot-time                Show boot timing analysis
@@ -1413,6 +1424,64 @@ func cmdOnce(conn net.Conn, svcName string) error {
 	}
 	info("Service '%s' started once (no restart).\n", svcName)
 	return nil
+}
+
+func cmdRunAction(conn net.Conn, svcName, actionName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+	// Payload: handle(4) + actionNameLen(2) + actionName(N)
+	actionBytes := control.EncodeServiceName(actionName)
+	payload := make([]byte, 4+len(actionBytes))
+	binary.LittleEndian.PutUint32(payload, handle)
+	copy(payload[4:], actionBytes)
+
+	if err := control.WritePacket(conn, control.CmdRunAction, payload); err != nil {
+		return err
+	}
+	rply, data, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	switch rply {
+	case control.RplyActionOutput:
+		if len(data) > 0 {
+			fmt.Print(string(data))
+		}
+		return nil
+	case control.RplyNAK:
+		return fmt.Errorf("%s", string(data))
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+}
+
+func cmdListActions(conn net.Conn, svcName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, handle)
+	if err := control.WritePacket(conn, control.CmdListActions, payload); err != nil {
+		return err
+	}
+	rply, data, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	switch rply {
+	case control.RplyActionList:
+		if len(data) == 0 {
+			info("No extra actions defined for '%s'.\n", svcName)
+		} else {
+			fmt.Println(string(data))
+		}
+		return nil
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
 }
 
 func cmdBootTime(conn net.Conn) error {

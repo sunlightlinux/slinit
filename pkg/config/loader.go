@@ -962,6 +962,12 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec := svc.Record()
 	rec.SetDescription(desc.Description)
 	rec.SetRequiredPaths(desc.RequiredFiles, desc.RequiredDirs)
+	if len(desc.ExtraCommands) > 0 {
+		rec.SetExtraCommands(desc.ExtraCommands)
+	}
+	if len(desc.ExtraStartedCommands) > 0 {
+		rec.SetExtraStartedCommands(desc.ExtraStartedCommands)
+	}
 	rec.SetAutoRestart(desc.AutoRestart)
 	rec.SetSmoothRecovery(desc.SmoothRecovery)
 	rec.SetFlags(desc.Flags)
