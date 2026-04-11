@@ -82,6 +82,9 @@ const (
 	CmdQueryDescription    uint8 = 47 // query human-readable service description
 	CmdRunAction           uint8 = 48 // run an extra-command action
 	CmdListActions         uint8 = 49 // list available extra-command actions
+	CmdScheduleShutdown    uint8 = 35 // schedule a delayed shutdown (type + delay_secs)
+	CmdCancelShutdown      uint8 = 36 // cancel a pending scheduled shutdown
+	CmdQueryShutdown       uint8 = 37 // query pending shutdown status
 )
 
 // Reply codes (server → client).
@@ -124,6 +127,7 @@ const (
 	RplyDescription     uint8 = 94 // slinit query-description reply
 	RplyActionOutput    uint8 = 95 // output from extra-command action
 	RplyActionList      uint8 = 96 // list of available actions
+	RplyShutdownStatus  uint8 = 97 // scheduled shutdown status (type + remaining_secs)
 )
 
 // Info codes (server → client, unsolicited).

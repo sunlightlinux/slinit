@@ -60,6 +60,12 @@ type Logger struct {
 	output   io.Writer
 	syslogW  *syslog.Writer
 	mainLevel Level // minimum level for main log (syslog/file); defaults to same as level
+
+	// consoleDup is an optional secondary writer that receives a copy of
+	// every console-level log line. Used with --console-dup / -1 to tee
+	// output to /dev/console even when --log-file redirects l.output to
+	// a file. Inspired by s6-linux-init-maker's -1 flag.
+	consoleDup io.Writer
 }
 
 // New creates a new Logger with the specified minimum level.
@@ -70,6 +76,14 @@ func New(level Level) *Logger {
 // SetOutput redirects log output to the given writer.
 func (l *Logger) SetOutput(w io.Writer) {
 	l.output = w
+}
+
+// SetConsoleDup sets a secondary writer that receives a copy of every
+// console-level log line. This is typically /dev/console, used when
+// --log-file redirects the primary output to a file but the operator
+// still wants to see logs on the physical console.
+func (l *Logger) SetConsoleDup(w io.Writer) {
+	l.consoleDup = w
 }
 
 // SetLevel changes the minimum logging level.
@@ -116,7 +130,11 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 
 	if consoleOK {
 		timestamp := time.Now().Format("15:04:05")
-		fmt.Fprintf(l.output, "[%s] %s: %s\n", timestamp, level, msg)
+		line := fmt.Sprintf("[%s] %s: %s\n", timestamp, level, msg)
+		fmt.Fprint(l.output, line)
+		if l.consoleDup != nil {
+			fmt.Fprint(l.consoleDup, line)
+		}
 	}
 
 	if syslogOK {

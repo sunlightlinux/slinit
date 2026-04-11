@@ -33,6 +33,12 @@ type Server struct {
 
 	// ShutdownFunc is called when a shutdown command is received.
 	ShutdownFunc func(service.ShutdownType)
+
+	// Scheduled shutdown state.
+	scheduledMu       sync.Mutex
+	scheduledTimer    *time.Timer
+	scheduledType     service.ShutdownType
+	scheduledDeadline time.Time // zero means no scheduled shutdown
 }
 
 // NewServer creates a new control socket server.
@@ -233,4 +239,95 @@ func (s *Server) HandlePassCSFD(conn net.Conn) {
 		delete(s.conns, c)
 		s.mu.Unlock()
 	}()
+}
+
+// ScheduleShutdown schedules a shutdown to occur after the given delay.
+// If a shutdown is already scheduled, it is replaced.
+// A delay of 0 triggers an immediate shutdown.
+func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration) {
+	s.scheduledMu.Lock()
+	defer s.scheduledMu.Unlock()
+
+	// Cancel existing timer if any.
+	if s.scheduledTimer != nil {
+		s.scheduledTimer.Stop()
+		s.scheduledTimer = nil
+	}
+
+	if delay <= 0 {
+		// Immediate shutdown.
+		s.scheduledDeadline = time.Time{}
+		if s.ShutdownFunc != nil {
+			s.ShutdownFunc(st)
+		}
+		return
+	}
+
+	s.scheduledType = st
+	s.scheduledDeadline = time.Now().Add(delay)
+	s.logger.Notice("Shutdown (%s) scheduled in %v (at %s)",
+		shutdownTypeName(st), delay, s.scheduledDeadline.Format("15:04:05"))
+
+	s.scheduledTimer = time.AfterFunc(delay, func() {
+		s.scheduledMu.Lock()
+		s.scheduledDeadline = time.Time{}
+		s.scheduledTimer = nil
+		s.scheduledMu.Unlock()
+
+		s.logger.Notice("Scheduled shutdown (%s) executing now", shutdownTypeName(st))
+		if s.ShutdownFunc != nil {
+			s.ShutdownFunc(st)
+		}
+	})
+}
+
+// CancelShutdown cancels a pending scheduled shutdown.
+// Returns true if a shutdown was cancelled, false if none was pending.
+func (s *Server) CancelShutdown() bool {
+	s.scheduledMu.Lock()
+	defer s.scheduledMu.Unlock()
+
+	if s.scheduledTimer == nil {
+		return false
+	}
+
+	s.scheduledTimer.Stop()
+	s.scheduledTimer = nil
+	s.scheduledDeadline = time.Time{}
+	s.logger.Notice("Scheduled shutdown cancelled")
+	return true
+}
+
+// ScheduledShutdownInfo returns the pending shutdown type and time remaining.
+// If no shutdown is scheduled, remaining is 0 and ok is false.
+func (s *Server) ScheduledShutdownInfo() (st service.ShutdownType, remaining time.Duration, ok bool) {
+	s.scheduledMu.Lock()
+	defer s.scheduledMu.Unlock()
+
+	if s.scheduledTimer == nil || s.scheduledDeadline.IsZero() {
+		return 0, 0, false
+	}
+
+	rem := time.Until(s.scheduledDeadline)
+	if rem < 0 {
+		rem = 0
+	}
+	return s.scheduledType, rem, true
+}
+
+func shutdownTypeName(st service.ShutdownType) string {
+	switch st {
+	case service.ShutdownHalt:
+		return "halt"
+	case service.ShutdownPoweroff:
+		return "poweroff"
+	case service.ShutdownReboot:
+		return "reboot"
+	case service.ShutdownKexec:
+		return "kexec"
+	case service.ShutdownSoftReboot:
+		return "softreboot"
+	default:
+		return "unknown"
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -31,6 +32,11 @@ func TestKillAllProcesses(t *testing.T) {
 	}
 	defer func() { killFunc = origKill }()
 
+	// Zero grace period for fast test
+	origGrace := killGracePeriod
+	killGracePeriod = 0
+	defer func() { killGracePeriod = origGrace }()
+
 	KillAllProcesses(testLogger())
 
 	if len(calls) != 2 {
@@ -45,6 +51,22 @@ func TestKillAllProcesses(t *testing.T) {
 	// Second call: SIGKILL to remaining processes
 	if calls[1].pid != -1 || calls[1].sig != syscall.SIGKILL {
 		t.Fatalf("Expected kill(-1, SIGKILL), got kill(%d, %v)", calls[1].pid, calls[1].sig)
+	}
+}
+
+func TestSetKillGracePeriod(t *testing.T) {
+	orig := killGracePeriod
+	defer func() { killGracePeriod = orig }()
+
+	SetKillGracePeriod(5 * time.Second)
+	if KillGracePeriod() != 5*time.Second {
+		t.Errorf("KillGracePeriod() = %v, want 5s", KillGracePeriod())
+	}
+
+	// Negative clamps to 0.
+	SetKillGracePeriod(-1 * time.Second)
+	if KillGracePeriod() != 0 {
+		t.Errorf("KillGracePeriod() = %v, want 0 for negative input", KillGracePeriod())
 	}
 }
 
@@ -261,10 +283,12 @@ func TestExecuteWithHook(t *testing.T) {
 	origSync := syncFunc
 	origReboot := rebootFunc
 	origHook := runHookFunc
+	origGrace := killGracePeriod
 
 	killFunc = func(pid int, sig syscall.Signal) error { return syscall.ESRCH }
 	syncFunc = func() {}
 	rebootFunc = func(cmd int) error { return nil }
+	killGracePeriod = 0
 
 	// Hook returns true → swapoff/umount should NOT be called
 	hookCalled := false
@@ -278,6 +302,7 @@ func TestExecuteWithHook(t *testing.T) {
 		syncFunc = origSync
 		rebootFunc = origReboot
 		runHookFunc = origHook
+		killGracePeriod = origGrace
 	}()
 
 	// Execute won't return (InfiniteHold) but rebootFunc returns nil

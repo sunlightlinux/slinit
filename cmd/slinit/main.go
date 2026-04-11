@@ -94,6 +94,23 @@ func main() {
 	flag.StringVar(&cpuAffinityStr, "cpu-affinity", "", "default CPU affinity for daemon and services (e.g. 0-3)")
 	flag.StringVar(&cpuAffinityStr, "a", "", "default CPU affinity for daemon and services (e.g. 0-3)")
 
+	var catchAllLog string
+	var noCatchAll bool
+	flag.StringVar(&catchAllLog, "catch-all-log", "", "catch-all log file path (default: /run/slinit/catch-all.log)")
+	flag.BoolVar(&noCatchAll, "B", false, "disable catch-all logger")
+	flag.BoolVar(&noCatchAll, "no-catch-all", false, "disable catch-all logger")
+
+	var shutdownGrace string
+	flag.StringVar(&shutdownGrace, "shutdown-grace", "3s", "SIGTERM→SIGKILL grace period during shutdown (e.g. 3s, 5000ms)")
+
+	var bootBanner string
+	var initUmask string
+	var consoleDup bool
+	flag.StringVar(&bootBanner, "banner", "slinit booting...", "boot banner (empty to disable)")
+	flag.StringVar(&initUmask, "umask", "0022", "initial umask (octal)")
+	flag.BoolVar(&consoleDup, "1", false, "duplicate log output to /dev/console (when using --log-file)")
+	flag.BoolVar(&consoleDup, "console-dup", false, "duplicate log output to /dev/console (when using --log-file)")
+
 	var parallelStartLimit int
 	var parallelSlowThreshold string
 	var sysOverride string
@@ -122,6 +139,20 @@ func main() {
 	// Safety net: if slinit panics, catch it and perform emergency cleanup.
 	// PID 1: kill all processes + force reboot. Container: exit(111).
 	defer shutdown.CrashRecovery(isPID1, containerMode)
+
+	// Catch-all logger: capture stdout/stderr through a pipe so that early
+	// boot messages, child process output, and panics are preserved to a
+	// persistent log file while still being visible on the console.
+	// Inspired by s6-linux-init's catch-all logger (s6-svscan-log).
+	// Enabled by default for PID 1 and container mode; use -B to disable.
+	if (isPID1 || containerMode) && !noCatchAll {
+		cal, err := logging.StartCatchAll(catchAllLog)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: catch-all logger: %v (continuing without)\n", err)
+		} else {
+			defer cal.Stop()
+		}
+	}
 
 	// SysV init compatibility: "init 0" → poweroff, "init 6" → reboot
 	// When not PID 1, numeric arguments trigger shutdown via control socket.
@@ -209,6 +240,36 @@ func main() {
 		} else {
 			defer logger.CloseSyslog()
 		}
+	}
+
+	// Console duplicate: tee log output to /dev/console even when
+	// --log-file redirects the primary output to a file.
+	// Inspired by s6-linux-init-maker's -1 flag.
+	if consoleDup {
+		cons, err := os.OpenFile("/dev/console", os.O_WRONLY, 0)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: --console-dup: %v (ignored)\n", err)
+		} else {
+			defer cons.Close()
+			logger.SetConsoleDup(cons)
+		}
+	}
+
+	// Apply shutdown grace period.
+	if grace, err := time.ParseDuration(shutdownGrace); err == nil {
+		shutdown.SetKillGracePeriod(grace)
+		logger.Debug("Shutdown grace period: %v", grace)
+	} else {
+		logger.Error("Invalid --shutdown-grace %q: %v (using default %v)",
+			shutdownGrace, err, shutdown.DefaultKillGracePeriod)
+	}
+
+	// Apply boot housekeeping settings before InitPID1.
+	shutdown.SetBootBanner(bootBanner)
+	if mask, err := strconv.ParseUint(initUmask, 8, 32); err == nil {
+		shutdown.SetInitUmask(uint32(mask))
+	} else {
+		logger.Error("Invalid --umask %q: %v (using default 0022)", initUmask, err)
 	}
 
 	if containerMode {
@@ -465,15 +526,28 @@ func main() {
 
 		shutdownType := loop.GetShutdownType()
 
-		// Container mode: exit with appropriate code
+		// Container mode: write results and exit with appropriate code.
+		// Inspired by s6-linux-init's container-results directory.
 		if containerMode {
+			exitCode := 0
 			if shutdownType != service.ShutdownNone {
-				logger.Info("Container shutdown complete")
-				os.Exit(0)
+				// Normal shutdown — collect exit code from boot service.
+				exitCode = containerExitCode(serviceSet, bootServices)
+				logger.Info("Container shutdown complete (exit code %d, type %s)",
+					exitCode, shutdownType)
+			} else {
+				// Boot failure — no explicit shutdown was requested.
+				exitCode = 1
+				if ec := containerExitCode(serviceSet, bootServices); ec != 0 {
+					exitCode = ec
+				}
+				shutdownType = service.ShutdownPoweroff
+				logger.Error("Boot failure detected (container mode, exit code %d)", exitCode)
 			}
-			// Boot failure in container mode
-			logger.Error("Boot failure detected (container mode)")
-			os.Exit(1)
+			if err := shutdown.WriteContainerResults(exitCode, shutdownType); err != nil {
+				logger.Debug("Failed to write container results: %v", err)
+			}
+			os.Exit(exitCode)
 		}
 
 		// Normal shutdown (non-PID1 or explicit shutdown requested)
@@ -763,4 +837,24 @@ func confirmRestartBoot(logger *logging.Logger) byte {
 		}
 		// Ignore invalid keys, re-prompt
 	}
+}
+
+// containerExitCode extracts the exit code from the first boot service
+// that has a non-zero exit status. Returns 0 if all services exited cleanly.
+func containerExitCode(ss *service.ServiceSet, bootNames []string) int {
+	for _, name := range bootNames {
+		svc := ss.FindService(name, false)
+		if svc == nil {
+			continue
+		}
+		es := svc.GetExitStatus()
+		if es.Exited() && es.ExitCode() != 0 {
+			return es.ExitCode()
+		}
+		if es.Signaled() {
+			// Convention: 128 + signal number
+			return 128 + int(es.Signal())
+		}
+	}
+	return 0
 }

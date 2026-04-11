@@ -3,6 +3,7 @@
 package shutdown
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,10 +18,49 @@ import (
 // this process instead of init (PID 1).
 const prSetChildSubreaper = 36
 
+// Boot housekeeping defaults (configurable before calling InitPID1).
+var (
+	// bootBanner is printed to the console at the start of InitPID1.
+	// Set via SetBootBanner(). Empty string disables the banner.
+	bootBanner = "slinit booting..."
+
+	// initUmask is the initial umask set in InitPID1. Default 0022
+	// (matches s6-linux-init's default).
+	initUmask uint32 = 0022
+)
+
+// SetBootBanner overrides the boot banner shown on the console.
+// Pass empty string to disable.
+func SetBootBanner(s string) { bootBanner = s }
+
+// SetInitUmask overrides the initial umask set during PID 1 init.
+func SetInitUmask(mask uint32) { initUmask = mask }
+
 // InitPID1 performs early initialization required when running as PID 1.
-// This includes setting up /dev/console, disabling Ctrl+Alt+Del, setting
-// the child subreaper flag, and ignoring terminal job control signals.
+// This includes boot housekeeping (chdir, umask, setsid, banner), setting
+// up /dev/console, disabling Ctrl+Alt+Del, setting the child subreaper
+// flag, and ignoring terminal job control signals.
 func InitPID1(logger *logging.Logger) error {
+	// chdir to / — ensures a sane working directory regardless of how
+	// the kernel invoked init (s6-linux-init does this as its first step).
+	if err := syscall.Chdir("/"); err != nil {
+		logger.Debug("chdir /: %v (non-fatal)", err)
+	}
+
+	// Set initial umask. Configurable via SetInitUmask() before calling InitPID1.
+	old := syscall.Umask(int(initUmask))
+	if old != int(initUmask) {
+		logger.Debug("umask set to %04o (was %04o)", initUmask, old)
+	}
+
+	// Become session leader so PID 1 owns its own session/TTY.
+	// This may fail if already a session leader (typical for PID 1), which is fine.
+	if _, err := syscall.Setsid(); err != nil {
+		logger.Debug("setsid: %v (non-fatal, likely already session leader)", err)
+	} else {
+		logger.Debug("Session leader established")
+	}
+
 	// Mount essential filesystems early (needed before any service starts)
 	mountEarlyFS(logger)
 
@@ -29,6 +69,11 @@ func InitPID1(logger *logging.Logger) error {
 		logger.Debug("Console setup: %v (non-fatal)", err)
 	} else {
 		logger.Debug("Console redirected to /dev/console")
+	}
+
+	// Print boot banner on console (s6-linux-init prints a banner too).
+	if bootBanner != "" {
+		fmt.Fprintln(os.Stdout, bootBanner)
 	}
 
 	// Suppress non-critical kernel messages on console (like dmesg -n 1).

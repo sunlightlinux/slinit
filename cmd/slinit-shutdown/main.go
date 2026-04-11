@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/logging"
@@ -69,6 +70,13 @@ func main() {
 			shutdownType = service.ShutdownKexec
 		case arg == "--use-passed-cfd":
 			useCFD = true
+		case strings.HasPrefix(arg, "--grace="):
+			if d, err := time.ParseDuration(arg[len("--grace="):]); err == nil {
+				shutdown.SetKillGracePeriod(d)
+			} else {
+				fmt.Fprintf(os.Stderr, "Invalid --grace value: %s\n", arg[len("--grace="):])
+				os.Exit(1)
+			}
 		default:
 			fmt.Fprintf(os.Stderr, "Unrecognized option: %s\n", arg)
 			os.Exit(1)

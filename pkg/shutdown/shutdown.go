@@ -12,14 +12,31 @@ import (
 )
 
 const (
-	// ProcessKillGracePeriod is the time to wait between SIGTERM and SIGKILL
-	// when killing all remaining processes during shutdown.
-	ProcessKillGracePeriod = 1 * time.Second
+	// DefaultKillGracePeriod is the default time to wait between SIGTERM and
+	// SIGKILL when killing all remaining processes during shutdown.
+	DefaultKillGracePeriod = 3 * time.Second
 
 	// EmergencyShutdownTimeout is the maximum time to wait for services to
 	// stop before forcing a shutdown.
 	EmergencyShutdownTimeout = 90 * time.Second
 )
+
+// killGracePeriod is the configured time between SIGTERM and SIGKILL.
+// Settable via SetKillGracePeriod (--shutdown-grace flag).
+var killGracePeriod = DefaultKillGracePeriod
+
+// SetKillGracePeriod overrides the default SIGTERM→SIGKILL grace period.
+func SetKillGracePeriod(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	killGracePeriod = d
+}
+
+// KillGracePeriod returns the current SIGTERM→SIGKILL grace period.
+func KillGracePeriod() time.Duration {
+	return killGracePeriod
+}
 
 // shutdownHookPaths is the list of paths to search for a shutdown hook script.
 // The first executable hook found is used; the rest are ignored.
@@ -78,11 +95,13 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	InfiniteHold()
 }
 
-// KillAllProcesses sends SIGTERM to all processes, waits for a grace period,
-// then sends SIGKILL. This mirrors dinit's process cleanup in shutdown.cc.
-// kill(-1, sig) sends the signal to every process except PID 1 itself.
+// KillAllProcesses sends SIGTERM to all processes, waits for the configured
+// grace period, then sends SIGKILL. This mirrors dinit's process cleanup in
+// shutdown.cc. kill(-1, sig) sends the signal to every process except PID 1.
 func KillAllProcesses(logger *logging.Logger) {
-	logger.Info("Sending SIGTERM to all processes...")
+	grace := killGracePeriod
+
+	logger.Info("Sending SIGTERM to all processes (grace %v)...", grace)
 	if err := killFunc(-1, syscall.SIGTERM); err != nil {
 		// ESRCH means no processes to signal - that's fine
 		if err != syscall.ESRCH {
@@ -90,7 +109,9 @@ func KillAllProcesses(logger *logging.Logger) {
 		}
 	}
 
-	time.Sleep(ProcessKillGracePeriod)
+	if grace > 0 {
+		time.Sleep(grace)
+	}
 
 	logger.Info("Sending SIGKILL to remaining processes...")
 	if err := killFunc(-1, syscall.SIGKILL); err != nil {

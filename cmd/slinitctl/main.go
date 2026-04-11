@@ -245,11 +245,7 @@ doneFlags:
 			return cmdIsFailed(conn, name)
 		})
 	case "shutdown":
-		shutType := "poweroff"
-		if len(cmdArgs) > 0 {
-			shutType = cmdArgs[0]
-		}
-		err = cmdShutdown(conn, shutType)
+		err = cmdShutdownDispatch(conn, cmdArgs)
 	case "trigger":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdTrigger(conn, name)
@@ -429,7 +425,10 @@ Commands:
   status <service>         Show detailed service status
   is-started <service>     Exit 0 if started, 1 otherwise
   is-failed <service>      Exit 0 if failed, 1 otherwise
-  shutdown [type]          Initiate shutdown (halt|poweroff|reboot|kexec|softreboot)
+  shutdown [type] [time]   Shutdown: type=halt|poweroff|reboot|kexec|softreboot
+                           time=now|+N (min)|HH:MM (default: poweroff now)
+  shutdown -c              Cancel scheduled shutdown
+  shutdown --status        Show pending shutdown info
   trigger <service>        Trigger a triggered service
   untrigger <service>      Reset trigger state
   signal [-l] <sig> <svc>  Send signal to service process (-l to list)
@@ -1231,39 +1230,217 @@ func cmdIsFailed(conn net.Conn, name string) error {
 	return nil
 }
 
-func cmdShutdown(conn net.Conn, shutType string) error {
-	var st service.ShutdownType
-	switch shutType {
-	case "halt":
-		st = service.ShutdownHalt
-	case "poweroff":
-		st = service.ShutdownPoweroff
-	case "reboot":
-		st = service.ShutdownReboot
-	case "kexec":
-		st = service.ShutdownKexec
-	case "softreboot", "soft-reboot":
-		st = service.ShutdownSoftReboot
-	default:
-		return fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", shutType)
+// cmdShutdownDispatch handles the shutdown command with optional time scheduling.
+// Usage:
+//
+//	shutdown [type] [time]    - schedule or immediate shutdown
+//	shutdown -c               - cancel pending shutdown
+//	shutdown --status         - query pending shutdown
+//
+// Type: halt, poweroff (default), reboot, kexec, softreboot
+// Time: now (default), +N (minutes), HH:MM (absolute time)
+func cmdShutdownDispatch(conn net.Conn, args []string) error {
+	// Check for -c / --cancel
+	for _, a := range args {
+		if a == "-c" || a == "--cancel" {
+			return cmdCancelShutdown(conn)
+		}
+		if a == "--status" {
+			return cmdQueryShutdown(conn)
+		}
 	}
 
-	payload := []byte{uint8(st)}
-	if err := control.WritePacket(conn, control.CmdShutdown, payload); err != nil {
-		return err
+	shutType := "poweroff"
+	timeArg := "now"
+
+	for _, a := range args {
+		switch a {
+		case "halt", "poweroff", "reboot", "kexec", "softreboot", "soft-reboot":
+			shutType = a
+		default:
+			timeArg = a
+		}
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	st, err := parseShutdownType(shutType)
 	if err != nil {
 		return err
 	}
 
+	delay, err := parseShutdownTime(timeArg)
+	if err != nil {
+		return err
+	}
+
+	if delay <= 0 {
+		// Immediate shutdown — use the existing CmdShutdown for compatibility.
+		payload := []byte{uint8(st)}
+		if err := control.WritePacket(conn, control.CmdShutdown, payload); err != nil {
+			return err
+		}
+		rply, _, err := control.ReadPacket(conn)
+		if err != nil {
+			return err
+		}
+		if rply == control.RplyACK {
+			info("Shutdown (%s) initiated.\n", shutType)
+		} else {
+			return fmt.Errorf("shutdown failed: reply %d", rply)
+		}
+		return nil
+	}
+
+	// Scheduled shutdown.
+	secs := uint32(delay.Seconds())
+	payload := []byte{
+		uint8(st),
+		byte(secs >> 24), byte(secs >> 16), byte(secs >> 8), byte(secs),
+	}
+	if err := control.WritePacket(conn, control.CmdScheduleShutdown, payload); err != nil {
+		return err
+	}
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
 	if rply == control.RplyACK {
-		info("Shutdown (%s) initiated.\n", shutType)
+		info("Shutdown (%s) scheduled in %v.\n", shutType, delay)
 	} else {
-		return fmt.Errorf("shutdown failed: reply %d", rply)
+		return fmt.Errorf("schedule shutdown failed: reply %d", rply)
 	}
 	return nil
+}
+
+func cmdCancelShutdown(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdCancelShutdown, nil); err != nil {
+		return err
+	}
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply == control.RplyACK {
+		info("Scheduled shutdown cancelled.\n")
+	} else {
+		info("No shutdown is scheduled.\n")
+	}
+	return nil
+}
+
+func cmdQueryShutdown(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdQueryShutdown, nil); err != nil {
+		return err
+	}
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply == control.RplyNAK {
+		fmt.Println("No shutdown is scheduled.")
+		return nil
+	}
+	if rply != control.RplyShutdownStatus || len(payload) < 5 {
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+
+	st := service.ShutdownType(payload[0])
+	secs := uint32(payload[1])<<24 | uint32(payload[2])<<16 |
+		uint32(payload[3])<<8 | uint32(payload[4])
+	typeName := shutdownTypeToString(st)
+	fmt.Printf("Shutdown (%s) scheduled in %s.\n", typeName, formatHumanDuration(time.Duration(secs)*time.Second))
+	return nil
+}
+
+func parseShutdownType(s string) (service.ShutdownType, error) {
+	switch s {
+	case "halt":
+		return service.ShutdownHalt, nil
+	case "poweroff":
+		return service.ShutdownPoweroff, nil
+	case "reboot":
+		return service.ShutdownReboot, nil
+	case "kexec":
+		return service.ShutdownKexec, nil
+	case "softreboot", "soft-reboot":
+		return service.ShutdownSoftReboot, nil
+	default:
+		return 0, fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", s)
+	}
+}
+
+// parseShutdownTime parses a time argument into a duration.
+//
+//	"now"      → 0 (immediate)
+//	"+N"       → N minutes
+//	"HH:MM"    → delay until that time today (or tomorrow if past)
+func parseShutdownTime(s string) (time.Duration, error) {
+	if s == "now" || s == "" {
+		return 0, nil
+	}
+
+	// +N minutes
+	if strings.HasPrefix(s, "+") {
+		mins, err := strconv.Atoi(s[1:])
+		if err != nil || mins < 0 {
+			return 0, fmt.Errorf("invalid time: %s (use +N for minutes)", s)
+		}
+		return time.Duration(mins) * time.Minute, nil
+	}
+
+	// Plain number = minutes
+	if mins, err := strconv.Atoi(s); err == nil && mins >= 0 {
+		return time.Duration(mins) * time.Minute, nil
+	}
+
+	// HH:MM absolute time
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) == 2 {
+		h, err1 := strconv.Atoi(parts[0])
+		m, err2 := strconv.Atoi(parts[1])
+		if err1 == nil && err2 == nil && h >= 0 && h <= 23 && m >= 0 && m <= 59 {
+			now := time.Now()
+			target := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
+			if target.Before(now) {
+				// Target time already passed today — schedule for tomorrow.
+				target = target.Add(24 * time.Hour)
+			}
+			return target.Sub(now), nil
+		}
+	}
+
+	return 0, fmt.Errorf("invalid time: %s (use 'now', '+N' for minutes, or 'HH:MM')", s)
+}
+
+func shutdownTypeToString(st service.ShutdownType) string {
+	switch st {
+	case service.ShutdownHalt:
+		return "halt"
+	case service.ShutdownPoweroff:
+		return "poweroff"
+	case service.ShutdownReboot:
+		return "reboot"
+	case service.ShutdownKexec:
+		return "kexec"
+	case service.ShutdownSoftReboot:
+		return "softreboot"
+	default:
+		return "unknown"
+	}
+}
+
+func formatHumanDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
 }
 
 func cmdTrigger(conn net.Conn, name string) error {

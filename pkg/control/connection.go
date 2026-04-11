@@ -258,6 +258,12 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleRunAction(payload)
 	case CmdListActions:
 		return c.handleListActions(payload)
+	case CmdScheduleShutdown:
+		return c.handleScheduleShutdown(payload)
+	case CmdCancelShutdown:
+		return c.handleCancelShutdown()
+	case CmdQueryShutdown:
+		return c.handleQueryShutdown()
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
@@ -568,6 +574,49 @@ func (c *Connection) handleShutdown(payload []byte) error {
 		c.server.ShutdownFunc(shutType)
 	}
 	return c.writePacket(RplyACK, nil)
+}
+
+// handleScheduleShutdown schedules a delayed shutdown.
+// Payload: [type(1)] [delay_secs(4, big-endian)]
+// delay_secs == 0 means immediate (same as CmdShutdown).
+func (c *Connection) handleScheduleShutdown(payload []byte) error {
+	if len(payload) < 5 {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	shutType := service.ShutdownType(payload[0])
+	delaySecs := uint32(payload[1])<<24 | uint32(payload[2])<<16 |
+		uint32(payload[3])<<8 | uint32(payload[4])
+	delay := time.Duration(delaySecs) * time.Second
+
+	c.server.ScheduleShutdown(shutType, delay)
+	return c.writePacket(RplyACK, nil)
+}
+
+// handleCancelShutdown cancels a pending scheduled shutdown.
+func (c *Connection) handleCancelShutdown() error {
+	if c.server.CancelShutdown() {
+		return c.writePacket(RplyACK, nil)
+	}
+	// No shutdown was pending.
+	return c.writePacket(RplyNAK, nil)
+}
+
+// handleQueryShutdown returns info about a pending scheduled shutdown.
+// Reply payload: [type(1)] [remaining_secs(4, big-endian)]
+// If no shutdown is pending, replies NAK.
+func (c *Connection) handleQueryShutdown() error {
+	st, remaining, ok := c.server.ScheduledShutdownInfo()
+	if !ok {
+		return c.writePacket(RplyNAK, nil)
+	}
+
+	secs := uint32(remaining.Seconds())
+	payload := []byte{
+		uint8(st),
+		byte(secs >> 24), byte(secs >> 16), byte(secs >> 8), byte(secs),
+	}
+	return c.writePacket(RplyShutdownStatus, payload)
 }
 
 func (c *Connection) handleCloseHandle(payload []byte) error {
