@@ -230,22 +230,3 @@ func runShutdownHook(shutdownType service.ShutdownType, logger *logging.Logger) 
 	return true
 }
 
-// swapOff disables all swap devices. Called during shutdown when no
-// shutdown hook handled the cleanup.
-func swapOff(logger *logging.Logger) {
-	logger.Info("Disabling swap...")
-	cmd := exec.Command("/sbin/swapoff", "-a")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Debug("swapoff -a: %v (output: %s)", err, bytes.TrimSpace(output))
-	}
-}
-
-// unmountAll unmounts all filesystems. Called during shutdown when no
-// shutdown hook handled the cleanup.
-func unmountAll(logger *logging.Logger) {
-	logger.Info("Unmounting filesystems...")
-	cmd := exec.Command("/bin/umount", "-a", "-r")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Debug("umount -a -r: %v (output: %s)", err, bytes.TrimSpace(output))
-	}
-}
