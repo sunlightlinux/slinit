@@ -61,6 +61,9 @@ var (
 func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	logger.Notice("Executing shutdown: %s", shutdownType)
 
+	// Broadcast a final wall notice to any logged-in users.
+	WallShutdownNotice(shutdownType, 0, logger)
+
 	// Kill all remaining processes
 	KillAllProcesses(logger)
 

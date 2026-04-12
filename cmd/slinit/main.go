@@ -111,6 +111,9 @@ func main() {
 	flag.BoolVar(&consoleDup, "1", false, "duplicate log output to /dev/console (when using --log-file)")
 	flag.BoolVar(&consoleDup, "console-dup", false, "duplicate log output to /dev/console (when using --log-file)")
 
+	var noWall bool
+	flag.BoolVar(&noWall, "no-wall", false, "disable wall broadcasts at shutdown")
+
 	var parallelStartLimit int
 	var parallelSlowThreshold string
 	var sysOverride string
@@ -271,6 +274,9 @@ func main() {
 	} else {
 		logger.Error("Invalid --umask %q: %v (using default 0022)", initUmask, err)
 	}
+
+	// Wall broadcasts at shutdown (enabled by default, disable with --no-wall).
+	shutdown.SetWallEnabled(!noWall)
 
 	if containerMode {
 		logger.Notice("slinit starting in container mode (PID %d)", os.Getpid())
@@ -509,6 +515,13 @@ func main() {
 
 		ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
 			loop.InitiateShutdown(st)
+		}
+		ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool) {
+			if cancelled {
+				shutdown.WallShutdownCancelled(st, logger)
+				return
+			}
+			shutdown.WallShutdownNotice(st, delay, logger)
 		}
 		loop.OnReopenSocket = func() {
 			if err := ctrlServer.Reopen(); err != nil {

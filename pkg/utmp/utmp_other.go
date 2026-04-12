@@ -18,3 +18,6 @@ func CreateEntry(id, line string, pid int) bool { return true }
 
 // ClearEntry is a no-op on non-Linux platforms.
 func ClearEntry(id, line string) {}
+
+// ListUserTTYs returns an empty list on non-Linux platforms.
+func ListUserTTYs() []string { return nil }

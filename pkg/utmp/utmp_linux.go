@@ -118,6 +118,32 @@ static int c_max_id_len(void) {
 static int c_max_line_len(void) {
     return sizeof(((struct utmpx *)0)->ut_line);
 }
+
+// c_next_user_line iterates utmpx looking for USER_PROCESS entries.
+// Call with reset=1 to restart the iteration, reset=0 to continue.
+// Writes the ut_line value into out (caller-provided buffer of at least
+// UT_LINESIZE+1 bytes). Returns 1 if an entry was written, 0 on end.
+static int c_next_user_line(char *out, int reset) {
+    if (reset) {
+        setutxent();
+    }
+    struct utmpx *ent;
+    while ((ent = getutxent()) != NULL) {
+        if (ent->ut_type != USER_PROCESS) {
+            continue;
+        }
+        if (ent->ut_line[0] == '\0') {
+            continue;
+        }
+        // Copy up to sizeof(ut_line), ensuring NUL termination.
+        size_t n = sizeof(ent->ut_line);
+        memcpy(out, ent->ut_line, n);
+        out[n] = '\0';
+        return 1;
+    }
+    endutxent();
+    return 0;
+}
 */
 import "C"
 
@@ -155,4 +181,26 @@ func ClearEntry(id, line string) {
 	defer C.free(unsafe.Pointer(cID))
 	defer C.free(unsafe.Pointer(cLine))
 	C.c_clear_entry(cID, cLine)
+}
+
+// ListUserTTYs returns the ut_line values (TTY device names, e.g. "tty1",
+// "pts/0") of all active USER_PROCESS entries in the utmp database.
+// Used by the shutdown wall broadcast to find logged-in users.
+func ListUserTTYs() []string {
+	buf := make([]byte, MaxLineLen+1)
+	cBuf := (*C.char)(unsafe.Pointer(&buf[0]))
+
+	var lines []string
+	reset := C.int(1)
+	for C.c_next_user_line(cBuf, reset) != 0 {
+		reset = 0
+		n := 0
+		for n < len(buf) && buf[n] != 0 {
+			n++
+		}
+		if n > 0 {
+			lines = append(lines, string(buf[:n]))
+		}
+	}
+	return lines
 }

@@ -34,6 +34,12 @@ type Server struct {
 	// ShutdownFunc is called when a shutdown command is received.
 	ShutdownFunc func(service.ShutdownType)
 
+	// WallFunc is an optional hook invoked when a shutdown is scheduled
+	// or cancelled. The delay argument is the time until execution
+	// (0 means "immediate" or "cancelled" depending on cancelled).
+	// main.go wires this to shutdown.WallShutdownNotice.
+	WallFunc func(st service.ShutdownType, delay time.Duration, cancelled bool)
+
 	// Scheduled shutdown state.
 	scheduledMu       sync.Mutex
 	scheduledTimer    *time.Timer
@@ -268,6 +274,10 @@ func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration) 
 	s.logger.Notice("Shutdown (%s) scheduled in %v (at %s)",
 		shutdownTypeName(st), delay, s.scheduledDeadline.Format("15:04:05"))
 
+	if s.WallFunc != nil {
+		s.WallFunc(st, delay, false)
+	}
+
 	s.scheduledTimer = time.AfterFunc(delay, func() {
 		s.scheduledMu.Lock()
 		s.scheduledDeadline = time.Time{}
@@ -293,8 +303,13 @@ func (s *Server) CancelShutdown() bool {
 
 	s.scheduledTimer.Stop()
 	s.scheduledTimer = nil
+	cancelledType := s.scheduledType
 	s.scheduledDeadline = time.Time{}
 	s.logger.Notice("Scheduled shutdown cancelled")
+
+	if s.WallFunc != nil {
+		s.WallFunc(cancelledType, 0, true)
+	}
 	return true
 }
 
