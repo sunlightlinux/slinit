@@ -21,3 +21,16 @@ func ClearEntry(id, line string) {}
 
 // ListUserTTYs returns an empty list on non-Linux platforms.
 func ListUserTTYs() []string { return nil }
+
+// MaxUserLen is the maximum length of an ut_user value.
+var MaxUserLen = 32
+
+// Session represents a single logged-in user session from the utmpx
+// database. On non-Linux platforms it is unused but kept for API parity.
+type Session struct {
+	User string
+	Line string
+}
+
+// ListUserSessions returns an empty list on non-Linux platforms.
+func ListUserSessions() []Session { return nil }

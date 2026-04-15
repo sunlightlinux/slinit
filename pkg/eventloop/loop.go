@@ -51,6 +51,14 @@ type EventLoop struct {
 
 	// OnReopenSocket is called on SIGUSR1 to reopen the control socket
 	OnReopenSocket func()
+
+	// SignalShutdownGate, when set, is consulted before every signal-driven
+	// shutdown attempt (CAD, SIGTERM/SIGINT to PID 1, RT signals, etc.).
+	// Returning false aborts the shutdown; the signal is logged and
+	// otherwise ignored. It exists to implement /etc/slinit/shutdown.allow
+	// style access control without coupling pkg/eventloop to pkg/shutdown.
+	// reason is a human-readable signal name for logging.
+	SignalShutdownGate func(reason string) bool
 }
 
 // New creates a new EventLoop.
@@ -163,10 +171,29 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 	// Read shutdown state once (lock-free atomic)
 	shutting := el.isShuttingDown()
 
+	// Real-time shutdown signals (systemd SIGRTMIN+3..+6 convention).
+	// These are the standard way to trigger halt/poweroff/reboot/kexec
+	// against a container's PID 1 — `systemctl poweroff` from inside a
+	// container translates to `kill -s RTMIN+4 1`.
+	if st, name, ok := rtShutdownType(sysSignal); ok {
+		if shutting {
+			return el.escalateShutdown(name)
+		}
+		if !el.gateAllows(name) {
+			return false
+		}
+		el.logger.Notice("Received %s, initiating %s", name, st)
+		el.initiateShutdown(st)
+		return true
+	}
+
 	switch sysSignal {
 	case syscall.SIGTERM:
 		if shutting {
 			return el.escalateShutdown("SIGTERM")
+		}
+		if !el.gateAllows("SIGTERM") {
+			return false
 		}
 		if el.isContainer {
 			el.logger.Notice("Received SIGTERM, initiating graceful halt (container mode)")
@@ -184,6 +211,9 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		if shutting {
 			return el.escalateShutdown("SIGINT")
 		}
+		if !el.gateAllows("SIGINT") {
+			return false
+		}
 		if el.isContainer {
 			el.logger.Notice("Received SIGINT, initiating graceful halt (container mode)")
 			el.initiateShutdown(service.ShutdownHalt)
@@ -200,6 +230,9 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		if shutting {
 			return el.escalateShutdown("SIGQUIT")
 		}
+		if !el.gateAllows("SIGQUIT") {
+			return false
+		}
 		el.logger.Notice("Received SIGQUIT, initiating poweroff")
 		el.initiateShutdown(service.ShutdownPoweroff)
 		return true
@@ -214,6 +247,9 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 	case syscall.SIGUSR2:
 		if shutting {
 			return el.escalateShutdown("SIGUSR2")
+		}
+		if !el.gateAllows("SIGUSR2") {
+			return false
 		}
 		el.logger.Notice("Received SIGUSR2, initiating poweroff")
 		el.initiateShutdown(service.ShutdownPoweroff)
@@ -255,6 +291,21 @@ func (el *EventLoop) reapOrphans() {
 		}
 		el.logger.Debug("Reaped orphan process %d (status: %v)", pid, status)
 	}
+}
+
+// gateAllows consults el.SignalShutdownGate and returns true if the
+// shutdown should proceed. With no gate installed it is a no-op that
+// always allows. When the gate denies, it logs a notice so the operator
+// can see *why* a signal was ignored and returns false.
+func (el *EventLoop) gateAllows(sigName string) bool {
+	if el.SignalShutdownGate == nil {
+		return true
+	}
+	if el.SignalShutdownGate(sigName) {
+		return true
+	}
+	el.logger.Notice("Shutdown gate denied %s — ignoring signal", sigName)
+	return false
 }
 
 // escalateShutdown handles repeated shutdown signals during an ongoing

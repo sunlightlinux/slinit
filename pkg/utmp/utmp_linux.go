@@ -144,6 +144,39 @@ static int c_next_user_line(char *out, int reset) {
     endutxent();
     return 0;
 }
+
+// c_next_user_session is like c_next_user_line but also writes the
+// ut_user field into outUser (caller buffer of at least UT_NAMESIZE+1).
+// Used by shutdown.allow access control to check whether any authorised
+// user is currently logged in.
+static int c_next_user_session(char *outUser, char *outLine, int reset) {
+    if (reset) {
+        setutxent();
+    }
+    struct utmpx *ent;
+    while ((ent = getutxent()) != NULL) {
+        if (ent->ut_type != USER_PROCESS) {
+            continue;
+        }
+        if (ent->ut_user[0] == '\0') {
+            continue;
+        }
+        size_t un = sizeof(ent->ut_user);
+        memcpy(outUser, ent->ut_user, un);
+        outUser[un] = '\0';
+        size_t ln = sizeof(ent->ut_line);
+        memcpy(outLine, ent->ut_line, ln);
+        outLine[ln] = '\0';
+        return 1;
+    }
+    endutxent();
+    return 0;
+}
+
+// c_max_user_len returns sizeof(utmpx.ut_user).
+static int c_max_user_len(void) {
+    return sizeof(((struct utmpx *)0)->ut_user);
+}
 */
 import "C"
 
@@ -203,4 +236,46 @@ func ListUserTTYs() []string {
 		}
 	}
 	return lines
+}
+
+// MaxUserLen is the maximum length of an ut_user value.
+var MaxUserLen = int(C.c_max_user_len())
+
+// Session represents a single logged-in user session from the utmpx
+// database: the user name and the TTY/pseudoterminal device they are
+// attached to.
+type Session struct {
+	User string
+	Line string
+}
+
+// ListUserSessions returns one Session per active USER_PROCESS entry in
+// the utmp database. Used by shutdown.allow access control to verify
+// that at least one authorised user is currently logged in before
+// honouring a signal-driven shutdown.
+func ListUserSessions() []Session {
+	userBuf := make([]byte, MaxUserLen+1)
+	lineBuf := make([]byte, MaxLineLen+1)
+	cUser := (*C.char)(unsafe.Pointer(&userBuf[0]))
+	cLine := (*C.char)(unsafe.Pointer(&lineBuf[0]))
+
+	var sessions []Session
+	reset := C.int(1)
+	for C.c_next_user_session(cUser, cLine, reset) != 0 {
+		reset = 0
+		sessions = append(sessions, Session{
+			User: cStringUpTo(userBuf),
+			Line: cStringUpTo(lineBuf),
+		})
+	}
+	return sessions
+}
+
+// cStringUpTo returns the NUL-terminated prefix of buf as a Go string.
+func cStringUpTo(buf []byte) string {
+	n := 0
+	for n < len(buf) && buf[n] != 0 {
+		n++
+	}
+	return string(buf[:n])
 }

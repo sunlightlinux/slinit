@@ -14,7 +14,7 @@ import (
 // many orphan processes exiting simultaneously).
 func SetupSignals() chan os.Signal {
 	sigCh := make(chan os.Signal, 32)
-	signal.Notify(sigCh,
+	sigs := []os.Signal{
 		syscall.SIGTERM,
 		syscall.SIGINT,
 		syscall.SIGQUIT,
@@ -22,7 +22,13 @@ func SetupSignals() chan os.Signal {
 		syscall.SIGUSR1, // SysV: halt/reboot (busybox reboot)
 		syscall.SIGUSR2, // SysV: poweroff (busybox poweroff)
 		syscall.SIGCHLD, // For PID 1 orphan reaping
-	)
+	}
+	// Linux real-time signals (systemd-compatible shutdown triggers).
+	// On non-Linux platforms extraShutdownSignals() returns nil.
+	for _, s := range extraShutdownSignals() {
+		sigs = append(sigs, s)
+	}
+	signal.Notify(sigCh, sigs...)
 	return sigCh
 }
 

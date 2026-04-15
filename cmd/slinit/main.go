@@ -114,6 +114,11 @@ func main() {
 	var noWall bool
 	flag.BoolVar(&noWall, "no-wall", false, "disable wall broadcasts at shutdown")
 
+	var bootRlimits string
+	flag.StringVar(&bootRlimits, "rlimits", "",
+		"global resource limits applied to slinit and inherited by every service "+
+			"(comma-separated name=soft[:hard], e.g. 'nofile=65536,core=0,stack=8388608:unlimited')")
+
 	var parallelStartLimit int
 	var parallelSlowThreshold string
 	var sysOverride string
@@ -278,6 +283,20 @@ func main() {
 	// Wall broadcasts at shutdown (enabled by default, disable with --no-wall).
 	shutdown.SetWallEnabled(!noWall)
 
+	// Global rlimits: parse the --rlimits flag now so failures surface
+	// immediately. The values are applied after InitPID1/InitContainer so
+	// they take effect before any service starts — child processes inherit
+	// them automatically on fork.
+	var parsedRlimits []shutdown.BootRlimit
+	if bootRlimits != "" {
+		var err error
+		parsedRlimits, err = shutdown.ParseBootRlimits(bootRlimits)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: --rlimits: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	if containerMode {
 		logger.Notice("slinit starting in container mode (PID %d)", os.Getpid())
 		if err := shutdown.InitContainer(logger); err != nil {
@@ -292,6 +311,14 @@ func main() {
 		logger.Notice("slinit starting in system mode")
 	} else {
 		logger.Info("slinit starting in user mode")
+	}
+
+	// Apply global rlimits to slinit itself. Every child forked from here
+	// inherits these, so they act as a system-wide default that per-service
+	// rlimit-* settings can further tighten.
+	if len(parsedRlimits) > 0 {
+		n := shutdown.ApplyBootRlimits(parsedRlimits, logger)
+		logger.Info("Applied %d/%d global rlimits", n, len(parsedRlimits))
 	}
 
 	// Determine service directories
@@ -526,6 +553,22 @@ func main() {
 		loop.OnReopenSocket = func() {
 			if err := ctrlServer.Reopen(); err != nil {
 				logger.Error("Failed to reopen control socket: %v", err)
+			}
+		}
+
+		// /etc/slinit/shutdown.allow access control: only engage when
+		// running as PID 1 (the only situation where CAD-style signal
+		// escalation from local users is a concern). Containers and
+		// user-mode slinit don't need this — their shutdown paths are
+		// already gated by the runtime or by filesystem permissions.
+		if isPID1 && !containerMode {
+			allowPath := shutdown.FindShutdownAllow(shutdown.DefaultShutdownAllowPaths)
+			if allowPath != "" {
+				logger.Notice("Shutdown access control enabled via %s", allowPath)
+				loop.SignalShutdownGate = func(sigName string) bool {
+					allowed, _ := shutdown.CheckShutdownAllow(allowPath, logger)
+					return allowed
+				}
 			}
 		}
 
