@@ -20,6 +20,76 @@ const (
 	LevelError
 )
 
+// TimestampFormat selects how the console log line prefix is rendered.
+type TimestampFormat int
+
+const (
+	// TimestampWallclock is the default: "15:04:05" local time.
+	TimestampWallclock TimestampFormat = iota
+
+	// TimestampISO8601 renders an ISO-8601 timestamp with millisecond
+	// precision in the local timezone (e.g. 2026-04-17T10:31:04.213).
+	TimestampISO8601
+
+	// TimestampTAI64N renders the daemontools/s6-log external encoding:
+	// '@' + 16 hex TAI seconds + 8 hex nanoseconds. Makes slinit logs
+	// interchangeable with tai64nlocal(1).
+	TimestampTAI64N
+
+	// TimestampNone omits the prefix entirely (handy when piping into
+	// another logger that prepends its own timestamp).
+	TimestampNone
+)
+
+// ParseTimestampFormat accepts the CLI spelling of a TimestampFormat.
+func ParseTimestampFormat(s string) (TimestampFormat, error) {
+	switch s {
+	case "", "wallclock", "time", "default":
+		return TimestampWallclock, nil
+	case "iso", "iso8601":
+		return TimestampISO8601, nil
+	case "tai64n", "tai":
+		return TimestampTAI64N, nil
+	case "none", "off":
+		return TimestampNone, nil
+	default:
+		return TimestampWallclock, fmt.Errorf("invalid timestamp format %q (want wallclock|iso|tai64n|none)", s)
+	}
+}
+
+// timestampFormat is the package-wide timestamp format used by Logger
+// instances. Changed via SetTimestampFormat before any log lines are
+// emitted; races on this global are best-effort, matching the rest of
+// the package's configure-then-use pattern.
+var timestampFormat = TimestampWallclock
+
+// SetTimestampFormat changes the console log line timestamp encoding
+// for all subsequent log lines.
+func SetTimestampFormat(f TimestampFormat) { timestampFormat = f }
+
+// formatTimestamp renders t according to the currently selected format.
+// Returns an empty string for TimestampNone so callers can drop the
+// entire "[...] " prefix.
+func formatTimestamp(t time.Time) string {
+	switch timestampFormat {
+	case TimestampISO8601:
+		return t.Format("2006-01-02T15:04:05.000")
+	case TimestampTAI64N:
+		// daemontools convention: TAI = 2^62 + unix_seconds + 10.
+		// Leap seconds beyond the +10 base are not accounted for —
+		// matches what tai64n(1) and s6-log 't' produce in practice.
+		const tai64Offset = int64(1) << 62
+		const taiLeapBase = int64(10)
+		secs := uint64(tai64Offset + t.Unix() + taiLeapBase)
+		nsecs := uint32(t.Nanosecond())
+		return fmt.Sprintf("@%016x%08x", secs, nsecs)
+	case TimestampNone:
+		return ""
+	default:
+		return t.Format("15:04:05")
+	}
+}
+
 func (l Level) String() string {
 	switch l {
 	case LevelDebug:
@@ -129,8 +199,13 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 
 	if consoleOK {
-		timestamp := time.Now().Format("15:04:05")
-		line := fmt.Sprintf("[%s] %s: %s\n", timestamp, level, msg)
+		timestamp := formatTimestamp(time.Now())
+		var line string
+		if timestamp == "" {
+			line = fmt.Sprintf("%s: %s\n", level, msg)
+		} else {
+			line = fmt.Sprintf("[%s] %s: %s\n", timestamp, level, msg)
+		}
 		fmt.Fprint(l.output, line)
 		if l.consoleDup != nil {
 			fmt.Fprint(l.consoleDup, line)

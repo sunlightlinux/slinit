@@ -177,6 +177,78 @@ static int c_next_user_session(char *outUser, char *outLine, int reset) {
 static int c_max_user_len(void) {
     return sizeof(((struct utmpx *)0)->ut_user);
 }
+
+// c_logout_all_users rewrites every USER_PROCESS entry in utmp as
+// DEAD_PROCESS and appends a matching logout record to wtmp so last(1)
+// can display a clean session boundary across a shutdown. The utmp
+// rewrite preserves ut_id and ut_line so getutxid/getutxline matches;
+// the wtmp record has a blank ut_user per sysvinit convention.
+// Returns the number of sessions logged out.
+static int c_logout_all_users(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+
+    // Snapshot USER_PROCESS entries first so we don't mutate the file
+    // while iterating. A cap of 256 sessions is well above anything a
+    // real init will see (utmp is for login sessions, not connections).
+    struct utmpx saved[256];
+    int n = 0;
+
+    setutxent();
+    struct utmpx *ent;
+    while (n < (int)(sizeof(saved)/sizeof(saved[0])) && (ent = getutxent()) != NULL) {
+        if (ent->ut_type != USER_PROCESS) continue;
+        if (ent->ut_line[0] == '\0') continue;
+        saved[n++] = *ent;
+    }
+    endutxent();
+
+    for (int i = 0; i < n; i++) {
+        struct utmpx dead;
+        memset(&dead, 0, sizeof(dead));
+        dead.ut_type = DEAD_PROCESS;
+        memcpy(dead.ut_id, saved[i].ut_id, sizeof(dead.ut_id));
+        memcpy(dead.ut_line, saved[i].ut_line, sizeof(dead.ut_line));
+        dead.ut_pid = saved[i].ut_pid;
+        dead.ut_tv.tv_sec = tv.tv_sec;
+        dead.ut_tv.tv_usec = tv.tv_usec;
+
+        setutxent();
+        pututxline(&dead);
+        endutxent();
+
+        struct utmp wrec;
+        memset(&wrec, 0, sizeof(wrec));
+        wrec.ut_type = DEAD_PROCESS;
+        memcpy(wrec.ut_id, saved[i].ut_id, sizeof(wrec.ut_id));
+        memcpy(wrec.ut_line, saved[i].ut_line, sizeof(wrec.ut_line));
+        wrec.ut_pid = saved[i].ut_pid;
+        wrec.ut_tv.tv_sec = tv.tv_sec;
+        wrec.ut_tv.tv_usec = tv.tv_usec;
+        updwtmp(_PATH_WTMP, &wrec);
+    }
+    return n;
+}
+
+// c_log_shutdown appends a RUN_LVL "shutdown" record to wtmp so that
+// `last -x` renders a system-shutdown boundary. Matches sysvinit's
+// convention of ut_user="shutdown", ut_line="~", ut_id="~~".
+static int c_log_shutdown(void) {
+    struct utmp rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.ut_type = RUN_LVL;
+    strncpy(rec.ut_user, "shutdown", sizeof(rec.ut_user));
+    strncpy(rec.ut_line, "~", sizeof(rec.ut_line));
+    strncpy(rec.ut_id, "~~", sizeof(rec.ut_id));
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    rec.ut_tv.tv_sec = tv.tv_sec;
+    rec.ut_tv.tv_usec = tv.tv_usec;
+
+    updwtmp(_PATH_WTMP, &rec);
+    return 1;
+}
 */
 import "C"
 
@@ -278,4 +350,21 @@ func cStringUpTo(buf []byte) string {
 		n++
 	}
 	return string(buf[:n])
+}
+
+// LogoutAllUsers marks every active USER_PROCESS entry in utmp as
+// DEAD_PROCESS and appends a matching logout record to wtmp. This is
+// the shutdown counterpart of LogBoot: after it runs, `last` shows a
+// clean session boundary instead of still-logged-in sessions bleeding
+// across the reboot. Returns the number of sessions logged out.
+func LogoutAllUsers() int {
+	return int(C.c_logout_all_users())
+}
+
+// LogShutdown appends a RUN_LVL "shutdown" record to wtmp so that
+// `last -x` renders a system-shutdown boundary. Called from the
+// shutdown sequence after LogoutAllUsers and before processes are
+// killed, matching sysvinit behaviour.
+func LogShutdown() bool {
+	return C.c_log_shutdown() != 0
 }

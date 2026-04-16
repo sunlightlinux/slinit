@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"net"
@@ -45,6 +46,14 @@ func (s *stringSlice) Set(v string) error {
 
 func main() {
 	bootStartTime := time.Now()
+
+	// SysV init compatibility: when invoked as halt/poweroff/reboot (via
+	// /sbin/halt → slinit symlinks), act as a thin CLI that requests the
+	// shutdown via the control socket. Must run before flag.Parse so the
+	// compat shim isn't confused by slinit's own flag set.
+	if handleSysVCompat() {
+		return
+	}
 
 	// Parse command-line flags
 	var (
@@ -106,10 +115,19 @@ func main() {
 	var bootBanner string
 	var initUmask string
 	var consoleDup bool
+	var devtmpfsPath string
+	var runMode string
+	var kcmdlineDest string
 	flag.StringVar(&bootBanner, "banner", "slinit booting...", "boot banner (empty to disable)")
 	flag.StringVar(&initUmask, "umask", "0022", "initial umask (octal)")
 	flag.BoolVar(&consoleDup, "1", false, "duplicate log output to /dev/console (when using --log-file)")
 	flag.BoolVar(&consoleDup, "console-dup", false, "duplicate log output to /dev/console (when using --log-file)")
+	flag.StringVar(&devtmpfsPath, "devtmpfs-path", "/dev", "mount devtmpfs at this path (empty disables the mount)")
+	flag.StringVar(&runMode, "run-mode", "mount", "how to stage /run at boot (mount|remount|keep)")
+	flag.StringVar(&kcmdlineDest, "kcmdline-dest", "/run/slinit/kcmdline", "snapshot /proc/cmdline to this path (empty disables)")
+
+	var timestampFormat string
+	flag.StringVar(&timestampFormat, "timestamp-format", "wallclock", "log timestamp format (wallclock|iso|tai64n|none)")
 
 	var noWall bool
 	flag.BoolVar(&noWall, "no-wall", false, "disable wall broadcasts at shutdown")
@@ -162,8 +180,14 @@ func main() {
 		}
 	}
 
-	// SysV init compatibility: "init 0" → poweroff, "init 6" → reboot
-	// When not PID 1, numeric arguments trigger shutdown via control socket.
+	// SysV init compatibility: "init 0" → poweroff, "init 6" → reboot,
+	// "init N" (N in 1..5) → start the runlevel-N service via the control
+	// socket. Runlevels are a sysvinit concept slinit doesn't implement
+	// natively — this dispatch is an alias so operators used to
+	// `init 3` (multi-user network) can keep their muscle memory, as
+	// long as the admin has defined runlevel-1 … runlevel-5 services.
+	// When not PID 1, numeric arguments trigger these actions via the
+	// control socket.
 	if !isPID1 {
 		args := flag.Args()
 		if len(args) > 0 {
@@ -172,6 +196,8 @@ func main() {
 				sendShutdownAndExit(socketPath, systemMode, service.ShutdownPoweroff)
 			case "6":
 				sendShutdownAndExit(socketPath, systemMode, service.ShutdownReboot)
+			case "1", "2", "3", "4", "5":
+				startServiceAndExit(socketPath, systemMode, "runlevel-"+args[0])
 			}
 		}
 	}
@@ -228,6 +254,11 @@ func main() {
 	}
 	logger := logging.New(consLevel)
 	logger.SetMainLevel(mainLogLevel)
+	if tf, err := logging.ParseTimestampFormat(timestampFormat); err == nil {
+		logging.SetTimestampFormat(tf)
+	} else {
+		fmt.Fprintf(os.Stderr, "slinit: %v (using default wallclock)\n", err)
+	}
 
 	// Redirect log output to file (--log-file/-l)
 	if logFile != "" {
@@ -279,6 +310,13 @@ func main() {
 	} else {
 		logger.Error("Invalid --umask %q: %v (using default 0022)", initUmask, err)
 	}
+	shutdown.SetDevtmpfsPath(devtmpfsPath)
+	if rm, err := shutdown.ParseRunMode(runMode); err == nil {
+		shutdown.SetRunMode(rm)
+	} else {
+		logger.Error("Invalid --run-mode %q: %v (using default mount)", runMode, err)
+	}
+	shutdown.SetKcmdlineDest(kcmdlineDest)
 
 	// Wall broadcasts at shutdown (enabled by default, disable with --no-wall).
 	shutdown.SetWallEnabled(!noWall)
@@ -812,6 +850,71 @@ func sendShutdownAndExit(socketFlag string, systemFlag bool, shutType service.Sh
 	}
 
 	os.Exit(0)
+}
+
+// startServiceAndExit connects to the running slinit instance and asks
+// it to start the named service. Used for SysV-style `init N` dispatch
+// (N in 1..5) which we translate into "start the runlevel-N service".
+//
+// The dance mirrors slinitctl's cmdStart: load the service (→ handle),
+// then issue CmdStartService. A missing service is reported as an
+// actionable error so the operator knows they need to define one.
+func startServiceAndExit(socketFlag string, systemFlag bool, name string) {
+	sock := resolveSocketPath(socketFlag, systemFlag || os.Getuid() == 0)
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: cannot connect to %s: %v\n", sock, err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	// Load — yields a handle if the service exists.
+	if err := control.WritePacket(conn, control.CmdLoadService, control.EncodeServiceName(name)); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: load %s: %v\n", name, err)
+		os.Exit(1)
+	}
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: reading load reply: %v\n", err)
+		os.Exit(1)
+	}
+	if rply != control.RplyServiceRecord {
+		fmt.Fprintf(os.Stderr,
+			"slinit: cannot start %s (reply: %d) — define a %q service to use this runlevel alias\n",
+			name, rply, name)
+		os.Exit(1)
+	}
+	if len(payload) < 5 {
+		fmt.Fprintf(os.Stderr, "slinit: truncated load reply (%d bytes)\n", len(payload))
+		os.Exit(1)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	// Start — flags=0 (no pin, not stop). EncodeHandle pads the 1-byte
+	// flag field to match the wire format used by slinitctl.
+	startPayload := make([]byte, 5)
+	binary.LittleEndian.PutUint32(startPayload[0:4], handle)
+	startPayload[4] = 0
+	if err := control.WritePacket(conn, control.CmdStartService, startPayload); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: start %s: %v\n", name, err)
+		os.Exit(1)
+	}
+	rply, _, err = control.ReadPacket(conn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: reading start reply: %v\n", err)
+		os.Exit(1)
+	}
+	switch rply {
+	case control.RplyACK, control.RplyAlreadySS:
+		os.Exit(0)
+	case control.RplyShuttingDown:
+		fmt.Fprintln(os.Stderr, "slinit: system is shutting down")
+		os.Exit(1)
+	default:
+		fmt.Fprintf(os.Stderr, "slinit: start %s not acknowledged (reply: %d)\n", name, rply)
+		os.Exit(1)
+	}
 }
 
 // tryStartServices attempts to load and start all named services. Returns true

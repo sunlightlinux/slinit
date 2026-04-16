@@ -9,6 +9,7 @@ import (
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/utmp"
 )
 
 const (
@@ -47,10 +48,12 @@ var shutdownHookPaths = []string{
 
 // Mockable syscall functions for testing.
 var (
-	killFunc   = syscall.Kill
-	syncFunc   = syscall.Sync
-	rebootFunc = syscall.Reboot
-	runHookFunc = runShutdownHook
+	killFunc           = syscall.Kill
+	syncFunc           = syscall.Sync
+	rebootFunc         = syscall.Reboot
+	runHookFunc        = runShutdownHook
+	logoutAllUsersFunc = utmp.LogoutAllUsers
+	logShutdownFunc    = utmp.LogShutdown
 )
 
 // Execute performs the full shutdown sequence after all services have stopped.
@@ -63,6 +66,15 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 
 	// Broadcast a final wall notice to any logged-in users.
 	WallShutdownNotice(shutdownType, 0, logger)
+
+	// Mark every active login session as closed in utmp+wtmp so that
+	// last(1) shows clean logout boundaries across the reboot. Doing
+	// this before KillAllProcesses means the utmp/wtmp files are still
+	// on a writable filesystem and no logger has been torn down.
+	if n := logoutAllUsersFunc(); n > 0 {
+		logger.Info("Logged out %d active session(s)", n)
+	}
+	logShutdownFunc()
 
 	// Kill all remaining processes
 	KillAllProcesses(logger)

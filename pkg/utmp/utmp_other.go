@@ -34,3 +34,9 @@ type Session struct {
 
 // ListUserSessions returns an empty list on non-Linux platforms.
 func ListUserSessions() []Session { return nil }
+
+// LogoutAllUsers is a no-op on non-Linux platforms.
+func LogoutAllUsers() int { return 0 }
+
+// LogShutdown is a no-op on non-Linux platforms.
+func LogShutdown() bool { return true }
