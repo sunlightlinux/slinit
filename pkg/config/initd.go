@@ -145,11 +145,15 @@ func InitDToServiceDescription(scriptPath string) (*ServiceDescription, error) {
 		return nil, fmt.Errorf("parsing init.d script '%s': %w", name, err)
 	}
 
+	// Source /etc/rc.conf + /etc/conf.d/<name> ahead of each action,
+	// matching OpenRC's convention. The wrapper is a no-op when those
+	// files are absent, so non-OpenRC distros still work identically
+	// to before.
 	desc := &ServiceDescription{
-		Name:    name,
-		Type:    service.TypeScripted,
-		Command: []string{scriptPath, "start"},
-		StopCommand: []string{scriptPath, "stop"},
+		Name:        name,
+		Type:        service.TypeScripted,
+		Command:     wrapInitdWithConfD(scriptPath, name, "start"),
+		StopCommand: wrapInitdWithConfD(scriptPath, name, "stop"),
 	}
 
 	if lsb.ShortDescription != "" {

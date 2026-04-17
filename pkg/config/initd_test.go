@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -112,11 +113,19 @@ func TestInitDToServiceDescription(t *testing.T) {
 	if desc.Type != 3 { // TypeScripted
 		t.Errorf("Type = %d, want TypeScripted (3)", desc.Type)
 	}
-	if len(desc.Command) != 2 || desc.Command[1] != "start" {
-		t.Errorf("Command = %v, want [<path> start]", desc.Command)
+	// Commands are wrapped in `sh -c ... ; exec <script> <action>` so
+	// OpenRC /etc/rc.conf + /etc/conf.d/<name> get sourced before the
+	// init.d script runs. Verify the wrapper structure and that the
+	// right action ends up in the exec.
+	if len(desc.Command) != 3 || desc.Command[0] != "/bin/sh" || desc.Command[1] != "-c" {
+		t.Errorf("Command = %v, want [/bin/sh -c <snippet>]", desc.Command)
+	} else if !strings.Contains(desc.Command[2], "'start'") {
+		t.Errorf("Command snippet missing 'start': %q", desc.Command[2])
 	}
-	if len(desc.StopCommand) != 2 || desc.StopCommand[1] != "stop" {
-		t.Errorf("StopCommand = %v, want [<path> stop]", desc.StopCommand)
+	if len(desc.StopCommand) != 3 || desc.StopCommand[0] != "/bin/sh" || desc.StopCommand[1] != "-c" {
+		t.Errorf("StopCommand = %v, want [/bin/sh -c <snippet>]", desc.StopCommand)
+	} else if !strings.Contains(desc.StopCommand[2], "'stop'") {
+		t.Errorf("StopCommand snippet missing 'stop': %q", desc.StopCommand[2])
 	}
 	if desc.Description != "My example daemon" {
 		t.Errorf("Description = %q, want %q", desc.Description, "My example daemon")

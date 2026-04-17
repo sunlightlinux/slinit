@@ -181,13 +181,12 @@ func main() {
 	}
 
 	// SysV init compatibility: "init 0" → poweroff, "init 6" → reboot,
-	// "init N" (N in 1..5) → start the runlevel-N service via the control
-	// socket. Runlevels are a sysvinit concept slinit doesn't implement
-	// natively — this dispatch is an alias so operators used to
-	// `init 3` (multi-user network) can keep their muscle memory, as
-	// long as the admin has defined runlevel-1 … runlevel-5 services.
-	// When not PID 1, numeric arguments trigger these actions via the
-	// control socket.
+	// "init N" (N in 1..5) → start runlevel-N. OpenRC-style named
+	// runlevels (single, nonetwork, default, boot, sysinit) also
+	// dispatch to the corresponding runlevel-<name> service. Slinit
+	// has no native runlevel concept — these are pure aliases, so the
+	// admin must define runlevel-N / runlevel-<name> services for the
+	// dispatch to have anything to do.
 	if !isPID1 {
 		args := flag.Args()
 		if len(args) > 0 {
@@ -197,6 +196,8 @@ func main() {
 			case "6":
 				sendShutdownAndExit(socketPath, systemMode, service.ShutdownReboot)
 			case "1", "2", "3", "4", "5":
+				startServiceAndExit(socketPath, systemMode, "runlevel-"+args[0])
+			case "single", "nonetwork", "default", "boot", "sysinit":
 				startServiceAndExit(socketPath, systemMode, "runlevel-"+args[0])
 			}
 		}
