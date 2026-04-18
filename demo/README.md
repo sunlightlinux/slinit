@@ -314,8 +314,9 @@ Try:
 ```bash
 rc-service hello-initd start       # argv shim over slinitctl
 rc-update add hello-initd default  # adds waits-for: hello-initd on runlevel-default
-rc-status default                   # graph runlevel-default
-slinitctl catlog hello-initd       # see HELLO_MESSAGE from /etc/conf.d/
+rc-status default                  # graph runlevel-default
+grep hello-initd /run/slinit/catch-all.log
+                                   # see HELLO_MESSAGE from /etc/conf.d/
 ```
 
 ### Runit-Inspired Features
