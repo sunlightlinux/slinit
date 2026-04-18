@@ -11,9 +11,10 @@ assert_exit_code "slinitctl --system is-started ok-svc" 0 "is-started ok-svc exi
 # is-failed on a running service should exit 1 (not failed)
 assert_exit_code "slinitctl --system is-failed ok-svc" 1 "is-failed ok-svc exits 1"
 
-# fail-svc should have failed to start (scripted with exit 1).
-# Wait for it to reach STOPPED state (it starts, runs "exit 1", and fails).
-sleep 2
+# fail-svc is scripted with `exit 1`; poll for STOPPED instead of
+# a fixed sleep so the test stays deterministic under boot-queue
+# pressure (`wait_for_service` polls every second up to 10s).
+wait_for_service "fail-svc" "STOPPED" 10
 
 # is-started on a failed service should exit 1
 assert_exit_code "slinitctl --system is-started fail-svc" 1 "is-started fail-svc exits 1"
