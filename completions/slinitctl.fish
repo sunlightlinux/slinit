@@ -7,7 +7,7 @@ function __slinitctl_services
 end
 
 # Subcommands
-set -l commands list ls start wake stop release restart status is-started is-failed shutdown trigger untrigger signal pause continue once reload unload boot-time analyze catlog attach setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable query-name service-dirs load-mech dependents platform
+set -l commands list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog attach setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph query-name service-dirs load-mech dependents list5 status5 platform completion
 
 # Disable file completions by default
 complete -c slinitctl -f

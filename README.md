@@ -789,7 +789,7 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 98 QEMU-based integration tests
+├── tests/functional/      # 52 QEMU-based integration tests
 ├── tests/fuzz/            # 18 fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
@@ -797,10 +797,10 @@ slinit/
 ## Testing
 
 ```bash
-# Unit tests (~728 tests + benchmarks across 21 packages)
+# Unit tests (~751 tests + benchmarks across 21 packages)
 go test ./...
 
-# Functional tests (98 QEMU-based integration tests)
+# Functional tests (52 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
 # Fuzz targets (18 targets across 4 files)

@@ -38,15 +38,22 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (237+ tests)
-- **Functional tests**: `./tests/functional/run-tests.sh` (35 QEMU-based tests)
+- **Unit tests**: `go test ./...` (~751 tests across 21 packages)
+- **Functional tests**: `./tests/functional/run-tests.sh` (52 QEMU-based tests)
+- **Fuzz targets**: `go test -fuzz=FuzzParseConfig ./tests/fuzz` (18 targets across 4 files)
 - Requires `qemu-system-x86_64` for functional tests
 
 ### Project Structure
 
-- `cmd/` - Entry points (slinit, slinitctl, slinit-check, slinit-monitor)
-- `pkg/` - Core packages (service, config, control, shutdown, process, eventloop)
+- `cmd/` - Entry points (slinit, slinitctl, slinit-check, slinit-monitor,
+  slinit-shutdown, slinit-init-maker, slinit-nuke, slinit-mount, plus
+  OpenRC shims: rc-service, rc-update, rc-status)
+- `pkg/` - Core packages (service, config, control, shutdown, process,
+  eventloop, logging, utmp, autofs, checkpath, platform)
+- `internal/util/` - Path and parsing utilities
+- `completions/` - Shell completions (bash, zsh, fish)
 - `tests/functional/` - QEMU integration tests
+- `tests/fuzz/` - Fuzz targets
 - `demo/` - QEMU demo environment
 
 ## License

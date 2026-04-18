@@ -35,6 +35,8 @@ _slinitctl() {
         'status:Show service status'
         'is-started:Check if service is started'
         'is-failed:Check if service has failed'
+        'is-newer-than:Compare service start times (exit 0 if A started after B)'
+        'is-older-than:Compare service start times (exit 0 if A started before B)'
         'shutdown:Initiate system shutdown'
         'trigger:Trigger a triggered service'
         'untrigger:Reset trigger state'
@@ -47,6 +49,7 @@ _slinitctl() {
         'attach:Attach to service virtual TTY (Ctrl+] to detach)'
         'pause:Pause a service (SIGSTOP)'
         'continue:Continue a paused service (SIGCONT)'
+        'cont:Continue a paused service (alias for continue)'
         'once:Start service without auto-restart'
         'setenv:Set per-service environment variable'
         'unsetenv:Remove per-service environment variable'
@@ -63,7 +66,11 @@ _slinitctl() {
         'service-dirs:List service directories'
         'load-mech:Query service loader mechanism'
         'dependents:List service dependents'
+        'graph:Print dependency graph (DOT format)'
+        'list5:List services with v5 protocol extended info'
+        'status5:Show v5 protocol extended status'
         'platform:Detect and display virtualization/container platform'
+        'completion:Generate shell completion script (bash/zsh/fish)'
     )
 
     global_opts=(
