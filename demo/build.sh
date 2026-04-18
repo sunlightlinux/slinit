@@ -156,12 +156,13 @@ cat > "${ROOTFS_DIR}/etc/init.d/hello-initd" <<'EOF'
 #                    /etc/rc.conf and /etc/conf.d/<name> sourcing.
 ### END INIT INFO
 
+LOG=/run/hello-initd.log
 case "$1" in
     start)
-        echo "[hello-initd] start: rc_parallel=${rc_parallel:-unset}, HELLO_MESSAGE=${HELLO_MESSAGE:-unset}"
+        echo "[hello-initd] start: rc_parallel=${rc_parallel:-unset}, HELLO_MESSAGE=${HELLO_MESSAGE:-unset}" | tee -a "$LOG"
         ;;
     stop)
-        echo "[hello-initd] stop"
+        echo "[hello-initd] stop" | tee -a "$LOG"
         ;;
     *)
         echo "usage: $0 {start|stop}" >&2
