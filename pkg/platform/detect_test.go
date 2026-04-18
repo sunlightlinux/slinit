@@ -178,6 +178,120 @@ func TestDetectXenDomU(t *testing.T) {
 	})
 }
 
+func TestDetectKVMViaHypervisorType(t *testing.T) {
+	m := newMockFS()
+	m.files["/sys/hypervisor/type"] = []byte("kvm\n")
+	withMock(m, func() {
+		if got := Detect(); got != KVM {
+			t.Errorf("expected KVM, got %q", got)
+		}
+	})
+}
+
+func TestDetectKVMViaDMIProduct(t *testing.T) {
+	m := newMockFS()
+	m.files["/sys/class/dmi/id/product_name"] = []byte("KVM\n")
+	withMock(m, func() {
+		if got := Detect(); got != KVM {
+			t.Errorf("expected KVM, got %q", got)
+		}
+	})
+}
+
+func TestDetectQEMUViaDMIVendor(t *testing.T) {
+	m := newMockFS()
+	// product_name doesn't match, sys_vendor says QEMU, and no kvm-clock —
+	// pure-TCG path.
+	m.files["/sys/class/dmi/id/product_name"] = []byte("Standard PC (Q35 + ICH9, 2009)\n")
+	m.files["/sys/class/dmi/id/sys_vendor"] = []byte("QEMU\n")
+	withMock(m, func() {
+		if got := Detect(); got != QEMU {
+			t.Errorf("expected QEMU, got %q", got)
+		}
+	})
+}
+
+func TestDetectKVMViaClocksourceWithQEMUVendor(t *testing.T) {
+	// KVM guests commonly show sys_vendor=QEMU with no /sys/hypervisor;
+	// kvm-clock in the clocksource list is the disambiguator.
+	m := newMockFS()
+	m.files["/sys/class/dmi/id/product_name"] = []byte("Standard PC (Q35 + ICH9, 2009)\n")
+	m.files["/sys/class/dmi/id/sys_vendor"] = []byte("QEMU\n")
+	m.files["/sys/devices/system/clocksource/clocksource0/available_clocksource"] = []byte("kvm-clock tsc acpi_pm\n")
+	withMock(m, func() {
+		if got := Detect(); got != KVM {
+			t.Errorf("expected KVM (kvm-clock tiebreaker), got %q", got)
+		}
+	})
+}
+
+func TestDetectKVMViaClocksourceOnly(t *testing.T) {
+	// No DMI at all, but kvm-clock present — minimal QEMU configs can
+	// hide SMBIOS from the guest.
+	m := newMockFS()
+	m.files["/sys/devices/system/clocksource/clocksource0/available_clocksource"] = []byte("kvm-clock tsc\n")
+	withMock(m, func() {
+		if got := Detect(); got != KVM {
+			t.Errorf("expected KVM (clocksource fallback), got %q", got)
+		}
+	})
+}
+
+func TestDetectVMware(t *testing.T) {
+	m := newMockFS()
+	m.files["/sys/class/dmi/id/product_name"] = []byte("VMware Virtual Platform\n")
+	withMock(m, func() {
+		if got := Detect(); got != VMware {
+			t.Errorf("expected VMware, got %q", got)
+		}
+	})
+}
+
+func TestDetectHyperV(t *testing.T) {
+	m := newMockFS()
+	m.files["/sys/class/dmi/id/product_name"] = []byte("Virtual Machine\n")
+	m.files["/sys/class/dmi/id/sys_vendor"] = []byte("Microsoft Corporation\n")
+	withMock(m, func() {
+		if got := Detect(); got != HyperV {
+			t.Errorf("expected HyperV, got %q", got)
+		}
+	})
+}
+
+func TestDetectVirtualBox(t *testing.T) {
+	m := newMockFS()
+	m.files["/sys/class/dmi/id/product_name"] = []byte("VirtualBox\n")
+	withMock(m, func() {
+		if got := Detect(); got != VirtualBox {
+			t.Errorf("expected VirtualBox, got %q", got)
+		}
+	})
+}
+
+func TestDetectBochs(t *testing.T) {
+	m := newMockFS()
+	m.files["/sys/class/dmi/id/sys_vendor"] = []byte("Bochs\n")
+	withMock(m, func() {
+		if got := Detect(); got != Bochs {
+			t.Errorf("expected Bochs, got %q", got)
+		}
+	})
+}
+
+// Xen still wins over DMI when both are present (PV guests can ship
+// Xen-flavored DMI with KVM-like strings on mixed hosts).
+func TestDetectXenBeatsDMI(t *testing.T) {
+	m := newMockFS()
+	m.dirs["/proc/xen"] = true
+	m.files["/proc/xen/capabilities"] = []byte("")
+	m.files["/sys/class/dmi/id/product_name"] = []byte("KVM\n")
+	withMock(m, func() {
+		if got := Detect(); got != XenU {
+			t.Errorf("expected XenU (Xen precedence), got %q", got)
+		}
+	})
+}
+
 func TestDetectNone(t *testing.T) {
 	m := newMockFS()
 	withMock(m, func() {

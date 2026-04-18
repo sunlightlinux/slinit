@@ -28,6 +28,12 @@ const (
 	WSL           Type = "wsl"          // Windows Subsystem for Linux
 	Xen0          Type = "xen0"         // Xen Dom0 (control domain)
 	XenU          Type = "xenu"         // Xen DomU (guest domain)
+	KVM           Type = "kvm"          // KVM hypervisor guest
+	QEMU          Type = "qemu"         // QEMU-TCG guest (no KVM)
+	VMware        Type = "vmware"       // VMware guest
+	HyperV        Type = "microsoft"    // Hyper-V guest
+	VirtualBox    Type = "oracle"       // VirtualBox guest
+	Bochs         Type = "bochs"        // Bochs emulator
 )
 
 // AllTypes returns all known platform types for validation.
@@ -35,6 +41,7 @@ func AllTypes() []Type {
 	return []Type{
 		Docker, Podman, LXC, SystemdNspawn, OpenVZ,
 		Vserver, RKT, UML, WSL, Xen0, XenU,
+		KVM, QEMU, VMware, HyperV, VirtualBox, Bochs,
 	}
 }
 
@@ -142,7 +149,8 @@ func detectContainer() Type {
 }
 
 func detectVM() Type {
-	// Xen: /proc/xen exists
+	// Xen: /proc/xen exists (kept first so PV-only Xen guests without
+	// DMI still detect before we fall through to the DMI probes).
 	if fi, err := statFunc("/proc/xen"); err == nil && fi.IsDir() {
 		// Dom0 has "control_d" in /proc/xen/capabilities
 		if caps, err := readFileFunc("/proc/xen/capabilities"); err == nil {
@@ -153,7 +161,82 @@ func detectVM() Type {
 		return XenU
 	}
 
+	// /sys/hypervisor/type is authoritative when present.
+	if data, err := readFileFunc("/sys/hypervisor/type"); err == nil {
+		switch strings.ToLower(strings.TrimSpace(string(data))) {
+		case "xen":
+			return XenU // Dom0 already returned above via /proc/xen
+		case "kvm":
+			return KVM
+		}
+	}
+
+	// DMI vendor / product strings — systemd-detect-virt's primary
+	// probe on x86 and the most reliable source on a paravirtualized
+	// KVM guest where /proc/xen is absent and /sys/hypervisor isn't
+	// exposed. We check product_name before sys_vendor because QEMU
+	// sets product_name to "KVM" under KVM acceleration and to
+	// "Standard PC (..)" (QEMU) under pure TCG.
+	if data, err := readFileFunc("/sys/class/dmi/id/product_name"); err == nil {
+		pn := strings.ToLower(strings.TrimSpace(string(data)))
+		switch {
+		case strings.Contains(pn, "kvm"):
+			return KVM
+		case strings.Contains(pn, "virtualbox"):
+			return VirtualBox
+		case strings.Contains(pn, "vmware"):
+			return VMware
+		case strings.Contains(pn, "bochs"):
+			return Bochs
+		case strings.Contains(pn, "virtual machine"):
+			// Hyper-V reports "Virtual Machine" with sys_vendor "Microsoft Corporation"
+			if sv, err := readFileFunc("/sys/class/dmi/id/sys_vendor"); err == nil {
+				if strings.Contains(strings.ToLower(string(sv)), "microsoft") {
+					return HyperV
+				}
+			}
+		}
+	}
+
+	if data, err := readFileFunc("/sys/class/dmi/id/sys_vendor"); err == nil {
+		sv := strings.ToLower(strings.TrimSpace(string(data)))
+		switch {
+		case strings.Contains(sv, "qemu"):
+			// KVM guests commonly report sys_vendor=QEMU with no
+			// /sys/hypervisor entry; fall back to kvm-clock to tell
+			// accelerated KVM apart from pure-TCG QEMU.
+			if hasKVMClock() {
+				return KVM
+			}
+			return QEMU
+		case strings.Contains(sv, "vmware"):
+			return VMware
+		case strings.Contains(sv, "microsoft"):
+			return HyperV
+		case strings.Contains(sv, "innotek") || strings.Contains(sv, "oracle"):
+			return VirtualBox
+		case strings.Contains(sv, "bochs"):
+			return Bochs
+		}
+	}
+
+	// Last-resort: kvm-clock exposed by the guest kernel even when DMI is
+	// blank (some minimal QEMU configs hide SMBIOS from the guest).
+	if hasKVMClock() {
+		return KVM
+	}
+
 	return None
+}
+
+// hasKVMClock reports whether the guest kernel advertises kvm-clock as a
+// clocksource — a reliable marker that KVM acceleration is in use.
+func hasKVMClock() bool {
+	data, err := readFileFunc("/sys/devices/system/clocksource/clocksource0/available_clocksource")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "kvm-clock")
 }
 
 // MatchesKeyword checks if a keyword string (e.g. "-docker", "-lxc") matches

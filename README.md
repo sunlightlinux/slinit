@@ -196,7 +196,7 @@ ln -s slinit /sbin/reboot
 | `--run-mode` | Stage `/run` at boot: `mount` (fresh tmpfs), `remount` (unmount+mount), `keep` (untouched) | `mount` |
 | `--devtmpfs-path` | Mount devtmpfs at this path (empty disables) | `/dev` |
 | `--kcmdline-dest` | Snapshot `/proc/cmdline` to this path (empty disables) | `/run/slinit/kcmdline` |
-| `-S` / `--sys` | Override platform detection (`docker`, `lxc`, `podman`, `wsl`, `xen0`, `xenu`, `none`) | auto |
+| `-S` / `--sys` | Override platform detection (`docker`, `lxc`, `podman`, `systemd-nspawn`, `openvz`, `vserver`, `rkt`, `uml`, `wsl`, `xen0`, `xenu`, `kvm`, `qemu`, `vmware`, `microsoft` (Hyper-V), `oracle` (VirtualBox), `bochs`, `none`) | auto |
 | `--conf-dir` | Override `conf.d` overlay directories (comma-separated; `none` disables overlays) | |
 | `--version` | Show version and exit | |
 
@@ -785,7 +785,7 @@ slinit/
 │   ├── utmp/              # UTMPX cgo wrapper (boot + logout + shutdown records)
 │   ├── autofs/            # Autofs direct-mount helper
 │   ├── checkpath/         # Path permission / ownership verifier
-│   └── platform/          # Container/platform auto-detect (docker/lxc/podman/wsl/xen)
+│   └── platform/          # Container & VM auto-detect (docker/lxc/podman/wsl/xen/kvm/qemu/vmware/hyperv/vbox/bochs)
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
