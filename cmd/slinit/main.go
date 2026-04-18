@@ -171,7 +171,18 @@ func main() {
 	// persistent log file while still being visible on the console.
 	// Inspired by s6-linux-init's catch-all logger (s6-svscan-log).
 	// Enabled by default for PID 1 and container mode; use -B to disable.
+	//
+	// When running as PID 1 we must stage /run *before* opening the log
+	// file — otherwise InitPID1 will later mount a fresh tmpfs over /run
+	// and hide whatever file we opened on the initramfs's /run. StageRun
+	// is idempotent, so InitPID1's own call below is a no-op.
 	if (isPID1 || containerMode) && !noCatchAll {
+		if isPID1 {
+			if rm, err := shutdown.ParseRunMode(runMode); err == nil {
+				shutdown.SetRunMode(rm)
+			}
+			shutdown.StageRun(logging.New(logging.LevelError))
+		}
 		cal, err := logging.StartCatchAll(catchAllLog)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: catch-all logger: %v (continuing without)\n", err)

@@ -1258,6 +1258,14 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		case "halt", "poweroff", "reboot", "kexec", "softreboot", "soft-reboot":
 			shutType = a
 		default:
+			// A non-type arg is accepted only if it parses as a time
+			// spec ("now", "+N", "HH:MM", plain minutes). Anything
+			// else is a typo of the shutdown type — preserve the
+			// old "unknown shutdown type" error so scripts/tests
+			// relying on it keep working.
+			if _, err := parseShutdownTime(a); err != nil {
+				return fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", a)
+			}
 			timeArg = a
 		}
 	}

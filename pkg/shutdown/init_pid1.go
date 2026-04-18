@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -203,8 +204,11 @@ func mountEarlyFS(logger *logging.Logger) {
 		logger.Debug("Mounted proc on /proc")
 	}
 
-	// Stage /run according to the configured mode.
-	mountRunTmpfs(logger)
+	// Stage /run according to the configured mode. StageRun is
+	// idempotent so this is a no-op if the caller already staged /run
+	// before StartCatchAll (to keep the catch-all log from being
+	// hidden by a later tmpfs mount).
+	StageRun(logger)
 
 	// Snapshot kernel cmdline so services can read it without depending
 	// on /proc being mounted in their mount namespace.
@@ -215,6 +219,23 @@ func mountEarlyFS(logger *logging.Logger) {
 			logger.Debug("Kernel cmdline snapshot written to %s", kcmdlineDest)
 		}
 	}
+}
+
+// runStaged ensures mountRunTmpfs runs exactly once per process. This
+// lets callers stage /run early (e.g. before StartCatchAll, so the
+// catch-all log file lives on the final tmpfs and isn't buried under
+// a later mount) without breaking InitPID1, which also wants to do it.
+var runStaged sync.Once
+
+// StageRun stages /run per the configured RunMode. It is idempotent:
+// the second and subsequent calls are no-ops.
+//
+// Call this from the caller (cmd/slinit) before StartCatchAll when you
+// want the catch-all log to survive — otherwise InitPID1 mounts a
+// fresh tmpfs over /run and hides the log file the catch-all logger
+// opened on the initramfs's /run.
+func StageRun(logger *logging.Logger) {
+	runStaged.Do(func() { mountRunTmpfs(logger) })
 }
 
 // mountRunTmpfs stages /run according to the runMode global. See
