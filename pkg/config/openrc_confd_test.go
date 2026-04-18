@@ -40,6 +40,24 @@ func TestWrapInitdWithConfD_GuardsPresence(t *testing.T) {
 	}
 }
 
+func TestWrapInitdWithConfD_AutoExportsSourcedVars(t *testing.T) {
+	snippet := wrapInitdWithConfD("/etc/init.d/foo", "foo", "start")[2]
+	// `set -a` must appear before the first source and `set +a` must
+	// close it off before `exec` — otherwise variables assigned in
+	// rc.conf / conf.d stay shell-local and aren't inherited by the
+	// exec'd init.d script.
+	setAIdx := strings.Index(snippet, "set -a")
+	setPlusAIdx := strings.Index(snippet, "set +a")
+	rcIdx := strings.Index(snippet, "rc.conf")
+	execIdx := strings.Index(snippet, "exec ")
+	if setAIdx < 0 || setPlusAIdx < 0 {
+		t.Fatalf("snippet missing set -a/+a pair: %q", snippet)
+	}
+	if !(setAIdx < rcIdx && rcIdx < setPlusAIdx && setPlusAIdx < execIdx) {
+		t.Errorf("wrong ordering set-a<rc<set+a<exec: %q", snippet)
+	}
+}
+
 func TestWrapInitdWithConfD_QuotesPaths(t *testing.T) {
 	// Even a vanilla invocation must single-quote paths so shell
 	// metacharacters in (hypothetical) conf.d filenames can't escape.

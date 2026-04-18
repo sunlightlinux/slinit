@@ -53,6 +53,12 @@ func SetOpenRCShell(shell string) {
 // when either file is missing — each source is guarded by a `-r` test
 // so a fresh install without rc.conf still works.
 //
+// `set -a` wraps the sourcing so every variable assigned in rc.conf
+// and conf.d/<name> is auto-exported to the environment. Without it,
+// `. file` only populates shell-local variables, which `exec` then
+// drops when replacing the shell with the init.d script — matching
+// OpenRC's own behaviour of exposing conf.d tunables as env vars.
+//
 // Shell-quoting note: scriptPath and name flow from the filesystem, so
 // they're trusted to contain valid path characters. They're
 // single-quoted with any embedded single quotes escaped via the
@@ -60,7 +66,7 @@ func SetOpenRCShell(shell string) {
 // (a service named "weird'one" is unlikely but we handle it cleanly).
 func wrapInitdWithConfD(scriptPath, name, action string) []string {
 	snippet := fmt.Sprintf(
-		"[ -r %s ] && . %s; [ -r %s/%s ] && . %s/%s; exec %s %s",
+		"set -a; [ -r %s ] && . %s; [ -r %s/%s ] && . %s/%s; set +a; exec %s %s",
 		shellQuote(openrcRCConf), shellQuote(openrcRCConf),
 		shellQuote(openrcConfDDir), shellQuote(name),
 		shellQuote(openrcConfDDir), shellQuote(name),
