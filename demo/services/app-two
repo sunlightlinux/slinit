@@ -1,0 +1,7 @@
+# app-two — second producer into the shared-log logger
+# Combined with app-one into a single line-prefixed stream.
+type = process
+command = /bin/sh -c "i=0; while true; do i=$((i+1)); echo \"two msg $i\"; sleep 4; done"
+shared-logger = shared-log
+restart = on-failure
+depends-on: shared-log

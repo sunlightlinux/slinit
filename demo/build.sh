@@ -61,13 +61,15 @@ for pkg in "${BASH_PKG}" "${READLINE_PKG}" "${LIBNCURSESW_PKG}" "${NCURSES_TERMI
     fi
 done
 
-# Step 4: Build slinit, slinitctl, slinit-check, slinit-monitor (static)
+# Step 4: Build full slinit toolchain (static)
 echo "[4/7] Building slinit toolchain (static)..."
 cd "${PROJECT_DIR}"
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit" ./cmd/slinit
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinitctl" ./cmd/slinitctl
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-check" ./cmd/slinit-check
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-monitor" ./cmd/slinit-monitor
+for bin in slinit slinitctl slinit-check slinit-monitor \
+           slinit-shutdown slinit-init-maker slinit-nuke slinit-mount \
+           rc-service rc-update rc-status; do
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+        go build -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
+done
 
 # Step 5: Prepare rootfs
 echo "[5/7] Preparing rootfs..."
@@ -86,13 +88,30 @@ done
 rm -rf "${ROOTFS_DIR}/.PKGINFO" "${ROOTFS_DIR}/.SIGN."* "${ROOTFS_DIR}/.post-install" "${ROOTFS_DIR}/.pre-install" "${ROOTFS_DIR}/.trigger"
 
 # Install slinit binaries
-install -m 755 "${BUILD_DIR}/slinit" "${ROOTFS_DIR}/sbin/slinit"
-install -m 755 "${BUILD_DIR}/slinitctl" "${ROOTFS_DIR}/usr/bin/slinitctl"
-install -m 755 "${BUILD_DIR}/slinit-check" "${ROOTFS_DIR}/usr/bin/slinit-check"
-install -m 755 "${BUILD_DIR}/slinit-monitor" "${ROOTFS_DIR}/usr/bin/slinit-monitor"
+install -m 755 "${BUILD_DIR}/slinit"            "${ROOTFS_DIR}/sbin/slinit"
+install -m 755 "${BUILD_DIR}/slinitctl"         "${ROOTFS_DIR}/usr/bin/slinitctl"
+install -m 755 "${BUILD_DIR}/slinit-check"      "${ROOTFS_DIR}/usr/bin/slinit-check"
+install -m 755 "${BUILD_DIR}/slinit-monitor"    "${ROOTFS_DIR}/usr/bin/slinit-monitor"
+install -m 755 "${BUILD_DIR}/slinit-shutdown"   "${ROOTFS_DIR}/sbin/slinit-shutdown"
+install -m 755 "${BUILD_DIR}/slinit-init-maker" "${ROOTFS_DIR}/usr/bin/slinit-init-maker"
+install -m 755 "${BUILD_DIR}/slinit-nuke"       "${ROOTFS_DIR}/sbin/slinit-nuke"
+install -m 755 "${BUILD_DIR}/slinit-mount"      "${ROOTFS_DIR}/usr/sbin/slinit-mount"
+install -m 755 "${BUILD_DIR}/rc-service"        "${ROOTFS_DIR}/usr/sbin/rc-service"
+install -m 755 "${BUILD_DIR}/rc-update"         "${ROOTFS_DIR}/usr/sbin/rc-update"
+install -m 755 "${BUILD_DIR}/rc-status"         "${ROOTFS_DIR}/usr/sbin/rc-status"
 
 # Make slinit the init system
 ln -sf slinit "${ROOTFS_DIR}/sbin/init"
+
+# SysV compat symlinks (slinit dispatches on argv[0]: halt / poweroff / reboot)
+ln -sf slinit "${ROOTFS_DIR}/sbin/halt"
+ln -sf slinit "${ROOTFS_DIR}/sbin/poweroff"
+ln -sf slinit "${ROOTFS_DIR}/sbin/reboot"
+
+# slinit-shutdown symlinks (reboot/halt/soft-reboot via argv[0])
+ln -sf slinit-shutdown "${ROOTFS_DIR}/sbin/slinit-reboot"
+ln -sf slinit-shutdown "${ROOTFS_DIR}/sbin/slinit-halt"
+ln -sf slinit-shutdown "${ROOTFS_DIR}/sbin/slinit-soft-reboot"
 
 # Ensure directories exist
 mkdir -p "${ROOTFS_DIR}/run"
@@ -103,7 +122,54 @@ mkdir -p "${ROOTFS_DIR}/sys"
 # Step 6: Install service files and shell completions
 echo "[6/7] Installing service files and shell completions..."
 mkdir -p "${ROOTFS_DIR}/etc/slinit.d"
-cp "${SCRIPT_DIR}/services/"* "${ROOTFS_DIR}/etc/slinit.d/"
+# -R so env-dir subdirectories (e.g. runit-svc.env.d/) are copied intact;
+# slinit's loader skips directories, so they don't clash with service files.
+cp -R "${SCRIPT_DIR}/services/." "${ROOTFS_DIR}/etc/slinit.d/"
+
+# OpenRC compat: /etc/rc.conf and /etc/conf.d/<svc> are sourced by the
+# init.d wrapper before every action, so operators migrating from
+# OpenRC keep their tunables.
+mkdir -p "${ROOTFS_DIR}/etc/conf.d" "${ROOTFS_DIR}/etc/init.d"
+cat > "${ROOTFS_DIR}/etc/rc.conf" <<'EOF'
+# /etc/rc.conf — global OpenRC-style config (sourced by init.d wrapper)
+rc_interactive="NO"
+rc_parallel="YES"
+EOF
+
+cat > "${ROOTFS_DIR}/etc/conf.d/hello-initd" <<'EOF'
+# /etc/conf.d/hello-initd — per-service OpenRC-style config
+HELLO_MESSAGE="hello from /etc/conf.d/hello-initd"
+EOF
+
+# Demo init.d script (LSB headers so slinit auto-detects it and
+# maps $network → waits-for network, etc.).
+cat > "${ROOTFS_DIR}/etc/init.d/hello-initd" <<'EOF'
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          hello-initd
+# Required-Start:
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: init.d + conf.d demo for slinit
+# Description:       Exercises /etc/init.d auto-detection plus
+#                    /etc/rc.conf and /etc/conf.d/<name> sourcing.
+### END INIT INFO
+
+case "$1" in
+    start)
+        echo "[hello-initd] start: rc_parallel=${rc_parallel:-unset}, HELLO_MESSAGE=${HELLO_MESSAGE:-unset}"
+        ;;
+    stop)
+        echo "[hello-initd] stop"
+        ;;
+    *)
+        echo "usage: $0 {start|stop}" >&2
+        exit 2
+        ;;
+esac
+EOF
+chmod 755 "${ROOTFS_DIR}/etc/init.d/hello-initd"
 
 # Install bash completion (generated by slinitctl itself)
 mkdir -p "${ROOTFS_DIR}/etc/bash_completion.d"

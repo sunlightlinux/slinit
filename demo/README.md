@@ -35,6 +35,14 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | logger        | process   | Pipe logging consumer (consumer-of)            |
 | env-demo      | process   | Environment variable substitution + env-file   |
 | graceful-stop | process   | Stop-command demo (graceful cleanup on stop)    |
+| cron-demo     | process   | cron-command periodic task (fires every 10s)   |
+| shared-log    | process   | SharedLogMux central logger (writes /run/shared-log.txt) |
+| app-one       | process   | Producer into shared-log (shared-logger)       |
+| app-two       | process   | Producer into shared-log (shared-logger)       |
+| runit-svc     | process   | Runit-feature bundle: ready-check + pre-stop-hook + control-command + env-dir + lock-file + finish-command |
+| vtty-svc      | process   | Virtual TTY demo (`slinitctl attach vtty-svc`) |
+| hello-initd   | scripted  | `/etc/init.d/hello-initd` auto-detected via LSB headers, sources `/etc/rc.conf` + `/etc/conf.d/hello-initd` |
+| slinit-mount  | process   | Autofs lazy-mount daemon                       |
 | recovery      | process   | Emergency shell after boot failure             |
 
 ## Interactive Commands
@@ -235,7 +243,16 @@ boot (internal)
 ├── waits-for: hello-logged (process, pipe) ── depends-on: system-init
 │   └── logger (process, consumer-of) ── depends-on: system-init
 ├── waits-for: env-demo (process, env-file) ── depends-on: system-init
-└── waits-for: graceful-stop (process, stop-command) ── depends-on: system-init
+├── waits-for: graceful-stop (process, stop-command) ── depends-on: system-init
+├── waits-for: cron-demo (process, cron-command) ── depends-on: system-init
+├── waits-for: shared-log (process, log-type=pipe) ── depends-on: system-init
+│   ├── app-one (shared-logger) ── depends-on: shared-log
+│   └── app-two (shared-logger) ── depends-on: shared-log
+├── waits-for: runit-svc (process, ready-check + hooks + env-dir + lock) ── depends-on: system-init
+└── waits-for: vtty-svc (process, vtty=true) ── depends-on: system-init
+
+hello-initd (scripted, /etc/init.d auto-detect + conf.d wrapper) — started manually:
+  rc-service hello-initd start   # auto-detected at runtime, not referenced by boot
 ```
 
 ## Feature Demos
@@ -256,6 +273,50 @@ uses `consumer-of = hello-logged` to read that pipe and process the output.
 `graceful-stop` demonstrates `stop-command`: when stopped, slinit runs the
 stop-command first (allowing cleanup), then falls back to the termination
 signal if the stop-command fails.
+
+### Cron-Like Periodic Tasks
+`cron-demo` runs a main process and, via `cron-command` + `cron-interval`,
+fires a side task every 10s (after a 2s initial delay). `slinitctl catlog
+cron-demo` shows both the main heartbeats and the cron ticks interleaved.
+
+### Shared Multi-Service Logger
+`shared-log` is a central logger reading lines from `stdin`. `app-one` and
+`app-two` both declare `shared-logger = shared-log`, so slinit's
+`SharedLogMux` multiplexes their stdouts into a single line-prefixed
+stream (`[app-one] …`, `[app-two] …`). The central process appends each
+line to `/run/shared-log.txt` with a timestamp.
+
+### Runit Feature Bundle (`runit-svc`)
+One service exercises most runit-inspired knobs:
+- `env-dir = /etc/slinit.d/runit-svc.env.d` (one file per variable)
+- `ready-check-command` with `ready-check-interval = 1`
+- `pre-stop-hook` receives the PID as `$1`
+- `control-command-HUP` — `slinitctl signal HUP runit-svc` triggers it
+- `finish-command` receives exit code + signal as `$1` + `$2`
+- `lock-file` guarantees single instance
+
+Combined output lands in `/run/runit-svc.log`.
+
+### Virtual TTY (`vtty-svc`)
+Declares `vtty = true`; attach from another shell with
+`slinitctl attach vtty-svc` (Ctrl+] to detach). The scrollback buffer is
+set to 64 KiB via `vtty-scrollback`.
+
+### /etc/init.d + OpenRC Compat
+`/etc/init.d/hello-initd` is a plain SysV init script with LSB headers.
+slinit auto-detects it, parses `Provides/Required-Start/...`, and wraps
+every action in `sh -c '[ -r /etc/rc.conf ] && . /etc/rc.conf; [ -r
+/etc/conf.d/hello-initd ] && . /etc/conf.d/hello-initd; exec <script>
+<action>'`, so OpenRC tunables (`HELLO_MESSAGE`, `rc_parallel`) are
+visible to the script without any schema changes.
+
+Try:
+```bash
+rc-service hello-initd start       # argv shim over slinitctl
+rc-update add hello-initd default  # adds waits-for: hello-initd on runlevel-default
+rc-status default                   # graph runlevel-default
+slinitctl catlog hello-initd       # see HELLO_MESSAGE from /etc/conf.d/
+```
 
 ### Runit-Inspired Features
 

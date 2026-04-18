@@ -13,3 +13,12 @@ waits-for: hello-logged
 waits-for: logger
 waits-for: env-demo
 waits-for: graceful-stop
+waits-for: cron-demo
+waits-for: shared-log
+waits-for: app-one
+waits-for: app-two
+waits-for: runit-svc
+waits-for: vtty-svc
+# hello-initd is auto-detected from /etc/init.d at runtime;
+# slinit-check (offline) doesn't scan init.d, so it's not listed here.
+# Start it manually in the demo with: rc-service hello-initd start

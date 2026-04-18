@@ -1,0 +1,14 @@
+# cron-demo — cron-command periodic task demo
+# Main process writes a heartbeat every 5s; the cron-command fires
+# every 10s (after a 2s initial delay) and appends a separate line.
+# Try: slinitctl catlog cron-demo
+type = process
+command = /bin/sh -c "i=0; while true; do i=$((i+1)); echo \"[cron-demo] main tick $i at $(date +%H:%M:%S)\"; sleep 5; done"
+cron-command = /bin/sh -c "echo \"[cron-demo] CRON ran at $(date +%H:%M:%S)\""
+cron-interval = 10
+cron-delay = 2
+cron-on-error = continue
+log-type = buffer
+log-buffer-size = 4096
+restart = on-failure
+depends-on: system-init

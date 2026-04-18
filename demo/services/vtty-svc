@@ -1,0 +1,10 @@
+# vtty-svc — virtual TTY demo (screen-like attach/detach)
+# Runs a simple interactive loop under a PTY. Attach from another
+# console or ssh session to see the output live.
+# Try: slinitctl attach vtty-svc   (Ctrl+] to detach)
+type = process
+command = /bin/sh -c "i=0; while true; do i=$((i+1)); printf '[vtty] tick %d at %s\n' \"$i\" \"$(date +%H:%M:%S)\"; sleep 2; done"
+vtty = true
+vtty-scrollback = 65536
+restart = on-failure
+depends-on: system-init

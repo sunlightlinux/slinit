@@ -1,0 +1,20 @@
+# runit-svc — runit-inspired features bundle
+# Showcases ready-check-command, pre-stop-hook, control-command-HUP,
+# env-dir, finish-command, and lock-file in one service.
+#
+# Try:
+#   slinitctl status runit-svc        # see STARTED after ready marker appears
+#   slinitctl signal HUP runit-svc    # fires control-command-HUP
+#   slinitctl stop runit-svc          # runs pre-stop-hook, then finish-command
+#   cat /run/runit-svc.log            # combined hook output
+type = process
+command = /bin/sh -c "trap 'echo [runit-svc] HUP received >> /run/runit-svc.log' HUP; echo \"[runit-svc] started, GREETING=$GREETING\" >> /run/runit-svc.log; sleep 2; touch /run/runit-svc.ready; while true; do sleep 30; done"
+env-dir = /etc/slinit.d/runit-svc.env.d
+ready-check-command = /bin/sh -c "[ -f /run/runit-svc.ready ]"
+ready-check-interval = 1s
+pre-stop-hook = /bin/sh -c "echo '[runit-svc] pre-stop (pid=$1)' >> /run/runit-svc.log"
+control-command-HUP = /bin/sh -c "echo '[runit-svc] control-command-HUP ran' >> /run/runit-svc.log"
+finish-command = /bin/sh -c "echo '[runit-svc] finish (exit=$1 sig=$2)' >> /run/runit-svc.log"
+lock-file = /run/runit-svc.lock
+restart = no
+depends-on: system-init

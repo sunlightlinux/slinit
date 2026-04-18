@@ -1,0 +1,8 @@
+# app-one — first producer into the shared-log logger
+# Its stdout is line-prefixed with [app-one] and merged with app-two's
+# stream through SharedLogMux before reaching shared-log.
+type = process
+command = /bin/sh -c "i=0; while true; do i=$((i+1)); echo \"one msg $i\"; sleep 3; done"
+shared-logger = shared-log
+restart = on-failure
+depends-on: shared-log

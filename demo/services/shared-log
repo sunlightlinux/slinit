@@ -1,0 +1,9 @@
+# shared-log — central logger for the multi-service shared-logger demo
+# Reads line-prefixed output ([app-one] …, [app-two] …) from the
+# SharedLogMux on stdin and appends it to /run/shared-log.txt.
+# Try: slinitctl status shared-log && cat /run/shared-log.txt
+type = process
+command = /bin/sh -c "while IFS= read -r line; do echo \"$(date +%H:%M:%S) $line\" >> /run/shared-log.txt; done"
+log-type = pipe
+restart = on-failure
+depends-on: system-init
