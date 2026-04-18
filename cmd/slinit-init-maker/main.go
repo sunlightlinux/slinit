@@ -22,6 +22,11 @@ import (
 	"os"
 )
 
+// version is injected at build time via:
+//   go build -ldflags "-X main.version=v1.10.10" ./cmd/slinit-init-maker
+// Local builds without ldflags report "dev".
+var version = "dev"
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -65,7 +70,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 
 	if showVersion {
-		fmt.Fprintln(stdout, "slinit-init-maker (part of slinit)")
+		fmt.Fprintf(stdout, "slinit-init-maker version %s (part of slinit)\n", version)
 		return 0
 	}
 

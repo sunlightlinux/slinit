@@ -25,6 +25,11 @@ const (
 	defaultUserSocket   = ".slinitctl"
 )
 
+// version is injected at build time via:
+//   go build -ldflags "-X main.version=v1.10.10" ./cmd/slinitctl
+// Local builds without ldflags report "dev".
+var version = "dev"
+
 // quiet suppresses informational output (set by --quiet/-q).
 var quiet bool
 
@@ -106,7 +111,7 @@ func main() {
 			printUsage()
 			os.Exit(0)
 		case args[0] == "--version":
-			fmt.Println("slinitctl version 0.1.0")
+			fmt.Printf("slinitctl version %s\n", version)
 			os.Exit(0)
 		default:
 			goto doneFlags

@@ -25,9 +25,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const (
-	version = "0.1.0"
+// version is injected at build time via:
+//   go build -ldflags "-X main.version=v1.10.10" ./cmd/slinit
+// Local builds without ldflags report "dev".
+var version = "dev"
 
+const (
 	defaultSystemServiceDir = "/etc/slinit.d"
 	defaultUserServiceDir   = ".config/slinit.d"
 	defaultBootService      = "boot"
