@@ -47,9 +47,3 @@ benchstat baseline.txt new.txt
 - **ControlRoundTrip** — list-services command latency (5/20/100 services)
 - **ControlServiceStatus** — per-service status query via handle
 - **WireEncoding** — raw packet write + handle encoding overhead
-
-### Log Rotation (potential)
-
-- **LogRotatorWrite** — line filtering + file write throughput
-- **LogRotatorRotate** — rotation + old file cleanup latency
-- **LogLineFilter** — regex include/exclude pattern matching overhead

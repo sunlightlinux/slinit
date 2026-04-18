@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (51 tests)
+# Run all tests (52 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -90,12 +90,14 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 49 | close-fds | Close stdin/stdout/stderr (redirect to /dev/null) |
 | 50 | nice-oom-ioprio | Nice value and OOM score adjustment |
 | 51 | clock-guard | Boot-time clock protection (floor + timestamp file) |
+| 52 | catch-all-logger | Early-boot catch-all logger captures stdout/stderr to `/run/slinit/catch-all.log` |
 
 ## How It Works
 
 1. **Build phase**: `build-vm.sh` downloads Alpine Linux minirootfs, cross-compiles
-   slinit + slinitctl + slinit-check + slinit-monitor, and creates an initramfs
-   with demo services
+   the slinit binaries (daemon, `slinitctl`, `slinit-check`, `slinit-monitor`,
+   `slinit-shutdown`, `slinit-init-maker`, `slinit-nuke`, `rc-service`, `rc-update`,
+   `rc-status`) and creates an initramfs with demo services
 2. **Per-test boot**: Each test gets its own QEMU VM boot. The test script is
    injected into the initramfs as a service
 3. **Guest runner**: `lib/guest-runner.sh` runs inside the VM, waits for slinit

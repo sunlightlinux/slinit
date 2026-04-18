@@ -1,8 +1,36 @@
 # slinit
 
-A service manager and init system inspired by [dinit](https://github.com/davmac314/dinit), written in Go.
+A service manager and init system written in Go. The core is a port of
+[dinit](https://github.com/davmac314/dinit), with features layered in
+from [runit](http://smarden.org/runit/),
+[s6-linux-init](https://skarnet.org/software/s6-linux-init/), and
+[OpenRC](https://github.com/OpenRC/openrc).
 
-slinit can run as PID 1 (init system) or as a user-level service manager. It uses a dinit-compatible configuration format and manages services with dependency tracking, automatic restart, and process lifecycle management.
+slinit can run as PID 1 (init system) or as a user-level service
+manager. It uses a dinit-compatible configuration format and manages
+services with dependency tracking, automatic restart, and process
+lifecycle management. Admins moving from any of the four upstreams
+should keep their muscle memory:
+
+- **dinit**: service-description format, dep types, state machine, and
+  `slinitctl` verbs are 1:1 with dinit.
+- **runit**: `finish-command`, `ready-check-command`, `pre-stop-hook`,
+  `env-dir`, `control-command-<SIGNAL>`, `chroot`, `new-session`,
+  `lock-file`, log rotation/filtering/processor, down-file marker,
+  `once` command.
+- **s6-linux-init**: catch-all logger, TAI64N/ISO timestamps,
+  scheduled shutdown + cancel, wall messages, `/etc/shutdown.allow`
+  access control, global boot-time rlimits, container mode with
+  exit/halt codes + ready-fd, SysV compat symlinks, `slinit-init-maker`
+  generator, `slinit-nuke` emergency, RT-signal container shutdown.
+- **OpenRC**: `rc-service` / `rc-update` / `rc-status` CLI shims,
+  `/etc/rc.conf` + `/etc/conf.d/<service>` sourcing for init.d scripts,
+  named-runlevel dispatch (`init default|single|nonetwork|...`),
+  init.d/LSB auto-detection.
+
+Runlevels, where present, are pure UX aliases over the dependency
+graph — slinit does not introduce a second state machine or config
+format to accommodate them.
 
 ## Features
 
@@ -17,7 +45,7 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Config includes**: `@include` and `@include-opt` directives for modular config
 - **Runit-inspired features**: finish-command, ready-check-command, pre-stop-hook, env-dir, control-command, chroot, new-session, lock-file, close-fds, log rotation/filtering/processor, down-file marker
 - **Control socket**: binary protocol (v6) over Unix domain socket for runtime management
-- **slinitctl CLI**: 36 commands — list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, pause, continue, once, reload, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, add-dep, rm-dep, enable, disable, shutdown, boot-time, dependents, query-load-mech
+- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, trigger, untrigger, signal, pause, continue, once, reload, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
 - **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
 - **Service aliases**: `provides` for alternative name lookup
@@ -60,19 +88,64 @@ slinit can run as PID 1 (init system) or as a user-level service manager. It use
 - **Dual mode**: system init (PID 1) or user-level service manager
 - **Offline enable/disable**: `--offline` mode creates/removes waits-for.d symlinks without a running daemon
 - **Dinit naming compat**: `rlimit-addrspace`, `run-in-cgroup`, `consumer-of =` all supported as aliases
+- **s6-linux-init features**:
+  - Catch-all logger capturing early-boot stdout/stderr (`--catch-all-log`, `-B` to disable)
+  - TAI64N / ISO-8601 / wallclock / none log timestamps (`--timestamp-format`)
+  - Scheduled shutdown (`shutdown +5`, `shutdown HH:MM`) with cancel (`shutdown -c`) and status
+  - Wall broadcasts to logged-in users on shutdown (disable with `--no-wall`)
+  - `/etc/slinit/shutdown.allow` / `/etc/shutdown.allow` access control for signal-driven shutdown
+  - Configurable `SIGTERM→SIGKILL` grace period (`--shutdown-grace`)
+  - Global rlimits at boot, inherited by all services (`--rlimits nofile=65536,core=0,...`)
+  - RT-signal container shutdown (SIGRTMIN+3..+6 → halt/poweroff/reboot/kexec)
+  - UTMPX logout records for every active session + RUN_LVL shutdown boundary in wtmp
+  - Kernel cmdline snapshot to `/run/slinit/kcmdline` (`--kcmdline-dest`)
+  - `/run` tmpfs staging modes (`--run-mode=mount|remount|keep`)
+  - Configurable devtmpfs mount point (`--devtmpfs-path`, empty disables)
+  - `/sbin/halt`, `/sbin/poweroff`, `/sbin/reboot` compat via argv[0] dispatch
+- **OpenRC UX compat**:
+  - `rc-service <svc> <action>` — translates to `slinitctl start|stop|restart|status|...`
+  - `rc-update add|del <svc> [runlevel]` — models runlevels as `runlevel-<name>` services
+  - `rc-status [runlevel]` — lists services grouped by runlevel dep graph
+  - Init.d scripts source `/etc/rc.conf` + `/etc/conf.d/<name>` automatically via `sh -c` wrapper
+  - Named runlevel dispatch: `init default|single|nonetwork|boot|sysinit` → start `runlevel-<name>`
+- **SysV compat**: `init 0` → poweroff, `init 6` → reboot, `init N` (1..5) → start runlevel-N
+- **Standalone binaries**: `slinit-init-maker` (bootable layout generator), `slinit-nuke`
+  (emergency `kill -1`), `slinit-shutdown` (orderly shutdown shim, also invocable as
+  `slinit-reboot`/`slinit-halt`/`slinit-soft-reboot` symlinks)
 
 ## Building
 
 ```bash
+# Core daemon + control CLI
 go build ./cmd/slinit
 go build ./cmd/slinitctl
-go build ./cmd/slinit-check
-go build ./cmd/slinit-monitor
-go build ./cmd/slinit-shutdown
-# Optional symlinks for convenience:
+
+# Companion utilities
+go build ./cmd/slinit-check       # offline/online config linter
+go build ./cmd/slinit-monitor     # event watcher + command executor
+go build ./cmd/slinit-shutdown    # standalone shutdown utility
+go build ./cmd/slinit-init-maker  # bootable service-dir generator
+go build ./cmd/slinit-nuke        # emergency kill-all
+go build ./cmd/slinit-mount       # autofs lazy-mount helper
+go build ./cmd/slinit-checkpath   # path-validation helper
+
+# OpenRC compat shims
+go build ./cmd/rc-service
+go build ./cmd/rc-update
+go build ./cmd/rc-status
+
+# Or build everything at once
+go build ./...
+
+# Optional compat symlinks:
 ln -s slinit-shutdown slinit-reboot
 ln -s slinit-shutdown slinit-halt
 ln -s slinit-shutdown slinit-soft-reboot
+
+# SysV compat (slinit itself handles these via argv[0]):
+ln -s slinit /sbin/halt
+ln -s slinit /sbin/poweroff
+ln -s slinit /sbin/reboot
 ```
 
 ## Running
@@ -110,7 +183,21 @@ ln -s slinit-shutdown slinit-soft-reboot
 | `-l` / `--log-file` | Log to file instead of console | |
 | `-b` / `--cgroup-path` | Default cgroup base path for services | |
 | `--parallel-start-limit` | Max concurrent service starts (0 = unlimited) | `0` |
-| `--parallel-start-slow-threshold` | Seconds before a starting service is considered "slow" | `10` |
+| `--parallel-start-slow-threshold` | Seconds before a starting service is considered "slow" | `10s` |
+| `--shutdown-grace` | SIGTERM→SIGKILL grace period during shutdown | `3s` |
+| `--no-wall` | Disable wall broadcasts at shutdown | `false` |
+| `--banner` | Boot banner printed to console (empty disables) | `slinit booting...` |
+| `--umask` | Initial umask (octal) | `0022` |
+| `-1` / `--console-dup` | Duplicate log output to `/dev/console` even with `--log-file` | `false` |
+| `--catch-all-log` | Path for the early-boot catch-all log | `/run/slinit/catch-all.log` |
+| `-B` / `--no-catch-all` | Disable catch-all logger | `false` |
+| `--timestamp-format` | Log timestamp format (`wallclock`\|`iso`\|`tai64n`\|`none`) | `wallclock` |
+| `--rlimits` | Global rlimits applied to slinit and inherited by services (`name=soft[:hard]` comma-separated) | |
+| `--run-mode` | Stage `/run` at boot: `mount` (fresh tmpfs), `remount` (unmount+mount), `keep` (untouched) | `mount` |
+| `--devtmpfs-path` | Mount devtmpfs at this path (empty disables) | `/dev` |
+| `--kcmdline-dest` | Snapshot `/proc/cmdline` to this path (empty disables) | `/run/slinit/kcmdline` |
+| `-S` / `--sys` | Override platform detection (`docker`, `lxc`, `podman`, `wsl`, `xen0`, `xenu`, `none`) | auto |
+| `--conf-dir` | Override `conf.d` overlay directories (comma-separated; `none` disables overlays) | |
 | `--version` | Show version and exit | |
 
 Default service directories (when `--services-dir` is not set):
@@ -509,6 +596,16 @@ slinitctl shutdown reboot
 slinitctl shutdown halt
 slinitctl shutdown softreboot       # restart slinit without kernel reboot
 
+# Scheduled shutdown + cancel
+slinitctl shutdown reboot +5        # in 5 minutes
+slinitctl shutdown poweroff 18:30   # at 18:30 today/tomorrow
+slinitctl shutdown -c               # cancel a pending shutdown
+slinitctl shutdown --status         # report pending shutdown, if any
+
+# Dependency inspection
+slinitctl graph myservice           # dep graph rooted at myservice
+slinitctl analyze                   # global dep-graph overview
+
 # Connect to system/user instance explicitly
 slinitctl --system list
 slinitctl --user list
@@ -544,6 +641,86 @@ slinit-monitor
 slinit-monitor -c 'echo "Service %n changed to %s (event: %v)"'
 ```
 
+### slinit-init-maker
+
+Generates a bootable service-description directory skeleton — top-level
+`boot` target, optional `system-mounts` + `network` stubs, N agetty
+services (with correct inittab-id), env-file with `HOSTNAME`/`TZ`/`PATH`,
+optional shutdown-hook sample, README. Inspired by
+[s6-linux-init-maker](https://skarnet.org/software/s6-linux-init/s6-linux-init-maker.html).
+
+```bash
+# Default layout to /etc/slinit/boot.d
+slinit-init-maker
+
+# Custom layout: 4 ttys, specific hostname/tz, no network stub
+slinit-init-maker --ttys 4 --hostname myhost --tz Europe/Bucharest \
+    --output /tmp/boot.d --with-shutdown-hook
+
+# Preview without touching the disk
+slinit-init-maker --dry-run
+```
+
+### slinit-nuke
+
+Emergency userspace cleanup: `kill(-1, SIGTERM)` → grace period →
+`kill(-1, SIGKILL)`. Intended for recovery scenarios where the orderly
+shutdown path is unavailable — not a replacement for
+`slinitctl shutdown`.
+
+```bash
+slinit-nuke                    # TERM, wait 2s, KILL
+slinit-nuke --grace 500ms
+slinit-nuke -9                 # skip TERM, SIGKILL immediately
+```
+
+### slinit-shutdown
+
+Standalone shutdown utility. Can talk to a running slinit or — with
+`--system` — perform the shutdown sequence directly. Invocable as
+`slinit-reboot`, `slinit-halt`, or `slinit-soft-reboot` via symlinks.
+
+```bash
+slinit-shutdown -r            # reboot
+slinit-shutdown -p            # poweroff
+slinit-shutdown -h            # halt
+slinit-shutdown -s            # soft reboot
+slinit-shutdown -k            # kexec
+```
+
+### OpenRC compat: rc-service / rc-update / rc-status
+
+Thin argv-translating shims over `slinitctl` for admins used to
+OpenRC. They exec `slinitctl` (resolved via `$PATH` or the `SLINITCTL`
+env var), so output, exit codes and flag precedence mirror
+`slinitctl`'s own.
+
+```bash
+# rc-service — service control
+rc-service nginx start
+rc-service nginx stop
+rc-service nginx status
+rc-service --exists nginx     # → slinitctl is-started nginx
+rc-service --list             # → slinitctl list
+
+# rc-update — runlevel membership (modelled as runlevel-<name> services)
+rc-update add  nginx default  # → slinitctl --from runlevel-default enable nginx
+rc-update del  nginx boot     # → slinitctl --from runlevel-boot disable nginx
+rc-update show                # → slinitctl graph runlevel-default
+rc-update update              # no-op (slinit has no dep cache)
+
+# rc-status — status listing
+rc-status                     # → slinitctl list
+rc-status default             # → slinitctl graph runlevel-default
+rc-status --list              # list known OpenRC runlevel names
+rc-status --runlevel          # print "default" (slinit has no current runlevel)
+```
+
+`/etc/rc.conf` and `/etc/conf.d/<name>` are sourced automatically
+before every init.d script action (see Project structure notes),
+so OpenRC per-service config files like `/etc/conf.d/nginx` keep
+working unchanged.
+
 ## Architecture
 
 slinit follows Go-idiomatic patterns while preserving dinit's proven service management design:
@@ -558,49 +735,76 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 
 ### PID 1 Signal Handling
 
-| Signal    | Action                | Source                        |
-|-----------|-----------------------|-------------------------------|
-| `SIGTERM` | reboot                | busybox `reboot`              |
-| `SIGINT`  | reboot                | Ctrl-Alt-Del (via CAD)        |
-| `SIGQUIT` | poweroff              | --                            |
-| `SIGUSR1` | reopen control socket | recovery when fs writable     |
-| `SIGUSR2` | poweroff              | busybox `poweroff`            |
-| `SIGHUP`  | ignored               | --                            |
-| `SIGCHLD` | reap orphans          | child process exit            |
+| Signal        | Action                | Source                        |
+|---------------|-----------------------|-------------------------------|
+| `SIGTERM`     | reboot                | busybox `reboot`              |
+| `SIGINT`      | reboot                | Ctrl-Alt-Del (via CAD)        |
+| `SIGQUIT`     | poweroff              | --                            |
+| `SIGUSR1`     | reopen control socket | recovery when fs writable     |
+| `SIGUSR2`     | poweroff              | busybox `poweroff`            |
+| `SIGHUP`      | ignored               | --                            |
+| `SIGCHLD`     | reap orphans          | child process exit            |
+| `SIGRTMIN+3`  | halt                  | systemd-compat container      |
+| `SIGRTMIN+4`  | poweroff              | systemd-compat container      |
+| `SIGRTMIN+5`  | reboot                | systemd-compat container      |
+| `SIGRTMIN+6`  | kexec                 | systemd-compat container      |
+
+RT signals let `kill -s RTMIN+4 1` from inside a container trigger a
+clean shutdown without needing slinitctl present in the image.
+
+Signal-driven shutdown (SIGTERM/SIGINT/SIGQUIT/SIGUSR2/SIGRTMIN+3..+6)
+can be gated by `/etc/slinit/shutdown.allow` — see [Features](#features)
+above. The gate applies only to the initial trigger; a second press
+of Ctrl+Alt+Del or a repeated RT signal always escalates.
 
 ## Project structure
 
 ```
 slinit/
 ├── cmd/
-│   ├── slinit/          # Daemon entry point
-│   ├── slinitctl/       # Control CLI (36 commands, incl. attach)
-│   ├── slinit-check/    # Config linter (offline + online)
-│   ├── slinit-monitor/  # Event watcher + command executor
-│   └── slinit-shutdown/ # Standalone shutdown utility
+│   ├── slinit/            # Daemon entry point (incl. SysV argv[0] dispatch)
+│   ├── slinitctl/         # Control CLI (36 commands, incl. attach)
+│   ├── slinit-check/      # Config linter (offline + online)
+│   ├── slinit-monitor/    # Event watcher + command executor
+│   ├── slinit-shutdown/   # Standalone shutdown utility (+ reboot/halt/soft symlinks)
+│   ├── slinit-init-maker/ # Bootable service-dir generator (s6-linux-init-maker inspired)
+│   ├── slinit-nuke/       # Emergency kill-all (TERM → grace → KILL)
+│   ├── slinit-mount/      # Autofs lazy-mount helper
+│   ├── slinit-checkpath/  # Path-validation helper
+│   ├── rc-service/        # OpenRC compat: thin shim over slinitctl
+│   ├── rc-update/         # OpenRC compat: runlevel membership via runlevel-<name> services
+│   └── rc-status/         # OpenRC compat: status listing
 ├── pkg/
-│   ├── service/         # Service types, state machine, dependency graph
-│   ├── config/          # Dinit-compatible config parser and loader
-│   ├── control/         # Control socket protocol (v6) and server
-│   ├── shutdown/        # PID 1 init, shutdown executor, soft-reboot, clock guard
-│   ├── process/         # Process execution, monitoring, attrs, caps
-│   ├── eventloop/       # Event loop, signals, timers
-│   ├── logging/         # Console logger
-│   └── utmp/            # UTMPX cgo wrapper
-├── internal/util/       # Path and parsing utilities
-├── completions/         # Shell completions (bash, zsh, fish)
-├── demo/                # QEMU demo environment
-└── tests/functional/    # 51 QEMU-based integration tests
+│   ├── service/           # Service types, state machine, dependency graph
+│   ├── config/            # Dinit-compatible config parser + loader, init.d/LSB, OpenRC conf.d wrapper
+│   ├── control/           # Control socket protocol (v6) and server
+│   ├── shutdown/          # PID 1 init, shutdown executor, soft-reboot, clock guard, run-mode
+│   ├── process/           # Process execution, monitoring, attrs, caps
+│   ├── eventloop/         # Event loop, signals, timers
+│   ├── logging/           # Console logger (wallclock / ISO / TAI64N / none)
+│   ├── utmp/              # UTMPX cgo wrapper (boot + logout + shutdown records)
+│   ├── autofs/            # Autofs direct-mount helper
+│   ├── checkpath/         # Path permission / ownership verifier
+│   └── platform/          # Container/platform auto-detect (docker/lxc/podman/wsl/xen)
+├── internal/util/         # Path and parsing utilities
+├── completions/           # Shell completions (bash, zsh, fish)
+├── demo/                  # QEMU demo environment
+├── tests/functional/      # 98 QEMU-based integration tests
+├── tests/fuzz/            # 18 fuzz targets (config, protocol, autofs, process parsers)
+└── tests/performance/     # Performance and stress harness
 ```
 
 ## Testing
 
 ```bash
-# Unit tests (441 tests across 12 packages)
+# Unit tests (~728 tests + benchmarks across 21 packages)
 go test ./...
 
-# Functional tests (51 QEMU-based integration tests)
+# Functional tests (98 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
+
+# Fuzz targets (18 targets across 4 files)
+go test -fuzz=FuzzParseConfig ./tests/fuzz
 ```
 
 ## Roadmap
@@ -622,6 +826,8 @@ go test ./...
 - [x] **Phase 15**: Shutdown info display, escalating force shutdown, cron-like periodic tasks, soft parallel start limit, proper socket activation (multiple sockets, TCP/UDP, on-demand)
 - [x] **Phase 16**: Multi-service shared logger (SharedLogMux -- N producers → single logger, line-prefixed)
 - [x] **Phase 17**: Virtual TTY -- screen-like attach/detach via PTY allocation, ring buffer scrollback, `slinitctl attach`
+- [x] **Phase 18**: s6-linux-init parity -- catch-all logger, TAI64N/ISO/none timestamps, scheduled shutdown + cancel + status, wall broadcasts, `/etc/shutdown.allow` access control, configurable grace, global rlimits, RT-signal container shutdown (SIGRTMIN+3..+6), UTMPX logout + wtmp RUN_LVL shutdown, kernel cmdline snapshot, `/run` tmpfs run-mode, configurable devtmpfs, SysV argv[0] compat (`halt`/`poweroff`/`reboot`), `slinit-init-maker`, `slinit-nuke`
+- [x] **Phase 19**: OpenRC UX compat -- `rc-service`/`rc-update`/`rc-status` argv shims, `/etc/rc.conf` + `/etc/conf.d/<name>` sourcing via `sh -c` wrapper, runlevels modelled as `runlevel-<name>` services, named-runlevel dispatch (`init default|single|nonetwork|boot|sysinit`)
 
 ## License
 

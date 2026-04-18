@@ -141,6 +141,18 @@ slinitctl service-dirs
 # SysV init compatibility (alternative to slinitctl shutdown)
 init 0                           # poweroff  (sends SIGUSR2 to PID 1)
 init 6                           # reboot    (sends SIGTERM to PID 1)
+init default                     # start runlevel-default service
+init single                      # start runlevel-single service (recovery)
+
+# SysV compat via argv[0] dispatch (symlinks → slinit binary)
+halt                             # invokes slinit → ShutdownHalt
+poweroff                         # invokes slinit → ShutdownPoweroff
+reboot                           # invokes slinit → ShutdownReboot
+
+# OpenRC compat shims (argv-translate over slinitctl)
+rc-service hello status          # → slinitctl status hello
+rc-update add hello default      # → slinitctl --from runlevel-default enable hello
+rc-status default                # → slinitctl graph runlevel-default
 
 # Clean shutdown (exits QEMU due to -no-reboot)
 slinitctl shutdown reboot
@@ -167,6 +179,23 @@ slinit-check --system                 # check all system service dirs
 slinit-check --online
 slinit-check --online hello ticker
 slinit-check --online -p /run/slinit.ctl   # explicit socket path
+```
+
+## slinit-shutdown / slinit-nuke
+
+Standalone shutdown helpers for emergency or scripted use:
+
+```bash
+slinit-shutdown -r               # orderly reboot (via control socket)
+slinit-shutdown -p               # orderly poweroff
+slinit-shutdown -h               # orderly halt
+slinit-shutdown -s               # soft reboot (restart slinit, keep kernel)
+slinit-shutdown -k               # kexec reboot (requires preloaded kernel)
+
+# Emergency userspace cleanup (TERM → grace → KILL)
+slinit-nuke                      # default 2s grace
+slinit-nuke --grace 500ms
+slinit-nuke -9                   # skip TERM, SIGKILL immediately
 ```
 
 ## slinit-monitor (Event Watcher)
@@ -252,14 +281,22 @@ config-driven design:
 slinit handles SysV init signal conventions for compatibility with busybox and
 other tools:
 
-| Signal    | Action                | Source                        |
-|-----------|-----------------------|-------------------------------|
-| `SIGTERM` | reboot                | busybox `reboot`              |
-| `SIGINT`  | reboot                | Ctrl-Alt-Del (via CAD)        |
-| `SIGQUIT` | poweroff              | --                            |
-| `SIGUSR1` | reopen control socket | recovery when fs writable     |
-| `SIGUSR2` | poweroff              | busybox `poweroff`            |
-| `SIGHUP`  | ignored               | --                            |
+| Signal        | Action                | Source                        |
+|---------------|-----------------------|-------------------------------|
+| `SIGTERM`     | reboot                | busybox `reboot`              |
+| `SIGINT`      | reboot                | Ctrl-Alt-Del (via CAD)        |
+| `SIGQUIT`     | poweroff              | --                            |
+| `SIGUSR1`     | reopen control socket | recovery when fs writable     |
+| `SIGUSR2`     | poweroff              | busybox `poweroff`            |
+| `SIGHUP`      | ignored               | --                            |
+| `SIGRTMIN+3`  | halt                  | systemd-compat container      |
+| `SIGRTMIN+4`  | poweroff              | systemd-compat container      |
+| `SIGRTMIN+5`  | reboot                | systemd-compat container      |
+| `SIGRTMIN+6`  | kexec                 | systemd-compat container      |
+
+Signal-driven shutdowns can be gated by `/etc/slinit/shutdown.allow`
+(or `/etc/shutdown.allow`). The gate applies only to the initial trigger;
+a second press of Ctrl+Alt+Del (or repeated RT signal) always escalates.
 
 ## Boot Failure Recovery
 
