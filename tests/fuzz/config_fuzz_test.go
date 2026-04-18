@@ -1,6 +1,8 @@
 package fuzz
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -73,5 +75,29 @@ func FuzzParseCPUAffinity(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data string) {
 		config.ParseCPUAffinity(data)
+	})
+}
+
+// FuzzParseLSBHeaders fuzzes the /etc/init.d LSB header parser. The
+// parser reads from disk, so each iteration stages the fuzz input in
+// a temp file before calling ParseLSBHeaders. Prefixing every line
+// with `#` in part of the corpus exercises the real-world shape of
+// init scripts; bare inputs exercise the tolerant fall-through path.
+func FuzzParseLSBHeaders(f *testing.F) {
+	f.Add("### BEGIN INIT INFO\n# Provides: foo\n# Required-Start: $network\n### END INIT INFO\n")
+	f.Add("### BEGIN INIT INFO\n# Provides: a b c\n# Description: multi\n#  line\n#  continuation\n### END INIT INFO\n")
+	f.Add("#!/bin/sh\necho no lsb headers here\n")
+	f.Add("### BEGIN INIT INFO\n### END INIT INFO\n")
+	f.Add("### BEGIN INIT INFO\n# Short-Description: X\n# Default-Start: 2 3 4 5\n# Default-Stop: 0 1 6\n### END INIT INFO\n")
+	f.Add("### BEGIN INIT INFO\n# :missing-key\n# Provides :\n# :\n### END INIT INFO\n")
+	f.Add("### BEGIN INIT INFO\n# Unknown-Key: ignored\n# Provides: x\n### END INIT INFO\n")
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, data string) {
+		path := filepath.Join(t.TempDir(), "init-script")
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Skip()
+		}
+		_, _ = config.ParseLSBHeaders(path)
 	})
 }

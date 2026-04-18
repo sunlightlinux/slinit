@@ -790,7 +790,7 @@ slinit/
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
 ├── tests/functional/      # 52 QEMU-based integration tests
-├── tests/fuzz/            # 18 fuzz targets (config, protocol, autofs, process parsers)
+├── tests/fuzz/            # 21 fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
 

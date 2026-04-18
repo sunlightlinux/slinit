@@ -40,7 +40,7 @@ go test ./...
 
 - **Unit tests**: `go test ./...` (~751 tests across 21 packages)
 - **Functional tests**: `./tests/functional/run-tests.sh` (52 QEMU-based tests)
-- **Fuzz targets**: `go test -fuzz=FuzzParseConfig ./tests/fuzz` (18 targets across 4 files)
+- **Fuzz targets**: `go test -fuzz=FuzzConfigParse ./tests/fuzz` (21 targets across 4 files)
 - Requires `qemu-system-x86_64` for functional tests
 
 ### Project Structure

@@ -29,6 +29,7 @@ done
 | FuzzConfigParse | Main service config file parser (text grammar) |
 | FuzzParseIDMapping | Namespace UID/GID mapping "container:host:size" |
 | FuzzParseCPUAffinity | CPU affinity spec "0-3 8-11" |
+| FuzzParseLSBHeaders | /etc/init.d LSB header block parser |
 
 ### Control Protocol (protocol_fuzz_test.go)
 | Target | What it fuzzes |
@@ -56,6 +57,8 @@ done
 | FuzzParseSecurebits | Securebits flag names → bitmask |
 | FuzzParseDuration | Decimal seconds → time.Duration |
 | FuzzParseSignal | Signal name/number → syscall.Signal |
+| FuzzReadEnvFile | KEY=VALUE env-file + !clear/!unset/!import meta |
+| FuzzReadEnvDir | runit-style env-dir (one file per var) |
 
 ## Crash corpus
 
