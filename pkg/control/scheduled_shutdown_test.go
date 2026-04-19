@@ -33,16 +33,18 @@ func TestScheduleShutdownDelayed(t *testing.T) {
 	logger := logging.New(logging.LevelError)
 	srv := NewServer(nil, "/dev/null", logger)
 
-	var called bool
+	done := make(chan struct{})
 	srv.ShutdownFunc = func(st service.ShutdownType) {
-		called = true
+		close(done)
 	}
 
 	srv.ScheduleShutdown(service.ShutdownPoweroff, 100*time.Millisecond)
 
 	// Should not fire immediately.
-	if called {
+	select {
+	case <-done:
 		t.Fatal("ShutdownFunc called before delay expired")
+	default:
 	}
 
 	// Query should show pending.
@@ -58,8 +60,9 @@ func TestScheduleShutdownDelayed(t *testing.T) {
 	}
 
 	// Wait for it to fire.
-	time.Sleep(200 * time.Millisecond)
-	if !called {
+	select {
+	case <-done:
+	case <-time.After(time.Second):
 		t.Fatal("ShutdownFunc not called after delay")
 	}
 
@@ -74,9 +77,9 @@ func TestCancelShutdown(t *testing.T) {
 	logger := logging.New(logging.LevelError)
 	srv := NewServer(nil, "/dev/null", logger)
 
-	var called bool
+	fired := make(chan struct{}, 1)
 	srv.ShutdownFunc = func(st service.ShutdownType) {
-		called = true
+		fired <- struct{}{}
 	}
 
 	srv.ScheduleShutdown(service.ShutdownHalt, 500*time.Millisecond)
@@ -94,9 +97,10 @@ func TestCancelShutdown(t *testing.T) {
 	}
 
 	// Wait past the original deadline — should NOT fire.
-	time.Sleep(600 * time.Millisecond)
-	if called {
+	select {
+	case <-fired:
 		t.Fatal("ShutdownFunc called after cancel")
+	case <-time.After(600 * time.Millisecond):
 	}
 }
 
@@ -114,9 +118,9 @@ func TestScheduleShutdownReplace(t *testing.T) {
 	logger := logging.New(logging.LevelError)
 	srv := NewServer(nil, "/dev/null", logger)
 
-	var calledType service.ShutdownType
+	typeCh := make(chan service.ShutdownType, 1)
 	srv.ShutdownFunc = func(st service.ShutdownType) {
-		calledType = st
+		typeCh <- st
 	}
 
 	// Schedule halt in 500ms.
@@ -124,9 +128,13 @@ func TestScheduleShutdownReplace(t *testing.T) {
 	// Replace with reboot in 100ms.
 	srv.ScheduleShutdown(service.ShutdownReboot, 100*time.Millisecond)
 
-	time.Sleep(200 * time.Millisecond)
-	if calledType != service.ShutdownReboot {
-		t.Errorf("type = %v, want ShutdownReboot (replacement)", calledType)
+	select {
+	case got := <-typeCh:
+		if got != service.ShutdownReboot {
+			t.Errorf("type = %v, want ShutdownReboot (replacement)", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement shutdown did not fire")
 	}
 }
 

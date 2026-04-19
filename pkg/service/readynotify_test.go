@@ -30,8 +30,7 @@ func TestProcessServiceWithReadyNotification(t *testing.T) {
 	}
 
 	// Clean up
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 	time.Sleep(500 * time.Millisecond)
 }
 
@@ -102,8 +101,7 @@ func TestReadyNotificationPipevar(t *testing.T) {
 	}
 
 	// Clean up
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 	time.Sleep(500 * time.Millisecond)
 }
 
@@ -124,7 +122,6 @@ func TestProcessServiceWithoutReadyNotification(t *testing.T) {
 	}
 
 	// Clean up
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 	time.Sleep(500 * time.Millisecond)
 }

@@ -23,8 +23,7 @@ func TestScriptedServiceStartStop(t *testing.T) {
 	}
 
 	// Stop the service
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 
 	time.Sleep(300 * time.Millisecond)
 

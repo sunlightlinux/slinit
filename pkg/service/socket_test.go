@@ -131,8 +131,7 @@ func TestSocketPassedToChild(t *testing.T) {
 	}
 
 	// Clean up
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 	time.Sleep(500 * time.Millisecond)
 }
 
@@ -294,8 +293,7 @@ func TestMultipleSocketsPassedToChild(t *testing.T) {
 		t.Errorf("unexpected marker: %q", string(data))
 	}
 
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 	time.Sleep(500 * time.Millisecond)
 }
 

@@ -155,8 +155,7 @@ func TestTriggeredServiceCancelStart(t *testing.T) {
 	}
 
 	// Stop before triggering
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 
 	if svc.State() != StateStopped {
 		t.Errorf("expected STOPPED after cancel, got %v", svc.State())

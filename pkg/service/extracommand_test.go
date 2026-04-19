@@ -27,14 +27,14 @@ func TestLookupExtraCommandStartedOnly(t *testing.T) {
 	})
 
 	// Not started — should not find it
-	sr.state = StateStopped
+	sr.state.Store(StateStopped)
 	_, ok := sr.LookupExtraCommand("reload")
 	if ok {
 		t.Error("reload should not be available when stopped")
 	}
 
 	// Started — should find it
-	sr.state = StateStarted
+	sr.state.Store(StateStarted)
 	cmd, ok := sr.LookupExtraCommand("reload")
 	if !ok {
 		t.Fatal("expected to find reload when started")

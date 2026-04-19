@@ -352,7 +352,8 @@ func (el *EventLoop) logBlockingServices() {
 // startShutdownReporter launches a goroutine that periodically logs
 // which services are blocking shutdown.
 func (el *EventLoop) startShutdownReporter() {
-	el.shutdownReporterStop = make(chan struct{})
+	stop := make(chan struct{})
+	el.shutdownReporterStop = stop
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -360,7 +361,7 @@ func (el *EventLoop) startShutdownReporter() {
 			select {
 			case <-ticker.C:
 				el.logBlockingServices()
-			case <-el.shutdownReporterStop:
+			case <-stop:
 				return
 			}
 		}

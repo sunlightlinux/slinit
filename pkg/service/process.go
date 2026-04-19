@@ -87,6 +87,8 @@ type ProcessService struct {
 	socketFDs []*os.File // additional sockets (fd 4, 5, ... for multiple socket-listen)
 	socketOnDemand bool  // start service on first connection (socket-activation = on-demand)
 	socketDemandStop chan struct{} // signal to stop on-demand watcher
+	socketDemandDone chan struct{} // closed when watcher goroutine exits
+	socketDemandLn   net.Listener  // listener owned by watcher; closed to break Accept
 
 	// Readiness notification
 	readyNotifyFD  int      // fd number child writes to (-1 if none)
@@ -534,63 +536,67 @@ func (s *ProcessService) startOnDemandWatcher() {
 		return
 	}
 	s.socketDemandStop = make(chan struct{})
+	s.socketDemandDone = make(chan struct{})
+
+	// Dup the fd on the caller's goroutine so a concurrent closeSocket
+	// cannot race the child's read of s.socketFD.
+	fdDup, err := syscall.Dup(int(s.socketFD.Fd()))
+	if err != nil {
+		s.services.logger.Error("Service '%s': on-demand socket dup failed: %v", s.serviceName, err)
+		close(s.socketDemandDone)
+		return
+	}
+
+	f := os.NewFile(uintptr(fdDup), "on-demand-socket")
+	ln, err := net.FileListener(f)
+	f.Close()
+	if err != nil {
+		s.services.logger.Error("Service '%s': on-demand listener failed: %v", s.serviceName, err)
+		close(s.socketDemandDone)
+		return
+	}
+	s.socketDemandLn = ln
 
 	go func() {
-		// Create a net.Listener from the fd (dup'd so we don't consume the original)
-		fdDup, err := syscall.Dup(int(s.socketFD.Fd()))
-		if err != nil {
-			s.services.logger.Error("Service '%s': on-demand socket dup failed: %v", s.serviceName, err)
-			return
-		}
-		f := os.NewFile(uintptr(fdDup), "on-demand-socket")
-		ln, err := net.FileListener(f)
-		f.Close()
-		if err != nil {
-			s.services.logger.Error("Service '%s': on-demand listener failed: %v", s.serviceName, err)
-			return
-		}
+		defer close(s.socketDemandDone)
 		defer ln.Close()
 
-		// Set a short deadline so we can check stopCh periodically
-		for {
-			select {
-			case <-s.socketDemandStop:
-				return
-			default:
-			}
-
-			if tcpLn, ok := ln.(*net.TCPListener); ok {
-				tcpLn.SetDeadline(time.Now().Add(500 * time.Millisecond))
-			} else if unixLn, ok := ln.(*net.UnixListener); ok {
-				unixLn.SetDeadline(time.Now().Add(500 * time.Millisecond))
-			}
-
-			conn, err := ln.Accept()
-			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					continue // timeout, retry
-				}
-				// Real error or closed
-				return
-			}
-			// Got a connection! Close it back (the real service will accept it
-			// after being started — the connection stays in the socket backlog).
-			conn.Close()
-
-			s.services.logger.Info("Service '%s': on-demand socket activation triggered", s.serviceName)
-
-			// Start the service via the normal path
-			s.services.StartService(s.self)
+		conn, err := ln.Accept()
+		if err != nil {
+			// Listener closed (stop) or other error — exit.
 			return
 		}
+		// Got a connection! Close it back (the real service will accept it
+		// after being started — the connection stays in the socket backlog).
+		conn.Close()
+
+		select {
+		case <-s.socketDemandStop:
+			return
+		default:
+		}
+
+		s.services.logger.Info("Service '%s': on-demand socket activation triggered", s.serviceName)
+
+		// Start the service via the normal path
+		s.services.StartService(s.self)
 	}()
 }
 
-// stopOnDemandWatcher stops the on-demand socket watcher.
+// stopOnDemandWatcher stops the on-demand socket watcher and waits for
+// its goroutine to exit, so the caller can safely close the socket after.
 func (s *ProcessService) stopOnDemandWatcher() {
 	if s.socketDemandStop != nil {
 		close(s.socketDemandStop)
 		s.socketDemandStop = nil
+		if s.socketDemandLn != nil {
+			s.socketDemandLn.Close() // unblocks Accept
+			s.socketDemandLn = nil
+		}
+		if s.socketDemandDone != nil {
+			<-s.socketDemandDone
+			s.socketDemandDone = nil
+		}
 	}
 }
 
@@ -622,7 +628,14 @@ func (s *ProcessService) SetRestartLimits(interval time.Duration, maxCount int) 
 }
 
 // PID returns the process ID of the running service.
-func (s *ProcessService) PID() int { return s.pid }
+func (s *ProcessService) PID() int {
+	// pid is written under queueMu.Lock by the scheduler. We can't RLock
+	// here because PID() is also called from within queueMu.Lock via
+	// notifyListeners → encodeStatus5Into callbacks (RWMutex is not
+	// reentrant). Relies on int reads being atomic on supported archs;
+	// worst case a reader sees a stale value, never a torn one.
+	return s.pid
+}
 
 // GetExitStatus returns the exit status of the last process.
 func (s *ProcessService) GetExitStatus() ExitStatus { return s.exitStatus }
@@ -1271,14 +1284,18 @@ func (s *ProcessService) getReadyChan() <-chan bool {
 }
 
 // handleReadyNotification processes readiness notification from the pipe.
+// Runs in the monitorProcess goroutine; acquires queueMu.
 func (s *ProcessService) handleReadyNotification(ready bool) {
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+
 	// Close the read-end pipe
 	s.closeReadyPipe()
 
 	// Nil the channel so we don't select on it again
 	s.readyCh = nil
 
-	if s.state != StateStarting {
+	if s.state.Load() != StateStarting {
 		// Not in STARTING state; ignore readiness signal
 		return
 	}
@@ -1290,14 +1307,14 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.Started()
 		s.startCronIfConfigured()
 		s.startHealthCheckIfConfigured()
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 	} else {
 		// EOF without data - child closed pipe without writing
 		s.services.logger.Error("Service '%s': readiness pipe closed without notification", s.serviceName)
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, false)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 	}
 }
 
@@ -1310,17 +1327,8 @@ func (s *ProcessService) closeReadyPipe() {
 }
 
 // handleChildExit processes a child process termination.
+// Runs in the monitorProcess goroutine; acquires queueMu.
 func (s *ProcessService) handleChildExit(exit process.ChildExit) {
-	s.exitStatus = ExitStatus{
-		WaitStatus: exit.Status,
-		HasStatus:  true,
-	}
-	if exit.ExecErr != nil {
-		s.exitStatus.ExecFailed = true
-		s.exitStatus.ExecStage = uint8(exit.ExecErr.Stage)
-		s.exitStatus.ExecErrno = extractErrno(exit.ExecErr.Err)
-	}
-
 	// Kill any remaining processes in the child's process group
 	// (e.g., orphaned sleep, background scripts spawned by the shell).
 	// The lead process is already reaped; wait4(-pgid) only targets
@@ -1335,6 +1343,19 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// Clear utmp entry
 	if s.HasUtmp() && s.services.OnUtmpClear != nil {
 		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	}
+
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+
+	s.exitStatus = ExitStatus{
+		WaitStatus: exit.Status,
+		HasStatus:  true,
+	}
+	if exit.ExecErr != nil {
+		s.exitStatus.ExecFailed = true
+		s.exitStatus.ExecStage = uint8(exit.ExecErr.Stage)
+		s.exitStatus.ExecErrno = extractErrno(exit.ExecErr.Err)
 	}
 
 	s.pid = 0
@@ -1352,13 +1373,13 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 		s.services.logger.Error("Service '%s': exec failed: %v",
 			s.serviceName, exit.ExecErr)
 		s.stopReason = ReasonExecFailed
-		s.state = StateStopping
+		s.state.Store(StateStopping)
 		s.failedToStart(false, true)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 		return
 	}
 
-	state := s.state
+	state := s.state.Load()
 
 	switch state {
 	case StateStarting:
@@ -1367,13 +1388,13 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 			s.serviceName, exit.Status)
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, true)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 
 	case StateStopping:
 		// Expected - we asked it to stop
 		s.stopIssued = false
 		s.Stopped()
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 
 	case StateStarted:
 		// Unexpected termination
@@ -1391,24 +1412,25 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 			s.doSmoothRecovery()
 		} else {
 			// Handle unexpected termination through normal path
-			s.handleUnexpectedTermination()
+			s.handleUnexpectedTerminationLocked()
 		}
 	}
 }
 
-// handleUnexpectedTermination handles when a started process dies unexpectedly.
-func (s *ProcessService) handleUnexpectedTermination() {
+// handleUnexpectedTerminationLocked handles when a started process dies
+// unexpectedly. Caller must hold queueMu.
+func (s *ProcessService) handleUnexpectedTerminationLocked() {
 	s.stopReason = ReasonTerminated
 	s.forceStop = true
 
 	s.doStop(false)
-	s.services.ProcessQueues()
+	s.services.processQueuesLocked()
 
 	// If after processing queues we're still stopping and desired is STARTED,
 	// the restart will be handled by the state machine
-	if s.state == StateStopping && s.desired == StateStarted && !s.IsStartPinned() {
+	if s.state.Load() == StateStopping && s.desired.Load() == StateStarted && !s.IsStartPinned() {
 		s.initiateStart()
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 	}
 }
 
@@ -1434,7 +1456,7 @@ func (s *ProcessService) doSmoothRecovery() {
 			s.services.logger.Error("Service '%s': smooth recovery failed: %v",
 				s.serviceName, err)
 			s.doingSmoothRecov = false
-			s.handleUnexpectedTermination()
+			s.handleUnexpectedTerminationLocked()
 		} else {
 			s.doingSmoothRecov = false
 		}
@@ -1446,7 +1468,11 @@ func (s *ProcessService) doSmoothRecovery() {
 }
 
 // handleTimerExpired processes a timer expiration.
+// Runs in the monitorProcess goroutine; acquires queueMu.
 func (s *ProcessService) handleTimerExpired() {
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+
 	purpose := s.timerPurpose
 	s.timerPurpose = timerNone
 
@@ -1486,7 +1512,7 @@ func (s *ProcessService) handleTimerExpired() {
 				s.services.logger.Error("Service '%s': restart failed: %v",
 					s.serviceName, err)
 				s.doingSmoothRecov = false
-				s.handleUnexpectedTermination()
+				s.handleUnexpectedTerminationLocked()
 			} else {
 				s.doingSmoothRecov = false
 			}
@@ -1524,6 +1550,8 @@ func (s *ProcessService) cancelTimer() {
 }
 
 func (s *ProcessService) getTimerChan() <-chan time.Time {
+	s.services.queueMu.RLock()
+	defer s.services.queueMu.RUnlock()
 	if s.processTimer != nil {
 		return s.processTimer.C
 	}

@@ -29,8 +29,7 @@ func TestProcessServiceStartStop(t *testing.T) {
 	t.Logf("Service started with PID %d", pid)
 
 	// Stop the service
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 
 	// Wait for process to die
 	time.Sleep(500 * time.Millisecond)
@@ -137,8 +136,7 @@ func TestProcessServiceStopTimeout(t *testing.T) {
 	}
 
 	// Stop - should SIGTERM first, then SIGKILL after timeout
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 
 	// Wait for SIGTERM timeout + SIGKILL to take effect
 	time.Sleep(1500 * time.Millisecond)

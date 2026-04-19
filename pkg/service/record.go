@@ -4,11 +4,22 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
+
+// atomicServiceState is a race-free wrapper around ServiceState. State fields
+// are written under queueMu.Lock (single-writer) but read from many goroutines
+// (control connections, listeners, tests). Atomic ops keep the race detector
+// quiet and avoid the RWMutex reentrancy deadlock that occurs when a callback
+// from notifyListeners re-enters State() while the scheduler holds queueMu.
+type atomicServiceState struct{ v atomic.Uint32 }
+
+func (a *atomicServiceState) Load() ServiceState    { return ServiceState(a.v.Load()) }
+func (a *atomicServiceState) Store(s ServiceState)  { a.v.Store(uint32(s)) }
 
 // Service is the core interface that all service types implement.
 // It replaces the C++ virtual method pattern from dinit's service_record hierarchy.
@@ -76,9 +87,9 @@ type ServiceRecord struct {
 	description string // human-readable description for status/list output
 	recordType  ServiceType
 
-	// State
-	state   ServiceState
-	desired ServiceState
+	// State (atomic: written under queueMu.Lock, read lockless)
+	state   atomicServiceState
+	desired atomicServiceState
 
 	// Flags
 	autoRestart    AutoRestartMode
@@ -215,16 +226,17 @@ type ServiceRecord struct {
 
 // NewServiceRecord creates a new ServiceRecord with default values.
 func NewServiceRecord(self Service, set *ServiceSet, name string, recordType ServiceType) *ServiceRecord {
-	return &ServiceRecord{
+	sr := &ServiceRecord{
 		self:        self,
 		serviceName: name,
 		recordType:  recordType,
-		state:       StateStopped,
-		desired:     StateStopped,
 		autoRestart: RestartNever,
 		termSignal:  syscall.SIGTERM,
 		services:    set,
 	}
+	sr.state.Store(StateStopped)
+	sr.desired.Store(StateStopped)
+	return sr
 }
 
 // --- Interface implementation methods ---
@@ -298,8 +310,8 @@ func (sr *ServiceRecord) CheckRequiredPaths() error {
 func (sr *ServiceRecord) LoadModTime() time.Time       { return sr.loadModTime }
 func (sr *ServiceRecord) SetLoadModTime(t time.Time)   { sr.loadModTime = t }
 func (sr *ServiceRecord) Type() ServiceType           { return sr.recordType }
-func (sr *ServiceRecord) State() ServiceState      { return sr.state }
-func (sr *ServiceRecord) TargetState() ServiceState { return sr.desired }
+func (sr *ServiceRecord) State() ServiceState       { return sr.state.Load() }
+func (sr *ServiceRecord) TargetState() ServiceState { return sr.desired.Load() }
 func (sr *ServiceRecord) StopReason() StoppedReason { return sr.stopReason }
 func (sr *ServiceRecord) RequiredBy() int          { return sr.requiredBy }
 func (sr *ServiceRecord) Dependencies() []*ServiceDep { return sr.dependsOn }
@@ -315,7 +327,7 @@ func (sr *ServiceRecord) GetSmoothRecovery() bool  { return sr.smoothRecovery }
 
 // UnrecoverableStop forces the service to stop without possibility of restart.
 func (sr *ServiceRecord) UnrecoverableStop() {
-	sr.desired = StateStopped
+	sr.desired.Store(StateStopped)
 	sr.ForcedStop()
 }
 
@@ -381,7 +393,7 @@ func (sr *ServiceRecord) LookupExtraCommand(action string) ([]string, bool) {
 		return cmd, true
 	}
 	if cmd, ok := sr.extraStartedCommands[action]; ok {
-		if sr.state == StateStarted {
+		if sr.state.Load() == StateStarted {
 			return cmd, true
 		}
 		return nil, false // exists but service not started
@@ -641,8 +653,8 @@ func (sr *ServiceRecord) StartupDuration() time.Duration {
 // IsFundamentallyStopped returns true if the service is effectively stopped:
 // either in STOPPED state, or STARTING but still waiting for deps.
 func (sr *ServiceRecord) IsFundamentallyStopped() bool {
-	return sr.state == StateStopped ||
-		(sr.state == StateStarting && sr.waitingForDeps)
+	return sr.state.Load() == StateStopped ||
+		(sr.state.Load() == StateStarting && sr.waitingForDeps)
 }
 
 // CanInterruptStop returns true if a STOPPING service can immediately go back to STARTED.
@@ -686,7 +698,7 @@ func (sr *ServiceRecord) Wake() bool {
 			continue
 		}
 		from := dept.From
-		fromState := from.State()
+		fromState := from.Record().state.Load()
 		if fromState == StateStarted || fromState == StateStarting {
 			found = true
 			if !dept.HoldingAcq {
@@ -712,7 +724,7 @@ func (sr *ServiceRecord) Stop(bringDown bool) {
 	}
 
 	if bringDown || sr.requiredBy == 0 {
-		sr.desired = StateStopped
+		sr.desired.Store(StateStopped)
 	}
 
 	if sr.IsStartPinned() {
@@ -727,7 +739,7 @@ func (sr *ServiceRecord) Stop(bringDown bool) {
 		}
 	}
 
-	if bringDown && sr.state != StateStopped {
+	if bringDown && sr.state.Load() != StateStopped {
 		sr.stopReason = ReasonNormal
 		sr.doStop(false)
 	}
@@ -735,7 +747,7 @@ func (sr *ServiceRecord) Stop(bringDown bool) {
 
 // Restart restarts the service. Returns true if restart was issued.
 func (sr *ServiceRecord) Restart() bool {
-	if sr.state == StateStarted {
+	if sr.state.Load() == StateStarted {
 		sr.stopReason = ReasonNormal
 		sr.forceStop = true
 		sr.doStop(true)
@@ -746,7 +758,7 @@ func (sr *ServiceRecord) Restart() bool {
 
 // ForcedStop marks this service and all dependents for forced stop.
 func (sr *ServiceRecord) ForcedStop() {
-	if sr.state != StateStopped {
+	if sr.state.Load() != StateStopped {
 		sr.forceStop = true
 		if !sr.IsStartPinned() {
 			sr.propStop = true
@@ -803,12 +815,12 @@ func (sr *ServiceRecord) Unpin() {
 			}
 		}
 
-		if sr.state == StateStarted {
+		if sr.state.Load() == StateStarted {
 			if sr.requiredBy == 0 {
 				sr.propRelease = true
 				sr.services.AddPropQueue(sr.self)
 			}
-			if sr.desired == StateStopped || sr.forceStop {
+			if sr.desired.Load() == StateStopped || sr.forceStop {
 				sr.doStop(false)
 				// Note: caller is responsible for draining queues
 				// (e.g. StopAllServices calls processQueuesLocked,
@@ -825,7 +837,7 @@ func (sr *ServiceRecord) Unpin() {
 func (sr *ServiceRecord) Require() {
 	sr.requiredBy++
 	if sr.requiredBy == 1 {
-		if sr.state != StateStarting && sr.state != StateStarted {
+		if sr.state.Load() != StateStarting && sr.state.Load() != StateStarted {
 			sr.propStart = true
 			sr.services.AddPropQueue(sr.self)
 		}
@@ -836,12 +848,12 @@ func (sr *ServiceRecord) Require() {
 func (sr *ServiceRecord) Release(issueStop bool) {
 	sr.requiredBy--
 	if sr.requiredBy == 0 {
-		if sr.state == StateStopping {
-			if sr.desired == StateStarted && !sr.IsStartPinned() {
+		if sr.state.Load() == StateStopping {
+			if sr.desired.Load() == StateStarted && !sr.IsStartPinned() {
 				sr.notifyListeners(EventStartCancelled)
 			}
 		}
-		sr.desired = StateStopped
+		sr.desired.Store(StateStopped)
 
 		if sr.IsStartPinned() {
 			return
@@ -853,7 +865,7 @@ func (sr *ServiceRecord) Release(issueStop bool) {
 			sr.services.AddPropQueue(sr.self)
 		}
 
-		if sr.state != StateStopped && sr.state != StateStopping && issueStop {
+		if sr.state.Load() != StateStopped && sr.state.Load() != StateStopping && issueStop {
 			sr.stopReason = ReasonNormal
 			sr.doStop(false)
 		}
@@ -890,7 +902,7 @@ func (sr *ServiceRecord) DoPropagation() {
 	if sr.propFailure {
 		sr.propFailure = false
 		sr.stopReason = ReasonDepFailed
-		sr.state = StateStopped
+		sr.state.Store(StateStopped)
 		sr.failedToStart(true, true)
 	}
 
@@ -926,7 +938,7 @@ func (sr *ServiceRecord) DoPropagation() {
 			}
 
 			if !sr.deptPinnedStarted && !sr.pinnedStarted {
-				if (sr.desired == StateStopped || sr.forceStop) && sr.state == StateStarted {
+				if (sr.desired.Load() == StateStopped || sr.forceStop) && sr.state.Load() == StateStarted {
 					sr.doStop(false)
 				}
 			}
@@ -936,12 +948,12 @@ func (sr *ServiceRecord) DoPropagation() {
 
 // ExecuteTransition performs a state transition based on the current and desired states.
 func (sr *ServiceRecord) ExecuteTransition() {
-	if sr.state == StateStarting {
+	if sr.state.Load() == StateStarting {
 		if sr.checkDepsStarted() {
 			sr.waitingForDeps = false
 			sr.allDepsStarted()
 		}
-	} else if sr.state == StateStopping {
+	} else if sr.state.Load() == StateStopping {
 		if sr.stopCheckDependents() {
 			sr.waitingForDeps = false
 			sr.self.BringDown()
@@ -974,9 +986,9 @@ func (sr *ServiceRecord) notifyListeners(event ServiceEvent) {
 }
 
 func (sr *ServiceRecord) doStart() {
-	wasActive := sr.state != StateStopped
+	wasActive := sr.state.Load() != StateStopped
 
-	sr.desired = StateStarted
+	sr.desired.Store(StateStarted)
 
 	if sr.pinnedStopped {
 		if !wasActive {
@@ -988,7 +1000,7 @@ func (sr *ServiceRecord) doStart() {
 	// 'down' marker prevents auto-start (e.g., as dependency)
 	// Explicit Start() clears markedDown before calling doStart()
 	if sr.markedDown {
-		sr.desired = StateStopped
+		sr.desired.Store(StateStopped)
 		return
 	}
 
@@ -996,7 +1008,7 @@ func (sr *ServiceRecord) doStart() {
 	if !wasActive {
 		for _, dept := range sr.dependents {
 			if !dept.IsHard() {
-				deptState := dept.From.Record().state
+				deptState := dept.From.Record().state.Load()
 				if !dept.HoldingAcq &&
 					(deptState == StateStarted || deptState == StateStarting) {
 					dept.HoldingAcq = true
@@ -1007,7 +1019,7 @@ func (sr *ServiceRecord) doStart() {
 	}
 
 	if wasActive {
-		if sr.state != StateStopping {
+		if sr.state.Load() != StateStopping {
 			return
 		}
 		if !sr.CanInterruptStop() {
@@ -1030,7 +1042,7 @@ func (sr *ServiceRecord) initiateStart() {
 	sr.startFailed = false
 	sr.startSkipped = false
 	sr.startRequestTime = time.Now()
-	sr.state = StateStarting
+	sr.state.Store(StateStarting)
 	sr.waitingForDeps = true
 
 	if sr.startCheckDependencies() {
@@ -1043,10 +1055,10 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 
 	for _, dep := range sr.dependsOn {
 		to := dep.To
-		if dep.IsOnlyOrdering() && to.State() != StateStarting {
+		if dep.IsOnlyOrdering() && to.Record().state.Load() != StateStarting {
 			continue
 		}
-		if to.State() != StateStarted {
+		if to.Record().state.Load() != StateStarted {
 			dep.WaitingOn = true
 			allStarted = false
 		}
@@ -1054,7 +1066,7 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 
 	for _, dept := range sr.dependents {
 		if !dept.WaitingOn && dept.IsOnlyOrdering() {
-			if dept.From.State() == StateStarting {
+			if dept.From.Record().state.Load() == StateStarting {
 				dept.WaitingOn = true
 			}
 		}
@@ -1091,7 +1103,7 @@ func (sr *ServiceRecord) allDepsStarted() {
 				sr.services.queueMu.Lock()
 				sr.waitingForStartSlot = false
 				if !sr.self.BringUp() {
-					sr.state = StateStopping
+					sr.state.Store(StateStopping)
 					sr.failedToStart(false, true)
 				}
 				sr.services.processQueuesLocked()
@@ -1102,7 +1114,7 @@ func (sr *ServiceRecord) allDepsStarted() {
 	}
 
 	if !sr.self.BringUp() {
-		sr.state = StateStopping
+		sr.state.Store(StateStopping)
 		sr.failedToStart(false, true)
 	}
 }
@@ -1142,10 +1154,10 @@ func (sr *ServiceRecord) Started() {
 	}
 
 	sr.services.logger.ServiceStarted(sr.serviceName)
-	sr.state = StateStarted
+	sr.state.Store(StateStarted)
 	sr.notifyListeners(EventStarted)
 
-	if sr.forceStop || sr.desired == StateStopped {
+	if sr.forceStop || sr.desired.Load() == StateStopped {
 		sr.doStop(false)
 		return
 	}
@@ -1169,7 +1181,7 @@ func (sr *ServiceRecord) Stopped() {
 
 	sr.forceStop = false
 
-	willRestart := sr.desired == StateStarted && !sr.pinnedStopped
+	willRestart := sr.desired.Load() == StateStarted && !sr.pinnedStopped
 
 	// If we won't restart, break soft dependencies
 	if !willRestart {
@@ -1192,7 +1204,7 @@ func (sr *ServiceRecord) Stopped() {
 		dep.To.Record().dependentStopped()
 	}
 
-	sr.state = StateStopped
+	sr.state.Store(StateStopped)
 
 	if willRestart {
 		sr.initiateStart()
@@ -1240,7 +1252,7 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 		}
 	}
 
-	sr.desired = StateStopped
+	sr.desired.Store(StateStopped)
 
 	if sr.waitingForConsole {
 		sr.services.UnqueueConsole(sr.self)
@@ -1256,7 +1268,7 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 	for _, dept := range sr.dependents {
 		switch dept.DepType {
 		case DepRegular, DepMilestone:
-			if dept.From.State() == StateStarting {
+			if dept.From.Record().state.Load() == StateStarting {
 				dept.From.Record().propFailure = true
 				sr.services.AddPropQueue(dept.From)
 			}
@@ -1296,10 +1308,10 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 
 	if !withRestart {
 		// Check for auto-restart
-		if sr.autoRestart == RestartAlways && sr.desired == StateStarted {
+		if sr.autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
 			forRestart = sr.self.CheckRestart()
 			sr.inAutoRestart = forRestart
-		} else if sr.autoRestart == RestartOnFailure && sr.desired == StateStarted {
+		} else if sr.autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
 			exitStatus := sr.self.GetExitStatus()
 			if exitStatus.Signaled() {
 				// Don't auto-restart for administrative signals (matching dinit)
@@ -1327,8 +1339,8 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 
 	allDepsStopped := sr.stopDependents(forRestart, restartDeps)
 
-	if sr.state != StateStarted {
-		if sr.state == StateStarting {
+	if sr.state.Load() != StateStarted {
+		if sr.state.Load() == StateStarting {
 			if !sr.waitingForDeps && !sr.waitingForConsole {
 				if !sr.self.CanInterruptStart() {
 					return
@@ -1348,7 +1360,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		}
 	}
 
-	sr.state = StateStopping
+	sr.state.Store(StateStopping)
 	sr.waitingForDeps = !allDepsStopped
 	if allDepsStopped {
 		sr.services.AddTransitionQueue(sr.self)
@@ -1356,13 +1368,13 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 }
 
 func (sr *ServiceRecord) dependencyStarted() {
-	if (sr.state == StateStarting || sr.state == StateStarted) && sr.waitingForDeps {
+	if (sr.state.Load() == StateStarting || sr.state.Load() == StateStarted) && sr.waitingForDeps {
 		sr.services.AddTransitionQueue(sr.self)
 	}
 }
 
 func (sr *ServiceRecord) dependentStopped() {
-	if sr.state == StateStopping && sr.waitingForDeps {
+	if sr.state.Load() == StateStopping && sr.waitingForDeps {
 		sr.services.AddTransitionQueue(sr.self)
 	}
 }
@@ -1388,7 +1400,7 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 			}
 
 			if sr.forceStop {
-				if sr.desired == StateStopped {
+				if sr.desired.Load() == StateStopped {
 					depFrom.stopReason = ReasonDepFailed
 					depFrom.UnrecoverableStop()
 				} else {
@@ -1396,10 +1408,10 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 				}
 			}
 
-			if dept.From.State() != StateStopped {
-				if sr.desired == StateStopped {
-					if depFrom.desired != StateStopped {
-						depFrom.desired = StateStopped
+			if dept.From.Record().state.Load() != StateStopped {
+				if sr.desired.Load() == StateStopped {
+					if depFrom.desired.Load() != StateStopped {
+						depFrom.desired.Store(StateStopped)
 						if depFrom.startExplicit {
 							depFrom.startExplicit = false
 							depFrom.Release(true)
@@ -1407,7 +1419,7 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 						depFrom.propStop = true
 						sr.services.AddPropQueue(dept.From)
 					}
-				} else if restartDeps && dept.From.State() != StateStopping {
+				} else if restartDeps && dept.From.Record().state.Load() != StateStopping {
 					depFrom.stopReason = ReasonDepRestart
 					depFrom.inUserRestart = true
 					depFrom.propStop = true
@@ -1445,7 +1457,7 @@ func (sr *ServiceRecord) AcquiredConsole() {
 	sr.waitingForConsole = false
 	sr.haveConsole = true
 
-	if sr.state != StateStarting {
+	if sr.state.Load() != StateStarting {
 		sr.releaseConsole()
 	} else if sr.checkDepsStarted() {
 		sr.allDepsStarted()
@@ -1469,9 +1481,9 @@ func (sr *ServiceRecord) AddDep(to Service, depType DependencyType) *ServiceDep 
 
 	if depType != DepBefore && depType != DepAfter {
 		if depType == DepRegular ||
-			to.State() == StateStarted ||
-			to.State() == StateStarting {
-			if sr.state == StateStarting || sr.state == StateStarted {
+			to.Record().state.Load() == StateStarted ||
+			to.Record().state.Load() == StateStarting {
+			if sr.state.Load() == StateStarting || sr.state.Load() == StateStarted {
 				toRec.Require()
 				dep.HoldingAcq = true
 			}

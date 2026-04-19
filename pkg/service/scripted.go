@@ -141,6 +141,7 @@ func (s *ScriptedService) SetStopTimeout(d time.Duration) { s.stopTimeout = d }
 
 // PID returns the PID of the currently running command (start or stop).
 func (s *ScriptedService) PID() int {
+	// See ProcessService.PID() — same reentrancy rationale.
 	if s.startPID > 0 {
 		return s.startPID
 	}
@@ -380,6 +381,8 @@ func (s *ScriptedService) monitorStop(exitCh <-chan process.ChildExit) {
 	}
 }
 
+// handleStartExit processes start-command termination. Runs in the
+// monitorStart goroutine; acquires queueMu.
 func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	// Kill remaining process group members (orphaned children of the script)
 	process.KillProcessGroup(exit.PID)
@@ -394,6 +397,9 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
 	}
 
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+
 	s.startPID = 0
 	s.startHandle.Clear()
 	s.cancelTimer()
@@ -403,7 +409,7 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 			s.serviceName, exit.ExecErr)
 		s.stopReason = ReasonExecFailed
 		s.failedToStart(false, true)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 		return
 	}
 
@@ -414,12 +420,12 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 			s.services.logger.Error("Service '%s': start command completed after timeout",
 				s.serviceName)
 			s.failedToStart(false, true)
-			s.services.ProcessQueues()
+			s.services.processQueuesLocked()
 			return
 		}
 		// Start command succeeded
 		s.Started()
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 	} else {
 		// Start command failed
 		exitCode := -1
@@ -432,10 +438,12 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 			s.stopReason = ReasonFailed
 		}
 		s.failedToStart(false, true)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 	}
 }
 
+// handleStopExit processes stop-command termination. Runs in the
+// monitorStop goroutine; acquires queueMu.
 func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 	// Kill remaining process group members
 	process.KillProcessGroup(exit.PID)
@@ -444,6 +452,9 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 	if s.Flags.KillAllOnStop {
 		s.killCgroupTree(syscall.SIGKILL)
 	}
+
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
 
 	s.stopPID = 0
 	s.stopHandle.Clear()
@@ -456,10 +467,15 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 
 	// Whether stop command succeeded or not, the service is stopped
 	s.Stopped()
-	s.services.ProcessQueues()
+	s.services.processQueuesLocked()
 }
 
+// handleTimerExpired processes a timer expiration. Runs in a monitor
+// goroutine; acquires queueMu.
 func (s *ScriptedService) handleTimerExpired() {
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+
 	purpose := s.timerPurpose
 	s.timerPurpose = scriptedTimerNone
 
@@ -476,7 +492,7 @@ func (s *ScriptedService) handleTimerExpired() {
 		s.stopReason = ReasonTimedOut
 		if s.startPID <= 0 {
 			s.failedToStart(false, true)
-			s.services.ProcessQueues()
+			s.services.processQueuesLocked()
 		}
 
 	case scriptedTimerStopTimeout:
@@ -522,6 +538,8 @@ func (s *ScriptedService) cancelTimer() {
 }
 
 func (s *ScriptedService) getTimerChan() <-chan time.Time {
+	s.services.queueMu.RLock()
+	defer s.services.queueMu.RUnlock()
 	if s.processTimer != nil {
 		return s.processTimer.C
 	}

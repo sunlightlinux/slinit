@@ -188,8 +188,7 @@ func TestServicePinStart(t *testing.T) {
 	}
 
 	// Try to stop - should remain started due to pin
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 
 	if svc.State() != StateStarted {
 		t.Errorf("pinned service should remain STARTED, got %v", svc.State())
@@ -314,8 +313,7 @@ func TestServiceWakeWithActiveDependents(t *testing.T) {
 	}
 
 	// Stop child — parent stays STARTED (soft dep)
-	child.Stop(true)
-	set.ProcessQueues()
+	set.StopService(child)
 
 	if child.State() != StateStopped {
 		t.Fatalf("child expected STOPPED, got %v", child.State())

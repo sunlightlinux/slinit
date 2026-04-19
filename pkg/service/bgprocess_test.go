@@ -50,8 +50,7 @@ func TestBGProcessServiceStartStop(t *testing.T) {
 	}
 
 	// Stop the service
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 
 	// Need to wait for SIGTERM to kill daemon + polling interval (1s) to detect death
 	time.Sleep(2500 * time.Millisecond)
@@ -156,8 +155,7 @@ func TestBGProcessServiceWithDependency(t *testing.T) {
 	}
 
 	// Stop
-	svc.Stop(true)
-	set.ProcessQueues()
+	set.StopService(svc)
 	time.Sleep(2500 * time.Millisecond)
 
 	if svc.State() != StateStopped {

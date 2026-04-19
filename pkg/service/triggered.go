@@ -45,7 +45,7 @@ func (s *TriggeredService) InterruptStart() bool {
 // is in STARTING state with deps satisfied, the service transitions to STARTED.
 func (s *TriggeredService) SetTrigger(triggered bool) {
 	s.isTriggered = triggered
-	if s.isTriggered && s.State() == StateStarting && !s.waitingForDeps {
+	if s.isTriggered && s.state.Load() == StateStarting && !s.waitingForDeps {
 		s.Started()
 	}
 }

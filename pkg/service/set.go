@@ -49,12 +49,14 @@ type ServiceSet struct {
 	shutdownType   ShutdownType
 
 	// queueMu protects the processing queues, console queue, and
-	// activeServices counter. It is held across entire ProcessQueues
-	// drain loops and at top-level entry points (StartService,
-	// StopService, etc.) so that internal callbacks (AddPropQueue,
-	// AddTransitionQueue, ServiceActive, ServiceInactive) can be
-	// called without re-locking.
-	queueMu sync.Mutex
+	// activeServices counter, plus service-state fields mutated during
+	// scheduling. It is held across entire ProcessQueues drain loops
+	// and at top-level entry points (StartService, StopService, etc.)
+	// so that internal callbacks (AddPropQueue, AddTransitionQueue,
+	// ServiceActive, ServiceInactive) can be called without re-locking.
+	// Monitor goroutines (process exit, timer expiry, daemon polling)
+	// acquire it before mutating state; getters (State, PID) RLock.
+	queueMu sync.RWMutex
 
 	// Processing queues
 	propQueue    []Service // propagation queue

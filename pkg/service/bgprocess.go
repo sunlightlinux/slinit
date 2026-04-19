@@ -199,6 +199,7 @@ func (s *BGProcessService) SetRestartLimits(interval time.Duration, maxCount int
 
 // PID returns the daemon PID if known, otherwise the launcher PID.
 func (s *BGProcessService) PID() int {
+	// See ProcessService.PID() — same reentrancy rationale.
 	if s.daemonPID > 0 {
 		return s.daemonPID
 	}
@@ -531,6 +532,8 @@ func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 }
 
 // handleLauncherExit processes the launcher process termination.
+// Runs in the monitorLauncher goroutine; acquires queueMu to serialize
+// state mutations with the main scheduling path.
 func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	// Kill remaining process group members from the launcher
 	process.KillProcessGroup(exit.PID)
@@ -539,6 +542,9 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	if s.Flags.KillAllOnStop {
 		s.killCgroupTree(syscall.SIGKILL)
 	}
+
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
 
 	s.launcherPID = 0
 	s.procHandle.Clear()
@@ -559,9 +565,9 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 			s.serviceName, exit.ExecErr)
 		s.cancelTimer()
 		s.stopReason = ReasonExecFailed
-		s.state = StateStopping
+		s.state.Store(StateStopping)
 		s.failedToStart(false, true)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 		return
 	}
 
@@ -575,7 +581,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, true)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 		return
 	}
 
@@ -587,7 +593,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, true)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 		return
 	}
 
@@ -597,7 +603,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, true)
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 		return
 	}
 
@@ -611,7 +617,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 
 	s.cancelTimer()
 	s.Started()
-	s.services.ProcessQueues()
+	s.services.processQueuesLocked()
 
 	// Start monitoring the daemon process
 	go s.monitorDaemon()
@@ -671,7 +677,11 @@ func (s *BGProcessService) monitorDaemon() {
 }
 
 // handleDaemonTermination handles when the daemon process disappears.
+// Runs in the monitorDaemon goroutine; acquires queueMu.
 func (s *BGProcessService) handleDaemonTermination() {
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+
 	s.services.logger.Error("Service '%s': daemon process %d terminated",
 		s.serviceName, s.daemonPID)
 
@@ -683,35 +693,36 @@ func (s *BGProcessService) handleDaemonTermination() {
 	s.daemonPID = 0
 	s.cancelTimer()
 
-	state := s.state
+	state := s.state.Load()
 
 	switch state {
 	case StateStopping:
 		s.stopIssued = false
 		s.Stopped()
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 
 	case StateStarted:
 		if s.smoothRecovery && s.CheckRestart() {
 			s.doingSmoothRecov = true
 			s.doSmoothRecovery()
 		} else {
-			s.handleUnexpectedTermination()
+			s.handleUnexpectedTerminationLocked()
 		}
 	}
 }
 
-// handleUnexpectedTermination handles when a started daemon dies unexpectedly.
-func (s *BGProcessService) handleUnexpectedTermination() {
+// handleUnexpectedTerminationLocked handles when a started daemon dies
+// unexpectedly. Caller must hold queueMu.
+func (s *BGProcessService) handleUnexpectedTerminationLocked() {
 	s.stopReason = ReasonTerminated
 	s.forceStop = true
 
 	s.doStop(false)
-	s.services.ProcessQueues()
+	s.services.processQueuesLocked()
 
-	if s.state == StateStopping && s.desired == StateStarted && !s.IsStartPinned() {
+	if s.state.Load() == StateStopping && s.desired.Load() == StateStarted && !s.IsStartPinned() {
 		s.initiateStart()
-		s.services.ProcessQueues()
+		s.services.processQueuesLocked()
 	}
 }
 
@@ -732,7 +743,7 @@ func (s *BGProcessService) doSmoothRecovery() {
 	if elapsed >= effectiveDelay {
 		if !s.self.BringUp() {
 			s.doingSmoothRecov = false
-			s.handleUnexpectedTermination()
+			s.handleUnexpectedTerminationLocked()
 		} else {
 			s.doingSmoothRecov = false
 		}
@@ -743,7 +754,11 @@ func (s *BGProcessService) doSmoothRecovery() {
 }
 
 // handleTimerExpired processes a timer expiration.
+// Runs in a monitor goroutine; acquires queueMu.
 func (s *BGProcessService) handleTimerExpired() {
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+
 	purpose := s.timerPurpose
 	s.timerPurpose = bgTimerNone
 
@@ -782,7 +797,7 @@ func (s *BGProcessService) handleTimerExpired() {
 		if s.doingSmoothRecov {
 			if !s.self.BringUp() {
 				s.doingSmoothRecov = false
-				s.handleUnexpectedTermination()
+				s.handleUnexpectedTerminationLocked()
 			} else {
 				s.doingSmoothRecov = false
 			}
@@ -820,6 +835,8 @@ func (s *BGProcessService) cancelTimer() {
 }
 
 func (s *BGProcessService) getTimerChan() <-chan time.Time {
+	s.services.queueMu.RLock()
+	defer s.services.queueMu.RUnlock()
 	if s.processTimer != nil {
 		return s.processTimer.C
 	}
