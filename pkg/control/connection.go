@@ -825,23 +825,72 @@ func (c *Connection) handleCatLog(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	if svc.GetLogType() != service.LogToBuffer {
+	switch svc.GetLogType() {
+	case service.LogToBuffer:
+		logBuf := svc.GetLogBuffer()
+		if logBuf == nil {
+			return c.writePacket(RplyNAK, nil)
+		}
+		var data []byte
+		if flags&CatLogFlagClear != 0 {
+			data = logBuf.GetBufferAndClear()
+		} else {
+			data = logBuf.GetBuffer()
+		}
+		return c.writePacket(RplySvcLog, EncodeSvcLog(data))
+
+	case service.LogToFile:
+		// --clear has no sensible semantic for a tail read; refuse.
+		if flags&CatLogFlagClear != 0 {
+			return c.writePacket(RplyNAK, nil)
+		}
+		path := svc.GetLogFile()
+		if path == "" {
+			return c.writePacket(RplyNAK, nil)
+		}
+		data, err := readLogFileTail(path, 64*1024)
+		if err != nil {
+			return c.writePacket(RplyNAK, nil)
+		}
+		return c.writePacket(RplySvcLog, EncodeSvcLog(data))
+
+	default:
 		return c.writePacket(RplyNAK, nil)
 	}
+}
 
-	logBuf := svc.GetLogBuffer()
-	if logBuf == nil {
-		return c.writePacket(RplyNAK, nil)
+// readLogFileTail returns the last `max` bytes of a file (or whole file if smaller).
+// Aligns to the next newline after the seek point so partial first line is dropped.
+func readLogFileTail(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
+	defer f.Close()
 
-	var data []byte
-	if flags&CatLogFlagClear != 0 {
-		data = logBuf.GetBufferAndClear()
-	} else {
-		data = logBuf.GetBuffer()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-	reply := EncodeSvcLog(data)
-	return c.writePacket(RplySvcLog, reply)
+	size := info.Size()
+
+	offset := int64(0)
+	if size > max {
+		offset = size - max
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	if offset > 0 {
+		if nl := strings.IndexByte(string(data), '\n'); nl >= 0 && nl+1 < len(data) {
+			data = data[nl+1:]
+		}
+	}
+	return data, nil
 }
 
 func (c *Connection) handleReloadService(payload []byte) error {

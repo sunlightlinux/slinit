@@ -1397,10 +1397,14 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 		s.services.processQueuesLocked()
 
 	case StateStarted:
-		// Unexpected termination
+		// Unexpected termination. Only log non-clean exits (match dinit
+		// did_exit_clean semantics): a clean exit (code 0) from a
+		// restart=true service is normal turnover, not an error.
 		if exit.Exited() {
-			s.services.logger.Error("Service '%s': process exited with code %d",
-				s.serviceName, exit.Status.ExitStatus())
+			if code := exit.Status.ExitStatus(); code != 0 {
+				s.services.logger.Error("Service '%s': process exited with code %d",
+					s.serviceName, code)
+			}
 		} else if exit.Signaled() {
 			s.services.logger.Error("Service '%s': process killed by signal %v",
 				s.serviceName, exit.Status.Signal())

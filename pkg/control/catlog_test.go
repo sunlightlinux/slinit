@@ -3,6 +3,9 @@ package control
 import (
 	"bytes"
 	"encoding/binary"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -211,5 +214,97 @@ func TestCatLogCommand_Clear(t *testing.T) {
 	_, logData2, _ := DecodeSvcLog(payload3)
 	if len(logData2) != 0 {
 		t.Errorf("buffer should be empty after clear, got %q", logData2)
+	}
+}
+
+func TestCatLogCommand_LogToFile(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	logPath := filepath.Join(t.TempDir(), "app.log")
+	content := "line 1\nline 2\nline 3\n"
+	if err := os.WriteFile(logPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write logfile: %v", err)
+	}
+
+	svc := service.NewProcessService(server.services, "file-svc")
+	svc.SetLogType(service.LogToFile)
+	svc.SetLogFileDetails(logPath, 0644, -1, -1)
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdLoadService, EncodeServiceName("file-svc")); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil || rply != RplyServiceRecord {
+		t.Fatalf("load failed: rply=%d err=%v", rply, err)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	if err := WritePacket(conn, CmdCatLog, EncodeCatLogRequest(handle, false)); err != nil {
+		t.Fatalf("catlog: %v", err)
+	}
+	rply2, payload2, err := ReadPacket(conn)
+	if err != nil || rply2 != RplySvcLog {
+		t.Fatalf("expected RplySvcLog, got %d err=%v", rply2, err)
+	}
+	_, logData, _ := DecodeSvcLog(payload2)
+	if string(logData) != content {
+		t.Errorf("logData = %q, want %q", logData, content)
+	}
+}
+
+func TestCatLogCommand_LogToFile_TailTruncation(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	// Build a log larger than the tail cap (64 KiB) so we exercise the
+	// seek-to-tail + newline-align path.
+	logPath := filepath.Join(t.TempDir(), "big.log")
+	var b strings.Builder
+	for i := 0; i < 5000; i++ {
+		b.WriteString("some middling log line for padding purposes\n")
+	}
+	b.WriteString("LAST_MARKER\n")
+	if err := os.WriteFile(logPath, []byte(b.String()), 0644); err != nil {
+		t.Fatalf("write logfile: %v", err)
+	}
+
+	svc := service.NewProcessService(server.services, "big-svc")
+	svc.SetLogType(service.LogToFile)
+	svc.SetLogFileDetails(logPath, 0644, -1, -1)
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdLoadService, EncodeServiceName("big-svc")); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil || rply != RplyServiceRecord {
+		t.Fatalf("load failed: rply=%d err=%v", rply, err)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	if err := WritePacket(conn, CmdCatLog, EncodeCatLogRequest(handle, false)); err != nil {
+		t.Fatalf("catlog: %v", err)
+	}
+	rply2, payload2, err := ReadPacket(conn)
+	if err != nil || rply2 != RplySvcLog {
+		t.Fatalf("expected RplySvcLog, got %d err=%v", rply2, err)
+	}
+	_, logData, _ := DecodeSvcLog(payload2)
+	if len(logData) > 64*1024 {
+		t.Errorf("tail size %d > cap 65536", len(logData))
+	}
+	if !bytes.Contains(logData, []byte("LAST_MARKER\n")) {
+		t.Errorf("tail missing LAST_MARKER")
+	}
+	if !bytes.HasPrefix(logData, []byte("some")) {
+		t.Errorf("tail not aligned to newline; starts with %q", logData[:min(20, len(logData))])
 	}
 }

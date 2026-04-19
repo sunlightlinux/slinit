@@ -1824,7 +1824,7 @@ func cmdCatLog(conn net.Conn, name string, clear bool) error {
 
 	switch rply {
 	case control.RplyNAK:
-		return fmt.Errorf("service '%s' is not configured to buffer output (log-type != buffer)", name)
+		return fmt.Errorf("service '%s': no log available (set log-type = buffer or log-file = /path for catlog support)", name)
 	case control.RplySvcLog:
 		_, logData, err := control.DecodeSvcLog(rplyPayload)
 		if err != nil {

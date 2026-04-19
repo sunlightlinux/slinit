@@ -68,6 +68,7 @@ type Service interface {
 	// Log buffer access (for catlog command)
 	GetLogBuffer() *LogBuffer
 	GetLogType() LogType
+	GetLogFile() string
 
 	// Internal access to the record (for state machine operations)
 	Record() *ServiceRecord
@@ -635,6 +636,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 // Default log buffer implementations (overridden by process-based services)
 func (sr *ServiceRecord) GetLogBuffer() *LogBuffer { return nil }
 func (sr *ServiceRecord) GetLogType() LogType      { return LogNone }
+func (sr *ServiceRecord) GetLogFile() string       { return "" }
 
 // Boot timing getters
 func (sr *ServiceRecord) StartRequestTime() time.Time { return sr.startRequestTime }
