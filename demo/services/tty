@@ -5,6 +5,7 @@ type = process
 command = /bin/bash --login
 options = runs-on-console unmask-intr
 restart = yes
+smooth-recovery = yes
 stop-timeout = 3
 term-signal = SIGHUP
 depends-on: system-init
