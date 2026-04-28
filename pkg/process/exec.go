@@ -85,11 +85,15 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 	}
 
-	// Lock file: acquire exclusive non-blocking flock before exec
+	// Lock file: acquire exclusive non-blocking flock before exec.
+	// O_NOFOLLOW prevents an attacker from pre-creating the path as a
+	// symlink to a system file — slinit runs as root so following the
+	// link would let any local user influence which file gets locked
+	// (DoS by holding a lock on a real lockfile elsewhere).
 	var lockFD *os.File
 	if params.LockFile != "" {
 		var err error
-		lockFD, err = os.OpenFile(params.LockFile, os.O_CREATE|os.O_WRONLY, 0600)
+		lockFD, err = os.OpenFile(params.LockFile, os.O_CREATE|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)
 		if err != nil {
 			return 0, nil, &ExecError{Stage: StageDoExec, Err: fmt.Errorf("lock-file open: %w", err)}
 		}

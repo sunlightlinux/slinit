@@ -59,16 +59,35 @@ type Connection struct {
 	writeMu    sync.Mutex // serializes all writes to conn
 	closeOnce  sync.Once
 	closed     bool
+
+	// peerAuthorized is set at construction time from SO_PEERCRED.
+	// True iff the connecting client has UID 0 (root) or matches the
+	// daemon's own UID (the typical case for --user mode where the
+	// socket lives under the user's runtime dir).
+	// The 0600 socket mode already restricts access at the FS layer;
+	// this is defense-in-depth against perm/race mistakes and against
+	// fds passed in by less trustworthy parents.
+	peerAuthorized bool
 }
 
 func newConnection(server *Server, conn net.Conn) *Connection {
-	return &Connection{
+	c := &Connection{
 		server:     server,
 		conn:       conn,
 		handles:    make(map[uint32]service.Service, 8),
 		revHandles: make(map[service.Service]uint32, 8),
 		nextHandle: 1,
 	}
+	if uid, ok := peerUID(conn); ok {
+		ownUID := uint32(os.Getuid())
+		c.peerAuthorized = (uid == 0 || uid == ownUID)
+	}
+	// If peerUID failed (non-Unix conn / kernel didn't return creds),
+	// peerAuthorized stays false → all commands rejected. This is the
+	// safe default; the only legitimate non-Unix path is unit tests
+	// (net.Pipe) which exercise dispatch directly without going through
+	// this constructor.
+	return c
 }
 
 // writePacket writes a packet to the connection, protected by writeMu.
@@ -179,6 +198,15 @@ func (c *Connection) serve() {
 }
 
 func (c *Connection) dispatch(cmd uint8, payload []byte) error {
+	// Defense-in-depth: even though the control socket is mode 0600, an
+	// unauthorized peer (different UID, kernel without SO_PEERCRED, or a
+	// non-Unix fd passed via --use-passed-cfd from a less trusted parent)
+	// must not be able to issue commands. The socket file mode is the
+	// primary boundary; this check exists so a perm/race mistake doesn't
+	// hand a non-root user the ability to shut down the system.
+	if !c.peerAuthorized {
+		return c.writePacket(RplyBadReq, nil)
+	}
 	switch cmd {
 	case CmdQueryVersion:
 		return c.handleQueryVersion()

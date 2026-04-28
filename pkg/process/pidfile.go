@@ -3,6 +3,7 @@ package process
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -24,8 +25,21 @@ const (
 // ReadPIDFile reads a process ID from the given file path.
 // It validates that the PID is a positive integer and checks if the process
 // is still alive using kill(pid, 0).
+//
+// O_NOFOLLOW: services often write their pid-file into world-writable
+// locations (/tmp, /var/run when shared across users). Without it a local
+// user could pre-create the path as a symlink to /proc/1/status etc. and
+// trick slinit into reading the wrong PID — which then drives signal
+// targets and "process alive?" decisions.
 func ReadPIDFile(path string) (int, PIDResult, error) {
-	data, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, PIDResultFailed, fmt.Errorf("reading PID file: %w", err)
+	}
+	defer f.Close()
+	// Cap the read so a hostile/junk file can't drive an unbounded
+	// allocation. A real PID file is < 64 bytes; 4 KiB is generous.
+	data, err := io.ReadAll(io.LimitReader(f, 4096))
 	if err != nil {
 		return 0, PIDResultFailed, fmt.Errorf("reading PID file: %w", err)
 	}

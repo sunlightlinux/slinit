@@ -6,8 +6,18 @@ import (
 	"testing"
 )
 
+// withCgroupRoot temporarily points cgroupRoot at the test's tmpdir so
+// validateCgroupPath accepts the test's synthetic cgroup tree.
+func withCgroupRoot(t *testing.T, root string) {
+	t.Helper()
+	old := cgroupRoot
+	cgroupRoot = root
+	t.Cleanup(func() { cgroupRoot = old })
+}
+
 func TestApplyCgroupSettingsWritesFiles(t *testing.T) {
 	root := t.TempDir()
+	withCgroupRoot(t, root)
 	cgDir := filepath.Join(root, "myservice")
 
 	settings := []CgroupSetting{
@@ -47,6 +57,7 @@ func TestApplyCgroupSettingsWritesFiles(t *testing.T) {
 
 func TestApplyCgroupSettingsAutoCreateDir(t *testing.T) {
 	root := t.TempDir()
+	withCgroupRoot(t, root)
 	cgDir := filepath.Join(root, "deep", "nested", "cgroup")
 
 	settings := []CgroupSetting{
@@ -71,6 +82,7 @@ func TestApplyCgroupSettingsAutoCreateDir(t *testing.T) {
 
 func TestApplyCgroupAutoCreateDir(t *testing.T) {
 	root := t.TempDir()
+	withCgroupRoot(t, root)
 	cgDir := filepath.Join(root, "svc")
 
 	// applyCgroup should create the directory and write cgroup.procs
@@ -124,5 +136,38 @@ func TestEnableSubtreeControllers(t *testing.T) {
 	_, err := os.Stat(subtreeCtl)
 	if err != nil {
 		t.Fatalf("subtree_control should have been written: %v", err)
+	}
+}
+
+func TestValidateCgroupPathRejectsTraversal(t *testing.T) {
+	cases := []string{
+		"/sys/fs/cgroup/../../../etc/passwd",
+		"/etc/passwd",
+		"/sys/fs/cgroupX/leak", // not a child of /sys/fs/cgroup
+		"",
+		"/tmp/foo",
+	}
+	for _, p := range cases {
+		if err := validateCgroupPath(p); err == nil {
+			t.Errorf("validateCgroupPath(%q) = nil, want error", p)
+		}
+	}
+	// Sanity: a normal nested path is accepted.
+	if err := validateCgroupPath("/sys/fs/cgroup/svc/worker"); err != nil {
+		t.Errorf("validateCgroupPath valid path: %v", err)
+	}
+}
+
+func TestValidateCgroupSettingFileRejectsTraversal(t *testing.T) {
+	bad := []string{"", "..", "../escape", "memory/../escape", "subdir/file"}
+	for _, n := range bad {
+		if err := validateCgroupSettingFile(n); err == nil {
+			t.Errorf("validateCgroupSettingFile(%q) = nil, want error", n)
+		}
+	}
+	for _, n := range []string{"memory.max", "cpu.weight", "pids.max"} {
+		if err := validateCgroupSettingFile(n); err != nil {
+			t.Errorf("validateCgroupSettingFile(%q): %v", n, err)
+		}
 	}
 }

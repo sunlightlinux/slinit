@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -253,13 +254,19 @@ func (lr *LogRotator) processLine(line []byte) {
 }
 
 // openFileLocked opens the logfile for appending. Must be called with mu held.
+//
+// O_NOFOLLOW prevents an attacker (or a buggy service writing to a shared
+// /var/log path) from replacing the logfile with a symlink to /etc/passwd
+// or similar — slinit runs as root so a followed symlink would be an
+// arbitrary write primitive. fchown on the open fd (instead of path-based
+// os.Chown) closes the same TOCTOU window for the chown step.
 func (lr *LogRotator) openFileLocked() error {
-	f, err := os.OpenFile(lr.filePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, lr.filePerms)
+	f, err := os.OpenFile(lr.filePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, lr.filePerms)
 	if err != nil {
 		return err
 	}
 	if lr.fileUID >= 0 || lr.fileGID >= 0 {
-		_ = os.Chown(lr.filePath, lr.fileUID, lr.fileGID)
+		_ = f.Chown(lr.fileUID, lr.fileGID)
 	}
 	// Get current file size
 	info, err := f.Stat()

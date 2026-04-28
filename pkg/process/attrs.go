@@ -125,7 +125,43 @@ func applyIOPrio(pid, class, level int) error {
 	return nil
 }
 
+// cgroupRoot is the base of the cgroup v2 hierarchy used to validate
+// configured cgroup paths. Tests override this to point at a tmpdir.
+var cgroupRoot = "/sys/fs/cgroup"
+
+// validateCgroupPath rejects paths that aren't safely within the cgroup v2
+// hierarchy. Without this, a service with `cgroup = ../../../var/run`
+// would let slinit (root) write a PID into an arbitrary file via the
+// auto-MkdirAll + WriteFile sequence below.
+func validateCgroupPath(p string) error {
+	if p == "" {
+		return fmt.Errorf("empty cgroup path")
+	}
+	clean := filepath.Clean(p)
+	if clean != cgroupRoot && !strings.HasPrefix(clean, cgroupRoot+"/") {
+		return fmt.Errorf("cgroup path %q is outside %s", p, cgroupRoot)
+	}
+	return nil
+}
+
+// validateCgroupSettingFile rejects setting filenames that try to escape
+// the cgroup directory or address an unrelated file. Cgroup interface
+// files are all flat names (e.g. "memory.max", "cpu.weight"); a name
+// containing "/" or ".." is always either a typo or an attack.
+func validateCgroupSettingFile(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty cgroup setting name")
+	}
+	if strings.ContainsAny(name, "/") || name == ".." || strings.Contains(name, "..") {
+		return fmt.Errorf("cgroup setting name %q must be a flat filename", name)
+	}
+	return nil
+}
+
 func applyCgroup(pid int, cgroupPath string) error {
+	if err := validateCgroupPath(cgroupPath); err != nil {
+		return err
+	}
 	// Auto-create the cgroup directory if it does not exist.
 	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", cgroupPath, err)
@@ -139,6 +175,14 @@ func applyCgroup(pid int, cgroupPath string) error {
 // that delegation works (e.g., writing "memory.max" requires "+memory" in
 // the parent's cgroup.subtree_control).
 func applyCgroupSettings(cgroupPath string, settings []CgroupSetting) error {
+	if err := validateCgroupPath(cgroupPath); err != nil {
+		return err
+	}
+	for _, s := range settings {
+		if err := validateCgroupSettingFile(s.File); err != nil {
+			return err
+		}
+	}
 	// Auto-create the cgroup directory if it does not exist.
 	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", cgroupPath, err)

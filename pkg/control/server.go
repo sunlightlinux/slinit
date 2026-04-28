@@ -5,11 +5,31 @@ import (
 	"net"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
+
+// listenUnixRestricted creates a Unix socket at path with mode 0600. The
+// umask is tightened to 0177 around bind() so the socket file is never
+// briefly created with a permissive mode (the os.Chmod that we issue
+// afterwards is kept as belt-and-suspenders for filesystems where umask
+// is honored differently).
+func listenUnixRestricted(path string) (net.Listener, error) {
+	old := syscall.Umask(0177)
+	listener, err := net.Listen("unix", path)
+	syscall.Umask(old)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		listener.Close()
+		return nil, err
+	}
+	return listener, nil
+}
 
 // Server listens on a Unix domain socket and handles control connections.
 type Server struct {
@@ -64,14 +84,8 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	listener, err := net.Listen("unix", s.sockPath)
+	listener, err := listenUnixRestricted(s.sockPath)
 	if err != nil {
-		return err
-	}
-
-	// Set socket permissions (owner only)
-	if err := os.Chmod(s.sockPath, 0600); err != nil {
-		listener.Close()
 		return err
 	}
 
@@ -204,13 +218,8 @@ func (s *Server) Reopen() error {
 	// Remove stale socket file
 	os.Remove(s.sockPath)
 
-	listener, err := net.Listen("unix", s.sockPath)
+	listener, err := listenUnixRestricted(s.sockPath)
 	if err != nil {
-		return err
-	}
-
-	if err := os.Chmod(s.sockPath, 0600); err != nil {
-		listener.Close()
 		return err
 	}
 

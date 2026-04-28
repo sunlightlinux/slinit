@@ -983,12 +983,15 @@ func (s *ProcessService) startProcess() error {
 				return fmt.Errorf("failed to create log rotator pipe: %w", pipeErr)
 			}
 		} else {
-			f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, os.FileMode(s.logFilePerms))
+			// O_NOFOLLOW + fchown-via-fd close the symlink-swap window
+			// where slinit (running as root) would otherwise write to —
+			// or chown — an attacker-pointed path.
+			f, err := os.OpenFile(s.logFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, os.FileMode(s.logFilePerms))
 			if err != nil {
 				return fmt.Errorf("failed to open logfile '%s': %w", s.logFile, err)
 			}
 			if s.logFileUID >= 0 || s.logFileGID >= 0 {
-				_ = os.Chown(s.logFile, s.logFileUID, s.logFileGID)
+				_ = f.Chown(s.logFileUID, s.logFileGID)
 			}
 			outputPipe = f
 		}
