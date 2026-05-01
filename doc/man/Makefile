@@ -13,10 +13,28 @@ MANDIR  ?= $(PREFIX)/share/man
 
 MD2MAN  ?= go tool github.com/cpuguy83/go-md2man/v2
 
-PAGES_8 = slinit.8 slinitctl.8
+PAGES_8 = \
+	slinit.8 \
+	slinitctl.8 \
+	slinit-check.8 \
+	slinit-monitor.8 \
+	slinit-shutdown.8 \
+	slinit-checkpath.8 \
+	slinit-init-maker.8 \
+	slinit-mount.8 \
+	slinit-nuke.8 \
+	rc-service.8 \
+	rc-update.8 \
+	rc-status.8
+
 PAGES_5 = slinit-service.5
+
 PAGES   = $(PAGES_8) $(PAGES_5)
-# slinit-check.8 slinit-monitor.8 slinit-shutdown.8 — pending
+
+# Aliases installed as symlinks pointing at slinit-shutdown.8.
+# These mirror the symlinks the binary itself ships with, so
+# `man reboot` (etc.) lands on the right page.
+SHUTDOWN_ALIASES = slinit-reboot.8 slinit-halt.8 slinit-poweroff.8 slinit-soft-reboot.8
 
 all: $(PAGES)
 
@@ -29,6 +47,9 @@ all: $(PAGES)
 install: $(PAGES)
 	install -d $(DESTDIR)$(MANDIR)/man8
 	install -m644 $(PAGES_8) $(DESTDIR)$(MANDIR)/man8/
+	for alias in $(SHUTDOWN_ALIASES); do \
+		ln -sf slinit-shutdown.8 $(DESTDIR)$(MANDIR)/man8/$$alias; \
+	done
 	install -d $(DESTDIR)$(MANDIR)/man5
 	install -m644 $(PAGES_5) $(DESTDIR)$(MANDIR)/man5/
 
