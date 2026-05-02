@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -439,6 +441,16 @@ func main() {
 	if cgroupPath != "" {
 		serviceSet.SetDefaultCgroupPath(cgroupPath)
 		logger.Info("Default cgroup path: %s", cgroupPath)
+	}
+
+	// Discover slinit-runner so services that configure mlockall(2) or
+	// set_mempolicy(2) can have those syscalls applied via the helper
+	// before exec'ing the real command. The discovery is best-effort:
+	// if we don't find the binary, those settings silently degrade and
+	// the operator gets a startup warning when services try to use them.
+	if runner := findSlinitRunner(); runner != "" {
+		serviceSet.SetRunnerPath(runner)
+		logger.Debug("slinit-runner discovered at %s", runner)
 	}
 
 	// Set global CPU affinity (--cpu-affinity/-a)
@@ -1105,6 +1117,32 @@ func startWatchdog(isPID1, containerMode, noWatchdog bool,
 		}
 	}()
 	return wd
+}
+
+// findSlinitRunner locates the slinit-runner exec helper. Order:
+//   1. Same directory as the running slinit binary (typical PID 1
+//      install where everything lives in /sbin or /usr/sbin).
+//   2. PATH lookup for "slinit-runner".
+//   3. Hard-coded /usr/sbin and /sbin fallbacks.
+// Returns "" when none are present — services that configure mlockall
+// or NUMA will then log a warning and start without those settings.
+func findSlinitRunner() string {
+	const name = "slinit-runner"
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), name)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	for _, p := range []string{"/usr/sbin/" + name, "/sbin/" + name, "/usr/local/sbin/" + name} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // closeWatchdog disarms the kernel watchdog before any shutdown / reboot

@@ -208,6 +208,13 @@ type ServiceRecord struct {
 	schedPeriod         uint64 // ns
 	schedResetOnFork    bool
 
+	// Memory locking + NUMA. Empty/zero = no change. Applied via the
+	// slinit-runner exec helper (stored on ServiceSet.RunnerPath).
+	mlockallFlags    int
+	numaMempolicy    uint32
+	numaMempolicySet bool
+	numaNodes        []uint
+
 	cloneflags  uintptr              // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
 	uidMappings []syscall.SysProcIDMap // user namespace UID mappings
 	gidMappings []syscall.SysProcIDMap // user namespace GID mappings
@@ -618,6 +625,13 @@ func (sr *ServiceRecord) SetSchedDeadlineParams(runtime, deadline, period uint64
 }
 func (sr *ServiceRecord) SetSchedResetOnFork(b bool) { sr.schedResetOnFork = b }
 
+func (sr *ServiceRecord) SetMlockallFlags(flags int) { sr.mlockallFlags = flags }
+func (sr *ServiceRecord) SetNumaMempolicy(mode uint32, set bool) {
+	sr.numaMempolicy = mode
+	sr.numaMempolicySet = set
+}
+func (sr *ServiceRecord) SetNumaNodes(nodes []uint) { sr.numaNodes = nodes }
+
 func (sr *ServiceRecord) SetCloneflags(flags uintptr)          { sr.cloneflags = flags }
 func (sr *ServiceRecord) SetUidMappings(m []syscall.SysProcIDMap) { sr.uidMappings = m }
 func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappings = m }
@@ -658,6 +672,11 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 		params.SchedPeriod = sr.schedPeriod
 		params.SchedResetOnFork = sr.schedResetOnFork
 	}
+	params.MlockallFlags = sr.mlockallFlags
+	params.NumaMempolicy = sr.numaMempolicy
+	params.NumaMempolicySet = sr.numaMempolicySet
+	params.NumaNodes = sr.numaNodes
+	params.RunnerPath = sr.services.RunnerPath()
 	params.Cloneflags = sr.cloneflags
 	params.UidMappings = sr.uidMappings
 	params.GidMappings = sr.gidMappings

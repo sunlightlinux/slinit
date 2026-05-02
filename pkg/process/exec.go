@@ -4,7 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // StartProcess starts a child process with the given parameters.
@@ -18,7 +22,18 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: os.ErrInvalid}
 	}
 
-	cmd := exec.Command(params.Command[0], params.Command[1:]...)
+	// mlockall and set_mempolicy operate on the calling process, so
+	// they cannot be applied to a fork()ed child from outside. When
+	// either is configured we prepend slinit-runner to the command —
+	// the runner applies the syscalls then exec()s the real program
+	// in place, so the running process is the one slinit ultimately
+	// supervises (PID and signals match).
+	command := params.Command
+	if needsRunnerWrap(params) && params.RunnerPath != "" {
+		command = wrapWithRunner(params)
+	}
+
+	cmd := exec.Command(command[0], command[1:]...)
 
 	// Working directory
 	if params.WorkingDir != "" {
@@ -358,4 +373,54 @@ func KillProcessGroup(pgid int) {
 			break
 		}
 	}
+}
+
+// needsRunnerWrap reports whether the command needs to be prefixed with
+// slinit-runner because mlockall(2) and/or set_mempolicy(2) — both
+// per-calling-process syscalls — were requested.
+func needsRunnerWrap(p ExecParams) bool {
+	return p.MlockallFlags != 0 || p.NumaMempolicySet
+}
+
+// wrapWithRunner returns a new argv that invokes slinit-runner with
+// the appropriate flags before the real command.
+func wrapWithRunner(p ExecParams) []string {
+	args := []string{p.RunnerPath}
+	if p.MlockallFlags != 0 {
+		args = append(args, "--mlockall="+strconv.Itoa(p.MlockallFlags))
+	}
+	if p.NumaMempolicySet {
+		args = append(args, "--mempolicy="+mempolicyName(p.NumaMempolicy))
+		if len(p.NumaNodes) > 0 {
+			args = append(args, "--numa-nodes="+formatNodeList(p.NumaNodes))
+		}
+	}
+	args = append(args, "--")
+	args = append(args, p.Command...)
+	return args
+}
+
+func mempolicyName(mode uint32) string {
+	switch mode {
+	case unix.MPOL_DEFAULT:
+		return "default"
+	case unix.MPOL_BIND:
+		return "bind"
+	case unix.MPOL_PREFERRED:
+		return "preferred"
+	case unix.MPOL_INTERLEAVE:
+		return "interleave"
+	case unix.MPOL_LOCAL:
+		return "local"
+	default:
+		return "default"
+	}
+}
+
+func formatNodeList(nodes []uint) string {
+	parts := make([]string, len(nodes))
+	for i, n := range nodes {
+		parts[i] = strconv.FormatUint(uint64(n), 10)
+	}
+	return strings.Join(parts, ",")
 }

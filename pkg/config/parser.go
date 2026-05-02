@@ -190,6 +190,12 @@ type ServiceDescription struct {
 	SchedResetOnFork bool   // SCHED_FLAG_RESET_ON_FORK (default true)
 	SchedResetOnForkSet bool // tracks whether the user gave an explicit value
 
+	// Memory locking and NUMA — applied via the slinit-runner exec helper.
+	MlockallFlags    int    // mlockall(2) bitmask (MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)
+	NumaMempolicy    uint32 // unix.MPOL_*
+	NumaMempolicySet bool   // distinguishes explicit MPOL_DEFAULT from unset
+	NumaNodes        []uint // node list for BIND/INTERLEAVE/PREFERRED
+
 	// Resource limits (soft:hard or just value for both)
 	RlimitNofile *[2]uint64
 	RlimitCore   *[2]uint64
@@ -1176,6 +1182,28 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.SchedResetOnFork = b
 		desc.SchedResetOnForkSet = true
 
+	case "mlockall":
+		flags, err := parseMlockallFlags(value)
+		if err != nil {
+			return err
+		}
+		desc.MlockallFlags = flags
+
+	case "numa-mempolicy":
+		mode, err := parseMempolicyMode(value)
+		if err != nil {
+			return err
+		}
+		desc.NumaMempolicy = mode
+		desc.NumaMempolicySet = true
+
+	case "numa-nodes":
+		nodes, err := ParseCPUAffinity(value) // same numeric-list grammar
+		if err != nil {
+			return fmt.Errorf("numa-nodes: %w", err)
+		}
+		desc.NumaNodes = nodes
+
 	case "rlimit-nofile":
 		lim, err := parseRlimit(value)
 		if err != nil {
@@ -1505,6 +1533,58 @@ func parseSchedDuration(value string) (uint64, error) {
 		return 0, fmt.Errorf("must be > 0")
 	}
 	return n, nil
+}
+
+// parseMlockallFlags accepts the symbolic names current/future/both/onfault
+// (combinable with '+' or ',') and returns the mlockall(2) bitmask.
+// "both" is shorthand for current+future.
+func parseMlockallFlags(value string) (int, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return 0, fmt.Errorf("mlockall: empty value")
+	}
+	if value == "no" || value == "off" || value == "0" {
+		return 0, nil
+	}
+	var out int
+	for _, part := range strings.FieldsFunc(value, func(r rune) bool {
+		return r == '+' || r == ',' || r == ' '
+	}) {
+		switch part {
+		case "current":
+			out |= unix.MCL_CURRENT
+		case "future":
+			out |= unix.MCL_FUTURE
+		case "both", "yes", "on":
+			out |= unix.MCL_CURRENT | unix.MCL_FUTURE
+		case "onfault":
+			out |= unix.MCL_ONFAULT
+		default:
+			return 0, fmt.Errorf("mlockall: unknown flag %q (expected current|future|both|onfault)", part)
+		}
+	}
+	if out == 0 {
+		return 0, fmt.Errorf("mlockall: no valid flags in %q", value)
+	}
+	return out, nil
+}
+
+// parseMempolicyMode maps a config string to a Linux MPOL_* constant.
+func parseMempolicyMode(value string) (uint32, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "default":
+		return unix.MPOL_DEFAULT, nil
+	case "bind":
+		return unix.MPOL_BIND, nil
+	case "preferred":
+		return unix.MPOL_PREFERRED, nil
+	case "interleave":
+		return unix.MPOL_INTERLEAVE, nil
+	case "local":
+		return unix.MPOL_LOCAL, nil
+	default:
+		return 0, fmt.Errorf("numa-mempolicy: unknown mode %q (expected bind|preferred|interleave|local|default)", value)
+	}
 }
 
 // parseReadyNotification parses a ready-notification value.

@@ -136,6 +136,11 @@ var KnownSettings = map[string]OperatorType{
 	"sched-period":         OpEquals,
 	"sched-reset-on-fork":  OpEquals,
 
+	// memory locking + NUMA placement (telco / 5G data plane)
+	"mlockall":       OpEquals,
+	"numa-mempolicy": OpEquals,
+	"numa-nodes":     OpEquals,
+
 	// capabilities
 	"capabilities": OpEquals | OpPlusEqual,
 	"securebits":   OpEquals | OpPlusEqual,

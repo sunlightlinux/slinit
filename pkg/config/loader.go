@@ -646,6 +646,31 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: NUMA policy + nodes cross-fields
+	if desc.NumaMempolicySet {
+		switch desc.NumaMempolicy {
+		case unix.MPOL_BIND, unix.MPOL_INTERLEAVE, unix.MPOL_PREFERRED:
+			if len(desc.NumaNodes) == 0 {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message:     "numa-mempolicy=bind|interleave|preferred requires numa-nodes",
+				}
+			}
+		case unix.MPOL_DEFAULT, unix.MPOL_LOCAL:
+			if len(desc.NumaNodes) > 0 {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message:     "numa-mempolicy=default|local does not accept numa-nodes",
+				}
+			}
+		}
+	} else if len(desc.NumaNodes) > 0 {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message:     "numa-nodes set without numa-mempolicy",
+		}
+	}
+
 	// Create the service based on type
 	svc := dl.createService(name, desc)
 
@@ -1119,6 +1144,17 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		rec.SetSchedPriority(desc.SchedPriority)
 		rec.SetSchedDeadlineParams(desc.SchedRuntime, desc.SchedDeadline, desc.SchedPeriod)
 		rec.SetSchedResetOnFork(desc.SchedResetOnFork)
+	}
+
+	// Memory locking + NUMA (applied via slinit-runner)
+	if desc.MlockallFlags != 0 {
+		rec.SetMlockallFlags(desc.MlockallFlags)
+	}
+	if desc.NumaMempolicySet {
+		rec.SetNumaMempolicy(desc.NumaMempolicy, true)
+		if len(desc.NumaNodes) > 0 {
+			rec.SetNumaNodes(desc.NumaNodes)
+		}
 	}
 
 	// Namespace isolation (Linux clone flags)

@@ -409,6 +409,54 @@ sched-deadline = 800us
 sched-period   = 1ms
 ```
 
+## MEMORY LOCKING & NUMA PLACEMENT
+
+These two settings address the second pillar of jitter elimination
+(after **REAL-TIME SCHEDULING**): keeping the service's working set
+resident and on the right NUMA node. Both are applied by an exec
+helper (**slinit-runner**) that slinit transparently prepends to the
+service command — the running process is the real binary, not the
+helper, so signals and PIDs match what slinitctl reports.
+
+**slinit-runner** must be on **PATH** or in the same directory as the
+**slinit** binary. When it cannot be located, mlockall and
+numa-mempolicy are silently ignored (slinit logs a startup warning).
+
+**mlockall**=*current*|*future*|*both*|*onfault*|*no*
+:   Lock the service's pages in RAM via **mlockall**(2). *current*
+    locks already-mapped pages, *future* locks every page mapped after
+    the call, *both* combines them. *onfault* (Linux 4.4+) defers the
+    lock until the page is faulted in. Comma- or `+`-separated
+    combinations are accepted (`current+future+onfault`). *yes* is an
+    alias for *both*. Requires **CAP_IPC_LOCK** or sufficient
+    **rlimit-memlock**; without those, the service fails to start.
+
+**numa-mempolicy**=*bind*|*preferred*|*interleave*|*local*|*default*
+:   NUMA memory-allocation policy applied via **set_mempolicy**(2).
+    *bind* hard-restricts allocation to **numa-nodes**; *preferred*
+    tries those nodes first but allows fallback; *interleave*
+    round-robins across them; *local* allocates from whatever node the
+    thread is running on at allocation time; *default* clears any
+    inherited policy. *bind*, *preferred*, *interleave* require
+    **numa-nodes**.
+
+**numa-nodes**=*list*
+:   Comma- or hyphen-spec like *0-3* or *0,2,4*. Required for
+    mempolicy *bind*/*preferred*/*interleave*; rejected for *local*
+    and *default*.
+
+Example — a 5G mediation service pinned to NUMA node 0, locking all
+its pages:
+
+```
+type           = process
+command        = /usr/bin/mediator
+cpu-affinity   = 0-3
+numa-mempolicy = bind
+numa-nodes     = 0
+mlockall       = current+future
+```
+
 ## CAPABILITIES & SANDBOXING
 
 **capabilities**=*caps*

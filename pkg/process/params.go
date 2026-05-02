@@ -200,6 +200,33 @@ type ExecParams struct {
 	// scheduler. Defaults to true at the parser level.
 	SchedResetOnFork bool
 
+	// MlockallFlags is the bitmask passed to mlockall(2) (MCL_CURRENT |
+	// MCL_FUTURE | MCL_ONFAULT). Zero means do not lock memory. The
+	// syscall affects the *calling* process, so slinit applies it via
+	// the slinit-runner exec helper rather than from the parent.
+	// Requires CAP_IPC_LOCK or a sufficient RLIMIT_MEMLOCK.
+	MlockallFlags int
+
+	// NumaMempolicy is the NUMA memory policy applied via
+	// set_mempolicy(2). Zero (MPOL_DEFAULT) means do not change. Like
+	// mlockall, applied via slinit-runner.
+	NumaMempolicy uint32
+
+	// NumaMempolicySet distinguishes "explicit MPOL_DEFAULT" from
+	// "field unset" — same shape as SchedPolicySet.
+	NumaMempolicySet bool
+
+	// NumaNodes is the node mask for BIND/INTERLEAVE/PREFERRED. Empty
+	// for DEFAULT and LOCAL.
+	NumaNodes []uint
+
+	// RunnerPath is the absolute path to slinit-runner. Empty disables
+	// the wrapper even if Mlockall/NUMA fields are set (in which case
+	// the syscalls are silently ignored — the operator gets a startup
+	// warning). Set by the daemon at startup so service-side code does
+	// not have to discover it.
+	RunnerPath string
+
 	// Chroot is the directory to chroot into before exec.
 	// Applied via SysProcAttr.Chroot.
 	Chroot string
