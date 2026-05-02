@@ -182,6 +182,30 @@ service-file format.
     overriding lets you keep a chatty file log while the console is
     quieter (or vice-versa).
 
+**\--watchdog-device** *path*
+:   Hardware watchdog character device to feed. When empty (the
+    default) slinit auto-discovers */dev/watchdog0*, falling back to
+    */dev/watchdog* on systems that only expose the legacy alias.
+    Only applied when slinit runs as PID 1 or in container mode.
+
+**\--watchdog-timeout** *duration*
+:   Kernel-side timeout programmed via *WDIOC_SETTIMEOUT*. The
+    kernel rounds to the nearest value its driver supports.
+    Default *60s*. Accepts any **time.ParseDuration** form (*30s*,
+    *2m*).
+
+**\--watchdog-interval** *duration*
+:   How often the feeder pings the device. Defaults to
+    *timeout / 3* — three pings per timeout window survive a single
+    dropped tick (e.g. brief CPU starvation) before the kernel
+    resets the box.
+
+**\--no-watchdog**
+:   Disable the hardware-watchdog feeder even when running as PID 1
+    with a watchdog device present. Useful for development VMs and
+    test rigs where a stuck slinit must NOT trigger a hardware
+    reset.
+
 **\--version**
 :   Print the slinit version and exit.
 
@@ -325,6 +349,13 @@ command line.
 
 */run/slinit/kcmdline*
 :   Snapshot of */proc/cmdline* taken during PID-1 init.
+
+*/dev/watchdog0*, */dev/watchdog*
+:   Hardware-watchdog character devices fed by slinit when running as
+    PID 1 (see **\--watchdog-device**, **\--no-watchdog**). The kernel
+    timer is disarmed via the magic-close byte (`V`) before any
+    orderly shutdown so the reboot path is never truncated by a
+    watchdog reset.
 
 ## EXIT STATUS
 

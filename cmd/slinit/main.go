@@ -22,6 +22,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
+	"github.com/sunlightlinux/slinit/pkg/watchdog"
 	"golang.org/x/sys/unix"
 )
 
@@ -150,6 +151,15 @@ func main() {
 	var confDir string
 	flag.IntVar(&parallelStartLimit, "parallel-start-limit", 0, "max concurrent service starts (0=unlimited)")
 	flag.StringVar(&parallelSlowThreshold, "parallel-start-slow-threshold", "10s", "time before a starting service is considered slow")
+
+	var watchdogDevice string
+	var watchdogTimeoutStr string
+	var watchdogIntervalStr string
+	var noWatchdog bool
+	flag.StringVar(&watchdogDevice, "watchdog-device", "", "hardware watchdog character device (auto-detected when empty)")
+	flag.StringVar(&watchdogTimeoutStr, "watchdog-timeout", "60s", "kernel-side watchdog timeout (e.g. 30s, 2m)")
+	flag.StringVar(&watchdogIntervalStr, "watchdog-interval", "", "watchdog ping interval (default: timeout/3)")
+	flag.BoolVar(&noWatchdog, "no-watchdog", false, "disable hardware watchdog feeder even when running as PID 1")
 	flag.StringVar(&sysOverride, "sys", "", "override platform detection (docker, lxc, podman, wsl, xen0, xenu, none)")
 	flag.StringVar(&sysOverride, "S", "", "override platform detection (short for --sys)")
 	flag.StringVar(&confDir, "conf-dir", "", "override conf.d overlay directories (comma-separated; 'none' disables overlays)")
@@ -378,6 +388,15 @@ func main() {
 		logger.Info("Applied %d/%d global rlimits", n, len(parsedRlimits))
 	}
 
+	// Hardware watchdog feeder: only meaningful when we're system manager
+	// (PID 1 or container PID 1). The feeder programs the kernel timer
+	// and pings at a sub-timeout cadence; if slinit hangs the kernel
+	// resets the box. Auto-enable when running as PID 1 with a watchdog
+	// device present; disable explicitly with --no-watchdog or by
+	// pointing --watchdog-device at a non-existent path.
+	wd := startWatchdog(isPID1, containerMode, noWatchdog,
+		watchdogDevice, watchdogTimeoutStr, watchdogIntervalStr, logger)
+
 	// Determine service directories
 	dirs := resolveServiceDirs(serviceDirs, systemMode)
 	logger.Info("Service directories: %v", dirs)
@@ -558,6 +577,7 @@ func main() {
 	if !startedAny {
 		if containerMode {
 			logger.Error("No boot services could be loaded, exiting (container mode)")
+			closeWatchdog(wd, logger)
 			os.Exit(1)
 		}
 		if isPID1 {
@@ -565,8 +585,10 @@ func main() {
 			logger.Error("Create at least '%s' in one of the service directories", bootServices[0])
 			logger.Error("Rebooting in 10 seconds...")
 			time.Sleep(10 * time.Second)
+			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
+		closeWatchdog(wd, logger)
 		os.Exit(1)
 	}
 
@@ -660,6 +682,7 @@ func main() {
 			if err := shutdown.WriteContainerResults(exitCode, shutdownType); err != nil {
 				logger.Debug("Failed to write container results: %v", err)
 			}
+			closeWatchdog(wd, logger)
 			os.Exit(exitCode)
 		}
 
@@ -668,6 +691,7 @@ func main() {
 			break
 		}
 		if shutdownType != service.ShutdownNone {
+			closeWatchdog(wd, logger)
 			handlePID1Shutdown(shutdownType, logger)
 			// handlePID1Shutdown does not return
 		}
@@ -683,6 +707,7 @@ func main() {
 				continue // re-enter boot loop
 			}
 			logger.Error("Failed to start recovery service, rebooting")
+			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 
@@ -691,6 +716,7 @@ func main() {
 		switch action {
 		case 'r':
 			logger.Notice("User chose reboot")
+			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case 'e':
 			logger.Notice("User chose recovery")
@@ -699,6 +725,7 @@ func main() {
 				continue
 			}
 			logger.Error("Failed to start recovery service, rebooting")
+			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case 's':
 			logger.Notice("User chose restart boot sequence")
@@ -707,16 +734,20 @@ func main() {
 				continue
 			}
 			logger.Error("Failed to restart boot services, rebooting")
+			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case 'p':
 			logger.Notice("User chose poweroff")
+			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownPoweroff, logger)
 		default:
 			logger.Error("Invalid choice, rebooting")
+			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 	}
 
+	closeWatchdog(wd, logger)
 	logger.Info("slinit shutdown complete")
 }
 
@@ -1014,6 +1045,77 @@ func confirmRestartBoot(logger *logging.Logger) byte {
 			return ch
 		}
 		// Ignore invalid keys, re-prompt
+	}
+}
+
+// startWatchdog opens the hardware watchdog, programs the kernel timeout,
+// and starts a background goroutine that pings it on a ticker. Returns
+// nil when the feeder is disabled, when the device is missing, or when
+// programming fails — in those cases slinit continues without a feeder
+// and logs a warning so the operator can spot the misconfiguration.
+//
+// Auto-enable rule: PID 1 or container PID 1, --no-watchdog not set,
+// and a watchdog device available. User-mode invocations never arm the
+// hardware watchdog (the kernel only lets one process own the device,
+// and PID 1 should always be that process on a real init system).
+func startWatchdog(isPID1, containerMode, noWatchdog bool,
+	device, timeoutStr, intervalStr string,
+	logger *logging.Logger,
+) *watchdog.Feeder {
+	if noWatchdog {
+		return nil
+	}
+	if !isPID1 && !containerMode {
+		return nil
+	}
+
+	timeout, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		logger.Error("Invalid --watchdog-timeout %q: %v (watchdog disabled)", timeoutStr, err)
+		return nil
+	}
+	var interval time.Duration
+	if intervalStr != "" {
+		interval, err = time.ParseDuration(intervalStr)
+		if err != nil {
+			logger.Error("Invalid --watchdog-interval %q: %v (watchdog disabled)", intervalStr, err)
+			return nil
+		}
+	}
+
+	wd, err := watchdog.Open(watchdog.Config{
+		Device:   device,
+		Timeout:  timeout,
+		Interval: interval,
+	})
+	if err != nil {
+		// Most common cause is "no device" on bare-metal kernels without
+		// a watchdog driver, or in containers. Surface as Notice not
+		// Error — running without a watchdog is degraded but expected
+		// in many environments.
+		logger.Notice("Hardware watchdog unavailable: %v (continuing without)", err)
+		return nil
+	}
+	logger.Notice("Hardware watchdog armed: device=%s timeout=%s interval=%s",
+		wd.Device(), wd.Timeout(), wd.Interval())
+
+	go func() {
+		if err := wd.Run(context.Background()); err != nil {
+			logger.Error("Watchdog feeder stopped: %v", err)
+		}
+	}()
+	return wd
+}
+
+// closeWatchdog disarms the kernel watchdog before any shutdown / reboot
+// path. Idempotent: safe to call from every exit point even if the
+// feeder was never opened or has already been closed.
+func closeWatchdog(wd *watchdog.Feeder, logger *logging.Logger) {
+	if wd == nil {
+		return
+	}
+	if err := wd.Close(); err != nil {
+		logger.Error("Watchdog close: %v", err)
 	}
 }
 
