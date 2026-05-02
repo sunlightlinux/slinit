@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "while true; do sleep 60; done"
+required-files = /nonexistent/file/that/does/not/exist
+depends-on: system-init

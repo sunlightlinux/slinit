@@ -1,0 +1,5 @@
+type = bgprocess
+command = /bin/sh -c "setsid /bin/sh /etc/slinit.d/bg-daemon.sh & sleep 1; exit 0"
+pid-file = /tmp/bg-svc.pid
+restart = false
+depends-on: system-init

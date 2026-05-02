@@ -1,0 +1,9 @@
+type = process
+command = /bin/sh -c "date +%s >> /tmp/backoff-times; exit 1"
+restart = on-failure
+restart-delay = 1
+restart-delay-step = 1
+restart-delay-cap = 3
+restart-limit-count = 6
+restart-limit-interval = 60
+depends-on: system-init

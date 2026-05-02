@@ -1,0 +1,8 @@
+type = process
+command = /bin/sh -c "sleep 3; touch /tmp/health-fail; while true; do sleep 60; done"
+healthcheck-command = /bin/sh -c "test ! -f /tmp/health-fail"
+healthcheck-interval = 1
+healthcheck-delay = 2
+healthcheck-max-failures = 2
+unhealthy-command = /bin/sh -c "echo unhealthy-fired > /tmp/unhealthy-marker"
+depends-on: system-init

@@ -1,0 +1,4 @@
+type = process
+description = test service for query commands
+command = /bin/sh -c "while true; do sleep 60; done"
+depends-on: system-init

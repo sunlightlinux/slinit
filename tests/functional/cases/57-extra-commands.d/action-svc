@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "while true; do sleep 60; done"
+extra-command = dump /bin/sh -c "echo dump-ran > /tmp/action-dump"
+extra-started-command = status /bin/sh -c "echo status-ran > /tmp/action-status"
+depends-on: system-init

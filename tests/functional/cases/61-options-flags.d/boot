@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+depends-on: test-runner
+waits-for: killgrp-svc
+waits-for: sigonly-svc

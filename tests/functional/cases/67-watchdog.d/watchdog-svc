@@ -1,0 +1,9 @@
+type = process
+command = /bin/sh -c "date +%s >> /tmp/watchdog-starts; printf r >&3; while true; do sleep 60; done"
+ready-notification = pipefd:3
+watchdog-timeout = 3
+restart = on-failure
+restart-delay = 1
+restart-limit-count = 5
+restart-limit-interval = 60
+depends-on: system-init

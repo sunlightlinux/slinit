@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "trap '' TERM; while true; do sleep 60; done"
+stop-timeout = 2
+restart = false
+depends-on: system-init

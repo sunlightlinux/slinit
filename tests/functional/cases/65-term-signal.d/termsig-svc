@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "trap 'echo INT-received > /tmp/termsig-result; exit 0' INT; while true; do sleep 1; done"
+term-signal = INT
+restart = false
+depends-on: system-init

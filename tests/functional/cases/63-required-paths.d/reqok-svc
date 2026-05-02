@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "while true; do sleep 60; done"
+required-files = /etc/hostname
+required-dirs = /tmp
+depends-on: system-init

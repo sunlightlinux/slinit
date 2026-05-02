@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "cat /proc/self/environ | tr '\0' '\n' > /tmp/loadopt-result; while true; do sleep 60; done"
+run-as = root
+load-options = export-passwd-vars export-service-name
+depends-on: system-init

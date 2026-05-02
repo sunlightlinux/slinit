@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "sleep 3600 & echo $! > /tmp/killgrp-child-pid; while true; do sleep 60; done"
+options = kill-all-on-stop
+restart = false
+depends-on: system-init
