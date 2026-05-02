@@ -128,6 +128,14 @@ var KnownSettings = map[string]OperatorType{
 	// cpu affinity
 	"cpu-affinity": OpEquals,
 
+	// real-time scheduling (telco / 5G data plane)
+	"sched-policy":         OpEquals,
+	"sched-priority":       OpEquals,
+	"sched-runtime":        OpEquals,
+	"sched-deadline":       OpEquals,
+	"sched-period":         OpEquals,
+	"sched-reset-on-fork":  OpEquals,
+
 	// capabilities
 	"capabilities": OpEquals | OpPlusEqual,
 	"securebits":   OpEquals | OpPlusEqual,

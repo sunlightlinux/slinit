@@ -74,6 +74,15 @@ func applyPostForkAttrs(pid int, params ExecParams) []error {
 			errs = append(errs, fmt.Errorf("cpu-affinity: %w", err))
 		}
 	}
+	// Real-time scheduling. Applied AFTER cpu-affinity / cgroup so
+	// admission control sees the final placement. SchedSetAttr operates
+	// on a remote PID, so the parent can configure the child's policy
+	// without an extra child-side hop.
+	if params.SchedPolicy != 0 {
+		if err := applySched(pid, params); err != nil {
+			errs = append(errs, fmt.Errorf("sched-policy: %w", err))
+		}
+	}
 	return errs
 }
 
@@ -371,4 +380,54 @@ func applySecurebits(bits uint32) error {
 	// TODO: implement via a small C helper or clone3+CLONE_CLEAR_SIGHAND
 	// to set securebits in the child process.
 	return fmt.Errorf("securebits cannot be safely set from parent process (would affect slinit itself)")
+}
+
+// applySched programs the scheduling policy and, where applicable,
+// priority / deadline-bandwidth parameters of pid via sched_setattr(2).
+//
+// SCHED_DEADLINE rejects any change that does not fit the system's
+// available bandwidth (admission control). SCHED_FIFO/RR require
+// CAP_SYS_NICE or a sufficient RLIMIT_RTPRIO. We pass these errors back
+// to the caller — the operator sees them in the post-fork warning log
+// and the service starts with the kernel's default policy instead.
+func applySched(pid int, params ExecParams) error {
+	attr := unix.SchedAttr{
+		Size:   uint32(unsafe.Sizeof(unix.SchedAttr{})),
+		Policy: params.SchedPolicy,
+	}
+	if params.SchedResetOnFork {
+		attr.Flags |= unix.SCHED_FLAG_RESET_ON_FORK
+	}
+
+	switch params.SchedPolicy {
+	case unix.SCHED_FIFO, unix.SCHED_RR:
+		if params.SchedPriority < 1 || params.SchedPriority > 99 {
+			return fmt.Errorf("sched-priority %d out of range 1..99", params.SchedPriority)
+		}
+		attr.Priority = params.SchedPriority
+
+	case unix.SCHED_DEADLINE:
+		if params.SchedRuntime == 0 || params.SchedDeadline == 0 || params.SchedPeriod == 0 {
+			return fmt.Errorf("SCHED_DEADLINE requires sched-runtime, sched-deadline and sched-period")
+		}
+		if params.SchedRuntime > params.SchedDeadline {
+			return fmt.Errorf("SCHED_DEADLINE: runtime (%d) must be ≤ deadline (%d)",
+				params.SchedRuntime, params.SchedDeadline)
+		}
+		if params.SchedDeadline > params.SchedPeriod {
+			return fmt.Errorf("SCHED_DEADLINE: deadline (%d) must be ≤ period (%d)",
+				params.SchedDeadline, params.SchedPeriod)
+		}
+		attr.Runtime = params.SchedRuntime
+		attr.Deadline = params.SchedDeadline
+		attr.Period = params.SchedPeriod
+
+	case unix.SCHED_NORMAL, unix.SCHED_BATCH, unix.SCHED_IDLE:
+		// No priority field; nothing else to fill.
+
+	default:
+		return fmt.Errorf("unsupported sched-policy %d", params.SchedPolicy)
+	}
+
+	return unix.SchedSetAttr(pid, &attr, 0)
 }

@@ -348,6 +348,67 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 **cpu-affinity**=*list*
 :   CPU affinity, e.g. `0-3` or `0,2,4`.
 
+## REAL-TIME SCHEDULING (telco / 5G data plane)
+
+slinit can configure the kernel scheduler for jitter-sensitive
+workloads via **sched_setattr**(2). The scheduler primitives below
+require **CAP_SYS_NICE** (or a sufficient **RLIMIT_RTPRIO** /
+**RLIMIT_NICE**) at start time; without them the post-fork attr step
+fails best-effort and the service starts with the default policy.
+
+A runaway RT task can starve the scheduler. **sched-reset-on-fork**
+defaults to *yes* so any **fork**(2) the service issues drops back to
+**SCHED_OTHER** — a build script or shell exec'd by an RT service
+will not inherit FIFO priority.
+
+**sched-policy**=*fifo*|*rr*|*deadline*|*batch*|*idle*|*other*
+:   Kernel scheduling policy. *fifo* and *rr* are the classic real-time
+    classes (priority 1-99); *deadline* (Linux 3.14+) is bandwidth-
+    reservation EDF. *batch* / *idle* are throughput-friendly variants
+    of OTHER. Aliases: *realtime* → *fifo*, *normal* → *other*. Unset
+    means "inherit slinit's policy".
+
+**sched-priority**=*1..99*
+:   Static priority for **SCHED_FIFO** / **SCHED_RR**. Required when
+    those policies are selected; rejected for any other policy.
+
+**sched-runtime**=*duration*, **sched-deadline**=*duration*, **sched-period**=*duration*
+:   **SCHED_DEADLINE** parameters. All three are required and must
+    satisfy *runtime* ≤ *deadline* ≤ *period*. Accept Go duration
+    strings (*500us*, *5ms*) or bare nanosecond integers. The kernel
+    runs admission control: a deadline reservation that does not fit
+    the system's available bandwidth is rejected at start time.
+
+**sched-reset-on-fork**=*yes*|*no*
+:   Set **SCHED_FLAG_RESET_ON_FORK** so children fork()ed by the
+    service drop to **SCHED_OTHER**. Default *yes*. Only set *no* if
+    you have a specific reason — e.g. a service that uses worker
+    threads via a privileged thread pool you want to keep at RT
+    priority. Note: Linux applies the reset *only across fork*, not
+    across **execve**(2).
+
+Example — a low-jitter mediation service pinned to CPU 3 with
+**SCHED_FIFO/80**:
+
+```
+type        = process
+command     = /usr/bin/mediator
+cpu-affinity = 3
+sched-policy   = fifo
+sched-priority = 80
+```
+
+Example — a 200µs-out-of-every-1ms reservation via **SCHED_DEADLINE**:
+
+```
+type           = process
+command        = /usr/bin/rt-loop
+sched-policy   = deadline
+sched-runtime  = 200us
+sched-deadline = 800us
+sched-period   = 1ms
+```
+
 ## CAPABILITIES & SANDBOXING
 
 **capabilities**=*caps*

@@ -13,6 +13,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"golang.org/x/sys/unix"
 )
 
 // Default init.d directories to search as fallback.
@@ -594,6 +595,57 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: scheduling-policy cross-fields
+	if desc.SchedPolicySet {
+		switch desc.SchedPolicy {
+		case unix.SCHED_FIFO, unix.SCHED_RR:
+			if desc.SchedPriority == 0 {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message:     "sched-priority is required for SCHED_FIFO / SCHED_RR (1..99)",
+				}
+			}
+		case unix.SCHED_DEADLINE:
+			if desc.SchedRuntime == 0 || desc.SchedDeadline == 0 || desc.SchedPeriod == 0 {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message:     "SCHED_DEADLINE requires sched-runtime, sched-deadline AND sched-period",
+				}
+			}
+			if desc.SchedRuntime > desc.SchedDeadline || desc.SchedDeadline > desc.SchedPeriod {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message:     "SCHED_DEADLINE invariant: runtime ≤ deadline ≤ period",
+				}
+			}
+			if desc.SchedPriority != 0 {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message:     "sched-priority has no meaning under SCHED_DEADLINE — drop it or switch to sched-policy=fifo|rr",
+				}
+			}
+		default:
+			if desc.SchedPriority != 0 {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message:     "sched-priority is only meaningful with sched-policy=fifo or rr",
+				}
+			}
+			if desc.SchedRuntime != 0 || desc.SchedDeadline != 0 || desc.SchedPeriod != 0 {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message:     "sched-runtime / sched-deadline / sched-period are only meaningful with sched-policy=deadline",
+				}
+			}
+		}
+	} else if desc.SchedPriority != 0 || desc.SchedRuntime != 0 ||
+		desc.SchedDeadline != 0 || desc.SchedPeriod != 0 {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message:     "sched-priority / sched-runtime / sched-deadline / sched-period set without sched-policy",
+		}
+	}
+
 	// Create the service based on type
 	svc := dl.createService(name, desc)
 
@@ -1059,6 +1111,14 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	if len(desc.CPUAffinity) > 0 {
 		rec.SetCPUAffinity(desc.CPUAffinity)
+	}
+
+	// Real-time scheduling
+	if desc.SchedPolicySet {
+		rec.SetSchedPolicy(desc.SchedPolicy, true)
+		rec.SetSchedPriority(desc.SchedPriority)
+		rec.SetSchedDeadlineParams(desc.SchedRuntime, desc.SchedDeadline, desc.SchedPeriod)
+		rec.SetSchedResetOnFork(desc.SchedResetOnFork)
 	}
 
 	// Namespace isolation (Linux clone flags)

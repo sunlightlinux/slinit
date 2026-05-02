@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"golang.org/x/sys/unix"
 )
 
 // maxIncludeDepth limits the nesting depth of @include directives to prevent
@@ -179,6 +180,16 @@ type ServiceDescription struct {
 	CgroupSettings []CgroupSetting // cgroup v2 controller knobs
 	CPUAffinity    []uint // CPU numbers to pin to
 
+	// Real-time scheduling
+	SchedPolicy      uint32 // unix.SCHED_* (0 = unset / SCHED_NORMAL)
+	SchedPolicySet   bool   // distinguishes "explicit SCHED_NORMAL" from unset
+	SchedPriority    uint32 // 1..99 for FIFO/RR
+	SchedRuntime     uint64 // nanoseconds, SCHED_DEADLINE
+	SchedDeadline    uint64 // nanoseconds, SCHED_DEADLINE
+	SchedPeriod      uint64 // nanoseconds, SCHED_DEADLINE
+	SchedResetOnFork bool   // SCHED_FLAG_RESET_ON_FORK (default true)
+	SchedResetOnForkSet bool // tracks whether the user gave an explicit value
+
 	// Resource limits (soft:hard or just value for both)
 	RlimitNofile *[2]uint64
 	RlimitCore   *[2]uint64
@@ -239,6 +250,12 @@ func NewServiceDescription(name string) *ServiceDescription {
 		SocketUID:     -1,
 		SocketGID:     -1,
 		ReadyNotifyFD: -1,
+		// Default sched-reset-on-fork=yes is intentional: an RT
+		// service that fork()s a shell or build script must NOT pass
+		// FIFO priority to that child, or a runaway child can starve
+		// the scheduler. The user can override by setting
+		// sched-reset-on-fork=no explicitly.
+		SchedResetOnFork: true,
 	}
 }
 
@@ -1114,6 +1131,51 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.CPUAffinity = cpus
 
+	case "sched-policy":
+		pol, err := parseSchedPolicy(value)
+		if err != nil {
+			return err
+		}
+		desc.SchedPolicy = pol
+		desc.SchedPolicySet = true
+
+	case "sched-priority":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("sched-priority: %w", err)
+		}
+		if n < 1 || n > 99 {
+			return fmt.Errorf("sched-priority %d out of range 1..99", n)
+		}
+		desc.SchedPriority = uint32(n)
+
+	case "sched-runtime":
+		ns, err := parseSchedDuration(value)
+		if err != nil {
+			return fmt.Errorf("sched-runtime: %w", err)
+		}
+		desc.SchedRuntime = ns
+	case "sched-deadline":
+		ns, err := parseSchedDuration(value)
+		if err != nil {
+			return fmt.Errorf("sched-deadline: %w", err)
+		}
+		desc.SchedDeadline = ns
+	case "sched-period":
+		ns, err := parseSchedDuration(value)
+		if err != nil {
+			return fmt.Errorf("sched-period: %w", err)
+		}
+		desc.SchedPeriod = ns
+
+	case "sched-reset-on-fork":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("sched-reset-on-fork: %w", err)
+		}
+		desc.SchedResetOnFork = b
+		desc.SchedResetOnForkSet = true
+
 	case "rlimit-nofile":
 		lim, err := parseRlimit(value)
 		if err != nil {
@@ -1400,6 +1462,49 @@ func parseDuration(value string) (time.Duration, error) {
 		return 0, fmt.Errorf("duration must be non-negative")
 	}
 	return time.Duration(f * float64(time.Second)), nil
+}
+
+// parseSchedPolicy maps a config string to a Linux SCHED_* constant.
+// Accepts both the kernel name (fifo, rr, batch, idle, deadline, other)
+// and conventional aliases (realtime → fifo, normal → other).
+func parseSchedPolicy(value string) (uint32, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "other", "normal":
+		return unix.SCHED_NORMAL, nil
+	case "fifo", "realtime":
+		return unix.SCHED_FIFO, nil
+	case "rr":
+		return unix.SCHED_RR, nil
+	case "batch":
+		return unix.SCHED_BATCH, nil
+	case "idle":
+		return unix.SCHED_IDLE, nil
+	case "deadline":
+		return unix.SCHED_DEADLINE, nil
+	default:
+		return 0, fmt.Errorf("sched-policy: unknown policy %q (expected one of fifo, rr, batch, idle, deadline, other)", value)
+	}
+}
+
+// parseSchedDuration accepts Go duration syntax ("500us", "10ms",
+// "100ns") or a bare nanosecond integer, and returns the value in
+// nanoseconds. SCHED_DEADLINE expresses everything in ns, so we
+// normalise here and store ns directly in the description.
+func parseSchedDuration(value string) (uint64, error) {
+	if d, err := time.ParseDuration(value); err == nil {
+		if d <= 0 {
+			return 0, fmt.Errorf("must be > 0")
+		}
+		return uint64(d.Nanoseconds()), nil
+	}
+	n, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q (expected Go duration like 5ms or a bare ns integer)", value)
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("must be > 0")
+	}
+	return n, nil
 }
 
 // parseReadyNotification parses a ready-notification value.

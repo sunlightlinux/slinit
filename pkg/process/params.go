@@ -175,6 +175,31 @@ type ExecParams struct {
 	// via sched_setaffinity(). nil/empty means don't change.
 	CPUAffinity []uint
 
+	// SchedPolicy is the scheduling policy applied via sched_setattr.
+	// 0 (SCHED_NORMAL/OTHER) means "do not change" — slinit only issues
+	// the syscall when an explicit non-default policy was requested,
+	// otherwise the child keeps whatever the parent had. Use the
+	// unix.SCHED_* constants for the named policies.
+	SchedPolicy uint32
+
+	// SchedPriority is the static priority for SCHED_FIFO / SCHED_RR
+	// (1..99). Ignored for the other policies.
+	SchedPriority uint32
+
+	// SchedRuntime / SchedDeadline / SchedPeriod (nanoseconds) describe
+	// a SCHED_DEADLINE bandwidth reservation. Required when SchedPolicy
+	// is SCHED_DEADLINE; ignored otherwise.
+	SchedRuntime  uint64
+	SchedDeadline uint64
+	SchedPeriod   uint64
+
+	// SchedResetOnFork sets SCHED_FLAG_RESET_ON_FORK on the policy: any
+	// child fork()ed by the service drops back to SCHED_OTHER. Strongly
+	// recommended for RT services so a runaway shell or build script
+	// the service may exec doesn't inherit FIFO priority and starve the
+	// scheduler. Defaults to true at the parser level.
+	SchedResetOnFork bool
+
 	// Chroot is the directory to chroot into before exec.
 	// Applied via SysProcAttr.Chroot.
 	Chroot string

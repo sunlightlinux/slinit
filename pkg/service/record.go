@@ -196,6 +196,18 @@ type ServiceRecord struct {
 	ambientCaps []uintptr
 	securebits  uint32
 	cpuAffinity []uint
+
+	// Real-time scheduling (telco / 5G data plane). Zero values keep
+	// the kernel default; only when schedPolicySet is true does the
+	// post-fork attr step issue a sched_setattr.
+	schedPolicy         uint32
+	schedPolicySet      bool
+	schedPriority       uint32
+	schedRuntime        uint64 // ns
+	schedDeadline       uint64 // ns
+	schedPeriod         uint64 // ns
+	schedResetOnFork    bool
+
 	cloneflags  uintptr              // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
 	uidMappings []syscall.SysProcIDMap // user namespace UID mappings
 	gidMappings []syscall.SysProcIDMap // user namespace GID mappings
@@ -590,6 +602,22 @@ func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)       { sr.rlimits = appen
 func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = caps }
 func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
 func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
+
+// SetSchedPolicy programs the kernel scheduling policy (unix.SCHED_*).
+// Pass policySet=false to keep the inherited policy; the rest of the
+// sched-* setters are then ignored at apply time.
+func (sr *ServiceRecord) SetSchedPolicy(policy uint32, policySet bool) {
+	sr.schedPolicy = policy
+	sr.schedPolicySet = policySet
+}
+func (sr *ServiceRecord) SetSchedPriority(p uint32)         { sr.schedPriority = p }
+func (sr *ServiceRecord) SetSchedDeadlineParams(runtime, deadline, period uint64) {
+	sr.schedRuntime = runtime
+	sr.schedDeadline = deadline
+	sr.schedPeriod = period
+}
+func (sr *ServiceRecord) SetSchedResetOnFork(b bool) { sr.schedResetOnFork = b }
+
 func (sr *ServiceRecord) SetCloneflags(flags uintptr)          { sr.cloneflags = flags }
 func (sr *ServiceRecord) SetUidMappings(m []syscall.SysProcIDMap) { sr.uidMappings = m }
 func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappings = m }
@@ -621,6 +649,14 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.CPUAffinity = sr.cpuAffinity
 	if len(params.CPUAffinity) == 0 {
 		params.CPUAffinity = sr.services.DefaultCPUAffinity()
+	}
+	if sr.schedPolicySet {
+		params.SchedPolicy = sr.schedPolicy
+		params.SchedPriority = sr.schedPriority
+		params.SchedRuntime = sr.schedRuntime
+		params.SchedDeadline = sr.schedDeadline
+		params.SchedPeriod = sr.schedPeriod
+		params.SchedResetOnFork = sr.schedResetOnFork
 	}
 	params.Cloneflags = sr.cloneflags
 	params.UidMappings = sr.uidMappings
