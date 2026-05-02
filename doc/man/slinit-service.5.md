@@ -257,8 +257,30 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 :   How the service signals readiness. Supported forms:
 
     * `pipefd:N` — write a single byte to fd *N*; slinit closes the
-      read end on receipt.
+      read end on receipt unless **watchdog-timeout** is also set.
+    * `pipevar:VARNAME` — slinit allocates an fd, sets *VARNAME* in
+      the service environment, and the child writes to that fd.
     * `s6` — s6-style readiness on fd 1 (close stdout).
+
+**watchdog-timeout**=*duration*
+:   Per-service software watchdog. Reuses the **ready-notification**
+    pipe: after the initial readiness byte the pipe stays open and
+    every subsequent write is treated as a keepalive that resets the
+    timer. If no keepalive arrives within *duration*, slinit declares
+    the service unhealthy and stops it — the configured **restart**
+    policy then handles the re-spawn. Closing the pipe while the
+    service is still running counts as a miss (carrier-grade init
+    does not let services silently disable their own watchdog).
+
+    Requires **ready-notification** to be set on a **type=process**
+    service; otherwise the service refuses to load. Accepts Go
+    duration strings (*30s*, *2m*) or bare seconds (*30*, *0.5*).
+
+    Use case: telco / 5G / digital-call workloads where a stuck
+    service must be detected and restarted without operator
+    intervention. The daemon-level **\--watchdog-device** in
+    **slinit**(8) is the system-wide complement; together they cover
+    "stuck slinit" and "stuck service" failure modes.
 
 **close-stdin**=*yes*|*no*, **close-stdout**=*yes*|*no*, **close-stderr**=*yes*|*no*
 :   Close the corresponding standard file descriptor before exec.

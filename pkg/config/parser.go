@@ -141,6 +141,7 @@ type ServiceDescription struct {
 	ReadyNotification string
 	ReadyNotifyFD     int    // parsed from pipefd:N (-1 if unset)
 	ReadyNotifyVar    string // parsed from pipevar:VARNAME
+	WatchdogTimeout   time.Duration // 0 = disabled; piggybacks on ready-notification pipe
 
 	// Credentials
 	RunAs string
@@ -944,6 +945,21 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		if err := parseReadyNotification(desc, value); err != nil {
 			return err
 		}
+	case "watchdog-timeout":
+		// Accept both Go duration syntax ("30s", "2m") and bare-seconds
+		// floats ("30", "0.5") to match the surrounding settings.
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("watchdog-timeout: invalid duration %q", value)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		if d <= 0 {
+			return fmt.Errorf("watchdog-timeout must be > 0 (got %s)", d)
+		}
+		desc.WatchdogTimeout = d
 	case "run-as":
 		desc.RunAs = value
 

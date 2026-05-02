@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -95,6 +96,15 @@ type ProcessService struct {
 	readyNotifyVar string   // env var name ("" if none)
 	readyPipeRead  *os.File // read-end of notification pipe (parent watches)
 	readyCh        chan bool // receives true=ready, false=EOF/error
+
+	// Service-level watchdog. Piggybacks on the ready-notification pipe:
+	// the first message marks the service ready, subsequent writes act
+	// as keepalives that reset the watchdog timer. A miss declares the
+	// service unhealthy and triggers Stop(false) — the existing
+	// restart-on-failure path takes it from there.
+	watchdogTimeout time.Duration
+	watchdogStop    chan struct{} // closed to terminate the watcher goroutine
+	watchdogDone    chan struct{} // closed when the watcher goroutine returns
 
 	// Log output
 	logType      LogType
@@ -342,6 +352,146 @@ func (s *ProcessService) stopHealthChecker() {
 	}
 }
 
+// startWatchdogWatcher launches the per-service watchdog goroutine after
+// the initial readiness signal. The goroutine reads from the same pipe
+// that delivered the readiness byte; every subsequent read is treated
+// as a keepalive that resets the deadline. If the deadline expires
+// without a read, the service is stopped and the configured restart
+// policy takes over.
+//
+// Caller must hold queueMu.
+func (s *ProcessService) startWatchdogWatcher() {
+	if s.watchdogTimeout <= 0 || s.readyPipeRead == nil {
+		return
+	}
+	if s.watchdogStop != nil {
+		// Already running — defensive; should not normally happen because
+		// handleReadyNotification fires exactly once per start cycle.
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	pipe := s.readyPipeRead
+	timeout := s.watchdogTimeout
+	s.watchdogStop = stop
+	s.watchdogDone = done
+
+	s.services.logger.Info("Service '%s': watchdog armed (timeout=%v)",
+		s.serviceName, timeout)
+	go s.watchdogLoop(pipe, timeout, stop, done)
+}
+
+// watchdogLoop blocks on pipe reads with a deadline equal to the
+// watchdog timeout. It returns when:
+//   - the deadline elapses → watchdog miss → Stop(false)
+//   - the pipe is closed by the service → also a miss (the service
+//     voluntarily disarmed itself, which a telco-grade init must not
+//     allow silently — restart and surface)
+//   - stop is closed → BringDown / handleChildExit asked us to quit
+//     (the child is gone or being shut down explicitly; the regular
+//     paths handle that case)
+func (s *ProcessService) watchdogLoop(pipe *os.File, timeout time.Duration,
+	stop, done chan struct{},
+) {
+	defer close(done)
+
+	buf := make([]byte, 128)
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		if err := pipe.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			// Non-pollable fd. Without deadlines we cannot enforce the
+			// watchdog; bail loudly so the operator notices.
+			s.services.logger.Error("Service '%s': watchdog disabled: %v",
+				s.serviceName, err)
+			return
+		}
+
+		n, err := pipe.Read(buf)
+		// Cancellation racing with the read? Treat as clean shutdown.
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		switch {
+		case err == nil && n > 0:
+			// Keepalive received; loop resets the deadline.
+			continue
+		case isDeadlineExceeded(err):
+			s.services.logger.Error("Service '%s': watchdog timeout (%v) — restarting",
+				s.serviceName, timeout)
+			s.fireWatchdogStop()
+			return
+		default:
+			// EOF or other read error. The service either died (in
+			// which case handleChildExit will close stop shortly and
+			// our select above already covered that) or closed its
+			// end of the watchdog pipe while still running. Either
+			// way, the watchdog cannot continue — escalate to Stop.
+			s.services.logger.Error("Service '%s': watchdog pipe lost (%v) — restarting",
+				s.serviceName, err)
+			s.fireWatchdogStop()
+			return
+		}
+	}
+}
+
+// stopWatchdogWatcher signals the watchdog goroutine to terminate.
+// Idempotent. Used from BringDown (caller does not hold queueMu).
+func (s *ProcessService) stopWatchdogWatcher() {
+	s.stopWatchdogWatcherLocked()
+}
+
+// stopWatchdogWatcherLocked is the queueMu-held variant. It sets the
+// pipe deadline to "now" so the watcher's blocked Read returns
+// immediately, then drops the channel references. We do NOT wait for
+// the goroutine to exit: the caller may itself be running under
+// queueMu (e.g. handleChildExit), and the watcher's Stop(false) path
+// would re-enter that lock. The goroutine is short-lived once the
+// pipe is closed elsewhere, so leaking it briefly is harmless.
+func (s *ProcessService) stopWatchdogWatcherLocked() {
+	if s.watchdogStop == nil {
+		return
+	}
+	select {
+	case <-s.watchdogStop:
+		// already closed
+	default:
+		close(s.watchdogStop)
+	}
+	if s.readyPipeRead != nil {
+		// Push the deadline into the past to unblock any in-flight Read.
+		_ = s.readyPipeRead.SetReadDeadline(time.Unix(1, 0))
+	}
+	s.watchdogStop = nil
+	s.watchdogDone = nil
+}
+
+// isDeadlineExceeded matches both os.ErrDeadlineExceeded and the
+// underlying syscall error wrappers Go uses on different kernels.
+func isDeadlineExceeded(err error) bool {
+	return errors.Is(err, os.ErrDeadlineExceeded)
+}
+
+// fireWatchdogStop is the watchdog goroutine's path into the state
+// machine. It mirrors the locking discipline of ServiceSet.StopService:
+// acquire queueMu, call Stop(false) (allows restart-on-failure to
+// kick in), drain the queues. Without the lock, Stop's writes to
+// propQueue / stopQueue race with the queue drains running under
+// queueMu in other goroutines.
+func (s *ProcessService) fireWatchdogStop() {
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+	s.Stop(false)
+	s.services.processQueuesLocked()
+}
+
 // startCronIfConfigured starts the cron runner if a cron-command is configured.
 func (s *ProcessService) startCronIfConfigured() {
 	if s.cronRunner != nil {
@@ -383,6 +533,26 @@ func (s *ProcessService) SetReadyNotification(fd int, varName string) {
 // HasReadyNotification returns true if readiness notification is configured.
 func (s *ProcessService) HasReadyNotification() bool {
 	return s.readyNotifyFD >= 0 || s.readyNotifyVar != ""
+}
+
+// SetWatchdogTimeout configures the per-service watchdog. The service
+// must keep writing to the ready-notification pipe at least once per
+// timeout window or slinit declares it unhealthy and stops it (which
+// triggers the configured restart policy). A zero value disables the
+// watchdog. The loader rejects watchdog-timeout without ready-notification.
+func (s *ProcessService) SetWatchdogTimeout(d time.Duration) {
+	s.watchdogTimeout = d
+}
+
+// HasWatchdog returns true if a service-level watchdog is configured.
+func (s *ProcessService) HasWatchdog() bool {
+	return s.watchdogTimeout > 0
+}
+
+// WatchdogTimeout returns the configured per-service watchdog timeout
+// (zero when disabled).
+func (s *ProcessService) WatchdogTimeout() time.Duration {
+	return s.watchdogTimeout
 }
 
 // openSocket creates and binds listening sockets for socket activation.
@@ -695,6 +865,7 @@ func (s *ProcessService) BringDown() {
 	// Stop health checker and cron runner if active
 	s.stopHealthChecker()
 	s.stopCronRunner()
+	s.stopWatchdogWatcher()
 
 	// Close readiness pipe if still open (no longer waiting for readiness)
 	s.closeReadyPipe()
@@ -1292,11 +1463,16 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
 
-	// Close the read-end pipe
-	s.closeReadyPipe()
-
 	// Nil the channel so we don't select on it again
 	s.readyCh = nil
+
+	// When a watchdog is configured we keep the pipe open after the
+	// initial readiness signal: subsequent writes act as keepalives.
+	// Without a watchdog the pipe is one-shot, mirroring dinit.
+	keepPipe := ready && s.HasWatchdog() && s.state.Load() == StateStarting
+	if !keepPipe {
+		s.closeReadyPipe()
+	}
 
 	if s.state.Load() != StateStarting {
 		// Not in STARTING state; ignore readiness signal
@@ -1310,6 +1486,9 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.Started()
 		s.startCronIfConfigured()
 		s.startHealthCheckIfConfigured()
+		if keepPipe {
+			s.startWatchdogWatcher()
+		}
 		s.services.processQueuesLocked()
 	} else {
 		// EOF without data - child closed pipe without writing
@@ -1364,6 +1543,7 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	s.pid = 0
 	s.procHandle.Clear()
 	s.cancelTimer()
+	s.stopWatchdogWatcherLocked()
 	s.closeReadyPipe()
 
 	// Run finish-command if configured (before restart decision)

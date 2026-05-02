@@ -278,6 +278,9 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 			s.SetErrorLogger(desc.ErrorLogger)
 		}
 		s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
+		if desc.WatchdogTimeout > 0 {
+			s.SetWatchdogTimeout(desc.WatchdogTimeout)
+		}
 		if len(desc.CronCommand) > 0 {
 			s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
 		}
@@ -574,6 +577,23 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: watchdog-timeout piggybacks on the ready-notification pipe.
+	// Without one configured the service has no channel through which to
+	// send keepalives, so the watchdog would fire as soon as it armed.
+	if desc.WatchdogTimeout > 0 && desc.ReadyNotifyFD < 0 && desc.ReadyNotifyVar == "" {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message:     "watchdog-timeout requires ready-notification to be set " +
+				"(the service uses the same pipe to send keepalives)",
+		}
+	}
+	if desc.WatchdogTimeout > 0 && desc.Type != service.TypeProcess {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message:     "watchdog-timeout is only supported for type=process services",
+		}
+	}
+
 	// Create the service based on type
 	svc := dl.createService(name, desc)
 
@@ -801,6 +821,9 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		}
 		if desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" {
 			svc.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
+		}
+		if desc.WatchdogTimeout > 0 {
+			svc.SetWatchdogTimeout(desc.WatchdogTimeout)
 		}
 		if len(desc.CronCommand) > 0 {
 			svc.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)

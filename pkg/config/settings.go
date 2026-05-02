@@ -61,6 +61,7 @@ var KnownSettings = map[string]OperatorType{
 	"stopsig":            OpEquals, // OpenRC alias
 	"pid-file":           OpEquals,
 	"ready-notification": OpEquals,
+	"watchdog-timeout":   OpEquals,
 
 	// Logging
 	"logfile":             OpEquals,
