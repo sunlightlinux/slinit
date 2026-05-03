@@ -75,9 +75,16 @@ service-file format.
     The intended use is **soft-reboot**: when **slinitctl shutdown
     soft-reboot** runs, slinit drops a snapshot at
     */run/slinit/soft-reboot-snapshot.json* and re-execs itself with
-    this flag pointing at that file. Operators upgrading the slinit
-    binary on a long-running system therefore keep their service
-    activations across the restart.
+    this flag *and* **\--run-mode=keep** appended (the latter is
+    mandatory — the default *mount* mode would stack a fresh tmpfs
+    over /run and hide the snapshot before the new daemon could read
+    it). Operators upgrading the slinit binary on a long-running
+    system therefore keep their service activations across the
+    restart.
+
+    The snapshot file is removed once successfully consumed, so a
+    later restart of slinit (e.g. for diagnostics) does not silently
+    replay stale intent.
 
     A missing snapshot file is not an error — it is the normal case on
     a fresh boot. A snapshot whose schema **version** is newer than

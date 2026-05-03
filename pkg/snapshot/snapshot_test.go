@@ -22,11 +22,15 @@ func (testLogger) Info(string, ...interface{})        {}
 // quietRestoreLogger captures emitted lines for assertion.
 type quietRestoreLogger struct {
 	notices []string
+	infos   []string
 	warns   []string
 }
 
 func (q *quietRestoreLogger) Notice(format string, args ...any) {
 	q.notices = append(q.notices, format)
+}
+func (q *quietRestoreLogger) Info(format string, args ...any) {
+	q.infos = append(q.infos, format)
 }
 func (q *quietRestoreLogger) Warn(format string, args ...any) {
 	q.warns = append(q.warns, format)

@@ -11,6 +11,7 @@ import (
 // daemon passes its real logger; tests pass nil to silence output.
 type RestoreLogger interface {
 	Notice(format string, args ...any)
+	Info(format string, args ...any)
 	Warn(format string, args ...any)
 }
 
@@ -43,12 +44,14 @@ func Restore(set *service.ServiceSet, snap *Snapshot, logger RestoreLogger) (int
 
 	// Global env first so any service that consults it during
 	// BringUp sees the operator-set values.
+	envApplied := 0
 	for _, kv := range snap.GlobalEnv {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok || k == "" {
 			continue
 		}
 		set.GlobalSetEnv(k, v)
+		envApplied++
 	}
 
 	applied := 0
@@ -66,8 +69,8 @@ func Restore(set *service.ServiceSet, snap *Snapshot, logger RestoreLogger) (int
 	set.ProcessQueues()
 
 	if logger != nil {
-		logger.Notice("snapshot restore: %d service intents reapplied (%d entries)",
-			applied, len(snap.Services))
+		logger.Notice("snapshot restore: %d service intents (of %d), %d global env vars",
+			applied, len(snap.Services), envApplied)
 	}
 	return applied, nil
 }

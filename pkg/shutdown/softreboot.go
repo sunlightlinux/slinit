@@ -68,11 +68,23 @@ func SoftReboot(logger *logging.Logger) error {
 	return execFunc(execPath, argv, os.Environ())
 }
 
-// softRebootArgv returns args with --restore-from-snapshot=path appended
-// when the snapshot file exists, or args unchanged otherwise. If args
-// already contains a --restore-from-snapshot flag (e.g. the operator
-// chained two soft-reboots in a row), the path is rewritten in place
-// rather than duplicated — multiple values would confuse flag parsing.
+// softRebootArgv returns args extended with the flags the new slinit
+// needs to consume a snapshot left behind by the outgoing instance:
+//
+//   - --restore-from-snapshot=<path> tells the new daemon what to read.
+//   - --run-mode=keep is mandatory: the snapshot lives on /run/, and
+//     the default `mount` mode would stack a fresh tmpfs over /run,
+//     hiding the file before the daemon ever opens it. Found in
+//     practice during the first soft-reboot demo — without this the
+//     restore silently no-ops with "No snapshot at /run/...".
+//
+// Both flags are idempotent: if the operator (or a previous chained
+// soft-reboot) already passed them, the values are rewritten in place
+// rather than appended a second time, which would confuse flag.Parse.
+//
+// If no snapshot file is present at path, args is returned unchanged —
+// a soft-reboot triggered before any state was captured falls back to
+// a clean boot, which is the right default.
 func softRebootArgv(args []string, path string) []string {
 	if path == "" {
 		return args
@@ -80,11 +92,19 @@ func softRebootArgv(args []string, path string) []string {
 	if _, err := statFunc(path); err != nil {
 		return args
 	}
-	flag := "--restore-from-snapshot=" + path
+	return injectFlag(injectFlag(args, "--restore-from-snapshot=", path),
+		"--run-mode=", "keep")
+}
+
+// injectFlag rewrites or appends `<prefix><value>` in args. Used by
+// softRebootArgv to set both --restore-from-snapshot and --run-mode
+// without duplicating either when chained.
+func injectFlag(args []string, prefix, value string) []string {
+	flag := prefix + value
 	out := make([]string, 0, len(args)+1)
 	replaced := false
 	for _, a := range args {
-		if strings.HasPrefix(a, "--restore-from-snapshot=") {
+		if strings.HasPrefix(a, prefix) {
 			out = append(out, flag)
 			replaced = true
 			continue

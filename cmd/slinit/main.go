@@ -671,8 +671,8 @@ func main() {
 				logger.Error("Soft-reboot snapshot write failed: %v", err)
 				return
 			}
-			logger.Info("Soft-reboot snapshot saved to %s (%d service intents)",
-				snapshot.SoftRebootPath, len(snap.Services))
+			logger.Info("Soft-reboot snapshot saved to %s (%d service intents, %d global env vars)",
+				snapshot.SoftRebootPath, len(snap.Services), len(snap.GlobalEnv))
 		}
 
 		// /etc/slinit/shutdown.allow access control: only engage when
@@ -1049,6 +1049,17 @@ func applySnapshot(path string, serviceSet *service.ServiceSet, logger *logging.
 
 	if _, err := snapshot.Restore(serviceSet, snap, logger); err != nil {
 		logger.Error("Snapshot restore failed: %v", err)
+		return
+	}
+
+	// Snapshot consumed. Remove it so a later restart of slinit
+	// (e.g. an operator manually re-running it for diagnostics)
+	// does not silently replay stale intent. The file is on tmpfs
+	// for the soft-reboot path, so this is just hygiene; for an
+	// operator-supplied path it is the only thing that prevents
+	// accidental double-restore.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		logger.Warn("Failed to remove consumed snapshot %s: %v", path, err)
 	}
 }
 

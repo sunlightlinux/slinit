@@ -384,27 +384,46 @@ func TestSoftRebootArgvNoSnapshot(t *testing.T) {
 	}
 }
 
-func TestSoftRebootArgvAppendsFlag(t *testing.T) {
+func TestSoftRebootArgvAppendsFlags(t *testing.T) {
+	// Snapshot present → both --restore-from-snapshot and --run-mode=keep
+	// must be appended. --run-mode=keep is critical: the default `mount`
+	// mode would stack a fresh tmpfs over /run, hiding the snapshot.
 	orig := statFunc
 	statFunc = func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }
 	defer func() { statFunc = orig }()
 
 	args := []string{"/sbin/slinit", "-s"}
 	got := softRebootArgv(args, "/run/slinit/x.json")
-	want := []string{"/sbin/slinit", "-s", "--restore-from-snapshot=/run/slinit/x.json"}
+	want := []string{
+		"/sbin/slinit", "-s",
+		"--restore-from-snapshot=/run/slinit/x.json",
+		"--run-mode=keep",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("argv = %v, want %v", got, want)
 	}
 }
 
-func TestSoftRebootArgvReplacesExistingFlag(t *testing.T) {
+func TestSoftRebootArgvReplacesExistingFlags(t *testing.T) {
+	// Both flags already in argv → values are rewritten in place,
+	// not duplicated (which would confuse flag.Parse).
 	orig := statFunc
 	statFunc = func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }
 	defer func() { statFunc = orig }()
 
-	args := []string{"/sbin/slinit", "--restore-from-snapshot=/old.json", "-s"}
+	args := []string{
+		"/sbin/slinit",
+		"--restore-from-snapshot=/old.json",
+		"--run-mode=mount",
+		"-s",
+	}
 	got := softRebootArgv(args, "/run/slinit/new.json")
-	want := []string{"/sbin/slinit", "--restore-from-snapshot=/run/slinit/new.json", "-s"}
+	want := []string{
+		"/sbin/slinit",
+		"--restore-from-snapshot=/run/slinit/new.json",
+		"--run-mode=keep",
+		"-s",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("argv = %v, want %v", got, want)
 	}
