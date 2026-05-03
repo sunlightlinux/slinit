@@ -1,0 +1,298 @@
+#!/bin/sh
+#
+# slinit-resource - OCF Resource Agent for slinit-managed services.
+#
+# Wraps slinitctl(8) so a Pacemaker / Corosync HA cluster can drive any
+# slinit service as a cluster resource. The agent is POSIX shell (not Go)
+# for two reasons:
+#   1. The OCF spec is shell-shaped (env-var parameters, no IPC).
+#   2. Cluster nodes already have /bin/sh; pulling Go into the agent path
+#      would break the property that resource agents are auditable scripts.
+#
+# OCF spec: Open Cluster Framework Resource Agent API 1.0
+#   https://github.com/ClusterLabs/OCF-spec/blob/main/ra/1.0/resource-agent-api.md
+#
+# Install path (Pacemaker default):
+#   ${OCF_ROOT:-/usr/lib/ocf}/resource.d/slinit/slinit-resource
+#
+# Then in crm:
+#   primitive nginx ocf:slinit:slinit-resource \
+#       params service=nginx \
+#       op monitor interval=15s timeout=10s
+#
+
+#######################################################################
+# OCF return codes (spec section 3.1).
+# Keep the literal numbers — Pacemaker matches on them, not on names.
+#######################################################################
+OCF_SUCCESS=0
+OCF_ERR_GENERIC=1
+OCF_ERR_ARGS=2
+OCF_ERR_UNIMPLEMENTED=3
+OCF_ERR_PERM=4
+OCF_ERR_INSTALLED=5
+OCF_ERR_CONFIGURED=6
+OCF_NOT_RUNNING=7
+
+#######################################################################
+# Logging.
+#
+# When invoked under Pacemaker, OCF_FUNCTIONS_DIR/.ocf-shellfuncs is
+# present and supplies ocf_log; outside the cluster (smoke tests, manual
+# runs) we fall back to a plain stderr writer so the agent still works.
+#######################################################################
+: "${OCF_FUNCTIONS_DIR:=${OCF_ROOT:-/usr/lib/ocf}/lib/heartbeat}"
+if [ -r "$OCF_FUNCTIONS_DIR/.ocf-shellfuncs" ]; then
+    # shellcheck disable=SC1091
+    . "$OCF_FUNCTIONS_DIR/.ocf-shellfuncs"
+else
+    ocf_log() {
+        # $1 = level (debug|info|warn|err), $2..= message
+        _level="$1"; shift
+        printf '%s: %s\n' "$_level" "$*" >&2
+    }
+fi
+
+#######################################################################
+# Resource parameters (declared in meta-data, supplied via OCF_RESKEY_*).
+#######################################################################
+: "${OCF_RESKEY_service:=}"
+: "${OCF_RESKEY_socket:=/run/slinit.socket}"
+: "${OCF_RESKEY_slinitctl:=slinitctl}"
+: "${OCF_RESKEY_start_timeout:=30}"
+: "${OCF_RESKEY_stop_timeout:=30}"
+
+#######################################################################
+# Helpers.
+#######################################################################
+
+# ctl ARG... — invoke slinitctl with the configured socket.
+ctl() {
+    "$OCF_RESKEY_slinitctl" --socket-path "$OCF_RESKEY_socket" "$@"
+}
+
+# require_service_param — abort if the mandatory `service` parameter is missing.
+require_service_param() {
+    if [ -z "$OCF_RESKEY_service" ]; then
+        ocf_log err "OCF_RESKEY_service is required"
+        exit $OCF_ERR_CONFIGURED
+    fi
+}
+
+# probe_state — print one of STARTED, STOPPED, STARTING, STOPPING,
+# UNKNOWN to stdout, or fail with non-zero if the daemon is unreachable
+# or the service is unknown.
+probe_state() {
+    _out=$(ctl status "$OCF_RESKEY_service" 2>&1) || {
+        # Distinguish "daemon down" from "service not declared".
+        case "$_out" in
+            *"connection refused"*|*"no such file"*|*"connect: "*)
+                return 2
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+    }
+    printf '%s\n' "$_out" \
+        | awk '/^[[:space:]]*State:/ { print $2; exit }'
+}
+
+#######################################################################
+# OCF actions.
+#######################################################################
+
+action_meta_data() {
+    cat <<'EOF'
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="slinit-resource" version="1.0">
+  <version>1.0</version>
+  <longdesc lang="en">
+Pacemaker/OCF resource agent that drives a slinit-managed service as a
+cluster resource. The agent talks to a running slinit daemon via slinitctl
+and the slinit control socket; it does not start a daemon of its own.
+
+The slinit service must already be defined under a services-dir known to
+the daemon (the agent does not load service descriptions). Typical use:
+slinit runs as PID 1 (or a user-mode manager) on every cluster node, the
+target service is defined identically on each node, and Pacemaker decides
+where it runs at any moment.
+  </longdesc>
+  <shortdesc lang="en">slinit service as a Pacemaker cluster resource</shortdesc>
+
+  <parameters>
+    <parameter name="service" required="1" unique="1">
+      <longdesc lang="en">
+Name of the slinit service to control. Must match a service description
+loaded by the slinit daemon on every node where this resource may run.
+      </longdesc>
+      <shortdesc lang="en">slinit service name</shortdesc>
+      <content type="string"/>
+    </parameter>
+
+    <parameter name="socket" required="0" unique="0">
+      <longdesc lang="en">
+Path to the slinit control socket. Defaults to /run/slinit.socket
+(system-mode default). Override for user-mode managers or non-standard
+layouts.
+      </longdesc>
+      <shortdesc lang="en">slinit control socket path</shortdesc>
+      <content type="string" default="/run/slinit.socket"/>
+    </parameter>
+
+    <parameter name="slinitctl" required="0" unique="0">
+      <longdesc lang="en">
+Path to the slinitctl binary. Defaults to looking it up in PATH.
+      </longdesc>
+      <shortdesc lang="en">slinitctl binary</shortdesc>
+      <content type="string" default="slinitctl"/>
+    </parameter>
+  </parameters>
+
+  <actions>
+    <action name="start"        timeout="30s"/>
+    <action name="stop"         timeout="30s"/>
+    <action name="monitor"      timeout="10s" interval="15s" depth="0"/>
+    <action name="status"       timeout="10s"/>
+    <action name="meta-data"    timeout="5s"/>
+    <action name="validate-all" timeout="10s"/>
+  </actions>
+</resource-agent>
+EOF
+    return $OCF_SUCCESS
+}
+
+action_validate_all() {
+    require_service_param
+
+    if ! command -v "$OCF_RESKEY_slinitctl" >/dev/null 2>&1; then
+        ocf_log err "slinitctl binary not found: $OCF_RESKEY_slinitctl"
+        return $OCF_ERR_INSTALLED
+    fi
+
+    # The daemon may be down on this node (e.g. during a probe before the
+    # cluster has brought it up). Don't fail validation for that — only
+    # fail if the service truly does not exist when the daemon IS up.
+    _out=$(ctl status "$OCF_RESKEY_service" 2>&1)
+    _rc=$?
+    if [ $_rc -ne 0 ]; then
+        case "$_out" in
+            *"connection refused"*|*"no such file"*|*"connect: "*)
+                ocf_log info "slinit daemon not reachable; skipping service-existence check"
+                return $OCF_SUCCESS
+                ;;
+            *"unknown service"*|*"not found"*|*"not loaded"*|*"no such service"*)
+                ocf_log err "slinit service '$OCF_RESKEY_service' is not declared"
+                return $OCF_ERR_CONFIGURED
+                ;;
+        esac
+    fi
+    return $OCF_SUCCESS
+}
+
+action_monitor() {
+    require_service_param
+
+    _state=$(probe_state)
+    _rc=$?
+    if [ $_rc -eq 2 ]; then
+        # Daemon down — from Pacemaker's view the resource cannot be
+        # running here. Treat as not-running so the cluster can decide.
+        ocf_log debug "slinit daemon unreachable; reporting NOT_RUNNING"
+        return $OCF_NOT_RUNNING
+    fi
+    if [ $_rc -ne 0 ]; then
+        ocf_log err "slinitctl status failed for '$OCF_RESKEY_service'"
+        return $OCF_ERR_GENERIC
+    fi
+
+    case "$_state" in
+        STARTED)
+            return $OCF_SUCCESS
+            ;;
+        STOPPED|"")
+            return $OCF_NOT_RUNNING
+            ;;
+        STARTING|STOPPING)
+            # Mid-transition. From the agent's perspective the resource
+            # is not yet/no longer running — Pacemaker will re-probe.
+            return $OCF_NOT_RUNNING
+            ;;
+        *)
+            ocf_log warn "unexpected slinit state: $_state"
+            return $OCF_ERR_GENERIC
+            ;;
+    esac
+}
+
+action_start() {
+    require_service_param
+
+    # If already running, nothing to do (OCF idempotency requirement).
+    action_monitor
+    case $? in
+        $OCF_SUCCESS) return $OCF_SUCCESS ;;
+    esac
+
+    if ! ctl start "$OCF_RESKEY_service"; then
+        ocf_log err "slinitctl start '$OCF_RESKEY_service' failed"
+        return $OCF_ERR_GENERIC
+    fi
+
+    # slinitctl start blocks until STARTED unless --no-wait was passed,
+    # so a successful return already implies the resource is up. Confirm
+    # to be defensive against unusual states (e.g. SMOOTHRECOVERY).
+    action_monitor
+}
+
+action_stop() {
+    require_service_param
+
+    action_monitor
+    case $? in
+        $OCF_NOT_RUNNING) return $OCF_SUCCESS ;;
+    esac
+
+    # --ignore-unstarted swallows the race where the service stopped
+    # between the monitor probe and our request.
+    if ! ctl stop --ignore-unstarted "$OCF_RESKEY_service"; then
+        ocf_log err "slinitctl stop '$OCF_RESKEY_service' failed"
+        return $OCF_ERR_GENERIC
+    fi
+
+    action_monitor
+    case $? in
+        $OCF_NOT_RUNNING) return $OCF_SUCCESS ;;
+        *)
+            ocf_log err "service '$OCF_RESKEY_service' did not stop"
+            return $OCF_ERR_GENERIC
+            ;;
+    esac
+}
+
+#######################################################################
+# Dispatch.
+#######################################################################
+case "${1:-}" in
+    start)        action_start ;;
+    stop)         action_stop ;;
+    monitor)      action_monitor ;;
+    status)       action_monitor ;;
+    meta-data)    action_meta_data ;;
+    validate-all) action_validate_all ;;
+    usage|help|"")
+        cat <<EOF
+Usage: $0 {start|stop|monitor|status|meta-data|validate-all}
+
+OCF resource agent for slinit-managed services. Driven by Pacemaker via
+OCF_RESKEY_* environment variables; see meta-data for the parameter list.
+EOF
+        exit $OCF_ERR_ARGS
+        ;;
+    *)
+        ocf_log err "unknown action: $1"
+        exit $OCF_ERR_UNIMPLEMENTED
+        ;;
+esac
+exit $?

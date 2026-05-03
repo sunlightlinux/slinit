@@ -1,4 +1,5 @@
 # Rendered man pages — regenerated from *.md sources via `make`.
 *.8
+*.7
 *.5
 *.1

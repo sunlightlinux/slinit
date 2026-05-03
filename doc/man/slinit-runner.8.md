@@ -1,14 +1,16 @@
-# NAME
+# slinit-runner 8 "" "" "slinit \- service management system"
+
+## NAME
 
 slinit-runner - exec helper that applies mlockall(2) and set_mempolicy(2)
 before running a service
 
-# SYNOPSIS
+## SYNOPSIS
 
 **slinit-runner** [**\--mlockall**=*N*] [**\--mempolicy**=*MODE*]
 [**\--numa-nodes**=*LIST*] **\--** *COMMAND* [*ARGS*...]
 
-# DESCRIPTION
+## DESCRIPTION
 
 **slinit-runner** is a small exec helper invoked by **slinit**(8) when
 a service description sets **mlockall** or **numa-mempolicy**. It
@@ -30,7 +32,7 @@ slinit-runner is not intended for direct human use; the daemon
 synthesises invocations from the **mlockall** / **numa-mempolicy** /
 **numa-nodes** keys in **slinit-service**(5).
 
-# OPTIONS
+## OPTIONS
 
 **\--mlockall**=*N*
 :   Bitmask passed to **mlockall**(2). The flag values follow
@@ -48,7 +50,7 @@ synthesises invocations from the **mlockall** / **numa-mempolicy** /
     comma-separated singles and hyphen ranges (e.g. *0-3* or
     *0,2,4*). Rejected for *local* and *default*.
 
-# EXIT STATUS
+## EXIT STATUS
 
 **slinit-runner** does not normally return: on success it is replaced
 by the target program. Failures of the helper itself produce:
@@ -61,11 +63,11 @@ by the target program. Failures of the helper itself produce:
 If **execve**(2) fails after the syscalls succeeded the locked memory
 is released when the helper exits.
 
-# SEE ALSO
+## SEE ALSO
 
 **slinit**(8), **slinit-service**(5),
 **mlockall**(2), **set_mempolicy**(2), **numa**(7)
 
-# AUTHORS
+## AUTHORS
 
 Ionut Nechita and contributors. slinit is licensed under Apache 2.0.
