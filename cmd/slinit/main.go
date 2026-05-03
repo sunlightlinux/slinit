@@ -23,6 +23,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
+	"github.com/sunlightlinux/slinit/pkg/snapshot"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
 	"github.com/sunlightlinux/slinit/pkg/watchdog"
 	"golang.org/x/sys/unix"
@@ -74,11 +75,12 @@ func main() {
 		consoleLevel   string
 		quietMode      bool
 		autoRecovery   bool
-		envFile        string
-		readyFD        int
-		logFile        string
-		cgroupPath     string
-		cpuAffinityStr string
+		envFile         string
+		readyFD         int
+		logFile         string
+		cgroupPath      string
+		cpuAffinityStr  string
+		restoreSnapPath string
 	)
 
 	flag.StringVar(&serviceDirs, "services-dir", "", "service description directory (comma-separated for multiple)")
@@ -112,6 +114,8 @@ func main() {
 	flag.StringVar(&cgroupPath, "cgroup-path", "", "default cgroup base path for services")
 	flag.StringVar(&cpuAffinityStr, "cpu-affinity", "", "default CPU affinity for daemon and services (e.g. 0-3)")
 	flag.StringVar(&cpuAffinityStr, "a", "", "default CPU affinity for daemon and services (e.g. 0-3)")
+	flag.StringVar(&restoreSnapPath, "restore-from-snapshot", "",
+		"replay operator intent (activations, pins, triggers, global env) from a snapshot file written by a prior slinit instance")
 
 	var catchAllLog string
 	var noCatchAll bool
@@ -604,6 +608,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Replay operator intent from a prior slinit instance if requested.
+	// Boot services are already activated by this point; snapshot adds
+	// additional intent (manual activations, pins, triggers, global env)
+	// that the boot graph alone cannot reconstruct.
+	if restoreSnapPath != "" {
+		applySnapshot(restoreSnapPath, serviceSet, logger)
+	}
+
 	// Start control socket server
 	ctx := context.Background()
 	ctrlServer := control.NewServer(serviceSet, sock, logger)
@@ -645,6 +657,22 @@ func main() {
 			if err := ctrlServer.Reopen(); err != nil {
 				logger.Error("Failed to reopen control socket: %v", err)
 			}
+		}
+
+		// Capture operator-visible intent for soft-reboot. The new
+		// slinit binary picks this up via --restore-from-snapshot
+		// (appended to argv inside SoftReboot below).
+		loop.OnPreShutdown = func(st service.ShutdownType) {
+			if st != service.ShutdownSoftReboot {
+				return
+			}
+			snap := snapshot.Capture(serviceSet)
+			if err := snapshot.Write(snapshot.SoftRebootPath, snap); err != nil {
+				logger.Error("Soft-reboot snapshot write failed: %v", err)
+				return
+			}
+			logger.Info("Soft-reboot snapshot saved to %s (%d service intents)",
+				snapshot.SoftRebootPath, len(snap.Services))
 		}
 
 		// /etc/slinit/shutdown.allow access control: only engage when
@@ -989,6 +1017,39 @@ func tryStartServices(names []string, serviceSet *service.ServiceSet, loader *co
 		}
 	}
 	return ok
+}
+
+// applySnapshot reads a snapshot from path, ensures every service it
+// names is loaded (so Restore can resolve it), then applies the
+// operator intent. A missing snapshot file is logged and ignored —
+// fresh boots without a prior soft-reboot are normal.
+func applySnapshot(path string, serviceSet *service.ServiceSet, logger *logging.Logger) {
+	snap, err := snapshot.Read(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			logger.Info("No snapshot at %s — proceeding with fresh boot", path)
+			return
+		}
+		logger.Error("Snapshot %s: %v — proceeding without restore", path, err)
+		return
+	}
+
+	// Pre-load any service that the snapshot names but the boot graph
+	// hasn't pulled in yet. Errors are non-fatal: restore.go logs and
+	// skips unresolved entries, which is the right behaviour when a
+	// service file was removed between the snapshot and this boot.
+	for _, e := range snap.Services {
+		if e.Name == "" {
+			continue
+		}
+		if _, err := serviceSet.LoadService(e.Name); err != nil {
+			logger.Warn("Snapshot references service %q which failed to load: %v", e.Name, err)
+		}
+	}
+
+	if _, err := snapshot.Restore(serviceSet, snap, logger); err != nil {
+		logger.Error("Snapshot restore failed: %v", err)
+	}
 }
 
 // tryStartService attempts to load and start a named service. Returns true on success.

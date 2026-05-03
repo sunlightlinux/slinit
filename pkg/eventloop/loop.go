@@ -59,6 +59,14 @@ type EventLoop struct {
 	// style access control without coupling pkg/eventloop to pkg/shutdown.
 	// reason is a human-readable signal name for logging.
 	SignalShutdownGate func(reason string) bool
+
+	// OnPreShutdown is called once per shutdown attempt, immediately
+	// before StopAllServices runs and while every service still holds
+	// its activation/pin/trigger state. main.go wires this to capture
+	// a snapshot for soft-reboot — by the time StopAllServices returns
+	// the operator-visible state is gone. Returning is best-effort:
+	// errors are logged by the callback and shutdown continues.
+	OnPreShutdown func(shutdownType service.ShutdownType)
 }
 
 // New creates a new EventLoop.
@@ -411,6 +419,13 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	// Release mutex before calling StopAllServices to avoid potential
 	// deadlock if service state changes try to signal back to the event loop.
 	el.mu.Unlock()
+
+	// Capture operator state (snapshot) while services still hold it.
+	// StopAllServices clears activation/pin/trigger as it tears down,
+	// so this hook must run first.
+	if el.OnPreShutdown != nil {
+		el.OnPreShutdown(shutdownType)
+	}
 
 	el.services.StopAllServices(shutdownType)
 

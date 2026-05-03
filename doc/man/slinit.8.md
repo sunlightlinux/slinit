@@ -63,6 +63,31 @@ service-file format.
     listening. Used by parent processes to detect that slinit has come
     up and is accepting commands.
 
+**\--restore-from-snapshot** *path*
+:   Replay operator intent from a snapshot file written by a prior
+    slinit instance. The snapshot records which services were
+    explicitly activated, which were pinned (start or stop), which
+    triggered services had been triggered, and the global environment
+    set via **slinitctl setenv-global**. After the boot graph is
+    activated, slinit re-applies that intent so manual state from the
+    previous session is preserved.
+
+    The intended use is **soft-reboot**: when **slinitctl shutdown
+    soft-reboot** runs, slinit drops a snapshot at
+    */run/slinit/soft-reboot-snapshot.json* and re-execs itself with
+    this flag pointing at that file. Operators upgrading the slinit
+    binary on a long-running system therefore keep their service
+    activations across the restart.
+
+    A missing snapshot file is not an error — it is the normal case on
+    a fresh boot. A snapshot whose schema **version** is newer than
+    this binary understands is rejected; an older snapshot is read
+    as-is (the format is additive).
+
+    The snapshot only records *intent*, not running PIDs: services
+    are re-spawned, not re-attached. For zero-downtime per service
+    use a HA cluster (see **slinit-resource**(7)) instead.
+
 **-l** *path*, **\--log-file** *path*
 :   Append log messages to *path* instead of syslog. Console messages
     are still emitted unless **-q** is given. When running as PID 1 and
@@ -349,6 +374,11 @@ command line.
 
 */run/slinit/kcmdline*
 :   Snapshot of */proc/cmdline* taken during PID-1 init.
+
+*/run/slinit/soft-reboot-snapshot.json*
+:   Operator-intent snapshot written just before a soft reboot and
+    consumed by the re-execed slinit via **\--restore-from-snapshot**.
+    Lives on tmpfs so it does not survive a real reboot.
 
 */dev/watchdog0*, */dev/watchdog*
 :   Hardware-watchdog character devices fed by slinit when running as

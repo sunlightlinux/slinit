@@ -3,6 +3,7 @@ package shutdown
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"syscall"
 	"testing"
 	"time"
@@ -14,6 +15,16 @@ import (
 func testLogger() *logging.Logger {
 	return logging.New(logging.LevelError)
 }
+
+// fakeFileInfo is a minimal os.FileInfo for snapshot-presence tests.
+type fakeFileInfo struct{}
+
+func (fakeFileInfo) Name() string       { return "snapshot.json" }
+func (fakeFileInfo) Size() int64        { return 0 }
+func (fakeFileInfo) Mode() os.FileMode  { return 0o600 }
+func (fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (fakeFileInfo) IsDir() bool        { return false }
+func (fakeFileInfo) Sys() any           { return nil }
 
 func TestKillAllProcesses(t *testing.T) {
 	// Track syscall invocations
@@ -357,6 +368,45 @@ func TestSoftReboot(t *testing.T) {
 	}
 	if execPath == "" {
 		t.Fatal("Expected non-empty exec path")
+	}
+}
+
+func TestSoftRebootArgvNoSnapshot(t *testing.T) {
+	// Snapshot file absent → argv unchanged.
+	orig := statFunc
+	statFunc = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	defer func() { statFunc = orig }()
+
+	args := []string{"/sbin/slinit", "-s"}
+	got := softRebootArgv(args, "/run/slinit/x.json")
+	if !reflect.DeepEqual(got, args) {
+		t.Errorf("argv = %v, want unchanged %v", got, args)
+	}
+}
+
+func TestSoftRebootArgvAppendsFlag(t *testing.T) {
+	orig := statFunc
+	statFunc = func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }
+	defer func() { statFunc = orig }()
+
+	args := []string{"/sbin/slinit", "-s"}
+	got := softRebootArgv(args, "/run/slinit/x.json")
+	want := []string{"/sbin/slinit", "-s", "--restore-from-snapshot=/run/slinit/x.json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("argv = %v, want %v", got, want)
+	}
+}
+
+func TestSoftRebootArgvReplacesExistingFlag(t *testing.T) {
+	orig := statFunc
+	statFunc = func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }
+	defer func() { statFunc = orig }()
+
+	args := []string{"/sbin/slinit", "--restore-from-snapshot=/old.json", "-s"}
+	got := softRebootArgv(args, "/run/slinit/new.json")
+	want := []string{"/sbin/slinit", "--restore-from-snapshot=/run/slinit/new.json", "-s"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("argv = %v, want %v", got, want)
 	}
 }
 
