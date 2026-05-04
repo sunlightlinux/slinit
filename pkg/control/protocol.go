@@ -85,6 +85,7 @@ const (
 	CmdScheduleShutdown    uint8 = 35 // schedule a delayed shutdown (type + delay_secs)
 	CmdCancelShutdown      uint8 = 36 // cancel a pending scheduled shutdown
 	CmdQueryShutdown       uint8 = 37 // query pending shutdown status
+	CmdReloadAll           uint8 = 38 // rescan all loaded service descriptions from disk
 )
 
 // Reply codes (server → client).
@@ -128,6 +129,7 @@ const (
 	RplyActionOutput    uint8 = 95 // output from extra-command action
 	RplyActionList      uint8 = 96 // list of available actions
 	RplyShutdownStatus  uint8 = 97 // scheduled shutdown status (type + remaining_secs)
+	RplyReloadAllResult uint8 = 98 // reload-all summary (uint16 succeeded + uint16 failed, LE)
 )
 
 // Info codes (server → client, unsolicited).

@@ -182,3 +182,138 @@ func TestReloadInvalidHandle(t *testing.T) {
 		t.Fatalf("expected BadReq for invalid handle, got %d", rply)
 	}
 }
+
+func TestReloadAllNoLoader(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	// No loader set: reload-all must NAK.
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdReloadAll, nil); err != nil {
+		t.Fatal(err)
+	}
+	rply, _ := readReply(t, conn)
+	if rply != RplyNAK {
+		t.Fatalf("expected NAK without loader, got %d", rply)
+	}
+}
+
+func TestReloadAllEmpty(t *testing.T) {
+	// Loader set but no services loaded — must succeed with 0/0.
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svcDir := t.TempDir()
+	loader := config.NewDirLoader(server.services, []string{svcDir})
+	server.services.SetLoader(loader)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdReloadAll, nil); err != nil {
+		t.Fatal(err)
+	}
+	rply, payload := readReply(t, conn)
+	if rply != RplyReloadAllResult {
+		t.Fatalf("expected RplyReloadAllResult, got %d", rply)
+	}
+	if len(payload) < 4 {
+		t.Fatalf("short payload: %d bytes", len(payload))
+	}
+	ok := binary.LittleEndian.Uint16(payload[0:2])
+	failed := binary.LittleEndian.Uint16(payload[2:4])
+	if ok != 0 || failed != 0 {
+		t.Errorf("expected 0/0, got ok=%d failed=%d", ok, failed)
+	}
+}
+
+func TestReloadAllMultiple(t *testing.T) {
+	// Three loaded services, one stopped + one started + one in transitional
+	// state (we can't easily force STARTING in a unit test, so we cover
+	// stopped+started which is the common case). All succeed.
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svcDir := t.TempDir()
+	loader := config.NewDirLoader(server.services, []string{svcDir})
+	server.services.SetLoader(loader)
+
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		if err := os.WriteFile(filepath.Join(svcDir, name), []byte("type = internal\n"), 0644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+		if _, err := loader.LoadService(name); err != nil {
+			t.Fatalf("load %s: %v", name, err)
+		}
+	}
+	server.services.StartService(server.services.FindService("beta", false))
+	if server.services.FindService("beta", false).State() != service.StateStarted {
+		t.Fatal("beta should be STARTED")
+	}
+
+	// Modify all three on disk so reload has something to pick up.
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		if err := os.WriteFile(filepath.Join(svcDir, name), []byte("type = internal\nrestart = true\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdReloadAll, nil); err != nil {
+		t.Fatal(err)
+	}
+	rply, payload := readReply(t, conn)
+	if rply != RplyReloadAllResult {
+		t.Fatalf("expected RplyReloadAllResult, got %d", rply)
+	}
+	ok := binary.LittleEndian.Uint16(payload[0:2])
+	failed := binary.LittleEndian.Uint16(payload[2:4])
+	if ok != 3 || failed != 0 {
+		t.Errorf("expected 3/0, got ok=%d failed=%d", ok, failed)
+	}
+}
+
+func TestReloadAllPartialFailure(t *testing.T) {
+	// Two services loaded; delete one's file from disk before reload-all.
+	// The deleted one fails (loader cannot read it), the surviving one
+	// succeeds.
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svcDir := t.TempDir()
+	loader := config.NewDirLoader(server.services, []string{svcDir})
+	server.services.SetLoader(loader)
+
+	for _, name := range []string{"keep", "doomed"} {
+		if err := os.WriteFile(filepath.Join(svcDir, name), []byte("type = internal\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loader.LoadService(name); err != nil {
+			t.Fatalf("load %s: %v", name, err)
+		}
+	}
+
+	if err := os.Remove(filepath.Join(svcDir, "doomed")); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdReloadAll, nil); err != nil {
+		t.Fatal(err)
+	}
+	rply, payload := readReply(t, conn)
+	if rply != RplyReloadAllResult {
+		t.Fatalf("expected RplyReloadAllResult, got %d", rply)
+	}
+	ok := binary.LittleEndian.Uint16(payload[0:2])
+	failed := binary.LittleEndian.Uint16(payload[2:4])
+	if ok != 1 || failed != 1 {
+		t.Errorf("expected 1 ok / 1 failed, got ok=%d failed=%d", ok, failed)
+	}
+}

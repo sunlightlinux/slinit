@@ -286,6 +286,8 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdReload(conn, name)
 		})
+	case "reload-all":
+		err = cmdReloadAll(conn)
 	case "unload":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdUnload(conn, name)
@@ -443,6 +445,7 @@ Commands:
   action <svc> <action>    Run a custom extra-command action
   list-actions <service>   List available extra-command actions
   reload <service>         Reload service configuration from disk
+  reload-all               Reload every loaded service from disk (skips transitional)
   unload <service>         Unload a stopped service from memory
   boot-time                Show boot timing analysis
   catlog [--clear] <svc>   Show buffered service output
@@ -1778,6 +1781,40 @@ func cmdReload(conn net.Conn, name string) error {
 	return nil
 }
 
+// cmdReloadAll asks the daemon to rescan every loaded service description
+// from disk. The daemon returns a summary of how many succeeded and how
+// many failed; transitional services (Starting/Stopping) are skipped
+// silently and counted in neither bucket. Exits non-zero if any failed.
+func cmdReloadAll(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdReloadAll, nil); err != nil {
+		return err
+	}
+
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+
+	switch rply {
+	case control.RplyReloadAllResult:
+		if len(payload) < 4 {
+			return fmt.Errorf("reload-all: short reply (%d bytes)", len(payload))
+		}
+		ok := binary.LittleEndian.Uint16(payload[0:2])
+		failed := binary.LittleEndian.Uint16(payload[2:4])
+		if failed > 0 {
+			info("Reloaded %d service(s); %d failed (see daemon log).\n", ok, failed)
+			return fmt.Errorf("reload-all: %d service(s) failed", failed)
+		}
+		info("Reloaded %d service(s).\n", ok)
+		return nil
+	case control.RplyNAK:
+		return fmt.Errorf("reload-all: daemon has no loader configured")
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+}
+
 func cmdUnload(conn net.Conn, name string) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
@@ -2830,7 +2867,7 @@ const bashCompletion = `# Bash completion for slinitctl
 # Usage: eval "$(slinitctl completion bash)"
 
 _slinitctl_commands() {
-    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
+    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
 }
 
 _slinitctl_services() {
@@ -2940,6 +2977,7 @@ _slinitctl() {
         'cont:Continue (SIGCONT) a paused service'
         'once:Start service without restart on exit'
         'reload:Reload service config'
+        'reload-all:Reload every loaded service from disk'
         'unload:Unload stopped service'
         'boot-time:Boot timing analysis'
         'analyze:Boot timing analysis'
@@ -3007,7 +3045,7 @@ function __slinitctl_services
     slinitctl --system list 2>/dev/null | string replace -r '^\[.*\] ' '' | string replace -r ' \(.*' ''
 end
 
-set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
 
 complete -c slinitctl -f
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s p -l socket-path -rF -d 'Socket path'
@@ -3020,7 +3058,7 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s q -l quiet -
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s h -l help -d 'Help'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l version -d 'Version'
 
-for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
     complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -a $cmd
 end
 

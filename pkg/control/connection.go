@@ -242,6 +242,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleUnpinService(payload)
 	case CmdReloadService:
 		return c.handleReloadService(payload)
+	case CmdReloadAll:
+		return c.handleReloadAll()
 	case CmdUnloadService:
 		return c.handleUnloadService(payload)
 	case CmdSetEnv:
@@ -955,6 +957,62 @@ func (c *Connection) handleReloadService(payload []byte) error {
 
 	c.server.services.ProcessQueues()
 	return c.writePacket(RplyACK, nil)
+}
+
+// handleReloadAll rescans every currently-loaded service description
+// from disk. Mirrors the per-service handleReloadService but in bulk:
+// services in transitional states (Starting / Stopping / Started-but-
+// going-down) are skipped silently (operator can retry); only services
+// in Stopped or Started can have their config swapped safely. Returns
+// a summary (uint16 succeeded + uint16 failed) so the operator sees
+// scope without scrolling the daemon log.
+//
+// Per-connection handle remapping: if a service was replaced (a type
+// change between reads), update this connection's handle map so the
+// caller's outstanding handle keeps resolving. Other connections that
+// hold a stale handle to the old service object are left untouched —
+// same trade-off as the single-service handleReloadService, fixing
+// it system-wide is a separate concern.
+func (c *Connection) handleReloadAll() error {
+	loader := c.server.services.GetLoader()
+	if loader == nil {
+		return c.writePacket(RplyNAK, nil)
+	}
+
+	var ok, failed uint16
+
+	for _, svc := range c.server.services.ListServices() {
+		state := svc.State()
+		if state != service.StateStopped && state != service.StateStarted {
+			// Skipped (transitional). Don't count as failed —
+			// the config on disk may be fine, just bad timing.
+			continue
+		}
+
+		newSvc, err := loader.ReloadService(svc)
+		if err != nil {
+			failed++
+			continue
+		}
+		ok++
+
+		if newSvc != svc {
+			// Type change: swap any of THIS connection's handles
+			// pointing at the old object.
+			if h, found := c.revHandles[svc]; found {
+				delete(c.revHandles, svc)
+				c.handles[h] = newSvc
+				c.revHandles[newSvc] = h
+			}
+		}
+	}
+
+	c.server.services.ProcessQueues()
+
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint16(payload[0:2], ok)
+	binary.LittleEndian.PutUint16(payload[2:4], failed)
+	return c.writePacket(RplyReloadAllResult, payload)
 }
 
 func (c *Connection) handleUnloadService(payload []byte) error {

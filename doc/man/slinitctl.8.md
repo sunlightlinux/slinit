@@ -176,6 +176,17 @@ daemon, which is useful at install time or in initramfs.
     rejects reloads that would change the service type or invalidate
     in-flight state.
 
+**reload-all**
+:   Re-read every loaded service description from disk in one round
+    trip. Services in transitional states (**STARTING** / **STOPPING**)
+    are skipped silently — operators retry once the service settles.
+    Prints a summary like "Reloaded 12 service(s)" on success or
+    "Reloaded 11 service(s); 1 failed" with a non-zero exit when one
+    or more reloads were rejected. The per-service rules of **reload**
+    apply (no type change, must be in a stable state). Typical use:
+    ops applied a config update across many service files and want
+    them all picked up without scripting a `for` loop.
+
 **unload** *service*
 :   Drop *service* from the in-memory set. Only allowed when the
     service is stopped and not a dependency of an active service.
