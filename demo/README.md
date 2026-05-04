@@ -44,6 +44,22 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | hello-initd   | scripted  | `/etc/init.d/hello-initd` auto-detected via LSB headers, sources `/etc/rc.conf` + `/etc/conf.d/hello-initd` |
 | slinit-mount  | process   | Autofs lazy-mount daemon                       |
 | recovery      | process   | Emergency shell after boot failure             |
+| template-worker | process | Service template with `$1` arg substitution (`slinitctl start template-worker@alpha`) |
+| logfile-demo  | process   | File logging with rotation + regex filtering   |
+| bgprocess-demo | bgprocess | Self-backgrounding daemon with pid-file tracking |
+| extra-actions | process   | Custom actions via extra-command / extra-started-command |
+| guard-demo    | process   | Pre-start guards (required-files, required-dirs) |
+| rlimit-demo   | process   | Resource limits (rlimit-nofile, nice, oom-score-adj, ioprio) |
+| cgroup-demo   | process   | Cgroup v2 resource limits (memory, pids, cpu-weight) |
+| backoff-demo  | process   | Progressive restart delay (restart-delay-step + cap) |
+| socket-demo   | process   | Socket activation (LISTEN_FDS, socket-listen)  |
+| namespace-demo | process  | PID + mount namespace isolation                |
+| stop-timeout-demo | process | SIGTERM → SIGKILL escalation (stop-timeout=3) |
+| healthcheck-demo | process | Health check with unhealthy-command callback   |
+| chain-a       | scripted  | chain-to demo (auto-starts chain-b on stop)    |
+| chain-b       | scripted  | chain-to target (started by chain-a)           |
+| include-demo  | process   | @include directive (config split across files)  |
+| sandbox-demo  | process   | Privilege drop (run-as, working-dir, new-session, close-stdin) |
 
 ## Interactive Commands
 
@@ -338,6 +354,95 @@ config-driven design:
 - **down file**: marker file in service dir prevents auto-start
 - **pause/continue**: SIGSTOP/SIGCONT via slinitctl
 - **once**: start service without auto-restart
+
+### Service Templates (`template-worker`)
+Service files without `@` in the name serve as templates. Start instances
+with `slinitctl start template-worker@alpha`. The `$1` variable expands
+to the argument (`alpha`). Each instance runs independently.
+
+### File Logging with Rotation (`logfile-demo`)
+Demonstrates `logfile`, `logfile-max-size`, `logfile-max-files`, `log-include`,
+and `log-exclude`. Only INFO and ERROR lines reach the log file; DEBUG is
+filtered out. Rotated files appear as `logfile-demo.log.YYYYMMDD-HHMMSS`.
+
+### BGProcess Type (`bgprocess-demo`)
+A daemon that backgrounds itself. The launcher forks, writes the child PID
+to `pid-file`, and exits. slinit reads the PID file to track the daemon.
+
+### Custom Actions (`extra-actions`)
+`extra-command` defines actions callable in any state; `extra-started-command`
+only when the service is running. Try:
+```bash
+slinitctl list-actions extra-actions
+slinitctl action extra-actions dump
+slinitctl action extra-actions status
+cat /run/extra-actions.log
+```
+
+### Pre-Start Guards (`guard-demo`)
+`required-files` and `required-dirs` check path existence before exec.
+If any path is missing, the service fails immediately without running.
+
+### Resource Limits (`rlimit-demo`)
+Demonstrates `rlimit-nofile`, `rlimit-core`, `nice`, `oom-score-adj`, and
+`ioprio`. Check applied limits via `/proc/PID/limits`.
+
+### Cgroup v2 Resource Control (`cgroup-demo`, `cgroup-worker`)
+Two services demonstrate cgroup v2 resource limits. `system-init` mounts
+cgroup2 at `/sys/fs/cgroup` and enables controllers (memory, pids, cpu, io,
+cpuset) on the `slinit` subtree.
+
+`cgroup-demo` shows basic limits:
+- `cgroup-memory-max = 64M` — hard memory limit
+- `cgroup-memory-high = 48M` — throttling threshold
+- `cgroup-pids-max = 10` — max processes
+- `cgroup-cpu-weight = 50` — CPU scheduling weight
+
+`cgroup-worker` shows advanced knobs:
+- `cgroup-cpu-max = 50000 100000` — 50% CPU bandwidth (50ms per 100ms)
+- `cgroup-memory-low = 16M` — memory protection (best-effort)
+- `cgroup-io-weight = 50` — I/O scheduling weight
+- `cgroup-cpuset-cpus = 0` — pin to CPU 0
+
+```bash
+slinitctl catlog cgroup-demo
+cat /sys/fs/cgroup/slinit/cgroup-demo/memory.max
+cat /sys/fs/cgroup/slinit/cgroup-worker/cpu.max
+```
+
+### Restart Backoff (`backoff-demo`)
+`restart-delay-step` increases the delay by 1s on each failure.
+`restart-delay-cap` limits the maximum delay to 3s. Prevents crash loops
+from consuming resources.
+
+### Socket Activation (`socket-demo`)
+`socket-listen` opens a Unix socket; `socket-activation = immediate` opens
+it at load time. The service receives it as fd 3 via `LISTEN_FDS=1`.
+
+### Namespace Isolation (`namespace-demo`)
+`namespace-pid = yes` gives the process its own PID namespace (sees itself
+as PID 1). `namespace-mount = yes` provides a private mount table.
+
+### Stop Timeout Escalation (`stop-timeout-demo`)
+The service ignores SIGTERM. After `stop-timeout = 3` seconds, slinit
+escalates to SIGKILL. Demonstrates graceful-to-forceful stop behavior.
+
+### Health Checks (`healthcheck-demo`)
+`healthcheck-command` polls every 5s (after 3s delay). After 2 consecutive
+failures, `unhealthy-command` fires. The service starts healthy and becomes
+unhealthy after 30s.
+
+### Chain-To (`chain-a` → `chain-b`)
+When `chain-a` stops normally, `chain-to = chain-b` automatically starts
+`chain-b`. Useful for multi-phase boot sequences or migration tasks.
+
+### @include Directive (`include-demo`)
+`@include /path/to/file` inlines another config file. Useful for sharing
+common settings across services or splitting large configs.
+
+### Privilege Dropping (`sandbox-demo`)
+`run-as = nobody` drops to an unprivileged user. Combined with `working-dir`,
+`new-session`, and `close-stdin` for basic sandboxing.
 
 ## PID 1 Signal Handling
 

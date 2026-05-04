@@ -1,0 +1,17 @@
+# cgroup-worker — cgroup v2 CPU + memory isolation demo
+# Demonstrates cgroup-cpu-max, cgroup-memory-low, and cgroup-cpuset-cpus
+# for fine-grained resource control.
+# Try: slinitctl catlog cgroup-worker
+# Try: cat /sys/fs/cgroup/slinit/cgroup-worker/cpu.max
+# Try: cat /sys/fs/cgroup/slinit/cgroup-worker/memory.low
+type = process
+command = /bin/sh -c "echo '[cgroup-worker] running with CPU/memory isolation'; echo \"  cpu.max=$(cat /sys/fs/cgroup/slinit/cgroup-worker/cpu.max 2>/dev/null)\"; echo \"  memory.low=$(cat /sys/fs/cgroup/slinit/cgroup-worker/memory.low 2>/dev/null)\"; while true; do sleep 30; done"
+cgroup = /sys/fs/cgroup/slinit/cgroup-worker
+cgroup-cpu-max = 50000 100000
+cgroup-memory-max = 128M
+cgroup-memory-low = 16M
+cgroup-cpuset-cpus = 0
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

@@ -1,0 +1,14 @@
+# logfile-demo — file logging with rotation and filtering
+# Demonstrates logfile, logfile-max-size, logfile-max-files,
+# log-include, and log-exclude for selective log capture.
+# Try: cat /run/logfile-demo.log
+# Try: ls -la /run/logfile-demo.log*
+type = process
+command = /bin/sh -c "i=0; while true; do i=$((i+1)); echo \"INFO: message $i\"; echo \"DEBUG: noise $i\"; echo \"ERROR: problem $i\"; sleep 2; done"
+logfile = /run/logfile-demo.log
+logfile-max-size = 4096
+logfile-max-files = 3
+log-include = ^(INFO|ERROR):
+log-exclude = ^DEBUG:
+restart = no
+depends-on: system-init

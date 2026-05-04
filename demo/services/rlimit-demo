@@ -1,0 +1,15 @@
+# rlimit-demo — resource limits + nice + oom-score-adj
+# Demonstrates rlimit-nofile, rlimit-core, nice, oom-score-adj, and ioprio.
+# Try: slinitctl catlog rlimit-demo
+# Try: cat /proc/$(slinitctl status rlimit-demo | grep PID | awk '{print $2}')/limits
+type = process
+command = /bin/sh -c "echo '[rlimit] nofile:'; cat /proc/self/limits | grep 'open files'; echo '[rlimit] nice:'; cat /proc/self/stat | awk '{print $19}'; echo '[rlimit] oom_score_adj:'; cat /proc/self/oom_score_adj; while true; do sleep 30; done"
+rlimit-nofile = 512:1024
+rlimit-core = 0
+nice = 5
+oom-score-adj = 100
+ioprio = best-effort:4
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

@@ -2,4 +2,3 @@
 # Demonstrates transitive dependency resolution.
 type = internal
 depends-on: dep-b
-waits-for: restarter

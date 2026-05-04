@@ -1,0 +1,13 @@
+# namespace-demo — PID + mount namespace isolation
+# Demonstrates namespace-pid and namespace-mount for container-like isolation.
+# The process sees itself as PID 1 inside its own PID namespace.
+# Try: slinitctl catlog namespace-demo
+type = process
+command = /bin/sh -c "echo \"[ns-demo] PID inside namespace: $$\"; cat /proc/self/status | grep NSpid; echo \"[ns-demo] mount namespace active\"; while true; do sleep 30; done"
+namespace-pid = yes
+namespace-mount = yes
+stop-timeout = 3
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

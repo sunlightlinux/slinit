@@ -1,0 +1,15 @@
+# backoff-demo — progressive restart delay (exponential backoff)
+# Demonstrates restart-delay-step and restart-delay-cap.
+# Runs for 5s then exits; each restart waits longer (2s, 4s, 6s, 6s, ...).
+# Try: slinitctl catlog backoff-demo (shows restart markers with timestamps)
+type = process
+command = /bin/sh -c "echo \"[backoff] started at $(date +%H:%M:%S)\"; sleep 5; echo '[backoff] exiting'; exit 1"
+restart = on-failure
+restart-delay = 2
+restart-delay-step = 2
+restart-delay-cap = 6
+restart-limit-count = 3
+restart-limit-interval = 120
+log-type = buffer
+log-buffer-size = 4096
+depends-on: system-init

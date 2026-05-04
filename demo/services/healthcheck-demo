@@ -1,0 +1,16 @@
+# healthcheck-demo — health check with unhealthy action
+# Demonstrates healthcheck-command, healthcheck-interval, and unhealthy-command.
+# The service becomes "unhealthy" after 60s (marker file removed).
+# Try: slinitctl status healthcheck-demo
+# Try: cat /run/healthcheck-demo.log
+type = process
+command = /bin/sh -c "touch /run/healthcheck-demo.healthy; echo '[healthcheck] started, healthy for 60s'; sleep 60; rm -f /run/healthcheck-demo.healthy; echo '[healthcheck] now unhealthy'; while true; do sleep 60; done"
+healthcheck-command = /bin/sh -c "test -f /run/healthcheck-demo.healthy"
+healthcheck-interval = 10
+healthcheck-delay = 5
+healthcheck-max-failures = 3
+unhealthy-command = /bin/sh -c "echo \"[healthcheck] UNHEALTHY at $(date +%H:%M:%S)\" >> /run/healthcheck-demo.log"
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

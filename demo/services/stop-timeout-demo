@@ -1,0 +1,13 @@
+# stop-timeout-demo — SIGTERM to SIGKILL escalation
+# Demonstrates stop-timeout: the service ignores SIGTERM, so slinit
+# escalates to SIGKILL after 3 seconds.
+# Try: slinitctl stop stop-timeout-demo (takes ~3s)
+# Try: slinitctl catlog stop-timeout-demo
+type = process
+command = /bin/sh -c "echo '[stop-timeout] running (ignores SIGTERM)'; trap '' TERM; while true; do sleep 1; done"
+stop-timeout = 3
+term-signal = TERM
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

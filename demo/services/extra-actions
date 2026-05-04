@@ -1,0 +1,13 @@
+# extra-actions — custom actions demo (OpenRC-style)
+# Demonstrates extra-command and extra-started-command for custom actions.
+# Try: slinitctl list-actions extra-actions
+# Try: slinitctl action extra-actions status
+# Try: slinitctl action extra-actions dump
+type = process
+command = /bin/sh -c "echo '[extra-actions] running'; while true; do sleep 30; done"
+extra-command = dump /bin/sh -c "echo '[extra-actions] dump: uptime=$(cat /proc/uptime)' >> /run/extra-actions.log"
+extra-started-command = status /bin/sh -c "echo '[extra-actions] status: healthy, pid=$$' >> /run/extra-actions.log"
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

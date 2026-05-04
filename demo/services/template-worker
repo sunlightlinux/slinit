@@ -1,0 +1,13 @@
+# template-worker — service template for multiple instances
+# Demonstrates $1 argument substitution for parameterized services.
+# Start instances with: slinitctl start template-worker@alpha
+#                       slinitctl start template-worker@beta
+# Try: slinitctl catlog template-worker@alpha
+# Try: slinitctl list (shows each instance separately)
+type = process
+command = /bin/sh -c "echo \"[worker:$1] started instance '$1'\"; while true; do sleep 30; done"
+description = Worker instance $1
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

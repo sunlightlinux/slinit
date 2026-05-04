@@ -1,7 +1,9 @@
-# system-init -- mount essential filesystems
+# system-init -- mount essential filesystems + cgroup v2
 # Scripted service: runs command once, exits 0 = STARTED.
 # Does NOT mount /run (rootfs is already tmpfs from initramfs).
+# Mounts cgroup2 and enables memory, pids, cpu controllers for demos.
+# Note: /dev, /proc are already mounted by init-wrapper before slinit starts.
 type = scripted
-command = /bin/sh -c "mount -t proc proc /proc 2>/dev/null; mount -t sysfs sysfs /sys 2>/dev/null; mount -t devtmpfs devtmpfs /dev 2>/dev/null; mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null; echo 'system-init: filesystems mounted'"
+command = /bin/sh -c "mount -t proc proc /proc 2>/dev/null; mount -t sysfs sysfs /sys 2>/dev/null; mount -t devtmpfs devtmpfs /dev 2>/dev/null; mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null; mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null; echo '+memory +pids +cpu +io +cpuset' > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; mkdir -p /sys/fs/cgroup/slinit && echo '+memory +pids +cpu +io +cpuset' > /sys/fs/cgroup/slinit/cgroup.subtree_control 2>/dev/null; echo 'system-init: filesystems + cgroup v2 mounted'"
 stop-command = /bin/sh -c "echo 'system-init: stop (no-op)'"
 stop-timeout = 5

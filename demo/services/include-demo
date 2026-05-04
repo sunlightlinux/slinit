@@ -1,0 +1,11 @@
+# include-demo — @include directive demo
+# Demonstrates @include to split service config across files.
+# The included file provides the command and description.
+# Try: slinitctl status include-demo
+# Try: slinitctl catlog include-demo
+type = process
+@include /etc/slinit.d/include-demo.inc
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

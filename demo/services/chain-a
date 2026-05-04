@@ -1,0 +1,10 @@
+# chain-a — chain-to demo (first in chain)
+# When chain-a stops normally, chain-b starts automatically.
+# Demonstrates chain-to for service sequencing.
+# Try: slinitctl start chain-a
+# Try: slinitctl status chain-b (should be STARTED after chain-a completes)
+type = scripted
+command = /bin/sh -c "echo '[chain-a] running setup task'; sleep 2; echo '[chain-a] done'"
+stop-command = /bin/true
+chain-to = chain-b
+depends-on: system-init

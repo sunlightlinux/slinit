@@ -1,0 +1,6 @@
+#!/bin/sh
+# Launcher for bgprocess-demo: forks a daemon in a new session,
+# writes its PID to the pid-file, and exits.
+setsid sh -c 'echo $$ > /run/bgprocess-demo.pid; exec sleep 3600' &
+sleep 1
+exit 0

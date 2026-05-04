@@ -1,0 +1,15 @@
+# sandbox-demo — privilege dropping + close-fds + new-session
+# Demonstrates run-as, new-session, close-stdin, and working-dir.
+# The process runs as nobody in /tmp with stdin closed.
+# Try: slinitctl status sandbox-demo
+# Try: slinitctl catlog sandbox-demo
+type = process
+command = /bin/sh -c "echo \"[sandbox] uid=$(id -u) gid=$(id -g) user=$(whoami)\"; echo \"[sandbox] cwd=$(pwd)\"; echo \"[sandbox] session=$(cat /proc/self/stat | awk '{print $6}')\"; while true; do sleep 30; done"
+run-as = nobody
+working-dir = /tmp
+new-session = yes
+close-stdin = true
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

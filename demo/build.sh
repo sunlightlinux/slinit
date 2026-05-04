@@ -10,7 +10,6 @@ ALPINE_RELEASE="3.21.6"
 ALPINE_ARCH="x86_64"
 ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
 MINIROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_RELEASE}-${ALPINE_ARCH}.tar.gz"
-KERNEL_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/netboot/vmlinuz-virt"
 PACKAGES_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/${ALPINE_ARCH}"
 
 # Bash and its dependencies (Alpine APK filenames)
@@ -39,14 +38,50 @@ else
     echo "[1/7] Using cached Alpine minirootfs"
 fi
 
-# Step 2: Download Alpine virt kernel
+# Step 2: Download Alpine virt kernel + watchdog module
+# We download the linux-virt APK which contains both vmlinuz and kernel modules.
+# This guarantees the kernel and modules are the same version.
 KERNEL="${CACHE_DIR}/vmlinuz-virt"
-if [ ! -f "${KERNEL}" ]; then
-    echo "[2/7] Downloading Alpine virt kernel..."
-    curl -fSL -o "${KERNEL}.tmp" "${KERNEL_URL}"
-    mv "${KERNEL}.tmp" "${KERNEL}"
+KSTAGE="${BUILD_DIR}/kernel-stage"
+
+# Discover the current linux-virt package from the mirror
+KVIRT_PKG_FILE="${CACHE_DIR}/.linux-virt-pkg"
+if [ ! -f "${KERNEL}" ] || [ ! -f "${KVIRT_PKG_FILE}" ]; then
+    echo "[2/7] Downloading Alpine virt kernel + modules..."
+    KVIRT_PKG=$(curl -sL "${PACKAGES_URL}/" | grep -o "linux-virt-[0-9][^\"]*\.apk" | sort -V | tail -1)
+    if [ -n "${KVIRT_PKG}" ]; then
+        if [ ! -f "${CACHE_DIR}/${KVIRT_PKG}" ]; then
+            echo "  Fetching ${KVIRT_PKG}..."
+            curl -fSL -o "${CACHE_DIR}/${KVIRT_PKG}.tmp" "${PACKAGES_URL}/${KVIRT_PKG}"
+            mv "${CACHE_DIR}/${KVIRT_PKG}.tmp" "${CACHE_DIR}/${KVIRT_PKG}"
+        fi
+        echo "${KVIRT_PKG}" > "${KVIRT_PKG_FILE}"
+        # Extract into staging area
+        rm -rf "${KSTAGE}"
+        mkdir -p "${KSTAGE}"
+        tar xzf "${CACHE_DIR}/${KVIRT_PKG}" -C "${KSTAGE}" 2>/dev/null || true
+        # Find and cache the kernel
+        KVMLINUZ=$(find "${KSTAGE}" -name 'vmlinuz-*' -o -name 'vmlinuz' 2>/dev/null | head -1)
+        if [ -n "${KVMLINUZ}" ]; then
+            cp "${KVMLINUZ}" "${KERNEL}"
+            echo "  Kernel: $(basename "${KVMLINUZ}")"
+        else
+            echo "  Warning: vmlinuz not found in ${KVIRT_PKG}"
+        fi
+    else
+        echo "  Warning: could not find linux-virt package on mirror"
+    fi
 else
     echo "[2/7] Using cached kernel"
+    # Re-extract staging if needed
+    if [ ! -d "${KSTAGE}/lib" ]; then
+        KVIRT_PKG=$(cat "${KVIRT_PKG_FILE}")
+        if [ -f "${CACHE_DIR}/${KVIRT_PKG}" ]; then
+            rm -rf "${KSTAGE}"
+            mkdir -p "${KSTAGE}"
+            tar xzf "${CACHE_DIR}/${KVIRT_PKG}" -C "${KSTAGE}" 2>/dev/null || true
+        fi
+    fi
 fi
 
 # Step 3: Download bash and dependencies (APK packages)
@@ -87,6 +122,26 @@ done
 # Clean up APK metadata extracted into rootfs
 rm -rf "${ROOTFS_DIR}/.PKGINFO" "${ROOTFS_DIR}/.SIGN."* "${ROOTFS_DIR}/.post-install" "${ROOTFS_DIR}/.pre-install" "${ROOTFS_DIR}/.trigger"
 
+# Install watchdog kernel module from the linux-virt package (extracted in step 2).
+HAS_WATCHDOG_MOD=0
+echo "  Installing watchdog kernel module..."
+if [ -d "${KSTAGE}/lib/modules" ]; then
+    # Copy the i6300esb watchdog module
+    (cd "${KSTAGE}" && find lib/modules -name 'i6300esb.ko*' -exec install -D {} "${ROOTFS_DIR}/{}" \;) 2>/dev/null || true
+    # Copy module metadata so modprobe can resolve dependencies
+    (cd "${KSTAGE}" && find lib/modules \( -name 'modules.dep*' -o -name 'modules.alias*' \
+        -o -name 'modules.order' -o -name 'modules.builtin*' \) \
+        -exec install -D {} "${ROOTFS_DIR}/{}" \;) 2>/dev/null || true
+    if find "${ROOTFS_DIR}/lib/modules" -name 'i6300esb.ko*' 2>/dev/null | grep -q .; then
+        echo "  Watchdog module (i6300esb) installed"
+        HAS_WATCHDOG_MOD=1
+    else
+        echo "  Warning: i6300esb module not found in kernel package"
+    fi
+else
+    echo "  Warning: no kernel modules available"
+fi
+
 # Install slinit binaries
 install -m 755 "${BUILD_DIR}/slinit"            "${ROOTFS_DIR}/sbin/slinit"
 install -m 755 "${BUILD_DIR}/slinitctl"         "${ROOTFS_DIR}/usr/bin/slinitctl"
@@ -100,8 +155,23 @@ install -m 755 "${BUILD_DIR}/rc-service"        "${ROOTFS_DIR}/usr/sbin/rc-servi
 install -m 755 "${BUILD_DIR}/rc-update"         "${ROOTFS_DIR}/usr/sbin/rc-update"
 install -m 755 "${BUILD_DIR}/rc-status"         "${ROOTFS_DIR}/usr/sbin/rc-status"
 
-# Make slinit the init system
-ln -sf slinit "${ROOTFS_DIR}/sbin/init"
+# Set up /sbin/init: if we have the watchdog module, use an init-wrapper
+# that loads it before exec'ing slinit (so /dev/watchdog0 exists when
+# slinit's auto-detection runs). Otherwise, link directly to slinit.
+if [ "${HAS_WATCHDOG_MOD}" = "1" ]; then
+    cat > "${ROOTFS_DIR}/sbin/init-wrapper" <<'INITEOF'
+#!/bin/sh
+mount -t proc proc /proc 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+modprobe i6300esb 2>/dev/null
+umount /proc 2>/dev/null
+exec /sbin/slinit "$@"
+INITEOF
+    chmod 755 "${ROOTFS_DIR}/sbin/init-wrapper"
+    ln -sf init-wrapper "${ROOTFS_DIR}/sbin/init"
+else
+    ln -sf slinit "${ROOTFS_DIR}/sbin/init"
+fi
 
 # SysV compat symlinks (slinit dispatches on argv[0]: halt / poweroff / reboot)
 ln -sf slinit "${ROOTFS_DIR}/sbin/halt"
@@ -143,7 +213,7 @@ EOF
 
 # Demo init.d script (LSB headers so slinit auto-detects it and
 # maps $network → waits-for network, etc.).
-cat > "${ROOTFS_DIR}/etc/init.d/hello-initd" <<'EOF'
+cat > "${ROOTFS_DIR}/etc/init.d/hello-initd" <<'INITDEOF'
 #!/bin/sh
 ### BEGIN INIT INFO
 # Provides:          hello-initd
@@ -169,7 +239,7 @@ case "$1" in
         exit 2
         ;;
 esac
-EOF
+INITDEOF
 chmod 755 "${ROOTFS_DIR}/etc/init.d/hello-initd"
 
 # Install bash completion (generated by slinitctl itself)
@@ -180,8 +250,6 @@ mkdir -p "${ROOTFS_DIR}/etc/bash_completion.d"
 mkdir -p "${ROOTFS_DIR}/etc/profile.d"
 cat > "${ROOTFS_DIR}/etc/profile.d/slinitctl-completion.sh" <<'EOF'
 # slinitctl bash completion
-# Works with bash; ash/busybox sh does not support programmable completion.
-# For ash, use: slinitctl <TAB> relies on the shell's default path completion.
 if type complete >/dev/null 2>&1 && [ -f /etc/bash_completion.d/slinitctl ]; then
     . /etc/bash_completion.d/slinitctl
 fi

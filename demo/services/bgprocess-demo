@@ -1,0 +1,11 @@
+# bgprocess-demo — self-backgrounding daemon (bgprocess type)
+# Demonstrates bgprocess type with pid-file tracking.
+# The launcher writes a helper script, runs it via setsid, and exits.
+# slinit reads the pid-file to track the daemon.
+# Try: slinitctl status bgprocess-demo
+# Try: cat /run/bgprocess-demo.pid
+type = bgprocess
+command = /bin/sh /etc/slinit.d/bgprocess-demo.launcher
+pid-file = /run/bgprocess-demo.pid
+restart = no
+depends-on: system-init

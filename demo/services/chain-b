@@ -1,0 +1,7 @@
+# chain-b — chain-to target (started by chain-a)
+# Automatically started when chain-a stops normally.
+# Try: slinitctl status chain-b
+type = scripted
+command = /bin/sh -c "echo '[chain-b] started via chain-to from chain-a'"
+stop-command = /bin/true
+depends-on: system-init

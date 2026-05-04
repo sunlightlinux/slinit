@@ -1,0 +1,19 @@
+# cgroup-demo — cgroup v2 resource limits
+# Demonstrates memory, PID, and CPU limits via cgroup v2 controllers.
+# The service is placed in a dedicated cgroup with strict limits.
+# Try: slinitctl status cgroup-demo
+# Try: slinitctl catlog cgroup-demo
+# Try: cat /sys/fs/cgroup/slinit/cgroup-demo/memory.max
+# Try: cat /sys/fs/cgroup/slinit/cgroup-demo/pids.max
+# Try: cat /sys/fs/cgroup/slinit/cgroup-demo/cpu.weight
+type = process
+command = /bin/sh -c "echo '[cgroup-demo] running with resource limits'; echo \"  memory.max=$(cat /sys/fs/cgroup/slinit/cgroup-demo/memory.max 2>/dev/null)\"; echo \"  pids.max=$(cat /sys/fs/cgroup/slinit/cgroup-demo/pids.max 2>/dev/null)\"; echo \"  cpu.weight=$(cat /sys/fs/cgroup/slinit/cgroup-demo/cpu.weight 2>/dev/null)\"; while true; do sleep 30; done"
+cgroup = /sys/fs/cgroup/slinit/cgroup-demo
+cgroup-memory-max = 64M
+cgroup-memory-high = 48M
+cgroup-pids-max = 10
+cgroup-cpu-weight = 50
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

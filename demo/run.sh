@@ -30,8 +30,9 @@ exec qemu-system-x86_64 \
     ${KVM_ARGS} \
     -kernel "${KERNEL}" \
     -initrd "${INITRAMFS}" \
-    -append "console=ttyS0 rdinit=/sbin/init loglevel=4" \
+    -append "console=ttyS0 rdinit=/sbin/init loglevel=4 i6300esb.heartbeat=60" \
     -m "${MEMORY}" \
     -nographic \
     -no-reboot \
-    -serial mon:stdio
+    -serial mon:stdio \
+    -device i6300esb

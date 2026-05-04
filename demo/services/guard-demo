@@ -1,0 +1,12 @@
+# guard-demo — required-files / required-dirs pre-start guards
+# Demonstrates pre-start path checks. The service only starts if
+# /proc and /tmp exist. If a required path is missing, it fails immediately.
+# Try: slinitctl status guard-demo
+type = process
+command = /bin/sh -c "echo '[guard-demo] all required paths exist'; while true; do sleep 30; done"
+required-files = /proc/uptime
+required-dirs = /tmp /run
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init
