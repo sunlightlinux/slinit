@@ -620,7 +620,12 @@ func main() {
 			continue
 		}
 		serviceSet.StartService(svc)
-		logger.Info("Boot service '%s' started", svcName)
+		// "activation requested", not "STARTED": StartService only
+		// schedules the start; the service may still be STARTING (or
+		// blocked on a trigger / dependency / waits-for) when this
+		// returns. The actual STARTED transition is logged by
+		// ServiceLogger.ServiceStarted from the state machine.
+		logger.Info("Boot service '%s' activation requested", svcName)
 		startedAny = true
 	}
 
@@ -1106,7 +1111,7 @@ func tryStartService(name string, serviceSet *service.ServiceSet, loader *config
 		return false
 	}
 	serviceSet.StartService(svc)
-	logger.Info("Service '%s' started for recovery", name)
+	logger.Info("Service '%s' activation requested for recovery", name)
 	return true
 }
 

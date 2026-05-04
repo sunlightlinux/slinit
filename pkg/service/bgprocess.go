@@ -685,8 +685,18 @@ func (s *BGProcessService) handleDaemonTermination() {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
 
-	s.services.logger.Error("Service '%s': daemon process %d terminated",
-		s.serviceName, s.daemonPID)
+	// Log severity follows expectation: if we initiated the stop
+	// (state == StateStopping), the daemon dying IS the success
+	// case — operators should not see ERROR during a clean shutdown.
+	// Anything else is a genuine surprise (crash, OOM, kernel kill).
+	state := s.state.Load()
+	if state == StateStopping {
+		s.services.logger.Info("Service '%s': daemon process %d terminated",
+			s.serviceName, s.daemonPID)
+	} else {
+		s.services.logger.Error("Service '%s': daemon process %d terminated",
+			s.serviceName, s.daemonPID)
+	}
 
 	// Clear utmp entry
 	if s.HasUtmp() && s.services.OnUtmpClear != nil {
@@ -695,8 +705,6 @@ func (s *BGProcessService) handleDaemonTermination() {
 
 	s.daemonPID = 0
 	s.cancelTimer()
-
-	state := s.state.Load()
 
 	switch state {
 	case StateStopping:
