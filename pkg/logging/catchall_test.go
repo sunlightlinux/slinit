@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -116,6 +117,88 @@ func TestCatchAllDash(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	cal.Stop()
 	// No crash = pass; just verify no file was created.
+}
+
+// TestCatchAllReattachAfterRedirect reproduces the InitPID1 scenario:
+// catch-all sets up the pipe, an early log message is written, then
+// some other code (setupConsole in real life) Dup2s fd 1/2 to a
+// different fd. Without ReattachStdoutErr, subsequent log messages
+// bypass the pipe and the early message ends up flushed late by the
+// drain goroutine — visibly out-of-order timestamps in the demo log.
+//
+// This test verifies that after ReattachStdoutErr, fd 1/2 are bound
+// back to the pipe and a subsequent write reaches the catch-all log
+// (i.e. it goes through the pipe→drain path, not the bypass path).
+func TestCatchAllReattachAfterRedirect(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "catch-all.log")
+
+	cal, err := StartCatchAll(logPath)
+	if err != nil {
+		t.Fatalf("StartCatchAll: %v", err)
+	}
+	defer cal.Stop()
+
+	// Write before the simulated redirect — must reach the log.
+	os.Stdout.WriteString("before-redirect\n")
+
+	// Simulate setupConsole's Dup2: redirect fd 1/2 to a side file.
+	sidePath := filepath.Join(dir, "side.log")
+	side, err := os.OpenFile(sidePath, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open side: %v", err)
+	}
+	defer side.Close()
+	origStdout := os.Stdout
+	origStderr := os.Stderr
+	if err := syscall.Dup2(int(side.Fd()), 1); err != nil {
+		t.Fatalf("dup2 stdout to side: %v", err)
+	}
+	if err := syscall.Dup2(int(side.Fd()), 2); err != nil {
+		t.Fatalf("dup2 stderr to side: %v", err)
+	}
+	os.Stdout = os.NewFile(1, "/dev/stdout")
+	os.Stderr = os.NewFile(2, "/dev/stderr")
+
+	// At this point fd 1/2 bypass the catch-all pipe.
+	os.Stdout.WriteString("during-bypass\n")
+
+	// Reattach — fd 1/2 should now go through the pipe again.
+	if err := cal.ReattachStdoutErr(); err != nil {
+		t.Fatalf("ReattachStdoutErr: %v", err)
+	}
+
+	os.Stdout.WriteString("after-reattach\n")
+
+	// Drain.
+	time.Sleep(80 * time.Millisecond)
+
+	// Restore real stdio so test framework I/O still works after the test.
+	os.Stdout = origStdout
+	os.Stderr = origStderr
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	log := string(logBytes)
+	if !strings.Contains(log, "before-redirect") {
+		t.Errorf("catch-all log missing 'before-redirect':\n%s", log)
+	}
+	if !strings.Contains(log, "after-reattach") {
+		t.Errorf("catch-all log missing 'after-reattach' (Reattach failed):\n%s", log)
+	}
+
+	// 'during-bypass' must NOT appear in the catch-all — it went to
+	// the side file, proving the bypass scenario was real and the
+	// reattach actually flipped the redirect back.
+	if strings.Contains(log, "during-bypass") {
+		t.Errorf("catch-all log unexpectedly contains 'during-bypass' — bypass scenario didn't trigger:\n%s", log)
+	}
+	sideBytes, _ := os.ReadFile(sidePath)
+	if !strings.Contains(string(sideBytes), "during-bypass") {
+		t.Errorf("side file missing 'during-bypass'; got:\n%s", sideBytes)
+	}
 }
 
 func TestCatchAllStopIdempotent(t *testing.T) {

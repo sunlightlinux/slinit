@@ -150,6 +150,28 @@ func (c *CatchAllLogger) Console() *os.File {
 	return c.console
 }
 
+// ReattachStdoutErr re-redirects fd 1 and fd 2 to the catch-all pipe. Call
+// this after any code path that has performed its own Dup2 on those fds
+// (notably InitPID1's setupConsole, which redirects them to /dev/console
+// to ensure log output reaches the operator on systems without catch-all).
+//
+// Without this re-attach, messages logged BEFORE the un-redirect sit
+// buffered in the pipe and the drain goroutine flushes them to the
+// console LATER than subsequent direct-to-console writes, producing
+// out-of-order timestamps. Calling Reattach restores the invariant
+// "every log line goes through the pipe in chronological order".
+func (c *CatchAllLogger) ReattachStdoutErr() error {
+	if err := syscall.Dup2(int(c.pipeW.Fd()), 1); err != nil {
+		return fmt.Errorf("dup2 stdout: %w", err)
+	}
+	if err := syscall.Dup2(int(c.pipeW.Fd()), 2); err != nil {
+		return fmt.Errorf("dup2 stderr: %w", err)
+	}
+	os.Stdout = os.NewFile(1, "/dev/stdout")
+	os.Stderr = os.NewFile(2, "/dev/stderr")
+	return nil
+}
+
 // Stop drains remaining output from the pipe, closes the log file, and
 // restores fd 1/2 to the original console. Safe to call multiple times.
 func (c *CatchAllLogger) Stop() {

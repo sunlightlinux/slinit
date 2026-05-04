@@ -199,16 +199,38 @@ func main() {
 	// file — otherwise InitPID1 will later mount a fresh tmpfs over /run
 	// and hide whatever file we opened on the initramfs's /run. StageRun
 	// is idempotent, so InitPID1's own call below is a no-op.
+	var cal *logging.CatchAllLogger
 	if (isPID1 || containerMode) && !noCatchAll {
 		if isPID1 {
 			if rm, err := shutdown.ParseRunMode(runMode); err == nil {
 				shutdown.SetRunMode(rm)
 			}
 			shutdown.StageRun(logging.New(logging.LevelError))
+
+			// Defensive against an in-place exec from a prior slinit
+			// (soft-reboot path): the previous instance dup2'd fd 1/2
+			// to its catch-all pipe write end, which inherits across
+			// exec but loses its reader (the prior drain goroutine is
+			// gone). StartCatchAll's Dup(1) would then save that dead
+			// pipe end as "console" — drain goroutine writes a couple
+			// of bytes, kernel buffer fills, EPIPE, every subsequent
+			// log line is silently dropped.
+			//
+			// Open /dev/console fresh and bind it to fd 1/2 here.
+			// On a clean kernel boot this is a no-op (fd 1/2 are
+			// already /dev/console); on soft-reboot it restores the
+			// invariant that StartCatchAll expects.
+			if cf, err := os.OpenFile("/dev/console", os.O_RDWR, 0); err == nil {
+				syscall.Dup2(int(cf.Fd()), 1)
+				syscall.Dup2(int(cf.Fd()), 2)
+				cf.Close()
+			}
 		}
-		cal, err := logging.StartCatchAll(catchAllLog)
+		var err error
+		cal, err = logging.StartCatchAll(catchAllLog)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: catch-all logger: %v (continuing without)\n", err)
+			cal = nil
 		} else {
 			defer cal.Stop()
 		}
@@ -379,6 +401,18 @@ func main() {
 		logger.Notice("slinit starting as PID 1 (init system mode)")
 		if err := shutdown.InitPID1(logger); err != nil {
 			logger.Error("PID 1 initialization warning: %v", err)
+		}
+		// InitPID1's setupConsole Dup2s fd 1/2 to /dev/console, which
+		// breaks the catch-all redirect set up earlier. Re-attach so
+		// every subsequent log line goes through the pipe — this keeps
+		// timestamps strictly monotonic in print order. Without this,
+		// messages logged before InitPID1 (e.g. "starting as PID 1")
+		// sit buffered in the pipe and flush AFTER later direct-to-
+		// console writes, producing visibly out-of-order timestamps.
+		if cal != nil {
+			if err := cal.ReattachStdoutErr(); err != nil {
+				logger.Error("Failed to re-attach catch-all: %v", err)
+			}
 		}
 	} else if systemMode {
 		logger.Notice("slinit starting in system mode")
