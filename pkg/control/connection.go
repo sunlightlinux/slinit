@@ -244,6 +244,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleReloadService(payload)
 	case CmdReloadAll:
 		return c.handleReloadAll()
+	case CmdReloadSignal:
+		return c.handleReloadSignal(payload)
 	case CmdUnloadService:
 		return c.handleUnloadService(payload)
 	case CmdSetEnv:
@@ -702,6 +704,52 @@ func (c *Connection) handleSetTrigger(payload []byte) error {
 
 	triggered.SetTrigger(triggerVal)
 	c.server.services.ProcessQueues()
+	return c.writePacket(RplyACK, nil)
+}
+
+// handleReloadSignal sends the service's configured `reload-signal`
+// to its main running process. Different from handleReloadService —
+// that one re-reads the service description from disk; this one
+// tells the running daemon to re-read its own config (the
+// nginx-reload / SIGHUP-style operation).
+//
+// Replies:
+//   - RplyBadReq: bad payload or unknown handle
+//   - RplyNAK: service has no reload-signal configured
+//   - RplySignalNoPID: service is not running
+//   - RplySignalErr: kill(2) returned an error
+//   - RplyACK: signal sent
+func (c *Connection) handleReloadSignal(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+
+	sig := svc.Record().ReloadSignal()
+	if sig == 0 {
+		return c.writePacket(RplyNAK, nil)
+	}
+
+	pid := svc.PID()
+	if pid <= 0 {
+		return c.writePacket(RplySignalNoPID, nil)
+	}
+
+	if ps, ok := svc.(*service.ProcessService); ok {
+		if ps.SendSignalWithControl(sig) {
+			return c.writePacket(RplyACK, nil)
+		}
+		return c.writePacket(RplySignalErr, []byte("signal failed"))
+	}
+
+	if err := syscall.Kill(pid, sig); err != nil {
+		return c.writePacket(RplySignalErr, []byte(fmt.Sprintf("%v", err)))
+	}
 	return c.writePacket(RplyACK, nil)
 }
 

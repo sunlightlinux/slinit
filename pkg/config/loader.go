@@ -1075,6 +1075,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetNormalExitSignals(desc.NormalExitSignals)
 	rec.SetFlags(desc.Flags)
 	rec.SetTermSignal(desc.TermSignal)
+	rec.SetReloadSignal(desc.ReloadSignal)
 	if desc.ChainTo != "" {
 		rec.SetChainTo(desc.ChainTo)
 	}

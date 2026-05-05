@@ -154,6 +154,7 @@ type ServiceRecord struct {
 
 	// Process settings (shared across service types)
 	termSignal    syscall.Signal
+	reloadSignal  syscall.Signal // 0 = unset; sent by `slinitctl reload-signal`
 	socketPath    string   // primary socket path (for backwards compat)
 	socketPaths   []string // all socket-listen paths (for multiple sockets)
 	socketPerms   int
@@ -417,6 +418,8 @@ func (sr *ServiceRecord) IsNormalExit(es ExitStatus) bool {
 func (sr *ServiceRecord) SetChainTo(name string)              { sr.chainTo = name }
 func (sr *ServiceRecord) SetServiceDscDir(dir string)         { sr.serviceDscDir = dir }
 func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)     { sr.termSignal = sig }
+func (sr *ServiceRecord) SetReloadSignal(sig syscall.Signal)   { sr.reloadSignal = sig }
+func (sr *ServiceRecord) ReloadSignal() syscall.Signal         { return sr.reloadSignal }
 
 func (sr *ServiceRecord) SetFlags(flags ServiceFlags) { sr.Flags = flags }
 func (sr *ServiceRecord) SetProvides(name string)     { sr.provides = name }

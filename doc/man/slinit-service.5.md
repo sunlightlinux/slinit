@@ -134,6 +134,21 @@ exist; if they do, they may not change the service type.
 :   Signal sent on stop. Defaults to *TERM*. Aliases: **termsignal**
     (dinit), **stopsig** (OpenRC).
 
+**reload-signal**=*signal*
+:   Signal sent to the running process when the operator runs
+    **slinitctl reload-signal** *service*. The intended use is the
+    "tell the daemon to re-read its own config" idiom (e.g. nginx,
+    sshd, syslog). No default — when unset, **slinitctl
+    reload-signal** rejects the request with an explanatory error.
+
+    Distinct from **slinitctl reload** *service*, which re-reads
+    the slinit-side service description from disk (the slinit
+    operator's view of the service) without touching the running
+    process. The two operations address different layers; both can
+    legitimately appear in the same operator workflow.
+
+    Inspired by upstart's **reload signal** stanza.
+
 ## ENVIRONMENT
 
 **env-file**=*path*

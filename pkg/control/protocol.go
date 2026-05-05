@@ -86,6 +86,7 @@ const (
 	CmdCancelShutdown      uint8 = 36 // cancel a pending scheduled shutdown
 	CmdQueryShutdown       uint8 = 37 // query pending shutdown status
 	CmdReloadAll           uint8 = 38 // rescan all loaded service descriptions from disk
+	CmdReloadSignal        uint8 = 39 // send the service's configured reload-signal to its main process
 )
 
 // Reply codes (server → client).

@@ -145,6 +145,7 @@ type ServiceDescription struct {
 	RestartInterval   time.Duration
 	RestartLimitCount int
 	TermSignal        syscall.Signal
+	ReloadSignal      syscall.Signal // upstart-inspired; 0 = unset
 	PIDFile           string
 	ReadyNotification string
 	ReadyNotifyFD     int    // parsed from pipefd:N (-1 if unset)
@@ -903,6 +904,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.TermSignal = sig
+	case "reload-signal":
+		sig, err := parseSignal(value)
+		if err != nil {
+			return err
+		}
+		desc.ReloadSignal = sig
 
 	// Logging
 	case "logfile":

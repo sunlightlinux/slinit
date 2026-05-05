@@ -354,6 +354,51 @@ func equalSigSlice(a, b []syscall.Signal) bool {
 	return true
 }
 
+// TestReloadSignalPropagates parses reload-signal in the various
+// accepted forms (named, SIG-prefixed, numeric) and confirms the
+// parsed value reaches ServiceDescription.ReloadSignal.
+func TestReloadSignalPropagates(t *testing.T) {
+	cases := []struct {
+		input string
+		want  syscall.Signal
+	}{
+		{`type = process
+command = /bin/true
+reload-signal = SIGHUP`, syscall.SIGHUP},
+		{`type = process
+command = /bin/true
+reload-signal = HUP`, syscall.SIGHUP},
+		{`type = process
+command = /bin/true
+reload-signal = USR1`, syscall.SIGUSR1},
+		{`type = process
+command = /bin/true
+reload-signal = none`, 0},
+		{`type = process
+command = /bin/true`, 0}, // default unset
+	}
+	for _, c := range cases {
+		desc, err := Parse(strings.NewReader(c.input), "test", "test-file")
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", c.input, err)
+		}
+		if desc.ReloadSignal != c.want {
+			t.Errorf("Parse(%q): ReloadSignal=%v, want %v",
+				c.input, desc.ReloadSignal, c.want)
+		}
+	}
+}
+
+// TestReloadSignalRejectsBogus: unknown signal name fails parse.
+func TestReloadSignalRejectsBogus(t *testing.T) {
+	bad := `type = process
+command = /bin/true
+reload-signal = SIGFOO`
+	if _, err := Parse(strings.NewReader(bad), "test", "test-file"); err == nil {
+		t.Error("expected error for unknown signal SIGFOO")
+	}
+}
+
 // TestNormalExitPropagates verifies the parser → ServiceDescription
 // path, including the += accumulator semantics declared in
 // settings.go.

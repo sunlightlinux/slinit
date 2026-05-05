@@ -288,6 +288,10 @@ doneFlags:
 		})
 	case "reload-all":
 		err = cmdReloadAll(conn)
+	case "reload-signal":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdReloadSignal(conn, name)
+		})
 	case "unload":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdUnload(conn, name)
@@ -446,6 +450,7 @@ Commands:
   list-actions <service>   List available extra-command actions
   reload <service>         Reload service configuration from disk
   reload-all               Reload every loaded service from disk (skips transitional)
+  reload-signal <service>  Send service's configured reload-signal to its process
   unload <service>         Unload a stopped service from memory
   boot-time                Show boot timing analysis
   catlog [--clear] <svc>   Show buffered service output
@@ -1781,6 +1786,37 @@ func cmdReload(conn net.Conn, name string) error {
 	return nil
 }
 
+// cmdReloadSignal sends the service's configured `reload-signal` to
+// its main process. Distinct from cmdReload (which re-reads the
+// service description); this is the nginx-reload / SIGHUP-style
+// "tell the running process to re-read its own config" operation.
+func cmdReloadSignal(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+	if err := control.WritePacket(conn, control.CmdReloadSignal, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	switch rply {
+	case control.RplyACK:
+		info("Reload signal sent to '%s'.\n", name)
+		return nil
+	case control.RplyNAK:
+		return fmt.Errorf("service '%s' has no reload-signal configured", name)
+	case control.RplySignalNoPID:
+		return fmt.Errorf("service '%s' has no running process", name)
+	case control.RplySignalErr:
+		return fmt.Errorf("reload-signal failed for '%s': %s", name, string(payload))
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+}
+
 // cmdReloadAll asks the daemon to rescan every loaded service description
 // from disk. The daemon returns a summary of how many succeeded and how
 // many failed; transitional services (Starting/Stopping) are skipped
@@ -2867,7 +2903,7 @@ const bashCompletion = `# Bash completion for slinitctl
 # Usage: eval "$(slinitctl completion bash)"
 
 _slinitctl_commands() {
-    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
+    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
 }
 
 _slinitctl_services() {
@@ -2906,7 +2942,7 @@ _slinitctl() {
     fi
 
     case "$cmd" in
-        start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv|status5|attach)
+        start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|reload-signal|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv|status5|attach)
             COMPREPLY=( $(compgen -W "$(_slinitctl_services)" -- "$cur") ) ;;
         shutdown)
             COMPREPLY=( $(compgen -W "halt poweroff reboot kexec softreboot" -- "$cur") ) ;;
@@ -2978,6 +3014,7 @@ _slinitctl() {
         'once:Start service without restart on exit'
         'reload:Reload service config'
         'reload-all:Reload every loaded service from disk'
+        'reload-signal:Send configured reload-signal to service process'
         'unload:Unload stopped service'
         'boot-time:Boot timing analysis'
         'analyze:Boot timing analysis'
@@ -3024,7 +3061,7 @@ _slinitctl() {
         command) _describe 'command' commands ;;
         args)
             case ${words[1]} in
-                start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv|status5|attach)
+                start|stop|wake|release|restart|status|is-started|is-failed|trigger|untrigger|pause|continue|cont|once|reload|reload-signal|unload|unpin|enable|disable|query-name|getallenv|catlog|dependents|setenv|unsetenv|status5|attach)
                     _slinitctl_services ;;
                 shutdown) _describe 'type' '(halt poweroff reboot kexec softreboot)' ;;
                 signal) case $CURRENT in 2) _describe 'signal' '(SIGHUP SIGINT SIGQUIT SIGKILL SIGUSR1 SIGUSR2 SIGTERM)' ;; 3) _slinitctl_services ;; esac ;;
@@ -3045,7 +3082,7 @@ function __slinitctl_services
     slinitctl --system list 2>/dev/null | string replace -r '^\[.*\] ' '' | string replace -r ' \(.*' ''
 end
 
-set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
 
 complete -c slinitctl -f
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s p -l socket-path -rF -d 'Socket path'
@@ -3058,11 +3095,11 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s q -l quiet -
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s h -l help -d 'Help'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l version -d 'Version'
 
-for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
     complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -a $cmd
 end
 
-for cmd in start stop wake release restart status is-started is-failed trigger untrigger pause continue cont once reload unload unpin enable disable query-name getallenv catlog dependents setenv unsetenv status5 attach
+for cmd in start stop wake release restart status is-started is-failed trigger untrigger pause continue cont once reload reload-signal unload unpin enable disable query-name getallenv catlog dependents setenv unsetenv status5 attach
     complete -c slinitctl -n "__fish_seen_subcommand_from $cmd" -a '(__slinitctl_services)'
 end
 

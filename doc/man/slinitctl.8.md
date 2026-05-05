@@ -187,6 +187,17 @@ daemon, which is useful at install time or in initramfs.
     ops applied a config update across many service files and want
     them all picked up without scripting a `for` loop.
 
+**reload-signal** *service*
+:   Send the signal declared in *service*'s **reload-signal** stanza
+    (see **slinit-service**(5)) to its main running process. This is
+    the "tell the daemon to re-read its own config" idiom — typical
+    for nginx, sshd, syslog and similar services. Rejects the
+    request when *service* has no **reload-signal** configured
+    (with an explicit error rather than silently no-op'ing) or when
+    the service has no running process. Different from **reload**
+    above, which re-reads the slinit-side service description and
+    does not touch the running process.
+
 **unload** *service*
 :   Drop *service* from the in-memory set. Only allowed when the
     service is stopped and not a dependency of an active service.
