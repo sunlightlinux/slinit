@@ -95,6 +95,7 @@ type ServiceRecord struct {
 	// Flags
 	autoRestart    AutoRestartMode
 	smoothRecovery bool
+	manualStart    bool // upstart-style: refuse all auto-activation
 
 	// Pins
 	pinnedStopped     bool
@@ -344,6 +345,7 @@ func (sr *ServiceRecord) GetExitStatus() ExitStatus { return ExitStatus{} }
 func (sr *ServiceRecord) BecomingInactive()        {}
 func (sr *ServiceRecord) CheckRestart() bool       { return true }
 func (sr *ServiceRecord) GetSmoothRecovery() bool  { return sr.smoothRecovery }
+func (sr *ServiceRecord) IsManualStart() bool      { return sr.manualStart }
 
 // UnrecoverableStop forces the service to stop without possibility of restart.
 func (sr *ServiceRecord) UnrecoverableStop() {
@@ -376,6 +378,7 @@ func (sr *ServiceRecord) RemoveListener(l ServiceListener) {
 
 func (sr *ServiceRecord) SetAutoRestart(mode AutoRestartMode) { sr.autoRestart = mode }
 func (sr *ServiceRecord) SetSmoothRecovery(v bool)            { sr.smoothRecovery = v }
+func (sr *ServiceRecord) SetManualStart(v bool)               { sr.manualStart = v }
 func (sr *ServiceRecord) SetChainTo(name string)              { sr.chainTo = name }
 func (sr *ServiceRecord) SetServiceDscDir(dir string)         { sr.serviceDscDir = dir }
 func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)     { sr.termSignal = sig }
@@ -748,6 +751,12 @@ func (sr *ServiceRecord) Wake() bool {
 	if sr.pinnedStopped {
 		return false
 	}
+	// `manual = yes` blocks wake the same way it blocks Require:
+	// auto-attaching to active dependents is exactly the kind of
+	// auto-activation manual is meant to refuse.
+	if sr.manualStart && !sr.startExplicit {
+		return false
+	}
 
 	found := false
 	for _, dept := range sr.dependents {
@@ -891,8 +900,19 @@ func (sr *ServiceRecord) Unpin() {
 }
 
 // Require increments the required_by count and triggers start if needed.
+//
+// `manual = yes` blocks the start trigger but still bumps requiredBy:
+// the bookkeeping has to stay consistent with the caller's HoldingAcq
+// flag (so a later Release() doesn't underflow). The service stays
+// STOPPED; hard-depending callers see their dep unsatisfied and block
+// or fail. That is the intended trade-off — `manual` declares "I am
+// opt-in", and the operator owns the order via explicit
+// `slinitctl start`.
 func (sr *ServiceRecord) Require() {
 	sr.requiredBy++
+	if sr.manualStart && !sr.startExplicit {
+		return
+	}
 	if sr.requiredBy == 1 {
 		if sr.state.Load() != StateStarting && sr.state.Load() != StateStarted {
 			sr.propStart = true

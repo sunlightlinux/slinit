@@ -272,12 +272,48 @@ smooth-recovery = no`, false},
 		{`type = process
 command = /bin/true
 smooth-recovery = invalid`, true},
+
+		// manual stanza shares the parseBool path with smooth-recovery.
+		{`type = process
+command = /bin/true
+manual = yes`, false},
+		{`type = process
+command = /bin/true
+manual = no`, false},
+		{`type = process
+command = /bin/true
+manual = invalid`, true},
 	}
 
 	for _, tt := range tests {
 		_, err := Parse(strings.NewReader(tt.input), "test", "test-file")
 		if (err != nil) != tt.wantErr {
 			t.Errorf("Parse(%q): error = %v, wantErr = %v", tt.input, err, tt.wantErr)
+		}
+	}
+}
+
+// TestManualStanzaPropagates verifies the parsed value reaches
+// ServiceDescription.ManualStart for the loader to wire onto the
+// ServiceRecord.
+func TestManualStanzaPropagates(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{`type = internal
+manual = yes`, true},
+		{`type = internal
+manual = no`, false},
+		{`type = internal`, false}, // default
+	}
+	for _, c := range cases {
+		desc, err := Parse(strings.NewReader(c.input), "test", "test-file")
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if desc.ManualStart != c.want {
+			t.Errorf("Parse(%q): ManualStart=%v, want %v", c.input, desc.ManualStart, c.want)
 		}
 	}
 }

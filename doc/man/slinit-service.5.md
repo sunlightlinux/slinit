@@ -180,6 +180,37 @@ slinit supports six dependency kinds. Names accept either `=` or `:`
 :   Drop-in directories: every entry inside *directory* (regardless of
     type) is treated as a dependency of the corresponding kind.
 
+## ACTIVATION
+
+**manual**=*yes*|*no*
+:   When *yes*, the service refuses every auto-activation path:
+    boot-graph propagation through **waits-for** / **depends-on**,
+    transitive activation as another service's dependency, and
+    **slinitctl wake**. Only an explicit **slinitctl start** *service*
+    activates it. Inspired by upstart's **manual** stanza.
+
+    Implications worth knowing:
+
+    1. A hard dependent (**depends-on**: *manual-service*) cannot
+       reach STARTED until the operator first runs
+       **slinitctl start** on the manual service. This is the
+       intended trade-off — *manual* declares "I am opt-in", and
+       the operator owns the order.
+
+    2. A soft dependent (**waits-for**: *manual-service*) will stall
+       in STARTING because *waits-for* expects the target to reach
+       a terminal state (STARTED or FAILED) and a manual service
+       reaches neither without operator action. Don't put manual
+       services in **waits-for** chains unless you also plan to
+       start them by hand before the dependent.
+
+    3. Once the operator has explicitly started the service, normal
+       lifecycle applies — restarts, smooth-recovery, dependents
+       acquiring it, **slinitctl stop**, all behave as usual.
+
+    4. Default is *no*. Setting *manual = no* is harmless and the
+       same as omitting the stanza.
+
 ## RESTART POLICY
 
 **restart**=*yes*|*no*|*on-failure*

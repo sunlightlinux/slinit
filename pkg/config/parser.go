@@ -111,6 +111,7 @@ type ServiceDescription struct {
 	// Behavior
 	AutoRestart    service.AutoRestartMode
 	SmoothRecovery bool
+	ManualStart    bool // upstart-style "manual" — blocks auto-activation
 	Flags          service.ServiceFlags
 
 	// Logging
@@ -810,6 +811,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.SmoothRecovery = b
+	case "manual":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.ManualStart = b
 
 	// Timeouts
 	case "stop-timeout":

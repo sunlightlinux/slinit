@@ -47,6 +47,7 @@ var KnownSettings = map[string]OperatorType{
 
 	// Process management
 	"run-as":             OpEquals,
+	"manual":             OpEquals,
 	"restart":            OpEquals,
 	"smooth-recovery":    OpEquals,
 	"stop-timeout":       OpEquals,

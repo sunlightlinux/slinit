@@ -1070,6 +1070,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	rec.SetAutoRestart(desc.AutoRestart)
 	rec.SetSmoothRecovery(desc.SmoothRecovery)
+	rec.SetManualStart(desc.ManualStart)
 	rec.SetFlags(desc.Flags)
 	rec.SetTermSignal(desc.TermSignal)
 	if desc.ChainTo != "" {
