@@ -293,6 +293,101 @@ manual = invalid`, true},
 	}
 }
 
+// TestParseNormalExit covers the upstart-style `normal exit` parser:
+// space-separated mix of decimal exit codes (0–255) and signal names.
+func TestParseNormalExit(t *testing.T) {
+	cases := []struct {
+		input     string
+		wantCodes []int
+		wantSigs  []syscall.Signal
+		wantErr   bool
+	}{
+		{"0 2 SIGTERM", []int{0, 2}, []syscall.Signal{syscall.SIGTERM}, false},
+		{"SIGUSR1", nil, []syscall.Signal{syscall.SIGUSR1}, false},
+		{"42", []int{42}, nil, false},
+		{"0 SIGTERM TERM", []int{0}, []syscall.Signal{syscall.SIGTERM, syscall.SIGTERM}, false},
+		{"", nil, nil, false},                  // empty → reset
+		{"256", nil, nil, true},                // out of range
+		{"-1", nil, nil, true},                 // out of range
+		{"SIGFOO", nil, nil, true},             // unknown signal
+		{"0   2 \t SIGTERM", []int{0, 2}, []syscall.Signal{syscall.SIGTERM}, false}, // whitespace OK
+	}
+	for _, c := range cases {
+		codes, sigs, err := parseNormalExit(c.input)
+		if (err != nil) != c.wantErr {
+			t.Errorf("parseNormalExit(%q): err=%v wantErr=%v", c.input, err, c.wantErr)
+			continue
+		}
+		if c.wantErr {
+			continue
+		}
+		if !equalIntSlice(codes, c.wantCodes) {
+			t.Errorf("parseNormalExit(%q): codes=%v want %v", c.input, codes, c.wantCodes)
+		}
+		if !equalSigSlice(sigs, c.wantSigs) {
+			t.Errorf("parseNormalExit(%q): sigs=%v want %v", c.input, sigs, c.wantSigs)
+		}
+	}
+}
+
+func equalIntSlice(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalSigSlice(a, b []syscall.Signal) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestNormalExitPropagates verifies the parser → ServiceDescription
+// path, including the += accumulator semantics declared in
+// settings.go.
+func TestNormalExitPropagates(t *testing.T) {
+	// Plain assignment.
+	desc, err := Parse(strings.NewReader(`type = process
+command = /bin/true
+normal-exit = 0 2 SIGTERM`), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !equalIntSlice(desc.NormalExitCodes, []int{0, 2}) {
+		t.Errorf("codes=%v, want [0 2]", desc.NormalExitCodes)
+	}
+	if !equalSigSlice(desc.NormalExitSignals, []syscall.Signal{syscall.SIGTERM}) {
+		t.Errorf("sigs=%v, want [SIGTERM]", desc.NormalExitSignals)
+	}
+
+	// += extends; = resets.
+	desc, err = Parse(strings.NewReader(`type = process
+command = /bin/true
+normal-exit = 0
+normal-exit += SIGUSR1`), "test", "test-file")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !equalIntSlice(desc.NormalExitCodes, []int{0}) {
+		t.Errorf("after +=: codes=%v, want [0]", desc.NormalExitCodes)
+	}
+	if !equalSigSlice(desc.NormalExitSignals, []syscall.Signal{syscall.SIGUSR1}) {
+		t.Errorf("after +=: sigs=%v, want [SIGUSR1]", desc.NormalExitSignals)
+	}
+}
+
 // TestManualStanzaPropagates verifies the parsed value reaches
 // ServiceDescription.ManualStart for the loader to wire onto the
 // ServiceRecord.

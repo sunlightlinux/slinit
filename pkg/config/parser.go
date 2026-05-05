@@ -112,7 +112,13 @@ type ServiceDescription struct {
 	AutoRestart    service.AutoRestartMode
 	SmoothRecovery bool
 	ManualStart    bool // upstart-style "manual" — blocks auto-activation
-	Flags          service.ServiceFlags
+	// upstart-style "normal exit": exit codes / signals that count as
+	// success and suppress respawn even with restart=yes. Empty means
+	// "use the built-in defaults" (code 0 + admin signals like SIGTERM
+	// for restart=on-failure; nothing extra for restart=yes).
+	NormalExitCodes   []int
+	NormalExitSignals []syscall.Signal
+	Flags             service.ServiceFlags
 
 	// Logging
 	LogType         service.LogType
@@ -817,6 +823,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.ManualStart = b
+	case "normal-exit":
+		codes, sigs, err := parseNormalExit(value)
+		if err != nil {
+			return err
+		}
+		if op == OpEquals {
+			desc.NormalExitCodes = codes
+			desc.NormalExitSignals = sigs
+		} else { // OpPlusEqual
+			desc.NormalExitCodes = append(desc.NormalExitCodes, codes...)
+			desc.NormalExitSignals = append(desc.NormalExitSignals, sigs...)
+		}
 
 	// Timeouts
 	case "stop-timeout":
@@ -1957,6 +1975,52 @@ func parseSignal(value string) (syscall.Signal, error) {
 		return 0, fmt.Errorf("unknown signal: %s", value)
 	}
 	return syscall.Signal(n), nil
+}
+
+// parseNormalExit parses an upstart-style `normal exit` value: a
+// space-separated list of decimal exit codes and/or signal names
+// (or numeric signal values). Examples:
+//
+//	normal-exit = 0 2 SIGTERM
+//	normal-exit = 0 SIGUSR1 15
+//
+// Returns the codes and signals as separate slices. A token that
+// looks like a small decimal (0–255) is interpreted as an exit code;
+// anything else is run through parseSignal. Strict bounds avoid the
+// ambiguity where a signal number and an exit code share a value
+// (e.g. 15 = SIGTERM but also a valid exit code) — in slinit a bare
+// number is always an exit code, and a signal must be named.
+//
+// An empty value clears the lists (useful for `normal-exit =` to
+// reset, mirroring how empty `command =` resets argv).
+func parseNormalExit(value string) ([]int, []syscall.Signal, error) {
+	tokens := strings.Fields(value)
+	if len(tokens) == 0 {
+		return nil, nil, nil
+	}
+
+	var codes []int
+	var sigs []syscall.Signal
+
+	for _, tok := range tokens {
+		// Try as exit code first when the token is bare digits.
+		// Signals must be named (SIGTERM, TERM) to avoid the
+		// number-vs-signal ambiguity.
+		if n, err := strconv.Atoi(tok); err == nil {
+			if n < 0 || n > 255 {
+				return nil, nil, fmt.Errorf("normal-exit: exit code %d out of range [0,255]", n)
+			}
+			codes = append(codes, n)
+			continue
+		}
+		sig, err := parseSignal(tok)
+		if err != nil {
+			return nil, nil, fmt.Errorf("normal-exit: %w", err)
+		}
+		sigs = append(sigs, sig)
+	}
+
+	return codes, sigs, nil
 }
 
 // ParseCPUAffinity parses a CPU affinity spec like "0 1 2 3", "0-3",

@@ -97,6 +97,11 @@ type ServiceRecord struct {
 	smoothRecovery bool
 	manualStart    bool // upstart-style: refuse all auto-activation
 
+	// upstart-style "normal exit": exit codes / signals that count as
+	// success, suppressing respawn even when autoRestart=RestartAlways.
+	normalExitCodes   []int
+	normalExitSignals []syscall.Signal
+
 	// Pins
 	pinnedStopped     bool
 	pinnedStarted     bool
@@ -379,6 +384,36 @@ func (sr *ServiceRecord) RemoveListener(l ServiceListener) {
 func (sr *ServiceRecord) SetAutoRestart(mode AutoRestartMode) { sr.autoRestart = mode }
 func (sr *ServiceRecord) SetSmoothRecovery(v bool)            { sr.smoothRecovery = v }
 func (sr *ServiceRecord) SetManualStart(v bool)               { sr.manualStart = v }
+
+func (sr *ServiceRecord) SetNormalExitCodes(c []int) { sr.normalExitCodes = c }
+func (sr *ServiceRecord) SetNormalExitSignals(s []syscall.Signal) {
+	sr.normalExitSignals = s
+}
+
+// IsNormalExit returns true if `es` matches one of the codes or
+// signals declared via the `normal-exit` stanza. The state machine
+// uses this to suppress respawn for exits the operator has marked
+// as success.
+func (sr *ServiceRecord) IsNormalExit(es ExitStatus) bool {
+	if es.Exited() {
+		code := es.ExitCode()
+		for _, c := range sr.normalExitCodes {
+			if c == code {
+				return true
+			}
+		}
+		return false
+	}
+	if es.Signaled() {
+		sig := es.Signal()
+		for _, s := range sr.normalExitSignals {
+			if s == sig {
+				return true
+			}
+		}
+	}
+	return false
+}
 func (sr *ServiceRecord) SetChainTo(name string)              { sr.chainTo = name }
 func (sr *ServiceRecord) SetServiceDscDir(dir string)         { sr.serviceDscDir = dir }
 func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)     { sr.termSignal = sig }
@@ -1384,24 +1419,34 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 	restartDeps := withRestart
 
 	if !withRestart {
+		// upstart-style `normal exit`: codes / signals the operator
+		// declared as success suppress respawn even with restart=yes.
+		// Apply this *before* the per-mode logic so it shadows both
+		// RestartAlways and RestartOnFailure uniformly.
+		exitStatus := sr.self.GetExitStatus()
+		normal := sr.IsNormalExit(exitStatus)
+
 		// Check for auto-restart
 		if sr.autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
-			forRestart = sr.self.CheckRestart()
-			sr.inAutoRestart = forRestart
+			if !normal {
+				forRestart = sr.self.CheckRestart()
+				sr.inAutoRestart = forRestart
+			}
 		} else if sr.autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
-			exitStatus := sr.self.GetExitStatus()
-			if exitStatus.Signaled() {
-				// Don't auto-restart for administrative signals (matching dinit)
-				sig := exitStatus.Signal()
-				if sig != syscall.SIGHUP && sig != syscall.SIGINT &&
-					sig != syscall.SIGUSR1 && sig != syscall.SIGUSR2 &&
-					sig != syscall.SIGTERM {
+			if !normal {
+				if exitStatus.Signaled() {
+					// Don't auto-restart for administrative signals (matching dinit)
+					sig := exitStatus.Signal()
+					if sig != syscall.SIGHUP && sig != syscall.SIGINT &&
+						sig != syscall.SIGUSR1 && sig != syscall.SIGUSR2 &&
+						sig != syscall.SIGTERM {
+						forRestart = sr.self.CheckRestart()
+						sr.inAutoRestart = forRestart
+					}
+				} else if exitStatus.Exited() && exitStatus.ExitCode() != 0 {
 					forRestart = sr.self.CheckRestart()
 					sr.inAutoRestart = forRestart
 				}
-			} else if exitStatus.Exited() && exitStatus.ExitCode() != 0 {
-				forRestart = sr.self.CheckRestart()
-				sr.inAutoRestart = forRestart
 			}
 		}
 	}

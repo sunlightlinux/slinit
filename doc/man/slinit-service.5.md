@@ -220,6 +220,34 @@ slinit supports six dependency kinds. Names accept either `=` or `:`
 :   Restart in-place without notifying dependents (useful for
     short crash-restart loops).
 
+**normal-exit**=*STATUS*|*SIGNAL*...
+:   Space-separated list of exit codes (decimal, 0–255) and signal
+    names (**SIGTERM**, **TERM**, etc.) that count as a normal,
+    successful exit. When the process exits with one of these,
+    automatic restart is suppressed *even if* **restart**=*yes*.
+
+    Bare numbers are always exit codes — signals must be named to
+    avoid the ambiguity where a value (e.g. *15*) is both a valid
+    exit code and **SIGTERM**.
+
+    Examples:
+
+        normal-exit = 0 2 SIGTERM    # 0 and 2 are success, so is SIGTERM
+        normal-exit = SIGUSR1        # killed via SIGUSR1 → don't respawn
+
+    The **+=** operator extends an existing list:
+
+        normal-exit = 0
+        normal-exit += SIGUSR1
+
+    With **restart**=*on-failure* the built-in admin signals
+    (**SIGHUP**, **SIGINT**, **SIGUSR1**, **SIGUSR2**, **SIGTERM**)
+    plus exit code 0 already suppress respawn; **normal-exit**
+    extends that set with arbitrary codes/signals the operator
+    declares as success. With **restart**=*yes* there are no
+    built-in suppressions, so **normal-exit** is the only way to
+    tell slinit "this exit is OK".
+
 **stop-timeout**=*duration*
 :   How long to wait between **term-signal** and SIGKILL.
 

@@ -50,6 +50,7 @@ var KnownSettings = map[string]OperatorType{
 	"manual":             OpEquals,
 	"restart":            OpEquals,
 	"smooth-recovery":    OpEquals,
+	"normal-exit":        OpEquals | OpPlusEqual,
 	"stop-timeout":       OpEquals,
 	"start-timeout":      OpEquals,
 	"restart-delay":          OpEquals,
