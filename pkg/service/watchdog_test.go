@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -135,6 +136,50 @@ func TestNoWatchdogDoesNotChangeReadySemantics(t *testing.T) {
 
 	set.StopService(svc)
 	time.Sleep(500 * time.Millisecond)
+}
+
+// TestWatchdogTriggersRestartOnFailure regression-tests the path where
+// a watchdog miss must respect the configured restart policy. Previous
+// behavior went through Stop(false), which clobbered desired=Stopped
+// when requiredBy was 0 (e.g. soft waits-for activation), and Release()
+// further sealed the fate by preventing the post-exit restart in
+// Stopped(). The fix evaluates the policy in fireWatchdogStop and
+// passes withRestart through to doStop so desired stays at Started.
+func TestWatchdogTriggersRestartOnFailure(t *testing.T) {
+	set, _ := newTestSet()
+	tmp, err := os.CreateTemp("", "wd-starts-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	svc := NewProcessService(set, "wd-restart")
+	svc.SetCommand([]string{"/bin/sh", "-c",
+		"date +%s%N >> " + tmp.Name() + "; printf r >&3; sleep 60"})
+	svc.SetReadyNotification(3, "")
+	svc.SetWatchdogTimeout(300 * time.Millisecond)
+	svc.SetStartTimeout(2 * time.Second)
+	svc.SetAutoRestart(RestartOnFailure)
+	svc.SetRestartLimits(time.Minute, 5)
+	svc.SetRestartDelay(50 * time.Millisecond)
+	set.AddService(svc)
+
+	set.StartService(svc)
+
+	// First start + watchdog fires (~300ms) + SIGTERM exit + restart.
+	time.Sleep(2500 * time.Millisecond)
+
+	data, _ := os.ReadFile(tmp.Name())
+	starts := 0
+	for _, b := range data {
+		if b == '\n' {
+			starts++
+		}
+	}
+	if starts < 2 {
+		t.Errorf("expected >=2 starts, got %d (file=%q)", starts, string(data))
+	}
 }
 
 func TestHasWatchdogAccessor(t *testing.T) {

@@ -480,15 +480,34 @@ func isDeadlineExceeded(err error) bool {
 }
 
 // fireWatchdogStop is the watchdog goroutine's path into the state
-// machine. It mirrors the locking discipline of ServiceSet.StopService:
-// acquire queueMu, call Stop(false) (allows restart-on-failure to
-// kick in), drain the queues. Without the lock, Stop's writes to
-// propQueue / stopQueue race with the queue drains running under
-// queueMu in other goroutines.
+// machine. A watchdog miss is treated as a service failure: force-kill
+// the still-running child and let the configured restart policy take
+// over.
+//
+// We don't go through Stop(false): when requiredBy is 0 (e.g. soft
+// waits-for activation) Stop() clobbers desired=StateStopped, killing
+// any chance of restart in Stopped(). doStop(false) is also wrong here
+// — it inspects exitStatus to decide on auto-restart, but the child
+// hasn't exited yet so the policy check sees a zero/empty status and
+// declines to restart, then Release() drops requiredBy to 0 and clears
+// desired anyway. Instead, evaluate the restart policy ourselves and
+// pass the result as withRestart so doStop preserves desired and skips
+// the Release path. Once SIGTERM kills the child, handleChildExit →
+// Stopped() sees desired==Started and calls initiateStart().
 func (s *ProcessService) fireWatchdogStop() {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
-	s.Stop(false)
+
+	s.stopReason = ReasonTerminated
+	s.forceStop = true
+
+	withRestart := false
+	switch s.autoRestart {
+	case RestartAlways, RestartOnFailure:
+		withRestart = s.CheckRestart()
+	}
+
+	s.doStop(withRestart)
 	s.services.processQueuesLocked()
 }
 
