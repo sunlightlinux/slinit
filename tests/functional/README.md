@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (52 tests)
+# Run all tests (70 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -91,6 +91,24 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 50 | nice-oom-ioprio | Nice value and OOM score adjustment |
 | 51 | clock-guard | Boot-time clock protection (floor + timestamp file) |
 | 52 | catch-all-logger | Early-boot catch-all logger captures stdout/stderr to `/run/slinit/catch-all.log` |
+| 53 | restart-backoff | Restart-delay step + cap apply progressive backoff between restarts |
+| 54 | overlay-config | `conf.d/` overlay overrides values in the base service description |
+| 55 | service-template | Service templates with `@argument` substitution (`$1`) |
+| 56 | rlimits | rlimit-* values are applied to the service process |
+| 57 | extra-commands | `extra-command-*` and `extra-started-command-*` custom actions |
+| 58 | healthcheck | `healthcheck-command` detects an unhealthy service |
+| 59 | smooth-recovery | Smooth recovery restarts without propagating failure to dependents |
+| 60 | service-env | `SLINIT_SERVICENAME` / `SLINIT_SERVICEDSCDIR` auto-injected per service |
+| 61 | options-flags | `options =` flags (kill-all-on-stop, signal-process-only) |
+| 62 | query-deps | `slinitctl dependents` / dependency graph query |
+| 63 | required-paths | `required-files` / `required-dirs` pre-start guards |
+| 64 | stop-timeout | `stop-timeout` escalates to SIGKILL on timeout |
+| 65 | term-signal | `term-signal` sends a custom signal instead of SIGTERM on stop |
+| 66 | bgprocess | bgprocess service type reads PID from a `pid-file` |
+| 67 | watchdog | `watchdog-timeout` kills + restarts unresponsive service |
+| 68 | load-options | `load-options` `export-passwd-vars` / `export-service-name` |
+| 69 | restart-limit | `restart-limit-count` puts service into FAILED after too many restarts |
+| 70 | include-directive | `@include` inlines another file into the service definition |
 
 ## How It Works
 

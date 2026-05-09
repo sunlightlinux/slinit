@@ -51,6 +51,7 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | guard-demo    | process   | Pre-start guards (required-files, required-dirs) |
 | rlimit-demo   | process   | Resource limits (rlimit-nofile, nice, oom-score-adj, ioprio) |
 | cgroup-demo   | process   | Cgroup v2 resource limits (memory, pids, cpu-weight) |
+| cgroup-worker | process   | Cgroup v2 CPU/memory isolation (cpu-max, memory-low, cpuset-cpus) |
 | backoff-demo  | process   | Progressive restart delay (restart-delay-step + cap) |
 | socket-demo   | process   | Socket activation (LISTEN_FDS, socket-listen)  |
 | namespace-demo | process  | PID + mount namespace isolation                |

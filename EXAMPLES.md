@@ -360,7 +360,7 @@ Plan:
 2. Server: implement handler that walks the dep graph.
    Verify:
    - Unit test against a fixture ServiceSet with 3 services, 2 deps.
-   - Manually: slinit + `echo | nc -U /run/slinit/control`.
+   - Manually: slinit + `echo | nc -U /run/slinit.socket`.
 
 3. CLI: add `slinitctl graph <svc>` subcommand with plain-text output.
    Verify:
