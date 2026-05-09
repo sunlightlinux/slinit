@@ -178,6 +178,10 @@ type ServiceDescription struct {
 
 	// Description
 	Description string
+	// Upstart-style metadata stanzas (informational only).
+	Author  string
+	Version string
+	Usage   string
 
 	// Process attributes
 	Nice        *int   // -20..19
@@ -536,6 +540,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		return applyType(desc, value)
 	case "description":
 		desc.Description = value
+	case "author":
+		desc.Author = value
+	case "version":
+		desc.Version = value
+	case "usage":
+		desc.Usage = value
 	case "command":
 		if op == OpPlusEqual {
 			desc.Command = append(desc.Command, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)

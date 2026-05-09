@@ -90,6 +90,11 @@ exist; if they do, they may not change the service type.
 **description**=*text*
 :   Human-readable description.
 
+**author**=*text*, **version**=*text*, **usage**=*text*
+:   Optional informational metadata mirroring upstart's *author*,
+    *version* and *usage* stanzas. Surfaced by **slinitctl status**
+    when set; otherwise ignored. They do not affect service behavior.
+
 **command**=*program* [*args*...]
 :   Program to execute (for **process**, **scripted**, **bgprocess**).
     Quoting and escaping follow shell-like rules.

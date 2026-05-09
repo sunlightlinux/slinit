@@ -86,6 +86,9 @@ type ServiceRecord struct {
 	serviceName string
 	serviceDir  string // directory where service description was found
 	description string // human-readable description for status/list output
+	author      string // upstart-style metadata (informational)
+	version     string
+	usage       string
 	recordType  ServiceType
 
 	// State (atomic: written under queueMu.Lock, read lockless)
@@ -273,6 +276,12 @@ func (sr *ServiceRecord) ServiceDir() string          { return sr.serviceDir }
 func (sr *ServiceRecord) SetServiceDir(dir string)    { sr.serviceDir = dir }
 func (sr *ServiceRecord) Description() string         { return sr.description }
 func (sr *ServiceRecord) SetDescription(d string)     { sr.description = d }
+func (sr *ServiceRecord) Author() string              { return sr.author }
+func (sr *ServiceRecord) SetAuthor(s string)          { sr.author = s }
+func (sr *ServiceRecord) Version() string             { return sr.version }
+func (sr *ServiceRecord) SetVersion(s string)         { sr.version = s }
+func (sr *ServiceRecord) Usage() string               { return sr.usage }
+func (sr *ServiceRecord) SetUsage(s string)           { sr.usage = s }
 
 // SetRequiredPaths records files and directories that must exist before
 // the service can start. Copies the slices so the caller may reuse them.

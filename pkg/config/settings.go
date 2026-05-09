@@ -24,6 +24,9 @@ var KnownSettings = map[string]OperatorType{
 	// Service identity
 	"type":        OpEquals,
 	"description": OpEquals,
+	"author":      OpEquals,
+	"version":     OpEquals,
+	"usage":       OpEquals,
 
 	// Dependencies (use colon)
 	"depends-on":    OpColon,

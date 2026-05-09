@@ -88,6 +88,7 @@ const (
 	CmdReloadAll           uint8 = 38 // rescan all loaded service descriptions from disk
 	CmdReloadSignal        uint8 = 39 // send the service's configured reload-signal to its main process
 	CmdResetEnv            uint8 = 50 // clear all runtime setenv mutations for a service
+	CmdQueryMetadata       uint8 = 51 // query author/version/usage metadata strings for a service
 )
 
 // Reply codes (server → client).
@@ -132,6 +133,7 @@ const (
 	RplyActionList      uint8 = 96 // list of available actions
 	RplyShutdownStatus  uint8 = 97 // scheduled shutdown status (type + remaining_secs)
 	RplyReloadAllResult uint8 = 98 // reload-all summary (uint16 succeeded + uint16 failed, LE)
+	RplyMetadata        uint8 = 99 // author/version/usage triplet (3× uint16 length-prefixed UTF-8)
 )
 
 // Info codes (server → client, unsolicited).
@@ -235,6 +237,30 @@ func DecodeServiceName(data []byte) (string, int, error) {
 		return "", 0, fmt.Errorf("data too short for service name: need %d, have %d", 2+nameLen, len(data))
 	}
 	return string(data[2 : 2+nameLen]), 2 + nameLen, nil
+}
+
+// EncodeMetadata encodes the author/version/usage triplet as three
+// uint16-length-prefixed UTF-8 strings, in that order.
+func EncodeMetadata(author, version, usage string) []byte {
+	b := make([]byte, 0, 6+len(author)+len(version)+len(usage))
+	b = append(b, EncodeServiceName(author)...)
+	b = append(b, EncodeServiceName(version)...)
+	b = append(b, EncodeServiceName(usage)...)
+	return b
+}
+
+// DecodeMetadata decodes the triplet produced by EncodeMetadata.
+func DecodeMetadata(data []byte) (author, version, usage string, err error) {
+	off := 0
+	for i, target := range []*string{&author, &version, &usage} {
+		s, n, derr := DecodeServiceName(data[off:])
+		if derr != nil {
+			return "", "", "", fmt.Errorf("metadata field %d: %w", i, derr)
+		}
+		*target = s
+		off += n
+	}
+	return author, version, usage, nil
 }
 
 // EncodeHandle encodes a uint32 handle.

@@ -1839,3 +1839,29 @@ restart-delay-step = -1
 		t.Fatal("expected error for negative restart-delay-step, got nil")
 	}
 }
+
+// TestParseUpstartMetadata exercises author/version/usage stanzas.
+// They are informational only — must round-trip through the parser
+// onto ServiceDescription and not affect any other field.
+func TestParseUpstartMetadata(t *testing.T) {
+	input := `
+type = internal
+description = stub
+author = Jane Doe <jane@example.com>
+version = 1.2.3-rc1
+usage = mysvc [--flag]
+`
+	desc, err := Parse(strings.NewReader(input), "meta", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.Author != "Jane Doe <jane@example.com>" {
+		t.Errorf("Author = %q", desc.Author)
+	}
+	if desc.Version != "1.2.3-rc1" {
+		t.Errorf("Version = %q", desc.Version)
+	}
+	if desc.Usage != "mysvc [--flag]" {
+		t.Errorf("Usage = %q", desc.Usage)
+	}
+}

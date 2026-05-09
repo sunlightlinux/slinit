@@ -1160,6 +1160,17 @@ func cmdStatus(conn net.Conn, name string) error {
 	if desc, err := fetchDescription(conn, handle); err == nil && desc != "" {
 		fmt.Printf("  Description: %s\n", desc)
 	}
+	if author, version, usage, err := fetchMetadata(conn, handle); err == nil {
+		if author != "" {
+			fmt.Printf("  Author:  %s\n", author)
+		}
+		if version != "" {
+			fmt.Printf("  Version: %s\n", version)
+		}
+		if usage != "" {
+			fmt.Printf("  Usage:   %s\n", usage)
+		}
+	}
 	fmt.Printf("  State:   %s\n", formatState(status.State))
 	fmt.Printf("  Target:  %s\n", formatTarget(status.TargetState))
 	fmt.Printf("  Type:    %s\n", status.SvcType)
@@ -1188,6 +1199,23 @@ func fetchDescription(conn net.Conn, handle uint32) (string, error) {
 	}
 	desc, _, err := control.DecodeServiceName(payload)
 	return desc, err
+}
+
+// fetchMetadata queries author/version/usage strings for a service handle.
+// Returns empty strings (no error) when the server does not support the
+// command, or when the service has no metadata set.
+func fetchMetadata(conn net.Conn, handle uint32) (author, version, usage string, err error) {
+	if err := control.WritePacket(conn, control.CmdQueryMetadata, control.EncodeHandle(handle)); err != nil {
+		return "", "", "", err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return "", "", "", err
+	}
+	if rply != control.RplyMetadata {
+		return "", "", "", fmt.Errorf("unexpected reply: %d", rply)
+	}
+	return control.DecodeMetadata(payload)
 }
 
 // getServiceStatus fetches the status for a service via the control protocol.

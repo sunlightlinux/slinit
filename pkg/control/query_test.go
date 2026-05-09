@@ -140,3 +140,97 @@ func TestQueryServiceDscDirNoLoader(t *testing.T) {
 		t.Fatalf("expected 0 dirs with no loader, got %d", count)
 	}
 }
+
+// TestQueryMetadata: a service with author/version/usage set must
+// round-trip those strings through CmdQueryMetadata / RplyMetadata.
+func TestQueryMetadata(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "meta-svc")
+	rec := svc.Record()
+	rec.SetAuthor("Jane Doe <jane@example.com>")
+	rec.SetVersion("1.2.3")
+	rec.SetUsage("meta-svc [opts]")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdLoadService, EncodeServiceName("meta-svc")); err != nil {
+		t.Fatal(err)
+	}
+	rply, payload, err := ReadPacket(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rply != RplyServiceRecord {
+		t.Fatalf("LoadService: expected ServiceRecord, got %d", rply)
+	}
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	if err := WritePacket(conn, CmdQueryMetadata, EncodeHandle(handle)); err != nil {
+		t.Fatal(err)
+	}
+	rply, payload, err = ReadPacket(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rply != RplyMetadata {
+		t.Fatalf("expected RplyMetadata, got %d", rply)
+	}
+	author, version, usage, err := DecodeMetadata(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if author != "Jane Doe <jane@example.com>" || version != "1.2.3" || usage != "meta-svc [opts]" {
+		t.Errorf("metadata round-trip mismatch: a=%q v=%q u=%q", author, version, usage)
+	}
+}
+
+// TestQueryMetadataEmpty: a service without metadata returns three
+// empty strings, not an error.
+func TestQueryMetadataEmpty(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "empty-meta")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	if err := WritePacket(conn, CmdLoadService, EncodeServiceName("empty-meta")); err != nil {
+		t.Fatal(err)
+	}
+	_, payload, _ := ReadPacket(conn)
+	handle := binary.LittleEndian.Uint32(payload[1:5])
+
+	WritePacket(conn, CmdQueryMetadata, EncodeHandle(handle))
+	rply, payload, _ := ReadPacket(conn)
+	if rply != RplyMetadata {
+		t.Fatalf("expected RplyMetadata, got %d", rply)
+	}
+	a, v, u, err := DecodeMetadata(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != "" || v != "" || u != "" {
+		t.Errorf("expected empty triplet, got a=%q v=%q u=%q", a, v, u)
+	}
+}
+
+// TestQueryMetadataBadHandle: invalid handle must NAK with BadReq.
+func TestQueryMetadataBadHandle(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	WritePacket(conn, CmdQueryMetadata, EncodeHandle(999))
+	rply, _, _ := ReadPacket(conn)
+	if rply != RplyBadReq {
+		t.Errorf("expected RplyBadReq, got %d", rply)
+	}
+}
