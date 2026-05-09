@@ -32,8 +32,13 @@ func TestBGProcessServiceStartStop(t *testing.T) {
 
 	set.StartService(svc)
 
-	// Wait for launcher to exit and PID file to be read
-	time.Sleep(500 * time.Millisecond)
+	// Wait for launcher to exit, PID file to be written, and slinit to
+	// pick it up. Poll with a generous deadline to tolerate -race
+	// instrumentation (which can stretch the 500ms happy-path timing).
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && svc.State() != StateStarted {
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	if svc.State() != StateStarted {
 		t.Fatalf("expected STARTED, got %v", svc.State())
@@ -49,11 +54,16 @@ func TestBGProcessServiceStartStop(t *testing.T) {
 		t.Errorf("expected ServiceStarted notification for bg-svc")
 	}
 
-	// Stop the service
+	// Stop the service. Need to wait for SIGTERM to kill daemon +
+	// BGProcess polling interval (~1s) to detect death. Same poll-loop
+	// pattern as the start path keeps the test happy-path-fast yet
+	// tolerant under -race.
 	set.StopService(svc)
 
-	// Need to wait for SIGTERM to kill daemon + polling interval (1s) to detect death
-	time.Sleep(2500 * time.Millisecond)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && svc.State() != StateStopped {
+		time.Sleep(50 * time.Millisecond)
+	}
 
 	if svc.State() != StateStopped {
 		t.Errorf("expected STOPPED, got %v", svc.State())
