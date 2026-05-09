@@ -848,6 +848,76 @@ func TestUnsetEnv(t *testing.T) {
 	}
 }
 
+// --- reset-env tests ---
+
+// TestResetEnvClearsAllVars: after several setenv calls, reset-env must
+// drop every entry and getallenv must report an empty environment.
+func TestResetEnvClearsAllVars(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "reset-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "reset-svc")
+
+	WritePacket(conn, CmdSetEnv, EncodeSetEnv(handle, "FOO", "1", false))
+	readReply(t, conn)
+	WritePacket(conn, CmdSetEnv, EncodeSetEnv(handle, "BAR", "2", false))
+	readReply(t, conn)
+
+	WritePacket(conn, CmdResetEnv, EncodeHandle(handle))
+	rply, _ := readReply(t, conn)
+	if rply != RplyACK {
+		t.Fatalf("reset-env: expected ACK, got %d", rply)
+	}
+
+	WritePacket(conn, CmdGetAllEnv, EncodeHandle(handle))
+	rply, data := readReply(t, conn)
+	if rply != RplyEnvList {
+		t.Fatalf("getallenv: expected EnvList, got %d", rply)
+	}
+	env, _ := DecodeEnvList(data)
+	if len(env) != 0 {
+		t.Fatalf("expected 0 env vars after reset, got %d (%v)", len(env), env)
+	}
+}
+
+// TestResetEnvBadHandle: reset-env on a bogus handle must NAK with BadReq
+// rather than touching unrelated state.
+func TestResetEnvBadHandle(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	WritePacket(conn, CmdResetEnv, EncodeHandle(999))
+	rply, _ := readReply(t, conn)
+	if rply != RplyBadReq {
+		t.Errorf("expected RplyBadReq, got %d", rply)
+	}
+}
+
+// TestResetEnvGlobalRejected: handle 0 (global) must NAK — global reset
+// would require snapshotting startup env and is not yet implemented.
+func TestResetEnvGlobalRejected(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	WritePacket(conn, CmdResetEnv, EncodeHandle(0))
+	rply, _ := readReply(t, conn)
+	if rply != RplyNAK {
+		t.Errorf("expected RplyNAK for global handle, got %d", rply)
+	}
+}
+
 // --- global setenv/unsetenv tests ---
 
 func TestGlobalSetEnvAndGetAllEnv(t *testing.T) {

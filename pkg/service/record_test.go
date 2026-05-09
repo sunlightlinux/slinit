@@ -578,3 +578,31 @@ func TestReadyFDDefault(t *testing.T) {
 		t.Errorf("expected default readyFD = -1, got %d", set.ReadyFD())
 	}
 }
+
+// TestResetEnvDropsRuntimeMutations: per-service env reset must drop
+// every entry populated via SetEnvVar so the next start falls back to
+// env-file / global env defaults. Subsequent SetEnvVar must still work
+// (no nil-map panic on the reused record).
+func TestResetEnvDropsRuntimeMutations(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "reset-svc")
+	set.AddService(svc)
+
+	rec := svc.Record()
+	rec.SetEnvVar("FOO", "1")
+	rec.SetEnvVar("BAR", "2")
+	if got := rec.GetAllEnv(); len(got) != 2 {
+		t.Fatalf("setup: expected 2 vars, got %d (%v)", len(got), got)
+	}
+
+	rec.ResetEnv()
+
+	if got := rec.GetAllEnv(); len(got) != 0 {
+		t.Errorf("expected empty env after ResetEnv, got %v", got)
+	}
+
+	rec.SetEnvVar("AFTER", "ok")
+	if got := rec.GetAllEnv(); got["AFTER"] != "ok" {
+		t.Errorf("post-reset SetEnvVar lost: %v", got)
+	}
+}

@@ -228,6 +228,13 @@ daemon, which is useful at install time or in initramfs.
 **getallenv**
 :   Print the daemon's full environment (one *KEY*=*VALUE* per line).
 
+**reset-env** *service*
+:   Clear all runtime **setenv** mutations on *service*. After reset,
+    the next start sees only the daemon's global environment plus the
+    service's *env-file* — i.e. the defaults the service was loaded
+    with. Mirrors upstart's *initctl reset-env JOB*. Operates on the
+    in-memory state only and does not touch files on disk.
+
 **setenv-global** / **unsetenv-global** / **getallenv-global**
 :   Same as the **setenv** family but operate on the global
     environment (handle 0): the values are inherited by every service

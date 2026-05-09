@@ -252,6 +252,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleSetEnv(payload)
 	case CmdGetAllEnv:
 		return c.handleGetAllEnv(payload)
+	case CmdResetEnv:
+		return c.handleResetEnv(payload)
 	case CmdAddDep:
 		return c.handleAddDep(payload)
 	case CmdRmDep:
@@ -1134,6 +1136,25 @@ func (c *Connection) handleSetEnv(payload []byte) error {
 			svc.Record().SetEnvVar(key, value)
 		}
 	}
+	return c.writePacket(RplyACK, nil)
+}
+
+func (c *Connection) handleResetEnv(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	if handle == 0 {
+		// Global reset is not yet supported (would require snapshotting
+		// the daemon's startup env to know which keys are runtime
+		// mutations vs. defaults).
+		return c.writePacket(RplyNAK, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc.Record().ResetEnv()
 	return c.writePacket(RplyACK, nil)
 }
 

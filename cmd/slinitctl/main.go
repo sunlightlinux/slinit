@@ -324,6 +324,10 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdGetAllEnv(conn, name)
 		})
+	case "reset-env":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdResetEnv(conn, name)
+		})
 	case "setenv-global":
 		if len(cmdArgs) < 1 {
 			fatal("Usage: slinitctl setenv-global KEY=VALUE")
@@ -457,6 +461,7 @@ Commands:
   setenv <svc> KEY=VALUE   Set environment variable for service
   unsetenv <svc> KEY       Remove environment variable
   getallenv <svc>          List all runtime environment variables
+  reset-env <svc>          Clear all runtime setenv mutations on <svc>
   setenv-global KEY=VALUE  Set global environment variable
   unsetenv-global KEY      Remove global environment variable
   getallenv-global         List all global environment variables
@@ -2049,6 +2054,27 @@ func cmdUnsetEnv(conn net.Conn, svcName, key string) error {
 	return nil
 }
 
+func cmdResetEnv(conn net.Conn, svcName string) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+
+	if err := control.WritePacket(conn, control.CmdResetEnv, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+
+	rply, _, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("reset-env failed: reply %d", rply)
+	}
+	info("Service '%s': cleared runtime environment\n", svcName)
+	return nil
+}
+
 func cmdGetAllEnv(conn net.Conn, svcName string) error {
 	handle, err := loadServiceHandle(conn, svcName)
 	if err != nil {
@@ -2903,7 +2929,7 @@ const bashCompletion = `# Bash completion for slinitctl
 # Usage: eval "$(slinitctl completion bash)"
 
 _slinitctl_commands() {
-    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
+    echo "list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach platform completion"
 }
 
 _slinitctl_services() {
@@ -3082,7 +3108,7 @@ function __slinitctl_services
     slinitctl --system list 2>/dev/null | string replace -r '^\[.*\] ' '' | string replace -r ' \(.*' ''
 end
 
-set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+set -l cmds list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
 
 complete -c slinitctl -f
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s p -l socket-path -rF -d 'Socket path'
@@ -3095,11 +3121,11 @@ complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s q -l quiet -
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -s h -l help -d 'Help'
 complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -l version -d 'Version'
 
-for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
+for cmd in list ls start wake stop release restart status is-started is-failed is-newer-than is-older-than shutdown trigger untrigger signal pause continue cont once reload reload-all reload-signal unload boot-time analyze catlog setenv unsetenv getallenv reset-env setenv-global unsetenv-global getallenv-global add-dep rm-dep unpin enable disable graph dependents query-name service-dirs load-mech list5 status5 attach completion
     complete -c slinitctl -n "not __fish_seen_subcommand_from $cmds" -a $cmd
 end
 
-for cmd in start stop wake release restart status is-started is-failed trigger untrigger pause continue cont once reload reload-signal unload unpin enable disable query-name getallenv catlog dependents setenv unsetenv status5 attach
+for cmd in start stop wake release restart status is-started is-failed trigger untrigger pause continue cont once reload reload-signal unload unpin enable disable query-name getallenv reset-env catlog dependents setenv unsetenv status5 attach
     complete -c slinitctl -n "__fish_seen_subcommand_from $cmd" -a '(__slinitctl_services)'
 end
 

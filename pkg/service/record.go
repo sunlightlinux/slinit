@@ -571,6 +571,14 @@ func (sr *ServiceRecord) UnsetEnvVar(key string) {
 	delete(sr.extraEnv, key)
 }
 
+// ResetEnv clears all runtime-set environment variables on this service.
+// After reset, the next start sees only the daemon's global env plus
+// the service's env-file (the "defaults"). Mirrors upstart's
+// `initctl reset-env JOB`.
+func (sr *ServiceRecord) ResetEnv() {
+	sr.extraEnv = nil
+}
+
 func (sr *ServiceRecord) GetAllEnv() map[string]string {
 	if sr.extraEnv == nil {
 		return nil
