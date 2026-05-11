@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (70 tests)
+# Run all tests (71 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -109,6 +109,7 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 68 | load-options | `load-options` `export-passwd-vars` / `export-service-name` |
 | 69 | restart-limit | `restart-limit-count` puts service into FAILED after too many restarts |
 | 70 | include-directive | `@include` inlines another file into the service definition |
+| 71 | umask | `umask =` sets the file-creation mask for the service process |
 
 ## How It Works
 

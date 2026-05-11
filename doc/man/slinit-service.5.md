@@ -421,6 +421,11 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 **oom-score-adj**=*-1000..1000*
 :   Linux OOM-killer adjustment.
 
+**umask**=*octal*
+:   File-creation mask for the service process, in octal (`000`..`777`,
+    e.g. `027` or `0077`). When unset the service inherits slinit's own
+    umask (set via the `--umask` daemon flag, default `0022`).
+
 **ioprio**=*spec*
 :   Linux I/O priority, e.g. `realtime:4`.
 

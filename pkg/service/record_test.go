@@ -606,3 +606,26 @@ func TestResetEnvDropsRuntimeMutations(t *testing.T) {
 		t.Errorf("post-reset SetEnvVar lost: %v", got)
 	}
 }
+
+func TestUmaskFlowsToExecParams(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "umask-svc")
+	set.AddService(svc)
+	rec := svc.Record()
+
+	// Default: no umask configured → ExecParams.Umask stays nil so the
+	// child inherits slinit's mask.
+	var p process.ExecParams
+	rec.ApplyProcessAttrs(&p)
+	if p.Umask != nil {
+		t.Errorf("expected nil Umask by default, got %#o", *p.Umask)
+	}
+
+	m := uint32(0o027)
+	rec.SetUmask(&m)
+	var p2 process.ExecParams
+	rec.ApplyProcessAttrs(&p2)
+	if p2.Umask == nil || *p2.Umask != 0o027 {
+		t.Errorf("Umask did not propagate: got %v", p2.Umask)
+	}
+}

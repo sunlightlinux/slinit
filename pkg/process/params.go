@@ -227,6 +227,12 @@ type ExecParams struct {
 	// not have to discover it.
 	RunnerPath string
 
+	// Umask, if non-nil, is the file-creation mask to apply to the child
+	// process. slinit sets it in the parent immediately before fork (then
+	// restores its own) so the child inherits it; this is safe because
+	// StartProcess calls are serialized under ServiceSet.queueMu.
+	Umask *uint32
+
 	// Chroot is the directory to chroot into before exec.
 	// Applied via SysProcAttr.Chroot.
 	Chroot string

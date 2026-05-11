@@ -510,6 +510,38 @@ nice = 25
 	}
 }
 
+func TestParseUmask(t *testing.T) {
+	cases := []struct {
+		in   string
+		want uint32
+	}{
+		{"077", 0o077},
+		{"0022", 0o022},
+		{"027", 0o027},
+		{"0", 0},
+		{"777", 0o777},
+	}
+	for _, c := range cases {
+		input := "type = process\ncommand = /bin/true\numask = " + c.in + "\n"
+		desc, err := Parse(strings.NewReader(input), "test", "test-file")
+		if err != nil {
+			t.Fatalf("umask=%s: Parse failed: %v", c.in, err)
+		}
+		if desc.Umask == nil || *desc.Umask != c.want {
+			t.Errorf("umask=%s: got %v, want %#o", c.in, desc.Umask, c.want)
+		}
+	}
+}
+
+func TestParseUmaskInvalid(t *testing.T) {
+	for _, bad := range []string{"abc", "999", "1777", "-1", "0o22", ""} {
+		input := "type = process\ncommand = /bin/true\numask = " + bad + "\n"
+		if _, err := Parse(strings.NewReader(input), "test", "test-file"); err == nil {
+			t.Errorf("umask=%q: expected parse error", bad)
+		}
+	}
+}
+
 func TestParseCPUAffinity(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -206,6 +206,7 @@ type ServiceRecord struct {
 	ambientCaps []uintptr
 	securebits  uint32
 	cpuAffinity []uint
+	umask       *uint32 // file-creation mask for the service process (nil = inherit slinit's)
 
 	// Real-time scheduling (telco / 5G data plane). Zero values keep
 	// the kernel default; only when schedPolicySet is true does the
@@ -667,6 +668,7 @@ func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)       { sr.rlimits = appen
 func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = caps }
 func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
 func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
+func (sr *ServiceRecord) SetUmask(m *uint32)                  { sr.umask = m }
 
 // SetSchedPolicy programs the kernel scheduling policy (unix.SCHED_*).
 // Pass policySet=false to keep the inherited policy; the rest of the
@@ -718,6 +720,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
 	params.Securebits = sr.securebits
+	params.Umask = sr.umask
 	params.CPUAffinity = sr.cpuAffinity
 	if len(params.CPUAffinity) == 0 {
 		params.CPUAffinity = sr.services.DefaultCPUAffinity()

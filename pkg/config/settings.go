@@ -131,6 +131,9 @@ var KnownSettings = map[string]OperatorType{
 	"ioprio": OpEquals,
 	"oom-score-adj": OpEquals,
 
+	// per-service file-creation mask
+	"umask": OpEquals,
+
 	// cpu affinity
 	"cpu-affinity": OpEquals,
 

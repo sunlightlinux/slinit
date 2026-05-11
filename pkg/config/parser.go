@@ -184,8 +184,9 @@ type ServiceDescription struct {
 	Usage   string
 
 	// Process attributes
-	Nice        *int   // -20..19
-	OOMScoreAdj *int   // -1000..1000
+	Nice        *int    // -20..19
+	OOMScoreAdj *int    // -1000..1000
+	Umask       *uint32 // file-creation mask, octal 000..777
 	NoNewPrivs  bool
 	IOPrio      string // "class:level" e.g. "be:4", "idle"
 	CgroupPath     string // run-in-cgroup path
@@ -1118,6 +1119,14 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid oom-score-adj: %s (expected -1000..1000)", value)
 		}
 		desc.OOMScoreAdj = &n
+
+	case "umask":
+		m, err := strconv.ParseUint(value, 8, 32)
+		if err != nil || m > 0o777 {
+			return fmt.Errorf("invalid umask: %s (expected octal 000..777)", value)
+		}
+		u := uint32(m)
+		desc.Umask = &u
 
 	case "ioprio":
 		desc.IOPrio = value

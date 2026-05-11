@@ -273,8 +273,22 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("SLINIT_CS_FD=%d", csFD))
 	}
 
+	// Per-service umask: apply just before fork so the child inherits it,
+	// then restore immediately. Safe because every StartProcess call runs
+	// serialized under ServiceSet.queueMu — no other goroutine forks or
+	// changes the process umask concurrently. Done this late so slinit's
+	// own file/dir creation above keeps the daemon's normal umask.
+	prevUmask := -1
+	if params.Umask != nil {
+		prevUmask = syscall.Umask(int(*params.Umask))
+	}
+
 	// Start the process
-	if err := cmd.Start(); err != nil {
+	err := cmd.Start()
+	if prevUmask >= 0 {
+		syscall.Umask(prevUmask)
+	}
+	if err != nil {
 		if ptySlaveFd != nil {
 			ptySlaveFd.Close()
 		}

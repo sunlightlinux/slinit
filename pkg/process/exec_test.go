@@ -285,6 +285,51 @@ func TestStartProcessSignalGroup(t *testing.T) {
 	}
 }
 
+// --- Umask test ---
+
+func TestStartProcessUmask(t *testing.T) {
+	mask := uint32(0o077)
+	params := ExecParams{
+		// The child reports its inherited umask; exit 0 only if it
+		// matches what we configured. Shells print umask either as
+		// "077" or "0077" depending on implementation — accept both.
+		Command: []string{"/bin/sh", "-c", `case "$(umask)" in 0077|077) exit 0 ;; *) exit 1 ;; esac`},
+		Umask:   &mask,
+	}
+
+	pid, ch, err := StartProcess(params)
+	if err != nil {
+		t.Fatalf("StartProcess with umask failed: %v", err)
+	}
+	if pid <= 0 {
+		t.Fatalf("expected positive PID, got %d", pid)
+	}
+
+	exit := <-ch
+	if !exit.ExitedClean() {
+		t.Errorf("child did not see umask 0077 (exit status %d)", exit.Status.ExitStatus())
+	}
+}
+
+func TestStartProcessUmaskNilLeavesProcessUmask(t *testing.T) {
+	// With Umask unset, slinit must not touch its own umask. Set a
+	// distinctive mask, start a child, confirm slinit's mask is unchanged
+	// afterwards.
+	old := syscall.Umask(0o123)
+	defer syscall.Umask(old)
+
+	_, ch, err := StartProcess(ExecParams{Command: []string{"/bin/true"}})
+	if err != nil {
+		t.Fatalf("StartProcess failed: %v", err)
+	}
+	<-ch
+
+	cur := syscall.Umask(0o123)
+	if cur != 0o123 {
+		t.Errorf("slinit umask changed to %#o, want 0o123", cur)
+	}
+}
+
 // --- Empty command test ---
 
 func TestStartProcessEmptyCommand(t *testing.T) {

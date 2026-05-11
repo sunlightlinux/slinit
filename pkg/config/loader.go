@@ -1105,6 +1105,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.OOMScoreAdj != nil {
 		rec.SetOOMScoreAdj(desc.OOMScoreAdj)
 	}
+	if desc.Umask != nil {
+		rec.SetUmask(desc.Umask)
+	}
 	if desc.NoNewPrivs {
 		rec.SetNoNewPrivs(true)
 	}

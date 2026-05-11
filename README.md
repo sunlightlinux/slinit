@@ -44,7 +44,7 @@ format to accommodate them.
 - **Service templates**: `name@argument` pattern with `$1` substitution in config
 - **Config includes**: `@include` and `@include-opt` directives for modular config
 - **Runit-inspired features**: finish-command, ready-check-command, pre-stop-hook, env-dir, control-command, chroot, new-session, lock-file, close-fds, log rotation/filtering/processor, down-file marker
-- **Upstart-derived stanzas**: `manual` (opt-in services that refuse auto-activation), `normal-exit` (exit codes / signals declared as success — suppresses respawn under `restart=on-failure`/`restart=yes`), `reload-signal` (declarative signal sent by `slinitctl reload-signal`), `author`/`version`/`usage` (informational metadata surfaced by `slinitctl status`)
+- **Upstart-derived stanzas**: `manual` (opt-in services that refuse auto-activation), `normal-exit` (exit codes / signals declared as success — suppresses respawn under `restart=on-failure`/`restart=yes`), `reload-signal` (declarative signal sent by `slinitctl reload-signal`), `umask` (per-service file-creation mask), `author`/`version`/`usage` (informational metadata surfaced by `slinitctl status`)
 - **Control socket**: binary protocol (v6) over Unix domain socket for runtime management
 - **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, is-newer-than, is-older-than, trigger, untrigger, signal, pause, continue, once, reload, reload-all, reload-signal, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, reset-env, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, action, list-actions, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
@@ -790,7 +790,7 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 70 QEMU-based integration tests
+├── tests/functional/      # 71 QEMU-based integration tests
 ├── tests/fuzz/            # 21 fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
@@ -801,7 +801,7 @@ slinit/
 # Unit tests (~850+ tests + benchmarks across 25 packages)
 go test ./...
 
-# Functional tests (70 QEMU-based integration tests)
+# Functional tests (71 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
 # Fuzz targets (21 targets across 4 files)
@@ -830,7 +830,7 @@ go test -fuzz=FuzzParseConfig ./tests/fuzz
 - [x] **Phase 18**: s6-linux-init parity -- catch-all logger, TAI64N/ISO/none timestamps, scheduled shutdown + cancel + status, wall broadcasts, `/etc/shutdown.allow` access control, configurable grace, global rlimits, RT-signal container shutdown (SIGRTMIN+3..+6), UTMPX logout + wtmp RUN_LVL shutdown, kernel cmdline snapshot, `/run` tmpfs run-mode, configurable devtmpfs, SysV argv[0] compat (`halt`/`poweroff`/`reboot`), `slinit-init-maker`, `slinit-nuke`
 - [x] **Phase 19**: OpenRC UX compat -- `rc-service`/`rc-update`/`rc-status` argv shims, `/etc/rc.conf` + `/etc/conf.d/<name>` sourcing via `sh -c` wrapper, runlevels modelled as `runlevel-<name>` services, named-runlevel dispatch (`init default|single|nonetwork|boot|sysinit`)
 - [x] **Phase 20**: Telco-readiness -- hardware watchdog (`/dev/watchdog0` kicker with magic-close disarm), Pacemaker OCF resource agent for slinit services, operator-intent snapshot persisted across soft-reboot, /run remount semantics, catch-all logger consistency between PID 1 and soft-reboot, escalating force-shutdown surfacing blockers
-- [x] **Phase 21**: Upstart-derived adaptations -- `manual` stanza (opt-in services), `normal-exit` (declared success exit codes/signals), `reload-signal` (declarative SIGHUP-style reload + `slinitctl reload-signal`), `reload-all` (bulk rescan), `reset-env` (clear per-service runtime env), `author`/`version`/`usage` metadata stanzas surfaced by `slinitctl status`; service-watchdog timeout now respects `restart=on-failure` / `restart=yes` policy
+- [x] **Phase 21**: Upstart-derived adaptations -- `manual` stanza (opt-in services), `normal-exit` (declared success exit codes/signals), `reload-signal` (declarative SIGHUP-style reload + `slinitctl reload-signal`), `reload-all` (bulk rescan), `reset-env` (clear per-service runtime env), per-service `umask`, `author`/`version`/`usage` metadata stanzas surfaced by `slinitctl status`; service-watchdog timeout now respects `restart=on-failure` / `restart=yes` policy
 
 ## License
 
