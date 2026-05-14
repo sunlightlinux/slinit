@@ -629,3 +629,27 @@ func TestUmaskFlowsToExecParams(t *testing.T) {
 		t.Errorf("Umask did not propagate: got %v", p2.Umask)
 	}
 }
+
+func TestStartOnPathSetterGetter(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "path-svc")
+	set.AddService(svc)
+	rec := svc.Record()
+
+	// Default: nothing configured.
+	if p, tr := rec.StartOnPath(); p != "" || tr != 0 {
+		t.Errorf("default StartOnPath should be empty, got (%q, %d)", p, tr)
+	}
+
+	rec.SetStartOnPath("/var/lib/foo", 3)
+	p, tr := rec.StartOnPath()
+	if p != "/var/lib/foo" || tr != 3 {
+		t.Errorf("StartOnPath mismatch: got (%q, %d), want (/var/lib/foo, 3)", p, tr)
+	}
+
+	// Clearing.
+	rec.SetStartOnPath("", 0)
+	if p, tr := rec.StartOnPath(); p != "" || tr != 0 {
+		t.Errorf("after clear, got (%q, %d), want empty", p, tr)
+	}
+}

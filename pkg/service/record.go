@@ -208,6 +208,15 @@ type ServiceRecord struct {
 	cpuAffinity []uint
 	umask       *uint32 // file-creation mask for the service process (nil = inherit slinit's)
 
+	// Path-based activation. startOnPath is the filesystem path (or
+	// directory) whose state triggers start; startOnPathTrigger names
+	// which condition (1=exists, 2=changed, 3=modified, 4=dir-not-empty).
+	// Wiring lives outside pkg/service (main.go + pkg/pathwatch) to
+	// avoid coupling the service core to inotify; this record only
+	// carries the config-time values so an external watcher can read them.
+	startOnPath        string
+	startOnPathTrigger int
+
 	// Real-time scheduling (telco / 5G data plane). Zero values keep
 	// the kernel default; only when schedPolicySet is true does the
 	// post-fork attr step issue a sched_setattr.
@@ -669,6 +678,21 @@ func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = 
 func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
 func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
 func (sr *ServiceRecord) SetUmask(m *uint32)                  { sr.umask = m }
+
+// SetStartOnPath records the path-activation configuration. trigger must
+// match the pathwatch.Trigger constants (1=exists, 2=changed,
+// 3=modified, 4=dir-not-empty). Calling with trigger=0 clears the
+// configuration.
+func (sr *ServiceRecord) SetStartOnPath(path string, trigger int) {
+	sr.startOnPath = path
+	sr.startOnPathTrigger = trigger
+}
+
+// StartOnPath returns the path-activation configuration. Empty path and
+// trigger==0 mean "not configured".
+func (sr *ServiceRecord) StartOnPath() (path string, trigger int) {
+	return sr.startOnPath, sr.startOnPathTrigger
+}
 
 // SetSchedPolicy programs the kernel scheduling policy (unix.SCHED_*).
 // Pass policySet=false to keep the inherited policy; the rest of the

@@ -19,6 +19,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/pathwatch"
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -611,6 +612,45 @@ func main() {
 
 	serviceSet.SetLoader(loader)
 
+	// Path-based activation: wire an inotify watcher for services that
+	// declare a start-on-path-* stanza. Hooked via OnServiceLoaded so
+	// both the initial boot load and dynamic `slinitctl load` produce
+	// armed watches. Re-arm on EventStopped via a per-service listener
+	// gives the systemd path-unit one-shot semantics (fires once per
+	// service-stopped cycle).
+	pathWatcher, pwErr := pathwatch.New(logger)
+	if pwErr != nil {
+		logger.Warn("Path activation disabled: %v", pwErr)
+	} else {
+		go pathWatcher.Run()
+		defer pathWatcher.Close()
+
+		serviceSet.OnServiceLoaded = func(svc service.Service) {
+			path, trig := svc.Record().StartOnPath()
+			if path == "" || trig == 0 {
+				return
+			}
+			kind := pathwatch.Trigger(trig)
+			s := svc
+			if err := pathWatcher.Add(path, kind, func() {
+				logger.Info("Service '%s': path activation fired (%s on %s)",
+					s.Name(), kind, path)
+				serviceSet.StartService(s)
+			}); err != nil {
+				logger.Warn("Service '%s': %s disabled: %v", s.Name(), kind, err)
+				return
+			}
+			s.Record().AddListener(&pathRearmListener{
+				watcher: pathWatcher, path: path, logger: logger,
+			})
+		}
+		serviceSet.OnServiceUnloaded = func(svc service.Service) {
+			if path, _ := svc.Record().StartOnPath(); path != "" {
+				pathWatcher.Remove(path)
+			}
+		}
+	}
+
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args)
 	startedAny := false
 	for _, svcName := range bootServices {
@@ -828,6 +868,25 @@ func main() {
 
 	closeWatchdog(wd, logger)
 	logger.Info("slinit shutdown complete")
+}
+
+// pathRearmListener re-arms a path-activation watch each time the
+// service becomes STOPPED. Registered per-service by the
+// OnServiceLoaded hook above; gives the watcher one-shot semantics
+// (fires once per service-stopped cycle), matching systemd path units.
+type pathRearmListener struct {
+	watcher *pathwatch.Watcher
+	path    string
+	logger  *logging.Logger
+}
+
+func (l *pathRearmListener) ServiceEvent(svc service.Service, event service.ServiceEvent) {
+	if event != service.EventStopped {
+		return
+	}
+	if err := l.watcher.Rearm(l.path); err != nil {
+		l.logger.Warn("Service '%s': path watch re-arm failed: %v", svc.Name(), err)
+	}
 }
 
 // handlePID1Shutdown performs the appropriate system action after all services

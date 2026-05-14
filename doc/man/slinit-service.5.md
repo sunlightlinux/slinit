@@ -589,6 +589,37 @@ mlockall       = current+future
 **socket-permissions**=*octal*, **socket-uid**=*N*, **socket-gid**=*N*
 :   Mode and ownership of the listening socket.
 
+## PATH-BASED ACTIVATION
+
+slinit can start a service when a filesystem condition is met, in the
+spirit of systemd path units. The four stanzas are **mutually
+exclusive** — at most one may appear per service. Each path must be
+absolute. Activation is one-shot: after the trigger fires the watch is
+re-armed only when the service returns to **STOPPED**.
+
+If the configured path (or its parent, for **start-on-path-exists**)
+does not exist at load time, slinit logs a warning and skips the
+watch; the service remains startable via `slinitctl start`.
+
+**start-on-path-exists**=*path*
+:   Fire when *path* exists. If *path* already exists at load time the
+    service starts immediately; otherwise slinit watches the parent
+    directory for *basename* to appear (via **IN_CREATE** /
+    **IN_MOVED_TO**).
+
+**start-on-path-changed**=*path*
+:   Fire when *path* is written and closed (file) or has entries
+    created/removed/renamed (directory). Uses **IN_CLOSE_WRITE** plus
+    directory mutation events.
+
+**start-on-path-modified**=*path*
+:   Like **start-on-path-changed** but also fires on every write
+    (**IN_MODIFY**), not only on close.
+
+**start-on-directory-not-empty**=*path*
+:   *path* must be an existing directory. Fires when it contains at
+    least one entry; if already non-empty at load, fires immediately.
+
 ## HEALTH CHECKS
 
 **healthcheck-command**=*program* [*args*...]

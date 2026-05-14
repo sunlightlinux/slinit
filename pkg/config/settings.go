@@ -134,6 +134,12 @@ var KnownSettings = map[string]OperatorType{
 	// per-service file-creation mask
 	"umask": OpEquals,
 
+	// path-based activation (the four are mutually exclusive per service)
+	"start-on-path-exists":         OpEquals,
+	"start-on-path-changed":        OpEquals,
+	"start-on-path-modified":       OpEquals,
+	"start-on-directory-not-empty": OpEquals,
+
 	// cpu affinity
 	"cpu-affinity": OpEquals,
 

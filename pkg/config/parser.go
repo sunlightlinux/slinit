@@ -187,6 +187,13 @@ type ServiceDescription struct {
 	Nice        *int    // -20..19
 	OOMScoreAdj *int    // -1000..1000
 	Umask       *uint32 // file-creation mask, octal 000..777
+
+	// Path-based activation. StartOnPath is empty when no trigger is
+	// configured; otherwise StartOnPathTrigger is 1..4 corresponding to
+	// pathwatch.Trigger{Exists,Changed,Modified,DirNotEmpty}. The four
+	// stanzas are mutually exclusive — setting any clears the others.
+	StartOnPath        string
+	StartOnPathTrigger int
 	NoNewPrivs  bool
 	IOPrio      string // "class:level" e.g. "be:4", "idle"
 	CgroupPath     string // run-in-cgroup path
@@ -1127,6 +1134,26 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		u := uint32(m)
 		desc.Umask = &u
+
+	case "start-on-path-exists", "start-on-path-changed",
+		"start-on-path-modified", "start-on-directory-not-empty":
+		if !filepath.IsAbs(value) {
+			return fmt.Errorf("%s: path must be absolute: %q", setting, value)
+		}
+		if desc.StartOnPathTrigger != 0 {
+			return fmt.Errorf("%s: only one start-on-* stanza is allowed per service", setting)
+		}
+		desc.StartOnPath = value
+		switch setting {
+		case "start-on-path-exists":
+			desc.StartOnPathTrigger = 1
+		case "start-on-path-changed":
+			desc.StartOnPathTrigger = 2
+		case "start-on-path-modified":
+			desc.StartOnPathTrigger = 3
+		case "start-on-directory-not-empty":
+			desc.StartOnPathTrigger = 4
+		}
 
 	case "ioprio":
 		desc.IOPrio = value

@@ -542,6 +542,54 @@ func TestParseUmaskInvalid(t *testing.T) {
 	}
 }
 
+func TestParseStartOnPath(t *testing.T) {
+	cases := []struct {
+		stanza      string
+		wantTrigger int
+	}{
+		{"start-on-path-exists", 1},
+		{"start-on-path-changed", 2},
+		{"start-on-path-modified", 3},
+		{"start-on-directory-not-empty", 4},
+	}
+	for _, c := range cases {
+		input := "type = process\ncommand = /bin/true\n" + c.stanza + " = /var/lib/foo\n"
+		desc, err := Parse(strings.NewReader(input), "test", "test-file")
+		if err != nil {
+			t.Fatalf("%s: Parse failed: %v", c.stanza, err)
+		}
+		if desc.StartOnPath != "/var/lib/foo" {
+			t.Errorf("%s: got path %q, want /var/lib/foo", c.stanza, desc.StartOnPath)
+		}
+		if desc.StartOnPathTrigger != c.wantTrigger {
+			t.Errorf("%s: got trigger %d, want %d", c.stanza, desc.StartOnPathTrigger, c.wantTrigger)
+		}
+	}
+}
+
+func TestParseStartOnPathRelative(t *testing.T) {
+	for _, stanza := range []string{
+		"start-on-path-exists",
+		"start-on-path-changed",
+		"start-on-path-modified",
+		"start-on-directory-not-empty",
+	} {
+		input := "type = process\ncommand = /bin/true\n" + stanza + " = relative/path\n"
+		if _, err := Parse(strings.NewReader(input), "test", "test-file"); err == nil {
+			t.Errorf("%s: relative path must be rejected", stanza)
+		}
+	}
+}
+
+func TestParseStartOnPathMutuallyExclusive(t *testing.T) {
+	input := "type = process\ncommand = /bin/true\n" +
+		"start-on-path-exists = /tmp/a\n" +
+		"start-on-path-modified = /tmp/b\n"
+	if _, err := Parse(strings.NewReader(input), "test", "test-file"); err == nil {
+		t.Error("expected error when two start-on-* stanzas are set on the same service")
+	}
+}
+
 func TestParseCPUAffinity(t *testing.T) {
 	tests := []struct {
 		name  string

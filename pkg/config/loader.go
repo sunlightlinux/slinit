@@ -728,6 +728,16 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Notify any external observers (e.g., the path-activation watcher)
+	// that this service has been fully loaded and configured. We fire
+	// here, after applyToService + consumer-of + shared-logger setup,
+	// so the record's StartOnPath() and other config-time fields are
+	// readable. Recursive dependency loads each fire their own
+	// notification before this caller's, which is the desired order.
+	if dl.set.OnServiceLoaded != nil {
+		dl.set.OnServiceLoaded(svc)
+	}
+
 	return svc, nil
 }
 
@@ -1107,6 +1117,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	if desc.Umask != nil {
 		rec.SetUmask(desc.Umask)
+	}
+	if desc.StartOnPathTrigger != 0 {
+		rec.SetStartOnPath(desc.StartOnPath, desc.StartOnPathTrigger)
 	}
 	if desc.NoNewPrivs {
 		rec.SetNoNewPrivs(true)

@@ -91,6 +91,14 @@ type ServiceSet struct {
 	OnRWReady   func() // called when starts-rwfs service reaches STARTED
 	OnBootReady func() // called when boot service reaches STARTED (for --ready-fd)
 
+	// Path-activation hooks. The loader invokes OnServiceLoaded after a
+	// service description has been fully applied (so StartOnPath is
+	// readable); OnServiceUnloaded fires from UnloadService. Both are
+	// wired by main.go to a pkg/pathwatch.Watcher. Keeping them as
+	// callbacks avoids importing pkg/pathwatch from pkg/service.
+	OnServiceLoaded   func(svc Service)
+	OnServiceUnloaded func(svc Service)
+
 	// Global daemon-level environment (from --env-file/-e)
 	// Protected by envMu for concurrent access from control socket goroutines.
 	// globalEnvVer is bumped on every mutation; readers cache (snapshot, ver)
@@ -225,6 +233,9 @@ func (ss *ServiceSet) RemoveService(svc Service) {
 func (ss *ServiceSet) UnloadService(svc Service) {
 	svc.Record().PrepareForUnload()
 	ss.RemoveService(svc)
+	if ss.OnServiceUnloaded != nil {
+		ss.OnServiceUnloaded(svc)
+	}
 }
 
 // ListServices returns all loaded services.
