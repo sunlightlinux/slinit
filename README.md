@@ -46,6 +46,7 @@ format to accommodate them.
 - **Runit-inspired features**: finish-command, ready-check-command, pre-stop-hook, env-dir, control-command, chroot, new-session, lock-file, close-fds, log rotation/filtering/processor, down-file marker
 - **Upstart-derived stanzas**: `manual` (opt-in services that refuse auto-activation), `normal-exit` (exit codes / signals declared as success — suppresses respawn under `restart=on-failure`/`restart=yes`), `reload-signal` (declarative signal sent by `slinitctl reload-signal`), `umask` (per-service file-creation mask), `author`/`version`/`usage` (informational metadata surfaced by `slinitctl status`)
 - **Path activation**: `start-on-path-exists`, `start-on-path-changed`, `start-on-path-modified`, `start-on-directory-not-empty` — inotify-driven, systemd-style one-shot triggers that start a service when a filesystem condition is met
+- **`.override` drop-ins**: an upstart-style `<service>.override` file next to the service file tweaks a packaged service's stanzas (scalars replace, `+=` appends) without editing the shipped file; applied after conf.d overlays so it has the final say
 - **Control socket**: binary protocol (v6) over Unix domain socket for runtime management
 - **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, is-newer-than, is-older-than, trigger, untrigger, signal, pause, continue, once, reload, reload-all, reload-signal, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, reset-env, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, action, list-actions, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
@@ -791,7 +792,7 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 72 QEMU-based integration tests
+├── tests/functional/      # 73 QEMU-based integration tests
 ├── tests/fuzz/            # 21 fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
@@ -802,7 +803,7 @@ slinit/
 # Unit tests (~850+ tests + benchmarks across 25 packages)
 go test ./...
 
-# Functional tests (72 QEMU-based integration tests)
+# Functional tests (73 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
 # Fuzz targets (21 targets across 4 files)
@@ -833,6 +834,7 @@ go test -fuzz=FuzzParseConfig ./tests/fuzz
 - [x] **Phase 20**: Telco-readiness -- hardware watchdog (`/dev/watchdog0` kicker with magic-close disarm), Pacemaker OCF resource agent for slinit services, operator-intent snapshot persisted across soft-reboot, /run remount semantics, catch-all logger consistency between PID 1 and soft-reboot, escalating force-shutdown surfacing blockers
 - [x] **Phase 21**: Upstart-derived adaptations -- `manual` stanza (opt-in services), `normal-exit` (declared success exit codes/signals), `reload-signal` (declarative SIGHUP-style reload + `slinitctl reload-signal`), `reload-all` (bulk rescan), `reset-env` (clear per-service runtime env), per-service `umask`, `author`/`version`/`usage` metadata stanzas surfaced by `slinitctl status`; service-watchdog timeout now respects `restart=on-failure` / `restart=yes` policy
 - [x] **Phase 22**: Path-based activation -- inotify-driven `start-on-path-exists` / `start-on-path-changed` / `start-on-path-modified` / `start-on-directory-not-empty` stanzas with systemd-style one-shot semantics (re-armed on `EventStopped`); single global watcher serves all services via the new `pkg/pathwatch` package
+- [x] **Phase 23**: Upstart-style `.override` drop-ins -- a sibling `<service>.override` file modifies a packaged service's stanzas (scalars replace, `+=` appends) without editing the shipped file; parsed after conf.d overlays so it has the final say, with template `$1` substitution preserved
 
 ## License
 

@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "echo base > /tmp/override-result; while true; do sleep 60; done"
+description = base config
+depends-on: system-init

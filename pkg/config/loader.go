@@ -786,6 +786,11 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 			if err := dl.applyOverlays(desc, name, baseName, serviceArg); err != nil {
 				return nil, "", err
 			}
+			// Apply a sibling <service>.override file last, so the
+			// upstart-style same-directory override has the final say.
+			if err := dl.applySiblingOverride(desc, name, path, serviceArg); err != nil {
+				return nil, "", err
+			}
 			return desc, path, nil
 		}
 	}
@@ -860,6 +865,31 @@ func (dl *DirLoader) applyOverlays(desc *ServiceDescription, name, baseName stri
 		}
 	}
 	return nil
+}
+
+// applySiblingOverride applies an optional "<basePath>.override" file that
+// sits in the same directory as the service file. This is upstart's
+// `.override` mechanism: a drop-in that modifies stanzas of an existing
+// service without editing the shipped file (so a distribution's packaged
+// service survives operator tweaks without conffile conflicts). It reuses
+// the overlay parser, so scalar settings replace and `+=` settings append.
+// For templates the override sits next to the resolved base file and so
+// applies to every instance. A missing override file is not an error; a
+// parse error inside one is fatal.
+func (dl *DirLoader) applySiblingOverride(desc *ServiceDescription, name, basePath string, serviceArg *string) error {
+	overridePath := basePath + ".override"
+	f, err := os.Open(overridePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return &ServiceLoadError{
+			ServiceName: name,
+			Message:     fmt.Sprintf("error reading override %s: %v", overridePath, err),
+		}
+	}
+	defer f.Close()
+	return ParseOverlay(f, name, overridePath, desc, serviceArg)
 }
 
 func (dl *DirLoader) createService(name string, desc *ServiceDescription) service.Service {

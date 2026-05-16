@@ -1,0 +1,2 @@
+command = /bin/sh -c "echo overridden > /tmp/override-result; while true; do sleep 60; done"
+description = overridden config

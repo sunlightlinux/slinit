@@ -62,6 +62,19 @@ Files dropped into */etc/slinit.conf.d/*\*service-name*\*` are loaded
 override scalars or append (`+=`) to lists. Overlays do not need to
 exist; if they do, they may not change the service type.
 
+### .override files
+
+A file named *\*service-name*\*.override* sitting in the **same
+directory** as the service file is an upstart-style drop-in: it lets
+an operator tweak a distribution-packaged service without editing the
+shipped file (so package upgrades don't conflict). It is parsed with
+the full grammar *after* both the main file and any conf.d overlays,
+so it has the final say on scalar conflicts; `+=` still appends. The
+override file is optional, but if present a parse error in it is
+fatal. For templates the override sits next to the resolved base file
+(e.g. *worker.override* for `worker@foo`) and applies to every
+instance, with *$1* substitution still in effect.
+
 ## SERVICE TYPES (`type=`)
 
 **process**
