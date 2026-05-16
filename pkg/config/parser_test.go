@@ -306,10 +306,10 @@ func TestParseNormalExit(t *testing.T) {
 		{"SIGUSR1", nil, []syscall.Signal{syscall.SIGUSR1}, false},
 		{"42", []int{42}, nil, false},
 		{"0 SIGTERM TERM", []int{0}, []syscall.Signal{syscall.SIGTERM, syscall.SIGTERM}, false},
-		{"", nil, nil, false},                  // empty → reset
-		{"256", nil, nil, true},                // out of range
-		{"-1", nil, nil, true},                 // out of range
-		{"SIGFOO", nil, nil, true},             // unknown signal
+		{"", nil, nil, false},      // empty → reset
+		{"256", nil, nil, true},    // out of range
+		{"-1", nil, nil, true},     // out of range
+		{"SIGFOO", nil, nil, true}, // unknown signal
 		{"0   2 \t SIGTERM", []int{0, 2}, []syscall.Signal{syscall.SIGTERM}, false}, // whitespace OK
 	}
 	for _, c := range cases {
@@ -927,13 +927,13 @@ func TestExpandEnvVarsNonColonOp(t *testing.T) {
 		// ${VAR-default} — use default only if unset (empty is OK)
 		{"${SLINIT_TEST_SET-fallback}", "value123"},
 		{"${SLINIT_TEST_UNSET-fallback}", "fallback"},
-		{"${SLINIT_TEST_EMPTY-fallback}", ""},           // empty is set, so no fallback
+		{"${SLINIT_TEST_EMPTY-fallback}", ""}, // empty is set, so no fallback
 		{"pre-${SLINIT_TEST_UNSET-/path}-suf", "pre-/path-suf"},
 
 		// ${VAR+alt} — use alt if set (even if empty)
 		{"${SLINIT_TEST_SET+alt}", "alt"},
-		{"${SLINIT_TEST_UNSET+alt}", ""},                // unset → no alt
-		{"${SLINIT_TEST_EMPTY+alt}", "alt"},             // empty but set → alt
+		{"${SLINIT_TEST_UNSET+alt}", ""},    // unset → no alt
+		{"${SLINIT_TEST_EMPTY+alt}", "alt"}, // empty but set → alt
 		{"pre-${SLINIT_TEST_EMPTY+YES}-post", "pre-YES-post"},
 		{"pre-${SLINIT_TEST_UNSET+YES}-post", "pre--post"},
 
@@ -1711,9 +1711,9 @@ func TestParseIDMappingInvalid(t *testing.T) {
 	tests := []string{
 		"",
 		"0:1000",
-		"0:1000:0",      // size must be > 0
-		"-1:1000:1",     // negative container id
-		"abc:1000:1",    // non-numeric
+		"0:1000:0",       // size must be > 0
+		"-1:1000:1",      // negative container id
+		"abc:1000:1",     // non-numeric
 		"0:1000:1:extra", // too many parts (SplitN limits to 3, so "1:extra" fails Atoi)
 	}
 	for _, s := range tests {

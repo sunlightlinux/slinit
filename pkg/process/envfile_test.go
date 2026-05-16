@@ -27,10 +27,10 @@ MULTI_EQ=a=b=c
 	}
 
 	tests := map[string]string{
-		"FOO":       "bar",
-		"BAZ":       "qux",
-		"EMPTY":     "",
-		"MULTI_EQ":  "a=b=c",
+		"FOO":      "bar",
+		"BAZ":      "qux",
+		"EMPTY":    "",
+		"MULTI_EQ": "a=b=c",
 	}
 	for k, want := range tests {
 		got, ok := env[k]

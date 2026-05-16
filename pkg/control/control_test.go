@@ -16,9 +16,9 @@ import (
 // testLogger implements service.ServiceLogger for tests.
 type testLogger struct{}
 
-func (l *testLogger) ServiceStarted(name string)              {}
-func (l *testLogger) ServiceStopped(name string)              {}
-func (l *testLogger) ServiceFailed(name string, dep bool)     {}
+func (l *testLogger) ServiceStarted(name string)               {}
+func (l *testLogger) ServiceStopped(name string)               {}
+func (l *testLogger) ServiceFailed(name string, dep bool)      {}
 func (l *testLogger) Error(format string, args ...interface{}) {}
 func (l *testLogger) Info(format string, args ...interface{})  {}
 

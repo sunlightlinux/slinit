@@ -218,8 +218,8 @@ func TestMapFacility(t *testing.T) {
 		{"$remote_fs", "remote-fs"},
 		{"$local_fs", "local-fs"},
 		{"$time", "time-sync"},
-		{"$all", ""},             // skip
-		{"nginx", "nginx"},       // passthrough
+		{"$all", ""},                 // skip
+		{"nginx", "nginx"},           // passthrough
 		{"my-service", "my-service"}, // passthrough
 	}
 	for _, tt := range tests {

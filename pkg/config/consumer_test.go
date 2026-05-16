@@ -201,9 +201,9 @@ func TestSharedLoggerMissingLogger(t *testing.T) {
 
 type testConsumerLogger struct{}
 
-func (l *testConsumerLogger) ServiceStarted(name string)              {}
-func (l *testConsumerLogger) ServiceStopped(name string)              {}
-func (l *testConsumerLogger) ServiceFailed(name string, dep bool)     {}
+func (l *testConsumerLogger) ServiceStarted(name string)               {}
+func (l *testConsumerLogger) ServiceStopped(name string)               {}
+func (l *testConsumerLogger) ServiceFailed(name string, dep bool)      {}
 func (l *testConsumerLogger) Error(format string, args ...interface{}) {}
 func (l *testConsumerLogger) Info(format string, args ...interface{})  {}
 

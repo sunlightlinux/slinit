@@ -16,12 +16,12 @@ import (
 )
 
 const (
-	defaultStopTimeout      = 10 * time.Second
-	defaultStartTimeout     = 60 * time.Second
-	defaultRestartDelay     = 200 * time.Millisecond
-	defaultRestartInterval  = 10 * time.Second
-	defaultMaxRestarts      = 3
-	defaultFinishTimeout    = 5 * time.Second
+	defaultStopTimeout        = 10 * time.Second
+	defaultStartTimeout       = 60 * time.Second
+	defaultRestartDelay       = 200 * time.Millisecond
+	defaultRestartInterval    = 10 * time.Second
+	defaultMaxRestarts        = 3
+	defaultFinishTimeout      = 5 * time.Second
 	defaultReadyCheckInterval = time.Second
 )
 
@@ -32,10 +32,10 @@ type ProcessService struct {
 	// Command configuration
 	command            []string
 	stopCommand        []string
-	finishCommand      []string      // runs after process exits (before restart decision)
-	readyCheckCommand  []string      // polls to verify service readiness
-	readyCheckInterval time.Duration // polling interval (default 1s)
-	preStopHook        []string      // runs before SIGTERM in BringDown
+	finishCommand      []string            // runs after process exits (before restart decision)
+	readyCheckCommand  []string            // polls to verify service readiness
+	readyCheckInterval time.Duration       // polling interval (default 1s)
+	preStopHook        []string            // runs before SIGTERM in BringDown
 	controlCommands    map[string][]string // signal name → custom command
 	workingDir         string
 	envFile            string
@@ -84,17 +84,17 @@ type ProcessService struct {
 	paused           bool // true when service is SIGSTOP'd (pause/continue)
 
 	// Socket activation
-	socketFD  *os.File   // primary listening socket (fd 3, nil if no socket-listen)
-	socketFDs []*os.File // additional sockets (fd 4, 5, ... for multiple socket-listen)
-	socketOnDemand bool  // start service on first connection (socket-activation = on-demand)
+	socketFD         *os.File      // primary listening socket (fd 3, nil if no socket-listen)
+	socketFDs        []*os.File    // additional sockets (fd 4, 5, ... for multiple socket-listen)
+	socketOnDemand   bool          // start service on first connection (socket-activation = on-demand)
 	socketDemandStop chan struct{} // signal to stop on-demand watcher
 	socketDemandDone chan struct{} // closed when watcher goroutine exits
 	socketDemandLn   net.Listener  // listener owned by watcher; closed to break Accept
 
 	// Readiness notification
-	readyNotifyFD  int      // fd number child writes to (-1 if none)
-	readyNotifyVar string   // env var name ("" if none)
-	readyPipeRead  *os.File // read-end of notification pipe (parent watches)
+	readyNotifyFD  int       // fd number child writes to (-1 if none)
+	readyNotifyVar string    // env var name ("" if none)
+	readyPipeRead  *os.File  // read-end of notification pipe (parent watches)
 	readyCh        chan bool // receives true=ready, false=EOF/error
 
 	// Service-level watchdog. Piggybacks on the ready-notification pipe:
@@ -128,10 +128,10 @@ type ProcessService struct {
 	// When set, stdout (and stderr unless errorLogger is set) is piped
 	// to the output-logger command. If errorLogger is set, stderr is
 	// piped to it separately.
-	outputLogger []string   // command + args for stdout logger
-	errorLogger  []string   // command + args for stderr logger (optional)
-	loggerCmd    *exec.Cmd  // running output-logger process
-	errLoggerCmd *exec.Cmd  // running error-logger process
+	outputLogger []string  // command + args for stdout logger
+	errorLogger  []string  // command + args for stderr logger (optional)
+	loggerCmd    *exec.Cmd // running output-logger process
+	errLoggerCmd *exec.Cmd // running error-logger process
 
 	// Cron-like periodic task
 	cronRunner *CronRunner

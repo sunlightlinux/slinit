@@ -26,7 +26,9 @@ const (
 )
 
 // version is injected at build time via:
-//   go build -ldflags "-X main.version=v1.10.10" ./cmd/slinitctl
+//
+//	go build -ldflags "-X main.version=v1.10.10" ./cmd/slinitctl
+//
 // Local builds without ldflags report "dev".
 var version = "dev"
 
@@ -2522,7 +2524,8 @@ func cmdDependents(conn net.Conn, name string) error {
 // a DOT-format directed graph suitable for Graphviz visualization.
 //
 // Usage: slinitctl graph | dot -Tpng -o services.png
-//        slinitctl graph | dot -Tsvg -o services.svg
+//
+//	slinitctl graph | dot -Tsvg -o services.svg
 func cmdGraph(conn net.Conn) error {
 	// Phase 1: list all services (collect names + handles)
 	type svcEntry struct {
@@ -3269,4 +3272,3 @@ func restoreTerminal(fd int, state *syscall.Termios) {
 	syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
 		uintptr(syscall.TCSETS), uintptr(unsafe.Pointer(state)), 0, 0, 0)
 }
-

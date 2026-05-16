@@ -17,20 +17,20 @@ import (
 //   - After maxFailures consecutive failures, the service is restarted
 //     (by signaling the parent to stop, letting auto-restart handle it).
 type HealthChecker struct {
-	command     []string      // health check command (exit 0 = healthy)
-	interval    time.Duration // time between checks
-	delay       time.Duration // initial delay before first check
-	maxFailures int           // consecutive failures before restart (0 = never restart)
-	unhealthyCmd []string     // command to run on each failure
+	command      []string      // health check command (exit 0 = healthy)
+	interval     time.Duration // time between checks
+	delay        time.Duration // initial delay before first check
+	maxFailures  int           // consecutive failures before restart (0 = never restart)
+	unhealthyCmd []string      // command to run on each failure
 
 	svc    Service
 	logger ServiceLogger
 	onFail func() // called when maxFailures reached (triggers service restart)
 
-	mu         sync.Mutex
-	failures   int           // consecutive failure count
-	stopCh     chan struct{}
-	doneCh     chan struct{}
+	mu       sync.Mutex
+	failures int // consecutive failure count
+	stopCh   chan struct{}
+	doneCh   chan struct{}
 }
 
 // NewHealthChecker creates a new health checker.

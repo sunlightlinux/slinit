@@ -31,24 +31,24 @@ var (
 	// Size of an int/pointer for ioctl encoding (platform-dependent).
 	ioctlIntSize = uint32(unsafe.Sizeof(int(0)))
 
-	AUTOFS_IOC_READY        = uintptr(iocMagic<<8 | 0x60)                                        // _IO(0x93, 0x60)
-	AUTOFS_IOC_FAIL         = uintptr(iocMagic<<8 | 0x61)                                        // _IO(0x93, 0x61)
-	AUTOFS_IOC_CATATONIC    = uintptr(iocMagic<<8 | 0x62)                                        // _IO(0x93, 0x62)
-	AUTOFS_IOC_PROTOVER     = uintptr(2<<30 | uint32(ioctlIntSize)<<16 | iocMagic<<8 | 0x63)     // _IOR(0x93, 0x63, int)
-	AUTOFS_IOC_SETTIMEOUT   = uintptr(3<<30 | uint32(unsafe.Sizeof(uint64(0)))<<16 | iocMagic<<8 | 0x64) // _IOWR(0x93, 0x64, ulong)
+	AUTOFS_IOC_READY        = uintptr(iocMagic<<8 | 0x60)                                                         // _IO(0x93, 0x60)
+	AUTOFS_IOC_FAIL         = uintptr(iocMagic<<8 | 0x61)                                                         // _IO(0x93, 0x61)
+	AUTOFS_IOC_CATATONIC    = uintptr(iocMagic<<8 | 0x62)                                                         // _IO(0x93, 0x62)
+	AUTOFS_IOC_PROTOVER     = uintptr(2<<30 | uint32(ioctlIntSize)<<16 | iocMagic<<8 | 0x63)                      // _IOR(0x93, 0x63, int)
+	AUTOFS_IOC_SETTIMEOUT   = uintptr(3<<30 | uint32(unsafe.Sizeof(uint64(0)))<<16 | iocMagic<<8 | 0x64)          // _IOWR(0x93, 0x64, ulong)
 	AUTOFS_IOC_EXPIRE       = uintptr(2<<30 | uint32(unsafe.Sizeof(AutofsExpireArgs{}))<<16 | iocMagic<<8 | 0x65) // _IOR(0x93, 0x65, autofs_expire)
-	AUTOFS_IOC_EXPIRE_MULTI = uintptr(iocMagic<<8 | 0x66)                                        // _IOW(0x93, 0x66, int) -- but arg is 0/flags, use _IO
+	AUTOFS_IOC_EXPIRE_MULTI = uintptr(iocMagic<<8 | 0x66)                                                         // _IOW(0x93, 0x66, int) -- but arg is 0/flags, use _IO
 )
 
 // Packet types in autofs v5.
 const (
-	PktTypeMissing        = 0
-	PktTypeExpire         = 1
-	PktTypeExpireMulti    = 2
-	PktTypeMissingIndirect  = 3
-	PktTypeExpireIndirect   = 4
-	PktTypeMissingDirect    = 5
-	PktTypeExpireDirect     = 6
+	PktTypeMissing         = 0
+	PktTypeExpire          = 1
+	PktTypeExpireMulti     = 2
+	PktTypeMissingIndirect = 3
+	PktTypeExpireIndirect  = 4
+	PktTypeMissingDirect   = 5
+	PktTypeExpireDirect    = 6
 )
 
 // Mount types for autofs.

@@ -28,12 +28,12 @@ const (
 //
 // Inspired by s6-linux-init's catch-all logger (s6-svscan-log).
 type CatchAllLogger struct {
-	pipeR    *os.File // read end of the capture pipe
-	pipeW    *os.File // write end (replaces fd 1 & 2)
-	console  *os.File // original console (saved before redirect)
-	logFile  *os.File // persistent log file
-	logPath  string
-	wg       sync.WaitGroup
+	pipeR     *os.File // read end of the capture pipe
+	pipeW     *os.File // write end (replaces fd 1 & 2)
+	console   *os.File // original console (saved before redirect)
+	logFile   *os.File // persistent log file
+	logPath   string
+	wg        sync.WaitGroup
 	closeOnce sync.Once
 }
 

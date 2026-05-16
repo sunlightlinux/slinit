@@ -1,10 +1,11 @@
 // slinit-shutdown: standalone shutdown utility for slinit.
 //
 // Can be invoked as:
-//   slinit-shutdown [-r|-h|-p|-s|-k] [--system] [--use-passed-cfd]
-//   slinit-reboot      (symlink — defaults to reboot)
-//   slinit-halt        (symlink — defaults to halt)
-//   slinit-soft-reboot (symlink — defaults to soft-reboot)
+//
+//	slinit-shutdown [-r|-h|-p|-s|-k] [--system] [--use-passed-cfd]
+//	slinit-reboot      (symlink — defaults to reboot)
+//	slinit-halt        (symlink — defaults to halt)
+//	slinit-soft-reboot (symlink — defaults to soft-reboot)
 //
 // When invoked without --system, it connects to the slinit daemon via
 // the control socket and issues a shutdown command. With --system, it

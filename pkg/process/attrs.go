@@ -14,9 +14,9 @@ import (
 
 // Linux syscall numbers not in Go's syscall package.
 const (
-	sysPrlimit64  = 302 // SYS_prlimit64 (amd64)
-	sysIoprioSet  = 251 // SYS_ioprio_set (amd64)
-	sysPrctl      = 157 // SYS_prctl (amd64)
+	sysPrlimit64 = 302 // SYS_prlimit64 (amd64)
+	sysIoprioSet = 251 // SYS_ioprio_set (amd64)
+	sysPrctl     = 157 // SYS_prctl (amd64)
 
 	ioprioWhoProcess = 1
 	prSetNoNewPrivs  = 38

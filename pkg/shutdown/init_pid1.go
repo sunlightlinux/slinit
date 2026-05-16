@@ -381,10 +381,10 @@ func isChildSubreaper() (bool, error) {
 // cause it to stop or interfere with process management.
 func ignoreTerminalSignals() {
 	signal.Ignore(
-		syscall.SIGTSTP,  // Terminal stop (Ctrl+Z)
-		syscall.SIGTTIN,  // Background process attempting read
-		syscall.SIGTTOU,  // Background process attempting write
-		syscall.SIGPIPE,  // Broken pipe
+		syscall.SIGTSTP, // Terminal stop (Ctrl+Z)
+		syscall.SIGTTIN, // Background process attempting read
+		syscall.SIGTTOU, // Background process attempting write
+		syscall.SIGPIPE, // Broken pipe
 	)
 }
 

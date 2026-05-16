@@ -16,8 +16,8 @@ type testLogger struct {
 	errors  []string
 }
 
-func (l *testLogger) ServiceStarted(name string) { l.started = append(l.started, name) }
-func (l *testLogger) ServiceStopped(name string) { l.stopped = append(l.stopped, name) }
+func (l *testLogger) ServiceStarted(name string)        { l.started = append(l.started, name) }
+func (l *testLogger) ServiceStopped(name string)        { l.stopped = append(l.stopped, name) }
 func (l *testLogger) ServiceFailed(name string, _ bool) { l.failed = append(l.failed, name) }
 func (l *testLogger) Error(format string, args ...interface{}) {
 	l.errors = append(l.errors, format)

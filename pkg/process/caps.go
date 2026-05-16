@@ -9,46 +9,46 @@ import (
 // Linux capability constants.
 // These correspond to CAP_* values from <linux/capability.h>.
 const (
-	CapChown            = 0
-	CapDacOverride      = 1
-	CapDacReadSearch    = 2
-	CapFowner           = 3
-	CapFsetid           = 4
-	CapKill             = 5
-	CapSetgid           = 6
-	CapSetuid           = 7
-	CapSetpcap          = 8
-	CapLinuxImmutable   = 9
-	CapNetBindService   = 10
-	CapNetBroadcast     = 11
-	CapNetAdmin         = 12
-	CapNetRaw           = 13
-	CapIpcLock          = 14
-	CapIpcOwner         = 15
-	CapSysModule        = 16
-	CapSysRawio         = 17
-	CapSysChroot        = 18
-	CapSysPtrace        = 19
-	CapSysPacct         = 20
-	CapSysAdmin         = 21
-	CapSysBoot          = 22
-	CapSysNice          = 23
-	CapSysResource      = 24
-	CapSysTime          = 25
-	CapSysTtyConfig     = 26
-	CapMknod            = 27
-	CapLease            = 28
-	CapAuditWrite       = 29
-	CapAuditControl     = 30
-	CapSetfcap          = 31
-	CapMacOverride      = 32
-	CapMacAdmin         = 33
-	CapSyslog           = 34
-	CapWakeAlarm        = 35
-	CapBlockSuspend     = 36
-	CapAuditRead        = 37
-	CapPerfmon          = 38
-	CapBpf              = 39
+	CapChown             = 0
+	CapDacOverride       = 1
+	CapDacReadSearch     = 2
+	CapFowner            = 3
+	CapFsetid            = 4
+	CapKill              = 5
+	CapSetgid            = 6
+	CapSetuid            = 7
+	CapSetpcap           = 8
+	CapLinuxImmutable    = 9
+	CapNetBindService    = 10
+	CapNetBroadcast      = 11
+	CapNetAdmin          = 12
+	CapNetRaw            = 13
+	CapIpcLock           = 14
+	CapIpcOwner          = 15
+	CapSysModule         = 16
+	CapSysRawio          = 17
+	CapSysChroot         = 18
+	CapSysPtrace         = 19
+	CapSysPacct          = 20
+	CapSysAdmin          = 21
+	CapSysBoot           = 22
+	CapSysNice           = 23
+	CapSysResource       = 24
+	CapSysTime           = 25
+	CapSysTtyConfig      = 26
+	CapMknod             = 27
+	CapLease             = 28
+	CapAuditWrite        = 29
+	CapAuditControl      = 30
+	CapSetfcap           = 31
+	CapMacOverride       = 32
+	CapMacAdmin          = 33
+	CapSyslog            = 34
+	CapWakeAlarm         = 35
+	CapBlockSuspend      = 36
+	CapAuditRead         = 37
+	CapPerfmon           = 38
+	CapBpf               = 39
 	CapCheckpointRestore = 40
 )
 
@@ -140,26 +140,26 @@ func ParseCapabilities(s string) ([]uintptr, error) {
 
 // Securebits constants from <linux/securebits.h>.
 const (
-	SecbitNoroot             uint32 = 1 << 0
-	SecbitNorootLocked       uint32 = 1 << 1
-	SecbitNoSetuidFixup      uint32 = 1 << 2
-	SecbitNoSetuidFixupLocked uint32 = 1 << 3
-	SecbitKeepCaps           uint32 = 1 << 4
-	SecbitKeepCapsLocked     uint32 = 1 << 5
-	SecbitNoCapAmbientRaise  uint32 = 1 << 6
+	SecbitNoroot                  uint32 = 1 << 0
+	SecbitNorootLocked            uint32 = 1 << 1
+	SecbitNoSetuidFixup           uint32 = 1 << 2
+	SecbitNoSetuidFixupLocked     uint32 = 1 << 3
+	SecbitKeepCaps                uint32 = 1 << 4
+	SecbitKeepCapsLocked          uint32 = 1 << 5
+	SecbitNoCapAmbientRaise       uint32 = 1 << 6
 	SecbitNoCapAmbientRaiseLocked uint32 = 1 << 7
 )
 
 // secbitNames maps securebits string names to their values.
 var secbitNames = map[string]uint32{
-	"noroot":                       SecbitNoroot,
-	"noroot-locked":                SecbitNorootLocked,
-	"no-setuid-fixup":              SecbitNoSetuidFixup,
-	"no-setuid-fixup-locked":       SecbitNoSetuidFixupLocked,
-	"keep-caps":                    SecbitKeepCaps,
-	"keep-caps-locked":             SecbitKeepCapsLocked,
-	"no-cap-ambient-raise":         SecbitNoCapAmbientRaise,
-	"no-cap-ambient-raise-locked":  SecbitNoCapAmbientRaiseLocked,
+	"noroot":                      SecbitNoroot,
+	"noroot-locked":               SecbitNorootLocked,
+	"no-setuid-fixup":             SecbitNoSetuidFixup,
+	"no-setuid-fixup-locked":      SecbitNoSetuidFixupLocked,
+	"keep-caps":                   SecbitKeepCaps,
+	"keep-caps-locked":            SecbitKeepCapsLocked,
+	"no-cap-ambient-raise":        SecbitNoCapAmbientRaise,
+	"no-cap-ambient-raise-locked": SecbitNoCapAmbientRaiseLocked,
 }
 
 // ParseSecurebits parses a space-separated list of securebits flag names

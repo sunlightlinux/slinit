@@ -28,8 +28,8 @@ type sharedLogProducer struct {
 	name   string
 	pipeR  *os.File      // read-end of producer's output pipe
 	pipeW  *os.File      // write-end passed to producer's stdout
-	stopCh chan struct{}  // closed to signal reader to stop
-	doneCh chan struct{}  // closed when reader goroutine exits
+	stopCh chan struct{} // closed to signal reader to stop
+	doneCh chan struct{} // closed when reader goroutine exits
 }
 
 // NewSharedLogMux creates a new multiplexer. It creates the internal pipe

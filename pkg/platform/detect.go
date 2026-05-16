@@ -16,24 +16,24 @@ import (
 type Type string
 
 const (
-	None          Type = ""              // bare metal / unknown
-	Docker        Type = "docker"        // Docker container
-	Podman        Type = "podman"        // Podman container
-	LXC           Type = "lxc"          // Linux Containers
+	None          Type = ""               // bare metal / unknown
+	Docker        Type = "docker"         // Docker container
+	Podman        Type = "podman"         // Podman container
+	LXC           Type = "lxc"            // Linux Containers
 	SystemdNspawn Type = "systemd-nspawn" // systemd-nspawn container
-	OpenVZ        Type = "openvz"        // OpenVZ container
-	Vserver       Type = "vserver"       // Linux VServer
-	RKT           Type = "rkt"          // CoreOS rkt
-	UML           Type = "uml"          // User-Mode Linux
-	WSL           Type = "wsl"          // Windows Subsystem for Linux
-	Xen0          Type = "xen0"         // Xen Dom0 (control domain)
-	XenU          Type = "xenu"         // Xen DomU (guest domain)
-	KVM           Type = "kvm"          // KVM hypervisor guest
-	QEMU          Type = "qemu"         // QEMU-TCG guest (no KVM)
-	VMware        Type = "vmware"       // VMware guest
-	HyperV        Type = "microsoft"    // Hyper-V guest
-	VirtualBox    Type = "oracle"       // VirtualBox guest
-	Bochs         Type = "bochs"        // Bochs emulator
+	OpenVZ        Type = "openvz"         // OpenVZ container
+	Vserver       Type = "vserver"        // Linux VServer
+	RKT           Type = "rkt"            // CoreOS rkt
+	UML           Type = "uml"            // User-Mode Linux
+	WSL           Type = "wsl"            // Windows Subsystem for Linux
+	Xen0          Type = "xen0"           // Xen Dom0 (control domain)
+	XenU          Type = "xenu"           // Xen DomU (guest domain)
+	KVM           Type = "kvm"            // KVM hypervisor guest
+	QEMU          Type = "qemu"           // QEMU-TCG guest (no KVM)
+	VMware        Type = "vmware"         // VMware guest
+	HyperV        Type = "microsoft"      // Hyper-V guest
+	VirtualBox    Type = "oracle"         // VirtualBox guest
+	Bochs         Type = "bochs"          // Bochs emulator
 )
 
 // AllTypes returns all known platform types for validation.

@@ -9,7 +9,7 @@ import (
 
 func TestHealthChecker_Healthy(t *testing.T) {
 	set, _ := newTestSet()
-	svc := NewInternalService(set,"hc-healthy")
+	svc := NewInternalService(set, "hc-healthy")
 
 	marker := filepath.Join(t.TempDir(), "healthy")
 	hc := NewHealthChecker(svc, []string{"/bin/sh", "-c", "echo ok > " + marker},
@@ -29,7 +29,7 @@ func TestHealthChecker_Healthy(t *testing.T) {
 
 func TestHealthChecker_Failure(t *testing.T) {
 	set, _ := newTestSet()
-	svc := NewInternalService(set,"hc-fail")
+	svc := NewInternalService(set, "hc-fail")
 
 	hc := NewHealthChecker(svc, []string{"/bin/sh", "-c", "exit 1"},
 		50*time.Millisecond, 0, 0, nil, set.logger, nil)
@@ -45,7 +45,7 @@ func TestHealthChecker_Failure(t *testing.T) {
 
 func TestHealthChecker_MaxFailuresRestart(t *testing.T) {
 	set, _ := newTestSet()
-	svc := NewInternalService(set,"hc-restart")
+	svc := NewInternalService(set, "hc-restart")
 
 	restartCalled := false
 	onFail := func() { restartCalled = true }
@@ -64,7 +64,7 @@ func TestHealthChecker_MaxFailuresRestart(t *testing.T) {
 
 func TestHealthChecker_RecoveryResetsCounter(t *testing.T) {
 	set, _ := newTestSet()
-	svc := NewInternalService(set,"hc-recover")
+	svc := NewInternalService(set, "hc-recover")
 
 	// Command that fails once then succeeds
 	dir := t.TempDir()
@@ -89,7 +89,7 @@ func TestHealthChecker_RecoveryResetsCounter(t *testing.T) {
 
 func TestHealthChecker_UnhealthyCommand(t *testing.T) {
 	set, _ := newTestSet()
-	svc := NewInternalService(set,"hc-unhealthy")
+	svc := NewInternalService(set, "hc-unhealthy")
 
 	marker := filepath.Join(t.TempDir(), "unhealthy-ran")
 	unhealthyCmd := []string{"/bin/sh", "-c", "touch " + marker}
@@ -108,7 +108,7 @@ func TestHealthChecker_UnhealthyCommand(t *testing.T) {
 
 func TestHealthChecker_InitialDelay(t *testing.T) {
 	set, _ := newTestSet()
-	svc := NewInternalService(set,"hc-delay")
+	svc := NewInternalService(set, "hc-delay")
 
 	marker := filepath.Join(t.TempDir(), "delayed")
 	hc := NewHealthChecker(svc, []string{"/bin/sh", "-c", "touch " + marker},
@@ -132,7 +132,7 @@ func TestHealthChecker_InitialDelay(t *testing.T) {
 
 func TestHealthChecker_DoubleStartStop(t *testing.T) {
 	set, _ := newTestSet()
-	svc := NewInternalService(set,"hc-double")
+	svc := NewInternalService(set, "hc-double")
 
 	hc := NewHealthChecker(svc, []string{"/bin/true"}, time.Second, 0, 0, nil, set.logger, nil)
 

@@ -5,25 +5,25 @@ package service
 //
 // Dependency type behaviors:
 //
-//   REGULAR (hard): From waits for To to start. If To fails, From fails too.
-//     If To stops, From must stop. Stop/failure propagates through the chain.
+//	REGULAR (hard): From waits for To to start. If To fails, From fails too.
+//	  If To stops, From must stop. Stop/failure propagates through the chain.
 //
-//   SOFT: From starts in parallel with To. If To fails or stops, From is
-//     unaffected. The link is broken on non-restart stop, retained on restart.
+//	SOFT: From starts in parallel with To. If To fails or stops, From is
+//	  unaffected. The link is broken on non-restart stop, retained on restart.
 //
-//   WAITS_FOR: Like SOFT, but From waits for To to start or fail before
-//     proceeding. If To fails, From continues (no cascade). Link semantics
-//     same as SOFT.
+//	WAITS_FOR: Like SOFT, but From waits for To to start or fail before
+//	  proceeding. If To fails, From continues (no cascade). Link semantics
+//	  same as SOFT.
 //
-//   MILESTONE: Hard until satisfied, then soft. While From is waiting (WaitingOn
-//     true), behaves like REGULAR. Once To starts and WaitingOn clears, behaves
-//     like SOFT - subsequent stop of To does not affect From.
+//	MILESTONE: Hard until satisfied, then soft. While From is waiting (WaitingOn
+//	  true), behaves like REGULAR. Once To starts and WaitingOn clears, behaves
+//	  like SOFT - subsequent stop of To does not affect From.
 //
-//   BEFORE: Ordering constraint only. From starts before To. Does not
-//     participate in require/release semantics or stop propagation.
+//	BEFORE: Ordering constraint only. From starts before To. Does not
+//	  participate in require/release semantics or stop propagation.
 //
-//   AFTER: Ordering constraint only. From starts after To. Same semantics
-//     as BEFORE regarding require/release.
+//	AFTER: Ordering constraint only. From starts after To. Same semantics
+//	  as BEFORE regarding require/release.
 type ServiceDep struct {
 	From Service
 	To   Service

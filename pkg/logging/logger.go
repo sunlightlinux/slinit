@@ -126,9 +126,9 @@ func (l Level) syslogPriority() syslog.Priority {
 
 // Logger provides structured logging for slinit.
 type Logger struct {
-	level    Level
-	output   io.Writer
-	syslogW  *syslog.Writer
+	level     Level
+	output    io.Writer
+	syslogW   *syslog.Writer
 	mainLevel Level // minimum level for main log (syslog/file); defaults to same as level
 
 	// consoleDup is an optional secondary writer that receives a copy of

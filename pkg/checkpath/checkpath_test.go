@@ -345,10 +345,10 @@ func TestApplyChownCurrentUID(t *testing.T) {
 // TestParseMode covers the happy paths.
 func TestParseMode(t *testing.T) {
 	cases := map[string]os.FileMode{
-		"0755": 0o755,
-		"755":  0o755,
+		"0755":  0o755,
+		"755":   0o755,
 		"0o644": 0o644,
-		"0":    0,
+		"0":     0,
 	}
 	for in, want := range cases {
 		got, err := ParseMode(in)

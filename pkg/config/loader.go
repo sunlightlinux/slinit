@@ -584,7 +584,7 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	if desc.WatchdogTimeout > 0 && desc.ReadyNotifyFD < 0 && desc.ReadyNotifyVar == "" {
 		return nil, &ServiceLoadError{
 			ServiceName: name,
-			Message:     "watchdog-timeout requires ready-notification to be set " +
+			Message: "watchdog-timeout requires ready-notification to be set " +
 				"(the service uses the same pipe to send keepalives)",
 		}
 	}

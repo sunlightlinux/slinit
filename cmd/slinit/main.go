@@ -31,7 +31,9 @@ import (
 )
 
 // version is injected at build time via:
-//   go build -ldflags "-X main.version=v1.10.10" ./cmd/slinit
+//
+//	go build -ldflags "-X main.version=v1.10.10" ./cmd/slinit
+//
 // Local builds without ldflags report "dev".
 var version = "dev"
 
@@ -65,17 +67,17 @@ func main() {
 
 	// Parse command-line flags
 	var (
-		serviceDirs    string
-		socketPath     string
-		systemMode     bool
-		userMode       bool
-		containerMode  bool
-		bootServices   stringSlice
-		showVersion    bool
-		logLevel       string
-		consoleLevel   string
-		quietMode      bool
-		autoRecovery   bool
+		serviceDirs     string
+		socketPath      string
+		systemMode      bool
+		userMode        bool
+		containerMode   bool
+		bootServices    stringSlice
+		showVersion     bool
+		logLevel        string
+		consoleLevel    string
+		quietMode       bool
+		autoRecovery    bool
 		envFile         string
 		readyFD         int
 		logFile         string
@@ -1290,10 +1292,11 @@ func startWatchdog(isPID1, containerMode, noWatchdog bool,
 }
 
 // findSlinitRunner locates the slinit-runner exec helper. Order:
-//   1. Same directory as the running slinit binary (typical PID 1
-//      install where everything lives in /sbin or /usr/sbin).
-//   2. PATH lookup for "slinit-runner".
-//   3. Hard-coded /usr/sbin and /sbin fallbacks.
+//  1. Same directory as the running slinit binary (typical PID 1
+//     install where everything lives in /sbin or /usr/sbin).
+//  2. PATH lookup for "slinit-runner".
+//  3. Hard-coded /usr/sbin and /sbin fallbacks.
+//
 // Returns "" when none are present — services that configure mlockall
 // or NUMA will then log a warning and start without those settings.
 func findSlinitRunner() string {

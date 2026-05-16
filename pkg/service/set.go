@@ -88,8 +88,8 @@ type ServiceSet struct {
 	// Keeping these as callbacks avoids a cgo dependency in the service package.
 	OnUtmpCreate func(id, line string, pid int)
 	OnUtmpClear  func(id, line string)
-	OnRWReady   func() // called when starts-rwfs service reaches STARTED
-	OnBootReady func() // called when boot service reaches STARTED (for --ready-fd)
+	OnRWReady    func() // called when starts-rwfs service reaches STARTED
+	OnBootReady  func() // called when boot service reaches STARTED (for --ready-fd)
 
 	// Path-activation hooks. The loader invokes OnServiceLoaded after a
 	// service description has been fully applied (so StartOnPath is
@@ -105,9 +105,9 @@ type ServiceSet struct {
 	// and skip re-copy if version matches.
 	envMu          sync.Mutex
 	globalEnv      []string
-	globalEnvVer   uint64 // monotonically increasing version
-	globalEnvSnap  []string // cached snapshot
-	globalEnvSnapV uint64   // version of cached snapshot
+	globalEnvVer   uint64         // monotonically increasing version
+	globalEnvSnap  []string       // cached snapshot
+	globalEnvSnapV uint64         // version of cached snapshot
 	globalEnvIdx   map[string]int // key → index in globalEnv for O(1) lookup
 	envListeners   []EnvListener
 
@@ -474,11 +474,11 @@ func (ss *ServiceSet) GetShutdownType() ShutdownType {
 
 // --- Boot timing ---
 
-func (ss *ServiceSet) SetBootStartTime(t time.Time)   { ss.bootStartTime = t }
+func (ss *ServiceSet) SetBootStartTime(t time.Time)    { ss.bootStartTime = t }
 func (ss *ServiceSet) SetBootServiceName(name string)  { ss.bootServiceName = name }
 func (ss *ServiceSet) SetKernelUptime(d time.Duration) { ss.kernelUptime = d }
 
-func (ss *ServiceSet) BootStartTime() time.Time   { return ss.bootStartTime }
+func (ss *ServiceSet) BootStartTime() time.Time    { return ss.bootStartTime }
 func (ss *ServiceSet) BootReadyTime() time.Time    { return ss.bootReadyTime }
 func (ss *ServiceSet) BootServiceName() string     { return ss.bootServiceName }
 func (ss *ServiceSet) KernelUptime() time.Duration { return ss.kernelUptime }
@@ -639,14 +639,14 @@ func (ss *ServiceSet) RemoveSharedLogMux(loggerName string) {
 	}
 }
 
-func (ss *ServiceSet) SetDefaultCgroupPath(p string)    { ss.defaultCgroupPath = p }
-func (ss *ServiceSet) DefaultCgroupPath() string        { return ss.defaultCgroupPath }
+func (ss *ServiceSet) SetDefaultCgroupPath(p string)     { ss.defaultCgroupPath = p }
+func (ss *ServiceSet) DefaultCgroupPath() string         { return ss.defaultCgroupPath }
 func (ss *ServiceSet) SetDefaultCPUAffinity(cpus []uint) { ss.defaultCPUAffinity = cpus }
-func (ss *ServiceSet) DefaultCPUAffinity() []uint       { return ss.defaultCPUAffinity }
+func (ss *ServiceSet) DefaultCPUAffinity() []uint        { return ss.defaultCPUAffinity }
 func (ss *ServiceSet) SetRunnerPath(p string)            { ss.runnerPath = p }
 func (ss *ServiceSet) RunnerPath() string                { return ss.runnerPath }
-func (ss *ServiceSet) SetReadyFD(fd int)                { ss.readyFD = fd }
-func (ss *ServiceSet) ReadyFD() int                     { return ss.readyFD }
+func (ss *ServiceSet) SetReadyFD(fd int)                 { ss.readyFD = fd }
+func (ss *ServiceSet) ReadyFD() int                      { return ss.readyFD }
 
 // RWReady returns true when a service with starts-rwfs has reached STARTED.
 func (ss *ServiceSet) RWReady() bool { return ss.rwReady }

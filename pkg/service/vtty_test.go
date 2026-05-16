@@ -316,4 +316,3 @@ func BenchmarkRingSnapshot(b *testing.B) {
 		_ = vt.ringSnapshot()
 	}
 }
-

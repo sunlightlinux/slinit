@@ -120,8 +120,8 @@ func TestLogfileLoaderSetup(t *testing.T) {
 
 type testLogfileLogger struct{}
 
-func (l *testLogfileLogger) ServiceStarted(name string)              {}
-func (l *testLogfileLogger) ServiceStopped(name string)              {}
-func (l *testLogfileLogger) ServiceFailed(name string, dep bool)     {}
+func (l *testLogfileLogger) ServiceStarted(name string)               {}
+func (l *testLogfileLogger) ServiceStopped(name string)               {}
+func (l *testLogfileLogger) ServiceFailed(name string, dep bool)      {}
 func (l *testLogfileLogger) Error(format string, args ...interface{}) {}
 func (l *testLogfileLogger) Info(format string, args ...interface{})  {}

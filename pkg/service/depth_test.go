@@ -4,11 +4,11 @@ import "testing"
 
 type depTestLogger struct{}
 
-func (depTestLogger) ServiceStarted(string)                     {}
-func (depTestLogger) ServiceStopped(string)                     {}
-func (depTestLogger) ServiceFailed(string, bool)                {}
-func (depTestLogger) Error(string, ...interface{})              {}
-func (depTestLogger) Info(string, ...interface{})               {}
+func (depTestLogger) ServiceStarted(string)        {}
+func (depTestLogger) ServiceStopped(string)        {}
+func (depTestLogger) ServiceFailed(string, bool)   {}
+func (depTestLogger) Error(string, ...interface{}) {}
+func (depTestLogger) Info(string, ...interface{})  {}
 
 func newDepTestSet() *ServiceSet {
 	return NewServiceSet(depTestLogger{})

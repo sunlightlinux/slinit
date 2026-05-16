@@ -21,7 +21,7 @@ type CronRunner struct {
 	logger ServiceLogger
 
 	mu      sync.Mutex
-	running bool       // true while a cron-command execution is in progress
+	running bool          // true while a cron-command execution is in progress
 	stopCh  chan struct{} // closed to signal the cron loop to exit
 	doneCh  chan struct{} // closed when the cron loop has fully exited
 }

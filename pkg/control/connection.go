@@ -55,7 +55,7 @@ type Connection struct {
 	handles    map[uint32]service.Service
 	revHandles map[service.Service]uint32 // reverse map for O(1) service→handle lookup
 	nextHandle uint32
-	listenEnv  bool // true if client subscribed to env events
+	listenEnv  bool       // true if client subscribed to env events
 	writeMu    sync.Mutex // serializes all writes to conn
 	closeOnce  sync.Once
 	closed     bool

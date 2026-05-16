@@ -13,11 +13,11 @@ import (
 // testLogger implements service.ServiceLogger silently.
 type testLogger struct{}
 
-func (testLogger) ServiceStarted(string)              {}
-func (testLogger) ServiceStopped(string)              {}
-func (testLogger) ServiceFailed(string, bool)         {}
-func (testLogger) Error(string, ...interface{})       {}
-func (testLogger) Info(string, ...interface{})        {}
+func (testLogger) ServiceStarted(string)        {}
+func (testLogger) ServiceStopped(string)        {}
+func (testLogger) ServiceFailed(string, bool)   {}
+func (testLogger) Error(string, ...interface{}) {}
+func (testLogger) Info(string, ...interface{})  {}
 
 // quietRestoreLogger captures emitted lines for assertion.
 type quietRestoreLogger struct {

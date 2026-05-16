@@ -80,9 +80,9 @@ func translate(argv []string) ([]string, error) {
 var openrcRunlevels = []string{"sysinit", "boot", "default", "nonetwork", "shutdown"}
 
 var (
-	errHelp             = fmt.Errorf("help requested")
-	errListRunlevels    = fmt.Errorf("list runlevels")
-	errCurrentRunlevel  = fmt.Errorf("current runlevel")
+	errHelp            = fmt.Errorf("help requested")
+	errListRunlevels   = fmt.Errorf("list runlevels")
+	errCurrentRunlevel = fmt.Errorf("current runlevel")
 )
 
 func run(argv []string, stdout, stderr *os.File) int {

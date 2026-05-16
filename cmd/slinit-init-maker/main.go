@@ -23,7 +23,9 @@ import (
 )
 
 // version is injected at build time via:
-//   go build -ldflags "-X main.version=v1.10.10" ./cmd/slinit-init-maker
+//
+//	go build -ldflags "-X main.version=v1.10.10" ./cmd/slinit-init-maker
+//
 // Local builds without ldflags report "dev".
 var version = "dev"
 

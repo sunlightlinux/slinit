@@ -20,11 +20,11 @@ var statFunc = os.Stat
 // arguments. This restarts the init system without rebooting the kernel.
 //
 // The sequence is:
-// 1. Resolve exec path while /proc is still mounted
-// 2. Run shutdown hook (if any) — hook may do its own cleanup
-// 3. Sync filesystems
-// 4. Re-exec slinit with original arguments (plus a --restore-from-snapshot
-//    pointer if the event loop dropped a snapshot)
+//  1. Resolve exec path while /proc is still mounted
+//  2. Run shutdown hook (if any) — hook may do its own cleanup
+//  3. Sync filesystems
+//  4. Re-exec slinit with original arguments (plus a --restore-from-snapshot
+//     pointer if the event loop dropped a snapshot)
 //
 // Unlike a hard reboot/halt, soft reboot does NOT unmount filesystems or kill
 // all processes. Filesystems must remain mounted and writable so the new slinit

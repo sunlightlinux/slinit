@@ -106,13 +106,13 @@ func TestParseBootRlimits_Empty(t *testing.T) {
 
 func TestParseBootRlimits_Errors(t *testing.T) {
 	cases := []string{
-		"nofile",               // missing =
-		"unknown=123",          // unknown name
-		"nofile=",              // empty value
-		"nofile=abc",           // not a number
-		"nofile=1024:abc",      // bad hard
+		"nofile",                   // missing =
+		"unknown=123",              // unknown name
+		"nofile=",                  // empty value
+		"nofile=abc",               // not a number
+		"nofile=1024:abc",          // bad hard
 		"nofile=1024, nofile=2048", // duplicate
-		"nofile=2048:1024",     // soft > hard
+		"nofile=2048:1024",         // soft > hard
 	}
 	for _, in := range cases {
 		if _, err := ParseBootRlimits(in); err == nil {

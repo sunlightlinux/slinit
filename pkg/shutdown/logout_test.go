@@ -1,8 +1,8 @@
 package shutdown
 
 import (
-	"syscall"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"

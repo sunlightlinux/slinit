@@ -295,7 +295,7 @@ type CgroupSetting struct {
 
 // Rlimit holds a resource limit (soft, hard) for a given resource.
 type Rlimit struct {
-	Resource int    // syscall.RLIMIT_* constant
+	Resource int // syscall.RLIMIT_* constant
 	Soft     uint64
 	Hard     uint64
 }

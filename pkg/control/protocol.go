@@ -49,7 +49,7 @@ const (
 	CmdWakeService        uint8 = 5
 	CmdReleaseService     uint8 = 6
 	CmdUnpinService       uint8 = 7
-	CmdListServices       uint8 = 8  // deprecated, use CmdListServices5
+	CmdListServices       uint8 = 8 // deprecated, use CmdListServices5
 	CmdUnloadService      uint8 = 9
 	CmdShutdown           uint8 = 10
 	CmdAddDep             uint8 = 11
@@ -72,23 +72,23 @@ const (
 	CmdServiceStatus6     uint8 = 28
 
 	// slinit extensions (beyond dinit's range)
-	CmdBootTime        uint8 = 40
-	CmdDisableService  uint8 = 41
-	CmdQueryDependents uint8 = 42
-	CmdPauseService    uint8 = 43
-	CmdContinueService uint8 = 44
-	CmdOnceService         uint8 = 45
-	CmdQueryDependencies   uint8 = 46
-	CmdQueryDescription    uint8 = 47 // query human-readable service description
-	CmdRunAction           uint8 = 48 // run an extra-command action
-	CmdListActions         uint8 = 49 // list available extra-command actions
-	CmdScheduleShutdown    uint8 = 35 // schedule a delayed shutdown (type + delay_secs)
-	CmdCancelShutdown      uint8 = 36 // cancel a pending scheduled shutdown
-	CmdQueryShutdown       uint8 = 37 // query pending shutdown status
-	CmdReloadAll           uint8 = 38 // rescan all loaded service descriptions from disk
-	CmdReloadSignal        uint8 = 39 // send the service's configured reload-signal to its main process
-	CmdResetEnv            uint8 = 50 // clear all runtime setenv mutations for a service
-	CmdQueryMetadata       uint8 = 51 // query author/version/usage metadata strings for a service
+	CmdBootTime          uint8 = 40
+	CmdDisableService    uint8 = 41
+	CmdQueryDependents   uint8 = 42
+	CmdPauseService      uint8 = 43
+	CmdContinueService   uint8 = 44
+	CmdOnceService       uint8 = 45
+	CmdQueryDependencies uint8 = 46
+	CmdQueryDescription  uint8 = 47 // query human-readable service description
+	CmdRunAction         uint8 = 48 // run an extra-command action
+	CmdListActions       uint8 = 49 // list available extra-command actions
+	CmdScheduleShutdown  uint8 = 35 // schedule a delayed shutdown (type + delay_secs)
+	CmdCancelShutdown    uint8 = 36 // cancel a pending scheduled shutdown
+	CmdQueryShutdown     uint8 = 37 // query pending shutdown status
+	CmdReloadAll         uint8 = 38 // rescan all loaded service descriptions from disk
+	CmdReloadSignal      uint8 = 39 // send the service's configured reload-signal to its main process
+	CmdResetEnv          uint8 = 50 // clear all runtime setenv mutations for a service
+	CmdQueryMetadata     uint8 = 51 // query author/version/usage metadata strings for a service
 )
 
 // Reply codes (server → client).
@@ -124,8 +124,8 @@ const (
 	RplyPreACK          uint8 = 79 // dinit: PREACK
 
 	// slinit extensions (beyond dinit's range)
-	RplyBootTime      uint8 = 90
-	RplyNotStopped    uint8 = 91
+	RplyBootTime        uint8 = 90
+	RplyNotStopped      uint8 = 91
 	RplyServiceName     uint8 = 92 // slinit query-name reply
 	RplyDependencies    uint8 = 93 // forward dependencies (handle + dep type)
 	RplyDescription     uint8 = 94 // slinit query-description reply
@@ -145,20 +145,20 @@ const (
 
 // ServiceEvent codes (matches service.ServiceEvent).
 const (
-	SvcEventStarted       uint8 = 0
-	SvcEventStopped       uint8 = 1
-	SvcEventFailedStart   uint8 = 2
+	SvcEventStarted        uint8 = 0
+	SvcEventStopped        uint8 = 1
+	SvcEventFailedStart    uint8 = 2
 	SvcEventStartCancelled uint8 = 3
-	SvcEventStopCancelled uint8 = 4
+	SvcEventStopCancelled  uint8 = 4
 )
 
 // Status flags byte bits.
 const (
-	StatusFlagHasPID        uint8 = 1 << 0
-	StatusFlagMarkedActive  uint8 = 1 << 1
-	StatusFlagWaitingDeps   uint8 = 1 << 2
-	StatusFlagHasConsole    uint8 = 1 << 3
-	StatusFlagStartFailed   uint8 = 1 << 4
+	StatusFlagHasPID       uint8 = 1 << 0
+	StatusFlagMarkedActive uint8 = 1 << 1
+	StatusFlagWaitingDeps  uint8 = 1 << 2
+	StatusFlagHasConsole   uint8 = 1 << 3
+	StatusFlagStartFailed  uint8 = 1 << 4
 )
 
 // Packet header: 1-byte command/reply + 2-byte payload length (little-endian).

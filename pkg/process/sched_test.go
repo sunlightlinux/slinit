@@ -128,4 +128,3 @@ func canSetRTPolicy(t *testing.T) bool {
 	// Anything else (e.g. ENOSYS on a stripped kernel) — treat as "no".
 	return false
 }
-

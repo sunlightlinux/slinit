@@ -241,4 +241,3 @@ func runShutdownHook(shutdownType service.ShutdownType, logger *logging.Logger) 
 	logger.Notice("Shutdown hook completed successfully (cleanup handled by hook)")
 	return true
 }
-

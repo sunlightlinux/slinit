@@ -58,9 +58,9 @@ type Spec struct {
 
 // Result describes what changed, if anything. Zero value means "no-op".
 type Result struct {
-	Created  bool
-	ChMod    bool
-	ChOwn    bool
+	Created   bool
+	ChMod     bool
+	ChOwn     bool
 	Truncated bool
 }
 

@@ -64,15 +64,15 @@ type Logger interface {
 }
 
 type entry struct {
-	path    string  // user-supplied absolute path
-	parent  string  // parent dir being watched (for "appear" mode)
-	base    string  // basename filter for parent-dir watches
+	path    string // user-supplied absolute path
+	parent  string // parent dir being watched (for "appear" mode)
+	base    string // basename filter for parent-dir watches
 	trigger Trigger
 	fn      func()
 
 	// State protected by Watcher.mu.
-	wd       int32 // current inotify watch descriptor (-1 if none)
-	fired    bool  // one-shot: ignore further events until Rearm
+	wd       int32  // current inotify watch descriptor (-1 if none)
+	fired    bool   // one-shot: ignore further events until Rearm
 	watching string // path currently registered with inotify (parent or path itself)
 }
 
@@ -445,4 +445,3 @@ func dirIsEmpty(dir string) (bool, error) {
 	}
 	return len(names) == 0, nil
 }
-

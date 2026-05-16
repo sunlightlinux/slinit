@@ -42,7 +42,10 @@ type LogRotator struct {
 	doneCh      chan struct{}
 	running     bool
 	serviceName string
-	logger      interface{ Info(string, ...interface{}); Error(string, ...interface{}) }
+	logger      interface {
+		Info(string, ...interface{})
+		Error(string, ...interface{})
+	}
 }
 
 // LogRotatorConfig holds configuration for a LogRotator.
@@ -58,7 +61,10 @@ type LogRotatorConfig struct {
 	Includes    []string
 	Excludes    []string
 	ServiceName string
-	Logger      interface{ Info(string, ...interface{}); Error(string, ...interface{}) }
+	Logger      interface {
+		Info(string, ...interface{})
+		Error(string, ...interface{})
+	}
 }
 
 // NewLogRotator creates a new LogRotator with the given configuration.

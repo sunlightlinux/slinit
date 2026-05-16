@@ -120,11 +120,11 @@ func (d DependencyType) String() string {
 type ServiceEvent uint8
 
 const (
-	EventStarted       ServiceEvent = iota // Service reached STARTED state
-	EventStopped                           // Service reached STOPPED state
-	EventFailedStart                       // Service failed to start
-	EventStartCancelled                    // Start was cancelled by a stop request
-	EventStopCancelled                     // Stop was cancelled by a start request
+	EventStarted        ServiceEvent = iota // Service reached STARTED state
+	EventStopped                            // Service reached STOPPED state
+	EventFailedStart                        // Service failed to start
+	EventStartCancelled                     // Start was cancelled by a stop request
+	EventStopCancelled                      // Stop was cancelled by a start request
 )
 
 func (e ServiceEvent) String() string {

@@ -16,7 +16,7 @@ const MaxDepDepth = 32
 // If Commit() is never called, Rollback() restores all original depths.
 type DepDepthUpdater struct {
 	// snapshots of changed services and their original depths
-	changed []depSnapshot
+	changed   []depSnapshot
 	committed bool
 }
 

@@ -18,8 +18,8 @@ import (
 // from notifyListeners re-enters State() while the scheduler holds queueMu.
 type atomicServiceState struct{ v atomic.Uint32 }
 
-func (a *atomicServiceState) Load() ServiceState    { return ServiceState(a.v.Load()) }
-func (a *atomicServiceState) Store(s ServiceState)  { a.v.Store(uint32(s)) }
+func (a *atomicServiceState) Load() ServiceState   { return ServiceState(a.v.Load()) }
+func (a *atomicServiceState) Store(s ServiceState) { a.v.Store(uint32(s)) }
 
 // Service is the core interface that all service types implement.
 // It replaces the C++ virtual method pattern from dinit's service_record hierarchy.
@@ -34,8 +34,8 @@ type Service interface {
 	StopReason() StoppedReason
 
 	// Lifecycle - called by the state machine
-	BringUp() bool   // start the service; returns false on failure
-	BringDown()      // stop the service
+	BringUp() bool // start the service; returns false on failure
+	BringDown()    // stop the service
 	CanInterruptStart() bool
 	InterruptStart() bool
 	BecomingInactive()
@@ -112,10 +112,10 @@ type ServiceRecord struct {
 	markedDown        bool // 'down' file exists — don't auto-start
 
 	// Waiting flags
-	waitingForDeps    bool
-	waitingForConsole  bool
-	haveConsole        bool
-	startExplicit      bool
+	waitingForDeps      bool
+	waitingForConsole   bool
+	haveConsole         bool
+	startExplicit       bool
 	waitingForStartSlot bool // waiting for start limiter slot
 
 	// Propagation flags
@@ -156,13 +156,13 @@ type ServiceRecord struct {
 	listeners  []ServiceListener
 
 	// Process settings (shared across service types)
-	termSignal    syscall.Signal
-	reloadSignal  syscall.Signal // 0 = unset; sent by `slinitctl reload-signal`
-	socketPath    string   // primary socket path (for backwards compat)
-	socketPaths   []string // all socket-listen paths (for multiple sockets)
-	socketPerms   int
-	socketUID     int
-	socketGID     int
+	termSignal   syscall.Signal
+	reloadSignal syscall.Signal // 0 = unset; sent by `slinitctl reload-signal`
+	socketPath   string         // primary socket path (for backwards compat)
+	socketPaths  []string       // all socket-listen paths (for multiple sockets)
+	socketPerms  int
+	socketUID    int
+	socketGID    int
 	stopReason   StoppedReason
 	chainTo      string // service to start when this one completes
 
@@ -195,18 +195,18 @@ type ServiceRecord struct {
 	extraEnv map[string]string
 
 	// Process attributes (applied post-fork)
-	nice        *int
-	oomScoreAdj *int
-	noNewPrivs  bool
-	ioPrioClass int
-	ioPrioLevel int
+	nice           *int
+	oomScoreAdj    *int
+	noNewPrivs     bool
+	ioPrioClass    int
+	ioPrioLevel    int
 	cgroupPath     string
 	cgroupSettings []process.CgroupSetting // cgroup v2 resource limits
 	rlimits        []process.Rlimit
-	ambientCaps []uintptr
-	securebits  uint32
-	cpuAffinity []uint
-	umask       *uint32 // file-creation mask for the service process (nil = inherit slinit's)
+	ambientCaps    []uintptr
+	securebits     uint32
+	cpuAffinity    []uint
+	umask          *uint32 // file-creation mask for the service process (nil = inherit slinit's)
 
 	// Path-based activation. startOnPath is the filesystem path (or
 	// directory) whose state triggers start; startOnPathTrigger names
@@ -233,13 +233,13 @@ type ServiceRecord struct {
 	// Real-time scheduling (telco / 5G data plane). Zero values keep
 	// the kernel default; only when schedPolicySet is true does the
 	// post-fork attr step issue a sched_setattr.
-	schedPolicy         uint32
-	schedPolicySet      bool
-	schedPriority       uint32
-	schedRuntime        uint64 // ns
-	schedDeadline       uint64 // ns
-	schedPeriod         uint64 // ns
-	schedResetOnFork    bool
+	schedPolicy      uint32
+	schedPolicySet   bool
+	schedPriority    uint32
+	schedRuntime     uint64 // ns
+	schedDeadline    uint64 // ns
+	schedPeriod      uint64 // ns
+	schedResetOnFork bool
 
 	// Memory locking + NUMA. Empty/zero = no change. Applied via the
 	// slinit-runner exec helper (stored on ServiceSet.RunnerPath).
@@ -248,7 +248,7 @@ type ServiceRecord struct {
 	numaMempolicySet bool
 	numaNodes        []uint
 
-	cloneflags  uintptr              // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
+	cloneflags  uintptr                // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
 	uidMappings []syscall.SysProcIDMap // user namespace UID mappings
 	gidMappings []syscall.SysProcIDMap // user namespace GID mappings
 
@@ -294,17 +294,17 @@ func NewServiceRecord(self Service, set *ServiceSet, name string, recordType Ser
 
 // --- Interface implementation methods ---
 
-func (sr *ServiceRecord) Name() string               { return sr.serviceName }
-func (sr *ServiceRecord) ServiceDir() string          { return sr.serviceDir }
-func (sr *ServiceRecord) SetServiceDir(dir string)    { sr.serviceDir = dir }
-func (sr *ServiceRecord) Description() string         { return sr.description }
-func (sr *ServiceRecord) SetDescription(d string)     { sr.description = d }
-func (sr *ServiceRecord) Author() string              { return sr.author }
-func (sr *ServiceRecord) SetAuthor(s string)          { sr.author = s }
-func (sr *ServiceRecord) Version() string             { return sr.version }
-func (sr *ServiceRecord) SetVersion(s string)         { sr.version = s }
-func (sr *ServiceRecord) Usage() string               { return sr.usage }
-func (sr *ServiceRecord) SetUsage(s string)           { sr.usage = s }
+func (sr *ServiceRecord) Name() string             { return sr.serviceName }
+func (sr *ServiceRecord) ServiceDir() string       { return sr.serviceDir }
+func (sr *ServiceRecord) SetServiceDir(dir string) { sr.serviceDir = dir }
+func (sr *ServiceRecord) Description() string      { return sr.description }
+func (sr *ServiceRecord) SetDescription(d string)  { sr.description = d }
+func (sr *ServiceRecord) Author() string           { return sr.author }
+func (sr *ServiceRecord) SetAuthor(s string)       { sr.author = s }
+func (sr *ServiceRecord) Version() string          { return sr.version }
+func (sr *ServiceRecord) SetVersion(s string)      { sr.version = s }
+func (sr *ServiceRecord) Usage() string            { return sr.usage }
+func (sr *ServiceRecord) SetUsage(s string)        { sr.usage = s }
 
 // SetRequiredPaths records files and directories that must exist before
 // the service can start. Copies the slices so the caller may reuse them.
@@ -366,24 +366,24 @@ func (sr *ServiceRecord) CheckRequiredPaths() error {
 	}
 	return nil
 }
-func (sr *ServiceRecord) LoadModTime() time.Time       { return sr.loadModTime }
-func (sr *ServiceRecord) SetLoadModTime(t time.Time)   { sr.loadModTime = t }
+func (sr *ServiceRecord) LoadModTime() time.Time      { return sr.loadModTime }
+func (sr *ServiceRecord) SetLoadModTime(t time.Time)  { sr.loadModTime = t }
 func (sr *ServiceRecord) Type() ServiceType           { return sr.recordType }
-func (sr *ServiceRecord) State() ServiceState       { return sr.state.Load() }
-func (sr *ServiceRecord) TargetState() ServiceState { return sr.desired.Load() }
-func (sr *ServiceRecord) StopReason() StoppedReason { return sr.stopReason }
-func (sr *ServiceRecord) RequiredBy() int          { return sr.requiredBy }
+func (sr *ServiceRecord) State() ServiceState         { return sr.state.Load() }
+func (sr *ServiceRecord) TargetState() ServiceState   { return sr.desired.Load() }
+func (sr *ServiceRecord) StopReason() StoppedReason   { return sr.stopReason }
+func (sr *ServiceRecord) RequiredBy() int             { return sr.requiredBy }
 func (sr *ServiceRecord) Dependencies() []*ServiceDep { return sr.dependsOn }
 func (sr *ServiceRecord) Dependents() []*ServiceDep   { return sr.dependents }
-func (sr *ServiceRecord) DepDepth() int                { return sr.depDepth }
-func (sr *ServiceRecord) SetDepDepth(d int)            { sr.depDepth = d }
-func (sr *ServiceRecord) Record() *ServiceRecord   { return sr }
-func (sr *ServiceRecord) PID() int                 { return -1 }
-func (sr *ServiceRecord) GetExitStatus() ExitStatus { return ExitStatus{} }
-func (sr *ServiceRecord) BecomingInactive()        {}
-func (sr *ServiceRecord) CheckRestart() bool       { return true }
-func (sr *ServiceRecord) GetSmoothRecovery() bool  { return sr.smoothRecovery }
-func (sr *ServiceRecord) IsManualStart() bool      { return sr.manualStart }
+func (sr *ServiceRecord) DepDepth() int               { return sr.depDepth }
+func (sr *ServiceRecord) SetDepDepth(d int)           { sr.depDepth = d }
+func (sr *ServiceRecord) Record() *ServiceRecord      { return sr }
+func (sr *ServiceRecord) PID() int                    { return -1 }
+func (sr *ServiceRecord) GetExitStatus() ExitStatus   { return ExitStatus{} }
+func (sr *ServiceRecord) BecomingInactive()           {}
+func (sr *ServiceRecord) CheckRestart() bool          { return true }
+func (sr *ServiceRecord) GetSmoothRecovery() bool     { return sr.smoothRecovery }
+func (sr *ServiceRecord) IsManualStart() bool         { return sr.manualStart }
 
 // UnrecoverableStop forces the service to stop without possibility of restart.
 func (sr *ServiceRecord) UnrecoverableStop() {
@@ -447,22 +447,22 @@ func (sr *ServiceRecord) IsNormalExit(es ExitStatus) bool {
 	}
 	return false
 }
-func (sr *ServiceRecord) SetChainTo(name string)              { sr.chainTo = name }
-func (sr *ServiceRecord) SetServiceDscDir(dir string)         { sr.serviceDscDir = dir }
-func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)     { sr.termSignal = sig }
-func (sr *ServiceRecord) SetReloadSignal(sig syscall.Signal)   { sr.reloadSignal = sig }
-func (sr *ServiceRecord) ReloadSignal() syscall.Signal         { return sr.reloadSignal }
+func (sr *ServiceRecord) SetChainTo(name string)             { sr.chainTo = name }
+func (sr *ServiceRecord) SetServiceDscDir(dir string)        { sr.serviceDscDir = dir }
+func (sr *ServiceRecord) SetTermSignal(sig syscall.Signal)   { sr.termSignal = sig }
+func (sr *ServiceRecord) SetReloadSignal(sig syscall.Signal) { sr.reloadSignal = sig }
+func (sr *ServiceRecord) ReloadSignal() syscall.Signal       { return sr.reloadSignal }
 
 func (sr *ServiceRecord) SetFlags(flags ServiceFlags) { sr.Flags = flags }
 func (sr *ServiceRecord) SetProvides(name string)     { sr.provides = name }
-func (sr *ServiceRecord) Provides() string             { return sr.provides }
-func (sr *ServiceRecord) SetEnableVia(name string)     { sr.enableVia = name }
-func (sr *ServiceRecord) EnableVia() string             { return sr.enableVia }
+func (sr *ServiceRecord) Provides() string            { return sr.provides }
+func (sr *ServiceRecord) SetEnableVia(name string)    { sr.enableVia = name }
+func (sr *ServiceRecord) EnableVia() string           { return sr.enableVia }
 
-func (sr *ServiceRecord) SetLogConsumer(svc Service)   { sr.logConsumer = svc }
-func (sr *ServiceRecord) LogConsumer() Service         { return sr.logConsumer }
-func (sr *ServiceRecord) SetConsumerFor(svc Service)   { sr.consumerFor = svc }
-func (sr *ServiceRecord) ConsumerFor() Service         { return sr.consumerFor }
+func (sr *ServiceRecord) SetLogConsumer(svc Service)      { sr.logConsumer = svc }
+func (sr *ServiceRecord) LogConsumer() Service            { return sr.logConsumer }
+func (sr *ServiceRecord) SetConsumerFor(svc Service)      { sr.consumerFor = svc }
+func (sr *ServiceRecord) ConsumerFor() Service            { return sr.consumerFor }
 func (sr *ServiceRecord) SetSharedLoggerName(name string) { sr.sharedLoggerName = name }
 func (sr *ServiceRecord) SharedLoggerName() string        { return sr.sharedLoggerName }
 
@@ -475,7 +475,7 @@ func (sr *ServiceRecord) SetExtraStartedCommands(cmds map[string][]string) {
 }
 
 // ExtraCommands returns all extra commands (both always and started-only).
-func (sr *ServiceRecord) ExtraCommands() map[string][]string { return sr.extraCommands }
+func (sr *ServiceRecord) ExtraCommands() map[string][]string        { return sr.extraCommands }
 func (sr *ServiceRecord) ExtraStartedCommands() map[string][]string { return sr.extraStartedCommands }
 
 // LookupExtraCommand finds an extra command by action name. Returns the command
@@ -509,8 +509,8 @@ func (sr *ServiceRecord) ListExtraActions() []string {
 	}
 	return actions
 }
-func (sr *ServiceRecord) OutputPipeW() *os.File        { return sr.outputPipeW }
-func (sr *ServiceRecord) OutputPipeR() *os.File        { return sr.outputPipeR }
+func (sr *ServiceRecord) OutputPipeW() *os.File { return sr.outputPipeW }
+func (sr *ServiceRecord) OutputPipeR() *os.File { return sr.outputPipeR }
 
 // EnsureOutputPipe lazily creates the output pipe for log-type=pipe.
 func (sr *ServiceRecord) EnsureOutputPipe() error {
@@ -581,13 +581,13 @@ func (sr *ServiceRecord) InittabID() string { return sr.inittabID }
 // InittabLine returns the inittab-line.
 func (sr *ServiceRecord) InittabLine() string { return sr.inittabLine }
 
-func (sr *ServiceRecord) IsMarkedActive() bool   { return sr.startExplicit }
-func (sr *ServiceRecord) IsStartPinned() bool    { return sr.pinnedStarted || sr.deptPinnedStarted }
-func (sr *ServiceRecord) IsStopPinned() bool     { return sr.pinnedStopped }
-func (sr *ServiceRecord) DidStartFail() bool     { return sr.startFailed }
-func (sr *ServiceRecord) WasStartSkipped() bool  { return sr.startSkipped }
-func (sr *ServiceRecord) IsLoading() bool        { return sr.isLoading }
-func (sr *ServiceRecord) HasConsole() bool       { return sr.haveConsole }
+func (sr *ServiceRecord) IsMarkedActive() bool    { return sr.startExplicit }
+func (sr *ServiceRecord) IsStartPinned() bool     { return sr.pinnedStarted || sr.deptPinnedStarted }
+func (sr *ServiceRecord) IsStopPinned() bool      { return sr.pinnedStopped }
+func (sr *ServiceRecord) DidStartFail() bool      { return sr.startFailed }
+func (sr *ServiceRecord) WasStartSkipped() bool   { return sr.startSkipped }
+func (sr *ServiceRecord) IsLoading() bool         { return sr.isLoading }
+func (sr *ServiceRecord) HasConsole() bool        { return sr.haveConsole }
 func (sr *ServiceRecord) WaitingForConsole() bool { return sr.waitingForConsole }
 
 // --- Environment variable management ---
@@ -679,18 +679,18 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 
 // --- Process attribute setters ---
 
-func (sr *ServiceRecord) SetNice(n *int)                    { sr.nice = n }
-func (sr *ServiceRecord) SetOOMScoreAdj(n *int)             { sr.oomScoreAdj = n }
-func (sr *ServiceRecord) SetNoNewPrivs(v bool)              { sr.noNewPrivs = v }
-func (sr *ServiceRecord) SetIOPrio(class, level int)        { sr.ioPrioClass = class; sr.ioPrioLevel = level }
-func (sr *ServiceRecord) SetCgroupPath(p string)            { sr.cgroupPath = p }
+func (sr *ServiceRecord) SetNice(n *int)                              { sr.nice = n }
+func (sr *ServiceRecord) SetOOMScoreAdj(n *int)                       { sr.oomScoreAdj = n }
+func (sr *ServiceRecord) SetNoNewPrivs(v bool)                        { sr.noNewPrivs = v }
+func (sr *ServiceRecord) SetIOPrio(class, level int)                  { sr.ioPrioClass = class; sr.ioPrioLevel = level }
+func (sr *ServiceRecord) SetCgroupPath(p string)                      { sr.cgroupPath = p }
 func (sr *ServiceRecord) SetCgroupSettings(s []process.CgroupSetting) { sr.cgroupSettings = s }
-func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)    { sr.rlimits = rl }
-func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)       { sr.rlimits = append(sr.rlimits, rl) }
-func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)      { sr.ambientCaps = caps }
-func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = bits }
-func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
-func (sr *ServiceRecord) SetUmask(m *uint32)                  { sr.umask = m }
+func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)              { sr.rlimits = rl }
+func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)                 { sr.rlimits = append(sr.rlimits, rl) }
+func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)               { sr.ambientCaps = caps }
+func (sr *ServiceRecord) SetSecurebits(bits uint32)                   { sr.securebits = bits }
+func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)                  { sr.cpuAffinity = cpus }
+func (sr *ServiceRecord) SetUmask(m *uint32)                          { sr.umask = m }
 
 // SetAppArmor records AppArmor confinement: load is an absolute path to
 // a profile parsed before start (empty = none); profile is the name the
@@ -733,7 +733,7 @@ func (sr *ServiceRecord) SetSchedPolicy(policy uint32, policySet bool) {
 	sr.schedPolicy = policy
 	sr.schedPolicySet = policySet
 }
-func (sr *ServiceRecord) SetSchedPriority(p uint32)         { sr.schedPriority = p }
+func (sr *ServiceRecord) SetSchedPriority(p uint32) { sr.schedPriority = p }
 func (sr *ServiceRecord) SetSchedDeadlineParams(runtime, deadline, period uint64) {
 	sr.schedRuntime = runtime
 	sr.schedDeadline = deadline
@@ -748,7 +748,7 @@ func (sr *ServiceRecord) SetNumaMempolicy(mode uint32, set bool) {
 }
 func (sr *ServiceRecord) SetNumaNodes(nodes []uint) { sr.numaNodes = nodes }
 
-func (sr *ServiceRecord) SetCloneflags(flags uintptr)          { sr.cloneflags = flags }
+func (sr *ServiceRecord) SetCloneflags(flags uintptr)             { sr.cloneflags = flags }
 func (sr *ServiceRecord) SetUidMappings(m []syscall.SysProcIDMap) { sr.uidMappings = m }
 func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappings = m }
 
@@ -816,7 +816,7 @@ func (sr *ServiceRecord) GetLogFile() string       { return "" }
 // Boot timing getters
 func (sr *ServiceRecord) StartRequestTime() time.Time { return sr.startRequestTime }
 func (sr *ServiceRecord) StartedTime() time.Time      { return sr.startedTime }
-func (sr *ServiceRecord) StoppedTime() time.Time       { return sr.stoppedTime }
+func (sr *ServiceRecord) StoppedTime() time.Time      { return sr.stoppedTime }
 
 // StartupDuration returns the time from start request to STARTED state.
 // Returns 0 if the service hasn't reached STARTED yet.

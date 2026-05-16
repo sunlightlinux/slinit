@@ -29,14 +29,14 @@ var KnownSettings = map[string]OperatorType{
 	"usage":       OpEquals,
 
 	// Dependencies (use colon)
-	"depends-on":    OpColon,
-	"depends-ms":    OpColon,
-	"waits-for":     OpColon,
-	"depends-on.d":  OpColon,
-	"depends-ms.d":  OpColon,
-	"waits-for.d":   OpColon,
-	"before":        OpColon,
-	"after":         OpColon,
+	"depends-on":   OpColon,
+	"depends-ms":   OpColon,
+	"waits-for":    OpColon,
+	"depends-on.d": OpColon,
+	"depends-ms.d": OpColon,
+	"waits-for.d":  OpColon,
+	"before":       OpColon,
+	"after":        OpColon,
 
 	// Commands
 	"command":      OpEquals | OpPlusEqual,
@@ -49,25 +49,25 @@ var KnownSettings = map[string]OperatorType{
 	"env-file": OpEquals,
 
 	// Process management
-	"run-as":             OpEquals,
-	"manual":             OpEquals,
-	"restart":            OpEquals,
-	"smooth-recovery":    OpEquals,
-	"normal-exit":        OpEquals | OpPlusEqual,
-	"stop-timeout":       OpEquals,
-	"start-timeout":      OpEquals,
+	"run-as":                 OpEquals,
+	"manual":                 OpEquals,
+	"restart":                OpEquals,
+	"smooth-recovery":        OpEquals,
+	"normal-exit":            OpEquals | OpPlusEqual,
+	"stop-timeout":           OpEquals,
+	"start-timeout":          OpEquals,
 	"restart-delay":          OpEquals,
 	"restart-delay-step":     OpEquals,
 	"restart-delay-cap":      OpEquals,
 	"restart-limit-interval": OpEquals,
 	"restart-limit-count":    OpEquals,
-	"term-signal":        OpEquals,
-	"termsignal":         OpEquals, // deprecated alias (dinit compat)
-	"stopsig":            OpEquals, // OpenRC alias
-	"reload-signal":      OpEquals, // upstart-inspired: signal sent by `slinitctl reload-signal`
-	"pid-file":           OpEquals,
-	"ready-notification": OpEquals,
-	"watchdog-timeout":   OpEquals,
+	"term-signal":            OpEquals,
+	"termsignal":             OpEquals, // deprecated alias (dinit compat)
+	"stopsig":                OpEquals, // OpenRC alias
+	"reload-signal":          OpEquals, // upstart-inspired: signal sent by `slinitctl reload-signal`
+	"pid-file":               OpEquals,
+	"ready-notification":     OpEquals,
+	"watchdog-timeout":       OpEquals,
 
 	// Logging
 	"logfile":             OpEquals,
@@ -79,10 +79,10 @@ var KnownSettings = map[string]OperatorType{
 
 	// Socket activation
 	"socket-listen":      OpEquals | OpPlusEqual, // multiple sockets via +=
-	"socket-permissions":  OpEquals,
-	"socket-uid":          OpEquals,
-	"socket-gid":          OpEquals,
-	"socket-activation":   OpEquals, // "immediate" (default) or "on-demand"
+	"socket-permissions": OpEquals,
+	"socket-uid":         OpEquals,
+	"socket-gid":         OpEquals,
+	"socket-activation":  OpEquals, // "immediate" (default) or "on-demand"
 
 	// Chaining
 	"chain-to": OpEquals,
@@ -94,22 +94,22 @@ var KnownSettings = map[string]OperatorType{
 	"provides": OpEquals,
 
 	// Consumer (dinit uses =, slinit originally used :, accept both)
-	"consumer-of":    OpEquals | OpColon,
-	"shared-logger":  OpEquals, // name of shared logger service (multi-service log mux)
+	"consumer-of":   OpEquals | OpColon,
+	"shared-logger": OpEquals, // name of shared logger service (multi-service log mux)
 
 	// Load options
 	"load-options": OpEquals | OpPlusEqual,
 
 	// rlimits
-	"rlimit-nofile":     OpEquals,
-	"rlimit-core":       OpEquals,
-	"rlimit-data":       OpEquals,
-	"rlimit-as":         OpEquals,
-	"rlimit-addrspace":  OpEquals, // dinit compat alias for rlimit-as
+	"rlimit-nofile":    OpEquals,
+	"rlimit-core":      OpEquals,
+	"rlimit-data":      OpEquals,
+	"rlimit-as":        OpEquals,
+	"rlimit-addrspace": OpEquals, // dinit compat alias for rlimit-as
 
 	// cgroup
-	"cgroup":         OpEquals,
-	"run-in-cgroup":  OpEquals, // dinit compat alias for cgroup
+	"cgroup":        OpEquals,
+	"run-in-cgroup": OpEquals, // dinit compat alias for cgroup
 
 	// cgroup v2 resource limits
 	"cgroup-memory-max":  OpEquals,
@@ -127,8 +127,8 @@ var KnownSettings = map[string]OperatorType{
 	"cgroup-setting":     OpEquals | OpPlusEqual, // generic: file value
 
 	// nice/ioprio
-	"nice":   OpEquals,
-	"ioprio": OpEquals,
+	"nice":          OpEquals,
+	"ioprio":        OpEquals,
 	"oom-score-adj": OpEquals,
 
 	// per-service file-creation mask
@@ -151,12 +151,12 @@ var KnownSettings = map[string]OperatorType{
 	"cpu-affinity": OpEquals,
 
 	// real-time scheduling (telco / 5G data plane)
-	"sched-policy":         OpEquals,
-	"sched-priority":       OpEquals,
-	"sched-runtime":        OpEquals,
-	"sched-deadline":       OpEquals,
-	"sched-period":         OpEquals,
-	"sched-reset-on-fork":  OpEquals,
+	"sched-policy":        OpEquals,
+	"sched-priority":      OpEquals,
+	"sched-runtime":       OpEquals,
+	"sched-deadline":      OpEquals,
+	"sched-period":        OpEquals,
+	"sched-reset-on-fork": OpEquals,
 
 	// memory locking + NUMA placement (telco / 5G data plane)
 	"mlockall":       OpEquals,
@@ -176,26 +176,26 @@ var KnownSettings = map[string]OperatorType{
 	"extra-started-command": OpEquals,
 
 	// Runit-inspired features
-	"finish-command":      OpEquals | OpPlusEqual,
-	"ready-check-command": OpEquals | OpPlusEqual,
+	"finish-command":       OpEquals | OpPlusEqual,
+	"ready-check-command":  OpEquals | OpPlusEqual,
 	"ready-check-interval": OpEquals,
-	"pre-stop-hook":       OpEquals | OpPlusEqual,
-	"env-dir":             OpEquals,
-	"chroot":              OpEquals,
-	"lock-file":           OpEquals,
-	"new-session":         OpEquals,
-	"namespace-pid":       OpEquals,
-	"namespace-mount":     OpEquals,
-	"namespace-net":       OpEquals,
-	"namespace-uts":       OpEquals,
-	"namespace-ipc":       OpEquals,
-	"namespace-user":      OpEquals,
-	"namespace-cgroup":    OpEquals,
-	"namespace-uid-map":   OpEquals | OpPlusEqual,
-	"namespace-gid-map":   OpEquals | OpPlusEqual,
-	"close-stdin":         OpEquals,
-	"close-stdout":        OpEquals,
-	"close-stderr":        OpEquals,
+	"pre-stop-hook":        OpEquals | OpPlusEqual,
+	"env-dir":              OpEquals,
+	"chroot":               OpEquals,
+	"lock-file":            OpEquals,
+	"new-session":          OpEquals,
+	"namespace-pid":        OpEquals,
+	"namespace-mount":      OpEquals,
+	"namespace-net":        OpEquals,
+	"namespace-uts":        OpEquals,
+	"namespace-ipc":        OpEquals,
+	"namespace-user":       OpEquals,
+	"namespace-cgroup":     OpEquals,
+	"namespace-uid-map":    OpEquals | OpPlusEqual,
+	"namespace-gid-map":    OpEquals | OpPlusEqual,
+	"close-stdin":          OpEquals,
+	"close-stdout":         OpEquals,
+	"close-stderr":         OpEquals,
 
 	// Pre-start fail-fast path checks (OpenRC-inspired)
 	"required-files": OpEquals | OpPlusEqual,

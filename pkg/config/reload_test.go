@@ -11,9 +11,9 @@ import (
 // testReloadLogger implements service.ServiceLogger for reload tests.
 type testReloadLogger struct{}
 
-func (l *testReloadLogger) ServiceStarted(name string)              {}
-func (l *testReloadLogger) ServiceStopped(name string)              {}
-func (l *testReloadLogger) ServiceFailed(name string, dep bool)     {}
+func (l *testReloadLogger) ServiceStarted(name string)               {}
+func (l *testReloadLogger) ServiceStopped(name string)               {}
+func (l *testReloadLogger) ServiceFailed(name string, dep bool)      {}
 func (l *testReloadLogger) Error(format string, args ...interface{}) {}
 func (l *testReloadLogger) Info(format string, args ...interface{})  {}
 

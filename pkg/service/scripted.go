@@ -332,7 +332,7 @@ func (s *ScriptedService) InterruptStart() bool {
 
 	if s.startPID > 0 && s.Flags.StartInterruptible {
 		process.SignalProcess(s.startPID, 2, false) // SIGINT
-		return false // Wait for it to die
+		return false                                // Wait for it to die
 	}
 
 	return s.startPID <= 0
