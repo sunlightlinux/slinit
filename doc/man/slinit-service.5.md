@@ -575,6 +575,24 @@ mlockall       = current+future
 **securebits**=*bits*
 :   Securebit names or bitmask (e.g. `keep-caps,no-setuid-fixup`).
 
+**apparmor-load**=*path*
+:   Absolute path to an AppArmor profile loaded with
+    `apparmor_parser -r` *before* the service starts (so a service may
+    ship its own profile). The load runs in the slinit process; if it
+    fails the service start fails — a security control never silently
+    degrades to unconfined. `apparmor_parser` is looked up on `PATH`
+    then `/sbin/apparmor_parser`.
+
+**apparmor-switch**=*profile*
+:   Name of an AppArmor profile the service transitions into on exec
+    (equivalent to libapparmor's `aa_change_onexec`). It is applied by
+    **slinit-runner**, which writes `exec` *profile* to
+    `/proc/self/attr/exec` immediately before `execve` — the kernel
+    binds the transition to the task that performs the exec, which is
+    why a parent-side apply is impossible. Requires the AppArmor LSM to
+    be active; if it is not, the start fails (fail closed). Combine
+    with **apparmor-load** to both ship and enter a profile.
+
 **options**=*flag* [*flag*...]
 :   Space-separated boolean flags. Recognised:
 

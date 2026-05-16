@@ -134,6 +134,10 @@ var KnownSettings = map[string]OperatorType{
 	// per-service file-creation mask
 	"umask": OpEquals,
 
+	// AppArmor confinement
+	"apparmor-load":   OpEquals,
+	"apparmor-switch": OpEquals,
+
 	// path-based activation (the four are mutually exclusive per service)
 	"start-on-path-exists":         OpEquals,
 	"start-on-path-changed":        OpEquals,

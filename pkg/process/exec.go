@@ -22,6 +22,16 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: os.ErrInvalid}
 	}
 
+	// Load any service-shipped AppArmor profile into the kernel before
+	// the child starts. This is a kernel-side operation (not per-task),
+	// so the parent does it; a failure aborts the start because a
+	// security control must never silently degrade to unconfined.
+	if params.AppArmorLoadProfile != "" {
+		if err := loadAppArmorProfile(params.AppArmorLoadProfile); err != nil {
+			return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
+		}
+	}
+
 	// mlockall and set_mempolicy operate on the calling process, so
 	// they cannot be applied to a fork()ed child from outside. When
 	// either is configured we prepend slinit-runner to the command —
@@ -389,11 +399,31 @@ func KillProcessGroup(pgid int) {
 	}
 }
 
+// loadAppArmorProfile parses and replaces an AppArmor profile by
+// running `apparmor_parser -r <path>`. The binary normally lives in
+// /sbin; fall back there if it is not on PATH (apparmor_parser is
+// frequently outside a minimal service PATH).
+func loadAppArmorProfile(path string) error {
+	bin, err := exec.LookPath("apparmor_parser")
+	if err != nil {
+		bin = "/sbin/apparmor_parser"
+		if _, statErr := os.Stat(bin); statErr != nil {
+			return fmt.Errorf("apparmor_parser not found: %w", err)
+		}
+	}
+	out, runErr := exec.Command(bin, "-r", path).CombinedOutput()
+	if runErr != nil {
+		return fmt.Errorf("apparmor_parser -r %s: %w: %s",
+			path, runErr, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // needsRunnerWrap reports whether the command needs to be prefixed with
 // slinit-runner because mlockall(2) and/or set_mempolicy(2) — both
 // per-calling-process syscalls — were requested.
 func needsRunnerWrap(p ExecParams) bool {
-	return p.MlockallFlags != 0 || p.NumaMempolicySet
+	return p.MlockallFlags != 0 || p.NumaMempolicySet || p.AppArmorProfile != ""
 }
 
 // wrapWithRunner returns a new argv that invokes slinit-runner with
@@ -408,6 +438,9 @@ func wrapWithRunner(p ExecParams) []string {
 		if len(p.NumaNodes) > 0 {
 			args = append(args, "--numa-nodes="+formatNodeList(p.NumaNodes))
 		}
+	}
+	if p.AppArmorProfile != "" {
+		args = append(args, "--apparmor="+p.AppArmorProfile)
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)

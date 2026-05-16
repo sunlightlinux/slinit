@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (74 tests)
+# Run all tests (75 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -113,6 +113,7 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 72 | path-activation | `start-on-path-exists` starts a service when an inotify-watched file appears |
 | 73 | override-files | a sibling `<service>.override` file replaces the base service's command and description |
 | 74 | script-block | `script ... end script` inline shell body runs as the service command |
+| 75 | apparmor | `apparmor-switch` fails closed when the AppArmor LSM is unavailable; plain services unaffected |
 
 ## How It Works
 

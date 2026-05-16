@@ -1,0 +1,4 @@
+type = scripted
+depends-on: system-init
+command = /bin/true
+apparmor-switch = slinit-nonexistent-profile

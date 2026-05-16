@@ -217,6 +217,15 @@ type ServiceRecord struct {
 	startOnPath        string
 	startOnPathTrigger int
 
+	// AppArmor confinement. appArmorLoad is an absolute path to a
+	// profile parsed (apparmor_parser -r) before the service starts;
+	// appArmorSwitch is a profile name the process transitions into on
+	// exec (aa_change_onexec). The switch is applied by slinit-runner
+	// because the kernel attaches the transition to the calling task's
+	// next execve, which only the child can perform.
+	appArmorLoad   string
+	appArmorSwitch string
+
 	// Real-time scheduling (telco / 5G data plane). Zero values keep
 	// the kernel default; only when schedPolicySet is true does the
 	// post-fork attr step issue a sched_setattr.
@@ -679,6 +688,19 @@ func (sr *ServiceRecord) SetSecurebits(bits uint32)           { sr.securebits = 
 func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)          { sr.cpuAffinity = cpus }
 func (sr *ServiceRecord) SetUmask(m *uint32)                  { sr.umask = m }
 
+// SetAppArmor records AppArmor confinement: load is an absolute path to
+// a profile parsed before start (empty = none); profile is the name the
+// service transitions into on exec (empty = no switch).
+func (sr *ServiceRecord) SetAppArmor(load, profile string) {
+	sr.appArmorLoad = load
+	sr.appArmorSwitch = profile
+}
+
+// AppArmor returns the configured load-profile path and switch profile.
+func (sr *ServiceRecord) AppArmor() (load, profile string) {
+	return sr.appArmorLoad, sr.appArmorSwitch
+}
+
 // SetStartOnPath records the path-activation configuration. trigger must
 // match the pathwatch.Trigger constants (1=exists, 2=changed,
 // 3=modified, 4=dir-not-empty). Calling with trigger=0 clears the
@@ -757,6 +779,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 		params.SchedPeriod = sr.schedPeriod
 		params.SchedResetOnFork = sr.schedResetOnFork
 	}
+	params.AppArmorLoadProfile = sr.appArmorLoad
+	params.AppArmorProfile = sr.appArmorSwitch
 	params.MlockallFlags = sr.mlockallFlags
 	params.NumaMempolicy = sr.numaMempolicy
 	params.NumaMempolicySet = sr.numaMempolicySet

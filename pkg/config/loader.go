@@ -1151,6 +1151,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.StartOnPathTrigger != 0 {
 		rec.SetStartOnPath(desc.StartOnPath, desc.StartOnPathTrigger)
 	}
+	if desc.AppArmorLoad != "" || desc.AppArmorSwitch != "" {
+		rec.SetAppArmor(desc.AppArmorLoad, desc.AppArmorSwitch)
+	}
 	if desc.NoNewPrivs {
 		rec.SetNoNewPrivs(true)
 	}

@@ -227,6 +227,18 @@ type ExecParams struct {
 	// not have to discover it.
 	RunnerPath string
 
+	// AppArmorLoadProfile, if non-empty, is an absolute path to an
+	// AppArmor profile loaded with `apparmor_parser -r` in the parent
+	// before the child is started. A load failure fails the start
+	// (security must fail closed, never silently run unconfined).
+	AppArmorLoadProfile string
+
+	// AppArmorProfile, if non-empty, is an AppArmor profile name the
+	// child transitions into on exec (aa_change_onexec). It is applied
+	// by slinit-runner because the kernel ties the transition to the
+	// task that performs the execve, which only the child can do.
+	AppArmorProfile string
+
 	// Umask, if non-nil, is the file-creation mask to apply to the child
 	// process. slinit sets it in the parent immediately before fork (then
 	// restores its own) so the child inherits it; this is safe because

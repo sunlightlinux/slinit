@@ -1,0 +1,3 @@
+type = process
+depends-on: system-init
+command = /bin/sh -c "echo ok > /tmp/aa-control; exec sleep 600"

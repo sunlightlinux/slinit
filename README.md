@@ -48,6 +48,7 @@ format to accommodate them.
 - **Path activation**: `start-on-path-exists`, `start-on-path-changed`, `start-on-path-modified`, `start-on-directory-not-empty` — inotify-driven, systemd-style one-shot triggers that start a service when a filesystem condition is met
 - **`.override` drop-ins**: an upstart-style `<service>.override` file next to the service file tweaks a packaged service's stanzas (scalars replace, `+=` appends) without editing the shipped file; applied after conf.d overlays so it has the final say
 - **Inline shell**: upstart-style `script ... end script` block becomes the service command via `/bin/sh -c` (verbatim multi-line body, same load-time `$VAR`/`$1` substitution as `command`, mutually exclusive with it)
+- **AppArmor confinement**: `apparmor-load` parses a service-shipped profile (`apparmor_parser -r`) before start; `apparmor-switch` transitions the process into a profile on exec (`aa_change_onexec` via slinit-runner) — both fail closed if the load/transition cannot be applied
 - **Control socket**: binary protocol (v6) over Unix domain socket for runtime management
 - **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, is-newer-than, is-older-than, trigger, untrigger, signal, pause, continue, once, reload, reload-all, reload-signal, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, reset-env, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, action, list-actions, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
@@ -793,7 +794,7 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 74 QEMU-based integration tests
+├── tests/functional/      # 75 QEMU-based integration tests
 ├── tests/fuzz/            # 21 fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
@@ -804,7 +805,7 @@ slinit/
 # Unit tests (~850+ tests + benchmarks across 25 packages)
 go test ./...
 
-# Functional tests (74 QEMU-based integration tests)
+# Functional tests (75 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
 # Fuzz targets (21 targets across 4 files)
@@ -837,6 +838,7 @@ go test -fuzz=FuzzParseConfig ./tests/fuzz
 - [x] **Phase 22**: Path-based activation -- inotify-driven `start-on-path-exists` / `start-on-path-changed` / `start-on-path-modified` / `start-on-directory-not-empty` stanzas with systemd-style one-shot semantics (re-armed on `EventStopped`); single global watcher serves all services via the new `pkg/pathwatch` package
 - [x] **Phase 23**: Upstart-style `.override` drop-ins -- a sibling `<service>.override` file modifies a packaged service's stanzas (scalars replace, `+=` appends) without editing the shipped file; parsed after conf.d overlays so it has the final say, with template `$1` substitution preserved
 - [x] **Phase 24**: Upstart-style `script ... end script` inline shell -- a verbatim multi-line block becomes the service command via `/bin/sh -c`; pure sugar over `command` (same load-time `$VAR`/`$1` substitution, mutually exclusive with it), unterminated block is a fatal parse error
+- [x] **Phase 25**: AppArmor confinement (first LSM integration) -- `apparmor-load` parses a profile (`apparmor_parser -r`) parent-side before start; `apparmor-switch` transitions on exec via `slinit-runner` writing `/proc/self/attr/exec` (`aa_change_onexec`), since the kernel binds the transition to the task performing the `execve`; both fail closed
 
 ## License
 

@@ -189,6 +189,12 @@ type ServiceDescription struct {
 	OOMScoreAdj *int    // -1000..1000
 	Umask       *uint32 // file-creation mask, octal 000..777
 
+	// AppArmor confinement. AppArmorLoad is an absolute path to a
+	// profile parsed before start; AppArmorSwitch is a profile name the
+	// process transitions into on exec. Either may be empty.
+	AppArmorLoad   string
+	AppArmorSwitch string
+
 	// Path-based activation. StartOnPath is empty when no trigger is
 	// configured; otherwise StartOnPathTrigger is 1..4 corresponding to
 	// pathwatch.Trigger{Exists,Changed,Modified,DirNotEmpty}. The four
@@ -1178,6 +1184,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		u := uint32(m)
 		desc.Umask = &u
+
+	case "apparmor-load":
+		if !filepath.IsAbs(value) {
+			return fmt.Errorf("apparmor-load: path must be absolute: %q", value)
+		}
+		desc.AppArmorLoad = value
+
+	case "apparmor-switch":
+		if value == "" {
+			return fmt.Errorf("apparmor-switch: profile name must not be empty")
+		}
+		desc.AppArmorSwitch = value
 
 	case "start-on-path-exists", "start-on-path-changed",
 		"start-on-path-modified", "start-on-directory-not-empty":

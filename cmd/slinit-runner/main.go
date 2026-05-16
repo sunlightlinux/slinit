@@ -41,6 +41,8 @@ func run() error {
 		"NUMA memory policy: bind, preferred, interleave, local, default")
 	numaNodes := fs.String("numa-nodes", "",
 		"NUMA node list for bind/interleave/preferred (e.g. '0-3' or '0,2,4')")
+	apparmor := fs.String("apparmor", "",
+		"AppArmor profile to transition into on the upcoming exec")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -67,6 +69,16 @@ func run() error {
 		}
 	}
 
+	// AppArmor domain transition. This must be the last thing before
+	// exec: the kernel attaches the profile change to *this* task's
+	// next execve, so no fork may intervene. A failure aborts rather
+	// than exec'ing the service unconfined.
+	if *apparmor != "" {
+		if err := changeOnExec(*apparmor); err != nil {
+			return fmt.Errorf("apparmor switch %q: %w", *apparmor, err)
+		}
+	}
+
 	// Replace ourselves with the target program. exec inherits the
 	// locked memory and the active mempolicy, so the bandwidth promise
 	// the operator made via the config takes effect from the first
@@ -75,6 +87,25 @@ func run() error {
 		return fmt.Errorf("exec %s: %w", args[0], err)
 	}
 	return nil // unreachable
+}
+
+// changeOnExec performs an AppArmor onexec transition, the same
+// operation as libapparmor's aa_change_onexec(): write "exec <profile>"
+// to /proc/self/attr/exec in a single write(2). The kernel applies the
+// profile when this task next calls execve, which is the syscall.Exec
+// immediately after this returns. Writing requires the AppArmor LSM to
+// be active; on a kernel without it the open/write fails and the start
+// is aborted (fail closed).
+func changeOnExec(profile string) error {
+	f, err := os.OpenFile("/proc/self/attr/exec", os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open /proc/self/attr/exec: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write([]byte("exec " + profile)); err != nil {
+		return fmt.Errorf("write attr/exec: %w", err)
+	}
+	return nil
 }
 
 func parseMempolicy(mode, nodesStr string) (uint32, []uint, error) {
