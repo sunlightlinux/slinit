@@ -1,0 +1,6 @@
+type = process
+depends-on: system-init
+script
+echo scripted > /tmp/script-marker
+exec sleep 600
+end script

@@ -112,6 +112,17 @@ instance, with *$1* substitution still in effect.
 :   Program to execute (for **process**, **scripted**, **bgprocess**).
     Quoting and escaping follow shell-like rules.
 
+**script** ... **end script**
+:   Upstart-style inline shell sugar. A bare `script` line on its own
+    opens a block; every following line is taken **verbatim** (leading
+    whitespace preserved) until a bare `end script` line. The block is
+    wrapped as `/bin/sh -c` *body* and becomes **command**, so it is
+    mutually exclusive with **command** (specifying both is an error).
+    The body undergoes the same load-time `$VAR`/`$1` substitution as
+    **command**; use `$$` for a literal `$` (so a runtime shell
+    variable must be written `$$VAR`). A missing `end script` is a
+    fatal parse error.
+
 **stop-command**=*program* [*args*...]
 :   For **scripted**: program executed when the service stops.
 

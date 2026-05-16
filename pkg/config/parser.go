@@ -64,24 +64,25 @@ type ServiceDescription struct {
 	Type service.ServiceType
 
 	// Commands
-	Command           []string
-	StopCommand       []string
-	FinishCommand     []string      // runs after process exits (before restart)
-	ReadyCheckCommand []string      // polls to verify service readiness
-	ReadyCheckInterval time.Duration // polling interval for ready-check (default 1s)
-	PreStopHook       []string      // runs before SIGTERM in BringDown
-	ControlCommands   map[string][]string // signal→custom command (runit control/)
+	Command              []string
+	ScriptBlock          bool // command came from a script...end script block
+	StopCommand          []string
+	FinishCommand        []string            // runs after process exits (before restart)
+	ReadyCheckCommand    []string            // polls to verify service readiness
+	ReadyCheckInterval   time.Duration       // polling interval for ready-check (default 1s)
+	PreStopHook          []string            // runs before SIGTERM in BringDown
+	ControlCommands      map[string][]string // signal→custom command (runit control/)
 	ExtraCommands        map[string][]string // custom actions (available in any state)
 	ExtraStartedCommands map[string][]string // custom actions (only when STARTED)
-	WorkingDir        string
-	EnvFile           string
-	EnvDir            string // runit-style: directory with one file per env var
-	Chroot            string // chroot directory before exec
-	LockFile          string // exclusive flock file path
-	NewSession        bool   // setsid() before exec
-	CloseStdin        bool   // close fd 0
-	CloseStdout       bool   // close fd 1
-	CloseStderr       bool   // close fd 2
+	WorkingDir           string
+	EnvFile              string
+	EnvDir               string // runit-style: directory with one file per env var
+	Chroot               string // chroot directory before exec
+	LockFile             string // exclusive flock file path
+	NewSession           bool   // setsid() before exec
+	CloseStdin           bool   // close fd 0
+	CloseStdout          bool   // close fd 1
+	CloseStderr          bool   // close fd 2
 
 	// Namespace isolation (Linux clone flags)
 	NamespacePID    bool // CLONE_NEWPID
@@ -97,11 +98,11 @@ type ServiceDescription struct {
 	NamespaceGidMap []IDMapping
 
 	// Dependencies (by name, resolved by the loader)
-	DependsOn  []string // depends-on (REGULAR)
-	DependsMS  []string // depends-ms (MILESTONE)
-	WaitsFor   []string // waits-for (WAITS_FOR)
-	Before     []string // before
-	After      []string // after
+	DependsOn []string // depends-on (REGULAR)
+	DependsMS []string // depends-ms (MILESTONE)
+	WaitsFor  []string // waits-for (WAITS_FOR)
+	Before    []string // before
+	After     []string // after
 
 	// Dependency directories
 	DependsOnD []string // depends-on.d
@@ -121,20 +122,20 @@ type ServiceDescription struct {
 	Flags             service.ServiceFlags
 
 	// Logging
-	LogType         service.LogType
-	LogFile         string
-	LogFilePerms    int
-	LogFileUID      int
-	LogFileGID      int
-	LogBufMax       int
-	LogMaxSize      int64         // max logfile size before rotation (bytes)
-	LogMaxFiles     int           // max number of rotated log files to keep
-	LogRotateTime   time.Duration // rotate logfile at this interval
-	LogProcessor    []string      // command to run on rotated logfile
-	LogInclude      []string      // include only lines matching these patterns
-	LogExclude      []string      // exclude lines matching these patterns
-	OutputLogger    []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
-	ErrorLogger     []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
+	LogType       service.LogType
+	LogFile       string
+	LogFilePerms  int
+	LogFileUID    int
+	LogFileGID    int
+	LogBufMax     int
+	LogMaxSize    int64         // max logfile size before rotation (bytes)
+	LogMaxFiles   int           // max number of rotated log files to keep
+	LogRotateTime time.Duration // rotate logfile at this interval
+	LogProcessor  []string      // command to run on rotated logfile
+	LogInclude    []string      // include only lines matching these patterns
+	LogExclude    []string      // exclude lines matching these patterns
+	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
+	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
 	// Process management
 	StopTimeout       time.Duration
@@ -148,8 +149,8 @@ type ServiceDescription struct {
 	ReloadSignal      syscall.Signal // upstart-inspired; 0 = unset
 	PIDFile           string
 	ReadyNotification string
-	ReadyNotifyFD     int    // parsed from pipefd:N (-1 if unset)
-	ReadyNotifyVar    string // parsed from pipevar:VARNAME
+	ReadyNotifyFD     int           // parsed from pipefd:N (-1 if unset)
+	ReadyNotifyVar    string        // parsed from pipevar:VARNAME
 	WatchdogTimeout   time.Duration // 0 = disabled; piggybacks on ready-notification pipe
 
 	// Credentials
@@ -194,21 +195,21 @@ type ServiceDescription struct {
 	// stanzas are mutually exclusive — setting any clears the others.
 	StartOnPath        string
 	StartOnPathTrigger int
-	NoNewPrivs  bool
-	IOPrio      string // "class:level" e.g. "be:4", "idle"
-	CgroupPath     string // run-in-cgroup path
-	CgroupSettings []CgroupSetting // cgroup v2 controller knobs
-	CPUAffinity    []uint // CPU numbers to pin to
+	NoNewPrivs         bool
+	IOPrio             string          // "class:level" e.g. "be:4", "idle"
+	CgroupPath         string          // run-in-cgroup path
+	CgroupSettings     []CgroupSetting // cgroup v2 controller knobs
+	CPUAffinity        []uint          // CPU numbers to pin to
 
 	// Real-time scheduling
-	SchedPolicy      uint32 // unix.SCHED_* (0 = unset / SCHED_NORMAL)
-	SchedPolicySet   bool   // distinguishes "explicit SCHED_NORMAL" from unset
-	SchedPriority    uint32 // 1..99 for FIFO/RR
-	SchedRuntime     uint64 // nanoseconds, SCHED_DEADLINE
-	SchedDeadline    uint64 // nanoseconds, SCHED_DEADLINE
-	SchedPeriod      uint64 // nanoseconds, SCHED_DEADLINE
-	SchedResetOnFork bool   // SCHED_FLAG_RESET_ON_FORK (default true)
-	SchedResetOnForkSet bool // tracks whether the user gave an explicit value
+	SchedPolicy         uint32 // unix.SCHED_* (0 = unset / SCHED_NORMAL)
+	SchedPolicySet      bool   // distinguishes "explicit SCHED_NORMAL" from unset
+	SchedPriority       uint32 // 1..99 for FIFO/RR
+	SchedRuntime        uint64 // nanoseconds, SCHED_DEADLINE
+	SchedDeadline       uint64 // nanoseconds, SCHED_DEADLINE
+	SchedPeriod         uint64 // nanoseconds, SCHED_DEADLINE
+	SchedResetOnFork    bool   // SCHED_FLAG_RESET_ON_FORK (default true)
+	SchedResetOnForkSet bool   // tracks whether the user gave an explicit value
 
 	// Memory locking and NUMA — applied via the slinit-runner exec helper.
 	MlockallFlags    int    // mlockall(2) bitmask (MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)
@@ -392,6 +393,46 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 			continue
 		}
 
+		// Handle upstart-style "script ... end script" inline shell.
+		// A bare `script` line opens a block; following lines are taken
+		// verbatim until a bare `end script` line, then wrapped as
+		// `/bin/sh -c <body>`. It is pure sugar over the `command`
+		// setting, so the body undergoes the same load-time env/$1
+		// substitution and the two are mutually exclusive.
+		if trimmed == "script" {
+			if len(desc.Command) > 0 || desc.ScriptBlock {
+				return nil, &ParseError{
+					ServiceName: name,
+					FileName:    fileName,
+					Line:        lineNum,
+					Message:     "script block conflicts with command",
+				}
+			}
+			var body []string
+			closed := false
+			for scanner.Scan() {
+				lineNum++
+				bl := scanner.Text()
+				if strings.TrimSpace(bl) == "end script" {
+					closed = true
+					break
+				}
+				body = append(body, bl)
+			}
+			if !closed {
+				return nil, &ParseError{
+					ServiceName: name,
+					FileName:    fileName,
+					Line:        lineNum,
+					Message:     "unterminated script block (missing 'end script')",
+				}
+			}
+			script := expandEnvVarsForCommand(strings.Join(body, "\n"), serviceArg)
+			desc.Command = []string{"/bin/sh", "-c", script}
+			desc.ScriptBlock = true
+			continue
+		}
+
 		// Parse setting
 		setting, value, op, err := parseLine(trimmed)
 		if err != nil {
@@ -555,6 +596,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "usage":
 		desc.Usage = value
 	case "command":
+		if desc.ScriptBlock {
+			return fmt.Errorf("command conflicts with script block")
+		}
 		if op == OpPlusEqual {
 			desc.Command = append(desc.Command, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
 		} else {
