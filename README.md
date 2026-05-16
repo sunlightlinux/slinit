@@ -3,13 +3,14 @@
 A service manager and init system written in Go. The core is a port of
 [dinit](https://github.com/davmac314/dinit), with features layered in
 from [runit](http://smarden.org/runit/),
-[s6-linux-init](https://skarnet.org/software/s6-linux-init/), and
-[OpenRC](https://github.com/OpenRC/openrc).
+[s6-linux-init](https://skarnet.org/software/s6-linux-init/),
+[OpenRC](https://github.com/OpenRC/openrc), and
+[upstart](https://code.launchpad.net/upstart).
 
 slinit can run as PID 1 (init system) or as a user-level service
 manager. It uses a dinit-compatible configuration format and manages
 services with dependency tracking, automatic restart, and process
-lifecycle management. Admins moving from any of the four upstreams
+lifecycle management. Admins moving from any of the five upstreams
 should keep their muscle memory:
 
 - **dinit**: service-description format, dep types, state machine, and
@@ -27,6 +28,10 @@ should keep their muscle memory:
   `/etc/rc.conf` + `/etc/conf.d/<service>` sourcing for init.d scripts,
   named-runlevel dispatch (`init default|single|nonetwork|...`),
   init.d/LSB auto-detection.
+- **upstart**: `manual`, `normal-exit`, `reload-signal`, `umask`,
+  `author`/`version`/`usage`, `apparmor-load`/`apparmor-switch`,
+  `debug`, `script ... end script`, `start-on-path-*` activation,
+  `<service>.override` drop-ins, `slinitctl reset-env` / `reload-all`.
 
 Runlevels, where present, are pure UX aliases over the dependency
 graph — slinit does not introduce a second state machine or config
