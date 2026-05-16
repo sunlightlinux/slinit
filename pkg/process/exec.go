@@ -423,7 +423,7 @@ func loadAppArmorProfile(path string) error {
 // slinit-runner because mlockall(2) and/or set_mempolicy(2) — both
 // per-calling-process syscalls — were requested.
 func needsRunnerWrap(p ExecParams) bool {
-	return p.MlockallFlags != 0 || p.NumaMempolicySet || p.AppArmorProfile != ""
+	return p.MlockallFlags != 0 || p.NumaMempolicySet || p.AppArmorProfile != "" || p.DebugStop
 }
 
 // wrapWithRunner returns a new argv that invokes slinit-runner with
@@ -441,6 +441,9 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	if p.AppArmorProfile != "" {
 		args = append(args, "--apparmor="+p.AppArmorProfile)
+	}
+	if p.DebugStop {
+		args = append(args, "--debug")
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)

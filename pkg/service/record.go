@@ -226,6 +226,10 @@ type ServiceRecord struct {
 	appArmorLoad   string
 	appArmorSwitch string
 
+	// debug raises SIGSTOP in the child before exec so a developer can
+	// attach a debugger; the operator resumes it with SIGCONT.
+	debug bool
+
 	// Real-time scheduling (telco / 5G data plane). Zero values keep
 	// the kernel default; only when schedPolicySet is true does the
 	// post-fork attr step issue a sched_setattr.
@@ -701,6 +705,12 @@ func (sr *ServiceRecord) AppArmor() (load, profile string) {
 	return sr.appArmorLoad, sr.appArmorSwitch
 }
 
+// SetDebug enables the pre-exec SIGSTOP debug stop for this service.
+func (sr *ServiceRecord) SetDebug(b bool) { sr.debug = b }
+
+// Debug reports whether the pre-exec debug stop is enabled.
+func (sr *ServiceRecord) Debug() bool { return sr.debug }
+
 // SetStartOnPath records the path-activation configuration. trigger must
 // match the pathwatch.Trigger constants (1=exists, 2=changed,
 // 3=modified, 4=dir-not-empty). Calling with trigger=0 clears the
@@ -781,6 +791,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	}
 	params.AppArmorLoadProfile = sr.appArmorLoad
 	params.AppArmorProfile = sr.appArmorSwitch
+	params.DebugStop = sr.debug
 	params.MlockallFlags = sr.mlockallFlags
 	params.NumaMempolicy = sr.numaMempolicy
 	params.NumaMempolicySet = sr.numaMempolicySet

@@ -1,0 +1,4 @@
+type = process
+depends-on: system-init
+debug = yes
+command = /bin/sh -c "echo running > /tmp/debug-marker; exec sleep 600"

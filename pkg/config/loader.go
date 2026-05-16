@@ -1154,6 +1154,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if desc.AppArmorLoad != "" || desc.AppArmorSwitch != "" {
 		rec.SetAppArmor(desc.AppArmorLoad, desc.AppArmorSwitch)
 	}
+	if desc.Debug {
+		rec.SetDebug(true)
+	}
 	if desc.NoNewPrivs {
 		rec.SetNoNewPrivs(true)
 	}

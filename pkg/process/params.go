@@ -239,6 +239,11 @@ type ExecParams struct {
 	// task that performs the execve, which only the child can do.
 	AppArmorProfile string
 
+	// DebugStop, when true, makes slinit-runner raise SIGSTOP on itself
+	// before exec so a developer can `gdb -p` the (pre-exec) process and
+	// `kill -CONT` it to proceed. Requires the runner wrap.
+	DebugStop bool
+
 	// Umask, if non-nil, is the file-creation mask to apply to the child
 	// process. slinit sets it in the parent immediately before fork (then
 	// restores its own) so the child inherits it; this is safe because

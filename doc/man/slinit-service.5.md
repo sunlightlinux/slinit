@@ -593,6 +593,15 @@ mlockall       = current+future
     be active; if it is not, the start fails (fail closed). Combine
     with **apparmor-load** to both ship and enter a profile.
 
+**debug**=*bool*
+:   Developer aid. When `yes`, the service is wrapped with
+    **slinit-runner**, which raises `SIGSTOP` on itself after all
+    runner-side setup but *before* `execve`. Attach a debugger to that
+    PID (`gdb -p`), set breakpoints, then resume it with `kill -CONT`
+    *pid*; the runner then performs any AppArmor transition and exec's
+    the real command, so the debugger lands in the service from its
+    first instruction. Off by default.
+
 **options**=*flag* [*flag*...]
 :   Space-separated boolean flags. Recognised:
 

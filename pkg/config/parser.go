@@ -195,6 +195,10 @@ type ServiceDescription struct {
 	AppArmorLoad   string
 	AppArmorSwitch string
 
+	// Debug, when true, makes the child raise SIGSTOP before exec so a
+	// developer can `gdb -p` it and then `kill -CONT` to proceed.
+	Debug bool
+
 	// Path-based activation. StartOnPath is empty when no trigger is
 	// configured; otherwise StartOnPathTrigger is 1..4 corresponding to
 	// pathwatch.Trigger{Exists,Changed,Modified,DirNotEmpty}. The four
@@ -656,6 +660,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.NewSession = b
+	case "debug":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.Debug = b
 	case "namespace-pid":
 		b, err := parseBool(value)
 		if err != nil {

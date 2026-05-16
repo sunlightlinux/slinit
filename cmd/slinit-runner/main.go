@@ -43,6 +43,8 @@ func run() error {
 		"NUMA node list for bind/interleave/preferred (e.g. '0-3' or '0,2,4')")
 	apparmor := fs.String("apparmor", "",
 		"AppArmor profile to transition into on the upcoming exec")
+	debug := fs.Bool("debug", false,
+		"raise SIGSTOP before exec so a debugger can attach (resume with SIGCONT)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -66,6 +68,17 @@ func run() error {
 	if *mlockall != 0 {
 		if err := unix.Mlockall(*mlockall); err != nil {
 			return fmt.Errorf("mlockall(0x%x): %w", *mlockall, err)
+		}
+	}
+
+	// Developer debug stop: all runner setup is done, so freeze here
+	// with SIGSTOP. The operator attaches a debugger to this PID and
+	// resumes it with SIGCONT, after which the profile transition and
+	// exec happen — the debugger lands in the service from its first
+	// instruction.
+	if *debug {
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGSTOP); err != nil {
+			return fmt.Errorf("debug SIGSTOP: %w", err)
 		}
 	}
 

@@ -138,6 +138,9 @@ var KnownSettings = map[string]OperatorType{
 	"apparmor-load":   OpEquals,
 	"apparmor-switch": OpEquals,
 
+	// developer debug: SIGSTOP child before exec
+	"debug": OpEquals,
+
 	// path-based activation (the four are mutually exclusive per service)
 	"start-on-path-exists":         OpEquals,
 	"start-on-path-changed":        OpEquals,
