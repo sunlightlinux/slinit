@@ -60,6 +60,16 @@ func (e *ExecError) Error() string {
 	return fmt.Sprintf("failed while %s: %v", e.Stage, e.Err)
 }
 
+// ServiceDir is one auto-managed service directory (systemd's
+// RuntimeDirectory= family). Path is absolute and already prefixed
+// with its base (/run, /var/lib, /var/cache, /var/log, /etc). Volatile
+// marks a RuntimeDirectory, removed when the service stops.
+type ServiceDir struct {
+	Path     string
+	Mode     os.FileMode
+	Volatile bool
+}
+
 // ExecParams holds the parameters for starting a child process.
 type ExecParams struct {
 	// Command is the program and arguments to execute.
@@ -238,6 +248,12 @@ type ExecParams struct {
 	// by slinit-runner because the kernel ties the transition to the
 	// task that performs the execve, which only the child can do.
 	AppArmorProfile string
+
+	// ServiceDirs are runtime/state/cache/logs/configuration directories
+	// created (and chowned to RunAsUID/RunAsGID) in the parent before the
+	// child starts, mirroring systemd's RuntimeDirectory= family. Volatile
+	// entries (RuntimeDirectory) are removed when the service stops.
+	ServiceDirs []ServiceDir
 
 	// DebugStop, when true, makes slinit-runner raise SIGSTOP on itself
 	// before exec so a developer can `gdb -p` the (pre-exec) process and

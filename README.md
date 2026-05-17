@@ -55,6 +55,7 @@ format to accommodate them.
 - **Inline shell**: upstart-style `script ... end script` block becomes the service command via `/bin/sh -c` (verbatim multi-line body, same load-time `$VAR`/`$1` substitution as `command`, mutually exclusive with it)
 - **AppArmor confinement**: `apparmor-load` parses a service-shipped profile (`apparmor_parser -r`) before start; `apparmor-switch` transitions the process into a profile on exec (`aa_change_onexec` via slinit-runner) — both fail closed if the load/transition cannot be applied
 - **Debug stop**: `debug = yes` makes slinit-runner raise `SIGSTOP` before exec so a developer can `gdb -p` the process and resume it with `kill -CONT`
+- **Service directories**: systemd-style `runtime-directory`/`state-directory`/`cache-directory`/`logs-directory`/`configuration-directory` auto-create + chown to `run-as` under `/run`,`/var/lib`,`/var/cache`,`/var/log`,`/etc` (with `*-mode`); runtime dir removed on stop per `runtime-directory-preserve`
 - **Control socket**: binary protocol (v6) over Unix domain socket for runtime management
 - **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, is-newer-than, is-older-than, trigger, untrigger, signal, pause, continue, once, reload, reload-all, reload-signal, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, reset-env, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, action, list-actions, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
@@ -800,7 +801,7 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 76 QEMU-based integration tests
+├── tests/functional/      # 77 QEMU-based integration tests
 ├── tests/fuzz/            # 21 fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
@@ -811,7 +812,7 @@ slinit/
 # Unit tests (~850+ tests + benchmarks across 25 packages)
 go test ./...
 
-# Functional tests (76 QEMU-based integration tests)
+# Functional tests (77 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
 # Fuzz targets (21 targets across 4 files)
@@ -846,6 +847,7 @@ go test -fuzz=FuzzParseConfig ./tests/fuzz
 - [x] **Phase 24**: Upstart-style `script ... end script` inline shell -- a verbatim multi-line block becomes the service command via `/bin/sh -c`; pure sugar over `command` (same load-time `$VAR`/`$1` substitution, mutually exclusive with it), unterminated block is a fatal parse error
 - [x] **Phase 25**: AppArmor confinement (first LSM integration) -- `apparmor-load` parses a profile (`apparmor_parser -r`) parent-side before start; `apparmor-switch` transitions on exec via `slinit-runner` writing `/proc/self/attr/exec` (`aa_change_onexec`), since the kernel binds the transition to the task performing the `execve`; both fail closed
 - [x] **Phase 26**: `debug = yes` developer stop -- slinit-runner raises `SIGSTOP` after runner setup but before `execve` so `gdb -p` can attach pre-exec; `kill -CONT` resumes into the AppArmor transition + exec. Completes the upstart-feature adaptation backlog (all 12 candidates shipped)
+- [x] **Phase 27**: systemd-style auto-managed service directories -- `runtime-directory`/`state-directory`/`cache-directory`/`logs-directory`/`configuration-directory` (+`-mode`) created and chowned to `run-as` under `/run`,`/var/lib`,`/var/cache`,`/var/log`,`/etc` before start; runtime dir removed on stop per `runtime-directory-preserve` (no/yes/restart). First item of the systemd-adaptation backlog
 
 ## License
 

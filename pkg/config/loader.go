@@ -1097,6 +1097,35 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 	}
 }
 
+// resolveServiceDirs turns the parsed *-directory name lists into
+// absolute process.ServiceDir specs. Bases follow systemd:
+// runtime-directory→/run, state-directory→/var/lib,
+// cache-directory→/var/cache, logs-directory→/var/log,
+// configuration-directory→/etc. Only runtime-directory entries are
+// volatile (removed on stop). Modes default to 0755.
+func resolveServiceDirs(desc *ServiceDescription) []process.ServiceDir {
+	var out []process.ServiceDir
+	add := func(names []string, base string, mode *uint32, volatile bool) {
+		m := os.FileMode(0o755)
+		if mode != nil {
+			m = os.FileMode(*mode)
+		}
+		for _, n := range names {
+			out = append(out, process.ServiceDir{
+				Path:     filepath.Join(base, n),
+				Mode:     m,
+				Volatile: volatile,
+			})
+		}
+	}
+	add(desc.RuntimeDirs, "/run", desc.RuntimeDirMode, true)
+	add(desc.StateDirs, "/var/lib", desc.StateDirMode, false)
+	add(desc.CacheDirs, "/var/cache", desc.CacheDirMode, false)
+	add(desc.LogsDirs, "/var/log", desc.LogsDirMode, false)
+	add(desc.ConfigDirs, "/etc", desc.ConfigDirMode, false)
+	return out
+}
+
 // applyToService applies parsed configuration to the service record.
 func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec := svc.Record()
@@ -1156,6 +1185,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	if desc.Debug {
 		rec.SetDebug(true)
+	}
+	if dirs := resolveServiceDirs(desc); len(dirs) > 0 {
+		rec.SetServiceDirs(dirs, desc.RuntimeDirPreserve)
 	}
 	if desc.NoNewPrivs {
 		rec.SetNoNewPrivs(true)

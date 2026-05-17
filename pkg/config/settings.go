@@ -138,6 +138,19 @@ var KnownSettings = map[string]OperatorType{
 	"apparmor-load":   OpEquals,
 	"apparmor-switch": OpEquals,
 
+	// systemd-style auto-managed service directories
+	"runtime-directory":            OpEquals,
+	"state-directory":              OpEquals,
+	"cache-directory":              OpEquals,
+	"logs-directory":               OpEquals,
+	"configuration-directory":      OpEquals,
+	"runtime-directory-mode":       OpEquals,
+	"state-directory-mode":         OpEquals,
+	"cache-directory-mode":         OpEquals,
+	"logs-directory-mode":          OpEquals,
+	"configuration-directory-mode": OpEquals,
+	"runtime-directory-preserve":   OpEquals,
+
 	// developer debug: SIGSTOP child before exec
 	"debug": OpEquals,
 

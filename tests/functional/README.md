@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (76 tests)
+# Run all tests (77 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -115,6 +115,7 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 74 | script-block | `script ... end script` inline shell body runs as the service command |
 | 75 | apparmor | `apparmor-switch` fails closed when the AppArmor LSM is unavailable; plain services unaffected |
 | 76 | debug | `debug = yes` SIGSTOPs the runner pre-exec; service runs only after SIGCONT |
+| 77 | service-dirs | `runtime-directory`/`state-directory` created on start; runtime dir removed on stop, state dir persists |
 
 ## How It Works
 

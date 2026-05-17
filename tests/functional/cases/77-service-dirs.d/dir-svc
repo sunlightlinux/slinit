@@ -1,0 +1,5 @@
+type = process
+depends-on: system-init
+runtime-directory = slinit-rt
+state-directory = slinit-st
+command = /bin/sh -c "echo up > /tmp/dir-marker; exec sleep 600"

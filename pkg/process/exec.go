@@ -32,6 +32,16 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 	}
 
+	// Create the service's runtime/state/cache/logs/configuration
+	// directories before the child starts, owned by the run-as user.
+	// A failure aborts the start: a service that cannot get its
+	// StateDirectory must not run as if it had one.
+	if len(params.ServiceDirs) > 0 {
+		if err := ensureServiceDirs(params.ServiceDirs, params.RunAsUID, params.RunAsGID); err != nil {
+			return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
+		}
+	}
+
 	// mlockall and set_mempolicy operate on the calling process, so
 	// they cannot be applied to a fork()ed child from outside. When
 	// either is configured we prepend slinit-runner to the command —
@@ -397,6 +407,27 @@ func KillProcessGroup(pgid int) {
 			break
 		}
 	}
+}
+
+// ensureServiceDirs creates each directory (parents included), sets its
+// mode explicitly (MkdirAll is umask-masked), and chowns it to the
+// run-as user when one is configured. Missing parents are created; an
+// existing directory is left in place but its mode/owner are corrected.
+func ensureServiceDirs(dirs []ServiceDir, uid, gid uint32) error {
+	for _, d := range dirs {
+		if err := os.MkdirAll(d.Path, d.Mode); err != nil {
+			return fmt.Errorf("service directory %s: %w", d.Path, err)
+		}
+		if err := os.Chmod(d.Path, d.Mode); err != nil {
+			return fmt.Errorf("service directory %s: chmod: %w", d.Path, err)
+		}
+		if uid != 0 || gid != 0 {
+			if err := os.Chown(d.Path, int(uid), int(gid)); err != nil {
+				return fmt.Errorf("service directory %s: chown: %w", d.Path, err)
+			}
+		}
+	}
+	return nil
 }
 
 // loadAppArmorProfile parses and replaces an AppArmor profile by

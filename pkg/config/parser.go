@@ -199,6 +199,15 @@ type ServiceDescription struct {
 	// developer can `gdb -p` it and then `kill -CONT` to proceed.
 	Debug bool
 
+	// systemd-style auto-managed service directories (relative names,
+	// resolved by the loader against /run, /var/lib, /var/cache,
+	// /var/log, /etc). Modes default to 0755 when the *Mode field is
+	// nil. RuntimeDirPreserve: 0=no (remove on stop), 1=yes (never
+	// remove), 2=restart (keep across restart, remove on full stop).
+	RuntimeDirs, StateDirs, CacheDirs, LogsDirs, ConfigDirs                []string
+	RuntimeDirMode, StateDirMode, CacheDirMode, LogsDirMode, ConfigDirMode *uint32
+	RuntimeDirPreserve                                                     int
+
 	// Path-based activation. StartOnPath is empty when no trigger is
 	// configured; otherwise StartOnPathTrigger is 1..4 corresponding to
 	// pathwatch.Trigger{Exists,Changed,Modified,DirNotEmpty}. The four
@@ -590,6 +599,44 @@ func parseLine(line string) (setting string, value string, op OperatorType, err 
 
 	err = fmt.Errorf("missing operator ('=' or ':')")
 	return
+}
+
+// parseServiceDirNames splits a space-separated list of relative
+// directory names for the *-directory settings, expanding $1/$VAR and
+// rejecting absolute paths or '.'/'..' components (the loader prefixes
+// a trusted base; a name must not escape it).
+func parseServiceDirNames(setting, value string, serviceArg *string) ([]string, error) {
+	var out []string
+	for _, raw := range strings.Fields(value) {
+		n := expandEnvVars(raw, serviceArg)
+		if n == "" {
+			continue
+		}
+		if strings.HasPrefix(n, "/") {
+			return nil, fmt.Errorf("%s: name must be relative: %q", setting, n)
+		}
+		for _, comp := range strings.Split(n, "/") {
+			if comp == "." || comp == ".." {
+				return nil, fmt.Errorf("%s: '.'/'..' not allowed: %q", setting, n)
+			}
+		}
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: no directory name given", setting)
+	}
+	return out, nil
+}
+
+// parseDirMode parses an octal directory mode (000..777) for the
+// *-directory-mode settings.
+func parseDirMode(setting, value string) (*uint32, error) {
+	m, err := strconv.ParseUint(value, 8, 32)
+	if err != nil || m > 0o777 {
+		return nil, fmt.Errorf("invalid %s: %s (expected octal 000..777)", setting, value)
+	}
+	u := uint32(m)
+	return &u, nil
 }
 
 // applySetting applies a parsed setting to the service description.
@@ -1206,6 +1253,57 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("apparmor-switch: profile name must not be empty")
 		}
 		desc.AppArmorSwitch = value
+
+	case "runtime-directory", "state-directory", "cache-directory",
+		"logs-directory", "configuration-directory":
+		names, err := parseServiceDirNames(setting, value, serviceArg)
+		if err != nil {
+			return err
+		}
+		switch setting {
+		case "runtime-directory":
+			desc.RuntimeDirs = names
+		case "state-directory":
+			desc.StateDirs = names
+		case "cache-directory":
+			desc.CacheDirs = names
+		case "logs-directory":
+			desc.LogsDirs = names
+		case "configuration-directory":
+			desc.ConfigDirs = names
+		}
+
+	case "runtime-directory-mode", "state-directory-mode",
+		"cache-directory-mode", "logs-directory-mode",
+		"configuration-directory-mode":
+		m, err := parseDirMode(setting, value)
+		if err != nil {
+			return err
+		}
+		switch setting {
+		case "runtime-directory-mode":
+			desc.RuntimeDirMode = m
+		case "state-directory-mode":
+			desc.StateDirMode = m
+		case "cache-directory-mode":
+			desc.CacheDirMode = m
+		case "logs-directory-mode":
+			desc.LogsDirMode = m
+		case "configuration-directory-mode":
+			desc.ConfigDirMode = m
+		}
+
+	case "runtime-directory-preserve":
+		switch value {
+		case "no":
+			desc.RuntimeDirPreserve = 0
+		case "yes":
+			desc.RuntimeDirPreserve = 1
+		case "restart":
+			desc.RuntimeDirPreserve = 2
+		default:
+			return fmt.Errorf("invalid runtime-directory-preserve: %q (expected no, yes, or restart)", value)
+		}
 
 	case "start-on-path-exists", "start-on-path-changed",
 		"start-on-path-modified", "start-on-directory-not-empty":

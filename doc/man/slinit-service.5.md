@@ -388,6 +388,39 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 **close-stdin**=*yes*|*no*, **close-stdout**=*yes*|*no*, **close-stderr**=*yes*|*no*
 :   Close the corresponding standard file descriptor before exec.
 
+## SERVICE DIRECTORIES
+
+systemd-style auto-managed directories. Each setting takes one or more
+space-separated **relative** names (absolute paths and `.`/`..`
+components are rejected; `$1`/`$VAR` are expanded). slinit creates each
+directory (parents included) before the service starts, sets its mode,
+and — when **run-as** is set — chowns it to that user/group. A creation
+failure fails the start.
+
+**runtime-directory**=*name*...
+:   Created under */run*. **Removed when the service stops** (subject
+    to **runtime-directory-preserve**).
+
+**state-directory**=*name*...
+:   Created under */var/lib*. Persistent (never auto-removed).
+
+**cache-directory**=*name*...
+:   Created under */var/cache*. Persistent.
+
+**logs-directory**=*name*...
+:   Created under */var/log*. Persistent.
+
+**configuration-directory**=*name*...
+:   Created under */etc*. Persistent.
+
+**runtime-directory-mode**=*octal*, **state-directory-mode**=*octal*, **cache-directory-mode**=*octal*, **logs-directory-mode**=*octal*, **configuration-directory-mode**=*octal*
+:   Mode for the corresponding directories (default *0755*).
+
+**runtime-directory-preserve**=*no*|*yes*|*restart*
+:   *no* (default) removes **runtime-directory** every time the service
+    stops; *restart* keeps it across a restart but removes it on a full
+    stop; *yes* never removes it.
+
 ## NAMESPACES (Linux)
 
 **namespace-pid**=*yes*|*no*, **namespace-mount**=*yes*|*no*,

@@ -230,6 +230,13 @@ type ServiceRecord struct {
 	// attach a debugger; the operator resumes it with SIGCONT.
 	debug bool
 
+	// systemd-style auto-managed directories, already resolved to
+	// absolute paths. Volatile entries (RuntimeDirectory) are removed
+	// when the service stops, subject to runtimeDirPreserve
+	// (0=no, 1=yes, 2=restart).
+	serviceDirs        []process.ServiceDir
+	runtimeDirPreserve int
+
 	// Real-time scheduling (telco / 5G data plane). Zero values keep
 	// the kernel default; only when schedPolicySet is true does the
 	// post-fork attr step issue a sched_setattr.
@@ -711,6 +718,34 @@ func (sr *ServiceRecord) SetDebug(b bool) { sr.debug = b }
 // Debug reports whether the pre-exec debug stop is enabled.
 func (sr *ServiceRecord) Debug() bool { return sr.debug }
 
+// SetServiceDirs records the resolved auto-managed directories and the
+// runtime-directory preservation policy (0=no, 1=yes, 2=restart).
+func (sr *ServiceRecord) SetServiceDirs(dirs []process.ServiceDir, runtimePreserve int) {
+	sr.serviceDirs = dirs
+	sr.runtimeDirPreserve = runtimePreserve
+}
+
+// cleanupServiceDirs removes volatile (RuntimeDirectory) directories
+// when the service stops, honouring runtimeDirPreserve. willRestart is
+// true when the stop is part of a restart cycle.
+func (sr *ServiceRecord) cleanupServiceDirs(willRestart bool) {
+	for _, d := range sr.serviceDirs {
+		if !d.Volatile {
+			continue
+		}
+		if sr.runtimeDirPreserve == 1 {
+			continue // yes: never remove
+		}
+		if sr.runtimeDirPreserve == 2 && willRestart {
+			continue // restart: keep across a restart
+		}
+		if err := os.RemoveAll(d.Path); err != nil {
+			sr.services.logger.Error("Service '%s': runtime directory %s cleanup failed: %v",
+				sr.serviceName, d.Path, err)
+		}
+	}
+}
+
 // SetStartOnPath records the path-activation configuration. trigger must
 // match the pathwatch.Trigger constants (1=exists, 2=changed,
 // 3=modified, 4=dir-not-empty). Calling with trigger=0 clears the
@@ -789,6 +824,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 		params.SchedPeriod = sr.schedPeriod
 		params.SchedResetOnFork = sr.schedResetOnFork
 	}
+	params.ServiceDirs = sr.serviceDirs
 	params.AppArmorLoadProfile = sr.appArmorLoad
 	params.AppArmorProfile = sr.appArmorSwitch
 	params.DebugStop = sr.debug
@@ -1376,6 +1412,8 @@ func (sr *ServiceRecord) Stopped() {
 	sr.forceStop = false
 
 	willRestart := sr.desired.Load() == StateStarted && !sr.pinnedStopped
+
+	sr.cleanupServiceDirs(willRestart)
 
 	// If we won't restart, break soft dependencies
 	if !willRestart {
