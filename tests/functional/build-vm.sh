@@ -46,6 +46,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinitctl" ./cmd/slinitctl
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-check" ./cmd/slinit-check
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-monitor" ./cmd/slinit-monitor
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-runner" ./cmd/slinit-runner
 
 # Prepare rootfs
 echo "[4/5] Preparing rootfs..."
@@ -57,6 +58,10 @@ install -m 755 "${BUILD_DIR}/slinit" "${ROOTFS_DIR}/sbin/slinit"
 install -m 755 "${BUILD_DIR}/slinitctl" "${ROOTFS_DIR}/usr/bin/slinitctl"
 install -m 755 "${BUILD_DIR}/slinit-check" "${ROOTFS_DIR}/usr/bin/slinit-check"
 install -m 755 "${BUILD_DIR}/slinit-monitor" "${ROOTFS_DIR}/usr/bin/slinit-monitor"
+# slinit-runner must sit next to the slinit binary (/sbin): findSlinitRunner
+# checks the slinit binary's own directory first. Without it, services
+# using apparmor-switch / debug / mlockall silently skip the runner wrap.
+install -m 755 "${BUILD_DIR}/slinit-runner" "${ROOTFS_DIR}/sbin/slinit-runner"
 ln -sf slinit "${ROOTFS_DIR}/sbin/init"
 
 mkdir -p "${ROOTFS_DIR}/run" "${ROOTFS_DIR}/dev" "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys"

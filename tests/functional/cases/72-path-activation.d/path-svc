@@ -2,4 +2,9 @@ type = scripted
 command = /bin/sh -c "echo fired > /tmp/path-marker"
 stop-command = /bin/true
 start-on-path-exists = /run/slinit-path-trigger
+# manual: the dependency graph (boot waits-for path-svc) loads this
+# service so pathwatch arms, but must NOT start it — only the path
+# trigger (an explicit StartService) may. This is the correct pattern
+# for any path-activated service.
+manual = yes
 depends-on: system-init
