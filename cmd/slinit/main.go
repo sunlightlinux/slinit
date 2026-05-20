@@ -312,8 +312,23 @@ func main() {
 	if quietMode {
 		consLevel = logging.LevelError
 	}
+
+	// Production boot console: in system mode, render service events as
+	// clean "[ OK ] name" / "[FAIL] name" status lines and keep the console
+	// quiet (warnings and errors only). The full timestamped stream still
+	// flows to the main log (syslog). Disabled by --log-file, quiet mode,
+	// an explicit --console-level, or a debug log level. The slinit.debug
+	// kernel argument also forces it off, but that check is deferred until
+	// after InitPID1 mounts /proc (see below).
+	bootConsole := systemMode && !quietMode && logFile == "" && consoleLevel == "" &&
+		mainLogLevel != logging.LevelDebug
+	if bootConsole {
+		consLevel = logging.LevelWarn
+	}
+
 	logger := logging.New(consLevel)
 	logger.SetMainLevel(mainLogLevel)
+	logger.SetBootConsole(bootConsole, !noColor())
 	if tf, err := logging.ParseTimestampFormat(timestampFormat); err == nil {
 		logging.SetTimestampFormat(tf)
 	} else {
@@ -416,6 +431,14 @@ func main() {
 			if err := cal.ReattachStdoutErr(); err != nil {
 				logger.Error("Failed to re-attach catch-all: %v", err)
 			}
+		}
+		// slinit.debug on the kernel command line restores the verbose
+		// timestamped log stream (the developer view). /proc is mounted by
+		// InitPID1, so this is the earliest we can read /proc/cmdline.
+		if bootConsole && kcmdlineHasFlag("slinit.debug") {
+			logger.SetBootConsole(false, false)
+			logger.SetLevel(logging.LevelDebug)
+			logger.Notice("slinit.debug: verbose console logging enabled")
 		}
 	} else if systemMode {
 		logger.Notice("slinit starting in system mode")
@@ -744,6 +767,10 @@ func main() {
 		// slinit binary picks this up via --restore-from-snapshot
 		// (appended to argv inside SoftReboot below).
 		loop.OnPreShutdown = func(st service.ShutdownType) {
+			// Switch the production boot console to teardown markers
+			// ("[STOPPD] name") for the stop phase. No-op when the boot
+			// console is disabled (verbose mode / not system mode).
+			logger.SetShutdownConsole(true)
 			if st != service.ShutdownSoftReboot {
 				return
 			}
@@ -916,6 +943,30 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logge
 		logger.Error("Unknown shutdown type: %s, halting", shutdownType)
 		shutdown.Execute(service.ShutdownHalt, logger)
 	}
+}
+
+// kcmdlineHasFlag reports whether /proc/cmdline contains the given
+// space-delimited token. Used to honor boot-time toggles (e.g. slinit.debug)
+// that the kernel passes through to init. Returns false if /proc is not
+// mounted or the file cannot be read.
+func kcmdlineHasFlag(flag string) bool {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	for _, f := range strings.Fields(string(data)) {
+		if f == flag {
+			return true
+		}
+	}
+	return false
+}
+
+// noColor reports whether ANSI color should be suppressed, honoring the
+// de-facto NO_COLOR convention (https://no-color.org).
+func noColor() bool {
+	_, set := os.LookupEnv("NO_COLOR")
+	return set
 }
 
 func parseLogLevel(s string) logging.Level {

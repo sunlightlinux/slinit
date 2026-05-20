@@ -136,7 +136,28 @@ type Logger struct {
 	// output to /dev/console even when --log-file redirects l.output to
 	// a file. Inspired by s6-linux-init-maker's -1 flag.
 	consoleDup io.Writer
+
+	// bootConsole renders service start/stop/fail events as compact
+	// "[ OK ] name" / "[FAIL] name" status lines on the console (the
+	// production boot look) instead of the verbose timestamped stream.
+	// The full detail is still recorded in the main log (syslog/file).
+	bootConsole bool
+
+	// color enables ANSI color in the boot-console status markers.
+	color bool
+
+	// shuttingDown, when set, makes the boot console render service stop
+	// events as "[STOPPD] name" (the teardown look) instead of "[ OK ] name".
+	// Flipped on once when shutdown begins, via SetShutdownConsole.
+	shuttingDown bool
 }
+
+// ANSI escape sequences for boot-console status markers.
+const (
+	ansiGreen = "\033[1;32m"
+	ansiRed   = "\033[1;31m"
+	ansiReset = "\033[0m"
+)
 
 // New creates a new Logger with the specified minimum level.
 func New(level Level) *Logger {
@@ -166,6 +187,66 @@ func (l *Logger) SetLevel(level Level) {
 // of the console level. This mirrors dinit's separate log-level / console-level.
 func (l *Logger) SetMainLevel(level Level) {
 	l.mainLevel = level
+}
+
+// SetBootConsole toggles the production boot console. When enabled, service
+// start/stop/fail events render as compact "[ OK ] name" / "[FAIL] name"
+// status lines on the console instead of the verbose timestamped stream;
+// the full events are still written to the main log (syslog/file). color
+// toggles ANSI coloring of the status marker.
+func (l *Logger) SetBootConsole(enabled, color bool) {
+	l.bootConsole = enabled
+	l.color = color
+}
+
+// SetShutdownConsole switches the boot console into teardown mode, where
+// service stop events render as "[STOPPD] name" instead of "[ OK ] name".
+// Called once when shutdown begins; harmless when the boot console is off.
+func (l *Logger) SetShutdownConsole(enabled bool) {
+	l.shuttingDown = enabled
+}
+
+// bootStatus writes a "<marker> name" status line to the console (and the
+// console-dup writer, if any). The marker comes from markerOK/markerFail/
+// markerStopped, which apply ANSI color when l.color is set.
+func (l *Logger) bootStatus(marker, name string) {
+	line := fmt.Sprintf("%s %s\n", marker, name)
+	fmt.Fprint(l.output, line)
+	if l.consoleDup != nil {
+		fmt.Fprint(l.consoleDup, line)
+	}
+}
+
+// markerOK renders the "[ OK ]" success marker, green when color is enabled.
+func (l *Logger) markerOK() string {
+	if l.color {
+		return "[ " + ansiGreen + "OK" + ansiReset + " ]"
+	}
+	return "[ OK ]"
+}
+
+// markerFail renders the "[FAIL]" failure marker, red when color is enabled.
+func (l *Logger) markerFail() string {
+	if l.color {
+		return "[" + ansiRed + "FAIL" + ansiReset + "]"
+	}
+	return "[FAIL]"
+}
+
+// markerStopped renders the "[STOPPD]" teardown marker shown for each service
+// stopped during shutdown. Left uncolored to match the dinit teardown look.
+func (l *Logger) markerStopped() string {
+	return "[STOPPD]"
+}
+
+// mainLog records a message in the main log (syslog) only, bypassing the
+// console. Used by the boot-console reporter, which prints its own compact
+// status line to the console but still wants the full event in the main log.
+func (l *Logger) mainLog(level Level, format string, args ...interface{}) {
+	if l.syslogW == nil || level < l.mainLevel {
+		return
+	}
+	l.logToSyslog(level, fmt.Sprintf(format, args...))
 }
 
 // SetSyslog enables syslog output as the main log facility (like dinit's /dev/log).
@@ -261,16 +342,41 @@ func (l *Logger) Error(format string, args ...interface{}) {
 
 // ServiceStarted logs a service start event.
 func (l *Logger) ServiceStarted(name string) {
+	if l.bootConsole {
+		l.bootStatus(l.markerOK(), name)
+		l.mainLog(LevelInfo, "Service '%s' started", name)
+		return
+	}
 	l.log(LevelInfo, "Service '%s' started", name)
 }
 
-// ServiceStopped logs a service stop event.
+// ServiceStopped logs a service stop event. During shutdown the boot console
+// renders it as "[STOPPD] name"; otherwise (a stop during normal runtime) it
+// stays "[ OK ] name".
 func (l *Logger) ServiceStopped(name string) {
+	if l.bootConsole {
+		if l.shuttingDown {
+			l.bootStatus(l.markerStopped(), name)
+		} else {
+			l.bootStatus(l.markerOK(), name)
+		}
+		l.mainLog(LevelInfo, "Service '%s' stopped", name)
+		return
+	}
 	l.log(LevelInfo, "Service '%s' stopped", name)
 }
 
 // ServiceFailed logs a service failure event.
 func (l *Logger) ServiceFailed(name string, depFailed bool) {
+	if l.bootConsole {
+		l.bootStatus(l.markerFail(), name)
+		if depFailed {
+			l.mainLog(LevelError, "Service '%s' failed to start (dependency failed)", name)
+		} else {
+			l.mainLog(LevelError, "Service '%s' failed to start", name)
+		}
+		return
+	}
 	if depFailed {
 		l.log(LevelError, "Service '%s' failed to start (dependency failed)", name)
 	} else {
