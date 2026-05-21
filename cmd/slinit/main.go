@@ -439,6 +439,19 @@ func main() {
 			logger.SetBootConsole(false, false)
 			logger.SetLevel(logging.LevelDebug)
 			logger.Notice("slinit.debug: verbose console logging enabled")
+		} else if bootConsole && !consoleDup {
+			// Mirror the boot console to every *other* active console so the
+			// "[ OK ] name" list shows on all of them. l.output already goes
+			// to /dev/console, but that is only the last console= on the
+			// cmdline (typically the serial line), so the VGA screen (tty0)
+			// would otherwise show kernel printk but none of slinit's service
+			// list. Needs /proc, hence after InitPID1.
+			if w, closers := logging.OpenSecondaryConsoles(); w != nil {
+				logger.SetConsoleDup(w)
+				for _, c := range closers {
+					defer c.Close()
+				}
+			}
 		}
 	} else if systemMode {
 		logger.Notice("slinit starting in system mode")
