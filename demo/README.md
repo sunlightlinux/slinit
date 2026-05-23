@@ -20,9 +20,10 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 
 | Service       | Type      | Description                                    |
 |---------------|-----------|------------------------------------------------|
-| boot          | internal  | Boot milestone (depends on system-init + tty)  |
+| boot          | internal  | Boot milestone (system-init + all-services + tty) |
+| all-services  | internal  | Aggregate milestone: waits-for every demo workload |
 | system-init   | scripted  | Mounts /proc, /sys, /dev, /dev/pts             |
-| tty           | process   | Interactive shell on console                   |
+| tty           | process   | Interactive shell on console (starts after all-services) |
 | hello         | process   | Echo loop with log buffer                      |
 | ticker        | process   | Periodic timestamp output (alias: my-ticker)   |
 | trigger-test  | triggered | Externally triggered service                   |
@@ -249,24 +250,27 @@ slinit-monitor --exit
 ```
 boot (internal)
 ├── depends-on: system-init (scripted)
-├── depends-on: tty (process, console) ── depends-on: system-init
-├── waits-for: hello (process, logbuf) ── depends-on: system-init
-├── waits-for: ticker (process, logbuf) ── depends-on: system-init
-├── waits-for: dep-chain (internal)
-│   ├── depends-on: dep-b (internal) ── waits-for: dep-a ── depends-on: system-init
-│   └── waits-for: restarter (process, restart) ── depends-on: system-init
-├── waits-for: trigger-test (triggered) ── depends-on: system-init
-├── waits-for: cpu-pinned (process, cpu-affinity) ── depends-on: system-init
-├── waits-for: hello-logged (process, pipe) ── depends-on: system-init
-│   └── logger (process, consumer-of) ── depends-on: system-init
-├── waits-for: env-demo (process, env-file) ── depends-on: system-init
-├── waits-for: graceful-stop (process, stop-command) ── depends-on: system-init
-├── waits-for: cron-demo (process, cron-command) ── depends-on: system-init
-├── waits-for: shared-log (process, log-type=pipe) ── depends-on: system-init
-│   ├── app-one (shared-logger) ── depends-on: shared-log
-│   └── app-two (shared-logger) ── depends-on: shared-log
-├── waits-for: runit-svc (process, ready-check + hooks + env-dir + lock) ── depends-on: system-init
-└── waits-for: vtty-svc (process, vtty=true) ── depends-on: system-init
+├── depends-on: all-services (internal)
+│   ├── depends-on: system-init (scripted)
+│   ├── waits-for: hello (process, logbuf) ── depends-on: system-init
+│   ├── waits-for: ticker (process, logbuf) ── depends-on: system-init
+│   ├── waits-for: dep-chain (internal)
+│   │   ├── depends-on: dep-b (internal) ── waits-for: dep-a ── depends-on: system-init
+│   │   └── waits-for: restarter (process, restart) ── depends-on: system-init
+│   ├── waits-for: cpu-pinned (process, cpu-affinity) ── depends-on: system-init
+│   ├── waits-for: hello-logged (process, pipe) ── depends-on: system-init
+│   │   └── logger (process, consumer-of) ── depends-on: system-init
+│   ├── waits-for: env-demo (process, env-file) ── depends-on: system-init
+│   ├── waits-for: graceful-stop (process, stop-command) ── depends-on: system-init
+│   ├── waits-for: cron-demo (process, cron-command) ── depends-on: system-init
+│   ├── waits-for: shared-log (process, log-type=pipe) ── depends-on: system-init
+│   │   ├── app-one (shared-logger) ── depends-on: shared-log
+│   │   └── app-two (shared-logger) ── depends-on: shared-log
+│   ├── waits-for: runit-svc (process, ready-check + hooks + env-dir + lock) ── depends-on: system-init
+│   └── waits-for: vtty-svc (process, vtty=true) ── depends-on: system-init
+├── depends-on: tty (process, console) ── depends-on: system-init, after: all-services
+└── waits-for: trigger-test (triggered) ── depends-on: system-init
+        (stays STARTING until `slinitctl trigger trigger-test`; does not gate the prompt)
 
 hello-initd (scripted, /etc/init.d auto-detect + conf.d wrapper) — started manually:
   rc-service hello-initd start   # auto-detected at runtime, not referenced by boot

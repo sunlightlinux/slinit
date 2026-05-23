@@ -1,38 +1,16 @@
 # boot -- system boot milestone
-# Default boot target. Depends on essential services,
-# waits for optional services.
+# Default boot target. Brings up the base system (system-init), every
+# demo workload (all-services), and finally the interactive console
+# shell (tty). tty is ordered "after: all-services" so the login prompt
+# is not interleaved with the service-start list.
 type = internal
 depends-on: system-init
+depends-on: all-services
 depends-on: tty
-waits-for: hello
-waits-for: ticker
-waits-for: dep-chain
+# trigger-test is a `triggered` service: it stays in STARTING until
+# `slinitctl trigger trigger-test`. Referenced here (not in all-services)
+# so it is loaded/visible for the demo without blocking the login prompt.
 waits-for: trigger-test
-waits-for: cpu-pinned
-waits-for: hello-logged
-waits-for: logger
-waits-for: env-demo
-waits-for: graceful-stop
-waits-for: cron-demo
-waits-for: shared-log
-waits-for: app-one
-waits-for: app-two
-waits-for: runit-svc
-waits-for: logfile-demo
-waits-for: extra-actions
-waits-for: guard-demo
-waits-for: rlimit-demo
-waits-for: cgroup-demo
-waits-for: cgroup-worker
-waits-for: socket-demo
-waits-for: namespace-demo
-waits-for: stop-timeout-demo
-waits-for: healthcheck-demo
-waits-for: chain-a
-waits-for: include-demo
-waits-for: sandbox-demo
-waits-for: bgprocess-demo
-waits-for: vtty-svc
 # hello-initd is auto-detected from /etc/init.d at runtime;
 # slinit-check (offline) doesn't scan init.d, so it's not listed here.
 # Start it manually in the demo with: rc-service hello-initd start
