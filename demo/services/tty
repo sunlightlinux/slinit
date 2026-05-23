@@ -1,6 +1,9 @@
 # tty -- interactive shell on console
 # Runs bash with console access (job control enabled).
 # Restarts when shell exits.
+# Ordered "after: all-services" so bash grabs the console only once every
+# demo service has started — the login prompt then appears cleanly instead
+# of interleaving with the service-start list.
 type = process
 command = /bin/bash --login
 options = runs-on-console unmask-intr
@@ -9,3 +12,4 @@ smooth-recovery = yes
 stop-timeout = 3
 term-signal = SIGHUP
 depends-on: system-init
+after: all-services
