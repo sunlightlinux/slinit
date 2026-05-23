@@ -41,7 +41,7 @@ const (
 
 // Boot housekeeping defaults (configurable before calling InitPID1).
 var (
-	// bootBanner is printed to the console at the start of InitPID1.
+	// bootBanner is printed by PrintBootBanner() after InitPID1 returns.
 	// Set via SetBootBanner(). Empty string disables the banner.
 	bootBanner = "slinit booting..."
 
@@ -69,6 +69,17 @@ var (
 // SetBootBanner overrides the boot banner shown on the console.
 // Pass empty string to disable.
 func SetBootBanner(s string) { bootBanner = s }
+
+// PrintBootBanner writes the configured boot banner to stdout (nothing when the
+// banner is empty). Call it after InitPID1 returns — and, when the catch-all
+// logger is active, after ReattachStdoutErr — so the banner travels through the
+// catch-all pipe and is persisted to the catch-all log instead of being written
+// straight to /dev/console by setupConsole's fd redirect.
+func PrintBootBanner() {
+	if bootBanner != "" {
+		fmt.Fprintln(os.Stdout, bootBanner)
+	}
+}
 
 // SetInitUmask overrides the initial umask set during PID 1 init.
 func SetInitUmask(mask uint32) { initUmask = mask }
@@ -140,10 +151,10 @@ func InitPID1(logger *logging.Logger) error {
 		logger.Debug("Console redirected to /dev/console")
 	}
 
-	// Print boot banner on console (s6-linux-init prints a banner too).
-	if bootBanner != "" {
-		fmt.Fprintln(os.Stdout, bootBanner)
-	}
+	// The boot banner (s6-linux-init prints one too) is emitted by the caller
+	// via PrintBootBanner(), after the catch-all logger re-attaches fd 1/2 to
+	// its pipe — printing it here would write straight to /dev/console (which
+	// setupConsole just pointed fd 1 at) and bypass the catch-all log.
 
 	// Suppress non-critical kernel messages on console (like dmesg -n 1).
 	// This prevents kernel log noise from interfering with service output.

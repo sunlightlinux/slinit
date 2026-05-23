@@ -432,6 +432,11 @@ func main() {
 				logger.Error("Failed to re-attach catch-all: %v", err)
 			}
 		}
+		// Print the boot banner now that fd 1/2 are back on the catch-all pipe
+		// (when active), so it shows on the console *and* is captured in the
+		// catch-all log. setupConsole inside InitPID1 had pointed fd 1 at
+		// /dev/console, which would otherwise bypass the catch-all.
+		shutdown.PrintBootBanner()
 		// slinit.debug on the kernel command line restores the verbose
 		// timestamped log stream (the developer view). /proc is mounted by
 		// InitPID1, so this is the earliest we can read /proc/cmdline.
