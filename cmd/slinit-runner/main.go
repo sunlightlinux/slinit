@@ -45,6 +45,15 @@ func run() error {
 		"AppArmor profile to transition into on the upcoming exec")
 	debug := fs.Bool("debug", false,
 		"raise SIGSTOP before exec so a debugger can attach (resume with SIGCONT)")
+	privateTmp := fs.Bool("private-tmp", false,
+		"mount a fresh tmpfs at /tmp and /var/tmp (systemd PrivateTmp=)")
+	protectSystem := fs.String("protect-system", "",
+		"remount system paths read-only: yes | full | strict (systemd ProtectSystem=)")
+	var readOnlyPaths, readWritePaths stringList
+	fs.Var(&readOnlyPaths, "read-only-path",
+		"add a path to be bind-mounted read-only (repeatable)")
+	fs.Var(&readWritePaths, "read-write-path",
+		"add a path to remain writable when ProtectSystem= would make it read-only (repeatable)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -68,6 +77,26 @@ func run() error {
 	if *mlockall != 0 {
 		if err := unix.Mlockall(*mlockall); err != nil {
 			return fmt.Errorf("mlockall(0x%x): %w", *mlockall, err)
+		}
+	}
+
+	// Filesystem sandbox: must happen before AppArmor transition (since
+	// the kernel binds the apparmor onexec change to *this* task and any
+	// intervening fork/exec via mount helpers would lose it) but after
+	// the mlockall/mempolicy calls above (those are pure per-task
+	// syscalls unaffected by the mount setup). The runner already runs
+	// inside the fresh mount namespace created by the parent's
+	// CLONE_NEWNS, so the mount(2) calls below are confined to it.
+	if *privateTmp || *protectSystem != "" ||
+		len(readOnlyPaths) > 0 || len(readWritePaths) > 0 {
+		spec := sandboxSpec{
+			privateTmp:     *privateTmp,
+			protectSystem:  *protectSystem,
+			readOnlyPaths:  readOnlyPaths,
+			readWritePaths: readWritePaths,
+		}
+		if err := applySandbox(spec); err != nil {
+			return fmt.Errorf("sandbox: %w", err)
 		}
 	}
 

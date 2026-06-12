@@ -291,6 +291,21 @@ type ExecParams struct {
 	// CloseStderr closes fd 2 in the child process.
 	CloseStderr bool
 
+	// Filesystem sandbox (systemd-style), applied by slinit-runner in
+	// the service's private mount namespace. The loader auto-implies
+	// CLONE_NEWNS into Cloneflags whenever any of these are set.
+	//
+	// PrivateTmp: per-service tmpfs at /tmp and /var/tmp.
+	// ProtectSystem: "" (off), "yes" (ro /usr,/boot,/efi),
+	//   "full" (yes + /etc), "strict" (whole / ro except writable
+	//   carve-outs and the standard mountpoints kept writable).
+	// ReadOnlyPaths/ReadWritePaths: explicit per-path overrides, applied
+	//   after ProtectSystem (rw first, then ro).
+	PrivateTmp     bool
+	ProtectSystem  string
+	ReadOnlyPaths  []string
+	ReadWritePaths []string
+
 	// Cloneflags specifies Linux clone flags for namespace isolation.
 	// OR'd into SysProcAttr.Cloneflags (e.g. syscall.CLONE_NEWPID).
 	Cloneflags uintptr

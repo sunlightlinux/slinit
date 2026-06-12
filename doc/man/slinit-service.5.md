@@ -421,6 +421,35 @@ failure fails the start.
     stops; *restart* keeps it across a restart but removes it on a full
     stop; *yes* never removes it.
 
+## FILESYSTEM SANDBOX (Linux)
+
+systemd-style declarative filesystem isolation. Any stanza below implies
+a private mount namespace — slinit auto-OR's *CLONE_NEWNS* into the
+clone flags and **slinit-runner** sets up the requested mounts there
+before exec'ing the service. The host filesystem is untouched.
+
+**private-tmp**=*yes*|*no*
+:   Replace */tmp* and */var/tmp* with a fresh per-service *tmpfs*. The
+    service sees an empty *tmp*; the host sees nothing. Equivalent to
+    systemd's **PrivateTmp=**.
+
+**protect-system**=*no*|*yes*|*full*|*strict*
+:   *yes* read-only remounts */usr*, */boot* and */efi*. *full* adds
+    */etc*. *strict* remounts the whole root */* read-only; only the
+    paths listed in **read-write-paths** plus the standard
+    runtime mountpoints (*/dev*, */proc*, */sys*, */run*, */tmp*,
+    */var/tmp*) stay writable. *no* (default) disables the remount.
+
+**read-only-paths**=*path*...
+:   Bind-mount each absolute path on top of itself and remount it
+    read-only inside the sandbox. Repeatable with `+=`. Paths must be
+    absolute and free of `..` components.
+
+**read-write-paths**=*path*...
+:   Punch a writable hole through **protect-system**=*strict* for the
+    listed paths. Applied before **read-only-paths**, so a path may
+    appear in both (rw first wins). Repeatable with `+=`.
+
 ## NAMESPACES (Linux)
 
 **namespace-pid**=*yes*|*no*, **namespace-mount**=*yes*|*no*,
