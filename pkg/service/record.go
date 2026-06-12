@@ -259,6 +259,15 @@ type ServiceRecord struct {
 	uidMappings []syscall.SysProcIDMap // user namespace UID mappings
 	gidMappings []syscall.SysProcIDMap // user namespace GID mappings
 
+	// systemd-style filesystem sandbox. Any non-empty/non-false field
+	// here causes the loader to OR CLONE_NEWNS into cloneflags, and
+	// slinit-runner sets up the requested isolation inside that fresh
+	// mount namespace before exec'ing the service.
+	sandboxPrivateTmp     bool
+	sandboxProtectSystem  string
+	sandboxReadOnlyPaths  []string
+	sandboxReadWritePaths []string
+
 	// Queue membership flags
 	InPropQueue bool
 	InStopQueue bool
@@ -712,6 +721,32 @@ func (sr *ServiceRecord) AppArmor() (load, profile string) {
 	return sr.appArmorLoad, sr.appArmorSwitch
 }
 
+// SetSandbox records the filesystem-sandbox configuration (systemd-style
+// PrivateTmp/ProtectSystem/Read{Only,Write}Paths). protectSystem is one
+// of "", "yes", "full", "strict". The mount namespace is set up by
+// slinit-runner; the loader is responsible for OR'ing CLONE_NEWNS into
+// cloneflags when this is in use.
+func (sr *ServiceRecord) SetSandbox(privateTmp bool, protectSystem string, roPaths, rwPaths []string) {
+	sr.sandboxPrivateTmp = privateTmp
+	sr.sandboxProtectSystem = protectSystem
+	sr.sandboxReadOnlyPaths = roPaths
+	sr.sandboxReadWritePaths = rwPaths
+}
+
+// SandboxActive reports whether any sandbox knob is set; the loader uses
+// this to decide if it must auto-imply CLONE_NEWNS.
+func (sr *ServiceRecord) SandboxActive() bool {
+	return sr.sandboxPrivateTmp || sr.sandboxProtectSystem != "" ||
+		len(sr.sandboxReadOnlyPaths) > 0 || len(sr.sandboxReadWritePaths) > 0
+}
+
+// Sandbox returns the recorded sandbox configuration. Used by tests and
+// the status reporter; the production read path is ApplyProcessAttrs.
+func (sr *ServiceRecord) Sandbox() (privateTmp bool, protectSystem string, roPaths, rwPaths []string) {
+	return sr.sandboxPrivateTmp, sr.sandboxProtectSystem,
+		sr.sandboxReadOnlyPaths, sr.sandboxReadWritePaths
+}
+
 // SetDebug enables the pre-exec SIGSTOP debug stop for this service.
 func (sr *ServiceRecord) SetDebug(b bool) { sr.debug = b }
 
@@ -784,6 +819,7 @@ func (sr *ServiceRecord) SetNumaMempolicy(mode uint32, set bool) {
 func (sr *ServiceRecord) SetNumaNodes(nodes []uint) { sr.numaNodes = nodes }
 
 func (sr *ServiceRecord) SetCloneflags(flags uintptr)             { sr.cloneflags = flags }
+func (sr *ServiceRecord) Cloneflags() uintptr                     { return sr.cloneflags }
 func (sr *ServiceRecord) SetUidMappings(m []syscall.SysProcIDMap) { sr.uidMappings = m }
 func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappings = m }
 
@@ -836,6 +872,10 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.Cloneflags = sr.cloneflags
 	params.UidMappings = sr.uidMappings
 	params.GidMappings = sr.gidMappings
+	params.PrivateTmp = sr.sandboxPrivateTmp
+	params.ProtectSystem = sr.sandboxProtectSystem
+	params.ReadOnlyPaths = sr.sandboxReadOnlyPaths
+	params.ReadWritePaths = sr.sandboxReadWritePaths
 
 	// Inject dinit-compatible query env vars
 	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)

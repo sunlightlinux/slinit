@@ -214,6 +214,13 @@ var KnownSettings = map[string]OperatorType{
 	"required-files": OpEquals | OpPlusEqual,
 	"required-dirs":  OpEquals | OpPlusEqual,
 
+	// systemd-style filesystem sandbox (applied via slinit-runner in a
+	// fresh mount namespace; CLONE_NEWNS is auto-implied)
+	"private-tmp":      OpEquals,
+	"protect-system":   OpEquals,
+	"read-only-paths":  OpEquals | OpPlusEqual,
+	"read-write-paths": OpEquals | OpPlusEqual,
+
 	// Virtual TTY (screen-like attach/detach)
 	"vtty":            OpEquals, // true/false
 	"vtty-scrollback": OpEquals, // scrollback buffer size in bytes

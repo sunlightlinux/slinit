@@ -454,7 +454,17 @@ func loadAppArmorProfile(path string) error {
 // slinit-runner because mlockall(2) and/or set_mempolicy(2) — both
 // per-calling-process syscalls — were requested.
 func needsRunnerWrap(p ExecParams) bool {
-	return p.MlockallFlags != 0 || p.NumaMempolicySet || p.AppArmorProfile != "" || p.DebugStop
+	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
+		p.AppArmorProfile != "" || p.DebugStop || sandboxActive(p)
+}
+
+// sandboxActive reports whether any filesystem-sandbox field is set.
+// The runner needs the wrap whenever ANY of them is requested because
+// mount(2) and tmpfs setup happen inside the child's mount namespace
+// before exec.
+func sandboxActive(p ExecParams) bool {
+	return p.PrivateTmp || p.ProtectSystem != "" ||
+		len(p.ReadOnlyPaths) > 0 || len(p.ReadWritePaths) > 0
 }
 
 // wrapWithRunner returns a new argv that invokes slinit-runner with
@@ -475,6 +485,21 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	if p.DebugStop {
 		args = append(args, "--debug")
+	}
+	// Filesystem sandbox flags. These are applied inside the child's
+	// fresh mount namespace (CLONE_NEWNS, auto-implied by the loader) by
+	// slinit-runner before exec'ing the real service.
+	if p.PrivateTmp {
+		args = append(args, "--private-tmp")
+	}
+	if p.ProtectSystem != "" {
+		args = append(args, "--protect-system="+p.ProtectSystem)
+	}
+	for _, ro := range p.ReadOnlyPaths {
+		args = append(args, "--read-only-path="+ro)
+	}
+	for _, rw := range p.ReadWritePaths {
+		args = append(args, "--read-write-path="+rw)
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)

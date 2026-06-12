@@ -279,6 +279,22 @@ type ServiceDescription struct {
 	// the service refuses to start if any required path is missing.
 	RequiredFiles []string // files that must exist and be readable
 	RequiredDirs  []string // directories that must exist
+
+	// systemd-style filesystem sandbox. Any non-zero value implies a
+	// private mount namespace (CLONE_NEWNS) — the loader OR's the flag
+	// into Cloneflags automatically. Applied child-side by slinit-runner.
+	//
+	// PrivateTmp: replace /tmp and /var/tmp with per-service tmpfs.
+	// ProtectSystem: "" (off), "yes" (ro /usr,/boot,/efi),
+	//   "full" (yes + /etc), "strict" (whole / ro except
+	//   ReadWritePaths and /dev,/proc,/sys,/tmp,/var/tmp,/run).
+	// ReadOnlyPaths/ReadWritePaths: explicit per-path overrides applied
+	//   after ProtectSystem. Order matters: ReadWritePaths override
+	//   ProtectSystem ro; ReadOnlyPaths add further ro on top.
+	PrivateTmp     bool
+	ProtectSystem  string
+	ReadOnlyPaths  []string
+	ReadWritePaths []string
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -624,6 +640,38 @@ func parseServiceDirNames(setting, value string, serviceArg *string) ([]string, 
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%s: no directory name given", setting)
+	}
+	return out, nil
+}
+
+// parseSandboxPaths splits a space-separated list of absolute paths for
+// the sandbox path settings (read-only-paths, read-write-paths and
+// peers), expanding $1/$VAR. Each path must be absolute and free of '.'
+// or '..' components — the runner applies them as bind mounts in the
+// service's private mount namespace, so escapes via traversal must be
+// rejected at parse time.
+func parseSandboxPaths(setting, value string, serviceArg *string) ([]string, error) {
+	var out []string
+	for _, raw := range strings.Fields(value) {
+		p := expandEnvVars(raw, serviceArg)
+		if p == "" {
+			continue
+		}
+		if !filepath.IsAbs(p) {
+			return nil, fmt.Errorf("%s: path must be absolute: %q", setting, p)
+		}
+		// Refuse '..' on the raw path: filepath.Clean would collapse
+		// "/etc/../root" → "/root" before we could reject the escape
+		// attempt, silently widening the sandbox.
+		for _, comp := range strings.Split(p, "/") {
+			if comp == ".." {
+				return nil, fmt.Errorf("%s: '..' not allowed: %q", setting, p)
+			}
+		}
+		out = append(out, filepath.Clean(p))
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: no path given", setting)
 	}
 	return out, nil
 }
@@ -1253,6 +1301,42 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("apparmor-switch: profile name must not be empty")
 		}
 		desc.AppArmorSwitch = value
+
+	case "private-tmp":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("private-tmp: %w", err)
+		}
+		desc.PrivateTmp = b
+
+	case "protect-system":
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "", "no", "off", "false", "0":
+			desc.ProtectSystem = ""
+		case "yes", "true", "1":
+			desc.ProtectSystem = "yes"
+		case "full":
+			desc.ProtectSystem = "full"
+		case "strict":
+			desc.ProtectSystem = "strict"
+		default:
+			return fmt.Errorf("protect-system: expected no|yes|full|strict, got %q", value)
+		}
+
+	case "read-only-paths":
+		paths, err := parseSandboxPaths(setting, value, serviceArg)
+		if err != nil {
+			return err
+		}
+		desc.ReadOnlyPaths = append(desc.ReadOnlyPaths, paths...)
+
+	case "read-write-paths":
+		paths, err := parseSandboxPaths(setting, value, serviceArg)
+		if err != nil {
+			return err
+		}
+		desc.ReadWritePaths = append(desc.ReadWritePaths, paths...)
 
 	case "runtime-directory", "state-directory", "cache-directory",
 		"logs-directory", "configuration-directory":
