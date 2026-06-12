@@ -1303,6 +1303,30 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if seccompCfg.Active() {
 		rec.SetSeccomp(seccompCfg)
 	}
+
+	// systemd-style Restrict*/Protect* hardening cluster.
+	hardeningCfg := service.HardeningConfig{
+		ProtectKernelTunables: desc.ProtectKernelTunables,
+		ProtectKernelModules:  desc.ProtectKernelModules,
+		ProtectKernelLogs:     desc.ProtectKernelLogs,
+		ProtectClock:          desc.ProtectClock,
+		ProtectControlGroups:  desc.ProtectControlGroups,
+		ProtectHostname:       desc.ProtectHostname,
+		LockPersonality:       desc.LockPersonality,
+	}
+	if hardeningCfg.Active() {
+		rec.SetHardening(hardeningCfg)
+		// Three of the seven knobs need ro mount operations
+		// (protect-kernel-tunables → /proc/sys, protect-control-groups
+		// → /sys/fs/cgroup, protect-kernel-logs → /dev/kmsg). Auto-imply
+		// CLONE_NEWNS so the runner has a private mount namespace
+		// to apply them in without touching the host fs.
+		if hardeningCfg.ProtectKernelTunables ||
+			hardeningCfg.ProtectControlGroups ||
+			hardeningCfg.ProtectKernelLogs {
+			cloneflags |= syscall.CLONE_NEWNS
+		}
+	}
 	if cloneflags != 0 {
 		rec.SetCloneflags(cloneflags)
 	}

@@ -223,6 +223,19 @@ var KnownSettings = map[string]OperatorType{
 	"system-call-error-number":  OpEquals,
 	"system-call-log":           OpEquals | OpPlusEqual,
 
+	// systemd-style Restrict*/Protect* hardening cluster (#7 v1).
+	// Each is a yes/no toggle. Some apply via an additional seccomp
+	// deny filter, some via extra mount ops in the runner; several do
+	// both. Combined with the user's system-call-filter via the
+	// kernel's "most-restrictive of all loaded filters wins" rule.
+	"protect-kernel-tunables": OpEquals,
+	"protect-kernel-modules":  OpEquals,
+	"protect-kernel-logs":     OpEquals,
+	"protect-clock":           OpEquals,
+	"protect-control-groups":  OpEquals,
+	"protect-hostname":        OpEquals,
+	"lock-personality":        OpEquals,
+
 	// systemd-style filesystem sandbox (applied via slinit-runner in a
 	// fresh mount namespace; CLONE_NEWNS is auto-implied)
 	"private-tmp":          OpEquals,
