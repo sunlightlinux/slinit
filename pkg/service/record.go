@@ -265,6 +265,11 @@ type ServiceRecord struct {
 	// mount namespace before exec'ing the service.
 	sandbox SandboxConfig
 
+	// systemd-style seccomp-bpf filter (#4). Compiled and installed
+	// by slinit-runner before exec; the loader auto-implies
+	// PR_SET_NO_NEW_PRIVS when this is in use.
+	seccomp SeccompConfig
+
 	// Queue membership flags
 	InPropQueue bool
 	InStopQueue bool
@@ -757,6 +762,35 @@ func (c SandboxConfig) Active() bool {
 // OR'ing CLONE_NEWNS into cloneflags when sandbox is in use.
 func (sr *ServiceRecord) SetSandbox(c SandboxConfig) { sr.sandbox = c }
 
+// SeccompConfig captures the systemd-style seccomp-bpf filter the
+// service should run under. Items in Filter may include @group tokens
+// and an optional leading '~' that flips into deny mode; the runner
+// expands and compiles them via pkg/seccomp. Architectures defaults to
+// the current arch when empty.
+type SeccompConfig struct {
+	Filter        []string
+	Architectures []string
+	ErrorAction   string // "" | "kill" | "log" | "trap" | errno name | errno number
+	LogFilter     []string
+}
+
+// Active reports whether any seccomp knob is set.
+func (c SeccompConfig) Active() bool {
+	return len(c.Filter) > 0 || len(c.LogFilter) > 0 ||
+		c.ErrorAction != "" || len(c.Architectures) > 0
+}
+
+// SetSeccomp records the seccomp filter spec. The loader auto-implies
+// PR_SET_NO_NEW_PRIVS when this is in use, since the seccomp install
+// requires it for non-root callers.
+func (sr *ServiceRecord) SetSeccomp(c SeccompConfig) { sr.seccomp = c }
+
+// Seccomp returns the recorded seccomp configuration.
+func (sr *ServiceRecord) Seccomp() SeccompConfig { return sr.seccomp }
+
+// SeccompActive reports whether seccomp filtering was requested.
+func (sr *ServiceRecord) SeccompActive() bool { return sr.seccomp.Active() }
+
 // SandboxActive reports whether any sandbox knob is set; the loader uses
 // this to decide if it must auto-imply CLONE_NEWNS.
 func (sr *ServiceRecord) SandboxActive() bool { return sr.sandbox.Active() }
@@ -901,6 +935,19 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.BindPaths = sr.sandbox.BindPaths
 	params.BindReadOnlyPaths = sr.sandbox.BindReadOnlyPaths
 	params.TemporaryFileSystem = sr.sandbox.TemporaryFileSystem
+
+	params.SeccompFilter = sr.seccomp.Filter
+	params.SeccompArchitectures = sr.seccomp.Architectures
+	params.SeccompErrorAction = sr.seccomp.ErrorAction
+	params.SeccompLogFilter = sr.seccomp.LogFilter
+	// seccomp(2) requires PR_SET_NO_NEW_PRIVS for non-root callers.
+	// Auto-implying it is safer than failing the install with a
+	// confusing EACCES; the operator can still set
+	// `options=no-new-privs` explicitly when they want it without a
+	// filter.
+	if sr.seccomp.Active() {
+		params.NoNewPrivs = true
+	}
 
 	// Inject dinit-compatible query env vars
 	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)

@@ -317,6 +317,20 @@ type ExecParams struct {
 	BindReadOnlyPaths   []string // "src:dst" pairs, read-only
 	TemporaryFileSystem []string // "path[:options]" entries
 
+	// systemd-style seccomp-bpf filter (#4). The runner expands
+	// @group tokens, compiles the resolved list into BPF via
+	// pkg/seccomp, and installs it just before exec. The parent
+	// auto-sets NoNewPrivs whenever any of these are set.
+	//
+	// SeccompFilter: syscall names / @groups (leading '~' = deny mode).
+	// SeccompArchitectures: canonical arch names (defaults to current).
+	// SeccompErrorAction: "" | kill | log | trap | errno-name | errno-number.
+	// SeccompLogFilter: syscalls always logged independent of mode.
+	SeccompFilter        []string
+	SeccompArchitectures []string
+	SeccompErrorAction   string
+	SeccompLogFilter     []string
+
 	// Cloneflags specifies Linux clone flags for namespace isolation.
 	// OR'd into SysProcAttr.Cloneflags (e.g. syscall.CLONE_NEWPID).
 	Cloneflags uintptr

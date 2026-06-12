@@ -66,6 +66,54 @@ func TestWrapWithRunnerSandbox(t *testing.T) {
 	}
 }
 
+// TestNeedsRunnerWrapSeccomp verifies any seccomp field forces the
+// runner wrap; install must happen in the same task that will become
+// the service, so an unwrapped command would silently lose the filter.
+func TestNeedsRunnerWrapSeccomp(t *testing.T) {
+	cases := []struct {
+		name string
+		p    ExecParams
+	}{
+		{"filter", ExecParams{SeccompFilter: []string{"@system-service"}}},
+		{"arch", ExecParams{SeccompArchitectures: []string{"native"}}},
+		{"errno", ExecParams{SeccompErrorAction: "EPERM"}},
+		{"log", ExecParams{SeccompLogFilter: []string{"ptrace"}}},
+	}
+	for _, c := range cases {
+		if !needsRunnerWrap(c.p) {
+			t.Errorf("%s: should require runner wrap", c.name)
+		}
+	}
+}
+
+// TestWrapWithRunnerSeccomp checks the wire format of the seccomp
+// flags. The runner consumes them in this exact shape; getting the
+// encoding wrong would silently disable the filter.
+func TestWrapWithRunnerSeccomp(t *testing.T) {
+	p := ExecParams{
+		Command:              []string{"/usr/bin/svc"},
+		SeccompFilter:        []string{"@system-service", "write"},
+		SeccompArchitectures: []string{"native"},
+		SeccompErrorAction:   "EPERM",
+		SeccompLogFilter:     []string{"ptrace"},
+		RunnerPath:           "/sbin/slinit-runner",
+	}
+	got := wrapWithRunner(p)
+	want := []string{
+		"/sbin/slinit-runner",
+		"--syscall-filter=@system-service",
+		"--syscall-filter=write",
+		"--syscall-arch=native",
+		"--syscall-action=EPERM",
+		"--syscall-log=ptrace",
+		"--",
+		"/usr/bin/svc",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("argv mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
 // TestWrapWithRunnerSandboxExpansion checks the wire format of the #3b
 // flags. The runner consumes them in this exact shape and order.
 func TestWrapWithRunnerSandboxExpansion(t *testing.T) {

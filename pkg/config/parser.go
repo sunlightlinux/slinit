@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/seccomp"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"golang.org/x/sys/unix"
 )
@@ -319,6 +320,26 @@ type ServiceDescription struct {
 	BindPaths           []string
 	BindReadOnlyPaths   []string
 	TemporaryFileSystem []string
+
+	// systemd-style seccomp-bpf filter (#4). The parser validates and
+	// expands @group tokens at load time; the runner compiles the
+	// resolved list into BPF and installs it before exec. Setting any
+	// of these auto-implies PR_SET_NO_NEW_PRIVS in the child so the
+	// seccomp install succeeds without CAP_SYS_ADMIN.
+	//
+	// SystemCallFilter: raw items (names, @group, leading '~' on first
+	//   entry to flip into deny mode). The parser preserves them as
+	//   given so '+=' across multiple lines composes naturally.
+	// SystemCallArchitectures: list of canonical arch names (native,
+	//   x86-64, x86, arm64, arm). Defaults to the running arch.
+	// SystemCallErrorNumber: action for non-allowed syscalls. Empty
+	//   means KILL; otherwise "log" / "trap" / errno name / number.
+	// SystemCallLog: syscall names / @groups that always trigger
+	//   SECCOMP_RET_LOG regardless of the main filter mode.
+	SystemCallFilter        []string
+	SystemCallArchitectures []string
+	SystemCallErrorNumber   string
+	SystemCallLog           []string
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -759,6 +780,39 @@ func parseTmpfsEntries(setting, value string, serviceArg *string) ([]string, err
 		return nil, fmt.Errorf("%s: no entry given", setting)
 	}
 	return out, nil
+}
+
+// validateSeccompItems checks that every system-call-filter /
+// system-call-log entry is one of: a known syscall name on this arch,
+// a recognised @group, or — only as the very first item across the
+// merged list — the '~' deny-mode prefix. Errors here surface at parse
+// time so a typo can never produce a silently-empty filter at boot.
+func validateSeccompItems(setting string, items []string) error {
+	for i, it := range items {
+		it = strings.TrimSpace(it)
+		if it == "" {
+			continue
+		}
+		if strings.HasPrefix(it, "~") {
+			if i != 0 {
+				return fmt.Errorf("%s: '~' prefix only allowed on the first item, got %q", setting, it)
+			}
+			it = strings.TrimPrefix(it, "~")
+			if it == "" {
+				continue
+			}
+		}
+		if strings.HasPrefix(it, "@") {
+			if _, ok := seccomp.ExpandGroup(it); !ok {
+				return fmt.Errorf("%s: unknown group %q", setting, it)
+			}
+			continue
+		}
+		if _, ok := seccomp.SyscallNumber(it); !ok {
+			return fmt.Errorf("%s: unknown syscall %q on this arch", setting, it)
+		}
+	}
+	return nil
 }
 
 // parseDirMode parses an octal directory mode (000..777) for the
@@ -1487,6 +1541,35 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.TemporaryFileSystem = append(desc.TemporaryFileSystem, entries...)
+
+	case "system-call-filter":
+		items := strings.Fields(expandEnvVars(value, serviceArg))
+		if err := validateSeccompItems(setting, items); err != nil {
+			return err
+		}
+		desc.SystemCallFilter = append(desc.SystemCallFilter, items...)
+
+	case "system-call-architectures":
+		for _, a := range strings.Fields(expandEnvVars(value, serviceArg)) {
+			if _, err := seccomp.ResolveArch(a); err != nil {
+				return fmt.Errorf("system-call-architectures: %w", err)
+			}
+			desc.SystemCallArchitectures = append(desc.SystemCallArchitectures, a)
+		}
+
+	case "system-call-error-number":
+		v := strings.TrimSpace(value)
+		if _, err := seccomp.ParseAction(v); err != nil {
+			return fmt.Errorf("system-call-error-number: %w", err)
+		}
+		desc.SystemCallErrorNumber = v
+
+	case "system-call-log":
+		items := strings.Fields(expandEnvVars(value, serviceArg))
+		if err := validateSeccompItems(setting, items); err != nil {
+			return err
+		}
+		desc.SystemCallLog = append(desc.SystemCallLog, items...)
 
 	case "runtime-directory", "state-directory", "cache-directory",
 		"logs-directory", "configuration-directory":

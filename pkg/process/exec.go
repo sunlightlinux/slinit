@@ -455,7 +455,16 @@ func loadAppArmorProfile(path string) error {
 // per-calling-process syscalls — were requested.
 func needsRunnerWrap(p ExecParams) bool {
 	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
-		p.AppArmorProfile != "" || p.DebugStop || sandboxActive(p)
+		p.AppArmorProfile != "" || p.DebugStop ||
+		sandboxActive(p) || seccompActive(p)
+}
+
+// seccompActive reports whether any seccomp field is set. seccomp must
+// be installed in the calling task (the one that becomes the service),
+// which is the runner, so any presence flips this on.
+func seccompActive(p ExecParams) bool {
+	return len(p.SeccompFilter) > 0 || len(p.SeccompLogFilter) > 0 ||
+		p.SeccompErrorAction != "" || len(p.SeccompArchitectures) > 0
 }
 
 // sandboxActive reports whether any filesystem-sandbox field is set.
@@ -525,6 +534,18 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	for _, t := range p.TemporaryFileSystem {
 		args = append(args, "--tmpfs-path="+t)
+	}
+	for _, s := range p.SeccompFilter {
+		args = append(args, "--syscall-filter="+s)
+	}
+	for _, a := range p.SeccompArchitectures {
+		args = append(args, "--syscall-arch="+a)
+	}
+	if p.SeccompErrorAction != "" {
+		args = append(args, "--syscall-action="+p.SeccompErrorAction)
+	}
+	for _, s := range p.SeccompLogFilter {
+		args = append(args, "--syscall-log="+s)
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)

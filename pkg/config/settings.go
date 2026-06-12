@@ -214,6 +214,15 @@ var KnownSettings = map[string]OperatorType{
 	"required-files": OpEquals | OpPlusEqual,
 	"required-dirs":  OpEquals | OpPlusEqual,
 
+	// systemd-style seccomp-bpf filter (#4). The filter list supports
+	// '~' first-item prefix for deny mode, '@group' tokens for the
+	// curated groups in pkg/seccomp, and bare syscall names. Repeatable
+	// with '+='.
+	"system-call-filter":        OpEquals | OpPlusEqual,
+	"system-call-architectures": OpEquals | OpPlusEqual,
+	"system-call-error-number":  OpEquals,
+	"system-call-log":           OpEquals | OpPlusEqual,
+
 	// systemd-style filesystem sandbox (applied via slinit-runner in a
 	// fresh mount namespace; CLONE_NEWNS is auto-implied)
 	"private-tmp":          OpEquals,

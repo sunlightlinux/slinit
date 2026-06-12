@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# Broad allowlist that includes everything sh needs. The service must
+# reach STARTED, proving the filter does not falsely kill ordinary shell
+# operations.
+system-call-filter = @system-service
+system-call-error-number = EPERM
+command = /bin/sh -c "echo ok > /tmp/seccomp-allowed-marker; exec sleep 600"

@@ -69,6 +69,15 @@ func run() error {
 		"add a read-only bind-mount as src:dst (repeatable)")
 	fs.Var(&tmpfsPaths, "tmpfs-path",
 		"mount a fresh tmpfs at path[:options] (repeatable)")
+	var syscallFilter, syscallArchs, syscallLog stringList
+	syscallAction := fs.String("syscall-action", "",
+		"seccomp default action for non-allowed syscalls (kill|log|trap|errno-name|errno-number)")
+	fs.Var(&syscallFilter, "syscall-filter",
+		"add a seccomp filter item: syscall name, @group, or ~ prefix on first item (repeatable)")
+	fs.Var(&syscallArchs, "syscall-arch",
+		"add an accepted architecture for seccomp filtering (repeatable)")
+	fs.Var(&syscallLog, "syscall-log",
+		"add a syscall (or @group) always logged via SECCOMP_RET_LOG (repeatable)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -119,6 +128,22 @@ func run() error {
 		if err := applySandbox(spec); err != nil {
 			return fmt.Errorf("sandbox: %w", err)
 		}
+	}
+
+	// seccomp filter install. Must come after the mount/mempolicy
+	// setup above (those are privileged operations the kernel would
+	// refuse with NO_NEW_PRIVS set) and before the AppArmor onexec
+	// transition (AppArmor only attaches to the next execve, which is
+	// our trailing syscall.Exec). The install also sets
+	// PR_SET_NO_NEW_PRIVS as a prerequisite so non-root services can
+	// use it without CAP_SYS_ADMIN.
+	if err := installSeccomp(seccompSpec{
+		filter:    syscallFilter,
+		archs:     syscallArchs,
+		errorAct:  *syscallAction,
+		logFilter: syscallLog,
+	}); err != nil {
+		return err
 	}
 
 	// Developer debug stop: all runner setup is done, so freeze here
