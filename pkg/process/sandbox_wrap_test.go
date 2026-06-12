@@ -114,6 +114,61 @@ func TestWrapWithRunnerSeccomp(t *testing.T) {
 	}
 }
 
+// TestNeedsRunnerWrapHardening verifies any Restrict*/Protect* knob
+// triggers the wrap, since the protection is applied in-task in the
+// runner.
+func TestNeedsRunnerWrapHardening(t *testing.T) {
+	cases := []struct {
+		name string
+		p    ExecParams
+	}{
+		{"kernel-tunables", ExecParams{ProtectKernelTunables: true}},
+		{"kernel-modules", ExecParams{ProtectKernelModules: true}},
+		{"kernel-logs", ExecParams{ProtectKernelLogs: true}},
+		{"clock", ExecParams{ProtectClock: true}},
+		{"control-groups", ExecParams{ProtectControlGroups: true}},
+		{"hostname", ExecParams{ProtectHostname: true}},
+		{"personality", ExecParams{LockPersonality: true}},
+	}
+	for _, c := range cases {
+		if !needsRunnerWrap(c.p) {
+			t.Errorf("%s: should require runner wrap", c.name)
+		}
+	}
+}
+
+// TestWrapWithRunnerHardening verifies the wire format. The runner
+// reads these as bool flag.Bool flags; the names must match.
+func TestWrapWithRunnerHardening(t *testing.T) {
+	p := ExecParams{
+		Command:               []string{"/usr/bin/svc"},
+		ProtectKernelTunables: true,
+		ProtectKernelModules:  true,
+		ProtectKernelLogs:     true,
+		ProtectClock:          true,
+		ProtectControlGroups:  true,
+		ProtectHostname:       true,
+		LockPersonality:       true,
+		RunnerPath:            "/sbin/slinit-runner",
+	}
+	got := wrapWithRunner(p)
+	want := []string{
+		"/sbin/slinit-runner",
+		"--protect-kernel-tunables",
+		"--protect-kernel-modules",
+		"--protect-kernel-logs",
+		"--protect-clock",
+		"--protect-control-groups",
+		"--protect-hostname",
+		"--lock-personality",
+		"--",
+		"/usr/bin/svc",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("argv mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
 // TestWrapWithRunnerSandboxExpansion checks the wire format of the #3b
 // flags. The runner consumes them in this exact shape and order.
 func TestWrapWithRunnerSandboxExpansion(t *testing.T) {

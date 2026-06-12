@@ -340,6 +340,20 @@ type ServiceDescription struct {
 	SystemCallArchitectures []string
 	SystemCallErrorNumber   string
 	SystemCallLog           []string
+
+	// systemd-style Restrict*/Protect* hardening cluster (#7 v1). Each
+	// is a bool that expands at runner-side to a small fixed deny
+	// syscall list and/or a mount op. The arg-checking variants
+	// (RestrictRealtime, RestrictSUIDSGID, MemoryDenyWriteExecute,
+	// RestrictNamespaces, RestrictAddressFamilies) need a BPF compiler
+	// extension and are tracked as a v2 follow-on.
+	ProtectKernelTunables bool
+	ProtectKernelModules  bool
+	ProtectKernelLogs     bool
+	ProtectClock          bool
+	ProtectControlGroups  bool
+	ProtectHostname       bool
+	LockPersonality       bool
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -1570,6 +1584,31 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.SystemCallLog = append(desc.SystemCallLog, items...)
+
+	case "protect-kernel-tunables", "protect-kernel-modules",
+		"protect-kernel-logs", "protect-clock",
+		"protect-control-groups", "protect-hostname",
+		"lock-personality":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", setting, err)
+		}
+		switch setting {
+		case "protect-kernel-tunables":
+			desc.ProtectKernelTunables = b
+		case "protect-kernel-modules":
+			desc.ProtectKernelModules = b
+		case "protect-kernel-logs":
+			desc.ProtectKernelLogs = b
+		case "protect-clock":
+			desc.ProtectClock = b
+		case "protect-control-groups":
+			desc.ProtectControlGroups = b
+		case "protect-hostname":
+			desc.ProtectHostname = b
+		case "lock-personality":
+			desc.LockPersonality = b
+		}
 
 	case "runtime-directory", "state-directory", "cache-directory",
 		"logs-directory", "configuration-directory":

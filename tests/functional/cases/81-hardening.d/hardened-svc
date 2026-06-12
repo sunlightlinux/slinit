@@ -1,0 +1,21 @@
+type = process
+depends-on: system-init
+# Mix mount-based (control-groups) + seccomp-based (clock, hostname,
+# personality) so the probe exercises both code paths.
+protect-control-groups = yes
+protect-clock = yes
+protect-hostname = yes
+lock-personality = yes
+command = /bin/sh -c "set -e; \
+mkdir -p /var/tmp/hardening-out; \
+# Try to write a fresh file under /sys/fs/cgroup (read-only-remounted): \
+if echo nope > /sys/fs/cgroup/hardening-probe 2>/dev/null; then cgroup=writable; \
+else cgroup=protected; fi; \
+# Try to set the system clock (denied by seccomp; date returns non-zero): \
+if date -s '1970-01-01 00:00:00' >/dev/null 2>&1; then clock=writable; \
+else clock=protected; fi; \
+# Try to change the hostname (denied by seccomp): \
+if hostname slinit-pwn 2>/dev/null; then host=writable; \
+else host=protected; fi; \
+echo \"cgroup=$cgroup clock=$clock host=$host\" > /var/tmp/hardening-out/result; \
+exec sleep 600"

@@ -456,7 +456,17 @@ func loadAppArmorProfile(path string) error {
 func needsRunnerWrap(p ExecParams) bool {
 	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
 		p.AppArmorProfile != "" || p.DebugStop ||
-		sandboxActive(p) || seccompActive(p)
+		sandboxActive(p) || seccompActive(p) || hardeningActive(p)
+}
+
+// hardeningActive reports whether any Restrict*/Protect* knob is set.
+// Each active knob expands at runner-side to a seccomp deny filter or
+// a mount op; an unwrapped command would silently lose the protection.
+func hardeningActive(p ExecParams) bool {
+	return p.ProtectKernelTunables || p.ProtectKernelModules ||
+		p.ProtectKernelLogs || p.ProtectClock ||
+		p.ProtectControlGroups || p.ProtectHostname ||
+		p.LockPersonality
 }
 
 // seccompActive reports whether any seccomp field is set. seccomp must
@@ -546,6 +556,27 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	for _, s := range p.SeccompLogFilter {
 		args = append(args, "--syscall-log="+s)
+	}
+	if p.ProtectKernelTunables {
+		args = append(args, "--protect-kernel-tunables")
+	}
+	if p.ProtectKernelModules {
+		args = append(args, "--protect-kernel-modules")
+	}
+	if p.ProtectKernelLogs {
+		args = append(args, "--protect-kernel-logs")
+	}
+	if p.ProtectClock {
+		args = append(args, "--protect-clock")
+	}
+	if p.ProtectControlGroups {
+		args = append(args, "--protect-control-groups")
+	}
+	if p.ProtectHostname {
+		args = append(args, "--protect-hostname")
+	}
+	if p.LockPersonality {
+		args = append(args, "--lock-personality")
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)

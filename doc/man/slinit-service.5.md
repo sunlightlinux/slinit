@@ -529,6 +529,59 @@ the internal **seccomp** package and installs it via the
     observing a process before tightening the filter. Repeatable with
     `+=`. Equivalent to systemd's **SystemCallLog=**.
 
+## RESTRICT*/PROTECT* HARDENING (Linux)
+
+systemd-style hardening knobs. Each is a yes/no toggle. Active knobs
+expand at runner-side to a fixed seccomp deny filter (installed
+alongside any user **system-call-filter** — the kernel picks the most
+restrictive action across all loaded filters) and/or a small mount
+operation. **PR_SET_NO_NEW_PRIVS** is auto-implied when any knob is
+set. The mount-based knobs (**protect-kernel-tunables**,
+**protect-control-groups**, **protect-kernel-logs**) additionally
+auto-imply *CLONE_NEWNS* so the operations are confined to the
+service's private mount namespace.
+
+**protect-kernel-tunables**=*yes*|*no*
+:   Read-only remount */proc/sys* and deny **iopl**(2), **ioperm**(2),
+    **swapon**(2), **swapoff**(2). Equivalent to systemd's
+    **ProtectKernelTunables=**.
+
+**protect-kernel-modules**=*yes*|*no*
+:   Deny **init_module**(2), **finit_module**(2),
+    **delete_module**(2). Equivalent to systemd's
+    **ProtectKernelModules=**.
+
+**protect-kernel-logs**=*yes*|*no*
+:   Deny **syslog**(2) and bind-mount */dev/null* over */dev/kmsg*.
+    Equivalent to systemd's **ProtectKernelLogs=**.
+
+**protect-clock**=*yes*|*no*
+:   Deny **clock_settime**(2), **clock_adjtime**(2),
+    **settimeofday**(2), **adjtimex**(2). Equivalent to systemd's
+    **ProtectClock=**.
+
+**protect-control-groups**=*yes*|*no*
+:   Read-only remount */sys/fs/cgroup*. Equivalent to systemd's
+    **ProtectControlGroups=**.
+
+**protect-hostname**=*yes*|*no*
+:   Deny **sethostname**(2), **setdomainname**(2). Equivalent to
+    systemd's **ProtectHostname=**.
+
+**lock-personality**=*yes*|*no*
+:   Deny **personality**(2). Equivalent to systemd's
+    **LockPersonality=** (slinit blanket-denies the call; systemd
+    arg-checks for non-current personalities — the practical effect
+    is identical for almost every workload).
+
+**Not yet implemented:** the systemd hardening knobs that require
+seccomp argument inspection — **RestrictRealtime=**,
+**RestrictSUIDSGID=**, **MemoryDenyWriteExecute=**,
+**RestrictNamespaces=**, **RestrictAddressFamilies=** — are deferred
+to a v2 that grows the slinit seccomp BPF compiler with
+*seccomp_data.args* support. Tracked in
+*project_systemd_analysis.md*.
+
 ## NAMESPACES (Linux)
 
 **namespace-pid**=*yes*|*no*, **namespace-mount**=*yes*|*no*,

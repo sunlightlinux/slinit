@@ -270,6 +270,12 @@ type ServiceRecord struct {
 	// PR_SET_NO_NEW_PRIVS when this is in use.
 	seccomp SeccompConfig
 
+	// systemd-style Restrict*/Protect* hardening cluster (#7). Each
+	// active knob translates at runner-side to a small seccomp deny
+	// filter and/or a mount op. Like seccomp, the loader auto-implies
+	// PR_SET_NO_NEW_PRIVS when any knob is set.
+	hardening HardeningConfig
+
 	// Queue membership flags
 	InPropQueue bool
 	InStopQueue bool
@@ -791,6 +797,41 @@ func (sr *ServiceRecord) Seccomp() SeccompConfig { return sr.seccomp }
 // SeccompActive reports whether seccomp filtering was requested.
 func (sr *ServiceRecord) SeccompActive() bool { return sr.seccomp.Active() }
 
+// HardeningConfig captures the systemd-style Restrict*/Protect* knobs
+// that ship in slinit #7 v1. Each is a yes/no toggle; the runner
+// expands the active ones to a deny seccomp filter and/or extra mount
+// operations. The arg-checking variants (RestrictRealtime,
+// RestrictSUIDSGID, MemoryDenyWriteExecute, RestrictNamespaces,
+// RestrictAddressFamilies) are deferred to v2 once pkg/seccomp grows
+// argument-inspection BPF support.
+type HardeningConfig struct {
+	ProtectKernelTunables bool
+	ProtectKernelModules  bool
+	ProtectKernelLogs     bool
+	ProtectClock          bool
+	ProtectControlGroups  bool
+	ProtectHostname       bool
+	LockPersonality       bool
+}
+
+// Active reports whether any hardening knob is set.
+func (c HardeningConfig) Active() bool {
+	return c.ProtectKernelTunables || c.ProtectKernelModules ||
+		c.ProtectKernelLogs || c.ProtectClock ||
+		c.ProtectControlGroups || c.ProtectHostname ||
+		c.LockPersonality
+}
+
+// SetHardening records the Restrict*/Protect* knob set. The loader
+// auto-implies PR_SET_NO_NEW_PRIVS when any knob is active.
+func (sr *ServiceRecord) SetHardening(c HardeningConfig) { sr.hardening = c }
+
+// Hardening returns the recorded hardening config.
+func (sr *ServiceRecord) Hardening() HardeningConfig { return sr.hardening }
+
+// HardeningActive reports whether any Restrict*/Protect* knob is set.
+func (sr *ServiceRecord) HardeningActive() bool { return sr.hardening.Active() }
+
 // SandboxActive reports whether any sandbox knob is set; the loader uses
 // this to decide if it must auto-imply CLONE_NEWNS.
 func (sr *ServiceRecord) SandboxActive() bool { return sr.sandbox.Active() }
@@ -946,6 +987,17 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	// `options=no-new-privs` explicitly when they want it without a
 	// filter.
 	if sr.seccomp.Active() {
+		params.NoNewPrivs = true
+	}
+
+	params.ProtectKernelTunables = sr.hardening.ProtectKernelTunables
+	params.ProtectKernelModules = sr.hardening.ProtectKernelModules
+	params.ProtectKernelLogs = sr.hardening.ProtectKernelLogs
+	params.ProtectClock = sr.hardening.ProtectClock
+	params.ProtectControlGroups = sr.hardening.ProtectControlGroups
+	params.ProtectHostname = sr.hardening.ProtectHostname
+	params.LockPersonality = sr.hardening.LockPersonality
+	if sr.hardening.Active() {
 		params.NoNewPrivs = true
 	}
 

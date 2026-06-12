@@ -78,6 +78,16 @@ func run() error {
 		"add an accepted architecture for seccomp filtering (repeatable)")
 	fs.Var(&syscallLog, "syscall-log",
 		"add a syscall (or @group) always logged via SECCOMP_RET_LOG (repeatable)")
+	// systemd-style Restrict*/Protect* hardening knobs (#7 v1). Each
+	// is a bool flag; the runner expands actives into a deny-mode
+	// seccomp filter plus a small set of mount ops in applyHardening.
+	pkTun := fs.Bool("protect-kernel-tunables", false, "block /proc/sys writes + iopl/ioperm/swapon syscalls")
+	pkMod := fs.Bool("protect-kernel-modules", false, "block init_module/finit_module/delete_module")
+	pkLog := fs.Bool("protect-kernel-logs", false, "block syslog(2) + hide /dev/kmsg")
+	pClock := fs.Bool("protect-clock", false, "block clock_settime/adjtime/settimeofday/adjtimex")
+	pCG := fs.Bool("protect-control-groups", false, "remount /sys/fs/cgroup read-only")
+	pHost := fs.Bool("protect-hostname", false, "block sethostname/setdomainname")
+	pPersonality := fs.Bool("lock-personality", false, "block personality(2)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -142,6 +152,23 @@ func run() error {
 		archs:     syscallArchs,
 		errorAct:  *syscallAction,
 		logFilter: syscallLog,
+	}); err != nil {
+		return err
+	}
+
+	// Restrict*/Protect* hardening cluster (#7). Layered on top of the
+	// user filter: the kernel runs every loaded seccomp filter on
+	// every syscall and picks the most restrictive action, so a deny
+	// here always wins over an allow above. Mount ops happen first
+	// (they need MS_PRIVATE on /), seccomp install last.
+	if err := applyHardening(hardeningSpec{
+		protectKernelTunables: *pkTun,
+		protectKernelModules:  *pkMod,
+		protectKernelLogs:     *pkLog,
+		protectClock:          *pClock,
+		protectControlGroups:  *pCG,
+		protectHostname:       *pHost,
+		lockPersonality:       *pPersonality,
 	}); err != nil {
 		return err
 	}

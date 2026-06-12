@@ -331,6 +331,19 @@ type ExecParams struct {
 	SeccompErrorAction   string
 	SeccompLogFilter     []string
 
+	// systemd-style Restrict*/Protect* hardening cluster (#7). Each
+	// active knob expands at runner-side to a small fixed deny syscall
+	// list (installed as a second seccomp filter) and/or an extra
+	// mount op. The parent auto-sets NoNewPrivs whenever any of these
+	// are set, same as for SeccompFilter.
+	ProtectKernelTunables bool
+	ProtectKernelModules  bool
+	ProtectKernelLogs     bool
+	ProtectClock          bool
+	ProtectControlGroups  bool
+	ProtectHostname       bool
+	LockPersonality       bool
+
 	// Cloneflags specifies Linux clone flags for namespace isolation.
 	// OR'd into SysProcAttr.Cloneflags (e.g. syscall.CLONE_NEWPID).
 	Cloneflags uintptr
