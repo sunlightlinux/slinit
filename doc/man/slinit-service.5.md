@@ -450,6 +450,45 @@ before exec'ing the service. The host filesystem is untouched.
     listed paths. Applied before **read-only-paths**, so a path may
     appear in both (rw first wins). Repeatable with `+=`.
 
+**protect-home**=*no*|*yes*|*read-only*|*tmpfs*
+:   Hide */home*, */root* and */run/user* from the service. *yes*
+    over-mounts each with an inaccessible (mode 0000) tmpfs; *read-only*
+    ro-remounts them; *tmpfs* replaces them with empty per-service
+    tmpfs. Equivalent to systemd's **ProtectHome=**.
+
+**inaccessible-paths**=*path*...
+:   Hide each absolute path behind an empty inaccessible mount (an
+    empty tmpfs for directories, */dev/null* bind for files). The
+    service cannot read or list the original content. Repeatable with
+    `+=`.
+
+**protect-proc**=*default*|*noaccess*|*invisible*|*ptraceable*
+:   Remount */proc* with the matching **hidepid=** option:
+    *noaccess* hides PID entries of other users; *invisible* hides them
+    entirely; *ptraceable* shows only PIDs the service can ptrace.
+    Equivalent to systemd's **ProtectProc=**.
+
+**proc-subset**=*all*|*pid*
+:   Remount */proc* with **subset=pid** so the service sees only the
+    per-PID directories — kernel knobs (*/proc/sys*, */proc/kcore*,
+    etc.) become invisible. Combines with **protect-proc** in a single
+    remount. Equivalent to systemd's **ProcSubset=**.
+
+**bind-paths**=*src*|*src*:*dst*...
+:   Bind-mount *src* onto *dst* (writable) inside the sandbox. If only
+    *src* is given, *dst* defaults to *src*. The runner creates *dst*
+    if missing. Repeatable with `+=`.
+
+**bind-read-only-paths**=*src*|*src*:*dst*...
+:   Like **bind-paths** but the resulting mount is read-only.
+    Repeatable with `+=`.
+
+**temporary-filesystem**=*path*|*path*:*options*...
+:   Mount a fresh *tmpfs* at *path*; *options* (comma-separated) is
+    forwarded to **mount**(2) verbatim, e.g. *size=64m,mode=0700*.
+    Repeatable with `+=`. Equivalent to systemd's
+    **TemporaryFileSystem=**.
+
 ## NAMESPACES (Linux)
 
 **namespace-pid**=*yes*|*no*, **namespace-mount**=*yes*|*no*,

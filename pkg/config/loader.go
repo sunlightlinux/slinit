@@ -1274,12 +1274,22 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	// systemd-style filesystem sandbox: any non-default value implies a
 	// private mount namespace. Recorded on the service record so the
 	// runner sets up the requested isolation inside that ns.
-	sandboxActive := desc.PrivateTmp || desc.ProtectSystem != "" ||
-		len(desc.ReadOnlyPaths) > 0 || len(desc.ReadWritePaths) > 0
-	if sandboxActive {
+	sandbox := service.SandboxConfig{
+		PrivateTmp:          desc.PrivateTmp,
+		ProtectSystem:       desc.ProtectSystem,
+		ReadOnlyPaths:       desc.ReadOnlyPaths,
+		ReadWritePaths:      desc.ReadWritePaths,
+		ProtectHome:         desc.ProtectHome,
+		InaccessiblePaths:   desc.InaccessiblePaths,
+		ProtectProc:         desc.ProtectProc,
+		ProcSubset:          desc.ProcSubset,
+		BindPaths:           desc.BindPaths,
+		BindReadOnlyPaths:   desc.BindReadOnlyPaths,
+		TemporaryFileSystem: desc.TemporaryFileSystem,
+	}
+	if sandbox.Active() {
 		cloneflags |= syscall.CLONE_NEWNS
-		rec.SetSandbox(desc.PrivateTmp, desc.ProtectSystem,
-			desc.ReadOnlyPaths, desc.ReadWritePaths)
+		rec.SetSandbox(sandbox)
 	}
 	if cloneflags != 0 {
 		rec.SetCloneflags(cloneflags)

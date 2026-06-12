@@ -263,10 +263,7 @@ type ServiceRecord struct {
 	// here causes the loader to OR CLONE_NEWNS into cloneflags, and
 	// slinit-runner sets up the requested isolation inside that fresh
 	// mount namespace before exec'ing the service.
-	sandboxPrivateTmp     bool
-	sandboxProtectSystem  string
-	sandboxReadOnlyPaths  []string
-	sandboxReadWritePaths []string
+	sandbox SandboxConfig
 
 	// Queue membership flags
 	InPropQueue bool
@@ -721,31 +718,52 @@ func (sr *ServiceRecord) AppArmor() (load, profile string) {
 	return sr.appArmorLoad, sr.appArmorSwitch
 }
 
-// SetSandbox records the filesystem-sandbox configuration (systemd-style
-// PrivateTmp/ProtectSystem/Read{Only,Write}Paths). protectSystem is one
-// of "", "yes", "full", "strict". The mount namespace is set up by
-// slinit-runner; the loader is responsible for OR'ing CLONE_NEWNS into
-// cloneflags when this is in use.
-func (sr *ServiceRecord) SetSandbox(privateTmp bool, protectSystem string, roPaths, rwPaths []string) {
-	sr.sandboxPrivateTmp = privateTmp
-	sr.sandboxProtectSystem = protectSystem
-	sr.sandboxReadOnlyPaths = roPaths
-	sr.sandboxReadWritePaths = rwPaths
+// SandboxConfig captures the full systemd-style filesystem-sandbox
+// configuration. ServiceRecord stores one of these by value; the loader
+// populates it from ServiceDescription and ApplyProcessAttrs forwards
+// every field onto ExecParams. Any non-zero field causes the loader to
+// auto-imply CLONE_NEWNS into the clone flags.
+//
+// Field semantics mirror their systemd counterparts; see slinit-service(5)
+// for the user-facing description.
+type SandboxConfig struct {
+	PrivateTmp          bool
+	ProtectSystem       string // "" | "yes" | "full" | "strict"
+	ReadOnlyPaths       []string
+	ReadWritePaths      []string
+	ProtectHome         string // "" | "yes" | "read-only" | "tmpfs"
+	InaccessiblePaths   []string
+	ProtectProc         string // "" | "noaccess" | "invisible" | "ptraceable"
+	ProcSubset          string // "" | "pid"
+	BindPaths           []string // "src:dst" pairs (writable)
+	BindReadOnlyPaths   []string // "src:dst" pairs (read-only)
+	TemporaryFileSystem []string // "path[:options]" tmpfs mounts
 }
+
+// Active reports whether any sandbox knob is set. Used by the loader to
+// decide whether to OR CLONE_NEWNS into the clone flags and by the
+// process layer to gate the runner wrap.
+func (c SandboxConfig) Active() bool {
+	return c.PrivateTmp ||
+		c.ProtectSystem != "" || len(c.ReadOnlyPaths) > 0 || len(c.ReadWritePaths) > 0 ||
+		c.ProtectHome != "" || len(c.InaccessiblePaths) > 0 ||
+		c.ProtectProc != "" || c.ProcSubset != "" ||
+		len(c.BindPaths) > 0 || len(c.BindReadOnlyPaths) > 0 ||
+		len(c.TemporaryFileSystem) > 0
+}
+
+// SetSandbox records the filesystem-sandbox configuration. The mount
+// namespace is set up by slinit-runner; the loader is responsible for
+// OR'ing CLONE_NEWNS into cloneflags when sandbox is in use.
+func (sr *ServiceRecord) SetSandbox(c SandboxConfig) { sr.sandbox = c }
 
 // SandboxActive reports whether any sandbox knob is set; the loader uses
 // this to decide if it must auto-imply CLONE_NEWNS.
-func (sr *ServiceRecord) SandboxActive() bool {
-	return sr.sandboxPrivateTmp || sr.sandboxProtectSystem != "" ||
-		len(sr.sandboxReadOnlyPaths) > 0 || len(sr.sandboxReadWritePaths) > 0
-}
+func (sr *ServiceRecord) SandboxActive() bool { return sr.sandbox.Active() }
 
 // Sandbox returns the recorded sandbox configuration. Used by tests and
 // the status reporter; the production read path is ApplyProcessAttrs.
-func (sr *ServiceRecord) Sandbox() (privateTmp bool, protectSystem string, roPaths, rwPaths []string) {
-	return sr.sandboxPrivateTmp, sr.sandboxProtectSystem,
-		sr.sandboxReadOnlyPaths, sr.sandboxReadWritePaths
-}
+func (sr *ServiceRecord) Sandbox() SandboxConfig { return sr.sandbox }
 
 // SetDebug enables the pre-exec SIGSTOP debug stop for this service.
 func (sr *ServiceRecord) SetDebug(b bool) { sr.debug = b }
@@ -872,10 +890,17 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.Cloneflags = sr.cloneflags
 	params.UidMappings = sr.uidMappings
 	params.GidMappings = sr.gidMappings
-	params.PrivateTmp = sr.sandboxPrivateTmp
-	params.ProtectSystem = sr.sandboxProtectSystem
-	params.ReadOnlyPaths = sr.sandboxReadOnlyPaths
-	params.ReadWritePaths = sr.sandboxReadWritePaths
+	params.PrivateTmp = sr.sandbox.PrivateTmp
+	params.ProtectSystem = sr.sandbox.ProtectSystem
+	params.ReadOnlyPaths = sr.sandbox.ReadOnlyPaths
+	params.ReadWritePaths = sr.sandbox.ReadWritePaths
+	params.ProtectHome = sr.sandbox.ProtectHome
+	params.InaccessiblePaths = sr.sandbox.InaccessiblePaths
+	params.ProtectProc = sr.sandbox.ProtectProc
+	params.ProcSubset = sr.sandbox.ProcSubset
+	params.BindPaths = sr.sandbox.BindPaths
+	params.BindReadOnlyPaths = sr.sandbox.BindReadOnlyPaths
+	params.TemporaryFileSystem = sr.sandbox.TemporaryFileSystem
 
 	// Inject dinit-compatible query env vars
 	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)

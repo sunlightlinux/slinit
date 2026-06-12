@@ -295,6 +295,30 @@ type ServiceDescription struct {
 	ProtectSystem  string
 	ReadOnlyPaths  []string
 	ReadWritePaths []string
+
+	// Sandbox expansion (#3b).
+	//
+	// ProtectHome: "" (off), "yes" (make /home,/root,/run/user
+	//   inaccessible), "read-only" (ro remount), "tmpfs" (empty tmpfs
+	//   over each).
+	// InaccessiblePaths: absolute paths over-mounted with an empty,
+	//   restrictively-permissioned tmpfs (or /dev/null for files).
+	// ProtectProc: "" (off / default), "noaccess" | "invisible" |
+	//   "ptraceable" — passed as hidepid= when remounting /proc.
+	// ProcSubset: "" (off / "all"), "pid" — remount /proc with
+	//   subset=pid so the service sees only PID directories.
+	// BindPaths / BindReadOnlyPaths: entries "src" or "src:dst" (dst
+	//   defaults to src). Repeatable with '+='.
+	// TemporaryFileSystem: entries "path" or "path:options" — tmpfs
+	//   mounted at path; the optional comma-separated options string
+	//   is forwarded to mount(2) verbatim.
+	ProtectHome         string
+	InaccessiblePaths   []string
+	ProtectProc         string
+	ProcSubset          string
+	BindPaths           []string
+	BindReadOnlyPaths   []string
+	TemporaryFileSystem []string
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -672,6 +696,67 @@ func parseSandboxPaths(setting, value string, serviceArg *string) ([]string, err
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%s: no path given", setting)
+	}
+	return out, nil
+}
+
+// parseBindEntries splits a space-separated list of bind-mount entries
+// of the form "src" or "src:dst" (where dst defaults to src). Both sides
+// must be absolute and free of '..'. The runner consumes the joined
+// "src:dst" form directly, so this helper normalises every entry into
+// that shape.
+func parseBindEntries(setting, value string, serviceArg *string) ([]string, error) {
+	var out []string
+	for _, raw := range strings.Fields(value) {
+		entry := expandEnvVars(raw, serviceArg)
+		if entry == "" {
+			continue
+		}
+		src, dst, hasDst := strings.Cut(entry, ":")
+		if !hasDst {
+			dst = src
+		}
+		for _, p := range []string{src, dst} {
+			if !filepath.IsAbs(p) {
+				return nil, fmt.Errorf("%s: path must be absolute: %q", setting, entry)
+			}
+			for _, comp := range strings.Split(p, "/") {
+				if comp == ".." {
+					return nil, fmt.Errorf("%s: '..' not allowed: %q", setting, entry)
+				}
+			}
+		}
+		out = append(out, filepath.Clean(src)+":"+filepath.Clean(dst))
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: no entry given", setting)
+	}
+	return out, nil
+}
+
+// parseTmpfsEntries splits a space-separated list of "path" or
+// "path:options" entries. options is forwarded verbatim to mount(2) so
+// no parsing or validation happens here beyond rejecting an absent path.
+func parseTmpfsEntries(setting, value string, serviceArg *string) ([]string, error) {
+	var out []string
+	for _, raw := range strings.Fields(value) {
+		entry := expandEnvVars(raw, serviceArg)
+		if entry == "" {
+			continue
+		}
+		path, _, _ := strings.Cut(entry, ":")
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("%s: path must be absolute: %q", setting, entry)
+		}
+		for _, comp := range strings.Split(path, "/") {
+			if comp == ".." {
+				return nil, fmt.Errorf("%s: '..' not allowed: %q", setting, entry)
+			}
+		}
+		out = append(out, entry)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: no entry given", setting)
 	}
 	return out, nil
 }
@@ -1337,6 +1422,71 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.ReadWritePaths = append(desc.ReadWritePaths, paths...)
+
+	case "protect-home":
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "", "no", "off", "false", "0":
+			desc.ProtectHome = ""
+		case "yes", "true", "1":
+			desc.ProtectHome = "yes"
+		case "read-only", "ro":
+			desc.ProtectHome = "read-only"
+		case "tmpfs":
+			desc.ProtectHome = "tmpfs"
+		default:
+			return fmt.Errorf("protect-home: expected no|yes|read-only|tmpfs, got %q", value)
+		}
+
+	case "inaccessible-paths":
+		paths, err := parseSandboxPaths(setting, value, serviceArg)
+		if err != nil {
+			return err
+		}
+		desc.InaccessiblePaths = append(desc.InaccessiblePaths, paths...)
+
+	case "protect-proc":
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "", "default":
+			desc.ProtectProc = ""
+		case "noaccess", "invisible", "ptraceable":
+			desc.ProtectProc = v
+		default:
+			return fmt.Errorf("protect-proc: expected default|noaccess|invisible|ptraceable, got %q", value)
+		}
+
+	case "proc-subset":
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "", "all":
+			desc.ProcSubset = ""
+		case "pid":
+			desc.ProcSubset = "pid"
+		default:
+			return fmt.Errorf("proc-subset: expected all|pid, got %q", value)
+		}
+
+	case "bind-paths":
+		entries, err := parseBindEntries(setting, value, serviceArg)
+		if err != nil {
+			return err
+		}
+		desc.BindPaths = append(desc.BindPaths, entries...)
+
+	case "bind-read-only-paths":
+		entries, err := parseBindEntries(setting, value, serviceArg)
+		if err != nil {
+			return err
+		}
+		desc.BindReadOnlyPaths = append(desc.BindReadOnlyPaths, entries...)
+
+	case "temporary-filesystem":
+		entries, err := parseTmpfsEntries(setting, value, serviceArg)
+		if err != nil {
+			return err
+		}
+		desc.TemporaryFileSystem = append(desc.TemporaryFileSystem, entries...)
 
 	case "runtime-directory", "state-directory", "cache-directory",
 		"logs-directory", "configuration-directory":

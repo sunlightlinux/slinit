@@ -49,11 +49,26 @@ func run() error {
 		"mount a fresh tmpfs at /tmp and /var/tmp (systemd PrivateTmp=)")
 	protectSystem := fs.String("protect-system", "",
 		"remount system paths read-only: yes | full | strict (systemd ProtectSystem=)")
-	var readOnlyPaths, readWritePaths stringList
+	protectHome := fs.String("protect-home", "",
+		"hide /home, /root, /run/user: yes | read-only | tmpfs (systemd ProtectHome=)")
+	protectProc := fs.String("protect-proc", "",
+		"/proc hidepid= mode: noaccess | invisible | ptraceable (systemd ProtectProc=)")
+	procSubset := fs.String("proc-subset", "",
+		"/proc subset= filter: pid (systemd ProcSubset=)")
+	var readOnlyPaths, readWritePaths, inaccessiblePaths stringList
+	var bindPaths, bindROPaths, tmpfsPaths stringList
 	fs.Var(&readOnlyPaths, "read-only-path",
 		"add a path to be bind-mounted read-only (repeatable)")
 	fs.Var(&readWritePaths, "read-write-path",
 		"add a path to remain writable when ProtectSystem= would make it read-only (repeatable)")
+	fs.Var(&inaccessiblePaths, "inaccessible-path",
+		"add a path to be hidden behind an empty inaccessible mount (repeatable)")
+	fs.Var(&bindPaths, "bind-path",
+		"add a writable bind-mount as src:dst (repeatable)")
+	fs.Var(&bindROPaths, "bind-ro-path",
+		"add a read-only bind-mount as src:dst (repeatable)")
+	fs.Var(&tmpfsPaths, "tmpfs-path",
+		"mount a fresh tmpfs at path[:options] (repeatable)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -87,14 +102,20 @@ func run() error {
 	// syscalls unaffected by the mount setup). The runner already runs
 	// inside the fresh mount namespace created by the parent's
 	// CLONE_NEWNS, so the mount(2) calls below are confined to it.
-	if *privateTmp || *protectSystem != "" ||
-		len(readOnlyPaths) > 0 || len(readWritePaths) > 0 {
-		spec := sandboxSpec{
-			privateTmp:     *privateTmp,
-			protectSystem:  *protectSystem,
-			readOnlyPaths:  readOnlyPaths,
-			readWritePaths: readWritePaths,
-		}
+	spec := sandboxSpec{
+		privateTmp:          *privateTmp,
+		protectSystem:       *protectSystem,
+		readOnlyPaths:       readOnlyPaths,
+		readWritePaths:      readWritePaths,
+		protectHome:         *protectHome,
+		inaccessiblePaths:   inaccessiblePaths,
+		protectProc:         *protectProc,
+		procSubset:          *procSubset,
+		bindPaths:           bindPaths,
+		bindROPaths:         bindROPaths,
+		temporaryFilesystem: tmpfsPaths,
+	}
+	if spec.active() {
 		if err := applySandbox(spec); err != nil {
 			return fmt.Errorf("sandbox: %w", err)
 		}

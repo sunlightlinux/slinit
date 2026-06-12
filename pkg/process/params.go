@@ -306,6 +306,17 @@ type ExecParams struct {
 	ReadOnlyPaths  []string
 	ReadWritePaths []string
 
+	// Sandbox expansion (#3b). Same plumbing path through slinit-runner
+	// as the MVP fields above; see SandboxConfig in pkg/service for
+	// per-field semantics.
+	ProtectHome         string
+	InaccessiblePaths   []string
+	ProtectProc         string
+	ProcSubset          string
+	BindPaths           []string // "src:dst" pairs, writable
+	BindReadOnlyPaths   []string // "src:dst" pairs, read-only
+	TemporaryFileSystem []string // "path[:options]" entries
+
 	// Cloneflags specifies Linux clone flags for namespace isolation.
 	// OR'd into SysProcAttr.Cloneflags (e.g. syscall.CLONE_NEWPID).
 	Cloneflags uintptr
