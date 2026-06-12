@@ -216,10 +216,17 @@ var KnownSettings = map[string]OperatorType{
 
 	// systemd-style filesystem sandbox (applied via slinit-runner in a
 	// fresh mount namespace; CLONE_NEWNS is auto-implied)
-	"private-tmp":      OpEquals,
-	"protect-system":   OpEquals,
-	"read-only-paths":  OpEquals | OpPlusEqual,
-	"read-write-paths": OpEquals | OpPlusEqual,
+	"private-tmp":          OpEquals,
+	"protect-system":       OpEquals,
+	"read-only-paths":      OpEquals | OpPlusEqual,
+	"read-write-paths":     OpEquals | OpPlusEqual,
+	"protect-home":         OpEquals,
+	"inaccessible-paths":   OpEquals | OpPlusEqual,
+	"protect-proc":         OpEquals,
+	"proc-subset":          OpEquals,
+	"bind-paths":           OpEquals | OpPlusEqual,
+	"bind-read-only-paths": OpEquals | OpPlusEqual,
+	"temporary-filesystem": OpEquals | OpPlusEqual,
 
 	// Virtual TTY (screen-like attach/detach)
 	"vtty":            OpEquals, // true/false

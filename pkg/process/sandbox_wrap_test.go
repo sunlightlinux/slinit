@@ -16,10 +16,19 @@ func TestNeedsRunnerWrapSandbox(t *testing.T) {
 		want bool
 	}{
 		{"no sandbox", ExecParams{}, false},
+		// #3a MVP
 		{"private-tmp", ExecParams{PrivateTmp: true}, true},
 		{"protect-system=yes", ExecParams{ProtectSystem: "yes"}, true},
 		{"read-only-paths", ExecParams{ReadOnlyPaths: []string{"/usr"}}, true},
 		{"read-write-paths", ExecParams{ReadWritePaths: []string{"/var/lib/svc"}}, true},
+		// #3b expansion
+		{"protect-home=yes", ExecParams{ProtectHome: "yes"}, true},
+		{"inaccessible-paths", ExecParams{InaccessiblePaths: []string{"/opt/secret"}}, true},
+		{"protect-proc=invisible", ExecParams{ProtectProc: "invisible"}, true},
+		{"proc-subset=pid", ExecParams{ProcSubset: "pid"}, true},
+		{"bind-paths", ExecParams{BindPaths: []string{"/a:/b"}}, true},
+		{"bind-ro-paths", ExecParams{BindReadOnlyPaths: []string{"/a:/b"}}, true},
+		{"temporary-filesystem", ExecParams{TemporaryFileSystem: []string{"/run/svc"}}, true},
 	}
 	for _, c := range cases {
 		got := needsRunnerWrap(c.p)
@@ -49,6 +58,38 @@ func TestWrapWithRunnerSandbox(t *testing.T) {
 		"--read-only-path=/usr/local",
 		"--read-only-path=/opt",
 		"--read-write-path=/var/lib/svc",
+		"--",
+		"/usr/bin/svc",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("argv mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+// TestWrapWithRunnerSandboxExpansion checks the wire format of the #3b
+// flags. The runner consumes them in this exact shape and order.
+func TestWrapWithRunnerSandboxExpansion(t *testing.T) {
+	p := ExecParams{
+		Command:             []string{"/usr/bin/svc"},
+		ProtectHome:         "tmpfs",
+		InaccessiblePaths:   []string{"/opt/secret"},
+		ProtectProc:         "invisible",
+		ProcSubset:          "pid",
+		BindPaths:           []string{"/var/data:/var/data"},
+		BindReadOnlyPaths:   []string{"/etc/conf:/etc/conf"},
+		TemporaryFileSystem: []string{"/run/svc:size=64m"},
+		RunnerPath:          "/sbin/slinit-runner",
+	}
+	got := wrapWithRunner(p)
+	want := []string{
+		"/sbin/slinit-runner",
+		"--protect-home=tmpfs",
+		"--inaccessible-path=/opt/secret",
+		"--protect-proc=invisible",
+		"--proc-subset=pid",
+		"--bind-path=/var/data:/var/data",
+		"--bind-ro-path=/etc/conf:/etc/conf",
+		"--tmpfs-path=/run/svc:size=64m",
 		"--",
 		"/usr/bin/svc",
 	}

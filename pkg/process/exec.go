@@ -463,8 +463,12 @@ func needsRunnerWrap(p ExecParams) bool {
 // mount(2) and tmpfs setup happen inside the child's mount namespace
 // before exec.
 func sandboxActive(p ExecParams) bool {
-	return p.PrivateTmp || p.ProtectSystem != "" ||
-		len(p.ReadOnlyPaths) > 0 || len(p.ReadWritePaths) > 0
+	return p.PrivateTmp ||
+		p.ProtectSystem != "" || len(p.ReadOnlyPaths) > 0 || len(p.ReadWritePaths) > 0 ||
+		p.ProtectHome != "" || len(p.InaccessiblePaths) > 0 ||
+		p.ProtectProc != "" || p.ProcSubset != "" ||
+		len(p.BindPaths) > 0 || len(p.BindReadOnlyPaths) > 0 ||
+		len(p.TemporaryFileSystem) > 0
 }
 
 // wrapWithRunner returns a new argv that invokes slinit-runner with
@@ -500,6 +504,27 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	for _, rw := range p.ReadWritePaths {
 		args = append(args, "--read-write-path="+rw)
+	}
+	if p.ProtectHome != "" {
+		args = append(args, "--protect-home="+p.ProtectHome)
+	}
+	for _, ip := range p.InaccessiblePaths {
+		args = append(args, "--inaccessible-path="+ip)
+	}
+	if p.ProtectProc != "" {
+		args = append(args, "--protect-proc="+p.ProtectProc)
+	}
+	if p.ProcSubset != "" {
+		args = append(args, "--proc-subset="+p.ProcSubset)
+	}
+	for _, b := range p.BindPaths {
+		args = append(args, "--bind-path="+b)
+	}
+	for _, b := range p.BindReadOnlyPaths {
+		args = append(args, "--bind-ro-path="+b)
+	}
+	for _, t := range p.TemporaryFileSystem {
+		args = append(args, "--tmpfs-path="+t)
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)

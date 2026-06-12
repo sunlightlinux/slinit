@@ -117,15 +117,16 @@ func TestSandboxFlowsToRecord(t *testing.T) {
 	if !rec.SandboxActive() {
 		t.Fatal("SandboxActive() should be true")
 	}
-	pt, ps, ro, rw := rec.Sandbox()
-	if !pt || ps != "yes" {
-		t.Errorf("Sandbox basics = (pt=%v, ps=%q), want (true, yes)", pt, ps)
+	cfg := rec.Sandbox()
+	if !cfg.PrivateTmp || cfg.ProtectSystem != "yes" {
+		t.Errorf("Sandbox basics = (pt=%v, ps=%q), want (true, yes)",
+			cfg.PrivateTmp, cfg.ProtectSystem)
 	}
-	if !equalStrings(ro, []string{"/usr/local"}) {
-		t.Errorf("ro = %v", ro)
+	if !equalStrings(cfg.ReadOnlyPaths, []string{"/usr/local"}) {
+		t.Errorf("ro = %v", cfg.ReadOnlyPaths)
 	}
-	if !equalStrings(rw, []string{"/var/lib/boxed"}) {
-		t.Errorf("rw = %v", rw)
+	if !equalStrings(cfg.ReadWritePaths, []string{"/var/lib/boxed"}) {
+		t.Errorf("rw = %v", cfg.ReadWritePaths)
 	}
 	// CLONE_NEWNS must be auto-implied so the runner sees a fresh
 	// mount namespace; without it the bind/remount(2) operations
@@ -156,6 +157,126 @@ func TestSandboxIdleNoNamespace(t *testing.T) {
 	}
 	if rec.Cloneflags()&syscall.CLONE_NEWNS != 0 {
 		t.Errorf("CLONE_NEWNS should not be set (cloneflags=0x%x)", rec.Cloneflags())
+	}
+}
+
+// TestParseSandboxExpansion covers every #3b stanza in a single
+// realistic service description.
+func TestParseSandboxExpansion(t *testing.T) {
+	input := `type = process
+command = /usr/bin/svc
+protect-home = read-only
+inaccessible-paths = /opt/secret /var/secret
+protect-proc = invisible
+proc-subset = pid
+bind-paths = /var/data /host/in:/svc/in
+bind-read-only-paths = /etc/svc-config:/etc/config
+temporary-filesystem = /run/svc /tmp/scratch:size=64m,mode=0700
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test-file")
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if desc.ProtectHome != "read-only" {
+		t.Errorf("ProtectHome = %q", desc.ProtectHome)
+	}
+	if !equalStrings(desc.InaccessiblePaths, []string{"/opt/secret", "/var/secret"}) {
+		t.Errorf("InaccessiblePaths = %v", desc.InaccessiblePaths)
+	}
+	if desc.ProtectProc != "invisible" {
+		t.Errorf("ProtectProc = %q", desc.ProtectProc)
+	}
+	if desc.ProcSubset != "pid" {
+		t.Errorf("ProcSubset = %q", desc.ProcSubset)
+	}
+	// Single-arg bind expands to "src:src"; src:dst is preserved.
+	wantBind := []string{"/var/data:/var/data", "/host/in:/svc/in"}
+	if !equalStrings(desc.BindPaths, wantBind) {
+		t.Errorf("BindPaths = %v, want %v", desc.BindPaths, wantBind)
+	}
+	wantBindRO := []string{"/etc/svc-config:/etc/config"}
+	if !equalStrings(desc.BindReadOnlyPaths, wantBindRO) {
+		t.Errorf("BindReadOnlyPaths = %v, want %v", desc.BindReadOnlyPaths, wantBindRO)
+	}
+	// tmpfs entries preserve the optional ":options" suffix verbatim.
+	wantTmpfs := []string{"/run/svc", "/tmp/scratch:size=64m,mode=0700"}
+	if !equalStrings(desc.TemporaryFileSystem, wantTmpfs) {
+		t.Errorf("TemporaryFileSystem = %v, want %v", desc.TemporaryFileSystem, wantTmpfs)
+	}
+}
+
+// TestParseProtectHomeLevels covers the four accepted modes (with their
+// synonyms) plus rejection of an unknown value.
+func TestParseProtectHomeLevels(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"yes", "yes"}, {"true", "yes"},
+		{"no", ""}, {"off", ""}, {"", ""},
+		{"read-only", "read-only"}, {"ro", "read-only"},
+		{"tmpfs", "tmpfs"},
+	} {
+		input := "type = process\ncommand = /bin/true\nprotect-home = " + c.in + "\n"
+		desc, err := Parse(strings.NewReader(input), "svc", "test-file")
+		if err != nil {
+			t.Errorf("level %q: %v", c.in, err)
+			continue
+		}
+		if desc.ProtectHome != c.want {
+			t.Errorf("level %q → %q, want %q", c.in, desc.ProtectHome, c.want)
+		}
+	}
+	bad := "type = process\ncommand = /bin/true\nprotect-home = paranoid\n"
+	if _, err := Parse(strings.NewReader(bad), "svc", "test-file"); err == nil {
+		t.Fatal("expected error for unknown protect-home mode")
+	}
+}
+
+// TestParseBindPathsRejectsBadPath ensures src and dst are both
+// validated — a traversal in dst is just as bad as in src.
+func TestParseBindPathsRejectsBadPath(t *testing.T) {
+	cases := []string{
+		"bind-paths = relative/path\n",
+		"bind-paths = /etc/../escape:/dst\n",
+		"bind-paths = /src:/etc/../escape\n",
+		"bind-paths = /src:relative\n",
+	}
+	for _, line := range cases {
+		input := "type = process\ncommand = /bin/true\n" + line
+		if _, err := Parse(strings.NewReader(input), "svc", "test-file"); err == nil {
+			t.Errorf("expected error for %q", line)
+		}
+	}
+}
+
+// TestSandboxExpansionFlowsToRecord ensures the #3b fields reach the
+// ServiceRecord and trigger CLONE_NEWNS via SandboxConfig.Active().
+func TestSandboxExpansionFlowsToRecord(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceFile(t, dir, "boxed-ext",
+		"type = process\ncommand = /usr/bin/svc\n"+
+			"protect-home = tmpfs\nbind-paths = /var/data\n"+
+			"temporary-filesystem = /run/svc\n")
+
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+
+	svc, err := loader.LoadService("boxed-ext")
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	rec := svc.Record()
+	cfg := rec.Sandbox()
+	if cfg.ProtectHome != "tmpfs" {
+		t.Errorf("ProtectHome = %q", cfg.ProtectHome)
+	}
+	if !equalStrings(cfg.BindPaths, []string{"/var/data:/var/data"}) {
+		t.Errorf("BindPaths = %v", cfg.BindPaths)
+	}
+	if !equalStrings(cfg.TemporaryFileSystem, []string{"/run/svc"}) {
+		t.Errorf("TemporaryFileSystem = %v", cfg.TemporaryFileSystem)
+	}
+	if rec.Cloneflags()&syscall.CLONE_NEWNS == 0 {
+		t.Error("CLONE_NEWNS not auto-implied for #3b sandbox")
 	}
 }
 
