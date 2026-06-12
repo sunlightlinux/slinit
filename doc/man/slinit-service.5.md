@@ -489,6 +489,46 @@ before exec'ing the service. The host filesystem is untouched.
     Repeatable with `+=`. Equivalent to systemd's
     **TemporaryFileSystem=**.
 
+## SECCOMP FILTER (Linux)
+
+systemd-style seccomp-bpf filter installed in the child task just
+before exec. Setting any stanza below auto-implies
+**PR_SET_NO_NEW_PRIVS**, which the kernel requires for a non-root
+seccomp install. The runner compiles the resolved list into BPF via
+the internal **seccomp** package and installs it via the
+**seccomp**(2) syscall; an install failure aborts the start.
+
+**system-call-filter**=*item*...
+:   Each *item* is one of: a syscall name (e.g. *openat*), a curated
+    group token (e.g. *@system-service*), or a leading **~** prefix
+    *only on the first item* to switch from allowlist (default) to
+    denylist mode. The list is composable with `+=` across multiple
+    lines. Unknown syscall names or groups are rejected at parse time.
+    Equivalent to systemd's **SystemCallFilter=**.
+    Predefined groups: *@system-service*, *@privileged*, *@network-io*,
+    *@file-system*, *@process*, *@clock*, *@debug*, *@ipc*, *@mount*,
+    *@raw-io*, *@reboot*, *@swap*.
+
+**system-call-architectures**=*name*...
+:   Architectures the filter accepts: *native* (default — the running
+    arch), *x86-64* / *amd64*, *x86* / *i386*, *arm64* / *aarch64*,
+    *arm*. Syscalls issued from any other architecture take the kill
+    action, mirroring systemd's **SystemCallArchitectures=**.
+
+**system-call-error-number**=*kill*|*log*|*trap*|*errno-name*|*errno-number*
+:   Action for syscalls that do NOT match an allow entry (or DO match
+    a deny entry). *kill* (default) sends **SECCOMP_RET_KILL_PROCESS**;
+    *log* / *trap* use the corresponding seccomp returns; an errno
+    name (e.g. *EPERM*) or numeric value (1..4095) returns
+    **SECCOMP_RET_ERRNO** with that value. Equivalent to systemd's
+    **SystemCallErrorNumber=**.
+
+**system-call-log**=*item*...
+:   Syscalls (names or *@group* tokens) that always trigger
+    **SECCOMP_RET_LOG** independent of the main filter. Useful for
+    observing a process before tightening the filter. Repeatable with
+    `+=`. Equivalent to systemd's **SystemCallLog=**.
+
 ## NAMESPACES (Linux)
 
 **namespace-pid**=*yes*|*no*, **namespace-mount**=*yes*|*no*,

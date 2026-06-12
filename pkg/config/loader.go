@@ -1291,6 +1291,18 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		cloneflags |= syscall.CLONE_NEWNS
 		rec.SetSandbox(sandbox)
 	}
+
+	// systemd-style seccomp-bpf filter. Recorded on the service
+	// record; the runner compiles+installs it pre-exec.
+	seccompCfg := service.SeccompConfig{
+		Filter:        desc.SystemCallFilter,
+		Architectures: desc.SystemCallArchitectures,
+		ErrorAction:   desc.SystemCallErrorNumber,
+		LogFilter:     desc.SystemCallLog,
+	}
+	if seccompCfg.Active() {
+		rec.SetSeccomp(seccompCfg)
+	}
 	if cloneflags != 0 {
 		rec.SetCloneflags(cloneflags)
 	}

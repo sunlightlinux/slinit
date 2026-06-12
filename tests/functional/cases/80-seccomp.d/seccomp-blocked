@@ -1,0 +1,17 @@
+type = process
+depends-on: system-init
+# Deny list: ptrace must return EPERM. The script reports whether the
+# syscall was blocked into a witness file. /usr/bin/strace is a safe
+# probe since it issues ptrace immediately; if strace itself isn't
+# available the script falls back to checking that mount(2) is blocked
+# via the same denylist.
+system-call-filter = ~ptrace mount
+system-call-error-number = EPERM
+command = /bin/sh -c "set -e; \
+if strace -f /bin/true 2>/tmp/seccomp-strace-err; then result=ptrace-allowed; \
+else \
+  if grep -q 'Operation not permitted\\|EPERM' /tmp/seccomp-strace-err 2>/dev/null; then result=ptrace-blocked; \
+  else result=strace-unavailable; fi; \
+fi; \
+echo $result > /tmp/seccomp-blocked-result; \
+exec sleep 600"
