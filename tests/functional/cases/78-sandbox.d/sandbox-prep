@@ -1,7 +1,12 @@
 type = scripted
 depends-on: system-init
-# Pre-create host directories that the sandbox bind-mounts onto.
-# read-write-paths and bind-paths both bind a host path into the
-# sandbox view, so the source must exist when the runner mounts.
-command = /bin/sh -c "mkdir -p /var/tmp/sandbox-rw"
+# Pre-create host directory bind-mounted by read-write-paths.
+# The source must exist before the runner does the bind; the script
+# inside the sandbox can't help — its mkdir runs in the namespace
+# after the mount layout is already set.
+#
+# Path is under /run (not /var/tmp) because the sandbox-svc enables
+# private-tmp, which replaces /var/tmp with a fresh tmpfs and would
+# hide anything mkdir'd here.
+command = /bin/sh -c "mkdir -p /run/sandbox-rw"
 stop-command = /bin/true

@@ -6,13 +6,15 @@
 
 wait_for_service "sandbox-svc" "STARTED" 15
 
-# /var/tmp/sandbox-rw is a read-write-path so the file should be
-# visible on the host.
-[ -f /var/tmp/sandbox-rw/marker ] && rw=yes || rw=no
+# /run/sandbox-rw is a read-write-path so the file should be
+# visible on the host. We use /run (not /var/tmp) because the
+# probe service also enables private-tmp, which replaces
+# /var/tmp inside the sandbox with a fresh tmpfs.
+[ -f /run/sandbox-rw/marker ] && rw=yes || rw=no
 assert_eq "$rw" "yes" "read-write-path visible to host"
 
 # The probe's result tells us whether /etc was blocked.
-result=$(cat /var/tmp/sandbox-rw/result 2>/dev/null)
+result=$(cat /run/sandbox-rw/result 2>/dev/null)
 assert_eq "$result" "etc-protected" "read-only-paths blocks /etc writes"
 
 # Private-tmp: the file the service dropped in its private /tmp must NOT
