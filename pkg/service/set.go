@@ -99,6 +99,13 @@ type ServiceSet struct {
 	OnServiceLoaded   func(svc Service)
 	OnServiceUnloaded func(svc Service)
 
+	// OnSystemAction is wired by main to the event loop's shutdown
+	// initiator. It fires when a service's configured failure-action /
+	// success-action triggers a system-level transition (reboot,
+	// poweroff, halt, supervisor exit). Keeping it a callback avoids
+	// pulling pkg/eventloop into pkg/service.
+	OnSystemAction func(action SystemAction, rebootArg string)
+
 	// Global daemon-level environment (from --env-file/-e)
 	// Protected by envMu for concurrent access from control socket goroutines.
 	// globalEnvVer is bumped on every mutation; readers cache (snapshot, ver)

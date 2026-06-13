@@ -319,6 +319,47 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
 :   Rate-limit: more than *N* failures inside this window puts the
     service into the *failed* state.
 
+## SYSTEM ACTIONS (appliance basics)
+
+When a service reaches STOPPED, slinit can optionally trigger a
+system-level transition depending on whether the stop was a failure
+or a clean finish. Operator-issued stops (**slinitctl stop**) never
+trigger either action.
+
+**failure-action**=*none*|*reboot*|*poweroff*|*halt*|*exit*
+:   Action when the service ends in a failure state: start failed,
+    process exited non-zero / on a non-administrative signal, the
+    restart limit was exhausted, or a start-time timeout fired.
+
+**success-action**=*none*|*reboot*|*poweroff*|*halt*|*exit*
+:   Action when the service finishes cleanly: the process exited 0
+    after reaching *started*, and no auto-restart is configured.
+    Mostly useful for oneshot scripted services that drive a state
+    transition the operator wants the whole system to follow.
+
+**reboot-argument**=*string*
+:   Argument forwarded to **reboot**(2) when the chosen action is
+    *reboot*. Currently parsed and logged; kernel handoff via
+    LINUX_REBOOT_CMD_RESTART2 is a follow-up.
+
+The values map onto the same shutdown machinery used by
+**slinitctl shutdown**: *reboot* / *poweroff* / *halt* go through
+**InitiateShutdown** with the corresponding type. *exit* terminates
+slinit itself when it is running as a user/container supervisor;
+in PID 1 mode it is logged and ignored (the kernel would panic on
+PID 1 exit).
+
+Example — appliance that reboots when a critical service fails:
+
+    failure-action = reboot
+
+Example — boot-time provisioning oneshot that triggers a reboot to
+apply OS-level changes:
+
+    type           = scripted
+    command        = /sbin/apply-update
+    success-action = reboot
+
 ## LOGGING
 
 **logfile**=*path*

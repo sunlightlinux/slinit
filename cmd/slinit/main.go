@@ -768,6 +768,30 @@ func main() {
 		ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
 			loop.InitiateShutdown(st)
 		}
+
+		// Per-service failure-action / success-action: route the
+		// requested system action through the same shutdown path
+		// operators trigger from slinitctl. ActionExit terminates
+		// slinit itself — only sensible in user/container mode where
+		// PID 1 abandonment isn't a kernel panic; in PID1 mode we
+		// downgrade it to a warning to keep the system bootable.
+		// rebootArg is parsed and stored per service for diagnostics;
+		// wiring it through LINUX_REBOOT_CMD_RESTART2 is a follow-up.
+		serviceSet.OnSystemAction = func(act service.SystemAction, rebootArg string) {
+			if rebootArg != "" {
+				logger.Info("system-action reboot-argument=%q (not yet forwarded to reboot(2))", rebootArg)
+			}
+			if act == service.ActionExit {
+				if isPID1 {
+					logger.Error("ignoring failure-action=exit: cannot exit as PID 1")
+					return
+				}
+				logger.Info("failure-action=exit: terminating slinit")
+				loop.InitiateShutdown(service.ShutdownRemain)
+				return
+			}
+			loop.InitiateShutdown(act.AsShutdownType())
+		}
 		ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool) {
 			if cancelled {
 				shutdown.WallShutdownCancelled(st, logger)
