@@ -1175,6 +1175,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetRuntimeMax(desc.RuntimeMaxSec)
 	rec.SetOOMPolicy(desc.OOMPolicy)
 	rec.SetCredentials(desc.Credentials)
+	rec.SetDynamicUser(desc.DynamicUser)
 	if len(desc.ExtraCommands) > 0 {
 		rec.SetExtraCommands(desc.ExtraCommands)
 	}

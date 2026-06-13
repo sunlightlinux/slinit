@@ -159,6 +159,21 @@ instance, with *$1* substitution still in effect.
 **run-as**=*user*[:*group*]
 :   Drop privileges to *user* (and optionally *group*) before exec.
 
+**dynamic-user**=*yes*|*no*
+:   When *yes*, slinit allocates a transient UID/GID from a pool
+    (default range 61184..65519, matching systemd) at every
+    **BringUp** and releases it in **Stopped**. The UID exists only
+    in slinit's memory — there is no */etc/passwd* entry. Per-service
+    isolation features (**runtime-directory** chown, **credentials**
+    file ownership) all see the same transient identity.
+
+    The pool is per-daemon and does not survive a slinit restart —
+    dynamic-user is an isolation feature, not a stable identity.
+    Conflicts with **run-as**: at runtime the dynamic UID wins.
+
+    Use for short-lived workers, sandboxed scripts, and anything
+    that needs a non-zero UID but doesn't merit a permanent account.
+
 **chroot**=*path*
 :   `chroot()` into *path* before exec.
 

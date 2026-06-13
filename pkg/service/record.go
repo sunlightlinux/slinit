@@ -333,6 +333,14 @@ type ServiceRecord struct {
 	// through $CREDENTIALS_DIRECTORY. Set up in StartProcess (parent
 	// side) and torn down in Stopped().
 	credentials []process.CredentialSource
+
+	// dynamic-user (systemd #13): allocate a transient UID/GID from
+	// the set's UIDPool at BringUp, release it in Stopped(). The UID
+	// exists only in-process — no /etc/passwd entry. dynamicUID == 0
+	// means either disabled or "not yet allocated" (use dynamicUser
+	// to disambiguate).
+	dynamicUser bool
+	dynamicUID  uint32
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -447,6 +455,45 @@ func (sr *ServiceRecord) SetCredentials(c []process.CredentialSource) {
 // Credentials returns the configured credential sources for
 // introspection / tests.
 func (sr *ServiceRecord) Credentials() []process.CredentialSource { return sr.credentials }
+
+// SetDynamicUser enables/disables the dynamic-user feature for this
+// service. When enabled, BringUp allocates a transient UID from the
+// set's pool and Stopped() releases it.
+func (sr *ServiceRecord) SetDynamicUser(v bool) { sr.dynamicUser = v }
+
+// DynamicUser reports whether dynamic-user is enabled.
+func (sr *ServiceRecord) DynamicUser() bool { return sr.dynamicUser }
+
+// DynamicUID returns the currently allocated transient UID, or 0 if
+// none. Concrete services check this in BringUp; the record exposes it
+// for introspection and tests.
+func (sr *ServiceRecord) DynamicUID() uint32 { return sr.dynamicUID }
+
+// allocateDynamicUID reserves a UID from the set's pool and records it
+// on the record. No-op when dynamic-user is disabled or a UID is
+// already allocated (idempotent across restart attempts within the
+// same start cycle).
+func (sr *ServiceRecord) allocateDynamicUID() error {
+	if !sr.dynamicUser || sr.dynamicUID != 0 {
+		return nil
+	}
+	uid, err := sr.services.UIDPool().Allocate(sr.serviceName)
+	if err != nil {
+		return err
+	}
+	sr.dynamicUID = uid
+	return nil
+}
+
+// releaseDynamicUID returns the transient UID to the pool (no-op when
+// none was allocated). Called from Stopped().
+func (sr *ServiceRecord) releaseDynamicUID() {
+	if sr.dynamicUID == 0 {
+		return
+	}
+	sr.services.UIDPool().Release(sr.dynamicUID)
+	sr.dynamicUID = 0
+}
 
 // armRuntimeMaxTimer schedules a stop request runtimeMax after now.
 // Called from Started(); the AfterFunc runs in its own goroutine so it
@@ -1819,6 +1866,9 @@ func (sr *ServiceRecord) Stopped() {
 				"Service '%s': credentials cleanup: %v", sr.serviceName, err)
 		}
 	}
+
+	// Release the dynamic-user transient UID (no-op when disabled).
+	sr.releaseDynamicUID()
 
 	if sr.haveConsole {
 		sr.releaseConsole()

@@ -123,6 +123,21 @@ func (s *BGProcessService) SetEnvFile(path string)          { s.envFile = path }
 func (s *BGProcessService) SetPIDFile(path string)          { s.pidFile = path }
 func (s *BGProcessService) GetPIDFile() string              { return s.pidFile }
 func (s *BGProcessService) SetRunAs(uid, gid uint32)        { s.runAsUID = uid; s.runAsGID = gid }
+
+// effectiveRunAsUID / GID prefer the dynamic-user transient UID when
+// allocated, falling back to the configured run-as values.
+func (s *BGProcessService) effectiveRunAsUID() uint32 {
+	if uid := s.Record().DynamicUID(); uid != 0 {
+		return uid
+	}
+	return s.runAsUID
+}
+func (s *BGProcessService) effectiveRunAsGID() uint32 {
+	if uid := s.Record().DynamicUID(); uid != 0 {
+		return uid
+	}
+	return s.runAsGID
+}
 func (s *BGProcessService) SetStartTimeout(d time.Duration) { s.startTimeout = d }
 func (s *BGProcessService) SetStopTimeout(d time.Duration)  { s.stopTimeout = d }
 func (s *BGProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d }
@@ -228,6 +243,12 @@ func (s *BGProcessService) BringUp() bool {
 		return false
 	}
 
+	// Dynamic-user allocation (#13).
+	if err := s.Record().allocateDynamicUID(); err != nil {
+		s.services.logger.Error("Service '%s': dynamic-user: %v", s.serviceName, err)
+		return false
+	}
+
 	// Evaluate systemd-style start preconditions before doing any work.
 	switch outcome, reason := s.CheckPredicates(); outcome {
 	case PredFailed:
@@ -319,8 +340,8 @@ func (s *BGProcessService) BringUp() bool {
 		Env:               s.buildEnv(),
 		TermSignal:        s.termSignal,
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
-		RunAsUID:          s.runAsUID,
-		RunAsGID:          s.runAsGID,
+		RunAsUID:          s.effectiveRunAsUID(),
+		RunAsGID:          s.effectiveRunAsGID(),
 		OutputPipe:        outputPipe,
 		InputPipe:         inputPipe,
 	}

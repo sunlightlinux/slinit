@@ -121,6 +121,10 @@ type ServiceSet struct {
 	// Parallel start limiter (from --parallel-start-limit)
 	startLimiter *StartLimiter
 
+	// Dynamic-user UID pool. Lazily created on first dynamic-user=yes
+	// service so set-ups that never use the feature pay nothing.
+	uidPool *UIDPool
+
 	// Shared log multiplexers: logger service name → mux
 	sharedLogMuxes map[string]*SharedLogMux
 
@@ -618,6 +622,16 @@ func (ss *ServiceSet) SetStartLimiter(max int, slowThreshold time.Duration) {
 
 // StartLimiter returns the start limiter, or nil if not configured.
 func (ss *ServiceSet) GetStartLimiter() *StartLimiter { return ss.startLimiter }
+
+// UIDPool returns the dynamic-user UID pool, creating one with the
+// systemd-style range (61184..65519) on first call. Concurrent callers
+// race the lazy init under queueMu; the loser sees the winner's pool.
+func (ss *ServiceSet) UIDPool() *UIDPool {
+	if ss.uidPool == nil {
+		ss.uidPool = NewUIDPool(0, 0)
+	}
+	return ss.uidPool
+}
 
 // GetOrCreateSharedLogMux returns the shared log mux for the given logger service,
 // creating one if it doesn't exist yet.

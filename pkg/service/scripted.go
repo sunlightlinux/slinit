@@ -96,6 +96,23 @@ func (s *ScriptedService) SetRunAs(uid, gid uint32) {
 	s.runAsGID = gid
 }
 
+// effectiveRunAsUID returns the dynamic-user UID when allocated,
+// otherwise the configured runAsUID.
+func (s *ScriptedService) effectiveRunAsUID() uint32 {
+	if uid := s.Record().DynamicUID(); uid != 0 {
+		return uid
+	}
+	return s.runAsUID
+}
+
+// effectiveRunAsGID mirrors effectiveRunAsUID for the GID.
+func (s *ScriptedService) effectiveRunAsGID() uint32 {
+	if uid := s.Record().DynamicUID(); uid != 0 {
+		return uid
+	}
+	return s.runAsGID
+}
+
 // SetLogType sets the log output type.
 func (s *ScriptedService) SetLogType(lt LogType) { s.logType = lt }
 
@@ -154,6 +171,13 @@ func (s *ScriptedService) BringUp() bool {
 		// No start command = started immediately (like internal)
 		s.Started()
 		return true
+	}
+
+	// Dynamic-user allocation (#13). Mirrors ProcessService.BringUp:
+	// happens before any UID-dependent setup.
+	if err := s.Record().allocateDynamicUID(); err != nil {
+		s.services.logger.Error("Service '%s': dynamic-user: %v", s.serviceName, err)
+		return false
 	}
 
 	// Evaluate systemd-style start preconditions before doing any work.
@@ -238,8 +262,8 @@ func (s *ScriptedService) BringUp() bool {
 		Command:    s.startCommand,
 		WorkingDir: s.workingDir,
 		Env:        s.Record().BuildFullEnv(),
-		RunAsUID:   s.runAsUID,
-		RunAsGID:   s.runAsGID,
+		RunAsUID:   s.effectiveRunAsUID(),
+		RunAsGID:   s.effectiveRunAsGID(),
 		OutputPipe: outputPipe,
 		InputPipe:  inputPipe,
 	}
@@ -298,8 +322,8 @@ func (s *ScriptedService) BringDown() {
 		Command:    s.stopCommand,
 		WorkingDir: s.workingDir,
 		Env:        s.Record().BuildFullEnv(),
-		RunAsUID:   s.runAsUID,
-		RunAsGID:   s.runAsGID,
+		RunAsUID:   s.effectiveRunAsUID(),
+		RunAsGID:   s.effectiveRunAsGID(),
 	}
 	s.Record().ApplyProcessAttrs(&params)
 
