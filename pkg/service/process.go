@@ -33,6 +33,8 @@ type ProcessService struct {
 	command            []string
 	stopCommand        []string
 	finishCommand      []string            // runs after process exits (before restart decision)
+	preStartCommand    []string            // runs before fork+exec; non-zero exit fails the start
+	postStartCommand   []string            // runs after Started(); non-zero exit only logs
 	readyCheckCommand  []string            // polls to verify service readiness
 	readyCheckInterval time.Duration       // polling interval (default 1s)
 	preStopHook        []string            // runs before SIGTERM in BringDown
@@ -181,6 +183,16 @@ func (s *ProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
 
 // SetFinishCommand sets the finish command (runs after process exits).
 func (s *ProcessService) SetFinishCommand(cmd []string) { s.finishCommand = cmd }
+
+// SetPreStartCommand records a command to run synchronously before the
+// main process is forked. A non-zero exit fails the start (systemd's
+// ExecStartPre= semantics).
+func (s *ProcessService) SetPreStartCommand(cmd []string) { s.preStartCommand = cmd }
+
+// SetPostStartCommand records a command to run asynchronously after the
+// service has reached STARTED. A non-zero exit is logged but does not
+// fail the service (systemd's ExecStartPost= semantics).
+func (s *ProcessService) SetPostStartCommand(cmd []string) { s.postStartCommand = cmd }
 
 // SetReadyCheckCommand sets the ready-check command and optional interval.
 func (s *ProcessService) SetReadyCheckCommand(cmd []string, interval time.Duration) {
@@ -887,6 +899,18 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	// systemd-style ExecStartPre=: synchronous, non-zero exit fails
+	// the start. Runs after sandbox prep / required paths but before
+	// the main fork, so a failed pre-hook never leaves a half-started
+	// process behind.
+	if len(s.preStartCommand) > 0 {
+		if err := s.runHookCommand(s.preStartCommand, "pre-start-command"); err != nil {
+			s.services.logger.Error("Service '%s': pre-start-command failed: %v",
+				s.serviceName, err)
+			return false
+		}
+	}
+
 	if err := s.startProcess(); err != nil {
 		s.services.logger.Error("Service '%s': failed to start: %v", s.serviceName, err)
 		return false
@@ -897,7 +921,35 @@ func (s *ProcessService) BringUp() bool {
 	// the start timeout should be armed BEFORE startProcess() and cancelled
 	// inside startProcess() when readiness is confirmed.
 
+	// systemd-style ExecStartPost=: asynchronous, exit code is only
+	// logged. Runs in a goroutine so a slow hook doesn't block the
+	// scheduling loop.
+	if len(s.postStartCommand) > 0 {
+		go func() {
+			if err := s.runHookCommand(s.postStartCommand, "post-start-command"); err != nil {
+				s.services.logger.Error("Service '%s': post-start-command failed: %v",
+					s.serviceName, err)
+			}
+		}()
+	}
+
 	return true
+}
+
+// runHookCommand executes a one-shot hook (pre-start-command,
+// post-start-command) using the same working-dir / env / timeout as
+// finish-command. Synchronous; returns the exec.Cmd error.
+func (s *ProcessService) runHookCommand(cmd []string, label string) error {
+	if len(cmd) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultFinishTimeout)
+	defer cancel()
+	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	c.Dir = s.workingDir
+	c.Env = s.buildEnv()
+	s.services.logger.Info("Service '%s': running %s", s.serviceName, label)
+	return c.Run()
 }
 
 // BringDown stops the service process.

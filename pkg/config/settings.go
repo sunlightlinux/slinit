@@ -192,6 +192,8 @@ var KnownSettings = map[string]OperatorType{
 
 	// Runit-inspired features
 	"finish-command":       OpEquals | OpPlusEqual,
+	"pre-start-command":    OpEquals | OpPlusEqual,
+	"post-start-command":   OpEquals | OpPlusEqual,
 	"ready-check-command":  OpEquals | OpPlusEqual,
 	"ready-check-interval": OpEquals,
 	"pre-stop-hook":        OpEquals | OpPlusEqual,
