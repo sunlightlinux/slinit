@@ -849,6 +849,19 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	// Evaluate systemd-style start preconditions. assert-* failure aborts
+	// the start; condition-* failure short-circuits to STARTED with no
+	// process so dependents see a satisfied dep.
+	switch outcome, reason := s.CheckPredicates(); outcome {
+	case PredFailed:
+		s.services.logger.Error("Service '%s': %s", s.serviceName, reason)
+		return false
+	case PredSkip:
+		s.services.logger.Info("Service '%s': skipped (%s)", s.serviceName, reason)
+		s.markSkippedStart()
+		return true
+	}
+
 	// Fail-fast pre-start check: required_files / required_dirs must exist
 	// before we even attempt fork/exec. Produces a clear error instead of
 	// a cryptic ENOENT crash from the child.
