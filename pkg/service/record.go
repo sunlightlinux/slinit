@@ -306,6 +306,12 @@ type ServiceRecord struct {
 	successAction   SystemAction
 	rebootArgument  string
 
+	// restartLimitExhausted is set by doStop when CheckRestart denies a
+	// wanted auto-restart. Stopped() reads it to override willRestart
+	// and route the service into the FAILED stable state instead of
+	// re-entering initiateStart.
+	restartLimitExhausted bool
+
 	// runtimeMax is a hard cap on total time the service may spend in
 	// STARTED. A zero value disables the cap (the default). When the
 	// timer fires the service is asked to stop the same way an operator
@@ -1788,6 +1794,17 @@ func (sr *ServiceRecord) Stopped() {
 	sr.forceStop = false
 
 	willRestart := sr.desired.Load() == StateStarted && !sr.pinnedStopped
+	// restart-limit-count exhausted overrides willRestart: settle into
+	// the FAILED stable state instead of trying initiateStart again.
+	if sr.restartLimitExhausted {
+		willRestart = false
+		sr.startFailed = true
+		sr.desired.Store(StateStopped)
+		sr.restartLimitExhausted = false
+		sr.services.logger.Error(
+			"Service '%s': restart-limit-count exhausted, marking failed",
+			sr.serviceName)
+	}
 
 	sr.cleanupServiceDirs(willRestart)
 
@@ -1948,9 +1965,16 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		exitStatus := sr.self.GetExitStatus()
 		normal := sr.IsNormalExit(exitStatus)
 
+		// Track whether auto-restart was asked for; if CheckRestart
+		// denies it (rate-limit exhausted) we land in the
+		// restart-limit-exhausted branch below and treat the service
+		// as failed instead of looping.
+		wantedRestart := false
+
 		// Check for auto-restart
 		if sr.autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
 			if !normal {
+				wantedRestart = true
 				forRestart = sr.self.CheckRestart()
 				sr.inAutoRestart = forRestart
 			}
@@ -1962,15 +1986,25 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 					if sig != syscall.SIGHUP && sig != syscall.SIGINT &&
 						sig != syscall.SIGUSR1 && sig != syscall.SIGUSR2 &&
 						sig != syscall.SIGTERM {
+						wantedRestart = true
 						forRestart = sr.self.CheckRestart()
 						sr.inAutoRestart = forRestart
 					}
 				} else if exitStatus.Exited() && exitStatus.ExitCode() != 0 {
+					wantedRestart = true
 					forRestart = sr.self.CheckRestart()
 					sr.inAutoRestart = forRestart
 				}
 			}
 		}
+
+		// Remember whether auto-restart was wanted but denied so the
+		// post-stop logic below can route the service into the FAILED
+		// state instead of letting it loop. Without this, Stopped() sees
+		// desired=Started and re-enters initiateStart, which resets
+		// startFailed=false and BringUp clears exitStatus={} — leaving
+		// slinitctl is-failed racy because it can sample mid-iteration.
+		sr.restartLimitExhausted = wantedRestart && !forRestart
 	}
 
 	// If we won't restart, release explicit activation
