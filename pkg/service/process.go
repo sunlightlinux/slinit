@@ -182,6 +182,27 @@ func NewProcessService(set *ServiceSet, name string) *ProcessService {
 // SetCommand sets the startup command.
 func (s *ProcessService) SetCommand(cmd []string) { s.command = cmd }
 
+// effectiveRunAsUID returns the dynamic-user UID when allocated,
+// otherwise the configured runAsUID. Called by startProcess so the
+// switch between static run-as and dynamic-user is transparent to
+// the rest of the exec path.
+func (s *ProcessService) effectiveRunAsUID() uint32 {
+	if uid := s.Record().DynamicUID(); uid != 0 {
+		return uid
+	}
+	return s.runAsUID
+}
+
+// effectiveRunAsGID mirrors effectiveRunAsUID for the GID. Dynamic
+// users reuse the UID as GID (matching systemd: one transient UID is
+// also a transient GID with the same value).
+func (s *ProcessService) effectiveRunAsGID() uint32 {
+	if uid := s.Record().DynamicUID(); uid != 0 {
+		return uid
+	}
+	return s.runAsGID
+}
+
 // SetStopCommand sets the stop command.
 func (s *ProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
 
@@ -889,6 +910,14 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	// Dynamic-user: allocate a transient UID/GID from the pool. This
+	// must happen before any UID-dependent setup (ServiceDirs chown,
+	// credentials chown) so they all see the same effective identity.
+	if err := s.Record().allocateDynamicUID(); err != nil {
+		s.services.logger.Error("Service '%s': dynamic-user: %v", s.serviceName, err)
+		return false
+	}
+
 	// Evaluate systemd-style start preconditions. assert-* failure aborts
 	// the start; condition-* failure short-circuits to STARTED with no
 	// process so dependents see a satisfied dep.
@@ -1387,8 +1416,8 @@ func (s *ProcessService) startProcess() error {
 		OnConsole:         s.Flags.RunsOnConsole || s.Flags.StartsOnConsole,
 		UnmaskSigint:      s.Flags.UnmaskIntr,
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
-		RunAsUID:          s.runAsUID,
-		RunAsGID:          s.runAsGID,
+		RunAsUID:          s.effectiveRunAsUID(),
+		RunAsGID:          s.effectiveRunAsGID(),
 		OutputPipe:        outputPipe,
 		ErrorPipe:         errorPipe,
 		InputPipe:         inputPipe,

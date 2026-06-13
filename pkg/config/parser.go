@@ -171,6 +171,11 @@ type ServiceDescription struct {
 	// Credentials
 	RunAs string
 
+	// DynamicUser allocates a transient UID/GID from the daemon's
+	// pool at every BringUp, released in Stopped(). Conflicts with
+	// run-as=: the loader rejects descriptions that set both.
+	DynamicUser bool
+
 	// Socket activation
 	SocketPath       string   // primary socket path (first socket-listen)
 	SocketPaths      []string // all socket-listen paths (for multiple sockets)
@@ -1584,6 +1589,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.WatchdogTimeout = d
 	case "run-as":
 		desc.RunAs = value
+	case "dynamic-user":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.DynamicUser = b
 
 	// Socket
 	case "socket-listen":
