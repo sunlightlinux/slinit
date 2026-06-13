@@ -159,6 +159,25 @@ instance, with *$1* substitution still in effect.
 **run-as**=*user*[:*group*]
 :   Drop privileges to *user* (and optionally *group*) before exec.
 
+**file-descriptor-store-max**=*N*
+:   Enable the systemd-style file-descriptor store. At BringUp slinit
+    creates a `$NOTIFY_SOCKET` (Unix datagram) at
+    `/run/slinit/notify/`*service*`.sock` owned by the run-as user.
+    The child can `sd_notify` packets like:
+
+        FDSTORE=1
+        FDNAME=upstream
+
+    with one or more fds attached via SCM_RIGHTS; slinit keeps up to
+    *N* of them. On the next BringUp the stored fds are prepended to
+    `LISTEN_FDS` (with their FDNAMEs in `LISTEN_FDNAMES`), so a
+    restart re-attaches the previous run's listening sockets without
+    dropping connections.
+
+    The store lives in slinit's memory — a daemon restart loses
+    everything, matching systemd. `0` (default) disables the
+    feature; an unconfigured service has no `$NOTIFY_SOCKET`.
+
 **dynamic-user**=*yes*|*no*
 :   When *yes*, slinit allocates a transient UID/GID from a pool
     (default range 61184..65519, matching systemd) at every

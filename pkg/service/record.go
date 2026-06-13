@@ -341,6 +341,15 @@ type ServiceRecord struct {
 	// to disambiguate).
 	dynamicUser bool
 	dynamicUID  uint32
+
+	// file-descriptor-store (systemd #14). When fdStoreMax > 0 a
+	// $NOTIFY_SOCKET is created at BringUp and the parent listens for
+	// sd_notify FDSTORE=1 messages. Stored fds are kept across
+	// restarts inside the daemon and prepended to the child's
+	// LISTEN_FDS on the next BringUp.
+	fdStoreMax int
+	fdStore    *process.FDStore
+	notifySock *process.NotifySocketListener
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -493,6 +502,72 @@ func (sr *ServiceRecord) releaseDynamicUID() {
 	}
 	sr.services.UIDPool().Release(sr.dynamicUID)
 	sr.dynamicUID = 0
+}
+
+// SetFDStoreMax configures the file-descriptor-store capacity for this
+// service. A value > 0 enables a $NOTIFY_SOCKET listener at BringUp.
+func (sr *ServiceRecord) SetFDStoreMax(n int) {
+	sr.fdStoreMax = n
+	if n > 0 && sr.fdStore == nil {
+		sr.fdStore = process.NewFDStore(n)
+	}
+}
+
+// FDStoreMax reports the configured capacity.
+func (sr *ServiceRecord) FDStoreMax() int { return sr.fdStoreMax }
+
+// FDStore returns the underlying store (nil when the feature is off).
+func (sr *ServiceRecord) FDStore() *process.FDStore { return sr.fdStore }
+
+// OnNotify implements process.NotifySocketHandler — the listener
+// goroutine calls it for every sd_notify packet. FDSTORE=1 messages
+// stash their attached fds; other messages are currently logged-only
+// (READY=1 is handled via the legacy pipe path in ProcessService).
+func (sr *ServiceRecord) OnNotify(msg process.NotifyMessage, fds []*os.File) {
+	if msg.FDStore && sr.fdStore != nil {
+		for _, f := range fds {
+			name := msg.FDName
+			if name == "" {
+				name = "stored"
+			}
+			if err := sr.fdStore.Add(process.FDStoreEntry{Name: name, File: f}); err != nil {
+				sr.services.logger.Error(
+					"Service '%s': fd-store rejected fd %s: %v",
+					sr.serviceName, f.Name(), err)
+			}
+		}
+		sr.services.logger.Info(
+			"Service '%s': fd-store accepted %d fd(s); store=%d/%d",
+			sr.serviceName, len(fds), sr.fdStore.Len(), sr.fdStoreMax)
+		return
+	}
+	if msg.Status != "" {
+		sr.services.logger.Info("Service '%s': status %q", sr.serviceName, msg.Status)
+	}
+}
+
+// setupNotifySocket creates the per-service $NOTIFY_SOCKET and starts
+// the listener. Called from BringUp when fdStoreMax > 0. The returned
+// path goes into the child's environment.
+func (sr *ServiceRecord) setupNotifySocket(uid, gid uint32) (string, error) {
+	if sr.notifySock != nil {
+		sr.notifySock.Stop()
+	}
+	l, err := process.NewNotifySocketListener(sr.serviceName, uid, gid)
+	if err != nil {
+		return "", err
+	}
+	sr.notifySock = l
+	l.Start(sr)
+	return l.Path(), nil
+}
+
+// teardownNotifySocket stops the listener if running.
+func (sr *ServiceRecord) teardownNotifySocket() {
+	if sr.notifySock != nil {
+		sr.notifySock.Stop()
+		sr.notifySock = nil
+	}
 }
 
 // armRuntimeMaxTimer schedules a stop request runtimeMax after now.
@@ -1869,6 +1944,12 @@ func (sr *ServiceRecord) Stopped() {
 
 	// Release the dynamic-user transient UID (no-op when disabled).
 	sr.releaseDynamicUID()
+
+	// Tear down the $NOTIFY_SOCKET listener (no-op when disabled).
+	// Stored fds are intentionally NOT closed: they survive until the
+	// next BringUp hands them off via LISTEN_FDS. Daemon-shutdown
+	// closes them via ServiceSet teardown.
+	sr.teardownNotifySocket()
 
 	if sr.haveConsole {
 		sr.releaseConsole()

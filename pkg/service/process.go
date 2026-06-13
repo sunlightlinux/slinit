@@ -203,6 +203,24 @@ func (s *ProcessService) effectiveRunAsGID() uint32 {
 	return s.runAsGID
 }
 
+// drainFDStore hands the previously stashed fds to the next BringUp.
+// Returns nil when fd-store is disabled — the safe default.
+func (s *ProcessService) drainFDStore() []process.FDStoreEntry {
+	if store := s.Record().FDStore(); store != nil {
+		return store.Drain()
+	}
+	return nil
+}
+
+// notifySocketPath returns the per-service $NOTIFY_SOCKET path, or ""
+// when fd-store / sd_notify is not configured for this service.
+func (s *ProcessService) notifySocketPath() string {
+	if l := s.Record().notifySock; l != nil {
+		return l.Path()
+	}
+	return ""
+}
+
 // SetStopCommand sets the stop command.
 func (s *ProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
 
@@ -918,6 +936,18 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	// fd-store setup: open $NOTIFY_SOCKET when the feature is enabled
+	// so the child can sd_notify FDSTORE=1 us back. The socket lives
+	// at /run/slinit/notify/<svc>.sock, owned by the run-as user.
+	if s.Record().FDStoreMax() > 0 {
+		path, err := s.Record().setupNotifySocket(s.effectiveRunAsUID(), s.effectiveRunAsGID())
+		if err != nil {
+			s.services.logger.Error("Service '%s': fd-store setup: %v", s.serviceName, err)
+			return false
+		}
+		_ = path // exported into ExecParams below
+	}
+
 	// Evaluate systemd-style start preconditions. assert-* failure aborts
 	// the start; condition-* failure short-circuits to STARTED with no
 	// process so dependents see a satisfied dep.
@@ -1426,6 +1456,8 @@ func (s *ProcessService) startProcess() error {
 		ExtraSocketFDs:    s.socketFDs,
 		ControlSocketFD:   csClientFD,
 		NotifyPipe:        notifyPipeWrite,
+		StoredFDs:         s.drainFDStore(),
+		NotifySocketPath:  s.notifySocketPath(),
 		ForceNotifyFD:     s.readyNotifyFD,
 		NotifyVar:         s.readyNotifyVar,
 		Chroot:            s.chroot,

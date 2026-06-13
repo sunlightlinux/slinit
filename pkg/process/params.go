@@ -263,6 +263,15 @@ type ExecParams struct {
 	ServiceName string
 	Credentials []CredentialSource
 
+	// File-descriptor-store handoff (#14). StoredFDs are prepended to
+	// the LISTEN_FDS sequence so a restart sees the previous run's
+	// listening sockets first; their FDNAMEs become LISTEN_FDNAMES.
+	// NotifySocketPath, if non-empty, is exported as $NOTIFY_SOCKET so
+	// the child can send sd_notify FDSTORE=1 packets back to the
+	// daemon.
+	StoredFDs        []FDStoreEntry
+	NotifySocketPath string
+
 	// DebugStop, when true, makes slinit-runner raise SIGSTOP on itself
 	// before exec so a developer can `gdb -p` the (pre-exec) process and
 	// `kill -CONT` it to proceed. Requires the runner wrap.

@@ -247,20 +247,54 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// so socket goes first. Readiness notification pipe follows.
 	var extraFdNullFiles []*os.File // /dev/null files to close after start
 
-	// Socket activation: pre-opened listening sockets starting at fd 3
+	// Socket activation: pre-opened listening sockets starting at fd 3.
+	// Order: fd-store handoffs first (so a restart re-attaches its old
+	// sockets at the same fd numbers), then SocketFD + extras.
+	listenNames := make([]string, 0, len(params.StoredFDs))
+	nFDs := 0
+	for _, e := range params.StoredFDs {
+		if e.File == nil {
+			continue
+		}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, e.File)
+		listenNames = append(listenNames, e.Name)
+		nFDs++
+	}
 	if params.SocketFD != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, params.SocketFD)
+		nFDs++
 		for _, extraFD := range params.ExtraSocketFDs {
 			cmd.ExtraFiles = append(cmd.ExtraFiles, extraFD)
+			nFDs++
 		}
-		nFDs := 1 + len(params.ExtraSocketFDs)
+	}
+	if nFDs > 0 {
 		listenEnv := fmt.Sprintf("LISTEN_FDS=%d", nFDs)
 		if cmd.Env == nil {
 			cmd.Env = append(baseEnv[:len(baseEnv):len(baseEnv)], listenEnv)
 		} else {
 			cmd.Env = append(cmd.Env, listenEnv)
 		}
+		// LISTEN_FDNAMES is only set when we have names to advertise
+		// (fd-store entries always carry one; socket-listen sockets
+		// don't, so we fill blanks for them).
+		if len(listenNames) > 0 {
+			for len(listenNames) < nFDs {
+				listenNames = append(listenNames, "")
+			}
+			cmd.Env = append(cmd.Env, "LISTEN_FDNAMES="+strings.Join(listenNames, ":"))
+		}
 		// LISTEN_PID will be set after cmd.Start() (see below)
+	}
+
+	// $NOTIFY_SOCKET for sd_notify FDSTORE=1 messages.
+	if params.NotifySocketPath != "" {
+		notifyEnv := "NOTIFY_SOCKET=" + params.NotifySocketPath
+		if cmd.Env == nil {
+			cmd.Env = append(baseEnv[:len(baseEnv):len(baseEnv)], notifyEnv)
+		} else {
+			cmd.Env = append(cmd.Env, notifyEnv)
+		}
 	}
 
 	// Readiness notification pipe
