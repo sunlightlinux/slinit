@@ -264,6 +264,15 @@ type ServiceDescription struct {
 	CronDelay    time.Duration // initial delay before first run
 	CronOnError  string        // "continue" (default) or "stop"
 
+	// Calendar-mode scheduling (systemd OnCalendar=-style). When set,
+	// CronInterval/CronDelay are ignored and fire times come from the
+	// CalendarSpec. RandomizedDelay adds uniform jitter [0,d) to each
+	// fire. Persistent triggers a catch-up run when the daemon misses
+	// a scheduled fire (e.g. across reboot — currently in-memory only).
+	CronCalendar        *service.CalendarSpec
+	CronRandomizedDelay time.Duration
+	CronPersistent      bool
+
 	// Continuous health checking (post-STARTED, OpenRC supervise-daemon inspired)
 	HealthCheckCommand  []string      // command to run periodically (exit 0 = healthy)
 	HealthCheckInterval time.Duration // interval between checks (default 30s)
@@ -1149,6 +1158,27 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		default:
 			return fmt.Errorf("invalid cron-on-error: %q (must be 'continue' or 'stop')", value)
 		}
+	case "cron-calendar":
+		spec, err := service.ParseCalendar(value)
+		if err != nil {
+			return fmt.Errorf("cron-calendar: %w", err)
+		}
+		desc.CronCalendar = spec
+	case "cron-randomized-delay":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("cron-randomized-delay: %w", err)
+		}
+		if d < 0 {
+			return fmt.Errorf("cron-randomized-delay must be >= 0")
+		}
+		desc.CronRandomizedDelay = d
+	case "cron-persistent":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.CronPersistent = b
 
 	// Continuous health checking
 	case "healthcheck-command":

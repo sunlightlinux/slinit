@@ -257,10 +257,13 @@ var KnownSettings = map[string]OperatorType{
 	"vtty-scrollback": OpEquals, // scrollback buffer size in bytes
 
 	// Cron-like periodic tasks
-	"cron-command":  OpEquals | OpPlusEqual,
-	"cron-interval": OpEquals,
-	"cron-delay":    OpEquals,
-	"cron-on-error": OpEquals,
+	"cron-command":          OpEquals | OpPlusEqual,
+	"cron-interval":         OpEquals,
+	"cron-delay":            OpEquals,
+	"cron-on-error":         OpEquals,
+	"cron-calendar":         OpEquals,
+	"cron-randomized-delay": OpEquals,
+	"cron-persistent":       OpEquals,
 
 	// Continuous health checking
 	"healthcheck-command":      OpEquals | OpPlusEqual,

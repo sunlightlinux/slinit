@@ -993,11 +993,53 @@ watch; the service remains startable via `slinitctl start`.
 :   A sub-task that runs while the service is up.
 
 **cron-interval**=*duration*, **cron-delay**=*duration*
-:   Period and initial delay.
+:   Period and initial delay (interval mode).
 
 **cron-on-error**=*continue*|*stop*
 :   What to do when **cron-command** exits non-zero (default
     *continue*).
+
+**cron-calendar**=*expression*
+:   systemd-style **OnCalendar=** expression. When set, replaces the
+    interval scheduler — fire times come from the calendar.
+
+    Recognised forms:
+
+    - **Aliases:** *minutely*, *hourly*, *daily* / *midnight*,
+      *weekly*, *monthly*, *yearly* / *annually*.
+    - **Time only:** `HH:MM`, `HH:MM:SS`. Bare time = daily.
+    - **Wildcards in time:** `*:0/15` (every 15 minutes at second 0),
+      `*:00` (top of every hour), `03:*` (every minute in the 3am
+      hour).
+    - **Weekday filters:** `Mon`, `Mon,Wed,Fri`, `Mon..Fri`. Combine
+      with a time: `Mon..Fri 09:00`.
+    - **Date pattern:** `YYYY-MM-DD` with `*` wildcards in any field,
+      e.g. `*-*-1 00:00` (first of every month). The year is parsed
+      but currently not used as a constraint.
+
+    Out of scope: timezone shifts mid-expression, week-of-year,
+    negative day-of-month.
+
+**cron-randomized-delay**=*duration*
+:   Adds uniform jitter `[0,d)` to every fire time. Useful for
+    fleets that would otherwise herd on the same boundary
+    (everyone backing up at midnight, etc.).
+
+**cron-persistent**=*yes*|*no*
+:   When *yes*, if the daemon was down through a scheduled fire,
+    run once immediately on startup to catch up. The persistence
+    store is currently in-memory only — a future on-disk store
+    will let catch-up survive daemon restarts.
+
+    Example — backup every Sunday at 03:00 with ±30 min jitter,
+    catching up if a boot was missed:
+
+        type             = scripted
+        command          = /usr/local/bin/backup
+        cron-command     = /usr/local/bin/backup
+        cron-calendar    = Sun 03:00
+        cron-randomized-delay = 30m
+        cron-persistent  = yes
 
 ## CUSTOM ACTIONS (OpenRC / runit)
 
