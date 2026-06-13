@@ -305,6 +305,14 @@ type ServiceRecord struct {
 	failureAction   SystemAction
 	successAction   SystemAction
 	rebootArgument  string
+
+	// runtimeMax is a hard cap on total time the service may spend in
+	// STARTED. A zero value disables the cap (the default). When the
+	// timer fires the service is asked to stop the same way an operator
+	// stop would — including running stop-command and honouring
+	// stop-timeout / SIGKILL escalation.
+	runtimeMax      time.Duration
+	runtimeMaxTimer *time.Timer
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -392,6 +400,52 @@ func (sr *ServiceRecord) SuccessAction() SystemAction { return sr.successAction 
 
 // RebootArgument returns the configured reboot argument.
 func (sr *ServiceRecord) RebootArgument() string { return sr.rebootArgument }
+
+// SetRuntimeMax records the maximum total time the service may stay in
+// STARTED. A zero or negative duration disables the cap.
+func (sr *ServiceRecord) SetRuntimeMax(d time.Duration) { sr.runtimeMax = d }
+
+// RuntimeMax returns the configured runtime cap.
+func (sr *ServiceRecord) RuntimeMax() time.Duration { return sr.runtimeMax }
+
+// armRuntimeMaxTimer schedules a stop request runtimeMax after now.
+// Called from Started(); the AfterFunc runs in its own goroutine so it
+// acquires queueMu before touching service state. A previously-armed
+// timer (from a prior restart) is cancelled first.
+func (sr *ServiceRecord) armRuntimeMaxTimer() {
+	sr.cancelRuntimeMaxTimer()
+	if sr.runtimeMax <= 0 {
+		return
+	}
+	d := sr.runtimeMax
+	svc := sr.self
+	set := sr.services
+	name := sr.serviceName
+	sr.runtimeMaxTimer = time.AfterFunc(d, func() {
+		set.queueMu.Lock()
+		defer set.queueMu.Unlock()
+		// Re-check: the service may have already stopped (process
+		// exited on its own, operator stopped it) between the timer
+		// firing and us acquiring the lock. Stopping a STOPPED service
+		// is a no-op but logging is noisy.
+		if svc.State() != StateStarted {
+			return
+		}
+		set.logger.Info("Service '%s': runtime-max-sec (%s) reached, stopping",
+			name, d)
+		svc.Record().Stop(true)
+		set.processQueuesLocked()
+	})
+}
+
+// cancelRuntimeMaxTimer disarms the runtime cap timer if armed. Safe to
+// call when no timer is active.
+func (sr *ServiceRecord) cancelRuntimeMaxTimer() {
+	if sr.runtimeMaxTimer != nil {
+		sr.runtimeMaxTimer.Stop()
+		sr.runtimeMaxTimer = nil
+	}
+}
 
 // chooseStoppedAction picks the system-level action to apply now that
 // the service has reached STOPPED. Returns ActionNone when the daemon
@@ -1679,6 +1733,11 @@ func (sr *ServiceRecord) Started() {
 	sr.state.Store(StateStarted)
 	sr.notifyListeners(EventStarted)
 
+	// Arm the runtime-max-sec cap (if any) now that we're STARTED.
+	// Skipped path leaves runtimeMaxTimer nil; an existing timer from a
+	// previous start has already been cancelled in Stopped().
+	sr.armRuntimeMaxTimer()
+
 	if sr.forceStop || sr.desired.Load() == StateStopped {
 		sr.doStop(false)
 		return
@@ -1696,6 +1755,11 @@ func (sr *ServiceRecord) Started() {
 // Stopped is called when the service has actually stopped.
 func (sr *ServiceRecord) Stopped() {
 	sr.stoppedTime = time.Now()
+
+	// Disarm the runtime-max-sec timer (if any). Safe to call when no
+	// timer was armed (service never reached STARTED, or runtime-max
+	// wasn't configured).
+	sr.cancelRuntimeMaxTimer()
 
 	if sr.haveConsole {
 		sr.releaseConsole()

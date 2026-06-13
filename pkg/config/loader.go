@@ -1154,6 +1154,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetFailureAction(desc.FailureAction)
 	rec.SetSuccessAction(desc.SuccessAction)
 	rec.SetRebootArgument(desc.RebootArgument)
+	rec.SetRuntimeMax(desc.RuntimeMaxSec)
 	if len(desc.ExtraCommands) > 0 {
 		rec.SetExtraCommands(desc.ExtraCommands)
 	}
