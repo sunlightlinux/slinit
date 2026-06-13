@@ -286,8 +286,11 @@ var KnownSettings = map[string]OperatorType{
 	"logfile-max-files":   OpEquals,
 	"logfile-rotate-time": OpEquals,
 	"log-processor":       OpEquals | OpPlusEqual,
-	"log-include":         OpEquals,
-	"log-exclude":         OpEquals,
+	"log-include":              OpEquals,
+	"log-exclude":              OpEquals,
+	"log-rate-limit-interval":  OpEquals,
+	"log-rate-limit-burst":     OpEquals,
+	"log-level-max":            OpEquals,
 
 	// systemd-style appliance actions
 	"failure-action":  OpEquals,

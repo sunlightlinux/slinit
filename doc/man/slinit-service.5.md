@@ -457,6 +457,21 @@ apply OS-level changes:
 :   Filter lines that reach the log target. Multiple patterns OR
     together.
 
+**log-rate-limit-interval**=*duration*, **log-rate-limit-burst**=*N*
+:   Token-bucket rate limit for the log pipeline. At most *N* lines
+    are kept per *duration* window; excess lines are dropped and a
+    single notice is emitted when the limit first engages. Both
+    must be > 0 to enable; the bucket refills proportionally as
+    time passes. Requires a configured **logfile** (the limiter
+    sits on the LogRotator's pipe).
+
+**log-level-max**=*emerg*|*alert*|*crit*|*err*|*warn*|*notice*|*info*|*debug*
+:   Drop log lines whose syslog severity is higher than the
+    threshold. Lines without a `<N>` priority prefix are treated as
+    *info* (6), so plain text passes any threshold >= info. Accepts
+    the kebab-case keyword (`warning`, `error` are also accepted)
+    or the numeric 0..7. *off* / *none* / *any* disable the filter.
+
 **log-processor**=*program* [*args*...]
 :   Pipe lines through *program* before they hit the log target.
 

@@ -140,6 +140,15 @@ type ServiceDescription struct {
 	LogProcessor  []string      // command to run on rotated logfile
 	LogInclude    []string      // include only lines matching these patterns
 	LogExclude    []string      // exclude lines matching these patterns
+
+	// systemd-style log rate limiting. Drops lines exceeding
+	// LogRateLimitBurst per LogRateLimitInterval (token bucket).
+	// Both must be > 0 for the limiter to engage.
+	LogRateLimitInterval time.Duration
+	LogRateLimitBurst    int
+	// systemd-style severity filter. -1 = disabled, 0..7 = drop lines
+	// with priority above the threshold.
+	LogLevelMax int
 	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
 	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
@@ -413,6 +422,7 @@ func NewServiceDescription(name string) *ServiceDescription {
 		LogFilePerms:  0600,
 		LogFileUID:    -1,
 		LogFileGID:    -1,
+		LogLevelMax:   -1,
 		SocketPerms:   0600,
 		SocketUID:     -1,
 		SocketGID:     -1,
@@ -1503,6 +1513,27 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		} else {
 			desc.LogProcessor = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
+	case "log-rate-limit-interval":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("log-rate-limit-interval: %w", err)
+		}
+		if d < 0 {
+			return fmt.Errorf("log-rate-limit-interval must be >= 0")
+		}
+		desc.LogRateLimitInterval = d
+	case "log-rate-limit-burst":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("log-rate-limit-burst: must be a non-negative integer")
+		}
+		desc.LogRateLimitBurst = n
+	case "log-level-max":
+		lvl, err := service.ParseLogLevel(value)
+		if err != nil {
+			return err
+		}
+		desc.LogLevelMax = lvl
 	case "log-include":
 		desc.LogInclude = append(desc.LogInclude, value)
 	case "log-exclude":
