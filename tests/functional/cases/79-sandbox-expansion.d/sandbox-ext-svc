@@ -9,12 +9,22 @@ bind-paths = /var/tmp/sandbox-ext-rw
 #  - /home should be a fresh tmpfs (protect-home=tmpfs)
 #  - /run/svc-scratch should be a writable tmpfs (temporary-filesystem)
 #  - /var/tmp/sandbox-ext-rw should be visible on host (bind-paths)
-command = /bin/sh -c "set -e; \
-mkdir -p /var/tmp/sandbox-ext-rw; \
-ls /opt > /tmp/opt-list 2>/dev/null || true; \
-opt_count=$(ls /opt 2>/dev/null | wc -l); \
-if [ \"$opt_count\" = \"0\" ]; then opt=hidden; else opt=visible; fi; \
-if echo home-probe > /home/home-probe 2>/dev/null && [ -f /home/home-probe ]; then home=writable; else home=blocked; fi; \
-if echo scratch > /run/svc-scratch/scratch-probe 2>/dev/null && [ -f /run/svc-scratch/scratch-probe ]; then scratch=writable; else scratch=blocked; fi; \
-echo \"opt=$opt home=$home scratch=$scratch\" > /var/tmp/sandbox-ext-rw/probe-result; \
-exec sleep 600"
+script
+set -e
+mkdir -p /var/tmp/sandbox-ext-rw
+ls /opt > /tmp/opt-list 2>/dev/null || true
+opt_count=$(ls /opt 2>/dev/null | wc -l)
+if [ "$opt_count" = "0" ]; then opt=hidden; else opt=visible; fi
+if echo home-probe > /home/home-probe 2>/dev/null && [ -f /home/home-probe ]; then
+    home=writable
+else
+    home=blocked
+fi
+if echo scratch > /run/svc-scratch/scratch-probe 2>/dev/null && [ -f /run/svc-scratch/scratch-probe ]; then
+    scratch=writable
+else
+    scratch=blocked
+fi
+echo "opt=$opt home=$home scratch=$scratch" > /var/tmp/sandbox-ext-rw/probe-result
+exec sleep 600
+end script

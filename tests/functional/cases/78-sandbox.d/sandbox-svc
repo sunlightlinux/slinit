@@ -8,10 +8,15 @@ read-write-paths = /var/tmp/sandbox-rw
 # write to /etc (must fail since protect-system=yes ro-remounts /usr,
 # /boot, /efi but NOT /etc — so read-only-paths makes /etc ro). Drop a
 # witness file describing what happened.
-command = /bin/sh -c "set -e; \
-mkdir -p /var/tmp/sandbox-rw; \
-echo private > /tmp/sandbox-private; \
-echo readwrite > /var/tmp/sandbox-rw/marker; \
-if echo nope > /etc/sandbox-escape 2>/dev/null; then echo etc-writable > /var/tmp/sandbox-rw/result; \
-else echo etc-protected > /var/tmp/sandbox-rw/result; fi; \
-exec sleep 600"
+script
+set -e
+mkdir -p /var/tmp/sandbox-rw
+echo private > /tmp/sandbox-private
+echo readwrite > /var/tmp/sandbox-rw/marker
+if echo nope > /etc/sandbox-escape 2>/dev/null; then
+    echo etc-writable > /var/tmp/sandbox-rw/result
+else
+    echo etc-protected > /var/tmp/sandbox-rw/result
+fi
+exec sleep 600
+end script
