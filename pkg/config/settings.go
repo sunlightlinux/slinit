@@ -288,6 +288,7 @@ var KnownSettings = map[string]OperatorType{
 	"failure-action":  OpEquals,
 	"success-action":  OpEquals,
 	"reboot-argument": OpEquals,
+	"runtime-max-sec": OpEquals,
 }
 
 // IsKnownSetting returns true if the setting name is recognized.

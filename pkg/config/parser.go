@@ -294,9 +294,14 @@ type ServiceDescription struct {
 	// reaches STOPPED in a failure (start failed, non-zero exit, etc.)
 	// or clean-finish state respectively. RebootArgument is forwarded
 	// to reboot(2) for kexec-style transitions.
-	FailureAction   service.SystemAction
-	SuccessAction   service.SystemAction
-	RebootArgument  string
+	FailureAction  service.SystemAction
+	SuccessAction  service.SystemAction
+	RebootArgument string
+
+	// RuntimeMaxSec is a hard cap on how long the service may stay in
+	// STARTED. Zero means no cap. When the timer fires the service is
+	// asked to stop via the same path an operator stop uses.
+	RuntimeMaxSec time.Duration
 
 	// systemd-style filesystem sandbox. Any non-zero value implies a
 	// private mount namespace (CLONE_NEWNS) — the loader OR's the flag
@@ -1223,6 +1228,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.SuccessAction = act
 	case "reboot-argument":
 		desc.RebootArgument = expandEnvVars(value, serviceArg)
+	case "runtime-max-sec":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("runtime-max-sec: %w", err)
+		}
+		desc.RuntimeMaxSec = d
 
 	// Restart
 	case "restart":

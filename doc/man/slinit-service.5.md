@@ -342,6 +342,15 @@ trigger either action.
     *reboot*. Currently parsed and logged; kernel handoff via
     LINUX_REBOOT_CMD_RESTART2 is a follow-up.
 
+**runtime-max-sec**=*duration*
+:   Hard cap on the total time the service may stay in STARTED.
+    When the timer fires the service is asked to stop via the same
+    path an operator stop uses (so **stop-command** runs and
+    **stop-timeout** / SIGKILL escalation still apply). Useful for
+    self-terminating workloads and for mitigating slow leaks
+    without an external supervisor. The clock starts when the
+    service enters STARTED; restarts reset it.
+
 The values map onto the same shutdown machinery used by
 **slinitctl shutdown**: *reboot* / *poweroff* / *halt* go through
 **InitiateShutdown** with the corresponding type. *exit* terminates
