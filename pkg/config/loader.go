@@ -433,6 +433,7 @@ func (dl *DirLoader) checkCycle(svc service.Service, desc *ServiceDescription) e
 	allDepNames = append(allDepNames, desc.DependsOn...)
 	allDepNames = append(allDepNames, desc.DependsMS...)
 	allDepNames = append(allDepNames, desc.WaitsFor...)
+	allDepNames = append(allDepNames, desc.PreparedBy...)
 	allDepNames = append(allDepNames, desc.After...)
 
 	// BFS: check if any transitive dependency leads back to svc
@@ -496,20 +497,21 @@ func (dl *DirLoader) validatePidFileUnchanged(svc service.Service, desc *Service
 	return nil
 }
 
-// validateNewRegularDeps checks that new regular deps are already STARTED.
+// validateNewRegularDeps checks that new regular/prepared-by deps are
+// already STARTED. PREPARED_BY is treated like REGULAR because it is a
+// hard dependency from the dependent's point of view.
 func (dl *DirLoader) validateNewRegularDeps(svc service.Service, desc *ServiceDescription) error {
-	// Build set of current regular deps
+	// Build set of current hard deps (regular + prepared-by)
 	currentDeps := map[string]bool{}
 	for _, dep := range svc.Record().Dependencies() {
-		if dep.DepType == service.DepRegular {
+		if dep.DepType == service.DepRegular || dep.DepType == service.DepPreparedBy {
 			currentDeps[dep.To.Name()] = true
 		}
 	}
 
-	// Check new regular deps that don't already exist
-	for _, depName := range desc.DependsOn {
+	check := func(depName string) error {
 		if currentDeps[depName] {
-			continue
+			return nil
 		}
 		depSvc := dl.set.FindService(depName, false)
 		if depSvc == nil || depSvc.State() != service.StateStarted {
@@ -517,6 +519,18 @@ func (dl *DirLoader) validateNewRegularDeps(svc service.Service, desc *ServiceDe
 				ServiceName: svc.Name(),
 				Message:     fmt.Sprintf("cannot add non-started dependency '%s' to running service", depName),
 			}
+		}
+		return nil
+	}
+
+	for _, depName := range desc.DependsOn {
+		if err := check(depName); err != nil {
+			return err
+		}
+	}
+	for _, depName := range desc.PreparedBy {
+		if err := check(depName); err != nil {
+			return err
 		}
 	}
 
@@ -1008,6 +1022,7 @@ func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescript
 		{desc.DependsOn, service.DepRegular},
 		{desc.DependsMS, service.DepMilestone},
 		{desc.WaitsFor, service.DepWaitsFor},
+		{desc.PreparedBy, service.DepPreparedBy},
 		{desc.Before, service.DepBefore},
 		{desc.After, service.DepAfter},
 	}
@@ -1031,6 +1046,7 @@ func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescript
 		{desc.DependsOnD, service.DepRegular},
 		{desc.DependsMSD, service.DepMilestone},
 		{desc.WaitsForD, service.DepWaitsFor},
+		{desc.PreparedByD, service.DepPreparedBy},
 	}
 
 	for _, spec := range dirDepSpecs {

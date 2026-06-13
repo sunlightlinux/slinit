@@ -89,12 +89,13 @@ func (t ServiceType) String() string {
 type DependencyType uint8
 
 const (
-	DepRegular   DependencyType = iota // Hard dependency
-	DepSoft                            // Parallel start, failure/stop doesn't affect dependent
-	DepWaitsFor                        // Like soft, but dependent waits for start/fail
-	DepMilestone                       // Must start successfully, then becomes soft
-	DepBefore                          // Ordering: this starts before target
-	DepAfter                           // Ordering: this starts after target
+	DepRegular    DependencyType = iota // Hard dependency
+	DepSoft                             // Parallel start, failure/stop doesn't affect dependent
+	DepWaitsFor                         // Like soft, but dependent waits for start/fail
+	DepMilestone                        // Must start successfully, then becomes soft
+	DepBefore                           // Ordering: this starts before target
+	DepAfter                            // Ordering: this starts after target
+	DepPreparedBy                       // Like REGULAR, but dependency restarts when dependent restarts
 )
 
 func (d DependencyType) String() string {
@@ -111,6 +112,8 @@ func (d DependencyType) String() string {
 		return "before"
 	case DepAfter:
 		return "after"
+	case DepPreparedBy:
+		return "prepared-by"
 	default:
 		return fmt.Sprintf("DependencyType(%d)", d)
 	}

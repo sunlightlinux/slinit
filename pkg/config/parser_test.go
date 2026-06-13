@@ -82,6 +82,7 @@ depends-on: network
 depends-on: syslog
 waits-for: dbus
 depends-ms: mount-fs
+prepared-by: preflight
 before: shutdown
 after: early-boot
 `
@@ -104,6 +105,9 @@ after: early-boot
 	}
 	if len(desc.DependsMS) != 1 || desc.DependsMS[0] != "mount-fs" {
 		t.Errorf("expected depends-ms ['mount-fs'], got %v", desc.DependsMS)
+	}
+	if len(desc.PreparedBy) != 1 || desc.PreparedBy[0] != "preflight" {
+		t.Errorf("expected prepared-by ['preflight'], got %v", desc.PreparedBy)
 	}
 	if len(desc.Before) != 1 || desc.Before[0] != "shutdown" {
 		t.Errorf("expected before ['shutdown'], got %v", desc.Before)
