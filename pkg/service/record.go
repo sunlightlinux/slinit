@@ -301,6 +301,10 @@ type ServiceRecord struct {
 	requiredDirs  []string
 
 	predicates []Predicate
+
+	failureAction   SystemAction
+	successAction   SystemAction
+	rebootArgument  string
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -366,6 +370,59 @@ func (sr *ServiceRecord) SetPredicates(preds []Predicate) {
 // Predicates returns the configured start preconditions for
 // introspection/tests.
 func (sr *ServiceRecord) Predicates() []Predicate { return sr.predicates }
+
+// SetFailureAction records the system-level action to trigger when this
+// service stops in a failure state (failed start, non-zero exit without
+// auto-restart, or restart-limit exhausted).
+func (sr *ServiceRecord) SetFailureAction(a SystemAction) { sr.failureAction = a }
+
+// SetSuccessAction records the system-level action to trigger when this
+// service finishes successfully (clean exit 0, no restart configured).
+func (sr *ServiceRecord) SetSuccessAction(a SystemAction) { sr.successAction = a }
+
+// SetRebootArgument records the optional kernel-command-line passed to
+// reboot(2) when failure-action / success-action triggers a reboot.
+func (sr *ServiceRecord) SetRebootArgument(s string) { sr.rebootArgument = s }
+
+// FailureAction returns the configured failure action.
+func (sr *ServiceRecord) FailureAction() SystemAction { return sr.failureAction }
+
+// SuccessAction returns the configured success action.
+func (sr *ServiceRecord) SuccessAction() SystemAction { return sr.successAction }
+
+// RebootArgument returns the configured reboot argument.
+func (sr *ServiceRecord) RebootArgument() string { return sr.rebootArgument }
+
+// chooseStoppedAction picks the system-level action to apply now that
+// the service has reached STOPPED. Returns ActionNone when the daemon
+// is already shutting down (we don't second-guess shutdown ordering),
+// when the service is about to restart (the failure is recoverable),
+// or when neither action is configured.
+func (sr *ServiceRecord) chooseStoppedAction(willRestart bool) SystemAction {
+	if willRestart || sr.services.IsShuttingDown() {
+		return ActionNone
+	}
+	// Failure path: start never succeeded, or post-start failure
+	// surfaced (signal/non-zero exit/timeout) — anything other than a
+	// clean operator-issued stop or a clean post-run finish.
+	exitStatus := sr.self.GetExitStatus()
+	cleanFinish := sr.stopReason == ReasonTerminated &&
+		exitStatus.Exited() && exitStatus.ExitCode() == 0
+	if sr.startFailed ||
+		sr.stopReason == ReasonFailed ||
+		sr.stopReason == ReasonExecFailed ||
+		sr.stopReason == ReasonTimedOut ||
+		(sr.stopReason == ReasonTerminated && !cleanFinish) {
+		return sr.failureAction
+	}
+	// Success path: only fire for a service that finished on its own
+	// with a clean exit. Operator-issued stops (ReasonNormal without a
+	// terminated process) do not count.
+	if cleanFinish {
+		return sr.successAction
+	}
+	return ActionNone
+}
 
 // markSkippedStart short-circuits the start path when a condition-*
 // predicate fails: the service transitions straight to STARTED with
@@ -1692,6 +1749,23 @@ func (sr *ServiceRecord) Stopped() {
 			sr.Release(false)
 		} else if sr.requiredBy == 0 {
 			sr.services.ServiceInactive(sr.self)
+		}
+	}
+
+	// systemd-style failure-action / success-action: pick whichever
+	// applies and let main's shutdown initiator handle it. The hook is
+	// invoked AFTER state is STOPPED so a reboot-action service is
+	// reported as STOPPED to listeners that fire before the reboot.
+	if action := sr.chooseStoppedAction(willRestart); action != ActionNone {
+		if cb := sr.services.OnSystemAction; cb != nil {
+			kind := "success"
+			if action == sr.failureAction {
+				kind = "failure"
+			}
+			sr.services.logger.Info(
+				"Service '%s': %s-action=%s — initiating system action",
+				sr.serviceName, kind, action)
+			cb(action, sr.rebootArgument)
 		}
 	}
 

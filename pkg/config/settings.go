@@ -283,6 +283,11 @@ var KnownSettings = map[string]OperatorType{
 	"log-processor":       OpEquals | OpPlusEqual,
 	"log-include":         OpEquals,
 	"log-exclude":         OpEquals,
+
+	// systemd-style appliance actions
+	"failure-action":  OpEquals,
+	"success-action":  OpEquals,
+	"reboot-argument": OpEquals,
 }
 
 // IsKnownSetting returns true if the setting name is recognized.

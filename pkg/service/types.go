@@ -220,6 +220,72 @@ func (r StoppedReason) DidFinish() bool {
 	return r == ReasonTerminated
 }
 
+// SystemAction is a system-level action triggered by a per-service
+// failure-action / success-action stanza. ActionNone leaves slinit
+// silent; the others ask the daemon to initiate the corresponding
+// shutdown sequence (or, for ActionExit, terminate the supervisor
+// itself — meaningful only in user-instance / container mode).
+type SystemAction uint8
+
+const (
+	ActionNone     SystemAction = iota // Default: no system-level action
+	ActionReboot                       // Initiate system reboot
+	ActionPoweroff                     // Initiate system poweroff
+	ActionHalt                         // Halt the system without powering down
+	ActionExit                         // Terminate slinit (user/container mode only)
+)
+
+// String returns the kebab-case form accepted by the parser.
+func (a SystemAction) String() string {
+	switch a {
+	case ActionNone:
+		return "none"
+	case ActionReboot:
+		return "reboot"
+	case ActionPoweroff:
+		return "poweroff"
+	case ActionHalt:
+		return "halt"
+	case ActionExit:
+		return "exit"
+	default:
+		return fmt.Sprintf("SystemAction(%d)", a)
+	}
+}
+
+// ParseSystemAction parses a value from the failure-action / success-action
+// settings. Empty string is treated as ActionNone.
+func ParseSystemAction(s string) (SystemAction, error) {
+	switch s {
+	case "", "none":
+		return ActionNone, nil
+	case "reboot":
+		return ActionReboot, nil
+	case "poweroff":
+		return ActionPoweroff, nil
+	case "halt":
+		return ActionHalt, nil
+	case "exit":
+		return ActionExit, nil
+	}
+	return ActionNone, fmt.Errorf("unknown system action %q (use none/reboot/poweroff/halt/exit)", s)
+}
+
+// AsShutdownType maps a SystemAction to the shutdown.ShutdownType the
+// daemon's shutdown executor speaks. Returns ShutdownNone for ActionNone
+// and ActionExit (the latter is handled separately by the daemon).
+func (a SystemAction) AsShutdownType() ShutdownType {
+	switch a {
+	case ActionReboot:
+		return ShutdownReboot
+	case ActionPoweroff:
+		return ShutdownPoweroff
+	case ActionHalt:
+		return ShutdownHalt
+	}
+	return ShutdownNone
+}
+
 // AutoRestartMode controls restart behavior.
 type AutoRestartMode uint8
 

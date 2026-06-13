@@ -289,6 +289,15 @@ type ServiceDescription struct {
 	// other failed start. Negation with leading "!".
 	Predicates []service.Predicate
 
+	// systemd-style failure-action / success-action: a system-level
+	// transition (reboot/poweroff/halt/exit) triggered when the service
+	// reaches STOPPED in a failure (start failed, non-zero exit, etc.)
+	// or clean-finish state respectively. RebootArgument is forwarded
+	// to reboot(2) for kexec-style transitions.
+	FailureAction   service.SystemAction
+	SuccessAction   service.SystemAction
+	RebootArgument  string
+
 	// systemd-style filesystem sandbox. Any non-zero value implies a
 	// private mount namespace (CLONE_NEWNS) — the loader OR's the flag
 	// into Cloneflags automatically. Applied child-side by slinit-runner.
@@ -1198,6 +1207,22 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		for _, p := range strings.Fields(expandEnvVars(value, serviceArg)) {
 			desc.RequiredDirs = append(desc.RequiredDirs, p)
 		}
+
+	// systemd-style failure-action / success-action (appliance basics).
+	case "failure-action":
+		act, err := service.ParseSystemAction(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.FailureAction = act
+	case "success-action":
+		act, err := service.ParseSystemAction(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.SuccessAction = act
+	case "reboot-argument":
+		desc.RebootArgument = expandEnvVars(value, serviceArg)
 
 	// Restart
 	case "restart":
