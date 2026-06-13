@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -1315,6 +1316,16 @@ func (c *Connection) handleEnableService(payload []byte) error {
 	}
 	fromSvc.Record().AddDep(svc, service.DepWaitsFor)
 
+	// Persist by creating a waits-for.d symlink in the source service's
+	// load directory, so the dependency survives a daemon restart. The
+	// in-memory dep was already added above; a persistence failure is
+	// logged but does not undo the runtime change — operators who
+	// re-enable after the disk is full or read-only should see the
+	// error in logs and re-run once the underlying issue is fixed.
+	if err := persistEnable(fromSvc, svc); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: enable: persist waits-for.d link: %v\n", err)
+	}
+
 	// Start the target service
 	c.server.services.StartService(svc)
 	return c.writePacket(RplyACK, nil)
@@ -1355,9 +1366,59 @@ func (c *Connection) handleDisableService(payload []byte) error {
 	// Remove waits-for dependency from source to target
 	fromSvc.Record().RmDep(svc, service.DepWaitsFor)
 
+	// Remove the persisted waits-for.d symlink (if any). Errors other
+	// than ENOENT are logged but not propagated — the in-memory dep is
+	// gone and the daemon's view is authoritative; the operator can
+	// inspect the log and clean up the on-disk artifact if needed.
+	if err := persistDisable(fromSvc, svc); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: disable: remove waits-for.d link: %v\n", err)
+	}
+
 	// Stop the target service
 	c.server.services.StopService(svc)
 	return c.writePacket(RplyACK, nil)
+}
+
+// persistEnable creates a symlink from <fromSvc-dir>/waits-for.d/<to-name>
+// to ../<to-name>, so the enable survives a daemon restart. If fromSvc has
+// no recorded load directory (e.g. it was added programmatically without
+// loading from disk), the call is a no-op — there is no on-disk service
+// description to anchor the link.
+//
+// The fromSvc service-dir is the directory the description was loaded
+// from. We don't follow user-overridden waits-for.d= paths here; using
+// the canonical subdirectory matches the offline path slinitctl uses and
+// the directory the loader scans by default.
+func persistEnable(fromSvc, toSvc service.Service) error {
+	dir := fromSvc.Record().ServiceDir()
+	if dir == "" {
+		return nil
+	}
+	waitsDir := filepath.Join(dir, "waits-for.d")
+	if err := os.MkdirAll(waitsDir, 0755); err != nil {
+		return err
+	}
+	link := filepath.Join(waitsDir, toSvc.Name())
+	if _, err := os.Lstat(link); err == nil {
+		return nil // already present
+	}
+	target := filepath.Join("..", toSvc.Name())
+	return os.Symlink(target, link)
+}
+
+// persistDisable removes the symlink created by persistEnable. ENOENT is
+// not an error: the disable still succeeded in memory and an absent link
+// is the desired end state.
+func persistDisable(fromSvc, toSvc service.Service) error {
+	dir := fromSvc.Record().ServiceDir()
+	if dir == "" {
+		return nil
+	}
+	link := filepath.Join(dir, "waits-for.d", toSvc.Name())
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (c *Connection) handleQueryServiceName(payload []byte) error {

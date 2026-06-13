@@ -1299,6 +1299,86 @@ func TestDisableService(t *testing.T) {
 	}
 }
 
+// TestEnablePersistsViaSymlink verifies that an online enable creates a
+// waits-for.d/<target> symlink in the source service's load directory,
+// matching dinit's behaviour and allowing the enable to survive a
+// daemon restart.
+func TestEnablePersistsViaSymlink(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	// Simulate a service that was loaded from disk by giving "boot" a
+	// service-dir. The persistence helper keys off ServiceDir().
+	bootDir := t.TempDir()
+	boot := service.NewInternalService(server.services, "boot")
+	boot.Record().SetServiceDir(bootDir)
+	server.services.AddService(boot)
+	server.services.SetBootServiceName("boot")
+	server.services.StartService(boot)
+
+	target := service.NewInternalService(server.services, "target-svc")
+	server.services.AddService(target)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "target-svc")
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
+	if rply, _ := readReply(t, conn); rply != RplyACK {
+		t.Fatalf("enable: expected ACK, got %d", rply)
+	}
+
+	link := filepath.Join(bootDir, "waits-for.d", "target-svc")
+	dest, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("expected symlink at %s: %v", link, err)
+	}
+	if want := filepath.Join("..", "target-svc"); dest != want {
+		t.Errorf("symlink target: got %q, want %q", dest, want)
+	}
+
+	// A second enable must not error or duplicate the link.
+	handle2 := findHandle(t, conn, "target-svc")
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle2))
+	if rply, _ := readReply(t, conn); rply != RplyACK {
+		t.Fatalf("second enable: expected ACK, got %d", rply)
+	}
+
+	// And the disable path must remove it.
+	WritePacket(conn, CmdDisableService, EncodeHandle(handle2))
+	if rply, _ := readReply(t, conn); rply != RplyACK {
+		t.Fatalf("disable: expected ACK, got %d", rply)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Errorf("expected symlink removed, lstat err = %v", err)
+	}
+}
+
+// TestEnableWithoutServiceDirNoOp verifies that enabling a programmatic
+// (non-disk-backed) service does not error and does not try to write
+// anywhere.
+func TestEnableWithoutServiceDirNoOp(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	// boot deliberately has no ServiceDir.
+	boot := service.NewInternalService(server.services, "boot")
+	server.services.AddService(boot)
+	server.services.SetBootServiceName("boot")
+	server.services.StartService(boot)
+
+	target := service.NewInternalService(server.services, "target-svc")
+	server.services.AddService(target)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	handle := findHandle(t, conn, "target-svc")
+	WritePacket(conn, CmdEnableService, EncodeHandle(handle))
+	if rply, _ := readReply(t, conn); rply != RplyACK {
+		t.Fatalf("enable: expected ACK, got %d", rply)
+	}
+}
+
 func TestEnableNoBootService(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()
