@@ -1,14 +1,17 @@
 type = process
 depends-on: system-init
+depends-on: sandbox-prep
 # Mix mount-based (control-groups) + seccomp-based (clock, hostname,
 # personality) so the probe exercises both code paths.
+#
+# $ doubled ($$) so slinit's load-time env-var expansion leaves shell
+# variables alone.
 protect-control-groups = yes
 protect-clock = yes
 protect-hostname = yes
 lock-personality = yes
 script
 set -e
-mkdir -p /var/tmp/hardening-out
 # Try to write a fresh file under /sys/fs/cgroup (read-only-remounted):
 if echo nope > /sys/fs/cgroup/hardening-probe 2>/dev/null; then
     cgroup=writable
@@ -27,6 +30,6 @@ if hostname slinit-pwn 2>/dev/null; then
 else
     host=protected
 fi
-echo "cgroup=$cgroup clock=$clock host=$host" > /var/tmp/hardening-out/result
+echo "cgroup=$$cgroup clock=$$clock host=$$host" > /var/tmp/hardening-out/result
 exec sleep 600
 end script
