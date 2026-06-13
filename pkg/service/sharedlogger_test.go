@@ -153,37 +153,60 @@ func TestSharedLogMux_ProducerRestart(t *testing.T) {
 		}
 	}()
 
-	// First instance — write and close
+	// waitForLine polls for a given line under linesMu; returns false on
+	// timeout. Replaces the previous time.Sleep+check pattern, which was
+	// flaky under -race on busy CI hosts where 100ms wasn't enough for
+	// the producer → mux → reader chain to settle.
+	waitForLine := func(want string, timeout time.Duration) bool {
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			linesMu.Lock()
+			for _, l := range lines {
+				if l == want {
+					linesMu.Unlock()
+					return true
+				}
+			}
+			linesMu.Unlock()
+			time.Sleep(10 * time.Millisecond)
+		}
+		return false
+	}
+
+	// First instance — write and close.
 	pipe1, _ := mux.AddProducer("restart-svc")
 	fmt.Fprintln(pipe1, "first run")
 	pipe1.Close()
-	time.Sleep(100 * time.Millisecond) // let reader pick it up
+	if !waitForLine("[restart-svc] first run", 2*time.Second) {
+		linesMu.Lock()
+		t.Logf("lines after first run: %v", lines)
+		linesMu.Unlock()
+		// Not fatal: the test's real assertion is that second-run
+		// survives the restart.
+	}
 
-	// Re-add same name (simulates restart) — old reader is stopped
+	// Re-add same name (simulates restart) — old reader is stopped.
 	pipe2, _ := mux.AddProducer("restart-svc")
 	fmt.Fprintln(pipe2, "second run")
 	pipe2.Close()
-	time.Sleep(100 * time.Millisecond)
+	if !waitForLine("[restart-svc] second run", 2*time.Second) {
+		linesMu.Lock()
+		t.Errorf("expected '[restart-svc] second run' within 2s; lines: %v", lines)
+		linesMu.Unlock()
+	}
 
-	// Should still have 1 producer
+	// Should still have 1 producer.
 	if mux.ProducerCount() != 1 {
 		t.Errorf("expected 1 producer, got %d", mux.ProducerCount())
 	}
 
-	// At least the second line should be present (first may or may not survive the restart)
+	// Every captured line should carry the prefix.
 	linesMu.Lock()
 	defer linesMu.Unlock()
-	found := false
 	for _, l := range lines {
-		if l == "[restart-svc] second run" {
-			found = true
-		}
 		if !strings.HasPrefix(l, "[restart-svc] ") {
 			t.Errorf("unexpected prefix: %q", l)
 		}
-	}
-	if !found {
-		t.Errorf("expected '[restart-svc] second run' in lines: %v", lines)
 	}
 }
 
