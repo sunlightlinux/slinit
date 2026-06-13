@@ -5,6 +5,9 @@ depends-on: system-init
 # probe since it issues ptrace immediately; if strace itself isn't
 # available the script falls back to checking that mount(2) is blocked
 # via the same denylist.
+#
+# $ is doubled ($$) so slinit's load-time env-var expansion leaves
+# shell variables alone.
 system-call-filter = ~ptrace mount
 system-call-error-number = EPERM
 script
@@ -18,6 +21,6 @@ else
         result=strace-unavailable
     fi
 fi
-echo $result > /tmp/seccomp-blocked-result
+echo $$result > /tmp/seccomp-blocked-result
 exec sleep 600
 end script

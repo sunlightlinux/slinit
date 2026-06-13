@@ -1,5 +1,6 @@
 type = process
 depends-on: system-init
+depends-on: sandbox-prep
 private-tmp = yes
 protect-system = yes
 read-only-paths = /etc
@@ -10,7 +11,6 @@ read-write-paths = /var/tmp/sandbox-rw
 # witness file describing what happened.
 script
 set -e
-mkdir -p /var/tmp/sandbox-rw
 echo private > /tmp/sandbox-private
 echo readwrite > /var/tmp/sandbox-rw/marker
 if echo nope > /etc/sandbox-escape 2>/dev/null; then

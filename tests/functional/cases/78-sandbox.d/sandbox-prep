@@ -1,0 +1,7 @@
+type = scripted
+depends-on: system-init
+# Pre-create host directories that the sandbox bind-mounts onto.
+# read-write-paths and bind-paths both bind a host path into the
+# sandbox view, so the source must exist when the runner mounts.
+command = /bin/sh -c "mkdir -p /var/tmp/sandbox-rw"
+stop-command = /bin/true

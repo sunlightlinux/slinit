@@ -1,0 +1,5 @@
+type = scripted
+depends-on: system-init
+# Pre-create host dirs for bind-paths (the bind source must exist).
+command = /bin/sh -c "mkdir -p /var/tmp/sandbox-ext-rw"
+stop-command = /bin/true

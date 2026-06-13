@@ -1,0 +1,8 @@
+type = scripted
+depends-on: system-init
+# Pre-create the host dir where the probe writes its witness file.
+# Without this the script would mkdir inside the sandbox view (still
+# fine — no bind here) but having a sentinel makes the test independent
+# of root-fs writability.
+command = /bin/sh -c "mkdir -p /var/tmp/hardening-out"
+stop-command = /bin/true
