@@ -303,6 +303,12 @@ type ServiceDescription struct {
 	// asked to stop via the same path an operator stop uses.
 	RuntimeMaxSec time.Duration
 
+	// OOMPolicy controls how slinit reacts when the service's cgroup v2
+	// reports an OOM kill. Continue lets the kernel proceed unattended;
+	// Stop asks the service to stop cleanly; Kill SIGKILLs the whole
+	// cgroup. Off by default.
+	OOMPolicy service.OOMPolicy
+
 	// systemd-style filesystem sandbox. Any non-zero value implies a
 	// private mount namespace (CLONE_NEWNS) — the loader OR's the flag
 	// into Cloneflags automatically. Applied child-side by slinit-runner.
@@ -1234,6 +1240,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("runtime-max-sec: %w", err)
 		}
 		desc.RuntimeMaxSec = d
+	case "oom-policy":
+		p, err := service.ParseOOMPolicy(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.OOMPolicy = p
 
 	// Restart
 	case "restart":

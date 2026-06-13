@@ -351,6 +351,27 @@ trigger either action.
     without an external supervisor. The clock starts when the
     service enters STARTED; restarts reset it.
 
+**oom-policy**=*continue*|*stop*|*kill*
+:   Reaction to a cgroup v2 OOM kill in the service's cgroup.
+
+    *continue* (default) — slinit takes no action; the kernel's
+    OOM kill stands as the only response.
+
+    *stop* — slinit asks the service to stop via the normal
+    stop path (stop-command, stop-timeout, SIGKILL escalation),
+    so the surviving processes do not get left in an inconsistent
+    state.
+
+    *kill* — slinit SIGKILLs every process in the cgroup subtree
+    using **cgroup.kill** when available (kernel ≥ 5.14) and a
+    PID walk as fallback.
+
+    The watcher samples **<cgroup>/memory.events** once per second
+    while the service is STARTED; *continue* is a no-op and arms no
+    watcher. Requires a configured **cgroup-path** (or a default
+    via the daemon's **--cgroup-path**); otherwise the policy is
+    parsed and stored but cannot fire.
+
 The values map onto the same shutdown machinery used by
 **slinitctl shutdown**: *reboot* / *poweroff* / *halt* go through
 **InitiateShutdown** with the corresponding type. *exit* terminates

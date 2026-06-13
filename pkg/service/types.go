@@ -286,6 +286,43 @@ func (a SystemAction) AsShutdownType() ShutdownType {
 	return ShutdownNone
 }
 
+// OOMPolicy describes what slinit does when the service's cgroup v2
+// reports an OOM kill. Mirrors systemd's OOMPolicy=.
+type OOMPolicy uint8
+
+const (
+	OOMContinue OOMPolicy = iota // Default: just log, take no action
+	OOMStop                      // Issue a clean stop on the service
+	OOMKill                      // SIGKILL everything in the cgroup
+)
+
+// String returns the kebab-case form accepted by the parser.
+func (p OOMPolicy) String() string {
+	switch p {
+	case OOMContinue:
+		return "continue"
+	case OOMStop:
+		return "stop"
+	case OOMKill:
+		return "kill"
+	default:
+		return fmt.Sprintf("OOMPolicy(%d)", p)
+	}
+}
+
+// ParseOOMPolicy decodes the oom-policy= setting value.
+func ParseOOMPolicy(s string) (OOMPolicy, error) {
+	switch s {
+	case "", "continue":
+		return OOMContinue, nil
+	case "stop":
+		return OOMStop, nil
+	case "kill":
+		return OOMKill, nil
+	}
+	return OOMContinue, fmt.Errorf("unknown oom-policy %q (use continue/stop/kill)", s)
+}
+
 // AutoRestartMode controls restart behavior.
 type AutoRestartMode uint8
 

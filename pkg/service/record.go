@@ -313,6 +313,14 @@ type ServiceRecord struct {
 	// stop-timeout / SIGKILL escalation.
 	runtimeMax      time.Duration
 	runtimeMaxTimer *time.Timer
+
+	// oomPolicy is the action to take when the service's cgroup v2
+	// reports an OOM kill. OOMContinue (default) lets the kernel's
+	// OOM kill handler complete without slinit intervention; OOMStop
+	// asks the service to stop cleanly; OOMKill SIGKILLs everything
+	// in the cgroup tree. The watcher is set up lazily in Started().
+	oomPolicy OOMPolicy
+	oomWatch  *oomWatcher
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -407,6 +415,12 @@ func (sr *ServiceRecord) SetRuntimeMax(d time.Duration) { sr.runtimeMax = d }
 
 // RuntimeMax returns the configured runtime cap.
 func (sr *ServiceRecord) RuntimeMax() time.Duration { return sr.runtimeMax }
+
+// SetOOMPolicy records the cgroup v2 OOM-kill response policy.
+func (sr *ServiceRecord) SetOOMPolicy(p OOMPolicy) { sr.oomPolicy = p }
+
+// OOMPolicy returns the configured OOM policy.
+func (sr *ServiceRecord) OOMPolicy() OOMPolicy { return sr.oomPolicy }
 
 // armRuntimeMaxTimer schedules a stop request runtimeMax after now.
 // Called from Started(); the AfterFunc runs in its own goroutine so it
@@ -1738,6 +1752,9 @@ func (sr *ServiceRecord) Started() {
 	// previous start has already been cancelled in Stopped().
 	sr.armRuntimeMaxTimer()
 
+	// Start the cgroup OOM watcher (if oom-policy demands it).
+	sr.armOOMWatcher()
+
 	if sr.forceStop || sr.desired.Load() == StateStopped {
 		sr.doStop(false)
 		return
@@ -1760,6 +1777,9 @@ func (sr *ServiceRecord) Stopped() {
 	// timer was armed (service never reached STARTED, or runtime-max
 	// wasn't configured).
 	sr.cancelRuntimeMaxTimer()
+
+	// Cancel the OOM watcher (if armed). Idempotent — nil-safe.
+	sr.cancelOOMWatcher()
 
 	if sr.haveConsole {
 		sr.releaseConsole()

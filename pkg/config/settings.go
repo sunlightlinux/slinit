@@ -289,6 +289,7 @@ var KnownSettings = map[string]OperatorType{
 	"success-action":  OpEquals,
 	"reboot-argument": OpEquals,
 	"runtime-max-sec": OpEquals,
+	"oom-policy":      OpEquals,
 }
 
 // IsKnownSetting returns true if the setting name is recognized.
