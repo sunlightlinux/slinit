@@ -1,0 +1,32 @@
+type = process
+depends-on: system-init
+depends-on: cred-prep
+# Two credentials: one loaded from a file on disk, one set inline.
+# Both end up under $CREDENTIALS_DIRECTORY (mode 0400) and the
+# directory should be a fresh ro tmpfs at /run/credentials/cred-svc.
+load-credential = api-key:/var/lib/secrets/api.key
+set-credential  = greeting:hello-from-set
+# The probe writes its observations to a witness file under /run so
+# the test harness on the host can verify the contents.
+script
+set -e
+mkdir -p /run/cred-probe
+# $$CREDENTIALS_DIRECTORY survives slinit's load-time substitution
+# because we double the $.
+DIR="$$CREDENTIALS_DIRECTORY"
+echo "dir=$$DIR" > /run/cred-probe/result
+# Witness the two credential files
+file_key=$$(cat $$DIR/api-key 2>/dev/null || echo MISSING)
+inline=$$(cat $$DIR/greeting 2>/dev/null || echo MISSING)
+echo "api-key=$$file_key" >> /run/cred-probe/result
+echo "greeting=$$inline" >> /run/cred-probe/result
+# Witness tmpfs and ro: try a write that should fail.
+if echo defeat > $$DIR/api-key 2>/dev/null; then
+    echo "writable=yes" >> /run/cred-probe/result
+else
+    echo "writable=no" >> /run/cred-probe/result
+fi
+# Witness the mount type (tmpfs expected).
+mount | grep " $$DIR " | head -1 > /run/cred-probe/mount-line || true
+exec sleep 600
+end script

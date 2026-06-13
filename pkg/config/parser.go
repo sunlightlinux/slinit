@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/seccomp"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"golang.org/x/sys/unix"
@@ -308,6 +309,12 @@ type ServiceDescription struct {
 	// Stop asks the service to stop cleanly; Kill SIGKILLs the whole
 	// cgroup. Off by default.
 	OOMPolicy service.OOMPolicy
+
+	// Credentials are file/inline secrets exposed to the service via a
+	// fresh tmpfs at /run/credentials/<svc>/ pointed to by
+	// $CREDENTIALS_DIRECTORY. load-credential = NAME:PATH copies from a
+	// file; set-credential = NAME:VALUE writes the literal.
+	Credentials []process.CredentialSource
 
 	// systemd-style filesystem sandbox. Any non-zero value implies a
 	// private mount namespace (CLONE_NEWNS) — the loader OR's the flag
@@ -894,6 +901,28 @@ func parsePredicate(setting, value string, serviceArg *string) (service.Predicat
 	}, true, nil
 }
 
+// splitNameValue parses a "NAME:VALUE" form used by load-credential
+// and set-credential. Returns (name, value, true) on success and
+// (empty, empty, false) when the colon is missing or the name is
+// empty. Whitespace around the colon is trimmed; the value is taken
+// verbatim from the first non-space character (so trailing whitespace
+// in literals is preserved).
+func splitNameValue(s string) (string, string, bool) {
+	i := strings.IndexByte(s, ':')
+	if i < 0 {
+		return "", "", false
+	}
+	name := strings.TrimSpace(s[:i])
+	if name == "" {
+		return "", "", false
+	}
+	rest := s[i+1:]
+	// Trim only leading whitespace; trailing whitespace may be part
+	// of a credential literal the operator deliberately included.
+	rest = strings.TrimLeft(rest, " \t")
+	return name, rest, true
+}
+
 // splitPredicateNegation strips a single leading "!" from a predicate
 // value. Whitespace around the bang and the value is trimmed so users
 // can write either "! kvm" or "!kvm".
@@ -1246,6 +1275,31 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.OOMPolicy = p
+	case "load-credential":
+		// load-credential = NAME:PATH — copy a file from disk into
+		// /run/credentials/<svc>/NAME. NAME : PATH form is the only
+		// one we accept (v1 — no parent inheritance, no encrypted).
+		name, src, ok := splitNameValue(value)
+		if !ok {
+			return fmt.Errorf("load-credential: expected NAME:PATH, got %q", value)
+		}
+		desc.Credentials = append(desc.Credentials, process.CredentialSource{
+			Name: name,
+			Path: expandEnvVars(src, serviceArg),
+		})
+	case "set-credential":
+		// set-credential = NAME:VALUE — write literal VALUE as
+		// /run/credentials/<svc>/NAME. Value is passed verbatim; no
+		// escape interpretation (use load-credential from a file for
+		// values that need newlines or NULs).
+		name, val, ok := splitNameValue(value)
+		if !ok {
+			return fmt.Errorf("set-credential: expected NAME:VALUE, got %q", value)
+		}
+		desc.Credentials = append(desc.Credentials, process.CredentialSource{
+			Name:  name,
+			Value: expandEnvVars(val, serviceArg),
+		})
 
 	// Restart
 	case "restart":

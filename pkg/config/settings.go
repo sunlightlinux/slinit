@@ -290,6 +290,10 @@ var KnownSettings = map[string]OperatorType{
 	"reboot-argument": OpEquals,
 	"runtime-max-sec": OpEquals,
 	"oom-policy":      OpEquals,
+
+	// systemd-style per-service credentials
+	"load-credential": OpEquals | OpPlusEqual,
+	"set-credential":  OpEquals | OpPlusEqual,
 }
 
 // IsKnownSetting returns true if the setting name is recognized.

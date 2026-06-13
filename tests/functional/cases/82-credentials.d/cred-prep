@@ -1,0 +1,7 @@
+type = scripted
+depends-on: system-init
+# Stage a file-backed credential on the host so the service can
+# load-credential from it. Reading from /etc keeps the test
+# self-contained (no extra runtime layout required).
+command = /bin/sh -c "mkdir -p /var/lib/secrets && echo 'shhh-file-secret' > /var/lib/secrets/api.key"
+stop-command = /bin/true
