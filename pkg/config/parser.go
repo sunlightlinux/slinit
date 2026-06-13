@@ -283,6 +283,12 @@ type ServiceDescription struct {
 	RequiredFiles []string // files that must exist and be readable
 	RequiredDirs  []string // directories that must exist
 
+	// systemd-style start predicates. condition-* failures skip the
+	// service silently (start is treated as successful, no process
+	// runs); assert-* failures fail the start and cascade like any
+	// other failed start. Negation with leading "!".
+	Predicates []service.Predicate
+
 	// systemd-style filesystem sandbox. Any non-zero value implies a
 	// private mount namespace (CLONE_NEWNS) — the loader OR's the flag
 	// into Cloneflags automatically. Applied child-side by slinit-runner.
@@ -829,6 +835,54 @@ func validateSeccompItems(setting string, items []string) error {
 		}
 	}
 	return nil
+}
+
+// parsePredicate decodes a setting named "condition-XXX" or "assert-XXX"
+// into a service.Predicate. Returns (predicate, true, nil) on a match,
+// (zero, false, nil) when the setting does not start with one of the
+// recognised prefixes, and (zero, true, err) on a malformed value.
+//
+// The "!" prefix on the value flips Negate; whitespace around it is
+// stripped. Environment substitution applies to the parameter so a
+// description can reference $1 or ${VAR}.
+func parsePredicate(setting, value string, serviceArg *string) (service.Predicate, bool, error) {
+	var (
+		name     string
+		isAssert bool
+	)
+	switch {
+	case strings.HasPrefix(setting, "condition-"):
+		name = setting[len("condition-"):]
+	case strings.HasPrefix(setting, "assert-"):
+		name = setting[len("assert-"):]
+		isAssert = true
+	default:
+		return service.Predicate{}, false, nil
+	}
+
+	kind, ok := service.PredicateKindByName(name)
+	if !ok {
+		return service.Predicate{}, false, nil
+	}
+
+	param, negate := splitPredicateNegation(expandEnvVars(value, serviceArg))
+	return service.Predicate{
+		Kind:     kind,
+		Param:    param,
+		Negate:   negate,
+		IsAssert: isAssert,
+	}, true, nil
+}
+
+// splitPredicateNegation strips a single leading "!" from a predicate
+// value. Whitespace around the bang and the value is trimmed so users
+// can write either "! kvm" or "!kvm".
+func splitPredicateNegation(value string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if strings.HasPrefix(v, "!") {
+		return strings.TrimSpace(v[1:]), true
+	}
+	return v, false
 }
 
 // parseDirMode parses an octal directory mode (000..777) for the
@@ -1911,6 +1965,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 					desc.ControlCommands[sigName] = cmd
 				}
 			}
+			return nil
+		}
+		// systemd-style start predicates: condition-* / assert-*.
+		if pred, ok, perr := parsePredicate(setting, value, serviceArg); perr != nil {
+			return perr
+		} else if ok {
+			desc.Predicates = append(desc.Predicates, pred)
 			return nil
 		}
 		return fmt.Errorf("unknown setting: %s", setting)

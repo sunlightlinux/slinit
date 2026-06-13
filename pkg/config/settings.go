@@ -295,6 +295,12 @@ func IsKnownSetting(name string) bool {
 	if strings.HasPrefix(name, "control-command-") {
 		return true
 	}
+	// Dynamic prefix: condition-X / assert-X start predicates. The
+	// suffix is validated when the predicate is parsed, so unknown
+	// kinds still surface as parse errors with a useful name.
+	if isPredicateSetting(name) {
+		return true
+	}
 	return false
 }
 
@@ -308,7 +314,15 @@ func ValidOperator(setting string, op OperatorType) bool {
 	if strings.HasPrefix(setting, "control-command-") {
 		return (OpEquals|OpPlusEqual)&op != 0
 	}
+	// Predicates accept '=' only — the value is a single string.
+	if isPredicateSetting(setting) {
+		return op&OpEquals != 0
+	}
 	return false
+}
+
+func isPredicateSetting(name string) bool {
+	return strings.HasPrefix(name, "condition-") || strings.HasPrefix(name, "assert-")
 }
 
 // OptionFlags maps option string names to their ServiceFlags field names.

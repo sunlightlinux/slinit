@@ -299,6 +299,8 @@ type ServiceRecord struct {
 	// BringUp refuses to start the service if any of these paths is missing.
 	requiredFiles []string
 	requiredDirs  []string
+
+	predicates []Predicate
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -350,6 +352,75 @@ func (sr *ServiceRecord) RequiredFiles() []string { return sr.requiredFiles }
 
 // RequiredDirs returns the configured list of required directories.
 func (sr *ServiceRecord) RequiredDirs() []string { return sr.requiredDirs }
+
+// SetPredicates records the systemd-style start preconditions for this
+// service. Copies the slice so the caller may reuse it.
+func (sr *ServiceRecord) SetPredicates(preds []Predicate) {
+	if len(preds) > 0 {
+		sr.predicates = append(sr.predicates[:0], preds...)
+	} else {
+		sr.predicates = nil
+	}
+}
+
+// Predicates returns the configured start preconditions for
+// introspection/tests.
+func (sr *ServiceRecord) Predicates() []Predicate { return sr.predicates }
+
+// markSkippedStart short-circuits the start path when a condition-*
+// predicate fails: the service transitions straight to STARTED with
+// no process so dependents proceed as if the start succeeded, and
+// WasStartSkipped() returns true for introspection. Mirrors
+// systemd's "ConditionXxx=" silent-skip semantics.
+func (sr *ServiceRecord) markSkippedStart() {
+	sr.startSkipped = true
+	sr.Started()
+}
+
+// PredicateOutcome is the result of evaluating CheckPredicates.
+type PredicateOutcome uint8
+
+const (
+	PredOK      PredicateOutcome = iota // all checks passed (or none configured)
+	PredSkip                            // a condition-* failed → skip silently
+	PredFailed                          // an assert-* failed → fail start
+)
+
+// CheckPredicates evaluates every configured predicate in order and
+// returns the strictest outcome. Within a category the FIRST failing
+// predicate wins (so the reason string points at it). assert-* outranks
+// condition-*: an assertion failure is still surfaced even if a prior
+// condition would have caused a skip.
+//
+// Returns ("", "") when every predicate passes or none are configured.
+func (sr *ServiceRecord) CheckPredicates() (PredicateOutcome, string) {
+	var (
+		firstSkipReason string
+		failReason      string
+	)
+	for _, p := range sr.predicates {
+		ok, why := p.Evaluate()
+		if ok {
+			continue
+		}
+		if p.IsAssert {
+			if failReason == "" {
+				failReason = fmt.Sprintf("%s failed: %s", p.String(), why)
+			}
+			continue
+		}
+		if firstSkipReason == "" {
+			firstSkipReason = fmt.Sprintf("%s failed: %s", p.String(), why)
+		}
+	}
+	if failReason != "" {
+		return PredFailed, failReason
+	}
+	if firstSkipReason != "" {
+		return PredSkip, firstSkipReason
+	}
+	return PredOK, ""
+}
 
 // CheckRequiredPaths verifies all configured required paths exist. Returns
 // the first error encountered with a clear message suitable for logging.

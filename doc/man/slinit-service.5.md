@@ -928,6 +928,88 @@ watch; the service remains startable via `slinitctl start`.
 :   Existence checks performed before exec; the service fails
     immediately if any path is missing.
 
+## START PREDICATES (systemd-style)
+
+Each predicate is checked *before* **required-files**/**required-dirs**
+and before fork/exec. Predicates come in two flavours:
+
+- **condition-**\* — on failure the start is *skipped silently*: the
+  service transitions to STARTED with no process running. Dependents
+  see a satisfied dep and proceed; nothing is logged as an error.
+  Equivalent to systemd's *Condition\** directives.
+- **assert-**\* — on failure the start is *aborted* and propagates to
+  hard dependents like any other failed start. Equivalent to
+  systemd's *Assert\** directives.
+
+Negate any predicate by prefixing the value with `!` (whitespace
+between the bang and the value is tolerated).
+
+Recognised predicates (each has both a `condition-` and an `assert-`
+form):
+
+**\*-path-exists**=*path*
+:   *path* exists (any file type, symlinks followed).
+
+**\*-path-exists-glob**=*pattern*
+:   *pattern* matches at least one filesystem entry.
+
+**\*-path-is-directory**=*path*
+:   *path* exists and is a directory.
+
+**\*-path-is-mount-point**=*path*
+:   *path* is a filesystem mount point (its device id differs from its
+    parent's).
+
+**\*-file-not-empty**=*path*
+:   *path* is a regular file with non-zero size.
+
+**\*-directory-not-empty**=*path*
+:   *path* is a directory with at least one entry.
+
+**\*-kernel-command-line**=*token*
+:   `/proc/cmdline` contains *token*. *token* may be a bare key
+    (`quiet`) or a `key=value` pair.
+
+**\*-virtualization**=[*kind*|`yes`|`no`]
+:   Detect the running virtualization (probe order: `/proc/1/cgroup`,
+    `$container` env var, cpuinfo `hypervisor` flag, DMI strings,
+    WSL fingerprint). Specific kinds: `kvm`, `qemu`, `vmware`,
+    `virtualbox`, `microsoft`, `xen`, `wsl`, `docker`, `lxc`,
+    `podman`, `kubernetes`. `yes` / empty matches any virt; `no`
+    matches bare metal.
+
+**\*-first-boot**[=`yes`|`no`]
+:   `/etc/machine-id` is missing or `uninitialized`. Defaults to `yes`.
+
+**\*-host**=*hostname*
+:   System hostname matches *hostname* (case-insensitive).
+
+**\*-security**=*lsm*
+:   Named LSM is active. Recognised: `selinux`, `apparmor`, `tomoyo`,
+    `smack`, `ima`, `audit`.
+
+**\*-needs-update**[=`yes`|`no`]
+:   `/run/systemd/update-on-next-boot` or `/run/needs-update` exists.
+
+**\*-ac-power**[=`yes`|`no`]
+:   Reads `/sys/class/power_supply` to detect AC vs battery. With no
+    power-supply class entries (server / VM) the system is assumed to
+    be on AC.
+
+Examples:
+
+    # Skip the service on first boot (silent skip, dependents proceed):
+    condition-first-boot = no
+
+    # Refuse to start outside a KVM guest:
+    assert-virtualization = kvm
+
+    # Only run when the laptop is on AC:
+    condition-ac-power = yes
+
+    # Only run if the kernel was booted with debug=1:
+    condition-kernel-command-line = debug=1
+
 ## INITTAB (UTMPX)
 
 **inittab-id**=*ID*, **inittab-line**=*tty*

@@ -1150,6 +1150,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetVersion(desc.Version)
 	rec.SetUsage(desc.Usage)
 	rec.SetRequiredPaths(desc.RequiredFiles, desc.RequiredDirs)
+	rec.SetPredicates(desc.Predicates)
 	if len(desc.ExtraCommands) > 0 {
 		rec.SetExtraCommands(desc.ExtraCommands)
 	}

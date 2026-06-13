@@ -156,6 +156,17 @@ func (s *ScriptedService) BringUp() bool {
 		return true
 	}
 
+	// Evaluate systemd-style start preconditions before doing any work.
+	switch outcome, reason := s.CheckPredicates(); outcome {
+	case PredFailed:
+		s.services.logger.Error("Service '%s': %s", s.serviceName, reason)
+		return false
+	case PredSkip:
+		s.services.logger.Info("Service '%s': skipped (%s)", s.serviceName, reason)
+		s.markSkippedStart()
+		return true
+	}
+
 	// Fail-fast pre-start check: required_files / required_dirs must exist
 	// before we run the start script. See ProcessService.BringUp.
 	if err := s.CheckRequiredPaths(); err != nil {
