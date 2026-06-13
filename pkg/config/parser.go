@@ -70,6 +70,8 @@ type ServiceDescription struct {
 	ScriptBlock          bool // command came from a script...end script block
 	StopCommand          []string
 	FinishCommand        []string            // runs after process exits (before restart)
+	PreStartCommand      []string            // runs before command; non-zero exit fails the start (systemd ExecStartPre=)
+	PostStartCommand     []string            // runs after Started(); non-zero exit only logs (systemd ExecStartPost=)
 	ReadyCheckCommand    []string            // polls to verify service readiness
 	ReadyCheckInterval   time.Duration       // polling interval for ready-check (default 1s)
 	PreStopHook          []string            // runs before SIGTERM in BringDown
@@ -987,6 +989,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			desc.FinishCommand = append(desc.FinishCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
 		} else {
 			desc.FinishCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+	case "pre-start-command":
+		if op == OpPlusEqual {
+			desc.PreStartCommand = append(desc.PreStartCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.PreStartCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
+		}
+	case "post-start-command":
+		if op == OpPlusEqual {
+			desc.PostStartCommand = append(desc.PostStartCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
+		} else {
+			desc.PostStartCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
 	case "ready-check-command":
 		if op == OpPlusEqual {

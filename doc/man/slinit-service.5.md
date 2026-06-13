@@ -130,6 +130,19 @@ instance, with *$1* substitution still in effect.
 :   Runit-style: a program executed *after* **command** exits, before
     a possible restart.
 
+**pre-start-command**=*program* [*args*...]
+:   systemd-style *ExecStartPre=*: a program executed synchronously
+    before the main **command** is forked. A non-zero exit fails the
+    start. Runs after sandbox / required-paths checks but before
+    fork+exec, so a failed pre-hook never leaves a half-started
+    process behind. **+=** appends arguments. Process services only.
+
+**post-start-command**=*program* [*args*...]
+:   systemd-style *ExecStartPost=*: a program executed asynchronously
+    after the service reaches **started**. A non-zero exit is logged
+    but does not fail the service. Useful for "service is up, notify
+    something" hooks. **+=** appends arguments. Process services only.
+
 **ready-check-command**=*program* [*args*...]
 :   A program polled until it exits 0; the service is considered
     started only when the check passes.
