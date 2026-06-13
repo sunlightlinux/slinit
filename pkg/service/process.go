@@ -123,8 +123,11 @@ type ProcessService struct {
 	logMaxFiles   int
 	logRotateTime time.Duration
 	logProcessor  []string
-	logIncludes   []string
-	logExcludes   []string
+	logIncludes          []string
+	logExcludes          []string
+	logRateLimitInterval time.Duration
+	logRateLimitBurst    int
+	logLevelMax          int
 
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
@@ -170,6 +173,7 @@ func NewProcessService(set *ServiceSet, name string) *ProcessService {
 		restartInterval: defaultRestartInterval,
 		maxRestartCount: defaultMaxRestarts,
 		readyNotifyFD:   -1,
+		logLevelMax:     -1,
 	}
 	svc.ServiceRecord = *NewServiceRecord(svc, set, name, TypeProcess)
 	return svc
@@ -553,6 +557,19 @@ func (s *ProcessService) stopCronRunner() {
 func (s *ProcessService) SetLogFilters(includes, excludes []string) {
 	s.logIncludes = includes
 	s.logExcludes = excludes
+}
+
+// SetLogRateLimit configures the log pipeline's token-bucket limiter.
+// interval=0 or burst=0 disables it.
+func (s *ProcessService) SetLogRateLimit(interval time.Duration, burst int) {
+	s.logRateLimitInterval = interval
+	s.logRateLimitBurst = burst
+}
+
+// SetLogLevelMax sets the maximum syslog severity (0..7) to keep.
+// -1 disables the filter.
+func (s *ProcessService) SetLogLevelMax(level int) {
+	s.logLevelMax = level
 }
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
@@ -1219,26 +1236,32 @@ func (s *ProcessService) startProcess() error {
 		}
 		outputPipe = s.outputPipeW
 	} else if s.logType == LogToFile && s.logFile != "" {
-		// Use LogRotator if rotation, filtering, or processing is configured
+		// Use LogRotator if rotation, filtering, processing, rate
+		// limit, or severity filter is configured
 		if s.logMaxSize > 0 || s.logMaxFiles > 0 || s.logRotateTime > 0 ||
-			len(s.logProcessor) > 0 || len(s.logIncludes) > 0 || len(s.logExcludes) > 0 {
+			len(s.logProcessor) > 0 || len(s.logIncludes) > 0 || len(s.logExcludes) > 0 ||
+			(s.logRateLimitInterval > 0 && s.logRateLimitBurst > 0) ||
+			s.logLevelMax >= 0 {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 			}
 			var err error
 			s.logRotator, err = NewLogRotator(LogRotatorConfig{
-				FilePath:    s.logFile,
-				FilePerms:   os.FileMode(s.logFilePerms),
-				FileUID:     s.logFileUID,
-				FileGID:     s.logFileGID,
-				MaxSize:     s.logMaxSize,
-				MaxFiles:    s.logMaxFiles,
-				RotateTime:  s.logRotateTime,
-				Processor:   s.logProcessor,
-				Includes:    s.logIncludes,
-				Excludes:    s.logExcludes,
-				ServiceName: s.serviceName,
-				Logger:      s.services.logger,
+				FilePath:     s.logFile,
+				FilePerms:    os.FileMode(s.logFilePerms),
+				FileUID:      s.logFileUID,
+				FileGID:      s.logFileGID,
+				MaxSize:      s.logMaxSize,
+				MaxFiles:     s.logMaxFiles,
+				RotateTime:   s.logRotateTime,
+				Processor:    s.logProcessor,
+				Includes:     s.logIncludes,
+				Excludes:     s.logExcludes,
+				RateInterval: s.logRateLimitInterval,
+				RateBurst:    s.logRateLimitBurst,
+				LogLevelMax:  s.logLevelMax,
+				ServiceName:  s.serviceName,
+				Logger:       s.services.logger,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to create log rotator: %w", err)

@@ -32,6 +32,18 @@ type LogRotator struct {
 	includes  []*regexp.Regexp
 	excludes  []*regexp.Regexp
 
+	// Rate limiter (token bucket). rateInterval==0 means disabled.
+	rateInterval     time.Duration
+	rateBurst        int
+	rateTokens       float64   // current available tokens
+	rateLastRefill   time.Time // last time we refilled the bucket
+	rateDropped      uint64    // lines dropped since last reset
+	rateDropReported bool      // emitted the "rate limit hit" notice already
+
+	// Severity filter. levelMax == -1 means disabled. 0..7 follow
+	// syslog levels: 0=emerg (most severe) .. 7=debug (least).
+	levelMax int
+
 	// State
 	file        *os.File
 	currentSize int64
@@ -61,6 +73,12 @@ type LogRotatorConfig struct {
 	Includes    []string
 	Excludes    []string
 	ServiceName string
+	// Rate limit: drop lines exceeding RateBurst per RateInterval.
+	// Both must be > 0 for the limiter to engage.
+	RateInterval time.Duration
+	RateBurst    int
+	// Severity filter: 0..7 (syslog), -1 to disable.
+	LogLevelMax int
 	Logger      interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
@@ -70,17 +88,30 @@ type LogRotatorConfig struct {
 // NewLogRotator creates a new LogRotator with the given configuration.
 func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 	lr := &LogRotator{
-		filePath:    cfg.FilePath,
-		filePerms:   cfg.FilePerms,
-		fileUID:     cfg.FileUID,
-		fileGID:     cfg.FileGID,
-		maxSize:     cfg.MaxSize,
-		maxFiles:    cfg.MaxFiles,
-		rotateInt:   cfg.RotateTime,
-		processor:   cfg.Processor,
-		serviceName: cfg.ServiceName,
-		logger:      cfg.Logger,
-		lastRotate:  time.Now(),
+		filePath:     cfg.FilePath,
+		filePerms:    cfg.FilePerms,
+		fileUID:      cfg.FileUID,
+		fileGID:      cfg.FileGID,
+		maxSize:      cfg.MaxSize,
+		maxFiles:     cfg.MaxFiles,
+		rotateInt:    cfg.RotateTime,
+		processor:    cfg.Processor,
+		serviceName:  cfg.ServiceName,
+		logger:       cfg.Logger,
+		lastRotate:   time.Now(),
+		rateInterval: cfg.RateInterval,
+		rateBurst:    cfg.RateBurst,
+		levelMax:     cfg.LogLevelMax,
+	}
+	if lr.levelMax == 0 && cfg.LogLevelMax == 0 {
+		// Zero means "disabled" externally; internally we store -1 so
+		// 0 (emerg) remains a usable threshold for callers that
+		// explicitly request it via SetLogLevelMax.
+		lr.levelMax = -1
+	}
+	if cfg.RateInterval > 0 && cfg.RateBurst > 0 {
+		lr.rateTokens = float64(cfg.RateBurst)
+		lr.rateLastRefill = time.Now()
 	}
 	if lr.filePerms == 0 {
 		lr.filePerms = 0600
@@ -238,6 +269,30 @@ func (lr *LogRotator) processLine(line []byte) {
 		}
 	}
 
+	// Severity gate: drop lines with a syslog priority above the
+	// configured maximum. Lines without a <N> prefix are treated as
+	// "info" (6), so plain text output passes any threshold >= 6.
+	if lr.levelMax >= 0 {
+		if extractSyslogLevel(matchLine) > lr.levelMax {
+			return
+		}
+	}
+
+	// Rate limiter (token bucket). When the bucket is empty the line
+	// is dropped and a single "rate limit hit" notice is emitted.
+	if lr.rateInterval > 0 && lr.rateBurst > 0 {
+		if !lr.tryConsumeRateToken() {
+			lr.rateDropped++
+			if !lr.rateDropReported && lr.logger != nil {
+				lr.logger.Info(
+					"Service '%s': log-rate-limit hit (%d bursts/%s); dropping further lines",
+					lr.serviceName, lr.rateBurst, lr.rateInterval)
+				lr.rateDropReported = true
+			}
+			return
+		}
+	}
+
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
 
@@ -389,4 +444,90 @@ func (lr *LogRotator) Close() {
 	if doneCh != nil && running {
 		<-doneCh
 	}
+}
+
+// tryConsumeRateToken refills the token bucket based on elapsed time
+// and consumes one token. Returns false when the bucket is empty.
+// Refill rate is rateBurst tokens per rateInterval, capped at rateBurst.
+func (lr *LogRotator) tryConsumeRateToken() bool {
+	lr.mu.Lock()
+	defer lr.mu.Unlock()
+	now := time.Now()
+	if lr.rateLastRefill.IsZero() {
+		lr.rateLastRefill = now
+		lr.rateTokens = float64(lr.rateBurst)
+	} else {
+		elapsed := now.Sub(lr.rateLastRefill)
+		if elapsed > 0 {
+			refill := float64(lr.rateBurst) * elapsed.Seconds() / lr.rateInterval.Seconds()
+			lr.rateTokens += refill
+			if lr.rateTokens > float64(lr.rateBurst) {
+				lr.rateTokens = float64(lr.rateBurst)
+			}
+			lr.rateLastRefill = now
+		}
+	}
+	if lr.rateTokens >= 1 {
+		lr.rateTokens -= 1
+		// Reset the "dropped" notice once we have headroom again.
+		lr.rateDropReported = false
+		return true
+	}
+	return false
+}
+
+// extractSyslogLevel parses a leading <N> syslog priority prefix and
+// returns the level component (0..7). Lines without a prefix are
+// treated as info (6) so plain text output passes any threshold >= 6.
+//
+// Priority is `facility*8 + level`. We strip facility by masking with 7.
+func extractSyslogLevel(line []byte) int {
+	if len(line) < 3 || line[0] != '<' {
+		return 6
+	}
+	end := -1
+	for i := 1; i < len(line) && i <= 4; i++ {
+		if line[i] == '>' {
+			end = i
+			break
+		}
+		if line[i] < '0' || line[i] > '9' {
+			return 6
+		}
+	}
+	if end < 2 {
+		return 6
+	}
+	n := 0
+	for i := 1; i < end; i++ {
+		n = n*10 + int(line[i]-'0')
+	}
+	return n & 7
+}
+
+// ParseLogLevel decodes a level keyword used by log-level-max. Returns
+// -1 for empty / "off" / "none" / "any" (disabled), or 0..7 for valid
+// syslog severities. Unknown keywords yield an error.
+func ParseLogLevel(s string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "off", "none", "any":
+		return -1, nil
+	case "0", "emerg", "panic":
+		return 0, nil
+	case "1", "alert":
+		return 1, nil
+	case "2", "crit", "critical":
+		return 2, nil
+	case "3", "err", "error":
+		return 3, nil
+	case "4", "warn", "warning":
+		return 4, nil
+	case "5", "notice":
+		return 5, nil
+	case "6", "info":
+		return 6, nil
+	case "7", "debug":
+		return 7, nil
+	}
+	return -1, fmt.Errorf("unknown log level %q (use emerg/alert/crit/err/warn/notice/info/debug or 0..7)", s)
 }
