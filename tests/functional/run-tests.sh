@@ -53,15 +53,24 @@ check_prereqs() {
     fi
 }
 
-# Build the base VM image (once)
+# Build the base VM image (once).
+#
+# Staleness check: rebuild if anything under cmd/ or pkg/ is newer than
+# the cached initramfs. Previously we only watched cmd/slinit/main.go,
+# which silently kept stale binaries in the VM when only a pkg/ file
+# changed — leading to confusing "fix doesn't work" sessions when in
+# fact the new code never reached the VM.
 build_base() {
     if [ -f "${OUTPUT_DIR}/initramfs-base.cpio.gz" ] && [ -f "${OUTPUT_DIR}/vmlinuz-virt" ]; then
-        # Rebuild if binaries are stale
-        local slinit_src="${PROJECT_DIR}/cmd/slinit/main.go"
-        if [ "${OUTPUT_DIR}/initramfs-base.cpio.gz" -nt "$slinit_src" ]; then
+        local newest_src
+        newest_src=$(find "${PROJECT_DIR}/cmd" "${PROJECT_DIR}/pkg" \
+            -name '*.go' -type f -newer "${OUTPUT_DIR}/initramfs-base.cpio.gz" \
+            -print -quit 2>/dev/null)
+        if [ -z "$newest_src" ]; then
             echo "Using cached VM image (pass KEEP_BUILD=0 to force rebuild)"
             return 0
         fi
+        echo "Detected newer source (${newest_src#${PROJECT_DIR}/}), rebuilding..."
     fi
     echo "Building base VM image..."
     bash "${SCRIPT_DIR}/build-vm.sh"
