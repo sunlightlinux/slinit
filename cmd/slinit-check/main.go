@@ -268,6 +268,16 @@ func main() {
 				warnings++
 			}
 		}
+
+		// Check consumer-of: producer must exist, be a process-like service,
+		// and have log-type=pipe. Errors here use desc.ConsumerOf (the name
+		// string) directly, never a producer-description pointer that may be
+		// nil — mirrors dinit-check upstream fix 703e6d3.
+		if desc.ConsumerOf != "" {
+			e, w := checkConsumerOf(dirs, name, desc.ConsumerOf)
+			errors += e
+			warnings += w
+		}
 	}
 
 	fmt.Println("\nSecondary checks complete.")
@@ -289,6 +299,44 @@ func main() {
 	if errors > 0 {
 		os.Exit(1)
 	}
+}
+
+// checkConsumerOf validates the consumer-of relationship for svcName.
+// producerName is the value of desc.ConsumerOf (a service name string).
+// The producer must:
+//  1. exist as a service description on disk,
+//  2. be a process, bgprocess, or scripted service (something that runs),
+//  3. declare log-type = pipe so its stdout/stderr can be piped to us.
+//
+// Returns (errors, warnings). Note: producer is referenced by name (not
+// pointer) in every error path — a non-existing producer must not
+// trigger a nil-pointer deref.
+func checkConsumerOf(dirs []string, svcName, producerName string) (int, int) {
+	prodDesc, _ := findServiceDesc(dirs, producerName)
+	if prodDesc == nil {
+		fmt.Fprintf(os.Stderr,
+			"  ERROR [%s]: consumer-of producer %q does not exist\n",
+			svcName, producerName)
+		return 1, 0
+	}
+
+	errs, warns := 0, 0
+	switch prodDesc.Type {
+	case service.TypeProcess, service.TypeBGProcess, service.TypeScripted:
+		// ok
+	default:
+		fmt.Fprintf(os.Stderr,
+			"  ERROR [%s]: consumer-of producer %q must be process, bgprocess, or scripted (got %s)\n",
+			svcName, producerName, prodDesc.Type)
+		errs++
+	}
+	if prodDesc.LogType != service.LogToPipe {
+		fmt.Fprintf(os.Stderr,
+			"  ERROR [%s]: consumer-of producer %q must declare log-type = pipe\n",
+			svcName, producerName)
+		errs++
+	}
+	return errs, warns
 }
 
 func checkExecutable(path, svcName, setting, svcFile string) int {
