@@ -7,11 +7,17 @@ depends-on: system-init
 # via the same denylist.
 system-call-filter = ~ptrace mount
 system-call-error-number = EPERM
-command = /bin/sh -c "set -e; \
-if strace -f /bin/true 2>/tmp/seccomp-strace-err; then result=ptrace-allowed; \
-else \
-  if grep -q 'Operation not permitted\\|EPERM' /tmp/seccomp-strace-err 2>/dev/null; then result=ptrace-blocked; \
-  else result=strace-unavailable; fi; \
-fi; \
-echo $result > /tmp/seccomp-blocked-result; \
-exec sleep 600"
+script
+set -e
+if strace -f /bin/true 2>/tmp/seccomp-strace-err; then
+    result=ptrace-allowed
+else
+    if grep -q 'Operation not permitted\|EPERM' /tmp/seccomp-strace-err 2>/dev/null; then
+        result=ptrace-blocked
+    else
+        result=strace-unavailable
+    fi
+fi
+echo $result > /tmp/seccomp-blocked-result
+exec sleep 600
+end script
