@@ -4,19 +4,23 @@ depends-on: sandbox-prep
 private-tmp = yes
 protect-system = yes
 read-only-paths = /etc
-read-write-paths = /var/tmp/sandbox-rw
+read-write-paths = /run/sandbox-rw
 # A small probe script: write a file inside the private /tmp, attempt to
 # write to /etc (must fail since protect-system=yes ro-remounts /usr,
 # /boot, /efi but NOT /etc — so read-only-paths makes /etc ro). Drop a
 # witness file describing what happened.
+#
+# /run/sandbox-rw is used (not /var/tmp/...) because private-tmp
+# replaces /var/tmp inside the sandbox with a fresh tmpfs, which would
+# hide the bind source. /run is not touched by private-tmp.
 script
 set -e
 echo private > /tmp/sandbox-private
-echo readwrite > /var/tmp/sandbox-rw/marker
+echo readwrite > /run/sandbox-rw/marker
 if echo nope > /etc/sandbox-escape 2>/dev/null; then
-    echo etc-writable > /var/tmp/sandbox-rw/result
+    echo etc-writable > /run/sandbox-rw/result
 else
-    echo etc-protected > /var/tmp/sandbox-rw/result
+    echo etc-protected > /run/sandbox-rw/result
 fi
 exec sleep 600
 end script
