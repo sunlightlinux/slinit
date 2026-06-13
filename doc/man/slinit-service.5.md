@@ -351,6 +351,34 @@ trigger either action.
     without an external supervisor. The clock starts when the
     service enters STARTED; restarts reset it.
 
+**load-credential**=*NAME*:*PATH*, **set-credential**=*NAME*:*VALUE*
+:   Per-service credentials materialised at
+    `/run/credentials/`*service*`/`*NAME* and exposed to the
+    service through `$CREDENTIALS_DIRECTORY`. **load-credential**
+    copies a file from disk; **set-credential** writes the literal
+    value (no escape interpretation — use **load-credential** when
+    the literal needs newlines or NULs).
+
+    The directory is a fresh tmpfs (`size=1M`, `mode=0700`,
+    `MS_NOSUID|MS_NODEV|MS_NOEXEC`), each file is `mode 0400`
+    chowned to the **run-as** user, and the tmpfs is remounted
+    read-only before exec. The mount is torn down when the service
+    stops.
+
+    Multiple credentials may be added with **+=** or by repeating
+    the setting; ordering is preserved. Credential names may not
+    contain `/` or NUL.
+
+    *Out of scope (v1):* `load-credential-encrypted` (TPM-sealed
+    secrets), `import-credential` (inheritance from the daemon's
+    own credentials). Plain on-disk and inline forms cover the
+    immediate "secrets without env leakage" use case.
+
+    Example:
+
+        load-credential = api-key:/etc/myservice/api.key
+        set-credential  = greeting:hello world
+
 **oom-policy**=*continue*|*stop*|*kill*
 :   Reaction to a cgroup v2 OOM kill in the service's cgroup.
 

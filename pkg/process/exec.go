@@ -42,6 +42,23 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 	}
 
+	// Populate $CREDENTIALS_DIRECTORY from the configured sources.
+	// A failure aborts the start — running without an expected
+	// credential is worse than not running, and secrets are by design
+	// the kind of input you must not silently degrade away from.
+	credDir, err := SetupCredentials(params.ServiceName, params.Credentials, params.RunAsUID, params.RunAsGID)
+	if err != nil {
+		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
+	}
+	if credDir != "" {
+		// Add CREDENTIALS_DIRECTORY to env, building Env if needed.
+		if cap(params.Env) == 0 {
+			params.Env = []string{"CREDENTIALS_DIRECTORY=" + credDir}
+		} else {
+			params.Env = append(params.Env, "CREDENTIALS_DIRECTORY="+credDir)
+		}
+	}
+
 	// mlockall and set_mempolicy operate on the calling process, so
 	// they cannot be applied to a fork()ed child from outside. When
 	// either is configured we prepend slinit-runner to the command —
@@ -304,7 +321,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	}
 
 	// Start the process
-	err := cmd.Start()
+	err = cmd.Start()
 	if prevUmask >= 0 {
 		syscall.Umask(prevUmask)
 	}
@@ -320,6 +337,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 		if lockFD != nil {
 			lockFD.Close()
+		}
+		// Roll back the credentials tmpfs so a failed start does not
+		// leave a populated /run/credentials/<svc>/ behind.
+		if credDir != "" {
+			_ = CleanupCredentials(params.ServiceName)
 		}
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
 	}

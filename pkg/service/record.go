@@ -327,6 +327,12 @@ type ServiceRecord struct {
 	// in the cgroup tree. The watcher is set up lazily in Started().
 	oomPolicy OOMPolicy
 	oomWatch  *oomWatcher
+
+	// credentials are file/literal secrets materialised at
+	// /run/credentials/<service>/ via a fresh ro tmpfs and exposed
+	// through $CREDENTIALS_DIRECTORY. Set up in StartProcess (parent
+	// side) and torn down in Stopped().
+	credentials []process.CredentialSource
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -427,6 +433,20 @@ func (sr *ServiceRecord) SetOOMPolicy(p OOMPolicy) { sr.oomPolicy = p }
 
 // OOMPolicy returns the configured OOM policy.
 func (sr *ServiceRecord) OOMPolicy() OOMPolicy { return sr.oomPolicy }
+
+// SetCredentials records the per-service credential sources. Copies
+// the slice so the caller may reuse it.
+func (sr *ServiceRecord) SetCredentials(c []process.CredentialSource) {
+	if len(c) > 0 {
+		sr.credentials = append(sr.credentials[:0], c...)
+	} else {
+		sr.credentials = nil
+	}
+}
+
+// Credentials returns the configured credential sources for
+// introspection / tests.
+func (sr *ServiceRecord) Credentials() []process.CredentialSource { return sr.credentials }
 
 // armRuntimeMaxTimer schedules a stop request runtimeMax after now.
 // Called from Started(); the AfterFunc runs in its own goroutine so it
@@ -1156,6 +1176,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 		params.SchedResetOnFork = sr.schedResetOnFork
 	}
 	params.ServiceDirs = sr.serviceDirs
+	params.ServiceName = sr.serviceName
+	params.Credentials = sr.credentials
 	params.AppArmorLoadProfile = sr.appArmorLoad
 	params.AppArmorProfile = sr.appArmorSwitch
 	params.DebugStop = sr.debug
@@ -1786,6 +1808,17 @@ func (sr *ServiceRecord) Stopped() {
 
 	// Cancel the OOM watcher (if armed). Idempotent — nil-safe.
 	sr.cancelOOMWatcher()
+
+	// Tear down the per-service /run/credentials/<svc>/ tmpfs (no-op
+	// when no credentials were configured). Cleanup errors are logged
+	// but don't block the rest of Stopped — the daemon will hold a
+	// pointer to the umount target until next boot at worst.
+	if len(sr.credentials) > 0 {
+		if err := process.CleanupCredentials(sr.serviceName); err != nil {
+			sr.services.logger.Error(
+				"Service '%s': credentials cleanup: %v", sr.serviceName, err)
+		}
+	}
 
 	if sr.haveConsole {
 		sr.releaseConsole()

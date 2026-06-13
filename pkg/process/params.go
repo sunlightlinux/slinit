@@ -255,6 +255,14 @@ type ExecParams struct {
 	// entries (RuntimeDirectory) are removed when the service stops.
 	ServiceDirs []ServiceDir
 
+	// Credentials are files exposed to the service via a fresh tmpfs at
+	// /run/credentials/<service>/, owned by RunAsUID/RunAsGID, files
+	// mode 0400, tmpfs remounted ro after populate. ServiceName tells
+	// StartProcess where to mount it. The path is written to the
+	// $CREDENTIALS_DIRECTORY env var; the caller does not pre-set it.
+	ServiceName string
+	Credentials []CredentialSource
+
 	// DebugStop, when true, makes slinit-runner raise SIGSTOP on itself
 	// before exec so a developer can `gdb -p` the (pre-exec) process and
 	// `kill -CONT` it to proceed. Requires the runner wrap.
