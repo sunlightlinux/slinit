@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
@@ -151,5 +153,57 @@ func TestCheckNamespaceOverlappingUidMaps(t *testing.T) {
 	e, _ := checkNamespaceConfig(desc, "test")
 	if e != 1 {
 		t.Errorf("overlapping uid maps: errors=%d, want 1", e)
+	}
+}
+
+// --- consumer-of validation tests ---
+
+// makeSvcFile writes a small service description into dir/name.
+func makeSvcFile(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+func TestCheckConsumerOfMissingProducer(t *testing.T) {
+	dir := t.TempDir()
+	// Note: no producer file written; consumer references "ghost".
+	e, w := checkConsumerOf([]string{dir}, "consumer", "ghost")
+	if e != 1 {
+		t.Errorf("missing producer: errors=%d, want 1", e)
+	}
+	if w != 0 {
+		t.Errorf("missing producer: warnings=%d, want 0", w)
+	}
+}
+
+func TestCheckConsumerOfWrongType(t *testing.T) {
+	dir := t.TempDir()
+	makeSvcFile(t, dir, "prod", "type = internal\n")
+	e, _ := checkConsumerOf([]string{dir}, "consumer", "prod")
+	// Two errors expected: wrong type AND missing log-type=pipe.
+	if e < 1 {
+		t.Errorf("wrong-type producer: errors=%d, want >=1", e)
+	}
+}
+
+func TestCheckConsumerOfMissingPipeLogType(t *testing.T) {
+	dir := t.TempDir()
+	makeSvcFile(t, dir, "prod",
+		"type = process\ncommand = /bin/true\n")
+	e, _ := checkConsumerOf([]string{dir}, "consumer", "prod")
+	if e != 1 {
+		t.Errorf("missing log-type=pipe: errors=%d, want 1", e)
+	}
+}
+
+func TestCheckConsumerOfHappyPath(t *testing.T) {
+	dir := t.TempDir()
+	makeSvcFile(t, dir, "prod",
+		"type = process\ncommand = /bin/true\nlog-type = pipe\n")
+	e, w := checkConsumerOf([]string{dir}, "consumer", "prod")
+	if e != 0 || w != 0 {
+		t.Errorf("valid producer: errors=%d warnings=%d, want 0/0", e, w)
 	}
 }
