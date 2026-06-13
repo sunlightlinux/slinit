@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math/rand"
 	"os/exec"
 	"sync"
 	"time"
@@ -11,11 +12,30 @@ import (
 // When the parent service reaches STARTED, Start() is called to begin
 // the periodic execution. Stop() blocks until any in-progress execution
 // completes, then returns.
+//
+// Two scheduling modes:
+//
+//   - Interval mode (default): runs every `interval` duration.
+//   - Calendar mode: when `calendar != nil`, fire times are derived from
+//     a systemd-style OnCalendar expression. `interval` is unused.
+//
+// Optional modifiers:
+//
+//   - randomizedDelay: jitter added to each fire time, uniform [0, d).
+//   - persistent: on startup, if lastRun is set and a fire time was
+//     missed (lastRun > 0 < now), run once immediately to catch up
+//     before resuming the schedule. Currently the persistence store is
+//     in-memory (per-process); a future on-disk store would survive
+//     daemon restarts.
 type CronRunner struct {
-	command  []string
-	interval time.Duration
-	delay    time.Duration
-	onError  string // "continue" (default) or "stop"
+	command         []string
+	interval        time.Duration
+	delay           time.Duration
+	onError         string // "continue" (default) or "stop"
+	calendar        *CalendarSpec
+	randomizedDelay time.Duration
+	persistent      bool
+	lastRun         time.Time
 
 	svc    Service // parent service (for logging context)
 	logger ServiceLogger
@@ -26,7 +46,7 @@ type CronRunner struct {
 	doneCh  chan struct{} // closed when the cron loop has fully exited
 }
 
-// NewCronRunner creates a new CronRunner.
+// NewCronRunner creates a new CronRunner in interval mode.
 func NewCronRunner(svc Service, cmd []string, interval, delay time.Duration, onError string, logger ServiceLogger) *CronRunner {
 	if onError == "" {
 		onError = "continue"
@@ -41,6 +61,29 @@ func NewCronRunner(svc Service, cmd []string, interval, delay time.Duration, onE
 		onError:  onError,
 		svc:      svc,
 		logger:   logger,
+	}
+}
+
+// NewCalendarCronRunner creates a new CronRunner in calendar mode. The
+// command is invoked at every instant matching `calendar`. Optional
+// `randomizedDelay` (>=0) adds uniform jitter to each fire time;
+// `persistent` enables catch-up on startup when a fire was missed.
+func NewCalendarCronRunner(
+	svc Service, cmd []string, calendar *CalendarSpec,
+	randomizedDelay time.Duration, persistent bool,
+	onError string, logger ServiceLogger,
+) *CronRunner {
+	if onError == "" {
+		onError = "continue"
+	}
+	return &CronRunner{
+		command:         cmd,
+		calendar:        calendar,
+		randomizedDelay: randomizedDelay,
+		persistent:      persistent,
+		onError:         onError,
+		svc:             svc,
+		logger:          logger,
 	}
 }
 
@@ -91,7 +134,15 @@ func (cr *CronRunner) IsRunning() bool {
 func (cr *CronRunner) loop() {
 	defer close(cr.doneCh)
 
-	// Initial delay
+	if cr.calendar != nil {
+		cr.loopCalendar()
+		return
+	}
+	cr.loopInterval()
+}
+
+// loopInterval drives the original "every N seconds" schedule.
+func (cr *CronRunner) loopInterval() {
 	if cr.delay > 0 {
 		select {
 		case <-time.After(cr.delay):
@@ -100,7 +151,6 @@ func (cr *CronRunner) loop() {
 		}
 	}
 
-	// Run once immediately, then on interval
 	if !cr.runOnce() {
 		return
 	}
@@ -115,6 +165,54 @@ func (cr *CronRunner) loop() {
 				return
 			}
 		case <-cr.stopCh:
+			return
+		}
+	}
+}
+
+// loopCalendar computes successive fire times from the CalendarSpec.
+// On startup, if persistent and lastRun indicates a missed fire, runs
+// once immediately to catch up; otherwise sleeps until the next match.
+// Random jitter (if configured) is added between fire times.
+func (cr *CronRunner) loopCalendar() {
+	now := time.Now()
+	// Catch-up: if persistent and the next scheduled fire after lastRun
+	// is in the past, run now once before resuming.
+	if cr.persistent && !cr.lastRun.IsZero() {
+		nextMissed := cr.calendar.NextAfter(cr.lastRun)
+		if !nextMissed.IsZero() && nextMissed.Before(now) {
+			cr.logger.Info(
+				"Service '%s': calendar catch-up (missed fire at %v)",
+				cr.svc.Name(), nextMissed)
+			if !cr.runOnce() {
+				return
+			}
+		}
+	}
+
+	for {
+		now = time.Now()
+		next := cr.calendar.NextAfter(now)
+		if next.IsZero() {
+			// Spec has no future match — exit quietly.
+			return
+		}
+		// Apply jitter so a fleet of machines doesn't herd onto the same
+		// fire time. Uniform [0, randomizedDelay).
+		if cr.randomizedDelay > 0 {
+			next = next.Add(time.Duration(rand.Int63n(int64(cr.randomizedDelay))))
+		}
+		delay := time.Until(next)
+		if delay < 0 {
+			delay = 0
+		}
+		select {
+		case <-time.After(delay):
+		case <-cr.stopCh:
+			return
+		}
+		cr.lastRun = next
+		if !cr.runOnce() {
 			return
 		}
 	}

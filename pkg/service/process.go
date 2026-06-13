@@ -318,9 +318,20 @@ func (s *ProcessService) SetOutputLogger(cmd []string) { s.outputLogger = cmd }
 // When configured, stderr is piped to this command separately from stdout.
 func (s *ProcessService) SetErrorLogger(cmd []string) { s.errorLogger = cmd }
 
-// SetCronConfig configures the periodic cron task.
+// SetCronConfig configures the periodic cron task in interval mode.
 func (s *ProcessService) SetCronConfig(cmd []string, interval, delay time.Duration, onError string) {
 	s.cronRunner = NewCronRunner(s, cmd, interval, delay, onError, s.services.logger)
+}
+
+// SetCronCalendar configures the periodic cron task in calendar mode.
+// When calendar is non-nil it takes precedence over any interval
+// scheduling that may have been set earlier.
+func (s *ProcessService) SetCronCalendar(
+	cmd []string, calendar *CalendarSpec,
+	randomizedDelay time.Duration, persistent bool, onError string,
+) {
+	s.cronRunner = NewCalendarCronRunner(
+		s, cmd, calendar, randomizedDelay, persistent, onError, s.services.logger)
 }
 
 // SetHealthCheck configures the continuous health checker.

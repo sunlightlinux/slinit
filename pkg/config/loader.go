@@ -283,7 +283,12 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 			s.SetWatchdogTimeout(desc.WatchdogTimeout)
 		}
 		if len(desc.CronCommand) > 0 {
-			s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+			if desc.CronCalendar != nil {
+				s.SetCronCalendar(desc.CronCommand, desc.CronCalendar,
+					desc.CronRandomizedDelay, desc.CronPersistent, desc.CronOnError)
+			} else {
+				s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+			}
 		}
 		if len(desc.HealthCheckCommand) > 0 {
 			s.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
@@ -957,7 +962,12 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 			svc.SetWatchdogTimeout(desc.WatchdogTimeout)
 		}
 		if len(desc.CronCommand) > 0 {
-			svc.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+			if desc.CronCalendar != nil {
+				svc.SetCronCalendar(desc.CronCommand, desc.CronCalendar,
+					desc.CronRandomizedDelay, desc.CronPersistent, desc.CronOnError)
+			} else {
+				svc.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+			}
 		}
 		if len(desc.HealthCheckCommand) > 0 {
 			svc.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
