@@ -4,17 +4,21 @@ A service manager and init system written in Go. The core is a port of
 [dinit](https://github.com/davmac314/dinit), with features layered in
 from [runit](http://smarden.org/runit/),
 [s6-linux-init](https://skarnet.org/software/s6-linux-init/),
-[OpenRC](https://github.com/OpenRC/openrc), and
-[upstart](https://code.launchpad.net/upstart).
+[OpenRC](https://github.com/OpenRC/openrc),
+[upstart](https://code.launchpad.net/upstart), and
+[systemd](https://systemd.io/) (relevant service-manager subset; D-Bus,
+journald binary log, logind, and generators are deliberately out of
+scope).
 
 slinit can run as PID 1 (init system) or as a user-level service
 manager. It uses a dinit-compatible configuration format and manages
 services with dependency tracking, automatic restart, and process
-lifecycle management. Admins moving from any of the five upstreams
+lifecycle management. Admins moving from any of the six upstreams
 should keep their muscle memory:
 
 - **dinit**: service-description format, dep types, state machine, and
-  `slinitctl` verbs are 1:1 with dinit.
+  `slinitctl` verbs are 1:1 with dinit. Adds `prepared-by` (hard dep
+  that also restarts when the dependent restarts).
 - **runit**: `finish-command`, `ready-check-command`, `pre-stop-hook`,
   `env-dir`, `control-command-<SIGNAL>`, `chroot`, `new-session`,
   `lock-file`, log rotation/filtering/processor, down-file marker,
@@ -32,6 +36,23 @@ should keep their muscle memory:
   `author`/`version`/`usage`, `apparmor-load`/`apparmor-switch`,
   `debug`, `script ... end script`, `start-on-path-*` activation,
   `<service>.override` drop-ins, `slinitctl reset-env` / `reload-all`.
+- **systemd**: declarative start predicates (`condition-*` /
+  `assert-*`), auto-managed service directories (`runtime-directory`
+  family), filesystem sandbox (`private-tmp`, `protect-system`,
+  `read-only-paths`, `bind-paths`, `inaccessible-paths`,
+  `temporary-filesystem`, `protect-home`, `protect-proc`/`proc-subset`),
+  `system-call-filter` seccomp filter with curated groups + argument
+  architectures, `Restrict*`/`Protect*` hardening cluster
+  (`protect-kernel-tunables/-modules/-logs/-clock/-control-groups/`
+  `-hostname`, `lock-personality`), `failure-action` /
+  `success-action` / `reboot-argument`, `runtime-max-sec`,
+  `oom-policy`, `pre-start-command` / `post-start-command`,
+  `log-rate-limit-*` + `log-level-max`, per-service `credentials`
+  via tmpfs ro + `$CREDENTIALS_DIRECTORY`, calendar timers
+  (`cron-calendar`, `cron-randomized-delay`, `cron-persistent`),
+  `dynamic-user` (transient UID/GID from a per-daemon pool),
+  `file-descriptor-store-max` (sd_notify FDSTORE=1 with SCM_RIGHTS
+  replay across restarts).
 
 Runlevels, where present, are pure UX aliases over the dependency
 graph — slinit does not introduce a second state machine or config
@@ -40,7 +61,7 @@ format to accommodate them.
 ## Features
 
 - **Service types**: process, scripted, bgprocess, internal, triggered
-- **Dependency management**: 6 dependency types (regular, waits-for, milestone, soft, before, after)
+- **Dependency management**: 7 dependency types (regular, waits-for, milestone, soft, before, after, prepared-by)
 - **Process lifecycle**: SIGTERM with configurable timeout, SIGKILL escalation
 - **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
 - **Dinit-compatible config**: key=value service description files
@@ -50,6 +71,19 @@ format to accommodate them.
 - **Config includes**: `@include` and `@include-opt` directives for modular config
 - **Runit-inspired features**: finish-command, ready-check-command, pre-stop-hook, env-dir, control-command, chroot, new-session, lock-file, close-fds, log rotation/filtering/processor, down-file marker
 - **Upstart-derived stanzas**: `manual` (opt-in services that refuse auto-activation), `normal-exit` (exit codes / signals declared as success — suppresses respawn under `restart=on-failure`/`restart=yes`), `reload-signal` (declarative signal sent by `slinitctl reload-signal`), `umask` (per-service file-creation mask), `author`/`version`/`usage` (informational metadata surfaced by `slinitctl status`)
+- **Systemd-derived features**:
+  - **Start predicates**: `condition-*` (skip silently on fail) and `assert-*` (fail start) — 13 kinds × cond/assert × `!` negation. Recognised: `path-exists`/`-glob`, `path-is-directory`/`-mount-point`, `file-not-empty`, `directory-not-empty`, `kernel-command-line`, `virtualization` (kvm/qemu/vmware/wsl/docker/lxc/...), `first-boot`, `host`, `security` (selinux/apparmor/tomoyo/smack/ima/audit), `needs-update`, `ac-power`
+  - **Service directories**: `runtime-directory`/`state-directory`/`cache-directory`/`logs-directory`/`configuration-directory` (+`-mode`) auto-create + chown to `run-as` under `/run`,`/var/lib`,`/var/cache`,`/var/log`,`/etc`; runtime dir removed on stop per `runtime-directory-preserve`
+  - **Filesystem sandbox**: `private-tmp`, `protect-system` (yes/full/strict), `read-only-paths`/`read-write-paths`/`inaccessible-paths`, `bind-paths`/`bind-read-only-paths`, `temporary-filesystem`, `protect-home` (yes/tmpfs/read-only), `protect-proc`/`proc-subset` — all applied via `slinit-runner` in the service's own mount namespace
+  - **Seccomp**: `system-call-filter` with curated groups (`@system-service`, `@privileged`, etc.) + `~deny` syntax, `system-call-architectures`, `system-call-error-number`, `system-call-log`; cBPF compiler in `pkg/seccomp`
+  - **Hardening**: `protect-kernel-tunables`/`-modules`/`-logs`/`-clock`/`-control-groups`/`-hostname`, `lock-personality` (mount-based + seccomp-based, batched in slinit-runner)
+  - **Appliance basics**: `failure-action`/`success-action` (none/reboot/poweroff/halt/exit) + `reboot-argument`, `runtime-max-sec` (hard cap on STARTED time), `oom-policy` (continue/stop/kill on cgroup-v2 memory.events)
+  - **Hooks**: `pre-start-command` (sync, non-zero exit fails start), `post-start-command` (async after Started, log-only)
+  - **Log pipeline**: `log-rate-limit-interval`/`log-rate-limit-burst` (token bucket), `log-level-max` (syslog priority filter)
+  - **Credentials**: `load-credential = NAME:PATH` (copy file), `set-credential = NAME:VALUE` (inline) — exposed via tmpfs ro at `/run/credentials/<svc>/` (mode 0700, files 0400, chown to run-as) and `$CREDENTIALS_DIRECTORY` env var
+  - **Calendar timers**: `cron-calendar = <expr>` (`daily`, `hourly`, `Mon..Fri 09:00`, `*-*-1 00:00`, `*:0/15`, ...) + `cron-randomized-delay` (jitter) + `cron-persistent` (catch-up on startup)
+  - **Dynamic user**: `dynamic-user = yes` allocates a transient UID/GID from a per-daemon pool (61184..65519, matching systemd) at every BringUp, released in Stopped; no `/etc/passwd` entry
+  - **File-descriptor store**: `file-descriptor-store-max = N` creates a `$NOTIFY_SOCKET` Unix datagram socket; the child can sd_notify `FDSTORE=1` + `FDNAME=name` with fds via SCM_RIGHTS; on the next BringUp the stored fds are prepended to `LISTEN_FDS` (with names in `LISTEN_FDNAMES`) so a restart re-attaches its listening sockets without losing connections
 - **Path activation**: `start-on-path-exists`, `start-on-path-changed`, `start-on-path-modified`, `start-on-directory-not-empty` — inotify-driven, systemd-style one-shot triggers that start a service when a filesystem condition is met
 - **`.override` drop-ins**: an upstart-style `<service>.override` file next to the service file tweaks a packaged service's stanzas (scalars replace, `+=` appends) without editing the shipped file; applied after conf.d overlays so it has the final say
 - **Inline shell**: upstart-style `script ... end script` block becomes the service command via `/bin/sh -c` (verbatim multi-line body, same load-time `$VAR`/`$1` substitution as `command`, mutually exclusive with it)
@@ -467,6 +501,47 @@ command = /usr/bin/optional
 | `cron-interval`           | Interval between cron executions (seconds)        |
 | `cron-delay`              | Initial delay before first cron execution (seconds) |
 | `cron-on-error`           | Behavior on cron command failure: `continue` (default) or `stop` |
+| `cron-calendar`           | systemd-style `OnCalendar=` expression (`daily`, `Mon..Fri 09:00`, `*:0/15`) |
+| `cron-randomized-delay`   | Jitter `[0,d)` added to each calendar fire        |
+| `cron-persistent`         | Catch-up run when a fire was missed across daemon downtime |
+| `prepared-by:`            | Hard dependency that also restarts when the dependent restarts |
+| `condition-*` / `assert-*` | Systemd-style start predicates (13 kinds, `!` negation) -- skip silently / fail start |
+| `runtime-directory`       | systemd-style auto-managed `/run/<svc>` (chowned to run-as) |
+| `state-directory`         | Persistent `/var/lib/<svc>` (also `cache-`/`logs-`/`configuration-directory`) |
+| `private-tmp`             | Per-service `/tmp` and `/var/tmp` tmpfs           |
+| `protect-system`          | RO-remount `/usr`/`/boot`/`/efi` (yes/full/strict) |
+| `read-only-paths`         | Bind ro at given paths                            |
+| `read-write-paths`        | Bind rw at given paths (punches holes through protect-system) |
+| `inaccessible-paths`      | Hide paths via empty tmpfs mount                  |
+| `bind-paths`              | Bind host paths into the sandbox (rw)             |
+| `bind-read-only-paths`    | Bind host paths into the sandbox (ro)             |
+| `temporary-filesystem`    | Mount fresh tmpfs at given path                   |
+| `protect-home`            | yes/tmpfs/read-only on `/home`,`/root`,`/run/user`|
+| `protect-proc`            | proc-hidepid mode (`default`/`invisible`/`ptraceable`) |
+| `proc-subset`             | `/proc` view subset (`all`/`pid`)                 |
+| `system-call-filter`      | seccomp allow/deny list; supports `@group` and `~deny-first` |
+| `system-call-architectures` | Allowed architectures for seccomp                |
+| `system-call-error-number` | Errno returned for filtered syscalls (default EPERM) |
+| `protect-kernel-tunables` | Block writes to `/proc/sys`, `/sys`               |
+| `protect-kernel-modules`  | Block `init_module`/`finit_module`/`delete_module` |
+| `protect-kernel-logs`     | Block `syslog`                                    |
+| `protect-clock`           | Block `clock_settime`/`settimeofday`/`adjtimex`   |
+| `protect-control-groups`  | RO `/sys/fs/cgroup`                               |
+| `protect-hostname`        | Block `sethostname`/`setdomainname`               |
+| `lock-personality`        | Block `personality` syscall                       |
+| `failure-action`          | System action on permanent failure: none/reboot/poweroff/halt/exit |
+| `success-action`          | System action on clean finish: none/reboot/poweroff/halt/exit |
+| `reboot-argument`         | Argument for reboot syscall (kexec-style)        |
+| `runtime-max-sec`         | Hard cap on STARTED time; stop when exceeded     |
+| `oom-policy`              | Reaction to cgroup-v2 OOM kill: continue/stop/kill |
+| `pre-start-command`       | Hook before `command` (sync, non-zero exit fails start) |
+| `post-start-command`      | Hook after Started (async, log-only)             |
+| `log-rate-limit-interval` / `-burst` | Token-bucket limiter (drop excess lines) |
+| `log-level-max`           | Drop lines above syslog severity (emerg..debug)  |
+| `load-credential`         | `NAME:PATH` copy a file into `/run/credentials/<svc>/` |
+| `set-credential`          | `NAME:VALUE` write inline literal as a credential |
+| `dynamic-user`            | Allocate a transient UID/GID per BringUp, release on Stopped |
+| `file-descriptor-store-max` | Enable sd_notify FDSTORE=1 fd handover across restarts |
 | `@include`                | Include another config file (error if not found) |
 | `@include-opt`            | Include another config file (ignore if not found)|
 
@@ -487,6 +562,7 @@ command = /usr/bin/optional
 | `depends-on` | Hard dependency -- start required, stop propagates |
 | `depends-ms` | Milestone dependency -- must start, then becomes soft |
 | `waits-for` | Soft dependency -- waits for start, but failure doesn't propagate |
+| `prepared-by` | Hard dependency like `depends-on`, but each restart of the dependent also restarts the dependency (for prepare/cleanup per execution) |
 | `before` | Ordering -- this service starts before the named service |
 | `after` | Ordering -- this service starts after the named service |
 
@@ -787,11 +863,13 @@ slinit/
 │   ├── rc-update/         # OpenRC compat: runlevel membership via runlevel-<name> services
 │   └── rc-status/         # OpenRC compat: status listing
 ├── pkg/
-│   ├── service/           # Service types, state machine, dependency graph
+│   ├── service/           # Service types, state machine, dependency graph, predicates, calendar, UID pool
 │   ├── config/            # Dinit-compatible config parser + loader, init.d/LSB, OpenRC conf.d wrapper
 │   ├── control/           # Control socket protocol (v6) and server
 │   ├── shutdown/          # PID 1 init, shutdown executor, soft-reboot, clock guard, run-mode
-│   ├── process/           # Process execution, monitoring, attrs, caps
+│   ├── process/           # Process execution, monitoring, attrs, caps, credentials, fd-store, sd_notify socket
+│   ├── seccomp/           # cBPF compiler + curated syscall groups (@system-service, @privileged, ...)
+│   ├── pathwatch/         # inotify-driven path activation
 │   ├── eventloop/         # Event loop, signals, timers
 │   ├── logging/           # Console logger (wallclock / ISO / TAI64N / none)
 │   ├── utmp/              # UTMPX cgo wrapper (boot + logout + shutdown records)
@@ -801,21 +879,21 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 77 QEMU-based integration tests
-├── tests/fuzz/            # 21 fuzz targets (config, protocol, autofs, process parsers)
+├── tests/functional/      # 82 QEMU-based integration tests
+├── tests/fuzz/            # 21+ fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
 
 ## Testing
 
 ```bash
-# Unit tests (~850+ tests + benchmarks across 25 packages)
+# Unit tests (~900+ tests + benchmarks across 26 packages)
 go test ./...
 
-# Functional tests (77 QEMU-based integration tests)
+# Functional tests (82 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
-# Fuzz targets (21 targets across 4 files)
+# Fuzz targets (21+ targets across 4 files)
 go test -fuzz=FuzzParseConfig ./tests/fuzz
 ```
 
@@ -848,6 +926,18 @@ go test -fuzz=FuzzParseConfig ./tests/fuzz
 - [x] **Phase 25**: AppArmor confinement (first LSM integration) -- `apparmor-load` parses a profile (`apparmor_parser -r`) parent-side before start; `apparmor-switch` transitions on exec via `slinit-runner` writing `/proc/self/attr/exec` (`aa_change_onexec`), since the kernel binds the transition to the task performing the `execve`; both fail closed
 - [x] **Phase 26**: `debug = yes` developer stop -- slinit-runner raises `SIGSTOP` after runner setup but before `execve` so `gdb -p` can attach pre-exec; `kill -CONT` resumes into the AppArmor transition + exec. Completes the upstart-feature adaptation backlog (all 12 candidates shipped)
 - [x] **Phase 27**: systemd-style auto-managed service directories -- `runtime-directory`/`state-directory`/`cache-directory`/`logs-directory`/`configuration-directory` (+`-mode`) created and chowned to `run-as` under `/run`,`/var/lib`,`/var/cache`,`/var/log`,`/etc` before start; runtime dir removed on stop per `runtime-directory-preserve` (no/yes/restart). First item of the systemd-adaptation backlog
+- [x] **Phase 28**: Filesystem sandbox cluster -- `private-tmp`, `protect-system`, `read-only-paths`/`read-write-paths`, `protect-home`, `inaccessible-paths`, `protect-proc`/`proc-subset`, `bind-paths`/`bind-read-only-paths`, `temporary-filesystem`; applied child-side via `slinit-runner` in a fresh mount namespace (MS_PRIVATE on `/`, then layered overlays)
+- [x] **Phase 29**: Seccomp filter -- `system-call-filter` with `~deny` prefix + curated `@group` allowlists (`@system-service`, `@privileged`, `@network-io`, ...), `system-call-architectures`, `system-call-error-number`, `system-call-log`; cBPF compiler in `pkg/seccomp` (multi-arch syscall tables, native + extra arches)
+- [x] **Phase 30**: Hardening cluster (`Restrict*`/`Protect*` v1) -- `protect-kernel-tunables/-modules/-logs/-clock/-control-groups/-hostname`, `lock-personality`; mount-based knobs (RO `/proc/sys`,`/sys/fs/cgroup`) compose with mount-namespace setup, seccomp-based knobs (`clock_settime`,`sethostname`,`personality`,`init_module`...) feed into the runner's seccomp install
+- [x] **Phase 31**: Dinit upstream parity refresh -- `prepared-by` dependency type (hard dep that also restarts when the dependent restarts), enable/disable persisted via `waits-for.d` symlink, `slinit-check` validates `consumer-of` (producer exists / right type / `log-type=pipe`); restart-limit-count entering a stable FAILED state instead of looping `initiateStart -> exit -> Stopped -> initiateStart`
+- [x] **Phase 32**: Start predicates -- `condition-*` (skip silently on fail) and `assert-*` (fail start) with `!` negation; 13 kinds (`path-exists`/`-glob`, `path-is-directory`/`-mount-point`, `file-not-empty`, `directory-not-empty`, `kernel-command-line`, `virtualization`, `first-boot`, `host`, `security`, `needs-update`, `ac-power`); SKIPPED short-circuits to STARTED so dependents proceed
+- [x] **Phase 33**: Appliance basics -- `failure-action` / `success-action` (none/reboot/poweroff/halt/exit) + `reboot-argument`; `runtime-max-sec` (hard cap on STARTED time, stop via normal path); `oom-policy` (continue/stop/kill) driven by a per-service cgroup-v2 `memory.events` watcher
+- [x] **Phase 34**: Pre-start / post-start hooks -- systemd-style `pre-start-command` (sync, non-zero exit fails start) and `post-start-command` (async, log-only); same working-dir / env / timeout as `finish-command`
+- [x] **Phase 35**: Log pipeline filters -- `log-rate-limit-interval`/`log-rate-limit-burst` (token bucket; drops with a single "limit hit" notice) + `log-level-max` (syslog `<N>` priority gate, lines without prefix treated as info)
+- [x] **Phase 36**: Credentials framework -- `load-credential=NAME:PATH` (copy file) and `set-credential=NAME:VALUE` (inline); materialised at `/run/credentials/<svc>/` on a fresh ro tmpfs (`size=1M`, `mode=0700`, `MS_NOSUID|MS_NODEV|MS_NOEXEC`), files `0400` chowned to run-as, `$CREDENTIALS_DIRECTORY` exported to the service. No env leakage via `/proc`.
+- [x] **Phase 37**: Calendar timers -- `cron-calendar` (`daily`, `hourly`, `weekly`, `Mon..Fri 09:00`, `Mon,Wed,Fri 12:00`, `*-*-1 00:00`, `*:0/15`); `cron-randomized-delay` jitter; `cron-persistent` catch-up; per-field advancement in NextAfter (no brute-force second iteration)
+- [x] **Phase 38**: Dynamic users -- `dynamic-user=yes` allocates a transient UID/GID from a per-daemon pool (61184..65519, matching systemd) at every BringUp via shared `UIDPool`; released in Stopped(); no `/etc/passwd` entry. UID-dependent setup (`runtime-directory`, `credentials`) sees the same transient identity
+- [x] **Phase 39**: File-descriptor store -- `file-descriptor-store-max=N` creates a per-service `$NOTIFY_SOCKET` Unix datagram socket at `/run/slinit/notify/<svc>.sock`; sd_notify packet parser routes `FDSTORE=1` + `FDNAME=name` with SCM_RIGHTS fds into an in-memory store; next BringUp prepends them to `LISTEN_FDS` (with names in `LISTEN_FDNAMES`). **Closes the systemd-adaptation backlog (14/14 items shipped; `#7 v2` arg-checking BPF for `RestrictRealtime`/`SUIDSGID`/`MDWE`/`Namespaces`/`AddressFamilies` deferred -- needs `pkg/seccomp` BPF compiler extension)**
 
 ## License
 

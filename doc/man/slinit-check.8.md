@@ -78,6 +78,20 @@ that filesystem paths referenced by the description are usable:
 - The directories holding **pid-file**, **logfile**, **lock-file**, and
   **socket-listen** exist.
 
+**consumer-of** is validated against the producer's service file:
+
+- The producer must exist as a service description (otherwise the
+  consumer can never start).
+- The producer must be **process**, **bgprocess**, or **scripted**
+  — only those types have a process whose output can be piped.
+- The producer must declare **log-type = pipe**; otherwise its
+  stdout/stderr is not available to the consumer.
+
+Error messages reference the producer by name (not by parsed
+description pointer), so a non-existing producer cannot trigger a
+nil-pointer dereference — mirroring dinit-check upstream fix
+*703e6d3*.
+
 Namespace settings are checked for self-consistency:
 
 - **namespace-uid-map** / **namespace-gid-map** without
