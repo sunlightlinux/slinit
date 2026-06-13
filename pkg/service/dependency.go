@@ -24,6 +24,11 @@ package service
 //
 //	AFTER: Ordering constraint only. From starts after To. Same semantics
 //	  as BEFORE regarding require/release.
+//
+//	PREPARED_BY: Like REGULAR (hard, propagates failure/stop), but with one
+//	  extra rule: when From restarts, To is also restarted first. Use for
+//	  per-execution prepare/cleanup steps that need a fresh run each cycle.
+//	  Services using prepared-by should not enable smooth-recovery.
 type ServiceDep struct {
 	From Service
 	To   Service
@@ -45,9 +50,11 @@ func NewServiceDep(from, to Service, depType DependencyType) *ServiceDep {
 	}
 }
 
-// IsHard returns true if this is a hard dependency (REGULAR or MILESTONE still waiting).
+// IsHard returns true if this is a hard dependency (REGULAR, PREPARED_BY,
+// or MILESTONE still waiting).
 func (d *ServiceDep) IsHard() bool {
 	return d.DepType == DepRegular ||
+		d.DepType == DepPreparedBy ||
 		(d.DepType == DepMilestone && d.WaitingOn)
 }
 

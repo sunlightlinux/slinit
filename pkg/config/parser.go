@@ -99,16 +99,18 @@ type ServiceDescription struct {
 	NamespaceGidMap []IDMapping
 
 	// Dependencies (by name, resolved by the loader)
-	DependsOn []string // depends-on (REGULAR)
-	DependsMS []string // depends-ms (MILESTONE)
-	WaitsFor  []string // waits-for (WAITS_FOR)
-	Before    []string // before
-	After     []string // after
+	DependsOn  []string // depends-on (REGULAR)
+	DependsMS  []string // depends-ms (MILESTONE)
+	WaitsFor   []string // waits-for (WAITS_FOR)
+	PreparedBy []string // prepared-by (PREPARED_BY)
+	Before     []string // before
+	After      []string // after
 
 	// Dependency directories
-	DependsOnD []string // depends-on.d
-	DependsMSD []string // depends-ms.d
-	WaitsForD  []string // waits-for.d
+	DependsOnD  []string // depends-on.d
+	DependsMSD  []string // depends-ms.d
+	WaitsForD   []string // waits-for.d
+	PreparedByD []string // prepared-by.d
 
 	// Behavior
 	AutoRestart    service.AutoRestartMode
@@ -1104,6 +1106,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid dependency name: %w", err)
 		}
 		desc.WaitsFor = append(desc.WaitsFor, depName)
+	case "prepared-by":
+		depName := expandEnvVars(value, serviceArg)
+		if err := ValidateServiceName(depName); err != nil {
+			return fmt.Errorf("invalid dependency name: %w", err)
+		}
+		desc.PreparedBy = append(desc.PreparedBy, depName)
 	case "before":
 		depName := expandEnvVars(value, serviceArg)
 		if err := ValidateServiceName(depName); err != nil {
@@ -1122,6 +1130,8 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.DependsMSD = append(desc.DependsMSD, expandEnvVars(value, serviceArg))
 	case "waits-for.d":
 		desc.WaitsForD = append(desc.WaitsForD, expandEnvVars(value, serviceArg))
+	case "prepared-by.d":
+		desc.PreparedByD = append(desc.PreparedByD, expandEnvVars(value, serviceArg))
 
 	// Pre-start fail-fast path checks (OpenRC-inspired)
 	case "required-files":

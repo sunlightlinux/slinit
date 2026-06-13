@@ -195,7 +195,7 @@ always set in the service environment (see **slinit**(8)).
 
 ## DEPENDENCIES
 
-slinit supports six dependency kinds. Names accept either `=` or `:`
+slinit supports seven dependency kinds. Names accept either `=` or `:`
 (`depends-on=foo` and `depends-on:foo` are equivalent).
 
 **depends-on**=*service*
@@ -210,6 +210,14 @@ slinit supports six dependency kinds. Names accept either `=` or `:`
 :   Soft dependency: starts *service* alongside this one, but does
     not block startup if *service* fails.
 
+**prepared-by**=*service*
+:   Hard dependency like **depends-on**, with one extra rule: each
+    time this service restarts, *service* is restarted first. Use
+    for per-execution prepare / cleanup steps that must run fresh
+    every cycle (e.g. provisioning a tmpfs, refreshing credentials,
+    rotating a sandbox). Avoid combining with `smooth-recovery=yes`
+    — the restart cascade is what gives this dependency its value.
+
 **before**=*service*
 :   Ordering only: if both end up starting, this one starts before
     *service*. No forced activation.
@@ -220,7 +228,7 @@ slinit supports six dependency kinds. Names accept either `=` or `:`
 **chain-to**=*service*
 :   When this service stops normally, automatically start *service*.
 
-**depends-on.d**=*directory*, **depends-ms.d**=*directory*, **waits-for.d**=*directory*
+**depends-on.d**=*directory*, **depends-ms.d**=*directory*, **waits-for.d**=*directory*, **prepared-by.d**=*directory*
 :   Drop-in directories: every entry inside *directory* (regardless of
     type) is treated as a dependency of the corresponding kind.
 

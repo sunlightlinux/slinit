@@ -241,6 +241,105 @@ func TestSoftDepReattachOnRestart(t *testing.T) {
 	}
 }
 
+// --- PreparedBy dependency tests ---
+
+func TestPreparedByDepFailureCascades(t *testing.T) {
+	set, _ := newTestSet()
+
+	dep := NewInternalService(set, "prep-dep")
+	main := NewInternalService(set, "main-svc")
+	set.AddService(dep)
+	set.AddService(main)
+
+	main.Record().AddDep(dep, DepPreparedBy)
+
+	dep.PinStop()
+	set.StartService(main)
+
+	if main.State() != StateStopped {
+		t.Errorf("main should be STOPPED due to prepared-by dep failure, got %v", main.State())
+	}
+	if !main.Record().DidStartFail() {
+		t.Error("main should report start failure")
+	}
+}
+
+func TestPreparedByDepStopPropagates(t *testing.T) {
+	set, _ := newTestSet()
+
+	dep := NewInternalService(set, "prep-dep")
+	main := NewInternalService(set, "main-svc")
+	set.AddService(dep)
+	set.AddService(main)
+
+	main.Record().AddDep(dep, DepPreparedBy)
+	set.StartService(main)
+
+	if dep.State() != StateStarted || main.State() != StateStarted {
+		t.Fatalf("both should be STARTED, got dep=%v main=%v", dep.State(), main.State())
+	}
+
+	// Stopping main should release dep too (hard semantics)
+	set.StopService(main)
+	if main.State() != StateStopped {
+		t.Errorf("main should be STOPPED, got %v", main.State())
+	}
+	if dep.State() != StateStopped {
+		t.Errorf("dep should be STOPPED after main releases it, got %v", dep.State())
+	}
+}
+
+func TestPreparedByRestartsDependencyOnDependentRestart(t *testing.T) {
+	set, logger := newTestSet()
+
+	dep := NewInternalService(set, "prep-dep")
+	main := NewInternalService(set, "main-svc")
+	set.AddService(dep)
+	set.AddService(main)
+
+	main.Record().AddDep(dep, DepPreparedBy)
+	set.StartService(main)
+
+	if dep.State() != StateStarted || main.State() != StateStarted {
+		t.Fatalf("both should be STARTED initially, got dep=%v main=%v", dep.State(), main.State())
+	}
+
+	countStarts := func(name string) int {
+		n := 0
+		for _, s := range logger.started {
+			if s == name {
+				n++
+			}
+		}
+		return n
+	}
+
+	depStartsBefore := countStarts("prep-dep")
+	mainStartsBefore := countStarts("main-svc")
+
+	// Restart main — the prepared-by dep must restart too.
+	if !main.Record().Restart() {
+		t.Fatal("expected main.Restart() to succeed")
+	}
+	set.ProcessQueues()
+
+	if main.State() != StateStarted {
+		t.Errorf("main should be STARTED after restart, got %v", main.State())
+	}
+	if dep.State() != StateStarted {
+		t.Errorf("dep should be STARTED after main restart, got %v", dep.State())
+	}
+
+	if countStarts("main-svc") <= mainStartsBefore {
+		t.Errorf("main should have logged a new start; before=%d after=%d (started=%v)",
+			mainStartsBefore, countStarts("main-svc"), logger.started)
+	}
+	if countStarts("prep-dep") <= depStartsBefore {
+		t.Errorf("prepared-by dep should have logged a new start on dependent restart; before=%d after=%d (started=%v)",
+			depStartsBefore, countStarts("prep-dep"), logger.started)
+	}
+}
+
 // --- BEFORE/AFTER ordering tests ---
 
 func TestBeforeOrdering(t *testing.T) {

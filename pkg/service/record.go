@@ -1603,6 +1603,15 @@ func (sr *ServiceRecord) Stopped() {
 	sr.state.Store(StateStopped)
 
 	if willRestart {
+		// Restart any PREPARED_BY dependencies first. They are hard deps
+		// (IsHard returns true), so startCheckDependencies in initiateStart
+		// below will see them in non-STARTED state and make us wait until
+		// they reach STARTED again.
+		for _, dep := range sr.dependsOn {
+			if dep.DepType == DepPreparedBy {
+				dep.To.Record().Restart()
+			}
+		}
 		sr.initiateStart()
 	} else {
 		sr.self.BecomingInactive()
@@ -1663,7 +1672,7 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 	// Cancel start of dependents
 	for _, dept := range sr.dependents {
 		switch dept.DepType {
-		case DepRegular, DepMilestone:
+		case DepRegular, DepPreparedBy, DepMilestone:
 			if dept.From.Record().state.Load() == StateStarting {
 				dept.From.Record().propFailure = true
 				sr.services.AddPropQueue(dept.From)
@@ -1886,7 +1895,7 @@ func (sr *ServiceRecord) AddDep(to Service, depType DependencyType) *ServiceDep 
 	toRec.dependents = append(toRec.dependents, dep)
 
 	if depType != DepBefore && depType != DepAfter {
-		if depType == DepRegular ||
+		if depType == DepRegular || depType == DepPreparedBy ||
 			to.Record().state.Load() == StateStarted ||
 			to.Record().state.Load() == StateStarting {
 			if sr.state.Load() == StateStarting || sr.state.Load() == StateStarted {

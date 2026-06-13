@@ -29,14 +29,16 @@ var KnownSettings = map[string]OperatorType{
 	"usage":       OpEquals,
 
 	// Dependencies (use colon)
-	"depends-on":   OpColon,
-	"depends-ms":   OpColon,
-	"waits-for":    OpColon,
-	"depends-on.d": OpColon,
-	"depends-ms.d": OpColon,
-	"waits-for.d":  OpColon,
-	"before":       OpColon,
-	"after":        OpColon,
+	"depends-on":    OpColon,
+	"depends-ms":    OpColon,
+	"waits-for":     OpColon,
+	"prepared-by":   OpColon,
+	"depends-on.d":  OpColon,
+	"depends-ms.d":  OpColon,
+	"waits-for.d":   OpColon,
+	"prepared-by.d": OpColon,
+	"before":        OpColon,
+	"after":         OpColon,
 
 	// Commands
 	"command":      OpEquals | OpPlusEqual,

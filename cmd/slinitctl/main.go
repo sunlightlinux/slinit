@@ -2228,12 +2228,14 @@ func parseDepType(s string) (service.DependencyType, error) {
 		return service.DepWaitsFor, nil
 	case "depends-ms", "milestone":
 		return service.DepMilestone, nil
+	case "prepared-by":
+		return service.DepPreparedBy, nil
 	case "before":
 		return service.DepBefore, nil
 	case "after":
 		return service.DepAfter, nil
 	default:
-		return 0, fmt.Errorf("unknown dependency type: %s (use depends-on, waits-for, depends-ms, before, after)", s)
+		return 0, fmt.Errorf("unknown dependency type: %s (use depends-on, waits-for, depends-ms, prepared-by, before, after)", s)
 	}
 }
 
@@ -2708,6 +2710,8 @@ func graphEdgeStyle(dt service.DependencyType) (string, string, string) {
 		return "dashed", "#00838f", "waits-for" // teal dashed
 	case service.DepMilestone:
 		return "bold", "#e65100", "milestone" // orange bold
+	case service.DepPreparedBy:
+		return "bold", "#1565c0", "prepared-by" // blue bold (hard + restart-link)
 	case service.DepBefore:
 		return "dotted", "#616161", "before" // grey dotted
 	case service.DepAfter:
