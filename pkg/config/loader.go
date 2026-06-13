@@ -1176,6 +1176,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetOOMPolicy(desc.OOMPolicy)
 	rec.SetCredentials(desc.Credentials)
 	rec.SetDynamicUser(desc.DynamicUser)
+	rec.SetFDStoreMax(desc.FileDescriptorStoreMax)
 	if len(desc.ExtraCommands) > 0 {
 		rec.SetExtraCommands(desc.ExtraCommands)
 	}

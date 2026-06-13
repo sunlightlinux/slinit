@@ -176,6 +176,12 @@ type ServiceDescription struct {
 	// run-as=: the loader rejects descriptions that set both.
 	DynamicUser bool
 
+	// FileDescriptorStoreMax enables fd-store: the daemon listens on
+	// $NOTIFY_SOCKET for sd_notify FDSTORE=1 packets and keeps up to
+	// N fds across restarts (replayed via LISTEN_FDS on the next
+	// BringUp). 0 disables.
+	FileDescriptorStoreMax int
+
 	// Socket activation
 	SocketPath       string   // primary socket path (first socket-listen)
 	SocketPaths      []string // all socket-listen paths (for multiple sockets)
@@ -1595,6 +1601,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.DynamicUser = b
+	case "file-descriptor-store-max":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("file-descriptor-store-max: must be a non-negative integer")
+		}
+		desc.FileDescriptorStoreMax = n
 
 	// Socket
 	case "socket-listen":
