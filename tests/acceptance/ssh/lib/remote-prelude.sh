@@ -91,6 +91,11 @@ wait_for_service() {
 # Drops a service description into $ACCEPTANCE_SVCDIR and asks the daemon to
 # reload its directory listing. Enforces the acceptance-test- prefix to make
 # unexpected leftovers trivial to spot/clean (`ls /etc/slinit.d/acceptance-test-*`).
+#
+# Unloads the name first so any cached description from a previous case is
+# dropped — slinit caches the parsed description at load time and won't
+# re-read the file on a fresh start (it only warns about a mtime mismatch).
+# Without this, a case re-using a name across runs gets the OLD command.
 svc_deploy() {
     _name="$1"
     case "$_name" in
@@ -98,9 +103,8 @@ svc_deploy() {
         *) echo "FATAL: svc_deploy refuses '$_name' (must start with $ACCEPTANCE_NS_PREFIX)" >&2
            exit 2 ;;
     esac
+    slinitctl --system unload "$_name" 2>/dev/null || true
     cat > "${ACCEPTANCE_SVCDIR}/${_name}"
-    # No daemon-side ack needed; slinit picks the file up on the next
-    # load/start request.
 }
 
 # svc_remove NAME [NAME...]
