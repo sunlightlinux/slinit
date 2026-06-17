@@ -35,7 +35,12 @@ echo "OK: $SVC running as pid $_pid"
 # We delegate to a sub-shell so the redirection error (which the *outer*
 # shell would otherwise emit on its own stderr and slip past `2>&1`) is
 # captured by the inner sh's stderr.
-_TARGET="/proc/$_pid/root/proc/sys/kernel/random/uuid"
+#
+# Target /proc/sys/kernel/hostname (writable on the host with root) so the
+# *only* reason a write can fail is the read-only remount. /proc/sys/kernel/
+# random/uuid is read-only at the file level even outside any namespace
+# and would always yield EACCES, masking what we're trying to assert.
+_TARGET="/proc/$_pid/root/proc/sys/kernel/hostname"
 _err="$(sh -c "echo testval > $_TARGET" 2>&1)"
 _TESTS_RUN=$((_TESTS_RUN + 1))
 case "$_err" in
