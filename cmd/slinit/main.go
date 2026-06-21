@@ -678,7 +678,13 @@ func main() {
 			if err := pathWatcher.Add(path, kind, func() {
 				logger.Info("Service '%s': path activation fired (%s on %s)",
 					s.Name(), kind, path)
-				serviceSet.StartService(s)
+				// Goroutine: pathwatch.arm() may fire this callback
+				// synchronously from pathRearmListener.ServiceEvent,
+				// which runs under queueMu inside the process-exit
+				// handler. StartService also takes queueMu, so a
+				// direct call self-deadlocks the moment the trigger
+				// path still exists when the service stops.
+				go serviceSet.StartService(s)
 			}); err != nil {
 				logger.Warn("Service '%s': %s disabled: %v", s.Name(), kind, err)
 				return
