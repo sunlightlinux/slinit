@@ -88,6 +88,20 @@ func run() error {
 	pCG := fs.Bool("protect-control-groups", false, "remount /sys/fs/cgroup read-only")
 	pHost := fs.Bool("protect-hostname", false, "block sethostname/setdomainname")
 	pPersonality := fs.Bool("lock-personality", false, "block personality(2)")
+	// run-as: when the service combines a non-root credential with any
+	// sandbox feature, the parent slinit can't drop UID at fork time
+	// because the mount/seccomp ops below require CAP_SYS_ADMIN. We
+	// stay root through setup, then drop just before exec. AmbientCaps
+	// are restored after setresuid using PR_SET_KEEPCAPS + a fresh
+	// PR_CAP_AMBIENT_RAISE per cap (the kernel clears the ambient set
+	// on UID change otherwise).
+	runAsUID := fs.Int("run-as-uid", -1,
+		"drop to this UID just before exec (post-sandbox/seccomp); -1 = no change")
+	runAsGID := fs.Int("run-as-gid", -1,
+		"drop to this GID just before exec; -1 = no change")
+	var ambientCaps stringList
+	fs.Var(&ambientCaps, "ambient-cap",
+		"capability number to raise in the ambient set after run-as drop (repeatable)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -184,6 +198,18 @@ func run() error {
 		}
 	}
 
+	// run-as drop: now that every privileged setup step is done, lower
+	// the credentials. PR_SET_KEEPCAPS makes the kernel preserve our
+	// Permitted set across setresuid; we then re-raise each configured
+	// capability into the ambient set so it survives the upcoming
+	// execve. Without this dance ambient would be cleared by the UID
+	// change and the child would exec with no capabilities.
+	if *runAsUID >= 0 || *runAsGID >= 0 {
+		if err := dropCredentials(*runAsUID, *runAsGID, ambientCaps); err != nil {
+			return err
+		}
+	}
+
 	// AppArmor domain transition. This must be the last thing before
 	// exec: the kernel attaches the profile change to *this* task's
 	// next execve, so no fork may intervene. A failure aborts rather
@@ -202,6 +228,44 @@ func run() error {
 		return fmt.Errorf("exec %s: %w", args[0], err)
 	}
 	return nil // unreachable
+}
+
+// dropCredentials lowers the runner's UID/GID and re-raises ambient
+// caps. Order is critical: PR_SET_KEEPCAPS before setresuid (else the
+// kernel clears Permitted on the UID change), then setresgid first
+// (so we still have CAP_SETGID), then setresuid, then ambient raise.
+func dropCredentials(uid, gid int, ambient []string) error {
+	// Preserve Permitted across the upcoming setresuid.
+	if err := unix.Prctl(unix.PR_SET_KEEPCAPS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("PR_SET_KEEPCAPS: %w", err)
+	}
+	if gid >= 0 {
+		if err := unix.Setresgid(gid, gid, gid); err != nil {
+			return fmt.Errorf("setresgid(%d): %w", gid, err)
+		}
+	}
+	if uid >= 0 {
+		if err := unix.Setresuid(uid, uid, uid); err != nil {
+			return fmt.Errorf("setresuid(%d): %w", uid, err)
+		}
+	}
+	// Re-raise ambient. PR_CAP_AMBIENT_RAISE refuses caps not already
+	// in Permitted+Inheritable, so we mirror them in first.
+	for _, capStr := range ambient {
+		capNum, err := strconv.Atoi(capStr)
+		if err != nil {
+			return fmt.Errorf("ambient-cap %q: %w", capStr, err)
+		}
+		// Add to inheritable (already in permitted via KEEPCAPS).
+		if err := capRaiseInheritable(uintptr(capNum)); err != nil {
+			return fmt.Errorf("cap %d: inheritable raise: %w", capNum, err)
+		}
+		if err := unix.Prctl(unix.PR_CAP_AMBIENT,
+			unix.PR_CAP_AMBIENT_RAISE, uintptr(capNum), 0, 0); err != nil {
+			return fmt.Errorf("cap %d: ambient raise: %w", capNum, err)
+		}
+	}
+	return nil
 }
 
 // changeOnExec performs an AppArmor onexec transition, the same
