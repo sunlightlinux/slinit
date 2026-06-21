@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // Linux capability syscall data for version 3 (_LINUX_CAPABILITY_VERSION_3,
@@ -21,6 +24,34 @@ type capUserData struct {
 	effective   uint32
 	permitted   uint32
 	inheritable uint32
+}
+
+// narrowBoundingSet drops every capability from the calling thread's
+// CapBnd that isn't on the keep list. The kernel reports the highest
+// supported cap via /proc/sys/kernel/cap_last_cap; reading that file
+// is cheap and avoids hardcoding cap-table size as new caps land.
+func narrowBoundingSet(keepRaw []string) error {
+	keep := make(map[uintptr]bool, len(keepRaw))
+	for _, k := range keepRaw {
+		n, err := strconv.Atoi(k)
+		if err != nil {
+			return fmt.Errorf("bounding-cap %q: %w", k, err)
+		}
+		keep[uintptr(n)] = true
+	}
+	// 40 covers every cap defined as of Linux 5.x — PR_CAPBSET_DROP on
+	// numbers outside the supported range simply returns EINVAL, so a
+	// fixed upper bound is safe.
+	for cap := uintptr(0); cap <= 40; cap++ {
+		if keep[cap] {
+			continue
+		}
+		err := unix.Prctl(unix.PR_CAPBSET_DROP, cap, 0, 0, 0)
+		if err != nil && err != syscall.EINVAL {
+			return fmt.Errorf("PR_CAPBSET_DROP cap=%d: %w", cap, err)
+		}
+	}
+	return nil
 }
 
 // capRaiseInheritable adds capNum to the calling thread's Inheritable

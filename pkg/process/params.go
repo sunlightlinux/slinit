@@ -177,6 +177,12 @@ type ExecParams struct {
 	// to set on the child process via SysProcAttr.AmbientCaps.
 	AmbientCaps []uintptr
 
+	// BoundingCaps is the positive keep-list for the child's CapBnd.
+	// Every cap NOT in this list is dropped via PR_CAPBSET_DROP in
+	// slinit-runner before exec. Nil means "inherit parent's bounding
+	// set" (no narrowing).
+	BoundingCaps []uintptr
+
 	// Securebits is a bitmask of securebits flags to apply post-fork
 	// via prctl(PR_SET_SECUREBITS). Best-effort from parent.
 	Securebits uint32

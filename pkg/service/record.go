@@ -204,6 +204,7 @@ type ServiceRecord struct {
 	cgroupSettings []process.CgroupSetting // cgroup v2 resource limits
 	rlimits        []process.Rlimit
 	ambientCaps    []uintptr
+	boundingCaps   []uintptr // positive keep-list for CapBnd; nil = inherit
 	securebits     uint32
 	cpuAffinity    []uint
 	umask          *uint32 // file-creation mask for the service process (nil = inherit slinit's)
@@ -1056,6 +1057,7 @@ func (sr *ServiceRecord) SetCgroupSettings(s []process.CgroupSetting) { sr.cgrou
 func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)              { sr.rlimits = rl }
 func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)                 { sr.rlimits = append(sr.rlimits, rl) }
 func (sr *ServiceRecord) SetAmbientCaps(caps []uintptr)               { sr.ambientCaps = caps }
+func (sr *ServiceRecord) SetBoundingCaps(caps []uintptr)              { sr.boundingCaps = caps }
 func (sr *ServiceRecord) SetSecurebits(bits uint32)                   { sr.securebits = bits }
 func (sr *ServiceRecord) SetCPUAffinity(cpus []uint)                  { sr.cpuAffinity = cpus }
 func (sr *ServiceRecord) SetUmask(m *uint32)                          { sr.umask = m }
@@ -1283,6 +1285,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.CgroupSettings = sr.cgroupSettings
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
+	params.BoundingCaps = sr.boundingCaps
 	params.Securebits = sr.securebits
 	params.Umask = sr.umask
 	params.CPUAffinity = sr.cpuAffinity

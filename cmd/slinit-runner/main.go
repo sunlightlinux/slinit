@@ -102,6 +102,9 @@ func run() error {
 	var ambientCaps stringList
 	fs.Var(&ambientCaps, "ambient-cap",
 		"capability number to raise in the ambient set after run-as drop (repeatable)")
+	var boundingCaps stringList
+	fs.Var(&boundingCaps, "bounding-cap",
+		"capability number to retain in CapBnd; every other cap is PR_CAPBSET_DROP'd (repeatable)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -195,6 +198,16 @@ func run() error {
 	if *debug {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGSTOP); err != nil {
 			return fmt.Errorf("debug SIGSTOP: %w", err)
+		}
+	}
+
+	// Bounding-set narrowing. Must happen BEFORE the setresuid drop:
+	// PR_CAPBSET_DROP needs CAP_SETPCAP, which the kernel strips at the
+	// UID change. Iterate 0..40 (the kernel rejects out-of-range
+	// numbers anyway) and drop any cap not on the keep list.
+	if len(boundingCaps) > 0 {
+		if err := narrowBoundingSet(boundingCaps); err != nil {
+			return err
 		}
 	}
 

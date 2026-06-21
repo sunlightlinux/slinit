@@ -1266,6 +1266,12 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 			rec.SetAmbientCaps(caps)
 		}
 	}
+	if desc.CapabilityBoundingSet != "" {
+		caps, err := process.ParseCapabilities(desc.CapabilityBoundingSet)
+		if err == nil && len(caps) > 0 {
+			rec.SetBoundingCaps(caps)
+		}
+	}
 	if desc.Securebits != "" {
 		bits, err := process.ParseSecurebits(desc.Securebits)
 		if err == nil && bits != 0 {

@@ -269,8 +269,9 @@ type ServiceDescription struct {
 	RlimitAs     *[2]uint64
 
 	// Capabilities and securebits
-	Capabilities string // comma/space-separated capability names
-	Securebits   string // space-separated securebits flag names
+	Capabilities           string // comma/space-separated capability names
+	CapabilityBoundingSet  string // positive list kept in CapBnd; others PR_CAPBSET_DROP'd
+	Securebits             string // space-separated securebits flag names
 
 	// UTMP/WTMP
 	InittabID   string // inittab-id for utmpx
@@ -2102,6 +2103,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	case "capabilities":
 		desc.Capabilities = value
+
+	case "capability-bounding-set":
+		// Positive list of capabilities to retain in CapBnd. Every
+		// other cap is dropped via PR_CAPBSET_DROP in slinit-runner
+		// before exec. systemd-style `~` drop prefix is not supported
+		// in this first cut — narrow to what's named, full stop.
+		desc.CapabilityBoundingSet = value
 
 	case "securebits":
 		desc.Securebits = value

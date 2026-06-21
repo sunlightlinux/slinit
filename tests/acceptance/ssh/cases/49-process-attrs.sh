@@ -32,6 +32,9 @@ umask = 027
 nice = 5
 oom-score-adj = 500
 rlimit-nofile = 1024
+rlimit-core = 0
+rlimit-data = 1048576
+rlimit-as = 1073741824
 ioprio = best-effort:7
 command = /bin/sh -c 'touch $PROBE; while :; do sleep 60; done'
 restart = false
@@ -86,6 +89,16 @@ assert_eq "$_oom" "500" "/proc/$_pid/oom_score_adj = 500"
 # limit (5th is hard).
 _nofile=$(awk '/Max open files/ {print $4}' /proc/$_pid/limits 2>/dev/null)
 assert_eq "$_nofile" "1024" "/proc/$_pid/limits Max open files soft = 1024"
+
+# rlimit-core / rlimit-data / rlimit-as: same column layout.
+_core=$(awk '/Max core file size/ {print $5}' /proc/$_pid/limits 2>/dev/null)
+assert_eq "$_core" "0" "/proc/$_pid/limits Max core file size = 0"
+
+_data=$(awk '/Max data size/ {print $4}' /proc/$_pid/limits 2>/dev/null)
+assert_eq "$_data" "1048576" "/proc/$_pid/limits Max data size = 1M"
+
+_as=$(awk '/Max address space/ {print $4}' /proc/$_pid/limits 2>/dev/null)
+assert_eq "$_as" "1073741824" "/proc/$_pid/limits Max address space = 1G"
 
 # ioprio: best-effort class, prio 7. ionice -p prints e.g.
 # "best-effort: prio 7".

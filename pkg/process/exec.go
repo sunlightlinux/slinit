@@ -528,7 +528,8 @@ func loadAppArmorProfile(path string) error {
 func needsRunnerWrap(p ExecParams) bool {
 	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
 		p.AppArmorProfile != "" || p.DebugStop ||
-		sandboxActive(p) || seccompActive(p) || hardeningActive(p)
+		sandboxActive(p) || seccompActive(p) || hardeningActive(p) ||
+		len(p.BoundingCaps) > 0
 }
 
 // hardeningActive reports whether any Restrict*/Protect* knob is set.
@@ -661,6 +662,13 @@ func wrapWithRunner(p ExecParams) []string {
 		for _, c := range p.AmbientCaps {
 			args = append(args, "--ambient-cap="+strconv.FormatUint(uint64(c), 10))
 		}
+	}
+	// Bounding-set narrowing: pass the positive keep-list; the runner
+	// PR_CAPBSET_DROPs every cap not on it. Must run before the
+	// setresuid drop above (the kernel strips CAP_SETPCAP at UID
+	// change, which is the gate for PR_CAPBSET_DROP).
+	for _, c := range p.BoundingCaps {
+		args = append(args, "--bounding-cap="+strconv.FormatUint(uint64(c), 10))
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)
