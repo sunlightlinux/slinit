@@ -238,6 +238,7 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 
 // updateTypeSpecificFields applies type-specific setters from the description.
 func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *ServiceDescription) {
+	dl.applyRunAs(svc, desc)
 	switch s := svc.(type) {
 	case *service.ProcessService:
 		s.SetCommand(desc.Command)
@@ -987,6 +988,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.VTTYEnabled {
 			svc.SetVTTY(true, desc.VTTYScrollback, "/run/slinit")
 		}
+		dl.applyRunAs(svc, desc)
 		return svc
 	case service.TypeScripted:
 		svc := service.NewScriptedService(dl.set, name)
@@ -1000,6 +1002,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 			svc.SetStopTimeout(desc.StopTimeout)
 		}
 		applyLogSettings(svc, desc)
+		dl.applyRunAs(svc, desc)
 		return svc
 	case service.TypeBGProcess:
 		svc := service.NewBGProcessService(dl.set, name)
@@ -1024,6 +1027,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
 		applyLogSettings(svc, desc)
+		dl.applyRunAs(svc, desc)
 		return svc
 	case service.TypeTriggered:
 		return service.NewTriggeredService(dl.set, name)
@@ -1542,6 +1546,77 @@ func applyLoadOptions(svc service.Service, desc *ServiceDescription) {
 				rec.SetEnvVar("SHELL", shell)
 			}
 		}
+	}
+}
+
+// resolveRunAs decodes a `run-as = <user>[:<group>]` value into the
+// numeric UID/GID pair slinit hands to SysProcAttr.Credential. Each
+// component accepts a name or a numeric id (matching most other init
+// systems). Returns (0, 0, false) when the user can't be resolved —
+// the caller logs and skips, rather than refusing to load the
+// service, because dropping the description for a typoed user would
+// surprise admins more than logging would.
+func resolveRunAs(spec string) (uid uint32, gid uint32, ok bool) {
+	userPart, groupPart, _ := strings.Cut(spec, ":")
+	userPart = strings.TrimSpace(userPart)
+	groupPart = strings.TrimSpace(groupPart)
+	if userPart == "" {
+		return 0, 0, false
+	}
+
+	u, err := user.Lookup(userPart)
+	if err != nil {
+		u, err = user.LookupId(userPart)
+		if err != nil {
+			return 0, 0, false
+		}
+	}
+	uid64, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	gid64, err := strconv.ParseUint(u.Gid, 10, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+
+	if groupPart != "" {
+		g, gerr := user.LookupGroup(groupPart)
+		if gerr != nil {
+			g, gerr = user.LookupGroupId(groupPart)
+		}
+		if gerr == nil {
+			if ggid, perr := strconv.ParseUint(g.Gid, 10, 32); perr == nil {
+				gid64 = ggid
+			}
+		}
+	}
+
+	return uint32(uid64), uint32(gid64), true
+}
+
+// applyRunAs resolves desc.RunAs and calls the type-specific
+// SetRunAs setter. No-op when the field is empty or the user can't
+// be resolved — the latter case prints a warning to stderr and lets
+// the service still load as the parent's UID. slinit-check would
+// catch the typo offline.
+func (dl *DirLoader) applyRunAs(svc service.Service, desc *ServiceDescription) {
+	if desc.RunAs == "" {
+		return
+	}
+	uid, gid, ok := resolveRunAs(desc.RunAs)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "slinit: service %q: run-as=%q — user unresolved, ignored\n",
+			svc.Name(), desc.RunAs)
+		return
+	}
+	switch s := svc.(type) {
+	case *service.ProcessService:
+		s.SetRunAs(uid, gid)
+	case *service.ScriptedService:
+		s.SetRunAs(uid, gid)
+	case *service.BGProcessService:
+		s.SetRunAs(uid, gid)
 	}
 }
 

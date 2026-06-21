@@ -90,16 +90,32 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		Setpgid: true,
 	}
 
-	// Credential setup (run as different user/group)
-	if params.RunAsUID != 0 || params.RunAsGID != 0 {
+	// Credential setup (run as different user/group).
+	//
+	// When the service combines a non-root credential with any runner
+	// feature (mlockall, mempolicy, AppArmor, sandbox, seccomp,
+	// hardening) the credential drop has to happen *inside*
+	// slinit-runner instead of at fork time: every one of those ops
+	// either needs CAP_SYS_ADMIN / CAP_IPC_LOCK / CAP_MAC_ADMIN, all of
+	// which a UID drop to (say) nobody would strip before the runner
+	// ever started. wrapWithRunner emits matching
+	// --run-as-uid/--run-as-gid/--ambient-cap flags so the runner does
+	// the drop after setup, keeping AmbientCaps preserved via
+	// PR_SET_KEEPCAPS + a fresh PR_CAP_AMBIENT_RAISE.
+	deferRunAsToRunner := needsRunnerWrap(params) && params.RunnerPath != "" &&
+		(params.RunAsUID != 0 || params.RunAsGID != 0)
+	if !deferRunAsToRunner && (params.RunAsUID != 0 || params.RunAsGID != 0) {
 		cmd.SysProcAttr.Credential = &syscall.Credential{
 			Uid: params.RunAsUID,
 			Gid: params.RunAsGID,
 		}
 	}
 
-	// Ambient capabilities (applied in child between fork and exec)
-	if len(params.AmbientCaps) > 0 {
+	// Ambient capabilities (applied in child between fork and exec).
+	// Same caveat as above: when run-as is deferred to the runner, the
+	// kernel would clear the ambient set on the UID drop, so we let the
+	// runner re-raise them after setresuid.
+	if len(params.AmbientCaps) > 0 && !deferRunAsToRunner {
 		cmd.SysProcAttr.AmbientCaps = params.AmbientCaps
 	}
 
@@ -633,6 +649,18 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	if p.LockPersonality {
 		args = append(args, "--lock-personality")
+	}
+	// Deferred run-as + ambient caps. Always emit when a non-root
+	// credential is configured: by the time wrapWithRunner is being
+	// called the parent has already decided to use the runner, so the
+	// runner is responsible for the credential drop in every code path
+	// where it runs. (See exec.go: deferRunAsToRunner.)
+	if p.RunAsUID != 0 || p.RunAsGID != 0 {
+		args = append(args, "--run-as-uid="+strconv.Itoa(int(p.RunAsUID)))
+		args = append(args, "--run-as-gid="+strconv.Itoa(int(p.RunAsGID)))
+		for _, c := range p.AmbientCaps {
+			args = append(args, "--ambient-cap="+strconv.FormatUint(uint64(c), 10))
+		}
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)
