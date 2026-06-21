@@ -48,6 +48,15 @@ EOF
     assert_eq "$_got_uid" "$_nobody_uid" "run-as nobody: child UID matches /etc/passwd"
 fi
 
+# Sub-case A's service must be torn down here. svc_deploy can't replace
+# the cached description while the prior service is still STARTED:
+# slinitctl unload rejects loaded+running services, the cat clobbers
+# the file, and the next start re-uses the cached *old* command —
+# which writes only to MARK_UID once, never the new MARK_GID. (Hit
+# this exact race during the Tier 3b run.)
+svc_remove "$SVC_UID"
+rm -f "$MARK_UID"
+
 # --- Sub-case B: chroot ---------------------------------------------
 # Build a minimal jail with /bin/sh (busybox or static) and a sentinel
 # file. The child stamps the sentinel into the marker — if chroot took,
@@ -105,6 +114,35 @@ if [ ! -e /sentinel ] || ! grep -q JAILED_FS_SENTINEL /sentinel 2>/dev/null; the
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: host has a /sentinel — can't prove chroot did anything"
+fi
+
+svc_remove "$SVC_CHROOT"
+
+# --- Sub-case C: run-as user:group split ---------------------------
+# Pin both components: pick a group whose GID differs from nobody's
+# primary group so the colon split is observable. `bin` is on every
+# distro, with GID typically 1 or 2 — distinct from nogroup's 99/65534.
+MARK_GID="${MARK_UID}.gid"
+_bin_gid=$(getent group bin | awk -F: '{print $3}')
+if [ -n "$_bin_gid" ] && [ -n "$_nobody_uid" ]; then
+    rm -f "$MARK_UID" "$MARK_GID"
+    : > "$MARK_UID"
+    : > "$MARK_GID"
+    chmod 0666 "$MARK_UID" "$MARK_GID"
+    svc_deploy "$SVC_UID" <<EOF
+type = process
+run-as = nobody:bin
+command = /bin/sh -c 'id -u > $MARK_UID; id -g > $MARK_GID; while :; do sleep 60; done'
+restart = false
+EOF
+    slinitctl --system start "$SVC_UID" >/dev/null 2>&1
+    wait_for_service "$SVC_UID" "STARTED" 10 || true
+    assert_service_state "$SVC_UID" "STARTED" "$SVC_UID STARTED (user:group)"
+    sleep 1
+    assert_eq "$(cat "$MARK_UID")" "$_nobody_uid" "run-as nobody:bin: UID = nobody's"
+    assert_eq "$(cat "$MARK_GID")" "$_bin_gid"    "run-as nobody:bin: GID = bin's"
+else
+    echo "SKIP: 'bin' group not resolvable; user:group split case omitted"
 fi
 
 test_summary

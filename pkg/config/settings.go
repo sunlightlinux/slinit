@@ -181,8 +181,9 @@ var KnownSettings = map[string]OperatorType{
 	"numa-nodes":     OpEquals,
 
 	// capabilities
-	"capabilities": OpEquals | OpPlusEqual,
-	"securebits":   OpEquals | OpPlusEqual,
+	"capabilities":            OpEquals | OpPlusEqual,
+	"capability-bounding-set": OpEquals | OpPlusEqual,
+	"securebits":              OpEquals | OpPlusEqual,
 
 	// utmp
 	"inittab-id":   OpEquals,
