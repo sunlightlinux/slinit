@@ -137,3 +137,35 @@ func TestCronRunner_DoubleStartStop(t *testing.T) {
 	cr.Stop()
 	cr.Stop()
 }
+
+// Regression: calendar mode leaves cr.interval at zero, which used to
+// feed context.WithTimeout(ctx, 0) and kill every fire before it could
+// write anything. executeCommand now falls back to time.Minute.
+func TestCronRunner_CalendarExecutesCommand(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "cal-test")
+
+	marker := filepath.Join(t.TempDir(), "cal-ran")
+
+	// Fire every second: *:*:* — full wildcard list yields nil for each
+	// component, which inAny/containsInt treat as "any".
+	spec, err := ParseCalendar("*:*:*")
+	if err != nil {
+		t.Fatalf("ParseCalendar: %v", err)
+	}
+
+	cr := NewCalendarCronRunner(svc, []string{"/bin/sh", "-c", "echo ok > " + marker},
+		spec, 0, false, "continue", set.logger)
+
+	cr.Start()
+	time.Sleep(1500 * time.Millisecond) // long enough to cross a second boundary
+	cr.Stop()
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("calendar cron did not execute: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("calendar cron ran but produced no output")
+	}
+}

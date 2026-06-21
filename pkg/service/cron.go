@@ -248,13 +248,21 @@ func (cr *CronRunner) runOnce() bool {
 	return true
 }
 
-// executeCommand runs the cron command with a timeout matching the interval.
+// executeCommand runs the cron command with a per-fire timeout.
+// Interval mode uses cr.interval as the cap (a fire shouldn't outlive
+// its scheduled gap). Calendar mode has no natural per-fire cap so it
+// falls back to one minute — matching the interval-mode default at
+// NewCronRunner.
 func (cr *CronRunner) executeCommand() error {
 	if len(cr.command) == 0 {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cr.interval)
+	timeout := cr.interval
+	if timeout <= 0 {
+		timeout = time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cr.command[0], cr.command[1:]...)
