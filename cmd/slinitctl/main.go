@@ -373,11 +373,11 @@ doneFlags:
 	case "query-load-mech", "load-mech":
 		err = cmdQueryLoadMech(conn)
 	case "dependents":
-		if len(args) < 1 {
+		if len(cmdArgs) < 1 {
 			fmt.Fprintf(os.Stderr, "usage: slinitctl dependents <service>\n")
 			os.Exit(1)
 		}
-		err = cmdDependents(conn, args[0])
+		err = cmdDependents(conn, cmdArgs[0])
 	case "list5":
 		err = cmdListServices5(conn)
 	case "status5":
