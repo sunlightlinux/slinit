@@ -59,7 +59,11 @@ func applyPostForkAttrs(pid int, params ExecParams) []error {
 			errs = append(errs, fmt.Errorf("cgroup(%s): %w", params.CgroupPath, err))
 		}
 	}
-	if params.NoNewPrivs {
+	if params.NoNewPrivs && params.RunnerPath == "" {
+		// Runner-wrap (exec.go:69) handles NoNewPrivs end-to-end via
+		// --no-new-privs whenever RunnerPath is set; only call the
+		// parent-side stub when no runner is configured, so the
+		// operator gets a single clear warning instead of one per start.
 		if err := applyNoNewPrivs(pid); err != nil {
 			errs = append(errs, fmt.Errorf("no_new_privs: %w", err))
 		}
@@ -343,16 +347,15 @@ func killPIDsFromCgroupProcs(cgroupPath string, sig syscall.Signal) error {
 }
 
 func applyNoNewPrivs(pid int) error {
-	// PR_SET_NO_NEW_PRIVS can only be set on the calling thread, not on
-	// another process. The /proc/PID/attr/no_new_privs path does not exist.
-	// This must be set in the child process before exec.
-	//
-	// Since Go's os/exec doesn't provide a pre-exec callback in the child,
-	// this is a known limitation. For most use cases, the combination of
-	// Credential + AmbientCaps in SysProcAttr provides equivalent security.
-	//
-	// TODO: implement via Cloneflags or a small C helper.
-	return fmt.Errorf("no_new_privs cannot be set from parent process (requires child-side prctl)")
+	// PR_SET_NO_NEW_PRIVS can only be set on the calling thread; the
+	// parent cannot reach into a forked child. The supported path is
+	// slinit-runner --no-new-privs (see cmd/slinit-runner/main.go and
+	// exec.go:528 needsRunnerWrap). This parent-side function only
+	// runs in the degraded path where RunnerPath is empty (runner not
+	// installed) — surface that explicitly so the operator sees why
+	// the prctl didn't take.
+	_ = pid
+	return fmt.Errorf("no_new_privs requires slinit-runner (RunnerPath unset on this ServiceSet)")
 }
 
 func applyCPUAffinity(pid int, cpus []uint) error {
