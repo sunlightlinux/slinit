@@ -529,7 +529,7 @@ func needsRunnerWrap(p ExecParams) bool {
 	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
 		p.AppArmorProfile != "" || p.DebugStop ||
 		sandboxActive(p) || seccompActive(p) || hardeningActive(p) ||
-		len(p.BoundingCaps) > 0
+		len(p.BoundingCaps) > 0 || p.NoNewPrivs
 }
 
 // hardeningActive reports whether any Restrict*/Protect* knob is set.
@@ -669,6 +669,12 @@ func wrapWithRunner(p ExecParams) []string {
 	// change, which is the gate for PR_CAPBSET_DROP).
 	for _, c := range p.BoundingCaps {
 		args = append(args, "--bounding-cap="+strconv.FormatUint(uint64(c), 10))
+	}
+	// no-new-privs: parent-side applyNoNewPrivs is a stub (prctl can't
+	// target a peer task — attrs.go:345). Defer to the runner, which sets
+	// PR_SET_NO_NEW_PRIVS on its own task before exec.
+	if p.NoNewPrivs {
+		args = append(args, "--no-new-privs")
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)

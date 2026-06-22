@@ -24,6 +24,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/pkg/seccomp"
 )
 
 func main() {
@@ -105,6 +107,8 @@ func run() error {
 	var boundingCaps stringList
 	fs.Var(&boundingCaps, "bounding-cap",
 		"capability number to retain in CapBnd; every other cap is PR_CAPBSET_DROP'd (repeatable)")
+	noNewPrivs := fs.Bool("no-new-privs", false,
+		"set PR_SET_NO_NEW_PRIVS before exec; mirrors dinit's options=no-new-privs (run-child-proc.cc:470)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -220,6 +224,19 @@ func run() error {
 	if *runAsUID >= 0 || *runAsGID >= 0 {
 		if err := dropCredentials(*runAsUID, *runAsGID, ambientCaps); err != nil {
 			return err
+		}
+	}
+
+	// no-new-privs: set PR_SET_NO_NEW_PRIVS on this task so the upcoming
+	// exec can't gain privileges via SUID/SGID bits or file capabilities.
+	// Idempotent — installSeccomp() above already sets it when a filter
+	// is configured, but we call unconditionally so a service that asked
+	// for NNP without a seccomp filter still gets it. Matches dinit
+	// run-child-proc.cc:470 semantics. Must come before the AppArmor
+	// onexec switch (no fork may intervene between the switch and exec).
+	if *noNewPrivs {
+		if err := seccomp.EnsureNoNewPrivs(); err != nil {
+			return fmt.Errorf("no-new-privs: %w", err)
 		}
 	}
 
