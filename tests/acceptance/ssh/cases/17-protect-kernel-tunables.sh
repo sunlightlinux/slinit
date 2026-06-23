@@ -31,6 +31,21 @@ if [ -z "$_pid" ]; then
 fi
 echo "OK: $SVC running as pid $_pid"
 
+# slinit marks the service STARTED as soon as cmd.Start() returns the
+# fork PID, but slinit-runner is still inside applyHardening at that
+# moment — bind+remount /proc/sys RO hasn't necessarily landed yet.
+# Under suite-mode VM load this race widens, and a write probe fired
+# right after STARTED can slip through. Wait for the RO line in the
+# service's mountinfo before probing.
+_e=0
+while [ "$_e" -lt 5 ]; do
+    if grep -qE '/proc/sys [^-]*\bro\b' /proc/"$_pid"/mountinfo 2>/dev/null; then
+        break
+    fi
+    sleep 0.2
+    _e=$((_e + 1))
+done
+
 # Write attempt through the service's mount namespace must fail with EROFS.
 # We delegate to a sub-shell so the redirection error (which the *outer*
 # shell would otherwise emit on its own stderr and slip past `2>&1`) is
