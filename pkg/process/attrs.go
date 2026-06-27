@@ -183,6 +183,32 @@ func applyCgroup(pid int, cgroupPath string) error {
 	return os.WriteFile(procsPath, strconv.AppendInt(nil, int64(pid), 10), 0200)
 }
 
+// PrepareCgroupForFD pre-creates the cgroup directory + writes resource
+// settings, then opens the directory and returns the *os.File. The fd is
+// suitable as SysProcAttr.CgroupFD with UseCgroupFD=true, which routes
+// fork through clone3+CLONE_INTO_CGROUP — the child enters the cgroup
+// before exec, so anything it forks afterwards inherits the cgroup.
+// Without this, a fast shell child could fork (e.g. setsid'd) grandchildren
+// in the root cgroup during the race window between cmd.Start() and the
+// post-fork cgroup.procs write.
+//
+// Caller is responsible for closing the returned fd after Start.
+// Requires Linux ≥5.7 for CLONE_INTO_CGROUP at fork time.
+func PrepareCgroupForFD(cgroupPath string, settings []CgroupSetting) (*os.File, error) {
+	if err := validateCgroupPath(cgroupPath); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", cgroupPath, err)
+	}
+	if len(settings) > 0 {
+		// Best-effort: settings write failures here are non-fatal because
+		// the post-fork path retries the same writes (idempotent).
+		_ = applyCgroupSettings(cgroupPath, settings)
+	}
+	return os.Open(cgroupPath)
+}
+
 // applyCgroupSettings writes resource limit values to the cgroup directory.
 // It also enables the required subtree controllers on the parent cgroup so
 // that delegation works (e.g., writing "memory.max" requires "+memory" in

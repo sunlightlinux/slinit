@@ -360,6 +360,26 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("SLINIT_CS_FD=%d", csFD))
 	}
 
+	// Cgroup pre-attach: open the target cgroup as a directory fd and
+	// route fork through clone3+CLONE_INTO_CGROUP. Without this, the
+	// child shell could fork (e.g. setsid'd) grandchildren in the root
+	// cgroup before the parent's post-fork cgroup.procs write lands,
+	// defeating `kill-all-on-stop`. Best-effort: on older kernels we
+	// fall back to the post-fork attach in applyPostForkAttrs.
+	var cgroupFD *os.File
+	if params.CgroupPath != "" {
+		if fd, err := PrepareCgroupForFD(params.CgroupPath, params.CgroupSettings); err == nil {
+			cgroupFD = fd
+			cmd.SysProcAttr.UseCgroupFD = true
+			cmd.SysProcAttr.CgroupFD = int(fd.Fd())
+		}
+	}
+	defer func() {
+		if cgroupFD != nil {
+			cgroupFD.Close()
+		}
+	}()
+
 	// Per-service umask: apply just before fork so the child inherits it,
 	// then restore immediately. Safe because every StartProcess call runs
 	// serialized under ServiceSet.queueMu — no other goroutine forks or

@@ -570,8 +570,12 @@ func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 // Runs in the monitorLauncher goroutine; acquires queueMu to serialize
 // state mutations with the main scheduling path.
 func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
-	// Kill remaining process group members from the launcher
-	process.KillProcessGroup(exit.PID)
+	// Kill remaining process group members from the launcher.
+	// SignalProcessOnly opts out of pgroup signals for this service
+	// (dinit parity: baseproc-service.cc kill_pg gates on the same flag).
+	if !s.Flags.SignalProcessOnly {
+		process.KillProcessGroup(exit.PID)
+	}
 
 	// Kill entire cgroup tree to clean up orphaned processes
 	if s.Flags.KillAllOnStop {
