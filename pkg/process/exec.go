@@ -441,21 +441,47 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 
 	exitCh := make(chan ChildExit, 1)
 
+	// Register with the exit router BEFORE the wait goroutine starts. If
+	// PID 1's SIGCHLD handler reaps this child before cmd.Wait() does,
+	// the router delivers the real WaitStatus here; otherwise cmd.Wait()
+	// is the source of truth. Without this, an orphan-reaper win silently
+	// loses the exit code and finish-command sees ExitStatus()==0.
+	routedCh := DefaultExitRouter.Register(pid)
+
 	// Goroutine that waits for the process to finish
 	go func() {
 		defer close(exitCh)
+		defer DefaultExitRouter.Unregister(pid)
 		// Release lock file when process exits
 		if lockFD != nil {
 			defer lockFD.Close()
 		}
 
-		err := cmd.Wait()
+		// Run cmd.Wait() in a sub-goroutine so we can race it against
+		// the router. Buffered cap 1 so the sub-goroutine's send never
+		// blocks if the router wins.
+		waitDone := make(chan syscall.WaitStatus, 1)
+		go func() {
+			err := cmd.Wait()
+			var status syscall.WaitStatus
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					status = exitErr.Sys().(syscall.WaitStatus)
+				}
+			}
+			waitDone <- status
+		}()
 
 		var status syscall.WaitStatus
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				status = exitErr.Sys().(syscall.WaitStatus)
-			}
+		select {
+		case status = <-routedCh:
+			// Orphan reaper got there first. Drain the cmd.Wait() goroutine
+			// in the background so it doesn't leak — Wait4 will eventually
+			// return ECHILD now that the child is reaped.
+			go func() { <-waitDone }()
+		case status = <-waitDone:
+			// cmd.Wait() won the race; routedCh will be unregistered by
+			// the deferred Unregister above.
 		}
 
 		exitCh <- ChildExit{

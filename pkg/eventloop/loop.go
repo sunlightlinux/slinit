@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -282,11 +283,12 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 // KillProcessGroup(-pgid). This loop catches remaining orphans:
 // double-forked daemons, setsid'd children, etc.
 //
-// There is a small race with os/exec's internal Wait4(pid): if we reap
-// a managed child here, the goroutine gets ECHILD and reports status=0.
-// In practice Go's runtime reaps managed children before this handler
-// runs, so the race is extremely unlikely. The trade-off (no zombie
-// accumulation) is worth it for PID 1.
+// Race resolution: Wait4(-1, ...) also collects any managed child that
+// exits at the same moment. When that happens process.DefaultExitRouter
+// routes the real WaitStatus to the per-service wait goroutine; without
+// the router, cmd.Wait() would observe ECHILD and silently report
+// status=0, losing the real exit code in finish-command, is-failed,
+// and chain-to gating.
 func (el *EventLoop) reapOrphans() {
 	if !el.isPID1 {
 		return
@@ -296,6 +298,10 @@ func (el *EventLoop) reapOrphans() {
 		pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
 		if pid <= 0 || err != nil {
 			break
+		}
+		if process.DefaultExitRouter.Route(pid, status) {
+			el.logger.Debug("Routed reaped pid %d to managed-child waiter (status: %v)", pid, status)
+			continue
 		}
 		el.logger.Debug("Reaped orphan process %d (status: %v)", pid, status)
 	}
