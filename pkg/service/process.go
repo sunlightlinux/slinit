@@ -1694,7 +1694,11 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// (e.g., orphaned sleep, background scripts spawned by the shell).
 	// The lead process is already reaped; wait4(-pgid) only targets
 	// group members, so this is safe for other managed services.
-	process.KillProcessGroup(exit.PID)
+	// SignalProcessOnly opts out of every pgroup signal for this service
+	// (dinit parity: baseproc-service.cc kill_pg gates on the same flag).
+	if !s.Flags.SignalProcessOnly {
+		process.KillProcessGroup(exit.PID)
+	}
 
 	// Kill entire cgroup tree to clean up any orphaned processes
 	if s.Flags.KillAllOnStop {
