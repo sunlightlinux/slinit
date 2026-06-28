@@ -116,8 +116,16 @@ func (l *NotifySocketListener) readLoop(handler NotifySocketHandler) {
 		)
 		ctlErr := rawConn.Read(func(fd uintptr) bool {
 			n, oobn, _, _, recvErr = unix.Recvmsg(int(fd), bodyBuf, oobBuf, 0)
-			// Return true so the runtime doesn't retry on EAGAIN we
-			// never produced.
+			// Net.UnixConn puts the underlying fd in non-blocking mode
+			// so it can integrate with the netpoller. When there is no
+			// datagram queued Recvmsg returns EAGAIN; tell the runtime
+			// to park us on read-readiness and call us back when one
+			// actually arrives. Returning true here would treat the
+			// EAGAIN as "done" and exit the loop without ever delivering
+			// a single packet — the bug this guards against.
+			if recvErr == unix.EAGAIN || recvErr == unix.EWOULDBLOCK {
+				return false
+			}
 			return true
 		})
 		if ctlErr != nil || recvErr != nil {
