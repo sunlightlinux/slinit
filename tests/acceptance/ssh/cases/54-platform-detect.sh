@@ -55,11 +55,16 @@ esac
 # the VM's hardware emulation.
 expected=""
 
-# Strongest signal: kvm-clock as the current clocksource.
+# Strongest signal: kvm-clock listed as an available clocksource. The
+# kernel only registers it under KVM acceleration — pure-TCG QEMU never
+# exposes kvm-clock. We deliberately check `available_clocksource` (not
+# `current_clocksource`) so the test still recognizes KVM when the boot
+# cmdline pins a different source (clocksource=tsc / tsc=reliable).
 _clock=$(cat /sys/devices/system/clocksource/clocksource0/current_clocksource 2>/dev/null)
-if [ "$_clock" = "kvm-clock" ]; then
-    expected="kvm"
-fi
+_avail=$(cat /sys/devices/system/clocksource/clocksource0/available_clocksource 2>/dev/null)
+case " $_avail " in
+    *' kvm-clock '*) expected="kvm" ;;
+esac
 
 # DMI sys_vendor / product_name lookups.
 _sys_vendor=$(tr -d '\0\n' < /sys/class/dmi/id/sys_vendor 2>/dev/null)
