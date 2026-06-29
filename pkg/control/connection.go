@@ -1471,7 +1471,24 @@ func (c *Connection) handleQueryServiceDscDir() error {
 		return c.writePacket(RplyServiceDscDir, reply)
 	}
 
-	dirs := loader.ServiceDirs()
+	// Dinit-parity (upstream 044b950 + 1300c63): resolve every directory
+	// path against the daemon's working directory before sending it to
+	// the client. dinitctl traditionally treated whatever the daemon
+	// returned as authoritative and joined relative paths against its
+	// OWN cwd, which silently lied when the two processes had different
+	// working directories. Doing the Abs() server-side closes the gap
+	// for every existing client without a protocol bump.
+	rawDirs := loader.ServiceDirs()
+	dirs := make([]string, len(rawDirs))
+	for i, d := range rawDirs {
+		if abs, err := filepath.Abs(d); err == nil {
+			dirs[i] = abs
+		} else {
+			// Abs only fails if Getwd does — keep the raw value so a
+			// best-effort answer reaches the client.
+			dirs[i] = d
+		}
+	}
 	// Wire format: count(2) + [dirLen(2) + dir(N)]*
 	size := 2
 	for _, d := range dirs {

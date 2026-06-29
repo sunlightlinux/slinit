@@ -168,6 +168,13 @@ doneFlags:
 				}
 			}
 		}
+		// Dinit-parity (upstream 044b950): in offline mode --services-dir
+		// is consumed locally (waits-for.d symlink writes), so a relative
+		// path must be resolved against THIS process's cwd before we hand
+		// it to offlineEnable / offlineDisable.
+		if abs, err := filepath.Abs(svcDir); err == nil {
+			svcDir = abs
+		}
 		switch command {
 		case "enable":
 			if len(cmdArgs) < 1 {
