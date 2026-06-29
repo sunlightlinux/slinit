@@ -335,15 +335,28 @@ func main() {
 		fmt.Fprintf(os.Stderr, "slinit: %v (using default wallclock)\n", err)
 	}
 
-	// Redirect log output to file (--log-file/-l)
+	// Redirect log output to file (--log-file/-l).
+	//
+	// Dinit-parity (upstream 3e48a8e): a system manager (PID 1 / -m /
+	// container) must NOT terminate when the requested logfile can't be
+	// opened — there's critical bring-up to do and stderr is still a
+	// usable fallback. User-mode slinit bails out so the operator sees
+	// the bad path right away.
 	if logFile != "" {
 		lf, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "slinit: cannot open log file '%s': %v\n", logFile, err)
-			os.Exit(1)
+			if isPID1 || systemMode || containerMode {
+				fmt.Fprintf(os.Stderr,
+					"slinit: cannot open log file '%s': %v (continuing with default log target)\n",
+					logFile, err)
+			} else {
+				fmt.Fprintf(os.Stderr, "slinit: cannot open log file '%s': %v\n", logFile, err)
+				os.Exit(1)
+			}
+		} else {
+			defer lf.Close()
+			logger.SetOutput(lf)
 		}
-		defer lf.Close()
-		logger.SetOutput(lf)
 	} else if systemMode {
 		// In system mode without --log-file, use syslog as the main log
 		// facility (like dinit's /dev/log connection).
@@ -505,17 +518,31 @@ func main() {
 		}
 	}
 
-	// Load daemon-level environment file (--env-file/-e)
+	// Load daemon-level environment file (--env-file/-e).
+	//
+	// Dinit-parity (upstream bb2dea8 + 2883533): an explicit env-file
+	// failure is a hard error UNLESS we're acting as a system manager.
+	// System managers (PID 1, --system, --system-mgr, container mode)
+	// are doing critical work and shouldn't terminate mid-boot over a
+	// missing config — they log the error and continue with the empty
+	// global env. User-mode slinit (no -m / not PID 1) bails out so the
+	// operator finds out about the bad path immediately.
 	if envFile != "" {
-		if fileEnv, err := process.ReadEnvFile(envFile); err == nil {
+		fileEnv, err := process.ReadEnvFile(envFile)
+		if err != nil {
+			if isPID1 || systemMode || containerMode {
+				logger.Error("Failed to read env-file '%s': %v (continuing)", envFile, err)
+			} else {
+				logger.Error("Failed to read env-file '%s': %v", envFile, err)
+				os.Exit(1)
+			}
+		} else {
 			env := make([]string, 0, len(fileEnv))
 			for k, v := range fileEnv {
 				env = append(env, k+"="+v)
 			}
 			serviceSet.SetGlobalEnv(env)
 			logger.Info("Loaded %d variables from env-file '%s'", len(fileEnv), envFile)
-		} else {
-			logger.Error("Failed to read env-file '%s': %v", envFile, err)
 		}
 	}
 
