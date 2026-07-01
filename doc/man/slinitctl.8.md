@@ -204,8 +204,10 @@ daemon, which is useful at install time or in initramfs.
 
 **add-dep** *kind* *from* *to*
 :   Add a dependency edge of *kind* (`depends-on`/`regular`,
-    `waits-for`/`soft`, `depends-ms`/`milestone`, `before`, `after`)
-    from *from* to *to*.
+    `waits-for`/`soft`, `depends-ms`/`milestone`, `prepared-by`,
+    `before`, `after`) from *from* to *to*. `prepared-by` behaves as
+    a hard dependency that also cascades a restart from *from* back to
+    *to* — see **slinit-service**(5).
 
 **rm-dep** *kind* *from* *to*
 :   Remove a dependency edge of *kind*.
@@ -254,6 +256,12 @@ daemon, which is useful at install time or in initramfs.
     **reboot**, **kexec**, **softreboot** / **soft-reboot**. Same
     semantics as the **slinit-shutdown**(8) tool but routed through
     the control socket.
+
+**halt** | **poweroff** | **reboot** | **kexec** | **softreboot**
+:   Top-level shortcuts equivalent to **shutdown** with the same
+    *kind*. Provided so **slinitctl reboot** works as muscle-memory
+    from other init systems without having to type the *kind*
+    argument.
 
 ### Misc
 
