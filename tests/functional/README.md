@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (77 tests)
+# Run all tests (158 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test

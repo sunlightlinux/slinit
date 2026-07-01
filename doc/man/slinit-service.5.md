@@ -935,6 +935,16 @@ mlockall       = current+future
     `cap_net_bind_service,cap_chown`). Unlisted capabilities are
     dropped from all sets including *ambient*.
 
+**capability-bounding-set**=*caps*
+:   Comma-separated positive list of capability names retained in the
+    bounding set (`CapBnd`). All other capabilities are dropped via
+    `PR_CAPBSET_DROP` in **slinit-runner**(8) before `execve`,
+    permanently — the process cannot re-acquire them for the rest of
+    its lifetime. Use this to strip capabilities the service must
+    never gain, even transitively via setuid execs it later performs.
+    Systemd-style `~` drop prefix is not supported; the list is
+    interpreted positively (only the listed caps survive).
+
 **securebits**=*bits*
 :   Securebit names or bitmask (e.g. `keep-caps,no-setuid-fixup`).
 
