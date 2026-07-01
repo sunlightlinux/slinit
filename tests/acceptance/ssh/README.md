@@ -56,17 +56,26 @@ lib/
   ssh.sh           # ssh/scp helpers (host-side)
   remote-prelude.sh # sourced by each case on the remote
 cases/
-  01-version.sh
+  01-version.sh          # read-only baseline (01-03)
   02-control-socket.sh
   03-essential-services.sh
-  04-start-stop.sh
-  05-restart.sh
-  06-reload-signal.sh
-  07-dependency.sh
-  08-scripted-failure.sh
-  09-triggered.sh
-  10-cleanup.sh
+  04-start-stop.sh       # basic lifecycle (04-10)
+  ...
+  11-rc-service.sh       # OpenRC shims (11-19)
+  20-bgprocess-pidfile.sh # bg / triggered / trigger (20-29)
+  30-ready-notification.sh # dep semantics / notify / socket-act (30-39)
+  40-env-dir.sh          # env / cred / runtime-dir (40-49)
+  50-path-trigger.sh     # path activation / mount / conditions (50-59)
+  60-options-signal-process-only.sh # options-* / oom / restart-limit (60-69)
+  70-log-rate-limit.sh   # logging, hardening, lifecycle gaps (70-79)
+  80-envfile-leniency.sh # dinit parity fixes (80-82)
+  81-logfile-leniency.sh
+  82-service-dirs-abs.sh
+  99-cleanup.sh          # tears down acceptance-test-* namespace
 ```
+
+**82 real cases** (numbered 01–82) plus a final `99-cleanup.sh` teardown.
+Numbering leaves gaps so related features can be grouped without renumbering.
 
 Each `cases/NN-*.sh` is a self-contained shell script. The runner:
 
