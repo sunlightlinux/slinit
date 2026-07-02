@@ -144,7 +144,7 @@ Strong success criteria let you loop independently. Weak criteria
   protocol (v5).
 - `pkg/process/exec.go` — fork/exec + child monitoring.
 - `cmd/slinit/main.go` — PID 1 / container-mode entry point.
-- `cmd/slinitctl/main.go` — 35 subcommands + 12 global flags.
+- `cmd/slinitctl/main.go` — ~40 subcommands + 14 global flags.
 
 ### Reference sources
 - **dinit** (C++): `../dinit/src/` — key files `service.{h,cc}`,

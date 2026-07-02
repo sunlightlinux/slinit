@@ -61,7 +61,7 @@ format to accommodate them.
 ## Features
 
 - **Service types**: process, scripted, bgprocess, internal, triggered
-- **Dependency management**: 7 dependency types (regular, waits-for, milestone, soft, before, after, prepared-by)
+- **Dependency management**: 6 dependency types (depends-on, waits-for, depends-ms, before, after, prepared-by)
 - **Process lifecycle**: SIGTERM with configurable timeout, SIGKILL escalation
 - **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
 - **Dinit-compatible config**: key=value service description files
@@ -857,7 +857,7 @@ of Ctrl+Alt+Del or a repeated RT signal always escalates.
 slinit/
 ├── cmd/
 │   ├── slinit/            # Daemon entry point (incl. SysV argv[0] dispatch)
-│   ├── slinitctl/         # Control CLI (36 commands, incl. attach)
+│   ├── slinitctl/         # Control CLI (~40 subcommands + 14 global flags)
 │   ├── slinit-check/      # Config linter (offline + online)
 │   ├── slinit-monitor/    # Event watcher + command executor
 │   ├── slinit-shutdown/   # Standalone shutdown utility (+ reboot/halt/soft symlinks)
