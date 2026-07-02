@@ -24,6 +24,7 @@ PAGES_8 = \
 	slinit-init-maker.8 \
 	slinit-mount.8 \
 	slinit-nuke.8 \
+	slinit-seedrng.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8

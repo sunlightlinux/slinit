@@ -157,7 +157,8 @@ format to accommodate them.
 - **SysV compat**: `init 0` → poweroff, `init 6` → reboot, `init N` (1..5) → start runlevel-N
 - **Standalone binaries**: `slinit-init-maker` (bootable layout generator), `slinit-nuke`
   (emergency `kill -1`), `slinit-shutdown` (orderly shutdown shim, also invocable as
-  `slinit-reboot`/`slinit-halt`/`slinit-soft-reboot` symlinks)
+  `slinit-reboot`/`slinit-halt`/`slinit-soft-reboot` symlinks), `slinit-seedrng` (SeedRNG
+  entropy persistence — `RNDADDENTROPY` + fresh-seed rotation, systemd/OpenRC equivalent)
 
 ## Building
 
@@ -174,6 +175,7 @@ go build ./cmd/slinit-init-maker  # bootable service-dir generator
 go build ./cmd/slinit-nuke        # emergency kill-all
 go build ./cmd/slinit-mount       # autofs lazy-mount helper
 go build ./cmd/slinit-checkpath   # path-validation helper
+go build ./cmd/slinit-seedrng     # persist entropy across reboots (SeedRNG)
 
 # OpenRC compat shims
 go build ./cmd/rc-service
@@ -865,6 +867,7 @@ slinit/
 │   ├── slinit-nuke/       # Emergency kill-all (TERM → grace → KILL)
 │   ├── slinit-mount/      # Autofs lazy-mount helper
 │   ├── slinit-checkpath/  # Path-validation helper
+│   ├── slinit-seedrng/    # Persist entropy across reboots (SeedRNG protocol)
 │   ├── rc-service/        # OpenRC compat: thin shim over slinitctl
 │   ├── rc-update/         # OpenRC compat: runlevel membership via runlevel-<name> services
 │   └── rc-status/         # OpenRC compat: status listing
