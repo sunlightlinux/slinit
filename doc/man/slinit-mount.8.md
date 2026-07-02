@@ -109,7 +109,7 @@ slinit-mount --foreground -d /etc/slinit.d/mount.d
 Trigger a config reload after dropping a new **.mount** file:
 
 ```
-slinitctl signal --signal HUP slinit-mount
+slinitctl signal HUP slinit-mount
 ```
 
 # SEE ALSO

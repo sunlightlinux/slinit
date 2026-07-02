@@ -196,9 +196,13 @@ service-file format.
     is reported as slow. Default `10s`.
 
 **-S** *kind*, **\--sys** *kind*
-:   Override platform auto-detection. Accepted: `docker`, `lxc`,
-    `podman`, `wsl`, `xen0`, `xenu`, `none`. Mostly useful for testing
-    container-mode behaviour outside a real container.
+:   Override platform auto-detection. Accepted values match the set
+    detected by **pkg/platform**: `docker`, `lxc`, `podman`,
+    `systemd-nspawn`, `openvz`, `vserver`, `rkt`, `uml`, `wsl`,
+    `xen0`, `xenu`, `kvm`, `qemu`, `vmware`, `microsoft` (Hyper-V),
+    `oracle` (VirtualBox), `bochs`, or `none`. Mostly useful for
+    testing container-mode / VM-specific behaviour outside a real
+    environment.
 
 **\--conf-dir** *dirs*
 :   Override the default conf.d overlay directories
