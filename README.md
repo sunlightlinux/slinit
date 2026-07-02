@@ -244,6 +244,12 @@ ln -s slinit /sbin/reboot
 | `--kcmdline-dest` | Snapshot `/proc/cmdline` to this path (empty disables) | `/run/slinit/kcmdline` |
 | `-S` / `--sys` | Override platform detection (`docker`, `lxc`, `podman`, `systemd-nspawn`, `openvz`, `vserver`, `rkt`, `uml`, `wsl`, `xen0`, `xenu`, `kvm`, `qemu`, `vmware`, `microsoft` (Hyper-V), `oracle` (VirtualBox), `bochs`, `none`) | auto |
 | `--conf-dir` | Override `conf.d` overlay directories (comma-separated; `none` disables overlays) | |
+| `-a` / `--cpu-affinity` | Default CPU affinity for daemon and services (e.g. `0-3`, `0,2,4`) | |
+| `--restore-from-snapshot` | Replay operator-intent snapshot after soft-reboot (path to snapshot file) | |
+| `--watchdog-device` | Hardware watchdog character device to feed (PID 1 / container mode) | auto (`/dev/watchdog0` → `/dev/watchdog`) |
+| `--watchdog-timeout` | Kernel-side watchdog timeout (`WDIOC_SETTIMEOUT`) | `60s` |
+| `--watchdog-interval` | How often the feeder pings the device | `timeout / 3` |
+| `--no-watchdog` | Disable hardware-watchdog feeder even when PID 1 | `false` |
 | `--version` | Show version and exit | |
 
 Default service directories (when `--services-dir` is not set):

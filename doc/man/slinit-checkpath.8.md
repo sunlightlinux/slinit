@@ -76,11 +76,11 @@ when only **-W** is requested (writable check, no creation).
 
 # EXAMPLES
 
-Typical use from a slinit service description's **pre-start**:
+Typical use from a slinit service description's **pre-start-command**:
 
 ```
-pre-start = /usr/bin/slinit-checkpath \
-                -d -m 0755 -o redis:redis /run/redis
+pre-start-command = /usr/bin/slinit-checkpath \
+                        -d -m 0755 -o redis:redis /run/redis
 ```
 
 Ensure a runtime FIFO exists with restrictive perms:
