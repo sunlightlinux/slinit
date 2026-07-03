@@ -109,6 +109,8 @@ func run() error {
 		"capability number to retain in CapBnd; every other cap is PR_CAPBSET_DROP'd (repeatable)")
 	noNewPrivs := fs.Bool("no-new-privs", false,
 		"set PR_SET_NO_NEW_PRIVS before exec; mirrors dinit's options=no-new-privs (run-child-proc.cc:470)")
+	securebits := fs.Int("securebits", -1,
+		"PR_SET_SECUREBITS bitmask to apply before exec; -1 = leave untouched")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -237,6 +239,18 @@ func run() error {
 	if *noNewPrivs {
 		if err := seccomp.EnsureNoNewPrivs(); err != nil {
 			return fmt.Errorf("no-new-privs: %w", err)
+		}
+	}
+
+	// Securebits: PR_SET_SECUREBITS affects the calling thread only.
+	// Setting it here (post-run-as, pre-exec) is the safe seam: this
+	// process is about to become the child via syscall.Exec, so bits are
+	// inherited by the target program and no other slinit-managed task
+	// is affected.
+	if *securebits >= 0 {
+		if _, _, errno := syscall.Syscall(unix.SYS_PRCTL,
+			uintptr(unix.PR_SET_SECUREBITS), uintptr(*securebits), 0); errno != 0 {
+			return fmt.Errorf("PR_SET_SECUREBITS(0x%x): %w", *securebits, errno)
 		}
 	}
 
