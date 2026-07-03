@@ -207,3 +207,54 @@ func TestCheckConsumerOfHappyPath(t *testing.T) {
 		t.Errorf("valid producer: errors=%d warnings=%d, want 0/0", e, w)
 	}
 }
+
+// --- findServiceDesc @arg handling ---
+
+func TestFindServiceDescSubstitutesServiceArg(t *testing.T) {
+	dir := t.TempDir()
+	// Base template file: command references $1.
+	makeSvcFile(t, dir, "getty",
+		"type = process\ncommand = /sbin/agetty tty$1\n")
+
+	desc, path := findServiceDesc([]string{dir}, "getty@1")
+	if desc == nil {
+		t.Fatalf("findServiceDesc returned nil for getty@1")
+	}
+	if path == "" {
+		t.Fatalf("findServiceDesc returned empty path for getty@1")
+	}
+	if len(desc.Command) != 2 || desc.Command[1] != "tty1" {
+		t.Errorf("expected command [/sbin/agetty tty1], got %v", desc.Command)
+	}
+}
+
+func TestFindServiceDescPlainNameUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	makeSvcFile(t, dir, "svc",
+		"type = process\ncommand = /bin/true\n")
+
+	desc, _ := findServiceDesc([]string{dir}, "svc")
+	if desc == nil {
+		t.Fatalf("findServiceDesc returned nil for svc")
+	}
+	if len(desc.Command) != 1 || desc.Command[0] != "/bin/true" {
+		t.Errorf("expected command [/bin/true], got %v", desc.Command)
+	}
+}
+
+func TestFindServiceDescPrefersFullNameOverBase(t *testing.T) {
+	dir := t.TempDir()
+	// Both files present: the full-name file should win over the template.
+	makeSvcFile(t, dir, "getty",
+		"type = process\ncommand = /sbin/agetty tty$1\n")
+	makeSvcFile(t, dir, "getty@1",
+		"type = process\ncommand = /sbin/agetty console\n")
+
+	desc, _ := findServiceDesc([]string{dir}, "getty@1")
+	if desc == nil {
+		t.Fatalf("findServiceDesc returned nil for getty@1")
+	}
+	if len(desc.Command) != 2 || desc.Command[1] != "console" {
+		t.Errorf("expected full-name file to win (command [/sbin/agetty console]), got %v", desc.Command)
+	}
+}

@@ -374,19 +374,40 @@ func checkExecutable(path, svcName, setting, svcFile string) int {
 }
 
 func findServiceDesc(dirs []string, name string) (*config.ServiceDescription, string) {
-	for _, dir := range dirs {
-		path := filepath.Join(dir, name)
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		defer f.Close()
+	// Support name@argument templates: try the full name first, then fall
+	// back to the base name (before '@'), and thread the argument through
+	// so $1/${1} gets substituted during the re-parse.
+	baseName := name
+	var serviceArg *string
+	if idx := strings.IndexByte(name, '@'); idx >= 0 {
+		baseName = name[:idx]
+		arg := name[idx+1:]
+		serviceArg = &arg
+	}
+	searchNames := []string{name}
+	if baseName != name {
+		searchNames = append(searchNames, baseName)
+	}
 
-		desc, err := config.Parse(f, name, path)
-		if err != nil {
-			return nil, ""
+	for _, dir := range dirs {
+		for _, sn := range searchNames {
+			path := filepath.Join(dir, sn)
+			f, err := os.Open(path)
+			if err != nil {
+				continue
+			}
+			var desc *config.ServiceDescription
+			if serviceArg != nil {
+				desc, err = config.ParseWithArg(f, name, path, *serviceArg)
+			} else {
+				desc, err = config.Parse(f, name, path)
+			}
+			f.Close()
+			if err != nil {
+				return nil, ""
+			}
+			return desc, path
 		}
-		return desc, path
 	}
 	return nil, ""
 }
