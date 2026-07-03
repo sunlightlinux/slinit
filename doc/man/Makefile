@@ -25,6 +25,7 @@ PAGES_8 = \
 	slinit-mount.8 \
 	slinit-nuke.8 \
 	slinit-seedrng.8 \
+	slinit-start-stop-daemon.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8

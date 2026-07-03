@@ -158,7 +158,10 @@ format to accommodate them.
 - **Standalone binaries**: `slinit-init-maker` (bootable layout generator), `slinit-nuke`
   (emergency `kill -1`), `slinit-shutdown` (orderly shutdown shim, also invocable as
   `slinit-reboot`/`slinit-halt`/`slinit-soft-reboot` symlinks), `slinit-seedrng` (SeedRNG
-  entropy persistence — `RNDADDENTROPY` + fresh-seed rotation, systemd/OpenRC equivalent)
+  entropy persistence — `RNDADDENTROPY` + fresh-seed rotation, systemd/OpenRC equivalent),
+  `slinit-start-stop-daemon` (Debian/OpenRC-compatible daemon runner for ported init.d
+  scripts — `--start`/`--stop`/`--status` with pidfile/exec/name/user matching and
+  `TERM/30/KILL/5`-style retry schedules)
 
 ## Building
 
@@ -176,6 +179,7 @@ go build ./cmd/slinit-nuke        # emergency kill-all
 go build ./cmd/slinit-mount       # autofs lazy-mount helper
 go build ./cmd/slinit-checkpath   # path-validation helper
 go build ./cmd/slinit-seedrng     # persist entropy across reboots (SeedRNG)
+go build ./cmd/slinit-start-stop-daemon  # Debian/OpenRC start-stop-daemon(8) clone
 
 # OpenRC compat shims
 go build ./cmd/rc-service

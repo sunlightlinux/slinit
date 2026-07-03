@@ -9,3 +9,6 @@
 /slinit-reboot
 /slinit-halt
 /slinit-soft-reboot
+/slinit-seedrng
+/slinit-start-stop-daemon
+/slinit-runner
