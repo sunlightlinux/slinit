@@ -65,7 +65,7 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | sysctl-demo   | scripted  | `slinit-sysctl` applies `/etc/sysctl.d/*.conf` — before/after `/proc/sys` values in log |
 | svc-value-demo | process  | OpenRC per-service key=value store (`service_set_value`/`service_get_value`); stop-command reads back the persisted values |
 | ssd-demo      | scripted  | `slinit-start-stop-daemon --start --background --make-pidfile` supervises a `sleep 300`; stop-command uses `--retry TERM/2/KILL/2` |
-| supervise-demo | scripted | `slinit-supervise-daemon` respawn loop with 500ms delay + 200ms step (cap 5s); child counter file ticks up each iteration |
+| supervise-demo | scripted | `slinit-supervise-daemon --verbose` respawn loop with 500ms delay + 200ms step (cap 5s); child counter file ticks up each iteration; `/tmp/slinit-supervise-daemon.err` captures the detached supervisor's log |
 | einfo-demo    | scripted  | Walks every einfo applet (einfo/ewarn/eerror/ebegin/eend/veinfo/eval_ecolors) — colour output visible via `slinitctl catlog einfo-demo` |
 | openrc-initd-demo | scripted | `/etc/init.d/openrc-initd-demo` OpenRC-style: `#!/sbin/openrc-run` shebang, `depend() { need X; after Y; }` extracted by the sandbox parser |
 

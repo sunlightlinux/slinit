@@ -57,6 +57,17 @@ func cmdStart(opts Options) int {
 	cmd.Stdin = devnull
 	cmd.Stdout = devnull
 	cmd.Stderr = devnull
+	// Under --verbose, keep the supervisor's stderr wired into a
+	// scratch file so a broken re-exec surfaces something an operator
+	// can inspect. Silent by default because the release path is
+	// meant to be quiet.
+	if opts.Verbose {
+		if errLog, err := os.OpenFile("/tmp/slinit-supervise-daemon.err",
+			os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644); err == nil {
+			cmd.Stderr = errLog
+			defer errLog.Close()
+		}
+	}
 	setDetached(cmd)
 
 	if err := cmd.Start(); err != nil {

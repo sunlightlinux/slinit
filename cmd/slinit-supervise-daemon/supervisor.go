@@ -17,11 +17,13 @@ import (
 // the rate limiter (RespawnMax within RespawnPeriod) says stop, or
 // SIGTERM lands.
 func runSupervisor(opts Options) int {
+	superLogf(opts, "supervisor entered; svc=%s pidfile=%s", opts.Service, opts.PidFile)
 	// Write our supervisor pidfile so cmdStart's poll loop unblocks.
 	if err := writePIDFile(opts.PidFile, os.Getpid()); err != nil {
 		superLogf(opts, "write pidfile %q: %v", opts.PidFile, err)
 		return exitInsufficientPri
 	}
+	superLogf(opts, "supervisor pidfile written pid=%d", os.Getpid())
 	// Both files are removed on clean exit so stale content does not
 	// linger for the next start.
 	defer func() {
