@@ -126,6 +126,7 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 85 | slinit-sysctl | applies dotted + slashed keys to real /proc/sys/*; verbose summary reports applied/ignored/errors; `-` best-effort miss is ignored by default but escalates under `--strict`; malformed config error names file+line |
 | 86 | slinit-svc-value | file-per-key backing under `$RC_SVCDIR/options/`; symlink dispatch (service_get_value, save_options alias, etc.); empty-value delete; no trailing newline on writes; `service_export` skips already-stored keys; SLINIT_SERVICENAME env fallback |
 | 87 | slinit-start-stop-daemon | `--start --background --make-pidfile` fork against real /bin/sleep; `--status` probes pidfile-live; double-`--start` refused with exit 1 (softened to 0 under `--oknodo`); `--stop --retry TERM/2/KILL/2` terminates the child; stale pidfile yields LSB code 5 (0 with `--oknodo`) |
+| 88 | slinit-supervise-daemon | detach into supervisor loop via re-exec + SLINIT_SSD_SUPERVISOR=1; supervisor + daemon.pidfile companion both written; short-lived child respawned within budget (>=2 iterations); `--stop` tears the tree down and cleans both pidfiles; second `--stop` with missing pidfile still exits 0 |
 
 ## How It Works
 
