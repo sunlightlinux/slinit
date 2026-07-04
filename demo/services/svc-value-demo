@@ -1,0 +1,16 @@
+# svc-value-demo -- OpenRC-style per-service key=value store
+# Try: slinitctl catlog svc-value-demo
+# Try: slinitctl stop svc-value-demo         # stop-command reads the stored values
+# Try: slinitctl start svc-value-demo
+# Try: ls /run/slinit/options/svc-value-demo # inspect the backing files
+#
+# Persists a synthetic "port" and "pidfile-path" on start, prints
+# what it stored, then sleeps. The stop-command reads back both
+# values and reports them — proof the store survives across
+# separate process invocations.
+type = process
+depends-on: system-init
+command = /bin/sh -c "export RC_SVCNAME=svc-value-demo; service_set_value port 8443; service_set_value pidfile-path /run/demo/svc-value.pid; echo \"svc-value-demo: stored port=$(service_get_value port) pidfile-path=$(service_get_value pidfile-path)\"; while true; do sleep 30; done"
+stop-command = /bin/sh -c "export RC_SVCNAME=svc-value-demo; port=$(service_get_value port 2>/dev/null || echo missing); pf=$(service_get_value pidfile-path 2>/dev/null || echo missing); echo \"svc-value-demo: stop sees port=$port pidfile-path=$pf\""
+log-type = buffer
+log-buffer-size = 4096

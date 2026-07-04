@@ -62,6 +62,12 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | chain-b       | scripted  | chain-to target (started by chain-a)           |
 | include-demo  | process   | @include directive (config split across files)  |
 | sandbox-demo  | process   | Privilege drop (run-as, working-dir, new-session, close-stdin) |
+| sysctl-demo   | scripted  | `slinit-sysctl` applies `/etc/sysctl.d/*.conf` — before/after `/proc/sys` values in log |
+| svc-value-demo | process  | OpenRC per-service key=value store (`service_set_value`/`service_get_value`); stop-command reads back the persisted values |
+| ssd-demo      | scripted  | `slinit-start-stop-daemon --start --background --make-pidfile` supervises a `sleep 300`; stop-command uses `--retry TERM/2/KILL/2` |
+| supervise-demo | scripted | `slinit-supervise-daemon` respawn loop with 500ms delay + 200ms step (cap 5s); child counter file ticks up each iteration |
+| einfo-demo    | scripted  | Walks every einfo applet (einfo/ewarn/eerror/ebegin/eend/veinfo/eval_ecolors) — colour output visible via `slinitctl catlog einfo-demo` |
+| openrc-initd-demo | scripted | `/etc/init.d/openrc-initd-demo` OpenRC-style: `#!/sbin/openrc-run` shebang, `depend() { need X; after Y; }` extracted by the sandbox parser |
 
 ## Interactive Commands
 
@@ -189,6 +195,68 @@ slinitctl shutdown softreboot      # restart slinit without kernel reboot
 # Connect to system/user instance explicitly
 slinitctl --system list
 slinitctl --user list
+```
+
+## OpenRC-Compat CLI Tools
+
+The demo VM ships the whole OpenRC compat cluster. Every tool is a
+standalone binary; the ones with multiple applets dispatch via
+`basename(argv[0])` so symlinks (installed by `build.sh`) work
+transparently.
+
+```bash
+# --- slinit-sysctl: apply /etc/sysctl.d/*.conf ------------------
+slinit-sysctl --verbose /etc/sysctl.d/50-slinit-demo.conf
+cat /proc/sys/kernel/printk        # values chosen by the fixture
+
+# --- slinit-binfmt: register /etc/binfmt.d/*.conf --------------
+# Alpine's virt kernel lacks binfmt_misc — expect exit 3 with a
+# "not available" message. On a kernel that has it, this would
+# actually register /etc/binfmt.d/hello-demo.conf.
+slinit-binfmt --verbose
+
+# --- slinit-fstabinfo: query /etc/fstab ------------------------
+slinit-fstabinfo                        # list every mountpoint
+slinit-fstabinfo --blockdevice /home    # UUID / device for /home
+slinit-fstabinfo --options /            # raw mount options
+slinit-fstabinfo --passno =2            # every entry with pass=2
+slinit-fstabinfo --fstype ext4          # ext4 only
+
+# --- slinit-mountinfo: query /proc/mounts ----------------------
+slinit-mountinfo                        # reverse-order mountpoints
+slinit-mountinfo --fstype /             # what filesystem is /
+slinit-mountinfo --fstype-regex '^ext'  # only ext-family mounts
+slinit-mountinfo --nonetdev             # every non-_netdev entry
+
+# --- slinit-einfo: pretty status output ------------------------
+einfo "starting demo"                    # green "* starting demo"
+ewarn "watch out"                        # yellow, to stderr
+eerror "kaboom"                          # red, to stderr, rc=1
+ebegin "doing thing"; sleep 0.2; eend 0  # "* doing thing ... [ ok ]"
+EINFO_VERBOSE=yes veinfo "loud now"      # v* variants gate on this
+eval_ecolors                             # dump color escape vars
+
+# --- slinit-svc-value: per-service key=value store -------------
+export RC_SVCNAME=svc-value-demo
+service_get_value port                   # printed by svc-value-demo
+service_set_value note "manual entry"
+ls /run/slinit/options/svc-value-demo    # backing files
+
+# --- slinit-shell-var: sanitise for shell identifiers ----------
+slinit-shell-var "my-service.d/1"        # → my_service_d_1
+name=$(slinit-shell-var "127.0.0.1")
+eval "${name}_PORT=8080"
+
+# --- slinit-start-stop-daemon: Debian ssd(8) clone -------------
+slinit-start-stop-daemon --status --pidfile /run/ssd-demo/sleeper.pid
+slinit-start-stop-daemon --stop --pidfile /run/ssd-demo/sleeper.pid \
+    --retry TERM/2/KILL/2
+
+# --- slinit-supervise-daemon: OpenRC supervise-daemon(8) -------
+# Started by the supervise-demo scripted service; peek at its state:
+cat /tmp/supervise-demo-count            # respawn iteration counter
+cat /run/supervise-demo/sup.pid          # supervisor pid
+cat /run/supervise-demo/sup.pid.daemon   # currently-supervised daemon
 ```
 
 ## slinit-check (Config Linter)

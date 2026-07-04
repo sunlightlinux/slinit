@@ -39,3 +39,10 @@ waits-for: include-demo
 waits-for: sandbox-demo
 waits-for: bgprocess-demo
 waits-for: vtty-svc
+# OpenRC-tools showcase services (added alongside the standalone
+# binaries so the boot-time list of demos exercises the new surface).
+waits-for: sysctl-demo
+waits-for: svc-value-demo
+waits-for: ssd-demo
+waits-for: supervise-demo
+waits-for: einfo-demo
