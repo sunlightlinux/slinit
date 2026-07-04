@@ -17,4 +17,5 @@
 /slinit-einfo
 /slinit-shell-var
 /slinit-binfmt
+/slinit-sysctl
 /slinit-runner
