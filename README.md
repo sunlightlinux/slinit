@@ -178,7 +178,10 @@ format to accommodate them.
   into shell-variable-safe names by replacing non-alnum bytes with `_`),
   `slinit-binfmt` (systemd-binfmt clone — registers custom binary
   formats from `/etc/binfmt.d/*.conf` via `/proc/sys/fs/binfmt_misc/register`;
-  needed for QEMU user-mode, Mono/.NET, WSL interop)
+  needed for QEMU user-mode, Mono/.NET, WSL interop),
+  `slinit-sysctl` (systemd-sysctl clone — applies `sysctl.d/*.conf` +
+  `/etc/sysctl.conf` tunables to `/proc/sys/*`; supports the OpenRC/systemd
+  `-key = value` best-effort prefix and dotted-or-slashed keys)
 
 ## Building
 
@@ -203,6 +206,7 @@ go build ./cmd/slinit-mountinfo          # OpenRC mountinfo(8) clone
 go build ./cmd/slinit-einfo              # OpenRC einfo(1) multi-applet
 go build ./cmd/slinit-shell-var          # OpenRC shell_var(1) clone
 go build ./cmd/slinit-binfmt             # systemd-binfmt(1) clone
+go build ./cmd/slinit-sysctl             # systemd-sysctl(1) clone
 
 # OpenRC compat shims
 go build ./cmd/rc-service

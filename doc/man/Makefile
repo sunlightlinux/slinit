@@ -31,6 +31,7 @@ PAGES_8 = \
 	slinit-mountinfo.8 \
 	slinit-einfo.8 \
 	slinit-binfmt.8 \
+	slinit-sysctl.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8
