@@ -170,7 +170,10 @@ format to accommodate them.
   `--fstype`/`--passno OP N`/positional filters, `--mount`/`--remount` actions),
   `slinit-mountinfo` (OpenRC-compatible `/proc/mounts` query utility —
   8 regex filters, netdev/nonetdev via fstab, reverse-order output for
-  umount sequencing, `--options`/`--fstype`/`--node` selectors)
+  umount sequencing, `--options`/`--fstype`/`--node` selectors),
+  `slinit-einfo` (OpenRC-compatible status-output multi-applet —
+  dispatches via `argv[0]` to `einfo`/`ewarn`/`eerror`/`ebegin`/`eend`
+  and 15 other applet names, colour-aware, `esyslog`+`ewaitfile` included)
 
 ## Building
 
@@ -192,6 +195,7 @@ go build ./cmd/slinit-start-stop-daemon  # Debian/OpenRC start-stop-daemon(8) cl
 go build ./cmd/slinit-supervise-daemon   # OpenRC supervise-daemon(8) clone
 go build ./cmd/slinit-fstabinfo          # OpenRC fstabinfo(8) clone
 go build ./cmd/slinit-mountinfo          # OpenRC mountinfo(8) clone
+go build ./cmd/slinit-einfo              # OpenRC einfo(1) multi-applet
 
 # OpenRC compat shims
 go build ./cmd/rc-service
