@@ -111,6 +111,8 @@ func run() error {
 		"set PR_SET_NO_NEW_PRIVS before exec; mirrors dinit's options=no-new-privs (run-child-proc.cc:470)")
 	securebits := fs.Int("securebits", -1,
 		"PR_SET_SECUREBITS bitmask to apply before exec; -1 = leave untouched")
+	argv0 := fs.String("argv0", "",
+		"override argv[0] presented to the exec'd target; default is args[0]")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -268,7 +270,15 @@ func run() error {
 	// locked memory and the active mempolicy, so the bandwidth promise
 	// the operator made via the config takes effect from the first
 	// instruction of the real service.
-	if err := syscall.Exec(args[0], args, os.Environ()); err != nil {
+	//
+	// argv0 override honours Debian's --startas semantics when the
+	// runner is prepended by slinit-start-stop-daemon: the child sees a
+	// distinct argv[0] while the kernel exec's a different path.
+	execArgv := args
+	if *argv0 != "" {
+		execArgv = append([]string{*argv0}, args[1:]...)
+	}
+	if err := syscall.Exec(args[0], execArgv, os.Environ()); err != nil {
 		return fmt.Errorf("exec %s: %w", args[0], err)
 	}
 	return nil // unreachable

@@ -2,13 +2,10 @@
 //
 // Drop-in replacement for OpenRC's start-stop-daemon(8): starts, stops,
 // or queries the status of a daemon so ported /etc/init.d scripts keep
-// working under slinit.
-//
-// The subset of flags implemented covers everything actually used by
-// init.d scripts on Debian/Ubuntu/Alpine/Void today. Rare hardening
-// flags (--capabilities, --secbits, --no-new-privs, --scheduler) are
-// deferred until a runner-wrap is wired up; the tool rejects them
-// explicitly so scripts do not silently lose sandboxing.
+// working under slinit. All hardening (--capabilities/--secbits/
+// --no-new-privs) is routed through slinit-runner, and --notify covers
+// every readiness mode Debian/OpenRC document (none, manual, pidfile,
+// fd:N, stderr, signal[:SIG]).
 package main
 
 import (
@@ -454,7 +451,7 @@ Real-time scheduling:
 Logging & readiness:
   -3, --stdout-logger CMD         pipe child stdout to CMD's stdin
   -4, --stderr-logger CMD         pipe child stderr to CMD's stdin
-      --notify readiness=MODE     none | pidfile (wait for --pidfile)
+      --notify readiness=MODE     none | manual | pidfile | fd:N | stderr | signal[:SIG]
   -P, --progress                  print dots each second during wait loops
   -i, --interpreted               name/exec match against argv[1] when exe is an interpreter
 
