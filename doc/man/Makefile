@@ -29,6 +29,7 @@ PAGES_8 = \
 	slinit-supervise-daemon.8 \
 	slinit-fstabinfo.8 \
 	slinit-mountinfo.8 \
+	slinit-einfo.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8
