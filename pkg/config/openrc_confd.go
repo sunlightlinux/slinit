@@ -75,6 +75,29 @@ func wrapInitdWithConfD(scriptPath, name, action string) []string {
 	return []string{openrcShellPath, "-c", snippet}
 }
 
+// wrapOpenRCScript sources an openrc-run-flavoured init.d script
+// and invokes the named function (start / stop) directly instead of
+// exec'ing the script. OpenRC scripts do not carry a dispatcher —
+// their `#!/sbin/openrc-run` shebang tells the OpenRC runtime to
+// call the right function based on the invocation name. Under slinit
+// there is no openrc-run interpreter, so we source and dispatch in
+// shell ourselves, after the same rc.conf + conf.d overlays the
+// regular wrapper applies.
+//
+// `action` is passed verbatim as a shell function name; only
+// caller-controlled constants ("start"/"stop") reach it, so no
+// escaping is needed.
+func wrapOpenRCScript(scriptPath, name, action string) []string {
+	snippet := fmt.Sprintf(
+		"set -a; [ -r %s ] && . %s; [ -r %s/%s ] && . %s/%s; set +a; . %s && %s",
+		shellQuote(openrcRCConf), shellQuote(openrcRCConf),
+		shellQuote(openrcConfDDir), shellQuote(name),
+		shellQuote(openrcConfDDir), shellQuote(name),
+		shellQuote(scriptPath), action,
+	)
+	return []string{openrcShellPath, "-c", snippet}
+}
+
 // shellQuote produces a single-quoted POSIX-shell literal for s.
 // Embedded single quotes become '\'' which terminates the current
 // quoted run, emits a literal quote, then starts a new quoted run.
