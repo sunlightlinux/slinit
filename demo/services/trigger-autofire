@@ -1,0 +1,15 @@
+# trigger-autofire -- flips trigger-test into STARTED at boot.
+# The demo used to leave trigger-test hanging in STARTING so operators
+# could see the triggered-service state; that turned into "waste of
+# time" once nobody wanted to `slinitctl trigger trigger-test` by hand
+# each boot. This one-shot scripted service runs slinitctl to fire
+# the trigger the moment slinit's control socket is up.
+#
+# Manual demo remains available:
+#   slinitctl stop trigger-test        # back to STOPPED
+#   slinitctl start trigger-test       # → STARTING again
+#   slinitctl trigger trigger-test     # → STARTED
+type = scripted
+depends-on: system-init
+command = /usr/bin/slinitctl trigger trigger-test
+stop-command = /usr/bin/slinitctl untrigger trigger-test
