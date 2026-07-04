@@ -253,3 +253,129 @@ func TestMultipleProvides(t *testing.T) {
 		t.Errorf("Provides = %q, want %q", desc.Provides, "alias-name")
 	}
 }
+
+// TestInitDToServiceDescription_OpenRCDepend covers the compat path:
+// a script with an OpenRC-shaped depend() function (no LSB block) has
+// its directives translated onto ServiceDescription fields.
+func TestInitDToServiceDescription_OpenRCDepend(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skipf("no /bin/sh: %v", err)
+	}
+	body := `#!/sbin/openrc-run
+depend() {
+    need localmount fsck
+    use lvm
+    after clock
+    before bootmisc logger
+    provide storage
+    keyword -docker -lxc
+}
+start() { :; }
+`
+	dir := t.TempDir()
+	path := writeScript(t, dir, "storage", body)
+
+	desc, err := InitDToServiceDescription(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// need → depends-on
+	wantDep := map[string]bool{"localmount": true, "fsck": true}
+	got := map[string]bool{}
+	for _, d := range desc.DependsOn {
+		got[d] = true
+	}
+	for k := range wantDep {
+		if !got[k] {
+			t.Errorf("DependsOn missing %q: got %v", k, desc.DependsOn)
+		}
+	}
+	// use → waits-for
+	if len(desc.WaitsFor) != 1 || desc.WaitsFor[0] != "lvm" {
+		t.Errorf("WaitsFor = %v, want [lvm]", desc.WaitsFor)
+	}
+	// after → After
+	if len(desc.After) != 1 || desc.After[0] != "clock" {
+		t.Errorf("After = %v, want [clock]", desc.After)
+	}
+	// before → Before
+	wantBefore := map[string]bool{"bootmisc": true, "logger": true}
+	gotBefore := map[string]bool{}
+	for _, d := range desc.Before {
+		gotBefore[d] = true
+	}
+	for k := range wantBefore {
+		if !gotBefore[k] {
+			t.Errorf("Before missing %q: got %v", k, desc.Before)
+		}
+	}
+	// provide → Provides
+	if desc.Provides != "storage" {
+		t.Errorf("Provides = %q, want %q", desc.Provides, "storage")
+	}
+}
+
+// TestInitDToServiceDescription_LSBWinsOverOpenRC ensures the OpenRC
+// parser is skipped when LSB headers already produced dependency
+// information. Otherwise a script that ships both blocks would end up
+// with duplicated deps.
+func TestInitDToServiceDescription_LSBWinsOverOpenRC(t *testing.T) {
+	body := `#!/sbin/openrc-run
+### BEGIN INIT INFO
+# Provides:       hybrid
+# Required-Start: $syslog
+### END INIT INFO
+depend() {
+    need localmount
+}
+start() { :; }
+`
+	dir := t.TempDir()
+	path := writeScript(t, dir, "hybrid", body)
+
+	desc, err := InitDToServiceDescription(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// LSB provided a dep → depend() must not run.
+	for _, d := range desc.DependsOn {
+		if d == "localmount" {
+			t.Errorf("localmount came from depend() but LSB had deps: %v", desc.DependsOn)
+		}
+	}
+	// LSB's $syslog should be mapped.
+	if len(desc.DependsOn) != 1 || desc.DependsOn[0] != "syslog" {
+		t.Errorf("DependsOn = %v, want [syslog]", desc.DependsOn)
+	}
+}
+
+// TestInitDToServiceDescription_NonOpenRCScriptSkipsDependParse checks
+// that a plain #!/bin/sh script without openrc-run shebang does NOT
+// invoke the OpenRC parser, even if it happens to define depend().
+// This guards the compat-only intent of the fallback.
+func TestInitDToServiceDescription_NonOpenRCScriptSkipsDependParse(t *testing.T) {
+	body := `#!/bin/sh
+# Not an OpenRC script — no shebang match.
+depend() {
+    need dont-map-me
+}
+start() { :; }
+`
+	dir := t.TempDir()
+	path := writeScript(t, dir, "plain", body)
+
+	desc, err := InitDToServiceDescription(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desc.DependsOn) != 0 {
+		t.Errorf("DependsOn = %v, want empty (non-openrc shebang)", desc.DependsOn)
+	}
+	// Sanity: still discovered as an init.d script.
+	if desc.Name != "plain" {
+		t.Errorf("Name = %q, want %q", desc.Name, "plain")
+	}
+	// unused import guard: strings must be referenced somewhere in
+	// case the surrounding block gets trimmed.
+	_ = strings.TrimSpace
+}
