@@ -7,10 +7,12 @@ type = internal
 depends-on: system-init
 depends-on: all-services
 depends-on: tty
-# trigger-test is a `triggered` service: it stays in STARTING until
-# `slinitctl trigger trigger-test`. Referenced here (not in all-services)
-# so it is loaded/visible for the demo without blocking the login prompt.
-waits-for: trigger-test
+# trigger-test is a `triggered` service. trigger-autofire is a one-shot
+# scripted service that runs `slinitctl trigger trigger-test` right after
+# system-init so the demo boots with trigger-test in STARTED instead of
+# leaving it hanging in STARTING. The triggered-service pattern is still
+# demonstrable — stop / start / trigger it by hand to see the state.
+waits-for: trigger-autofire
 # hello-initd is auto-detected from /etc/init.d at runtime;
 # slinit-check (offline) doesn't scan init.d, so it's not listed here.
 # Start it manually in the demo with: rc-service hello-initd start

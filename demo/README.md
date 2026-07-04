@@ -26,7 +26,8 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 | tty           | process   | Interactive shell on console (starts after all-services) |
 | hello         | process   | Echo loop with log buffer                      |
 | ticker        | process   | Periodic timestamp output (alias: my-ticker)   |
-| trigger-test  | triggered | Externally triggered service                   |
+| trigger-test  | triggered | Externally triggered service. Fired at boot by `trigger-autofire` so the default list shows it STARTED — stop / start / trigger by hand to see the STARTING state |
+| trigger-autofire | scripted | Runs `slinitctl trigger trigger-test` once after system-init so operators don't have to fire the trigger by hand every boot |
 | dep-a         | internal  | Dependency chain leaf                          |
 | dep-b         | internal  | Dependency chain middle (waits-for dep-a)      |
 | dep-chain     | internal  | Dependency chain root                          |
