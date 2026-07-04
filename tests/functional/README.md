@@ -125,6 +125,7 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 84 | slinit-binfmt | `--root=DIR` fixture: late-wins discovery, parse errors include file+line; real /proc/sys/fs/binfmt_misc register/unregister when the kernel supports it (exit 3 when it doesn't) |
 | 85 | slinit-sysctl | applies dotted + slashed keys to real /proc/sys/*; verbose summary reports applied/ignored/errors; `-` best-effort miss is ignored by default but escalates under `--strict`; malformed config error names file+line |
 | 86 | slinit-svc-value | file-per-key backing under `$RC_SVCDIR/options/`; symlink dispatch (service_get_value, save_options alias, etc.); empty-value delete; no trailing newline on writes; `service_export` skips already-stored keys; SLINIT_SERVICENAME env fallback |
+| 87 | slinit-start-stop-daemon | `--start --background --make-pidfile` fork against real /bin/sleep; `--status` probes pidfile-live; double-`--start` refused with exit 1 (softened to 0 under `--oknodo`); `--stop --retry TERM/2/KILL/2` terminates the child; stale pidfile yields LSB code 5 (0 with `--oknodo`) |
 
 ## How It Works
 
