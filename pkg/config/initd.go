@@ -187,10 +187,95 @@ func InitDToServiceDescription(scriptPath string) (*ServiceDescription, error) {
 		}
 	}
 
+	// OpenRC-style depend() extraction. Runs only when we couldn't
+	// pull anything useful from LSB headers — Alpine/Void scripts
+	// never carry LSB blocks, so this is the actual dep source for
+	// those distros. Best-effort: on any error we keep the LSB
+	// result (possibly empty) and move on rather than fail the load.
+	if !lsbHasDeps(lsb) {
+		if header, err := readShebang(scriptPath); err == nil &&
+			LooksLikeOpenRCScript(header) {
+			if dep, err := ParseOpenRCDepend(scriptPath); err == nil && dep.HasAny() {
+				applyOpenRCDepend(desc, dep)
+			}
+		}
+	}
+
 	// Don't auto-restart init.d scripts (they're typically one-shot)
 	desc.AutoRestart = service.RestartNever
 
 	return desc, nil
+}
+
+// lsbHasDeps reports whether the LSB block contributed any dependency
+// signal at all. When it did not, we try the OpenRC parser as a
+// fallback rather than shipping a service with an empty dep graph.
+func lsbHasDeps(lsb *LSBInfo) bool {
+	if lsb == nil {
+		return false
+	}
+	return len(lsb.RequiredStart)+len(lsb.ShouldStart)+len(lsb.Provides) > 0
+}
+
+// readShebang reads just enough of the script for LooksLikeOpenRCScript
+// to inspect the first line. Kept small so we don't slurp arbitrary
+// files into memory.
+func readShebang(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	buf := make([]byte, 128)
+	n, _ := f.Read(buf)
+	return string(buf[:n]), nil
+}
+
+// applyOpenRCDepend translates a parsed depend() block onto desc.
+// Mapping mirrors OpenRC semantics:
+//
+//	need    → depends-on (hard)
+//	use     → waits-for  (soft)
+//	want    → waits-for  (modern spelling of use)
+//	after   → after      (order-only)
+//	before  → before     (order-only)
+//	provide → provides   (first only; slinit takes a single alias)
+//	keyword → captured but not enforced yet
+//
+// Virtual facility names ($network etc.) are re-mapped via
+// mapFacility so they match slinit's LSBFacilityMap entries.
+func applyOpenRCDepend(desc *ServiceDescription, dep *OpenRCDepend) {
+	for _, s := range dep.Need {
+		if m := mapFacility(s); m != "" {
+			desc.DependsOn = append(desc.DependsOn, m)
+		}
+	}
+	for _, s := range dep.Use {
+		if m := mapFacility(s); m != "" {
+			desc.WaitsFor = append(desc.WaitsFor, m)
+		}
+	}
+	for _, s := range dep.Want {
+		if m := mapFacility(s); m != "" {
+			desc.WaitsFor = append(desc.WaitsFor, m)
+		}
+	}
+	for _, s := range dep.After {
+		if m := mapFacility(s); m != "" {
+			desc.After = append(desc.After, m)
+		}
+	}
+	for _, s := range dep.Before {
+		if m := mapFacility(s); m != "" {
+			desc.Before = append(desc.Before, m)
+		}
+	}
+	if desc.Provides == "" && len(dep.Provide) > 0 {
+		// slinit supports a single provides alias; take the first
+		// and drop the rest silently. Rare in practice — most scripts
+		// list at most one.
+		desc.Provides = dep.Provide[0]
+	}
 }
 
 // mapFacility converts an LSB facility name to a slinit service name.
