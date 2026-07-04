@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# OpenRC-style init.d script. Under slinit, the loader's OpenRC
+# fallback runs when an LSB block is absent AND the shebang looks
+# like openrc-run — both true for this fixture.
+
+description="OpenRC-style init.d test service"
+
+depend() {
+    need target-svc
+    after order-target
+}
+
+start() {
+    echo "openrc-svc: started" > /tmp/openrc-svc-status
+}
+
+stop() {
+    echo "openrc-svc: stopped" > /tmp/openrc-svc-status
+}

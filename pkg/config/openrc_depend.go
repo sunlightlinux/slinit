@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -125,7 +126,11 @@ func ParseOpenRCDepend(scriptPath string) (*OpenRCDepend, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dependParseTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", openrcDependSandbox, "sandbox", scriptPath)
+	// Use an absolute path so this works when slinit runs as PID 1
+	// with an empty or minimal PATH — exec.LookPath("sh") returns
+	// nothing there and the whole parse silently degrades to
+	// "no deps" without an obvious symptom in production.
+	cmd := exec.CommandContext(ctx, resolveShell(), "-c", openrcDependSandbox, "sandbox", scriptPath)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -194,6 +199,22 @@ func parseDependOutput(text string) *OpenRCDepend {
 		}
 	}
 	return dep
+}
+
+// resolveShell picks the sh binary to run the sandbox with. Falls
+// through /bin/sh → /usr/bin/sh → PATH lookup → literal "sh" (which
+// then errors out with a clear message downstream). Absolute paths
+// come first because slinit at PID 1 boot time has an empty PATH.
+func resolveShell() string {
+	for _, p := range []string{"/bin/sh", "/usr/bin/sh"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if p, err := exec.LookPath("sh"); err == nil {
+		return p
+	}
+	return "sh"
 }
 
 // LooksLikeOpenRCScript returns true when the first shebang line

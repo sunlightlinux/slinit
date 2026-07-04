@@ -192,12 +192,21 @@ func InitDToServiceDescription(scriptPath string) (*ServiceDescription, error) {
 	// never carry LSB blocks, so this is the actual dep source for
 	// those distros. Best-effort: on any error we keep the LSB
 	// result (possibly empty) and move on rather than fail the load.
+	//
+	// The openrc-run shebang also changes how the wrapper invokes
+	// the script: /sbin/openrc-run is not shipped by slinit, so an
+	// execve of the script would fail with ENOENT on the interpreter
+	// line. Instead we source the script and call the start()/stop()
+	// shell function directly, mirroring what openrc-run itself does
+	// on OpenRC systems.
 	if !lsbHasDeps(lsb) {
 		if header, err := readShebang(scriptPath); err == nil &&
 			LooksLikeOpenRCScript(header) {
 			if dep, err := ParseOpenRCDepend(scriptPath); err == nil && dep.HasAny() {
 				applyOpenRCDepend(desc, dep)
 			}
+			desc.Command = wrapOpenRCScript(scriptPath, name, "start")
+			desc.StopCommand = wrapOpenRCScript(scriptPath, name, "stop")
 		}
 	}
 

@@ -116,6 +116,12 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 75 | apparmor | `apparmor-switch` fails closed when the AppArmor LSM is unavailable; plain services unaffected |
 | 76 | debug | `debug = yes` SIGSTOPs the runner pre-exec; service runs only after SIGCONT |
 | 77 | service-dirs | `runtime-directory`/`state-directory` created on start; runtime dir removed on stop, state dir persists |
+| 78 | sandbox | filesystem sandbox knobs (private-tmp, protect-system, protect-home) rewrite the child's mount namespace |
+| 79 | sandbox-expansion | `${RUNTIME_DIR}`/`${STATE_DIR}` placeholders resolve in sandbox path lists |
+| 80 | seccomp | `system-call-filter` / `system-call-architectures` install a seccomp BPF filter that blocks the named syscalls |
+| 81 | hardening | Restrict*/Protect* cluster (protect-kernel-*, lock-personality, protect-hostname, protect-clock, protect-control-groups) applied via slinit-runner |
+| 82 | credentials | `load-credentials`/`import-credentials`/`set-credentials` populate `${CREDENTIALS_DIRECTORY}` for the service process |
+| 83 | initd-openrc-depend | /etc/init.d auto-detect handles OpenRC-style `depend()` — `need X` translates to slinit `depends-on`, script sourced with start/stop dispatch |
 
 ## How It Works
 
