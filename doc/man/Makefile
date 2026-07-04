@@ -38,7 +38,9 @@ PAGES_7 = slinit-resource.7
 
 PAGES_5 = slinit-service.5
 
-PAGES   = $(PAGES_8) $(PAGES_7) $(PAGES_5)
+PAGES_1 = slinit-shell-var.1
+
+PAGES   = $(PAGES_8) $(PAGES_7) $(PAGES_5) $(PAGES_1)
 
 # Aliases installed as symlinks pointing at slinit-shutdown.8.
 # These mirror the symlinks the binary itself ships with, so
@@ -56,6 +58,9 @@ all: $(PAGES)
 %.5: %.5.md
 	$(MD2MAN) -in $< -out $@
 
+%.1: %.1.md
+	$(MD2MAN) -in $< -out $@
+
 install: $(PAGES)
 	install -d $(DESTDIR)$(MANDIR)/man8
 	install -m644 $(PAGES_8) $(DESTDIR)$(MANDIR)/man8/
@@ -66,6 +71,8 @@ install: $(PAGES)
 	install -m644 $(PAGES_7) $(DESTDIR)$(MANDIR)/man7/
 	install -d $(DESTDIR)$(MANDIR)/man5
 	install -m644 $(PAGES_5) $(DESTDIR)$(MANDIR)/man5/
+	install -d $(DESTDIR)$(MANDIR)/man1
+	install -m644 $(PAGES_1) $(DESTDIR)$(MANDIR)/man1/
 
 clean:
 	rm -f $(PAGES)
