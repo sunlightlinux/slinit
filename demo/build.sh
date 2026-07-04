@@ -337,6 +337,28 @@ kernel.printk = 3 3 1 6
 -vm.this.does.not.exist = 42
 EOF
 
+# Helper script consumed by the supervise-demo service. Kept as a
+# static drop rather than an inline printf inside pre-start-command
+# because slinit's config parser pre-expands $VAR at load time; the
+# child script's runtime `$n` / `$(...)` references would otherwise
+# have to be escaped as `$$n` / `$$(...)` inside the service file.
+mkdir -p "${ROOTFS_DIR}/usr/libexec"
+cat > "${ROOTFS_DIR}/usr/libexec/supervise-demo-child.sh" <<'CHILDEOF'
+#!/bin/sh
+# supervise-demo-child.sh -- iteration counter for the supervise-daemon
+# respawn loop. Bumps /tmp/supervise-demo-count each time the
+# supervisor spawns us, then exits after a short sleep so the
+# respawn logic actually fires.
+n=0
+if [ -f /tmp/supervise-demo-count ]; then
+    n=$(cat /tmp/supervise-demo-count)
+fi
+n=$((n + 1))
+echo "$n" >/tmp/supervise-demo-count
+exec sleep 1
+CHILDEOF
+chmod 755 "${ROOTFS_DIR}/usr/libexec/supervise-demo-child.sh"
+
 # fstabinfo/mountinfo need something to query. /etc/fstab exists on
 # every Linux distro; give the demo VM a small one so the tools have
 # non-empty output.
