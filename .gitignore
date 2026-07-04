@@ -15,4 +15,5 @@
 /slinit-fstabinfo
 /slinit-mountinfo
 /slinit-einfo
+/slinit-shell-var
 /slinit-runner
