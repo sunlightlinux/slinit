@@ -1,0 +1,17 @@
+# supervise-demo -- OpenRC supervise-daemon detached loop.
+# Try: slinitctl catlog supervise-demo
+# Try: cat /tmp/supervise-demo-count           # ticks up per respawn
+# Try: cat /run/supervise-demo/sup.pid         # supervisor pid
+# Try: cat /run/supervise-demo/sup.pid.daemon  # daemon pid (rotates)
+#
+# The wrapped child (/tmp/supervise-demo-child.sh) exits after 1s and
+# writes its iteration count to a file. The supervisor respawns it
+# with a 500ms delay + 200ms step, capped at 5s. On slinit stop the
+# supervisor's SIGTERM handler tears the whole tree down.
+type = scripted
+depends-on: system-init
+pre-start-command = /bin/sh -c "mkdir -p /run/supervise-demo && printf '#!/bin/sh\nn=0\n[ -f /tmp/supervise-demo-count ] && n=$(cat /tmp/supervise-demo-count)\nn=$((n + 1))\necho $n >/tmp/supervise-demo-count\nexec sleep 1\n' >/tmp/supervise-demo-child.sh && chmod +x /tmp/supervise-demo-child.sh"
+command = /bin/sh -c "slinit-supervise-daemon supervise-demo --start --pidfile /run/supervise-demo/sup.pid --exec /tmp/supervise-demo-child.sh --respawn-max 0 --respawn-delay 500ms --respawn-delay-step 200ms --respawn-delay-cap 5sec && echo \"supervise-demo: supervisor pid $(cat /run/supervise-demo/sup.pid)\""
+stop-command = /bin/sh -c "slinit-supervise-daemon supervise-demo --stop --pidfile /run/supervise-demo/sup.pid; rm -f /tmp/supervise-demo-child.sh /tmp/supervise-demo-count; echo 'supervise-demo: supervisor stopped'"
+log-type = buffer
+log-buffer-size = 4096

@@ -1,0 +1,12 @@
+# einfo-demo -- OpenRC-flavoured status output via the einfo family.
+# Try: slinitctl catlog einfo-demo
+#
+# Walks through every applet exposed by slinit-einfo: green info,
+# yellow warning, red error, the ebegin/eend "* thing ... [ ok ]"
+# pair, and the verbose variants gated on EINFO_VERBOSE. The service
+# is scripted so its stdout captures the full sequence for catlog.
+type = scripted
+depends-on: system-init
+command = /bin/sh -c "export COLUMNS=60 EINFO_VERBOSE=yes; einfo 'einfo-demo: starting demonstration'; ewarn 'einfo-demo: this is a warning'; einfon 'einfo-demo: no-newline '; einfo continuation; ebegin 'einfo-demo: pretending to do work'; sleep 0.5; eend 0; ebegin 'einfo-demo: this will fail'; eend 1 'demo failure message'; ewend 1 'einfo-demo: advisory (yellow marker)'; veinfo 'einfo-demo: verbose applet fired'; einfo 'einfo-demo: eval_ecolors output:'; eval_ecolors | sed 's/^/  /'; einfo 'einfo-demo: done'"
+log-type = buffer
+log-buffer-size = 8192

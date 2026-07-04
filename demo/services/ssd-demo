@@ -1,0 +1,15 @@
+# ssd-demo -- Debian/OpenRC start-stop-daemon lifecycle
+# Try: slinitctl catlog ssd-demo
+# Try: cat /run/ssd-demo/sleeper.pid          # pidfile written by --make-pidfile
+# Try: kill -0 $(cat /run/ssd-demo/sleeper.pid) && echo alive
+#
+# Boots a supervised sleep loop via slinit-start-stop-daemon and
+# tears it down cleanly on service stop using --retry TERM/2/KILL/2.
+# Uses --name (comm-based match) because Alpine's sleep is a busybox
+# applet, so /proc/PID/exe always points to /bin/busybox.
+type = scripted
+depends-on: system-init
+command = /bin/sh -c "mkdir -p /run/ssd-demo && slinit-start-stop-daemon --start --background --make-pidfile --pidfile /run/ssd-demo/sleeper.pid --name sleep --startas /bin/sleep -- 300 && echo \"ssd-demo: sleeper started as pid $(cat /run/ssd-demo/sleeper.pid)\""
+stop-command = /bin/sh -c "slinit-start-stop-daemon --stop --pidfile /run/ssd-demo/sleeper.pid --retry TERM/2/KILL/2 && echo 'ssd-demo: sleeper stopped'"
+log-type = buffer
+log-buffer-size = 4096

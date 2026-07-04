@@ -1,0 +1,13 @@
+# sysctl-demo -- apply /etc/sysctl.d/*.conf to /proc/sys via slinit-sysctl.
+# Try: slinitctl catlog sysctl-demo
+# Try: cat /proc/sys/kernel/printk           # values chosen by the fixture
+# Try: cat /proc/sys/kernel/threads-max
+#
+# One-shot scripted service: writes a demo config, applies it, prints
+# the before/after so the log buffer captures what happened. Real
+# systems would run something like this once, early, and be done.
+type = scripted
+depends-on: system-init
+command = /bin/sh -c "mkdir -p /etc/sysctl.d && printf '# demo tunables\nkernel.printk = 3 3 1 6\nkernel/threads-max = 100000\n-vm.this.does.not.exist = 42\n' >/etc/sysctl.d/99-demo.conf && echo '== before ==' && printf 'printk: '; cat /proc/sys/kernel/printk; printf 'threads-max: '; cat /proc/sys/kernel/threads-max; echo '== applying ==' && slinit-sysctl --verbose /etc/sysctl.d/99-demo.conf 2>&1; echo '== after ==' && printf 'printk: '; cat /proc/sys/kernel/printk; printf 'threads-max: '; cat /proc/sys/kernel/threads-max"
+log-type = buffer
+log-buffer-size = 4096

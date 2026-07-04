@@ -101,7 +101,11 @@ echo "[4/7] Building slinit toolchain (static)..."
 cd "${PROJECT_DIR}"
 for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-shutdown slinit-init-maker slinit-nuke slinit-mount \
-           rc-service rc-update rc-status; do
+           rc-service rc-update rc-status \
+           slinit-runner slinit-checkpath slinit-seedrng \
+           slinit-binfmt slinit-sysctl slinit-svc-value \
+           slinit-start-stop-daemon slinit-supervise-daemon \
+           slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var; do
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
         go build -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
 done
@@ -154,6 +158,38 @@ install -m 755 "${BUILD_DIR}/slinit-mount"      "${ROOTFS_DIR}/usr/sbin/slinit-m
 install -m 755 "${BUILD_DIR}/rc-service"        "${ROOTFS_DIR}/usr/sbin/rc-service"
 install -m 755 "${BUILD_DIR}/rc-update"         "${ROOTFS_DIR}/usr/sbin/rc-update"
 install -m 755 "${BUILD_DIR}/rc-status"         "${ROOTFS_DIR}/usr/sbin/rc-status"
+
+# slinit-runner must sit next to the slinit binary in /sbin/ (looked
+# up as a sibling of os.Executable()). Every other new binary is a
+# user-facing utility, so /usr/bin/.
+install -m 755 "${BUILD_DIR}/slinit-runner"            "${ROOTFS_DIR}/sbin/slinit-runner"
+install -m 755 "${BUILD_DIR}/slinit-checkpath"         "${ROOTFS_DIR}/usr/bin/slinit-checkpath"
+install -m 755 "${BUILD_DIR}/slinit-seedrng"           "${ROOTFS_DIR}/usr/bin/slinit-seedrng"
+install -m 755 "${BUILD_DIR}/slinit-binfmt"            "${ROOTFS_DIR}/usr/bin/slinit-binfmt"
+install -m 755 "${BUILD_DIR}/slinit-sysctl"            "${ROOTFS_DIR}/usr/bin/slinit-sysctl"
+install -m 755 "${BUILD_DIR}/slinit-svc-value"         "${ROOTFS_DIR}/usr/bin/slinit-svc-value"
+install -m 755 "${BUILD_DIR}/slinit-start-stop-daemon" "${ROOTFS_DIR}/usr/bin/slinit-start-stop-daemon"
+install -m 755 "${BUILD_DIR}/slinit-supervise-daemon"  "${ROOTFS_DIR}/usr/bin/slinit-supervise-daemon"
+install -m 755 "${BUILD_DIR}/slinit-fstabinfo"         "${ROOTFS_DIR}/usr/bin/slinit-fstabinfo"
+install -m 755 "${BUILD_DIR}/slinit-mountinfo"         "${ROOTFS_DIR}/usr/bin/slinit-mountinfo"
+install -m 755 "${BUILD_DIR}/slinit-einfo"             "${ROOTFS_DIR}/usr/bin/slinit-einfo"
+install -m 755 "${BUILD_DIR}/slinit-shell-var"         "${ROOTFS_DIR}/usr/bin/slinit-shell-var"
+
+# einfo multi-applet symlinks so init.d scripts can invoke `einfo`,
+# `ewarn`, `eerror`, `ebegin`, `eend`, etc. by name.
+for _ap in einfo einfon ewarn ewarnn eerror eerrorn ebegin eend ewend \
+           veinfo veinfon vewarn vewarnn vebegin veend vewend \
+           eindent eoutdent veindent veoutdent \
+           esyslog elog ewaitfile eval_ecolors; do
+    ln -sf slinit-einfo "${ROOTFS_DIR}/usr/bin/${_ap}"
+done
+
+# service_get_value / service_set_value / service_export dispatch
+# via argv[0]. Same pattern.
+for _ap in service_get_value get_options service_set_value \
+           save_options service_export; do
+    ln -sf slinit-svc-value "${ROOTFS_DIR}/usr/bin/${_ap}"
+done
 
 # Set up /sbin/init: if we have the watchdog module, use an init-wrapper
 # that loads it before exec'ing slinit (so /dev/watchdog0 exists when
@@ -241,6 +277,81 @@ case "$1" in
 esac
 INITDEOF
 chmod 755 "${ROOTFS_DIR}/etc/init.d/hello-initd"
+
+# Second init.d demo: OpenRC-flavoured. No LSB block; deps come out
+# of the depend() shell function, extracted by slinit's sandboxed
+# `sh -c` parser. Try `slinitctl start openrc-initd-demo` after boot
+# to see it (and its need-target dep) come up.
+mkdir -p "${ROOTFS_DIR}/etc/conf.d"
+cat > "${ROOTFS_DIR}/etc/conf.d/openrc-initd-demo" <<'EOF'
+# /etc/conf.d/openrc-initd-demo — sourced by slinit's init.d wrapper.
+GREETING="hello from OpenRC-style depend()"
+EOF
+cat > "${ROOTFS_DIR}/etc/init.d/openrc-initd-demo" <<'INITDEOF'
+#!/sbin/openrc-run
+# OpenRC-flavoured init.d script. slinit sees the openrc-run
+# shebang, sandboxes the depend() function to extract deps, and
+# sources start()/stop() directly (there is no openrc-run
+# interpreter shipped).
+
+description="OpenRC-style depend() demo"
+
+depend() {
+    # `need` is a hard dep — slinit maps this to depends-on:
+    need system-init
+    # `after` is order-only — mapped to slinit's after:
+    after hello
+}
+
+start() {
+    echo "[openrc-initd-demo] start: greeting=${GREETING:-unset}" > /run/openrc-initd-demo.log
+}
+
+stop() {
+    echo "[openrc-initd-demo] stop" >> /run/openrc-initd-demo.log
+}
+INITDEOF
+chmod 755 "${ROOTFS_DIR}/etc/init.d/openrc-initd-demo"
+
+# systemd-flavoured binfmt.d fixture. Wired to demonstrate parse +
+# discover. The Alpine virt kernel used by the demo does NOT ship
+# binfmt_misc, so slinit-binfmt exits with code 3; try
+# `slinit-binfmt -v` inside the VM to see the "not available"
+# message. On a kernel with binfmt_misc built-in, the same tool
+# would register the format below.
+mkdir -p "${ROOTFS_DIR}/etc/binfmt.d"
+cat > "${ROOTFS_DIR}/etc/binfmt.d/hello-demo.conf" <<'EOF'
+# End-to-end fixture for slinit-binfmt.
+# Maps files ending in ".demoext" to /bin/cat as their interpreter.
+:demo-hello:E::demoext::/bin/cat:
+EOF
+
+# systemd-flavoured sysctl.d fixture. Consumed by sysctl-demo.
+mkdir -p "${ROOTFS_DIR}/etc/sysctl.d"
+cat > "${ROOTFS_DIR}/etc/sysctl.d/50-slinit-demo.conf" <<'EOF'
+# Persisted here for `slinit-sysctl -v /etc/sysctl.d/50-slinit-demo.conf`.
+# The `sysctl-demo` service writes its own fixture at boot; this file
+# lets the interactive shell run slinit-sysctl by hand without any
+# preamble.
+kernel.printk = 3 3 1 6
+-vm.this.does.not.exist = 42
+EOF
+
+# fstabinfo/mountinfo need something to query. /etc/fstab exists on
+# every Linux distro; give the demo VM a small one so the tools have
+# non-empty output.
+cat > "${ROOTFS_DIR}/etc/fstab" <<'EOF'
+# Demo fstab consumed by slinit-fstabinfo / slinit-mountinfo.
+# Try: slinit-fstabinfo -o /
+# Try: slinit-fstabinfo --passno =2
+# Try: slinit-mountinfo --nonetdev
+proc     /proc  proc   defaults          0 0
+sysfs    /sys   sysfs  defaults          0 0
+tmpfs    /tmp   tmpfs  mode=1777,nosuid  0 0
+tmpfs    /run   tmpfs  mode=755          0 0
+/dev/vda /      ext4   defaults,noatime  0 1
+/dev/vdb /home  ext4   defaults,noatime  0 2
+EOF
 
 # Install bash completion (generated by slinitctl itself)
 mkdir -p "${ROOTFS_DIR}/etc/bash_completion.d"
