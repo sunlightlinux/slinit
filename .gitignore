@@ -13,4 +13,5 @@
 /slinit-start-stop-daemon
 /slinit-supervise-daemon
 /slinit-fstabinfo
+/slinit-mountinfo
 /slinit-runner

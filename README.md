@@ -167,7 +167,10 @@ format to accommodate them.
   bypass to daemon, `--stop` clean tear-down through supervisor),
   `slinit-fstabinfo` (OpenRC-compatible `/etc/fstab` query utility —
   `--blockdevice`/`--options`/`--mountargs`/`--passno` output modes,
-  `--fstype`/`--passno OP N`/positional filters, `--mount`/`--remount` actions)
+  `--fstype`/`--passno OP N`/positional filters, `--mount`/`--remount` actions),
+  `slinit-mountinfo` (OpenRC-compatible `/proc/mounts` query utility —
+  8 regex filters, netdev/nonetdev via fstab, reverse-order output for
+  umount sequencing, `--options`/`--fstype`/`--node` selectors)
 
 ## Building
 
@@ -188,6 +191,7 @@ go build ./cmd/slinit-seedrng     # persist entropy across reboots (SeedRNG)
 go build ./cmd/slinit-start-stop-daemon  # Debian/OpenRC start-stop-daemon(8) clone
 go build ./cmd/slinit-supervise-daemon   # OpenRC supervise-daemon(8) clone
 go build ./cmd/slinit-fstabinfo          # OpenRC fstabinfo(8) clone
+go build ./cmd/slinit-mountinfo          # OpenRC mountinfo(8) clone
 
 # OpenRC compat shims
 go build ./cmd/rc-service
