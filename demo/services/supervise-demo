@@ -13,8 +13,13 @@ type = scripted
 depends-on: system-init
 # --verbose keeps the detached supervisor's stderr wired into
 # /tmp/slinit-supervise-daemon.err so `cat` inspects the respawn log.
-pre-start-command = /bin/mkdir -p /run/supervise-demo
-command = /usr/bin/slinit-supervise-daemon supervise-demo --start --verbose --pidfile /run/supervise-demo/sup.pid --exec /usr/libexec/supervise-demo-child.sh --respawn-max 0 --respawn-delay 500ms --respawn-delay-step 200ms --respawn-delay-cap 5sec
+#
+# mkdir is inline (rather than pre-start-command) because slinit
+# spawns the two in separate exec calls and the intermediate state on
+# /run appears to not always survive — using a shell wrapper here
+# keeps the "make the parent dir" step and the exec in the same
+# process image, which is what actually works on the demo VM.
+command = /bin/sh -c "mkdir -p /run/supervise-demo && exec /usr/bin/slinit-supervise-daemon supervise-demo --start --verbose --pidfile /run/supervise-demo/sup.pid --exec /usr/libexec/supervise-demo-child.sh --respawn-max 0 --respawn-delay 500ms --respawn-delay-step 200ms --respawn-delay-cap 5sec"
 stop-command = /usr/bin/slinit-supervise-daemon supervise-demo --stop --pidfile /run/supervise-demo/sup.pid
 log-type = buffer
 log-buffer-size = 4096
