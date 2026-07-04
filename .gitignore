@@ -11,4 +11,5 @@
 /slinit-soft-reboot
 /slinit-seedrng
 /slinit-start-stop-daemon
+/slinit-supervise-daemon
 /slinit-runner

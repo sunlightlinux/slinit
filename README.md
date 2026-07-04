@@ -161,7 +161,10 @@ format to accommodate them.
   entropy persistence — `RNDADDENTROPY` + fresh-seed rotation, systemd/OpenRC equivalent),
   `slinit-start-stop-daemon` (Debian/OpenRC-compatible daemon runner for ported init.d
   scripts — `--start`/`--stop`/`--status` with pidfile/exec/name/user matching and
-  `TERM/30/KILL/5`-style retry schedules)
+  `TERM/30/KILL/5`-style retry schedules),
+  `slinit-supervise-daemon` (OpenRC-compatible detached supervisor for non-forking
+  daemons — rolling-window respawn rate limiter, linear-step backoff, `--signal`
+  bypass to daemon, `--stop` clean tear-down through supervisor)
 
 ## Building
 
@@ -180,6 +183,7 @@ go build ./cmd/slinit-mount       # autofs lazy-mount helper
 go build ./cmd/slinit-checkpath   # path-validation helper
 go build ./cmd/slinit-seedrng     # persist entropy across reboots (SeedRNG)
 go build ./cmd/slinit-start-stop-daemon  # Debian/OpenRC start-stop-daemon(8) clone
+go build ./cmd/slinit-supervise-daemon   # OpenRC supervise-daemon(8) clone
 
 # OpenRC compat shims
 go build ./cmd/rc-service
