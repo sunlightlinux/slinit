@@ -127,6 +127,10 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 86 | slinit-svc-value | file-per-key backing under `$RC_SVCDIR/options/`; symlink dispatch (service_get_value, save_options alias, etc.); empty-value delete; no trailing newline on writes; `service_export` skips already-stored keys; SLINIT_SERVICENAME env fallback |
 | 87 | slinit-start-stop-daemon | `--start --background --make-pidfile` fork against real /bin/sleep; `--status` probes pidfile-live; double-`--start` refused with exit 1 (softened to 0 under `--oknodo`); `--stop --retry TERM/2/KILL/2` terminates the child; stale pidfile yields LSB code 5 (0 with `--oknodo`) |
 | 88 | slinit-supervise-daemon | detach into supervisor loop via re-exec + SLINIT_SSD_SUPERVISOR=1; supervisor + daemon.pidfile companion both written; short-lived child respawned within budget (>=2 iterations); `--stop` tears the tree down and cleans both pidfiles; second `--stop` with missing pidfile still exits 0 |
+| 89 | slinit-fstabinfo | fixture-driven output selectors (`--blockdevice`, `--options`, `--mountargs`, `--passno /mnt`); filters (`--fstype`, `--passno =2`); positional narrowing; `--file` seam; EINFO_QUIET suppression |
+| 90 | slinit-mountinfo | real `/proc/mounts` includes `/proc` with fstype=proc, rootfs skipped; fixture drives reverse-order output, regex filters (fstype/skip-fstype, point-regex), `--node`/`--options` selectors; `--netdev`/`--nonetdev` cross-reference `/etc/fstab` for `_netdev`; relative positional rejected |
+| 91 | slinit-einfo | argv[0] dispatch across 22 applet symlinks; einfo→stdout / ewarn+eerror→stderr; `n`-suffix suppresses newline; `v*` variants gated on EINFO_VERBOSE; EINFO_QUIET blanket suppression; eend marker + status propagation; eindent no-op; eval_ecolors emits all 6 shell vars; ewaitfile fires + times out |
+| 92 | slinit-shell-var | single-arg mapping (`my-service.d/1` → `my_service_d_1`); multi-arg joined with literal space, inner spaces sanitised; pure-punctuation → all underscores; zero args → empty; sanitised output usable as a shell identifier (round-trip via `eval`) |
 
 ## How It Works
 
