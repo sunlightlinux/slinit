@@ -175,7 +175,10 @@ format to accommodate them.
   dispatches via `argv[0]` to `einfo`/`ewarn`/`eerror`/`ebegin`/`eend`
   and 15 other applet names, colour-aware, `esyslog`+`ewaitfile` included),
   `slinit-shell-var` (OpenRC-compatible `shell_var`(1) — sanitises argv
-  into shell-variable-safe names by replacing non-alnum bytes with `_`)
+  into shell-variable-safe names by replacing non-alnum bytes with `_`),
+  `slinit-binfmt` (systemd-binfmt clone — registers custom binary
+  formats from `/etc/binfmt.d/*.conf` via `/proc/sys/fs/binfmt_misc/register`;
+  needed for QEMU user-mode, Mono/.NET, WSL interop)
 
 ## Building
 
@@ -199,6 +202,7 @@ go build ./cmd/slinit-fstabinfo          # OpenRC fstabinfo(8) clone
 go build ./cmd/slinit-mountinfo          # OpenRC mountinfo(8) clone
 go build ./cmd/slinit-einfo              # OpenRC einfo(1) multi-applet
 go build ./cmd/slinit-shell-var          # OpenRC shell_var(1) clone
+go build ./cmd/slinit-binfmt             # systemd-binfmt(1) clone
 
 # OpenRC compat shims
 go build ./cmd/rc-service

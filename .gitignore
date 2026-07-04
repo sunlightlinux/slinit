@@ -16,4 +16,5 @@
 /slinit-mountinfo
 /slinit-einfo
 /slinit-shell-var
+/slinit-binfmt
 /slinit-runner
