@@ -11,8 +11,10 @@
 # tears the whole tree down.
 type = scripted
 depends-on: system-init
+# --verbose keeps the detached supervisor's stderr wired into
+# /tmp/slinit-supervise-daemon.err so `cat` inspects the respawn log.
 pre-start-command = /bin/mkdir -p /run/supervise-demo
-command = /usr/bin/slinit-supervise-daemon supervise-demo --start --pidfile /run/supervise-demo/sup.pid --exec /usr/libexec/supervise-demo-child.sh --respawn-max 0 --respawn-delay 500ms --respawn-delay-step 200ms --respawn-delay-cap 5sec
+command = /usr/bin/slinit-supervise-daemon supervise-demo --start --verbose --pidfile /run/supervise-demo/sup.pid --exec /usr/libexec/supervise-demo-child.sh --respawn-max 0 --respawn-delay 500ms --respawn-delay-step 200ms --respawn-delay-cap 5sec
 stop-command = /usr/bin/slinit-supervise-daemon supervise-demo --stop --pidfile /run/supervise-demo/sup.pid
 log-type = buffer
 log-buffer-size = 4096
