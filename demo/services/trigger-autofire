@@ -9,7 +9,13 @@
 #   slinitctl stop trigger-test        # back to STOPPED
 #   slinitctl start trigger-test       # → STARTING again
 #   slinitctl trigger trigger-test     # → STARTED
+# Order matters: `slinitctl trigger` alone only flips the trigger
+# flag; the service still needs a start request to enter STARTING
+# and consume that flag. `start` puts it in STARTING, `trigger`
+# unblocks the transition to STARTED. Doing them in one process
+# with && guarantees the trigger lands only if the start request
+# went through.
 type = scripted
 depends-on: system-init
-command = /usr/bin/slinitctl trigger trigger-test
-stop-command = /usr/bin/slinitctl untrigger trigger-test
+command = /bin/sh -c "slinitctl start trigger-test && slinitctl trigger trigger-test"
+stop-command = /bin/sh -c "slinitctl untrigger trigger-test; slinitctl stop trigger-test"
