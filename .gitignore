@@ -12,4 +12,5 @@
 /slinit-seedrng
 /slinit-start-stop-daemon
 /slinit-supervise-daemon
+/slinit-fstabinfo
 /slinit-runner
