@@ -36,6 +36,73 @@ func TestRunnerWrapErrorsWithoutBinary(t *testing.T) {
 	}
 }
 
+func TestRunnerWrapForwardsStartasViaArgv0(t *testing.T) {
+	// --startas differs from --exec: the runner-wrap must emit
+	// --argv0=<opts.Exec> so the child sees Debian's argv[0] override
+	// while the kernel exec's --startas's binary.
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "slinit-runner")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
+	os.Setenv("PATH", dir)
+
+	opts := Options{
+		Mode:       "start",
+		Exec:       "/usr/sbin/foo",
+		Startas:    "/opt/wrapped/foo-real",
+		NoNewPrivs: true,
+	}
+	// resolveExec would compute binary=/opt/wrapped/foo-real,
+	// argv=[/usr/sbin/foo]. Mirror that here.
+	_, argv, wrapped, err := runnerWrapArgs(opts,
+		"/opt/wrapped/foo-real", []string{"/usr/sbin/foo"})
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if !wrapped {
+		t.Fatalf("wrap not applied")
+	}
+	// --argv0=/usr/sbin/foo must be present.
+	if !contains(argv, "--argv0=/usr/sbin/foo") {
+		t.Errorf("--argv0=/usr/sbin/foo missing: %v", argv)
+	}
+	// Positional tail must be the real binary + user args.
+	sepIdx := indexOf(argv, "--")
+	if sepIdx < 0 {
+		t.Fatalf("`--` missing: %v", argv)
+	}
+	tail := argv[sepIdx+1:]
+	if len(tail) == 0 || tail[0] != "/opt/wrapped/foo-real" {
+		t.Errorf("tail[0]=%q, want /opt/wrapped/foo-real", tail[0])
+	}
+}
+
+func TestRunnerWrapSkipsArgv0WhenExecEqualsBinary(t *testing.T) {
+	// When --startas is not set, argv[0] and binary coincide; no
+	// --argv0 flag should be emitted so the trivial case stays clean.
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "slinit-runner")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
+	os.Setenv("PATH", dir)
+
+	opts := Options{Mode: "start", Exec: "/bin/true", NoNewPrivs: true}
+	_, argv, wrapped, err := runnerWrapArgs(opts,
+		"/bin/true", []string{"/bin/true"})
+	if err != nil || !wrapped {
+		t.Fatalf("wrap: err=%v wrapped=%v", err, wrapped)
+	}
+	if containsPrefix(argv, "--argv0=") {
+		t.Errorf("--argv0 unexpectedly emitted: %v", argv)
+	}
+}
+
 func TestRunnerWrapBuildsExpectedArgv(t *testing.T) {
 	// Drop a fake slinit-runner into a temp PATH so locateRunner finds it.
 	dir := t.TempDir()

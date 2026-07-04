@@ -15,12 +15,10 @@ import (
 // nil) when a wrap was applied, or ("", nil, false, nil) when no wrap
 // is needed and the caller should exec `binary` with `argv` directly.
 //
-// The runner does `syscall.Exec(args[0], args, env)`, so it uses the
-// first positional after `--` as both the binary path and argv[0].
-// That means --startas (which sets a distinct argv[0]) is silently
-// ignored when hardening flags are present; combining the two is a
-// rare footgun anyway (hardening on start-stop-daemon vs a scripted
-// re-exec via --startas).
+// When both --startas and --exec are set, the caller's argv[0] carries
+// the desired argv[0] override (Debian convention). We forward it via
+// slinit-runner's --argv0 flag so the runner re-exec's `binary` while
+// presenting argv[0]=<opts.Exec> to the child.
 func runnerWrapArgs(opts Options, binary string, argv []string) (string, []string, bool, error) {
 	if opts.Capabilities == "" && opts.Securebits == "" && !opts.NoNewPrivs {
 		return "", nil, false, nil
@@ -50,10 +48,16 @@ func runnerWrapArgs(opts Options, binary string, argv []string) (string, []strin
 		}
 		runnerArgs = append(runnerArgs, "--securebits="+strconv.FormatUint(uint64(bits), 10))
 	}
+	// --argv0 preserves Debian's --startas/--exec split: `binary` is
+	// what the kernel exec's, argv[0] presented to the child is
+	// argv[0] the caller already computed (opts.Exec when different
+	// from binary). Only emit when they actually differ, so the plain
+	// hardening-only case stays as-is.
+	if len(argv) > 0 && argv[0] != binary {
+		runnerArgs = append(runnerArgs, "--argv0="+argv[0])
+	}
 	// Positional tail: real binary + user args. The runner exec's
-	// runnerArgs[N] with itself as argv[0], so putting the binary path
-	// here makes it the child's argv[0] too. --startas is ignored (see
-	// note above).
+	// args[0] (binary) with argv = [--argv0 or args[0], args[1:]...].
 	runnerArgs = append(runnerArgs, "--", binary)
 	runnerArgs = append(runnerArgs, argv[1:]...)
 	return runner, runnerArgs, true, nil

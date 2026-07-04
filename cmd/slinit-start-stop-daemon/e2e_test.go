@@ -36,7 +36,7 @@ func TestE2EStartBackgroundStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pid, err := spawn(binary, argv, opts)
+	pid, _, err := spawn(binary, argv, opts)
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}

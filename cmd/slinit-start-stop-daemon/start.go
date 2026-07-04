@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -36,13 +35,33 @@ func cmdStart(opts Options) int {
 		return exitBadUsage
 	}
 
+	// Pre-flight notify validation. The pipe/signal modes need the
+	// parent to survive past exec to observe readiness, so --background
+	// is required (otherwise cmd.Wait() blocks and we never reach the
+	// wait step).
+	proto, perr := parseNotify(opts.Notify)
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "--notify: %v\n", perr)
+		return exitBadUsage
+	}
+	if !opts.Background {
+		switch proto.mode {
+		case "fd", "stderr", "signal":
+			fmt.Fprintf(os.Stderr, "--notify readiness=%s requires --background\n", proto.mode)
+			return exitBadUsage
+		}
+	}
+
 	if opts.Test {
 		writeMsg(opts, "would start %s %v", binary, argv[1:])
 		return exitOK
 	}
 
-	pid, err := spawn(binary, argv, opts)
+	pid, state, err := spawn(binary, argv, opts)
 	if err != nil {
+		if state != nil {
+			state.closeAll()
+		}
 		fmt.Fprintf(os.Stderr, "spawn: %v\n", err)
 		return exitInsufficientPri
 	}
@@ -54,11 +73,13 @@ func cmdStart(opts Options) int {
 		}
 	}
 
-	if opts.Wait > 0 {
+	// --wait is a pre-sleep only when no real readiness protocol is
+	// configured; the protocol's own timeout otherwise supersedes it.
+	if opts.Notify == "" && opts.Wait > 0 {
 		waitWithProgress(time.Duration(opts.Wait)*time.Millisecond, opts)
 	}
-	if opts.Notify != "" {
-		if code := applyNotify(opts, pid); code != exitOK {
+	if state != nil && proto.mode != "none" {
+		if code := state.wait(opts, pid); code != exitOK {
 			return code
 		}
 	}
@@ -68,48 +89,27 @@ func cmdStart(opts Options) int {
 	return exitOK
 }
 
-// applyNotify implements the subset of --notify readiness modes that
-// makes sense for a one-shot start command:
-//   - readiness=none: don't wait, treat exec success as ready.
-//   - readiness=pidfile: poll for --pidfile to appear (bounded by
-//     --wait if given, otherwise a 30s default).
-//
-// The richer OpenRC modes (fd, stderr, signal) are rejected loudly.
+// applyNotify is the legacy state-less entry point retained for tests
+// that exercise pidfile/none/manual directly. The pre-fork modes (fd,
+// stderr, signal) route through spawn() → notifyState instead.
 func applyNotify(opts Options, pid int) int {
-	spec := strings.TrimSpace(opts.Notify)
-	kv := strings.SplitN(spec, "=", 2)
-	if len(kv) != 2 || strings.TrimSpace(kv[0]) != "readiness" {
-		fmt.Fprintf(os.Stderr, "--notify: only 'readiness=' form is supported (got %q)\n", spec)
+	proto, err := parseNotify(opts.Notify)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--notify: %v\n", err)
 		return exitUnsupported
 	}
-	mode := strings.TrimSpace(kv[1])
-	switch mode {
-	case "none":
+	switch proto.mode {
+	case "none", "manual":
 		return exitOK
 	case "pidfile":
-		if opts.PidFile == "" {
-			fmt.Fprintln(os.Stderr, "--notify readiness=pidfile requires --pidfile")
-			return exitBadUsage
-		}
-		timeout := 30 * time.Second
-		if opts.Wait > 0 {
-			timeout = time.Duration(opts.Wait) * time.Millisecond
-		}
-		deadline := time.Now().Add(timeout)
-		for time.Now().Before(deadline) {
-			if _, err := os.Stat(opts.PidFile); err == nil {
-				return exitOK
-			}
-			if !processAlive(pid) {
-				fmt.Fprintf(os.Stderr, "--notify pidfile: child exited before writing %q\n", opts.PidFile)
-				return exitInsufficientPri
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-		fmt.Fprintf(os.Stderr, "--notify pidfile: %q did not appear within %s\n", opts.PidFile, timeout)
-		return exitInsufficientPri
+		return waitPidfile(opts, pid)
+	case "fd", "stderr", "signal":
+		// These require pre-fork wiring performed by spawn().
+		fmt.Fprintf(os.Stderr,
+			"--notify readiness=%s must be applied via spawn's pre-fork state\n",
+			proto.mode)
+		return exitUnsupported
 	default:
-		fmt.Fprintf(os.Stderr, "--notify readiness=%s is not supported\n", mode)
 		return exitUnsupported
 	}
 }
@@ -148,14 +148,16 @@ func waitWithProgress(d time.Duration, opts Options) {
 
 // spawn is the fork/exec plumbing. In --background mode we return the
 // child's PID and detach; otherwise we wait for it and propagate its
-// exit status.
-func spawn(binary string, argv []string, opts Options) (int, error) {
+// exit status. The returned notifyState carries pre-fork resources
+// (pipe read side, signal channel) the caller uses to observe
+// readiness; it is nil-safe.
+func spawn(binary string, argv []string, opts Options) (int, *notifyState, error) {
 	// Runner-wrap for hardening flags. When --capabilities/--secbits/
 	// --no-new-privs are set we prepend slinit-runner so the syscalls
 	// happen child-side before exec (they cannot be applied to a peer
 	// task from the parent).
 	if runnerBin, runnerArgv, wrapped, err := runnerWrapArgs(opts, binary, argv); err != nil {
-		return 0, err
+		return 0, nil, err
 	} else if wrapped {
 		binary = runnerBin
 		argv = runnerArgv
@@ -181,7 +183,7 @@ func spawn(binary string, argv []string, opts Options) (int, error) {
 	if opts.ChUID != "" || opts.MatchUser != "" || opts.Group != "" {
 		uid, gid, err := resolveCredentials(opts)
 		if err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		sysattr.Credential = &syscall.Credential{
 			Uid: uint32(uid),
@@ -194,7 +196,14 @@ func spawn(binary string, argv []string, opts Options) (int, error) {
 	cmd.SysProcAttr = sysattr
 
 	if err := setupStdio(cmd, opts); err != nil {
-		return 0, err
+		return 0, nil, err
+	}
+	// Notify wiring: must happen AFTER setupStdio (so readiness=stderr
+	// can override cmd.Stderr) and BEFORE cmd.Start() (pipes must land
+	// in the child's fd table on exec).
+	state, err := prepareNotify(cmd, opts)
+	if err != nil {
+		return 0, nil, err
 	}
 	if opts.Umask != nil {
 		old := syscall.Umask(int(*opts.Umask))
@@ -202,9 +211,15 @@ func spawn(binary string, argv []string, opts Options) (int, error) {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		if state != nil {
+			state.closeAll()
+		}
+		return 0, nil, err
 	}
 	pid := cmd.Process.Pid
+	// Release parent's copy of child-side pipe fds so EOFs are visible
+	// once the child (or its wrapper) closes its own copy.
+	state.postFork()
 
 	// Parent-applicable attrs go on after fork so the child inherits them.
 	if opts.Nice != nil {
@@ -225,7 +240,7 @@ func spawn(binary string, argv []string, opts Options) (int, error) {
 	if opts.Scheduler != "" {
 		policy, err := parseSchedPolicy(opts.Scheduler)
 		if err != nil {
-			return 0, err
+			return 0, state, err
 		}
 		if err := applySched(pid, policy, uint32(opts.SchedulerPriority)); err != nil && opts.Verbose {
 			fmt.Fprintf(os.Stderr, "warning: sched_setattr(%s,%d): %v\n",
@@ -239,7 +254,7 @@ func spawn(binary string, argv []string, opts Options) (int, error) {
 		go func() {
 			_ = cmd.Wait()
 		}()
-		return pid, nil
+		return pid, state, nil
 	}
 
 	if err := cmd.Wait(); err != nil {
@@ -249,9 +264,9 @@ func spawn(binary string, argv []string, opts Options) (int, error) {
 				os.Exit(code)
 			}
 		}
-		return pid, err
+		return pid, state, err
 	}
-	return pid, nil
+	return pid, state, nil
 }
 
 func setupStdio(cmd *exec.Cmd, opts Options) error {

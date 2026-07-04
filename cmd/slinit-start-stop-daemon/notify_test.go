@@ -15,12 +15,32 @@ func TestApplyNotifyReadinessNoneReturnsOK(t *testing.T) {
 	}
 }
 
+func TestApplyNotifyReadinessManualReturnsOK(t *testing.T) {
+	// "manual" is application-owned readiness; we do not wait for
+	// anything and treat the start as successful once the child is
+	// exec'd. Same effect as "none" but preserves the semantic
+	// distinction for scripts that document their intent.
+	if code := applyNotify(Options{Notify: "readiness=manual"}, os.Getpid()); code != exitOK {
+		t.Errorf("readiness=manual: got %d", code)
+	}
+}
+
 func TestApplyNotifyMalformedIsUnsupported(t *testing.T) {
 	if code := applyNotify(Options{Notify: "bogus"}, os.Getpid()); code != exitUnsupported {
 		t.Errorf("malformed: got %d, want %d", code, exitUnsupported)
 	}
+	// fd:1 is out of range — parseNotify rejects it, applyNotify surfaces
+	// it as unsupported.
 	if code := applyNotify(Options{Notify: "readiness=fd:1"}, os.Getpid()); code != exitUnsupported {
-		t.Errorf("readiness=fd:N: got %d, want %d", code, exitUnsupported)
+		t.Errorf("readiness=fd:1 (out of range): got %d, want %d", code, exitUnsupported)
+	}
+	// A well-formed fd/stderr/signal mode reached via applyNotify (no
+	// spawn state) should also error — those modes are pre-fork only.
+	for _, spec := range []string{"readiness=fd:3", "readiness=stderr", "readiness=signal"} {
+		if code := applyNotify(Options{Notify: spec}, os.Getpid()); code != exitUnsupported {
+			t.Errorf("%s via legacy applyNotify: got %d, want %d",
+				spec, code, exitUnsupported)
+		}
 	}
 }
 

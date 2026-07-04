@@ -152,10 +152,24 @@ child before **exec**(2) — a peer task cannot set them from outside.
 **-4**, **--stderr-logger** *CMD*
 :   Same for the child's stderr.
 
-**--notify** **readiness=**{**none**|**pidfile**}
-:   Readiness protocol. **none** returns immediately after fork.
-    **pidfile** blocks until **--pidfile** appears (bounded by
-    **--wait** milliseconds, or 30s if not set).
+**--notify** **readiness=**{**none**|**manual**|**pidfile**|**fd:**N|**stderr**|**signal**[**:**SIG]}
+:   Readiness protocol. The timeout is **--wait** milliseconds, or 30
+    seconds when not set. Modes that observe the child (fd/stderr/
+    signal) additionally require **--background** so the parent can
+    survive the exec and watch the readiness channel.
+
+    - **none** — return immediately after fork.
+    - **manual** — application-owned readiness; alias of **none**.
+    - **pidfile** — block until **--pidfile** appears.
+    - **fd:**N — the child inherits fd *N* (3-9) as the write side of
+      a pipe; the parent treats the first byte written (or an EOF
+      preceded by any data) as ready. Emulates **sd_notify**(3) at
+      minimum.
+    - **stderr** — the child's stderr is piped to the parent; the
+      first non-empty line signals ready. Conflicts with **--stderr**
+      and **--stderr-logger**.
+    - **signal**[**:**SIG] — the child sends *SIG* (default
+      **SIGUSR1**) to its parent (**getppid**(2)) once ready.
 
 **-P**, **--progress**
 :   Print a "." to stderr each second while sleeping (during **--wait**,
@@ -212,16 +226,12 @@ Following the Debian/LSB convention:
 - **5**: **--stop** invoked with a **--pidfile** whose target is gone
   (stale pidfile). Use **--oknodo** to reduce this to **0**.
 
-# NOT IMPLEMENTED
+# INTEROP NOTES
 
-The following niche modes remain unsupported:
-
-- **--notify readiness=**{**fd:**N|**stderr**|**signal**|**manual**} —
-  only **none** and **pidfile** are wired.
-- The **-a**/**--startas** override is silently ignored when hardening
-  flags are present, because **slinit-runner** re-execs with its own
-  positional as **argv[0]**. Use a native slinit service description
-  when both are needed.
+- The **-a**/**--startas** override interacts with hardening flags
+  through **slinit-runner --argv0**: the kernel exec's **--startas**'s
+  binary while the child sees **--exec** as its **argv[0]**, matching
+  Debian's behaviour even under the runner-wrap.
 
 For deeper hardening (seccomp filters, sandbox paths, cgroup limits,
 NUMA policy, mlockall, AppArmor) use a native slinit service
