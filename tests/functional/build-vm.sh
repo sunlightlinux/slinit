@@ -39,7 +39,10 @@ else
     echo "[2/5] Using cached kernel"
 fi
 
-# Build slinit binaries (static, no CGO for portability)
+# Build slinit binaries (static, no CGO for portability).
+# The kernel-touching + supervisor helpers are shipped in the VM too so
+# their end-to-end behaviour can be exercised against a real /proc/sys,
+# binfmt_misc, and process tree — unit tests can't reach those paths.
 echo "[3/5] Building slinit binaries (static)..."
 cd "${PROJECT_DIR}"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit" ./cmd/slinit
@@ -47,6 +50,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-check" ./cmd/slinit-check
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-monitor" ./cmd/slinit-monitor
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-runner" ./cmd/slinit-runner
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-binfmt" ./cmd/slinit-binfmt
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-sysctl" ./cmd/slinit-sysctl
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-svc-value" ./cmd/slinit-svc-value
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-start-stop-daemon" ./cmd/slinit-start-stop-daemon
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-supervise-daemon" ./cmd/slinit-supervise-daemon
 
 # Prepare rootfs
 echo "[4/5] Preparing rootfs..."
@@ -62,6 +70,11 @@ install -m 755 "${BUILD_DIR}/slinit-monitor" "${ROOTFS_DIR}/usr/bin/slinit-monit
 # checks the slinit binary's own directory first. Without it, services
 # using apparmor-switch / debug / mlockall silently skip the runner wrap.
 install -m 755 "${BUILD_DIR}/slinit-runner" "${ROOTFS_DIR}/sbin/slinit-runner"
+install -m 755 "${BUILD_DIR}/slinit-binfmt" "${ROOTFS_DIR}/usr/bin/slinit-binfmt"
+install -m 755 "${BUILD_DIR}/slinit-sysctl" "${ROOTFS_DIR}/usr/bin/slinit-sysctl"
+install -m 755 "${BUILD_DIR}/slinit-svc-value" "${ROOTFS_DIR}/usr/bin/slinit-svc-value"
+install -m 755 "${BUILD_DIR}/slinit-start-stop-daemon" "${ROOTFS_DIR}/usr/bin/slinit-start-stop-daemon"
+install -m 755 "${BUILD_DIR}/slinit-supervise-daemon" "${ROOTFS_DIR}/usr/bin/slinit-supervise-daemon"
 ln -sf slinit "${ROOTFS_DIR}/sbin/init"
 
 mkdir -p "${ROOTFS_DIR}/run" "${ROOTFS_DIR}/dev" "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys"
