@@ -164,7 +164,10 @@ format to accommodate them.
   `TERM/30/KILL/5`-style retry schedules),
   `slinit-supervise-daemon` (OpenRC-compatible detached supervisor for non-forking
   daemons — rolling-window respawn rate limiter, linear-step backoff, `--signal`
-  bypass to daemon, `--stop` clean tear-down through supervisor)
+  bypass to daemon, `--stop` clean tear-down through supervisor),
+  `slinit-fstabinfo` (OpenRC-compatible `/etc/fstab` query utility —
+  `--blockdevice`/`--options`/`--mountargs`/`--passno` output modes,
+  `--fstype`/`--passno OP N`/positional filters, `--mount`/`--remount` actions)
 
 ## Building
 
@@ -184,6 +187,7 @@ go build ./cmd/slinit-checkpath   # path-validation helper
 go build ./cmd/slinit-seedrng     # persist entropy across reboots (SeedRNG)
 go build ./cmd/slinit-start-stop-daemon  # Debian/OpenRC start-stop-daemon(8) clone
 go build ./cmd/slinit-supervise-daemon   # OpenRC supervise-daemon(8) clone
+go build ./cmd/slinit-fstabinfo          # OpenRC fstabinfo(8) clone
 
 # OpenRC compat shims
 go build ./cmd/rc-service
