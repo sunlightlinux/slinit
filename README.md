@@ -181,7 +181,10 @@ format to accommodate them.
   needed for QEMU user-mode, Mono/.NET, WSL interop),
   `slinit-sysctl` (systemd-sysctl clone — applies `sysctl.d/*.conf` +
   `/etc/sysctl.conf` tunables to `/proc/sys/*`; supports the OpenRC/systemd
-  `-key = value` best-effort prefix and dotted-or-slashed keys)
+  `-key = value` best-effort prefix and dotted-or-slashed keys),
+  `slinit-svc-value` (OpenRC `value`(1) clone — per-service persistent
+  key=value store via `service_get_value`/`service_set_value`/`service_export`
+  applets; backing at `/run/slinit/options/<svc>/<key>`)
 
 ## Building
 
@@ -207,6 +210,7 @@ go build ./cmd/slinit-einfo              # OpenRC einfo(1) multi-applet
 go build ./cmd/slinit-shell-var          # OpenRC shell_var(1) clone
 go build ./cmd/slinit-binfmt             # systemd-binfmt(1) clone
 go build ./cmd/slinit-sysctl             # systemd-sysctl(1) clone
+go build ./cmd/slinit-svc-value          # OpenRC value(1) clone
 
 # OpenRC compat shims
 go build ./cmd/rc-service

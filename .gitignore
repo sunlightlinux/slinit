@@ -18,4 +18,5 @@
 /slinit-shell-var
 /slinit-binfmt
 /slinit-sysctl
+/slinit-svc-value
 /slinit-runner
