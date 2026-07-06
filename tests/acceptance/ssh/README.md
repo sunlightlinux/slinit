@@ -71,10 +71,11 @@ cases/
   80-envfile-leniency.sh # dinit parity fixes (80-82)
   81-logfile-leniency.sh
   82-service-dirs-abs.sh
-  99-cleanup.sh          # tears down acceptance-test-* namespace
+  105-…-144-…           # directive coverage batch (see cases/ dir)
+  999-cleanup.sh         # tears down acceptance-test-* namespace
 ```
 
-**82 real cases** (numbered 01–82) plus a final `99-cleanup.sh` teardown.
+**122 real cases** (numbered 01–82, 105–144) plus a final `999-cleanup.sh` teardown.
 Numbering leaves gaps so related features can be grouped without renumbering.
 
 Each `cases/NN-*.sh` is a self-contained shell script. The runner:
