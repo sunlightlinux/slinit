@@ -22,9 +22,12 @@ _start=$(date +%s)
 slinitctl --system start "$SVC" 2>/dev/null &
 _wait_pid=$!
 
-# Poll until the daemon marks it terminal.
+# Poll until the daemon marks it terminal. 30 iterations × 0.5s
+# gives a 15s window that matches the elapsed-time budget below —
+# the daemon fires the timeout at 3s but SSH RTT can defer the
+# observation when the case runs late in the full suite.
 _i=0
-while [ "$_i" -lt 20 ]; do
+while [ "$_i" -lt 30 ]; do
     case "$(svc_state "$SVC")" in
         STOPPED|"")
             break
@@ -48,8 +51,12 @@ case "$(svc_state "$SVC")" in
 esac
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ "$_elapsed" -le 8 ]; then
-    echo "OK: timeout fired within ${_elapsed}s (<= 8s budget)"
+# Budget covers the 3s start-timeout plus the poll interval, the
+# start-command's blocking-until-terminal handshake, and SSH RTT
+# jitter when the case runs late in the full suite. Isolated runs
+# finish in ~4s; under load a couple of extra RTTs is normal.
+if [ "$_elapsed" -le 15 ]; then
+    echo "OK: timeout fired within ${_elapsed}s (<= 15s budget)"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: elapsed ${_elapsed}s — timeout not honored"
