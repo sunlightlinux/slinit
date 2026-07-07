@@ -1,10 +1,13 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 const sampleLSBScript = `#!/bin/sh
@@ -294,19 +297,20 @@ start() { :; }
 	if len(desc.WaitsFor) != 1 || desc.WaitsFor[0] != "lvm" {
 		t.Errorf("WaitsFor = %v, want [lvm]", desc.WaitsFor)
 	}
-	// after → After
-	if len(desc.After) != 1 || desc.After[0] != "clock" {
-		t.Errorf("After = %v, want [clock]", desc.After)
+	// after → AfterOptional (OpenRC's `after` is advisory ordering,
+	// not a hard existence dep, so it goes to the lenient list).
+	if len(desc.AfterOptional) != 1 || desc.AfterOptional[0] != "clock" {
+		t.Errorf("AfterOptional = %v, want [clock]", desc.AfterOptional)
 	}
-	// before → Before
+	// before → BeforeOptional (same rationale as `after`).
 	wantBefore := map[string]bool{"bootmisc": true, "logger": true}
 	gotBefore := map[string]bool{}
-	for _, d := range desc.Before {
+	for _, d := range desc.BeforeOptional {
 		gotBefore[d] = true
 	}
 	for k := range wantBefore {
 		if !gotBefore[k] {
-			t.Errorf("Before missing %q: got %v", k, desc.Before)
+			t.Errorf("BeforeOptional missing %q: got %v", k, desc.BeforeOptional)
 		}
 	}
 	// provide → Provides
@@ -346,6 +350,91 @@ start() { :; }
 	// LSB's $syslog should be mapped.
 	if len(desc.DependsOn) != 1 || desc.DependsOn[0] != "syslog" {
 		t.Errorf("DependsOn = %v, want [syslog]", desc.DependsOn)
+	}
+}
+
+// TestLoadDependencies_OptionalMissingSkipped covers the regression that
+// blocked case 83-initd-openrc-depend: an OpenRC-flavoured init.d script
+// declaring `after some-name` for a service that isn't installed used to
+// fail the whole load. AfterOptional/BeforeOptional now surface the
+// OpenRC "advisory" semantics — missing targets are silently dropped
+// while genuine parse/filesystem errors still propagate.
+func TestLoadDependencies_OptionalMissingSkipped(t *testing.T) {
+	dir := t.TempDir()
+	// Existing service to reference — sanity-check the optional path
+	// still hooks up real deps when they resolve.
+	writeServiceFile(t, dir, "peer", "type = process\ncommand = /bin/true\n")
+	writeServiceFile(t, dir, "svc",
+		"type = process\ncommand = /bin/true\n"+
+			"before: peer\n"+
+			"after: peer\n")
+
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+
+	// Baseline: strict `after = missing` must still fail.
+	writeServiceFile(t, dir, "strict-bad",
+		"type = process\ncommand = /bin/true\nafter: does-not-exist\n")
+	if _, err := loader.LoadService("strict-bad"); err == nil {
+		t.Fatalf("strict `after = does-not-exist` should fail; got nil")
+	} else if !errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("strict miss should wrap ErrServiceNotFound; got %v", err)
+	}
+
+	// Post-parse patch to simulate what InitDToServiceDescription
+	// does for OpenRC scripts — route the missing name through the
+	// optional list. loadDependencies must swallow it.
+	writeServiceFile(t, dir, "lenient",
+		"type = process\ncommand = /bin/true\n")
+	desc, _, err := loader.findAndParse("lenient")
+	if err != nil {
+		t.Fatalf("findAndParse: %v", err)
+	}
+	desc.AfterOptional = []string{"does-not-exist"}
+	desc.BeforeOptional = []string{"still-not-here"}
+
+	svc := loader.createService("lenient", desc)
+	ss.AddService(svc)
+	if err := loader.loadDependencies(svc, desc, filepath.Join(dir, "lenient")); err != nil {
+		t.Fatalf("loadDependencies with only optional-missing deps errored: %v", err)
+	}
+}
+
+// TestInitDToServiceDescription_OpenRC_MissingAfter_EndToEnd is the
+// end-to-end regression that case 83-initd-openrc-depend hits: an OpenRC
+// script that references a not-installed order-only tag in `after`
+// must still load through the init.d fallback rather than erroring the
+// entire load.
+func TestInitDToServiceDescription_OpenRC_MissingAfter_EndToEnd(t *testing.T) {
+	svcDir := t.TempDir()
+	initDir := t.TempDir()
+
+	// A native slinit service that plays the `need` target — must exist.
+	writeServiceFile(t, svcDir, "openrc-need",
+		"type = process\ncommand = /bin/true\n")
+
+	// The OpenRC init.d script: `need` a real service, `after` a fake tag.
+	body := `#!/sbin/openrc-run
+depend() {
+    need openrc-need
+    after totally-not-installed-tag
+}
+start() { :; }
+`
+	writeScript(t, initDir, "openrc-depend", body)
+
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{svcDir})
+	loader.SetInitDDirs([]string{initDir})
+	ss.SetLoader(loader)
+
+	svc, err := loader.LoadService("openrc-depend")
+	if err != nil {
+		t.Fatalf("openrc-depend load failed on missing `after` tag: %v", err)
+	}
+	if svc.Name() != "openrc-depend" {
+		t.Errorf("service name = %q, want openrc-depend", svc.Name())
 	}
 }
 

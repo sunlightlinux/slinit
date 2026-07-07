@@ -269,14 +269,17 @@ func applyOpenRCDepend(desc *ServiceDescription, dep *OpenRCDepend) {
 			desc.WaitsFor = append(desc.WaitsFor, m)
 		}
 	}
+	// OpenRC treats `after`/`before` as advisory ordering, not a hard
+	// existential dep. Route them into the optional lists so the loader
+	// drops missing targets silently instead of failing the whole load.
 	for _, s := range dep.After {
 		if m := mapFacility(s); m != "" {
-			desc.After = append(desc.After, m)
+			desc.AfterOptional = append(desc.AfterOptional, m)
 		}
 	}
 	for _, s := range dep.Before {
 		if m := mapFacility(s); m != "" {
-			desc.Before = append(desc.Before, m)
+			desc.BeforeOptional = append(desc.BeforeOptional, m)
 		}
 	}
 	if desc.Provides == "" && len(dep.Provide) > 0 {
