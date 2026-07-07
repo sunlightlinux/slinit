@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -15,6 +16,13 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"golang.org/x/sys/unix"
 )
+
+// ErrServiceNotFound is wrapped by ServiceLoadError when findAndParse
+// cannot locate a service description across any configured directory.
+// Callers that resolve best-effort references (e.g. init.d/OpenRC
+// `after`/`before` advisory ordering) use errors.Is to distinguish a
+// missing target from a real parse or filesystem error.
+var ErrServiceNotFound = errors.New("service description not found")
 
 // Default init.d directories to search as fallback.
 var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
@@ -839,6 +847,7 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 	return nil, "", &ServiceLoadError{
 		ServiceName: name,
 		Message:     "service description not found",
+		Err:         ErrServiceNotFound,
 	}
 }
 
@@ -1038,21 +1047,29 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 
 func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescription, filePath string) error {
 	depSpecs := []struct {
-		names   []string
-		depType service.DependencyType
+		names    []string
+		depType  service.DependencyType
+		optional bool // when true, missing targets are silently skipped
 	}{
-		{desc.DependsOn, service.DepRegular},
-		{desc.DependsMS, service.DepMilestone},
-		{desc.WaitsFor, service.DepWaitsFor},
-		{desc.PreparedBy, service.DepPreparedBy},
-		{desc.Before, service.DepBefore},
-		{desc.After, service.DepAfter},
+		{desc.DependsOn, service.DepRegular, false},
+		{desc.DependsMS, service.DepMilestone, false},
+		{desc.WaitsFor, service.DepWaitsFor, false},
+		{desc.PreparedBy, service.DepPreparedBy, false},
+		{desc.Before, service.DepBefore, false},
+		{desc.After, service.DepAfter, false},
+		// Advisory ordering hints from init.d/OpenRC — dropped when
+		// the target isn't loadable rather than failing the parent.
+		{desc.BeforeOptional, service.DepBefore, true},
+		{desc.AfterOptional, service.DepAfter, true},
 	}
 
 	for _, spec := range depSpecs {
 		for _, depName := range spec.names {
 			depSvc, err := dl.LoadService(depName)
 			if err != nil {
+				if spec.optional && errors.Is(err, ErrServiceNotFound) {
+					continue
+				}
 				return fmt.Errorf("loading dependency '%s' for service '%s': %w",
 					depName, svc.Name(), err)
 			}
@@ -1655,11 +1672,14 @@ func lookupShell(uid string) string {
 type ServiceLoadError struct {
 	ServiceName string
 	Message     string
+	Err         error // wrapped for errors.Is, e.g. ErrServiceNotFound
 }
 
 func (e *ServiceLoadError) Error() string {
 	return fmt.Sprintf("service '%s': %s", e.ServiceName, e.Message)
 }
+
+func (e *ServiceLoadError) Unwrap() error { return e.Err }
 
 // parseIOPrio parses an ioprio string "class:level" or just "class".
 // Returns (class, level). class is -1 on error.

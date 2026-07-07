@@ -109,6 +109,13 @@ type ServiceDescription struct {
 	Before     []string // before
 	After      []string // after
 
+	// Best-effort ordering: like Before/After but the loader treats a
+	// missing target as a silently-dropped hint, not a load failure.
+	// Populated by the init.d/OpenRC auto-detect path — OpenRC's
+	// `after`/`before` are advisory, not existential.
+	BeforeOptional []string
+	AfterOptional  []string
+
 	// Dependency directories
 	DependsOnD  []string // depends-on.d
 	DependsMSD  []string // depends-ms.d
