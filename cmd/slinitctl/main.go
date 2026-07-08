@@ -816,6 +816,72 @@ func warnIfDescriptionChanged(conn net.Conn, handle uint32, name string) {
 	}
 }
 
+// queryLoadModTime asks the daemon for the mtime the service description
+// file had at load time (protocol v6). Returns 0 when the daemon predates
+// v6 or the query fails — callers treat 0 as "no stamp available".
+func queryLoadModTime(conn net.Conn, handle uint32) int64 {
+	if err := control.WritePacket(conn, control.CmdServiceStatus6, control.EncodeHandle(handle)); err != nil {
+		return 0
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil || rply != control.RplyServiceStatus {
+		return 0
+	}
+	s6, err := control.DecodeServiceStatus6(payload)
+	if err != nil {
+		return 0
+	}
+	return s6.LoadModTime
+}
+
+// resolveServiceDescFile queries the daemon's configured service description
+// dirs and returns the first path that resolves to an on-disk file for the
+// given service name (falling back to the base name for `svc@arg` templates).
+// The second return value reports whether the file's current mtime differs
+// from loadModTime (0 disables the check — used when the v6 path was
+// unavailable). Returns ok=false when no candidate file exists.
+func resolveServiceDescFile(conn net.Conn, name string, loadModTime int64) (path string, modified, ok bool) {
+	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, nil); err != nil {
+		return "", false, false
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil || rply != control.RplyServiceDscDir || len(payload) < 2 {
+		return "", false, false
+	}
+	count := int(binary.LittleEndian.Uint16(payload))
+	off := 2
+	baseName := name
+	if idx := strings.IndexByte(name, '@'); idx >= 0 {
+		baseName = name[:idx]
+	}
+	searchNames := []string{name}
+	if baseName != name {
+		searchNames = append(searchNames, baseName)
+	}
+	for i := 0; i < count; i++ {
+		if len(payload) < off+2 {
+			return "", false, false
+		}
+		dirLen := int(binary.LittleEndian.Uint16(payload[off:]))
+		off += 2
+		if len(payload) < off+dirLen {
+			return "", false, false
+		}
+		dir := string(payload[off : off+dirLen])
+		off += dirLen
+		for _, sn := range searchNames {
+			candidate := filepath.Join(dir, sn)
+			fi, err := os.Stat(candidate)
+			if err != nil {
+				continue
+			}
+			mod := loadModTime != 0 && fi.ModTime().Unix() != loadModTime
+			return candidate, mod, true
+		}
+	}
+	return "", false, false
+}
+
 func loadServiceHandle(conn net.Conn, name string) (uint32, error) {
 	nameData := control.EncodeServiceName(name)
 	if err := control.WritePacket(conn, control.CmdLoadService, nameData); err != nil {
@@ -1165,7 +1231,22 @@ func cmdStatus(conn net.Conn, name string) error {
 		return err
 	}
 
+	// Fetch load-time mod stamp separately so we can render
+	// "(modified since loaded)" without giving up the PID/Type/Exit
+	// columns that only ride the v1 status wire. dinit-parity a94ef73.
+	loadModTime := queryLoadModTime(conn, handle)
+
 	fmt.Printf("Service: %s\n", name)
+	// Show the description file path + modification marker, dinit-parity
+	// e099aa4 + a94ef73. Skip on error so init.d/synthesized services
+	// don't print a bogus "File:" line.
+	if sdfPath, modified, ok := resolveServiceDescFile(conn, name, loadModTime); ok {
+		if modified {
+			fmt.Printf("  File:    %s (modified since loaded)\n", sdfPath)
+		} else {
+			fmt.Printf("  File:    %s\n", sdfPath)
+		}
+	}
 	if desc, err := fetchDescription(conn, handle); err == nil && desc != "" {
 		fmt.Printf("  Description: %s\n", desc)
 	}
