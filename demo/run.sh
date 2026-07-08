@@ -35,4 +35,5 @@ exec qemu-system-x86_64 \
     -nographic \
     -no-reboot \
     -serial mon:stdio \
+    -nic none \
     -device i6300esb
