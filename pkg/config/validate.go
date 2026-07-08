@@ -9,14 +9,23 @@ import (
 // exhaustion from deeply recursive service references (e.g. svc@1 -> svc@2 -> ...).
 const MaxDepDepth = 32
 
+// MaxServiceNameLen is the maximum length of a service name. The control
+// protocol encodes name lengths as uint16, so anything longer would overflow
+// the wire format. dinit-parity 1e56a23.
+const MaxServiceNameLen = 65535
+
 // ValidateServiceName checks that a service name is well-formed.
 // Rules (matching dinit):
 //   - Must not be empty
+//   - Must not exceed MaxServiceNameLen (uint16)
 //   - Must not start with '.' or '@'
 //   - Characters before '@' must be alphanumeric, '.', '_', '-', or UTF-8 >= 128
 func ValidateServiceName(name string) error {
 	if name == "" {
 		return fmt.Errorf("service name is empty")
+	}
+	if len(name) > MaxServiceNameLen {
+		return fmt.Errorf("service name is too long")
 	}
 	if name[0] == '.' {
 		return fmt.Errorf("service name must not start with '.'")
