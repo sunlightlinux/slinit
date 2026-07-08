@@ -288,6 +288,71 @@ func TestRunShutdownHookReceivesArg(t *testing.T) {
 	}
 }
 
+// runExecuteWithMocks runs Execute with a mocked reboot/hook/kill/sync
+// stack and returns whether sync + logShutdown ran. Used by the
+// SetSyncEnabled / SetWtmpEnabled tests below.
+func runExecuteWithMocks(t *testing.T) (syncRan, wtmpRan bool) {
+	t.Helper()
+	origKill, origSync, origReboot, origHook := killFunc, syncFunc, rebootFunc, runHookFunc
+	origLogout, origLogshut, origGrace := logoutAllUsersFunc, logShutdownFunc, killGracePeriod
+	killFunc = func(int, syscall.Signal) error { return syscall.ESRCH }
+	syncFunc = func() { syncRan = true }
+	rebootFunc = func(int) error { return nil }
+	runHookFunc = func(service.ShutdownType, *logging.Logger) bool { return true }
+	logoutAllUsersFunc = func() int { return 0 }
+	logShutdownFunc = func() bool { wtmpRan = true; return true }
+	killGracePeriod = 0
+	defer func() {
+		killFunc, syncFunc, rebootFunc, runHookFunc = origKill, origSync, origReboot, origHook
+		logoutAllUsersFunc, logShutdownFunc, killGracePeriod = origLogout, origLogshut, origGrace
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		rebootFunc = func(int) error {
+			close(done)
+			select {}
+		}
+		Execute(service.ShutdownReboot, testLogger())
+	}()
+	<-done
+	return syncRan, wtmpRan
+}
+
+func TestExecuteRespectsSyncEnabled(t *testing.T) {
+	orig := syncEnabled
+	defer func() { syncEnabled = orig }()
+
+	SetSyncEnabled(false)
+	syncRan, _ := runExecuteWithMocks(t)
+	if syncRan {
+		t.Error("syncFunc called despite SetSyncEnabled(false)")
+	}
+
+	SetSyncEnabled(true)
+	syncRan, _ = runExecuteWithMocks(t)
+	if !syncRan {
+		t.Error("syncFunc not called despite SetSyncEnabled(true)")
+	}
+}
+
+func TestExecuteRespectsWtmpEnabled(t *testing.T) {
+	orig := wtmpEnabled
+	defer func() { wtmpEnabled = orig }()
+
+	SetWtmpEnabled(false)
+	_, wtmpRan := runExecuteWithMocks(t)
+	if wtmpRan {
+		t.Error("logShutdownFunc called despite SetWtmpEnabled(false)")
+	}
+
+	SetWtmpEnabled(true)
+	_, wtmpRan = runExecuteWithMocks(t)
+	if !wtmpRan {
+		t.Error("logShutdownFunc not called despite SetWtmpEnabled(true)")
+	}
+}
+
 func TestExecuteWithHook(t *testing.T) {
 	// Mock all syscalls to prevent real shutdown
 	origKill := killFunc
