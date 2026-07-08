@@ -39,6 +39,22 @@ func KillGracePeriod() time.Duration {
 	return killGracePeriod
 }
 
+// syncEnabled and wtmpEnabled gate the corresponding steps in Execute so
+// slinit-shutdown can honour systemd-style --no-sync / --no-wtmp flags.
+// Default: enabled (traditional shutdown behaviour).
+var (
+	syncEnabled = true
+	wtmpEnabled = true
+)
+
+// SetSyncEnabled toggles the pre-reboot syscall.Sync() call in Execute.
+// Disable with `slinit-shutdown -n` / `--no-sync` for a fast unclean exit.
+func SetSyncEnabled(v bool) { syncEnabled = v }
+
+// SetWtmpEnabled toggles the utmp/wtmp write in Execute.
+// Disable with `slinit-shutdown -d` / `--no-wtmp` to skip the shutdown record.
+func SetWtmpEnabled(v bool) { wtmpEnabled = v }
+
 // shutdownHookPaths is the list of paths to search for a shutdown hook script.
 // The first executable hook found is used; the rest are ignored.
 var shutdownHookPaths = []string{
@@ -71,10 +87,13 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// last(1) shows clean logout boundaries across the reboot. Doing
 	// this before KillAllProcesses means the utmp/wtmp files are still
 	// on a writable filesystem and no logger has been torn down.
-	if n := logoutAllUsersFunc(); n > 0 {
-		logger.Info("Logged out %d active session(s)", n)
+	// Gated by wtmpEnabled (systemd's -d / --no-wtmp on reboot(8)).
+	if wtmpEnabled {
+		if n := logoutAllUsersFunc(); n > 0 {
+			logger.Info("Logged out %d active session(s)", n)
+		}
+		logShutdownFunc()
 	}
-	logShutdownFunc()
 
 	// Kill all remaining processes
 	KillAllProcesses(logger)
@@ -95,9 +114,14 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 		logger.Debug("Clock timestamp saved for next boot")
 	}
 
-	// Sync filesystems to minimize data loss
-	logger.Info("Syncing filesystems...")
-	syncFunc()
+	// Sync filesystems to minimize data loss. Skipped when the caller
+	// asks for a fast exit via systemd's -n / --no-sync.
+	if syncEnabled {
+		logger.Info("Syncing filesystems...")
+		syncFunc()
+	} else {
+		logger.Info("Skipping filesystem sync (--no-sync)")
+	}
 
 	// Issue the appropriate reboot command
 	if err := rebootSystem(shutdownType); err != nil {

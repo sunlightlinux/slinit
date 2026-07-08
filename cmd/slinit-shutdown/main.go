@@ -26,6 +26,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
+	"github.com/sunlightlinux/slinit/pkg/utmp"
 )
 
 const (
@@ -37,6 +38,10 @@ func main() {
 		showHelp    bool
 		sysShutdown bool
 		useCFD      bool
+		wtmpOnly    bool
+		noWtmp      bool
+		noSync      bool
+		noWall      bool
 	)
 
 	shutdownType := defaultShutdownType()
@@ -59,9 +64,23 @@ func main() {
 			showHelp = true
 		case arg == "--system":
 			sysShutdown = true
+		// systemd(1) reboot/halt/poweroff surface — long-form aliases.
+		case arg == "--halt":
+			shutdownType = service.ShutdownHalt
+		case arg == "--reboot":
+			shutdownType = service.ShutdownReboot
+		case arg == "--poweroff":
+			// systemd: `--poweroff` overrides argv[0] except when the
+			// binary is `reboot`, where it is ignored. Match that quirk.
+			if !strings.HasSuffix(execName, "reboot") ||
+				strings.HasSuffix(execName, "soft-reboot") {
+				shutdownType = service.ShutdownPoweroff
+			}
 		case arg == "-r":
 			shutdownType = service.ShutdownReboot
 		case arg == "-h":
+			// systemd: `-h` is short for --halt only for the poweroff
+			// binary; for others it's already a shutdown type toggle.
 			shutdownType = service.ShutdownHalt
 		case arg == "-p":
 			shutdownType = service.ShutdownPoweroff
@@ -69,6 +88,18 @@ func main() {
 			shutdownType = service.ShutdownSoftReboot
 		case arg == "-k":
 			shutdownType = service.ShutdownKexec
+		// systemd(1) reboot(8) options that bypass the init contact
+		// (or gate the utmp/wall/sync side effects).
+		case arg == "-f", arg == "--force":
+			sysShutdown = true
+		case arg == "-w", arg == "--wtmp-only":
+			wtmpOnly = true
+		case arg == "-d", arg == "--no-wtmp":
+			noWtmp = true
+		case arg == "-n", arg == "--no-sync":
+			noSync = true
+		case arg == "--no-wall":
+			noWall = true
 		case arg == "--use-passed-cfd":
 			useCFD = true
 		case strings.HasPrefix(arg, "--grace="):
@@ -86,7 +117,28 @@ func main() {
 
 	if showHelp {
 		printUsage(execName)
-		os.Exit(1)
+		os.Exit(0)
+	}
+
+	// -w / --wtmp-only writes the shutdown record and exits without
+	// touching the init system or the reboot syscall. Matches systemd's
+	// contract exactly.
+	if wtmpOnly {
+		utmp.LogShutdown()
+		os.Exit(0)
+	}
+
+	// Propagate the systemd-style gating knobs to pkg/shutdown so they
+	// apply to the direct path (--system / -f). They're no-ops on the
+	// daemon path — the daemon owns its own wtmp/sync/wall policy.
+	if noSync {
+		shutdown.SetSyncEnabled(false)
+	}
+	if noWtmp {
+		shutdown.SetWtmpEnabled(false)
+	}
+	if noWall {
+		shutdown.SetWallEnabled(false)
 	}
 
 	if sysShutdown {
@@ -138,14 +190,23 @@ func defaultShutdownType() service.ShutdownType {
 func printUsage(execName string) {
 	fmt.Fprintf(os.Stderr, `%s: shut down the system
   --help             show this help
-  -r                 reboot
-  -h                 halt system
-  -p                 power down (default)
+  -r, --reboot       reboot the machine
+  -h, --halt         halt the machine
+  -p, --poweroff     power down the machine (default)
   -s                 soft-reboot (restart slinit with same arguments)
   -k                 execute kernel loaded via kexec
+  -f, --force        bypass the init daemon (direct kernel reboot;
+                     equivalent to --system, filesystems may not be
+                     properly unmounted)
+  -n, --no-sync      skip filesystem sync before rebooting
+  -d, --no-wtmp      do not write a shutdown entry to utmp/wtmp
+  -w, --wtmp-only    write only the shutdown entry to utmp/wtmp,
+                     do not actually reboot
+  --no-wall          do not broadcast the shutdown wall message
   --use-passed-cfd   use the socket fd from SLINIT_CS_FD env var
-  --system           perform shutdown immediately, instead of issuing
-                     command to the init daemon (not for normal use)
+  --system           alias for --force (perform shutdown immediately,
+                     not for normal use)
+  --grace=DURATION   override the SIGTERM→SIGKILL grace period
 `, execName)
 }
 
