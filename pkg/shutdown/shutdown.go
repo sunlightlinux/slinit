@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 	"time"
 
@@ -78,6 +79,16 @@ var (
 // This function should only be called when running as PID 1.
 // It does not return under normal circumstances.
 func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
+	// KillAllProcesses below will kill(-1, SIGKILL) every non-init process,
+	// including any shell that fork/exec'd us. When the session leader dies
+	// the kernel delivers SIGHUP to the rest of the session — us included.
+	// Go's default action for SIGHUP terminates the process, so without
+	// this an interactive `reboot -f` from a user shell dies silently at
+	// the SIGKILL sweep and never reaches the reboot syscall. PID 1 has no
+	// controlling tty so this is a no-op there; running it unconditionally
+	// keeps the two entry paths symmetric.
+	signal.Ignore(syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE)
+
 	logger.Notice("Executing shutdown: %s", shutdownType)
 
 	// Broadcast a final wall notice to any logged-in users.
@@ -131,6 +142,67 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// If we get here, the reboot syscall failed.
 	// PID 1 must never exit, so hold indefinitely.
 	logger.Error("Shutdown failed, holding indefinitely")
+	InfiniteHold()
+}
+
+// ExecuteForce performs the minimal "get out now" shutdown path used by
+// systemd's reboot -f: utmp shutdown record, filesystem sync, and the
+// kernel reboot syscall. Services are NOT stopped and filesystems are
+// NOT unmounted — this matches reboot(8)'s documented contract:
+// "In most cases, filesystems are not properly unmounted before shutdown."
+//
+// Deliberate omissions vs. Execute (verified against systemd's
+// systemctl-compat-halt.c halt_main → halt_now):
+//   - no wall broadcast (systemd only walls via the logind path, which
+//     -f skips entirely);
+//   - no kill(-1); the reboot syscall is what stops everything;
+//   - no umount / swapoff / shutdown-hook.
+//
+// Callers: `/sbin/reboot -f`, `slinit-shutdown -f`. PID 1's own shutdown
+// flow uses Execute instead, which stops services and unmounts before
+// the reboot syscall.
+func ExecuteForce(shutdownType service.ShutdownType, logger *logging.Logger) {
+	// Insurance against a session-leader SIGHUP if the caller ever ends
+	// up in a killed pgroup — cheap, harmless on PID 1.
+	signal.Ignore(syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE)
+
+	logger.Notice("Forced shutdown: %s (filesystems not unmounted)", shutdownType)
+
+	// utmp/wtmp shutdown record (respects --no-wtmp via SetWtmpEnabled).
+	// systemd only writes when its own systemd-update-utmp is absent;
+	// slinit has no such helper, so we always write unless -d.
+	if wtmpEnabled {
+		if n := logoutAllUsersFunc(); n > 0 {
+			logger.Info("Logged out %d active session(s)", n)
+		}
+		logShutdownFunc()
+	}
+
+	// Persist the clock timestamp — the file is small and the write is
+	// cheap; skipping it would cost the next boot a false-positive on
+	// the clock regression guard.
+	if err := WriteClockTimestamp(); err != nil {
+		logger.Debug("Failed to save clock timestamp: %v", err)
+	}
+
+	// Sync unless -n / --no-sync. systemd's `reboot -ff` (double force)
+	// skips sync — same effect here via `reboot -f -n`.
+	if syncEnabled {
+		logger.Info("Syncing filesystems...")
+		syncFunc()
+	} else {
+		logger.Info("Skipping filesystem sync (--no-sync)")
+	}
+
+	// Re-enable Ctrl+Alt+Del so if the reboot syscall itself somehow
+	// fails, the operator still has a kernel-level escape hatch. systemd
+	// does the same in halt_now(). Errors are non-fatal.
+	_ = rebootFunc(syscall.LINUX_REBOOT_CMD_CAD_ON)
+
+	if err := rebootSystem(shutdownType); err != nil {
+		logger.Error("Reboot syscall failed: %v", err)
+	}
+	logger.Error("Forced shutdown syscall returned unexpectedly")
 	InfiniteHold()
 }
 
