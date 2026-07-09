@@ -5,8 +5,49 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/shutdown"
+	"github.com/sunlightlinux/slinit/pkg/utmp"
 )
+
+// sysvExtraFlags captures the systemd(1) reboot/poweroff/halt options
+// that change *how* the shutdown is performed but not *what* it is.
+// Kept separate from parseSysVCompat's shutdown-type mapping so the
+// two concerns can be tested independently.
+type sysvExtraFlags struct {
+	force    bool // -f / --force     — bypass the daemon (direct kernel reboot)
+	wtmpOnly bool // -w / --wtmp-only — write shutdown record and exit
+	noWtmp   bool // -d / --no-wtmp   — skip utmp/wtmp shutdown record
+	noSync   bool // -n / --no-sync   — skip filesystem sync
+	noWall   bool // --no-wall        — skip wall broadcast
+}
+
+// parseSysVExtraFlags scans argv[1:] for the systemd(1) reboot/halt/
+// poweroff flags that gate side-effects (or, for -f, choose a completely
+// different execution path). Unrecognised args are ignored to match the
+// historical "silently tolerated" contract of legacy SysV shims.
+func parseSysVExtraFlags(argv []string) sysvExtraFlags {
+	var f sysvExtraFlags
+	if len(argv) <= 1 {
+		return f
+	}
+	for _, a := range argv[1:] {
+		switch a {
+		case "-f", "--force":
+			f.force = true
+		case "-w", "--wtmp-only":
+			f.wtmpOnly = true
+		case "-d", "--no-wtmp":
+			f.noWtmp = true
+		case "-n", "--no-sync":
+			f.noSync = true
+		case "--no-wall":
+			f.noWall = true
+		}
+	}
+	return f
+}
 
 // parseSysVCompat inspects argv[0] and the argument list to decide
 // whether this invocation is a SysV init compatibility call (i.e. slinit
@@ -78,11 +119,59 @@ func handleSysVCompat() bool {
 	}
 	for _, a := range os.Args[1:] {
 		if a == "--help" || a == "-?" {
-			fmt.Printf("Usage: %s [-f] [-p|-P] [-r] [-h]\n", prog)
+			fmt.Printf("Usage: %s [-f] [-p|-P] [-r] [-h] [-n] [-w] [-d] [--no-wall]\n", prog)
 			fmt.Println("SysV compatibility shim — requests shutdown via the slinit control socket.")
+			fmt.Println("With -f/--force, bypasses the daemon and reboots the kernel directly")
+			fmt.Println("(matches systemd's reboot(8) contract).")
 			os.Exit(0)
 		}
 	}
+
+	extra := parseSysVExtraFlags(os.Args)
+
+	// -w / --wtmp-only: write the shutdown record and exit without
+	// touching the init system or the reboot syscall. Same contract as
+	// systemd's reboot(8) -w. Wins over -f: matches slinit-shutdown's
+	// argument-precedence order.
+	if extra.wtmpOnly {
+		utmp.LogShutdown()
+		os.Exit(0)
+	}
+
+	// -f / --force: bypass the daemon and perform the shutdown directly
+	// — kill(-1), umount, sync, reboot syscall — instead of asking init
+	// to stop services one by one. Matches systemd's reboot -f (which
+	// documents "does not contact the init system"). Without -f, we
+	// preserve the historical behaviour of sending a graceful shutdown
+	// request to the running slinit instance.
+	if extra.force {
+		if extra.noSync {
+			shutdown.SetSyncEnabled(false)
+		}
+		if extra.noWtmp {
+			shutdown.SetWtmpEnabled(false)
+		}
+		if extra.noWall {
+			shutdown.SetWallEnabled(false)
+		}
+		doForceShutdownAndExit(st)
+	}
+
 	sendShutdownAndExit("", true, st)
 	return true // unreachable
+}
+
+// doForceShutdownAndExit runs the minimal `reboot -f` path — sync and
+// reboot syscall, no service teardown, no umount. Matches systemd's
+// documented contract: "does not contact the init system" and
+// "filesystems are not properly unmounted before shutdown". If the
+// reboot syscall unexpectedly returns, we exit 1 so the caller notices
+// something went wrong.
+func doForceShutdownAndExit(st service.ShutdownType) {
+	logger := logging.New(logging.LevelInfo)
+	if f, err := os.OpenFile("/dev/console", os.O_WRONLY, 0); err == nil {
+		logger.SetOutput(f)
+	}
+	shutdown.ExecuteForce(st, logger)
+	os.Exit(1)
 }

@@ -117,3 +117,76 @@ func TestParseSysVCompat_BasenameStripsPath(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSysVExtraFlags_Empty(t *testing.T) {
+	f := parseSysVExtraFlags([]string{"reboot"})
+	if f.force || f.wtmpOnly || f.noWtmp || f.noSync || f.noWall {
+		t.Errorf("no flags → %+v, want all-false", f)
+	}
+	// Nil / zero-length argv must not panic.
+	if got := parseSysVExtraFlags(nil); got != (sysvExtraFlags{}) {
+		t.Errorf("nil argv → %+v, want zero", got)
+	}
+}
+
+func TestParseSysVExtraFlags_Force(t *testing.T) {
+	for _, arg := range []string{"-f", "--force"} {
+		f := parseSysVExtraFlags([]string{"reboot", arg})
+		if !f.force {
+			t.Errorf("%q did not set force", arg)
+		}
+	}
+}
+
+func TestParseSysVExtraFlags_WtmpOnly(t *testing.T) {
+	for _, arg := range []string{"-w", "--wtmp-only"} {
+		f := parseSysVExtraFlags([]string{"reboot", arg})
+		if !f.wtmpOnly {
+			t.Errorf("%q did not set wtmpOnly", arg)
+		}
+	}
+}
+
+func TestParseSysVExtraFlags_NoWtmp(t *testing.T) {
+	for _, arg := range []string{"-d", "--no-wtmp"} {
+		f := parseSysVExtraFlags([]string{"reboot", arg})
+		if !f.noWtmp {
+			t.Errorf("%q did not set noWtmp", arg)
+		}
+	}
+}
+
+func TestParseSysVExtraFlags_NoSync(t *testing.T) {
+	for _, arg := range []string{"-n", "--no-sync"} {
+		f := parseSysVExtraFlags([]string{"reboot", arg})
+		if !f.noSync {
+			t.Errorf("%q did not set noSync", arg)
+		}
+	}
+}
+
+func TestParseSysVExtraFlags_NoWall(t *testing.T) {
+	f := parseSysVExtraFlags([]string{"reboot", "--no-wall"})
+	if !f.noWall {
+		t.Errorf("--no-wall did not set noWall")
+	}
+}
+
+func TestParseSysVExtraFlags_Combined(t *testing.T) {
+	f := parseSysVExtraFlags([]string{"reboot", "-f", "-n", "-d", "--no-wall"})
+	if !(f.force && f.noSync && f.noWtmp && f.noWall) {
+		t.Errorf("combined → %+v, want force/noSync/noWtmp/noWall all true", f)
+	}
+	if f.wtmpOnly {
+		t.Errorf("combined → wtmpOnly=true unexpectedly")
+	}
+}
+
+func TestParseSysVExtraFlags_UnknownIgnored(t *testing.T) {
+	// Legacy sysvinit flags that we don't act on must be silently
+	// ignored, same as the shutdown-type parser above.
+	f := parseSysVExtraFlags([]string{"reboot", "--random", "-x", "-y"})
+	if f != (sysvExtraFlags{}) {
+		t.Errorf("unknown flags leaked into %+v", f)
+	}
+}

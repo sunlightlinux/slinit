@@ -37,6 +37,7 @@ func main() {
 	var (
 		showHelp    bool
 		sysShutdown bool
+		forceMode   bool
 		useCFD      bool
 		wtmpOnly    bool
 		noWtmp      bool
@@ -89,9 +90,14 @@ func main() {
 		case arg == "-k":
 			shutdownType = service.ShutdownKexec
 		// systemd(1) reboot(8) options that bypass the init contact
-		// (or gate the utmp/wall/sync side effects).
+		// (or gate the utmp/wall/sync side effects). -f/--force triggers
+		// the *minimal* path (sync + reboot syscall); --system is the
+		// legacy alias for the *full* cleanup path (kill(-1) + umount +
+		// sync + reboot). Kept separate to match systemd's contract:
+		// `reboot -f` is documented as "does not contact the init system"
+		// and "filesystems are not properly unmounted before shutdown".
 		case arg == "-f", arg == "--force":
-			sysShutdown = true
+			forceMode = true
 		case arg == "-w", arg == "--wtmp-only":
 			wtmpOnly = true
 		case arg == "-d", arg == "--no-wtmp":
@@ -139,6 +145,11 @@ func main() {
 	}
 	if noWall {
 		shutdown.SetWallEnabled(false)
+	}
+
+	if forceMode {
+		doForceShutdown(shutdownType)
+		os.Exit(1)
 	}
 
 	if sysShutdown {
@@ -195,17 +206,17 @@ func printUsage(execName string) {
   -p, --poweroff     power down the machine (default)
   -s                 soft-reboot (restart slinit with same arguments)
   -k                 execute kernel loaded via kexec
-  -f, --force        bypass the init daemon (direct kernel reboot;
-                     equivalent to --system, filesystems may not be
-                     properly unmounted)
+  -f, --force        minimal shutdown path: sync + reboot syscall,
+                     do not stop services or unmount filesystems
+                     (matches systemd reboot -f contract)
   -n, --no-sync      skip filesystem sync before rebooting
   -d, --no-wtmp      do not write a shutdown entry to utmp/wtmp
   -w, --wtmp-only    write only the shutdown entry to utmp/wtmp,
                      do not actually reboot
   --no-wall          do not broadcast the shutdown wall message
   --use-passed-cfd   use the socket fd from SLINIT_CS_FD env var
-  --system           alias for --force (perform shutdown immediately,
-                     not for normal use)
+  --system           full cleanup path: kill(-1), umount, sync, reboot
+                     (used by init itself, not for normal user reboots)
   --grace=DURATION   override the SIGTERM→SIGKILL grace period
 `, execName)
 }
@@ -225,6 +236,15 @@ func doSystemShutdown(shutdownType service.ShutdownType) {
 	}
 
 	shutdown.Execute(shutdownType, logger)
+}
+
+// doForceShutdown runs the minimal reboot -f path: no service teardown,
+// no umount — just sync and the reboot syscall. Matches systemd's
+// documented `reboot -f` contract.
+func doForceShutdown(shutdownType service.ShutdownType) {
+	logger := logging.New(logging.LevelInfo)
+	logger.SetOutput(openConsole())
+	shutdown.ExecuteForce(shutdownType, logger)
 }
 
 func openConsole() *os.File {
