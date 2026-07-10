@@ -209,6 +209,21 @@ service-file format.
     (*/etc/slinit.conf.d* in system mode). Comma-separated; the
     literal `none` disables overlays entirely.
 
+**\--watch-services-dir**
+:   Opt-in: watch every **\--services-dir** with **inotify**(7) and
+    auto-load a service when a new file appears (or is renamed in),
+    auto-unload it when the file is removed. Modified files are
+    logged; slinit's existing *(modified since loaded)* marker still
+    surfaces the change via `slinitctl status`. Services are loaded
+    but **not** auto-started (matches dinit's explicit-start model);
+    the operator can then `slinitctl start <name>`. Unload happens
+    only when the service is *STOPPED* — running services are left
+    loaded with a warning. Editor artefacts (dotfiles, `~`, `.swp`,
+    `.tmp`, `.new`, `.bak`) and `.d` overlay dirs are ignored. A
+    300 ms debounce window collapses rapid multi-event bursts (write
+    + close + rename) into a single dispatch per file. Inspired by
+    **runsvdir**(8)'s inotify rescan (runit 2.3.1+).
+
 **\--log-level** *level*
 :   Minimum level for the main log facility (file or syslog). One of
     `debug`, `info`, `notice`, `warn`, `error`. Default `info`.

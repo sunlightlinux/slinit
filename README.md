@@ -85,6 +85,7 @@ format to accommodate them.
   - **Dynamic user**: `dynamic-user = yes` allocates a transient UID/GID from a per-daemon pool (61184..65519, matching systemd) at every BringUp, released in Stopped; no `/etc/passwd` entry
   - **File-descriptor store**: `file-descriptor-store-max = N` creates a `$NOTIFY_SOCKET` Unix datagram socket; the child can sd_notify `FDSTORE=1` + `FDNAME=name` with fds via SCM_RIGHTS; on the next BringUp the stored fds are prepended to `LISTEN_FDS` (with names in `LISTEN_FDNAMES`) so a restart re-attaches its listening sockets without losing connections
 - **Path activation**: `start-on-path-exists`, `start-on-path-changed`, `start-on-path-modified`, `start-on-directory-not-empty` — inotify-driven, systemd-style one-shot triggers that start a service when a filesystem condition is met
+- **Services-dir auto-watch**: opt-in `--watch-services-dir` watches every services-dir with `inotify(7)`; a file dropped in the dir is auto-loaded (but not auto-started, matching dinit's explicit-start model), a removed file is auto-unloaded when the service is stopped. Editor artefacts (dotfiles, `~`, `.swp`, `.tmp`, `.bak`) and `.d` overlay dirs are filtered; a 300 ms debounce collapses editor multi-event bursts. Inspired by `runsvdir`'s inotify rescan (runit 2.3.1+)
 - **`.override` drop-ins**: an upstart-style `<service>.override` file next to the service file tweaks a packaged service's stanzas (scalars replace, `+=` appends) without editing the shipped file; applied after conf.d overlays so it has the final say
 - **Inline shell**: upstart-style `script ... end script` block becomes the service command via `/bin/sh -c` (verbatim multi-line body, same load-time `$VAR`/`$1` substitution as `command`, mutually exclusive with it)
 - **AppArmor confinement**: `apparmor-load` parses a service-shipped profile (`apparmor_parser -r`) before start; `apparmor-switch` transitions the process into a profile on exec (`aa_change_onexec` via slinit-runner) — both fail closed if the load/transition cannot be applied
@@ -914,6 +915,7 @@ slinit/
 │   ├── process/           # Process execution, monitoring, attrs, caps, credentials, fd-store, sd_notify socket
 │   ├── seccomp/           # cBPF compiler + curated syscall groups (@system-service, @privileged, ...)
 │   ├── pathwatch/         # inotify-driven path activation
+│   ├── svcdirwatch/       # inotify-driven services-dir auto-watch
 │   ├── eventloop/         # Event loop, signals, timers
 │   ├── logging/           # Console logger (wallclock / ISO / TAI64N / none)
 │   ├── utmp/              # UTMPX cgo wrapper (boot + logout + shutdown records)
@@ -987,6 +989,7 @@ go test -fuzz=FuzzParseConfig ./tests/fuzz
 - [x] **Phase 37**: Calendar timers -- `cron-calendar` (`daily`, `hourly`, `weekly`, `Mon..Fri 09:00`, `Mon,Wed,Fri 12:00`, `*-*-1 00:00`, `*:0/15`); `cron-randomized-delay` jitter; `cron-persistent` catch-up; per-field advancement in NextAfter (no brute-force second iteration)
 - [x] **Phase 38**: Dynamic users -- `dynamic-user=yes` allocates a transient UID/GID from a per-daemon pool (61184..65519, matching systemd) at every BringUp via shared `UIDPool`; released in Stopped(); no `/etc/passwd` entry. UID-dependent setup (`runtime-directory`, `credentials`) sees the same transient identity
 - [x] **Phase 39**: File-descriptor store -- `file-descriptor-store-max=N` creates a per-service `$NOTIFY_SOCKET` Unix datagram socket at `/run/slinit/notify/<svc>.sock`; sd_notify packet parser routes `FDSTORE=1` + `FDNAME=name` with SCM_RIGHTS fds into an in-memory store; next BringUp prepends them to `LISTEN_FDS` (with names in `LISTEN_FDNAMES`). **Closes the systemd-adaptation backlog (14/14 items shipped; `#7 v2` arg-checking BPF for `RestrictRealtime`/`SUIDSGID`/`MDWE`/`Namespaces`/`AddressFamilies` deferred -- needs `pkg/seccomp` BPF compiler extension)**
+- [x] **Phase 40**: Services-dir auto-watch (`--watch-services-dir`) -- opt-in `inotify(7)`-based multiplexer (`pkg/svcdirwatch`) watches every services-dir; new file → `LoadService`, removed file → `UnloadService` (only when *STOPPED*), modified file → informational log (the existing *(modified since loaded)* marker still fires via `status`). Editor artefacts (`.`, `~`, `.swp`, `.tmp`, `.new`, `.bak`) and `.d` overlay dirs are filtered; a 300 ms debounce collapses editor multi-event bursts (write + close + rename) into a single dispatch per file. Inspired by `runsvdir`'s inotify rescan (runit 2.3.1+)
 
 ## License
 
