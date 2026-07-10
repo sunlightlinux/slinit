@@ -25,6 +25,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
 	"github.com/sunlightlinux/slinit/pkg/snapshot"
+	"github.com/sunlightlinux/slinit/pkg/svcdirwatch"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
 	"github.com/sunlightlinux/slinit/pkg/watchdog"
 	"golang.org/x/sys/unix"
@@ -172,6 +173,10 @@ func main() {
 	flag.StringVar(&sysOverride, "sys", "", "override platform detection (docker, lxc, podman, wsl, xen0, xenu, none)")
 	flag.StringVar(&sysOverride, "S", "", "override platform detection (short for --sys)")
 	flag.StringVar(&confDir, "conf-dir", "", "override conf.d overlay directories (comma-separated; 'none' disables overlays)")
+
+	var watchServiceDirs bool
+	flag.BoolVar(&watchServiceDirs, "watch-services-dir", false,
+		"auto-load/unload services when files appear or disappear in services-dir (inotify-based, opt-in)")
 
 	flag.Parse()
 
@@ -724,6 +729,55 @@ func main() {
 			if path, _ := svc.Record().StartOnPath(); path != "" {
 				pathWatcher.Remove(path)
 			}
+		}
+	}
+
+	// Services-dir auto-watch (opt-in via --watch-services-dir): drop a
+	// file in a watched dir → the service is loaded automatically (but
+	// NOT auto-started, matching dinit's explicit-start model); remove
+	// a file → the service is unloaded, but only if currently STOPPED
+	// (running services are left alone with a warning). Modified files
+	// are logged; slinit's existing "(modified since loaded)" marker
+	// still surfaces the change via `status`. Inspired by runsvdir's
+	// inotify-based rescan in runit 2.3.1+.
+	if watchServiceDirs {
+		sdw, err := svcdirwatch.New(logger, svcdirwatch.Handler{
+			Appeared: func(name string) {
+				logger.Info("svcdirwatch: '%s' appeared, loading", name)
+				if _, err := serviceSet.LoadService(name); err != nil {
+					logger.Warn("svcdirwatch: load '%s' failed: %v", name, err)
+				}
+			},
+			Disappeared: func(name string) {
+				svc := serviceSet.FindService(name, false)
+				if svc == nil {
+					return
+				}
+				if svc.Record().State() != service.StateStopped {
+					logger.Warn("svcdirwatch: '%s' file removed but service is running; leaving loaded",
+						name)
+					return
+				}
+				logger.Info("svcdirwatch: '%s' disappeared, unloading", name)
+				serviceSet.UnloadService(svc)
+			},
+			Modified: func(name string) {
+				logger.Info("svcdirwatch: '%s' modified (run `slinitctl reload %s` to apply)",
+					name, name)
+			},
+		}, svcdirwatch.Options{})
+		if err != nil {
+			logger.Warn("svcdirwatch disabled: %v", err)
+		} else {
+			for _, d := range dirs {
+				if err := sdw.AddDir(d); err != nil {
+					logger.Warn("svcdirwatch: %v", err)
+				} else {
+					logger.Info("svcdirwatch: watching %s", d)
+				}
+			}
+			go sdw.Run()
+			defer sdw.Close()
 		}
 	}
 
