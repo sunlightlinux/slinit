@@ -241,6 +241,12 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 		}
 	}
 
+	// A service that IS a shared-logger sink records its lossy /
+	// queue-size on its own record; the loader reads them back when a
+	// producer registers via setupSharedLogger.
+	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
+	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
+
 	return svc, nil
 }
 
@@ -754,6 +760,12 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 			return nil, err
 		}
 	}
+
+	// A service that IS a shared-logger sink records its lossy /
+	// queue-size on its own record; the loader reads them back when a
+	// producer registers via setupSharedLogger.
+	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
+	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
 
 	// Set up shared-logger relationship
 	if desc.SharedLogger != "" {
@@ -1527,8 +1539,13 @@ func (dl *DirLoader) setupSharedLogger(producer service.Service, desc *ServiceDe
 		}
 	}
 
-	// Get or create the mux for this logger
-	if _, err := dl.set.GetOrCreateSharedLogMux(loggerName); err != nil {
+	// Get or create the mux for this logger. Lossy/queue tuning is
+	// read from the *logger* service — the sink owns the drop policy.
+	muxOpts := service.SharedLogMuxOptions{
+		Lossy:     logger.Record().SharedLoggerLossy(),
+		QueueSize: logger.Record().SharedLoggerQueueSize(),
+	}
+	if _, err := dl.set.GetOrCreateSharedLogMux(loggerName, muxOpts); err != nil {
 		return &ServiceLoadError{
 			ServiceName: producer.Name(),
 			Message:     fmt.Sprintf("shared-logger: failed to create mux for '%s': %v", loggerName, err),

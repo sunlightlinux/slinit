@@ -1950,6 +1950,41 @@ usage = mysvc [--flag]
 	}
 }
 
+// TestParseSharedLoggerLossy exercises the svlogd -L analogue on a
+// logger sink: shared-logger-lossy is a bool; shared-logger-queue-size
+// is a positive int; both round-trip through ServiceDescription.
+func TestParseSharedLoggerLossy(t *testing.T) {
+	input := `
+type = process
+command = /usr/bin/svlogd /var/log/mux
+shared-logger-lossy = yes
+shared-logger-queue-size = 256
+`
+	desc, err := Parse(strings.NewReader(input), "logger", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !desc.SharedLoggerLossy {
+		t.Errorf("SharedLoggerLossy = false, want true")
+	}
+	if desc.SharedLoggerQueueSize != 256 {
+		t.Errorf("SharedLoggerQueueSize = %d, want 256", desc.SharedLoggerQueueSize)
+	}
+}
+
+// TestParseSharedLoggerLossyRejectsInvalid guards against negative or
+// zero queue sizes — a 0-sized channel would be unbuffered and defeat
+// the lossy design (every write would block).
+func TestParseSharedLoggerLossyRejectsInvalid(t *testing.T) {
+	for _, val := range []string{"0", "-1", "abc"} {
+		input := "type = process\ncommand = /bin/true\nshared-logger-queue-size = " + val + "\n"
+		_, err := Parse(strings.NewReader(input), "svc", "test")
+		if err == nil {
+			t.Errorf("shared-logger-queue-size=%q: expected error, got nil", val)
+		}
+	}
+}
+
 // TestParseLogSanitize exercises the svlogd -r / -R analogues.
 // log-sanitize sets the replacement char; log-sanitize-extra adds
 // bytes on top of the default control-char set. Both single-config

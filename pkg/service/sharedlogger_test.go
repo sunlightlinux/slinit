@@ -392,3 +392,193 @@ func TestSharedLogMux_PipeForChildProcess(t *testing.T) {
 
 	pipeW.Close()
 }
+
+// TestSharedLogMux_LossyDropsUnderBackpressure verifies the svlogd -L
+// analogue: with lossy mode on and a full queue, producer writes are
+// dropped rather than blocked, and DropCount reflects the loss.
+func TestSharedLogMux_LossyDropsUnderBackpressure(t *testing.T) {
+	// Very small queue + no reader on the logger side → the writer
+	// goroutine fills the OS pipe (64KB kernel buffer) then blocks on
+	// Write, and the queue backs up to its bound. Additional producer
+	// lines then get dropped.
+	mux, err := NewSharedLogMuxWithOptions(SharedLogMuxOptions{
+		Lossy:          true,
+		QueueSize:      4,
+		ReportInterval: time.Hour, // suppress reports during the test
+	})
+	if err != nil {
+		t.Fatalf("NewSharedLogMuxWithOptions: %v", err)
+	}
+	defer mux.Close()
+
+	pipeW, err := mux.AddProducer("svc")
+	if err != nil {
+		t.Fatalf("AddProducer: %v", err)
+	}
+
+	// Write far more lines than the queue + pipe can hold. Each line
+	// is ~4KB so ~40 lines fills up 64KB of pipe buffer plus the
+	// 4-slot channel; the rest must drop.
+	big := strings.Repeat("x", 4000)
+	for i := 0; i < 200; i++ {
+		fmt.Fprintln(pipeW, big)
+	}
+	pipeW.Close()
+
+	// Give the reader goroutine time to catch up and drop.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if mux.DropCount() > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if mux.DropCount() == 0 {
+		t.Errorf("expected DropCount > 0 under backpressure, got 0")
+	}
+}
+
+// TestSharedLogMux_LossyPassesLinesWhenReaderKeepsUp confirms that the
+// lossy path is transparent when the sink drains fast enough — no
+// spurious drops when the logger is not slow.
+func TestSharedLogMux_LossyPassesLinesWhenReaderKeepsUp(t *testing.T) {
+	mux, err := NewSharedLogMuxWithOptions(SharedLogMuxOptions{
+		Lossy:          true,
+		QueueSize:      64,
+		ReportInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("NewSharedLogMuxWithOptions: %v", err)
+	}
+
+	pipeW, err := mux.AddProducer("svc")
+	if err != nil {
+		t.Fatalf("AddProducer: %v", err)
+	}
+
+	// Drain the logger pipe concurrently so writes never block.
+	// Communicate the collected lines through a done channel so the
+	// scanner goroutine is fully joined before we inspect the slice.
+	type result struct{ lines []string }
+	done := make(chan result)
+	go func() {
+		var lines []string
+		scanner := bufio.NewScanner(mux.InputPipe())
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+		}
+		done <- result{lines: lines}
+	}()
+
+	for i := 0; i < 10; i++ {
+		fmt.Fprintf(pipeW, "line-%d\n", i)
+	}
+	pipeW.Close()
+
+	// Let the writer flush before we tear down.
+	time.Sleep(100 * time.Millisecond)
+
+	if mux.DropCount() != 0 {
+		t.Errorf("no drops expected with a live reader; got %d", mux.DropCount())
+	}
+
+	// mux.Close() shuts the mux pipe, letting the scanner return.
+	mux.Close()
+
+	select {
+	case r := <-done:
+		seen := 0
+		for _, line := range r.lines {
+			if strings.HasPrefix(line, "[svc] line-") {
+				seen++
+			}
+		}
+		if seen < 10 {
+			t.Errorf("expected at least 10 lines delivered, got %d (all: %v)", seen, r.lines)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("scanner goroutine did not exit after mux.Close()")
+	}
+}
+
+// TestSharedLogMux_LossyEmitsDropReport confirms the writer synthesises
+// a "[shared-logger] dropped N lines" heartbeat after ReportInterval
+// once drops have occurred.
+func TestSharedLogMux_LossyEmitsDropReport(t *testing.T) {
+	mux, err := NewSharedLogMuxWithOptions(SharedLogMuxOptions{
+		Lossy:          true,
+		QueueSize:      2,
+		ReportInterval: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewSharedLogMuxWithOptions: %v", err)
+	}
+
+	// Reader goroutine collecting everything the mux emits.
+	got := make(chan string, 64)
+	go func() {
+		scanner := bufio.NewScanner(mux.InputPipe())
+		for scanner.Scan() {
+			got <- scanner.Text()
+		}
+	}()
+
+	pipeW, err := mux.AddProducer("svc")
+	if err != nil {
+		t.Fatalf("AddProducer: %v", err)
+	}
+
+	// Burst a lot to trigger drops, then trickle enough to unstick the
+	// writer so it can emit the report on a subsequent successful write.
+	big := strings.Repeat("y", 3000)
+	for i := 0; i < 100; i++ {
+		fmt.Fprintln(pipeW, big)
+	}
+	time.Sleep(200 * time.Millisecond)
+	for i := 0; i < 5; i++ {
+		fmt.Fprintf(pipeW, "post-%d\n", i)
+		time.Sleep(30 * time.Millisecond)
+	}
+	pipeW.Close()
+	mux.Close()
+
+	deadline := time.After(2 * time.Second)
+	foundReport := false
+readLoop:
+	for {
+		select {
+		case line, ok := <-got:
+			if !ok {
+				break readLoop
+			}
+			if strings.Contains(line, "[shared-logger] dropped") {
+				foundReport = true
+				break readLoop
+			}
+		case <-deadline:
+			break readLoop
+		}
+	}
+
+	if !foundReport {
+		t.Errorf("expected a '[shared-logger] dropped ...' report line; drop count = %d", mux.DropCount())
+	}
+}
+
+// TestSharedLogMux_BlockingModeUnaffected confirms the classic (non-lossy)
+// path still uses direct-write and never touches the queue path.
+func TestSharedLogMux_BlockingModeUnaffected(t *testing.T) {
+	mux, err := NewSharedLogMux()
+	if err != nil {
+		t.Fatalf("NewSharedLogMux: %v", err)
+	}
+	defer mux.Close()
+
+	if mux.queue != nil {
+		t.Errorf("blocking mux should have nil queue, got non-nil")
+	}
+	if mux.DropCount() != 0 {
+		t.Errorf("blocking mux DropCount should be 0, got %d", mux.DropCount())
+	}
+}

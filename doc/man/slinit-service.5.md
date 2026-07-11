@@ -541,6 +541,21 @@ apply OS-level changes:
 :   Send output to the named logger service (a one-to-many fan-in,
     line-prefixed with `[svc-name]`). Implies **log-type=pipe**.
 
+**shared-logger-lossy**=*bool*, **shared-logger-queue-size**=*N*
+:   svlogd(8) `-L`-style drop-on-backpressure — set these on the
+    **logger service itself**, not on producers. With
+    **shared-logger-lossy=yes**, producer output flows through an
+    internal buffered channel; when the channel is full (typically
+    because the logger process is slow to drain its stdin), the
+    newest lines are dropped rather than blocking the producer.
+    The mux periodically emits a synthetic
+    `[shared-logger] dropped N lines` heartbeat so the loss is
+    visible in the log stream. **shared-logger-queue-size** tunes
+    the channel depth (default 1024 lines) — deeper smooths larger
+    bursts at the cost of more memory. First producer to register
+    wins the setting: the mux inherits its policy from the logger
+    at construction time and does not re-tune on later joiners.
+
 **catch-all** logging is configured at the daemon level, not here:
 see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 
