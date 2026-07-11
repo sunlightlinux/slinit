@@ -39,6 +39,16 @@ daemon, which is useful at install time or in initramfs.
 :   For commands that normally wait for the target state to be
     reached, return as soon as the request has been accepted.
 
+**-w**, **\--wait**=*SEC*
+:   Fail with a timeout error if the daemon does not reply within
+    *SEC* seconds. 0 (default) disables the CLI-side cap — the
+    daemon's own start/stop/reload timeouts still apply. Mirrors
+    **sv**(8) `-w SEC`: useful when scripting bulk operations against
+    a daemon that might be pathologically slow, so the script can
+    move on rather than block indefinitely. Note that a timeout only
+    stops the CLI from waiting; the underlying operation may still
+    complete server-side.
+
 **\--pin**
 :   For **start** and **stop**: pin the service in the requested state
     so that automatic restart / dependency-driven stop cannot move it.

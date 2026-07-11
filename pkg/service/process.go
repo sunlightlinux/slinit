@@ -132,6 +132,8 @@ type ProcessService struct {
 	logSanitizeChar      byte
 	logSanitizeExtra     []byte
 	logMaxLineLength     int
+	logTimestampMode     string
+	logLinePrefix        string
 
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
@@ -632,6 +634,19 @@ func (s *ProcessService) SetLogSanitize(char byte, extra []byte) {
 // disables the cap.
 func (s *ProcessService) SetLogMaxLineLength(n int) {
 	s.logMaxLineLength = n
+}
+
+// SetLogTimestamp configures a per-line timestamp prefix mode
+// (svlogd -t/-tt/-ttt). Empty disables. Valid: tai64n, human, iso8601.
+func (s *ProcessService) SetLogTimestamp(mode string) {
+	s.logTimestampMode = mode
+}
+
+// SetLogLinePrefix configures a static per-line prefix (svlogd p<...>).
+// Empty disables. A trailing space is appended at LogRotator load time
+// if the operator omitted it.
+func (s *ProcessService) SetLogLinePrefix(prefix string) {
+	s.logLinePrefix = prefix
 }
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
@@ -1325,7 +1340,8 @@ func (s *ProcessService) startProcess() error {
 			(s.logRateLimitInterval > 0 && s.logRateLimitBurst > 0) ||
 			s.logLevelMax >= 0 ||
 			s.logSanitizeChar != 0 || len(s.logSanitizeExtra) > 0 ||
-			s.logMaxLineLength > 0 {
+			s.logMaxLineLength > 0 ||
+			s.logTimestampMode != "" || s.logLinePrefix != "" {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 			}
@@ -1347,6 +1363,8 @@ func (s *ProcessService) startProcess() error {
 				SanitizeChar:  s.logSanitizeChar,
 				SanitizeExtra: s.logSanitizeExtra,
 				MaxLineLength: s.logMaxLineLength,
+				TimestampMode: s.logTimestampMode,
+				LinePrefix:    s.logLinePrefix,
 				ServiceName:   s.serviceName,
 				Logger:        s.services.logger,
 			})

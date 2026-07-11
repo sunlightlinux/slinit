@@ -1980,6 +1980,52 @@ func TestParseLogMaxLineLengthRejectsInvalid(t *testing.T) {
 	}
 }
 
+// TestParseLogTimestamp covers svlogd -t/-tt/-ttt: three named modes
+// plus an explicit-off value all round-trip through ServiceDescription.
+func TestParseLogTimestamp(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"tai64n", "tai64n"},
+		{"human", "human"},
+		{"iso8601", "iso8601"},
+		{"off", ""},
+	}
+	for _, c := range cases {
+		input := "type = process\ncommand = /bin/true\nlog-timestamp = " + c.in + "\n"
+		desc, err := Parse(strings.NewReader(input), "svc", "test")
+		if err != nil {
+			t.Errorf("log-timestamp=%q: unexpected error: %v", c.in, err)
+			continue
+		}
+		if desc.LogTimestamp != c.want {
+			t.Errorf("log-timestamp=%q: LogTimestamp = %q, want %q", c.in, desc.LogTimestamp, c.want)
+		}
+	}
+}
+
+// TestParseLogTimestampRejectsUnknown guards against silent no-ops if
+// the operator misspells a mode.
+func TestParseLogTimestampRejectsUnknown(t *testing.T) {
+	input := "type = process\ncommand = /bin/true\nlog-timestamp = rfc3339\n"
+	_, err := Parse(strings.NewReader(input), "svc", "test")
+	if err == nil {
+		t.Fatal("expected error for unknown timestamp mode, got nil")
+	}
+}
+
+// TestParseLogLinePrefix round-trips the p<prefix> analogue.
+func TestParseLogLinePrefix(t *testing.T) {
+	input := "type = process\ncommand = /bin/true\nlog-line-prefix = tenant42\n"
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.LogLinePrefix != "tenant42" {
+		t.Errorf("LogLinePrefix = %q, want %q", desc.LogLinePrefix, "tenant42")
+	}
+}
+
 // TestParseSharedLoggerLossy exercises the svlogd -L analogue on a
 // logger sink: shared-logger-lossy is a bool; shared-logger-queue-size
 // is a positive int; both round-trip through ServiceDescription.

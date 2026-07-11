@@ -300,6 +300,8 @@ var KnownSettings = map[string]OperatorType{
 	"log-sanitize":             OpEquals, // svlogd -r: replace control chars with this single ASCII char
 	"log-sanitize-extra":       OpEquals, // svlogd -R: additional bytes to treat as replaceable
 	"log-max-line-length":      OpEquals, // svlogd -l: truncate lines longer than N bytes with '+' marker
+	"log-timestamp":            OpEquals, // svlogd -t/-tt/-ttt: prepend timestamp to each line
+	"log-line-prefix":          OpEquals, // svlogd log/config p<prefix>: static per-line prefix
 
 	// systemd-style appliance actions
 	"failure-action":  OpEquals,
