@@ -224,6 +224,26 @@ service-file format.
     + close + rename) into a single dispatch per file. Inspired by
     **runsvdir**(8)'s inotify rescan (runit 2.3.1+).
 
+**\--sentinel-dir** *dir*
+:   Opt-in: watch *dir* with **inotify**(7) for runit-compatible
+    sentinel files that, when armed with **+x**, drive slinit's own
+    shutdown surface out-of-band from the control socket. Recognized
+    filenames: **stopit** (halt), **reboot**, **poweroff**. A file
+    without the executable bit is treated as staged-but-unarmed —
+    the operator can prepare it in advance and flip `chmod +x` when
+    the trigger should fire (this matches **runit**(8)'s workflow).
+    Every trigger logs an audit line with the file owner's UID and
+    mtime before the file is unlinked, so a compliance regime that
+    requires forensic evidence of who requested a system state
+    change gets a durable filesystem-anchored record. Pre-existing
+    armed files are honoured at boot via an initial scan, so an
+    admin who dropped **reboot** while slinit was down still gets
+    the reboot when it comes back up. Empty (default) disables the
+    watcher — the vast majority of installations don't need this,
+    and the socket + signal surface already covers the common cases.
+    Intended for database servers, telco control planes, and other
+    workloads where the audit trail matters as much as the trigger.
+
 **\--log-level** *level*
 :   Minimum level for the main log facility (file or syslog). One of
     `debug`, `info`, `notice`, `warn`, `error`. Default `info`.
