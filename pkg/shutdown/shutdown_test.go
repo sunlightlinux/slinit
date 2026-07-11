@@ -530,3 +530,55 @@ func TestSoftRebootRunsShutdownHook(t *testing.T) {
 		t.Fatalf("Expected hook type ShutdownSoftReboot, got %v", hookShutType)
 	}
 }
+
+// TestExecuteKexecFallsBackToNormalReboot verifies the ergonomic fix
+// for the "shutdown kexec without a preloaded kernel" trap: instead
+// of leaving the box in InfiniteHold with an EINVAL error, Execute
+// should retry with LINUX_REBOOT_CMD_RESTART so the operator's
+// intent (get the box back) is honored.
+func TestExecuteKexecFallsBackToNormalReboot(t *testing.T) {
+	origKill, origSync, origReboot, origHook := killFunc, syncFunc, rebootFunc, runHookFunc
+	origLogout, origLogshut, origGrace := logoutAllUsersFunc, logShutdownFunc, killGracePeriod
+
+	killFunc = func(int, syscall.Signal) error { return nil }
+	syncFunc = func() {}
+	runHookFunc = func(service.ShutdownType, *logging.Logger) bool { return true }
+	logoutAllUsersFunc = func() int { return 0 }
+	logShutdownFunc = func() bool { return true }
+	killGracePeriod = 0
+	defer func() {
+		killFunc, syncFunc, rebootFunc, runHookFunc = origKill, origSync, origReboot, origHook
+		logoutAllUsersFunc, logShutdownFunc, killGracePeriod = origLogout, origLogshut, origGrace
+	}()
+
+	const kexecCmd = 0x45584543
+	var seen []int
+	done := make(chan struct{})
+	go func() {
+		rebootFunc = func(cmd int) error {
+			seen = append(seen, cmd)
+			// First call is the kexec attempt — simulate the
+			// kernel's "no kexec kernel loaded" response.
+			if cmd == kexecCmd {
+				return syscall.EINVAL
+			}
+			// Second call is the fallback RESTART — succeed
+			// visibly so the test goroutine hangs where the real
+			// path would too, then signal.
+			close(done)
+			select {}
+		}
+		Execute(service.ShutdownKexec, testLogger())
+	}()
+	<-done
+
+	if len(seen) < 2 {
+		t.Fatalf("expected two reboot syscalls (kexec + fallback), got %d: %v", len(seen), seen)
+	}
+	if seen[0] != kexecCmd {
+		t.Errorf("first call: got 0x%x, want 0x%x (kexec)", seen[0], kexecCmd)
+	}
+	if seen[1] != syscall.LINUX_REBOOT_CMD_RESTART {
+		t.Errorf("fallback: got 0x%x, want 0x%x (RESTART)", seen[1], syscall.LINUX_REBOOT_CMD_RESTART)
+	}
+}

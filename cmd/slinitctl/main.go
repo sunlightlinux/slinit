@@ -1466,6 +1466,20 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		return err
 	}
 
+	// Kexec preflight: warn early if no kernel is loaded so the
+	// operator understands why the box will just do a normal reboot.
+	// This is a courtesy check — the daemon-side path also falls
+	// back to a normal reboot on EINVAL, but the operator staring
+	// at slinitctl might miss that log line if they're not on the
+	// console.
+	if st == service.ShutdownKexec && !kexecKernelLoaded() {
+		fmt.Fprintf(os.Stderr,
+			"slinitctl: warning: no kexec kernel loaded (see /sys/kernel/kexec_loaded); "+
+				"the daemon will fall back to a normal reboot. "+
+				"Pre-load a kernel with `kexec -l <kernel> --reuse-cmdline` first "+
+				"to actually kexec.\n")
+	}
+
 	delay, err := parseShutdownTime(timeArg)
 	if err != nil {
 		return err
@@ -1565,6 +1579,19 @@ func parseShutdownType(s string) (service.ShutdownType, error) {
 	default:
 		return 0, fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", s)
 	}
+}
+
+// kexecKernelLoaded reports whether the kernel currently has a
+// kexec image loaded via kexec_load / kexec_file_load. Returns false
+// on any read error — the caller uses this as a courtesy preflight,
+// so an unreadable sysfs (container, older kernel without kexec)
+// falls through to the daemon-side EINVAL handling.
+func kexecKernelLoaded() bool {
+	data, err := os.ReadFile("/sys/kernel/kexec_loaded")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(data)) == "1"
 }
 
 // parseShutdownTime parses a time argument into a duration.
