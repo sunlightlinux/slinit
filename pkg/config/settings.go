@@ -290,6 +290,7 @@ var KnownSettings = map[string]OperatorType{
 	// Log rotation and filtering
 	"logfile-max-size":    OpEquals,
 	"logfile-max-files":   OpEquals,
+	"logfile-min-files":   OpEquals, // svlogd Nmin: keep at least N old files on ENOSPC drain
 	"logfile-rotate-time": OpEquals,
 	"log-processor":       OpEquals | OpPlusEqual,
 	"log-include":              OpEquals,

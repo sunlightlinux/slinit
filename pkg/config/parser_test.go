@@ -1980,6 +1980,45 @@ func TestParseLogMaxLineLengthRejectsInvalid(t *testing.T) {
 	}
 }
 
+// TestParseLogMinFiles verifies svlogd Nmin round-trip and the
+// min < max invariant enforced at parse time.
+func TestParseLogMinFiles(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+logfile = /var/log/svc.log
+logfile-max-files = 20
+logfile-min-files = 5
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.LogMinFiles != 5 {
+		t.Errorf("LogMinFiles = %d, want 5", desc.LogMinFiles)
+	}
+}
+
+// TestParseLogMinFilesRejectsInvalid covers zero / negative /
+// non-numeric values plus the min >= max misconfiguration.
+func TestParseLogMinFilesRejectsInvalid(t *testing.T) {
+	cases := []struct {
+		name, input string
+	}{
+		{"zero", "type = process\ncommand = /bin/true\nlogfile-min-files = 0\n"},
+		{"negative", "type = process\ncommand = /bin/true\nlogfile-min-files = -3\n"},
+		{"non-numeric", "type = process\ncommand = /bin/true\nlogfile-min-files = many\n"},
+		{"min>=max", "type = process\ncommand = /bin/true\nlogfile-max-files = 5\nlogfile-min-files = 5\n"},
+		{"min>max", "type = process\ncommand = /bin/true\nlogfile-max-files = 5\nlogfile-min-files = 8\n"},
+	}
+	for _, c := range cases {
+		_, err := Parse(strings.NewReader(c.input), "svc", "test")
+		if err == nil {
+			t.Errorf("%s: expected error, got nil", c.name)
+		}
+	}
+}
+
 // TestParseLogTimestamp covers svlogd -t/-tt/-ttt: three named modes
 // plus an explicit-off value all round-trip through ServiceDescription.
 func TestParseLogTimestamp(t *testing.T) {

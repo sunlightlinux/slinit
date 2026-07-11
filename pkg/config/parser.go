@@ -144,6 +144,7 @@ type ServiceDescription struct {
 	LogBufMax     int
 	LogMaxSize    int64         // max logfile size before rotation (bytes)
 	LogMaxFiles   int           // max number of rotated log files to keep
+	LogMinFiles   int           // svlogd Nmin: minimum rotated files to keep during ENOSPC recovery (0 = disabled)
 	LogRotateTime time.Duration // rotate logfile at this interval
 	LogProcessor  []string      // command to run on rotated logfile
 	LogInclude    []string      // include only lines matching these patterns
@@ -1551,6 +1552,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid logfile-max-files: %w", err)
 		}
 		desc.LogMaxFiles = n
+	case "logfile-min-files":
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("logfile-min-files: must be a positive integer (got %q)", value)
+		}
+		if desc.LogMaxFiles > 0 && n >= desc.LogMaxFiles {
+			// svlogd rejects Nmin >= nmax at load time; matching that
+			// behavior here catches the operator mistake early rather
+			// than at first ENOSPC when the daemon is already stressed.
+			return fmt.Errorf("logfile-min-files (%d) must be less than logfile-max-files (%d)", n, desc.LogMaxFiles)
+		}
+		desc.LogMinFiles = n
 	case "logfile-rotate-time":
 		d, err := parseDuration(value)
 		if err != nil {

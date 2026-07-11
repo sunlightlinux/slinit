@@ -497,6 +497,16 @@ apply OS-level changes:
 :   Built-in log rotation. Rotates when the file exceeds *bytes* or
     *duration* has elapsed; keeps the last *N* rotated files.
 
+**logfile-min-files**=*N*
+:   svlogd(8) *Nmin*-style ENOSPC recovery floor. When a write to the
+    current logfile fails because the filesystem is full, LogRotator
+    aggressively deletes the oldest rotated files down to this count
+    and retries the write once. Better a shorter log history than a
+    lost stream of live events. Must be a positive integer strictly
+    less than **logfile-max-files** — the parser rejects
+    misconfigurations at load time. 0 (default) disables the recovery
+    path; the write is simply lost on disk-full.
+
 **log-include**=*regex*, **log-exclude**=*regex*
 :   Filter lines that reach the log target. Multiple patterns OR
     together.

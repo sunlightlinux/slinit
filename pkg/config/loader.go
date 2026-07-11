@@ -288,6 +288,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		}
 		applyLogSettings(s, desc)
 		s.SetLogRotation(desc.LogMaxSize, desc.LogMaxFiles, desc.LogRotateTime)
+		s.SetLogMinFiles(desc.LogMinFiles)
 		s.SetLogProcessor(desc.LogProcessor)
 		s.SetLogFilters(desc.LogInclude, desc.LogExclude)
 		s.SetLogRateLimit(desc.LogRateLimitInterval, desc.LogRateLimitBurst)
@@ -982,6 +983,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		}
 		applyLogSettings(svc, desc)
 		svc.SetLogRotation(desc.LogMaxSize, desc.LogMaxFiles, desc.LogRotateTime)
+		svc.SetLogMinFiles(desc.LogMinFiles)
 		svc.SetLogProcessor(desc.LogProcessor)
 		svc.SetLogFilters(desc.LogInclude, desc.LogExclude)
 		svc.SetLogRateLimit(desc.LogRateLimitInterval, desc.LogRateLimitBurst)
