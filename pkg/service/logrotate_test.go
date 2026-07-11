@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestLogRotatorSanitizeInPlaceDefault verifies the built-in
@@ -90,6 +92,189 @@ func TestLogRotatorSanitizeDisabled(t *testing.T) {
 	}
 	if lr.sanitizeChar != 0 {
 		t.Errorf("sanitizeChar should be 0 when neither knob is set, got %d", lr.sanitizeChar)
+	}
+}
+
+// TestLogRotatorCapLineDisabled verifies the fast path: with
+// MaxLineLength=0 the helper returns the input slice unchanged.
+func TestLogRotatorCapLineDisabled(t *testing.T) {
+	lr, err := NewLogRotator(LogRotatorConfig{ServiceName: "t", LogLevelMax: -1})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	in := []byte("short line\n")
+	got := lr.capLine(in)
+	if &got[0] != &in[0] {
+		t.Errorf("cap-disabled: capLine should return the input slice unchanged")
+	}
+}
+
+// TestLogRotatorCapLineNoTruncation covers the boundary: a line whose
+// content is exactly maxLineLen bytes long must NOT be marked.
+func TestLogRotatorCapLineNoTruncation(t *testing.T) {
+	lr, err := NewLogRotator(LogRotatorConfig{
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		MaxLineLength: 16,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	// exactly 16 bytes of content + newline
+	in := []byte("0123456789abcdef\n")
+	got := lr.capLine(in)
+	if string(got) != "0123456789abcdef\n" {
+		t.Errorf("boundary: got %q, want unchanged", got)
+	}
+}
+
+// TestLogRotatorCapLineTruncatesWithMarker covers the svlogd-compat
+// path: content > maxLineLen gets clipped to N bytes then '+' + '\n'.
+func TestLogRotatorCapLineTruncatesWithMarker(t *testing.T) {
+	lr, err := NewLogRotator(LogRotatorConfig{
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		MaxLineLength: 8,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	in := []byte("0123456789ABCDEF\n")
+	got := lr.capLine(in)
+	if string(got) != "01234567+\n" {
+		t.Errorf("truncate: got %q, want %q", got, "01234567+\n")
+	}
+}
+
+// TestLogRotatorCapLineNoTrailingNewline covers the discard-mode
+// path where readLoop hands us content without a terminating '\n'
+// (mid-line overflow). capLine must still emit a well-formed line.
+func TestLogRotatorCapLineNoTrailingNewline(t *testing.T) {
+	lr, err := NewLogRotator(LogRotatorConfig{
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		MaxLineLength: 4,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	in := []byte("aaaaaaaa") // 8 bytes, no newline
+	got := lr.capLine(in)
+	if string(got) != "aaaa+\n" {
+		t.Errorf("no-newline overflow: got %q, want %q", got, "aaaa+\n")
+	}
+}
+
+// waitForLogFile busy-polls for the log file to reach at least
+// wantSize bytes. Needed because CreatePipe/StartReader/Close race
+// with the reader goroutine — a synchronous Close() the moment after
+// w.Close() sometimes tears pipeR down before the reader schedules
+// its Read of the buffered payload. The condition variable would
+// need a larger refactor to expose; polling here keeps the test
+// footprint minimal.
+func waitForLogFile(t *testing.T, path string, wantSize int) []byte {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil && len(b) >= wantSize {
+			return b
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("log file %s did not reach %d bytes within timeout", path, wantSize)
+	return nil
+}
+
+// TestLogRotatorReadLoopTruncatesLongLine drives the full pipe →
+// readLoop → capLine → file path with a line that exceeds the cap
+// but arrives with a newline (single-chunk read).
+func TestLogRotatorReadLoopTruncatesLongLine(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:      logPath,
+		FilePerms:     0600,
+		FileUID:       -1,
+		FileGID:       -1,
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		MaxLineLength: 16,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	w, err := lr.CreatePipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	lr.StartReader()
+
+	// Write two lines: one short, one over the cap.
+	if _, err := w.Write([]byte("short line\n")); err != nil {
+		t.Fatalf("write short: %v", err)
+	}
+	long := bytes.Repeat([]byte("A"), 100)
+	long = append(long, '\n')
+	if _, err := w.Write(long); err != nil {
+		t.Fatalf("write long: %v", err)
+	}
+	w.Close()
+
+	want := "short line\n" + strings.Repeat("A", 16) + "+\n"
+	got := waitForLogFile(t, logPath, len(want))
+	lr.Close()
+	if string(got) != want {
+		t.Errorf("logfile contents:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestLogRotatorReadLoopDiscardModeRecovers verifies the safety-net:
+// a producer that emits N bytes without a '\n' triggers early truncate,
+// then the reader silently discards until it finds the next newline,
+// and the following line is delivered intact.
+func TestLogRotatorReadLoopDiscardModeRecovers(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:      logPath,
+		FilePerms:     0600,
+		FileUID:       -1,
+		FileGID:       -1,
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		MaxLineLength: 8,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	w, err := lr.CreatePipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	lr.StartReader()
+
+	// Emit 50 bytes with no newline in the middle, then the closing
+	// '\n', then a clean short line. The 50-byte run should be
+	// truncated at 8 bytes with a '+' marker; the tail (bytes 9..50)
+	// should be dropped by discard mode; then "ok\n" should land
+	// unchanged as its own line.
+	if _, err := w.Write(bytes.Repeat([]byte("X"), 50)); err != nil {
+		t.Fatalf("write X: %v", err)
+	}
+	if _, err := w.Write([]byte("\nok\n")); err != nil {
+		t.Fatalf("write ok: %v", err)
+	}
+	w.Close()
+
+	want := strings.Repeat("X", 8) + "+\n" + "ok\n"
+	got := waitForLogFile(t, logPath, len(want))
+	lr.Close()
+	if string(got) != want {
+		t.Errorf("logfile contents:\n got %q\nwant %q", got, want)
 	}
 }
 

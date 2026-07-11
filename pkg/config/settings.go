@@ -299,6 +299,7 @@ var KnownSettings = map[string]OperatorType{
 	"log-level-max":            OpEquals,
 	"log-sanitize":             OpEquals, // svlogd -r: replace control chars with this single ASCII char
 	"log-sanitize-extra":       OpEquals, // svlogd -R: additional bytes to treat as replaceable
+	"log-max-line-length":      OpEquals, // svlogd -l: truncate lines longer than N bytes with '+' marker
 
 	// systemd-style appliance actions
 	"failure-action":  OpEquals,

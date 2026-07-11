@@ -1950,6 +1950,36 @@ usage = mysvc [--flag]
 	}
 }
 
+// TestParseLogMaxLineLength exercises the svlogd -l analogue: a
+// positive integer round-trips, and a value below the safety floor
+// (16 bytes) is rejected at parse time.
+func TestParseLogMaxLineLength(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+log-max-line-length = 256
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.LogMaxLineLength != 256 {
+		t.Errorf("LogMaxLineLength = %d, want 256", desc.LogMaxLineLength)
+	}
+}
+
+// TestParseLogMaxLineLengthRejectsInvalid guards against zero,
+// negative, sub-16 (mostly-marker lines), and non-numeric values.
+func TestParseLogMaxLineLengthRejectsInvalid(t *testing.T) {
+	for _, val := range []string{"0", "-1", "10", "abc"} {
+		input := "type = process\ncommand = /bin/true\nlog-max-line-length = " + val + "\n"
+		_, err := Parse(strings.NewReader(input), "svc", "test")
+		if err == nil {
+			t.Errorf("log-max-line-length=%q: expected error, got nil", val)
+		}
+	}
+}
+
 // TestParseSharedLoggerLossy exercises the svlogd -L analogue on a
 // logger sink: shared-logger-lossy is a bool; shared-logger-queue-size
 // is a positive int; both round-trip through ServiceDescription.

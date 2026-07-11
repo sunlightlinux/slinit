@@ -516,6 +516,18 @@ apply OS-level changes:
     the kebab-case keyword (`warning`, `error` are also accepted)
     or the numeric 0..7. *off* / *none* / *any* disable the filter.
 
+**log-max-line-length**=*N*
+:   svlogd(8) `-l N`-style hard cap on line length, in bytes. Lines
+    whose content exceeds *N* are truncated to the first *N* bytes and
+    marked with a `+` immediately before the trailing newline, so the
+    operator can tell at a glance that the line was clipped. A
+    producer that emits *N* bytes without a newline in sight (the
+    common runaway case) triggers the same truncate + marker, then the
+    LogRotator silently discards further input until it sees the next
+    newline — guarding against unbounded lineBuf growth. Minimum
+    accepted value is 16 bytes; 0 disables the cap. Requires a
+    configured **logfile**.
+
 **log-sanitize**=*char*, **log-sanitize-extra**=*bytes*
 :   svlogd(8)-style byte scrubbing. When **log-sanitize** is set to a
     single printable ASCII character, each control byte in the log
