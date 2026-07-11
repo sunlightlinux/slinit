@@ -170,6 +170,17 @@ type ServiceDescription struct {
 	// switches the reader into discard mode until the next newline
 	// so a runaway producer cannot balloon the mux/rotator's memory.
 	LogMaxLineLength int
+	// svlogd -t/-tt/-ttt: prepend a timestamp to each line before it
+	// hits the sink. Empty (default) leaves lines unmodified. Valid
+	// values: "tai64n" (external tai64n format), "human"
+	// (YYYY-MM-DD_HH:MM:SS.µs UTC), "iso8601"
+	// (YYYY-MM-DDTHH:MM:SS.µs UTC).
+	LogTimestamp string
+	// svlogd log/config p<prefix>: a fixed string emitted before the
+	// line content (and after the timestamp, if any). Useful for
+	// tagging log streams by hostname/tenant/tier before they land in
+	// an aggregator.
+	LogLinePrefix string
 	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
 	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
@@ -1603,6 +1614,17 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("log-max-line-length: must be >= 16 bytes (got %d)", n)
 		}
 		desc.LogMaxLineLength = n
+	case "log-timestamp":
+		switch value {
+		case "", "off", "none":
+			desc.LogTimestamp = ""
+		case "tai64n", "human", "iso8601":
+			desc.LogTimestamp = value
+		default:
+			return fmt.Errorf("log-timestamp: unknown mode %q (want tai64n|human|iso8601)", value)
+		}
+	case "log-line-prefix":
+		desc.LogLinePrefix = value
 
 	// Output/error logger (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	case "output-logger":

@@ -278,6 +278,182 @@ func TestLogRotatorReadLoopDiscardModeRecovers(t *testing.T) {
 	}
 }
 
+// TestLogRotatorTimestampISO8601 checks the svlogd -ttt style
+// timestamp is emitted at the start of each line and preserves the
+// newline at the end.
+func TestLogRotatorTimestampISO8601(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:      logPath,
+		FilePerms:     0600,
+		FileUID:       -1,
+		FileGID:       -1,
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		TimestampMode: "iso8601",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	lr.processLine([]byte("hello\n"))
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Sync()
+	}
+	lr.mu.Unlock()
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	line := string(got)
+	// Expect: YYYY-MM-DDTHH:MM:SS.µs⁠Z hello\n  — 27-char ts + " hello\n".
+	if len(line) < 30 || line[10] != 'T' || line[len(line)-6:] != "hello\n" {
+		t.Errorf("iso8601: unexpected output %q", line)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(strings.Split(line, " ")[0]), "Z") {
+		t.Errorf("iso8601: expected trailing Z on timestamp, got %q", line)
+	}
+}
+
+// TestLogRotatorTimestampHuman covers the svlogd -tt format:
+// YYYY-MM-DD_HH:MM:SS.µs (no trailing Z, underscore between date and
+// time).
+func TestLogRotatorTimestampHuman(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath: logPath, FilePerms: 0600, FileUID: -1, FileGID: -1,
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		TimestampMode: "human",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	lr.processLine([]byte("hi\n"))
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Sync()
+	}
+	lr.mu.Unlock()
+
+	got, _ := os.ReadFile(logPath)
+	line := string(got)
+	if len(line) < 26 || line[10] != '_' || !strings.HasSuffix(line, "hi\n") {
+		t.Errorf("human: unexpected output %q", line)
+	}
+}
+
+// TestLogRotatorTimestampTAI64N verifies the tai64n token shape:
+// '@' followed by 24 hex digits (16 for seconds, 8 for nanos).
+func TestLogRotatorTimestampTAI64N(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath: logPath, FilePerms: 0600, FileUID: -1, FileGID: -1,
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		TimestampMode: "tai64n",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	lr.processLine([]byte("x\n"))
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Sync()
+	}
+	lr.mu.Unlock()
+
+	got, _ := os.ReadFile(logPath)
+	line := string(got)
+	if len(line) < 27 || line[0] != '@' || !strings.HasSuffix(line, "x\n") {
+		t.Errorf("tai64n: unexpected output %q", line)
+	}
+	// Chars 1..24 must be hex.
+	for i := 1; i <= 24; i++ {
+		c := line[i]
+		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') {
+			t.Errorf("tai64n: non-hex byte %q at position %d in %q", c, i, line)
+		}
+	}
+}
+
+// TestLogRotatorLinePrefix covers svlogd's `p<prefix>` config: a fixed
+// string precedes each line's content. Auto-adds trailing space when
+// operator omitted it.
+func TestLogRotatorLinePrefix(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath: logPath, FilePerms: 0600, FileUID: -1, FileGID: -1,
+		ServiceName: "t",
+		LogLevelMax: -1,
+		LinePrefix:  "host01",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	lr.processLine([]byte("hello\n"))
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Sync()
+	}
+	lr.mu.Unlock()
+
+	got, _ := os.ReadFile(logPath)
+	if string(got) != "host01 hello\n" {
+		t.Errorf("prefix: got %q, want %q", got, "host01 hello\n")
+	}
+}
+
+// TestLogRotatorTimestampPlusPrefix confirms the two decorations
+// compose as [timestamp] [prefix] content.
+func TestLogRotatorTimestampPlusPrefix(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath: logPath, FilePerms: 0600, FileUID: -1, FileGID: -1,
+		ServiceName:   "t",
+		LogLevelMax:   -1,
+		TimestampMode: "iso8601",
+		LinePrefix:    "host01",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	lr.processLine([]byte("hello\n"))
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Sync()
+	}
+	lr.mu.Unlock()
+
+	got, _ := os.ReadFile(logPath)
+	line := string(got)
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) != 3 || parts[1] != "host01" || parts[2] != "hello\n" {
+		t.Errorf("compose: got %q, want <ts> host01 hello\\n", line)
+	}
+}
+
 // TestLogRotatorProcessLineSanitizes drives sanitization through
 // processLine → file write, matching what a real service pipe does.
 func TestLogRotatorProcessLineSanitizes(t *testing.T) {

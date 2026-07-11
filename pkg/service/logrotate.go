@@ -58,6 +58,13 @@ type LogRotator struct {
 	// input can't balloon lineBuf.
 	maxLineLen int
 
+	// svlogd -t/-tt/-ttt: timestamp mode prepended to every line.
+	// "" = disabled. Others: "tai64n", "human", "iso8601".
+	tsMode string
+	// svlogd log/config p<prefix>: static per-line prefix, emitted
+	// after the timestamp (if any). Includes the trailing space.
+	linePrefix []byte
+
 	// State
 	file        *os.File
 	currentSize int64
@@ -101,6 +108,13 @@ type LogRotatorConfig struct {
 	SanitizeExtra []byte
 	// svlogd -l: hard cap on line length in bytes (0 = disabled).
 	MaxLineLength int
+	// svlogd -t/-tt/-ttt: line timestamp mode. Accepts "tai64n",
+	// "human", "iso8601", or "" (disabled).
+	TimestampMode string
+	// svlogd log/config p<prefix>: static per-line prefix. Emitted
+	// after any timestamp and before the line content. A trailing
+	// space is added automatically at load time if omitted.
+	LinePrefix string
 	Logger      interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
@@ -146,6 +160,16 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 	}
 	if cfg.MaxLineLength > 0 {
 		lr.maxLineLen = cfg.MaxLineLength
+	}
+	if cfg.TimestampMode != "" {
+		lr.tsMode = cfg.TimestampMode
+	}
+	if cfg.LinePrefix != "" {
+		p := cfg.LinePrefix
+		if !strings.HasSuffix(p, " ") {
+			p += " "
+		}
+		lr.linePrefix = []byte(p)
 	}
 	if lr.filePerms == 0 {
 		lr.filePerms = 0600
@@ -384,6 +408,14 @@ func (lr *LogRotator) processLine(line []byte) {
 		lr.sanitizeInPlace(line)
 	}
 
+	// svlogd -t/-tt/-ttt + p<prefix>: assemble the outbound record as
+	// [timestamp] [prefix] content. We only allocate when at least one
+	// of the two is configured; the plain-line hot path stays zero-copy.
+	out := line
+	if lr.tsMode != "" || len(lr.linePrefix) > 0 {
+		out = lr.decorateLine(line)
+	}
+
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
 
@@ -395,14 +427,74 @@ func (lr *LogRotator) processLine(line []byte) {
 	}
 
 	// Check size-based rotation
-	if lr.maxSize > 0 && lr.currentSize+int64(len(line)) > lr.maxSize {
+	if lr.maxSize > 0 && lr.currentSize+int64(len(out)) > lr.maxSize {
 		lr.rotateLocked()
 	}
 
-	n, err := lr.file.Write(line)
+	n, err := lr.file.Write(out)
 	if err == nil {
 		lr.currentSize += int64(n)
 	}
+}
+
+// decorateLine returns a new buffer of the form:
+//
+//	[timestamp ][prefix ]content\n
+//
+// with the trailing '\n' preserved when line already had one. The
+// helper is only called when at least one of tsMode / linePrefix is
+// configured, so it's fine to allocate a fresh slice each call.
+func (lr *LogRotator) decorateLine(line []byte) []byte {
+	hasNL := len(line) > 0 && line[len(line)-1] == '\n'
+	content := line
+	if hasNL {
+		content = line[:len(line)-1]
+	}
+
+	ts := lr.formatTimestamp()
+	// Reserve upper bound; ts + space + prefix + content + \n.
+	out := make([]byte, 0, len(ts)+len(lr.linePrefix)+len(content)+2)
+	if len(ts) > 0 {
+		out = append(out, ts...)
+		out = append(out, ' ')
+	}
+	if len(lr.linePrefix) > 0 {
+		out = append(out, lr.linePrefix...)
+	}
+	out = append(out, content...)
+	out = append(out, '\n')
+	return out
+}
+
+// formatTimestamp returns the mode-appropriate timestamp bytes, or a
+// nil/empty slice when timestamping is off. The three modes mirror
+// svlogd -t / -tt / -ttt: an external tai64n-format token; a
+// human-readable UTC form; and a strict ISO 8601 UTC form.
+func (lr *LogRotator) formatTimestamp() []byte {
+	now := time.Now().UTC()
+	switch lr.tsMode {
+	case "tai64n":
+		// tai64n bytes: '@' + 16 hex digits (seconds w/ TAI epoch
+		// offset 2^62 + 10 leap seconds), then 8 hex digits of nanos.
+		// The leap-second table is baked into the offset constant so
+		// the result matches daemontools' tai64n for a monotonic UTC
+		// read on modern kernels — good enough for log stitching, not
+		// suitable for high-precision timekeeping research.
+		const tai64nEpoch = uint64(0x4000000000000000) + 10
+		secs := tai64nEpoch + uint64(now.Unix())
+		nanos := uint32(now.Nanosecond())
+		buf := make([]byte, 0, 1+16+8)
+		buf = append(buf, '@')
+		buf = fmt.Appendf(buf, "%016x%08x", secs, nanos)
+		return buf
+	case "human":
+		// YYYY-MM-DD_HH:MM:SS.µs — svlogd -tt style.
+		return []byte(now.Format("2006-01-02_15:04:05.000000"))
+	case "iso8601":
+		// YYYY-MM-DDTHH:MM:SS.µsZ — sortable, strict-parse friendly.
+		return []byte(now.Format("2006-01-02T15:04:05.000000Z"))
+	}
+	return nil
 }
 
 // sanitizeInPlace replaces control bytes (< 0x20, plus 0x7F DEL) and

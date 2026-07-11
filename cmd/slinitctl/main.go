@@ -35,6 +35,12 @@ var version = "dev"
 // quiet suppresses informational output (set by --quiet/-q).
 var quiet bool
 
+// waitTimeout is the reply timeout in seconds set by -w / --wait. 0
+// disables the CLI-side cap (server-side timeouts still apply). This
+// is a package-level so command functions don't have to plumb it
+// through their signatures — matching the existing pattern for quiet.
+var waitTimeout time.Duration
+
 func main() {
 	args := os.Args[1:]
 
@@ -52,6 +58,7 @@ func main() {
 		fromSvc     string
 		useCFD      bool
 		quietMode   bool
+		waitSecs    int // sv -w SEC: per-invocation reply timeout, 0 = no CLI-side cap
 	)
 	for len(args) > 0 {
 		switch {
@@ -72,6 +79,24 @@ func main() {
 			args = args[1:]
 		case args[0] == "--no-wait":
 			noWait = true
+			args = args[1:]
+		case args[0] == "-w" || args[0] == "--wait":
+			if len(args) < 2 {
+				fatal("-w requires an argument (seconds)")
+			}
+			n, err := strconv.Atoi(args[1])
+			if err != nil || n < 0 {
+				fatal("-w: must be a non-negative integer (got %q)", args[1])
+			}
+			waitSecs = n
+			args = args[2:]
+		case strings.HasPrefix(args[0], "-w=") || strings.HasPrefix(args[0], "--wait="):
+			val := strings.TrimPrefix(strings.TrimPrefix(args[0], "--wait="), "-w=")
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				fatal("-w: must be a non-negative integer (got %q)", val)
+			}
+			waitSecs = n
 			args = args[1:]
 		case args[0] == "--pin":
 			pinFlag = true
@@ -222,6 +247,7 @@ doneFlags:
 
 	// Set package-level quiet flag
 	quiet = quietMode || noWait
+	waitTimeout = time.Duration(waitSecs) * time.Second
 
 	switch command {
 	case "list", "ls":
@@ -428,6 +454,9 @@ Options:
   --system, -s             Connect to system service manager
   --user, -u               Connect to user service manager
   --no-wait                Do not wait for command completion
+  -w, --wait SEC           Fail after SEC seconds if the daemon does not
+                           reply (0 = no cap; server-side timeouts still
+                           apply). Mirrors sv -w SEC.
   --pin                    Pin service in started/stopped state (start/stop)
   --force, -f              Force stop even with dependents (stop/restart)
   --ignore-unstarted       Exit 0 if service already stopped (stop/restart)
@@ -541,7 +570,17 @@ func connectSocket(path string) (net.Conn, error) {
 // info/event packets (InfoServiceEvent, InfoServiceEvent5, InfoEnvEvent)
 // that may arrive due to auto-subscription via allocHandle. Returns the
 // first non-info packet.
+//
+// When waitTimeout > 0 (sv -w SEC), a read deadline is installed so a
+// stuck daemon can't hang the CLI forever — a hit deadline surfaces
+// as a wrapped net.Error{Timeout:true} for the caller to distinguish.
+// The deadline is cleared before returning so subsequent reads on the
+// same conn are not accidentally capped.
 func readReply(conn net.Conn) (uint8, []byte, error) {
+	if waitTimeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(waitTimeout))
+		defer conn.SetReadDeadline(time.Time{})
+	}
 	for {
 		rply, payload, err := control.ReadPacket(conn)
 		if err != nil {
@@ -3083,7 +3122,7 @@ _slinitctl() {
 
     if [ -z "$cmd" ]; then
         if [[ "$cur" == -* ]]; then
-            COMPREPLY=( $(compgen -W "--socket-path -p --system -s --user -u --no-wait --pin --force -f --ignore-unstarted --offline -o --services-dir -d --from --use-passed-cfd --quiet -q --help -h --version" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--socket-path -p --system -s --user -u --no-wait -w --wait --pin --force -f --ignore-unstarted --offline -o --services-dir -d --from --use-passed-cfd --quiet -q --help -h --version" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "$(_slinitctl_commands)" -- "$cur") )
         fi

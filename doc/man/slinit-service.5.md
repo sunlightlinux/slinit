@@ -516,6 +516,23 @@ apply OS-level changes:
     the kebab-case keyword (`warning`, `error` are also accepted)
     or the numeric 0..7. *off* / *none* / *any* disable the filter.
 
+**log-timestamp**=*tai64n*|*human*|*iso8601*|*off*
+:   svlogd(8) `-t`/`-tt`/`-ttt`-style per-line timestamp prefix,
+    emitted before the line content when it lands in the log target.
+    *tai64n* emits an `@`-prefixed 24-hex-digit token compatible with
+    daemontools' *tai64n*; *human* uses `YYYY-MM-DD_HH:MM:SS.µs` UTC;
+    *iso8601* uses strict `YYYY-MM-DDTHH:MM:SS.µsZ` UTC.
+    *off* / empty disables (default). Useful for services whose logs
+    do not carry an intrinsic timestamp. Requires a configured
+    **logfile**.
+
+**log-line-prefix**=*string*
+:   svlogd(8) `log/config` `p<prefix>`-style static per-line prefix,
+    emitted after any **log-timestamp** and before the line content.
+    A trailing space is added automatically when the operator omitted
+    it. Common uses: hostname / tenant / tier tags for downstream
+    log aggregators. Requires a configured **logfile**.
+
 **log-max-line-length**=*N*
 :   svlogd(8) `-l N`-style hard cap on line length, in bytes. Lines
     whose content exceeds *N* are truncated to the first *N* bytes and
