@@ -543,6 +543,18 @@ apply OS-level changes:
     it. Common uses: hostname / tenant / tier tags for downstream
     log aggregators. Requires a configured **logfile**.
 
+**log-read-buffer-size**=*bytes*
+:   svlogd(8) `-b`-style tuning knob for LogRotator's pipe reader:
+    the number of bytes drawn from the producer pipe per `Read()`
+    syscall. Bigger buffers reduce syscall overhead on chatty
+    producers (metrics collectors, verbose loggers) at the cost of
+    slightly more memory per rotator; smaller values shave memory on
+    quiet services. Must be in the [512..1048576] envelope; 0
+    (default) selects the built-in 4096-byte chunk that slinit has
+    always shipped. Rarely worth tuning — this exists for parity
+    with **svlogd**(8) and for the tiny-footprint embedded case.
+    Requires a configured **logfile**.
+
 **log-max-line-length**=*N*
 :   svlogd(8) `-l N`-style hard cap on line length, in bytes. Lines
     whose content exceeds *N* are truncated to the first *N* bytes and

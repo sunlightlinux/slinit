@@ -135,6 +135,7 @@ type ProcessService struct {
 	logMaxLineLength     int
 	logTimestampMode     string
 	logLinePrefix        string
+	logReadBufferSize    int
 
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
@@ -655,6 +656,13 @@ func (s *ProcessService) SetLogTimestamp(mode string) {
 // if the operator omitted it.
 func (s *ProcessService) SetLogLinePrefix(prefix string) {
 	s.logLinePrefix = prefix
+}
+
+// SetLogReadBufferSize sets the per-Read chunk size for LogRotator's
+// pipe reader (svlogd -b). 0 selects the built-in default (4096).
+// The parser bounds explicit values to [512..1MB] before they arrive.
+func (s *ProcessService) SetLogReadBufferSize(n int) {
+	s.logReadBufferSize = n
 }
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
@@ -1372,8 +1380,9 @@ func (s *ProcessService) startProcess() error {
 				SanitizeChar:  s.logSanitizeChar,
 				SanitizeExtra: s.logSanitizeExtra,
 				MaxLineLength: s.logMaxLineLength,
-				TimestampMode: s.logTimestampMode,
-				LinePrefix:    s.logLinePrefix,
+				TimestampMode:  s.logTimestampMode,
+				LinePrefix:     s.logLinePrefix,
+				ReadBufferSize: s.logReadBufferSize,
 				ServiceName:   s.serviceName,
 				Logger:        s.services.logger,
 			})

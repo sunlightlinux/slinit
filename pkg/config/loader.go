@@ -297,6 +297,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogMaxLineLength(desc.LogMaxLineLength)
 		s.SetLogTimestamp(desc.LogTimestamp)
 		s.SetLogLinePrefix(desc.LogLinePrefix)
+		s.SetLogReadBufferSize(desc.LogReadBufferSize)
 		if len(desc.OutputLogger) > 0 {
 			s.SetOutputLogger(desc.OutputLogger)
 		}
@@ -992,6 +993,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetLogMaxLineLength(desc.LogMaxLineLength)
 		svc.SetLogTimestamp(desc.LogTimestamp)
 		svc.SetLogLinePrefix(desc.LogLinePrefix)
+		svc.SetLogReadBufferSize(desc.LogReadBufferSize)
 		if len(desc.OutputLogger) > 0 {
 			svc.SetOutputLogger(desc.OutputLogger)
 		}

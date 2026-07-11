@@ -182,6 +182,11 @@ type ServiceDescription struct {
 	// tagging log streams by hostname/tenant/tier before they land in
 	// an aggregator.
 	LogLinePrefix string
+	// svlogd -b: byte count read from the producer pipe per Read()
+	// call. 0 leaves LogRotator's built-in 4096 default. Bounded at
+	// parse time to a sane [512..1MB] window — bigger values buy
+	// nothing on line-oriented input and just tie up memory.
+	LogReadBufferSize int
 	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
 	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
@@ -1638,6 +1643,15 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 	case "log-line-prefix":
 		desc.LogLinePrefix = value
+	case "log-read-buffer-size":
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("log-read-buffer-size: must be a positive integer (got %q)", value)
+		}
+		if n < 512 || n > 1024*1024 {
+			return fmt.Errorf("log-read-buffer-size: must be between 512 and 1048576 bytes (got %d)", n)
+		}
+		desc.LogReadBufferSize = n
 
 	// Output/error logger (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	case "output-logger":
