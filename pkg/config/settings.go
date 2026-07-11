@@ -303,6 +303,7 @@ var KnownSettings = map[string]OperatorType{
 	"log-max-line-length":      OpEquals, // svlogd -l: truncate lines longer than N bytes with '+' marker
 	"log-timestamp":            OpEquals, // svlogd -t/-tt/-ttt: prepend timestamp to each line
 	"log-line-prefix":          OpEquals, // svlogd log/config p<prefix>: static per-line prefix
+	"log-read-buffer-size":     OpEquals, // svlogd -b: bytes per pipe Read call (default 4096)
 
 	// systemd-style appliance actions
 	"failure-action":  OpEquals,

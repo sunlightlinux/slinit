@@ -16,6 +16,12 @@ import (
 	"time"
 )
 
+// defaultReadBufferSize is the fallback read-chunk size used by
+// readLoop when the operator did not configure log-read-buffer-size.
+// Matches the historical hardcoded value; large enough to consume a
+// typical burst of structured log lines in one Read() syscall.
+const defaultReadBufferSize = 4096
+
 // LogRotator manages logfile writing with rotation, filtering, and post-rotate processing.
 // Inspired by runit's svlogd but using dinit-compatible config keys.
 type LogRotator struct {
@@ -66,6 +72,10 @@ type LogRotator struct {
 	// svlogd log/config p<prefix>: static per-line prefix, emitted
 	// after the timestamp (if any). Includes the trailing space.
 	linePrefix []byte
+
+	// svlogd -b: bytes per pipe Read() call in readLoop. 0 means
+	// "use the built-in default" (defaultReadBufferSize).
+	readBufSize int
 
 	// State
 	file            *os.File
@@ -119,6 +129,10 @@ type LogRotatorConfig struct {
 	// after any timestamp and before the line content. A trailing
 	// space is added automatically at load time if omitted.
 	LinePrefix string
+	// svlogd -b: bytes per pipe Read() call. 0 selects the built-in
+	// 4096-byte default; the parser bounds explicit values to
+	// [512..1MB] before they reach us.
+	ReadBufferSize int
 	Logger      interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
@@ -175,6 +189,9 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 			p += " "
 		}
 		lr.linePrefix = []byte(p)
+	}
+	if cfg.ReadBufferSize > 0 {
+		lr.readBufSize = cfg.ReadBufferSize
 	}
 	if lr.filePerms == 0 {
 		lr.filePerms = 0600
@@ -267,7 +284,11 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 		close(doneCh)
 	}()
 
-	buf := make([]byte, 4096)
+	bufSize := lr.readBufSize
+	if bufSize <= 0 {
+		bufSize = defaultReadBufferSize
+	}
+	buf := make([]byte, bufSize)
 	var lineBuf []byte
 	// discarding == true means we already emitted a truncated line
 	// for the current input line and are now dropping bytes until we

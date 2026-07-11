@@ -1980,6 +1980,45 @@ func TestParseLogMaxLineLengthRejectsInvalid(t *testing.T) {
 	}
 }
 
+// TestParseLogReadBufferSize covers svlogd -b: positive int inside
+// the [512..1MB] envelope round-trips through ServiceDescription.
+func TestParseLogReadBufferSize(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+log-read-buffer-size = 16384
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.LogReadBufferSize != 16384 {
+		t.Errorf("LogReadBufferSize = %d, want 16384", desc.LogReadBufferSize)
+	}
+}
+
+// TestParseLogReadBufferSizeRejectsInvalid enforces the safety
+// envelope at load time — non-positive values, values below 512, and
+// values above 1 MB all must fail.
+func TestParseLogReadBufferSizeRejectsInvalid(t *testing.T) {
+	cases := []struct {
+		name, val string
+	}{
+		{"zero", "0"},
+		{"negative", "-1"},
+		{"below-floor", "128"},
+		{"above-cap", "2097152"},
+		{"non-numeric", "big"},
+	}
+	for _, c := range cases {
+		input := "type = process\ncommand = /bin/true\nlog-read-buffer-size = " + c.val + "\n"
+		_, err := Parse(strings.NewReader(input), "svc", "test")
+		if err == nil {
+			t.Errorf("%s (%s): expected error, got nil", c.name, c.val)
+		}
+	}
+}
+
 // TestParseLogMinFiles verifies svlogd Nmin round-trip and the
 // min < max invariant enforced at parse time.
 func TestParseLogMinFiles(t *testing.T) {

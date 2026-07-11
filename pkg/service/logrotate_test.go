@@ -689,6 +689,68 @@ func TestLogRotatorFreeSpaceOneShotWarn(t *testing.T) {
 	}
 }
 
+// TestLogRotatorReadBufferSizeCustom checks that a large read buffer
+// still yields correct line-oriented output: readLoop must split on
+// '\n' regardless of read chunk boundaries.
+func TestLogRotatorReadBufferSizeCustom(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:       logPath,
+		FilePerms:      0600,
+		FileUID:        -1,
+		FileGID:        -1,
+		ServiceName:    "t",
+		LogLevelMax:    -1,
+		ReadBufferSize: 65536,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	w, err := lr.CreatePipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	lr.StartReader()
+
+	// Write several lines in one syscall — the large read buf will
+	// pick them up together, and readLoop must still split correctly.
+	if _, err := w.Write([]byte("aaa\nbbb\nccc\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	w.Close()
+
+	want := "aaa\nbbb\nccc\n"
+	got := waitForLogFile(t, logPath, len(want))
+	lr.Close()
+	if string(got) != want {
+		t.Errorf("with 64KB read buffer:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestLogRotatorReadBufferSizeDefault confirms the zero-value fast
+// path: an unset ReadBufferSize keeps the historical 4096-byte
+// buffer that the code always shipped with.
+func TestLogRotatorReadBufferSizeDefault(t *testing.T) {
+	lr, err := NewLogRotator(LogRotatorConfig{
+		ServiceName: "t",
+		LogLevelMax: -1,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	if lr.readBufSize != 0 {
+		t.Errorf("readBufSize should stay at 0 (deferred to default) when unconfigured, got %d", lr.readBufSize)
+	}
+	if defaultReadBufferSize != 4096 {
+		t.Errorf("defaultReadBufferSize changed unexpectedly: %d (want 4096 for parity with historical behavior)", defaultReadBufferSize)
+	}
+}
+
 // TestLogRotatorProcessLineSanitizes drives sanitization through
 // processLine → file write, matching what a real service pipe does.
 func TestLogRotatorProcessLineSanitizes(t *testing.T) {
