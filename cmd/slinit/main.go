@@ -186,6 +186,20 @@ func main() {
 	flag.StringVar(&activeProfile, "active-profile", "",
 		"activate this named profile at boot (runsvchdir analogue); services declaring 'profile = <name>' filter against this. Empty = no filter (all services eligible)")
 
+	var ringBufSize int
+	flag.IntVar(&ringBufSize, "stderr-ring-buffer-size", 0,
+		"capture the daemon's own recent log lines in an N-byte ring buffer that is re-emitted periodically (runsvdir rolling-buffer analogue). 0 disables (opt-in)")
+	var ringBufInterval time.Duration
+	flag.DurationVar(&ringBufInterval, "stderr-ring-buffer-interval", 15*time.Minute,
+		"how often the ring buffer's contents are re-emitted (only meaningful with --stderr-ring-buffer-size)")
+
+	var heartbeatInterval time.Duration
+	flag.DurationVar(&heartbeatInterval, "heartbeat-interval", 0,
+		"emit a one-line health summary at this interval (services active/failed/stopped, restart rate, watchdog misses, RSS). 0 disables (opt-in)")
+	var heartbeatWindow time.Duration
+	flag.DurationVar(&heartbeatWindow, "heartbeat-restart-window", time.Minute,
+		"window over which the heartbeat's 'restarts(N)' count is computed")
+
 	flag.Parse()
 
 	if showVersion {
@@ -395,6 +409,23 @@ func main() {
 		}
 	}
 
+	// Stderr ring buffer (runsvdir rolling-buffer analogue). Captures
+	// the last N bytes of the daemon's own log output and re-emits
+	// them on a periodic ticker so transient warnings stay visible
+	// even if the operator missed the original line.
+	var ringDumper *logging.RingDumper
+	if ringBufSize > 0 {
+		ring := logging.NewRingBuffer(ringBufSize)
+		logger.SetRingBuffer(ring)
+		// Sink is stderr so the dump reaches whatever the operator
+		// is watching (journalctl, /dev/console, tee to a file).
+		ringDumper = logging.NewRingDumper(ring, os.Stderr, ringBufInterval)
+		go ringDumper.Run()
+		defer ringDumper.Stop()
+		logger.Info("stderr ring buffer active (%d bytes, dumping every %s)",
+			ring.Capacity(), ringBufInterval)
+	}
+
 	// Apply shutdown grace period.
 	if grace, err := time.ParseDuration(shutdownGrace); err == nil {
 		shutdown.SetKillGracePeriod(grace)
@@ -522,6 +553,20 @@ func main() {
 		// the loader / boot flow can filter accordingly.
 		serviceSet.SetActiveProfile(activeProfile)
 		logger.Info("Active profile: %s", activeProfile)
+	}
+
+	// Periodic health heartbeat. Opt-in via --heartbeat-interval.
+	// Emits a single grep-friendly summary line (state counts,
+	// restart rate, watchdog misses, RSS) so an operator can
+	// spot-check the supervisor without a control-socket round-trip.
+	var heartbeat *service.HeartbeatReporter
+	if heartbeatInterval > 0 {
+		heartbeat = service.NewHeartbeatReporter(serviceSet, logger,
+			heartbeatInterval, heartbeatWindow)
+		go heartbeat.Run()
+		defer heartbeat.Stop()
+		logger.Info("heartbeat reporter active (interval=%s, window=%s)",
+			heartbeatInterval, heartbeatWindow)
 	}
 
 	// Wire UTMP callbacks (keeps service pkg cgo-free)

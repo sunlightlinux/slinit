@@ -224,6 +224,31 @@ service-file format.
     + close + rename) into a single dispatch per file. Inspired by
     **runsvdir**(8)'s inotify rescan (runit 2.3.1+).
 
+**\--stderr-ring-buffer-size** *bytes*, **\--stderr-ring-buffer-interval** *duration*
+:   Opt-in: capture the daemon's own recent log output in an
+    N-byte in-memory ring buffer and re-emit its contents on stderr
+    every *duration* (default 15m). Inspired by **runsvdir**(8)'s
+    optional rolling-buffer second argument. Useful when transient
+    warnings would otherwise scroll past unnoticed — the buffer
+    guarantees each captured message stays visible until at least
+    one dump has emitted it. 0 (default) disables the feature; no
+    ring is allocated and the logger stays zero-overhead. Minimum
+    accepted size is 16 bytes; values below that are silently
+    promoted. The buffer is cleared after each dump so a quiet
+    period between ticks produces no output rather than repeating
+    the previous dump.
+
+**\--heartbeat-interval** *duration*, **\--heartbeat-restart-window** *duration*
+:   Opt-in: emit a single grep-friendly summary line at each
+    *interval* with the supervisor's own health signals. Fields:
+    **active**, **failed**, **stopped**, **starting**, **stopping**
+    service counts; **restarts(N)** count over the sliding
+    *restart-window* (default 1m); **watchdog-misses** cumulative
+    counter; **rss** in kilobytes read from /proc/self/status.
+    0 (default) disables. Useful as a lightweight SLI feed for
+    monitoring systems that don't need to open the control socket
+    to check whether the supervisor is healthy.
+
 **\--active-profile** *name*
 :   Activate profile *name* at boot (runit *runsvchdir* analogue).
     Services declaring **profile = *name*** (or **profile = ...,
