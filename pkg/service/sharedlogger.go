@@ -5,7 +5,34 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 )
+
+// defaultLossyQueueSize bounds the mux's per-instance channel when
+// lossy mode is enabled. Sized to smooth ~1s of moderate bursts (a
+// few hundred lines/sec) without letting a slow logger balloon memory.
+const defaultLossyQueueSize = 1024
+
+// defaultLossyReportInterval is how often the writer goroutine
+// synthesises a "[shared-logger] dropped N lines" heartbeat when
+// drops have occurred but the mux would otherwise be quiet.
+const defaultLossyReportInterval = 30 * time.Second
+
+// SharedLogMuxOptions carries per-mux tuning that reaches the mux only
+// at construction time. Zero-value = classic blocking behavior.
+type SharedLogMuxOptions struct {
+	// Lossy enables the drop-instead-of-block path. Producers writing
+	// to a full internal queue increment a counter and move on; the
+	// mux emits a synthetic "dropped N lines" line at most every
+	// ReportInterval.
+	Lossy bool
+	// QueueSize is the buffered channel depth. 0 selects the default.
+	QueueSize int
+	// ReportInterval controls how often drop reports are emitted.
+	// 0 selects the default.
+	ReportInterval time.Duration
+}
 
 // SharedLogMux multiplexes output from multiple producer services into a single
 // pipe that feeds the logger service's stdin. Each line is prefixed with the
@@ -21,6 +48,18 @@ type SharedLogMux struct {
 	loggerW   *os.File   // write-end → logger's stdin
 	loggerR   *os.File   // read-end → passed to logger as InputPipe
 	closed    bool
+
+	// Lossy mode: when queue is non-nil, producer goroutines feed
+	// pre-formatted line buffers into it and a dedicated writer
+	// goroutine drains it into loggerW with blocking writes. If the
+	// queue is full at the moment the producer tries to send, the
+	// line is dropped and dropCount is incremented atomically. The
+	// writer emits a synthetic report line at most every
+	// reportInterval when drops > 0.
+	queue          chan []byte
+	writerDone     chan struct{}
+	dropCount      atomic.Uint64
+	reportInterval time.Duration
 }
 
 // sharedLogProducer tracks one producer's pipe and reader goroutine.
@@ -35,15 +74,42 @@ type sharedLogProducer struct {
 // NewSharedLogMux creates a new multiplexer. It creates the internal pipe
 // that the logger service will read from (via InputPipe()).
 func NewSharedLogMux() (*SharedLogMux, error) {
+	return NewSharedLogMuxWithOptions(SharedLogMuxOptions{})
+}
+
+// NewSharedLogMuxWithOptions creates a mux with tuning applied.
+// Zero-value opts is equivalent to NewSharedLogMux (classic blocking).
+func NewSharedLogMuxWithOptions(opts SharedLogMuxOptions) (*SharedLogMux, error) {
 	r, w, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("shared-logger: failed to create mux pipe: %w", err)
 	}
-	return &SharedLogMux{
+	m := &SharedLogMux{
 		producers: make(map[string]*sharedLogProducer),
 		loggerW:   w,
 		loggerR:   r,
-	}, nil
+	}
+	if opts.Lossy {
+		size := opts.QueueSize
+		if size <= 0 {
+			size = defaultLossyQueueSize
+		}
+		m.reportInterval = opts.ReportInterval
+		if m.reportInterval <= 0 {
+			m.reportInterval = defaultLossyReportInterval
+		}
+		m.queue = make(chan []byte, size)
+		m.writerDone = make(chan struct{})
+		go m.lossyWriter()
+	}
+	return m, nil
+}
+
+// DropCount reports the number of lines the lossy path has dropped
+// since construction. Callers use this for observability (metrics /
+// slinitctl status). Always 0 in classic blocking mode.
+func (m *SharedLogMux) DropCount() uint64 {
+	return m.dropCount.Load()
 }
 
 // InputPipe returns the read-end of the mux pipe. This should be passed
@@ -150,14 +216,30 @@ func (m *SharedLogMux) Close() {
 		<-p.doneCh
 	}
 
-	// Close the mux pipe
+	// Lossy mode: tear down the writer goroutine before closing the
+	// mux pipe. The writer might be blocked on Write to loggerW (a
+	// silent logger fills the OS pipe buffer), so we first close the
+	// read end to break the pipe with EPIPE, then close the queue so
+	// the writer sees the sentinel and returns.
+	if m.queue != nil {
+		m.loggerR.Close()
+		close(m.queue)
+		<-m.writerDone
+		m.loggerW.Close()
+		return
+	}
+
+	// Classic mode: no writer goroutine to coordinate with.
 	m.loggerW.Close()
 	m.loggerR.Close()
 }
 
 // readProducer reads lines from a producer's pipe and writes them prefixed
 // to the logger pipe. Exits when the pipe is closed or stopCh is signaled.
-// Writes the prefix parts directly to avoid per-line string formatting allocation.
+// In classic mode writes go directly to loggerW (three small writes under
+// writerMu). In lossy mode each line is coalesced into one buffer and
+// handed to the queue with a non-blocking send; a full queue drops the
+// line rather than blocking the producer.
 func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 	defer close(p.doneCh)
 
@@ -167,7 +249,6 @@ func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 
 	// Pre-build the prefix bytes once: "[name] "
 	prefix := []byte("[" + p.name + "] ")
-	nl := []byte{'\n'}
 
 	for scanner.Scan() {
 		select {
@@ -178,13 +259,31 @@ func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 
 		lineBytes := scanner.Bytes()
 
+		if m.queue != nil {
+			// Lossy path: coalesce prefix+line+nl into one buffer and
+			// hand it to the writer via a non-blocking send. Buffer
+			// ownership transfers to the writer which will discard it
+			// after Write returns.
+			buf := make([]byte, 0, len(prefix)+len(lineBytes)+1)
+			buf = append(buf, prefix...)
+			buf = append(buf, lineBytes...)
+			buf = append(buf, '\n')
+			select {
+			case m.queue <- buf:
+			default:
+				m.dropCount.Add(1)
+			}
+			continue
+		}
+
+		// Classic blocking path
 		m.writerMu.Lock()
 		_, err := m.loggerW.Write(prefix)
 		if err == nil {
 			_, err = m.loggerW.Write(lineBytes)
 		}
 		if err == nil {
-			_, err = m.loggerW.Write(nl)
+			_, err = m.loggerW.Write([]byte{'\n'})
 		}
 		m.writerMu.Unlock()
 
@@ -194,6 +293,51 @@ func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 		}
 	}
 	// Pipe closed (producer exited) — goroutine exits naturally
+}
+
+// lossyWriter drains the queue in FIFO order, writing each buffered
+// line to loggerW with a blocking write (guaranteeing per-line
+// atomicity). Between writes it checks whether it's time to emit a
+// drop report — the report piggybacks on the natural cadence of
+// incoming traffic so we don't need a separate timer goroutine when
+// the queue is idle.
+func (m *SharedLogMux) lossyWriter() {
+	defer close(m.writerDone)
+
+	var lastReport time.Time
+	var lastReported uint64
+
+	emitReport := func() {
+		total := m.dropCount.Load()
+		delta := total - lastReported
+		if delta == 0 {
+			return
+		}
+		lastReported = total
+		lastReport = time.Now()
+		msg := fmt.Sprintf("[shared-logger] dropped %d lines (backpressure)\n", delta)
+		m.writerMu.Lock()
+		_, _ = m.loggerW.Write([]byte(msg))
+		m.writerMu.Unlock()
+	}
+
+	for buf := range m.queue {
+		m.writerMu.Lock()
+		_, err := m.loggerW.Write(buf)
+		m.writerMu.Unlock()
+		// A write error means the logger pipe is broken (logger
+		// crashed / restart in flight). We discard the buffer and
+		// keep looping so that ReplaceLoggerPipe can rescue us on
+		// the next iteration; producers continue reading from their
+		// pipes and, if the queue backs up, drop rather than block.
+		_ = err
+		if m.dropCount.Load() > lastReported && time.Since(lastReport) >= m.reportInterval {
+			emitReport()
+		}
+	}
+	// Queue closed → final flush of the drop counter so the last few
+	// dropped lines are not silently forgotten.
+	emitReport()
 }
 
 // ReplaceLoggerPipe replaces the mux's logger pipe (used when logger restarts).

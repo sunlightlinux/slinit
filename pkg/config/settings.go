@@ -99,8 +99,10 @@ var KnownSettings = map[string]OperatorType{
 	"provides": OpEquals,
 
 	// Consumer (dinit uses =, slinit originally used :, accept both)
-	"consumer-of":   OpEquals | OpColon,
-	"shared-logger": OpEquals, // name of shared logger service (multi-service log mux)
+	"consumer-of":              OpEquals | OpColon,
+	"shared-logger":            OpEquals, // name of shared logger service (multi-service log mux)
+	"shared-logger-lossy":      OpEquals, // (on the logger svc) svlogd -L: drop lines instead of blocking producers
+	"shared-logger-queue-size": OpEquals, // (on the logger svc) buffered channel depth for lossy mode
 
 	// Load options
 	"load-options": OpEquals | OpPlusEqual,

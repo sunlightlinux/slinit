@@ -183,7 +183,9 @@ type ServiceRecord struct {
 	consumerFor Service  // which service we consume (set on consumer)
 
 	// Shared logger: multiple producers → single logger service
-	sharedLoggerName string // name of the shared logger service (empty if not used)
+	sharedLoggerName       string // name of the shared logger service (empty if not used)
+	sharedLoggerLossy      bool   // (on the logger svc) drop instead of block on backpressure
+	sharedLoggerQueueSize  int    // (on the logger svc) buffered channel depth (0 = default)
 
 	// Extra commands (OpenRC-style custom actions)
 	// extraCommands are available in any service state.
@@ -834,6 +836,14 @@ func (sr *ServiceRecord) SetConsumerFor(svc Service)      { sr.consumerFor = svc
 func (sr *ServiceRecord) ConsumerFor() Service            { return sr.consumerFor }
 func (sr *ServiceRecord) SetSharedLoggerName(name string) { sr.sharedLoggerName = name }
 func (sr *ServiceRecord) SharedLoggerName() string        { return sr.sharedLoggerName }
+
+// SharedLoggerLossy / QueueSize are read from the *logger* service
+// (the sink), not from producers. Set at load time; passed to
+// GetOrCreateSharedLogMux when a producer registers with the mux.
+func (sr *ServiceRecord) SetSharedLoggerLossy(b bool)      { sr.sharedLoggerLossy = b }
+func (sr *ServiceRecord) SharedLoggerLossy() bool          { return sr.sharedLoggerLossy }
+func (sr *ServiceRecord) SetSharedLoggerQueueSize(n int)   { sr.sharedLoggerQueueSize = n }
+func (sr *ServiceRecord) SharedLoggerQueueSize() int       { return sr.sharedLoggerQueueSize }
 
 // SetExtraCommands sets custom actions available in any service state.
 func (sr *ServiceRecord) SetExtraCommands(cmds map[string][]string) { sr.extraCommands = cmds }

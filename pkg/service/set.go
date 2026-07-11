@@ -634,12 +634,16 @@ func (ss *ServiceSet) UIDPool() *UIDPool {
 }
 
 // GetOrCreateSharedLogMux returns the shared log mux for the given logger service,
-// creating one if it doesn't exist yet.
-func (ss *ServiceSet) GetOrCreateSharedLogMux(loggerName string) (*SharedLogMux, error) {
+// creating one if it doesn't exist yet. Options only apply on first
+// creation — the first caller wins, later callers get the existing mux
+// regardless of what they pass. This is deliberate: the mux belongs
+// to the logger service, and its lossy/blocking mode is a property of
+// that sink, not of the producers that happen to connect to it.
+func (ss *ServiceSet) GetOrCreateSharedLogMux(loggerName string, opts SharedLogMuxOptions) (*SharedLogMux, error) {
 	if mux, ok := ss.sharedLogMuxes[loggerName]; ok {
 		return mux, nil
 	}
-	mux, err := NewSharedLogMux()
+	mux, err := NewSharedLogMuxWithOptions(opts)
 	if err != nil {
 		return nil, err
 	}

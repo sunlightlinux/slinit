@@ -217,6 +217,10 @@ type ServiceDescription struct {
 	// Consumer
 	ConsumerOf   string
 	SharedLogger string // shared-logger: multiple producers → single logger service
+	// svlogd -L: when this service is a shared-logger sink, drop lines
+	// instead of blocking producers if the mux queue backs up.
+	SharedLoggerLossy     bool
+	SharedLoggerQueueSize int // buffered channel depth for lossy mode (0 = default 1024)
 
 	// Description
 	Description string
@@ -1710,6 +1714,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.SharedLogger = loggerName
 		// Implicitly set log-type to pipe
 		desc.LogType = service.LogToPipe
+	case "shared-logger-lossy":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("shared-logger-lossy: %w", err)
+		}
+		desc.SharedLoggerLossy = b
+	case "shared-logger-queue-size":
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("shared-logger-queue-size: must be a positive integer (got %q)", value)
+		}
+		desc.SharedLoggerQueueSize = n
 
 	// Options
 	case "options":
