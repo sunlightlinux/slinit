@@ -51,6 +51,13 @@ type LogRotator struct {
 	sanitizeChar  byte
 	sanitizeExtra [256]bool
 
+	// svlogd -l: max line length in bytes. 0 disables. When active,
+	// content longer than maxLineLen is truncated to maxLineLen bytes
+	// then marked with '+' before the newline. A no-newline overflow
+	// also flips readLoop into discard-until-'\n' mode so unbounded
+	// input can't balloon lineBuf.
+	maxLineLen int
+
 	// State
 	file        *os.File
 	currentSize int64
@@ -92,6 +99,8 @@ type LogRotatorConfig struct {
 	// If SanitizeExtra is non-empty and SanitizeChar is 0, the default
 	// replacement '_' is used.
 	SanitizeExtra []byte
+	// svlogd -l: hard cap on line length in bytes (0 = disabled).
+	MaxLineLength int
 	Logger      interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
@@ -134,6 +143,9 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		for _, b := range cfg.SanitizeExtra {
 			lr.sanitizeExtra[b] = true
 		}
+	}
+	if cfg.MaxLineLength > 0 {
+		lr.maxLineLen = cfg.MaxLineLength
 	}
 	if lr.filePerms == 0 {
 		lr.filePerms = 0600
@@ -228,33 +240,82 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 
 	buf := make([]byte, 4096)
 	var lineBuf []byte
+	// discarding == true means we already emitted a truncated line
+	// for the current input line and are now dropping bytes until we
+	// see the terminating '\n'. Guards against a runaway producer
+	// ballooning lineBuf beyond maxLineLen.
+	discarding := false
 
 	for {
 		n, err := pipeR.Read(buf)
 		if n > 0 {
-			// Process data line by line for filtering
 			data := buf[:n]
 			for len(data) > 0 {
+				if discarding {
+					idx := bytes.IndexByte(data, '\n')
+					if idx < 0 {
+						data = nil // whole chunk was mid-overflow
+						continue
+					}
+					// Newline found — recover and move on.
+					discarding = false
+					data = data[idx+1:]
+					continue
+				}
+
 				idx := bytes.IndexByte(data, '\n')
 				if idx >= 0 {
 					lineBuf = append(lineBuf, data[:idx+1]...)
-					lr.processLine(lineBuf)
+					lr.processLine(lr.capLine(lineBuf))
 					lineBuf = lineBuf[:0]
 					data = data[idx+1:]
-				} else {
-					lineBuf = append(lineBuf, data...)
-					data = nil
+					continue
+				}
+
+				// No newline in this chunk — append and check overflow.
+				lineBuf = append(lineBuf, data...)
+				data = nil
+				if lr.maxLineLen > 0 && len(lineBuf) > lr.maxLineLen {
+					lr.processLine(lr.capLine(lineBuf))
+					lineBuf = lineBuf[:0]
+					discarding = true
 				}
 			}
 		}
 		if err != nil {
-			// Flush remaining partial line
-			if len(lineBuf) > 0 {
-				lr.processLine(lineBuf)
+			// Flush remaining partial line (unless we're in discard mode
+			// and the producer died without ever emitting '\n').
+			if !discarding && len(lineBuf) > 0 {
+				lr.processLine(lr.capLine(lineBuf))
 			}
 			return
 		}
 	}
+}
+
+// capLine implements the svlogd -l truncation semantic. Lines whose
+// content (not counting the trailing '\n') is <= maxLineLen are
+// returned unchanged. Longer lines are truncated to the first
+// maxLineLen bytes and marked with a '+' before the newline so the
+// operator can tell at a glance the line was clipped. When called
+// during a mid-line overflow (no trailing '\n' in the buffer yet) we
+// still emit a well-formed line with '+\n' at the end.
+func (lr *LogRotator) capLine(line []byte) []byte {
+	if lr.maxLineLen <= 0 {
+		return line
+	}
+	hasNL := len(line) > 0 && line[len(line)-1] == '\n'
+	content := line
+	if hasNL {
+		content = line[:len(line)-1]
+	}
+	if len(content) <= lr.maxLineLen {
+		return line
+	}
+	out := make([]byte, 0, lr.maxLineLen+2)
+	out = append(out, content[:lr.maxLineLen]...)
+	out = append(out, '+', '\n')
+	return out
 }
 
 // processLine filters and writes a single line to the logfile.

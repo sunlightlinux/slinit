@@ -131,6 +131,7 @@ type ProcessService struct {
 	logLevelMax          int
 	logSanitizeChar      byte
 	logSanitizeExtra     []byte
+	logMaxLineLength     int
 
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
@@ -624,6 +625,13 @@ func (s *ProcessService) SetLogLevelMax(level int) {
 func (s *ProcessService) SetLogSanitize(char byte, extra []byte) {
 	s.logSanitizeChar = char
 	s.logSanitizeExtra = extra
+}
+
+// SetLogMaxLineLength caps log line length. Lines longer than n bytes
+// are truncated and marked with '+', svlogd(8) -l style. n == 0
+// disables the cap.
+func (s *ProcessService) SetLogMaxLineLength(n int) {
+	s.logMaxLineLength = n
 }
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
@@ -1316,7 +1324,8 @@ func (s *ProcessService) startProcess() error {
 			len(s.logProcessor) > 0 || len(s.logIncludes) > 0 || len(s.logExcludes) > 0 ||
 			(s.logRateLimitInterval > 0 && s.logRateLimitBurst > 0) ||
 			s.logLevelMax >= 0 ||
-			s.logSanitizeChar != 0 || len(s.logSanitizeExtra) > 0 {
+			s.logSanitizeChar != 0 || len(s.logSanitizeExtra) > 0 ||
+			s.logMaxLineLength > 0 {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 			}
@@ -1337,6 +1346,7 @@ func (s *ProcessService) startProcess() error {
 				LogLevelMax:   s.logLevelMax,
 				SanitizeChar:  s.logSanitizeChar,
 				SanitizeExtra: s.logSanitizeExtra,
+				MaxLineLength: s.logMaxLineLength,
 				ServiceName:   s.serviceName,
 				Logger:        s.services.logger,
 			})

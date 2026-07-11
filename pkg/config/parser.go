@@ -164,6 +164,12 @@ type ServiceDescription struct {
 	// that case the default '_' is used).
 	LogSanitizeChar  byte
 	LogSanitizeExtra []byte
+	// svlogd -l: hard cap on line length in bytes (0 = disabled).
+	// Lines longer than the cap are truncated to N bytes and marked
+	// with a '+' at position N+1; overflow with no newline in sight
+	// switches the reader into discard mode until the next newline
+	// so a runaway producer cannot balloon the mux/rotator's memory.
+	LogMaxLineLength int
 	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
 	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
@@ -1584,6 +1590,19 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("log-sanitize-extra: must not be empty")
 		}
 		desc.LogSanitizeExtra = []byte(value)
+	case "log-max-line-length":
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("log-max-line-length: must be a positive integer (got %q)", value)
+		}
+		if n < 16 {
+			// Sub-16 caps are almost certainly a config mistake — the
+			// '+' marker alone consumes 2 bytes, leaving < 14 bytes of
+			// actual content per line. Refuse rather than produce logs
+			// that are essentially useless.
+			return fmt.Errorf("log-max-line-length: must be >= 16 bytes (got %d)", n)
+		}
+		desc.LogMaxLineLength = n
 
 	// Output/error logger (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	case "output-logger":
