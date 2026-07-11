@@ -353,3 +353,127 @@ func TestStartProcessNonexistentBinary(t *testing.T) {
 		t.Fatal("expected error for nonexistent binary")
 	}
 }
+
+// TestStartProcessArgv0Override verifies the runit chpst -b analogue:
+// the child sees params.Argv0 as its argv[0] while the kernel still
+// exec's Command[0]. The child prints $0 (its argv[0]) which we read
+// through the OutputPipe.
+func TestStartProcessArgv0Override(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+
+	params := ExecParams{
+		Command:    []string{"/bin/sh", "-c", "printf %s \"$0\""},
+		Argv0:      "my-fake-name",
+		OutputPipe: w,
+	}
+
+	pid, ch, err := StartProcess(params)
+	w.Close() // parent's copy — child kept one via cmd.Stdout
+	if err != nil {
+		t.Fatalf("StartProcess failed: %v", err)
+	}
+	if pid <= 0 {
+		t.Fatalf("expected positive PID, got %d", pid)
+	}
+
+	buf := make([]byte, 128)
+	n, _ := r.Read(buf)
+	exit := <-ch
+	if !exit.ExitedClean() {
+		t.Fatalf("child did not exit cleanly: %v", exit.Status)
+	}
+
+	got := string(buf[:n])
+	if got != "my-fake-name" {
+		t.Errorf("argv[0] = %q, want %q", got, "my-fake-name")
+	}
+}
+
+// TestStartProcessArgv0Empty confirms the default: with Argv0 unset,
+// the child's argv[0] equals Command[0].
+func TestStartProcessArgv0Empty(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer r.Close()
+
+	params := ExecParams{
+		Command:    []string{"/bin/sh", "-c", "printf %s \"$0\""},
+		OutputPipe: w,
+	}
+
+	_, ch, err := StartProcess(params)
+	w.Close()
+	if err != nil {
+		t.Fatalf("StartProcess failed: %v", err)
+	}
+
+	buf := make([]byte, 128)
+	n, _ := r.Read(buf)
+	<-ch
+
+	got := string(buf[:n])
+	if got != "/bin/sh" {
+		t.Errorf("argv[0] = %q, want %q (Command[0])", got, "/bin/sh")
+	}
+}
+
+// TestWrapWithRunnerEmitsArgv0 checks that when the runner wrap is
+// active, Argv0 becomes --argv0=<value> so the override survives the
+// runner's own exec.
+func TestWrapWithRunnerEmitsArgv0(t *testing.T) {
+	p := ExecParams{
+		RunnerPath: "/usr/lib/slinit/slinit-runner",
+		Command:    []string{"/usr/sbin/sshd", "-D"},
+		Argv0:      "sshd: main",
+		NoNewPrivs: true, // any flag that triggers needsRunnerWrap
+	}
+	if !needsRunnerWrap(p) {
+		t.Fatal("needsRunnerWrap = false; test premise broken")
+	}
+	argv := wrapWithRunner(p)
+
+	found := false
+	for _, a := range argv {
+		if a == "--argv0=sshd: main" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("--argv0=sshd: main missing from wrapped argv: %v", argv)
+	}
+
+	// Trailing "-- Command..." block must still contain the real binary.
+	sepIdx := -1
+	for i, a := range argv {
+		if a == "--" {
+			sepIdx = i
+			break
+		}
+	}
+	if sepIdx < 0 || sepIdx+1 >= len(argv) || argv[sepIdx+1] != "/usr/sbin/sshd" {
+		t.Errorf("real binary should follow --; argv = %v", argv)
+	}
+}
+
+// TestWrapWithRunnerOmitsArgv0WhenUnset guards against the flag
+// leaking in when the operator did not configure command-argv0.
+func TestWrapWithRunnerOmitsArgv0WhenUnset(t *testing.T) {
+	p := ExecParams{
+		RunnerPath: "/usr/lib/slinit/slinit-runner",
+		Command:    []string{"/usr/sbin/sshd"},
+		NoNewPrivs: true,
+	}
+	argv := wrapWithRunner(p)
+	for _, a := range argv {
+		if len(a) >= 8 && a[:8] == "--argv0=" {
+			t.Errorf("--argv0 leaked into wrapped argv: %v", argv)
+		}
+	}
+}

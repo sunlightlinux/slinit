@@ -250,6 +250,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 	switch s := svc.(type) {
 	case *service.ProcessService:
 		s.SetCommand(desc.Command)
+		s.SetArgv0(desc.Argv0)
 		s.SetStopCommand(desc.StopCommand)
 		s.SetFinishCommand(desc.FinishCommand)
 		s.SetPreStartCommand(desc.PreStartCommand)
@@ -326,6 +327,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		applyLogSettings(s, desc)
 	case *service.BGProcessService:
 		s.SetCommand(desc.Command)
+		s.SetArgv0(desc.Argv0)
 		s.SetStopCommand(desc.StopCommand)
 		s.SetWorkingDir(desc.WorkingDir)
 		s.SetEnvFile(desc.EnvFile)
@@ -932,6 +934,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 	case service.TypeProcess:
 		svc := service.NewProcessService(dl.set, name)
 		svc.SetCommand(desc.Command)
+		svc.SetArgv0(desc.Argv0)
 		svc.SetStopCommand(desc.StopCommand)
 		svc.SetFinishCommand(desc.FinishCommand)
 		svc.SetPreStartCommand(desc.PreStartCommand)
@@ -1016,6 +1019,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 	case service.TypeBGProcess:
 		svc := service.NewBGProcessService(dl.set, name)
 		svc.SetCommand(desc.Command)
+		svc.SetArgv0(desc.Argv0)
 		svc.SetStopCommand(desc.StopCommand)
 		svc.SetWorkingDir(desc.WorkingDir)
 		svc.SetEnvFile(desc.EnvFile)

@@ -67,7 +67,8 @@ type ServiceDescription struct {
 
 	// Commands
 	Command              []string
-	ScriptBlock          bool // command came from a script...end script block
+	Argv0                string // override argv[0] presented to the target binary (runit chpst -b)
+	ScriptBlock          bool   // command came from a script...end script block
 	StopCommand          []string
 	FinishCommand        []string            // runs after process exits (before restart)
 	PreStartCommand      []string            // runs before command; non-zero exit fails the start (systemd ExecStartPre=)
@@ -1007,6 +1008,8 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		} else {
 			desc.Command = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
+	case "command-argv0":
+		desc.Argv0 = expandEnvVars(value, serviceArg)
 	case "stop-command":
 		if op == OpPlusEqual {
 			desc.StopCommand = append(desc.StopCommand, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)

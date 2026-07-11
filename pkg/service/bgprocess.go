@@ -23,6 +23,7 @@ type BGProcessService struct {
 
 	// Command configuration
 	command     []string
+	argv0       string // override argv[0] presented to the exec'd binary (runit chpst -b)
 	stopCommand []string
 	workingDir  string
 	envFile     string
@@ -117,6 +118,7 @@ func NewBGProcessService(set *ServiceSet, name string) *BGProcessService {
 // Setters
 
 func (s *BGProcessService) SetCommand(cmd []string)         { s.command = cmd }
+func (s *BGProcessService) SetArgv0(a string)               { s.argv0 = a }
 func (s *BGProcessService) SetStopCommand(cmd []string)     { s.stopCommand = cmd }
 func (s *BGProcessService) SetWorkingDir(dir string)        { s.workingDir = dir }
 func (s *BGProcessService) SetEnvFile(path string)          { s.envFile = path }
@@ -336,6 +338,7 @@ func (s *BGProcessService) BringUp() bool {
 
 	params := process.ExecParams{
 		Command:           s.command,
+		Argv0:             s.argv0,
 		WorkingDir:        s.workingDir,
 		Env:               s.buildEnv(),
 		TermSignal:        s.termSignal,
