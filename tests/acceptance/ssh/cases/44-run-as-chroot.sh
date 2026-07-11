@@ -70,6 +70,18 @@ elif ldd /bin/sh 2>/dev/null | grep -q "not a dynamic"; then
     cp /bin/sh "$JAIL/bin/sh"
 else
     # Carry the dynamic loader + libs alongside the shell.
+    # On merged-usr hosts (Void, Fedora, Arch, Debian≥12) /lib, /lib64,
+    # and /usr/lib64 are symlinks — glibc's baked-in search paths
+    # (/lib64, /usr/lib64 for x86_64) only resolve to a real libc via
+    # those symlinks, so we must mirror them BEFORE the mkdir/cp loop
+    # or mkdir -p turns them into real dirs and the loader stops
+    # finding libc inside the jail.
+    for _top in /lib /lib64 /usr/lib64; do
+        if [ -L "$_top" ]; then
+            mkdir -p "$(dirname "$JAIL$_top")"
+            ln -sf "$(readlink "$_top")" "$JAIL$_top"
+        fi
+    done
     cp /bin/sh "$JAIL/bin/sh"
     for _lib in $(ldd /bin/sh 2>/dev/null | awk '/=>/ {print $3} /\/ld-/ {print $1}'); do
         [ -f "$_lib" ] || continue
