@@ -44,6 +44,13 @@ type LogRotator struct {
 	// syslog levels: 0=emerg (most severe) .. 7=debug (least).
 	levelMax int
 
+	// svlogd -r / -R sanitization. When sanitizeChar != 0, control
+	// bytes (< 0x20, plus 0x7F) other than LF are replaced with
+	// sanitizeChar. sanitizeExtra[b] flags additional bytes to
+	// replace — populated from the log-sanitize-extra config.
+	sanitizeChar  byte
+	sanitizeExtra [256]bool
+
 	// State
 	file        *os.File
 	currentSize int64
@@ -79,6 +86,12 @@ type LogRotatorConfig struct {
 	RateBurst    int
 	// Severity filter: 0..7 (syslog), -1 to disable.
 	LogLevelMax int
+	// svlogd -r: replacement byte for control chars (0 = disabled).
+	SanitizeChar byte
+	// svlogd -R: bytes to additionally sanitize (each becomes SanitizeChar).
+	// If SanitizeExtra is non-empty and SanitizeChar is 0, the default
+	// replacement '_' is used.
+	SanitizeExtra []byte
 	Logger      interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
@@ -112,6 +125,15 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 	if cfg.RateInterval > 0 && cfg.RateBurst > 0 {
 		lr.rateTokens = float64(cfg.RateBurst)
 		lr.rateLastRefill = time.Now()
+	}
+	if cfg.SanitizeChar != 0 || len(cfg.SanitizeExtra) > 0 {
+		lr.sanitizeChar = cfg.SanitizeChar
+		if lr.sanitizeChar == 0 {
+			lr.sanitizeChar = '_'
+		}
+		for _, b := range cfg.SanitizeExtra {
+			lr.sanitizeExtra[b] = true
+		}
 	}
 	if lr.filePerms == 0 {
 		lr.filePerms = 0600
@@ -293,6 +315,14 @@ func (lr *LogRotator) processLine(line []byte) {
 		}
 	}
 
+	// svlogd -r/-R: replace unwanted bytes before the write. We mutate
+	// `line` in place — readLoop hands us a slice from its own buffer
+	// that is discarded after this call, so the mutation is not visible
+	// elsewhere and no copy is needed.
+	if lr.sanitizeChar != 0 {
+		lr.sanitizeInPlace(line)
+	}
+
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
 
@@ -311,6 +341,23 @@ func (lr *LogRotator) processLine(line []byte) {
 	n, err := lr.file.Write(line)
 	if err == nil {
 		lr.currentSize += int64(n)
+	}
+}
+
+// sanitizeInPlace replaces control bytes (< 0x20, plus 0x7F DEL) and
+// bytes flagged in sanitizeExtra with sanitizeChar. LF (0x0A) is always
+// preserved so the log stays line-oriented; TAB (0x09) is preserved
+// because operators expect indentation to survive (svlogd itself
+// treats \t as a control char, but that trips up too many log formats
+// so we diverge here — see log-sanitize-extra to add \t back).
+func (lr *LogRotator) sanitizeInPlace(buf []byte) {
+	for i, b := range buf {
+		if b == '\n' || b == '\t' {
+			continue
+		}
+		if b < 0x20 || b == 0x7F || lr.sanitizeExtra[b] {
+			buf[i] = lr.sanitizeChar
+		}
 	}
 }
 

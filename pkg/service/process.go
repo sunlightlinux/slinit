@@ -129,6 +129,8 @@ type ProcessService struct {
 	logRateLimitInterval time.Duration
 	logRateLimitBurst    int
 	logLevelMax          int
+	logSanitizeChar      byte
+	logSanitizeExtra     []byte
 
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
@@ -614,6 +616,14 @@ func (s *ProcessService) SetLogRateLimit(interval time.Duration, burst int) {
 // -1 disables the filter.
 func (s *ProcessService) SetLogLevelMax(level int) {
 	s.logLevelMax = level
+}
+
+// SetLogSanitize configures svlogd -r/-R style byte replacement.
+// char == 0 disables sanitization; extra lists bytes to replace in
+// addition to the default control-char set.
+func (s *ProcessService) SetLogSanitize(char byte, extra []byte) {
+	s.logSanitizeChar = char
+	s.logSanitizeExtra = extra
 }
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
@@ -1305,27 +1315,30 @@ func (s *ProcessService) startProcess() error {
 		if s.logMaxSize > 0 || s.logMaxFiles > 0 || s.logRotateTime > 0 ||
 			len(s.logProcessor) > 0 || len(s.logIncludes) > 0 || len(s.logExcludes) > 0 ||
 			(s.logRateLimitInterval > 0 && s.logRateLimitBurst > 0) ||
-			s.logLevelMax >= 0 {
+			s.logLevelMax >= 0 ||
+			s.logSanitizeChar != 0 || len(s.logSanitizeExtra) > 0 {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 			}
 			var err error
 			s.logRotator, err = NewLogRotator(LogRotatorConfig{
-				FilePath:     s.logFile,
-				FilePerms:    os.FileMode(s.logFilePerms),
-				FileUID:      s.logFileUID,
-				FileGID:      s.logFileGID,
-				MaxSize:      s.logMaxSize,
-				MaxFiles:     s.logMaxFiles,
-				RotateTime:   s.logRotateTime,
-				Processor:    s.logProcessor,
-				Includes:     s.logIncludes,
-				Excludes:     s.logExcludes,
-				RateInterval: s.logRateLimitInterval,
-				RateBurst:    s.logRateLimitBurst,
-				LogLevelMax:  s.logLevelMax,
-				ServiceName:  s.serviceName,
-				Logger:       s.services.logger,
+				FilePath:      s.logFile,
+				FilePerms:     os.FileMode(s.logFilePerms),
+				FileUID:       s.logFileUID,
+				FileGID:       s.logFileGID,
+				MaxSize:       s.logMaxSize,
+				MaxFiles:      s.logMaxFiles,
+				RotateTime:    s.logRotateTime,
+				Processor:     s.logProcessor,
+				Includes:      s.logIncludes,
+				Excludes:      s.logExcludes,
+				RateInterval:  s.logRateLimitInterval,
+				RateBurst:     s.logRateLimitBurst,
+				LogLevelMax:   s.logLevelMax,
+				SanitizeChar:  s.logSanitizeChar,
+				SanitizeExtra: s.logSanitizeExtra,
+				ServiceName:   s.serviceName,
+				Logger:        s.services.logger,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to create log rotator: %w", err)
