@@ -283,6 +283,12 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleQueryDescription(payload)
 	case CmdQueryMetadata:
 		return c.handleQueryMetadata(payload)
+	case CmdActivateProfile:
+		return c.handleActivateProfile(payload)
+	case CmdQueryProfile:
+		return c.handleQueryProfile()
+	case CmdListProfiles:
+		return c.handleListProfiles()
 	case CmdPauseService:
 		return c.handlePauseService(payload)
 	case CmdContinueService:
@@ -1461,6 +1467,36 @@ func (c *Connection) handleQueryMetadata(payload []byte) error {
 	}
 	rec := svc.Record()
 	return c.writePacket(RplyMetadata, EncodeMetadata(rec.Author(), rec.Version(), rec.Usage()))
+}
+
+// handleActivateProfile decodes a length-prefixed profile name and
+// asks the ServiceSet to swap. Failure to validate ("no service
+// declares this profile") comes back as RplyNAK so the client can
+// distinguish it from a protocol error.
+func (c *Connection) handleActivateProfile(payload []byte) error {
+	name, _, err := DecodeServiceName(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	res, aerr := c.server.services.ActivateProfile(name)
+	if aerr != nil {
+		return c.writePacket(RplyNAK, []byte(aerr.Error()))
+	}
+	return c.writePacket(RplyActivateResult,
+		EncodeActivateResult(res.Active, res.Stopped, res.Started, res.Kept))
+}
+
+// handleQueryProfile reports which profile is currently active.
+// Empty string means "no filter" — a valid state, not an error.
+func (c *Connection) handleQueryProfile() error {
+	return c.writePacket(RplyProfile, EncodeServiceName(c.server.services.ActiveProfile()))
+}
+
+// handleListProfiles enumerates every profile tag declared by any
+// loaded service. Reply is a sorted list; empty list is valid when
+// no service uses profiles.
+func (c *Connection) handleListProfiles() error {
+	return c.writePacket(RplyProfileList, EncodeStringList(c.server.services.ListProfiles()))
 }
 
 func (c *Connection) handleQueryServiceDscDir() error {

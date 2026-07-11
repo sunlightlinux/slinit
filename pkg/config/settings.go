@@ -98,6 +98,12 @@ var KnownSettings = map[string]OperatorType{
 	// Alias
 	"provides": OpEquals,
 
+	// Profile subsystem (runsvchdir-inspired). Services tagged with
+	// at least one profile become active only when the operator has
+	// activated a matching profile via slinitctl. Services without
+	// any profile tag are "global" and always eligible.
+	"profile": OpEquals | OpPlusEqual,
+
 	// Consumer (dinit uses =, slinit originally used :, accept both)
 	"consumer-of":              OpEquals | OpColon,
 	"shared-logger":            OpEquals, // name of shared logger service (multi-service log mux)
@@ -304,6 +310,10 @@ var KnownSettings = map[string]OperatorType{
 	"log-timestamp":            OpEquals, // svlogd -t/-tt/-ttt: prepend timestamp to each line
 	"log-line-prefix":          OpEquals, // svlogd log/config p<prefix>: static per-line prefix
 	"log-read-buffer-size":     OpEquals, // svlogd -b: bytes per pipe Read call (default 4096)
+	"log-forward-udp":          OpEquals, // svlogd u/U: forward each line via UDP as a syslog packet
+	"log-forward-format":       OpEquals, // rfc3164 (default) or rfc5424
+	"log-forward-facility":     OpEquals, // syslog facility name (default "daemon")
+	"log-forward-tag":          OpEquals, // syslog tag (default = service name)
 
 	// systemd-style appliance actions
 	"failure-action":  OpEquals,

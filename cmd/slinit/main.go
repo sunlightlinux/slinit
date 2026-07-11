@@ -182,6 +182,10 @@ func main() {
 	flag.StringVar(&sentinelDir, "sentinel-dir", "",
 		"directory to watch for runit-compatible sentinel files (stopit/reboot/poweroff + x); empty disables (opt-in)")
 
+	var activeProfile string
+	flag.StringVar(&activeProfile, "active-profile", "",
+		"activate this named profile at boot (runsvchdir analogue); services declaring 'profile = <name>' filter against this. Empty = no filter (all services eligible)")
+
 	flag.Parse()
 
 	if showVersion {
@@ -513,6 +517,12 @@ func main() {
 
 	// Create service set
 	serviceSet := service.NewServiceSet(logger)
+	if activeProfile != "" {
+		// Record the intended profile before any services load so
+		// the loader / boot flow can filter accordingly.
+		serviceSet.SetActiveProfile(activeProfile)
+		logger.Info("Active profile: %s", activeProfile)
+	}
 
 	// Wire UTMP callbacks (keeps service pkg cgo-free)
 	serviceSet.OnUtmpCreate = func(id, line string, pid int) {
@@ -791,6 +801,16 @@ func main() {
 		svc, err := serviceSet.LoadService(svcName)
 		if err != nil {
 			logger.Error("Failed to load service '%s': %v", svcName, err)
+			continue
+		}
+		// Profile filter: a profile-tagged boot service outside the
+		// active profile is loaded (so it's inspectable via
+		// slinitctl) but not started. Global services (no profile
+		// tag) are unaffected. This lets an operator ship one set
+		// of boot targets and select between them at boot via
+		// --active-profile without editing the service files.
+		if !serviceSet.ProfileAllows(svc.Record().Profiles()) {
+			logger.Info("Boot service '%s' skipped (outside active profile)", svcName)
 			continue
 		}
 		serviceSet.StartService(svc)

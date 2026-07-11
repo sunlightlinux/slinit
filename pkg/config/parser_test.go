@@ -2019,6 +2019,100 @@ func TestParseLogReadBufferSizeRejectsInvalid(t *testing.T) {
 	}
 }
 
+// TestParseLogForwardUDP round-trips the svlogd u/U analogue: a
+// valid host:port destination plus format/facility/tag knobs.
+func TestParseLogForwardUDP(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+log-forward-udp = 10.0.0.5:514
+log-forward-format = rfc5424
+log-forward-facility = local2
+log-forward-tag = myapp
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.LogForwardUDP != "10.0.0.5:514" {
+		t.Errorf("LogForwardUDP = %q", desc.LogForwardUDP)
+	}
+	if desc.LogForwardFormat != "rfc5424" {
+		t.Errorf("LogForwardFormat = %q", desc.LogForwardFormat)
+	}
+	if desc.LogForwardFacility != "local2" {
+		t.Errorf("LogForwardFacility = %q", desc.LogForwardFacility)
+	}
+	if desc.LogForwardTag != "myapp" {
+		t.Errorf("LogForwardTag = %q", desc.LogForwardTag)
+	}
+	if SyslogFacilityCode("local2") != 18 {
+		t.Errorf("facility lookup broken; local2 → %d, want 18", SyslogFacilityCode("local2"))
+	}
+}
+
+// TestParseLogForwardUDPRejectsInvalid catches operator mistakes at
+// load time: unparseable host:port, unknown format, unknown facility.
+func TestParseLogForwardUDPRejectsInvalid(t *testing.T) {
+	cases := []struct {
+		name, snippet string
+	}{
+		{"bad-host-port", "log-forward-udp = not-a-thing\n"},
+		{"unknown-format", "log-forward-format = rfc1234\n"},
+		{"unknown-facility", "log-forward-facility = pretend0\n"},
+		{"empty-tag", "log-forward-tag = \n"},
+	}
+	for _, c := range cases {
+		input := "type = process\ncommand = /bin/true\n" + c.snippet
+		if _, err := Parse(strings.NewReader(input), "svc", "test"); err == nil {
+			t.Errorf("%s: expected error, got nil", c.name)
+		}
+	}
+}
+
+// TestParseProfileCSV covers the "profile = a,b,c" form: a single-
+// line list of comma-separated tags round-trips into ServiceDescription
+// with whitespace preserved trimmed.
+func TestParseProfileCSV(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+profile = prod, rescue,  batch
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"prod", "rescue", "batch"}
+	if len(desc.Profiles) != len(want) {
+		t.Fatalf("Profiles = %v, want %v", desc.Profiles, want)
+	}
+	for i, w := range want {
+		if desc.Profiles[i] != w {
+			t.Errorf("Profiles[%d] = %q, want %q", i, desc.Profiles[i], w)
+		}
+	}
+}
+
+// TestParseProfileAppend covers the "profile += X" form which lets
+// overlay files add profile tags without overwriting the base list.
+func TestParseProfileAppend(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+profile = prod
+profile += rescue
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"prod", "rescue"}
+	if len(desc.Profiles) != len(want) {
+		t.Fatalf("Profiles = %v, want %v", desc.Profiles, want)
+	}
+}
+
 // TestParseLogMinFiles verifies svlogd Nmin round-trip and the
 // min < max invariant enforced at parse time.
 func TestParseLogMinFiles(t *testing.T) {

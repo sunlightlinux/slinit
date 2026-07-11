@@ -197,6 +197,31 @@ daemon, which is useful at install time or in initramfs.
     ops applied a config update across many service files and want
     them all picked up without scripting a `for` loop.
 
+**activate-profile** *name* | **-**
+:   Swap the active profile (runit *runsvchdir* analogue).
+    Services declaring **profile = *name*** (see
+    **slinit-service**(5)) that are not currently in the outgoing
+    profile are started; services in the outgoing profile that
+    are not in the incoming one are stopped. Services with no
+    profile tag ("global") are always kept. Reports the
+    started / stopped / kept service lists on success. Passing
+    **-** as the name deactivates the filter without stopping
+    anything — every service becomes eligible again on the next
+    load or boot pass. Rejected with a NAK if no loaded service
+    declares the requested name, so a typo does not silently
+    stop every profile-tagged service.
+
+**active-profile**
+:   Prints the name of the currently active profile. Prints
+    "(no active profile)" and exits 0 when the daemon started
+    without **\--active-profile** and no runtime activation
+    has occurred.
+
+**list-profiles**
+:   Enumerates every profile tag declared by any currently
+    loaded service, sorted alphabetically. Empty output means
+    no loaded service uses the **profile** stanza.
+
 **reload-signal** *service*
 :   Send the signal declared in *service*'s **reload-signal** stanza
     (see **slinit-service**(5)) to its main running process. This is

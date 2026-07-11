@@ -323,6 +323,22 @@ doneFlags:
 		})
 	case "reload-all":
 		err = cmdReloadAll(conn)
+	case "activate-profile":
+		if len(cmdArgs) < 1 {
+			// Empty means "deactivate filtering" — allow no arg to be
+			// treated as such by requiring an explicit "-" sentinel.
+			err = fmt.Errorf("usage: activate-profile <name> (or '-' to deactivate)")
+		} else {
+			target := cmdArgs[0]
+			if target == "-" {
+				target = ""
+			}
+			err = cmdActivateProfile(conn, target)
+		}
+	case "active-profile":
+		err = cmdActiveProfile(conn)
+	case "list-profiles":
+		err = cmdListProfiles(conn)
 	case "reload-signal":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdReloadSignal(conn, name)
@@ -2011,6 +2027,94 @@ func cmdReloadAll(conn net.Conn) error {
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
+}
+
+// cmdActivateProfile swaps the daemon's active profile. Reports the
+// stopped/started/kept service lists so the operator can see the
+// diff and reconcile any surprises.
+func cmdActivateProfile(conn net.Conn, name string) error {
+	if err := control.WritePacket(conn, control.CmdActivateProfile, control.EncodeServiceName(name)); err != nil {
+		return err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	switch rply {
+	case control.RplyActivateResult:
+		active, stopped, started, kept, derr := control.DecodeActivateResult(payload)
+		if derr != nil {
+			return fmt.Errorf("activate-profile: bad reply: %w", derr)
+		}
+		if active == "" {
+			info("Profile filter deactivated.\n")
+		} else {
+			info("Profile '%s' now active.\n", active)
+		}
+		if len(stopped) > 0 {
+			info("Stopped (%d): %s\n", len(stopped), strings.Join(stopped, ", "))
+		}
+		if len(started) > 0 {
+			info("Started (%d): %s\n", len(started), strings.Join(started, ", "))
+		}
+		if len(kept) > 0 && !quiet {
+			info("Kept (%d): %s\n", len(kept), strings.Join(kept, ", "))
+		}
+		return nil
+	case control.RplyNAK:
+		return fmt.Errorf("activate-profile: %s", string(payload))
+	default:
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+}
+
+// cmdActiveProfile prints the currently active profile name (empty
+// output when no filter is active).
+func cmdActiveProfile(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdQueryProfile, nil); err != nil {
+		return err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyProfile {
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	name, _, derr := control.DecodeServiceName(payload)
+	if derr != nil {
+		return fmt.Errorf("active-profile: bad reply: %w", derr)
+	}
+	if name == "" {
+		info("(no active profile)\n")
+	} else {
+		fmt.Println(name)
+	}
+	return nil
+}
+
+// cmdListProfiles prints every profile tag declared by any loaded
+// service, sorted alphabetically. Empty output = no service uses
+// profiles.
+func cmdListProfiles(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdListProfiles, nil); err != nil {
+		return err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyProfileList {
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	profiles, _, derr := control.DecodeStringList(payload)
+	if derr != nil {
+		return fmt.Errorf("list-profiles: bad reply: %w", derr)
+	}
+	for _, p := range profiles {
+		fmt.Println(p)
+	}
+	return nil
 }
 
 func cmdUnload(conn net.Conn, name string) error {

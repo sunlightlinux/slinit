@@ -89,6 +89,9 @@ const (
 	CmdReloadSignal      uint8 = 39 // send the service's configured reload-signal to its main process
 	CmdResetEnv          uint8 = 50 // clear all runtime setenv mutations for a service
 	CmdQueryMetadata     uint8 = 51 // query author/version/usage metadata strings for a service
+	CmdActivateProfile   uint8 = 52 // runsvchdir analogue: swap the active profile
+	CmdQueryProfile      uint8 = 53 // report the currently active profile name
+	CmdListProfiles      uint8 = 54 // enumerate every profile tag declared by loaded services
 )
 
 // Reply codes (server → client).
@@ -134,6 +137,9 @@ const (
 	RplyShutdownStatus  uint8 = 97 // scheduled shutdown status (type + remaining_secs)
 	RplyReloadAllResult uint8 = 98 // reload-all summary (uint16 succeeded + uint16 failed, LE)
 	RplyMetadata        uint8 = 99 // author/version/usage triplet (3× uint16 length-prefixed UTF-8)
+	RplyProfile         uint8 = 100 // single length-prefixed string (active profile name; "" = none)
+	RplyProfileList     uint8 = 101 // uint16 count + [uint16 len + name]*
+	RplyActivateResult  uint8 = 102 // active profile name + 3 lists (stopped/started/kept) all length-prefixed
 )
 
 // Info codes (server → client, unsolicited).
@@ -854,4 +860,87 @@ func DecodeServiceStatus6(data []byte) (ServiceStatusInfo6, error) {
 		ServiceStatusInfo5: s5,
 		LoadModTime:        int64(binary.LittleEndian.Uint64(data[14:])),
 	}, nil
+}
+
+// EncodeStringList encodes a []string as [count(2)][len(2)][s]* using
+// little-endian uint16. Reused by RplyProfileList and by the three
+// name lists inside RplyActivateResult (stopped/started/kept). Empty
+// list encodes as just the 2-byte count of 0.
+func EncodeStringList(items []string) []byte {
+	size := 2
+	for _, s := range items {
+		size += 2 + len(s)
+	}
+	buf := make([]byte, 0, size)
+	countBytes := make([]byte, 2)
+	binary.LittleEndian.PutUint16(countBytes, uint16(len(items)))
+	buf = append(buf, countBytes...)
+	for _, s := range items {
+		lenBytes := make([]byte, 2)
+		binary.LittleEndian.PutUint16(lenBytes, uint16(len(s)))
+		buf = append(buf, lenBytes...)
+		buf = append(buf, s...)
+	}
+	return buf
+}
+
+// DecodeStringList reverses EncodeStringList. Returns the parsed
+// slice and the number of bytes consumed from data.
+func DecodeStringList(data []byte) ([]string, int, error) {
+	if len(data) < 2 {
+		return nil, 0, fmt.Errorf("string list: too short for count")
+	}
+	n := int(binary.LittleEndian.Uint16(data))
+	off := 2
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		if len(data) < off+2 {
+			return nil, 0, fmt.Errorf("string list: too short for entry %d length", i)
+		}
+		sl := int(binary.LittleEndian.Uint16(data[off:]))
+		off += 2
+		if len(data) < off+sl {
+			return nil, 0, fmt.Errorf("string list: too short for entry %d payload", i)
+		}
+		out = append(out, string(data[off:off+sl]))
+		off += sl
+	}
+	return out, off, nil
+}
+
+// EncodeActivateResult packs the four fields of a profile activation
+// response: the newly-active profile name plus the stopped/started/
+// kept service lists. All four use the length-prefixed string(s)
+// scheme so the client can decode in one pass.
+func EncodeActivateResult(active string, stopped, started, kept []string) []byte {
+	var buf []byte
+	buf = append(buf, EncodeServiceName(active)...)
+	buf = append(buf, EncodeStringList(stopped)...)
+	buf = append(buf, EncodeStringList(started)...)
+	buf = append(buf, EncodeStringList(kept)...)
+	return buf
+}
+
+// DecodeActivateResult reverses EncodeActivateResult.
+func DecodeActivateResult(data []byte) (active string, stopped, started, kept []string, err error) {
+	active, n, err := DecodeServiceName(data)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	data = data[n:]
+	stopped, n, err = DecodeStringList(data)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	data = data[n:]
+	started, n, err = DecodeStringList(data)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	data = data[n:]
+	kept, _, err = DecodeStringList(data)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	return active, stopped, started, kept, nil
 }

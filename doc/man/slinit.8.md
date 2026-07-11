@@ -224,6 +224,17 @@ service-file format.
     + close + rename) into a single dispatch per file. Inspired by
     **runsvdir**(8)'s inotify rescan (runit 2.3.1+).
 
+**\--active-profile** *name*
+:   Activate profile *name* at boot (runit *runsvchdir* analogue).
+    Services declaring **profile = *name*** (or **profile = ...,
+    *name*, ...** — see **slinit-service**(5)) become eligible
+    for the boot-service auto-start pass; services tagged with
+    other profiles are loaded but not started. Services with no
+    profile tag ("global infrastructure") are always eligible
+    regardless. The active profile can also be switched at
+    runtime via **slinitctl activate-profile**. Empty (default)
+    means no filter — every boot service starts as normal.
+
 **\--sentinel-dir** *dir*
 :   Opt-in: watch *dir* with **inotify**(7) for runit-compatible
     sentinel files that, when armed with **+x**, drive slinit's own

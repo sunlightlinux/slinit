@@ -144,6 +144,13 @@ type ServiceSet struct {
 
 	// Notification channel: signaled when a service becomes inactive
 	inactiveCh chan struct{}
+
+	// activeProfile is the currently active profile name (runsvchdir
+	// analogue). Empty string means "no profile filter active" —
+	// every service that boots is eligible regardless of its
+	// profile tags. Set at boot via --active-profile and mutated at
+	// runtime via ActivateProfile.
+	activeProfile string
 }
 
 // NewServiceSet creates a new ServiceSet.
