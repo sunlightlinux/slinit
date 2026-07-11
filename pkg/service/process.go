@@ -122,6 +122,7 @@ type ProcessService struct {
 	// Log rotation/filtering config
 	logMaxSize    int64
 	logMaxFiles   int
+	logMinFiles   int // svlogd Nmin: floor for ENOSPC drain
 	logRotateTime time.Duration
 	logProcessor  []string
 	logIncludes          []string
@@ -369,6 +370,13 @@ func (s *ProcessService) SetLogRotation(maxSize int64, maxFiles int, rotateTime 
 	s.logMaxSize = maxSize
 	s.logMaxFiles = maxFiles
 	s.logRotateTime = rotateTime
+}
+
+// SetLogMinFiles sets the ENOSPC drain floor (svlogd Nmin). When
+// disk-full is encountered, LogRotator deletes rotated files down to
+// this count and retries the write. 0 disables the recovery path.
+func (s *ProcessService) SetLogMinFiles(n int) {
+	s.logMinFiles = n
 }
 
 // SetLogProcessor sets the log processor command.
@@ -1353,6 +1361,7 @@ func (s *ProcessService) startProcess() error {
 				FileGID:       s.logFileGID,
 				MaxSize:       s.logMaxSize,
 				MaxFiles:      s.logMaxFiles,
+				MinFiles:      s.logMinFiles,
 				RotateTime:    s.logRotateTime,
 				Processor:     s.logProcessor,
 				Includes:      s.logIncludes,

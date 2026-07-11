@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,6 +28,7 @@ type LogRotator struct {
 	fileGID   int
 	maxSize   int64         // rotate when file exceeds this size (0 = no size limit)
 	maxFiles  int           // keep at most this many rotated files (0 = unlimited)
+	minFiles  int           // svlogd Nmin: drain rotated files down to this count on ENOSPC (0 = disabled)
 	rotateInt time.Duration // rotate at this interval (0 = no time rotation)
 	processor []string      // command to run on rotated file
 	includes  []*regexp.Regexp
@@ -66,10 +68,11 @@ type LogRotator struct {
 	linePrefix []byte
 
 	// State
-	file        *os.File
-	currentSize int64
-	lastRotate  time.Time
-	rotateTimer *time.Timer
+	file            *os.File
+	currentSize     int64
+	lastRotate      time.Time
+	rotateTimer     *time.Timer
+	enospcReported  bool // one-shot: we already logged the ENOSPC drain event
 	pipeR       *os.File
 	pipeW       *os.File
 	doneCh      chan struct{}
@@ -89,6 +92,7 @@ type LogRotatorConfig struct {
 	FileGID     int
 	MaxSize     int64
 	MaxFiles    int
+	MinFiles    int // svlogd Nmin: floor for ENOSPC drain (0 = disabled)
 	RotateTime  time.Duration
 	Processor   []string
 	Includes    []string
@@ -130,6 +134,7 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		fileGID:      cfg.FileGID,
 		maxSize:      cfg.MaxSize,
 		maxFiles:     cfg.MaxFiles,
+		minFiles:     cfg.MinFiles,
 		rotateInt:    cfg.RotateTime,
 		processor:    cfg.Processor,
 		serviceName:  cfg.ServiceName,
@@ -434,6 +439,22 @@ func (lr *LogRotator) processLine(line []byte) {
 	n, err := lr.file.Write(out)
 	if err == nil {
 		lr.currentSize += int64(n)
+		return
+	}
+
+	// svlogd Nmin analogue: if the filesystem is full and we have
+	// rotated files we can sacrifice, drain oldest ones down to
+	// minFiles and retry the write once. Better a shorter log history
+	// than a lost stream of live events. We deliberately do NOT loop
+	// on retries — a persistent ENOSPC after the drain means the
+	// current-file writes themselves are the problem (large lines,
+	// tiny partition), which retry cannot fix.
+	if lr.minFiles > 0 && errors.Is(err, syscall.ENOSPC) {
+		if lr.freeSpaceLocked() {
+			if n2, err2 := lr.file.Write(out); err2 == nil {
+				lr.currentSize += int64(n2)
+			}
+		}
 	}
 }
 
@@ -547,6 +568,10 @@ func (lr *LogRotator) rotateLocked() {
 	lr.file = nil
 	lr.currentSize = 0
 	lr.lastRotate = time.Now()
+	// Fresh rotation cycle → arm the one-shot ENOSPC warning for the
+	// next drain event, so an operator sees the disk-pressure signal
+	// again if the newly-created file fills up.
+	lr.enospcReported = false
 
 	// Rename current to timestamped file
 	rotatedName := fmt.Sprintf("%s.%s", lr.filePath, lr.lastRotate.Format("20060102-150405"))
@@ -569,6 +594,61 @@ func (lr *LogRotator) rotateLocked() {
 
 	// Reopen current logfile
 	lr.openFileLocked()
+}
+
+// freeSpaceLocked implements svlogd's Nmin ENOSPC recovery. When the
+// current write hits a full filesystem, we aggressively delete rotated
+// files (oldest first) until only minFiles remain. Returns true if at
+// least one file was removed, so the caller can meaningfully retry
+// the write. A one-shot warning is emitted per drain event so the
+// operator sees the disk-pressure signal in the daemon log without
+// getting a flood of the same message on subsequent lines. Must be
+// called with mu held.
+func (lr *LogRotator) freeSpaceLocked() bool {
+	dir := filepath.Dir(lr.filePath)
+	base := filepath.Base(lr.filePath)
+	prefix := base + "."
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+
+	var rotated []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), prefix) && e.Name() != base {
+			rotated = append(rotated, e.Name())
+		}
+	}
+
+	if len(rotated) <= lr.minFiles {
+		// Nothing to reclaim — either no rotated files or already at
+		// the floor. The caller will not retry; the write is lost.
+		return false
+	}
+
+	// Oldest first (filenames start with a sortable timestamp).
+	sort.Strings(rotated)
+	toRemove := len(rotated) - lr.minFiles
+
+	removed := 0
+	for i := 0; i < toRemove; i++ {
+		path := filepath.Join(dir, rotated[i])
+		if err := os.Remove(path); err == nil {
+			removed++
+		}
+	}
+
+	if removed > 0 && !lr.enospcReported && lr.logger != nil {
+		lr.logger.Error(
+			"Service '%s': ENOSPC on logfile; drained %d rotated file(s) toward minimum %d",
+			lr.serviceName, removed, lr.minFiles)
+		lr.enospcReported = true
+	}
+	return removed > 0
 }
 
 // cleanOldFilesLocked removes rotated files exceeding maxFiles. Must be called with mu held.
