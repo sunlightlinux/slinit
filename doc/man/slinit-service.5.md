@@ -112,6 +112,16 @@ instance, with *$1* substitution still in effect.
 :   Program to execute (for **process**, **scripted**, **bgprocess**).
     Quoting and escaping follow shell-like rules.
 
+**command-argv0**=*string*
+:   Override the argv[0] presented to the exec'd binary. The kernel
+    still exec's **command**[0] — only the name the child sees changes.
+    Mirrors runit's *chpst -b* and Debian's *start-stop-daemon --startas*.
+    Useful when the target inspects its own argv[0] (e.g. a shell that
+    becomes a login shell when argv[0] starts with "-") or when a
+    supervisor wants a distinct process name in *ps* output. Applies only
+    to the main **command**; not to **stop-command**, hooks, or
+    ready-check commands. **process** and **bgprocess** only.
+
 **script** ... **end script**
 :   Upstart-style inline shell sugar. A bare `script` line on its own
     opens a block; every following line is taken **verbatim** (leading

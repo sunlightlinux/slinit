@@ -75,6 +75,14 @@ type ExecParams struct {
 	// Command is the program and arguments to execute.
 	Command []string
 
+	// Argv0, if non-empty, is the string presented to the exec'd target
+	// as argv[0]. The actual binary loaded is still Command[0]; only the
+	// name the child sees changes. Mirrors runit's chpst -b and Debian's
+	// start-stop-daemon --startas. When the child needs to go through
+	// slinit-runner (mlockall / sandbox / seccomp / etc.), the runner is
+	// invoked with --argv0 so the override survives the intermediate exec.
+	Argv0 string
+
 	// WorkingDir is the working directory for the process.
 	WorkingDir string
 

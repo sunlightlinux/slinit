@@ -31,6 +31,7 @@ type ProcessService struct {
 
 	// Command configuration
 	command            []string
+	argv0              string // override argv[0] presented to the exec'd binary (runit chpst -b)
 	stopCommand        []string
 	finishCommand      []string            // runs after process exits (before restart decision)
 	preStartCommand    []string            // runs before fork+exec; non-zero exit fails the start
@@ -181,6 +182,10 @@ func NewProcessService(set *ServiceSet, name string) *ProcessService {
 
 // SetCommand sets the startup command.
 func (s *ProcessService) SetCommand(cmd []string) { s.command = cmd }
+
+// SetArgv0 overrides the argv[0] presented to the exec'd binary.
+// Empty means "use command[0]" (default). Mirrors runit's chpst -b.
+func (s *ProcessService) SetArgv0(a string) { s.argv0 = a }
 
 // effectiveRunAsUID returns the dynamic-user UID when allocated,
 // otherwise the configured runAsUID. Called by startProcess so the
@@ -1440,6 +1445,7 @@ func (s *ProcessService) startProcess() error {
 
 	params := process.ExecParams{
 		Command:           s.command,
+		Argv0:             s.argv0,
 		WorkingDir:        s.workingDir,
 		Env:               s.buildEnv(),
 		TermSignal:        s.termSignal,

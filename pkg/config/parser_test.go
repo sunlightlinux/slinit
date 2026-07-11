@@ -1949,3 +1949,24 @@ usage = mysvc [--flag]
 		t.Errorf("Usage = %q", desc.Usage)
 	}
 }
+
+// TestParseCommandArgv0 exercises the runit chpst -b analogue —
+// command-argv0 lets the child see a distinct argv[0] while the kernel
+// still exec's Command[0].
+func TestParseCommandArgv0(t *testing.T) {
+	input := `
+type = process
+command = /usr/sbin/sshd -D
+command-argv0 = sshd: main
+`
+	desc, err := Parse(strings.NewReader(input), "sshd", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.Argv0 != "sshd: main" {
+		t.Errorf("Argv0 = %q, want %q", desc.Argv0, "sshd: main")
+	}
+	if len(desc.Command) == 0 || desc.Command[0] != "/usr/sbin/sshd" {
+		t.Errorf("Command = %v, want first element /usr/sbin/sshd", desc.Command)
+	}
+}

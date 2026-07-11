@@ -66,11 +66,19 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// in place, so the running process is the one slinit ultimately
 	// supervises (PID and signals match).
 	command := params.Command
-	if needsRunnerWrap(params) && params.RunnerPath != "" {
+	wrapped := needsRunnerWrap(params) && params.RunnerPath != ""
+	if wrapped {
 		command = wrapWithRunner(params)
 	}
 
 	cmd := exec.Command(command[0], command[1:]...)
+
+	// argv[0] override (runit chpst -b). Only apply in the unwrapped
+	// path — wrapWithRunner emits --argv0 so the runner does the
+	// substitution across its own exec.
+	if !wrapped && params.Argv0 != "" {
+		cmd.Args[0] = params.Argv0
+	}
 
 	// Working directory
 	if params.WorkingDir != "" {
@@ -721,6 +729,10 @@ func wrapWithRunner(p ExecParams) []string {
 	// PR_SET_NO_NEW_PRIVS on its own task before exec.
 	if p.NoNewPrivs {
 		args = append(args, "--no-new-privs")
+	}
+	// argv[0] override survives the runner's own exec via --argv0.
+	if p.Argv0 != "" {
+		args = append(args, "--argv0="+p.Argv0)
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)
