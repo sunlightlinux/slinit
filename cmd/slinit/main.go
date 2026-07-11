@@ -178,6 +178,10 @@ func main() {
 	flag.BoolVar(&watchServiceDirs, "watch-services-dir", false,
 		"auto-load/unload services when files appear or disappear in services-dir (inotify-based, opt-in)")
 
+	var sentinelDir string
+	flag.StringVar(&sentinelDir, "sentinel-dir", "",
+		"directory to watch for runit-compatible sentinel files (stopit/reboot/poweroff + x); empty disables (opt-in)")
+
 	flag.Parse()
 
 	if showVersion {
@@ -928,12 +932,52 @@ func main() {
 			}
 		}
 
+		// Sentinel-file IPC: opt-in via --sentinel-dir. Watches a
+		// small set of runit-compatible filenames (stopit/reboot/
+		// poweroff + x) and drives the same InitiateShutdown path
+		// operators normally reach via slinitctl. Kept optional so
+		// the 99% of users who prefer the socket-only surface pay
+		// zero inotify overhead. Handler audit lines land in the
+		// daemon log with owner UID + mtime for compliance use.
+		var sentinelWatcher *shutdown.SentinelWatcher
+		if sentinelDir != "" {
+			sw, err := shutdown.NewSentinelWatcher(sentinelDir, logger, shutdown.SentinelHandler{
+				OnShutdown: func(act shutdown.SentinelAction, audit shutdown.SentinelAudit) {
+					var st service.ShutdownType
+					switch act {
+					case shutdown.SentinelHalt:
+						st = service.ShutdownHalt
+					case shutdown.SentinelReboot:
+						st = service.ShutdownReboot
+					case shutdown.SentinelPoweroff:
+						st = service.ShutdownPoweroff
+					default:
+						return
+					}
+					loop.InitiateShutdown(st)
+				},
+			})
+			if err != nil {
+				logger.Warn("sentinel: disabled (%v)", err)
+			} else {
+				sw.InitialScan()
+				go sw.Run()
+				sentinelWatcher = sw
+				logger.Info("sentinel: watching %s", sentinelDir)
+			}
+		}
+
 		if err := loop.Run(ctx); err != nil {
 			if err == context.Canceled {
 				logger.Info("Event loop cancelled")
 			} else {
 				logger.Error("Event loop error: %v", err)
 			}
+		}
+
+		if sentinelWatcher != nil {
+			sentinelWatcher.Close()
+			sentinelWatcher = nil
 		}
 
 		shutdownType := loop.GetShutdownType()
