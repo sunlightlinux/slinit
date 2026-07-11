@@ -2,6 +2,7 @@ package shutdown
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -134,9 +135,25 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 		logger.Info("Skipping filesystem sync (--no-sync)")
 	}
 
-	// Issue the appropriate reboot command
-	if err := rebootSystem(shutdownType); err != nil {
-		logger.Error("Reboot syscall failed: %v", err)
+	// Issue the appropriate reboot command. Kexec has a well-known
+	// gotcha: LINUX_REBOOT_CMD_KEXEC returns EINVAL when no kernel
+	// has been pre-loaded via kexec_load / kexec_file_load (which
+	// most operators do out-of-band via `kexec -l`). Rather than
+	// leave the system in the "shutdown failed, holding indefinitely"
+	// dead end — an operator who asked to reboot did not ask to stop
+	// forever — we detect that specific EINVAL and fall back to a
+	// normal reboot. This mirrors systemctl kexec's behavior.
+	rebootType := shutdownType
+	if err := rebootSystem(rebootType); err != nil {
+		if rebootType == service.ShutdownKexec && errors.Is(err, syscall.EINVAL) {
+			logger.Error("kexec reboot: no kernel pre-loaded (use `kexec -l <kernel>` before `slinitctl shutdown kexec`); falling back to normal reboot")
+			rebootType = service.ShutdownReboot
+			if err := rebootSystem(rebootType); err != nil {
+				logger.Error("Fallback reboot syscall failed: %v", err)
+			}
+		} else {
+			logger.Error("Reboot syscall failed: %v", err)
+		}
 	}
 
 	// If we get here, the reboot syscall failed.
@@ -199,8 +216,18 @@ func ExecuteForce(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// does the same in halt_now(). Errors are non-fatal.
 	_ = rebootFunc(syscall.LINUX_REBOOT_CMD_CAD_ON)
 
-	if err := rebootSystem(shutdownType); err != nil {
-		logger.Error("Reboot syscall failed: %v", err)
+	// See Execute() for the same fallback rationale on kexec EINVAL.
+	rebootType := shutdownType
+	if err := rebootSystem(rebootType); err != nil {
+		if rebootType == service.ShutdownKexec && errors.Is(err, syscall.EINVAL) {
+			logger.Error("kexec reboot: no kernel pre-loaded; falling back to normal reboot")
+			rebootType = service.ShutdownReboot
+			if err := rebootSystem(rebootType); err != nil {
+				logger.Error("Fallback reboot syscall failed: %v", err)
+			}
+		} else {
+			logger.Error("Reboot syscall failed: %v", err)
+		}
 	}
 	logger.Error("Forced shutdown syscall returned unexpectedly")
 	InfiniteHold()
