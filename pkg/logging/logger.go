@@ -150,6 +150,11 @@ type Logger struct {
 	// events as "[STOPPD] name" (the teardown look) instead of "[ OK ] name".
 	// Flipped on once when shutdown begins, via SetShutdownConsole.
 	shuttingDown bool
+
+	// ringBuf, when non-nil, receives a copy of every formatted log
+	// line the Logger emits. Used by the runsvdir-inspired periodic
+	// re-emitter to keep transient warnings visible.
+	ringBuf *RingBuffer
 }
 
 // ANSI escape sequences for boot-console status markers.
@@ -162,6 +167,12 @@ const (
 // New creates a new Logger with the specified minimum level.
 func New(level Level) *Logger {
 	return &Logger{level: level, output: os.Stderr, mainLevel: level}
+}
+
+// SetRingBuffer attaches a ring buffer that receives a copy of every
+// formatted log line. Pass nil to detach. Safe to call at any time.
+func (l *Logger) SetRingBuffer(rb *RingBuffer) {
+	l.ringBuf = rb
 }
 
 // SetOutput redirects log output to the given writer.
@@ -290,6 +301,11 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 		fmt.Fprint(l.output, line)
 		if l.consoleDup != nil {
 			fmt.Fprint(l.consoleDup, line)
+		}
+		if l.ringBuf != nil {
+			// Ring buffer capture is best-effort — it returns nil
+			// unconditionally, so the error return is elided.
+			_, _ = l.ringBuf.Write([]byte(line))
 		}
 	}
 

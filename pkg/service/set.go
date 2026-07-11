@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -151,6 +152,17 @@ type ServiceSet struct {
 	// profile tags. Set at boot via --active-profile and mutated at
 	// runtime via ActivateProfile.
 	activeProfile string
+
+	// restartLog captures timestamps of every service restart the
+	// supervisor drives, used by the heartbeat reporter to compute a
+	// "restart rate" health signal. Older entries are pruned on
+	// query to keep the slice bounded. Protected by mu.
+	restartLog []time.Time
+
+	// watchdogMisses counts every watchdog-triggered restart across
+	// the daemon's lifetime. Incremented atomically so the heartbeat
+	// reader doesn't need to hold mu.
+	watchdogMisses atomic.Uint64
 }
 
 // NewServiceSet creates a new ServiceSet.
@@ -691,3 +703,93 @@ func (ss *ServiceSet) SetRWReady() { ss.rwReady = true }
 
 // SetLogReady marks the logging system as ready.
 func (ss *ServiceSet) SetLogReady() { ss.logReady = true }
+
+// NoteRestart records that a service has been (re)started as part of
+// the supervisor's own restart machinery, not a first-time boot.
+// Called from the state machine's post-stop restart branch. Storage
+// is capped so a runaway loop can't grow the log unbounded — anything
+// older than restartLogHorizon is pruned on write.
+const restartLogHorizon = 1 * time.Hour
+
+func (ss *ServiceSet) NoteRestart() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-restartLogHorizon)
+	// Prune stale entries in place.
+	kept := ss.restartLog[:0]
+	for _, ts := range ss.restartLog {
+		if ts.After(cutoff) {
+			kept = append(kept, ts)
+		}
+	}
+	ss.restartLog = append(kept, now)
+}
+
+// RestartsInLast reports the number of NoteRestart calls that landed
+// within the window ending now. Zero-value window returns the full
+// count without pruning.
+func (ss *ServiceSet) RestartsInLast(window time.Duration) int {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if window <= 0 {
+		return len(ss.restartLog)
+	}
+	cutoff := time.Now().Add(-window)
+	n := 0
+	for _, ts := range ss.restartLog {
+		if ts.After(cutoff) {
+			n++
+		}
+	}
+	return n
+}
+
+// NoteWatchdogMiss records one watchdog-triggered restart. Atomic so
+// hot paths on the service side don't have to hold ss.mu.
+func (ss *ServiceSet) NoteWatchdogMiss() {
+	ss.watchdogMisses.Add(1)
+}
+
+// WatchdogMisses returns the cumulative watchdog-miss count over the
+// daemon's lifetime. Never decreases; the operator interprets deltas
+// between heartbeats.
+func (ss *ServiceSet) WatchdogMisses() uint64 {
+	return ss.watchdogMisses.Load()
+}
+
+// CountByState returns a snapshot of how many currently-loaded
+// services are in each of the health-relevant states. The heartbeat
+// reporter turns this into a one-line "active=%d failed=%d
+// stopped=%d" health summary.
+type StateCounts struct {
+	Active   int // STARTED
+	Starting int // STARTING (transient)
+	Stopping int // STOPPING (transient)
+	Stopped  int // STOPPED (idle, no failure)
+	Failed   int // last exit was a failure that couldn't be recovered
+}
+
+func (ss *ServiceSet) CountByState() StateCounts {
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	var out StateCounts
+	for _, svc := range ss.records {
+		rec := svc.Record()
+		switch rec.State() {
+		case StateStarted:
+			out.Active++
+		case StateStarting:
+			out.Starting++
+		case StateStopping:
+			out.Stopping++
+		case StateStopped:
+			if rec.DidStartFail() {
+				out.Failed++
+			} else {
+				out.Stopped++
+			}
+		}
+	}
+	return out
+}

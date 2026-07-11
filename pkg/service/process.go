@@ -515,6 +515,7 @@ func (s *ProcessService) watchdogLoop(pipe *os.File, timeout time.Duration,
 		case isDeadlineExceeded(err):
 			s.services.logger.Error("Service '%s': watchdog timeout (%v) — restarting",
 				s.serviceName, timeout)
+			s.services.NoteWatchdogMiss()
 			s.fireWatchdogStop()
 			return
 		default:
@@ -525,6 +526,7 @@ func (s *ProcessService) watchdogLoop(pipe *os.File, timeout time.Duration,
 			// way, the watchdog cannot continue — escalate to Stop.
 			s.services.logger.Error("Service '%s': watchdog pipe lost (%v) — restarting",
 				s.serviceName, err)
+			s.services.NoteWatchdogMiss()
 			s.fireWatchdogStop()
 			return
 		}

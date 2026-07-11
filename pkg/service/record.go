@@ -2036,6 +2036,10 @@ func (sr *ServiceRecord) Stopped() {
 	sr.state.Store(StateStopped)
 
 	if willRestart {
+		// Record this as a supervisor-driven restart for heartbeat /
+		// health-signal accounting. First-boot BringUp does not count.
+		sr.services.NoteRestart()
+
 		// Restart any PREPARED_BY dependencies first. They are hard deps
 		// (IsHard returns true), so startCheckDependencies in initiateStart
 		// below will see them in non-STARTED state and make us wait until
