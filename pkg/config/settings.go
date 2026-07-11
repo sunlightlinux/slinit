@@ -295,6 +295,8 @@ var KnownSettings = map[string]OperatorType{
 	"log-rate-limit-interval":  OpEquals,
 	"log-rate-limit-burst":     OpEquals,
 	"log-level-max":            OpEquals,
+	"log-sanitize":             OpEquals, // svlogd -r: replace control chars with this single ASCII char
+	"log-sanitize-extra":       OpEquals, // svlogd -R: additional bytes to treat as replaceable
 
 	// systemd-style appliance actions
 	"failure-action":  OpEquals,

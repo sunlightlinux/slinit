@@ -1950,6 +1950,56 @@ usage = mysvc [--flag]
 	}
 }
 
+// TestParseLogSanitize exercises the svlogd -r / -R analogues.
+// log-sanitize sets the replacement char; log-sanitize-extra adds
+// bytes on top of the default control-char set. Both single-config
+// and combined forms must round-trip through ServiceDescription.
+func TestParseLogSanitize(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+log-sanitize = .
+log-sanitize-extra = |;
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if desc.LogSanitizeChar != '.' {
+		t.Errorf("LogSanitizeChar = %q, want '.'", desc.LogSanitizeChar)
+	}
+	if string(desc.LogSanitizeExtra) != "|;" {
+		t.Errorf("LogSanitizeExtra = %q, want %q", desc.LogSanitizeExtra, "|;")
+	}
+}
+
+// TestParseLogSanitizeRejectsMultibyte guards against operators
+// supplying a UTF-8 codepoint that would blow up the byte-level
+// replacement. Must reject at parse time.
+func TestParseLogSanitizeRejectsMultibyte(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+log-sanitize = é
+`
+	_, err := Parse(strings.NewReader(input), "svc", "test")
+	if err == nil {
+		t.Fatal("expected error for multibyte replacement, got nil")
+	}
+}
+
+// TestParseLogSanitizeRejectsEmpty covers the whitespace-only value
+// path: parseLine strips the value so `log-sanitize = \t` reduces to
+// the empty string, which must fail rather than silently disable
+// sanitization or crash the byte-level path.
+func TestParseLogSanitizeRejectsEmpty(t *testing.T) {
+	input := "type = process\ncommand = /bin/true\nlog-sanitize = \t\n"
+	_, err := Parse(strings.NewReader(input), "svc", "test")
+	if err == nil {
+		t.Fatal("expected error for empty replacement value, got nil")
+	}
+}
+
 // TestParseCommandArgv0 exercises the runit chpst -b analogue —
 // command-argv0 lets the child see a distinct argv[0] while the kernel
 // still exec's Command[0].

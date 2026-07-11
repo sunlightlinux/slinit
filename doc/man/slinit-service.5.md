@@ -516,6 +516,20 @@ apply OS-level changes:
     the kebab-case keyword (`warning`, `error` are also accepted)
     or the numeric 0..7. *off* / *none* / *any* disable the filter.
 
+**log-sanitize**=*char*, **log-sanitize-extra**=*bytes*
+:   svlogd(8)-style byte scrubbing. When **log-sanitize** is set to a
+    single printable ASCII character, each control byte in the log
+    stream (values < 0x20 and 0x7F) is replaced with it, except **LF**
+    (line boundary) and **TAB** (indentation) which pass through.
+    **log-sanitize-extra** flags additional bytes to replace with the
+    same character — one entry per byte in the string, e.g.
+    `log-sanitize-extra = |;` scrubs `|` and `;` too. Setting only
+    **log-sanitize-extra** implies a default replacement of `_`.
+    Useful for stripping ANSI colour escapes, NULs, and other
+    control-plane noise before lines land in the on-disk log.
+    Requires a configured **logfile** (the scrub sits on the
+    LogRotator).
+
 **log-processor**=*program* [*args*...]
 :   Pipe lines through *program* before they hit the log target.
 

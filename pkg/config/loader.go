@@ -286,6 +286,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogFilters(desc.LogInclude, desc.LogExclude)
 		s.SetLogRateLimit(desc.LogRateLimitInterval, desc.LogRateLimitBurst)
 		s.SetLogLevelMax(desc.LogLevelMax)
+		s.SetLogSanitize(desc.LogSanitizeChar, desc.LogSanitizeExtra)
 		if len(desc.OutputLogger) > 0 {
 			s.SetOutputLogger(desc.OutputLogger)
 		}
@@ -970,6 +971,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetLogFilters(desc.LogInclude, desc.LogExclude)
 		svc.SetLogRateLimit(desc.LogRateLimitInterval, desc.LogRateLimitBurst)
 		svc.SetLogLevelMax(desc.LogLevelMax)
+		svc.SetLogSanitize(desc.LogSanitizeChar, desc.LogSanitizeExtra)
 		if len(desc.OutputLogger) > 0 {
 			svc.SetOutputLogger(desc.OutputLogger)
 		}

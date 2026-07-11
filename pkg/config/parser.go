@@ -157,6 +157,13 @@ type ServiceDescription struct {
 	// systemd-style severity filter. -1 = disabled, 0..7 = drop lines
 	// with priority above the threshold.
 	LogLevelMax int
+	// svlogd -r / -R: sanitize non-printable bytes in log output.
+	// LogSanitizeChar is the single-byte replacement (0 = disabled).
+	// LogSanitizeExtra lists additional bytes replaced with the same
+	// char (allowed even without LogSanitizeChar being explicit — in
+	// that case the default '_' is used).
+	LogSanitizeChar  byte
+	LogSanitizeExtra []byte
 	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
 	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
@@ -1560,6 +1567,19 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.LogInclude = append(desc.LogInclude, value)
 	case "log-exclude":
 		desc.LogExclude = append(desc.LogExclude, value)
+	case "log-sanitize":
+		if len(value) != 1 {
+			return fmt.Errorf("log-sanitize: must be a single ASCII character (got %q)", value)
+		}
+		if value[0] < 0x20 || value[0] > 0x7E {
+			return fmt.Errorf("log-sanitize: replacement must be printable ASCII (got 0x%02x)", value[0])
+		}
+		desc.LogSanitizeChar = value[0]
+	case "log-sanitize-extra":
+		if len(value) == 0 {
+			return fmt.Errorf("log-sanitize-extra: must not be empty")
+		}
+		desc.LogSanitizeExtra = []byte(value)
 
 	// Output/error logger (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	case "output-logger":
