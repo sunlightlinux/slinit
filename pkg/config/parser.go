@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -187,6 +188,15 @@ type ServiceDescription struct {
 	// parse time to a sane [512..1MB] window — bigger values buy
 	// nothing on line-oriented input and just tie up memory.
 	LogReadBufferSize int
+	// svlogd u/U: UDP syslog forwarder. When LogForwardUDP is non-
+	// empty (host:port), every line that survives the filter chain
+	// is also emitted as a syslog UDP packet in the chosen format
+	// (rfc3164|rfc5424, default rfc3164) with the given facility
+	// (default "daemon") and tag (default service name).
+	LogForwardUDP      string
+	LogForwardFormat   string
+	LogForwardFacility string
+	LogForwardTag      string
 	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
 	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
@@ -230,6 +240,12 @@ type ServiceDescription struct {
 
 	// Chaining
 	ChainTo string
+
+	// Profiles is the CSV / repeated list of profile tags this
+	// service belongs to (runit runsvchdir analogue). Empty = global,
+	// always eligible. Non-empty = eligible only when the active
+	// profile matches at least one entry.
+	Profiles []string
 
 	// Alias
 	Provides string
@@ -1652,6 +1668,28 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("log-read-buffer-size: must be between 512 and 1048576 bytes (got %d)", n)
 		}
 		desc.LogReadBufferSize = n
+	case "log-forward-udp":
+		if _, _, err := net.SplitHostPort(value); err != nil {
+			return fmt.Errorf("log-forward-udp: must be host:port (got %q): %w", value, err)
+		}
+		desc.LogForwardUDP = value
+	case "log-forward-format":
+		switch value {
+		case "rfc3164", "rfc5424":
+			desc.LogForwardFormat = value
+		default:
+			return fmt.Errorf("log-forward-format: must be rfc3164 or rfc5424 (got %q)", value)
+		}
+	case "log-forward-facility":
+		if _, ok := syslogFacilityByName[value]; !ok {
+			return fmt.Errorf("log-forward-facility: unknown facility %q", value)
+		}
+		desc.LogForwardFacility = value
+	case "log-forward-tag":
+		if value == "" {
+			return fmt.Errorf("log-forward-tag: must not be empty")
+		}
+		desc.LogForwardTag = value
 
 	// Output/error logger (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	case "output-logger":
@@ -1758,6 +1796,28 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	// Alias
 	case "provides":
 		desc.Provides = value
+
+	case "profile":
+		// Accept either "profile = a,b,c" or repeated "profile += X"
+		// / "profile += Y". Comma-separated values in one line
+		// tolerate whitespace around each entry.
+		parts := strings.Split(value, ",")
+		var got []string
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if err := ValidateServiceName(p); err != nil {
+				return fmt.Errorf("invalid profile name %q: %w", p, err)
+			}
+			got = append(got, p)
+		}
+		if op == OpPlusEqual {
+			desc.Profiles = append(desc.Profiles, got...)
+		} else {
+			desc.Profiles = got
+		}
 
 	// Platform keywords (OpenRC-compatible: keyword -docker -lxc ...)
 	case "keyword":
@@ -3043,4 +3103,39 @@ func ParseCPUAffinity(value string) ([]uint, error) {
 		return nil, fmt.Errorf("empty CPU list")
 	}
 	return cpus, nil
+}
+
+// syslogFacilityByName maps human-readable syslog facility names to
+// their RFC 3164 codes. Used by the UDP forwarder to build the PRI
+// field. Names are lowercase to match svlogd / rsyslog convention.
+var syslogFacilityByName = map[string]int{
+	"kern":     0,
+	"user":     1,
+	"mail":     2,
+	"daemon":   3,
+	"auth":     4,
+	"syslog":   5,
+	"lpr":      6,
+	"news":     7,
+	"uucp":     8,
+	"cron":     9,
+	"authpriv": 10,
+	"ftp":      11,
+	"local0":   16,
+	"local1":   17,
+	"local2":   18,
+	"local3":   19,
+	"local4":   20,
+	"local5":   21,
+	"local6":   22,
+	"local7":   23,
+}
+
+// SyslogFacilityCode returns the numeric facility for a name, or -1
+// if the name is unknown. Exported for use in the UDP forwarder.
+func SyslogFacilityCode(name string) int {
+	if v, ok := syslogFacilityByName[name]; ok {
+		return v
+	}
+	return -1
 }

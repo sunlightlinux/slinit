@@ -77,6 +77,12 @@ type LogRotator struct {
 	// "use the built-in default" (defaultReadBufferSize).
 	readBufSize int
 
+	// svlogd u/U: UDP syslog forwarder. nil = disabled. When set,
+	// every line that survives the filter chain is also emitted as
+	// a syslog packet; failures on the UDP send do not backpressure
+	// the local write path.
+	forwarder *SyslogForwarder
+
 	// State
 	file            *os.File
 	currentSize     int64
@@ -133,6 +139,11 @@ type LogRotatorConfig struct {
 	// 4096-byte default; the parser bounds explicit values to
 	// [512..1MB] before they reach us.
 	ReadBufferSize int
+
+	// svlogd u/U: attach a UDP syslog forwarder. LogRotator takes
+	// ownership: the connection is closed when the rotator closes.
+	// nil = disabled.
+	Forwarder *SyslogForwarder
 	Logger      interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
@@ -192,6 +203,9 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 	}
 	if cfg.ReadBufferSize > 0 {
 		lr.readBufSize = cfg.ReadBufferSize
+	}
+	if cfg.Forwarder != nil {
+		lr.forwarder = cfg.Forwarder
 	}
 	if lr.filePerms == 0 {
 		lr.filePerms = 0600
@@ -455,6 +469,15 @@ func (lr *LogRotator) processLine(line []byte) {
 	// Check size-based rotation
 	if lr.maxSize > 0 && lr.currentSize+int64(len(out)) > lr.maxSize {
 		lr.rotateLocked()
+	}
+
+	// UDP syslog forward: fire-and-forget copy to the remote receiver.
+	// Runs on the read goroutine — the send is non-blocking and any
+	// UDP-level failure is coalesced into a periodic warning inside
+	// the forwarder itself, so a downed remote never stalls the
+	// local write.
+	if lr.forwarder != nil {
+		lr.forwarder.Send(out)
 	}
 
 	n, err := lr.file.Write(out)
@@ -744,6 +767,11 @@ func (lr *LogRotator) Close() {
 	lr.mu.Unlock()
 	if doneCh != nil && running {
 		<-doneCh
+	}
+	// Reader is drained; the UDP socket is exclusively ours to close.
+	if lr.forwarder != nil {
+		lr.forwarder.Close()
+		lr.forwarder = nil
 	}
 }
 

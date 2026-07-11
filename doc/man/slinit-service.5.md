@@ -543,6 +543,37 @@ apply OS-level changes:
     it. Common uses: hostname / tenant / tier tags for downstream
     log aggregators. Requires a configured **logfile**.
 
+**log-forward-udp**=*host:port*, **log-forward-format**=*rfc3164*|*rfc5424*, **log-forward-facility**=*name*, **log-forward-tag**=*string*
+:   svlogd(8) `u`/`U`-style UDP syslog forwarder. Every line that
+    survives the filter chain (**log-include**, **log-exclude**,
+    **log-level-max**, rate limit, sanitizer, cap) is also emitted
+    as a syslog packet aimed at *host:port*. Framing is either
+    classic BSD **rfc3164** (default) or the modern structured
+    **rfc5424**. The facility field (default *daemon*) accepts the
+    standard names *kern*, *user*, *mail*, *daemon*, *auth*,
+    *syslog*, *lpr*, *news*, *uucp*, *cron*, *authpriv*, *ftp*,
+    and *local0..local7*. The tag defaults to the service name
+    and is what appears in the syslog PROGRAM slot. Severity is
+    derived from an inline `<N>` PRI prefix on the source line
+    when present, otherwise defaults to *info*. Failures on the
+    UDP send do NOT backpressure the local write path — a downed
+    collector logs a coalesced warning at most every 30 s and
+    silently drops until it recovers. Useful for
+    embedded / container deployments that want to ship logs to a
+    central rsyslog without pulling in journald or vector.
+
+**profile**=*name1,name2,...*
+:   Tags this service as belonging to one or more named profiles
+    (runit *runsvchdir* analogue). When a profile is active (via
+    **slinit \--active-profile** at boot or **slinitctl
+    activate-profile** at runtime), only services whose profile
+    tags include the active profile — plus every service with no
+    profile tag ("global") — become eligible for auto-start. The
+    setting accepts either a single comma-separated list or the
+    **+=** append form so an overlay file can add tags to a base
+    service without overwriting them. See **slinitctl**(8) for the
+    activation surface.
+
 **log-read-buffer-size**=*bytes*
 :   svlogd(8) `-b`-style tuning knob for LogRotator's pipe reader:
     the number of bytes drawn from the producer pipe per `Read()`

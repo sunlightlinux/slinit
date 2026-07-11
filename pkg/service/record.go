@@ -187,6 +187,10 @@ type ServiceRecord struct {
 	sharedLoggerLossy      bool   // (on the logger svc) drop instead of block on backpressure
 	sharedLoggerQueueSize  int    // (on the logger svc) buffered channel depth (0 = default)
 
+	// profiles is the set of profile tags this service belongs to
+	// (runsvchdir analogue). Empty = global (always eligible).
+	profiles []string
+
 	// Extra commands (OpenRC-style custom actions)
 	// extraCommands are available in any service state.
 	// extraStartedCommands are only available when the service is STARTED.
@@ -844,6 +848,29 @@ func (sr *ServiceRecord) SetSharedLoggerLossy(b bool)      { sr.sharedLoggerLoss
 func (sr *ServiceRecord) SharedLoggerLossy() bool          { return sr.sharedLoggerLossy }
 func (sr *ServiceRecord) SetSharedLoggerQueueSize(n int)   { sr.sharedLoggerQueueSize = n }
 func (sr *ServiceRecord) SharedLoggerQueueSize() int       { return sr.sharedLoggerQueueSize }
+
+// SetProfiles assigns the profile tags this service belongs to.
+// Empty (nil / len==0) = global service.
+func (sr *ServiceRecord) SetProfiles(p []string) { sr.profiles = append(sr.profiles[:0], p...) }
+
+// Profiles returns the profile tags this service is a member of.
+func (sr *ServiceRecord) Profiles() []string { return sr.profiles }
+
+// InProfile reports whether the service is a member of profile `name`.
+// A service with no profile tags is always "in" every profile — it's
+// global infrastructure that must not be swapped out during profile
+// activation.
+func (sr *ServiceRecord) InProfile(name string) bool {
+	if len(sr.profiles) == 0 {
+		return true
+	}
+	for _, p := range sr.profiles {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
 
 // SetExtraCommands sets custom actions available in any service state.
 func (sr *ServiceRecord) SetExtraCommands(cmds map[string][]string) { sr.extraCommands = cmds }

@@ -136,6 +136,10 @@ type ProcessService struct {
 	logTimestampMode     string
 	logLinePrefix        string
 	logReadBufferSize    int
+	logForwardUDP        string
+	logForwardFormat     string
+	logForwardFacility   int
+	logForwardTag        string
 
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
@@ -663,6 +667,17 @@ func (s *ProcessService) SetLogLinePrefix(prefix string) {
 // The parser bounds explicit values to [512..1MB] before they arrive.
 func (s *ProcessService) SetLogReadBufferSize(n int) {
 	s.logReadBufferSize = n
+}
+
+// SetLogForward configures the UDP syslog forwarder (svlogd u/U).
+// dest is host:port; empty disables. facility is the numeric syslog
+// facility (0..23). format is "rfc3164" or "rfc5424". tag defaults
+// to the service name when empty.
+func (s *ProcessService) SetLogForward(dest, format string, facility int, tag string) {
+	s.logForwardUDP = dest
+	s.logForwardFormat = format
+	s.logForwardFacility = facility
+	s.logForwardTag = tag
 }
 
 // GetLogBuffer returns the log buffer (overrides ServiceRecord default).
@@ -1357,9 +1372,24 @@ func (s *ProcessService) startProcess() error {
 			s.logLevelMax >= 0 ||
 			s.logSanitizeChar != 0 || len(s.logSanitizeExtra) > 0 ||
 			s.logMaxLineLength > 0 ||
-			s.logTimestampMode != "" || s.logLinePrefix != "" {
+			s.logTimestampMode != "" || s.logLinePrefix != "" ||
+			s.logForwardUDP != "" {
 			if s.logRotator != nil {
 				s.logRotator.Close()
+			}
+			// Build the UDP forwarder before the rotator so we can
+			// bail out cleanly if the destination doesn't resolve.
+			var forwarder *SyslogForwarder
+			if s.logForwardUDP != "" {
+				fw, ferr := NewSyslogForwarder(
+					s.logForwardUDP, s.logForwardFormat, s.logForwardFacility,
+					s.logForwardTag, s.serviceName, s.services.logger)
+				if ferr != nil {
+					s.services.logger.Error("Service '%s': syslog-forward disabled (%v)",
+						s.serviceName, ferr)
+				} else {
+					forwarder = fw
+				}
 			}
 			var err error
 			s.logRotator, err = NewLogRotator(LogRotatorConfig{
@@ -1383,6 +1413,7 @@ func (s *ProcessService) startProcess() error {
 				TimestampMode:  s.logTimestampMode,
 				LinePrefix:     s.logLinePrefix,
 				ReadBufferSize: s.logReadBufferSize,
+				Forwarder:      forwarder,
 				ServiceName:   s.serviceName,
 				Logger:        s.services.logger,
 			})

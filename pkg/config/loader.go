@@ -246,6 +246,7 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	// producer registers via setupSharedLogger.
 	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
 	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
+	svc.Record().SetProfiles(desc.Profiles)
 
 	return svc, nil
 }
@@ -298,6 +299,8 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogTimestamp(desc.LogTimestamp)
 		s.SetLogLinePrefix(desc.LogLinePrefix)
 		s.SetLogReadBufferSize(desc.LogReadBufferSize)
+		s.SetLogForward(desc.LogForwardUDP, desc.LogForwardFormat,
+			SyslogFacilityCode(desc.LogForwardFacility), desc.LogForwardTag)
 		if len(desc.OutputLogger) > 0 {
 			s.SetOutputLogger(desc.OutputLogger)
 		}
@@ -771,6 +774,7 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// producer registers via setupSharedLogger.
 	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
 	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
+	svc.Record().SetProfiles(desc.Profiles)
 
 	// Set up shared-logger relationship
 	if desc.SharedLogger != "" {
@@ -994,6 +998,8 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetLogTimestamp(desc.LogTimestamp)
 		svc.SetLogLinePrefix(desc.LogLinePrefix)
 		svc.SetLogReadBufferSize(desc.LogReadBufferSize)
+		svc.SetLogForward(desc.LogForwardUDP, desc.LogForwardFormat,
+			SyslogFacilityCode(desc.LogForwardFacility), desc.LogForwardTag)
 		if len(desc.OutputLogger) > 0 {
 			svc.SetOutputLogger(desc.OutputLogger)
 		}
