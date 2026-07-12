@@ -788,3 +788,108 @@ func TestLogRotatorProcessLineSanitizes(t *testing.T) {
 		t.Errorf("logfile contents:\n got %q\nwant %q", got, want)
 	}
 }
+
+// TestLogRotatorSelectChain covers the s6-log-style regex chain: `-*
+// +alert` drops everything by default but keeps alert lines. This is
+// the exact idiom the s6-log docs give as the canonical filter.
+func TestLogRotatorSelectChain(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	cfg := LogRotatorConfig{
+		FilePath:    logPath,
+		FilePerms:   0600,
+		FileUID:     -1,
+		FileGID:     -1,
+		ServiceName: "test",
+		LogLevelMax: -1,
+		Select:      []string{"-*", "+alert", "+warn"},
+	}
+	lr, err := NewLogRotator(cfg)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	for _, line := range []string{
+		"debug: something happened\n",
+		"alert: DISK FULL\n",
+		"info: fyi\n",
+		"warn: low mem\n",
+		"trace: chatty output\n",
+	} {
+		lr.processLine([]byte(line))
+	}
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Sync()
+	}
+	lr.mu.Unlock()
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	// Chain evaluated left-to-right, LAST-MATCHED wins. debug/info/
+	// trace only match `-*`, so they end verdict = exclude. alert/warn
+	// re-flip to include via a later token.
+	want := "alert: DISK FULL\nwarn: low mem\n"
+	if string(got) != want {
+		t.Errorf("logfile contents:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestLogRotatorSelectLastMatchWins encodes the "last-matched verdict
+// wins" invariant that separates chain semantics from the classic
+// include/exclude AND: an initial `+*` is undone by a later `-noisy`
+// on lines matching noisy.
+func TestLogRotatorSelectLastMatchWins(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:    logPath,
+		FilePerms:   0600,
+		FileUID:     -1,
+		FileGID:     -1,
+		ServiceName: "test",
+		LogLevelMax: -1,
+		Select:      []string{"+*", "-noisy"},
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	for _, line := range []string{
+		"important: keep me\n",
+		"noisy: drop me\n",
+		"normal: keep me\n",
+	} {
+		lr.processLine([]byte(line))
+	}
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Sync()
+	}
+	lr.mu.Unlock()
+
+	got, _ := os.ReadFile(logPath)
+	want := "important: keep me\nnormal: keep me\n"
+	if string(got) != want {
+		t.Errorf("logfile contents:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestLogRotatorSelectRejectsBadToken guards operator confusion —
+// missing polarity prefix should fail load rather than silently no-op.
+func TestLogRotatorSelectRejectsBadToken(t *testing.T) {
+	_, err := NewLogRotator(LogRotatorConfig{
+		ServiceName: "test",
+		LogLevelMax: -1,
+		Select:      []string{"missingpolarity"},
+	})
+	if err == nil {
+		t.Fatal("expected error on missing +/- polarity, got nil")
+	}
+}

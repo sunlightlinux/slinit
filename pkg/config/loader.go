@@ -247,6 +247,7 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
 	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
 	svc.Record().SetProfiles(desc.Profiles)
+	svc.Record().SetBundleMembers(desc.BundleMembers)
 
 	return svc, nil
 }
@@ -292,6 +293,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogMinFiles(desc.LogMinFiles)
 		s.SetLogProcessor(desc.LogProcessor)
 		s.SetLogFilters(desc.LogInclude, desc.LogExclude)
+		s.SetLogSelect(desc.LogSelect)
 		s.SetLogRateLimit(desc.LogRateLimitInterval, desc.LogRateLimitBurst)
 		s.SetLogLevelMax(desc.LogLevelMax)
 		s.SetLogSanitize(desc.LogSanitizeChar, desc.LogSanitizeExtra)
@@ -640,6 +642,54 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Bundle desugaring — must run BEFORE type/dep validation so the
+	// synthesised depends-on entries are seen by every downstream
+	// check. A bundle is an internal service whose only job is to
+	// hold references to its members; hard depends-on means stopping
+	// the bundle propagates a stop to any member no other holder is
+	// keeping alive.
+	// log-select is mutually exclusive with the classic include/exclude
+	// pair: mixing them at parse time is almost certainly an operator
+	// mistake, and the two evaluation models produce different outputs
+	// for the same input (chain: last-match-wins vs. classic: AND).
+	if len(desc.LogSelect) > 0 &&
+		(len(desc.LogInclude) > 0 || len(desc.LogExclude) > 0) {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message: "log-select is mutually exclusive with " +
+				"log-include / log-exclude",
+		}
+	}
+
+	if len(desc.BundleMembers) > 0 {
+		// Reject only an EXPLICIT non-internal type — an unspecified
+		// type defaults to TypeProcess in NewServiceDescription but
+		// bundle-of should treat that as "no user intent yet" and
+		// overwrite it. TypeExplicit disambiguates the two.
+		if desc.TypeExplicit && desc.Type != service.TypeInternal {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message: "bundle-of requires type=internal " +
+					"(or no explicit type)",
+			}
+		}
+		desc.Type = service.TypeInternal
+		for _, m := range desc.BundleMembers {
+			// Guard against redundant listing that would double the
+			// dep and inflate requiredBy — no-op skip on duplicates.
+			seen := false
+			for _, existing := range desc.DependsOn {
+				if existing == m {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				desc.DependsOn = append(desc.DependsOn, m)
+			}
+		}
+	}
+
 	// Validate: ready-notification not supported for bgprocess
 	if desc.Type == service.TypeBGProcess && (desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "") {
 		return nil, &ServiceLoadError{
@@ -796,6 +846,7 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
 	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
 	svc.Record().SetProfiles(desc.Profiles)
+	svc.Record().SetBundleMembers(desc.BundleMembers)
 
 	// Set up shared-logger relationship
 	if desc.SharedLogger != "" {

@@ -99,6 +99,7 @@ const (
 	CmdActivateProfile   uint8 = 52 // runsvchdir analogue: swap the active profile
 	CmdQueryProfile      uint8 = 53 // report the currently active profile name
 	CmdListProfiles      uint8 = 54 // enumerate every profile tag declared by loaded services
+	CmdQueryBundleMembers uint8 = 55 // s6-rc analogue: names of a bundle's declared members
 )
 
 // Reply codes (server → client).
@@ -155,6 +156,7 @@ const (
 	RplyProfile         uint8 = 110 // single length-prefixed string (active profile name; "" = none)
 	RplyProfileList     uint8 = 111 // uint16 count + [uint16 len + name]*
 	RplyActivateResult  uint8 = 112 // active profile name + 3 lists (stopped/started/kept) all length-prefixed
+	RplyBundleMembers   uint8 = 113 // uint16 count + [uint16 len + name]* (empty when not a bundle)
 )
 
 // Info codes (server → client, unsolicited).

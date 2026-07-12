@@ -2303,3 +2303,78 @@ command-argv0 = sshd: main
 		t.Errorf("Command = %v, want first element /usr/sbin/sshd", desc.Command)
 	}
 }
+
+// TestParseBundleOf covers the s6-rc-style bundle grouping directive.
+// The parser must accept comma-, space- and repeated-line forms; the
+// loader adds each member as a `depends-on:` and forces type=internal
+// so stopping the bundle propagates a stop to its members.
+func TestParseBundleOf(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name: "comma-separated single line",
+			input: `
+bundle-of = alpha, beta, gamma
+`,
+			want: []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name: "space-separated single line",
+			input: `
+bundle-of = alpha beta gamma
+`,
+			want: []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name: "repeated colon-form",
+			input: `
+bundle-of: alpha
+bundle-of: beta
+bundle-of: gamma
+`,
+			want: []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name: "mixed comma + space",
+			input: `
+bundle-of = alpha,beta gamma
+`,
+			want: []string{"alpha", "beta", "gamma"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			desc, err := Parse(strings.NewReader(tc.input), "grp", "test")
+			if err != nil {
+				t.Fatalf("unexpected parse error: %v", err)
+			}
+			if len(desc.BundleMembers) != len(tc.want) {
+				t.Fatalf("BundleMembers len = %d, want %d (%v)",
+					len(desc.BundleMembers), len(tc.want),
+					desc.BundleMembers)
+			}
+			for i, m := range tc.want {
+				if desc.BundleMembers[i] != m {
+					t.Errorf("BundleMembers[%d] = %q, want %q",
+						i, desc.BundleMembers[i], m)
+				}
+			}
+		})
+	}
+}
+
+// TestParseBundleOfRejectsBadNames guards the validator: an obviously
+// bad member name must fail parse rather than land in the description
+// and blow up at load time.
+func TestParseBundleOfRejectsBadNames(t *testing.T) {
+	input := `
+bundle-of = .startswithdot
+`
+	_, err := Parse(strings.NewReader(input), "grp", "test")
+	if err == nil {
+		t.Fatal("expected parse error for '.'-prefix member name, got nil")
+	}
+}

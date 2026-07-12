@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/persist"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -65,6 +66,12 @@ type Server struct {
 	scheduledTimer    *time.Timer
 	scheduledType     service.ShutdownType
 	scheduledDeadline time.Time // zero means no scheduled shutdown
+
+	// PinStore, when Enabled(), records pin transitions to disk so a
+	// `stop --pin` on a service stays effective across a reboot. Nil
+	// (or a store built with an empty dir) is a valid no-op — every
+	// call site invokes it unconditionally.
+	Pins *persist.PinStore
 }
 
 // NewServer creates a new control socket server.

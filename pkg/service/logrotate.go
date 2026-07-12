@@ -39,6 +39,13 @@ type LogRotator struct {
 	processor []string      // command to run on rotated file
 	includes  []*regexp.Regexp
 	excludes  []*regexp.Regexp
+	// s6-log-style regex selection chain. Each entry carries a
+	// polarity (+ = include, - = exclude) and a compiled regex.
+	// Evaluated left-to-right per line; the LAST-MATCHED verdict
+	// wins. Empty chain (or `matchAny=false`) → include the line.
+	// Mutually exclusive with includes/excludes above (loader
+	// enforces the invariant).
+	selectChain []selectEntry
 
 	// Rate limiter (token bucket). rateInterval==0 means disabled.
 	rateInterval     time.Duration
@@ -113,6 +120,10 @@ type LogRotatorConfig struct {
 	Processor   []string
 	Includes    []string
 	Excludes    []string
+	// Select is the s6-log-style chain (see LogRotator.selectChain).
+	// Each token is `+regex` or `-regex`; `+*`/`-*` are match-all
+	// shortcuts. Must be empty if Includes/Excludes are set.
+	Select      []string
 	ServiceName string
 	// Rate limit: drop lines exceeding RateBurst per RateInterval.
 	// Both must be > 0 for the limiter to engage.
@@ -226,8 +237,36 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		}
 		lr.excludes = append(lr.excludes, re)
 	}
+	// Compile the s6-log-style selection chain.
+	for _, tok := range cfg.Select {
+		if len(tok) < 2 || (tok[0] != '+' && tok[0] != '-') {
+			return nil, fmt.Errorf(
+				"log-select token must start with '+' or '-': %q", tok)
+		}
+		pattern := tok[1:]
+		// `+*` / `-*` are match-all shortcuts — Go's regexp uses `.*`
+		// for that, but `*` alone is a syntax error. Special-case
+		// so users don't have to remember two conventions.
+		if pattern == "*" {
+			pattern = ".*"
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid log-select regex %q: %w", tok, err)
+		}
+		lr.selectChain = append(lr.selectChain, selectEntry{
+			include: tok[0] == '+',
+			re:      re,
+		})
+	}
 
 	return lr, nil
+}
+
+// selectEntry is one link in the s6-log-style selection chain.
+type selectEntry struct {
+	include bool // true = "+regex" (include on match), false = "-regex" (exclude)
+	re      *regexp.Regexp
 }
 
 // CreatePipe creates a pipe and returns the write end for the child process.
@@ -395,24 +434,40 @@ func (lr *LogRotator) processLine(line []byte) {
 		matchLine = matchLine[:len(matchLine)-1]
 	}
 
-	// Apply include filters (if any, line must match at least one)
-	if len(lr.includes) > 0 {
-		matched := false
-		for _, re := range lr.includes {
-			if re.Match(matchLine) {
-				matched = true
-				break
+	// s6-log-style selection chain (evaluated left-to-right; the
+	// LAST-MATCHED verdict wins). Include as default when no chain
+	// entry matches. Chain mode is mutually exclusive with the
+	// include/exclude pair — the loader enforces that at load time.
+	if len(lr.selectChain) > 0 {
+		include := true
+		for _, e := range lr.selectChain {
+			if e.re.Match(matchLine) {
+				include = e.include
 			}
 		}
-		if !matched {
+		if !include {
 			return
 		}
-	}
+	} else {
+		// Apply include filters (if any, line must match at least one)
+		if len(lr.includes) > 0 {
+			matched := false
+			for _, re := range lr.includes {
+				if re.Match(matchLine) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return
+			}
+		}
 
-	// Apply exclude filters (if any match, skip the line)
-	for _, re := range lr.excludes {
-		if re.Match(matchLine) {
-			return
+		// Apply exclude filters (if any match, skip the line)
+		for _, re := range lr.excludes {
+			if re.Match(matchLine) {
+				return
+			}
 		}
 	}
 

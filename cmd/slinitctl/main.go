@@ -1333,6 +1333,21 @@ func cmdStatus(conn net.Conn, name string) error {
 	if status.ExitStatus != 0 {
 		fmt.Printf("  Exit:    %d\n", status.ExitStatus)
 	}
+
+	// Bundle rendering: when the service is an s6-rc-style bundle the
+	// members list is non-empty, so we fetch each member's state and
+	// print a small tabular section. Non-bundle services get an empty
+	// list back and this block is silent.
+	if members, err := fetchBundleMembers(conn, handle); err == nil && len(members) > 0 {
+		fmt.Println("  Bundle members:")
+		for _, m := range members {
+			memberState := "?"
+			if s, err := getServiceStatus(conn, m); err == nil {
+				memberState = formatState(s.State)
+			}
+			fmt.Printf("    - %s (%s)\n", m, memberState)
+		}
+	}
 	return nil
 }
 
@@ -1352,6 +1367,25 @@ func fetchDescription(conn net.Conn, handle uint32) (string, error) {
 	}
 	desc, _, err := control.DecodeServiceName(payload)
 	return desc, err
+}
+
+// fetchBundleMembers queries the s6-rc-style member list for a bundle
+// service handle. Empty list is a legitimate reply for non-bundle
+// services, so callers use it as a "should I render a Members section?"
+// gate rather than as an error signal.
+func fetchBundleMembers(conn net.Conn, handle uint32) ([]string, error) {
+	if err := control.WritePacket(conn, control.CmdQueryBundleMembers, control.EncodeHandle(handle)); err != nil {
+		return nil, err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return nil, err
+	}
+	if rply != control.RplyBundleMembers {
+		return nil, fmt.Errorf("unexpected reply: %d", rply)
+	}
+	members, _, err := control.DecodeStringList(payload)
+	return members, err
 }
 
 // fetchMetadata queries author/version/usage strings for a service handle.
