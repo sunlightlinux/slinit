@@ -27,16 +27,17 @@ else
     echo "FAIL: /sys/fs/cgroup not ro: $_mi"
 fi
 
-# Host-side writability probe: on cgroup v2 the top-level /sys/fs/cgroup
-# is often already read-only by design (delegation contract) — creating
-# subgroups belongs in delegated subtrees, not at the root. So a mkdir
-# at the top-level failing isn't evidence of a leak from the guarded
-# service. Instead, probe /sys/fs/cgroup/cgroup.subtree_control which
-# PID 1 (us) must still be able to read even after the service masked
-# its own view.
+# Host-side isolation probe: what we're guarding against is the
+# service's read-only remount leaking into PID 1's view. Read a stable
+# file the guarded service now sees as ro but that PID 1 must still
+# see as normal — cgroup.controllers exists at the cgroup v2 root and
+# holds the list of enabled controllers; a delegation-related mkdir
+# gate at the top-level is expected on modern kernels, so probing
+# read-only files is the right isolation signal.
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ -r /sys/fs/cgroup/cgroup.subtree_control ]; then
-    echo "OK: host cgroup.subtree_control still readable from PID 1"
+if [ -r /sys/fs/cgroup/cgroup.controllers ] && \
+   [ -n "$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null)" ]; then
+    echo "OK: host cgroup.controllers still readable from PID 1"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: host cgroup root no longer readable"
