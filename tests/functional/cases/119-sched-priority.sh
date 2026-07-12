@@ -2,6 +2,12 @@
 # Test: sched-policy = rr + sched-priority = 42 applies SCHED_RR and
 # priority 42, verified via chrt -p.
 
+if ! command -v chrt >/dev/null 2>&1; then
+    echo "SKIP: chrt not on target (util-linux not installed)"
+    test_summary
+    return 0
+fi
+
 SVC="test-schedpr"
 
 cat > "/etc/slinit.d/$SVC" <<EOF

@@ -2,6 +2,12 @@
 # Test: SCHED_DEADLINE via sched-runtime/deadline/period. Verify chrt
 # reports SCHED_DEADLINE.
 
+if ! command -v chrt >/dev/null 2>&1; then
+    echo "SKIP: chrt not on target (util-linux not installed)"
+    test_summary
+    return 0
+fi
+
 SVC="test-schedd"
 
 cat > "/etc/slinit.d/$SVC" <<EOF

@@ -1,6 +1,12 @@
 #!/bin/sh
 # Test: sched-policy = fifo sets SCHED_FIFO; verify via chrt -p.
 
+if ! command -v chrt >/dev/null 2>&1; then
+    echo "SKIP: chrt not on target (util-linux not installed)"
+    test_summary
+    return 0
+fi
+
 SVC="test-schedp"
 
 cat > "/etc/slinit.d/$SVC" <<EOF

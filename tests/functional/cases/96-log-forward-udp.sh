@@ -15,6 +15,10 @@ LOG_PORT=15140
 LOG_OUT=/tmp/functional-udpfwd.log
 MARKER="UDPFWD_MARK"
 
+# BusyBox nc: `-l -u` UDP-listen support is patchy across builds.
+# Alpine's default nc may accept the flags but drop datagrams. Probe
+# by binding + sending a self-test datagram before starting the real
+# receiver; skip cleanly if BusyBox drops it.
 if nc -h 2>&1 | grep -q -- '-k'; then
     nc -u -l -p "$LOG_PORT" -k > "$LOG_OUT" 2>/dev/null &
 else
@@ -30,6 +34,19 @@ if ! kill -0 "$NC_PID" 2>/dev/null; then
     return 1
 fi
 echo "OK: UDP listener up on port $LOG_PORT"
+
+# Self-test the receiver — send a probe datagram; if it doesn't land
+# within 1s the BusyBox nc build silently drops UDP.
+printf 'SELF_TEST\n' | nc -u -w1 127.0.0.1 "$LOG_PORT" 2>/dev/null
+sleep 1
+if ! grep -q 'SELF_TEST' "$LOG_OUT" 2>/dev/null; then
+    kill "$NC_PID" 2>/dev/null
+    echo "SKIP: BusyBox nc drops UDP datagrams (self-test failed)"
+    test_summary
+    return 0
+fi
+# Clear the self-test so it doesn't contaminate real assertions.
+: > "$LOG_OUT"
 
 cat > "/etc/slinit.d/$SVC" <<EOF
 type = process
