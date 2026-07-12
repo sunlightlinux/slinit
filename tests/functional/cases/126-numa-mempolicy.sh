@@ -1,9 +1,15 @@
 #!/bin/sh
-# Test: numa-mempolicy = bind on node 0. Single-node hosts show
-# 'default'; presence of numa_maps + STARTED means the config was
-# accepted without error.
+# Test: numa-mempolicy = bind on node 0. Requires CONFIG_NUMA and
+# libnuma-aware slinit-runner. Alpine's virt kernel may be UP-only /
+# without CONFIG_NUMA; skip when /sys/devices/system/node isn't there.
 
 SVC="test-numa"
+
+if [ ! -d /sys/devices/system/node ]; then
+    echo "SKIP: kernel does not expose /sys/devices/system/node (CONFIG_NUMA off)"
+    test_summary
+    return 0
+fi
 
 cat > "/etc/slinit.d/$SVC" <<EOF
 type = process

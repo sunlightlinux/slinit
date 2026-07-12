@@ -3,6 +3,19 @@
 # without changing the exec path. Analogue of runit's chpst -b. Proven
 # via /proc/PID/cmdline (first NUL-terminated field is argv[0] verbatim)
 # and /proc/PID/exe (still the real binary).
+#
+# Busybox limitation: on Alpine most /bin/* commands are busybox
+# multi-call symlinks that DISPATCH on argv[0]. Overriding argv[0] to
+# a name busybox doesn't recognise makes the process exit with
+# "applet not found" — argv[0] passthrough is exercised but the target
+# refuses to run so we can't inspect it. Skip when we detect busybox
+# on /bin/sleep; the acceptance suite covers this on Void where sleep
+# is real coreutils.
+if readlink -f /bin/sleep 2>/dev/null | grep -q busybox; then
+    echo "SKIP: /bin/sleep is busybox — argv[0] override causes 'applet not found'"
+    test_summary
+    return 0
+fi
 
 SVC="test-argv0"
 

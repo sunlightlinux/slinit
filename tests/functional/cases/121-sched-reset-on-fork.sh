@@ -2,6 +2,12 @@
 # Test: sched-reset-on-fork = yes sets RESET_ON_FORK on the RT parent
 # so forked+exec'd children revert to SCHED_OTHER.
 
+if ! command -v chrt >/dev/null 2>&1; then
+    echo "SKIP: chrt not on target (util-linux not installed)"
+    test_summary
+    return 0
+fi
+
 SVC="test-schedrof"
 
 cat > "/etc/slinit.d/$SVC" <<EOF
