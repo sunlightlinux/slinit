@@ -34,7 +34,7 @@ func encodeStatusFlags(svc service.Service) uint8 {
 // MinCompatVersion is the minimum version a peer must support.
 // Version reply format: min_compat(2) + actual_version(2) = 4 bytes.
 const (
-	CPVersion        uint16 = 6
+	CPVersion        uint16 = 7
 	MinCompatVersion uint16 = 1
 )
 
@@ -70,6 +70,13 @@ const (
 	CmdServiceStatus5     uint8 = 26
 	CmdListenEnv          uint8 = 27
 	CmdServiceStatus6     uint8 = 28
+	// Enable-service v7 variant: same wire request as CmdEnableService (14),
+	// but the reply is [RplyServiceStatus][dep_exists(1B)][status_v6_buffer]
+	// instead of a bare RplyACK. Lets the client learn the target's state
+	// from the same round-trip that adds the dep, closing the tiny race
+	// where `slinitctl enable X` on a service that was already STARTED
+	// could report the pre-enable state. Matches dinit d7d843b.
+	CmdEnableServiceV7 uint8 = 29
 
 	// slinit extensions (beyond dinit's range)
 	CmdBootTime          uint8 = 40

@@ -260,7 +260,9 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 	case CmdRmDep:
 		return c.handleRmDep(payload)
 	case CmdEnableService:
-		return c.handleEnableService(payload)
+		return c.handleEnableService(payload, false)
+	case CmdEnableServiceV7:
+		return c.handleEnableService(payload, true)
 	case CmdDisableService:
 		return c.handleDisableService(payload)
 	case CmdQueryServiceName:
@@ -1279,7 +1281,12 @@ func (c *Connection) handleRmDep(payload []byte) error {
 	return c.writePacket(RplyACK, nil)
 }
 
-func (c *Connection) handleEnableService(payload []byte) error {
+// handleEnableService adds a waits-for dep from a "from" service to the
+// target and starts the target. When v7 is true the reply carries the
+// target's current status (via SERVICESTATUS + dep_exists prefix + v6
+// buffer) so the client learns terminal state from the same round-trip
+// that added the dep — matches dinit d7d843b's ENABLE_SERVICE_V7.
+func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 	handle, err := DecodeHandle(payload)
 	if err != nil {
 		return c.writePacket(RplyBadReq, nil)
@@ -1316,24 +1323,52 @@ func (c *Connection) handleEnableService(payload []byte) error {
 		}
 	}
 
-	// Add waits-for dependency from source to target
-	if service.CheckCircularDep(fromSvc, svc) {
-		return c.writePacket(RplyNAK, nil)
+	// Add waits-for dependency from source to target. Detect whether the
+	// dep already existed so v7 clients can report it (dinit exposes
+	// this via the dep_exists byte). We treat "already exists" as any
+	// non-BEFORE/AFTER dep of any type on the same target — matching
+	// dinit's `add_service_dep` behaviour where a WAITS_FOR request on a
+	// service that already has a REGULAR dep on the same target is a
+	// no-op.
+	depExists := false
+	for _, dep := range fromSvc.Record().Dependencies() {
+		if dep.To == svc && dep.DepType != service.DepBefore &&
+			dep.DepType != service.DepAfter {
+			depExists = true
+			break
+		}
 	}
-	fromSvc.Record().AddDep(svc, service.DepWaitsFor)
 
-	// Persist by creating a waits-for.d symlink in the source service's
-	// load directory, so the dependency survives a daemon restart. The
-	// in-memory dep was already added above; a persistence failure is
-	// logged but does not undo the runtime change — operators who
-	// re-enable after the disk is full or read-only should see the
-	// error in logs and re-run once the underlying issue is fixed.
-	if err := persistEnable(fromSvc, svc); err != nil {
-		fmt.Fprintf(os.Stderr, "slinit: enable: persist waits-for.d link: %v\n", err)
+	if !depExists {
+		if service.CheckCircularDep(fromSvc, svc) {
+			return c.writePacket(RplyNAK, nil)
+		}
+		fromSvc.Record().AddDep(svc, service.DepWaitsFor)
+
+		// Persist by creating a waits-for.d symlink in the source
+		// service's load directory, so the dependency survives a
+		// daemon restart. A persistence failure is logged but does
+		// not undo the runtime change — operators who re-enable after
+		// the disk is full or read-only should see the error in logs
+		// and re-run once the underlying issue is fixed.
+		if err := persistEnable(fromSvc, svc); err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: enable: persist waits-for.d link: %v\n", err)
+		}
 	}
 
 	// Start the target service
 	c.server.services.StartService(svc)
+
+	if v7 {
+		// Wire: [RplyServiceStatus][dep_exists(1B)][status_v6(22B)]
+		status := EncodeServiceStatus6(svc)
+		reply := make([]byte, 1+len(status))
+		if depExists {
+			reply[0] = 1
+		}
+		copy(reply[1:], status)
+		return c.writePacket(RplyServiceStatus, reply)
+	}
 	return c.writePacket(RplyACK, nil)
 }
 
