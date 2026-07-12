@@ -370,6 +370,27 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 func (dl *DirLoader) updateDependencies(svc service.Service, desc *ServiceDescription, filePath string) error {
 	rec := svc.Record()
 
+	// Fast-path: if the description's declared deps match the
+	// currently installed deps by (target-name, dep-type), skip the
+	// tear-down/rebuild entirely.
+	//
+	// Without this, a `reload-all` on an unchanged service description
+	// still cycles RmDep → AddDep on every dep. RmDep synchronously
+	// calls Release(true) on the target, and when the target's
+	// requiredBy drops to 0 (svc was the only holder), Release fires
+	// doStop() before we get a chance to re-Require it via AddDep
+	// below. On a healthy Void install where `boot` holds sshd, dbus,
+	// docker, elogind, crond, socklog, getty-* alive, reloading the
+	// `boot` service transiently releases every one of them and the
+	// whole system cascades to STOPPED — including sshd, which then
+	// dies before any pgroup re-Require completes.
+	//
+	// The skip is safe because "no change" means we would end up with
+	// the same dep set anyway; the round-trip was pure churn.
+	if descDepsMatchCurrent(rec, desc) {
+		return nil
+	}
+
 	// Save old deps for rollback
 	oldDeps := make([]*service.ServiceDep, len(rec.Dependencies()))
 	copy(oldDeps, rec.Dependencies())
@@ -1077,6 +1098,66 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 	default:
 		return service.NewInternalService(dl.set, name)
 	}
+}
+
+// depKey names one dep by target-name + type; used to diff current
+// against desc for the updateDependencies fast-path.
+type depKey struct {
+	name    string
+	depType service.DependencyType
+}
+
+// descDepsMatchCurrent reports whether the on-disk description's
+// declared deps exactly match svc's currently installed deps (by
+// target name and type). Directory-based deps (waits-for.d etc.)
+// disable the fast-path because their membership can drift on disk
+// without a description-file rewrite — safest to fall through and
+// let the full path re-resolve them.
+//
+// BEFORE-typed deps are excluded on both sides because
+// updateDependencies also excludes them from the tear-down (they
+// belong to whichever service originally declared `before:` on
+// this one, not to the description we're reloading).
+func descDepsMatchCurrent(rec *service.ServiceRecord, desc *ServiceDescription) bool {
+	// Directory-based deps: any presence disables the fast-path.
+	if len(desc.DependsOnD)+len(desc.DependsMSD)+
+		len(desc.WaitsForD)+len(desc.PreparedByD) > 0 {
+		return false
+	}
+
+	current := make(map[depKey]bool)
+	for _, d := range rec.Dependencies() {
+		if d.DepType == service.DepBefore {
+			continue
+		}
+		current[depKey{name: d.To.Name(), depType: d.DepType}] = true
+	}
+
+	wanted := make(map[depKey]bool)
+	add := func(names []string, dt service.DependencyType) {
+		for _, n := range names {
+			wanted[depKey{name: n, depType: dt}] = true
+		}
+	}
+	add(desc.DependsOn, service.DepRegular)
+	add(desc.DependsMS, service.DepMilestone)
+	add(desc.WaitsFor, service.DepWaitsFor)
+	add(desc.PreparedBy, service.DepPreparedBy)
+	add(desc.After, service.DepAfter)
+	add(desc.AfterOptional, service.DepAfter)
+	// desc.Before excluded on the wanted side to match the current
+	// side's exclusion. desc.BeforeOptional maps to DepBefore too, so
+	// also excluded.
+
+	if len(current) != len(wanted) {
+		return false
+	}
+	for k := range current {
+		if !wanted[k] {
+			return false
+		}
+	}
+	return true
 }
 
 func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescription, filePath string) error {
