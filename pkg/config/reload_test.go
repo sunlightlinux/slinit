@@ -388,3 +388,69 @@ func TestDescDepsMatchCurrent(t *testing.T) {
 		t.Fatal("directory-based deps must disable the fast-path")
 	}
 }
+
+// TestBundleOfDesugarsToInternalWithDeps proves the loader integration
+// of the s6-rc-style bundle-of directive:
+//   - the parsed member list is stashed on the record (visible via
+//     BundleMembers() for the status renderer to consume),
+//   - each member is added to DependsOn (so stopping the bundle
+//     transitively releases each member),
+//   - the type is forced to internal even when unspecified in the file.
+func TestBundleOfDesugarsToInternalWithDeps(t *testing.T) {
+	dir := t.TempDir()
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+
+	writeServiceFile(t, dir, "member-a", "type = internal\n")
+	writeServiceFile(t, dir, "member-b", "type = internal\n")
+	writeServiceFile(t, dir, "member-c", "type = internal\n")
+	writeServiceFile(t, dir, "media-stack",
+		"bundle-of = member-a, member-b, member-c\n")
+
+	svc, err := loader.LoadService("media-stack")
+	if err != nil {
+		t.Fatalf("load bundle failed: %v", err)
+	}
+	if svc.Type() != service.TypeInternal {
+		t.Fatalf("bundle type = %v, want TypeInternal", svc.Type())
+	}
+	members := svc.Record().BundleMembers()
+	want := []string{"member-a", "member-b", "member-c"}
+	if len(members) != len(want) {
+		t.Fatalf("BundleMembers = %v, want %v", members, want)
+	}
+	for i, m := range want {
+		if members[i] != m {
+			t.Errorf("BundleMembers[%d] = %q, want %q", i, members[i], m)
+		}
+	}
+	// Each member should be reachable as a dep, not just as metadata.
+	depNames := make(map[string]bool)
+	for _, dep := range svc.Record().Dependencies() {
+		depNames[dep.To.Name()] = true
+	}
+	for _, m := range want {
+		if !depNames[m] {
+			t.Errorf("member %q not present as a dep on the bundle", m)
+		}
+	}
+}
+
+// TestBundleOfRejectsIncompatibleType guards against silently ignoring
+// bundle-of on a `type = process` service — the semantics only make
+// sense on internal services since a bundle is a pure grouping node.
+func TestBundleOfRejectsIncompatibleType(t *testing.T) {
+	dir := t.TempDir()
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+
+	writeServiceFile(t, dir, "member-x", "type = internal\n")
+	writeServiceFile(t, dir, "bad-bundle",
+		"type = process\ncommand = /bin/true\nbundle-of = member-x\n")
+
+	if _, err := loader.LoadService("bad-bundle"); err == nil {
+		t.Fatal("expected type=process + bundle-of to fail load, got nil")
+	}
+}

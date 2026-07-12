@@ -39,6 +39,13 @@ var KnownSettings = map[string]OperatorType{
 	"prepared-by.d": OpColon,
 	"before":        OpColon,
 	"after":         OpColon,
+	// s6-rc-style bundle: names a group of services this "internal"
+	// service pulls up as a unit. Accepts either `=` (single-line
+	// comma/space list) or repeated `:` (one name per line).
+	"bundle-of": OpEquals | OpColon,
+	// s6-log-style regex selection chain; see LogSelect in parser.go
+	// for evaluation order. Repeatable so long chains can span lines.
+	"log-select": OpEquals | OpColon,
 
 	// Commands
 	"command":       OpEquals | OpPlusEqual,

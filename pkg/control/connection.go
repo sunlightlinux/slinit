@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/persist"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -291,6 +292,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleQueryProfile()
 	case CmdListProfiles:
 		return c.handleListProfiles()
+	case CmdQueryBundleMembers:
+		return c.handleQueryBundleMembers(payload)
 	case CmdPauseService:
 		return c.handlePauseService(payload)
 	case CmdContinueService:
@@ -436,6 +439,11 @@ func (c *Connection) handleStartService(payload []byte) error {
 	c.server.services.StartService(svc)
 	if pin {
 		svc.PinStart()
+		// Persist the pin so a reboot keeps the operator's intent.
+		// Errors are logged; a full disk must not fail the start.
+		if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
+		}
 	}
 	return c.writePacket(RplyACK, nil)
 }
@@ -517,12 +525,18 @@ func (c *Connection) handleStopService(payload []byte) error {
 	}
 	if pin {
 		svc.PinStop()
+		if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStopped); err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
+		}
 	}
 	if restart {
 		// Re-start the service after stopping (restart operation)
 		c.server.services.StartService(svc)
 		if pin {
 			svc.PinStart()
+			if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
+				fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
+			}
 		}
 	}
 	return c.writePacket(RplyACK, nil)
@@ -869,6 +883,11 @@ func (c *Connection) handleUnpinService(payload []byte) error {
 	}
 
 	svc.Unpin()
+	// Drop any persisted intent — unpin means the operator no longer
+	// wants slinit to re-apply pins on the next boot.
+	if err := c.server.Pins.Clear(svc.Name()); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
+	}
 	c.server.services.ProcessQueues()
 	return c.writePacket(RplyACK, nil)
 }
@@ -1532,6 +1551,22 @@ func (c *Connection) handleQueryProfile() error {
 // no service uses profiles.
 func (c *Connection) handleListProfiles() error {
 	return c.writePacket(RplyProfileList, EncodeStringList(c.server.services.ListProfiles()))
+}
+
+// handleQueryBundleMembers returns the s6-rc-style bundle member list
+// stored on the service record. Empty list is a valid reply when the
+// service is not a bundle — the client uses that to decide whether to
+// render a "Bundle members:" section in `slinitctl status`.
+func (c *Connection) handleQueryBundleMembers(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	return c.writePacket(RplyBundleMembers, EncodeStringList(svc.Record().BundleMembers()))
 }
 
 func (c *Connection) handleQueryServiceDscDir() error {

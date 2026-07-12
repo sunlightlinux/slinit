@@ -270,6 +270,7 @@ ln -s slinit /sbin/reboot
 | `--parallel-start-slow-threshold` | Seconds before a starting service is considered "slow" | `10s` |
 | `--shutdown-grace` | SIGTERM→SIGKILL grace period during shutdown | `3s` |
 | `--emergency-timeout` | Max time slinit waits for services to drain during shutdown before the force-exit path (SIGKILL any straggler, log names of blocking services in the same error line, then reboot syscall). Tune up for heavy stop cascades (docker + full systemd-style graph) | `90s` |
+| `--persist-intent` | Directory where pin transitions are persisted; `stop --pin X` writes `<dir>/X` with `pinned-stopped` so the pin survives a reboot. Empty disables (opt-in). Recommended: `/var/lib/slinit/intent` | (empty) |
 | `--no-wall` | Disable wall broadcasts at shutdown | `false` |
 | `--banner` | Boot banner printed to console (empty disables) | `slinit booting...` |
 | `--umask` | Initial umask (octal) | `0022` |
@@ -587,6 +588,8 @@ command = /usr/bin/optional
 | `set-credential`          | `NAME:VALUE` write inline literal as a credential |
 | `dynamic-user`            | Allocate a transient UID/GID per BringUp, release on Stopped |
 | `file-descriptor-store-max` | Enable sd_notify FDSTORE=1 fd handover across restarts |
+| `bundle-of`               | s6-rc-style grouping: names a set of services this internal svc pulls up as a unit; accepts comma-/space-separated list or repeated directive |
+| `log-select`              | s6-log-style regex chain (`-* +alert +warn`); last-matched verdict wins per line; mutually exclusive with log-include / log-exclude |
 | `@include`                | Include another config file (error if not found) |
 | `@include-opt`            | Include another config file (ignore if not found)|
 

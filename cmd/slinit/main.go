@@ -20,6 +20,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/pathwatch"
+	"github.com/sunlightlinux/slinit/pkg/persist"
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -185,6 +186,10 @@ func main() {
 	var activeProfile string
 	flag.StringVar(&activeProfile, "active-profile", "",
 		"activate this named profile at boot (runsvchdir analogue); services declaring 'profile = <name>' filter against this. Empty = no filter (all services eligible)")
+
+	var persistIntentDir string
+	flag.StringVar(&persistIntentDir, "persist-intent", "",
+		"directory for pin-intent persistence — `slinitctl stop --pin X` writes <dir>/X so the pin survives a reboot; empty disables (opt-in). Recommended value: /var/lib/slinit/intent")
 
 	var ringBufSize int
 	flag.IntVar(&ringBufSize, "stderr-ring-buffer-size", 0,
@@ -901,11 +906,44 @@ func main() {
 	// Start control socket server
 	ctx := context.Background()
 	ctrlServer := control.NewServer(serviceSet, sock, logger)
+
+	// Wire pin-intent persistence when the operator opted in with
+	// --persist-intent. Empty dir means "disabled" and every hook
+	// site short-circuits — no runtime cost when the feature isn't
+	// in use.
+	pinStore := persist.NewPinStore(persistIntentDir)
+	ctrlServer.Pins = pinStore
+
 	if err := ctrlServer.Start(ctx); err != nil {
 		logger.Error("Failed to start control socket: %v", err)
 		// Non-fatal: continue without control socket
 	} else {
 		defer ctrlServer.Stop()
+	}
+
+	// Replay any persisted pins BEFORE the boot cascade runs so a
+	// service marked pinned-stopped never briefly comes up first.
+	// Errors from the store are logged; a broken file for one service
+	// doesn't gate the whole restore.
+	if intents, err := pinStore.Load(); err == nil {
+		for name, intent := range intents {
+			svc := serviceSet.FindService(name, false)
+			if svc == nil {
+				logger.Info("Persist: skipping unknown service %s", name)
+				continue
+			}
+			switch intent {
+			case persist.IntentPinnedStarted:
+				svc.PinStart()
+				serviceSet.StartService(svc)
+				logger.Info("Persist: replayed pinned-started on %s", name)
+			case persist.IntentPinnedStopped:
+				svc.PinStop()
+				logger.Info("Persist: replayed pinned-stopped on %s", name)
+			}
+		}
+	} else {
+		logger.Warn("Persist: failed to load pin intents: %v", err)
 	}
 
 	// Wire pass-cs-fd: when a service creates a socketpair, the server end

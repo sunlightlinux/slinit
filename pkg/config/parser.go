@@ -124,6 +124,20 @@ type ServiceDescription struct {
 	WaitsForD   []string // waits-for.d
 	PreparedByD []string // prepared-by.d
 
+	// Bundle members — s6-rc-style grouping. When non-empty the loader
+	// forces `type = internal` and desugars each member into a
+	// `depends-on: <member>`. The list is also stashed on the record
+	// so `slinitctl status` can render a "Bundle members:" section
+	// with each member's live state.
+	BundleMembers []string
+	// TypeExplicit tracks whether the config file wrote a `type =`
+	// setting. NewServiceDescription defaults Type to TypeProcess so
+	// the bare-minimum case (`command = /bin/foo`) works; the loader
+	// needs to tell the difference so bundle-of can refuse an
+	// obviously-incompatible explicit type without also refusing the
+	// unspecified case.
+	TypeExplicit bool
+
 	// Behavior
 	AutoRestart    service.AutoRestartMode
 	SmoothRecovery bool
@@ -150,6 +164,12 @@ type ServiceDescription struct {
 	LogProcessor  []string      // command to run on rotated logfile
 	LogInclude    []string      // include only lines matching these patterns
 	LogExclude    []string      // exclude lines matching these patterns
+	// s6-log-style regex selection chain. Each token is either `+regex`
+	// (include if matches) or `-regex` (exclude if matches); `+*`/`-*`
+	// match every line. Tokens are evaluated in order per line and the
+	// LAST-MATCHED verdict wins. No match at end of chain → include.
+	// Mutually exclusive with LogInclude/LogExclude (checked at load).
+	LogSelect []string
 
 	// systemd-style log rate limiting. Drops lines exceeding
 	// LogRateLimitBurst per LogRateLimitInterval (token bucket).
@@ -1341,6 +1361,19 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid dependency name: %w", err)
 		}
 		desc.PreparedBy = append(desc.PreparedBy, depName)
+	case "bundle-of":
+		// Permissive parse: allow comma-, space- or repeated-directive
+		// forms so users can pick the one that reads best. Each name
+		// still runs through the normal validator + env-substitution.
+		for _, raw := range strings.FieldsFunc(value, func(r rune) bool {
+			return r == ',' || r == ' ' || r == '\t'
+		}) {
+			name := expandEnvVars(raw, serviceArg)
+			if err := ValidateServiceName(name); err != nil {
+				return fmt.Errorf("invalid bundle member name: %w", err)
+			}
+			desc.BundleMembers = append(desc.BundleMembers, name)
+		}
 	case "before":
 		depName := expandEnvVars(value, serviceArg)
 		if err := ValidateServiceName(depName); err != nil {
@@ -1622,6 +1655,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.LogInclude = append(desc.LogInclude, value)
 	case "log-exclude":
 		desc.LogExclude = append(desc.LogExclude, value)
+	case "log-select":
+		// Space-tokenised chain; each token is `+regex` or `-regex`.
+		// Repeated directive is also supported so long regex bodies
+		// don't need to fit on one line — every value's tokens are
+		// appended in file order.
+		for _, tok := range strings.Fields(value) {
+			if len(tok) < 2 || (tok[0] != '+' && tok[0] != '-') {
+				return fmt.Errorf(
+					"log-select token must start with '+' or '-': %q", tok)
+			}
+			desc.LogSelect = append(desc.LogSelect, tok)
+		}
 	case "log-sanitize":
 		if len(value) != 1 {
 			return fmt.Errorf("log-sanitize: must be a single ASCII character (got %q)", value)
@@ -2377,6 +2422,7 @@ func applyType(desc *ServiceDescription, value string) error {
 	default:
 		return fmt.Errorf("unknown service type: %s", value)
 	}
+	desc.TypeExplicit = true
 	return nil
 }
 

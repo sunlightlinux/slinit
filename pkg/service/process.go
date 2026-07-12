@@ -127,6 +127,9 @@ type ProcessService struct {
 	logProcessor  []string
 	logIncludes          []string
 	logExcludes          []string
+	// s6-log-style regex selection chain. Populated by SetLogSelect;
+	// mutually exclusive with the include/exclude pair at load time.
+	logSelect []string
 	logRateLimitInterval time.Duration
 	logRateLimitBurst    int
 	logLevelMax          int
@@ -621,6 +624,14 @@ func (s *ProcessService) stopCronRunner() {
 func (s *ProcessService) SetLogFilters(includes, excludes []string) {
 	s.logIncludes = includes
 	s.logExcludes = excludes
+}
+
+// SetLogSelect sets the s6-log-style regex selection chain. Each token
+// is `+regex` or `-regex`; the last-matched verdict wins per line; no
+// match at end of chain → include. Mutually exclusive with the
+// include/exclude pair — the loader validates before calling.
+func (s *ProcessService) SetLogSelect(tokens []string) {
+	s.logSelect = tokens
 }
 
 // SetLogRateLimit configures the log pipeline's token-bucket limiter.
@@ -1370,6 +1381,7 @@ func (s *ProcessService) startProcess() error {
 		// limit, or severity filter is configured
 		if s.logMaxSize > 0 || s.logMaxFiles > 0 || s.logRotateTime > 0 ||
 			len(s.logProcessor) > 0 || len(s.logIncludes) > 0 || len(s.logExcludes) > 0 ||
+			len(s.logSelect) > 0 ||
 			(s.logRateLimitInterval > 0 && s.logRateLimitBurst > 0) ||
 			s.logLevelMax >= 0 ||
 			s.logSanitizeChar != 0 || len(s.logSanitizeExtra) > 0 ||
@@ -1406,6 +1418,7 @@ func (s *ProcessService) startProcess() error {
 				Processor:     s.logProcessor,
 				Includes:      s.logIncludes,
 				Excludes:      s.logExcludes,
+				Select:        s.logSelect,
 				RateInterval:  s.logRateLimitInterval,
 				RateBurst:     s.logRateLimitBurst,
 				LogLevelMax:   s.logLevelMax,

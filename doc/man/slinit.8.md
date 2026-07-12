@@ -280,6 +280,18 @@ service-file format.
     Intended for database servers, telco control planes, and other
     workloads where the audit trail matters as much as the trigger.
 
+**\--persist-intent** *dir*
+:   Opt-in: persist pin transitions to *dir* so `slinitctl stop --pin
+    X` stays effective across a reboot. One file per service is
+    written atomically with contents `pinned-started` or
+    `pinned-stopped`; `slinitctl unpin` removes the file. At boot the
+    daemon replays these intents BEFORE the boot cascade so a service
+    marked pinned-stopped never briefly comes up first. Empty
+    (default) disables the feature — every hook site short-circuits
+    so runtime cost is zero when unused. Recommended value:
+    */var/lib/slinit/intent*. Inspired by s6-supervise's *wantup*/
+    *wantdown* files.
+
 **\--emergency-timeout** *duration*
 :   Maximum time slinit waits for services to drain during shutdown
     before flipping into the force-exit path (SIGKILL to any straggler,

@@ -191,6 +191,12 @@ type ServiceRecord struct {
 	// (runsvchdir analogue). Empty = global (always eligible).
 	profiles []string
 
+	// bundleMembers, when non-empty, marks this service as an s6-rc-
+	// style bundle. Members are also present as depends-on entries;
+	// this field is kept for status output ("Bundle members:" line
+	// with each member's live state).
+	bundleMembers []string
+
 	// Extra commands (OpenRC-style custom actions)
 	// extraCommands are available in any service state.
 	// extraStartedCommands are only available when the service is STARTED.
@@ -848,6 +854,18 @@ func (sr *ServiceRecord) SetSharedLoggerLossy(b bool)      { sr.sharedLoggerLoss
 func (sr *ServiceRecord) SharedLoggerLossy() bool          { return sr.sharedLoggerLossy }
 func (sr *ServiceRecord) SetSharedLoggerQueueSize(n int)   { sr.sharedLoggerQueueSize = n }
 func (sr *ServiceRecord) SharedLoggerQueueSize() int       { return sr.sharedLoggerQueueSize }
+
+// SetBundleMembers records the s6-rc-style member list for this
+// bundle. The loader has already added each member as a depends-on
+// dep — this list is only kept so `slinitctl status` can render a
+// "Bundle members:" section.
+func (sr *ServiceRecord) SetBundleMembers(m []string) {
+	sr.bundleMembers = append(sr.bundleMembers[:0], m...)
+}
+
+// BundleMembers returns the recorded member list (empty when the
+// service isn't a bundle).
+func (sr *ServiceRecord) BundleMembers() []string { return sr.bundleMembers }
 
 // SetProfiles assigns the profile tags this service belongs to.
 // Empty (nil / len==0) = global service.
