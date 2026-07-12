@@ -1,0 +1,27 @@
+#!/bin/sh
+# Test: sched-policy = fifo sets SCHED_FIFO; verify via chrt -p.
+
+SVC="test-schedp"
+
+cat > "/etc/slinit.d/$SVC" <<EOF
+type = process
+sched-policy = fifo
+sched-priority = 10
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no
+EOF
+
+slinitctl --system start "$SVC" 2>/dev/null
+wait_for_service "$SVC" STARTED 10
+assert_service_state "$SVC" "STARTED" "service reached STARTED"
+
+_pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ { print $2; exit }')
+_pol=$(chrt -p "$_pid" 2>&1 | awk -F': ' '/scheduling policy/ { print $2 }')
+
+_TESTS_RUN=$((_TESTS_RUN + 1))
+case "$_pol" in
+    SCHED_FIFO*) echo "OK: policy=$_pol" ;;
+    *) _TESTS_FAILED=$((_TESTS_FAILED + 1)); echo "FAIL: expected SCHED_FIFO got '$_pol'" ;;
+esac
+
+test_summary
