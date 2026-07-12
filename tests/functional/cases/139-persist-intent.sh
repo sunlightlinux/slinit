@@ -48,8 +48,15 @@ echo "OK: nested slinit up with --persist-intent"
 # Start the target, then stop --pin. The stop-pin path should persist
 # the intent to disk under $INTENT_DIR/target.
 sl start target >/dev/null 2>&1
-sleep 1
-sl stop --pin target >/dev/null 2>&1
+# Explicitly wait for STARTED — if we called --pin stop while state
+# was still STOPPED, the daemon would short-circuit with RplyAlreadySS
+# and never reach the persist hook.
+_e=0
+while [ "$_e" -lt 10 ] && \
+      [ "$(sl status target 2>/dev/null | awk '/State:/ {print $2}')" != "STARTED" ]; do
+    sleep 1; _e=$((_e + 1))
+done
+sl --pin stop target >/dev/null 2>&1
 sleep 1
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
@@ -78,7 +85,7 @@ else
 fi
 
 # Start --pin should write the mirror intent.
-sl start --pin target >/dev/null 2>&1
+sl --pin start target >/dev/null 2>&1
 sleep 1
 assert_contains "$(cat "$INTENT_DIR/target" 2>/dev/null)" "pinned-started" \
     "intent file records 'pinned-started' after start --pin"

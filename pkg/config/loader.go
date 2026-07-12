@@ -1063,6 +1063,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetLogMinFiles(desc.LogMinFiles)
 		svc.SetLogProcessor(desc.LogProcessor)
 		svc.SetLogFilters(desc.LogInclude, desc.LogExclude)
+		svc.SetLogSelect(desc.LogSelect)
 		svc.SetLogRateLimit(desc.LogRateLimitInterval, desc.LogRateLimitBurst)
 		svc.SetLogLevelMax(desc.LogLevelMax)
 		svc.SetLogSanitize(desc.LogSanitizeChar, desc.LogSanitizeExtra)
