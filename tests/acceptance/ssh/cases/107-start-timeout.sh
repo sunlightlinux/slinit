@@ -22,17 +22,33 @@ _start=$(date +%s)
 slinitctl --system start "$SVC" 2>/dev/null &
 _wait_pid=$!
 
-# Poll until the daemon marks it terminal. 30 iterations × 0.5s
-# gives a 15s window that matches the elapsed-time budget below —
-# the daemon fires the timeout at 3s but SSH RTT can defer the
-# observation when the case runs late in the full suite.
+# Two-phase polling.
+#
+# Phase 1 — wait for the service to actually enter the daemon's
+# registry. Without this, the very first svc_state call can race the
+# `start` request and return empty; the old case treated empty as
+# terminal ("break"), fell out of the loop on iteration zero, and then
+# the final assertion caught the service still in STARTING and FAILED.
+#
+# Phase 2 — poll for STOPPED. The 3s start-timeout kills the sleep 30
+# after 3s and the service should settle in STOPPED within a couple
+# of extra RTTs; 30 iterations × 0.5s gives a 15s ceiling that matches
+# the elapsed-time budget below.
+_i=0
+while [ "$_i" -lt 20 ]; do
+    _st=$(svc_state "$SVC")
+    case "$_st" in
+        STARTING|STARTED|STOPPING|STOPPED) break ;;
+    esac
+    _i=$((_i + 1))
+    sleep 0.5
+done
+
 _i=0
 while [ "$_i" -lt 30 ]; do
-    case "$(svc_state "$SVC")" in
-        STOPPED|"")
-            break
-            ;;
-    esac
+    if [ "$(svc_state "$SVC")" = "STOPPED" ]; then
+        break
+    fi
     _i=$((_i + 1))
     sleep 0.5
 done
