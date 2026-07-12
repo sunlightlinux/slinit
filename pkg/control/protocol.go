@@ -137,9 +137,17 @@ const (
 	RplyShutdownStatus  uint8 = 97 // scheduled shutdown status (type + remaining_secs)
 	RplyReloadAllResult uint8 = 98 // reload-all summary (uint16 succeeded + uint16 failed, LE)
 	RplyMetadata        uint8 = 99 // author/version/usage triplet (3× uint16 length-prefixed UTF-8)
-	RplyProfile         uint8 = 100 // single length-prefixed string (active profile name; "" = none)
-	RplyProfileList     uint8 = 101 // uint16 count + [uint16 len + name]*
-	RplyActivateResult  uint8 = 102 // active profile name + 3 lists (stopped/started/kept) all length-prefixed
+	// Profile reply codes: originally 100/101/102 but that collided
+	// with the InfoServiceEvent / InfoServiceEvent5 / InfoEnvEvent
+	// push-notification codes just below, so `readReply` on the
+	// client mistook every profile reply for an unsolicited push
+	// event and skipped it — hanging every activate-profile /
+	// list-profiles / active-profile call. Renumbered above the
+	// push range (which is 100-102) so the two families never
+	// overlap again.
+	RplyProfile         uint8 = 110 // single length-prefixed string (active profile name; "" = none)
+	RplyProfileList     uint8 = 111 // uint16 count + [uint16 len + name]*
+	RplyActivateResult  uint8 = 112 // active profile name + 3 lists (stopped/started/kept) all length-prefixed
 )
 
 // Info codes (server → client, unsolicited).
