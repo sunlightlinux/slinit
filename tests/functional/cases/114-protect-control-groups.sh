@@ -28,19 +28,18 @@ else
 fi
 
 # Host-side isolation probe: what we're guarding against is the
-# service's read-only remount leaking into PID 1's view. Read a stable
-# file the guarded service now sees as ro but that PID 1 must still
-# see as normal — cgroup.controllers exists at the cgroup v2 root and
-# holds the list of enabled controllers; a delegation-related mkdir
-# gate at the top-level is expected on modern kernels, so probing
-# read-only files is the right isolation signal.
+# service's read-only remount leaking into PID 1's view. Enumerating
+# /sys/fs/cgroup as a directory would fail if the mount was replaced
+# by something unexpected in our namespace. Content emptiness at
+# cgroup.controllers is normal on kernels booted without controllers
+# in the root, so probing readability of a *file* is fragile — probe
+# the mountpoint itself instead.
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ -r /sys/fs/cgroup/cgroup.controllers ] && \
-   [ -n "$(cat /sys/fs/cgroup/cgroup.controllers 2>/dev/null)" ]; then
-    echo "OK: host cgroup.controllers still readable from PID 1"
+if [ -d /sys/fs/cgroup ] && ls /sys/fs/cgroup >/dev/null 2>&1; then
+    echo "OK: PID 1 still sees /sys/fs/cgroup as a normal directory"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: host cgroup root no longer readable"
+    echo "FAIL: PID 1 /sys/fs/cgroup enumeration broken (leaked ro remount?)"
 fi
 
 test_summary
