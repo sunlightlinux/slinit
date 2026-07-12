@@ -15,7 +15,9 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
-// Default emergency shutdown timeout.
+// Default emergency shutdown timeout. Configurable at daemon start
+// via --emergency-timeout for workloads whose stop cascade legitimately
+// runs longer than the built-in 90s guard (docker + complex services).
 const defaultEmergencyTimeout = 90 * time.Second
 
 // EventLoop is the central event coordinator for slinit.
@@ -31,6 +33,11 @@ type EventLoop struct {
 	shutdownInitiated bool
 	shutdownType      service.ShutdownType
 	emergencyTimer    *time.Timer
+
+	// Emergency shutdown timeout. Zero means "use defaultEmergencyTimeout".
+	// Set via SetEmergencyTimeout before Run(); reads are unlocked because
+	// the field is only written at startup, before any goroutine reads it.
+	emergencyTimeout time.Duration
 
 	// Atomic counter for repeated shutdown signals (escalation).
 	shutdownSignals atomic.Int32
@@ -91,6 +98,24 @@ func (el *EventLoop) SetPID1Mode(v bool) {
 // - Boot failure detection (same as PID 1)
 func (el *EventLoop) SetContainerMode(v bool) {
 	el.isContainer = v
+}
+
+// SetEmergencyTimeout overrides the shutdown emergency-timeout guard
+// (default 90s). Values <= 0 fall back to the default. Must be called
+// before Run(); once the event loop is running the value is captured
+// into the timer callback and further changes have no effect on the
+// in-flight shutdown.
+func (el *EventLoop) SetEmergencyTimeout(d time.Duration) {
+	el.emergencyTimeout = d
+}
+
+// effectiveEmergencyTimeout returns the configured emergency timeout,
+// falling back to the compile-time default when unset or non-positive.
+func (el *EventLoop) effectiveEmergencyTimeout() time.Duration {
+	if el.emergencyTimeout > 0 {
+		return el.emergencyTimeout
+	}
+	return defaultEmergencyTimeout
 }
 
 // GetShutdownType returns the shutdown type that was requested.
@@ -330,11 +355,13 @@ func (el *EventLoop) escalateShutdown(sigName string) bool {
 	switch {
 	case count == 2:
 		el.logger.Notice("Received %s again, reducing emergency timeout to 25%%", sigName)
-		el.resetEmergencyTimer(defaultEmergencyTimeout / 4)
+		el.resetEmergencyTimer(el.effectiveEmergencyTimeout() / 4)
 		// Log which services are blocking shutdown
 		el.logBlockingServices()
 	case count >= 3:
-		el.logger.Error("Received %s a third time, killing all processes and forcing exit", sigName)
+		blocking := formatBlockingServices(el.services.GetActiveServiceInfo())
+		el.logger.Error("Received %s a third time, killing all processes and forcing exit%s",
+			sigName, blocking)
 		el.services.KillActiveServices()
 		el.stopShutdownReporter()
 		select {
@@ -351,7 +378,16 @@ func (el *EventLoop) logBlockingServices() {
 	if len(active) == 0 {
 		return
 	}
-	var parts []string
+	el.logger.Notice("Waiting for %d service(s) to stop: %s",
+		len(active), joinActiveServiceInfo(active))
+}
+
+// joinActiveServiceInfo renders a comma-separated list of blocking
+// services with state + PID. Shared between the periodic reporter and
+// the emergency force-exit log so both produce the same operator-
+// visible string.
+func joinActiveServiceInfo(active []service.ActiveServiceInfo) string {
+	parts := make([]string, 0, len(active))
 	for _, info := range active {
 		s := info.Name + " (" + info.State.String()
 		if info.PID > 0 {
@@ -360,7 +396,19 @@ func (el *EventLoop) logBlockingServices() {
 		s += ")"
 		parts = append(parts, s)
 	}
-	el.logger.Notice("Waiting for %d service(s) to stop: %s", len(active), strings.Join(parts, ", "))
+	return strings.Join(parts, ", ")
+}
+
+// formatBlockingServices returns a "; still blocking: X, Y, Z" suffix
+// for emergency-path log lines, or an empty string when nothing is
+// active. Callers append it to the primary error message so the
+// operator sees the blocker list in the same journal entry as the
+// force-exit event — no need to correlate two separate log lines.
+func formatBlockingServices(active []service.ActiveServiceInfo) string {
+	if len(active) == 0 {
+		return ""
+	}
+	return "; still blocking: " + joinActiveServiceInfo(active)
 }
 
 // startShutdownReporter launches a goroutine that periodically logs
@@ -413,10 +461,16 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 
 	// Start emergency timeout with a cancellable timer.
 	// Capture immutable refs to avoid racing on el fields after mutex release.
+	// services is captured too so the callback can enumerate blockers
+	// without touching el fields the timer isn't holding a lock on.
 	logger := el.logger
 	forceExitCh := el.forceExitCh
-	el.emergencyTimer = time.AfterFunc(defaultEmergencyTimeout, func() {
-		logger.Error("Services did not stop within %v, forcing shutdown", defaultEmergencyTimeout)
+	services := el.services
+	timeout := el.effectiveEmergencyTimeout()
+	el.emergencyTimer = time.AfterFunc(timeout, func() {
+		blocking := formatBlockingServices(services.GetActiveServiceInfo())
+		logger.Error("Services did not stop within %v, forcing shutdown%s",
+			timeout, blocking)
 		select {
 		case forceExitCh <- struct{}{}:
 		default:
@@ -459,8 +513,11 @@ func (el *EventLoop) resetEmergencyTimer(d time.Duration) {
 	}
 	logger := el.logger
 	forceExitCh := el.forceExitCh
+	services := el.services
 	el.emergencyTimer = time.AfterFunc(d, func() {
-		logger.Error("Escalated emergency timeout reached, forcing shutdown")
+		blocking := formatBlockingServices(services.GetActiveServiceInfo())
+		logger.Error("Escalated emergency timeout reached, forcing shutdown%s",
+			blocking)
 		select {
 		case forceExitCh <- struct{}{}:
 		default:
