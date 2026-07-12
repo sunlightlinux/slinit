@@ -200,6 +200,10 @@ func main() {
 	flag.DurationVar(&heartbeatWindow, "heartbeat-restart-window", time.Minute,
 		"window over which the heartbeat's 'restarts(N)' count is computed")
 
+	var emergencyTimeout time.Duration
+	flag.DurationVar(&emergencyTimeout, "emergency-timeout", 0,
+		"maximum time to wait for services to stop during shutdown before force-exit (default 90s; workloads with heavy docker/systemd-style teardown may need 3-5m)")
+
 	flag.Parse()
 
 	if showVersion {
@@ -920,6 +924,11 @@ func main() {
 		} else if isPID1 {
 			loop.SetPID1Mode(true)
 		}
+
+		// --emergency-timeout override. Zero passes through to the
+		// event loop's built-in default (90s); the setter handles the
+		// fallback so we don't hard-code the default twice.
+		loop.SetEmergencyTimeout(emergencyTimeout)
 
 		ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
 			loop.InitiateShutdown(st)
