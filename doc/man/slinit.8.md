@@ -280,6 +280,20 @@ service-file format.
     Intended for database servers, telco control planes, and other
     workloads where the audit trail matters as much as the trigger.
 
+**\--emergency-timeout** *duration*
+:   Maximum time slinit waits for services to drain during shutdown
+    before flipping into the force-exit path (SIGKILL to any straggler,
+    then hand off to the reboot/halt/kexec syscall). Default *90s*.
+    Zero (the flag's zero-value on daemon start) falls through to the
+    default; negatives are treated the same. When the timer fires the
+    error log line names every still-blocking service in-line
+    (**"Services did not stop within Xs, forcing shutdown; still
+    blocking: docker (STOPPING, pid 1234), elogind (STOPPING, pid
+    5678)"**) so the operator doesn't have to correlate with the
+    periodic reporter that was scrolling past. Workloads with a heavy
+    stop cascade (docker + dbus + full systemd-style service graph)
+    can safely tune this up to **3m** or **5m**.
+
 **\--log-level** *level*
 :   Minimum level for the main log facility (file or syslog). One of
     `debug`, `info`, `notice`, `warn`, `error`. Default `info`.

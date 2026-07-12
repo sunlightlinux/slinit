@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (158 tests)
+# Run all tests (136 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -131,6 +131,50 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 90 | slinit-mountinfo | real `/proc/mounts` includes `/proc` with fstype=proc, rootfs skipped; fixture drives reverse-order output, regex filters (fstype/skip-fstype, point-regex), `--node`/`--options` selectors; `--netdev`/`--nonetdev` cross-reference `/etc/fstab` for `_netdev`; relative positional rejected |
 | 91 | slinit-einfo | argv[0] dispatch across 22 applet symlinks; einfo→stdout / ewarn+eerror→stderr; `n`-suffix suppresses newline; `v*` variants gated on EINFO_VERBOSE; EINFO_QUIET blanket suppression; eend marker + status propagation; eindent no-op; eval_ecolors emits all 6 shell vars; ewaitfile fires + times out |
 | 92 | slinit-shell-var | single-arg mapping (`my-service.d/1` → `my_service_d_1`); multi-arg joined with literal space, inner spaces sanitised; pure-punctuation → all underscores; zero args → empty; sanitised output usable as a shell identifier (round-trip via `eval`) |
+| 93 | heartbeat | `--heartbeat-interval` emits a grep-friendly summary line (active/failed/stopped/starting/stopping counts, restarts(N), watchdog-misses, rss) |
+| 94 | stderr-ring-buffer | `--stderr-ring-buffer-size` + `--stderr-ring-buffer-interval` arm the daemon's recent-log ring; RingDumper announces itself in the log |
+| 95 | profile-subsystem | runsvchdir-analogue: `list-profiles`, `active-profile`, `activate-profile` (validate against loaded services, `-` deactivates, unknown profile NAKed) |
+| 96 | log-forward-udp | `log-forward-udp = host:port` sends producer stdout to a UDP listener framed per RFC 3164; self-tests the receiver on BusyBox and SKIPs if UDP is dropped |
+| 97 | sentinel-file-ipc | `--sentinel-dir` inotify path — chmod +x on `reboot` fires the handler + audit line + unlink; plain touch is ignored |
+| 98 | svcdirwatch | `--watch-services-dir` inotify auto-load: a service dropped into the dir becomes startable without an explicit reload-all |
+| 99 | command-argv0 | override argv[0] presented to the child (chpst -b analogue); SKIPs on BusyBox where /bin/sleep dispatches on argv[0] |
+| 100 | log-max-line-length | svlogd -l analogue: overlong lines truncated to N + `+` overflow marker, still land in the log |
+| 101 | log-sanitize | svlogd -r/-R analogue: control bytes rewritten to the sanitize char before disk |
+| 102 | log-timestamp | svlogd -tt analogue: `log-timestamp = human` prepends `YYYY-MM-DD_HH:MM:SS.µs` |
+| 103 | shared-logger-lossy | `shared-logger-lossy = yes` + `shared-logger-queue-size` opt-in path; producer output still reaches the sink under backpressure |
+| 104 | log-buffer-nmin | `log-buffer-size` + `logfile-min-files` parse cleanly and don't break rotator init |
+| 105 | wait-timeout | `-w SEC` / `--wait=SEC` caps how long slinitctl waits for a reply; non-integer / negative values fail flag-parse before touching the socket |
+| 106 | shutdown-flag-surface | `slinit-shutdown --help` lists every documented reboot(8)-compat flag (`--reboot`, `--halt`, `-r/-h/-p/-s/-k/-f`, `--force`, `--no-sync`, `--no-wtmp`, `--wtmp-only`, `--no-wall`, `--use-passed-cfd`, `--system`, `--grace=`) |
+| 107 | status-file-namecap | `slinitctl status` prints a `File:` line; mtime bump after load surfaces `(modified since loaded)`; `.`-prefix names rejected at load |
+| 108 | openrc-depend-ordering | `depend() { after other }` in an init.d script maps to advisory ordering (`AfterOptional`), not a hard dep — both services load and start via init.d auto-detect |
+| 109 | kexec-preflight | `slinitctl shutdown kexec` warns when `/sys/kernel/kexec_loaded == 0`; nested `slinit --user` isolates the shutdown so the host isn't affected |
+| 110 | enable-v7-status | protocol v7 `CmdEnableServiceV7` returns the target's status in the same round-trip; distinguishes "enabled" from "already enabled" |
+| 111 | protect-kernel-modules | blocks `init_module`/`finit_module`/`delete_module` via seccomp; probe: modprobe from inside the guarded service |
+| 112 | protect-kernel-logs | blocks `syslog(2)`; seccomp mode 2 active on child |
+| 113 | protect-clock | blocks `clock_settime`/`settimeofday`/`adjtimex` via seccomp |
+| 114 | protect-control-groups | remounts `/sys/fs/cgroup` ro in the service's mount ns; PID 1's view of `cgroup.controllers` stays readable |
+| 115 | protect-hostname | blocks `sethostname`/`setdomainname`; host hostname untouched |
+| 116 | lock-personality | blocks `personality(2)` via seccomp; child alive under mode-2 filter |
+| 117 | namespace-net-ipc | service runs in distinct net + IPC namespaces from PID 1 (inode ids differ) |
+| 118 | sched-policy | `sched-policy = fifo` → SCHED_FIFO via chrt -p (SKIP if chrt missing) |
+| 119 | sched-priority | `sched-policy = rr` + `sched-priority = 42` → SCHED_RR / prio 42 |
+| 120 | sched-deadline | SCHED_DEADLINE via `sched-runtime`/`sched-deadline`/`sched-period` |
+| 121 | sched-reset-on-fork | RESET_ON_FORK bit surfaced (either explicit flag or policy+priority readback) |
+| 122 | securebits | `securebits = keep-caps,no-setuid-fixup` parses; child comes up |
+| 123 | normal-exit | `normal-exit = 42` — scripted svc exiting 42 lands in STOPPED (not FAILED) |
+| 124 | success-action | `success-action = none` parses cleanly and svc reaches a terminal state |
+| 125 | mlockall | `mlockall = current+future` → `/proc/PID/status VmLck > 0` |
+| 126 | numa-mempolicy | `numa-mempolicy = bind` on node 0; SKIPs if CONFIG_NUMA is off |
+| 127 | state-directory-mode | `state-directory` + `state-directory-mode` creates `/var/lib/<svc>` with the requested mode |
+| 128 | cache-directory | `cache-directory` + `cache-directory-mode` at `/var/cache/<svc>` |
+| 129 | runtime-directory-preserve | `runtime-directory-preserve = yes` keeps `/run/<svc>/…` after stop |
+| 130 | namespace-cgroup | `namespace-cgroup = yes` puts the service in its own cgroup ns |
+| 131 | reboot-argument | parse-only smoke for `reboot-argument = recovery`; svc reaches a terminal state |
+| 132 | socket-permissions | `socket-permissions = 0640` sets the listener socket mode |
+| 133 | slinit-init-maker | `-dry-run` doesn't touch disk; real generation writes boot/system-init/getty-tty[N]/README; `-force` overwrites; slinit-check accepts the generated tree |
+| 134 | slinit-seedrng | fresh run writes seed.credit or seed.no-credit under `-seed-dir`; `-skip-credit` accepted; second run rotates the seed (sha256 changes) |
+| 135 | cgroup-v2 | memory.max / memory.high / pids.max / cpu.weight applied to the service's cgroup (with subtree_control auto-delegation) |
+| 136 | vtty | `vtty = true` opens `/run/slinit/vtty-<svc>.sock`; `/proc/PID/stat` tty_nr non-zero; socket removed on stop |
 
 ## How It Works
 

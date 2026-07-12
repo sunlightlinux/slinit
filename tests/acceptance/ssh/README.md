@@ -71,11 +71,17 @@ cases/
   80-envfile-leniency.sh # dinit parity fixes (80-82)
   81-logfile-leniency.sh
   82-service-dirs-abs.sh
-  105-…-144-…           # directive coverage batch (see cases/ dir)
+  93-…-98-…              # OpenRC/systemd-cluster + template + slinit-check (93-98)
+  100-…-104-…            # cgroup-v2 / namespace-iso / debug / vtty / extra-actions (100-104)
+  105-…-144-…            # directive-coverage batch (105-144, systemd hardening cluster)
+  145-…-162-…            # runit-parity closeout: heartbeat, ring-buffer, profile,
+                         # log-forward-udp, sentinel-file, svcdirwatch, argv0,
+                         # svlogd knobs, sv -w SEC, reboot(8) flags,
+                         # status File:, kexec preflight, protocol v7 enable
   999-cleanup.sh         # tears down acceptance-test-* namespace
 ```
 
-**122 real cases** (numbered 01–82, 105–144) plus a final `999-cleanup.sh` teardown.
+**162 real cases** (numbered 01–82, 93–98, 100–162) plus a final `999-cleanup.sh` teardown.
 Numbering leaves gaps so related features can be grouped without renumbering.
 
 Each `cases/NN-*.sh` is a self-contained shell script. The runner:

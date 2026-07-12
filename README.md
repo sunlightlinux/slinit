@@ -91,7 +91,7 @@ format to accommodate them.
 - **AppArmor confinement**: `apparmor-load` parses a service-shipped profile (`apparmor_parser -r`) before start; `apparmor-switch` transitions the process into a profile on exec (`aa_change_onexec` via slinit-runner) — both fail closed if the load/transition cannot be applied
 - **Debug stop**: `debug = yes` makes slinit-runner raise `SIGSTOP` before exec so a developer can `gdb -p` the process and resume it with `kill -CONT`
 - **Service directories**: systemd-style `runtime-directory`/`state-directory`/`cache-directory`/`logs-directory`/`configuration-directory` auto-create + chown to `run-as` under `/run`,`/var/lib`,`/var/cache`,`/var/log`,`/etc` (with `*-mode`); runtime dir removed on stop per `runtime-directory-preserve`
-- **Control socket**: binary protocol (v6) over Unix domain socket for runtime management
+- **Control socket**: binary protocol (v7 — adds `ENABLE_SERVICE_V7` for race-free enable+status round-trip) over Unix domain socket for runtime management
 - **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, is-newer-than, is-older-than, trigger, untrigger, signal, pause, continue, once, reload, reload-all, reload-signal, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, reset-env, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, action, list-actions, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
 - **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
@@ -269,6 +269,7 @@ ln -s slinit /sbin/reboot
 | `--parallel-start-limit` | Max concurrent service starts (0 = unlimited) | `0` |
 | `--parallel-start-slow-threshold` | Seconds before a starting service is considered "slow" | `10s` |
 | `--shutdown-grace` | SIGTERM→SIGKILL grace period during shutdown | `3s` |
+| `--emergency-timeout` | Max time slinit waits for services to drain during shutdown before the force-exit path (SIGKILL any straggler, log names of blocking services in the same error line, then reboot syscall). Tune up for heavy stop cascades (docker + full systemd-style graph) | `90s` |
 | `--no-wall` | Disable wall broadcasts at shutdown | `false` |
 | `--banner` | Boot banner printed to console (empty disables) | `slinit booting...` |
 | `--umask` | Initial umask (octal) | `0022` |
@@ -925,8 +926,8 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 158 QEMU-based integration tests
-├── tests/acceptance/ssh/  # 82 live-VM acceptance cases (SSH-driven)
+├── tests/functional/      # 136 QEMU-based integration tests
+├── tests/acceptance/ssh/  # 162 live-VM acceptance cases (SSH-driven)
 ├── tests/fuzz/            # 21+ fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
@@ -934,13 +935,13 @@ slinit/
 ## Testing
 
 ```bash
-# Unit tests (~1087+ tests + benchmarks across 28 packages)
+# Unit tests (~1450+ tests + benchmarks across 40 packages)
 go test ./...
 
-# Functional tests (158 QEMU-based integration tests)
+# Functional tests (136 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
-# Acceptance tests (82 SSH-driven cases against a live VM/host)
+# Acceptance tests (162 SSH-driven cases against a live VM/host)
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/acceptance/ssh/run.sh
 
