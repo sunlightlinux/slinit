@@ -35,6 +35,13 @@ var version = "dev"
 // quiet suppresses informational output (set by --quiet/-q).
 var quiet bool
 
+// peerCPVersion captures the server's declared protocol version after
+// versionHandshake. Individual command paths (e.g. cmdEnable) consult
+// it to pick a newer wire variant when both sides support it — for
+// v7 that means CmdEnableServiceV7, which returns the target's status
+// on the same round-trip and avoids a follow-up SERVICESTATUS query.
+var peerCPVersion uint16
+
 // waitTimeout is the reply timeout in seconds set by -w / --wait. 0
 // disables the CLI-side cap (server-side timeouts still apply). This
 // is a package-level so command functions don't have to plumb it
@@ -701,13 +708,14 @@ func versionHandshake(conn net.Conn) error {
 		if control.CPVersion < serverMin {
 			return fmt.Errorf("client protocol version %d is too old for server (server needs >= %d)", control.CPVersion, serverMin)
 		}
-		_ = serverActual // success
+		peerCPVersion = serverActual
 	} else if len(payload) >= 2 {
 		// Legacy format: just version(2) — v1 server
 		serverVer := binary.LittleEndian.Uint16(payload)
 		if serverVer < control.MinCompatVersion {
 			return fmt.Errorf("server protocol version %d is too old (need >= %d)", serverVer, control.MinCompatVersion)
 		}
+		peerCPVersion = serverVer
 	} else {
 		return fmt.Errorf("invalid version reply payload (len=%d)", len(payload))
 	}
@@ -2583,11 +2591,21 @@ func cmdEnable(conn net.Conn, name string, from string) error {
 		payload = control.EncodeHandle(handle)
 	}
 
-	if err := control.WritePacket(conn, control.CmdEnableService, payload); err != nil {
+	// v7+ daemons answer CmdEnableServiceV7 with the target's status on
+	// the same round-trip — that closes the race where the target could
+	// finish starting between our enable request and a follow-up status
+	// query. Fall back to plain CmdEnableService (ACK reply) on older
+	// peers so mixed-version pairs still work.
+	useV7 := peerCPVersion >= 7
+	cmd := control.CmdEnableService
+	if useV7 {
+		cmd = control.CmdEnableServiceV7
+	}
+	if err := control.WritePacket(conn, cmd, payload); err != nil {
 		return err
 	}
 
-	rply, _, err := readReply(conn)
+	rply, replyPayload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -2595,6 +2613,17 @@ func cmdEnable(conn net.Conn, name string, from string) error {
 	switch rply {
 	case control.RplyACK:
 		info("Service '%s' enabled.\n", name)
+	case control.RplyServiceStatus:
+		// v7 reply: [dep_exists(1B)][status_v6(22B)]
+		if !useV7 || len(replyPayload) < 1 {
+			return fmt.Errorf("enable failed: malformed status reply")
+		}
+		depExists := replyPayload[0] != 0
+		if depExists {
+			info("Service '%s' already enabled.\n", name)
+		} else {
+			info("Service '%s' enabled.\n", name)
+		}
 	case control.RplyNAK:
 		return fmt.Errorf("could not enable service '%s': no boot service configured", name)
 	case control.RplyShuttingDown:
