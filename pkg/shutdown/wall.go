@@ -38,10 +38,39 @@ var hostnameFunc = os.Hostname
 // announces the scheduled time. Errors writing to individual TTYs are logged
 // at debug level — a broken TTY should never block shutdown.
 func WallShutdownNotice(st service.ShutdownType, delay time.Duration, logger *logging.Logger) {
+	WallShutdownNoticeMsg(st, delay, "", logger)
+}
+
+// WallShutdownNoticeMsg is WallShutdownNotice with an optional
+// operator-supplied message appended to the standard notice. Empty
+// message → identical behaviour to WallShutdownNotice.
+func WallShutdownNoticeMsg(st service.ShutdownType, delay time.Duration, custom string, logger *logging.Logger) {
 	if !wallEnabled {
 		return
 	}
 	msg := formatShutdownMessage(st, delay)
+	if custom != "" {
+		msg += "\r\n\r\n" + custom
+	}
+	Wall(msg, logger)
+}
+
+// WallShutdownReminder broadcasts a periodic "N minutes until X"
+// reminder while a scheduled shutdown counts down. The custom message
+// (if any) is appended to help operators explain WHY the box is
+// being rebooted. Called by the control server's reminder timers.
+func WallShutdownReminder(st service.ShutdownType, remaining time.Duration, custom string, logger *logging.Logger) {
+	if !wallEnabled {
+		return
+	}
+	action := shutdownActionLabel(st)
+	msg := fmt.Sprintf(
+		"The system will %s in %s.\r\nPlease save your work and log out.",
+		action, humanDuration(remaining),
+	)
+	if custom != "" {
+		msg += "\r\n\r\n" + custom
+	}
 	Wall(msg, logger)
 }
 

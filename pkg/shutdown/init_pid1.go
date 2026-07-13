@@ -64,6 +64,13 @@ var (
 	// chosen so services can read the kernel command line without
 	// depending on /proc being mounted at service start.
 	kcmdlineDest = "/run/slinit/kcmdline"
+
+	// kernelEnvStoreDest is where /proc/cmdline KEY=VALUE tokens are
+	// extracted into a KEY=VALUE env-file, ready to be included from
+	// service configs via `env-file =`. Empty disables the extract.
+	// Not enabled by default: only tokens containing '=' are written,
+	// so a stray bare-word flag on the cmdline never leaks in.
+	kernelEnvStoreDest = ""
 )
 
 // SetBootBanner overrides the boot banner shown on the console.
@@ -101,6 +108,12 @@ func SetRunMode(m RunMode) {
 // SetKcmdlineDest overrides the /proc/cmdline snapshot destination.
 // Empty string disables the snapshot.
 func SetKcmdlineDest(p string) { kcmdlineDest = p }
+
+// SetKernelEnvStoreDest overrides the kernel-env-store destination.
+// Empty string disables the extract (default). When set, PID 1
+// parses /proc/cmdline for KEY=VALUE tokens and writes them to the
+// path in env-file format (one KEY=VALUE per line, no shell quoting).
+func SetKernelEnvStoreDest(p string) { kernelEnvStoreDest = p }
 
 // ParseRunMode accepts the CLI spelling of a RunMode.
 func ParseRunMode(s string) (RunMode, error) {
@@ -228,6 +241,19 @@ func mountEarlyFS(logger *logging.Logger) {
 			logger.Debug("Snapshot kernel cmdline: %v (non-fatal)", err)
 		} else {
 			logger.Debug("Kernel cmdline snapshot written to %s", kcmdlineDest)
+		}
+	}
+
+	// Extract KEY=VALUE tokens from /proc/cmdline into an env-file so
+	// downstream services can pick them up via `env-file =`. Bare-word
+	// flags (`quiet`, `ro`, `resume=UUID=...` — the last one is fine
+	// because it does contain '=') are ignored; only tokens whose
+	// first '=' produces a valid shell-safe KEY are emitted.
+	if kernelEnvStoreDest != "" {
+		if n, err := extractKernelEnvStore(kernelEnvStoreDest); err != nil {
+			logger.Debug("Kernel env-store: %v (non-fatal)", err)
+		} else {
+			logger.Debug("Kernel env-store: wrote %d entries to %s", n, kernelEnvStoreDest)
 		}
 	}
 }

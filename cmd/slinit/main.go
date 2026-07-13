@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -113,6 +114,14 @@ func main() {
 	flag.StringVar(&envFile, "env-file", "", "environment file to load at startup")
 	flag.IntVar(&readyFD, "F", -1, "file descriptor to notify when boot service is ready")
 	flag.IntVar(&readyFD, "ready-fd", -1, "file descriptor to notify when boot service is ready")
+	// s6-linux-init-style container entrypoint sync (inverse of --ready-fd).
+	// The container manager opens this fd inside the container, performs any
+	// setup work (mount injections, ns attach), then closes the fd. slinit
+	// blocks reading from it until EOF before proceeding with the boot
+	// cascade. -1 disables the wait.
+	var waitFD int
+	flag.IntVar(&waitFD, "W", -1, "block until EOF on this file descriptor before booting (Docker-style entrypoint sync)")
+	flag.IntVar(&waitFD, "wait-fd", -1, "block until EOF on this file descriptor before booting (Docker-style entrypoint sync)")
 	flag.StringVar(&logFile, "l", "", "log to file instead of console")
 	flag.StringVar(&logFile, "log-file", "", "log to file instead of console")
 	flag.StringVar(&cgroupPath, "b", "", "default cgroup base path for services")
@@ -131,6 +140,10 @@ func main() {
 	var shutdownGrace string
 	flag.StringVar(&shutdownGrace, "shutdown-grace", "3s", "SIGTERM→SIGKILL grace period during shutdown (e.g. 3s, 5000ms)")
 
+	var shutdownFinalSleep string
+	flag.StringVar(&shutdownFinalSleep, "shutdown-final-sleep", "0",
+		"settle pause between the SIGKILL wave and umountall (e.g. 500ms, 2s); 0 disables")
+
 	var bootBanner string
 	var initUmask string
 	var consoleDup bool
@@ -144,6 +157,11 @@ func main() {
 	flag.StringVar(&devtmpfsPath, "devtmpfs-path", "/dev", "mount devtmpfs at this path (empty disables the mount)")
 	flag.StringVar(&runMode, "run-mode", "mount", "how to stage /run at boot (mount|remount|keep)")
 	flag.StringVar(&kcmdlineDest, "kcmdline-dest", "/run/slinit/kcmdline", "snapshot /proc/cmdline to this path (empty disables)")
+
+	var kernelEnvStorePath string
+	flag.StringVar(&kernelEnvStorePath, "kernel-env-store", "",
+		"extract KEY=VALUE tokens from /proc/cmdline to this env-file path "+
+			"(services can `env-file =` it; empty disables the extract)")
 
 	var timestampFormat string
 	flag.StringVar(&timestampFormat, "timestamp-format", "wallclock", "log timestamp format (wallclock|iso|tai64n|none)")
@@ -219,6 +237,19 @@ func main() {
 			fmt.Printf("slinit version %s (platform: %s)\n", version, detected)
 		}
 		os.Exit(0)
+	}
+
+	// Container-manager entrypoint synchronization (s6-linux-init -W).
+	// Runs BEFORE any other setup: the container manager may still be
+	// injecting mounts, joining namespaces, or writing files under
+	// /run — proceeding before EOF risks a race where slinit boots
+	// against a half-prepared environment. Fail-closed on any I/O
+	// error so a mis-wired entrypoint is loud, not silent.
+	if waitFD >= 0 {
+		if err := waitForFDClose(waitFD); err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: --wait-fd %d: %v\n", waitFD, err)
+			os.Exit(1)
+		}
 	}
 
 	// Determine mode
@@ -444,6 +475,19 @@ func main() {
 			shutdownGrace, err, shutdown.DefaultKillGracePeriod)
 	}
 
+	// Apply shutdown final-sleep (s6-linux-init-maker -q analogue).
+	// "0" / empty are honoured as "disabled" so the default fast path
+	// carries no measurable cost.
+	if fs, err := time.ParseDuration(shutdownFinalSleep); err == nil {
+		shutdown.SetFinalSleep(fs)
+		if fs > 0 {
+			logger.Debug("Shutdown final-sleep: %v", fs)
+		}
+	} else {
+		logger.Error("Invalid --shutdown-final-sleep %q: %v (using 0)",
+			shutdownFinalSleep, err)
+	}
+
 	// Apply boot housekeeping settings before InitPID1.
 	shutdown.SetBootBanner(bootBanner)
 	if mask, err := strconv.ParseUint(initUmask, 8, 32); err == nil {
@@ -458,6 +502,7 @@ func main() {
 		logger.Error("Invalid --run-mode %q: %v (using default mount)", runMode, err)
 	}
 	shutdown.SetKcmdlineDest(kcmdlineDest)
+	shutdown.SetKernelEnvStoreDest(kernelEnvStorePath)
 
 	// Wall broadcasts at shutdown (enabled by default, disable with --no-wall).
 	shutdown.SetWallEnabled(!noWall)
@@ -995,12 +1040,18 @@ func main() {
 			}
 			loop.InitiateShutdown(act.AsShutdownType())
 		}
-		ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool) {
+		ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool, msg string) {
 			if cancelled {
 				shutdown.WallShutdownCancelled(st, logger)
 				return
 			}
-			shutdown.WallShutdownNotice(st, delay, logger)
+			shutdown.WallShutdownNoticeMsg(st, delay, msg, logger)
+		}
+		ctrlServer.WallReminderFunc = func(st service.ShutdownType, remaining time.Duration, msg string) {
+			shutdown.WallShutdownReminder(st, remaining, msg, logger)
+		}
+		ctrlServer.WallNoticeFunc = func(msg string) {
+			shutdown.Wall(msg, logger)
 		}
 		loop.OnReopenSocket = func() {
 			if err := ctrlServer.Reopen(); err != nil {
@@ -1663,6 +1714,39 @@ func closeWatchdog(wd *watchdog.Feeder, logger *logging.Logger) {
 	}
 	if err := wd.Close(); err != nil {
 		logger.Error("Watchdog close: %v", err)
+	}
+}
+
+// waitForFDClose blocks reading from the given file descriptor until
+// EOF (the writer end has been closed). Implements the s6-linux-init
+// `-W readyfd` container entrypoint contract: the container manager
+// opens fd `n` inside the container with one end held on its own side,
+// performs any pre-boot setup, then closes its end — slinit sees EOF
+// and proceeds. fd 0 (stdin) is rejected: if the operator has stdin,
+// this is almost certainly a mis-wired flag, and blocking on a
+// terminal fd would deadlock the boot cascade.
+func waitForFDClose(n int) error {
+	if n < 3 {
+		return fmt.Errorf("wait-fd must be >= 3 (0/1/2 are reserved)")
+	}
+	f := os.NewFile(uintptr(n), fmt.Sprintf("wait-fd-%d", n))
+	if f == nil {
+		return fmt.Errorf("fd %d is not open", n)
+	}
+	defer f.Close()
+	// Small buffer: we don't care about the bytes, only about EOF.
+	// A well-behaved container manager writes nothing and just closes
+	// the fd, but if a diagnostic-oriented one writes progress text we
+	// drain it without dumping it into the boot log.
+	buf := make([]byte, 256)
+	for {
+		_, err := f.Read(buf)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read: %w", err)
+		}
 	}
 }
 

@@ -58,14 +58,29 @@ type Server struct {
 	// WallFunc is an optional hook invoked when a shutdown is scheduled
 	// or cancelled. The delay argument is the time until execution
 	// (0 means "immediate" or "cancelled" depending on cancelled).
-	// main.go wires this to shutdown.WallShutdownNotice.
-	WallFunc func(st service.ShutdownType, delay time.Duration, cancelled bool)
+	// message is the operator-supplied text (may be empty).
+	// main.go wires this to shutdown.WallShutdownNoticeMsg.
+	WallFunc func(st service.ShutdownType, delay time.Duration, cancelled bool, message string)
+
+	// WallReminderFunc is called by the reminder timers at 5m/2m/1m
+	// before a scheduled shutdown fires, so logged-in users see the
+	// same countdown they'd expect from sysvinit/systemd shutdown.
+	// remaining is the time left until deadline; message is the
+	// operator-supplied text (may be empty).
+	WallReminderFunc func(st service.ShutdownType, remaining time.Duration, message string)
+
+	// WallNoticeFunc broadcasts an arbitrary wall message without
+	// scheduling anything. Wired to shutdown.Wall — powers the
+	// LSB-shutdown-style `-k` warning-only mode.
+	WallNoticeFunc func(message string)
 
 	// Scheduled shutdown state.
-	scheduledMu       sync.Mutex
-	scheduledTimer    *time.Timer
-	scheduledType     service.ShutdownType
-	scheduledDeadline time.Time // zero means no scheduled shutdown
+	scheduledMu        sync.Mutex
+	scheduledTimer     *time.Timer
+	scheduledReminders []*time.Timer
+	scheduledType      service.ShutdownType
+	scheduledDeadline  time.Time // zero means no scheduled shutdown
+	scheduledMessage   string
 
 	// PinStore, when Enabled(), records pin transitions to disk so a
 	// `stop --pin` on a service stays effective across a reboot. Nil
@@ -264,17 +279,15 @@ func (s *Server) HandlePassCSFD(conn net.Conn) {
 }
 
 // ScheduleShutdown schedules a shutdown to occur after the given delay.
-// If a shutdown is already scheduled, it is replaced.
-// A delay of 0 triggers an immediate shutdown.
-func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration) {
+// If a shutdown is already scheduled, it is replaced. delay <= 0 triggers
+// an immediate shutdown. message is an operator-supplied blurb appended
+// to the wall broadcasts (empty is fine).
+func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration, message string) {
 	s.scheduledMu.Lock()
 	defer s.scheduledMu.Unlock()
 
-	// Cancel existing timer if any.
-	if s.scheduledTimer != nil {
-		s.scheduledTimer.Stop()
-		s.scheduledTimer = nil
-	}
+	// Cancel existing timer(s) if any.
+	s.clearScheduledLocked()
 
 	if delay <= 0 {
 		// Immediate shutdown.
@@ -287,17 +300,37 @@ func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration) 
 
 	s.scheduledType = st
 	s.scheduledDeadline = time.Now().Add(delay)
+	s.scheduledMessage = message
 	s.logger.Notice("Shutdown (%s) scheduled in %v (at %s)",
 		shutdownTypeName(st), delay, s.scheduledDeadline.Format("15:04:05"))
 
 	if s.WallFunc != nil {
-		s.WallFunc(st, delay, false)
+		s.WallFunc(st, delay, false, message)
+	}
+
+	// LSB-shutdown-style reminder cadence: fire wall broadcasts at
+	// 5m/2m/1m before the deadline so operators (and their users) see
+	// the countdown they expect from sysvinit / systemd. Skip any
+	// milestone that wouldn't fit in the remaining window.
+	if s.WallReminderFunc != nil {
+		for _, r := range []time.Duration{5 * time.Minute, 2 * time.Minute, 1 * time.Minute} {
+			if delay > r {
+				remaining := r
+				stCap := st
+				msgCap := message
+				timer := time.AfterFunc(delay-r, func() {
+					s.WallReminderFunc(stCap, remaining, msgCap)
+				})
+				s.scheduledReminders = append(s.scheduledReminders, timer)
+			}
+		}
 	}
 
 	s.scheduledTimer = time.AfterFunc(delay, func() {
 		s.scheduledMu.Lock()
 		s.scheduledDeadline = time.Time{}
 		s.scheduledTimer = nil
+		s.scheduledMessage = ""
 		s.scheduledMu.Unlock()
 
 		s.logger.Notice("Scheduled shutdown (%s) executing now", shutdownTypeName(st))
@@ -305,6 +338,20 @@ func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration) 
 			s.ShutdownFunc(st)
 		}
 	})
+}
+
+// clearScheduledLocked stops the main timer + every reminder and
+// resets the reminder list. Must be called with scheduledMu held.
+// The main deadline/message are cleared by the caller.
+func (s *Server) clearScheduledLocked() {
+	if s.scheduledTimer != nil {
+		s.scheduledTimer.Stop()
+		s.scheduledTimer = nil
+	}
+	for _, t := range s.scheduledReminders {
+		t.Stop()
+	}
+	s.scheduledReminders = nil
 }
 
 // CancelShutdown cancels a pending scheduled shutdown.
@@ -317,14 +364,15 @@ func (s *Server) CancelShutdown() bool {
 		return false
 	}
 
-	s.scheduledTimer.Stop()
-	s.scheduledTimer = nil
 	cancelledType := s.scheduledType
+	cancelledMessage := s.scheduledMessage
+	s.clearScheduledLocked()
 	s.scheduledDeadline = time.Time{}
+	s.scheduledMessage = ""
 	s.logger.Notice("Scheduled shutdown cancelled")
 
 	if s.WallFunc != nil {
-		s.WallFunc(cancelledType, 0, true)
+		s.WallFunc(cancelledType, 0, true, cancelledMessage)
 	}
 	return true
 }

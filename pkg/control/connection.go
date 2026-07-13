@@ -312,6 +312,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleCancelShutdown()
 	case CmdQueryShutdown:
 		return c.handleQueryShutdown()
+	case CmdWallNotice:
+		return c.handleWallNotice(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
@@ -636,8 +638,10 @@ func (c *Connection) handleShutdown(payload []byte) error {
 }
 
 // handleScheduleShutdown schedules a delayed shutdown.
-// Payload: [type(1)] [delay_secs(4, big-endian)]
+// Payload: [type(1)] [delay_secs(4, big-endian)] [msg_len(2, LE)?] [msg_bytes...?]
 // delay_secs == 0 means immediate (same as CmdShutdown).
+// The message tail is optional — a 5-byte payload from an older client
+// still parses, keeping wire compatibility with pre-message callers.
 func (c *Connection) handleScheduleShutdown(payload []byte) error {
 	if len(payload) < 5 {
 		return c.writePacket(RplyBadReq, nil)
@@ -648,7 +652,37 @@ func (c *Connection) handleScheduleShutdown(payload []byte) error {
 		uint32(payload[3])<<8 | uint32(payload[4])
 	delay := time.Duration(delaySecs) * time.Second
 
-	c.server.ScheduleShutdown(shutType, delay)
+	// Optional trailing message. Guard against a truncated length
+	// header (extra byte after the fixed part with no msg_len) — treat
+	// as no message.
+	message := ""
+	if len(payload) >= 7 {
+		msgLen := int(payload[5]) | int(payload[6])<<8
+		start := 7
+		if msgLen > 0 && start+msgLen <= len(payload) {
+			message = string(payload[start : start+msgLen])
+		}
+	}
+
+	c.server.ScheduleShutdown(shutType, delay, message)
+	return c.writePacket(RplyACK, nil)
+}
+
+// handleWallNotice broadcasts an operator-supplied message to every
+// logged-in user without scheduling a shutdown. Powers LSB-shutdown's
+// `-k` warning-only mode. Payload: [msg_len(2, LE)] [msg_bytes...].
+func (c *Connection) handleWallNotice(payload []byte) error {
+	if len(payload) < 2 {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	msgLen := int(payload[0]) | int(payload[1])<<8
+	if msgLen == 0 || len(payload) < 2+msgLen {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	message := string(payload[2 : 2+msgLen])
+	if c.server.WallNoticeFunc != nil {
+		c.server.WallNoticeFunc(message)
+	}
 	return c.writePacket(RplyACK, nil)
 }
 

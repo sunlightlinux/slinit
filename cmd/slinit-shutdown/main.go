@@ -43,6 +43,7 @@ func main() {
 		noWtmp      bool
 		noSync      bool
 		noWall      bool
+		interactive bool
 	)
 
 	shutdownType := defaultShutdownType()
@@ -106,6 +107,11 @@ func main() {
 			noSync = true
 		case arg == "--no-wall":
 			noWall = true
+		case arg == "-i", arg == "--interactive":
+			// s6-linux-init-hpr -i: prompt for the local short hostname
+			// before shutting the box down. Cheap safeguard against the
+			// classic SSH footgun of rebooting the wrong host.
+			interactive = true
 		case arg == "--use-passed-cfd":
 			useCFD = true
 		case strings.HasPrefix(arg, "--grace="):
@@ -132,6 +138,17 @@ func main() {
 	if wtmpOnly {
 		utmp.LogShutdown()
 		os.Exit(0)
+	}
+
+	// -i / --interactive: require the operator to type the local
+	// short hostname before proceeding. Applies before any shutdown
+	// path (force / system / daemon) so the confirmation is universal.
+	if interactive {
+		verb := shutdownVerb(shutdownType)
+		if err := shutdown.ConfirmHostname(verb); err != nil {
+			fmt.Fprintf(os.Stderr, "slinit-shutdown: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Propagate the systemd-style gating knobs to pkg/shutdown so they
@@ -198,6 +215,26 @@ func defaultShutdownType() service.ShutdownType {
 	return service.ShutdownPoweroff
 }
 
+// shutdownVerb maps the internal ShutdownType to a short verb used in
+// the -i confirmation prompt so the operator sees which action they
+// are about to authorise.
+func shutdownVerb(st service.ShutdownType) string {
+	switch st {
+	case service.ShutdownReboot:
+		return "reboot"
+	case service.ShutdownHalt:
+		return "halt"
+	case service.ShutdownPoweroff:
+		return "poweroff"
+	case service.ShutdownSoftReboot:
+		return "soft-reboot"
+	case service.ShutdownKexec:
+		return "kexec"
+	default:
+		return "shut down"
+	}
+}
+
 func printUsage(execName string) {
 	fmt.Fprintf(os.Stderr, `%s: shut down the system
   --help             show this help
@@ -214,6 +251,8 @@ func printUsage(execName string) {
   -w, --wtmp-only    write only the shutdown entry to utmp/wtmp,
                      do not actually reboot
   --no-wall          do not broadcast the shutdown wall message
+  -i, --interactive  prompt for the short hostname before proceeding
+                     (anti-footgun for SSH sessions)
   --use-passed-cfd   use the socket fd from SLINIT_CS_FD env var
   --system           full cleanup path: kill(-1), umount, sync, reboot
                      (used by init itself, not for normal user reboots)
