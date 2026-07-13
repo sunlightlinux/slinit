@@ -353,6 +353,43 @@ func TestExecuteRespectsWtmpEnabled(t *testing.T) {
 	}
 }
 
+// TestExecuteHonoursFinalSleep verifies that Execute calls the sleep
+// primitive with the configured duration between the SIGKILL wave
+// and the umount step. Uses the sleepFunc mock so the test doesn't
+// actually sleep — asserts on the recorded duration.
+func TestExecuteHonoursFinalSleep(t *testing.T) {
+	origSleep, origFS := sleepFunc, finalSleep
+	defer func() { sleepFunc, finalSleep = origSleep, origFS }()
+
+	var slept time.Duration
+	sleepFunc = func(d time.Duration) { slept = d }
+	SetFinalSleep(750 * time.Millisecond)
+
+	runExecuteWithMocks(t)
+
+	if slept != 750*time.Millisecond {
+		t.Errorf("finalSleep applied: got %v, want 750ms", slept)
+	}
+}
+
+// TestExecuteSkipsFinalSleepWhenZero: the default fast path must
+// NOT call sleepFunc at all when finalSleep is 0. Guards against a
+// regression where a zero duration would still take the branch.
+func TestExecuteSkipsFinalSleepWhenZero(t *testing.T) {
+	origSleep, origFS := sleepFunc, finalSleep
+	defer func() { sleepFunc, finalSleep = origSleep, origFS }()
+
+	var called bool
+	sleepFunc = func(time.Duration) { called = true }
+	SetFinalSleep(0)
+
+	runExecuteWithMocks(t)
+
+	if called {
+		t.Error("sleepFunc invoked with finalSleep=0; want fast path")
+	}
+}
+
 func TestExecuteWithHook(t *testing.T) {
 	// Mock all syscalls to prevent real shutdown
 	origKill := killFunc

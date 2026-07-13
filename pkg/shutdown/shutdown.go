@@ -49,6 +49,13 @@ var (
 	wtmpEnabled = true
 )
 
+// finalSleep is the s6-linux-init-maker `-q` analogue: an optional
+// pause after the SIGKILL wave and before umountall so pending fs
+// writes (journal, flash-backed rewrites) have a beat to flush before
+// we tear the filesystem down. Default 0 = disabled, matching the
+// existing zero-cost path.
+var finalSleep time.Duration
+
 // SetSyncEnabled toggles the pre-reboot syscall.Sync() call in Execute.
 // Disable with `slinit-shutdown -n` / `--no-sync` for a fast unclean exit.
 func SetSyncEnabled(v bool) { syncEnabled = v }
@@ -56,6 +63,14 @@ func SetSyncEnabled(v bool) { syncEnabled = v }
 // SetWtmpEnabled toggles the utmp/wtmp write in Execute.
 // Disable with `slinit-shutdown -d` / `--no-wtmp` to skip the shutdown record.
 func SetWtmpEnabled(v bool) { wtmpEnabled = v }
+
+// SetFinalSleep configures the post-SIGKILL / pre-umount settle
+// pause. 0 (default) preserves the current zero-cost fast path.
+func SetFinalSleep(d time.Duration) { finalSleep = d }
+
+// sleepFunc is the sleep primitive used between SIGKILL and umount.
+// Overridable for tests so unit tests don't have to sleep.
+var sleepFunc = time.Sleep
 
 // shutdownHookPaths is the list of paths to search for a shutdown hook script.
 // The first executable hook found is used; the rest are ignored.
@@ -109,6 +124,14 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 
 	// Kill all remaining processes
 	KillAllProcesses(logger)
+
+	// Settle pause (s6-linux-init-maker -q): give journals and other
+	// flash-backed writers a beat to finish before umountall unwinds
+	// the fs. Zero (default) skips the sleep entirely.
+	if finalSleep > 0 {
+		logger.Info("Settle pause: sleeping %v before umount", finalSleep)
+		sleepFunc(finalSleep)
+	}
 
 	// Run shutdown hook; if it exits 0, it handled umount/swapoff itself
 	hookHandledCleanup := runHookFunc(shutdownType, logger)

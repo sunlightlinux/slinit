@@ -100,6 +100,7 @@ const (
 	CmdQueryProfile      uint8 = 53 // report the currently active profile name
 	CmdListProfiles      uint8 = 54 // enumerate every profile tag declared by loaded services
 	CmdQueryBundleMembers uint8 = 55 // s6-rc analogue: names of a bundle's declared members
+	CmdWallNotice         uint8 = 56 // LSB shutdown -k: broadcast a wall message without scheduling
 )
 
 // Reply codes (server → client).

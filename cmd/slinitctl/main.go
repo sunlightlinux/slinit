@@ -18,6 +18,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/shutdown"
 )
 
 const (
@@ -1485,22 +1486,87 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 
 	shutType := "poweroff"
 	timeArg := "now"
+	var (
+		interactive bool
+		warnOnly    bool
+		message     string
+	)
 
+	// First pass: extract flags. We do this in a dedicated loop so the
+	// second pass (positional type/time/message parsing) stays simple
+	// and can keep rejecting unknown tokens as typos.
+	rest := args[:0]
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-i" || a == "--interactive":
+			interactive = true
+		case a == "-k" || a == "--warn":
+			// LSB shutdown -k: warn-only. Broadcast the message and
+			// return without scheduling anything.
+			warnOnly = true
+		case a == "-m" || a == "--message":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s: missing message argument", a)
+			}
+			message = args[i+1]
+			i++
+		case strings.HasPrefix(a, "--message="):
+			message = a[len("--message="):]
+		default:
+			rest = append(rest, a)
+		}
+	}
+	args = rest
+
+	// Positional args: first is type (optional), second is time
+	// (optional), any remainder is joined into the wall message
+	// (SysV shutdown-style). Keep type-vs-time detection from before.
+	var messageTokens []string
+	positionalIdx := 0
 	for _, a := range args {
 		switch a {
 		case "halt", "poweroff", "reboot", "kexec", "softreboot", "soft-reboot":
 			shutType = a
+			positionalIdx++
 		default:
-			// A non-type arg is accepted only if it parses as a time
-			// spec ("now", "+N", "HH:MM", plain minutes). Anything
-			// else is a typo of the shutdown type — preserve the
-			// old "unknown shutdown type" error so scripts/tests
-			// relying on it keep working.
-			if _, err := parseShutdownTime(a); err != nil {
+			if _, err := parseShutdownTime(a); err == nil {
+				timeArg = a
+				positionalIdx++
+				continue
+			}
+			// Non-type non-time positional: only valid AFTER we've
+			// already accepted the leading type/time — otherwise it's
+			// a typo of the shutdown type. Guard so `shutdown wobble`
+			// still fails cleanly.
+			if positionalIdx == 0 {
 				return fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", a)
 			}
-			timeArg = a
+			messageTokens = append(messageTokens, a)
 		}
+	}
+	if message == "" && len(messageTokens) > 0 {
+		message = strings.Join(messageTokens, " ")
+	}
+
+	// -i / --interactive gate: prompt for hostname BEFORE contacting the
+	// daemon so a mis-typed hostname doesn't consume a scheduling slot.
+	if interactive {
+		if err := shutdown.ConfirmHostname(shutType); err != nil {
+			return err
+		}
+	}
+
+	// -k / warning-only: broadcast the message and stop. Doesn't
+	// schedule anything, doesn't require a valid shutdown type. If no
+	// message was provided the daemon still walls a default warning
+	// so operators aren't stuck constructing wall text every time.
+	if warnOnly {
+		wallMsg := message
+		if wallMsg == "" {
+			wallMsg = "System maintenance is planned. Please save your work."
+		}
+		return sendWallNotice(conn, wallMsg)
 	}
 
 	st, err := parseShutdownType(shutType)
@@ -1545,11 +1611,25 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		return nil
 	}
 
-	// Scheduled shutdown.
+	// Scheduled shutdown. Wire layout:
+	//   [type(1)] [delay_secs(4, big-endian)]
+	//   [msg_len(2, LE)] [msg_bytes...]
+	// The message tail is only appended when non-empty so pre-message
+	// slinitd instances still accept the packet (they treat the extra
+	// bytes as ignored padding).
 	secs := uint32(delay.Seconds())
 	payload := []byte{
 		uint8(st),
 		byte(secs >> 24), byte(secs >> 16), byte(secs >> 8), byte(secs),
+	}
+	if message != "" {
+		msgBytes := []byte(message)
+		if len(msgBytes) > 0xFFFF {
+			msgBytes = msgBytes[:0xFFFF]
+		}
+		payload = append(payload,
+			byte(len(msgBytes)&0xFF), byte((len(msgBytes)>>8)&0xFF))
+		payload = append(payload, msgBytes...)
 	}
 	if err := control.WritePacket(conn, control.CmdScheduleShutdown, payload); err != nil {
 		return err
@@ -1563,6 +1643,33 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 	} else {
 		return fmt.Errorf("schedule shutdown failed: reply %d", rply)
 	}
+	return nil
+}
+
+// sendWallNotice powers `slinitctl shutdown -k`: hand the operator's
+// message to the daemon, which walls it to every logged-in user via
+// its own utmp binding.
+func sendWallNotice(conn net.Conn, msg string) error {
+	msgBytes := []byte(msg)
+	if len(msgBytes) > 0xFFFF {
+		msgBytes = msgBytes[:0xFFFF]
+	}
+	payload := make([]byte, 0, 2+len(msgBytes))
+	payload = append(payload,
+		byte(len(msgBytes)&0xFF), byte((len(msgBytes)>>8)&0xFF))
+	payload = append(payload, msgBytes...)
+
+	if err := control.WritePacket(conn, control.CmdWallNotice, payload); err != nil {
+		return err
+	}
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("wall notice failed: reply %d", rply)
+	}
+	info("Wall message broadcast.\n")
 	return nil
 }
 
