@@ -149,12 +149,15 @@ func InitDToServiceDescription(scriptPath string) (*ServiceDescription, error) {
 	// matching OpenRC's convention. The wrapper is a no-op when those
 	// files are absent, so non-OpenRC distros still work identically
 	// to before.
-	desc := &ServiceDescription{
-		Name:        name,
-		Type:        service.TypeScripted,
-		Command:     wrapInitdWithConfD(scriptPath, name, "start"),
-		StopCommand: wrapInitdWithConfD(scriptPath, name, "stop"),
-	}
+	// Route through NewServiceDescription so init.d-derived services
+	// inherit every default the parser path sets (LogLevelMax=-1,
+	// AlertLevel=-1, LogFilePerms=0600, etc.). Without this the
+	// zero-valued fields would collide with loader validation
+	// (alert-level=0 with alert-file="" trips the "no sink" check).
+	desc := NewServiceDescription(name)
+	desc.Type = service.TypeScripted
+	desc.Command = wrapInitdWithConfD(scriptPath, name, "start")
+	desc.StopCommand = wrapInitdWithConfD(scriptPath, name, "stop")
 
 	if lsb.ShortDescription != "" {
 		desc.Description = lsb.ShortDescription

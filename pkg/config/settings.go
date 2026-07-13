@@ -321,6 +321,13 @@ var KnownSettings = map[string]OperatorType{
 	"log-forward-format":       OpEquals, // rfc3164 (default) or rfc5424
 	"log-forward-facility":     OpEquals, // syslog facility name (default "daemon")
 	"log-forward-tag":          OpEquals, // syslog tag (default = service name)
+	// s6-log-style priority alert channel: high-severity lines are
+	// also copied to alert-file. Independent of log-level-max (which
+	// drops from the main file); a line can appear in both, only in
+	// the alert channel, or only in the main file depending on the
+	// two thresholds.
+	"alert-file":  OpEquals,
+	"alert-level": OpEquals,
 
 	// systemd-style appliance actions
 	"failure-action":  OpEquals,

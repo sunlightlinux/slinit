@@ -90,6 +90,19 @@ type LogRotator struct {
 	// the local write path.
 	forwarder *SyslogForwarder
 
+	// s6-log-style priority alert channel. alertFilePath="" disables.
+	// When enabled, lines with syslog priority <= alertLevel are ALSO
+	// written to the alert file. Opened lazily on first matching line;
+	// close is handled in readLoop's defer alongside the main file.
+	alertFilePath string
+	alertLevel    int
+	alertFile     *os.File
+	// alertOpenFailed is a one-shot latch that suppresses further open
+	// attempts (and their error logs) once the alert file has failed
+	// to open. Reset only when the rotator is torn down; a persistent
+	// path problem would otherwise spam the daemon log per line.
+	alertOpenFailed bool
+
 	// State
 	file            *os.File
 	currentSize     int64
@@ -155,6 +168,16 @@ type LogRotatorConfig struct {
 	// ownership: the connection is closed when the rotator closes.
 	// nil = disabled.
 	Forwarder *SyslogForwarder
+
+	// s6-log-style priority alert channel. When AlertFilePath is non-
+	// empty, every line whose syslog priority is <= AlertLevel is
+	// ALSO written to AlertFilePath (in addition to the main sink).
+	// Independent of LogLevelMax: alert routing happens even when the
+	// main sink drops the line. -1 disables. AlertFilePath inherits
+	// the main file's perms/uid/gid — no separate knob in MVP.
+	AlertFilePath string
+	AlertLevel    int
+
 	Logger      interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
@@ -217,6 +240,12 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 	}
 	if cfg.Forwarder != nil {
 		lr.forwarder = cfg.Forwarder
+	}
+	lr.alertFilePath = cfg.AlertFilePath
+	if cfg.AlertLevel < 0 || cfg.AlertFilePath == "" {
+		lr.alertLevel = -1
+	} else {
+		lr.alertLevel = cfg.AlertLevel
 	}
 	if lr.filePerms == 0 {
 		lr.filePerms = 0600
@@ -327,6 +356,10 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 		if lr.file != nil {
 			lr.file.Close()
 			lr.file = nil
+		}
+		if lr.alertFile != nil {
+			lr.alertFile.Close()
+			lr.alertFile = nil
 		}
 		if lr.rotateTimer != nil {
 			lr.rotateTimer.Stop()
@@ -471,17 +504,23 @@ func (lr *LogRotator) processLine(line []byte) {
 		}
 	}
 
-	// Severity gate: drop lines with a syslog priority above the
-	// configured maximum. Lines without a <N> prefix are treated as
-	// "info" (6), so plain text output passes any threshold >= 6.
-	if lr.levelMax >= 0 {
-		if extractSyslogLevel(matchLine) > lr.levelMax {
-			return
-		}
+	// Compute the syslog priority once when either the main level
+	// gate or the alert channel needs it. Extraction cost is a handful
+	// of byte comparisons; doing it once keeps the two decisions
+	// consistent (both read the same prefix on the same line) even if
+	// the alert channel later grows more knobs.
+	lineLevel := 6
+	if lr.levelMax >= 0 || lr.alertLevel >= 0 {
+		lineLevel = extractSyslogLevel(matchLine)
 	}
 
 	// Rate limiter (token bucket). When the bucket is empty the line
 	// is dropped and a single "rate limit hit" notice is emitted.
+	// Deliberately BEFORE the alert-channel write and the levelMax
+	// gate: the rate limit protects both sinks, otherwise a runaway
+	// service could still swamp the alert file while its main log is
+	// dropped. Also matches the systemd-style rate-limit contract
+	// (rate limit is a shared quota, not a per-sink quota).
 	if lr.rateInterval > 0 && lr.rateBurst > 0 {
 		if !lr.tryConsumeRateToken() {
 			lr.rateDropped++
@@ -513,6 +552,23 @@ func (lr *LogRotator) processLine(line []byte) {
 
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
+
+	// Alert channel: mirror high-severity lines to the alert file
+	// BEFORE the levelMax gate — routing there is independent of what
+	// the main sink decides. Failures don't affect the main write; a
+	// one-shot latch (alertOpenFailed) prevents log-spam if the alert
+	// path is broken.
+	if lr.alertLevel >= 0 && lineLevel <= lr.alertLevel {
+		lr.writeAlertLocked(out)
+	}
+
+	// Severity gate for the MAIN sink: drop lines with a syslog
+	// priority above the configured maximum. The alert write above is
+	// unaffected — that's the point of routing critical events to a
+	// separate channel even when the main log is quieted down.
+	if lr.levelMax >= 0 && lineLevel > lr.levelMax {
+		return
+	}
 
 	// Open file if needed
 	if lr.file == nil {
@@ -634,6 +690,50 @@ func (lr *LogRotator) sanitizeInPlace(buf []byte) {
 	}
 }
 
+// writeAlertLocked writes a decorated line to the s6-log-style priority
+// alert channel, opening the file lazily on first use. Errors are
+// logged once (per rotator lifetime) via alertOpenFailed and never
+// propagate to the main sink — the alert file is a best-effort
+// secondary output, not a hard dependency of the log pipeline. Must
+// be called with lr.mu held.
+func (lr *LogRotator) writeAlertLocked(out []byte) {
+	if lr.alertFilePath == "" || lr.alertOpenFailed {
+		return
+	}
+	if lr.alertFile == nil {
+		f, err := os.OpenFile(
+			lr.alertFilePath,
+			os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW,
+			lr.filePerms,
+		)
+		if err != nil {
+			lr.alertOpenFailed = true
+			if lr.logger != nil {
+				lr.logger.Error(
+					"Service '%s': alert-file open failed (%s): %v; disabling channel",
+					lr.serviceName, lr.alertFilePath, err)
+			}
+			return
+		}
+		// Match the main sink's ownership policy so operators can
+		// downgrade permissions on the file without slinit racing to
+		// re-chown it back on every rotation.
+		if lr.fileUID >= 0 || lr.fileGID >= 0 {
+			_ = f.Chown(lr.fileUID, lr.fileGID)
+		}
+		lr.alertFile = f
+	}
+	if _, err := lr.alertFile.Write(out); err != nil && lr.logger != nil {
+		// Don't latch — a transient ENOSPC/EIO on the alert file
+		// shouldn't permanently disable the channel. Persistent errors
+		// will keep re-appearing in the daemon log until the operator
+		// intervenes, which is the intended signal.
+		lr.logger.Error(
+			"Service '%s': alert-file write failed: %v",
+			lr.serviceName, err)
+	}
+}
+
 // openFileLocked opens the logfile for appending. Must be called with mu held.
 //
 // O_NOFOLLOW prevents an attacker (or a buggy service writing to a shared
@@ -672,8 +772,14 @@ func (lr *LogRotator) rotateLocked() {
 	// again if the newly-created file fills up.
 	lr.enospcReported = false
 
-	// Rename current to timestamped file
-	rotatedName := fmt.Sprintf("%s.%s", lr.filePath, lr.lastRotate.Format("20060102-150405"))
+	// Rename current to timestamped file. Nanosecond precision (matching
+	// s6-log's tai64n scheme) so back-to-back rotations under a tight
+	// max-size + high-throughput producer don't collide: rename(2) on
+	// Linux atomically REPLACES the destination if it exists, so a
+	// second-precision suffix would silently clobber the first rotated
+	// file. Nanoseconds make same-tick collisions effectively impossible
+	// under mutex serialization.
+	rotatedName := fmt.Sprintf("%s.%s", lr.filePath, lr.lastRotate.Format("20060102-150405.000000000"))
 	if err := os.Rename(lr.filePath, rotatedName); err != nil {
 		if lr.logger != nil {
 			lr.logger.Error("Service '%s': logfile rotate rename failed: %v", lr.serviceName, err)

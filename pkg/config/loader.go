@@ -303,6 +303,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogReadBufferSize(desc.LogReadBufferSize)
 		s.SetLogForward(desc.LogForwardUDP, desc.LogForwardFormat,
 			SyslogFacilityCode(desc.LogForwardFacility), desc.LogForwardTag)
+		s.SetAlertLog(desc.AlertFile, resolveAlertLevel(desc.AlertFile, desc.AlertLevel))
 		if len(desc.OutputLogger) > 0 {
 			s.SetOutputLogger(desc.OutputLogger)
 		}
@@ -658,6 +659,18 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 			ServiceName: name,
 			Message: "log-select is mutually exclusive with " +
 				"log-include / log-exclude",
+		}
+	}
+
+	// alert-level without alert-file is a config typo — no sink is
+	// declared, so the threshold has nothing to route to. alert-file
+	// alone falls back to a default of warn (see resolveAlertLevel);
+	// alert-level alone must be rejected explicitly.
+	if desc.AlertFile == "" && desc.AlertLevel >= 0 {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message: "alert-level set without alert-file — " +
+				"no sink for the routed lines",
 		}
 	}
 
@@ -1073,6 +1086,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetLogReadBufferSize(desc.LogReadBufferSize)
 		svc.SetLogForward(desc.LogForwardUDP, desc.LogForwardFormat,
 			SyslogFacilityCode(desc.LogForwardFacility), desc.LogForwardTag)
+		svc.SetAlertLog(desc.AlertFile, resolveAlertLevel(desc.AlertFile, desc.AlertLevel))
 		if len(desc.OutputLogger) > 0 {
 			svc.SetOutputLogger(desc.OutputLogger)
 		}
@@ -1301,6 +1315,22 @@ type logSettable interface {
 	SetLogType(service.LogType)
 	SetLogBufMax(int)
 	SetLogFileDetails(path string, perms, uid, gid int)
+}
+
+// resolveAlertLevel picks the effective severity threshold for the
+// s6-log-style alert channel. When alert-file is declared but the
+// operator did not spell out alert-level, we fall back to "warn" (4)
+// — the same default operators expect from most severity-routed sinks
+// and the one s6-log itself recommends. Returns -1 (disabled) when no
+// alert-file is set.
+func resolveAlertLevel(alertFile string, parsed int) int {
+	if alertFile == "" {
+		return -1
+	}
+	if parsed < 0 {
+		return 4 // syslog "warn"
+	}
+	return parsed
 }
 
 // applyLogSettings applies log type configuration to a process-based service.
