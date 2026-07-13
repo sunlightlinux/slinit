@@ -2378,3 +2378,77 @@ bundle-of = .startswithdot
 		t.Fatal("expected parse error for '.'-prefix member name, got nil")
 	}
 }
+
+// TestParseAlertFileAndLevel exercises the s6-log-style priority alert
+// channel: both directives round-trip through ServiceDescription, and
+// alert-level accepts symbolic + numeric syslog levels.
+func TestParseAlertFileAndLevel(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+logfile = /var/log/svc.log
+alert-file = /var/log/svc-alerts.log
+alert-level = warn
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if desc.AlertFile != "/var/log/svc-alerts.log" {
+		t.Errorf("AlertFile = %q, want /var/log/svc-alerts.log", desc.AlertFile)
+	}
+	if desc.AlertLevel != 4 {
+		t.Errorf("AlertLevel = %d, want 4 (warn)", desc.AlertLevel)
+	}
+
+	// Numeric form.
+	input2 := `
+type = process
+command = /bin/true
+logfile = /var/log/svc.log
+alert-file = /var/log/svc-alerts.log
+alert-level = 3
+`
+	desc2, err := Parse(strings.NewReader(input2), "svc", "test")
+	if err != nil {
+		t.Fatalf("parse numeric: %v", err)
+	}
+	if desc2.AlertLevel != 3 {
+		t.Errorf("numeric AlertLevel = %d, want 3", desc2.AlertLevel)
+	}
+}
+
+// TestParseAlertLevelUnknown rejects garbage severity names before
+// they reach the loader — same policy as log-level-max.
+func TestParseAlertLevelUnknown(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+alert-file = /var/log/x.log
+alert-level = urgent
+`
+	_, err := Parse(strings.NewReader(input), "svc", "test")
+	if err == nil {
+		t.Fatal("expected error on unknown alert-level, got nil")
+	}
+}
+
+// TestParseAlertFileDefault confirms the "-1 = disabled" default when
+// neither directive appears: NewServiceDescription must not
+// accidentally opt every service into an alert channel.
+func TestParseAlertFileDefault(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+`
+	desc, err := Parse(strings.NewReader(input), "svc", "test")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if desc.AlertFile != "" {
+		t.Errorf("AlertFile default = %q, want empty", desc.AlertFile)
+	}
+	if desc.AlertLevel != -1 {
+		t.Errorf("AlertLevel default = %d, want -1", desc.AlertLevel)
+	}
+}

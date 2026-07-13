@@ -893,3 +893,221 @@ func TestLogRotatorSelectRejectsBadToken(t *testing.T) {
 		t.Fatal("expected error on missing +/- polarity, got nil")
 	}
 }
+
+// TestLogRotatorAlertChannelRoutes verifies the s6-log-style priority
+// alert channel: high-severity lines land in the alert file in
+// addition to the main sink; low-severity lines only hit the main
+// sink. The two thresholds (levelMax + alertLevel) are independent.
+func TestLogRotatorAlertChannelRoutes(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "svc.log")
+	alertPath := filepath.Join(dir, "svc-alerts.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:      mainPath,
+		FilePerms:     0600,
+		FileUID:       -1,
+		FileGID:       -1,
+		AlertFilePath: alertPath,
+		AlertLevel:    4, // warn: routes 0..4 to alert
+		LogLevelMax:   -1,
+		ServiceName:   "test",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	// crit (2) and warn (4) → both files; info (6) → main only.
+	lr.processLine([]byte("<2>critical failure\n"))
+	lr.processLine([]byte("<4>warning event\n"))
+	lr.processLine([]byte("<6>informational tick\n"))
+
+	// Close via defer path — bypass the pipe machinery in this
+	// direct-call test by draining the file handles manually.
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Close()
+	}
+	if lr.alertFile != nil {
+		lr.alertFile.Close()
+	}
+	lr.mu.Unlock()
+
+	mainBody, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatalf("read main: %v", err)
+	}
+	if want := "<2>critical failure\n<4>warning event\n<6>informational tick\n"; string(mainBody) != want {
+		t.Errorf("main log:\n got %q\nwant %q", mainBody, want)
+	}
+
+	alertBody, err := os.ReadFile(alertPath)
+	if err != nil {
+		t.Fatalf("read alert: %v", err)
+	}
+	if want := "<2>critical failure\n<4>warning event\n"; string(alertBody) != want {
+		t.Errorf("alert log:\n got %q\nwant %q", alertBody, want)
+	}
+}
+
+// TestLogRotatorAlertChannelSurvivesLevelMax verifies the crossover:
+// when levelMax drops a line from the main sink, the alert channel
+// still receives it (routing is independent of the main-sink gate).
+func TestLogRotatorAlertChannelSurvivesLevelMax(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "svc.log")
+	alertPath := filepath.Join(dir, "svc-alerts.log")
+
+	// Main sink drops everything above notice (5); alert routes
+	// warn (4) and stricter to the alert file.
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:      mainPath,
+		FilePerms:     0600,
+		FileUID:       -1,
+		FileGID:       -1,
+		AlertFilePath: alertPath,
+		AlertLevel:    4,
+		LogLevelMax:   5,
+		ServiceName:   "test",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	// crit (2): main + alert. info (6): main drops, alert doesn't route.
+	// warn (4): main + alert. debug (7): main drops, alert doesn't route.
+	lr.processLine([]byte("<2>critical\n"))
+	lr.processLine([]byte("<6>chatty info\n"))
+	lr.processLine([]byte("<4>warn\n"))
+	lr.processLine([]byte("<7>debug spam\n"))
+
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Close()
+	}
+	if lr.alertFile != nil {
+		lr.alertFile.Close()
+	}
+	lr.mu.Unlock()
+
+	mainBody, _ := os.ReadFile(mainPath)
+	if want := "<2>critical\n<4>warn\n"; string(mainBody) != want {
+		t.Errorf("main log:\n got %q\nwant %q", mainBody, want)
+	}
+
+	alertBody, _ := os.ReadFile(alertPath)
+	if want := "<2>critical\n<4>warn\n"; string(alertBody) != want {
+		t.Errorf("alert log:\n got %q\nwant %q", alertBody, want)
+	}
+}
+
+// TestLogRotatorAlertChannelDisabledByDefault asserts the safety
+// default: with AlertLevel=-1 and AlertFilePath="", NO alert file is
+// created regardless of severity. Guards against a future refactor
+// accidentally opting every service into an alert sink.
+func TestLogRotatorAlertChannelDisabledByDefault(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "svc.log")
+	alertPath := filepath.Join(dir, "svc-alerts.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:    mainPath,
+		FilePerms:   0600,
+		FileUID:     -1,
+		FileGID:     -1,
+		AlertLevel:  -1,
+		LogLevelMax: -1,
+		ServiceName: "test",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	lr.processLine([]byte("<0>panic-level line\n"))
+
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Close()
+	}
+	lr.mu.Unlock()
+
+	if _, err := os.Stat(alertPath); !os.IsNotExist(err) {
+		t.Errorf("alert file should not exist when channel is disabled; stat err=%v", err)
+	}
+}
+
+// TestLogRotatorRotateNoCollision drives two back-to-back rotations and
+// asserts both rotated files survive on disk. Prior second-precision
+// timestamp naming would silently clobber the first rotated file when
+// two rotations landed inside the same wall-clock second (rename(2)
+// on Linux atomically REPLACES the destination). Nanosecond precision
+// eliminates the collision under the rotator's mutex-serialized path.
+func TestLogRotatorRotateNoCollision(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "svc.log")
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:    logPath,
+		FilePerms:   0600,
+		FileUID:     -1,
+		FileGID:     -1,
+		ServiceName: "test",
+		LogLevelMax: -1,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	lr.mu.Lock()
+	if err := lr.openFileLocked(); err != nil {
+		lr.mu.Unlock()
+		t.Fatalf("open: %v", err)
+	}
+	// First rotation.
+	if _, err := lr.file.WriteString("first\n"); err != nil {
+		lr.mu.Unlock()
+		t.Fatalf("write1: %v", err)
+	}
+	lr.rotateLocked()
+	// Second rotation immediately after — same wall-clock second is
+	// guaranteed under mutex-serialized execution here.
+	if _, err := lr.file.WriteString("second\n"); err != nil {
+		lr.mu.Unlock()
+		t.Fatalf("write2: %v", err)
+	}
+	lr.rotateLocked()
+	lr.mu.Unlock()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	var rotated []string
+	prefix := filepath.Base(logPath) + "."
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), prefix) {
+			rotated = append(rotated, e.Name())
+		}
+	}
+	if len(rotated) != 2 {
+		t.Fatalf("expected 2 rotated files, got %d: %v", len(rotated), rotated)
+	}
+
+	// Verify each rotated file carries the payload we wrote before
+	// rotating — i.e. the second rotation did not overwrite the first.
+	sort.Strings(rotated)
+	firstBody, err := os.ReadFile(filepath.Join(dir, rotated[0]))
+	if err != nil {
+		t.Fatalf("read first: %v", err)
+	}
+	if string(firstBody) != "first\n" {
+		t.Errorf("first rotated body: got %q want %q", firstBody, "first\n")
+	}
+	secondBody, err := os.ReadFile(filepath.Join(dir, rotated[1]))
+	if err != nil {
+		t.Fatalf("read second: %v", err)
+	}
+	if string(secondBody) != "second\n" {
+		t.Errorf("second rotated body: got %q want %q", secondBody, "second\n")
+	}
+}

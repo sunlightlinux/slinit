@@ -55,3 +55,29 @@ func TestParseRlimitHelper(t *testing.T) {
 		}
 	}
 }
+
+// TestResolveAlertLevel pins the fallback matrix: file empty →
+// disabled (-1), file set + level parsed → level unchanged, file set +
+// level default (-1) → warn (4) so operators declaring only the file
+// still get sane routing.
+func TestResolveAlertLevel(t *testing.T) {
+	tests := []struct {
+		name     string
+		file     string
+		parsed   int
+		expected int
+	}{
+		{"no-file-no-level", "", -1, -1},
+		{"no-file-with-level", "", 3, -1},
+		{"file-no-level", "/tmp/a.log", -1, 4},
+		{"file-with-level", "/tmp/a.log", 2, 2},
+		{"file-with-emerg", "/tmp/a.log", 0, 0},
+	}
+	for _, tt := range tests {
+		got := resolveAlertLevel(tt.file, tt.parsed)
+		if got != tt.expected {
+			t.Errorf("%s: resolveAlertLevel(%q, %d) = %d, want %d",
+				tt.name, tt.file, tt.parsed, got, tt.expected)
+		}
+	}
+}

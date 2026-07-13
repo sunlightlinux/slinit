@@ -143,6 +143,11 @@ type ProcessService struct {
 	logForwardFormat     string
 	logForwardFacility   int
 	logForwardTag        string
+	// s6-log-style priority alert channel. When alertFile is non-
+	// empty, lines whose syslog level is <= alertLevel are ALSO
+	// written to alertFile (in addition to the main log). -1 disables.
+	alertFile  string
+	alertLevel int
 
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
@@ -189,6 +194,7 @@ func NewProcessService(set *ServiceSet, name string) *ProcessService {
 		maxRestartCount: defaultMaxRestarts,
 		readyNotifyFD:   -1,
 		logLevelMax:     -1,
+		alertLevel:      -1,
 	}
 	svc.ServiceRecord = *NewServiceRecord(svc, set, name, TypeProcess)
 	return svc
@@ -632,6 +638,16 @@ func (s *ProcessService) SetLogFilters(includes, excludes []string) {
 // include/exclude pair — the loader validates before calling.
 func (s *ProcessService) SetLogSelect(tokens []string) {
 	s.logSelect = tokens
+}
+
+// SetAlertLog configures the s6-log-style priority alert channel.
+// path=="" disables it (level is ignored). When path is non-empty,
+// level is 0..7 (syslog) and lines with priority <= level are copied
+// to path in addition to the main log write. The loader normalises
+// the level via resolveAlertLevel before calling this.
+func (s *ProcessService) SetAlertLog(path string, level int) {
+	s.alertFile = path
+	s.alertLevel = level
 }
 
 // SetLogRateLimit configures the log pipeline's token-bucket limiter.
@@ -1387,7 +1403,8 @@ func (s *ProcessService) startProcess() error {
 			s.logSanitizeChar != 0 || len(s.logSanitizeExtra) > 0 ||
 			s.logMaxLineLength > 0 ||
 			s.logTimestampMode != "" || s.logLinePrefix != "" ||
-			s.logForwardUDP != "" {
+			s.logForwardUDP != "" ||
+			s.alertFile != "" {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 			}
@@ -1429,6 +1446,8 @@ func (s *ProcessService) startProcess() error {
 				LinePrefix:     s.logLinePrefix,
 				ReadBufferSize: s.logReadBufferSize,
 				Forwarder:      forwarder,
+				AlertFilePath: s.alertFile,
+				AlertLevel:    s.alertLevel,
 				ServiceName:   s.serviceName,
 				Logger:        s.services.logger,
 			})

@@ -562,6 +562,24 @@ apply OS-level changes:
     embedded / container deployments that want to ship logs to a
     central rsyslog without pulling in journald or vector.
 
+**alert-file**=*path*, **alert-level**=*emerg*|*alert*|*crit*|*err*|*warn*|*notice*|*info*|*debug*
+:   s6-log(1)-style priority alert channel. When **alert-file** is
+    set, every line whose syslog priority is <= **alert-level** is
+    also written to *path* in addition to the main logfile. Routing
+    is independent of **log-level-max** — a line the main sink drops
+    can still land in the alert file, letting operators quiet down
+    the main log while keeping a compact record of critical events
+    for a pager or dashboard. **alert-file** without **alert-level**
+    defaults to *warn* (4). **alert-level** without **alert-file** is
+    a config error (no sink for the routed lines). Rate limit,
+    sanitize, timestamp and prefix decorations still apply — the
+    alert file receives the same decorated form as the main sink,
+    ensuring the two streams stay comparable. Rotation on the alert
+    file is not managed by slinit in the MVP: use external logrotate
+    or a symlink into an already-rotated directory. Files are opened
+    with `O_NOFOLLOW` and inherit **logfile-perms** / **logfile-uid**
+    / **logfile-gid** from the main sink.
+
 **profile**=*name1,name2,...*
 :   Tags this service as belonging to one or more named profiles
     (runit *runsvchdir* analogue). When a profile is active (via

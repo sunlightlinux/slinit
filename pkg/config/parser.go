@@ -217,6 +217,14 @@ type ServiceDescription struct {
 	LogForwardFormat   string
 	LogForwardFacility string
 	LogForwardTag      string
+	// s6-log-style priority alert channel. When AlertFile is non-
+	// empty, lines whose syslog priority is <= AlertLevel are ALSO
+	// written to AlertFile (in addition to the main log). Routing is
+	// independent of LogLevelMax: a line can appear in both, only in
+	// the alert channel, or only in the main file depending on the
+	// two thresholds. -1 disables the alert channel.
+	AlertFile  string
+	AlertLevel int
 	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
 	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
 
@@ -513,6 +521,7 @@ func NewServiceDescription(name string) *ServiceDescription {
 		LogFileUID:    -1,
 		LogFileGID:    -1,
 		LogLevelMax:   -1,
+		AlertLevel:    -1,
 		SocketPerms:   0600,
 		SocketUID:     -1,
 		SocketGID:     -1,
@@ -1735,6 +1744,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("log-forward-tag: must not be empty")
 		}
 		desc.LogForwardTag = value
+
+	// s6-log-style priority alert channel. alert-file is a second
+	// sink that mirrors high-severity lines; alert-level is the
+	// threshold (0=emerg .. 7=debug). Independent of log-level-max.
+	case "alert-file":
+		desc.AlertFile = expandEnvVars(value, serviceArg)
+	case "alert-level":
+		lvl, err := service.ParseLogLevel(value)
+		if err != nil {
+			return err
+		}
+		desc.AlertLevel = lvl
 
 	// Output/error logger (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	case "output-logger":
