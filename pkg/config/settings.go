@@ -337,6 +337,18 @@ var KnownSettings = map[string]OperatorType{
 	"runtime-max-sec": OpEquals,
 	"oom-policy":      OpEquals,
 
+	// systemd-style PSI pressure watches (cgroup v2). Both keys per
+	// resource are needed to arm the trigger: the *-watch key opts in,
+	// the *-threshold key sets the stall duration within a 2-second
+	// window. Threshold defaults to 200ms when watch=on and threshold
+	// is unset (matches systemd's default).
+	"memory-pressure-watch":     OpEquals,
+	"memory-pressure-threshold": OpEquals,
+	"cpu-pressure-watch":        OpEquals,
+	"cpu-pressure-threshold":    OpEquals,
+	"io-pressure-watch":         OpEquals,
+	"io-pressure-threshold":     OpEquals,
+
 	// systemd-style per-service credentials
 	"load-credential": OpEquals | OpPlusEqual,
 	"set-credential":  OpEquals | OpPlusEqual,

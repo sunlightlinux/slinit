@@ -174,6 +174,13 @@ const (
 	SvcEventFailedStart    uint8 = 2
 	SvcEventStartCancelled uint8 = 3
 	SvcEventStopCancelled  uint8 = 4
+	// PSI pressure-threshold-crossed events (additive; no protocol
+	// version bump). Emitted when a service configured with
+	// {memory,cpu,io}-pressure-watch has its cgroup v2 stall exceed
+	// the configured threshold within the fixed 2-second window.
+	SvcEventPressureMemory uint8 = 5
+	SvcEventPressureCPU    uint8 = 6
+	SvcEventPressureIO     uint8 = 7
 )
 
 // Status flags byte bits.

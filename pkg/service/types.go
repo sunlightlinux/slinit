@@ -128,6 +128,9 @@ const (
 	EventFailedStart                        // Service failed to start
 	EventStartCancelled                     // Start was cancelled by a stop request
 	EventStopCancelled                      // Stop was cancelled by a start request
+	EventPressureMemory                     // cgroup v2 memory.pressure crossed threshold
+	EventPressureCPU                        // cgroup v2 cpu.pressure crossed threshold
+	EventPressureIO                         // cgroup v2 io.pressure crossed threshold
 )
 
 func (e ServiceEvent) String() string {
@@ -142,6 +145,12 @@ func (e ServiceEvent) String() string {
 		return "STARTCANCELLED"
 	case EventStopCancelled:
 		return "STOPCANCELLED"
+	case EventPressureMemory:
+		return "PRESSURE-MEMORY"
+	case EventPressureCPU:
+		return "PRESSURE-CPU"
+	case EventPressureIO:
+		return "PRESSURE-IO"
 	default:
 		return fmt.Sprintf("ServiceEvent(%d)", e)
 	}
