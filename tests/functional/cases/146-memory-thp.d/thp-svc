@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# memory-thp = never routes through slinit-runner (needsRunnerWrap
+# gate) which calls prctl(PR_SET_THP_DISABLE, 1) before exec.
+# THP_enabled state is inherited across execve, so the target
+# process runs with THP disabled.
+memory-thp = never
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

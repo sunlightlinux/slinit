@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: sock-yes
+waits-for: sock-no
+waits-for: test-runner

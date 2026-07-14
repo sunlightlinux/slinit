@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# QEMU without -device tpm-* has no TPM, so
+# /sys/kernel/security/tpm0/binary_bios_measurements is missing.
+# condition-security = measured-os fails → service skipped
+# (STARTED with no PID).
+condition-security = measured-os
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

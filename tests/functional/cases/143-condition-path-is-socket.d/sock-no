@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# Negative case: /etc/os-release is a regular file, not a socket.
+# S_ISSOCK fails, condition fails, service reaches STARTED with
+# no PID (skipped).
+condition-path-is-socket = /etc/os-release
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

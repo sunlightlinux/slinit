@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (136 tests)
+# Run all tests (147 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -175,6 +175,17 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 134 | slinit-seedrng | fresh run writes seed.credit or seed.no-credit under `-seed-dir`; `-skip-credit` accepted; second run rotates the seed (sha256 changes) |
 | 135 | cgroup-v2 | memory.max / memory.high / pids.max / cpu.weight applied to the service's cgroup (with subtree_control auto-delegation) |
 | 136 | vtty | `vtty = true` opens `/run/slinit/vtty-<svc>.sock`; `/proc/PID/stat` tty_nr non-zero; socket removed on stop |
+| 137 | bundle-of | s6-rc-style bundles resolve into their members via `slinitctl start <bundle>` |
+| 138 | log-select | s6-log-style include/exclude regex chain filters logger stdin |
+| 139 | persist-intent | slinit-shutdown `--persist-intent` writes /run/slinit/shutdown.intent |
+| 140 | supplementary-groups | numeric GID resolver installs `Groups: 27 100 500` on the child's /proc/PID/status; guarded by run-as = 65534:65534 |
+| 141 | psi-pressure | `memory-pressure-watch = yes` keeps a `/sys/fs/cgroup/.../memory.pressure` fd open on slinit (PID 1); fd is released on stop |
+| 142 | condition-fraction | staged rollout gate: `TAG:0` skips (no PID), `TAG:100` starts (live PID) — bucket math is deterministic against `/etc/machine-id` |
+| 143 | condition-path-is-socket | `S_ISSOCK` check: `/run/slinit.socket` (real AF_UNIX) starts, `/etc/os-release` (regular file) skips |
+| 144 | condition-security=measured-os | no TPM in the QEMU VM → `condition-security = measured-os` fails and skips the service |
+| 145 | minimum-uptime-sec | `slinit --help` surface: `--minimum-uptime-sec` flag documented with boot-loop context |
+| 146 | memory-thp | `memory-thp = never` routes through slinit-runner; child's `/proc/PID/status` THP_enabled=0 when the field is exposed (kernel ≥ 5.11) |
+| 147 | fd-store-preserve | `file-descriptor-store-preserve = yes\|no\|on-success` all parse and start; NOTIFY_SOCKET is exported to each child |
 
 ## How It Works
 

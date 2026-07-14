@@ -1,0 +1,7 @@
+type = process
+depends-on: system-init
+# 100% always matches: bucket is in [0.00, 99.99), always < 100.
+# Service reaches STARTED with a live PID.
+condition-fraction = always-tag:100
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

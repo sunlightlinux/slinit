@@ -1,0 +1,6 @@
+type = process
+depends-on: system-init
+file-descriptor-store-max = 4
+file-descriptor-store-preserve = on-success
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no
