@@ -2,8 +2,10 @@ package service
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -24,6 +26,8 @@ const (
 	PredSecurity                               // a security framework is active
 	PredNeedsUpdate                            // distro update marker present
 	PredACPower                                // on AC power (not battery)
+	PredPathIsSocket                           // path exists and is a socket (S_ISSOCK)
+	PredFraction                               // fleet rollout: machine-id⊕tag hash < percent
 )
 
 // Predicate is one declarative start precondition. A failing condition
@@ -79,6 +83,10 @@ func (p Predicate) String() string {
 		name = "needs-update"
 	case PredACPower:
 		name = "ac-power"
+	case PredPathIsSocket:
+		name = "path-is-socket"
+	case PredFraction:
+		name = "fraction"
 	default:
 		name = fmt.Sprintf("kind-%d", p.Kind)
 	}
@@ -167,8 +175,67 @@ func evalRaw(p Predicate) (bool, string) {
 		return checkNeedsUpdate(p.Param)
 	case PredACPower:
 		return checkACPower(p.Param)
+	case PredPathIsSocket:
+		return pathIsSocket(p.Param)
+	case PredFraction:
+		return checkFraction(p.Param)
 	}
 	return false, fmt.Sprintf("unknown predicate kind %d", p.Kind)
+}
+
+// pathIsSocket returns true iff path exists and is a Unix domain
+// socket (matches systemd's ConditionPathIsSocket=). A path that
+// exists but is not a socket, or that is missing entirely, fails.
+func pathIsSocket(path string) (bool, string) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return false, fmt.Sprintf("path %q: %v", path, err)
+	}
+	if st.Mode()&os.ModeSocket == 0 {
+		return false, fmt.Sprintf("%q is not a socket", path)
+	}
+	return true, ""
+}
+
+// checkFraction implements systemd's ConditionFraction=. Value shape
+// is "<tag>:<percent>" — the tag is hashed together with the host's
+// machine-id via FNV-1a to derive a stable 32-bit value; the condition
+// succeeds iff that value modulo 100 < percent. Percent accepts an
+// integer or one decimal place (0.5% granularity is enough for staged
+// rollouts). The tag lets multiple independent rollouts on the same
+// host resolve to independent bucket assignments.
+//
+// A missing /etc/machine-id fails the condition (opt-in only on hosts
+// with a stable identifier) rather than falling back to hostname —
+// that would make the roll-out non-stable across renames.
+func checkFraction(param string) (bool, string) {
+	spec := strings.TrimSpace(param)
+	tag, pctStr, ok := strings.Cut(spec, ":")
+	if !ok {
+		return false, fmt.Sprintf("fraction: expected TAG:PERCENT, got %q", spec)
+	}
+	tag = strings.TrimSpace(tag)
+	pctStr = strings.TrimSpace(pctStr)
+	pct, err := strconv.ParseFloat(pctStr, 64)
+	if err != nil {
+		return false, fmt.Sprintf("fraction: percent %q: %v", pctStr, err)
+	}
+	if pct < 0 || pct > 100 {
+		return false, fmt.Sprintf("fraction: percent %v out of [0,100]", pct)
+	}
+	mid, err := os.ReadFile("/etc/machine-id")
+	if err != nil {
+		return false, fmt.Sprintf("fraction: /etc/machine-id: %v", err)
+	}
+	h := fnv.New32a()
+	h.Write([]byte(strings.TrimSpace(string(mid))))
+	h.Write([]byte{0}) // separator so "abcTAG" and "abc"+"TAG" differ
+	h.Write([]byte(tag))
+	bucket := float64(h.Sum32()%10000) / 100.0 // two-decimal precision
+	if bucket < pct {
+		return true, ""
+	}
+	return false, fmt.Sprintf("fraction: bucket %.2f%% >= %.2f%%", bucket, pct)
 }
 
 // parsePredicateParam strips a leading "!" and reports whether the value
@@ -213,6 +280,10 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredNeedsUpdate, true
 	case "ac-power":
 		return PredACPower, true
+	case "path-is-socket":
+		return PredPathIsSocket, true
+	case "fraction":
+		return PredFraction, true
 	}
 	return 0, false
 }

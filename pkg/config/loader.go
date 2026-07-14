@@ -1402,6 +1402,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetCredentials(desc.Credentials)
 	rec.SetDynamicUser(desc.DynamicUser)
 	rec.SetFDStoreMax(desc.FileDescriptorStoreMax)
+	rec.SetFDStorePreserve(desc.FileDescriptorStorePreserve)
 	if len(desc.ExtraCommands) > 0 {
 		rec.SetExtraCommands(desc.ExtraCommands)
 	}
@@ -1512,6 +1513,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 
 	// Memory locking + NUMA (applied via slinit-runner)
+	if desc.MemoryTHP != "" {
+		rec.SetMemoryTHP(desc.MemoryTHP)
+	}
 	if desc.MlockallFlags != 0 {
 		rec.SetMlockallFlags(desc.MlockallFlags)
 	}

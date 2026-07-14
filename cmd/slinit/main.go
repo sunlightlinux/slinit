@@ -144,6 +144,10 @@ func main() {
 	flag.StringVar(&shutdownFinalSleep, "shutdown-final-sleep", "0",
 		"settle pause between the SIGKILL wave and umountall (e.g. 500ms, 2s); 0 disables")
 
+	var minimumUptimeSec string
+	flag.StringVar(&minimumUptimeSec, "minimum-uptime-sec", "0",
+		"anti-boot-loop floor: delay shutdown/reboot until the system has been up this long (e.g. 30s); 0 disables")
+
 	var bootBanner string
 	var initUmask string
 	var consoleDup bool
@@ -486,6 +490,25 @@ func main() {
 	} else {
 		logger.Error("Invalid --shutdown-final-sleep %q: %v (using 0)",
 			shutdownFinalSleep, err)
+	}
+
+	// Apply anti-boot-loop floor (systemd v261 MinimumUptimeSec=).
+	// Zero disables. Bare integers are treated as seconds so
+	// "--minimum-uptime-sec 30" and "--minimum-uptime-sec 30s" both work.
+	if v := strings.TrimSpace(minimumUptimeSec); v != "" && v != "0" {
+		var d time.Duration
+		if secs, perr := strconv.Atoi(v); perr == nil {
+			d = time.Duration(secs) * time.Second
+		} else if pd, perr := time.ParseDuration(v); perr == nil {
+			d = pd
+		} else {
+			logger.Error("Invalid --minimum-uptime-sec %q: %v (using 0)",
+				minimumUptimeSec, perr)
+		}
+		if d > 0 {
+			shutdown.SetMinimumUptime(d)
+			logger.Debug("Anti-boot-loop floor: %v", d)
+		}
 	}
 
 	// Apply boot housekeeping settings before InitPID1.

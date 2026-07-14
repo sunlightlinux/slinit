@@ -259,6 +259,19 @@ func checkSecurity(param string) (bool, string) {
 				return true, ""
 			}
 		}
+	case "measured-os":
+		// systemd v261: succeeds when the kernel has extended TPM PCRs
+		// during boot. We look at the TPM binary_bios_measurements log —
+		// a non-empty file means firmware/kernel measured something into
+		// the TPM. Does not require systemd-stub or UKI.
+		st, err := os.Stat("/sys/kernel/security/tpm0/binary_bios_measurements")
+		if err != nil {
+			return false, "no TPM binary_bios_measurements log"
+		}
+		if st.Size() == 0 {
+			return false, "TPM binary_bios_measurements log is empty"
+		}
+		return true, ""
 	default:
 		return false, fmt.Sprintf("unknown security framework %q", param)
 	}
