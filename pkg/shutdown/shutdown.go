@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,6 +58,19 @@ var (
 // existing zero-cost path.
 var finalSleep time.Duration
 
+// minimumUptime is systemd v261's MinimumUptimeSec= anti-boot-loop
+// floor. When set (non-zero) and Execute() fires before the system has
+// been up for at least this long, the delta is slept off before the
+// destructive sequence starts. Prevents tight reboot loops from
+// burning flash / CI harnesses when a broken start-up unit trips into
+// an immediate reboot. Default 0 = disabled (no floor).
+var minimumUptime time.Duration
+
+// uptimeFunc reads current system uptime (/proc/uptime) at check
+// time. Overridable for tests so the boot-loop guard can be exercised
+// without waiting real seconds.
+var uptimeFunc = readUptime
+
 // SetSyncEnabled toggles the pre-reboot syscall.Sync() call in Execute.
 // Disable with `slinit-shutdown -n` / `--no-sync` for a fast unclean exit.
 func SetSyncEnabled(v bool) { syncEnabled = v }
@@ -67,6 +82,11 @@ func SetWtmpEnabled(v bool) { wtmpEnabled = v }
 // SetFinalSleep configures the post-SIGKILL / pre-umount settle
 // pause. 0 (default) preserves the current zero-cost fast path.
 func SetFinalSleep(d time.Duration) { finalSleep = d }
+
+// SetMinimumUptime configures the anti-boot-loop floor. Passed by the
+// daemon from --minimum-uptime-sec (or system.conf equivalent). Zero
+// disables the check.
+func SetMinimumUptime(d time.Duration) { minimumUptime = d }
 
 // sleepFunc is the sleep primitive used between SIGKILL and umount.
 // Overridable for tests so unit tests don't have to sleep.
@@ -106,6 +126,20 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE)
 
 	logger.Notice("Executing shutdown: %s", shutdownType)
+
+	// Anti-boot-loop floor (systemd v261 MinimumUptimeSec=). When a
+	// shutdown fires earlier than the configured floor, sleep the
+	// delta before touching processes/filesystems. Keeps a broken
+	// start-up unit from immediately re-tripping into the reboot
+	// syscall in a tight loop that would burn flash / CI harnesses.
+	if minimumUptime > 0 {
+		if up, err := uptimeFunc(); err == nil && up < minimumUptime {
+			wait := minimumUptime - up
+			logger.Notice("Boot-loop guard: uptime %v < minimum %v, delaying shutdown by %v",
+				up, minimumUptime, wait)
+			sleepFunc(wait)
+		}
+	}
 
 	// Broadcast a final wall notice to any logged-in users.
 	WallShutdownNotice(shutdownType, 0, logger)
@@ -386,4 +420,23 @@ func runShutdownHook(shutdownType service.ShutdownType, logger *logging.Logger) 
 
 	logger.Notice("Shutdown hook completed successfully (cleanup handled by hook)")
 	return true
+}
+
+// readUptime returns the system uptime by reading /proc/uptime (first
+// field, seconds since boot as a float). Returns an error on any read
+// or parse failure — the caller treats that as "unknown, skip guard".
+func readUptime() (time.Duration, error) {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+	first, _, ok := strings.Cut(strings.TrimSpace(string(data)), " ")
+	if !ok {
+		first = strings.TrimSpace(string(data))
+	}
+	secs, err := strconv.ParseFloat(first, 64)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(secs * float64(time.Second)), nil
 }

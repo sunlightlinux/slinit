@@ -268,6 +268,12 @@ type ServiceRecord struct {
 	numaMempolicySet bool
 	numaNodes        []uint
 
+	// memoryTHP is systemd v261 MemoryTHP=: per-service Transparent
+	// Huge Pages policy. Empty = no change; "never" opts out via
+	// PR_SET_THP_DISABLE at the runner; "madvise"/"always" are
+	// accepted for parity but rely on the system default.
+	memoryTHP string
+
 	cloneflags  uintptr                // namespace clone flags (CLONE_NEWPID, CLONE_NEWNS, etc.)
 	uidMappings []syscall.SysProcIDMap // user namespace UID mappings
 	gidMappings []syscall.SysProcIDMap // user namespace GID mappings
@@ -373,8 +379,9 @@ type ServiceRecord struct {
 	// sd_notify FDSTORE=1 messages. Stored fds are kept across
 	// restarts inside the daemon and prepended to the child's
 	// LISTEN_FDS on the next BringUp.
-	fdStoreMax int
-	fdStore    *process.FDStore
+	fdStoreMax      int
+	fdStore         *process.FDStore
+	fdStorePreserve string // "" | "no" | "yes" | "on-success" (systemd v261)
 	notifySock *process.NotifySocketListener
 }
 
@@ -560,6 +567,12 @@ func (sr *ServiceRecord) SetFDStoreMax(n int) {
 
 // FDStoreMax reports the configured capacity.
 func (sr *ServiceRecord) FDStoreMax() int { return sr.fdStoreMax }
+
+// SetFDStorePreserve configures whether stored fds survive a service
+// stop. Values match systemd's FileDescriptorStorePreserve=: ""/"no"
+// clear on stop; "yes" retain until daemon exit; "on-success" retain
+// only across a clean exit. No-op when the store is disabled.
+func (sr *ServiceRecord) SetFDStorePreserve(mode string) { sr.fdStorePreserve = mode }
 
 // FDStore returns the underlying store (nil when the feature is off).
 func (sr *ServiceRecord) FDStore() *process.FDStore { return sr.fdStore }
@@ -1338,6 +1351,10 @@ func (sr *ServiceRecord) SetSchedDeadlineParams(runtime, deadline, period uint64
 func (sr *ServiceRecord) SetSchedResetOnFork(b bool) { sr.schedResetOnFork = b }
 
 func (sr *ServiceRecord) SetMlockallFlags(flags int) { sr.mlockallFlags = flags }
+
+// SetMemoryTHP records the per-service THP policy (never|madvise|always).
+// Empty leaves the system default. Passed through to slinit-runner.
+func (sr *ServiceRecord) SetMemoryTHP(mode string) { sr.memoryTHP = mode }
 func (sr *ServiceRecord) SetNumaMempolicy(mode uint32, set bool) {
 	sr.numaMempolicy = mode
 	sr.numaMempolicySet = set
@@ -1397,6 +1414,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.NumaMempolicy = sr.numaMempolicy
 	params.NumaMempolicySet = sr.numaMempolicySet
 	params.NumaNodes = sr.numaNodes
+	params.MemoryTHP = sr.memoryTHP
 	params.RunnerPath = sr.services.RunnerPath()
 	params.Cloneflags = sr.cloneflags
 	params.UidMappings = sr.uidMappings
@@ -2044,10 +2062,27 @@ func (sr *ServiceRecord) Stopped() {
 	sr.releaseDynamicUID()
 
 	// Tear down the $NOTIFY_SOCKET listener (no-op when disabled).
-	// Stored fds are intentionally NOT closed: they survive until the
-	// next BringUp hands them off via LISTEN_FDS. Daemon-shutdown
-	// closes them via ServiceSet teardown.
+	// Whether stored fds survive to the next BringUp is governed by
+	// file-descriptor-store-preserve (systemd v261 semantics):
+	//   ""|"no"      → close now (systemd default)
+	//   "yes"        → keep across stop until daemon exits
+	//   "on-success" → keep only if this stop is a clean exit
+	// The check runs against sr.fdStore (nil when fd-store disabled).
 	sr.teardownNotifySocket()
+	if sr.fdStore != nil {
+		keep := false
+		switch sr.fdStorePreserve {
+		case "yes":
+			keep = true
+		case "on-success":
+			es := sr.self.GetExitStatus()
+			keep = sr.stopReason == ReasonNormal ||
+				(sr.stopReason == ReasonTerminated && es.Exited() && es.ExitCode() == 0)
+		}
+		if !keep {
+			sr.fdStore.Close()
+		}
+	}
 
 	if sr.haveConsole {
 		sr.releaseConsole()

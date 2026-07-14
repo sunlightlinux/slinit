@@ -582,7 +582,7 @@ func loadAppArmorProfile(path string) error {
 // per-calling-process syscalls — were requested.
 func needsRunnerWrap(p ExecParams) bool {
 	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
-		p.AppArmorProfile != "" || p.DebugStop ||
+		p.AppArmorProfile != "" || p.DebugStop || p.MemoryTHP != "" ||
 		sandboxActive(p) || seccompActive(p) || hardeningActive(p) ||
 		len(p.BoundingCaps) > 0 || p.NoNewPrivs
 }
@@ -636,6 +636,9 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	if p.DebugStop {
 		args = append(args, "--debug")
+	}
+	if p.MemoryTHP != "" {
+		args = append(args, "--memory-thp="+p.MemoryTHP)
 	}
 	// Filesystem sandbox flags. These are applied inside the child's
 	// fresh mount namespace (CLONE_NEWNS, auto-implied by the loader) by

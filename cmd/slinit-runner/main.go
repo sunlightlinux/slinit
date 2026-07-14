@@ -47,6 +47,9 @@ func run() error {
 		"AppArmor profile to transition into on the upcoming exec")
 	debug := fs.Bool("debug", false,
 		"raise SIGSTOP before exec so a debugger can attach (resume with SIGCONT)")
+	memoryTHP := fs.String("memory-thp", "",
+		"Transparent Huge Page policy for this task: never | madvise | always (systemd MemoryTHP=). "+
+			"Only 'never' has per-process effect (PR_SET_THP_DISABLE); madvise/always fall back to the system default.")
 	privateTmp := fs.Bool("private-tmp", false,
 		"mount a fresh tmpfs at /tmp and /var/tmp (systemd PrivateTmp=)")
 	protectSystem := fs.String("protect-system", "",
@@ -139,6 +142,12 @@ func run() error {
 	if *mlockall != 0 {
 		if err := unix.Mlockall(*mlockall); err != nil {
 			return fmt.Errorf("mlockall(0x%x): %w", *mlockall, err)
+		}
+	}
+
+	if *memoryTHP != "" {
+		if err := applyMemoryTHP(*memoryTHP); err != nil {
+			return fmt.Errorf("memory-thp: %w", err)
 		}
 	}
 
@@ -469,4 +478,22 @@ func setMempolicy(mode uint32, nodes []uint) error {
 		return errno
 	}
 	return nil
+}
+
+// applyMemoryTHP implements systemd's MemoryTHP=. Only "never" has a
+// per-process effect: the kernel offers PR_SET_THP_DISABLE which
+// opts this task and its descendants out of THP. "madvise" and
+// "always" are accepted for config parity but leave the task at the
+// system default (they are only meaningful as a system-wide policy
+// under /sys/kernel/mm/transparent_hugepage/enabled).
+func applyMemoryTHP(mode string) error {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "never":
+		return unix.Prctl(unix.PR_SET_THP_DISABLE, 1, 0, 0, 0)
+	case "madvise", "always":
+		// Explicit no-op: system default carries.
+		return nil
+	default:
+		return fmt.Errorf("unknown mode %q (expected never|madvise|always)", mode)
+	}
 }

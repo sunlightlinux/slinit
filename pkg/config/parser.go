@@ -265,6 +265,20 @@ type ServiceDescription struct {
 	// BringUp). 0 disables.
 	FileDescriptorStoreMax int
 
+	// FileDescriptorStorePreserve controls whether the fd-store
+	// contents survive a service stop. Values: "" or "no" (default,
+	// clear on stop — current behaviour); "yes" (keep across
+	// stop→start); "on-success" (keep only if last exit was clean).
+	// Ignored when FileDescriptorStoreMax is zero.
+	FileDescriptorStorePreserve string
+
+	// MemoryTHP is systemd v261 MemoryTHP=: per-service Transparent
+	// Huge Pages policy. "never" opts the service out via
+	// PR_SET_THP_DISABLE (applied child-side by slinit-runner);
+	// "madvise" and "always" are accepted for parity but leave the
+	// system default in place. Empty = no change.
+	MemoryTHP string
+
 	// Socket activation
 	SocketPath       string   // primary socket path (first socket-listen)
 	SocketPaths      []string // all socket-listen paths (for multiple sockets)
@@ -1877,6 +1891,22 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("file-descriptor-store-max: must be a non-negative integer")
 		}
 		desc.FileDescriptorStoreMax = n
+	case "file-descriptor-store-preserve":
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "", "no", "yes", "on-success":
+			desc.FileDescriptorStorePreserve = v
+		default:
+			return fmt.Errorf("file-descriptor-store-preserve: expected yes|no|on-success, got %q", value)
+		}
+	case "memory-thp":
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "never", "madvise", "always":
+			desc.MemoryTHP = v
+		default:
+			return fmt.Errorf("memory-thp: expected never|madvise|always, got %q", value)
+		}
 
 	// Socket
 	case "socket-listen":

@@ -349,6 +349,15 @@ var KnownSettings = map[string]OperatorType{
 	"io-pressure-watch":         OpEquals,
 	"io-pressure-threshold":     OpEquals,
 
+	// systemd MemoryTHP= — Transparent Huge Pages policy per service.
+	// Applied child-side by slinit-runner via PR_SET_THP_DISABLE.
+	"memory-thp": OpEquals,
+
+	// systemd FileDescriptorStorePreserve= — whether the fd-store
+	// (introduced with file-descriptor-store-max) is retained across
+	// stop/restart. Values: yes | no | on-success.
+	"file-descriptor-store-preserve": OpEquals,
+
 	// systemd-style per-service credentials
 	"load-credential": OpEquals | OpPlusEqual,
 	"set-credential":  OpEquals | OpPlusEqual,

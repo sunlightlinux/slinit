@@ -252,6 +252,12 @@ type ExecParams struct {
 	// for DEFAULT and LOCAL.
 	NumaNodes []uint
 
+	// MemoryTHP mirrors systemd v261 MemoryTHP= (never|madvise|always).
+	// Only "never" has a per-process effect (PR_SET_THP_DISABLE);
+	// the other values are accepted for parity but leave the system
+	// default in place. Applied by slinit-runner. Empty = no change.
+	MemoryTHP string
+
 	// RunnerPath is the absolute path to slinit-runner. Empty disables
 	// the wrapper even if Mlockall/NUMA fields are set (in which case
 	// the syscalls are silently ignored — the operator gets a startup
