@@ -60,6 +60,7 @@ var KnownSettings = map[string]OperatorType{
 
 	// Process management
 	"run-as":                 OpEquals,
+	"supplementary-groups":   OpEquals | OpPlusEqual,
 	"dynamic-user":           OpEquals,
 	"file-descriptor-store-max": OpEquals,
 	"manual":                 OpEquals,

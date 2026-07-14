@@ -93,6 +93,14 @@ type ExecParams struct {
 	RunAsUID uint32
 	RunAsGID uint32
 
+	// SupplementaryGIDs is the child's supplementary group set. Loaded
+	// from the service's supplementary-groups= directive after name
+	// resolution. Nil means "leave supplementary groups untouched"
+	// (the parent's set is inherited). An empty non-nil slice would
+	// clear the set, which we don't currently expose — treat nil and
+	// [] identically at the call site.
+	SupplementaryGIDs []uint32
+
 	// Signal to use for stopping the process (default SIGTERM).
 	TermSignal syscall.Signal
 

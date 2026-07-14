@@ -247,6 +247,13 @@ type ServiceDescription struct {
 	// Credentials
 	RunAs string
 
+	// SupplementaryGroups lists group names (or numeric GIDs) to load
+	// as the child's supplementary group set. Applied when run-as is
+	// set; without it slinit would leave the child with an empty set
+	// (Go's syscall.Credential clears supplementary groups on any
+	// UID drop). Matches systemd's SupplementaryGroups=.
+	SupplementaryGroups []string
+
 	// DynamicUser allocates a transient UID/GID from the daemon's
 	// pool at every BringUp, released in Stopped(). Conflicts with
 	// run-as=: the loader rejects descriptions that set both.
@@ -1802,6 +1809,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.WatchdogTimeout = d
 	case "run-as":
 		desc.RunAs = value
+	case "supplementary-groups":
+		groups := strings.Fields(value)
+		if op == OpPlusEqual {
+			desc.SupplementaryGroups = append(desc.SupplementaryGroups, groups...)
+		} else {
+			desc.SupplementaryGroups = groups
+		}
 	case "dynamic-user":
 		b, err := parseBool(value)
 		if err != nil {

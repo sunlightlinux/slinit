@@ -32,8 +32,9 @@ type BGProcessService struct {
 	pidFile string
 
 	// Credentials
-	runAsUID uint32
-	runAsGID uint32
+	runAsUID          uint32
+	runAsGID          uint32
+	supplementaryGIDs []uint32
 
 	// Process state
 	launcherPID int
@@ -125,6 +126,9 @@ func (s *BGProcessService) SetEnvFile(path string)          { s.envFile = path }
 func (s *BGProcessService) SetPIDFile(path string)          { s.pidFile = path }
 func (s *BGProcessService) GetPIDFile() string              { return s.pidFile }
 func (s *BGProcessService) SetRunAs(uid, gid uint32)        { s.runAsUID = uid; s.runAsGID = gid }
+func (s *BGProcessService) SetSupplementaryGroups(gids []uint32) {
+	s.supplementaryGIDs = gids
+}
 
 // effectiveRunAsUID / GID prefer the dynamic-user transient UID when
 // allocated, falling back to the configured run-as values.
@@ -345,6 +349,7 @@ func (s *BGProcessService) BringUp() bool {
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
 		RunAsUID:          s.effectiveRunAsUID(),
 		RunAsGID:          s.effectiveRunAsGID(),
+		SupplementaryGIDs: s.supplementaryGIDs,
 		OutputPipe:        outputPipe,
 		InputPipe:         inputPipe,
 	}
