@@ -435,6 +435,19 @@ type ServiceDescription struct {
 	// cgroup. Off by default.
 	OOMPolicy service.OOMPolicy
 
+	// PSI pressure watches (cgroup v2, systemd-parity). Each *Watch bool
+	// enables monitoring of the corresponding <cgroup>/{memory,cpu,io}.pressure
+	// file. Threshold is the stall duration within a fixed 2-second window
+	// that must be exceeded before a SERVICEEVENT is emitted; a zero value
+	// means "use the default" (200 ms) — matches systemd's behaviour when
+	// only the enable knob is set. Requires a cgroup path on the service.
+	MemoryPressureWatch     bool
+	MemoryPressureThreshold time.Duration
+	CPUPressureWatch        bool
+	CPUPressureThreshold    time.Duration
+	IOPressureWatch         bool
+	IOPressureThreshold     time.Duration
+
 	// Credentials are file/inline secrets exposed to the service via a
 	// fresh tmpfs at /run/credentials/<svc>/ pointed to by
 	// $CREDENTIALS_DIRECTORY. load-credential = NAME:PATH copies from a
@@ -1450,6 +1463,42 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.OOMPolicy = p
+	case "memory-pressure-watch":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("memory-pressure-watch: %w", err)
+		}
+		desc.MemoryPressureWatch = b
+	case "memory-pressure-threshold":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("memory-pressure-threshold: %w", err)
+		}
+		desc.MemoryPressureThreshold = d
+	case "cpu-pressure-watch":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("cpu-pressure-watch: %w", err)
+		}
+		desc.CPUPressureWatch = b
+	case "cpu-pressure-threshold":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("cpu-pressure-threshold: %w", err)
+		}
+		desc.CPUPressureThreshold = d
+	case "io-pressure-watch":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("io-pressure-watch: %w", err)
+		}
+		desc.IOPressureWatch = b
+	case "io-pressure-threshold":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("io-pressure-threshold: %w", err)
+		}
+		desc.IOPressureThreshold = d
 	case "load-credential":
 		// load-credential = NAME:PATH — copy a file from disk into
 		// /run/credentials/<svc>/NAME. NAME : PATH form is the only

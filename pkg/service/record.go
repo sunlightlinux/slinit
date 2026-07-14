@@ -341,6 +341,19 @@ type ServiceRecord struct {
 	oomPolicy OOMPolicy
 	oomWatch  *oomWatcher
 
+	// PSI pressure watches (cgroup v2, systemd-parity). Each threshold
+	// is the stall time within a fixed 2s window that must be exceeded
+	// before a SERVICEEVENT is emitted. A zero threshold when the
+	// matching *Watch bool is true selects the default (200ms). Watcher
+	// goroutines are armed in Started(), torn down in Stopped().
+	psiMemWatch bool
+	psiMemThr   time.Duration
+	psiCPUWatch bool
+	psiCPUThr   time.Duration
+	psiIOWatch  bool
+	psiIOThr    time.Duration
+	psiWatch    *psiWatcher
+
 	// credentials are file/literal secrets materialised at
 	// /run/credentials/<service>/ via a fresh ro tmpfs and exposed
 	// through $CREDENTIALS_DIRECTORY. Set up in StartProcess (parent
@@ -460,6 +473,25 @@ func (sr *ServiceRecord) RuntimeMax() time.Duration { return sr.runtimeMax }
 
 // SetOOMPolicy records the cgroup v2 OOM-kill response policy.
 func (sr *ServiceRecord) SetOOMPolicy(p OOMPolicy) { sr.oomPolicy = p }
+
+// SetPSIMemoryWatch enables cgroup v2 memory.pressure monitoring. A zero
+// threshold selects the default (200ms within a 2s window).
+func (sr *ServiceRecord) SetPSIMemoryWatch(enabled bool, threshold time.Duration) {
+	sr.psiMemWatch = enabled
+	sr.psiMemThr = threshold
+}
+
+// SetPSICPUWatch enables cgroup v2 cpu.pressure monitoring.
+func (sr *ServiceRecord) SetPSICPUWatch(enabled bool, threshold time.Duration) {
+	sr.psiCPUWatch = enabled
+	sr.psiCPUThr = threshold
+}
+
+// SetPSIIOWatch enables cgroup v2 io.pressure monitoring.
+func (sr *ServiceRecord) SetPSIIOWatch(enabled bool, threshold time.Duration) {
+	sr.psiIOWatch = enabled
+	sr.psiIOThr = threshold
+}
 
 // OOMPolicy returns the configured OOM policy.
 func (sr *ServiceRecord) OOMPolicy() OOMPolicy { return sr.oomPolicy }
@@ -1963,6 +1995,11 @@ func (sr *ServiceRecord) Started() {
 	// Start the cgroup OOM watcher (if oom-policy demands it).
 	sr.armOOMWatcher()
 
+	// Arm the cgroup v2 PSI pressure watches (if any pressure-watch is
+	// enabled). No-op when no cgroup path is set — pressure files live
+	// under the cgroup tree.
+	sr.armPSIWatcher()
+
 	if sr.forceStop || sr.desired.Load() == StateStopped {
 		sr.doStop(false)
 		return
@@ -1988,6 +2025,9 @@ func (sr *ServiceRecord) Stopped() {
 
 	// Cancel the OOM watcher (if armed). Idempotent — nil-safe.
 	sr.cancelOOMWatcher()
+
+	// Cancel any armed PSI pressure watchers. Idempotent — nil-safe.
+	sr.cancelPSIWatcher()
 
 	// Tear down the per-service /run/credentials/<svc>/ tmpfs (no-op
 	// when no credentials were configured). Cleanup errors are logged
