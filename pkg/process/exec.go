@@ -114,8 +114,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		(params.RunAsUID != 0 || params.RunAsGID != 0)
 	if !deferRunAsToRunner && (params.RunAsUID != 0 || params.RunAsGID != 0) {
 		cmd.SysProcAttr.Credential = &syscall.Credential{
-			Uid: params.RunAsUID,
-			Gid: params.RunAsGID,
+			Uid:    params.RunAsUID,
+			Gid:    params.RunAsGID,
+			Groups: params.SupplementaryGIDs,
 		}
 	}
 
@@ -715,6 +716,9 @@ func wrapWithRunner(p ExecParams) []string {
 		args = append(args, "--run-as-gid="+strconv.Itoa(int(p.RunAsGID)))
 		for _, c := range p.AmbientCaps {
 			args = append(args, "--ambient-cap="+strconv.FormatUint(uint64(c), 10))
+		}
+		for _, g := range p.SupplementaryGIDs {
+			args = append(args, "--supp-gid="+strconv.FormatUint(uint64(g), 10))
 		}
 	}
 	// Bounding-set narrowing: pass the positive keep-list; the runner

@@ -85,6 +85,56 @@ func TestWrapWithRunnerNumaWithoutNodes(t *testing.T) {
 	}
 }
 
+// TestWrapWithRunnerSupplementaryGIDs verifies each configured
+// supplementary GID becomes its own --supp-gid=N runner flag, and
+// that the emit is gated on a run-as drop being present (no UID drop
+// means no setgroups path in the runner).
+func TestWrapWithRunnerSupplementaryGIDs(t *testing.T) {
+	p := ExecParams{
+		Command:           []string{"/bin/true"},
+		MlockallFlags:     unix.MCL_CURRENT,
+		RunnerPath:        "/sbin/slinit-runner",
+		RunAsUID:          1000,
+		RunAsGID:          1000,
+		SupplementaryGIDs: []uint32{27, 100, 500},
+	}
+	got := wrapWithRunner(p)
+	want := []string{
+		"/sbin/slinit-runner",
+		"--mlockall=1",
+		"--run-as-uid=1000",
+		"--run-as-gid=1000",
+		"--supp-gid=27",
+		"--supp-gid=100",
+		"--supp-gid=500",
+		"--",
+		"/bin/true",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("wrapWithRunner argv mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+// TestWrapWithRunnerSupplementaryGIDsIgnoredWithoutRunAs pins the
+// current behaviour: without a UID/GID drop, supplementary groups
+// are not plumbed to the runner. The runner's setgroups block is
+// gated behind the same run-as check, so this keeps the two sides
+// consistent — no orphaned flag emit that the runner would ignore.
+func TestWrapWithRunnerSupplementaryGIDsIgnoredWithoutRunAs(t *testing.T) {
+	p := ExecParams{
+		Command:           []string{"/bin/true"},
+		MlockallFlags:     unix.MCL_CURRENT,
+		RunnerPath:        "/sbin/slinit-runner",
+		SupplementaryGIDs: []uint32{27, 100},
+	}
+	got := wrapWithRunner(p)
+	for _, a := range got {
+		if len(a) >= 10 && a[:10] == "--supp-gid" {
+			t.Errorf("unexpected supp-gid flag with no run-as drop: %v", got)
+		}
+	}
+}
+
 func TestMempolicyName(t *testing.T) {
 	cases := map[uint32]string{
 		unix.MPOL_DEFAULT:    "default",

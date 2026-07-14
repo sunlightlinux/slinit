@@ -168,6 +168,24 @@ instance, with *$1* substitution still in effect.
 
 **run-as**=*user*[:*group*]
 :   Drop privileges to *user* (and optionally *group*) before exec.
+    Only the primary UID and primary GID are set — supplementary
+    groups from `/etc/group` are NOT loaded automatically. Use
+    **supplementary-groups**= to opt in explicitly, matching the
+    principle of least surprise across sysvinit / OpenRC / systemd.
+
+**supplementary-groups**=*grp1* [*grp2*...]
+:   Space-separated list of group names (or numeric GIDs) installed
+    as the child's supplementary group set before the **run-as** drop.
+    Accepts `+=` to accumulate across lines. Unresolvable names are
+    logged and skipped; numeric fallback allows namespace-managed
+    GIDs with no `/etc/group` entry. Meaningful only when **run-as**
+    is set — without a UID drop the parent's group set is inherited.
+
+    Example: a postgres service needing `ssl-cert` for
+    `/etc/ssl/private` reads:
+
+        run-as = postgres:postgres
+        supplementary-groups = ssl-cert
 
 **file-descriptor-store-max**=*N*
 :   Enable the systemd-style file-descriptor store. At BringUp slinit

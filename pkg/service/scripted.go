@@ -20,8 +20,9 @@ type ScriptedService struct {
 	workingDir   string
 
 	// Credentials
-	runAsUID uint32
-	runAsGID uint32
+	runAsUID          uint32
+	runAsGID          uint32
+	supplementaryGIDs []uint32
 
 	// Process tracking
 	startPID    int
@@ -94,6 +95,11 @@ func (s *ScriptedService) SetWorkingDir(dir string) { s.workingDir = dir }
 func (s *ScriptedService) SetRunAs(uid, gid uint32) {
 	s.runAsUID = uid
 	s.runAsGID = gid
+}
+
+// SetSupplementaryGroups sets the child's supplementary group set.
+func (s *ScriptedService) SetSupplementaryGroups(gids []uint32) {
+	s.supplementaryGIDs = gids
 }
 
 // effectiveRunAsUID returns the dynamic-user UID when allocated,
@@ -259,13 +265,14 @@ func (s *ScriptedService) BringUp() bool {
 	}
 
 	params := process.ExecParams{
-		Command:    s.startCommand,
-		WorkingDir: s.workingDir,
-		Env:        s.Record().BuildFullEnv(),
-		RunAsUID:   s.effectiveRunAsUID(),
-		RunAsGID:   s.effectiveRunAsGID(),
-		OutputPipe: outputPipe,
-		InputPipe:  inputPipe,
+		Command:           s.startCommand,
+		WorkingDir:        s.workingDir,
+		Env:               s.Record().BuildFullEnv(),
+		RunAsUID:          s.effectiveRunAsUID(),
+		RunAsGID:          s.effectiveRunAsGID(),
+		SupplementaryGIDs: s.supplementaryGIDs,
+		OutputPipe:        outputPipe,
+		InputPipe:         inputPipe,
 	}
 	s.Record().ApplyProcessAttrs(&params)
 
@@ -319,11 +326,12 @@ func (s *ScriptedService) BringDown() {
 	}
 
 	params := process.ExecParams{
-		Command:    s.stopCommand,
-		WorkingDir: s.workingDir,
-		Env:        s.Record().BuildFullEnv(),
-		RunAsUID:   s.effectiveRunAsUID(),
-		RunAsGID:   s.effectiveRunAsGID(),
+		Command:           s.stopCommand,
+		WorkingDir:        s.workingDir,
+		Env:               s.Record().BuildFullEnv(),
+		RunAsUID:          s.effectiveRunAsUID(),
+		RunAsGID:          s.effectiveRunAsGID(),
+		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
 

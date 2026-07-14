@@ -51,8 +51,9 @@ type ProcessService struct {
 	closeStderr        bool   // close fd 2
 
 	// Credentials
-	runAsUID uint32
-	runAsGID uint32
+	runAsUID          uint32
+	runAsGID          uint32
+	supplementaryGIDs []uint32
 
 	// Process state
 	pid        int
@@ -320,6 +321,12 @@ func (s *ProcessService) SetEnvFile(path string) { s.envFile = path }
 func (s *ProcessService) SetRunAs(uid, gid uint32) {
 	s.runAsUID = uid
 	s.runAsGID = gid
+}
+
+// SetSupplementaryGroups sets the child's supplementary group set.
+// Applied together with SetRunAs — see loader.applySupplementaryGroups.
+func (s *ProcessService) SetSupplementaryGroups(gids []uint32) {
+	s.supplementaryGIDs = gids
 }
 
 // SetStartTimeout sets the start timeout.
@@ -1578,6 +1585,7 @@ func (s *ProcessService) startProcess() error {
 		SignalProcessOnly: s.Flags.SignalProcessOnly,
 		RunAsUID:          s.effectiveRunAsUID(),
 		RunAsGID:          s.effectiveRunAsGID(),
+		SupplementaryGIDs: s.supplementaryGIDs,
 		OutputPipe:        outputPipe,
 		ErrorPipe:         errorPipe,
 		InputPipe:         inputPipe,

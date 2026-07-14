@@ -104,6 +104,9 @@ func run() error {
 	var ambientCaps stringList
 	fs.Var(&ambientCaps, "ambient-cap",
 		"capability number to raise in the ambient set after run-as drop (repeatable)")
+	var suppGIDs stringList
+	fs.Var(&suppGIDs, "supp-gid",
+		"supplementary GID to install before setresgid/setresuid (repeatable). Requires --run-as-uid/-gid.")
 	var boundingCaps stringList
 	fs.Var(&boundingCaps, "bounding-cap",
 		"capability number to retain in CapBnd; every other cap is PR_CAPBSET_DROP'd (repeatable)")
@@ -226,7 +229,7 @@ func run() error {
 	// execve. Without this dance ambient would be cleared by the UID
 	// change and the child would exec with no capabilities.
 	if *runAsUID >= 0 || *runAsGID >= 0 {
-		if err := dropCredentials(*runAsUID, *runAsGID, ambientCaps); err != nil {
+		if err := dropCredentials(*runAsUID, *runAsGID, ambientCaps, suppGIDs); err != nil {
 			return err
 		}
 	}
@@ -286,12 +289,28 @@ func run() error {
 
 // dropCredentials lowers the runner's UID/GID and re-raises ambient
 // caps. Order is critical: PR_SET_KEEPCAPS before setresuid (else the
-// kernel clears Permitted on the UID change), then setresgid first
-// (so we still have CAP_SETGID), then setresuid, then ambient raise.
-func dropCredentials(uid, gid int, ambient []string) error {
+// kernel clears Permitted on the UID change), then setgroups (needs
+// CAP_SETGID), then setresgid, then setresuid, then ambient raise.
+func dropCredentials(uid, gid int, ambient []string, supp []string) error {
 	// Preserve Permitted across the upcoming setresuid.
 	if err := unix.Prctl(unix.PR_SET_KEEPCAPS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("PR_SET_KEEPCAPS: %w", err)
+	}
+	// Supplementary groups: install BEFORE setresgid/setresuid so we
+	// still have CAP_SETGID. Empty list means the caller didn't set
+	// the directive, so leave whatever the parent had (typically none).
+	if len(supp) > 0 {
+		gids := make([]int, 0, len(supp))
+		for _, s := range supp {
+			g, err := strconv.Atoi(s)
+			if err != nil || g < 0 {
+				return fmt.Errorf("supp-gid %q: not a non-negative integer", s)
+			}
+			gids = append(gids, g)
+		}
+		if err := unix.Setgroups(gids); err != nil {
+			return fmt.Errorf("setgroups(%v): %w", gids, err)
+		}
 	}
 	if gid >= 0 {
 		if err := unix.Setresgid(gid, gid, gid); err != nil {

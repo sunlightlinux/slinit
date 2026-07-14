@@ -255,6 +255,7 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 // updateTypeSpecificFields applies type-specific setters from the description.
 func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *ServiceDescription) {
 	dl.applyRunAs(svc, desc)
+	dl.applySupplementaryGroups(svc, desc)
 	switch s := svc.(type) {
 	case *service.ProcessService:
 		s.SetCommand(desc.Command)
@@ -1118,6 +1119,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 			svc.SetVTTY(true, desc.VTTYScrollback, "/run/slinit")
 		}
 		dl.applyRunAs(svc, desc)
+		dl.applySupplementaryGroups(svc, desc)
 		return svc
 	case service.TypeScripted:
 		svc := service.NewScriptedService(dl.set, name)
@@ -1132,6 +1134,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		}
 		applyLogSettings(svc, desc)
 		dl.applyRunAs(svc, desc)
+		dl.applySupplementaryGroups(svc, desc)
 		return svc
 	case service.TypeBGProcess:
 		svc := service.NewBGProcessService(dl.set, name)
@@ -1158,6 +1161,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		}
 		applyLogSettings(svc, desc)
 		dl.applyRunAs(svc, desc)
+		dl.applySupplementaryGroups(svc, desc)
 		return svc
 	case service.TypeTriggered:
 		return service.NewTriggeredService(dl.set, name)
@@ -1842,6 +1846,82 @@ func (dl *DirLoader) applyRunAs(svc service.Service, desc *ServiceDescription) {
 		s.SetRunAs(uid, gid)
 	case *service.BGProcessService:
 		s.SetRunAs(uid, gid)
+	}
+}
+
+// resolveSupplementaryGroups decodes each entry in `supplementary-groups`
+// (a name or numeric GID) into a GID list. Unresolvable entries are
+// logged and skipped rather than failing the whole service, matching
+// resolveRunAs's forgiving behavior. Empty input returns nil so callers
+// can distinguish "unset" from "explicitly cleared" (only the former is
+// currently exposed at the config layer — [] would clear all groups,
+// which isn't a shape the directive supports).
+func resolveSupplementaryGroups(svcName string, specs []string) []uint32 {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]uint32, 0, len(specs))
+	seen := make(map[uint32]struct{}, len(specs))
+	for _, spec := range specs {
+		spec = strings.TrimSpace(spec)
+		if spec == "" {
+			continue
+		}
+		var gid uint32
+		if g, err := user.LookupGroup(spec); err == nil {
+			gid64, perr := strconv.ParseUint(g.Gid, 10, 32)
+			if perr != nil {
+				continue
+			}
+			gid = uint32(gid64)
+		} else if g, err := user.LookupGroupId(spec); err == nil {
+			gid64, perr := strconv.ParseUint(g.Gid, 10, 32)
+			if perr != nil {
+				continue
+			}
+			gid = uint32(gid64)
+		} else if n, perr := strconv.ParseUint(spec, 10, 32); perr == nil {
+			// Numeric fallback: an admin may legitimately set a GID
+			// that has no /etc/group entry (namespaces, dynamic IDs).
+			// Matches chpst -u's behaviour on unresolvable numeric ids.
+			gid = uint32(n)
+		} else {
+			fmt.Fprintf(os.Stderr, "slinit: service %q: supplementary-groups: group %q unresolved, skipped\n",
+				svcName, spec)
+			continue
+		}
+		if _, dup := seen[gid]; dup {
+			continue
+		}
+		seen[gid] = struct{}{}
+		out = append(out, gid)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// applySupplementaryGroups resolves desc.SupplementaryGroups and
+// installs the GID list on the type-specific setter. No-op when the
+// list is empty. Only meaningful when run-as is also set; without a
+// UID drop the kernel keeps whatever groups the parent had (root's,
+// typically empty).
+func (dl *DirLoader) applySupplementaryGroups(svc service.Service, desc *ServiceDescription) {
+	if len(desc.SupplementaryGroups) == 0 {
+		return
+	}
+	gids := resolveSupplementaryGroups(svc.Name(), desc.SupplementaryGroups)
+	if len(gids) == 0 {
+		return
+	}
+	switch s := svc.(type) {
+	case *service.ProcessService:
+		s.SetSupplementaryGroups(gids)
+	case *service.ScriptedService:
+		s.SetSupplementaryGroups(gids)
+	case *service.BGProcessService:
+		s.SetSupplementaryGroups(gids)
 	}
 }
 
