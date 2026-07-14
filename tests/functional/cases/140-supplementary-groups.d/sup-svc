@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# Non-root UID/GID so slinit installs a syscall.Credential (and
+# therefore actually calls setgroups). UID 65534 is nobody on Alpine
+# and Void alike. Supplementary GIDs are pure numeric (no /etc/group
+# entry required) — exercises the numeric fallback resolver.
+run-as = 65534:65534
+supplementary-groups = 27 100 500
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

@@ -1,0 +1,7 @@
+type = process
+depends-on: system-init
+# 0% never matches: bucket is in [0.00, 99.99), so bucket < 0 never
+# holds. Service should reach STARTED but stay skipped (no process).
+condition-fraction = never-tag:0
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

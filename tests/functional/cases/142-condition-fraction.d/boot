@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: frac-zero
+waits-for: frac-hundred
+waits-for: test-runner

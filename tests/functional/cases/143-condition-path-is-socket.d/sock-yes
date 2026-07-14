@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# Positive case: /run/slinit.socket is slinit's own control socket
+# (a real AF_UNIX socket, listening at boot). S_ISSOCK succeeds, so
+# the condition holds and the service starts with a live PID.
+condition-path-is-socket = /run/slinit.socket
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

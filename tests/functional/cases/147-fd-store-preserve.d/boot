@@ -1,0 +1,6 @@
+type = internal
+depends-on: system-init
+waits-for: preserve-yes
+waits-for: preserve-no
+waits-for: preserve-on-success
+waits-for: test-runner
