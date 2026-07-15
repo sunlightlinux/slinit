@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# capabilities = cap_net_bind_service raises the named cap in the
+# ambient set of the child, so a setuid drop to nobody still keeps
+# the port-<1024 bind ability. CAP_NET_BIND_SERVICE is capability
+# number 10 — bit 0x400 in the hex mask exposed via CapAmb: in
+# /proc/PID/status.
+run-as = nobody
+capabilities = cap_net_bind_service
+command = /bin/sh -c "exec sleep 600"

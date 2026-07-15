@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# dynamic-user allocates a transient UID from the pool at BringUp and
+# releases it in Stopped(). Pool defaults to [61184, 65519] (systemd
+# range). The child's /proc/PID/status Uid: line is where the test
+# reads the allocated UID from.
+dynamic-user = yes
+command = /bin/sh -c "exec sleep 600"

@@ -1,0 +1,5 @@
+type = scripted
+depends-on: system-init
+# Pre-create the host dir where the probe writes its witness file.
+command = /bin/sh -c "mkdir -p /var/tmp/pkt-out"
+stop-command = /bin/true

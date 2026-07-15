@@ -1,0 +1,7 @@
+type = scripted
+depends-on: system-init
+# pp-svc runs as nobody, so the witness dir needs to be writable by
+# non-root. chmod 0777 is the cheap way — this is a throwaway test
+# path, no security concern.
+command = /bin/sh -c "mkdir -p /var/tmp/pp-out && chmod 0777 /var/tmp/pp-out"
+stop-command = /bin/true

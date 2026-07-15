@@ -1,0 +1,4 @@
+type = scripted
+depends-on: system-init
+command = /bin/sh -c "mkdir -p /var/tmp/ps-out"
+stop-command = /bin/true

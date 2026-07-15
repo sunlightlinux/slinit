@@ -1,0 +1,32 @@
+type = process
+depends-on: system-init
+depends-on: sandbox-prep
+# proc-subset = pid remounts /proc with subset=pid, so only PID
+# directories are exposed. Kernel state files like /proc/uptime,
+# /proc/meminfo, /proc/cpuinfo disappear entirely — reads return
+# ENOENT. The child's own PID directory must still be visible so
+# /proc/self/status keeps working.
+proc-subset = pid
+script
+set -e
+# Own PID directory must still exist.
+if [ -d "/proc/$$$$" ]; then
+    _self=visible
+else
+    _self=hidden
+fi
+# /proc/uptime must be gone.
+if [ -r /proc/uptime ]; then
+    _uptime=visible
+else
+    _uptime=hidden
+fi
+# /proc/meminfo must also be gone (second-source check).
+if [ -r /proc/meminfo ]; then
+    _meminfo=visible
+else
+    _meminfo=hidden
+fi
+echo "self=$$_self uptime=$$_uptime meminfo=$$_meminfo" > /var/tmp/ps-out/result
+exec sleep 600
+end script

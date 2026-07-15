@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: nnp-svc
+waits-for: nnp-off-svc
+waits-for: test-runner

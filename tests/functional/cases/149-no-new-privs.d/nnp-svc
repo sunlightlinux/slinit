@@ -1,0 +1,7 @@
+type = process
+depends-on: system-init
+# options = no-new-privs makes slinit-runner call PR_SET_NO_NEW_PRIVS
+# on the child before exec. The bit is visible as NoNewPrivs: 1 in
+# /proc/PID/status and is preserved across execve+setuid drops.
+options = no-new-privs
+command = /bin/sh -c "exec sleep 600"

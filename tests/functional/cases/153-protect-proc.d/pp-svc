@@ -1,0 +1,30 @@
+type = process
+depends-on: system-init
+depends-on: sandbox-prep
+# protect-proc = invisible → hidepid=invisible on /proc. Any PID
+# owned by a UID other than the service's own becomes unreadable
+# and even unlistable. The child runs as nobody (65534) so PID 1
+# (slinit, root) must be invisible; the child's own PID is still
+# visible to itself.
+run-as = nobody
+protect-proc = invisible
+script
+set -e
+# Own PID must be visible.
+if [ -d "/proc/$$$$" ]; then
+    _self=visible
+else
+    _self=hidden
+fi
+# Try to read /proc/1/status — hidepid=invisible makes it fail even
+# to open the directory (dirent gone entirely, not just permission).
+if [ -r /proc/1/status ]; then
+    _one=readable
+elif [ -d /proc/1 ]; then
+    _one=dirvisible
+else
+    _one=invisible
+fi
+echo "self=$$_self one=$$_one" > /var/tmp/pp-out/result
+exec sleep 600
+end script

@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (147 tests)
+# Run all tests (154 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -186,6 +186,13 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 145 | minimum-uptime-sec | `slinit --help` surface: `--minimum-uptime-sec` flag documented with boot-loop context |
 | 146 | memory-thp | `memory-thp = never` routes through slinit-runner; child's `/proc/PID/status` THP_enabled=0 when the field is exposed (kernel ≥ 5.11) |
 | 147 | fd-store-preserve | `file-descriptor-store-preserve = yes\|no\|on-success` all parse and start; NOTIFY_SOCKET is exported to each child |
+| 148 | dynamic-user | `dynamic-user = yes` allocates a transient UID from the [61184, 65519] pool; UID reallocated on restart, never appears in `/etc/passwd` |
+| 149 | no-new-privs | `options = no-new-privs` → child's `/proc/PID/status NoNewPrivs=1`; control service without the option shows `NoNewPrivs=0` |
+| 150 | ambient-cap | `capabilities = cap_net_bind_service` sets bit 10 (0x400) in child's CapAmb/CapEff/CapPrm (validated with `run-as = nobody`) |
+| 151 | close-fds | `close-stdin/close-stdout/close-stderr = yes` redirects fds 0/1/2 → /dev/null; each `/proc/PID/fd/N` resolves to `/dev/null` |
+| 152 | protect-kernel-tunables | ro-remount of `/proc/sys` blocks writes to `net.ipv4.ip_forward`; seccomp deny list catches `swapoff` |
+| 153 | protect-proc | `protect-proc = invisible` (hidepid=invisible) hides PID 1 (root-owned) from a `run-as = nobody` service; own PID still visible |
+| 154 | proc-subset=pid | `/proc/uptime`, `/proc/meminfo` disappear inside the service's mount ns; PID dirs remain; host `/proc/uptime` unaffected |
 
 ## How It Works
 
