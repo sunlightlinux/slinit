@@ -1,0 +1,5 @@
+type = process
+depends-on: system-init
+# Control service without options=no-new-privs — proves the bit is
+# genuinely toggled by the directive rather than always-on.
+command = /bin/sh -c "exec sleep 600"

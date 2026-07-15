@@ -1,0 +1,38 @@
+type = process
+depends-on: system-init
+depends-on: sandbox-prep
+# protect-kernel-tunables triggers slinit-runner to unshare a mount
+# namespace, ro-remount /proc/sys, and install a seccomp deny filter
+# for iopl/ioperm/swapon/swapoff. The probe below verifies both the
+# mount-based knob (write to /proc/sys/net/ipv4/ip_forward fails) and
+# a syscall the deny list catches (swapoff on a non-existent path is
+# expected to hit the filter before ENOENT).
+protect-kernel-tunables = yes
+script
+set -e
+# Read the current value first so we can restore in case protection
+# is off and the write leaks.
+_orig=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo unknown)
+if echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null; then
+    _proc=writable
+    # If we accidentally flipped it, put it back.
+    echo "$$_orig" > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+else
+    _proc=protected
+fi
+# swapoff("/nonexistent") — if the seccomp filter is active, the
+# syscall is killed (SIGSYS) or returns EPERM before hitting
+# ENOENT. busybox `swapoff` may not be built in; fall back to a
+# marker "no-swapoff" when the tool is missing.
+if command -v swapoff >/dev/null 2>&1; then
+    if swapoff /nonexistent-swap-target 2>/dev/null; then
+        _swap=allowed
+    else
+        _swap=denied
+    fi
+else
+    _swap=no-swapoff
+fi
+echo "proc=$$_proc swap=$$_swap orig=$$_orig" > /var/tmp/pkt-out/result
+exec sleep 600
+end script

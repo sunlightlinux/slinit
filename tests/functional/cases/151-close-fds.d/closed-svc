@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# close-stdin/close-stdout/close-stderr redirect the standard fds
+# to /dev/null (runit -0/-1/-2 style). The child still has fds 0,
+# 1, 2 open, but they resolve to /dev/null rather than the daemon's
+# stdin or the service log pipe.
+close-stdin = yes
+close-stdout = yes
+close-stderr = yes
+command = /bin/sh -c "exec sleep 600"
