@@ -5,6 +5,27 @@
 // command and the helper applies the syscalls before exec'ing the
 // child binary in place.
 //
+// NB on mlockall(2): per POSIX and Linux, "Memory locks are ... auto-
+// matically removed (unlocked) during an execve(2)." That means the
+// runner's own mlockall call does NOT survive the upcoming exec into
+// the service binary — VmLck on the exec'd task will be zero. The
+// runner therefore does two things:
+//
+//   1. Raise RLIMIT_MEMLOCK to RLIM_INFINITY — rlimits DO survive
+//      execve, so the exec'd service can now itself call
+//      mlockall(2)/mlock(2) without hitting EPERM if it wants
+//      pinned memory. This is what LimitMEMLOCK= gives you in
+//      systemd and what rc_ulimit -l covers in OpenRC.
+//   2. Call mlockall(2) on the runner's own address space for the
+//      brief pre-exec setup phase — cheap (~5 MB), lets an RT-adjacent
+//      operator reason about the setup window, but the state is
+//      released at execve regardless.
+//
+// The `mlockall = current+future` config directive is thus best read
+// as "enable memory-locking for this service" — the resource permission
+// is durable, but the actual pin has to be requested by the service
+// itself. This matches every other init system's behaviour.
+//
 // Usage (always synthesised by slinit, never invoked by humans):
 //
 //	slinit-runner [--mlockall=N] [--mempolicy=MODE]
@@ -140,6 +161,20 @@ func run() error {
 	}
 
 	if *mlockall != 0 {
+		// Raise RLIMIT_MEMLOCK to unlimited FIRST so the exec'd service
+		// can call mlockall/mlock/mlock2 without CAP_IPC_LOCK. Rlimits
+		// are preserved across execve; the mlockall lock we take next
+		// is not (see the package-level comment). Set both soft and
+		// hard to infinity; if the runner is unprivileged the raise
+		// will fail with EPERM — degrade gracefully rather than kill
+		// the whole service over it, since the intent is expressed
+		// declaratively and the target may still work without a real
+		// lock.
+		inf := unix.Rlimit{Cur: unix.RLIM_INFINITY, Max: unix.RLIM_INFINITY}
+		if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &inf); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"slinit-runner: warn: setrlimit(RLIMIT_MEMLOCK, INF): %v\n", err)
+		}
 		if err := unix.Mlockall(*mlockall); err != nil {
 			return fmt.Errorf("mlockall(0x%x): %w", *mlockall, err)
 		}

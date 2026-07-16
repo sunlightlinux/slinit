@@ -1,6 +1,9 @@
 #!/bin/sh
-# Test: mlockall = current+future locks pages so /proc/PID/status
-# VmLck > 0.
+# Test: mlockall = current+future raises RLIMIT_MEMLOCK to unlimited
+# so the service can itself call mlockall(2)/mlock(2). Runner's own
+# mlockall does NOT survive execve into the service (per POSIX), so
+# checking /proc/PID/status VmLck races against exec and is unreliable
+# under load — /proc/PID/limits carries the durable state.
 
 SVC="test-mlk"
 
@@ -23,14 +26,17 @@ while [ "$_i" -lt 5 ]; do
     sleep 0.2
     _i=$((_i + 1))
 done
-_vmlck=$(awk '/^VmLck:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
+
+_line=$(awk '/^Max locked memory/' "/proc/$_pid/limits" 2>/dev/null)
+_soft=$(printf '%s' "$_line" | awk '{ print $(NF-2) }')
+_hard=$(printf '%s' "$_line" | awk '{ print $(NF-1) }')
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ -n "$_vmlck" ] && [ "$_vmlck" != "0" ]; then
-    echo "OK: VmLck=$_vmlck kB (>0)"
+if [ "$_soft" = "unlimited" ] && [ "$_hard" = "unlimited" ]; then
+    echo "OK: RLIMIT_MEMLOCK soft=unlimited hard=unlimited"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: VmLck='$_vmlck' — expected > 0"
+    echo "FAIL: RLIMIT_MEMLOCK not raised — line='$_line' (soft='$_soft' hard='$_hard')"
 fi
 
 test_summary

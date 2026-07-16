@@ -377,6 +377,10 @@ type ServiceDescription struct {
 	SchedResetOnForkSet bool   // tracks whether the user gave an explicit value
 
 	// Memory locking and NUMA — applied via the slinit-runner exec helper.
+	// NB: mlockall(2)'s lock does NOT survive the runner's exec into the
+	// service binary (per POSIX). What the directive actually delivers
+	// is a durable RLIMIT_MEMLOCK bump to unlimited — the service can
+	// then call mlockall(2)/mlock(2) itself without CAP_IPC_LOCK.
 	MlockallFlags    int    // mlockall(2) bitmask (MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)
 	NumaMempolicy    uint32 // unix.MPOL_*
 	NumaMempolicySet bool   // distinguishes explicit MPOL_DEFAULT from unset
