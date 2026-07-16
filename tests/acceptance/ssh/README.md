@@ -78,10 +78,14 @@ cases/
                          # log-forward-udp, sentinel-file, svcdirwatch, argv0,
                          # svlogd knobs, sv -w SEC, reboot(8) flags,
                          # status File:, kexec preflight, protocol v7 enable
+  163-…-169-…            # predicate coverage: condition-security=measured-os
+                         # (TPM), condition-virtualization, kernel-command-line,
+                         # host, fraction, path-is-socket,
+                         # file/directory-not-empty
   999-cleanup.sh         # tears down acceptance-test-* namespace
 ```
 
-**162 real cases** (numbered 01–82, 93–98, 100–162) plus a final `999-cleanup.sh` teardown.
+**169 real cases** (numbered 01–82, 93–98, 100–169) plus a final `999-cleanup.sh` teardown.
 Numbering leaves gaps so related features can be grouped without renumbering.
 
 Each `cases/NN-*.sh` is a self-contained shell script. The runner:
