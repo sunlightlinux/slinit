@@ -57,6 +57,10 @@ type BGProcessService struct {
 	restartDelayCap     time.Duration
 	currentRestartDelay time.Duration
 
+	// systemd-style RestartRandomizedDelaySec: additive jitter drawn
+	// from [0, restartRandomizedDelay). 0 disables.
+	restartRandomizedDelay time.Duration
+
 	// Restart rate limiting
 	restartInterval      time.Duration
 	maxRestartCount      int
@@ -154,26 +158,34 @@ func (s *BGProcessService) SetRestartBackoff(step, cap time.Duration) {
 	s.restartDelayCap = cap
 }
 
+// SetRestartRandomizedDelay configures additive jitter on the restart delay.
+func (s *BGProcessService) SetRestartRandomizedDelay(d time.Duration) {
+	s.restartRandomizedDelay = d
+}
+
 // nextRestartDelay returns the delay to use for the next restart and advances
 // the progressive backoff counter. When step <= 0, always returns restartDelay.
+// Jitter (restartRandomizedDelay) is applied on top of the base value when set.
 func (s *BGProcessService) nextRestartDelay() time.Duration {
+	var delay time.Duration
 	if s.restartDelayStep <= 0 {
-		return s.restartDelay
+		delay = s.restartDelay
+	} else {
+		if s.currentRestartDelay < s.restartDelay {
+			s.currentRestartDelay = s.restartDelay
+		}
+		delay = s.currentRestartDelay
+		next := delay + s.restartDelayStep
+		capDelay := s.restartDelayCap
+		if capDelay <= 0 {
+			capDelay = 60 * time.Second
+		}
+		if next > capDelay {
+			next = capDelay
+		}
+		s.currentRestartDelay = next
 	}
-	if s.currentRestartDelay < s.restartDelay {
-		s.currentRestartDelay = s.restartDelay
-	}
-	delay := s.currentRestartDelay
-	next := delay + s.restartDelayStep
-	capDelay := s.restartDelayCap
-	if capDelay <= 0 {
-		capDelay = 60 * time.Second
-	}
-	if next > capDelay {
-		next = capDelay
-	}
-	s.currentRestartDelay = next
-	return delay
+	return delay + jitter(s.restartRandomizedDelay)
 }
 
 // BecomingInactive is called when the service won't restart. Cleans up pipe.

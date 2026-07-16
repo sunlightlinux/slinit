@@ -75,6 +75,11 @@ type ProcessService struct {
 	restartDelayCap     time.Duration // max capped delay (0 = no cap, default 60s when step > 0)
 	currentRestartDelay time.Duration // current effective delay, advances on each restart
 
+	// systemd-style RestartRandomizedDelaySec: jitter drawn from
+	// [0, restartRandomizedDelay) added to the effective restart delay
+	// to spread out reconnect storms across a fleet. 0 disables jitter.
+	restartRandomizedDelay time.Duration
+
 	// Restart rate limiting
 	restartInterval      time.Duration
 	maxRestartCount      int
@@ -347,26 +352,35 @@ func (s *ProcessService) SetRestartBackoff(step, cap time.Duration) {
 	s.restartDelayCap = cap
 }
 
+// SetRestartRandomizedDelay configures jitter added to the restart delay
+// (systemd RestartRandomizedDelaySec). 0 disables jitter.
+func (s *ProcessService) SetRestartRandomizedDelay(d time.Duration) {
+	s.restartRandomizedDelay = d
+}
+
 // nextRestartDelay returns the delay to use for the next restart and advances
 // the progressive backoff counter. When step <= 0, always returns restartDelay.
+// Jitter (restartRandomizedDelay) is applied on top of the base value when set.
 func (s *ProcessService) nextRestartDelay() time.Duration {
+	var delay time.Duration
 	if s.restartDelayStep <= 0 {
-		return s.restartDelay
+		delay = s.restartDelay
+	} else {
+		if s.currentRestartDelay < s.restartDelay {
+			s.currentRestartDelay = s.restartDelay
+		}
+		delay = s.currentRestartDelay
+		next := delay + s.restartDelayStep
+		capDelay := s.restartDelayCap
+		if capDelay <= 0 {
+			capDelay = 60 * time.Second
+		}
+		if next > capDelay {
+			next = capDelay
+		}
+		s.currentRestartDelay = next
 	}
-	if s.currentRestartDelay < s.restartDelay {
-		s.currentRestartDelay = s.restartDelay
-	}
-	delay := s.currentRestartDelay
-	next := delay + s.restartDelayStep
-	capDelay := s.restartDelayCap
-	if capDelay <= 0 {
-		capDelay = 60 * time.Second
-	}
-	if next > capDelay {
-		next = capDelay
-	}
-	s.currentRestartDelay = next
-	return delay
+	return delay + jitter(s.restartRandomizedDelay)
 }
 
 // SetLogType sets the log output type.

@@ -272,6 +272,26 @@ func checkSecurity(param string) (bool, string) {
 			return false, "TPM binary_bios_measurements log is empty"
 		}
 		return true, ""
+	case "measured-uki":
+		// Stricter sibling of measured-os: requires evidence that a
+		// UKI (systemd-stub or equivalent) measured the kernel image
+		// into a TPM PCR at boot. sd-stub advertises this by writing
+		// the LoaderVendor EFI variable StubPcrKernelImage=<pcr>. The
+		// efivarfs sysfs path is stable across kernels; a stat is
+		// enough to confirm the variable is present.
+		const stubPCRVar = "/sys/firmware/efi/efivars/" +
+			"StubPcrKernelImage-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+		if _, err := os.Stat(stubPCRVar); err != nil {
+			return false, "no StubPcrKernelImage EFI variable (not booted via sd-stub UKI)"
+		}
+		// Reuse the measured-os TPM log check: if the log is empty
+		// the UKI did not actually reach the TPM.
+		if st, err := os.Stat("/sys/kernel/security/tpm0/binary_bios_measurements"); err != nil {
+			return false, "no TPM binary_bios_measurements log"
+		} else if st.Size() == 0 {
+			return false, "TPM binary_bios_measurements log is empty"
+		}
+		return true, ""
 	default:
 		return false, fmt.Sprintf("unknown security framework %q", param)
 	}

@@ -286,6 +286,9 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.RestartDelayStep > 0 || desc.RestartDelayCap > 0 {
 			s.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
 		}
+		if desc.RestartRandomizedDelay > 0 {
+			s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
+		}
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
@@ -362,6 +365,9 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		}
 		if desc.RestartDelayStep > 0 || desc.RestartDelayCap > 0 {
 			s.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
+		}
+		if desc.RestartRandomizedDelay > 0 {
+			s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
 		}
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
@@ -1393,6 +1399,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetPredicates(desc.Predicates)
 	rec.SetFailureAction(desc.FailureAction)
 	rec.SetSuccessAction(desc.SuccessAction)
+	rec.SetStartLimitAction(desc.StartLimitAction)
 	rec.SetRebootArgument(desc.RebootArgument)
 	rec.SetRuntimeMax(desc.RuntimeMaxSec)
 	rec.SetOOMPolicy(desc.OOMPolicy)
@@ -1412,6 +1419,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetAutoRestart(desc.AutoRestart)
 	rec.SetSmoothRecovery(desc.SmoothRecovery)
 	rec.SetManualStart(desc.ManualStart)
+	rec.SetRefuseManualStart(desc.RefuseManualStart)
+	rec.SetRefuseManualStop(desc.RefuseManualStop)
+	rec.SetStopWhenUnneeded(desc.StopWhenUnneeded)
 	rec.SetNormalExitCodes(desc.NormalExitCodes)
 	rec.SetNormalExitSignals(desc.NormalExitSignals)
 	rec.SetFlags(desc.Flags)
