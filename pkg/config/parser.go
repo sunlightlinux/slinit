@@ -142,6 +142,16 @@ type ServiceDescription struct {
 	AutoRestart    service.AutoRestartMode
 	SmoothRecovery bool
 	ManualStart    bool // upstart-style "manual" — blocks auto-activation
+	// systemd-style RefuseManualStart / RefuseManualStop: the control
+	// socket (i.e. explicit slinitctl start/stop by an operator) rejects
+	// the request with RplyManualRefused. The service can still be
+	// brought up or down by the dependency graph — the flag only
+	// blocks the direct control-socket path.
+	RefuseManualStart bool
+	RefuseManualStop  bool
+	// StopWhenUnneeded (systemd): auto-stop when the last dependent falls
+	// away and no explicit hold is in place. Complement of manual=yes.
+	StopWhenUnneeded bool
 	// upstart-style "normal exit": exit codes / signals that count as
 	// success and suppress respawn even with restart=yes. Empty means
 	// "use the built-in defaults" (code 0 + admin signals like SIGTERM
@@ -234,6 +244,9 @@ type ServiceDescription struct {
 	RestartDelay      time.Duration
 	RestartDelayStep  time.Duration // additive backoff increment per failed restart
 	RestartDelayCap   time.Duration // max capped delay for progressive backoff
+	// systemd RestartRandomizedDelaySec: additive jitter added to each
+	// computed restart delay to spread reconnect storms.
+	RestartRandomizedDelay time.Duration
 	RestartInterval   time.Duration
 	RestartLimitCount int
 	TermSignal        syscall.Signal
@@ -434,9 +447,13 @@ type ServiceDescription struct {
 	// reaches STOPPED in a failure (start failed, non-zero exit, etc.)
 	// or clean-finish state respectively. RebootArgument is forwarded
 	// to reboot(2) for kexec-style transitions.
-	FailureAction  service.SystemAction
-	SuccessAction  service.SystemAction
-	RebootArgument string
+	FailureAction    service.SystemAction
+	SuccessAction    service.SystemAction
+	// StartLimitAction fires when restart-limit-count is exhausted, in
+	// addition to (or instead of) FailureAction. systemd names it
+	// StartLimitAction=; slinit uses start-limit-action=.
+	StartLimitAction service.SystemAction
+	RebootArgument   string
 
 	// RuntimeMaxSec is a hard cap on how long the service may stay in
 	// STARTED. Zero means no cap. When the timer fires the service is
@@ -1463,6 +1480,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.SuccessAction = act
+	case "start-limit-action":
+		act, err := service.ParseSystemAction(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.StartLimitAction = act
 	case "reboot-argument":
 		desc.RebootArgument = expandEnvVars(value, serviceArg)
 	case "runtime-max-sec":
@@ -1554,6 +1577,24 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.ManualStart = b
+	case "refuse-manual-start":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.RefuseManualStart = b
+	case "refuse-manual-stop":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.RefuseManualStop = b
+	case "stop-when-unneeded":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.StopWhenUnneeded = b
 	case "normal-exit":
 		codes, sigs, err := parseNormalExit(value)
 		if err != nil {
@@ -1612,6 +1653,19 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("restart-delay-cap must be >= 0")
 		}
 		desc.RestartDelayCap = d
+	case "restart-randomized-delay":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid restart-randomized-delay: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		if d < 0 {
+			return fmt.Errorf("restart-randomized-delay must be >= 0")
+		}
+		desc.RestartRandomizedDelay = d
 	case "restart-limit-interval":
 		d, err := parseDuration(value)
 		if err != nil {

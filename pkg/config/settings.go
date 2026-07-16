@@ -64,6 +64,9 @@ var KnownSettings = map[string]OperatorType{
 	"dynamic-user":           OpEquals,
 	"file-descriptor-store-max": OpEquals,
 	"manual":                 OpEquals,
+	"refuse-manual-start":    OpEquals,
+	"refuse-manual-stop":     OpEquals,
+	"stop-when-unneeded":     OpEquals,
 	"restart":                OpEquals,
 	"smooth-recovery":        OpEquals,
 	"normal-exit":            OpEquals | OpPlusEqual,
@@ -72,6 +75,7 @@ var KnownSettings = map[string]OperatorType{
 	"restart-delay":          OpEquals,
 	"restart-delay-step":     OpEquals,
 	"restart-delay-cap":      OpEquals,
+	"restart-randomized-delay": OpEquals,
 	"restart-limit-interval": OpEquals,
 	"restart-limit-count":    OpEquals,
 	"term-signal":            OpEquals,
@@ -331,9 +335,10 @@ var KnownSettings = map[string]OperatorType{
 	"alert-level": OpEquals,
 
 	// systemd-style appliance actions
-	"failure-action":  OpEquals,
-	"success-action":  OpEquals,
-	"reboot-argument": OpEquals,
+	"failure-action":     OpEquals,
+	"success-action":     OpEquals,
+	"start-limit-action": OpEquals,
+	"reboot-argument":    OpEquals,
 	"runtime-max-sec": OpEquals,
 	"oom-policy":      OpEquals,
 

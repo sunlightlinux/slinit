@@ -101,6 +101,7 @@ const (
 	CmdListProfiles      uint8 = 54 // enumerate every profile tag declared by loaded services
 	CmdQueryBundleMembers uint8 = 55 // s6-rc analogue: names of a bundle's declared members
 	CmdWallNotice         uint8 = 56 // LSB shutdown -k: broadcast a wall message without scheduling
+	CmdResetFailed        uint8 = 57 // clear the startFailed flag on a specific service or all
 )
 
 // Reply codes (server → client).
@@ -158,6 +159,7 @@ const (
 	RplyProfileList     uint8 = 111 // uint16 count + [uint16 len + name]*
 	RplyActivateResult  uint8 = 112 // active profile name + 3 lists (stopped/started/kept) all length-prefixed
 	RplyBundleMembers   uint8 = 113 // uint16 count + [uint16 len + name]* (empty when not a bundle)
+	RplyManualRefused   uint8 = 114 // systemd-style refuse-manual-start / refuse-manual-stop rejection
 )
 
 // Info codes (server → client, unsolicited).

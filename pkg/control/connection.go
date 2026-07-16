@@ -314,9 +314,34 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleQueryShutdown()
 	case CmdWallNotice:
 		return c.handleWallNotice(payload)
+	case CmdResetFailed:
+		return c.handleResetFailed(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
+}
+
+// handleResetFailed clears startFailed on a single service (payload is a
+// 4-byte handle) or on every loaded service (payload is empty — the
+// "--all" wire form). Idempotent; returns RplyACK either way.
+func (c *Connection) handleResetFailed(payload []byte) error {
+	if len(payload) == 0 {
+		// --all: iterate every loaded service and clear the flag.
+		for _, svc := range c.server.services.ListServices() {
+			svc.Record().ResetFailed()
+		}
+		return c.writePacket(RplyACK, nil)
+	}
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc.Record().ResetFailed()
+	return c.writePacket(RplyACK, nil)
 }
 
 // --- Command handlers ---
@@ -434,6 +459,14 @@ func (c *Connection) handleStartService(payload []byte) error {
 		return c.writePacket(RplyPinnedStopped, nil)
 	}
 
+	// refuse-manual-start blocks the direct control-socket path but
+	// not the dependency graph. StartService is only invoked here
+	// from the control connection, so gating at this call site is
+	// exactly the systemd semantics.
+	if svc.Record().RefusesManualStart() {
+		return c.writePacket(RplyManualRefused, nil)
+	}
+
 	if err := c.sendPreACK(flags); err != nil {
 		return err
 	}
@@ -514,6 +547,13 @@ func (c *Connection) handleStopService(payload []byte) error {
 
 	if !force && svc.Record().IsStartPinned() {
 		return c.writePacket(RplyPinnedStarted, nil)
+	}
+
+	// refuse-manual-stop mirrors refuse-manual-start on the shutdown
+	// side. `force` overrides so an operator can still forcibly stop
+	// a runaway service if that's really required.
+	if !force && svc.Record().RefusesManualStop() {
+		return c.writePacket(RplyManualRefused, nil)
 	}
 
 	if err := c.sendPreACK(flags); err != nil {

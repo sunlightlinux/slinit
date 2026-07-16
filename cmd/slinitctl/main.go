@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -260,6 +261,8 @@ doneFlags:
 	switch command {
 	case "list", "ls":
 		err = cmdList(conn)
+	case "run":
+		err = cmdRun(conn, cmdArgs)
 	case "start":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdStart(conn, name, pinFlag, noWait)
@@ -292,6 +295,8 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdIsFailed(conn, name)
 		})
+	case "reset-failed":
+		err = cmdResetFailedDispatch(conn, cmdArgs)
 	case "shutdown":
 		err = cmdShutdownDispatch(conn, cmdArgs)
 	case "trigger":
@@ -1132,6 +1137,8 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 		info("Service '%s' is already started.\n", name)
 	case control.RplyPinnedStopped:
 		return fmt.Errorf("service '%s' is pinned stopped", name)
+	case control.RplyManualRefused:
+		return fmt.Errorf("service '%s' refuses manual start (refuse-manual-start = yes)", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")
 	default:
@@ -1219,6 +1226,8 @@ func cmdStop(conn net.Conn, name string, pin bool, force bool, ignoreUnstarted b
 		info("Service '%s' is already stopped.\n", name)
 	case control.RplyPinnedStarted:
 		return fmt.Errorf("service '%s' is pinned started", name)
+	case control.RplyManualRefused:
+		return fmt.Errorf("service '%s' refuses manual stop (refuse-manual-stop = yes) — use --force to override", name)
 	default:
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
@@ -1461,6 +1470,181 @@ func cmdIsFailed(conn net.Conn, name string) error {
 	if !failed {
 		os.Exit(1)
 	}
+	return nil
+}
+
+// cmdRun spawns a transient one-shot service (systemd-run analogue).
+// Usage: slinitctl run [--unit NAME] [--type process|scripted] [--wait]
+//                     [--description STR] -- COMMAND [ARGS...]
+//
+// Writes a service description into /run/slinit.d/<name> — that path is
+// tmpfs on any real system, so the file evaporates at the next boot
+// without polluting /etc/slinit.d. The daemon picks it up via the
+// existing load-on-demand path (CmdLoadService reads every default
+// service dir), so no new protocol command is needed.
+func cmdRun(conn net.Conn, args []string) error {
+	var (
+		unitName    string
+		description string
+		svcType     = "process"
+		waitStarted bool
+	)
+	// Simple front-loaded flag parser. The `--` sentinel separates
+	// slinitctl's own flags from the command to execute; anything after
+	// it is the argv passed to the transient service.
+	i := 0
+	for ; i < len(args); i++ {
+		switch {
+		case args[i] == "--":
+			i++
+			goto commandStart
+		case args[i] == "--wait":
+			waitStarted = true
+		case strings.HasPrefix(args[i], "--unit="):
+			unitName = strings.TrimPrefix(args[i], "--unit=")
+		case args[i] == "--unit":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("run: --unit requires a name")
+			}
+			unitName = args[i]
+		case strings.HasPrefix(args[i], "--description="):
+			description = strings.TrimPrefix(args[i], "--description=")
+		case args[i] == "--description":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("run: --description requires a value")
+			}
+			description = args[i]
+		case strings.HasPrefix(args[i], "--type="):
+			svcType = strings.TrimPrefix(args[i], "--type=")
+		case args[i] == "--type":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("run: --type requires a value")
+			}
+			svcType = args[i]
+		default:
+			goto commandStart
+		}
+	}
+commandStart:
+	cmdParts := args[i:]
+	if len(cmdParts) == 0 {
+		return fmt.Errorf("run: no command given (expected: slinitctl run [flags] -- CMD [ARGS...])")
+	}
+	switch svcType {
+	case "process", "scripted":
+		// Accepted types for a transient one-shot. bgprocess needs a
+		// pidfile which doesn't fit the "one shot from CLI" model.
+	default:
+		return fmt.Errorf("run: --type must be process or scripted, got %q", svcType)
+	}
+	if unitName == "" {
+		var randbuf [4]byte
+		if _, err := rand.Read(randbuf[:]); err != nil {
+			return fmt.Errorf("run: cannot generate unit name: %w", err)
+		}
+		unitName = fmt.Sprintf("run-%x", randbuf)
+	}
+	if strings.ContainsAny(unitName, "/\x00") {
+		return fmt.Errorf("run: unit name must not contain '/' or NUL")
+	}
+
+	if err := os.MkdirAll("/run/slinit.d", 0755); err != nil {
+		return fmt.Errorf("run: mkdir /run/slinit.d: %w", err)
+	}
+	path := "/run/slinit.d/" + unitName
+	// Quote command tokens minimally: replace embedded double quotes and
+	// wrap each token. This matches how svc files typically write
+	// commands with arguments — dinit-style tokenisation splits on
+	// whitespace but respects double-quoted spans.
+	var body strings.Builder
+	body.WriteString("type = " + svcType + "\n")
+	if description != "" {
+		body.WriteString("description = " + description + "\n")
+	}
+	body.WriteString("command =")
+	for _, p := range cmdParts {
+		body.WriteString(" \"")
+		body.WriteString(strings.ReplaceAll(p, `"`, `\"`))
+		body.WriteByte('"')
+	}
+	body.WriteByte('\n')
+	body.WriteString("restart = false\n")
+	if err := os.WriteFile(path, []byte(body.String()), 0644); err != nil {
+		return fmt.Errorf("run: write %s: %w", path, err)
+	}
+
+	if err := cmdStart(conn, unitName, false, false); err != nil {
+		return fmt.Errorf("run: start '%s': %w", unitName, err)
+	}
+	if !waitStarted {
+		info("Transient unit '%s' started (%s).\n", unitName, path)
+		return nil
+	}
+	// Wait for the service to settle: STARTED (process still running)
+	// or STOPPED (scripted svc that finished). Bounded at 60s so a
+	// hung service doesn't wedge the CLI forever.
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		st, err := getServiceStatus(conn, unitName)
+		if err != nil {
+			return err
+		}
+		switch st.State {
+		case service.StateStarted:
+			info("Transient unit '%s' STARTED.\n", unitName)
+			return nil
+		case service.StateStopped:
+			if st.Flags&control.StatusFlagStartFailed != 0 {
+				return fmt.Errorf("transient unit '%s' failed to start", unitName)
+			}
+			info("Transient unit '%s' finished cleanly.\n", unitName)
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("run: timed out waiting for '%s' to settle", unitName)
+}
+
+// cmdResetFailedDispatch handles `slinitctl reset-failed [SVC | --all]`.
+// The empty-payload wire form is the --all flavour; the handle form
+// clears the flag on a single service.
+func cmdResetFailedDispatch(conn net.Conn, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("reset-failed: expected a service name or --all")
+	}
+	if args[0] == "--all" {
+		if err := control.WritePacket(conn, control.CmdResetFailed, nil); err != nil {
+			return err
+		}
+		rply, _, err := readReply(conn)
+		if err != nil {
+			return err
+		}
+		if rply != control.RplyACK {
+			return fmt.Errorf("reset-failed --all: unexpected reply %d", rply)
+		}
+		info("Reset failed state on all services.\n")
+		return nil
+	}
+	name := args[0]
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+	if err := control.WritePacket(conn, control.CmdResetFailed, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+	rply, _, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("reset-failed '%s': unexpected reply %d", name, rply)
+	}
+	info("Reset failed state on '%s'.\n", name)
 	return nil
 }
 

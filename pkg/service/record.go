@@ -99,6 +99,16 @@ type ServiceRecord struct {
 	autoRestart    AutoRestartMode
 	smoothRecovery bool
 	manualStart    bool // upstart-style: refuse all auto-activation
+	// systemd-style RefuseManualStart / RefuseManualStop. Reject the
+	// direct control-socket path only — dependency-driven activation
+	// or teardown is still allowed. See connection.handleStartService /
+	// handleStopService for the gate.
+	refuseManualStart bool
+	refuseManualStop  bool
+	// systemd StopWhenUnneeded=: when true, the service auto-stops once
+	// no dependent is holding it up AND the operator hasn't explicitly
+	// started it. Checked in dependentStopped after the usual bookkeeping.
+	stopWhenUnneeded  bool
 
 	// upstart-style "normal exit": exit codes / signals that count as
 	// success, suppressing respawn even when autoRestart=RestartAlways.
@@ -321,9 +331,13 @@ type ServiceRecord struct {
 
 	predicates []Predicate
 
-	failureAction   SystemAction
-	successAction   SystemAction
-	rebootArgument  string
+	failureAction    SystemAction
+	successAction    SystemAction
+	// startLimitAction fires when restart-limit-count is exhausted,
+	// independently of failure-action/success-action which are gated on
+	// stopReason. This mirrors systemd's StartLimitAction=.
+	startLimitAction SystemAction
+	rebootArgument   string
 
 	// restartLimitExhausted is set by doStop when CheckRestart denies a
 	// wanted auto-restart. Stopped() reads it to override willRestart
@@ -457,6 +471,15 @@ func (sr *ServiceRecord) SetFailureAction(a SystemAction) { sr.failureAction = a
 // SetSuccessAction records the system-level action to trigger when this
 // service finishes successfully (clean exit 0, no restart configured).
 func (sr *ServiceRecord) SetSuccessAction(a SystemAction) { sr.successAction = a }
+
+// SetStartLimitAction records the action fired when restart-limit-count
+// is exhausted. Independent of failure-action which is gated on stopReason;
+// this hooks the specific "we asked for a restart but rate-limit denied it"
+// path.
+func (sr *ServiceRecord) SetStartLimitAction(a SystemAction) { sr.startLimitAction = a }
+
+// StartLimitAction returns the configured restart-limit exhaustion action.
+func (sr *ServiceRecord) StartLimitAction() SystemAction { return sr.startLimitAction }
 
 // SetRebootArgument records the optional kernel-command-line passed to
 // reboot(2) when failure-action / success-action triggers a reboot.
@@ -810,6 +833,9 @@ func (sr *ServiceRecord) BecomingInactive()           {}
 func (sr *ServiceRecord) CheckRestart() bool          { return true }
 func (sr *ServiceRecord) GetSmoothRecovery() bool     { return sr.smoothRecovery }
 func (sr *ServiceRecord) IsManualStart() bool         { return sr.manualStart }
+func (sr *ServiceRecord) RefusesManualStart() bool    { return sr.refuseManualStart }
+func (sr *ServiceRecord) RefusesManualStop() bool     { return sr.refuseManualStop }
+func (sr *ServiceRecord) StopsWhenUnneeded() bool     { return sr.stopWhenUnneeded }
 
 // UnrecoverableStop forces the service to stop without possibility of restart.
 func (sr *ServiceRecord) UnrecoverableStop() {
@@ -843,6 +869,9 @@ func (sr *ServiceRecord) RemoveListener(l ServiceListener) {
 func (sr *ServiceRecord) SetAutoRestart(mode AutoRestartMode) { sr.autoRestart = mode }
 func (sr *ServiceRecord) SetSmoothRecovery(v bool)            { sr.smoothRecovery = v }
 func (sr *ServiceRecord) SetManualStart(v bool)               { sr.manualStart = v }
+func (sr *ServiceRecord) SetRefuseManualStart(v bool)         { sr.refuseManualStart = v }
+func (sr *ServiceRecord) SetRefuseManualStop(v bool)          { sr.refuseManualStop = v }
+func (sr *ServiceRecord) SetStopWhenUnneeded(v bool)          { sr.stopWhenUnneeded = v }
 
 func (sr *ServiceRecord) SetNormalExitCodes(c []int) { sr.normalExitCodes = c }
 func (sr *ServiceRecord) SetNormalExitSignals(s []syscall.Signal) {
@@ -1054,6 +1083,13 @@ func (sr *ServiceRecord) IsMarkedActive() bool    { return sr.startExplicit }
 func (sr *ServiceRecord) IsStartPinned() bool     { return sr.pinnedStarted || sr.deptPinnedStarted }
 func (sr *ServiceRecord) IsStopPinned() bool      { return sr.pinnedStopped }
 func (sr *ServiceRecord) DidStartFail() bool      { return sr.startFailed }
+
+// ResetFailed clears the startFailed flag so subsequent status queries
+// no longer report the service as failed. Mirrors systemd's
+// `systemctl reset-failed`. No-op on a service that isn't marked failed.
+func (sr *ServiceRecord) ResetFailed() {
+	sr.startFailed = false
+}
 func (sr *ServiceRecord) WasStartSkipped() bool   { return sr.startSkipped }
 func (sr *ServiceRecord) IsLoading() bool         { return sr.isLoading }
 func (sr *ServiceRecord) HasConsole() bool        { return sr.haveConsole }
@@ -2083,6 +2119,18 @@ func (sr *ServiceRecord) Stopped() {
 		sr.services.logger.Error(
 			"Service '%s': restart-limit-count exhausted, marking failed",
 			sr.serviceName)
+		// systemd StartLimitAction=: escalate a rate-limit failure into a
+		// system-level action (reboot/kexec/etc). Fires here — not from
+		// chooseStoppedAction — so it's independent of the failure-action
+		// path and always triggers when the operator asked for it.
+		if act := sr.startLimitAction; act != ActionNone {
+			if cb := sr.services.OnSystemAction; cb != nil {
+				sr.services.logger.Info(
+					"Service '%s': start-limit-action=%s — initiating system action",
+					sr.serviceName, act)
+				cb(act, sr.rebootArgument)
+			}
+		}
 	}
 
 	// fdStore lifetime — decided after willRestart so a stop-then-start
@@ -2361,6 +2409,20 @@ func (sr *ServiceRecord) dependencyStarted() {
 func (sr *ServiceRecord) dependentStopped() {
 	if sr.state.Load() == StateStopping && sr.waitingForDeps {
 		sr.services.AddTransitionQueue(sr.self)
+	}
+	// systemd StopWhenUnneeded=: once the last dependent falls off and
+	// nobody explicitly asked us to be up, spontaneously stop. Guarded
+	// on stopCheckDependents so we don't rip out a service that still
+	// has another live dependent, and on !startExplicit so an operator
+	// hold beats the auto-stop.
+	if sr.stopWhenUnneeded &&
+		sr.state.Load() == StateStarted &&
+		!sr.startExplicit &&
+		!sr.pinnedStarted &&
+		sr.stopCheckDependents() {
+		sr.desired.Store(StateStopped)
+		sr.propStop = true
+		sr.services.AddPropQueue(sr.self)
 	}
 }
 
