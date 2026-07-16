@@ -2061,28 +2061,10 @@ func (sr *ServiceRecord) Stopped() {
 	// Release the dynamic-user transient UID (no-op when disabled).
 	sr.releaseDynamicUID()
 
-	// Tear down the $NOTIFY_SOCKET listener (no-op when disabled).
-	// Whether stored fds survive to the next BringUp is governed by
-	// file-descriptor-store-preserve (systemd v261 semantics):
-	//   ""|"no"      → close now (systemd default)
-	//   "yes"        → keep across stop until daemon exits
-	//   "on-success" → keep only if this stop is a clean exit
-	// The check runs against sr.fdStore (nil when fd-store disabled).
+	// Tear down the $NOTIFY_SOCKET listener (no-op when disabled). The
+	// stored fds outlive the socket — a fresh listener is created on the
+	// next BringUp; see below for their lifecycle.
 	sr.teardownNotifySocket()
-	if sr.fdStore != nil {
-		keep := false
-		switch sr.fdStorePreserve {
-		case "yes":
-			keep = true
-		case "on-success":
-			es := sr.self.GetExitStatus()
-			keep = sr.stopReason == ReasonNormal ||
-				(sr.stopReason == ReasonTerminated && es.Exited() && es.ExitCode() == 0)
-		}
-		if !keep {
-			sr.fdStore.Close()
-		}
-	}
 
 	if sr.haveConsole {
 		sr.releaseConsole()
@@ -2101,6 +2083,30 @@ func (sr *ServiceRecord) Stopped() {
 		sr.services.logger.Error(
 			"Service '%s': restart-limit-count exhausted, marking failed",
 			sr.serviceName)
+	}
+
+	// fdStore lifetime — decided after willRestart so a stop-then-start
+	// (Restart(), auto-restart) preserves stashed fds regardless of the
+	// file-descriptor-store-preserve setting. That directive only
+	// governs final deactivation, per systemd v261 semantics:
+	//   ""|"no"      → close on final deactivation (systemd default)
+	//   "yes"        → keep across deactivation until daemon exits
+	//   "on-success" → keep only if this stop is a clean exit
+	if sr.fdStore != nil {
+		keep := willRestart
+		if !keep {
+			switch sr.fdStorePreserve {
+			case "yes":
+				keep = true
+			case "on-success":
+				es := sr.self.GetExitStatus()
+				keep = sr.stopReason == ReasonNormal ||
+					(sr.stopReason == ReasonTerminated && es.Exited() && es.ExitCode() == 0)
+			}
+		}
+		if !keep {
+			sr.fdStore.Close()
+		}
 	}
 
 	sr.cleanupServiceDirs(willRestart)
