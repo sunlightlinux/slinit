@@ -385,14 +385,32 @@ func dropCredentials(uid, gid int, ambient []string, supp []string) error {
 	return nil
 }
 
+// apparmorSecurityDir is the sysfs indicator that the AppArmor LSM is
+// live on this kernel. Overridable for tests so we can exercise both
+// the active-LSM and no-LSM branches without needing a chroot.
+var apparmorSecurityDir = "/sys/kernel/security/apparmor"
+
 // changeOnExec performs an AppArmor onexec transition, the same
 // operation as libapparmor's aa_change_onexec(): write "exec <profile>"
 // to /proc/self/attr/exec in a single write(2). The kernel applies the
 // profile when this task next calls execve, which is the syscall.Exec
-// immediately after this returns. Writing requires the AppArmor LSM to
-// be active; on a kernel without it the open/write fails and the start
-// is aborted (fail closed).
+// immediately after this returns.
+//
+// Fail-closed contract: the profile switch must have real effect. On a
+// kernel with the LSM framework compiled in but AppArmor NOT active
+// (lsm=none or a different LSM chosen), /proc/self/attr/exec exists
+// AND the write to it succeeds silently — no profile transition takes
+// place and the service would run unconfined, exactly the outcome the
+// operator asked to prevent. Detect AppArmor via /sys/kernel/security/
+// apparmor (populated only when the LSM is active) and abort the start
+// otherwise.
 func changeOnExec(profile string) error {
+	if _, err := os.Stat(apparmorSecurityDir); err != nil {
+		return fmt.Errorf(
+			"AppArmor LSM not active (no %s); "+
+				"cannot switch to %q without the profile being enforced",
+			apparmorSecurityDir, profile)
+	}
 	f, err := os.OpenFile("/proc/self/attr/exec", os.O_WRONLY, 0)
 	if err != nil {
 		return fmt.Errorf("open /proc/self/attr/exec: %w", err)

@@ -228,6 +228,30 @@ func mountEarlyFS(logger *logging.Logger) {
 		logger.Debug("Mounted proc on /proc")
 	}
 
+	// Mount sysfs on /sys so cgroup writes, /sys/class/net enumeration,
+	// and the securityfs mount below have a parent to hang off. Kernel
+	// initramfs may already have this — the mount is a no-op with EBUSY
+	// in that case, which we swallow at debug level.
+	os.MkdirAll("/sys", 0555)
+	if err := syscall.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil {
+		logger.Debug("Mount sysfs: %v (non-fatal, likely already mounted)", err)
+	} else {
+		logger.Debug("Mounted sysfs on /sys")
+	}
+
+	// Mount securityfs on /sys/kernel/security so LSM state is
+	// observable at runtime. Required for AppArmor apparmor-switch=
+	// fail-closed detection (checks /sys/kernel/security/apparmor)
+	// and for condition-security= predicates that probe LSM presence.
+	// If sysfs isn't mounted the mkdir chain will silently walk into
+	// a tmpfs, which is harmless.
+	os.MkdirAll("/sys/kernel/security", 0755)
+	if err := syscall.Mount("securityfs", "/sys/kernel/security", "securityfs", 0, ""); err != nil {
+		logger.Debug("Mount securityfs: %v (non-fatal)", err)
+	} else {
+		logger.Debug("Mounted securityfs on /sys/kernel/security")
+	}
+
 	// Stage /run according to the configured mode. StageRun is
 	// idempotent so this is a no-op if the caller already staged /run
 	// before StartCatchAll (to keep the catch-all log from being
