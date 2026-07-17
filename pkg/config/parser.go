@@ -419,6 +419,9 @@ type ServiceDescription struct {
 	CronCalendar        *service.CalendarSpec
 	CronRandomizedDelay time.Duration
 	CronPersistent      bool
+	// systemd AccuracySec=: snap fire times to a bucket so many timers
+	// coalesce onto a small set of wake-ups. 0 = no coalescing.
+	CronAccuracy time.Duration
 
 	// Continuous health checking (post-STARTED, OpenRC supervise-daemon inspired)
 	HealthCheckCommand  []string      // command to run periodically (exit 0 = healthy)
@@ -1310,23 +1313,29 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		} else {
 			desc.CronCommand = splitCommand(expandEnvVarsForCommand(value, serviceArg))
 		}
-	case "cron-interval":
+	case "cron-interval", "cron-on-unit-active":
+		// cron-on-unit-active is a systemd-portability alias: matches
+		// systemd's OnUnitActiveSec= (fire delay from previous fire).
+		// Semantically identical to cron-interval in slinit's model.
 		d, err := time.ParseDuration(value)
 		if err != nil {
 			// Try as plain seconds
 			secs, err2 := strconv.ParseFloat(value, 64)
 			if err2 != nil {
-				return fmt.Errorf("invalid cron-interval: %w", err)
+				return fmt.Errorf("invalid %s: %w", setting, err)
 			}
 			d = time.Duration(secs * float64(time.Second))
 		}
 		desc.CronInterval = d
-	case "cron-delay":
+	case "cron-delay", "cron-on-active":
+		// cron-on-active is a systemd-portability alias: matches
+		// systemd's OnActiveSec= (fire delay from parent-svc STARTED).
+		// Semantically identical to cron-delay in slinit's model.
 		d, err := time.ParseDuration(value)
 		if err != nil {
 			secs, err2 := strconv.ParseFloat(value, 64)
 			if err2 != nil {
-				return fmt.Errorf("invalid cron-delay: %w", err)
+				return fmt.Errorf("invalid %s: %w", setting, err)
 			}
 			d = time.Duration(secs * float64(time.Second))
 		}
@@ -1359,6 +1368,19 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.CronPersistent = b
+	case "cron-accuracy-sec":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid cron-accuracy-sec: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		if d < 0 {
+			return fmt.Errorf("cron-accuracy-sec must be >= 0")
+		}
+		desc.CronAccuracy = d
 
 	// Continuous health checking
 	case "healthcheck-command":

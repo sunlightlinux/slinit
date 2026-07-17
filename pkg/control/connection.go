@@ -316,9 +316,40 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleWallNotice(payload)
 	case CmdResetFailed:
 		return c.handleResetFailed(payload)
+	case CmdFreezeService:
+		return c.handleFreezeService(payload, true)
+	case CmdThawService:
+		return c.handleFreezeService(payload, false)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
+}
+
+// handleFreezeService writes to cgroup.freeze on the target service's
+// cgroup v2 directory. `freeze == true` corresponds to CmdFreezeService
+// ("1"), false to CmdThawService ("0"). Returns RplyNAK with the OS
+// error surfaced via stderr when the cgroup path is missing or the
+// write fails (typically means the daemon isn't running on cgroup v2
+// or the service has no cgroup path configured).
+func (c *Connection) handleFreezeService(payload []byte, freeze bool) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	if freeze {
+		err = svc.Record().Freeze()
+	} else {
+		err = svc.Record().Thaw()
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
+		return c.writePacket(RplyNAK, nil)
+	}
+	return c.writePacket(RplyACK, nil)
 }
 
 // handleResetFailed clears startFailed on a single service (payload is a

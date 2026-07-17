@@ -102,6 +102,8 @@ const (
 	CmdQueryBundleMembers uint8 = 55 // s6-rc analogue: names of a bundle's declared members
 	CmdWallNotice         uint8 = 56 // LSB shutdown -k: broadcast a wall message without scheduling
 	CmdResetFailed        uint8 = 57 // clear the startFailed flag on a specific service or all
+	CmdFreezeService      uint8 = 58 // cgroup v2 freezer: write 1 to cgroup.freeze
+	CmdThawService        uint8 = 59 // cgroup v2 freezer: write 0 to cgroup.freeze
 )
 
 // Reply codes (server → client).

@@ -442,6 +442,16 @@ func (s *ProcessService) SetCronCalendar(
 		s, cmd, calendar, randomizedDelay, persistent, onError, s.services.logger)
 }
 
+// SetCronAccuracy applies AccuracySec=-style bucket coalescing to the
+// active cron runner. No-op when no cron is configured or when the
+// runner is in interval mode (accuracy only makes sense for calendar
+// fires, since interval already sets its own cadence).
+func (s *ProcessService) SetCronAccuracy(d time.Duration) {
+	if s.cronRunner != nil {
+		s.cronRunner.SetAccuracy(d)
+	}
+}
+
 // SetHealthCheck configures the continuous health checker.
 func (s *ProcessService) SetHealthCheck(cmd []string, interval, delay time.Duration,
 	maxFailures int, unhealthyCmd []string) {
