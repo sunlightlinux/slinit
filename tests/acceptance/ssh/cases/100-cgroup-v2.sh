@@ -91,13 +91,17 @@ _check_knob memory.high   "67108864"  "memory.high = 64M"
 _check_knob pids.max      "25"        "pids.max = 25"
 _check_knob cpu.weight    "200"       "cpu.weight = 200"
 
-# The service's process is a member of the cgroup.
+# The service's process is a member of the cgroup. NB: cgroup.procs
+# is a kernfs virtual file — stat always reports size=0 regardless of
+# content, so `[ -s file ]` incorrectly reports empty. Count lines
+# via wc, which actually reads the file.
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ -s "$CG_ROOT/cgroup.procs" ]; then
-    echo "OK: cgroup.procs has member(s): $(wc -l <"$CG_ROOT/cgroup.procs")"
+_procs=$(wc -l <"$CG_ROOT/cgroup.procs" 2>/dev/null)
+if [ -n "$_procs" ] && [ "$_procs" -gt 0 ]; then
+    echo "OK: cgroup.procs has member(s): $_procs"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: cgroup.procs is empty"
+    echo "FAIL: cgroup.procs is empty (line count=$_procs)"
 fi
 
 test_summary
