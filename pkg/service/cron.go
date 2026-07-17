@@ -2,11 +2,25 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+// cronPersistDir is the directory where CronRunner writes lastRun
+// timestamps for services marked cron-persistent=yes. Overridable
+// via SetCronPersistDir for tests / user-mode instances.
+var cronPersistDir = "/var/lib/slinit/cron"
+
+// SetCronPersistDir overrides the on-disk lastRun store location.
+// Meant for tests and user-mode daemons where /var/lib/slinit is
+// unwritable; production use should stick with the default.
+func SetCronPersistDir(dir string) { cronPersistDir = dir }
 
 // CronRunner manages a periodic sub-task for a service.
 // When the parent service reaches STARTED, Start() is called to begin
@@ -34,6 +48,12 @@ type CronRunner struct {
 	onError         string // "continue" (default) or "stop"
 	calendar        *CalendarSpec
 	randomizedDelay time.Duration
+	// accuracy: snap computed fire times to a multiple of this duration
+	// so many timers coalesce onto a small set of wake-ups. 0 = no
+	// coalescing (fire at exact calendar match). Matches systemd
+	// AccuracySec= semantics: the effective fire time is picked from
+	// [nominal, nominal + accuracy) so a fleet averages out.
+	accuracy        time.Duration
 	persistent      bool
 	lastRun         time.Time
 
@@ -86,6 +106,11 @@ func NewCalendarCronRunner(
 		logger:          logger,
 	}
 }
+
+// SetAccuracy configures wake-up coalescing. When non-zero, each
+// computed fire time is snapped to a multiple of `d` (0 disables).
+// Matches systemd AccuracySec=. Safe to call before Start().
+func (cr *CronRunner) SetAccuracy(d time.Duration) { cr.accuracy = d }
 
 // Start launches the periodic execution goroutine.
 // Must only be called once. Safe to call from any goroutine.
@@ -176,6 +201,15 @@ func (cr *CronRunner) loopInterval() {
 // Random jitter (if configured) is added between fire times.
 func (cr *CronRunner) loopCalendar() {
 	now := time.Now()
+	// Read the on-disk lastRun so catch-up survives a daemon restart or
+	// soft-reboot. In-memory cr.lastRun overrides only when the on-disk
+	// read fails (missing file, empty, unparseable) — the latter is
+	// treated as "no previous run", which matches the first-boot case.
+	if cr.persistent {
+		if t, ok := cr.readPersisted(); ok {
+			cr.lastRun = t
+		}
+	}
 	// Catch-up: if persistent and the next scheduled fire after lastRun
 	// is in the past, run now once before resuming.
 	if cr.persistent && !cr.lastRun.IsZero() {
@@ -187,6 +221,7 @@ func (cr *CronRunner) loopCalendar() {
 			if !cr.runOnce() {
 				return
 			}
+			cr.writePersisted(nextMissed)
 		}
 	}
 
@@ -202,6 +237,13 @@ func (cr *CronRunner) loopCalendar() {
 		if cr.randomizedDelay > 0 {
 			next = next.Add(time.Duration(rand.Int63n(int64(cr.randomizedDelay))))
 		}
+		// Snap to accuracy bucket if configured. Truncate down: the
+		// bucketed fire may lie slightly before the nominal, which
+		// matches AccuracySec= — the operator asked to trade precision
+		// for wakeup coalescing.
+		if cr.accuracy > 0 {
+			next = next.Truncate(cr.accuracy)
+		}
 		delay := time.Until(next)
 		if delay < 0 {
 			delay = 0
@@ -215,6 +257,63 @@ func (cr *CronRunner) loopCalendar() {
 		if !cr.runOnce() {
 			return
 		}
+		if cr.persistent {
+			cr.writePersisted(next)
+		}
+	}
+}
+
+// persistPath returns the on-disk path for this cron's lastRun record.
+// Uses the parent service's name, sanitised so a "/" in the name can't
+// escape the store directory.
+func (cr *CronRunner) persistPath() string {
+	name := strings.ReplaceAll(cr.svc.Name(), "/", "_")
+	return filepath.Join(cronPersistDir, name)
+}
+
+// readPersisted returns the parsed lastRun timestamp; the bool is false
+// on any error (missing file / unreadable / unparseable), matching the
+// "no previous run" case exactly.
+func (cr *CronRunner) readPersisted() (time.Time, bool) {
+	data, err := os.ReadFile(cr.persistPath())
+	if err != nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// writePersisted saves the lastRun timestamp atomically (temp + rename)
+// so a crash mid-write can't leave a torn file. Failures are logged
+// but don't propagate — persistence is best-effort by design.
+func (cr *CronRunner) writePersisted(t time.Time) {
+	if err := os.MkdirAll(cronPersistDir, 0755); err != nil {
+		cr.logger.Error("Service '%s': cron persist mkdir: %v", cr.svc.Name(), err)
+		return
+	}
+	path := cr.persistPath()
+	tmp, err := os.CreateTemp(cronPersistDir, filepath.Base(path)+".*")
+	if err != nil {
+		cr.logger.Error("Service '%s': cron persist create: %v", cr.svc.Name(), err)
+		return
+	}
+	if _, err := fmt.Fprintln(tmp, t.Format(time.RFC3339Nano)); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		cr.logger.Error("Service '%s': cron persist write: %v", cr.svc.Name(), err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		cr.logger.Error("Service '%s': cron persist close: %v", cr.svc.Name(), err)
+		return
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		cr.logger.Error("Service '%s': cron persist rename: %v", cr.svc.Name(), err)
 	}
 }
 

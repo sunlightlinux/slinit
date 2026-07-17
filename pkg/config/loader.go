@@ -325,6 +325,9 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 			} else {
 				s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
 			}
+			if desc.CronAccuracy > 0 {
+				s.SetCronAccuracy(desc.CronAccuracy)
+			}
 		}
 		if len(desc.HealthCheckCommand) > 0 {
 			s.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
@@ -1112,6 +1115,9 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 					desc.CronRandomizedDelay, desc.CronPersistent, desc.CronOnError)
 			} else {
 				svc.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+			}
+			if desc.CronAccuracy > 0 {
+				svc.SetCronAccuracy(desc.CronAccuracy)
 			}
 		}
 		if len(desc.HealthCheckCommand) > 0 {

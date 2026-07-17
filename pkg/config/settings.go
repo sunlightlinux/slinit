@@ -285,10 +285,13 @@ var KnownSettings = map[string]OperatorType{
 	// Cron-like periodic tasks
 	"cron-command":          OpEquals | OpPlusEqual,
 	"cron-interval":         OpEquals,
+	"cron-on-unit-active":   OpEquals, // alias for cron-interval (systemd naming)
 	"cron-delay":            OpEquals,
+	"cron-on-active":        OpEquals, // alias for cron-delay (systemd naming)
 	"cron-on-error":         OpEquals,
 	"cron-calendar":         OpEquals,
 	"cron-randomized-delay": OpEquals,
+	"cron-accuracy-sec":     OpEquals,
 	"cron-persistent":       OpEquals,
 
 	// Continuous health checking

@@ -324,6 +324,14 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdContinue(conn, name)
 		})
+	case "freeze":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdFreeze(conn, name, true)
+		})
+	case "thaw":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdFreeze(conn, name, false)
+		})
 	case "once":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdOnce(conn, name)
@@ -2138,6 +2146,42 @@ func cmdContinue(conn net.Conn, svcName string) error {
 		return fmt.Errorf("failed to continue service '%s'", svcName)
 	}
 	info("Service '%s' continued.\n", svcName)
+	return nil
+}
+
+// cmdFreeze drives the cgroup v2 freezer for a service. `freeze=true`
+// suspends everything in the service's cgroup atomically (unlike the
+// SIGSTOP-based `pause`, this cannot be escaped by unshare or a
+// non-catchable child). `freeze=false` thaws it. Requires the daemon
+// to be running on cgroup v2 with a resolvable path for the service —
+// on failure the daemon logs the OS error and returns RplyNAK, which
+// slinitctl surfaces here as a generic error.
+func cmdFreeze(conn net.Conn, svcName string, freeze bool) error {
+	handle, err := loadServiceHandle(conn, svcName)
+	if err != nil {
+		return err
+	}
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, handle)
+	cmd := control.CmdFreezeService
+	verb := "freeze"
+	past := "frozen"
+	if !freeze {
+		cmd = control.CmdThawService
+		verb = "thaw"
+		past = "thawed"
+	}
+	if err := control.WritePacket(conn, cmd, payload); err != nil {
+		return err
+	}
+	rply, _, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyACK {
+		return fmt.Errorf("failed to %s service '%s' (check daemon log for cgroup v2 error)", verb, svcName)
+	}
+	info("Service '%s' %s.\n", svcName, past)
 	return nil
 }
 
