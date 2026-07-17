@@ -130,7 +130,9 @@ func TestHandleConnRejectsMalformed(t *testing.T) {
 	peerAuthFunc = func(*net.UnixConn) error { return nil }
 	defer func() { peerAuthFunc = origAuth }()
 
+	acceptDone := make(chan struct{})
 	go func() {
+		defer close(acceptDone)
 		conn, err := l.Accept()
 		if err != nil {
 			return
@@ -143,10 +145,16 @@ func TestHandleConnRejectsMalformed(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	c.Write([]byte("garbled_no_space\n"))
-	time.Sleep(30 * time.Millisecond)
 	c.Close()
-	// A short window to allow the server side to finish + return.
-	time.Sleep(30 * time.Millisecond)
+	// Wait for the server goroutine to fully return before the
+	// deferred restore of peerAuthFunc / utmpClearFunc races the
+	// still-running handleConn read of the same package globals.
+	// time.Sleep is not synchronisation.
+	select {
+	case <-acceptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleConn did not return within 2s after client close")
+	}
 
 	if called {
 		t.Fatal("ClearEntry called on malformed input — daemon silently nuked utmp")
