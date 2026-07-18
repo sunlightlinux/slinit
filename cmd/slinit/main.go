@@ -917,6 +917,20 @@ func main() {
 		}
 	}
 
+	// Rescue mode: kernel cmdline `slinit.rescue=1` or `slinit.emergency=1`
+	// (both aliases) skips the normal service graph entirely and drops
+	// into a shell on /dev/console. On shell exit we reboot into normal
+	// mode so an operator can fix a broken boot without an install USB.
+	// systemMode gate: only meaningful when we're PID 1 — user-mode
+	// slinit has no console concept.
+	if systemMode && (kcmdlineHasFlag("slinit.rescue") || kcmdlineHasFlag("slinit.emergency")) {
+		logger.Notice("slinit.rescue: dropping to /dev/console shell (exit shell to reboot)")
+		runRescueShell(logger)
+		// After shell exit, trigger a reboot via the shutdown executor.
+		shutdown.Execute(service.ShutdownReboot, logger)
+		return
+	}
+
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args)
 	startedAny := false
 	for _, svcName := range bootServices {
@@ -1301,6 +1315,39 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logge
 	default:
 		logger.Error("Unknown shutdown type: %s, halting", shutdownType)
 		shutdown.Execute(service.ShutdownHalt, logger)
+	}
+}
+
+// runRescueShell spawns a shell on /dev/console and blocks until it
+// exits. Tries `/sbin/sulogin` first for root-password gated access,
+// falls back to `/bin/sh` when sulogin is unavailable (e.g. minimal
+// container image). This is the systemd rescue.target / sysvinit S
+// mode analogue.
+func runRescueShell(logger *logging.Logger) {
+	candidates := []string{"/sbin/sulogin", "/bin/sulogin", "/bin/sh", "/usr/bin/sh"}
+	var shell string
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			shell = p
+			break
+		}
+	}
+	if shell == "" {
+		logger.Error("slinit.rescue: no shell found in %v; halting", candidates)
+		return
+	}
+	logger.Notice("slinit.rescue: exec %s (exit to reboot)", shell)
+	cmd := exec.Command(shell)
+	if tty, err := os.OpenFile("/dev/console", os.O_RDWR, 0); err == nil {
+		cmd.Stdin = tty
+		cmd.Stdout = tty
+		cmd.Stderr = tty
+		defer tty.Close()
+	}
+	// setsid so the shell owns its own controlling tty.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	if err := cmd.Run(); err != nil {
+		logger.Error("slinit.rescue: shell exited with error: %v", err)
 	}
 }
 

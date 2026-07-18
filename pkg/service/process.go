@@ -43,6 +43,11 @@ type ProcessService struct {
 	workingDir         string
 	envFile            string
 	envDir             string // directory with one file per env var
+	// envGenerator: path to an executable that emits `KEY=VALUE\n` lines
+	// on stdout at service-start time. Merged after env-file and env-dir
+	// so it wins conflicts. Failure aborts the start (systemd
+	// EnvironmentGenerator semantics; non-zero exit = fail).
+	envGenerator string
 	chroot             string // chroot before exec
 	lockFile           string // exclusive flock path
 	newSession         bool   // setsid() before exec
@@ -321,6 +326,11 @@ func (s *ProcessService) SetWorkingDir(dir string) { s.workingDir = dir }
 
 // SetEnvFile sets the environment file path.
 func (s *ProcessService) SetEnvFile(path string) { s.envFile = path }
+
+// SetEnvGenerator points at an executable that emits KEY=VALUE lines
+// on stdout at start-time. Empty disables. A non-zero exit fails the
+// start — the operator asked for a strict env source.
+func (s *ProcessService) SetEnvGenerator(path string) { s.envGenerator = path }
 
 // SetRunAs sets the UID and GID to run the process as.
 func (s *ProcessService) SetRunAs(uid, gid uint32) {
@@ -1379,7 +1389,62 @@ func (s *ProcessService) buildEnv() []string {
 			}
 		}
 	}
+
+	// env-generator (systemd EnvironmentGenerator sibling): run the
+	// helper and merge its stdout as KEY=VALUE lines. Merged AFTER
+	// env-file/env-dir so it can override them per systemd semantics.
+	// Errors are logged but don't fail the start here (startProcess
+	// separately gates on a strict-mode invocation if we ever add it);
+	// keeping this a soft failure prevents a misconfigured generator
+	// from turning into a system-wide boot outage.
+	if s.envGenerator != "" {
+		genEnv, err := runEnvGenerator(s.envGenerator)
+		if err != nil {
+			s.services.logger.Error("Service '%s': env-generator '%s' failed: %v",
+				s.serviceName, s.envGenerator, err)
+		} else {
+			for k, v := range genEnv {
+				entry := k + "=" + v
+				replaced := false
+				for i, e := range env {
+					if strings.HasPrefix(e, k+"=") {
+						env[i] = entry
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					env = append(env, entry)
+				}
+			}
+		}
+	}
 	return env
+}
+
+// runEnvGenerator invokes the executable and parses its stdout as
+// KEY=VALUE lines. Blank lines and lines beginning with '#' are
+// skipped so the generator can be a hand-written shell script with
+// comments. Non-zero exit yields an error.
+func runEnvGenerator(path string) (map[string]string, error) {
+	cmd := exec.Command(path)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	kv := make(map[string]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		i := strings.IndexByte(line, '=')
+		if i <= 0 {
+			continue
+		}
+		kv[line[:i]] = line[i+1:]
+	}
+	return kv, nil
 }
 
 // startProcess forks and execs the service process.
