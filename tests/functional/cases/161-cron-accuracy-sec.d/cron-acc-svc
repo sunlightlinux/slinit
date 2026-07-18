@@ -1,0 +1,7 @@
+type = process
+depends-on: system-init
+cron-command = /bin/true
+cron-calendar = *:*:0/30
+cron-accuracy-sec = 15s
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

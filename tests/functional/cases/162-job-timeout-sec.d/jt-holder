@@ -1,0 +1,4 @@
+type = process
+depends-on: system-init
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

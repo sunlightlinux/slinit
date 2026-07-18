@@ -1,0 +1,6 @@
+type = scripted
+depends-on: system-init
+depends-on: jt-blocker
+job-timeout-sec = 2s
+command = /bin/true
+restart = no

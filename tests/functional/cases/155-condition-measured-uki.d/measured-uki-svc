@@ -1,0 +1,5 @@
+type = scripted
+depends-on: system-init
+condition-security = measured-uki
+command = /bin/sh -c 'touch /tmp/measured-uki-ran; exit 0'
+restart = no

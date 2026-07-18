@@ -63,6 +63,15 @@ assert_exit_code() {
     return 0
 }
 
+# svc_state SERVICE
+# Emits the service's current state (STARTED, STARTING, STOPPED, ...)
+# or empty string when the service isn't known. Mirrors the helper the
+# SSH acceptance harness ships. Useful when you want to compare state
+# without immediately asserting.
+svc_state() {
+    slinitctl --system status "$1" 2>/dev/null | awk '/State:/ {print $2; exit}'
+}
+
 # assert_service_state SERVICE EXPECTED_STATE [MESSAGE]
 # Checks service state via slinitctl is-started / status.
 assert_service_state() {

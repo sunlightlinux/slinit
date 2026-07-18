@@ -1,0 +1,4 @@
+type = process
+depends-on: system-init
+command = /bin/sh -c 'exit 7'
+restart = no
