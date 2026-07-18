@@ -1,0 +1,5 @@
+type = process
+depends-on: system-init
+depends-on: swu-helper
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

@@ -1,0 +1,6 @@
+type = process
+depends-on: system-init
+refuse-manual-start = yes
+refuse-manual-stop = yes
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

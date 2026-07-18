@@ -1,0 +1,5 @@
+type = scripted
+depends-on: system-init
+start-timeout = 300
+command = /bin/sh -c 'sleep 300'
+restart = no

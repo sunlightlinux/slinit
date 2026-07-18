@@ -1,0 +1,5 @@
+type = process
+depends-on: system-init
+cgroup = /sys/fs/cgroup/slinit/freeze-svc
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

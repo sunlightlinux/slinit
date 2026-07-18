@@ -1,0 +1,6 @@
+type = process
+depends-on: system-init
+restart-delay = 0.1
+restart-randomized-delay = 200ms
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no

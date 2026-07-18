@@ -67,6 +67,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 # 133 / 134 (bootable-tree generator, seed rotation).
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-init-maker" ./cmd/slinit-init-maker
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-seedrng" ./cmd/slinit-seedrng
+# slinit-tmpfiles / slinit-sysusers: exercised by functional tests
+# 165 / 166 (systemd-tmpfiles/sysusers.d compat helpers).
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-tmpfiles" ./cmd/slinit-tmpfiles
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-sysusers" ./cmd/slinit-sysusers
 
 # Prepare rootfs
 echo "[4/5] Preparing rootfs..."
@@ -94,6 +98,8 @@ install -m 755 "${BUILD_DIR}/slinit-shell-var" "${ROOTFS_DIR}/usr/bin/slinit-she
 install -m 755 "${BUILD_DIR}/slinit-shutdown" "${ROOTFS_DIR}/usr/bin/slinit-shutdown"
 install -m 755 "${BUILD_DIR}/slinit-init-maker" "${ROOTFS_DIR}/usr/bin/slinit-init-maker"
 install -m 755 "${BUILD_DIR}/slinit-seedrng" "${ROOTFS_DIR}/usr/bin/slinit-seedrng"
+install -m 755 "${BUILD_DIR}/slinit-tmpfiles" "${ROOTFS_DIR}/usr/bin/slinit-tmpfiles"
+install -m 755 "${BUILD_DIR}/slinit-sysusers" "${ROOTFS_DIR}/usr/bin/slinit-sysusers"
 ln -sf slinit "${ROOTFS_DIR}/sbin/init"
 
 mkdir -p "${ROOTFS_DIR}/run" "${ROOTFS_DIR}/dev" "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys"
