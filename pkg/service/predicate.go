@@ -28,6 +28,19 @@ const (
 	PredACPower                                // on AC power (not battery)
 	PredPathIsSocket                           // path exists and is a socket (S_ISSOCK)
 	PredFraction                               // fleet rollout: machine-id⊕tag hash < percent
+	// Bucket A1: cheap-win predicates — all self-contained, all read a
+	// single /proc or /etc source and compare a value the operator
+	// declared. Systemd equivalents in parentheses.
+	PredArchitecture       // Architecture= — GOARCH match (x86_64, arm64, ...)
+	PredCPUFeature         // CPUFeature= — /proc/cpuinfo flag match
+	PredCPUs               // CPUs= — runtime.NumCPU vs OP-value
+	PredMemory             // Memory= — /proc/meminfo MemTotal vs OP-value
+	PredKernelVersion      // KernelVersion= — uname().Release vs OP-value
+	PredKernelModuleLoaded // KernelModuleLoaded= — /proc/modules match
+	PredOSRelease          // OSRelease= — /etc/os-release KEY=VALUE
+	PredUser               // User= — os.Getuid() vs uid or username
+	PredGroup              // Group= — os.Getgid()+groups vs gid or groupname
+	PredEnvironment        // Environment= — daemon env KEY=VALUE
 )
 
 // Predicate is one declarative start precondition. A failing condition
@@ -87,6 +100,26 @@ func (p Predicate) String() string {
 		name = "path-is-socket"
 	case PredFraction:
 		name = "fraction"
+	case PredArchitecture:
+		name = "architecture"
+	case PredCPUFeature:
+		name = "cpu-feature"
+	case PredCPUs:
+		name = "cpus"
+	case PredMemory:
+		name = "memory"
+	case PredKernelVersion:
+		name = "kernel-version"
+	case PredKernelModuleLoaded:
+		name = "kernel-module-loaded"
+	case PredOSRelease:
+		name = "os-release"
+	case PredUser:
+		name = "user"
+	case PredGroup:
+		name = "group"
+	case PredEnvironment:
+		name = "environment"
 	default:
 		name = fmt.Sprintf("kind-%d", p.Kind)
 	}
@@ -179,6 +212,26 @@ func evalRaw(p Predicate) (bool, string) {
 		return pathIsSocket(p.Param)
 	case PredFraction:
 		return checkFraction(p.Param)
+	case PredArchitecture:
+		return checkArchitecture(p.Param)
+	case PredCPUFeature:
+		return checkCPUFeature(p.Param)
+	case PredCPUs:
+		return checkCPUs(p.Param)
+	case PredMemory:
+		return checkMemory(p.Param)
+	case PredKernelVersion:
+		return checkKernelVersion(p.Param)
+	case PredKernelModuleLoaded:
+		return checkKernelModuleLoaded(p.Param)
+	case PredOSRelease:
+		return checkOSRelease(p.Param)
+	case PredUser:
+		return checkUser(p.Param)
+	case PredGroup:
+		return checkGroup(p.Param)
+	case PredEnvironment:
+		return checkEnvironment(p.Param)
 	}
 	return false, fmt.Sprintf("unknown predicate kind %d", p.Kind)
 }
@@ -284,6 +337,26 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredPathIsSocket, true
 	case "fraction":
 		return PredFraction, true
+	case "architecture":
+		return PredArchitecture, true
+	case "cpu-feature":
+		return PredCPUFeature, true
+	case "cpus":
+		return PredCPUs, true
+	case "memory":
+		return PredMemory, true
+	case "kernel-version":
+		return PredKernelVersion, true
+	case "kernel-module-loaded":
+		return PredKernelModuleLoaded, true
+	case "os-release":
+		return PredOSRelease, true
+	case "user":
+		return PredUser, true
+	case "group":
+		return PredGroup, true
+	case "environment":
+		return PredEnvironment, true
 	}
 	return 0, false
 }
