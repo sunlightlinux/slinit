@@ -352,6 +352,14 @@ type ServiceRecord struct {
 	// re-entering initiateStart.
 	restartLimitExhausted bool
 
+	// startedEmitted collapses redundant Started() calls within one
+	// session so the boot console shows exactly one "[ OK ] name"
+	// per successful start, even when multiple readiness paths race
+	// (ready-notification arrives right before the fallback fires,
+	// auto-restart flow re-enters, etc.). Cleared in initiateStart()
+	// so the next session's Started() emits again.
+	startedEmitted bool
+
 	// runtimeMax is a hard cap on total time the service may spend in
 	// STARTED. A zero value disables the cap (the default). When the
 	// timer fires the service is asked to stop the same way an operator
@@ -1991,6 +1999,9 @@ func (sr *ServiceRecord) doStart() {
 
 func (sr *ServiceRecord) initiateStart() {
 	sr.startFailed = false
+	// Clear the per-session Started()-emitted flag so the next
+	// successful start emits its own boot-console line.
+	sr.startedEmitted = false
 	sr.startSkipped = false
 	sr.startRequestTime = time.Now()
 	sr.state.Store(StateStarting)
@@ -2077,6 +2088,17 @@ func (sr *ServiceRecord) allDepsStarted() {
 
 // Started is called when the service has successfully started.
 func (sr *ServiceRecord) Started() {
+	// Idempotent: multiple Started() calls per session (races between
+	// ready-notification / ready-check / immediate-fallback paths, or
+	// a re-entrant auto-restart flow) collapse to one observable
+	// event. Prevents the duplicate "[ OK ] name" boot-console line
+	// operators observed on ceres v1.10.46. Cleared in initiateStart()
+	// for the next session.
+	if sr.startedEmitted {
+		return
+	}
+	sr.startedEmitted = true
+
 	// Job completed in time — disarm the whole-job timer so a late
 	// AfterFunc firing can't fail an already-STARTED service.
 	sr.cancelJobTimeoutTimer()

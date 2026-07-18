@@ -22,7 +22,12 @@ const (
 	defaultRestartInterval    = 10 * time.Second
 	defaultMaxRestarts        = 3
 	defaultFinishTimeout      = 5 * time.Second
-	defaultReadyCheckInterval = time.Second
+	// 100ms is short enough that sockets binding in microseconds don't
+	// pay a visible boot-time cost, and long enough that a slower
+	// readiness (systemd unit, real database open) doesn't turn into
+	// a busy-loop. Combined with the immediate first check inside
+	// watchReadyCheck the fast path costs one command exec only.
+	defaultReadyCheckInterval = 100 * time.Millisecond
 )
 
 // ProcessService manages a long-running process.
@@ -2188,11 +2193,25 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 
 // watchReadyCheck polls the ready-check-command until it succeeds or times out.
 // Sends true on readyCh when the command exits 0, false if the doneCh is closed.
+// Runs the check ONCE immediately before entering the polling loop so a
+// service that is already ready pays a single exec latency instead of one
+// full interval — matters for sockets that bind in microseconds (dbus,
+// most listen(2)-then-fork daemons).
 func (s *ProcessService) watchReadyCheck() {
 	interval := s.readyCheckInterval
 	if interval <= 0 {
 		interval = defaultReadyCheckInterval
 	}
+
+	// Immediate first check. The doneCh race is handled by the loop
+	// below — if we return here on success, all good; if the command
+	// fails, fall through to the polling loop which will also serve
+	// any pending doneCh signal.
+	if s.runReadyCheckOnce() {
+		s.readyCh <- true
+		return
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -2202,15 +2221,22 @@ func (s *ProcessService) watchReadyCheck() {
 			s.readyCh <- false
 			return
 		case <-ticker.C:
-			cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
-			cmd.Dir = s.workingDir
-			cmd.Env = s.buildEnv()
-			if err := cmd.Run(); err == nil {
+			if s.runReadyCheckOnce() {
 				s.readyCh <- true
 				return
 			}
 		}
 	}
+}
+
+// runReadyCheckOnce executes the configured ready-check-command exactly
+// once and reports whether it exited 0. Kept as a tiny helper so the
+// immediate-first-check and the polling loop share one code path.
+func (s *ProcessService) runReadyCheckOnce() bool {
+	cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
+	cmd.Dir = s.workingDir
+	cmd.Env = s.buildEnv()
+	return cmd.Run() == nil
 }
 
 // execPreStopHook runs the pre-stop-hook before sending stop signal.
