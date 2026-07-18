@@ -270,6 +270,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetWorkingDir(desc.WorkingDir)
 		s.SetEnvFile(desc.EnvFile)
 		s.SetEnvDir(desc.EnvDir)
+		s.SetEnvGenerator(desc.EnvGenerator)
 		s.SetChroot(desc.Chroot)
 		s.SetLockFile(desc.LockFile)
 		s.SetNewSession(desc.NewSession)
@@ -1062,6 +1063,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetEnvDir(desc.EnvDir)
 		svc.SetWorkingDir(desc.WorkingDir)
 		svc.SetEnvFile(desc.EnvFile)
+		svc.SetEnvGenerator(desc.EnvGenerator)
 		svc.SetChroot(desc.Chroot)
 		svc.SetLockFile(desc.LockFile)
 		svc.SetNewSession(desc.NewSession)
@@ -1408,6 +1410,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetStartLimitAction(desc.StartLimitAction)
 	rec.SetRebootArgument(desc.RebootArgument)
 	rec.SetRuntimeMax(desc.RuntimeMaxSec)
+	rec.SetJobTimeout(desc.JobTimeoutSec)
 	rec.SetOOMPolicy(desc.OOMPolicy)
 	rec.SetPSIMemoryWatch(desc.MemoryPressureWatch, desc.MemoryPressureThreshold)
 	rec.SetPSICPUWatch(desc.CPUPressureWatch, desc.CPUPressureThreshold)
@@ -1479,6 +1482,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	if desc.CgroupPath != "" {
 		rec.SetCgroupPath(desc.CgroupPath)
+		rec.SetSlice(desc.Slice)
 	}
 	if len(desc.CgroupSettings) > 0 {
 		cgSettings := make([]process.CgroupSetting, len(desc.CgroupSettings))

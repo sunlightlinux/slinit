@@ -134,6 +134,7 @@ var KnownSettings = map[string]OperatorType{
 
 	// cgroup
 	"cgroup":        OpEquals,
+	"slice":         OpEquals,
 	"run-in-cgroup": OpEquals, // dinit compat alias for cgroup
 
 	// cgroup v2 resource limits
@@ -222,6 +223,7 @@ var KnownSettings = map[string]OperatorType{
 	"ready-check-interval": OpEquals,
 	"pre-stop-hook":        OpEquals | OpPlusEqual,
 	"env-dir":              OpEquals,
+	"env-generator":        OpEquals,
 	"chroot":               OpEquals,
 	"lock-file":            OpEquals,
 	"new-session":          OpEquals,
@@ -343,6 +345,7 @@ var KnownSettings = map[string]OperatorType{
 	"start-limit-action": OpEquals,
 	"reboot-argument":    OpEquals,
 	"runtime-max-sec": OpEquals,
+	"job-timeout-sec": OpEquals,
 	"oom-policy":      OpEquals,
 
 	// systemd-style PSI pressure watches (cgroup v2). Both keys per

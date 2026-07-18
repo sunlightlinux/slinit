@@ -224,6 +224,13 @@ type ServiceRecord struct {
 	ioPrioLevel    int
 	cgroupPath     string
 	cgroupSettings []process.CgroupSetting // cgroup v2 resource limits
+	// slice: systemd-style hierarchical grouping (e.g. "system.slice",
+	// "system.slice/database.slice"). When set with no explicit
+	// cgroupPath, the effective cgroup becomes
+	// /sys/fs/cgroup/<slice>/<svc-name>, letting a fleet of services
+	// share cumulative limits at the slice level. Explicit cgroupPath
+	// still wins for backward compatibility.
+	slice string
 	rlimits        []process.Rlimit
 	ambientCaps    []uintptr
 	boundingCaps   []uintptr // positive keep-list for CapBnd; nil = inherit
@@ -352,6 +359,14 @@ type ServiceRecord struct {
 	// stop-timeout / SIGKILL escalation.
 	runtimeMax      time.Duration
 	runtimeMaxTimer *time.Timer
+
+	// jobTimeout is systemd's JobTimeoutSec=: a hard cap on the whole
+	// start job (waiting-for-deps + own start-timeout). It fires even
+	// when start-timeout=0 or the service is stuck waiting on a slow
+	// dependency graph. Zero disables. Cancelled when the service
+	// reaches STARTED or STOPPED.
+	jobTimeout      time.Duration
+	jobTimeoutTimer *time.Timer
 
 	// oomPolicy is the action to take when the service's cgroup v2
 	// reports an OOM kill. OOMContinue (default) lets the kernel's
@@ -493,6 +508,14 @@ func (sr *ServiceRecord) SuccessAction() SystemAction { return sr.successAction 
 
 // RebootArgument returns the configured reboot argument.
 func (sr *ServiceRecord) RebootArgument() string { return sr.rebootArgument }
+
+// SetJobTimeout configures JobTimeoutSec=: the whole start job
+// (dep-wait + own start-timeout) is aborted when this elapses.
+// Zero disables. Cancelled at Started() / Stopped().
+func (sr *ServiceRecord) SetJobTimeout(d time.Duration) { sr.jobTimeout = d }
+
+// JobTimeout returns the configured job-timeout duration.
+func (sr *ServiceRecord) JobTimeout() time.Duration { return sr.jobTimeout }
 
 // SetRuntimeMax records the maximum total time the service may stay in
 // STARTED. A zero or negative duration disables the cap.
@@ -687,6 +710,44 @@ func (sr *ServiceRecord) cancelRuntimeMaxTimer() {
 	if sr.runtimeMaxTimer != nil {
 		sr.runtimeMaxTimer.Stop()
 		sr.runtimeMaxTimer = nil
+	}
+}
+
+// armJobTimeoutTimer starts a wall-clock timer that fires jobTimeout
+// after initiateStart. If the service is still StateStarting when the
+// timer fires (dep-wait, start-limiter, or the child's own start-
+// timeout hasn't yanked it), the start is failed. Cancelled once the
+// service reaches STARTED or STOPPED.
+func (sr *ServiceRecord) armJobTimeoutTimer() {
+	sr.cancelJobTimeoutTimer()
+	if sr.jobTimeout <= 0 {
+		return
+	}
+	d := sr.jobTimeout
+	svc := sr.self
+	set := sr.services
+	name := sr.serviceName
+	sr.jobTimeoutTimer = time.AfterFunc(d, func() {
+		set.queueMu.Lock()
+		defer set.queueMu.Unlock()
+		if svc.State() != StateStarting {
+			return
+		}
+		set.logger.Error("Service '%s': job-timeout-sec (%s) elapsed, failing start",
+			name, d)
+		rec := svc.Record()
+		rec.stopReason = ReasonTimedOut
+		rec.startFailed = true
+		rec.UnrecoverableStop()
+		set.processQueuesLocked()
+	})
+}
+
+// cancelJobTimeoutTimer disarms the job-timeout timer if armed.
+func (sr *ServiceRecord) cancelJobTimeoutTimer() {
+	if sr.jobTimeoutTimer != nil {
+		sr.jobTimeoutTimer.Stop()
+		sr.jobTimeoutTimer = nil
 	}
 }
 
@@ -1189,6 +1250,8 @@ func (sr *ServiceRecord) SetOOMScoreAdj(n *int)                       { sr.oomSc
 func (sr *ServiceRecord) SetNoNewPrivs(v bool)                        { sr.noNewPrivs = v }
 func (sr *ServiceRecord) SetIOPrio(class, level int)                  { sr.ioPrioClass = class; sr.ioPrioLevel = level }
 func (sr *ServiceRecord) SetCgroupPath(p string)                      { sr.cgroupPath = p }
+func (sr *ServiceRecord) SetSlice(s string)                           { sr.slice = s }
+func (sr *ServiceRecord) Slice() string                               { return sr.slice }
 func (sr *ServiceRecord) SetCgroupSettings(s []process.CgroupSetting) { sr.cgroupSettings = s }
 func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)              { sr.rlimits = rl }
 func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)                 { sr.rlimits = append(sr.rlimits, rl) }
@@ -1402,11 +1465,18 @@ func (sr *ServiceRecord) Cloneflags() uintptr                     { return sr.cl
 func (sr *ServiceRecord) SetUidMappings(m []syscall.SysProcIDMap) { sr.uidMappings = m }
 func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappings = m }
 
-// EffectiveCgroupPath returns the cgroup path for this service,
-// falling back to the daemon default. Empty if neither is set.
+// EffectiveCgroupPath returns the cgroup path for this service.
+// Resolution order:
+//  1. Explicit cgroup = path (backward compat, wins outright).
+//  2. slice = name → /sys/fs/cgroup/<slice>/<svc-name>.
+//  3. Daemon default cgroup path.
+// Empty if none apply.
 func (sr *ServiceRecord) EffectiveCgroupPath() string {
 	if sr.cgroupPath != "" {
 		return sr.cgroupPath
+	}
+	if sr.slice != "" {
+		return "/sys/fs/cgroup/" + sr.slice + "/" + sr.serviceName
 	}
 	return sr.services.DefaultCgroupPath()
 }
@@ -1418,10 +1488,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.NoNewPrivs = sr.noNewPrivs
 	params.IOPrioClass = sr.ioPrioClass
 	params.IOPrioLevel = sr.ioPrioLevel
-	params.CgroupPath = sr.cgroupPath
-	if params.CgroupPath == "" {
-		params.CgroupPath = sr.services.DefaultCgroupPath()
-	}
+	params.CgroupPath = sr.EffectiveCgroupPath()
 	params.CgroupSettings = sr.cgroupSettings
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
@@ -1929,6 +1996,11 @@ func (sr *ServiceRecord) initiateStart() {
 	sr.state.Store(StateStarting)
 	sr.waitingForDeps = true
 
+	// Arm the whole-job timer (JobTimeoutSec=): dep-wait + start-timeout
+	// combined. Disarmed when the service reaches STARTED / STOPPED so
+	// it never fires against a healthy service.
+	sr.armJobTimeoutTimer()
+
 	if sr.startCheckDependencies() {
 		sr.services.AddTransitionQueue(sr.self)
 	}
@@ -2005,6 +2077,10 @@ func (sr *ServiceRecord) allDepsStarted() {
 
 // Started is called when the service has successfully started.
 func (sr *ServiceRecord) Started() {
+	// Job completed in time — disarm the whole-job timer so a late
+	// AfterFunc firing can't fail an already-STARTED service.
+	sr.cancelJobTimeoutTimer()
+
 	// Release start limiter slot
 	if limiter := sr.services.GetStartLimiter(); limiter != nil {
 		limiter.Release(sr.self)
@@ -2076,6 +2152,11 @@ func (sr *ServiceRecord) Stopped() {
 	// timer was armed (service never reached STARTED, or runtime-max
 	// wasn't configured).
 	sr.cancelRuntimeMaxTimer()
+
+	// Also disarm the job-timeout timer for the same reason — the
+	// job has ended (either successfully or by failure); no need for
+	// the timer to fire and race a re-start.
+	sr.cancelJobTimeoutTimer()
 
 	// Cancel the OOM watcher (if armed). Idempotent — nil-safe.
 	sr.cancelOOMWatcher()

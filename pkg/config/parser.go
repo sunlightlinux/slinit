@@ -83,6 +83,10 @@ type ServiceDescription struct {
 	WorkingDir           string
 	EnvFile              string
 	EnvDir               string // runit-style: directory with one file per env var
+	// EnvGenerator: executable path invoked at start-time; its stdout
+	// is parsed as KEY=VALUE lines and merged into the service env.
+	// systemd EnvironmentGenerator sibling.
+	EnvGenerator string
 	Chroot               string // chroot directory before exec
 	LockFile             string // exclusive flock file path
 	NewSession           bool   // setsid() before exec
@@ -363,6 +367,11 @@ type ServiceDescription struct {
 	NoNewPrivs         bool
 	IOPrio             string          // "class:level" e.g. "be:4", "idle"
 	CgroupPath         string          // run-in-cgroup path
+	// Slice: systemd-style hierarchical parent (e.g. "system.slice").
+	// When set with no explicit CgroupPath, the effective cgroup is
+	// /sys/fs/cgroup/<Slice>/<name>. Cheap way to get cumulative limits
+	// across a family of services without touching each config.
+	Slice string
 	CgroupSettings     []CgroupSetting // cgroup v2 controller knobs
 	CPUAffinity        []uint          // CPU numbers to pin to
 
@@ -466,6 +475,11 @@ type ServiceDescription struct {
 	// STARTED. Zero means no cap. When the timer fires the service is
 	// asked to stop via the same path an operator stop uses.
 	RuntimeMaxSec time.Duration
+
+	// JobTimeoutSec is systemd's JobTimeoutSec=: a hard cap on the
+	// whole start job (dep-wait + own start-timeout). Fires even when
+	// start-timeout=0 or the graph is stuck waiting.
+	JobTimeoutSec time.Duration
 
 	// OOMPolicy controls how slinit reacts when the service's cgroup v2
 	// reports an OOM kill. Continue lets the kernel proceed unattended;
@@ -1189,6 +1203,8 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		desc.EnvFile = expandEnvVars(value, serviceArg)
 	case "env-dir":
 		desc.EnvDir = expandEnvVars(value, serviceArg)
+	case "env-generator":
+		desc.EnvGenerator = expandEnvVars(value, serviceArg)
 	case "pre-stop-hook":
 		if op == OpPlusEqual {
 			desc.PreStopHook = append(desc.PreStopHook, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)
@@ -1520,6 +1536,19 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("runtime-max-sec: %w", err)
 		}
 		desc.RuntimeMaxSec = d
+	case "job-timeout-sec":
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			secs, err2 := strconv.ParseFloat(value, 64)
+			if err2 != nil {
+				return fmt.Errorf("invalid job-timeout-sec: %w", err)
+			}
+			d = time.Duration(secs * float64(time.Second))
+		}
+		if d < 0 {
+			return fmt.Errorf("job-timeout-sec must be >= 0")
+		}
+		desc.JobTimeoutSec = d
 	case "oom-policy":
 		p, err := service.ParseOOMPolicy(strings.TrimSpace(value))
 		if err != nil {
@@ -2364,6 +2393,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	case "cgroup", "run-in-cgroup":
 		desc.CgroupPath = value
+	case "slice":
+		// Systemd-style hierarchical grouping. Value is a bare name
+		// (e.g. "system.slice") — no leading slash, no expansion beyond
+		// trimming so operator can't accidentally embed a variable that
+		// escapes the cgroup root.
+		desc.Slice = strings.TrimSpace(value)
 
 	// Cgroup v2 resource limits — dedicated settings for common controllers.
 	// Values are written as-is to the corresponding cgroup v2 knob file.
