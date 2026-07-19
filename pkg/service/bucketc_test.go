@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+// TestKillModeZeroValueIsProcess is a load-bearing invariant: every
+// ServiceRecord created without an explicit kill-mode= directive
+// carries KillMode = 0, which MUST be KillModeProcess (signal only
+// the main pid). If someone reorders the iota list, killsToGroup()
+// will silently start walking the cgroup for every service on the
+// system — the exact regression caught by acceptance test
+// 59-options-kill-all-on-stop's negative-control probe on ceres
+// v1.10.49.
+func TestKillModeZeroValueIsProcess(t *testing.T) {
+	if KillModeProcess != 0 {
+		t.Fatalf("KillModeProcess must be 0 (zero-value default), got %d", KillModeProcess)
+	}
+	var zero KillMode
+	if zero != KillModeProcess {
+		t.Fatalf("zero-value KillMode must == KillModeProcess, got %v", zero)
+	}
+}
+
 // TestParseKillMode covers the four named modes plus rejection of a
 // typo. The state-machine consumer is killsToGroup() in process.go —
 // exercised indirectly by the functional suite.
