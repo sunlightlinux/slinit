@@ -75,6 +75,12 @@ type ProcessService struct {
 	processTimer *time.Timer
 	timerPurpose timerPurpose
 
+	// pendingStopSignal is a per-invocation override consumed by
+	// pickStopSignal. Set by fireWatchdogStop to route the watchdog
+	// signal through the standard doStop path; cleared after use so
+	// the next stop cycle reads normal config.
+	pendingStopSignal syscall.Signal
+
 	// Timeout configuration
 	startTimeout time.Duration
 	stopTimeout  time.Duration
@@ -393,6 +399,67 @@ func (s *ProcessService) SetTimeoutAbortSec(d time.Duration) { s.timeoutAbortSec
 // becoming empty (ExitTypeCgroup).
 func (s *ProcessService) SetExitType(t ExitType) { s.exitType = t }
 
+// pickStopSignal chooses the primary signal delivered by doStop. The
+// picker order matches systemd's precedence: a watchdog-triggered stop
+// uses watchdog-signal (default SIGABRT), a restart-driven stop uses
+// restart-kill-signal (falls back to term-signal), everything else
+// uses term-signal.
+func (s *ProcessService) pickStopSignal() syscall.Signal {
+	// watchdog-signal wins when set — Stop() sets a per-invocation
+	// pendingStopSignal that we consume here.
+	if s.pendingStopSignal != 0 {
+		sig := s.pendingStopSignal
+		s.pendingStopSignal = 0
+		return sig
+	}
+	if s.Record().InAutoRestart() {
+		if sig := s.Record().RestartKillSignal(); sig != 0 {
+			return sig
+		}
+	}
+	sig := s.termSignal
+	if sig == 0 {
+		sig = syscall.SIGTERM
+	}
+	return sig
+}
+
+// killsToGroup reports whether the service's stop escalation should
+// signal the whole cgroup vs. the main pid only. Merges two config
+// axes: the historical options=kill-all-on-stop flag and the newer
+// kill-mode = control-group|mixed enum. mixed uses the group only at
+// escalation; process/none do not touch the group; control-group
+// always does. If either config axis is set to a group-touching mode
+// we take it.
+func (s *ProcessService) killsToGroup() bool {
+	if s.Flags.KillAllOnStop {
+		return true
+	}
+	switch s.Record().KillMode() {
+	case KillModeControlGroup, KillModeMixed:
+		return true
+	}
+	return false
+}
+
+// stopTimeoutSignal picks the signal delivered when the stop-timeout
+// expires. Mirrors systemd's TimeoutStopFailureMode=:
+//   - terminate (default): SIGKILL (or SIGABRT-then-KILL if
+//     timeoutAbortSec is set — legacy path preserved).
+//   - abort: SIGABRT immediately (skip the timeoutAbortSec branch).
+//   - kill: SIGKILL immediately, bypass any SIGABRT phase.
+// The escalation SIGKILL after abort is still finalKillSignal()
+// per FinalKillSignal=.
+func (s *ProcessService) stopTimeoutSignal() (syscall.Signal, string) {
+	switch s.Record().TimeoutStopFailureMode() {
+	case TimeoutFailureAbort:
+		return syscall.SIGABRT, "SIGABRT (stop-failure-mode=abort)"
+	case TimeoutFailureKill:
+		return s.Record().FinalKillSignal(), "SIGKILL (stop-failure-mode=kill)"
+	}
+	return 0, ""
+}
+
 // startTimeoutSignal returns the signal + human label for the
 // configured timeout-start-failure-mode.
 func (s *ProcessService) startTimeoutSignal() (syscall.Signal, string) {
@@ -707,6 +774,16 @@ func (s *ProcessService) fireWatchdogStop() {
 
 	s.stopReason = ReasonTerminated
 	s.forceStop = true
+
+	// systemd WatchdogSignal= — route through the standard stop path
+	// but with the operator-picked signal (default SIGABRT — that's
+	// what the systemd docs specify). pickStopSignal consumes and
+	// clears this per invocation.
+	if sig := s.Record().WatchdogSignal(); sig != 0 {
+		s.pendingStopSignal = sig
+	} else {
+		s.pendingStopSignal = syscall.SIGABRT
+	}
 
 	withRestart := false
 	switch s.autoRestart {
@@ -1328,11 +1405,25 @@ func (s *ProcessService) BringDown() {
 		// stop-command failed to start; fall through to signal
 	}
 
-	// Send termination signal (or run control-command if configured)
-	sig := s.termSignal
-	if sig == 0 {
-		sig = syscall.SIGTERM
+	// systemd KillMode=none — skip the primary signal entirely. The
+	// service is expected to terminate on its own or via a
+	// control-command triggered elsewhere. We still arm the stop
+	// timeout so an unresponsive service escalates to
+	// final-kill-signal (unless survive-final-kill-signal is set).
+	if s.Record().KillMode() == KillModeNone {
+		s.services.logger.Info("Service '%s': kill-mode=none, skipping primary signal",
+			s.serviceName)
+		s.stopIssued = true
+		if s.stopTimeout > 0 {
+			s.armTimer(s.stopTimeout, timerStopTimeout)
+		}
+		return
 	}
+
+	// Send termination signal (or run control-command if configured).
+	// The picker honours watchdog-signal (via pendingStopSignal) and
+	// restart-kill-signal in addition to term-signal.
+	sig := s.pickStopSignal()
 
 	sigName := signalName(sig)
 	if cmd, ok := s.controlCommands[sigName]; ok && len(cmd) > 0 {
@@ -1351,8 +1442,11 @@ func (s *ProcessService) BringDown() {
 
 	s.stopIssued = true
 
-	// Kill entire cgroup process tree if configured
-	if s.Flags.KillAllOnStop {
+	// Kill entire cgroup process tree if configured. kill-mode=mixed
+	// only touches the group at escalation time, so during the
+	// primary-signal phase we only widen if kill-all-on-stop or
+	// kill-mode=control-group is set.
+	if s.Flags.KillAllOnStop || s.Record().KillMode() == KillModeControlGroup {
 		s.killCgroupTree(sig)
 	}
 
@@ -1894,7 +1988,7 @@ func (s *ProcessService) startProcess() error {
 
 	// Create utmp entry if inittab-id or inittab-line is configured
 	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
-		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, pid)
+		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
 	}
 
 	// Start monitoring goroutine
@@ -2076,6 +2170,17 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	s.stopWatchdogWatcherLocked()
 	s.closeReadyPipe()
 
+	// systemd RemoveIPC= — sweep POSIX shm + SysV IPC owned by the
+	// service's UID. Skipped for root (UID 0) to avoid nuking shared
+	// system state. Runs on the queueMu goroutine — the sweep is
+	// bounded (walks a small procfs table) so we don't defer it.
+	if s.Record().RemoveIPCEnabled() {
+		uid := s.effectiveRunAsUID()
+		if uid != 0 {
+			removeIPCForUID(uid)
+		}
+	}
+
 	// Run finish-command if configured (before restart decision)
 	if len(s.finishCommand) > 0 && exit.ExecErr == nil {
 		s.execFinishCommand(exit)
@@ -2231,6 +2336,27 @@ func (s *ProcessService) handleTimerExpired() {
 		}
 
 	case timerStopTimeout:
+		// systemd TimeoutStopFailureMode= — if the operator picked
+		// abort or kill, honour that instead of the historical
+		// SIGABRT-then-SIGKILL cascade. Zero-value (terminate) falls
+		// through to the legacy path.
+		if sig, label := s.stopTimeoutSignal(); sig != 0 {
+			if s.pid > 0 {
+				s.services.logger.Error("Service '%s': stop timeout exceeded, sending %s",
+					s.serviceName, label)
+				process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+			}
+			if s.killsToGroup() {
+				s.killCgroupTree(sig)
+			}
+			// For abort mode arm a follow-on timer so we still escalate
+			// to the final-kill-signal. For kill mode we already sent
+			// the final signal; no further escalation.
+			if s.Record().TimeoutStopFailureMode() == TimeoutFailureAbort {
+				s.armTimer(s.timeoutAbortSec, timerAbortTimeout)
+			}
+			return
+		}
 		// Stop timeout expired. If timeout-abort-sec is configured,
 		// insert a SIGABRT phase so the child can dump core / print
 		// a stack trace before SIGKILL — matches systemd
@@ -2242,14 +2368,24 @@ func (s *ProcessService) handleTimerExpired() {
 			s.armTimer(s.timeoutAbortSec, timerAbortTimeout)
 			return
 		}
-		if s.pid > 0 {
-			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGKILL",
+		if s.Record().SurviveFinalKillSignal() {
+			// systemd SurviveFinalKillSignal=yes: no SIGKILL, no
+			// cgroup sweep. The operator has assumed responsibility
+			// for terminating the service by other means.
+			s.services.logger.Info("Service '%s': stop timeout — survive-final-kill-signal set, not escalating",
 				s.serviceName)
-			process.SignalProcess(s.pid, syscall.SIGKILL, false) // Always kill group
+			return
 		}
-		// Kill entire cgroup tree on SIGKILL escalation
-		if s.Flags.KillAllOnStop {
-			s.killCgroupTree(syscall.SIGKILL)
+		finalSig := s.Record().FinalKillSignal()
+		if s.pid > 0 {
+			s.services.logger.Error("Service '%s': stop timeout exceeded, sending %v",
+				s.serviceName, finalSig)
+			process.SignalProcess(s.pid, finalSig, false) // Always kill group
+		}
+		// Kill entire cgroup tree on final-signal escalation, per
+		// kill-mode + kill-all-on-stop option.
+		if s.killsToGroup() {
+			s.killCgroupTree(finalSig)
 		}
 		// Also kill stop-command if still running
 		if s.stopPID > 0 {
@@ -2260,14 +2396,21 @@ func (s *ProcessService) handleTimerExpired() {
 
 	case timerAbortTimeout:
 		// SIGABRT window elapsed without the child exiting. Escalate
-		// to SIGKILL with the same fan-out as the direct-SIGKILL path.
-		if s.pid > 0 {
-			s.services.logger.Error("Service '%s': abort timeout exceeded, sending SIGKILL",
+		// to the final-kill-signal with the same fan-out as the
+		// direct-SIGKILL path, unless survive-final-kill-signal is set.
+		if s.Record().SurviveFinalKillSignal() {
+			s.services.logger.Info("Service '%s': abort timeout — survive-final-kill-signal set, not escalating",
 				s.serviceName)
-			process.SignalProcess(s.pid, syscall.SIGKILL, false)
+			return
 		}
-		if s.Flags.KillAllOnStop {
-			s.killCgroupTree(syscall.SIGKILL)
+		finalSig := s.Record().FinalKillSignal()
+		if s.pid > 0 {
+			s.services.logger.Error("Service '%s': abort timeout exceeded, sending %v",
+				s.serviceName, finalSig)
+			process.SignalProcess(s.pid, finalSig, false)
+		}
+		if s.killsToGroup() {
+			s.killCgroupTree(finalSig)
 		}
 		if s.stopPID > 0 {
 			process.SignalProcess(s.stopPID, syscall.SIGKILL, false)

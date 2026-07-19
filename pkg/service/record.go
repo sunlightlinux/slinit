@@ -322,6 +322,43 @@ type ServiceRecord struct {
 	// PR_SET_NO_NEW_PRIVS when any knob is set.
 	hardening HardeningConfig
 
+	// Bucket B — legacy-safe niches. Each is a small runner-side apply
+	// (coredumpFilter, timerSlackNsec, memoryKSM, personality,
+	// ignoreSIGPIPE) plus one master-side cleanup (removeIPC) and one
+	// utmp knob (utmpMode). Kept as flat fields rather than a struct
+	// because they don't share cluster semantics — an operator can
+	// enable memory-ksm without any other Bucket B directive.
+	coredumpFilter   string
+	timerSlackNsec   int64
+	memoryKSM        bool
+	personality      string
+	ignoreSIGPIPE    *bool // nil = default (yes)
+	removeIPC        bool
+	utmpMode         string // "" (init) | "init" | "login" | "user"
+
+	// Bucket C — v261/262 catch-up.
+	cpusetPartition           string
+	cacheDirectoryQuota       int64
+	logsDirectoryQuota        int64
+	stateDirectoryQuota       int64
+	cacheDirectoryAccounting  bool
+	logsDirectoryAccounting   bool
+	stateDirectoryAccounting  bool
+	startupAllowedCPUs        string
+	startupAllowedMemoryNodes string
+	// steadyAllowedCPUs / steadyAllowedMemoryNodes hold the values
+	// that the cgroup should carry AFTER Started() fires. Populated by
+	// the loader only when the startup-* twin is set; retune fires in
+	// applySteadyStateCgroup().
+	steadyAllowedCPUs         string
+	steadyAllowedMemoryNodes  string
+	timeoutStopFailureMode    TimeoutFailureMode
+	watchdogSignal            syscall.Signal // 0 = default SIGABRT (systemd), or SIGTERM if the operator hasn't opted in — see fireWatchdogStop.
+	finalKillSignal           syscall.Signal // 0 = default SIGKILL
+	surviveFinalKillSignal    bool
+	restartKillSignal         syscall.Signal
+	killMode                  KillMode
+
 	// Queue membership flags
 	InPropQueue bool
 	InStopQueue bool
@@ -1398,12 +1435,11 @@ func (sr *ServiceRecord) Seccomp() SeccompConfig { return sr.seccomp }
 func (sr *ServiceRecord) SeccompActive() bool { return sr.seccomp.Active() }
 
 // HardeningConfig captures the systemd-style Restrict*/Protect* knobs
-// that ship in slinit #7 v1. Each is a yes/no toggle; the runner
-// expands the active ones to a deny seccomp filter and/or extra mount
-// operations. The arg-checking variants (RestrictRealtime,
-// RestrictSUIDSGID, MemoryDenyWriteExecute, RestrictNamespaces,
-// RestrictAddressFamilies) are deferred to v2 once pkg/seccomp grows
-// argument-inspection BPF support.
+// that ship in slinit's hardening cluster. Each is a yes/no toggle
+// except RestrictAddressFamilies, which carries an allow-list. The
+// runner expands actives to seccomp filters (one union deny-mode
+// filter for the block-outright knobs + per-directive arg-checking
+// programs for the Restrict* set) and, where needed, a mount op.
 type HardeningConfig struct {
 	ProtectKernelTunables bool
 	ProtectKernelModules  bool
@@ -1412,6 +1448,16 @@ type HardeningConfig struct {
 	ProtectControlGroups  bool
 	ProtectHostname       bool
 	LockPersonality       bool
+	// Bucket A extension — argument-checking BPF fragments + one
+	// prctl. Landed as a follow-on to Tier B once pkg/seccomp grew
+	// arg-inspection support.
+	RestrictRealtime         bool
+	RestrictNamespaces       bool
+	RestrictSUIDSGID         bool
+	RestrictFileSystems      bool
+	RestrictAddressFamilies  []string
+	RestrictAFEnabled        bool
+	MemoryDenyWriteExecute   bool
 }
 
 // Active reports whether any hardening knob is set.
@@ -1419,7 +1465,10 @@ func (c HardeningConfig) Active() bool {
 	return c.ProtectKernelTunables || c.ProtectKernelModules ||
 		c.ProtectKernelLogs || c.ProtectClock ||
 		c.ProtectControlGroups || c.ProtectHostname ||
-		c.LockPersonality
+		c.LockPersonality ||
+		c.RestrictRealtime || c.RestrictNamespaces ||
+		c.RestrictSUIDSGID || c.RestrictFileSystems ||
+		c.RestrictAFEnabled || c.MemoryDenyWriteExecute
 }
 
 // SetHardening records the Restrict*/Protect* knob set. The loader
@@ -1431,6 +1480,134 @@ func (sr *ServiceRecord) Hardening() HardeningConfig { return sr.hardening }
 
 // HardeningActive reports whether any Restrict*/Protect* knob is set.
 func (sr *ServiceRecord) HardeningActive() bool { return sr.hardening.Active() }
+
+// Bucket B setters + accessors.
+func (sr *ServiceRecord) SetCoredumpFilter(s string)      { sr.coredumpFilter = s }
+func (sr *ServiceRecord) SetTimerSlackNsec(n int64)       { sr.timerSlackNsec = n }
+func (sr *ServiceRecord) SetMemoryKSM(b bool)             { sr.memoryKSM = b }
+func (sr *ServiceRecord) SetPersonality(s string)         { sr.personality = s }
+func (sr *ServiceRecord) SetIgnoreSIGPIPE(b *bool)        { sr.ignoreSIGPIPE = b }
+func (sr *ServiceRecord) SetRemoveIPC(b bool)             { sr.removeIPC = b }
+func (sr *ServiceRecord) SetUtmpMode(s string)            { sr.utmpMode = s }
+
+// RemoveIPCEnabled reports whether the operator asked slinit to clean
+// up SysV IPC + POSIX shm for the service's UID after each stop.
+func (sr *ServiceRecord) RemoveIPCEnabled() bool { return sr.removeIPC }
+
+// UtmpMode returns the operator-requested utmp record type: "init"
+// (default), "login", or "user". Empty string is treated as "init"
+// by the utmp write path.
+func (sr *ServiceRecord) UtmpMode() string { return sr.utmpMode }
+
+// Bucket C setters + accessors.
+func (sr *ServiceRecord) SetCpusetPartition(s string)              { sr.cpusetPartition = s }
+func (sr *ServiceRecord) SetCacheDirectoryQuota(n int64)           { sr.cacheDirectoryQuota = n }
+func (sr *ServiceRecord) SetLogsDirectoryQuota(n int64)            { sr.logsDirectoryQuota = n }
+func (sr *ServiceRecord) SetStateDirectoryQuota(n int64)           { sr.stateDirectoryQuota = n }
+func (sr *ServiceRecord) SetCacheDirectoryAccounting(b bool)       { sr.cacheDirectoryAccounting = b }
+func (sr *ServiceRecord) SetLogsDirectoryAccounting(b bool)        { sr.logsDirectoryAccounting = b }
+func (sr *ServiceRecord) SetStateDirectoryAccounting(b bool)       { sr.stateDirectoryAccounting = b }
+func (sr *ServiceRecord) SetStartupAllowedCPUs(s string)           { sr.startupAllowedCPUs = s }
+func (sr *ServiceRecord) SetStartupAllowedMemoryNodes(s string)    { sr.startupAllowedMemoryNodes = s }
+func (sr *ServiceRecord) SetSteadyAllowedCPUs(s string)            { sr.steadyAllowedCPUs = s }
+func (sr *ServiceRecord) SetSteadyAllowedMemoryNodes(s string)     { sr.steadyAllowedMemoryNodes = s }
+
+// applySteadyStateCgroup rewrites cpuset.cpus / cpuset.mems to the
+// operator's steady-state values after the service reaches Started.
+// A no-op unless startup-allowed-cpus / startup-allowed-memory-nodes
+// were set — otherwise the initial cgroup write already carries the
+// desired state. Best-effort: errors are logged, not surfaced (the
+// service is already Started; failing here would be worse than
+// leaving the wrong cpuset for a beat).
+func (sr *ServiceRecord) applySteadyStateCgroup() {
+	if sr.startupAllowedCPUs == "" && sr.startupAllowedMemoryNodes == "" {
+		return
+	}
+	cgPath := sr.EffectiveCgroupPath()
+	if cgPath == "" {
+		return
+	}
+	if sr.startupAllowedCPUs != "" && sr.steadyAllowedCPUs != "" {
+		writeCgroupFile(cgPath, "cpuset.cpus", sr.steadyAllowedCPUs, sr)
+	}
+	if sr.startupAllowedMemoryNodes != "" && sr.steadyAllowedMemoryNodes != "" {
+		writeCgroupFile(cgPath, "cpuset.mems", sr.steadyAllowedMemoryNodes, sr)
+	}
+}
+
+// writeCgroupFile writes value to <cgPath>/name. Best-effort: an error
+// (missing file, no controller, unwritable delegation) is logged with
+// the service name and swallowed.
+func writeCgroupFile(cgPath, name, value string, sr *ServiceRecord) {
+	full := cgPath + "/" + name
+	if err := os.WriteFile(full, []byte(value), 0); err != nil {
+		sr.services.logger.Error("Service '%s': cgroup retune write %s = %q: %v",
+			sr.serviceName, name, value, err)
+	}
+}
+func (sr *ServiceRecord) SetTimeoutStopFailureMode(m TimeoutFailureMode) {
+	sr.timeoutStopFailureMode = m
+}
+func (sr *ServiceRecord) SetWatchdogSignal(s syscall.Signal)       { sr.watchdogSignal = s }
+func (sr *ServiceRecord) SetFinalKillSignal(s syscall.Signal)      { sr.finalKillSignal = s }
+func (sr *ServiceRecord) SetSurviveFinalKillSignal(b bool)         { sr.surviveFinalKillSignal = b }
+func (sr *ServiceRecord) SetRestartKillSignal(s syscall.Signal)    { sr.restartKillSignal = s }
+func (sr *ServiceRecord) SetKillMode(m KillMode)                   { sr.killMode = m }
+
+// TimeoutStopFailureMode returns the signal picker used when the stop
+// timeout expires.
+func (sr *ServiceRecord) TimeoutStopFailureMode() TimeoutFailureMode {
+	return sr.timeoutStopFailureMode
+}
+
+// WatchdogSignal returns the signal sent on watchdog miss (0 = use
+// termSignal path).
+func (sr *ServiceRecord) WatchdogSignal() syscall.Signal { return sr.watchdogSignal }
+
+// FinalKillSignal returns the escalation-final signal (0 = SIGKILL).
+func (sr *ServiceRecord) FinalKillSignal() syscall.Signal {
+	if sr.finalKillSignal == 0 {
+		return syscall.SIGKILL
+	}
+	return sr.finalKillSignal
+}
+
+// SurviveFinalKillSignal reports whether the operator opted out of the
+// final SIGKILL escalation. Rare — used by services that manage their
+// own hard-stop path.
+func (sr *ServiceRecord) SurviveFinalKillSignal() bool { return sr.surviveFinalKillSignal }
+
+// RestartKillSignal returns the signal to use when the current stop is
+// part of a restart cycle (0 = fall back to termSignal).
+func (sr *ServiceRecord) RestartKillSignal() syscall.Signal { return sr.restartKillSignal }
+
+// KillMode returns the configured KillMode.
+func (sr *ServiceRecord) KillMode() KillMode { return sr.killMode }
+
+// InAutoRestart exposes the record's auto-restart marker for callers
+// that need to pick behaviour based on whether the current stop is
+// part of a restart cycle (e.g. restart-kill-signal).
+func (sr *ServiceRecord) InAutoRestart() bool { return sr.inAutoRestart }
+
+// CpusetPartition returns the cgroup v2 cpuset partition mode ("" =
+// don't touch).
+func (sr *ServiceRecord) CpusetPartition() string { return sr.cpusetPartition }
+
+// StartupAllowedCPUs returns the cpuset spec used during Startup (empty
+// = use the steady-state allowed-cpus / cgroup-cpuset-cpus).
+func (sr *ServiceRecord) StartupAllowedCPUs() string { return sr.startupAllowedCPUs }
+
+// StartupAllowedMemoryNodes returns the memory-node spec used during
+// Startup.
+func (sr *ServiceRecord) StartupAllowedMemoryNodes() string {
+	return sr.startupAllowedMemoryNodes
+}
+
+// DirectoryQuotas returns the (state, cache, logs) byte quotas
+// requested by the operator (0 = not set).
+func (sr *ServiceRecord) DirectoryQuotas() (state, cache, logs int64) {
+	return sr.stateDirectoryQuota, sr.cacheDirectoryQuota, sr.logsDirectoryQuota
+}
 
 // SandboxActive reports whether any sandbox knob is set; the loader uses
 // this to decide if it must auto-imply CLONE_NEWNS.
@@ -1609,6 +1786,21 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.ProtectControlGroups = sr.hardening.ProtectControlGroups
 	params.ProtectHostname = sr.hardening.ProtectHostname
 	params.LockPersonality = sr.hardening.LockPersonality
+	params.RestrictRealtime = sr.hardening.RestrictRealtime
+	params.RestrictNamespaces = sr.hardening.RestrictNamespaces
+	params.RestrictSUIDSGID = sr.hardening.RestrictSUIDSGID
+	params.RestrictFileSystems = sr.hardening.RestrictFileSystems
+	params.RestrictAddressFamilies = sr.hardening.RestrictAddressFamilies
+	params.RestrictAFEnabled = sr.hardening.RestrictAFEnabled
+	params.MemoryDenyWriteExecute = sr.hardening.MemoryDenyWriteExecute
+	params.CoredumpFilter = sr.coredumpFilter
+	params.TimerSlackNsec = sr.timerSlackNsec
+	params.MemoryKSM = sr.memoryKSM
+	params.Personality = sr.personality
+	if sr.ignoreSIGPIPE != nil {
+		params.IgnoreSIGPIPE = *sr.ignoreSIGPIPE
+		params.IgnoreSIGPIPESet = true
+	}
 	if sr.hardening.Active() {
 		params.NoNewPrivs = true
 	}
@@ -2160,6 +2352,13 @@ func (sr *ServiceRecord) Started() {
 	}
 
 	sr.startedTime = time.Now()
+
+	// systemd StartupAllowedCPUs= / StartupAllowedMemoryNodes= — after
+	// the service reaches Started, retune the cgroup cpuset to the
+	// steady-state values. No-op unless a startup-* override was set
+	// AND a steady-state cgroup-cpuset-* value was configured for the
+	// retune target.
+	sr.applySteadyStateCgroup()
 
 	// Auto-detect boot service reaching STARTED
 	if sr.services.bootServiceName != "" && sr.serviceName == sr.services.bootServiceName && sr.services.bootReadyTime.IsZero() {

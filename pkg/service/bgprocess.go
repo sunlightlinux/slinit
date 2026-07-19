@@ -699,7 +699,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 
 	// Create utmp entry for the daemon process
 	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
-		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, pid)
+		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
 	}
 
 	s.cancelTimer()

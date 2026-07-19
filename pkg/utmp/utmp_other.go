@@ -16,6 +16,9 @@ func LogBoot() bool { return true }
 // CreateEntry is a no-op on non-Linux platforms.
 func CreateEntry(id, line string, pid int) bool { return true }
 
+// CreateEntryMode is a no-op on non-Linux platforms.
+func CreateEntryMode(id, line string, pid int, mode string) bool { return true }
+
 // ClearEntry is a no-op on non-Linux platforms.
 func ClearEntry(id, line string) {}
 

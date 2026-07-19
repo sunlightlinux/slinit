@@ -114,6 +114,23 @@ func run() error {
 	pCG := fs.Bool("protect-control-groups", false, "remount /sys/fs/cgroup read-only")
 	pHost := fs.Bool("protect-hostname", false, "block sethostname/setdomainname")
 	pPersonality := fs.Bool("lock-personality", false, "block personality(2)")
+	rRealtime := fs.Bool("restrict-realtime", false, "block sched_setscheduler with SCHED_FIFO/RR/DEADLINE + sched_setattr")
+	rNamespaces := fs.Bool("restrict-namespaces", false, "block unshare/setns/clone with CLONE_NEW* + clone3 outright")
+	rSUIDSGID := fs.Bool("restrict-suidsgid", false, "block chmod/fchmod/fchmodat modes with SUID/SGID bits")
+	rFileSystems := fs.Bool("restrict-file-systems", false, "block mount/umount/fsopen/fsmount/move_mount/open_tree entirely")
+	mDenyWX := fs.Bool("memory-deny-write-execute", false, "prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN)")
+	// Bucket B — legacy-safe niches.
+	coredumpFilter := fs.String("coredump-filter", "", "hex mask written to /proc/self/coredump_filter (empty = leave untouched)")
+	timerSlack := fs.Int64("timer-slack-nsec", 0, "prctl(PR_SET_TIMERSLACK, N); 0 = leave untouched")
+	memoryKSM := fs.Bool("memory-ksm", false, "opt this process's anon pages into KSM merging via prctl(PR_SET_MEMORY_MERGE)")
+	ignoreSigpipeYes := fs.Bool("ignore-sigpipe", false, "install SIG_IGN for SIGPIPE (systemd default; overrides parent's inherited SIG_DFL)")
+	ignoreSigpipeNo := fs.Bool("no-ignore-sigpipe", false, "explicitly keep the inherited SIGPIPE handler (opts OUT of the default IGN)")
+	personality := fs.String("personality", "", "personality(2) domain: x86-64|x86|arm|arm64")
+	var restrictAFs stringList
+	fs.Var(&restrictAFs, "restrict-address-family",
+		"allowlist an AF_* family for socket()/socketpair(); repeatable (empty list denies all)")
+	rAFEnabled := fs.Bool("restrict-address-families-enable", false,
+		"enable restrict-address-families with the accumulated --restrict-address-family list")
 	// run-as: when the service combines a non-root credential with any
 	// sandbox feature, the parent slinit can't drop UID at fork time
 	// because the mount/seccomp ops below require CAP_SYS_ADMIN. We
@@ -233,14 +250,40 @@ func run() error {
 	// every syscall and picks the most restrictive action, so a deny
 	// here always wins over an allow above. Mount ops happen first
 	// (they need MS_PRIVATE on /), seccomp install last.
+	afsParsed, err := parseAFList(restrictAFs)
+	if err != nil {
+		return err
+	}
+	// Bucket B applied here (before the hardening seccomp filters —
+	// personality() and prctl(PR_SET_MEMORY_MERGE / PR_SET_TIMERSLACK)
+	// must succeed before a filter that denies prctl could ever be
+	// installed). Ignore-sigpipe writes the SIG_IGN handler which is
+	// inherited across execve.
+	if err := applyBucketB(bucketBSpec{
+		coredumpFilter:    *coredumpFilter,
+		timerSlackNsec:    *timerSlack,
+		memoryKSM:         *memoryKSM,
+		ignoreSigpipeYes:  *ignoreSigpipeYes,
+		ignoreSigpipeNo:   *ignoreSigpipeNo,
+		personality:       *personality,
+	}); err != nil {
+		return err
+	}
 	if err := applyHardening(hardeningSpec{
-		protectKernelTunables: *pkTun,
-		protectKernelModules:  *pkMod,
-		protectKernelLogs:     *pkLog,
-		protectClock:          *pClock,
-		protectControlGroups:  *pCG,
-		protectHostname:       *pHost,
-		lockPersonality:       *pPersonality,
+		protectKernelTunables:   *pkTun,
+		protectKernelModules:    *pkMod,
+		protectKernelLogs:       *pkLog,
+		protectClock:            *pClock,
+		protectControlGroups:    *pCG,
+		protectHostname:         *pHost,
+		lockPersonality:         *pPersonality,
+		restrictRealtime:        *rRealtime,
+		restrictNamespaces:      *rNamespaces,
+		restrictSUIDSGID:        *rSUIDSGID,
+		restrictFileSystems:     *rFileSystems,
+		restrictAddressFamilies: afsParsed,
+		restrictAFEnabled:       *rAFEnabled,
+		memoryDenyWriteExecute:  *mDenyWX,
 	}); err != nil {
 		return err
 	}

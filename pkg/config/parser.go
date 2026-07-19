@@ -590,10 +590,7 @@ type ServiceDescription struct {
 
 	// systemd-style Restrict*/Protect* hardening cluster (#7 v1). Each
 	// is a bool that expands at runner-side to a small fixed deny
-	// syscall list and/or a mount op. The arg-checking variants
-	// (RestrictRealtime, RestrictSUIDSGID, MemoryDenyWriteExecute,
-	// RestrictNamespaces, RestrictAddressFamilies) need a BPF compiler
-	// extension and are tracked as a v2 follow-on.
+	// syscall list and/or a mount op.
 	ProtectKernelTunables bool
 	ProtectKernelModules  bool
 	ProtectKernelLogs     bool
@@ -601,6 +598,43 @@ type ServiceDescription struct {
 	ProtectControlGroups  bool
 	ProtectHostname       bool
 	LockPersonality       bool
+	// Arg-checking hardening variants — shipped as Bucket A follow-on
+	// to Tier B. Each maps to a per-directive BPF fragment in
+	// pkg/seccomp/restrict_linux.go, installed by slinit-runner.
+	RestrictRealtime         bool
+	RestrictNamespaces       bool
+	RestrictSUIDSGID         bool
+	RestrictFileSystems      bool
+	RestrictAddressFamilies  []string // AF_* tokens or numeric; empty when directive absent
+	RestrictAFEnabled        bool     // distinguishes "unset" from "empty allow-list"
+	MemoryDenyWriteExecute   bool
+
+	// Bucket B — legacy-safe niches. See settings.go docstring for
+	// grouping rationale.
+	CoredumpFilter  string // hex mask or "" when unset; empty string means "don't touch /proc/self/coredump_filter"
+	TimerSlackNsec  int64  // 0 = don't touch (kernel default is 50µs, so zero is not a meaningful setting anyway)
+	MemoryKSM       bool
+	RemoveIPC       bool
+	IgnoreSIGPIPE   *bool  // nil = default (yes, matching systemd); pointer disambiguates unset from explicit no
+	Personality     string // "" = leave; "x86-64" / "x86" / native arch names
+	UtmpMode        string // "" (default init) | "init" | "login" | "user"
+
+	// Bucket C — v261/262 catch-up.
+	CpusetPartition           string // "" | "root" | "isolated" | "member"
+	CacheDirectoryQuota       int64  // bytes; 0 = don't set a quota
+	LogsDirectoryQuota        int64
+	StateDirectoryQuota       int64
+	CacheDirectoryAccounting  bool
+	LogsDirectoryAccounting   bool
+	StateDirectoryAccounting  bool
+	StartupAllowedCPUs        string // cpuset spec used during Startup, then swapped
+	StartupAllowedMemoryNodes string
+	TimeoutStopFailureMode    service.TimeoutFailureMode
+	WatchdogSignal            syscall.Signal // 0 = default (SIGABRT)
+	FinalKillSignal           syscall.Signal // 0 = default (SIGKILL)
+	SurviveFinalKillSignal    bool
+	RestartKillSignal         syscall.Signal
+	KillMode                  service.KillMode
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -2420,6 +2454,159 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			desc.LockPersonality = b
 		}
 
+	case "restrict-realtime", "restrict-namespaces", "restrict-suidsgid",
+		"restrict-file-systems", "memory-deny-write-execute":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", setting, err)
+		}
+		switch setting {
+		case "restrict-realtime":
+			desc.RestrictRealtime = b
+		case "restrict-namespaces":
+			desc.RestrictNamespaces = b
+		case "restrict-suidsgid":
+			desc.RestrictSUIDSGID = b
+		case "restrict-file-systems":
+			desc.RestrictFileSystems = b
+		case "memory-deny-write-execute":
+			desc.MemoryDenyWriteExecute = b
+		}
+
+	case "coredump-filter":
+		desc.CoredumpFilter = strings.TrimSpace(value)
+	case "timer-slack-nsec":
+		n, err := strconv.ParseInt(strings.TrimSpace(value), 0, 64)
+		if err != nil || n < 0 {
+			return fmt.Errorf("timer-slack-nsec: expected non-negative integer, got %q", value)
+		}
+		desc.TimerSlackNsec = n
+	case "memory-ksm":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("memory-ksm: %w", err)
+		}
+		desc.MemoryKSM = b
+	case "remove-ipc":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("remove-ipc: %w", err)
+		}
+		desc.RemoveIPC = b
+	case "ignore-sigpipe":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("ignore-sigpipe: %w", err)
+		}
+		desc.IgnoreSIGPIPE = &b
+	case "personality":
+		v := strings.TrimSpace(value)
+		switch v {
+		case "", "x86-64", "x86_64", "x86", "linux32", "arm", "arm64", "aarch64":
+			desc.Personality = v
+		default:
+			return fmt.Errorf("personality: unknown %q (accepts x86-64|x86|arm|arm64)", v)
+		}
+	case "cpuset-partition":
+		v := strings.TrimSpace(value)
+		switch v {
+		case "", "root", "isolated", "member":
+			desc.CpusetPartition = v
+		default:
+			return fmt.Errorf("cpuset-partition: expected root|isolated|member, got %q", value)
+		}
+	case "cache-directory-quota":
+		n, err := parseByteSize(value)
+		if err != nil {
+			return fmt.Errorf("cache-directory-quota: %w", err)
+		}
+		desc.CacheDirectoryQuota = n
+	case "logs-directory-quota":
+		n, err := parseByteSize(value)
+		if err != nil {
+			return fmt.Errorf("logs-directory-quota: %w", err)
+		}
+		desc.LogsDirectoryQuota = n
+	case "state-directory-quota":
+		n, err := parseByteSize(value)
+		if err != nil {
+			return fmt.Errorf("state-directory-quota: %w", err)
+		}
+		desc.StateDirectoryQuota = n
+	case "cache-directory-accounting", "logs-directory-accounting", "state-directory-accounting":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", setting, err)
+		}
+		switch setting {
+		case "cache-directory-accounting":
+			desc.CacheDirectoryAccounting = b
+		case "logs-directory-accounting":
+			desc.LogsDirectoryAccounting = b
+		case "state-directory-accounting":
+			desc.StateDirectoryAccounting = b
+		}
+	case "startup-allowed-cpus":
+		desc.StartupAllowedCPUs = strings.TrimSpace(value)
+	case "startup-allowed-memory-nodes":
+		desc.StartupAllowedMemoryNodes = strings.TrimSpace(value)
+	case "timeout-stop-failure-mode":
+		m, err := service.ParseTimeoutFailureMode(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.TimeoutStopFailureMode = m
+	case "watchdog-signal":
+		sig, err := parseSignal(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("watchdog-signal: %w", err)
+		}
+		desc.WatchdogSignal = sig
+	case "final-kill-signal":
+		sig, err := parseSignal(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("final-kill-signal: %w", err)
+		}
+		desc.FinalKillSignal = sig
+	case "survive-final-kill-signal":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("survive-final-kill-signal: %w", err)
+		}
+		desc.SurviveFinalKillSignal = b
+	case "restart-kill-signal":
+		sig, err := parseSignal(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("restart-kill-signal: %w", err)
+		}
+		desc.RestartKillSignal = sig
+	case "kill-mode":
+		km, err := service.ParseKillMode(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.KillMode = km
+	case "utmp-mode":
+		v := strings.ToLower(strings.TrimSpace(value))
+		switch v {
+		case "", "init", "login", "user":
+			desc.UtmpMode = v
+		default:
+			return fmt.Errorf("utmp-mode: expected init|login|user, got %q", value)
+		}
+	case "restrict-address-families":
+		// Whitespace-separated allow-list of AF_* tokens or numeric
+		// values. Presence of the directive (even with an empty value)
+		// enables the check; empty = deny all, non-empty = allow only
+		// the listed families. Matches systemd RestrictAddressFamilies=.
+		items := strings.Fields(expandEnvVars(value, serviceArg))
+		if op == OpEquals {
+			desc.RestrictAddressFamilies = items
+		} else {
+			desc.RestrictAddressFamilies = append(desc.RestrictAddressFamilies, items...)
+		}
+		desc.RestrictAFEnabled = true
+
 	case "runtime-directory", "state-directory", "cache-directory",
 		"logs-directory", "configuration-directory":
 		names, err := parseServiceDirNames(setting, value, serviceArg)
@@ -3348,6 +3535,40 @@ func parseNonColonOp(expr string) (varName string, op byte, operand string, ok b
 }
 
 // signalNames maps signal names (uppercase) to their syscall values.
+// parseByteSize accepts an integer + optional K/M/G/T suffix (base
+// 1024). Empty suffix = bytes. Used by the *-directory-quota
+// directives which mirror systemd's size format.
+func parseByteSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+	mult := int64(1)
+	last := s[len(s)-1]
+	switch last {
+	case 'K', 'k':
+		mult = 1024
+		s = s[:len(s)-1]
+	case 'M', 'm':
+		mult = 1024 * 1024
+		s = s[:len(s)-1]
+	case 'G', 'g':
+		mult = 1024 * 1024 * 1024
+		s = s[:len(s)-1]
+	case 'T', 't':
+		mult = 1024 * 1024 * 1024 * 1024
+		s = s[:len(s)-1]
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("byte-size parse: %w", err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("byte-size negative")
+	}
+	return n * mult, nil
+}
+
 // Package-level to avoid re-allocating on every parseSignal call.
 var signalNames = map[string]syscall.Signal{
 	"SIGHUP":  syscall.SIGHUP,

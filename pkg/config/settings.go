@@ -273,6 +273,43 @@ var KnownSettings = map[string]OperatorType{
 	"protect-control-groups":  OpEquals,
 	"protect-hostname":        OpEquals,
 	"lock-personality":        OpEquals,
+	// systemd Restrict*/MemoryDenyWriteExecute hardening — argument-
+	// checking BPF fragments + one prctl. Each is yes/no. address-
+	// families accepts an allow-list of AF_* tokens or empty (deny all).
+	// Bucket B — legacy-safe niches. Each is a small runner-side
+	// prctl / madvise / procfs write, or a stop-time cleanup on the
+	// master side (remove-ipc). Grouped with the Restrict* set because
+	// operators who reach for hardening tend to reach for these too.
+	"coredump-filter":  OpEquals,
+	"timer-slack-nsec": OpEquals,
+	"memory-ksm":       OpEquals,
+	"remove-ipc":       OpEquals,
+	"ignore-sigpipe":   OpEquals,
+	"personality":      OpEquals,
+	"utmp-mode":        OpEquals,
+
+	// Bucket C — v261/262 catch-up.
+	"cpuset-partition":                 OpEquals,
+	"cache-directory-quota":            OpEquals,
+	"logs-directory-quota":             OpEquals,
+	"state-directory-quota":            OpEquals,
+	"cache-directory-accounting":       OpEquals,
+	"logs-directory-accounting":        OpEquals,
+	"state-directory-accounting":       OpEquals,
+	"startup-allowed-cpus":             OpEquals,
+	"startup-allowed-memory-nodes":     OpEquals,
+	"timeout-stop-failure-mode":        OpEquals,
+	"watchdog-signal":                  OpEquals,
+	"final-kill-signal":                OpEquals,
+	"survive-final-kill-signal":        OpEquals,
+	"restart-kill-signal":              OpEquals,
+	"kill-mode":                        OpEquals,
+	"restrict-realtime":           OpEquals,
+	"restrict-namespaces":         OpEquals,
+	"restrict-suidsgid":           OpEquals,
+	"restrict-file-systems":       OpEquals,
+	"restrict-address-families":   OpEquals | OpPlusEqual,
+	"memory-deny-write-execute":   OpEquals,
 
 	// systemd-style filesystem sandbox (applied via slinit-runner in a
 	// fresh mount namespace; CLONE_NEWNS is auto-implied)

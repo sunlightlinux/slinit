@@ -388,6 +388,26 @@ type ExecParams struct {
 	ProtectControlGroups  bool
 	ProtectHostname       bool
 	LockPersonality       bool
+	// Bucket A hardening extension: argument-checking BPF fragments +
+	// prctl. Each maps to a --restrict-* flag on slinit-runner.
+	RestrictRealtime        bool
+	RestrictNamespaces      bool
+	RestrictSUIDSGID        bool
+	RestrictFileSystems     bool
+	RestrictAddressFamilies []string // AF_* names or numeric strings
+	RestrictAFEnabled       bool     // presence marker; distinguishes unset from empty allow-list
+	MemoryDenyWriteExecute  bool
+
+	// Bucket B — legacy-safe niches. All runner-side except RemoveIPC
+	// (master-side stop-time cleanup). Zero-value on each is "leave
+	// untouched"; the loader sets these only when the operator opted
+	// in.
+	CoredumpFilter    string
+	TimerSlackNsec    int64
+	MemoryKSM         bool
+	IgnoreSIGPIPE     bool
+	IgnoreSIGPIPESet  bool   // distinguishes explicit "no" from unset (default is yes)
+	Personality       string
 
 	// Cloneflags specifies Linux clone flags for namespace isolation.
 	// OR'd into SysProcAttr.Cloneflags (e.g. syscall.CLONE_NEWPID).

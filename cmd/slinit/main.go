@@ -647,8 +647,8 @@ func main() {
 	}
 
 	// Wire UTMP callbacks (keeps service pkg cgo-free)
-	serviceSet.OnUtmpCreate = func(id, line string, pid int) {
-		utmp.CreateEntry(id, line, pid)
+	serviceSet.OnUtmpCreate = func(id, line, mode string, pid int) {
+		utmp.CreateEntryMode(id, line, pid, mode)
 	}
 	serviceSet.OnUtmpClear = func(id, line string) {
 		utmp.ClearEntry(id, line)

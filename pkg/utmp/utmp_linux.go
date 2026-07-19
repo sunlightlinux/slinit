@@ -54,11 +54,13 @@ static int c_log_boot(void) {
     return 1;
 }
 
-// c_create_entry writes an INIT_PROCESS record to utmp.
-static int c_create_entry(const char *id, const char *line, int pid) {
+// c_create_entry_mode writes a record of the given ut_type to utmp.
+// Callers pass one of INIT_PROCESS(5) / LOGIN_PROCESS(6) / USER_PROCESS(7);
+// anything else is normalised to INIT_PROCESS by the Go wrapper.
+static int c_create_entry_mode(const char *id, const char *line, int pid, int ut_type) {
     struct utmpx record;
     memset(&record, 0, sizeof(record));
-    record.ut_type = INIT_PROCESS;
+    record.ut_type = ut_type;
     record.ut_pid = pid;
 
     strncpy(record.ut_id, id, sizeof(record.ut_id));
@@ -268,14 +270,30 @@ func LogBoot() bool {
 }
 
 // CreateEntry writes an INIT_PROCESS record to utmp for a started service.
-// id and line correspond to the service's inittab-id and inittab-line settings.
-// pid is the process ID of the started service.
+// id and line correspond to the service's inittab-id and inittab-line
+// settings. pid is the process ID of the started service. Preserved for
+// callers that don't care about the record type.
 func CreateEntry(id, line string, pid int) bool {
+	return CreateEntryMode(id, line, pid, "")
+}
+
+// CreateEntryMode writes a utmp record of the mode-selected ut_type
+// (init | login | user). Empty mode defaults to init. Kept as a
+// separate entry point rather than an extra param on CreateEntry so
+// existing callers stay source-compatible.
+func CreateEntryMode(id, line string, pid int, mode string) bool {
+	utType := C.int(5) // INIT_PROCESS
+	switch mode {
+	case "login":
+		utType = 6 // LOGIN_PROCESS
+	case "user":
+		utType = 7 // USER_PROCESS
+	}
 	cID := C.CString(id)
 	cLine := C.CString(line)
 	defer C.free(unsafe.Pointer(cID))
 	defer C.free(unsafe.Pointer(cLine))
-	return C.c_create_entry(cID, cLine, C.int(pid)) != 0
+	return C.c_create_entry_mode(cID, cLine, C.int(pid), utType) != 0
 }
 
 // ClearEntry writes a DEAD_PROCESS record to utmp for a stopped service.

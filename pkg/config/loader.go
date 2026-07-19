@@ -1503,11 +1503,46 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		rec.SetCgroupPath(desc.CgroupPath)
 		rec.SetSlice(desc.Slice)
 	}
-	if len(desc.CgroupSettings) > 0 {
-		cgSettings := make([]process.CgroupSetting, len(desc.CgroupSettings))
-		for i, cs := range desc.CgroupSettings {
-			cgSettings[i] = process.CgroupSetting{File: cs.File, Value: cs.Value}
+	// Cgroup settings: user-declared cgroup-setting entries + Bucket C
+	// cpuset-partition + startup-allowed-cpus/mems. The Startup values
+	// win over the steady-state cgroup-cpuset-cpus at cgroup creation
+	// time; ServiceRecord.applySteadyStateCgroup() retunes to the
+	// steady value when Started() fires.
+	var cgSettings []process.CgroupSetting
+	for _, cs := range desc.CgroupSettings {
+		cgSettings = append(cgSettings, process.CgroupSetting{File: cs.File, Value: cs.Value})
+	}
+	if desc.CpusetPartition != "" {
+		cgSettings = append(cgSettings, process.CgroupSetting{
+			File: "cpuset.cpus.partition", Value: desc.CpusetPartition,
+		})
+	}
+	if desc.StartupAllowedCPUs != "" {
+		// Record the steady value BEFORE we overwrite with startup.
+		// The loop above already appended any cgroup-cpuset-cpus
+		// entry; capture its value so the record can retune on
+		// Started(). No cgroup-cpuset-cpus set → nothing to retune to,
+		// startup value stays for the service's lifetime.
+		for _, cs := range desc.CgroupSettings {
+			if cs.File == "cpuset.cpus" {
+				rec.SetSteadyAllowedCPUs(cs.Value)
+			}
 		}
+		cgSettings = append(cgSettings, process.CgroupSetting{
+			File: "cpuset.cpus", Value: desc.StartupAllowedCPUs,
+		})
+	}
+	if desc.StartupAllowedMemoryNodes != "" {
+		for _, cs := range desc.CgroupSettings {
+			if cs.File == "cpuset.mems" {
+				rec.SetSteadyAllowedMemoryNodes(cs.Value)
+			}
+		}
+		cgSettings = append(cgSettings, process.CgroupSetting{
+			File: "cpuset.mems", Value: desc.StartupAllowedMemoryNodes,
+		})
+	}
+	if len(cgSettings) > 0 {
 		rec.SetCgroupSettings(cgSettings)
 	}
 	if desc.IOPrio != "" {
@@ -1623,14 +1658,51 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 
 	// systemd-style Restrict*/Protect* hardening cluster.
 	hardeningCfg := service.HardeningConfig{
-		ProtectKernelTunables: desc.ProtectKernelTunables,
-		ProtectKernelModules:  desc.ProtectKernelModules,
-		ProtectKernelLogs:     desc.ProtectKernelLogs,
-		ProtectClock:          desc.ProtectClock,
-		ProtectControlGroups:  desc.ProtectControlGroups,
-		ProtectHostname:       desc.ProtectHostname,
-		LockPersonality:       desc.LockPersonality,
+		ProtectKernelTunables:   desc.ProtectKernelTunables,
+		ProtectKernelModules:    desc.ProtectKernelModules,
+		ProtectKernelLogs:       desc.ProtectKernelLogs,
+		ProtectClock:            desc.ProtectClock,
+		ProtectControlGroups:    desc.ProtectControlGroups,
+		ProtectHostname:         desc.ProtectHostname,
+		LockPersonality:         desc.LockPersonality,
+		RestrictRealtime:        desc.RestrictRealtime,
+		RestrictNamespaces:      desc.RestrictNamespaces,
+		RestrictSUIDSGID:        desc.RestrictSUIDSGID,
+		RestrictFileSystems:     desc.RestrictFileSystems,
+		RestrictAddressFamilies: desc.RestrictAddressFamilies,
+		RestrictAFEnabled:       desc.RestrictAFEnabled,
+		MemoryDenyWriteExecute:  desc.MemoryDenyWriteExecute,
 	}
+	// Bucket B — legacy-safe niches. Threaded as individual fields on
+	// the record because they don't share a cluster gate.
+	rec.SetCoredumpFilter(desc.CoredumpFilter)
+	rec.SetTimerSlackNsec(desc.TimerSlackNsec)
+	rec.SetMemoryKSM(desc.MemoryKSM)
+	rec.SetPersonality(desc.Personality)
+	rec.SetIgnoreSIGPIPE(desc.IgnoreSIGPIPE)
+	rec.SetRemoveIPC(desc.RemoveIPC)
+	rec.SetUtmpMode(desc.UtmpMode)
+
+	// Bucket C — v261/262 catch-up. cpuset-partition + startup-*
+	// piggyback on CgroupSettings below via cgroupBucketCSettings; the
+	// remaining fields (timeout-stop-failure-mode, watchdog-signal,
+	// final-kill-signal, restart-kill-signal, kill-mode, quotas,
+	// accounting) are recorded here for the state machine to consume.
+	rec.SetCpusetPartition(desc.CpusetPartition)
+	rec.SetStartupAllowedCPUs(desc.StartupAllowedCPUs)
+	rec.SetStartupAllowedMemoryNodes(desc.StartupAllowedMemoryNodes)
+	rec.SetCacheDirectoryQuota(desc.CacheDirectoryQuota)
+	rec.SetLogsDirectoryQuota(desc.LogsDirectoryQuota)
+	rec.SetStateDirectoryQuota(desc.StateDirectoryQuota)
+	rec.SetCacheDirectoryAccounting(desc.CacheDirectoryAccounting)
+	rec.SetLogsDirectoryAccounting(desc.LogsDirectoryAccounting)
+	rec.SetStateDirectoryAccounting(desc.StateDirectoryAccounting)
+	rec.SetTimeoutStopFailureMode(desc.TimeoutStopFailureMode)
+	rec.SetWatchdogSignal(desc.WatchdogSignal)
+	rec.SetFinalKillSignal(desc.FinalKillSignal)
+	rec.SetSurviveFinalKillSignal(desc.SurviveFinalKillSignal)
+	rec.SetRestartKillSignal(desc.RestartKillSignal)
+	rec.SetKillMode(desc.KillMode)
 	if hardeningCfg.Active() {
 		rec.SetHardening(hardeningCfg)
 		// Three of the seven knobs need ro mount operations
