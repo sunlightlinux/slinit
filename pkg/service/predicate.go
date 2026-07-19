@@ -50,6 +50,12 @@ const (
 	PredMachineTag           // MachineTag= — TAGS= line from /etc/machine-info
 	PredCredential           // Credential= — file present under $CREDENTIALS_DIRECTORY
 	PredControlGroupController // ControlGroupController= — cgroup v2 controller enabled
+	// Bucket A3: PSI-based instantaneous conditions. Sibling of the
+	// v261 pressure watches — those subscribe to threshold events at
+	// runtime; these are one-shot checks at service start.
+	PredMemoryPressure // MemoryPressure= — /proc/pressure/memory some avg10
+	PredCPUPressure    // CPUPressure=    — /proc/pressure/cpu    some avg10
+	PredIOPressure     // IOPressure=     — /proc/pressure/io     some avg10
 )
 
 // Predicate is one declarative start precondition. A failing condition
@@ -143,6 +149,12 @@ func (p Predicate) String() string {
 		name = "credential"
 	case PredControlGroupController:
 		name = "control-group-controller"
+	case PredMemoryPressure:
+		name = "memory-pressure"
+	case PredCPUPressure:
+		name = "cpu-pressure"
+	case PredIOPressure:
+		name = "io-pressure"
 	default:
 		name = fmt.Sprintf("kind-%d", p.Kind)
 	}
@@ -269,6 +281,12 @@ func evalRaw(p Predicate) (bool, string) {
 		return checkCredential(p.Param)
 	case PredControlGroupController:
 		return checkControlGroupController(p.Param)
+	case PredMemoryPressure:
+		return checkPSIPressure("/proc/pressure/memory", p.Param)
+	case PredCPUPressure:
+		return checkPSIPressure("/proc/pressure/cpu", p.Param)
+	case PredIOPressure:
+		return checkPSIPressure("/proc/pressure/io", p.Param)
 	}
 	return false, fmt.Sprintf("unknown predicate kind %d", p.Kind)
 }
@@ -408,6 +426,12 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredCredential, true
 	case "control-group-controller":
 		return PredControlGroupController, true
+	case "memory-pressure":
+		return PredMemoryPressure, true
+	case "cpu-pressure":
+		return PredCPUPressure, true
+	case "io-pressure":
+		return PredIOPressure, true
 	}
 	return 0, false
 }
