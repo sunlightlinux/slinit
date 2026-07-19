@@ -87,7 +87,7 @@ type ServiceSet struct {
 
 	// UTMP callbacks — wired by main.go to utmp package functions.
 	// Keeping these as callbacks avoids a cgo dependency in the service package.
-	OnUtmpCreate func(id, line string, pid int)
+	OnUtmpCreate func(id, line, mode string, pid int)
 	OnUtmpClear  func(id, line string)
 	OnRWReady    func() // called when starts-rwfs service reaches STARTED
 	OnBootReady  func() // called when boot service reaches STARTED (for --ready-fd)

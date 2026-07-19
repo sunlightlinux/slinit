@@ -510,6 +510,58 @@ func ParseExitType(s string) (ExitType, error) {
 	return 0, fmt.Errorf("unknown exit-type %q (use main|cgroup)", s)
 }
 
+// KillMode picks which processes get signalled on stop. Mirrors
+// systemd's KillMode= directive. slinit already covered the main
+// distinctions via the kill-all-on-stop option flag; this enum
+// surfaces them under the systemd-familiar spelling and adds the
+// "none" mode (rare — used by services that manage their own
+// lifecycle after receiving SIGTERM).
+type KillMode uint8
+
+const (
+	// KillModeControlGroup: SIGTERM to every process in the cgroup +
+	// SIGKILL escalation. Equivalent to options=kill-all-on-stop.
+	KillModeControlGroup KillMode = iota
+	// KillModeProcess: signal only the main pid (slinit's historical
+	// default).
+	KillModeProcess
+	// KillModeMixed: SIGTERM to the main pid, SIGKILL to the whole
+	// cgroup at escalation. Compromise for services that want a soft
+	// stop for the leader but a hard cleanup for children.
+	KillModeMixed
+	// KillModeNone: send nothing. The service is expected to notice
+	// the stop request through some other channel (control-command,
+	// custom signal handler, etc). Rarely useful.
+	KillModeNone
+)
+
+func (m KillMode) String() string {
+	switch m {
+	case KillModeControlGroup:
+		return "control-group"
+	case KillModeMixed:
+		return "mixed"
+	case KillModeNone:
+		return "none"
+	}
+	return "process"
+}
+
+// ParseKillMode decodes the config value.
+func ParseKillMode(s string) (KillMode, error) {
+	switch s {
+	case "", "process":
+		return KillModeProcess, nil
+	case "control-group":
+		return KillModeControlGroup, nil
+	case "mixed":
+		return KillModeMixed, nil
+	case "none":
+		return KillModeNone, nil
+	}
+	return 0, fmt.Errorf("unknown kill-mode %q (use control-group|process|mixed|none)", s)
+}
+
 // RestartMode picks the cascade behaviour on auto-restart. Mirrors
 // systemd's RestartMode= directive.
 type RestartMode uint8

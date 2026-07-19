@@ -3,21 +3,67 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/sunlightlinux/slinit/pkg/seccomp"
 	"golang.org/x/sys/unix"
 )
 
+// parseAFList converts operator-facing AF_* tokens ("AF_INET",
+// "AF_UNIX", "AF_INET6", or bare numbers) into the numeric values the
+// BPF compiler expects. Case-insensitive, tolerant of an "AF_" prefix
+// or its absence. Empty or all-whitespace input yields the empty
+// allow-list — the operator asked for "no families", which is what
+// gets enforced.
+func parseAFList(toks []string) ([]int, error) {
+	names := map[string]int{
+		"UNIX":   1, "LOCAL": 1,
+		"INET":   2,
+		"AX25":   3,
+		"IPX":    4,
+		"APPLETALK": 5,
+		"NETLINK": 16,
+		"PACKET": 17,
+		"INET6":  10,
+		"BLUETOOTH": 31,
+		"VSOCK":  40,
+	}
+	var out []int
+	for _, raw := range toks {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		v = strings.ToUpper(strings.TrimPrefix(strings.ToUpper(v), "AF_"))
+		if n, ok := names[v]; ok {
+			out = append(out, n)
+			continue
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("restrict-address-families: unknown family %q", raw)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 // hardeningSpec is the parsed set of Restrict*/Protect* flags from
 // main(). Each is yes/no in slinit's config; the runner translates the
-// active ones into a fixed deny syscall list (installed as a second
-// seccomp filter alongside the user's main one) and a small set of
-// mount operations.
+// active ones into seccomp filters (installed alongside the user's
+// main system-call-filter) and a small set of mount operations.
 //
-// The arg-checking variants (RestrictRealtime, RestrictSUIDSGID,
-// MemoryDenyWriteExecute, RestrictNamespaces, RestrictAddressFamilies)
-// are deferred — they need a BPF compiler extension to inspect
-// seccomp_data.args.
+// Two seccomp filter families are used:
+//   1. A single deny-mode filter with the union of all "block-outright"
+//      syscall lists (protect-kernel-*, protect-clock, protect-hostname,
+//      lock-personality). Cheapest to build; one filter, many syscalls.
+//   2. Per-restriction arg-checking BPF programs (restrict-realtime,
+//      restrict-namespaces, restrict-suidsgid, restrict-address-families,
+//      restrict-file-systems). Each is its own tiny filter; the kernel
+//      stacks them and applies the most-restrictive result.
+//
+// memory-deny-write-execute is a straight prctl, not seccomp.
 type hardeningSpec struct {
 	protectKernelTunables bool
 	protectKernelModules  bool
@@ -26,13 +72,25 @@ type hardeningSpec struct {
 	protectControlGroups  bool
 	protectHostname       bool
 	lockPersonality       bool
+	// Arg-checking variants — see pkg/seccomp/restrict_linux.go for the
+	// per-directive BPF programs.
+	restrictRealtime         bool
+	restrictNamespaces       bool
+	restrictSUIDSGID         bool
+	restrictFileSystems      bool
+	restrictAddressFamilies  []int // empty when the directive is not set; explicit "no families" is len == 0 sentinel below
+	restrictAFEnabled        bool  // true when the directive appeared, distinguishes "unset" from "empty allow-list"
+	memoryDenyWriteExecute   bool
 }
 
 func (h hardeningSpec) active() bool {
 	return h.protectKernelTunables || h.protectKernelModules ||
 		h.protectKernelLogs || h.protectClock ||
 		h.protectControlGroups || h.protectHostname ||
-		h.lockPersonality
+		h.lockPersonality ||
+		h.restrictRealtime || h.restrictNamespaces ||
+		h.restrictSUIDSGID || h.restrictFileSystems ||
+		h.restrictAFEnabled || h.memoryDenyWriteExecute
 }
 
 // needsMountNS reports whether any active knob requires a private
@@ -95,30 +153,90 @@ func applyHardening(h hardeningSpec) error {
 		}
 	}
 
-	// Build the seccomp deny filter. We construct it directly rather
-	// than going through seccomp.Build because the input is a fixed
-	// curated list — there's no user expansion to do, and the deny
-	// semantics (kill on match, allow everything else) match
-	// ModeDeny with default ActionAllow.
-	denyList := collectDenyList(h)
-	if len(denyList) == 0 {
+	// memory-deny-write-execute is a straight prctl — no seccomp
+	// needed. Runs BEFORE the seccomp install so a filter that blocks
+	// prctl doesn't lock us out. PR_SET_MDWE first appeared in kernel
+	// 6.3; on older kernels the prctl returns EINVAL and we surface
+	// it as an error (fail-closed to match the operator's stated
+	// intent).
+	if h.memoryDenyWriteExecute {
+		const prSetMDWE = 65
+		const mdweRefuseExecGain = 1
+		if err := unix.Prctl(prSetMDWE, mdweRefuseExecGain, 0, 0, 0); err != nil {
+			return fmt.Errorf("memory-deny-write-execute: %w", err)
+		}
+	}
+
+	// PR_SET_NO_NEW_PRIVS is the shared prerequisite for every seccomp
+	// install below. Set it once; each install() is a no-op on the
+	// prctl side after the first.
+	seccompNeeded := len(collectDenyList(h)) > 0 ||
+		h.restrictRealtime || h.restrictNamespaces ||
+		h.restrictSUIDSGID || h.restrictFileSystems || h.restrictAFEnabled
+	if seccompNeeded {
+		if err := seccomp.EnsureNoNewPrivs(); err != nil {
+			return fmt.Errorf("hardening prerequisite: %w", err)
+		}
+	}
+
+	// Build the seccomp deny filter for the block-outright cluster.
+	// Constructed directly rather than via seccomp.Build because the
+	// input is a curated list — no user expansion to do.
+	if denyList := collectDenyList(h); len(denyList) > 0 {
+		filter := &seccomp.Filter{
+			Mode:          seccomp.ModeDeny,
+			Syscalls:      denyList,
+			Archs:         []string{seccomp.NativeArch()},
+			DefaultAction: seccomp.ActionKill,
+		}
+		prog, err := seccomp.Compile(filter)
+		if err != nil {
+			return fmt.Errorf("hardening seccomp compile: %w", err)
+		}
+		if err := seccomp.Install(prog); err != nil {
+			return fmt.Errorf("hardening seccomp install: %w", err)
+		}
+	}
+
+	// Arg-checking filters. Each is a small standalone program; the
+	// kernel stacks them and takes the most-restrictive result.
+	installArg := func(name string, build func() ([]unix.SockFilter, error)) error {
+		prog, err := build()
+		if err != nil {
+			return fmt.Errorf("%s compile: %w", name, err)
+		}
+		if err := seccomp.Install(prog); err != nil {
+			return fmt.Errorf("%s install: %w", name, err)
+		}
 		return nil
 	}
-	filter := &seccomp.Filter{
-		Mode:          seccomp.ModeDeny,
-		Syscalls:      denyList,
-		Archs:         []string{seccomp.NativeArch()},
-		DefaultAction: seccomp.ActionKill,
+	if h.restrictRealtime {
+		if err := installArg("restrict-realtime", seccomp.CompileRestrictRealtime); err != nil {
+			return err
+		}
 	}
-	prog, err := seccomp.Compile(filter)
-	if err != nil {
-		return fmt.Errorf("hardening seccomp compile: %w", err)
+	if h.restrictNamespaces {
+		if err := installArg("restrict-namespaces", seccomp.CompileRestrictNamespaces); err != nil {
+			return err
+		}
 	}
-	if err := seccomp.EnsureNoNewPrivs(); err != nil {
-		return fmt.Errorf("hardening prerequisite: %w", err)
+	if h.restrictSUIDSGID {
+		if err := installArg("restrict-suidsgid", seccomp.CompileRestrictSUIDSGID); err != nil {
+			return err
+		}
 	}
-	if err := seccomp.Install(prog); err != nil {
-		return fmt.Errorf("hardening seccomp install: %w", err)
+	if h.restrictFileSystems {
+		if err := installArg("restrict-file-systems", seccomp.CompileRestrictFileSystems); err != nil {
+			return err
+		}
+	}
+	if h.restrictAFEnabled {
+		afs := h.restrictAddressFamilies
+		if err := installArg("restrict-address-families", func() ([]unix.SockFilter, error) {
+			return seccomp.CompileRestrictAddressFamilies(afs)
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

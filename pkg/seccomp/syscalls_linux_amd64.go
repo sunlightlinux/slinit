@@ -292,6 +292,15 @@ var syscallNumbers = map[string]int{
 	// Privileged
 	"mount":            unix.SYS_MOUNT,
 	"umount2":          unix.SYS_UMOUNT2,
+	// Post-2019 filesystem-mount API. Needed for restrict-file-systems,
+	// which denies every mount syscall (classic BPF can't inspect the
+	// fsname string; the BPF-LSM path is systemd-specific).
+	"fsopen":           unix.SYS_FSOPEN,
+	"fsconfig":         unix.SYS_FSCONFIG,
+	"fsmount":          unix.SYS_FSMOUNT,
+	"fspick":           unix.SYS_FSPICK,
+	"move_mount":       unix.SYS_MOVE_MOUNT,
+	"open_tree":        unix.SYS_OPEN_TREE,
 	"pivot_root":       unix.SYS_PIVOT_ROOT,
 	"chroot":           unix.SYS_CHROOT,
 	"setns":            unix.SYS_SETNS,

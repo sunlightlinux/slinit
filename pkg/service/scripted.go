@@ -300,7 +300,7 @@ func (s *ScriptedService) BringUp() bool {
 
 	// Create utmp entry for the start process
 	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
-		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, pid)
+		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
 	}
 
 	// Monitor the start command

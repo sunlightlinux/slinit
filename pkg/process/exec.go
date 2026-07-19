@@ -584,7 +584,16 @@ func needsRunnerWrap(p ExecParams) bool {
 	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
 		p.AppArmorProfile != "" || p.DebugStop || p.MemoryTHP != "" ||
 		sandboxActive(p) || seccompActive(p) || hardeningActive(p) ||
-		len(p.BoundingCaps) > 0 || p.NoNewPrivs
+		len(p.BoundingCaps) > 0 || p.NoNewPrivs ||
+		bucketBActive(p)
+}
+
+// bucketBActive reports whether any legacy-safe niche needs the
+// runner. Each of these requires runner-side work — a prctl, a
+// procfs write, a personality() syscall, or a SIG_IGN install.
+func bucketBActive(p ExecParams) bool {
+	return p.CoredumpFilter != "" || p.TimerSlackNsec > 0 ||
+		p.MemoryKSM || p.Personality != "" || p.IgnoreSIGPIPESet
 }
 
 // hardeningActive reports whether any Restrict*/Protect* knob is set.
@@ -594,7 +603,10 @@ func hardeningActive(p ExecParams) bool {
 	return p.ProtectKernelTunables || p.ProtectKernelModules ||
 		p.ProtectKernelLogs || p.ProtectClock ||
 		p.ProtectControlGroups || p.ProtectHostname ||
-		p.LockPersonality
+		p.LockPersonality ||
+		p.RestrictRealtime || p.RestrictNamespaces ||
+		p.RestrictSUIDSGID || p.RestrictFileSystems ||
+		p.RestrictAFEnabled || p.MemoryDenyWriteExecute
 }
 
 // seccompActive reports whether any seccomp field is set. seccomp must
@@ -708,6 +720,47 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	if p.LockPersonality {
 		args = append(args, "--lock-personality")
+	}
+	if p.RestrictRealtime {
+		args = append(args, "--restrict-realtime")
+	}
+	if p.RestrictNamespaces {
+		args = append(args, "--restrict-namespaces")
+	}
+	if p.RestrictSUIDSGID {
+		args = append(args, "--restrict-suidsgid")
+	}
+	if p.RestrictFileSystems {
+		args = append(args, "--restrict-file-systems")
+	}
+	if p.RestrictAFEnabled {
+		args = append(args, "--restrict-address-families-enable")
+		for _, af := range p.RestrictAddressFamilies {
+			args = append(args, "--restrict-address-family="+af)
+		}
+	}
+	if p.MemoryDenyWriteExecute {
+		args = append(args, "--memory-deny-write-execute")
+	}
+	// Bucket B — legacy-safe niches.
+	if p.CoredumpFilter != "" {
+		args = append(args, "--coredump-filter="+p.CoredumpFilter)
+	}
+	if p.TimerSlackNsec > 0 {
+		args = append(args, "--timer-slack-nsec="+strconv.FormatInt(p.TimerSlackNsec, 10))
+	}
+	if p.MemoryKSM {
+		args = append(args, "--memory-ksm")
+	}
+	if p.Personality != "" {
+		args = append(args, "--personality="+p.Personality)
+	}
+	if p.IgnoreSIGPIPESet {
+		if p.IgnoreSIGPIPE {
+			args = append(args, "--ignore-sigpipe")
+		} else {
+			args = append(args, "--no-ignore-sigpipe")
+		}
 	}
 	// Deferred run-as + ambient caps. Always emit when a non-root
 	// credential is configured: by the time wrapWithRunner is being
