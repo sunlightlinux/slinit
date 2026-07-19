@@ -71,6 +71,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 # 165 / 166 (systemd-tmpfiles/sysusers.d compat helpers).
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-tmpfiles" ./cmd/slinit-tmpfiles
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-sysusers" ./cmd/slinit-sysusers
+# slinit-cgtop: cgroup v2 top-like viewer (systemd-cgtop equivalent).
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-cgtop" ./cmd/slinit-cgtop
 
 # Prepare rootfs
 echo "[4/5] Preparing rootfs..."
@@ -100,6 +102,7 @@ install -m 755 "${BUILD_DIR}/slinit-init-maker" "${ROOTFS_DIR}/usr/bin/slinit-in
 install -m 755 "${BUILD_DIR}/slinit-seedrng" "${ROOTFS_DIR}/usr/bin/slinit-seedrng"
 install -m 755 "${BUILD_DIR}/slinit-tmpfiles" "${ROOTFS_DIR}/usr/bin/slinit-tmpfiles"
 install -m 755 "${BUILD_DIR}/slinit-sysusers" "${ROOTFS_DIR}/usr/bin/slinit-sysusers"
+install -m 755 "${BUILD_DIR}/slinit-cgtop" "${ROOTFS_DIR}/usr/bin/slinit-cgtop"
 ln -sf slinit "${ROOTFS_DIR}/sbin/init"
 
 mkdir -p "${ROOTFS_DIR}/run" "${ROOTFS_DIR}/dev" "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys"
