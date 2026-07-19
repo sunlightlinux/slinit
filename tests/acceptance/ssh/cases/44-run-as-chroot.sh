@@ -61,6 +61,14 @@ rm -f "$MARK_UID"
 # Build a minimal jail with /bin/sh (busybox or static) and a sentinel
 # file. The child stamps the sentinel into the marker — if chroot took,
 # it sees the jail's /sentinel, NOT the host's.
+#
+# Defensive: nuke any stale jail from a prior interrupted run before
+# rebuilding. Without this, a prior SSH drop / hard kill leaves
+# dangling symlinks under $JAIL that the mkdir loop below can't
+# recover from (mkdir -p fails EEXIST on a dangling symlink at the
+# final path component). rm -rf on a non-existent path is a no-op.
+umount "$JAIL/proc" 2>/dev/null
+rm -rf "$JAIL"
 mkdir -p "$JAIL/bin"
 # Copy busybox or sh statically. Trying both common locations.
 if [ -x /bin/busybox ]; then
@@ -71,23 +79,30 @@ elif ldd /bin/sh 2>/dev/null | grep -q "not a dynamic"; then
 else
     # Carry the dynamic loader + libs alongside the shell.
     # On merged-usr hosts (Void, Fedora, Arch, Debian≥12) /lib, /lib64,
-    # and /usr/lib64 are symlinks — glibc's baked-in search paths
-    # (/lib64, /usr/lib64 for x86_64) only resolve to a real libc via
-    # those symlinks, so we must mirror them BEFORE the mkdir/cp loop
-    # or mkdir -p turns them into real dirs and the loader stops
-    # finding libc inside the jail.
-    for _top in /lib /lib64 /usr/lib64; do
-        if [ -L "$_top" ]; then
-            mkdir -p "$(dirname "$JAIL$_top")"
-            ln -sf "$(readlink "$_top")" "$JAIL$_top"
-        fi
-    done
+    # and /usr/lib64 are symlinks pointing at usr/lib. The old logic
+    # created those symlinks FIRST (before any real dir under $JAIL/usr
+    # existed) and then walked the ldd output to mkdir + cp libs at
+    # host-name paths. Two failure modes surfaced on ceres:
+    #   1. `mkdir -p $JAIL/usr/lib64` on a dangling symlink fails EEXIST
+    #      because the final component isn't a directory (POSIX mkdir).
+    #   2. cp copies a lib into a symlink target that doesn't exist yet,
+    #      creating a REGULAR FILE at the symlink's canonical path.
+    # Fix: (1) resolve each lib's directory to its CANONICAL path via
+    # readlink -f, so mkdir + cp always land on real directories, then
+    # (2) mirror the host's top-level lib symlinks LAST, guarded by
+    # [ ! -e ] so a partial retry doesn't try to overwrite them.
     cp /bin/sh "$JAIL/bin/sh"
     for _lib in $(ldd /bin/sh 2>/dev/null | awk '/=>/ {print $3} /\/ld-/ {print $1}'); do
         [ -f "$_lib" ] || continue
-        _libdir=$(dirname "$_lib")
-        mkdir -p "$JAIL$_libdir"
-        cp -L "$_lib" "$JAIL$_libdir/"
+        _canon_dir=$(dirname "$(readlink -f "$_lib" 2>/dev/null || echo "$_lib")")
+        mkdir -p "$JAIL$_canon_dir"
+        cp -L "$_lib" "$JAIL$_canon_dir/"
+    done
+    for _top in /lib /lib64 /usr/lib64; do
+        if [ -L "$_top" ] && [ ! -e "$JAIL$_top" ]; then
+            mkdir -p "$(dirname "$JAIL$_top")"
+            ln -sf "$(readlink "$_top")" "$JAIL$_top"
+        fi
     done
 fi
 echo "JAILED_FS_SENTINEL" > "$JAIL/sentinel"
