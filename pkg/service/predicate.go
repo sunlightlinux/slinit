@@ -1,12 +1,15 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // PredicateKind identifies one of the systemd-style start preconditions.
@@ -56,7 +59,17 @@ const (
 	PredMemoryPressure // MemoryPressure= — /proc/pressure/memory some avg10
 	PredCPUPressure    // CPUPressure=    — /proc/pressure/cpu    some avg10
 	PredIOPressure     // IOPressure=     — /proc/pressure/io     some avg10
+	// systemd ExecCondition= — run a command; exit 0 proceeds with the
+	// start, non-zero exit skips the service silently. Runs the parameter
+	// through /bin/sh -c so operators can pass a full command line
+	// (`test -f /foo && grep -q bar /etc/foo` etc.). Bounded 10s timeout
+	// so a hung check does not stall boot.
+	PredExecCondition
 )
+
+// execConditionTimeout caps how long the pre-flight command may run
+// before slinit gives up and skips the service.
+const execConditionTimeout = 10 * time.Second
 
 // Predicate is one declarative start precondition. A failing condition
 // (IsAssert=false) skips the service silently — it transitions to
@@ -155,6 +168,15 @@ func (p Predicate) String() string {
 		name = "cpu-pressure"
 	case PredIOPressure:
 		name = "io-pressure"
+	case PredExecCondition:
+		// Rendered as `exec-condition` (not `condition-exec-*`) because
+		// systemd exposes this as its own directive, not as a member
+		// of the Condition* family. The parser accepts it as such and
+		// synthesises a Predicate at parse time.
+		if p.IsAssert {
+			return "assert-exec-condition=" + p.Param
+		}
+		return "exec-condition=" + p.Param
 	default:
 		name = fmt.Sprintf("kind-%d", p.Kind)
 	}
@@ -287,8 +309,34 @@ func evalRaw(p Predicate) (bool, string) {
 		return checkPSIPressure("/proc/pressure/cpu", p.Param)
 	case PredIOPressure:
 		return checkPSIPressure("/proc/pressure/io", p.Param)
+	case PredExecCondition:
+		return checkExecCondition(p.Param)
 	}
 	return false, fmt.Sprintf("unknown predicate kind %d", p.Kind)
+}
+
+// checkExecCondition runs the pre-flight command line through /bin/sh -c
+// with a bounded timeout. Exit 0 = OK; any non-zero exit or timeout
+// causes the predicate to fail (service is skipped, or fails if used as
+// assert-exec-condition). The command inherits slinit's environment so
+// operators can consume env-file / setenv values in the check.
+func checkExecCondition(cmdline string) (bool, string) {
+	if strings.TrimSpace(cmdline) == "" {
+		return false, "exec-condition: empty command"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execConditionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdline)
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return false, fmt.Sprintf("exec-condition %q timed out after %s", cmdline, execConditionTimeout)
+		}
+		if ee, ok := err.(*exec.ExitError); ok {
+			return false, fmt.Sprintf("exec-condition %q exited %d", cmdline, ee.ExitCode())
+		}
+		return false, fmt.Sprintf("exec-condition %q: %v", cmdline, err)
+	}
+	return true, ""
 }
 
 // pathIsSocket returns true iff path exists and is a Unix domain

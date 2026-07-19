@@ -161,6 +161,10 @@ type ServiceDescription struct {
 	// "use the built-in defaults" (code 0 + admin signals like SIGTERM
 	// for restart=on-failure; nothing extra for restart=yes).
 	NormalExitCodes   []int
+	// systemd RestartForceExitStatus: exit codes that force a restart
+	// independent of the `restart =` setting. Sibling of NormalExitCodes;
+	// a code in both wins the force interpretation.
+	RestartForceExitCodes []int
 	NormalExitSignals []syscall.Signal
 	Flags             service.ServiceFlags
 
@@ -245,12 +249,26 @@ type ServiceDescription struct {
 	// Process management
 	StopTimeout       time.Duration
 	StartTimeout      time.Duration
+	// systemd TimeoutAbortSec= — SIGABRT phase between SIGTERM and
+	// SIGKILL during a stop-timeout escalation. Zero disables.
+	TimeoutAbortSec time.Duration
+	// systemd TimeoutStartFailureMode= — signal used when
+	// start-timeout fires.
+	TimeoutStartFailureMode service.TimeoutFailureMode
+	// systemd RestartMode= — normal|direct.
+	RestartMode service.RestartMode
+	// systemd ExitType= — main|cgroup.
+	ExitType service.ExitType
 	RestartDelay      time.Duration
 	RestartDelayStep  time.Duration // additive backoff increment per failed restart
 	RestartDelayCap   time.Duration // max capped delay for progressive backoff
 	// systemd RestartRandomizedDelaySec: additive jitter added to each
 	// computed restart delay to spread reconnect storms.
 	RestartRandomizedDelay time.Duration
+	// systemd RestartMaxDelaySec: hard cap on the sum of restart-delay
+	// (+ backoff step) + restart-randomized-delay. Zero disables the
+	// cap (jitter can push arbitrarily large — matches systemd default).
+	RestartMaxDelay time.Duration
 	RestartInterval   time.Duration
 	RestartLimitCount int
 	TermSignal        syscall.Signal
@@ -475,6 +493,10 @@ type ServiceDescription struct {
 	// STARTED. Zero means no cap. When the timer fires the service is
 	// asked to stop via the same path an operator stop uses.
 	RuntimeMaxSec time.Duration
+	// systemd RuntimeRandomizedExtraSec: additive jitter drawn from
+	// [0, N) added to RuntimeMaxSec per start-session so a fleet
+	// of identical services doesn't herd onto the same tick.
+	RuntimeRandomizedExtra time.Duration
 
 	// JobTimeoutSec is systemd's JobTimeoutSec=: a hard cap on the
 	// whole start job (dep-wait + own start-timeout). Fires even when
@@ -1065,6 +1087,17 @@ func validateSeccompItems(setting string, items []string) error {
 // stripped. Environment substitution applies to the parameter so a
 // description can reference $1 or ${VAR}.
 func parsePredicate(setting, value string, serviceArg *string) (service.Predicate, bool, error) {
+	// systemd's ExecCondition= is spelled `exec-condition = <shell cmd>`
+	// in slinit. It sits outside the Condition* family (the value is a
+	// full command line, no leading-! negation), so short-circuit here
+	// and synthesise the predicate directly.
+	if setting == "exec-condition" || setting == "assert-exec-condition" {
+		return service.Predicate{
+			Kind:     service.PredExecCondition,
+			Param:    expandEnvVars(value, serviceArg),
+			IsAssert: setting == "assert-exec-condition",
+		}, true, nil
+	}
 	var (
 		name     string
 		isAssert bool
@@ -1536,6 +1569,15 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("runtime-max-sec: %w", err)
 		}
 		desc.RuntimeMaxSec = d
+	case "runtime-randomized-extra":
+		d, err := parseDuration(value)
+		if err != nil {
+			return fmt.Errorf("runtime-randomized-extra: %w", err)
+		}
+		if d < 0 {
+			return fmt.Errorf("runtime-randomized-extra must be >= 0")
+		}
+		desc.RuntimeRandomizedExtra = d
 	case "job-timeout-sec":
 		d, err := time.ParseDuration(value)
 		if err != nil {
@@ -1662,6 +1704,21 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			desc.NormalExitCodes = append(desc.NormalExitCodes, codes...)
 			desc.NormalExitSignals = append(desc.NormalExitSignals, sigs...)
 		}
+	case "restart-force-exit-status":
+		// Same numeric grammar as normal-exit but signal-name tokens
+		// are rejected — force-restart is exit-code-only per systemd.
+		codes, sigs, err := parseNormalExit(value)
+		if err != nil {
+			return fmt.Errorf("restart-force-exit-status: %w", err)
+		}
+		if len(sigs) > 0 {
+			return fmt.Errorf("restart-force-exit-status: signal tokens not accepted")
+		}
+		if op == OpEquals {
+			desc.RestartForceExitCodes = codes
+		} else {
+			desc.RestartForceExitCodes = append(desc.RestartForceExitCodes, codes...)
+		}
 
 	// Timeouts
 	case "stop-timeout":
@@ -1676,6 +1733,43 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.StartTimeout = d
+	case "timeout-sec":
+		// systemd TimeoutSec= — convenience alias that sets both
+		// start-timeout and stop-timeout to the same value. Explicit
+		// per-direction settings still win if declared later.
+		d, err := parseDuration(value)
+		if err != nil {
+			return fmt.Errorf("timeout-sec: %w", err)
+		}
+		desc.StartTimeout = d
+		desc.StopTimeout = d
+	case "timeout-abort-sec":
+		d, err := parseDuration(value)
+		if err != nil {
+			return fmt.Errorf("timeout-abort-sec: %w", err)
+		}
+		if d < 0 {
+			return fmt.Errorf("timeout-abort-sec must be >= 0")
+		}
+		desc.TimeoutAbortSec = d
+	case "timeout-start-failure-mode":
+		m, err := service.ParseTimeoutFailureMode(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.TimeoutStartFailureMode = m
+	case "restart-mode":
+		m, err := service.ParseRestartMode(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.RestartMode = m
+	case "exit-type":
+		t, err := service.ParseExitType(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.ExitType = t
 	case "restart-delay":
 		d, err := parseDuration(value)
 		if err != nil {
@@ -1708,6 +1802,15 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("restart-delay-cap must be >= 0")
 		}
 		desc.RestartDelayCap = d
+	case "restart-max-delay":
+		d, err := parseDuration(value)
+		if err != nil {
+			return fmt.Errorf("restart-max-delay: %w", err)
+		}
+		if d < 0 {
+			return fmt.Errorf("restart-max-delay must be >= 0")
+		}
+		desc.RestartMaxDelay = d
 	case "restart-randomized-delay":
 		d, err := time.ParseDuration(value)
 		if err != nil {

@@ -79,6 +79,20 @@ type ProcessService struct {
 	startTimeout time.Duration
 	stopTimeout  time.Duration
 	restartDelay time.Duration
+	// systemd TimeoutStartFailureMode= — signal delivered when
+	// start-timeout expires. Default TimeoutFailureTerminate maps to
+	// the legacy SIGINT behaviour.
+	timeoutStartFailureMode TimeoutFailureMode
+	// systemd TimeoutAbortSec= — when non-zero, stop-timeout fires
+	// SIGABRT first + arms another timer of this length before
+	// escalating to SIGKILL. Zero preserves the legacy immediate
+	// SIGKILL path.
+	timeoutAbortSec time.Duration
+	// systemd ExitType= — with ExitTypeCgroup the service is considered
+	// stopped only after the delegated cgroup drains. Requires an
+	// EffectiveCgroupPath (delegate-cgroup or explicit cgroup =); with
+	// no cgroup this silently degrades to ExitTypeMain semantics.
+	exitType ExitType
 
 	// Progressive restart backoff (OpenRC-compatible, linear additive)
 	restartDelayStep    time.Duration // increment added per successive restart (0 = disabled)
@@ -89,6 +103,10 @@ type ProcessService struct {
 	// [0, restartRandomizedDelay) added to the effective restart delay
 	// to spread out reconnect storms across a fleet. 0 disables jitter.
 	restartRandomizedDelay time.Duration
+	// systemd RestartMaxDelaySec: cap on the (delay + jitter) sum.
+	// Distinct from restartDelayCap which only caps the progressive
+	// backoff itself; this is the honest final ceiling. 0 = no cap.
+	restartMaxDelay time.Duration
 
 	// Restart rate limiting
 	restartInterval      time.Duration
@@ -198,6 +216,9 @@ const (
 	timerStartTimeout
 	timerStopTimeout
 	timerRestartDelay
+	// timerAbortTimeout: SIGABRT phase inserted between stop-timeout
+	// (SIGTERM) and the SIGKILL escalation. Wraps timeout-abort-sec.
+	timerAbortTimeout
 )
 
 // NewProcessService creates a new process service.
@@ -355,6 +376,35 @@ func (s *ProcessService) SetStartTimeout(d time.Duration) { s.startTimeout = d }
 // SetStopTimeout sets the stop timeout.
 func (s *ProcessService) SetStopTimeout(d time.Duration) { s.stopTimeout = d }
 
+// SetTimeoutStartFailureMode picks the signal delivered when the
+// start-timeout expires. Default (terminate) preserves the legacy
+// SIGINT-then-escalation behaviour.
+func (s *ProcessService) SetTimeoutStartFailureMode(m TimeoutFailureMode) {
+	s.timeoutStartFailureMode = m
+}
+
+// SetTimeoutAbortSec configures the SIGABRT phase before SIGKILL
+// during a stop-timeout escalation. Zero preserves the legacy
+// immediate-SIGKILL path.
+func (s *ProcessService) SetTimeoutAbortSec(d time.Duration) { s.timeoutAbortSec = d }
+
+// SetExitType picks whether service-stopped is decided by the main
+// pid alone (ExitTypeMain, default) or by the delegated cgroup
+// becoming empty (ExitTypeCgroup).
+func (s *ProcessService) SetExitType(t ExitType) { s.exitType = t }
+
+// startTimeoutSignal returns the signal + human label for the
+// configured timeout-start-failure-mode.
+func (s *ProcessService) startTimeoutSignal() (syscall.Signal, string) {
+	switch s.timeoutStartFailureMode {
+	case TimeoutFailureAbort:
+		return syscall.SIGABRT, "SIGABRT (start-failure-mode=abort)"
+	case TimeoutFailureKill:
+		return syscall.SIGKILL, "SIGKILL (start-failure-mode=kill)"
+	}
+	return syscall.SIGINT, "SIGINT (start-failure-mode=terminate)"
+}
+
 // SetRestartDelay sets the minimum delay between restarts.
 func (s *ProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d }
 
@@ -371,6 +421,13 @@ func (s *ProcessService) SetRestartBackoff(step, cap time.Duration) {
 // (systemd RestartRandomizedDelaySec). 0 disables jitter.
 func (s *ProcessService) SetRestartRandomizedDelay(d time.Duration) {
 	s.restartRandomizedDelay = d
+}
+
+// SetRestartMaxDelay configures the systemd RestartMaxDelaySec cap:
+// hard upper bound on the sum of restart-delay (+ backoff step) plus
+// restart-randomized-delay jitter. Zero means no cap.
+func (s *ProcessService) SetRestartMaxDelay(d time.Duration) {
+	s.restartMaxDelay = d
 }
 
 // nextRestartDelay returns the delay to use for the next restart and advances
@@ -395,7 +452,11 @@ func (s *ProcessService) nextRestartDelay() time.Duration {
 		}
 		s.currentRestartDelay = next
 	}
-	return delay + jitter(s.restartRandomizedDelay)
+	total := delay + jitter(s.restartRandomizedDelay)
+	if s.restartMaxDelay > 0 && total > s.restartMaxDelay {
+		total = s.restartMaxDelay
+	}
+	return total
 }
 
 // SetLogType sets the log output type.
@@ -1051,6 +1112,60 @@ func (s *ProcessService) PID() int {
 
 // GetExitStatus returns the exit status of the last process.
 func (s *ProcessService) GetExitStatus() ExitStatus { return s.exitStatus }
+
+// cgroupDrainTimeout caps how long exit-type=cgroup will wait for the
+// delegated cgroup to become unpopulated before proceeding anyway. Kept
+// generous — the operator asked for cgroup drain, so we honour it even
+// when it's slow; but a permanently-stuck worker must not deadlock the
+// service manager.
+const cgroupDrainTimeout = 30 * time.Second
+
+// cgroupDrainPollInterval is the poll cadence for cgroup.events. Fast
+// enough for interactive stop, coarse enough that a 30s wait is at most
+// 150 file reads.
+const cgroupDrainPollInterval = 200 * time.Millisecond
+
+// readCgroupPopulated reads cgroup.events and returns whether the
+// "populated 1" line is set. A read error (cgroup gone) is reported as
+// unpopulated — the drain is over either way.
+func readCgroupPopulated(cgPath string) (bool, error) {
+	data, err := os.ReadFile(cgPath + "/cgroup.events")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "populated" {
+			return fields[1] == "1", nil
+		}
+	}
+	return false, nil
+}
+
+// waitCgroupThenDispatch polls cgroup.events until the delegated cgroup
+// drains (or the drain timeout fires), then resumes the state-machine
+// transition on queueMu. Runs in its own goroutine.
+func (s *ProcessService) waitCgroupThenDispatch(cgPath string, state ServiceState, exit process.ChildExit) {
+	deadline := time.Now().Add(cgroupDrainTimeout)
+	for {
+		populated, err := readCgroupPopulated(cgPath)
+		if err != nil || !populated {
+			break
+		}
+		if time.Now().After(deadline) {
+			s.services.queueMu.Lock()
+			s.services.logger.Error(
+				"Service '%s': cgroup drain timed out after %s, proceeding with stop-transition",
+				s.serviceName, cgroupDrainTimeout)
+			s.services.queueMu.Unlock()
+			break
+		}
+		time.Sleep(cgroupDrainPollInterval)
+	}
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+	s.dispatchAfterExitLocked(state, exit)
+}
 
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 // Used when kill-all-on-stop is set to ensure the entire process tree is terminated.
@@ -1979,6 +2094,29 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 
 	state := s.state.Load()
 
+	// systemd ExitType=cgroup: main pid gone but the delegated cgroup
+	// may still hold workers spawned by fork-exec. Defer the
+	// stopped-transition until the cgroup drains. StateStarting keeps
+	// the immediate-failure path — a start-time failure is not
+	// "waiting for a healthy workload to finish".
+	if s.exitType == ExitTypeCgroup && state != StateStarting {
+		if cgPath := s.EffectiveCgroupPath(); cgPath != "" {
+			if populated, _ := readCgroupPopulated(cgPath); populated {
+				s.services.logger.Info(
+					"Service '%s': main pid exited, waiting for cgroup drain (exit-type=cgroup)",
+					s.serviceName)
+				go s.waitCgroupThenDispatch(cgPath, state, exit)
+				return
+			}
+		}
+	}
+
+	s.dispatchAfterExitLocked(state, exit)
+}
+
+// dispatchAfterExitLocked runs the state-machine tail of handleChildExit
+// after any exit-type=cgroup drain wait. Caller must hold queueMu.
+func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit process.ChildExit) {
 	switch state {
 	case StateStarting:
 		// Process died while we thought it was starting
@@ -2080,17 +2218,30 @@ func (s *ProcessService) handleTimerExpired() {
 
 	switch purpose {
 	case timerStartTimeout:
-		// Start timeout expired
+		// Start timeout expired. Signal choice is systemd-configurable
+		// via timeout-start-failure-mode (terminate/abort/kill); default
+		// terminate = SIGINT to preserve the historical slinit behaviour.
 		if s.pid > 0 {
-			s.services.logger.Error("Service '%s': start timeout exceeded, sending SIGINT",
-				s.serviceName)
-			process.SignalProcess(s.pid, syscall.SIGINT, s.Flags.SignalProcessOnly)
+			sig, label := s.startTimeoutSignal()
+			s.services.logger.Error("Service '%s': start timeout exceeded, sending %s",
+				s.serviceName, label)
+			process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
 			s.stopReason = ReasonTimedOut
 			s.failedToStart(false, false) // Don't immediately stop, wait for process
 		}
 
 	case timerStopTimeout:
-		// Stop timeout expired - escalate to SIGKILL
+		// Stop timeout expired. If timeout-abort-sec is configured,
+		// insert a SIGABRT phase so the child can dump core / print
+		// a stack trace before SIGKILL — matches systemd
+		// TimeoutAbortSec=. Without it we go straight to SIGKILL.
+		if s.timeoutAbortSec > 0 && s.pid > 0 {
+			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGABRT (timeout-abort-sec=%v)",
+				s.serviceName, s.timeoutAbortSec)
+			process.SignalProcess(s.pid, syscall.SIGABRT, s.Flags.SignalProcessOnly)
+			s.armTimer(s.timeoutAbortSec, timerAbortTimeout)
+			return
+		}
 		if s.pid > 0 {
 			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGKILL",
 				s.serviceName)
@@ -2104,6 +2255,21 @@ func (s *ProcessService) handleTimerExpired() {
 		if s.stopPID > 0 {
 			s.services.logger.Error("Service '%s': killing stop-command (pid %d)",
 				s.serviceName, s.stopPID)
+			process.SignalProcess(s.stopPID, syscall.SIGKILL, false)
+		}
+
+	case timerAbortTimeout:
+		// SIGABRT window elapsed without the child exiting. Escalate
+		// to SIGKILL with the same fan-out as the direct-SIGKILL path.
+		if s.pid > 0 {
+			s.services.logger.Error("Service '%s': abort timeout exceeded, sending SIGKILL",
+				s.serviceName)
+			process.SignalProcess(s.pid, syscall.SIGKILL, false)
+		}
+		if s.Flags.KillAllOnStop {
+			s.killCgroupTree(syscall.SIGKILL)
+		}
+		if s.stopPID > 0 {
 			process.SignalProcess(s.stopPID, syscall.SIGKILL, false)
 		}
 

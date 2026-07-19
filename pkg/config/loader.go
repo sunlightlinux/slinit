@@ -281,6 +281,11 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.StopTimeout > 0 {
 			s.SetStopTimeout(desc.StopTimeout)
 		}
+		if desc.TimeoutAbortSec > 0 {
+			s.SetTimeoutAbortSec(desc.TimeoutAbortSec)
+		}
+		s.SetTimeoutStartFailureMode(desc.TimeoutStartFailureMode)
+		s.SetExitType(desc.ExitType)
 		if desc.RestartDelay > 0 {
 			s.SetRestartDelay(desc.RestartDelay)
 		}
@@ -289,6 +294,9 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		}
 		if desc.RestartRandomizedDelay > 0 {
 			s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
+		}
+		if desc.RestartMaxDelay > 0 {
+			s.SetRestartMaxDelay(desc.RestartMaxDelay)
 		}
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
@@ -364,6 +372,11 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.StopTimeout > 0 {
 			s.SetStopTimeout(desc.StopTimeout)
 		}
+		if desc.TimeoutAbortSec > 0 {
+			s.SetTimeoutAbortSec(desc.TimeoutAbortSec)
+		}
+		s.SetTimeoutStartFailureMode(desc.TimeoutStartFailureMode)
+		s.SetExitType(desc.ExitType)
 		if desc.RestartDelay > 0 {
 			s.SetRestartDelay(desc.RestartDelay)
 		}
@@ -372,6 +385,9 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		}
 		if desc.RestartRandomizedDelay > 0 {
 			s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
+		}
+		if desc.RestartMaxDelay > 0 {
+			s.SetRestartMaxDelay(desc.RestartMaxDelay)
 		}
 		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
@@ -1410,6 +1426,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetStartLimitAction(desc.StartLimitAction)
 	rec.SetRebootArgument(desc.RebootArgument)
 	rec.SetRuntimeMax(desc.RuntimeMaxSec)
+	rec.SetRuntimeMaxExtra(desc.RuntimeRandomizedExtra)
 	rec.SetJobTimeout(desc.JobTimeoutSec)
 	rec.SetOOMPolicy(desc.OOMPolicy)
 	rec.SetPSIMemoryWatch(desc.MemoryPressureWatch, desc.MemoryPressureThreshold)
@@ -1432,6 +1449,8 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetRefuseManualStop(desc.RefuseManualStop)
 	rec.SetStopWhenUnneeded(desc.StopWhenUnneeded)
 	rec.SetNormalExitCodes(desc.NormalExitCodes)
+	rec.SetRestartForceExitCodes(desc.RestartForceExitCodes)
+	rec.SetRestartMode(desc.RestartMode)
 	rec.SetNormalExitSignals(desc.NormalExitSignals)
 	rec.SetFlags(desc.Flags)
 	rec.SetTermSignal(desc.TermSignal)

@@ -113,6 +113,16 @@ type ServiceRecord struct {
 	// upstart-style "normal exit": exit codes / signals that count as
 	// success, suppressing respawn even when autoRestart=RestartAlways.
 	normalExitCodes   []int
+	// systemd RestartForceExitStatus: exit codes/signals that FORCE a
+	// restart independent of the `restart =` setting. Sibling of
+	// normalExitCodes (which suppresses restart); this override wins
+	// even when restart=no. Applied in doStop before the per-mode
+	// auto-restart branch.
+	restartForceExitCodes []int
+	// systemd RestartMode=. `direct` skips the cascade to hard
+	// dependents on a user-initiated or auto-restart; `normal`
+	// (default) preserves the historical cascade.
+	restartMode RestartMode
 	normalExitSignals []syscall.Signal
 
 	// Pins
@@ -367,6 +377,10 @@ type ServiceRecord struct {
 	// stop-timeout / SIGKILL escalation.
 	runtimeMax      time.Duration
 	runtimeMaxTimer *time.Timer
+	// runtimeMaxExtra: RuntimeRandomizedExtraSec sibling. Jitter added
+	// to runtimeMax on each armRuntimeMaxTimer call so a fleet of
+	// identical services doesn't all hit the ceiling simultaneously.
+	runtimeMaxExtra time.Duration
 
 	// jobTimeout is systemd's JobTimeoutSec=: a hard cap on the whole
 	// start job (waiting-for-deps + own start-timeout). It fires even
@@ -528,6 +542,10 @@ func (sr *ServiceRecord) JobTimeout() time.Duration { return sr.jobTimeout }
 // SetRuntimeMax records the maximum total time the service may stay in
 // STARTED. A zero or negative duration disables the cap.
 func (sr *ServiceRecord) SetRuntimeMax(d time.Duration) { sr.runtimeMax = d }
+
+// SetRuntimeMaxExtra configures the additive jitter drawn from [0, N)
+// and added to runtimeMax at armRuntimeMaxTimer time. Zero disables.
+func (sr *ServiceRecord) SetRuntimeMaxExtra(d time.Duration) { sr.runtimeMaxExtra = d }
 
 // RuntimeMax returns the configured runtime cap.
 func (sr *ServiceRecord) RuntimeMax() time.Duration { return sr.runtimeMax }
@@ -691,7 +709,10 @@ func (sr *ServiceRecord) armRuntimeMaxTimer() {
 	if sr.runtimeMax <= 0 {
 		return
 	}
-	d := sr.runtimeMax
+	// Apply RuntimeRandomizedExtraSec jitter per-session so consecutive
+	// starts of the same service, and a fleet of identical instances,
+	// don't converge on a single tick.
+	d := sr.runtimeMax + jitter(sr.runtimeMaxExtra)
 	svc := sr.self
 	set := sr.services
 	name := sr.serviceName
@@ -943,6 +964,32 @@ func (sr *ServiceRecord) SetRefuseManualStop(v bool)          { sr.refuseManualS
 func (sr *ServiceRecord) SetStopWhenUnneeded(v bool)          { sr.stopWhenUnneeded = v }
 
 func (sr *ServiceRecord) SetNormalExitCodes(c []int) { sr.normalExitCodes = c }
+
+// SetRestartForceExitCodes records exit codes that FORCE a restart
+// regardless of the `restart =` setting. Sibling of normal-exit codes.
+func (sr *ServiceRecord) SetRestartForceExitCodes(c []int) { sr.restartForceExitCodes = c }
+
+// SetRestartMode chooses the cascade behaviour on restart:
+// RestartModeDirect skips the dependent-restart cascade so the
+// dependents keep running through the parent's flip.
+func (sr *ServiceRecord) SetRestartMode(m RestartMode) { sr.restartMode = m }
+
+// IsForceRestartExit reports whether the given exit status matches one
+// of the configured RestartForceExitStatus codes. Signals aren't part
+// of this list — the operator writes signal-based force-restart via
+// autoRestart RestartAlways instead.
+func (sr *ServiceRecord) IsForceRestartExit(es ExitStatus) bool {
+	if !es.Exited() || len(sr.restartForceExitCodes) == 0 {
+		return false
+	}
+	code := es.ExitCode()
+	for _, c := range sr.restartForceExitCodes {
+		if c == code {
+			return true
+		}
+	}
+	return false
+}
 func (sr *ServiceRecord) SetNormalExitSignals(s []syscall.Signal) {
 	sr.normalExitSignals = s
 }
@@ -2413,7 +2460,10 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 	sr.inUserRestart = false
 
 	forRestart := withRestart
-	restartDeps := withRestart
+	// systemd RestartMode=direct: keep dependents up through this
+	// service's restart cycle. `withRestart` still gates the parent
+	// itself, only the cascade to dependents is suppressed.
+	restartDeps := withRestart && sr.restartMode != RestartModeDirect
 
 	if !withRestart {
 		// upstart-style `normal exit`: codes / signals the operator
@@ -2428,6 +2478,21 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		// restart-limit-exhausted branch below and treat the service
 		// as failed instead of looping.
 		wantedRestart := false
+
+		// systemd RestartForceExitStatus: codes that force a restart
+		// regardless of the `restart =` setting. Applied FIRST so
+		// even a normal-exit code entry gets overridden — the
+		// operator's declared "always come back on THIS code" wins
+		// over both `restart = no` and `normal-exit`.
+		if sr.desired.Load() == StateStarted && sr.IsForceRestartExit(exitStatus) {
+			wantedRestart = true
+			forRestart = sr.self.CheckRestart()
+			sr.inAutoRestart = forRestart
+			// Skip the per-mode auto-restart block below — the force
+			// path already decided.
+			sr.restartLimitExhausted = wantedRestart && !forRestart
+			goto forceHandled
+		}
 
 		// Check for auto-restart
 		if sr.autoRestart == RestartAlways && sr.desired.Load() == StateStarted {
@@ -2463,6 +2528,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		// startFailed=false and BringUp clears exitStatus={} — leaving
 		// slinitctl is-failed racy because it can sample mid-iteration.
 		sr.restartLimitExhausted = wantedRestart && !forRestart
+	forceHandled:
 	}
 
 	// If we won't restart, release explicit activation
