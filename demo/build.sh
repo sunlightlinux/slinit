@@ -105,7 +105,8 @@ for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-runner slinit-checkpath slinit-seedrng \
            slinit-binfmt slinit-sysctl slinit-svc-value \
            slinit-start-stop-daemon slinit-supervise-daemon \
-           slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var; do
+           slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var \
+           slinit-cgtop; do
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
         go build -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
 done
@@ -174,6 +175,7 @@ install -m 755 "${BUILD_DIR}/slinit-fstabinfo"         "${ROOTFS_DIR}/usr/bin/sl
 install -m 755 "${BUILD_DIR}/slinit-mountinfo"         "${ROOTFS_DIR}/usr/bin/slinit-mountinfo"
 install -m 755 "${BUILD_DIR}/slinit-einfo"             "${ROOTFS_DIR}/usr/bin/slinit-einfo"
 install -m 755 "${BUILD_DIR}/slinit-shell-var"         "${ROOTFS_DIR}/usr/bin/slinit-shell-var"
+install -m 755 "${BUILD_DIR}/slinit-cgtop"             "${ROOTFS_DIR}/usr/bin/slinit-cgtop"
 
 # einfo multi-applet symlinks so init.d scripts can invoke `einfo`,
 # `ewarn`, `eerror`, `ebegin`, `eend`, etc. by name.
