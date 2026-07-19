@@ -450,3 +450,109 @@ type ServiceFlags struct {
 	KillAllOnStop      bool // Kill all processes in cgroup on stop
 	UnmaskIntr         bool // Unmask SIGINT when running on console
 }
+
+// TimeoutFailureMode picks the signal delivered when a start-timeout
+// (or, in a future extension, stop-timeout) elapses without the
+// child having reached the expected state. Mirrors systemd's
+// TimeoutStartFailureMode= / TimeoutStopFailureMode=.
+type TimeoutFailureMode uint8
+
+const (
+	// TimeoutFailureTerminate is the default: send SIGTERM (fall
+	// back to SIGKILL after stop-timeout via the existing escalation).
+	TimeoutFailureTerminate TimeoutFailureMode = iota
+	// TimeoutFailureAbort sends SIGABRT so the child can dump core /
+	// print a stack trace before the kernel terminates it.
+	TimeoutFailureAbort
+	// TimeoutFailureKill sends SIGKILL immediately — no coredump, no
+	// cleanup opportunity.
+	TimeoutFailureKill
+)
+
+func (m TimeoutFailureMode) String() string {
+	switch m {
+	case TimeoutFailureAbort:
+		return "abort"
+	case TimeoutFailureKill:
+		return "kill"
+	}
+	return "terminate"
+}
+
+// ExitType picks what "the service has stopped" means. Mirrors
+// systemd's ExitType= directive: with `main` the service is considered
+// stopped as soon as the tracked main pid exits (default, historical
+// behaviour); with `cgroup` slinit additionally waits for the delegated
+// cgroup to drain — useful when the entry-point fork-exec's a real
+// worker and returns immediately.
+type ExitType uint8
+
+const (
+	ExitTypeMain   ExitType = iota // wait only for the main pid
+	ExitTypeCgroup                 // wait for the entire cgroup to drain
+)
+
+func (t ExitType) String() string {
+	if t == ExitTypeCgroup {
+		return "cgroup"
+	}
+	return "main"
+}
+
+// ParseExitType decodes the config value.
+func ParseExitType(s string) (ExitType, error) {
+	switch s {
+	case "", "main":
+		return ExitTypeMain, nil
+	case "cgroup":
+		return ExitTypeCgroup, nil
+	}
+	return 0, fmt.Errorf("unknown exit-type %q (use main|cgroup)", s)
+}
+
+// RestartMode picks the cascade behaviour on auto-restart. Mirrors
+// systemd's RestartMode= directive.
+type RestartMode uint8
+
+const (
+	// RestartModeNormal (default) — restart the service AND cascade
+	// the restart to hard-dependent services so they see a clean
+	// stopped-then-started sequence.
+	RestartModeNormal RestartMode = iota
+	// RestartModeDirect — restart only this service. Dependents keep
+	// running through the restart. Useful for helper services whose
+	// dependents can tolerate a brief unavailability without needing
+	// to be recycled themselves.
+	RestartModeDirect
+)
+
+func (m RestartMode) String() string {
+	if m == RestartModeDirect {
+		return "direct"
+	}
+	return "normal"
+}
+
+// ParseRestartMode decodes the config value.
+func ParseRestartMode(s string) (RestartMode, error) {
+	switch s {
+	case "", "normal":
+		return RestartModeNormal, nil
+	case "direct":
+		return RestartModeDirect, nil
+	}
+	return 0, fmt.Errorf("unknown restart-mode %q (use normal|direct)", s)
+}
+
+// ParseTimeoutFailureMode decodes the config value.
+func ParseTimeoutFailureMode(s string) (TimeoutFailureMode, error) {
+	switch s {
+	case "", "terminate":
+		return TimeoutFailureTerminate, nil
+	case "abort":
+		return TimeoutFailureAbort, nil
+	case "kill":
+		return TimeoutFailureKill, nil
+	}
+	return 0, fmt.Errorf("unknown timeout-failure-mode %q (use terminate|abort|kill)", s)
+}

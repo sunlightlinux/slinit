@@ -51,6 +51,17 @@ type BGProcessService struct {
 	startTimeout time.Duration
 	stopTimeout  time.Duration
 	restartDelay time.Duration
+	// systemd TimeoutAbortSec= / TimeoutStartFailureMode=. Stored for
+	// parity with ProcessService; BGProcessService's timeout escalation
+	// path is more limited but the fields let the config layer wire
+	// without special-casing.
+	timeoutAbortSec         time.Duration
+	timeoutStartFailureMode TimeoutFailureMode
+	// systemd ExitType= — accepted for config-parity with process
+	// services. BGProcess polls the pidfile so cgroup-drain semantics
+	// are less meaningful, but honouring the setting keeps operator
+	// mental model consistent.
+	exitType ExitType
 
 	// Progressive restart backoff (OpenRC-compatible, linear additive)
 	restartDelayStep    time.Duration
@@ -60,6 +71,8 @@ type BGProcessService struct {
 	// systemd-style RestartRandomizedDelaySec: additive jitter drawn
 	// from [0, restartRandomizedDelay). 0 disables.
 	restartRandomizedDelay time.Duration
+	// systemd RestartMaxDelaySec cap on delay + jitter total. 0 = no cap.
+	restartMaxDelay time.Duration
 
 	// Restart rate limiting
 	restartInterval      time.Duration
@@ -150,6 +163,11 @@ func (s *BGProcessService) effectiveRunAsGID() uint32 {
 }
 func (s *BGProcessService) SetStartTimeout(d time.Duration) { s.startTimeout = d }
 func (s *BGProcessService) SetStopTimeout(d time.Duration)  { s.stopTimeout = d }
+func (s *BGProcessService) SetTimeoutAbortSec(d time.Duration) { s.timeoutAbortSec = d }
+func (s *BGProcessService) SetTimeoutStartFailureMode(m TimeoutFailureMode) {
+	s.timeoutStartFailureMode = m
+}
+func (s *BGProcessService) SetExitType(t ExitType) { s.exitType = t }
 func (s *BGProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d }
 
 // SetRestartBackoff configures progressive (linear additive) restart backoff.
@@ -161,6 +179,12 @@ func (s *BGProcessService) SetRestartBackoff(step, cap time.Duration) {
 // SetRestartRandomizedDelay configures additive jitter on the restart delay.
 func (s *BGProcessService) SetRestartRandomizedDelay(d time.Duration) {
 	s.restartRandomizedDelay = d
+}
+
+// SetRestartMaxDelay caps the (delay + jitter) sum, matching systemd
+// RestartMaxDelaySec. 0 disables the cap.
+func (s *BGProcessService) SetRestartMaxDelay(d time.Duration) {
+	s.restartMaxDelay = d
 }
 
 // nextRestartDelay returns the delay to use for the next restart and advances
@@ -185,7 +209,11 @@ func (s *BGProcessService) nextRestartDelay() time.Duration {
 		}
 		s.currentRestartDelay = next
 	}
-	return delay + jitter(s.restartRandomizedDelay)
+	total := delay + jitter(s.restartRandomizedDelay)
+	if s.restartMaxDelay > 0 && total > s.restartMaxDelay {
+		total = s.restartMaxDelay
+	}
+	return total
 }
 
 // BecomingInactive is called when the service won't restart. Cleans up pipe.
