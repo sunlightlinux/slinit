@@ -519,12 +519,16 @@ func ParseExitType(s string) (ExitType, error) {
 type KillMode uint8
 
 const (
+	// KillModeProcess is the zero value and slinit's historical
+	// default: signal only the main pid. Putting this first is
+	// load-bearing — every service without an explicit kill-mode=
+	// directive lands here, so a zero-value KillMode MUST reproduce
+	// the pre-Bucket-C behaviour. (Regression caught by acceptance
+	// test 59-options-kill-all-on-stop's negative-control probe.)
+	KillModeProcess KillMode = iota
 	// KillModeControlGroup: SIGTERM to every process in the cgroup +
 	// SIGKILL escalation. Equivalent to options=kill-all-on-stop.
-	KillModeControlGroup KillMode = iota
-	// KillModeProcess: signal only the main pid (slinit's historical
-	// default).
-	KillModeProcess
+	KillModeControlGroup
 	// KillModeMixed: SIGTERM to the main pid, SIGKILL to the whole
 	// cgroup at escalation. Compromise for services that want a soft
 	// stop for the leader but a hard cleanup for children.
