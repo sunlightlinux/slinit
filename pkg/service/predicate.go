@@ -41,6 +41,15 @@ const (
 	PredUser               // User= — os.Getuid() vs uid or username
 	PredGroup              // Group= — os.Getgid()+groups vs gid or groupname
 	PredEnvironment        // Environment= — daemon env KEY=VALUE
+	// Bucket A2: mid-complexity predicates. Each reads a specific
+	// sysfs/procfs/etc source and interprets a small format.
+	PredFileIsExecutable     // FileIsExecutable= — regular file with any exec bit set
+	PredPathIsSymbolicLink   // PathIsSymbolicLink= — lstat + S_ISLNK
+	PredPathIsReadWrite      // PathIsReadWrite= — statfs, MS_RDONLY not set
+	PredFirmware             // Firmware= — uefi | bios | device-tree | smbios | DMI keys
+	PredMachineTag           // MachineTag= — TAGS= line from /etc/machine-info
+	PredCredential           // Credential= — file present under $CREDENTIALS_DIRECTORY
+	PredControlGroupController // ControlGroupController= — cgroup v2 controller enabled
 )
 
 // Predicate is one declarative start precondition. A failing condition
@@ -120,6 +129,20 @@ func (p Predicate) String() string {
 		name = "group"
 	case PredEnvironment:
 		name = "environment"
+	case PredFileIsExecutable:
+		name = "file-is-executable"
+	case PredPathIsSymbolicLink:
+		name = "path-is-symbolic-link"
+	case PredPathIsReadWrite:
+		name = "path-is-read-write"
+	case PredFirmware:
+		name = "firmware"
+	case PredMachineTag:
+		name = "machine-tag"
+	case PredCredential:
+		name = "credential"
+	case PredControlGroupController:
+		name = "control-group-controller"
 	default:
 		name = fmt.Sprintf("kind-%d", p.Kind)
 	}
@@ -232,6 +255,20 @@ func evalRaw(p Predicate) (bool, string) {
 		return checkGroup(p.Param)
 	case PredEnvironment:
 		return checkEnvironment(p.Param)
+	case PredFileIsExecutable:
+		return checkFileIsExecutable(p.Param)
+	case PredPathIsSymbolicLink:
+		return checkPathIsSymbolicLink(p.Param)
+	case PredPathIsReadWrite:
+		return checkPathIsReadWrite(p.Param)
+	case PredFirmware:
+		return checkFirmware(p.Param)
+	case PredMachineTag:
+		return checkMachineTag(p.Param)
+	case PredCredential:
+		return checkCredential(p.Param)
+	case PredControlGroupController:
+		return checkControlGroupController(p.Param)
 	}
 	return false, fmt.Sprintf("unknown predicate kind %d", p.Kind)
 }
@@ -357,6 +394,20 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredGroup, true
 	case "environment":
 		return PredEnvironment, true
+	case "file-is-executable":
+		return PredFileIsExecutable, true
+	case "path-is-symbolic-link":
+		return PredPathIsSymbolicLink, true
+	case "path-is-read-write":
+		return PredPathIsReadWrite, true
+	case "firmware":
+		return PredFirmware, true
+	case "machine-tag":
+		return PredMachineTag, true
+	case "credential":
+		return PredCredential, true
+	case "control-group-controller":
+		return PredControlGroupController, true
 	}
 	return 0, false
 }
