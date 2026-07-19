@@ -60,7 +60,20 @@ func main() {
 	all := flag.Bool("all", false, "include cgroups with zero tasks and zero memory")
 	flag.Parse()
 
+	// cgroup v2 is required — the field names (memory.current,
+	// cpu.stat, io.stat) don't exist on v1. Modern systemd-cgtop made
+	// the same call after v250 dropped its v1/hybrid fallback path, so
+	// we're aligned with upstream. The presence of a legacy per-
+	// controller subtree (e.g. /sys/fs/cgroup/memory/) surfaces a
+	// clearer diagnostic than the bare stat failure.
 	if _, err := os.Stat(filepath.Join(cgroupRoot, "cgroup.controllers")); err != nil {
+		if _, v1 := os.Stat(filepath.Join(cgroupRoot, "memory", "memory.usage_in_bytes")); v1 == nil {
+			fmt.Fprintf(os.Stderr,
+				"slinit-cgtop: cgroup v1 hierarchy detected at %s — this tool needs the unified v2 hierarchy.\n"+
+					"Boot with `systemd.unified_cgroup_hierarchy=1` (or the kernel default on a modern distro) and retry.\n",
+				cgroupRoot)
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "slinit-cgtop: cgroup v2 not mounted at %s: %v\n", cgroupRoot, err)
 		os.Exit(1)
 	}
