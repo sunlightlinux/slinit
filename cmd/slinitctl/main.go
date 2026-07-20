@@ -1481,9 +1481,131 @@ func cmdIsFailed(conn net.Conn, name string) error {
 	return nil
 }
 
+// parseOnActive validates the --on-active duration value. Accepts
+// the same forms Go's time.ParseDuration handles (5s, 200ms, 1h) —
+// this is a superset of what slinit's config parser takes, so a pass
+// here doesn't guarantee runtime acceptance, but it catches typos
+// before we hit disk. A bare integer is also accepted and interpreted
+// as seconds (matches how many slinit durations degrade to seconds).
+func parseOnActive(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		if d < 0 {
+			return 0, fmt.Errorf("duration must be non-negative, got %s", s)
+		}
+		return d, nil
+	}
+	// Bare integer → seconds.
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("expected duration like 5s / 200ms / 1h or seconds integer, got %q", s)
+	}
+	return time.Duration(n) * time.Second, nil
+}
+
+// wrapWithSleep transforms an argv into `/bin/sh -c 'sleep N; exec "…"'`
+// so the service delays N before exec'ing the target. Delivers a true
+// one-shot timer via the shell without pulling slinit's periodic cron
+// runner into a case it wasn't designed for. Uses single-quote wrapping
+// of the shell command with escape for embedded single quotes; the
+// argv tokens are re-emitted with double-quote wrapping inside so
+// exec's tokenisation matches the operator's original argv.
+func wrapWithSleep(dur string, argv []string) []string {
+	var sb strings.Builder
+	sb.WriteString("sleep ")
+	sb.WriteString(shellSingleQuote(dur))
+	sb.WriteString("; exec")
+	for _, tok := range argv {
+		sb.WriteByte(' ')
+		sb.WriteString(shellSingleQuote(tok))
+	}
+	return []string{"/bin/sh", "-c", sb.String()}
+}
+
+// shellSingleQuote wraps s in POSIX-safe single quotes: any embedded
+// single quote is expanded to `'\''` (close, escaped-quote, reopen).
+// Enough to safely embed arbitrary strings inside `sh -c 'blob'`.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, `'`, `'\''`) + "'"
+}
+
+// buildRunBody assembles the transient service description that
+// cmdRun writes into /run/slinit.d/. Kept as a pure helper so the
+// generated shape is unit-testable without touching the filesystem
+// or the control socket. Command tokens are minimally-quoted
+// (double-quote each, escape embedded double quotes) so dinit-style
+// whitespace tokenisation reunites them at parse time.
+//
+// envFilePath, when non-empty, becomes an `env-file =` reference —
+// the caller writes the KEY=VAL contents separately (cmdRun does
+// this alongside the description write). Kept out of the body-
+// building logic so tests don't have to hit disk.
+func buildRunBody(svcType, description string, cmdParts []string, slice, niceVal, runAs, envFilePath string, properties []string) string {
+	var body strings.Builder
+	body.WriteString("type = " + svcType + "\n")
+	if description != "" {
+		body.WriteString("description = " + description + "\n")
+	}
+	body.WriteString("command =")
+	for _, p := range cmdParts {
+		body.WriteString(" \"")
+		body.WriteString(strings.ReplaceAll(p, `"`, `\"`))
+		body.WriteByte('"')
+	}
+	body.WriteByte('\n')
+	body.WriteString("restart = false\n")
+	if slice != "" {
+		body.WriteString("slice = " + slice + "\n")
+	}
+	if niceVal != "" {
+		body.WriteString("nice = " + niceVal + "\n")
+	}
+	if runAs != "" {
+		body.WriteString("run-as = " + runAs + "\n")
+	}
+	if envFilePath != "" {
+		body.WriteString("env-file = " + envFilePath + "\n")
+	}
+	// --property lines pass through as-is; the config parser
+	// validates on load so a bad KEY surfaces there rather than
+	// here (matches how file-based services fail).
+	for _, kv := range properties {
+		body.WriteString(kv + "\n")
+	}
+	return body.String()
+}
+
 // cmdRun spawns a transient one-shot service (systemd-run analogue).
-// Usage: slinitctl run [--unit NAME] [--type process|scripted] [--wait]
-//                     [--description STR] -- COMMAND [ARGS...]
+// Usage: slinitctl run [flags] -- COMMAND [ARGS...]
+//   flags:
+//     --unit NAME              transient unit name (default: run-<rand>)
+//     --description STR
+//     --type process|scripted  (default: process)
+//     --slice NAME
+//     --nice N
+//     --run-as USER[:GROUP]    drop privileges before exec (per the
+//                              existing run-as directive)
+//     --on-active DURATION     one-shot timer form: sleep DURATION
+//                              before exec'ing the target. Wraps the
+//                              argv in /bin/sh -c 'sleep N; exec …'
+//                              (systemd-run --on-active).
+//     --setenv VAR=VAL         repeatable
+//     --property KEY=VAL       repeatable pass-through of any slinit
+//                              config directive (KEY is slinit-native
+//                              kebab-case, not systemd CamelCase)
+//     --wait                   block until STARTED (or STOPPED for
+//                              scripted); 60s cap
+//     --collect                block until STOPPED, then unload +
+//                              remove the transient description; no
+//                              cap (Ctrl-C is the escape hatch)
+//
+// Note on --user: use the global slinitctl `--user` / `-u` flag to
+// target the user service manager socket. `slinitctl --user run --`
+// is the systemd-run --user analogue; a `run`-local --user would
+// only duplicate the same routing.
 //
 // Writes a service description into /run/slinit.d/<name> — that path is
 // tmpfs on any real system, so the file evaporates at the next boot
@@ -1496,11 +1618,25 @@ func cmdRun(conn net.Conn, args []string) error {
 		description string
 		svcType     = "process"
 		waitStarted bool
+		collect     bool
+		slice       string
+		niceVal     string   // string so unset ("") is distinguishable from --nice=0
+		setenvs     []string // --setenv=X=Y, repeatable
+		properties  []string // --property=key=value (slinit-native), repeatable
+		runAs       string   // --run-as=user[:group]
+		onActive    string   // --on-active=DURATION — one-shot timer form
 	)
 	// Simple front-loaded flag parser. The `--` sentinel separates
 	// slinitctl's own flags from the command to execute; anything after
 	// it is the argv passed to the transient service.
 	i := 0
+	takeVal := func(flag string) (string, error) {
+		i++
+		if i >= len(args) {
+			return "", fmt.Errorf("run: %s requires a value", flag)
+		}
+		return args[i], nil
+	}
 	for ; i < len(args); i++ {
 		switch {
 		case args[i] == "--":
@@ -1508,30 +1644,92 @@ func cmdRun(conn net.Conn, args []string) error {
 			goto commandStart
 		case args[i] == "--wait":
 			waitStarted = true
+		case args[i] == "--collect":
+			// Wait for STOPPED then unload + remove the transient
+			// description file. Implies wait-for-STOPPED semantics
+			// (overrides --wait's STARTED-early-return for process
+			// services); most useful for scripted / short-lived
+			// services since long-runners never exit on their own.
+			collect = true
 		case strings.HasPrefix(args[i], "--unit="):
 			unitName = strings.TrimPrefix(args[i], "--unit=")
 		case args[i] == "--unit":
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("run: --unit requires a name")
+			v, err := takeVal("--unit")
+			if err != nil {
+				return err
 			}
-			unitName = args[i]
+			unitName = v
 		case strings.HasPrefix(args[i], "--description="):
 			description = strings.TrimPrefix(args[i], "--description=")
 		case args[i] == "--description":
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("run: --description requires a value")
+			v, err := takeVal("--description")
+			if err != nil {
+				return err
 			}
-			description = args[i]
+			description = v
 		case strings.HasPrefix(args[i], "--type="):
 			svcType = strings.TrimPrefix(args[i], "--type=")
 		case args[i] == "--type":
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("run: --type requires a value")
+			v, err := takeVal("--type")
+			if err != nil {
+				return err
 			}
-			svcType = args[i]
+			svcType = v
+		case strings.HasPrefix(args[i], "--slice="):
+			slice = strings.TrimPrefix(args[i], "--slice=")
+		case args[i] == "--slice":
+			v, err := takeVal("--slice")
+			if err != nil {
+				return err
+			}
+			slice = v
+		case strings.HasPrefix(args[i], "--nice="):
+			niceVal = strings.TrimPrefix(args[i], "--nice=")
+		case args[i] == "--nice":
+			v, err := takeVal("--nice")
+			if err != nil {
+				return err
+			}
+			niceVal = v
+		case strings.HasPrefix(args[i], "--setenv="):
+			// setenv=X=Y form; the payload is passed through as-is
+			// (no unquoting) so the config parser handles shell-
+			// like escapes uniformly with file-based services.
+			setenvs = append(setenvs, strings.TrimPrefix(args[i], "--setenv="))
+		case args[i] == "--setenv":
+			v, err := takeVal("--setenv")
+			if err != nil {
+				return err
+			}
+			setenvs = append(setenvs, v)
+		case strings.HasPrefix(args[i], "--run-as="):
+			runAs = strings.TrimPrefix(args[i], "--run-as=")
+		case args[i] == "--run-as":
+			v, err := takeVal("--run-as")
+			if err != nil {
+				return err
+			}
+			runAs = v
+		case strings.HasPrefix(args[i], "--on-active="):
+			onActive = strings.TrimPrefix(args[i], "--on-active=")
+		case args[i] == "--on-active":
+			v, err := takeVal("--on-active")
+			if err != nil {
+				return err
+			}
+			onActive = v
+		case strings.HasPrefix(args[i], "--property="):
+			// Generic escape hatch: pass any slinit config directive
+			// through directly. Format: --property=key=value (slinit-
+			// native kebab-case keys, not systemd CamelCase). E.g.
+			// --property=restart=on-failure or --property=cgroup=/my/cg
+			properties = append(properties, strings.TrimPrefix(args[i], "--property="))
+		case args[i] == "--property":
+			v, err := takeVal("--property")
+			if err != nil {
+				return err
+			}
+			properties = append(properties, v)
 		default:
 			goto commandStart
 		}
@@ -1559,61 +1757,123 @@ commandStart:
 		return fmt.Errorf("run: unit name must not contain '/' or NUL")
 	}
 
+	if niceVal != "" {
+		if _, err := strconv.Atoi(niceVal); err != nil {
+			return fmt.Errorf("run: --nice must be an integer, got %q", niceVal)
+		}
+	}
+	for _, kv := range properties {
+		if !strings.Contains(kv, "=") {
+			return fmt.Errorf("run: --property must be KEY=VALUE, got %q", kv)
+		}
+	}
+	// --on-active accepts durations spelled the same way parseDuration
+	// on the daemon side accepts (bare integer = seconds, or the
+	// unit-suffixed forms slinit's parser understands). Validate here
+	// by round-tripping through time.ParseDuration first — that's a
+	// superset of what the daemon accepts, so a pass here doesn't
+	// guarantee the daemon takes it, but a fail here catches obvious
+	// typos before we hit disk / socket.
+	if onActive != "" {
+		if _, err := parseOnActive(onActive); err != nil {
+			return fmt.Errorf("run: --on-active: %w", err)
+		}
+	}
+
 	if err := os.MkdirAll("/run/slinit.d", 0755); err != nil {
 		return fmt.Errorf("run: mkdir /run/slinit.d: %w", err)
 	}
 	path := "/run/slinit.d/" + unitName
-	// Quote command tokens minimally: replace embedded double quotes and
-	// wrap each token. This matches how svc files typically write
-	// commands with arguments — dinit-style tokenisation splits on
-	// whitespace but respects double-quoted spans.
-	var body strings.Builder
-	body.WriteString("type = " + svcType + "\n")
-	if description != "" {
-		body.WriteString("description = " + description + "\n")
+	envPath := ""
+	if len(setenvs) > 0 {
+		envPath = path + ".env"
+		var envBody strings.Builder
+		for _, kv := range setenvs {
+			envBody.WriteString(kv + "\n")
+		}
+		if err := os.WriteFile(envPath, []byte(envBody.String()), 0644); err != nil {
+			return fmt.Errorf("run: write %s: %w", envPath, err)
+		}
 	}
-	body.WriteString("command =")
-	for _, p := range cmdParts {
-		body.WriteString(" \"")
-		body.WriteString(strings.ReplaceAll(p, `"`, `\"`))
-		body.WriteByte('"')
+	// --on-active: wrap the child in `sh -c 'sleep N; exec CMD…'`.
+	// Rejected the cron-command path — slinit's cron is inherently
+	// periodic (interval defaults to 60s when <=0), so it would fire
+	// again after the initial delay. A shell-wrap is one-shot by
+	// construction and every service type inherits from it.
+	if onActive != "" {
+		cmdParts = wrapWithSleep(onActive, cmdParts)
 	}
-	body.WriteByte('\n')
-	body.WriteString("restart = false\n")
-	if err := os.WriteFile(path, []byte(body.String()), 0644); err != nil {
+	body := buildRunBody(svcType, description, cmdParts, slice, niceVal, runAs, envPath, properties)
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		if envPath != "" {
+			_ = os.Remove(envPath)
+		}
 		return fmt.Errorf("run: write %s: %w", path, err)
+	}
+	// If we later abort/return with an error before start, roll back
+	// both files so a retry doesn't inherit stale state.
+	cleanupOnErr := func() {
+		_ = os.Remove(path)
+		if envPath != "" {
+			_ = os.Remove(envPath)
+		}
 	}
 
 	if err := cmdStart(conn, unitName, false, false); err != nil {
+		cleanupOnErr()
 		return fmt.Errorf("run: start '%s': %w", unitName, err)
 	}
-	if !waitStarted {
+	if !waitStarted && !collect {
 		info("Transient unit '%s' started (%s).\n", unitName, path)
 		return nil
 	}
-	// Wait for the service to settle: STARTED (process still running)
-	// or STOPPED (scripted svc that finished). Bounded at 60s so a
-	// hung service doesn't wedge the CLI forever.
+	// Wait for the service to settle. --wait accepts STARTED (process
+	// still running) or STOPPED (scripted svc that finished);
+	// --collect ONLY accepts STOPPED and then unloads + removes the
+	// on-disk description. --collect implies --wait but stays in the
+	// loop through STARTED events since a process service reaches
+	// STARTED first and then STOPPED later.
+	//
+	// Bound: --wait uses a 60s cap (a hung service shouldn't wedge
+	// the CLI forever). --collect uses no cap because the caller
+	// explicitly asked to wait for exit; Ctrl-C is the escape hatch.
 	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
+		if !collect && time.Now().After(deadline) {
+			return fmt.Errorf("run: timed out waiting for '%s' to settle", unitName)
+		}
 		st, err := getServiceStatus(conn, unitName)
 		if err != nil {
 			return err
 		}
 		switch st.State {
 		case service.StateStarted:
-			info("Transient unit '%s' STARTED.\n", unitName)
-			return nil
+			if !collect {
+				info("Transient unit '%s' STARTED.\n", unitName)
+				return nil
+			}
+			// --collect: keep polling until STOPPED.
 		case service.StateStopped:
 			if st.Flags&control.StatusFlagStartFailed != 0 {
+				if collect {
+					_ = cmdUnload(conn, unitName)
+					cleanupOnErr()
+				}
 				return fmt.Errorf("transient unit '%s' failed to start", unitName)
 			}
-			info("Transient unit '%s' finished cleanly.\n", unitName)
+			if collect {
+				if err := cmdUnload(conn, unitName); err != nil {
+					return fmt.Errorf("run: --collect: unload '%s': %w", unitName, err)
+				}
+				cleanupOnErr()
+				info("Transient unit '%s' collected.\n", unitName)
+			} else {
+				info("Transient unit '%s' finished cleanly.\n", unitName)
+			}
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return fmt.Errorf("run: timed out waiting for '%s' to settle", unitName)
 }
 
 // cmdResetFailedDispatch handles `slinitctl reset-failed [SVC | --all]`.
