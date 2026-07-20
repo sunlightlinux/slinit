@@ -679,6 +679,22 @@ type ServiceDescription struct {
 	// label immediately, inherited by execve).
 	SMACKProcessLabel string
 
+	// bus-name / bus-scope / bus-policy — config-parity with
+	// systemd D-Bus unit files. slinit ships NO D-Bus client
+	// dependency; instead, when bus-name is set AND no explicit
+	// ready-check-command is configured AND `dbus-send` is on
+	// PATH at load time, the loader auto-installs an equivalent
+	// ready-check-command that polls NameHasOwner. Systems
+	// without a D-Bus daemon (server appliances, embedded)
+	// silently keep bus-name as informational metadata only,
+	// which lets one config file port between "no D-Bus" and
+	// GNOME/KDE hosts without editing. bus-policy was removed
+	// from systemd around v242 with kdbus; accepted-warned so
+	// legacy unit-file copy-paste doesn't fail parsing.
+	BusName      string
+	BusPolicy    string // deprecated; accepted with warning
+	BusNameScope string // system (default) | session
+
 	// TTY cluster — console-service knobs. All except TTYPath are
 	// no-ops unless TTYPath is set.
 	TTYPath          string
@@ -2645,6 +2661,29 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.KillMode = km
+	case "bus-name":
+		v := strings.TrimSpace(value)
+		// Well-known D-Bus names are dot-separated (org.example.Foo).
+		// Empty is legal (accept + no auto-wire); anything with an
+		// obviously-invalid char rejects.
+		if v != "" && !isValidDBusName(v) {
+			return fmt.Errorf("bus-name: invalid D-Bus name %q (expected e.g. org.example.MyService)", value)
+		}
+		desc.BusName = v
+	case "bus-policy":
+		// bus-policy was removed from systemd around v242 alongside
+		// the kdbus abandonment. Accept for config-parity but log a
+		// warning at load time via the returned description; the
+		// runtime never touches this field.
+		desc.BusPolicy = strings.TrimSpace(value)
+	case "bus-name-scope":
+		v := strings.TrimSpace(value)
+		switch v {
+		case "", "system", "session":
+			desc.BusNameScope = v
+		default:
+			return fmt.Errorf("bus-name-scope: expected system|session, got %q", value)
+		}
 	case "tty-path":
 		v := strings.TrimSpace(value)
 		if v != "" && !strings.HasPrefix(v, "/") {
@@ -3717,6 +3756,43 @@ func parseNonColonOp(expr string) (varName string, op byte, operand string, ok b
 }
 
 // signalNames maps signal names (uppercase) to their syscall values.
+// isValidDBusName does a permissive syntax check for a well-known
+// D-Bus bus name (dot-separated segments; each segment starts with a
+// letter or underscore; subsequent chars are letters, digits,
+// underscore, or dash). Colon-prefixed unique names (":1.42") are
+// NOT accepted here — those are runtime-assigned and never appear as
+// a config-side well-known name. Rejects any whitespace or control
+// character (visible early: an operator that typoed "my service"
+// gets the error at parse rather than a confusing runtime failure).
+func isValidDBusName(s string) bool {
+	if len(s) == 0 || len(s) > 255 {
+		return false
+	}
+	segStart := true
+	dots := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '.' {
+			if segStart { // empty segment or leading dot
+				return false
+			}
+			dots++
+			segStart = true
+			continue
+		}
+		valid := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+		if !segStart {
+			valid = valid || (c >= '0' && c <= '9') || c == '-'
+		}
+		if !valid {
+			return false
+		}
+		segStart = false
+	}
+	// Well-known names have at least one dot per the spec.
+	return dots >= 1 && !segStart
+}
+
 // parseOpenFile decodes systemd's OpenFile= grammar:
 //   PATH[:FDNAME[:OPTIONS]]
 // FDNAME is optional (defaults to the basename); OPTIONS is a comma-
