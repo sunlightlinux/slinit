@@ -331,6 +331,18 @@ type ExecParams struct {
 
 	// CloseStdin closes fd 0 in the child process.
 	CloseStdin bool
+
+	// StdinBytes, when non-nil, is written to the child's stdin
+	// before exec (systemd StandardInputText= / StandardInputData=).
+	// Wins over CloseStdin — closing an already-fed pipe still lets
+	// the child read the bytes, then see EOF, which is the expected
+	// semantics for one-shot services.
+	StdinBytes []byte
+
+	// OpenFiles is the systemd OpenFile= list: each entry becomes an
+	// inherited fd on top of the socket-listen range, with a matching
+	// LISTEN_FDNAMES token so the child can identify it by name.
+	OpenFiles []OpenFileEntry
 	// CloseStdout closes fd 1 in the child process.
 	CloseStdout bool
 	// CloseStderr closes fd 2 in the child process.
@@ -425,6 +437,15 @@ type ExecParams struct {
 type CgroupSetting struct {
 	File  string
 	Value string
+}
+
+// OpenFileEntry is one systemd OpenFile= directive resolved to the
+// exec path. Options is the raw comma-separated flags string from
+// the config; parsed at open time in pkg/process/openfile.go.
+type OpenFileEntry struct {
+	Path    string
+	FDName  string
+	Options string
 }
 
 // Rlimit holds a resource limit (soft, hard) for a given resource.

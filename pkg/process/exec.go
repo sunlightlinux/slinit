@@ -1,7 +1,9 @@
 package process
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -10,6 +12,13 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// bytesReader wraps a []byte as an io.Reader for stdin injection.
+// os/exec accepts any io.Reader as Cmd.Stdin; it copies through a
+// pipe in a goroutine and closes the write end when the reader
+// returns io.EOF, giving the child the "read data, then see EOF"
+// contract required by StandardInputText= / StandardInputData=.
+func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 // StartProcess starts a child process with the given parameters.
 // It returns the PID and a channel that will receive exactly one ChildExit
@@ -242,6 +251,16 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Stdin = params.InputPipe
 	}
 
+	// systemd StandardInputText= / StandardInputData= — pre-feed the
+	// child's stdin with the bytes the operator baked into the
+	// config. Wins over CloseStdin: closing an already-fed pipe
+	// still lets the child read the bytes before seeing EOF, which
+	// is the expected semantics for one-shot services that consume
+	// their config off stdin.
+	if params.StdinBytes != nil {
+		cmd.Stdin = bytesReader(params.StdinBytes)
+	}
+
 	// Close stdin/stdout/stderr: redirect to /dev/null (runit -0/-1/-2 style)
 	if params.CloseStdin && cmd.Stdin == nil {
 		devNull, err := os.Open("/dev/null")
@@ -293,6 +312,27 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			nFDs++
 		}
 	}
+	// systemd OpenFile= — open each configured path, append to
+	// ExtraFiles, and carry the fdname alongside LISTEN_FDNAMES so
+	// the child can look it up by name. Opened files are closed on
+	// the parent side after cmd.Start(); the kernel keeps the file
+	// alive as long as the child holds its fd.
+	openedForClose := make([]*os.File, 0, len(params.OpenFiles))
+	for _, of := range params.OpenFiles {
+		f, err := openConfiguredFile(of)
+		if err != nil {
+			// Clean up already-opened files before returning.
+			for _, prior := range openedForClose {
+				prior.Close()
+			}
+			return 0, nil, fmt.Errorf("open-file %q: %w", of.Path, err)
+		}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
+		openedForClose = append(openedForClose, f)
+		listenNames = append(listenNames, of.FDName)
+		nFDs++
+	}
+
 	if nFDs > 0 {
 		listenEnv := fmt.Sprintf("LISTEN_FDS=%d", nFDs)
 		if cmd.Env == nil {
@@ -414,6 +454,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		for _, f := range extraFdNullFiles {
 			f.Close()
 		}
+		for _, f := range openedForClose {
+			f.Close()
+		}
 		if lockFD != nil {
 			lockFD.Close()
 		}
@@ -435,6 +478,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 
 	// Close /dev/null filler fds after fork
 	for _, f := range extraFdNullFiles {
+		f.Close()
+	}
+	// Close our copies of OpenFile= fds — the child inherited them
+	// via ExtraFiles, so the kernel keeps them alive on that side.
+	for _, f := range openedForClose {
 		f.Close()
 	}
 

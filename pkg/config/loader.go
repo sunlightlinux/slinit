@@ -323,7 +323,18 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if len(desc.ErrorLogger) > 0 {
 			s.SetErrorLogger(desc.ErrorLogger)
 		}
-		s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
+		// systemd NotifyAccess=none disables the readiness pipe
+		// entirely — pass fd=-1, name="" so the service ignores any
+		// ready-notification directive that was set. The other three
+		// modes (main|exec|all) are all satisfied by slinit's pipe-
+		// only implementation, which intrinsically only accepts
+		// writes from the child that inherited the write-end fd, so
+		// no gating is needed for them.
+		if desc.NotifyAccessSet && desc.NotifyAccess == service.NotifyAccessNone {
+			s.SetReadyNotification(-1, "")
+		} else {
+			s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
+		}
 		if desc.WatchdogTimeout > 0 {
 			s.SetWatchdogTimeout(desc.WatchdogTimeout)
 		}
@@ -1432,7 +1443,33 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetPSIMemoryWatch(desc.MemoryPressureWatch, desc.MemoryPressureThreshold)
 	rec.SetPSICPUWatch(desc.CPUPressureWatch, desc.CPUPressureThreshold)
 	rec.SetPSIIOWatch(desc.IOPressureWatch, desc.IOPressureThreshold)
-	rec.SetCredentials(desc.Credentials)
+	// systemd ImportCredential= — glob patterns resolved against
+	// the system credstore root (default /etc/credstore, override
+	// via $SYSTEM_CREDSTORE for tests). Each match
+	// becomes a credential named by its basename, added on top of
+	// load-credential / set-credential. Silent on empty match sets:
+	// systemd treats ImportCredential= as best-effort so an operator
+	// can list every candidate credstore without requiring all be
+	// present at start time.
+	creds := desc.Credentials
+	credRoot := credstoreRoot()
+	for _, pat := range desc.ImportCredentials {
+		full := filepath.Join(credRoot, pat)
+		matches, err := filepath.Glob(full)
+		if err != nil {
+			// Bad glob patterns surface at the runner side via
+			// SetupCredentials returning no data; log so the operator
+			// sees the syntax error but don't fail the whole loader.
+			continue
+		}
+		for _, m := range matches {
+			creds = append(creds, process.CredentialSource{
+				Name: filepath.Base(m),
+				Path: m,
+			})
+		}
+	}
+	rec.SetCredentials(creds)
 	rec.SetDynamicUser(desc.DynamicUser)
 	rec.SetFDStoreMax(desc.FileDescriptorStoreMax)
 	rec.SetFDStorePreserve(desc.FileDescriptorStorePreserve)
@@ -1703,6 +1740,22 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetSurviveFinalKillSignal(desc.SurviveFinalKillSignal)
 	rec.SetRestartKillSignal(desc.RestartKillSignal)
 	rec.SetKillMode(desc.KillMode)
+
+	// Bucket D — env + credential pipeline.
+	rec.SetPassEnvironment(desc.PassEnvironment, desc.PassEnvSet)
+	rec.SetUnsetEnvironment(desc.UnsetEnvironment)
+	rec.SetExecSearchPath(desc.ExecSearchPath)
+	rec.SetStandardInput(desc.StandardInput, desc.StandardInputSet)
+	if len(desc.OpenFiles) > 0 {
+		ofs := make([]service.OpenFileRecord, len(desc.OpenFiles))
+		for i, f := range desc.OpenFiles {
+			ofs[i] = service.OpenFileRecord{Path: f.Path, FDName: f.FDName, Options: f.Options}
+		}
+		rec.SetOpenFiles(ofs)
+	}
+	rec.SetImportCredentials(desc.ImportCredentials)
+	rec.SetNotifyAccess(desc.NotifyAccess, desc.NotifyAccessSet)
+	rec.SetGuessMainPID(desc.GuessMainPID)
 	if hardeningCfg.Active() {
 		rec.SetHardening(hardeningCfg)
 		// Three of the seven knobs need ro mount operations
@@ -2150,4 +2203,14 @@ func calcServiceDepth(svc service.Service) int {
 		}
 	}
 	return depth
+}
+
+// credstoreRoot returns the base directory ImportCredential= globs
+// against. Defaults to /etc/credstore per the systemd docs; a test
+// or an alternate distro layout can override via SYSTEM_CREDSTORE.
+func credstoreRoot() string {
+	if v := os.Getenv("SYSTEM_CREDSTORE"); v != "" {
+		return v
+	}
+	return "/etc/credstore"
 }
