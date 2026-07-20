@@ -630,7 +630,9 @@ func loadAppArmorProfile(path string) error {
 // per-calling-process syscalls — were requested.
 func needsRunnerWrap(p ExecParams) bool {
 	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
-		p.AppArmorProfile != "" || p.DebugStop || p.MemoryTHP != "" ||
+		p.AppArmorProfile != "" || p.SELinuxContext != "" ||
+		p.SMACKProcessLabel != "" ||
+		p.DebugStop || p.MemoryTHP != "" ||
 		sandboxActive(p) || seccompActive(p) || hardeningActive(p) ||
 		len(p.BoundingCaps) > 0 || p.NoNewPrivs ||
 		bucketBActive(p)
@@ -693,6 +695,12 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	if p.AppArmorProfile != "" {
 		args = append(args, "--apparmor="+p.AppArmorProfile)
+	}
+	if p.SELinuxContext != "" {
+		args = append(args, "--selinux-context="+p.SELinuxContext)
+	}
+	if p.SMACKProcessLabel != "" {
+		args = append(args, "--smack-label="+p.SMACKProcessLabel)
 	}
 	if p.DebugStop {
 		args = append(args, "--debug")

@@ -670,6 +670,14 @@ type ServiceDescription struct {
 	// services that don't provide a pid-file. Reads cgroup.procs and
 	// picks the first non-init pid.
 	GuessMainPID       bool
+
+	// SELinux domain transition applied at runner side via
+	// /proc/self/attr/exec (mirror of apparmor-switch's write path).
+	SELinuxContext string
+	// SMACK label applied at runner side via /proc/self/attr/current
+	// (SMACK is not exec-transition, it changes the calling task's
+	// label immediately, inherited by execve).
+	SMACKProcessLabel string
 }
 
 // OpenFileSpec captures one open-file directive's parsed form.
@@ -2628,6 +2636,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.KillMode = km
+	case "selinux-context":
+		v := strings.TrimSpace(value)
+		if v == "" {
+			return fmt.Errorf("selinux-context: context must not be empty")
+		}
+		desc.SELinuxContext = v
+	case "smack-process-label":
+		v := strings.TrimSpace(value)
+		if v == "" {
+			return fmt.Errorf("smack-process-label: label must not be empty")
+		}
+		desc.SMACKProcessLabel = v
 	case "pass-environment":
 		toks := strings.Fields(expandEnvVars(value, serviceArg))
 		if op == OpEquals {

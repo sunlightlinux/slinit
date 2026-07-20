@@ -66,6 +66,10 @@ func run() error {
 		"NUMA node list for bind/interleave/preferred (e.g. '0-3' or '0,2,4')")
 	apparmor := fs.String("apparmor", "",
 		"AppArmor profile to transition into on the upcoming exec")
+	selinuxContext := fs.String("selinux-context", "",
+		"SELinux security context to transition into on the upcoming exec")
+	smackLabel := fs.String("smack-label", "",
+		"SMACK label to apply to the calling task (inherited across exec)")
 	debug := fs.Bool("debug", false,
 		"raise SIGSTOP before exec so a debugger can attach (resume with SIGCONT)")
 	memoryTHP := fs.String("memory-thp", "",
@@ -343,6 +347,27 @@ func run() error {
 		if _, _, errno := syscall.Syscall(unix.SYS_PRCTL,
 			uintptr(unix.PR_SET_SECUREBITS), uintptr(*securebits), 0); errno != 0 {
 			return fmt.Errorf("PR_SET_SECUREBITS(0x%x): %w", *securebits, errno)
+		}
+	}
+
+	// SMACK label: applied immediately (not exec-transition), the
+	// kernel keeps the label across execve. Runs BEFORE the SELinux
+	// / AppArmor blocks so those transitions carry the SMACK label
+	// as their starting state on hosts running both LSMs (rare but
+	// legal since kernel 4.16 LSM stacking).
+	if *smackLabel != "" {
+		if err := smackSetProcessLabel(*smackLabel); err != nil {
+			return fmt.Errorf("smack label %q: %w", *smackLabel, err)
+		}
+	}
+
+	// SELinux domain transition: writes to /proc/self/attr/exec so
+	// the kernel schedules the transition for the upcoming execve.
+	// Same fail-closed contract as AppArmor — a silently-succeeded
+	// write on a non-SELinux system leaves the service unconfined.
+	if *selinuxContext != "" {
+		if err := selinuxChangeOnExec(*selinuxContext); err != nil {
+			return fmt.Errorf("selinux context %q: %w", *selinuxContext, err)
 		}
 	}
 

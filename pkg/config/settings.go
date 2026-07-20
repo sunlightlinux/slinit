@@ -315,6 +315,16 @@ var KnownSettings = map[string]OperatorType{
 	"import-credential":    OpEquals | OpPlusEqual,
 	"notify-access":        OpEquals,
 	"guess-main-pid":       OpEquals,
+
+	// Bucket E (partial, "Bucket A+"): SELinux + SMACK LSM domain
+	// setters. Complement apparmor-switch — a service that opted into
+	// AppArmor confinement previously has no way to express the same
+	// intent for SELinux/SMACK hosts. Both are small parser + runner
+	// adds; the rest of Bucket E (root-image, extension-images, bpf-
+	// delegate, luo-session, bus-name, usb-function, log-namespace,
+	// pam-name, tty-*) is deferred with rationale in project memory.
+	"selinux-context":     OpEquals,
+	"smack-process-label": OpEquals,
 	"restrict-realtime":           OpEquals,
 	"restrict-namespaces":         OpEquals,
 	"restrict-suidsgid":           OpEquals,
