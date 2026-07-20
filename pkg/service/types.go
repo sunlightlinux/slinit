@@ -510,6 +510,57 @@ func ParseExitType(s string) (ExitType, error) {
 	return 0, fmt.Errorf("unknown exit-type %q (use main|cgroup)", s)
 }
 
+// NotifyAccess picks which processes can post to the readiness pipe.
+// Mirrors systemd's NotifyAccess=. slinit's pipe-based notification
+// (vs systemd's Unix socket + SO_PEERCRED) makes most of these
+// distinctions trivial — the fd is only inherited by the child of
+// the fork+exec, so a "main pid only" restriction is intrinsic. The
+// enum is honoured mainly for config-parity + to allow the operator
+// to disable notification entirely via "none".
+type NotifyAccess uint8
+
+const (
+	// NotifyAccessNone is the zero value: no notification pipe is
+	// wired. Systemd calls this "the service can't call sd_notify at
+	// all"; we translate it as "don't set up ready-notification even
+	// if ready-notification = pipefd:VAR is set." Load-bearing
+	// zero-value: an unconfigured record MUST default to Main to
+	// preserve historical behaviour, so ParseNotifyAccess maps ""
+	// and "main" to NotifyAccessMain (not to the enum's zero).
+	NotifyAccessMain NotifyAccess = iota
+	NotifyAccessAll
+	NotifyAccessExec
+	NotifyAccessNone
+)
+
+func (n NotifyAccess) String() string {
+	switch n {
+	case NotifyAccessAll:
+		return "all"
+	case NotifyAccessExec:
+		return "exec"
+	case NotifyAccessNone:
+		return "none"
+	}
+	return "main"
+}
+
+// ParseNotifyAccess decodes the config value. Empty string returns
+// NotifyAccessMain (systemd's documented default).
+func ParseNotifyAccess(s string) (NotifyAccess, error) {
+	switch s {
+	case "", "main":
+		return NotifyAccessMain, nil
+	case "all":
+		return NotifyAccessAll, nil
+	case "exec":
+		return NotifyAccessExec, nil
+	case "none":
+		return NotifyAccessNone, nil
+	}
+	return 0, fmt.Errorf("unknown notify-access %q (use main|all|exec|none)", s)
+}
+
 // KillMode picks which processes get signalled on stop. Mirrors
 // systemd's KillMode= directive. slinit already covered the main
 // distinctions via the kill-all-on-stop option flag; this enum

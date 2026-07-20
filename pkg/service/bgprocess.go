@@ -284,8 +284,14 @@ func (s *BGProcessService) BringUp() bool {
 		return false
 	}
 
-	if s.pidFile == "" {
-		s.services.logger.Error("Service '%s': no pid-file specified for bgprocess", s.serviceName)
+	// systemd GuessMainPID= opt-in: allow bgprocess with no pid-file
+	// as long as the service runs in a delegated cgroup — we scan
+	// cgroup.procs after the launcher exits and pick the first non-
+	// init pid. If neither pid-file nor guess-main-pid is set, we
+	// still refuse (a bgprocess without either has no way to track
+	// its lifecycle).
+	if s.pidFile == "" && !s.Record().GuessMainPID() {
+		s.services.logger.Error("Service '%s': no pid-file specified for bgprocess (or set guess-main-pid = yes)", s.serviceName)
 		return false
 	}
 
@@ -672,11 +678,27 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		return
 	}
 
-	// Launcher exited cleanly - read PID file to find the daemon
-	pid, result, err := process.ReadPIDFile(s.pidFile)
+	// Launcher exited cleanly. Discover the daemon PID: read pid-
+	// file when configured, otherwise (guess-main-pid) scan the
+	// service's cgroup.procs and pick the first non-init pid.
+	var (
+		pid    int
+		result process.PIDResult
+		err    error
+	)
+	if s.pidFile != "" {
+		pid, result, err = process.ReadPIDFile(s.pidFile)
+	} else if s.Record().GuessMainPID() {
+		pid, err = guessMainPIDFromCgroup(s.EffectiveCgroupPath())
+		if err != nil {
+			result = process.PIDResultFailed
+		} else {
+			result = process.PIDResultOK
+		}
+	}
 	if result == process.PIDResultFailed {
-		s.services.logger.Error("Service '%s': failed to read PID file '%s': %v",
-			s.serviceName, s.pidFile, err)
+		s.services.logger.Error("Service '%s': failed to discover daemon pid: %v",
+			s.serviceName, err)
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, true)

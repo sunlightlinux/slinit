@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -635,6 +636,47 @@ type ServiceDescription struct {
 	SurviveFinalKillSignal    bool
 	RestartKillSignal         syscall.Signal
 	KillMode                  service.KillMode
+
+	// Bucket D — env + credential pipeline.
+	// PassEnvironment filters which env vars from PID 1 are forwarded
+	// to the child. Unset = forward everything (dinit compat); a set
+	// list restricts to just those names. `+=` extends.
+	PassEnvironment    []string
+	PassEnvSet         bool
+	// UnsetEnvironment names env vars to remove after all other env-
+	// building has run. `+=` extends.
+	UnsetEnvironment   []string
+	// ExecSearchPath overrides $PATH for the child. Empty = inherit.
+	ExecSearchPath     string
+	// StandardInput* bake stdin content: -text is a literal string,
+	// -data is base64-encoded bytes. Both feed the same runner stdin
+	// pipe; the parser stashes the raw bytes.
+	StandardInput      []byte
+	StandardInputSet   bool
+	// OpenFile is a v261+ knob: pre-open a path and pass the fd to
+	// the child via the same LISTEN_FDS/LISTEN_FDNAMES protocol used
+	// for socket-listen. Format: PATH[:FDNAME[:OPTIONS]] where
+	// OPTIONS is a comma-separated subset of {read-only, append,
+	// truncate, graceful}. Repeatable via `+=`.
+	OpenFiles          []OpenFileSpec
+	// ImportCredential globs credentials from $CREDENTIALS_DIRECTORY
+	// (usually /etc/credstore/*). Adds each match as an available
+	// credential name; complements load-credential/set-credential.
+	ImportCredentials  []string
+	// NotifyAccess = main|all|exec|none. See service.NotifyAccess.
+	NotifyAccess       service.NotifyAccess
+	NotifyAccessSet    bool
+	// GuessMainPID enables cgroup-scan fallback for Type=bgprocess
+	// services that don't provide a pid-file. Reads cgroup.procs and
+	// picks the first non-init pid.
+	GuessMainPID       bool
+}
+
+// OpenFileSpec captures one open-file directive's parsed form.
+type OpenFileSpec struct {
+	Path    string
+	FDName  string
+	Options string // comma-separated flags, forwarded as-is to the runner
 }
 
 // NewServiceDescription creates a ServiceDescription with default values.
@@ -2586,6 +2628,88 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.KillMode = km
+	case "pass-environment":
+		toks := strings.Fields(expandEnvVars(value, serviceArg))
+		if op == OpEquals {
+			desc.PassEnvironment = toks
+		} else {
+			desc.PassEnvironment = append(desc.PassEnvironment, toks...)
+		}
+		// Presence marker: "= " with an empty value still switches to
+		// filter mode (forward nothing), matching systemd behaviour.
+		desc.PassEnvSet = true
+	case "unset-environment":
+		toks := strings.Fields(expandEnvVars(value, serviceArg))
+		if op == OpEquals {
+			desc.UnsetEnvironment = toks
+		} else {
+			desc.UnsetEnvironment = append(desc.UnsetEnvironment, toks...)
+		}
+	case "exec-search-path":
+		desc.ExecSearchPath = strings.TrimSpace(expandEnvVars(value, serviceArg))
+	case "standard-input-text":
+		// Literal text; append with newline separators when += is
+		// used (matches systemd's multi-line semantics). The parser
+		// stashes raw bytes so the runner can inject them into the
+		// child's stdin without re-encoding.
+		text := expandEnvVars(value, serviceArg)
+		if op == OpPlusEqual && desc.StandardInputSet {
+			desc.StandardInput = append(desc.StandardInput, '\n')
+		}
+		desc.StandardInput = append(desc.StandardInput, []byte(text)...)
+		desc.StandardInputSet = true
+	case "standard-input-data":
+		// Base64 payload; systemd allows the operator to embed
+		// arbitrary bytes (including NULs) via base64 encoding. `+=`
+		// concatenates the decoded bytes.
+		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("standard-input-data: base64 decode: %w", err)
+		}
+		if op == OpEquals {
+			desc.StandardInput = raw
+		} else {
+			desc.StandardInput = append(desc.StandardInput, raw...)
+		}
+		desc.StandardInputSet = true
+	case "open-file":
+		spec, err := parseOpenFile(expandEnvVars(value, serviceArg))
+		if err != nil {
+			return fmt.Errorf("open-file: %w", err)
+		}
+		if op == OpEquals {
+			desc.OpenFiles = []OpenFileSpec{spec}
+		} else {
+			desc.OpenFiles = append(desc.OpenFiles, spec)
+		}
+	case "import-credential":
+		// Glob pattern (or bare name) that the loader expands against
+		// $CREDENTIALS_DIRECTORY when the service starts. We stash
+		// the pattern as-is; expansion happens later so the pattern
+		// stays literal in the description (matches load-credential
+		// where the PATH is also lazy).
+		pat := strings.TrimSpace(expandEnvVars(value, serviceArg))
+		if pat == "" {
+			return fmt.Errorf("import-credential: empty pattern")
+		}
+		if op == OpEquals {
+			desc.ImportCredentials = []string{pat}
+		} else {
+			desc.ImportCredentials = append(desc.ImportCredentials, pat)
+		}
+	case "notify-access":
+		n, err := service.ParseNotifyAccess(strings.TrimSpace(value))
+		if err != nil {
+			return err
+		}
+		desc.NotifyAccess = n
+		desc.NotifyAccessSet = true
+	case "guess-main-pid":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("guess-main-pid: %w", err)
+		}
+		desc.GuessMainPID = b
 	case "utmp-mode":
 		v := strings.ToLower(strings.TrimSpace(value))
 		switch v {
@@ -3535,6 +3659,34 @@ func parseNonColonOp(expr string) (varName string, op byte, operand string, ok b
 }
 
 // signalNames maps signal names (uppercase) to their syscall values.
+// parseOpenFile decodes systemd's OpenFile= grammar:
+//   PATH[:FDNAME[:OPTIONS]]
+// FDNAME is optional (defaults to the basename); OPTIONS is a comma-
+// separated list of flags the runner honours when opening the file.
+// The parser only splits on ':' — validation of unknown options is
+// deferred to the runner so a future kernel option surfaces there
+// without a parser update.
+func parseOpenFile(value string) (OpenFileSpec, error) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return OpenFileSpec{}, fmt.Errorf("empty spec")
+	}
+	parts := strings.SplitN(v, ":", 3)
+	spec := OpenFileSpec{Path: parts[0]}
+	if !strings.HasPrefix(spec.Path, "/") {
+		return OpenFileSpec{}, fmt.Errorf("path must be absolute: %q", spec.Path)
+	}
+	if len(parts) > 1 && parts[1] != "" {
+		spec.FDName = parts[1]
+	} else {
+		spec.FDName = filepath.Base(spec.Path)
+	}
+	if len(parts) > 2 {
+		spec.Options = parts[2]
+	}
+	return spec, nil
+}
+
 // parseByteSize accepts an integer + optional K/M/G/T suffix (base
 // 1024). Empty suffix = bytes. Used by the *-directory-quota
 // directives which mirror systemd's size format.

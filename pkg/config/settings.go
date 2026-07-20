@@ -304,6 +304,17 @@ var KnownSettings = map[string]OperatorType{
 	"survive-final-kill-signal":        OpEquals,
 	"restart-kill-signal":              OpEquals,
 	"kill-mode":                        OpEquals,
+
+	// Bucket D — env + credential pipeline.
+	"pass-environment":     OpEquals | OpPlusEqual,
+	"unset-environment":    OpEquals | OpPlusEqual,
+	"exec-search-path":     OpEquals,
+	"standard-input-text":  OpEquals | OpPlusEqual,
+	"standard-input-data":  OpEquals | OpPlusEqual,
+	"open-file":            OpEquals | OpPlusEqual,
+	"import-credential":    OpEquals | OpPlusEqual,
+	"notify-access":        OpEquals,
+	"guess-main-pid":       OpEquals,
 	"restrict-realtime":           OpEquals,
 	"restrict-namespaces":         OpEquals,
 	"restrict-suidsgid":           OpEquals,

@@ -359,6 +359,20 @@ type ServiceRecord struct {
 	restartKillSignal         syscall.Signal
 	killMode                  KillMode
 
+	// Bucket D — env + credential pipeline. Flat fields, none share
+	// cluster semantics with each other.
+	passEnvironment    []string
+	passEnvSet         bool
+	unsetEnvironment   []string
+	execSearchPath     string
+	standardInput      []byte
+	standardInputSet   bool
+	openFiles          []OpenFileRecord
+	importCredentials  []string
+	notifyAccess       NotifyAccess
+	notifyAccessSet    bool
+	guessMainPID       bool
+
 	// Queue membership flags
 	InPropQueue bool
 	InStopQueue bool
@@ -1303,7 +1317,7 @@ func (sr *ServiceRecord) BuildFullEnv() []string {
 	result := make([]string, 0, len(globalEnv)+len(extra))
 	result = append(result, globalEnv...)
 	result = append(result, extra...)
-	return result
+	return sr.applyBucketDEnvFilters(result)
 }
 
 // BuildEnvWithFile returns global env + env-file vars + per-service extraEnv
@@ -1332,7 +1346,89 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 		env = append(env, k+"="+v)
 	}
 	env = append(env, extra...)
-	return env
+	return sr.applyBucketDEnvFilters(env)
+}
+
+// applyBucketDEnvFilters is the tail of every env-build path. Applies
+// systemd's PassEnvironment= / UnsetEnvironment= / ExecSearchPath=
+// semantics in that order:
+//
+//   1. If PassEnvironment was set explicitly, drop every var whose
+//      NAME is not in the allow-list. Empty list = drop everything.
+//   2. Remove every var whose NAME appears in UnsetEnvironment.
+//   3. If ExecSearchPath is set, override PATH= (or append if not
+//      present).
+//
+// The dinit-compatible default (nothing set) is a no-op so existing
+// services see no behaviour change.
+func (sr *ServiceRecord) applyBucketDEnvFilters(env []string) []string {
+	pass, passSet := sr.PassEnvironment()
+	unset := sr.UnsetEnvironment()
+	path := sr.ExecSearchPath()
+	if !passSet && len(unset) == 0 && path == "" {
+		return env
+	}
+	var passSetLookup map[string]struct{}
+	if passSet {
+		passSetLookup = make(map[string]struct{}, len(pass))
+		for _, name := range pass {
+			passSetLookup[name] = struct{}{}
+		}
+		// SLINIT_* names are always forwarded — they're set BY slinit
+		// after this filter and would be dropped by a strict filter
+		// otherwise, breaking dinit-compat query env vars.
+		passSetLookup["SLINIT_SERVICENAME"] = struct{}{}
+		passSetLookup["SLINIT_SERVICEDSCDIR"] = struct{}{}
+	}
+	unsetLookup := make(map[string]struct{}, len(unset))
+	for _, name := range unset {
+		unsetLookup[name] = struct{}{}
+	}
+	out := env[:0]
+	for _, kv := range env {
+		eq := indexByteFast(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		name := kv[:eq]
+		if passSet {
+			if _, ok := passSetLookup[name]; !ok {
+				continue
+			}
+		}
+		if _, drop := unsetLookup[name]; drop {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if path != "" {
+		out = replaceOrAppendEnv(out, "PATH", path)
+	}
+	return out
+}
+
+// indexByteFast is a strings.IndexByte alias kept local so record.go
+// doesn't grow a strings import just for one call site.
+func indexByteFast(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+// replaceOrAppendEnv sets NAME=value in env, replacing an existing
+// entry or appending a new one.
+func replaceOrAppendEnv(env []string, name, value string) []string {
+	prefix := name + "="
+	for i, kv := range env {
+		if len(kv) >= len(prefix) && kv[:len(prefix)] == prefix {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
 }
 
 // --- Process attribute setters ---
@@ -1603,6 +1699,73 @@ func (sr *ServiceRecord) StartupAllowedMemoryNodes() string {
 	return sr.startupAllowedMemoryNodes
 }
 
+// OpenFileRecord is the service-package copy of pkg/config's
+// OpenFileSpec — kept here so the service package doesn't import
+// config (would form a cycle). The loader converts one to the other
+// at wire-up time.
+type OpenFileRecord struct {
+	Path    string
+	FDName  string
+	Options string
+}
+
+// Bucket D setters + accessors.
+func (sr *ServiceRecord) SetPassEnvironment(names []string, set bool) {
+	sr.passEnvironment = names
+	sr.passEnvSet = set
+}
+func (sr *ServiceRecord) SetUnsetEnvironment(names []string) { sr.unsetEnvironment = names }
+func (sr *ServiceRecord) SetExecSearchPath(p string)         { sr.execSearchPath = p }
+func (sr *ServiceRecord) SetStandardInput(data []byte, set bool) {
+	sr.standardInput = data
+	sr.standardInputSet = set
+}
+func (sr *ServiceRecord) SetOpenFiles(files []OpenFileRecord)  { sr.openFiles = files }
+func (sr *ServiceRecord) SetImportCredentials(pats []string)   { sr.importCredentials = pats }
+func (sr *ServiceRecord) SetNotifyAccess(n NotifyAccess, set bool) {
+	sr.notifyAccess = n
+	sr.notifyAccessSet = set
+}
+func (sr *ServiceRecord) SetGuessMainPID(b bool) { sr.guessMainPID = b }
+
+// PassEnvironment returns the operator-declared pass-list + whether
+// the directive was set. When set is false the caller inherits every
+// PID-1 env var; when true the caller keeps only names in the list.
+func (sr *ServiceRecord) PassEnvironment() ([]string, bool) {
+	return sr.passEnvironment, sr.passEnvSet
+}
+
+// UnsetEnvironment returns the operator-declared unset list.
+func (sr *ServiceRecord) UnsetEnvironment() []string { return sr.unsetEnvironment }
+
+// ExecSearchPath returns the override for $PATH (empty = inherit).
+func (sr *ServiceRecord) ExecSearchPath() string { return sr.execSearchPath }
+
+// StandardInput returns the baked stdin bytes + whether the directive
+// was set. Empty slice with set=true is legal (means "provide EOF
+// immediately"); nil with set=false means "inherit whatever the
+// runner would attach."
+func (sr *ServiceRecord) StandardInput() ([]byte, bool) {
+	return sr.standardInput, sr.standardInputSet
+}
+
+// OpenFiles returns the pre-open specs to pass to the child.
+func (sr *ServiceRecord) OpenFiles() []OpenFileRecord { return sr.openFiles }
+
+// ImportCredentials returns the credential glob patterns.
+func (sr *ServiceRecord) ImportCredentials() []string { return sr.importCredentials }
+
+// NotifyAccess returns the picker + whether the directive was
+// explicitly set (used by the ready-notification path to decide
+// whether to wire the pipe at all).
+func (sr *ServiceRecord) NotifyAccess() (NotifyAccess, bool) {
+	return sr.notifyAccess, sr.notifyAccessSet
+}
+
+// GuessMainPID reports whether the cgroup-scan fallback is enabled
+// for a bgprocess service that lacks a pid-file.
+func (sr *ServiceRecord) GuessMainPID() bool { return sr.guessMainPID }
+
 // DirectoryQuotas returns the (state, cache, logs) byte quotas
 // requested by the operator (0 = not set).
 func (sr *ServiceRecord) DirectoryQuotas() (state, cache, logs int64) {
@@ -1800,6 +1963,19 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	if sr.ignoreSIGPIPE != nil {
 		params.IgnoreSIGPIPE = *sr.ignoreSIGPIPE
 		params.IgnoreSIGPIPESet = true
+	}
+	if sr.standardInputSet {
+		// Copy defensively: the record may live longer than the exec,
+		// and a caller stashing this slice for retry would otherwise
+		// see it mutated by the child's stdin pipe writer goroutine.
+		params.StdinBytes = append([]byte(nil), sr.standardInput...)
+	}
+	if len(sr.openFiles) > 0 {
+		ofs := make([]process.OpenFileEntry, len(sr.openFiles))
+		for i, f := range sr.openFiles {
+			ofs[i] = process.OpenFileEntry{Path: f.Path, FDName: f.FDName, Options: f.Options}
+		}
+		params.OpenFiles = ofs
 	}
 	if sr.hardening.Active() {
 		params.NoNewPrivs = true
