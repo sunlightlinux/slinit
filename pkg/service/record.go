@@ -372,6 +372,9 @@ type ServiceRecord struct {
 	notifyAccess       NotifyAccess
 	notifyAccessSet    bool
 	guessMainPID       bool
+	// Bucket E partial — LSM domain transition mirrors of AppArmor.
+	selinuxContext     string
+	smackProcessLabel  string
 
 	// Queue membership flags
 	InPropQueue bool
@@ -1727,6 +1730,16 @@ func (sr *ServiceRecord) SetNotifyAccess(n NotifyAccess, set bool) {
 	sr.notifyAccessSet = set
 }
 func (sr *ServiceRecord) SetGuessMainPID(b bool) { sr.guessMainPID = b }
+func (sr *ServiceRecord) SetSELinuxContext(s string)     { sr.selinuxContext = s }
+func (sr *ServiceRecord) SetSMACKProcessLabel(s string)  { sr.smackProcessLabel = s }
+
+// SELinuxContext returns the operator-requested SELinux domain (empty
+// = don't touch).
+func (sr *ServiceRecord) SELinuxContext() string { return sr.selinuxContext }
+
+// SMACKProcessLabel returns the operator-requested SMACK label (empty
+// = don't touch).
+func (sr *ServiceRecord) SMACKProcessLabel() string { return sr.smackProcessLabel }
 
 // PassEnvironment returns the operator-declared pass-list + whether
 // the directive was set. When set is false the caller inherits every
@@ -1907,6 +1920,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.Credentials = sr.credentials
 	params.AppArmorLoadProfile = sr.appArmorLoad
 	params.AppArmorProfile = sr.appArmorSwitch
+	params.SELinuxContext = sr.selinuxContext
+	params.SMACKProcessLabel = sr.smackProcessLabel
 	params.DebugStop = sr.debug
 	params.MlockallFlags = sr.mlockallFlags
 	params.NumaMempolicy = sr.numaMempolicy

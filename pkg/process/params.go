@@ -271,6 +271,17 @@ type ExecParams struct {
 	// (security must fail closed, never silently run unconfined).
 	AppArmorLoadProfile string
 
+	// SELinuxContext, if non-empty, is a SELinux security context the
+	// runner writes to /proc/self/attr/exec before execve. Fails
+	// closed if selinuxfs is absent (LSM not active).
+	SELinuxContext string
+
+	// SMACKProcessLabel, if non-empty, is a SMACK label the runner
+	// writes to /proc/self/attr/current. SMACK changes the label
+	// immediately (unlike SELinux which schedules on execve) but the
+	// label survives the execve and applies to the service.
+	SMACKProcessLabel string
+
 	// AppArmorProfile, if non-empty, is an AppArmor profile name the
 	// child transitions into on exec (aa_change_onexec). It is applied
 	// by slinit-runner because the kernel ties the transition to the

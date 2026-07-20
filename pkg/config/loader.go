@@ -1756,6 +1756,8 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetImportCredentials(desc.ImportCredentials)
 	rec.SetNotifyAccess(desc.NotifyAccess, desc.NotifyAccessSet)
 	rec.SetGuessMainPID(desc.GuessMainPID)
+	rec.SetSELinuxContext(desc.SELinuxContext)
+	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)
 	if hardeningCfg.Active() {
 		rec.SetHardening(hardeningCfg)
 		// Three of the seven knobs need ro mount operations
