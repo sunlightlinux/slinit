@@ -35,13 +35,21 @@ event. Use **--exit** to make it exit after the first command run.
 
 Each positional argument is a service name. **slinit-monitor** loads
 each service to obtain a control-protocol handle, then subscribes to
-its event stream. Five event types are reported:
+its event stream. Event types reported:
 
 - **started** — the service reached the started state.
 - **stopped** — the service reached the stopped state.
 - **failed** — the service failed to start.
 - **start-cancelled** — a pending start was cancelled.
 - **stop-cancelled** — a pending stop was cancelled.
+- **pressure-memory** — cgroup v2 memory PSI crossed the threshold
+  set via **memory-pressure-watch** / **memory-pressure-threshold**.
+  Fires whenever the *some* avg-window value exceeds the threshold
+  within a 2-second polling window; no repeat suppression, so a
+  service that stays under pressure fires every window until it
+  drops back.
+- **pressure-cpu** — analogous for CPU PSI (**cpu-pressure-\***).
+- **pressure-io** — analogous for IO PSI (**io-pressure-\***).
 
 ## Environment mode (**-E**)
 

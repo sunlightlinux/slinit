@@ -1,4 +1,6 @@
-# slinit-runner 8 "" "" "slinit \- service management system"
+% SLINIT-RUNNER(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-20
 
 ## NAME
 
@@ -173,6 +175,88 @@ seccomp filter plus a small set of mount operations applied before
 
 **\--lock-personality**
 :   Block **personality**(2). Mirrors **LockPersonality=**.
+
+**\--restrict-realtime**
+:   Block **sched_setscheduler**(2) with *SCHED_FIFO*/*RR*/*DEADLINE*
+    + blanket-deny **sched_setattr**(2). Mirrors **RestrictRealtime=**.
+
+**\--restrict-namespaces**
+:   Block **unshare**(2)/**setns**(2)/**clone**(2) with any *CLONE_NEW\**
+    flag + blanket-deny **clone3**(2). Mirrors **RestrictNamespaces=**.
+
+**\--restrict-suidsgid**
+:   Block **chmod**(2)/**fchmod**(2)/**fchmodat**(2) with *S_ISUID* or
+    *S_ISGID* in the mode. Mirrors **RestrictSUIDSGID=**.
+
+**\--restrict-file-systems**
+:   Blanket-deny the mount syscall family
+    (**mount**(2)/**umount2**(2)/**fsopen**(2)/**fsconfig**(2)/
+    **fsmount**(2)/**fspick**(2)/**move_mount**(2)/**open_tree**(2)).
+    Systemd's fstype allow-list variant requires BPF-LSM.
+
+**\--restrict-address-families-enable** + **\--restrict-address-family**=*AF*
+:   Allow-list for **socket**(2)/**socketpair**(2). Repeat
+    **\--restrict-address-family** to add more; empty list denies
+    every socket call. AF names case-insensitive with or without
+    *AF_* prefix, or numeric.
+
+**\--memory-deny-write-execute**
+:   **prctl**(2) *PR_SET_MDWE* with *PR_MDWE_REFUSE_EXEC_GAIN*.
+    Kernel 6.3+; fail-close on older kernels.
+
+### LSM domain transitions
+
+**\--apparmor**=*profile*
+:   AppArmor profile to transition into on the upcoming exec (writes
+    `exec profile` to `/proc/self/attr/exec`). Fails closed if
+    `/sys/kernel/security/apparmor` is absent.
+
+**\--selinux-context**=*context*
+:   SELinux security context to transition into (writes to
+    `/proc/self/attr/exec`). Fails closed on missing `/sys/fs/selinux`.
+
+**\--smack-label**=*label*
+:   SMACK label applied to the calling task (writes to
+    `/proc/self/attr/current`, immediate not exec-transition, but
+    survives execve). Fails closed on missing `/sys/fs/smackfs`.
+
+### TTY setup
+
+**\--tty-path**=*path*
+:   Open the TTY at *path* (O_RDWR|O_NOCTTY) and wire it as
+    stdin/stdout/stderr. Setsid + Setctty via SysProcAttr.
+
+**\--tty-columns**=*N*, **\--tty-rows**=*N*
+:   TIOCSWINSZ. Both required.
+
+**\--tty-vhangup**
+:   **vhangup**(2) after open (drop prior session).
+
+**\--tty-vt-disallocate**
+:   For /dev/ttyN, VT_DISALLOCATE ioctl BEFORE open (reallocate
+    clean).
+
+**\--tty-reset**
+:   Write ESC c (RIS) after open.
+
+### Bucket B legacy niches
+
+**\--coredump-filter**=*mask*
+:   Write to `/proc/self/coredump_filter` (inherited across
+    fork+exec).
+
+**\--timer-slack-nsec**=*N*
+:   **prctl**(2) *PR_SET_TIMERSLACK*.
+
+**\--memory-ksm**
+:   **prctl**(2) *PR_SET_MEMORY_MERGE*. Kernel 6.4+.
+
+**\--ignore-sigpipe** / **\--no-ignore-sigpipe**
+:   Install *SIG_IGN* for SIGPIPE (systemd default) / restore
+    inherited SIG_DFL.
+
+**\--personality**=*x86-64*|*x86*|*arm*|*arm64*|*linux32*
+:   **personality**(2) domain. Bare numeric also accepted.
 
 ### Credentials & capabilities
 

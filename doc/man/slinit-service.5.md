@@ -1,6 +1,8 @@
-# slinit-service 5 "" "" "slinit \- service management system"
+% SLINIT-SERVICE(5) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-20
 
-## NAME
+# NAME
 
 slinit-service - slinit service description file format
 
@@ -263,6 +265,37 @@ instance, with *$1* substitution still in effect.
 :   Read environment from `envdir`-style directory (one variable per
     file; filename is the variable name, contents the value).
 
+**env-generator**=*path*
+:   Executable that emits *KEY*=*VALUE* lines on stdout at start
+    time. Merged after **env-file** and **env-dir** so it wins
+    conflicts. Failure aborts the start (systemd
+    **EnvironmentGenerator** semantics).
+
+**pass-environment**=*NAME*...
+:   Allow-list filter on PID-1 env inheritance. When set, only
+    listed names are forwarded to the child. Empty value = drop
+    everything. **SLINIT_SERVICENAME** and **SLINIT_SERVICEDSCDIR**
+    are always forwarded regardless (dinit-compat query env vars).
+    Repeatable via *+=*. Systemd **PassEnvironment=**.
+
+**unset-environment**=*NAME*...
+:   Explicit unset list; runs after **pass-environment** so a
+    broad allow can be paired with a targeted strip.
+
+**exec-search-path**=*path*
+:   Override `PATH=` for the child. Replaces an existing PATH=
+    entry rather than appending, so operators don't have to chase
+    which duplicate wins.
+
+**standard-input-text**=*string*
+:   Baked stdin content for one-shot services (systemd's answer
+    to runit's `data/`). *+=* concatenates with newline separator.
+
+**standard-input-data**=*base64*
+:   Same as **standard-input-text** but the payload is base64-
+    encoded so arbitrary bytes (including NULs) can be embedded.
+    *+=* concatenates decoded bytes.
+
 **setenv** is also exposed at runtime via **slinitctl**(8).
 
 The variables **SLINIT_SERVICENAME** and **SLINIT_SERVICEDSCDIR** are
@@ -393,6 +426,93 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
 **restart-limit-interval**=*duration*, **restart-limit-count**=*N*
 :   Rate-limit: more than *N* failures inside this window puts the
     service into the *failed* state.
+
+**restart-randomized-delay**=*duration*
+:   Additive jitter drawn uniformly from *[0, N)* added to the
+    effective restart delay. Prevents thundering-herd when many
+    services restart simultaneously (dbus crash → 50 dependents
+    all wake at the same instant). Mirror of systemd
+    **RestartRandomizedDelaySec=**.
+
+**restart-max-delay**=*duration*
+:   Final cap on the *(backoff + jitter)* sum. Distinct from
+    **restart-delay-cap** which only caps the progressive backoff
+    itself; this is the honest total-time ceiling. 0 = no cap.
+
+**runtime-max-sec**=*duration*, **runtime-randomized-extra**=*duration*
+:   Force-stop the service after *runtime-max-sec* elapsed since
+    start. **runtime-randomized-extra** adds fleet jitter so a
+    thousand identical services don't all hit the runtime cap at
+    the same wallclock instant.
+
+**restart-force-exit-status**=*STATUS*...
+:   Exit codes that FORCE a restart even when **restart** = *no* or
+    **on-failure** would normally suppress it. Complements
+    **normal-exit** (which suppresses restart). Signal tokens are
+    not accepted here — signals go through the autoRestart /
+    RestartAlways path. Repeatable via *+=*.
+
+**restart-mode**=*normal*|*direct*
+:   *direct* skips the dependent-restart cascade — dependents keep
+    running through the parent's restart cycle. Useful for helper
+    services whose consumers can tolerate a brief unavailability
+    without being recycled themselves. *normal* (default) preserves
+    the historical cascade.
+
+**restart-kill-signal**=*SIGNAL*
+:   Signal used when the current stop is part of a restart cycle
+    (vs a plain stop). Falls back to **term-signal** when unset.
+
+**kill-mode**=*process*|*control-group*|*mixed*|*none*
+:   Which processes get signalled on stop.
+
+    - *process* (default, matches slinit's historical behaviour):
+      signal only the main pid.
+    - *control-group*: signal every process in the cgroup +
+      escalation. Equivalent to *options=kill-all-on-stop*.
+    - *mixed*: primary signal to the main pid, final-signal to the
+      whole cgroup at escalation.
+    - *none*: skip the primary signal entirely. The service is
+      expected to notice the stop request through some other
+      channel; the stop-timeout still fires to escalate.
+
+**final-kill-signal**=*SIGNAL*
+:   Signal used at the final escalation stage (default *SIGKILL*).
+
+**survive-final-kill-signal**=*yes*|*no*
+:   Opts out of the final SIGKILL escalation entirely. Rare;
+    documented for specialised containers where the operator
+    manages hard-stop through some other mechanism.
+
+**watchdog-signal**=*SIGNAL*
+:   Signal sent on watchdog miss (default *SIGABRT* — matches
+    systemd docs). Routed through the standard stop path so
+    escalation still applies.
+
+**timeout-sec**=*duration*
+:   Convenience alias — sets **start-timeout** and **stop-timeout**
+    simultaneously.
+
+**timeout-abort-sec**=*duration*
+:   When non-zero, stop-timeout expiry sends **SIGABRT** first,
+    arms another timer of this length, then escalates to
+    **final-kill-signal**. Lets a hung child dump a stack trace
+    before being killed. 0 preserves the direct-SIGKILL path.
+
+**timeout-start-failure-mode**=*terminate*|*abort*|*kill*
+:   Signal picker for start-timeout expiry. *terminate* (default) →
+    SIGINT (legacy). *abort* → SIGABRT. *kill* → SIGKILL.
+
+**timeout-stop-failure-mode**=*terminate*|*abort*|*kill*
+:   Mirror of the start variant, but for stop-timeout expiry.
+    Overrides **timeout-abort-sec** when set to *abort* or *kill*.
+
+**exit-type**=*main*|*cgroup*
+:   With *cgroup* the service is not considered stopped when the
+    main pid exits — slinit polls *cgroup.events* every 200ms and
+    only transitions to STOPPED when the delegated cgroup drains
+    (30s cap). Useful when the entry-point fork-exec's a real
+    worker and returns immediately.
 
 ## SYSTEM ACTIONS (appliance basics)
 
@@ -900,13 +1020,51 @@ service's private mount namespace.
     arg-checks for non-current personalities — the practical effect
     is identical for almost every workload).
 
-**Not yet implemented:** the systemd hardening knobs that require
-seccomp argument inspection — **RestrictRealtime=**,
-**RestrictSUIDSGID=**, **MemoryDenyWriteExecute=**,
-**RestrictNamespaces=**, **RestrictAddressFamilies=** — are deferred
-to a v2 that grows the slinit seccomp BPF compiler with
-*seccomp_data.args* support. Tracked in
-*project_systemd_analysis.md*.
+**restrict-realtime**=*yes*|*no*
+:   Deny **sched_setscheduler**(2) with *SCHED_FIFO* / *SCHED_RR* /
+    *SCHED_DEADLINE* (mask includes *SCHED_RESET_ON_FORK*); blanket-
+    deny **sched_setattr**(2) since its argument is a struct pointer
+    the kernel can't inspect from seccomp. Equivalent to systemd's
+    **RestrictRealtime=**.
+
+**restrict-namespaces**=*yes*|*no*
+:   Deny **unshare**(2) / **setns**(2) / **clone**(2) when the flags
+    include any *CLONE_NEW\** bit; blanket-deny **clone3**(2) since
+    its args live behind a user pointer. Equivalent to systemd's
+    **RestrictNamespaces=** (yes/no form; per-namespace allow-list
+    not shipped).
+
+**restrict-suidsgid**=*yes*|*no*
+:   Deny **chmod**(2) / **fchmod**(2) / **fchmodat**(2) calls whose
+    mode argument sets *S_ISUID* or *S_ISGID*. Equivalent to
+    systemd's **RestrictSUIDSGID=** — chmod family only per
+    systemd's documented behaviour.
+
+**restrict-file-systems**=*yes*|*no*
+:   Deny the entire mount syscall family: **mount**(2),
+    **umount2**(2), **fsopen**(2), **fsconfig**(2), **fsmount**(2),
+    **fspick**(2), **move_mount**(2), **open_tree**(2). Classic
+    seccomp-BPF cannot inspect the fsname string; the most-
+    restrictive interpretation ships (deny all). systemd's
+    fstype allow-list variant requires BPF-LSM.
+
+**restrict-address-families**=*AF_INET* *AF_UNIX* *AF_INET6* ...
+:   Allow-list of address families for **socket**(2) and
+    **socketpair**(2); anything not listed is denied. Empty
+    directive value = deny every socket call. Repeatable via *+=*.
+    Family names are the *AF_\** constants (case-insensitive, with
+    or without the *AF_* prefix) or numeric values.
+
+**memory-deny-write-execute**=*yes*|*no*
+:   **prctl**(2) *PR_SET_MDWE* with *PR_MDWE_REFUSE_EXEC_GAIN*.
+    Kernel 6.3+ required; older kernels return *EINVAL* and slinit
+    fail-closes to match the operator's stated intent.
+
+Runner-side ordering: **memory-deny-write-execute** and the shared
+*PR_SET_NO_NEW_PRIVS* prctl run BEFORE any seccomp install so a
+filter that later blocks prctl can't lock the runner out. Each
+**restrict-\*** directive installs as its OWN seccomp filter; the
+kernel stacks filters and takes the most restrictive result.
 
 ## NAMESPACES (Linux)
 
@@ -1122,6 +1280,25 @@ mlockall       = current+future
     why a parent-side apply is impossible. Requires the AppArmor LSM to
     be active; if it is not, the start fails (fail closed). Combine
     with **apparmor-load** to both ship and enter a profile.
+
+**selinux-context**=*context*
+:   SELinux security context the service transitions into on the
+    upcoming exec (e.g. *system_u:system_r:my_service_t:s0*). The
+    runner writes the context to `/proc/self/attr/exec` right before
+    `execve`, so the kernel schedules the domain transition for that
+    exec call. Fails closed if `/sys/fs/selinux` is absent (LSM not
+    active) — a silent write on a non-SELinux system would leave the
+    service unconfined, exactly the outcome the operator asked to
+    prevent. Mirror of **apparmor-switch** for SELinux hosts.
+
+**smack-process-label**=*label*
+:   SMACK label applied to the calling task via
+    `/proc/self/attr/current`. Unlike SELinux and AppArmor, SMACK
+    changes the label immediately (no exec-transition) but the label
+    survives `execve` and applies to the service. Runs BEFORE the
+    SELinux/AppArmor transitions so those carry the SMACK label as
+    starting state on kernels with LSM stacking (kernel 4.16+). Fails
+    closed if `/sys/fs/smackfs` is absent.
 
 **debug**=*bool*
 :   Developer aid. When `yes`, the service is wrapped with
@@ -1366,6 +1543,87 @@ form):
     power-supply class entries (server / VM) the system is assumed to
     be on AC.
 
+**\*-path-is-socket**=*path*
+:   *path* exists and is a socket file (S_ISSOCK).
+
+**\*-fraction**=*TAG*:*PERCENT*
+:   Staged rollout. FNV-1a hash of the machine-id XOR *TAG* is
+    compared against *PERCENT* (0-100). Same *(TAG, machine)* pair
+    always produces the same decision. Enables gradual fleet
+    rollouts without an external orchestrator.
+
+**\*-architecture**=*x86_64*|*arm64*|*386*|...
+:   Runtime CPU architecture (`GOARCH` values). Selective service
+    files per-arch.
+
+**\*-cpu-feature**=*avx2*|*sha_ni*|...
+:   Named cpuinfo flag present in `/proc/cpuinfo`. HW-accel /
+    crypto services.
+
+**\*-cpus**[=*OP N*]
+:   Number of online CPUs matches. Accepts operators `>=`, `<=`,
+    `<`, `>`, `=`, `!=` followed by an integer.
+
+**\*-memory**[=*OP SIZE*]
+:   `MemTotal` from `/proc/meminfo` matches, with K/M/G/T suffix.
+
+**\*-kernel-version**[=*OP VERSION*]
+:   `uname(2)` `release` field compared as semver-ish; `6.0`,
+    `>= 6.6.5`, etc.
+
+**\*-kernel-module-loaded**=*name*
+:   Module `name` appears in `/proc/modules`.
+
+**\*-os-release**=*KEY*=*VALUE*
+:   `/etc/os-release` line matches. `condition-os-release = ID=voidlinux`.
+
+**\*-user**=*uid*|*name*
+:   Current daemon UID matches (`os.Getuid` vs `getpwnam` lookup).
+
+**\*-group**=*gid*|*name*
+:   Current daemon GID or supplementary groups include the value.
+
+**\*-environment**=*KEY*=*VALUE*
+:   Daemon environment contains the exact assignment.
+
+**\*-file-is-executable**=*path*
+:   *path* is a regular file with at least one execute bit set.
+
+**\*-path-is-symbolic-link**=*path*
+:   *path* is a symlink (lstat).
+
+**\*-path-is-read-write**=*path*
+:   *path* resides on a read-write filesystem (statfs MS_RDONLY
+    check).
+
+**\*-firmware**=*uefi*|*bios*|*device-tree*|*dmi:KEY=VALUE*
+:   Boot firmware type. `dmi:` prefix probes a DMI/SMBIOS field.
+
+**\*-machine-tag**=*tag*
+:   `/etc/machine-info` has a `TAGS=` line containing *tag*.
+
+**\*-credential**=*name*
+:   Credential *name* is present under `$CREDENTIALS_DIRECTORY`.
+
+**\*-control-group-controller**=*memory*|*cpu*|*io*|...
+:   Named cgroup v2 controller enabled in
+    `/sys/fs/cgroup/cgroup.controllers`.
+
+**\*-memory-pressure**=*OP N*
+:   Instantaneous check of `/proc/pressure/memory` `some` `avg10`
+    value against *N* (percentage). Sibling of the runtime PSI
+    pressure watches (see **memory-pressure-watch**).
+
+**\*-cpu-pressure**=*OP N*, **\*-io-pressure**=*OP N*
+:   Same shape for CPU and IO PSI.
+
+**exec-condition**=*shell command*, **assert-exec-condition**=*shell command*
+:   Pre-flight command run through `/bin/sh -c`, 10-second timeout.
+    Exit 0 = proceed with start; non-zero, timeout, or empty
+    command = fail. **condition-** form skips silently on non-zero
+    (matches other **condition-\*** family); **assert-** form
+    fails the start and cascades. Systemd's **ExecCondition=**.
+
 Examples:
 
     # Skip the service on first boot (silent skip, dependents proceed):
@@ -1405,6 +1663,169 @@ Examples:
 :   Mark this service as a consumer of *service*. The service file
     descriptor of *service* is passed to this service's process via
     *SLINIT_CS_FD* (and **options**=*pass-cs-fd*).
+
+## TTY CLUSTER (console services)
+
+For getty-style services that connect to a specific TTY. All knobs
+except **tty-path** are no-ops without it. When **tty-path** is
+set, slinit opens the device with *O_RDWR|O_NOCTTY*, wires it as
+stdin/stdout/stderr, and makes the child session-leader with the
+tty as its controlling terminal (**Setsid** + **Setctty**). Wins
+over **options**=*runs-on-console* / *starts-on-console* when both
+are set — a getty configures a specific tty and doesn't want
+`/dev/console` instead.
+
+**tty-path**=*path*
+:   Absolute path to a TTY device (e.g. `/dev/tty1`, `/dev/ttyS0`).
+
+**tty-columns**=*N*, **tty-rows**=*N*
+:   Terminal winsize via *TIOCSWINSZ*. Both must be set together —
+    single-axis winsize is ill-defined.
+
+**tty-vhangup**=*yes*|*no*
+:   Call **vhangup**(2) on the fd to force any prior session off.
+
+**tty-vt-disallocate**=*yes*|*no*
+:   For `/dev/ttyN` (virtual terminals), call
+    `ioctl(/dev/tty0, VT_DISALLOCATE, N)` BEFORE open so the
+    subsequent open reallocates a fresh VT with clean screen
+    buffer / escape mode. Silently skipped on non-VT paths
+    (serial ports, ptys, `/dev/console`).
+
+**tty-reset**=*yes*|*no*
+:   Write ESC c (RIS — Reset to Initial State) so prior escape
+    mode / color state / cursor position doesn't leak in.
+
+Load-bearing ordering: (1) VT_DISALLOCATE first — frees the VT
+number, next open reallocates clean. (2) Open TTY. (3) vhangup —
+needs an open fd. (4) Reset — after vhangup so it lands on fresh
+state. (5) Winsize — after reset (reset would clobber it).
+
+## D-BUS INTEGRATION (dbus-optional)
+
+**bus-name**=*org.example.MyService*
+:   Well-known D-Bus name the service acquires. When set AND no
+    explicit **ready-check-command** is configured AND `dbus-send`
+    is on PATH at load time, slinit auto-installs a shell one-
+    liner that polls *NameHasOwner* via `dbus-send` as the
+    readiness gate. On hosts without `dbus-send`, **bus-name**
+    stays informational — one config file ports between "no
+    D-Bus" appliance hosts and GNOME/KDE workstations without
+    editing. slinit itself ships ZERO D-Bus client dependency.
+
+**bus-name-scope**=*system*|*session*
+:   Picks system bus (default, what GNOME/KDE/dbus-broker expose
+    on `/run/dbus/system_bus_socket`) vs session bus
+    (`$DBUS_SESSION_BUS_ADDRESS`).
+
+**bus-policy**=*talk*|*see*|*own*
+:   Accepted-noop for config-parity. systemd removed **BusPolicy=**
+    around v242 alongside the abandoned kdbus effort; the field is
+    parsed so legacy unit-file copy-paste doesn't fail, but the
+    runtime ignores it.
+
+## CREDENTIALS (systemd-style)
+
+Credentials are made available inside the service as read-only
+files under *$CREDENTIALS_DIRECTORY* (a fresh per-service tmpfs
+mounted at `/run/credentials/<name>/`).
+
+**load-credential**=*NAME*:*PATH*
+:   Copy the file at *PATH* into the credentials directory as
+    *NAME*. Repeatable via *+=*.
+
+**set-credential**=*NAME*:*VALUE*
+:   Write the literal *VALUE* as *NAME*. No shell escape
+    interpretation — use **load-credential** for binary data.
+
+**import-credential**=*GLOB*
+:   Glob pattern resolved against `/etc/credstore` (overridable
+    via *SYSTEM_CREDSTORE* env for tests). Each match adds a
+    credential named by its basename. Silent on empty match sets
+    per systemd's best-effort semantics.
+
+## OTHER RUNNER-SIDE KNOBS (Bucket B)
+
+**coredump-filter**=*mask*
+:   Hex or decimal mask written to `/proc/self/coredump_filter`;
+    inherited across fork+exec so the child sees it.
+
+**timer-slack-nsec**=*N*
+:   **prctl**(2) *PR_SET_TIMERSLACK*. 0 = leave untouched (kernel
+    default 50µs).
+
+**memory-ksm**=*yes*|*no*
+:   Opt this process's anonymous pages into KSM merging via
+    **prctl**(2) *PR_SET_MEMORY_MERGE*. Kernel 6.4+ required;
+    older kernels fail-close.
+
+**memory-thp**=*madvise*|*never*|*always*
+:   Transparent Huge Pages policy applied via **prctl**(2)
+    *PR_SET_THP_DISABLE*.
+
+**ignore-sigpipe**=*yes*|*no*
+:   Install *SIG_IGN* for **SIGPIPE** (systemd default). Explicit
+    *no* restores the shell/runit default (*SIG_DFL*, terminate
+    on write-to-closed-pipe).
+
+**personality**=*x86-64*|*x86*|*arm*|*arm64*|*linux32*
+:   **personality**(2) domain. Bare numeric value also accepted
+    for advanced flags.
+
+**remove-ipc**=*yes*|*no*
+:   At stop, sweep POSIX shm under `/dev/shm/` and SysV IPC
+    (parsed via `/proc/sysvipc/{shm,msg,sem}`) for objects owned
+    by the service UID and release them via **shmctl**(2) /
+    **msgctl**(2) / **semctl**(2) *IPC_RMID*. UID 0 is skipped
+    by design (would clobber shared system state).
+
+**utmp-mode**=*init*|*login*|*user*
+:   Picks the *ut_type* for the utmp record when **inittab-id**
+    is set (INIT_PROCESS / LOGIN_PROCESS / USER_PROCESS).
+
+**guess-main-pid**=*yes*|*no*
+:   For **type**=*bgprocess* without a **pid-file**: scan the
+    delegated cgroup's *cgroup.procs* and pick the lowest non-
+    self pid as the daemon. Requires a delegated cgroup (**cgroup**
+    or **slice** must be set).
+
+**notify-access**=*main*|*all*|*exec*|*none*
+:   Restricts who can post to the readiness pipe. slinit's pipe-
+    based notification (vs systemd's socket + SO_PEERCRED) makes
+    *main/exec/all* intrinsically equivalent — only the child
+    that inherited the write-end fd can post. *none* disables
+    the pipe entirely so a config that carries
+    **ready-notification** = ... but wants to opt out doesn't
+    have to remove the other directive.
+
+**open-file**=*PATH*[:*FDNAME*[:*OPTIONS*]]
+:   Pre-open a file at *PATH*, pass its fd to the child via the
+    same *LISTEN_FDS* + *LISTEN_FDNAMES* range as **socket-listen**
+    and fd-store handoffs. *OPTIONS* is a comma-separated subset
+    of {*read-only*, *append*, *truncate*, *graceful*}. *graceful*
+    falls back to `/dev/null` on open failure so the fd slot
+    stays stable. Unknown option = parse error. Repeatable via *+=*.
+
+## CGROUP (Bucket C additions)
+
+**cpuset-partition**=*root*|*isolated*|*member*
+:   Cgroup v2 `cpuset.cpus.partition` value.
+
+**startup-allowed-cpus**=*SPEC*, **startup-allowed-memory-nodes**=*SPEC*
+:   Cpuset used at cgroup creation. When set alongside the
+    steady-state **cgroup-cpuset-cpus** / **cgroup-cpuset-mems**,
+    slinit retunes the cgroup to the steady value after the
+    service reaches STARTED. No-op unless both a startup-\*
+    directive AND its steady-state counterpart are configured.
+
+**cache-directory-quota**, **logs-directory-quota**, **state-directory-quota**=*bytes*
+:   Filesystem quota bytes on the auto-managed service directories.
+    Suffix K/M/G/T (base 1024). Currently RECORDED but not applied
+    — the **quotactl**(2) *Q_XSETQLIM* path is deferred pending a
+    working xfs/ext4 test environment.
+
+**cache-directory-accounting**, **logs-directory-accounting**, **state-directory-accounting**=*yes*|*no*
+:   Enable quota accounting. Recorded (no-op apply, per above).
 
 ## EXAMPLE
 

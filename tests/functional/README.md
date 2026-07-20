@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (154 tests)
+# Run all tests (166 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -193,6 +193,18 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 | 152 | protect-kernel-tunables | ro-remount of `/proc/sys` blocks writes to `net.ipv4.ip_forward`; seccomp deny list catches `swapoff` |
 | 153 | protect-proc | `protect-proc = invisible` (hidepid=invisible) hides PID 1 (root-owned) from a `run-as = nobody` service; own PID still visible |
 | 154 | proc-subset=pid | `/proc/uptime`, `/proc/meminfo` disappear inside the service's mount ns; PID dirs remain; host `/proc/uptime` unaffected |
+| 155 | condition-measured-uki | Predicate skips when the boot wasn't measured via UKI + TPM PCR 4/5/7; asserts on measured host |
+| 156 | dynamic-user | Transient UID from the per-daemon pool; `/etc/passwd` unchanged, `/proc/PID/status Uid:` reports new UID |
+| 157 | fdstore-preserve | `file-descriptor-store-preserve = on-success` retains FDSTORE=1 entries across restart; explicit `no` drops them |
+| 158 | psi-pressure-watch | `memory-pressure-watch = yes` + threshold fires SvcEventPressureMemory when cgroup memory PSI crosses limit |
+| 159 | measured-os | `condition-security = measured-os` verifies TPM event log; skip on TPM-less host |
+| 160 | freeze-thaw | `slinitctl freeze/thaw` toggles cgroup v2 `cgroup.freeze`; atomic vs SIGSTOP for whole subtree |
+| 161 | cron-accuracy-sec | Cron fires are coalesced into buckets of the configured accuracy for RTC wakeup batching |
+| 162 | job-timeout-sec | Whole-job timer aborts the start even when the underlying command hasn't blown its start-timeout |
+| 163 | env-generator | Executable that emits KEY=VAL lines at start-time; merged after env-file/env-dir, wins conflicts |
+| 164 | slice-hierarchy | Nested `slice = system.slice/foo.slice` produces the matching cgroup path under `/sys/fs/cgroup/` |
+| 165 | slinit-tmpfiles | Declarative `f/d/L/w/e` directives populate `/run`/`/var` at boot; type-aware apply matches systemd-tmpfiles.d |
+| 166 | slinit-sysusers | Declarative user/group creation at boot; idempotent, honours pre-existing entries |
 
 ## How It Works
 
