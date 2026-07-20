@@ -678,6 +678,15 @@ type ServiceDescription struct {
 	// (SMACK is not exec-transition, it changes the calling task's
 	// label immediately, inherited by execve).
 	SMACKProcessLabel string
+
+	// TTY cluster — console-service knobs. All except TTYPath are
+	// no-ops unless TTYPath is set.
+	TTYPath          string
+	TTYColumns       uint16
+	TTYRows          uint16
+	TTYVHangup       bool
+	TTYVTDisallocate bool
+	TTYReset         bool
 }
 
 // OpenFileSpec captures one open-file directive's parsed form.
@@ -2636,6 +2645,35 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.KillMode = km
+	case "tty-path":
+		v := strings.TrimSpace(value)
+		if v != "" && !strings.HasPrefix(v, "/") {
+			return fmt.Errorf("tty-path: must be absolute, got %q", value)
+		}
+		desc.TTYPath = v
+	case "tty-columns", "tty-rows":
+		n, err := strconv.ParseUint(strings.TrimSpace(value), 10, 16)
+		if err != nil {
+			return fmt.Errorf("%s: expected non-negative uint16, got %q", setting, value)
+		}
+		if setting == "tty-columns" {
+			desc.TTYColumns = uint16(n)
+		} else {
+			desc.TTYRows = uint16(n)
+		}
+	case "tty-vhangup", "tty-vt-disallocate", "tty-reset":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("%s: %w", setting, err)
+		}
+		switch setting {
+		case "tty-vhangup":
+			desc.TTYVHangup = b
+		case "tty-vt-disallocate":
+			desc.TTYVTDisallocate = b
+		case "tty-reset":
+			desc.TTYReset = b
+		}
 	case "selinux-context":
 		v := strings.TrimSpace(value)
 		if v == "" {

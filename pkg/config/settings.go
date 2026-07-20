@@ -325,6 +325,16 @@ var KnownSettings = map[string]OperatorType{
 	// pam-name, tty-*) is deferred with rationale in project memory.
 	"selinux-context":     OpEquals,
 	"smack-process-label": OpEquals,
+
+	// Bucket E — TTY cluster for console services (getty, agetty-
+	// equivalents, serial-console handlers). Every knob no-ops
+	// unless tty-path is set; the others are refinements on top.
+	"tty-path":           OpEquals,
+	"tty-columns":        OpEquals,
+	"tty-rows":           OpEquals,
+	"tty-vhangup":        OpEquals,
+	"tty-vt-disallocate": OpEquals,
+	"tty-reset":          OpEquals,
 	"restrict-realtime":           OpEquals,
 	"restrict-namespaces":         OpEquals,
 	"restrict-suidsgid":           OpEquals,

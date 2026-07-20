@@ -375,6 +375,13 @@ type ServiceRecord struct {
 	// Bucket E partial — LSM domain transition mirrors of AppArmor.
 	selinuxContext     string
 	smackProcessLabel  string
+	// TTY cluster — no-ops unless ttyPath is set.
+	ttyPath          string
+	ttyColumns       uint16
+	ttyRows          uint16
+	ttyVHangup       bool
+	ttyVTDisallocate bool
+	ttyReset         bool
 
 	// Queue membership flags
 	InPropQueue bool
@@ -1732,6 +1739,15 @@ func (sr *ServiceRecord) SetNotifyAccess(n NotifyAccess, set bool) {
 func (sr *ServiceRecord) SetGuessMainPID(b bool) { sr.guessMainPID = b }
 func (sr *ServiceRecord) SetSELinuxContext(s string)     { sr.selinuxContext = s }
 func (sr *ServiceRecord) SetSMACKProcessLabel(s string)  { sr.smackProcessLabel = s }
+func (sr *ServiceRecord) SetTTYPath(s string)            { sr.ttyPath = s }
+func (sr *ServiceRecord) SetTTYColumns(n uint16)         { sr.ttyColumns = n }
+func (sr *ServiceRecord) SetTTYRows(n uint16)            { sr.ttyRows = n }
+func (sr *ServiceRecord) SetTTYVHangup(b bool)           { sr.ttyVHangup = b }
+func (sr *ServiceRecord) SetTTYVTDisallocate(b bool)     { sr.ttyVTDisallocate = b }
+func (sr *ServiceRecord) SetTTYReset(b bool)             { sr.ttyReset = b }
+
+// TTYPath returns the tty device path (empty = no TTY handling).
+func (sr *ServiceRecord) TTYPath() string { return sr.ttyPath }
 
 // SELinuxContext returns the operator-requested SELinux domain (empty
 // = don't touch).
@@ -1922,6 +1938,12 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.AppArmorProfile = sr.appArmorSwitch
 	params.SELinuxContext = sr.selinuxContext
 	params.SMACKProcessLabel = sr.smackProcessLabel
+	params.TTYPath = sr.ttyPath
+	params.TTYColumns = sr.ttyColumns
+	params.TTYRows = sr.ttyRows
+	params.TTYVHangup = sr.ttyVHangup
+	params.TTYVTDisallocate = sr.ttyVTDisallocate
+	params.TTYReset = sr.ttyReset
 	params.DebugStop = sr.debug
 	params.MlockallFlags = sr.mlockallFlags
 	params.NumaMempolicy = sr.numaMempolicy

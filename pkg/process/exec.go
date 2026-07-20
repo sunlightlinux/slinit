@@ -206,11 +206,20 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 	}
 
-	// Console handling: open /dev/console, create new session, set controlling terminal
+	// Console handling: open /dev/console (or an operator-picked TTY
+	// via TTYPath), create new session, set controlling terminal.
+	// TTYPath is more specific and wins over OnConsole when both are
+	// set — a getty-style service configures a specific tty and
+	// doesn't want /dev/console instead.
 	var consoleFd *os.File
-	if params.PTYSlave == "" && params.OnConsole {
+	usePTS := params.PTYSlave == "" && (params.OnConsole || params.TTYPath != "")
+	if usePTS {
 		var err error
-		consoleFd, err = os.OpenFile("/dev/console", os.O_RDWR, 0)
+		if params.TTYPath != "" {
+			consoleFd, err = setupTTY(params)
+		} else {
+			consoleFd, err = os.OpenFile("/dev/console", os.O_RDWR, 0)
+		}
 		if err != nil {
 			// Fallback to inherited stdin/stdout/stderr
 			cmd.Stdin = os.Stdin

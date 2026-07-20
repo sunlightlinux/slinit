@@ -1758,6 +1758,12 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)
 	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)
+	rec.SetTTYPath(desc.TTYPath)
+	rec.SetTTYColumns(desc.TTYColumns)
+	rec.SetTTYRows(desc.TTYRows)
+	rec.SetTTYVHangup(desc.TTYVHangup)
+	rec.SetTTYVTDisallocate(desc.TTYVTDisallocate)
+	rec.SetTTYReset(desc.TTYReset)
 	if hardeningCfg.Active() {
 		rec.SetHardening(hardeningCfg)
 		// Three of the seven knobs need ro mount operations

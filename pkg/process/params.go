@@ -276,6 +276,35 @@ type ExecParams struct {
 	// closed if selinuxfs is absent (LSM not active).
 	SELinuxContext string
 
+	// TTYPath, when non-empty, opens the given TTY device (O_RDWR|
+	// O_NOCTTY) and wires it as stdin/stdout/stderr for the child.
+	// Setsid + Setctty are enabled so the child becomes the session
+	// leader with a controlling terminal — matches getty semantics.
+	// Overrides OnConsole (they're mutually exclusive; TTYPath is
+	// more specific).
+	TTYPath string
+
+	// TTYColumns / TTYRows, when > 0, set the terminal winsize via
+	// TIOCSWINSZ on the opened TTY. Both must be set together to
+	// take effect (single-axis winsize is ill-defined).
+	TTYColumns uint16
+	TTYRows    uint16
+
+	// TTYVHangup: call vhangup(2) on the TTY before setup to force
+	// any prior session off. Matches systemd TTYVHangup=yes.
+	TTYVHangup bool
+
+	// TTYVTDisallocate: for /dev/ttyN (virtual terminals), call
+	// ioctl(fd, VT_DISALLOCATE, N) so the kernel wipes VT state
+	// (screen buffer, escape mode) before we hand it to the child.
+	// No-op on non-VT paths (serial ports, ptys).
+	TTYVTDisallocate bool
+
+	// TTYReset: write the terminal reset sequence (ESC c = RIS,
+	// full reset) to the TTY before setup so a prior client's
+	// escape mode / color / cursor state doesn't leak in.
+	TTYReset bool
+
 	// SMACKProcessLabel, if non-empty, is a SMACK label the runner
 	// writes to /proc/self/attr/current. SMACK changes the label
 	// immediately (unlike SELinux which schedules on execve) but the
