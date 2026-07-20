@@ -1,4 +1,6 @@
-# slinit 8 "" "" "slinit \- service management system"
+% SLINIT(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-20
 
 ## NAME
 
@@ -62,6 +64,118 @@ service-file format.
 :   File descriptor on which to write the control-socket path once
     listening. Used by parent processes to detect that slinit has come
     up and is accepting commands.
+
+**-W** *fd*, **\--wait-fd** *fd*
+:   Block until EOF on *fd* before booting. Docker-style entrypoint
+    sync: the container runtime holds one end of a pipe open and
+    closes it once slinit is safe to proceed (network up, storage
+    mounted). Useful in orchestrated container startup where
+    slinit must not race the surrounding init.
+
+**-s**, **\--system**, **\--sys**, **\--system-mgr**
+:   Run as system manager (even if not PID 1). Selects the system-
+    scope socket path and default services directory. Aliases
+    accepted for parity with dinit / systemd conventions.
+
+**-u**, **\--user**
+:   Run as user-scope service manager. Socket goes to
+    *$XDG_RUNTIME_DIR/slinitctl* (or *$HOME/.slinitctl*), default
+    service dirs shift to user-scope paths.
+
+**-o**, **\--container**
+:   Container mode (Docker / LXC / Podman). Skips the PID-1-only
+    setup branches (console CAD handler, /dev/tty0 opens, kernel
+    log ownership takeover) and prefers exit-with-code shutdown
+    over reboot syscalls.
+
+**\--cgroup-path** *path*
+:   Default cgroup base under which per-service subgroups get
+    created. Defaults to */sys/fs/cgroup/slinit* for PID 1,
+    a per-user path in user mode.
+
+**\--cpu-affinity** *cpuset*
+:   CPU affinity for the daemon AND for services that don't
+    specify their own **cpu-affinity=**. Format: kernel cpuset
+    string like *0-3* or *0,2,4*.
+
+**\--auto-recovery**
+:   Auto-run the *recovery* service if the boot cascade fails.
+    Standard sysinit-style rescue drop-in.
+
+**\--minimum-uptime-sec** *duration*
+:   Anti-boot-loop floor. If shutdown reaches slinit before the
+    system has been up *duration* seconds, slinit blocks the
+    shutdown until the floor is reached. Prevents tight
+    crash-restart loops from making the box unusable for
+    recovery. Real-value for telco / appliance workloads. Mirror
+    of systemd v261 **MinimumUptimeSec=**.
+
+**\--shutdown-final-sleep** *duration*
+:   Extra sleep after all services have stopped but before slinit
+    hands off to the reboot/halt/kexec syscall. Gives the kernel
+    time to flush pending dirty pages / final log lines to disk
+    on hosts where the storage stack is slow to settle.
+
+**\--catch-all-log** *path*
+:   Path to the catch-all log file that captures every service's
+    output when no per-service log target is configured. Default
+    */run/slinit/catch-all.log*.
+
+**\--no-catch-all**
+:   Disable the catch-all logger entirely. Services without a
+    log target write to /dev/null.
+
+**\--kernel-env-store** *path*
+:   Persist kernel command-line KEY=VALUE tokens into *path*
+    (default: disabled) so subsequent boots + slinitctl can query
+    them without re-parsing */proc/cmdline*. Companion to
+    **\--kcmdline-dest** (which snapshots the raw line).
+
+**-q**, **\--quiet**
+:   Suppress all but error output (equivalent to
+    **\--console-level=error**).
+
+**\--log-file** *path*
+:   Log to a file instead of the console. Combined with
+    **\--console-dup** (or **-1**), the daemon writes to both.
+
+**-1**, **\--console-dup**
+:   Duplicate log output to */dev/console* even when
+    **\--log-file** is set. Useful during install / bring-up so
+    the operator sees the daemon's own log without tailing the
+    file.
+
+**\--umask** *octal*
+:   Initial umask for slinit and (unless overridden) its
+    services. Default *0022*.
+
+**\--parallel-start-limit** *N*
+:   Cap on concurrent service starts. 0 (default) = unlimited.
+    Useful on storage-constrained hosts where too many parallel
+    starts (each doing its own fork + exec + config load) can
+    thrash the page cache.
+
+**\--parallel-start-slow-threshold** *duration*
+:   Time before a starting service is flagged as slow. Slow
+    services block the parallel-start counter from advancing,
+    forcing sequentialisation. Default *10s*.
+
+**\--stderr-ring-buffer-size** *N*, **\--stderr-ring-buffer-interval** *duration*
+:   Ring-buffer captures the last N bytes of daemon stderr and
+    flushes to log periodically. Diagnostic aid for reproducing
+    "why did slinit misbehave 5 minutes ago" without keeping
+    every stderr line forever.
+
+**\--heartbeat-interval** *duration*, **\--heartbeat-restart-window** *duration*
+:   Periodic self-check that services still meet their auto-
+    restart limits. Fires every *heartbeat-interval*; a service
+    that has failed within the last *heartbeat-restart-window*
+    but hasn't been restarted gets a nudge. Default disabled;
+    real value in unattended appliances.
+
+**\--timestamp-format** *format*
+:   Log timestamp format: *wallclock* (default), *iso*,
+    *tai64n* (s6-log-style), or *none*.
 
 **\--restore-from-snapshot** *path*
 :   Replay operator intent from a snapshot file written by a prior
@@ -507,7 +621,18 @@ In container mode, the exit status reflects the shutdown reason
 ## SEE ALSO
 
 **slinitctl**(8), **slinit-service**(5), **slinit-check**(8),
-**slinit-monitor**(8), **slinit-shutdown**(8).
+**slinit-monitor**(8), **slinit-shutdown**(8), **slinit-runner**(8),
+**slinit-cgtop**(8), **slinit-tmpfiles**(8),
+**slinit-sysusers**(8), **slinit-logouthookd**(8),
+**slinit-checkpath**(8), **slinit-mount**(8),
+**slinit-init-maker**(8), **slinit-nuke**(8),
+**slinit-seedrng**(8), **slinit-start-stop-daemon**(8),
+**slinit-supervise-daemon**(8), **slinit-binfmt**(8),
+**slinit-sysctl**(8), **slinit-fstabinfo**(8),
+**slinit-mountinfo**(8), **slinit-einfo**(8),
+**slinit-shell-var**(1), **slinit-svc-value**(1),
+**slinit-resource**(7), **rc-service**(8), **rc-update**(8),
+**rc-status**(8).
 
 ## AUTHORS
 

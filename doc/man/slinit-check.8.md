@@ -104,6 +104,18 @@ Namespace settings are checked for self-consistency:
 - Namespace flags on **internal** or **triggered** services emit a
   warning — there is no process for them to apply to.
 
+Directive-syntax validation is delegated to the parser: every
+setting recognised by **slinit-service**(5) is accepted here (~250
+directives across the systemd v260→v262 parity surface, including
+recent additions like **bus-name**, **tty-path**, LSM setters
+**selinux-context** / **smack-process-label**, the **restrict-\***
+hardening cluster, **notify-access**, **guess-main-pid**, and the
+**open-file** fd pass-through). An unknown directive is an ERROR;
+a syntactically-valid directive whose value is out of range (bad
+enum, negative duration, non-absolute path where absolute is
+required, invalid D-Bus well-known name, etc.) is also an ERROR
+per the parser's own contract.
+
 Non-fatal findings are emitted as **WARNING**; fatal findings are
 emitted as **ERROR**.
 

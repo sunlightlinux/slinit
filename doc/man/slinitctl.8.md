@@ -1,4 +1,6 @@
-# slinitctl 8 "" "" "slinit \- service management system"
+% SLINITCTL(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-20
 
 ## NAME
 
@@ -125,6 +127,44 @@ daemon, which is useful at install time or in initramfs.
 
 **unpin** *service*
 :   Clear a previous **\--pin** on *service*.
+
+**run** [*flags*] **\--** *COMMAND* [*ARGS*...]
+:   Spawn a transient one-shot service without writing a service
+    file (systemd-run analogue). The description is written to
+    */run/slinit.d/\<name\>* (tmpfs, evaporates at boot) and the
+    service is loaded + started via the standard code path — no
+    protocol change needed.
+
+    Flags:
+
+    - **\--unit** *NAME* — transient unit name (default
+      *run-\<rand-hex\>*).
+    - **\--description** *STR*
+    - **\--type** *process*|*scripted* (default *process*)
+    - **\--slice** *NAME* — cgroup slice.
+    - **\--nice** *N* — nice value (int).
+    - **\--run-as** *USER*[:*GROUP*] — credential drop via
+      **run-as =**.
+    - **\--on-active** *DURATION* — one-shot timer form: sleep
+      *DURATION* before exec'ing the target. Wraps the argv in
+      */bin/sh -c 'sleep N; exec …'*. Accepts *5s* / *200ms* /
+      *1h* / bare-integer-seconds. systemd-run's
+      **\--on-active**.
+    - **\--setenv** *VAR*=*VAL* — repeatable; written to a
+      companion *\<name\>.env* file and referenced via
+      **env-file =**.
+    - **\--property** *KEY*=*VAL* — repeatable pass-through of
+      any slinit config directive (KEY is slinit-native kebab-
+      case).
+    - **\--wait** — block until STARTED (or STOPPED for scripted).
+      60s cap.
+    - **\--collect** — block until STOPPED, then unload + remove
+      the transient description + .env sidecar. No cap; Ctrl-C
+      is the escape hatch.
+
+    User service manager: use the global **\--user** flag to
+    target the user socket — `slinitctl --user run -- …` is the
+    systemd-run **\--user** analogue.
 
 ### Status & queries
 

@@ -1,4 +1,6 @@
-# slinit-resource 7 "" "" "slinit \- service management system"
+% SLINIT-RESOURCE(7) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-20
 
 ## NAME
 

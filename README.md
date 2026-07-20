@@ -36,23 +36,56 @@ should keep their muscle memory:
   `author`/`version`/`usage`, `apparmor-load`/`apparmor-switch`,
   `debug`, `script ... end script`, `start-on-path-*` activation,
   `<service>.override` drop-ins, `slinitctl reset-env` / `reload-all`.
-- **systemd**: declarative start predicates (`condition-*` /
-  `assert-*`), auto-managed service directories (`runtime-directory`
-  family), filesystem sandbox (`private-tmp`, `protect-system`,
-  `read-only-paths`, `bind-paths`, `inaccessible-paths`,
-  `temporary-filesystem`, `protect-home`, `protect-proc`/`proc-subset`),
-  `system-call-filter` seccomp filter with curated groups + argument
-  architectures, `Restrict*`/`Protect*` hardening cluster
-  (`protect-kernel-tunables/-modules/-logs/-clock/-control-groups/`
-  `-hostname`, `lock-personality`), `failure-action` /
-  `success-action` / `reboot-argument`, `runtime-max-sec`,
-  `oom-policy`, `pre-start-command` / `post-start-command`,
-  `log-rate-limit-*` + `log-level-max`, per-service `credentials`
-  via tmpfs ro + `$CREDENTIALS_DIRECTORY`, calendar timers
-  (`cron-calendar`, `cron-randomized-delay`, `cron-persistent`),
-  `dynamic-user` (transient UID/GID from a per-daemon pool),
-  `file-descriptor-store-max` (sd_notify FDSTORE=1 with SCM_RIGHTS
-  replay across restarts).
+- **systemd**: ~250 config directives across five deep-scan passes
+  covering v260 through v262-devel. Full clusters: declarative
+  start predicates (~35 `condition-*` / `assert-*`, including
+  `exec-condition`, `fraction` for staged fleet rollouts,
+  `machine-tag`, `firmware`, PSI pressure conditions), auto-
+  managed service directories (`runtime/state/cache/logs/`
+  `configuration-directory` + `*-mode` + `*-quota` +
+  `*-accounting`), filesystem sandbox (`private-tmp`,
+  `protect-system`, `read-only-paths`, `bind-paths`,
+  `inaccessible-paths`, `temporary-filesystem`, `protect-home`,
+  `protect-proc`/`proc-subset`), seccomp (`system-call-filter`
+  with curated groups + arg architectures; full `Restrict*`
+  hardening — `restrict-realtime`/`namespaces`/`suidsgid`/
+  `file-systems`/`address-families`, `memory-deny-write-execute`),
+  `Protect*` cluster (`protect-kernel-tunables/-modules/-logs/`
+  `-clock/-control-groups/-hostname`, `lock-personality`), LSM
+  domain transitions (`apparmor-switch`, `selinux-context`,
+  `smack-process-label`; all fail-closed on missing LSM),
+  `failure-action` / `success-action` / `start-limit-action` /
+  `reboot-argument`, restart cluster (`restart-randomized-delay`,
+  `restart-max-delay`, `restart-force-exit-status`,
+  `restart-mode`, `restart-kill-signal`), timeout cluster
+  (`timeout-sec`, `timeout-abort-sec`, `timeout-start-failure-mode`,
+  `timeout-stop-failure-mode`), kill semantics (`kill-mode`,
+  `final-kill-signal`, `survive-final-kill-signal`,
+  `watchdog-signal`), `runtime-max-sec` + `runtime-randomized-`
+  `extra`, `exit-type = main|cgroup`, `oom-policy`, PSI pressure
+  watches (`{memory,cpu,io}-pressure-{watch,threshold}`),
+  `pre-start-command` / `post-start-command`, cgroup v2
+  resources (`cgroup-*-max`/`*-weight`, `cpuset-partition`,
+  `startup-allowed-cpus`/`memory-nodes`), `log-rate-limit-*` +
+  `log-level-max`, per-service credentials (tmpfs ro +
+  `$CREDENTIALS_DIRECTORY`, `load-credential` / `set-credential` /
+  `import-credential` glob), calendar timers (`cron-calendar`,
+  `cron-randomized-delay`, `cron-persistent`), env pipeline
+  (`pass-environment`, `unset-environment`, `exec-search-path`,
+  `env-generator`, `setenv`), `standard-input-text` /
+  `standard-input-data`, `open-file` (v261+ fd pass-through),
+  `notify-access`, `guess-main-pid`, `dynamic-user`,
+  `file-descriptor-store-max` + `-preserve` (sd_notify FDSTORE=1
+  with SCM_RIGHTS replay across restarts), console services
+  (`tty-path` + `tty-columns/rows/vhangup/vt-disallocate/reset`),
+  D-Bus name-based readiness (`bus-name` auto-wires ready-check
+  via `dbus-send` when installed — slinit ships zero D-Bus
+  dependency), Bucket B legacy niches (`coredump-filter`,
+  `timer-slack-nsec`, `memory-ksm`, `memory-thp`,
+  `ignore-sigpipe`, `personality`, `utmp-mode`, `remove-ipc`).
+  systemd's D-Bus object model, journald, generators, and
+  ecosystem daemons (networkd, resolved, logind, homed) remain
+  intentionally out of scope.
 
 Runlevels, where present, are pure UX aliases over the dependency
 graph — slinit does not introduce a second state machine or config
@@ -930,7 +963,7 @@ slinit/
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
 ├── tests/functional/      # 136 QEMU-based integration tests
-├── tests/acceptance/ssh/  # 162 live-VM acceptance cases (SSH-driven)
+├── tests/acceptance/ssh/  # 169 live-VM acceptance cases (SSH-driven)
 ├── tests/fuzz/            # 21+ fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
@@ -938,13 +971,13 @@ slinit/
 ## Testing
 
 ```bash
-# Unit tests (~1450+ tests + benchmarks across 40 packages)
+# Unit tests (~1680 tests + benchmarks across ~40 packages, 227 _test.go files)
 go test ./...
 
-# Functional tests (136 QEMU-based integration tests)
+# Functional tests (166 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
-# Acceptance tests (162 SSH-driven cases against a live VM/host)
+# Acceptance tests (169 SSH-driven cases against a live VM/host)
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/acceptance/ssh/run.sh
 
