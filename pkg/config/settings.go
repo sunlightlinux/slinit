@@ -329,6 +329,15 @@ var KnownSettings = map[string]OperatorType{
 	// Bucket E — TTY cluster for console services (getty, agetty-
 	// equivalents, serial-console handlers). Every knob no-ops
 	// unless tty-path is set; the others are refinements on top.
+	// bus-name / bus-policy — config-parity with systemd D-Bus
+	// unit files. See parser.go docstring: bus-name auto-wires
+	// ready-check-command via `dbus-send` when available; bus-policy
+	// is deprecated in systemd (removed with kdbus abandonment)
+	// and slinit accepts-warns.
+	"bus-name":         OpEquals,
+	"bus-policy":       OpEquals,
+	"bus-name-scope":   OpEquals, // system|session, default system
+
 	"tty-path":           OpEquals,
 	"tty-columns":        OpEquals,
 	"tty-rows":           OpEquals,

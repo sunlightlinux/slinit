@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -264,7 +265,22 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetFinishCommand(desc.FinishCommand)
 		s.SetPreStartCommand(desc.PreStartCommand)
 		s.SetPostStartCommand(desc.PostStartCommand)
-		s.SetReadyCheckCommand(desc.ReadyCheckCommand, desc.ReadyCheckInterval)
+		// bus-name auto-wiring: if the operator declared a D-Bus
+		// well-known name AND did not also provide an explicit
+		// ready-check-command, we synthesise one that polls
+		// NameHasOwner via `dbus-send`. Requires dbus-send on
+		// PATH — degrades gracefully on hosts without dbus so
+		// one config file ports between "no D-Bus" and GNOME/KDE
+		// installations without editing.
+		rcc := desc.ReadyCheckCommand
+		rci := desc.ReadyCheckInterval
+		if desc.BusName != "" && len(rcc) == 0 && dbusSendAvailable() {
+			rcc = dbusReadyCheckCommand(desc.BusName, desc.BusNameScope)
+			if rci == 0 {
+				rci = 100 * time.Millisecond
+			}
+		}
+		s.SetReadyCheckCommand(rcc, rci)
 		s.SetPreStopHook(desc.PreStopHook)
 		s.SetControlCommands(desc.ControlCommands)
 		s.SetWorkingDir(desc.WorkingDir)
@@ -1084,7 +1100,15 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetFinishCommand(desc.FinishCommand)
 		svc.SetPreStartCommand(desc.PreStartCommand)
 		svc.SetPostStartCommand(desc.PostStartCommand)
-		svc.SetReadyCheckCommand(desc.ReadyCheckCommand, desc.ReadyCheckInterval)
+		rccReload := desc.ReadyCheckCommand
+		rciReload := desc.ReadyCheckInterval
+		if desc.BusName != "" && len(rccReload) == 0 && dbusSendAvailable() {
+			rccReload = dbusReadyCheckCommand(desc.BusName, desc.BusNameScope)
+			if rciReload == 0 {
+				rciReload = 100 * time.Millisecond
+			}
+		}
+		svc.SetReadyCheckCommand(rccReload, rciReload)
 		svc.SetPreStopHook(desc.PreStopHook)
 		svc.SetControlCommands(desc.ControlCommands)
 		svc.SetEnvDir(desc.EnvDir)
@@ -2211,6 +2235,58 @@ func calcServiceDepth(svc service.Service) int {
 		}
 	}
 	return depth
+}
+
+// dbusSendPath is the resolved path to the dbus-send binary or the
+// empty string when not on PATH. Populated lazily by dbusSendAvailable
+// so a config change (installing dbus at runtime) is picked up on the
+// next slinitctl reload without a restart.
+var dbusSendPath = ""
+
+// dbusSendAvailable probes PATH for `dbus-send` — the standard D-Bus
+// reference-client CLI shipped with every dbus installation (Void's
+// `dbus`, Debian/Ubuntu's `dbus`, Fedora's `dbus-tools`). Empty
+// dbusSendPath sentinel is refreshed on each call so a fresh install
+// takes effect without a slinit restart. Caching the successful hit
+// keeps the hot path (dozens of services loading at boot) cheap.
+func dbusSendAvailable() bool {
+	if dbusSendPath != "" {
+		if _, err := os.Stat(dbusSendPath); err == nil {
+			return true
+		}
+		dbusSendPath = ""
+	}
+	for _, dir := range []string{"/usr/bin", "/bin", "/usr/local/bin"} {
+		full := dir + "/dbus-send"
+		if _, err := os.Stat(full); err == nil {
+			dbusSendPath = full
+			return true
+		}
+	}
+	return false
+}
+
+// dbusReadyCheckCommand builds the shell one-liner that gates
+// STARTED on the well-known name being owned. The `dbus-send` reply
+// prints `boolean true` when NameHasOwner returns true, `boolean
+// false` otherwise; grep -q flips the exit code so slinit's
+// ready-check-command polling sees ok/not-ok naturally.
+//
+// scope defaults to system — the daemon that GNOME / KDE / dbus-
+// broker exposes on /run/dbus/system_bus_socket. `session` picks
+// $DBUS_SESSION_BUS_ADDRESS (per-user helper daemons).
+func dbusReadyCheckCommand(name, scope string) []string {
+	scopeFlag := "--system"
+	if scope == "session" {
+		scopeFlag = "--session"
+	}
+	// Redirect stderr so a transient "connection refused" during
+	// daemon startup doesn't spam the service log; the exit code
+	// carries the whole signal.
+	cmd := fmt.Sprintf(
+		"%s %s --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:%s 2>/dev/null | grep -q 'boolean true'",
+		dbusSendPath, scopeFlag, name)
+	return []string{"/bin/sh", "-c", cmd}
 }
 
 // credstoreRoot returns the base directory ImportCredential= globs
