@@ -1,3 +1,7 @@
+% SLINIT-SYSCTL(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-sysctl - apply sysctl.d(5) tunables to /proc/sys

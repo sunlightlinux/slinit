@@ -1,3 +1,7 @@
+% SLINIT-MOUNTINFO(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-mountinfo - query the kernel mount table (OpenRC-compatible)

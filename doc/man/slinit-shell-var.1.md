@@ -1,3 +1,7 @@
+% SLINIT-SHELL-VAR(1) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-shell-var - sanitise strings into shell-variable names

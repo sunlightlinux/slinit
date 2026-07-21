@@ -1,3 +1,7 @@
+% SLINIT-FSTABINFO(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-fstabinfo - query /etc/fstab entries (OpenRC-compatible)

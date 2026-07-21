@@ -1,3 +1,7 @@
+% SLINIT-CHECK(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-check - offline configuration linter for slinit service files

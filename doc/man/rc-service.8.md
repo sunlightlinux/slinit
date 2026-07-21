@@ -1,3 +1,7 @@
+% RC-SERVICE(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 rc-service - OpenRC-compatible service control shim for slinit

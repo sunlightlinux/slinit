@@ -1,3 +1,7 @@
+% SLINIT-BINFMT(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-binfmt - register custom binary formats with the kernel

@@ -1,3 +1,7 @@
+% SLINIT-SHUTDOWN(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-shutdown - issue a shutdown, halt, reboot, or soft-reboot to slinit

@@ -32,6 +32,10 @@ PAGES_8 = \
 	slinit-einfo.8 \
 	slinit-binfmt.8 \
 	slinit-sysctl.8 \
+	slinit-cgtop.8 \
+	slinit-logouthookd.8 \
+	slinit-sysusers.8 \
+	slinit-tmpfiles.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8

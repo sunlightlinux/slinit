@@ -1,3 +1,7 @@
+% SLINIT-SVC-VALUE(1) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-svc-value, service_get_value, service_set_value,

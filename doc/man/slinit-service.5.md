@@ -100,6 +100,25 @@ instance, with *$1* substitution still in effect.
 :   Like **internal**, but stays in *waiting* until **slinitctl
     trigger** fires it. Useful as a manual gate.
 
+### Bundle (aggregate) services
+
+**bundle-of**=*svc1*, *svc2*, ... (also accepts `:` and repeat/`+=`)
+:   Marks the current service as an s6-rc-style bundle: it has no
+    process, but starting it starts every named member, and stopping
+    it stops them. Requires **type**=*internal* — bundles are pure
+    aggregation, not supervision. Members are looked up by name and
+    joined as hard dependencies (**depends-on**) at load time.
+
+    Member names may not begin with `.` (parser rejects it), and the
+    bundle itself is never a member of another bundle. Reload of a
+    bundle re-reads the member list; adds and removes propagate.
+    Convenient for boot-time groupings like `system.target` or
+    `all-network`.
+
+        # bundle "network" bringing up wired + wireless + resolver
+        type       = internal
+        bundle-of  = wired, wireless, resolver
+
 ## CORE SETTINGS
 
 **description**=*text*
@@ -207,6 +226,20 @@ instance, with *$1* substitution still in effect.
     The store lives in slinit's memory — a daemon restart loses
     everything, matching systemd. `0` (default) disables the
     feature; an unconfigured service has no `$NOTIFY_SOCKET`.
+
+**file-descriptor-store-preserve**=*yes*|*no*|*on-success*
+:   Controls whether the fd store survives a service *Stop*.
+
+    - *no* (default) — clear on Stop. A restart still preserves the
+      store (the store is scoped to the service, not the transition).
+    - *yes* — keep across Stop as well. `slinitctl start` after a
+      manual stop re-attaches the same listeners.
+    - *on-success* — keep only when the service stopped cleanly
+      (exit code 0 or signalled by an administrative stop). A crash
+      wipes the store so the next start reopens fresh sockets.
+
+    Only meaningful when **file-descriptor-store-max** is greater
+    than 0. Mirrors systemd's **FileDescriptorStorePreserve=**.
 
 **dynamic-user**=*yes*|*no*
 :   When *yes*, slinit allocates a transient UID/GID from a pool
@@ -371,6 +404,27 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
     4. Default is *no*. Setting *manual = no* is harmless and the
        same as omitting the stanza.
 
+**refuse-manual-start**=*yes*|*no*
+:   When *yes*, **slinitctl start** on this service is refused; only
+    activation as a dependency of another service will bring it up.
+    Complements **manual**, which forbids *auto*-activation: setting
+    both is legal but unusual (the service can only be reached via a
+    trigger, milestone, or explicit dependent request).
+
+**refuse-manual-stop**=*yes*|*no*
+:   When *yes*, **slinitctl stop** on this service is refused. The
+    service still stops when its dependents stop, when a milestone
+    dependency releases it, or during shutdown. Useful for critical
+    infrastructure services the operator should not stop by hand
+    (e.g. `dbus`, `journald`).
+
+**stop-when-unneeded**=*yes*|*no*
+:   When *yes*, the service stops as soon as no dependent needs it
+    anymore. Mirrors systemd's **StopWhenUnneeded=**. Default *no*
+    (the service stays up until explicitly stopped or shutdown).
+    Combine with soft dependencies to build cache-style services
+    that spin up on first demand and evaporate when idle.
+
 ## RESTART POLICY
 
 **restart**=*yes*|*no*|*on-failure*
@@ -426,6 +480,25 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
 **restart-limit-interval**=*duration*, **restart-limit-count**=*N*
 :   Rate-limit: more than *N* failures inside this window puts the
     service into the *failed* state.
+
+**start-limit-action**=*none*|*reboot*|*poweroff*|*halt*|*exit*
+:   System-level action when the restart limit is exhausted. *none*
+    (default) leaves the service *failed* without touching the rest
+    of the system; the other values route through the same shutdown
+    machinery as **failure-action** (see SYSTEM ACTIONS). Distinct
+    from **failure-action** — start-limit-action fires only on
+    restart-loop exhaustion, not on the first failure. Mirrors
+    systemd's **StartLimitAction=**.
+
+**job-timeout-sec**=*duration*
+:   Hard cap on how long a start or stop transition may take before
+    the transition is aborted and the service is forced into the
+    corresponding failure state. Distinct from **start-timeout** /
+    **stop-timeout**, which time out only the child process; this
+    covers the entire dependency-resolution + child-lifecycle window
+    (e.g. dependencies stuck in STARTING, ready-notification never
+    received). `0` (default) disables. Mirrors systemd's
+    **JobTimeoutSec=**.
 
 **restart-randomized-delay**=*duration*
 :   Additive jitter drawn uniformly from *[0, N)* added to the
@@ -624,6 +697,19 @@ apply OS-level changes:
     keep an in-memory ring buffer (queryable via **slinitctl
     catlog**); *pipe*: pipe to **shared-logger**; *command*: pipe to
     **output-logger** / **error-logger**.
+
+**log-select**=*+prefix* *-prefix* ...
+:   Per-service line filter applied before the log stream leaves the
+    reader — s6-log-select style. Tokens are `+`-prefixed to keep
+    lines starting with *prefix* or `-`-prefixed to drop them; the
+    first matching rule wins, and unmatched lines are dropped by
+    default (add a trailing `+ ` — literal `+` followed by empty
+    string — to keep everything unmatched). Mutually exclusive with
+    **log-include** / **log-exclude** (regex-based). Tokens without
+    a leading `+`/`-` are a parse error.
+
+        # keep NOTICE and ERROR lines, drop the rest
+        log-select = +NOTICE +ERROR -
 
 **log-buffer-size**=*N*
 :   Size in bytes of the in-memory log buffer.
@@ -1110,6 +1196,34 @@ kernel stacks filters and takes the most restrictive result.
     inside the cgroup directory (no slashes, no `..`), *value* is
     the literal contents to write.
 
+### PSI pressure watches (Linux ≥ 5.13)
+
+Reactive resource events rather than static limits: slinit polls
+the cgroup's `memory.pressure`, `cpu.pressure`, or `io.pressure`
+files and emits events when the `some avg10` share crosses a
+threshold. Consumed by **slinit-monitor**(8) as `pressure-*`
+events. Requires the service to be placed in a cgroup (**cgroup=**
+or the daemon's **\--cgroup-path**) and cgroup v2.
+
+**memory-pressure-watch**=*yes*|*no*, **cpu-pressure-watch**=*yes*|*no*,
+**io-pressure-watch**=*yes*|*no*
+:   Arm the pressure watcher for the given controller. Default *no*.
+    Watchers are per-service; a single service may arm all three.
+
+**memory-pressure-threshold**=*N*, **cpu-pressure-threshold**=*N*,
+**io-pressure-threshold**=*N*
+:   Percent (0..100) at which the pressure event fires. Default 10.
+    The watcher emits a `pressure-<type>-high` event when the share
+    crosses *N* upward and a `pressure-<type>-low` event when it
+    drops back below. Hysteresis is handled internally so a value
+    oscillating at the threshold does not flap.
+
+Example — page a scaler when memory pressure spikes for a workload:
+
+    cgroup                    = /workload
+    memory-pressure-watch     = yes
+    memory-pressure-threshold = 20
+
 ## RESOURCE LIMITS
 
 **rlimit-nofile**=*spec*, **rlimit-core**=*spec*,
@@ -1400,6 +1514,21 @@ watch; the service remains startable via `slinitctl start`.
 
 **cron-interval**=*duration*, **cron-delay**=*duration*
 :   Period and initial delay (interval mode).
+
+**cron-on-unit-active**=*duration*
+:   Systemd-portability alias for **cron-interval**. Use whichever
+    name is easier to keep in sync with an existing systemd timer
+    unit; slinit treats them identically.
+
+**cron-on-active**=*duration*
+:   Systemd-portability alias for **cron-delay**. See above.
+
+**cron-accuracy-sec**=*duration*
+:   Coalesce fire times within *duration* of each other so slinit
+    can batch wake-ups instead of firing on the exact microsecond.
+    Mostly relevant on battery-powered devices and for large fleets
+    of cron-style services that would otherwise wake independently.
+    Default `1s`. Mirrors systemd's **AccuracySec=**.
 
 **cron-on-error**=*continue*|*stop*
 :   What to do when **cron-command** exits non-zero (default

@@ -1,3 +1,7 @@
+% RC-STATUS(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 rc-status - OpenRC-compatible service status listing for slinit

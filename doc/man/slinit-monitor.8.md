@@ -1,3 +1,7 @@
+% SLINIT-MONITOR(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-monitor - watch slinit service and environment events, run a
