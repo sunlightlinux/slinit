@@ -1,3 +1,7 @@
+% SLINIT-CHECKPATH(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-checkpath - create or verify filesystem paths with type, mode,

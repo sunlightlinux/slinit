@@ -1,3 +1,7 @@
+% SLINIT-SUPERVISE-DAEMON(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-supervise-daemon - start a non-forking daemon and restart it if

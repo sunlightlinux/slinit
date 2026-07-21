@@ -1,3 +1,7 @@
+% SLINIT-NUKE(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-nuke - emergency kill-all utility for slinit-managed systems

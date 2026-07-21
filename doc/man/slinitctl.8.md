@@ -121,6 +121,19 @@ daemon, which is useful at install time or in initramfs.
 **continue** *service* (alias **cont**)
 :   Counterpart to **pause**: send SIGCONT.
 
+**freeze** *service*
+:   Freeze every process in the service's cgroup via the cgroup v2
+    *cgroup.freeze* interface. Unlike **pause** (which sends
+    SIGSTOP and can be observed / bypassed by the target), a
+    frozen cgroup is opaque to the frozen processes — they are
+    suspended by the kernel and cannot receive signals other than
+    SIGKILL. Requires a configured **cgroup** for the service and
+    cgroup v2. The service stays in *running* from slinit's
+    perspective.
+
+**thaw** *service*
+:   Counterpart to **freeze**: clear *cgroup.freeze*.
+
 **once** *service*
 :   Like **start**, but disable any *restart=on-failure* policy for
     this run — a one-shot-style execution.
@@ -181,6 +194,14 @@ daemon, which is useful at install time or in initramfs.
 
 **is-failed** *service*
 :   Exit 0 iff *service* failed at its last attempt.
+
+**reset-failed** [*service*]
+:   Clear the *failed* mark so the service can be started again
+    without an operator having to force-clear via **stop** +
+    **start**. Also resets the restart-limit counter (**restart-limit-count**)
+    so the next start is treated as a fresh attempt. With no argument,
+    clears the mark on every service currently in *failed*.
+    Mirrors systemd's **reset-failed** subcommand.
 
 **dependents** *service*
 :   Print services that hard-depend on *service*.

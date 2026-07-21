@@ -1,3 +1,7 @@
+% RC-UPDATE(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 rc-update - OpenRC-compatible runlevel membership tool for slinit

@@ -1,3 +1,7 @@
+% SLINIT-MOUNT(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-mount - autofs lazy mount daemon for slinit

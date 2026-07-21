@@ -1,3 +1,7 @@
+% SLINIT-INIT-MAKER(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-init-maker - generate a minimal, bootable slinit

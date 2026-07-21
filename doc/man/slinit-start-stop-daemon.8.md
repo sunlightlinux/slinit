@@ -1,3 +1,7 @@
+% SLINIT-START-STOP-DAEMON(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-start-stop-daemon - start or stop system daemons (OpenRC-compatible)

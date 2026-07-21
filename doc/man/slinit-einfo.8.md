@@ -1,3 +1,7 @@
+% SLINIT-EINFO(8) slinit | Sunlight Linux
+% Ionut Nechita
+% 2026-07-21
+
 # NAME
 
 slinit-einfo, einfo, ewarn, eerror, ebegin, eend, ewend, esyslog,
