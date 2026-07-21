@@ -5,18 +5,23 @@
 set -euo pipefail
 
 # Alpine Linux configuration
-ALPINE_VERSION="3.21"
-ALPINE_RELEASE="3.21.6"
+# NOTE: 3.21 shipped linux-virt 6.12.95-r0, which oopses on
+# nested-virt (VirtualBox host → QEMU/KVM → Alpine) during shutdown
+# — kernel-side NX-fault in a syscall path when slinit-supervise-daemon
+# reaps a stuck child. 3.23 ships 6.18.39-r0 (fresh LTS) and does not
+# hit that path. If you bump this back, clear demo/_cache first.
+ALPINE_VERSION="3.23"
+ALPINE_RELEASE="3.23.5"
 ALPINE_ARCH="x86_64"
 ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
 MINIROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_RELEASE}-${ALPINE_ARCH}.tar.gz"
 PACKAGES_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/${ALPINE_ARCH}"
 
 # Bash and its dependencies (Alpine APK filenames)
-BASH_PKG="bash-5.2.37-r0.apk"
-READLINE_PKG="readline-8.2.13-r0.apk"
-LIBNCURSESW_PKG="libncursesw-6.5_p20241006-r3.apk"
-NCURSES_TERMINFO_PKG="ncurses-terminfo-base-6.5_p20241006-r3.apk"
+BASH_PKG="bash-5.3.3-r1.apk"
+READLINE_PKG="readline-8.3.1-r0.apk"
+LIBNCURSESW_PKG="libncursesw-6.5_p20251123-r0.apk"
+NCURSES_TERMINFO_PKG="ncurses-terminfo-base-6.5_p20251123-r0.apk"
 
 # Directories
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
