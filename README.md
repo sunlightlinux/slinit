@@ -218,7 +218,16 @@ format to accommodate them.
   `-key = value` best-effort prefix and dotted-or-slashed keys),
   `slinit-svc-value` (OpenRC `value`(1) clone — per-service persistent
   key=value store via `service_get_value`/`service_set_value`/`service_export`
-  applets; backing at `/run/slinit/options/<svc>/<key>`)
+  applets; backing at `/run/slinit/options/<svc>/<key>`),
+  `slinit-cgtop` (top-like viewer for cgroup v2 CPU / memory / task counts
+  under `/sys/fs/cgroup`, sortable by any column, `--once` for scripting),
+  `slinit-sysusers` (systemd-sysusers clone — declarative user/group
+  creation from `sysusers.d/*.conf`, honours `u`/`g`/`m`/`r` line types),
+  `slinit-tmpfiles` (systemd-tmpfiles clone — creates/cleans
+  `tmpfiles.d/*.conf` entries at boot, path-safe under `/run` and `/var`),
+  `slinit-logouthookd` (utmp logout daemon — writes `DEAD_PROCESS` /
+  session-end records for tty and pty sessions so `who`/`w`/`last` stay
+  correct without a hook in every login shell)
 
 ## Building
 
@@ -245,6 +254,10 @@ go build ./cmd/slinit-shell-var          # OpenRC shell_var(1) clone
 go build ./cmd/slinit-binfmt             # systemd-binfmt(1) clone
 go build ./cmd/slinit-sysctl             # systemd-sysctl(1) clone
 go build ./cmd/slinit-svc-value          # OpenRC value(1) clone
+go build ./cmd/slinit-cgtop              # top-like viewer for cgroup v2 usage
+go build ./cmd/slinit-sysusers           # systemd-sysusers(1) clone
+go build ./cmd/slinit-tmpfiles           # systemd-tmpfiles(1) clone
+go build ./cmd/slinit-logouthookd        # utmp logout daemon (UTMPX bookkeeping)
 
 # OpenRC compat shims
 go build ./cmd/rc-service
@@ -800,14 +813,89 @@ Checks: file existence, type validity, command executability, dependency referen
 
 ### slinit-monitor
 
-Event watcher that subscribes to service state changes and optionally executes commands:
+Subscribes to the daemon's SERVICEEVENT / ENVEVENT stream and runs a
+command for every change. Substitutions: `%n` (name), `%s` (status text
+— `started`/`stopped`/`failed` for services, `set`/`unset` for env),
+`%v` (env-var value, `-E` mode only), `%%` (literal percent).
 
 ```bash
-# Watch all events
-slinit-monitor
+# 1. Alert on failure of a specific critical service.
+#    The shell test filters — slinit-monitor runs the command on every
+#    transition; %s carries the resulting state.
+slinit-monitor -c '[ "%s" = failed ] && \
+    logger -p daemon.alert -t slinit "svc %n entered FAILED"' \
+    postgres
 
-# Execute command on state change (%n=name, %s=state, %v=event)
-slinit-monitor -c 'echo "Service %n changed to %s (event: %v)"'
+# 2. Same idea via a webhook to the ops channel.
+slinit-monitor -c '[ "%s" = failed ] && \
+    curl -sS -X POST -d "%n went red" https://hooks.example/ops' \
+    nginx redis postgres
+
+# 3. Auto-remediation — restart a fallback svc when the primary drops.
+slinit-monitor -c '[ "%s" = stopped ] && slinitctl start nginx-standby' \
+    nginx
+
+# 4. Fire once when a service reaches started, then exit.
+#    Useful as a boot-time gate in shell scripts.
+slinit-monitor -i -e -c 'true' database
+
+# 5. Env-var watcher — mirror runtime env changes into an audit file.
+slinit-monitor -E -c 'printf "%%s %n=%v\n" "$(date -Is)" >> \
+    /var/log/slinit-env.log'
+```
+
+### slinit-cgtop
+
+Top-like viewer for the cgroup v2 tree. Reads `/sys/fs/cgroup`
+periodically and surfaces per-cgroup CPU %, memory bytes, and task
+counts. Colour-free output is script-friendly with `--once`.
+
+```bash
+# Live view, refresh every second, top 3 levels of the cgroup tree
+slinit-cgtop
+
+# Sort by memory instead of CPU, drill deeper, refresh every 500ms
+slinit-cgtop --sort mem --depth 5 --delay 500ms
+
+# One snapshot for a cron / metrics scraper (single line per cgroup)
+slinit-cgtop --once --sort mem --depth 4
+
+# Show every cgroup — including idle ones with zero tasks / zero memory
+slinit-cgtop --all
+```
+
+### slinit-sysusers / slinit-tmpfiles
+
+Declarative bootstrap of system state, drop-in compatible with the
+`systemd-sysusers`(8) and `systemd-tmpfiles`(8) formats. Typically wired
+as `type = scripted` services early in the boot graph.
+
+```bash
+# Users & groups — reads /usr/lib/sysusers.d/*.conf + /etc/sysusers.d/*.conf
+slinit-sysusers                  # apply everything
+slinit-sysusers --dry-run        # preview actions without touching passwd/group
+slinit-sysusers --dirs /etc/sysusers.d  # override search path
+
+# Runtime paths — reads /usr/lib/tmpfiles.d/*.conf + /etc/tmpfiles.d/*.conf
+slinit-tmpfiles                  # create/clean per config
+slinit-tmpfiles --dry-run
+```
+
+### slinit-logouthookd
+
+Persistent daemon that writes UTMPX `DEAD_PROCESS` records when tty /
+pty sessions end. Login programs (agetty, sshd, su) can drop a session
+descriptor onto its Unix socket and forget about it — the daemon
+watches the session, and once the last process on that line is gone,
+it writes the logout record so `who`, `w`, and `last` stay accurate
+without every login shell needing a private hook.
+
+```bash
+# Standard invocation (as a slinit service — usually a `type = process`).
+slinit-logouthookd
+
+# Custom socket path + permissions (default: /run/slinit-logouthookd.sock, 0600)
+slinit-logouthookd --socket /run/slh.sock --perms 0660
 ```
 
 ### slinit-init-maker
@@ -941,6 +1029,10 @@ slinit/
 │   ├── slinit-mount/      # Autofs lazy-mount helper
 │   ├── slinit-checkpath/  # Path-validation helper
 │   ├── slinit-seedrng/    # Persist entropy across reboots (SeedRNG protocol)
+│   ├── slinit-cgtop/      # Top-like viewer for cgroup v2 (CPU/mem/tasks)
+│   ├── slinit-sysusers/   # systemd-sysusers clone (declarative user/group)
+│   ├── slinit-tmpfiles/   # systemd-tmpfiles clone (/run + /var bootstrap)
+│   ├── slinit-logouthookd/# UTMPX logout daemon (DEAD_PROCESS bookkeeping)
 │   ├── rc-service/        # OpenRC compat: thin shim over slinitctl
 │   ├── rc-update/         # OpenRC compat: runlevel membership via runlevel-<name> services
 │   └── rc-status/         # OpenRC compat: status listing
@@ -962,7 +1054,7 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 136 QEMU-based integration tests
+├── tests/functional/      # 166 QEMU-based integration tests
 ├── tests/acceptance/ssh/  # 169 live-VM acceptance cases (SSH-driven)
 ├── tests/fuzz/            # 21+ fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
