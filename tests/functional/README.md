@@ -35,6 +35,22 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 - `socat` or `nc` (for virtio-serial result reading)
 - KVM recommended (falls back to software emulation)
 
+### KVM stability caveat on hybrid CPUs and nested virt
+
+On Intel hybrid architectures (Meteor Lake / Core Ultra 100 series and
+newer) or when the test host is itself a guest under another hypervisor
+(VirtualBox, VMware, Hyper-V), functional-test VMs can fail with a
+kernel Oops during boot or shutdown — typically `inflate_fast` page
+fault during initramfs decompression, `0xCC` poison in registers, or
+an NX-protected page execution. The bug lives in the KVM ↔ hybrid-CPU
+feature-passthrough path; the guest kernel is fine on non-hybrid
+silicon and non-nested KVM.
+
+If you hit this, pass `-cpu kvm64` to the QEMU invocation (or drop
+`-enable-kvm` and let it fall back to TCG at the cost of ~10-30× slower
+boot). Bare-metal hosts on older Intel, AMD Zen, or server SKUs are
+unaffected.
+
 ## Test Cases
 
 | # | Name | What it validates |

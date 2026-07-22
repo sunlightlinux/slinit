@@ -16,6 +16,29 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 - `curl`, `cpio`, `gzip`
 - KVM recommended (falls back to software emulation)
 
+### KVM stability caveat on hybrid CPUs and nested virt
+
+On Intel hybrid architectures (Meteor Lake / Core Ultra 100 series and
+newer — P + E + LP-E cores) or when running inside another hypervisor
+(VirtualBox, VMware, Hyper-V → QEMU/KVM), the demo guest may crash
+during initramfs decompression or shutdown with a kernel Oops
+(`inflate_fast` page fault, `0xCC` poison in registers, NX-protected
+page execution). This is not slinit — it's a KVM feature-passthrough
+edge case where CPU capabilities advertised via `-cpu host` behave
+differently than the guest kernel expects.
+
+Workarounds, in order of preference:
+
+- **`-cpu kvm64`** — restrict QEMU to a minimal x86_64 baseline CPU.
+  Keeps KVM acceleration, masks off the problematic feature bits.
+  Recommended for hybrid-CPU hosts and nested-virt setups.
+- **Drop `-enable-kvm`** — fall back to TCG (software emulation).
+  10-30× slower but works everywhere. Useful as a last resort.
+
+Bare-metal hosts on non-hybrid CPUs (older Intel, AMD Zen, server
+SKUs) and cloud runners are unaffected; the default QEMU invocation
+works as-is.
+
 ## Demo Services
 
 | Service       | Type      | Description                                    |
