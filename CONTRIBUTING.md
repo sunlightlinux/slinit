@@ -38,26 +38,34 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (~1087 tests across 28 packages)
-- **Functional tests**: `./tests/functional/run-tests.sh` (158 QEMU-based tests)
-- **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (82 SSH-driven cases against a live VM)
+- **Unit tests**: `go test ./...` (~1640 tests across ~40 packages)
+- **Functional tests**: `./tests/functional/run-tests.sh` (166 QEMU-based tests)
+- **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (169 SSH-driven cases against a live VM)
 - **Fuzz targets**: `go test -fuzz=FuzzConfigParse ./tests/fuzz` (21 targets across 4 files)
 - Requires `qemu-system-x86_64` for functional tests
 
 ### Project Structure
 
-- `cmd/` - Entry points (slinit, slinitctl, slinit-check, slinit-monitor,
-  slinit-shutdown, slinit-init-maker, slinit-nuke, slinit-mount,
-  slinit-checkpath, slinit-runner, slinit-resource, plus OpenRC shims:
+- `cmd/` - Entry points (slinit, slinitctl, slinit-runner, slinit-check,
+  slinit-monitor, slinit-shutdown, slinit-init-maker, slinit-nuke,
+  slinit-mount, slinit-checkpath, slinit-seedrng, slinit-cgtop,
+  slinit-logouthookd, slinit-sysusers, slinit-tmpfiles, slinit-binfmt,
+  slinit-sysctl, slinit-svc-value, slinit-shell-var, slinit-einfo,
+  slinit-fstabinfo, slinit-mountinfo, slinit-start-stop-daemon,
+  slinit-supervise-daemon, slinit-resource, plus OpenRC shims:
   rc-service, rc-update, rc-status)
-- `pkg/` - Core packages (service, config, control, shutdown, process,
-  eventloop, logging, utmp, autofs, checkpath, pathwatch, platform,
-  snapshot, watchdog)
+- `pkg/` - Core packages (service, config, control, process, shutdown,
+  eventloop, logging, seccomp, pathwatch, svcdirwatch, utmp, autofs,
+  checkpath, platform, snapshot, watchdog, einfo, fstab, mounts,
+  persist, rng)
 - `internal/util/` - Path and parsing utilities
 - `completions/` - Shell completions (bash, zsh, fish)
-- `tests/functional/` - QEMU integration tests
-- `tests/fuzz/` - Fuzz targets
+- `tests/functional/` - QEMU integration tests (166 cases)
+- `tests/acceptance/ssh/` - SSH-driven live-VM cases (169)
+- `tests/fuzz/` - Fuzz targets (21)
+- `tests/performance/` - Go benchmarks
 - `demo/` - QEMU demo environment
+- `doc/man/` - pandoc-flavored markdown → roff via `go tool md2man`
 
 ## License
 

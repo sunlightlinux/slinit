@@ -29,7 +29,7 @@ TIMEOUT=120 ./tests/functional/run-tests.sh
 
 ## Requirements
 
-- Go 1.22+
+- Go 1.25+
 - `qemu-system-x86_64`
 - `curl`, `cpio`, `gzip`
 - `socat` or `nc` (for virtio-serial result reading)

@@ -11,7 +11,7 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 
 ## Requirements
 
-- Go 1.22+
+- Go 1.25+
 - `qemu-system-x86_64`
 - `curl`, `cpio`, `gzip`
 - KVM recommended (falls back to software emulation)

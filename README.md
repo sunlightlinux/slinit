@@ -123,9 +123,8 @@ format to accommodate them.
 - **Inline shell**: upstart-style `script ... end script` block becomes the service command via `/bin/sh -c` (verbatim multi-line body, same load-time `$VAR`/`$1` substitution as `command`, mutually exclusive with it)
 - **AppArmor confinement**: `apparmor-load` parses a service-shipped profile (`apparmor_parser -r`) before start; `apparmor-switch` transitions the process into a profile on exec (`aa_change_onexec` via slinit-runner) — both fail closed if the load/transition cannot be applied
 - **Debug stop**: `debug = yes` makes slinit-runner raise `SIGSTOP` before exec so a developer can `gdb -p` the process and resume it with `kill -CONT`
-- **Service directories**: systemd-style `runtime-directory`/`state-directory`/`cache-directory`/`logs-directory`/`configuration-directory` auto-create + chown to `run-as` under `/run`,`/var/lib`,`/var/cache`,`/var/log`,`/etc` (with `*-mode`); runtime dir removed on stop per `runtime-directory-preserve`
 - **Control socket**: binary protocol (v7 — adds `ENABLE_SERVICE_V7` for race-free enable+status round-trip) over Unix domain socket for runtime management
-- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, is-newer-than, is-older-than, trigger, untrigger, signal, pause, continue, once, reload, reload-all, reload-signal, unload, unpin, catlog, attach, setenv, unsetenv, getallenv, reset-env, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, action, list-actions, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze
+- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, is-newer-than, is-older-than, trigger, untrigger, signal, pause, continue, freeze, thaw, once, run (transient service, systemd-run analogue), reload, reload-all, reload-signal, unload, unpin, reset-failed, catlog, attach, setenv, unsetenv, getallenv, reset-env, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, action, list-actions, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze, activate-profile / active-profile / list-profiles
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
 - **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
 - **Service aliases**: `provides` for alternative name lookup
@@ -148,7 +147,6 @@ format to accommodate them.
 - **Enable-via**: `@meta enable-via` directive for default enable/disable source service
 - **Push notifications**: SERVICEEVENT/ENVEVENT for real-time state and environment tracking
 - **SIGUSR1 socket reopen**: recover control socket when filesystem becomes writable
-- **slinit-shutdown**: standalone shutdown utility (also invocable as slinit-reboot, slinit-halt, slinit-soft-reboot via symlinks)
 - **Shutdown**: orderly service stop, shutdown hooks, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec/softreboot
 - **Soft-reboot**: restart slinit without rebooting the kernel (with shutdown hooks)
 - **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
@@ -235,6 +233,7 @@ format to accommodate them.
 # Core daemon + control CLI
 go build ./cmd/slinit
 go build ./cmd/slinitctl
+go build ./cmd/slinit-runner      # post-fork execve wrapper (LSM + hardening) — required by any service with LSM / seccomp / restrict-* knobs
 
 # Companion utilities
 go build ./cmd/slinit-check       # offline/online config linter
@@ -986,7 +985,7 @@ slinit follows Go-idiomatic patterns while preserving dinit's proven service man
 - **Interface + struct embedding** replaces C++ virtual method dispatch
 - **Two-phase state transitions** (propagation + execution) preserve correctness from dinit
 - **One goroutine per child process** for monitoring, with channel-based notification
-- **Binary control protocol** (v6) over Unix domain sockets, goroutine-per-connection
+- **Binary control protocol** (v7, min-compat v1) over Unix domain sockets, goroutine-per-connection
 - **Push notifications**: SERVICEEVENT5/ENVEVENT for real-time tracking
 - **PID 1 shutdown sequence**: shutdown hooks, process cleanup, filesystem sync, reboot syscalls
 
@@ -1020,7 +1019,8 @@ of Ctrl+Alt+Del or a repeated RT signal always escalates.
 slinit/
 ├── cmd/
 │   ├── slinit/            # Daemon entry point (incl. SysV argv[0] dispatch)
-│   ├── slinitctl/         # Control CLI (~40 subcommands + 14 global flags)
+│   ├── slinitctl/         # Control CLI (~60 subcommands + 15 global flags)
+│   ├── slinit-runner/     # Post-fork execve wrapper (LSM transitions, ambient caps, close-fds, restrict-* seccomp)
 │   ├── slinit-check/      # Config linter (offline + online)
 │   ├── slinit-monitor/    # Event watcher + command executor
 │   ├── slinit-shutdown/   # Standalone shutdown utility (+ reboot/halt/soft symlinks)
@@ -1033,16 +1033,26 @@ slinit/
 │   ├── slinit-sysusers/   # systemd-sysusers clone (declarative user/group)
 │   ├── slinit-tmpfiles/   # systemd-tmpfiles clone (/run + /var bootstrap)
 │   ├── slinit-logouthookd/# UTMPX logout daemon (DEAD_PROCESS bookkeeping)
+│   ├── slinit-binfmt/     # systemd-binfmt clone (register /etc/binfmt.d/*.conf via binfmt_misc)
+│   ├── slinit-sysctl/     # systemd-sysctl clone (apply sysctl.d/*.conf to /proc/sys)
+│   ├── slinit-fstabinfo/  # OpenRC fstabinfo(8) clone (query /etc/fstab)
+│   ├── slinit-mountinfo/  # OpenRC mountinfo(8) clone (query /proc/mounts)
+│   ├── slinit-einfo/      # OpenRC einfo(1) multi-applet (einfo/ewarn/eerror/...)
+│   ├── slinit-shell-var/  # OpenRC shell_var(1) clone (sanitise into shell identifiers)
+│   ├── slinit-svc-value/  # OpenRC value(1) clone (per-service key=value store)
+│   ├── slinit-start-stop-daemon/   # Debian/OpenRC start-stop-daemon(8) clone
+│   ├── slinit-supervise-daemon/    # OpenRC supervise-daemon(8) clone (detached supervisor)
+│   ├── slinit-resource/   # OCF Pacemaker resource agent (shell — not Go)
 │   ├── rc-service/        # OpenRC compat: thin shim over slinitctl
 │   ├── rc-update/         # OpenRC compat: runlevel membership via runlevel-<name> services
 │   └── rc-status/         # OpenRC compat: status listing
 ├── pkg/
 │   ├── service/           # Service types, state machine, dependency graph, predicates, calendar, UID pool
 │   ├── config/            # Dinit-compatible config parser + loader, init.d/LSB, OpenRC conf.d wrapper
-│   ├── control/           # Control socket protocol (v6) and server
+│   ├── control/           # Control socket protocol (v7, min-compat v1) and server
 │   ├── shutdown/          # PID 1 init, shutdown executor, soft-reboot, clock guard, run-mode
 │   ├── process/           # Process execution, monitoring, attrs, caps, credentials, fd-store, sd_notify socket
-│   ├── seccomp/           # cBPF compiler + curated syscall groups (@system-service, @privileged, ...)
+│   ├── seccomp/           # cBPF compiler + curated syscall groups (@system-service, @privileged, ...) + arg-checking restrict-*
 │   ├── pathwatch/         # inotify-driven path activation
 │   ├── svcdirwatch/       # inotify-driven services-dir auto-watch
 │   ├── eventloop/         # Event loop, signals, timers
@@ -1050,6 +1060,13 @@ slinit/
 │   ├── utmp/              # UTMPX cgo wrapper (boot + logout + shutdown records)
 │   ├── autofs/            # Autofs direct-mount helper
 │   ├── checkpath/         # Path permission / ownership verifier
+│   ├── einfo/             # ANSI/colour helpers shared by slinit-einfo applets
+│   ├── fstab/             # /etc/fstab parser (shared by slinit-fstabinfo / -mount)
+│   ├── mounts/            # /proc/mounts + /proc/self/mountinfo parser
+│   ├── persist/           # On-disk pin-intent persistence (--persist-intent)
+│   ├── rng/               # SeedRNG protocol implementation (used by slinit-seedrng)
+│   ├── snapshot/          # Operator-intent snapshot (survives soft-reboot via --restore-from-snapshot)
+│   ├── watchdog/          # Hardware watchdog kicker (/dev/watchdogN, WDIOC ioctls)
 │   └── platform/          # Container & VM auto-detect (docker/lxc/podman/wsl/xen/kvm/qemu/vmware/hyperv/vbox/bochs)
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
@@ -1063,7 +1080,7 @@ slinit/
 ## Testing
 
 ```bash
-# Unit tests (~1680 tests + benchmarks across ~40 packages, 227 _test.go files)
+# Unit tests (~1640 tests + benchmarks across ~40 packages, 227 _test.go files)
 go test ./...
 
 # Functional tests (166 QEMU-based integration tests)
@@ -1073,8 +1090,8 @@ go test ./...
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/acceptance/ssh/run.sh
 
-# Fuzz targets (21+ targets across 4 files)
-go test -fuzz=FuzzParseConfig ./tests/fuzz
+# Fuzz targets (21 targets across 4 files)
+go test -fuzz=FuzzConfigParse ./tests/fuzz
 ```
 
 ## Roadmap
