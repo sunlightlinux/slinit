@@ -74,8 +74,8 @@ When your changes create orphans:
 
 **slinit-specific:**
 - **Don't break dinit protocol/config compatibility** without an explicit
-  ask. The control protocol (v4/v5) and config parser accept legacy forms
-  on purpose.
+  ask. The control protocol (current CPVersion=7, MinCompatVersion=1) and
+  config parser accept legacy forms on purpose.
 - **Don't introduce import cycles.** `pkg/service` cannot import
   `pkg/config` — env-file parsing lives in `pkg/process` for this reason.
 
@@ -136,15 +136,19 @@ Strong success criteria let you loop independently. Weak criteria
 - Config parser accepts both `=` and `:` (`:` for dependency keys).
 
 ### Key files (first places to look)
-- `pkg/service/record.go` — state machine (~960 LOC core).
+- `pkg/service/record.go` — state machine (~3200 LOC; state transitions from line 2059).
 - `pkg/service/types.go` — all enum types. When adding a new state or
   flag, this is where it goes.
 - `pkg/config/parser.go` — dinit-compatible text grammar.
 - `pkg/control/{protocol,server,connection}.go` — binary Unix-socket
-  protocol (v5).
+  protocol (v7).
 - `pkg/process/exec.go` — fork/exec + child monitoring.
+- `pkg/seccomp/` — cBPF compiler + curated syscall groups + arg-checking
+  restrict-* cluster.
 - `cmd/slinit/main.go` — PID 1 / container-mode entry point.
-- `cmd/slinitctl/main.go` — ~40 subcommands + 14 global flags.
+- `cmd/slinit-runner/` — post-fork hardening execve wrapper (LSM, ambient
+  caps, close-fds, restrict-*).
+- `cmd/slinitctl/main.go` — ~60 subcommands + 15 global flags.
 
 ### Reference sources
 - **dinit** (C++): `../dinit/src/` — key files `service.{h,cc}`,
