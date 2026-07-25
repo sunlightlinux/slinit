@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# Control service: same start-timeout, but ready-check-command succeeds
+# on the first poll (/bin/true). start-timeout must NOT fire; svc
+# reaches STARTED normally within the interval budget.
+command = /bin/sh -c "exec sleep 600"
+ready-check-command = /bin/true
+ready-check-interval = 1s
+start-timeout = 3

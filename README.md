@@ -1071,7 +1071,7 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 166 QEMU-based integration tests
+├── tests/functional/      # 201 QEMU-based integration tests
 ├── tests/acceptance/ssh/  # 169 live-VM acceptance cases (SSH-driven)
 ├── tests/fuzz/            # 21+ fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
@@ -1083,7 +1083,7 @@ slinit/
 # Unit tests (~1640 tests + benchmarks across ~40 packages, 227 _test.go files)
 go test ./...
 
-# Functional tests (166 QEMU-based integration tests)
+# Functional tests (201 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
 # Acceptance tests (169 SSH-driven cases against a live VM/host)

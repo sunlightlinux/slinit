@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# pass-environment restricts the parent env inherited by the child to
+# the listed keys only — everything else is filtered. env-file adds
+# fixture vars so we can prove filtering is not just "empty parent env".
+env-file        = /tmp/188-envpass.env
+pass-environment = FIXTURE_KEEP
+command = /bin/sh -c "cat /proc/self/environ > /tmp/188-pass-out; exec sleep 600"

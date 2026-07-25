@@ -1,0 +1,8 @@
+type = internal
+depends-on: system-init
+# All three LSM services are on waits-for so their fail-closed
+# behavior doesn't cascade into a boot failure. The test observes
+# their state directly.
+waits-for: selinux-svc
+waits-for: smack-svc
+waits-for: test-runner

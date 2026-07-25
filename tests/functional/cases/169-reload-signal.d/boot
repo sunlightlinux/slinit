@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: reloadsig-svc
+waits-for: nosig-svc
+waits-for: test-runner

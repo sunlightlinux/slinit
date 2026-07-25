@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# standard-input-text is systemd's textual stdin pipe. slinit stitches
+# a pipe to the child's fd 0 and writes the literal text (with \n
+# terminator implied). The child reads and echoes to a marker.
+standard-input-text = hello-from-slinit
+# Redirect stdin to a marker file; test reads the file to see exactly
+# what bytes reached the child. Avoids busybox shell quirks around
+# $(cat) substitution and word-splitting the payload.
+command = /bin/sh -c "cat > /tmp/189-text-raw 2>&1; echo done > /tmp/189-text-out; exec sleep 600"

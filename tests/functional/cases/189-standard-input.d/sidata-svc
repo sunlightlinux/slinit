@@ -1,0 +1,7 @@
+type = process
+depends-on: system-init
+# standard-input-data is the binary/base64 sibling of -text. The
+# payload here is base64("ping-payload") — the child decodes it if
+# base64 is available, otherwise just checks the raw content.
+standard-input-data = cGluZy1wYXlsb2Fk
+command = /bin/sh -c "dd bs=1 count=64 2>/dev/null > /tmp/189-data-out; exec sleep 600"

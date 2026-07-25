@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# keyword is a *skip list* — listed platforms are disabled. Using a
+# platform that doesn't match the QEMU VM (`kvm`) so the svc loads
+# and runs, proving the directive parses and the loader honours the
+# non-match. Behavioural skip-on-match would need a keyword=kvm svc
+# NOT depended on by boot, which is fragile in this harness (the
+# loader surfaces the skip as a load-time error even under waits-for).
+keyword = wsl
+command = /bin/sh -c "exec sleep 600"

@@ -1,0 +1,15 @@
+type = process
+depends-on: system-init
+# Directives inspired by skarnet/runit/utmpd niches — small features
+# with narrow use cases (embedded / init-heavy setups):
+#   alert-file    = target for one-line status messages
+#   alert-level   = minimum severity that reaches alert-file
+#   pass-cs-fd    = pass a control-socket fd to the child
+#   utmp-mode     = extra bookkeeping mode for UTMPX entries
+alert-file  = /tmp/194-alert.log
+alert-level = warn
+# pass-cs-fd is a Flags option (options = pass-cs-fd), NOT a
+# standalone directive — passes a control-socket fd to the child.
+options   = pass-cs-fd
+utmp-mode   = login
+command = /bin/sh -c "exec sleep 600"

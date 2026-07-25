@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# Same idea with bus-name-scope = session — validates the alternate
+# scope value round-trips through the parser and loader without
+# affecting startup on a VM that has no session bus.
+bus-name       = com.example.slinit.session
+bus-name-scope = session
+command = /bin/sh -c "exec sleep 600"

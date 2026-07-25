@@ -1,0 +1,14 @@
+type = process
+depends-on: system-init
+# exec-search-path adds directories to the resolver used for finding
+# the command binary. /bin is already in the default PATH; adding
+# /nonexistent doesn't remove it, so /bin/sh still resolves. Test is
+# a smoke: proves the directive parses and doesn't interfere with a
+# resolvable command.
+exec-search-path = /nonexistent:/bin
+# Use an absolute command path so this test doesn't depend on how
+# exec-search-path interacts with basename lookup on the exec side —
+# the coverage we want here is just parse + start with the directive
+# set. If exec-search-path breaks anything downstream, the child
+# never spawns and /tmp/190-esp-ran stays absent.
+command = /bin/sh -c "touch /tmp/190-esp-ran; exec sleep 600"

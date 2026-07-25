@@ -1,0 +1,7 @@
+type = internal
+depends-on: system-init
+waits-for: prehook-svc
+waits-for: test-runner
+# prehook-fail-svc must NOT be a hard dep — we WANT it to fail-to-start
+# so the test can observe that. waits-for lets its failure not propagate.
+waits-for: prehook-fail-svc

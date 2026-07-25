@@ -1,0 +1,5 @@
+type = process
+depends-on: system-init
+# Chain target for normal-chainer. Must NOT be auto-started because
+# the parent exited non-zero and always-chain is not set.
+command = /bin/sh -c "exec sleep 600"

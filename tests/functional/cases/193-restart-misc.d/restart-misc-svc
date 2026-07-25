@@ -1,0 +1,20 @@
+type = process
+depends-on: system-init
+# Restart-policy tail — small directives that individual tests would
+# be overkill for. All coexist on one svc so the loader path exercises
+# every one and the svc still starts:
+#   start-limit-action        = none      (already-tested behavior is
+#                                          separate; this proves parse
+#                                          + coexistence)
+#   restart-force-exit-status = 42 43     (repeatable exit codes force
+#                                          restart even when restart=no)
+#   restart-max-delay         = 60        (absolute cap on backoff+jitter)
+#   restart-mode              = direct    (dependents keep running while
+#                                          parent restarts)
+#   runtime-randomized-extra  = 5         (jitter added to runtime-max-sec)
+start-limit-action        = none
+restart-force-exit-status = 42 43
+restart-max-delay         = 60
+restart-mode              = direct
+runtime-randomized-extra  = 5
+command = /bin/sh -c "exec sleep 600"

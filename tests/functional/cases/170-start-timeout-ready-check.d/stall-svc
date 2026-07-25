@@ -1,0 +1,12 @@
+type = process
+depends-on: system-init
+# The service body runs forever but never satisfies ready-check-command
+# (/bin/false always exits non-zero). start-timeout=3 must fire before
+# the ready-check loop ever succeeds, moving the service into a failed
+# state — proves start-timeout applies to the ready-check path, not
+# just to the fork/exec step.
+command = /bin/sh -c "exec sleep 600"
+ready-check-command = /bin/false
+ready-check-interval = 1s
+start-timeout = 3
+restart = no

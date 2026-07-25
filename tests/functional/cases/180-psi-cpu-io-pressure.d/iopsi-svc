@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# IO PSI watch — same shape as cpupsi-svc but exercising the io
+# controller's pressure file. Different cgroup path so the two
+# watchers don't collide.
+cgroup                = /slinit/180-io
+io-pressure-watch     = yes
+io-pressure-threshold = 15ms
+command = /bin/sh -c "exec sleep 600"

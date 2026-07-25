@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# reload-signal declares which signal `slinitctl reload-signal` sends
+# to the main pid. Upstart-inspired. The body traps SIGUSR1 and appends
+# to /tmp/169-reload-hits so the test can verify the signal was actually
+# delivered (versus just accepted by slinit).
+reload-signal = SIGUSR1
+command = /bin/sh -c "trap 'echo hit >> /tmp/169-reload-hits' USR1; while true; do sleep 1; done"

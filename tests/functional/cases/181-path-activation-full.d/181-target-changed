@@ -1,0 +1,3 @@
+# Marker file — must exist at slinit boot so pathwatch arm() succeeds
+# for start-on-path-changed. The test appends to it to trigger IN_MODIFY.
+initial

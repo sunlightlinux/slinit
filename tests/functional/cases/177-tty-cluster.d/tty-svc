@@ -1,0 +1,14 @@
+type = process
+depends-on: system-init
+# Exercises the full TTY cluster: setupTTY (pkg/process/tty.go) opens
+# tty-path RDWR|NOCTTY, then applies vhangup / reset / VT_DISALLOCATE
+# / TIOCSWINSZ from tty-columns × tty-rows. The child's stdin/stdout
+# are wired to the opened fd, so `stty size` reads the winsize back
+# and echoes it — proving TIOCSWINSZ landed on the right fd.
+tty-path           = /dev/tty1
+tty-columns        = 132
+tty-rows           = 42
+tty-vhangup        = yes
+tty-vt-disallocate = yes
+tty-reset          = yes
+command = /bin/sh -c "{ echo fd0-links: $(readlink /proc/self/fd/0 2>&1); echo stty-size: $(stty size 2>&1); ls -la /dev/tty1 2>&1; } > /tmp/177-diag; stty size > /tmp/177-size 2>&1 || echo stty-missing > /tmp/177-size; exec sleep 600"

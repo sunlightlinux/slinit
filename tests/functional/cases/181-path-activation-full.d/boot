@@ -1,0 +1,11 @@
+type = internal
+depends-on: system-init
+# Path-activated services need to be LOADED for pathwatch to arm the
+# inotify watcher, but must NOT auto-start on boot. The `waits-for:`
+# below satisfies loading; each service has `manual = yes` so only
+# the path trigger (inotify → StartService callback) can start it.
+# This mirrors 72-path-activation.sh's pattern.
+waits-for: pchanged-svc
+waits-for: pmodified-svc
+waits-for: pdirne-svc
+waits-for: test-runner

@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# options = shares-console flags this service as an intended console
+# sharer — the flag is stored on the record and consulted by the
+# runs-on-console arbitration path. End-to-end console-sharing behavior
+# needs another svc with runs-on-console, which is hard to arrange in a
+# minimal fixture; this test just proves parse + start survive with the
+# flag set, and the flag round-trips via the config → record path.
+options = shares-console
+command = /bin/sh -c "exec sleep 600"

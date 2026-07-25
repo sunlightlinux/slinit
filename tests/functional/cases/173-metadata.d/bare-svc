@@ -1,0 +1,6 @@
+type = process
+depends-on: system-init
+# Control: no metadata directives. The status output must NOT print
+# Author/Version/Usage lines for this service — the print is gated on
+# each field being non-empty.
+command = /bin/sh -c "exec sleep 600"

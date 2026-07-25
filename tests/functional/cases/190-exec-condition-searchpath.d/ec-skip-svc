@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# exec-condition = /bin/false → fails → svc is SKIPPED (short-circuits
+# to STARTED per the SKIPPED semantics, but the command NEVER runs).
+# The absence of /tmp/190-ec-skip-ran proves the main command was
+# gated out by the condition.
+exec-condition = /bin/false
+command = /bin/sh -c "touch /tmp/190-ec-skip-ran; exec sleep 600"

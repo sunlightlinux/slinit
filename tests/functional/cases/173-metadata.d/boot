@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: meta-svc
+waits-for: bare-svc
+waits-for: test-runner

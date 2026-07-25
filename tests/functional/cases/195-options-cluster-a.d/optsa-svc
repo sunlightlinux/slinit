@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# options-flags cluster A — behavioral flags on the Flags struct that
+# don't need a target syscall to prove they parse correctly:
+#   unmask-intr        — child inherits SIGINT unmasked
+#   skippable          — the boot graph is allowed to proceed past this
+#                        svc even if it fails/skips
+#   start-interruptible — allow slinitctl stop during STARTING
+options = unmask-intr skippable start-interruptible
+command = /bin/sh -c "exec sleep 600"

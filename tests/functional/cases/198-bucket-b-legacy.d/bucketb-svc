@@ -1,0 +1,13 @@
+type = process
+depends-on: system-init
+# Bucket B legacy hardening / process-attribute niches — small
+# directives from the systemd analysis triage marked as legacy but
+# still supported. All six coexist on one svc; the loader must accept
+# every one and the child still reaches STARTED.
+coredump-filter    = 0x33
+ignore-sigpipe     = yes
+memory-ksm         = no
+personality        = x86-64
+remove-ipc         = yes
+timer-slack-nsec   = 50000
+command = /bin/sh -c "exec sleep 600"

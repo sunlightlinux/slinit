@@ -1,0 +1,26 @@
+type = process
+depends-on: system-init
+# Service-directory cluster — every {runtime, state, cache, logs,
+# configuration}-directory variant with -mode + -quota + -accounting
+# where supported. Baseline creation of runtime-directory is covered
+# by 127/128/129; this fixture stacks all five dir kinds together so
+# the loader path exercises the -mode / -quota / -accounting knobs
+# on each.
+runtime-directory              = 186-run
+runtime-directory-mode         = 0750
+runtime-directory-preserve     = restart
+state-directory                = 186-state
+state-directory-mode           = 0755
+state-directory-quota          = 10M
+state-directory-accounting     = yes
+cache-directory                = 186-cache
+cache-directory-mode           = 0700
+cache-directory-quota          = 5M
+cache-directory-accounting     = yes
+logs-directory                 = 186-logs
+logs-directory-mode            = 0755
+logs-directory-quota           = 1M
+logs-directory-accounting      = yes
+configuration-directory        = 186-conf
+configuration-directory-mode   = 0700
+command = /bin/sh -c "exec sleep 600"

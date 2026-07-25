@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# post-start-command runs ASYNC in a goroutine after startProcess()
+# (see pkg/service/process.go runOneShotUp). Its exit code is only
+# logged. Here we just want the marker to appear shortly after the
+# service reaches STARTED.
+post-start-command = /bin/sh -c "echo post > /tmp/168-marker"
+command = /bin/sh -c "exec sleep 600"

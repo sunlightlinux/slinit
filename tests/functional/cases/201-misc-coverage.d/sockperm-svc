@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# socket-uid / socket-gid — set ownership on socket files created by
+# socket-listen. socket-permissions is covered by 132; this stacks the
+# ownership knobs on top.
+socket-listen      = /tmp/201-sockperm.sock
+socket-permissions = 0660
+socket-uid         = 0
+socket-gid         = 0
+command = /bin/sh -c "exec sleep 600"

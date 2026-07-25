@@ -1,0 +1,15 @@
+type = process
+depends-on: system-init
+# Timeout cluster — systemd-adjacent knobs stacked on one service:
+#   timeout-sec                = generic start+stop cap (both bounds
+#                                default to this if not overridden)
+#   timeout-abort-sec          = per-signal grace inside the SIGABRT
+#                                escalation path
+#   timeout-start-failure-mode = what to do on start timeout: terminate
+#                                (default) or abort
+#   timeout-stop-failure-mode  = same, for stop timeouts
+timeout-sec                = 5
+timeout-abort-sec          = 2
+timeout-start-failure-mode = terminate
+timeout-stop-failure-mode  = terminate
+command = /bin/sh -c "exec sleep 600"

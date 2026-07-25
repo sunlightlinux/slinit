@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# selinux-context requires /sys/fs/selinux to be present. Alpine's
+# linux-virt kernel does not enable SELinux, so this MUST fail-closed:
+# svc never reaches STARTED. The fail-closed contract is documented
+# in SECURITY.md.
+selinux-context = system_u:system_r:test_t:s0
+command = /bin/sh -c "exec sleep 600"
+restart = no

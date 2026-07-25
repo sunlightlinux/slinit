@@ -1,0 +1,8 @@
+type = internal
+depends-on: system-init
+# Both chainer services are on waits-for so their inevitable exit
+# doesn't cascade into boot. The test only observes whether their
+# chain targets got started.
+waits-for: always-chainer
+waits-for: normal-chainer
+waits-for: test-runner

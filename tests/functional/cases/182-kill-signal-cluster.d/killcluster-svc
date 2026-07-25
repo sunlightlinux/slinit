@@ -1,0 +1,22 @@
+type = process
+depends-on: system-init
+# Full kill / signal cluster:
+#   kill-mode           = mixed         → main pid gets term-signal, then
+#                                         whole cgroup gets final-kill-signal
+#   final-kill-signal   = SIGKILL       → the escalation signal (default)
+#   restart-kill-signal = SIGUSR1       → used specifically for restart
+#                                         transitions (vs plain stop)
+#   watchdog-signal     = SIGABRT       → sent when watchdog-timeout expires
+#   survive-final-kill-signal = no      → svc will not be re-registered if
+#                                         it survives the final kill
+#
+# Coverage is parse + start: behavioral verification of each signal
+# would require killing the svc mid-lifecycle and observing which
+# signal landed, which is fiddly and slow in QEMU. The stack-and-run
+# smoke is enough to prove the parser wires every directive.
+kill-mode                 = mixed
+final-kill-signal         = SIGKILL
+restart-kill-signal       = SIGUSR1
+watchdog-signal           = SIGUSR2
+survive-final-kill-signal = no
+command = /bin/sh -c "exec sleep 600"

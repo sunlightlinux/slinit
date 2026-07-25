@@ -1,0 +1,14 @@
+type = process
+depends-on: system-init
+# Combines four small systemd-derived knobs:
+#   notify-access   — who may write to $NOTIFY_SOCKET (main|all|exec|none)
+#   guess-main-pid  — cgroup.procs walker infers the "real" main pid
+#                     even when the launcher forks off a helper
+#   exit-type       — main (default) vs cgroup (svc considered stopped
+#                     when its cgroup empties)
+#   open-file       — pre-opens a file and hands the fd to the child
+notify-access    = main
+guess-main-pid   = yes
+exit-type        = main
+open-file        = /tmp/187-openfile.log
+command = /bin/sh -c "exec sleep 600"

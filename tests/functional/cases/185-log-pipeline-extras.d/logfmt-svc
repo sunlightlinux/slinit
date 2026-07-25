@@ -1,0 +1,12 @@
+type = process
+depends-on: system-init
+# Log-file attributes cluster — perms, uid/gid, rotation time. Each
+# knob writes the logfile in the mode/owner the operator asked for
+# on the first open. The test verifies mode via stat afterwards.
+logfile              = /tmp/185-log.log
+logfile-permissions  = 0640
+logfile-uid          = 0
+logfile-gid          = 0
+logfile-rotate-time  = 30
+log-line-prefix      = "[svc] "
+command = /bin/sh -c "while true; do echo message; sleep 1; done"

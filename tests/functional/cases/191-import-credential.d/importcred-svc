@@ -1,0 +1,11 @@
+type = process
+depends-on: system-init
+# import-credential = <pattern> — inherits credentials matching the
+# glob from the daemon's own credential store. In this fixture the
+# daemon has no credentials to pass through, so the directive
+# resolves to zero imports. The relevant check is that the directive
+# parses cleanly and the service still starts (the credentials
+# tmpfs is a no-op on the empty set).
+import-credential = my-secret-*
+set-credential    = fallback:zero
+command = /bin/sh -c "ls /run/credentials/importcred-svc/ > /tmp/191-creds 2>&1; exec sleep 600"

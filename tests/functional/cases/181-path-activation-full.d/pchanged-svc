@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# start-on-path-changed requires the path to exist at arm time (pathwatch
+# stats it; missing → arm fails → watcher never installed). The marker
+# file 181-target-changed is packaged in this .d/ dir and copied to
+# /etc/slinit.d/ by the test harness, so it exists before slinit finishes
+# loading. The test appends to it to fire IN_CLOSE_WRITE.
+manual                 = yes
+start-on-path-changed  = /etc/slinit.d/181-target-changed
+command = /bin/sh -c "touch /tmp/181-changed-fired; exec sleep 600"

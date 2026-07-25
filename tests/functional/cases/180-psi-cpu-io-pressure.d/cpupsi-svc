@@ -1,0 +1,11 @@
+type = process
+depends-on: system-init
+# CPU PSI watch — mirrors the existing memory-pressure fixture (141).
+# The watcher opens /sys/fs/cgroup/.../cpu.pressure with a threshold
+# and epolls it. Requires cgroup v2 (available in the QEMU VM). On
+# kernels without PSI (unlikely on 6.18) the directive parses but
+# the watcher logs a warning and no-ops; the service still starts.
+cgroup                  = /slinit/180-cpu
+cpu-pressure-watch     = yes
+cpu-pressure-threshold = 20ms
+command = /bin/sh -c "exec sleep 600"

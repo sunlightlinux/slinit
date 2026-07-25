@@ -1,0 +1,12 @@
+type = process
+depends-on: system-init
+# runs-on-console  — svc has console attached while STARTED. Passive
+# flag: slinit binds the child's stdio to /dev/console but does not
+# gate the state machine on any arbiter.
+#
+# (starts-on-console requires an active console arbiter in the boot
+# sequence — a two-service dance that fits acceptance tests but not
+# this minimal QEMU fixture. shares-console is covered by 176.
+# starts-rwfs / starts-log are in test 197.)
+options = runs-on-console
+command = /bin/sh -c "exec sleep 600"

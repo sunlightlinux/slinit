@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: cpupsi-svc
+waits-for: iopsi-svc
+waits-for: test-runner

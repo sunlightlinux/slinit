@@ -1,0 +1,11 @@
+type = process
+depends-on: system-init
+# start-on-directory-not-empty fires IMMEDIATELY at arm time if the
+# directory already has an entry (see pathwatch.arm — after os.Stat
+# and dirIsEmpty check, non-empty short-circuits to w.fire(e)). The
+# packaged 181-dir-target/.keep guarantees the dir is non-empty at
+# boot, so the trigger fires as part of the load handshake — perfect
+# for verifying end-to-end wiring without a runtime write.
+manual                          = yes
+start-on-directory-not-empty    = /etc/slinit.d/181-dir-target
+command = /bin/sh -c "touch /tmp/181-dirne-fired; exec sleep 600"

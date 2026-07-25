@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# pre-start-command exits 1. bringUp must treat that as a fatal start
+# failure and never spawn the main command — /tmp/167-not-run must NOT
+# exist after the test window elapses. Restart is disabled so we can
+# observe the failed state cleanly.
+pre-start-command = /bin/sh -c "exit 1"
+command = /bin/sh -c "echo ran > /tmp/167-not-run; exec sleep 600"
+restart = no

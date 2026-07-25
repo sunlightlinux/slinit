@@ -1,0 +1,7 @@
+type = internal
+depends-on: system-init
+# Both stall-svc and quick-svc are on waits-for so their outcomes
+# (fail vs success) don't block boot from reaching the test-runner.
+waits-for: stall-svc
+waits-for: quick-svc
+waits-for: test-runner

@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: logfmt-svc
+waits-for: logfilter-svc
+waits-for: test-runner

@@ -1,0 +1,15 @@
+type = process
+depends-on: system-init
+# Seccomp extras beyond the primary system-call-filter tested in 80:
+#   system-call-architectures — architectures allowed in the filter
+#   system-call-log           — syscalls to log-only instead of deny
+#   memory-deny-write-execute — mprotect WX blocker (fail-close on <6.3)
+#
+# On kernels below 6.3, MDWE fails closed; linux-virt is 6.18 in this
+# VM so we expect STARTED. Log filters are best-effort; STARTED means
+# the compilations succeeded and every filter installed.
+system-call-filter           = @system-service
+system-call-architectures    = native
+system-call-log              = kill
+memory-deny-write-execute    = yes
+command = /bin/sh -c "grep Seccomp: /proc/self/status > /tmp/200-seccomp; exec sleep 600"

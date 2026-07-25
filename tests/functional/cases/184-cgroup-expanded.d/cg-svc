@@ -1,0 +1,22 @@
+type = process
+depends-on: system-init
+# Full cgroup-v2 directive stack minus the ones already covered by
+# 135-cgroup-v2.sh (cgroup, cgroup-memory-max, cgroup-pids-max,
+# cgroup-cpu-weight). Everything here needs the corresponding
+# controller enabled — memory, cpu, io, cpuset — which is standard
+# on Alpine's linux-virt kernel.
+cgroup              = /slinit/184-cg
+cgroup-memory-high  = 128M
+cgroup-memory-low   = 32M
+cgroup-memory-min   = 16M
+cgroup-swap-max     = 0
+cgroup-cpu-max      = 50000 100000
+cgroup-io-weight    = 100
+cgroup-cpuset-cpus  = 0
+cgroup-setting      = memory.oom.group 1
+# startup-allowed-* only matter during boot bring-up — they widen the
+# affinity/mems for a short window and then narrow to cpuset-cpus/-mems.
+# Kept in the fixture so the loader path is exercised.
+startup-allowed-cpus         = 0
+startup-allowed-memory-nodes = 0
+command = /bin/sh -c "exec sleep 600"

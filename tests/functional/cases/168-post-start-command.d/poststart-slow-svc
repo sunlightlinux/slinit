@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# The post-hook sleeps 4s before touching its marker. Since post-start
+# runs asynchronously, the service must reach STARTED almost immediately
+# — NOT block waiting for the hook. That's the key contract: a slow
+# post-hook cannot delay the parent's promotion to STARTED.
+post-start-command = /bin/sh -c "sleep 4; echo late > /tmp/168-slow-marker"
+command = /bin/sh -c "exec sleep 600"

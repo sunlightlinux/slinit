@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (166 tests)
+# Run all tests (201 tests)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -221,6 +221,41 @@ unaffected.
 | 164 | slice-hierarchy | Nested `slice = system.slice/foo.slice` produces the matching cgroup path under `/sys/fs/cgroup/` |
 | 165 | slinit-tmpfiles | Declarative `f/d/L/w/e` directives populate `/run`/`/var` at boot; type-aware apply matches systemd-tmpfiles.d |
 | 166 | slinit-sysusers | Declarative user/group creation at boot; idempotent, honours pre-existing entries |
+| 167 | pre-start-command | Hook runs sync before main; non-zero exit blocks the fork/exec, service never reaches STARTED |
+| 168 | post-start-command | Hook runs async after STARTED; a slow hook does NOT delay the STARTED promotion |
+| 169 | reload-signal | `slinitctl reload-signal svc` delivers `reload-signal = SIG*` to main pid; undeclared svc fails cleanly |
+| 170 | start-timeout-ready-check | `start-timeout` fires when `ready-check-command` never succeeds; service ends up FAILED, passing ready-check services proceed normally |
+| 171 | reset-env | `slinitctl reset-env svc` clears runtime setenv mutations; getallenv drops the previously-set keys |
+| 172 | log-processor | Each rotated logfile is passed through `log-processor`; multiple rotations within the window all fire the hook |
+| 173 | metadata | `author` / `version` / `usage` directives surface as labeled lines in `slinitctl status`; absent directives produce no phantom lines |
+| 174 | ioprio | `ioprio = be:7` reaches the child; `ionice -p PID` reports best-effort class and priority 7 (distinct from any default) |
+| 175 | always-chain | `options = always-chain` fires `chain-to` even after non-zero exit; without the flag the chain is suppressed on failure |
+| 176 | shares-console | `options = shares-console` parses and starts cleanly (flag round-trip through config → record) |
+| 177 | tty-cluster | Full TTY cluster (tty-path + columns/rows/vhangup/vt-disallocate/reset) — setupTTY opens /dev/tty1, wires stdin, applies knobs |
+| 178 | restrict-cluster | Full restrict-* cluster (realtime/namespaces/suidsgid/file-systems/address-families) stacks and installs cleanly; child sees Seccomp: 2 |
+| 179 | dbus-cluster | bus-name / bus-policy / bus-name-scope parse under the dbus-optional design (no dbus daemon in VM) |
+| 180 | psi-cpu-io-pressure | cpu-pressure-watch/threshold + io-pressure-watch/threshold parse + service starts |
+| 181 | path-activation-full | start-on-path-changed / -path-modified / -directory-not-empty each fire via pathwatch (uses /etc/slinit.d/-anchored markers) |
+| 182 | kill-signal-cluster | kill-mode + final-kill-signal + restart-kill-signal + watchdog-signal + survive-final-kill-signal coexist |
+| 183 | timeout-cluster | timeout-sec + timeout-abort-sec + timeout-start-failure-mode + timeout-stop-failure-mode parse |
+| 184 | cgroup-expanded | memory-high/-low/-min + swap-max + cpu-max + io-weight + cpuset-cpus + cgroup-setting + startup-allowed-* land in cgroupfs (spot-checked via memory.high) |
+| 185 | log-pipeline-extras | logfile-permissions/uid/gid/rotate-time + log-forward-* + log-level-max + log-sanitize/-extra + log-line-prefix + log-max-line-length + log-read-buffer-size parse; mode 0640 verified on file |
+| 186 | service-dir-modes | runtime/state/cache/logs/configuration-directory each with -mode + -quota + -accounting; all 5 dirs created with requested mode |
+| 187 | notify-guess-exit-openfile | notify-access + guess-main-pid + exit-type + open-file combo parses + starts |
+| 188 | pass-unset-env | pass-environment whitelist and unset-environment blacklist visible in child /proc/self/environ |
+| 189 | standard-input | standard-input-text and standard-input-data bytes reach child stdin (base64 decoded for -data) |
+| 190 | exec-condition-searchpath | exec-condition=/bin/true runs command; =/bin/false skips it; exec-search-path parses |
+| 191 | import-credential | import-credential parses coexisting with set-credential; credentials tmpfs populated |
+| 192 | lsm-fail-closed | selinux-context and smack-process-label refuse to start when /sys/fs/selinux and /sys/fs/smackfs are absent (fail-closed contract) |
+| 193 | restart-misc | start-limit-action + restart-force-exit-status + restart-max-delay + restart-mode + runtime-randomized-extra coexist |
+| 194 | skarnet-niches | alert-file + alert-level + options=pass-cs-fd + utmp-mode all parse and coexist |
+| 195 | options-cluster-a | options=unmask-intr,skippable,start-interruptible round-trip through parser |
+| 196 | options-cluster-b | options=runs-on-console attaches console to STARTED svc (starts-on-console covered in acceptance) |
+| 197 | starts-rwfs-log | options=starts-rwfs,starts-log with ready-notification=pipefd:3 promote to STARTED on readiness byte |
+| 198 | bucket-b-legacy | coredump-filter + ignore-sigpipe + memory-ksm + personality + remove-ipc + timer-slack-nsec coexist |
+| 199 | cgroup-cpuset-hugetlb | cgroup-cpuset-mems + cgroup-hugetlb + cpuset-partition parse; kernels without hugetlb controller fail-open |
+| 200 | seccomp-arch-log-mdwe | system-call-architectures + system-call-log + memory-deny-write-execute stack on top of @system-service filter; Seccomp mode 2 confirmed |
+| 201 | misc-coverage | cron-persistent + cron-randomized-delay + socket-uid/-gid + bind-read-only-paths + keyword non-match |
 
 ## How It Works
 

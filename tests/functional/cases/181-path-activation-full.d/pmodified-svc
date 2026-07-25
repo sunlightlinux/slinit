@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# Same pre-created-marker pattern as pchanged-svc, but on a separate
+# target so the two watches don't share inotify state. -modified adds
+# IN_MODIFY to the mask; the test's echo triggers both write events.
+manual                  = yes
+start-on-path-modified  = /etc/slinit.d/181-target-modified
+command = /bin/sh -c "touch /tmp/181-modified-fired; exec sleep 600"

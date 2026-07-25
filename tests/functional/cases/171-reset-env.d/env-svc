@@ -1,0 +1,6 @@
+type = process
+depends-on: system-init
+# Body doesn't matter — the test uses slinitctl setenv / getallenv /
+# reset-env against the record's runtime env dict, which is a
+# server-side data structure independent of what the child is doing.
+command = /bin/sh -c "exec sleep 600"

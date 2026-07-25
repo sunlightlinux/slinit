@@ -1,0 +1,11 @@
+type = process
+depends-on: system-init
+# The child prints a long line every 0.2s, quickly exceeding the tiny
+# 200-byte rotation threshold. Every rotated file must be run through
+# log-processor, which appends a marker so the test can count how many
+# rotations happened.
+command = /bin/sh -c "while true; do echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; sleep 0.2; done"
+logfile = /tmp/172.log
+logfile-max-size = 200
+logfile-max-files = 5
+log-processor = /bin/sh -c "echo processed >> /tmp/172-proc.log"

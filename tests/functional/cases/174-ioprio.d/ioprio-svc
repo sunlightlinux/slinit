@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# ioprio directive maps to the ioprio_set(2) syscall in
+# pkg/process/attrs.go. Class:priority — best-effort class, priority
+# 7 (lowest). Best-effort's priority range is 0..7; 7 is a distinctive
+# value that no default would produce (default is be:4 or matches
+# nice-derived).
+ioprio = be:7
+command = /bin/sh -c "exec sleep 600"

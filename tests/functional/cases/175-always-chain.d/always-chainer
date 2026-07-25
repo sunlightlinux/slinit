@@ -1,0 +1,11 @@
+type = process
+depends-on: system-init
+# `type = process` so slinit marks Started() before observing the
+# exit — scripted would treat exit 1 as a start-failure and skip the
+# chain block entirely (record.go: outer `if !sr.startFailed`).
+# Here the parent goes STARTED → STOPPED with code 1, and always-chain
+# still needs to make chain-to fire despite the non-zero exit.
+command = /bin/sh -c "exit 1"
+chain-to = always-target
+options = always-chain
+restart = no

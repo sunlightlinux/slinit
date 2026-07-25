@@ -1,0 +1,7 @@
+type = internal
+depends-on: system-init
+waits-for: cronxtra-svc
+waits-for: sockperm-svc
+waits-for: bindro-svc
+waits-for: kw-svc
+waits-for: test-runner

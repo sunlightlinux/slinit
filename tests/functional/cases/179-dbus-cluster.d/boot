@@ -1,0 +1,5 @@
+type = internal
+depends-on: system-init
+waits-for: dbus-svc
+waits-for: dbus-session-svc
+waits-for: test-runner

@@ -1,0 +1,5 @@
+type = process
+depends-on: system-init
+# Chain target for always-chainer. Sits idle after being auto-started
+# so the test can observe its STARTED state.
+command = /bin/sh -c "exec sleep 600"

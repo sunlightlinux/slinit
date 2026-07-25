@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# Control service: same non-zero exit under `type = process` so the
+# comparison with always-chainer is apples-to-apples. Without the
+# always-chain flag, shouldChain in record.go requires a clean exit
+# (code 0). Here exit=1 so the chain must NOT fire.
+command = /bin/sh -c "exit 1"
+chain-to = normal-target
+restart = no

@@ -1,0 +1,10 @@
+type = process
+depends-on: system-init
+# Cron extras beyond baseline in 38-cron-task:
+#   cron-persistent        — catch-up on missed fires across restart
+#   cron-randomized-delay  — additive jitter on each fire
+cron-command          = /bin/true
+cron-interval         = 60
+cron-randomized-delay = 5s
+cron-persistent       = yes
+command = /bin/sh -c "exec sleep 600"

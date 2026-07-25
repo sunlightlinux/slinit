@@ -1,0 +1,5 @@
+type = process
+depends-on: system-init
+# exec-condition = /bin/true → passes → svc runs normally.
+exec-condition = /bin/true
+command = /bin/sh -c "touch /tmp/190-ec-pass-ran; exec sleep 600"

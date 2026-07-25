@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# pre-start-command runs SYNC before fork/exec of the main command
+# (see pkg/service/process.go runOneShotUp). It writes a marker so
+# the test can verify sequencing: marker MUST exist by the time the
+# service reaches STARTED, since bringUp will not call startProcess()
+# until this hook returns 0.
+pre-start-command = /bin/sh -c "echo pre > /tmp/167-marker"
+command = /bin/sh -c "exec sleep 600"

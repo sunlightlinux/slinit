@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# smack-process-label requires /sys/fs/smackfs. Alpine's linux-virt
+# does not enable SMACK, so the child must NOT reach STARTED — the
+# LSM transition is a hard-fail per the fail-closed contract.
+smack-process-label = MyServiceLabel
+command = /bin/sh -c "exec sleep 600"
+restart = no

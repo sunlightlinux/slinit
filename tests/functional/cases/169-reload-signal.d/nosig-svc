@@ -1,0 +1,7 @@
+type = process
+depends-on: system-init
+# Control service without reload-signal configured. `slinitctl
+# reload-signal nosig-svc` MUST fail with a clear error rather than
+# silently sending a default signal — that's the "no reload-signal
+# configured" error path in cmdReloadSignal.
+command = /bin/sh -c "exec sleep 600"

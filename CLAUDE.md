@@ -103,7 +103,7 @@ For multi-step tasks, state a brief plan:
 - `go test ./...` — ~1640 unit tests across ~40 packages.
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
-- `./tests/functional/run-tests.sh` — 166 QEMU-based integration tests
+- `./tests/functional/run-tests.sh` — 201 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
 - `./tests/acceptance/ssh/run.sh` — 169 SSH-driven cases against a live VM.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a

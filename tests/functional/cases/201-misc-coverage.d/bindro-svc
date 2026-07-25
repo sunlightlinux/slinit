@@ -1,0 +1,7 @@
+type = process
+depends-on: system-init
+# bind-read-only-paths — like bind-paths (tested via 78-sandbox) but
+# read-only. Uses /etc as a stable source; child sees the bind at
+# /run/201-bindro (a scratch location that any harness cleans up).
+bind-read-only-paths = /etc:/run/201-bindro
+command = /bin/sh -c "exec sleep 600"

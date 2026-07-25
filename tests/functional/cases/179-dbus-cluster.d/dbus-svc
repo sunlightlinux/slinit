@@ -1,0 +1,13 @@
+type = process
+depends-on: system-init
+# bus-name declares a D-Bus well-known name the service will own.
+# slinit is dbus-optional: at load time it probes for dbus-send; if
+# present, it auto-wires a ready-check-command that polls for the
+# name. If dbus-send is NOT installed (typical in this VM), the
+# directive is stored on the record but no ready-check is synthesised
+# — the service still starts normally. The test verifies parse +
+# start under both conditions.
+bus-name       = com.example.slinit.demo
+bus-policy     = strict
+bus-name-scope = system
+command = /bin/sh -c "exec sleep 600"

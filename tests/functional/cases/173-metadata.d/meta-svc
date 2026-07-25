@@ -1,0 +1,9 @@
+type = process
+depends-on: system-init
+# author/version/usage are informational upstart-derived stanzas that
+# slinit stores on the record and surfaces via slinitctl status. They
+# don't affect behavior; the test only checks the status output.
+author = jarvis@example.org
+version = 3.14.15
+usage = meta-svc --help
+command = /bin/sh -c "exec sleep 600"

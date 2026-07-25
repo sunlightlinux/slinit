@@ -1,0 +1,6 @@
+type = internal
+depends-on: system-init
+waits-for: ec-pass-svc
+waits-for: ec-skip-svc
+waits-for: esp-svc
+waits-for: test-runner

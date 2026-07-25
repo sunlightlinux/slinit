@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# unset-environment drops the listed keys from the child's env. env-file
+# populates FIXTURE_KEEP + FIXTURE_DROP; the unset directive must remove
+# FIXTURE_DROP while leaving FIXTURE_KEEP intact.
+env-file          = /tmp/188-envunset.env
+unset-environment = FIXTURE_DROP
+command = /bin/sh -c "cat /proc/self/environ > /tmp/188-unset-out; exec sleep 600"

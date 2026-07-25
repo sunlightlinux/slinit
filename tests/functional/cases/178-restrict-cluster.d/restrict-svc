@@ -1,0 +1,15 @@
+type = process
+depends-on: system-init
+# The full restrict-* cluster — every arg-checking BPF path compiled
+# in pkg/seccomp/restrict_linux.go must build cleanly, install, and
+# still let a benign child (sleep) reach STARTED. Each restrict-* is
+# its own seccomp filter stacked on top of any prior filters, so the
+# kernel returns EPERM on the covered syscalls but leaves everything
+# else running. If any of the filters fail to compile or install,
+# slinit-runner exits non-zero and the service never starts.
+restrict-realtime         = yes
+restrict-namespaces       = yes
+restrict-suidsgid         = yes
+restrict-file-systems     = yes
+restrict-address-families = AF_UNIX AF_INET
+command = /bin/sh -c "grep Seccomp: /proc/self/status > /tmp/178-seccomp 2>&1; exec sleep 600"

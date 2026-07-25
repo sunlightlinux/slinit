@@ -1,0 +1,13 @@
+type = process
+depends-on: system-init
+# starts-rwfs / starts-log mark this service as producing a filesystem
+# and a logging facility, respectively. slinit waits for a readiness
+# signal on the notification pipe before promoting to STARTED. Without
+# such a signal the svc sits in STARTING forever — the test would hang
+# — so we wire ready-notification=pipefd:3 and the child immediately
+# writes a byte + closes fd 3 to signal ready. That single byte is all
+# slinit needs; the flags are load-bearing on which sub-signals slinit
+# then propagates to dependents.
+options              = starts-rwfs starts-log
+ready-notification   = pipefd:3
+command = /bin/sh -c "echo r >&3; exec 3>&-; exec sleep 600"
