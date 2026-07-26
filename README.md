@@ -1072,7 +1072,7 @@ slinit/
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
 ├── tests/functional/      # 201 QEMU-based integration tests
-├── tests/acceptance/ssh/  # 194 live-VM acceptance cases (SSH-driven)
+├── tests/acceptance/ssh/  # 197 live-VM acceptance cases (SSH-driven)
 ├── tests/fuzz/            # 21+ fuzz targets (config, protocol, autofs, process parsers)
 └── tests/performance/     # Performance and stress harness
 ```
@@ -1086,7 +1086,7 @@ go test ./...
 # Functional tests (201 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
-# Acceptance tests (194 SSH-driven cases against a live VM/host)
+# Acceptance tests (197 SSH-driven cases against a live VM/host)
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/acceptance/ssh/run.sh
 

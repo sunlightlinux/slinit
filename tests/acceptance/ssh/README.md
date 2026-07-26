@@ -93,10 +93,14 @@ cases/
                          # shares-console coexistence, service-template lifecycle,
                          # dbus-name auto-wire, apparmor-real load,
                          # slinit-check --online, slinit-monitor e2e, pass-cs-fd
+  195-…-197-…            # closing gaps: per-svc env round-trip (setenv/getallenv/
+                         # unsetenv), metadata render (author/version/usage in
+                         # `slinitctl status`), cron-persistent + randomized-delay
+                         # behavior over a fire window
   999-cleanup.sh         # tears down acceptance-test-* namespace
 ```
 
-**194 real cases** (numbered 01–98, 100–194; 99 skipped) plus a final `999-cleanup.sh` teardown.
+**197 real cases** (numbered 01–98, 100–197; 99 skipped) plus a final `999-cleanup.sh` teardown.
 Numbering leaves gaps so related features can be grouped without renumbering.
 
 Each `cases/NN-*.sh` is a self-contained shell script. The runner:
