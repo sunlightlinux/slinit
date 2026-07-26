@@ -4,8 +4,9 @@
 
 | Version   | Supported |
 |-----------|-----------|
-| >= 1.10.55 | Yes       |
-| < 1.10.55  | No        |
+| >= 2.0.0  | Yes       |
+| 1.10.55   | Yes (transitional, until v2.0.x stabilises) |
+| < 1.10.55 | No        |
 
 ## Reporting a Vulnerability
 

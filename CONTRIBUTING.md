@@ -17,8 +17,11 @@ Thank you for your interest in contributing to slinit!
 3. Make your changes
 4. Run tests: `go test ./...`
 5. Run functional tests if applicable: `./tests/functional/run-tests.sh`
-6. Commit with a clear message
-7. Push to your fork and open a Pull Request
+6. Add a `[Unreleased]` entry to [CHANGELOG.md](CHANGELOG.md) if the
+   change is user-visible (new feature, behavioural fix, security
+   hardening). Internal refactors don't need one.
+7. Commit with a clear message
+8. Push to your fork and open a Pull Request
 
 ### Code Style
 

@@ -26,7 +26,7 @@ What actually happened.
 
 ## Environment
 
-- slinit version: (e.g. v1.10.55 — `slinitctl --version`)
+- slinit version: (e.g. v2.0.0 — `slinitctl --version`)
 - OS: (e.g. Alpine Linux 3.23, Sunlight OS)
 - Go version: (e.g. 1.25 — `go version`)
 - Running as: PID 1 / system manager / user manager / container

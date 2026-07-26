@@ -1137,6 +1137,12 @@ go test -fuzz=FuzzConfigParse ./tests/fuzz
 - [x] **Phase 39**: File-descriptor store -- `file-descriptor-store-max=N` creates a per-service `$NOTIFY_SOCKET` Unix datagram socket at `/run/slinit/notify/<svc>.sock`; sd_notify packet parser routes `FDSTORE=1` + `FDNAME=name` with SCM_RIGHTS fds into an in-memory store; next BringUp prepends them to `LISTEN_FDS` (with names in `LISTEN_FDNAMES`). **Closes the systemd-adaptation backlog (14/14 items shipped; `#7 v2` arg-checking BPF for `RestrictRealtime`/`SUIDSGID`/`MDWE`/`Namespaces`/`AddressFamilies` deferred -- needs `pkg/seccomp` BPF compiler extension)**
 - [x] **Phase 40**: Services-dir auto-watch (`--watch-services-dir`) -- opt-in `inotify(7)`-based multiplexer (`pkg/svcdirwatch`) watches every services-dir; new file → `LoadService`, removed file → `UnloadService` (only when *STOPPED*), modified file → informational log (the existing *(modified since loaded)* marker still fires via `status`). Editor artefacts (`.`, `~`, `.swp`, `.tmp`, `.new`, `.bak`) and `.d` overlay dirs are filtered; a 300 ms debounce collapses editor multi-event bursts (write + close + rename) into a single dispatch per file. Inspired by `runsvdir`'s inotify rescan (runit 2.3.1+)
 
+## Changelog
+
+Release history and per-version notes: [CHANGELOG.md](CHANGELOG.md).
+Development from v2.0.0 onward tracks three lanes — new features,
+security features, and code fixing.
+
 ## License
 
 [Apache License 2.0](LICENSE)
