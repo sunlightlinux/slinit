@@ -148,7 +148,7 @@ Strong success criteria let you loop independently. Weak criteria
 - `cmd/slinit/main.go` — PID 1 / container-mode entry point.
 - `cmd/slinit-runner/` — post-fork hardening execve wrapper (LSM, ambient
   caps, close-fds, restrict-*).
-- `cmd/slinitctl/main.go` — ~60 subcommands + 15 global flags.
+- `cmd/slinitctl/main.go` — ~70 subcommands + 15 global flags.
 
 ### Reference sources
 - **dinit** (C++): `../dinit/src/` — key files `service.{h,cc}`,

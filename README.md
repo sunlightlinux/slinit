@@ -1019,7 +1019,7 @@ of Ctrl+Alt+Del or a repeated RT signal always escalates.
 slinit/
 ├── cmd/
 │   ├── slinit/            # Daemon entry point (incl. SysV argv[0] dispatch)
-│   ├── slinitctl/         # Control CLI (~60 subcommands + 15 global flags)
+│   ├── slinitctl/         # Control CLI (~70 subcommands + 15 global flags)
 │   ├── slinit-runner/     # Post-fork execve wrapper (LSM transitions, ambient caps, close-fds, restrict-* seccomp)
 │   ├── slinit-check/      # Config linter (offline + online)
 │   ├── slinit-monitor/    # Event watcher + command executor
