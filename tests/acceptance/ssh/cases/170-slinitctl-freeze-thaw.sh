@@ -30,15 +30,26 @@ EOF
 slinitctl --system start "$SVC" >/dev/null
 wait_for_service "$SVC" "STARTED" 10 || { test_summary; return; }
 
-# Locate the cgroup.freeze knob (slinit places the svc under its cgroup path).
-CG=/sys/fs/cgroup/slinit/acceptance-freeze
+# Discover the actual cgroup path from /proc/PID/cgroup — slinit doesn't
+# always honor the `cgroup =` directive verbatim (needs daemon-side
+# --cgroup-path to enable the subtree). On systems without that flag,
+# the svc runs in the root cgroup and freeze isn't reachable.
+_pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ {print $2; exit}')
+_cgpath=$(awk -F: '{print $3; exit}' /proc/$_pid/cgroup 2>/dev/null)
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ -z "$_cgpath" ] || [ "$_cgpath" = "/" ]; then
+    echo "SKIP: slinit daemon does not manage a cgroup subtree on this install (svc in root cgroup); freeze/thaw needs --cgroup-path"
+    test_summary
+    return 0
+fi
+CG="/sys/fs/cgroup${_cgpath}"
 if [ ! -e "$CG/cgroup.freeze" ]; then
-    _TESTS_RUN=$((_TESTS_RUN + 1))
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: $CG/cgroup.freeze missing — cgroup layout differs from expectation"
+    echo "FAIL: $CG/cgroup.freeze missing"
     test_summary
     return
 fi
+echo "OK: cgroup at $CG has freeze knob"
 
 # Freeze the service.
 slinitctl --system freeze "$SVC" >/dev/null

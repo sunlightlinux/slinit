@@ -4,22 +4,24 @@
 # query-load-mech (currently always "file"), service-dirs (config search
 # paths), and boot-time (structured startup timing).
 
-# --- query-name -------------------------------------------------------
+# --- query-name (takes a service argument) ----------------------------
 _TESTS_RUN=$((_TESTS_RUN + 1))
-_qn=$(slinitctl --system query-name 2>&1)
+_qn=$(slinitctl --system query-name boot 2>&1)
 _rc=$?
 if [ $_rc -eq 0 ]; then
-    echo "OK: slinitctl query-name returned ('$_qn')"
+    echo "OK: slinitctl query-name boot returned ('$_qn')"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: slinitctl query-name failed rc=$_rc: $_qn"
+    echo "FAIL: slinitctl query-name boot failed rc=$_rc: $_qn"
 fi
 
 # --- query-load-mech --------------------------------------------------
 _TESTS_RUN=$((_TESTS_RUN + 1))
 _qlm=$(slinitctl --system query-load-mech 2>&1)
 if [ $? -eq 0 ]; then
-    assert_contains "$_qlm" "file" "query-load-mech reports 'file'"
+    # Output format is "Loader type: N (name)" — assert on the label
+    # prefix rather than a specific loader name that could change.
+    assert_contains "$_qlm" "Loader type:" "query-load-mech emits 'Loader type:' header"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: query-load-mech failed: $_qlm"

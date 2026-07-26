@@ -6,7 +6,9 @@
 # start two instances, verify each has its own state + working dir,
 # stop both.
 
-TMPL="acceptance-test-tmpl@"
+# Template filename: NO trailing @ (per pkg/config/loader.go findAndParse:
+# svc@arg is requested → base = svc → svc file is loaded as template).
+TMPL="acceptance-test-tmpl"
 INST_A="acceptance-test-tmpl@alpha"
 INST_B="acceptance-test-tmpl@beta"
 
@@ -19,8 +21,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Template file uses $$1 to defer expansion — $1 gets processed by the
-# instance-loader, and $$ escapes the literal $ so runtime shell sees $1.
+# Template file: $1 is expanded by the template loader with the
+# instance argument (alpha/beta). Runtime shell references would need
+# $$1 but there aren't any here — we just want the loader-time
+# substitution.
 cat > /etc/slinit.d/"$TMPL" <<'EOF'
 type = process
 command = /bin/sh -c "echo instance=$1 > /tmp/acceptance-tmpl-$1; exec sleep 600"

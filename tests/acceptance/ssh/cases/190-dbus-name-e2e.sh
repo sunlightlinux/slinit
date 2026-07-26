@@ -3,7 +3,7 @@
 # slinit auto-wires a ready-check-command that polls the D-Bus name
 # owner. The svc doesn't reach STARTED until the name is owned; this
 # test proves the auto-wire happens by:
-#   1. deploying a svc with bus-name = com.example.acceptance.190,
+#   1. deploying a svc with bus-name = com.example.Acceptance190,
 #   2. registering the name via a background dbus-send loop,
 #   3. observing the svc transition from STARTING → STARTED once the
 #      auto-wired ready-check succeeds.
@@ -12,7 +12,7 @@
 # session/system bus running.
 
 SVC="acceptance-test-dbus-name"
-BUS_NAME="com.example.acceptance.190"
+BUS_NAME="com.example.Acceptance190"
 
 cleanup() {
     kill "$OWNER_PID" 2>/dev/null || true
@@ -46,19 +46,21 @@ restart = false
 EOF
 
 # Kick off the svc; it will sit in STARTING until the auto-wired
-# ready-check sees the name owner.
+# ready-check sees the name owner. Poll a few times to give slinit
+# time to transition into STARTING (the state may briefly be empty
+# right after start on a busy daemon).
 slinitctl --system --no-wait start "$SVC" >/dev/null 2>&1
-sleep 2
 
-# In this test we don't actually claim the name (that needs a
-# real D-Bus service implementing the interface). Instead, we verify
-# the auto-wire happened by checking the svc's ready-check-command
-# via slinitctl status — a wired svc has a ready-check populated.
-# STARTED is the eventual state IF the auto-wire finds a name owner;
-# without one, the svc stays STARTING. Either way is acceptable —
-# the assertion is that slinit accepted the directive and didn't
-# crash.
-_state=$(svc_state "$SVC")
+_state=""
+_e=0
+while [ "$_e" -lt 8 ]; do
+    _state=$(svc_state "$SVC")
+    case "$_state" in
+        STARTING|STARTED) break ;;
+    esac
+    sleep 1; _e=$((_e + 1))
+done
+
 _TESTS_RUN=$((_TESTS_RUN + 1))
 case "$_state" in
 STARTING|STARTED)
@@ -66,7 +68,7 @@ STARTING|STARTED)
     ;;
 *)
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: bus-name svc in unexpected state '$_state'"
+    echo "FAIL: bus-name svc did not reach STARTING/STARTED (state='$_state')"
     ;;
 esac
 

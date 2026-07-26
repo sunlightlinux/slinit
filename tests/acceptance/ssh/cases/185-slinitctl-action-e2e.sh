@@ -15,7 +15,10 @@ svc_deploy "$SVC" <<EOF
 type = process
 command = /bin/sh -c 'exec sleep 600'
 restart = false
-extra-command = dump=/bin/sh -c "touch $MARK"
+# extra-command syntax is "<name> <command> [args...]" (space-separated,
+# not "name=command") per pkg/config/parser.go. First word is the
+# action name; the rest is the command to run when the action fires.
+extra-command = dump /bin/sh -c "touch $MARK"
 EOF
 
 slinitctl --system start "$SVC" >/dev/null

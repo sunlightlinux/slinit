@@ -14,18 +14,23 @@ type = triggered
 command = /bin/sh -c 'exec sleep 600'
 EOF
 
-# A triggered svc sits in a waiting state (not STARTED) until fired.
+# Start the svc — a triggered svc requested to start enters STARTING
+# and waits there until slinitctl trigger fires it.
+slinitctl --system --no-wait start "$SVC" >/dev/null 2>&1
 sleep 1
 _state=$(svc_state "$SVC")
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ "$_state" != "STARTED" ]; then
-    echo "OK: triggered svc is $_state (not STARTED) before trigger"
-else
+case "$_state" in
+STARTING|STOPPED)
+    echo "OK: triggered svc is $_state (not yet STARTED) — waiting for trigger"
+    ;;
+*)
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: triggered svc unexpectedly STARTED before trigger"
-fi
+    echo "FAIL: triggered svc unexpectedly $_state"
+    ;;
+esac
 
-# Fire trigger — svc should reach STARTED.
+# Fire trigger — svc should now reach STARTED.
 slinitctl --system trigger "$SVC" >/dev/null
 wait_for_service "$SVC" "STARTED" 10
 assert_service_state "$SVC" "STARTED" "triggered svc STARTED after trigger"

@@ -8,7 +8,7 @@ SVC_A="acceptance-test-adddep-a"
 SVC_B="acceptance-test-adddep-b"
 
 cleanup() {
-    slinitctl --system rm-dep waits-for "$SVC_A" "$SVC_B" >/dev/null 2>&1 || true
+    slinitctl --system rm-dep "$SVC_A" waits-for "$SVC_B" >/dev/null 2>&1 || true
     svc_remove "$SVC_A" "$SVC_B"
 }
 trap cleanup EXIT INT TERM
@@ -30,17 +30,24 @@ slinitctl --system start "$SVC_B" >/dev/null
 wait_for_service "$SVC_A" "STARTED" 10 || { test_summary; return; }
 wait_for_service "$SVC_B" "STARTED" 10 || { test_summary; return; }
 
-# Add A waits-for B.
-slinitctl --system add-dep waits-for "$SVC_A" "$SVC_B" >/dev/null 2>&1
+# slinitctl add-dep syntax: <from> <dep-type> <to>.
+# "A waits-for B" → add-dep A waits-for B.
+slinitctl --system add-dep "$SVC_A" waits-for "$SVC_B" >/dev/null 2>&1
 _rc=$?
-assert_exit_code "true" 0 "add-dep exit ($_rc)"
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ "$_rc" -eq 0 ]; then
+    echo "OK: add-dep '$SVC_A waits-for $SVC_B' accepted"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: add-dep exit $_rc"
+fi
 
 # dependents of B should now include A.
 _dependents=$(slinitctl --system dependents "$SVC_B" 2>&1)
 assert_contains "$_dependents" "$SVC_A" "$SVC_A appears as dependent of $SVC_B after add-dep"
 
 # Remove the dep.
-slinitctl --system rm-dep waits-for "$SVC_A" "$SVC_B" >/dev/null 2>&1
+slinitctl --system rm-dep "$SVC_A" waits-for "$SVC_B" >/dev/null 2>&1
 _dependents=$(slinitctl --system dependents "$SVC_B" 2>&1)
 assert_not_contains "$_dependents" "$SVC_A" "$SVC_A no longer a dependent after rm-dep"
 

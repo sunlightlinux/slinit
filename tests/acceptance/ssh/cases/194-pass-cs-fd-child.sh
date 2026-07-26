@@ -15,8 +15,11 @@ rm -f "$LOG"
 svc_deploy "$SVC" <<EOF
 type = process
 options = pass-cs-fd
-# Dump env for inspection + verify fd points at a socket.
-command = /bin/sh -c "env | grep SLINIT_CS_FD > $LOG; _fd=\$SLINIT_CS_FD; [ -n \"\$_fd\" ] && readlink /proc/self/fd/\$_fd >> $LOG 2>&1; exec sleep 600"
+# Runtime env refs must use \$\$VAR in the heredoc — slinit's config
+# parser pre-expands \$VAR at load time, so a bare \$SLINIT_CS_FD
+# would collapse to empty. Doubled dollar defers the reference to
+# the runtime shell where SLINIT_CS_FD is actually set.
+command = /bin/sh -c "env | grep SLINIT_CS_FD > $LOG; _fd=\$\$SLINIT_CS_FD; [ -n \"\$\$_fd\" ] && readlink /proc/self/fd/\$\$_fd >> $LOG 2>&1; exec sleep 600"
 restart = false
 EOF
 

@@ -4,36 +4,59 @@
 # (which stops it if no dependent needs it). Verifies both verbs work
 # distinctly from plain `start`/`stop`.
 
-SVC="acceptance-test-wakerelease"
+SVC_TARGET="acceptance-test-wakerelease-target"
+SVC_PARENT="acceptance-test-wakerelease-parent"
 
-cleanup() { svc_remove "$SVC"; }
+cleanup() { svc_remove "$SVC_PARENT" "$SVC_TARGET"; }
 trap cleanup EXIT INT TERM
 
-svc_deploy "$SVC" <<EOF
+# `wake` requires the target to have at least one dependent that has
+# already been started (otherwise slinit reports "no active
+# dependents, cannot wake"). Set up a parent that waits-for the
+# target, then `start` the parent to make the target
+# dependency-active — that opens the window in which `wake` is legal.
+svc_deploy "$SVC_TARGET" <<EOF
 type = process
 command = /bin/sh -c 'exec sleep 600'
 restart = false
 EOF
 
-# `wake` should bring the svc to STARTED but leave it not-active
-# (release-able without dependent tracking).
-slinitctl --system wake "$SVC" >/dev/null
-wait_for_service "$SVC" "STARTED" 10
-assert_service_state "$SVC" "STARTED" "svc STARTED after wake"
+svc_deploy "$SVC_PARENT" <<EOF
+type = process
+waits-for: $SVC_TARGET
+command = /bin/sh -c 'exec sleep 600'
+restart = false
+EOF
 
-# `release` should stop the svc since no dependent needs it.
-slinitctl --system release "$SVC" >/dev/null
-wait_for_service "$SVC" "STOPPED" 10
-assert_service_state "$SVC" "STOPPED" "svc STOPPED after release"
+# Starting the parent brings the target up transitively.
+slinitctl --system start "$SVC_PARENT" >/dev/null
+wait_for_service "$SVC_TARGET" "STARTED" 10
+assert_service_state "$SVC_TARGET" "STARTED" "target STARTED via parent waits-for"
 
-# `start` marks active — a plain `stop` should also bring it down.
-slinitctl --system start "$SVC" >/dev/null
-wait_for_service "$SVC" "STARTED" 10
-assert_service_state "$SVC" "STARTED" "svc STARTED after explicit start"
+# `release` un-marks active. Because the parent still waits-for it,
+# the target stays STARTED — release only stops when nobody needs it.
+slinitctl --system release "$SVC_TARGET" >/dev/null
+sleep 1
+assert_service_state "$SVC_TARGET" "STARTED" \
+    "target stays STARTED after release while parent still waits-for it"
 
-# But a `release` should also work on an actively-started svc.
-slinitctl --system release "$SVC" >/dev/null
-wait_for_service "$SVC" "STOPPED" 10
-assert_service_state "$SVC" "STOPPED" "svc STOPPED after release even when started active"
+# Stop parent → target's dependents drop to zero → release-able.
+slinitctl --system stop "$SVC_PARENT" >/dev/null
+wait_for_service "$SVC_PARENT" "STOPPED" 10
+wait_for_service "$SVC_TARGET" "STOPPED" 10
+assert_service_state "$SVC_TARGET" "STOPPED" \
+    "target STOPPED after parent stops (no more dependents)"
+
+# `wake` on a target whose parent is running again brings it up
+# without marking it active.
+slinitctl --system start "$SVC_PARENT" >/dev/null
+wait_for_service "$SVC_TARGET" "STARTED" 10
+slinitctl --system stop "$SVC_TARGET" >/dev/null 2>&1 || true
+sleep 1
+
+# Now wake — parent is active dep, so wake is legal.
+slinitctl --system wake "$SVC_TARGET" >/dev/null 2>&1
+wait_for_service "$SVC_TARGET" "STARTED" 10
+assert_service_state "$SVC_TARGET" "STARTED" "target STARTED after wake"
 
 test_summary
