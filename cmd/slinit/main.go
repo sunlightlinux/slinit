@@ -19,6 +19,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
+	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/pathwatch"
 	"github.com/sunlightlinux/slinit/pkg/persist"
@@ -405,6 +406,28 @@ func main() {
 	} else {
 		fmt.Fprintf(os.Stderr, "slinit: %v (using default wallclock)\n", err)
 	}
+
+	// Initialise the journal pipeline: boot-id / machine-id / hostname
+	// cache + in-process ring buffer + Unix DGRAM emitter aimed at
+	// /run/slinit/events.sock. Wiring runs unconditionally so every
+	// state transition and captured log line lands in the journal
+	// regardless of whether slinit-journald is installed. If the socket
+	// has no listener (typical until slinit-journald ships), emits fall
+	// back to the ring buffer only — slinit-journalctl can query that
+	// via the control socket.
+	//
+	// Called after logger setup so any warnings emitted during init
+	// use the configured log target; called before service loading so
+	// the first Load / Start transitions already produce journal
+	// entries.
+	hostname, _ := os.Hostname()
+	if err := journal.InitIDs(hostname); err != nil {
+		logger.Warn("Journal ID init failed: %v (events will still work with transient IDs)", err)
+	}
+	journalBuf := journal.NewEventBuffer(0)
+	journalEmitter := journal.NewEmitter(journalBuf, journal.SocketPath)
+	journal.SetGlobal(journalEmitter)
+	defer journalEmitter.Close()
 
 	// Redirect log output to file (--log-file/-l).
 	//

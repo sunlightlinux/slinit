@@ -591,6 +591,21 @@ func (lr *LogRotator) processLine(line []byte) {
 		lr.forwarder.Send(out)
 	}
 
+	// Journal emit — mirror the accepted line into the structured
+	// event bus. Fires alongside file/UDP writes so slinit-journalctl
+	// sees the same lines as `tail -f` on the logfile. Uses
+	// TransportStdout since this is captured service output (as
+	// opposed to state transitions from record.go, which use
+	// TransportDriver). Ensure `lineLevel` reflects the real syslog
+	// level even when neither levelMax nor alertLevel triggered the
+	// earlier extraction — journal callers care about priority.
+	if len(matchLine) > 0 {
+		if lr.levelMax < 0 && lr.alertLevel < 0 {
+			lineLevel = extractSyslogLevel(matchLine)
+		}
+		emitJournalLogLine(lr.serviceName, lineLevel, matchLine)
+	}
+
 	n, err := lr.file.Write(out)
 	if err == nil {
 		lr.currentSize += int64(n)

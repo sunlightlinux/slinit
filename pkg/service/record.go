@@ -2375,6 +2375,14 @@ func (sr *ServiceRecord) ExecuteTransition() {
 // --- Internal state machine helpers ---
 
 func (sr *ServiceRecord) notifyListeners(event ServiceEvent) {
+	// Journal emit runs unconditionally — a service with zero
+	// registered listeners (typical between control-connection
+	// disconnects) still produces state-transition events in the
+	// journal so slinit-journalctl can reconstruct the boot timeline
+	// later. The Emit call is a no-op if journal.SetGlobal was never
+	// called (e.g. during unit tests), so this is safe pre-Init.
+	sr.emitJournalStateEvent(event)
+
 	sr.listenerMu.Lock()
 	n := len(sr.listeners)
 	if n == 0 {
