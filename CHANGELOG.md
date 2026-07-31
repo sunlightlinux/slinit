@@ -17,8 +17,17 @@ the full commit-level record.
 
 ## [Unreleased]
 
-Nothing yet. Add entries here as they land; the next tagged release
-promotes this block to a dated version heading.
+### Fixed
+
+- **Shutdown console: getty prompt no longer collides with the first
+  [STOPPD] line.** On systems where a getty is still active on the
+  same tty slinit uses as console (typically tty1 on bare metal),
+  the login prompt "sunlight login: " previously ran into slinit's
+  first shutdown status line ("sunlight login: [STOPPD] boot"). The
+  boot-console renderer now emits a cursor-reset + clear-line +
+  newline sequence on the transition into shutdown mode, so the
+  first [STOPPD] line always starts on a fresh row. No behavioural
+  change to the [STOPPD] cascade itself.
 
 ## [2.0.0] — 2026-07-26
 

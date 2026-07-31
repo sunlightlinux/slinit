@@ -213,7 +213,19 @@ func (l *Logger) SetBootConsole(enabled, color bool) {
 // SetShutdownConsole switches the boot console into teardown mode, where
 // service stop events render as "[STOPPD] name" instead of "[ OK ] name".
 // Called once when shutdown begins; harmless when the boot console is off.
+//
+// On the transition into shutdown mode we emit a cursor-reset + clear-line
+// + newline sequence so the first [STOPPD] line starts on a fresh row,
+// even if the console still shows a lingering getty "login:" prompt from
+// tty1 (the two writers otherwise collide on the same visible row).
 func (l *Logger) SetShutdownConsole(enabled bool) {
+	if enabled && !l.shuttingDown && l.bootConsole {
+		const clearLine = "\r\x1b[2K\n"
+		fmt.Fprint(l.output, clearLine)
+		if l.consoleDup != nil {
+			fmt.Fprint(l.consoleDup, clearLine)
+		}
+	}
 	l.shuttingDown = enabled
 }
 

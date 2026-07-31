@@ -28,7 +28,10 @@ func TestBootConsoleStatusLines(t *testing.T) {
 
 // TestBootConsoleShutdownMarkers verifies that once shutdown is signalled,
 // service stop events render as "[STOPPD] name" while starts and failures
-// keep their boot markers.
+// keep their boot markers. The output is prefixed with a cursor-reset +
+// clear-line + newline sequence emitted once on the transition into
+// shutdown mode (so a lingering getty login prompt doesn't collide with
+// the first [STOPPD] line on the console).
 func TestBootConsoleShutdownMarkers(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(LevelWarn)
@@ -41,10 +44,62 @@ func TestBootConsoleShutdownMarkers(t *testing.T) {
 	l.ServiceFailed("dbus", false)
 
 	got := buf.String()
-	want := "[STOPPD] network\n[STOPPD] sshd\n[FAIL] dbus\n"
+	want := "\r\x1b[2K\n[STOPPD] network\n[STOPPD] sshd\n[FAIL] dbus\n"
 	if got != want {
 		t.Errorf("shutdown console output:\n got %q\nwant %q", got, want)
 	}
+}
+
+// TestShutdownConsoleClearLineOnceOnly verifies that the clear-line
+// sequence is emitted only on the false→true transition of shutdown
+// mode, and only when the boot console is active.
+func TestShutdownConsoleClearLineOnceOnly(t *testing.T) {
+	t.Run("emitted once on transition", func(t *testing.T) {
+		var buf bytes.Buffer
+		l := New(LevelWarn)
+		l.SetOutput(&buf)
+		l.SetBootConsole(true, false)
+
+		l.SetShutdownConsole(true)
+		l.SetShutdownConsole(true) // idempotent — should NOT emit again
+
+		got := buf.String()
+		want := "\r\x1b[2K\n"
+		if got != want {
+			t.Errorf("clear-line should fire once: got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no clear-line when boot console off", func(t *testing.T) {
+		var buf bytes.Buffer
+		l := New(LevelWarn)
+		l.SetOutput(&buf)
+		// boot console NOT enabled — verbose stream, no visible getty overlap
+
+		l.SetShutdownConsole(true)
+
+		if buf.Len() != 0 {
+			t.Errorf("clear-line should not fire without boot console: got %q", buf.String())
+		}
+	})
+
+	t.Run("fanout to consoleDup", func(t *testing.T) {
+		var out, dup bytes.Buffer
+		l := New(LevelWarn)
+		l.SetOutput(&out)
+		l.SetConsoleDup(&dup)
+		l.SetBootConsole(true, false)
+
+		l.SetShutdownConsole(true)
+
+		want := "\r\x1b[2K\n"
+		if out.String() != want {
+			t.Errorf("output: got %q, want %q", out.String(), want)
+		}
+		if dup.String() != want {
+			t.Errorf("consoleDup: got %q, want %q", dup.String(), want)
+		}
+	})
 }
 
 // TestBootConsoleColor verifies the OK/FAIL markers are colored when
