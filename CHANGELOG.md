@@ -17,6 +17,47 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Added
+
+- **Journal pipeline Phase 2 — `slinit-journalctl` query CLI.**
+  systemd-journalctl-equivalent operator surface on top of the Phase
+  1 event bus. Wire path: `slinit-journalctl → CmdJournalQuery /
+  CmdJournalSubscribe → journal.GlobalBuffer().Query / GlobalSubscribe
+  → RplyJournalEntry stream`. Flags for v2: `-n/--lines`, `-o/--output`
+  (short / short-iso / cat / json / verbose), `-u/--unit` (repeatable),
+  `-p/--priority` (numeric + symbolic), `--since/--until` (RFC3339,
+  `now/today/yesterday`, relative `-Nh/-Nd`), `-r/--reverse`,
+  `-f/--follow`, `-k/--dmesg`, `--list-boots`, `--boot [ID]`,
+  `-c/--cursor`, `--show-cursor`, `--file=PATH` (JSONL offline reader
+  incl. transparent `.gz`), `--socket-path`, `--system/--user`.
+  Kmsg reader wired into slinit itself so `-k` populates on
+  system-mode boots.
+- **Journal pipeline Phase 3 — `slinit-journald` persistent daemon.**
+  Binds `/run/slinit/events.sock` with SO_PASSCRED, snapshots
+  `/proc/PID/{comm,exe,cmdline}` for trusted metadata on external
+  clients. Persists JSONL to `/var/log/slinit-journal/YYYY-MM-DD.jsonl`
+  with `.idx` bisect companion (16-byte tuples `(realtime_usec_le64,
+  byte_offset_le64)`). Rotation defaults 128 MiB / 24h; vacuum defaults
+  100 files / 4 GiB / 30 days. Whole-file gzip compression on rotate
+  (chosen over LZ4 to avoid a new external dependency; readers open
+  `.jsonl.gz` transparently). Volatile fallback to `/run/slinit-journal/`
+  when `/var/log/slinit-journal/` is unwritable (missing partition,
+  container without persistent mount). Daemon is optional — slinit
+  keeps working with or without it.
+
+### Changed
+
+- **`extractSyslogLevel` now recognizes uppercase keyword prefixes**
+  (`EMERG:`, `ALERT:`, `CRIT:`, `ERR:`/`ERROR:`, `WARN:`/`WARNING:`,
+  `NOTICE:`, `INFO:`, `DEBUG:`) in addition to the RFC 5424 `<N>`
+  form. Priority-based filters (`log-level-max`, `alert-level`) and
+  the new journal pipeline (`slinit-journalctl -p err`) now behave
+  the way an operator expects when apps use stdlib-style level tags
+  instead of syslog priorities. RFC 5424 keeps precedence; a line
+  with neither still defaults to info. Case-sensitive uppercase +
+  colon terminator only, so plain prose containing "info" or the
+  word "error" is unaffected.
+
 ### Fixed
 
 - **Shutdown console: getty prompt no longer collides with the first

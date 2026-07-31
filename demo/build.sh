@@ -111,7 +111,7 @@ for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-binfmt slinit-sysctl slinit-svc-value \
            slinit-start-stop-daemon slinit-supervise-daemon \
            slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var \
-           slinit-cgtop; do
+           slinit-cgtop slinit-journalctl slinit-journald; do
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
         go build -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
 done
@@ -181,6 +181,8 @@ install -m 755 "${BUILD_DIR}/slinit-mountinfo"         "${ROOTFS_DIR}/usr/bin/sl
 install -m 755 "${BUILD_DIR}/slinit-einfo"             "${ROOTFS_DIR}/usr/bin/slinit-einfo"
 install -m 755 "${BUILD_DIR}/slinit-shell-var"         "${ROOTFS_DIR}/usr/bin/slinit-shell-var"
 install -m 755 "${BUILD_DIR}/slinit-cgtop"             "${ROOTFS_DIR}/usr/bin/slinit-cgtop"
+install -m 755 "${BUILD_DIR}/slinit-journalctl"        "${ROOTFS_DIR}/usr/bin/slinit-journalctl"
+install -m 755 "${BUILD_DIR}/slinit-journald"          "${ROOTFS_DIR}/usr/sbin/slinit-journald"
 
 # einfo multi-applet symlinks so init.d scripts can invoke `einfo`,
 # `ewarn`, `eerror`, `ebegin`, `eend`, etc. by name.
@@ -231,6 +233,19 @@ mkdir -p "${ROOTFS_DIR}/run"
 mkdir -p "${ROOTFS_DIR}/dev"
 mkdir -p "${ROOTFS_DIR}/proc"
 mkdir -p "${ROOTFS_DIR}/sys"
+
+# Seed /etc/machine-id so pkg/journal doesn't have to fall back to a
+# transient random ID on every boot. systemd's format: 32 lowercase
+# hex chars + newline. Fresh per build (baked into the initramfs)
+# but stable across reboots of the same VM image, which is what
+# cursor semantics ("boot changed vs same") depend on.
+if [ ! -f "${ROOTFS_DIR}/etc/machine-id" ]; then
+    mkdir -p "${ROOTFS_DIR}/etc"
+    # od + tr: portable 32-hex-char generator (16 random bytes → 32 hex).
+    od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "${ROOTFS_DIR}/etc/machine-id"
+    echo >> "${ROOTFS_DIR}/etc/machine-id"
+    chmod 0444 "${ROOTFS_DIR}/etc/machine-id"
+fi
 
 # Step 6: Install service files and shell completions
 echo "[6/7] Installing service files and shell completions..."

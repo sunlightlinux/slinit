@@ -320,6 +320,10 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleFreezeService(payload, true)
 	case CmdThawService:
 		return c.handleFreezeService(payload, false)
+	case CmdJournalQuery:
+		return c.handleJournalQuery(payload)
+	case CmdJournalSubscribe:
+		return c.handleJournalSubscribe(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}

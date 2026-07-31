@@ -104,6 +104,8 @@ const (
 	CmdResetFailed        uint8 = 57 // clear the startFailed flag on a specific service or all
 	CmdFreezeService      uint8 = 58 // cgroup v2 freezer: write 1 to cgroup.freeze
 	CmdThawService        uint8 = 59 // cgroup v2 freezer: write 0 to cgroup.freeze
+	CmdJournalQuery       uint8 = 60 // slinit-journalctl: filter+limit → RplyJournalEntry* + RplyJournalDone
+	CmdJournalSubscribe   uint8 = 61 // slinit-journalctl -f: server pushes RplyJournalEntry until connection close
 )
 
 // Reply codes (server → client).
@@ -162,6 +164,9 @@ const (
 	RplyActivateResult  uint8 = 112 // active profile name + 3 lists (stopped/started/kept) all length-prefixed
 	RplyBundleMembers   uint8 = 113 // uint16 count + [uint16 len + name]* (empty when not a bundle)
 	RplyManualRefused   uint8 = 114 // systemd-style refuse-manual-start / refuse-manual-stop rejection
+	RplyJournalEntry    uint8 = 115 // one JSONL-encoded Event; multiple per JournalQuery/Subscribe reply
+	RplyJournalDone     uint8 = 116 // terminates a JournalQuery reply stream
+	RplyJournalErr      uint8 = 117 // JournalQuery/Subscribe rejected (bad JSON filter, buffer unset, etc.)
 )
 
 // Info codes (server → client, unsolicited).

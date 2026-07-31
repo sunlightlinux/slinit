@@ -17,11 +17,13 @@ import (
 const SocketPath = "/run/slinit/events.sock"
 
 // Emitter routes events to (a) an in-process ring buffer that's
-// always available to control-socket queries, and (b) a Unix DGRAM
-// socket that slinit-journald (or any listener) receives. When no
-// listener is bound to the socket, send fails with ECONNREFUSED and
-// is silently dropped — this matches sd_journal's fail-open behavior
-// and prevents journald crashes from blocking the daemon.
+// always available to control-socket queries, (b) a Unix DGRAM
+// socket that slinit-journald (or any listener) receives, and (c) a
+// set of live in-process subscribers (used by slinit-journalctl -f
+// via the CmdJournalSubscribe control opcode). When no listener is
+// bound to the socket, send fails with ECONNREFUSED and is silently
+// dropped — this matches sd_journal's fail-open behavior and prevents
+// journald crashes from blocking the daemon.
 //
 // The Emitter is safe for concurrent use. Slinit installs one
 // process-wide instance via SetGlobal at PID-1 startup; any package
@@ -46,6 +48,19 @@ type Emitter struct {
 	// can detect a broken listener.
 	dropped atomic.Uint64
 	sent    atomic.Uint64
+
+	// Live in-process subscribers. Every Emit fans a *pointer* to the
+	// event out to each subscriber's channel. When a channel is full
+	// the emit path drops the event for that subscriber (never
+	// blocks) — the counter tracks per-subscriber overrun so slow
+	// readers surface in Stats() without stalling the daemon.
+	subsMu sync.RWMutex
+	subs   map[*subscription]struct{}
+}
+
+type subscription struct {
+	ch      chan *Event
+	dropped atomic.Uint64
 }
 
 // NewEmitter builds an emitter that pushes events into buf and
@@ -60,6 +75,7 @@ func NewEmitter(buf *EventBuffer, socketPath string) *Emitter {
 	return &Emitter{
 		buffer:     buf,
 		socketPath: socketPath,
+		subs:       make(map[*subscription]struct{}),
 	}
 }
 
@@ -111,10 +127,12 @@ func (e *Emitter) Emit(evt *Event) error {
 		return fmt.Errorf("journal: emit: %w", err)
 	}
 
-	// Fan out. Buffer first (never fails), then socket (best-effort).
+	// Fan out. Buffer first (never fails), then subscribers (never
+	// blocks — full channel drops), then socket (best-effort).
 	if e.buffer != nil {
 		e.buffer.Push(evt)
 	}
+	e.fanoutSubs(evt)
 
 	if err := e.publishToSocket(evt); err != nil {
 		e.dropped.Add(1)
@@ -126,6 +144,62 @@ func (e *Emitter) Emit(evt *Event) error {
 
 	e.sent.Add(1)
 	return nil
+}
+
+// fanoutSubs pushes evt to every live subscriber. Non-blocking: when
+// a channel is full the event is skipped for that subscriber (dropped
+// counter incremented). Uses RLock so multiple emits can fan out
+// concurrently — the map is only written by Subscribe/Unsubscribe.
+func (e *Emitter) fanoutSubs(evt *Event) {
+	e.subsMu.RLock()
+	defer e.subsMu.RUnlock()
+	for s := range e.subs {
+		select {
+		case s.ch <- evt:
+		default:
+			s.dropped.Add(1)
+		}
+	}
+}
+
+// Subscribe registers a channel that receives every subsequent Emit.
+// The returned channel is buffered with `bufferSize` slots; when the
+// buffer fills, further events are silently dropped for this
+// subscriber (each drop is counted internally). Zero or negative
+// bufferSize is clamped to 64 — smaller than that risks storm loss
+// during boot when hundreds of state transitions fire back-to-back.
+//
+// The returned cancel function unsubscribes and closes the channel;
+// call it (typically deferred) when the subscriber is done. It is
+// safe to call cancel more than once.
+func (e *Emitter) Subscribe(bufferSize int) (<-chan *Event, func()) {
+	if bufferSize <= 0 {
+		bufferSize = 64
+	}
+	sub := &subscription{ch: make(chan *Event, bufferSize)}
+	e.subsMu.Lock()
+	e.subs[sub] = struct{}{}
+	e.subsMu.Unlock()
+
+	var cancelOnce sync.Once
+	cancel := func() {
+		cancelOnce.Do(func() {
+			e.subsMu.Lock()
+			delete(e.subs, sub)
+			e.subsMu.Unlock()
+			close(sub.ch)
+		})
+	}
+	return sub.ch, cancel
+}
+
+// SubscriberCount returns the number of active subscribers. Diagnostic
+// only — surfaced by tests and future stats reporting to detect
+// stuck subscriptions.
+func (e *Emitter) SubscriberCount() int {
+	e.subsMu.RLock()
+	defer e.subsMu.RUnlock()
+	return len(e.subs)
 }
 
 // stampTrusted overwrites the daemon-injected fields on evt with the
@@ -280,4 +354,38 @@ func Emit(evt *Event) {
 		return
 	}
 	_ = e.Emit(evt)
+}
+
+// Buffer exposes the emitter's in-process ring buffer so external
+// consumers (control-socket handlers replying to slinit-journalctl
+// queries) can Query without threading the emitter through APIs. May
+// be nil when the emitter was constructed without a buffer.
+func (e *Emitter) Buffer() *EventBuffer { return e.buffer }
+
+// GlobalBuffer returns the process-wide emitter's ring buffer, or
+// nil when SetGlobal has not been called or the emitter has no
+// buffer. Callers (pkg/control) use this to answer JournalQuery
+// requests without an import cycle back to cmd/slinit/main.go.
+func GlobalBuffer() *EventBuffer {
+	globalMu.RLock()
+	defer globalMu.RUnlock()
+	if global == nil {
+		return nil
+	}
+	return global.buffer
+}
+
+// GlobalSubscribe registers a follower against the process-wide
+// emitter, returning the receive channel and the unsubscribe
+// function. When no global emitter is installed (tests, embedded
+// mode) the returned channel is nil and cancel is a no-op — callers
+// should check the channel for nil before selecting on it.
+func GlobalSubscribe(bufferSize int) (<-chan *Event, func()) {
+	globalMu.RLock()
+	e := global
+	globalMu.RUnlock()
+	if e == nil {
+		return nil, func() {}
+	}
+	return e.Subscribe(bufferSize)
 }

@@ -92,6 +92,7 @@ works as-is.
 | supervise-demo | scripted | `slinit-supervise-daemon --verbose` respawn loop with 500ms delay + 200ms step (cap 5s); child counter file ticks up each iteration; `/tmp/slinit-supervise-daemon.err` captures the detached supervisor's log |
 | einfo-demo    | scripted  | Walks every einfo applet (einfo/ewarn/eerror/ebegin/eend/veinfo/eval_ecolors) — colour output visible via `slinitctl catlog einfo-demo` |
 | openrc-initd-demo | scripted | `/etc/init.d/openrc-initd-demo` OpenRC-style: `#!/sbin/openrc-run` shebang, `depend() { need X; after Y; }` extracted by the sandbox parser |
+| journal-demo  | process   | `slinit-journald` persistent daemon (writes to `/run/slinit-journal/*.jsonl` in the demo since /var is not persistent). Try `slinit-journalctl -n 20` / `-f` / `-u hello` / `-o json` / `--list-boots` from the demo shell. |
 
 ## Interactive Commands
 

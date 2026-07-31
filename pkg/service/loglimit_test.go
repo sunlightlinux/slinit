@@ -46,15 +46,33 @@ func TestExtractSyslogLevel(t *testing.T) {
 		line string
 		want int
 	}{
-		// <PRI> = facility*8 + level. Masked to 7 → level.
+		// RFC 5424 <PRI> = facility*8 + level. Masked to 7 → level.
 		{"<11>Mar 1 12:34:56 hello", 3}, // facility=1 (user), level=3 (err)
 		{"<6>info line", 6},
 		{"<7>debug", 7},
 		{"<0>emergency", 0},
-		{"<165>full priority", 5},  // 165 & 7 = 5
-		{"plain text line", 6},     // no prefix → info default
-		{"<no-num>not numeric", 6}, // malformed → info default
-		{"<>", 6},                  // empty digits → info default
+		{"<165>full priority", 5}, // 165 & 7 = 5
+
+		// Uppercase keyword prefix — the common convention emitted
+		// by Go log.Printf / Python logging / java.util.logging.
+		{"EMERG: outage", 0},
+		{"ALERT: paged", 1},
+		{"CRIT: db down", 2},
+		{"ERR: something broke", 3},
+		{"ERROR: connection refused", 3},
+		{"WARN: slow query", 4},
+		{"WARNING: retry", 4},
+		{"NOTICE: config reloaded", 5},
+		{"INFO: request handled", 6},
+		{"DEBUG: entering fn", 7},
+
+		// Malformed / prose that must NOT trigger keyword match.
+		{"info: lowercase does not count", 6},
+		{"INFOno colon here", 6},
+		{"the ERROR message is", 6},   // not at start
+		{"plain text line", 6},        // no prefix → info default
+		{"<no-num>not numeric", 6}, // malformed <> → keyword fallback → info
+		{"<>", 6},                  // empty digits → keyword fallback → info
 		{"", 6},
 	}
 	for _, c := range cases {

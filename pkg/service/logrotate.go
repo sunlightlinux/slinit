@@ -981,33 +981,93 @@ func (lr *LogRotator) tryConsumeRateToken() bool {
 	return false
 }
 
-// extractSyslogLevel parses a leading <N> syslog priority prefix and
-// returns the level component (0..7). Lines without a prefix are
-// treated as info (6) so plain text output passes any threshold >= 6.
+// extractSyslogLevel returns the syslog level (0..7) for a log line.
+// Precedence:
+//  1. RFC 5424 `<N>` prefix — facility*8 + level, masked to level.
+//  2. Uppercase keyword prefix — `EMERG:`, `ALERT:`, `CRIT:`, `ERR:` /
+//     `ERROR:`, `WARN:` / `WARNING:`, `NOTICE:`, `INFO:`, `DEBUG:`.
+//     Case-sensitive uppercase only + colon terminator — a plain
+//     "info" word inside prose does NOT count. This mirrors what
+//     most stdlib loggers (Go log.Printf, Python logging, java.util.
+//     logging) emit by default, so `slinit-journalctl -p err`
+//     against an app that logs `ERROR: connection refused` behaves
+//     the way an operator expects.
+//  3. Anything else → info (6) so plain text passes any threshold
+//     >= 6.
 //
-// Priority is `facility*8 + level`. We strip facility by masking with 7.
+// Filters that consume this (log-level-max, alert-level) get the
+// same benefit as the journal emit path.
 func extractSyslogLevel(line []byte) int {
-	if len(line) < 3 || line[0] != '<' {
+	// RFC 5424 first.
+	if len(line) >= 3 && line[0] == '<' {
+		end := -1
+		for i := 1; i < len(line) && i <= 4; i++ {
+			if line[i] == '>' {
+				end = i
+				break
+			}
+			if line[i] < '0' || line[i] > '9' {
+				return matchKeywordLevel(line)
+			}
+		}
+		if end < 2 {
+			return matchKeywordLevel(line)
+		}
+		n := 0
+		for i := 1; i < end; i++ {
+			n = n*10 + int(line[i]-'0')
+		}
+		return n & 7
+	}
+	return matchKeywordLevel(line)
+}
+
+// matchKeywordLevel returns the syslog level (0..7) for a line that
+// starts with `KEYWORD:` where KEYWORD is one of the syslog severity
+// names in uppercase. Returns 6 (info) when no keyword matches.
+//
+// Kept as a separate helper so it round-trips independently of the
+// RFC 5424 path — tests can exercise each one in isolation.
+func matchKeywordLevel(line []byte) int {
+	// Length gate: shortest keyword is "ERR:" (4 chars) — 3 letters
+	// plus colon; anything shorter cannot match.
+	if len(line) < 4 {
 		return 6
 	}
-	end := -1
-	for i := 1; i < len(line) && i <= 4; i++ {
-		if line[i] == '>' {
-			end = i
+	// Split on the first colon; scan bounded by the shortest useful
+	// window (WARNING is 7 chars — cap at 8 to include colon).
+	colon := -1
+	for i := 0; i < len(line) && i <= 8; i++ {
+		if line[i] == ':' {
+			colon = i
 			break
 		}
-		if line[i] < '0' || line[i] > '9' {
-			return 6
-		}
 	}
-	if end < 2 {
+	if colon < 3 {
 		return 6
 	}
-	n := 0
-	for i := 1; i < end; i++ {
-		n = n*10 + int(line[i]-'0')
+	// Compare against the fixed set. Kept as a switch (not a map)
+	// to avoid an allocation on every log line — hot path in
+	// systems with chatty services.
+	switch string(line[:colon]) {
+	case "EMERG":
+		return 0
+	case "ALERT":
+		return 1
+	case "CRIT":
+		return 2
+	case "ERR", "ERROR":
+		return 3
+	case "WARN", "WARNING":
+		return 4
+	case "NOTICE":
+		return 5
+	case "INFO":
+		return 6
+	case "DEBUG":
+		return 7
 	}
-	return n & 7
+	return 6
 }
 
 // ParseLogLevel decodes a level keyword used by log-level-max. Returns

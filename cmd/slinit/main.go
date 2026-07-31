@@ -429,6 +429,17 @@ func main() {
 	journal.SetGlobal(journalEmitter)
 	defer journalEmitter.Close()
 
+	// Kmsg reader — feeds /dev/kmsg lines into the journal with
+	// Transport=kernel. Optional (systems without CAP_SYSLOG or
+	// container-mode without /dev/kmsg silently skip); slinit itself
+	// keeps working either way. Started before service loading so
+	// early-boot kernel messages land in the same journal stream
+	// operators query via `slinit-journalctl -k`.
+	if kmsgReader, err := journal.NewKmsgReader(journalEmitter); err == nil {
+		go kmsgReader.Run(context.Background())
+		defer kmsgReader.Stop()
+	}
+
 	// Redirect log output to file (--log-file/-l).
 	//
 	// Dinit-parity (upstream 3e48a8e): a system manager (PID 1 / -m /
