@@ -88,6 +88,72 @@ func TestParseKmsgLine(t *testing.T) {
 			if got.Transport != c.wantTr {
 				t.Errorf("transport: got %v, want %v", got.Transport, c.wantTr)
 			}
+			// Every kernel event must self-identify as unit "kernel"
+			// so short-format renderers don't fall through to
+			// "unknown" and slinit-journalctl -u kernel filters cleanly.
+			if got.Unit != "kernel" {
+				t.Errorf("unit: got %q, want \"kernel\"", got.Unit)
+			}
 		})
+	}
+}
+
+// TestEmitKernelTransportSkipsPID verifies the stampTrusted special
+// case for kernel-origin events: no userspace PID/UID/GID leaks onto
+// them (they didn't come from a userspace process), while boot ID /
+// machine ID / hostname stay populated (per-boot metadata is still
+// meaningful for the reader).
+func TestEmitKernelTransportSkipsPID(t *testing.T) {
+	InitIDs("testhost")
+	buf := NewEventBuffer(4)
+	e := NewEmitter(buf, "/dev/null-nope")
+	defer e.Close()
+
+	evt := &Event{
+		Msg:       "fake kernel message",
+		Prio:      PriorityWarning,
+		Transport: TransportKernel,
+		Unit:      "kernel",
+	}
+	_ = e.Emit(evt)
+
+	if evt.Pid != 0 {
+		t.Errorf("kernel event should have _pid=0, got %d", evt.Pid)
+	}
+	if evt.Uid != 0 {
+		t.Errorf("kernel event should have _uid=0, got %d", evt.Uid)
+	}
+	if evt.Gid != 0 {
+		t.Errorf("kernel event should have _gid=0, got %d", evt.Gid)
+	}
+	// Per-boot/host metadata still stamped.
+	if evt.BootID == "" {
+		t.Error("kernel event should still carry _boot_id")
+	}
+	if evt.MachineID == "" {
+		t.Error("kernel event should still carry _machine_id")
+	}
+	if evt.Hostname == "" {
+		t.Error("kernel event should still carry _hostname")
+	}
+}
+
+// TestEmitDriverTransportStampsPID is the flip side: a non-kernel
+// event (driver, stdout, native) MUST get the emitting process's
+// PID stamped so operators can trace the source.
+func TestEmitDriverTransportStampsPID(t *testing.T) {
+	InitIDs("testhost")
+	buf := NewEventBuffer(4)
+	e := NewEmitter(buf, "/dev/null-nope")
+	defer e.Close()
+
+	evt := &Event{Msg: "regular event"}
+	_ = e.Emit(evt)
+
+	if evt.Pid == 0 {
+		t.Error("non-kernel event should have _pid stamped, got 0")
+	}
+	if evt.Transport != TransportDriver {
+		t.Errorf("empty transport should default to driver, got %q", evt.Transport)
 	}
 }

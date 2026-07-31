@@ -180,6 +180,7 @@ func parseKmsgLine(line string) *Event {
 			Msg:       strings.TrimSpace(line),
 			Prio:      PriorityInfo,
 			Transport: TransportKernel,
+			Unit:      "kernel",
 		}
 	}
 
@@ -215,5 +216,6 @@ func parseKmsgLine(line string) *Event {
 		Msg:       msg,
 		Prio:      sev,
 		Transport: TransportKernel,
+		Unit:      "kernel",
 	}
 }

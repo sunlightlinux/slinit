@@ -204,29 +204,39 @@ func (e *Emitter) SubscriberCount() int {
 
 // stampTrusted overwrites the daemon-injected fields on evt with the
 // authoritative values for the current process context.
+//
+// Kernel-transport events are a special case: they originate in the
+// kernel, not in a userspace process, so stamping slinit's own PID/
+// UID/GID/Comm/Exe/Cmdline onto them would be a lie. Consumers seeing
+// `_pid=1` on a kmsg event would reasonably conclude PID 1 emitted
+// it — misleading. For TransportKernel we leave the userspace-
+// identity fields at their zero values so renderers (which already
+// omit empty fields) hide them.
 func (e *Emitter) stampTrusted(evt *Event) {
-	// _pid/_uid/_gid come from the current process for in-process
-	// emits. External clients get them via SO_PASSCRED on the
-	// receiver side.
-	evt.Pid = os.Getpid()
-	evt.Uid = os.Getuid()
-	evt.Gid = os.Getgid()
-
-	// Boot ID + machine ID + hostname come from the cache populated
-	// at InitIDs time. If InitIDs was never called, these will panic
-	// — that's a programming error (main should always Init before
-	// any Emit).
-	evt.BootID = BootID()
-	evt.MachineID = MachineID()
-	evt.Hostname = Hostname()
-
 	// Default Transport = driver for in-process emits. Callers that
 	// know better (kmsg reader → kernel, stdout reader → stdout) set
 	// it explicitly before calling Emit; we don't overwrite a
-	// non-empty value.
+	// non-empty value. Resolved before the identity block so the
+	// kernel-transport branch sees the caller's choice.
 	if evt.Transport == "" {
 		evt.Transport = TransportDriver
 	}
+
+	// Userspace identity: skip for kernel-origin events (see doc).
+	if evt.Transport != TransportKernel {
+		evt.Pid = os.Getpid()
+		evt.Uid = os.Getuid()
+		evt.Gid = os.Getgid()
+	}
+
+	// Boot ID + machine ID + hostname always come from the cache
+	// populated at InitIDs time. If InitIDs was never called, these
+	// will panic — that's a programming error (main should always
+	// Init before any Emit). Kernel events still carry them; they're
+	// per-boot / per-host metadata, not per-process identity.
+	evt.BootID = BootID()
+	evt.MachineID = MachineID()
+	evt.Hostname = Hostname()
 }
 
 // publishToSocket attempts to send the event as a JSONL datagram.
