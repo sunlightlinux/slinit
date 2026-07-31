@@ -61,13 +61,16 @@ func NewKmsgReader(emitter *Emitter) (*KmsgReader, error) {
 		return nil, fmt.Errorf("journal: open %s: %w", KmsgPath, err)
 	}
 
-	// Seek to end so we only see NEW kernel messages, not history
-	// (systemd-journald does the same for the "current boot" view;
-	// history is picked up by --list-boots on prior boot files).
-	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("journal: seek kmsg tail: %w", err)
-	}
+	// Default position on /dev/kmsg is the FIRST record still in the
+	// kernel's ring buffer — reading from open replays the whole
+	// current-boot dmesg and then blocks (EAGAIN → poll) for new
+	// entries. This matches systemd-journald's --dmesg behaviour and
+	// is what operators expect from `slinit-journalctl -k`.
+	//
+	// (The prior version seeked to SEEK_END here, which skipped the
+	// entire boot log. Slinit starts after the kernel's noisy init
+	// phase, so on a static system nothing NEW arrives to fill the
+	// -k output — the buffer looked empty.)
 
 	return &KmsgReader{
 		emitter: emitter,
