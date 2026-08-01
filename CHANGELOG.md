@@ -19,6 +19,24 @@ the full commit-level record.
 
 ### Added
 
+- **`slinit-journalctl -o export`** — systemd export format
+  (`KEY=value` lines, blank line between events). Piped to
+  systemd-journal-remote-alikes or custom parsers for cross-host
+  log forwarding without JSON overhead. Empty fields skipped for
+  readability (matches renderVerbose convention). Binary payloads
+  not supported in v1 — slinit's Event schema never emits binary
+  values anywhere, so the length-prefixed escape systemd uses is
+  deferred until actually needed.
+
+- **Vacuum for binary journals.** `pkg/journald.VacuumOptions` gains
+  a `Suffixes` field (default keeps `.jsonl` back-compat); binary
+  callers pass `[".journal"]` and prune the same way JSONL already
+  did. `slinit-journald --format=binary` wires
+  `VacuumingHook(..., Suffixes=[".journal"])` through its RotatedHook
+  so binary-mode operators get identical retention behaviour to the
+  JSONL sink. `removeJournalFile` now also cleans up `.gz` and
+  `.idx` companions in one go.
+
 - **Journal Phase B — binary format + FSS sealing.** Adds an
   on-disk binary journal (`pkg/journalbin`) structurally isomorphic
   to systemd-journald's format (7 object types: DATA, FIELD,
@@ -83,6 +101,20 @@ the full commit-level record.
   word "error" is unaffected.
 
 ### Fixed
+
+- **`slinit-journald`: pre-daemon events reach the persistent
+  journal.** Before this change, service state transitions and log
+  captures emitted by slinit BEFORE `journal-demo` bound
+  `/run/slinit/events.sock` were only in the in-proc ring buffer
+  (queryable via `slinit-journalctl` sans `--file`) — the binary/
+  JSONL file on disk only picked up events from daemon-start onwards.
+  slinit-journald now queries slinit's control socket at startup
+  (`--control-socket=/run/slinit.socket`, empty disables) via
+  `CmdJournalQuery{}` and persists every returned backlog event
+  through the configured sink. Small race window (~<10ms between
+  query completion and `events.sock` bind) is documented and
+  accepted; a seq-based dedup would need protocol additions we can
+  add later if operators hit the race in practice.
 
 - **Shutdown console: getty prompt no longer collides with the first
   [STOPPD] line.** On systems where a getty is still active on the

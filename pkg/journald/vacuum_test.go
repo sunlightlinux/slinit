@@ -133,6 +133,33 @@ func TestVacuumExcludesCurrent(t *testing.T) {
 	}
 }
 
+func TestVacuumSuffixFilterBinary(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().Add(-time.Hour)
+	// 3 .journal files + 1 .jsonl decoy. Vacuum with Suffixes=[.journal]
+	// must prune 2 of the 3 .journal files and leave the .jsonl untouched.
+	for i := 0; i < 3; i++ {
+		writeFake(t, filepath.Join(dir, "bin"+string(rune('0'+i))+".journal"),
+			10, base.Add(time.Duration(i)*time.Minute))
+	}
+	writeFake(t, filepath.Join(dir, "decoy.jsonl"), 10, base)
+
+	removed, err := Vacuum(dir, VacuumOptions{
+		MaxFiles: 1,
+		Suffixes: []string{".journal"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Fatalf("expected 2 removals, got %d", removed)
+	}
+	// Decoy must survive — outside the suffix filter.
+	if _, err := os.Stat(filepath.Join(dir, "decoy.jsonl")); err != nil {
+		t.Errorf("decoy .jsonl removed unexpectedly: %v", err)
+	}
+}
+
 func TestVacuumingHookViaFileSink(t *testing.T) {
 	// End-to-end: FileSink with tight rotation + tight vacuum. After
 	// several rotations, only MaxFiles rotated files should remain.

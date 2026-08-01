@@ -34,6 +34,11 @@ type VacuumOptions struct {
 	MaxFiles     int
 	MaxTotalSize int64
 	MaxAge       time.Duration
+	// Suffixes limits the file extensions Vacuum considers. Empty
+	// selects [".jsonl"] for backward compatibility with the Phase 3
+	// callers. Binary journal callers pass [".journal"]; a bilingual
+	// tool that manages both wires [".jsonl", ".journal"].
+	Suffixes []string
 }
 
 // Vacuum enumerates .jsonl files under dir, sorts them oldest-first
@@ -65,13 +70,24 @@ func Vacuum(dir string, opts VacuumOptions, excludePaths ...string) (removed int
 			excl[p] = struct{}{}
 		}
 	}
+	suffixes := opts.Suffixes
+	if len(suffixes) == 0 {
+		suffixes = []string{".jsonl"}
+	}
 	var candidates []cand
 	for _, e := range entries {
 		name := e.Name()
-		// Only rotated .jsonl files (not .idx, not compressed .lz4
-		// yet — 3f wires that later). Also skip the excluded
-		// current file.
-		if !strings.HasSuffix(name, ".jsonl") {
+		// Match any configured suffix. .idx / .gz companions are
+		// removed via removeJournalFile side-effects when their
+		// parent is deleted.
+		matched := false
+		for _, sfx := range suffixes {
+			if strings.HasSuffix(name, sfx) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			continue
 		}
 		full := filepath.Join(dir, name)
@@ -159,15 +175,22 @@ func Vacuum(dir string, opts VacuumOptions, excludePaths ...string) (removed int
 	return removed, firstErr
 }
 
-// removeJournalFile deletes a jsonl file and its .idx companion.
-// A missing .idx is not an error (may not exist for a same-second
-// rotation that took zero events). A missing .jsonl IS an error —
-// the caller was told it existed by ReadDir.
-func removeJournalFile(jsonlPath string) error {
-	if err := os.Remove(jsonlPath); err != nil {
+// removeJournalFile deletes a journal file and any companion — .idx
+// for both JSONL and binary layouts, .gz for compressed JSONL. A
+// missing companion is not an error (may not exist for a same-second
+// rotation with zero events or a JSONL file that wasn't compressed).
+// A missing primary IS an error — the caller was told it existed by
+// ReadDir.
+func removeJournalFile(primaryPath string) error {
+	if err := os.Remove(primaryPath); err != nil {
 		return err
 	}
-	_ = os.Remove(idxPath(jsonlPath))
+	// jsonl+idx wrote alongside .jsonl in Phase 3c; binary+idx wrote
+	// alongside .journal in Phase B2b. idxPath appends ".idx" in both
+	// cases so the same helper suits both layouts.
+	_ = os.Remove(primaryPath + ".idx")
+	// Compressed JSONL companion.
+	_ = os.Remove(primaryPath + ".gz")
 	return nil
 }
 

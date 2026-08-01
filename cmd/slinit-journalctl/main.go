@@ -55,12 +55,13 @@ const (
 	fmtCat      outputFormat = "cat"
 	fmtJSON     outputFormat = "json"
 	fmtVerbose  outputFormat = "verbose"
+	fmtExport   outputFormat = "export"
 )
 
 // validFormats lists every format value the -o flag accepts, in the
 // order shown by --help. Kept as a slice (not a map) so error messages
 // can print a stable, human-friendly enumeration.
-var validFormats = []outputFormat{fmtShort, fmtShortISO, fmtCat, fmtJSON, fmtVerbose}
+var validFormats = []outputFormat{fmtShort, fmtShortISO, fmtCat, fmtJSON, fmtVerbose, fmtExport}
 
 func main() {
 	opts, err := parseArgs(os.Args[1:])
@@ -1000,6 +1001,8 @@ func render(out io.Writer, f outputFormat, e *journal.Event) error {
 		return renderJSON(out, e)
 	case fmtVerbose:
 		return renderVerbose(out, e)
+	case fmtExport:
+		return renderExport(out, e)
 	default:
 		return fmt.Errorf("no renderer for format %q", f)
 	}
@@ -1121,6 +1124,58 @@ func renderVerbose(out io.Writer, e *journal.Event) error {
 	return nil
 }
 
+// renderExport produces systemd's "export" format: one KEY=value per
+// line, blank line separates events. Piped to systemd-journal-remote
+// and equivalents for cross-host log forwarding, or fed into custom
+// parsers that want a stable line-oriented text protocol without
+// JSON overhead.
+//
+// Binary payloads (values containing a NUL or newline) are NOT
+// supported in v1 — export format has a workaround (length-prefixed
+// binary section) but slinit's Event schema doesn't emit binary
+// values anywhere, so we skip the escape until it's actually needed.
+func renderExport(out io.Writer, e *journal.Event) error {
+	// Timestamps + core.
+	fmt.Fprintf(out, "__REALTIME_TIMESTAMP=%d\n", e.Ts/1000) // us
+	fmt.Fprintf(out, "__MONOTONIC_TIMESTAMP=%d\n", e.Mts/1000)
+	writeExportField(out, "PRIORITY", strconv.Itoa(int(e.Prio)))
+	writeExportField(out, "MESSAGE", e.Msg)
+	writeExportField(out, "SYSLOG_IDENTIFIER", e.SyslogIdentifier)
+	writeExportField(out, "_TRANSPORT", string(e.Transport))
+	writeExportField(out, "_SLINIT_UNIT", e.Unit)
+	if e.Pid > 0 {
+		writeExportField(out, "_PID", strconv.Itoa(e.Pid))
+	}
+	if e.Uid > 0 {
+		writeExportField(out, "_UID", strconv.Itoa(e.Uid))
+	}
+	if e.Gid > 0 {
+		writeExportField(out, "_GID", strconv.Itoa(e.Gid))
+	}
+	writeExportField(out, "_COMM", e.Comm)
+	writeExportField(out, "_EXE", e.Exe)
+	writeExportField(out, "_CMDLINE", e.Cmdline)
+	writeExportField(out, "_HOSTNAME", e.Hostname)
+	writeExportField(out, "_BOOT_ID", e.BootID)
+	writeExportField(out, "_MACHINE_ID", e.MachineID)
+	// Freeform fields in stable (sorted) order — matches renderVerbose.
+	for _, k := range sortedKeys(e.Fields) {
+		writeExportField(out, k, e.Fields[k])
+	}
+	_, err := fmt.Fprintln(out) // blank line between events
+	return err
+}
+
+// writeExportField writes "KEY=value\n" only when value is non-empty.
+// systemd's export format allows empty-value lines (KEY=) but slinit's
+// convention (matching renderVerbose) is to skip them for readability.
+func writeExportField(out io.Writer, key, value string) {
+	if value == "" {
+		return
+	}
+	fmt.Fprintf(out, "%s=%s\n", key, value)
+}
+
 // writeField prints "    KEY=value" only when the value is non-empty
 // — keeps the verbose renderer scannable by dropping unset fields.
 func writeField(out io.Writer, name, value string) {
@@ -1193,6 +1248,7 @@ Output formats:
   cat         Just the message text (feed to grep / less)
   json        One raw JSON object per event (feed to jq)
   verbose     Multi-line dump of every field (systemd-style)
+  export      systemd export format (KEY=value lines, blank between events)
 
 Wire path: slinit-journalctl → CmdJournalQuery over /run/slinit.socket
   → RplyJournalEntry* + RplyJournalDone.

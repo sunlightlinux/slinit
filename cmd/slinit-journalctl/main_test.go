@@ -279,6 +279,53 @@ func TestRenderVerbose(t *testing.T) {
 	}
 }
 
+func TestRenderExport(t *testing.T) {
+	var buf bytes.Buffer
+	if err := render(&buf, fmtExport, mkEvent()); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	// export format: KEY=value per line, trailing blank line separates
+	// events. Every non-empty field from mkEvent() should surface.
+	checks := []string{
+		"__REALTIME_TIMESTAMP=",
+		"__MONOTONIC_TIMESTAMP=",
+		"PRIORITY=4\n",
+		"MESSAGE=hello world\n",
+		"_TRANSPORT=driver\n",
+		"_SLINIT_UNIT=sshd\n",
+		"_PID=1234\n",
+		"_HOSTNAME=ceres\n",
+		"CUSTOM_KEY=value1\n",
+	}
+	for _, c := range checks {
+		if !strings.Contains(got, c) {
+			t.Errorf("export missing %q\nfull output:\n%s", c, got)
+		}
+	}
+	// Must end with a blank line as event separator.
+	if !strings.HasSuffix(got, "\n\n") {
+		t.Fatalf("export must end with blank line separator; ends: %q", got[len(got)-4:])
+	}
+}
+
+func TestRenderExportSkipsEmptyFields(t *testing.T) {
+	// _UID=0 → skipped; SyslogIdentifier="" → skipped.
+	e := mkEvent()
+	e.SyslogIdentifier = ""
+	var buf bytes.Buffer
+	if err := render(&buf, fmtExport, e); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if strings.Contains(got, "_UID=") {
+		t.Errorf("_UID=0 should be omitted in export: %q", got)
+	}
+	if strings.Contains(got, "SYSLOG_IDENTIFIER=") {
+		t.Errorf("empty SyslogIdentifier should be omitted: %q", got)
+	}
+}
+
 func TestRenderUnknownFormat(t *testing.T) {
 	var buf bytes.Buffer
 	if err := render(&buf, "hex", mkEvent()); err == nil {

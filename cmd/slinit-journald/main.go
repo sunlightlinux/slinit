@@ -16,12 +16,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/journalbin"
 	"github.com/sunlightlinux/slinit/pkg/journald"
@@ -41,6 +44,7 @@ func main() {
 		maxFiles     = flag.Int("vacuum-files", journald.DefaultMaxFiles, "prune to at most N rotated files after each rotation (0 = disabled)")
 		maxTotalSize = flag.Int64("vacuum-size", journald.DefaultMaxTotalSize, "prune rotated files until total under this many bytes (0 = disabled)")
 		vacuumAge    = flag.Duration("vacuum-age", journald.DefaultVacuumMaxAge, "prune rotated files older than this (0 = disabled)")
+		controlSock  = flag.String("control-socket", "/run/slinit.socket", "slinit control socket for backlog replay at startup ('' disables replay)")
 		compress     = flag.Bool("compress", true, "gzip-compress rotated .jsonl files (jsonl format only; binary not compressed in v1)")
 		format       = flag.String("format", "binary", "storage format: binary (default, Phase B) or jsonl (Phase C, human-grep-friendly)")
 		fssKeyPath   = flag.String("fss-key", "", "FSS key file for binary sealing ('' disables sealing)")
@@ -129,18 +133,26 @@ Flags:
 				}
 				fssKey = k
 			}
-			// TODO: fallback + vacuum for binary sink (same policy as
-			// jsonl). For v1 we open primary directly; degradation to
-			// /run and vacuum arrive in the next batch.
+			// Vacuum for binary uses the same policy caps as JSONL but
+			// scoped to .journal files (VacuumOptions.Suffixes). Wired
+			// through the RotatedHook so pruning happens synchronously
+			// with rotation, matching the JSONL sink's behaviour.
+			binVacOpts := journald.VacuumOptions{
+				MaxFiles:     *maxFiles,
+				MaxTotalSize: *maxTotalSize,
+				MaxAge:       *vacuumAge,
+				Suffixes:     []string{".journal"},
+			}
 			bs, err := journald.NewBinarySink(journald.BinarySinkOptions{
-				Dir:        *dir,
-				FsyncEvery: *fsyncEvery,
-				MaxSize:    *maxSize,
-				MaxAge:     *maxAge,
-				FSSKey:     fssKey,
-				TagEvery:   *fssTagEvery,
-				BootID:     journal.BootID(),
-				MachineID:  journal.MachineID(),
+				Dir:         *dir,
+				FsyncEvery:  *fsyncEvery,
+				MaxSize:     *maxSize,
+				MaxAge:      *maxAge,
+				FSSKey:      fssKey,
+				TagEvery:    *fssTagEvery,
+				BootID:      journal.BootID(),
+				MachineID:   journal.MachineID(),
+				RotatedHook: journald.VacuumingHook(*dir, binVacOpts),
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-journald: binary sink: %v\n", err)
@@ -158,6 +170,29 @@ Flags:
 		default:
 			fmt.Fprintf(os.Stderr, "slinit-journald: unknown --format %q (want jsonl or binary)\n", *format)
 			os.Exit(2)
+		}
+	}
+
+	// Backlog replay: slinit maintains an in-proc ring buffer of every
+	// event fired since boot (see pkg/journal.NewEventBuffer wiring in
+	// cmd/slinit/main.go). Events emitted BEFORE this daemon starts
+	// listening on events.sock have already vanished from the socket
+	// path but survive in that buffer. Query them via the control
+	// socket and persist through our sink so operator-facing tools see
+	// the full boot history.
+	//
+	// Race window: between backlog-query completion and recv.Run
+	// binding events.sock, a live event could be lost. In practice
+	// this is <10ms and the ring buffer keeps another copy queryable
+	// via slinit-journalctl (no --file). Accepting the tradeoff over
+	// the more elaborate seq-based dedup design.
+	if *controlSock != "" && !*dryRun {
+		if n, err := replayBacklog(*controlSock, sink); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"slinit-journald: WARN backlog replay from %s failed (%v) — pre-daemon events not persisted\n",
+				*controlSock, err)
+		} else if n > 0 {
+			fmt.Fprintf(os.Stderr, "slinit-journald: replayed %d pre-daemon events from %s\n", n, *controlSock)
 		}
 	}
 
@@ -189,6 +224,55 @@ Flags:
 	}
 	got, dropped := recv.Stats()
 	fmt.Fprintf(os.Stderr, "slinit-journald: shutdown clean (received=%d dropped=%d)\n", got, dropped)
+}
+
+// replayBacklog dials slinit's control socket, sends CmdJournalQuery
+// with no filter, and hands every returned event to `sink`. Called
+// once at daemon startup so events emitted BEFORE the daemon bound
+// events.sock still land on disk. Returns the count of events replayed
+// and the first error (control-dial failure, protocol mismatch, sink
+// write failure — the last is soft, we count-and-continue).
+func replayBacklog(sockPath string, sink journald.Sink) (int, error) {
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return 0, fmt.Errorf("dial %s: %w", sockPath, err)
+	}
+	defer conn.Close()
+
+	payload, err := json.Marshal(control.JournalQueryRequest{})
+	if err != nil {
+		return 0, err
+	}
+	if err := control.WritePacket(conn, control.CmdJournalQuery, payload); err != nil {
+		return 0, fmt.Errorf("send query: %w", err)
+	}
+
+	replayed := 0
+	for {
+		typ, body, err := control.ReadPacket(conn)
+		if err != nil {
+			return replayed, fmt.Errorf("read reply: %w", err)
+		}
+		switch typ {
+		case control.RplyJournalEntry:
+			evt, err := journal.UnmarshalEvent(body)
+			if err != nil {
+				continue // one bad entry doesn't sink the whole replay
+			}
+			if err := sink.Handle(evt); err != nil {
+				continue
+			}
+			replayed++
+		case control.RplyJournalDone:
+			return replayed, nil
+		case control.RplyJournalErr:
+			return replayed, fmt.Errorf("server: %s", string(body))
+		case control.RplyBadReq:
+			return replayed, fmt.Errorf("server rejected CmdJournalQuery (protocol mismatch?)")
+		default:
+			return replayed, fmt.Errorf("unexpected reply type %d during replay", typ)
+		}
+	}
 }
 
 // byteSize renders a byte count as a short human string. Used in the
