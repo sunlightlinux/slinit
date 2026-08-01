@@ -1,25 +1,23 @@
-# journal-demo -- persistent journal daemon
+# journal-demo -- persistent journal daemon (Phase B: binary + FSS)
 #
-# Runs slinit-journald so events fanned out by slinit itself (state
-# transitions, log-forward lines, kmsg reader) get persisted to
-# /run/slinit-journal/*.jsonl (volatile since the demo's initramfs
-# has no /var/log persistence).
+# Runs slinit-journald with the Phase B binary format and FSS sealing
+# enabled so operators can see the full systemd-journald-alike surface
+# in the demo. Coexists with Phase C JSONL — flip `--format=jsonl` in
+# the command below to fall back if needed.
+#
+# The FSS key at /etc/slinit/journal-key is minted at initramfs-build
+# time by demo/build.sh (same shape as /etc/machine-id) so sealing
+# works from the very first boot without any pre-start dance.
 #
 # Try it from the demo shell:
 #
-#   slinit-journalctl -n 20               # last 20 events
-#   slinit-journalctl -u hello -o cat     # just the "hello" service's msgs
-#   slinit-journalctl -p err              # errors only
-#   slinit-journalctl -f                  # follow live
-#   slinit-journalctl -o json | head -1   # raw JSON line
-#   slinit-journalctl --list-boots        # current boot span
-#   ls -la /run/slinit-journal/           # on-disk .jsonl + .idx
-#
-# The daemon is optional — everything above except --file also works
-# without it (queries hit the in-process ring buffer). Persistence and
-# `-f` fan-out to external subscribers are what the daemon adds.
+#   slinit-journalctl -n 20                                  # last 20 (via control)
+#   ls -la /run/slinit-journal/                              # on-disk .journal + .idx
+#   slinit-journalctl --file /run/slinit-journal/*.journal   # read the binary file directly
+#   slinit-journalctl --file /run/slinit-journal/*.journal --verify   # walk FSS tag chain
+#   slinit-journalctl -f                                     # follow live via control socket
 type = process
-command = /usr/sbin/slinit-journald --dir=/run/slinit-journal --volatile-dir=/run/slinit-journal --max-size=8388608 --max-age=1h
+command = /usr/sbin/slinit-journald --dir=/run/slinit-journal --volatile-dir=/run/slinit-journal --format=binary --fss-key=/etc/slinit/journal-key --max-size=8388608 --max-age=1h
 restart = on-failure
 restart-limit-count = 5
 restart-limit-interval = 30

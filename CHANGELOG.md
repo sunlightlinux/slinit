@@ -19,6 +19,30 @@ the full commit-level record.
 
 ### Added
 
+- **Journal Phase B — binary format + FSS sealing.** Adds an
+  on-disk binary journal (`pkg/journalbin`) structurally isomorphic
+  to systemd-journald's format (7 object types: DATA, FIELD,
+  ENTRY, DATA_HASH_TABLE, FIELD_HASH_TABLE, ENTRY_ARRAY, TAG; 240-B
+  header; jenkins lookup3 hashing; entry-array chain for time-bisect;
+  little-endian throughout) but with a distinct magic (`SLJRNL01`)
+  so `journalctl` from systemd cannot open slinit files by mistake.
+  DATA dedup via hash table saves storage on high-cardinality workloads.
+  Forward Secure Sealing (FSS) via HKDF-SHA256 per-epoch key + HMAC-SHA256
+  tag chain; `slinit-journalctl --file X --verify --fss-key /path`
+  walks the chain and reports first tamper point. Coexists with the
+  Phase C JSONL sink — `slinit-journald --format=binary|jsonl`,
+  default binary; JSONL stays available for debug workflows that want
+  greppable text logs. `slinit-journal-migrate --from DIR --to DIR`
+  converts existing JSONL history into the binary format. New
+  sd_journal-semantic Go API at `pkg/journalbin/sd` (Open, Next,
+  Previous, GetData, GetRealtimeUsec, GetCursor, TestCursor,
+  SeekRealtimeUsec, SeekCursor, SeekHead, SeekTail, AddMatch,
+  FlushMatches) — semantic-compat with libsystemd-journal, not ABI-
+  compat (no cgo, no C linking). Demo QEMU image wires
+  journal-demo with binary format + FSS out-of-the-box; key minted
+  at initramfs-build time so sealing works on first boot.
+
+
 - **Journal pipeline Phase 2 — `slinit-journalctl` query CLI.**
   systemd-journalctl-equivalent operator surface on top of the Phase
   1 event bus. Wire path: `slinit-journalctl → CmdJournalQuery /

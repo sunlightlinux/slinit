@@ -111,7 +111,7 @@ for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-binfmt slinit-sysctl slinit-svc-value \
            slinit-start-stop-daemon slinit-supervise-daemon \
            slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var \
-           slinit-cgtop slinit-journalctl slinit-journald; do
+           slinit-cgtop slinit-journalctl slinit-journald slinit-journal-migrate; do
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
         go build -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
 done
@@ -183,6 +183,7 @@ install -m 755 "${BUILD_DIR}/slinit-shell-var"         "${ROOTFS_DIR}/usr/bin/sl
 install -m 755 "${BUILD_DIR}/slinit-cgtop"             "${ROOTFS_DIR}/usr/bin/slinit-cgtop"
 install -m 755 "${BUILD_DIR}/slinit-journalctl"        "${ROOTFS_DIR}/usr/bin/slinit-journalctl"
 install -m 755 "${BUILD_DIR}/slinit-journald"          "${ROOTFS_DIR}/usr/sbin/slinit-journald"
+install -m 755 "${BUILD_DIR}/slinit-journal-migrate"   "${ROOTFS_DIR}/usr/bin/slinit-journal-migrate"
 
 # einfo multi-applet symlinks so init.d scripts can invoke `einfo`,
 # `ewarn`, `eerror`, `ebegin`, `eend`, etc. by name.
@@ -245,6 +246,19 @@ if [ ! -f "${ROOTFS_DIR}/etc/machine-id" ]; then
     od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "${ROOTFS_DIR}/etc/machine-id"
     echo >> "${ROOTFS_DIR}/etc/machine-id"
     chmod 0444 "${ROOTFS_DIR}/etc/machine-id"
+fi
+
+# Seed /etc/slinit/journal-key for the demo journal-demo service.
+# pkg/journalbin.FSSKey JSON schema: {seed:<base64>, start_usec:0,
+# interval_usec:900000000 (15 minutes)}. Fresh per build; matches
+# what pkg/journalbin.NewFSSKey would produce, but done at build
+# time so the daemon has sealing capability from the very first boot.
+if [ ! -f "${ROOTFS_DIR}/etc/slinit/journal-key" ]; then
+    mkdir -p "${ROOTFS_DIR}/etc/slinit"
+    _seed_b64=$(head -c 64 /dev/urandom | base64 -w0)
+    printf '{"seed":"%s","start_usec":0,"interval_usec":900000000}\n' "${_seed_b64}" \
+        > "${ROOTFS_DIR}/etc/slinit/journal-key"
+    chmod 0400 "${ROOTFS_DIR}/etc/slinit/journal-key"
 fi
 
 # Step 6: Install service files and shell completions

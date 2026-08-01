@@ -23,6 +23,7 @@ import (
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/journal"
+	"github.com/sunlightlinux/slinit/pkg/journalbin"
 	"github.com/sunlightlinux/slinit/pkg/journald"
 )
 
@@ -40,7 +41,10 @@ func main() {
 		maxFiles     = flag.Int("vacuum-files", journald.DefaultMaxFiles, "prune to at most N rotated files after each rotation (0 = disabled)")
 		maxTotalSize = flag.Int64("vacuum-size", journald.DefaultMaxTotalSize, "prune rotated files until total under this many bytes (0 = disabled)")
 		vacuumAge    = flag.Duration("vacuum-age", journald.DefaultVacuumMaxAge, "prune rotated files older than this (0 = disabled)")
-		compress     = flag.Bool("compress", true, "gzip-compress rotated .jsonl files (still readable via slinit-journalctl --file)")
+		compress     = flag.Bool("compress", true, "gzip-compress rotated .jsonl files (jsonl format only; binary not compressed in v1)")
+		format       = flag.String("format", "binary", "storage format: binary (default, Phase B) or jsonl (Phase C, human-grep-friendly)")
+		fssKeyPath   = flag.String("fss-key", "", "FSS key file for binary sealing ('' disables sealing)")
+		fssTagEvery  = flag.Int("fss-tag-every", journalbin.DefaultFSSTagEvery, "seal a TAG every N entries (binary+FSS only)")
 		dryRun       = flag.Bool("dry-run", false, "print received events to stdout instead of persisting")
 		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
@@ -69,48 +73,92 @@ Flags:
 		fmt.Fprintf(os.Stderr, "slinit-journald: init IDs: %v (continuing with transient)\n", err)
 	}
 
-	// Sink selection: --dry-run always uses stdout so operators can
-	// pipe to jq; otherwise the FileSink writes to
-	// $dir/YYYY-MM-DD.jsonl (created if missing) with rotation and
-	// vacuum wired through the RotatedHook.
+	// Sink selection:
+	//   --dry-run  → stdout (JSONL, human-pipeable to jq).
+	//   --format=jsonl → Phase C FileSink with gzip rotate + vacuum.
+	//   --format=binary (default) → Phase B BinarySink with optional FSS.
+	//
+	// Both persistent formats share the same rotation + vacuum
+	// defaults so operators only tune one policy regardless of
+	// --format.
 	var sink journald.Sink = journald.StdoutSink{}
 	if !*dryRun {
-		vacOpts := journald.VacuumOptions{
-			MaxFiles:     *maxFiles,
-			MaxTotalSize: *maxTotalSize,
-			MaxAge:       *vacuumAge,
-		}
-		// Rotation hook order: compress first (so vacuum sees the
-		// final .gz name and byte size), then vacuum. Compression
-		// runs synchronously with rotation — the alternative
-		// (background goroutine) risks a burst of un-compressed
-		// files accumulating during heavy write pressure.
-		var hooks []func(string, string)
-		if *compress {
-			hooks = append(hooks, journald.CompressingRotationHook())
-		}
-		hooks = append(hooks, journald.VacuumingHook(*dir, vacOpts))
-		fs, actualDir, degraded := journald.OpenFileSinkWithFallback(*dir, *volatileDir, journald.FileSinkOptions{
-			FsyncEvery:  *fsyncEvery,
-			MaxSize:     *maxSize,
-			MaxAge:      *maxAge,
-			RotatedHook: journald.ChainHooks(hooks...),
-		})
-		if fs == nil {
-			fmt.Fprintf(os.Stderr, "slinit-journald: %v\n", degraded)
-			os.Exit(1)
-		}
-		if degraded != nil {
+		hostname, _ := os.Hostname()
+		_ = hostname
+		switch *format {
+		case "jsonl":
+			vacOpts := journald.VacuumOptions{
+				MaxFiles:     *maxFiles,
+				MaxTotalSize: *maxTotalSize,
+				MaxAge:       *vacuumAge,
+			}
+			var hooks []func(string, string)
+			if *compress {
+				hooks = append(hooks, journald.CompressingRotationHook())
+			}
+			hooks = append(hooks, journald.VacuumingHook(*dir, vacOpts))
+			fs, actualDir, degraded := journald.OpenFileSinkWithFallback(*dir, *volatileDir, journald.FileSinkOptions{
+				FsyncEvery:  *fsyncEvery,
+				MaxSize:     *maxSize,
+				MaxAge:      *maxAge,
+				RotatedHook: journald.ChainHooks(hooks...),
+			})
+			if fs == nil {
+				fmt.Fprintf(os.Stderr, "slinit-journald: %v\n", degraded)
+				os.Exit(1)
+			}
+			if degraded != nil {
+				fmt.Fprintf(os.Stderr,
+					"slinit-journald: WARN primary %s unwritable (%v), degraded to volatile %s (tmpfs)\n",
+					*dir, degraded, actualDir)
+			}
+			sink = fs
 			fmt.Fprintf(os.Stderr,
-				"slinit-journald: WARN primary %s unwritable (%v), degraded to volatile %s (tmpfs — no cross-reboot persistence)\n",
-				*dir, degraded, actualDir)
+				"slinit-journald: format=jsonl writing to %s (fsync=%d, rotate=%s|%s, vacuum=%d files|%s|%s)\n",
+				fs.CurrentPath(), *fsyncEvery,
+				byteSize(*maxSize), *maxAge,
+				*maxFiles, byteSize(*maxTotalSize), *vacuumAge)
+
+		case "binary":
+			var fssKey *journalbin.FSSKey
+			if *fssKeyPath != "" {
+				k, err := journalbin.LoadFSSKey(*fssKeyPath)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "slinit-journald: FSS key load: %v\n", err)
+					os.Exit(1)
+				}
+				fssKey = k
+			}
+			// TODO: fallback + vacuum for binary sink (same policy as
+			// jsonl). For v1 we open primary directly; degradation to
+			// /run and vacuum arrive in the next batch.
+			bs, err := journald.NewBinarySink(journald.BinarySinkOptions{
+				Dir:        *dir,
+				FsyncEvery: *fsyncEvery,
+				MaxSize:    *maxSize,
+				MaxAge:     *maxAge,
+				FSSKey:     fssKey,
+				TagEvery:   *fssTagEvery,
+				BootID:     journal.BootID(),
+				MachineID:  journal.MachineID(),
+			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "slinit-journald: binary sink: %v\n", err)
+				os.Exit(1)
+			}
+			sink = bs
+			sealMsg := "unsealed"
+			if fssKey != nil {
+				sealMsg = fmt.Sprintf("sealed (tag every %d)", *fssTagEvery)
+			}
+			fmt.Fprintf(os.Stderr,
+				"slinit-journald: format=binary writing to %s (fsync=%d, rotate=%s|%s, %s)\n",
+				bs.CurrentPath(), *fsyncEvery, byteSize(*maxSize), *maxAge, sealMsg)
+
+		default:
+			fmt.Fprintf(os.Stderr, "slinit-journald: unknown --format %q (want jsonl or binary)\n", *format)
+			os.Exit(2)
 		}
-		sink = fs
-		fmt.Fprintf(os.Stderr,
-			"slinit-journald: writing to %s (fsync=%d, rotate=%s|%s, vacuum=%d files|%s|%s)\n",
-			fs.CurrentPath(), *fsyncEvery,
-			byteSize(*maxSize), *maxAge,
-			*maxFiles, byteSize(*maxTotalSize), *vacuumAge)
 	}
 
 	recv, err := journald.NewReceiver(*sockPath, sink)

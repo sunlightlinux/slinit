@@ -29,6 +29,7 @@ import (
 
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/journal"
+	"github.com/sunlightlinux/slinit/pkg/journalbin"
 	"github.com/sunlightlinux/slinit/pkg/journald"
 )
 
@@ -106,6 +107,8 @@ type options struct {
 	bootSet     bool             // sentinel: --boot was present (with or without ID)
 	cursor      string           // -c CURSOR — resume from a cursor produced by --show-cursor
 	showCursor  bool             // --show-cursor — print a resumable cursor after output
+	verify      bool             // --verify — walk FSS tag chain on a --file binary journal
+	fssKeyPath  string           // --fss-key PATH — key for --verify
 	showHelp    bool
 	showVersion bool
 }
@@ -323,6 +326,21 @@ func parseArgs(args []string) (options, error) {
 
 		case a == "--show-cursor":
 			opts.showCursor = true
+			args = args[1:]
+
+		case a == "--verify":
+			opts.verify = true
+			args = args[1:]
+
+		case a == "--fss-key":
+			if len(args) < 2 {
+				return opts, errors.New("--fss-key requires an argument")
+			}
+			opts.fssKeyPath = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--fss-key="):
+			opts.fssKeyPath = strings.TrimPrefix(a, "--fss-key=")
 			args = args[1:]
 
 		default:
@@ -628,18 +646,25 @@ func verifyBootID(conn net.Conn, want string) error {
 	return nil
 }
 
-// runFromFile reads a JSONL journal file line by line, applies the CLI
-// filter in-process, and renders the survivors. Filter semantics match
-// the server-side path via a shared journal.QueryFilter, so results are
-// bit-identical between `slinit-journalctl -u sshd` against a running
-// daemon and `slinit-journalctl -u sshd --file /var/log/.../old.jsonl`
-// against a rotated file.
+// runFromFile reads a journal file — either the binary Phase B format
+// (detected by the 8-byte SLJRNL01 magic) or the Phase C JSONL text
+// format (default when magic mismatches). Applies the CLI filter
+// in-process; results bit-identical to control-socket queries.
 //
-// .jsonl.gz files are decompressed transparently — no separate flag,
-// no zcat pipe. The suffix routes to the compressed opener.
+// --verify: only valid against a binary file. Walks the FSS TAG chain
+// using the key at --fss-key (or default /etc/slinit/journal-key) and
+// reports "OK" or the first bad TAG's offset.
 //
-// Limit + reverse are applied post-filter, same order as runOneShot.
+// .jsonl.gz files decompress transparently. Binary files are not
+// compressed in v1 (see pkg/journalbin/compress design note).
 func runFromFile(opts options) error {
+	if opts.verify {
+		return runVerify(opts)
+	}
+	// Peek at magic to route.
+	if isBinaryJournal(opts.sourceFile) {
+		return runFromBinaryFile(opts)
+	}
 	var r io.ReadCloser
 	if strings.HasSuffix(opts.sourceFile, ".gz") {
 		rc, err := journald.OpenCompressed(opts.sourceFile)
@@ -673,6 +698,96 @@ func runFromFile(opts options) error {
 		}
 	}
 	return nil
+}
+
+// isBinaryJournal peeks the first 8 bytes of path and reports whether
+// they match the pkg/journalbin SLJRNL01 magic. Silently returns
+// false on read error (caller then treats path as JSONL and either
+// parses it or surfaces the read error there).
+func isBinaryJournal(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var buf [8]byte
+	if _, err := f.Read(buf[:]); err != nil {
+		return false
+	}
+	return buf == journalbin.Magic
+}
+
+// runFromBinaryFile opens the file via journalbin.OpenReader (which
+// validates magic + incompat flags), applies the CLI filter, and
+// renders survivors. Reuses buildRequest().ToFilter() so filter
+// semantics match every other path.
+func runFromBinaryFile(opts options) error {
+	r, err := journalbin.OpenReader(opts.sourceFile)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	filter := buildRequest(opts).ToFilter()
+	var events []*journal.Event
+	err = r.Iter(func(e *journal.Event) bool {
+		if !filter.Match(e) {
+			return true
+		}
+		events = append(events, e)
+		if opts.limit > 0 && len(events) > opts.limit {
+			events = events[1:]
+		}
+		return true
+	})
+	if err != nil {
+		return err
+	}
+	if opts.reverse {
+		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+			events[i], events[j] = events[j], events[i]
+		}
+	}
+	out := os.Stdout
+	for _, evt := range events {
+		if err := render(out, opts.format, evt); err != nil {
+			return fmt.Errorf("render: %w", err)
+		}
+	}
+	return nil
+}
+
+// runVerify walks the FSS TAG chain of the binary journal at
+// opts.sourceFile. Requires an FSS key — either the path in
+// opts.fssKeyPath, or the default /etc/slinit/journal-key when the
+// flag is empty and the file is readable.
+func runVerify(opts options) error {
+	if opts.sourceFile == "" {
+		return errors.New("--verify requires --file PATH")
+	}
+	keyPath := opts.fssKeyPath
+	if keyPath == "" {
+		keyPath = "/etc/slinit/journal-key"
+	}
+	key, err := journalbin.LoadFSSKey(keyPath)
+	if err != nil {
+		return err
+	}
+	res, err := journalbin.Verify(opts.sourceFile, key)
+	if err != nil {
+		return err
+	}
+	if !res.SealingEnabled {
+		fmt.Printf("%s: FSS not enabled on this file (nothing to verify)\n", opts.sourceFile)
+		return nil
+	}
+	if res.OK() {
+		fmt.Printf("%s: OK (%d tags verified)\n", opts.sourceFile, res.TagsChecked)
+		return nil
+	}
+	fmt.Printf("%s: TAMPER DETECTED at tag offset %d (seqnum %d, %d prior tags OK)\n",
+		opts.sourceFile, res.FirstBadTagOffset, res.FirstBadTagSeqnum, res.TagsChecked)
+	return fmt.Errorf("verify: tamper at offset %d", res.FirstBadTagOffset)
 }
 
 // readJSONLFile streams a JSONL reader, decoding each line into an
@@ -1055,7 +1170,9 @@ Flags:
       --boot [ID]      Restrict to a boot (empty = current). Multi-boot lands with Phase 3
   -c, --cursor=TOKEN   Resume from a cursor produced by --show-cursor
       --show-cursor    Print a "-- cursor: s=..;b=.." line after output
-      --file=PATH      Read a JSONL journal file directly (offline / rotated files)
+      --file=PATH      Read a journal file directly (binary or JSONL; magic-detected; .gz auto-decompress)
+      --verify         Walk FSS TAG chain on --file (binary only); needs --fss-key
+      --fss-key=PATH   FSS key file for --verify (default /etc/slinit/journal-key)
       --socket-path=P  Override the control socket path
       --system         Force system-mode socket (/run/slinit.socket)
       --user           Force user-mode socket ($XDG_RUNTIME_DIR/slinitctl)
