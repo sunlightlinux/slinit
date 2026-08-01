@@ -297,12 +297,15 @@ func parseArgs(args []string) (options, error) {
 			opts.listBoots = true
 			args = args[1:]
 
-		case a == "--boot":
+		case a == "--boot" || a == "-b":
 			opts.bootSet = true
-			// --boot may take an optional ID argument. Peek: if the
-			// next token exists and doesn't start with '-', treat it
-			// as the ID; otherwise leave bootID empty ("current boot").
-			if len(args) >= 2 && !strings.HasPrefix(args[1], "-") {
+			// Optional ID argument. Peek: next token that DOESN'T look
+			// like another flag (starts with '-' UNLESS it's a numeric
+			// index like "0" or "-1") is treated as the boot spec.
+			// Systemd-style shortcuts: "0" = current boot, negative
+			// indices "-1" / "-2" reference previous boots (deferred —
+			// see resolveBootSpec).
+			if len(args) >= 2 && looksLikeBootSpec(args[1]) {
 				opts.bootID = args[1]
 				args = args[2:]
 			} else {
@@ -312,6 +315,12 @@ func parseArgs(args []string) (options, error) {
 		case strings.HasPrefix(a, "--boot="):
 			opts.bootSet = true
 			opts.bootID = strings.TrimPrefix(a, "--boot=")
+			args = args[1:]
+
+		case strings.HasPrefix(a, "-b"):
+			// -b<spec> without space (systemd shorthand: -b0, -b-1)
+			opts.bootSet = true
+			opts.bootID = strings.TrimPrefix(a, "-b")
 			args = args[1:]
 
 		case a == "-c" || a == "--cursor":
@@ -618,15 +627,23 @@ func runListBoots(conn net.Conn) error {
 	return nil
 }
 
-// verifyBootID checks whether the requested boot ID matches the
-// current boot (the only one visible in Phase 2). Multi-boot support
-// lands with Phase 3's persistent JSONL files; until then, --boot
-// with anything other than the current ID errors out cleanly rather
-// than silently returning zero events. An empty bootID always
-// matches ("--boot" with no arg == current boot).
+// verifyBootID checks whether the requested boot spec matches the
+// current boot. Accepts:
+//   ""       → current boot (--boot / -b without arg)
+//   "0"      → current boot (systemd shorthand)
+//   <32 hex> → specific boot ID; must match current (multi-boot
+//              indexing across on-disk rotated files not yet wired
+//              in the control-socket query path)
+//   "-N"     → negative index (systemd "N boots ago") — currently
+//              rejected with a helpful message pointing at
+//              --list-boots for lookup
 func verifyBootID(conn net.Conn, want string) error {
-	if want == "" {
+	if want == "" || want == "0" {
 		return nil
+	}
+	if strings.HasPrefix(want, "-") {
+		return fmt.Errorf("-b %s: relative boot indexing not yet supported; use --list-boots to get full IDs and pass one explicitly",
+			want)
 	}
 	// Query one event to fish out the server's BootID cheaply.
 	payload, _ := json.Marshal(control.JournalQueryRequest{Limit: 1})
@@ -641,10 +658,35 @@ func verifyBootID(conn net.Conn, want string) error {
 		return fmt.Errorf("--boot %s: no events on this boot yet to compare against", want)
 	}
 	if events[0].BootID != want {
-		return fmt.Errorf("--boot %s: multi-boot journals arrive with Phase 3; current boot is %s",
+		return fmt.Errorf("--boot %s: cross-boot journal queries not yet wired via the control socket; current boot is %s",
 			want, events[0].BootID)
 	}
 	return nil
+}
+
+// looksLikeBootSpec reports whether a token peek'd during flag
+// parsing looks like a boot spec argument to --boot / -b rather
+// than a separate flag. Accepts:
+//   - anything that doesn't start with '-' (positive index or hex ID)
+//   - "-N" where N is all digits (relative boot index)
+// Rejects other "-…" tokens which are always flags.
+func looksLikeBootSpec(s string) bool {
+	if s == "" {
+		return false
+	}
+	if !strings.HasPrefix(s, "-") {
+		return true
+	}
+	// "-<digits>" is a relative-boot spec, not a flag.
+	if len(s) < 2 {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // runFromFile reads a journal file — either the binary Phase B format
@@ -1254,7 +1296,8 @@ Flags:
   -f, --follow         Stream new events as they arrive (Ctrl-C to stop)
   -k, --dmesg          Show only kernel (kmsg) events
       --list-boots     List boot IDs the journal buffer covers and exit
-      --boot [ID]      Restrict to a boot (empty = current). Multi-boot lands with Phase 3
+  -b, --boot [ID]      Restrict to a boot (empty or "0" = current; full hex ID also accepted;
+                       relative "-N" and cross-boot control-socket query not yet wired)
   -c, --cursor=TOKEN   Resume from a cursor produced by --show-cursor
       --show-cursor    Print a "-- cursor: s=..;b=.." line after output
       --file=PATH      Read a journal file directly (binary or JSONL; magic-detected; .gz auto-decompress)

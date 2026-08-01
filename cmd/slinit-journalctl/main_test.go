@@ -845,6 +845,70 @@ func TestParseArgsCursorFlags(t *testing.T) {
 	}
 }
 
+func TestParseArgsBootShortForm(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		wantID  string
+	}{
+		{"-b alone", []string{"-b"}, ""},
+		{"-b 0 (current)", []string{"-b", "0"}, "0"},
+		{"-b0 glued", []string{"-b0"}, "0"},
+		{"-b -1 (relative)", []string{"-b", "-1"}, "-1"},
+		{"-b-1 glued", []string{"-b-1"}, "-1"},
+		{"-b <hex>", []string{"-b", "0123456789abcdef0123456789abcdef"}, "0123456789abcdef0123456789abcdef"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			opts, err := parseArgs(c.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !opts.bootSet {
+				t.Fatal("bootSet not set for -b")
+			}
+			if opts.bootID != c.wantID {
+				t.Fatalf("bootID = %q, want %q", opts.bootID, c.wantID)
+			}
+		})
+	}
+}
+
+func TestLooksLikeBootSpec(t *testing.T) {
+	cases := map[string]bool{
+		"":         false, // empty
+		"0":        true,  // positive index
+		"1":        true,
+		"abc123":   true,  // hex ID
+		"-1":       true,  // relative index
+		"-99":      true,  // relative index
+		"-o":       false, // real flag
+		"-r":       false, // real flag
+		"--follow": false, // long flag
+		"-":        false, // stray dash
+	}
+	for in, want := range cases {
+		if got := looksLikeBootSpec(in); got != want {
+			t.Errorf("looksLikeBootSpec(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestParseArgsBootPeekDoesNotEatFlag(t *testing.T) {
+	// --boot alone followed by another flag → bootID empty, flag
+	// still processed by its own case.
+	opts, err := parseArgs([]string{"-b", "-r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.bootSet || opts.bootID != "" {
+		t.Fatalf("boot spec eating: bootSet=%v bootID=%q", opts.bootSet, opts.bootID)
+	}
+	if !opts.reverse {
+		t.Fatal("following -r flag not honored")
+	}
+}
+
 func TestParseArgsBootWithID(t *testing.T) {
 	opts, err := parseArgs([]string{"--boot", "abc123"})
 	if err != nil {
