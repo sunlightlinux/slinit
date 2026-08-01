@@ -590,6 +590,18 @@ func resolveSocketPath(flagValue string, systemMode, userMode bool) string {
 	if flagValue != "" {
 		return flagValue
 	}
+	// Environment fallback — dinit-parity: dinit-client.h reads
+	// DINIT_SOCKET_PATH as the pre-mode fallback, so per-user
+	// .profile exports and packaging scripts that set it work
+	// unchanged under slinit. SLINIT_SOCKET_PATH accepted as the
+	// slinit-native name; DINIT_ takes precedence to match dinit's
+	// exact semantic when both are somehow set.
+	if p := os.Getenv("DINIT_SOCKET_PATH"); p != "" {
+		return p
+	}
+	if p := os.Getenv("SLINIT_SOCKET_PATH"); p != "" {
+		return p
+	}
 	if systemMode {
 		return defaultSystemSocket
 	}

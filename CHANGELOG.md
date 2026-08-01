@@ -52,6 +52,33 @@ the full commit-level record.
   and continues when the symlink can't be reached (runtime
   removal already succeeded).
 
+- **Full dinit-parity sweep: env-var + bootstrap-path gaps closed.**
+  A deep audit of dinit's protocol, dinitctl subcommands, service
+  directives, and bootstrap surface (against dinit 2b25539) surfaced
+  five silent-surprise gaps for operators porting a dinit setup —
+  all in the environment/env-file bootstrap layer, not opcodes or
+  config grammar (which stayed at 100% parity). Fixed here as a
+  single sweep so the audit's punch-list closes cleanly:
+  - `DINIT_SERVICE` env var now exported alongside `DINIT_SERVICENAME`
+    under `load-options: export-service-name`. Ported scripts using
+    `case "$DINIT_SERVICE" in …` work unchanged.
+  - `DINIT_CS_FD` exported alongside `SLINIT_CS_FD` under
+    `options: pass-cs-fd`, so a dinit-native child inheriting the
+    control-socket fd finds it under the documented name.
+  - `slinitctl` honours `DINIT_SOCKET_PATH` (and `SLINIT_SOCKET_PATH`
+    as native alias) as a pre-mode fallback when `--socket-path` is
+    absent. DINIT_ wins on collision to match dinit's behaviour
+    exactly.
+  - slinit auto-loads `/etc/slinit/environment` (and
+    `/etc/dinit/environment` as second-choice fallback) when
+    `--env-file` isn't given. Missing-file is silently skipped;
+    explicit `--env-file` keeps the existing loud-error semantics.
+  - User-mode service-dir search list now includes BOTH
+    `$XDG_CONFIG_HOME/slinit.d` AND `$HOME/.config/slinit.d` when
+    they differ, deduped when identical. Users with
+    non-default XDG_CONFIG_HOME no longer lose their `~/.config`
+    overrides.
+
 - **Dinit upstream sync: `CmdRmDepV7 = 30`** (matches dinit
   `2b25539`). Server-side handler mirrors the ENABLE_SERVICE_V7
   wire — reply is `[RplyServiceStatus][dep_exists(1B)][status_v6(22B)]`

@@ -416,6 +416,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			copy(cmd.Env, baseEnv)
 		}
 		cmd.Env = append(cmd.Env, fmt.Sprintf("SLINIT_CS_FD=%d", csFD))
+		// DINIT_CS_FD is the name documented in dinit-service.5 and
+		// consumed by dinit-native scripts + `dinitctl
+		// --use-passed-cfd`. Exported alongside SLINIT_CS_FD so both
+		// vocabularies see the same fd number.
+		cmd.Env = append(cmd.Env, fmt.Sprintf("DINIT_CS_FD=%d", csFD))
 	}
 
 	// Cgroup pre-attach: open the target cgroup as a directory fd and

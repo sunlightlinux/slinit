@@ -702,13 +702,36 @@ func main() {
 	// missing config — they log the error and continue with the empty
 	// global env. User-mode slinit (no -m / not PID 1) bails out so the
 	// operator finds out about the bad path immediately.
-	if envFile != "" {
-		fileEnv, err := process.ReadEnvFile(envFile)
+	// dinit-parity: when --env-file is not passed, fall back to the
+	// well-known default `/etc/slinit/environment` (dinit reads
+	// `/etc/dinit/environment` implicitly per dinit.cc:517).
+	// Missing-file is non-fatal — the operator hasn't opted into it,
+	// so no complaint. `/etc/dinit/environment` accepted as a
+	// second-choice fallback so a dual-install migration keeps
+	// working.
+	effectiveEnvFile := envFile
+	envFileImplicit := false
+	if effectiveEnvFile == "" {
+		for _, candidate := range []string{"/etc/slinit/environment", "/etc/dinit/environment"} {
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				effectiveEnvFile = candidate
+				envFileImplicit = true
+				break
+			}
+		}
+	}
+	if effectiveEnvFile != "" {
+		fileEnv, err := process.ReadEnvFile(effectiveEnvFile)
 		if err != nil {
-			if isPID1 || systemMode || containerMode {
-				logger.Error("Failed to read env-file '%s': %v (continuing)", envFile, err)
+			// Implicit fallback: quietly skip on error (operator
+			// didn't ask for this file explicitly). Explicit --env-file:
+			// keep existing loud-error behaviour.
+			if envFileImplicit {
+				logger.Info("Implicit env-file '%s' unreadable: %v (skipping)", effectiveEnvFile, err)
+			} else if isPID1 || systemMode || containerMode {
+				logger.Error("Failed to read env-file '%s': %v (continuing)", effectiveEnvFile, err)
 			} else {
-				logger.Error("Failed to read env-file '%s': %v", envFile, err)
+				logger.Error("Failed to read env-file '%s': %v", effectiveEnvFile, err)
 				os.Exit(1)
 			}
 		} else {
@@ -717,7 +740,7 @@ func main() {
 				env = append(env, k+"="+v)
 			}
 			serviceSet.SetGlobalEnv(env)
-			logger.Info("Loaded %d variables from env-file '%s'", len(fileEnv), envFile)
+			logger.Info("Loaded %d variables from env-file '%s'", len(fileEnv), effectiveEnvFile)
 		}
 	}
 
@@ -1446,11 +1469,20 @@ func resolveServiceDirs(flagValue string, systemMode bool) []string {
 		return []string{defaultUserServiceDir}
 	}
 	dirs := []string{}
-	// Prefer $XDG_CONFIG_HOME/slinit.d if set
+	// dinit-parity (options-processing.cc:35-83): include BOTH
+	// $XDG_CONFIG_HOME/slinit.d AND $HOME/.config/slinit.d, deduping
+	// only when they resolve to the same path. A user with
+	// XDG_CONFIG_HOME=/custom/xdg shouldn't lose their conventional
+	// ~/.config/slinit.d overrides.
+	defaultUserDir := home + "/.config/slinit.d"
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		dirs = append(dirs, xdg+"/slinit.d")
+		xdgDir := xdg + "/slinit.d"
+		dirs = append(dirs, xdgDir)
+		if xdgDir != defaultUserDir {
+			dirs = append(dirs, defaultUserDir)
+		}
 	} else {
-		dirs = append(dirs, home+"/.config/slinit.d")
+		dirs = append(dirs, defaultUserDir)
 	}
 	dirs = append(dirs,
 		"/etc/slinit.d/user",

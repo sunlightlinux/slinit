@@ -1950,6 +1950,12 @@ func applyLoadOptions(svc service.Service, desc *ServiceDescription) {
 
 	if desc.ExportServiceName {
 		rec.SetEnvVar("DINIT_SERVICENAME", svc.Name())
+		// DINIT_SERVICE is the canonical variable documented in
+		// dinit-service.5 (dinit/src/load-service.cc:566). Set it
+		// alongside DINIT_SERVICENAME so a service script ported from
+		// dinit with `case "$DINIT_SERVICE" in …` finds the value it
+		// expects. Both names carry the same string.
+		rec.SetEnvVar("DINIT_SERVICE", svc.Name())
 		if rec.ServiceDir() != "" {
 			rec.SetEnvVar("DINIT_SERVICEDSCDIR", rec.ServiceDir())
 		}
