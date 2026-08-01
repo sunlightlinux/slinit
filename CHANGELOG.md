@@ -52,6 +52,28 @@ the full commit-level record.
   and continues when the symlink can't be reached (runtime
   removal already succeeded).
 
+- **`slinit-supports` — self-introspection CLI + `doc/features.md`.**
+  Answers "does slinit accept X?" for X = directive, opcode, or
+  option — and where the feature originated (dinit / systemd / runit
+  / s6 / OpenRC / Upstart / slinit-native). Hybrid design: the
+  canonical list is auto-discovered from source via `go/ast` (walks
+  `applySetting`'s switch dispatcher in `pkg/config/parser.go` and
+  the `Cmd*` const block in `pkg/control/protocol.go`), so drift
+  between "docs claim we support this" and "code actually accepts
+  this" is structurally impossible. Provenance annotations
+  (source/category/notes) hand-curated in `pkg/features/provenance.go`;
+  a CI test fails on orphans (annotated names removed from code
+  without cleanup). Unannotated discovered names get TODO
+  placeholders — enrichment is incremental. Commands:
+  `slinit-supports NAME` (yes/no + provenance), `--list-directives`
+  / `--list-opcodes` / `--list-options` / `--list-all` (enumerate,
+  optionally `--group-by=source|category|kind`), `--format=text|
+  json|markdown`. `doc/features.md` is the markdown output committed
+  under source control — regenerate with
+  `slinit-supports --format=markdown --list-all --group-by=source
+  > doc/features.md`. Distinctive: neither systemd nor dinit ships
+  an equivalent self-introspection tool.
+
 - **Full dinit-parity sweep: env-var + bootstrap-path gaps closed.**
   A deep audit of dinit's protocol, dinitctl subcommands, service
   directives, and bootstrap surface (against dinit 2b25539) surfaced

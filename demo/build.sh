@@ -111,7 +111,8 @@ for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-binfmt slinit-sysctl slinit-svc-value \
            slinit-start-stop-daemon slinit-supervise-daemon \
            slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var \
-           slinit-cgtop slinit-journalctl slinit-journald slinit-journal-migrate; do
+           slinit-cgtop slinit-journalctl slinit-journald slinit-journal-migrate \
+           slinit-supports; do
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
         go build -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
 done
@@ -184,6 +185,7 @@ install -m 755 "${BUILD_DIR}/slinit-cgtop"             "${ROOTFS_DIR}/usr/bin/sl
 install -m 755 "${BUILD_DIR}/slinit-journalctl"        "${ROOTFS_DIR}/usr/bin/slinit-journalctl"
 install -m 755 "${BUILD_DIR}/slinit-journald"          "${ROOTFS_DIR}/usr/sbin/slinit-journald"
 install -m 755 "${BUILD_DIR}/slinit-journal-migrate"   "${ROOTFS_DIR}/usr/bin/slinit-journal-migrate"
+install -m 755 "${BUILD_DIR}/slinit-supports"          "${ROOTFS_DIR}/usr/bin/slinit-supports"
 
 # `journalctl` compat symlink so operators muscle-memory'd on systemd
 # find the same UX under the familiar name. slinit-journalctl does no

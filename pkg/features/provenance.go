@@ -1,0 +1,227 @@
+package features
+
+// provenance is the hand-curated annotation table. It maps every
+// name a slinit user might type — directive, opcode, or option —
+// to its Source (which upstream project the semantic came from) +
+// Category (which internal subsystem) + DocURL + Notes.
+//
+// The list is intentionally comprehensive for opcodes (small,
+// deterministic surface) and complete for the ~60 most-used
+// service directives. Discovered directive keys not enumerated
+// here get a "SourceSlinit + TODO note" placeholder from
+// merge.go's enrichWithDefaults so nothing silently drops off
+// the map — subsequent commits promote TODO placeholders to
+// proper provenance as authors have time.
+//
+// Wire numbers: 0..30 range are dinit-wire (opcode-for-opcode
+// compatible with dinit protocol v7). 35..63 range are
+// slinit-native extensions past dinit's numbering.
+
+// provenanceTable is consumed by Load() (see merge.go). Order
+// doesn't matter — Registry indexes by Name.
+var provenanceTable = []Feature{
+
+	// ---------- CONTROL PROTOCOL: OPCODES (Cmd*) ----------
+	// dinit-wire opcodes 0..30 (100% compat with dinit protocol v7).
+
+	{Name: "CmdQueryVersion", Kind: KindOpcode, Source: SourceDinit, Category: CatControlProto, Notes: "opcode 0 — handshake, returns CPVersion + MinCompatVersion"},
+	{Name: "CmdFindService", Kind: KindOpcode, Source: SourceDinit, Category: CatControlProto, Notes: "opcode 1 — resolve service name to handle"},
+	{Name: "CmdLoadService", Kind: KindOpcode, Source: SourceDinit, Category: CatControlProto, Notes: "opcode 2 — load service description from disk, return handle"},
+	{Name: "CmdStartService", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 3 — activate a service (pin start if flag)"},
+	{Name: "CmdStopService", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 4 — stop a service (pin stop if flag)"},
+	{Name: "CmdWakeService", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 5 — wake a stopped-and-required service (dep restart)"},
+	{Name: "CmdReleaseService", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 6 — remove explicit activation, stop if unreferenced"},
+	{Name: "CmdUnpinService", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 7 — clear start-pin or stop-pin"},
+	{Name: "CmdListServices", Kind: KindOpcode, Source: SourceDinit, Category: CatObservability, Notes: "opcode 8 — deprecated, use ListServices5"},
+	{Name: "CmdUnloadService", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 9 — remove service from set (must be stopped)"},
+	{Name: "CmdShutdown", Kind: KindOpcode, Source: SourceDinit, Category: CatShutdown, Notes: "opcode 10 — trigger system shutdown (poweroff/reboot/halt/softreboot)"},
+	{Name: "CmdAddDep", Kind: KindOpcode, Source: SourceDinit, Category: CatDependency, Notes: "opcode 11 — add dependency edge at runtime"},
+	{Name: "CmdRmDep", Kind: KindOpcode, Source: SourceDinit, Category: CatDependency, Notes: "opcode 12 — remove dependency edge (see also CmdRmDepV7)"},
+	{Name: "CmdQueryLoadMech", Kind: KindOpcode, Source: SourceDinit, Category: CatObservability, Notes: "opcode 13 — query loader search-path list"},
+	{Name: "CmdEnableService", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 14 — add waits-for dep + start (persistent via symlink)"},
+	{Name: "CmdQueryServiceName", Kind: KindOpcode, Source: SourceDinit, Category: CatObservability, Notes: "opcode 15 — reverse handle→name lookup"},
+	{Name: "CmdReloadService", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 16 — reload service description without restart"},
+	{Name: "CmdSetEnv", Kind: KindOpcode, Source: SourceDinit, Category: CatEnv, Notes: "opcode 17 — set env var in slinit global or per-service"},
+	{Name: "CmdServiceStatus", Kind: KindOpcode, Source: SourceDinit, Category: CatObservability, Notes: "opcode 18 — deprecated, use ServiceStatus5 or ServiceStatus6"},
+	{Name: "CmdSetTrigger", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 19 — fire a `triggered` service"},
+	{Name: "CmdCatLog", Kind: KindOpcode, Source: SourceDinit, Category: CatLogging, Notes: "opcode 20 — stream a service's captured log (log-type=buffer)"},
+	{Name: "CmdSignal", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 21 — send signal to a service's main process"},
+	{Name: "CmdQueryServiceDscDir", Kind: KindOpcode, Source: SourceDinit, Category: CatObservability, Notes: "opcode 22 — loader search-path list (see also QueryServiceLoadDir=63 for per-service dir)"},
+	{Name: "CmdCloseHandle", Kind: KindOpcode, Source: SourceDinit, Category: CatControlProto, Notes: "opcode 23 — free a server-side service handle"},
+	{Name: "CmdGetAllEnv", Kind: KindOpcode, Source: SourceDinit, Category: CatEnv, Notes: "opcode 24 — dump slinit global env"},
+	{Name: "CmdListServices5", Kind: KindOpcode, Source: SourceDinit, Category: CatObservability, Notes: "opcode 25 — v5 protocol list all loaded services"},
+	{Name: "CmdServiceStatus5", Kind: KindOpcode, Source: SourceDinit, Category: CatObservability, Notes: "opcode 26 — v5 protocol service status"},
+	{Name: "CmdListenEnv", Kind: KindOpcode, Source: SourceDinit, Category: CatEnv, Notes: "opcode 27 — subscribe to env-change events"},
+	{Name: "CmdServiceStatus6", Kind: KindOpcode, Source: SourceDinit, Category: CatObservability, Notes: "opcode 28 — v6 protocol adds service-file mtime"},
+	{Name: "CmdEnableServiceV7", Kind: KindOpcode, Source: SourceDinit, Category: CatLifecycle, Notes: "opcode 29 — enable + inline status reply (v7)"},
+	{Name: "CmdRmDepV7", Kind: KindOpcode, Source: SourceDinit, Category: CatDependency, Notes: "opcode 30 — rm-dep + inline status reply (v7, dinit 2b25539 parity)"},
+
+	// slinit-native opcodes (35..63) — dinit doesn't know these.
+
+	{Name: "CmdScheduleShutdown", Kind: KindOpcode, Source: SourceSlinit, Category: CatShutdown, Notes: "opcode 35 — delayed shutdown (systemd `shutdown +5min` UX)"},
+	{Name: "CmdCancelShutdown", Kind: KindOpcode, Source: SourceSlinit, Category: CatShutdown, Notes: "opcode 36 — cancel pending scheduled shutdown"},
+	{Name: "CmdQueryShutdown", Kind: KindOpcode, Source: SourceSlinit, Category: CatShutdown, Notes: "opcode 37 — query pending shutdown state"},
+	{Name: "CmdReloadAll", Kind: KindOpcode, Source: SourceSlinit, Category: CatLifecycle, Notes: "opcode 38 — rescan every service description from disk"},
+	{Name: "CmdReloadSignal", Kind: KindOpcode, Source: SourceSystemd, Category: CatLifecycle, Notes: "opcode 39 — send configured reload-signal (systemd ExecReload analog)"},
+	{Name: "CmdBootTime", Kind: KindOpcode, Source: SourceSystemd, Category: CatObservability, Notes: "opcode 40 — systemd-analyze equivalent (kernel+userspace boot times)"},
+	{Name: "CmdDisableService", Kind: KindOpcode, Source: SourceSlinit, Category: CatLifecycle, Notes: "opcode 41 — atomic rm-dep + remove waits-for.d symlink + stop"},
+	{Name: "CmdQueryDependents", Kind: KindOpcode, Source: SourceSlinit, Category: CatDependency, Notes: "opcode 42 — reverse dep lookup (what depends on X)"},
+	{Name: "CmdPauseService", Kind: KindOpcode, Source: SourceSystemd, Category: CatLifecycle, Notes: "opcode 43 — SIGSTOP-based pause (cgroup freezer analog for legacy)"},
+	{Name: "CmdContinueService", Kind: KindOpcode, Source: SourceSystemd, Category: CatLifecycle, Notes: "opcode 44 — SIGCONT resume"},
+	{Name: "CmdOnceService", Kind: KindOpcode, Source: SourceSystemd, Category: CatLifecycle, Notes: "opcode 45 — start with restart disabled for this invocation"},
+	{Name: "CmdQueryDependencies", Kind: KindOpcode, Source: SourceSlinit, Category: CatDependency, Notes: "opcode 46 — forward dep query (what X depends on)"},
+	{Name: "CmdQueryDescription", Kind: KindOpcode, Source: SourceSlinit, Category: CatObservability, Notes: "opcode 47 — human-readable description text"},
+	{Name: "CmdRunAction", Kind: KindOpcode, Source: SourceSystemd, Category: CatLifecycle, Notes: "opcode 48 — run extra-command action (systemd ExecCondition/Pre/Post analog)"},
+	{Name: "CmdListActions", Kind: KindOpcode, Source: SourceSystemd, Category: CatObservability, Notes: "opcode 49 — enumerate configured extra-command actions"},
+	{Name: "CmdResetEnv", Kind: KindOpcode, Source: SourceSlinit, Category: CatEnv, Notes: "opcode 50 — clear all runtime setenv mutations"},
+	{Name: "CmdQueryMetadata", Kind: KindOpcode, Source: SourceUpstart, Category: CatObservability, Notes: "opcode 51 — author/version/usage strings (Upstart-derived)"},
+	{Name: "CmdActivateProfile", Kind: KindOpcode, Source: SourceRunit, Category: CatLifecycle, Notes: "opcode 52 — runsvchdir analog (swap active profile)"},
+	{Name: "CmdQueryProfile", Kind: KindOpcode, Source: SourceRunit, Category: CatObservability, Notes: "opcode 53 — report active profile name"},
+	{Name: "CmdListProfiles", Kind: KindOpcode, Source: SourceSlinit, Category: CatObservability, Notes: "opcode 54 — enumerate declared profile tags"},
+	{Name: "CmdQueryBundleMembers", Kind: KindOpcode, Source: SourceS6, Category: CatObservability, Notes: "opcode 55 — s6-rc bundle-of members query"},
+	{Name: "CmdWallNotice", Kind: KindOpcode, Source: SourceOpenRC, Category: CatShutdown, Notes: "opcode 56 — LSB shutdown -k (broadcast without scheduling)"},
+	{Name: "CmdResetFailed", Kind: KindOpcode, Source: SourceSystemd, Category: CatLifecycle, Notes: "opcode 57 — clear startFailed flag (systemctl reset-failed analog)"},
+	{Name: "CmdFreezeService", Kind: KindOpcode, Source: SourceSystemd, Category: CatCgroup, Notes: "opcode 58 — cgroup v2 freezer (write 1 to cgroup.freeze)"},
+	{Name: "CmdThawService", Kind: KindOpcode, Source: SourceSystemd, Category: CatCgroup, Notes: "opcode 59 — cgroup v2 unfreeze (write 0)"},
+	{Name: "CmdJournalQuery", Kind: KindOpcode, Source: SourceSystemd, Category: CatLogging, Notes: "opcode 60 — slinit-journalctl query (parity with systemd journalctl)"},
+	{Name: "CmdJournalSubscribe", Kind: KindOpcode, Source: SourceSystemd, Category: CatLogging, Notes: "opcode 61 — slinit-journalctl -f follow subscription"},
+	{Name: "CmdDisableServiceV7", Kind: KindOpcode, Source: SourceSlinit, Category: CatLifecycle, Notes: "opcode 62 — atomic disable + inline status reply (slinit-native V7)"},
+	{Name: "CmdQueryServiceLoadDir", Kind: KindOpcode, Source: SourceSlinit, Category: CatObservability, Notes: "opcode 63 — per-service load dir (for dinit-compat --dinit-compat client symlink cleanup)"},
+
+	// ---------- SERVICE DIRECTIVES: TOP-USED ----------
+	// Directives with well-known provenance. Rest get placeholder
+	// entries via merge.go's enrichWithDefaults.
+
+	// Names cross-checked against actual case values in
+	// pkg/config/parser.go's applySetting dispatcher. Any name that
+	// wasn't confirmed via discovery gets omitted here — merge.go
+	// puts unknown discovered names in TODO-placeholders so the
+	// annotation list can grow incrementally without shipping
+	// fiction.
+	{Name: "type", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "process/scripted/bgprocess/internal/triggered"},
+	{Name: "command", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "main service command (with $-var expansion; use $$VAR for runtime env refs)"},
+	{Name: "stop-command", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "command run to stop the service"},
+	{Name: "working-dir", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "chdir before exec"},
+	{Name: "env-file", Kind: KindDirective, Source: SourceDinit, Category: CatEnv, Notes: "env vars loaded from file at service load time"},
+	{Name: "env-dir", Kind: KindDirective, Source: SourceRunit, Category: CatEnv, Notes: "envdir-style: each file in dir becomes VAR=<contents> (runit/chpst)"},
+	{Name: "pass-environment", Kind: KindDirective, Source: SourceSystemd, Category: CatEnv, Notes: "PassEnvironment= — vars inherited from slinit's env"},
+	{Name: "unset-environment", Kind: KindDirective, Source: SourceSystemd, Category: CatEnv, Notes: "UnsetEnvironment= — remove from child env"},
+	{Name: "run-as", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "drop privileges to user (uid/gid resolved)"},
+	{Name: "supplementary-groups", Kind: KindDirective, Source: SourceRunit, Category: CatServiceConfig, Notes: "extra GIDs (runit chpst -G analog; systemd SupplementaryGroups=)"},
+	{Name: "restart", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "bool — auto-restart on unexpected exit"},
+	{Name: "restart-limit-count", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "max restarts within restart-limit-interval"},
+	{Name: "restart-limit-interval", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "window for restart-limit-count (systemd StartLimitIntervalSec)"},
+	{Name: "restart-delay", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "delay between restart attempts"},
+	{Name: "restart-max-delay", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle},
+	{Name: "restart-delay-cap", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "systemd RestartMaxDelaySec analog"},
+	{Name: "restart-delay-step", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "exponential backoff step"},
+	{Name: "restart-randomized-delay", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "systemd RestartRandomizedDelaySec"},
+	{Name: "restart-force-exit-status", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "systemd RestartForceExitStatus analog"},
+	{Name: "restart-mode", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle},
+	{Name: "restart-kill-signal", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle},
+	{Name: "normal-exit", Kind: KindDirective, Source: SourceUpstart, Category: CatLifecycle, Notes: "exit codes considered clean (no restart)"},
+	{Name: "reload-signal", Kind: KindDirective, Source: SourceUpstart, Category: CatLifecycle, Notes: "signal for CmdReloadSignal"},
+	{Name: "term-signal", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "signal sent on stop (default SIGTERM); dinit's stop-signal name"},
+	{Name: "kill-mode", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "control-group / process / mixed / none"},
+	{Name: "stop-timeout", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "grace period before SIGKILL after term-signal"},
+	{Name: "start-timeout", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle},
+	{Name: "stop-when-unneeded", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "StopWhenUnneeded="},
+	{Name: "smooth-recovery", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "restart w/o disturbing dependents"},
+	{Name: "manual", Kind: KindDirective, Source: SourceUpstart, Category: CatLifecycle, Notes: "requires explicit slinitctl start"},
+	{Name: "depends-on", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "hard dep — target must be running (starts + stops together)"},
+	{Name: "waits-for", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "soft dep — wait for target start but don't stop with it"},
+	{Name: "depends-ms", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "milestone dep (start after but doesn't cause target start)"},
+	{Name: "before", Kind: KindDirective, Source: SourceSystemd, Category: CatDependency, Notes: "systemd After= / Before= ordering (no activation)"},
+	{Name: "after", Kind: KindDirective, Source: SourceSystemd, Category: CatDependency},
+	{Name: "chain-to", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "start target after this service reaches STOPPED (oneshot chaining)"},
+	{Name: "consumer-of", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "auto-pipe stdout of another service to this one's stdin"},
+	{Name: "socket-activation", Kind: KindDirective, Source: SourceSystemd, Category: CatSocket, Notes: "systemd sd-socket activation"},
+	{Name: "log-type", Kind: KindDirective, Source: SourceDinit, Category: CatLogging, Notes: "none/buffer/file/pipe/syslog"},
+	{Name: "log-buffer-size", Kind: KindDirective, Source: SourceDinit, Category: CatLogging, Notes: "in-memory ring buffer size for log-type=buffer"},
+	{Name: "log-level-max", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging, Notes: "syslog severity threshold (LogLevelMax=)"},
+	{Name: "log-rate-limit-interval", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging},
+	{Name: "log-rate-limit-burst", Kind: KindDirective, Source: SourceSystemd, Category: CatLogging},
+	{Name: "log-forward-udp", Kind: KindDirective, Source: SourceSlinit, Category: CatLogging, Notes: "syslog-style UDP forwarder (host:port)"},
+	{Name: "log-forward-facility", Kind: KindDirective, Source: SourceSlinit, Category: CatLogging},
+	{Name: "log-forward-tag", Kind: KindDirective, Source: SourceSlinit, Category: CatLogging},
+	{Name: "log-forward-format", Kind: KindDirective, Source: SourceSlinit, Category: CatLogging},
+	{Name: "log-select", Kind: KindDirective, Source: SourceS6, Category: CatLogging, Notes: "s6-log-style +/- regex chain"},
+	{Name: "log-include", Kind: KindDirective, Source: SourceRunit, Category: CatLogging, Notes: "svlogd include regex"},
+	{Name: "log-exclude", Kind: KindDirective, Source: SourceRunit, Category: CatLogging, Notes: "svlogd exclude regex"},
+	{Name: "log-timestamp", Kind: KindDirective, Source: SourceRunit, Category: CatLogging, Notes: "svlogd -t analog"},
+	{Name: "log-line-prefix", Kind: KindDirective, Source: SourceSlinit, Category: CatLogging},
+	{Name: "log-max-line-length", Kind: KindDirective, Source: SourceRunit, Category: CatLogging},
+	{Name: "log-processor", Kind: KindDirective, Source: SourceRunit, Category: CatLogging, Notes: "svlogd !processor"},
+	{Name: "log-read-buffer-size", Kind: KindDirective, Source: SourceSlinit, Category: CatLogging},
+	{Name: "log-sanitize", Kind: KindDirective, Source: SourceRunit, Category: CatLogging, Notes: "svlogd -r/-R sanitization"},
+	{Name: "log-sanitize-extra", Kind: KindDirective, Source: SourceRunit, Category: CatLogging},
+	{Name: "close-stdin", Kind: KindDirective, Source: SourceRunit, Category: CatSandbox, Notes: "chpst -0"},
+	{Name: "close-stdout", Kind: KindDirective, Source: SourceRunit, Category: CatSandbox, Notes: "chpst -1"},
+	{Name: "close-stderr", Kind: KindDirective, Source: SourceRunit, Category: CatSandbox, Notes: "chpst -2"},
+	{Name: "cgroup-memory-max", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd MemoryMax="},
+	{Name: "cgroup-memory-high", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd MemoryHigh="},
+	{Name: "cgroup-memory-low", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup},
+	{Name: "cgroup-memory-min", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup},
+	{Name: "cgroup-cpu-max", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd CPUQuota="},
+	{Name: "cgroup-cpu-weight", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd CPUWeight="},
+	{Name: "cgroup-cpuset-cpus", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd AllowedCPUs="},
+	{Name: "cgroup-cpuset-mems", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd AllowedMemoryNodes="},
+	{Name: "run-in-cgroup", Kind: KindDirective, Source: SourceDinit, Category: CatCgroup, Notes: "attach service to specific cgroup path"},
+	{Name: "memory-pressure-watch", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd MemoryPressureWatch= (v261)"},
+	{Name: "memory-pressure-threshold", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup},
+	{Name: "cpu-pressure-watch", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup},
+	{Name: "cpu-pressure-threshold", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup},
+	{Name: "memory-deny-write-execute", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "MemoryDenyWriteExecute= — mmap PROT_WRITE|PROT_EXEC seccomp filter"},
+	{Name: "memory-ksm", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd MemoryKSM= (v257)"},
+	{Name: "memory-thp", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd MemoryTHP= (v261)"},
+	{Name: "capability-bounding-set", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "CapabilityBoundingSet="},
+	{Name: "cpu-affinity", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig, Notes: "CPUAffinity= mask/list"},
+	{Name: "nice", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig},
+	{Name: "oom-score-adj", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig, Notes: "OOMScoreAdjust="},
+	{Name: "oom-policy", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig, Notes: "OOMPolicy= (continue/stop/kill)"},
+	{Name: "ready-notification", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "pipefd:/pipevar: ready via pipe write (dinit convention)"},
+	{Name: "ready-check-command", Kind: KindDirective, Source: SourceSlinit, Category: CatLifecycle, Notes: "external readiness probe"},
+	{Name: "ready-check-interval", Kind: KindDirective, Source: SourceSlinit, Category: CatLifecycle},
+	{Name: "refuse-manual-start", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "RefuseManualStart="},
+	{Name: "refuse-manual-stop", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "RefuseManualStop="},
+	{Name: "reboot-argument", Kind: KindDirective, Source: SourceSystemd, Category: CatShutdown, Notes: "RebootArgument= for kexec chain"},
+	{Name: "remove-ipc", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "RemoveIPC="},
+	{Name: "read-only-paths", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "ReadOnlyPaths="},
+	{Name: "read-write-paths", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "ReadWritePaths="},
+	{Name: "bind-paths", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "BindPaths="},
+	{Name: "bind-read-only-paths", Kind: KindDirective, Source: SourceSystemd, Category: CatSandbox, Notes: "BindReadOnlyPaths="},
+	{Name: "bundle-of", Kind: KindDirective, Source: SourceS6, Category: CatDependency, Notes: "s6-rc bundle grouping — start N services with one name"},
+	{Name: "apparmor-load", Kind: KindDirective, Source: SourceUpstart, Category: CatSandbox, Notes: "load AppArmor policy on start"},
+	{Name: "apparmor-switch", Kind: KindDirective, Source: SourceUpstart, Category: CatSandbox, Notes: "switch to AppArmor profile after exec"},
+	{Name: "bus-name", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "BusName= for D-Bus activation"},
+	{Name: "cache-directory", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig, Notes: "CacheDirectory= — auto-managed /var/cache/<name>"},
+	{Name: "cache-directory-mode", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig},
+	{Name: "cache-directory-quota", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig, Notes: "systemd CacheDirectoryQuota= (v258)"},
+	{Name: "ignore-sigpipe", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "IgnoreSIGPIPE="},
+	{Name: "options", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "boolean flags list (see individual options entries)"},
+	{Name: "load-options", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "loader-time flags (export-service-name, export-passwd-vars)"},
+	{Name: "description", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "human-readable service description"},
+	{Name: "author", Kind: KindDirective, Source: SourceUpstart, Category: CatServiceConfig, Notes: "@meta author string"},
+	{Name: "version", Kind: KindDirective, Source: SourceUpstart, Category: CatServiceConfig, Notes: "@meta version string"},
+	{Name: "usage", Kind: KindDirective, Source: SourceUpstart, Category: CatServiceConfig, Notes: "@meta usage string"},
+
+	// ---------- @meta directives ----------
+	{Name: "@meta:enable-via", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "which service to hang the enable waits-for.d symlink off"},
+	{Name: "@include", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "load another file's contents inline"},
+	{Name: "@include-opt", Kind: KindDirective, Source: SourceDinit, Category: CatServiceConfig, Notes: "@include but tolerant of missing files"},
+
+	// ---------- options: boolean flags ----------
+	{Name: "option:starts-rwfs", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle, Notes: "expose read-write root filesystem to service"},
+	{Name: "option:starts-log", Kind: KindOption, Source: SourceDinit, Category: CatLogging},
+	{Name: "option:pass-cs-fd", Kind: KindOption, Source: SourceDinit, Category: CatControlProto, Notes: "pass control-socket fd via DINIT_CS_FD/SLINIT_CS_FD"},
+	{Name: "option:unmask-intr", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle},
+	{Name: "option:always-chain", Kind: KindOption, Source: SourceDinit, Category: CatDependency},
+	{Name: "option:kill-all-on-stop", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle},
+	{Name: "option:no-new-privs", Kind: KindOption, Source: SourceSystemd, Category: CatSandbox},
+	{Name: "option:signal-process-only", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle},
+	{Name: "option:runs-on-console", Kind: KindOption, Source: SourceDinit, Category: CatServiceConfig, Notes: "getty-style — foreground the tty"},
+	{Name: "option:starts-on-console", Kind: KindOption, Source: SourceDinit, Category: CatServiceConfig},
+	{Name: "option:shares-console", Kind: KindOption, Source: SourceDinit, Category: CatServiceConfig},
+	{Name: "option:start-interruptible", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle},
+	{Name: "option:skippable", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle},
+}
