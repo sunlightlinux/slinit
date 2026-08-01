@@ -259,7 +259,9 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 	case CmdAddDep:
 		return c.handleAddDep(payload)
 	case CmdRmDep:
-		return c.handleRmDep(payload)
+		return c.handleRmDep(payload, false)
+	case CmdRmDepV7:
+		return c.handleRmDep(payload, true)
 	case CmdEnableService:
 		return c.handleEnableService(payload, false)
 	case CmdEnableServiceV7:
@@ -1370,7 +1372,15 @@ func (c *Connection) handleAddDep(payload []byte) error {
 	return c.writePacket(RplyACK, nil)
 }
 
-func (c *Connection) handleRmDep(payload []byte) error {
+// handleRmDep removes a dependency edge (from → to) of the given
+// type. When v7 is true the reply carries the target service's
+// status (via SERVICESTATUS + dep_exists prefix + v6 buffer) so a
+// client can learn whether the removal actually caused the target
+// to transition — matches dinit 2b25539's REM_DEP_V7. dep_exists=0
+// because after a successful remove the dep never exists; the byte
+// is kept for wire symmetry with ENABLE_SERVICE_V7 so tools can share
+// their status-parsing path.
+func (c *Connection) handleRmDep(payload []byte, v7 bool) error {
 	handleFrom, handleTo, depType, err := DecodeDepRequest(payload)
 	if err != nil {
 		return c.writePacket(RplyBadReq, nil)
@@ -1406,6 +1416,17 @@ func (c *Connection) handleRmDep(payload []byte) error {
 	}
 
 	c.server.services.ProcessQueues()
+
+	if v7 {
+		// Wire: [RplyServiceStatus][dep_exists(1B)][status_v6(22B)].
+		// dep_exists is always 0 after a successful remove; kept for
+		// wire compatibility with ENABLE_SERVICE_V7 so client code
+		// can share the status decoder.
+		status := EncodeServiceStatus6(to)
+		reply := make([]byte, 1+len(status))
+		copy(reply[1:], status)
+		return c.writePacket(RplyServiceStatus, reply)
+	}
 	return c.writePacket(RplyACK, nil)
 }
 

@@ -77,6 +77,13 @@ const (
 	// where `slinitctl enable X` on a service that was already STARTED
 	// could report the pre-enable state. Matches dinit d7d843b.
 	CmdEnableServiceV7 uint8 = 29
+	// Remove-dep v7 variant: same wire request as CmdRmDep (12), but
+	// the reply is [RplyServiceStatus][dep_exists(1B)][status_v6_buffer]
+	// instead of a bare RplyACK. Lets the client learn the target's
+	// state from the same round-trip that removed the dep, so
+	// `slinitctl rm-dep`/`disable` can wait race-free for the target
+	// to reach STOPPED (or report if it won't). Matches dinit 2b25539.
+	CmdRmDepV7 uint8 = 30
 
 	// slinit extensions (beyond dinit's range)
 	CmdBootTime          uint8 = 40

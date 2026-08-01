@@ -19,6 +19,18 @@ the full commit-level record.
 
 ### Added
 
+- **Dinit upstream sync: `CmdRmDepV7 = 30`** (matches dinit
+  `2b25539`). Server-side handler mirrors the ENABLE_SERVICE_V7
+  wire — reply is `[RplyServiceStatus][dep_exists(1B)][status_v6(22B)]`
+  instead of a bare RplyACK — so a client learns the target's
+  post-removal state on the same round-trip. `slinitctl rm-dep`
+  uses V7 automatically when the peer advertises CPVersion ≥ 7,
+  falling back to the plain CmdRmDep + ACK path on older daemons
+  so mixed-version pairs keep working. Closes the tiny race where a
+  follow-up status query could catch the target mid-transition.
+  Rendered in slinitctl output as `(target now STOPPED)` /
+  `STARTING` / etc.
+
 - **`slinit-journalctl -o export`** — systemd export format
   (`KEY=value` lines, blank line between events). Piped to
   systemd-journal-remote-alikes or custom parsers for cross-host

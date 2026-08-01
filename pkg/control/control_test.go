@@ -1194,6 +1194,76 @@ func TestAddDepAndRmDep(t *testing.T) {
 	}
 }
 
+func TestRmDepV7ReturnsStatus(t *testing.T) {
+	// dinit 2b25539 parity: REM_DEP_V7 answers with the target's
+	// status inline so `slinitctl disable`/`rm-dep` can wait race-
+	// free for the target to reach STOPPED without a follow-up query.
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	parent := service.NewInternalService(server.services, "v7-parent")
+	child := service.NewInternalService(server.services, "v7-child")
+	server.services.AddService(parent)
+	server.services.AddService(child)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	hParent := findHandle(t, conn, "v7-parent")
+	hChild := findHandle(t, conn, "v7-child")
+
+	// Establish then remove via V7.
+	payload := EncodeDepRequest(hParent, hChild, uint8(service.DepWaitsFor))
+	WritePacket(conn, CmdAddDep, payload)
+	rply, _ := readReply(t, conn)
+	if rply != RplyACK {
+		t.Fatalf("add-dep: expected ACK, got %d", rply)
+	}
+
+	WritePacket(conn, CmdRmDepV7, payload)
+	rply, replyPayload := readReply(t, conn)
+	if rply != RplyServiceStatus {
+		t.Fatalf("rm-dep V7: expected RplyServiceStatus, got %d", rply)
+	}
+	// Wire: [dep_exists(1B)][status_v6(≥1B)]. After a successful
+	// remove dep_exists is always 0.
+	if len(replyPayload) < 2 {
+		t.Fatalf("rm-dep V7: reply too short (%d bytes)", len(replyPayload))
+	}
+	if replyPayload[0] != 0 {
+		t.Errorf("rm-dep V7: dep_exists byte = %d, want 0 after successful remove", replyPayload[0])
+	}
+	// The dep must actually be removed from the record.
+	for _, d := range parent.Record().Dependencies() {
+		if d.To == child && d.DepType == service.DepWaitsFor {
+			t.Fatal("waits-for dep still present after CmdRmDepV7")
+		}
+	}
+}
+
+func TestRmDepV7NakOnMissingDep(t *testing.T) {
+	// V7 must still NAK when the dep never existed — the inline-status
+	// reply is only for the success path.
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	a := service.NewInternalService(server.services, "v7nak-a")
+	b := service.NewInternalService(server.services, "v7nak-b")
+	server.services.AddService(a)
+	server.services.AddService(b)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	hA := findHandle(t, conn, "v7nak-a")
+	hB := findHandle(t, conn, "v7nak-b")
+
+	payload := EncodeDepRequest(hA, hB, uint8(service.DepRegular))
+	WritePacket(conn, CmdRmDepV7, payload)
+	rply, _ := readReply(t, conn)
+	if rply != RplyNAK {
+		t.Fatalf("rm-dep V7 on missing dep: expected NAK, got %d", rply)
+	}
+}
+
 func TestRmDepNotFound(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()

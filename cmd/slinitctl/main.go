@@ -3181,11 +3181,22 @@ func cmdRmDep(conn net.Conn, fromName, depTypeStr, toName string) error {
 	}
 
 	payload := control.EncodeDepRequest(handleFrom, handleTo, uint8(depType))
-	if err := control.WritePacket(conn, control.CmdRmDep, payload); err != nil {
+	// v7+ daemons answer CmdRmDepV7 with the target's status on the
+	// same round-trip — mirror of CmdEnableServiceV7. Lets the caller
+	// see whether the removal actually caused the target to stop,
+	// closing the race where a follow-up status query might catch it
+	// mid-transition. Fall back to plain CmdRmDep (ACK reply) on
+	// older peers so mixed-version pairs still work.
+	useV7 := peerCPVersion >= 7
+	cmd := control.CmdRmDep
+	if useV7 {
+		cmd = control.CmdRmDepV7
+	}
+	if err := control.WritePacket(conn, cmd, payload); err != nil {
 		return err
 	}
 
-	rply, _, err := readReply(conn)
+	rply, replyPayload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3193,12 +3204,47 @@ func cmdRmDep(conn net.Conn, fromName, depTypeStr, toName string) error {
 	switch rply {
 	case control.RplyACK:
 		info("Removed %s dependency: %s -> %s\n", depTypeStr, fromName, toName)
+	case control.RplyServiceStatus:
+		// v7 reply: [dep_exists(1B)][status_v6(22B)]. dep_exists is
+		// always 0 after a successful remove; the byte is kept for
+		// wire symmetry with ENABLE_SERVICE_V7.
+		if !useV7 || len(replyPayload) < 1 {
+			return fmt.Errorf("rm-dep: malformed status reply")
+		}
+		state := decodeServiceState(replyPayload[1:])
+		info("Removed %s dependency: %s -> %s (target now %s)\n",
+			depTypeStr, fromName, toName, state)
 	case control.RplyNAK:
 		return fmt.Errorf("dependency %s -> %s (%s) not found", fromName, toName, depTypeStr)
 	default:
 		return fmt.Errorf("rm-dep failed: reply %d", rply)
 	}
 	return nil
+}
+
+// decodeServiceState returns a compact human-readable target-state
+// label extracted from a status_v6 buffer. Used by cmdRmDep's v7
+// path to report the after-removal state. Falls back to "unknown"
+// when the buffer is too short.
+func decodeServiceState(status []byte) string {
+	if len(status) < 1 {
+		return "unknown"
+	}
+	// status_v6 first byte is the current state enum (matches
+	// pkg/service.ServiceState); reuse the enum's String via a small
+	// map so we don't tie the CLI to pkg/service.
+	switch status[0] {
+	case 0:
+		return "STOPPED"
+	case 1:
+		return "STARTING"
+	case 2:
+		return "STARTED"
+	case 3:
+		return "STOPPING"
+	default:
+		return fmt.Sprintf("state(%d)", status[0])
+	}
 }
 
 func cmdEnable(conn net.Conn, name string, from string) error {
