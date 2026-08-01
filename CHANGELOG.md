@@ -19,6 +19,26 @@ the full commit-level record.
 
 ### Added
 
+- **Slinit-native disable atomic + dinit-compat wire:
+  `CmdDisableServiceV7 = 62` + `CmdQueryServiceLoadDir = 63` +
+  `slinitctl disable --dinit-compat` flag.** Two wires on the
+  server for slinit's disable — the slinit-native atomic path
+  (`CmdDisableServiceV7`, single round-trip: rm-dep +
+  waits-for.d symlink cleanup + StopService + inline status) and
+  the dinit-compat path (`CmdRmDepV7` from the prior commit + a
+  new `CmdQueryServiceLoadDir` opcode so clients can locate the
+  per-service load directory to remove waits-for.d/target
+  symlinks client-side). `slinitctl disable` defaults to the
+  atomic slinit path (V7 when peer ≥ 7, plain otherwise); the
+  new `--dinit-compat` flag switches to the client-side symlink
+  cleanup flow, wire-compatible with real dinit daemons that
+  don't know slinit's atomic opcode. Falls back to `boot` as the
+  "from" service when `--from` isn't given (matches slinit's
+  server-side default). Remote-friendly: the atomic path needs no
+  filesystem access at the client; the dinit-compat path warns
+  and continues when the symlink can't be reached (runtime
+  removal already succeeded).
+
 - **Dinit upstream sync: `CmdRmDepV7 = 30`** (matches dinit
   `2b25539`). Server-side handler mirrors the ENABLE_SERVICE_V7
   wire — reply is `[RplyServiceStatus][dep_exists(1B)][status_v6(22B)]`

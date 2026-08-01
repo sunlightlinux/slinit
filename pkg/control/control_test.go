@@ -1264,6 +1264,71 @@ func TestRmDepV7NakOnMissingDep(t *testing.T) {
 	}
 }
 
+func TestDisableServiceV7ReturnsStatus(t *testing.T) {
+	// Slinit-native V7 wire: atomic rm-dep + persistDisable +
+	// StopService, plus inline status so slinitctl disable can wait
+	// race-free. Mirrors CmdEnableServiceV7 / CmdRmDepV7 patterns.
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	boot := service.NewInternalService(server.services, "boot")
+	child := service.NewInternalService(server.services, "v7dis-child")
+	server.services.AddService(boot)
+	server.services.AddService(child)
+	server.services.SetBootServiceName("boot")
+
+	// Pre-existing waits-for dep boot → child
+	boot.Record().AddDep(child, service.DepWaitsFor)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	hChild := findHandle(t, conn, "v7dis-child")
+
+	WritePacket(conn, CmdDisableServiceV7, EncodeHandle(hChild))
+	rply, payload := readReply(t, conn)
+	if rply != RplyServiceStatus {
+		t.Fatalf("disable V7: expected RplyServiceStatus, got %d", rply)
+	}
+	// Wire: [dep_exists(1B)][status_v6(≥1B)]. dep_exists = 0.
+	if len(payload) < 2 {
+		t.Fatalf("disable V7: reply too short (%d bytes)", len(payload))
+	}
+	if payload[0] != 0 {
+		t.Errorf("disable V7: dep_exists = %d, want 0", payload[0])
+	}
+	// The dep must be gone in-memory.
+	for _, d := range boot.Record().Dependencies() {
+		if d.To == child && d.DepType == service.DepWaitsFor {
+			t.Fatal("waits-for dep still present after CmdDisableServiceV7")
+		}
+	}
+}
+
+func TestQueryServiceLoadDirEmpty(t *testing.T) {
+	// Programmatically-added services have no ServiceDir → count=0.
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "no-dir-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	h := findHandle(t, conn, "no-dir-svc")
+
+	WritePacket(conn, CmdQueryServiceLoadDir, EncodeHandle(h))
+	rply, payload := readReply(t, conn)
+	if rply != RplyServiceDscDir {
+		t.Fatalf("expected RplyServiceDscDir, got %d", rply)
+	}
+	if len(payload) < 2 {
+		t.Fatal("reply too short")
+	}
+	if got := binary.LittleEndian.Uint16(payload[:2]); got != 0 {
+		t.Errorf("count = %d, want 0 for service without on-disk dir", got)
+	}
+}
+
 func TestRmDepNotFound(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()

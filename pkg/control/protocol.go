@@ -113,6 +113,19 @@ const (
 	CmdThawService        uint8 = 59 // cgroup v2 freezer: write 0 to cgroup.freeze
 	CmdJournalQuery       uint8 = 60 // slinit-journalctl: filter+limit → RplyJournalEntry* + RplyJournalDone
 	CmdJournalSubscribe   uint8 = 61 // slinit-journalctl -f: server pushes RplyJournalEntry until connection close
+	// Disable-service v7 variant: same wire request as CmdDisableService
+	// (41), but the reply is [RplyServiceStatus][dep_exists(1B)][
+	// status_v6_buffer] instead of a bare RplyACK. Slinit-native atomic
+	// path (rm-dep + persistDisable + StopService in one round-trip)
+	// with the V7 wait-for-stop semantic mirroring CmdEnableServiceV7 /
+	// CmdRmDepV7. Distinct from CmdRmDepV7 (30) which is dinit-compat
+	// but doesn't touch the on-disk waits-for.d symlink.
+	CmdDisableServiceV7  uint8 = 62
+	// Query the on-disk load directory for a specific service (returns
+	// the path where its description file lives). Used by
+	// slinitctl disable --dinit-compat to locate the waits-for.d
+	// symlink it needs to remove after a CmdRmDepV7 sequence.
+	CmdQueryServiceLoadDir uint8 = 63
 )
 
 // Reply codes (server → client).

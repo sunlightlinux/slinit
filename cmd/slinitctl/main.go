@@ -65,6 +65,7 @@ func main() {
 		offlineMode bool
 		servicesDir string
 		fromSvc     string
+		dinitCompat bool
 		useCFD      bool
 		quietMode   bool
 		waitSecs    int // sv -w SEC: per-invocation reply timeout, 0 = no CLI-side cap
@@ -139,6 +140,14 @@ func main() {
 			args = args[1:]
 		case args[0] == "--use-passed-cfd":
 			useCFD = true
+			args = args[1:]
+		case args[0] == "--dinit-compat":
+			// Force slinitctl disable to speak the dinit-compatible
+			// wire (REM_DEP_V7 + client-side symlink cleanup) instead
+			// of the slinit-native atomic path (CmdDisableServiceV7).
+			// Useful when slinitctl talks to a real dinit daemon that
+			// doesn't know CmdDisableServiceV7.
+			dinitCompat = true
 			args = args[1:]
 		case args[0] == "--quiet" || args[0] == "-q":
 			quietMode = true
@@ -432,7 +441,7 @@ doneFlags:
 		})
 	case "disable":
 		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdDisable(conn, name, fromSvc)
+			return cmdDisable(conn, name, fromSvc, dinitCompat)
 		})
 	case "query-name":
 		err = requireServiceArg(cmdArgs, func(name string) error {
@@ -3333,12 +3342,37 @@ func cmdUnpin(conn net.Conn, name string) error {
 	return nil
 }
 
-func cmdDisable(conn net.Conn, name string, from string) error {
+// cmdDisable takes the target service name and (optional) explicit
+// "from" service, and routes to one of two wires:
+//
+//   dinitCompat=true (or --dinit-compat flag): emits the dinit-native
+//     wire — CmdRmDepV7 removes the runtime dep, then client-side
+//     symlink cleanup uses CmdQueryServiceLoadDir to find the
+//     from-service's on-disk dir and remove waits-for.d/<target>.
+//     Wire-compatible with real dinit daemons that don't know
+//     slinit's CmdDisableService opcode. Requires the client to be
+//     on the same machine as the daemon (or on a filesystem where
+//     the symlink is reachable) for the on-disk cleanup step;
+//     runtime removal succeeds either way and the on-disk artifact
+//     is orphaned with a warning otherwise.
+//
+//   dinitCompat=false (default): uses CmdDisableServiceV7 when
+//     peerCPVersion >= 7 (falling back to CmdDisableService for
+//     older peers). Slinit-native atomic path — server does rm-dep +
+//     symlink cleanup + StopService in one round-trip. Works
+//     remote. V7 reply carries the target's status so we can print
+//     the resulting state ("target now STOPPED").
+func cmdDisable(conn net.Conn, name string, from string, dinitCompat bool) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
 	}
 
+	if dinitCompat {
+		return cmdDisableDinitWire(conn, name, handle, from)
+	}
+
+	// Slinit-native atomic path.
 	var payload []byte
 	if from != "" {
 		fromHandle, err := loadServiceHandle(conn, from)
@@ -3352,11 +3386,16 @@ func cmdDisable(conn net.Conn, name string, from string) error {
 		payload = control.EncodeHandle(handle)
 	}
 
-	if err := control.WritePacket(conn, control.CmdDisableService, payload); err != nil {
+	useV7 := peerCPVersion >= 7
+	cmd := control.CmdDisableService
+	if useV7 {
+		cmd = control.CmdDisableServiceV7
+	}
+	if err := control.WritePacket(conn, cmd, payload); err != nil {
 		return err
 	}
 
-	rply, _, err := readReply(conn)
+	rply, replyPayload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3364,12 +3403,128 @@ func cmdDisable(conn net.Conn, name string, from string) error {
 	switch rply {
 	case control.RplyACK:
 		info("Service '%s' disabled.\n", name)
+	case control.RplyServiceStatus:
+		// v7 reply: [dep_exists(1B)][status_v6(22B)]. dep_exists always
+		// 0 on a successful disable; kept for wire symmetry.
+		if !useV7 || len(replyPayload) < 2 {
+			return fmt.Errorf("disable: malformed status reply")
+		}
+		state := decodeServiceState(replyPayload[1:])
+		info("Service '%s' disabled (target now %s).\n", name, state)
 	case control.RplyNAK:
 		return fmt.Errorf("could not disable service '%s': no boot service configured", name)
 	default:
 		return fmt.Errorf("disable failed: reply %d", rply)
 	}
 	return nil
+}
+
+// cmdDisableDinitWire implements the --dinit-compat path: remove the
+// runtime dep via CmdRmDepV7 (or CmdRmDep on old peers) and then
+// remove the on-disk waits-for.d symlink client-side. Falls back to
+// "boot" for the "from" service when --from wasn't specified, matching
+// slinit's own server-side auto-detection default.
+func cmdDisableDinitWire(conn net.Conn, name string, targetHandle uint32, from string) error {
+	if from == "" {
+		from = "boot"
+	}
+	fromHandle, err := loadServiceHandle(conn, from)
+	if err != nil {
+		return fmt.Errorf("--dinit-compat: load from-service %q: %w", from, err)
+	}
+
+	// Query the from-service's on-disk directory BEFORE removing the
+	// dep so a failure to answer stops us early (avoids an orphaned
+	// symlink whose owning dir we can't locate afterwards).
+	fromDir, err := queryServiceLoadDir(conn, fromHandle)
+	if err != nil {
+		// Warn but proceed — the runtime dep removal still succeeds.
+		fmt.Fprintf(os.Stderr,
+			"slinit: --dinit-compat: could not query load dir for %q (%v); waits-for.d symlink will be orphaned\n",
+			from, err)
+	}
+
+	// Remove the waits-for dep via V7 (fallback to plain rm-dep on old
+	// peers). This is the same wire dinit's disable uses.
+	payload := control.EncodeDepRequest(fromHandle, targetHandle, uint8(2)) // 2 = DepWaitsFor
+	useV7 := peerCPVersion >= 7
+	cmd := control.CmdRmDep
+	if useV7 {
+		cmd = control.CmdRmDepV7
+	}
+	if err := control.WritePacket(conn, cmd, payload); err != nil {
+		return err
+	}
+	rply, replyPayload, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	var stateLabel string
+	switch rply {
+	case control.RplyACK:
+		// pre-V7 daemon; no inline status
+	case control.RplyServiceStatus:
+		if useV7 && len(replyPayload) >= 2 {
+			stateLabel = decodeServiceState(replyPayload[1:])
+		}
+	case control.RplyNAK:
+		return fmt.Errorf("--dinit-compat: dep %s -> %s not present", from, name)
+	default:
+		return fmt.Errorf("--dinit-compat: unexpected reply %d", rply)
+	}
+
+	// Client-side symlink cleanup. ENOENT is not an error (the disable
+	// still succeeded runtime; someone else may have removed the file).
+	if fromDir != "" {
+		linkPath := filepath.Join(fromDir, "waits-for.d", name)
+		if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr,
+				"slinit: --dinit-compat: warn: remove %s: %v (runtime dep already gone)\n",
+				linkPath, err)
+		}
+	}
+	if stateLabel != "" {
+		info("Service '%s' disabled via --dinit-compat wire (target now %s).\n", name, stateLabel)
+	} else {
+		info("Service '%s' disabled via --dinit-compat wire.\n", name)
+	}
+	return nil
+}
+
+// queryServiceLoadDir asks the daemon for the on-disk directory
+// where the given service's description was loaded from. Wire:
+// CmdQueryServiceLoadDir(handle) → RplyServiceDscDir(count(2) +
+// [len(2) + path(N)]). Returns "" without error when the service
+// has no on-disk dir (loaded programmatically).
+func queryServiceLoadDir(conn net.Conn, handle uint32) (string, error) {
+	if err := control.WritePacket(conn, control.CmdQueryServiceLoadDir, control.EncodeHandle(handle)); err != nil {
+		return "", err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return "", err
+	}
+	if rply == control.RplyBadReq {
+		return "", fmt.Errorf("bad handle")
+	}
+	if rply != control.RplyServiceDscDir {
+		return "", fmt.Errorf("unexpected reply %d", rply)
+	}
+	if len(payload) < 2 {
+		return "", fmt.Errorf("truncated reply")
+	}
+	count := binary.LittleEndian.Uint16(payload[:2])
+	if count == 0 {
+		return "", nil
+	}
+	if len(payload) < 4 {
+		return "", fmt.Errorf("truncated reply (len prefix)")
+	}
+	dirLen := binary.LittleEndian.Uint16(payload[2:4])
+	if len(payload) < 4+int(dirLen) {
+		return "", fmt.Errorf("truncated reply (dir body)")
+	}
+	return string(payload[4 : 4+dirLen]), nil
 }
 
 func cmdQueryServiceName(conn net.Conn, svcName string) error {

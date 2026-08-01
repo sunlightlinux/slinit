@@ -267,7 +267,11 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 	case CmdEnableServiceV7:
 		return c.handleEnableService(payload, true)
 	case CmdDisableService:
-		return c.handleDisableService(payload)
+		return c.handleDisableService(payload, false)
+	case CmdDisableServiceV7:
+		return c.handleDisableService(payload, true)
+	case CmdQueryServiceLoadDir:
+		return c.handleQueryServiceLoadDir(payload)
 	case CmdQueryServiceName:
 		return c.handleQueryServiceName(payload)
 	case CmdQueryServiceDscDir:
@@ -1521,7 +1525,18 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 	return c.writePacket(RplyACK, nil)
 }
 
-func (c *Connection) handleDisableService(payload []byte) error {
+// handleDisableService removes the persistent waits-for dependency
+// from an inferred (or explicit) "from" service to the target,
+// deletes the on-disk waits-for.d symlink, and stops the target.
+// When v7 is true the reply carries the target's status inline via
+// SERVICESTATUS + dep_exists prefix + v6 buffer — matches
+// CmdEnableServiceV7 / CmdRmDepV7 patterns so `slinitctl disable`
+// can wait race-free for STOPPED without a follow-up query.
+//
+// dep_exists is 0 on a successful V7 disable; kept for wire
+// symmetry with the enable/rm-dep V7 replies so client status
+// decoders can share the same path.
+func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 	handle, err := DecodeHandle(payload)
 	if err != nil {
 		return c.writePacket(RplyBadReq, nil)
@@ -1566,6 +1581,13 @@ func (c *Connection) handleDisableService(payload []byte) error {
 
 	// Stop the target service
 	c.server.services.StopService(svc)
+
+	if v7 {
+		status := EncodeServiceStatus6(svc)
+		reply := make([]byte, 1+len(status))
+		copy(reply[1:], status)
+		return c.writePacket(RplyServiceStatus, reply)
+	}
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -1738,6 +1760,44 @@ func (c *Connection) handleQueryServiceDscDir() error {
 		copy(buf[off+2:], d)
 		off += 2 + len(d)
 	}
+	return c.writePacket(RplyServiceDscDir, buf)
+}
+
+// handleQueryServiceLoadDir returns the on-disk directory where the
+// specific service's description was loaded from (as opposed to
+// CmdQueryServiceDscDir which returns the loader's SEARCH-path list).
+// Used by `slinitctl disable --dinit-compat` so the client can find
+// the waits-for.d/ symlink it needs to remove after a race-free
+// CmdRmDepV7 exchange.
+//
+// Wire reuses RplyServiceDscDir for symmetry with the search-path
+// reply — a single directory entry (count=1). Empty dir when the
+// service was added programmatically or from a source without an
+// on-disk path (count=0).
+func (c *Connection) handleQueryServiceLoadDir(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	dir := svc.Record().ServiceDir()
+	if dir != "" {
+		if abs, err := filepath.Abs(dir); err == nil {
+			dir = abs
+		}
+	}
+	// count(2) + [dirLen(2) + dir(N)]*
+	if dir == "" {
+		reply := make([]byte, 2) // count=0
+		return c.writePacket(RplyServiceDscDir, reply)
+	}
+	buf := make([]byte, 2+2+len(dir))
+	binary.LittleEndian.PutUint16(buf, 1) // count=1
+	binary.LittleEndian.PutUint16(buf[2:], uint16(len(dir)))
+	copy(buf[4:], dir)
 	return c.writePacket(RplyServiceDscDir, buf)
 }
 
