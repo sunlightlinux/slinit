@@ -185,6 +185,12 @@ install -m 755 "${BUILD_DIR}/slinit-journalctl"        "${ROOTFS_DIR}/usr/bin/sl
 install -m 755 "${BUILD_DIR}/slinit-journald"          "${ROOTFS_DIR}/usr/sbin/slinit-journald"
 install -m 755 "${BUILD_DIR}/slinit-journal-migrate"   "${ROOTFS_DIR}/usr/bin/slinit-journal-migrate"
 
+# `journalctl` compat symlink so operators muscle-memory'd on systemd
+# find the same UX under the familiar name. slinit-journalctl does no
+# argv[0] dispatch — either name invokes the same flag parser and
+# behaves identically.
+ln -sf slinit-journalctl "${ROOTFS_DIR}/usr/bin/journalctl"
+
 # einfo multi-applet symlinks so init.d scripts can invoke `einfo`,
 # `ewarn`, `eerror`, `ebegin`, `eend`, etc. by name.
 for _ap in einfo einfon ewarn ewarnn eerror eerrorn ebegin eend ewend \
