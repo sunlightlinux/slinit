@@ -161,15 +161,18 @@ func mkEvent() *journal.Event {
 }
 
 func TestRenderShort(t *testing.T) {
+	// mkEvent produces a driver-transport event with no
+	// SLINIT_TARGET_PID hint, matching a state transition where the
+	// subject is an internal service. Slinit-internal events without
+	// a target PID render with NO bracket (see renderShort's switch
+	// — printing the emitter's PID=1 would misrepresent the subject).
 	var buf bytes.Buffer
 	if err := render(&buf, fmtShort, mkEvent()); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
-	// short uses local time, so we can't check the timestamp text
-	// verbatim — just check the trailing parts and pid marker.
-	if !strings.Contains(got, "ceres sshd[1234]: hello world\n") {
-		t.Fatalf("unexpected short output: %q", got)
+	if !strings.Contains(got, "ceres sshd: hello world\n") {
+		t.Fatalf("driver event w/o target-pid should have no bracket: %q", got)
 	}
 }
 
@@ -179,10 +182,9 @@ func TestRenderShortISO(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := buf.String()
-	if !strings.Contains(got, "ceres sshd[1234]: hello world\n") {
-		t.Fatalf("unexpected short-iso output: %q", got)
+	if !strings.Contains(got, "ceres sshd: hello world\n") {
+		t.Fatalf("driver event w/o target-pid should have no bracket: %q", got)
 	}
-	// short-iso timestamp begins with 4-digit year.
 	if !strings.HasPrefix(got, "2026-") {
 		t.Fatalf("short-iso should start with year, got %q", got[:20])
 	}
@@ -229,11 +231,12 @@ func TestRenderShortPrefersTargetPID(t *testing.T) {
 	}
 }
 
-func TestRenderShortFallsBackToEmitterPID(t *testing.T) {
-	// No SLINIT_TARGET_PID → fall back to _PID (the emitter).
-	// Preserves the current behaviour for events that don't carry the
-	// hint (external clients, kmsg, etc — target concept doesn't apply).
+func TestRenderShortFallsBackToEmitterPIDForExternal(t *testing.T) {
+	// Emitter-PID fallback applies only to NON-slinit-internal
+	// events (native / syslog / kernel) where _PID actually is the
+	// real source. Verify with a native-transport event.
 	e := mkEvent()
+	e.Transport = journal.TransportNative
 	e.Pid = 1234
 	delete(e.Fields, "SLINIT_TARGET_PID")
 
@@ -242,14 +245,38 @@ func TestRenderShortFallsBackToEmitterPID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "sshd[1234]:") {
-		t.Fatalf("emitter pid fallback failed: %q", buf.String())
+		t.Fatalf("emitter pid fallback failed for external transport: %q", buf.String())
+	}
+}
+
+func TestRenderShortDriverNoTargetPIDHidesBracket(t *testing.T) {
+	// Slinit-internal driver event with no SLINIT_TARGET_PID (or
+	// PID<=0 for an internal service) → NO bracket, so the user
+	// doesn't get misled by the emitter's PID=1.
+	e := mkEvent()
+	e.Transport = journal.TransportDriver
+	e.Pid = 1 // slinit itself, ignored for driver events
+	delete(e.Fields, "SLINIT_TARGET_PID")
+
+	var buf bytes.Buffer
+	if err := render(&buf, fmtShort, e); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if strings.Contains(got, "[1]") {
+		t.Fatalf("driver event without target-pid must not print emitter PID=1: %q", got)
+	}
+	if !strings.Contains(got, "ceres sshd: hello world\n") {
+		t.Fatalf("expected bracketless output: %q", got)
 	}
 }
 
 func TestRenderShortIgnoresMalformedTargetPID(t *testing.T) {
-	// Non-numeric SLINIT_TARGET_PID → treated as absent, fall back
-	// to _PID rather than emitting garbage in the bracket.
+	// Non-numeric SLINIT_TARGET_PID → treated as absent. For a
+	// driver event that means "no bracket" (not fallback to _PID),
+	// per the slinit-internal-emitter rule.
 	e := mkEvent()
+	e.Transport = journal.TransportDriver
 	e.Pid = 42
 	if e.Fields == nil {
 		e.Fields = map[string]string{}
@@ -260,8 +287,8 @@ func TestRenderShortIgnoresMalformedTargetPID(t *testing.T) {
 	if err := render(&buf, fmtShort, e); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "sshd[42]:") {
-		t.Fatalf("malformed target-pid should fall back: %q", buf.String())
+	if strings.Contains(buf.String(), "[42]") {
+		t.Fatalf("driver event with malformed target-pid must not fall back to _PID: %q", buf.String())
 	}
 }
 
@@ -277,14 +304,16 @@ func TestRenderShortFallbacks(t *testing.T) {
 		t.Fatalf("empty hostname should render as '-': %q", buf.String())
 	}
 
-	// SyslogIdentifier wins over Unit.
+	// SyslogIdentifier wins over Unit. mkEvent is a driver event
+	// without target-pid → no bracket, so the identifier is followed
+	// by ": " rather than "[N]: ".
 	e2 := mkEvent()
 	e2.SyslogIdentifier = "openssh"
 	var buf2 bytes.Buffer
 	if err := render(&buf2, fmtShort, e2); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf2.String(), " openssh[") {
+	if !strings.Contains(buf2.String(), " openssh: ") {
 		t.Fatalf("SyslogIdentifier should override Unit: %q", buf2.String())
 	}
 }

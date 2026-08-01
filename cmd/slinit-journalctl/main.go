@@ -1056,17 +1056,24 @@ func renderShort(out io.Writer, e *journal.Event, tf timeFormat) error {
 	if host == "" {
 		host = "-"
 	}
-	// Prefer the SUBJECT service's PID over the emitter's _PID:
-	// state-transition events are emitted by slinit itself (PID 1),
-	// but the operator wants "system-init[478]: STARTED" not
-	// "system-init[1]: STARTED" — the [N] should refer to who the
-	// event is ABOUT, not who wrote it. SLINIT_TARGET_PID carries
-	// this hint (populated by emitJournalStateEvent /
-	// emitJournalLogLine when the subject has a live child PID).
+	// Bracket display priority:
+	//   1. SLINIT_TARGET_PID (subject service's live PID) — the
+	//      operator wants "hello[478]:" not "hello[1]:".
+	//   2. No bracket when the event is slinit-internal
+	//      (Transport=driver/stdout) and no target PID exists —
+	//      internal services and scripted services that already
+	//      exited have PID <=0, and printing the emitter's PID=1
+	//      instead would be misleading ("system-init[1]:" reads as
+	//      if system-init ran as PID 1 which it did not).
+	//   3. Fall back to _PID for external emitters (native, syslog,
+	//      kernel-with-pid) where _PID IS the real source.
 	pidPart := ""
-	if tp := targetPIDOf(e); tp > 0 {
-		pidPart = fmt.Sprintf("[%d]", tp)
-	} else if e.Pid > 0 {
+	switch {
+	case targetPIDOf(e) > 0:
+		pidPart = fmt.Sprintf("[%d]", targetPIDOf(e))
+	case e.Transport == journal.TransportDriver || e.Transport == journal.TransportStdout:
+		// Slinit-internal event without a target PID → no bracket.
+	case e.Pid > 0:
 		pidPart = fmt.Sprintf("[%d]", e.Pid)
 	}
 	_, err := fmt.Fprintf(out, "%s %s %s%s: %s\n",
