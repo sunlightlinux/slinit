@@ -114,6 +114,7 @@ type LogRotator struct {
 	doneCh      chan struct{}
 	running     bool
 	serviceName string
+	getPID      func() int
 	logger      interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
@@ -138,6 +139,14 @@ type LogRotatorConfig struct {
 	// shortcuts. Must be empty if Includes/Excludes are set.
 	Select      []string
 	ServiceName string
+	// GetPID returns the current PID of the service whose stdout this
+	// rotator captures. Called once per emitted journal event so
+	// short-format renderers can display the actual producer PID in
+	// `unit[PID]:` (defaulting to _PID = the emitter, i.e. slinit
+	// itself, was misleading — every event looked like it came from
+	// PID 1). Nil callback (or PID<=0) → SLINIT_TARGET_PID field
+	// simply not stashed and the renderer falls back to _PID.
+	GetPID func() int
 	// Rate limit: drop lines exceeding RateBurst per RateInterval.
 	// Both must be > 0 for the limiter to engage.
 	RateInterval time.Duration
@@ -197,6 +206,7 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		rotateInt:    cfg.RotateTime,
 		processor:    cfg.Processor,
 		serviceName:  cfg.ServiceName,
+		getPID:       cfg.GetPID,
 		logger:       cfg.Logger,
 		lastRotate:   time.Now(),
 		rateInterval: cfg.RateInterval,
@@ -603,7 +613,11 @@ func (lr *LogRotator) processLine(line []byte) {
 		if lr.levelMax < 0 && lr.alertLevel < 0 {
 			lineLevel = extractSyslogLevel(matchLine)
 		}
-		emitJournalLogLine(lr.serviceName, lineLevel, matchLine)
+		pid := 0
+		if lr.getPID != nil {
+			pid = lr.getPID()
+		}
+		emitJournalLogLine(lr.serviceName, lineLevel, matchLine, pid)
 	}
 
 	n, err := lr.file.Write(out)

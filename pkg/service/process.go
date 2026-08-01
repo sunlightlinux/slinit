@@ -1734,6 +1734,7 @@ func (s *ProcessService) startProcess() error {
 			}
 			var err error
 			s.logRotator, err = NewLogRotator(LogRotatorConfig{
+				GetPID:        s.PID,
 				FilePath:      s.logFile,
 				FilePerms:     os.FileMode(s.logFilePerms),
 				FileUID:       s.logFileUID,

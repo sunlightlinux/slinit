@@ -204,6 +204,67 @@ func TestRenderShortNoPid(t *testing.T) {
 	}
 }
 
+func TestRenderShortPrefersTargetPID(t *testing.T) {
+	// State-transition events are emitted by slinit (PID 1) but the
+	// bracket should show the SUBJECT service's PID via
+	// SLINIT_TARGET_PID. Otherwise every line reads "unit[1]:" which
+	// is misleading.
+	e := mkEvent()
+	e.Pid = 1
+	if e.Fields == nil {
+		e.Fields = map[string]string{}
+	}
+	e.Fields["SLINIT_TARGET_PID"] = "478"
+
+	var buf bytes.Buffer
+	if err := render(&buf, fmtShort, e); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "sshd[478]:") {
+		t.Fatalf("target-pid not preferred over emitter pid: %q", got)
+	}
+	if strings.Contains(got, "sshd[1]:") {
+		t.Fatalf("emitter pid leaked into bracket: %q", got)
+	}
+}
+
+func TestRenderShortFallsBackToEmitterPID(t *testing.T) {
+	// No SLINIT_TARGET_PID → fall back to _PID (the emitter).
+	// Preserves the current behaviour for events that don't carry the
+	// hint (external clients, kmsg, etc — target concept doesn't apply).
+	e := mkEvent()
+	e.Pid = 1234
+	delete(e.Fields, "SLINIT_TARGET_PID")
+
+	var buf bytes.Buffer
+	if err := render(&buf, fmtShort, e); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "sshd[1234]:") {
+		t.Fatalf("emitter pid fallback failed: %q", buf.String())
+	}
+}
+
+func TestRenderShortIgnoresMalformedTargetPID(t *testing.T) {
+	// Non-numeric SLINIT_TARGET_PID → treated as absent, fall back
+	// to _PID rather than emitting garbage in the bracket.
+	e := mkEvent()
+	e.Pid = 42
+	if e.Fields == nil {
+		e.Fields = map[string]string{}
+	}
+	e.Fields["SLINIT_TARGET_PID"] = "not-a-number"
+
+	var buf bytes.Buffer
+	if err := render(&buf, fmtShort, e); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "sshd[42]:") {
+		t.Fatalf("malformed target-pid should fall back: %q", buf.String())
+	}
+}
+
 func TestRenderShortFallbacks(t *testing.T) {
 	// Empty hostname should render as "-".
 	e := mkEvent()

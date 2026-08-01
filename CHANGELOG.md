@@ -19,6 +19,19 @@ the full commit-level record.
 
 ### Added
 
+- **`SLINIT_TARGET_PID` for short-format `unit[PID]:` display.**
+  State-transition events are emitted by slinit itself (PID 1) but
+  the operator wants `system-init[478]: STARTED` — the bracket
+  should show the SUBJECT service's PID, not the emitter's.
+  `emitJournalStateEvent` now stashes the target service's PID via
+  ServiceSet lookup; `emitJournalLogLine` stashes it via a new
+  `GetPID` callback on `LogRotatorConfig` (wired from ProcessService).
+  slinit-journalctl short/short-iso renderers prefer the target PID
+  when present, falling back to `_PID` (the emitter) otherwise.
+  Internal services (system-init, boot, all-services) and pre-start
+  events with PID ≤ 0 skip the field so no misleading `[0]` /
+  `[-1]` brackets. Kernel events (Transport=kernel) untouched.
+
 - **Slinit-native disable atomic + dinit-compat wire:
   `CmdDisableServiceV7 = 62` + `CmdQueryServiceLoadDir = 63` +
   `slinitctl disable --dinit-compat` flag.** Two wires on the

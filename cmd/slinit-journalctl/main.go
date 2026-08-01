@@ -1056,13 +1056,38 @@ func renderShort(out io.Writer, e *journal.Event, tf timeFormat) error {
 	if host == "" {
 		host = "-"
 	}
+	// Prefer the SUBJECT service's PID over the emitter's _PID:
+	// state-transition events are emitted by slinit itself (PID 1),
+	// but the operator wants "system-init[478]: STARTED" not
+	// "system-init[1]: STARTED" — the [N] should refer to who the
+	// event is ABOUT, not who wrote it. SLINIT_TARGET_PID carries
+	// this hint (populated by emitJournalStateEvent /
+	// emitJournalLogLine when the subject has a live child PID).
 	pidPart := ""
-	if e.Pid > 0 {
+	if tp := targetPIDOf(e); tp > 0 {
+		pidPart = fmt.Sprintf("[%d]", tp)
+	} else if e.Pid > 0 {
 		pidPart = fmt.Sprintf("[%d]", e.Pid)
 	}
 	_, err := fmt.Fprintf(out, "%s %s %s%s: %s\n",
 		formatTime(e.Ts, tf), host, identOf(e), pidPart, e.Msg)
 	return err
+}
+
+// targetPIDOf returns the SLINIT_TARGET_PID hint from an event's
+// freeform Fields, or 0 when absent / malformed. Used by short-
+// format renderers to display the subject service's PID instead of
+// the emitter's.
+func targetPIDOf(e *journal.Event) int {
+	v, ok := e.Fields["SLINIT_TARGET_PID"]
+	if !ok || v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // renderCat prints just the message with a trailing newline, matching
