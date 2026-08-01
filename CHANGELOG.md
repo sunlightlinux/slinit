@@ -17,6 +17,87 @@ the full commit-level record.
 
 ## [Unreleased]
 
+Nothing yet. Add entries here as they land; the next tagged release
+promotes this block to a dated version heading.
+
+## [2.1.0] — 2026-08-01
+
+Second release under the v2.x line. Themes of this cut:
+
+- **Full journal pipeline.** slinit ships an operator-grade journal
+  subsystem alongside the existing per-service logfile/catlog
+  surface. Coexisting formats via `slinit-journald --format=`:
+  Phase C JSONL text (debuggable, greppable, `zcat | jq`-friendly)
+  and Phase B binary (structurally isomorphic to systemd-journald
+  with 7 object types, jenkins lookup3 hashing, entry-array time
+  index, FSS sealing via HKDF-SHA256 + HMAC-SHA256). New
+  `slinit-journalctl` CLI covers the operator daily workflow
+  (short/short-iso/cat/json/verbose/export formatters, `-u`, `-p`,
+  `--since/--until`, `-r`, `-f`, `-k`, `--list-boots`, `-b/--boot`,
+  `-c/--cursor`, `--show-cursor`, `--file`, `--verify`), reads both
+  formats via magic-sniff, follows via CmdJournalSubscribe.
+  Rotation (128 MiB / 24h), vacuum (100 files / 4 GiB / 30 days),
+  gzip-on-rotate for JSONL, volatile /run fallback when /var is
+  unwritable. Backlog replay at daemon start so events emitted
+  before `journal-demo` binds still land on disk. Migrator
+  (`slinit-journal-migrate`) converts JSONL history into the
+  binary format. `sd_journal`-semantic Go API (`pkg/journalbin/sd`
+  — 15 methods, no cgo, no libsystemd link). Demo VM ships
+  everything wired with FSS key minted at initramfs-build time.
+
+- **100% dinit-parity closure.** Deep audit against dinit
+  `2b25539` confirmed protocol opcodes 0..30, all 22 dinitctl
+  subcommands, every `dinit-service.5` directive, `@meta` +
+  `@include*` all match. Five silent-surprise gaps in the env-var
+  and bootstrap-path layer were closed: `DINIT_SERVICE`,
+  `DINIT_CS_FD`, `DINIT_SOCKET_PATH` alias, auto-load
+  `/etc/slinit/environment` (with `/etc/dinit/environment`
+  fallback), user-mode `$XDG_CONFIG_HOME` + `$HOME/.config` dedup.
+  Two new V7 opcodes for race-free wait-for-stop:
+  `CmdRmDepV7 = 30` (dinit-compat, mirrors dinit
+  `REM_DEP_V7`) and `CmdDisableServiceV7 = 62` (slinit-native
+  atomic disable). `slinitctl disable --dinit-compat` speaks the
+  A-wire path (CmdRmDepV7 + client-side symlink cleanup via new
+  `CmdQueryServiceLoadDir = 63`) for interop with real dinit
+  daemons.
+
+- **Self-introspection: `slinit-supports` CLI + `doc/features.md`.**
+  Distinctive — neither systemd nor dinit ship an equivalent.
+  Answers "does slinit support X?" for X = directive / opcode /
+  option, and where the feature originated (dinit / systemd /
+  runit / s6 / OpenRC / Upstart / slinit-native). Hybrid design:
+  the canonical list is auto-discovered from `pkg/config/parser.go`
+  and `pkg/control/protocol.go` via `go/ast`, so drift between
+  "docs claim" and "code accepts" is structurally impossible.
+  Provenance annotations hand-curated in `pkg/features/provenance.go`.
+  CI test fails on orphans (annotated names removed from code),
+  warn-only on unannotated (accumulation acceptable — enrichment
+  is incremental). `slinit-supports NAME` / `--list-{directives,
+  opcodes,options,all}` / `--group-by=source|category|kind` /
+  `--format=text|json|markdown`. `doc/features.md` is the
+  regenerable canonical feature reference committed under source.
+
+- **Journal UX polish.** `SLINIT_TARGET_PID` field so short-format
+  renderers display the SUBJECT service's PID in `unit[PID]:`
+  brackets instead of slinit's own PID=1 (the emitter). No
+  bracket at all for internal services / already-exited scripted
+  services rather than the misleading `[1]`. Kernel events
+  correctly show `kernel:` (not `unknown[1]:`) with no user-space
+  identity leak. `journalctl` symlink to `slinit-journalctl` in
+  the demo for muscle-memory. `-b` systemd shortcut for `--boot`
+  (accepts `0`, hex ID, deferred `-N` relative). Priority keyword
+  auto-recognition — `INFO:` / `ERROR:` / `WARN:` prefixes map to
+  syslog severities without requiring RFC 5424 `<N>` framing.
+
+- **Shutdown console: getty prompt no longer collides with the
+  first [STOPPD] line.** Cursor-reset + clear-line + newline
+  sequence on the transition into shutdown mode.
+
+Zero behavioural breakage from v2.0.0; the bump reflects the
+substantial new feature surface (journal pipeline + self-introspection)
+rather than any incompatibility. Everything under [2.0.0]'s known
+limitations still holds.
+
 ### Added
 
 - **`SLINIT_TARGET_PID` for short-format `unit[PID]:` display.**
