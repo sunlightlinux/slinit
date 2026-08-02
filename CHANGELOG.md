@@ -64,6 +64,38 @@ the full commit-level record.
   Enter-presses, QEMU chatter) can't auto-dismiss the menu before
   the operator sees it.
 
+- **Interactive boot debugger** (`recovery.Debugger`). A raw-mode
+  reader on `/dev/console` that pops a live-status menu on Ctrl-B
+  during boot. Third sibling of the two boot-failure menus, sharing
+  the same visual language and single-keypress + Ctrl-B/Ctrl-D
+  conventions. Wired in `cmd/slinit/main.go` right before the boot
+  service loop; auto-detaches when the boot service reaches STARTED
+  (login prompts are up → getty owns `/dev/console` → further reads
+  from us would compete with login input). Menu content:
+  - Live snapshot: in-progress services with PIDs, and any waiting
+    ones — recomputed each time the menu opens
+  - `[c]` / Ctrl-D — continue (dismiss, resume listening)
+  - `[s]` / Ctrl-B — drop to shell (canonical mode restored around
+    the fork; re-arms raw on shell exit, then re-presents the menu)
+  - `[f]` — force-fail the first in-progress service (invokes
+    `ServiceSet.ForceStopService`; useful for skipping a stuck dep
+    without a full reboot)
+  - `[r]` — reboot / `[p]` — poweroff
+  - Auto-continue after 60s (menu doesn't strand a headless system)
+
+  Honest scope: the debugger does NOT freeze slinit's event loop —
+  that would deadlock the watchdog feeder + control-socket accept +
+  signal handling. What it does is present a LIVE-STATUS view; the
+  state machine keeps running underneath while the menu is open.
+  Force-fail is the only action that mutates state.
+
+  Phase 1 scope is boot-time (physical Ctrl-B on `/dev/console` up
+  to getty-start). Post-boot access via `slinitctl debug` + SIGUSR1
+  is a Phase 2 follow-up — physical Ctrl-B post-boot would require
+  pty interposition (~800 LOC) or a getty-shim binary and risks
+  breaking the login flow, so the signal-based path is the cleaner
+  answer for "listens always" semantics after boot.
+
 ## [2.1.0] — 2026-08-01
 
 Second release under the v2.x line. Themes of this cut:

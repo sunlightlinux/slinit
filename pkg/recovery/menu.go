@@ -325,31 +325,45 @@ const actionShell Action = -1
 // runShell execs the first available shell candidate on /dev/console.
 // Mirrors cmd/slinit/main.go's runRescueShell but takes the console
 // writer from the outer scope so any error messages appear in-line
-// with the menu.
+// with the menu. Thin wrapper over forkShellOnConsole; kept as a
+// separate function so callers using Options don't have to unpack
+// its fields at the call site.
+func runShell(w io.Writer, opts Options) {
+	forkShellOnConsole(w, opts.ShellCandidates, opts.ConsolePath, opts.runCanonical)
+}
+
+// forkShellOnConsole picks the first present shell from candidates,
+// re-opens ConsolePath as the child's stdin/stdout/stderr (a fresh
+// fd — reusing the parent's raw-mode fd would confuse the child's
+// line editing), and runs it with Setsid+Setctty so it becomes its
+// own session leader with the console as its controlling tty.
+//
+// When runCanonical is non-nil, the shell is fork'd inside it —
+// canonical mode restored around the exec, raw mode re-armed on
+// return — so the shell gets normal line editing / echo but the
+// caller's next read is back in cbreak. When runCanonical is nil
+// (tests, non-tty callers) the shell runs directly.
 //
 // The tty is temporarily restored to canonical mode via opts.runCanonical
 // (set by Present) so the shell inherits normal line editing / echo,
 // then re-armed to cbreak on return so the next menu iteration
 // keeps its single-keypress input.
-func runShell(w io.Writer, opts Options) {
+func forkShellOnConsole(w io.Writer, candidates []string, consolePath string, runCanonical func(fn func())) {
 	var shell string
-	for _, p := range opts.ShellCandidates {
+	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			shell = p
 			break
 		}
 	}
 	if shell == "" {
-		fmt.Fprintf(w, "\n[recovery] no shell found in %v; returning to menu\n", opts.ShellCandidates)
+		fmt.Fprintf(w, "\n[recovery] no shell found in %v; returning to menu\n", candidates)
 		return
 	}
 	runIt := func() {
 		fmt.Fprintf(w, "\n[recovery] exec %s (exit to return to menu)\n", shell)
 		cmd := exec.Command(shell)
-		// Re-open the console for the shell — reusing the outer
-		// tty fd would confuse the child's raw-mode / echo
-		// settings.
-		if tty, err := os.OpenFile(opts.ConsolePath, os.O_RDWR, 0); err == nil {
+		if tty, err := os.OpenFile(consolePath, os.O_RDWR, 0); err == nil {
 			cmd.Stdin = tty
 			cmd.Stdout = tty
 			cmd.Stderr = tty
@@ -360,8 +374,8 @@ func runShell(w io.Writer, opts Options) {
 			fmt.Fprintf(w, "\n[recovery] shell exited with error: %v\n", err)
 		}
 	}
-	if opts.runCanonical != nil {
-		opts.runCanonical(runIt)
+	if runCanonical != nil {
+		runCanonical(runIt)
 	} else {
 		// Tests / non-tty callers: no termios juggling needed.
 		runIt()

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -989,6 +990,61 @@ func main() {
 		return
 	}
 
+	// Boot debugger: raw-mode reader on /dev/console that pops an
+	// interactive menu on Ctrl-B during boot. Only meaningful under
+	// PID 1 + system mode (need an exclusive /dev/console). Stops
+	// when the boot service reaches STARTED — at that point login
+	// prompts are up, getty owns /dev/console, and further reads
+	// from us would compete with login input (see Phase 2 follow-up
+	// for the `slinitctl debug` / SIGUSR1 path that gives post-boot
+	// access without the tty race).
+	var bootDebugger *recovery.Debugger
+	if isPID1 && systemMode {
+		bootDebugger = recovery.NewDebugger(recovery.DebuggerOptions{
+			Timeout: 60 * time.Second,
+			StatusFn: func() recovery.StatusSnapshot {
+				active := serviceSet.GetActiveServiceInfo()
+				snap := recovery.StatusSnapshot{}
+				for _, si := range active {
+					info := recovery.ServiceInfo{
+						Name:  si.Name,
+						State: si.State.String(),
+					}
+					if si.PID > 0 {
+						info.Note = fmt.Sprintf("PID=%d", si.PID)
+					}
+					if si.State == service.StateStarting || si.State == service.StateStopping {
+						snap.InProgress = append(snap.InProgress, info)
+					}
+				}
+				return snap
+			},
+			ForceFailFn: func(name string) error {
+				svc := serviceSet.FindService(name, false)
+				if svc == nil {
+					return fmt.Errorf("service %q not loaded", name)
+				}
+				serviceSet.ForceStopService(svc)
+				return nil
+			},
+			RebootFn: func() {
+				closeWatchdog(wd, logger)
+				shutdown.Execute(service.ShutdownReboot, logger)
+			},
+			PoweroffFn: func() {
+				closeWatchdog(wd, logger)
+				shutdown.Execute(service.ShutdownPoweroff, logger)
+			},
+			Logger: logger,
+		})
+		if err := bootDebugger.Start(); err != nil {
+			logger.Warn("Boot debugger disabled: %v", err)
+			bootDebugger = nil
+		} else {
+			defer bootDebugger.Stop()
+		}
+	}
+
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args).
 	// Wrapped in a retry loop so the rescue menu's "continue" action
 	// (operator dropped to shell, fixed a typo) can re-attempt without
@@ -1024,6 +1080,14 @@ func main() {
 			// ServiceLogger.ServiceStarted from the state machine.
 			logger.Info("Boot service '%s' activation requested", svcName)
 			startedAny = true
+			// Boot-debugger auto-detach: when this boot service reaches
+			// STARTED, all its dependencies (including getty on the
+			// console-owner tty svc) are up. From that moment further
+			// Ctrl-B reads compete with login-prompt input, so stop
+			// the reader. Idempotent — safe if fired multiple times.
+			if bootDebugger != nil {
+				svc.Record().AddListener(&debuggerStopOnStart{dbg: bootDebugger})
+			}
 		}
 		if startedAny {
 			break
@@ -1367,6 +1431,24 @@ func main() {
 
 	closeWatchdog(wd, logger)
 	logger.Info("slinit shutdown complete")
+}
+
+// debuggerStopOnStart wraps recovery.Debugger.Stop into a
+// ServiceListener that fires on EventStarted. Registered on the
+// boot service so the debugger detaches from /dev/console the
+// moment login prompts come up. sync.Once so Stop is idempotent
+// even if the listener sees multiple STARTED events (start-stop
+// cycles from a smooth-recovery service).
+type debuggerStopOnStart struct {
+	dbg  *recovery.Debugger
+	once sync.Once
+}
+
+func (l *debuggerStopOnStart) ServiceEvent(_ service.Service, event service.ServiceEvent) {
+	if event != service.EventStarted {
+		return
+	}
+	l.once.Do(l.dbg.Stop)
 }
 
 // pathRearmListener re-arms a path-activation watch each time the
