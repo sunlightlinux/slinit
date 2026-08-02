@@ -82,6 +82,18 @@ type Options struct {
 	// diagnosis without scrolling up (getty may have overwritten
 	// them).
 	Errors []string
+
+	// tty is the console the caller opened — set by Present() and
+	// carried through so runShell can pause raw mode around the
+	// exec (shells want canonical) and restore it afterwards.
+	// runCanonical (defined in tty_linux.go) captures the current
+	// termios via closure.
+	tty *os.File
+	// runCanonical, when non-nil, temporarily restores the
+	// original (canonical) termios, runs fn, then re-sets raw
+	// mode. Injected by Present() so tests and the pure `present`
+	// path don't drag in Linux termios syscalls.
+	runCanonical func(fn func())
 }
 
 // DefaultTimeout is the auto-reboot window when the operator gives
@@ -104,6 +116,11 @@ var defaultShellCandidates = []string{
 // menu — so a full "fix the typo and retry" flow is one menu
 // interaction: press `s`, edit the file, exit shell, press `c`.
 //
+// The tty is put into cbreak (canonical-off, echo-off) mode so
+// every keypress — plain letters, Ctrl-B, Ctrl-D — is delivered
+// immediately without requiring Enter. On exit (or before forking
+// a shell) the original termios is restored.
+//
 // Any I/O error opening the console falls back immediately to
 // ActionTimeout so a truly headless system still auto-reboots
 // (the design doesn't let a broken /dev/console strand PID 1).
@@ -123,6 +140,20 @@ func Present(opts Options) Action {
 		return ActionTimeout
 	}
 	defer tty.Close()
+	// Cbreak: char-at-a-time input, no echo. `nil` return from
+	// setRawMode means "not a tty" (won't happen for /dev/console
+	// but the check keeps behaviour sane if someone points opts at
+	// a regular file for debug).
+	orig := setRawMode(tty)
+	defer restoreTermios(tty, orig)
+	opts.tty = tty
+	opts.runCanonical = func(fn func()) {
+		// Shells expect canonical mode + echo — restore original,
+		// run the shell, then re-arm raw for the next menu round.
+		restoreTermios(tty, orig)
+		fn()
+		orig = setRawMode(tty)
+	}
 	return present(tty, tty, opts)
 }
 
@@ -286,6 +317,11 @@ const actionShell Action = -1
 // Mirrors cmd/slinit/main.go's runRescueShell but takes the console
 // writer from the outer scope so any error messages appear in-line
 // with the menu.
+//
+// The tty is temporarily restored to canonical mode via opts.runCanonical
+// (set by Present) so the shell inherits normal line editing / echo,
+// then re-armed to cbreak on return so the next menu iteration
+// keeps its single-keypress input.
 func runShell(w io.Writer, opts Options) {
 	var shell string
 	for _, p := range opts.ShellCandidates {
@@ -298,18 +334,27 @@ func runShell(w io.Writer, opts Options) {
 		fmt.Fprintf(w, "\n[recovery] no shell found in %v; returning to menu\n", opts.ShellCandidates)
 		return
 	}
-	fmt.Fprintf(w, "\n[recovery] exec %s (exit to return to menu)\n", shell)
-	cmd := exec.Command(shell)
-	// Re-open the console for the shell — reusing the outer tty
-	// fd would confuse the child's raw-mode / echo settings.
-	if tty, err := os.OpenFile(opts.ConsolePath, os.O_RDWR, 0); err == nil {
-		cmd.Stdin = tty
-		cmd.Stdout = tty
-		cmd.Stderr = tty
-		defer tty.Close()
+	runIt := func() {
+		fmt.Fprintf(w, "\n[recovery] exec %s (exit to return to menu)\n", shell)
+		cmd := exec.Command(shell)
+		// Re-open the console for the shell — reusing the outer
+		// tty fd would confuse the child's raw-mode / echo
+		// settings.
+		if tty, err := os.OpenFile(opts.ConsolePath, os.O_RDWR, 0); err == nil {
+			cmd.Stdin = tty
+			cmd.Stdout = tty
+			cmd.Stderr = tty
+			defer tty.Close()
+		}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(w, "\n[recovery] shell exited with error: %v\n", err)
+		}
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(w, "\n[recovery] shell exited with error: %v\n", err)
+	if opts.runCanonical != nil {
+		opts.runCanonical(runIt)
+	} else {
+		// Tests / non-tty callers: no termios juggling needed.
+		runIt()
 	}
 }
