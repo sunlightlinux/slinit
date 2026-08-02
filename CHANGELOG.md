@@ -17,8 +17,29 @@ the full commit-level record.
 
 ## [Unreleased]
 
-Nothing yet. Add entries here as they land; the next tagged release
-promotes this block to a dated version heading.
+### Added
+
+- **Interactive rescue menu on fatal boot failure** (`pkg/recovery`).
+  When PID 1 fails to load any boot service (typo in a service file,
+  missing dependency, unreadable /etc/slinit.d), the previous
+  behaviour was `sleep 10 && reboot` — a reboot-loop trap that hid
+  the diagnosis and gave no in-console path to fix the config
+  without an install USB. Now: print a boxed menu on /dev/console
+  with the collected load errors, wait up to 60s for operator
+  input, then execute one of:
+  - `r` — reboot now
+  - `p` — power off
+  - `s` (or Ctrl-B) — drop to shell (sulogin first, then /bin/sh);
+    on shell exit, the menu re-appears so the operator can fix a
+    typo and press `c` to retry without a real reboot
+  - `c` (or Ctrl-D) — retry loading boot services from scratch
+  - no input → auto-reboot after timeout (headless-safety net)
+
+  The Ctrl-B / Ctrl-D shortcuts align with muscle-memory from
+  common boot debuggers. Truncates over-long error lines so the
+  menu box stays visually intact on 80-col serial consoles.
+  Bypasses cleanly when `/dev/console` isn't openable (truly
+  headless with no console → straight to auto-reboot).
 
 ## [2.1.0] — 2026-08-01
 

@@ -25,6 +25,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/persist"
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/process"
+	"github.com/sunlightlinux/slinit/pkg/recovery"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
 	"github.com/sunlightlinux/slinit/pkg/snapshot"
@@ -988,49 +989,84 @@ func main() {
 		return
 	}
 
-	// Load and start boot services (-t svc1 -t svc2 ... or positional args)
-	startedAny := false
-	for _, svcName := range bootServices {
-		svc, err := serviceSet.LoadService(svcName)
-		if err != nil {
-			logger.Error("Failed to load service '%s': %v", svcName, err)
-			continue
+	// Load and start boot services (-t svc1 -t svc2 ... or positional args).
+	// Wrapped in a retry loop so the rescue menu's "continue" action
+	// (operator dropped to shell, fixed a typo) can re-attempt without
+	// re-execing slinit — see recovery.Present.
+	var startedAny bool
+	var loadErrors []string
+	for retry := 0; ; retry++ {
+		startedAny = false
+		loadErrors = loadErrors[:0]
+		for _, svcName := range bootServices {
+			svc, err := serviceSet.LoadService(svcName)
+			if err != nil {
+				msg := fmt.Sprintf("load '%s': %v", svcName, err)
+				logger.Error("Failed to %s", msg)
+				loadErrors = append(loadErrors, msg)
+				continue
+			}
+			// Profile filter: a profile-tagged boot service outside the
+			// active profile is loaded (so it's inspectable via
+			// slinitctl) but not started. Global services (no profile
+			// tag) are unaffected. This lets an operator ship one set
+			// of boot targets and select between them at boot via
+			// --active-profile without editing the service files.
+			if !serviceSet.ProfileAllows(svc.Record().Profiles()) {
+				logger.Info("Boot service '%s' skipped (outside active profile)", svcName)
+				continue
+			}
+			serviceSet.StartService(svc)
+			// "activation requested", not "STARTED": StartService only
+			// schedules the start; the service may still be STARTING (or
+			// blocked on a trigger / dependency / waits-for) when this
+			// returns. The actual STARTED transition is logged by
+			// ServiceLogger.ServiceStarted from the state machine.
+			logger.Info("Boot service '%s' activation requested", svcName)
+			startedAny = true
 		}
-		// Profile filter: a profile-tagged boot service outside the
-		// active profile is loaded (so it's inspectable via
-		// slinitctl) but not started. Global services (no profile
-		// tag) are unaffected. This lets an operator ship one set
-		// of boot targets and select between them at boot via
-		// --active-profile without editing the service files.
-		if !serviceSet.ProfileAllows(svc.Record().Profiles()) {
-			logger.Info("Boot service '%s' skipped (outside active profile)", svcName)
-			continue
+		if startedAny {
+			break
 		}
-		serviceSet.StartService(svc)
-		// "activation requested", not "STARTED": StartService only
-		// schedules the start; the service may still be STARTING (or
-		// blocked on a trigger / dependency / waits-for) when this
-		// returns. The actual STARTED transition is logged by
-		// ServiceLogger.ServiceStarted from the state machine.
-		logger.Info("Boot service '%s' activation requested", svcName)
-		startedAny = true
-	}
-
-	if !startedAny {
 		if containerMode {
 			logger.Error("No boot services could be loaded, exiting (container mode)")
 			closeWatchdog(wd, logger)
 			os.Exit(1)
 		}
-		if isPID1 {
-			logger.Error("No service files found in %v", dirs)
-			logger.Error("Create at least '%s' in one of the service directories", bootServices[0])
-			logger.Error("Rebooting in 10 seconds...")
-			time.Sleep(10 * time.Second)
+		if !isPID1 {
+			closeWatchdog(wd, logger)
+			os.Exit(1)
+		}
+		// PID 1 boot failure: present the interactive rescue menu
+		// instead of a blind 10-second reboot loop. Operator gets
+		// reboot / poweroff / shell (edit /etc/slinit.d, then Ctrl-D)
+		// / retry-loading options. Auto-reboots after 60s if no input
+		// (headless-safety).
+		logger.Error("No boot services could be started; entering rescue menu (auto-reboot in 60s)")
+		action := recovery.Present(recovery.Options{
+			Errors: append([]string{
+				fmt.Sprintf("No service files found in %v", dirs),
+				fmt.Sprintf("(bootService=%q)", bootServices[0]),
+			}, loadErrors...),
+		})
+		logger.Notice("Rescue menu chose: %s", action)
+		switch action {
+		case recovery.ActionRetry:
+			// Loop back — operator likely fixed a typo in a shell.
+			// Reset serviceSet? Only the last load errored; the
+			// LoadService path re-scans dirs each call, so a retry
+			// is safe. Loop and try again from scratch.
+			continue
+		case recovery.ActionPoweroff:
+			closeWatchdog(wd, logger)
+			shutdown.Execute(service.ShutdownPoweroff, logger)
+		case recovery.ActionReboot, recovery.ActionTimeout:
+			fallthrough
+		default:
 			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
-		closeWatchdog(wd, logger)
+		// Unreachable — shutdown.Execute doesn't return on PID 1.
 		os.Exit(1)
 	}
 
