@@ -41,6 +41,17 @@ func setRawMode(f *os.File) *unix.Termios {
 	if err := unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, &raw); err != nil {
 		return nil
 	}
+	// Drop any bytes already queued in the tty input buffer BEFORE
+	// the menu starts reading. Rescue-menu context: at boot the
+	// console has probably accumulated stray input (kernel-boot
+	// noise on serial lines, an operator's `\n`s while watching the
+	// boot, QEMU test-agent chatter, etc). Without this flush, our
+	// first ReadByte returns one of those stale bytes immediately,
+	// charToAction maps it to some action, Present returns fast,
+	// and main's retry loop cycles the menu without the operator
+	// ever touching a key. tcflush(TCIFLUSH) is the standard
+	// clean-slate primitive for this.
+	_ = unix.IoctlSetInt(int(f.Fd()), unix.TCFLSH, unix.TCIFLUSH)
 	return orig
 }
 
