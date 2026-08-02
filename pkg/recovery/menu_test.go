@@ -69,6 +69,30 @@ func TestReadActionWithTimeoutSkipsWhitespace(t *testing.T) {
 	}
 }
 
+// TestReadActionWithTimeoutEOFIsRetry — on a canonical-mode tty
+// (default for /dev/console under PID 1), pressing Ctrl-D on an
+// empty line delivers io.EOF, NOT the 0x04 byte. The reader must
+// treat that EOF as the operator's "continue" intent — otherwise
+// it flows through errCh → ActionTimeout → reboot, which is
+// exactly the failure mode reported the first time this was tested
+// against real QEMU. Regression guard.
+func TestReadActionWithTimeoutEOFIsRetry(t *testing.T) {
+	pr, pw := io.Pipe()
+	go func() {
+		// Close without writing → readers see io.EOF, which is
+		// what a bare Ctrl-D on canonical-mode /dev/console
+		// produces at the syscall layer.
+		pw.Close()
+	}()
+	defer pr.Close()
+
+	var out bytes.Buffer
+	got := readActionWithTimeout(pr, &out, 2*time.Second)
+	if got != ActionRetry {
+		t.Fatalf("EOF should map to ActionRetry (Ctrl-D semantic), got %v", got)
+	}
+}
+
 // TestReadActionWithTimeoutTimesOut fires the safety-net path when
 // no input arrives before the deadline. Keep the timeout short so
 // the test runs fast.

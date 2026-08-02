@@ -17,6 +17,7 @@ package recovery
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -198,6 +199,18 @@ func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Acti
 		for {
 			b, err := br.ReadByte()
 			if err != nil {
+				// EOF on a canonical-mode tty = operator pressed
+				// Ctrl-D on an empty line (the kernel doesn't
+				// deliver the 0x04 byte, it delivers zero-byte
+				// read → io.EOF). Map that to a synthetic 0x04
+				// so charToAction routes it to ActionRetry —
+				// matches the "Ctrl-D = continue" semantic the
+				// menu documents. Every other error stays as
+				// timeout (safer than guessing).
+				if errors.Is(err, io.EOF) {
+					inputCh <- 0x04
+					return
+				}
 				errCh <- err
 				return
 			}
