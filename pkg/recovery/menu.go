@@ -213,31 +213,46 @@ func renderMenu(w io.Writer, opts Options) {
 	)
 }
 
-// readActionWithTimeout reads a single character (or a line — we
-// accept both since serial consoles often deliver line-buffered
-// input) and maps it to an Action. Blocks up to timeout; returns
-// ActionTimeout if nothing arrives.
+// readActionWithTimeout is the load-failure-menu-flavored wrapper
+// around readByteWithTimeout: reads a single key and maps it via
+// charToAction. Kept as a thin shim so the shared byte-reading
+// machinery lives in one place (readByteWithTimeout) and can be
+// reused by PresentCollapse without duplicating the goroutine +
+// countdown-tick logic.
+func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Action {
+	b, ok := readByteWithTimeout(r, w, timeout)
+	if !ok {
+		return ActionTimeout
+	}
+	return charToAction(b)
+}
+
+// readByteWithTimeout reads a single non-whitespace byte from r or
+// returns (0, false) if nothing arrives before timeout. Blocks up
+// to timeout. Every second it re-writes the countdown line on w
+// (`\r| Auto-reboot in Xs if no input. |\r> `) so the operator sees
+// the clock tick — makes the UI feel alive on a serial console vs
+// frozen.
+//
+// A read error other than io.EOF is treated as timeout (safer than
+// guessing). io.EOF gets a synthetic 0x04 (Ctrl-D) so callers using
+// the load-failure "Ctrl-D = continue" convention still work when
+// the underlying tty is in canonical mode; callers that don't care
+// about that semantic simply ignore the byte value on the caller
+// side (PresentCollapse maps 0x04 to CollapseRestartBoot which is
+// its analog of "continue trying to boot").
 //
 // Uses a goroutine + channel because os.File.Read has no native
 // deadline on non-socket fds (/dev/console is a tty character
 // device, not a socket).
-func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Action {
+func readByteWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) (byte, bool) {
 	inputCh := make(chan byte, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		buf := make([]byte, 1)
 		br := bufio.NewReader(r)
 		for {
 			b, err := br.ReadByte()
 			if err != nil {
-				// EOF on a canonical-mode tty = operator pressed
-				// Ctrl-D on an empty line (the kernel doesn't
-				// deliver the 0x04 byte, it delivers zero-byte
-				// read → io.EOF). Map that to a synthetic 0x04
-				// so charToAction routes it to ActionRetry —
-				// matches the "Ctrl-D = continue" semantic the
-				// menu documents. Every other error stays as
-				// timeout (safer than guessing).
 				if errors.Is(err, io.EOF) {
 					inputCh <- 0x04
 					return
@@ -246,38 +261,32 @@ func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Acti
 				return
 			}
 			// Skip whitespace (line noise, trailing \n from a
-			// previous line-buffered input, etc). This means the
-			// operator can type either `r` or `r<Enter>` — both
-			// work.
+			// previous line-buffered input, etc). Operator can
+			// type either `r` or `r<Enter>` — both work.
 			if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
 				continue
 			}
-			buf[0] = b
 			inputCh <- b
 			return
 		}
 	}()
 
-	// Countdown timer: refresh the "Auto-reboot in Xs" line every
-	// second so the operator sees the clock tick. Not strictly
-	// necessary but makes the UI feel alive vs frozen.
 	deadline := time.Now().Add(timeout)
 	tick := time.NewTicker(1 * time.Second)
 	defer tick.Stop()
 	for {
 		select {
 		case b := <-inputCh:
-			return charToAction(b)
+			return b, true
 		case <-errCh:
-			return ActionTimeout
+			return 0, false
 		case <-time.After(time.Until(deadline)):
-			return ActionTimeout
+			return 0, false
 		case <-tick.C:
 			remaining := int(time.Until(deadline).Seconds())
 			if remaining <= 0 {
-				return ActionTimeout
+				return 0, false
 			}
-			// Overwrite the previous countdown line with \r.
 			fmt.Fprintf(w, "\r| Auto-reboot in %2ds if no input.                            |\r> ", remaining)
 		}
 	}

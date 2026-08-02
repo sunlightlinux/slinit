@@ -41,6 +41,29 @@ the full commit-level record.
   Bypasses cleanly when `/dev/console` isn't openable (truly
   headless with no console → straight to auto-reboot).
 
+- **Post-boot-collapse rescue menu unified with `pkg/recovery`**
+  (`recovery.PresentCollapse`). The old `confirmRestartBoot` prompt
+  fired from `cmd/slinit/main.go` when all services stopped without
+  an explicit shutdown was a plain "Choose: (r)eboot, r(e)covery,
+  re(s)tart boot sequence, (p)ower off?" line with no timeout, no
+  Ctrl-B/Ctrl-D shortcuts, and no stale-input flush. Replaced with a
+  boxed menu that reuses the same cbreak + tcflush + single-keypress
+  + 60s auto-reboot machinery as the load-fail rescue menu:
+  - `r` — reboot now
+  - `p` — power off
+  - `s` (or Ctrl-D) — restart boot sequence (retry all boot
+    services; Ctrl-D matches "continue booting" muscle memory)
+  - `e` (or Ctrl-B) — start `recovery` service (Ctrl-B matches
+    "escape hatch" muscle memory)
+  - no input → auto-reboot after 60s (headless-safety net; previously
+    would block forever on `f.Read` waiting for a key)
+
+  Same visual language as the load-fail menu so the two boot-failure
+  prompts feel like siblings, and the tcflush guarantees stray input
+  buffered at collapse time (kernel messages on serial, operator's
+  Enter-presses, QEMU chatter) can't auto-dismiss the menu before
+  the operator sees it.
+
 ## [2.1.0] — 2026-08-01
 
 Second release under the v2.x line. Themes of this cut:

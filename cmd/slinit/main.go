@@ -1325,14 +1325,18 @@ func main() {
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 
-		// Interactive prompt (no -r flag)
-		action := confirmRestartBoot(logger)
-		switch action {
-		case 'r':
+		// Interactive prompt (no -r flag). Same UX shape as the
+		// load-fail rescue menu (cbreak, tcflush, single-key +
+		// Ctrl-B/Ctrl-D, 60s auto-reboot safety net) via
+		// pkg/recovery. Distinct action set — no "drop to shell"
+		// here; instead 's' restarts the boot sequence and 'e'
+		// starts the recovery service.
+		switch recovery.PresentCollapse(recovery.CollapseOptions{}) {
+		case recovery.CollapseReboot:
 			logger.Notice("User chose reboot")
 			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
-		case 'e':
+		case recovery.CollapseRecoverySvc:
 			logger.Notice("User chose recovery")
 			if tryStartService("recovery", serviceSet, loader, logger) {
 				serviceSet.ResetBootTiming()
@@ -1341,7 +1345,7 @@ func main() {
 			logger.Error("Failed to start recovery service, rebooting")
 			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
-		case 's':
+		case recovery.CollapseRestartBoot:
 			logger.Notice("User chose restart boot sequence")
 			if tryStartServices(bootServices, serviceSet, loader, logger) {
 				serviceSet.ResetBootTiming()
@@ -1350,12 +1354,12 @@ func main() {
 			logger.Error("Failed to restart boot services, rebooting")
 			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
-		case 'p':
+		case recovery.CollapsePoweroff:
 			logger.Notice("User chose poweroff")
 			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownPoweroff, logger)
-		default:
-			logger.Error("Invalid choice, rebooting")
+		case recovery.CollapseTimeout:
+			logger.Notice("No input within timeout, rebooting")
 			closeWatchdog(wd, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
@@ -1733,62 +1737,6 @@ func tryStartService(name string, serviceSet *service.ServiceSet, loader *config
 	serviceSet.StartService(svc)
 	logger.Info("Service '%s' activation requested for recovery", name)
 	return true
-}
-
-// confirmRestartBoot displays an interactive prompt on /dev/console for the user
-// to choose an action after a boot failure. Returns one of: 'r' (reboot),
-// 'e' (recovery), 's' (restart boot), 'p' (poweroff).
-// Falls back to 'r' (reboot) if the console cannot be opened.
-func confirmRestartBoot(logger *logging.Logger) byte {
-	f, err := os.OpenFile("/dev/console", os.O_RDWR, 0)
-	if err != nil {
-		logger.Error("Cannot open /dev/console for recovery prompt: %v", err)
-		return 'r'
-	}
-	defer f.Close()
-
-	fd := int(f.Fd())
-
-	// Save current terminal settings
-	oldTermios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
-	if err != nil {
-		logger.Error("Cannot get terminal settings: %v", err)
-		return 'r'
-	}
-
-	// Set raw mode: disable canonical mode and echo
-	rawTermios := *oldTermios
-	rawTermios.Lflag &^= unix.ICANON | unix.ECHO
-	rawTermios.Cc[unix.VMIN] = 1
-	rawTermios.Cc[unix.VTIME] = 0
-
-	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &rawTermios); err != nil {
-		logger.Error("Cannot set raw terminal mode: %v", err)
-		return 'r'
-	}
-
-	// Restore terminal on return
-	defer unix.IoctlSetTermios(fd, unix.TCSETS, oldTermios)
-
-	msg := "\n\nAll services have stopped with no shutdown issued; boot failure?\n" +
-		"Choose: (r)eboot, r(e)covery, re(s)tart boot sequence, (p)ower off? "
-	f.WriteString(msg)
-
-	// Read a single byte
-	buf := make([]byte, 1)
-	for {
-		n, err := f.Read(buf)
-		if err != nil || n == 0 {
-			logger.Error("Failed to read from console: %v", err)
-			return 'r'
-		}
-		ch := buf[0]
-		if ch == 'r' || ch == 'e' || ch == 's' || ch == 'p' {
-			f.WriteString(string(ch) + "\n")
-			return ch
-		}
-		// Ignore invalid keys, re-prompt
-	}
 }
 
 // startWatchdog opens the hardware watchdog, programs the kernel timeout,
