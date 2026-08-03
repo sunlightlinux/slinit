@@ -1,7 +1,6 @@
 package recovery
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -241,13 +240,24 @@ func (d *Debugger) Stop() {
 		d.tty.Close()
 	}
 	<-d.doneCh
-	// Restore termios AFTER goroutine exit — otherwise a race
-	// window could see the goroutine reading in the wrong mode.
+	// Restore termios AFTER goroutine exit. termios is per-tty
+	// kernel state (not per-fd), so we re-open the console just
+	// for the ioctl — the goroutine's fd is closed and calling
+	// TCSETS on it would silently return EBADF, leaving the tty
+	// stuck in raw mode. When bash / getty then opens the console,
+	// it inherits ICANON off + ECHO off and typed characters
+	// vanish (this exact bug shipped in the initial cut of
+	// debugger phase 1).
 	d.termiosMu.Lock()
 	orig := d.termios
 	d.termios = nil
 	d.termiosMu.Unlock()
-	restoreTermios(d.tty, orig)
+	if orig != nil {
+		if f, err := os.OpenFile(d.opts.ConsolePath, os.O_RDWR, 0); err == nil {
+			restoreTermios(f, orig)
+			f.Close()
+		}
+	}
 	if d.opts.Logger != nil {
 		d.opts.Logger.Info("Boot debugger stopped")
 	}
@@ -258,22 +268,55 @@ func (d *Debugger) Stop() {
 // silently dropped — a stray keypress at boot time shouldn't
 // trigger anything, and letting bytes accumulate on getty would
 // break the eventual login flow (mitigated by Stop before getty).
+//
+// Poll-with-timeout instead of a naked ReadByte because Linux does
+// not unblock a pending tty read when the fd is Close()'d from
+// another goroutine — the driver keeps the reader parked in the
+// wait queue independently of which fd initiated the read. Without
+// this loop Stop() would hang until the operator pressed a key.
 func (d *Debugger) run() {
 	defer close(d.doneCh)
-	br := bufio.NewReader(d.tty)
+	fd := int(d.tty.Fd())
+	buf := make([]byte, 1)
+	pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	for {
 		select {
 		case <-d.stopCh:
 			return
 		default:
 		}
-		b, err := br.ReadByte()
+		// 200ms is small enough that Stop responds snappily (the
+		// wait sits inside main.go's boot loop and blocks the tty
+		// service start), but large enough that we don't burn CPU
+		// during the seconds-long service startup window.
+		pollFds[0].Revents = 0
+		n, err := unix.Poll(pollFds, 200)
 		if err != nil {
-			// Console closed (Stop) or transient error → exit.
-			// Better to fail closed than spam CPU on a broken fd.
+			if err == unix.EINTR {
+				continue
+			}
 			return
 		}
-		if b != 0x02 { // only Ctrl-B triggers the menu
+		if n == 0 {
+			continue // timeout, re-check stopCh
+		}
+		if pollFds[0].Revents&(unix.POLLHUP|unix.POLLNVAL|unix.POLLERR) != 0 {
+			return // fd went away (Stop closed it) or errored
+		}
+		if pollFds[0].Revents&unix.POLLIN == 0 {
+			continue
+		}
+		nr, err := unix.Read(fd, buf)
+		if err != nil {
+			if err == unix.EINTR || err == unix.EAGAIN {
+				continue
+			}
+			return
+		}
+		if nr == 0 {
+			continue
+		}
+		if buf[0] != 0x02 { // only Ctrl-B triggers the menu
 			continue
 		}
 		// Serialize with itself — the menu presentation is not

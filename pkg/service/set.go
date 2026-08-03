@@ -100,6 +100,16 @@ type ServiceSet struct {
 	OnServiceLoaded   func(svc Service)
 	OnServiceUnloaded func(svc Service)
 
+	// OnConsoleAcquire fires from ProcessService.BringUp just before a
+	// service that has RunsOnConsole (or StartsOnConsole) opens
+	// /dev/console. Wired by main.go to recovery.Debugger.Stop so the
+	// boot debugger releases its raw-mode grip on the tty BEFORE the
+	// child inherits it — otherwise interactive shells (bash --login)
+	// capture our raw termios as their "original" and can't ever get
+	// echo back. Called at most once per process spawn; the callback
+	// itself must be idempotent because service restarts fire it again.
+	OnConsoleAcquire func()
+
 	// OnSystemAction is wired by main to the event loop's shutdown
 	// initiator. It fires when a service's configured failure-action /
 	// success-action triggers a system-level transition (reboot,

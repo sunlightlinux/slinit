@@ -1042,6 +1042,15 @@ func main() {
 			bootDebugger = nil
 		} else {
 			defer bootDebugger.Stop()
+			// Detach BEFORE a runs-on-console service opens /dev/console:
+			// a login shell (bash --login) reads termios once at startup
+			// and reuses it between commands, so a post-start restore
+			// would come too late (echo stays off after the first
+			// command). ServiceSet fires this from ProcessService.BringUp
+			// right before the child inherits /dev/console. Stop is
+			// idempotent, so restarts of the tty service (smooth-recovery)
+			// fire it again harmlessly.
+			serviceSet.OnConsoleAcquire = bootDebugger.Stop
 		}
 	}
 

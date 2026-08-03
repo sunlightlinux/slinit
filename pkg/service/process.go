@@ -1911,6 +1911,16 @@ func (s *ProcessService) startProcess() error {
 	}
 	s.Record().ApplyProcessAttrs(&params)
 
+	// Notify anyone holding the console (e.g. the boot debugger's
+	// raw-mode reader) that a service is about to inherit /dev/console.
+	// Must fire BEFORE StartProcess: once the child forks, our termios
+	// state is what it captures — restoring after the fact would be
+	// clobbered by the child's own "save original" step (bash --login
+	// reads termios once at startup and reuses it between commands).
+	if params.OnConsole && s.services.OnConsoleAcquire != nil {
+		s.services.OnConsoleAcquire()
+	}
+
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
 		if outputPipe != nil && s.logType == LogToBuffer {
