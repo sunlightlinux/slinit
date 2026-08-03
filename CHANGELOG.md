@@ -17,6 +17,38 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.1] — 2026-08-03
+
+Point release focused on the boot-time operator UX. Third boot-failure
+menu (live debugger on Ctrl-B) lands and rounds out the trio started
+in [2.1.0]. Two follow-up fixes surfaced from live QEMU testing:
+
+- **Boot debugger detach moved before console-owning service exec.**
+  The initial cut stopped the debugger from `boot` EventStarted, which
+  ran *after* `bash --login` had already opened `/dev/console` and
+  captured slinit's raw termios as its "original" — so echo worked for
+  the first command and then vanished. `ServiceSet.OnConsoleAcquire`
+  now fires from `ProcessService.BringUp` right before `StartProcess`
+  when `params.OnConsole` is true, giving the debugger a chance to
+  release termios before the child inherits the fd. Reader loop also
+  switched from a blocking `bufio.ReadByte` to `unix.Poll` with a
+  200ms timeout because Linux does not unblock a pending tty read on
+  `Close()` — the previous `Stop` hung waiting for a keystroke.
+  Restore-termios in `Stop` re-opens `/dev/console` for the ioctl
+  since the reader fd is closed by that point (per-tty state, not
+  per-fd).
+
+- **Force-fail filters aggregate services out of its target set.**
+  The `[f]` action force-fails `snap.InProgress[0]`. Aggregate services
+  (`boot`, `all-services` — no command, just dep bundles) show as
+  STARTING until the whole tree resolves; if `[f]` hit one of those
+  the cascade would take the whole dep graph down and trigger
+  `BOOT COLLAPSE` — the opposite of what an operator hitting force-fail
+  on a stuck child wants. Split by PID in main's `StatusFn`: process
+  svcs go to In-progress (targetable), aggregates go to Waiting on deps
+  (visible but not targetable). Verified end-to-end in QEMU: `[f]` on
+  a stuck child no longer nukes the tree.
+
 ### Added
 
 - **Interactive rescue menu on fatal boot failure** (`pkg/recovery`).
