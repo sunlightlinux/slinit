@@ -1006,15 +1006,24 @@ func main() {
 				active := serviceSet.GetActiveServiceInfo()
 				snap := recovery.StatusSnapshot{}
 				for _, si := range active {
+					if si.State != service.StateStarting && si.State != service.StateStopping {
+						continue
+					}
 					info := recovery.ServiceInfo{
 						Name:  si.Name,
 						State: si.State.String(),
 					}
 					if si.PID > 0 {
 						info.Note = fmt.Sprintf("PID=%d", si.PID)
-					}
-					if si.State == service.StateStarting || si.State == service.StateStopping {
 						snap.InProgress = append(snap.InProgress, info)
+					} else {
+						// Aggregate services (type=internal, or bundle
+						// deps with no command) show as Starting until
+						// every dep resolves. Force-failing them would
+						// cascade the whole tree and trigger
+						// BOOT COLLAPSE — surface them separately so
+						// [f] cannot accidentally target them.
+						snap.Waiting = append(snap.Waiting, info)
 					}
 				}
 				return snap
