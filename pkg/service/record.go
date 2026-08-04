@@ -2529,10 +2529,7 @@ func (sr *ServiceRecord) allDepsStarted() {
 				<-waitCh
 				sr.services.queueMu.Lock()
 				sr.waitingForStartSlot = false
-				if !sr.self.BringUp() {
-					sr.state.Store(StateStopping)
-					sr.failedToStart(false, true)
-				}
+				sr.callBringUp()
 				sr.services.processQueuesLocked()
 				sr.services.queueMu.Unlock()
 			}()
@@ -2540,6 +2537,30 @@ func (sr *ServiceRecord) allDepsStarted() {
 		}
 	}
 
+	sr.callBringUp()
+}
+
+// callBringUp is the shared entry that gates every service-type
+// BringUp behind the OnConfirmSpawn hook (systemd.confirm_spawn
+// parity). Placed here rather than in each ProcessService /
+// TriggeredService / InternalService / BGProcessService /
+// ScriptedService.BringUp so a single gate covers all five types —
+// otherwise operators booting with slinit.confirm-spawn would see
+// process services prompt but internal / scripted / triggered ones
+// slip through unasked (which was the initial cut's behaviour and
+// made the feature much less useful than intended).
+//
+// Skip semantics: OnConfirmSpawn returning false transitions the
+// record to Stopping + failedToStart, so dependents cascade — the
+// point of a debugging tool is that "skipped" reveals dependency
+// structure, not that the skipped svc gets silently pretended-up.
+func (sr *ServiceRecord) callBringUp() {
+	if sr.services.OnConfirmSpawn != nil && !sr.services.OnConfirmSpawn(sr.serviceName) {
+		sr.services.logger.Info("Service '%s': skipped by confirm-spawn", sr.serviceName)
+		sr.state.Store(StateStopping)
+		sr.failedToStart(false, true)
+		return
+	}
 	if !sr.self.BringUp() {
 		sr.state.Store(StateStopping)
 		sr.failedToStart(false, true)
