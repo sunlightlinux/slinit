@@ -112,7 +112,8 @@ for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-start-stop-daemon slinit-supervise-daemon \
            slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var \
            slinit-cgtop slinit-journalctl slinit-journald slinit-journal-migrate \
-           slinit-supports; do
+           slinit-supports \
+           slinit-logouthookd slinit-sysusers slinit-tmpfiles; do
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
         go build -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
 done
@@ -186,6 +187,9 @@ install -m 755 "${BUILD_DIR}/slinit-journalctl"        "${ROOTFS_DIR}/usr/bin/sl
 install -m 755 "${BUILD_DIR}/slinit-journald"          "${ROOTFS_DIR}/usr/sbin/slinit-journald"
 install -m 755 "${BUILD_DIR}/slinit-journal-migrate"   "${ROOTFS_DIR}/usr/bin/slinit-journal-migrate"
 install -m 755 "${BUILD_DIR}/slinit-supports"          "${ROOTFS_DIR}/usr/bin/slinit-supports"
+install -m 755 "${BUILD_DIR}/slinit-sysusers"          "${ROOTFS_DIR}/usr/bin/slinit-sysusers"
+install -m 755 "${BUILD_DIR}/slinit-tmpfiles"          "${ROOTFS_DIR}/usr/bin/slinit-tmpfiles"
+install -m 755 "${BUILD_DIR}/slinit-logouthookd"       "${ROOTFS_DIR}/usr/sbin/slinit-logouthookd"
 
 # `journalctl` compat symlink so operators muscle-memory'd on systemd
 # find the same UX under the familiar name. slinit-journalctl does no
