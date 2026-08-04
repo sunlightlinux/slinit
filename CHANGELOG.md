@@ -17,6 +17,39 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Added
+
+- **`pkg/bootmode` — structured kernel-cmdline boot-mode parser**
+  (Phase 1 of the recovery+boot refactor). Centralises what was
+  previously scattered `kcmdlineHasFlag` calls in `cmd/slinit/main.go`
+  into a single `bootmode.Options` struct with typed fields for the
+  full slinit / systemd operator surface: `Mode` (Normal / Emergency /
+  Rescue), `DebugShell`, `ConfirmSpawn`, `CrashShell`, `LogLevel`,
+  and legacy `Debug`. Recognized tokens:
+
+  - Bare: `single`, `s`, `1` → Rescue (sysvinit runlevel 1 compat);
+    `emergency` → Emergency; `rescue` → Rescue;
+    `slinit.emergency`, `slinit.rescue`, `slinit.debug-shell`,
+    `slinit.confirm-spawn`, `slinit.crash-shell`, `slinit.debug`.
+  - Key=value: `slinit.log-level=<lvl>`.
+
+  Last-mode-wins semantics for conflicting bare tokens
+  (`emergency rescue` → Rescue), matching systemd's precedence.
+  KEY=VALUE forms of bare-token keys are ignored so a `single=1`
+  kernel arg cannot accidentally trip Rescue. Parser is fully
+  testable off `/proc/cmdline` — `ParseFromProc` is the OS-side
+  entry point, `Parse(string)` is what the 34-case test table
+  exercises.
+
+  Wired in `main.go` right after `PrintBootBanner`: replaces the
+  legacy `kcmdlineHasFlag("slinit.debug")` and
+  `kcmdlineHasFlag("slinit.rescue"||"slinit.emergency")` checks with
+  typed field reads. Logs the parsed non-default options once at
+  boot so operators can confirm their cmdline was honored. Phases
+  2-5 (emergency/rescue service split, tty9 debug shell,
+  confirm-spawn, crash-shell) consume this parser without touching
+  the cmdline read path again.
+
 ## [2.1.1] — 2026-08-03
 
 Point release focused on the boot-time operator UX. Third boot-failure

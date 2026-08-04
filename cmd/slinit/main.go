@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/bootmode"
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
@@ -580,6 +581,12 @@ func main() {
 		}
 	}
 
+	// Kernel-cmdline boot-mode selectors (emergency / rescue /
+	// debug-shell / confirm-spawn / crash-shell / log-level). Parsed
+	// once and consumed at several call sites below. Zero value =
+	// "no override" which is what non-PID-1 branches want.
+	var kOpts bootmode.Options
+
 	if containerMode {
 		logger.Notice("slinit starting in container mode (PID %d)", os.Getpid())
 		if err := shutdown.InitContainer(logger); err != nil {
@@ -607,10 +614,25 @@ func main() {
 		// catch-all log. setupConsole inside InitPID1 had pointed fd 1 at
 		// /dev/console, which would otherwise bypass the catch-all.
 		shutdown.PrintBootBanner()
+		// Parse kernel-cmdline selectors now — /proc is mounted by
+		// InitPID1 above, so this is the earliest safe point. Errors
+		// are non-fatal: a missing /proc/cmdline leaves kOpts at its
+		// zero value (Normal mode, no overrides), which is the safe
+		// default.
+		if o, err := bootmode.ParseFromProc(); err != nil {
+			logger.Warn("bootmode: parse /proc/cmdline: %v", err)
+		} else {
+			kOpts = o
+			if kOpts.Mode != bootmode.Normal || kOpts.DebugShell ||
+				kOpts.ConfirmSpawn || kOpts.CrashShell || kOpts.LogLevel != "" {
+				logger.Notice("bootmode: mode=%s debug-shell=%v confirm-spawn=%v crash-shell=%v log-level=%q",
+					kOpts.Mode, kOpts.DebugShell, kOpts.ConfirmSpawn,
+					kOpts.CrashShell, kOpts.LogLevel)
+			}
+		}
 		// slinit.debug on the kernel command line restores the verbose
-		// timestamped log stream (the developer view). /proc is mounted by
-		// InitPID1, so this is the earliest we can read /proc/cmdline.
-		if bootConsole && kcmdlineHasFlag("slinit.debug") {
+		// timestamped log stream (the developer view).
+		if bootConsole && kOpts.Debug {
 			logger.SetBootConsole(false, false)
 			logger.SetLevel(logging.LevelDebug)
 			logger.Notice("slinit.debug: verbose console logging enabled")
@@ -976,14 +998,20 @@ func main() {
 		}
 	}
 
-	// Rescue mode: kernel cmdline `slinit.rescue=1` or `slinit.emergency=1`
-	// (both aliases) skips the normal service graph entirely and drops
-	// into a shell on /dev/console. On shell exit we reboot into normal
-	// mode so an operator can fix a broken boot without an install USB.
-	// systemMode gate: only meaningful when we're PID 1 — user-mode
-	// slinit has no console concept.
-	if systemMode && (kcmdlineHasFlag("slinit.rescue") || kcmdlineHasFlag("slinit.emergency")) {
-		logger.Notice("slinit.rescue: dropping to /dev/console shell (exit shell to reboot)")
+	// Rescue / emergency mode: kernel cmdline picks it up (slinit.rescue,
+	// slinit.emergency, bare "rescue", bare "emergency", or sysvinit
+	// "single" / "s" / "1"). Skips the normal service graph entirely
+	// and drops into a shell on /dev/console. On shell exit we reboot
+	// into normal mode so an operator can fix a broken boot without an
+	// install USB. systemMode gate: only meaningful when we're PID 1 —
+	// user-mode slinit has no console concept.
+	//
+	// Phase 1 handles Emergency and Rescue with the same runRescueShell
+	// path; Phase 2 of the recovery+boot refactor splits them (Rescue
+	// gets local-fs mount + read-write remount, Emergency stays
+	// filesystem-agnostic for use when even the root FS is broken).
+	if systemMode && (kOpts.Mode == bootmode.Rescue || kOpts.Mode == bootmode.Emergency) {
+		logger.Notice("bootmode=%s: dropping to /dev/console shell (exit shell to reboot)", kOpts.Mode)
 		runRescueShell(logger)
 		// After shell exit, trigger a reboot via the shutdown executor.
 		shutdown.Execute(service.ShutdownReboot, logger)
@@ -1546,23 +1574,6 @@ func runRescueShell(logger *logging.Logger) {
 	if err := cmd.Run(); err != nil {
 		logger.Error("slinit.rescue: shell exited with error: %v", err)
 	}
-}
-
-// kcmdlineHasFlag reports whether /proc/cmdline contains the given
-// space-delimited token. Used to honor boot-time toggles (e.g. slinit.debug)
-// that the kernel passes through to init. Returns false if /proc is not
-// mounted or the file cannot be read.
-func kcmdlineHasFlag(flag string) bool {
-	data, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return false
-	}
-	for _, f := range strings.Fields(string(data)) {
-		if f == flag {
-			return true
-		}
-	}
-	return false
 }
 
 // noColor reports whether ANSI color should be suppressed, honoring the
