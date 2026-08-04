@@ -19,6 +19,32 @@ the full commit-level record.
 
 ### Added
 
+- **Emergency vs Rescue split** (Phase 2 of the recovery+boot refactor).
+  Both modes still bypass the normal service graph and drop straight
+  to sulogin on /dev/console, but Rescue now runs `mount -a` first so
+  /etc/fstab is honoured — the operator has /home, /var, /tmp before
+  reaching the shell. Emergency stays filesystem-agnostic (except the
+  kernel-mounted root) so it works even when fstab is broken or a
+  critical mount hangs. Matches systemd's emergency.target /
+  rescue.target distinction. New helper `mountLocalFsBestEffort` in
+  main.go: 30s ctx timeout guards against a hanging NFS/iSCSI mount,
+  best-effort semantics keep the shell reachable regardless of exit
+  status, silent skip when mount(8) is absent (minimal container
+  image).
+
+- **Persistent debug shell on /dev/tty9** (Phase 3 of the
+  recovery+boot refactor). Enabled by kernel cmdline
+  `slinit.debug-shell`. Analog of systemd.debug-shell.service on
+  tty9 — an always-on root shell on a dedicated VT that never
+  competes with getty on /dev/console. Solves the "post-boot debug
+  access" problem architecturally instead of via the previously
+  planned SIGUSR1 + `slinitctl debug` route (Phase 2 of the old
+  debugger TODO), which required pty interposition or a getty shim.
+  Respawn loop with getty-style crash-loop guard (sub-second exits
+  get a 1s cooldown before respawn). Silently skips when tty9
+  cannot be opened (headless system, no VT support) or no shell
+  is available. Goroutine lives for the whole PID-1 lifetime.
+
 - **`pkg/bootmode` — structured kernel-cmdline boot-mode parser**
   (Phase 1 of the recovery+boot refactor). Centralises what was
   previously scattered `kcmdlineHasFlag` calls in `cmd/slinit/main.go`

@@ -1006,11 +1006,15 @@ func main() {
 	// install USB. systemMode gate: only meaningful when we're PID 1 —
 	// user-mode slinit has no console concept.
 	//
-	// Phase 1 handles Emergency and Rescue with the same runRescueShell
-	// path; Phase 2 of the recovery+boot refactor splits them (Rescue
-	// gets local-fs mount + read-write remount, Emergency stays
-	// filesystem-agnostic for use when even the root FS is broken).
+	// systemd parity: Rescue runs `mount -a` first so /etc/fstab is
+	// honoured and the operator has /home, /var, etc. Emergency stays
+	// filesystem-agnostic (except the kernel-mounted root) — the whole
+	// point is a shell even when fstab is broken or a critical mount
+	// hangs.
 	if systemMode && (kOpts.Mode == bootmode.Rescue || kOpts.Mode == bootmode.Emergency) {
+		if kOpts.Mode == bootmode.Rescue {
+			mountLocalFsBestEffort(logger)
+		}
 		logger.Notice("bootmode=%s: dropping to /dev/console shell (exit shell to reboot)", kOpts.Mode)
 		runRescueShell(logger)
 		// After shell exit, trigger a reboot via the shutdown executor.
@@ -1089,6 +1093,16 @@ func main() {
 			// fire it again harmlessly.
 			serviceSet.OnConsoleAcquire = bootDebugger.Stop
 		}
+	}
+
+	// Persistent debug shell on /dev/tty9 (systemd.debug-shell parity).
+	// Independent of the Ctrl-B debugger: this one is post-boot always-on,
+	// on a dedicated VT so it never competes with getty on /dev/console.
+	// Enable via kernel cmdline `slinit.debug-shell`. Goroutine runs for
+	// the lifetime of PID 1 — no cleanup needed on shutdown because slinit
+	// exits ceremoniously via shutdown.Execute which doesn't return here.
+	if isPID1 && systemMode && kOpts.DebugShell {
+		go runDebugShellRespawnLoop("/dev/tty9", logger, make(chan struct{}))
 	}
 
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args).
@@ -1540,6 +1554,115 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logge
 	default:
 		logger.Error("Unknown shutdown type: %s, halting", shutdownType)
 		shutdown.Execute(service.ShutdownHalt, logger)
+	}
+}
+
+// runDebugShellRespawnLoop maintains a sulogin/shell on ttyPath for the
+// lifetime of slinit. Respawns on shell exit with a getty-style backoff
+// so a broken tty can't CPU-burn. Analog of systemd.debug-shell.service
+// on tty9 — the whole point is post-boot access to a root shell without
+// competing with getty on /dev/console. Runs in its own goroutine so a
+// stuck shell doesn't block the main boot.
+//
+// Best-effort: silently skips if ttyPath cannot be opened (headless
+// system, no VT support) or no shell is available. Stops when stopCh
+// closes — PID 1 slinit typically never triggers that (main.go blocks
+// forever), but non-PID-1 modes with DebugShell enabled will.
+func runDebugShellRespawnLoop(ttyPath string, logger *logging.Logger, stopCh <-chan struct{}) {
+	candidates := []string{"/sbin/sulogin", "/bin/sulogin", "/bin/sh", "/usr/bin/sh"}
+	var shell string
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			shell = p
+			break
+		}
+	}
+	if shell == "" {
+		logger.Warn("debug-shell: no sulogin or /bin/sh found; skipping")
+		return
+	}
+	// One-shot probe: if the tty doesn't open now it won't open later
+	// either (no VT9, headless, permission problem). No point in a
+	// respawn loop.
+	tty, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
+	if err != nil {
+		logger.Warn("debug-shell: open %s: %v; skipping", ttyPath, err)
+		return
+	}
+	tty.Close()
+	logger.Notice("debug-shell: enabled on %s (shell=%s, respawns on exit)", ttyPath, shell)
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		default:
+		}
+		start := time.Now()
+		tty, err := os.OpenFile(ttyPath, os.O_RDWR, 0)
+		if err != nil {
+			logger.Warn("debug-shell: %s no longer openable: %v; giving up", ttyPath, err)
+			return
+		}
+		cmd := exec.Command(shell)
+		cmd.Stdin = tty
+		cmd.Stdout = tty
+		cmd.Stderr = tty
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+		_ = cmd.Run() // errors are expected on operator logout
+		tty.Close()
+		// Respawn backoff: crash-loop guard. A shell that exits in
+		// under a second (bad terminfo, sulogin can't find root pw,
+		// tty flapped) gets a 1s cooldown to avoid CPU burn. Normal
+		// operator logout respawns immediately for snappy UX.
+		if time.Since(start) < time.Second {
+			select {
+			case <-stopCh:
+				return
+			case <-time.After(time.Second):
+			}
+		}
+	}
+}
+
+// mountLocalFsBestEffort runs `mount -a` to bring up /etc/fstab entries
+// before dropping into a rescue shell. Called for Rescue mode only —
+// Emergency skips this so a broken fstab / hanging network mount can't
+// keep the operator away from the shell.
+//
+// Best-effort semantics: any non-zero exit is logged but doesn't abort
+// the rescue path. A 30s timeout guards against a mount hanging on an
+// unreachable NFS or iSCSI target; the shell comes up regardless. Skip
+// silently when mount(8) isn't installed (minimal container image).
+func mountLocalFsBestEffort(logger *logging.Logger) {
+	candidates := []string{"/bin/mount", "/usr/bin/mount", "/sbin/mount"}
+	var mount string
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			mount = p
+			break
+		}
+	}
+	if mount == "" {
+		logger.Warn("bootmode=rescue: no mount(8) found; skipping local-fs mount")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	logger.Notice("bootmode=rescue: running %s -a (30s timeout)", mount)
+	cmd := exec.CommandContext(ctx, mount, "-a")
+	out, err := cmd.CombinedOutput()
+	trimmed := strings.TrimSpace(string(out))
+	if err != nil {
+		if trimmed != "" {
+			logger.Warn("bootmode=rescue: mount -a: %v (output: %s)", err, trimmed)
+		} else {
+			logger.Warn("bootmode=rescue: mount -a: %v", err)
+		}
+		return
+	}
+	if trimmed != "" {
+		logger.Info("bootmode=rescue: mount -a output: %s", trimmed)
 	}
 }
 
