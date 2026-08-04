@@ -146,7 +146,16 @@ func (el *EventLoop) Run(ctx context.Context) error {
 			return ctx.Err()
 
 		case <-el.forceExitCh:
-			el.logger.Error("Emergency shutdown timeout reached, forcing exit")
+			// forceExitCh has two writer paths: emergency timer
+			// (real timeout — services blocked shutdown) and the
+			// empty-services fast path in initiateShutdown (nothing
+			// to stop). Distinguish so the operator log reflects
+			// reality instead of blaming a phantom timeout.
+			if el.services.CountActiveServices() == 0 {
+				el.logger.Info("All services stopped, exiting")
+			} else {
+				el.logger.Error("Emergency shutdown timeout reached, forcing exit")
+			}
 			return nil
 
 		case sig := <-el.sigCh:
@@ -488,6 +497,19 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	}
 
 	el.services.StopAllServices(shutdownType)
+
+	// Empty-set fast path: rescue/emergency boots have no services
+	// running (bypass the service graph entirely), so there's nothing
+	// for inactiveCh to notify about. Poke forceExitCh so Run() exits
+	// immediately instead of waiting for the emergency timer. The
+	// Run-side handler already logs "All services stopped, exiting"
+	// when it sees count == 0, so no message duplication.
+	if el.services.CountActiveServices() == 0 {
+		select {
+		case el.forceExitCh <- struct{}{}:
+		default:
+		}
+	}
 
 	// Start periodic reporting of blocking services
 	el.startShutdownReporter()

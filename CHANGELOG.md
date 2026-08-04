@@ -21,6 +21,39 @@ the full commit-level record.
 
 ### Changed
 
+- **Rescue / emergency mode now keeps the control socket + event loop
+  alive** (systemd rescue.target parity). The previous cut bypassed
+  slinit's infrastructure entirely — control socket unopened, event
+  loop never started — so `slinitctl` commands from inside the
+  rescue shell failed with "no such file or directory". Refactored:
+  the rescue-mode gate short-circuits boot-services load + debugger
+  + confirm-spawn (all irrelevant to a bare-shell boot) but still
+  runs through `ctrlServer.Start` and `loop.Run`. Rescue shell is
+  spawned in a goroutine that, on shell exit, calls
+  `loop.InitiateShutdown(reboot)` — matching how a normal boot
+  reaches shutdown. `slinitctl shutdown` from inside the shell now
+  routes through the same path.
+
+  `pkg/eventloop.initiateShutdown` gained an empty-set fast path:
+  after `StopAllServices` returns, if `CountActiveServices() == 0`
+  the loop pokes `forceExitCh` immediately instead of waiting for
+  the 90s emergency timer to fire. The Run-side handler distinguishes
+  the two callers (real timeout vs. no-services fast path) and logs
+  correctly in each case. Live QEMU: `slinitctl shutdown` from
+  rescue now reboots at ~19s vs the ~107s the old timer-wait path
+  took.
+
+- **Recovery menu rendering unified through shared box primitives**
+  (Phase 6 of the recovery+boot refactor). `pkg/recovery/menu.go`
+  now exposes `writeBoxHeader / writeBoxBlank / writeBoxLine /
+  writeBoxFooter` plus the `menuBoxBar` constant; `Present`,
+  `PresentCollapse`, and `Debugger` all render through them so
+  a change to the box style (width, bar character, prompt) lands
+  in one place. `renderServiceBlock` and `renderErrorBlock` in
+  the debugger also use the new primitives — silent-omit-when-empty
+  contract preserved. Behavioural output is identical; all
+  existing menu tests pass unchanged.
+
 - **Recovery menu rendering unified through shared box primitives**
   (Phase 6 of the recovery+boot refactor). `pkg/recovery/menu.go`
   now exposes `writeBoxHeader / writeBoxBlank / writeBoxLine /

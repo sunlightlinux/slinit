@@ -1011,26 +1011,18 @@ func main() {
 	// Rescue / emergency mode: kernel cmdline picks it up (slinit.rescue,
 	// slinit.emergency, bare "rescue", bare "emergency", or sysvinit
 	// "single" / "s" / "1"). Skips the normal service graph entirely
-	// and drops into a shell on /dev/console. On shell exit we reboot
-	// into normal mode so an operator can fix a broken boot without an
-	// install USB. systemMode gate: only meaningful when we're PID 1 —
-	// user-mode slinit has no console concept.
+	// but keeps the control socket + event loop running (systemd
+	// rescue.target parity) so slinitctl commands work from inside
+	// the rescue shell. The actual shell spawn happens later, after
+	// ctrlServer.Start + eventloop.Run wiring — see rescueMode
+	// dispatch below the boot loop setup.
 	//
 	// systemd parity: Rescue runs `mount -a` first so /etc/fstab is
 	// honoured and the operator has /home, /var, etc. Emergency stays
 	// filesystem-agnostic (except the kernel-mounted root) — the whole
 	// point is a shell even when fstab is broken or a critical mount
 	// hangs.
-	if systemMode && (kOpts.Mode == bootmode.Rescue || kOpts.Mode == bootmode.Emergency) {
-		if kOpts.Mode == bootmode.Rescue {
-			mountLocalFsBestEffort(logger)
-		}
-		logger.Notice("bootmode=%s: dropping to /dev/console shell (exit shell to reboot)", kOpts.Mode)
-		runRescueShell(logger)
-		// After shell exit, trigger a reboot via the shutdown executor.
-		shutdown.Execute(service.ShutdownReboot, logger)
-		return
-	}
+	rescueMode := systemMode && (kOpts.Mode == bootmode.Rescue || kOpts.Mode == bootmode.Emergency)
 
 	// Boot debugger: raw-mode reader on /dev/console that pops an
 	// interactive menu on Ctrl-B during boot. Only meaningful under
@@ -1045,8 +1037,10 @@ func main() {
 	// exclusive read on /dev/console, and two readers on the same
 	// tty race for each byte. Confirm-spawn is more intrusive so it
 	// wins — operator explicitly asked for per-service prompts.
+	// Also skipped in rescue/emergency mode — no boot services to
+	// debug, and the rescue shell owns /dev/console.
 	var bootDebugger *recovery.Debugger
-	if isPID1 && systemMode && !kOpts.ConfirmSpawn {
+	if isPID1 && systemMode && !kOpts.ConfirmSpawn && !rescueMode {
 		bootDebugger = recovery.NewDebugger(recovery.DebuggerOptions{
 			Timeout: 60 * time.Second,
 			StatusFn: func() recovery.StatusSnapshot {
@@ -1124,8 +1118,9 @@ func main() {
 	// /dev/console before each service is brought up; operator answers
 	// [y] to proceed or [n] to skip. Mutually exclusive with the boot
 	// debugger (both want exclusive read on /dev/console). Only PID 1
-	// system mode — user-mode has no /dev/console concept.
-	if isPID1 && systemMode && kOpts.ConfirmSpawn {
+	// system mode — user-mode has no /dev/console concept. Skipped in
+	// rescue mode — no services will be spawned.
+	if isPID1 && systemMode && kOpts.ConfirmSpawn && !rescueMode {
 		serviceSet.OnConfirmSpawn = makeConfirmSpawnPrompt(logger)
 		logger.Notice("confirm-spawn: enabled — will prompt [y/n] before each service start")
 	}
@@ -1134,9 +1129,13 @@ func main() {
 	// Wrapped in a retry loop so the rescue menu's "continue" action
 	// (operator dropped to shell, fixed a typo) can re-attempt without
 	// re-execing slinit — see recovery.Present.
+	//
+	// Skipped in rescue/emergency mode — those paths spawn the rescue
+	// shell after ctrlServer.Start below and don't touch the service
+	// graph. Nothing to load or restart.
 	var startedAny bool
 	var loadErrors []string
-	for retry := 0; ; retry++ {
+	for retry := 0; !rescueMode; retry++ {
 		startedAny = false
 		loadErrors = loadErrors[:0]
 		for _, svcName := range bootServices {
@@ -1407,6 +1406,26 @@ func main() {
 				sentinelWatcher = sw
 				logger.Info("sentinel: watching %s", sentinelDir)
 			}
+		}
+
+		// Rescue / emergency dispatch: spawn the shell on /dev/console
+		// in a goroutine BEFORE Run() blocks, so ctrlServer + event
+		// loop are already accepting requests when the operator lands
+		// in the shell. `slinitctl shutdown` from inside the rescue
+		// shell then routes through loop.InitiateShutdown just like a
+		// normal boot. Shell exit is treated as an explicit reboot
+		// request. Runs on the first (and only) iteration of the boot
+		// retry loop since rescueMode short-circuits the boot-services
+		// load block above.
+		if rescueMode {
+			if kOpts.Mode == bootmode.Rescue {
+				mountLocalFsBestEffort(logger)
+			}
+			logger.Notice("bootmode=%s: shell active on /dev/console (exit shell or `slinitctl shutdown` to reboot)", kOpts.Mode)
+			go func() {
+				runRescueShell(logger)
+				loop.InitiateShutdown(service.ShutdownReboot)
+			}()
 		}
 
 		if err := loop.Run(ctx); err != nil {
