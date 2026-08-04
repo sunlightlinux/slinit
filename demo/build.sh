@@ -114,8 +114,12 @@ for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-cgtop slinit-journalctl slinit-journald slinit-journal-migrate \
            slinit-supports \
            slinit-logouthookd slinit-sysusers slinit-tmpfiles; do
+    # -tags paniconce activates the crash-shell test hook in
+    # cmd/slinit/panictest_on.go (no-op file for other binaries).
+    # See demo/run.sh --panic-after=N and --crash-shell for the
+    # end-to-end validation path.
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-        go build -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
+        go build -tags paniconce -ldflags='-s -w' -o "${BUILD_DIR}/${bin}" "./cmd/${bin}"
 done
 
 # Step 5: Prepare rootfs

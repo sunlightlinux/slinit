@@ -120,6 +120,16 @@ type ServiceSet struct {
 	// diagnosing which service is misbehaving.
 	OnConfirmSpawn func(name string) bool
 
+	// crashPaused, when true, freezes every callBringUp invocation.
+	// Set by SetCrashPause during the crash-shell drop so a running
+	// tty svc (with restart=yes) does not respawn its shell while the
+	// crash-shell holds /dev/console — two shells reading the same
+	// tty race for keystrokes and the operator sees interleaved
+	// nonsense. atomic so pkg/shutdown can flip it from the crash
+	// goroutine without grabbing queueMu (which the event loop may
+	// hold at panic time).
+	crashPaused atomic.Bool
+
 	// OnSystemAction is wired by main to the event loop's shutdown
 	// initiator. It fires when a service's configured failure-action /
 	// success-action triggers a system-level transition (reboot,
@@ -477,6 +487,20 @@ func (ss *ServiceSet) InactiveCh() <-chan struct{} {
 func (ss *ServiceSet) IsShuttingDown() bool {
 	return !ss.restartEnabled
 }
+
+// SetCrashPause flips the crash-shell freeze flag. When true, every
+// subsequent callBringUp is a no-op — services that exit (e.g. because
+// pkg/shutdown.spawnCrashShell sent them SIGHUP) do not respawn. Once
+// the crash-shell exits and CrashRecovery proceeds to the emergency
+// reboot, the flag is moot because the whole process is about to
+// syscall.Reboot anyway. Callable from any goroutine.
+func (ss *ServiceSet) SetCrashPause(paused bool) { ss.crashPaused.Store(paused) }
+
+// IsCrashPaused reports whether the crash-shell freeze flag is set.
+// callBringUp checks this before invoking the concrete BringUp so a
+// pending restart can be short-circuited without racing against the
+// service state machine's normal exit-handling flow.
+func (ss *ServiceSet) IsCrashPaused() bool { return ss.crashPaused.Load() }
 
 // ActiveServiceInfo holds info about a non-stopped service (for shutdown reporting).
 type ActiveServiceInfo struct {

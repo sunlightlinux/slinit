@@ -630,6 +630,11 @@ func main() {
 					kOpts.CrashShell, kOpts.LogLevel)
 			}
 		}
+		// Test hook for crash-shell (see cmd/slinit/panictest_*.go).
+		// No-op in production builds; when compiled with `-tags
+		// paniconce`, arms a panic timer if slinit.panic-after=<sec>
+		// is on the kernel cmdline.
+		maybeArmPanicTimer(logger)
 		// slinit.debug on the kernel command line restores the verbose
 		// timestamped log stream (the developer view).
 		if bootConsole && kOpts.Debug {
@@ -693,6 +698,15 @@ func main() {
 
 	// Create service set
 	serviceSet := service.NewServiceSet(logger)
+
+	// Wire the crash-shell pause callback so pkg/shutdown.spawnCrashShell
+	// can freeze the state machine before hanging up existing tty owners.
+	// Prevents a restart=yes tty svc from respawning bash into the tty
+	// sulogin is trying to use — the two-shell race the operator saw
+	// before this fix (`ls` split into `l` in one shell and `s` in the
+	// other). Package-level wiring: nil-safe on non-PID-1 modes where
+	// crash-shell doesn't fire anyway.
+	shutdown.CrashPauseFn = serviceSet.SetCrashPause
 	if activeProfile != "" {
 		// Record the intended profile before any services load so
 		// the loader / boot flow can filter accordingly.
@@ -1111,7 +1125,14 @@ func main() {
 	// the lifetime of PID 1 — no cleanup needed on shutdown because slinit
 	// exits ceremoniously via shutdown.Execute which doesn't return here.
 	if isPID1 && systemMode && kOpts.DebugShell {
-		go runDebugShellRespawnLoop("/dev/tty9", logger, make(chan struct{}))
+		go func() {
+			// Wrap panics — a bug in the respawn loop (bad tty
+			// probe, syscall regression) would otherwise crash PID 1
+			// straight to kernel panic. Route through crash-shell /
+			// emergency-reboot instead.
+			defer shutdown.CrashRecovery(isPID1, containerMode)
+			runDebugShellRespawnLoop("/dev/tty9", logger, make(chan struct{}))
+		}()
 	}
 
 	// Confirm-spawn (systemd.confirm_spawn parity). Prompts on
@@ -1424,6 +1445,13 @@ func main() {
 			logger.Notice("bootmode=%s: shell active on /dev/console (exit shell or `slinitctl shutdown` to reboot)", kOpts.Mode)
 			label := fmt.Sprintf("bootmode=%s", kOpts.Mode)
 			go func() {
+				// Wrap panics so a bug in runRescueShell (e.g. a
+				// termios syscall regression) reaches the crash-shell
+				// / emergency-reboot path instead of dumping to
+				// kernel panic. Go goroutine panics aren't caught by
+				// main's defer — every long-lived goroutine needs its
+				// own recover.
+				defer shutdown.CrashRecovery(isPID1, containerMode)
 				runRescueShell(label, logger)
 				loop.InitiateShutdown(service.ShutdownReboot)
 			}()

@@ -5,9 +5,27 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/bootmode"
 )
+
+// CrashPauseFn, when non-nil, is called by spawnCrashShell with `true`
+// before SIGHUP + sulogin drop, and left set — the reboot syscall
+// terminates the whole process, so unpausing after the shell exits
+// is moot. Wired by main.go to serviceSet.SetCrashPause so a
+// restart=yes tty svc cannot respawn its shell while sulogin holds
+// /dev/console (would deadlock the operator with two readers
+// competing for keystrokes — seen live in QEMU).
+//
+// Package-level variable rather than a param on CrashRecovery
+// because CrashRecovery is registered via `defer` at main() entry,
+// long before ServiceSet exists; a variable let main.go poke the
+// wiring later. Nil-safe: production builds that don't wire it
+// simply skip the pause step (with the two-shell race still
+// possible in the post-boot panic path — the goroutine-panic
+// wrappers cover most cases before this ever runs).
+var CrashPauseFn func(paused bool)
 
 // CrashRecovery is a deferred function that catches panics in the main
 // goroutine and performs emergency cleanup. When running as PID 1, a panic
@@ -106,6 +124,34 @@ func spawnCrashShell() {
 		writeConsole("slinit: crash-shell: no sulogin or /bin/sh found; skipping\n")
 		return
 	}
+	// Freeze the service state machine so restart=yes services (tty
+	// svc in particular) do NOT respawn while sulogin holds the tty.
+	// Without this the sighup below kicks bash off /dev/console, the
+	// event loop sees the exit and calls callBringUp → new bash on
+	// same tty → two-shell race. CrashPauseFn is nil-safe (production
+	// builds may not wire it).
+	if CrashPauseFn != nil {
+		CrashPauseFn(true)
+	}
+
+	// Kill every existing process so nothing competes for /dev/console
+	// with our sulogin. SIGHUP was tried first (send terminals a
+	// hangup, let shells exit cleanly) but on Alpine bash --login
+	// somewhere between kernel signal delivery and Go runtime signal
+	// masking failed to actually die — leaving two shells racing on
+	// the tty. SIGKILL is bulletproof: caught / ignored / masked all
+	// bypassed. We're already on the crash path headed for a hard
+	// reboot; grace for daemons isn't the priority here, a working
+	// sulogin is.
+	//
+	// kill(-1, SIGKILL) sends SIGKILL to every process the caller
+	// can signal — everything except us (PID 1). Small sleep lets
+	// the kernel actually deliver + reap before we grab the tty fd,
+	// preventing a race where /dev/console still shows the outgoing
+	// controlling-tty owner.
+	syscall.Kill(-1, syscall.SIGKILL)
+	time.Sleep(200 * time.Millisecond)
+
 	tty, err := os.OpenFile("/dev/console", os.O_RDWR, 0)
 	if err != nil {
 		writeConsole(fmt.Sprintf("slinit: crash-shell: open /dev/console: %v\n", err))

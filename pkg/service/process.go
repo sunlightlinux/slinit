@@ -1663,6 +1663,16 @@ func runEnvGenerator(path string) (map[string]string, error) {
 
 // startProcess forks and execs the service process.
 func (s *ProcessService) startProcess() error {
+	// Crash-shell freeze: catches the smooth-recovery restart path
+	// too (doSmoothRecovery → startProcess directly, bypassing
+	// callBringUp). Without this check, tty svc with
+	// smooth-recovery=yes respawns bash into /dev/console while
+	// pkg/shutdown.spawnCrashShell is trying to hold the tty for
+	// sulogin. Return a sentinel error so the caller logs it and
+	// gives up cleanly.
+	if s.services.IsCrashPaused() {
+		return fmt.Errorf("service '%s': start suppressed (crash-shell freeze)", s.serviceName)
+	}
 	s.lastStartTime = time.Now()
 	s.stopIssued = false
 	s.exitStatus = ExitStatus{}

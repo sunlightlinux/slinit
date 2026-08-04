@@ -2555,6 +2555,15 @@ func (sr *ServiceRecord) allDepsStarted() {
 // point of a debugging tool is that "skipped" reveals dependency
 // structure, not that the skipped svc gets silently pretended-up.
 func (sr *ServiceRecord) callBringUp() {
+	// Crash-shell freeze: pkg/shutdown.spawnCrashShell flips this on
+	// via SetCrashPause before it SIGHUPs the current /dev/console
+	// owner, so a restart=yes tty svc does not spawn a competing shell
+	// while sulogin is holding the tty. No state transition, no
+	// failedToStart — the service just sits in whatever state it was
+	// in; the process is about to syscall.Reboot anyway.
+	if sr.services.IsCrashPaused() {
+		return
+	}
 	if sr.services.OnConfirmSpawn != nil && !sr.services.OnConfirmSpawn(sr.serviceName) {
 		sr.services.logger.Info("Service '%s': skipped by confirm-spawn", sr.serviceName)
 		sr.state.Store(StateStopping)

@@ -11,6 +11,10 @@
 #   ./run.sh --crash-shell    # spawn shell on PID-1 panic (before reboot)
 #   ./run.sh --debug          # slinit.debug — verbose console log
 #   ./run.sh --log-level=X    # slinit.log-level=X (debug/info/notice/...)
+#   ./run.sh --panic-after=N  # PID-1 panic after N seconds (needs -tags
+#                             #   paniconce build, which demo/build.sh
+#                             #   sets by default). Pair with --crash-shell
+#                             #   to validate the recovery drop-to-sulogin.
 #   ./run.sh --debug-shell    # sulogin on /dev/tty9 — note: -nographic
 #                             #   serial-only demo cannot switch to VT9,
 #                             #   provided for completeness (works on ISO
@@ -41,6 +45,7 @@ for arg in "$@"; do
         --debug-shell)    APPEND+=" slinit.debug-shell" ;;
         --debug)          APPEND+=" slinit.debug" ;;
         --log-level=*)    APPEND+=" slinit.log-level=${arg#--log-level=}" ;;
+        --panic-after=*)  APPEND+=" slinit.panic-after=${arg#--panic-after=}" ;;
         --help|-h)
             grep -E '^# ' "$0" | sed 's/^# //'
             exit 0 ;;
