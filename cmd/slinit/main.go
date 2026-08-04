@@ -1030,8 +1030,13 @@ func main() {
 	// from us would compete with login input (see Phase 2 follow-up
 	// for the `slinitctl debug` / SIGUSR1 path that gives post-boot
 	// access without the tty race).
+	//
+	// Mutually exclusive with slinit.confirm-spawn: both would want
+	// exclusive read on /dev/console, and two readers on the same
+	// tty race for each byte. Confirm-spawn is more intrusive so it
+	// wins — operator explicitly asked for per-service prompts.
 	var bootDebugger *recovery.Debugger
-	if isPID1 && systemMode {
+	if isPID1 && systemMode && !kOpts.ConfirmSpawn {
 		bootDebugger = recovery.NewDebugger(recovery.DebuggerOptions{
 			Timeout: 60 * time.Second,
 			StatusFn: func() recovery.StatusSnapshot {
@@ -1103,6 +1108,16 @@ func main() {
 	// exits ceremoniously via shutdown.Execute which doesn't return here.
 	if isPID1 && systemMode && kOpts.DebugShell {
 		go runDebugShellRespawnLoop("/dev/tty9", logger, make(chan struct{}))
+	}
+
+	// Confirm-spawn (systemd.confirm_spawn parity). Prompts on
+	// /dev/console before each service is brought up; operator answers
+	// [y] to proceed or [n] to skip. Mutually exclusive with the boot
+	// debugger (both want exclusive read on /dev/console). Only PID 1
+	// system mode — user-mode has no /dev/console concept.
+	if isPID1 && systemMode && kOpts.ConfirmSpawn {
+		serviceSet.OnConfirmSpawn = makeConfirmSpawnPrompt(logger)
+		logger.Notice("confirm-spawn: enabled — will prompt [y/n] before each service start")
 	}
 
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args).
@@ -1554,6 +1569,41 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logge
 	default:
 		logger.Error("Unknown shutdown type: %s, halting", shutdownType)
 		shutdown.Execute(service.ShutdownHalt, logger)
+	}
+}
+
+// makeConfirmSpawnPrompt returns a hook suitable for
+// ServiceSet.OnConfirmSpawn: opens /dev/console per prompt (avoids
+// holding a fd for the whole boot), writes a [y/n] question, reads one
+// line, returns true iff answer is "y" or empty. On any error (console
+// unopenable, read fails, etc.) auto-proceeds — the operator asked for
+// interactivity but a broken tty shouldn't wedge the boot forever.
+//
+// Uses canonical mode (default): operator must press Enter after the
+// answer. Rougher UX than the recovery menu's cbreak but avoids the
+// termios-restoration dance for a debugging-only feature; keeps the
+// implementation simple.
+func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
+	return func(name string) bool {
+		tty, err := os.OpenFile("/dev/console", os.O_RDWR, 0)
+		if err != nil {
+			logger.Warn("confirm-spawn: open /dev/console: %v; auto-proceeding for %q", err, name)
+			return true
+		}
+		defer tty.Close()
+		fmt.Fprintf(tty, "\nconfirm-spawn: start service %q? [Y/n] ", name)
+		buf := make([]byte, 32)
+		n, err := tty.Read(buf)
+		if err != nil || n == 0 {
+			fmt.Fprintf(tty, "(no input, defaulting to yes)\n")
+			return true
+		}
+		answer := strings.TrimSpace(strings.ToLower(string(buf[:n])))
+		if answer == "n" || answer == "no" {
+			fmt.Fprintf(tty, "-> skipped\n")
+			return false
+		}
+		return true
 	}
 }
 

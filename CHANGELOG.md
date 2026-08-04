@@ -19,6 +19,30 @@ the full commit-level record.
 
 ### Added
 
+- **`slinit.confirm-spawn` and `slinit.crash-shell`** (Phase 5 of the
+  recovery+boot refactor). Both consume the `bootmode.Options` fields
+  Phase 1 already exposed.
+
+  `slinit.confirm-spawn` on the kernel cmdline installs a
+  `ServiceSet.OnConfirmSpawn` hook that prompts `start service X?
+  [Y/n]` on /dev/console before every `ProcessService.BringUp`.
+  Answer `n` skips the fork (BringUp returns false, state machine
+  treats it as a failed start — dependencies cascade, which is the
+  point of a debugging tool). Mutually exclusive with the boot
+  debugger since both need exclusive read on /dev/console — the
+  debugger is skipped when confirm-spawn is on. Uses canonical
+  mode (Enter to submit) so no termios restoration is required.
+  systemd.confirm_spawn parity.
+
+  `slinit.crash-shell` on the kernel cmdline drops into sulogin
+  on /dev/console when PID 1 panics, BEFORE the existing
+  kill-all + emergency-reboot path fires. Best-effort: no sulogin
+  found or /dev/console un-openable falls through to the normal
+  emergency reboot. `pkg/shutdown.CrashRecovery` re-reads
+  /proc/cmdline on the panic path (no need to plumb Options
+  through) — a tiny extra syscall on a very rare code path.
+  systemd.crash_shell parity.
+
 - **Emergency vs Rescue split** (Phase 2 of the recovery+boot refactor).
   Both modes still bypass the normal service graph and drop straight
   to sulogin on /dev/console, but Rescue now runs `mount -a` first so

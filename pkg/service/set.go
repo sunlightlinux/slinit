@@ -110,6 +110,16 @@ type ServiceSet struct {
 	// itself must be idempotent because service restarts fire it again.
 	OnConsoleAcquire func()
 
+	// OnConfirmSpawn fires from ProcessService.BringUp at the very start
+	// of every service activation, giving the operator a [y/n] gate
+	// before each fork+exec — systemd.confirm_spawn parity. Return true
+	// to proceed with the start (default behavior when unset), false to
+	// skip the start (BringUp returns false → the state machine treats
+	// it as a failed start). Wired by main.go when kernel cmdline has
+	// slinit.confirm-spawn. Slows boot dramatically — intended for
+	// diagnosing which service is misbehaving.
+	OnConfirmSpawn func(name string) bool
+
 	// OnSystemAction is wired by main to the event loop's shutdown
 	// initiator. It fires when a service's configured failure-action /
 	// success-action triggers a system-level transition (reboot,

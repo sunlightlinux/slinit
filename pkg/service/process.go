@@ -1264,6 +1264,18 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	// Confirm-spawn gate (systemd.confirm_spawn parity). Fires before
+	// any hook or side-effect so a skipped start truly skips everything
+	// — no pre-start-command runs, no dynamic-user allocation, no
+	// sandbox prep. Callback returning false is treated as a failed
+	// start by the state machine (deps that required this svc will
+	// cascade). Intentional: confirm-spawn is a debugging tool, not
+	// production behaviour.
+	if s.services.OnConfirmSpawn != nil && !s.services.OnConfirmSpawn(s.serviceName) {
+		s.services.logger.Info("Service '%s': skipped by confirm-spawn", s.serviceName)
+		return false
+	}
+
 	// Dynamic-user: allocate a transient UID/GID from the pool. This
 	// must happen before any UID-dependent setup (ServiceDirs chown,
 	// credentials chown) so they all see the same effective identity.
