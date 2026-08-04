@@ -1422,8 +1422,9 @@ func main() {
 				mountLocalFsBestEffort(logger)
 			}
 			logger.Notice("bootmode=%s: shell active on /dev/console (exit shell or `slinitctl shutdown` to reboot)", kOpts.Mode)
+			label := fmt.Sprintf("bootmode=%s", kOpts.Mode)
 			go func() {
-				runRescueShell(logger)
+				runRescueShell(label, logger)
 				loop.InitiateShutdown(service.ShutdownReboot)
 			}()
 		}
@@ -1750,7 +1751,17 @@ func mountLocalFsBestEffort(logger *logging.Logger) {
 // falls back to `/bin/sh` when sulogin is unavailable (e.g. minimal
 // container image). This is the systemd rescue.target / sysvinit S
 // mode analogue.
-func runRescueShell(logger *logging.Logger) {
+//
+// label is the operator-visible prefix in log lines ("bootmode=rescue",
+// "bootmode=emergency", etc.) so the same helper serves both boot modes
+// without pretending it's always the rescue path.
+//
+// SIGTERM/SIGKILL/SIGHUP exits are logged as Info, not Error — those
+// are how `slinitctl shutdown` / `poweroff` from inside the shell
+// reach us: eventloop's shutdown reap sends the signal, cmd.Wait sees
+// the child gone via signal, and complaining about a signaled exit
+// during shutdown is noise.
+func runRescueShell(label string, logger *logging.Logger) {
 	candidates := []string{"/sbin/sulogin", "/bin/sulogin", "/bin/sh", "/usr/bin/sh"}
 	var shell string
 	for _, p := range candidates {
@@ -1760,10 +1771,10 @@ func runRescueShell(logger *logging.Logger) {
 		}
 	}
 	if shell == "" {
-		logger.Error("slinit.rescue: no shell found in %v; halting", candidates)
+		logger.Error("%s: no shell found in %v; halting", label, candidates)
 		return
 	}
-	logger.Notice("slinit.rescue: exec %s (exit to reboot)", shell)
+	logger.Notice("%s: exec %s (exit to reboot)", label, shell)
 	cmd := exec.Command(shell)
 	if tty, err := os.OpenFile("/dev/console", os.O_RDWR, 0); err == nil {
 		cmd.Stdin = tty
@@ -1773,9 +1784,23 @@ func runRescueShell(logger *logging.Logger) {
 	}
 	// setsid so the shell owns its own controlling tty.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	if err := cmd.Run(); err != nil {
-		logger.Error("slinit.rescue: shell exited with error: %v", err)
+	err := cmd.Run()
+	if err == nil {
+		return
 	}
+	// Signal-driven exit during shutdown is expected — the operator
+	// asked for it via `slinitctl shutdown` or `poweroff`. Downgrade
+	// to Info to avoid a spurious ERROR line right before reboot.
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			s := ws.Signal()
+			if s == syscall.SIGTERM || s == syscall.SIGKILL || s == syscall.SIGHUP {
+				logger.Info("%s: shell terminated by %v (shutdown in progress)", label, s)
+				return
+			}
+		}
+	}
+	logger.Error("%s: shell exited with error: %v", label, err)
 }
 
 // noColor reports whether ANSI color should be suppressed, honoring the
