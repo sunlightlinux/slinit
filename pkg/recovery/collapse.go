@@ -115,24 +115,15 @@ func presentCollapse(r io.Reader, w io.Writer, timeout time.Duration) CollapseAc
 // language as renderMenu (load-fail) so the two prompts feel like
 // siblings, different action set.
 func renderCollapseMenu(w io.Writer, timeout time.Duration) {
-	const bar = "+============================================================+"
-	fmt.Fprintf(w, `
-%s
-| slinit: BOOT COLLAPSE — all services stopped               |
-|                                                            |
-| Choose an action:                                          |
-|   [r]  reboot now                                          |
-|   [p]  power off                                           |
-|   [s]  restart boot sequence           (Ctrl-D alias)      |
-|   [e]  start recovery service          (Ctrl-B alias)      |
-|                                                            |
-| Auto-reboot in %2ds if no input.                            |
-%s
-> `,
-		bar,
-		int(timeout.Seconds()),
-		bar,
-	)
+	writeBoxHeader(w, "slinit: BOOT COLLAPSE — all services stopped")
+	writeBoxBlank(w)
+	writeBoxLine(w, "Choose an action:")
+	writeBoxLine(w, "  [r]  reboot now")
+	writeBoxLine(w, "  [p]  power off")
+	writeBoxLine(w, "  [s]  restart boot sequence           (Ctrl-D alias)")
+	writeBoxLine(w, "  [e]  start recovery service          (Ctrl-B alias)")
+	writeBoxBlank(w)
+	writeBoxFooter(w, "reboot", timeout)
 }
 
 // collapseCharToAction maps the operator's single-char input to a

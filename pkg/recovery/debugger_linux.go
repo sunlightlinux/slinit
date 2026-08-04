@@ -444,21 +444,18 @@ func (d *Debugger) dispatch(a DebugAction) {
 // service names + notes so the box stays visually intact on
 // 80-col serial consoles.
 func renderDebugMenu(w io.Writer, snap StatusSnapshot, timeout time.Duration) {
-	const bar = "+============================================================+"
-	fmt.Fprintf(w, "\n%s\n", bar)
-	fmt.Fprintf(w, "| slinit: BOOT DEBUGGER — Ctrl-B intercepted at %6.2fs      |\n", snap.Elapsed.Seconds())
+	writeBoxHeader(w, fmt.Sprintf("slinit: BOOT DEBUGGER — Ctrl-B intercepted at %6.2fs", snap.Elapsed.Seconds()))
 	renderServiceBlock(w, "In progress", snap.InProgress, 5)
 	renderServiceBlock(w, "Waiting on deps", snap.Waiting, 5)
 	renderErrorBlock(w, snap.RecentErrors)
-	fmt.Fprintf(w, "|                                                            |\n")
-	fmt.Fprintf(w, "| Actions:                                                   |\n")
-	fmt.Fprintf(w, "|   [c] / Ctrl-D   continue boot                             |\n")
-	fmt.Fprintf(w, "|   [s] / Ctrl-B   drop to shell                             |\n")
-	fmt.Fprintf(w, "|   [f]            force-fail first in-progress service      |\n")
-	fmt.Fprintf(w, "|   [r]            reboot           [p]  power off           |\n")
-	fmt.Fprintf(w, "|                                                            |\n")
-	fmt.Fprintf(w, "| Auto-continue in %2ds if no input.                          |\n", int(timeout.Seconds()))
-	fmt.Fprintf(w, "%s\n> ", bar)
+	writeBoxBlank(w)
+	writeBoxLine(w, "Actions:")
+	writeBoxLine(w, "  [c] / Ctrl-D   continue boot")
+	writeBoxLine(w, "  [s] / Ctrl-B   drop to shell")
+	writeBoxLine(w, "  [f]            force-fail first in-progress service")
+	writeBoxLine(w, "  [r]            reboot           [p]  power off")
+	writeBoxBlank(w)
+	writeBoxFooter(w, "continue", timeout)
 }
 
 // renderServiceBlock prints a section like:
@@ -475,24 +472,21 @@ func renderServiceBlock(w io.Writer, title string, svcs []ServiceInfo, max int) 
 	if len(svcs) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "|                                                            |\n")
-	fmt.Fprintf(w, "| %-58s |\n", fmt.Sprintf("%s (%d):", title, len(svcs)))
+	writeBoxBlank(w)
+	writeBoxLine(w, "%s (%d):", title, len(svcs))
 	shown := svcs
 	if len(shown) > max {
 		shown = shown[:max]
 	}
 	for _, s := range shown {
-		line := fmt.Sprintf("  %-20s %s", truncString(s.Name, 20), s.State)
 		if s.Note != "" {
-			line = fmt.Sprintf("  %-20s %s (%s)", truncString(s.Name, 20), s.State, s.Note)
+			writeBoxLine(w, "  %-20s %s (%s)", truncString(s.Name, 20), s.State, s.Note)
+		} else {
+			writeBoxLine(w, "  %-20s %s", truncString(s.Name, 20), s.State)
 		}
-		if len(line) > 58 {
-			line = line[:55] + "..."
-		}
-		fmt.Fprintf(w, "| %-58s |\n", line)
 	}
 	if len(svcs) > max {
-		fmt.Fprintf(w, "| %-58s |\n", fmt.Sprintf("  ... +%d more", len(svcs)-max))
+		writeBoxLine(w, "  ... +%d more", len(svcs)-max)
 	}
 }
 
@@ -503,19 +497,15 @@ func renderErrorBlock(w io.Writer, errs []string) {
 	if len(errs) == 0 {
 		return
 	}
-	fmt.Fprintf(w, "|                                                            |\n")
-	fmt.Fprintf(w, "| Recent errors (last %d):                                   |\n", len(errs))
+	writeBoxBlank(w)
+	writeBoxLine(w, "Recent errors (last %d):", len(errs))
 	shown := errs
 	const max = 3
 	if len(shown) > max {
 		shown = shown[len(shown)-max:]
 	}
 	for _, e := range shown {
-		line := e
-		if len(line) > 56 {
-			line = line[:53] + "..."
-		}
-		fmt.Fprintf(w, "|   %-56s |\n", line)
+		writeBoxLine(w, "  %s", e)
 	}
 }
 

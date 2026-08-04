@@ -19,6 +19,41 @@ the full commit-level record.
 
 ### Added
 
+- **`slinit-analyze` — post-boot timeline analysis** (Phase 4 of the
+  recovery+boot refactor). New standalone cmd, systemd-analyze
+  parity for the queries most operators run after a slow boot.
+  Subcommands:
+  - `time` — total userspace event span + time-to-boot-STARTED +
+    last service STARTED (both wall duration and which svc).
+  - `blame` — per-service cumulative time from boot start to
+    STARTED, sorted slowest-first. `-n N` caps to top-N.
+    Metric is cumulative rather than per-svc activation duration
+    because slinit does not emit a STARTING event today (would
+    need a new SLINIT_EVENT= value); still surfaces the
+    slowest-to-boot services.
+
+  Data source: `CmdJournalQuery` over `/run/slinit.socket` — same
+  wire as `slinit-journalctl`. Filters client-side for
+  `Fields["SLINIT_EVENT"]=="STARTED"`. `critical-chain` and `plot`
+  intentionally omitted — both would need to reparse
+  `/etc/slinit.d` for the dependency graph (~300 LOC of grammar
+  work), separate from this MVP.
+
+### Changed
+
+- **Recovery menu rendering unified through shared box primitives**
+  (Phase 6 of the recovery+boot refactor). `pkg/recovery/menu.go`
+  now exposes `writeBoxHeader / writeBoxBlank / writeBoxLine /
+  writeBoxFooter` plus the `menuBoxBar` constant; `Present`,
+  `PresentCollapse`, and `Debugger` all render through them so
+  a change to the box style (width, bar character, prompt) lands
+  in one place. `renderServiceBlock` and `renderErrorBlock` in
+  the debugger also use the new primitives — silent-omit-when-empty
+  contract preserved. Behavioural output is identical; all
+  existing menu tests pass unchanged.
+
+### Added
+
 - **`slinit.confirm-spawn` and `slinit.crash-shell`** (Phase 5 of the
   recovery+boot refactor). Both consume the `bootmode.Options` fields
   Phase 1 already exposed.

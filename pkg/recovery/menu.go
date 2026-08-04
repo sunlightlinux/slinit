@@ -22,7 +22,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -174,43 +173,66 @@ func present(r io.Reader, w io.Writer, opts Options) Action {
 	}
 }
 
-// renderMenu writes the boxed menu + errors + prompt to w. Kept as
-// a single Fprintf so partial writes don't leave a half-drawn box
-// on a slow serial console.
+// menuBoxBar is the horizontal bar used by every rescue-menu box
+// (Present, PresentCollapse, Debugger). Fixed 60-column width matches
+// serial-console defaults; changing it means changing all three
+// renderers plus their tests.
+const menuBoxBar = "+============================================================+"
+
+// writeBoxHeader opens a new menu box: leading newline, bar, then the
+// title line padded to the interior width. Callers follow with their
+// per-menu content (writeBoxBlank / writeBoxLine / any custom Fprintf)
+// and close via writeBoxFooter.
+func writeBoxHeader(w io.Writer, title string) {
+	fmt.Fprintf(w, "\n%s\n", menuBoxBar)
+	fmt.Fprintf(w, "| %-58s |\n", title)
+}
+
+// writeBoxBlank writes a spacer row inside the box — a `|` at each
+// margin, whitespace between. Used to visually separate sections
+// (title / errors / actions / footer) without cluttering the box.
+func writeBoxBlank(w io.Writer) {
+	fmt.Fprintf(w, "|                                                            |\n")
+}
+
+// writeBoxLine writes a single content row: `| <content> |`. content
+// is formatted from format+args and truncated to fit the 58-char
+// interior with "..." tail on overflow so a runaway string can't
+// break the box outline on an 80-col serial console.
+func writeBoxLine(w io.Writer, format string, args ...interface{}) {
+	line := fmt.Sprintf(format, args...)
+	if len(line) > 58 {
+		line = line[:55] + "..."
+	}
+	fmt.Fprintf(w, "| %-58s |\n", line)
+}
+
+// writeBoxFooter writes the auto-* countdown row + closing bar +
+// operator prompt. verb is "reboot" for rescue/collapse or "continue"
+// for the debugger — chosen to match what the timeout actually does.
+func writeBoxFooter(w io.Writer, verb string, timeout time.Duration) {
+	writeBoxLine(w, "Auto-%s in %2ds if no input.", verb, int(timeout.Seconds()))
+	fmt.Fprintf(w, "%s\n> ", menuBoxBar)
+}
+
+// renderMenu writes the boxed load-failure menu on w.
 func renderMenu(w io.Writer, opts Options) {
-	const bar = "+============================================================+"
-	var errsBlock strings.Builder
+	writeBoxHeader(w, "slinit: BOOT FAILURE — cannot continue")
 	if len(opts.Errors) > 0 {
-		errsBlock.WriteString("|                                                            |\n")
-		errsBlock.WriteString("| Errors:                                                    |\n")
+		writeBoxBlank(w)
+		writeBoxLine(w, "Errors:")
 		for _, e := range opts.Errors {
-			// Truncate very long errors so the box stays visually
-			// intact on 80-col consoles. Full text is still in the
-			// scrollback (logger already printed it).
-			line := e
-			if len(line) > 56 {
-				line = line[:53] + "..."
-			}
-			fmt.Fprintf(&errsBlock, "|   %-56s |\n", line)
+			writeBoxLine(w, "  %s", e)
 		}
 	}
-	fmt.Fprintf(w, `
-%s
-| slinit: BOOT FAILURE — cannot continue                     |%s|                                                            |
-| Choose an action:                                          |
-|   [r]  reboot now                                          |
-|   [p]  power off                                           |
-|   [s]  drop to shell   (Ctrl-B alias)                      |
-|   [c]  continue — retry loading boot   (Ctrl-D alias)      |
-|                                                            |
-| Auto-reboot in %2ds if no input.                            |
-%s
-> `,
-		bar,
-		"\n"+errsBlock.String(),
-		int(opts.Timeout.Seconds()),
-		bar,
-	)
+	writeBoxBlank(w)
+	writeBoxLine(w, "Choose an action:")
+	writeBoxLine(w, "  [r]  reboot now")
+	writeBoxLine(w, "  [p]  power off")
+	writeBoxLine(w, "  [s]  drop to shell   (Ctrl-B alias)")
+	writeBoxLine(w, "  [c]  continue — retry loading boot   (Ctrl-D alias)")
+	writeBoxBlank(w)
+	writeBoxFooter(w, "reboot", opts.Timeout)
 }
 
 // readActionWithTimeout is the load-failure-menu-flavored wrapper
