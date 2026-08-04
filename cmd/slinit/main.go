@@ -636,7 +636,17 @@ func main() {
 			logger.SetBootConsole(false, false)
 			logger.SetLevel(logging.LevelDebug)
 			logger.Notice("slinit.debug: verbose console logging enabled")
-		} else if bootConsole && !consoleDup {
+		} else if kOpts.LogLevel != "" {
+			// slinit.log-level=<lvl> — systemd.log_level parity.
+			// Finer-grained than slinit.debug (which also flips off
+			// the compact boot console); this only adjusts the log
+			// verbosity threshold, boot console stays as-is.
+			// Unknown level strings silently degrade to Info via
+			// parseLogLevel — matches how --log-level treats them.
+			logger.SetLevel(parseLogLevel(kOpts.LogLevel))
+			logger.Notice("slinit.log-level=%s applied", kOpts.LogLevel)
+		}
+		if bootConsole && !kOpts.Debug && !consoleDup {
 			// Mirror the boot console to every *other* active console so the
 			// "[ OK ] name" list shows on all of them. l.output already goes
 			// to /dev/console, but that is only the last console= on the
