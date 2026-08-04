@@ -1605,14 +1605,16 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logge
 // makeConfirmSpawnPrompt returns a hook suitable for
 // ServiceSet.OnConfirmSpawn: opens /dev/console per prompt (avoids
 // holding a fd for the whole boot), writes a [y/n] question, reads one
-// line, returns true iff answer is "y" or empty. On any error (console
-// unopenable, read fails, etc.) auto-proceeds — the operator asked for
-// interactivity but a broken tty shouldn't wedge the boot forever.
+// keypress, returns true iff the operator does NOT press n/N. On any
+// error (console unopenable, read fails, etc.) auto-proceeds — the
+// operator asked for interactivity but a broken tty shouldn't wedge
+// the boot forever.
 //
-// Uses canonical mode (default): operator must press Enter after the
-// answer. Rougher UX than the recovery menu's cbreak but avoids the
-// termios-restoration dance for a debugging-only feature; keeps the
-// implementation simple.
+// Cbreak mode: ICANON off so a single keypress dispatches (no Enter
+// required), ECHO kept on so the operator sees their y/n. TCIFLUSH
+// before the read drops stray input the operator may have accumulated
+// during a slow pre-start-command. Termios is captured + restored per
+// prompt so a failure mid-boot doesn't leave the tty in raw mode.
 func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
 	return func(name string) bool {
 		tty, err := os.OpenFile("/dev/console", os.O_RDWR, 0)
@@ -1621,15 +1623,34 @@ func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
 			return true
 		}
 		defer tty.Close()
+		fd := int(tty.Fd())
+
+		// Switch to cbreak. Falling back to canonical read if the fd
+		// is not a tty (test harness, redirected stdin) — the operator
+		// still has to press Enter but the prompt still works.
+		orig, tErr := unix.IoctlGetTermios(fd, unix.TCGETS)
+		if tErr == nil {
+			raw := *orig
+			raw.Lflag &^= unix.ICANON // keep ECHO so the y/n is visible
+			raw.Cc[unix.VMIN] = 1
+			raw.Cc[unix.VTIME] = 0
+			_ = unix.IoctlSetTermios(fd, unix.TCSETS, &raw)
+			// Drop bytes queued while the operator watched the last
+			// service start so a stale Enter doesn't auto-answer.
+			_ = unix.IoctlSetInt(fd, unix.TCFLSH, unix.TCIFLUSH)
+			defer unix.IoctlSetTermios(fd, unix.TCSETS, orig)
+		}
+
 		fmt.Fprintf(tty, "\nconfirm-spawn: start service %q? [Y/n] ", name)
-		buf := make([]byte, 32)
+		buf := make([]byte, 1)
 		n, err := tty.Read(buf)
+		fmt.Fprintln(tty) // cbreak swallows Enter, so print our own line-break
 		if err != nil || n == 0 {
 			fmt.Fprintf(tty, "(no input, defaulting to yes)\n")
 			return true
 		}
-		answer := strings.TrimSpace(strings.ToLower(string(buf[:n])))
-		if answer == "n" || answer == "no" {
+		switch buf[0] {
+		case 'n', 'N':
 			fmt.Fprintf(tty, "-> skipped\n")
 			return false
 		}
