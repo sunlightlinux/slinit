@@ -346,7 +346,7 @@ doneFlags:
 			return cmdOnce(conn, name)
 		})
 	case "boot-time", "analyze":
-		err = cmdBootTime(conn)
+		err = cmdAnalyze(conn, cmdArgs)
 	case "reload":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdReload(conn, name)
@@ -2621,6 +2621,272 @@ func formatDuration(d time.Duration) string {
 		return strconv.FormatInt(d.Milliseconds(), 10) + "ms"
 	}
 	return strconv.FormatFloat(d.Seconds(), 'f', 3, 64) + "s"
+}
+
+// cmdAnalyze is the dispatcher for `slinitctl analyze [sub]`. Extends
+// the historical `slinitctl boot-time` (which showed kernel+userspace
+// summary + per-svc blame in one shot) with sub-commands matching
+// systemd-analyze's operator surface:
+//
+//	slinitctl analyze                     # same as `time` — full summary
+//	slinitctl analyze time                # kernel + userspace + blame
+//	slinitctl analyze blame               # alias for `time`
+//	slinitctl analyze critical-chain [S]  # longest dependency chain
+//	slinitctl analyze dot                 # dep graph in Graphviz DOT
+//	slinitctl analyze plot                # NOT YET — needs per-svc start
+//	                                      #   timestamps (BootTime protocol
+//	                                      #   only exposes durations)
+func cmdAnalyze(conn net.Conn, args []string) error {
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+	}
+	switch sub {
+	case "", "time", "blame":
+		return cmdBootTime(conn)
+	case "critical-chain":
+		var svc string
+		if len(args) > 1 {
+			svc = args[1]
+		}
+		return cmdAnalyzeCriticalChain(conn, svc)
+	case "dot":
+		return cmdGraph(conn)
+	case "plot":
+		return fmt.Errorf("analyze plot: not implemented — BootTime protocol " +
+			"exposes per-svc durations but not start timestamps, which SVG " +
+			"timeline layout needs; use `analyze critical-chain` for the " +
+			"slowest sequence or `analyze dot | dot -Tsvg` for the graph")
+	default:
+		return fmt.Errorf("analyze: unknown subcommand %q (want: time, blame, "+
+			"critical-chain, dot, plot)", sub)
+	}
+}
+
+// cmdAnalyzeCriticalChain walks the dependency graph from the boot
+// service backwards, following the path with the largest cumulative
+// startup time — the operator's answer to "what dominated boot?".
+// startSvc overrides the walk root (defaults to BootTimeInfo.BootSvcName).
+//
+// Complexity: O(V + E) via memoized DFS. Graph fetched via the same
+// list + FindService + QueryDependencies rounds cmdGraph uses; timing
+// data from CmdBootTime. Both are one-shot RPCs so cost is
+// proportional to number of services, not query size.
+func cmdAnalyzeCriticalChain(conn net.Conn, startSvc string) error {
+	// --- Timing data ---
+	if err := control.WritePacket(conn, control.CmdBootTime, nil); err != nil {
+		return err
+	}
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyBootTime {
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	info, err := control.DecodeBootTime(payload)
+	if err != nil {
+		return err
+	}
+	if info.BootReadyNs == 0 {
+		return fmt.Errorf("boot service %q has not reached STARTED yet; "+
+			"critical-chain requires a complete boot", info.BootSvcName)
+	}
+	if startSvc == "" {
+		startSvc = info.BootSvcName
+	}
+	svcDur := make(map[string]time.Duration, len(info.Services))
+	for _, s := range info.Services {
+		svcDur[s.Name] = time.Duration(s.StartupNs)
+	}
+
+	// --- Dependency graph ---
+	deps, err := fetchDepGraph(conn)
+	if err != nil {
+		return fmt.Errorf("fetch dep graph: %w", err)
+	}
+	if _, ok := deps[startSvc]; !ok {
+		return fmt.Errorf("service %q not found in dependency graph", startSvc)
+	}
+
+	// --- Longest-path DFS with memoization ---
+	// cache[svc] = (max cumulative time reachable from svc backwards, chain of svcs)
+	type memo struct {
+		total time.Duration
+		chain []string
+	}
+	cache := make(map[string]memo)
+	var walk func(svc string) memo
+	walk = func(svc string) memo {
+		if m, ok := cache[svc]; ok {
+			return m
+		}
+		// Guard against cycles (shouldn't happen in a well-formed
+		// dep graph, but a bad service file could produce one).
+		cache[svc] = memo{total: 0, chain: nil}
+		var best memo
+		for _, dep := range deps[svc] {
+			m := walk(dep)
+			candidate := m.total + svcDur[dep]
+			if candidate > best.total {
+				best = memo{
+					total: candidate,
+					chain: append([]string{dep}, m.chain...),
+				}
+			}
+		}
+		cache[svc] = best
+		return best
+	}
+
+	m := walk(startSvc)
+
+	// --- Render ---
+	// Each StartupNs is INCLUSIVE of its deps (time from BringUp to
+	// STARTED — the parent waited on the child, so the child's time
+	// is already counted inside the parent's). "Self time" is
+	// parent_dur - max_child_dur — how much of the parent's wait
+	// was its OWN work vs waiting on this specific child. That's
+	// what actually answers "who did work" vs "who waited".
+	fmt.Printf("Critical dependency chain for %q:\n\n", startSvc)
+	chain := append([]string{startSvc}, m.chain...)
+	for i, name := range chain {
+		indent := strings.Repeat("  ", i)
+		prefix := indent
+		if i > 0 {
+			prefix += "└─"
+		} else {
+			prefix += "  "
+		}
+		dur := svcDur[name]
+		selfNote := ""
+		if i < len(chain)-1 {
+			childDur := svcDur[chain[i+1]]
+			self := dur - childDur
+			if self > 0 {
+				selfNote = fmt.Sprintf("  (+%s self)", formatDuration(self))
+			}
+		} else {
+			// Leaf: whole duration is self.
+			selfNote = fmt.Sprintf("  (+%s self)", formatDuration(dur))
+		}
+		fmt.Printf("%s%s%s%s\n",
+			prefix, padRight(name, 32-len(prefix)+2),
+			formatDuration(dur), selfNote)
+	}
+	return nil
+}
+
+// padRight pads s with spaces so it fills exactly width columns.
+// Used for column alignment in critical-chain output.
+func padRight(s string, width int) string {
+	if len(s) >= width {
+		return s + " "
+	}
+	return s + strings.Repeat(" ", width-len(s))
+}
+
+// fetchDepGraph replays the list + FindService + QueryDependencies
+// rounds cmdGraph uses, but returns the edges as an adjacency map
+// keyed by service name (svc → its direct dependencies). Cheaper for
+// callers that want to walk the graph programmatically vs. render it.
+func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
+	// Phase 1: list all services.
+	if err := control.WritePacket(conn, control.CmdListServices, nil); err != nil {
+		return nil, err
+	}
+	type entry struct {
+		name   string
+		handle uint32
+	}
+	var entries []entry
+	for {
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return nil, err
+		}
+		if rply == control.RplyListDone {
+			break
+		}
+		if rply != control.RplySvcInfo {
+			return nil, fmt.Errorf("unexpected reply: %d", rply)
+		}
+		info, _, err := control.DecodeSvcInfo(payload)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry{name: info.Name})
+	}
+	// Phase 2: FindService for each.
+	for i := range entries {
+		if err := control.WritePacket(conn, control.CmdFindService,
+			control.EncodeServiceName(entries[i].name)); err != nil {
+			return nil, err
+		}
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return nil, err
+		}
+		if rply != control.RplyServiceRecord || len(payload) < 5 {
+			continue
+		}
+		entries[i].handle = binary.LittleEndian.Uint32(payload[1:])
+	}
+	handleNames := make(map[uint32]string, len(entries))
+	for _, e := range entries {
+		handleNames[e.handle] = e.name
+	}
+	// Phase 3: QueryDependencies for each.
+	deps := make(map[string][]string, len(entries))
+	for _, e := range entries {
+		if e.handle == 0 {
+			continue
+		}
+		if err := control.WritePacket(conn, control.CmdQueryDependencies,
+			control.EncodeHandle(e.handle)); err != nil {
+			return nil, err
+		}
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return nil, err
+		}
+		if rply != control.RplyDependencies || len(payload) < 4 {
+			continue
+		}
+		count := int(binary.LittleEndian.Uint32(payload))
+		off := 4
+		for j := 0; j < count; j++ {
+			if len(payload) < off+5 {
+				break
+			}
+			depHandle := binary.LittleEndian.Uint32(payload[off:])
+			off += 5
+			depName, ok := handleNames[depHandle]
+			if !ok {
+				// Resolve a fresh handle inline (rare — happens
+				// when a dep was allocated after our Phase 1 list).
+				if err := control.WritePacket(conn, control.CmdQueryServiceName,
+					control.EncodeHandle(depHandle)); err == nil {
+					if rply2, payload2, err := control.ReadPacket(conn); err == nil &&
+						rply2 == control.RplyServiceName {
+						depName, _, _ = control.DecodeServiceName(payload2)
+						handleNames[depHandle] = depName
+					}
+				}
+			}
+			if depName != "" {
+				deps[e.name] = append(deps[e.name], depName)
+			}
+		}
+	}
+	// Ensure every service has an entry (even leaf services with no deps),
+	// so callers can distinguish "no deps" from "not in graph".
+	for _, e := range entries {
+		if _, ok := deps[e.name]; !ok {
+			deps[e.name] = nil
+		}
+	}
+	return deps, nil
 }
 
 func cmdReload(conn net.Conn, name string) error {
