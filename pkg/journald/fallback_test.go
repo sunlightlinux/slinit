@@ -53,9 +53,12 @@ func TestFallbackPrimaryUnwritable(t *testing.T) {
 }
 
 func TestFallbackNoFallbackReturnsErr(t *testing.T) {
-	// Non-existent parent path forces mkdir failure without any
-	// permission dependency.
-	primary := "/no/such/parent/dir/for/slinit-journald"
+	// Path with /dev/null as parent — MkdirAll fails with ENOTDIR
+	// regardless of UID, so this stays deterministic when the test
+	// suite runs as root on CI (a plain non-existent path like
+	// /no/such/parent/... would succeed because root can MkdirAll
+	// anywhere).
+	primary := "/dev/null/for/slinit-journald"
 
 	fs, _, err := OpenFileSinkWithFallback(primary, "", FileSinkOptions{})
 	if fs != nil {
@@ -72,8 +75,9 @@ func TestProbeWritable(t *testing.T) {
 	if err := probeWritable(t.TempDir()); err != nil {
 		t.Fatalf("probe on temp dir failed: %v", err)
 	}
-	// Non-existent parent — mkdir attempt fails.
-	if err := probeWritable("/no/such/parent/x/y/z"); err == nil {
+	// /dev/null as parent forces ENOTDIR on the MkdirAll attempt,
+	// independent of UID — matters for CI running as root.
+	if err := probeWritable("/dev/null/x/y/z"); err == nil {
 		t.Fatal("expected probe error for uncreatable dir")
 	}
 }
