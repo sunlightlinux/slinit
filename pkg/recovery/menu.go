@@ -242,7 +242,7 @@ func renderMenu(w io.Writer, opts Options) {
 // reused by PresentCollapse without duplicating the goroutine +
 // countdown-tick logic.
 func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Action {
-	b, ok := readByteWithTimeout(r, w, timeout)
+	b, ok := readByteWithTimeout(r, w, timeout, "reboot")
 	if !ok {
 		return ActionTimeout
 	}
@@ -251,10 +251,12 @@ func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Acti
 
 // readByteWithTimeout reads a single non-whitespace byte from r or
 // returns (0, false) if nothing arrives before timeout. Blocks up
-// to timeout. Every second it re-writes the countdown line on w
-// (`\r| Auto-reboot in Xs if no input. |\r> `) so the operator sees
-// the clock tick — makes the UI feel alive on a serial console vs
-// frozen.
+// to timeout. Every second it re-writes the countdown line on w so
+// the operator sees the clock tick — makes the UI feel alive on a
+// serial console vs frozen. `verb` is the action the countdown
+// describes when it expires ("reboot" for load-fail / collapse
+// menus, "continue" for the debugger); callers pass the same word
+// their footer used so the messages don't disagree.
 //
 // A read error other than io.EOF is treated as timeout (safer than
 // guessing). io.EOF gets a synthetic 0x04 (Ctrl-D) so callers using
@@ -267,7 +269,7 @@ func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Acti
 // Uses a goroutine + channel because os.File.Read has no native
 // deadline on non-socket fds (/dev/console is a tty character
 // device, not a socket).
-func readByteWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) (byte, bool) {
+func readByteWithTimeout(r io.Reader, w io.Writer, timeout time.Duration, verb string) (byte, bool) {
 	inputCh := make(chan byte, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -293,23 +295,56 @@ func readByteWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) (byte,
 		}
 	}()
 
+	// clearPrompt wipes the countdown text on the way out so any
+	// [OK] name line that fires next (via ResumeBootConsole or the
+	// caller's own dispatch log) starts on a clean row instead of
+	// stamping over "Auto-* in Xs if no input…" leftovers.
+	// \r + ANSI erase-to-end-of-line + \n moves cursor to the next
+	// physical line for the follow-up output. Cheap enough to always
+	// run.
+	clearPrompt := func() {
+		fmt.Fprint(w, "\r\x1b[2K\n")
+	}
+
+	// Simpler than Ticker: one time.After per iteration, capped at
+	// the smaller of 1s (redraw cadence) and remaining time (never
+	// overshoot the deadline). Earlier Ticker-based version fired
+	// once then stopped delivering subsequent ticks on the demo
+	// serial console — never root-caused but time.After per loop
+	// dodges whatever runtime interaction bit it.
 	deadline := time.Now().Add(timeout)
-	tick := time.NewTicker(1 * time.Second)
-	defer tick.Stop()
 	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			clearPrompt()
+			return 0, false
+		}
+		wait := time.Second
+		if remaining < wait {
+			wait = remaining
+		}
 		select {
 		case b := <-inputCh:
+			clearPrompt()
 			return b, true
 		case <-errCh:
+			clearPrompt()
 			return 0, false
-		case <-time.After(time.Until(deadline)):
-			return 0, false
-		case <-tick.C:
-			remaining := int(time.Until(deadline).Seconds())
-			if remaining <= 0 {
+		case <-time.After(wait):
+			secs := int(time.Until(deadline).Seconds())
+			if secs <= 0 {
+				clearPrompt()
 				return 0, false
 			}
-			fmt.Fprintf(w, "\r| Auto-reboot in %2ds if no input.                            |\r> ", remaining)
+			// \r returns cursor to start of the prompt line (which
+			// is what we're on after renderXxxMenu ended with
+			// "%s\n> ", bar). The %-64s pad clears any leftover
+			// from the previous tick line or a stray [OK] that snuck
+			// through before PauseBootConsole caught up. Trailing
+			// "\r> " puts the prompt back so operator input still
+			// lands right after ">".
+			fmt.Fprintf(w, "\r%-64s\r> Auto-%s in %2ds if no input… (press any key)\r> ",
+				"", verb, secs)
 		}
 	}
 }

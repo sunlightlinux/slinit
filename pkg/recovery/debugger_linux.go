@@ -140,6 +140,15 @@ type DebuggerOptions struct {
 	// (sulogin → /bin/sh). Empty picks the same defaults as
 	// pkg/recovery.Present.
 	ShellCandidates []string
+	// PauseBootConsoleFn / ResumeBootConsoleFn, when non-nil, are
+	// invoked around each menu render so concurrent "[ OK ] name"
+	// lines from services finishing while the operator reads the
+	// menu don't trample the boxed layout. Wired by main.go to
+	// logger.PauseBootConsole / ResumeBootConsole. Nil-safe: on
+	// non-PID-1 mode or tests, the menu still renders correctly,
+	// just with the old interleaving behaviour.
+	PauseBootConsoleFn  func()
+	ResumeBootConsoleFn func()
 }
 
 // Debugger owns a goroutine that continuously reads /dev/console in
@@ -232,6 +241,19 @@ func (d *Debugger) Stop() {
 	if !d.running.CompareAndSwap(true, false) {
 		return
 	}
+	// If a menu is presenting right now (operator hit Ctrl-B and is
+	// reading / interacting) do NOT rip the tty out from under them.
+	// Wait for the menu to close on its own (operator picks an
+	// action or 60s auto-continue timeout). This is the difference
+	// between "boot completed while you were browsing the debugger
+	// and we killed your session" and "boot completed silently in
+	// the background, come back to us when you're done".
+	//
+	// menuMu is held only during presentMenu, so this normally
+	// returns immediately; the wait matters only when a real menu
+	// is up.
+	d.menuMu.Lock()
+	d.menuMu.Unlock()
 	close(d.stopCh)
 	// Closing the tty fd unblocks the goroutine's ReadByte via
 	// EBADF/EIO — the standard way to unstick a blocking read on
@@ -334,7 +356,20 @@ func (d *Debugger) run() {
 // Returns when the operator picks a non-shell action (or menu times
 // out). Runs on the reader goroutine; the tty is already in raw
 // mode from Start.
+//
+// Pauses the boot console renderer for the whole present cycle so
+// concurrent "[ OK ] name" lines from services that finish while
+// the operator reads the menu don't shatter the boxed layout.
+// Resume on exit — the snapshot inside the box already reflects
+// live state per render, so the operator loses nothing by not
+// seeing the individual completion lines.
 func (d *Debugger) presentMenu() DebugAction {
+	if d.opts.PauseBootConsoleFn != nil {
+		d.opts.PauseBootConsoleFn()
+	}
+	if d.opts.ResumeBootConsoleFn != nil {
+		defer d.opts.ResumeBootConsoleFn()
+	}
 	// Fresh snapshot per menu open — state may have advanced since
 	// the previous Ctrl-B (or the state machine may have made
 	// progress while the menu was open a moment ago).
@@ -342,7 +377,7 @@ func (d *Debugger) presentMenu() DebugAction {
 		snap := d.opts.StatusFn()
 		snap.Elapsed = time.Since(d.startTime)
 		renderDebugMenu(d.tty, snap, d.opts.Timeout)
-		b, ok := readByteWithTimeout(d.tty, d.tty, d.opts.Timeout)
+		b, ok := readByteWithTimeout(d.tty, d.tty, d.opts.Timeout, "continue")
 		if !ok {
 			return DebugTimeout
 		}

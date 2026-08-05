@@ -1100,6 +1100,12 @@ func main() {
 				shutdown.Execute(service.ShutdownPoweroff, logger)
 			},
 			Logger: logger,
+			// Silence the compact "[ OK ] name" boot console while
+			// the menu is open so services finishing in parallel
+			// don't shatter the boxed layout. Snapshot in the menu
+			// already reflects live state per render.
+			PauseBootConsoleFn:  logger.PauseBootConsole,
+			ResumeBootConsoleFn: logger.ResumeBootConsole,
 		})
 		if err := bootDebugger.Start(); err != nil {
 			logger.Warn("Boot debugger disabled: %v", err)

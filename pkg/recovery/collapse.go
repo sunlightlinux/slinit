@@ -104,7 +104,7 @@ func PresentCollapse(opts CollapseOptions) CollapseAction {
 // /dev/console.
 func presentCollapse(r io.Reader, w io.Writer, timeout time.Duration) CollapseAction {
 	renderCollapseMenu(w, timeout)
-	b, ok := readByteWithTimeout(r, w, timeout)
+	b, ok := readByteWithTimeout(r, w, timeout, "reboot")
 	if !ok {
 		return CollapseTimeout
 	}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/syslog"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -143,6 +144,14 @@ type Logger struct {
 	// The full detail is still recorded in the main log (syslog/file).
 	bootConsole bool
 
+	// bootConsolePaused, when non-zero, suppresses bootStatus writes
+	// to the console (and consoleDup). Used by recovery.Debugger's
+	// menu present-loop to keep the boxed menu from being trampled by
+	// concurrent [ OK ] name lines from services that finish while
+	// the operator reads the menu. Syslog/main log still records the
+	// events — this only affects the compact console renderer.
+	bootConsolePaused atomic.Bool
+
 	// color enables ANSI color in the boot-console status markers.
 	color bool
 
@@ -231,14 +240,27 @@ func (l *Logger) SetShutdownConsole(enabled bool) {
 
 // bootStatus writes a "<marker> name" status line to the console (and the
 // console-dup writer, if any). The marker comes from markerOK/markerFail/
-// markerStopped, which apply ANSI color when l.color is set.
+// markerStopped, which apply ANSI color when l.color is set. Suppressed
+// when bootConsolePaused is set (see PauseBootConsole) so an interactive
+// menu on /dev/console isn't trampled by concurrent service transitions.
 func (l *Logger) bootStatus(marker, name string) {
+	if l.bootConsolePaused.Load() {
+		return
+	}
 	line := fmt.Sprintf("%s %s\n", marker, name)
 	fmt.Fprint(l.output, line)
 	if l.consoleDup != nil {
 		fmt.Fprint(l.consoleDup, line)
 	}
 }
+
+// PauseBootConsole silently suppresses the "[ OK ] name" compact
+// renderer while a caller holds /dev/console for an interactive menu
+// (recovery.Debugger, PresentCollapse, Present). Syslog / main log
+// continue to record events — this is UI-only. Idempotent under the
+// atomic; ResumeBootConsole is the inverse.
+func (l *Logger) PauseBootConsole()  { l.bootConsolePaused.Store(true) }
+func (l *Logger) ResumeBootConsole() { l.bootConsolePaused.Store(false) }
 
 // markerOK renders the "[ OK ]" success marker, green when color is enabled.
 func (l *Logger) markerOK() string {
