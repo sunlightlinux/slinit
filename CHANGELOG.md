@@ -17,113 +17,23 @@ the full commit-level record.
 
 ## [Unreleased]
 
-### Added
+## [2.1.2] — 2026-08-04
 
-### Changed
-
-- **Rescue / emergency mode now keeps the control socket + event loop
-  alive** (systemd rescue.target parity). The previous cut bypassed
-  slinit's infrastructure entirely — control socket unopened, event
-  loop never started — so `slinitctl` commands from inside the
-  rescue shell failed with "no such file or directory". Refactored:
-  the rescue-mode gate short-circuits boot-services load + debugger
-  + confirm-spawn (all irrelevant to a bare-shell boot) but still
-  runs through `ctrlServer.Start` and `loop.Run`. Rescue shell is
-  spawned in a goroutine that, on shell exit, calls
-  `loop.InitiateShutdown(reboot)` — matching how a normal boot
-  reaches shutdown. `slinitctl shutdown` from inside the shell now
-  routes through the same path.
-
-  `pkg/eventloop.initiateShutdown` gained an empty-set fast path:
-  after `StopAllServices` returns, if `CountActiveServices() == 0`
-  the loop pokes `forceExitCh` immediately instead of waiting for
-  the 90s emergency timer to fire. The Run-side handler distinguishes
-  the two callers (real timeout vs. no-services fast path) and logs
-  correctly in each case. Live QEMU: `slinitctl shutdown` from
-  rescue now reboots at ~19s vs the ~107s the old timer-wait path
-  took.
-
-- **Recovery menu rendering unified through shared box primitives**
-  (Phase 6 of the recovery+boot refactor). `pkg/recovery/menu.go`
-  now exposes `writeBoxHeader / writeBoxBlank / writeBoxLine /
-  writeBoxFooter` plus the `menuBoxBar` constant; `Present`,
-  `PresentCollapse`, and `Debugger` all render through them so
-  a change to the box style (width, bar character, prompt) lands
-  in one place. `renderServiceBlock` and `renderErrorBlock` in
-  the debugger also use the new primitives — silent-omit-when-empty
-  contract preserved. Behavioural output is identical; all
-  existing menu tests pass unchanged.
-
-- **Recovery menu rendering unified through shared box primitives**
-  (Phase 6 of the recovery+boot refactor). `pkg/recovery/menu.go`
-  now exposes `writeBoxHeader / writeBoxBlank / writeBoxLine /
-  writeBoxFooter` plus the `menuBoxBar` constant; `Present`,
-  `PresentCollapse`, and `Debugger` all render through them so
-  a change to the box style (width, bar character, prompt) lands
-  in one place. `renderServiceBlock` and `renderErrorBlock` in
-  the debugger also use the new primitives — silent-omit-when-empty
-  contract preserved. Behavioural output is identical; all
-  existing menu tests pass unchanged.
+Recovery + boot refactor: brings slinit's kernel-cmdline surface,
+rescue/emergency semantics, and boot-timing tooling to systemd-analyze
+parity (four of five subcommands, per-svc self-time annotated) while
+keeping slinit's unique interactive UX (Ctrl-B live debugger, boxed
+rescue menus, boot-collapse dialog). Ten features shipped across six
+planned phases + a dozen follow-up UX fixes from live QEMU testing.
 
 ### Added
-
-- **`slinit.confirm-spawn` and `slinit.crash-shell`** (Phase 5 of the
-  recovery+boot refactor). Both consume the `bootmode.Options` fields
-  Phase 1 already exposed.
-
-  `slinit.confirm-spawn` on the kernel cmdline installs a
-  `ServiceSet.OnConfirmSpawn` hook that prompts `start service X?
-  [Y/n]` on /dev/console before every `ProcessService.BringUp`.
-  Answer `n` skips the fork (BringUp returns false, state machine
-  treats it as a failed start — dependencies cascade, which is the
-  point of a debugging tool). Mutually exclusive with the boot
-  debugger since both need exclusive read on /dev/console — the
-  debugger is skipped when confirm-spawn is on. Uses canonical
-  mode (Enter to submit) so no termios restoration is required.
-  systemd.confirm_spawn parity.
-
-  `slinit.crash-shell` on the kernel cmdline drops into sulogin
-  on /dev/console when PID 1 panics, BEFORE the existing
-  kill-all + emergency-reboot path fires. Best-effort: no sulogin
-  found or /dev/console un-openable falls through to the normal
-  emergency reboot. `pkg/shutdown.CrashRecovery` re-reads
-  /proc/cmdline on the panic path (no need to plumb Options
-  through) — a tiny extra syscall on a very rare code path.
-  systemd.crash_shell parity.
-
-- **Emergency vs Rescue split** (Phase 2 of the recovery+boot refactor).
-  Both modes still bypass the normal service graph and drop straight
-  to sulogin on /dev/console, but Rescue now runs `mount -a` first so
-  /etc/fstab is honoured — the operator has /home, /var, /tmp before
-  reaching the shell. Emergency stays filesystem-agnostic (except the
-  kernel-mounted root) so it works even when fstab is broken or a
-  critical mount hangs. Matches systemd's emergency.target /
-  rescue.target distinction. New helper `mountLocalFsBestEffort` in
-  main.go: 30s ctx timeout guards against a hanging NFS/iSCSI mount,
-  best-effort semantics keep the shell reachable regardless of exit
-  status, silent skip when mount(8) is absent (minimal container
-  image).
-
-- **Persistent debug shell on /dev/tty9** (Phase 3 of the
-  recovery+boot refactor). Enabled by kernel cmdline
-  `slinit.debug-shell`. Analog of systemd.debug-shell.service on
-  tty9 — an always-on root shell on a dedicated VT that never
-  competes with getty on /dev/console. Solves the "post-boot debug
-  access" problem architecturally instead of via the previously
-  planned SIGUSR1 + `slinitctl debug` route (Phase 2 of the old
-  debugger TODO), which required pty interposition or a getty shim.
-  Respawn loop with getty-style crash-loop guard (sub-second exits
-  get a 1s cooldown before respawn). Silently skips when tty9
-  cannot be opened (headless system, no VT support) or no shell
-  is available. Goroutine lives for the whole PID-1 lifetime.
 
 - **`pkg/bootmode` — structured kernel-cmdline boot-mode parser**
-  (Phase 1 of the recovery+boot refactor). Centralises what was
-  previously scattered `kcmdlineHasFlag` calls in `cmd/slinit/main.go`
-  into a single `bootmode.Options` struct with typed fields for the
-  full slinit / systemd operator surface: `Mode` (Normal / Emergency /
-  Rescue), `DebugShell`, `ConfirmSpawn`, `CrashShell`, `LogLevel`,
-  and legacy `Debug`. Recognized tokens:
+  (Phase 1). Centralises what were scattered `kcmdlineHasFlag` calls
+  in `cmd/slinit/main.go` into a single `bootmode.Options` struct
+  with typed fields for the full slinit + systemd operator surface:
+  `Mode` (Normal / Emergency / Rescue), `DebugShell`, `ConfirmSpawn`,
+  `CrashShell`, `LogLevel`, and legacy `Debug`. Recognized tokens:
 
   - Bare: `single`, `s`, `1` → Rescue (sysvinit runlevel 1 compat);
     `emergency` → Emergency; `rescue` → Rescue;
@@ -131,23 +41,176 @@ the full commit-level record.
     `slinit.confirm-spawn`, `slinit.crash-shell`, `slinit.debug`.
   - Key=value: `slinit.log-level=<lvl>`.
 
-  Last-mode-wins semantics for conflicting bare tokens
-  (`emergency rescue` → Rescue), matching systemd's precedence.
-  KEY=VALUE forms of bare-token keys are ignored so a `single=1`
-  kernel arg cannot accidentally trip Rescue. Parser is fully
-  testable off `/proc/cmdline` — `ParseFromProc` is the OS-side
-  entry point, `Parse(string)` is what the 34-case test table
-  exercises.
+  Last-mode-wins on conflicts (`emergency rescue` → Rescue), matching
+  systemd precedence. KEY=VALUE forms of bare-token selectors are
+  ignored so `single=1` cannot accidentally trip Rescue. 34-case
+  test table exercises the full grammar.
 
-  Wired in `main.go` right after `PrintBootBanner`: replaces the
-  legacy `kcmdlineHasFlag("slinit.debug")` and
-  `kcmdlineHasFlag("slinit.rescue"||"slinit.emergency")` checks with
-  typed field reads. Logs the parsed non-default options once at
-  boot so operators can confirm their cmdline was honored. Phases
-  2-5 (emergency/rescue service split, tty9 debug shell,
-  confirm-spawn, crash-shell) consume this parser without touching
-  the cmdline read path again.
+- **Emergency vs Rescue split** (Phase 2, systemd rescue.target /
+  emergency.target parity). Rescue runs `mount -a` first so
+  `/etc/fstab` is honoured (operator has `/home`, `/var`, `/tmp`
+  before the sulogin). Emergency stays filesystem-agnostic so it
+  works even when fstab is broken or a critical mount hangs. New
+  `mountLocalFsBestEffort`: 30s context timeout guards a hanging
+  NFS/iSCSI mount, best-effort semantics keep the shell reachable
+  regardless of exit, silent-skip when `mount(8)` is absent.
 
+- **Persistent debug shell on /dev/tty9** (Phase 3, systemd
+  `debug-shell.service` parity). Enabled by `slinit.debug-shell`
+  on the kernel cmdline. An always-on root shell on a dedicated VT
+  that never competes with getty on `/dev/console`. Solves the
+  post-boot debug-access problem architecturally — previously
+  planned via SIGUSR1 + `slinitctl debug` (Phase 2 of the old
+  debugger TODO), which needed pty interposition or a getty shim.
+  Respawn loop with getty-style crash-loop guard.
+
+- **`slinit.confirm-spawn`** (Phase 5, systemd `confirm_spawn`
+  parity). Kernel cmdline installs a `ServiceSet.OnConfirmSpawn`
+  hook that prompts `start service X? [Y/n]` on `/dev/console`
+  before every service activation. Gated at `ServiceRecord.callBringUp`
+  (the single call site every service type flows through — not just
+  ProcessService's `startProcess`) so InternalService,
+  TriggeredService, BGProcessService, and ScriptedService all
+  prompt too. Cbreak mode: one keypress dispatches (no Enter).
+  Mutually exclusive with the boot debugger — both need exclusive
+  read on `/dev/console`.
+
+- **`slinit.crash-shell`** (Phase 5, systemd `crash_shell` parity).
+  Drops into sulogin on `/dev/console` when PID 1 panics, BEFORE
+  the existing kill-all + emergency-reboot path fires. Best-effort:
+  no sulogin found or `/dev/console` un-openable falls through to
+  the normal emergency reboot. New package-level
+  `pkg/shutdown.CrashPauseFn` wired to `serviceSet.SetCrashPause`
+  freezes the state machine (gated at both `callBringUp` and
+  `startProcess` to catch the smooth-recovery path too) so a
+  restart=yes tty svc cannot respawn its shell while sulogin holds
+  the tty. Existing tty owners get `SIGKILL` before the reopen —
+  `SIGHUP` was tried first but bash on Alpine (through some
+  interaction with Go runtime signal masking) refused to die.
+  Goroutine panics inside slinit (event loop, control server,
+  rescue-shell, debug-shell respawn) each wrap themselves with
+  `defer shutdown.CrashRecovery` — a bare goroutine panic in Go
+  crashes the whole process, main's own defer never sees it.
+
+- **`slinitctl analyze` subcommand dispatcher** — extends the
+  historical `slinitctl boot-time` (still an alias) with
+  systemd-analyze-style sub-commands:
+
+  - `analyze time` / `blame` — the existing kernel+userspace
+    summary + per-svc blame output (backwards-compatible default).
+  - `analyze critical-chain [SVC]` — walks the dep graph from the
+    boot service backwards (memoized DFS), showing the longest
+    chain with per-node inclusive duration + self time. Self-time
+    is `parent_dur - max_child_dur`, the operator's answer to
+    "who actually did work?" vs "who waited?". Live demo boot
+    surfaces `chain-a` as the real bottleneck (+2.079s self out
+    of 2.112s inclusive).
+  - `analyze dot` — reuses existing `cmdGraph` (Graphviz DOT).
+  - `analyze plot` — stub with a helpful error message. SVG
+    timeline layout needs per-svc start timestamps but the
+    BootTime protocol only exposes StartupNs durations; extending
+    the protocol is a follow-up.
+
+  New helper `fetchDepGraph` replays cmdGraph's list + FindService
+  + QueryDependencies rounds and returns an adjacency map for
+  programmatic walking. `slinitctl boot-time` untouched.
+
+- **Test hook for crash-shell validation** (`-tags paniconce` build).
+  New `cmd/slinit/panictest_on.go` (active only with the tag) arms
+  a goroutine that panics after N seconds when
+  `slinit.panic-after=N` is on the kernel cmdline. Never compiled
+  into production slpkgs builds; the demo `build.sh` sets the tag
+  so `./demo/run.sh --panic-after=5 --crash-shell` validates the
+  panic → crash-shell → sulogin → emergency-reboot end-to-end.
+
+- **Demo bootmode selector flags in `demo/run.sh`**: `--rescue`,
+  `--emergency`, `--confirm-spawn`, `--crash-shell`, `--debug-shell`,
+  `--debug`, `--log-level=X`, `--panic-after=N`. Composable; base
+  cmdline unchanged so bare `./run.sh` behaves as before.
+  `demo/build.sh` also picks up three binaries that had shipped
+  in the slpkgs template but were missing from the demo initramfs:
+  `slinit-logouthookd`, `slinit-sysusers`, `slinit-tmpfiles`.
+
+### Changed
+
+- **Rescue / emergency now keep the control socket + event loop
+  alive** (systemd rescue.target parity). The initial cut bypassed
+  slinit's infrastructure entirely — control socket unopened, event
+  loop never started — so `slinitctl` commands from inside the
+  rescue shell failed with "no such file or directory". Refactored:
+  the rescue-mode gate short-circuits boot-services load + debugger
+  + confirm-spawn (all irrelevant to a bare-shell boot) but still
+  runs through `ctrlServer.Start` and `loop.Run`. Rescue shell is
+  spawned in a goroutine that, on exit, calls
+  `loop.InitiateShutdown(reboot)`. `slinitctl shutdown` from inside
+  the shell now routes through the same shutdown path a normal boot
+  uses.
+
+  `pkg/eventloop.initiateShutdown` gained an empty-set fast path:
+  after `StopAllServices` returns, if `CountActiveServices() == 0`
+  the loop pokes `forceExitCh` immediately instead of waiting for
+  the 90s emergency timer. Live QEMU: `slinitctl shutdown` from
+  rescue now reboots in ~19s vs the ~107s the old timer-wait took.
+
+- **Recovery menu rendering unified through shared box primitives**
+  (Phase 6). `pkg/recovery/menu.go` now exposes `writeBoxHeader /
+  writeBoxBlank / writeBoxLine / writeBoxFooter` plus the
+  `menuBoxBar` constant; `Present`, `PresentCollapse`, and
+  `Debugger` all render through them so box style (width, bar
+  character, prompt) lands in one place. `renderServiceBlock` and
+  `renderErrorBlock` in the debugger use the new primitives too.
+  Behavioural output identical.
+
+- **Boot debugger menu — five UX fixes from live QEMU testing:**
+
+  1. `Logger.PauseBootConsole` / `ResumeBootConsole` silence the
+     compact `[ OK ] name` renderer while the debugger menu is
+     open, so services finishing in parallel don't shatter the
+     boxed layout.
+  2. Countdown-line verb is now caller-configurable — was hardcoded
+     "Auto-reboot" but the debugger footer says "Auto-continue",
+     the two contradicted each other.
+  3. Countdown redraw switched from `time.Ticker` (which fired
+     once then stopped on the demo serial console — never
+     root-caused) to `time.After` per iteration; visibly ticks
+     down every second now.
+  4. `Debugger.Stop` waits on `menuMu` before touching the tty so
+     boot completing in the background doesn't rip the menu out
+     from under an operator mid-interaction.
+  5. `clearPrompt` closure wipes the countdown line on every read
+     return so downstream `[ OK ] tty` / dispatch logs land on a
+     clean row, not stamped over `Auto-continue in Xs …`.
+
+- **`runRescueShell` label + signal-aware exit handling.** The
+  helper hardcoded a `slinit.rescue:` prefix even when called from
+  Emergency mode; now takes a `label` parameter that main passes
+  as `bootmode=<mode>`. SIGTERM/SIGKILL/SIGHUP exits (how
+  `slinitctl shutdown` / `poweroff` from inside the shell reach us)
+  downgrade from ERROR to Info — the shell being signaled during
+  shutdown is normal, not an error.
+
+- **`slinit.log-level=<lvl>` now actually applied.** The Phase 1
+  parser captured the field but nothing wired it into
+  `logger.SetLevel`. Fixed. Debug still wins on precedence
+  (comprehensive: verbose + boot console off); LogLevel is the
+  finer knob (level threshold only, boot console preserved).
+
+- **Demo fstab uses `noauto` on `/dev/vda`/`/dev/vdb`** so
+  `mount -a` from Rescue mode exits cleanly when the demo VM is
+  launched without `-drive` (the default). `nofail` was tried
+  first but Alpine's busybox `mount(8)` doesn't honour it
+  (systemd/util-linux only); `noauto` is universal.
+
+### Removed
+
+- **`cmd/slinit-analyze`** — briefly landed as a standalone binary,
+  then deleted the same session after a live QEMU comparison
+  showed it duplicated the existing `slinitctl boot-time` (and
+  `slinitctl analyze` alias) with a strictly inferior metric
+  (cumulative delta from boot start vs the existing per-svc
+  activation duration). The `slinitctl analyze` subcommand
+  dispatcher added under **Added** above delivers the same
+  systemd-analyze surface without a redundant binary.
 ## [2.1.1] — 2026-08-03
 
 Point release focused on the boot-time operator UX. Third boot-failure
