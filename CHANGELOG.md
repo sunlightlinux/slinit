@@ -17,6 +17,79 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.4] — 2026-08-06
+
+Migration acceleration cut. Three new converters land under `cmd/`
+so operators can port existing service files onto slinit without
+hand-editing everything. All three follow the same pattern: parse
+the source format's grammar, extract into `slinitConfig`, emit a
+dinit-compatible service file, WARN on anything without a 1:1
+mapping so review is auditable.
+
+### Added
+
+- **`slinit-runit-convert`** — reads a runit service directory
+  (`/etc/sv/<name>/`) and emits a slinit service file. Handles
+  the void-linux convention (sourced `conf` file) and all 25
+  chpst flags. Simple `run` scripts get their daemon extracted
+  directly (`exec chpst -u nobody daemon` → `run-as = nobody`,
+  `command = daemon`); anything with shell metachars, setup
+  logic, or complex substitution falls back to
+  `command = /bin/sh <sv-dir>/run` so the original stays
+  authoritative. `finish`, `conf`, `down`, `log/run`, `check`,
+  `control/*` all auto-detected with appropriate WARN/NOTE.
+  `--enable-map` scans `/var/service/<name>` symlinks and prints
+  suggested `slinitctl enable` commands. Validated against real
+  void `run` scripts (3proxy, FreeRADIUS, cronie,
+  GCP-Guest-Initialization).
+
+- **`slinit-openrc-convert`** — reads an OpenRC `init.d` script
+  and emits a slinit service file. Two paths: (1) variable-only
+  scripts (`command=`, `pidfile=`, `depend()`, no custom
+  `start()`/`stop()`) get a self-contained slinit file with no
+  runtime openrc-run dependency — 5/63 scripts in the OpenRC
+  tree fit this shape. (2) Scripts with custom shell functions
+  (58/63, the common case) get wrapped as
+  `command = /usr/sbin/openrc-run <script> start`, preserving
+  every ebegin/einfo/start-stop-daemon call. `--wrapper=` swaps
+  the invocation for slinit-openrc-shim variants.
+  `depend()` verbs map: `need` → `depends-on:`, `use`/`after` →
+  `waits-for:`; `before` warns (invert on the target),
+  `provide` and `keyword` note the semantic gap. Auto-detects
+  `/etc/conf.d/<name>` as env-file. `--enable-map` scans
+  `/etc/runlevels/*/<name>`.
+
+- **`slinit-systemd-convert`** — reads a `.service` unit and
+  emits a slinit service file. Section-aware INI parser handles
+  `\`-line-continuation. About 40 [Unit] + [Service] + [Install]
+  directives mapped, everything else warned so the operator sees
+  what's unrepresented. Type= maps as
+  simple/exec→process, forking→bgprocess, oneshot→scripted,
+  notify/notify-reload→process (with a note about notify-fd).
+  ExecStart prefix chars (`-+!:@`) stripped with a NOTE per
+  prefix; multiple ExecStartPre/Post lines warn (slinit takes
+  one). Restart= collapses systemd's 5 values into slinit's 3
+  (no/yes/on-failure) with ambiguous cases warned.
+  User+Group merge into `run-as = user:group`. Hardening
+  directives (Private*, Protect*, Restrict*, SystemCall*)
+  produce NOTEs naming the equivalent slinit directive so the
+  operator can add them by hand. Dep names normalise: strips
+  `.service`, `.target`, `.socket`, `.path`, `.mount`, `.timer`,
+  `.swap`, `.device` so slinit sees bare names. Rejects timer /
+  socket / path / mount / target units at the guard — those need
+  slinit-native equivalents, not mechanical translation.
+  Template units (`@` in the name) also rejected — instantiate
+  first.
+
+All three tools:
+  * Are single-file cmds (~350–500 LOC each) plus table-driven
+    tests (5–10 test funcs, 30–80 assertions each);
+  * Share a `--dry-run` / `--verbose` / `--output-dir=DIR` flag
+    surface for muscle-memory consistency (runit and openrc add
+    `--enable-map` for their respective enable markers);
+  * Emit a `# Converted from <path>` provenance comment at the
+    top of every output so downstream review has a clear source.
+
 ## [2.1.2] — 2026-08-04
 
 Recovery + boot refactor: brings slinit's kernel-cmdline surface,
