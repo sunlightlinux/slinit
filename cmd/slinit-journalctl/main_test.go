@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -167,7 +168,7 @@ func TestRenderShort(t *testing.T) {
 	// a target PID render with NO bracket (see renderShort's switch
 	// — printing the emitter's PID=1 would misrepresent the subject).
 	var buf bytes.Buffer
-	if err := render(&buf, fmtShort, mkEvent()); err != nil {
+	if err := render(&buf, fmtShort, mkEvent(), renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -178,7 +179,7 @@ func TestRenderShort(t *testing.T) {
 
 func TestRenderShortISO(t *testing.T) {
 	var buf bytes.Buffer
-	if err := render(&buf, fmtShortISO, mkEvent()); err != nil {
+	if err := render(&buf, fmtShortISO, mkEvent(), renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -194,7 +195,7 @@ func TestRenderShortNoPid(t *testing.T) {
 	e := mkEvent()
 	e.Pid = 0
 	var buf bytes.Buffer
-	if err := render(&buf, fmtShort, e); err != nil {
+	if err := render(&buf, fmtShort, e, renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -219,7 +220,7 @@ func TestRenderShortPrefersTargetPID(t *testing.T) {
 	e.Fields["SLINIT_TARGET_PID"] = "478"
 
 	var buf bytes.Buffer
-	if err := render(&buf, fmtShort, e); err != nil {
+	if err := render(&buf, fmtShort, e, renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -241,7 +242,7 @@ func TestRenderShortFallsBackToEmitterPIDForExternal(t *testing.T) {
 	delete(e.Fields, "SLINIT_TARGET_PID")
 
 	var buf bytes.Buffer
-	if err := render(&buf, fmtShort, e); err != nil {
+	if err := render(&buf, fmtShort, e, renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "sshd[1234]:") {
@@ -259,7 +260,7 @@ func TestRenderShortDriverNoTargetPIDHidesBracket(t *testing.T) {
 	delete(e.Fields, "SLINIT_TARGET_PID")
 
 	var buf bytes.Buffer
-	if err := render(&buf, fmtShort, e); err != nil {
+	if err := render(&buf, fmtShort, e, renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -284,7 +285,7 @@ func TestRenderShortIgnoresMalformedTargetPID(t *testing.T) {
 	e.Fields["SLINIT_TARGET_PID"] = "not-a-number"
 
 	var buf bytes.Buffer
-	if err := render(&buf, fmtShort, e); err != nil {
+	if err := render(&buf, fmtShort, e, renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "[42]") {
@@ -297,7 +298,7 @@ func TestRenderShortFallbacks(t *testing.T) {
 	e := mkEvent()
 	e.Hostname = ""
 	var buf bytes.Buffer
-	if err := render(&buf, fmtShort, e); err != nil {
+	if err := render(&buf, fmtShort, e, renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), " - sshd") {
@@ -310,7 +311,7 @@ func TestRenderShortFallbacks(t *testing.T) {
 	e2 := mkEvent()
 	e2.SyslogIdentifier = "openssh"
 	var buf2 bytes.Buffer
-	if err := render(&buf2, fmtShort, e2); err != nil {
+	if err := render(&buf2, fmtShort, e2, renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf2.String(), " openssh: ") {
@@ -320,7 +321,7 @@ func TestRenderShortFallbacks(t *testing.T) {
 
 func TestRenderCat(t *testing.T) {
 	var buf bytes.Buffer
-	if err := render(&buf, fmtCat, mkEvent()); err != nil {
+	if err := render(&buf, fmtCat, mkEvent(), renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if buf.String() != "hello world\n" {
@@ -330,7 +331,7 @@ func TestRenderCat(t *testing.T) {
 
 func TestRenderJSON(t *testing.T) {
 	var buf bytes.Buffer
-	if err := render(&buf, fmtJSON, mkEvent()); err != nil {
+	if err := render(&buf, fmtJSON, mkEvent(), renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	line := buf.String()
@@ -348,7 +349,7 @@ func TestRenderJSON(t *testing.T) {
 
 func TestRenderVerbose(t *testing.T) {
 	var buf bytes.Buffer
-	if err := render(&buf, fmtVerbose, mkEvent()); err != nil {
+	if err := render(&buf, fmtVerbose, mkEvent(), renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -371,7 +372,7 @@ func TestRenderVerbose(t *testing.T) {
 
 func TestRenderExport(t *testing.T) {
 	var buf bytes.Buffer
-	if err := render(&buf, fmtExport, mkEvent()); err != nil {
+	if err := render(&buf, fmtExport, mkEvent(), renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -404,7 +405,7 @@ func TestRenderExportSkipsEmptyFields(t *testing.T) {
 	e := mkEvent()
 	e.SyslogIdentifier = ""
 	var buf bytes.Buffer
-	if err := render(&buf, fmtExport, e); err != nil {
+	if err := render(&buf, fmtExport, e, renderOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
@@ -418,7 +419,7 @@ func TestRenderExportSkipsEmptyFields(t *testing.T) {
 
 func TestRenderUnknownFormat(t *testing.T) {
 	var buf bytes.Buffer
-	if err := render(&buf, "hex", mkEvent()); err == nil {
+	if err := render(&buf, "hex", mkEvent(), renderOpts{}); err == nil {
 		t.Fatal("expected error for unknown format")
 	}
 }
@@ -933,5 +934,363 @@ func TestRunQueryFileWithFollowRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("unexpected error text: %v", err)
+	}
+}
+
+// TestParseArgsGroupADisplay verifies every display modifier lands
+// in the right options field with both long and (where present) short
+// forms accepted.
+func TestParseArgsGroupADisplay(t *testing.T) {
+	cases := []struct {
+		name  string
+		args  []string
+		check func(o options) error
+	}{
+		{"no-hostname", []string{"--no-hostname"}, func(o options) error {
+			if !o.noHostname {
+				return fmt.Errorf("noHostname not set")
+			}
+			return nil
+		}},
+		{"utc", []string{"--utc"}, func(o options) error {
+			if !o.utc {
+				return fmt.Errorf("utc not set")
+			}
+			return nil
+		}},
+		{"truncate-newline", []string{"--truncate-newline"}, func(o options) error {
+			if !o.truncateNewline {
+				return fmt.Errorf("truncateNewline not set")
+			}
+			return nil
+		}},
+		{"quiet-short", []string{"-q"}, func(o options) error {
+			if !o.quiet {
+				return fmt.Errorf("quiet not set")
+			}
+			return nil
+		}},
+		{"quiet-long", []string{"--quiet"}, func(o options) error {
+			if !o.quiet {
+				return fmt.Errorf("quiet not set")
+			}
+			return nil
+		}},
+		{"all-short", []string{"-a"}, func(o options) error {
+			if !o.allFields {
+				return fmt.Errorf("allFields not set")
+			}
+			return nil
+		}},
+		{"no-full", []string{"--no-full"}, func(o options) error {
+			if !o.noFull {
+				return fmt.Errorf("noFull not set")
+			}
+			return nil
+		}},
+		{"full-short", []string{"-l"}, func(o options) error {
+			if !o.fullFlag {
+				return fmt.Errorf("fullFlag not set")
+			}
+			return nil
+		}},
+		{"no-tail", []string{"--no-tail"}, func(o options) error {
+			if !o.noTail {
+				return fmt.Errorf("noTail not set")
+			}
+			return nil
+		}},
+		{"pager-end", []string{"-e"}, func(o options) error {
+			if !o.pagerEnd {
+				return fmt.Errorf("pagerEnd not set")
+			}
+			return nil
+		}},
+		{"output-fields", []string{"--output-fields=MESSAGE,PRIORITY,_PID"}, func(o options) error {
+			if len(o.outputFields) != 3 || o.outputFields[0] != "MESSAGE" {
+				return fmt.Errorf("bad outputFields: %v", o.outputFields)
+			}
+			return nil
+		}},
+		{"merge", []string{"-m"}, func(o options) error {
+			if !o.merge {
+				return fmt.Errorf("merge not set")
+			}
+			return nil
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o, err := parseArgs(c.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.check(o); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+// TestParseArgsGroupAFiltering covers the systemd-parity filter
+// flags: -t/-T for identifier include/exclude, --facility, -g grep,
+// --this-boot alias, and -U/--user-unit routing.
+func TestParseArgsGroupAFiltering(t *testing.T) {
+	o, err := parseArgs([]string{
+		"-t", "nginx", "-t", "sshd",
+		"-T", "kernel",
+		"--facility=mail,4",
+		"-g", "PATTERN",
+		"--case-sensitive=no",
+		"--this-boot",
+		"-U", "user-svc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.identifiers) != 2 || o.identifiers[0] != "nginx" {
+		t.Errorf("identifiers = %v", o.identifiers)
+	}
+	if len(o.excludeIdentifiers) != 1 || o.excludeIdentifiers[0] != "kernel" {
+		t.Errorf("excludeIdentifiers = %v", o.excludeIdentifiers)
+	}
+	// facility: "mail" → 2, "4" → 4
+	if len(o.facility) != 2 || o.facility[0] != 2 || o.facility[1] != 4 {
+		t.Errorf("facility = %v", o.facility)
+	}
+	if !o.facilitySet {
+		t.Errorf("facilitySet should be true")
+	}
+	if o.grep != "PATTERN" {
+		t.Errorf("grep = %q", o.grep)
+	}
+	if !o.grepCaseSet || o.grepCaseSensitive {
+		t.Errorf("grepCaseSensitive expected false w/ set=true; got sensitive=%v set=%v", o.grepCaseSensitive, o.grepCaseSet)
+	}
+	if !o.thisBoot || !o.bootSet || o.bootID != "0" {
+		t.Errorf("--this-boot didn't wire bootSet=0")
+	}
+	if len(o.userUnitFilters) != 1 || o.userUnitFilters[0] != "user-svc" || !o.userMode {
+		t.Errorf("-U didn't populate userUnitFilters + userMode: %+v", o)
+	}
+}
+
+// TestParseArgsGroupAIntro covers introspection flag parsing.
+func TestParseArgsGroupAIntro(t *testing.T) {
+	o, err := parseArgs([]string{"-F", "_HOSTNAME"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.fieldName != "_HOSTNAME" {
+		t.Errorf("-F: got %q", o.fieldName)
+	}
+	o, err = parseArgs([]string{"--fields"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.fieldsList {
+		t.Errorf("--fields not set")
+	}
+	o, err = parseArgs([]string{"--header"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.headerDump {
+		t.Errorf("--header not set")
+	}
+	o, err = parseArgs([]string{"--disk-usage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.diskUsage {
+		t.Errorf("--disk-usage not set")
+	}
+}
+
+// TestParseArgsGroupACursorSource verifies --after-cursor,
+// --cursor-file, -D/--directory, and --root routing.
+func TestParseArgsGroupACursorSource(t *testing.T) {
+	o, err := parseArgs([]string{
+		"--after-cursor=s=1;b=abc",
+		"--cursor-file", "/tmp/cf",
+		"-D", "/var/log/j",
+		"--root=/mnt/snap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.afterCursor != "s=1;b=abc" {
+		t.Errorf("afterCursor: %q", o.afterCursor)
+	}
+	if o.cursorFile != "/tmp/cf" {
+		t.Errorf("cursorFile: %q", o.cursorFile)
+	}
+	if o.directory != "/var/log/j" {
+		t.Errorf("directory: %q", o.directory)
+	}
+	if o.root != "/mnt/snap" {
+		t.Errorf("root: %q", o.root)
+	}
+}
+
+// TestParseFacilityList exercises numeric + name mixing, out-of-range
+// rejection, and case-insensitive name lookup.
+func TestParseFacilityList(t *testing.T) {
+	got, err := parseFacilityList("auth,LOCAL0,17,23")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{4, 16, 17, 23}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+	if _, err := parseFacilityList("24"); err == nil {
+		t.Error("expected out-of-range error for 24")
+	}
+	if _, err := parseFacilityList("bogus-fac"); err == nil {
+		t.Error("expected error for unknown facility")
+	}
+}
+
+// TestGrepInsensitiveHeuristic — matches systemd's default:
+// all-lowercase pattern is case-insensitive; any uppercase is
+// case-sensitive; explicit --case-sensitive overrides both.
+func TestGrepInsensitiveHeuristic(t *testing.T) {
+	if !shouldGrepInsensitive(options{grep: "error"}) {
+		t.Error("all-lowercase should be insensitive")
+	}
+	if shouldGrepInsensitive(options{grep: "Error"}) {
+		t.Error("mixed-case should be sensitive")
+	}
+	if shouldGrepInsensitive(options{grep: "error", grepCaseSet: true, grepCaseSensitive: true}) {
+		t.Error("explicit sensitive override should win")
+	}
+	if !shouldGrepInsensitive(options{grep: "Error", grepCaseSet: true, grepCaseSensitive: false}) {
+		t.Error("explicit insensitive override should win over uppercase")
+	}
+}
+
+// TestRenderOptsTruncate — --truncate-newline cuts at the first LF;
+// --no-full ellipsizes at 256 chars. Both should combine (newline
+// truncation first, then length cap on the survivor).
+func TestRenderOptsTruncate(t *testing.T) {
+	msg := "first line\nsecond line\nthird"
+	ro := renderOpts{truncateNewline: true}
+	if got := ro.truncateMsg(msg); got != "first line" {
+		t.Errorf("truncateNewline: %q", got)
+	}
+	long := strings.Repeat("x", 300)
+	ro = renderOpts{noFull: true}
+	got := ro.truncateMsg(long)
+	if len(got) != 256 || !strings.HasSuffix(got, "...") {
+		t.Errorf("noFull: len=%d suffix=%q", len(got), got[len(got)-3:])
+	}
+}
+
+// TestRenderOutputFieldsFilter — --output-fields restricts verbose
+// output to the named subset. MESSAGE stays, hidden fields drop.
+func TestRenderOutputFieldsFilter(t *testing.T) {
+	e := mkEvent()
+	ro := renderOpts{outputFields: map[string]bool{"MESSAGE": true}}
+	var buf bytes.Buffer
+	if err := renderVerbose(&buf, e, ro); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "MESSAGE=") {
+		t.Errorf("MESSAGE should be present:\n%s", out)
+	}
+	if strings.Contains(out, "TS_NSEC=") || strings.Contains(out, "PRIORITY=") {
+		t.Errorf("hidden field leaked:\n%s", out)
+	}
+}
+
+// TestUTCTimestamp — --utc renders in UTC even in a non-UTC TZ.
+func TestUTCTimestamp(t *testing.T) {
+	// Fixed timestamp: 2026-01-01T00:00:00Z (nanoseconds)
+	ts := int64(1767225600) * int64(time.Second)
+	got := formatTime(ts, timeISO, true)
+	if !strings.HasSuffix(got, "Z") && !strings.HasSuffix(got, "+00:00") {
+		t.Errorf("utc timestamp should end in Z or +00:00: %q", got)
+	}
+}
+
+// TestResolveCursorInputPriority — --after-cursor beats --cursor beats
+// --cursor-file when multiple are set. Mode reflects the source.
+func TestResolveCursorInputPriority(t *testing.T) {
+	tmp := t.TempDir() + "/cf"
+	if err := os.WriteFile(tmp, []byte("s=42;b=fromfile\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tok, mode, err := resolveCursorInput(options{
+		afterCursor: "s=1;b=A", cursor: "s=2;b=B", cursorFile: tmp,
+	})
+	if err != nil || tok != "s=1;b=A" || mode != cursorAfter {
+		t.Errorf("afterCursor should win: tok=%q mode=%v err=%v", tok, mode, err)
+	}
+	tok, mode, err = resolveCursorInput(options{cursor: "s=2;b=B", cursorFile: tmp})
+	if err != nil || tok != "s=2;b=B" || mode != cursorInclusive {
+		t.Errorf("cursor should beat cursor-file: tok=%q mode=%v err=%v", tok, mode, err)
+	}
+	tok, mode, err = resolveCursorInput(options{cursorFile: tmp})
+	if err != nil || tok != "s=42;b=fromfile" || mode != cursorInclusive {
+		t.Errorf("cursor-file only: tok=%q mode=%v err=%v", tok, mode, err)
+	}
+	// Missing cursor-file is treated as "no prior cursor" — bootstrap OK.
+	tok, mode, err = resolveCursorInput(options{cursorFile: "/nonexistent/xyz"})
+	if err != nil || tok != "" || mode != cursorInclusive {
+		t.Errorf("missing cursor-file should bootstrap silently: tok=%q err=%v", tok, err)
+	}
+}
+
+// TestWriteCursorFileAtomic — writeCursorFile must land the update
+// atomically (tmp+rename), so a torn write can never leave a
+// half-baked cursor on disk.
+func TestWriteCursorFileAtomic(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/cursor"
+	if err := writeCursorFile(path, "s=100;b=abc"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "s=100;b=abc" {
+		t.Errorf("cursor content: %q", string(data))
+	}
+	// Overwrite: same path, different value.
+	if err := writeCursorFile(path, "s=200;b=xyz"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if strings.TrimSpace(string(data)) != "s=200;b=xyz" {
+		t.Errorf("overwrite failed: %q", string(data))
+	}
+}
+
+// TestExtractField — field name → Event value lookup, covering core
+// fields (MESSAGE, _PID), a freeform (SLINIT_EVENT), and a miss.
+func TestExtractField(t *testing.T) {
+	e := &journal.Event{
+		Msg:              "hello",
+		Pid:              123,
+		SyslogIdentifier: "my-svc",
+		Fields:           map[string]string{"SLINIT_EVENT": "started"},
+	}
+	if got := extractField(e, "MESSAGE"); got != "hello" {
+		t.Errorf("MESSAGE: %q", got)
+	}
+	if got := extractField(e, "_PID"); got != "123" {
+		t.Errorf("_PID: %q", got)
+	}
+	if got := extractField(e, "SYSLOG_IDENTIFIER"); got != "my-svc" {
+		t.Errorf("SYSLOG_IDENTIFIER: %q", got)
+	}
+	if got := extractField(e, "SLINIT_EVENT"); got != "started" {
+		t.Errorf("SLINIT_EVENT: %q", got)
+	}
+	if got := extractField(e, "DOES_NOT_EXIST"); got != "" {
+		t.Errorf("miss should be empty: %q", got)
 	}
 }

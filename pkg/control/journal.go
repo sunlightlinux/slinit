@@ -36,6 +36,19 @@ type JournalQueryRequest struct {
 	// "kernel", "native", "syslog").
 	Transports []string `json:"transports,omitempty"`
 
+	// Identifiers is the OR-set of SYSLOG_IDENTIFIER values to keep
+	// (systemd `-t IDENT`). Match resolves against Event's SyslogID
+	// with Unit/Comm fallback per journal.ResolveIdentifier.
+	Identifiers []string `json:"identifiers,omitempty"`
+	// ExcludeIdentifiers drops events whose resolved identifier is in
+	// this set (systemd `-T IDENT`). Applied after Identifiers.
+	ExcludeIdentifiers []string `json:"exclude_identifiers,omitempty"`
+	// GrepPattern is an RE2 regex the event message must match
+	// (systemd `-g PATTERN`). Empty means no grep filter.
+	GrepPattern string `json:"grep,omitempty"`
+	// GrepInsensitive folds ASCII case for GrepPattern.
+	GrepInsensitive bool `json:"grep_i,omitempty"`
+
 	// Limit caps the number of matching events returned. Zero or
 	// negative means "no cap"; positive limits keep the most recent N.
 	Limit int `json:"limit,omitempty"`
@@ -49,9 +62,13 @@ type JournalQueryRequest struct {
 // semantics for bit-identical output).
 func (req JournalQueryRequest) ToFilter() journal.QueryFilter {
 	f := journal.QueryFilter{
-		Units:      req.Units,
-		Since:      req.Since,
-		Until:      req.Until,
+		Units:              req.Units,
+		Since:              req.Since,
+		Until:              req.Until,
+		Identifiers:        req.Identifiers,
+		ExcludeIdentifiers: req.ExcludeIdentifiers,
+		GrepPattern:        req.GrepPattern,
+		GrepInsensitive:    req.GrepInsensitive,
 	}
 	if req.PrioritySet {
 		f.MinPriority = journal.Priority(req.MinPriority)

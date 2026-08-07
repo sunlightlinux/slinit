@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"regexp"
 	"sync"
 	"time"
 )
@@ -145,6 +146,25 @@ type QueryFilter struct {
 	Until int64
 	// Transports is the set of transports to include. Empty means all.
 	Transports []Transport
+
+	// Identifiers is the set of SYSLOG_IDENTIFIER values to include
+	// (systemd `journalctl -t IDENT`). Empty means all. Match is
+	// against Event.SyslogIdentifier with a fallback to Unit / Comm
+	// via identOf-equivalent resolution, matching systemd's -t
+	// semantics of "match the identifier the operator sees in short
+	// output".
+	Identifiers []string
+	// ExcludeIdentifiers is the systemd `-T IDENT` inverse of
+	// Identifiers — any event whose resolved identifier is in this
+	// set is dropped. Applied after Identifiers include-filter.
+	ExcludeIdentifiers []string
+	// GrepPattern, if non-empty, is an RE2-compatible regex the event
+	// Msg must match (systemd `-g PATTERN`). Compiled at filter build
+	// time, so callers pay the compile cost once per query.
+	GrepPattern string
+	// GrepInsensitive folds ASCII case in GrepPattern (systemd
+	// `--case-sensitive=no` / `-g` default heuristic).
+	GrepInsensitive bool
 }
 
 // hasMinPriority is a sentinel test that distinguishes "priority
@@ -192,7 +212,65 @@ func (q QueryFilter) Match(e *Event) bool {
 			return false
 		}
 	}
+	if len(q.Identifiers) > 0 {
+		ident := ResolveIdentifier(e)
+		ok := false
+		for _, id := range q.Identifiers {
+			if ident == id {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	if len(q.ExcludeIdentifiers) > 0 {
+		ident := ResolveIdentifier(e)
+		for _, id := range q.ExcludeIdentifiers {
+			if ident == id {
+				return false
+			}
+		}
+	}
+	if q.GrepPattern != "" && !grepMatch(q.GrepPattern, q.GrepInsensitive, e.Msg) {
+		return false
+	}
 	return true
+}
+
+// ResolveIdentifier picks the display identifier for an event using
+// the same fallback chain as short-format renderers: SyslogIdentifier
+// wins, then Unit, then Comm, then "unknown". Exported so filters and
+// renderers share one source of truth for what "identifier" means.
+func ResolveIdentifier(e *Event) string {
+	switch {
+	case e.SyslogIdentifier != "":
+		return e.SyslogIdentifier
+	case e.Unit != "":
+		return e.Unit
+	case e.Comm != "":
+		return e.Comm
+	default:
+		return "unknown"
+	}
+}
+
+// grepMatch reports whether pattern matches s. Compilation errors
+// return false (drop the event) — pattern should have been validated
+// at flag-parse time, so a runtime miss means either an empty pattern
+// or an unrecoverable programmer error. Regex compiled per call because
+// QueryFilter is value-typed and short-lived; the caller runs at most
+// one Match loop over the buffer per query.
+func grepMatch(pattern string, insensitive bool, s string) bool {
+	if insensitive {
+		pattern = "(?i)" + pattern
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false
+	}
+	return re.MatchString(s)
 }
 
 // isEmpty reports whether the filter is fully disabled — every

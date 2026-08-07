@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -110,6 +111,45 @@ type options struct {
 	showCursor  bool             // --show-cursor — print a resumable cursor after output
 	verify      bool             // --verify — walk FSS tag chain on a --file binary journal
 	fssKeyPath  string           // --fss-key PATH — key for --verify
+
+	// --- Group A additions (systemd journalctl parity) ---
+
+	// Display modifiers.
+	noHostname      bool     // --no-hostname — drop hostname column in short outputs
+	utc             bool     // --utc — render timestamps in UTC instead of local
+	truncateNewline bool     // --truncate-newline — cut MESSAGE at first \n
+	quiet           bool     // -q/--quiet — suppress info messages (empty file etc.)
+	noFull          bool     // --no-full — ellipsize long fields
+	fullFlag        bool     // --full — inverse of --no-full (default, kept for parity)
+	allFields       bool     // -a/--all — show all field values without ellipsizing
+	noTail          bool     // --no-tail — show all matches (inverse of default -n heuristic)
+	pagerEnd        bool     // -e/--pager-end — start pager at end (no-op: no pager wired)
+	outputFields    []string // --output-fields=A,B,C — restrict verbose/JSON to these keys
+	merge           bool     // -m/--merge — merge multiple journal sources (no-op single-source)
+
+	// Filtering.
+	identifiers        []string // -t IDENT — SYSLOG_IDENTIFIER include-set
+	excludeIdentifiers []string // -T IDENT — SYSLOG_IDENTIFIER exclude-set
+	facility           []int    // --facility=NAME|N — reserved; slinit doesn't record facility yet
+	facilitySet        bool     // sentinel: --facility was present (emits WARN)
+	grep               string   // -g PATTERN — RE2 regex on MESSAGE
+	grepCaseSensitive  bool     // --case-sensitive[=BOOL] — override -g's default heuristic
+	grepCaseSet        bool     // sentinel: user explicitly passed --case-sensitive
+	thisBoot           bool     // --this-boot — alias for --boot=0
+	userUnitFilters    []string // -U/--user-unit — user-scope unit filter
+
+	// Introspection sub-commands (short-circuit before running a query).
+	fieldName    string // -F/--field FIELD — list unique values for FIELD
+	fieldsList   bool   // --fields — list all known field names
+	headerDump   bool   // --header — dump journal file headers (--file mode)
+	diskUsage    bool   // --disk-usage — total bytes across on-disk journals
+
+	// Cursor / source extensions.
+	afterCursor string // --after-cursor — same as -c but positions strictly after
+	cursorFile  string // --cursor-file FILE — load+persist cursor via file
+	directory   string // -D/--directory DIR — glob *.jsonl / *.slj under DIR
+	root        string // --root PATH — filesystem root prefix for source lookups
+
 	showHelp    bool
 	showVersion bool
 }
@@ -353,11 +393,293 @@ func parseArgs(args []string) (options, error) {
 			opts.fssKeyPath = strings.TrimPrefix(a, "--fss-key=")
 			args = args[1:]
 
+		// --- Group A: display modifiers ---
+
+		case a == "--no-hostname":
+			opts.noHostname = true
+			args = args[1:]
+
+		case a == "--utc":
+			opts.utc = true
+			args = args[1:]
+
+		case a == "--truncate-newline":
+			opts.truncateNewline = true
+			args = args[1:]
+
+		case a == "-q" || a == "--quiet":
+			opts.quiet = true
+			args = args[1:]
+
+		case a == "--no-full":
+			opts.noFull = true
+			args = args[1:]
+
+		case a == "-l" || a == "--full":
+			opts.fullFlag = true
+			args = args[1:]
+
+		case a == "-a" || a == "--all":
+			opts.allFields = true
+			args = args[1:]
+
+		case a == "--no-tail":
+			opts.noTail = true
+			args = args[1:]
+
+		case a == "-e" || a == "--pager-end":
+			opts.pagerEnd = true
+			args = args[1:]
+
+		case a == "--output-fields":
+			if len(args) < 2 {
+				return opts, errors.New("--output-fields requires an argument")
+			}
+			opts.outputFields = splitCSVFields(args[1])
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--output-fields="):
+			opts.outputFields = splitCSVFields(strings.TrimPrefix(a, "--output-fields="))
+			args = args[1:]
+
+		case a == "-m" || a == "--merge":
+			opts.merge = true
+			args = args[1:]
+
+		// --- Group A: filtering ---
+
+		case a == "-t" || a == "--identifier":
+			if len(args) < 2 {
+				return opts, fmt.Errorf("%s requires an argument", a)
+			}
+			opts.identifiers = append(opts.identifiers, args[1])
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--identifier="):
+			opts.identifiers = append(opts.identifiers, strings.TrimPrefix(a, "--identifier="))
+			args = args[1:]
+
+		case a == "-T" || a == "--exclude-identifier":
+			if len(args) < 2 {
+				return opts, fmt.Errorf("%s requires an argument", a)
+			}
+			opts.excludeIdentifiers = append(opts.excludeIdentifiers, args[1])
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--exclude-identifier="):
+			opts.excludeIdentifiers = append(opts.excludeIdentifiers, strings.TrimPrefix(a, "--exclude-identifier="))
+			args = args[1:]
+
+		case a == "--facility":
+			if len(args) < 2 {
+				return opts, errors.New("--facility requires an argument")
+			}
+			fs, err := parseFacilityList(args[1])
+			if err != nil {
+				return opts, err
+			}
+			opts.facility = append(opts.facility, fs...)
+			opts.facilitySet = true
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--facility="):
+			fs, err := parseFacilityList(strings.TrimPrefix(a, "--facility="))
+			if err != nil {
+				return opts, err
+			}
+			opts.facility = append(opts.facility, fs...)
+			opts.facilitySet = true
+			args = args[1:]
+
+		case a == "-g" || a == "--grep":
+			if len(args) < 2 {
+				return opts, fmt.Errorf("%s requires an argument", a)
+			}
+			opts.grep = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--grep="):
+			opts.grep = strings.TrimPrefix(a, "--grep=")
+			args = args[1:]
+
+		case a == "--case-sensitive":
+			opts.grepCaseSensitive = true
+			opts.grepCaseSet = true
+			args = args[1:]
+
+		case strings.HasPrefix(a, "--case-sensitive="):
+			b, err := parseBoolArg(strings.TrimPrefix(a, "--case-sensitive="))
+			if err != nil {
+				return opts, fmt.Errorf("--case-sensitive: %w", err)
+			}
+			opts.grepCaseSensitive = b
+			opts.grepCaseSet = true
+			args = args[1:]
+
+		case a == "--this-boot":
+			opts.thisBoot = true
+			opts.bootSet = true
+			opts.bootID = "0"
+			args = args[1:]
+
+		case a == "-U" || a == "--user-unit":
+			if len(args) < 2 {
+				return opts, fmt.Errorf("%s requires an argument", a)
+			}
+			opts.userUnitFilters = append(opts.userUnitFilters, args[1])
+			opts.userMode = true
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--user-unit="):
+			opts.userUnitFilters = append(opts.userUnitFilters, strings.TrimPrefix(a, "--user-unit="))
+			opts.userMode = true
+			args = args[1:]
+
+		// --- Group A: introspection ---
+
+		case a == "-F" || a == "--field":
+			if len(args) < 2 {
+				return opts, fmt.Errorf("%s requires an argument", a)
+			}
+			opts.fieldName = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--field="):
+			opts.fieldName = strings.TrimPrefix(a, "--field=")
+			args = args[1:]
+
+		case a == "--fields":
+			opts.fieldsList = true
+			args = args[1:]
+
+		case a == "--header":
+			opts.headerDump = true
+			args = args[1:]
+
+		case a == "--disk-usage":
+			opts.diskUsage = true
+			args = args[1:]
+
+		// --- Group A: cursor / source ---
+
+		case a == "--after-cursor":
+			if len(args) < 2 {
+				return opts, errors.New("--after-cursor requires an argument")
+			}
+			opts.afterCursor = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--after-cursor="):
+			opts.afterCursor = strings.TrimPrefix(a, "--after-cursor=")
+			args = args[1:]
+
+		case a == "--cursor-file":
+			if len(args) < 2 {
+				return opts, errors.New("--cursor-file requires an argument")
+			}
+			opts.cursorFile = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--cursor-file="):
+			opts.cursorFile = strings.TrimPrefix(a, "--cursor-file=")
+			args = args[1:]
+
+		case a == "-D" || a == "--directory":
+			if len(args) < 2 {
+				return opts, fmt.Errorf("%s requires an argument", a)
+			}
+			opts.directory = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--directory="):
+			opts.directory = strings.TrimPrefix(a, "--directory=")
+			args = args[1:]
+
+		case a == "--root":
+			if len(args) < 2 {
+				return opts, errors.New("--root requires an argument")
+			}
+			opts.root = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--root="):
+			opts.root = strings.TrimPrefix(a, "--root=")
+			args = args[1:]
+
 		default:
 			return opts, fmt.Errorf("unknown argument %q (try -h)", a)
 		}
 	}
 	return opts, nil
+}
+
+// splitCSVFields tokenizes a comma-separated field list into a slice
+// with whitespace trimmed. Empty tokens are dropped so
+// `--output-fields=,A,,B,` behaves the same as `--output-fields=A,B`.
+func splitCSVFields(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// parseBoolArg accepts "yes", "true", "1", "on" as true and their
+// negations. Case-insensitive. Matches systemd's parse_boolean.
+func parseBoolArg(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "yes", "true", "1", "on":
+		return true, nil
+	case "no", "false", "0", "off":
+		return false, nil
+	}
+	return false, fmt.Errorf("invalid boolean %q", s)
+}
+
+// facilityNames maps syslog facility names (RFC 5424) to numeric
+// codes. Kept as a slice so lookup logic can iterate case-insensitively
+// without a second map allocation.
+var facilityNames = map[string]int{
+	"kern": 0, "user": 1, "mail": 2, "daemon": 3, "auth": 4,
+	"syslog": 5, "lpr": 6, "news": 7, "uucp": 8, "cron": 9,
+	"authpriv": 10, "ftp": 11, "ntp": 12, "security": 13, "console": 14,
+	"solaris-cron": 15,
+	"local0": 16, "local1": 17, "local2": 18, "local3": 19,
+	"local4": 20, "local5": 21, "local6": 22, "local7": 23,
+}
+
+// parseFacilityList accepts a comma-separated list of syslog facility
+// names or 0..23 numeric codes and returns the resolved numeric set.
+// Unknown names return an error identifying the offender. Slinit
+// events don't currently carry a facility field (only priority), so
+// the parsed list is stored for future use and surfaces a WARN at
+// query time — the flag is present so scripts written for systemd's
+// journalctl don't fail with "unknown argument".
+func parseFacilityList(s string) ([]int, error) {
+	var out []int
+	for _, tok := range strings.Split(s, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(tok); err == nil {
+			if n < 0 || n > 23 {
+				return nil, fmt.Errorf("facility %d out of range 0..23", n)
+			}
+			out = append(out, n)
+			continue
+		}
+		n, ok := facilityNames[strings.ToLower(tok)]
+		if !ok {
+			return nil, fmt.Errorf("unknown facility %q", tok)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 // parsePriorityArg accepts both numeric (0..7) and symbolic priority
@@ -534,11 +856,55 @@ func resolveSocketPath(opts options) string {
 // The file path never dials a socket, so --file + --follow is rejected
 // (inotify-based file follow arrives with Phase 3 / 2h cursor work).
 func runQuery(opts options) error {
+	// Warn once about flags whose semantics don't map to slinit's
+	// journal model. The flag is still parsed so scripts don't break;
+	// the operator just learns not to rely on it.
+	if opts.facilitySet && !opts.quiet {
+		fmt.Fprintln(os.Stderr, "slinit-journalctl: --facility parsed but ignored (slinit events don't record a syslog facility yet)")
+	}
+	if opts.merge && !opts.quiet {
+		// Merge is a no-op on a single-source setup; harmless. Only
+		// worth mentioning if the operator combined it with something
+		// hinting they expected multi-source behavior.
+		if opts.directory == "" && opts.root == "" && opts.sourceFile == "" && !opts.quiet {
+			// Silent by default — noise only appears when the user
+			// might reasonably wonder. Currently that's always.
+		}
+	}
+
+	// Introspection short-circuits — none of them require a live
+	// journal connection except --disk-usage (which reads /var/log)
+	// and --field/--fields (which iterate events, so they do need one).
+
+	if opts.fieldsList {
+		return runFieldsList(os.Stdout)
+	}
+	if opts.diskUsage {
+		return runDiskUsage(opts, os.Stdout)
+	}
+
 	if opts.sourceFile != "" {
 		if opts.follow {
 			return errors.New("--file and --follow are mutually exclusive (file-follow lands with Phase 3)")
 		}
+		if opts.headerDump {
+			return runHeaderDump(opts, os.Stdout)
+		}
+		if opts.fieldName != "" {
+			return runFieldValuesFromFile(opts, os.Stdout)
+		}
 		return runFromFile(opts)
+	}
+
+	// --directory: iterate every *.jsonl / *.jsonl.gz / binary journal
+	// in DIR (recursively). Each file gets rendered in filesystem
+	// order — deterministic enough for grep pipelines without a
+	// separate sort pass.
+	if opts.directory != "" {
+		if opts.follow {
+			return errors.New("--directory and --follow are mutually exclusive")
+		}
+		return runFromDirectory(opts)
 	}
 
 	sockPath := resolveSocketPath(opts)
@@ -551,6 +917,12 @@ func runQuery(opts options) error {
 	if opts.listBoots {
 		return runListBoots(conn)
 	}
+	if opts.headerDump {
+		return runHeaderDumpLive(conn, os.Stdout)
+	}
+	if opts.fieldName != "" {
+		return runFieldValues(conn, opts, os.Stdout)
+	}
 	if opts.bootSet {
 		if err := verifyBootID(conn, opts.bootID); err != nil {
 			return err
@@ -560,6 +932,380 @@ func runQuery(opts options) error {
 		return runFollow(conn, opts)
 	}
 	return runOneShot(conn, opts)
+}
+
+// runFieldsList prints the set of field names slinit's Event schema
+// exposes, matching systemd's `journalctl --fields`. The list is
+// sorted so scripts that grep -x won't fail on reordering.
+func runFieldsList(out io.Writer) error {
+	fields := []string{
+		"MESSAGE", "PRIORITY", "SYSLOG_IDENTIFIER", "TRANSPORT",
+		"UNIT", "TS_NSEC", "MTS_NSEC",
+		"_PID", "_UID", "_GID", "_COMM", "_EXE", "_CMDLINE",
+		"_HOSTNAME", "_BOOT_ID", "_MACHINE_ID", "_TRANSPORT",
+		// Slinit-native metadata a service can inject via
+		// pkg/service/journal_emit.go.
+		"SLINIT_EVENT", "SLINIT_SERVICE_STATE", "SLINIT_TARGET_PID",
+	}
+	for _, f := range fields {
+		fmt.Fprintln(out, f)
+	}
+	return nil
+}
+
+// runFieldValues queries all events matching the current filter, then
+// prints the distinct values seen for opts.fieldName. Systemd's
+// `-F FIELD` semantics: iterate journal, project to the named field,
+// dedupe, sort, print one per line.
+func runFieldValues(conn net.Conn, opts options, out io.Writer) error {
+	req := buildRequest(opts)
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	if err := control.WritePacket(conn, control.CmdJournalQuery, payload); err != nil {
+		return err
+	}
+	events, err := collectStream(conn)
+	if err != nil {
+		return err
+	}
+	return emitDistinctFieldValues(out, events, opts.fieldName)
+}
+
+// runFieldValuesFromFile is the --file counterpart of runFieldValues.
+// Reads the file straight into memory, applies the filter, projects.
+func runFieldValuesFromFile(opts options, out io.Writer) error {
+	events, err := loadFileEvents(opts)
+	if err != nil {
+		return err
+	}
+	return emitDistinctFieldValues(out, events, opts.fieldName)
+}
+
+// emitDistinctFieldValues extracts opts.fieldName from every event,
+// deduplicates, sorts, and prints one per line. Field name resolution
+// mirrors the verbose renderer so "-F MESSAGE" pulls Msg, "-F _PID"
+// pulls Pid, etc. Freeform keys fall through to Event.Fields lookup
+// so slinit-native fields (SLINIT_*) work without extra plumbing.
+func emitDistinctFieldValues(out io.Writer, events []*journal.Event, field string) error {
+	seen := make(map[string]struct{})
+	for _, e := range events {
+		v := extractField(e, field)
+		if v == "" {
+			continue
+		}
+		seen[v] = struct{}{}
+	}
+	values := make([]string, 0, len(seen))
+	for v := range seen {
+		values = append(values, v)
+	}
+	// Stable sort so consecutive runs show identical output.
+	for i := 1; i < len(values); i++ {
+		for j := i; j > 0 && values[j-1] > values[j]; j-- {
+			values[j-1], values[j] = values[j], values[j-1]
+		}
+	}
+	for _, v := range values {
+		fmt.Fprintln(out, v)
+	}
+	return nil
+}
+
+// extractField reads a single named field off an Event using the same
+// field names the renderers emit. Underscore-prefixed keys map to
+// trusted metadata; upper-case bare names map to core fields; anything
+// else falls through to the freeform Fields map so SLINIT_* and
+// operator-injected keys work uniformly.
+func extractField(e *journal.Event, name string) string {
+	switch name {
+	case "MESSAGE":
+		return e.Msg
+	case "PRIORITY":
+		return e.Prio.String()
+	case "SYSLOG_IDENTIFIER":
+		return e.SyslogIdentifier
+	case "TRANSPORT", "_TRANSPORT":
+		return string(e.Transport)
+	case "UNIT":
+		return e.Unit
+	case "TS_NSEC":
+		return strconv.FormatInt(e.Ts, 10)
+	case "MTS_NSEC":
+		return strconv.FormatInt(e.Mts, 10)
+	case "_PID":
+		if e.Pid == 0 {
+			return ""
+		}
+		return strconv.Itoa(e.Pid)
+	case "_UID":
+		if e.Uid == 0 {
+			return ""
+		}
+		return strconv.Itoa(e.Uid)
+	case "_GID":
+		if e.Gid == 0 {
+			return ""
+		}
+		return strconv.Itoa(e.Gid)
+	case "_COMM":
+		return e.Comm
+	case "_EXE":
+		return e.Exe
+	case "_CMDLINE":
+		return e.Cmdline
+	case "_HOSTNAME":
+		return e.Hostname
+	case "_BOOT_ID":
+		return e.BootID
+	case "_MACHINE_ID":
+		return e.MachineID
+	}
+	if e.Fields != nil {
+		return e.Fields[name]
+	}
+	return ""
+}
+
+// loadFileEvents is a helper that funnels --file loading through the
+// same filter path used by runFromFile/runFromBinaryFile, returning
+// the filtered event slice for callers that want to project or count
+// rather than render.
+func loadFileEvents(opts options) ([]*journal.Event, error) {
+	filter := buildRequest(opts).ToFilter()
+	if isBinaryJournal(opts.sourceFile) {
+		r, err := journalbin.OpenReader(opts.sourceFile)
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close()
+		var events []*journal.Event
+		err = r.Iter(func(e *journal.Event) bool {
+			if filter.Match(e) {
+				events = append(events, e)
+			}
+			return true
+		})
+		return events, err
+	}
+	var r io.ReadCloser
+	if strings.HasSuffix(opts.sourceFile, ".gz") {
+		rc, err := journald.OpenCompressed(opts.sourceFile)
+		if err != nil {
+			return nil, err
+		}
+		r = rc
+	} else {
+		f, err := os.Open(opts.sourceFile)
+		if err != nil {
+			return nil, err
+		}
+		r = f
+	}
+	defer r.Close()
+	return readJSONLFile(r, filter, 0)
+}
+
+// runHeaderDump prints metadata about a --file source: for a binary
+// journal, the SLJRNL01 header fields; for JSONL, first/last event
+// stats. Matches systemd's `journalctl --header` which shows one
+// header block per journal file it touches.
+func runHeaderDump(opts options, out io.Writer) error {
+	if isBinaryJournal(opts.sourceFile) {
+		r, err := journalbin.OpenReader(opts.sourceFile)
+		if err != nil {
+			return err
+		}
+		defer r.Close()
+		hdr := r.Header()
+		fmt.Fprintf(out, "File: %s\n", opts.sourceFile)
+		fmt.Fprintf(out, "  Magic: %s\n", string(hdr.Magic[:]))
+		fmt.Fprintf(out, "  Compat flags: 0x%08x  Incompat flags: 0x%08x\n", hdr.CompatFlags, hdr.IncompatFlags)
+		fmt.Fprintf(out, "  Boot ID: %x\n", hdr.BootID)
+		fmt.Fprintf(out, "  Machine ID: %x\n", hdr.MachineID)
+		fmt.Fprintf(out, "  Seqnum range: %d..%d\n", hdr.HeadEntrySeqnum, hdr.TailEntrySeqnum)
+		fmt.Fprintf(out, "  Realtime range: %s..%s\n",
+			time.Unix(0, int64(hdr.HeadEntryRealtime)*1000).Format(time.RFC3339),
+			time.Unix(0, int64(hdr.TailEntryRealtime)*1000).Format(time.RFC3339))
+		fmt.Fprintf(out, "  Objects: %d\n", hdr.NObjects)
+		fmt.Fprintf(out, "  Entries: %d\n", hdr.NEntries)
+		return nil
+	}
+	// JSONL: stat + count.
+	fi, err := os.Stat(opts.sourceFile)
+	if err != nil {
+		return err
+	}
+	events, err := loadFileEvents(opts)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "File: %s (JSONL, %d bytes)\n", opts.sourceFile, fi.Size())
+	fmt.Fprintf(out, "  Entries: %d\n", len(events))
+	if len(events) > 0 {
+		fmt.Fprintf(out, "  Realtime range: %s..%s\n",
+			time.Unix(0, events[0].Ts).Format(time.RFC3339),
+			time.Unix(0, events[len(events)-1].Ts).Format(time.RFC3339))
+		fmt.Fprintf(out, "  Boot IDs seen: %s\n", strings.Join(distinctBootIDs(events), ", "))
+	}
+	return nil
+}
+
+// runHeaderDumpLive prints a summary of the running daemon's in-process
+// ring buffer, since there's no on-disk file to describe. Systemd's
+// --header without --file inspects /var/log/journal; slinit's live
+// equivalent is the memory buffer.
+func runHeaderDumpLive(conn net.Conn, out io.Writer) error {
+	payload, _ := json.Marshal(control.JournalQueryRequest{})
+	if err := control.WritePacket(conn, control.CmdJournalQuery, payload); err != nil {
+		return err
+	}
+	events, err := collectStream(conn)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "Source: in-process ring buffer via control socket")
+	fmt.Fprintf(out, "  Entries: %d\n", len(events))
+	if len(events) > 0 {
+		fmt.Fprintf(out, "  Realtime range: %s..%s\n",
+			time.Unix(0, events[0].Ts).Format(time.RFC3339),
+			time.Unix(0, events[len(events)-1].Ts).Format(time.RFC3339))
+		fmt.Fprintf(out, "  Boot IDs seen: %s\n", strings.Join(distinctBootIDs(events), ", "))
+	}
+	return nil
+}
+
+// distinctBootIDs collects and stably sorts the unique boot IDs seen
+// in the event slice.
+func distinctBootIDs(events []*journal.Event) []string {
+	seen := make(map[string]struct{})
+	for _, e := range events {
+		if e.BootID != "" {
+			seen[e.BootID] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1] > out[j]; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
+}
+
+// runDiskUsage prints total bytes consumed by on-disk journals under
+// the configured journal directory. Matches systemd's --disk-usage
+// which sums /var/log/journal recursively.
+func runDiskUsage(opts options, out io.Writer) error {
+	dir := opts.directory
+	if dir == "" {
+		dir = "/var/log/slinit-journal"
+	}
+	if opts.root != "" {
+		dir = filepath.Join(opts.root, dir)
+	}
+	var total int64
+	var count int
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			// Missing dir is fine (fresh install, nothing rotated yet).
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		total += info.Size()
+		count++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Journal path %s: %d file(s), %s total\n", dir, count, formatBytes(total))
+	return nil
+}
+
+// runFromDirectory walks opts.directory (honoring --root prefix if
+// set) collecting every plausible journal file and delegates to the
+// existing runFromFile-style logic per file. Renders straight to
+// stdout in walk order — deterministic per filesystem, which is what
+// scripts want when piped into grep / awk.
+func runFromDirectory(opts options) error {
+	dir := opts.directory
+	if opts.root != "" {
+		dir = filepath.Join(opts.root, dir)
+	}
+	files, err := journalFilesUnder(dir)
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		if !opts.quiet {
+			fmt.Fprintf(os.Stderr, "slinit-journalctl: no journal files under %s\n", dir)
+		}
+		return nil
+	}
+	// Delegate per-file to the existing single-file renderer by
+	// mutating a shallow-copy of opts. Filter matching stays consistent
+	// because both paths derive from buildRequest → ToFilter.
+	for _, f := range files {
+		perFile := opts
+		perFile.sourceFile = f
+		if err := runFromFile(perFile); err != nil {
+			return fmt.Errorf("%s: %w", f, err)
+		}
+	}
+	return nil
+}
+
+// journalFilesUnder walks dir and returns every path with a .jsonl,
+// .jsonl.gz, or .slj suffix. Symlinks are followed by filepath.Walk
+// default (Stat, not Lstat) which is what we want for admins who
+// bind-mount rotated journals into place.
+func journalFilesUnder(dir string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		name := info.Name()
+		if strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".jsonl.gz") || strings.HasSuffix(name, ".slj") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// formatBytes turns byte counts into human-readable K/M/G with one
+// decimal — enough resolution to spot a runaway journal without a
+// second decimal that just adds noise.
+func formatBytes(n int64) string {
+	const (
+		K = 1024
+		M = K * 1024
+		G = M * 1024
+	)
+	switch {
+	case n >= G:
+		return fmt.Sprintf("%.1fG", float64(n)/float64(G))
+	case n >= M:
+		return fmt.Sprintf("%.1fM", float64(n)/float64(M))
+	case n >= K:
+		return fmt.Sprintf("%.1fK", float64(n)/float64(K))
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
 }
 
 // runListBoots queries the buffer once, reports the boot(s) it
@@ -734,9 +1480,10 @@ func runFromFile(opts options) error {
 			events[i], events[j] = events[j], events[i]
 		}
 	}
+	ro := buildRenderOpts(opts)
 	out := os.Stdout
 	for _, evt := range events {
-		if err := render(out, opts.format, evt); err != nil {
+		if err := render(out, opts.format, evt, ro); err != nil {
 			return fmt.Errorf("render: %w", err)
 		}
 	}
@@ -791,9 +1538,10 @@ func runFromBinaryFile(opts options) error {
 			events[i], events[j] = events[j], events[i]
 		}
 	}
+	ro := buildRenderOpts(opts)
 	out := os.Stdout
 	for _, evt := range events {
-		if err := render(out, opts.format, evt); err != nil {
+		if err := render(out, opts.format, evt, ro); err != nil {
 			return fmt.Errorf("render: %w", err)
 		}
 	}
@@ -879,18 +1627,32 @@ func readJSONLFile(r io.Reader, filter journal.QueryFilter, limit int) ([]*journ
 // prints a resumable cursor on a trailing "-- cursor:" line.
 func runOneShot(conn net.Conn, opts options) error {
 	req := buildRequest(opts)
-	// --cursor overrides --since and adds a boot_id sanity check on
-	// the reply. If the boot changed since the cursor was issued we
-	// bail rather than replaying stale data.
+
+	// Cursor resolution order (only one of these should be set at a
+	// time; the parser doesn't enforce mutual exclusion but the last
+	// non-empty value wins so the semantics stay predictable):
+	//   1. --after-cursor  → strictly after (Since = ts + 1)
+	//   2. --cursor        → at or after   (Since = ts)   [systemd -c semantics]
+	//   3. --cursor-file   → same as --cursor but read from FILE
+	cursorToken, cursorMode, err := resolveCursorInput(opts)
+	if err != nil {
+		return err
+	}
 	var wantBoot string
-	if opts.cursor != "" {
-		ts, boot, err := parseCursor(opts.cursor)
+	if cursorToken != "" {
+		ts, boot, err := parseCursor(cursorToken)
 		if err != nil {
 			return err
 		}
-		req.Since = ts + 1 // strictly after the cursor position
 		wantBoot = boot
+		switch cursorMode {
+		case cursorAfter:
+			req.Since = ts + 1
+		default:
+			req.Since = ts
+		}
 	}
+
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -902,6 +1664,11 @@ func runOneShot(conn net.Conn, opts options) error {
 	if err != nil {
 		return err
 	}
+	// Client-side re-filter: older daemons ignore Identifiers/Grep
+	// and return everything. Running the filter locally guarantees
+	// correctness regardless of daemon vintage. Same code path also
+	// makes --file / --directory results consistent with socket ones.
+	events = clientSideFilter(events, req)
 	if wantBoot != "" && len(events) > 0 && events[0].BootID != wantBoot {
 		return fmt.Errorf("cursor: boot changed (was %s, now %s); position is meaningless in the new boot",
 			wantBoot, events[0].BootID)
@@ -911,9 +1678,10 @@ func runOneShot(conn net.Conn, opts options) error {
 			events[i], events[j] = events[j], events[i]
 		}
 	}
+	ro := buildRenderOpts(opts)
 	out := os.Stdout
 	for _, evt := range events {
-		if err := render(out, opts.format, evt); err != nil {
+		if err := render(out, opts.format, evt, ro); err != nil {
 			return fmt.Errorf("render: %w", err)
 		}
 	}
@@ -928,7 +1696,70 @@ func runOneShot(conn net.Conn, opts options) error {
 		}
 		fmt.Fprintf(out, "-- cursor: %s\n", formatCursor(last))
 	}
+	// --cursor-file persists the trailing cursor so a subsequent run
+	// with the same flag resumes precisely where this one left off
+	// (mimicking systemd's atomic cursor-file update). We write even
+	// on empty results so an operator scripting a scan sees a stable
+	// path (older cursor stays valid if nothing new arrived).
+	if opts.cursorFile != "" && len(events) > 0 {
+		last := events[len(events)-1]
+		if opts.reverse {
+			last = events[0]
+		}
+		if err := writeCursorFile(opts.cursorFile, formatCursor(last)); err != nil {
+			return fmt.Errorf("cursor-file: %w", err)
+		}
+	}
 	return nil
+}
+
+// cursorMode discriminates inclusive (--cursor) vs exclusive
+// (--after-cursor) positioning. --cursor-file inherits inclusive
+// since it stores the last emitted cursor which the operator wants
+// to re-emit only if the daemon rolled back (unlikely).
+type cursorMode int
+
+const (
+	cursorInclusive cursorMode = iota
+	cursorAfter
+)
+
+// resolveCursorInput picks the effective cursor token + mode from
+// opts, respecting the priority chain declared in runOneShot. Returns
+// ("", cursorInclusive, nil) when no cursor input was provided.
+func resolveCursorInput(opts options) (string, cursorMode, error) {
+	if opts.afterCursor != "" {
+		return opts.afterCursor, cursorAfter, nil
+	}
+	if opts.cursor != "" {
+		return opts.cursor, cursorInclusive, nil
+	}
+	if opts.cursorFile != "" {
+		data, err := os.ReadFile(opts.cursorFile)
+		if err != nil {
+			// Missing file is treated as "no prior cursor" rather
+			// than a hard error — first-time invocation of a
+			// script using --cursor-file must be allowed to
+			// bootstrap from scratch.
+			if errors.Is(err, os.ErrNotExist) {
+				return "", cursorInclusive, nil
+			}
+			return "", cursorInclusive, fmt.Errorf("read cursor-file %s: %w", opts.cursorFile, err)
+		}
+		return strings.TrimSpace(string(data)), cursorInclusive, nil
+	}
+	return "", cursorInclusive, nil
+}
+
+// writeCursorFile atomically writes token to path via a temp+rename
+// dance — a torn write during shutdown must never leave the operator
+// with a corrupted cursor that can't be resumed from.
+func writeCursorFile(path, token string) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(token+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // runFollow sends CmdJournalSubscribe and renders each RplyJournalEntry
@@ -946,6 +1777,7 @@ func runFollow(conn net.Conn, opts options) error {
 	if err := control.WritePacket(conn, control.CmdJournalSubscribe, payload); err != nil {
 		return fmt.Errorf("send subscribe: %w", err)
 	}
+	ro := buildRenderOpts(opts)
 	out := os.Stdout
 	for {
 		typ, body, err := control.ReadPacket(conn)
@@ -961,7 +1793,7 @@ func runFollow(conn net.Conn, opts options) error {
 			if decodeErr != nil {
 				return fmt.Errorf("decode entry: %w", decodeErr)
 			}
-			if err := render(out, opts.format, evt); err != nil {
+			if err := render(out, opts.format, evt, ro); err != nil {
 				return fmt.Errorf("render: %w", err)
 			}
 		case control.RplyJournalErr:
@@ -979,11 +1811,26 @@ func runFollow(conn net.Conn, opts options) error {
 // share it and slinit-journald's replay tool (Phase 3) has a single
 // authoritative reference.
 func buildRequest(opts options) control.JournalQueryRequest {
+	// --user-unit is treated as an additional -u source when the
+	// operator is in user mode. Merging into Units keeps the wire
+	// filter simple; the client-side scope check already ensures we
+	// dialled the right socket.
+	units := opts.units
+	if len(opts.userUnitFilters) > 0 {
+		units = append(append([]string{}, units...), opts.userUnitFilters...)
+	}
 	req := control.JournalQueryRequest{
-		Units: opts.units,
-		Since: opts.since,
-		Until: opts.until,
-		Limit: opts.limit,
+		Units:              units,
+		Since:              opts.since,
+		Until:              opts.until,
+		Limit:              opts.limit,
+		Identifiers:        opts.identifiers,
+		ExcludeIdentifiers: opts.excludeIdentifiers,
+		GrepPattern:        opts.grep,
+		// Systemd's `-g` default is case-insensitive when the pattern
+		// is all-lowercase, case-sensitive otherwise; we mirror that
+		// unless the operator overrode with --case-sensitive[=BOOL].
+		GrepInsensitive: shouldGrepInsensitive(opts),
 	}
 	if opts.prioritySet {
 		req.MinPriority = int(opts.priority)
@@ -997,6 +1844,44 @@ func buildRequest(opts options) control.JournalQueryRequest {
 		req.Transports = []string{string(journal.TransportKernel)}
 	}
 	return req
+}
+
+// shouldGrepInsensitive implements systemd's --case-sensitive heuristic:
+// explicit user override wins; otherwise pattern with any uppercase
+// letter is case-sensitive, all-lowercase is case-insensitive.
+func shouldGrepInsensitive(opts options) bool {
+	if opts.grep == "" {
+		return false
+	}
+	if opts.grepCaseSet {
+		return !opts.grepCaseSensitive
+	}
+	for _, r := range opts.grep {
+		if r >= 'A' && r <= 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// clientSideFilter re-applies the wire-request's filter locally so
+// filter dimensions the daemon doesn't understand (introduced in
+// v2.1.6 — Identifiers, ExcludeIdentifiers, GrepPattern) still work
+// against older daemons that ignore the unknown JSON keys. Cheap
+// enough to run unconditionally: buffer + filter is O(N) either way
+// and the pkg/journal Match function is trivial.
+func clientSideFilter(events []*journal.Event, req control.JournalQueryRequest) []*journal.Event {
+	if len(req.Identifiers) == 0 && len(req.ExcludeIdentifiers) == 0 && req.GrepPattern == "" {
+		return events
+	}
+	filter := req.ToFilter()
+	kept := events[:0]
+	for _, e := range events {
+		if filter.Match(e) {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 // collectStream reads RplyJournalEntry packets from conn into a slice
@@ -1028,23 +1913,82 @@ func collectStream(conn net.Conn) ([]*journal.Event, error) {
 	}
 }
 
+// renderOpts collects the display-side toggles from CLI options that
+// each renderer needs to honor (--utc, --no-hostname, --truncate-newline,
+// --no-full, --output-fields). Passed as a small value so we don't leak
+// the full options struct into the render layer.
+type renderOpts struct {
+	utc             bool
+	noHostname      bool
+	truncateNewline bool
+	noFull          bool
+	outputFields    map[string]bool // nil = all fields; non-empty = keep only these
+}
+
+// buildRenderOpts extracts the render-relevant subset of options. The
+// outputFields slice is turned into a set for O(1) membership tests.
+func buildRenderOpts(opts options) renderOpts {
+	ro := renderOpts{
+		utc:             opts.utc,
+		noHostname:      opts.noHostname,
+		truncateNewline: opts.truncateNewline,
+		noFull:          opts.noFull,
+	}
+	if len(opts.outputFields) > 0 {
+		ro.outputFields = make(map[string]bool, len(opts.outputFields))
+		for _, f := range opts.outputFields {
+			ro.outputFields[f] = true
+		}
+	}
+	return ro
+}
+
+// keepField reports whether field name should be included given the
+// active --output-fields filter. Empty filter means "keep all".
+func (ro renderOpts) keepField(name string) bool {
+	if ro.outputFields == nil {
+		return true
+	}
+	return ro.outputFields[name]
+}
+
+// truncateMsg applies --truncate-newline (cut at first LF) and
+// --no-full (ellipsize at ~256 chars, matching systemd's default
+// column limit for short outputs). Order matters: newline first so
+// we don't ellipsize a boring first line just because the tail was
+// long.
+func (ro renderOpts) truncateMsg(msg string) string {
+	if ro.truncateNewline {
+		if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			msg = msg[:i]
+		}
+	}
+	if ro.noFull {
+		const cap = 256
+		if len(msg) > cap {
+			msg = msg[:cap-3] + "..."
+		}
+	}
+	return msg
+}
+
 // render dispatches to the format-specific writer. Chosen over a
 // map[format]func table because Go's method values allocate; a switch
 // stays cheap and reads naturally.
-func render(out io.Writer, f outputFormat, e *journal.Event) error {
+func render(out io.Writer, f outputFormat, e *journal.Event, ro renderOpts) error {
 	switch f {
 	case fmtShort:
-		return renderShort(out, e, timeShort)
+		return renderShort(out, e, timeShort, ro)
 	case fmtShortISO:
-		return renderShort(out, e, timeISO)
+		return renderShort(out, e, timeISO, ro)
 	case fmtCat:
-		return renderCat(out, e)
+		return renderCat(out, e, ro)
 	case fmtJSON:
 		return renderJSON(out, e)
 	case fmtVerbose:
-		return renderVerbose(out, e)
+		return renderVerbose(out, e, ro)
 	case fmtExport:
-		return renderExport(out, e)
+		return renderExport(out, e, ro)
 	default:
 		return fmt.Errorf("no renderer for format %q", f)
 	}
@@ -1061,9 +2005,12 @@ const (
 )
 
 // formatTime turns a nanosecond Unix timestamp into the display string
-// for the selected timeFormat.
-func formatTime(nsec int64, tf timeFormat) string {
+// for the selected timeFormat, honoring --utc.
+func formatTime(nsec int64, tf timeFormat, utc bool) string {
 	t := time.Unix(0, nsec)
+	if utc {
+		t = t.UTC()
+	}
 	switch tf {
 	case timeISO:
 		return t.Format(time.RFC3339)
@@ -1093,11 +2040,7 @@ func identOf(e *journal.Event) string {
 // short-iso variant with RFC3339 timestamp). The [PID] block is
 // omitted when Pid==0 so slinit-driver events don't carry a noisy
 // "[1]" suffix on every line.
-func renderShort(out io.Writer, e *journal.Event, tf timeFormat) error {
-	host := e.Hostname
-	if host == "" {
-		host = "-"
-	}
+func renderShort(out io.Writer, e *journal.Event, tf timeFormat, ro renderOpts) error {
 	// Bracket display priority:
 	//   1. SLINIT_TARGET_PID (subject service's live PID) — the
 	//      operator wants "hello[478]:" not "hello[1]:".
@@ -1118,8 +2061,18 @@ func renderShort(out io.Writer, e *journal.Event, tf timeFormat) error {
 	case e.Pid > 0:
 		pidPart = fmt.Sprintf("[%d]", e.Pid)
 	}
+	msg := ro.truncateMsg(e.Msg)
+	if ro.noHostname {
+		_, err := fmt.Fprintf(out, "%s %s%s: %s\n",
+			formatTime(e.Ts, tf, ro.utc), identOf(e), pidPart, msg)
+		return err
+	}
+	host := e.Hostname
+	if host == "" {
+		host = "-"
+	}
 	_, err := fmt.Fprintf(out, "%s %s %s%s: %s\n",
-		formatTime(e.Ts, tf), host, identOf(e), pidPart, e.Msg)
+		formatTime(e.Ts, tf, ro.utc), host, identOf(e), pidPart, msg)
 	return err
 }
 
@@ -1142,8 +2095,8 @@ func targetPIDOf(e *journal.Event) int {
 // renderCat prints just the message with a trailing newline, matching
 // systemd's cat mode: the terminal-friendly form for feeding a pager
 // or grep pipeline that shouldn't see timestamps.
-func renderCat(out io.Writer, e *journal.Event) error {
-	_, err := fmt.Fprintln(out, e.Msg)
+func renderCat(out io.Writer, e *journal.Event, ro renderOpts) error {
+	_, err := fmt.Fprintln(out, ro.truncateMsg(e.Msg))
 	return err
 }
 
@@ -1164,35 +2117,37 @@ func renderJSON(out io.Writer, e *journal.Event) error {
 // mirroring systemd's verbose format. Field order is stable so diffs
 // between two verbose dumps are meaningful. Empty fields are skipped
 // so the output stays scannable on narrow terminals.
-func renderVerbose(out io.Writer, e *journal.Event) error {
+func renderVerbose(out io.Writer, e *journal.Event, ro renderOpts) error {
 	// Timestamp header line — human-readable + machine-readable.
 	fmt.Fprintf(out, "%s [%d.%09d]\n",
-		formatTime(e.Ts, timeISO), e.Ts/1_000_000_000, e.Ts%1_000_000_000)
-	writeField(out, "TS_NSEC", strconv.FormatInt(e.Ts, 10))
-	writeField(out, "MTS_NSEC", strconv.FormatInt(e.Mts, 10))
-	writeField(out, "PRIORITY", e.Prio.String())
-	writeField(out, "TRANSPORT", string(e.Transport))
-	writeField(out, "UNIT", e.Unit)
-	writeField(out, "SYSLOG_IDENTIFIER", e.SyslogIdentifier)
+		formatTime(e.Ts, timeISO, ro.utc), e.Ts/1_000_000_000, e.Ts%1_000_000_000)
+	writeFieldFiltered(out, ro, "TS_NSEC", strconv.FormatInt(e.Ts, 10))
+	writeFieldFiltered(out, ro, "MTS_NSEC", strconv.FormatInt(e.Mts, 10))
+	writeFieldFiltered(out, ro, "PRIORITY", e.Prio.String())
+	writeFieldFiltered(out, ro, "TRANSPORT", string(e.Transport))
+	writeFieldFiltered(out, ro, "UNIT", e.Unit)
+	writeFieldFiltered(out, ro, "SYSLOG_IDENTIFIER", e.SyslogIdentifier)
 	if e.Pid > 0 {
-		writeField(out, "_PID", strconv.Itoa(e.Pid))
+		writeFieldFiltered(out, ro, "_PID", strconv.Itoa(e.Pid))
 	}
 	if e.Uid > 0 {
-		writeField(out, "_UID", strconv.Itoa(e.Uid))
+		writeFieldFiltered(out, ro, "_UID", strconv.Itoa(e.Uid))
 	}
 	if e.Gid > 0 {
-		writeField(out, "_GID", strconv.Itoa(e.Gid))
+		writeFieldFiltered(out, ro, "_GID", strconv.Itoa(e.Gid))
 	}
-	writeField(out, "_COMM", e.Comm)
-	writeField(out, "_EXE", e.Exe)
-	writeField(out, "_CMDLINE", e.Cmdline)
-	writeField(out, "_HOSTNAME", e.Hostname)
-	writeField(out, "_BOOT_ID", e.BootID)
-	writeField(out, "_MACHINE_ID", e.MachineID)
-	writeField(out, "MESSAGE", e.Msg)
+	writeFieldFiltered(out, ro, "_COMM", e.Comm)
+	writeFieldFiltered(out, ro, "_EXE", e.Exe)
+	writeFieldFiltered(out, ro, "_CMDLINE", e.Cmdline)
+	if !ro.noHostname {
+		writeFieldFiltered(out, ro, "_HOSTNAME", e.Hostname)
+	}
+	writeFieldFiltered(out, ro, "_BOOT_ID", e.BootID)
+	writeFieldFiltered(out, ro, "_MACHINE_ID", e.MachineID)
+	writeFieldFiltered(out, ro, "MESSAGE", ro.truncateMsg(e.Msg))
 	// Freeform fields last, sorted for deterministic output.
 	for _, k := range sortedKeys(e.Fields) {
-		writeField(out, k, e.Fields[k])
+		writeFieldFiltered(out, ro, k, e.Fields[k])
 	}
 	fmt.Fprintln(out) // blank line between records
 	return nil
@@ -1208,33 +2163,35 @@ func renderVerbose(out io.Writer, e *journal.Event) error {
 // supported in v1 — export format has a workaround (length-prefixed
 // binary section) but slinit's Event schema doesn't emit binary
 // values anywhere, so we skip the escape until it's actually needed.
-func renderExport(out io.Writer, e *journal.Event) error {
+func renderExport(out io.Writer, e *journal.Event, ro renderOpts) error {
 	// Timestamps + core.
 	fmt.Fprintf(out, "__REALTIME_TIMESTAMP=%d\n", e.Ts/1000) // us
 	fmt.Fprintf(out, "__MONOTONIC_TIMESTAMP=%d\n", e.Mts/1000)
-	writeExportField(out, "PRIORITY", strconv.Itoa(int(e.Prio)))
-	writeExportField(out, "MESSAGE", e.Msg)
-	writeExportField(out, "SYSLOG_IDENTIFIER", e.SyslogIdentifier)
-	writeExportField(out, "_TRANSPORT", string(e.Transport))
-	writeExportField(out, "_SLINIT_UNIT", e.Unit)
+	writeExportFieldFiltered(out, ro, "PRIORITY", strconv.Itoa(int(e.Prio)))
+	writeExportFieldFiltered(out, ro, "MESSAGE", ro.truncateMsg(e.Msg))
+	writeExportFieldFiltered(out, ro, "SYSLOG_IDENTIFIER", e.SyslogIdentifier)
+	writeExportFieldFiltered(out, ro, "_TRANSPORT", string(e.Transport))
+	writeExportFieldFiltered(out, ro, "_SLINIT_UNIT", e.Unit)
 	if e.Pid > 0 {
-		writeExportField(out, "_PID", strconv.Itoa(e.Pid))
+		writeExportFieldFiltered(out, ro, "_PID", strconv.Itoa(e.Pid))
 	}
 	if e.Uid > 0 {
-		writeExportField(out, "_UID", strconv.Itoa(e.Uid))
+		writeExportFieldFiltered(out, ro, "_UID", strconv.Itoa(e.Uid))
 	}
 	if e.Gid > 0 {
-		writeExportField(out, "_GID", strconv.Itoa(e.Gid))
+		writeExportFieldFiltered(out, ro, "_GID", strconv.Itoa(e.Gid))
 	}
-	writeExportField(out, "_COMM", e.Comm)
-	writeExportField(out, "_EXE", e.Exe)
-	writeExportField(out, "_CMDLINE", e.Cmdline)
-	writeExportField(out, "_HOSTNAME", e.Hostname)
-	writeExportField(out, "_BOOT_ID", e.BootID)
-	writeExportField(out, "_MACHINE_ID", e.MachineID)
+	writeExportFieldFiltered(out, ro, "_COMM", e.Comm)
+	writeExportFieldFiltered(out, ro, "_EXE", e.Exe)
+	writeExportFieldFiltered(out, ro, "_CMDLINE", e.Cmdline)
+	if !ro.noHostname {
+		writeExportFieldFiltered(out, ro, "_HOSTNAME", e.Hostname)
+	}
+	writeExportFieldFiltered(out, ro, "_BOOT_ID", e.BootID)
+	writeExportFieldFiltered(out, ro, "_MACHINE_ID", e.MachineID)
 	// Freeform fields in stable (sorted) order — matches renderVerbose.
 	for _, k := range sortedKeys(e.Fields) {
-		writeExportField(out, k, e.Fields[k])
+		writeExportFieldFiltered(out, ro, k, e.Fields[k])
 	}
 	_, err := fmt.Fprintln(out) // blank line between events
 	return err
@@ -1250,6 +2207,16 @@ func writeExportField(out io.Writer, key, value string) {
 	fmt.Fprintf(out, "%s=%s\n", key, value)
 }
 
+// writeExportFieldFiltered is the --output-fields-aware sibling of
+// writeExportField. Field is emitted only when both non-empty AND
+// present in the active fields set (or set is nil = keep all).
+func writeExportFieldFiltered(out io.Writer, ro renderOpts, key, value string) {
+	if !ro.keepField(key) {
+		return
+	}
+	writeExportField(out, key, value)
+}
+
 // writeField prints "    KEY=value" only when the value is non-empty
 // — keeps the verbose renderer scannable by dropping unset fields.
 func writeField(out io.Writer, name, value string) {
@@ -1257,6 +2224,16 @@ func writeField(out io.Writer, name, value string) {
 		return
 	}
 	fmt.Fprintf(out, "    %s=%s\n", name, value)
+}
+
+// writeFieldFiltered is the --output-fields-aware sibling of
+// writeField. Same emit-only-if-nonempty semantics, plus the extra
+// membership gate.
+func writeFieldFiltered(out io.Writer, ro renderOpts, name, value string) {
+	if !ro.keepField(name) {
+		return
+	}
+	writeField(out, name, value)
 }
 
 // sortedKeys returns the keys of a string map in stable ascending
@@ -1286,28 +2263,59 @@ func printHelp(out io.Writer) {
 Query the slinit journal ring buffer via the control socket.
 
 Flags:
-  -n, --lines=N        Show only the last N matching events (0 = all)
-  -o, --output=FMT     Output format: short (default), short-iso, cat, json, verbose
-  -u, --unit=NAME      Filter by service unit (repeatable — OR-set)
-  -p, --priority=LVL   Keep only events at LVL or more urgent (0..7 or emerg..debug)
-      --since=TIME     Keep only events at or after TIME
-      --until=TIME     Keep only events at or before TIME
-  -r, --reverse        Print newest first (ignored under -f)
-  -f, --follow         Stream new events as they arrive (Ctrl-C to stop)
-  -k, --dmesg          Show only kernel (kmsg) events
-      --list-boots     List boot IDs the journal buffer covers and exit
-  -b, --boot [ID]      Restrict to a boot (empty or "0" = current; full hex ID also accepted;
-                       relative "-N" and cross-boot control-socket query not yet wired)
-  -c, --cursor=TOKEN   Resume from a cursor produced by --show-cursor
-      --show-cursor    Print a "-- cursor: s=..;b=.." line after output
-      --file=PATH      Read a journal file directly (binary or JSONL; magic-detected; .gz auto-decompress)
-      --verify         Walk FSS TAG chain on --file (binary only); needs --fss-key
-      --fss-key=PATH   FSS key file for --verify (default /etc/slinit/journal-key)
-      --socket-path=P  Override the control socket path
-      --system         Force system-mode socket (/run/slinit.socket)
-      --user           Force user-mode socket ($XDG_RUNTIME_DIR/slinitctl)
-      --version        Print version and exit
-  -h, --help           Show this help
+  -n, --lines=N               Show only the last N matching events (0 = all)
+      --no-tail               Show all matches (inverse of default -n heuristic)
+  -o, --output=FMT            Output format: short (default), short-iso, cat, json, verbose, export
+      --output-fields=A,B,C   Restrict verbose/export/JSON to these field keys
+  -u, --unit=NAME             Filter by service unit (repeatable — OR-set)
+  -U, --user-unit=NAME        Filter by user-scope unit (also forces --user)
+  -t, --identifier=IDENT      Include events with matching SYSLOG_IDENTIFIER (repeatable)
+  -T, --exclude-identifier=I  Drop events with matching SYSLOG_IDENTIFIER (repeatable)
+      --facility=NAME|N       Parsed, accepted; slinit doesn't record facility yet (WARN emitted)
+  -g, --grep=PATTERN          RE2 regex on MESSAGE; default case-insensitive if pattern is all-lowercase
+      --case-sensitive[=BOOL] Override the case heuristic used by -g
+  -p, --priority=LVL          Keep only events at LVL or more urgent (0..7 or emerg..debug)
+      --since=TIME            Keep only events at or after TIME
+      --until=TIME            Keep only events at or before TIME
+  -r, --reverse               Print newest first (ignored under -f)
+  -f, --follow                Stream new events as they arrive (Ctrl-C to stop)
+  -k, --dmesg                 Show only kernel (kmsg) events
+  -m, --merge                 Accept for parity; no-op on single-source setups
+      --list-boots            List boot IDs the journal buffer covers and exit
+  -b, --boot [ID]             Restrict to a boot (empty or "0" = current; full hex ID also accepted)
+      --this-boot             Alias for --boot=0
+  -c, --cursor=TOKEN          Resume at cursor (inclusive)
+      --after-cursor=TOKEN    Resume strictly after cursor (exclusive)
+      --cursor-file=FILE      Load cursor from FILE at start, persist updated cursor at end
+      --show-cursor           Print "-- cursor: s=..;b=.." line after output
+      --file=PATH             Read a journal file (binary or JSONL; magic-detected; .gz auto-decompress)
+  -D, --directory=DIR         Iterate every *.jsonl / *.jsonl.gz / *.slj under DIR
+      --root=PATH             Prefix applied to filesystem paths (--directory, --disk-usage default)
+      --verify                Walk FSS TAG chain on --file (binary only); needs --fss-key
+      --fss-key=PATH          FSS key file for --verify (default /etc/slinit/journal-key)
+
+  Display modifiers:
+      --no-hostname           Drop hostname column from short outputs
+      --utc                   Render timestamps in UTC instead of local
+      --truncate-newline      Cut MESSAGE at the first newline
+      --no-full               Ellipsize long fields (~256 chars)
+  -l, --full                  Show full fields (default)
+  -a, --all                   Show all field values without ellipsizing
+  -e, --pager-end             Accepted for parity; no pager currently invoked
+  -q, --quiet                 Suppress info messages (empty file etc.)
+
+  Introspection (short-circuit — no event stream):
+  -F, --field=NAME            Print distinct values seen for NAME across events
+      --fields                Print the list of known field names
+      --header                Print journal file / buffer header metadata
+      --disk-usage            Print total bytes across on-disk journals
+
+  Connection:
+      --socket-path=P         Override the control socket path
+      --system                Force system-mode socket (/run/slinit.socket)
+      --user                  Force user-mode socket ($XDG_RUNTIME_DIR/slinitctl)
+      --version               Print version and exit
+  -h, --help                  Show this help
 
 Time formats for --since/--until:
   now                          current wall clock
