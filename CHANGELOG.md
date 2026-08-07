@@ -17,6 +17,87 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.6] — 2026-08-07
+
+Systemd journalctl parity push. Slinit-journalctl started at 21 flags
+against systemd's 65 (~32%); this cut brings us to 51/65 (~78%) in
+two batched groups. Group A landed the client-side query + display
+surface; Group B closed the maintenance ops that need daemon +
+filesystem coordination. Remaining gap is Groups C (FSS, 3), D
+(catalog, 4), E (invocation, 2) plus 9 systemd-specific concepts
+that don't map onto slinit's model (image dissection, journal
+namespaces, persistent/volatile switching).
+
+### Added — Group A (25 flags, 950b15f)
+
+Display modifiers: `--no-hostname`, `--utc`, `--truncate-newline`,
+`--no-full`, `-l/--full`, `-a/--all`, `--no-tail`, `-e/--pager-end`,
+`-q/--quiet`, `--output-fields=A,B,C`, `-m/--merge`.
+
+Filtering: `-t/--identifier=I` (SYSLOG_IDENTIFIER include),
+`-T/--exclude-identifier=I` (inverse), `--facility=NAME|N` (parsed +
+warned — slinit's Event schema doesn't record facility yet),
+`-g/--grep=REGEX` (RE2 on MESSAGE), `--case-sensitive[=BOOL]`
+(overrides systemd's all-lowercase auto-heuristic), `--this-boot`
+(alias for `--boot=0`), `-U/--user-unit=NAME` (user-scope + forces
+`--user`).
+
+Cursor / source: `--after-cursor=TOKEN` (strictly-after semantics;
+`-c` becomes inclusive-at per systemd), `--cursor-file=FILE` (load +
+atomic tmp+rename persist), `-D/--directory=DIR` (glob every
+`*.jsonl` / `*.jsonl.gz` / `*.slj` under DIR), `--root=PATH`
+(filesystem-root prefix for `--directory`, `--disk-usage` default).
+
+Introspection (short-circuit — no event stream):
+`-F/--field=NAME` (distinct values), `--fields` (list of known field
+names), `--header` (metadata: file header for `--file`, buffer
+summary otherwise), `--disk-usage` (bytes on disk).
+
+Wire additions: `JournalQueryRequest` gains `Identifiers`,
+`ExcludeIdentifiers`, `GrepPattern`, `GrepInsensitive` (all
+`omitempty` — older daemons ignore cleanly). Client-side re-runs the
+filter locally after receiving events, so `-t/-T/-g` work against
+any daemon vintage — server-side pushdown is an optimization, not a
+correctness dependency.
+
+### Added — Group B (5 flags + PID file signalling, 5c63160)
+
+Maintenance ops that need daemon coordination:
+
+- `--sync` — force fsync of the active sink via SIGUSR1 to
+  slinit-journald. Falls back to walking the journal dir + `fsync`
+  per file when no daemon is running, so shutdown scripts on fresh
+  systems don't hard-fail.
+- `--rotate` — close current file, rename with nanosecond suffix,
+  open a new one (SIGUSR2). Daemon-only — file-level rename would
+  race live writes.
+- `--vacuum-size=SIZE` / `--vacuum-files=N` / `--vacuum-time=TIME` —
+  in-process `journald.Vacuum` with the current dated file excluded
+  from deletion so a live daemon never sees its writer disappear.
+  Works with or without a running daemon.
+- `--pid-file=PATH` — override the default
+  `/run/slinit-journald.pid` lookup path.
+
+Wire additions:
+- `journald.FileSink` / `BinarySink` gain public `Rotate()`;
+  `BinarySink` gains public `Flush()` (`FileSink` already had one).
+  Both extracted into a shared `rotateLocked` helper.
+- `cmd/slinit-journald` writes `/run/slinit-journald.pid` at startup
+  (removed on clean shutdown) and installs SIGUSR1/SIGUSR2 handlers
+  via type assertion — `StdoutSink` and future sinks without
+  Flush/Rotate methods remain valid without carrying no-ops.
+
+Size / duration parsers accept systemd forms (`100M`, `2GiB`, `30d`,
+`6M`, `1y`) alongside Go-native (`1h30m`, `250ms`).
+
+Missing journal directory is a benign no-op for `--sync` and
+`--vacuum-*` rather than a hard error.
+
+### Fixed
+
+- `--cursor` semantics now match systemd (inclusive-at); the previous
+  strictly-after behavior moved to `--after-cursor` where it belongs.
+
 ## [2.1.5] — 2026-08-07
 
 Follow-up to the v2.1.4 converter cut. Real-world validation on ceres
