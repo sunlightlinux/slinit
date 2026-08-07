@@ -17,6 +17,49 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.5] — 2026-08-07
+
+Follow-up to the v2.1.4 converter cut. Real-world validation on ceres
+(46 void services under `/etc/sv/*`) showed `slinit-runit-convert`
+needed operator hand-editing for the log/finish/check/down auxiliaries
+and dropped `sv check DEP` on the floor. Close the gaps so every runit
+sv dir round-trips through `slinit-check` cleanly with no manual
+review pass. Before: 46 outputs, 25 failed lint. After: 46/46 clean.
+
+### Fixed
+
+- **`slinit-runit-convert`: 1:1 conversion, no manual review needed.**
+  - `sv check DEP` in run script now auto-emits `waits-for: DEP`
+    (previously a NOTE with "safer to review" hedge, and — before the
+    intra-session /bin/sh wrap fix — a silently-dropped runtime
+    dependency that let elogind start before dbus was ready).
+  - `./finish` auto-wires as `finish-command = /bin/sh <path>`.
+    slinit's `execFinishCommand` appends exitCode + signalNum after
+    the configured argv, so the wrapped script receives runit-
+    compatible `$1` / `$2`.
+  - `./check` auto-wires as `ready-check-command = /bin/sh <path>`.
+  - `./down` file → `manual = yes`.
+  - `./log/run` recursively converts into a `<name>-log` companion
+    service with `consumer-of = <name>`; primary gains
+    `log-type = pipe` so slinit's consumer-attach validator accepts
+    the pairing. Log companion inherits the same aux-file semantics
+    (finish/check/conf on the log/ subdir all handled).
+  - Default `working-dir = <svdir>` matches `runsv`'s pre-exec chdir
+    — required for agetty finish's `${PWD##*-}` idiom and for
+    wrapped run scripts that source `./conf` relatively.
+  - `env-file` only emitted when the file actually exists on disk.
+    void guards `. ./conf` with `[ -r conf ]`, so a missing conf is
+    legal at runtime; slinit's env-file directive is unconditional
+    and would warn under `slinit-check` on the same input.
+  - Extracted bare commands now go through `exec.LookPath`, so
+    `chpst -u nobody nanoklogd` becomes
+    `command = /usr/bin/nanoklogd`. slinit's execve path does no
+    PATH search, so a bare name would ENOENT at start.
+  - Regression tests cover aux-file detection, log companion +
+    `log-type = pipe` pairing, env-file existence gating, PATH
+    resolution, and `sv check` → `waits-for` extraction.
+  - Landed as `d7e12eb`.
+
 ## [2.1.4] — 2026-08-06
 
 Migration acceleration cut. Three new converters land under `cmd/`
