@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/control"
@@ -149,6 +150,16 @@ type options struct {
 	cursorFile  string // --cursor-file FILE — load+persist cursor via file
 	directory   string // -D/--directory DIR — glob *.jsonl / *.slj under DIR
 	root        string // --root PATH — filesystem root prefix for source lookups
+
+	// --- Group B: maintenance ---
+
+	sync        bool          // --sync — force daemon fsync via SIGUSR1
+	rotate      bool          // --rotate — force daemon rotation via SIGUSR2
+	vacuumSize  int64         // --vacuum-size=SIZE — prune to at most SIZE bytes
+	vacuumFiles int           // --vacuum-files=N — keep at most N archived files
+	vacuumTime  time.Duration // --vacuum-time=TIME — drop files older than TIME
+	vacuumSet   bool          // sentinel — any of the three vacuum flags was passed
+	pidFile     string        // --pid-file PATH — override /run/slinit-journald.pid
 
 	showHelp    bool
 	showVersion bool
@@ -606,6 +617,90 @@ func parseArgs(args []string) (options, error) {
 			opts.root = strings.TrimPrefix(a, "--root=")
 			args = args[1:]
 
+		// --- Group B: maintenance ---
+
+		case a == "--sync":
+			opts.sync = true
+			args = args[1:]
+
+		case a == "--rotate":
+			opts.rotate = true
+			args = args[1:]
+
+		case a == "--vacuum-size":
+			if len(args) < 2 {
+				return opts, errors.New("--vacuum-size requires an argument")
+			}
+			n, err := parseSizeArg(args[1])
+			if err != nil {
+				return opts, fmt.Errorf("--vacuum-size: %w", err)
+			}
+			opts.vacuumSize = n
+			opts.vacuumSet = true
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--vacuum-size="):
+			n, err := parseSizeArg(strings.TrimPrefix(a, "--vacuum-size="))
+			if err != nil {
+				return opts, fmt.Errorf("--vacuum-size: %w", err)
+			}
+			opts.vacuumSize = n
+			opts.vacuumSet = true
+			args = args[1:]
+
+		case a == "--vacuum-files":
+			if len(args) < 2 {
+				return opts, errors.New("--vacuum-files requires an argument")
+			}
+			n, err := strconv.Atoi(args[1])
+			if err != nil || n < 0 {
+				return opts, fmt.Errorf("--vacuum-files: invalid count %q", args[1])
+			}
+			opts.vacuumFiles = n
+			opts.vacuumSet = true
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--vacuum-files="):
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--vacuum-files="))
+			if err != nil || n < 0 {
+				return opts, fmt.Errorf("--vacuum-files: invalid count %q", strings.TrimPrefix(a, "--vacuum-files="))
+			}
+			opts.vacuumFiles = n
+			opts.vacuumSet = true
+			args = args[1:]
+
+		case a == "--vacuum-time":
+			if len(args) < 2 {
+				return opts, errors.New("--vacuum-time requires an argument")
+			}
+			d, err := parseDurationArg(args[1])
+			if err != nil {
+				return opts, fmt.Errorf("--vacuum-time: %w", err)
+			}
+			opts.vacuumTime = d
+			opts.vacuumSet = true
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--vacuum-time="):
+			d, err := parseDurationArg(strings.TrimPrefix(a, "--vacuum-time="))
+			if err != nil {
+				return opts, fmt.Errorf("--vacuum-time: %w", err)
+			}
+			opts.vacuumTime = d
+			opts.vacuumSet = true
+			args = args[1:]
+
+		case a == "--pid-file":
+			if len(args) < 2 {
+				return opts, errors.New("--pid-file requires an argument")
+			}
+			opts.pidFile = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--pid-file="):
+			opts.pidFile = strings.TrimPrefix(a, "--pid-file=")
+			args = args[1:]
+
 		default:
 			return opts, fmt.Errorf("unknown argument %q (try -h)", a)
 		}
@@ -680,6 +775,98 @@ func parseFacilityList(s string) ([]int, error) {
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+// parseSizeArg accepts systemd-style byte sizes: bare integers are
+// bytes, "K"/"M"/"G"/"T" suffixes use base-1024. Case-insensitive
+// suffix. Matches sd_parse_size for the common cases (skips the
+// "1234M56K" mixed form which admins rarely use in practice).
+func parseSizeArg(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("empty size")
+	}
+	// Strip optional trailing "B"/"b" first (bytes marker).
+	if strings.HasSuffix(s, "B") || strings.HasSuffix(s, "b") {
+		s = s[:len(s)-1]
+	}
+	// Strip optional "i" (KiB/MiB style) that may sit between the
+	// unit letter and the "B" we just removed.
+	if strings.HasSuffix(s, "i") || strings.HasSuffix(s, "I") {
+		s = s[:len(s)-1]
+	}
+	if s == "" {
+		return 0, errors.New("empty size")
+	}
+	mult := int64(1)
+	last := s[len(s)-1]
+	switch last {
+	case 'K', 'k':
+		mult = 1024
+		s = s[:len(s)-1]
+	case 'M', 'm':
+		mult = 1024 * 1024
+		s = s[:len(s)-1]
+	case 'G', 'g':
+		mult = 1024 * 1024 * 1024
+		s = s[:len(s)-1]
+	case 'T', 't':
+		mult = 1024 * 1024 * 1024 * 1024
+		s = s[:len(s)-1]
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("bad size %q: %w", s, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("size must be non-negative, got %d", n)
+	}
+	return n * mult, nil
+}
+
+// parseDurationArg accepts systemd-style time spans: `5s`, `30m`,
+// `2h`, `3d`, `4w`, `6M` (30-day month approx), `1y` (365-day year).
+// Also accepts Go-native forms (`1h30m`) via time.ParseDuration
+// fallback.
+func parseDurationArg(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("empty duration")
+	}
+	// Try Go-native first — covers `1h30m`, `250ms`, etc.
+	if d, err := time.ParseDuration(s); err == nil && d >= 0 {
+		return d, nil
+	}
+	// Systemd tokens: <number><unit>.
+	unit := s[len(s)-1]
+	body := s[:len(s)-1]
+	n, err := strconv.ParseInt(body, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("bad duration %q", s)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("duration must be non-negative, got %d", n)
+	}
+	var mult time.Duration
+	switch unit {
+	case 's':
+		mult = time.Second
+	case 'm':
+		mult = time.Minute
+	case 'h':
+		mult = time.Hour
+	case 'd':
+		mult = 24 * time.Hour
+	case 'w':
+		mult = 7 * 24 * time.Hour
+	case 'M':
+		mult = 30 * 24 * time.Hour
+	case 'y':
+		mult = 365 * 24 * time.Hour
+	default:
+		return 0, fmt.Errorf("bad duration unit %q (want s/m/h/d/w/M/y)", string(unit))
+	}
+	return time.Duration(n) * mult, nil
 }
 
 // parsePriorityArg accepts both numeric (0..7) and symbolic priority
@@ -872,15 +1059,24 @@ func runQuery(opts options) error {
 		}
 	}
 
-	// Introspection short-circuits — none of them require a live
-	// journal connection except --disk-usage (which reads /var/log)
-	// and --field/--fields (which iterate events, so they do need one).
+	// Introspection + maintenance short-circuits. None of them stream
+	// events; they operate on the daemon (--sync/--rotate) or directly
+	// on the filesystem (--vacuum-*, --disk-usage, --fields).
 
 	if opts.fieldsList {
 		return runFieldsList(os.Stdout)
 	}
 	if opts.diskUsage {
 		return runDiskUsage(opts, os.Stdout)
+	}
+	if opts.sync {
+		return runSync(opts)
+	}
+	if opts.rotate {
+		return runRotate(opts)
+	}
+	if opts.vacuumSet {
+		return runVacuum(opts)
 	}
 
 	if opts.sourceFile != "" {
@@ -1201,13 +1397,7 @@ func distinctBootIDs(events []*journal.Event) []string {
 // the configured journal directory. Matches systemd's --disk-usage
 // which sums /var/log/journal recursively.
 func runDiskUsage(opts options, out io.Writer) error {
-	dir := opts.directory
-	if dir == "" {
-		dir = "/var/log/slinit-journal"
-	}
-	if opts.root != "" {
-		dir = filepath.Join(opts.root, dir)
-	}
+	dir := journalDir(opts)
 	var total int64
 	var count int
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -1285,6 +1475,171 @@ func journalFilesUnder(dir string) ([]string, error) {
 		return nil, err
 	}
 	return files, nil
+}
+
+// defaultPidFile returns opts.pidFile if the operator set it,
+// otherwise the daemon's write-side default. Kept in one place so a
+// future move (e.g. XDG runtime dir for user-mode journald) has a
+// single edit site.
+func defaultPidFile(opts options) string {
+	if opts.pidFile != "" {
+		return opts.pidFile
+	}
+	return "/run/slinit-journald.pid"
+}
+
+// readDaemonPID reads and validates the PID file. Returns a helpful
+// error when missing or malformed so the operator knows whether the
+// daemon just isn't running or the file got corrupted.
+func readDaemonPID(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, fmt.Errorf("no daemon running (pid file %s not present)", path)
+		}
+		return 0, fmt.Errorf("read pid file %s: %w", path, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("pid file %s: bad contents %q", path, string(data))
+	}
+	// Sanity check that the PID actually exists.
+	if err := syscall.Kill(pid, 0); err != nil {
+		return 0, fmt.Errorf("pid %d in %s does not exist (stale pid file after crash?)", pid, path)
+	}
+	return pid, nil
+}
+
+// runSync sends SIGUSR1 to slinit-journald which fsyncs its current
+// sink. If no daemon is running we walk the journal directory and
+// fsync every JSONL/binary file directly — safe operation since
+// nothing else writes to them concurrently in that scenario.
+func runSync(opts options) error {
+	pid, err := readDaemonPID(defaultPidFile(opts))
+	if err != nil {
+		// No daemon path — fsync files directly.
+		return syncJournalDir(opts)
+	}
+	if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
+		return fmt.Errorf("send SIGUSR1 to %d: %w", pid, err)
+	}
+	if !opts.quiet {
+		fmt.Fprintf(os.Stdout, "slinit-journald (pid %d): SIGUSR1 sent for flush\n", pid)
+	}
+	return nil
+}
+
+// syncJournalDir is the daemon-less --sync path: open every journal
+// file in the configured dir and fsync each one. Slow on large
+// directories but rare — operators typically call --sync during
+// pre-shutdown or migration flows, not per-request.
+func syncJournalDir(opts options) error {
+	dir := journalDir(opts)
+	// Missing directory is a benign no-op — a fresh system without
+	// persistent journals yet still shouldn't fail its shutdown
+	// script when it optimistically calls --sync.
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		if !opts.quiet {
+			fmt.Fprintf(os.Stdout, "no journal files under %s (nothing to sync)\n", dir)
+		}
+		return nil
+	}
+	files, err := journalFilesUnder(dir)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		fh, err := os.Open(f)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", f, err)
+		}
+		if err := fh.Sync(); err != nil {
+			fh.Close()
+			return fmt.Errorf("fsync %s: %w", f, err)
+		}
+		fh.Close()
+	}
+	if !opts.quiet {
+		fmt.Fprintf(os.Stdout, "fsynced %d file(s) under %s (no daemon running)\n", len(files), dir)
+	}
+	return nil
+}
+
+// runRotate sends SIGUSR2 to slinit-journald which closes the active
+// file, renames it with a nanosecond suffix, and opens a fresh one.
+// Requires a running daemon — file-level rotation would race with
+// journald's own writes, so we refuse rather than corrupt state.
+func runRotate(opts options) error {
+	pid, err := readDaemonPID(defaultPidFile(opts))
+	if err != nil {
+		return fmt.Errorf("--rotate requires slinit-journald running: %w", err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
+		return fmt.Errorf("send SIGUSR2 to %d: %w", pid, err)
+	}
+	if !opts.quiet {
+		fmt.Fprintf(os.Stdout, "slinit-journald (pid %d): SIGUSR2 sent for rotate\n", pid)
+	}
+	return nil
+}
+
+// runVacuum runs journald.Vacuum in-process, excluding the current
+// (active) journal file so we never race a live daemon into corrupting
+// its own writes. Reports the count of pruned files so scripts can
+// gate on non-zero cleanup.
+func runVacuum(opts options) error {
+	dir := journalDir(opts)
+	// Missing dir treated as "no files to vacuum" — same shutdown-
+	// script rationale as --sync above.
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		if !opts.quiet {
+			fmt.Fprintf(os.Stdout, "no journal directory at %s (nothing to vacuum)\n", dir)
+		}
+		return nil
+	}
+	vopts := journald.VacuumOptions{
+		MaxFiles:     opts.vacuumFiles,
+		MaxTotalSize: opts.vacuumSize,
+		MaxAge:       opts.vacuumTime,
+		Suffixes:     []string{".jsonl", ".jsonl.gz", ".journal"},
+	}
+	exclude := currentJournalFiles(dir)
+	removed, err := journald.Vacuum(dir, vopts, exclude...)
+	if err != nil {
+		return fmt.Errorf("vacuum %s: %w", dir, err)
+	}
+	if !opts.quiet {
+		fmt.Fprintf(os.Stdout, "vacuum %s: removed %d file(s)\n", dir, removed)
+	}
+	return nil
+}
+
+// journalDir picks the journal directory the maintenance ops act on.
+// --directory wins; otherwise the daemon's default, optionally
+// prefixed by --root.
+func journalDir(opts options) string {
+	dir := opts.directory
+	if dir == "" {
+		dir = "/var/log/slinit-journal"
+	}
+	if opts.root != "" {
+		dir = filepath.Join(opts.root, dir)
+	}
+	return dir
+}
+
+// currentJournalFiles enumerates the "live" file names under dir that
+// vacuum must NOT delete: today's <YYYY-MM-DD>.jsonl and .journal (the
+// convention both FileSink and BinarySink use for their current
+// writer). Returned paths are absolute so Vacuum's exclusion check
+// (path-equal) matches without further normalization.
+func currentJournalFiles(dir string) []string {
+	t := time.Now().UTC()
+	base := fmt.Sprintf("%04d-%02d-%02d", t.Year(), int(t.Month()), t.Day())
+	return []string{
+		filepath.Join(dir, base+".jsonl"),
+		filepath.Join(dir, base+".journal"),
+	}
 }
 
 // formatBytes turns byte counts into human-readable K/M/G with one
@@ -2309,6 +2664,16 @@ Flags:
       --fields                Print the list of known field names
       --header                Print journal file / buffer header metadata
       --disk-usage            Print total bytes across on-disk journals
+
+  Maintenance (short-circuit — talks to slinit-journald via signals):
+      --sync                  Force fsync via SIGUSR1 to daemon
+                              (falls back to walking journal dir if no daemon)
+      --rotate                Force rotation via SIGUSR2 (daemon required)
+      --vacuum-size=SIZE      Prune rotated files until total on-disk ≤ SIZE
+                              (bytes; K/M/G/T suffix accepted)
+      --vacuum-files=N        Keep only the most recent N archived files
+      --vacuum-time=TIME      Drop files older than TIME (s/m/h/d/w/M/y)
+      --pid-file=PATH         Override /run/slinit-journald.pid lookup path
 
   Connection:
       --socket-path=P         Override the control socket path

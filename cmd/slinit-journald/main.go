@@ -22,6 +22,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/control"
@@ -49,6 +50,7 @@ func main() {
 		format       = flag.String("format", "binary", "storage format: binary (default, Phase B) or jsonl (Phase C, human-grep-friendly)")
 		fssKeyPath   = flag.String("fss-key", "", "FSS key file for binary sealing ('' disables sealing)")
 		fssTagEvery  = flag.Int("fss-tag-every", journalbin.DefaultFSSTagEvery, "seal a TAG every N entries (binary+FSS only)")
+		pidFile      = flag.String("pid-file", "/run/slinit-journald.pid", "path to write our PID (for `slinit-journalctl --sync/--rotate`); '' disables")
 		dryRun       = flag.Bool("dry-run", false, "print received events to stdout instead of persisting")
 		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
@@ -203,14 +205,48 @@ Flags:
 	}
 	fmt.Fprintf(os.Stderr, "slinit-journald: listening on %s\n", recv.Path())
 
+	// PID file: written best-effort so `slinit-journalctl --sync` /
+	// `--rotate` can locate us. Removal on shutdown is deferred so a
+	// stale PID file after a crash gets cleaned up on the next start
+	// via the (implicit) atomic-write in os.WriteFile.
+	if *pidFile != "" {
+		if err := os.WriteFile(*pidFile, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "slinit-journald: WARN could not write pid-file %s: %v\n", *pidFile, err)
+		} else {
+			defer os.Remove(*pidFile)
+		}
+	}
+
 	// Cancellation: SIGTERM / SIGINT triggers clean shutdown so the
 	// socket file is removed and the sink flushes before we exit.
+	// SIGUSR1 forces a Flush (fsync of pending writes); SIGUSR2 forces
+	// a Rotate (close current file, open a new one). Both signals map
+	// to `slinit-journalctl --sync` / `--rotate` so operators get
+	// systemd-parity ops without needing an out-of-band admin channel.
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
 	go func() {
-		<-sigCh
-		cancel()
+		for sig := range sigCh {
+			switch sig {
+			case syscall.SIGUSR1:
+				if s, ok := sink.(interface{ Flush() error }); ok {
+					if err := s.Flush(); err != nil {
+						fmt.Fprintf(os.Stderr, "slinit-journald: SIGUSR1 flush: %v\n", err)
+					}
+				}
+			case syscall.SIGUSR2:
+				if s, ok := sink.(interface{ Rotate() error }); ok {
+					if err := s.Rotate(); err != nil {
+						fmt.Fprintf(os.Stderr, "slinit-journald: SIGUSR2 rotate: %v\n", err)
+					}
+				}
+			default:
+				// SIGINT / SIGTERM
+				cancel()
+				return
+			}
+		}
 	}()
 
 	recv.Run(ctx)

@@ -296,6 +296,20 @@ func (s *FileSink) Flush() error {
 	return s.flushLocked()
 }
 
+// Rotate forces an immediate rotation regardless of size/age triggers.
+// Called from operator-triggered maintenance (SIGUSR2 in the daemon,
+// `slinit-journalctl --rotate`). Returns nil on no-op (file already
+// zero-length or sink closed) so the operator doesn't see a scary
+// error for the "nothing to rotate yet" case.
+func (s *FileSink) Rotate() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.f == nil {
+		return nil
+	}
+	return s.rotateLocked()
+}
+
 // Close flushes any pending writes, fsyncs, and closes the file. After
 // Close, further Handle calls return an error rather than silently
 // re-opening — the daemon's Stop path is the only legitimate way in.

@@ -193,7 +193,16 @@ func (s *BinarySink) maybeRotateLocked() error {
 	if !sizeTrig && !ageTrig {
 		return nil
 	}
+	return s.rotateLocked()
+}
 
+// rotateLocked performs the actual rename+reopen without checking
+// triggers — the shared body between maybeRotateLocked (checked) and
+// Rotate (forced). Caller must hold s.mu.
+func (s *BinarySink) rotateLocked() error {
+	if s.w == nil {
+		return nil
+	}
 	oldPath := s.curPath
 	openNs := s.openedAt.UnixNano()
 	if err := s.w.Close(); err != nil {
@@ -213,6 +222,29 @@ func (s *BinarySink) maybeRotateLocked() error {
 		s.rotatedHook(newPath, s.curPath)
 	}
 	return nil
+}
+
+// Flush persists any pending writer state to disk. Delegates to the
+// underlying journalbin.Writer.Flush — a public entry point so the
+// daemon's SIGUSR1 handler and `slinit-journalctl --sync` can force
+// an fsync without going through Close.
+func (s *BinarySink) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.w == nil {
+		return nil
+	}
+	return s.w.Flush()
+}
+
+// Rotate forces an immediate rotation regardless of size/age triggers.
+// Called from operator-triggered maintenance (SIGUSR2 in the daemon,
+// `slinit-journalctl --rotate`). Nil on no-op if the sink is already
+// closed / empty.
+func (s *BinarySink) Rotate() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rotateLocked()
 }
 
 // binaryCurrentFileName mirrors currentFileName but with the .journal

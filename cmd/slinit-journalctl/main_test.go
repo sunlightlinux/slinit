@@ -1269,6 +1269,153 @@ func TestWriteCursorFileAtomic(t *testing.T) {
 	}
 }
 
+// TestParseSizeArg covers systemd-style byte-size parsing: bare
+// integer, K/M/G/T (case-insensitive), and the KiB/MiB "i" suffix.
+func TestParseSizeArg(t *testing.T) {
+	cases := map[string]int64{
+		"0":     0,
+		"1024":  1024,
+		"1K":    1024,
+		"1k":    1024,
+		"2M":    2 * 1024 * 1024,
+		"3G":    3 * 1024 * 1024 * 1024,
+		"1T":    1024 * 1024 * 1024 * 1024,
+		"512B":  512,
+		"64KiB": 64 * 1024,
+	}
+	for in, want := range cases {
+		got, err := parseSizeArg(in)
+		if err != nil {
+			t.Errorf("parseSizeArg(%q): unexpected error %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseSizeArg(%q) = %d, want %d", in, got, want)
+		}
+	}
+	if _, err := parseSizeArg(""); err == nil {
+		t.Error("empty string should error")
+	}
+	if _, err := parseSizeArg("-5K"); err == nil {
+		t.Error("negative size should error")
+	}
+	if _, err := parseSizeArg("bad"); err == nil {
+		t.Error("non-numeric should error")
+	}
+}
+
+// TestParseDurationArg — mix of Go-native (1h30m) and systemd tokens
+// (5s, 3d, 2w, 6M, 1y). Negative values rejected; unknown units
+// rejected.
+func TestParseDurationArg(t *testing.T) {
+	cases := map[string]time.Duration{
+		"5s":     5 * time.Second,
+		"30m":    30 * time.Minute,
+		"2h":     2 * time.Hour,
+		"1d":     24 * time.Hour,
+		"2w":     14 * 24 * time.Hour,
+		"6M":     6 * 30 * 24 * time.Hour,
+		"1y":     365 * 24 * time.Hour,
+		"1h30m":  time.Hour + 30*time.Minute, // Go-native
+		"250ms":  250 * time.Millisecond,     // Go-native
+	}
+	for in, want := range cases {
+		got, err := parseDurationArg(in)
+		if err != nil {
+			t.Errorf("parseDurationArg(%q): unexpected error %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("parseDurationArg(%q) = %v, want %v", in, got, want)
+		}
+	}
+	if _, err := parseDurationArg("5x"); err == nil {
+		t.Error("unknown unit should error")
+	}
+	if _, err := parseDurationArg(""); err == nil {
+		t.Error("empty should error")
+	}
+}
+
+// TestParseArgsGroupBMaintenance covers all 5 Group B flags plus the
+// --pid-file override.
+func TestParseArgsGroupBMaintenance(t *testing.T) {
+	o, err := parseArgs([]string{
+		"--sync",
+		"--rotate",
+		"--vacuum-size=100M",
+		"--vacuum-files=10",
+		"--vacuum-time=30d",
+		"--pid-file", "/tmp/pid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.sync {
+		t.Error("sync not set")
+	}
+	if !o.rotate {
+		t.Error("rotate not set")
+	}
+	if o.vacuumSize != 100*1024*1024 {
+		t.Errorf("vacuumSize = %d", o.vacuumSize)
+	}
+	if o.vacuumFiles != 10 {
+		t.Errorf("vacuumFiles = %d", o.vacuumFiles)
+	}
+	if o.vacuumTime != 30*24*time.Hour {
+		t.Errorf("vacuumTime = %v", o.vacuumTime)
+	}
+	if !o.vacuumSet {
+		t.Error("vacuumSet sentinel not toggled")
+	}
+	if o.pidFile != "/tmp/pid" {
+		t.Errorf("pidFile = %q", o.pidFile)
+	}
+}
+
+// TestReadDaemonPIDErrors — clean error paths for missing and stale
+// PID files. A live PID would need a fixture process to test, out of
+// scope for a plain unit run.
+func TestReadDaemonPIDErrors(t *testing.T) {
+	if _, err := readDaemonPID("/nonexistent/pid/file"); err == nil {
+		t.Error("expected error for missing pid file")
+	}
+	tmp := t.TempDir() + "/pid"
+	// Bad contents
+	if err := os.WriteFile(tmp, []byte("not-a-pid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDaemonPID(tmp); err == nil {
+		t.Error("expected error for malformed pid")
+	}
+	// Nonexistent PID (very large number unlikely to be assigned)
+	if err := os.WriteFile(tmp, []byte("2147483646\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDaemonPID(tmp); err == nil {
+		t.Error("expected error for stale pid")
+	}
+}
+
+// TestCurrentJournalFiles — list should include today's dated
+// jsonl+journal files under the given dir, absolute paths.
+func TestCurrentJournalFiles(t *testing.T) {
+	files := currentJournalFiles("/var/log/slinit-journal")
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files (jsonl + journal), got %d", len(files))
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	for _, f := range files {
+		if !strings.Contains(f, today) {
+			t.Errorf("expected today's date in %q", f)
+		}
+		if !strings.HasPrefix(f, "/var/log/slinit-journal/") {
+			t.Errorf("expected absolute path, got %q", f)
+		}
+	}
+}
+
 // TestExtractField — field name → Event value lookup, covering core
 // fields (MESSAGE, _PID), a freeform (SLINIT_EVENT), and a miss.
 func TestExtractField(t *testing.T) {
