@@ -17,6 +17,32 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.7] — 2026-08-07
+
+Patch release. Fixes a correctness regression in the v2.1.6 Group A
+landing surfaced by live smoke on ceres.
+
+### Fixed
+
+- `journalctl`: `-t IDENT`, `-T IDENT`, and `-g PATTERN` returned an
+  empty result set when combined with a small `-n` limit (e.g.
+  `-t getty-tty1 -n 1` on a buffer known to contain the entry). Two
+  causes, both closed in `68cafa1`:
+  - `QueryFilter.isEmpty()` in `pkg/journal/buffer.go` didn't know
+    about the Group A dimensions (`Identifiers`,
+    `ExcludeIdentifiers`, `GrepPattern`), so a query with only
+    those set took the server-side fast path — return the whole
+    snapshot, trim to `Limit` — and dropped the matching events on
+    the floor before the client could see them.
+  - Even with the server-side fix in place, an older daemon
+    vintage that predates Group A would still ignore the new JSON
+    keys and apply its own `-n` trim first, reproducing the same
+    symptom. The client now sends `Limit=0` to the daemon
+    whenever any Group A filter is populated and applies `-n`
+    locally after `clientSideFilter`, so filtering works against
+    any daemon version at the cost of one extra pass over the
+    returned event set.
+
 ## [2.1.6] — 2026-08-07
 
 Systemd journalctl parity push. Slinit-journalctl started at 21 flags
