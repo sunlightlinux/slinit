@@ -282,7 +282,10 @@ func (q QueryFilter) isEmpty() bool {
 	return len(q.Units) == 0 &&
 		!q.hasMinPriority() &&
 		q.Since == 0 && q.Until == 0 &&
-		len(q.Transports) == 0
+		len(q.Transports) == 0 &&
+		len(q.Identifiers) == 0 &&
+		len(q.ExcludeIdentifiers) == 0 &&
+		q.GrepPattern == ""
 }
 
 // Query returns events from the buffer matching filter, in chronological

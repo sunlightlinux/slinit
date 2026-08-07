@@ -2024,6 +2024,12 @@ func runOneShot(conn net.Conn, opts options) error {
 	// correctness regardless of daemon vintage. Same code path also
 	// makes --file / --directory results consistent with socket ones.
 	events = clientSideFilter(events, req)
+	// Apply -n client-side when the daemon was told Limit=0 (see
+	// wireLimitFor). Trims the most recent N matches, matching the
+	// tail semantics the daemon would have applied itself.
+	if req.Limit == 0 && opts.limit > 0 && len(events) > opts.limit {
+		events = events[len(events)-opts.limit:]
+	}
 	if wantBoot != "" && len(events) > 0 && events[0].BootID != wantBoot {
 		return fmt.Errorf("cursor: boot changed (was %s, now %s); position is meaningless in the new boot",
 			wantBoot, events[0].BootID)
@@ -2174,11 +2180,18 @@ func buildRequest(opts options) control.JournalQueryRequest {
 	if len(opts.userUnitFilters) > 0 {
 		units = append(append([]string{}, units...), opts.userUnitFilters...)
 	}
+	// Limit handling: when the request carries client-side filters
+	// (Identifiers/ExcludeIdentifiers/GrepPattern) we deliberately
+	// send the server Limit=0 so it returns the full match set. The
+	// client then filters + applies the operator's -n. Sending Limit
+	// to a daemon that doesn't understand the new filter fields
+	// would trim BEFORE the filter runs, and -n 5 on `-t sshd` would
+	// silently return zero events. See wireLimitFor.
 	req := control.JournalQueryRequest{
 		Units:              units,
 		Since:              opts.since,
 		Until:              opts.until,
-		Limit:              opts.limit,
+		Limit:              wireLimitFor(opts),
 		Identifiers:        opts.identifiers,
 		ExcludeIdentifiers: opts.excludeIdentifiers,
 		GrepPattern:        opts.grep,
@@ -2199,6 +2212,18 @@ func buildRequest(opts options) control.JournalQueryRequest {
 		req.Transports = []string{string(journal.TransportKernel)}
 	}
 	return req
+}
+
+// wireLimitFor returns the Limit value to send to the daemon. When
+// the client is going to re-filter locally (any Group A filter is
+// set) we send 0 (== "no cap") so the daemon returns the complete
+// match set before we trim. Otherwise the daemon's -n trimming is
+// authoritative.
+func wireLimitFor(opts options) int {
+	if len(opts.identifiers) > 0 || len(opts.excludeIdentifiers) > 0 || opts.grep != "" {
+		return 0
+	}
+	return opts.limit
 }
 
 // shouldGrepInsensitive implements systemd's --case-sensitive heuristic:
