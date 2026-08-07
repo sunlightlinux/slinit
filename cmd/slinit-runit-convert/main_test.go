@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -240,12 +242,14 @@ func TestAnalyzeRunScriptCases(t *testing.T) {
 			wantEnvFile: "/tmp/dir/conf",
 		},
 		{
-			// sv check produces a NOTE about the informal dep and
-			// otherwise doesn't force a fallback — the exec line
-			// stays extractable.
+			// sv check gates the exec (`sv check X || exit 1`), so
+			// dropping the check would silently start the daemon
+			// without its dep ready. Fall back to /bin/sh wrap so
+			// the check keeps firing, and emit a NOTE hinting at
+			// the cleaner waits-for equivalent.
 			name:         "sv check dep",
 			script:       "#!/bin/sh\nsv check dbus\nexec daemon",
-			wantCommand:  "daemon",
+			wantFallback: true,
 			wantNoteHint: "waits-for: dbus",
 		},
 		{
@@ -306,9 +310,12 @@ func TestEmitSlinitFile(t *testing.T) {
 		newSession:    true,
 		closeStdin:    true,
 		finishCommand: "/etc/sv/svc/finish",
+		readyCheckCmd: "/bin/sh /etc/sv/svc/check",
 		manual:        true,
 		restart:       "yes",
 		restartDelay:  "1",
+		waitsFor:      []string{"dbus", "syslog"},
+		consumerOf:    "producer",
 		comments:      []string{"generated-by-test"},
 	}
 	var buf bytes.Buffer
@@ -327,13 +334,219 @@ func TestEmitSlinitFile(t *testing.T) {
 		"options = new-session",
 		"close-stdin = yes",
 		"finish-command = /etc/sv/svc/finish",
+		"ready-check-command = /bin/sh /etc/sv/svc/check",
 		"manual = yes",
 		"restart = yes",
 		"restart-delay = 1",
+		"consumer-of = producer",
+		"waits-for: dbus",
+		"waits-for: syslog",
 	}
 	for _, w := range want {
 		if !strings.Contains(out, w) {
 			t.Errorf("missing %q in output:\n%s", w, out)
 		}
+	}
+}
+
+// TestConvertServiceAuxFiles verifies that finish, check, down, and
+// conf get auto-detected + wired without operator intervention. This
+// is the guarantee that runit → slinit conversion needs no manual
+// second pass for typical void service dirs.
+func TestConvertServiceAuxFiles(t *testing.T) {
+	dir := t.TempDir()
+	svcDir := filepath.Join(dir, "aux-svc")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// run: simplest possible daemon launcher
+	if err := os.WriteFile(filepath.Join(svcDir, "run"),
+		[]byte("#!/bin/sh\nexec /usr/bin/daemon\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// finish, check, down, conf: all get auto-detected
+	for _, f := range []string{"finish", "check", "conf"} {
+		if err := os.WriteFile(filepath.Join(svcDir, f),
+			[]byte("#!/bin/sh\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "down"), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := convertService(svcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantFinish := "/bin/sh " + filepath.Join(svcDir, "finish")
+	if cfg.finishCommand != wantFinish {
+		t.Errorf("finishCommand = %q, want %q", cfg.finishCommand, wantFinish)
+	}
+	wantCheck := "/bin/sh " + filepath.Join(svcDir, "check")
+	if cfg.readyCheckCmd != wantCheck {
+		t.Errorf("readyCheckCmd = %q, want %q", cfg.readyCheckCmd, wantCheck)
+	}
+	if !cfg.manual {
+		t.Errorf("manual should be true when down file exists")
+	}
+	wantConf := filepath.Join(svcDir, "conf")
+	if cfg.envFile != wantConf {
+		t.Errorf("envFile = %q, want %q", cfg.envFile, wantConf)
+	}
+	// workingDir defaults to svcDir so finish's ${PWD##*-} works and
+	// the wrapped run script can source ./conf relatively.
+	if cfg.workingDir != svcDir {
+		t.Errorf("workingDir = %q, want %q", cfg.workingDir, svcDir)
+	}
+}
+
+// TestConvertServiceLogChild covers the log/run companion generation.
+// The primary should stay clean; the log config should carry
+// consumer-of pointing at the primary's name.
+func TestConvertServiceLogChild(t *testing.T) {
+	dir := t.TempDir()
+	svcDir := filepath.Join(dir, "logged-svc")
+	logDir := filepath.Join(svcDir, "log")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "run"),
+		[]byte("#!/bin/sh\nexec /usr/bin/daemon\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "run"),
+		[]byte("#!/bin/sh\nexec vlogger -t logged-svc -p daemon\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, warns, err := convertService(svcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.logChild == nil {
+		t.Fatalf("expected logChild to be populated; warns=%v", warns)
+	}
+	if cfg.logChild.svcName != "logged-svc-log" {
+		t.Errorf("logChild svcName = %q, want logged-svc-log", cfg.logChild.svcName)
+	}
+	if cfg.logChild.consumerOf != "logged-svc" {
+		t.Errorf("logChild consumerOf = %q, want logged-svc", cfg.logChild.consumerOf)
+	}
+	if cfg.logChild.command != "vlogger -t logged-svc -p daemon" {
+		t.Errorf("logChild command = %q, want extracted vlogger line", cfg.logChild.command)
+	}
+}
+
+// TestConvertServiceLogChildAlsoSetsLogTypePipe — slinit rejects a
+// consumer-of pointer unless the producer declares log-type = pipe,
+// so the primary MUST get that directive alongside the auto-generated
+// log companion. Regression guard against silently generating an
+// unlint-clean pair.
+func TestConvertServiceLogChildAlsoSetsLogTypePipe(t *testing.T) {
+	dir := t.TempDir()
+	svcDir := filepath.Join(dir, "producer")
+	logDir := filepath.Join(svcDir, "log")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "run"),
+		[]byte("#!/bin/sh\nexec /usr/bin/daemon\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "run"),
+		[]byte("#!/bin/sh\nexec /bin/cat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := convertService(svcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.logTypePipe {
+		t.Errorf("primary cfg.logTypePipe should be true when logChild exists")
+	}
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	if !strings.Contains(buf.String(), "log-type = pipe") {
+		t.Errorf("primary output should contain `log-type = pipe`; got:\n%s", buf.String())
+	}
+}
+
+// TestConvertServiceEnvFileMissingDropped — void run scripts guard
+// their conf sourcing with `[ -r conf ]` and ship without the conf
+// file when there's nothing to configure. Emitting env-file for a
+// non-existent file would fail slinit-check; drop the directive
+// silently instead.
+func TestConvertServiceEnvFileMissingDropped(t *testing.T) {
+	dir := t.TempDir()
+	svcDir := filepath.Join(dir, "no-conf")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Run script references conf but the file itself doesn't exist.
+	if err := os.WriteFile(filepath.Join(svcDir, "run"),
+		[]byte("#!/bin/sh\n[ -r conf ] && . ./conf\nexec /usr/bin/daemon\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := convertService(svcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.envFile != "" {
+		t.Errorf("envFile = %q, want empty (file doesn't exist on disk)", cfg.envFile)
+	}
+}
+
+// TestResolveBareCommand — bare command names get rewritten to their
+// absolute PATH resolution. `/bin/sh` is guaranteed on any POSIX-y
+// test host, so it's the reliable probe.
+func TestResolveBareCommand(t *testing.T) {
+	// Already absolute — untouched.
+	if got := resolveBareCommand("/bin/foo --flag"); got != "/bin/foo --flag" {
+		t.Errorf("absolute path modified: %q", got)
+	}
+	// Empty — untouched.
+	if got := resolveBareCommand(""); got != "" {
+		t.Errorf("empty modified: %q", got)
+	}
+	// Bare `sh` should resolve to /bin/sh or /usr/bin/sh.
+	got := resolveBareCommand("sh -c 'foo'")
+	if !strings.HasPrefix(got, "/") {
+		t.Errorf("expected absolute path prefix for `sh -c ...`, got %q", got)
+	}
+	if !strings.HasSuffix(got, "/sh -c foo") {
+		t.Errorf("suffix wrong (shellFields join may have dropped quotes ok): %q", got)
+	}
+	// Unknown binary — untouched.
+	if got := resolveBareCommand("definitely-not-a-real-binary-xyz --arg"); got != "definitely-not-a-real-binary-xyz --arg" {
+		t.Errorf("unresolvable name shouldn't be rewritten, got %q", got)
+	}
+}
+
+// TestConvertServiceSvCheckAutoWaitsFor confirms `sv check DEP` in a
+// run script populates waitsFor without operator intervention — the
+// key 1:1 wiring this refactor was about.
+func TestConvertServiceSvCheckAutoWaitsFor(t *testing.T) {
+	dir := t.TempDir()
+	svcDir := filepath.Join(dir, "elogind-like")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "run"),
+		[]byte("#!/bin/sh\nsv check dbus >/dev/null || exit 1\nexec /usr/libexec/elogind\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := convertService(svcDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.waitsFor) != 1 || cfg.waitsFor[0] != "dbus" {
+		t.Errorf("waitsFor = %v, want [dbus]", cfg.waitsFor)
+	}
+	// Still falls back to wrap so the runtime sv check keeps firing.
+	if !strings.HasPrefix(cfg.command, "/bin/sh ") {
+		t.Errorf("command = %q, want /bin/sh wrap (sv check is gating logic)", cfg.command)
 	}
 }

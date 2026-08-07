@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -84,21 +85,42 @@ Flags:
 		}
 
 		name := filepath.Base(strings.TrimRight(in, "/"))
-		var buf bytes.Buffer
-		emitSlinitFile(&buf, cfg)
+
+		// Assemble every file this conversion produces: the primary
+		// plus (optionally) a `<name>-log` companion sourced from
+		// runit's log/ subdir.
+		type out struct {
+			name string
+			buf  *bytes.Buffer
+		}
+		var outputs []out
+		primary := new(bytes.Buffer)
+		emitSlinitFile(primary, cfg)
+		outputs = append(outputs, out{name, primary})
+		if cfg.logChild != nil {
+			logBuf := new(bytes.Buffer)
+			emitSlinitFile(logBuf, cfg.logChild)
+			outputs = append(outputs, out{cfg.logChild.svcName, logBuf})
+		}
 
 		if outputDir == "" {
-			os.Stdout.Write(buf.Bytes())
+			for i, o := range outputs {
+				if i > 0 {
+					fmt.Fprintf(os.Stdout, "\n# --- %s ---\n", o.name)
+				}
+				os.Stdout.Write(o.buf.Bytes())
+			}
 		} else {
-			outPath := filepath.Join(outputDir, name)
-			if dryRun {
-				fmt.Fprintf(os.Stderr, "--- would write %s ---\n", outPath)
-				os.Stderr.Write(buf.Bytes())
-			} else {
-				if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
-					fmt.Fprintf(os.Stderr, "slinit-runit-convert: write %s: %v\n", outPath, err)
-					hadErrors = true
-					continue
+			for _, o := range outputs {
+				outPath := filepath.Join(outputDir, o.name)
+				if dryRun {
+					fmt.Fprintf(os.Stderr, "--- would write %s ---\n", outPath)
+					os.Stderr.Write(o.buf.Bytes())
+				} else {
+					if err := os.WriteFile(outPath, o.buf.Bytes(), 0o644); err != nil {
+						fmt.Fprintf(os.Stderr, "slinit-runit-convert: write %s: %v\n", outPath, err)
+						hadErrors = true
+					}
 				}
 			}
 		}
@@ -170,11 +192,16 @@ type slinitConfig struct {
 	rlimitData   string
 
 	finishCommand string
+	readyCheckCmd string
 	manual        bool // `down` file present
 	restart       string
 	restartDelay  string
 
-	depends  []string // waits-for suggestions (currently unused — see NOTE emissions)
+	waitsFor   []string      // auto-emitted from `sv check DEP` in run script
+	consumerOf string        // set only on log-companion configs
+	logChild   *slinitConfig // set on primary when log/run exists — emitted separately
+	logTypePipe bool         // primary needs `log-type = pipe` when a consumer companion attaches
+
 	comments []string // free-form comments prepended to the output
 }
 
@@ -204,6 +231,12 @@ func convertService(dir string) (*slinitConfig, []warning, error) {
 		svcName:      name,
 		runitDir:     absDir,
 		svcType:      "process",
+		// runsv chdir()s into the service dir before starting run/finish,
+		// so scripts that reference ./conf, use ${PWD##*-} in finish
+		// (agetty), etc. rely on it. Set the same default so any finish
+		// or wrapped run script sees the same $PWD. Overridden if the
+		// run script itself uses `chpst -C DIR`.
+		workingDir:   absDir,
 		restart:      "yes", // runit default is auto-respawn
 		restartDelay: "1",   // runit default respawn cooldown
 	}
@@ -211,10 +244,18 @@ func convertService(dir string) (*slinitConfig, []warning, error) {
 	var warns []warning
 	warns = append(warns, analyzeRunScript(cfg, string(runBytes))...)
 
-	// finish → finish-command
-	finishPath := filepath.Join(absDir, "finish")
-	if _, err := os.Stat(finishPath); err == nil {
-		cfg.finishCommand = finishPath
+	// finish → finish-command. Wrap in /bin/sh so the script can use
+	// runit's $1 (exit code) / $2 (signal or status byte) args. Slinit's
+	// execFinishCommand appends exitCode+signalNum after the configured
+	// argv, so `/bin/sh <path>` receives them as $1/$2 — matching runit.
+	if _, err := os.Stat(filepath.Join(absDir, "finish")); err == nil {
+		cfg.finishCommand = "/bin/sh " + filepath.Join(absDir, "finish")
+	}
+
+	// check → ready-check-command. Same /bin/sh wrap. Slinit polls the
+	// command periodically; exit 0 means ready (runit convention).
+	if _, err := os.Stat(filepath.Join(absDir, "check")); err == nil {
+		cfg.readyCheckCmd = "/bin/sh " + filepath.Join(absDir, "check")
 	}
 
 	// down (any file, touched) → manual = yes
@@ -224,28 +265,57 @@ func convertService(dir string) (*slinitConfig, []warning, error) {
 
 	// conf (void convention) — auto-detected inside analyzeRunScript
 	// via the ". ./conf" pattern; if not detected there but the file
-	// exists, assume it's sourced anyway.
+	// exists, assume it's sourced anyway. Void run scripts guard
+	// sourcing with `[ -r conf ]` so a missing conf is expected and
+	// harmless at runtime — but slinit's env-file directive is
+	// unconditional and warns on missing files, so drop the directive
+	// if the file isn't actually there.
 	if cfg.envFile == "" {
 		if _, err := os.Stat(filepath.Join(absDir, "conf")); err == nil {
 			cfg.envFile = filepath.Join(absDir, "conf")
 		}
+	} else {
+		if _, err := os.Stat(cfg.envFile); err != nil {
+			cfg.envFile = ""
+		}
 	}
 
-	// log/run — separate service. Not emitted here; the operator
-	// creates <name>-log by hand or runs the converter again on
-	// <absDir>/log. Warn once.
+	// log/run → companion `<name>-log` service. Recursively convert
+	// the log subdirectory (which is itself a valid sv dir with its
+	// own run/finish/conf), then wire it as consumer-of=<name>. Slinit
+	// splices the primary's stdout into the log consumer's stdin.
 	if _, err := os.Stat(filepath.Join(absDir, "log", "run")); err == nil {
-		warns = append(warns, warning{"WARN", fmt.Sprintf(
-			"log/run detected — create a separate slinit service (e.g. `slinit-runit-convert %s/log`) and wire it as a logger",
-			absDir)})
+		logCfg, logWarns, err := convertService(filepath.Join(absDir, "log"))
+		if err != nil {
+			warns = append(warns, warning{"WARN", fmt.Sprintf(
+				"log/run present but conversion failed: %v — wire manually",
+				err)})
+		} else {
+			logCfg.svcName = name + "-log"
+			logCfg.consumerOf = name
+			// The log service's own comments already reference the log
+			// subdir path; prepend one making the parent link explicit.
+			logCfg.comments = append([]string{
+				fmt.Sprintf("Auto-generated companion for `%s` (runit log/run)", name),
+			}, logCfg.comments...)
+			cfg.logChild = logCfg
+			// Slinit validates consumer-of against the producer's log
+			// type: a consumer only attaches when the producer declares
+			// `log-type = pipe`. Set it now so both files round-trip
+			// through slinit-check cleanly.
+			cfg.logTypePipe = true
+			for _, w := range logWarns {
+				warns = append(warns, warning{w.level, "log/" + w.msg})
+			}
+		}
 	}
 
-	// check — readiness probe. slinit's rough equivalent is a
-	// pre-start-command or ready-check-command depending on version.
-	// Emit a note rather than guess.
-	if _, err := os.Stat(filepath.Join(absDir, "check")); err == nil {
-		warns = append(warns, warning{"NOTE", "check script present — map manually to ready-check-command or pre-start-command"})
-	}
+	// Resolve bare commands via PATH. Slinit's exec path is bare
+	// execve — no PATH search — so a runit `chpst -u nobody daemon`
+	// with just "daemon" would fail with ENOENT at start. If we can
+	// resolve on the host running the converter, rewrite to absolute;
+	// otherwise leave alone and let slinit-check warn.
+	cfg.command = resolveBareCommand(cfg.command)
 
 	// control/X — custom scripts. Warn per file found.
 	if entries, err := os.ReadDir(filepath.Join(absDir, "control")); err == nil {
@@ -287,12 +357,19 @@ func analyzeRunScript(cfg *slinitConfig, script string) []warning {
 			cfg.envFile = filepath.Join(cfg.runitDir, "conf")
 			continue
 		}
-		// Detect `sv check DEP` — informal ordering hint.
+		// Detect `sv check DEP` — this is runit's ordering primitive.
+		// Emit as slinit `waits-for: DEP` (semantically stronger:
+		// waits for the dep to reach STARTED rather than just have a
+		// running run script). We still fall back to /bin/sh wrap for
+		// the exec because the check-then-exit-1 pattern is a real
+		// runtime guard and dropping it would change behavior on the
+		// unhappy path.
 		if fields := strings.Fields(line); len(fields) >= 3 && fields[0] == "sv" && fields[1] == "check" {
 			dep := fields[2]
+			cfg.waitsFor = append(cfg.waitsFor, dep)
 			warns = append(warns, warning{"NOTE", fmt.Sprintf(
-				"run script calls `sv check %s` — consider adding `waits-for: %s` (not auto-emitted, safer to review)",
-				dep, dep)})
+				"`sv check %s` → auto-emitted `waits-for: %s`", dep, dep)})
+			sawComplexLogic = true
 			continue
 		}
 		// `exec 2>&1` — stderr merge into stdout. Slinit already
@@ -349,6 +426,27 @@ func analyzeRunScript(cfg *slinitConfig, script string) []warning {
 		cfg.command = lastExec
 	}
 	return warns
+}
+
+// resolveBareCommand rewrites the first word of s to an absolute path
+// via PATH lookup, if that word is a bare name (no leading /). If the
+// binary isn't in PATH the original string is returned unchanged — the
+// operator can install it later and the config still lints (a slinit
+// warning, not an error).
+func resolveBareCommand(s string) string {
+	if s == "" || strings.HasPrefix(s, "/") {
+		return s
+	}
+	fields := shellFields(s)
+	if len(fields) == 0 || strings.Contains(fields[0], "/") {
+		return s
+	}
+	abs, err := exec.LookPath(fields[0])
+	if err != nil {
+		return s
+	}
+	fields[0] = abs
+	return strings.Join(fields, " ")
 }
 
 // hasShellMetachars returns true if s contains characters that need
@@ -578,6 +676,9 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 	if c.finishCommand != "" {
 		fmt.Fprintf(w, "finish-command = %s\n", c.finishCommand)
 	}
+	if c.readyCheckCmd != "" {
+		fmt.Fprintf(w, "ready-check-command = %s\n", c.readyCheckCmd)
+	}
 	if c.manual {
 		fmt.Fprintln(w, "manual = yes")
 	}
@@ -587,7 +688,13 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 	if c.restartDelay != "" {
 		fmt.Fprintf(w, "restart-delay = %s\n", c.restartDelay)
 	}
-	for _, d := range c.depends {
+	if c.consumerOf != "" {
+		fmt.Fprintf(w, "consumer-of = %s\n", c.consumerOf)
+	}
+	if c.logTypePipe {
+		fmt.Fprintln(w, "log-type = pipe")
+	}
+	for _, d := range c.waitsFor {
 		fmt.Fprintf(w, "waits-for: %s\n", d)
 	}
 }
