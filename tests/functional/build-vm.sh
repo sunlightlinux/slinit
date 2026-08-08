@@ -73,6 +73,16 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-sysusers" ./cmd/slinit-sysusers
 # slinit-cgtop: cgroup v2 top-like viewer (systemd-cgtop equivalent).
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-cgtop" ./cmd/slinit-cgtop
+# v2.0.0 → v2.1.12 companions: journal pipeline + self-introspection
+# CLI + three legacy-config → slinit converters. Needed by functional
+# tests 202+ that exercise the systemd-journalctl parity surface and
+# runit/openrc/systemd migration paths.
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-supports" ./cmd/slinit-supports
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-journalctl" ./cmd/slinit-journalctl
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-journald" ./cmd/slinit-journald
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-runit-convert" ./cmd/slinit-runit-convert
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-openrc-convert" ./cmd/slinit-openrc-convert
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-systemd-convert" ./cmd/slinit-systemd-convert
 
 # Prepare rootfs
 echo "[4/5] Preparing rootfs..."
@@ -103,6 +113,14 @@ install -m 755 "${BUILD_DIR}/slinit-seedrng" "${ROOTFS_DIR}/usr/bin/slinit-seedr
 install -m 755 "${BUILD_DIR}/slinit-tmpfiles" "${ROOTFS_DIR}/usr/bin/slinit-tmpfiles"
 install -m 755 "${BUILD_DIR}/slinit-sysusers" "${ROOTFS_DIR}/usr/bin/slinit-sysusers"
 install -m 755 "${BUILD_DIR}/slinit-cgtop" "${ROOTFS_DIR}/usr/bin/slinit-cgtop"
+install -m 755 "${BUILD_DIR}/slinit-supports" "${ROOTFS_DIR}/usr/bin/slinit-supports"
+install -m 755 "${BUILD_DIR}/slinit-journalctl" "${ROOTFS_DIR}/usr/bin/slinit-journalctl"
+install -m 755 "${BUILD_DIR}/slinit-journald" "${ROOTFS_DIR}/usr/bin/slinit-journald"
+install -m 755 "${BUILD_DIR}/slinit-runit-convert" "${ROOTFS_DIR}/usr/bin/slinit-runit-convert"
+install -m 755 "${BUILD_DIR}/slinit-openrc-convert" "${ROOTFS_DIR}/usr/bin/slinit-openrc-convert"
+install -m 755 "${BUILD_DIR}/slinit-systemd-convert" "${ROOTFS_DIR}/usr/bin/slinit-systemd-convert"
+# journalctl symlink so systemd-muscle-memory scripts work unchanged.
+ln -sf slinit-journalctl "${ROOTFS_DIR}/usr/bin/journalctl"
 ln -sf slinit "${ROOTFS_DIR}/sbin/init"
 
 mkdir -p "${ROOTFS_DIR}/run" "${ROOTFS_DIR}/dev" "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys"
