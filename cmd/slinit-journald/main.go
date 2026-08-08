@@ -23,6 +23,8 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/control"
@@ -30,6 +32,145 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/journalbin"
 	"github.com/sunlightlinux/slinit/pkg/journald"
 )
+
+// DefaultAdminSocket is the ambient control socket slinit-journald
+// listens on for out-of-band admin commands (--flush, --relinquish-
+// var, --smart-relinquish-var). Kept separate from the events socket
+// so a well-known path never conflicts with the operator's --socket
+// override. Datagram-oriented (SOCK_DGRAM) because commands are
+// single ASCII words with no reply body — send-and-forget matches
+// signal semantics without the Go/RT-signal weirdness.
+const DefaultAdminSocket = "/run/slinit-journald.ctl"
+
+// guardedSink wraps a Sink with a mutex so signal handlers can Close
+// the current inner sink and re-open at a different directory without
+// racing the Receiver's Handle loop. Also tracks the current write dir
+// + the format-specific factory so --flush (SIGRTMIN+0) and
+// --relinquish-var (SIGRTMIN+1) can swap between the persistent primary
+// and the volatile tmpfs fallback.
+//
+// Handle / Close / Flush / Rotate delegate to the inner sink under the
+// same lock, so the existing SIGUSR1 / SIGUSR2 (fsync + rotate) paths
+// remain safe alongside the new swap operations. The `Flush()` method
+// preserves the fsync semantics from Group B; the persistent/volatile
+// migration lives on `FlushVolatile()` under a distinct name so the
+// two never collide despite systemd's overlapping vocabulary.
+type guardedSink struct {
+	mu          sync.Mutex
+	inner       journald.Sink
+	currentDir  string
+	primaryDir  string
+	volatileDir string
+	// factory constructs a fresh sink pointing at the given dir.
+	// Non-nil second return is the actual directory used (Fallback
+	// may pick volatile if primary refuses); third return is an
+	// error if construction failed outright.
+	factory func(dir string) (journald.Sink, string, error)
+}
+
+func (g *guardedSink) Handle(evt *journal.Event) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.inner.Handle(evt)
+}
+
+func (g *guardedSink) Close() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.inner.Close()
+}
+
+// Flush = fsync active sink (SIGUSR1 handler → --sync client).
+func (g *guardedSink) Flush() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if s, ok := g.inner.(interface{ Flush() error }); ok {
+		return s.Flush()
+	}
+	return nil
+}
+
+// Rotate = force rotation on active sink (SIGUSR2 handler → --rotate).
+func (g *guardedSink) Rotate() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if s, ok := g.inner.(interface{ Rotate() error }); ok {
+		return s.Rotate()
+	}
+	return nil
+}
+
+// FlushVolatile migrates journal files from volatile → primary + swaps
+// the active sink over. No-op when we're already persistent. Called
+// from the SIGRTMIN+0 handler for `slinit-journalctl --flush`.
+func (g *guardedSink) FlushVolatile() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.currentDir == g.primaryDir {
+		return nil // already persistent
+	}
+	if err := journald.ProbeWritable(g.primaryDir); err != nil {
+		return fmt.Errorf("primary still unwritable: %w", err)
+	}
+	if err := g.inner.Close(); err != nil {
+		return fmt.Errorf("close volatile sink: %w", err)
+	}
+	if _, err := journald.Migrate(g.volatileDir, g.primaryDir); err != nil {
+		// Try to reopen volatile so events keep flowing while the
+		// operator debugs the migration failure.
+		if s, _, e := g.factory(g.volatileDir); e == nil {
+			g.inner = s
+			g.currentDir = g.volatileDir
+		}
+		return fmt.Errorf("migrate: %w", err)
+	}
+	newSink, actual, err := g.factory(g.primaryDir)
+	if err != nil {
+		if s, _, e := g.factory(g.volatileDir); e == nil {
+			g.inner = s
+			g.currentDir = g.volatileDir
+		}
+		return fmt.Errorf("open primary sink: %w", err)
+	}
+	g.inner = newSink
+	g.currentDir = actual
+	return nil
+}
+
+// RelinquishVar closes the persistent sink + reopens at volatile.
+// Called from SIGRTMIN+1 for `slinit-journalctl --relinquish-var`
+// (and its --smart-relinquish-var conditional cousin). Used before
+// umount /var so nothing pins the persistent fs.
+func (g *guardedSink) RelinquishVar() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.currentDir == g.volatileDir {
+		return nil // already volatile
+	}
+	if err := g.inner.Close(); err != nil {
+		return fmt.Errorf("close persistent sink: %w", err)
+	}
+	newSink, actual, err := g.factory(g.volatileDir)
+	if err != nil {
+		// Restore persistent so events keep flowing.
+		if s, _, e := g.factory(g.primaryDir); e == nil {
+			g.inner = s
+			g.currentDir = g.primaryDir
+		}
+		return fmt.Errorf("open volatile sink: %w", err)
+	}
+	g.inner = newSink
+	g.currentDir = actual
+	return nil
+}
+
+// CurrentDir reports where the active sink is writing. Used by the
+// startup banner + tests.
+func (g *guardedSink) CurrentDir() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.currentDir
+}
 
 // version is stamped at build time via `-X main.version=vX.Y.Z`.
 var version = "dev"
@@ -51,6 +192,7 @@ func main() {
 		fssKeyPath   = flag.String("fss-key", "", "FSS key file for binary sealing ('' disables sealing)")
 		fssTagEvery  = flag.Int("fss-tag-every", journalbin.DefaultFSSTagEvery, "seal a TAG every N entries (binary+FSS only)")
 		pidFile      = flag.String("pid-file", "/run/slinit-journald.pid", "path to write our PID (for `slinit-journalctl --sync/--rotate`); '' disables")
+		adminSock    = flag.String("admin-socket", DefaultAdminSocket, "UNIX SOCK_DGRAM path listening for admin commands (flush/relinquish); '' disables")
 		dryRun       = flag.Bool("dry-run", false, "print received events to stdout instead of persisting")
 		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
@@ -88,6 +230,7 @@ Flags:
 	// defaults so operators only tune one policy regardless of
 	// --format.
 	var sink journald.Sink = journald.StdoutSink{}
+	var guarded *guardedSink
 	if !*dryRun {
 		hostname, _ := os.Hostname()
 		_ = hostname
@@ -98,30 +241,52 @@ Flags:
 				MaxTotalSize: *maxTotalSize,
 				MaxAge:       *vacuumAge,
 			}
-			var hooks []func(string, string)
-			if *compress {
-				hooks = append(hooks, journald.CompressingRotationHook())
+			// factory closure: called at initial open and at each
+			// SIGRTMIN swap to build a sink for the requested dir.
+			// The hook chain uses the target dir so vacuum after a
+			// swap prunes files under the NEW location, not the old.
+			jsonlFactory := func(target string) (journald.Sink, string, error) {
+				var hooks []func(string, string)
+				if *compress {
+					hooks = append(hooks, journald.CompressingRotationHook())
+				}
+				hooks = append(hooks, journald.VacuumingHook(target, vacOpts))
+				fs, actualDir, degraded := journald.OpenFileSinkWithFallback(target, *volatileDir, journald.FileSinkOptions{
+					FsyncEvery:  *fsyncEvery,
+					MaxSize:     *maxSize,
+					MaxAge:      *maxAge,
+					RotatedHook: journald.ChainHooks(hooks...),
+				})
+				if fs == nil {
+					return nil, "", degraded
+				}
+				return fs, actualDir, nil
 			}
-			hooks = append(hooks, journald.VacuumingHook(*dir, vacOpts))
-			fs, actualDir, degraded := journald.OpenFileSinkWithFallback(*dir, *volatileDir, journald.FileSinkOptions{
-				FsyncEvery:  *fsyncEvery,
-				MaxSize:     *maxSize,
-				MaxAge:      *maxAge,
-				RotatedHook: journald.ChainHooks(hooks...),
-			})
-			if fs == nil {
-				fmt.Fprintf(os.Stderr, "slinit-journald: %v\n", degraded)
+			fs, actualDir, err := jsonlFactory(*dir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "slinit-journald: %v\n", err)
 				os.Exit(1)
 			}
-			if degraded != nil {
+			if actualDir != *dir {
 				fmt.Fprintf(os.Stderr,
-					"slinit-journald: WARN primary %s unwritable (%v), degraded to volatile %s (tmpfs)\n",
-					*dir, degraded, actualDir)
+					"slinit-journald: WARN primary %s unwritable, degraded to volatile %s (tmpfs)\n",
+					*dir, actualDir)
 			}
-			sink = fs
+			guarded = &guardedSink{
+				inner:       fs,
+				currentDir:  actualDir,
+				primaryDir:  *dir,
+				volatileDir: *volatileDir,
+				factory:     jsonlFactory,
+			}
+			sink = guarded
+			path := ""
+			if p, ok := fs.(interface{ CurrentPath() string }); ok {
+				path = p.CurrentPath()
+			}
 			fmt.Fprintf(os.Stderr,
 				"slinit-journald: format=jsonl writing to %s (fsync=%d, rotate=%s|%s, vacuum=%d files|%s|%s)\n",
-				fs.CurrentPath(), *fsyncEvery,
+				path, *fsyncEvery,
 				byteSize(*maxSize), *maxAge,
 				*maxFiles, byteSize(*maxTotalSize), *vacuumAge)
 
@@ -135,39 +300,53 @@ Flags:
 				}
 				fssKey = k
 			}
-			// Vacuum for binary uses the same policy caps as JSONL but
-			// scoped to .journal files (VacuumOptions.Suffixes). Wired
-			// through the RotatedHook so pruning happens synchronously
-			// with rotation, matching the JSONL sink's behaviour.
 			binVacOpts := journald.VacuumOptions{
 				MaxFiles:     *maxFiles,
 				MaxTotalSize: *maxTotalSize,
 				MaxAge:       *vacuumAge,
 				Suffixes:     []string{".journal"},
 			}
-			bs, err := journald.NewBinarySink(journald.BinarySinkOptions{
-				Dir:         *dir,
-				FsyncEvery:  *fsyncEvery,
-				MaxSize:     *maxSize,
-				MaxAge:      *maxAge,
-				FSSKey:      fssKey,
-				TagEvery:    *fssTagEvery,
-				BootID:      journal.BootID(),
-				MachineID:   journal.MachineID(),
-				RotatedHook: journald.VacuumingHook(*dir, binVacOpts),
-			})
+			binaryFactory := func(target string) (journald.Sink, string, error) {
+				bs, err := journald.NewBinarySink(journald.BinarySinkOptions{
+					Dir:         target,
+					FsyncEvery:  *fsyncEvery,
+					MaxSize:     *maxSize,
+					MaxAge:      *maxAge,
+					FSSKey:      fssKey,
+					TagEvery:    *fssTagEvery,
+					BootID:      journal.BootID(),
+					MachineID:   journal.MachineID(),
+					RotatedHook: journald.VacuumingHook(target, binVacOpts),
+				})
+				if err != nil {
+					return nil, "", err
+				}
+				return bs, target, nil
+			}
+			bs, actualDir, err := binaryFactory(*dir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-journald: binary sink: %v\n", err)
 				os.Exit(1)
 			}
-			sink = bs
+			guarded = &guardedSink{
+				inner:       bs,
+				currentDir:  actualDir,
+				primaryDir:  *dir,
+				volatileDir: *volatileDir,
+				factory:     binaryFactory,
+			}
+			sink = guarded
 			sealMsg := "unsealed"
 			if fssKey != nil {
 				sealMsg = fmt.Sprintf("sealed (tag every %d)", *fssTagEvery)
 			}
+			path := ""
+			if p, ok := bs.(interface{ CurrentPath() string }); ok {
+				path = p.CurrentPath()
+			}
 			fmt.Fprintf(os.Stderr,
 				"slinit-journald: format=binary writing to %s (fsync=%d, rotate=%s|%s, %s)\n",
-				bs.CurrentPath(), *fsyncEvery, byteSize(*maxSize), *maxAge, sealMsg)
+				path, *fsyncEvery, byteSize(*maxSize), *maxAge, sealMsg)
 
 		default:
 			fmt.Fprintf(os.Stderr, "slinit-journald: unknown --format %q (want jsonl or binary)\n", *format)
@@ -217,15 +396,22 @@ Flags:
 		}
 	}
 
-	// Cancellation: SIGTERM / SIGINT triggers clean shutdown so the
-	// socket file is removed and the sink flushes before we exit.
-	// SIGUSR1 forces a Flush (fsync of pending writes); SIGUSR2 forces
-	// a Rotate (close current file, open a new one). Both signals map
-	// to `slinit-journalctl --sync` / `--rotate` so operators get
-	// systemd-parity ops without needing an out-of-band admin channel.
+	// Cancellation + on-the-fly maintenance:
+	//   SIGINT / SIGTERM → clean shutdown
+	//   SIGUSR1          → fsync active sink (`--sync`)
+	//   SIGUSR2          → rotate active file (`--rotate`)
+	// Volatile ⇄ persistent switching (`--flush`, `--relinquish-var`,
+	// `--smart-relinquish-var`) goes through the admin socket instead
+	// of signals — Go's os/signal doesn't reliably deliver SIGRTMIN
+	// via signal.Notify (uncaught signals in that range terminate the
+	// process), so a UNIX DGRAM control socket is both more robust
+	// and more extensible for future admin commands.
 	ctx, cancel := context.WithCancel(context.Background())
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
+	signal.Notify(sigCh,
+		syscall.SIGINT, syscall.SIGTERM,
+		syscall.SIGUSR1, syscall.SIGUSR2,
+	)
 	go func() {
 		for sig := range sigCh {
 			switch sig {
@@ -241,13 +427,22 @@ Flags:
 						fmt.Fprintf(os.Stderr, "slinit-journald: SIGUSR2 rotate: %v\n", err)
 					}
 				}
-			default:
-				// SIGINT / SIGTERM
+			case syscall.SIGINT, syscall.SIGTERM:
 				cancel()
 				return
+			default:
+				fmt.Fprintf(os.Stderr, "slinit-journald: ignoring unexpected signal %v\n", sig)
 			}
 		}
 	}()
+
+	// Admin control socket. Datagram-oriented — each recvfrom is one
+	// ASCII command word. Silently ignored when --admin-socket="" or
+	// guarded==nil (dry-run: no swappable sink to act on).
+	if *adminSock != "" && guarded != nil {
+		go runAdminSocket(*adminSock, guarded)
+		defer os.Remove(*adminSock)
+	}
 
 	recv.Run(ctx)
 
@@ -268,6 +463,64 @@ Flags:
 // events.sock still land on disk. Returns the count of events replayed
 // and the first error (control-dial failure, protocol mismatch, sink
 // write failure — the last is soft, we count-and-continue).
+// runAdminSocket binds path as an abstract-safe UNIX DGRAM socket and
+// dispatches each incoming datagram to the guarded sink. Recognised
+// commands (single ASCII words, one per datagram):
+//
+//	flush              → guarded.FlushVolatile()
+//	relinquish-var     → guarded.RelinquishVar()
+//	smart-relinquish   → guarded.RelinquishVar() (client did the /var
+//	                     mountpoint check before dialing)
+//
+// Unrecognised commands are logged and ignored. The socket is
+// removed on daemon exit via the caller's defer.
+func runAdminSocket(path string, g *guardedSink) {
+	// Best-effort unlink any leftover from a previous run.
+	_ = os.Remove(path)
+	addr, err := net.ResolveUnixAddr("unixgram", path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-journald: admin socket resolve %s: %v\n", path, err)
+		return
+	}
+	conn, err := net.ListenUnixgram("unixgram", addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-journald: admin socket bind %s: %v\n", path, err)
+		return
+	}
+	defer conn.Close()
+	// Loosen perms so a non-root operator running `slinit-journalctl
+	// --flush` can send commands. Datagram content is trusted by
+	// design — same trust boundary as SIGUSR1/2 via kill().
+	_ = os.Chmod(path, 0o666)
+	fmt.Fprintf(os.Stderr, "slinit-journald: admin socket listening on %s\n", path)
+
+	buf := make([]byte, 128)
+	for {
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			// Socket closed on shutdown — exit quietly.
+			return
+		}
+		cmd := strings.TrimSpace(string(buf[:n]))
+		switch cmd {
+		case "flush":
+			if err := g.FlushVolatile(); err != nil {
+				fmt.Fprintf(os.Stderr, "slinit-journald: admin flush: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "slinit-journald: flushed → %s\n", g.CurrentDir())
+			}
+		case "relinquish-var", "smart-relinquish":
+			if err := g.RelinquishVar(); err != nil {
+				fmt.Fprintf(os.Stderr, "slinit-journald: admin relinquish: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "slinit-journald: relinquished /var → %s\n", g.CurrentDir())
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "slinit-journald: admin: unknown command %q\n", cmd)
+		}
+	}
+}
+
 func replayBacklog(sockPath string, sink journald.Sink) (int, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {

@@ -170,6 +170,12 @@ type options struct {
 	force        bool          // --force — overwrite existing --setup-keys output
 	syncOnExit   bool          // --synchronize-on-exit — accepted for parity; we always fsync on Close
 
+	// --- Sprint 2: volatile ⇄ persistent switching ---
+
+	flush              bool // --flush — signal SIGRTMIN+0: migrate volatile → persistent
+	relinquishVar      bool // --relinquish-var — SIGRTMIN+1: close persistent, reopen at volatile
+	smartRelinquishVar bool // --smart-relinquish-var — only relinquish when /var is a separate mount
+
 	// --- Group D: catalog ---
 
 	catalog       bool // -x/--catalog — augment MESSAGE with catalog text
@@ -777,6 +783,20 @@ func parseArgs(args []string) (options, error) {
 			opts.syncOnExit = b
 			args = args[1:]
 
+		// --- Sprint 2: volatile ⇄ persistent switching ---
+
+		case a == "--flush":
+			opts.flush = true
+			args = args[1:]
+
+		case a == "--relinquish-var":
+			opts.relinquishVar = true
+			args = args[1:]
+
+		case a == "--smart-relinquish-var":
+			opts.smartRelinquishVar = true
+			args = args[1:]
+
 		// --- Group D: catalog ---
 
 		case a == "-x" || a == "--catalog":
@@ -1188,6 +1208,12 @@ func runQuery(opts options) error {
 	}
 	if opts.vacuumSet {
 		return runVacuum(opts)
+	}
+	if opts.flush {
+		return runFlush(opts)
+	}
+	if opts.relinquishVar || opts.smartRelinquishVar {
+		return runRelinquishVar(opts)
 	}
 
 	// Group C — FSS key management. --setup-keys is a one-shot;
@@ -1774,6 +1800,94 @@ func currentJournalFiles(dir string) []string {
 		filepath.Join(dir, base+".jsonl"),
 		filepath.Join(dir, base+".journal"),
 	}
+}
+
+// --- Sprint 2: volatile ⇄ persistent switching ---
+
+// defaultAdminSocket matches slinit-journald's DefaultAdminSocket
+// constant. Kept in sync manually — both are Linux-only.
+const defaultAdminSocket = "/run/slinit-journald.ctl"
+
+// sendAdminCommand writes cmd as a single datagram to the daemon's
+// admin socket. Fire-and-forget: the daemon logs errors to its own
+// stderr but doesn't ack per command (matches SIGUSR1/2 fire-and-
+// forget semantics).
+func sendAdminCommand(cmd string) error {
+	addr, err := net.ResolveUnixAddr("unixgram", defaultAdminSocket)
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialUnix("unixgram", nil, addr)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w (is slinit-journald running with --admin-socket?)", defaultAdminSocket, err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte(cmd)); err != nil {
+		return fmt.Errorf("write %q: %w", cmd, err)
+	}
+	return nil
+}
+
+// runFlush asks slinit-journald to migrate volatile journal files
+// to the persistent primary and switch the active sink over. No-op
+// when the daemon is already writing to the primary. Requires a
+// running daemon — the sink-swap step is the whole point.
+func runFlush(opts options) error {
+	if err := sendAdminCommand("flush"); err != nil {
+		return fmt.Errorf("--flush: %w", err)
+	}
+	if !opts.quiet {
+		fmt.Fprintln(os.Stdout, "slinit-journald: flush command sent")
+	}
+	return nil
+}
+
+// runRelinquishVar asks the daemon to close the persistent sink and
+// reopen at the volatile fallback. Under --smart-relinquish-var the
+// /var mount check runs first: no-op when /var isn't a separate
+// mountpoint (in which case there's nothing to un-pin before umount).
+func runRelinquishVar(opts options) error {
+	cmd := "relinquish-var"
+	if opts.smartRelinquishVar && !opts.relinquishVar {
+		sep, err := isSeparateVarMount()
+		if err != nil {
+			return fmt.Errorf("--smart-relinquish-var: probe /var: %w", err)
+		}
+		if !sep {
+			if !opts.quiet {
+				fmt.Fprintln(os.Stdout, "smart-relinquish-var: /var is not a separate mountpoint, nothing to relinquish")
+			}
+			return nil
+		}
+		cmd = "smart-relinquish"
+	}
+	if err := sendAdminCommand(cmd); err != nil {
+		return fmt.Errorf("--relinquish-var: %w", err)
+	}
+	if !opts.quiet {
+		fmt.Fprintf(os.Stdout, "slinit-journald: %s command sent\n", cmd)
+	}
+	return nil
+}
+
+// isSeparateVarMount parses /proc/self/mountinfo looking for a
+// mount point whose target is exactly "/var". Returns true if such
+// a line exists — meaning /var lives on a filesystem distinct from
+// the root fs and the daemon needs to release it before umount.
+func isSeparateVarMount() (bool, error) {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		// mountinfo format: id parentID major:minor root mount-point ...
+		// We want field 5 (0-indexed 4).
+		fields := strings.Fields(line)
+		if len(fields) >= 5 && fields[4] == "/var" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // --- Group C: FSS key management ---
@@ -3119,6 +3233,12 @@ Flags:
       --vacuum-files=N        Keep only the most recent N archived files
       --vacuum-time=TIME      Drop files older than TIME (s/m/h/d/w/M/y)
       --pid-file=PATH         Override /run/slinit-journald.pid lookup path
+      --flush                 Migrate volatile /run journal → persistent
+                              /var (SIGRTMIN+0). Daemon required.
+      --relinquish-var        Close persistent sink, reopen at volatile
+                              (SIGRTMIN+1) — call before umount /var.
+      --smart-relinquish-var  --relinquish-var only when /var is a separate
+                              mountpoint.
 
   FSS (Forward-Secure Sealing):
       --setup-keys            Mint a fresh sealing key; save to --fss-key

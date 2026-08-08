@@ -1518,6 +1518,33 @@ func TestSetupKeysRefusesExistingWithoutForce(t *testing.T) {
 	}
 }
 
+// TestParseArgsSprint2 covers --flush, --relinquish-var,
+// --smart-relinquish-var (all boolean).
+func TestParseArgsSprint2(t *testing.T) {
+	o, err := parseArgs([]string{"--flush"})
+	if err != nil || !o.flush {
+		t.Errorf("--flush: %+v %v", o, err)
+	}
+	o, err = parseArgs([]string{"--relinquish-var"})
+	if err != nil || !o.relinquishVar {
+		t.Errorf("--relinquish-var: %+v %v", o, err)
+	}
+	o, err = parseArgs([]string{"--smart-relinquish-var"})
+	if err != nil || !o.smartRelinquishVar {
+		t.Errorf("--smart-relinquish-var: %+v %v", o, err)
+	}
+}
+
+// TestIsSeparateVarMount smoke — the check parses mountinfo without
+// blowing up regardless of what the host has for /var. We can't
+// assume a specific answer (dev boxes vary), just that the call
+// returns cleanly.
+func TestIsSeparateVarMount(t *testing.T) {
+	if _, err := isSeparateVarMount(); err != nil {
+		t.Errorf("isSeparateVarMount: %v", err)
+	}
+}
+
 // TestParseArgsSprint1 covers --force and --synchronize-on-exit
 // (both long and =BOOL forms).
 func TestParseArgsSprint1(t *testing.T) {
