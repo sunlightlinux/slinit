@@ -17,6 +17,50 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.11] — 2026-08-08
+
+Sprint 3 of the systemd journalctl parity follow-up: journal
+namespaces. Coverage 61/65 → **63/65 (~97%)**.
+
+### Added
+
+- `--namespace=NS` — filter events by the new `Event.Namespace`
+  field (systemd `LogNamespace=` equivalent). Uses the same
+  server-side push-down + client-side re-filter pattern the rest
+  of the Group A filters use; small `-n` limits stay correct.
+- `--list-namespaces` — enumerate namespaces detected via
+  `/var/log/slinit-journal.*` and `/run/slinit-journal.*`
+  directories. The default (unnamed) namespace is implicit and
+  not listed.
+- `slinit-journald --namespace=NS` — when set, any default path
+  flag still at its compiled-in value gets a `.NS` suffix so two
+  daemons with different namespaces never fight over the same
+  files. Explicit path overrides always win. `guardedSink.namespace`
+  tags incoming events so downstream storage + queries can filter
+  uniformly.
+
+### Wire changes
+
+- `journal.Event` gains `Namespace string` (zero-value = default
+  namespace).
+- `control.JournalQueryRequest`, `journal.QueryFilter`,
+  `QueryFilter.isEmpty`, and `Match` all gain the field.
+  `wireLimitFor` bypasses server `-n` when the new filter is set.
+
+### Notes
+
+Services still emit through slinit's default event bus + ring
+buffer without a namespace tag. Namespaces are a journald-side
+concept — the operator wants isolation on the storage side, not
+on slinit's in-memory ring. Adding `log-namespace =` as a
+per-service config directive is a natural follow-up but not
+shipped here to keep this cut focused on the client surface.
+
+Remaining 2 systemd flags need substantial infrastructure and land
+in Sprint 4:
+- `--image` / `--image-policy` — disk dissection library port
+  (LUKS + LVM + GPT + FS mounting via loop devices).
+
 ## [2.1.10] — 2026-08-08
 
 Sprint 2 of the systemd journalctl parity follow-up: three flags
