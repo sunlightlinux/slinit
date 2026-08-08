@@ -17,6 +17,72 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.8] — 2026-08-08
+
+Closes the systemd journalctl parity project. Nine additional flags
+land across the remaining implementable groups; coverage climbs from
+51/65 (v2.1.7) to **60/65 (~92%)**. The five outstanding flags are
+all systemd-specific concepts that don't map onto slinit's model
+(`--image`, `--image-policy`, `--namespace`, `--list-namespaces`,
+`--flush`, `--relinquish-var`, `--smart-relinquish-var`,
+`--synchronize-on-exit`) and stay unimplemented by design.
+
+### Added — Group C (FSS operator surface, 3 flags)
+
+- `--setup-keys` — mint a fresh FSS sealing key via
+  `journalbin.NewFSSKey`, save to `--fss-key` path (default
+  `/etc/slinit/journal-key`), print the base64 verification token
+  for out-of-band sharing.
+- `--verify-key=TOKEN` — inline verification token, alternative to
+  the `--fss-key` file path (verifier host doesn't need a disk
+  copy).
+- `--interval=DUR` — epoch duration for `--setup-keys` (default 15m,
+  matching systemd).
+
+### Added — Group D (message catalog, 4 flags + new pkg/catalog)
+
+New `pkg/catalog` implements a systemd-compatible catalog file
+parser (`-- MESSAGE_ID` header + RFC 822 body). ID normalisation
+strips dashes and lowercases; header keys title-case per RFC.
+Compiled cache is gob-encoded to
+`/var/lib/slinit/catalog/catalog.compiled` for O(1) `--dump` on
+large catalogs.
+
+- `-x` / `--catalog` — augment MESSAGE output with matching catalog
+  body under the short-format line, indented two spaces.
+- `--dump-catalog` — print every entry, sorted by ID.
+- `--list-catalog` — print just the IDs, sorted.
+- `--update-catalog` — rescan source dirs
+  (`/usr/share/slinit-catalog`, `/usr/lib/slinit/catalog`,
+  `/usr/lib/systemd/catalog` — with `--root` prefix), rebuild the
+  cache.
+
+### Added — Group E (invocation tracking, 2 flags + pkg/service emit)
+
+`pkg/service` mints a 128-bit hex invocation ID
+(`crypto/rand` → hex) at each `initiateStart`, stored on the
+`ServiceRecord` and attached as `SLINIT_INVOCATION_ID` to every
+journal event emitted during the invocation's lifecycle (Starting →
+Started → Stopping → Stopped and any Failed variants).
+
+- `--invocation=UUID` — filter events by exact
+  `SLINIT_INVOCATION_ID` match. Wired through the wire filter (new
+  `InvocationID` field on `QueryFilter` +
+  `JournalQueryRequest`) with the same server-side push-down +
+  client-fallback pattern Group A introduced.
+- `--list-invocations` — requires `-u UNIT`; projects events to
+  `(id, first_ts, last_ts)`, sorts by first-seen, prints one row
+  per invocation. Under a daemon vintage that doesn't emit the
+  field, a friendly no-invocations message points the operator at
+  the emitter-side requirement.
+
+### Wire changes
+
+- `QueryFilter`, `JournalQueryRequest`, and `QueryFilter.isEmpty`
+  gain `InvocationID`.
+- Client-side `wireLimitFor` bypasses server `-n` when the new
+  filter is populated (same rationale as the v2.1.7 fix).
+
 ## [2.1.7] — 2026-08-07
 
 Patch release. Fixes a correctness regression in the v2.1.6 Group A
