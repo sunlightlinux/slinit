@@ -17,6 +17,56 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.12] — 2026-08-08
+
+**Systemd journalctl parity project complete: 65 of 65 flags.**
+Sprint 4 lands `--image` + `--image-policy` — the last two flags
+in systemd's surface. Coverage 63/65 → **65/65 (100%)**.
+
+### Added
+
+- `--image=PATH` — attach a disk image via `losetup(8)` (read-only
+  with `--partscan`), mount the first filesystem containing a
+  recognised journal directory
+  (`var/log/slinit-journal` / `run/slinit-journal` /
+  `var/log/journal`), query it, detach on exit.
+- `--image-policy=POLICY` — accepts slinit shorthand
+  (`loose` / `strict` / `""`) and systemd's full colon-separated
+  per-partition form
+  (`root=verity+encrypted+signed:usr=verity:home=encrypted`).
+  `strict` refuses LUKS / LVM / verity partitions upfront via
+  `lsblk` FSTYPE probe. Full-form tokens are parsed and stored on
+  the `Policy.PerPartition` map, reserved for future LUKS-aware
+  slinit versions.
+
+### Notes
+
+Pragmatic implementation: rather than porting systemd's ~5kloc
+`libblkid` + LUKS + LVM stack, `pkg/dissect` shells out to
+util-linux (`losetup`, `mount`, `lsblk`) — universally available on
+Linux. Trade-off: no native handling of encrypted / verity / LVM
+partitions. The 95% common case (raw + GPT/MBR partitioned images
+with ext4/xfs/vfat filesystems) works fully.
+
+Detach always runs via `defer` — even on error paths — so a broken
+image never leaks a loop device.
+
+### Coverage summary — the 4-sprint parity arc
+
+- v2.1.9 (Sprint 1, 2 flags): `--force` + `--synchronize-on-exit`
+- v2.1.10 (Sprint 2, 3 flags): `--flush` + `--relinquish-var` +
+  `--smart-relinquish-var` via a UNIX DGRAM control socket
+- v2.1.11 (Sprint 3, 2 flags): `--namespace` + `--list-namespaces`
+- v2.1.12 (Sprint 4, 2 flags): `--image` + `--image-policy`
+
+Total from v2.1.8: 58/65 → 65/65. Every flag accepted; five carry
+slinit-specific semantics (documented in --help):
+- `--force`: always-overwrite for `--setup-keys`.
+- `--synchronize-on-exit`: always-on (sinks fsync on Close).
+- `--sync`: SIGUSR1 to journald PID (systemd uses dbus).
+- `--merge`: no-op on single-source setups.
+- `--pager-end`: no-op (no pager wired).
+
 ## [2.1.11] — 2026-08-08
 
 Sprint 3 of the systemd journalctl parity follow-up: journal
