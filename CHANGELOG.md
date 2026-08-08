@@ -17,6 +17,29 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.9] — 2026-08-08
+
+Sprint 1 of the follow-up systemd parity push. Two more flags at
+minimal cost:
+
+### Added
+
+- `--force` — safety gate for `--setup-keys`. Previously we always
+  overwrote an existing FSS key file, silently invalidating every
+  TAG chain sealed with the old key. Now refuse without `--force`
+  and print a hint that names the flag.
+- `--synchronize-on-exit[=BOOL]` — accepted for parity. Slinit's
+  sinks always `fsync` on `Close` (`FileSink.Close` /
+  `BinarySink.Close`), so this is effectively always-on and there's
+  nothing to configure. Documented as such in `--help`; kept
+  parseable so scripts written for systemd don't fall over.
+
+Coverage: 56/65 → **58/65 (~89%)**. Remaining 7 are:
+- `--flush` / `--relinquish-var` / `--smart-relinquish-var` —
+  volatile-persistent switching machinery.
+- `--namespace` / `--list-namespaces` — journal namespace concept.
+- `--image` / `--image-policy` — disk dissection library.
+
 ## [2.1.8] — 2026-08-08
 
 Closes the systemd journalctl parity project. Nine additional flags
