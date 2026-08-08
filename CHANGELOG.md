@@ -17,6 +17,64 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.10] — 2026-08-08
+
+Sprint 2 of the systemd journalctl parity follow-up: three flags
+for volatile ⇄ persistent switching operators need before umount
+/var. Coverage 58/65 → **61/65 (~94%)**.
+
+### Added
+
+- `--flush` — asks slinit-journald to migrate any journal files
+  from the volatile fallback dir (typically `/run/slinit-journal`)
+  to the persistent primary (typically `/var/log/slinit-journal`)
+  and switch the active sink over. No-op when the daemon is already
+  writing to the primary.
+- `--relinquish-var` — closes the persistent sink and reopens at
+  the volatile fallback. Call before umount /var so nothing pins
+  the persistent filesystem.
+- `--smart-relinquish-var` — probe `/proc/self/mountinfo` for a
+  `/var` mount line first; only relinquish if `/var` is on a
+  distinct filesystem. On single-fs systems this becomes a
+  documented no-op.
+
+### Wire changes
+
+- **pkg/journald/flush.go** (new) — `Migrate(src, dst)` moves the
+  journal artefact set with a same-fs Rename fast path + cross-fs
+  copy+remove fallback. `ProbeWritable(dir)` MkdirAll + write-then-
+  remove probe.
+- **cmd/slinit-journald** — `guardedSink` wraps the active sink
+  with a mutex + factory closure that knows how to reopen at any
+  directory; `FlushVolatile` / `RelinquishVar` swap the inner sink
+  under the lock so the Receiver's Handle loop never races the
+  swap. `--admin-socket` flag (default `/run/slinit-journald.ctl`)
+  plus a `runAdminSocket` goroutine that reads
+  `flush` / `relinquish-var` / `smart-relinquish` datagrams and
+  dispatches to the guarded sink.
+- **cmd/slinit-journalctl** — the three flags dial the admin socket
+  and send a single command word (fire-and-forget, same semantics
+  as SIGUSR1 / SIGUSR2 but doesn't hit Go's os/signal SIGRTMIN
+  delivery bug that made the original signal-based design fail).
+
+### Notes
+
+The three flags were originally planned as SIGRTMIN+0 / +1
+handlers, but a live smoke on ceres showed Go's `signal.Notify`
+doesn't deliver signals in the SIGRTMIN..SIGRTMAX range on Linux —
+the process terminates with the default action even when Notify
+was called for that signal. A minimal reproducer confirmed the
+issue is Go-runtime, not our wiring. The DGRAM control socket
+approach is both more robust and cleaner for future admin
+extensions.
+
+Remaining 4 systemd flags need substantial infrastructure and land
+in Sprints 3-4:
+- `--namespace` / `--list-namespaces` — journal namespace concept
+  (Sprint 3).
+- `--image` / `--image-policy` — disk dissection library port
+  (Sprint 4).
+
 ## [2.1.9] — 2026-08-08
 
 Sprint 1 of the follow-up systemd parity push. Two more flags at
