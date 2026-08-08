@@ -31,6 +31,7 @@ import (
 
 	"github.com/sunlightlinux/slinit/pkg/catalog"
 	"github.com/sunlightlinux/slinit/pkg/control"
+	"github.com/sunlightlinux/slinit/pkg/dissect"
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/journalbin"
 	"github.com/sunlightlinux/slinit/pkg/journald"
@@ -180,6 +181,11 @@ type options struct {
 
 	namespace      string // --namespace=NS — filter + route to NS daemon
 	listNamespaces bool   // --list-namespaces — enumerate namespaces from filesystem
+
+	// --- Sprint 4: disk image dissection ---
+
+	image       string // --image=PATH — losetup + mount + read journal from image
+	imagePolicy string // --image-policy=POLICY — parsed via pkg/dissect.ParsePolicy
 
 	// --- Group D: catalog ---
 
@@ -819,6 +825,30 @@ func parseArgs(args []string) (options, error) {
 			opts.listNamespaces = true
 			args = args[1:]
 
+		// --- Sprint 4: disk image dissection ---
+
+		case a == "--image":
+			if len(args) < 2 {
+				return opts, errors.New("--image requires an argument")
+			}
+			opts.image = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--image="):
+			opts.image = strings.TrimPrefix(a, "--image=")
+			args = args[1:]
+
+		case a == "--image-policy":
+			if len(args) < 2 {
+				return opts, errors.New("--image-policy requires an argument")
+			}
+			opts.imagePolicy = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--image-policy="):
+			opts.imagePolicy = strings.TrimPrefix(a, "--image-policy=")
+			args = args[1:]
+
 		// --- Group D: catalog ---
 
 		case a == "-x" || a == "--catalog":
@@ -1239,6 +1269,9 @@ func runQuery(opts options) error {
 	}
 	if opts.listNamespaces {
 		return runListNamespaces(os.Stdout)
+	}
+	if opts.image != "" {
+		return runFromImage(opts)
 	}
 
 	// Group C — FSS key management. --setup-keys is a one-shot;
@@ -1825,6 +1858,37 @@ func currentJournalFiles(dir string) []string {
 		filepath.Join(dir, base+".jsonl"),
 		filepath.Join(dir, base+".journal"),
 	}
+}
+
+// --- Sprint 4: disk image dissection ---
+
+// runFromImage attaches a disk image via pkg/dissect, then reruns
+// the query as a --directory scan over the mounted journal path.
+// Detach always runs — even on error paths — so a broken image
+// doesn't leak a loop device.
+func runFromImage(opts options) error {
+	policy, err := dissect.ParsePolicy(opts.imagePolicy)
+	if err != nil {
+		return fmt.Errorf("--image-policy: %w", err)
+	}
+	_, journalDir, detach, err := dissect.Attach(opts.image, policy)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := detach(); err != nil {
+			fmt.Fprintf(os.Stderr, "slinit-journalctl: WARN detach %s: %v\n", opts.image, err)
+		}
+	}()
+	if !opts.quiet {
+		fmt.Fprintf(os.Stderr, "slinit-journalctl: --image %s → mounted, journal at %s\n", opts.image, journalDir)
+	}
+	// Rewrite opts as a --directory query pointing at the mounted
+	// journal, then re-enter the standard runFromDirectory path.
+	imgOpts := opts
+	imgOpts.image = ""
+	imgOpts.directory = journalDir
+	return runFromDirectory(imgOpts)
 }
 
 // --- Sprint 3: journal namespaces ---
@@ -3327,6 +3391,15 @@ Flags:
       --list-namespaces       List namespaces detected via
                               /var/log/slinit-journal.* and
                               /run/slinit-journal.* dirs
+
+  Disk image dissection (requires root):
+      --image=PATH            Attach the image via losetup(8), mount ro,
+                              locate the journal dir (var/log/slinit-
+                              journal or run/slinit-journal), query it,
+                              detach on exit
+      --image-policy=POLICY   loose (default) | strict | full colon-
+                              separated systemd form. strict refuses
+                              LUKS/LVM/verity partitions
 
   FSS (Forward-Secure Sealing):
       --setup-keys            Mint a fresh sealing key; save to --fss-key

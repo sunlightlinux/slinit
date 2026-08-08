@@ -1535,6 +1535,20 @@ func TestParseArgsSprint2(t *testing.T) {
 	}
 }
 
+// TestParseArgsSprint4 covers --image and --image-policy.
+func TestParseArgsSprint4(t *testing.T) {
+	o, err := parseArgs([]string{"--image=/path/to/disk.img", "--image-policy=strict"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.image != "/path/to/disk.img" {
+		t.Errorf("image = %q", o.image)
+	}
+	if o.imagePolicy != "strict" {
+		t.Errorf("imagePolicy = %q", o.imagePolicy)
+	}
+}
+
 // TestParseArgsSprint3 covers --namespace and --list-namespaces.
 func TestParseArgsSprint3(t *testing.T) {
 	o, err := parseArgs([]string{"--namespace=prod"})
