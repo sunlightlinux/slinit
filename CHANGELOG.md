@@ -17,6 +17,92 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.13] — 2026-08-08
+
+Test-suite catch-up. Closes the SSH-acceptance + QEMU-functional
+coverage gap for every feature landed between v2.0.0 and v2.1.12
+that can be exercised at runtime. No code changes; assertion tests
+only.
+
+### Added — tests/acceptance/ssh (197 → 219 cases)
+
+22 new cases (198-219) covering:
+- Converters (v2.1.4-5): runit basic + log companion (v2.1.5
+  headline), openrc simple + wrapped, systemd Type/Restart/deps
+  with suffix stripping.
+- Journalctl group A-B (v2.1.6/7/10): identifier `-t/-T` with
+  the v2.1.7 small-limit fix, `--vacuum-*` with current-day
+  preservation + missing-dir tolerance.
+- Journalctl C-D-E (v2.1.8-9): invocation tracking +
+  `--list-invocations`, catalog round-trip via `--root`,
+  `--setup-keys` + `--force` safety.
+- Journalctl Sprints 3-4 (v2.1.11-12): `--namespace` + tag +
+  `--list-namespaces`, `--image` + `--image-policy=strict`.
+- v2.1.0-2 baseline: `slinit-supports`, `-b` shortcut, `-k`
+  kernel events + render rules, `slinitctl analyze`
+  (time/blame/critical-chain/dot/plot stub), journalctl symlink,
+  verbose+export formats, `slinitctl disable` dual-wire,
+  bracket target-PID rule.
+- Deep dinit + FSS (v2.1.0): env-var compat
+  (SLINIT_SERVICENAME + DINIT_SOCKET_PATH), FSS binary
+  `--verify` clean + tamper detection, backlog replay banner.
+
+Also lands a chmod-only sweep marking cases 170-197 executable
+so an operator running `./cases/NN-…sh` directly does the right
+thing (previously only mattered because run.sh invokes them via
+`sh $file`).
+
+### Added — tests/functional (201 → 218 cases)
+
+17 new cases (202-218) covering the same feature surface from
+the fresh-PID-1-boot side. Groups roughly mirror the acceptance
+batch:
+- 202 `--list-boots` + `-b` shortcut.
+- 203 kernel events + render rules (gates on kmsg presence so a
+  silent QEMU boot doesn't false-fail).
+- 204 `slinit-supports` introspection.
+- 205 `slinitctl analyze` subcommands + `plot` stub.
+- 206 runit converter + log companion.
+- 207 openrc converter (variable-only + wrapped paths).
+- 208 systemd converter (Type/Restart/User+Group, line
+  continuation, forking→bgprocess, oneshot restart default).
+- 209 invocation tracking (fresh-boot version — exact count
+  assertions).
+- 210 catalog round-trip via `--root` prefix.
+- 211 FSS `--setup-keys` + `--force` safety gate.
+- 212 FSS binary `--verify` full tamper-detection round-trip.
+- 213 dinit env-var compat.
+- 214 `slinitctl disable` dual-wire (tolerant symlink probe;
+  layout differs between guest and ceres).
+- 215 journalctl verbose + export formats.
+- 216 Group A bundle (`--fields` / `--header` / `--disk-usage`
+  / `-F` / `--utc` / `--no-hostname` / `--output-fields` /
+  `-g`).
+- 217 vacuum + flush (direct file vacuum + spawned daemon for
+  `--flush` / `--relinquish-var` via admin socket).
+- 218 namespace daemon + `--list-namespaces` + filter (synthetic
+  JSONL for the tag assertion since the QEMU minimal boot may
+  not produce enough backlog events for the namespaced daemon
+  to persist bytes in time).
+
+`build-vm.sh` extended to install six additional binaries in the
+guest so the new cases have something to exercise: `slinit-
+supports`, `slinit-journalctl`, `slinit-journald`, and the three
+converters. Also adds a `journalctl → slinit-journalctl` symlink
+matching the slpkgs `post_install` convention.
+
+### Not covered — reserved for manual QA / future harness work
+
+- Boot debugger Ctrl-B (v2.1.1) — interactive tty.
+- Rescue menu / Emergency-Rescue split / tty9 debug-shell /
+  confirm-spawn / crash-shell (v2.1.1-2) — interactive tty +
+  fatal-boot simulation.
+- Bootmode kernel-cmdline parser (v2.1.2) — needs per-test
+  kernel-args injection at VM boot.
+- `--image` / `--image-policy` in the QEMU harness (v2.1.12) —
+  needs `mkfs.ext4` in the Alpine minirootfs; acceptance case
+  208 covers it against ceres.
+
 ## [2.1.12] — 2026-08-08
 
 **Systemd journalctl parity project complete: 65 of 65 flags.**
