@@ -1,0 +1,4 @@
+type = internal
+depends-on: system-init
+waits-for: dwsvc
+waits-for: test-runner

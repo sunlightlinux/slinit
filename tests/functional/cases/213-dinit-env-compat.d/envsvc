@@ -1,0 +1,4 @@
+type = process
+depends-on: system-init
+command = /bin/sh -c 'env > /tmp/env-dump.txt; exec sleep 600'
+restart = false
