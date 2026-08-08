@@ -176,6 +176,11 @@ type options struct {
 	relinquishVar      bool // --relinquish-var — SIGRTMIN+1: close persistent, reopen at volatile
 	smartRelinquishVar bool // --smart-relinquish-var — only relinquish when /var is a separate mount
 
+	// --- Sprint 3: journal namespaces ---
+
+	namespace      string // --namespace=NS — filter + route to NS daemon
+	listNamespaces bool   // --list-namespaces — enumerate namespaces from filesystem
+
 	// --- Group D: catalog ---
 
 	catalog       bool // -x/--catalog — augment MESSAGE with catalog text
@@ -797,6 +802,23 @@ func parseArgs(args []string) (options, error) {
 			opts.smartRelinquishVar = true
 			args = args[1:]
 
+		// --- Sprint 3: journal namespaces ---
+
+		case a == "--namespace":
+			if len(args) < 2 {
+				return opts, errors.New("--namespace requires an argument")
+			}
+			opts.namespace = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--namespace="):
+			opts.namespace = strings.TrimPrefix(a, "--namespace=")
+			args = args[1:]
+
+		case a == "--list-namespaces":
+			opts.listNamespaces = true
+			args = args[1:]
+
 		// --- Group D: catalog ---
 
 		case a == "-x" || a == "--catalog":
@@ -1214,6 +1236,9 @@ func runQuery(opts options) error {
 	}
 	if opts.relinquishVar || opts.smartRelinquishVar {
 		return runRelinquishVar(opts)
+	}
+	if opts.listNamespaces {
+		return runListNamespaces(os.Stdout)
 	}
 
 	// Group C — FSS key management. --setup-keys is a one-shot;
@@ -1800,6 +1825,58 @@ func currentJournalFiles(dir string) []string {
 		filepath.Join(dir, base+".jsonl"),
 		filepath.Join(dir, base+".journal"),
 	}
+}
+
+// --- Sprint 3: journal namespaces ---
+
+// runListNamespaces enumerates namespaces by scanning the standard
+// slinit-journald directory-naming convention (`<base>.NS` for both
+// persistent /var/log and volatile /run). Prints one namespace per
+// line, sorted, deduped across primary + volatile paths. The default
+// namespace (unnamed) is implied by any bare `<base>` dir but not
+// listed since it's always present.
+func runListNamespaces(out io.Writer) error {
+	seen := map[string]struct{}{}
+	scan := func(parent, prefix string) {
+		entries, err := os.ReadDir(parent)
+		if err != nil {
+			return
+		}
+		for _, ent := range entries {
+			if !ent.IsDir() {
+				continue
+			}
+			name := ent.Name()
+			if !strings.HasPrefix(name, prefix+".") {
+				continue
+			}
+			ns := strings.TrimPrefix(name, prefix+".")
+			if ns == "" {
+				continue
+			}
+			seen[ns] = struct{}{}
+		}
+	}
+	scan("/var/log", "slinit-journal")
+	scan("/run", "slinit-journal")
+	if len(seen) == 0 {
+		fmt.Fprintln(out, "(no namespaces present — only the default namespace is active)")
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	// Stable sort with the tiny bubble the rest of this file uses.
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j-1] > names[j]; j-- {
+			names[j-1], names[j] = names[j], names[j-1]
+		}
+	}
+	for _, n := range names {
+		fmt.Fprintln(out, n)
+	}
+	return nil
 }
 
 // --- Sprint 2: volatile ⇄ persistent switching ---
@@ -2686,6 +2763,7 @@ func buildRequest(opts options) control.JournalQueryRequest {
 		// unless the operator overrode with --case-sensitive[=BOOL].
 		GrepInsensitive: shouldGrepInsensitive(opts),
 		InvocationID:    opts.invocation,
+		Namespace:       opts.namespace,
 	}
 	if opts.prioritySet {
 		req.MinPriority = int(opts.priority)
@@ -2707,7 +2785,8 @@ func buildRequest(opts options) control.JournalQueryRequest {
 // match set before we trim. Otherwise the daemon's -n trimming is
 // authoritative.
 func wireLimitFor(opts options) int {
-	if len(opts.identifiers) > 0 || len(opts.excludeIdentifiers) > 0 || opts.grep != "" || opts.invocation != "" {
+	if len(opts.identifiers) > 0 || len(opts.excludeIdentifiers) > 0 ||
+		opts.grep != "" || opts.invocation != "" || opts.namespace != "" {
 		return 0
 	}
 	return opts.limit
@@ -2738,7 +2817,8 @@ func shouldGrepInsensitive(opts options) bool {
 // enough to run unconditionally: buffer + filter is O(N) either way
 // and the pkg/journal Match function is trivial.
 func clientSideFilter(events []*journal.Event, req control.JournalQueryRequest) []*journal.Event {
-	if len(req.Identifiers) == 0 && len(req.ExcludeIdentifiers) == 0 && req.GrepPattern == "" && req.InvocationID == "" {
+	if len(req.Identifiers) == 0 && len(req.ExcludeIdentifiers) == 0 &&
+		req.GrepPattern == "" && req.InvocationID == "" && req.Namespace == "" {
 		return events
 	}
 	filter := req.ToFilter()
@@ -3234,11 +3314,19 @@ Flags:
       --vacuum-time=TIME      Drop files older than TIME (s/m/h/d/w/M/y)
       --pid-file=PATH         Override /run/slinit-journald.pid lookup path
       --flush                 Migrate volatile /run journal → persistent
-                              /var (SIGRTMIN+0). Daemon required.
-      --relinquish-var        Close persistent sink, reopen at volatile
-                              (SIGRTMIN+1) — call before umount /var.
+                              /var (via admin socket). Daemon required.
+      --relinquish-var        Close persistent sink, reopen at volatile —
+                              call before umount /var.
       --smart-relinquish-var  --relinquish-var only when /var is a separate
                               mountpoint.
+
+  Journal namespaces:
+      --namespace=NS          Filter events by their Namespace tag; when
+                              set, wireLimit switches to client-side -n so
+                              small limits still surface matching events
+      --list-namespaces       List namespaces detected via
+                              /var/log/slinit-journal.* and
+                              /run/slinit-journal.* dirs
 
   FSS (Forward-Secure Sealing):
       --setup-keys            Mint a fresh sealing key; save to --fss-key

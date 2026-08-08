@@ -33,6 +33,30 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/journald"
 )
 
+// applyNamespaceDefaults rewrites the still-at-default path flags to
+// include the namespace suffix. Explicit operator overrides are
+// preserved: we only touch a flag when it still holds the compiled-in
+// default. Called once at startup after flag.Parse.
+func applyNamespaceDefaults(ns string, sockPath, dir, volatileDir, pidFile, adminSock *string) {
+	if *sockPath == journal.SocketPath {
+		// journal.SocketPath = "/run/slinit/events.sock"; keep the
+		// same parent dir with a per-NS suffix.
+		*sockPath = fmt.Sprintf("/run/slinit/events-%s.sock", ns)
+	}
+	if *dir == journald.DefaultJournalDir {
+		*dir = fmt.Sprintf("%s.%s", journald.DefaultJournalDir, ns)
+	}
+	if *volatileDir == journald.DefaultVolatileDir {
+		*volatileDir = fmt.Sprintf("%s.%s", journald.DefaultVolatileDir, ns)
+	}
+	if *pidFile == "/run/slinit-journald.pid" {
+		*pidFile = fmt.Sprintf("/run/slinit-journald.%s.pid", ns)
+	}
+	if *adminSock == DefaultAdminSocket {
+		*adminSock = fmt.Sprintf("/run/slinit-journald.%s.ctl", ns)
+	}
+}
+
 // DefaultAdminSocket is the ambient control socket slinit-journald
 // listens on for out-of-band admin commands (--flush, --relinquish-
 // var, --smart-relinquish-var). Kept separate from the events socket
@@ -61,6 +85,10 @@ type guardedSink struct {
 	currentDir  string
 	primaryDir  string
 	volatileDir string
+	// namespace, when non-empty, is stamped on every incoming event
+	// that doesn't already carry one. Matches systemd's per-namespace
+	// journald tagging events with the LogNamespace= value.
+	namespace string
 	// factory constructs a fresh sink pointing at the given dir.
 	// Non-nil second return is the actual directory used (Fallback
 	// may pick volatile if primary refuses); third return is an
@@ -71,6 +99,12 @@ type guardedSink struct {
 func (g *guardedSink) Handle(evt *journal.Event) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// Stamp namespace so downstream storage + queries can filter by
+	// it. Respect the client's own tag if present (allows multiplexed
+	// use cases like a stub daemon fan-out).
+	if g.namespace != "" && evt.Namespace == "" {
+		evt.Namespace = g.namespace
+	}
 	return g.inner.Handle(evt)
 }
 
@@ -193,6 +227,7 @@ func main() {
 		fssTagEvery  = flag.Int("fss-tag-every", journalbin.DefaultFSSTagEvery, "seal a TAG every N entries (binary+FSS only)")
 		pidFile      = flag.String("pid-file", "/run/slinit-journald.pid", "path to write our PID (for `slinit-journalctl --sync/--rotate`); '' disables")
 		adminSock    = flag.String("admin-socket", DefaultAdminSocket, "UNIX SOCK_DGRAM path listening for admin commands (flush/relinquish); '' disables")
+		namespace    = flag.String("namespace", "", "journal namespace label (systemd LogNamespace equivalent); when set, defaults for -dir/-volatile-dir/-socket/-pid-file/-admin-socket gain the .NS suffix and incoming events are tagged with this namespace")
 		dryRun       = flag.Bool("dry-run", false, "print received events to stdout instead of persisting")
 		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
@@ -211,6 +246,16 @@ Flags:
 	if *showVersion {
 		fmt.Println(version)
 		return
+	}
+
+	// Namespace-aware default path resolution. When --namespace=NS is
+	// set and the corresponding path flag still holds its zero-arg
+	// default, append `.NS` (or `-NS.sock` for the events socket) so
+	// two daemons with different namespaces never fight over the same
+	// files. Operators wanting a custom layout can still override each
+	// path explicitly; the suffixing only kicks in on the defaults.
+	if *namespace != "" {
+		applyNamespaceDefaults(*namespace, sockPath, dir, volatileDir, pidFile, adminSock)
 	}
 
 	// InitIDs so the daemon's own emit path (any logs slinit-journald
@@ -277,6 +322,7 @@ Flags:
 				currentDir:  actualDir,
 				primaryDir:  *dir,
 				volatileDir: *volatileDir,
+				namespace:   *namespace,
 				factory:     jsonlFactory,
 			}
 			sink = guarded
@@ -333,6 +379,7 @@ Flags:
 				currentDir:  actualDir,
 				primaryDir:  *dir,
 				volatileDir: *volatileDir,
+				namespace:   *namespace,
 				factory:     binaryFactory,
 			}
 			sink = guarded

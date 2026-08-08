@@ -130,6 +130,14 @@ type Event struct {
 	// exists.
 	Unit string `json:"unit,omitempty"`
 
+	// Namespace is the journal namespace the event was emitted into.
+	// Empty means the default (unnamed) namespace. A slinit-journald
+	// started with --namespace=NS tags every incoming event with this
+	// field and filters queries by it; `slinit-journalctl
+	// --namespace=NS` matches on the same key. Matches systemd's
+	// `LogNamespace=` unit directive + `journalctl --namespace=`.
+	Namespace string `json:"namespace,omitempty"`
+
 	// SyslogIdentifier lets a client override the display name in
 	// short output mode. Falls back to Unit, then to Comm, then to
 	// "unknown". Matches systemd SYSLOG_IDENTIFIER.

@@ -170,6 +170,12 @@ type QueryFilter struct {
 	// field equals this value (systemd `--invocation=UUID`). Empty
 	// means no filter.
 	InvocationID string
+
+	// Namespace filters events by their Namespace field (systemd
+	// `journalctl --namespace=NS`). Empty means no filter — the
+	// query returns events from every namespace, including the
+	// default (unnamed) one.
+	Namespace string
 }
 
 // hasMinPriority is a sentinel test that distinguishes "priority
@@ -246,6 +252,9 @@ func (q QueryFilter) Match(e *Event) bool {
 			return false
 		}
 	}
+	if q.Namespace != "" && e.Namespace != q.Namespace {
+		return false
+	}
 	return true
 }
 
@@ -296,7 +305,8 @@ func (q QueryFilter) isEmpty() bool {
 		len(q.Identifiers) == 0 &&
 		len(q.ExcludeIdentifiers) == 0 &&
 		q.GrepPattern == "" &&
-		q.InvocationID == ""
+		q.InvocationID == "" &&
+		q.Namespace == ""
 }
 
 // Query returns events from the buffer matching filter, in chronological
