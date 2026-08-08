@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/journal"
+	"github.com/sunlightlinux/slinit/pkg/journalbin"
 )
 
 func TestParseArgsDefaults(t *testing.T) {
@@ -1413,6 +1414,74 @@ func TestCurrentJournalFiles(t *testing.T) {
 		if !strings.HasPrefix(f, "/var/log/slinit-journal/") {
 			t.Errorf("expected absolute path, got %q", f)
 		}
+	}
+}
+
+// TestParseArgsGroupC covers --setup-keys, --verify-key, --interval.
+func TestParseArgsGroupC(t *testing.T) {
+	o, err := parseArgs([]string{"--setup-keys", "--verify-key=abc123", "--interval=1h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.setupKeys {
+		t.Error("setupKeys not set")
+	}
+	if o.verifyKey != "abc123" {
+		t.Errorf("verifyKey = %q", o.verifyKey)
+	}
+	if o.fssInterval != time.Hour {
+		t.Errorf("fssInterval = %v", o.fssInterval)
+	}
+}
+
+// TestParseArgsGroupD covers catalog flags.
+func TestParseArgsGroupD(t *testing.T) {
+	o, err := parseArgs([]string{"-x", "--dump-catalog", "--update-catalog", "--list-catalog"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.catalog || !o.dumpCatalog || !o.updateCatalog || !o.listCatalog {
+		t.Errorf("bad flags: %+v", o)
+	}
+}
+
+// TestParseArgsGroupE covers invocation flags.
+func TestParseArgsGroupE(t *testing.T) {
+	o, err := parseArgs([]string{"--invocation=deadbeef", "--list-invocations"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.invocation != "deadbeef" {
+		t.Errorf("invocation = %q", o.invocation)
+	}
+	if !o.listInvocations {
+		t.Error("listInvocations not set")
+	}
+}
+
+// TestRunSetupKeysWritesFile verifies --setup-keys creates a valid
+// FSSKey file and prints a verification token on stdout.
+func TestRunSetupKeysWritesFile(t *testing.T) {
+	dir := t.TempDir()
+	key := dir + "/journal-key"
+	var out bytes.Buffer
+	err := runSetupKeys(options{fssKeyPath: key, fssInterval: time.Hour}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(key); err != nil {
+		t.Errorf("key file not created: %v", err)
+	}
+	if !strings.Contains(out.String(), "Verification key") {
+		t.Errorf("output missing verification key header: %q", out.String())
+	}
+	// Reload → should parse cleanly.
+	loaded, err := journalbin.LoadFSSKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.IntervalUsec != int64(time.Hour/time.Microsecond) {
+		t.Errorf("interval not persisted: %d", loaded.IntervalUsec)
 	}
 }
 

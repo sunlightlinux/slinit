@@ -125,6 +125,13 @@ type ServiceRecord struct {
 	restartMode RestartMode
 	normalExitSignals []syscall.Signal
 
+	// invocationID is the 128-bit-hex identifier minted at each
+	// initiateStart. Rides on every journal event emitted during the
+	// invocation lifecycle (Starting → Started → Stopping → Stopped
+	// and any Failed variants), so client-side dedupe by
+	// SLINIT_INVOCATION_ID gives exactly one row per start attempt.
+	invocationID string
+
 	// Pins
 	pinnedStopped     bool
 	pinnedStarted     bool
@@ -2464,6 +2471,11 @@ func (sr *ServiceRecord) initiateStart() {
 	sr.startedEmitted = false
 	sr.startSkipped = false
 	sr.startRequestTime = time.Now()
+	// Mint a fresh invocation ID so every event this cycle emits
+	// carries the same SLINIT_INVOCATION_ID. Matches systemd's
+	// per-start UUID and gives `slinit-journalctl --list-invocations
+	// -u UNIT` a stable dedupe key.
+	sr.invocationID = newInvocationID()
 	sr.state.Store(StateStarting)
 	sr.waitingForDeps = true
 

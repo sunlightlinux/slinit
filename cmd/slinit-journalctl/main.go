@@ -29,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/catalog"
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/journalbin"
@@ -160,6 +161,24 @@ type options struct {
 	vacuumTime  time.Duration // --vacuum-time=TIME — drop files older than TIME
 	vacuumSet   bool          // sentinel — any of the three vacuum flags was passed
 	pidFile     string        // --pid-file PATH — override /run/slinit-journald.pid
+
+	// --- Group C: FSS ---
+
+	setupKeys    bool          // --setup-keys — mint fresh FSS key + print verification token
+	verifyKey    string        // --verify-key=KEY — inline verification token (alternative to --fss-key)
+	fssInterval  time.Duration // --interval=DUR — epoch duration for --setup-keys
+
+	// --- Group D: catalog ---
+
+	catalog       bool // -x/--catalog — augment MESSAGE with catalog text
+	dumpCatalog   bool // --dump-catalog
+	updateCatalog bool // --update-catalog
+	listCatalog   bool // --list-catalog
+
+	// --- Group E: invocation ---
+
+	invocation      string // --invocation=UUID — filter events by SLINIT_INVOCATION_ID
+	listInvocations bool   // --list-invocations — list invocations for --unit
 
 	showHelp    bool
 	showVersion bool
@@ -701,6 +720,77 @@ func parseArgs(args []string) (options, error) {
 			opts.pidFile = strings.TrimPrefix(a, "--pid-file=")
 			args = args[1:]
 
+		// --- Group C: FSS ---
+
+		case a == "--setup-keys":
+			opts.setupKeys = true
+			args = args[1:]
+
+		case a == "--verify-key":
+			if len(args) < 2 {
+				return opts, errors.New("--verify-key requires an argument")
+			}
+			opts.verifyKey = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--verify-key="):
+			opts.verifyKey = strings.TrimPrefix(a, "--verify-key=")
+			args = args[1:]
+
+		case a == "--interval":
+			if len(args) < 2 {
+				return opts, errors.New("--interval requires an argument")
+			}
+			d, err := parseDurationArg(args[1])
+			if err != nil {
+				return opts, fmt.Errorf("--interval: %w", err)
+			}
+			opts.fssInterval = d
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--interval="):
+			d, err := parseDurationArg(strings.TrimPrefix(a, "--interval="))
+			if err != nil {
+				return opts, fmt.Errorf("--interval: %w", err)
+			}
+			opts.fssInterval = d
+			args = args[1:]
+
+		// --- Group D: catalog ---
+
+		case a == "-x" || a == "--catalog":
+			opts.catalog = true
+			args = args[1:]
+
+		case a == "--dump-catalog":
+			opts.dumpCatalog = true
+			args = args[1:]
+
+		case a == "--update-catalog":
+			opts.updateCatalog = true
+			args = args[1:]
+
+		case a == "--list-catalog":
+			opts.listCatalog = true
+			args = args[1:]
+
+		// --- Group E: invocation ---
+
+		case a == "--invocation":
+			if len(args) < 2 {
+				return opts, errors.New("--invocation requires an argument")
+			}
+			opts.invocation = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--invocation="):
+			opts.invocation = strings.TrimPrefix(a, "--invocation=")
+			args = args[1:]
+
+		case a == "--list-invocations":
+			opts.listInvocations = true
+			args = args[1:]
+
 		default:
 			return opts, fmt.Errorf("unknown argument %q (try -h)", a)
 		}
@@ -1077,6 +1167,29 @@ func runQuery(opts options) error {
 	}
 	if opts.vacuumSet {
 		return runVacuum(opts)
+	}
+
+	// Group C — FSS key management. --setup-keys is a one-shot;
+	// --verify-key feeds into the --verify path (handled in runFromFile).
+	if opts.setupKeys {
+		return runSetupKeys(opts, os.Stdout)
+	}
+
+	// Group D — catalog. --dump/--update/--list are short-circuits;
+	// --catalog augments rendered output (handled in the render layer).
+	if opts.dumpCatalog {
+		return runDumpCatalog(opts, os.Stdout)
+	}
+	if opts.updateCatalog {
+		return runUpdateCatalog(opts, os.Stdout)
+	}
+	if opts.listCatalog {
+		return runListCatalog(opts, os.Stdout)
+	}
+
+	// Group E — invocation list is a short-circuit (project + dedupe).
+	if opts.listInvocations {
+		return runListInvocationsShortCircuit(opts)
 	}
 
 	if opts.sourceFile != "" {
@@ -1642,6 +1755,235 @@ func currentJournalFiles(dir string) []string {
 	}
 }
 
+// --- Group C: FSS key management ---
+
+// runSetupKeys mints a fresh FSS sealing key and saves it to the
+// configured path (--fss-key or default /etc/slinit/journal-key),
+// then prints the base64-encoded seed as the verification token the
+// operator will paste into `--verify-key=...` on remote hosts.
+// Matches systemd's `journalctl --setup-keys` UX: separate
+// sealing-key file kept private, verification token printed for
+// out-of-band distribution.
+func runSetupKeys(opts options, out io.Writer) error {
+	path := opts.fssKeyPath
+	if path == "" {
+		path = "/etc/slinit/journal-key"
+	}
+	interval := opts.fssInterval
+	intervalUsec := int64(interval / time.Microsecond)
+	if intervalUsec <= 0 {
+		intervalUsec = journalbin.DefaultFSSEpochUsec
+	}
+	startUsec := time.Now().UnixMicro()
+	key, err := journalbin.NewFSSKey(startUsec, intervalUsec)
+	if err != nil {
+		return fmt.Errorf("mint FSS key: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+	if err := journalbin.SaveFSSKey(path, key); err != nil {
+		return err
+	}
+	if !opts.quiet {
+		fmt.Fprintf(out, "FSS key saved to %s (interval %s)\n", path, time.Duration(intervalUsec)*time.Microsecond)
+		fmt.Fprintf(out, "Verification key (share this out-of-band; keep %s private):\n\n  %s\n\n",
+			path, key.Seed)
+		fmt.Fprintf(out, "Use on the verifier host as:\n  slinit-journalctl --verify --verify-key=%s --file=<journal>\n",
+			key.Seed)
+	}
+	return nil
+}
+
+// loadFSSKeyForVerify resolves the FSS key for a --verify run,
+// preferring an inline --verify-key over a --fss-key file. Returns an
+// in-memory FSSKey either way so the callers stay uniform.
+func loadFSSKeyForVerify(opts options) (*journalbin.FSSKey, error) {
+	if opts.verifyKey != "" {
+		// Reconstitute a minimal FSSKey from just the seed — enough
+		// for Verify() since it only needs Seed + StartUsec/IntervalUsec
+		// to re-derive per-epoch keys.  StartUsec/IntervalUsec are
+		// read from the journal file's own header, so we can leave
+		// them zero here and let Verify pull the metadata from disk.
+		return &journalbin.FSSKey{
+			Seed:         opts.verifyKey,
+			IntervalUsec: journalbin.DefaultFSSEpochUsec,
+		}, nil
+	}
+	path := opts.fssKeyPath
+	if path == "" {
+		path = "/etc/slinit/journal-key"
+	}
+	return journalbin.LoadFSSKey(path)
+}
+
+// --- Group D: catalog ---
+
+// runDumpCatalog prints every entry in the compiled catalog cache in
+// a systemd-compatible text layout so operators can diff / grep. Uses
+// the pkg/catalog default paths (compiled cache under /var/lib/slinit).
+func runDumpCatalog(opts options, out io.Writer) error {
+	c, err := loadCatalog(opts)
+	if err != nil {
+		return err
+	}
+	c.Dump(out)
+	return nil
+}
+
+// runUpdateCatalog re-scans catalog source directories and rebuilds
+// the compiled cache. Idempotent — safe to run on every boot or after
+// package install / removal.
+func runUpdateCatalog(opts options, out io.Writer) error {
+	c, err := catalog.LoadDirs(catalogSourceDirs(opts)...)
+	if err != nil {
+		return err
+	}
+	cachePath := catalogCachePath(opts)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return err
+	}
+	if err := c.SaveCompiled(cachePath); err != nil {
+		return err
+	}
+	if !opts.quiet {
+		fmt.Fprintf(out, "catalog updated: %d entries -> %s\n", c.Len(), cachePath)
+	}
+	return nil
+}
+
+// runListCatalog prints one MESSAGE_ID per line, sorted.
+func runListCatalog(opts options, out io.Writer) error {
+	c, err := loadCatalog(opts)
+	if err != nil {
+		return err
+	}
+	for _, id := range c.SortedIDs() {
+		fmt.Fprintln(out, id)
+	}
+	return nil
+}
+
+// loadCatalog tries the compiled cache first; falls back to fresh
+// scan of source dirs if the cache is missing (fresh install) so
+// --dump/--list work even before a --update-catalog run.
+func loadCatalog(opts options) (*catalog.Catalog, error) {
+	if c, err := catalog.LoadCompiled(catalogCachePath(opts)); err == nil {
+		return c, nil
+	}
+	return catalog.LoadDirs(catalogSourceDirs(opts)...)
+}
+
+// catalogSourceDirs enumerates the directories scanned by
+// --update-catalog. Matches systemd's convention plus a slinit-native
+// dir. Order-sensitive: later entries win on MESSAGE_ID collision.
+func catalogSourceDirs(opts options) []string {
+	dirs := []string{
+		"/usr/share/slinit-catalog",
+		"/usr/lib/slinit/catalog",
+		"/usr/lib/systemd/catalog", // reuse existing systemd catalogs
+	}
+	if opts.root != "" {
+		for i, d := range dirs {
+			dirs[i] = filepath.Join(opts.root, d)
+		}
+	}
+	return dirs
+}
+
+// catalogCachePath is the compiled binary catalog location. --root
+// prefix applied so image-installer flows write into the target
+// filesystem, not the host.
+func catalogCachePath(opts options) string {
+	path := "/var/lib/slinit/catalog/catalog.compiled"
+	if opts.root != "" {
+		path = filepath.Join(opts.root, path)
+	}
+	return path
+}
+
+// --- Group E: invocation ---
+
+// runListInvocationsShortCircuit queries the buffer restricted to
+// opts.units, projects to (SLINIT_INVOCATION_ID, first-seen ts),
+// dedupes, sorts by timestamp, and prints one row per invocation.
+// Matches systemd's `journalctl --list-invocations -u UNIT` output
+// shape (ID + newest/oldest timestamp).
+func runListInvocationsShortCircuit(opts options) error {
+	if len(opts.units) == 0 && len(opts.userUnitFilters) == 0 {
+		return errors.New("--list-invocations requires -u UNIT")
+	}
+	events, err := gatherEvents(opts)
+	if err != nil {
+		return err
+	}
+	type inv struct {
+		id        string
+		first     int64
+		last      int64
+	}
+	seen := map[string]*inv{}
+	var order []string
+	for _, e := range events {
+		id := extractField(e, "SLINIT_INVOCATION_ID")
+		if id == "" {
+			continue
+		}
+		rec, ok := seen[id]
+		if !ok {
+			rec = &inv{id: id, first: e.Ts, last: e.Ts}
+			seen[id] = rec
+			order = append(order, id)
+			continue
+		}
+		if e.Ts < rec.first {
+			rec.first = e.Ts
+		}
+		if e.Ts > rec.last {
+			rec.last = e.Ts
+		}
+	}
+	if len(order) == 0 {
+		fmt.Fprintln(os.Stdout, "(no invocations recorded for this unit — is the daemon emitting SLINIT_INVOCATION_ID?)")
+		return nil
+	}
+	for _, id := range order {
+		rec := seen[id]
+		fmt.Fprintf(os.Stdout, "%s  %s..%s\n",
+			id,
+			time.Unix(0, rec.first).Format(time.RFC3339),
+			time.Unix(0, rec.last).Format(time.RFC3339),
+		)
+	}
+	return nil
+}
+
+// gatherEvents pulls events for a normal query — used by
+// --list-invocations and any future Group E extension that wants to
+// aggregate over events without duplicating the socket/file logic.
+func gatherEvents(opts options) ([]*journal.Event, error) {
+	if opts.sourceFile != "" {
+		return loadFileEvents(opts)
+	}
+	sockPath := resolveSocketPath(opts)
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", sockPath, err)
+	}
+	defer conn.Close()
+	req := buildRequest(opts)
+	req.Limit = 0 // pull everything; caller aggregates
+	payload, _ := json.Marshal(req)
+	if err := control.WritePacket(conn, control.CmdJournalQuery, payload); err != nil {
+		return nil, err
+	}
+	events, err := collectStream(conn)
+	if err != nil {
+		return nil, err
+	}
+	return clientSideFilter(events, req), nil
+}
+
 // formatBytes turns byte counts into human-readable K/M/G with one
 // decimal — enough resolution to spot a runaway journal without a
 // second decimal that just adds noise.
@@ -2199,6 +2541,7 @@ func buildRequest(opts options) control.JournalQueryRequest {
 		// is all-lowercase, case-sensitive otherwise; we mirror that
 		// unless the operator overrode with --case-sensitive[=BOOL].
 		GrepInsensitive: shouldGrepInsensitive(opts),
+		InvocationID:    opts.invocation,
 	}
 	if opts.prioritySet {
 		req.MinPriority = int(opts.priority)
@@ -2220,7 +2563,7 @@ func buildRequest(opts options) control.JournalQueryRequest {
 // match set before we trim. Otherwise the daemon's -n trimming is
 // authoritative.
 func wireLimitFor(opts options) int {
-	if len(opts.identifiers) > 0 || len(opts.excludeIdentifiers) > 0 || opts.grep != "" {
+	if len(opts.identifiers) > 0 || len(opts.excludeIdentifiers) > 0 || opts.grep != "" || opts.invocation != "" {
 		return 0
 	}
 	return opts.limit
@@ -2251,7 +2594,7 @@ func shouldGrepInsensitive(opts options) bool {
 // enough to run unconditionally: buffer + filter is O(N) either way
 // and the pkg/journal Match function is trivial.
 func clientSideFilter(events []*journal.Event, req control.JournalQueryRequest) []*journal.Event {
-	if len(req.Identifiers) == 0 && len(req.ExcludeIdentifiers) == 0 && req.GrepPattern == "" {
+	if len(req.Identifiers) == 0 && len(req.ExcludeIdentifiers) == 0 && req.GrepPattern == "" && req.InvocationID == "" {
 		return events
 	}
 	filter := req.ToFilter()
@@ -2303,6 +2646,7 @@ type renderOpts struct {
 	truncateNewline bool
 	noFull          bool
 	outputFields    map[string]bool // nil = all fields; non-empty = keep only these
+	catalog         *catalog.Catalog // non-nil when -x/--catalog is on; augments short output
 }
 
 // buildRenderOpts extracts the render-relevant subset of options. The
@@ -2320,7 +2664,33 @@ func buildRenderOpts(opts options) renderOpts {
 			ro.outputFields[f] = true
 		}
 	}
+	if opts.catalog {
+		if c, err := loadCatalog(opts); err == nil {
+			ro.catalog = c
+		}
+		// Silent on load failure — --catalog augmentation is a
+		// convenience; a missing/broken catalog file shouldn't sink
+		// the whole query.
+	}
 	return ro
+}
+
+// catalogAugment returns the catalog body for e's MESSAGE_ID, or
+// "" if -x is off or the ID isn't found. Called from short renderers
+// to append the human-readable explanation on a second line.
+func (ro renderOpts) catalogAugment(e *journal.Event) string {
+	if ro.catalog == nil || e.Fields == nil {
+		return ""
+	}
+	id := e.Fields["MESSAGE_ID"]
+	if id == "" {
+		return ""
+	}
+	entry := ro.catalog.Lookup(id)
+	if entry == nil {
+		return ""
+	}
+	return entry.Body
 }
 
 // keepField reports whether field name should be included given the
@@ -2443,17 +2813,37 @@ func renderShort(out io.Writer, e *journal.Event, tf timeFormat, ro renderOpts) 
 	}
 	msg := ro.truncateMsg(e.Msg)
 	if ro.noHostname {
-		_, err := fmt.Fprintf(out, "%s %s%s: %s\n",
-			formatTime(e.Ts, tf, ro.utc), identOf(e), pidPart, msg)
-		return err
+		if _, err := fmt.Fprintf(out, "%s %s%s: %s\n",
+			formatTime(e.Ts, tf, ro.utc), identOf(e), pidPart, msg); err != nil {
+			return err
+		}
+		writeCatalogAugment(out, ro, e)
+		return nil
 	}
 	host := e.Hostname
 	if host == "" {
 		host = "-"
 	}
-	_, err := fmt.Fprintf(out, "%s %s %s%s: %s\n",
-		formatTime(e.Ts, tf, ro.utc), host, identOf(e), pidPart, msg)
-	return err
+	if _, err := fmt.Fprintf(out, "%s %s %s%s: %s\n",
+		formatTime(e.Ts, tf, ro.utc), host, identOf(e), pidPart, msg); err != nil {
+		return err
+	}
+	writeCatalogAugment(out, ro, e)
+	return nil
+}
+
+// writeCatalogAugment prints the catalog body under the event line
+// when -x is set and a matching entry exists. Indent each body line
+// so it visually parents to the event above. Matches systemd's
+// two-space indent + `-- Subject:` header block.
+func writeCatalogAugment(out io.Writer, ro renderOpts, e *journal.Event) {
+	body := ro.catalogAugment(e)
+	if body == "" {
+		return
+	}
+	for _, line := range strings.Split(body, "\n") {
+		fmt.Fprintf(out, "  %s\n", line)
+	}
 }
 
 // targetPIDOf returns the SLINIT_TARGET_PID hint from an event's
@@ -2699,6 +3089,27 @@ Flags:
       --vacuum-files=N        Keep only the most recent N archived files
       --vacuum-time=TIME      Drop files older than TIME (s/m/h/d/w/M/y)
       --pid-file=PATH         Override /run/slinit-journald.pid lookup path
+
+  FSS (Forward-Secure Sealing):
+      --setup-keys            Mint a fresh sealing key; save to --fss-key
+                              (default /etc/slinit/journal-key); print the
+                              verification token for out-of-band sharing
+      --verify-key=TOKEN      Inline verification token (alternative to
+                              --fss-key file)
+      --interval=DUR          Epoch duration for --setup-keys (default 15m)
+
+  Catalog:
+  -x, --catalog               Augment MESSAGE with catalog entry text
+                              (matches on the event's MESSAGE_ID field)
+      --dump-catalog          Dump all catalog entries as text
+      --list-catalog          List every catalog MESSAGE_ID, sorted
+      --update-catalog        Rescan /usr/share/slinit-catalog + friends,
+                              rebuild the compiled cache
+
+  Invocation tracking:
+      --invocation=UUID       Filter events by SLINIT_INVOCATION_ID
+      --list-invocations      With -u UNIT: list every invocation seen,
+                              one row per (id + first..last timestamp)
 
   Connection:
       --socket-path=P         Override the control socket path

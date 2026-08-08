@@ -67,6 +67,9 @@ func (sr *ServiceRecord) emitJournalStateEvent(event ServiceEvent) {
 		"SLINIT_EVENT":         event.String(),
 		"SLINIT_SERVICE_STATE": sr.state.Load().String(),
 	}
+	if sr.invocationID != "" {
+		fields["SLINIT_INVOCATION_ID"] = sr.invocationID
+	}
 	// Add SLINIT_TARGET_PID when the service actually has a running
 	// process (Process/Scripted/BGProcess with pid > 0). Internal
 	// services and services in STOPPED report -1/0 and we skip the

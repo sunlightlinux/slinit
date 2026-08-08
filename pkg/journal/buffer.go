@@ -165,6 +165,11 @@ type QueryFilter struct {
 	// GrepInsensitive folds ASCII case in GrepPattern (systemd
 	// `--case-sensitive=no` / `-g` default heuristic).
 	GrepInsensitive bool
+
+	// InvocationID keeps only events whose SLINIT_INVOCATION_ID
+	// field equals this value (systemd `--invocation=UUID`). Empty
+	// means no filter.
+	InvocationID string
 }
 
 // hasMinPriority is a sentinel test that distinguishes "priority
@@ -236,6 +241,11 @@ func (q QueryFilter) Match(e *Event) bool {
 	if q.GrepPattern != "" && !grepMatch(q.GrepPattern, q.GrepInsensitive, e.Msg) {
 		return false
 	}
+	if q.InvocationID != "" {
+		if e.Fields == nil || e.Fields["SLINIT_INVOCATION_ID"] != q.InvocationID {
+			return false
+		}
+	}
 	return true
 }
 
@@ -285,7 +295,8 @@ func (q QueryFilter) isEmpty() bool {
 		len(q.Transports) == 0 &&
 		len(q.Identifiers) == 0 &&
 		len(q.ExcludeIdentifiers) == 0 &&
-		q.GrepPattern == ""
+		q.GrepPattern == "" &&
+		q.InvocationID == ""
 }
 
 // Query returns events from the buffer matching filter, in chronological

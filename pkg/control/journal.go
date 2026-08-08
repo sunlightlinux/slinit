@@ -48,6 +48,9 @@ type JournalQueryRequest struct {
 	GrepPattern string `json:"grep,omitempty"`
 	// GrepInsensitive folds ASCII case for GrepPattern.
 	GrepInsensitive bool `json:"grep_i,omitempty"`
+	// InvocationID filters events by their SLINIT_INVOCATION_ID
+	// field (systemd `--invocation=UUID`). Empty means no filter.
+	InvocationID string `json:"invocation_id,omitempty"`
 
 	// Limit caps the number of matching events returned. Zero or
 	// negative means "no cap"; positive limits keep the most recent N.
@@ -69,6 +72,7 @@ func (req JournalQueryRequest) ToFilter() journal.QueryFilter {
 		ExcludeIdentifiers: req.ExcludeIdentifiers,
 		GrepPattern:        req.GrepPattern,
 		GrepInsensitive:    req.GrepInsensitive,
+		InvocationID:       req.InvocationID,
 	}
 	if req.PrioritySet {
 		f.MinPriority = journal.Priority(req.MinPriority)
