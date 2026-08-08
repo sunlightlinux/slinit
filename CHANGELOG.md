@@ -21,11 +21,24 @@ the full commit-level record.
 
 Closes the systemd journalctl parity project. Nine additional flags
 land across the remaining implementable groups; coverage climbs from
-51/65 (v2.1.7) to **60/65 (~92%)**. The five outstanding flags are
+47/65 (v2.1.7) to **56/65 (~86%)**. The nine outstanding flags are
 all systemd-specific concepts that don't map onto slinit's model
-(`--image`, `--image-policy`, `--namespace`, `--list-namespaces`,
-`--flush`, `--relinquish-var`, `--smart-relinquish-var`,
-`--synchronize-on-exit`) and stay unimplemented by design.
+and stay unimplemented by design:
+
+- `--image=PATH` / `--image-policy=POLICY` — need systemd's disk
+  dissection library (LUKS + LVM + partitioning walk).
+- `--namespace=NS` / `--list-namespaces` — slinit has one journal
+  per socket, one daemon; no namespace concept.
+- `--flush` / `--relinquish-var` / `--smart-relinquish-var` —
+  volatile-to-persistent switching machinery that slinit's fallback
+  sink doesn't need (writes straight to `/var/log/slinit-journal`
+  or, if unwritable, degrades to tmpfs on startup — no runtime
+  handoff).
+- `--synchronize-on-exit` — libsystemd `sd_journal_close`
+  configuration knob; N/A for CLI-only slinit-journalctl.
+- `--force` — modifier for `--setup-keys`; slinit's `--setup-keys`
+  already overwrites unconditionally (see the `SaveFSSKey` docstring
+  on why one call is enough).
 
 ### Added — Group C (FSS operator surface, 3 flags)
 
