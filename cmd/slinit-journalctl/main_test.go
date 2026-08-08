@@ -1485,6 +1485,60 @@ func TestRunSetupKeysWritesFile(t *testing.T) {
 	}
 }
 
+// TestSetupKeysRefusesExistingWithoutForce — safety gate: overwriting
+// invalidates every prior TAG chain, so operators must opt in.
+func TestSetupKeysRefusesExistingWithoutForce(t *testing.T) {
+	dir := t.TempDir()
+	key := dir + "/journal-key"
+	// Seed an existing file. Mode 0600 so the rewrite path can open
+	// it for write — the test is about --force logic, not permission
+	// handling.
+	if err := os.WriteFile(key, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	err := runSetupKeys(options{fssKeyPath: key}, &out)
+	if err == nil {
+		t.Fatal("expected error refusing to overwrite existing key")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("error should mention --force: %v", err)
+	}
+	// With --force it should succeed and overwrite.
+	err = runSetupKeys(options{fssKeyPath: key, force: true}, &out)
+	if err != nil {
+		t.Fatalf("--force run failed: %v", err)
+	}
+	loaded, err := journalbin.LoadFSSKey(key)
+	if err != nil {
+		t.Fatalf("reload after --force: %v", err)
+	}
+	if loaded.Seed == "" {
+		t.Error("expected fresh seed after --force overwrite")
+	}
+}
+
+// TestParseArgsSprint1 covers --force and --synchronize-on-exit
+// (both long and =BOOL forms).
+func TestParseArgsSprint1(t *testing.T) {
+	o, err := parseArgs([]string{"--force"})
+	if err != nil || !o.force {
+		t.Errorf("--force: %+v %v", o, err)
+	}
+	o, err = parseArgs([]string{"--synchronize-on-exit"})
+	if err != nil || !o.syncOnExit {
+		t.Errorf("--synchronize-on-exit: %+v %v", o, err)
+	}
+	o, err = parseArgs([]string{"--synchronize-on-exit=no"})
+	if err != nil || o.syncOnExit {
+		t.Errorf("--synchronize-on-exit=no should set false: %+v %v", o, err)
+	}
+	o, err = parseArgs([]string{"--synchronize-on-exit=yes"})
+	if err != nil || !o.syncOnExit {
+		t.Errorf("--synchronize-on-exit=yes should set true: %+v %v", o, err)
+	}
+}
+
 // TestExtractField — field name → Event value lookup, covering core
 // fields (MESSAGE, _PID), a freeform (SLINIT_EVENT), and a miss.
 func TestExtractField(t *testing.T) {

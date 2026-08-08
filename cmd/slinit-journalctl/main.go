@@ -167,6 +167,8 @@ type options struct {
 	setupKeys    bool          // --setup-keys — mint fresh FSS key + print verification token
 	verifyKey    string        // --verify-key=KEY — inline verification token (alternative to --fss-key)
 	fssInterval  time.Duration // --interval=DUR — epoch duration for --setup-keys
+	force        bool          // --force — overwrite existing --setup-keys output
+	syncOnExit   bool          // --synchronize-on-exit — accepted for parity; we always fsync on Close
 
 	// --- Group D: catalog ---
 
@@ -754,6 +756,25 @@ func parseArgs(args []string) (options, error) {
 				return opts, fmt.Errorf("--interval: %w", err)
 			}
 			opts.fssInterval = d
+			args = args[1:]
+
+		case a == "--force":
+			opts.force = true
+			args = args[1:]
+
+		case a == "--synchronize-on-exit":
+			// Accepted for systemd parity. Slinit already fsyncs the
+			// active sink on Close (see FileSink.Close / BinarySink.Close)
+			// so there's nothing extra to configure at exit time.
+			opts.syncOnExit = true
+			args = args[1:]
+
+		case strings.HasPrefix(a, "--synchronize-on-exit="):
+			b, err := parseBoolArg(strings.TrimPrefix(a, "--synchronize-on-exit="))
+			if err != nil {
+				return opts, fmt.Errorf("--synchronize-on-exit: %w", err)
+			}
+			opts.syncOnExit = b
 			args = args[1:]
 
 		// --- Group D: catalog ---
@@ -1768,6 +1789,15 @@ func runSetupKeys(opts options, out io.Writer) error {
 	path := opts.fssKeyPath
 	if path == "" {
 		path = "/etc/slinit/journal-key"
+	}
+	// Safety gate: refuse to clobber an existing key file (which would
+	// invalidate every TAG chain that already used it) unless the
+	// operator opts in with --force. Matches systemd's `journalctl
+	// --setup-keys` behaviour of erroring on re-run without --force.
+	if !opts.force {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("%s already exists — pass --force to overwrite (previously-sealed journals become unverifiable)", path)
+		}
 	}
 	interval := opts.fssInterval
 	intervalUsec := int64(interval / time.Microsecond)
@@ -3094,9 +3124,14 @@ Flags:
       --setup-keys            Mint a fresh sealing key; save to --fss-key
                               (default /etc/slinit/journal-key); print the
                               verification token for out-of-band sharing
+      --force                 Allow --setup-keys to overwrite an existing
+                              key file (invalidates prior TAG chains)
       --verify-key=TOKEN      Inline verification token (alternative to
                               --fss-key file)
       --interval=DUR          Epoch duration for --setup-keys (default 15m)
+      --synchronize-on-exit[=BOOL]
+                              Accepted for parity with systemd; slinit
+                              always fsyncs on Close so this is a no-op
 
   Catalog:
   -x, --catalog               Augment MESSAGE with catalog entry text
