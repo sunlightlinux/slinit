@@ -17,6 +17,142 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-08-09
+
+**Stable-release milestone.** Rolls up the entire v2.1.x line
+(v2.1.0 → v2.1.14) into a minor-version bump so downstream
+packagers, distros, and image builders can pin against a single
+stable tag before the v2.2.x lane opens next week. No code
+changes on top of v2.1.14 — the git-tree contents are
+byte-identical to `v2.1.14`; the tag exists purely as a stable
+anchor.
+
+### What v2.1.x delivered (recap)
+
+- **Journal pipeline — 65/65 systemd `journalctl` flag parity**
+  (v2.1.0 → v2.1.12). Full query surface (`-t/-T/-g` with case
+  heuristic, `-b/--boot/--this-boot`, `-c/--cursor/--after-cursor/
+  --cursor-file`, `--since/--until` with human-time forms),
+  display (`--utc/--no-hostname/--truncate-newline/--no-full/
+  --output-fields`, 6 `-o` formats), introspection (`--fields/
+  --header/--disk-usage/-F/--list-boots`), maintenance
+  (`--sync/--rotate/--vacuum-*` + `--flush/--relinquish-var/
+  --smart-relinquish-var` via UNIX DGRAM admin socket), FSS
+  sealing (`--setup-keys/--force/--verify/--verify-key/
+  --interval`), message catalog (`-x/--dump/--list/--update`),
+  invocation tracking (per-start `SLINIT_INVOCATION_ID` +
+  `--invocation` + `--list-invocations`), journal namespaces
+  (per-daemon `--namespace=NS` with auto-suffixed paths +
+  filter + `--list-namespaces`), disk-image dissection
+  (`--image` + `--image-policy` via losetup+mount). Backing
+  daemon writes both JSONL (Phase C, gzip-rotated) and binary
+  (Phase B, SLJRNL01 with FSS TAG chain via HKDF-SHA256 +
+  HMAC-SHA256).
+- **Migration converters** (v2.1.4-5): scripted migration path
+  from runit, OpenRC, and systemd via `slinit-runit-convert` /
+  `slinit-openrc-convert` / `slinit-systemd-convert`. Runit
+  converter validated 46/46 lint-clean against real void
+  `/etc/sv/*` including `log/run` companion pairing with
+  `log-type = pipe` + `consumer-of`; auto-emits `waits-for:
+  DEP` from `sv check DEP` in run scripts; recognises the
+  runit 2025-08 `chpst -A` alarm flag (WARN, no slinit
+  runtime-alarm primitive).
+- **`slinit-supports`** self-introspection CLI (v2.1.0) —
+  `--list-directives` / `--list-opcodes` / `--list-all` and
+  name lookup so package managers can query slinit's
+  capability set without parsing source.
+- **`slinitctl analyze`** subcommand dispatcher (v2.1.2) —
+  `time`, `blame`, `critical-chain`, `dot`, plus a `plot`
+  stub. Replaces the removed `slinit-analyze` binary.
+- **Recovery + boot-debugger subsystem (`pkg/recovery` +
+  `pkg/bootmode`)** — the largest v2.1.x land after journalctl.
+  Two new packages plus ~22 recovery commits across v2.1.1 →
+  v2.1.2 bring slinit to systemd-analyze parity on the boot-
+  failure UX axis.
+    - **v2.1.1 — Interactive boot debugger** (`pkg/recovery`):
+      Ctrl-B trigger during boot opens a rescue menu (cbreak
+      tty mode so keypresses fire without Enter, tcflush of
+      pending tty input before menu reads, EOF from canonical-
+      mode maps to `ActionRetry` for Ctrl-D UX). Force-fail
+      target filters aggregate services (they can't be force-
+      failed meaningfully). Boot debugger detaches from the
+      console BEFORE a console-owning service exec so it never
+      clobbers the child's terminal.
+    - **v2.1.2 Phase 1 — Structured kernel-cmdline parser**
+      (`pkg/bootmode`): typed `Options` struct with `Mode`
+      enum (Default/Emergency/Rescue), plus `DebugShell`,
+      `ConfirmSpawn`, `CrashShell`, `LogLevel`, `Debug`.
+      `Parse(string)` and `ParseFromProc()`. Wires
+      `slinit.log-level=` straight into `logger.SetLevel`.
+    - **v2.1.2 Phase 2+3 — Emergency vs Rescue split + tty9
+      debug-shell**: Emergency drops to `sulogin` before
+      services start; Rescue keeps the control socket +
+      eventloop alive so operators can `slinitctl` the box
+      while debugging; tty9 debug-shell runs in a respawn
+      loop when `slinit.debug-shell` is on the cmdline.
+    - **v2.1.2 Phase 4 — `slinit-analyze` replaced by
+      `slinitctl analyze`** subcommand dispatcher: `time /
+      blame / critical-chain / dot / plot`; the standalone
+      `slinit-analyze` binary was removed as a duplicate.
+    - **v2.1.2 Phase 5 — Confirm-spawn + crash-shell**
+      (systemd parity): `confirm-spawn` gates every service at
+      `allDepsStarted` so all 5 service types prompt (process /
+      scripted / bgprocess / internal / triggered), single-
+      keypress cbreak dispatch. `crash-shell` drops into a
+      shell on PID 1 goroutine panic, with `SetCrashPause`
+      freezing every subsequent `callBringUp` while the shell
+      runs so a bounce-loop doesn't kill the debugging session.
+      `defer shutdown.CrashRecovery` wraps every long-lived
+      goroutine (rescue/debug-shell/test-hook) since Go's
+      main-goroutine `defer recover` doesn't catch other-
+      goroutine panics.
+    - **v2.1.2 Phase 6 — Recovery-pkg cleanup + unified UX**:
+      shared menu-box primitives (`menuBoxBar`,
+      `writeBoxHeader/Blank/Line/Footer`); `Debugger.Stop`
+      waits on `menuMu` before restoring termios so a live
+      menu doesn't get its state pulled out from under it;
+      `readByteWithTimeout` uses `time.After` per iteration +
+      `clearPrompt` for a clean redraw. `pkg/logging` gains
+      `PauseBootConsole`/`ResumeBootConsole` (via
+      `bootConsolePaused atomic.Bool`) so the boot banner
+      doesn't inter-print with a live menu.
+    - Follow-up UX polish: five menu fixes (a56be20), end-to-
+      end crash-shell validation + service-freeze during
+      drop (24c4f20), signal-driven exit-noise swallowed on
+      `runRescueShell` (929830f), demo fstab uses `noauto` so
+      Rescue's `mount -a` exits clean (5ae8802).
+- **Dinit-parity sweep** (v2.1.0): `DINIT_SERVICE` /
+  `DINIT_CS_FD` / `DINIT_SOCKET_PATH` env-var aliases,
+  `/etc/slinit/environment` auto-load, `XDG_CONFIG_HOME` +
+  `$HOME/.config` dedup, dual-wire disable (`CmdDisableServiceV7=62`
+  atomic default; `--dinit-compat` routes through
+  `CmdRmDepV7=30` for real-dinit interop).
+- **Test-suite catch-up** (v2.1.13): 39 new cases total (22
+  acceptance, 17 functional) closing runtime-testable coverage
+  for the v2.1.x arc.
+- **Dev tooling** (v2.1.14): `tools/stats/` binary walks the
+  repo for LOC / test / structure / feature-surface / doc
+  counts (text / `--json` / `--markdown`). Excluded from the
+  slpkgs template — dev-only.
+
+### Verified surface
+
+- **35 binaries** under `cmd/`
+- **29 packages** under `pkg/`
+- **2,413 test cases** total: 1,956 unit + 21 fuzz + 218
+  functional (QEMU) + 218 acceptance (SSH); all green on the
+  v2.1.14 CI run (`go vet` clean, race-detector clean, cross-
+  compile clean for every command).
+- **317 config directives + 106 wire opcodes** discoverable
+  via `slinit-supports --list-directives` / `--list-opcodes`.
+
+### Next lane
+
+The v2.2.x line opens for the next batch of features / fixes.
+Per per-version CHANGELOG detail below, this cut is the anchor
+for downstream packagers that want a stable tag between the
+v2.1.x rapid-iteration lane and whatever v2.2.x brings.
+
 ## [2.1.14] — 2026-08-08
 
 Small triage cut: one upstream-parity fix in the runit converter,
@@ -569,7 +705,7 @@ review pass. Before: 46 outputs, 25 failed lint. After: 46/46 clean.
     resolution, and `sv check` → `waits-for` extraction.
   - Landed as `d7e12eb`.
 
-## [2.1.4] — 2026-08-06
+## [2.1.3]/[2.1.4] — 2026-08-06
 
 Migration acceleration cut. Three new converters land under `cmd/`
 so operators can port existing service files onto slinit without
