@@ -169,6 +169,7 @@ func TestParseChpstWarnings(t *testing.T) {
 		{"unmapped rlimit fsize", []string{"-f", "1000000", "daemon"}, "chpst -f 1000000"},
 		{"env-only user", []string{"-U", "nobody", "daemon"}, "chpst -U nobody"},
 		{"pid namespace F", []string{"-F", "daemon"}, "chpst -F"},
+		{"alarm timer A", []string{"-A", "30", "daemon"}, "chpst -A 30"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -185,6 +186,18 @@ func TestParseChpstWarnings(t *testing.T) {
 				t.Errorf("expected warning containing %q; got %v", c.wantWarn, warns)
 			}
 		})
+	}
+}
+
+// TestParseChpstAlarmDoesNotEatCommand — regression guard for
+// runit 2025-08's -A flag: before the takesValue set was updated,
+// `chpst -A 30 daemon` was parsed as (-A) + command="30 daemon",
+// silently breaking every service that used the new alarm flag.
+func TestParseChpstAlarmDoesNotEatCommand(t *testing.T) {
+	var cfg slinitConfig
+	parseChpst(&cfg, []string{"-A", "30", "daemon", "--flag"})
+	if cfg.command != "daemon --flag" {
+		t.Errorf("command = %q, want 'daemon --flag' (chpst -A must consume the seconds value)", cfg.command)
 	}
 }
 

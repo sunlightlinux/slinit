@@ -523,7 +523,11 @@ func parseChpst(cfg *slinitConfig, args []string) []warning {
 		}
 		flagChar := flag[0]
 		var val string
-		takesValue := strings.ContainsRune("uUbemdopfcrtCnlL/", rune(flagChar))
+		// -A joined the takesValue set in runit 2025-08 (chpst
+		// commit 45b7fde). Add it here so `chpst -A 30 daemon` parses
+		// as (-A 30) + daemon rather than treating "30" as the
+		// command name.
+		takesValue := strings.ContainsRune("uUbemdopfcrtCnlLA/", rune(flagChar))
 		if takesValue {
 			if len(flag) > 1 {
 				val = flag[1:]
@@ -572,6 +576,14 @@ func parseChpst(cfg *slinitConfig, args []string) []warning {
 			cfg.workingDir = val
 		case 'n':
 			warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -n %s (nice level) not mapped", val)})
+		case 'A':
+			// runit 2025-08 (chpst commit 45b7fde) added -A N as
+			// a SIGALRM timer set before newpid1. Slinit has no
+			// runtime alarm primitive — `stop-timeout` is the
+			// closest analogue but different semantics (deadline
+			// on stop, not on the whole process lifetime). Warn
+			// so the operator picks the right rewrite manually.
+			warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -A %s (SIGALRM timer) not mapped — slinit has no runtime alarm; consider stop-timeout if you meant a stop deadline", val)})
 		case 'l', 'L':
 			cfg.lockFile = val
 		case 'P':
