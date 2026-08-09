@@ -92,11 +92,7 @@ func collectStatus() statusFields {
 		s.Architecture = cstring(uname.Machine[:])
 		s.Hostname = cstring(uname.Nodename[:])
 	}
-	// The "transient hostname" is what the running kernel returns
-	// when it differs from what's on disk.
-	if s.Hostname != "" && s.Hostname != s.StaticHostname {
-		s.TransientHostname = s.Hostname
-	}
+	s.TransientHostname = transientDisplay(s.Hostname, s.StaticHostname)
 
 	s.MachineID = readTrimmed(machineIDPath)
 	s.BootID = readTrimmed(bootIDPath)
@@ -174,6 +170,30 @@ func renderJSON(out io.Writer, s statusFields, mode string) error {
 		enc.SetIndent("", "    ")
 	}
 	return enc.Encode(s)
+}
+
+// transientDisplay returns the value we want to show for
+// "Transient hostname" in status output.
+//
+// The kernel's nodename is only interesting when it differs from the
+// on-disk static hostname AND names a real host — the values `(none)`
+// (Linux's placeholder when nothing has ever called sethostname(2))
+// and `localhost` (distro default before any hostname config lands)
+// are both "hostname unset" sentinels and match what
+// systemd-hostnamed hides from operators. See core/hostname-setup.c
+// in systemd for the same list.
+func transientDisplay(kernel, static string) string {
+	if kernel == "" {
+		return ""
+	}
+	if kernel == static {
+		return ""
+	}
+	switch kernel {
+	case "(none)", "localhost", "localhost.localdomain":
+		return ""
+	}
+	return kernel
 }
 
 func joinKernel(name, release string) string {

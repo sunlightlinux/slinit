@@ -240,6 +240,29 @@ func TestValidateHostname(t *testing.T) {
 	}
 }
 
+func TestTransientDisplay(t *testing.T) {
+	cases := []struct {
+		kernel, static, want string
+		note                 string
+	}{
+		{"srv-01", "srv-01", "", "matches static → hide"},
+		{"", "srv-01", "", "kernel empty → hide"},
+		{"(none)", "localhost", "", "Linux placeholder → hide"},
+		{"(none)", "srv-01", "", "placeholder even against real static"},
+		{"localhost", "", "", "distro default → hide"},
+		{"localhost.localdomain", "srv-01", "", "distro-fqdn default → hide"},
+		{"srv-02", "srv-01", "srv-02", "real difference → show"},
+		{"box", "", "box", "static missing, kernel real → show"},
+	}
+	for _, c := range cases {
+		got := transientDisplay(c.kernel, c.static)
+		if got != c.want {
+			t.Errorf("[%s] transientDisplay(%q,%q) = %q, want %q",
+				c.note, c.kernel, c.static, got, c.want)
+		}
+	}
+}
+
 func TestValidChassis(t *testing.T) {
 	for _, ok := range []string{"desktop", "laptop", "convertible", "server", "tablet", "vm", "container"} {
 		if !validChassis(ok) {
