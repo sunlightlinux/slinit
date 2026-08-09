@@ -284,6 +284,31 @@ cat /run/supervise-demo/sup.pid          # supervisor pid
 cat /run/supervise-demo/sup.pid.daemon   # currently-supervised daemon
 ```
 
+## systemd-Compat CLI Tools
+
+Native slinit implementations of the two systemd CLIs operators most
+often reach for. Both are pure-Go, no D-Bus, and both are also
+installed under their systemd names via symlink so muscle memory
+carries over.
+
+```bash
+# --- slinit-hostnamectl: systemd hostnamectl(1) parity ---------
+hostnamectl                              # status: hostname/os/kernel/hw/fw
+hostnamectl --json=short status          # machine-readable snapshot
+hostnamectl hostname                     # print current hostname
+hostnamectl hostname demo-box            # set static + transient + pretty
+hostnamectl --pretty hostname 'Demo VM'  # only PRETTY_HOSTNAME
+hostnamectl chassis                      # auto-detects vm inside QEMU
+hostnamectl chassis vm                   # persist to /etc/machine-info
+hostnamectl deployment production        # tag deployment environment
+hostnamectl location 'Bucharest, RO'     # free-form location string
+
+# --- slinit-journalctl: systemd journalctl(1) parity (65/65) ---
+# See the journal-demo service block above for the full flag menu.
+journalctl -n 20                         # last 20 events
+journalctl -f                            # follow mode
+```
+
 ## slinit-check (Config Linter)
 
 Offline and online validation of service configuration files.
