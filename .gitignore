@@ -20,3 +20,4 @@
 /slinit-sysctl
 /slinit-svc-value
 /slinit-runner
+/slinit-hostnamectl
