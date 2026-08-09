@@ -17,6 +17,68 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.1.14] — 2026-08-08
+
+Small triage cut: one upstream-parity fix in the runit converter,
+one dev-only stats binary, and a big documentation refresh so the
+README + CONTRIBUTING + man page + test-suite READMEs all match
+the v2.1.0 → v2.1.12 surface. No changes to runtime behaviour.
+
+### Fixed
+
+- `slinit-runit-convert`: recognise runit 2025-08's new
+  `chpst -A seconds` flag (SIGALRM timer, upstream commit
+  `45b7fde`). Before this, `chpst -A 30 daemon` was silently
+  parsed as an unknown flag + `command = "30 daemon"`. The
+  converter now consumes the `-A` value + emits a WARN naming
+  the missing slinit primitive (there's no runtime-alarm
+  equivalent; `stop-timeout` is documented as the closest but
+  different-semantic alternative). Regression guard:
+  `TestParseChpstAlarmDoesNotEatCommand`. Landed as `bc986f0`.
+
+### Added
+
+- `tools/stats/` — dev-only project statistics binary. Walks
+  the repo and reports LOC by language (Go / Shell / Markdown /
+  YAML / XML / JSON / Makefile with code/comment/blank split),
+  test counts (unit / fuzz / functional / acceptance — the two
+  shell-driven suites surface both files-on-disk and real-cases
+  counts), structural shape (packages, binaries, demo services,
+  man pages), the feature surface (config directives + wire
+  opcodes grepped straight from source so no built binary is
+  required), and doc size (CHANGELOG versions + line counts).
+  Text default, `--json` for CI, `--markdown` for README embed.
+  Excluded from the slpkgs template on purpose — dev tooling,
+  not something that ships to an operator's rootfs. Landed as
+  `2ac5212`.
+
+### Docs
+
+- README.md — full refresh (`0421dc9`, +307/-17 LOC). Journal
+  pipeline + journalctl 65/65 parity moved out of "deliberately
+  out of scope" into the Features list, with the full flag
+  inventory. New Features bullets for self-introspection,
+  migration converters, `slinitctl analyze`, and boot recovery
+  UX. Building section lists 8 new binaries. Companion Tools
+  gains 7 new sections (journalctl / journald / journal-migrate
+  / supports / three converters) with concrete example
+  commands. Project structure enumerates the 6 new `cmd/` dirs
+  + 8 new `pkg/` dirs. Roadmap adds Phases 41-54 covering
+  v2.1.0 → v2.1.12.
+- doc/man/slinit.8.md — description block lists upstart +
+  systemd as additional feature sources; explicit journalctl +
+  FSS-sealing callout; explicit out-of-scope list; new
+  paragraph naming the three migration converters.
+- CONTRIBUTING.md — test counts refreshed (218 / 218 / 1956);
+  `pkg/` + `cmd/` enumerations bumped to today's 29 packages +
+  35 binaries with pointers to `ls` for the live list.
+- CLAUDE.md — verification-command comment refreshed to the
+  actual test counts.
+- tests/functional/README.md — 202-218 case rows added; count
+  bumped 201 → 218.
+- tests/acceptance/ssh/README.md — case-count phrasing bumped
+  to 218 real cases (219 files on disk with `999-cleanup`).
+
 ## [2.1.13] — 2026-08-08
 
 Test-suite catch-up. Closes the SSH-acceptance + QEMU-functional
