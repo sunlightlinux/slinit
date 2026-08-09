@@ -21,3 +21,4 @@
 /slinit-svc-value
 /slinit-runner
 /slinit-hostnamectl
+/slinit-timedatectl

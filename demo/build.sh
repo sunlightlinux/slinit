@@ -112,7 +112,7 @@ for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-start-stop-daemon slinit-supervise-daemon \
            slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var \
            slinit-cgtop slinit-journalctl slinit-journald slinit-journal-migrate \
-           slinit-supports slinit-hostnamectl \
+           slinit-supports slinit-hostnamectl slinit-timedatectl \
            slinit-logouthookd slinit-sysusers slinit-tmpfiles; do
     # -tags paniconce activates the crash-shell test hook in
     # cmd/slinit/panictest_on.go (no-op file for other binaries).
@@ -192,6 +192,7 @@ install -m 755 "${BUILD_DIR}/slinit-journald"          "${ROOTFS_DIR}/usr/sbin/s
 install -m 755 "${BUILD_DIR}/slinit-journal-migrate"   "${ROOTFS_DIR}/usr/bin/slinit-journal-migrate"
 install -m 755 "${BUILD_DIR}/slinit-supports"          "${ROOTFS_DIR}/usr/bin/slinit-supports"
 install -m 755 "${BUILD_DIR}/slinit-hostnamectl"       "${ROOTFS_DIR}/usr/bin/slinit-hostnamectl"
+install -m 755 "${BUILD_DIR}/slinit-timedatectl"       "${ROOTFS_DIR}/usr/bin/slinit-timedatectl"
 install -m 755 "${BUILD_DIR}/slinit-sysusers"          "${ROOTFS_DIR}/usr/bin/slinit-sysusers"
 install -m 755 "${BUILD_DIR}/slinit-tmpfiles"          "${ROOTFS_DIR}/usr/bin/slinit-tmpfiles"
 install -m 755 "${BUILD_DIR}/slinit-logouthookd"       "${ROOTFS_DIR}/usr/sbin/slinit-logouthookd"
@@ -205,6 +206,9 @@ ln -sf slinit-journalctl "${ROOTFS_DIR}/usr/bin/journalctl"
 # Same pattern for hostnamectl: the systemd name is the operator's
 # muscle memory; both invocations dispatch to the same parser.
 ln -sf slinit-hostnamectl "${ROOTFS_DIR}/usr/bin/hostnamectl"
+
+# Same pattern for timedatectl.
+ln -sf slinit-timedatectl "${ROOTFS_DIR}/usr/bin/timedatectl"
 
 # einfo multi-applet symlinks so init.d scripts can invoke `einfo`,
 # `ewarn`, `eerror`, `ebegin`, `eend`, etc. by name.

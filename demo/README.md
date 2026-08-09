@@ -307,6 +307,17 @@ hostnamectl location 'Bucharest, RO'     # free-form location string
 # See the journal-demo service block above for the full flag menu.
 journalctl -n 20                         # last 20 events
 journalctl -f                            # follow mode
+
+# --- slinit-timedatectl: systemd timedatectl(1) parity ---------
+timedatectl                              # status: local/UTC/RTC/TZ/NTP
+timedatectl show                         # KEY=VALUE property dump
+timedatectl --json=short status          # machine-readable snapshot
+timedatectl list-timezones | head        # first 10 IANA zones
+timedatectl set-timezone Europe/Bucharest
+timedatectl set-time '+5min'             # relative offset
+timedatectl set-time '2026-08-09 14:30'  # absolute (local TZ)
+timedatectl set-local-rtc no             # RTC stays UTC (recommended)
+timedatectl set-ntp yes                  # if a time-sync service is installed
 ```
 
 ## slinit-check (Config Linter)
