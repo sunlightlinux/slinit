@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (201 tests)
+# Run all tests (218 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -256,6 +256,23 @@ unaffected.
 | 199 | cgroup-cpuset-hugetlb | cgroup-cpuset-mems + cgroup-hugetlb + cpuset-partition parse; kernels without hugetlb controller fail-open |
 | 200 | seccomp-arch-log-mdwe | system-call-architectures + system-call-log + memory-deny-write-execute stack on top of @system-service filter; Seccomp mode 2 confirmed |
 | 201 | misc-coverage | cron-persistent + cron-randomized-delay + socket-uid/-gid + bind-read-only-paths + keyword non-match |
+| 202 | journalctl-list-boots | `--list-boots` enumeration + `-b` shortcut (bare / `-b0` / `--boot`); boot ID matches event's `_boot_id` field (v2.1.0) |
+| 203 | journalctl-kernel-events | `-k`/`--dmesg` returns bare-prefix `kernel:` lines with no [PID] bracket (v2.1.0 render rule); JSON has `unit=kernel` + `_transport=kernel` |
+| 204 | slinit-supports | self-introspection CLI: `--list-directives` / `--list-opcodes` / `--list-all` + name lookup + non-zero exit on unknown (v2.1.0) |
+| 205 | slinitctl-analyze | analyze `time`/`blame`/`critical-chain`/`dot` with live impls; `plot` is a documented not-implemented stub (v2.1.2) |
+| 206 | slinit-runit-convert | log companion path (v2.1.5): `-log` file with `consumer-of` + `log-type = pipe` on primary; `working-dir` defaults to sv dir |
+| 207 | slinit-openrc-convert | variable-only script (self-contained slinit file) vs custom `start()` script (wrapped via `openrc-run` at runtime) (v2.1.4) |
+| 208 | slinit-systemd-convert | `Type`/`Restart`/`User`+`Group`/`After`+`Requires` with `.service`/`.target` suffix strip; `forking`→`bgprocess`; `oneshot` defaults `restart=no`; line continuation joins ExecStart (v2.1.4) |
+| 209 | journalctl-invocation-tracking | per-start UUID + `--list-invocations` dedupe on fresh boot; `--invocation` filter isolates a single lifecycle (v2.1.8) |
+| 210 | journalctl-catalog | catalog round-trip via `--root`: `--list-catalog` / `--dump-catalog` / `--update-catalog`; compiled gob cache; header title-casing (`Defined-By`) (v2.1.8) |
+| 211 | journalctl-fss-setup-keys | fresh `--setup-keys` mints key + prints verification token; second run refuses without `--force`; `--force` rotates the seed (v2.1.8/v2.1.9) |
+| 212 | journalctl-fss-verify | binary `--verify` full tamper round-trip: sealed daemon → verify clean → tamper → verify FAIL (v2.1.0 a6371e1) |
+| 213 | dinit-env-compat | `SLINIT_SERVICENAME` + `SLINIT_SERVICEDSCDIR` in child env; `slinitctl` honors `DINIT_SOCKET_PATH` (v2.1.0 4eee317) |
+| 214 | slinitctl-disable-dual-wire | atomic V7 default vs `--dinit-compat` client-side + `CmdRmDepV7`; symlink probe tolerates either `waits-for.d` or `boot.d` layout (v2.1.0 6b5f58d) |
+| 215 | journalctl-verbose-export | verbose 4-space indent + `[sec.ns]` header; export `__REALTIME`/`__MONOTONIC` lines, no verbose indent (v2.1.0) |
+| 216 | journalctl-group-a-bundle | `--fields` / `--header` / `--disk-usage` / `-F` / `--utc` / `--no-hostname` / `--output-fields` / `-g` in one bundled case (v2.1.6 Group A) |
+| 217 | journalctl-vacuum-flush | `--vacuum-files` direct on files (current-day preserved); `--flush` + `--relinquish-var` via spawned daemon + admin control socket (v2.1.10) |
+| 218 | journalctl-namespace | `--namespace` daemon + `--list-namespaces` enumeration + filter on synthetic JSONL (v2.1.11) |
 
 ## How It Works
 

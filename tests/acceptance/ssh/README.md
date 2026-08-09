@@ -100,7 +100,7 @@ cases/
   999-cleanup.sh         # tears down acceptance-test-* namespace
 ```
 
-**197 real cases** (numbered 01–98, 100–197; 99 skipped) plus a final `999-cleanup.sh` teardown.
+**218 real cases** (numbered 01–98, 100–219; 99 skipped) plus a final `999-cleanup.sh` teardown (219 files on disk).
 Numbering leaves gaps so related features can be grouped without renumbering.
 
 Each `cases/NN-*.sh` is a self-contained shell script. The runner:

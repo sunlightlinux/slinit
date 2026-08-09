@@ -14,9 +14,23 @@ slinit - supervise processes and manage services (Go init system)
 
 **slinit** is a process supervisor and service manager that can also act as
 the system **init** process (PID 1) on Linux. It implements the dinit base
-model in Go, with additional features drawn from runit, s6-linux-init and
-OpenRC. The control protocol and service-description file format are
-backwards-compatible with dinit.
+model in Go, with additional features layered in from **runit**,
+**s6-linux-init**, **OpenRC**, **upstart**, and **systemd** (relevant
+service-manager subset — including a full **journalctl** at 65/65
+flag parity plus a **slinit-journald** binary log format with FSS
+sealing; the D-Bus object model, logind session/seat management,
+unit generators, and the systemd ecosystem daemons
+networkd/resolved/homed remain intentionally out of scope). The
+control protocol and service-description file format are
+backwards-compatible with dinit; the CmdRmDepV7 opcode + `slinitctl
+--dinit-compat disable` path lets slinitctl talk to a real dinit
+daemon too.
+
+Migration is scripted rather than manual: **slinit-runit-convert**,
+**slinit-openrc-convert**, and **slinit-systemd-convert** port sv
+directories, init.d scripts, and .service units to slinit's
+key=value format with per-directive WARN/NOTE for anything that
+doesn't have a 1:1 mapping.
 
 slinit can run in three modes:
 
