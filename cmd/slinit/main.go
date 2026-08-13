@@ -1218,6 +1218,19 @@ func main() {
 		// / retry-loading options. Auto-reboots after 60s if no input
 		// (headless-safety).
 		logger.Error("No boot services could be started; entering rescue menu (auto-reboot in 60s)")
+		// Stop the boot debugger before opening the rescue menu: both
+		// read /dev/console in raw mode, and two concurrent readers on
+		// the same tty race for every byte the operator types. That
+		// race is what produces truncated commands ("stty" → "ty"),
+		// spurious empty-line prompts ("bash-5.3# " repeated), and
+		// occasionally Ctrl-B interpreted mid-word. Stopping here is
+		// safe: the debugger's use case is "peek at what's still
+		// starting" during a normal boot, and by the time we're
+		// entering the rescue menu the boot has definitively failed.
+		if bootDebugger != nil {
+			bootDebugger.Stop()
+			bootDebugger = nil
+		}
 		action := recovery.Present(recovery.Options{
 			Errors: append([]string{
 				fmt.Sprintf("No service files found in %v", dirs),
@@ -1704,7 +1717,7 @@ func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
 // closes — PID 1 slinit typically never triggers that (main.go blocks
 // forever), but non-PID-1 modes with DebugShell enabled will.
 func runDebugShellRespawnLoop(ttyPath string, logger *logging.Logger, stopCh <-chan struct{}) {
-	candidates := []string{"/sbin/sulogin", "/bin/sulogin", "/bin/sh", "/usr/bin/sh"}
+	candidates := []string{"/sbin/sulogin", "/bin/sulogin", "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"}
 	var shell string
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
@@ -1739,7 +1752,12 @@ func runDebugShellRespawnLoop(ttyPath string, logger *logging.Logger, stopCh <-c
 			logger.Warn("debug-shell: %s no longer openable: %v; giving up", ttyPath, err)
 			return
 		}
+		// Prevent serial-console shell-query trap — see
+		// pkg/recovery/tty_linux.go SeedWinsize / FlushInput.
+		recovery.SeedWinsize(tty)
+		recovery.FlushInput(tty)
 		cmd := exec.Command(shell)
+		cmd.Env = recovery.WithTermDumbEnv(os.Environ())
 		cmd.Stdin = tty
 		cmd.Stdout = tty
 		cmd.Stderr = tty
@@ -1817,7 +1835,7 @@ func mountLocalFsBestEffort(logger *logging.Logger) {
 // the child gone via signal, and complaining about a signaled exit
 // during shutdown is noise.
 func runRescueShell(label string, logger *logging.Logger) {
-	candidates := []string{"/sbin/sulogin", "/bin/sulogin", "/bin/sh", "/usr/bin/sh"}
+	candidates := []string{"/sbin/sulogin", "/bin/sulogin", "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"}
 	var shell string
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
@@ -1832,11 +1850,16 @@ func runRescueShell(label string, logger *logging.Logger) {
 	logger.Notice("%s: exec %s (exit to reboot)", label, shell)
 	cmd := exec.Command(shell)
 	if tty, err := os.OpenFile("/dev/console", os.O_RDWR, 0); err == nil {
+		// Prevent serial-console shell-query trap — see
+		// pkg/recovery/tty_linux.go SeedWinsize / FlushInput.
+		recovery.SeedWinsize(tty)
+		recovery.FlushInput(tty)
 		cmd.Stdin = tty
 		cmd.Stdout = tty
 		cmd.Stderr = tty
 		defer tty.Close()
 	}
+	cmd.Env = recovery.WithTermDumbEnv(os.Environ())
 	// setsid so the shell owns its own controlling tty.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	err := cmd.Run()

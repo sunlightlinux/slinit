@@ -170,6 +170,55 @@ func TestPresentTruncatesLongErrors(t *testing.T) {
 
 // TestActionStringRoundtrip — String() must render every Action
 // value distinctly so log lines are unambiguous.
+func TestWithTermDumb(t *testing.T) {
+	in := []string{
+		"PATH=/sbin:/bin",
+		"TERM=xterm-256color", // parent had a fancy terminal
+		"LINES=50",            // and a large window
+		"COLUMNS=200",
+		"HOME=/root",
+	}
+	got := withTermDumb(in)
+	seen := map[string]string{}
+	for _, kv := range got {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			seen[kv[:i]] = kv[i+1:]
+		}
+	}
+	// Ours must win.
+	if seen["TERM"] != "dumb" {
+		t.Errorf("TERM = %q, want dumb", seen["TERM"])
+	}
+	if seen["LINES"] != "24" {
+		t.Errorf("LINES = %q, want 24", seen["LINES"])
+	}
+	if seen["COLUMNS"] != "80" {
+		t.Errorf("COLUMNS = %q, want 80", seen["COLUMNS"])
+	}
+	// Passthrough vars survive.
+	if seen["PATH"] != "/sbin:/bin" {
+		t.Errorf("PATH lost: %q", seen["PATH"])
+	}
+	if seen["HOME"] != "/root" {
+		t.Errorf("HOME lost: %q", seen["HOME"])
+	}
+	// No duplicate TERM/LINES/COLUMNS.
+	count := func(prefix string) int {
+		n := 0
+		for _, kv := range got {
+			if strings.HasPrefix(kv, prefix) {
+				n++
+			}
+		}
+		return n
+	}
+	for _, p := range []string{"TERM=", "LINES=", "COLUMNS="} {
+		if n := count(p); n != 1 {
+			t.Errorf("%s appears %d times, want 1", p, n)
+		}
+	}
+}
+
 func TestActionStringRoundtrip(t *testing.T) {
 	seen := map[string]Action{}
 	for _, a := range []Action{ActionReboot, ActionPoweroff, ActionRetry, ActionTimeout} {

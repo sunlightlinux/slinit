@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -104,8 +105,18 @@ const DefaultTimeout = 60 * time.Second
 // sulogin gets first shot because it authenticates via /etc/shadow
 // before granting the shell — matters on a shared machine where
 // physical console access ≠ trusted user.
+//
+// bash sits before /bin/sh because on serial consoles busybox ash's
+// line editor is hard-coded to send `ESC[6n` cursor-position queries
+// at every prompt render, regardless of TERM. The host emulator's
+// reply lands on the shell's stdin as a stray `[...` command. bash's
+// readline honors TERM=dumb (which slinit sets in the child env)
+// and skips the query entirely, so a demo/deployment that ships
+// bash gets a clean shell prompt. On minimal images without bash we
+// fall through to /bin/sh with the winsize/flush workaround.
 var defaultShellCandidates = []string{
 	"/sbin/sulogin", "/bin/sulogin",
+	"/bin/bash", "/usr/bin/bash",
 	"/bin/sh", "/usr/bin/sh",
 }
 
@@ -379,6 +390,29 @@ func charToAction(b byte) Action {
 // outside the exported range so consumers never see it.
 const actionShell Action = -1
 
+// withTermDumb returns env with TERM=dumb + LINES=24 + COLUMNS=80,
+// dropping any existing TERM/LINES/COLUMNS the parent inherited so
+// our values are the ones the child sees. Exposed as a package-level
+// helper so cmd/slinit's rescue + debug-shell paths can use the same
+// canonical env-shape.
+func withTermDumb(env []string) []string {
+	out := make([]string, 0, len(env)+3)
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "TERM="):
+		case strings.HasPrefix(kv, "LINES="):
+		case strings.HasPrefix(kv, "COLUMNS="):
+		default:
+			out = append(out, kv)
+		}
+	}
+	return append(out, "TERM=dumb", "LINES=24", "COLUMNS=80")
+}
+
+// WithTermDumbEnv is the exported form for callers outside this
+// package (cmd/slinit uses it for the rescue + debug-shell paths).
+func WithTermDumbEnv(env []string) []string { return withTermDumb(env) }
+
 // runShell execs the first available shell candidate on /dev/console.
 // Mirrors cmd/slinit/main.go's runRescueShell but takes the console
 // writer from the outer scope so any error messages appear in-line
@@ -421,11 +455,36 @@ func forkShellOnConsole(w io.Writer, candidates []string, consolePath string, ru
 		fmt.Fprintf(w, "\n[recovery] exec %s (exit to return to menu)\n", shell)
 		cmd := exec.Command(shell)
 		if tty, err := os.OpenFile(consolePath, os.O_RDWR, 0); err == nil {
+			// Seed the winsize BEFORE we drain: shells that fall back
+			// to `ESC[6n` cursor-pos queries when winsize is 0x0 will
+			// stop querying once TIOCGWINSZ returns real numbers.
+			// Without this, drain-then-exec still lets a fresh burst
+			// of replies land on the shell's stdin as soon as its
+			// line editor renders the first prompt.
+			seedWinsize(tty)
+			// Drain stray terminal replies (cursor-position reports,
+			// device-attributes responses) that the emulator may have
+			// queued while the menu was drawing ANSI escapes. Without
+			// this, the shell's first read returns bytes like "[5R"
+			// or "[40;5R" and treats them as commands. See flushInput
+			// for the full context.
+			flushInput(tty)
 			cmd.Stdin = tty
 			cmd.Stdout = tty
 			cmd.Stderr = tty
 			defer tty.Close()
 		}
+		// Force TERM=dumb + explicit LINES/COLUMNS on serial recovery.
+		// TERM=dumb is the well-known signal to shells and readline-
+		// like libraries to disable ANSI escape emission entirely
+		// (no color, no cursor queries, no fancy line editing).
+		// Without it, busybox ash's libbb/lineedit sends `ESC[6n`
+		// cursor-position queries on every prompt render and the
+		// host terminal's replies land back on the shell's stdin as
+		// stray `[38;5R` "commands". Winsize alone doesn't fix this
+		// — the queries fire regardless of TIOCGWINSZ. Filter out
+		// the caller's TERM instead of appending so ours wins.
+		cmd.Env = withTermDumb(os.Environ())
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 		if err := cmd.Run(); err != nil {
 			fmt.Fprintf(w, "\n[recovery] shell exited with error: %v\n", err)

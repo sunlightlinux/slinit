@@ -19,6 +19,16 @@
 #                             #   serial-only demo cannot switch to VT9,
 #                             #   provided for completeness (works on ISO
 #                             #   on real hardware with VGA output).
+#   ./run.sh --no-monitor     # drop the QEMU monitor mux (`-serial stdio`
+#                             #   instead of `-serial mon:stdio`). Use when
+#                             #   the recovery shell shows heartbeat-like
+#                             #   newlines or truncated commands — the
+#                             #   `mon:stdio` demultiplexer occasionally
+#                             #   injects sync bytes on some host/xterm
+#                             #   combinations. Trade-off: Ctrl+A, X no
+#                             #   longer exits QEMU; use `slinitctl
+#                             #   shutdown poweroff` from inside, or kill
+#                             #   the qemu process from another terminal.
 #
 # Flags append tokens to the kernel -append line so bootmode.ParseFromProc
 # in slinit picks them up. Multiple flags compose: --rescue --debug
@@ -35,6 +45,12 @@ MEMORY="${MEMORY:-256}"
 # `./run.sh` behaves as before.
 APPEND="console=ttyS0 rdinit=/sbin/init loglevel=4 i6300esb.heartbeat=60"
 
+# QEMU serial mode. Default keeps the monitor-multiplexed stdio channel
+# (Ctrl+A, X exits the VM); --no-monitor peels the mux off — see the
+# header comment for the trade-off.
+SERIAL_ARGS=(-serial mon:stdio)
+EXIT_HINT="Ctrl+A, X to exit"
+
 # Parse selectors — each is a whole flag, KEY=VALUE forms handled inline.
 for arg in "$@"; do
     case "$arg" in
@@ -46,6 +62,10 @@ for arg in "$@"; do
         --debug)          APPEND+=" slinit.debug" ;;
         --log-level=*)    APPEND+=" slinit.log-level=${arg#--log-level=}" ;;
         --panic-after=*)  APPEND+=" slinit.panic-after=${arg#--panic-after=}" ;;
+        --no-monitor)
+            SERIAL_ARGS=(-serial stdio -monitor none)
+            EXIT_HINT="poweroff from inside, or kill qemu from another terminal"
+            ;;
         --help|-h)
             grep -E '^# ' "$0" | sed 's/^# //'
             exit 0 ;;
@@ -69,7 +89,7 @@ else
     KVM_ARGS="-cpu qemu64"
 fi
 
-echo "Starting slinit QEMU demo (Ctrl+A, X to exit)"
+echo "Starting slinit QEMU demo (${EXIT_HINT})"
 echo "kernel cmdline: ${APPEND}"
 echo ""
 
@@ -81,6 +101,6 @@ exec qemu-system-x86_64 \
     -m "${MEMORY}" \
     -nographic \
     -no-reboot \
-    -serial mon:stdio \
+    "${SERIAL_ARGS[@]}" \
     -nic none \
     -device i6300esb

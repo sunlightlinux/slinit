@@ -49,9 +49,8 @@ func setRawMode(f *os.File) *unix.Termios {
 	// first ReadByte returns one of those stale bytes immediately,
 	// charToAction maps it to some action, Present returns fast,
 	// and main's retry loop cycles the menu without the operator
-	// ever touching a key. tcflush(TCIFLUSH) is the standard
-	// clean-slate primitive for this.
-	_ = unix.IoctlSetInt(int(f.Fd()), unix.TCFLSH, unix.TCIFLUSH)
+	// ever touching a key.
+	flushInput(f)
 	return orig
 }
 
@@ -63,4 +62,60 @@ func restoreTermios(f *os.File, orig *unix.Termios) {
 		return
 	}
 	_ = unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, orig)
+}
+
+// SeedWinsize is the exported form of seedWinsize for callers outside
+// pkg/recovery (cmd/slinit's rescue + debug-shell exec paths hit the
+// same serial-console-no-winsize trap as the recovery menu does).
+func SeedWinsize(f *os.File) { seedWinsize(f) }
+
+// FlushInput is the exported form of flushInput for the same reason.
+func FlushInput(f *os.File) { flushInput(f) }
+
+// seedWinsize sets a plausible 24x80 window size on the tty when
+// the kernel has none recorded (both dims 0). Rescue-menu context:
+// serial-console setups (`-serial mon:stdio` under QEMU, agetty on
+// ttyS0, etc.) don't get a WINCH from the host emulator, so
+// TIOCGWINSZ returns zeros. Shells with line-editing (busybox ash's
+// libbb/lineedit is the concrete offender) then fall back to
+// sending `ESC[6n` cursor-position queries on every prompt render,
+// and the host terminal's `ESC[row;colR` replies show up as stray
+// input like `[38;5R` / `[45R` at the shell — treated as commands.
+// Setting a sane winsize once suppresses the query loop.
+//
+// Called with the same fd the shell will read from. Zero-valued
+// winsize is treated as "unset" (matches what shells check); if the
+// admin already set dimensions via `stty rows N cols M` or agetty
+// -w, we leave the caller-chosen size alone.
+func seedWinsize(f *os.File) {
+	ws, err := unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ)
+	if err != nil {
+		return
+	}
+	if ws.Row != 0 || ws.Col != 0 {
+		return
+	}
+	seed := &unix.Winsize{Row: 24, Col: 80}
+	_ = unix.IoctlSetWinsize(int(f.Fd()), unix.TIOCSWINSZ, seed)
+}
+
+// flushInput drops whatever bytes have already been queued on the
+// tty's input buffer. Wanted before handing the tty off to another
+// consumer (a fork'd shell, a re-entered menu) so it starts on a
+// clean slate.
+//
+// Concrete rescue-menu case: the menu emits ANSI writes to draw its
+// box (\r\x1b[2K\n, etc.); many terminal emulators reply to
+// terminal-side queries — cursor-position reports (\x1b[6n → \x1b
+// [row;colR), device-attributes reports (\x1b[c → \x1b[?…c),
+// keyboard-encoding reports — spontaneously or in response to
+// sequences that look adjacent to a query. Those replies land in
+// the tty's input buffer. Without a flush, the very first bytes the
+// exec'd /bin/sh reads are those replies, which the shell tries to
+// interpret as commands (`[5R: not found`, `[40: not found`, etc.).
+//
+// tcflush(TCIFLUSH) drains only the input side, matching what
+// setRawMode already does at menu entry. No-op on non-tty fds.
+func flushInput(f *os.File) {
+	_ = unix.IoctlSetInt(int(f.Fd()), unix.TCFLSH, unix.TCIFLUSH)
 }
