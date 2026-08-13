@@ -296,6 +296,39 @@ func TestParseOSRelease(t *testing.T) {
 	}
 }
 
+// TestDetectVM_DMIMatches walks the DMI vendor table with fixture
+// values to lock in each hypervisor's canonical mapping. Added
+// alongside the "Alibaba Cloud ECS" entry (mirrored from systemd
+// abffa868a8) — if that regressed to bare "Alibaba Cloud" the test
+// would catch it, and the same coverage is useful for the older
+// entries as regression insurance.
+func TestDetectVM_DMIMatches(t *testing.T) {
+	cases := []struct{ vendor, want string }{
+		{"QEMU", "qemu"},
+		{"KVM", "kvm"},
+		{"VMware, Inc.", "vmware"},
+		{"innotek GmbH", "oracle"},
+		{"Xen", "xen"},
+		{"Microsoft Corporation", "microsoft"},
+		{"Amazon EC2", "amazon"},
+		{"Alibaba Cloud ECS", "kvm"},
+	}
+	dir := t.TempDir()
+	sv := filepath.Join(dir, "sys_vendor")
+	defer withPath(&dmiSysVendorPath, sv)()
+	// Product + bios are unset so only sys_vendor drives the match.
+	defer withPath(&dmiProductNamePath, filepath.Join(dir, "missing"))()
+	defer withPath(&dmiBiosVendorPath, filepath.Join(dir, "missing"))()
+	for _, c := range cases {
+		if err := os.WriteFile(sv, []byte(c.vendor+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := detectVM(); got != c.want {
+			t.Errorf("detectVM() for %q = %q, want %q", c.vendor, got, c.want)
+		}
+	}
+}
+
 func TestRunStatus_TextFromFixtures(t *testing.T) {
 	dir := t.TempDir()
 	seed := func(name, contents string) string {

@@ -128,6 +128,11 @@ func detectVM() string {
 		{"microsoft corporation", "microsoft"},
 		{"hyper-v", "microsoft"},
 		{"amazon ec2", "amazon"},
+		// "Alibaba Cloud ECS" is narrower than the bare "Alibaba
+		// Cloud" sys_vendor which can appear on non-VM hardware —
+		// keep the ECS suffix so we only tag actual VM instances.
+		// Mirrors systemd's post-v261 addition (abffa868a8, 2026-08).
+		{"alibaba cloud ecs", "kvm"},
 	} {
 		if strings.Contains(sysVendor, hit.needle) ||
 			strings.Contains(product, hit.needle) ||
