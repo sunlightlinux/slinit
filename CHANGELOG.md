@@ -17,6 +17,100 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.1] — 2026-08-12
+
+Point release on top of v2.2.0 — two new systemd-compat CLIs land as
+first-class binaries, and the boot-failure rescue shell becomes
+usable on serial consoles.
+
+### New features
+
+- **`slinit-hostnamectl`** — systemd `hostnamectl(1)` parity,
+  D-Bus-free. Native Go implementation of `status` / `hostname [NAME]`
+  / `icon-name` / `chassis` / `deployment` / `location`, with the
+  scope flags `--transient` / `--static` / `--pretty` and JSON output
+  (`--json=pretty|short|off`, `-j`). Reads and writes on-disk sources
+  directly: `/etc/hostname` (kernel + static), `/etc/machine-info`
+  (pretty / icon / chassis / deployment / location + hardware
+  metadata), `/etc/machine-id`, `/proc/sys/kernel/random/boot_id`,
+  `/etc/os-release`, `/sys/class/dmi/id/*`, `uname(2)`. Chassis
+  auto-detects from SMBIOS chassis_type + container / VM heuristics
+  (docker, podman, lxc, nspawn, kvm, qemu, vmware, virtualbox, xen,
+  hyper-v, ec2). `-H/--host` and `-M/--machine` parse cleanly but
+  return an error at runtime — no D-Bus, no nspawn integration.
+  `hostnamectl` symlink onto `slinit-hostnamectl` for muscle memory.
+
+- **`slinit-timedatectl`** — systemd `timedatectl(1)` parity,
+  D-Bus-free. `status` / `show` (KEY=VALUE) / `set-time` (RFC3339,
+  systemd form, `@epoch`, relative `+5min`/`-2h`/`+1d`, `now`) /
+  `set-timezone` (atomic `/etc/localtime` symlink swap + zone
+  validation via TZif magic, rejects `..` and absolute paths) /
+  `list-timezones` (prefers `zone1970.tab`, falls back to `zone.tab`,
+  then filesystem walk) / `set-local-rtc [--adjust-system-clock]`
+  (writes `/etc/adjtime` line 3, optional `hwclock --systohc`
+  passthrough) / `set-ntp` (probes `/etc/slinit.d/` for chronyd /
+  systemd-timesyncd / ntpd / openntpd / sntp, then `slinitctl
+  enable/disable` + `start/stop`). Reads `/dev/rtc` via
+  `RTC_RD_TIME` and interprets it per `/etc/adjtime`. `-H/--host` /
+  `-M/--machine` + timesyncd-specific subcommands
+  (`timesync-status` / `show-timesync` / `ntp-servers` / `revert`)
+  parse but return errors at runtime with pointed diagnostics.
+  `timedatectl` symlink for muscle memory.
+
+### Code fixing
+
+- **Rescue shell usable on serial consoles.** The `[s]` drop-to-shell
+  action after a boot failure produced a shell where the operator's
+  input was half-eaten (typing `stty` yielded `ty`), empty
+  `bash-5.3#` prompts multiplied, and busybox ash flooded the
+  console with `[38;5R` cursor-position report replies. Five small
+  patches close every failure mode: the boot debugger's console
+  reader is stopped before the rescue menu opens (was racing with
+  the shell for every byte); `TIOCSWINSZ` seeds a 24×80 winsize on
+  serial ttys with no WINCH history (stops the line-editor fallback
+  that queries cursor pos via `ESC[6n`); the tty input buffer is
+  flushed at exec (drops stale terminal replies from the menu's
+  rendering); `TERM=dumb` + `LINES=24` + `COLUMNS=80` are exported
+  to the child so bash's readline skips ANSI entirely; and
+  `/bin/bash` sits before `/bin/sh` in shell candidates (bash
+  respects `TERM=dumb`, busybox ash doesn't for the query). Applied
+  at every fork-shell site — rescue menu, boot debugger `[s]`,
+  `--debug-shell` on tty9, `bootmode=rescue/emergency`. `demo/run.sh`
+  gains a `--no-monitor` flag that swaps `-serial mon:stdio` for
+  `-serial stdio -monitor none` — was a diagnostic detour, kept as
+  a useful knob for similar console investigations.
+
+- **Transient-hostname sentinel filter.** `hostnamectl status`
+  hid the `Transient hostname` field when the kernel reports one of
+  the "unset" sentinels — `(none)` (Linux placeholder before any
+  `sethostname(2)` call) or `localhost` / `localhost.localdomain`
+  (distro-default before real config lands). Matches systemd-hostnamed's
+  same filter and stops the field from showing meaningless text on
+  fresh installs.
+
+- **Decoded wait status in stop-command failure log.** The rare
+  "stop command failed" error line printed the raw 16-bit wait(2)
+  status word (`status: 1280`) instead of the decoded exit code
+  or signal. Now emits `exit code N` for normal exits, `killed by
+  signal N (name)` for signal deaths, or a labeled raw form for
+  the stopped/continued edge case.
+
+- **`restart-limit-count = 0` now honored as "unlimited".** The
+  runtime already treated `maxRestartCount == 0` as "no restart
+  rate limit" (matching what an operator writing 0 in a service
+  file expects), but the loader was silently dropping explicit
+  zeros: the four `if desc.RestartInterval > 0 ||
+  desc.RestartLimitCount > 0` gates couldn't distinguish an
+  unset int field from an explicit zero, so the built-in default
+  (3 restarts / 10s) kept applying. Added a `RestartLimitCountSet
+  bool` companion field so the parser can record intent; loader
+  gates now key off it. Negative values are rejected at parse
+  time. The demo's `tty` service now uses this (`command =
+  /bin/bash --login -o ignoreeof` + `restart-limit-count = 0`)
+  so an operator can `logout` or Ctrl-D as many times as they
+  like without cascading the boot into a BOOT COLLAPSE — matches
+  what `agetty` on `tty1..N` does.
+
 ## [2.2.0] — 2026-08-09
 
 **Stable-release milestone.** Rolls up the entire v2.1.x line
