@@ -314,7 +314,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.RestartMaxDelay > 0 {
 			s.SetRestartMaxDelay(desc.RestartMaxDelay)
 		}
-		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
+		if desc.RestartInterval > 0 || desc.RestartLimitCountSet {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
 		applyLogSettings(s, desc)
@@ -416,7 +416,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.RestartMaxDelay > 0 {
 			s.SetRestartMaxDelay(desc.RestartMaxDelay)
 		}
-		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
+		if desc.RestartInterval > 0 || desc.RestartLimitCountSet {
 			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
 		applyLogSettings(s, desc)
@@ -1131,7 +1131,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.RestartDelayStep > 0 || desc.RestartDelayCap > 0 {
 			svc.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
 		}
-		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
+		if desc.RestartInterval > 0 || desc.RestartLimitCountSet {
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
 		applyLogSettings(svc, desc)
@@ -1221,7 +1221,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.RestartDelayStep > 0 || desc.RestartDelayCap > 0 {
 			svc.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
 		}
-		if desc.RestartInterval > 0 || desc.RestartLimitCount > 0 {
+		if desc.RestartInterval > 0 || desc.RestartLimitCountSet {
 			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		}
 		applyLogSettings(svc, desc)

@@ -272,6 +272,12 @@ type ServiceDescription struct {
 	RestartMaxDelay time.Duration
 	RestartInterval   time.Duration
 	RestartLimitCount int
+	// RestartLimitCountSet distinguishes "operator never wrote
+	// restart-limit-count" from "operator wrote restart-limit-count = 0".
+	// The loader treats 0 as "unlimited" (matching pkg/service's
+	// maxRestartCount > 0 gate), but the plain int field can't tell
+	// the two cases apart because Go zero-init also gives 0.
+	RestartLimitCountSet bool
 	TermSignal        syscall.Signal
 	ReloadSignal      syscall.Signal // upstart-inspired; 0 = unset
 	PIDFile           string
@@ -1944,7 +1950,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		if err != nil {
 			return fmt.Errorf("invalid count: %w", err)
 		}
+		if n < 0 {
+			return fmt.Errorf("restart-limit-count must be >= 0 (0 = unlimited)")
+		}
 		desc.RestartLimitCount = n
+		desc.RestartLimitCountSet = true
 
 	// Signal — OpenRC uses "stopsig" as the shell var name; slinit's
 	// canonical form is "term-signal", with "termsignal" kept as a dinit

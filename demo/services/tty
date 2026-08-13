@@ -5,9 +5,25 @@
 # demo service has started — the login prompt then appears cleanly instead
 # of interleaving with the service-start list.
 type = process
-command = /bin/bash --login
+# bash -o ignoreeof: soften rapid Ctrl-D exits. Without this, holding
+# Ctrl-D queues EOFs in the tty input buffer faster than bash can
+# start, each new bash reads one EOF and immediately exits ("logout"),
+# and the operator sees several seconds of "no prompt" while the
+# queued EOFs drain. ignoreeof requires 10 consecutive EOFs before
+# bash actually exits — an accidental double-Ctrl-D no longer takes
+# the shell down, and even a burst of them just prints
+# "Use \"logout\" to leave the shell." a few times before finally
+# exiting.
+command = /bin/bash --login -o ignoreeof
 options = runs-on-console unmask-intr
 restart = yes
+# Getty-style respawn: even after ignoreeof lets bash exit deliberately,
+# the operator can still `exit` or type `logout` at will, and the tty
+# should come back forever. Default (3 restarts / 10s) is calibrated
+# for services that shouldn't crash-loop; a login shell exits on
+# purpose every time, so unlimited respawns match what agetty /
+# mingetty do on Linux tty1..N.
+restart-limit-count = 0
 smooth-recovery = yes
 stop-timeout = 3
 term-signal = SIGHUP

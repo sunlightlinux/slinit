@@ -2436,6 +2436,59 @@ alert-level = urgent
 // TestParseAlertFileDefault confirms the "-1 = disabled" default when
 // neither directive appears: NewServiceDescription must not
 // accidentally opt every service into an alert channel.
+// TestParseRestartLimitCountZero locks in the "explicit 0 means
+// unlimited" semantic so the loader can distinguish it from the
+// zero-value "operator never wrote the directive" state via the
+// RestartLimitCountSet flag.
+func TestParseRestartLimitCountZero(t *testing.T) {
+	cases := []struct {
+		name          string
+		input         string
+		wantCount     int
+		wantSet       bool
+	}{
+		{"explicit zero", `
+type = process
+command = /bin/true
+restart-limit-count = 0
+`, 0, true},
+		{"explicit non-zero", `
+type = process
+command = /bin/true
+restart-limit-count = 42
+`, 42, true},
+		{"never set", `
+type = process
+command = /bin/true
+`, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			desc, err := Parse(strings.NewReader(c.input), "svc", "test")
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if desc.RestartLimitCount != c.wantCount {
+				t.Errorf("RestartLimitCount = %d, want %d", desc.RestartLimitCount, c.wantCount)
+			}
+			if desc.RestartLimitCountSet != c.wantSet {
+				t.Errorf("RestartLimitCountSet = %v, want %v", desc.RestartLimitCountSet, c.wantSet)
+			}
+		})
+	}
+}
+
+func TestParseRestartLimitCountRejectsNegative(t *testing.T) {
+	input := `
+type = process
+command = /bin/true
+restart-limit-count = -1
+`
+	if _, err := Parse(strings.NewReader(input), "svc", "test"); err == nil {
+		t.Error("negative restart-limit-count should error")
+	}
+}
+
 func TestParseAlertFileDefault(t *testing.T) {
 	input := `
 type = process
