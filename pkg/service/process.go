@@ -2203,7 +2203,30 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 	}
 
 	if s.state.Load() != StateStarting {
-		// Not in STARTING state; ignore readiness signal
+		// State is not STARTING but readyCh still fired. The one
+		// legitimate context is smooth recovery: doSmoothRecovery
+		// keeps state at StateStarted, calls startProcess which arms
+		// a fresh readyCh + start-timeout timer, and the new child
+		// re-signals readiness. A ready=true here is redundant but
+		// harmless (state is already the target). A ready=false —
+		// child crashed before notifying, or closed the pipe without
+		// writing — means the recovered process is unhealthy and
+		// must be treated as an unexpected termination, else the
+		// service stays wedged at STARTED with no live PID while
+		// dependents believe it is up. Mirrors dinit's fix 991fceeb
+		// (2026-08-30, "Better handling of smooth recovery failure":
+		// treat smooth-recovery failure universally as termination
+		// rather than start failure).
+		if !ready && s.state.Load() == StateStarted {
+			s.services.logger.Error(
+				"Service '%s': readiness pipe closed during smooth recovery — treating as unexpected termination",
+				s.serviceName)
+			s.cancelTimer()
+			s.handleUnexpectedTerminationLocked()
+			return
+		}
+		// Any other combination (ready=true while STARTED, or state
+		// STOPPING/STOPPED) — nothing meaningful to do.
 		return
 	}
 
