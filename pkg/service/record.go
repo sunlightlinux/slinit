@@ -41,6 +41,18 @@ type Service interface {
 	BecomingInactive()
 	CheckRestart() bool
 
+	// ScheduleRestartWithBackoff is called by Stopped() before it would
+	// otherwise fire initiateStart() on the willRestart path. Services
+	// with a configured restart-delay / restart-delay-step should
+	// compute the next effective delay, and if lastStartTime is closer
+	// than that delay, arm a private timer and return true. Stopped()
+	// then skips initiateStart(); when the timer fires, the service
+	// calls initiateStart() itself. Returning false means "no delay
+	// needed, start now" — Stopped() proceeds with initiateStart().
+	// Default (ServiceRecord) always returns false so services without
+	// restart-delay semantics restart immediately, as they do today.
+	ScheduleRestartWithBackoff() bool
+
 	// Process info (for process-based services; defaults return -1/{})
 	PID() int
 	GetExitStatus() ExitStatus
@@ -989,6 +1001,11 @@ func (sr *ServiceRecord) PID() int                    { return -1 }
 func (sr *ServiceRecord) GetExitStatus() ExitStatus   { return ExitStatus{} }
 func (sr *ServiceRecord) BecomingInactive()           {}
 func (sr *ServiceRecord) CheckRestart() bool          { return true }
+
+// ScheduleRestartWithBackoff default: no delay semantics for this
+// service kind. Types with a restart-delay knob (ProcessService,
+// BGProcessService) override this.
+func (sr *ServiceRecord) ScheduleRestartWithBackoff() bool { return false }
 func (sr *ServiceRecord) GetSmoothRecovery() bool     { return sr.smoothRecovery }
 func (sr *ServiceRecord) IsManualStart() bool         { return sr.manualStart }
 func (sr *ServiceRecord) RefusesManualStart() bool    { return sr.refuseManualStart }
@@ -2808,7 +2825,15 @@ func (sr *ServiceRecord) Stopped() {
 				dep.To.Record().Restart()
 			}
 		}
-		sr.initiateStart()
+		// Honour restart-delay / restart-delay-step / restart-delay-cap
+		// on the willRestart path. If the service arms a private timer,
+		// it will call initiateStart itself when the timer fires — we
+		// bail out here so the two paths don't race. Services without
+		// restart-delay semantics (default ServiceRecord) return false
+		// and the immediate initiateStart runs as before.
+		if !sr.self.ScheduleRestartWithBackoff() {
+			sr.initiateStart()
+		}
 	} else {
 		sr.self.BecomingInactive()
 

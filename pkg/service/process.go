@@ -121,6 +121,14 @@ type ProcessService struct {
 	restartIntervalCount int
 	lastStartTime        time.Time
 
+	// Timer that fires initiateStart() after a restart-delay window on
+	// the non-smooth-recovery path. Uses time.AfterFunc directly (not
+	// the shared processTimer) because monitorProcess exits as soon as
+	// handleChildExit returns, so the shared timer's monitor-loop
+	// listener isn't alive to receive it. Held so we can Stop() it if
+	// the operator cancels the restart before it fires.
+	restartDelayTimer *time.Timer
+
 	// State tracking
 	stopIssued       bool
 	doingSmoothRecov bool
@@ -495,6 +503,85 @@ func (s *ProcessService) SetRestartRandomizedDelay(d time.Duration) {
 // restart-randomized-delay jitter. Zero means no cap.
 func (s *ProcessService) SetRestartMaxDelay(d time.Duration) {
 	s.restartMaxDelay = d
+}
+
+// ScheduleRestartWithBackoff implements the Service interface hook that
+// Stopped() calls before it would otherwise invoke initiateStart() on the
+// willRestart path. If the process's last start was less than the next
+// effective restart-delay ago, arm timerRestartDelay for the remaining
+// duration, set pendingInitiateStart, and return true so Stopped()
+// skips its own initiateStart call. When the timer fires the handler
+// clears the flag and calls Record().initiateStart() itself, so the
+// operator sees the configured delay (and progressive backoff) between
+// crash and re-launch.
+//
+// When restart-delay is 0 or the delay already elapsed (e.g. a service
+// that ran a long time before crashing), returns false immediately —
+// Stopped() proceeds as before with no observable delay.
+//
+// nextRestartDelay() is called only on the "actually needs to wait"
+// path so the backoff counter advances in lockstep with real restarts.
+func (s *ProcessService) ScheduleRestartWithBackoff() bool {
+	// smooth-recovery has its own dedicated backoff path in
+	// doSmoothRecovery; don't double-handle it here.
+	if s.doingSmoothRecov {
+		return false
+	}
+	// No delay configured (zero-value restart-delay + no step): let
+	// Stopped() restart immediately, matching pre-fix behaviour for
+	// services that never opted into backoff.
+	if s.restartDelay <= 0 && s.restartDelayStep <= 0 {
+		return false
+	}
+	effectiveDelay := s.nextRestartDelay()
+	if effectiveDelay <= 0 {
+		return false
+	}
+	elapsed := time.Since(s.lastStartTime)
+	if elapsed >= effectiveDelay {
+		// The gap between last start and now is already larger than
+		// the required delay (e.g. a stable service that ran an hour
+		// before crashing). Restart immediately.
+		return false
+	}
+	remaining := effectiveDelay - elapsed
+	if s.restartDelayStep > 0 && effectiveDelay > s.restartDelay {
+		s.services.logger.Info("Service '%s': restart delayed %v (backoff %v)",
+			s.serviceName, remaining, effectiveDelay)
+	} else {
+		s.services.logger.Info("Service '%s': restart delayed %v",
+			s.serviceName, remaining)
+	}
+	// Own goroutine via AfterFunc — monitorProcess dies after
+	// handleChildExit returns, so a shared processTimer would fire
+	// into an empty select. AfterFunc gives us a private callback.
+	if s.restartDelayTimer != nil {
+		s.restartDelayTimer.Stop()
+	}
+	s.restartDelayTimer = time.AfterFunc(remaining, s.fireDelayedInitiateStart)
+	return true
+}
+
+// fireDelayedInitiateStart is the AfterFunc callback armed by
+// ScheduleRestartWithBackoff. Re-checks the same gate that Stopped()
+// applied — desired might have flipped to Stopped while the timer
+// was pending (operator ran `slinitctl stop`), in which case the
+// restart is abandoned.
+func (s *ProcessService) fireDelayedInitiateStart() {
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+	s.restartDelayTimer = nil
+	if s.state.Load() != StateStopped {
+		return
+	}
+	if s.desired.Load() != StateStarted {
+		return
+	}
+	if s.pinnedStopped {
+		return
+	}
+	s.Record().initiateStart()
+	s.services.processQueuesLocked()
 }
 
 // nextRestartDelay returns the delay to use for the next restart and advances
