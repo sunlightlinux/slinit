@@ -17,6 +17,24 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.3] — 2026-08-31
+
+Test-only point release on top of v2.2.2. No behaviour changes to
+slinit itself.
+
+### Test infrastructure
+
+- **`116-lock-personality` — polls for seccomp filter install.**
+  Under slow VMs the single-shot `/proc/PID/status` read in this
+  test could catch the child between `slinit`'s post-fork
+  `Started()` call and `slinit-runner`'s pre-exec `seccomp.Install()`
+  — `Seccomp:` briefly reads 0, the test asserts 2, flake. Poll the
+  field for up to 2s (10 × 200ms) so the runner has room to finish
+  its hardening pipeline on any reasonable host; the fast-path
+  break-out keeps normal runs at zero extra latency. Slinit itself
+  is behaviourally correct: `STARTED == fork happened`, matching
+  systemd `Type=simple` semantics.
+
 ## [2.2.2] — 2026-08-30
 
 Point release on top of v2.2.1 — three state-machine bug fixes
