@@ -17,6 +17,76 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.2] — 2026-08-30
+
+Point release on top of v2.2.1 — three state-machine bug fixes
+targeting long-latent regressions in the restart / smooth-recovery
+paths, plus one small dinit-parity port and a DMI detection
+addition.
+
+### Code fixing
+
+- **`restart-delay` + `restart-delay-step` / `restart-delay-cap` now
+  applied on non-smooth-recovery restarts.** Latent since the
+  progressive-backoff feature landed. `nextRestartDelay()` was
+  called only from `doSmoothRecovery`; services configured with
+  plain `restart = on-failure` or `restart = yes` respawned as fast
+  as the state machine could turn over, ignoring the entire delay
+  machinery. A crash-looping service would burn every restart-limit
+  slot in milliseconds before the backoff had a chance to slow it
+  down. Fix routes `Stopped()`'s willRestart branch through a new
+  `Service.ScheduleRestartWithBackoff()` hook — `ServiceRecord`'s
+  default returns false (no delay) so unaffected service types
+  keep their existing behaviour; `ProcessService` overrides to
+  compute `nextRestartDelay()`, and if `time.Since(lastStartTime) <
+  effectiveDelay`, arms a `time.AfterFunc` for the remainder and
+  defers `initiateStart` until the timer fires. Uses a private
+  `AfterFunc` timer rather than the shared `processTimer` because
+  `monitorProcess` exits after `handleChildExit` returns, leaving
+  the shared timer's monitor-loop listener dead. The callback
+  re-checks `state == StateStopped && desired == StateStarted`
+  before firing so an operator who runs `slinitctl stop` while the
+  timer is pending doesn't get a surprise restart. Surfaced by
+  functional test `53-restart-backoff` which had been failing
+  silently (gap1=1s from `date +%s` second-boundary noise,
+  gap2=0s).
+
+- **Smooth-recovery readiness-pipe failure treated as termination.**
+  Mirrors dinit upstream `991fceeb` (2026-08-30, "Better handling of
+  smooth recovery failure"). A service with `notify` +
+  `smooth-recovery` whose respawned process closed the readiness
+  pipe without signalling (child crashes pre-notify, `dup2` moves
+  fd 3 elsewhere) was silently ignored by
+  `handleReadyNotification`'s early-return on `state !=
+  StateStarting`, leaving the service wedged at `StateStarted`
+  with no live PID while dependents believed it was up. Fix
+  extends the state-check branch to detect `state == StateStarted
+  + ready == false` and route through
+  `handleUnexpectedTerminationLocked` so the state machine
+  transitions out. Narrow combination (`notify` + smooth-recovery
+  + child that crashes post-fork pre-notify), but silent wedging
+  is the worst failure shape when it hits.
+
+- **`slinit-hostnamectl` detects Alibaba Cloud ECS as KVM.** Mirrors
+  systemd `abffa868a8`. The narrower `Alibaba Cloud ECS` match
+  (rather than the bare `Alibaba Cloud` sys_vendor that can appear
+  on non-VM hardware) tags actual ECS instances instead of falling
+  through to the cpuinfo hypervisor-flag `unknown`. Coverage-locked
+  by `TestDetectVM_DMIMatches` across eight vendors.
+
+### Test infrastructure
+
+- **`TestScriptedServiceNoStrayTimers`** — defense-in-depth
+  regression lock for the class of bug dinit closed with
+  `6ee41c74` (missed timer clear on scripted-service exit paths).
+  Slinit is structurally safe (`cancelTimer()` unconditional at the
+  top of every `handleStartExit` / `handleStopExit`), but this
+  test guarantees a future refactor can't quietly move the cancel
+  into a conditional branch without the CI catching it. Five
+  subtests cover the representative exit paths (successful
+  start+stop, start-command failure, exec failure, stop-command
+  failure, no-commands immediate transitions).
+
 ## [2.2.1] — 2026-08-12
 
 Point release on top of v2.2.0 — two new systemd-compat CLIs land as
