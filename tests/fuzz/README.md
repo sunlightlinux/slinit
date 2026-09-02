@@ -91,6 +91,12 @@ also enforces:
 | FuzzReadEnvFile | KEY=VALUE env-file + !clear/!unset/!import meta |
 | FuzzReadEnvDir | runit-style env-dir (one file per var) |
 
+### State machine (co-located in pkg/service)
+
+| Package | Target | What it fuzzes |
+|---------|--------|----------------|
+| pkg/service | FuzzStateMachine | Drives a 3-service dep chain through pseudo-random sequences of {Start, Stop, Restart, ForceStop, PinStart, Unpin, ProcessQueues} operations. Asserts state stays in the legal enum range and TargetState remains a steady value at every step. Uses InternalService for zero fork/exec overhead — ~17k iterations / 30s let the mutator explore deep operation sequences a unit test wouldn't reach. Already surfaced one real semantic gap on the first burst (stop-through-pinned-chain wedge); see the header docstring for the "known finding" note. |
+
 ## In-package fuzz targets
 
 Fuzz targets that need access to `main`-package internals live next
