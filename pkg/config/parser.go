@@ -3975,6 +3975,9 @@ func ParseCPUAffinity(value string) ([]uint, error) {
 			if lo > hi {
 				return nil, fmt.Errorf("invalid range %s (start > end)", tok)
 			}
+			if hi > MaxCPUNumber {
+				return nil, fmt.Errorf("CPU number %d exceeds max %d", hi, MaxCPUNumber)
+			}
 			for c := lo; c <= hi; c++ {
 				if !seen[uint(c)] {
 					cpus = append(cpus, uint(c))
@@ -3986,6 +3989,9 @@ func ParseCPUAffinity(value string) ([]uint, error) {
 			c, err := strconv.ParseUint(tok, 10, 32)
 			if err != nil {
 				return nil, fmt.Errorf("invalid CPU number %q", tok)
+			}
+			if c > MaxCPUNumber {
+				return nil, fmt.Errorf("CPU number %d exceeds max %d", c, MaxCPUNumber)
 			}
 			if !seen[uint(c)] {
 				cpus = append(cpus, uint(c))

@@ -14,6 +14,14 @@ const MaxDepDepth = 32
 // the wire format. dinit-parity 1e56a23.
 const MaxServiceNameLen = 65535
 
+// MaxCPUNumber caps the largest CPU index accepted by ParseCPUAffinity.
+// Linux CPU_SETSIZE defaults to 1024; kernels compiled with
+// CONFIG_NR_CPUS go up to ~8192; no realistic hardware exceeds a few
+// thousand CPUs. Cap at 65535 as a defense-in-depth against a
+// pathological `cpu-affinity = 0-4294967294` config that would spin
+// the loader allocating multi-GB slices. Caught by FuzzParseCPUAffinity.
+const MaxCPUNumber = 65535
+
 // ValidateServiceName checks that a service name is well-formed.
 // Rules (matching dinit):
 //   - Must not be empty
