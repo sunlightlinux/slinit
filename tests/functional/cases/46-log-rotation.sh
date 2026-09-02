@@ -19,13 +19,21 @@ else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
 fi
 
-# Check that at least one rotated file exists (timestamp suffix pattern)
+# Check that at least one rotated file exists (timestamp suffix pattern).
+# The rotator uses `filepath.log.YYYYMMDD-HHMMSS.NNNNNNNNN` — dot-separated,
+# nanosecond precision to avoid same-tick collisions under `yes`(1)-style
+# high-throughput writers. Match on the dot to distinguish rotated from
+# the live main file.
 rotated_count=$(ls /tmp/logrot-svc.log.* 2>/dev/null | wc -l)
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ "$rotated_count" -gt 0 ]; then
     echo "OK: $rotated_count rotated log file(s) found"
 else
-    echo "FAIL: no rotated log files found (expected logrot-svc.log.YYYYMMDD-HHMMSS)"
+    echo "FAIL: no rotated log files found (expected logrot-svc.log.YYYYMMDD-HHMMSS.NNN)"
+    echo "  ls /tmp/logrot-svc.log*:"
+    ls -la /tmp/logrot-svc.log* 2>&1 | sed 's/^/    /'
+    echo "  main file size:"
+    wc -c /tmp/logrot-svc.log 2>&1 | sed 's/^/    /'
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
 fi
 
