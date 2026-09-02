@@ -288,6 +288,12 @@ func EncodeServiceName(name string) []byte {
 
 // DecodeServiceName decodes a service name from [len(2)][name(N)].
 // Returns the name and number of bytes consumed.
+//
+// Rejects embedded NUL bytes at the wire layer: no on-disk loader
+// (pkg/config's ValidateServiceName) accepts them, and letting them
+// through to code paths that pass names to logging, journal fields,
+// or filesystem lookups risks truncation-at-NUL surprises. Cheap
+// defense-in-depth — one scan of the length-prefixed payload.
 func DecodeServiceName(data []byte) (string, int, error) {
 	if len(data) < 2 {
 		return "", 0, fmt.Errorf("data too short for service name length")
@@ -296,7 +302,13 @@ func DecodeServiceName(data []byte) (string, int, error) {
 	if len(data) < 2+nameLen {
 		return "", 0, fmt.Errorf("data too short for service name: need %d, have %d", 2+nameLen, len(data))
 	}
-	return string(data[2 : 2+nameLen]), 2 + nameLen, nil
+	nameBytes := data[2 : 2+nameLen]
+	for _, b := range nameBytes {
+		if b == 0 {
+			return "", 0, fmt.Errorf("service name contains NUL byte")
+		}
+	}
+	return string(nameBytes), 2 + nameLen, nil
 }
 
 // EncodeMetadata encodes the author/version/usage triplet as three

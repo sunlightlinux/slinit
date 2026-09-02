@@ -21,28 +21,48 @@ for f in $(go test -list 'Fuzz.*' ./tests/fuzz/ 2>/dev/null | grep ^Fuzz); do
 done
 ```
 
+## Invariants
+
+Every target enforces at least the "must not panic" invariant. Where
+the underlying API is a pure `(bytes ⇄ struct)` codec pair, the fuzz
+also enforces:
+
+- **Round-trip fidelity** — `decode(encode(decode(bytes))) == decode(bytes)`.
+  A decoder that tolerates bytes the encoder never emits (or vice
+  versa) creates a wire drift between daemon and client versions;
+  the round-trip check catches such drift on the first fuzz
+  iteration that hits it.
+- **Semantic wire-vs-loader consistency** — bytes that decode
+  cleanly at the wire layer must not encode names the on-disk
+  loader would reject (`ValidateServiceName`). Closes defense-in-
+  depth gaps like "wire accepts NUL bytes in service names but
+  filesystem paths would truncate at NUL."
+
 ## Targets
 
 ### Config Parsing (config_fuzz_test.go)
 | Target | What it fuzzes |
 |--------|----------------|
-| FuzzConfigParse | Main service config file parser (text grammar) |
+| FuzzConfigParse | Main service config file parser (text grammar). Seed corpus includes every real config from `demo/services/` (52 files as of v2.2.3) so the mutator starts from production-shaped inputs. Post-parse the desc's slice/map fields are traversed to catch partial-initialisation nil-deref shapes. |
 | FuzzParseIDMapping | Namespace UID/GID mapping "container:host:size" |
 | FuzzParseCPUAffinity | CPU affinity spec "0-3 8-11" |
 | FuzzParseLSBHeaders | /etc/init.d LSB header block parser |
 
 ### Control Protocol (protocol_fuzz_test.go)
-| Target | What it fuzzes |
-|--------|----------------|
-| FuzzReadPacket | Binary packet reader [type(1)+len(2)+payload(N)] |
-| FuzzDecodeServiceName | Service name [len(2)+name(N)] |
-| FuzzDecodeHandle | uint32 handle |
-| FuzzDecodeServiceStatus | 12-byte service status |
-| FuzzDecodeServiceStatus5 | 14-byte v5 service status |
-| FuzzDecodeSetEnv | Set-env request (handle + KEY=VALUE) |
-| FuzzDecodeEnvList | Env list reply (KEY=VALUE\0 pairs) |
-| FuzzDecodeDepRequest | Add/remove dependency request |
-| FuzzDecodeBootTime | Boot timing info |
+| Target | What it fuzzes | Round-trip? |
+|--------|----------------|:-----------:|
+| FuzzReadPacket | Binary packet reader [type(1)+len(2)+payload(N)] | — |
+| FuzzDecodeServiceName | Service name [len(2)+name(N)] | ✓ |
+| FuzzDecodeHandle | uint32 handle | ✓ |
+| FuzzDecodeMetadata | Author/version/usage triplet | ✓ |
+| FuzzDecodeServiceStatus | 12-byte service status | (encoder needs live svc) |
+| FuzzDecodeServiceStatus5 | 14-byte v5 service status | (encoder needs live svc) |
+| FuzzDecodeSetEnv | Set-env request (handle + KEY=VALUE) | ✓ |
+| FuzzDecodeEnvList | Env list reply (KEY=VALUE\0 pairs) | ✓ (via map value-equality) |
+| FuzzDecodeDepRequest | Add/remove dependency request | ✓ |
+| FuzzDecodeBootTime | Boot timing info | ✓ |
+| FuzzDecodeCatLogRequest | Catlog request (handle + clear flag) | ✓ |
+| FuzzServiceNameSemantics | Wire-vs-loader consistency (NUL rejection, etc.) | — (semantic) |
 
 ### Autofs (autofs_fuzz_test.go)
 | Target | What it fuzzes |

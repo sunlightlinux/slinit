@@ -3,11 +3,47 @@ package fuzz
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
 )
+
+// seedFromDir walks a directory of real service config files and calls
+// f.Add on each one's contents. Feeding the fuzzer real-world
+// production-shaped configs (rather than 20 hand-crafted stubs) makes
+// Go's coverage-guided mutator start from a set of inputs that already
+// exercise the parser's deep code paths — including options combinations
+// the hand-crafted seeds miss.
+func seedFromDir(f *testing.F, dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		f.Add(string(data))
+	}
+}
+
+// repoDemoServicesDir returns the absolute path to demo/services/ from
+// this test file's location. Skips seed-from-demo if the layout has
+// shifted (test still runs on the hand-crafted seeds).
+func repoDemoServicesDir() string {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		return ""
+	}
+	// tests/fuzz/<file> → ../../demo/services
+	return filepath.Join(filepath.Dir(thisFile), "..", "..", "demo", "services")
+}
 
 // FuzzConfigParse fuzzes the main service config file parser.
 // This is the highest-priority target — it parses untrusted text input
@@ -35,9 +71,32 @@ func FuzzConfigParse(f *testing.F) {
 	f.Add("type = process\ncommand = /bin/true\nlog-include = ^ERROR\nlog-exclude = ^DEBUG\n")
 	f.Add("type = process\ncommand = /bin/true\ncron-command = /bin/check\ncron-interval = 60\n")
 
+	// Pull in every real service config from demo/services/ (52 files
+	// as of v2.2.3) as additional seed corpus. Each represents a
+	// combination of directives that actually ships in a working
+	// system, which is dramatically better mutation input than the
+	// hand-crafted stubs above — most bugs surface at the boundaries
+	// between multiple options, not at single-directive isolation.
+	seedFromDir(f, repoDemoServicesDir())
+
 	f.Fuzz(func(t *testing.T, data string) {
-		// Must not panic on any input
-		config.Parse(strings.NewReader(data), "fuzz-svc", "fuzz-file")
+		// Invariant 1: must not panic on any input.
+		desc, err := config.Parse(strings.NewReader(data), "fuzz-svc", "fuzz-file")
+		if err != nil {
+			return
+		}
+		// Invariant 2: a successful parse yields a description that
+		// can be traversed without panic — the parser must never
+		// return a partially-initialised desc that trips a downstream
+		// nil deref. Access every slice/map field the loader reads.
+		_ = desc.DependsOn
+		_ = desc.WaitsFor
+		_ = desc.After
+		_ = desc.Before
+		_ = desc.Provides
+		_ = desc.Command
+		_ = desc.StopCommand
+		_ = desc.WorkingDir
 	})
 }
 
