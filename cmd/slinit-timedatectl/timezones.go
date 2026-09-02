@@ -64,7 +64,19 @@ func readZoneTab(path string) ([]string, bool) {
 		if len(fields) < 3 {
 			continue
 		}
-		seen[fields[2]] = struct{}{}
+		zone := fields[2]
+		// Defense-in-depth: an entry whose zone name would let a
+		// downstream filepath.Join escape the zoneinfo tree, or one
+		// with an embedded NUL that would truncate at a filesystem
+		// boundary, gets dropped at enumeration time. validateZone
+		// catches this again at set-timezone time, but a corrupted
+		// zone.tab shouldn't even surface such names to callers
+		// listing timezones. Caught by FuzzReadZoneTab.
+		if strings.HasPrefix(zone, "/") || strings.Contains(zone, "..") ||
+			strings.ContainsRune(zone, '\x00') {
+			continue
+		}
+		seen[zone] = struct{}{}
 	}
 	if s.Err() != nil {
 		return nil, false

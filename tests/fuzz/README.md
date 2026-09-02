@@ -70,6 +70,17 @@ also enforces:
 | FuzzParseV5Packet | Autofs v5 kernel notification (binary) |
 | FuzzParseMountUnit | .mount config file parser |
 
+### Fstab (fstab_fuzz_test.go)
+| Target | What it fuzzes |
+|--------|----------------|
+| FuzzFstabParse | pkg/fstab.Parse + Options() + FindByFile — util-linux octal escapes, freq/passno defaults, multi-comma option strings |
+
+### Journal binary format (journalbin_fuzz_test.go)
+| Target | What it fuzzes |
+|--------|----------------|
+| FuzzJournalBinaryDecodeHeader | pkg/journalbin.DecodeHeader — 240-byte SLJRNL01 header (magic, incompat_flags, offset/size fields) |
+| FuzzJournalBinaryOpenReader | Full OpenReader → EntryOffsets → SeekRealtime → Iter pipeline on a staged temp file. Seed corpus includes real Writer-produced journals so the mutator starts on ENTRY_ARRAY chain code paths |
+
 ### Process Attributes (process_fuzz_test.go)
 | Target | What it fuzzes |
 |--------|----------------|
@@ -79,6 +90,33 @@ also enforces:
 | FuzzParseSignal | Signal name/number → syscall.Signal |
 | FuzzReadEnvFile | KEY=VALUE env-file + !clear/!unset/!import meta |
 | FuzzReadEnvDir | runit-style env-dir (one file per var) |
+
+## In-package fuzz targets
+
+Fuzz targets that need access to `main`-package internals live next
+to their code as `_fuzz_test.go` files. Run per-package rather than
+via `./tests/fuzz/`.
+
+| Package | Target | What it fuzzes |
+|---------|--------|----------------|
+| cmd/slinit-hostnamectl | FuzzDecodeValue | machine-info/os-release value decoder + round-trip through encodeValue |
+| cmd/slinit-hostnamectl | FuzzLoadMachineInfo | Full load → save → reload round-trip on /etc/machine-info |
+| cmd/slinit-hostnamectl | FuzzParseOSRelease | /etc/os-release parser |
+| cmd/slinit-timedatectl | FuzzReadZoneTab | /usr/share/zoneinfo/zone.tab enumeration; asserts no NUL / no path-escape zones surface to caller |
+| cmd/slinit-timedatectl | FuzzValidateZone | Zone-name validator (last line of defense before filepath.Join with zoneinfoDir) |
+| cmd/slinit-tmpfiles | FuzzTmpfilesParseLine | systemd-tmpfiles.d(5) directive lines |
+| cmd/slinit-sysusers | FuzzSysusersParseLine | systemd-sysusers.d(5) directive lines |
+| cmd/slinit-systemd-convert | FuzzParseSystemdUnit | .service/.socket/.mount INI-shaped parser (~200 systemd directives, each with domain-specific value parsers) |
+| cmd/slinit-runit-convert | FuzzAnalyzeRunScript | /etc/sv/`<svc>`/run shell script analyzer |
+| cmd/slinit-runit-convert | FuzzParseChpst | chpst argument parser (~15 short flags with optional args) |
+| cmd/slinit-openrc-convert | FuzzParseOpenrcScript | /etc/init.d/`<svc>` openrc-run script parser |
+| cmd/slinit-openrc-convert | FuzzParseDepend | `depend()` body mini-DSL parser |
+
+Run per-package:
+```bash
+go test -fuzz=FuzzParseSystemdUnit -fuzztime=30s ./cmd/slinit-systemd-convert/
+go test -fuzz=FuzzDecodeValue -fuzztime=30s ./cmd/slinit-hostnamectl/
+```
 
 ## Crash corpus
 
