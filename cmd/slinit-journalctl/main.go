@@ -1287,13 +1287,20 @@ func runQuery(opts options) error {
 			if !machine.Alive(m.PID) {
 				return fmt.Errorf("-M %s: registered PID %d is not alive (stale registration?)", opts.machineTarget, m.PID)
 			}
-			// Prefer socket dial for live journal (event bus + ring
-			// buffer + subscribe). Fall back to directory iteration
-			// when the container has no live daemon.
-			sockPath := filepath.Join(m.Root, machine.EventsSockPath)
-			if m.Root == "" {
-				sockPath = fmt.Sprintf("/proc/%d/root%s", m.PID, machine.EventsSockPath)
-			}
+			// Prefer control-socket dial: the container's slinit
+			// itself binds /run/slinit.socket during PID-1 setup, so
+			// this works even when the optional slinit-journald
+			// daemon isn't running inside the container. Fall back
+			// to persistent journal directory iteration only when
+			// the control socket is unreachable.
+			//
+			// Always use /proc/PID/root for runtime paths — the
+			// container's /run is a private tmpfs mounted inside
+			// its namespace and does NOT reflect back to the bind-
+			// mount source recorded in m.Root. m.Root is only
+			// meaningful for on-disk files (journal dir under
+			// /var/log/, which lives in the rootfs proper).
+			sockPath := fmt.Sprintf("/proc/%d/root%s", m.PID, machine.ControlSockPath)
 			if _, statErr := os.Stat(sockPath); statErr == nil {
 				opts.socketPath = sockPath
 			} else {

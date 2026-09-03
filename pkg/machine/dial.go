@@ -11,9 +11,20 @@ import (
 	"strings"
 )
 
-// EventsSockPath is the in-container path to slinit's journal event
-// bus socket. Same relative path as on the host — the daemon inside
-// the container binds it in its own /run.
+// ControlSockPath is the in-container path to slinit's control
+// socket — the stream socket slinitctl / slinit-journalctl dial for
+// both one-shot queries and --follow subscribes. Same relative path
+// as on the host (slinit itself binds it during PID-1 setup, no
+// separate daemon required).
+const ControlSockPath = "/run/slinit.socket"
+
+// EventsSockPath is the in-container path to the DGRAM event bus
+// slinit-journald binds and receives events from. Only present when
+// the optional slinit-journald daemon is running inside the
+// container. slinit-journalctl doesn't dial this directly — it goes
+// through the control socket — but keeping the constant lets
+// slinit-machinectl and inspection tools surface the daemon's
+// presence.
 const EventsSockPath = "/run/slinit/events.sock"
 
 // JournalDirPaths are the in-container paths the persistent journal
