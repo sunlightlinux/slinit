@@ -22,6 +22,14 @@ const (
 	entryArrayItemStride     = 8
 )
 
+// maxEntryArrayObjectSize is the largest on-disk ENTRY_ARRAY object a
+// legitimate writer will ever produce (header + next_off + max items).
+// Used by readEntryArray as a hard cap against a hostile Size field.
+// Without this bound, a Size of 2^61 in the header triggers a
+// multi-EB alloc that OOMs the process. Caught by
+// FuzzJournalBinaryOpenReader.
+const maxEntryArrayObjectSize = uint64(entryArrayFixedPart + entryArrayMaxCap*entryArrayItemStride)
+
 // entryArraySizeFor returns the total on-disk size (unpadded) of an
 // ENTRY_ARRAY holding `cap` entries.
 func entryArraySizeFor(cap int) uint64 {
@@ -94,6 +102,12 @@ func readEntryArray(f *os.File, arrayOff uint64) (next uint64, items []uint64, e
 	}
 	if oh.Type != ObjectEntryArray {
 		return 0, nil, fmt.Errorf("journalbin: expected ENTRY_ARRAY at %d, got %s", arrayOff, oh.Type)
+	}
+	if oh.Size < entryArrayFixedPart {
+		return 0, nil, fmt.Errorf("journalbin: ENTRY_ARRAY at %d has size %d below minimum %d", arrayOff, oh.Size, entryArrayFixedPart)
+	}
+	if oh.Size > maxEntryArrayObjectSize {
+		return 0, nil, fmt.Errorf("journalbin: ENTRY_ARRAY at %d has size %d exceeds max %d", arrayOff, oh.Size, maxEntryArrayObjectSize)
 	}
 	capacity := entryArrayCapFrom(oh.Size)
 	body := make([]byte, oh.Size-ObjectHeaderSize)
