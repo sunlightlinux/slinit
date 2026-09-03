@@ -1,27 +1,10 @@
-# Build binaries
+# Build binaries — `go build ./cmd/<name>` writes to repo root by
+# default. Glob patterns rather than enumerated names so a new
+# cmd/ subdirectory gets picked up automatically without another
+# .gitignore edit. Anything matching these that IS intentional (a
+# script named `slinit-something`) must be `git add -f`'d.
 /slinit
-/slinit-static
+/slinit-*
 /slinitctl
-/slinitctl-static
-/slinit-check
-/slinit-monitor
-/slinit-shutdown
-/slinit-reboot
-/slinit-halt
-/slinit-soft-reboot
-/slinit-seedrng
-/slinit-start-stop-daemon
-/slinit-supervise-daemon
-/slinit-fstabinfo
-/slinit-mountinfo
-/slinit-einfo
-/slinit-shell-var
-/slinit-binfmt
-/slinit-sysctl
-/slinit-svc-value
-/slinit-runner
-/slinit-hostnamectl
-/slinit-timedatectl
-/slinit-journalctl
-/slinit-machinectl
-/slinit-nspawn
+/slinitctl-*
+/rc-*
