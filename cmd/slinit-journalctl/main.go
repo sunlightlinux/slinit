@@ -35,6 +35,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/journalbin"
 	"github.com/sunlightlinux/slinit/pkg/journald"
+	"github.com/sunlightlinux/slinit/pkg/machine"
 )
 
 const (
@@ -1258,15 +1259,59 @@ func runQuery(opts options) error {
 	if opts.facilitySet && !opts.quiet {
 		fmt.Fprintln(os.Stderr, "slinit-journalctl: --facility parsed but ignored (slinit events don't record a syslog facility yet)")
 	}
-	if opts.machineTarget != "" && !opts.quiet {
-		// systemd's -M --machine dispatches into a container's private
-		// journal via systemd-nspawn / machined. slinit has no nspawn
-		// integration; accept the flag so scripts written for systemd
-		// don't error out, warn once, and continue against the host
-		// journal.
-		fmt.Fprintf(os.Stderr,
-			"slinit-journalctl: -M %q accepted but ignored (nspawn/machined integration not present in slinit — querying host journal)\n",
-			opts.machineTarget)
+	if opts.machineTarget != "" {
+		// -M CONTAINER routes the query into the container's own
+		// journal via pkg/machine's file registry. slinit does not
+		// ship a D-Bus machined equivalent — the registry is
+		// /run/slinit/machines/<name> files that slinit-nspawn
+		// (or `slinit-machinectl register`) writes. Resolution:
+		//   registry file → container PID → container rootfs
+		//   → /proc/PID/root/run/slinit/events.sock (host-visible)
+		// If the container has --file, --directory, --root or
+		// --image set, the operator's explicit source wins — -M is
+		// silently downgraded to a WARN so the query still runs.
+		if opts.sourceFile != "" || opts.directory != "" || opts.root != "" || opts.image != "" {
+			if !opts.quiet {
+				fmt.Fprintf(os.Stderr,
+					"slinit-journalctl: -M %q ignored — explicit source (--file/--directory/--root/--image) takes precedence\n",
+					opts.machineTarget)
+			}
+		} else {
+			m, err := machine.Lookup(opts.machineTarget)
+			if err != nil {
+				return fmt.Errorf("-M %s: %w", opts.machineTarget, err)
+			}
+			if m == nil {
+				return fmt.Errorf("-M %s: no such machine registered under %s", opts.machineTarget, machine.Dir())
+			}
+			if !machine.Alive(m.PID) {
+				return fmt.Errorf("-M %s: registered PID %d is not alive (stale registration?)", opts.machineTarget, m.PID)
+			}
+			// Prefer socket dial for live journal (event bus + ring
+			// buffer + subscribe). Fall back to directory iteration
+			// when the container has no live daemon.
+			sockPath := filepath.Join(m.Root, machine.EventsSockPath)
+			if m.Root == "" {
+				sockPath = fmt.Sprintf("/proc/%d/root%s", m.PID, machine.EventsSockPath)
+			}
+			if _, statErr := os.Stat(sockPath); statErr == nil {
+				opts.socketPath = sockPath
+			} else {
+				// No live socket → walk the persistent journal
+				// directory instead. Falls out through --directory
+				// path, which already handles rotated JSONL + FSS.
+				files, listErr := m.ListJournalFiles()
+				if listErr != nil {
+					return fmt.Errorf("-M %s: no live socket at %s and journal listing failed: %w", opts.machineTarget, sockPath, listErr)
+				}
+				if len(files) == 0 {
+					return fmt.Errorf("-M %s: no live socket at %s and no persistent journal files under container rootfs", opts.machineTarget, sockPath)
+				}
+				// Point --directory at the first journal dir we found
+				// so runFromDirectory picks up every rotated file.
+				opts.directory = filepath.Dir(files[0])
+			}
+		}
 	}
 	if opts.latestInvocation {
 		// -I resolves at run time: find the latest invocation ID
