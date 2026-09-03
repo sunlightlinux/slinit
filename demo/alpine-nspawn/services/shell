@@ -1,8 +1,11 @@
-# Interactive /bin/sh on the container's tty1. Handy for poking
-# around inside — hit Enter to get a shell prompt if you launched
-# the container in the foreground.
+# A "monitor" service — proves long-running services survive under
+# slinit's supervision. Named shell historically (original design ran
+# getty on tty1 for interactive login), but namespaced containers
+# without an allocated PTY can't open /dev/tty1, so we swap to a
+# pure /bin/sh loop that reports uptime + PID every 15 seconds.
+# From the host: `slinit-journalctl -M alpine-demo -u shell -f`.
 
 type = process
-command = /sbin/getty -L tty1 0 vt100
+command = /bin/sh -c 'while :; do echo "MONITOR: uptime=$(cat /proc/uptime | cut -d. -f1)s pid=$$"; sleep 15; done'
 restart = yes
 restart-delay-step = 1
