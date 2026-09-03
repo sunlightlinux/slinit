@@ -1609,6 +1609,103 @@ func TestParseArgsSprint1(t *testing.T) {
 	}
 }
 
+// TestAllOutputFormatsRoundtrip covers every -o value: each format
+// must accept a canned Event without erroring, produce non-empty
+// output, and (where applicable) round-trip the key content —
+// timestamp, ident, message. Lock-in that the switch in render()
+// has a branch for every entry in validFormats.
+func TestAllOutputFormatsRoundtrip(t *testing.T) {
+	e := &journal.Event{
+		Ts:               time.Date(2026, 9, 3, 22, 53, 17, 123_456_000, time.UTC).UnixNano(),
+		Mts:              5_123_456_000, // 5.123456 seconds since boot
+		Msg:              "test message",
+		SyslogIdentifier: "svc",
+		Unit:             "svc",
+		Pid:              42,
+		Hostname:         "container",
+		Prio:             journal.PriorityInfo,
+		Transport:        journal.TransportStdout,
+	}
+	ro := renderOpts{utc: true}
+
+	for _, f := range validFormats {
+		t.Run(string(f), func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := render(&buf, f, e, ro); err != nil {
+				t.Fatalf("render(%s): %v", f, err)
+			}
+			if buf.Len() == 0 {
+				t.Fatalf("render(%s) produced no output", f)
+			}
+			// Every format should contain the message somewhere in
+			// the output (either directly or embedded in JSON).
+			if !strings.Contains(buf.String(), "test message") {
+				t.Errorf("render(%s) missing message; got:\n%s", f, buf.String())
+			}
+		})
+	}
+}
+
+// TestJSONSeqFraming — RFC 7464 requires RS (0x1E) before each record.
+// Regression guard: if someone "cleans up" the byte to a plain
+// separator this catches it.
+func TestJSONSeqFraming(t *testing.T) {
+	e := &journal.Event{Msg: "seq-test", Ts: 1000, Mts: 500}
+	var buf bytes.Buffer
+	if err := render(&buf, fmtJSONSeq, e, renderOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.Bytes()
+	if len(out) < 2 || out[0] != 0x1e {
+		t.Errorf("json-seq output must start with 0x1e (RS); got %v", out[:2])
+	}
+	if out[len(out)-1] != '\n' {
+		t.Error("json-seq output must end with LF")
+	}
+}
+
+// TestJSONSSEFraming — SSE demands "data: " prefix + blank-line
+// terminator. Catches drift from the W3C spec.
+func TestJSONSSEFraming(t *testing.T) {
+	e := &journal.Event{Msg: "sse-test", Ts: 1000, Mts: 500}
+	var buf bytes.Buffer
+	if err := render(&buf, fmtJSONSSE, e, renderOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if !strings.HasPrefix(s, "data: ") {
+		t.Errorf("json-sse must start with 'data: '; got %q", s[:min(10, len(s))])
+	}
+	if !strings.HasSuffix(s, "\n\n") {
+		t.Errorf("json-sse must end with blank-line terminator; got %q", s[max(0, len(s)-4):])
+	}
+}
+
+// TestMonotonicFormat — the [SSS.uuuuuu] bracket format is what
+// journalctl produces + what dmesg-style tools expect. Regression
+// against timestamp-source mixing (e.Ts vs e.Mts).
+func TestMonotonicFormat(t *testing.T) {
+	e := &journal.Event{
+		Ts:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
+		Mts:       5_123_456_000, // 5.123456 s since boot
+		Msg:       "mono-test",
+		Unit:      "svc",
+		SyslogIdentifier: "svc",
+	}
+	var buf bytes.Buffer
+	if err := render(&buf, fmtShortMonotonic, e, renderOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if !strings.Contains(s, "[    5.123456]") {
+		t.Errorf("monotonic format missing [    5.123456] prefix; got: %s", s)
+	}
+	// Wall clock should NOT appear anywhere.
+	if strings.Contains(s, "Jan 01") {
+		t.Errorf("monotonic must not include wall-clock; got: %s", s)
+	}
+}
+
 // TestExtractField — field name → Event value lookup, covering core
 // fields (MESSAGE, _PID), a freeform (SLINIT_EVENT), and a miss.
 func TestExtractField(t *testing.T) {

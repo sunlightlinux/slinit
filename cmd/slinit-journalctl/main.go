@@ -55,18 +55,33 @@ var version = "dev"
 type outputFormat string
 
 const (
-	fmtShort    outputFormat = "short"
-	fmtShortISO outputFormat = "short-iso"
-	fmtCat      outputFormat = "cat"
-	fmtJSON     outputFormat = "json"
-	fmtVerbose  outputFormat = "verbose"
-	fmtExport   outputFormat = "export"
+	fmtShort           outputFormat = "short"
+	fmtShortPrecise    outputFormat = "short-precise"
+	fmtShortISO        outputFormat = "short-iso"
+	fmtShortISOPrecise outputFormat = "short-iso-precise"
+	fmtShortFull       outputFormat = "short-full"
+	fmtShortMonotonic  outputFormat = "short-monotonic"
+	fmtShortUnix       outputFormat = "short-unix"
+	fmtCat             outputFormat = "cat"
+	fmtWithUnit        outputFormat = "with-unit"
+	fmtJSON            outputFormat = "json"
+	fmtJSONPretty      outputFormat = "json-pretty"
+	fmtJSONSSE         outputFormat = "json-sse"
+	fmtJSONSeq         outputFormat = "json-seq"
+	fmtVerbose         outputFormat = "verbose"
+	fmtExport          outputFormat = "export"
 )
 
 // validFormats lists every format value the -o flag accepts, in the
 // order shown by --help. Kept as a slice (not a map) so error messages
 // can print a stable, human-friendly enumeration.
-var validFormats = []outputFormat{fmtShort, fmtShortISO, fmtCat, fmtJSON, fmtVerbose, fmtExport}
+var validFormats = []outputFormat{
+	fmtShort, fmtShortPrecise, fmtShortISO, fmtShortISOPrecise,
+	fmtShortFull, fmtShortMonotonic, fmtShortUnix,
+	fmtCat, fmtWithUnit,
+	fmtJSON, fmtJSONPretty, fmtJSONSSE, fmtJSONSeq,
+	fmtVerbose, fmtExport,
+}
 
 func main() {
 	opts, err := parseArgs(os.Args[1:])
@@ -3152,12 +3167,32 @@ func render(out io.Writer, f outputFormat, e *journal.Event, ro renderOpts) erro
 	switch f {
 	case fmtShort:
 		return renderShort(out, e, timeShort, ro)
+	case fmtShortPrecise:
+		return renderShort(out, e, timeShortPrecise, ro)
 	case fmtShortISO:
 		return renderShort(out, e, timeISO, ro)
+	case fmtShortISOPrecise:
+		return renderShort(out, e, timeISOPrecise, ro)
+	case fmtShortFull:
+		return renderShort(out, e, timeFull, ro)
+	case fmtShortMonotonic:
+		// Monotonic clock reads e.Mts, not e.Ts. Route through a
+		// dedicated path that swaps the timestamp source.
+		return renderShortMonotonic(out, e, ro)
+	case fmtShortUnix:
+		return renderShort(out, e, timeUnix, ro)
 	case fmtCat:
 		return renderCat(out, e, ro)
+	case fmtWithUnit:
+		return renderWithUnit(out, e, ro)
 	case fmtJSON:
 		return renderJSON(out, e)
+	case fmtJSONPretty:
+		return renderJSONPretty(out, e)
+	case fmtJSONSSE:
+		return renderJSONSSE(out, e)
+	case fmtJSONSeq:
+		return renderJSONSeq(out, e)
 	case fmtVerbose:
 		return renderVerbose(out, e, ro)
 	case fmtExport:
@@ -3169,24 +3204,47 @@ func render(out io.Writer, f outputFormat, e *journal.Event, ro renderOpts) erro
 
 // timeFormat picks the timestamp representation. systemd's "short"
 // format is a fixed 15-char localtime "Jan 02 15:04:05"; short-iso is
-// RFC3339 with numeric offset.
+// RFC3339 with numeric offset. The -precise / -full / -monotonic /
+// -unix variants tune the same slot for higher precision, weekday
+// visibility, or a different clock reference altogether.
 type timeFormat int
 
 const (
-	timeShort timeFormat = iota
-	timeISO
+	timeShort           timeFormat = iota // "Jan 02 15:04:05"
+	timeShortPrecise                      // "Jan 02 15:04:05.uuuuuu"
+	timeISO                               // RFC3339: "2026-09-03T22:53:17+02:00"
+	timeISOPrecise                        // RFC3339 + microseconds
+	timeFull                              // "Wed 2026-09-03 22:53:17 CEST"
+	timeMonotonic                         // "[    5.123456]" seconds since boot
+	timeUnix                              // "1234567890.123456"
 )
 
 // formatTime turns a nanosecond Unix timestamp into the display string
-// for the selected timeFormat, honoring --utc.
+// for the selected timeFormat, honoring --utc. mts is used only by
+// timeMonotonic (which reads e.Mts, not e.Ts).
 func formatTime(nsec int64, tf timeFormat, utc bool) string {
 	t := time.Unix(0, nsec)
 	if utc {
 		t = t.UTC()
 	}
 	switch tf {
+	case timeShortPrecise:
+		return t.Format("Jan 02 15:04:05.000000")
 	case timeISO:
 		return t.Format(time.RFC3339)
+	case timeISOPrecise:
+		return t.Format("2006-01-02T15:04:05.000000Z07:00")
+	case timeFull:
+		// systemd's short-full: "Wed 2026-09-03 22:53:17 CEST"
+		return t.Format("Mon 2006-01-02 15:04:05 MST")
+	case timeUnix:
+		// Unix seconds with 6-digit microsecond precision.
+		return fmt.Sprintf("%d.%06d", nsec/int64(time.Second), (nsec%int64(time.Second))/int64(time.Microsecond))
+	case timeMonotonic:
+		// Same shape as dmesg / kernel log: "[    S.uuuuuu]".
+		secs := nsec / int64(time.Second)
+		micros := (nsec % int64(time.Second)) / int64(time.Microsecond)
+		return fmt.Sprintf("[%5d.%06d]", secs, micros)
 	default:
 		return t.Format("Jan 02 15:04:05")
 	}
@@ -3390,6 +3448,104 @@ func renderExport(out io.Writer, e *journal.Event, ro renderOpts) error {
 	return err
 }
 
+// renderShortMonotonic prints "[    S.uuuuuu] IDENT[PID]: MSG" — the
+// short format with a monotonic-clock timestamp instead of wall-clock.
+// Reads e.Mts (monotonic ns since boot), not e.Ts. Useful when the
+// wall clock is unreliable (VMs without RTC, containers with fake
+// time) but boot-relative ordering is meaningful.
+func renderShortMonotonic(out io.Writer, e *journal.Event, ro renderOpts) error {
+	// Reuse renderShort's identifier + bracket logic by constructing
+	// a fake event with e.Ts replaced by e.Mts. Cheaper than
+	// duplicating the whole renderShort body just to swap one field.
+	shadow := *e
+	shadow.Ts = e.Mts
+	return renderShort(out, &shadow, timeMonotonic, ro)
+}
+
+// renderWithUnit produces short-format output with an explicit "unit:"
+// prefix so multi-unit dumps stay unambiguous when a single log line
+// could belong to any of several services. Mirrors systemd's
+// with-unit format.
+func renderWithUnit(out io.Writer, e *journal.Event, ro renderOpts) error {
+	unit := e.Unit
+	if unit == "" {
+		unit = identOf(e)
+	}
+	// Emit the same identifying prefix short would produce, then
+	// suffix it with "unit=NAME:" for disambiguation.
+	fmt.Fprintf(out, "%s unit=%s ", formatTime(e.Ts, timeShort, ro.utc), unit)
+	// Now delegate the message + identifier/pid rendering to a
+	// pared-down inline path (can't call renderShort without
+	// double-timestamping).
+	ident := identOf(e)
+	pid := shortDisplayPID(e)
+	if pid > 0 {
+		fmt.Fprintf(out, "%s[%d]: ", ident, pid)
+	} else {
+		fmt.Fprintf(out, "%s: ", ident)
+	}
+	msg := ro.truncateMsg(e.Msg)
+	if _, err := fmt.Fprintln(out, msg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// renderJSONPretty is renderJSON with json.MarshalIndent — two-space
+// indent, one field per line. Matches systemd's json-pretty layout
+// closely enough that jq / diffing tools produce identical results.
+func renderJSONPretty(out io.Writer, e *journal.Event) error {
+	data, err := json.MarshalIndent(e, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, err = out.Write(append(data, '\n'))
+	return err
+}
+
+// renderJSONSSE emits Server-Sent Events framing: each event becomes
+// one "data: <json>\n\n" record. HTTP/SSE consumers (browser
+// EventSource, kubernetes-style watch endpoints) parse this directly.
+// The exact framing is defined by the W3C SSE spec — a single data:
+// line per JSON, followed by a blank line as the record delimiter.
+func renderJSONSSE(out io.Writer, e *journal.Event) error {
+	data, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "data: %s\n\n", data)
+	return err
+}
+
+// renderJSONSeq emits RFC 7464 JSON Text Sequences: each record is
+// framed by a leading RS (0x1E) byte and a trailing LF. This is the
+// wire format `curl --output-format=json-seq` and jq --seq speak, so
+// operators piping slinit-journalctl output into those tools get a
+// non-ambiguous stream even when a JSON value contains embedded
+// newlines.
+func renderJSONSeq(out io.Writer, e *journal.Event) error {
+	data, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	if _, err := out.Write([]byte{0x1e}); err != nil {
+		return err
+	}
+	_, err = out.Write(append(data, '\n'))
+	return err
+}
+
+// shortDisplayPID replicates renderShort's PID selection so
+// renderWithUnit stays byte-identical in the [PID] slot.
+func shortDisplayPID(e *journal.Event) int {
+	if v, ok := e.Fields["SLINIT_TARGET_PID"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return e.Pid
+}
+
 // writeExportField writes "KEY=value\n" only when value is non-empty.
 // systemd's export format allows empty-value lines (KEY=) but slinit's
 // convention (matching renderVerbose) is to skip them for readability.
@@ -3458,7 +3614,12 @@ Query the slinit journal ring buffer via the control socket.
 Flags:
   -n, --lines=N               Show only the last N matching events (0 = all)
       --no-tail               Show all matches (inverse of default -n heuristic)
-  -o, --output=FMT            Output format: short (default), short-iso, cat, json, verbose, export
+  -o, --output=FMT            Output format:
+                              short (default), short-precise, short-iso,
+                              short-iso-precise, short-full, short-monotonic,
+                              short-unix, cat, with-unit,
+                              json, json-pretty, json-sse, json-seq,
+                              verbose, export
       --output-fields=A,B,C   Restrict verbose/export/JSON to these field keys
   -u, --unit=NAME             Filter by service unit (repeatable — OR-set)
   -U, --user-unit=NAME        Filter by user-scope unit (also forces --user)
