@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"runtime"
 	"strconv"
 	"testing"
 )
@@ -37,6 +38,59 @@ func TestArchitectureRuntime(t *testing.T) {
 	if _, ok := PredicateKindByName("architecture"); !ok {
 		t.Fatal("architecture predicate missing from KindByName")
 	}
+}
+
+// TestCPUFeatureArchPrefix covers the arch-prefix form added by
+// systemd d5186757411: "<arch>.<feature>" only evaluates the feature
+// on the named arch, returning false everywhere else without touching
+// /proc/cpuinfo. Reachable from any service file targeting a
+// mixed-arch fleet where CPU feature names might collide.
+func TestCPUFeatureArchPrefix(t *testing.T) {
+	currentArch := archAlias(runtime.GOARCH)
+
+	// A prefix that does NOT match the current arch must always be
+	// false, regardless of the feature name — the point of the
+	// feature is to avoid probing cpuinfo for the wrong arch.
+	otherArch := "arm64"
+	if currentArch == "arm64" {
+		otherArch = "x86_64"
+	}
+	ok, _ := checkCPUFeature(otherArch + ".this-feature-cannot-exist")
+	if ok {
+		t.Errorf("checkCPUFeature(%q.foo) on %s = true; want false (arch mismatch)", otherArch, currentArch)
+	}
+
+	// A prefix that matches the current arch followed by a nonsense
+	// feature name must fall through to the cpuinfo check and
+	// return false — proving the prefix stripping worked (otherwise
+	// the arch-mismatch path would have short-circuited).
+	ok, msg := checkCPUFeature(currentArch + ".this-feature-cannot-exist")
+	if ok {
+		t.Errorf("checkCPUFeature(%q.this-feature-cannot-exist) = true; want false (feature absent)", currentArch)
+	}
+	// The error message should mention the feature, not the arch —
+	// distinguishing "arch mismatched" from "feature not found".
+	if msg == "" || !contains(msg, "this-feature-cannot-exist") {
+		t.Errorf("checkCPUFeature(match-arch.absent-feature) msg = %q; want mention of feature", msg)
+	}
+
+	// Empty feature after prefix must error the same way as bare
+	// empty input.
+	ok, msg = checkCPUFeature(currentArch + ".")
+	if ok || msg == "" {
+		t.Errorf("checkCPUFeature(%q.) = %v,%q; want false + non-empty error", currentArch, ok, msg)
+	}
+}
+
+// contains is a local strings.Contains alias to keep this test file's
+// import set narrow.
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCPUsAndMemoryAcceptOps covers the operator + numeric-value parse

@@ -36,6 +36,14 @@ func checkArchitecture(param string) (bool, string) {
 	return false, fmt.Sprintf("architecture: %q != %q", got, want)
 }
 
+// archMatches reports whether param names the current runtime arch,
+// using the same canonical names as checkArchitecture. Used by both
+// ConditionArchitecture and the arch-prefix form of ConditionCPUFeature
+// (systemd d5186757411).
+func archMatches(param string) bool {
+	return archAlias(runtime.GOARCH) == strings.TrimSpace(param)
+}
+
 func archAlias(goarch string) string {
 	switch goarch {
 	case "386":
@@ -69,8 +77,22 @@ func archAlias(goarch string) string {
 // checkCPUFeature succeeds when /proc/cpuinfo's flags line contains the
 // requested feature (case-insensitive), matching systemd's
 // ConditionCPUFeature=. Common examples: avx2, sha_ni, aes.
+//
+// Also accepts an optional architecture prefix so a service can spell
+// "arm64.bti" instead of bare "bti" on mixed-arch fleets where CPU
+// feature names can collide across architectures. On a matching arch
+// the prefix is stripped and the remaining feature is looked up as
+// usual; on any other arch the condition returns false without
+// touching /proc/cpuinfo. Mirrors systemd d5186757411 (2026-07-10).
 func checkCPUFeature(param string) (bool, string) {
-	want := strings.ToLower(strings.TrimSpace(param))
+	param = strings.TrimSpace(param)
+	if arch, feature, ok := strings.Cut(param, "."); ok {
+		if !archMatches(arch) {
+			return false, fmt.Sprintf("cpu-feature: arch prefix %q does not match current %q", arch, archAlias(runtime.GOARCH))
+		}
+		param = feature
+	}
+	want := strings.ToLower(param)
 	if want == "" {
 		return false, "cpu-feature: empty flag name"
 	}
