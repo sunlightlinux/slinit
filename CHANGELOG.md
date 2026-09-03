@@ -17,6 +17,142 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.4] — 2026-09-03
+
+Feature-heavy release: full `slinit-journalctl` systemd parity (flag
+surface + short-form aliases + output formats), first-class nspawn-
+style container integration (three-tier architecture + working demo),
+and a correctness fix for a state-machine race that Tier 3 fuzz
+surfaced. Every code fix that landed here originated in a test that
+now guards it.
+
+### Added
+
+- **`pkg/machine` — flat-file container registry** (Tier 1). Files
+  under `/run/slinit/machines/<name>` map operator-chosen names to
+  the container's host-visible PID 1. No D-Bus, no management
+  daemon — mirrors OpenRC/runit "flat files instead of a service
+  manager for the service manager". 14 tests cover roundtrip, atomic
+  overwrite, invalid-name/path-traversal/bogus-PID rejection,
+  liveness probing, and journal-file enumeration under a container
+  rootfs.
+- **`slinit-machinectl`** (Tier 2): CLI over `pkg/machine` with
+  `register / unregister / list / status / show` subcommands.
+  Modelled on systemd's `machinectl` subset that fits slinit's
+  runtime model.
+- **`slinit-nspawn`** (Tier 3): namespaced container launcher.
+  Creates PID / mount / UTS / IPC (+ optional NET) namespaces via
+  self-reexec + `CLONE_NEW*`, pivot_root into the target rootfs,
+  standard virtual FS bind mounts (`/proc`, `/sys`, `/dev/pts`,
+  `/run`, `/tmp`), then execs `/sbin/slinit` (or `--init=PATH`) as
+  PID 1 inside. Signal proxy forwards SIGTERM/SIGINT from the
+  launcher to container PID 1; registry cleanup runs on child exit.
+- **`slinit-journalctl -M CONTAINER`** now dispatches into the
+  container's journal via `pkg/machine` + `/proc/PID/root/run/
+  slinit.socket`, replacing the earlier WARN-shim. Explicit `--file/
+  --directory/--root/--image` still win. Unknown or stale machines
+  return a clean error identifying the registry path.
+- **`slinit-journalctl` full 15/15 output-format parity** with
+  systemd. 9 new modes: `short-precise`, `short-iso-precise`,
+  `short-full`, `short-monotonic` (dmesg-style `[    S.uuuuuu]`
+  bracket), `short-unix`, `with-unit` (multi-unit disambiguation),
+  `json-pretty` (indented), `json-sse` (`data: JSON\n\n` for browser
+  EventSource), `json-seq` (RFC 7464 `\x1e JSON \n` for `jq --seq`).
+- **`slinit-journalctl` full 65/65 flag-surface parity** with
+  systemd `journalctl`. Short-form aliases `-S/--since`, `-i/--file`,
+  `-N/--fields`, `-W/--no-hostname`. New `-I` resolves to the latest
+  invocation of `-u UNIT` at run time (requires `-u`, mutually
+  exclusive with `--invocation=`). `--no-pager` accepted as a silent
+  no-op for script portability.
+- **`condition-cpu-feature` arch-prefix syntax** (`arm64.bti` ⇔
+  bare `bti` on arm64, false everywhere else) — retroactive port of
+  systemd `d518675741` (2026-07-10) missed in the July 14 v261 sweep.
+- **`demo/alpine-nspawn/`**: end-to-end walkthrough with Alpine
+  minirootfs, three sample services (ticker/httpd/shell all pure
+  `/bin/sh` loops so no busybox-applet dependencies), fetch + setup
+  + run + stop scripts, and README documenting the flow. Live-
+  tested — `-M alpine-demo -f` streams container stdout in real time.
+
+### Fixed
+
+- **wedged-STOPPING state race** (surfaced by Tier 3 fuzz seed
+  `[88 48 44 49]`). `svc.Record().PinStart()` enqueued
+  `propPinDpt=true` but relied on the caller to drain — a racing
+  `Stop(dep)` in the window between PinStart and ProcessQueues
+  observed stale `deptPinnedStarted=false` and ran `doStop`,
+  leaving the dep wedged in StateStopping forever. Fixed with new
+  `ServiceSet.PinStartService` / `UnpinService` wrappers that hold
+  `queueMu` + call `processQueuesLocked` atomically, mirroring
+  dinit's control-layer `pin_start(); process_queues();`
+  convention. All three production callers routed through the
+  wrappers. `TestPinStartServiceWrapperDrainsPropagation` locks
+  in the fix.
+- **`readEntryArray` unbounded allocation** (fuzz-caught DoS): a
+  hostile `ObjectHeader.Size` in a `.journal` file triggered a
+  multi-EB `make([]byte, oh.Size-16)` and OOMed the reader. New
+  `maxEntryArrayObjectSize` cap tied to the writer's
+  `entryArrayMaxCap=4096`. Corpus `0e62be2bf96a4a88` guards the
+  regression.
+- **`ParseCPUAffinity` unbounded loop** (fuzz-caught DoS): input
+  `0-79999999` allocated ~640 MB of `[]uint` + a same-size map.
+  New `MaxCPUNumber=65535` cap (10× above any realistic CPU count)
+  rejects with a clean error. Corpus `fdbd62cae53e1173` guards.
+- **Wire-layer NUL rejection in `DecodeServiceName`** (fuzz-caught
+  defense-in-depth) — see `pkg/control`.
+- **`readZoneTab` filters NUL + `..` + `/`-prefixed entries**
+  (fuzz-caught defense-in-depth) in `slinit-timedatectl` zoneinfo
+  enumeration.
+- **`115-protect-hostname` / `113-protect-clock` / `112-protect-
+  kernel-logs` / `111-protect-kernel-modules`** — polled
+  `/proc/PID/status` for Seccomp mode over 10×200 ms rather than
+  a single-shot read after `sleep 0.5`. Same fix pattern as
+  `116-lock-personality` shipped earlier; race is between slinit's
+  post-fork `Started()` event and `slinit-runner`'s pre-exec
+  `seccomp.Install()`.
+
+### Tests
+
+- **Fuzz suite: 21 targets → 34 targets** across 9 packages,
+  in three focused passes:
+  - **Tier 1 (depth)**: round-trip invariants on 8 control-protocol
+    encode/decode pairs + `FuzzServiceNameSemantics` wire-vs-loader
+    consistency check that immediately surfaced the NUL-in-
+    DecodeServiceName gap.
+  - **Tier 2 (breadth)**: 12 new targets across 8 packages
+    (`FuzzFstabParse`, `FuzzJournalBinaryDecodeHeader`,
+    `FuzzJournalBinaryOpenReader`, `FuzzDecodeValue`,
+    `FuzzLoadMachineInfo`, `FuzzParseOSRelease`, `FuzzReadZoneTab`,
+    `FuzzValidateZone`, `FuzzTmpfilesParseLine`,
+    `FuzzSysusersParseLine`, `FuzzParseSystemdUnit`,
+    `FuzzAnalyzeRunScript`, `FuzzParseChpst`,
+    `FuzzParseOpenrcScript`, `FuzzParseDepend`).
+  - **Tier 3 (state machine, in-package `pkg/service`)**: single
+    `FuzzStateMachine` driving a 3-node dep chain through pseudo-
+    random sequences of Start/Stop/Restart/ForceStop/PinStart/
+    Unpin/ProcessQueues; surfaced the wedged-STOPPING bug fixed
+    above.
+- **Full-suite verified on 40-core hardware**: `for f in $(go test
+  -list 'Fuzz.*'); do go test -fuzz=$f -fuzztime=5m; done` runs
+  ~1–2 billion iterations across all 34 targets with zero new
+  findings after this session's fixes.
+- **Alpine-nspawn end-to-end** live-tested: `sudo ./run.sh` boots
+  the container, `slinit-journalctl -M alpine-demo -u ticker -f`
+  streams `TICK N` lines at 5 s cadence with correct hostname
+  (`alpine-demo`) and container-local PID (12).
+
+### Housekeeping
+
+- `.gitignore` refactored to glob patterns (`/slinit-*`, `/rc-*`,
+  `/slinitctl-*`) — every existing + future `cmd/` binary covered
+  without another edit. `git check-ignore` verified `cmd/` source
+  directories remain fully tracked.
+- `demo/build.sh` now bundles `slinit-machinectl` + `slinit-nspawn`
+  into the QEMU rootfs.
+- `tests/fuzz/README.md` sequential-runner snippet anchors `-fuzz`
+  regex with `^$` so a name that's a prefix of another target
+  (`FuzzDecodeServiceStatus` vs `FuzzDecodeServiceStatus5`)
+  doesn't fail with "matches more than one".
+
 ## [2.2.3] — 2026-08-31
 
 Test-only point release on top of v2.2.2. No behaviour changes to
