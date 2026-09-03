@@ -42,16 +42,28 @@ import (
 //  2. TargetState (desired) is one of the legal steady values
 //     (StateStopped or StateStarted), never a transitional state.
 //
-// Known finding, not asserted (surfaced by an early fuzz run with ops
-// `[88 48 44 49]`): stopping a service whose dependent chain reaches
-// a pin-started service leaves the stopped service stuck in
-// StateStopping. This is a semantic design gap between "cascade
-// through pinning" and "refuse-if-dependent-blocks" that dinit
-// resolves at the CLI layer via a `--force` flag on `stop`; slinit
-// currently accepts the stop request unconditionally and the state
-// machine has no path back out. Not asserted here because a fuzz
-// isn't the venue to pick between semantics — filed as a follow-on
-// for design work.
+// Original wedge (ops `[88 48 44 49]` = Start svc2 → Start svc0 →
+// PinStart svc2 → Stop svc0): fixed. Root cause was that raw
+// `svc.Record().PinStart()` enqueued propPinDpt but relied on the
+// caller to drain it, and a racing Stop observed stale
+// `deptPinnedStarted=false`. Fixed by routing pin ops through
+// `ServiceSet.PinStartService` / `UnpinService` wrappers that hold
+// queueMu + call processQueuesLocked atomically (mirroring dinit's
+// control-layer `pin_start(); process_queues();` convention). The
+// fuzz uses those wrappers now, and TestPinStartServiceWrapperDrains-
+// Propagation locks in the fix.
+//
+// Second wedge shape surfaced by the reactivated invariant (ops
+// `[56 50 36]` = Start svc1 → Restart svc0 → PinStart svc1): NOT a
+// pin-propagation race — a legitimate Restart-cascade-vs-Pin
+// interaction. Restart(svc0) sets `svc1.propStop = true` as part of
+// the restart cascade; a subsequent PinStart(svc1) makes svc1 pinned
+// so its doStop early-returns; svc0 waits for svc1 to stop forever
+// (waitingForDeps=true). Design call for a separate session:
+// pinning a service should probably cancel any pending stop from a
+// restart cascade (analogous to how it blocks direct Stop). Left as
+// a documented known finding — the fuzz allows wedged-STOPPING for
+// now, would trip once the Restart+Pin interaction is addressed.
 func FuzzStateMachine(f *testing.F) {
 	// Seed corpus: representative operation sequences.
 	// Format is raw bytes; comment above each explains the intent.
@@ -126,9 +138,9 @@ func FuzzStateMachine(f *testing.F) {
 			case 3:
 				set.ForceStopService(svc)
 			case 4:
-				svc.Record().PinStart()
+				set.PinStartService(svc)
 			case 5:
-				svc.Record().Unpin()
+				set.UnpinService(svc)
 			case 6:
 				set.ProcessQueues()
 			case 7:
@@ -152,17 +164,16 @@ func FuzzStateMachine(f *testing.F) {
 		}
 
 		// Settle: run the state machine one more time and give
-		// scheduled work a moment to complete. Post-settle state is
-		// not asserted (see the "Known finding" note in the header):
-		// wedged-STOPPING under pinned-dependent chains is a
-		// documented semantic gap that a fuzz can't decide between.
+		// scheduled work a moment to complete.
 		set.ProcessQueues()
 		time.Sleep(20 * time.Millisecond)
 		set.ProcessQueues()
 
-		// After settle, TargetState must still be legal (drives any
-		// future transition) and State must still be in the enum
-		// range — these hold regardless of the wedged-STOPPING gap.
+		// Post-settle: assert enum-range + steady TargetState. The
+		// wedged-STOPPING check is deliberately not asserted (see
+		// the "Second wedge shape" note in the header) — Restart +
+		// PinStart interaction can leave a service waiting on a
+		// now-pinned dep. That's a design gap tracked separately.
 		for i, s := range svcs {
 			if st := s.State(); st > StateStopping {
 				t.Errorf("svc%d: invalid post-settle state %d (ops=%v)",

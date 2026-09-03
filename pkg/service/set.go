@@ -343,6 +343,33 @@ func (ss *ServiceSet) ForceStopService(svc Service) {
 	ss.processQueuesLocked()
 }
 
+// PinStartService pins the service in started state and drains the
+// resulting dept_pinned_started propagation atomically. Mirrors dinit's
+// control layer convention where `pin_start()` is always paired with
+// `process_queues()` (see dinit control.cc). Without this drain, a
+// racing `Stop(dep)` observes stale `deptPinnedStarted=false` on the
+// dep and wedges it in STOPPING because Stop's `IsStartPinned()` check
+// returns false before propagation has reached the dep. Callers must
+// use this wrapper rather than raw `svc.PinStart()` unless they are
+// already inside a queueMu-held region and manually call
+// processQueuesLocked() before releasing the lock.
+func (ss *ServiceSet) PinStartService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.PinStart()
+	ss.processQueuesLocked()
+}
+
+// UnpinService clears both start and stop pins and drains the resulting
+// propagation atomically. Same rationale as PinStartService — an
+// interleaved Stop/Start on a former dep would see stale pin state.
+func (ss *ServiceSet) UnpinService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Unpin()
+	ss.processQueuesLocked()
+}
+
 // StopAllServices stops all services (for shutdown).
 func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 	// Snapshot services under read lock to avoid racing with concurrent

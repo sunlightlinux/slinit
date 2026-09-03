@@ -514,7 +514,7 @@ func (c *Connection) handleStartService(payload []byte) error {
 
 	c.server.services.StartService(svc)
 	if pin {
-		svc.PinStart()
+		c.server.services.PinStartService(svc)
 		// Persist the pin so a reboot keeps the operator's intent.
 		// Errors are logged; a full disk must not fail the start.
 		if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
@@ -616,7 +616,7 @@ func (c *Connection) handleStopService(payload []byte) error {
 		// Re-start the service after stopping (restart operation)
 		c.server.services.StartService(svc)
 		if pin {
-			svc.PinStart()
+			c.server.services.PinStartService(svc)
 			if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
 			}
@@ -997,13 +997,12 @@ func (c *Connection) handleUnpinService(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	svc.Unpin()
+	c.server.services.UnpinService(svc)
 	// Drop any persisted intent — unpin means the operator no longer
 	// wants slinit to re-apply pins on the next boot.
 	if err := c.server.Pins.Clear(svc.Name()); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
 	}
-	c.server.services.ProcessQueues()
 	return c.writePacket(RplyACK, nil)
 }
 

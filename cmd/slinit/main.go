@@ -1297,8 +1297,8 @@ func main() {
 			}
 			switch intent {
 			case persist.IntentPinnedStarted:
-				svc.PinStart()
 				serviceSet.StartService(svc)
+				serviceSet.PinStartService(svc)
 				logger.Info("Persist: replayed pinned-started on %s", name)
 			case persist.IntentPinnedStopped:
 				svc.PinStop()

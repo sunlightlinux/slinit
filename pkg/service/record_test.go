@@ -203,6 +203,97 @@ func TestServicePinStart(t *testing.T) {
 	}
 }
 
+// TestPinStartServiceWrapperDrainsPropagation covers the wedged-STOPPING
+// bug caught by Tier 3 FuzzStateMachine: PinStart adds propPinDpt to
+// the queue but the caller must drain before any interleaved Stop on
+// a dep observes IsStartPinned() correctly. Raw svc.Record().PinStart()
+// leaves the dep chain in a half-propagated state; ServiceSet.
+// PinStartService wraps PinStart + processQueuesLocked atomically.
+func TestPinStartServiceWrapperDrainsPropagation(t *testing.T) {
+	set, _ := newTestSet()
+
+	svc0 := NewInternalService(set, "wedge-svc0")
+	svc1 := NewInternalService(set, "wedge-svc1")
+	svc2 := NewInternalService(set, "wedge-svc2")
+	set.AddService(svc0)
+	set.AddService(svc1)
+	set.AddService(svc2)
+	svc1.Record().AddDep(svc0, DepRegular)
+	svc2.Record().AddDep(svc1, DepRegular)
+
+	set.StartService(svc2)
+	set.StartService(svc0)
+
+	// Original fuzz sequence: PinStart via wrapper, then Stop the
+	// deepest dep. Wrapper drains propPinDpt so Stop's IsStartPinned
+	// check sees deptPinnedStarted=true on svc0.
+	set.PinStartService(svc2)
+	set.StopService(svc0)
+
+	// Give any lingering settle a moment; wedge would show as STOPPING.
+	set.ProcessQueues()
+
+	if got := svc0.State(); got != StateStarted {
+		t.Errorf("svc0: pinned via chain, expected STARTED, got %v", got)
+	}
+	if got := svc1.State(); got != StateStarted {
+		t.Errorf("svc1: pinned via chain, expected STARTED, got %v", got)
+	}
+	if got := svc2.State(); got != StateStarted {
+		t.Errorf("svc2: directly pinned, expected STARTED, got %v", got)
+	}
+
+	// After Unpin cascade, the deferred stop on svc0 (recorded via
+	// desired=STOPPED at Stop time) fires and cascades up.
+	set.UnpinService(svc2)
+	set.ProcessQueues()
+
+	if got := svc0.State(); got != StateStopped {
+		t.Errorf("svc0: post-unpin, expected STOPPED, got %v", got)
+	}
+	if got := svc1.State(); got != StateStopped {
+		t.Errorf("svc1: cascade post-unpin, expected STOPPED, got %v", got)
+	}
+	if got := svc2.State(); got != StateStopped {
+		t.Errorf("svc2: cascade post-unpin, expected STOPPED, got %v", got)
+	}
+}
+
+// TestRawPinStartLeavesRaceOpen documents the race: bypassing the
+// wrapper triggers the wedge. This test intentionally reproduces the
+// buggy sequence to lock in that ServiceSet.PinStartService — not raw
+// svc.PinStart() — is the correct public API.
+func TestRawPinStartLeavesRaceOpen(t *testing.T) {
+	set, _ := newTestSet()
+
+	svc0 := NewInternalService(set, "raw-svc0")
+	svc1 := NewInternalService(set, "raw-svc1")
+	svc2 := NewInternalService(set, "raw-svc2")
+	set.AddService(svc0)
+	set.AddService(svc1)
+	set.AddService(svc2)
+	svc1.Record().AddDep(svc0, DepRegular)
+	svc2.Record().AddDep(svc1, DepRegular)
+
+	set.StartService(svc2)
+	set.StartService(svc0)
+	svc2.Record().PinStart() // bypass wrapper — propagation NOT drained
+	set.StopService(svc0)    // observes stale deptPinnedStarted=false
+
+	set.ProcessQueues()
+
+	// The wedge is the point — without the drain, svc0 ends up in
+	// STOPPING because Stop's IsStartPinned check returned false
+	// before the propPinDpt queue reached svc0. If someone accidentally
+	// "fixes" PinStart to propagate synchronously, this test will
+	// change shape — that's expected, update accordingly.
+	if svc0.State() != StateStopping {
+		t.Skipf("raw PinStart no longer wedges svc0 (state=%v) — "+
+			"if PinStart was made synchronous, drop this test",
+			svc0.State())
+	}
+}
+
 func TestServicePinStop(t *testing.T) {
 	set, _ := newTestSet()
 

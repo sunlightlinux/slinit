@@ -89,12 +89,16 @@ func applyOne(set *service.ServiceSet, entry ServiceSnapshot, logger RestoreLogg
 
 	// Pin first: PinnedStop wins if both happen to be true. This is
 	// the safer default — refusing to auto-start a service the
-	// operator deliberately pinned down.
+	// operator deliberately pinned down. PinStart routed through the
+	// ServiceSet wrapper so propagation drains atomically — a raw
+	// svc.Record().PinStart() leaves dept_pinned_started unpropagated
+	// until the next queue drain, which races with any interleaved
+	// Stop on a dep (see wedged-STOPPING fix).
 	switch {
 	case entry.PinnedStop:
 		svc.Record().PinStop()
 	case entry.PinnedStart:
-		svc.Record().PinStart()
+		set.PinStartService(svc)
 	}
 
 	// Trigger: a TriggeredService remembers the latch even when
