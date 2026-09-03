@@ -327,5 +327,85 @@ func childMain() error {
 	// Exec the init. slinit expects PID 1 semantics; nothing to teach
 	// it about our namespaces since it always is one.
 	argv := append([]string{initBin}, initArgs...)
-	return syscall.Exec(initBin, argv, os.Environ())
+	if err := syscall.Exec(initBin, argv, os.Environ()); err != nil {
+		// execve ENOENT is famously ambiguous — the target binary
+		// missing, its dynamic interpreter missing, or a #! shebang
+		// pointing at nothing all look identical. Investigate before
+		// bubbling up so the operator gets a concrete pointer.
+		hint := diagnoseExecFailure(initBin, err)
+		return fmt.Errorf("exec %s: %w%s", initBin, err, hint)
+	}
+	return nil
+}
+
+// diagnoseExecFailure looks at the failed exec target and produces a
+// human hint for the two most common causes: file-not-found and
+// glibc-vs-musl interpreter mismatch. Returns "" when nothing useful
+// can be surfaced (in that case the raw errno wins).
+func diagnoseExecFailure(path string, execErr error) string {
+	if !errors.Is(execErr, syscall.ENOENT) {
+		return ""
+	}
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Sprintf(" (%s does not exist inside the container — did setup-rootfs.sh copy it?)", path)
+	}
+	// Binary exists. Read the ELF interpreter path (PT_INTERP)
+	// via the standard bytes at the start of the file to detect a
+	// glibc-vs-musl mismatch.
+	interp := readELFInterpreter(path)
+	if interp == "" {
+		return ""
+	}
+	if _, err := os.Stat(interp); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Sprintf(" (interpreter %s missing — %s is dynamically linked; rebuild with CGO_ENABLED=0 for musl containers)", interp, path)
+	}
+	return ""
+}
+
+// readELFInterpreter returns the PT_INTERP segment payload from an
+// ELF64 binary, or "" if the file isn't a supported ELF or the
+// segment can't be located quickly. Only meant as a diagnostic hint
+// — a proper ELF parser lives in debug/elf but pulling that in for
+// a one-shot error message is overkill.
+func readELFInterpreter(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) < 64 {
+		return ""
+	}
+	// ELF64 magic + class byte 2 (64-bit)
+	if string(data[:4]) != "\x7fELF" || data[4] != 2 {
+		return ""
+	}
+	// Walk .interp section by scanning for the well-known interpreter
+	// path prefixes. This is a heuristic — sufficient for the two
+	// distros we care about (musl vs glibc) and avoids a full ELF
+	// parse for a hint-only string.
+	for _, prefix := range []string{"/lib64/ld-linux", "/lib/ld-linux", "/lib/ld-musl"} {
+		if idx := indexOfString(data, prefix); idx >= 0 {
+			// Read until NUL to get the full interpreter path.
+			end := idx
+			for end < len(data) && data[end] != 0 {
+				end++
+			}
+			return string(data[idx:end])
+		}
+	}
+	return ""
+}
+
+func indexOfString(haystack []byte, needle string) int {
+	nb := []byte(needle)
+	for i := 0; i+len(nb) <= len(haystack); i++ {
+		match := true
+		for j := 0; j < len(nb); j++ {
+			if haystack[i+j] != nb[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }
