@@ -1,0 +1,9 @@
+# A trivial "prove -M works" ticker. Every 5 seconds emits a line
+# tagged with a fixed identifier so the host operator can filter for
+# it via `slinit-journalctl -M alpine-demo -u ticker -f`.
+
+type = process
+command = /bin/sh -c 'i=0; while :; do i=$((i+1)); echo "TICK $i from inside the container ($(date -u +%FT%TZ))"; sleep 5; done'
+restart = yes
+restart-delay-step = 1
+restart-delay-cap = 10

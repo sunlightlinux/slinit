@@ -1,0 +1,8 @@
+# Interactive /bin/sh on the container's tty1. Handy for poking
+# around inside — hit Enter to get a shell prompt if you launched
+# the container in the foreground.
+
+type = process
+command = /sbin/getty -L tty1 0 vt100
+restart = yes
+restart-delay-step = 1

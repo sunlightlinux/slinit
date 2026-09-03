@@ -1,0 +1,4 @@
+type = internal
+waits-for = ticker
+waits-for = httpd
+waits-for = shell
