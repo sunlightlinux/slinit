@@ -10,3 +10,4 @@ command = /bin/sh -c 'i=0; while :; do i=$((i+1)); echo "HEARTBEAT #$i - httpd-s
 restart = yes
 restart-delay-step = 2
 restart-delay-cap = 30
+log-type = buffer

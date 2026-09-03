@@ -7,3 +7,7 @@ command = /bin/sh -c 'i=0; while :; do i=$((i+1)); echo "TICK $i from inside the
 restart = yes
 restart-delay-step = 1
 restart-delay-cap = 10
+# Route stdout/stderr into slinit's in-process ring buffer so
+# `slinit-journalctl -M alpine-demo -u ticker -f` surfaces each TICK
+# line as a journal entry alongside the state transition events.
+log-type = buffer
