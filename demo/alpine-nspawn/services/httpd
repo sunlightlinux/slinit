@@ -6,7 +6,7 @@
 # shows the heartbeat stream.
 
 type = process
-command = /bin/sh -c 'i=0; while :; do i=$((i+1)); echo "HEARTBEAT #$i - httpd-substitute running healthy ($(date -u +%FT%TZ))"; sleep 10; done'
+command = /bin/sh -c 'i=0; while :; do i=$$((i+1)); echo "HEARTBEAT #$$i - httpd-substitute running healthy ($$(date -u +%FT%TZ))"; sleep 10; done'
 restart = yes
 restart-delay-step = 2
 restart-delay-cap = 30

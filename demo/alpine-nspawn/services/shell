@@ -6,7 +6,7 @@
 # From the host: `slinit-journalctl -M alpine-demo -u shell -f`.
 
 type = process
-command = /bin/sh -c 'while :; do echo "MONITOR: uptime=$(cat /proc/uptime | cut -d. -f1)s pid=$$"; sleep 15; done'
+command = /bin/sh -c 'while :; do echo "MONITOR: uptime=$$(cat /proc/uptime | cut -d. -f1)s pid=$$$$"; sleep 15; done'
 restart = yes
 restart-delay-step = 1
 log-type = file
