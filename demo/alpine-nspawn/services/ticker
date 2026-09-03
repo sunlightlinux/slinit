@@ -7,7 +7,16 @@ command = /bin/sh -c 'i=0; while :; do i=$((i+1)); echo "TICK $i from inside the
 restart = yes
 restart-delay-step = 1
 restart-delay-cap = 10
-# Route stdout/stderr into slinit's in-process ring buffer so
-# `slinit-journalctl -M alpine-demo -u ticker -f` surfaces each TICK
-# line as a journal entry alongside the state transition events.
-log-type = buffer
+# Route stdout/stderr into slinit's journal so `slinit-journalctl -M
+# alpine-demo -u ticker -f` surfaces each TICK line as an entry
+# alongside the state-transition events.
+#
+# Mechanism: LogRotator's per-line processing loop calls
+# emitJournalLogLine on every line it accepts (logrotate.go:620).
+# LogRotator activates only when logfile= is set AND at least one
+# processing knob is on — the logfile-max-size below flips it, so
+# a bare 1M rotation ceiling is enough to arm the journal-emit
+# path even though we don't care about rotation for a demo.
+log-type = file
+logfile = /var/log/slinit/ticker.log
+logfile-max-size = 1M

@@ -47,8 +47,10 @@ done
 # Ensure /run and /var/log/slinit-journal directories exist so the
 # container's slinit-journald can write immediately (Phase 3 daemon
 # handles this on its own, but pre-creating avoids first-boot ENOENT
-# noise).
-install -d -m 0755 rootfs/run rootfs/var/log/slinit-journal
+# noise). /var/log/slinit hosts per-service logfiles that LogRotator
+# writes to when log-type=file is set — pre-created so services don't
+# fail their first write.
+install -d -m 0755 rootfs/run rootfs/var/log/slinit-journal rootfs/var/log/slinit
 
 echo "→ services installed:"
 ls rootfs/etc/slinit.d/ | sed 's/^/    /'
