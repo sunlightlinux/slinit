@@ -14,10 +14,12 @@ go test ./tests/fuzz/
 # Run with extended time for deeper coverage
 go test -fuzz=FuzzReadPacket -fuzztime=5m ./tests/fuzz/
 
-# Run all fuzz targets sequentially
+# Run all fuzz targets sequentially. Anchor the regex with ^$ so a name
+# that's a prefix of another target (e.g. FuzzDecodeServiceStatus vs
+# FuzzDecodeServiceStatus5) doesn't fail with "matches more than one".
 for f in $(go test -list 'Fuzz.*' ./tests/fuzz/ 2>/dev/null | grep ^Fuzz); do
     echo "=== $f ==="
-    go test -fuzz=$f -fuzztime=30s ./tests/fuzz/
+    go test -fuzz="^${f}$" -fuzztime=30s ./tests/fuzz/
 done
 ```
 
