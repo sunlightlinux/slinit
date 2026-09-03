@@ -22,3 +22,6 @@
 /slinit-runner
 /slinit-hostnamectl
 /slinit-timedatectl
+/slinit-journalctl
+/slinit-machinectl
+/slinit-nspawn

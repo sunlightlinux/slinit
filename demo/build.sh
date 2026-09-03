@@ -113,7 +113,8 @@ for bin in slinit slinitctl slinit-check slinit-monitor \
            slinit-fstabinfo slinit-mountinfo slinit-einfo slinit-shell-var \
            slinit-cgtop slinit-journalctl slinit-journald slinit-journal-migrate \
            slinit-supports slinit-hostnamectl slinit-timedatectl \
-           slinit-logouthookd slinit-sysusers slinit-tmpfiles; do
+           slinit-logouthookd slinit-sysusers slinit-tmpfiles \
+           slinit-machinectl slinit-nspawn; do
     # -tags paniconce activates the crash-shell test hook in
     # cmd/slinit/panictest_on.go (no-op file for other binaries).
     # See demo/run.sh --panic-after=N and --crash-shell for the
