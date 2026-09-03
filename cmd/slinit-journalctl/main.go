@@ -196,8 +196,10 @@ type options struct {
 
 	// --- Group E: invocation ---
 
-	invocation      string // --invocation=UUID — filter events by SLINIT_INVOCATION_ID
-	listInvocations bool   // --list-invocations — list invocations for --unit
+	invocation           string // --invocation=UUID — filter events by SLINIT_INVOCATION_ID
+	latestInvocation     bool   // -I — resolve to the latest invocation ID for -u UNIT at run time
+	listInvocations      bool   // --list-invocations — list invocations for --unit
+	machineTarget        string // -M --machine=CONTAINER — accepted for parity, WARN-and-skip
 
 	showHelp    bool
 	showVersion bool
@@ -321,7 +323,7 @@ func parseArgs(args []string) (options, error) {
 			opts.prioritySet = true
 			args = args[1:]
 
-		case a == "--since":
+		case a == "-S" || a == "--since":
 			if len(args) < 2 {
 				return opts, errors.New("--since requires an argument")
 			}
@@ -371,7 +373,7 @@ func parseArgs(args []string) (options, error) {
 			opts.kernelOnly = true
 			args = args[1:]
 
-		case a == "--file":
+		case a == "-i" || a == "--file":
 			if len(args) < 2 {
 				return opts, errors.New("--file requires an argument")
 			}
@@ -444,7 +446,7 @@ func parseArgs(args []string) (options, error) {
 
 		// --- Group A: display modifiers ---
 
-		case a == "--no-hostname":
+		case a == "-W" || a == "--no-hostname":
 			opts.noHostname = true
 			args = args[1:]
 
@@ -597,7 +599,7 @@ func parseArgs(args []string) (options, error) {
 			opts.fieldName = strings.TrimPrefix(a, "--field=")
 			args = args[1:]
 
-		case a == "--fields":
+		case a == "-N" || a == "--fields":
 			opts.fieldsList = true
 			args = args[1:]
 
@@ -882,6 +884,30 @@ func parseArgs(args []string) (options, error) {
 
 		case a == "--list-invocations":
 			opts.listInvocations = true
+			args = args[1:]
+
+		case a == "-I":
+			// systemd: "-I" is the shortcut for "the latest
+			// invocation of the specified -u UNIT". Resolved at run
+			// time (see runQuery) — needs a unit + event gather.
+			opts.latestInvocation = true
+			args = args[1:]
+
+		case a == "--no-pager":
+			// systemd invokes $PAGER for long output; slinit never
+			// does — accept silently so scripts ported from systemd
+			// keep working without a WARN spew.
+			args = args[1:]
+
+		case a == "-M" || a == "--machine":
+			if len(args) < 2 {
+				return opts, fmt.Errorf("%s requires an argument", a)
+			}
+			opts.machineTarget = args[1]
+			args = args[2:]
+
+		case strings.HasPrefix(a, "--machine="):
+			opts.machineTarget = strings.TrimPrefix(a, "--machine=")
 			args = args[1:]
 
 		default:
@@ -1231,6 +1257,38 @@ func runQuery(opts options) error {
 	// the operator just learns not to rely on it.
 	if opts.facilitySet && !opts.quiet {
 		fmt.Fprintln(os.Stderr, "slinit-journalctl: --facility parsed but ignored (slinit events don't record a syslog facility yet)")
+	}
+	if opts.machineTarget != "" && !opts.quiet {
+		// systemd's -M --machine dispatches into a container's private
+		// journal via systemd-nspawn / machined. slinit has no nspawn
+		// integration; accept the flag so scripts written for systemd
+		// don't error out, warn once, and continue against the host
+		// journal.
+		fmt.Fprintf(os.Stderr,
+			"slinit-journalctl: -M %q accepted but ignored (nspawn/machined integration not present in slinit — querying host journal)\n",
+			opts.machineTarget)
+	}
+	if opts.latestInvocation {
+		// -I resolves at run time: find the latest invocation ID
+		// recorded for the requested unit, then continue query with
+		// opts.invocation set. Requires -u UNIT (matches systemd).
+		if len(opts.units) == 0 && len(opts.userUnitFilters) == 0 {
+			return errors.New("-I requires -u UNIT")
+		}
+		if opts.invocation != "" {
+			return errors.New("-I and --invocation are mutually exclusive")
+		}
+		id, err := resolveLatestInvocation(opts)
+		if err != nil {
+			return err
+		}
+		if id == "" {
+			if !opts.quiet {
+				fmt.Fprintln(os.Stderr, "slinit-journalctl: -I: no recorded invocations for this unit")
+			}
+			return nil
+		}
+		opts.invocation = id
 	}
 	if opts.merge && !opts.quiet {
 		// Merge is a no-op on a single-source setup; harmless. Only
@@ -2241,6 +2299,31 @@ func runListInvocationsShortCircuit(opts options) error {
 		)
 	}
 	return nil
+}
+
+// resolveLatestInvocation returns the SLINIT_INVOCATION_ID with the
+// highest observed timestamp for the units in opts. Used by -I to
+// pin the query to the latest invocation. Returns "" when no
+// invocations are recorded (caller decides whether that's a soft
+// no-op or an error).
+func resolveLatestInvocation(opts options) (string, error) {
+	events, err := gatherEvents(opts)
+	if err != nil {
+		return "", err
+	}
+	var bestID string
+	var bestTs int64
+	for _, e := range events {
+		id := extractField(e, "SLINIT_INVOCATION_ID")
+		if id == "" {
+			continue
+		}
+		if bestID == "" || e.Ts > bestTs {
+			bestID = id
+			bestTs = e.Ts
+		}
+	}
+	return bestID, nil
 }
 
 // gatherEvents pulls events for a normal query — used by
@@ -3333,8 +3416,8 @@ Flags:
   -g, --grep=PATTERN          RE2 regex on MESSAGE; default case-insensitive if pattern is all-lowercase
       --case-sensitive[=BOOL] Override the case heuristic used by -g
   -p, --priority=LVL          Keep only events at LVL or more urgent (0..7 or emerg..debug)
-      --since=TIME            Keep only events at or after TIME
-      --until=TIME            Keep only events at or before TIME
+  -S, --since=TIME            Keep only events at or after TIME
+  -U, --until=TIME            Keep only events at or before TIME (also --user-unit above)
   -r, --reverse               Print newest first (ignored under -f)
   -f, --follow                Stream new events as they arrive (Ctrl-C to stop)
   -k, --dmesg                 Show only kernel (kmsg) events
@@ -3346,27 +3429,35 @@ Flags:
       --after-cursor=TOKEN    Resume strictly after cursor (exclusive)
       --cursor-file=FILE      Load cursor from FILE at start, persist updated cursor at end
       --show-cursor           Print "-- cursor: s=..;b=.." line after output
-      --file=PATH             Read a journal file (binary or JSONL; magic-detected; .gz auto-decompress)
+  -i, --file=PATH             Read a journal file (binary or JSONL; magic-detected; .gz auto-decompress)
   -D, --directory=DIR         Iterate every *.jsonl / *.jsonl.gz / *.slj under DIR
       --root=PATH             Prefix applied to filesystem paths (--directory, --disk-usage default)
       --verify                Walk FSS TAG chain on --file (binary only); needs --fss-key
       --fss-key=PATH          FSS key file for --verify (default /etc/slinit/journal-key)
 
   Display modifiers:
-      --no-hostname           Drop hostname column from short outputs
+  -W, --no-hostname           Drop hostname column from short outputs
       --utc                   Render timestamps in UTC instead of local
       --truncate-newline      Cut MESSAGE at the first newline
       --no-full               Ellipsize long fields (~256 chars)
   -l, --full                  Show full fields (default)
   -a, --all                   Show all field values without ellipsizing
   -e, --pager-end             Accepted for parity; no pager currently invoked
+      --no-pager              Accepted for parity; slinit never invokes a pager
   -q, --quiet                 Suppress info messages (empty file etc.)
 
   Introspection (short-circuit — no event stream):
   -F, --field=NAME            Print distinct values seen for NAME across events
-      --fields                Print the list of known field names
+  -N, --fields                Print the list of known field names
       --header                Print journal file / buffer header metadata
       --disk-usage            Print total bytes across on-disk journals
+  -I                          Query only the latest invocation of -u UNIT
+                              (mutually exclusive with --invocation=ID)
+
+  Machine target (systemd-nspawn integration):
+  -M, --machine=CONTAINER     Accepted for parity; slinit has no nspawn
+                              integration — WARN emitted, query hits host
+                              journal.
 
   Maintenance (short-circuit — talks to slinit-journald via signals):
       --sync                  Force fsync via SIGUSR1 to daemon

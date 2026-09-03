@@ -1634,3 +1634,91 @@ func TestExtractField(t *testing.T) {
 		t.Errorf("miss should be empty: %q", got)
 	}
 }
+
+// TestParseArgsSystemdShortAliases covers the systemd-parity short
+// forms added in the full-parity pass: -S/-i/-N/-W/-I plus --no-pager
+// silent no-op and -M/--machine WARN-shim. Each must reach the same
+// options field as the long form (or a distinct sentinel where the
+// systemd flag has no long-form equivalent).
+func TestParseArgsSystemdShortAliases(t *testing.T) {
+	// -S = --since; use a parseable time to avoid pulling in the
+	// time-parse implementation details.
+	nowStr := time.Now().Format(time.RFC3339)
+	oS, err := parseArgs([]string{"-S", nowStr})
+	if err != nil || oS.since == 0 {
+		t.Errorf("-S %q: since=%d err=%v", nowStr, oS.since, err)
+	}
+	oSl, err := parseArgs([]string{"--since", nowStr})
+	if err != nil || oSl.since != oS.since {
+		t.Errorf("--since parity mismatch: -S since=%d, --since since=%d err=%v", oS.since, oSl.since, err)
+	}
+
+	// -i = --file
+	oI, err := parseArgs([]string{"-i", "/tmp/foo.jsonl"})
+	if err != nil || oI.sourceFile != "/tmp/foo.jsonl" {
+		t.Errorf("-i: sourceFile=%q err=%v", oI.sourceFile, err)
+	}
+
+	// -N = --fields
+	oN, err := parseArgs([]string{"-N"})
+	if err != nil || !oN.fieldsList {
+		t.Errorf("-N: fieldsList=%v err=%v", oN.fieldsList, err)
+	}
+
+	// -W = --no-hostname
+	oW, err := parseArgs([]string{"-W"})
+	if err != nil || !oW.noHostname {
+		t.Errorf("-W: noHostname=%v err=%v", oW.noHostname, err)
+	}
+
+	// -I = latest invocation of -u UNIT (no long-form; sentinel field)
+	oILat, err := parseArgs([]string{"-I"})
+	if err != nil || !oILat.latestInvocation {
+		t.Errorf("-I: latestInvocation=%v err=%v", oILat.latestInvocation, err)
+	}
+
+	// --no-pager is silent — options should be default-shaped and no
+	// error should surface.
+	oNP, err := parseArgs([]string{"--no-pager"})
+	if err != nil {
+		t.Errorf("--no-pager err=%v", err)
+	}
+	_ = oNP
+
+	// -M / --machine variants
+	oM1, err := parseArgs([]string{"-M", "web-container"})
+	if err != nil || oM1.machineTarget != "web-container" {
+		t.Errorf("-M: machineTarget=%q err=%v", oM1.machineTarget, err)
+	}
+	oM2, err := parseArgs([]string{"--machine=db-container"})
+	if err != nil || oM2.machineTarget != "db-container" {
+		t.Errorf("--machine=: machineTarget=%q err=%v", oM2.machineTarget, err)
+	}
+	oM3, err := parseArgs([]string{"--machine", "cache"})
+	if err != nil || oM3.machineTarget != "cache" {
+		t.Errorf("--machine: machineTarget=%q err=%v", oM3.machineTarget, err)
+	}
+}
+
+// TestRunQueryDashIRequiresUnit covers the run-time gate for -I —
+// it needs -u UNIT because it resolves to the latest invocation ID of
+// a specific unit, and it's mutually exclusive with --invocation=.
+func TestRunQueryDashIRequiresUnit(t *testing.T) {
+	// -I alone → error
+	opts, err := parseArgs([]string{"-I"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runErr := runQuery(opts); runErr == nil || !strings.Contains(runErr.Error(), "-I requires -u UNIT") {
+		t.Errorf("-I without -u: err=%v (want mention of `-u UNIT`)", runErr)
+	}
+
+	// -I + --invocation=X → mutually exclusive error
+	opts2, err := parseArgs([]string{"-I", "-u", "web", "--invocation=abc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runErr := runQuery(opts2); runErr == nil || !strings.Contains(runErr.Error(), "mutually exclusive") {
+		t.Errorf("-I + --invocation=: err=%v (want mutually exclusive)", runErr)
+	}
+}
