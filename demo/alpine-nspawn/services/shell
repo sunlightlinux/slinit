@@ -11,4 +11,4 @@ restart = yes
 restart-delay-step = 1
 log-type = file
 logfile = /var/log/slinit/shell.log
-logfile-max-size = 1M
+logfile-max-size = 1048576

@@ -12,4 +12,4 @@ restart-delay-step = 2
 restart-delay-cap = 30
 log-type = file
 logfile = /var/log/slinit/httpd.log
-logfile-max-size = 1M
+logfile-max-size = 1048576

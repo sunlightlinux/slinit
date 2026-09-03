@@ -19,4 +19,4 @@ restart-delay-cap = 10
 # path even though we don't care about rotation for a demo.
 log-type = file
 logfile = /var/log/slinit/ticker.log
-logfile-max-size = 1M
+logfile-max-size = 1048576
