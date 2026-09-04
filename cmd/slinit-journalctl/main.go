@@ -2642,12 +2642,26 @@ func aggregateBootsFromDir(dir string, byID map[string]*bootRange) error {
 	return nil
 }
 
-// isTruncationErr returns true for the read-past-end shapes that
-// signal an unclean-shutdown tail rather than an unreadable file.
-// EOF is the binary walker's "next offset points beyond file end";
-// io.ErrUnexpectedEOF is the JSONL parser's "line ends mid-record".
-// Neither means the earlier records are unreadable — they're just
-// telling us where the usable data ends.
+// isTruncationErr returns true for shapes signalling an unclean-
+// shutdown tail rather than an unreadable file. The earlier records
+// are still fine — we just can't walk past the truncation boundary.
+//
+// Recognised truncation shapes:
+//   - io.EOF                              (physical past-file-end)
+//   - io.ErrUnexpectedEOF                 (JSONL line ends mid-record)
+//   - fmt.Errorf-wrapped "…: EOF"         (same, before %w plumbing)
+//   - "expected ENTRY_ARRAY … got …"      (chain pointer landed on
+//                                          a zero-filled or wrong-
+//                                          type object left by an
+//                                          uninitialised writer)
+//   - "object size … < header size …"     (zero-region masquerading
+//                                          as a header)
+//
+// The writer-side recovery paths (recoverEntryArrayTailLocked,
+// recoverFSSStateLocked) already treat these the same way; keeping
+// the reader-side classifier in lockstep so `--list-boots` on a
+// corrupted directory produces best-effort output instead of
+// erroring out.
 func isTruncationErr(err error) bool {
 	if err == nil {
 		return false
@@ -2655,13 +2669,11 @@ func isTruncationErr(err error) bool {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
-	// journalbin wraps EOF into descriptive strings like
-	// "journalbin: read entry-array hdr at 1844720: EOF" — the
-	// errors.Is chain catches that via %w. The string-contains
-	// fallback below covers the (historical) `fmt.Errorf` wraps
-	// that didn't preserve the sentinel.
 	msg := err.Error()
-	return strings.Contains(msg, ": EOF") || strings.Contains(msg, "unexpected EOF")
+	return strings.Contains(msg, ": EOF") ||
+		strings.Contains(msg, "unexpected EOF") ||
+		strings.Contains(msg, "expected ENTRY_ARRAY") ||
+		strings.Contains(msg, "< header size")
 }
 
 // resolveBootSpec rewrites opts.bootID from any of the systemd-parity

@@ -1712,6 +1712,20 @@ func TestIsTruncationErr(t *testing.T) {
 		t.Error("string-form 'EOF' suffix should be classified as truncation")
 	}
 
+	// Positive: type-mismatch on chain pointer (zero-region masquerading
+	// as header, or a wrong-type object). Live surface hit against
+	// journal-demo's persistent file after a hard reboot.
+	typeMismatch := errors.New("journalbin: expected ENTRY_ARRAY at 1832096, got UNUSED")
+	if !isTruncationErr(typeMismatch) {
+		t.Error("'expected ENTRY_ARRAY … got …' should be classified as truncation")
+	}
+
+	// Positive: bad-size shape (zero-region where a header should be).
+	badSize := errors.New("journalbin: object size 0 < header size 16 at 1822528")
+	if !isTruncationErr(badSize) {
+		t.Error("'< header size' should be classified as truncation")
+	}
+
 	// Negative: real errors do NOT get absorbed. Regression guard
 	// against an over-broad match that would hide genuine
 	// bad-magic / permission / corruption failures.
