@@ -143,8 +143,17 @@ rm -rf "${ROOTFS_DIR}/.PKGINFO" "${ROOTFS_DIR}/.SIGN."* "${ROOTFS_DIR}/.post-ins
 HAS_WATCHDOG_MOD=0
 echo "  Installing watchdog kernel module..."
 if [ -d "${KSTAGE}/lib/modules" ]; then
-    # Copy the i6300esb watchdog module
-    (cd "${KSTAGE}" && find lib/modules -name 'i6300esb.ko*' -exec install -D {} "${ROOTFS_DIR}/{}" \;) 2>/dev/null || true
+    # Copy the i6300esb watchdog module + virtio-blk + vfat modules
+    # needed for the run.sh --persist flow (/dev/vda vfat-formatted
+    # for /var/log/slinit-journal persistence across hard reboots).
+    # Module list is a static enumeration rather than a `find *` blob
+    # so a kernel package that gains extra .ko files doesn't grow the
+    # initramfs unbounded. Aliases file (installed a few lines below)
+    # lets modprobe resolve pci:v00001AF4d00001001... → virtio_blk
+    # at auto-load time.
+    for KMOD in i6300esb virtio virtio_ring virtio_pci virtio_blk fat vfat nls_ascii nls_cp437; do
+        (cd "${KSTAGE}" && find lib/modules -name "${KMOD}.ko*" -exec install -D {} "${ROOTFS_DIR}/{}" \;) 2>/dev/null || true
+    done
     # Copy module metadata so modprobe can resolve dependencies
     (cd "${KSTAGE}" && find lib/modules \( -name 'modules.dep*' -o -name 'modules.alias*' \
         -o -name 'modules.order' -o -name 'modules.builtin*' \) \
@@ -154,6 +163,11 @@ if [ -d "${KSTAGE}/lib/modules" ]; then
         HAS_WATCHDOG_MOD=1
     else
         echo "  Warning: i6300esb module not found in kernel package"
+    fi
+    if find "${ROOTFS_DIR}/lib/modules" -name 'virtio_blk.ko*' 2>/dev/null | grep -q .; then
+        echo "  virtio-blk + vfat modules installed (run.sh --persist target)"
+    else
+        echo "  Warning: virtio_blk module not found — run.sh --persist will not see /dev/vda"
     fi
 else
     echo "  Warning: no kernel modules available"
