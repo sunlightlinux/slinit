@@ -5,7 +5,7 @@
 # Try: slinitctl action extra-actions dump
 type = process
 command = /bin/sh -c "echo '[extra-actions] running'; while true; do sleep 30; done"
-extra-command = dump /bin/sh -c "echo '[extra-actions] dump: uptime=$(cat /proc/uptime)' >> /run/extra-actions.log"
+extra-command = dump /bin/sh -c "echo '[extra-actions] dump: uptime=$$(cat /proc/uptime)' >> /run/extra-actions.log"
 extra-started-command = status /bin/sh -c "echo '[extra-actions] status: healthy, pid=$$' >> /run/extra-actions.log"
 log-type = buffer
 log-buffer-size = 4096

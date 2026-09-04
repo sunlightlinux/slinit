@@ -4,7 +4,7 @@
 # Try: echo hello | nc -U /run/socket-demo.sock
 # Try: slinitctl catlog socket-demo
 type = process
-command = /bin/sh -c "echo '[socket-demo] started with LISTEN_FDS=$LISTEN_FDS'; while true; do sleep 30; done"
+command = /bin/sh -c "echo '[socket-demo] started with LISTEN_FDS=$$LISTEN_FDS'; while true; do sleep 30; done"
 socket-listen = /run/socket-demo.sock
 socket-permissions = 0666
 socket-activation = immediate

@@ -7,7 +7,7 @@
 # Try: cat /sys/fs/cgroup/slinit/cgroup-demo/pids.max
 # Try: cat /sys/fs/cgroup/slinit/cgroup-demo/cpu.weight
 type = process
-command = /bin/sh -c "echo '[cgroup-demo] running with resource limits'; echo \"  memory.max=$(cat /sys/fs/cgroup/slinit/cgroup-demo/memory.max 2>/dev/null)\"; echo \"  pids.max=$(cat /sys/fs/cgroup/slinit/cgroup-demo/pids.max 2>/dev/null)\"; echo \"  cpu.weight=$(cat /sys/fs/cgroup/slinit/cgroup-demo/cpu.weight 2>/dev/null)\"; while true; do sleep 30; done"
+command = /bin/sh -c "echo '[cgroup-demo] running with resource limits'; echo \"  memory.max=$$(cat /sys/fs/cgroup/slinit/cgroup-demo/memory.max 2>/dev/null)\"; echo \"  pids.max=$$(cat /sys/fs/cgroup/slinit/cgroup-demo/pids.max 2>/dev/null)\"; echo \"  cpu.weight=$$(cat /sys/fs/cgroup/slinit/cgroup-demo/cpu.weight 2>/dev/null)\"; while true; do sleep 30; done"
 cgroup = /sys/fs/cgroup/slinit/cgroup-demo
 cgroup-memory-max = 64M
 cgroup-memory-high = 48M

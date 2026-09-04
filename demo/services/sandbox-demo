@@ -4,7 +4,7 @@
 # Try: slinitctl status sandbox-demo
 # Try: slinitctl catlog sandbox-demo
 type = process
-command = /bin/sh -c "echo \"[sandbox] uid=$(id -u) gid=$(id -g) user=$(whoami)\"; echo \"[sandbox] cwd=$(pwd)\"; echo \"[sandbox] session=$(cat /proc/self/stat | awk '{print $6}')\"; while true; do sleep 30; done"
+command = /bin/sh -c "echo \"[sandbox] uid=$$(id -u) gid=$$(id -g) user=$$(whoami)\"; echo \"[sandbox] cwd=$$(pwd)\"; echo \"[sandbox] session=$$(cat /proc/self/stat | awk '{print $$6}')\"; while true; do sleep 30; done"
 run-as = nobody
 working-dir = /tmp
 new-session = yes

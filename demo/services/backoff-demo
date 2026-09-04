@@ -3,7 +3,7 @@
 # Runs for 5s then exits; each restart waits longer (2s, 4s, 6s, 6s, ...).
 # Try: slinitctl catlog backoff-demo (shows restart markers with timestamps)
 type = process
-command = /bin/sh -c "echo \"[backoff] started at $(date +%H:%M:%S)\"; sleep 5; echo '[backoff] exiting'; exit 1"
+command = /bin/sh -c "echo \"[backoff] started at $$(date +%H:%M:%S)\"; sleep 5; echo '[backoff] exiting'; exit 1"
 restart = on-failure
 restart-delay = 2
 restart-delay-step = 2

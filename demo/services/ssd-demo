@@ -9,7 +9,7 @@
 # applet, so /proc/PID/exe always points to /bin/busybox.
 type = scripted
 depends-on: system-init
-command = /bin/sh -c "mkdir -p /run/ssd-demo && slinit-start-stop-daemon --start --background --make-pidfile --pidfile /run/ssd-demo/sleeper.pid --name sleep --startas /bin/sleep -- 300 && echo \"ssd-demo: sleeper started as pid $(cat /run/ssd-demo/sleeper.pid)\""
+command = /bin/sh -c "mkdir -p /run/ssd-demo && slinit-start-stop-daemon --start --background --make-pidfile --pidfile /run/ssd-demo/sleeper.pid --name sleep --startas /bin/sleep -- 300 && echo \"ssd-demo: sleeper started as pid $$(cat /run/ssd-demo/sleeper.pid)\""
 stop-command = /bin/sh -c "slinit-start-stop-daemon --stop --pidfile /run/ssd-demo/sleeper.pid --retry TERM/2/KILL/2 && echo 'ssd-demo: sleeper stopped'"
 log-type = buffer
 log-buffer-size = 4096
