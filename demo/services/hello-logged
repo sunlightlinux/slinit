@@ -6,3 +6,4 @@ command = /bin/sh -c "i=0; while true; do i=$$((i+1)); echo \"message $$i at $$(
 log-type = pipe
 restart = on-failure
 depends-on: system-init
+@meta enable-via all-services

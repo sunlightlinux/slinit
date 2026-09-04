@@ -2,3 +2,4 @@
 # Demonstrates transitive dependency resolution.
 type = internal
 depends-on: dep-b
+@meta enable-via all-services

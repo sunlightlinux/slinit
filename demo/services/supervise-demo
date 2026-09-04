@@ -23,3 +23,4 @@ command = /bin/sh -c "mkdir -p /run/supervise-demo && exec /usr/bin/slinit-super
 stop-command = /usr/bin/slinit-supervise-daemon supervise-demo --stop --pidfile /run/supervise-demo/sup.pid
 log-type = buffer
 log-buffer-size = 4096
+@meta enable-via all-services

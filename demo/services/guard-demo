@@ -10,3 +10,4 @@ log-type = buffer
 log-buffer-size = 4096
 restart = no
 depends-on: system-init
+@meta enable-via all-services

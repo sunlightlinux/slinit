@@ -13,3 +13,4 @@ command = /bin/sh -c "mkdir -p /run/ssd-demo && slinit-start-stop-daemon --start
 stop-command = /bin/sh -c "slinit-start-stop-daemon --stop --pidfile /run/ssd-demo/sleeper.pid --retry TERM/2/KILL/2 && echo 'ssd-demo: sleeper stopped'"
 log-type = buffer
 log-buffer-size = 4096
+@meta enable-via all-services

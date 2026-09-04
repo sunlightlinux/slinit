@@ -8,3 +8,4 @@ vtty = true
 vtty-scrollback = 65536
 restart = on-failure
 depends-on: system-init
+@meta enable-via all-services

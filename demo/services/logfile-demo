@@ -12,3 +12,4 @@ log-include = ^(INFO|ERROR):
 log-exclude = ^DEBUG:
 restart = no
 depends-on: system-init
+@meta enable-via all-services

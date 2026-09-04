@@ -9,3 +9,4 @@ log-type = buffer
 log-buffer-size = 8192
 restart = yes
 depends-on: system-init
+@meta enable-via all-services

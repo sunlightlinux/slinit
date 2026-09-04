@@ -9,3 +9,4 @@ command = /bin/sh /etc/slinit.d/bgprocess-demo.launcher
 pid-file = /run/bgprocess-demo.pid
 restart = no
 depends-on: system-init
+@meta enable-via all-services

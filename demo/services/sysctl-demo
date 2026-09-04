@@ -11,3 +11,4 @@ depends-on: system-init
 command = /bin/sh -c "mkdir -p /etc/sysctl.d && printf '# demo tunables\nkernel.printk = 3 3 1 6\nkernel/threads-max = 100000\n-vm.this.does.not.exist = 42\n' >/etc/sysctl.d/99-demo.conf && echo '== before ==' && printf 'printk: '; cat /proc/sys/kernel/printk; printf 'threads-max: '; cat /proc/sys/kernel/threads-max; echo '== applying ==' && slinit-sysctl --verbose /etc/sysctl.d/99-demo.conf 2>&1; echo '== after ==' && printf 'printk: '; cat /proc/sys/kernel/printk; printf 'threads-max: '; cat /proc/sys/kernel/threads-max"
 log-type = buffer
 log-buffer-size = 4096
+@meta enable-via all-services

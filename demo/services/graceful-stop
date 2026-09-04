@@ -10,3 +10,4 @@ stop-timeout = 10
 log-type = buffer
 log-buffer-size = 4096
 depends-on: system-init
+@meta enable-via all-services

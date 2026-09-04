@@ -29,3 +29,4 @@ restart-limit-count = 5
 restart-limit-interval = 30
 depends-on: system-init
 depends-on: persist-journal-mount
+@meta enable-via all-services

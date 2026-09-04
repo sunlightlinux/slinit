@@ -18,3 +18,4 @@ finish-command = /bin/sh -c "echo '[runit-svc] finish (exit=$$1 sig=$$2)' >> /ru
 lock-file = /run/runit-svc.lock
 restart = no
 depends-on: system-init
+@meta enable-via all-services

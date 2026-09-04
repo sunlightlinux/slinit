@@ -7,3 +7,4 @@ command = /bin/sh -c "while IFS= read -r line; do echo \"$$(date +%H:%M:%S) $$li
 log-type = pipe
 restart = on-failure
 depends-on: system-init
+@meta enable-via all-services

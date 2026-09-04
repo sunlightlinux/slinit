@@ -17,3 +17,4 @@ command = /bin/sh -c "export RC_SVCNAME=svc-value-demo; service_set_value port 8
 stop-command = /bin/sh -c "export RC_SVCNAME=svc-value-demo; port=$(service_get_value port 2>/dev/null || echo missing); pf=$(service_get_value pidfile-path 2>/dev/null || echo missing); echo \"svc-value-demo: stop sees port=$$port pidfile-path=$$pf\""
 log-type = buffer
 log-buffer-size = 4096
+@meta enable-via all-services
