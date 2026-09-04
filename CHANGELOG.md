@@ -17,6 +17,113 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.5] — 2026-09-04
+
+Journal multi-boot pass. `journalctl --list-boots` now surfaces
+every boot the on-disk journal covers (not just the current
+process's ring buffer), `-b -N` relative indexing resolves via
+the same aggregator, and the QEMU demo gained a `--persist` flag
+that wires a virtio disk through to `/var/log/slinit-journal` so
+multiple hard-reboot cycles accumulate in `--list-boots` instead
+of getting wiped by the initramfs tmpfs. Two PID-1 SIGCHLD reaper
+race fixes shipped alongside — noticed while shaking down the
+demo, applied under the "surfaces once, fix once" principle.
+
+### Added
+
+- **`journalctl --list-boots` walks on-disk journals**. Prior
+  implementation queried only the control-socket ring buffer, so
+  a host with a running `slinit-journald` still only saw the
+  current boot. `runListBoots` now aggregates BootID→(first_ts,
+  last_ts) from three sources: the ring buffer, every `.journal`
+  binary Phase B file under `/var/log/slinit-journal/` +
+  `/run/slinit-journal/` (via `pkg/journalbin.MultiReader.Iter`),
+  and every `.jsonl` / `.jsonl.gz` Phase C file in the same
+  dirs. Same-BootID entries across sources collapse into one row
+  spanning the widest bounds seen.
+- **`journalctl -b -N` relative boot indexing**. `-b -1` for
+  "previous boot" was the workhorse of post-mortem debugging on
+  systemd hosts and slinit previously rejected it with a
+  helpful-but-noisy "use --list-boots to look up the ID". New
+  `resolveBootSpec` walks the same aggregator and resolves `-N`
+  to a concrete 32-hex boot-id, then routes the query through
+  `runFromDirectory` (which reads `/var/log/slinit-journal/`)
+  with a new `QueryFilter.BootID` field so events from other
+  boots don't leak through. `-b <hex>` and `+N` shapes handled
+  in the same code path. `-b -N -f` rejected — past boots don't
+  emit new events.
+- **`journalctl --list-boots` tolerates unclean-shutdown
+  truncation**. A hard reboot mid-write leaves the tail
+  ENTRY_ARRAY of the active `.journal` file pointing past
+  end-of-file. New `isTruncationErr` classifier absorbs `io.EOF`
+  / `io.ErrUnexpectedEOF` (and their `fmt.Errorf %w` wraps) as
+  "reached end of usable data on this file, keep going" while
+  still surfacing genuine unreadable-file errors (bad magic,
+  permissions). Investigating "why did we hard-reboot last time"
+  now returns useful results instead of erroring out on the
+  corrupt-tail file.
+- **`journalctl` accepts `.journal` files under `--directory`**.
+  `journalFilesUnder` had `.jsonl / .jsonl.gz / .slj` but was
+  missing `.journal` (binary Phase B extension), so
+  `runFromDirectory` couldn't find binary files even though
+  `--list-boots` could. Whitelist extended.
+- **`demo/run.sh --persist` provisions a persistent virtio
+  disk**. Creates `_output/journal.img` (256 MB sparse) on first
+  use, attaches via `-drive file=…,format=raw,if=virtio`, and
+  echoes the resulting flag on the startup line so the operator
+  can confirm QEMU received it. Kernel modules (`virtio_blk`,
+  `virtio_pci`, `fat`, `vfat`, `nls_cp437`, `nls_ascii`) now
+  bundled into the initramfs from the Alpine linux-virt package.
+- **`demo/services/persist-journal-mount`**: `scripted` service
+  that mkfs-vfats `/dev/vda` on first use and mounts it at
+  `/var/log/slinit-journal` with explicit `codepage=437,
+  iocharset=ascii` (vfat mount rejects `EINVAL` without a loaded
+  NLS charset). Idempotent — a `mountpoint -q` gate skips the
+  setup on softreboot passthrough, and a `mount -o remount,rw`
+  handles the softreboot "shutdown left it ro" case. Logs its
+  mount-vs-tmpfs decision to `/run/persist-journal-mount.log`
+  for post-boot inspection. Depends on `system-init`;
+  `journal-demo` depends on it.
+- **`demo/build.sh` caches the FSS key at `_cache/journal-key`**
+  so it survives `rm -rf _build/rootfs` on every rebuild.
+  Previously each `./build.sh` minted a fresh random key,
+  invalidating the TAG chain in any journal file written by a
+  previous `--persist` run — the next boot's `slinit-journald`
+  crash-looped with exit 1. Delete `_cache/journal-key`
+  intentionally to rotate.
+- **`demo/README.md`**: new "Multi-boot journal listing" section
+  documenting the `--persist` workflow, softreboot-preserves-
+  boot-id caveat (systemd parity — must hard-reboot for a new
+  entry), and reset instructions.
+
+### Fixed
+
+- **`waitid ECHILD` swallow in cron + finish-command**. slinit as
+  PID 1 runs a global SIGCHLD reaper (`pkg/process/exitrouter.go`)
+  that collects every child zombie. `CronRunner.executeCommand`
+  and `ProcessService.execFinishCommand` both use vanilla
+  `os/exec.CommandContext` — they compete with the reaper, and
+  when the reaper wins `cmd.Run()` returns `waitid: no child
+  processes`. The commands DID run and exit; only the exit code
+  is unobservable. Absorb `ECHILD` via new `isECHILDErr` helper
+  in `pkg/service/cron.go`; `finish-command` at
+  `pkg/service/process.go:2628` reuses the same predicate.
+  Regression-guarded so `*exec.ExitError` still surfaces
+  correctly.
+
+### Housekeeping
+
+- `demo/services/*`: escaped bare `$VAR` / `$((…))` / `$(cmd)`
+  as `$$` in 20 service files (`hello`, `ticker`, `app-one`,
+  `app-two`, `cron-demo`, `hello-logged`, `vtty-svc`,
+  `backoff-demo`, `logfile-demo`, `logger`, `shared-log`,
+  `sandbox-demo`, `cgroup-demo`, `cgroup-worker`, `ssd-demo`,
+  `extra-actions`, `healthcheck-demo`, `env-demo`, `socket-demo`,
+  `runit-svc`). Slinit's `command =` parser pre-expands `$VAR`
+  at load time (documented behaviour), so shell-side references
+  need `$$` to reach the runtime shell. Fixed the visible
+  "message  " (empty counter) noise the demo produced.
+
 ## [2.2.4] — 2026-09-03
 
 Feature-heavy release: full `slinit-journalctl` systemd parity (flag
