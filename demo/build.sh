@@ -290,16 +290,31 @@ fi
 
 # Seed /etc/slinit/journal-key for the demo journal-demo service.
 # pkg/journalbin.FSSKey JSON schema: {seed:<base64>, start_usec:0,
-# interval_usec:900000000 (15 minutes)}. Fresh per build; matches
-# what pkg/journalbin.NewFSSKey would produce, but done at build
-# time so the daemon has sealing capability from the very first boot.
-if [ ! -f "${ROOTFS_DIR}/etc/slinit/journal-key" ]; then
-    mkdir -p "${ROOTFS_DIR}/etc/slinit"
+# interval_usec:900000000 (15 minutes)}. Matches what
+# pkg/journalbin.NewFSSKey would produce, but done at build time so
+# the daemon has sealing capability from the very first boot.
+#
+# Cached to _cache/ (not _build/rootfs/) so re-runs of build.sh keep
+# the SAME key. Rationale: any journal file written under --persist
+# is sealed with the FSS key active at write time; if build.sh
+# regenerated the key on every run, the daemon on the next boot
+# would refuse to open (or crash-loop on) journals written in the
+# previous run because the TAG chain wouldn't verify. This bit us
+# live — journal-demo crashed with exit 1 five times in a row after
+# a rebuild + run cycle. Delete _cache/journal-key to intentionally
+# rotate (mirrors `slinit-journalctl --setup-keys` UX).
+CACHED_KEY="${CACHE_DIR}/journal-key"
+if [ ! -f "${CACHED_KEY}" ]; then
     _seed_b64=$(head -c 64 /dev/urandom | base64 -w0)
     printf '{"seed":"%s","start_usec":0,"interval_usec":900000000}\n' "${_seed_b64}" \
-        > "${ROOTFS_DIR}/etc/slinit/journal-key"
-    chmod 0400 "${ROOTFS_DIR}/etc/slinit/journal-key"
+        > "${CACHED_KEY}"
+    chmod 0400 "${CACHED_KEY}"
+    echo "  Fresh FSS key seeded at ${CACHED_KEY}"
+else
+    echo "  Reusing cached FSS key at ${CACHED_KEY}"
 fi
+mkdir -p "${ROOTFS_DIR}/etc/slinit"
+install -m 0400 "${CACHED_KEY}" "${ROOTFS_DIR}/etc/slinit/journal-key"
 
 # Step 6: Install service files and shell completions
 echo "[6/7] Installing service files and shell completions..."
