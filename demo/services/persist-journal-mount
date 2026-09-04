@@ -24,18 +24,18 @@
 # the logic into a script file the service invokes.
 
 type = scripted
-command = /bin/sh -c 'mkdir -p /var/log/slinit-journal; if [ -b /dev/vda ]; then if ! blkid /dev/vda >/dev/null 2>&1; then echo "persist-journal-mount: formatting /dev/vda (vfat) for first-boot persistence"; mkfs.vfat /dev/vda >/dev/null; fi; mount /dev/vda /var/log/slinit-journal && echo "persist-journal-mount: /var/log/slinit-journal mounted from /dev/vda (persistent)"; else echo "persist-journal-mount: no /dev/vda; /var/log/slinit-journal stays on tmpfs (volatile)"; fi'
-# stdout carries the mount-vs-tmpfs decision — route to a logfile so
-# `slinit-journalctl -u persist-journal-mount` surfaces it. LogRotator's
-# processLine emits journal events only when at least one processing
-# knob is on (logfile-max-size, log-includes, etc.); the 1 MiB cap
-# below is arbitrary — flips LogRotator on, that's the point.
+# Command redirects its own output to /run/persist-journal-mount.log
+# so the mount decision (persistent vs volatile) is inspectable after
+# boot with:
 #
-# Logfile in /run (tmpfs, always writable) rather than /var/log —
-# Alpine minirootfs doesn't ship /var/log/ so a path under there
-# fails to open at service start (LogRotator opens BEFORE the
-# command runs, so a mkdir -p in the command can't rescue it).
-log-type = file
-logfile = /run/persist-journal-mount.log
-logfile-max-size = 1048576
+#   cat /run/persist-journal-mount.log
+#
+# Not using log-type=file because slinit's scripted-svc path opens
+# the logfile directly without the LogRotator processing loop that
+# emits journal events (contrast pkg/service/process.go which wires
+# LogRotator for LogToFile). A scripted-svc under log-type=file
+# would land the output in the file but NEVER surface via
+# `slinit-journalctl -u persist-journal-mount`. Filed as a slinit-
+# side ergonomics gap in the commit message.
+command = /bin/sh -c 'exec >>/run/persist-journal-mount.log 2>&1; mkdir -p /var/log/slinit-journal; ls -l /dev/vda 2>/dev/null || echo "persist-journal-mount: /dev/vda not present (no --persist?)"; if [ -b /dev/vda ]; then if ! blkid /dev/vda >/dev/null 2>&1; then echo "persist-journal-mount: formatting /dev/vda (vfat) for first-boot persistence"; mkfs.vfat /dev/vda >/dev/null; fi; if mount /dev/vda /var/log/slinit-journal; then echo "persist-journal-mount: /var/log/slinit-journal mounted from /dev/vda (persistent)"; else echo "persist-journal-mount: mount FAILED for /dev/vda"; fi; else echo "persist-journal-mount: /var/log/slinit-journal stays on tmpfs (volatile)"; fi'
 depends-on: system-init
