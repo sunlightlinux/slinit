@@ -17,18 +17,12 @@
 # still creates /var/log/slinit-journal as a plain directory on
 # the initramfs tmpfs, so journal-demo doesn't need to know
 # whether persistence is in play.
+#
+# NOTE: slinit's config parser does NOT support backslash line
+# continuation — every line is parsed independently. Keep the
+# `command =` value on one physical line, however long, or move
+# the logic into a script file the service invokes.
 
 type = scripted
-command = /bin/sh -c '\
-    mkdir -p /var/log/slinit-journal && \
-    if [ -b /dev/vda ]; then \
-        if ! blkid /dev/vda >/dev/null 2>&1; then \
-            echo "→ formatting /dev/vda (vfat) for first-boot persistence"; \
-            mkfs.vfat /dev/vda >/dev/null; \
-        fi; \
-        mount /dev/vda /var/log/slinit-journal && \
-        echo "→ /var/log/slinit-journal mounted from /dev/vda (persistent)"; \
-    else \
-        echo "→ no /dev/vda; /var/log/slinit-journal stays on tmpfs (volatile)"; \
-    fi'
+command = /bin/sh -c 'mkdir -p /var/log/slinit-journal; if [ -b /dev/vda ]; then if ! blkid /dev/vda >/dev/null 2>&1; then echo "persist-journal-mount: formatting /dev/vda (vfat) for first-boot persistence"; mkfs.vfat /dev/vda >/dev/null; fi; mount /dev/vda /var/log/slinit-journal && echo "persist-journal-mount: /var/log/slinit-journal mounted from /dev/vda (persistent)"; else echo "persist-journal-mount: no /dev/vda; /var/log/slinit-journal stays on tmpfs (volatile)"; fi'
 depends-on: system-init
