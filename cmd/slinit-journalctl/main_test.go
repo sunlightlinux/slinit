@@ -1609,6 +1609,50 @@ func TestParseArgsSprint1(t *testing.T) {
 	}
 }
 
+// TestAggregateBoot covers the BootID→timespan folding used by
+// --list-boots. Empty BootID entries drop; multi-event windows
+// extend to the widest bounds; a single event forms a zero-width
+// range. This is the cross-source dedupe primitive — same BootID
+// showing up in ring buffer + on-disk journals collapses into one
+// row, so the invariant "range spans min/max ts across all sources"
+// is load-bearing.
+func TestAggregateBoot(t *testing.T) {
+	byID := map[string]*bootRange{}
+
+	// Empty BootID: dropped.
+	aggregateBoot(byID, &journal.Event{Ts: 100})
+	if len(byID) != 0 {
+		t.Errorf("empty BootID should be dropped; got %+v", byID)
+	}
+
+	// First entry for a BootID: creates window at (ts, ts).
+	aggregateBoot(byID, &journal.Event{BootID: "b1", Ts: 500})
+	if r := byID["b1"]; r == nil || r.first != 500 || r.last != 500 {
+		t.Errorf("first insert: got %+v", r)
+	}
+
+	// Same BootID, earlier ts: extend .first downward.
+	aggregateBoot(byID, &journal.Event{BootID: "b1", Ts: 200})
+	if r := byID["b1"]; r.first != 200 || r.last != 500 {
+		t.Errorf("earlier ts: got first=%d last=%d, want first=200 last=500", r.first, r.last)
+	}
+
+	// Same BootID, later ts: extend .last upward.
+	aggregateBoot(byID, &journal.Event{BootID: "b1", Ts: 900})
+	if r := byID["b1"]; r.first != 200 || r.last != 900 {
+		t.Errorf("later ts: got first=%d last=%d, want first=200 last=900", r.first, r.last)
+	}
+
+	// Different BootID: independent window.
+	aggregateBoot(byID, &journal.Event{BootID: "b2", Ts: 1000})
+	if r := byID["b2"]; r == nil || r.first != 1000 || r.last != 1000 {
+		t.Errorf("distinct BootID: got %+v", r)
+	}
+	if len(byID) != 2 {
+		t.Errorf("expected 2 distinct boots, got %d", len(byID))
+	}
+}
+
 // TestAllOutputFormatsRoundtrip covers every -o value: each format
 // must accept a canned Event without erroring, produce non-empty
 // output, and (where applicable) round-trip the key content —

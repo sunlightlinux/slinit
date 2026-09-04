@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -2440,15 +2441,60 @@ func formatBytes(n int64) string {
 	}
 }
 
-// runListBoots queries the buffer once, reports the boot(s) it
-// covers, and exits. In Phase 2 the buffer holds one boot's worth
-// of events (the process resets IDs on restart), so this prints
-// exactly one row: `0 <boot_id> <first_ts>—<last_ts>`. When Phase 3
-// starts persisting rotated journals across boots the server reply
-// will grow to multiple rows and this same output loop handles them.
+// bootRange is the min/max ts window per BootID surfaced by
+// --list-boots. Shared across sources so aggregate can merge the
+// ring buffer's view with the on-disk journals'.
+type bootRange struct {
+	id    string
+	first int64
+	last  int64
+}
+
+// aggregateBoot updates byID with e's contribution — extends an
+// existing window or creates a fresh one. Empty BootID entries are
+// dropped (nothing useful to plot on the timeline).
+func aggregateBoot(byID map[string]*bootRange, e *journal.Event) {
+	if e.BootID == "" {
+		return
+	}
+	r, ok := byID[e.BootID]
+	if !ok {
+		byID[e.BootID] = &bootRange{id: e.BootID, first: e.Ts, last: e.Ts}
+		return
+	}
+	if e.Ts < r.first {
+		r.first = e.Ts
+	}
+	if e.Ts > r.last {
+		r.last = e.Ts
+	}
+}
+
+// listBootsJournalDirs lists the standard on-disk paths --list-boots
+// scans in addition to the live control-socket ring buffer.
+// Persistent dir first (survives hard reboot on a real host), then
+// the volatile /run fallback (dinit-philosophy: journald is optional,
+// on a container without persistent journal /run is the only place
+// events land).
+var listBootsJournalDirs = []string{
+	"/var/log/slinit-journal",
+	"/run/slinit-journal",
+}
+
+// runListBoots aggregates BootID→timespan from every source
+// slinit-journalctl can see: the live ring buffer via the control
+// socket, then every .journal (binary Phase B) and .jsonl / .jsonl.gz
+// (Phase C) file under the standard journal directories. Newest boot
+// prints as index 0, older ones as -1 / -2 / ... matching systemd's
+// UX. A cross-source event that shares a BootID is deduplicated by
+// the aggregator — the same boot showing up in both the buffer and
+// on disk collapses into one row, with the timespan spanning the
+// widest bounds seen.
 func runListBoots(conn net.Conn) error {
-	// Query with no filter, no limit — we just need the min/max Ts
-	// per distinct BootID in the buffer.
+	byID := map[string]*bootRange{}
+
+	// 1. Ring buffer — always available (control socket dial
+	// already succeeded to reach this point).
 	payload, err := json.Marshal(control.JournalQueryRequest{})
 	if err != nil {
 		return err
@@ -2460,47 +2506,108 @@ func runListBoots(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	type bootRange struct {
-		id       string
-		first    int64
-		last     int64
-	}
-	byID := map[string]*bootRange{}
-	order := []string{} // stable iteration order
 	for _, e := range events {
-		if e.BootID == "" {
+		aggregateBoot(byID, e)
+	}
+
+	// 2. On-disk journals — walk each standard dir. Missing dirs
+	// are not an error (a container without journald has none);
+	// only report an error when the dir exists but a file inside
+	// is malformed (would silently swallow real corruption
+	// otherwise).
+	for _, dir := range listBootsJournalDirs {
+		if _, err := os.Stat(dir); err != nil {
 			continue
 		}
-		r, ok := byID[e.BootID]
-		if !ok {
-			r = &bootRange{id: e.BootID, first: e.Ts, last: e.Ts}
-			byID[e.BootID] = r
-			order = append(order, e.BootID)
-			continue
-		}
-		if e.Ts < r.first {
-			r.first = e.Ts
-		}
-		if e.Ts > r.last {
-			r.last = e.Ts
+		if err := aggregateBootsFromDir(dir, byID); err != nil {
+			return fmt.Errorf("list-boots: %s: %w", dir, err)
 		}
 	}
-	if len(order) == 0 {
+
+	if len(byID) == 0 {
 		// No events seen yet — still emit the current boot so the
 		// operator sees SOMETHING (matches `journalctl --list-boots`
 		// behaviour on a freshly-booted system before any logging).
 		fmt.Printf(" 0 %s (no events yet)\n", journal.BootID())
 		return nil
 	}
-	for i, id := range order {
-		r := byID[id]
-		// Newest first, index 0 = current boot per journalctl UX.
-		idx := i - (len(order) - 1)
+
+	// 3. Sort by first_ts ascending so newest boot prints last —
+	// but with a NEGATIVE index so `journalctl --list-boots`
+	// convention holds (0 = current, -1 = previous, ...).
+	sorted := make([]*bootRange, 0, len(byID))
+	for _, r := range byID {
+		sorted = append(sorted, r)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].first < sorted[j].first })
+
+	for i, r := range sorted {
+		idx := i - (len(sorted) - 1)
 		fmt.Printf("%3d %s %s—%s\n",
-			idx, id,
+			idx, r.id,
 			time.Unix(0, r.first).Format(time.RFC3339),
 			time.Unix(0, r.last).Format(time.RFC3339),
 		)
+	}
+	return nil
+}
+
+// aggregateBootsFromDir walks every journal file under dir and folds
+// its BootID→timespan contribution into byID. Handles both
+// binary (.journal via journalbin.MultiReader) and JSONL (.jsonl /
+// .jsonl.gz via readJSONLFile with a null filter).
+func aggregateBootsFromDir(dir string, byID map[string]*bootRange) error {
+	// Binary path: journalbin.OpenDir + Iter walks every .journal
+	// file in one call.
+	if mr, err := journalbin.OpenDir(dir); err == nil {
+		if len(mr.Readers()) > 0 {
+			err := mr.Iter(func(e *journal.Event) bool {
+				aggregateBoot(byID, e)
+				return true
+			})
+			mr.Close()
+			if err != nil {
+				return err
+			}
+		} else {
+			mr.Close()
+		}
+	}
+	// JSONL path: enumerate .jsonl / .jsonl.gz separately, read
+	// each end-to-end. Same shape as loadFileEvents but with a
+	// no-op filter.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, ent := range entries {
+		name := ent.Name()
+		isJSONL := strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".jsonl.gz")
+		if !isJSONL {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		var rc io.ReadCloser
+		if strings.HasSuffix(name, ".gz") {
+			rc, err = journald.OpenCompressed(path)
+			if err != nil {
+				return err
+			}
+		} else {
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			rc = f
+		}
+		events, err := readJSONLFile(rc, journal.QueryFilter{MinPriority: -1}, 0)
+		rc.Close()
+		if err != nil {
+			return err
+		}
+		for _, e := range events {
+			aggregateBoot(byID, e)
+		}
 	}
 	return nil
 }
