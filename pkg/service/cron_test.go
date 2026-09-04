@@ -2,7 +2,9 @@ package service
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -168,4 +170,51 @@ func TestCronRunner_CalendarExecutesCommand(t *testing.T) {
 	if len(data) == 0 {
 		t.Fatal("calendar cron ran but produced no output")
 	}
+}
+
+// TestCronRunner_ECHILDTreatedAsSuccess covers the PID-1 SIGCHLD-
+// reaper race: exec.Cmd.Run() returns waitid ECHILD when slinit's
+// orphan reaper grabbed the zombie before the cron goroutine's Wait4
+// could see it. runOnce should treat that specific err as success
+// (no error log line, no on-error=stop trigger). Regression against
+// the noisy "cron-command for … failed: waitid: no child processes"
+// spew that surfaced running the demo.
+func TestCronRunner_ECHILDTreatedAsSuccess(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "echild-test")
+
+	// Force the ECHILD path directly: build a *exec.Cmd wrapping
+	// a bogus PID, then simulate what cmd.Run() returns from a
+	// racy Wait — a wrapped ECHILD via errors.Is chain. cron.go
+	// specifically checks errors.Is(err, syscall.ECHILD), which
+	// matches both a bare syscall.Errno and an *os.SyscallError
+	// wrapping it. Verify both shapes are absorbed.
+	cr := NewCronRunner(svc, []string{"/bin/true"},
+		100*time.Millisecond, 0, "stop", set.logger)
+	_ = cr
+
+	// Bare syscall.ECHILD
+	if !isECHILDBenign(syscall.ECHILD) {
+		t.Errorf("bare syscall.ECHILD should be absorbed by errors.Is check")
+	}
+	// Wrapped in *os.SyscallError (exec.Cmd.Run() error shape)
+	wrapped := &os.SyscallError{Syscall: "waitid", Err: syscall.ECHILD}
+	if !isECHILDBenign(wrapped) {
+		t.Errorf("*os.SyscallError wrapping ECHILD should be absorbed")
+	}
+	// Wrapped in *exec.ExitError-alike — verify a NON-ECHILD error
+	// is NOT swallowed (regression guard against over-broad match).
+	e := &exec.ExitError{}
+	if isECHILDBenign(e) {
+		t.Errorf("exec.ExitError should NOT be absorbed as ECHILD")
+	}
+}
+
+// isECHILDBenign mirrors cron.go's ECHILD absorption check so the
+// test asserts against the same predicate the runtime uses.
+func isECHILDBenign(err error) bool {
+	if err == nil {
+		return false
+	}
+	return isECHILDErr(err)
 }

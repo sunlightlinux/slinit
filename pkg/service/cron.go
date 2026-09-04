@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -365,5 +367,28 @@ func (cr *CronRunner) executeCommand() error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cr.command[0], cr.command[1:]...)
-	return cmd.Run()
+	err := cmd.Run()
+	if isECHILDErr(err) {
+		// PID-1 race: slinit's global SIGCHLD reaper (pkg/process/
+		// exitrouter.go) claimed the zombie before exec.Cmd's own
+		// Wait4 could see it. The command DID run and exit —
+		// there's just nobody left to read its status from. The
+		// same shape is handled inline for slinit-supervised
+		// children at pkg/process/exec.go:551 via routedCh; cron
+		// commands go through the vanilla os/exec path (they're
+		// not slinit services) so we absorb ECHILD here instead.
+		// Loses exit-code visibility for the on-error=stop branch
+		// on this one iteration — acceptable given the alternative
+		// is a spurious error line on every cron tick.
+		return nil
+	}
+	return err
+}
+
+// isECHILDErr reports whether err is a waitid/wait4 ECHILD wrapped
+// in any of the shapes Go's os/exec surfaces (bare syscall.Errno,
+// *os.SyscallError). Extracted so cron_test.go can assert the same
+// predicate the runtime uses.
+func isECHILDErr(err error) bool {
+	return err != nil && errors.Is(err, syscall.ECHILD)
 }
