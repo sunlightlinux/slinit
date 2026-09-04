@@ -3,8 +3,11 @@ package journalbin
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/sunlightlinux/slinit/pkg/journal"
@@ -307,14 +310,56 @@ func (w *Writer) recoverFSSStateLocked() error {
 // array. Records the tail offset, its capacity, and how many slots
 // are filled (first zero == fill boundary). No-op when the chain is
 // empty (no entries yet).
+//
+// Truncation tolerance: when readEntryArray fails with io.EOF (the
+// chain points into a region that got cut off — typical after an
+// unclean shutdown), we treat the chain as terminated at the previous
+// good offset instead of aborting startup. If the corruption is at
+// the very first array (EntryArrayOffset itself past-EOF), the header
+// gets reset to 0 so the next Append allocates a fresh chain. Cost:
+// entries in unreadable segments become orphaned (already unreadable
+// via forward walking anyway), but the daemon starts and keeps
+// writing. Without this, slinit-journald crash-loops on any journal
+// file that survived a hard reboot mid-write.
 func (w *Writer) recoverEntryArrayTailLocked() error {
 	if w.header.EntryArrayOffset == 0 {
 		return nil
 	}
 	cur := w.header.EntryArrayOffset
+	var lastGood uint64
 	for {
 		next, items, err := readEntryArray(w.f, cur)
 		if err != nil {
+			if errors.Is(err, io.EOF) || strings.Contains(err.Error(), ": EOF") {
+				// Truncated chain. If we made no forward progress
+				// (first array is past-EOF), forget the chain
+				// entirely — Append will allocate a fresh one.
+				if lastGood == 0 {
+					w.header.EntryArrayOffset = 0
+					w.entryArrayTail = 0
+					w.entryArrayTailCap = 0
+					w.entryArrayTailFill = 0
+					return nil
+				}
+				// Otherwise the last good array is our new tail —
+				// re-read it to populate tail state.
+				_, items, err = readEntryArray(w.f, lastGood)
+				if err != nil {
+					return err
+				}
+				fill := 0
+				for i, e := range items {
+					if e == 0 {
+						fill = i
+						break
+					}
+					fill = i + 1
+				}
+				w.entryArrayTail = lastGood
+				w.entryArrayTailCap = len(items)
+				w.entryArrayTailFill = fill
+				return nil
+			}
 			return err
 		}
 		if next == 0 {
@@ -332,6 +377,7 @@ func (w *Writer) recoverEntryArrayTailLocked() error {
 			w.entryArrayTailFill = fill
 			return nil
 		}
+		lastGood = cur
 		cur = next
 	}
 }
