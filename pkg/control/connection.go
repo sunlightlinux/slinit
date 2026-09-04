@@ -1590,22 +1590,47 @@ func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 	return c.writePacket(RplyACK, nil)
 }
 
-// persistEnable creates a symlink from <fromSvc-dir>/waits-for.d/<to-name>
-// to ../<to-name>, so the enable survives a daemon restart. If fromSvc has
-// no recorded load directory (e.g. it was added programmatically without
-// loading from disk), the call is a no-op — there is no on-disk service
-// description to anchor the link.
+// enableDirFor returns the on-disk directory persistEnable should
+// write the enable-symlink into (and persistDisable should remove
+// from) for the given fromSvc. Preference order:
 //
-// The fromSvc service-dir is the directory the description was loaded
-// from. We don't follow user-overridden waits-for.d= paths here; using
-// the canonical subdirectory matches the offline path slinitctl uses and
-// the directory the loader scans by default.
-func persistEnable(fromSvc, toSvc service.Service) error {
+//  1. First entry of fromSvc's declared `waits-for.d:` list, if any
+//     (resolved against ServiceDir when relative). This is the ONLY
+//     directory the loader will scan on next boot, so a symlink
+//     dropped anywhere else is a silent no-op.
+//  2. Falls back to `<ServiceDir>/waits-for.d/` when the service
+//     didn't declare `waits-for.d:` — matches the legacy behaviour
+//     and the offline path slinitctl uses. Note: without a
+//     matching directive in the description, the loader won't
+//     scan this on next boot, so the symlink only affects the
+//     current process's runtime state.
+//
+// Returns "" when fromSvc has no ServiceDir (programmatic add), in
+// which case both persist functions no-op.
+func enableDirFor(fromSvc service.Service) string {
 	dir := fromSvc.Record().ServiceDir()
 	if dir == "" {
+		return ""
+	}
+	for _, d := range fromSvc.Record().WaitsForDirs() {
+		if filepath.IsAbs(d) {
+			return d
+		}
+		return filepath.Join(dir, d)
+	}
+	return filepath.Join(dir, "waits-for.d")
+}
+
+// persistEnable creates a symlink from <enableDir>/<to-name> to
+// ../<to-name>, so the enable survives a daemon restart. If fromSvc
+// has no recorded load directory (e.g. it was added programmatically
+// without loading from disk), the call is a no-op — there is no
+// on-disk service description to anchor the link.
+func persistEnable(fromSvc, toSvc service.Service) error {
+	waitsDir := enableDirFor(fromSvc)
+	if waitsDir == "" {
 		return nil
 	}
-	waitsDir := filepath.Join(dir, "waits-for.d")
 	if err := os.MkdirAll(waitsDir, 0755); err != nil {
 		return err
 	}
@@ -1621,11 +1646,11 @@ func persistEnable(fromSvc, toSvc service.Service) error {
 // not an error: the disable still succeeded in memory and an absent link
 // is the desired end state.
 func persistDisable(fromSvc, toSvc service.Service) error {
-	dir := fromSvc.Record().ServiceDir()
-	if dir == "" {
+	waitsDir := enableDirFor(fromSvc)
+	if waitsDir == "" {
 		return nil
 	}
-	link := filepath.Join(dir, "waits-for.d", toSvc.Name())
+	link := filepath.Join(waitsDir, toSvc.Name())
 	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
 		return err
 	}

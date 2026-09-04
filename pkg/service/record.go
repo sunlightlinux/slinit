@@ -97,6 +97,13 @@ type ServiceRecord struct {
 	self        Service // pointer back to the implementing Service
 	serviceName string
 	serviceDir  string // directory where service description was found
+	// waitsForDirs are the `waits-for.d:` paths declared in the
+	// description (possibly zero). Kept on the record so
+	// persistEnable can write a symlink into the SAME directory
+	// the loader will scan on next boot, instead of guessing
+	// waits-for.d/ and dropping the enable to a place the loader
+	// ignores.
+	waitsForDirs []string
 	description string // human-readable description for status/list output
 	author      string // upstart-style metadata (informational)
 	version     string
@@ -536,6 +543,17 @@ func NewServiceRecord(self Service, set *ServiceSet, name string, recordType Ser
 func (sr *ServiceRecord) Name() string             { return sr.serviceName }
 func (sr *ServiceRecord) ServiceDir() string       { return sr.serviceDir }
 func (sr *ServiceRecord) SetServiceDir(dir string) { sr.serviceDir = dir }
+
+// WaitsForDirs returns the resolved `waits-for.d:` paths from the
+// service description (relative or absolute, in declaration order).
+// Consumers: persistEnable / persistDisable use the first entry to
+// write / remove the enable-symlink into the directory the loader
+// will actually scan.
+func (sr *ServiceRecord) WaitsForDirs() []string { return sr.waitsForDirs }
+
+// SetWaitsForDirs is called by the config loader with the parsed
+// list. Mirrors SetServiceDir's shape.
+func (sr *ServiceRecord) SetWaitsForDirs(dirs []string) { sr.waitsForDirs = dirs }
 func (sr *ServiceRecord) Description() string      { return sr.description }
 func (sr *ServiceRecord) SetDescription(d string)  { sr.description = d }
 func (sr *ServiceRecord) Author() string           { return sr.author }

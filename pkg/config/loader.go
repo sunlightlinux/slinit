@@ -863,6 +863,7 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 
 	// Record the directory and modification time of the service description
 	svc.Record().SetServiceDir(filepath.Dir(filePath))
+	svc.Record().SetWaitsForDirs(desc.WaitsForD)
 	if fi, err := os.Stat(filePath); err == nil {
 		svc.Record().SetLoadModTime(fi.ModTime())
 	}
