@@ -176,11 +176,28 @@ func (r *Reader) Iter(fn func(*journal.Event) bool) error {
 			return fmt.Errorf("journalbin: object size %d < header size %d at %d",
 				oh.Size, ObjectHeaderSize, off)
 		}
-		if off+oh.Size > fileSize {
+		// Overflow-safe bounds check. `off + oh.Size` can wrap on a
+		// hostile Size near uint64.Max, sneaking past a naive
+		// `off+size > fileSize`. Rewriting as `oh.Size > fileSize-off`
+		// keeps the arithmetic entirely inside the file-size domain
+		// (fileSize-off is guaranteed non-negative because we enter
+		// the loop only when off < fileSize).
+		if oh.Size > fileSize-off {
 			return fmt.Errorf("journalbin: object at %d claims size %d, past file end %d: %w",
 				off, oh.Size, fileSize, ErrObjectBounds)
 		}
 		next := off + AlignUp(oh.Size)
+		// Forward-progress guard. AlignUp(oh.Size) can wrap on a huge
+		// Size and land next <= off, which would loop the walker
+		// forever (fuzz timeout in FuzzJournalBinaryOpenReader
+		// surfaced this exact shape). The bounds check above catches
+		// the extreme case but not the boundary where AlignUp
+		// overflows exactly to (fileSize-off); belt-and-suspenders
+		// check ensures the walker always terminates.
+		if next <= off {
+			return fmt.Errorf("journalbin: object at %d has non-progressing size %d (aligned wrapped)",
+				off, oh.Size)
+		}
 
 		if oh.Type == ObjectEntry {
 			evt, err := r.readEntryAt(off, oh.Size)
