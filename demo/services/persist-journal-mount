@@ -30,7 +30,12 @@ command = /bin/sh -c 'mkdir -p /var/log/slinit-journal; if [ -b /dev/vda ]; then
 # processLine emits journal events only when at least one processing
 # knob is on (logfile-max-size, log-includes, etc.); the 1 MiB cap
 # below is arbitrary — flips LogRotator on, that's the point.
+#
+# Logfile in /run (tmpfs, always writable) rather than /var/log —
+# Alpine minirootfs doesn't ship /var/log/ so a path under there
+# fails to open at service start (LogRotator opens BEFORE the
+# command runs, so a mkdir -p in the command can't rescue it).
 log-type = file
-logfile = /var/log/slinit/persist-journal-mount.log
+logfile = /run/persist-journal-mount.log
 logfile-max-size = 1048576
 depends-on: system-init
