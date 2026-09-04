@@ -54,6 +54,7 @@ type JournalQueryRequest struct {
 	// Namespace filters events by their Event.Namespace tag
 	// (systemd `--namespace=NS`). Empty = no filter.
 	Namespace string `json:"namespace,omitempty"`
+	BootID    string `json:"boot_id,omitempty"`
 
 	// Limit caps the number of matching events returned. Zero or
 	// negative means "no cap"; positive limits keep the most recent N.
@@ -77,6 +78,7 @@ func (req JournalQueryRequest) ToFilter() journal.QueryFilter {
 		GrepInsensitive:    req.GrepInsensitive,
 		InvocationID:       req.InvocationID,
 		Namespace:          req.Namespace,
+		BootID:             req.BootID,
 	}
 	if req.PrioritySet {
 		f.MinPriority = journal.Priority(req.MinPriority)

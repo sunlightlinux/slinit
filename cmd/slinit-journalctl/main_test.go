@@ -1655,6 +1655,33 @@ func TestAggregateBoot(t *testing.T) {
 	}
 }
 
+// TestBootIDForFilter covers the boot-id-to-filter mapping used by
+// buildRequest. Empty string / "0" / relative forms MUST map to ""
+// so they don't reach the wire as literal filters — a QueryFilter
+// with BootID="0" would drop every real event because no
+// Event.BootID equals the shorthand. Only a resolved 32-hex ID is
+// passed through.
+func TestBootIDForFilter(t *testing.T) {
+	// Positive: 32-hex passes through unchanged.
+	hex32 := "8b979750485a0116a9ea7ba0aaedc3dc"
+	if got := bootIDForFilter(hex32); got != hex32 {
+		t.Errorf("bootIDForFilter(%q) = %q, want unchanged", hex32, got)
+	}
+
+	// Negative: current-boot shorthands and relative indices drop to "".
+	for _, spec := range []string{"", "0", "-1", "-2", "+1", "1", "abc", "notarealbootid"} {
+		if got := bootIDForFilter(spec); got != "" {
+			t.Errorf("bootIDForFilter(%q) = %q, want \"\" (should not become a filter)", spec, got)
+		}
+	}
+
+	// Negative: 32-char but not all hex.
+	non32Hex := "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG" // 32 non-hex chars
+	if got := bootIDForFilter(non32Hex); got != "" {
+		t.Errorf("bootIDForFilter(non-hex 32 chars) = %q, want \"\"", got)
+	}
+}
+
 // TestIsTruncationErr covers the classifier used by
 // aggregateBootsFromDir to distinguish "unclean-shutdown tail past
 // end of file" (recoverable — the earlier records are fine) from

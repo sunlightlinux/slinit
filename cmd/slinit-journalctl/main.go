@@ -1464,6 +1464,24 @@ func runQuery(opts options) error {
 		return runFieldValues(conn, opts, os.Stdout)
 	}
 	if opts.bootSet {
+		// Resolve any relative form (-N, +N) to a concrete boot-id
+		// via the aggregator that --list-boots uses (ring buffer +
+		// on-disk journals). "" / "0" stay as-is; a concrete 32-hex
+		// ID passes through unchanged. Sets opts.bootID + when the
+		// resolved boot is NOT current, sets opts.directory so we
+		// route through the on-disk read path.
+		if err := resolveBootSpec(conn, &opts); err != nil {
+			return err
+		}
+		// Cross-boot: delegate to runFromDirectory. The buildRequest
+		// filter (via ToFilter) picks up opts.bootID so only the
+		// target boot's events surface even if the file has more.
+		if opts.directory != "" {
+			if opts.follow {
+				return errors.New("-b <past-boot> and --follow are mutually exclusive (past boots don't emit new events)")
+			}
+			return runFromDirectory(opts)
+		}
 		if err := verifyBootID(conn, opts.bootID); err != nil {
 			return err
 		}
@@ -2645,23 +2663,148 @@ func isTruncationErr(err error) bool {
 	return strings.Contains(msg, ": EOF") || strings.Contains(msg, "unexpected EOF")
 }
 
+// resolveBootSpec rewrites opts.bootID from any of the systemd-parity
+// spec forms into a concrete 32-hex boot-id, and sets opts.directory
+// to the target boot's on-disk journal directory when that boot is
+// not the current one. Called before verifyBootID.
+//
+// Spec forms:
+//
+//	""       → current boot (no rewrite)
+//	"0"      → current boot (no rewrite)
+//	<32hex>  → specific boot-id (pre-resolved; no rewrite)
+//	"-N"     → N-th previous boot from the ordered set the aggregator
+//	           sees (ring buffer + on-disk journals). "-1" = the boot
+//	           just before current, "-2" = the one before that, etc.
+//	"+N"     → not implemented (only meaningful on merged multi-machine
+//	           setups; returns error)
+//
+// The resolved ID is looked up against the same aggregation used by
+// --list-boots, so an operator seeing "-1" in --list-boots output
+// gets exactly that boot's events when they pass `-b -1`.
+func resolveBootSpec(conn net.Conn, opts *options) error {
+	spec := opts.bootID
+	// Fast paths: current-boot shorthands and pre-resolved hex.
+	if spec == "" || spec == "0" {
+		return nil
+	}
+	if len(spec) == 32 && isAllHex(spec) {
+		// Concrete boot-id — route via directory in case it's not
+		// current (verifyBootID will confirm or the directory read
+		// takes over).
+		opts.directory = firstExistingJournalDir()
+		return nil
+	}
+	// Relative index?
+	if strings.HasPrefix(spec, "-") || strings.HasPrefix(spec, "+") {
+		n, err := strconv.Atoi(spec)
+		if err != nil {
+			return fmt.Errorf("-b %s: not a valid relative index (want -N)", spec)
+		}
+		if n > 0 {
+			return fmt.Errorf("-b +%d: future-boot indexing not supported (only meaningful on merged multi-machine setups)", n)
+		}
+		byID, err := aggregateAllBoots(conn)
+		if err != nil {
+			return fmt.Errorf("-b %s: %w", spec, err)
+		}
+		if len(byID) == 0 {
+			return fmt.Errorf("-b %s: no boots recorded yet", spec)
+		}
+		// Sort by first_ts ascending, then index from newest.
+		// idx 0 = newest, -1 = second-newest, etc.
+		sorted := make([]*bootRange, 0, len(byID))
+		for _, r := range byID {
+			sorted = append(sorted, r)
+		}
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].first < sorted[j].first })
+		wantIdx := len(sorted) - 1 + n // -1 → len-2, -2 → len-3, ...
+		if wantIdx < 0 || wantIdx >= len(sorted) {
+			return fmt.Errorf("-b %s: only %d boots recorded; requested index out of range", spec, len(sorted))
+		}
+		opts.bootID = sorted[wantIdx].id
+		opts.directory = firstExistingJournalDir()
+		return nil
+	}
+	return fmt.Errorf("-b %s: not a recognised spec (expected empty, 0, -N, or 32-hex ID)", spec)
+}
+
+// aggregateAllBoots is the aggregator used by both --list-boots and
+// -b -N resolution — pulls from ring buffer + on-disk journals into
+// a single BootID→bootRange map.
+func aggregateAllBoots(conn net.Conn) (map[string]*bootRange, error) {
+	byID := map[string]*bootRange{}
+	// Ring buffer via control socket.
+	payload, err := json.Marshal(control.JournalQueryRequest{})
+	if err == nil {
+		if werr := control.WritePacket(conn, control.CmdJournalQuery, payload); werr == nil {
+			if events, cerr := collectStream(conn); cerr == nil {
+				for _, e := range events {
+					aggregateBoot(byID, e)
+				}
+			}
+		}
+	}
+	// On-disk directories.
+	for _, dir := range listBootsJournalDirs {
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		if err := aggregateBootsFromDir(dir, byID); err != nil {
+			return nil, err
+		}
+	}
+	return byID, nil
+}
+
+// firstExistingJournalDir returns the first on-disk journal directory
+// that exists among listBootsJournalDirs, or "" when none exist.
+// Used to auto-set opts.directory when -b <spec> targets a boot
+// other than the current one.
+func firstExistingJournalDir() string {
+	for _, dir := range listBootsJournalDirs {
+		if _, err := os.Stat(dir); err == nil {
+			return dir
+		}
+	}
+	return ""
+}
+
+// bootIDForFilter returns s only when it's a valid 32-hex boot-id.
+// Empty string / "0" / "-N" forms map to "" (no filter) — those are
+// current-boot / relative-index shorthands and must not reach the
+// wire as literal filters. resolveBootSpec has already converted any
+// relative form to a concrete hex ID before this is called.
+func bootIDForFilter(s string) string {
+	if len(s) == 32 && isAllHex(s) {
+		return s
+	}
+	return ""
+}
+
+// isAllHex reports whether s is all lowercase-hex chars — a
+// pre-resolved boot-id from journalctl --list-boots output has this
+// shape.
+func isAllHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
 // verifyBootID checks whether the requested boot spec matches the
 // current boot. Accepts:
 //   ""       → current boot (--boot / -b without arg)
 //   "0"      → current boot (systemd shorthand)
-//   <32 hex> → specific boot ID; must match current (multi-boot
-//              indexing across on-disk rotated files not yet wired
-//              in the control-socket query path)
-//   "-N"     → negative index (systemd "N boots ago") — currently
-//              rejected with a helpful message pointing at
-//              --list-boots for lookup
+//   <32 hex> → specific boot ID; must match current OR fall through
+//              to on-disk read via opts.directory when set by
+//              resolveBootSpec
 func verifyBootID(conn net.Conn, want string) error {
 	if want == "" || want == "0" {
 		return nil
-	}
-	if strings.HasPrefix(want, "-") {
-		return fmt.Errorf("-b %s: relative boot indexing not yet supported; use --list-boots to get full IDs and pass one explicitly",
-			want)
 	}
 	// Query one event to fish out the server's BootID cheaply.
 	payload, _ := json.Marshal(control.JournalQueryRequest{Limit: 1})
@@ -3118,6 +3261,12 @@ func buildRequest(opts options) control.JournalQueryRequest {
 		GrepInsensitive: shouldGrepInsensitive(opts),
 		InvocationID:    opts.invocation,
 		Namespace:       opts.namespace,
+		// Only a resolved 32-hex boot-id becomes a filter. "" and
+		// "0" are current-boot shorthands — passing them as a
+		// filter would drop every event because no Event.BootID
+		// equals them. resolveBootSpec has already rewritten -N
+		// forms to concrete hex before this call.
+		BootID: bootIDForFilter(opts.bootID),
 	}
 	if opts.prioritySet {
 		req.MinPriority = int(opts.priority)

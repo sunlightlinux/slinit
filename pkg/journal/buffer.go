@@ -176,6 +176,13 @@ type QueryFilter struct {
 	// query returns events from every namespace, including the
 	// default (unnamed) one.
 	Namespace string
+
+	// BootID restricts to events tagged with this boot-id. Used by
+	// `journalctl -b <ID>` and its `-b -N` relative form after
+	// resolution to a concrete id. Empty means no filter (all boots
+	// pass). Compared against Event.BootID exactly; the caller is
+	// responsible for normalising hex case if needed.
+	BootID string
 }
 
 // hasMinPriority is a sentinel test that distinguishes "priority
@@ -253,6 +260,9 @@ func (q QueryFilter) Match(e *Event) bool {
 		}
 	}
 	if q.Namespace != "" && e.Namespace != q.Namespace {
+		return false
+	}
+	if q.BootID != "" && e.BootID != q.BootID {
 		return false
 	}
 	return true
