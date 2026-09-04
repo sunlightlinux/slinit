@@ -23,7 +23,7 @@ type = process
 # state new startup can't recover). Without this, exit 1 on the daemon
 # tells us nothing — its own stderr is discarded by the process
 # supervisor default. Cat /run/journal-demo.err to see the real error.
-command = /bin/sh -c 'exec /usr/sbin/slinit-journald --dir=/var/log/slinit-journal --volatile-dir=/run/slinit-journal --format=binary --fss-key=/etc/slinit/journal-key --max-size=8388608 --max-age=1h 2>>/run/journal-demo.err'
+command = /bin/sh -c '/usr/sbin/slinit-journald --dir=/var/log/slinit-journal --volatile-dir=/run/slinit-journal --format=binary --fss-key=/etc/slinit/journal-key --max-size=8388608 --max-age=1h >/run/journal-demo.err 2>&1'
 restart = on-failure
 restart-limit-count = 5
 restart-limit-interval = 30
