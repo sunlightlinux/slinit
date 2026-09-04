@@ -2625,7 +2625,15 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	cmd.Env = s.buildEnv()
 
 	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil && !isECHILDErr(err) {
+		// Same PID-1 reaper race handled in pkg/service/cron.go:
+		// slinit's global SIGCHLD reaper (pkg/process/exitrouter.go)
+		// may claim the zombie before this cmd.Run()'s Wait4 sees
+		// it, producing waitid ECHILD. The finish-command DID run;
+		// its exit status is just unobservable on this path. Log
+		// only real failures — swallowing ECHILD avoids spurious
+		// "finish-command failed: waitid: no child processes" on
+		// every shutdown of a runit-style service.
 		s.services.logger.Error("Service '%s': finish-command failed: %v",
 			s.serviceName, err)
 	}
