@@ -25,4 +25,12 @@
 
 type = scripted
 command = /bin/sh -c 'mkdir -p /var/log/slinit-journal; if [ -b /dev/vda ]; then if ! blkid /dev/vda >/dev/null 2>&1; then echo "persist-journal-mount: formatting /dev/vda (vfat) for first-boot persistence"; mkfs.vfat /dev/vda >/dev/null; fi; mount /dev/vda /var/log/slinit-journal && echo "persist-journal-mount: /var/log/slinit-journal mounted from /dev/vda (persistent)"; else echo "persist-journal-mount: no /dev/vda; /var/log/slinit-journal stays on tmpfs (volatile)"; fi'
+# stdout carries the mount-vs-tmpfs decision — route to a logfile so
+# `slinit-journalctl -u persist-journal-mount` surfaces it. LogRotator's
+# processLine emits journal events only when at least one processing
+# knob is on (logfile-max-size, log-includes, etc.); the 1 MiB cap
+# below is arbitrary — flips LogRotator on, that's the point.
+log-type = file
+logfile = /var/log/slinit/persist-journal-mount.log
+logfile-max-size = 1048576
 depends-on: system-init
