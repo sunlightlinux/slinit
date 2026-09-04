@@ -303,7 +303,13 @@ func (w *Writer) recoverFSSStateLocked() error {
 			return err
 		}
 		if oh.Size < ObjectHeaderSize {
-			return fmt.Errorf("journalbin: FSS recovery bad object size %d at %d", oh.Size, off)
+			// Zero-filled header (Size=0, Type=0) — allocated space
+			// the writer never initialised before dying. Same
+			// unclean-shutdown shape as the ": EOF" case above;
+			// treat as scan boundary rather than fatal error so the
+			// daemon can start and keep sealing from wherever the
+			// last good TAG left off.
+			break
 		}
 		next := off + AlignUp(oh.Size)
 		if next <= off || next > fileSize {
