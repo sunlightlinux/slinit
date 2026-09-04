@@ -9,42 +9,17 @@
 # `slinitctl trigger trigger-test`, so waiting for it would block this
 # milestone forever (and with it the login prompt). boot references it
 # instead, where a perpetually-pending waits-for is harmless.
+#
+# Enable/disable individual demo services with:
+#
+#   slinitctl enable  <name>       # creates all-services.d/<name> symlink
+#   slinitctl disable <name>       # removes the symlink
+#
+# The waits-for.d directive below tells the loader to enumerate every
+# entry in all-services.d/ (symlinks or plain files, name == service
+# name) and add each as a waits-for dependency. Mirrors dinit's
+# boot.d/ pattern — one directory of symlinks operators can toggle
+# without editing this file.
 type = internal
 depends-on: system-init
-waits-for: hello
-waits-for: ticker
-waits-for: dep-chain
-waits-for: cpu-pinned
-waits-for: hello-logged
-waits-for: logger
-waits-for: env-demo
-waits-for: graceful-stop
-waits-for: cron-demo
-waits-for: shared-log
-waits-for: app-one
-waits-for: app-two
-waits-for: runit-svc
-waits-for: logfile-demo
-waits-for: extra-actions
-waits-for: guard-demo
-waits-for: rlimit-demo
-waits-for: cgroup-demo
-waits-for: cgroup-worker
-waits-for: socket-demo
-waits-for: namespace-demo
-waits-for: stop-timeout-demo
-waits-for: healthcheck-demo
-waits-for: chain-a
-waits-for: include-demo
-waits-for: sandbox-demo
-waits-for: bgprocess-demo
-waits-for: vtty-svc
-# OpenRC-tools showcase services (added alongside the standalone
-# binaries so the boot-time list of demos exercises the new surface).
-waits-for: sysctl-demo
-waits-for: svc-value-demo
-waits-for: ssd-demo
-waits-for: supervise-demo
-waits-for: einfo-demo
-waits-for: persist-journal-mount
-waits-for: journal-demo
+waits-for.d = all-services.d
