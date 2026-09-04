@@ -17,8 +17,9 @@
 #   slinit-journalctl --file /run/slinit-journal/*.journal --verify   # walk FSS tag chain
 #   slinit-journalctl -f                                     # follow live via control socket
 type = process
-command = /usr/sbin/slinit-journald --dir=/run/slinit-journal --volatile-dir=/run/slinit-journal --format=binary --fss-key=/etc/slinit/journal-key --max-size=8388608 --max-age=1h
+command = /usr/sbin/slinit-journald --dir=/var/log/slinit-journal --volatile-dir=/run/slinit-journal --format=binary --fss-key=/etc/slinit/journal-key --max-size=8388608 --max-age=1h
 restart = on-failure
 restart-limit-count = 5
 restart-limit-interval = 30
 depends-on: system-init
+depends-on: persist-journal-mount

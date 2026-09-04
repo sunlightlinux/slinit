@@ -1,0 +1,34 @@
+# persist-journal-mount — bring /var/log/slinit-journal onto a
+# persistent block device when demo/run.sh --persist attached one
+# (virtio disk = /dev/vda), else no-op success.
+#
+# Scripted (not process) because it's a one-shot setup task that
+# ends after mount(2) returns — a process-type service would keep
+# a shell running forever holding no lock. Runs before journal-demo
+# so slinit-journald sees the mount as a plain directory it can
+# open at startup.
+#
+# Filesystem: vfat, because Alpine minirootfs's busybox ships
+# mkfs.vfat but NOT mkfs.ext4, and journal files don't need
+# permissions/symlinks/etc. Only the first boot formats the disk;
+# subsequent boots see the filesystem via blkid and skip.
+#
+# /dev/vda absence (no --persist) is a soft success — the mkdir
+# still creates /var/log/slinit-journal as a plain directory on
+# the initramfs tmpfs, so journal-demo doesn't need to know
+# whether persistence is in play.
+
+type = scripted
+command = /bin/sh -c '\
+    mkdir -p /var/log/slinit-journal && \
+    if [ -b /dev/vda ]; then \
+        if ! blkid /dev/vda >/dev/null 2>&1; then \
+            echo "→ formatting /dev/vda (vfat) for first-boot persistence"; \
+            mkfs.vfat /dev/vda >/dev/null; \
+        fi; \
+        mount /dev/vda /var/log/slinit-journal && \
+        echo "→ /var/log/slinit-journal mounted from /dev/vda (persistent)"; \
+    else \
+        echo "→ no /dev/vda; /var/log/slinit-journal stays on tmpfs (volatile)"; \
+    fi'
+depends-on: system-init

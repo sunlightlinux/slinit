@@ -46,4 +46,5 @@ waits-for: svc-value-demo
 waits-for: ssd-demo
 waits-for: supervise-demo
 waits-for: einfo-demo
+waits-for: persist-journal-mount
 waits-for: journal-demo

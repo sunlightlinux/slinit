@@ -19,6 +19,15 @@
 #                             #   serial-only demo cannot switch to VT9,
 #                             #   provided for completeness (works on ISO
 #                             #   on real hardware with VGA output).
+#   ./run.sh --persist        # attach a persistent virtio disk mounted at
+#                             #   /var/log/slinit-journal inside the guest.
+#                             #   Journal files survive a hard reboot
+#                             #   (slinitctl shutdown reboot inside the VM
+#                             #   + ./run.sh --persist again), so
+#                             #   `journalctl --list-boots` shows one entry
+#                             #   per boot instead of collapsing them.
+#                             #   Image path: _output/journal.img (256 MB
+#                             #   raw, vfat-formatted on first use).
 #   ./run.sh --no-monitor     # drop the QEMU monitor mux (`-serial stdio`
 #                             #   instead of `-serial mon:stdio`). Use when
 #                             #   the recovery shell shows heartbeat-like
@@ -50,6 +59,7 @@ APPEND="console=ttyS0 rdinit=/sbin/init loglevel=4 i6300esb.heartbeat=60"
 # header comment for the trade-off.
 SERIAL_ARGS=(-serial mon:stdio)
 EXIT_HINT="Ctrl+A, X to exit"
+PERSIST_ARGS=()
 
 # Parse selectors — each is a whole flag, KEY=VALUE forms handled inline.
 for arg in "$@"; do
@@ -65,6 +75,17 @@ for arg in "$@"; do
         --no-monitor)
             SERIAL_ARGS=(-serial stdio -monitor none)
             EXIT_HINT="poweroff from inside, or kill qemu from another terminal"
+            ;;
+        --persist)
+            # 256 MB raw image, created on first use. Small enough to
+            # copy around, big enough for hours of slinit event volume
+            # in the demo.
+            PERSIST_IMG="${OUTPUT_DIR}/journal.img"
+            if [ ! -f "${PERSIST_IMG}" ]; then
+                echo "→ creating ${PERSIST_IMG} (256 MB, sparse)"
+                truncate -s 256M "${PERSIST_IMG}"
+            fi
+            PERSIST_ARGS=(-drive "file=${PERSIST_IMG},format=raw,if=virtio")
             ;;
         --help|-h)
             grep -E '^# ' "$0" | sed 's/^# //'
@@ -103,4 +124,5 @@ exec qemu-system-x86_64 \
     -no-reboot \
     "${SERIAL_ARGS[@]}" \
     -nic none \
-    -device i6300esb
+    -device i6300esb \
+    "${PERSIST_ARGS[@]}"

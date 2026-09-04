@@ -307,6 +307,9 @@ hostnamectl location 'Bucharest, RO'     # free-form location string
 # See the journal-demo service block above for the full flag menu.
 journalctl -n 20                         # last 20 events
 journalctl -f                            # follow mode
+journalctl --list-boots                  # boots the journal has seen
+                                         #   (multi-entry needs ./run.sh --persist
+                                         #    + a hard reboot; see below)
 
 # --- slinit-timedatectl: systemd timedatectl(1) parity ---------
 timedatectl                              # status: local/UTC/RTC/TZ/NTP
@@ -319,6 +322,50 @@ timedatectl set-time '2026-08-09 14:30'  # absolute (local TZ)
 timedatectl set-local-rtc no             # RTC stays UTC (recommended)
 timedatectl set-ntp yes                  # if a time-sync service is installed
 ```
+
+## Multi-boot journal listing (`./run.sh --persist`)
+
+`./run.sh --persist` attaches a 256 MB raw disk image at
+`_output/journal.img` as `/dev/vda`. On first boot the
+`persist-journal-mount` service formats it (vfat — Alpine minirootfs's
+busybox ships `mkfs.vfat` but not `mkfs.ext4`) and mounts it at
+`/var/log/slinit-journal/`. `slinit-journald` then writes its
+`.journal` files there instead of the volatile `/run/slinit-journal/`
+tmpfs.
+
+Because the image lives on the host filesystem, the journal survives
+a hard reboot of the guest (which wipes tmpfs). Combined with
+slinit's boot-id regeneration on hard reboot (softreboot keeps the
+boot-id, matching systemd behaviour), each hard reboot produces a
+new entry in `journalctl --list-boots`.
+
+End-to-end walkthrough:
+
+```bash
+# Terminal 1: launch with persistent journal
+./run.sh --persist
+
+# Inside the VM (first boot):
+journalctl --list-boots                          # 1 entry (current)
+slinitctl shutdown reboot                        # hard reboot
+
+# Terminal 1 exits; relaunch:
+./run.sh --persist                               # journal.img reused
+
+# Inside the VM (second boot, new boot-id):
+journalctl --list-boots
+#  -1 <old boot-id> <first-ts>—<last-ts>
+#   0 <new boot-id> <first-ts>—<last-ts>
+```
+
+Without `--persist`, `--list-boots` only ever shows the current boot
+(tmpfs wipes on any restart). Note that `slinitctl shutdown
+softreboot` inside the VM keeps the same boot-id by design, so
+softreboot doesn't add a new entry even with `--persist` — you need
+a full reboot.
+
+To reset the persistent history: `rm _output/journal.img` before the
+next `./run.sh --persist`; the next boot will format a fresh disk.
 
 ## slinit-check (Config Linter)
 
