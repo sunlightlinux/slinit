@@ -270,12 +270,32 @@ func (w *Writer) recoverFSSStateLocked() error {
 	}
 	// Scan for the last TAG. On a linear-only-appends file this ends
 	// at the last-written TAG's aligned end offset.
+	//
+	// Truncation tolerance (same shape as recoverEntryArrayTailLocked):
+	// header.TailObjectOffset may point past the actual file end after
+	// an unclean shutdown, so the ReadAt calls below can return EOF
+	// mid-scan. When they do, stop the scan and commit whatever
+	// last-TAG we saw so far — losing FSS seal continuity for the
+	// truncated tail is preferable to crash-looping the daemon.
+	// Similar EOF handling on the tag-seqnum secondary read: skip
+	// that specific tag's seqnum recovery, keep whatever we already
+	// have.
 	off := uint64(HeaderSize)
 	var lastTagEnd uint64
 	var lastSeqnum uint64
-	for off < w.header.TailObjectOffset {
+	fileSize := w.header.TailObjectOffset
+	if fi, err := w.f.Stat(); err == nil && uint64(fi.Size()) < fileSize {
+		// Physical file shorter than header claims — cap the scan
+		// at the actual size so we never try to ReadAt past EOF
+		// in the first place.
+		fileSize = uint64(fi.Size())
+	}
+	for off < fileSize {
 		var hdrBuf [ObjectHeaderSize]byte
 		if _, err := w.f.ReadAt(hdrBuf[:], int64(off)); err != nil {
+			if errors.Is(err, io.EOF) || strings.Contains(err.Error(), ": EOF") {
+				break
+			}
 			return fmt.Errorf("journalbin: FSS recovery read at %d: %w", off, err)
 		}
 		oh, err := DecodeObjectHeader(hdrBuf[:])
@@ -286,10 +306,19 @@ func (w *Writer) recoverFSSStateLocked() error {
 			return fmt.Errorf("journalbin: FSS recovery bad object size %d at %d", oh.Size, off)
 		}
 		next := off + AlignUp(oh.Size)
+		if next <= off || next > fileSize {
+			// Wrap-safe forward-progress + no-past-EOF guard —
+			// consistent with reader.Iter's defence. Stop the scan
+			// here; last good tag (if any) becomes our tail.
+			break
+		}
 		if oh.Type == ObjectTag {
 			lastTagEnd = next
 			var seqBuf [8]byte
 			if _, err := w.f.ReadAt(seqBuf[:], int64(off)+int64(tagSeqnumOffset)); err != nil {
+				if errors.Is(err, io.EOF) || strings.Contains(err.Error(), ": EOF") {
+					break
+				}
 				return fmt.Errorf("journalbin: FSS recovery tag seqnum at %d: %w", off, err)
 			}
 			lastSeqnum = binary.LittleEndian.Uint64(seqBuf[:])
