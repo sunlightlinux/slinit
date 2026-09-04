@@ -1828,7 +1828,8 @@ func journalFilesUnder(dir string) ([]string, error) {
 			return nil
 		}
 		name := info.Name()
-		if strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".jsonl.gz") || strings.HasSuffix(name, ".slj") {
+		if strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".jsonl.gz") ||
+			strings.HasSuffix(name, ".slj") || strings.HasSuffix(name, ".journal") {
 			files = append(files, path)
 		}
 		return nil
