@@ -2556,6 +2556,17 @@ func runListBoots(conn net.Conn) error {
 // its BootID→timespan contribution into byID. Handles both
 // binary (.journal via journalbin.MultiReader) and JSONL (.jsonl /
 // .jsonl.gz via readJSONLFile with a null filter).
+//
+// Truncation tolerance: an unclean shutdown mid-write leaves the
+// tail ENTRY_ARRAY of the active .journal file pointing past
+// end-of-file, so mr.Iter surfaces `EOF` from `read entry-array
+// hdr at N`. That's a normal recovery scenario — the operator
+// wants to SEE which boots the journal captured up to that point,
+// not have `--list-boots` refuse to work. Absorb read-past-EOF
+// (and its io.ErrUnexpectedEOF sibling for short JSONL reads) as
+// "reached end of usable data on this file" and continue.
+// Genuine unreadable-file errors (permissions, bad magic) still
+// surface — those aren't tail-truncation, they're broken files.
 func aggregateBootsFromDir(dir string, byID map[string]*bootRange) error {
 	// Binary path: journalbin.OpenDir + Iter walks every .journal
 	// file in one call.
@@ -2566,7 +2577,7 @@ func aggregateBootsFromDir(dir string, byID map[string]*bootRange) error {
 				return true
 			})
 			mr.Close()
-			if err != nil {
+			if err != nil && !isTruncationErr(err) {
 				return err
 			}
 		} else {
@@ -2602,7 +2613,7 @@ func aggregateBootsFromDir(dir string, byID map[string]*bootRange) error {
 		}
 		events, err := readJSONLFile(rc, journal.QueryFilter{MinPriority: -1}, 0)
 		rc.Close()
-		if err != nil {
+		if err != nil && !isTruncationErr(err) {
 			return err
 		}
 		for _, e := range events {
@@ -2610,6 +2621,28 @@ func aggregateBootsFromDir(dir string, byID map[string]*bootRange) error {
 		}
 	}
 	return nil
+}
+
+// isTruncationErr returns true for the read-past-end shapes that
+// signal an unclean-shutdown tail rather than an unreadable file.
+// EOF is the binary walker's "next offset points beyond file end";
+// io.ErrUnexpectedEOF is the JSONL parser's "line ends mid-record".
+// Neither means the earlier records are unreadable — they're just
+// telling us where the usable data ends.
+func isTruncationErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// journalbin wraps EOF into descriptive strings like
+	// "journalbin: read entry-array hdr at 1844720: EOF" — the
+	// errors.Is chain catches that via %w. The string-contains
+	// fallback below covers the (historical) `fmt.Errorf` wraps
+	// that didn't preserve the sentinel.
+	msg := err.Error()
+	return strings.Contains(msg, ": EOF") || strings.Contains(msg, "unexpected EOF")
 }
 
 // verifyBootID checks whether the requested boot spec matches the

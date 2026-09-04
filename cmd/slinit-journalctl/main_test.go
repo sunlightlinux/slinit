@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -1650,6 +1652,50 @@ func TestAggregateBoot(t *testing.T) {
 	}
 	if len(byID) != 2 {
 		t.Errorf("expected 2 distinct boots, got %d", len(byID))
+	}
+}
+
+// TestIsTruncationErr covers the classifier used by
+// aggregateBootsFromDir to distinguish "unclean-shutdown tail past
+// end of file" (recoverable — the earlier records are fine) from
+// "unreadable file" (permissions, bad magic, real corruption). Live-
+// test surfaced a journalbin EOF wrapped as "journalbin: read
+// entry-array hdr at 1844720: EOF" that MUST be classified as
+// truncation so --list-boots keeps working after unclean shutdown.
+func TestIsTruncationErr(t *testing.T) {
+	// Positive: bare EOF sentinels.
+	if !isTruncationErr(io.EOF) {
+		t.Error("io.EOF should be classified as truncation")
+	}
+	if !isTruncationErr(io.ErrUnexpectedEOF) {
+		t.Error("io.ErrUnexpectedEOF should be classified as truncation")
+	}
+
+	// Positive: wrapped EOF via fmt.Errorf %w — matches the modern
+	// error chain path.
+	wrapped := fmt.Errorf("journalbin: read entry-array hdr at 1844720: %w", io.EOF)
+	if !isTruncationErr(wrapped) {
+		t.Error("wrapped EOF should be classified as truncation")
+	}
+
+	// Positive: string-only "…: EOF" fallback for historical wraps
+	// that lost the sentinel through fmt.Errorf without %w.
+	stringOnly := errors.New("journalbin: read entry-array hdr at 1844720: EOF")
+	if !isTruncationErr(stringOnly) {
+		t.Error("string-form 'EOF' suffix should be classified as truncation")
+	}
+
+	// Negative: real errors do NOT get absorbed. Regression guard
+	// against an over-broad match that would hide genuine
+	// bad-magic / permission / corruption failures.
+	if isTruncationErr(nil) {
+		t.Error("nil is not truncation")
+	}
+	if isTruncationErr(errors.New("bad magic")) {
+		t.Error("random error should NOT match")
+	}
+	if isTruncationErr(errors.New("permission denied")) {
+		t.Error("permission-denied should NOT match")
 	}
 }
 
