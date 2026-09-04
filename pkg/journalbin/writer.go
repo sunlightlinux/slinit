@@ -359,7 +359,20 @@ func (w *Writer) recoverEntryArrayTailLocked() error {
 	for {
 		next, items, err := readEntryArray(w.f, cur)
 		if err != nil {
-			if errors.Is(err, io.EOF) || strings.Contains(err.Error(), ": EOF") {
+			// Truncation shapes we recover from:
+			//   ": EOF" — read past physical end
+			//   "expected ENTRY_ARRAY … got UNUSED" — offset points
+			//     into a zero-filled region (allocated but never
+			//     written, or a partial write that got zeroed).
+			//   "expected ENTRY_ARRAY … got …" (any other type) —
+			//     offset points into a legitimate non-array object
+			//     that shouldn't be here; safest to treat as tail
+			//     boundary rather than crash-loop.
+			msg := err.Error()
+			isTruncation := errors.Is(err, io.EOF) ||
+				strings.Contains(msg, ": EOF") ||
+				strings.Contains(msg, "expected ENTRY_ARRAY")
+			if isTruncation {
 				// Truncated chain. If we made no forward progress
 				// (first array is past-EOF), forget the chain
 				// entirely — Append will allocate a fresh one.
