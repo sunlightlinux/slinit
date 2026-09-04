@@ -112,6 +112,11 @@ fi
 
 echo "Starting slinit QEMU demo (${EXIT_HINT})"
 echo "kernel cmdline: ${APPEND}"
+if [ ${#PERSIST_ARGS[@]} -gt 0 ]; then
+    echo "persist:        ${PERSIST_ARGS[*]}"
+else
+    echo "persist:        off (pass --persist to enable /dev/vda)"
+fi
 echo ""
 
 exec qemu-system-x86_64 \
