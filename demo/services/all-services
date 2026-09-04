@@ -22,4 +22,4 @@
 # without editing this file.
 type = internal
 depends-on: system-init
-waits-for.d = all-services.d
+waits-for.d: all-services.d
