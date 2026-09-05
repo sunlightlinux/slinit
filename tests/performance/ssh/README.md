@@ -51,6 +51,11 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `100-ctl-hammer-throughput`    | 200 sequential status calls — per-op amortised throughput |
 | `110-journal-fetch-during-write` | Fetch racing 500-write emitter — reader/writer contention |
 | `120-mixed-workload`           | Interleaved status/ls/boot-time/journalctl 40 ops — operator sim |
+| `130-drift-detection`          | 10 batches × 50 status — per-batch drift detector |
+| `140-rss-delta-under-load`     | PID-1 RSS before/after 2500 status + 500 journalctl |
+| `141-rss-scaling`              | RSS curve at 500 / 2500 / 10000 / 12500 ops — leak vs arena |
+| `150-long-tail-latency`        | 500 status — p50/p95/p99/max distribution |
+| `160-journal-scan-vs-size`     | Fetch(N=100) before + after 5k-pump — reveals full-scan bugs |
 
 All cases are **read-only** or write to the journal (which is
 designed to absorb high write volume). No case starts/stops real
@@ -110,8 +115,25 @@ Findings:
 - **Reader/writer coexistence is fine.** Fetch racing 500-writer
   emitter (`110`) is 96 ms — dominated by the writer's 500 fork/
   exec cost, not journal contention.
+- **No drift over 500-op sequences.** Per-op cost across 10 batches
+  of 50 status calls stays flat (0.82–0.97 ms), no monotonic
+  slowdown.
+- **Long-tail latency is tight.** p50 / p95 / p99 / max for 500
+  sequential status ops = 1.16 / 1.78 / 1.98 / 2.09 ms — max
+  within 2× p50, no GC pause spikes visible.
+- **Journal fetch doesn't full-scan.** Fetch(N=100) cost is
+  UNCHANGED after emitting 5000 additional entries (actually −9%
+  from cache warmup) — reader seeks to tail correctly.
 
-No actionable perf issues surfaced at the scale tested.
+**Observed but not (yet) a defect**: RSS grows slowly under
+sustained load. 12500 status ops added +556 kB to PID-1 RSS,
+with a rate that decreases-then-upticks (80 → 44 → 25 → 96 kB
+per 1000 ops). Not a linear leak (would grow much faster) — most
+likely Go runtime heap arena growth batched with GC cycles. Rate
+amortises to ~44 bytes/op, projecting ~1 MB/day at 1 op/sec — not
+critical for an init but worth `pprof` follow-up before making
+strong long-term-stability claims. Thread count stays flat (25),
+so no goroutine leak into OS-thread scale-up.
 
 ## Adding a case
 
