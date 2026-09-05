@@ -66,6 +66,20 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `240-mixed-heavy-load`         | 16 status + 8 journalctl + 4 boot-time parallel — peak admin sim |
 | `250-fair-share-latency`       | 1 light client's p99 while 4 heavy fetches run — no-starvation check |
 | `260-ls-drift-detection`       | 10 batches × 50 ls — enumeration-path drift |
+| `270-slinitctl-graph`          | Full dep graph DOT export |
+| `280-slinitctl-dependents`     | Reverse-dep query for one svc |
+| `290-slinitctl-getallenv-global` | Global env dump |
+| `300-list-v5-vs-list`          | Protocol v5 vs v7 for list — marshalling cost |
+| `310-status-v5-vs-status`      | Protocol v5 vs v7 for status — marshalling cost |
+| `320-slinitctl-catlog`         | Read service's buffered stdout |
+| `330-slinitctl-service-dirs`   | Configured svc-dir list (floor check) |
+| `340-slinitctl-platform`       | Platform detect via /proc + /sys |
+| `350-slinitctl-signal-safe`    | Send SIGWINCH (ignored) — signal path |
+| `360-slinitctl-reload`         | Re-read single svc config from disk |
+| `370-slinitctl-reload-all`     | Bulk reload every loaded svc |
+| `380-slinitctl-setenv-cycle`   | Set + unset per-svc env var — mutation path |
+| `390-slinitctl-getallenv-svc`  | Per-svc env dump (vs 290's global) |
+| `400-slinitctl-is-started`     | Minimal-payload up-check probe |
 
 All cases are **read-only** or write to the journal (which is
 designed to absorb high write volume). No case starts/stops real
@@ -154,6 +168,25 @@ Findings:
   cheap-copy list path.
 - **Offline parser is free.** `slinit-check` median 1.07 ms
   matches CLI baseline exactly.
+- **Bulk operations dramatically cheaper than N calls.**
+  `reload-all` reloads every loaded service in 1.30 ms — only
+  +14% over reloading a single service (1.11 ms) and 10× cheaper
+  than the N-serial-reload alternative (13 × 1.1 = 14 ms). Scripts
+  polling for state should prefer bulk endpoints where they
+  exist — the fork/exec + connect cost dwarfs the actual server
+  work.
+- **v5 and v7 protocols cost the same.** `list` vs `list5`
+  (1.133 vs 1.103 ms) and `status` vs `status5` (1.171 vs
+  1.214 ms) show no meaningful marshalling-overhead gap between
+  the two protocol variants — the extra fields v5 carries are
+  encoded efficiently.
+- **Signal delivery is essentially free.** `slinitctl signal
+  WINCH <svc>` (1.080 ms) is within 20 μs of CtlVersion — the
+  control-socket + kill(2) path adds nothing measurable.
+- **Graph export + reverse-dep queries are lean.** Full DOT
+  graph export = 1.53 ms; `dependents <svc>` = 1.13 ms. Even
+  though both walk the full dep set, the render/filter work
+  costs at most 500 μs on top of the baseline.
 
 **Observed but not (yet) a defect**: RSS grows slowly under
 sustained load. 12500 status ops added +556 kB to PID-1 RSS,
