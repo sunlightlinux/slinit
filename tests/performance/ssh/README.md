@@ -56,6 +56,16 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `141-rss-scaling`              | RSS curve at 500 / 2500 / 10000 / 12500 ops — leak vs arena |
 | `150-long-tail-latency`        | 500 status — p50/p95/p99/max distribution |
 | `160-journal-scan-vs-size`     | Fetch(N=100) before + after 5k-pump — reveals full-scan bugs |
+| `170-ls-long-tail`             | 500x `slinitctl ls` — p50/p95/p99/max for enumeration path |
+| `180-boot-time-long-tail`      | 500x `slinitctl boot-time` — heavier aggregation code path |
+| `190-slinit-check-offline`     | `slinit-check /etc/slinit.d/boot` — offline parser latency |
+| `200-journalctl-output-json`   | short-vs-json format — encode cost |
+| `210-journalctl-tag-filter`    | tag-filtered vs unfiltered — scan-time push-down check |
+| `220-journalctl-priority-filter` | `-p err` vs unfiltered — filter-push-down check |
+| `230-parallel-journalctl-8`    | 8 concurrent journalctl fetches — reader-side scaling |
+| `240-mixed-heavy-load`         | 16 status + 8 journalctl + 4 boot-time parallel — peak admin sim |
+| `250-fair-share-latency`       | 1 light client's p99 while 4 heavy fetches run — no-starvation check |
+| `260-ls-drift-detection`       | 10 batches × 50 ls — enumeration-path drift |
 
 All cases are **read-only** or write to the journal (which is
 designed to absorb high write volume). No case starts/stops real
@@ -124,6 +134,26 @@ Findings:
 - **Journal fetch doesn't full-scan.** Fetch(N=100) cost is
   UNCHANGED after emitting 5000 additional entries (actually −9%
   from cache warmup) — reader seeks to tail correctly.
+- **Journal filters push down to scan.** `-t tag` is 26% FASTER
+  than unfiltered same-N (filter reduces records to decode);
+  `-p err` is 50% FASTER (priority filter scans less). Both are
+  implemented correctly at scan time, not post-decode.
+- **JSON output is cheap.** `--output=json` adds only +8.5% vs
+  the default short format for N=500 — encoder is not the
+  hot path.
+- **Concurrent readers scale.** 8 parallel journalctl fetches
+  cost 0.41 ms each (vs 1.6 ms serial) — reader path is
+  parallel-friendly, same as the control server.
+- **Fair scheduling holds.** A light `slinitctl status` loop's
+  p99 (1.94 ms) under sustained heavy `-n 5000` journal reads
+  is essentially identical to the isolated baseline (1.98 ms) —
+  slinit does not starve short queries under big-request load.
+- **Aggregation is no slower than enumeration.** `boot-time`
+  long-tail max = 1.96 ms, `ls` long-tail max = 2.01 ms — server-
+  side start-timing aggregation costs nothing extra vs the
+  cheap-copy list path.
+- **Offline parser is free.** `slinit-check` median 1.07 ms
+  matches CLI baseline exactly.
 
 **Observed but not (yet) a defect**: RSS grows slowly under
 sustained load. 12500 status ops added +556 kB to PID-1 RSS,
