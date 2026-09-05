@@ -90,6 +90,36 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `480-slinitctl-signal-hup-safe` | SIGHUP delivery (svc reloads on HUP but stays up) |
 | `490-catlog-repeat-drift`      | 10×50 catlog batches — read-path drift (SKIPs if unsupported) |
 | `500-status-during-reload-all` | Light status p99 while reload-all hammers — mutex-hold check |
+| `510-journalctl-long-tail`     | 300x journalctl fetch — p50/p95/p99/max |
+| `520-journalctl-compound-filter` | tag+priority AND vs each alone vs unfiltered |
+| `530-throwaway-restart-cycle`  | Provision + 5 restarts per iter — restart cost |
+| `540-throwaway-pause-continue` | pause+continue cycle on `type=process` throwaway |
+| `550-provision-30-svcs-list`   | 30 sequential provisions — list cost at N=43 |
+| `560-deep-dep-chain`           | 10-deep chain — status walk on tip |
+| `570-boot-time-under-writes`   | boot-time under 200-logger write pressure |
+| `580-parallel-lifecycle-4`     | **DISRUPTIVE** — crashes slinit PID 1 on v2.2.6, gated |
+| `590-graph-before-after-provision` | Graph render at N=13 vs N=43 |
+| `600-status-under-massive-lifecycle` | **DISRUPTIVE** — 20 concurrent lifecycles, gated |
+
+### Disruptive cases (opt-in only)
+
+Cases marked **DISRUPTIVE** are known to crash slinit as PID 1 on
+the versions where they surfaced the bug. They stay in-tree so
+they can validate the fix, but skip themselves by default unless
+`SLINIT_ALLOW_DISRUPTIVE=1` is set in the case's environment.
+Never run against a production target without a recovery plan
+(console access + power-cycle capability).
+
+Currently gated:
+- **`580-parallel-lifecycle-4`** — 4 concurrent throwaway
+  provision+start+stop+unload lifecycles panic slinit PID 1
+  on v2.2.6.
+- **`600-status-under-massive-lifecycle`** — same class, 20
+  concurrent lifecycles fan out 5× harder than 580.
+
+Root cause not yet identified — the parallel add/remove of
+loaded services through the state machine appears to race
+somewhere. Bug tracked as follow-up in [slinit issue tracker].
 
 All cases are **read-only** or write to the journal (which is
 designed to absorb high write volume). No case starts/stops real
