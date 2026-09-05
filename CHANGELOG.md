@@ -17,6 +17,106 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.6] — 2026-09-05
+
+Journal-recovery hardening pass + enable/disable workflow polish +
+first real cold-boot performance harnesses. The journal fixes are
+motivated by the same class of crash-tolerance bug: a hard reboot
+mid-write leaves the tail of a `.journal` file in one of several
+truncated shapes, and prior code panicked or crash-looped on each.
+This release absorbs every truncation shape observed while shaking
+down the demo's `--persist` flag. The demo/UX pass closes the last
+gap where `slinitctl enable X` / `disable X` didn't round-trip
+symmetrically against `all-services.d/`. The perf-benchmark harnesses
+give slinit its first published cold-boot numbers so it can be
+plotted alongside dinit / systemd / runit in comparison literature.
+
+### Added
+
+- **`tests/performance/demo/` — four QEMU cold-boot harnesses.**
+  `cold-boot.sh` boots the full 34-service demo, `minimal-boot.sh`
+  strips to a single service for parity comparison, `fork-exec-
+  throughput.sh` generates N `type=scripted, command=/bin/true`
+  mock services to isolate per-service fork+exec+wait cost, and
+  `pid1-footprint.sh` measures steady-state RSS after an idle
+  wait (Go GC settle). All four share `_lib.sh`: a
+  `perf_write_collector` that emits the measurement service
+  inline (parameterised depends-on + optional pre-dump sleep),
+  `perf_extract_block` that strips ANSI colour + the `\r`
+  `/dev/console` tacks on, and `perf_median` / `perf_p95` /
+  `perf_summary` for the benchstat-compatible output tables.
+  Each harness owns only its own service-tree wiring; driver
+  loop is identical.
+- **`tests/performance/` tiered into `runtime/`, `demo/`, `ssh/`.**
+  Existing Go micro-benchmarks moved to `runtime/` (package
+  renamed to `perfruntime` since Go's stdlib owns `runtime`).
+  `demo/` holds the QEMU-driven harnesses above; `ssh/` reserved
+  for planned SSH-driven end-to-end latency benchmarks
+  (`ctl-latency`, `journalctl-throughput`, `enable-disable`).
+  README at each tier explains what belongs where.
+
+### Fixed
+
+- **`pkg/journalbin` writer: chain recovery tolerates truncated
+  ENTRY_ARRAY tail.** Prior `recoverEntryArrayTailLocked`
+  returned EOF as-is when the last written entry-array header
+  extended past end-of-file, which crash-looped the demo's
+  `journal-demo` service after every unclean shutdown. Now
+  treats truncation as "scan boundary reached, chain valid up
+  to here" — the reader clamps at the last complete entry-array
+  and future writes append cleanly.
+- **`pkg/journalbin` writer: FSS recovery tolerates truncated
+  tail.** `recoverFSSStateLocked` had the same class of bug in
+  the sealed-tag scan path. Extended `isTruncationErr` to
+  recognise `io.EOF`, `io.ErrUnexpectedEOF`, and their
+  `fmt.Errorf %w` wraps as end-of-usable-data signals rather
+  than fatal errors.
+- **`pkg/journalbin`: "expected ENTRY_ARRAY got X" treated as
+  truncation.** When the tail region has been zero-filled by a
+  crash mid-fallocate, the object type at the recovery cursor
+  reads as UNUSED (or any other non-ENTRY_ARRAY value) instead
+  of returning EOF. Previously fatal; now treated as
+  "recovered as much as possible, stop scanning".
+- **`pkg/journalbin`: FSS recovery treats `size < HeaderSize` as
+  scan boundary.** A partially-written object header with a
+  size field smaller than the header size itself is another
+  truncation shape — same fix applies.
+- **`pkg/journalbin` Iter: overflow-safe bounds + forward-
+  progress guard.** Fuzzing surfaced an integer-overflow path
+  where `Iter` would loop indefinitely on a hostile file
+  (`ObjectHeader.Size` wraparound + `AlignUp` overflow). Bounds
+  now use overflow-safe arithmetic, and a forward-progress
+  guard aborts if the cursor doesn't advance between iterations.
+- **`cmd/slinit-journalctl`: `isTruncationErr` classifies zero-
+  region shapes too.** `--list-boots` walk hit the same trap as
+  the writer: reading past the end of a truncated file returned
+  errors that weren't in the original `isTruncationErr`
+  predicate, aborting the multi-file scan mid-walk. Extended
+  the classifier to match the writer's set.
+- **`demo/services/all-services` uses `waits-for.d =
+  all-services.d/`.** Previously listed every workload with an
+  explicit `waits-for:` line, so `slinitctl enable X` /
+  `disable X` couldn't manipulate the boot bundle without
+  editing the file. Now enumerates via a symlink directory
+  operators toggle — the OpenRC `/etc/rc.conf`-alike UX slinit
+  was missing.
+- **`waits-for.d` directive takes `:` operator, not `=`.**
+  Config parser accepts both forms for value directives but
+  dependency directives (including `waits-for.d`) require `:`.
+  Fixed in the demo service file that hit this first.
+- **`pkg/control` persistEnable/Disable respect the service's
+  `waits-for.d` directive.** `slinitctl enable X` / `disable X`
+  had hardcoded `waits-for.d/` as the symlink target directory,
+  so services declaring a non-default `waits-for.d` name (like
+  `all-services.d`) wouldn't round-trip. Now looks up the
+  actual directory from the service's config via a new
+  `WaitsForDirs()` accessor and `enableDirFor()` helper.
+- **`demo/services/*` @meta enable-via all-services.** Adds
+  `@meta enable-via all-services` to every workload that
+  should be togglable via `slinitctl enable/disable`, so the
+  CLI resolves the right from-service instead of failing on
+  ambiguity. 34 services touched.
+
 ## [2.2.5] — 2026-09-04
 
 Journal multi-boot pass. `journalctl --list-boots` now surfaces
