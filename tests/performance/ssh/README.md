@@ -80,6 +80,16 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `380-slinitctl-setenv-cycle`   | Set + unset per-svc env var — mutation path |
 | `390-slinitctl-getallenv-svc`  | Per-svc env dump (vs 290's global) |
 | `400-slinitctl-is-started`     | Minimal-payload up-check probe |
+| `410-slinitctl-load-mech`      | Loader mechanism info — rare code path floor |
+| `420-slinitctl-list-actions`   | Empty extra-actions list per svc |
+| `430-slinitctl-add-rm-dep-cycle` | Runtime graph mutation (add + remove dep) |
+| `440-parallel-different-svcs`  | 8 parallel status on 8 DIFFERENT svcs — cross-svc mutex check |
+| `450-slinitctl-is-failed-negative` | Negative exit-code path (is-failed on running svc) |
+| `460-throwaway-lifecycle`      | Full lifecycle: write file → start → stop → unload → rm |
+| `470-concurrent-setenv-8`      | 8 parallel setenv on same svc, different keys — env mutex |
+| `480-slinitctl-signal-hup-safe` | SIGHUP delivery (svc reloads on HUP but stays up) |
+| `490-catlog-repeat-drift`      | 10×50 catlog batches — read-path drift (SKIPs if unsupported) |
+| `500-status-during-reload-all` | Light status p99 while reload-all hammers — mutex-hold check |
 
 All cases are **read-only** or write to the journal (which is
 designed to absorb high write volume). No case starts/stops real
@@ -187,6 +197,30 @@ Findings:
   graph export = 1.53 ms; `dependents <svc>` = 1.13 ms. Even
   though both walk the full dep set, the render/filter work
   costs at most 500 μs on top of the baseline.
+- **Full service lifecycle is sub-4 ms.** Write file to
+  `/etc/slinit.d/` → `slinitctl start` → `stop` → `unload` → rm
+  runs in 3.89 ms median. Provisioning + tearing down throwaway
+  services in perf harnesses costs essentially nothing.
+- **Cross-service concurrency has no mutex serialisation.** 8
+  parallel status on 8 DIFFERENT services (`440`) cost 2.20 ms
+  — matching 8 parallel status on the SAME service (`060` =
+  2.13 ms). If cross-svc reads serialised on a global mutex,
+  we'd see the different-svc case slower; the numbers match
+  within jitter.
+- **Reload-all doesn't stall reads.** Light `slinitctl status`
+  under sustained `reload-all` hammer: p99 = 1.99 ms, max =
+  2.00 ms — essentially identical to isolated baseline.
+  reload-all's loader mutex is held per-service, not across
+  the whole batch.
+- **Runtime graph mutation is cheap.** `add-dep` +
+  immediate `rm-dep` cycle = 2.50 ms (~1.25 ms per op), only
+  ~150 μs over baseline per operation despite touching the
+  service graph.
+- **is-failed adds ~32% over is-started.** 1.45 ms vs 1.11 ms
+  — the negative-check path is materially heavier. Worth a
+  look if scripts poll this in tight loops; likely the CLI's
+  exit-code translation not taking a shortcut on the fast
+  path.
 
 **Observed but not (yet) a defect**: RSS grows slowly under
 sustained load. 12500 status ops added +556 kB to PID-1 RSS,
