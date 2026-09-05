@@ -1,49 +1,54 @@
 # slinit Performance Benchmarks
 
-Go benchmarks measuring core slinit subsystem performance.
+Three-tier benchmark suite. Each tier answers a different question and
+runs on different infrastructure — separated so an operator running
+just one tier doesn't drag the others along.
 
-## Running
+## `runtime/` — in-process microbenchmarks
 
-```bash
-# All benchmarks
-go test -bench=. -benchmem ./tests/performance/
+Go `testing.B` benchmarks against the hot paths of slinit's core
+libraries: config parser, service-set operations, dependency
+resolution, control-protocol wire encoding. No external processes,
+no fork/exec, no fs writes beyond `t.TempDir()`. Sub-microsecond
+resolution.
 
-# Specific subsystem
-go test -bench=BenchmarkParse -benchmem ./tests/performance/
-go test -bench=BenchmarkServiceSet -benchmem ./tests/performance/
-go test -bench=BenchmarkDependency -benchmem ./tests/performance/
-go test -bench=BenchmarkControl -benchmem ./tests/performance/
+Answers: "did this refactor slow the parser?", "does adding a new
+directive add allocations?", "how does control-socket encoding scale
+with N services?"
 
-# With custom duration
-go test -bench=. -benchmem -benchtime=2s ./tests/performance/
+Run: `go test -bench=. -benchmem ./tests/performance/runtime/`
 
-# Save baseline for comparison
-go test -bench=. -benchmem -count=5 ./tests/performance/ > baseline.txt
+See [runtime/README.md](runtime/README.md) for the per-benchmark list.
 
-# Compare two runs (requires benchstat)
-benchstat baseline.txt new.txt
-```
+## `demo/` — QEMU cold-boot + memory footprint
 
-## Benchmarks
+Bash scripts that drive `demo/run.sh` (or a minimal-service variant),
+capture `slinitctl boot-time` output, and read `/proc/1/status` for
+PID-1 memory footprint. Comparable numbers to the systemd-alternatives
+literature ("systemd 1.8s / dinit 0.7s / runit 0.4s cold boot" etc.).
 
-### Config Parsing (`parse_bench_test.go`)
+Answers: "how does slinit boot compared to systemd/dinit on the same
+hardware?", "what's PID-1 RSS after boot with N services?", "does
+tag X regress boot time vs tag Y?"
 
-- **ParseService** — single service file with common directives
-- **ParseServiceComplex** — service with 20+ directives (deps, rlimits, affinity)
-- **ParseBatch** — N service files from disk (10/50/100/500)
-- **ParseCPUAffinity** — cpu-affinity spec parsing (single/range/mixed)
+Requires: `qemu-system-x86_64`. Run from repo root:
+`./tests/performance/demo/cold-boot.sh`
 
-### Service Engine (`service_bench_test.go`)
+Not yet populated — plan: `cold-boot.sh`, `pid1-footprint.sh`,
+`fork-exec-throughput.sh`.
 
-- **ServiceSetAdd** — adding N services to a ServiceSet (10/100/500/1000)
-- **ServiceSetFind** — name lookup in sets of varying size
-- **DependencyChain** — start propagation through a linear dep chain (depth 5-50)
-- **DependencyFanOut** — start propagation with N parallel deps (5-100)
-- **ServiceLoad** — end-to-end DirLoader with N services + dep resolution
-- **ProcessQueues** — queue drain with N pending services
+## `ssh/` — live-VM end-to-end latency
 
-### Control Protocol (`control_bench_test.go`)
+Bash scripts driven against a running VM over SSH (same pattern as
+`tests/acceptance/ssh/`). Measures user-visible operation latency:
+`slinitctl start`, `slinitctl status`, `slinit-journalctl -n 100`,
+enable/disable round-trip. Uses the acceptance harness's VM
+provisioning so operators only need one VM running.
 
-- **ControlRoundTrip** — list-services command latency (5/20/100 services)
-- **ControlServiceStatus** — per-service status query via handle
-- **WireEncoding** — raw packet write + handle encoding overhead
+Answers: "how fast does `slinitctl start` return after the service
+reaches STARTED?", "does `slinit-journalctl -f` add latency to
+concurrent emits?", "how does enable/disable round-trip compare to
+`systemctl enable`?"
+
+Requires: ssh access to a slinit VM. Not yet populated — plan:
+`ctl-latency.sh`, `journalctl-throughput.sh`, `enable-disable.sh`.
