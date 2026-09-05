@@ -1,27 +1,29 @@
 #!/bin/bash
-# cold-boot.sh — full-demo cold-boot benchmark. Measures slinit boot
-# time + PID-1 footprint after every one of the 34 demo/services/*
-# workloads has reached STARTED. Runs N QEMU iterations, extracts a
-# PERF-BEGIN..PERF-END block from serial stdout, prints
-# benchstat-compatible summary lines for docs/PERFORMANCE.md.
+# minimal-boot.sh — single-service cold-boot benchmark. Boots slinit
+# with a stripped-down boot target: only `system-init` (mount /proc
+# + /sys + cgroup v2) plus the `perf-collect` measurement service.
+# Every other file under demo/services/ stays on disk but is
+# unreferenced by boot's deps, so slinit never starts it.
+#
+# Matches the shape of the systemd-alternatives comparison
+# literature ("systemd 1.8s, dinit 0.7s, runit 0.4s single-SSH cold
+# boot") so slinit's number is directly comparable.
 #
 # Setup:
-#   - Copies perf-collect into demo/services/.
-#   - Appends `waits-for: perf-collect` to demo/services/boot so the
-#     boot aggregate holds STARTED until perf-collect finishes and
-#     powers off.
+#   - Copies perf-collect into demo/services/, rewriting its
+#     dependency from `all-services` (default, for full-demo boot)
+#     to `system-init` (minimal boot has no all-services aggregate).
+#   - Replaces demo/services/boot with a minimal variant:
+#         type=internal; depends-on: system-init; waits-for: perf-collect
 #   - Rebuilds initramfs via demo/build.sh.
 #   - Runs QEMU headless N times, captures serial stdout, parses.
 #   - Restores demo/services/boot + drops the injected perf-collect
 #     on exit (trap).
 #
-# For a stripped-down "single-service" cold-boot number that matches
-# the systemd-alternatives comparison literature, see minimal-boot.sh.
-#
 # Usage:
-#   tests/performance/demo/cold-boot.sh [ITERATIONS]      (default 5)
+#   tests/performance/demo/minimal-boot.sh [ITERATIONS]     (default 5)
 #
-# Requires: qemu-system-x86_64, awk, sort, printf.
+# Requires: qemu-system-x86_64, awk, sed, sort.
 
 set -euo pipefail
 
@@ -37,19 +39,12 @@ SVC_DIR="${DEMO_DIR}/services"
 BOOT_SVC="${SVC_DIR}/boot"
 
 if [ ! -f "${DEMO_DIR}/build.sh" ] || [ ! -f "${DEMO_DIR}/run.sh" ]; then
-    echo "cold-boot: expected demo/build.sh + demo/run.sh at ${DEMO_DIR}" >&2
+    echo "minimal-boot: expected demo/build.sh + demo/run.sh at ${DEMO_DIR}" >&2
     exit 2
 fi
 
 # Backup + inject. Trap restores unconditionally so a Ctrl-C mid-run
 # leaves the demo tree unchanged.
-#
-# Wiring: perf-collect goes into demo/services/ (a plain service
-# file), and demo/services/boot gets an appended `waits-for:
-# perf-collect` line so `boot` holds STARTED until perf-collect
-# finishes and powers off. Cannot symlink into all-services.d/
-# because that would make all-services soft-wait for perf-collect
-# while perf-collect hard-depends on all-services -- classic cycle.
 _boot_backup=""
 cleanup() {
     if [ -f "${SVC_DIR}/perf-collect" ]; then
@@ -61,38 +56,36 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "→ injecting perf-collect (dep: all-services) into ${SVC_DIR}/"
-perf_write_collector "${SVC_DIR}/perf-collect" "all-services"
+echo "→ injecting perf-collect (dep: system-init) into ${SVC_DIR}/"
+perf_write_collector "${SVC_DIR}/perf-collect" "system-init"
 
-_boot_backup="${BOOT_SVC}.perf-collect-bak"
+_boot_backup="${BOOT_SVC}.minimal-boot-bak"
 cp "${BOOT_SVC}" "${_boot_backup}"
-printf '\n# added by tests/performance/demo/cold-boot.sh\nwaits-for: perf-collect\n' \
-    >> "${BOOT_SVC}"
+cat > "${BOOT_SVC}" <<'EOF'
+# boot -- replaced by tests/performance/demo/minimal-boot.sh for the
+# duration of this benchmark run. Original saved next to it as
+# boot.minimal-boot-bak; the trap in minimal-boot.sh restores it.
+type = internal
+depends-on: system-init
+waits-for: perf-collect
+EOF
 
 echo "→ rebuilding initramfs (demo/build.sh)"
 (cd "${DEMO_DIR}" && ./build.sh >/dev/null 2>&1) || {
-    echo "cold-boot: demo/build.sh failed" >&2
+    echo "minimal-boot: demo/build.sh failed" >&2
     exit 3
 }
-
-# Collect samples. Each iteration boots the VM with perf-collect
-# baked in, waits for the marker line, kills QEMU, records metrics.
-_boot_samples=()
-_rss_samples=()
-_peak_samples=()
-_bin_bytes=0
 
 echo "→ running ${ITERATIONS} iterations..."
 _boot_samples=(); _rss_samples=(); _peak_samples=(); _bin_bytes=0
 for i in $(seq 1 "${ITERATIONS}"); do
     _log=$(mktemp)
-    # QEMU exits on poweroff (-no-reboot). Timeout 60s covers a
-    # full demo boot (~3s median) + perf-collect + shutdown drain.
-    timeout 60s bash -c "cd '${DEMO_DIR}' && ./run.sh --no-monitor </dev/null >'${_log}' 2>&1" || true
+    # Minimal boot is <1s; 30s covers a stuck boot with headroom.
+    timeout 30s bash -c "cd '${DEMO_DIR}' && ./run.sh --no-monitor </dev/null >'${_log}' 2>&1" || true
 
     _block=$(perf_extract_block "${_log}")
     if [ -z "${_block}" ] || ! grep -q "PERF-END" <<<"${_block}"; then
-        _keep="/tmp/cold-boot-iter${i}-$$.log"
+        _keep="/tmp/minimal-boot-iter${i}-$$.log"
         mv "${_log}" "${_keep}"
         echo "  iter $i: FAIL (no PERF-BEGIN/END block) — log saved: ${_keep}"
         continue
@@ -101,7 +94,7 @@ for i in $(seq 1 "${ITERATIONS}"); do
 
     eval "$(perf_parse_block "${_block}")"
     if [ -z "${BOOT_NS}" ] || [ "${BOOT_NS}" = "0" ] || [ -z "${RSS_KB}" ]; then
-        _keep="/tmp/cold-boot-iter${i}-$$.log"
+        _keep="/tmp/minimal-boot-iter${i}-$$.log"
         printf "%s\n" "${_block}" > "${_keep}"
         echo "  iter $i: FAIL (parse: boot=${BOOT_NS} rss=${RSS_KB} up=${UPTIME_LINE}) — block saved: ${_keep}"
         continue
@@ -116,11 +109,11 @@ for i in $(seq 1 "${ITERATIONS}"); do
 done
 
 if [ "${#_boot_samples[@]}" -eq 0 ]; then
-    echo "cold-boot: no successful iterations, aborting" >&2
+    echo "minimal-boot: no successful iterations, aborting" >&2
     exit 4
 fi
 
-perf_summary "Demo" "${#_boot_samples[@]}" "${ITERATIONS}" \
+perf_summary "Minimal" "${#_boot_samples[@]}" "${ITERATIONS}" \
     "$(perf_median "${_boot_samples[@]}")" "$(perf_p95 "${_boot_samples[@]}")" \
     "$(perf_median "${_rss_samples[@]}")" "$(perf_median "${_peak_samples[@]}")" \
     "${_bin_bytes}"
