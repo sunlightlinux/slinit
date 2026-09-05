@@ -1,40 +1,140 @@
 # slinit SSH-driven performance benchmarks
 
-End-to-end latency and throughput measurements against a live slinit
-VM over SSH. Same harness shape as [../../acceptance/ssh/](../../acceptance/ssh/)
-so operators only need one running VM; each harness ssh's in, drives
-`slinitctl`/`slinit-journalctl`, times the round-trip.
+End-to-end latency measurements against a live slinit VM over SSH.
+Each case is a small shell script that runs REMOTELY on the target,
+times its own operations with `date +%s%N`, and prints a
+`benchstat`-compatible summary line. Cases isolate slinit's own
+control-socket / IPC / journal-read latencies — not the SSH
+round-trip.
 
-Answers the "how does it feel to an operator?" questions the runtime
-microbenchmarks can't — network + control-socket + service-machine
-end-to-end latency including all the queuing, propagation, and OS
-scheduling in between.
+Same env-var contract as [../../acceptance/ssh/](../../acceptance/ssh/),
+and `lib/ssh.sh` is a symlink into the acceptance harness, so the
+same running VM serves both suites.
 
-## Requirements
+## Usage
 
-- ssh access to a slinit VM (same one used by
-  `tests/acceptance/ssh/run.sh`)
-- `SSH_HOST`, `SSH_PORT`, `SSH_USER` env vars, or a matching entry
-  in `~/.ssh/config`
+```
+VERBOSE=1 ACCEPTANCE_HOST=ceres.ionutnechita.ro \
+    ACCEPTANCE_PORT=40003 ACCEPTANCE_USER=root \
+    ./tests/performance/ssh/run.sh
+```
 
-## Planned harnesses
+- `ACCEPTANCE_HOST` / `ACCEPTANCE_PORT` / `ACCEPTANCE_USER` — required
+- `ACCEPTANCE_SSH_KEY` — optional explicit identity file
+- `VERBOSE=1` — echo the SSH invocation per case
+- `ITERS=N` — iterations per case (default 30)
+- `KEEP_REMOTE=1` — leave `/tmp/slinit-perf.$$` on target for inspection
 
-Not yet implemented — files below are the target shape:
+Run a subset by passing case paths:
 
-- `ctl-latency.sh` — measure wall-clock for common `slinitctl`
-  operations against a live VM: `start`, `stop`, `status`,
-  `ls`, `enable`, `disable`. Reports median + p95 over N iterations.
-- `journalctl-throughput.sh` — inject a burst of events via
-  `logger`, measure `slinit-journalctl -n N` fetch latency, then
-  `-f` streaming lag under sustained emit rate.
-- `enable-disable.sh` — round-trip `enable`+`disable` through a
-  demo service, verifying both symlink lifecycle and target-state
-  convergence times.
+```
+./run.sh cases/30-ctl-status.sh cases/50-journalctl-fetch-n100.sh
+```
+
+## Cases (v2.2.6)
+
+Numbered with zero-padding so lexical sort matches numeric order.
+
+| Case | Measures |
+|------|----------|
+| `010-ctl-version`              | `slinitctl --version` — CLI fork/exec baseline (no socket) |
+| `020-ctl-ls`                   | `slinitctl ls` — socket connect + N-service enumerate |
+| `030-ctl-status`               | `slinitctl status boot` — dep-tree walk on aggregate |
+| `040-ctl-boot-time`            | `slinitctl boot-time` — server-side aggregation + render |
+| `050-journalctl-fetch-n100`    | `slinit-journalctl -n 100` — journal decode + format |
+| `060-parallel-status-8`        | 8 concurrent `slinitctl status` per iteration |
+| `061-parallel-status-32`       | 32 concurrent — per-client cost vs `060` reveals lock contention |
+| `062-parallel-status-128`      | 128 concurrent — knee detector for accept-loop / fd-limit |
+| `070-ctl-status-every-svc`     | Status on every service from `slinitctl ls` — worst-per-service |
+| `080-journal-fetch-scaling`    | Fetch N ∈ {10, 100, 1000, 5000} — decode-path scaling |
+| `090-journal-burst-write`      | Burst 200 `logger` writes, then fetch tag-filtered — write-path |
+| `100-ctl-hammer-throughput`    | 200 sequential status calls — per-op amortised throughput |
+| `110-journal-fetch-during-write` | Fetch racing 500-write emitter — reader/writer contention |
+| `120-mixed-workload`           | Interleaved status/ls/boot-time/journalctl 40 ops — operator sim |
+
+All cases are **read-only** or write to the journal (which is
+designed to absorb high write volume). No case starts/stops real
+services. Start/stop throughput cases should ship as separate
+scripts that provision a throwaway `type=oneshot` service at setup
+and remove it at teardown.
+
+### Naming variables inside cases
+
+POSIX sh has no `local` keyword. `perf_run_iters` in
+`lib/remote-prelude.sh` uses variables prefixed with `_prf_` to
+avoid clobbering case-body variables. A case that defines helper
+functions using common names like `_i`, `_n`, `_cmd` is fine as
+long as those don't collide with `_prf_*`. When in doubt,
+prefix your case's inner variables with a short case-specific
+tag (e.g. `_bw_` for burst-write).
 
 ## Output format
 
-Each harness prints `benchstat`-compatible lines so results
-survive commit-to-commit comparison:
+Bench-style lines with median + p95 + min in milliseconds:
 
-    BenchmarkCtlStatus         100   3.1ms ± 4%
-    BenchmarkJournalctlFetch    50  22.7ms ± 8%
+    BenchmarkCtlVersion                 20  median=   1.017 ms  p95=   1.199 ms  min=   0.910 ms
+    BenchmarkCtlLs                      20  median=   1.214 ms  p95=   1.735 ms  min=   1.046 ms
+
+First measurement on ceres (real-hardware x86_64, v2.2.6, `ITERS=15`):
+
+```
+BenchmarkCtlVersion                 15  median=   1.057 ms
+BenchmarkCtlLs                      15  median=   1.079 ms
+BenchmarkCtlStatus_boot             15  median=   1.081 ms
+BenchmarkCtlBootTime                15  median=   1.106 ms
+BenchmarkJournalFetchN100           15  median=   1.739 ms
+BenchmarkParallelStatus8            15  median=   2.131 ms  (0.266 ms/client)
+BenchmarkParallelStatus32           15  median=   5.676 ms  (0.177 ms/client)
+BenchmarkParallelStatus128          15  median=  21.124 ms  (0.165 ms/client)
+BenchmarkCtlStatusAllSvc            15  median=  10.882 ms  (0.84 ms/svc, 13 svcs)
+BenchmarkJournalFetchN10            15  median=   1.244 ms
+BenchmarkJournalFetchN100           15  median=   1.568 ms
+BenchmarkJournalFetchN1000          15  median=   4.170 ms
+BenchmarkJournalFetchN5000          15  median=   6.385 ms
+BenchmarkJournalBurstWriteFetch_200 15  median= 138.652 ms  (~0.7 ms/logger call)
+BenchmarkCtlHammer_200x_boot        15  median= 172.487 ms  (0.86 ms/op)
+BenchmarkJournalFetchUnderWrite_500 15  median=  96.237 ms
+BenchmarkMixedOperatorWorkload_40   15  median=  36.721 ms  (0.92 ms/op)
+```
+
+Findings:
+
+- **Slinit is CLI-fork/exec-bound, not IPC-bound.** `CtlVersion`
+  at 1.057 ms is the noise floor; every socket op is within
+  20–700 μs of it. The Go binary's startup dominates.
+- **Concurrent scaling is flat.** 128 clients cost 0.165 ms each,
+  the same as 32 clients (0.177 ms) — no mutex contention or
+  accept-loop knee within operator-realistic fan-out.
+- **Journal read is sublinear in N.** Per-record cost DROPS from
+  N=100 to N=5000 — the fixed overhead per fetch amortises well.
+- **Reader/writer coexistence is fine.** Fetch racing 500-writer
+  emitter (`110`) is 96 ms — dominated by the writer's 500 fork/
+  exec cost, not journal contention.
+
+No actionable perf issues surfaced at the scale tested.
+
+## Adding a case
+
+Create `cases/NN-name.sh` — one line if the operation is
+non-parameterised:
+
+```sh
+# NN-name — one-line description of what this measures.
+perf_run_iters "$ITERS" "SomeLabel" "some-command --args"
+```
+
+`perf_run_iters` is provided by `lib/remote-prelude.sh` (loaded by
+`run.sh` before every case). It runs the command N times, records
+each wall-clock delta via `date +%s%N`, prints median + p95 + min.
+The command's own stdout/stderr are discarded so tty flushes don't
+skew the timing.
+
+## Planned follow-ons
+
+- Start/stop throughput case using a `perf-throwaway` service.
+- `enable`/`disable` round-trip (creates + removes a symlink under
+  `all-services.d/`).
+- `slinit-journalctl -f` streaming lag under sustained emit rate
+  (needs a `logger`-driven producer + timestamped consumer).
+- Concurrent-client scaling: N parallel `slinitctl status` from
+  different SSH sessions, measure per-request p95 vs N.
