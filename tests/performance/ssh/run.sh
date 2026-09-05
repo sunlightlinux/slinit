@@ -107,7 +107,11 @@ for case_path in "${CASES[@]}"; do
     if [ "$VERBOSE" = "1" ]; then
         echo "  (ssh: cd ${REMOTE_DIR} && ITERS=${ITERS} sh -c ...)"
     fi
-    ssh_run "cd ${REMOTE_DIR} && ITERS=${ITERS} sh -c '. ./remote-prelude.sh && . ./${case_name}.sh'"
+    # Forward SLINIT_ALLOW_DISRUPTIVE so disruptive-gated cases run
+    # when the operator explicitly opts in. ssh_run doesn't inherit
+    # the local environment, so we pass it inline.
+    _remote_env="ITERS=${ITERS} SLINIT_ALLOW_DISRUPTIVE=${SLINIT_ALLOW_DISRUPTIVE:-0}"
+    ssh_run "cd ${REMOTE_DIR} && ${_remote_env} sh -c '. ./remote-prelude.sh && . ./${case_name}.sh'"
     echo
 done
 
