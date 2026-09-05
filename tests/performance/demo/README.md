@@ -12,20 +12,49 @@ comparable hardware so slinit can be plotted alongside.
 - A built `demo/_output/initramfs.cpio.gz` and `vmlinuz-virt`
   (run `./demo/build.sh` from repo root first)
 
-## Planned harnesses
+## Harnesses
 
-Not yet implemented — files below are the target shape:
+- **`cold-boot.sh`** — full-boot loop harness. Injects
+  `perf-collect` (below) into `demo/services/`, rebuilds the
+  initramfs, runs `demo/run.sh --no-monitor` N times headless
+  (default 5), greps a `PERF-METRICS` marker line from serial
+  stdout, and reports median + p95 for boot time + PID-1
+  footprint. Restores the tree on exit via `trap`. Args:
+  optional iteration count as `$1`.
 
-- `cold-boot.sh` — repeat `demo/run.sh` N times (with a minimal-service
-  variant of the boot bundle), capture `slinitctl boot-time` output,
-  report median + p95. Args: `--services=minimal|full`, `--iterations=10`.
-- `pid1-footprint.sh` — after `boot` is STARTED, ssh in and cat
-  `/proc/1/status` → extract VmRSS, VmPeak, Threads, FDSize. Also
-  captures `ls -la /sbin/slinit` for on-disk binary size.
+  ```
+  ./tests/performance/demo/cold-boot.sh 10
+  ```
+
+  Prints benchstat-compatible lines suitable for
+  `docs/PERFORMANCE.md` and cross-commit diffs.
+
+- **`perf-collect`** — slinit service description (scripted).
+  Depends on `all-services` so it fires only after the full boot
+  reaches STARTED. Reads `slinitctl boot-time`,
+  `/proc/1/status`, and `/sbin/slinit` size; emits ONE marker
+  line to serial console; then `slinitctl shutdown poweroff` for
+  a clean exit that lets `cold-boot.sh` complete the wall-clock
+  cycle. Not part of the default demo boot bundle — only
+  injected temporarily by `cold-boot.sh`.
+
+  Marker format:
+  ```
+  PERF-METRICS boot_ns=<int> kernel_ns=<int> userspace_ns=<int> \
+    pid1_rss_kb=<int> pid1_vmpeak_kb=<int> pid1_threads=<int> \
+    pid1_fds=<int> slinit_bytes=<int>
+  ```
+
+### Planned follow-ons
+
 - `fork-exec-throughput.sh` — bring up N `type=process,
-  command=/bin/true` mock services and measure wall-clock to reach
-  all-STARTED. Compares against the ServiceSet microbenchmarks in
-  `../runtime/` to separate fork-exec cost from state-machine cost.
+  command=/bin/true` mock services and measure wall-clock to
+  reach all-STARTED. Isolates fork-exec cost from the
+  ServiceSet microbenchmarks in `../runtime/`.
+- `minimal-boot.sh` — same shape as `cold-boot.sh` but strips
+  the boot bundle down to a single SSH-alike service, so
+  numbers align with the systemd-alternatives comparison
+  literature (which measures "single SSH service" cold boot).
 
 ## Output format
 
