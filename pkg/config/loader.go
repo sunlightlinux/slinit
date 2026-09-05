@@ -29,6 +29,17 @@ var ErrServiceNotFound = errors.New("service description not found")
 var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
 
 // DirLoader loads service descriptions from one or more directories.
+//
+// The `loading` map and `curDepth` counter are per-instance mutable
+// state that the recursive load path both reads and writes. Public
+// entry points (LoadService, ReloadService) serialise all callers
+// through `mu` — concurrent calls from multiple control-socket
+// connections would otherwise trip Go's map-race detector and
+// panic the process (fatal when slinit is PID 1: kernel panic).
+// Internal recursion through loadDependencies uses loadServiceLocked
+// which relies on the caller already holding mu; do not call it
+// from any path that hasn't taken the lock. Regression covered by
+// TestDirLoader_ConcurrentLoadService.
 type DirLoader struct {
 	dirs        []string
 	initDirs    []string // init.d directories for fallback (empty = disabled)
@@ -37,6 +48,7 @@ type DirLoader struct {
 	loading     map[string]bool // tracks loading state for circular dependency detection
 	curDepth    int             // current recursion depth during loading
 	platformSys platform.Type   // detected (or overridden) platform for keyword filtering
+	mu          sync.Mutex      // serialises loading + curDepth mutation
 }
 
 // defaultOverlayDir is the default conf.d overlay location.
@@ -86,13 +98,27 @@ func (dl *DirLoader) ServiceDirs() []string {
 	return dl.dirs
 }
 
-// LoadService loads a service and its dependencies by name.
+// LoadService loads a service and its dependencies by name. Public
+// entry point; takes the loader mutex to serialise concurrent
+// callers, then delegates to loadServiceLocked. Recursive callers
+// from loadDependencies must use loadServiceLocked directly to
+// avoid deadlocking on this mutex.
 func (dl *DirLoader) LoadService(name string) (service.Service, error) {
+	dl.mu.Lock()
+	defer dl.mu.Unlock()
+	return dl.loadServiceLocked(name)
+}
+
+// loadServiceLocked is the mutex-bypass variant of LoadService.
+// Caller MUST hold dl.mu. Used by the public LoadService wrapper
+// and by loadDependencies for recursive dep resolution — the
+// entire dep-tree load runs under a single lock acquisition on
+// the entering goroutine.
+func (dl *DirLoader) loadServiceLocked(name string) (service.Service, error) {
 	// Check if already loaded
 	if svc := dl.set.FindService(name, false); svc != nil {
 		return svc, nil
 	}
-
 	return dl.loadServiceImpl(name, dl.curDepth)
 }
 
@@ -101,6 +127,9 @@ func (dl *DirLoader) LoadService(name string) (service.Service, error) {
 // For started services: in-place update with restrictions.
 // For starting/stopping services: reload refused.
 func (dl *DirLoader) ReloadService(svc service.Service) (service.Service, error) {
+	dl.mu.Lock()
+	defer dl.mu.Unlock()
+
 	name := svc.Name()
 
 	// Re-parse the config file
@@ -1316,7 +1345,7 @@ func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescript
 
 	for _, spec := range depSpecs {
 		for _, depName := range spec.names {
-			depSvc, err := dl.LoadService(depName)
+			depSvc, err := dl.loadServiceLocked(depName)
 			if err != nil {
 				if spec.optional && errors.Is(err, ErrServiceNotFound) {
 					continue
@@ -1369,7 +1398,7 @@ func (dl *DirLoader) loadDepsFromDir(svc service.Service, dir string, depType se
 		}
 
 		depName := entry.Name()
-		depSvc, err := dl.LoadService(depName)
+		depSvc, err := dl.loadServiceLocked(depName)
 		if err != nil {
 			return fmt.Errorf("loading dependency '%s' from directory '%s': %w",
 				depName, dir, err)
@@ -1837,7 +1866,7 @@ func (dl *DirLoader) setupConsumerOf(consumer service.Service, desc *ServiceDesc
 	producerName := desc.ConsumerOf
 
 	// Load the producer service
-	producer, err := dl.LoadService(producerName)
+	producer, err := dl.loadServiceLocked(producerName)
 	if err != nil {
 		return &ServiceLoadError{
 			ServiceName: consumer.Name(),
@@ -1896,7 +1925,7 @@ func (dl *DirLoader) setupSharedLogger(producer service.Service, desc *ServiceDe
 	loggerName := desc.SharedLogger
 
 	// Load the logger service (ensures it exists)
-	logger, err := dl.LoadService(loggerName)
+	logger, err := dl.loadServiceLocked(loggerName)
 	if err != nil {
 		return &ServiceLoadError{
 			ServiceName: producer.Name(),
