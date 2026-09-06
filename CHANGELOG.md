@@ -17,6 +17,130 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.7] — 2026-09-06
+
+Critical PID-1 fix + optional pprof diagnostic endpoint + massive
+perf-test expansion. The fix stops slinit from kernel-panicking
+the host when multiple control-socket clients concurrently load
+distinct services — a class of bug that only surfaces under
+stress but is fatal when it does. The pprof endpoint (build-tag
+gated so stock builds pay zero cost) plugs slinit into the
+standard Go profiling toolchain for future leak / hotspot
+investigations. The perf work extends `tests/performance/ssh/`
+from 14 to 93 SSH-driven cases and produces the first
+comprehensive coverage of slinit's control-surface hot path.
+
+### Fixed
+
+- **`pkg/config`: DirLoader now serialises concurrent
+  LoadService calls.** Root cause of a kernel panic surfaced
+  by stress testing on ceres (2026-09-05):
+  `DirLoader.loading map[string]bool` + `DirLoader.curDepth int`
+  were mutated by `loadServiceImpl` (`loader.go:671/677/678`
+  pre-fix) without any mutex. Two goroutines each servicing a
+  control-socket LoadService request race on the map. Go's
+  runtime detects concurrent map read+write and terminates the
+  process with `fatal error: concurrent map read and map write`
+  — unrecoverable. When slinit is PID 1, kernel panics.
+
+  Reproduces in 9 ms with 32 goroutines calling LoadService on
+  distinct services (regression test
+  `TestDirLoader_ConcurrentLoadService`); reproduces on the
+  live VM within one iteration of
+  `tests/performance/ssh/cases/580-parallel-lifecycle-4.sh`.
+
+  Fix: `sync.Mutex` on `DirLoader`, taken by the public
+  `LoadService` and `ReloadService` entry points; internal
+  recursion through `loadDependencies` migrated from
+  `dl.LoadService` to a new `loadServiceLocked` bypass so a
+  single goroutine holds the lock through the entire dep-tree
+  load without self-deadlocking. Four recursive callers
+  updated (two in loadDependencies + producer + logger
+  lookups). LoadService is not on a hot path — full mutex
+  serialisation adds no measurable overhead but rules out
+  the whole class of concurrent-map bugs in the loader.
+
+### Added
+
+- **Optional `net/http/pprof` endpoint on `/run/slinit/pprof.sock`,
+  guarded by the `pprof` build tag.** Stock builds compile a no-op
+  stub (`cmd/slinit/pprof_stub.go`, 7.7 MB binary, zero
+  runtime surface). Diagnostic builds with `-tags pprof`
+  compile the real handler (`cmd/slinit/pprof.go`, +5 MB
+  binary for the net/http + pprof surface, socket chmod 0600
+  root-only). Two-file layout means the diagnostic can be
+  resurrected any time by rebuilding with the tag — no code
+  changes required.
+
+  Rebuild + hot-patch flow (~2 minutes):
+
+  ```
+  go build -tags 'paniconce pprof' -ldflags='-s -w' \
+      -o /tmp/slinit ./cmd/slinit
+  scp /tmp/slinit target:/usr/bin/slinit.new
+  ssh target 'mv /usr/bin/slinit.new /usr/bin/slinit && \
+              slinitctl shutdown softreboot now'
+  # PID 1 picks up new binary; socket at /run/slinit/pprof.sock
+  ssh target 'curl --unix-socket /run/slinit/pprof.sock \
+      http://x/debug/pprof/heap' > before.pprof
+  # ... induce load ...
+  go tool pprof -diff_base before.pprof after.pprof
+  ```
+
+  First use of this endpoint closed the RSS-growth observation
+  from perf case `141`: live heap unchanged at 4661 kB across
+  12500-op load window, goroutine count constant at 37 —
+  confirmed the observed +2.7 MB RSS delta is Go runtime heap
+  arena, not a leak.
+
+- **`tests/performance/ssh/` expanded from 14 to 93 cases.**
+  Comprehensive coverage of slinit's control-surface hot path:
+  all slinitctl read + write ops, journal read/write/filter
+  variants, concurrent client scaling (1→128), lifecycle
+  scaling curve (1/2/4/8/16/20-way), long-tail latency,
+  reader-writer racing, cross-service concurrency, negative
+  paths, OpenRC compat shims, specialised directives (PSI /
+  cgroup / fd-store), parser stress (50-directive svc, error
+  path), and dep-tree scaling (10-node + 100-node chains).
+
+  Two disruptive cases (`580`, `600`) stay in-tree
+  behind `SLINIT_ALLOW_DISRUPTIVE=1` — they exist to validate
+  the DirLoader fix and would kernel-panic slinit again if
+  the mutex is ever removed. One case (`810`
+  socket-activation-on-demand) is a documented SKIP pending
+  socket-activation semantics review.
+
+  Publishable findings (numbers on ceres real hardware, kernel
+  7.2.3-lowlatency-sunlight1, Go 1.26.8):
+
+  - Slinit is CLI-fork/exec-bound, not IPC-bound: baseline
+    slinitctl call = 1.06 ms; every socket op is within
+    20-700 μs of the baseline.
+  - Concurrent client scaling is FLAT to 128 clients (0.165
+    ms/client at 128, matching 0.177 ms/client at 32) — no
+    mutex contention.
+  - Journal filter push-down implemented correctly: `-t tag`
+    is 26% FASTER than unfiltered, `-p err` is 50% faster.
+  - Bulk ops dramatically cheaper than N × individual: `reload-
+    all` = 1.30 ms (10x cheaper than 13 sequential reloads);
+    `restart` (1.29 ms) = HALF of `start && stop` (2.69 ms).
+  - Fair scheduling verified: light `status` p99 under
+    sustained heavy `-n 5000` reads = 1.94 ms, essentially
+    identical to isolated baseline (1.98 ms).
+  - Dep-walk on 100-deep chain = 1.94 ms (~8 μs/node) — linear
+    but tiny.
+  - Path-activation e2e (touch → observed STARTED) = 1.305 ms —
+    inotify essentially real-time.
+  - Full svc lifecycle (write file → start → stop → unload → rm)
+    = 3.89 ms serial; 4.90 ms at 4-way concurrency (post-fix).
+
+- **`tests/performance/ssh/run.sh` forwards
+  `SLINIT_ALLOW_DISRUPTIVE`** through the SSH invocation so
+  disruptive-gated cases run when the operator explicitly
+  opts in. Previously only `ITERS` was passed to the remote
+  shell — disruptive cases always saw the env var unset and
+  always skipped.
+
 ## [2.2.6] — 2026-09-05
 
 Journal-recovery hardening pass + enable/disable workflow polish +
