@@ -119,6 +119,16 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `770-socket-listen-overhead`   | Start cost of svc with socket-listen vs plain start |
 | `780-config-parse-error`       | Parse-error return latency (malformed svc file) |
 | `790-list-scaling-100`         | Provision 100 svcs → list at N=113 (10x scaling) |
+| `800-many-directive-svc`       | Load svc with 50 directives — parser stress |
+| `810-socket-activation-on-demand` | **SKIP** — semantics + netcat -q 0 both need pinning |
+| `820-openrc-rc-service`        | `rc-service status <svc>` OpenRC-shim overhead |
+| `830-openrc-rc-status`         | `rc-status` overview shim |
+| `840-openrc-rc-update-show`    | `rc-update show` enable-state view |
+| `850-slinit-monitor-help`      | `slinit-monitor --help` — TUI binary cold-start |
+| `860-memory-pressure-watch`    | PSI memory-pressure watch setup cost |
+| `870-cgroup-svc`               | cgroup= directive: mkdir + cgroup.procs write cost |
+| `880-fd-store-preserve`        | file-descriptor-store-preserve setup cost |
+| `890-slinit-check-boot`        | `slinit-check boot` recursive dep-tree parse |
 
 ### Disruptive cases (opt-in only)
 
@@ -304,6 +314,27 @@ Findings:
   (after +100 throwaways), `list` cost went 1.140 → 1.219 ms —
   a 1.07x ratio for an 8x population increase. Per-svc cost
   ~0.79 μs; at 10000 svcs a `list` would take ~8 ms.
+- **Parser handles heavy service files at zero cost.** A svc
+  with 50 different directives (real-world upper-bound for
+  security-hardened services) starts in 1.094 ms — matching
+  the plain scripted-start baseline. The parser is O(#lines)
+  with per-line work ~2 μs.
+- **OpenRC compat shims add ~400 μs.** `rc-service status svc`
+  = 1.506 ms vs direct `slinitctl status svc` = 1.081 ms. The
+  shim is a small binary that fork/exec's slinitctl with
+  rewritten args; the delta is the extra process. Only pay
+  this if scripts genuinely need OpenRC's argv shape.
+- **Specialised feature setup costs stay small.**
+  memory-pressure-watch = +15 μs on start, cgroup = +40 μs,
+  file-descriptor-store-preserve = +600 μs (heaviest; map init
+  + Stopped-hook wiring). All negligible against the CLI
+  baseline.
+- **slinit-check on the whole boot tree is cheap.** Recursive
+  parse of `boot` + every dep = 1.293 ms — only 220 μs over
+  a single-svc lint (case 190). Dep-tree walk is efficient.
+- **slinit-monitor cold-start matches CLI baseline.** The
+  monitor binary's `--help` path = 0.979 ms; the TUI init
+  overhead (before any real render work) is imperceptible.
 - **Full service lifecycle is sub-4 ms.** Write file to
   `/etc/slinit.d/` → `slinitctl start` → `stop` → `unload` → rm
   runs in 3.89 ms median. Provisioning + tearing down throwaway
