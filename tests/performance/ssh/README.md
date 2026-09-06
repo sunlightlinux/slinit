@@ -114,6 +114,11 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `720-cycle-enable-disable`     | enable+disable cycle — measures symlink FS overhead |
 | `730-cycle-restart-only`       | pure restart cycle — bundled stop+start in one call |
 | `740-cycle-scripted-start-oneshot` | pure start hammer on scripted /bin/true throwaway |
+| `750-deep-chain-100`           | 100-deep dep chain — status on tip (extreme depth test) |
+| `760-path-activation-fire`     | Touch trigger file → poll STARTED — inotify latency |
+| `770-socket-listen-overhead`   | Start cost of svc with socket-listen vs plain start |
+| `780-config-parse-error`       | Parse-error return latency (malformed svc file) |
+| `790-list-scaling-100`         | Provision 100 svcs → list at N=113 (10x scaling) |
 
 ### Disruptive cases (opt-in only)
 
@@ -277,6 +282,28 @@ Findings:
   N×reload. Scripts doing multiple ops on the same svc should
   prefer bundled endpoints where they exist — the bottleneck
   is always CLI process startup, not slinit's server.
+- **Dep-walk is linear in chain depth but cheap.** Status on the
+  tip of a 100-deep chain = 1.94 ms; the equivalent 10-deep
+  chain = 1.15 ms. Per-node cost is ~8 μs — at 1000 nodes the
+  status query would take ~9 ms, still usable.
+- **Path-activation is near-realtime.** From `touch <trigger>`
+  to slinit observing the CREATE + firing the svc + reaching
+  STARTED + our polling round-trip = 1.305 ms end-to-end.
+  inotify's latency is essentially zero; the 1.3 ms is
+  dominated by the CLI baseline + poll overhead.
+- **socket-listen adds zero overhead to start.** A svc with
+  `socket-listen = /tmp/sock` + `socket-activation = immediate`
+  starts in 1.111 ms — matching a plain scripted-start (1.126
+  ms in `740`). The socket bind + fd-passing fold into normal
+  start cost.
+- **Parser fails fast on bad input.** A malformed svc file
+  (e.g. `type = thisIsNotAValidType`) errors out in 1.215 ms —
+  only ~85 μs over the happy-path start baseline. The parser
+  bails on the first bad line, no wasted work.
+- **List scales sub-linearly.** From N=14 (default) to N=114
+  (after +100 throwaways), `list` cost went 1.140 → 1.219 ms —
+  a 1.07x ratio for an 8x population increase. Per-svc cost
+  ~0.79 μs; at 10000 svcs a `list` would take ~8 ms.
 - **Full service lifecycle is sub-4 ms.** Write file to
   `/etc/slinit.d/` → `slinitctl start` → `stop` → `unload` → rm
   runs in 3.89 ms median. Provisioning + tearing down throwaway
