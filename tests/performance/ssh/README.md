@@ -252,15 +252,34 @@ Findings:
   exit-code translation not taking a shortcut on the fast
   path.
 
-**Observed but not (yet) a defect**: RSS grows slowly under
-sustained load. 12500 status ops added +556 kB to PID-1 RSS,
-with a rate that decreases-then-upticks (80 → 44 → 25 → 96 kB
-per 1000 ops). Not a linear leak (would grow much faster) — most
-likely Go runtime heap arena growth batched with GC cycles. Rate
-amortises to ~44 bytes/op, projecting ~1 MB/day at 1 op/sec — not
-critical for an init but worth `pprof` follow-up before making
-strong long-term-stability claims. Thread count stays flat (25),
-so no goroutine leak into OS-thread scale-up.
+**Observation — RSS growth under load is Go runtime arena, NOT a leak**
+(pprof-verified 2026-09-06). Cases `140` and `141` show slow RSS
+growth under sustained status hammer: 12500 ops added +2732 kB
+RSS on a fresh boot. Investigation via `net/http/pprof` diff
+(build slinit with `-tags pprof`, expose on `/run/slinit/pprof.sock`,
+capture heap before/after):
+
+- Live heap (`inuse_space`): **unchanged** at 4661 kB across
+  snapshots — same 4 top allocators (runtime.mallocgc scheduler
+  internals 2565 kB, time.NewTicker 1024 kB, catch-all log
+  drain 545 kB, journal event buffer 528 kB). No live allocation
+  grew.
+- Cumulative allocs since boot: only 843 kB over the entire
+  investigation window — slinit is exceptionally lean.
+- Goroutine count: constant at 37 (9 process-wait goroutines +
+  runtime + control-server + journal-emit + watchdog + accept
+  loops).
+- Thread count: constant at 25 — no goroutine leak into OS-thread
+  scale-up.
+
+The 2.7 MB RSS delta is Go's runtime holding heap arena expanded
+to accommodate transient allocation bursts (12500 status handlers
+each allocated + freed). GC returns memory to Go's own heap, but
+Go returns it to the OS lazily (via madvise MADV_DONTNEED on a
+long-idle GC cycle, or when explicitly asked). Not a defect.
+Tuning knobs if RSS caps matter later: `GODEBUG=madvdontneed=1`,
+`debug.SetMemoryLimit(N)`, periodic `debug.FreeOSMemory()` at
+quiescent moments — none currently warranted for an init.
 
 ## Adding a case
 

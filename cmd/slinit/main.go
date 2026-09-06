@@ -679,6 +679,13 @@ func main() {
 		logger.Info("Applied %d/%d global rlimits", n, len(parsedRlimits))
 	}
 
+	// Diagnostic pprof endpoint: opt-in via SLINIT_PPROF_SOCK env var
+	// (usually set from kernel cmdline for PID 1). Listens on a Unix
+	// socket chmod 0600 so only root can profile. Zero cost when unset.
+	// Used for one-off leak investigations — the standard `go tool pprof`
+	// works over `curl --unix-socket`.
+	maybeStartPprof(logger)
+
 	// Hardware watchdog feeder: only meaningful when we're system manager
 	// (PID 1 or container PID 1). The feeder programs the kernel timer
 	// and pings at a sub-timeout cadence; if slinit hangs the kernel
