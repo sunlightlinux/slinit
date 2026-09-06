@@ -100,6 +100,16 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `580-parallel-lifecycle-4`     | **DISRUPTIVE** — crashes slinit PID 1 on v2.2.6, gated |
 | `590-graph-before-after-provision` | Graph render at N=13 vs N=43 |
 | `600-status-under-massive-lifecycle` | **DISRUPTIVE** — 20 concurrent lifecycles, gated |
+| `610-journalctl-since`         | `--since '1 min ago'` time-range filter |
+| `620-journalctl-reverse`       | `-r` reverse-order vs forward — seek-strategy check |
+| `630-journalctl-kernel-dmesg`  | `-k` kernel-only backend (kmsg not journal file) |
+| `640-parallel-lifecycle-2`     | 2 concurrent lifecycles — scaling-curve floor |
+| `650-parallel-lifecycle-8`     | 8 concurrent lifecycles — scaling middle |
+| `660-parallel-lifecycle-16`    | 16 concurrent lifecycles — pre-fix would have crashed |
+| `670-slinitctl-wake-vs-start`  | start+release cycle on throwaway |
+| `680-slinitctl-once-throwaway` | `once` command (start, no restart on exit) |
+| `690-signal-nonexistent-svc`   | Signal to missing svc — negative-path timing |
+| `700-slinitctl-graph-dependents` | graph + dependents in one round — state sharing |
 
 ### Disruptive cases (opt-in only)
 
@@ -226,7 +236,28 @@ Findings:
 - **Graph export + reverse-dep queries are lean.** Full DOT
   graph export = 1.53 ms; `dependents <svc>` = 1.13 ms. Even
   though both walk the full dep set, the render/filter work
-  costs at most 500 μs on top of the baseline.
+  costs at most 500 μs on top of the baseline. Combined in one
+  round-trip (`700`) = 2.08 ms, NOT 2.66 (=1.53+1.13) — the
+  server shares dep-walk state between the two queries.
+- **Journal `-r` reverse is FASTER than forward.** N=500
+  reverse 2.80 ms vs forward 3.16 ms. The reader seeks to
+  tail and walks backward without materialising the forward
+  set in memory first — correct implementation.
+- **Lifecycle scaling curve holds post-fix.** Parallel throwaway
+  lifecycles (write file → start → stop → unload → rm) scale
+  cleanly from 1 to 16 concurrent: serial 3.89, 2-way 4.42
+  (2.21 ms/lc), 4-way 4.90 (1.23), 8-way 7.56 (0.95), 16-way
+  12.98 (0.81 ms/lc). Not perfect linear (DirLoader is
+  serialised on `mu` per commit `cfe16ab`) but fork/exec cost
+  amortises well across parallel invocations. Post-fix, 16-way
+  runs cleanly where pre-fix even 4-way would kernel-panic.
+- **once + release + wake all match single-op cost.** All are
+  minor variants of start/stop that flip a bit in the state
+  machine — none impose measurable extra work over the baseline
+  IPC round-trip.
+- **Negative paths are fast.** Signal to a nonexistent service
+  returns in 1.10 ms — the svc lookup errors immediately, no
+  wasted work.
 - **Full service lifecycle is sub-4 ms.** Write file to
   `/etc/slinit.d/` → `slinitctl start` → `stop` → `unload` → rm
   runs in 3.89 ms median. Provisioning + tearing down throwaway
