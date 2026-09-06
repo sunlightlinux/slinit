@@ -110,6 +110,10 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `680-slinitctl-once-throwaway` | `once` command (start, no restart on exit) |
 | `690-signal-nonexistent-svc`   | Signal to missing svc — negative-path timing |
 | `700-slinitctl-graph-dependents` | graph + dependents in one round — state sharing |
+| `710-cycle-start-stop`         | start+stop cycle on type=process throwaway |
+| `720-cycle-enable-disable`     | enable+disable cycle — measures symlink FS overhead |
+| `730-cycle-restart-only`       | pure restart cycle — bundled stop+start in one call |
+| `740-cycle-scripted-start-oneshot` | pure start hammer on scripted /bin/true throwaway |
 
 ### Disruptive cases (opt-in only)
 
@@ -258,6 +262,21 @@ Findings:
 - **Negative paths are fast.** Signal to a nonexistent service
   returns in 1.10 ms — the svc lookup errors immediately, no
   wasted work.
+- **Start / stop / enable / disable are all equal-cost.** Under
+  1.4 ms per operation. Enable/disable's symlink FS work
+  (create + unlink a waits-for.d entry) is under 100 μs — the
+  1.34 ms per-op cost is essentially all CLI fork/exec + IPC
+  round-trip. Concretely: start+stop cycle = 2.687 ms; enable+
+  disable cycle = 2.686 ms (identical within noise); pure
+  scripted-start = 1.126 ms.
+- **Bundled ops are dramatically cheaper.** `restart` (server-
+  side stop+start folded into one control call) = 1.29 ms,
+  compared to 2.69 ms for the equivalent `start && stop`
+  invocation pair. Half the wall-clock because we pay one CLI
+  fork/exec instead of two. Same pattern as `reload-all` vs
+  N×reload. Scripts doing multiple ops on the same svc should
+  prefer bundled endpoints where they exist — the bottleneck
+  is always CLI process startup, not slinit's server.
 - **Full service lifecycle is sub-4 ms.** Write file to
   `/etc/slinit.d/` → `slinitctl start` → `stop` → `unload` → rm
   runs in 3.89 ms median. Provisioning + tearing down throwaway
