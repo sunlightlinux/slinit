@@ -17,6 +17,125 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.8] — 2026-09-08
+
+Documentation + upstream-parity pass. Closes the two loose ends
+surfaced during the v2.2.7 sign-off: nine slinit binaries under
+`cmd/` had shipped without man pages, and three of the five new
+dinit upstream state-machine commits (`24fb3d8..bf63b44`) needed
+porting. No user-facing regressions or new capabilities; the
+state-machine ports harden consistency corners that were latent
+in v2.2.7 rather than observably broken. Ship-worthy on the
+strength of the doc completeness alone.
+
+### Added
+
+- **Nine new man pages closing the binary → doc gap.** Every
+  binary under `cmd/` now has a source `.md` in `doc/man/`:
+
+  - `slinit-supports.8` — self-introspection CLI, source of
+    truth for `doc/features.md`.
+  - `slinit-journalctl.8` — 65-flag systemd-parity journal CLI
+    (441 lines, biggest single page; 16 flag groups from Event
+    selection through FSS + Catalog + Machine target).
+  - `slinit-journald.8` — persistent journal daemon documenting
+    both Phase B binary and Phase C JSONL formats.
+  - `slinit-journal-migrate.8` — one-shot JSONL → binary
+    migrator.
+  - `slinit-machinectl.8` — nspawn container registry query /
+    CRUD (`/run/slinit/machines/` file format documented).
+  - `slinit-nspawn.8` — nspawn container runtime, contrasted
+    explicitly with `systemd-nspawn(1)`.
+  - `slinit-openrc-convert.8` — `init.d` → `slinit-service(5)`
+    converter.
+  - `slinit-runit-convert.8` — runit svdir →
+    `slinit-service(5)` converter.
+  - `slinit-systemd-convert.8` — systemd `.service` →
+    `slinit-service(5)` converter (other unit types documented
+    as out of scope).
+
+  `doc/man/Makefile` `PAGES_8` list extended with the nine new
+  targets; all pages render cleanly via `make -C doc/man` (`go
+  tool github.com/cpuguy83/go-md2man/v2`) and install under
+  `$(MANDIR)/man8/`. +1377 lines. `slinit-hostnamectl` /
+  `slinit-timedatectl` remain covered by the existing
+  `hostnamectl.1` / `timedatectl.1` pages via install-time
+  symlinks.
+
+### Fixed
+
+- **`pkg/service`: `queueForConsole` guards against
+  double-enqueue (dinit `a000e76`).** Prior code unconditionally
+  set `waitingForConsole = true` and appended `self` to the
+  console queue. If `allDepsStarted` re-entered while the record
+  was still waiting for the console (a dep transition firing the
+  readiness check twice before `AcquiredConsole` ran), the same
+  `ServiceRecord` landed on the console queue twice — the second
+  `PullConsoleQueue` would then dispatch a service that had
+  already released the console. Fix skips the append when the
+  flag is already set. Latent in v2.2.7; ported defensively.
+
+- **`pkg/service`: `startCheckDependencies` requires
+  `waitingForDeps` before flagging a dependent as `WaitingOn`
+  (dinit `5fe1081`).** The dependents loop marked
+  `dept.WaitingOn = true` whenever the dependent was
+  `StateStarting`; without the extra `waitingForDeps` check, a
+  dependent that had already resolved its deps but was in the
+  console-acquisition branch picked up a stale WaitingOn flag
+  pointing at a dependency that just finished starting. No
+  observable misbehaviour in v2.2.7, but state now stays
+  authoritative for outside observers.
+
+- **`pkg/service`: `ExecuteTransition` short-circuits when
+  `waitingForDeps` is already clear + `allDepsStarted` clears
+  the flag before the console-queue branch (dinit `d24e6f9`).**
+  Two linked changes that close the loop on the fix above: once
+  a record has reached `allDepsStarted`, `waitingForDeps`
+  becomes authoritative and re-entries don't have to walk every
+  dep to reach the same conclusion. Clearing the flag before the
+  `queueForConsole` branch (instead of after) means the
+  ordering-only-dependent check from `5fe1081` sees the correct
+  post-resolution state instead of a stale `true` for services
+  that took the console-queue path.
+
+  The remaining two upstream commits (`bf63b44` `interrupt_start`
+  rename + `76a50f6` C++ header comment fix) are N/A: slinit
+  already uses the target names (`InterruptStart` /
+  `CanInterruptStart`), and the sole caller of `CanInterruptStart`
+  at `record.go:3061` already guards with `!waitingForDeps &&
+  !waitingForConsole`.
+
+  All 29 `pkg/*` test packages pass under `-race -count=1` before
+  and after both ports.
+
+### Changed
+
+- **Docs currency pass across 50+ `.md` files.** Test-count
+  headers refreshed everywhere they appeared (unit
+  `1956 → 2033`, `_test.go` files `273 → 291`, Go dirs
+  `69 → 65`, acceptance `218 → 219`, fuzz targets `21 → 27`) in
+  `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`. `SECURITY.md`
+  "Supported Versions" table refreshed (`>=2.2.0` supported;
+  `2.0.x`/`2.1.x` best-effort; `<2.0.0` unsupported).
+  `doc/features.md` header pins the exact regeneration command
+  (`slinit-supports --list-directives --group-by=source`).
+  Fuzz corpus size line updated ("54 files as of v2.2.7").
+  `tests/performance/README.md` + `tests/performance/ssh/
+  README.md` dropped the "not yet populated" stubs and now
+  reflect the shipped v2.2.7 harness (4 demo harnesses + 93 SSH
+  cases; first ceres measurement in v2.2.7).
+  `demo/README.md` service table gained the
+  `persist-journal-mount` row.
+
+- **`.github/pull_request_template.md`**: expanded testing
+  checklist (unit + functional + acceptance rows), dinit-parity
+  item, DCO reminder, `CHANGELOG.md`-update reminder.
+  **`.github/ISSUE_TEMPLATE/feature_request.md`**: added an
+  "Upstream Parity" section so requesters name any
+  dinit / systemd / runit / s6 / OpenRC equivalent up front.
+  **`.github/ISSUE_TEMPLATE/bug_report.md`**: version example
+  bumped `v2.0.0 → v2.2.7`.
+
 ## [2.2.7] — 2026-09-06
 
 Critical PID-1 fix + optional pprof diagnostic endpoint + massive
