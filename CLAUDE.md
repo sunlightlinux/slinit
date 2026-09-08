@@ -100,14 +100,17 @@ For multi-step tasks, state a brief plan:
 **Verification commands in slinit:**
 - `go build ./...` — full build, catches typos fast.
 - `go vet ./...` — catches misuse before tests.
-- `go test ./...` — ~1956 unit tests across 69 Go dirs (29 pkg/ + 35 cmd/ + tests + tools).
+- `go test ./...` — ~2033 unit tests across 65 Go dirs (29 pkg/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
 - `./tests/functional/run-tests.sh` — 218 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
-- `./tests/acceptance/ssh/run.sh` — 218 SSH-driven cases against a live VM.
+- `./tests/acceptance/ssh/run.sh` — 219 SSH-driven cases against a live VM.
+- `./tests/performance/ssh/run.sh` — 93 SSH-driven perf cases (comprehensive
+  CLI + IPC + journal + lifecycle-scaling coverage). Env-var contract
+  identical to the acceptance suite.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
-  single target. 21 targets across 4 files.
+  single target. 27 targets.
 - `./slinit-check /etc/slinit.d/<svc>` — offline config linter.
 
 Strong success criteria let you loop independently. Weak criteria

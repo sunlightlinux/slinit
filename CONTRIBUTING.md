@@ -41,10 +41,11 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (~1956 tests across 69 Go dirs, 273 _test.go files)
+- **Unit tests**: `go test ./...` (~2033 tests across 65 Go dirs, 291 _test.go files)
 - **Functional tests**: `./tests/functional/run-tests.sh` (218 QEMU-based cases)
-- **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (218 SSH-driven cases against a live VM)
-- **Fuzz targets**: `go test -fuzz=FuzzConfigParse ./tests/fuzz` (21 targets across 4 files)
+- **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (219 SSH-driven cases against a live VM)
+- **Performance harnesses**: `./tests/performance/ssh/run.sh` (93 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
+- **Fuzz targets**: `go test -fuzz=FuzzConfigParse ./tests/fuzz` (27 targets)
 - Requires `qemu-system-x86_64` for functional tests
 
 ### Project Structure
@@ -73,7 +74,8 @@ go test ./...
 - `internal/util/` - Path and parsing utilities
 - `completions/` - Shell completions (bash, zsh, fish)
 - `tests/functional/` - QEMU integration tests (218 cases)
-- `tests/acceptance/ssh/` - SSH-driven live-VM cases (218)
+- `tests/acceptance/ssh/` - SSH-driven live-VM cases (219)
+- `tests/performance/` - performance harnesses (93 SSH + 4 QEMU boot + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (21)
 - `tests/performance/` - Go benchmarks
 - `demo/` - QEMU demo environment

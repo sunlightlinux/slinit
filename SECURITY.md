@@ -4,9 +4,9 @@
 
 | Version   | Supported |
 |-----------|-----------|
-| >= 2.0.0  | Yes       |
-| 1.10.55   | Yes (transitional, until v2.0.x stabilises) |
-| < 1.10.55 | No        |
+| >= 2.2.0  | Yes       |
+| 2.0.x, 2.1.x | Best-effort backports for critical fixes only |
+| < 2.0.0   | No (v1.x line closed at v1.10.55; upgrade to v2.x) |
 
 ## Reporting a Vulnerability
 

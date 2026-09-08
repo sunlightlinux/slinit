@@ -1356,18 +1356,25 @@ slinit/
 ## Testing
 
 ```bash
-# Unit tests (~1956 tests + benchmarks across 69 Go dirs, 273 _test.go files)
+# Unit tests (~2033 tests + benchmarks across 65 Go dirs, 291 _test.go files)
 go test ./...
 
 # Functional tests (218 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
-# Acceptance tests (218 SSH-driven cases against a live VM/host)
+# Acceptance tests (219 SSH-driven cases against a live VM/host)
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/acceptance/ssh/run.sh
 
-# Fuzz targets (21 targets across 4 files)
+# Fuzz targets (27 targets)
 go test -fuzz=FuzzConfigParse ./tests/fuzz
+
+# Performance harnesses (93 SSH-driven cases + 4 QEMU boot harnesses
+# + runtime microbenchmarks — comprehensive control-surface coverage,
+# CLI + IPC + journal + lifecycle scaling; see tests/performance/README.md)
+ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
+  ./tests/performance/ssh/run.sh
+./tests/performance/demo/cold-boot.sh
 ```
 
 ## Roadmap
@@ -1426,6 +1433,30 @@ go test -fuzz=FuzzConfigParse ./tests/fuzz
 - [x] **Phase 52** (v2.1.7): journalctl `-t/-T/-g` + small `-n` correctness fix -- `QueryFilter.isEmpty()` learned about the Group A dimensions so filtered queries take the slow path (Match per event) and trim AFTER filtering. Client also sends `Limit=0` when a Group A filter is populated + trims locally, so filters work against any daemon vintage
 - [x] **Phase 53** (v2.1.8): journalctl systemd parity Groups C+D+E -- 9 flags. Group C (FSS, 3): `--setup-keys` mints sealing key + prints verification token, `--verify-key=TOKEN` inline verification, `--interval=DUR` epoch duration. Group D (catalog, 4 + new `pkg/catalog`): systemd-compatible `.catalog` parser (ID normalization + RFC 822 headers title-cased); `-x/--catalog` augments output, `--dump-catalog`, `--list-catalog`, `--update-catalog` (gob-compiled cache at `/var/lib/slinit/catalog/catalog.compiled`). Group E (invocation, 2 + pkg/service emit): 128-bit hex `SLINIT_INVOCATION_ID` minted at each `initiateStart`, attached to every event in the lifecycle; `--invocation=UUID` filter, `--list-invocations` dedupe
 - [x] **Phase 54** (v2.1.9-v2.1.12): journalctl parity completion — 4 Sprints, 9 more flags. Sprint 1 (v2.1.9, 2): `--force` (safety gate for `--setup-keys`), `--synchronize-on-exit` (no-op alias — slinit's sinks always fsync on Close). Sprint 2 (v2.1.10, 3): `--flush` + `--relinquish-var` + `--smart-relinquish-var` via a UNIX DGRAM control socket (Go's `os/signal` doesn't deliver SIGRTMIN reliably, so the initial signal-based design was replaced). Sprint 3 (v2.1.11, 2): `--namespace` + `--list-namespaces` — `slinit-journald --namespace=NS` auto-suffixes every default path (`.NS` on dir/volatile/pid/admin, `-NS.sock` on events socket); `guardedSink` stamps every incoming event with the namespace. Sprint 4 (v2.1.12, 2): `--image` + `--image-policy` via pkg/dissect (losetup + mount + lsblk shell-out; `strict` policy refuses LUKS/LVM/verity partitions). **Journalctl parity project complete: 65 of 65 flags.**
+
+Post-v2.1.12 the phase-numbering system was retired in favour of the
+three-lane structure the CHANGELOG carries (new features / security
+features / code fixing). Per-version detail from v2.2.0 onward
+lives in [CHANGELOG.md](CHANGELOG.md). Highlights since v2.1.12:
+
+- **v2.2.0–v2.2.4**: full `slinit-journalctl` systemd short-alias
+  parity + first-class nspawn-style container integration + state-
+  machine race fixes surfaced by fuzz.
+- **v2.2.5**: journal multi-boot — `--list-boots` walks on-disk
+  journals, `-b -N` relative indexing via aggregator + `demo/run.sh
+  --persist` for multi-boot demos.
+- **v2.2.6**: journal recovery hardening (six truncation-tolerance
+  fixes to pkg/journalbin), enable/disable workflow polish, first
+  published cold-boot performance harnesses under
+  tests/performance/demo/.
+- **v2.2.7**: critical `pkg/config` DirLoader concurrent-map fix
+  (PID-1 panic under stress), optional `net/http/pprof` endpoint
+  behind `-tags pprof`, SSH performance suite expanded to 93 cases,
+  slpkgs `post_install` now creates `/usr/bin/{halt,reboot,poweroff,
+  shutdown}` symlinks (fresh installs get working `reboot` out of
+  the box), three upstream dinit state-machine consistency fixes
+  ported. Validated on both KVM (ceres) and bare-metal (Intel NUC
+  Gen7): 219/219 acceptance pass on both.
 
 ## Changelog
 

@@ -45,7 +45,7 @@ also enforces:
 ### Config Parsing (config_fuzz_test.go)
 | Target | What it fuzzes |
 |--------|----------------|
-| FuzzConfigParse | Main service config file parser (text grammar). Seed corpus includes every real config from `demo/services/` (52 files as of v2.2.3) so the mutator starts from production-shaped inputs. Post-parse the desc's slice/map fields are traversed to catch partial-initialisation nil-deref shapes. |
+| FuzzConfigParse | Main service config file parser (text grammar). Seed corpus includes every real config from `demo/services/` (54 files as of v2.2.7) so the mutator starts from production-shaped inputs. Post-parse the desc's slice/map fields are traversed to catch partial-initialisation nil-deref shapes. |
 | FuzzParseIDMapping | Namespace UID/GID mapping "container:host:size" |
 | FuzzParseCPUAffinity | CPU affinity spec "0-3 8-11" |
 | FuzzParseLSBHeaders | /etc/init.d LSB header block parser |
