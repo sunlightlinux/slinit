@@ -22,6 +22,21 @@ How do you think this should work?
 
 Any alternative solutions or workarounds you've considered.
 
+## Upstream Parity
+
+If this feature exists in one of slinit's reference sources, please note
+which one and the exact name / semantics — matching upstream reduces
+implementation risk and preserves muscle memory for admins moving in:
+
+- **dinit** (`../dinit/src/`) — the state-machine + config-format base
+- **systemd** — service-manager directive/CLI surface
+- **runit** / **s6-linux-init** / **OpenRC** / **upstart** — feature-
+  specific ports
+
+If the feature has no upstream analogue, say so — slinit is willing to
+ship native features, but the bar for surface-growth without upstream
+precedent is intentionally higher (see CONTRIBUTING.md).
+
 ## Additional Context
 
-Any other information, references to dinit behavior, or examples.
+Any other information, code pointers, benchmark data, or examples.
