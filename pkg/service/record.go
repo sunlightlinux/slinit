@@ -2400,14 +2400,23 @@ func (sr *ServiceRecord) DoPropagation() {
 }
 
 // ExecuteTransition performs a state transition based on the current and desired states.
+//
+// The `!sr.waitingForDeps ||` short-circuit is the ported half of
+// dinit's d24e6f9 (2026-09-07). Once the flag is cleared (in
+// allDepsStarted / stopDependents), a re-entry of the transition
+// no longer has to walk every dep to reach the same conclusion;
+// the flag itself is authoritative. Paired with the `waitingForDeps
+// = false` promotion in allDepsStarted (below) — together they make
+// the flag reliable for outside observers (see startCheckDependencies's
+// ordering-only-dependent check).
 func (sr *ServiceRecord) ExecuteTransition() {
 	if sr.state.Load() == StateStarting {
-		if sr.checkDepsStarted() {
+		if !sr.waitingForDeps || sr.checkDepsStarted() {
 			sr.waitingForDeps = false
 			sr.allDepsStarted()
 		}
 	} else if sr.state.Load() == StateStopping {
-		if sr.stopCheckDependents() {
+		if !sr.waitingForDeps || sr.stopCheckDependents() {
 			sr.waitingForDeps = false
 			sr.self.BringDown()
 		}
@@ -2569,12 +2578,20 @@ func (sr *ServiceRecord) checkDepsStarted() bool {
 }
 
 func (sr *ServiceRecord) allDepsStarted() {
+	// Clear waitingForDeps BEFORE the console-queue branch (was after,
+	// pre-d24e6f9). Reason: once we reach this point, deps are fully
+	// resolved regardless of whether we're about to bring up or queue
+	// for the console. Keeping the flag true across the queueForConsole
+	// branch made outside observers (e.g. startCheckDependencies scanning
+	// for ordering-only dependents) misclassify us as still waiting on
+	// deps, planting stale WaitingOn flags on our ordering dependents.
+	// Paired with the ExecuteTransition short-circuit above.
+	sr.waitingForDeps = false
+
 	if sr.Flags.StartsOnConsole && !sr.haveConsole {
 		sr.queueForConsole()
 		return
 	}
-
-	sr.waitingForDeps = false
 
 	// Check start limiter (skip during shutdown — don't queue services)
 	if limiter := sr.services.GetStartLimiter(); limiter != nil && !sr.services.IsShuttingDown() {
