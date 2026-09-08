@@ -31,7 +31,7 @@ Run a subset by passing case paths:
 ./run.sh cases/30-ctl-status.sh cases/50-journalctl-fetch-n100.sh
 ```
 
-## Cases (v2.2.6)
+## Cases (v2.2.7)
 
 Numbered with zero-padding so lexical sort matches numeric order.
 
@@ -97,7 +97,7 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `550-provision-30-svcs-list`   | 30 sequential provisions — list cost at N=43 |
 | `560-deep-dep-chain`           | 10-deep chain — status walk on tip |
 | `570-boot-time-under-writes`   | boot-time under 200-logger write pressure |
-| `580-parallel-lifecycle-4`     | **DISRUPTIVE** — crashes slinit PID 1 on v2.2.6, gated |
+| `580-parallel-lifecycle-4`     | **DISRUPTIVE** — crashed slinit PID 1 on v2.2.6 (fixed in v2.2.7 `cfe16ab`), gated for regression validation |
 | `590-graph-before-after-provision` | Graph render at N=13 vs N=43 |
 | `600-status-under-massive-lifecycle` | **DISRUPTIVE** — 20 concurrent lifecycles, gated |
 | `610-journalctl-since`         | `--since '1 min ago'` time-range filter |
@@ -141,14 +141,23 @@ Never run against a production target without a recovery plan
 
 Currently gated:
 - **`580-parallel-lifecycle-4`** — 4 concurrent throwaway
-  provision+start+stop+unload lifecycles panic slinit PID 1
+  provision+start+stop+unload lifecycles panicked slinit PID 1
   on v2.2.6.
 - **`600-status-under-massive-lifecycle`** — same class, 20
   concurrent lifecycles fan out 5× harder than 580.
 
-Root cause not yet identified — the parallel add/remove of
-loaded services through the state machine appears to race
-somewhere. Bug tracked as follow-up in [slinit issue tracker].
+**Fixed in v2.2.7 (commit `cfe16ab`).** Root cause: `pkg/config`
+`DirLoader.loading` map + `curDepth` int were mutated by
+`loadServiceImpl` without a mutex; concurrent LoadService calls
+from multiple control-socket connections raced on the map, Go's
+runtime detected concurrent read+write and terminated PID 1,
+kernel panicked. Fix adds `sync.Mutex` to DirLoader plus a
+`loadServiceLocked` bypass so a single goroutine holds the lock
+through the whole dep-tree load without self-deadlocking.
+Regression test `TestDirLoader_ConcurrentLoadService` in
+`pkg/config` reproduces the race in 9 ms with 32 goroutines. The
+gated cases stay in-tree so any future regression that removes
+the mutex fails them immediately.
 
 All cases are **read-only** or write to the journal (which is
 designed to absorb high write volume). No case starts/stops real
@@ -173,7 +182,9 @@ Bench-style lines with median + p95 + min in milliseconds:
     BenchmarkCtlVersion                 20  median=   1.017 ms  p95=   1.199 ms  min=   0.910 ms
     BenchmarkCtlLs                      20  median=   1.214 ms  p95=   1.735 ms  min=   1.046 ms
 
-First measurement on ceres (real-hardware x86_64, v2.2.6, `ITERS=15`):
+First measurement on ceres (KVM x86_64, v2.2.7, `ITERS=15`; numbers
+originally captured on v2.2.6+hot-patched-cfe16ab and re-verified
+against the v2.2.7 fresh install):
 
 ```
 BenchmarkCtlVersion                 15  median=   1.057 ms

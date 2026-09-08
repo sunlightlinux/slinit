@@ -34,8 +34,17 @@ tag X regress boot time vs tag Y?"
 Requires: `qemu-system-x86_64`. Run from repo root:
 `./tests/performance/demo/cold-boot.sh`
 
-Not yet populated — plan: `cold-boot.sh`, `pid1-footprint.sh`,
-`fork-exec-throughput.sh`.
+Four harnesses shipped:
+- `cold-boot.sh` — full-demo boot (34 services, ~3020 ms median)
+- `minimal-boot.sh` — single-service boot for parity-comparison with
+  dinit / runit / s6 published numbers
+- `fork-exec-throughput.sh` — N mock services (default N=50); per-svc
+  fork+exec+wait cost
+- `pid1-footprint.sh` — PID-1 RSS + VmPeak after N-second idle wait,
+  for a steady-state (post-GC-settle) reading
+
+See [demo/README.md](demo/README.md) for the full comparison table
+and interpretation.
 
 ## `ssh/` — live-VM end-to-end latency
 
@@ -50,5 +59,20 @@ reaches STARTED?", "does `slinit-journalctl -f` add latency to
 concurrent emits?", "how does enable/disable round-trip compare to
 `systemctl enable`?"
 
-Requires: ssh access to a slinit VM. Not yet populated — plan:
-`ctl-latency.sh`, `journalctl-throughput.sh`, `enable-disable.sh`.
+Requires: ssh access to a slinit VM (same env-var contract as
+`tests/acceptance/ssh/`: `ACCEPTANCE_HOST` / `_PORT` / `_USER`).
+
+Currently **93 cases** covering the full control-surface hot path —
+all slinitctl read/write ops, journal read/write/filter variants,
+concurrency scaling from 1 to 128 clients, lifecycle scaling
+(1/2/4/8/16/20-way), long-tail latency, reader/writer racing,
+fair-share latency under heavy background load, OpenRC compat
+shims, specialised feature setup costs (PSI / cgroup / fd-store),
+parser stress, and dep-tree scaling.
+
+See [ssh/README.md](ssh/README.md) for the full case list and the
+architectural findings extracted from them.
+
+Two cases (`580` + `600`) are gated behind `SLINIT_ALLOW_DISRUPTIVE=1`
+and one (`810` socket-activation-on-demand) is a documented SKIP
+pending semantics review.
