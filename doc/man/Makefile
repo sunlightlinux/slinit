@@ -36,6 +36,15 @@ PAGES_8 = \
 	slinit-logouthookd.8 \
 	slinit-sysusers.8 \
 	slinit-tmpfiles.8 \
+	slinit-supports.8 \
+	slinit-journalctl.8 \
+	slinit-journald.8 \
+	slinit-journal-migrate.8 \
+	slinit-machinectl.8 \
+	slinit-nspawn.8 \
+	slinit-openrc-convert.8 \
+	slinit-runit-convert.8 \
+	slinit-systemd-convert.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8
