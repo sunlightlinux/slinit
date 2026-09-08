@@ -93,6 +93,7 @@ works as-is.
 | einfo-demo    | scripted  | Walks every einfo applet (einfo/ewarn/eerror/ebegin/eend/veinfo/eval_ecolors) — colour output visible via `slinitctl catlog einfo-demo` |
 | openrc-initd-demo | scripted | `/etc/init.d/openrc-initd-demo` OpenRC-style: `#!/sbin/openrc-run` shebang, `depend() { need X; after Y; }` extracted by the sandbox parser |
 | journal-demo  | process   | `slinit-journald` persistent daemon (Phase B binary format + FSS sealing; writes `/run/slinit-journal/*.journal` with `.jsonl` fallback via `--format=jsonl`). Try `slinit-journalctl -n 20` / `-f` / `-u hello` / `-o json` / `--list-boots` from the demo shell; add `--file /run/slinit-journal/*.journal --verify` to walk the FSS TAG chain. FSS key at `/etc/slinit/journal-key` (minted at initramfs-build time). The `journalctl` name is a symlink to `slinit-journalctl` for muscle-memory compat. |
+| persist-journal-mount | scripted | Formats + mounts the virtio disk `/dev/vda` that `demo/run.sh --persist` provisions, so journal writes land on a persistent backing store instead of tmpfs. Manual (`manual=yes`), fires only when `--persist` is passed. Multiple `demo/run.sh --persist` invocations accumulate boots in `slinit-journalctl --list-boots`. |
 
 ## Interactive Commands
 
