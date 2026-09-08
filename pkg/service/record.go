@@ -2540,7 +2540,17 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 
 	for _, dept := range sr.dependents {
 		if !dept.WaitingOn && dept.IsOnlyOrdering() {
-			if dept.From.Record().state.Load() == StateStarting {
+			// Only force the dependent to wait if it is still
+			// waiting for dependencies — a service that has
+			// already reached its Starting-with-deps-resolved
+			// phase should not get a stale WaitingOn flag stuck
+			// against a dependency that just finished starting.
+			// Port of dinit's 5fe1081 (2026-09-07): "Only apply
+			// ordering constraints when pre service is waiting
+			// for deps". No known misbehaviour without this;
+			// consistency alignment with upstream.
+			from := dept.From.Record()
+			if from.state.Load() == StateStarting && from.waitingForDeps {
 				dept.WaitingOn = true
 			}
 		}
@@ -3164,6 +3174,14 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 }
 
 func (sr *ServiceRecord) queueForConsole() {
+	// Guard against double-enqueue if allDepsStarted re-enters while
+	// we are still waiting for the console — that would corrupt the
+	// console queue (same service appears twice, second PullConsoleQueue
+	// finds a service that has already released the console). Port of
+	// dinit's a000e76 (2026-09-07).
+	if sr.waitingForConsole {
+		return
+	}
 	sr.waitingForConsole = true
 	sr.services.AppendConsoleQueue(sr.self)
 }
