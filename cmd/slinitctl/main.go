@@ -308,6 +308,8 @@ doneFlags:
 		err = cmdResetFailedDispatch(conn, cmdArgs)
 	case "shutdown":
 		err = cmdShutdownDispatch(conn, cmdArgs)
+	case "switch-root", "switch_root":
+		err = cmdSwitchRoot(conn, cmdArgs)
 	case "trigger":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdTrigger(conn, name)
@@ -2144,6 +2146,60 @@ func sendWallNotice(conn net.Conn, msg string) error {
 	}
 	info("Wall message broadcast.\n")
 	return nil
+}
+
+// cmdSwitchRoot implements `slinitctl switch-root NEWROOT [INIT]`,
+// finit-parity for the initramfs → real-root transition. Only
+// meaningful when slinit runs as PID 1 in an initramfs — the
+// server-side handler enforces that.
+func cmdSwitchRoot(conn net.Conn, args []string) error {
+	if len(args) < 1 || len(args) > 2 {
+		return fmt.Errorf("usage: slinitctl switch-root NEWROOT [INIT]")
+	}
+	newroot := args[0]
+	newinit := ""
+	if len(args) == 2 {
+		newinit = args[1]
+	}
+	// Wire layout: [nr_len(2, LE)][nr_bytes][ni_len(2, LE)][ni_bytes].
+	// A zero-length newinit signals "use the /sbin/init default".
+	nr := []byte(newroot)
+	ni := []byte(newinit)
+	if len(nr) > 0xFFFF || len(ni) > 0xFFFF {
+		return fmt.Errorf("switch-root: path too long (max 65535 bytes)")
+	}
+	payload := make([]byte, 0, 4+len(nr)+len(ni))
+	payload = append(payload, byte(len(nr)&0xFF), byte((len(nr)>>8)&0xFF))
+	payload = append(payload, nr...)
+	payload = append(payload, byte(len(ni)&0xFF), byte((len(ni)>>8)&0xFF))
+	payload = append(payload, ni...)
+	if err := control.WritePacket(conn, control.CmdSwitchRoot, payload); err != nil {
+		return err
+	}
+	rply, rest, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	switch rply {
+	case control.RplyACK:
+		// Server ACKed; the switch itself does not return (PID 1
+		// re-execs), so the connection will die shortly. If the
+		// caller cares to observe the switch itself, they should
+		// watch /dev/console — this client's job is done.
+		if newinit == "" {
+			newinit = "/sbin/init"
+		}
+		info("switch-root: transitioning to %s (init=%s)\n", newroot, newinit)
+		return nil
+	case control.RplyBadReq:
+		msg := "invalid request"
+		if len(rest) > 0 {
+			msg = string(rest)
+		}
+		return fmt.Errorf("switch-root: %s", msg)
+	default:
+		return fmt.Errorf("switch-root: unexpected reply %d", rply)
+	}
 }
 
 func cmdCancelShutdown(conn net.Conn) error {

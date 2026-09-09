@@ -359,6 +359,21 @@ daemon, which is useful at install time or in initramfs.
     from other init systems without having to type the *kind*
     argument.
 
+**switch-root** *NEWROOT* [*INIT*]
+:   Transition from an initramfs to the real root filesystem.
+    Only meaningful when slinit is running as PID 1 inside an
+    initramfs — the operator has mounted the decrypted / LVM /
+    NBD / iSCSI real root at *NEWROOT* and now hands off to
+    slinit-in-newroot (or any other init at *INIT*, defaulting
+    to */sbin/init*). slinit stops every service, kills
+    remaining processes, moves */dev*, */proc*, */sys*, */run*
+    into *NEWROOT*, deletes the initramfs contents (when */* is
+    ramfs / tmpfs), *mount --move NEWROOT /*, **chroot**(2)s
+    into it, and **execve**(2)s *INIT* with PID 1 preserved.
+    On success the CLI never sees the resulting state — the
+    kernel now runs the new *INIT*. finit-parity (`initctl
+    switch_root`).
+
 ### Misc
 
 **action** *service* *action-name* [*args...*]

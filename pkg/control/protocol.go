@@ -126,6 +126,17 @@ const (
 	// slinitctl disable --dinit-compat to locate the waits-for.d
 	// symlink it needs to remove after a CmdRmDepV7 sequence.
 	CmdQueryServiceLoadDir uint8 = 63
+	// Switch-root: replace / with a new-root filesystem, stop all
+	// services, kill remaining processes, mount-move virtual FSes
+	// into the new root, chroot, exec the new init. Only meaningful
+	// when slinit runs as PID 1 from an initramfs. Payload wire
+	// layout: [newroot_len(2, LE)][newroot_bytes][newinit_len(2, LE)]
+	// [newinit_bytes]; newinit_len may be 0 to accept the /sbin/init
+	// default. Server replies RplyACK before triggering the switch
+	// (the connection will die when the exec fires); on precheck
+	// failure it replies RplyBadReq with the failure text as
+	// payload. finit-parity (`initctl switch_root`).
+	CmdSwitchRoot uint8 = 64
 )
 
 // Reply codes (server → client).

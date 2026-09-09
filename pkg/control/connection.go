@@ -330,9 +330,61 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleJournalQuery(payload)
 	case CmdJournalSubscribe:
 		return c.handleJournalSubscribe(payload)
+	case CmdSwitchRoot:
+		return c.handleSwitchRoot(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
+}
+
+// handleSwitchRoot parses [newroot_len(2, LE)][newroot_bytes]
+// [newinit_len(2, LE)][newinit_bytes] and dispatches to
+// c.server.SwitchRootFunc after replying RplyACK (or RplyBadReq
+// with the failure text on precheck failure / missing hook).
+// The switch itself does not return — the process re-execs — so
+// the ACK is the only reply the client will ever see when the
+// request succeeds.
+func (c *Connection) handleSwitchRoot(payload []byte) error {
+	newroot, newinit, err := decodeSwitchRootPayload(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, []byte(err.Error()))
+	}
+	if c.server.SwitchRootFunc == nil {
+		return c.writePacket(RplyBadReq,
+			[]byte("switch-root not supported (slinit not running as PID 1 or hook not wired)"))
+	}
+	if err := c.writePacket(RplyACK, nil); err != nil {
+		return err
+	}
+	// SwitchRootFunc is expected NOT to return on success. If it
+	// does return, an error occurred after we already ACKed —
+	// nothing more to say to this client (connection is going away).
+	_ = c.server.SwitchRootFunc(newroot, newinit)
+	return nil
+}
+
+// decodeSwitchRootPayload extracts the two length-prefixed strings
+// from a CmdSwitchRoot payload. Returns an error if the layout is
+// truncated or lengths exceed the buffer.
+func decodeSwitchRootPayload(payload []byte) (newroot, newinit string, err error) {
+	if len(payload) < 2 {
+		return "", "", fmt.Errorf("switch-root: payload too short (%d < 2)", len(payload))
+	}
+	nrLen := int(payload[0]) | int(payload[1])<<8
+	if 2+nrLen > len(payload) {
+		return "", "", fmt.Errorf("switch-root: newroot length %d exceeds payload", nrLen)
+	}
+	newroot = string(payload[2 : 2+nrLen])
+	rest := payload[2+nrLen:]
+	if len(rest) < 2 {
+		return "", "", fmt.Errorf("switch-root: newinit header truncated")
+	}
+	niLen := int(rest[0]) | int(rest[1])<<8
+	if 2+niLen > len(rest) {
+		return "", "", fmt.Errorf("switch-root: newinit length %d exceeds payload", niLen)
+	}
+	newinit = string(rest[2 : 2+niLen])
+	return newroot, newinit, nil
 }
 
 // handleFreezeService writes to cgroup.freeze on the target service's

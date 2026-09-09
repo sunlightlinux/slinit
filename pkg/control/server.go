@@ -74,6 +74,16 @@ type Server struct {
 	// LSB-shutdown-style `-k` warning-only mode.
 	WallNoticeFunc func(message string)
 
+	// SwitchRootFunc is called when a CmdSwitchRoot request passes
+	// its precheck. Returning nil means the switch committed
+	// (execute never returns; the connection dies with the process);
+	// returning a non-nil error means the actual switch failed after
+	// the ACK went out, and the client learns via connection reset.
+	// Nil hook = switch-root disabled (returns Precheck-style error
+	// to the client so slinit outside initramfs doesn't accidentally
+	// pretend to support it).
+	SwitchRootFunc func(newroot, newinit string) error
+
 	// Scheduled shutdown state.
 	scheduledMu        sync.Mutex
 	scheduledTimer     *time.Timer

@@ -30,6 +30,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/recovery"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
+	"github.com/sunlightlinux/slinit/pkg/switchroot"
 	"github.com/sunlightlinux/slinit/pkg/snapshot"
 	"github.com/sunlightlinux/slinit/pkg/svcdirwatch"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
@@ -1381,6 +1382,34 @@ func main() {
 		}
 		ctrlServer.WallNoticeFunc = func(msg string) {
 			shutdown.Wall(msg, logger)
+		}
+		// switch-root wire-up. Only enabled when slinit runs as PID 1
+		// (the switchroot package rejects non-PID-1 callers anyway,
+		// but leaving the hook nil here surfaces a cleaner "not
+		// supported" reply to the client instead of walking to the
+		// PID check). finit-parity: initctl switch_root NEWROOT [INIT].
+		if isPID1 {
+			ctrlServer.SwitchRootFunc = func(newroot, newinit string) error {
+				resolved, err := switchroot.Precheck(newroot, newinit)
+				if err != nil {
+					logger.Error("switch-root: precheck: %v", err)
+					return err
+				}
+				return switchroot.Do(newroot, resolved, logger, func() {
+					// Stop-services hook: reuse the existing shutdown
+					// path's service teardown so the ordering is
+					// identical to a normal shutdown, minus the
+					// reboot(2) call. loop.InitiateShutdown(Remain)
+					// stops every service and clears the state
+					// machine without triggering a reboot.
+					loop.InitiateShutdown(service.ShutdownRemain)
+					// Give the state machine a beat to walk the
+					// stop cascade. 3s is far past a typical stop
+					// (services stop in ms) but a hard upper bound
+					// so a wedged service doesn't stall the switch.
+					time.Sleep(3 * time.Second)
+				})
+			}
 		}
 		loop.OnReopenSocket = func() {
 			if err := ctrlServer.Reopen(); err != nil {
