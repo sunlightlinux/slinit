@@ -467,6 +467,17 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	el.shutdownInitiated = true
 	el.shutdownType = shutdownType
 	el.shutdownSignals.Store(1)
+	// Announce on the operational log (surfaces on /dev/console when
+	// slinit is PID 1) so operators watching the serial line see that
+	// PID 1 caught the request before the [STOPPD] cascade begins.
+	// Matches dinitctl's own "Shutting down dinit..." announcement,
+	// except emitted server-side so it's visible whether the trigger
+	// was a control-socket client, a shutdown-binary invocation, or a
+	// reboot syscall relay. Level is Warn (not Info/Notice) so it
+	// clears the boot-console filter cmd/slinit sets to LevelWarn in
+	// systemMode — Notice would be silently dropped there, defeating
+	// the whole point of the announcement.
+	el.logger.Warn("Shutting down slinit (%s)...", shutdownType)
 
 	// Start emergency timeout with a cancellable timer.
 	// Capture immutable refs to avoid racing on el fields after mutex release.

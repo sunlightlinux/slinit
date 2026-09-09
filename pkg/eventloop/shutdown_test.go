@@ -9,6 +9,68 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
+// TestInitiateShutdown_AnnouncesOnLog locks in the UX contract that
+// PID 1 prints an operator-visible "Shutting down slinit (...)"
+// line at the top of every shutdown, before the [STOPPD] cascade.
+// Regression guard against the announcement being lost or moved
+// past the mutex where it could deadlock the log path under
+// concurrent InitiateShutdown callers.
+func TestInitiateShutdown_AnnouncesOnLog(t *testing.T) {
+	logger := logging.New(logging.LevelDebug)
+	var buf strings.Builder
+	logger.SetOutput(&buf)
+
+	set := service.NewServiceSet(logger)
+	el := New(set, logger)
+
+	el.InitiateShutdown(service.ShutdownReboot)
+	// Cancel the emergency timer so the goroutine doesn't fire
+	// during the test's fast-path.
+	if el.emergencyTimer != nil {
+		el.emergencyTimer.Stop()
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Shutting down slinit") {
+		t.Fatalf("expected shutdown announcement in log, got:\n%s", out)
+	}
+	if !strings.Contains(out, "reboot") {
+		t.Errorf("announcement should include shutdown-type 'reboot', got:\n%s", out)
+	}
+	// Warn (not Notice/Info) so the announcement clears the
+	// boot-console LevelWarn threshold in cmd/slinit main.go.
+	if !strings.Contains(out, "WARN") {
+		t.Errorf("announcement should be logged at WARN level (survives boot-console LevelWarn filter), got:\n%s", out)
+	}
+}
+
+// TestInitiateShutdown_IdempotentAnnouncement: a second call is a
+// no-op and must not double-log. Otherwise a stuck shutdown loop
+// (respawn / signal storm) would spam /dev/console.
+func TestInitiateShutdown_IdempotentAnnouncement(t *testing.T) {
+	logger := logging.New(logging.LevelDebug)
+	var buf strings.Builder
+	logger.SetOutput(&buf)
+
+	set := service.NewServiceSet(logger)
+	el := New(set, logger)
+
+	el.InitiateShutdown(service.ShutdownPoweroff)
+	el.InitiateShutdown(service.ShutdownReboot) // should be dropped
+	if el.emergencyTimer != nil {
+		el.emergencyTimer.Stop()
+	}
+
+	out := buf.String()
+	if strings.Count(out, "Shutting down slinit") != 1 {
+		t.Fatalf("expected exactly one shutdown announcement, got %d:\n%s",
+			strings.Count(out, "Shutting down slinit"), out)
+	}
+	if !strings.Contains(out, "poweroff") {
+		t.Errorf("first (winning) call was poweroff — announcement should reflect that, got:\n%s", out)
+	}
+}
+
 func TestEscalateShutdown_Levels(t *testing.T) {
 	logger := logging.New(logging.LevelDebug)
 	set := service.NewServiceSet(logger)
