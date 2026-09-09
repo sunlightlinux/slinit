@@ -93,10 +93,17 @@ func SetMinimumUptime(d time.Duration) { minimumUptime = d }
 var sleepFunc = time.Sleep
 
 // shutdownHookPaths is the list of paths to search for a shutdown hook script.
-// The first executable hook found is used; the rest are ignored.
+// The first executable hook found is used; the rest are ignored. dinit-compat
+// paths trail slinit's own so a slinit-native install always wins, but a
+// dinit → slinit migrant with an existing hook keeps it working silently
+// (mirrors the /etc/dinit/environment fallback in cmd/slinit/main.go).
+// dinit lookup order: /etc/dinit/shutdown-hook, /lib/dinit/shutdown-hook
+// (src/shutdown.cc:580-583).
 var shutdownHookPaths = []string{
 	"/etc/slinit/shutdown-hook",
 	"/lib/slinit/shutdown-hook",
+	"/etc/dinit/shutdown-hook",
+	"/lib/dinit/shutdown-hook",
 }
 
 // Mockable syscall functions for testing.

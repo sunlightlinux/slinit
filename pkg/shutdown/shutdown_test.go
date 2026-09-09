@@ -288,6 +288,91 @@ func TestRunShutdownHookReceivesArg(t *testing.T) {
 	}
 }
 
+// TestShutdownHookPathsIncludeDinitCompat locks in the dinit-migrant
+// UX contract: a fresh install ships with both slinit-native paths
+// and dinit fallback paths, in that order (slinit-native wins).
+// Mirrors the /etc/dinit/environment fallback wired into
+// cmd/slinit/main.go so a dinit → slinit switch keeps working
+// silently regardless of whether the operator has moved their hook
+// under /etc/slinit yet.
+func TestShutdownHookPathsIncludeDinitCompat(t *testing.T) {
+	want := []string{
+		"/etc/slinit/shutdown-hook",
+		"/lib/slinit/shutdown-hook",
+		"/etc/dinit/shutdown-hook",
+		"/lib/dinit/shutdown-hook",
+	}
+	if len(shutdownHookPaths) != len(want) {
+		t.Fatalf("shutdownHookPaths length = %d, want %d (paths: %v)",
+			len(shutdownHookPaths), len(want), shutdownHookPaths)
+	}
+	for i, p := range want {
+		if shutdownHookPaths[i] != p {
+			t.Errorf("shutdownHookPaths[%d] = %q, want %q", i, shutdownHookPaths[i], p)
+		}
+	}
+}
+
+// TestRunShutdownHookDinitFallback: slinit paths absent, dinit path
+// present → hook still runs. Regression against the pre-fix state
+// where a dinit migrant's hook was silently skipped.
+func TestRunShutdownHookDinitFallback(t *testing.T) {
+	dir := t.TempDir()
+	slinitPath := filepath.Join(dir, "etc-slinit-shutdown-hook") // won't exist
+	dinitPath := filepath.Join(dir, "etc-dinit-shutdown-hook")
+	marker := filepath.Join(dir, "hook-ran")
+	script := "#!/bin/sh\ntouch " + marker + "\n"
+	if err := os.WriteFile(dinitPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write dinit hook: %v", err)
+	}
+
+	origPaths := shutdownHookPaths
+	shutdownHookPaths = []string{slinitPath, dinitPath}
+	defer func() { shutdownHookPaths = origPaths }()
+
+	logger := logging.New(logging.LevelDebug)
+	if !runShutdownHook(service.ShutdownReboot, logger) {
+		t.Fatal("dinit-compat hook should have run and returned true")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("dinit hook marker not written: %v", err)
+	}
+}
+
+// TestRunShutdownHookSlinitWinsOverDinit: when both paths exist, the
+// slinit-native path is chosen. Guarantees dinit-compat doesn't
+// shadow a properly-installed slinit hook.
+func TestRunShutdownHookSlinitWinsOverDinit(t *testing.T) {
+	dir := t.TempDir()
+	slinitPath := filepath.Join(dir, "slinit-hook")
+	dinitPath := filepath.Join(dir, "dinit-hook")
+	marker := filepath.Join(dir, "which-ran")
+	slinitScript := "#!/bin/sh\necho slinit > " + marker + "\n"
+	dinitScript := "#!/bin/sh\necho dinit > " + marker + "\n"
+	if err := os.WriteFile(slinitPath, []byte(slinitScript), 0755); err != nil {
+		t.Fatalf("write slinit hook: %v", err)
+	}
+	if err := os.WriteFile(dinitPath, []byte(dinitScript), 0755); err != nil {
+		t.Fatalf("write dinit hook: %v", err)
+	}
+
+	origPaths := shutdownHookPaths
+	shutdownHookPaths = []string{slinitPath, dinitPath}
+	defer func() { shutdownHookPaths = origPaths }()
+
+	logger := logging.New(logging.LevelDebug)
+	if !runShutdownHook(service.ShutdownReboot, logger) {
+		t.Fatal("expected hook success")
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := string(data); got != "slinit\n" {
+		t.Errorf("hook winner = %q, want slinit (dinit path must not shadow)", got)
+	}
+}
+
 // runExecuteWithMocks runs Execute with a mocked reboot/hook/kill/sync
 // stack and returns whether sync + logShutdown ran. Used by the
 // SetSyncEnabled / SetWtmpEnabled tests below.
