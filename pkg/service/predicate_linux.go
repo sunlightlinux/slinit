@@ -42,6 +42,52 @@ func pathIsMountPoint(path string) (bool, string) {
 	return false, fmt.Sprintf("%q is not a mount point", path)
 }
 
+// bootCondActivePath is the kernel-cmdline snapshot to look for
+// slinit.cond=... in. Overridable at package level for tests that
+// mock a specific cmdline shape.
+var bootCondActivePath = "/proc/cmdline"
+
+// checkBootCond returns true when the operator booted with
+// slinit.cond=... on the kernel command line and the comma-separated
+// value list contains `name`. finit-parity for the
+// `finit.cond=foo,bar` factory/upgrade mode selector: services with
+// `condition-boot-cond = factory` only start when the operator
+// picked factory mode at boot. Multiple slinit.cond= tokens on the
+// same cmdline are all concatenated (matches finit's semantics).
+// Empty `name` never matches (guards against a config typo that
+// silently pins the service to "starts always").
+func checkBootCond(name string) (bool, string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, "condition-boot-cond: empty tag"
+	}
+	data, err := os.ReadFile(bootCondActivePath)
+	if err != nil {
+		return false, fmt.Sprintf("%s: %v", bootCondActivePath, err)
+	}
+	tokens := strings.Fields(string(data))
+	for _, t := range tokens {
+		// Accept both slinit.cond=... (native) and finit.cond=...
+		// (parity with a finit boot cmdline the operator may not
+		// have updated yet).
+		var value string
+		switch {
+		case strings.HasPrefix(t, "slinit.cond="):
+			value = t[len("slinit.cond="):]
+		case strings.HasPrefix(t, "finit.cond="):
+			value = t[len("finit.cond="):]
+		default:
+			continue
+		}
+		for _, v := range strings.Split(value, ",") {
+			if strings.TrimSpace(v) == name {
+				return true, ""
+			}
+		}
+	}
+	return false, fmt.Sprintf("slinit.cond= list lacks %q", name)
+}
+
 // kernelCmdlineContains looks for a whole-word token in /proc/cmdline.
 // systemd's ConditionKernelCommandLine matches either "key" presence or
 // "key=value" exactly; we do the same. An empty file means "no kernel

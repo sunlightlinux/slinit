@@ -1753,6 +1753,17 @@ form):
     (matches other **condition-\*** family); **assert-** form
     fails the start and cascades. Systemd's **ExecCondition=**.
 
+**condition-boot-cond**=*name*
+:   Match a value from the comma-separated **slinit.cond=** kernel-
+    command-line argument. `slinit.cond=factory,upgrade` sets two
+    boot conditions; a service with `condition-boot-cond = factory`
+    starts only in that mode. Used for factory / upgrade /
+    provisioning boot selection without editing service files.
+    Multiple **slinit.cond=** tokens on the same cmdline are all
+    merged. finit-parity: **finit.cond=** is also honoured so an
+    unchanged finit boot cmdline still triggers the right services
+    after a switch to slinit.
+
 Examples:
 
     # Skip the service on first boot (silent skip, dependents proceed):
@@ -1766,6 +1777,9 @@ Examples:
 
     # Only run if the kernel was booted with debug=1:
     condition-kernel-command-line = debug=1
+
+    # Only run in factory mode (operator booted with slinit.cond=factory):
+    condition-boot-cond = factory
 
 ## INITTAB (UTMPX)
 

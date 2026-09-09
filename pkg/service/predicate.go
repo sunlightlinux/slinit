@@ -65,6 +65,17 @@ const (
 	// (`test -f /foo && grep -q bar /etc/foo` etc.). Bounded 10s timeout
 	// so a hung check does not stall boot.
 	PredExecCondition
+
+	// finit-parity: PredBootCond matches a value from the
+	// comma-separated `slinit.cond=` kernel-cmdline argument. Used to
+	// select factory / upgrade / provisioning modes without editing
+	// service files — a service with `condition-boot-cond = factory`
+	// only starts when the operator boots with `slinit.cond=factory`
+	// (or any comma-list including `factory`). Distinct from
+	// PredKernelCommandLine (which matches whole tokens on
+	// /proc/cmdline) so an operator can layer both: a token-level
+	// check plus a comma-list mode selector.
+	PredBootCond
 )
 
 // execConditionTimeout caps how long the pre-flight command may run
@@ -168,6 +179,8 @@ func (p Predicate) String() string {
 		name = "cpu-pressure"
 	case PredIOPressure:
 		name = "io-pressure"
+	case PredBootCond:
+		name = "boot-cond"
 	case PredExecCondition:
 		// Rendered as `exec-condition` (not `condition-exec-*`) because
 		// systemd exposes this as its own directive, not as a member
@@ -311,6 +324,8 @@ func evalRaw(p Predicate) (bool, string) {
 		return checkPSIPressure("/proc/pressure/io", p.Param)
 	case PredExecCondition:
 		return checkExecCondition(p.Param)
+	case PredBootCond:
+		return checkBootCond(p.Param)
 	}
 	return false, fmt.Sprintf("unknown predicate kind %d", p.Kind)
 }
@@ -480,6 +495,8 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredCPUPressure, true
 	case "io-pressure":
 		return PredIOPressure, true
+	case "boot-cond":
+		return PredBootCond, true
 	}
 	return 0, false
 }
