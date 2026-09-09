@@ -1,6 +1,7 @@
 package process
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -9,6 +10,36 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// consoleActivePath is the kernel's list of active console tty names,
+// space-separated, in kernel-priority order. The LAST entry is the
+// console /dev/console redirects to and where oops messages land —
+// that's the one we pick when resolving the "@console" tty-path
+// sentinel. Overridable at package level so tests can point at a
+// fixture instead of the real sysfs entry.
+var consoleActivePath = "/sys/class/tty/console/active"
+
+// resolveConsolePath expands the finit-parity "@console" sentinel to
+// the /dev/tty* path the kernel currently uses as its primary
+// console. Returns an error when sysfs is unmounted or the file is
+// empty (kernel booted with `console=null` or every console blacklist-
+// ed) — no silent fallback because a getty pointed at the wrong tty
+// is worse than a service that fails loudly and can be fixed.
+func resolveConsolePath() (string, error) {
+	data, err := os.ReadFile(consoleActivePath)
+	if err != nil {
+		return "", fmt.Errorf("@console: read %s: %w", consoleActivePath, err)
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return "", fmt.Errorf("@console: %s is empty — kernel reports no active console", consoleActivePath)
+	}
+	// Kernel doc: "the console at the end of the list is the console
+	// where the kernel oops messages go" — matches /dev/console's
+	// redirect target and what an operator running a login prompt on
+	// "the console" would expect.
+	return "/dev/" + fields[len(fields)-1], nil
+}
 
 // setupTTY opens p.TTYPath (O_RDWR|O_NOCTTY) and applies every knob
 // the operator requested: VT_DISALLOCATE for /dev/ttyN, vhangup(),
@@ -32,10 +63,18 @@ func setupTTY(p ExecParams) (*os.File, error) {
 	if p.TTYPath == "" {
 		return nil, nil
 	}
-	if p.TTYVTDisallocate {
-		vtDisallocate(p.TTYPath)
+	ttyPath := p.TTYPath
+	if ttyPath == "@console" {
+		resolved, err := resolveConsolePath()
+		if err != nil {
+			return nil, err
+		}
+		ttyPath = resolved
 	}
-	fd, err := os.OpenFile(p.TTYPath, os.O_RDWR|syscall.O_NOCTTY, 0)
+	if p.TTYVTDisallocate {
+		vtDisallocate(ttyPath)
+	}
+	fd, err := os.OpenFile(ttyPath, os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return nil, err
 	}

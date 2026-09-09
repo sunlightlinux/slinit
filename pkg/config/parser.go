@@ -2696,8 +2696,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 	case "tty-path":
 		v := strings.TrimSpace(value)
-		if v != "" && !strings.HasPrefix(v, "/") {
-			return fmt.Errorf("tty-path: must be absolute, got %q", value)
+		// "@console" is a finit-parity sentinel that resolves at start
+		// time to the last (highest-priority) entry in
+		// /sys/class/tty/console/active — the same tty /dev/console
+		// redirects to. Lets a getty service avoid hard-coding
+		// tty1 vs ttyS0 across VGA/serial installs of the same image.
+		if v != "" && v != "@console" && !strings.HasPrefix(v, "/") {
+			return fmt.Errorf("tty-path: must be absolute or \"@console\", got %q", value)
 		}
 		desc.TTYPath = v
 	case "tty-columns", "tty-rows":

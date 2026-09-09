@@ -1805,7 +1805,18 @@ are set — a getty configures a specific tty and doesn't want
 `/dev/console` instead.
 
 **tty-path**=*path*
-:   Absolute path to a TTY device (e.g. `/dev/tty1`, `/dev/ttyS0`).
+:   Absolute path to a TTY device (e.g. `/dev/tty1`, `/dev/ttyS0`),
+    or the special sentinel **@console**. When set to **@console**,
+    slinit resolves the value at service-start time by reading
+    */sys/class/tty/console/active* and picking the last (highest-
+    priority) entry — the same tty */dev/console* redirects to and
+    where kernel oops messages land. Lets one service description
+    boot the right getty across VGA and serial installs of the same
+    image without patching per-target. If sysfs is unmounted or the
+    file is empty, the service fails to start rather than opening
+    the wrong tty. finit-parity (finit spawns a getty per console
+    when multiple are active — slinit resolves to the primary; run
+    a second service pointed at the other tty if both are needed).
 
 **tty-columns**=*N*, **tty-rows**=*N*
 :   Terminal winsize via *TIOCSWINSZ*. Both must be set together —

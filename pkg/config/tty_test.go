@@ -36,6 +36,21 @@ tty-reset = yes
 	}
 }
 
+// TestParseTTYPathAtConsole locks the finit-parity sentinel:
+// tty-path = @console must survive the absolute-path guard and
+// land as-is in TTYPath. Resolution happens at start time in
+// pkg/process; parser's job is just to accept it.
+func TestParseTTYPathAtConsole(t *testing.T) {
+	input := "type = process\ncommand = /sbin/agetty\ntty-path = @console\n"
+	desc, err := Parse(strings.NewReader(input), "svc", "test-file")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if desc.TTYPath != "@console" {
+		t.Errorf("tty-path = %q, want \"@console\" (unresolved sentinel)", desc.TTYPath)
+	}
+}
+
 // TestParseTTYRejectsBadValues catches typos before they silently
 // leave the TTY unconfigured. Relative paths, out-of-range winsize,
 // non-integer winsize all surface as errors at parse time.
