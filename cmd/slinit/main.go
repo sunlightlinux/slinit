@@ -629,6 +629,10 @@ func main() {
 					kOpts.Mode, kOpts.DebugShell, kOpts.ConfirmSpawn,
 					kOpts.CrashShell, kOpts.LogLevel)
 			}
+			if kOpts.RebootWatchdog {
+				shutdown.SetWatchdogReboot(true)
+				logger.Notice("slinit.reboot-watchdog: hardware WDT will drive final reset")
+			}
 		}
 		// Test hook for crash-shell (see cmd/slinit/panictest_*.go).
 		// No-op in production builds; when compiled with `-tags

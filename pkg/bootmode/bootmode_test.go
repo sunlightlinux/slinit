@@ -42,6 +42,7 @@ func TestParse(t *testing.T) {
 		{"slinit.confirm-spawn", "slinit.confirm-spawn", Options{ConfirmSpawn: true}},
 		{"slinit.crash-shell", "slinit.crash-shell", Options{CrashShell: true}},
 		{"slinit.debug legacy", "slinit.debug", Options{Debug: true}},
+		{"slinit.reboot-watchdog", "slinit.reboot-watchdog", Options{RebootWatchdog: true}},
 
 		// log-level KEY=VALUE.
 		{"log-level debug", "slinit.log-level=debug", Options{LogLevel: "debug"}},

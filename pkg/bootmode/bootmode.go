@@ -85,6 +85,13 @@ type Options struct {
 	// logging. Equivalent to LogLevel="debug" but kept separate so
 	// existing operators' muscle memory keeps working.
 	Debug bool
+	// RebootWatchdog arms /dev/watchdog with a short timeout on
+	// ShutdownReboot instead of relying on the kernel's reboot(2)
+	// syscall alone. Useful on embedded boards whose SoC reboot is
+	// unreliable (partial GPIO state, bootrom quirks) but whose WDT
+	// peripheral always produces a clean hardware reset. finit-parity
+	// (`reboot-watchdog = true` in Finit's global config).
+	RebootWatchdog bool
 }
 
 // Parse extracts slinit boot-mode settings from a raw kernel cmdline
@@ -106,6 +113,7 @@ type Options struct {
 //	  slinit.confirm-spawn   — ConfirmSpawn = true
 //	  slinit.crash-shell     — CrashShell = true
 //	  slinit.debug           — Debug = true (verbose logging, legacy)
+//	  slinit.reboot-watchdog — RebootWatchdog = true (WDT-driven reset)
 //	Key=value:
 //	  slinit.log-level=<lvl> — LogLevel = <lvl>
 func Parse(cmdline string) Options {
@@ -146,6 +154,8 @@ func Parse(cmdline string) Options {
 			opts.CrashShell = true
 		case "slinit.debug":
 			opts.Debug = true
+		case "slinit.reboot-watchdog":
+			opts.RebootWatchdog = true
 		case "slinit.log-level":
 			if hasValue {
 				opts.LogLevel = value

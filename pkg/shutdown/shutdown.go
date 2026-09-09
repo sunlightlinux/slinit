@@ -208,6 +208,22 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// forever — we detect that specific EINVAL and fall back to a
 	// normal reboot. This mirrors systemctl kexec's behavior.
 	rebootType := shutdownType
+	// finit-parity: when slinit.reboot-watchdog is armed on the
+	// kernel cmdline (or SetWatchdogReboot toggled the flag), arm the
+	// hardware WDT before the reboot(2) syscall so the peripheral
+	// resets the board when the syscall path is unreliable. WDT reset
+	// is reboot-shaped only (can't power off, halt, softreboot,
+	// kexec); other shutdown types fall through to the syscall path
+	// untouched.
+	if watchdogRebootEnabled && rebootType == service.ShutdownReboot {
+		if err := armWatchdogAndWait(logger); err != nil {
+			logger.Error("reboot-watchdog: %v — falling back to reboot(2) syscall", err)
+		}
+		// Fall through either way — either the WDT fired (we're
+		// gone) or it didn't (armWatchdogAndWait returned after the
+		// timeout window, or open/ioctl failed). reboot(2) is the
+		// safety net so a dead WDT doesn't wedge shutdown forever.
+	}
 	if err := rebootSystem(rebootType); err != nil {
 		if rebootType == service.ShutdownKexec && errors.Is(err, syscall.EINVAL) {
 			logger.Error("kexec reboot: no kernel pre-loaded (use `kexec -l <kernel>` before `slinitctl shutdown kexec`); falling back to normal reboot")
