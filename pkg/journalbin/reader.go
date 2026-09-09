@@ -20,8 +20,9 @@ import (
 // walks every object linearly, filters to ENTRY, and rebuilds the
 // journal.Event from item offsets → DATA payloads.
 type Reader struct {
-	f      *os.File
-	header *Header
+	f        *os.File
+	header   *Header
+	fileSize uint64
 }
 
 // OpenReader opens path read-only and validates the header. Returns
@@ -42,7 +43,29 @@ func OpenReader(path string) (*Reader, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("journalbin: header %s: %w", path, err)
 	}
-	return &Reader{f: f, header: h}, nil
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("journalbin: stat %s: %w", path, err)
+	}
+	return &Reader{f: f, header: h, fileSize: uint64(st.Size())}, nil
+}
+
+// checkBounds validates that a [off, off+size) window falls within
+// the file we opened. Overflow-safe: uses fileSize-off arithmetic
+// so a hostile Size near uint64.Max can't sneak past a naive
+// off+size > fileSize check. Every read path that trusts a size
+// field from disk must call this before allocating.
+func (r *Reader) checkBounds(off, size uint64) error {
+	if off > r.fileSize {
+		return fmt.Errorf("journalbin: offset %d past file end %d: %w",
+			off, r.fileSize, ErrObjectBounds)
+	}
+	if size > r.fileSize-off {
+		return fmt.Errorf("journalbin: obj at %d claims size %d past file end %d: %w",
+			off, size, r.fileSize, ErrObjectBounds)
+	}
+	return nil
 }
 
 // Close releases the underlying file. Idempotent.
@@ -131,6 +154,9 @@ func (r *Reader) entryRealtimeAt(off uint64) (uint64, error) {
 // API callers that already have offsets from SeekRealtime /
 // EntryOffsets and want the full event.
 func (r *Reader) ReadEntryAt(off uint64) (*journal.Event, error) {
+	if err := r.checkBounds(off, ObjectHeaderSize); err != nil {
+		return nil, err
+	}
 	var hdrBuf [ObjectHeaderSize]byte
 	if _, err := r.f.ReadAt(hdrBuf[:], int64(off)); err != nil {
 		return nil, fmt.Errorf("journalbin: read object header at %d: %w", off, err)
@@ -141,6 +167,9 @@ func (r *Reader) ReadEntryAt(off uint64) (*journal.Event, error) {
 	}
 	if oh.Type != ObjectEntry {
 		return nil, fmt.Errorf("journalbin: expected ENTRY at %d, got %s", off, oh.Type)
+	}
+	if err := r.checkBounds(off, oh.Size); err != nil {
+		return nil, err
 	}
 	return r.readEntryAt(off, oh.Size)
 }
@@ -153,11 +182,7 @@ func (r *Reader) Iter(fn func(*journal.Event) bool) error {
 	// concurrently appending, we simply won't see events past our
 	// initial read horizon — the reader semantics match what
 	// systemd's sd_journal_next does with a static-file view.
-	st, err := r.f.Stat()
-	if err != nil {
-		return fmt.Errorf("journalbin: stat: %w", err)
-	}
-	fileSize := uint64(st.Size())
+	fileSize := r.fileSize
 
 	off := uint64(HeaderSize)
 	for off < fileSize {
@@ -280,6 +305,9 @@ func (r *Reader) readEntryAt(off, size uint64) (*journal.Event, error) {
 // KEY=value payload bytes (without the leading DATA header + hash
 // chain metadata).
 func (r *Reader) readDataPayloadAt(off uint64) ([]byte, error) {
+	if err := r.checkBounds(off, ObjectHeaderSize); err != nil {
+		return nil, err
+	}
 	hdrBuf := make([]byte, ObjectHeaderSize)
 	if _, err := r.f.ReadAt(hdrBuf, int64(off)); err != nil {
 		return nil, fmt.Errorf("journalbin: read data header at %d: %w", off, err)
@@ -294,6 +322,16 @@ func (r *Reader) readDataPayloadAt(off uint64) ([]byte, error) {
 	const dataFixed = ObjectHeaderSize + 8 + 8 + 8 + 8 + 8 + 8
 	if oh.Size < dataFixed {
 		return nil, fmt.Errorf("journalbin: DATA at %d size %d < fixed %d", off, oh.Size, dataFixed)
+	}
+	// Guard the whole [off, off+oh.Size) window before trusting the
+	// declared size to allocate — the item's dataOff comes from an
+	// ENTRY item pointer that Iter doesn't validate individually, so
+	// a hostile file can point at a bogus DATA header with Size
+	// approaching uint64.Max and make(payloadLen) would panic with
+	// "makeslice: len out of range" (FuzzJournalBinaryOpenReader
+	// find, seed c959fdb198755a8a).
+	if err := r.checkBounds(off, oh.Size); err != nil {
+		return nil, err
 	}
 	payloadLen := oh.Size - dataFixed
 	if payloadLen == 0 {
