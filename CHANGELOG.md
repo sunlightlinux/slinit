@@ -17,6 +17,228 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.9] — 2026-09-10
+
+Finit-parity release. A fresh look at [finit](https://github.com/troglobit/finit)
+5.0-rc1 as a seventh upstream surfaced nine actionable items;
+eight ship here (one — the `conflicts:` directive — deliberately
+skipped: no user demand, no equivalent in dinit / runit / OpenRC,
+and a real implementation costs 3-5× the audit's estimate once
+state-machine integration is priced in). The batch pulls in
+several long-missing ergonomics: initramfs → real-root
+switch-root, boot-mode selection via kernel cmdline, legacy
+`/etc/rc.local` + Debian-style `/etc/network/interfaces`
+integration, and a small pkg/hooks framework that gives operators
+a scriptable extension point at every lifecycle boundary. Also
+folds in one fuzz-found `makeslice` panic (Xeon 40-thread run)
+and closes a dinit-migrant UX seam.
+
+### Added
+
+- **`slinitctl switch-root NEWROOT [INIT]`** — new pkg/switchroot
+  package + control opcode `CmdSwitchRoot = 64`. Enables slinit
+  as an initramfs init: the initramfs does the platform-specific
+  pre-mount work (decrypt LUKS, assemble LVM, wait for NBD /
+  iSCSI), then hands off to slinit-in-newroot via a control-
+  socket call. Precheck validates the request cleanly before
+  the point of no return (PID 1, newroot exists + is a real
+  mount point, init file exists / executable / regular).
+  Actual switch stops services, kills processes, moves /dev, /
+  proc, /sys, /run into the new root via `MS_MOVE`, deletes the
+  initramfs contents when `/` is ramfs / tmpfs, chroots, and
+  `execve`s the new init with PID 1 preserved. finit-parity for
+  `initctl switch_root`.
+
+- **`condition-boot-cond = <name>`** service directive +
+  `slinit.cond=foo,bar` kernel-cmdline selector. Enables
+  factory / upgrade / provisioning boot modes without editing
+  service files. `slinit.cond=factory` sets one tag,
+  `slinit.cond=a,b,c` sets three; multiple `slinit.cond=` tokens
+  are merged. `finit.cond=` also honoured as a parity shim for
+  operators with an unchanged finit boot cmdline. Reuses the
+  existing predicate framework — 8 tests, all safe for CI.
+
+- **`slinit.reboot-watchdog` kernel-cmdline** — arms `/dev/
+  watchdog` with a short timeout (10 s default, clamped [1, 300]
+  s) before `reboot(2)` on ShutdownReboot. For embedded boards
+  whose SoC reboot syscall is unreliable (bootrom quirks,
+  partial GPIO state) but whose WDT peripheral always produces a
+  clean reset. Uses raw `syscall.Open` + `WDIOC_SETTIMEOUT`
+  ioctl; fd stays open (no "V" magic close) so drivers without
+  `CONFIG_WATCHDOG_NOWAYOUT` don't disarm on close. Falls
+  through to `reboot(2)` if open or ioctl fails.
+
+- **`slinit.reboot-delay=<N>` kernel-cmdline** — inserts an
+  N-second pause between the shutdown-hook and the `reboot(2)`
+  syscall. Clamped to [0, 60]. For boards whose reset path
+  needs quiescent-bus time or external hardware needs to see
+  the "shutdown initiated" signal before taking over.
+
+- **`slinitctl suspend [STATE]`** — new opcode `CmdSuspend = 65`
+  + CLI subcommand. Writes STATE (default "mem") to
+  `/sys/power/state`; validates against the kernel's own
+  {freeze, standby, mem, disk} whitelist AND against the
+  runtime supported-list before the write, so unsupported
+  targets produce a clear error instead of an opaque `EINVAL`.
+  Blocks the client until wake (freeze / standby / mem).
+  finit-parity for `initctl suspend`.
+
+- **`slinitctl edit NAME`** — client-only helper (no new
+  opcode). Resolves the on-disk service description via
+  `CmdQueryServiceDscDir` + `CmdLoadService`, opens it in
+  `$VISUAL` / `$EDITOR` / `vi` (systemctl edit precedence),
+  triggers a reload on successful editor exit. Non-zero editor
+  exit aborts without touching the daemon — safer than the
+  shell idiom `vi FILE && slinitctl reload NAME` which fires
+  reload on any zero exit including `:q!` saves. finit-parity
+  for `initctl edit NAME`.
+
+- **`tty-path = @console` sentinel** — resolves at service-
+  start time to the last entry in
+  `/sys/class/tty/console/active` (the tty `/dev/console`
+  redirects to). One service definition boots the right getty
+  across VGA and serial installs of the same image. Fails
+  loudly when sysfs is unmounted or the file is empty — no
+  silent fallback to the wrong device.
+
+- **`pkg/hooks` — operator-hook scripts at
+  `/etc/slinit/hooks.d/<point>/*`**. Executable files in the
+  per-point subdirectory run in name-sorted order, one at a
+  time, 30 s per-script timeout. Non-executable files are
+  skipped silently. Failures are logged but non-fatal (hooks
+  are best-effort augmentation, not gates). Points fired:
+  **system-up** when the boot service reaches STARTED,
+  **system-down** at the top of shutdown before teardown,
+  **switch-root** at the top of the initramfs transition.
+  Script output routed through slinit's Info-level logger so
+  it doesn't race the console with the interactive tty.
+  `SLINIT_HOOK_POINT` exposed in the child env so a shared
+  script can branch on invocation path.
+
+- **`/etc/rc.local` + `/etc/rc.local.d/*` (finit-parity
+  runparts)**. Zero-config end-of-boot escape hatch for legacy
+  SysV / Debian / Alpine / Slackware operators. If executable,
+  run once at end-of-boot right after the `system-up` hook
+  point. `/etc/rc.local.d/*` drop-ins fire first (matching
+  Debian rc-local.service convention), then the monolithic
+  script. 5-minute per-script timeout, `SLINIT_HOOK_POINT=
+  rc-local` in the env.
+
+- **Debian / BusyBox `/etc/network/interfaces` integration** —
+  new `pkg/network` with two functions: `BringUpLoopback()`
+  (idempotent `SIOCSIFFLAGS` ioctl on `lo`, brought up at
+  very early boot so daemons binding to `127.0.0.1` don't
+  wait for an operator-declared network service) and
+  `RunIfup(up, logger)` (fork+exec `ifup -a` at boot end,
+  `ifdown -a --force` / `-a -f` at shutdown, honouring
+  `ifquery` presence to distinguish Debian ifupdown from
+  BusyBox). Silent no-op when either prerequisite is missing
+  — hosts using networkd / dhcpcd / NetworkManager / manual
+  services aren't touched. 90 s per-invocation timeout.
+  finit-parity for `void networking(int updown)` in finit's
+  `src/helpers.c`.
+
+- **`no-boot-marker = yes` directive** — suppresses the
+  `[ OK ] name` boot-console line for milestone-style services
+  whose completion is implied by the tree underneath (a
+  `depends-on: tty` milestone reached STARTED after bash
+  spawned a login prompt would otherwise print its marker
+  after the prompt, cluttering the console). Main log still
+  records the transition.
+
+- **Server-side shutdown announcement on `/dev/console`**. On
+  every shutdown path (control socket, slinit-shutdown binary,
+  SIGINT/SIGTERM relay, `reboot(2)`-syscall trigger), slinit
+  now emits `[HH:MM:SS] WARN: Shutting down slinit (kind)...`
+  before the `[STOPPD]` cascade begins. Level is Warn so it
+  clears the boot-console filter that `cmd/slinit` sets to
+  LevelWarn in systemMode — Notice would be silently dropped
+  there, defeating the point of an operator-visible
+  announcement.
+
+- **`pkg/shutdown` shutdown-hook fallback for dinit
+  migrants.** Slinit's shutdown-hook lookup now also checks
+  `/etc/dinit/shutdown-hook` and `/lib/dinit/shutdown-hook`
+  after its own paths, mirroring the `/etc/dinit/environment`
+  fallback already wired into `cmd/slinit/main.go`. A
+  dinit → slinit migration keeps a legacy hook working
+  silently. Slinit-native paths still win when both exist.
+
+- **README lists finit as a seventh upstream** alongside
+  dinit, runit, s6-linux-init, OpenRC, upstart, systemd.
+  Per-upstream section names the concrete features slinit
+  carried over.
+
+- **Demo integrations**: three new artefacts under `demo/` so a
+  fresh QEMU boot exercises the new surfaces without editing
+  anything:
+  - `services/factory-mode-demo` — boot-cond gate, STOPPED
+    unless the operator boots with `slinit.cond=factory`.
+  - `services/tty-autoconsole` — @console sentinel demo,
+    manual so it doesn't fight the interactive tty.
+  - `hooks.d/{system-up,system-down}/50-*` — two
+    echo-marker scripts.
+  - `/etc/rc.local` marker script installed by `build.sh`.
+
+### Fixed
+
+- **`pkg/journalbin`: DATA/ENTRY object size bounds checked
+  before `makeslice`.** Fuzz found a crash in
+  `readDataPayloadAt` after 82 s / 1.8 M execs on a 40-thread
+  Xeon: a hostile item pointer directing at a DATA header with
+  `Size` approaching `uint64.Max` made `payloadLen = oh.Size -
+  dataFixed` remain huge, and `make([]byte, payloadLen)`
+  tripped Go's `makeslice: len out of range` panic — process
+  termination, kernel panic if PID 1. Iter already had an
+  overflow-safe check for its top-level walk (v2.2.6); this
+  extends the same pattern to `readDataPayloadAt` (called via
+  ENTRY item pointers that Iter doesn't validate individually)
+  and `ReadEntryAt` (public path, raw caller-supplied offset).
+  Reader now caches file size at Open + a shared
+  `checkBounds(off, size)` helper enforces overflow-safe
+  bounds. Regression tests reproduce the crash shape (DATA
+  header with `Size = 1<<62`) + the past-EOF path.
+
+- **`slinit-journald` service teardown honours
+  `slinit.reboot-watchdog`** — the WDT-arm path is guarded by
+  `rebootType == ShutdownReboot` so poweroff / halt /
+  softreboot / kexec fall through untouched.
+
+### Changed
+
+- **Boot-console UX: login prompt now lands on its own line.**
+  Prior demo boot output showed hook / rc.local / ifup
+  wrapper output interleaving character-by-character with
+  bash's prompt on `/dev/console`. Three layers of change
+  land the fix:
+  1. Hook / rc.local / ifup stdout+stderr are captured
+     through slinit's Info-level logger instead of raw
+     `os.Stdout`. Info is below the boot-console filter
+     threshold (Warn), so script markers land in the journal
+     — `slinitctl catlog` and `slinit-journalctl` surface
+     them post-hoc — but no longer race the console.
+  2. Child process groups (`Setpgid = true` + `cmd.Cancel =
+     kill(-pid, SIGKILL)` + 2 s WaitDelay) — orphaned
+     grandchildren holding the stdout pipe past deadline
+     can't wedge cleanup. Cost: three extra lines per exec
+     site; benefit: `dhclient` / `network-restart` scripts
+     that background subshells no longer hang the boot.
+  3. `pkg/hooks` and `pkg/network` tolerate `ECHILD` on
+     `cmd.Wait()`: slinit-as-PID-1 generic-reaps every
+     zombie, and pipe-drain-then-Wait widens the race window
+     where the reaper wins. Under the best-effort hook
+     contract, ECHILD is treated as success. Exit status is
+     lost, but hook failures never gated boot anyway.
+
+- **`shutdown.Execute` gains an operator-visible
+  `Shutting down slinit (kind)...` line** at Warn level
+  ahead of the `[STOPPD]` cascade — served by
+  `initiateShutdown` in `pkg/eventloop`.
+
+- **`slinit-journalctl` + Reader tolerate `ECHILD`** — no
+  spurious "no child processes" warnings on hook / rc.local
+  / ifup child completion in PID-1 mode.
+
 ## [2.2.8] — 2026-09-08
 
 Documentation + upstream-parity pass. Closes the two loose ends
