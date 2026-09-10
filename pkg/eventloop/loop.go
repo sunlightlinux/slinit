@@ -75,6 +75,15 @@ type EventLoop struct {
 	// the operator-visible state is gone. Returning is best-effort:
 	// errors are logged by the callback and shutdown continues.
 	OnPreShutdown func(shutdownType service.ShutdownType)
+
+	// OnShutdownAnnounce fires at the very TOP of initiateShutdown,
+	// before the "Shutting down slinit (...)" WARN log line. main.go
+	// wires this to unmute the catch-all console tee so the WARN +
+	// subsequent teardown output is visible on /dev/console again.
+	// Distinct from OnPreShutdown, which fires later — after the
+	// WARN and after emergency timers are armed. Best-effort;
+	// panics are recovered by the caller's outer defer.
+	OnShutdownAnnounce func()
 }
 
 // New creates a new EventLoop.
@@ -467,6 +476,13 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	el.shutdownInitiated = true
 	el.shutdownType = shutdownType
 	el.shutdownSignals.Store(1)
+	// Call the "shutdown announced" hook FIRST, before the WARN log
+	// line — main.go uses this to unmute the catch-all console tee
+	// so operators see the "Shutting down slinit (...)" announcement
+	// AND the [STOPPD] cascade on /dev/console.
+	if el.OnShutdownAnnounce != nil {
+		el.OnShutdownAnnounce()
+	}
 	// Announce on the operational log (surfaces on /dev/console when
 	// slinit is PID 1) so operators watching the serial line see that
 	// PID 1 caught the request before the [STOPPD] cascade begins.

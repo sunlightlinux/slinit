@@ -1486,6 +1486,17 @@ func main() {
 			}
 		}
 
+		// Unmute the catch-all's console tee at the very start of
+		// shutdown, before the "Shutting down slinit (...)" WARN
+		// prints. Symmetric to the mute set at OnBootReady: boot →
+		// mute on, runtime silent, shutdown → mute off again so
+		// operators see the announcement + [STOPPD] cascade.
+		loop.OnShutdownAnnounce = func() {
+			if cal != nil {
+				cal.SetConsoleMuted(false)
+			}
+		}
+
 		// Capture operator-visible intent for soft-reboot. The new
 		// slinit binary picks this up via --restore-from-snapshot
 		// (appended to argv inside SoftReboot below).
@@ -1509,6 +1520,9 @@ func main() {
 			// Switch the production boot console to teardown markers
 			// ("[STOPPD] name") for the stop phase. No-op when the boot
 			// console is disabled (verbose mode / not system mode).
+			// Catch-all unmute happens earlier via OnShutdownAnnounce
+			// (fires before the "Shutting down slinit" WARN), so by
+			// now the console tee is already back on.
 			logger.SetShutdownConsole(true)
 			if st != service.ShutdownSoftReboot {
 				return
