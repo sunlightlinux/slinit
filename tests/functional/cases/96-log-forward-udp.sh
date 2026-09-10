@@ -45,8 +45,22 @@ if ! grep -q 'SELF_TEST' "$LOG_OUT" 2>/dev/null; then
     test_summary
     return 0
 fi
-# Clear the self-test so it doesn't contaminate real assertions.
+# BusyBox nc "-u -l" locks onto the first datagram's source port
+# after receiving (implicit connect), then drops packets from other
+# senders. The self-test's ephemeral port isn't the slinit
+# forwarder's port, so leaving this nc running would silently
+# ignore slinit's real datagrams. Kill + respawn nc so it re-arms
+# fresh for the actual test.
+kill "$NC_PID" 2>/dev/null
+wait "$NC_PID" 2>/dev/null
 : > "$LOG_OUT"
+if nc -h 2>&1 | grep -q -- '-k'; then
+    nc -u -l -p "$LOG_PORT" -k > "$LOG_OUT" 2>/dev/null &
+else
+    nc -u -l -p "$LOG_PORT" > "$LOG_OUT" 2>/dev/null &
+fi
+NC_PID=$!
+sleep 1
 
 cat > "/etc/slinit.d/$SVC" <<EOF
 type = process
