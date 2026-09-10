@@ -30,6 +30,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/recovery"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/hooks"
+	"github.com/sunlightlinux/slinit/pkg/network"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
 	"github.com/sunlightlinux/slinit/pkg/switchroot"
 	"github.com/sunlightlinux/slinit/pkg/snapshot"
@@ -599,6 +600,17 @@ func main() {
 		if err := shutdown.InitPID1(logger); err != nil {
 			logger.Error("PID 1 initialization warning: %v", err)
 		}
+		// finit-parity: bring loopback up at very early boot so
+		// daemons that bind to 127.0.0.1 (postgresql / redis /
+		// dbus on systems configured to use the unix-abstract
+		// namespace / sshd's LoginGraceTime tarpit) don't have
+		// to wait for an operator-declared network service. Kernel
+		// pre-populates 127.0.0.1/8 on lo; we only need to flip
+		// IFF_UP via SIOCSIFFLAGS. Best-effort — logged and
+		// continued on failure, matches finit's helper.
+		if err := network.BringUpLoopback(); err != nil {
+			logger.Warn("loopback bring-up: %v (continuing)", err)
+		}
 		// InitPID1's setupConsole Dup2s fd 1/2 to /dev/console, which
 		// breaks the catch-all redirect set up earlier. Re-attach so
 		// every subsequent log line goes through the pipe — this keeps
@@ -857,6 +869,15 @@ func main() {
 		prev := serviceSet.OnBootReady
 		serviceSet.OnBootReady = func() {
 			hooks.Run("system-up", logger)
+			// finit-parity Debian/BusyBox network integration:
+			// if /etc/network/interfaces exists AND `ifup` is on
+			// PATH, fork+exec `ifup -a` at end-of-boot. Silent
+			// no-op when either prerequisite is missing. Fires
+			// before rc.local so a legacy script inheriting the
+			// "network is up" invariant sees it.
+			if err := network.RunIfup(true, logger); err != nil {
+				logger.Warn("ifup: %v (continuing)", err)
+			}
 			// Legacy SysV/Debian/Alpine/Slackware compat: /etc/rc.local
 			// + /etc/rc.local.d/* fire at end-of-boot when executable.
 			// Zero config required — matches Finit's "no setting in
@@ -1468,6 +1489,13 @@ func main() {
 			// hook's stdout lands in the operational log format
 			// operators expect, not the [STOPPD] teardown format.
 			hooks.Run("system-down", logger)
+			// Symmetric to the boot-time ifup: bring interfaces
+			// down cleanly if the operator's config-file setup
+			// used the ifupdown pipeline. Runs after the operator
+			// hooks so their scripts see the network still up.
+			if err := network.RunIfup(false, logger); err != nil {
+				logger.Warn("ifdown: %v (continuing)", err)
+			}
 			// Switch the production boot console to teardown markers
 			// ("[STOPPD] name") for the stop phase. No-op when the boot
 			// console is disabled (verbose mode / not system mode).

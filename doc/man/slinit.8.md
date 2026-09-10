@@ -615,6 +615,18 @@ command line.
 */etc/slinit/environment*
 :   Default environment file for system mode.
 
+*/etc/network/interfaces*
+:   Debian/BusyBox network integration. When slinit runs as PID 1
+    and this file exists AND **ifup**(8) is on PATH, slinit
+    fork+execs `ifup -a` at end-of-boot (after the **system-up**
+    hook point) and `ifdown -a --force` (or `-a -f` on BusyBox) at
+    shutdown (before service teardown). Silent no-op when either
+    prerequisite is missing — hosts using **networkd** /
+    **dhcpcd** / **NetworkManager** / manual service files aren't
+    affected. finit-parity. Loopback is brought up unconditionally
+    via *SIOCSIFFLAGS* at very early boot so daemons that bind
+    to *127.0.0.1* don't need to wait for network config.
+
 */etc/rc.local*, */etc/rc.local.d/\**
 :   Legacy SysV/Debian/Alpine/Slackware compat: if executable, run
     once at end-of-boot right after the **system-up** hook point.
