@@ -857,6 +857,13 @@ func main() {
 		prev := serviceSet.OnBootReady
 		serviceSet.OnBootReady = func() {
 			hooks.Run("system-up", logger)
+			// Legacy SysV/Debian/Alpine/Slackware compat: /etc/rc.local
+			// + /etc/rc.local.d/* fire at end-of-boot when executable.
+			// Zero config required — matches Finit's "no setting in
+			// finit.conf" contract. Ordering: hooks.d/system-up/*
+			// first (modern operator escape hatch), rc.local.d/*
+			// second, rc.local monolithic script last.
+			hooks.RunRcLocal(logger)
 			if prev != nil {
 				prev()
 			}

@@ -99,6 +99,8 @@ works as-is.
 
 `/etc/slinit/hooks.d/` also ships two operator-hook examples: `system-up/50-hello` fires when the boot service reaches STARTED, `system-down/50-goodbye` fires at the top of shutdown before teardown. Both are trivial `echo` scripts that surface a marker line on the console so the hook mechanism is visible without editing anything.
 
+`/etc/rc.local` ships as a trivial marker script too (finit-parity for the legacy SysV/Debian/Alpine one-shot escape hatch). Fires at end-of-boot after the `system-up` hook point — look for the `[rc.local] fired ...` line right after the modern hook marker.
+
 ## Interactive Commands
 
 Run these from the shell inside the VM:

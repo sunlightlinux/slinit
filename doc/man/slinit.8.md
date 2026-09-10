@@ -615,6 +615,16 @@ command line.
 */etc/slinit/environment*
 :   Default environment file for system mode.
 
+*/etc/rc.local*, */etc/rc.local.d/\**
+:   Legacy SysV/Debian/Alpine/Slackware compat: if executable, run
+    once at end-of-boot right after the **system-up** hook point.
+    Zero config — matches finit's contract. */etc/rc.local.d/\**
+    drop-ins fire first (name-sorted, matches Debian rc-local.
+    service convention), then the monolithic */etc/rc.local*.
+    Per-script 5-minute timeout, non-fatal failures logged, output
+    on the console. `SLINIT_HOOK_POINT=rc-local` in the env so a
+    shared script can branch on the invocation path.
+
 */etc/slinit/hooks.d/&lt;point&gt;/\**
 :   Operator-supplied scripts run at defined lifecycle points.
     Executable regular files only; ordered lexically by filename

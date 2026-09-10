@@ -333,6 +333,21 @@ if [ -d "${SCRIPT_DIR}/hooks.d" ]; then
     cp -R "${SCRIPT_DIR}/hooks.d/." "${ROOTFS_DIR}/etc/slinit/hooks.d/"
 fi
 
+# Legacy SysV/Debian/Alpine compat surface: /etc/rc.local + /etc/
+# rc.local.d/*. Slinit's built-in rc.local runner fires them at
+# end-of-boot after the modern hooks.d/system-up/* scripts. The
+# demo ships a trivial marker so operators can verify the
+# compat surface works without editing anything.
+cat > "${ROOTFS_DIR}/etc/rc.local" <<'RCLOCALEOF'
+#!/bin/sh
+# /etc/rc.local -- legacy SysV/Debian/Alpine escape hatch for
+# one-shot boot tasks. Fired by slinit at end-of-boot when
+# executable. finit-parity for the zero-config compat surface.
+echo "[rc.local] fired (point=${SLINIT_HOOK_POINT}) at $(date +%H:%M:%S)"
+exit 0
+RCLOCALEOF
+chmod 0755 "${ROOTFS_DIR}/etc/rc.local"
+
 # OpenRC compat: /etc/rc.conf and /etc/conf.d/<svc> are sourced by the
 # init.d wrapper before every action, so operators migrating from
 # OpenRC keep their tunables.
