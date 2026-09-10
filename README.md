@@ -5,7 +5,8 @@ A service manager and init system written in Go. The core is a port of
 from [runit](http://smarden.org/runit/),
 [s6-linux-init](https://skarnet.org/software/s6-linux-init/),
 [OpenRC](https://github.com/OpenRC/openrc),
-[upstart](https://code.launchpad.net/upstart), and
+[upstart](https://code.launchpad.net/upstart),
+[finit](https://github.com/troglobit/finit), and
 [systemd](https://systemd.io/) (relevant service-manager subset —
 including a full `journalctl` (65/65 flag parity) + `journald` binary
 format with FSS sealing; D-Bus object model, logind session/seat
@@ -15,7 +16,7 @@ networkd/resolved/homed remain deliberately out of scope).
 slinit can run as PID 1 (init system) or as a user-level service
 manager. It uses a dinit-compatible configuration format and manages
 services with dependency tracking, automatic restart, and process
-lifecycle management. Admins moving from any of the six upstreams
+lifecycle management. Admins moving from any of the seven upstreams
 should keep their muscle memory:
 
 - **dinit**: service-description format, dep types, state machine, and
@@ -38,6 +39,19 @@ should keep their muscle memory:
   `author`/`version`/`usage`, `apparmor-load`/`apparmor-switch`,
   `debug`, `script ... end script`, `start-on-path-*` activation,
   `<service>.override` drop-ins, `slinitctl reset-env` / `reload-all`.
+- **finit**: `slinitctl switch-root NEWROOT [INIT]` for the
+  initramfs → real-root transition (unlocks LUKS/LVM/NBD/iSCSI
+  boot on any distro shipping slinit as PID 1), hardware-
+  watchdog-driven reboot (`slinit.reboot-watchdog` kernel-cmdline
+  flag — final reset via `/dev/watchdog` for embedded boards
+  whose SoC `reboot(2)` is unreliable), `tty-path = @console`
+  sentinel that resolves at start time to
+  `/sys/class/tty/console/active` (single service definition
+  boots the right getty across VGA and serial images), and
+  `slinit.cond=foo,bar` kernel-cmdline boot-mode selector
+  (`condition-boot-cond = factory` gates services on
+  factory / upgrade / provisioning mode without editing
+  service files).
 - **systemd**: ~250 config directives across five deep-scan passes
   covering v260 through v262-devel. Full clusters: declarative
   start predicates (~35 `condition-*` / `assert-*`, including
