@@ -1,0 +1,17 @@
+# factory-mode-demo -- boot-cond gated service demo
+# Only starts when the operator boots with `slinit.cond=factory`
+# (or a comma list including factory, e.g. `slinit.cond=factory,verify`).
+# On a normal demo boot the service loads but the condition-boot-cond
+# check fails silently, so it never brings the process up and appears
+# as STOPPED in `slinitctl list`.
+#
+# Try (from the host):
+#   ./run.sh                         # boots without the cond, service stays STOPPED
+#   ./run.sh SLINIT_ARGS='slinit.cond=factory'  # kernel cmdline sets factory tag
+#                                    # now the service starts and prints the marker
+type = process
+command = /bin/sh -c "echo '[factory-mode-demo] FACTORY MODE active — would run factory reset here'; sleep 60"
+condition-boot-cond = factory
+restart = no
+depends-on: system-init
+@meta enable-via all-services

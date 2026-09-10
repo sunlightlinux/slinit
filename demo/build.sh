@@ -323,6 +323,16 @@ mkdir -p "${ROOTFS_DIR}/etc/slinit.d"
 # slinit's loader skips directories, so they don't clash with service files.
 cp -R "${SCRIPT_DIR}/services/." "${ROOTFS_DIR}/etc/slinit.d/"
 
+# Bootstrap hook scripts (/etc/slinit/hooks.d/<point>/*). Each is a
+# small shell script slinit spawns at the corresponding lifecycle
+# point (system-up when the boot service reaches STARTED,
+# system-down at the top of shutdown before teardown). Executable
+# bit preserved by cp -R.
+if [ -d "${SCRIPT_DIR}/hooks.d" ]; then
+    mkdir -p "${ROOTFS_DIR}/etc/slinit/hooks.d"
+    cp -R "${SCRIPT_DIR}/hooks.d/." "${ROOTFS_DIR}/etc/slinit/hooks.d/"
+fi
+
 # OpenRC compat: /etc/rc.conf and /etc/conf.d/<svc> are sourced by the
 # init.d wrapper before every action, so operators migrating from
 # OpenRC keep their tunables.

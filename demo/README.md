@@ -94,6 +94,10 @@ works as-is.
 | openrc-initd-demo | scripted | `/etc/init.d/openrc-initd-demo` OpenRC-style: `#!/sbin/openrc-run` shebang, `depend() { need X; after Y; }` extracted by the sandbox parser |
 | journal-demo  | process   | `slinit-journald` persistent daemon (Phase B binary format + FSS sealing; writes `/run/slinit-journal/*.journal` with `.jsonl` fallback via `--format=jsonl`). Try `slinit-journalctl -n 20` / `-f` / `-u hello` / `-o json` / `--list-boots` from the demo shell; add `--file /run/slinit-journal/*.journal --verify` to walk the FSS TAG chain. FSS key at `/etc/slinit/journal-key` (minted at initramfs-build time). The `journalctl` name is a symlink to `slinit-journalctl` for muscle-memory compat. |
 | persist-journal-mount | scripted | Formats + mounts the virtio disk `/dev/vda` that `demo/run.sh --persist` provisions, so journal writes land on a persistent backing store instead of tmpfs. Manual (`manual=yes`), fires only when `--persist` is passed. Multiple `demo/run.sh --persist` invocations accumulate boots in `slinit-journalctl --list-boots`. |
+| factory-mode-demo | process | finit-parity `condition-boot-cond` demo: only starts when the kernel cmdline carries `slinit.cond=factory` (or a comma list including `factory`). Boot without the flag → service STOPPED; boot with `slinit.cond=factory` on the kernel cmdline → service STARTED with a marker line on the console. |
+| tty-autoconsole | process | finit-parity `tty-path = @console` demo: the sentinel resolves at start time to the last entry in `/sys/class/tty/console/active` (the same tty `/dev/console` redirects to). `manual=yes` so it doesn't fight the interactive `tty` service; run `slinitctl start tty-autoconsole` to see it print the resolved device. |
+
+`/etc/slinit/hooks.d/` also ships two operator-hook examples: `system-up/50-hello` fires when the boot service reaches STARTED, `system-down/50-goodbye` fires at the top of shutdown before teardown. Both are trivial `echo` scripts that surface a marker line on the console so the hook mechanism is visible without editing anything.
 
 ## Interactive Commands
 

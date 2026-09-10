@@ -1,0 +1,22 @@
+# tty-autoconsole -- demo of the @console tty-path sentinel
+# Instead of hard-coding /dev/tty1 or /dev/ttyS0, tty-path=@console
+# resolves at start time to the last (highest-priority) entry in
+# /sys/class/tty/console/active — the same tty /dev/console redirects
+# to and where kernel oops messages land.
+#
+# One service definition boots the "right" tty across:
+#   - a VGA-only VM (console=tty0)     → resolves to /dev/tty0
+#   - a serial-console VM (console=ttyS0) → resolves to /dev/ttyS0
+#   - a demo QEMU boot (nographic)     → resolves to /dev/ttyS0
+#
+# Manual = yes so it doesn't fight the interactive `tty` service for
+# the console. Operator triggers it via:
+#   slinitctl start tty-autoconsole
+# then reads the log to see which tty was resolved.
+type = process
+command = /bin/sh -c "printf '[tty-autoconsole] resolved tty = %s\\n' \"$(readlink -f /proc/self/fd/0)\"; sleep 30"
+tty-path = @console
+manual = yes
+restart = no
+depends-on: system-init
+@meta enable-via all-services

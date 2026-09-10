@@ -1,0 +1,9 @@
+#!/bin/sh
+# demo/hooks.d/system-up/50-hello -- fires when the boot service
+# reaches STARTED (all bootstrap services are up). Slinit sets
+# SLINIT_HOOK_POINT in the environment; scripts can share code
+# across points and branch on that.
+#
+# This one is intentionally trivial: prove the hook fires + carry
+# an obvious marker on /dev/console during boot.
+echo "[hook] system-up fired (point=${SLINIT_HOOK_POINT}) at $(date +%H:%M:%S)"

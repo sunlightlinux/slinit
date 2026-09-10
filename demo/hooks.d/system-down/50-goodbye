@@ -1,0 +1,10 @@
+#!/bin/sh
+# demo/hooks.d/system-down/50-goodbye -- fires at the top of
+# shutdown, BEFORE service teardown starts. Scripts see the
+# system in a coherent state (services still up, filesystems
+# mounted).
+#
+# Typical production use: last-chance persistence of a
+# telemetry counter, notify a supervisor, sync a specific
+# path. Trivial demo variant here.
+echo "[hook] system-down fired (point=${SLINIT_HOOK_POINT}) at $(date +%H:%M:%S) — services still up"
