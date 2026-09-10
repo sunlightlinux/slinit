@@ -868,6 +868,16 @@ func main() {
 	if isPID1 || systemMode {
 		prev := serviceSet.OnBootReady
 		serviceSet.OnBootReady = func() {
+			// Mute the catch-all's console tee once boot completes.
+			// During boot, mirroring every service's stdout to the
+			// console gives the operator a visible progress stream;
+			// during runtime it swamps the serial line and races the
+			// interactive tty for terminal echo. File tee keeps the
+			// full log in /run/slinit/catch-all.log for post-hoc
+			// inspection.
+			if cal != nil {
+				cal.SetConsoleMuted(true)
+			}
 			hooks.Run("system-up", logger)
 			// finit-parity Debian/BusyBox network integration:
 			// if /etc/network/interfaces exists AND `ifup` is on

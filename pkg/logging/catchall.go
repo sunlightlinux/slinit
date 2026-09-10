@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -35,6 +36,14 @@ type CatchAllLogger struct {
 	logPath   string
 	wg        sync.WaitGroup
 	closeOnce sync.Once
+	// consoleMuted, when true, suppresses the console tee — every
+	// captured line still lands in logFile, but the console side is
+	// skipped. cmd/slinit flips this on once the boot service reaches
+	// STARTED so a chatty demo (or any workload with many stdout-
+	// echoing services) doesn't race the interactive tty for the
+	// serial line during runtime. Atomic access so drain() and the
+	// setter don't need to share a mutex.
+	consoleMuted atomic.Bool
 }
 
 // StartCatchAll sets up the catch-all logger. It:
@@ -125,8 +134,14 @@ func (c *CatchAllLogger) drain() {
 		line := scanner.Bytes()
 		ts := time.Now().Format("2006-01-02T15:04:05.000")
 
-		// Write to console (original stdout) — always.
-		fmt.Fprintf(c.console, "%s\n", line)
+		// Write to console (original stdout) unless the operator (or
+		// cmd/slinit main) has muted the console tee — see
+		// SetConsoleMuted. File tee below always fires so the full
+		// stream stays in /run/slinit/catch-all.log for post-hoc
+		// inspection.
+		if !c.consoleMuted.Load() {
+			fmt.Fprintf(c.console, "%s\n", line)
+		}
 
 		// Write to persistent log file with timestamp.
 		if c.logFile != nil {
@@ -148,6 +163,19 @@ func (c *CatchAllLogger) drain() {
 // output that bypasses the normal logging path (e.g. crash recovery messages).
 func (c *CatchAllLogger) Console() *os.File {
 	return c.console
+}
+
+// SetConsoleMuted toggles the console-side of the tee. When true,
+// captured stdout+stderr lines are still written to the persistent
+// log file but skipped for the console. cmd/slinit flips this on
+// once the boot service reaches STARTED so an interactive tty is
+// not swamped by workload echoes — the boot phase still gets its
+// console mirror. Concurrent-safe.
+func (c *CatchAllLogger) SetConsoleMuted(v bool) {
+	if c == nil {
+		return
+	}
+	c.consoleMuted.Store(v)
 }
 
 // ReattachStdoutErr re-redirects fd 1 and fd 2 to the catch-all pipe. Call
