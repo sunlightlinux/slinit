@@ -1,12 +1,20 @@
 # boot -- system boot milestone
-# Default boot target. Brings up the base system (system-init), every
-# demo workload (all-services), and finally the interactive console
-# shell (tty). tty is ordered "after: all-services" so the login prompt
-# is not interleaved with the service-start list.
+# Default boot target. Brings up the base system (system-init) and every
+# demo workload (all-services). Deliberately does NOT depend on the
+# interactive tty service — boot STARTED is the moment the OnBootReady
+# hook fires slinit's system-up + rc.local + ifup wrappers, and running
+# tty INSIDE that dep chain means bash's login prompt would print
+# concurrently with those wrappers, interleaving on the console. tty is
+# ordered "after: boot" instead, so the hooks + rc.local complete
+# cleanly, then bash prompts on its own line.
 type = internal
 depends-on: system-init
 depends-on: all-services
-depends-on: tty
+# tty is started but NOT depended on: waits-for triggers its start
+# eligibility, tty's own `after: boot` gates its bring-up until this
+# service is STARTED. Effect: boot fires OnBootReady → hooks.Run →
+# ifup → rc.local completes → then bash prompt appears cleanly.
+waits-for: tty
 # trigger-test is a `triggered` service. trigger-autofire is a one-shot
 # scripted service that runs `slinitctl trigger trigger-test` right after
 # system-init so the demo boots with trigger-test in STARTED instead of

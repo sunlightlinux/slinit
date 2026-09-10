@@ -1,9 +1,11 @@
 # tty -- interactive shell on console
 # Runs bash with console access (job control enabled).
 # Restarts when shell exits.
-# Ordered "after: all-services" so bash grabs the console only once every
-# demo service has started — the login prompt then appears cleanly instead
-# of interleaving with the service-start list.
+# Ordered "after: boot" so bash grabs the console only after the boot
+# milestone STARTED (which is what triggers OnBootReady → hooks.d/
+# system-up/* + /etc/network/interfaces ifup -a + /etc/rc.local). If
+# tty ran inside the boot dep chain, bash's prompt would race those
+# wrappers on /dev/console and interleave.
 type = process
 # bash -o ignoreeof: soften rapid Ctrl-D exits. Without this, holding
 # Ctrl-D queues EOFs in the tty input buffer faster than bash can
@@ -28,4 +30,4 @@ smooth-recovery = yes
 stop-timeout = 3
 term-signal = SIGHUP
 depends-on: system-init
-after: all-services
+after: boot
