@@ -2,11 +2,14 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
@@ -103,19 +106,55 @@ func isExecutableFile(path string) bool {
 }
 
 // runRcLocalScript executes a single rc.local-shaped script under
-// the long timeout window. Stdout/stderr inherit so operators see
-// the classic "hello from rc.local" output on the console.
+// the long timeout window. stdout+stderr are captured line-by-line
+// through slinit's logger at Info level (same rationale as
+// pkg/hooks/runOne — avoid racing /dev/console with the login
+// prompt). `slinitctl catlog` and the journal preserve the output
+// for post-hoc inspection.
 func runRcLocalScript(path string, logger *logging.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), rcLocalTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path)
 	cmd.Env = append(os.Environ(), "SLINIT_HOOK_POINT=rc-local")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Kill the whole process group on timeout so orphaned children
+	// (typical: `network-restart` scripts that background dhclient)
+	// don't hold the stdout pipe past the deadline. Matches
+	// pkg/hooks/runOne — see rationale there.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	cmd.WaitDelay = 2 * time.Second
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
 	logger.Info("rc.local: running %s", path)
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go pipeLines(&wg, stdout, "rc.local", "rc-local", path, logger)
+	go pipeLines(&wg, stderr, "rc.local", "rc-local", path, logger)
+	wg.Wait()
+	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("timeout after %v", rcLocalTimeout)
+		}
+		// Same PID-1-reaper race as pkg/hooks/runOne — see the
+		// long comment there. ECHILD = child got reaped
+		// generically; treat as success under the best-effort
+		// contract.
+		if errors.Is(err, syscall.ECHILD) {
+			return nil
 		}
 		return err
 	}

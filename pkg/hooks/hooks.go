@@ -21,12 +21,17 @@
 package hooks
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
@@ -106,6 +111,11 @@ func Run(point string, logger *logging.Logger) (ran, failed int) {
 }
 
 // runOne executes a single hook script with the per-script timeout.
+// stdout+stderr are captured line-by-line through slinit's logger at
+// Info level so the output doesn't race /dev/console with the
+// interactive tty service's login prompt. Operators recover the
+// output via `slinitctl catlog` or the journal — production console
+// stays clean.
 func runOne(point, path string, logger *logging.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), perScriptTimeout)
 	defer cancel()
@@ -113,17 +123,71 @@ func runOne(point, path string, logger *logging.Logger) error {
 	cmd.Env = append(os.Environ(),
 		"SLINIT_HOOK_POINT="+point,
 	)
-	// Route the script's stdout/stderr to whatever slinit's own
-	// stdout/stderr point at (console under PID 1). Hooks that want
-	// their own log go through the shell.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Put the child in its own process group so a cmd.Cancel can kill
+	// the whole group at timeout — otherwise a `sleep 5` orphan
+	// (parent shell dies, grand-child inherits the pipe fds) would
+	// keep the stdout pipe open past the deadline, wedging Wait.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			// Negative pid = kill entire process group.
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
+	// WaitDelay is the belt-and-suspenders bound. Even after the
+	// group is killed, Wait() waits for pipe I/O to drain; if a
+	// child mis-handles SIGKILL somehow (rare — SIGKILL is
+	// uncatchable — but a defensive limit costs nothing) close the
+	// pipes ourselves after 2 s and return.
+	cmd.WaitDelay = 2 * time.Second
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
 	logger.Info("hooks: running %s", path)
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go pipeLines(&wg, stdout, "hook", point, path, logger)
+	go pipeLines(&wg, stderr, "hook", point, path, logger)
+	wg.Wait()
+	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("timeout after %v", perScriptTimeout)
+		}
+		// ECHILD == the PID-1 SIGCHLD reaper grabbed our child
+		// before cmd.Wait could waitid on it. Slinit-as-PID-1
+		// generic-reaps every zombie; that reaping widens with
+		// hooks that pipe stdout/stderr because Wait blocks on
+		// drain, extending the window. Exit status is lost when
+		// this happens — but hooks are best-effort by contract
+		// (a failure never gates boot), so treat ECHILD as
+		// success rather than logging a spurious "failed" warning.
+		if errors.Is(err, syscall.ECHILD) {
+			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+// pipeLines forwards every line r produces to `logger.Info` with a
+// prefix that names the point + script path, matching pkg/network's
+// existing pattern. The waitgroup lets runOne block on drain before
+// calling Wait() so no output is dropped when the child exits.
+func pipeLines(wg *sync.WaitGroup, r io.ReadCloser, kind, point, path string, logger *logging.Logger) {
+	defer wg.Done()
+	defer r.Close()
+	sc := bufio.NewScanner(r)
+	base := filepath.Base(path)
+	for sc.Scan() {
+		logger.Info("%s[%s/%s]: %s", kind, point, base, sc.Text())
+	}
 }

@@ -26,10 +26,12 @@ package network
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
@@ -141,6 +143,14 @@ func RunIfup(up bool, logger *logging.Logger) error {
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("ifup: timeout after %v", ifupTimeout)
+		}
+		// PID-1 SIGCHLD reaper race — see pkg/hooks/runOne
+		// comment. ECHILD means slinit's generic reaper grabbed
+		// the child before cmd.Wait could waitid on it. Exit
+		// status is lost but the ifup ran; treat as success
+		// under the best-effort contract.
+		if errors.Is(err, syscall.ECHILD) {
+			return nil
 		}
 		return fmt.Errorf("ifup: %s exited %v", tool, err)
 	}

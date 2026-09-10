@@ -449,6 +449,14 @@ type ServiceFlags struct {
 	AlwaysChain        bool // Always chain to the next service
 	KillAllOnStop      bool // Kill all processes in cgroup on stop
 	UnmaskIntr         bool // Unmask SIGINT when running on console
+	// NoBootMarker suppresses the "[ OK ] name" boot-console line
+	// when the service reaches STARTED. Meant for milestone-style
+	// internal services whose completion is implied by the tree
+	// underneath them (a boot target reached STARTED after tty
+	// spawned bash — the boot marker printed after the login prompt
+	// looked cluttered). Only affects the boot-console renderer;
+	// the main log still records the transition.
+	NoBootMarker bool
 }
 
 // TimeoutFailureMode picks the signal delivered when a start-timeout

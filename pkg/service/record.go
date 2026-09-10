@@ -2706,7 +2706,15 @@ func (sr *ServiceRecord) Started() {
 		sr.services.logger.Info("Logging system is now ready (service '%s')", sr.serviceName)
 	}
 
-	sr.services.logger.ServiceStarted(sr.serviceName)
+	if sr.Flags.NoBootMarker {
+		// Suppress the "[ OK ] name" boot-console line — used for
+		// milestone-style services (`boot` etc.) whose completion
+		// is implied by the tree underneath. Main log still records
+		// the transition.
+		sr.services.logger.Info("Service '%s' started (marker suppressed)", sr.serviceName)
+	} else {
+		sr.services.logger.ServiceStarted(sr.serviceName)
+	}
 	sr.state.Store(StateStarted)
 	sr.notifyListeners(EventStarted)
 

@@ -1783,6 +1783,18 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.SmoothRecovery = b
+	case "no-boot-marker":
+		// Suppress the "[ OK ] name" boot-console line when this
+		// service reaches STARTED. Intended for milestone-style
+		// internal services (e.g. `boot` in the demo) whose
+		// completion is implied by the tree underneath — printing
+		// their marker after a login prompt has already appeared
+		// on the console looks cluttered. Main log stays intact.
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.Flags.NoBootMarker = b
 	case "manual":
 		b, err := parseBool(value)
 		if err != nil {
