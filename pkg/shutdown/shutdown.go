@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/hooks"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
@@ -88,6 +89,30 @@ func SetFinalSleep(d time.Duration) { finalSleep = d }
 // disables the check.
 func SetMinimumUptime(d time.Duration) { minimumUptime = d }
 
+// rebootDelay is finit-parity for the `reboot-delay = N` global
+// option: an operator-configurable pause after the shutdown-hook
+// completes but before the kernel reboot syscall fires. Zero
+// (default) preserves the existing zero-overhead path.
+//
+// Use case is embedded — some SoCs / PMICs need a few seconds of
+// quiescent bus traffic before a hard reset triggers cleanly, or
+// external watchdog hardware wants time to see the "shutdown
+// initiated" signal before it takes over.
+var rebootDelay time.Duration
+
+// SetRebootDelay tunes the pre-reboot-syscall pause. Clamped to
+// [0, 60s] — longer means the shutdown looks like a hang to
+// anyone watching, which defeats the point.
+func SetRebootDelay(d time.Duration) {
+	if d < 0 {
+		d = 0
+	}
+	if d > 60*time.Second {
+		d = 60 * time.Second
+	}
+	rebootDelay = d
+}
+
 // sleepFunc is the sleep primitive used between SIGKILL and umount.
 // Overridable for tests so unit tests don't have to sleep.
 var sleepFunc = time.Sleep
@@ -133,6 +158,13 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE)
 
 	logger.Notice("Executing shutdown: %s", shutdownType)
+
+	// Operator-supplied system-down hooks — /etc/slinit/hooks.d/
+	// system-down/*. Run before any teardown so scripts see the
+	// system in a coherent state (services still up, filesystems
+	// mounted, network reachable). Best-effort; script failures
+	// don't gate the shutdown. finit-parity for HOOK_SYSTEM_DN.
+	hooks.Run("system-down", logger)
 
 	// Anti-boot-loop floor (systemd v261 MinimumUptimeSec=). When a
 	// shutdown fires earlier than the configured floor, sleep the
@@ -207,6 +239,17 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// dead end — an operator who asked to reboot did not ask to stop
 	// forever — we detect that specific EINVAL and fall back to a
 	// normal reboot. This mirrors systemctl kexec's behavior.
+	// finit-parity `reboot-delay = N`: quiescent pause before the
+	// reboot syscall for boards whose reset path needs settle time.
+	// Fires AFTER services are stopped + hook ran, so a watchdog
+	// pet or PMIC signal has a stable environment. Skipped on the
+	// force-exit path (ExecuteForce) — an operator asking for -f
+	// explicitly opted out of graceful pacing.
+	if rebootDelay > 0 {
+		logger.Notice("reboot-delay: pausing %v before reboot syscall", rebootDelay)
+		sleepFunc(rebootDelay)
+	}
+
 	rebootType := shutdownType
 	// finit-parity: when slinit.reboot-watchdog is armed on the
 	// kernel cmdline (or SetWatchdogReboot toggled the flag), arm the

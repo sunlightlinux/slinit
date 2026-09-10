@@ -15,6 +15,7 @@ package bootmode
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -92,6 +93,11 @@ type Options struct {
 	// peripheral always produces a clean hardware reset. finit-parity
 	// (`reboot-watchdog = true` in Finit's global config).
 	RebootWatchdog bool
+	// RebootDelaySec is finit-parity for `reboot-delay = N`: a
+	// pause (in seconds) between the shutdown-hook and the reboot
+	// syscall. Zero = disabled. Clamped downstream to [0, 60] to
+	// prevent a runaway config from wedging shutdown.
+	RebootDelaySec uint32
 }
 
 // Parse extracts slinit boot-mode settings from a raw kernel cmdline
@@ -115,7 +121,8 @@ type Options struct {
 //	  slinit.debug           — Debug = true (verbose logging, legacy)
 //	  slinit.reboot-watchdog — RebootWatchdog = true (WDT-driven reset)
 //	Key=value:
-//	  slinit.log-level=<lvl> — LogLevel = <lvl>
+//	  slinit.log-level=<lvl>   — LogLevel = <lvl>
+//	  slinit.reboot-delay=<N>  — RebootDelaySec = <N> (pre-reboot pause)
 func Parse(cmdline string) Options {
 	var opts Options
 	for _, tok := range strings.Fields(cmdline) {
@@ -159,6 +166,12 @@ func Parse(cmdline string) Options {
 		case "slinit.log-level":
 			if hasValue {
 				opts.LogLevel = value
+			}
+		case "slinit.reboot-delay":
+			if hasValue {
+				if n, err := strconv.ParseUint(value, 10, 32); err == nil {
+					opts.RebootDelaySec = uint32(n)
+				}
 			}
 		}
 	}

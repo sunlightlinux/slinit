@@ -29,6 +29,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/recovery"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/hooks"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
 	"github.com/sunlightlinux/slinit/pkg/switchroot"
 	"github.com/sunlightlinux/slinit/pkg/snapshot"
@@ -634,6 +635,11 @@ func main() {
 				shutdown.SetWatchdogReboot(true)
 				logger.Notice("slinit.reboot-watchdog: hardware WDT will drive final reset")
 			}
+			if kOpts.RebootDelaySec > 0 {
+				shutdown.SetRebootDelay(time.Duration(kOpts.RebootDelaySec) * time.Second)
+				logger.Notice("slinit.reboot-delay: %ds pause before reboot syscall",
+					kOpts.RebootDelaySec)
+			}
 		}
 		// Test hook for crash-shell (see cmd/slinit/panictest_*.go).
 		// No-op in production builds; when compiled with `-tags
@@ -838,6 +844,22 @@ func main() {
 			}
 			// Set as default for all child services
 			serviceSet.SetDefaultCPUAffinity(cpus)
+		}
+	}
+
+	// finit-parity system-up hook: operator scripts under
+	// /etc/slinit/hooks.d/system-up/* run once the boot service
+	// reaches STARTED (all bootstrap services are up). Composes
+	// with the --ready-fd notification below if both are wired:
+	// the wrapper here fires the hook first, then delegates to
+	// whatever was previously assigned to OnBootReady.
+	if isPID1 || systemMode {
+		prev := serviceSet.OnBootReady
+		serviceSet.OnBootReady = func() {
+			hooks.Run("system-up", logger)
+			if prev != nil {
+				prev()
+			}
 		}
 	}
 
@@ -1383,6 +1405,15 @@ func main() {
 		ctrlServer.WallNoticeFunc = func(msg string) {
 			shutdown.Wall(msg, logger)
 		}
+		// finit-parity: suspend hook wired unconditionally — writing
+		// /sys/power/state does not require PID 1 (a user manager
+		// on a laptop can suspend just as well) and the kernel
+		// rejects the write when the caller lacks CAP_SYS_ADMIN.
+		ctrlServer.SuspendFunc = func(state string) error {
+			logger.Notice("suspend: writing %q to /sys/power/state", state)
+			return shutdown.Suspend(state)
+		}
+
 		// switch-root wire-up. Only enabled when slinit runs as PID 1
 		// (the switchroot package rejects non-PID-1 callers anyway,
 		// but leaving the hook nil here surfaces a cleaner "not

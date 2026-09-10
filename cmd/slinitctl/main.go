@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -310,6 +311,10 @@ doneFlags:
 		err = cmdShutdownDispatch(conn, cmdArgs)
 	case "switch-root", "switch_root":
 		err = cmdSwitchRoot(conn, cmdArgs)
+	case "suspend":
+		err = cmdSuspend(conn, cmdArgs)
+	case "edit":
+		err = cmdEdit(conn, cmdArgs)
 	case "trigger":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdTrigger(conn, name)
@@ -2199,6 +2204,106 @@ func cmdSwitchRoot(conn net.Conn, args []string) error {
 		return fmt.Errorf("switch-root: %s", msg)
 	default:
 		return fmt.Errorf("switch-root: unexpected reply %d", rply)
+	}
+}
+
+// cmdEdit implements `slinitctl edit NAME`: fetch the service's
+// on-disk description path via CmdQueryServiceLoadDir + LoadService
+// (same lookup as `status`), open it in $EDITOR / $VISUAL / vi as
+// fallback, then trigger a reload once the editor exits with success.
+// finit-parity `initctl edit NAME` polish.
+func cmdEdit(conn net.Conn, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: slinitctl edit NAME")
+	}
+	name := args[0]
+	// Resolve the description file path by loading the service and
+	// asking the daemon where its description lives.
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyLoaderMech {
+		return fmt.Errorf("edit: could not resolve description dir for %q (reply %d)", name, rply)
+	}
+	// LoaderMech reply carries the directory path — the service file
+	// itself is <dir>/<name>. That mirrors how the on-disk loader
+	// composes the path when reading the description at start time.
+	dir := string(payload)
+	svcPath := filepath.Join(dir, name)
+	if _, err := os.Stat(svcPath); err != nil {
+		return fmt.Errorf("edit: %s: %w", svcPath, err)
+	}
+	// Editor priority: $VISUAL (systemctl edit convention), $EDITOR,
+	// then vi as the POSIX guaranteed fallback.
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	// Run the editor with the service path. Inherit stdio so the
+	// operator sees the tty session directly.
+	cmd := exec.Command(editor, svcPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("edit: %s exited %v (change NOT reloaded)", editor, err)
+	}
+	// Reload so the daemon picks up the edited description.
+	info("edit: reloading %s\n", name)
+	return cmdReload(conn, name)
+}
+
+// cmdSuspend implements `slinitctl suspend [STATE]`, finit-parity
+// for the /sys/power/state kernel write. STATE defaults to "mem"
+// (suspend-to-RAM); other kernel-recognised values are freeze,
+// standby, disk. The daemon blocks until the system wakes (for
+// freeze/standby/mem) so the client sees the reply post-resume.
+func cmdSuspend(conn net.Conn, args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("usage: slinitctl suspend [STATE]")
+	}
+	state := ""
+	if len(args) == 1 {
+		state = args[0]
+	}
+	stateBytes := []byte(state)
+	if len(stateBytes) > 0xFF {
+		return fmt.Errorf("suspend: state too long (max 255 bytes)")
+	}
+	payload := append([]byte{byte(len(stateBytes))}, stateBytes...)
+	if err := control.WritePacket(conn, control.CmdSuspend, payload); err != nil {
+		return err
+	}
+	rply, rest, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	switch rply {
+	case control.RplyACK:
+		if state == "" {
+			state = "mem"
+		}
+		info("suspend: %s wake completed\n", state)
+		return nil
+	case control.RplyBadReq:
+		msg := "invalid request"
+		if len(rest) > 0 {
+			msg = string(rest)
+		}
+		return fmt.Errorf("suspend: %s", msg)
+	default:
+		return fmt.Errorf("suspend: unexpected reply %d", rply)
 	}
 }
 

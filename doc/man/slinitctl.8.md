@@ -359,6 +359,26 @@ daemon, which is useful at install time or in initramfs.
     from other init systems without having to type the *kind*
     argument.
 
+**suspend** [*STATE*]
+:   Put the system to sleep by writing *STATE* to
+    */sys/power/state*. Default *STATE* is **mem** (suspend-to-RAM,
+    ACPI S3). Other kernel values: **freeze** (suspend-to-idle,
+    s2idle), **standby** (power-on suspend, S1), **disk**
+    (hibernate, S4 — successful hibernate does not return).
+    Slinit validates the state against the kernel-advertised list
+    in */sys/power/state* before writing so an unsupported target
+    produces a clear error rather than an opaque EINVAL. Blocks
+    the client until wake (freeze/standby/mem). finit-parity
+    (`initctl suspend`).
+
+**edit** *NAME*
+:   Open the on-disk service description for *NAME* in **$VISUAL**
+    (falls back to **$EDITOR**, then **vi**), then reload the
+    daemon's view once the editor exits with success. Cleaner than
+    the `vi /etc/slinit.d/NAME && slinitctl reload NAME` idiom —
+    a non-zero editor exit aborts without touching the daemon.
+    finit-parity (`initctl edit NAME`) polish.
+
 **switch-root** *NEWROOT* [*INIT*]
 :   Transition from an initramfs to the real root filesystem.
     Only meaningful when slinit is running as PID 1 inside an

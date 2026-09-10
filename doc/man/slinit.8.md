@@ -549,6 +549,28 @@ instead of being processed as arguments.
 To force a specific service name regardless, prefix it with **-t**
 (or **\--service**) — that form is always honoured.
 
+Recognised **slinit.**-prefixed selectors:
+
+* **slinit.rescue** / **slinit.emergency** — rescue / emergency mode
+  target selection (also honours bare **rescue** / **emergency** /
+  **single** / **s** / **1** for sysvinit compat).
+* **slinit.debug-shell** — arm a persistent sulogin on a secondary VT.
+* **slinit.confirm-spawn** — prompt before each service is brought up.
+* **slinit.crash-shell** — drop to sulogin instead of exiting on PID-1
+  panic.
+* **slinit.debug** — verbose console logging (equivalent to
+  **slinit.log-level=debug**).
+* **slinit.log-level=**\<level\> — systemd.log_level parity.
+* **slinit.cond=**\<name\>[,\<name\>...] — set one or more boot
+  conditions matched by **condition-boot-cond=** in service files
+  (see **slinit-service**(5)). Multiple **slinit.cond=** tokens are
+  merged; **finit.cond=** is honoured as a parity shim.
+* **slinit.reboot-watchdog** — arm the hardware WDT at shutdown
+  (finit-parity for embedded boards whose SoC reboot(2) is
+  unreliable).
+* **slinit.reboot-delay=**\<N\> — sleep N seconds between the
+  shutdown-hook and the reboot syscall. Clamped to [0, 60].
+
 ## SIGNALS
 
 When running as system manager (PID 1 or **-m**):
@@ -592,6 +614,17 @@ command line.
 
 */etc/slinit/environment*
 :   Default environment file for system mode.
+
+*/etc/slinit/hooks.d/&lt;point&gt;/\**
+:   Operator-supplied scripts run at defined lifecycle points.
+    Executable regular files only; ordered lexically by filename
+    (`10-x` before `20-y`); one at a time; 30 s per-script timeout;
+    non-zero exit is logged but doesn't abort. `SLINIT_HOOK_POINT`
+    is set in the child environment. Recognised points:
+    **system-up** (fires when the boot service reaches STARTED),
+    **system-down** (fires at the top of shutdown, before teardown),
+    **switch-root** (fires at the top of switch-root, before
+    initramfs teardown). finit-parity for its hook-script plugin.
 
 */etc/slinit/shutdown.allow*
 :   When present, controls which users may invoke **slinit-shutdown**

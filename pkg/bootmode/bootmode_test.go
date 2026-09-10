@@ -43,6 +43,9 @@ func TestParse(t *testing.T) {
 		{"slinit.crash-shell", "slinit.crash-shell", Options{CrashShell: true}},
 		{"slinit.debug legacy", "slinit.debug", Options{Debug: true}},
 		{"slinit.reboot-watchdog", "slinit.reboot-watchdog", Options{RebootWatchdog: true}},
+		{"slinit.reboot-delay=5", "slinit.reboot-delay=5", Options{RebootDelaySec: 5}},
+		{"slinit.reboot-delay=0 (no-op)", "slinit.reboot-delay=0", Options{RebootDelaySec: 0}},
+		{"slinit.reboot-delay=garbage", "slinit.reboot-delay=abc", Options{}},
 
 		// log-level KEY=VALUE.
 		{"log-level debug", "slinit.log-level=debug", Options{LogLevel: "debug"}},

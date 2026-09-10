@@ -332,6 +332,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleJournalSubscribe(payload)
 	case CmdSwitchRoot:
 		return c.handleSwitchRoot(payload)
+	case CmdSuspend:
+		return c.handleSuspend(payload)
 	default:
 		return c.writePacket(RplyBadReq, nil)
 	}
@@ -361,6 +363,30 @@ func (c *Connection) handleSwitchRoot(payload []byte) error {
 	// nothing more to say to this client (connection is going away).
 	_ = c.server.SwitchRootFunc(newroot, newinit)
 	return nil
+}
+
+// handleSuspend writes the requested power state (default "mem") to
+// /sys/power/state. Blocks until the kernel returns — which happens
+// on wake for "mem"/"freeze"/"standby", or on failure for
+// "disk"/"hibernate" (successful hibernate does not return, the
+// process is destroyed with the machine). finit-parity for
+// `initctl suspend`.
+func (c *Connection) handleSuspend(payload []byte) error {
+	state := "mem"
+	if len(payload) >= 1 {
+		stateLen := int(payload[0])
+		if stateLen > 0 && 1+stateLen <= len(payload) {
+			state = string(payload[1 : 1+stateLen])
+		}
+	}
+	if c.server.SuspendFunc == nil {
+		return c.writePacket(RplyBadReq,
+			[]byte("suspend not supported (hook not wired)"))
+	}
+	if err := c.server.SuspendFunc(state); err != nil {
+		return c.writePacket(RplyBadReq, []byte(err.Error()))
+	}
+	return c.writePacket(RplyACK, nil)
 }
 
 // decodeSwitchRootPayload extracts the two length-prefixed strings

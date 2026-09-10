@@ -137,6 +137,13 @@ const (
 	// failure it replies RplyBadReq with the failure text as
 	// payload. finit-parity (`initctl switch_root`).
 	CmdSwitchRoot uint8 = 64
+	// Suspend: write "mem" (or the caller-supplied state) to
+	// /sys/power/state, putting the system to sleep. finit-parity
+	// (`initctl suspend`). Payload: [state_len(1)][state_bytes];
+	// empty state defaults to "mem". Server replies RplyACK once
+	// the write completes (which returns when the system wakes),
+	// or RplyBadReq with the sysfs error text on failure.
+	CmdSuspend uint8 = 65
 )
 
 // Reply codes (server → client).

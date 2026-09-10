@@ -84,6 +84,13 @@ type Server struct {
 	// pretend to support it).
 	SwitchRootFunc func(newroot, newinit string) error
 
+	// SuspendFunc writes the requested power state to
+	// /sys/power/state. Blocks until wake (for "mem", "freeze",
+	// "standby") or failure. Nil hook = suspend disabled (returns
+	// error to client). Wired in cmd/slinit main; the actual sysfs
+	// write is in pkg/shutdown so tests can substitute a mock.
+	SuspendFunc func(state string) error
+
 	// Scheduled shutdown state.
 	scheduledMu        sync.Mutex
 	scheduledTimer     *time.Timer

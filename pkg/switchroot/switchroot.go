@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/hooks"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"golang.org/x/sys/unix"
 )
@@ -84,6 +85,12 @@ var (
 	// is initramfs. Best-effort — errors here don't fail the switch;
 	// they just cost some RAM until the process re-execs.
 	removeAllFunc = defaultRemoveOldRoot
+	// hooksRunFunc fires operator-supplied switch-root scripts from
+	// /etc/slinit/hooks.d/switch-root/*. Hookable so tests exercise
+	// the call site without touching /etc.
+	hooksRunFunc = func(point string, logger *logging.Logger) (int, int) {
+		return hooks.Run(point, logger)
+	}
 )
 
 // Precheck validates a switch-root request without side effects, so
@@ -168,6 +175,14 @@ func Do(newroot, newinit string, logger *logging.Logger, stopServices func()) er
 	}
 
 	logger.Warn("switch-root: transitioning to %s (init=%s)", newroot, newinit)
+
+	// 0. Operator-supplied switch-root hooks — /etc/slinit/hooks.d/
+	// switch-root/*. Run before teardown so scripts see the
+	// initramfs in a coherent state (services still up, /newroot
+	// mounted). Typical use: last-chance logging, TPM PCR extends,
+	// LUKS re-key ceremonies. Best-effort; script failures don't
+	// gate the switch. finit-parity for HOOK_SWITCH_ROOT.
+	hooksRunFunc("switch-root", logger)
 
 	// 1. Bring services down cleanly. The caller provides the
 	//    shutdown hook so this package doesn't need to know about
