@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -191,6 +192,10 @@ type ProcessService struct {
 	logForwardFormat     string
 	logForwardFacility   int
 	logForwardTag        string
+	// syslogForwarderOnly holds a SyslogForwarder created for the
+	// standalone log-forward-udp path (no rotator). Closed at
+	// service stop so we don't leak the UDP socket across restarts.
+	syslogForwarderOnly *SyslogForwarder
 	// s6-log-style priority alert channel. When alertFile is non-
 	// empty, lines whose syslog level is <= alertLevel are ALSO
 	// written to alertFile (in addition to the main log). -1 disables.
@@ -1880,6 +1885,32 @@ func (s *ProcessService) startProcess() error {
 			}
 			outputPipe = f
 		}
+	} else if s.logForwardUDP != "" {
+		// Standalone syslog-forward: log-forward-udp is set but no
+		// log-type / log-file / rotator-triggering directive
+		// activated the LogToFile+LogRotator path above. Capture
+		// stdout+stderr through a fresh pipe and ship each line
+		// via UDP without touching disk. finit / svlogd u/U parity:
+		// a service that only wants remote syslog shouldn't need
+		// to declare a local log file too.
+		fw, ferr := NewSyslogForwarder(
+			s.logForwardUDP, s.logForwardFormat, s.logForwardFacility,
+			s.logForwardTag, s.serviceName, s.services.logger)
+		if ferr != nil {
+			s.services.logger.Error("Service '%s': syslog-forward disabled (%v)",
+				s.serviceName, ferr)
+		} else {
+			pr, pw, perr := os.Pipe()
+			if perr != nil {
+				fw.Close()
+				s.services.logger.Error("Service '%s': syslog-forward pipe: %v",
+					s.serviceName, perr)
+			} else {
+				outputPipe = pw
+				s.syslogForwarderOnly = fw
+				go s.forwardOnlyLoop(pr, fw)
+			}
+		}
 	} else if s.logType == LogToCommand && len(s.outputLogger) > 0 {
 		// Spawn an external logger command and pipe stdout (+ stderr unless
 		// a separate error-logger is configured) to it. This is the
@@ -1934,6 +1965,10 @@ func (s *ProcessService) startProcess() error {
 				s.logBuf.CloseWriteEnd()
 			} else if outputPipe != nil && s.logType == LogToFile {
 				outputPipe.Close()
+			} else if s.syslogForwarderOnly != nil && outputPipe != nil {
+				outputPipe.Close()
+				s.syslogForwarderOnly.Close()
+				s.syslogForwarderOnly = nil
 			}
 			return err
 		}
@@ -2039,6 +2074,16 @@ func (s *ProcessService) startProcess() error {
 			}
 			s.stopLoggerCommands()
 		}
+		if s.syslogForwarderOnly != nil {
+			// StartProcess failed after forwarder + pipe were
+			// created — release the UDP socket + close pipe
+			// write end so the reader goroutine exits.
+			if outputPipe != nil {
+				outputPipe.Close()
+			}
+			s.syslogForwarderOnly.Close()
+			s.syslogForwarderOnly = nil
+		}
 		if notifyPipeWrite != nil {
 			notifyPipeWrite.Close()
 			s.readyPipeRead.Close()
@@ -2073,6 +2118,13 @@ func (s *ProcessService) startProcess() error {
 		if errorPipe != nil {
 			errorPipe.Close()
 		}
+	} else if s.syslogForwarderOnly != nil && outputPipe != nil {
+		// Standalone log-forward-udp path: close parent's copy of
+		// the pipe write end. The child inherited its own fd via
+		// dup2 inside the runner; the reader goroutine (started in
+		// startProcess above) sees EOF once every child copy is
+		// closed, exiting the loop and letting the forwarder go.
+		outputPipe.Close()
 	}
 
 	// Close parent's write end of notification pipe
@@ -2855,5 +2907,30 @@ func (s *ProcessService) stopLoggerCommands() {
 	if s.errLoggerCmd != nil && s.errLoggerCmd.Process != nil {
 		s.errLoggerCmd.Process.Kill()
 		s.errLoggerCmd = nil
+	}
+	// Standalone syslog-forward (no rotator) cleanup — closes the
+	// UDP socket the forwarder cached. Nil-safe.
+	if s.syslogForwarderOnly != nil {
+		s.syslogForwarderOnly.Close()
+		s.syslogForwarderOnly = nil
+	}
+}
+
+// forwardOnlyLoop reads pr line-by-line and ships each line via
+// SyslogForwarder. Used by the standalone log-forward-udp path
+// (no LogRotator). Exits when pr closes (child stdout+stderr FDs
+// closed after fork+exec, plus service exit closes them too).
+// stderr is captured in the same pipe as stdout because slinit's
+// exec sets both to outputPipe.
+func (s *ProcessService) forwardOnlyLoop(pr *os.File, fw *SyslogForwarder) {
+	defer pr.Close()
+	// bufio.Scanner default token size (64 KB) is fine for syslog
+	// UDP (per RFC 3164 max 1024 bytes, RFC 5424 typical 8 KB); if
+	// a service emits a longer line it'll be split at 64 KB.
+	sc := bufio.NewScanner(pr)
+	buf := make([]byte, 0, 65536)
+	sc.Buffer(buf, 65536)
+	for sc.Scan() {
+		fw.Send(sc.Bytes())
 	}
 }

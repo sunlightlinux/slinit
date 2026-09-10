@@ -4049,9 +4049,20 @@ var syslogFacilityByName = map[string]int{
 	"local7":   23,
 }
 
-// SyslogFacilityCode returns the numeric facility for a name, or -1
-// if the name is unknown. Exported for use in the UDP forwarder.
+// SyslogFacilityCode returns the numeric facility for a name.
+// Empty name → 1 (user), the default when an operator sets
+// `log-forward-udp` without an explicit `log-forward-facility=`.
+// Unknown name → -1 (caller-parser catches that at load time via
+// syslogFacilityByName membership check; a live caller reaching
+// this path with an unknown name signals a config-parser bug).
+// Prior behaviour returned -1 for empty, which made
+// `pri = -1*8 + severity` end up as a negative value on the
+// wire ("<-2>UDPFWD_MARK" instead of "<14>UDPFWD_MARK") — no
+// syslog receiver accepts that framing.
 func SyslogFacilityCode(name string) int {
+	if name == "" {
+		return 1 // LOG_USER — RFC 3164 default for general userspace
+	}
 	if v, ok := syslogFacilityByName[name]; ok {
 		return v
 	}
