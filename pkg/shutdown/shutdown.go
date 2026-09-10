@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sunlightlinux/slinit/pkg/hooks"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
@@ -159,12 +158,12 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 
 	logger.Notice("Executing shutdown: %s", shutdownType)
 
-	// Operator-supplied system-down hooks — /etc/slinit/hooks.d/
-	// system-down/*. Run before any teardown so scripts see the
-	// system in a coherent state (services still up, filesystems
-	// mounted, network reachable). Best-effort; script failures
-	// don't gate the shutdown. finit-parity for HOOK_SYSTEM_DN.
-	hooks.Run("system-down", logger)
+	// NOTE: system-down hooks fire earlier, from cmd/slinit's
+	// OnPreShutdown wiring — that's the seam BEFORE
+	// eventloop.StopAllServices runs, i.e. when services are truly
+	// still up. Placing them here would be misleading: by the time
+	// shutdown.Execute is called, the state-machine teardown has
+	// already completed and only the reboot(2) syscall remains.
 
 	// Anti-boot-loop floor (systemd v261 MinimumUptimeSec=). When a
 	// shutdown fires earlier than the configured floor, sleep the

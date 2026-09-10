@@ -1452,6 +1452,15 @@ func main() {
 		// slinit binary picks this up via --restore-from-snapshot
 		// (appended to argv inside SoftReboot below).
 		loop.OnPreShutdown = func(st service.ShutdownType) {
+			// finit-parity system-down hook: fires BEFORE the state-
+			// machine teardown, so scripts see the system in a
+			// coherent "still up" state (services running,
+			// filesystems mounted, network reachable). Best-effort;
+			// script failures don't gate the shutdown. Runs before
+			// SetShutdownConsole flips the console renderer so the
+			// hook's stdout lands in the operational log format
+			// operators expect, not the [STOPPD] teardown format.
+			hooks.Run("system-down", logger)
 			// Switch the production boot console to teardown markers
 			// ("[STOPPD] name") for the stop phase. No-op when the boot
 			// console is disabled (verbose mode / not system mode).
