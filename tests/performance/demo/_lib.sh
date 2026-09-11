@@ -38,7 +38,7 @@ perf_write_collector() {
 # See _lib.sh's perf_write_collector for details / docs.
 type = scripted
 depends-on: ${dep}
-command = /bin/sh -c '${sleep_prefix}{ echo PERF-BEGIN; echo UPTIME:; cat /proc/uptime; echo STATUS-BEGIN; cat /proc/1/status; echo STATUS-END; echo FDS:; ls /proc/1/fd 2>/dev/null | wc -l; echo SLINIT_BYTES:; stat -c %s /sbin/slinit 2>/dev/null || echo 0; echo PERF-END; } > /tmp/perf.out 2>&1; sync; cat /tmp/perf.out > /dev/console; sync; sleep 1; slinitctl shutdown poweroff
+command = /bin/sh -c '${sleep_prefix}{ echo PERF-BEGIN; echo UPTIME:; cat /proc/uptime; echo STATUS-BEGIN; cat /proc/1/status; echo STATUS-END; echo FDS:; ls /proc/1/fd 2>/dev/null | wc -l; echo SLINIT_BYTES:; stat -c %s /sbin/slinit 2>/dev/null || echo 0; echo BOOT-TIME-BEGIN; slinitctl boot-time 2>/dev/null || echo "(boot-time unavailable)"; echo BOOT-TIME-END; echo PERF-END; } > /tmp/perf.out 2>&1; sync; cat /tmp/perf.out > /dev/console; sync; sleep 1; slinitctl shutdown poweroff
 EOF
 }
 

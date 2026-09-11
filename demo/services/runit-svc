@@ -11,7 +11,14 @@ type = process
 command = /bin/sh -c "trap 'echo [runit-svc] HUP received >> /run/runit-svc.log' HUP; echo \"[runit-svc] started, GREETING=$$GREETING\" >> /run/runit-svc.log; sleep 2; touch /run/runit-svc.ready; while true; do sleep 30; done"
 env-dir = /etc/slinit.d/runit-svc.env.d
 ready-check-command = /bin/sh -c "[ -f /run/runit-svc.ready ]"
-ready-check-interval = 1s
+# 100ms interval tightens the poll-vs-event race window. With the
+# previous 1s interval and a 2s "app-warmup" sleep in the command,
+# boot time bimodally split into 2s (poll right after touch) or 3s
+# (poll right before touch, wait full interval), adding a visible
+# +1s spike to demo cold-boot benchmarks in 30% of runs. 100ms
+# gives ±50ms noise instead — still demonstrates the polling
+# feature but no longer dominates the boot-time distribution.
+ready-check-interval = 100ms
 pre-stop-hook = /bin/sh -c "echo '[runit-svc] pre-stop (pid=$1)' >> /run/runit-svc.log"
 control-command-HUP = /bin/sh -c "echo '[runit-svc] control-command-HUP ran' >> /run/runit-svc.log"
 finish-command = /bin/sh -c "echo '[runit-svc] finish (exit=$$1 sig=$$2)' >> /run/runit-svc.log"

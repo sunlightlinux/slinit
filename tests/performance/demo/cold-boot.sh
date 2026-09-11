@@ -109,6 +109,27 @@ for i in $(seq 1 "${ITERATIONS}"); do
 
     _boot_ms=$(awk -v b="${BOOT_NS}" 'BEGIN{printf "%.1f", b/1e6}')
     echo "  iter $i: boot=${_boot_ms}ms rss=${RSS_KB}kB peak=${VMPEAK_KB}kB threads=${THREADS} fds=${FDS}"
+    # Dump the per-service boot-time breakdown for iterations whose
+    # total boot exceeds a spike threshold (default 3000ms, override
+    # with COLD_BOOT_SPIKE_MS). Bimodal +1s spikes on the demo were
+    # traced this way — dumping the boot-time block for the slow
+    # iterations reveals which service accounts for the extra time.
+    # Also dumps when VERBOSE=1 regardless of threshold.
+    _spike_ms="${COLD_BOOT_SPIKE_MS:-3000}"
+    _dump_boot_time="false"
+    if [ "${VERBOSE:-0}" = "1" ]; then
+        _dump_boot_time="true"
+    elif awk -v b="${_boot_ms}" -v t="${_spike_ms}" 'BEGIN{exit !(b > t)}'; then
+        _dump_boot_time="true"
+    fi
+    if [ "${_dump_boot_time}" = "true" ]; then
+        _bt_block=$(printf '%s\n' "${_block}" \
+            | sed -n '/^BOOT-TIME-BEGIN$/,/^BOOT-TIME-END$/p' \
+            | sed '1d;$d')
+        if [ -n "${_bt_block}" ]; then
+            printf '%s\n' "${_bt_block}" | sed 's/^/      /'
+        fi
+    fi
     _boot_samples+=("${BOOT_NS}")
     _rss_samples+=("${RSS_KB}")
     _peak_samples+=("${VMPEAK_KB}")
