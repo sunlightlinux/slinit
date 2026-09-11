@@ -17,6 +17,191 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.10] — 2026-09-11
+
+Finit-parity finalisation + boot-console UX polish + one
+pre-existing regression closed. The Finit 5.0-rc1 feature
+comparison now stands at **22 of 23 items shipped**; the two
+that remain (finit's `org.finit` D-Bus control API + dlopen
+plugin ABI) are deliberate non-goals with a documented
+"revisit-if-adoption-demands" note in README, not gaps waiting
+for effort.
+
+Interactive-boot UX rework: the catch-all logger's console tee
+was quietly making the login prompt fight for the serial line
+on any host with chatty stdout services (demo VM's 34-service
+tree exposed it hard); a post-boot mute plus a shutdown-time
+un-mute keep boot progress + STOPPD cascade visible while
+removing the runtime spam that races bash's typing echo.
+
+A `log-forward-udp` bug that had been latent since the LogRotator
+guard landed 2026-02-25 finally surfaced through functional test
+96 — a service declaring `log-forward-udp` without any of the
+LogRotator-triggering directives (log-type, log-file, …) never
+built a SyslogForwarder, so UDP forwarding was silently dead.
+Fixed alongside a related "PRI = -2" wire error when no
+`log-forward-facility` was set.
+
+### Added
+
+- **`cmd/slinit-getty` — minimal built-in login-prompt binary.**
+  Closes the last partial GAP from the Finit inventory (#15).
+  Byte-for-byte argument compat with finit's `getty` tool
+  (`slinit-getty [-p] TTY [BAUD [TERM]]`) so existing tty
+  service entries transfer cleanly. Flow matches finit's
+  src/getty.c: setsid → open TTY → TIOCSCTTY (force=1) →
+  termios canonical + ECHO + ONLCR + ICRNL + 8N1 → render
+  `/etc/issue` with the classic `\d \l \m \n \o \r \s \t \u
+  \v` escapes (unknown escapes passed through so ANSI
+  survives) → prompt → read username → execve `/bin/login
+  [-p] -- USER`. Fallback chain if `/bin/login` is missing:
+  `/sbin/login → /usr/bin/login → /sbin/sulogin → /bin/sulogin
+  → /bin/sh` — an operator without a proper login binary
+  still gets an interactive shell instead of a boot-time
+  hang. Reduces util-linux dependency on embedded / BusyBox
+  images. 404 LOC + 145 LOC tests + 147 LOC man page.
+
+- **`cmd/slinit-watchdogd` — runtime hardware watchdog petting
+  daemon.** Closes the last partial GAP from the Finit
+  inventory (#16 / #22). Opens `/dev/watchdog`, sets the
+  reset countdown via `WDIOC_SETTIMEOUT`, and calls
+  `WDIOC_KEEPALIVE` at half the timeout interval. Complements
+  `pkg/shutdown`'s existing `slinit.reboot-watchdog` (which
+  arms the WDT at shutdown for a hardware reset): together
+  they cover the full runtime-plus-shutdown WDT lifecycle a
+  real embedded deployment needs.
+
+  Signals:
+  - `SIGTERM` / `SIGINT`: write `V` magic-close byte + close
+    → graceful disarm (WDT does NOT fire).
+  - `SIGPWR`: close without magic byte → WDT stays armed for
+    a successor daemon to inherit (finit-parity handover).
+  - `SIGHUP`: re-arm at current timeout without restart.
+
+  Defaults: 60 s timeout, timeout/2 interval, clamped to
+  `[5s, timeout-1s]` so the WDT sees ≥ 2 pets per window
+  minimum. Verbose (`-v`) logs every pet at Info; quiet by
+  default. 224 LOC + 87 LOC tests (ioctl constants locked
+  against `linux/watchdog.h` encoding) + 156 LOC man page.
+
+### Fixed
+
+- **`pkg/service`: `log-forward-udp` works standalone (no
+  `log-file` requirement).** Pre-existing regression from
+  2026-02-25 (commit `a8bf4456`) — the SyslogForwarder was
+  constructed only inside the LogRotator branch, which
+  itself required `logType == LogToFile && logFile != ""`.
+  A service declaring only `log-forward-udp` (no log-type,
+  no log-file) fell through every dispatch case with
+  `outputPipe = nil`; the child inherited slinit's stdout
+  and no UDP datagram was ever emitted. Functional test 96
+  silently SKIP'd for months because BusyBox nc dropped UDP;
+  a newer Alpine image accepted UDP and exposed the bug.
+
+  New dispatch branch in `pkg/service/process.go`
+  (`else if s.logForwardUDP != ""`) creates a fresh pipe +
+  SyslogForwarder + line-reader goroutine that ships every
+  stdout+stderr line via `fw.Send`. Zero disk cost. Post-fork
+  closes parent's copy of the pipe write end; goroutine sees
+  EOF once the child exits. Lifecycle managed via new
+  `syslogForwarderOnly *SyslogForwarder` field with cleanup
+  in `stopLoggerCommands` + error-path teardown.
+
+- **`pkg/config`: `SyslogFacilityCode("")` defaults to
+  LOG_USER instead of returning `-1`.** With no explicit
+  `log-forward-facility` directive, `desc.LogForwardFacility`
+  is empty; the code returned `-1` for "not found in map",
+  callers computed `pri = -1*8 + severity = -2`, wire output
+  was `<-2>UDPFWD_MARK` — RFC 3164 rejects PRI outside [0,
+  191], no conformant syslog receiver accepts a negative
+  value. Empty facility now returns `1` (LOG_USER, standard
+  general-userspace default); observed PRI is `<14>` for
+  default facility + info severity (1*8 + 6).
+
+- **`pkg/eventloop`: `OnShutdownAnnounce` hook — un-mute
+  catch-all before shutdown WARN.** Follow-up to the
+  post-boot catch-all mute below (which correctly silences
+  runtime service echoes but incorrectly also hid the
+  operator-visible `Shutting down slinit (kind)...` WARN
+  line + subsequent `[STOPPD]` cascade because the WARN
+  fires inside `initiateShutdown` BEFORE any `OnPreShutdown`
+  callback runs). New callback at the top of
+  `initiateShutdown` gives cmd/slinit main a seam to call
+  `SetConsoleMuted(false)` before anything logs. Symmetric
+  console-mute lifecycle: boot phase = mute OFF ("[ OK ]
+  name" visible); OnBootReady = mute ON (runtime silent);
+  OnShutdownAnnounce = mute OFF ("Shutting down..." +
+  "[STOPPD] cascade" visible); reboot syscall = dead.
+
+- **`tests/functional/cases/96-log-forward-udp.sh`: respawn nc
+  between self-test and real assertions.** BusyBox nc `-u -l`
+  (UDP listen) implicitly connects to the source of the first
+  datagram it receives; the self-test probe's ephemeral
+  source port isn't slinit's forwarder source port, so
+  subsequent datagrams get silently dropped. Test harness
+  now kills + respawns nc after a passing self-test, giving
+  slinit's forwarder a fresh listener to bind against. No
+  slinit-side change — the standalone log-forward-udp path
+  was correct; the harness was hostile to it.
+
+- **`demo/services/runit-svc`: `ready-check-interval` 1s →
+  100ms — cold-boot bimodal spike gone.** The demo cold-boot
+  benchmark showed a 3-of-10 iterations spike at ~+1000 ms
+  (median 2780 ms, p95 3790 ms). Root cause: runit-svc
+  sleeps 2 s in its command before creating
+  `/run/runit-svc.ready`; slinit's poll fires every 1 s.
+  Classic poll-vs-event boundary — if the poll happened
+  before `touch`, the file was caught on the NEXT poll a
+  full 1 s later. Reduced interval to 100 ms — median
+  unchanged (2 s app-warmup is intentional), p95 tightened
+  to 2810 ms (30 ms above median, distribution collapsed
+  to a 60 ms window across all iterations). Not a slinit
+  runtime bug; a demo-service configuration choice.
+
+### Changed
+
+- **`pkg/logging`: catch-all console tee muted post-boot.**
+  Prior behaviour teed every captured stdout+stderr line to
+  both `/run/slinit/catch-all.log` AND the original console.
+  On demo boots with 40+ services running echo-loops, that
+  became a continuous stream of console writes racing bash's
+  line-echo for the ttyS0 serial line — interactive typing
+  felt laggy because the kernel serial buffer was
+  perpetually flushing service output.
+
+  New `CatchAllLogger.SetConsoleMuted(bool)` toggle backed
+  by `sync/atomic`. cmd/slinit main flips it on inside the
+  OnBootReady wrapper: boot phase keeps its console mirror
+  (operator sees `[ OK ] name` stream), runtime goes silent
+  on console but file still receives everything for
+  post-hoc grep via `slinitctl catlog` / `slinit-journalctl`.
+  See the OnShutdownAnnounce fix above for the symmetric
+  un-mute at shutdown.
+
+- **`tests/performance/demo`: cold-boot harness dumps
+  per-service timing on spike iterations.** `perf_write_
+  collector` now embeds a `BOOT-TIME-BEGIN..END` block with
+  `slinitctl boot-time` output; `cold-boot.sh` auto-prints
+  it for iterations exceeding `COLD_BOOT_SPIKE_MS` (default
+  3000 ms) or when `VERBOSE=1`. Landed the runit-svc fix
+  above; instrumentation stays for future perf
+  investigations.
+
+- **`README.md`: finit bullet expanded to full 22-item
+  inventory + deferred-by-design note.** Prior version
+  listed 4 items (switch-root, reboot-watchdog, @console,
+  boot-cond) missing 8 subsequent additions. Now enumerates
+  every shipped finit-parity feature plus a paragraph naming
+  the two deliberate deferrals: `org.finit` D-Bus API
+  (positioning stays Unix-socket-first; a D-Bus-driven admin
+  tool can shell to `slinitctl` via a small wrapper) and
+  dlopen plugin ABI (Go's static-linking model makes a
+  stable C-ABI surface expensive; existing hooks.d + env-
+  generator cover most operator customisation without the
+  maintenance burden). Neither closes the door — both are
+  "revisit if adoption demands" (concrete external ask
+  reopens the conversation).
+
 ## [2.2.9] — 2026-09-10
 
 Finit-parity release. A fresh look at [finit](https://github.com/troglobit/finit)
