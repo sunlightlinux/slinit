@@ -39,19 +39,37 @@ should keep their muscle memory:
   `author`/`version`/`usage`, `apparmor-load`/`apparmor-switch`,
   `debug`, `script ... end script`, `start-on-path-*` activation,
   `<service>.override` drop-ins, `slinitctl reset-env` / `reload-all`.
-- **finit**: `slinitctl switch-root NEWROOT [INIT]` for the
-  initramfs → real-root transition (unlocks LUKS/LVM/NBD/iSCSI
-  boot on any distro shipping slinit as PID 1), hardware-
-  watchdog-driven reboot (`slinit.reboot-watchdog` kernel-cmdline
-  flag — final reset via `/dev/watchdog` for embedded boards
-  whose SoC `reboot(2)` is unreliable), `tty-path = @console`
-  sentinel that resolves at start time to
-  `/sys/class/tty/console/active` (single service definition
-  boots the right getty across VGA and serial images), and
-  `slinit.cond=foo,bar` kernel-cmdline boot-mode selector
-  (`condition-boot-cond = factory` gates services on
-  factory / upgrade / provisioning mode without editing
-  service files).
+- **finit**: 22 of 23 upstream features shipped —
+  `slinitctl switch-root NEWROOT [INIT]` for the initramfs →
+  real-root transition (unlocks LUKS/LVM/NBD/iSCSI boot on any
+  distro shipping slinit as PID 1), hardware-watchdog-driven
+  reboot (`slinit.reboot-watchdog` kernel-cmdline flag — final
+  reset via `/dev/watchdog` for embedded boards whose SoC
+  `reboot(2)` is unreliable), `tty-path = @console` sentinel
+  that resolves at start time to `/sys/class/tty/console/active`
+  (single service definition boots the right getty across VGA
+  and serial images), `slinit.cond=foo,bar` kernel-cmdline
+  boot-mode selector (`condition-boot-cond = factory` gates
+  services on factory / upgrade / provisioning mode without
+  editing service files), zero-config `/etc/rc.local` +
+  `/etc/rc.local.d/*` runparts (SysV/Debian/Alpine compat),
+  Debian/BusyBox `/etc/network/interfaces` integration + always-
+  on loopback bring-up via SIOCSIFFLAGS, `slinit-getty` built-in
+  login-prompt binary (reduces util-linux dep on embedded
+  images), and `slinit-watchdogd` runtime WDT petting daemon
+  with SIGPWR hand-over (complements the shutdown-time
+  `reboot-watchdog` for full runtime + shutdown WDT lifecycle
+  coverage). Deferred by design (revisit if adoption demands
+  it): finit's `org.finit` D-Bus control API — slinit's
+  positioning stays Unix-socket-first, and exposing a D-Bus
+  object model would double the surface for negligible
+  operator gain today (any D-Bus-driven admin tool can talk to
+  `slinitctl` via a small wrapper). Also deferred: a dlopen-
+  style plugin ABI — Go's monolithic build model makes a
+  stable C-ABI plugin surface expensive, and the existing
+  hooks.d/* shell-script extension point + env-generator
+  binaries cover most operator customisation without the ABI
+  maintenance burden.
 - **systemd**: ~250 config directives across five deep-scan passes
   covering v260 through v262-devel. Full clusters: declarative
   start predicates (~35 `condition-*` / `assert-*`, including
