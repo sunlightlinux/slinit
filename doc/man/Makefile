@@ -45,6 +45,7 @@ PAGES_8 = \
 	slinit-openrc-convert.8 \
 	slinit-runit-convert.8 \
 	slinit-systemd-convert.8 \
+	slinit-getty.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8
