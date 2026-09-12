@@ -17,6 +17,56 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.11] — 2026-09-12
+
+Single-fix patch release: `slinit-journalctl -f` hanging after
+~30s of stream time. Not a regression from v2.2.10 — the bug has
+been latent since v2.1.10 landed the follow-mode dispatcher; it
+just surfaced now because the debug session sat on `-f` long
+enough to trip the deadline. No behaviour change beyond making
+follow actually follow.
+
+### Fixed
+
+- `pkg/control`: `slinit-journalctl -f` orphaning its
+  server-side handler after exactly 30s. The dispatch loop in
+  `(*Connection).serve` stamps a 30-second read deadline before
+  every `ReadPacket` so it can re-check `ctx.Done` on a wedged
+  connection — that deadline is correct for the
+  request/response commands the dispatch loop was written for,
+  but it leaked into `handleJournalSubscribe`. Follow sessions
+  are one-way (the client sends nothing after the initial
+  `CmdJournalSubscribe` payload), and the handler starts an
+  `io.Copy(io.Discard, c.conn)` goroutine to detect client
+  disconnect via read EOF. With the deadline armed, that Read
+  tripped after 30s with a timeout error, closed the internal
+  `done` channel, the for-select in the handler hit `<-done`
+  and returned nil, and the connection went orphan server-side:
+  handler gone, socket still open, no more `RplyJournalEntry`
+  packets ever sent. The client sat forever on `ReadPacket`
+  waiting for events that would never come and the CLI
+  appeared to hang. Fix (~20 lines in
+  `pkg/control/journal.go`): clear the read deadline at the
+  top of `handleJournalSubscribe`
+  (`SetReadDeadline(time.Time{})`) so `io.Copy` blocks
+  indefinitely until the client actually closes its end. The
+  serve loop re-arms the deadline on its next iteration, which
+  subscribe never reaches — the handler is terminal for the
+  connection. Diagnosed via `/debug/pprof/goroutine` on a
+  `-tags pprof` slinit build, which showed
+  `handleJournalSubscribe` had already exited at the moment the
+  client stall was visible.
+
+  Verified live on ceres (kernel-cmdline spamming
+  `/dev/kmsg` every 200ms):
+
+  ```
+  Before:  t=30s lines=4301 last=kmsg-145
+           t=45s lines=4301 last=kmsg-145   ← stalled
+  After:   t=30s lines=4307 last=kmsg-150
+           t=45s lines=4387 last=kmsg-...   ← still growing
+  ```
+
 ## [2.2.10] — 2026-09-11
 
 Finit-parity finalisation + boot-console UX polish + one
