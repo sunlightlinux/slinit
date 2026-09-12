@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/journal"
 )
@@ -153,6 +154,25 @@ func (c *Connection) handleJournalSubscribe(payload []byte) error {
 		}
 	}
 	filter := req.ToFilter()
+
+	// Clear the read deadline set by (*Connection).serve. The
+	// dispatch loop stamps a 30s read deadline before every
+	// ReadPacket so it can re-check ctx.Done on a wedged connection;
+	// that deadline is fine for the request/response commands. It
+	// is NOT fine for subscribe: the follow session is one-way
+	// (client sends nothing after the initial CmdJournalSubscribe),
+	// so the io.Copy(io.Discard, c.conn) below has to block on Read
+	// indefinitely until the client actually closes its end. With
+	// the deadline still armed, io.Copy trips after 30s with a
+	// timeout error, `done` closes, this handler returns, and the
+	// connection becomes orphaned — the client sits forever on
+	// ReadPacket for events that will never come, and slinit-
+	// journalctl -f appears to "hang after ~30s". The deadline is
+	// re-armed by the serve loop on the next iteration, which we
+	// never reach because subscribe is terminal.
+	if tc, ok := c.conn.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = tc.SetReadDeadline(time.Time{})
+	}
 
 	// 1. Backlog first — matches user expectation for `slinit-journalctl -f`
 	// (systemd prints last N then follows). Only if a buffer exists.
