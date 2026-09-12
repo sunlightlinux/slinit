@@ -62,7 +62,7 @@ concurrent emits?", "how does enable/disable round-trip compare to
 Requires: ssh access to a slinit VM (same env-var contract as
 `tests/acceptance/ssh/`: `ACCEPTANCE_HOST` / `_PORT` / `_USER`).
 
-Currently **93 cases** covering the full control-surface hot path —
+Currently **92 cases** covering the full control-surface hot path —
 all slinitctl read/write ops, journal read/write/filter variants,
 concurrency scaling from 1 to 128 clients, lifecycle scaling
 (1/2/4/8/16/20-way), long-tail latency, reader/writer racing,

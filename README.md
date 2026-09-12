@@ -319,7 +319,18 @@ format to accommodate them.
   `tmpfiles.d/*.conf` entries at boot, path-safe under `/run` and `/var`),
   `slinit-logouthookd` (utmp logout daemon — writes `DEAD_PROCESS` /
   session-end records for tty and pty sessions so `who`/`w`/`last` stay
-  correct without a hook in every login shell)
+  correct without a hook in every login shell),
+  `slinit-getty` (finit-parity built-in login-prompt binary —
+  `setsid` + `TIOCSCTTY` + termios canonical/ICRNL/ONLCR/8N1,
+  `/etc/issue` rendering with `\d \l \m \n \o \r \s \t \u \v`
+  escapes, `/bin/login` → `sulogin` → `sh` fallback chain;
+  removes the util-linux `agetty` dependency on embedded images),
+  `slinit-watchdogd` (finit-parity runtime WDT petting daemon —
+  `WDIOC_SETTIMEOUT` + half-window `WDIOC_KEEPALIVE` loop, magic-
+  close `V` byte on SIGTERM/SIGINT, `SIGPWR` handover to a
+  successor daemon without disarm, `SIGHUP` re-arm; complements
+  the shutdown-time WDT already shipped in `pkg/shutdown` via
+  `slinit.reboot-watchdog`)
 
 ## Building
 
@@ -351,6 +362,8 @@ go build ./cmd/slinit-cgtop              # top-like viewer for cgroup v2 usage
 go build ./cmd/slinit-sysusers           # systemd-sysusers(1) clone
 go build ./cmd/slinit-tmpfiles           # systemd-tmpfiles(1) clone
 go build ./cmd/slinit-logouthookd        # utmp logout daemon (UTMPX bookkeeping)
+go build ./cmd/slinit-getty              # finit-parity built-in login-prompt (agetty-free)
+go build ./cmd/slinit-watchdogd          # finit-parity runtime WDT petting daemon
 
 # Journal pipeline (systemd journalctl parity — 65/65 flags)
 go build ./cmd/slinit-journalctl         # systemd journalctl 65/65-parity CLI (also as `journalctl` symlink)
@@ -1326,6 +1339,8 @@ slinit/
 │   ├── slinit-sysusers/   # systemd-sysusers clone (declarative user/group)
 │   ├── slinit-tmpfiles/   # systemd-tmpfiles clone (/run + /var bootstrap)
 │   ├── slinit-logouthookd/# UTMPX logout daemon (DEAD_PROCESS bookkeeping)
+│   ├── slinit-getty/      # finit-parity built-in login-prompt binary (agetty-free)
+│   ├── slinit-watchdogd/  # finit-parity runtime WDT petting daemon (SIGPWR handover)
 │   ├── slinit-binfmt/     # systemd-binfmt clone (register /etc/binfmt.d/*.conf via binfmt_misc)
 │   ├── slinit-sysctl/     # systemd-sysctl clone (apply sysctl.d/*.conf to /proc/sys)
 │   ├── slinit-fstabinfo/  # OpenRC fstabinfo(8) clone (query /etc/fstab)
@@ -1380,15 +1395,15 @@ slinit/
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
 ├── tests/functional/      # 218 QEMU-based integration tests
-├── tests/acceptance/ssh/  # 218 live-VM acceptance cases (SSH-driven)
-├── tests/fuzz/            # 21 fuzz targets (config, protocol, autofs, process parsers)
-└── tests/performance/     # Performance and stress harness
+├── tests/acceptance/ssh/  # 219 live-VM acceptance cases (SSH-driven)
+├── tests/fuzz/            # 27 fuzz targets (config, protocol, autofs, process parsers)
+└── tests/performance/     # Performance and stress harness (runtime + demo + 92 SSH cases)
 ```
 
 ## Testing
 
 ```bash
-# Unit tests (~2033 tests + benchmarks across 65 Go dirs, 291 _test.go files)
+# Unit tests (~2111 tests + benchmarks across 79 Go dirs, 302 _test.go files)
 go test ./...
 
 # Functional tests (218 QEMU-based integration tests)
@@ -1401,7 +1416,7 @@ ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
 # Fuzz targets (27 targets)
 go test -fuzz=FuzzConfigParse ./tests/fuzz
 
-# Performance harnesses (93 SSH-driven cases + 4 QEMU boot harnesses
+# Performance harnesses (92 SSH-driven cases + 4 QEMU boot harnesses
 # + runtime microbenchmarks — comprehensive control-surface coverage,
 # CLI + IPC + journal + lifecycle scaling; see tests/performance/README.md)
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
@@ -1483,12 +1498,59 @@ lives in [CHANGELOG.md](CHANGELOG.md). Highlights since v2.1.12:
   tests/performance/demo/.
 - **v2.2.7**: critical `pkg/config` DirLoader concurrent-map fix
   (PID-1 panic under stress), optional `net/http/pprof` endpoint
-  behind `-tags pprof`, SSH performance suite expanded to 93 cases,
+  behind `-tags pprof`, SSH performance suite expanded to 92 cases,
   slpkgs `post_install` now creates `/usr/bin/{halt,reboot,poweroff,
   shutdown}` symlinks (fresh installs get working `reboot` out of
   the box), three upstream dinit state-machine consistency fixes
   ported. Validated on both KVM (ceres) and bare-metal (Intel NUC
   Gen7): 219/219 acceptance pass on both.
+- **v2.2.8**: docs + upstream-parity pass. 9 new man pages close
+  the binary→doc gap (`slinit-supports`, `slinit-{journalctl,
+  journald,journal-migrate}`, `slinit-machinectl`, `slinit-nspawn`,
+  `slinit-{openrc,runit,systemd}-convert`); 3 dinit state-machine
+  consistency ports (`queueForConsole` double-enqueue guard,
+  `startCheckDependencies` waiting_for_deps consistency,
+  `ExecuteTransition` waitingForDeps-before-queueForConsole
+  reorder); docs currency across 50+ Markdown files. No binary
+  or config behaviour change.
+- **v2.2.9**: finit-parity release — fresh look at finit 5.0-rc1
+  as a seventh upstream surfaced 9 actionable items, 8 shipped.
+  Highlights: `slinitctl switch-root NEWROOT [INIT]` (initramfs →
+  real-root, unlocks LUKS/LVM/NBD/iSCSI boot paths), `pkg/hooks`
+  (system-up / system-down / switch-root operator scripts) with
+  zero-config `/etc/rc.local` + Debian/BusyBox
+  `/etc/network/interfaces` integration + SIOCSIFFLAGS loopback
+  bring-up, `slinit.cond=` / `slinit.reboot-watchdog` /
+  `slinit.reboot-delay=` kernel-cmdline selectors, `slinitctl
+  suspend` / `edit` subcommands, `tty-path = @console` sentinel,
+  fuzz-found `pkg/journalbin` DATA-header bounds fix (Xeon
+  40-thread hit a `makeslice` panic on a hostile length),
+  boot-console UX rewrite so operator-hook / rc.local / ifup
+  output no longer races bash's login prompt on `/dev/console`.
+  (Skipped: `conflicts:` directive — no user demand, real
+  implementation costs 3-5× the audit's state-machine
+  integration estimate.)
+- **v2.2.10**: finit-parity finalisation + boot-console UX polish
+  + one pre-existing regression closed. The Finit 5.0-rc1 feature
+  comparison now stands at **22 of 23 items shipped** — the
+  remaining two (D-Bus `org.finit` API and dlopen plugin ABI)
+  are deliberate-defer notes (README's finit bullet spells out
+  the reasoning and revisit triggers). New binaries:
+  `slinit-getty` (built-in login-prompt, removes the util-linux
+  `agetty` dependency on embedded images) and `slinit-watchdogd`
+  (runtime WDT petting daemon with SIGPWR handover; complements
+  the shutdown-time WDT already shipped via
+  `slinit.reboot-watchdog`). Fixes: `log-forward-udp` standalone
+  (pre-existing regression from 2026-02-25 where the
+  SyslogForwarder only got constructed inside the LogRotator
+  branch), `SyslogFacilityCode` empty-string default (RFC 3164
+  says LOG_USER=1, not −1), boot-console catch-all mute
+  post-boot + `OnShutdownAnnounce` un-mute so operators still
+  see the reboot notice on `/dev/console`, `tests/functional/96`
+  BusyBox nc UDP sticky-connect (respawn between self-test and
+  assertions), `tests/performance/demo` bimodal +1 s cold-boot
+  spike (runit-svc `ready-check-interval` 1 s → 100 ms; boot
+  distribution tightened from 2780-3790 ms to 2770-2830 ms).
 
 ## Changelog
 

@@ -31,7 +31,7 @@ Run a subset by passing case paths:
 ./run.sh cases/30-ctl-status.sh cases/50-journalctl-fetch-n100.sh
 ```
 
-## Cases (v2.2.7)
+## Cases (v2.2.10)
 
 Numbered with zero-padding so lexical sort matches numeric order.
 

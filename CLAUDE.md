@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 Behavioral guidelines for LLM-assisted work on **slinit** — a Go init system
-(dinit-in-Go base + runit + s6-linux-init + OpenRC UX).
+(dinit-in-Go base + runit + s6-linux-init + OpenRC UX + upstart + finit +
+systemd relevant service-manager subset).
 
 > Derived from [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills)
 > (MIT), based on [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876)
@@ -100,13 +101,13 @@ For multi-step tasks, state a brief plan:
 **Verification commands in slinit:**
 - `go build ./...` — full build, catches typos fast.
 - `go vet ./...` — catches misuse before tests.
-- `go test ./...` — ~2033 unit tests across 65 Go dirs (29 pkg/ + tests + tools).
+- `go test ./...` — ~2111 unit tests across 79 Go dirs (29 pkg/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
 - `./tests/functional/run-tests.sh` — 218 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
 - `./tests/acceptance/ssh/run.sh` — 219 SSH-driven cases against a live VM.
-- `./tests/performance/ssh/run.sh` — 93 SSH-driven perf cases (comprehensive
+- `./tests/performance/ssh/run.sh` — 92 SSH-driven perf cases (comprehensive
   CLI + IPC + journal + lifecycle-scaling coverage). Env-var contract
   identical to the acceptance suite.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
@@ -122,8 +123,10 @@ Strong success criteria let you loop independently. Weak criteria
 
 ### Positioning
 - **dinit-in-Go base** + features from **runit**, **s6-linux-init**,
-  **OpenRC**. See memory file `project_positioning.md` for how features
-  from the 4 upstreams fit together without creating parallel subsystems.
+  **OpenRC**, **upstart**, **finit**, and the relevant service-manager
+  subset of **systemd**. See memory file `project_positioning.md` for
+  how features from the 7 upstreams fit together without creating
+  parallel subsystems.
 - Config format: dinit-compatible `key=value`.
 - Control CLI: `slinitctl` + OpenRC shims (`rc-service`, `rc-update`,
   `rc-status`).
