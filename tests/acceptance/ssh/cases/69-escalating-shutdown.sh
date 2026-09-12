@@ -52,8 +52,17 @@ restart = false
 stop-timeout = 60
 EOF
 
+# -B disables the catch-all logger; without it, slinit's catch-all
+# mutes the console tee at OnBootReady (right after the boot service
+# reaches STARTED) and unmutes it at OnShutdownAnnounce. Any log
+# line emitted in the [boot-ready, shutdown-announce) window (the
+# "Received SIGTERM, initiating graceful halt" Notice among them)
+# lands only in /run/slinit/catch-all.log and never reaches the
+# stderr $LOG this test greps. With -B, slinit's logger writes
+# straight to stderr, no drain-side gating, and the Notice is always
+# in $LOG for the assertion below.
 # --console-level debug captures the Notice/Error lines we assert on.
-nohup slinit -o -m -p "$SOCKET" -d "$SVCDIR" -t boot \
+nohup slinit -o -m -B -p "$SOCKET" -d "$SVCDIR" -t boot \
     --console-level debug \
     >"$LOG" 2>&1 &
 SLINIT_PID=$!
