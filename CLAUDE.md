@@ -101,7 +101,7 @@ For multi-step tasks, state a brief plan:
 **Verification commands in slinit:**
 - `go build ./...` — full build, catches typos fast.
 - `go vet ./...` — catches misuse before tests.
-- `go test ./...` — ~2111 unit tests across 79 Go dirs (29 pkg/ + tests + tools).
+- `go test ./...` — ~2111 unit tests across 79 Go dirs (33 pkg/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
 - `./tests/functional/run-tests.sh` — 218 QEMU-based integration tests
