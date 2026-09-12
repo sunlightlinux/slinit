@@ -99,8 +99,18 @@ fi
 
 # --- First SIGTERM: container mode handles it as graceful halt -------
 kill -TERM "$SLINIT_PID"
-# Give the event loop a beat to land in the shutting-down branch.
-sleep 1
+# Poll the log for the Notice line — a fixed `sleep 1` racy vs
+# stderr flush order: sometimes the WARN "Shutting down slinit
+# (halt)..." lands before the NOTICE "Received SIGTERM, ..." is
+# visible to a subsequent grep even though both fire in-order at
+# the source. Bail on the first hit; cap at 5s so a real regression
+# still fails fast.
+_e=0
+while [ "$_e" -lt 25 ]; do
+    grep -q "initiating graceful halt" "$LOG" 2>/dev/null && break
+    sleep 0.2
+    _e=$((_e + 1))
+done
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if grep -q "initiating graceful halt" "$LOG" 2>/dev/null; then
