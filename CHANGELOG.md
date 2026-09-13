@@ -17,6 +17,64 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.2.12] — 2026-09-13
+
+Cinematic-boot polish + one small feature. Three commits, no
+behaviour change on stock installs (all three trigger only on
+opt-in cmdline args or opt-in service directives), no wire
+protocol change, no config surface removal.
+
+### Added
+
+- `condition-file-value = PATH:VALUE` — new native start
+  predicate that reads a small file (4 KB cap so a bad path
+  cannot stall boot on a growing log), trims trailing whitespace
+  including CR/LF, and string-compares the content to the
+  operator-declared value. Combined with the existing
+  leading-`!` negation (`Predicate.Negate`), covers both
+  "content equals X" and "content does NOT equal X" without
+  the `pre-start-command = /bin/sh -c '...'` fork+exec that was
+  the only prior workaround. Sub-microsecond vs 5-120 ms with
+  high variance on cache-cold systems. Distinct from
+  `condition-path-exists` (sysfs entries exist unconditionally
+  for phantom slots), `condition-file-not-empty` (the string
+  "0" is a non-empty file), and `condition-kernel-command-line`
+  (different source). Typical use: gate a service on a sysfs
+  enum/bool like `/sys/class/tty/ttyS0/type` (0 = phantom ISA
+  slot, nonzero = real UART), `/sys/class/backlight/*/actual_
+  brightness`, or `/sys/class/thermal/thermal_zone*/mode`.
+
+  Measured on ceres (identical 50-iter soak, kernel 7.2.3):
+  ```
+  Before (shell pre-start): userspace p90 = 403 ms, slow-tail 34 %
+  After  (native predicate): userspace p90 = 404 ms, slow-tail  2 %
+  ```
+  Median unchanged; the win is on the tail where the shell
+  fork used to spike.
+
+### Changed
+
+- Cmdline `splash` and `slinit.quiet` now auto-flip slinit
+  into quiet mode (`Quiet` in `pkg/bootmode`; suppressed
+  `bootConsole`, `logger.SetLevel(LevelError)`,
+  `PrintBootBanner` no-op). Rationale: any operator setting
+  `splash` on the kernel cmdline has already told the system
+  "I want a graphical boot"; the `[OK]/[FAIL]` cascade
+  slinit was still writing to `/dev/console` fought Plymouth
+  for the framebuffer and lost, and the `slinit booting...`
+  banner did the same flash. Two clean triggers, either
+  sufficient. Backward-compatible: absence of both leaves
+  every existing setup at the verbose console it had.
+  `slinit.debug` still wins when both are set — an operator
+  debugging boot gets the verbose stream regardless of the
+  splash marker.
+
+  Removes the need for the wrapper-script pattern
+  (`init=/usr/local/sbin/slinit-quiet` → `exec /usr/bin/slinit
+  -q "$@"`) that operators had to install manually to get a
+  clean splash. Now `init=/usr/bin/slinit quiet splash` on the
+  GRUB cmdline is the whole story.
+
 ## [2.2.11] — 2026-09-12
 
 Single-fix patch release: `slinit-journalctl -f` hanging after
