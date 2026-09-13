@@ -17,6 +17,98 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-09-13
+
+Milestone release — first minor bump on the 2.x line, marking the
+end of the 2.2.x correctness / integration phase and the point at
+which the current codebase has been continuously validated on real
+desktop stacks (XFCE 4.20, GNOME 48, KDE Plasma 6, Cinnamon 6.6,
+LXQt 2.4, MATE 1.26) with GDM3 and LightDM as PID-1 children,
+soak-tested at 100+ back-to-back reboots on QEMU with zero
+failed-start events, and shipped as an installable ISO
+(sunlight-os) from a fresh live image.
+
+No new commits vs 2.2.12 — this is a rename that consolidates the
+work of the 2.2.x series into a version tag operators can pin to.
+Everything that landed since 2.2.0 is now considered production-
+ready on a laptop/desktop workload, not just a server one.
+
+### Highlights of the 2.2.x → 2.3.0 arc (all shipped between
+2026-09-06 and 2026-09-13)
+
+- **finit-parity finalisation** (22 of 23 finit 5.0-rc1 items
+  shipped) — `switch-root`, hardware-watchdog-driven reboot,
+  `@console` sentinel, `slinit.cond=` mode selector, `hooks.d/*`,
+  `/etc/rc.local`, `/etc/network/interfaces` bring-up,
+  `slinit-getty` (agetty replacement, removes util-linux dep on
+  embedded images), `slinit-watchdogd` (runtime WDT petting with
+  `SIGPWR` handover). Two items deliberately deferred (D-Bus
+  `org.finit` API, dlopen plugin ABI) with revisit triggers
+  documented in README.
+
+- **Boot-console cinematic UX** — auto-quiet on kernel cmdline
+  `splash` / `slinit.quiet` (`pkg/bootmode` + `cmd/slinit`),
+  banner suppression under the same trigger, catch-all mute
+  post-boot, `OnShutdownAnnounce` un-mute so the shutdown WARN
+  still reaches `/dev/console`. Plymouth spinner → GDM/LightDM
+  handoff with zero text intermediate; ~400 ms userspace boot on
+  KVM with the full graphical stack (dbus + elogind + polkitd +
+  DM + docker + sshd + network).
+
+- **`slinit-journalctl -f` no longer hangs after ~30 s**
+  (`pkg/control/journal.go`) — the serve loop's 30 s read
+  deadline leaked into the follow-mode `io.Copy(io.Discard,
+  c.conn)` and orphaned the handler. Diagnosed via
+  `/debug/pprof/goroutine` on a `-tags pprof` build showing the
+  `handleJournalSubscribe` goroutine had already exited at the
+  moment of the client-side stall.
+
+- **`condition-file-value = PATH:VALUE`** native start predicate
+  — reads a small sysfs file inline and compares to an
+  operator-declared value, replacing the `pre-start-command =
+  /bin/sh -c '...'` fork+exec pattern for gating on sysfs
+  enums/bools (uart type, backlight state, thermal mode). Sub-µs
+  vs 5-120 ms with high variance on cache-cold systems; ceres
+  50-iter soak dropped the >400 ms userspace slow-tail from 34 %
+  to ~2 %.
+
+- **`log-forward-udp` standalone fix** — pre-existing regression
+  from 2026-02-25 where the SyslogForwarder was only constructed
+  inside the LogRotator branch (required a `log-file` to work).
+  Services with just `log-forward-udp = host:514` silently
+  dropped everything. New dispatch branch in `pkg/service/
+  process.go` creates the forwarder + pipe + reader goroutine.
+
+- **Test-harness robustness** — acceptance/69-escalating-shutdown
+  no longer races the catch-all mute (uses `-B` to disable
+  catch-all so the shutdown Notice always reaches stderr);
+  functional/96-log-forward-udp respawns BusyBox `nc` between
+  self-test and the assertion so the sticky-connect quirk does
+  not swallow subsequent datagrams; `tests/performance/demo/cold-
+  boot.sh` fixed a bimodal +1 s spike from a poll-vs-event race
+  in `runit-svc` (`ready-check-interval` 1 s → 100 ms).
+
+- **Sunlight OS integration proven** — slinit runs PID 1 on
+  Sunlight's live ISO + installed disks with slpkgs-native
+  packaging (`slinit`, `slinit-openrc-shims`, `sunlight-slinit-
+  services`), booting into a full graphical session (any of the
+  DEs above) with lightdm/gdm as slinit-managed child services.
+  100-boot QEMU soak with zero failed-start events.
+
+### Compat
+
+- Wire protocol: unchanged from 2.2.x (CPVersion=7,
+  MinCompatVersion=1). `slinitctl` 2.2.x clients continue to
+  work against a 2.3.0 daemon; a 2.3.0 `slinitctl` continues to
+  work against a 2.2.x daemon.
+- Config surface: `condition-file-value` is a new opt-in
+  directive; a 2.2.x parser will simply not recognise it (silent
+  skip). Existing service files are unchanged.
+- Cmdline: `splash` and `slinit.quiet` are new opt-in triggers;
+  absent, behaviour is unchanged.
+- Package manifests: no rename or removal on the `cmd/` list; no
+  binary was retired since 2.2.10.
+
 ## [2.2.12] — 2026-09-13
 
 Cinematic-boot polish + one small feature. Three commits, no
