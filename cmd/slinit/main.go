@@ -623,16 +623,14 @@ func main() {
 				logger.Error("Failed to re-attach catch-all: %v", err)
 			}
 		}
-		// Print the boot banner now that fd 1/2 are back on the catch-all pipe
-		// (when active), so it shows on the console *and* is captured in the
-		// catch-all log. setupConsole inside InitPID1 had pointed fd 1 at
-		// /dev/console, which would otherwise bypass the catch-all.
-		shutdown.PrintBootBanner()
 		// Parse kernel-cmdline selectors now — /proc is mounted by
 		// InitPID1 above, so this is the earliest safe point. Errors
 		// are non-fatal: a missing /proc/cmdline leaves kOpts at its
 		// zero value (Normal mode, no overrides), which is the safe
-		// default.
+		// default. Parsed BEFORE the boot banner so a `splash` /
+		// `slinit.quiet` cmdline can suppress the banner too — the
+		// banner would otherwise punch through the plymouth
+		// framebuffer via the /dev/console write.
 		if o, err := bootmode.ParseFromProc(); err != nil {
 			logger.Warn("bootmode: parse /proc/cmdline: %v", err)
 		} else {
@@ -652,6 +650,17 @@ func main() {
 				logger.Notice("slinit.reboot-delay: %ds pause before reboot syscall",
 					kOpts.RebootDelaySec)
 			}
+		}
+		// Print the boot banner now that /proc/cmdline has been
+		// parsed and we know whether the operator wants a
+		// cinematic boot. Skipped under Quiet so plymouth's
+		// framebuffer stays undisturbed; otherwise fires here so
+		// it shows on the console and is captured in the catch-all
+		// log (setupConsole in InitPID1 above pointed fd 1 at
+		// /dev/console; without the ReattachStdoutErr the banner
+		// would bypass the catch-all).
+		if !kOpts.Quiet {
+			shutdown.PrintBootBanner()
 		}
 		// Test hook for crash-shell (see cmd/slinit/panictest_*.go).
 		// No-op in production builds; when compiled with `-tags
