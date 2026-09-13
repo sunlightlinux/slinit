@@ -93,6 +93,16 @@ type Options struct {
 	// peripheral always produces a clean hardware reset. finit-parity
 	// (`reboot-watchdog = true` in Finit's global config).
 	RebootWatchdog bool
+	// Quiet suppresses slinit's [OK]/[FAIL] boot-console cascade so
+	// a graphical splash (Plymouth) can hold the framebuffer
+	// undisturbed. Triggered by either `splash` (the standard
+	// Linux/Plymouth boot marker — user asked for a cinematic
+	// boot) or `slinit.quiet` (explicit override, in case splash
+	// is off but the operator wants a silent boot anyway). Applied
+	// to the logger by forcing quietMode = true, which flips
+	// bootConsole off and bumps the console-level to Error.
+	Quiet bool
+
 	// RebootDelaySec is finit-parity for `reboot-delay = N`: a
 	// pause (in seconds) between the shutdown-hook and the reboot
 	// syscall. Zero = disabled. Clamped downstream to [0, 60] to
@@ -113,8 +123,10 @@ type Options struct {
 //	  single, s, 1           — Mode = Rescue (sysvinit runlevel 1 compat)
 //	  emergency              — Mode = Emergency
 //	  rescue                 — Mode = Rescue
+//	  splash                 — Quiet = true (plymouth marker; silence [OK] cascade)
 //	  slinit.emergency       — Mode = Emergency
 //	  slinit.rescue          — Mode = Rescue
+//	  slinit.quiet           — Quiet = true (explicit, no-plymouth path)
 //	  slinit.debug-shell     — DebugShell = true
 //	  slinit.confirm-spawn   — ConfirmSpawn = true
 //	  slinit.crash-shell     — CrashShell = true
@@ -145,6 +157,19 @@ func Parse(cmdline string) Options {
 				continue
 			case "rescue":
 				opts.Mode = Rescue
+				continue
+			case "splash":
+				// Standard Linux/Plymouth marker — user asked for
+				// a cinematic boot. Silence slinit's [OK] cascade
+				// so it does not overwrite the splash framebuffer
+				// via text-mode /dev/console writes.
+				opts.Quiet = true
+				continue
+			case "slinit.quiet":
+				// Explicit slinit.quiet — for operators who want
+				// a silent boot without plymouth. Independent of
+				// splash so either alone suffices.
+				opts.Quiet = true
 				continue
 			}
 		}

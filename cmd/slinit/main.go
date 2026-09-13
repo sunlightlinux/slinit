@@ -664,6 +664,20 @@ func main() {
 			logger.SetBootConsole(false, false)
 			logger.SetLevel(logging.LevelDebug)
 			logger.Notice("slinit.debug: verbose console logging enabled")
+		} else if kOpts.Quiet {
+			// splash / slinit.quiet on the kernel command line —
+			// operator asked for a cinematic boot (plymouth or
+			// otherwise). Kill the [OK]/[FAIL] boot console so
+			// slinit's own text output does not overwrite the
+			// splash framebuffer via /dev/console. Kernel messages
+			// and warnings still land in the journal and (if
+			// slinit is not PID 1) on stderr; only the compact
+			// boot-console renderer is suppressed. Independent of
+			// --quiet / -q flag: cmdline wins even without a
+			// user-set flag. Skipped when slinit.debug is on so
+			// operators debugging boot get their verbose stream.
+			logger.SetBootConsole(false, false)
+			logger.SetLevel(logging.LevelError)
 		} else if kOpts.LogLevel != "" {
 			// slinit.log-level=<lvl> — systemd.log_level parity.
 			// Finer-grained than slinit.debug (which also flips off
