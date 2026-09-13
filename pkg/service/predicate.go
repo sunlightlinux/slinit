@@ -66,6 +66,31 @@ const (
 	// so a hung check does not stall boot.
 	PredExecCondition
 
+	// PredFileValue reads a file, trims trailing whitespace, and
+	// compares the content to a parameter value. Param format is
+	// "PATH:VALUE" (last ':' separates); the file is opened
+	// O_RDONLY, its full content read (capped at 4KB so a bad
+	// path can't stall boot on a growing log), CRLF and trailing
+	// whitespace stripped, then compared string-equal to VALUE.
+	// Combined with the leading-! negation this covers both
+	// "content equals X" and "content does NOT equal X" without
+	// forking a shell:
+	//   condition-file-value = /sys/class/tty/ttyS0/type:0
+	//     → skip service unless /type reads exactly "0"
+	//   condition-file-value = !/sys/class/tty/ttyS0/type:0
+	//     → skip service unless /type reads anything OTHER than "0"
+	// Motivation: sysfs one-shot boolean/enum reads (uart type,
+	// backlight/actual_brightness, thermal_zone/mode, ...) are the
+	// classic gating case; `condition-path-exists` is too coarse
+	// (kernel drivers create the sysfs entry unconditionally) and
+	// `condition-file-not-empty` is too coarse (content is "0"
+	// which is a non-empty file). The fork-a-shell workaround
+	// costs 5-120ms per boot with high variance on cache-cold
+	// systems; this native predicate is ~5µs. Missing file /
+	// EACCES / no colon in the param → predicate fails with a
+	// descriptive reason.
+	PredFileValue
+
 	// finit-parity: PredBootCond matches a value from the
 	// comma-separated `slinit.cond=` kernel-cmdline argument. Used to
 	// select factory / upgrade / provisioning modes without editing
@@ -181,6 +206,8 @@ func (p Predicate) String() string {
 		name = "io-pressure"
 	case PredBootCond:
 		name = "boot-cond"
+	case PredFileValue:
+		name = "file-value"
 	case PredExecCondition:
 		// Rendered as `exec-condition` (not `condition-exec-*`) because
 		// systemd exposes this as its own directive, not as a member
@@ -326,8 +353,47 @@ func evalRaw(p Predicate) (bool, string) {
 		return checkExecCondition(p.Param)
 	case PredBootCond:
 		return checkBootCond(p.Param)
+	case PredFileValue:
+		return checkFileValue(p.Param)
 	}
 	return false, fmt.Sprintf("unknown predicate kind %d", p.Kind)
+}
+
+// checkFileValue reads the file at PATH (from Param="PATH:VALUE",
+// splitting on the LAST ':' so a path segment containing ':' — rare
+// on Linux but not impossible on FUSE-exposed weirdness — is still
+// unambiguous). Returns true when the file's content (after trimming
+// trailing whitespace, including CR/LF) equals VALUE, false otherwise.
+//
+// Bounded 4KB read cap: sysfs enum/bool files are always tiny (usually
+// 1-8 bytes), and capping keeps a mistaken path pointed at a growing
+// log from blocking boot on a huge read. Missing file / EACCES /
+// malformed param → false with a descriptive reason so the operator
+// sees why the service was skipped in the journal.
+func checkFileValue(param string) (bool, string) {
+	i := strings.LastIndexByte(param, ':')
+	if i < 0 {
+		return false, fmt.Sprintf("file-value: missing ':' in %q (want PATH:VALUE)", param)
+	}
+	path := param[:i]
+	want := param[i+1:]
+	if path == "" {
+		return false, "file-value: empty path"
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Sprintf("file-value: %v", err)
+	}
+	defer f.Close()
+	// 4KB cap — sysfs bools/enums are 1-8 bytes; anything bigger is
+	// operator error. ReadFull-style not needed: we truncate.
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	got := strings.TrimRight(string(buf[:n]), " \t\r\n")
+	if got != want {
+		return false, fmt.Sprintf("file-value: %s reads %q, want %q", path, got, want)
+	}
+	return true, ""
 }
 
 // checkExecCondition runs the pre-flight command line through /bin/sh -c
@@ -497,6 +563,8 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredIOPressure, true
 	case "boot-cond":
 		return PredBootCond, true
+	case "file-value":
+		return PredFileValue, true
 	}
 	return 0, false
 }
