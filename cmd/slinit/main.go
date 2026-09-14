@@ -426,6 +426,25 @@ func main() {
 	// use the configured log target; called before service loading so
 	// the first Load / Start transitions already produce journal
 	// entries.
+	//
+	// As PID 1 we're responsible for seeding the kernel hostname from
+	// /etc/hostname BEFORE we cache it for journal entries — otherwise
+	// every service-lifecycle event during early boot ships tagged
+	// with the kernel default "(none)" and stays that way for the rest
+	// of the boot even after a userspace service (early-setup, an
+	// operator's own `hostname -F` script) sets the kernel value.
+	// Best-effort: a missing/unreadable /etc/hostname just leaves the
+	// kernel default in place, matching what happens without this
+	// helper.
+	if isPID1 {
+		if data, err := os.ReadFile("/etc/hostname"); err == nil {
+			if h := strings.TrimSpace(string(data)); h != "" {
+				if err := unix.Sethostname([]byte(h)); err != nil {
+					logger.Warn("sethostname(%q) failed: %v", h, err)
+				}
+			}
+		}
+	}
 	hostname, _ := os.Hostname()
 	if err := journal.InitIDs(hostname); err != nil {
 		logger.Warn("Journal ID init failed: %v (events will still work with transient IDs)", err)
