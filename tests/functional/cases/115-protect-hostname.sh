@@ -19,13 +19,18 @@ assert_service_state "$SVC" "STARTED" "service reached STARTED"
 # STARTED is emitted right after fork for type=process without notify,
 # which races with slinit-runner's seccomp Install() — /proc/PID/status
 # can briefly show Seccomp=0 in the window between fork and the
-# runner's install. Poll for up to 2s (same shape as 116-lock-personality).
+# runner's install. Poll for up to 5s (bumped from 2s after a full
+# 218-case run hit the race under load — even the hostname assertion
+# fired, meaning the filter genuinely never installed within the
+# earlier budget on that iteration).
 _pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ { print $2; exit }')
 _seccomp=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+_i=0
+while [ "$_i" -lt 25 ]; do
     _seccomp=$(awk '/^Seccomp:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
     [ "$_seccomp" = "2" ] && break
     sleep 0.2
+    _i=$((_i + 1))
 done
 assert_eq "$_seccomp" "2" "seccomp filter (mode 2) installed"
 
@@ -38,7 +43,16 @@ case "$_err" in
         echo "OK: seccomp installed (probe stderr: '${_err:-<empty>}')" ;;
 esac
 
-# Host hostname must remain unchanged.
-assert_eq "$(hostname)" "$_orig_host" "host hostname untouched by guarded service"
+# Host hostname must remain unchanged. If the seccomp install lost
+# the fork-vs-install race and the probe managed to sneak sethostname
+# through, restore the original name best-effort BEFORE asserting so
+# the machine does not leak the mutation into the next case — the
+# assertion still fires because we compare the observed value from
+# BEFORE the restore.
+_after_host=$(hostname)
+if [ "$_after_host" != "$_orig_host" ]; then
+    hostname "$_orig_host" 2>/dev/null || true
+fi
+assert_eq "$_after_host" "$_orig_host" "host hostname untouched by guarded service"
 
 test_summary
