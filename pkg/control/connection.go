@@ -308,6 +308,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleOnceService(payload)
 	case CmdServiceStatus6:
 		return c.handleServiceStatus6(payload)
+	case CmdServiceShow:
+		return c.handleServiceShow(payload)
 	case CmdRunAction:
 		return c.handleRunAction(payload)
 	case CmdListActions:
@@ -1998,6 +2000,27 @@ func (c *Connection) handleServiceStatus6(payload []byte) error {
 
 	status := EncodeServiceStatus6(svc)
 	return c.writePacket(RplyServiceStatus, status)
+}
+
+// handleServiceShow renders the full systemd-`show`-style key=value
+// dump of the service. Reply body is UTF-8 text; the client renders
+// it directly. Length is bounded by MaxPayloadSize (65535 bytes) —
+// which is comfortably more than the ~4-6KB a fully-configured
+// service produces today.
+func (c *Connection) handleServiceShow(payload []byte) error {
+	handle, err := DecodeHandle(payload)
+	if err != nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	svc := c.getService(handle)
+	if svc == nil {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	body := service.RenderShow(svc)
+	if len(body) > MaxPayloadSize {
+		body = body[:MaxPayloadSize]
+	}
+	return c.writePacket(RplyServiceShow, []byte(body))
 }
 
 func (c *Connection) handleListenEnv() error {

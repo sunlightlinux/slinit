@@ -144,6 +144,13 @@ const (
 	// the write completes (which returns when the system wakes),
 	// or RplyBadReq with the sysfs error text on failure.
 	CmdSuspend uint8 = 65
+	// systemd-show analogue: dump the full configuration + live state
+	// of a service as a UTF-8 body of `Key=Value\n` lines. Payload:
+	// [handle(4)]. Reply: RplyServiceShow with the rendered body.
+	// The body format is stable enough for scripting (awk/grep) but
+	// intentionally not versioned per-field — new keys append at the
+	// end of the render, callers ignore keys they don't recognise.
+	CmdServiceShow uint8 = 66
 )
 
 // Reply codes (server → client).
@@ -205,6 +212,7 @@ const (
 	RplyJournalEntry    uint8 = 115 // one JSONL-encoded Event; multiple per JournalQuery/Subscribe reply
 	RplyJournalDone     uint8 = 116 // terminates a JournalQuery reply stream
 	RplyJournalErr      uint8 = 117 // JournalQuery/Subscribe rejected (bad JSON filter, buffer unset, etc.)
+	RplyServiceShow     uint8 = 118 // CmdServiceShow: UTF-8 body of `Key=Value\n` lines.
 )
 
 // Info codes (server → client, unsolicited).

@@ -297,6 +297,10 @@ doneFlags:
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdStatus(conn, name)
 		})
+	case "show":
+		err = requireServiceArg(cmdArgs, func(name string) error {
+			return cmdShow(conn, name)
+		})
 	case "is-started":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdIsStarted(conn, name)
@@ -529,6 +533,7 @@ Commands:
   release <service>        Remove active mark (stop if unrequired)
   restart <service>        Restart a service (stop + start)
   status <service>         Show detailed service status
+  show <service>           Dump every configured field as Key=Value (scripting)
   is-started <service>     Exit 0 if started, 1 otherwise
   is-failed <service>      Exit 0 if failed, 1 otherwise
   shutdown [type] [time]   Shutdown: type=halt|poweroff|reboot|kexec|softreboot
@@ -1481,6 +1486,29 @@ func printRecentJournal(name string, n int) {
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		fmt.Printf("    %s\n", line)
 	}
+}
+
+// cmdShow prints the systemd-`show`-style Key=Value dump of a
+// service. The server does all the rendering (pkg/service.RenderShow);
+// the CLI is a thin pipe. Output ordering is stable, so scripting via
+// `awk -F=` or `grep '^KillMode='` is safe.
+func cmdShow(conn net.Conn, name string) error {
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+	if err := control.WritePacket(conn, control.CmdServiceShow, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyServiceShow {
+		return fmt.Errorf("show: unexpected reply %d", rply)
+	}
+	fmt.Print(string(payload))
+	return nil
 }
 
 // fetchDescription queries the human-readable description for a service handle.
