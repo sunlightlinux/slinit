@@ -4527,11 +4527,32 @@ func cmdServiceStatus5(conn net.Conn, svcName string) error {
 		return err
 	}
 
+	// Piggy-back a v1 status query for Type/PID/ExitStatus — those
+	// live outside the fixed 14-byte v5 wire but are cheap to fetch on
+	// the same connection, and printing them here saves the operator
+	// a second round-trip.
+	var v1 control.ServiceStatusInfo
+	var haveV1 bool
+	if err := control.WritePacket(conn, control.CmdServiceStatus, control.EncodeHandle(handle)); err == nil {
+		if r, p, err := readReply(conn); err == nil && r == control.RplyServiceStatus {
+			if s, err := control.DecodeServiceStatus(p); err == nil {
+				v1 = s
+				haveV1 = true
+			}
+		}
+	}
+
 	state := service.ServiceState(status.State).String()
 	target := service.ServiceState(status.TargetState).String()
 	reason := stopReasonStr(status.StopReason)
 
 	fmt.Printf("Service: %s\n", svcName)
+	if haveV1 {
+		fmt.Printf("  Type:        %s\n", v1.SvcType)
+	}
+	if desc, err := fetchDescription(conn, handle); err == nil && desc != "" {
+		fmt.Printf("  Description: %s\n", desc)
+	}
 	fmt.Printf("  State:       %s\n", state)
 	fmt.Printf("  Target:      %s\n", target)
 	fmt.Printf("  Stop-reason: %s\n", reason)
@@ -4542,6 +4563,9 @@ func cmdServiceStatus5(conn net.Conn, svcName string) error {
 	if status.Flags&control.StatusFlagMarkedActive != 0 {
 		fmt.Printf(" [active]")
 	}
+	if status.Flags&control.StatusFlagWaitingDeps != 0 {
+		fmt.Printf(" [waiting-deps]")
+	}
 	if status.Flags&control.StatusFlagHasConsole != 0 {
 		fmt.Printf(" [console]")
 	}
@@ -4549,12 +4573,176 @@ func cmdServiceStatus5(conn net.Conn, svcName string) error {
 		fmt.Printf(" [start-failed]")
 	}
 	fmt.Println()
-	if status.ExecStage != 0 {
-		fmt.Printf("  Exec-stage:  %d\n", status.ExecStage)
+	if haveV1 && status.Flags&control.StatusFlagHasPID != 0 {
+		fmt.Printf("  PID:         %d\n", v1.PID)
 	}
-	fmt.Printf("  si_code:     %d\n", status.SiCode)
-	fmt.Printf("  si_status:   %d\n", status.SiStatus)
+	// Exec-stage nonzero encodes a fork-time failure — the ExecErrno
+	// then rides in SiCode (see EncodeServiceStatus5 in
+	// pkg/control/protocol.go). Render both symbolically.
+	if status.ExecStage != 0 {
+		fmt.Printf("  Exec-stage:  %d (%s)\n", status.ExecStage, execStageName(status.ExecStage))
+		fmt.Printf("  Exec-errno:  %d (%s)\n", status.SiCode, errnoName(status.SiCode))
+	} else {
+		fmt.Printf("  si_code:     %d (%s)\n", status.SiCode, siCodeName(status.SiCode))
+		if status.SiCode == 2 /*CLD_KILLED*/ || status.SiCode == 3 /*CLD_DUMPED*/ {
+			fmt.Printf("  si_status:   %d (%s)\n", status.SiStatus, signalNameByNum(status.SiStatus))
+		} else {
+			fmt.Printf("  si_status:   %d\n", status.SiStatus)
+		}
+	}
 	return nil
+}
+
+// siCodeName translates a wait(2) siginfo_t.si_code into the CLD_*
+// symbol so an operator can grep for `si_code: ... (CLD_KILLED)` when
+// hunting non-normal terminations. Zero (no wait event yet) renders
+// as an explicit "(none)" so nothing implies a value that isn't set.
+func siCodeName(code int32) string {
+	switch code {
+	case 0:
+		return "none"
+	case 1:
+		return "CLD_EXITED"
+	case 2:
+		return "CLD_KILLED"
+	case 3:
+		return "CLD_DUMPED"
+	case 4:
+		return "CLD_TRAPPED"
+	case 5:
+		return "CLD_STOPPED"
+	case 6:
+		return "CLD_CONTINUED"
+	}
+	return "unknown"
+}
+
+// signalNameByNum resolves a signal number to its SIG* symbol. Used
+// when si_code is CLD_KILLED / CLD_DUMPED and si_status is the signal
+// that killed the process.
+func signalNameByNum(n int32) string {
+	switch n {
+	case 1:
+		return "SIGHUP"
+	case 2:
+		return "SIGINT"
+	case 3:
+		return "SIGQUIT"
+	case 4:
+		return "SIGILL"
+	case 5:
+		return "SIGTRAP"
+	case 6:
+		return "SIGABRT"
+	case 7:
+		return "SIGBUS"
+	case 8:
+		return "SIGFPE"
+	case 9:
+		return "SIGKILL"
+	case 10:
+		return "SIGUSR1"
+	case 11:
+		return "SIGSEGV"
+	case 12:
+		return "SIGUSR2"
+	case 13:
+		return "SIGPIPE"
+	case 14:
+		return "SIGALRM"
+	case 15:
+		return "SIGTERM"
+	case 17:
+		return "SIGCHLD"
+	case 18:
+		return "SIGCONT"
+	case 19:
+		return "SIGSTOP"
+	case 20:
+		return "SIGTSTP"
+	case 24:
+		return "SIGXCPU"
+	case 25:
+		return "SIGXFSZ"
+	case 26:
+		return "SIGVTALRM"
+	case 27:
+		return "SIGPROF"
+	case 28:
+		return "SIGWINCH"
+	case 29:
+		return "SIGIO"
+	case 30:
+		return "SIGPWR"
+	case 31:
+		return "SIGSYS"
+	}
+	return "signal-" + strconv.Itoa(int(n))
+}
+
+// execStageName mirrors pkg/process.ExecStage.String() but for the
+// wire representation we get here (uint16 raw). Keeps the CLI free
+// of an extra process-pkg import for a translation table.
+func execStageName(stage uint16) string {
+	stages := []string{
+		"arranging file descriptors",
+		"reading environment file",
+		"setting environment variable",
+		"setting up activation socket",
+		"setting up control socket",
+		"changing directory",
+		"setting up standard input/output",
+		"entering cgroup",
+		"setting resource limits",
+		"setting user/group ID",
+		"opening log file",
+		"setting capabilities",
+		"setting I/O priority",
+		"executing command",
+	}
+	if int(stage) < len(stages) {
+		return stages[stage]
+	}
+	return "unknown"
+}
+
+// errnoName resolves the top handful of errno values slinit's fork
+// path is likely to surface. Falls through to numeric for anything
+// else — the operator can still look it up in errno(3).
+func errnoName(n int32) string {
+	switch n {
+	case 0:
+		return "OK"
+	case 1:
+		return "EPERM"
+	case 2:
+		return "ENOENT"
+	case 5:
+		return "EIO"
+	case 9:
+		return "EBADF"
+	case 12:
+		return "ENOMEM"
+	case 13:
+		return "EACCES"
+	case 14:
+		return "EFAULT"
+	case 17:
+		return "EEXIST"
+	case 20:
+		return "ENOTDIR"
+	case 21:
+		return "EISDIR"
+	case 22:
+		return "EINVAL"
+	case 24:
+		return "EMFILE"
+	case 28:
+		return "ENOSPC"
+	case 38:
+		return "ENOSYS"
+	}
+	return "errno-" + strconv.Itoa(int(n))
 }
 
 // cmdCompletion outputs a shell completion script to stdout.
