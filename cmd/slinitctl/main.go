@@ -1394,7 +1394,93 @@ func cmdStatus(conn net.Conn, name string) error {
 			fmt.Printf("    - %s (%s)\n", m, memberState)
 		}
 	}
+
+	// systemctl-style extras: cgroup tree + recent journal. Both are
+	// best-effort — no error is fatal because status still worked, and
+	// the state/PID lines above are the authoritative wire truth.
+	if status.Flags&control.StatusFlagHasPID != 0 {
+		printCgroupTree(int(status.PID))
+	}
+	printRecentJournal(name, 10)
 	return nil
+}
+
+// printCgroupTree renders a `systemctl status`-style CGroup section
+// for the service. It derives the cgroup v2 path from /proc/PID/cgroup
+// (line format "0::<path>" on unified hierarchy), lists the sibling
+// PIDs from cgroup.procs, and prints each with its /proc/PID/comm.
+// Silent on any error — a service without a cgroup, on cgroup v1, or
+// with a PID that just exited simply produces no output.
+func printCgroupTree(pid int) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return
+	}
+	var cgPath string
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		// cgroup v2 (unified): "0::/path"
+		if strings.HasPrefix(line, "0::") {
+			cgPath = strings.TrimPrefix(line, "0::")
+			break
+		}
+	}
+	if cgPath == "" || cgPath == "/" {
+		return
+	}
+	procsFile := "/sys/fs/cgroup" + cgPath + "/cgroup.procs"
+	procsData, err := os.ReadFile(procsFile)
+	if err != nil {
+		return
+	}
+	pids := strings.Fields(string(procsData))
+	if len(pids) == 0 {
+		return
+	}
+	fmt.Printf("\n  CGroup: %s\n", cgPath)
+	for i, pstr := range pids {
+		branch := "├─"
+		if i == len(pids)-1 {
+			branch = "└─"
+		}
+		comm := "?"
+		if b, err := os.ReadFile("/proc/" + pstr + "/comm"); err == nil {
+			comm = strings.TrimRight(string(b), "\n")
+		}
+		// cmdline is nicer than comm when it fits — matches systemctl.
+		if b, err := os.ReadFile("/proc/" + pstr + "/cmdline"); err == nil && len(b) > 0 {
+			cl := strings.ReplaceAll(strings.TrimRight(string(b), "\x00"), "\x00", " ")
+			if cl != "" {
+				comm = cl
+			}
+		}
+		fmt.Printf("    %s%s %s\n", branch, pstr, comm)
+	}
+}
+
+// printRecentJournal shells out to slinit-journalctl to render the
+// last n entries for the named service. Matches systemctl's own
+// pattern of exec'ing journalctl for its status output. Silent when
+// slinit-journalctl is absent (older installs) or when the query
+// fails (no journal daemon running, permission denied, etc.) so
+// status still returns cleanly.
+func printRecentJournal(name string, n int) {
+	bin, err := exec.LookPath("slinit-journalctl")
+	if err != nil {
+		return
+	}
+	cmd := exec.Command(bin,
+		"-u", name,
+		"-n", strconv.Itoa(n),
+		"--no-pager",
+		"--output=short")
+	out, err := cmd.Output()
+	if err != nil || len(out) == 0 {
+		return
+	}
+	fmt.Printf("\n  Journal (last %d):\n", n)
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		fmt.Printf("    %s\n", line)
+	}
 }
 
 // fetchDescription queries the human-readable description for a service handle.
