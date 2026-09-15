@@ -1501,9 +1501,12 @@ func printRecentJournal(name string, n int) {
 }
 
 // cmdShow prints the systemd-`show`-style Key=Value dump of a
-// service. The server does all the rendering (pkg/service.RenderShow);
-// the CLI is a thin pipe. Output ordering is stable, so scripting via
-// `awk -F=` or `grep '^KillMode='` is safe.
+// service. The server does all the config rendering
+// (pkg/service.RenderShow); the CLI augments it with live cgroup v2
+// accounting counters read from /sys/fs/cgroup at query time — the
+// numbers systemd reports as MemoryCurrent / CPUUsageNSec / OOMKills.
+// Output ordering is stable, so scripting via `awk -F=` or
+// `grep '^KillMode='` is safe.
 func cmdShow(conn net.Conn, name string) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
@@ -1519,8 +1522,197 @@ func cmdShow(conn net.Conn, name string) error {
 	if rply != control.RplyServiceShow {
 		return fmt.Errorf("show: unexpected reply %d", rply)
 	}
-	fmt.Print(string(payload))
+	body := string(payload)
+	fmt.Print(body)
+
+	// Live cgroup v2 accounting — reads at request time so counters
+	// reflect the moment the operator asked. Resolves the path from
+	// the CgroupPath= line if the service configured one; otherwise
+	// falls back to /proc/PID/cgroup (0:: line for v2 unified). No
+	// output when the service has no cgroup or the counters are
+	// unreadable (permission, cgroup v1, sysfs not populated yet).
+	if cg := resolveCgroupPath(conn, handle, body); cg != "" {
+		printCgroupAccounting(cg)
+	}
 	return nil
+}
+
+// resolveCgroupPath returns the absolute /sys/fs/cgroup subpath the
+// service lives in. Preferred source is the CgroupPath= line from the
+// show body (config-time truth); the PID-derived /proc read is a
+// fallback for services placed by dbus/pam/elogind session rules that
+// slinit itself didn't set.
+func resolveCgroupPath(conn net.Conn, handle uint32, showBody string) string {
+	for _, line := range strings.Split(showBody, "\n") {
+		if strings.HasPrefix(line, "CgroupPath=") {
+			p := strings.TrimPrefix(line, "CgroupPath=")
+			if p != "" {
+				return p
+			}
+		}
+	}
+	// Fall back to /proc/PID/cgroup for services without an explicit
+	// cgroup directive. Best-effort: we only bother when the v1 status
+	// exposes a PID.
+	if err := control.WritePacket(conn, control.CmdServiceStatus, control.EncodeHandle(handle)); err != nil {
+		return ""
+	}
+	r, p, err := readReply(conn)
+	if err != nil || r != control.RplyServiceStatus {
+		return ""
+	}
+	st, err := control.DecodeServiceStatus(p)
+	if err != nil || st.Flags&control.StatusFlagHasPID == 0 || st.PID == 0 {
+		return ""
+	}
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", st.PID))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "0::") {
+			cg := strings.TrimPrefix(line, "0::")
+			if cg == "" || cg == "/" {
+				return ""
+			}
+			return "/sys/fs/cgroup" + cg
+		}
+	}
+	return ""
+}
+
+// printCgroupAccounting prints the same live counters `systemctl show`
+// surfaces from the unified cgroup hierarchy. Each file is best-effort:
+// missing files on older kernels or unrooted controllers silently
+// skip the associated key rather than emitting error noise.
+func printCgroupAccounting(cg string) {
+	// Memory
+	if v := readCgroupUint(cg + "/memory.current"); v != "" {
+		fmt.Println("MemoryCurrent=" + v)
+	}
+	if v := readCgroupUint(cg + "/memory.peak"); v != "" {
+		fmt.Println("MemoryPeak=" + v)
+	}
+	if v := readCgroupUint(cg + "/memory.swap.current"); v != "" {
+		fmt.Println("MemorySwapCurrent=" + v)
+	}
+	if v := readCgroupUint(cg + "/memory.swap.peak"); v != "" {
+		fmt.Println("MemorySwapPeak=" + v)
+	}
+	// CPU — cpu.stat is flat "key value" lines; usage_usec is what
+	// systemd reports as CPUUsageNSec (× 1000).
+	if kv := readCgroupFlat(cg + "/cpu.stat"); kv != nil {
+		if usec, ok := kv["usage_usec"]; ok {
+			fmt.Println("CPUUsageNSec=" + mulString(usec, 1000))
+		}
+		if v, ok := kv["user_usec"]; ok {
+			fmt.Println("CPUUserNSec=" + mulString(v, 1000))
+		}
+		if v, ok := kv["system_usec"]; ok {
+			fmt.Println("CPUSystemNSec=" + mulString(v, 1000))
+		}
+	}
+	// Tasks (thread groups + threads); pids.current when the pids
+	// controller is enabled, else count entries in cgroup.procs.
+	if v := readCgroupUint(cg + "/pids.current"); v != "" {
+		fmt.Println("TasksCurrent=" + v)
+	} else if b, err := os.ReadFile(cg + "/cgroup.procs"); err == nil {
+		fmt.Printf("TasksCurrent=%d\n", len(strings.Fields(string(b))))
+	}
+	// OOM events — memory.events has "oom_kill N" among its lines.
+	if kv := readCgroupFlat(cg + "/memory.events"); kv != nil {
+		if v, ok := kv["oom_kill"]; ok {
+			fmt.Println("OOMKills=" + v)
+		}
+	}
+	// I/O — io.stat is one line per device: "MAJ:MIN rbytes=… wbytes=…".
+	// Sum across devices to match systemd's aggregate accounting.
+	if b, err := os.ReadFile(cg + "/io.stat"); err == nil {
+		var rb, wb, ro, wo uint64
+		for _, line := range strings.Split(string(b), "\n") {
+			for _, f := range strings.Fields(line) {
+				kv := strings.SplitN(f, "=", 2)
+				if len(kv) != 2 {
+					continue
+				}
+				n, err := strconv.ParseUint(kv[1], 10, 64)
+				if err != nil {
+					continue
+				}
+				switch kv[0] {
+				case "rbytes":
+					rb += n
+				case "wbytes":
+					wb += n
+				case "rios":
+					ro += n
+				case "wios":
+					wo += n
+				}
+			}
+		}
+		if rb > 0 || wb > 0 || ro > 0 || wo > 0 {
+			fmt.Printf("IOReadBytes=%d\n", rb)
+			fmt.Printf("IOWriteBytes=%d\n", wb)
+			fmt.Printf("IOReadOperations=%d\n", ro)
+			fmt.Printf("IOWriteOperations=%d\n", wo)
+		}
+	}
+}
+
+// readCgroupUint reads a single uint64 out of a cgroup interface file.
+// Returns "" when the file is absent, unreadable, or the special
+// systemd "max" sentinel (rendered as empty rather than lying about a
+// numeric ceiling that isn't set).
+func readCgroupUint(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(b))
+	if s == "" || s == "max" {
+		return ""
+	}
+	if _, err := strconv.ParseUint(s, 10, 64); err != nil {
+		return ""
+	}
+	return s
+}
+
+// readCgroupFlat parses a cgroup interface file that's laid out as
+// one "key value" pair per line (cpu.stat, memory.events, io.pressure
+// summaries). Returns nil when the file is absent or empty so callers
+// can `if kv := readCgroupFlat(...); kv != nil` guard the render.
+func readCgroupFlat(path string) map[string]string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, 8)
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		out[f[0]] = f[1]
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// mulString multiplies a numeric string by a small factor, returning
+// the result as a decimal string. Used to convert cpu.stat's
+// microsecond fields into nanoseconds for the systemd-shaped output
+// keys. Silently returns the input unchanged if it isn't a valid
+// uint64 — the show wire is never worth failing over.
+func mulString(s string, k uint64) string {
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return s
+	}
+	return strconv.FormatUint(n*k, 10)
 }
 
 // fetchDescription queries the human-readable description for a service handle.
