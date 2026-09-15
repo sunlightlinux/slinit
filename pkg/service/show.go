@@ -279,6 +279,185 @@ func RenderShow(s Service) string {
 	}
 	pb("GuessMainPID", sr.guessMainPID)
 
+	// --- Actions on lifecycle transitions ---
+	if sr.failureAction != ActionNone {
+		p("FailureAction", sr.failureAction.String())
+	}
+	if sr.successAction != ActionNone {
+		p("SuccessAction", sr.successAction.String())
+	}
+	if sr.startLimitAction != ActionNone {
+		p("StartLimitAction", sr.startLimitAction.String())
+	}
+	if sr.rebootArgument != "" {
+		p("RebootArgument", sr.rebootArgument)
+	}
+
+	// --- Bucket B / D catch-all ---
+	pb("DynamicUser", sr.dynamicUser)
+	pb("RemoveIPC", sr.removeIPC)
+	if sr.standardInputSet {
+		p("StandardInputData", fmt.Sprintf("%d bytes", len(sr.standardInput)))
+	}
+
+	// --- Namespaces decoded from cloneflags ---
+	// Cloneflags is set at load time so any Private*= directive that
+	// asked for a namespace is reflected here. Matches systemd's per-
+	// namespace booleans.
+	if sr.cloneflags != 0 {
+		pb("PrivateMounts", sr.cloneflags&uintptr(syscall.CLONE_NEWNS) != 0)
+		pb("PrivateUsers", sr.cloneflags&uintptr(syscall.CLONE_NEWUSER) != 0)
+		pb("PrivatePIDs", sr.cloneflags&uintptr(syscall.CLONE_NEWPID) != 0)
+		pb("PrivateIPC", sr.cloneflags&uintptr(syscall.CLONE_NEWIPC) != 0)
+		pb("PrivateNetwork", sr.cloneflags&uintptr(syscall.CLONE_NEWNET) != 0)
+	}
+
+	// --- CPUset + NUMA ---
+	if sr.cpusetPartition != "" {
+		p("CPUSetPartition", sr.cpusetPartition)
+	}
+	if sr.startupAllowedCPUs != "" {
+		p("StartupAllowedCPUs", sr.startupAllowedCPUs)
+	}
+	if sr.startupAllowedMemoryNodes != "" {
+		p("StartupAllowedMemoryNodes", sr.startupAllowedMemoryNodes)
+	}
+	if sr.steadyAllowedCPUs != "" {
+		p("AllowedCPUs", sr.steadyAllowedCPUs)
+	}
+	if sr.steadyAllowedMemoryNodes != "" {
+		p("AllowedMemoryNodes", sr.steadyAllowedMemoryNodes)
+	}
+	if sr.numaMempolicySet {
+		p("NUMAPolicy", strconv.FormatUint(uint64(sr.numaMempolicy), 10))
+		if len(sr.numaNodes) > 0 {
+			p("NUMAMask", uintListStr(sr.numaNodes))
+		}
+	}
+
+	// --- Auto-managed directories (RuntimeDirectory=, StateDirectory=, ...) ---
+	// systemd's parlance splits these into 5 top-level bases, and slinit
+	// tracks each entry with a Volatile flag that maps to the runtime
+	// bucket. Render every ServiceDir entry with its base + mode.
+	for _, sd := range sr.serviceDirs {
+		key := "ManagedDirectory"
+		if sd.Volatile {
+			key = "RuntimeDirectory"
+		}
+		p(key, fmt.Sprintf("%s (mode=%#o)", sd.Path, sd.Mode))
+	}
+	if len(sr.serviceDirs) > 0 {
+		switch sr.runtimeDirPreserve {
+		case 0:
+			p("RuntimeDirectoryPreserve", "no")
+		case 1:
+			p("RuntimeDirectoryPreserve", "yes")
+		case 2:
+			p("RuntimeDirectoryPreserve", "restart")
+		}
+	}
+	if sr.cacheDirectoryQuota > 0 {
+		p("CacheDirectoryQuota", strconv.FormatInt(sr.cacheDirectoryQuota, 10))
+	}
+	if sr.logsDirectoryQuota > 0 {
+		p("LogsDirectoryQuota", strconv.FormatInt(sr.logsDirectoryQuota, 10))
+	}
+	if sr.stateDirectoryQuota > 0 {
+		p("StateDirectoryQuota", strconv.FormatInt(sr.stateDirectoryQuota, 10))
+	}
+	pb("CacheDirectoryAccounting", sr.cacheDirectoryAccounting)
+	pb("LogsDirectoryAccounting", sr.logsDirectoryAccounting)
+	pb("StateDirectoryAccounting", sr.stateDirectoryAccounting)
+
+	// --- TTY cluster ---
+	if sr.ttyPath != "" {
+		p("TTYPath", sr.ttyPath)
+		if sr.ttyColumns > 0 {
+			p("TTYColumns", strconv.FormatUint(uint64(sr.ttyColumns), 10))
+		}
+		if sr.ttyRows > 0 {
+			p("TTYRows", strconv.FormatUint(uint64(sr.ttyRows), 10))
+		}
+		pb("TTYReset", sr.ttyReset)
+		pb("TTYVHangup", sr.ttyVHangup)
+		pb("TTYVTDisallocate", sr.ttyVTDisallocate)
+	}
+
+	// --- Capabilities ---
+	if len(sr.ambientCaps) > 0 {
+		names := make([]string, 0, len(sr.ambientCaps))
+		for _, c := range sr.ambientCaps {
+			names = append(names, capName(int(c)))
+		}
+		sort.Strings(names)
+		p("AmbientCapabilities", strings.Join(names, " "))
+	}
+	if len(sr.boundingCaps) > 0 {
+		names := make([]string, 0, len(sr.boundingCaps))
+		for _, c := range sr.boundingCaps {
+			names = append(names, capName(int(c)))
+		}
+		sort.Strings(names)
+		p("CapabilityBoundingSet", strings.Join(names, " "))
+	}
+	if sr.securebits != 0 {
+		p("SecureBits", fmt.Sprintf("%#x", sr.securebits))
+	}
+
+	// --- Realtime scheduling extras (period/runtime/deadline are ns) ---
+	if sr.schedPolicySet {
+		if sr.schedRuntime > 0 {
+			p("CPUSchedulingRuntimeNSec", strconv.FormatUint(sr.schedRuntime, 10))
+		}
+		if sr.schedDeadline > 0 {
+			p("CPUSchedulingDeadlineNSec", strconv.FormatUint(sr.schedDeadline, 10))
+		}
+		if sr.schedPeriod > 0 {
+			p("CPUSchedulingPeriodNSec", strconv.FormatUint(sr.schedPeriod, 10))
+		}
+	}
+	if sr.mlockallFlags != 0 {
+		p("MLockAll", fmt.Sprintf("%#x", sr.mlockallFlags))
+	}
+
+	// --- Path-based activation ---
+	if sr.startOnPath != "" {
+		p("StartOnPath", sr.startOnPath)
+		if sr.startOnPathTrigger != 0 {
+			p("StartOnPathTrigger", strconv.Itoa(sr.startOnPathTrigger))
+		}
+	}
+
+	// --- Conditions / assertions ---
+	if len(sr.predicates) > 0 {
+		names := make([]string, 0, len(sr.predicates))
+		for _, pr := range sr.predicates {
+			names = append(names, pr.String())
+		}
+		sort.Strings(names)
+		p("Conditions", strings.Join(names, " "))
+	}
+
+	// --- Provides + alias ---
+	if sr.enableVia != "" {
+		p("EnableVia", sr.enableVia)
+	}
+	if sr.chainTo != "" {
+		p("ChainTo", sr.chainTo)
+	}
+	if sr.socketPath != "" {
+		p("SocketPath", sr.socketPath)
+	}
+	if len(sr.socketPaths) > 0 {
+		p("SocketPaths", strings.Join(sr.socketPaths, " "))
+	}
+	if sr.inittabID != "" {
+		p("InittabID", sr.inittabID)
+	}
+	if sr.inittabLine != "" {
+		p("InittabLine", sr.inittabLine)
+	}
+
 	// --- Environment (per-service extraEnv only; global env is on the set) ---
 	if len(sr.extraEnv) > 0 {
 		pairs := make([]string, 0, len(sr.extraEnv))
@@ -313,7 +492,7 @@ func RenderShow(s Service) string {
 		p("Dependents", strings.Join(names, " "))
 	}
 
-	// --- Type-specific exec lines ---
+	// --- Type-specific exec lines + credentials + working dir ---
 	switch ss := s.(type) {
 	case *ProcessService:
 		if len(ss.command) > 0 {
@@ -337,12 +516,30 @@ func RenderShow(s Service) string {
 		if ss.envDir != "" {
 			p("EnvironmentDirectory", ss.envDir)
 		}
+		if ss.workingDir != "" {
+			p("WorkingDirectory", ss.workingDir)
+		}
+		if ss.runAsUID != 0 {
+			p("User", strconv.FormatUint(uint64(ss.runAsUID), 10))
+		}
+		if ss.runAsGID != 0 {
+			p("Group", strconv.FormatUint(uint64(ss.runAsGID), 10))
+		}
+		if ss.argv0 != "" {
+			p("Argv0", ss.argv0)
+		}
 	case *ScriptedService:
 		if len(ss.startCommand) > 0 {
 			p("ExecStart", strings.Join(ss.startCommand, " "))
 		}
 		if len(ss.stopCommand) > 0 {
 			p("ExecStop", strings.Join(ss.stopCommand, " "))
+		}
+		if ss.runAsUID != 0 {
+			p("User", strconv.FormatUint(uint64(ss.runAsUID), 10))
+		}
+		if ss.runAsGID != 0 {
+			p("Group", strconv.FormatUint(uint64(ss.runAsGID), 10))
 		}
 	case *BGProcessService:
 		if len(ss.command) > 0 {
@@ -354,9 +551,44 @@ func RenderShow(s Service) string {
 		if ss.pidFile != "" {
 			p("PIDFile", ss.pidFile)
 		}
+		if ss.runAsUID != 0 {
+			p("User", strconv.FormatUint(uint64(ss.runAsUID), 10))
+		}
+		if ss.runAsGID != 0 {
+			p("Group", strconv.FormatUint(uint64(ss.runAsGID), 10))
+		}
+		if ss.restartDelay > 0 {
+			p("RestartUSec", strconv.FormatInt(ss.restartDelay.Microseconds(), 10))
+		}
 	}
 
 	return b.String()
+}
+
+// capName maps a Linux capability number to its CAP_* symbolic name.
+// The list is exhaustive for kernels up to 6.x (last cap added was
+// CAP_CHECKPOINT_RESTORE = 40); anything beyond falls through to a
+// numeric form so the scripting shape stays stable.
+func capName(c int) string {
+	names := []string{
+		"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH",
+		"CAP_FOWNER", "CAP_FSETID", "CAP_KILL", "CAP_SETGID",
+		"CAP_SETUID", "CAP_SETPCAP", "CAP_LINUX_IMMUTABLE",
+		"CAP_NET_BIND_SERVICE", "CAP_NET_BROADCAST", "CAP_NET_ADMIN",
+		"CAP_NET_RAW", "CAP_IPC_LOCK", "CAP_IPC_OWNER",
+		"CAP_SYS_MODULE", "CAP_SYS_RAWIO", "CAP_SYS_CHROOT",
+		"CAP_SYS_PTRACE", "CAP_SYS_PACCT", "CAP_SYS_ADMIN",
+		"CAP_SYS_BOOT", "CAP_SYS_NICE", "CAP_SYS_RESOURCE",
+		"CAP_SYS_TIME", "CAP_SYS_TTY_CONFIG", "CAP_MKNOD", "CAP_LEASE",
+		"CAP_AUDIT_WRITE", "CAP_AUDIT_CONTROL", "CAP_SETFCAP",
+		"CAP_MAC_OVERRIDE", "CAP_MAC_ADMIN", "CAP_SYSLOG",
+		"CAP_WAKE_ALARM", "CAP_BLOCK_SUSPEND", "CAP_AUDIT_READ",
+		"CAP_PERFMON", "CAP_BPF", "CAP_CHECKPOINT_RESTORE",
+	}
+	if c >= 0 && c < len(names) {
+		return names[c]
+	}
+	return "cap-" + strconv.Itoa(c)
 }
 
 // yesNo renders bools in systemd's "yes"/"no" convention.
