@@ -471,8 +471,20 @@ doneFlags:
 	case "list5":
 		err = cmdListServices5(conn)
 	case "status5":
-		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdServiceStatus5(conn, name)
+		// -l / --long expands the compact v5 render with every field
+		// from CmdServiceShow so an operator hunting a config drift
+		// doesn't have to type `slinitctl show` as a second command.
+		longMode := false
+		filtered := cmdArgs[:0]
+		for _, a := range cmdArgs {
+			if a == "-l" || a == "--long" || a == "--full" {
+				longMode = true
+				continue
+			}
+			filtered = append(filtered, a)
+		}
+		err = requireServiceArg(filtered, func(name string) error {
+			return cmdServiceStatus5(conn, name, longMode)
 		})
 	case "graph":
 		err = cmdGraph(conn)
@@ -4504,7 +4516,7 @@ func cmdListServices5(conn net.Conn) error {
 	return nil
 }
 
-func cmdServiceStatus5(conn net.Conn, svcName string) error {
+func cmdServiceStatus5(conn net.Conn, svcName string, long bool) error {
 	handle, err := loadServiceHandle(conn, svcName)
 	if err != nil {
 		return err
@@ -4576,6 +4588,11 @@ func cmdServiceStatus5(conn net.Conn, svcName string) error {
 	if haveV1 && status.Flags&control.StatusFlagHasPID != 0 {
 		fmt.Printf("  PID:         %d\n", v1.PID)
 	}
+	// v1.ExitStatus is -1 while the service is running (no exit
+	// recorded yet); print only genuine post-exit status values.
+	if haveV1 && v1.ExitStatus > 0 {
+		fmt.Printf("  Exit:        %d\n", v1.ExitStatus)
+	}
 	// Exec-stage nonzero encodes a fork-time failure — the ExecErrno
 	// then rides in SiCode (see EncodeServiceStatus5 in
 	// pkg/control/protocol.go). Render both symbolically.
@@ -4588,6 +4605,22 @@ func cmdServiceStatus5(conn net.Conn, svcName string) error {
 			fmt.Printf("  si_status:   %d (%s)\n", status.SiStatus, signalNameByNum(status.SiStatus))
 		} else {
 			fmt.Printf("  si_status:   %d\n", status.SiStatus)
+		}
+	}
+
+	// -l/--long: append every configured field. Uses the same wire as
+	// `slinitctl show` (CmdServiceShow) so the two commands stay in
+	// lockstep — anything RenderShow adds tomorrow lands here too
+	// without a second edit.
+	if long {
+		if err := control.WritePacket(conn, control.CmdServiceShow, control.EncodeHandle(handle)); err == nil {
+			if r, p, err := readReply(conn); err == nil && r == control.RplyServiceShow {
+				fmt.Println()
+				fmt.Println("  Details:")
+				for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+					fmt.Printf("    %s\n", line)
+				}
+			}
 		}
 	}
 	return nil
