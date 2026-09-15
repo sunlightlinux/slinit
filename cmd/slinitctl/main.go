@@ -294,11 +294,22 @@ doneFlags:
 			return cmdRestart(conn, name, pinFlag, forceFlag, ignoreUnst, noWait)
 		})
 	case "status":
-		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdStatus(conn, name)
+		// -l/--long/--full appends a Details: block from CmdServiceShow
+		// so the operator can pull the full config without a second
+		// invocation — same shape as `status5 -l`.
+		statusLong, statusArgs := extractLongFlag(cmdArgs)
+		err = requireServiceArg(statusArgs, func(name string) error {
+			return cmdStatus(conn, name, statusLong)
 		})
 	case "show":
-		err = requireServiceArg(cmdArgs, func(name string) error {
+		// show already dumps every field, so -l is a no-op — warn to
+		// stderr rather than swallow silently so a scripter using it
+		// out of systemctl muscle memory notices and drops the flag.
+		showLong, showArgs := extractLongFlag(cmdArgs)
+		if showLong {
+			fmt.Fprintln(os.Stderr, "slinitctl: warning: `show` already renders every field; -l/--long is a no-op here")
+		}
+		err = requireServiceArg(showArgs, func(name string) error {
 			return cmdShow(conn, name)
 		})
 	case "is-started":
@@ -474,17 +485,9 @@ doneFlags:
 		// -l / --long expands the compact v5 render with every field
 		// from CmdServiceShow so an operator hunting a config drift
 		// doesn't have to type `slinitctl show` as a second command.
-		longMode := false
-		filtered := cmdArgs[:0]
-		for _, a := range cmdArgs {
-			if a == "-l" || a == "--long" || a == "--full" {
-				longMode = true
-				continue
-			}
-			filtered = append(filtered, a)
-		}
-		err = requireServiceArg(filtered, func(name string) error {
-			return cmdServiceStatus5(conn, name, longMode)
+		status5Long, status5Args := extractLongFlag(cmdArgs)
+		err = requireServiceArg(status5Args, func(name string) error {
+			return cmdServiceStatus5(conn, name, status5Long)
 		})
 	case "graph":
 		err = cmdGraph(conn)
@@ -1333,7 +1336,25 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 	return nil
 }
 
-func cmdStatus(conn net.Conn, name string) error {
+// extractLongFlag strips -l / --long / --full from cmdArgs and reports
+// whether any of them appeared. Kept lightweight (no full flag parser)
+// because slinitctl's convention is positional args + a small mixed
+// bag of short flags per subcommand, not a global getopt table.
+func extractLongFlag(args []string) (bool, []string) {
+	long := false
+	out := args[:0]
+	for _, a := range args {
+		switch a {
+		case "-l", "--long", "--full":
+			long = true
+		default:
+			out = append(out, a)
+		}
+	}
+	return long, out
+}
+
+func cmdStatus(conn net.Conn, name string, long bool) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
@@ -1419,6 +1440,21 @@ func cmdStatus(conn net.Conn, name string) error {
 		printCgroupTree(int(status.PID))
 	}
 	printRecentJournal(name, 10)
+
+	// -l/--long: append every configured field as a Details: block,
+	// mirroring status5's -l behaviour so the two commands stay
+	// symmetric. Uses the same CmdServiceShow wire as `slinitctl show`.
+	if long {
+		if err := control.WritePacket(conn, control.CmdServiceShow, control.EncodeHandle(handle)); err == nil {
+			if r, p, err := readReply(conn); err == nil && r == control.RplyServiceShow {
+				fmt.Println()
+				fmt.Println("  Details:")
+				for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+					fmt.Printf("    %s\n", line)
+				}
+			}
+		}
+	}
 	return nil
 }
 
