@@ -93,13 +93,44 @@ func newConnection(server *Server, conn net.Conn) *Connection {
 }
 
 // writePacket writes a packet to the connection, protected by writeMu.
+//
+// A 5-second write deadline is armed on the underlying conn before
+// each write so a slow-reader client (client stopped calling recv but
+// hasn't closed its end — kernel socket buffer fills up) cannot wedge
+// the state-machine goroutine that's firing a listener callback. Hangup
+// is a distinct case: conn.Write returns EPIPE/ECONNRESET immediately,
+// so this only kicks in for genuine backpressure. On timeout we mark
+// the connection closed under writeMu so every subsequent writePacket
+// from any goroutine short-circuits on c.closed instead of stacking
+// another 5-second wedge; the serve() loop notices via ctx.Done or
+// its next ReadPacket returning error and tears the connection down.
+//
+// 5s is deliberately generous — a healthy slinit-journalctl or event
+// subscriber drains well within milliseconds even under a boot storm;
+// only a wedged client hits this budget. `var` (not const) so tests
+// can shorten it without dragging their runtime up to the timeout.
+var writeDeadline = 5 * time.Second
+
 func (c *Connection) writePacket(pktType uint8, payload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.closed {
 		return errConnClosed
 	}
-	return WritePacket(c.conn, pktType, payload)
+	if tc, ok := c.conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = tc.SetWriteDeadline(time.Now().Add(writeDeadline))
+	}
+	err := WritePacket(c.conn, pktType, payload)
+	if err != nil {
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			// Slow-reader client. Mark closed so the state machine's
+			// next event on this connection returns immediately; serve()
+			// will exit its ReadPacket loop on the next iteration and
+			// c.close() unregisters all listeners.
+			c.closed = true
+		}
+	}
+	return err
 }
 
 func (c *Connection) close() {
