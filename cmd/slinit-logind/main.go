@@ -175,16 +175,134 @@ func (m *manager) ListInhibitors() ([]Inhibitor, *dbus.Error) {
 }
 
 // GetSession / GetUser / GetSeat resolve by id → object path so
-// callers can talk to per-object interfaces. Those interfaces are
-// not exposed yet; the path resolves for symmetry with systemd.
+// callers can talk to per-object interfaces.
 func (m *manager) GetSession(id string) (dbus.ObjectPath, *dbus.Error) {
+	if !sessionExistsLocked(id) {
+		return "/", dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
+			[]interface{}{id})
+	}
 	return sessionPath(id), nil
 }
 func (m *manager) GetUser(uid uint32) (dbus.ObjectPath, *dbus.Error) {
+	if _, err := os.Stat(userFile(uid)); err != nil {
+		return "/", dbus.NewError("org.freedesktop.login1.Error.NoSuchUser",
+			[]interface{}{uid})
+	}
 	return userPath(uid), nil
 }
 func (m *manager) GetSeat(id string) (dbus.ObjectPath, *dbus.Error) {
 	return seatPath(id), nil
+}
+
+// GetSessionByPID looks up which session a given process belongs to.
+// XFCE session integration and many desktop apps call this at startup
+// to discover their own session's object path. We walk sessions/*.json
+// and match on leader_pid; when the querying process is a descendant
+// of a session's leader we should still find it by /proc/PID/cgroup
+// reading — that fallback lands in Phase C+.
+func (m *manager) GetSessionByPID(pid uint32) (dbus.ObjectPath, *dbus.Error) {
+	if id, _ := findSessionByLeaderLocked(pid); id != "" {
+		return sessionPath(id), nil
+	}
+	// Fallback: derive session via /proc/PID/cgroup — the process may
+	// have been forked from the session leader without being the leader
+	// itself, but it inherits the session-<id>.scope cgroup.
+	if id := findSessionByCgroup(pid); id != "" {
+		return sessionPath(id), nil
+	}
+	return "/", dbus.NewError("org.freedesktop.login1.Error.NoSessionForPID",
+		[]interface{}{pid})
+}
+
+// GetUserByPID resolves a PID → owning user's object path. XFCE
+// applications call this when talking to xdg-desktop-portal etc.
+func (m *manager) GetUserByPID(pid uint32) (dbus.ObjectPath, *dbus.Error) {
+	if id, rec := findSessionByLeaderLocked(pid); id != "" {
+		return userPath(rec.UserID), nil
+	}
+	if id := findSessionByCgroup(pid); id != "" {
+		var rec SessionRecord
+		if readJSON(sessionFile(id), &rec) {
+			return userPath(rec.UserID), nil
+		}
+	}
+	// Fallback: read /proc/PID/status Uid: line.
+	if uid, ok := procUID(pid); ok {
+		if _, err := os.Stat(userFile(uid)); err == nil {
+			return userPath(uid), nil
+		}
+	}
+	return "/", dbus.NewError("org.freedesktop.login1.Error.NoSessionForPID",
+		[]interface{}{pid})
+}
+
+// findSessionByCgroup extracts the session id from /proc/PID/cgroup.
+// systemd's naming convention is session-<id>.scope; we grep for it
+// in the 0:: (unified v2) line. Empty string when the pid isn't in a
+// session scope.
+func findSessionByCgroup(pid uint32) string {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return ""
+	}
+	// Line format: 0::<path>. We're looking for .../session-<id>.scope
+	// somewhere in the path.
+	for _, line := range splitLines(string(b)) {
+		if !hasPrefix(line, "0::") {
+			continue
+		}
+		p := line[3:]
+		// scan for /session- ... .scope
+		for i := 0; i+len("session-") < len(p); i++ {
+			if p[i:i+len("session-")] == "session-" {
+				end := i + len("session-")
+				for end < len(p) && p[end] != '.' && p[end] != '/' {
+					end++
+				}
+				return p[i+len("session-") : end]
+			}
+		}
+	}
+	return ""
+}
+
+// procUID returns the real UID of a running process from
+// /proc/PID/status. Bool is false when the process is gone or
+// /proc isn't accessible.
+func procUID(pid uint32) (uint32, bool) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range splitLines(string(b)) {
+		if !hasPrefix(line, "Uid:") {
+			continue
+		}
+		var ruid uint32
+		if _, err := fmt.Sscanf(line, "Uid:\t%d", &ruid); err == nil {
+			return ruid, true
+		}
+	}
+	return 0, false
+}
+
+func splitLines(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
+}
+
+func hasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
 // Power methods proxy to slinit-shutdown. Interactive is systemd's
@@ -382,6 +500,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "slinit-logind: export: %v\n", err)
 		os.Exit(1)
 	}
+	// Manager-path introspection — desktop stacks (XFCE session, gvfs,
+	// portals) probe /org/freedesktop/login1 for its interface listing
+	// before calling methods; without a valid Introspect response they
+	// treat the daemon as absent and fall back into degraded modes
+	// (broken menus, missing power controls, etc.).
+	m.registerManagerIntrospection()
 	// Re-register per-object exports for any sessions that persisted
 	// across a slinit-logind restart. Without this loginctl show-session
 	// would 404 on the object path for sessions that PAM created before

@@ -99,7 +99,16 @@ func nextSessionID() (string, error) {
 // Signature matches elogind's introspection verbatim so pam_elogind
 // (or pam_systemd) can invoke it unchanged. Returns the wire tuple
 // with the fifo fd as a dbus.UnixFD.
+//
+// The leading `dbus.Sender` argument is godbus's magic-value injection
+// mechanism: at dispatch time it receives the caller's bus name so we
+// can resolve pid=0 (the systemd convention meaning "use my PID") to
+// the actual PID via org.freedesktop.DBus.GetConnectionUnixProcessID.
+// Without this fallback pam_elogind's usual invocation lands with
+// leader_pid=0, no cgroup migration happens, and every downstream
+// PID→session lookup fails.
 func (m *manager) CreateSession(
+	sender dbus.Sender,
 	uid, pid uint32,
 	service, sessionType, sessionClass, desktop string,
 	seatID string,
@@ -121,6 +130,13 @@ func (m *manager) CreateSession(
 ) {
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
+
+	// pid=0 → resolve via D-Bus caller. systemd/elogind's convention.
+	if pid == 0 && sender != "" {
+		if callerPID, err := m.callerPID(string(sender)); err == nil {
+			pid = callerPID
+		}
+	}
 
 	// If a session for this leader PID already exists, systemd's
 	// contract is to return the existing one with existing=true rather
@@ -277,6 +293,19 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 		}
 	}
 	return nil
+}
+
+// callerPID asks the system bus daemon for the PID owning the given
+// well-known/unique bus name. Used to resolve CreateSession's pid=0
+// (systemd convention for "use my PID") to the actual client PID.
+func (m *manager) callerPID(sender string) (uint32, error) {
+	obj := m.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+	var pid uint32
+	if err := obj.Call("org.freedesktop.DBus.GetConnectionUnixProcessID",
+		0, sender).Store(&pid); err != nil {
+		return 0, err
+	}
+	return pid, nil
 }
 
 // fileExists is a tiny predicate used to gate first-session-for-user

@@ -299,6 +299,54 @@ func (m *manager) ensureSeat(id string) {
 		iface+".SeatNew", id, path)
 }
 
+// registerManagerIntrospection publishes the Introspectable interface
+// on /org/freedesktop/login1 so `gdbus introspect` (and every desktop
+// stack that runs a discovery pass before calling methods) sees the
+// full Manager surface. Without it XFCE session integration, gvfs,
+// xdg-desktop-portal etc. treat the daemon as absent and downgrade
+// (broken right-click menus, no power controls, etc.).
+func (m *manager) registerManagerIntrospection() {
+	// Use introspect.Methods to auto-generate the method table from
+	// the manager receiver's exported methods. The interface XML is
+	// then attached to a Node hosting only Manager — matches what
+	// elogind serves on this path.
+	node := &introspect.Node{
+		Name: objPath,
+		Interfaces: []introspect.Interface{
+			introspect.IntrospectData,
+			{
+				Name:    iface,
+				Methods: introspect.Methods(m),
+				Signals: []introspect.Signal{
+					{Name: "SessionNew", Args: []introspect.Arg{
+						{Name: "session_id", Type: "s", Direction: "out"},
+						{Name: "object_path", Type: "o", Direction: "out"},
+					}},
+					{Name: "SessionRemoved", Args: []introspect.Arg{
+						{Name: "session_id", Type: "s", Direction: "out"},
+						{Name: "object_path", Type: "o", Direction: "out"},
+					}},
+					{Name: "UserNew", Args: []introspect.Arg{
+						{Name: "uid", Type: "u", Direction: "out"},
+						{Name: "object_path", Type: "o", Direction: "out"},
+					}},
+					{Name: "UserRemoved", Args: []introspect.Arg{
+						{Name: "uid", Type: "u", Direction: "out"},
+						{Name: "object_path", Type: "o", Direction: "out"},
+					}},
+					{Name: "SeatNew", Args: []introspect.Arg{
+						{Name: "seat_id", Type: "s", Direction: "out"},
+						{Name: "object_path", Type: "o", Direction: "out"},
+					}},
+				},
+			},
+		},
+	}
+	_ = m.conn.Export(introspect.NewIntrospectable(node),
+		dbus.ObjectPath(objPath),
+		"org.freedesktop.DBus.Introspectable")
+}
+
 // rehydrateObjects re-exports per-Session / User objects for the
 // state that already exists on disk when the daemon starts. Without
 // this a slinit-logind restart during an active login leaves the
