@@ -161,12 +161,21 @@ func (m *manager) CreateSession(
 				[]interface{}{err.Error()})
 	}
 
-	// User slice + session scope — matches systemd's cgroup layout so
-	// external tools that walk /sys/fs/cgroup by naming convention
-	// (top, cgroupfs-explorers, kubelet's cadvisor probes) find our
-	// sessions in the expected place.
+	// Session scope layout — Void's libelogind (bundled with the
+	// distro's polkit, xfce-polkit, gnome-shell, etc.) does *not*
+	// parse systemd's canonical /user.slice/user-<uid>.slice/session-
+	// <id>.scope hierarchy: sd_pid_get_session takes the FIRST cgroup
+	// path component after root and returns it verbatim. Elogind
+	// itself places sessions at /c<N>, so we do the same. A future
+	// distro shipping upstream systemd's libsystemd would parse the
+	// nested layout — for now we optimise for Void, which is where
+	// slinit-logind cutover happens.
+	//
+	// User slice tracked separately for future extension (per-user
+	// accounting via memory.max on user-<uid>.slice), but the session
+	// leader lives directly under /<id>.
+	sessionScope := fmt.Sprintf("/sys/fs/cgroup/%s", id)
 	userSlice := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice", uid)
-	sessionScope := fmt.Sprintf("%s/session-%s.scope", userSlice, id)
 	runtimePath := fmt.Sprintf("/run/user/%d", uid)
 
 	if err := ensureCgroup(userSlice); err != nil {
