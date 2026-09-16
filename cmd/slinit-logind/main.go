@@ -58,23 +58,28 @@ var (
 // Session, User, Seat mirror the D-Bus struct shape systemd's login1
 // ListSessions returns. Only the fields that appear in the wire
 // tuple; extra metadata lives in the JSON file on disk.
+//
+// JSON tags match SessionRecord/UserRecord field names so reading a
+// persisted record straight into a wire-shaped struct DTRT — without
+// them Go's decoder silently drops every unrecognised snake_case key
+// and the wire tuple ships with zeros for uid/name/seat.
 type Session struct {
-	ID       string
-	UserID   uint32
-	UserName string
-	SeatID   string
-	Path     dbus.ObjectPath
+	ID       string          `json:"id"`
+	UserID   uint32          `json:"user_id"`
+	UserName string          `json:"user_name"`
+	SeatID   string          `json:"seat_id"`
+	Path     dbus.ObjectPath `json:"-"`
 }
 
 type User struct {
-	UID  uint32
-	Name string
-	Path dbus.ObjectPath
+	UID  uint32          `json:"uid"`
+	Name string          `json:"name"`
+	Path dbus.ObjectPath `json:"-"`
 }
 
 type Seat struct {
-	ID   string
-	Path dbus.ObjectPath
+	ID   string          `json:"id"`
+	Path dbus.ObjectPath `json:"-"`
 }
 
 // Inhibitor rows are read from /run/slinit-logind/inhibitors/*.json.
@@ -92,8 +97,15 @@ type Inhibitor struct {
 // manager holds the mutable state visible over D-Bus. Locked as a
 // unit because read methods (ListSessions/Users/Seats) fan out and
 // the state files can turn over under a live PAM session.
+//
+// conn is set from main() after ConnectSystemBus so per-Session /
+// User / Seat objects can be registered when CreateSession fires
+// (see objects.go). Kept on the manager rather than a package global
+// so a test using two separate manager instances against a synthetic
+// bus doesn't cross-talk on the exported paths.
 type manager struct {
-	mu sync.RWMutex
+	mu   sync.RWMutex
+	conn *dbus.Conn
 }
 
 // ListSessions returns [(id, uid, user, seat, path)]. On a fresh
@@ -365,11 +377,19 @@ func main() {
 	}
 	defer conn.Close()
 
-	m := &manager{}
+	m := &manager{conn: conn}
 	if err := conn.Export(m, dbus.ObjectPath(objPath), iface); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-logind: export: %v\n", err)
 		os.Exit(1)
 	}
+	// Re-register per-object exports for any sessions that persisted
+	// across a slinit-logind restart. Without this loginctl show-session
+	// would 404 on the object path for sessions that PAM created before
+	// we came up.
+	m.rehydrateObjects()
+	// Ensure the always-on seat0 object exists so `loginctl seat-status`
+	// works out of the box.
+	m.ensureSeat("seat0")
 
 	// Request the well-known bus name. RequestNameFlagReplaceExisting
 	// makes us take over from elogind on a running system without

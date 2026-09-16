@@ -203,7 +203,8 @@ func (m *manager) CreateSession(
 				[]interface{}{err.Error()})
 	}
 
-	// Ensure user record exists so ListUsers reflects the login.
+	// Ensure user record exists so ListUsers reflects the login. First
+	// session for the user also mints the per-user D-Bus object.
 	userRec := UserRecord{
 		UID:         uid,
 		Name:        rec.UserName,
@@ -211,7 +212,20 @@ func (m *manager) CreateSession(
 		RuntimePath: runtimePath,
 		CreatedAt:   rec.CreatedAt,
 	}
+	firstSessionForUser := !fileExists(userFile(uid))
 	_ = writeJSONAtomic(userFile(uid), userRec)
+
+	// Register per-object D-Bus surfaces so `loginctl show-session`
+	// and per-object method calls (Terminate, Activate, Lock/Unlock,
+	// TakeControl, ...) resolve. Also fires SessionNew (and UserNew
+	// when applicable) so subscribers get the same wake-up systemd
+	// delivers.
+	if m.conn != nil {
+		m.registerSessionObject(rec)
+		if firstSessionForUser {
+			m.registerUserObject(userRec)
+		}
+	}
 
 	// FIFO fd: pam_open_session keeps this open; ReleaseSession
 	// happens implicitly on close if pam_close_session doesn't beat
@@ -247,14 +261,29 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 	if rec.Scope != "" {
 		_ = os.Remove(rec.Scope) // rmdir; EBUSY tolerated
 	}
+	// Drop the per-Session D-Bus object + fire SessionRemoved.
+	if m.conn != nil {
+		m.unregisterSessionObject(id)
+	}
 	// If no more sessions for the user, drop the user record + try
-	// to remove the user slice (again EBUSY tolerated).
+	// to remove the user slice (again EBUSY tolerated) + unregister
+	// the per-User D-Bus object.
 	if !userHasOtherSessionsLocked(rec.UserID, id) {
 		_ = os.Remove(userFile(rec.UserID))
 		userSlice := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice", rec.UserID)
 		_ = os.Remove(userSlice)
+		if m.conn != nil {
+			m.unregisterUserObject(rec.UserID)
+		}
 	}
 	return nil
+}
+
+// fileExists is a tiny predicate used to gate first-session-for-user
+// per-object registration. Kept lightweight — a single stat call.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // ActivateSession — sets a session as foreground. Phase B has no
