@@ -188,7 +188,15 @@ func (m *manager) CreateSession(
 
 	// Runtime dir: mode 0700, owned by the target uid. First session
 	// for the user creates it; subsequent sessions reuse it — safe
-	// because chown is a no-op when the owner already matches.
+	// because chown is a no-op when the owner already matches. Also
+	// enforce the parent /run/user is 0755 root:root so downstream
+	// user processes can traverse into their own runtime dir —
+	// without this XDG_RUNTIME_DIR-based clients (dbus, iceauth,
+	// portals) fail with EACCES on the parent lookup, and every
+	// desktop session comes up broken (no menus, no notifications,
+	// no polkit agent).
+	_ = os.MkdirAll("/run/user", 0755)
+	_ = os.Chmod("/run/user", 0755)
 	if err := os.MkdirAll(runtimePath, 0700); err == nil {
 		_ = os.Chown(runtimePath, int(uid), int(uid))
 	}
@@ -218,6 +226,14 @@ func (m *manager) CreateSession(
 			dbus.NewError("org.freedesktop.login1.Error.SessionPersistFailed",
 				[]interface{}{err.Error()})
 	}
+
+	// Compat: libelogind/libsystemd clients (polkitd, PAM helpers,
+	// sd_pid_get_session, etc.) read state directly from
+	// /run/systemd/sessions/<id> in shell-variable format. Without
+	// this file polkitd's sd_login_monitor_new() fails with -ENOENT,
+	// polkitd exits, and every desktop authorisation prompt loses
+	// its agent. Written alongside the JSON canonical form.
+	_ = writeCompatSession(rec)
 
 	// Ensure user record exists so ListUsers reflects the login. First
 	// session for the user also mints the per-user D-Bus object.
@@ -274,6 +290,7 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 	}
 	_ = os.Remove(sessionFile(id))
 	_ = os.Remove(fifoPath(id))
+	_ = os.Remove(compatSessionFile(id))
 	if rec.Scope != "" {
 		_ = os.Remove(rec.Scope) // rmdir; EBUSY tolerated
 	}
@@ -286,6 +303,7 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 	// the per-User D-Bus object.
 	if !userHasOtherSessionsLocked(rec.UserID, id) {
 		_ = os.Remove(userFile(rec.UserID))
+		_ = os.Remove(compatUserFile(rec.UserID))
 		userSlice := fmt.Sprintf("/sys/fs/cgroup/user.slice/user-%d.slice", rec.UserID)
 		_ = os.Remove(userSlice)
 		if m.conn != nil {
@@ -306,6 +324,82 @@ func (m *manager) callerPID(sender string) (uint32, error) {
 		return 0, err
 	}
 	return pid, nil
+}
+
+// compatSessionFile returns the libelogind/libsystemd path where
+// clients (polkitd, sd_pid_get_session, etc.) read session state via
+// sd-login. Kept mirror-parallel to sessionFile so cleanup on
+// ReleaseSession stays symmetric.
+func compatSessionFile(id string) string { return "/run/systemd/sessions/" + id }
+func compatUserFile(uid uint32) string {
+	return "/run/systemd/users/" + strconv.FormatUint(uint64(uid), 10)
+}
+func compatSeatFile(id string) string { return "/run/systemd/seats/" + id }
+
+// writeCompatSession writes /run/systemd/sessions/<id> in the
+// shell-variable format libelogind (and any consumer of libsystemd's
+// sd-login family) parses. Newlines separate KEY=VALUE pairs; no
+// quoting is required for the simple types we track. Missing dir is
+// created idempotently so a fresh boot doesn't need a separate
+// tmpfiles run for /run/systemd/.
+func writeCompatSession(rec SessionRecord) error {
+	_ = os.MkdirAll("/run/systemd/sessions", 0755)
+	_ = os.MkdirAll("/run/systemd/users", 0755)
+	_ = os.MkdirAll("/run/systemd/seats", 0755)
+	var b strings.Builder
+	fmt.Fprintf(&b, "# This is private data. Do not parse.\n")
+	fmt.Fprintf(&b, "UID=%d\n", rec.UserID)
+	fmt.Fprintf(&b, "USER=%s\n", rec.UserName)
+	fmt.Fprintf(&b, "ACTIVE=1\n")
+	fmt.Fprintf(&b, "STATE=active\n")
+	fmt.Fprintf(&b, "REMOTE=%d\n", boolInt(rec.Remote))
+	if rec.SeatID != "" {
+		fmt.Fprintf(&b, "SEAT=%s\n", rec.SeatID)
+	}
+	if rec.TTY != "" {
+		fmt.Fprintf(&b, "TTY=%s\n", rec.TTY)
+	}
+	if rec.Display != "" {
+		fmt.Fprintf(&b, "DISPLAY=%s\n", rec.Display)
+	}
+	if rec.VTNr > 0 {
+		fmt.Fprintf(&b, "VTNR=%d\n", rec.VTNr)
+	}
+	fmt.Fprintf(&b, "SERVICE=%s\n", rec.Service)
+	fmt.Fprintf(&b, "TYPE=%s\n", rec.Type)
+	fmt.Fprintf(&b, "CLASS=%s\n", rec.Class)
+	if rec.Desktop != "" {
+		fmt.Fprintf(&b, "DESKTOP=%s\n", rec.Desktop)
+	}
+	fmt.Fprintf(&b, "LEADER=%d\n", rec.LeaderPID)
+	fmt.Fprintf(&b, "REALTIME=%d\n", time.Now().Unix())
+	fmt.Fprintf(&b, "MONOTONIC=%d\n", 0)
+
+	// User compat file — most consumers just need the UID + name to
+	// identify. State minimal (STATE + NAME + RUNTIME).
+	var u strings.Builder
+	fmt.Fprintf(&u, "# This is private data. Do not parse.\n")
+	fmt.Fprintf(&u, "NAME=%s\n", rec.UserName)
+	fmt.Fprintf(&u, "STATE=active\n")
+	fmt.Fprintf(&u, "RUNTIME=%s\n", rec.RuntimePath)
+	_ = os.WriteFile(compatUserFile(rec.UserID), []byte(u.String()), 0644)
+
+	if rec.SeatID != "" {
+		var s strings.Builder
+		fmt.Fprintf(&s, "# This is private data. Do not parse.\n")
+		fmt.Fprintf(&s, "ACTIVE=%s\n", rec.ID)
+		fmt.Fprintf(&s, "SESSIONS=%s\n", rec.ID)
+		_ = os.WriteFile(compatSeatFile(rec.SeatID), []byte(s.String()), 0644)
+	}
+
+	return os.WriteFile(compatSessionFile(rec.ID), []byte(b.String()), 0644)
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // fileExists is a tiny predicate used to gate first-session-for-user
