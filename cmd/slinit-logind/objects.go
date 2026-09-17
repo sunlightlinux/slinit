@@ -14,6 +14,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 
@@ -255,11 +256,31 @@ func (m *manager) unregisterUserObject(uid uint32) {
 // writes /run/slinit-logind/seats/<id>.json so Manager.ListSeats
 // finds it — without the file on disk `loginctl list-seats` reports
 // "No seats." even though the object is queryable directly.
+//
+// libelogind compat: /run/systemd/seats/<id> must exist at daemon
+// startup because gdm probes it before creating any greeter session
+// (`openat("/run/systemd/seats/seat0") -> ENOENT` was the culprit
+// keeping GDM's greeter from ever starting on Sunlight). Written
+// with just the seat id — sessions get added by writeCompatSession
+// as they come and go.
 func (m *manager) ensureSeat(id string) {
 	seatRec := struct {
 		ID string `json:"id"`
 	}{ID: id}
 	_ = writeJSONAtomic(filepath.Join(stateRoot, "seats", id+".json"), seatRec)
+
+	// libelogind sd_get_seats + gdm/gnome-shell probing both hit
+	// /run/systemd/seats/ at their startup, so seed the compat file
+	// unconditionally alongside our JSON. Fields match elogind's own
+	// on-disk format (checked against elogind source) — gdm won't
+	// spawn a greeter if CAN_GRAPHICAL / CAN_TTY are missing.
+	_ = os.MkdirAll("/run/systemd/seats", 0755)
+	seatBody := "# This is private data. Do not parse.\n"
+	if id == "seat0" {
+		seatBody += "IS_SEAT0=1\n"
+	}
+	seatBody += "CAN_MULTI_SESSION=1\nCAN_TTY=1\nCAN_GRAPHICAL=1\n"
+	_ = os.WriteFile("/run/systemd/seats/"+id, []byte(seatBody), 0644)
 
 	so := &seatObject{m: m, id: id}
 	path := seatPath(id)
@@ -458,18 +479,42 @@ func (s *sessionObject) SetLockedHint(locked bool) *dbus.Error { return nil }
 
 // TakeControl / ReleaseControl are the compositor entry points
 // (Xorg/Wayland call them to become the seat's session manager).
-// Phase C stubs them successful so a compositor doesn't fail-init;
-// real device fd passing lands with seat detection.
-func (s *sessionObject) TakeControl(force bool) *dbus.Error   { return nil }
-func (s *sessionObject) ReleaseControl() *dbus.Error          { return nil }
+// Stubbed successful so a compositor doesn't fail-init.
+func (s *sessionObject) TakeControl(force bool) *dbus.Error { return nil }
+func (s *sessionObject) ReleaseControl() *dbus.Error        { return nil }
+
+// TakeDevice hands the caller an fd for the requested device
+// major:minor. Wayland compositors (mutter for GDM's greeter and any
+// gnome-shell session) call this for /dev/dri/card0 + input devices;
+// if it errors, gnome-shell exits with "Failed to find any matching
+// session" and GDM's greeter tears down without ever painting.
+//
+// Systemd's logind opens the device with O_RDWR|O_CLOEXEC and passes
+// the fd back over D-Bus; a real seat manager would also take DRM
+// master here and drop it on ReleaseDevice / PauseDeviceComplete.
+// Slinit-logind's Phase C+ ships the fd hand-off unconditionally
+// (there's no other session competing for the device at this point in
+// our model) and returns inactive=false so the caller knows the device
+// is live.
 func (s *sessionObject) TakeDevice(major, minor uint32) (dbus.UnixFD, bool, *dbus.Error) {
-	return 0, false, dbus.NewError("org.freedesktop.login1.Error.NotSupported",
-		[]interface{}{"device takeover requires seat management"})
+	path, err := devPathForMajorMinor(major, minor)
+	if err != nil {
+		return 0, false, dbus.NewError("org.freedesktop.login1.Error.NoSuchDevice",
+			[]interface{}{fmt.Sprintf("%d:%d: %v", major, minor, err)})
+	}
+	f, err := openDevice(path)
+	if err != nil {
+		return 0, false, dbus.NewError("org.freedesktop.login1.Error.DeviceOpenFailed",
+			[]interface{}{path + ": " + err.Error()})
+	}
+	// D-Bus dupes the fd across the wire; we intentionally leak our
+	// end (Go's GC won't close it while the goroutine holds the
+	// return value). Session count is tiny so fd leakage is bounded.
+	return dbus.UnixFD(f.Fd()), false, nil
 }
-func (s *sessionObject) ReleaseDevice(major, minor uint32) *dbus.Error { return nil }
-func (s *sessionObject) PauseDeviceComplete(major, minor uint32) *dbus.Error {
-	return nil
-}
+
+func (s *sessionObject) ReleaseDevice(major, minor uint32) *dbus.Error       { return nil }
+func (s *sessionObject) PauseDeviceComplete(major, minor uint32) *dbus.Error { return nil }
 
 // --- per-User methods ---
 

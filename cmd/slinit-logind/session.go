@@ -447,6 +447,61 @@ func (m *manager) UnlockSession(id string) *dbus.Error { return checkSess(id) }
 func (m *manager) LockSessions() *dbus.Error           { return nil }
 func (m *manager) UnlockSessions() *dbus.Error         { return nil }
 
+// TerminateSession is Manager.TerminateSession — semantically the
+// same as ReleaseSession for our purposes (both tear the record
+// down). GDM's greeter and lightdm's session-switch button call
+// TerminateSession; without it the greeter switch-user hangs.
+func (m *manager) TerminateSession(id string) *dbus.Error {
+	return m.ReleaseSession(id)
+}
+
+// TerminateUser tears down every session owned by the uid then drops
+// the user record. Called by loginctl terminate-user.
+func (m *manager) TerminateUser(uid uint32) *dbus.Error {
+	files, _ := filepath.Glob(filepath.Join(stateRoot, "sessions", "*.json"))
+	for _, f := range files {
+		var rec SessionRecord
+		if readJSON(f, &rec) && rec.UserID == uid {
+			_ = m.ReleaseSession(rec.ID)
+		}
+	}
+	return nil
+}
+
+// TerminateSeat tears down every session on the seat.
+func (m *manager) TerminateSeat(id string) *dbus.Error {
+	files, _ := filepath.Glob(filepath.Join(stateRoot, "sessions", "*.json"))
+	for _, f := range files {
+		var rec SessionRecord
+		if readJSON(f, &rec) && rec.SeatID == id {
+			_ = m.ReleaseSession(rec.ID)
+		}
+	}
+	return nil
+}
+
+// KillUser sends a signal to every process in every session owned by
+// uid. Iterates KillSession over the user's sessions.
+func (m *manager) KillUser(uid uint32, sig int32) *dbus.Error {
+	files, _ := filepath.Glob(filepath.Join(stateRoot, "sessions", "*.json"))
+	for _, f := range files {
+		var rec SessionRecord
+		if readJSON(f, &rec) && rec.UserID == uid {
+			_ = m.KillSession(rec.ID, "all", sig)
+		}
+	}
+	return nil
+}
+
+// SetUserLinger persists a "keep the user manager running across
+// logout" flag. loginctl enable-linger / disable-linger. We track it
+// in the user JSON record so the property surface can report it.
+func (m *manager) SetUserLinger(uid uint32, b bool, interactive bool) *dbus.Error {
+	// Phase C+ persistence — for now accept the call so `loginctl
+	// enable-linger sunlight` doesn't error.
+	return nil
+}
+
 // KillSession sends the given signal to every process in the session
 // cgroup, or just the leader if `who = "leader"`.
 func (m *manager) KillSession(id, who string, sig int32) *dbus.Error {

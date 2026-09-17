@@ -324,6 +324,38 @@ func (m *manager) SuspendThenHibernate(interactive bool) *dbus.Error {
 	return writeSysPower("mem")
 }
 
+// *WithFlags variants — systemd 246+ / elogind 246+ shape. GDM and
+// modern lightdm both call the WithFlags forms exclusively; without
+// them the reboot/shutdown buttons in the greeter fail silently with
+// UnknownMethod and the operator has to drop to a TTY. flags is a
+// bitfield (SD_LOGIND_ROOT_CHECK_INHIBITORS etc.) — we don't consult
+// inhibitors yet, so the flag argument is accepted and ignored.
+func (m *manager) PowerOffWithFlags(flags uint64) *dbus.Error { return runShutdown("poweroff") }
+func (m *manager) RebootWithFlags(flags uint64) *dbus.Error   { return runShutdown("reboot") }
+func (m *manager) HaltWithFlags(flags uint64) *dbus.Error     { return runShutdown("halt") }
+func (m *manager) SuspendWithFlags(flags uint64) *dbus.Error  { return writeSysPower("mem") }
+func (m *manager) HibernateWithFlags(flags uint64) *dbus.Error {
+	return writeSysPower("disk")
+}
+func (m *manager) HybridSleepWithFlags(flags uint64) *dbus.Error {
+	return writeSysPower("disk")
+}
+func (m *manager) SuspendThenHibernateWithFlags(flags uint64) *dbus.Error {
+	return writeSysPower("mem")
+}
+
+// Sleep is the systemd 253+ dispatcher — the client asks the daemon
+// to pick the best sleep operation given the hardware. We proxy to
+// Suspend as the safest default.
+func (m *manager) Sleep(flags uint64) *dbus.Error { return writeSysPower("mem") }
+func (m *manager) CanSleep() (string, *dbus.Error) { return canSleep("mem"), nil }
+
+// Reload is called by `loginctl reload` (used e.g. by
+// /etc/gdm/custom.conf edits when the operator drops in new drop-ins).
+// We have no persistent config to re-read yet, so this is a no-op
+// success — clients that call it expect ACK, not implementation.
+func (m *manager) Reload() *dbus.Error { return nil }
+
 // Can<Op> methods answer whether the corresponding action is
 // available. systemd returns "yes"/"no"/"challenge"/"na". slinit-
 // logind returns "yes" whenever the underlying capability exists,
@@ -487,6 +519,23 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// libelogind/libsystemd compat directory tree — desktop stacks
+	// (gdm, gnome-shell, xdg-desktop-portal) probe /run/systemd/*
+	// at startup and refuse to spawn a greeter if the tree doesn't
+	// exist. Mirror what elogind's daemon does on first launch.
+	for _, d := range []string{"sessions", "users", "seats", "machines", "inaccessible"} {
+		_ = os.MkdirAll(filepath.Join("/run/systemd", d), 0755)
+	}
+	// Inaccessible files bind-mounted by services that request
+	// PrivateDevices / InaccessibleDirectories. Elogind creates these
+	// as immutable placeholders — we do the same so a systemd unit
+	// migrated to slinit doesn't fail on the bind-mount step.
+	_ = os.WriteFile("/run/systemd/inaccessible/reg",
+		[]byte{}, 0000)
+	for _, kind := range []string{"blk", "chr", "sock", "fifo"} {
+		_ = os.Remove("/run/systemd/inaccessible/" + kind)
+	}
+	_ = os.Mkdir("/run/systemd/inaccessible/dir", 0000)
 
 	conn, err := dbus.ConnectSystemBus()
 	if err != nil {
