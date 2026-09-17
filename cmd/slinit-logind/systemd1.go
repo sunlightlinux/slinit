@@ -37,10 +37,15 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
@@ -54,12 +59,42 @@ const (
 )
 
 // systemd1Manager holds the stub's mutable state — an environment
-// map plus a monotonically-increasing job counter.
+// map, a per-unit "started" bit, and a monotonically-increasing job
+// counter.
+//
+// The per-unit map is important: gnome-session-binary probes
+// `GetUnit("gnome-session-manager.service")` BEFORE it starts its
+// own manager, and if the stub reports it as ActiveState=active
+// then gnome-session-binary decides another manager already owns the
+// session and exits with "Session manager already running!". So the
+// stub must report a unit as active only AFTER a StartUnit has been
+// issued for it — which is the systemd contract anyway.
 type systemd1Manager struct {
-	conn  *dbus.Conn
-	mu    sync.Mutex
-	env   map[string]string // KEY -> "KEY=VALUE"
-	nextJ uint64            // next job id, atomic-accessed
+	conn      *dbus.Conn
+	mu        sync.Mutex
+	env       map[string]string // KEY -> "KEY=VALUE"
+	started   map[string]bool   // unit name -> has been StartUnit'd
+	nextJ     uint64            // next job id, atomic-accessed
+	leaderMon uint32            // gnome-session-ctl-monitor compat: 0=off, 1=goroutine running
+}
+
+func (s *systemd1Manager) isActive(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.started[name]
+}
+
+func (s *systemd1Manager) setActive(name string, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.started == nil {
+		s.started = make(map[string]bool)
+	}
+	if on {
+		s.started[name] = true
+	} else {
+		delete(s.started, name)
+	}
 }
 
 // escapeUnitName converts a systemd unit name (e.g.
@@ -155,27 +190,47 @@ func (s *systemd1Manager) UnsetAndSetEnvironment(unset, set []string) *dbus.Erro
 // that path is registered lazily via registerUnitObject.
 // -----------------------------------------------------------------------------
 
+// GetUnit returns the object path for a unit that has been previously
+// loaded or started. If the unit is unknown, return NoSuchUnit so
+// callers (gnome-session-binary, gdm-x-session) treat it as absent
+// and proceed with their own startup instead of thinking it's
+// already up. This matches systemd's semantics: GetUnit is a lookup,
+// not a load — LoadUnit is the load call.
 func (s *systemd1Manager) GetUnit(name string) (dbus.ObjectPath, *dbus.Error) {
+	if !s.isActive(name) {
+		return "", dbus.NewError(
+			"org.freedesktop.systemd1.NoSuchUnit",
+			[]any{"Unit " + name + " not loaded."})
+	}
 	p := s.unitPath(name)
 	s.registerUnitObject(name, p)
 	return p, nil
 }
 
+// LoadUnit registers the unit object path (returning success) but
+// doesn't mark it active — the unit is "loaded but not started".
+// Matches systemd where LoadUnit succeeds for any nameable unit
+// without changing its ActiveState.
 func (s *systemd1Manager) LoadUnit(name string) (dbus.ObjectPath, *dbus.Error) {
-	return s.GetUnit(name)
+	p := s.unitPath(name)
+	s.registerUnitObject(name, p)
+	return p, nil
 }
 
+// GetUnitByPID returns NoSuchUnit — slinit doesn't track units by pid
+// and pretending we do would let callers think an ambient scope is
+// active when nothing is. Callers that hit this fall back to a
+// looser path (usually reading /proc/PID/cgroup themselves).
 func (s *systemd1Manager) GetUnitByPID(pid uint32) (dbus.ObjectPath, *dbus.Error) {
-	// slinit doesn't track units by pid; return a synthetic path so
-	// the caller sees a valid ObjectPath rather than an error. Same
-	// unit-object stub responds behind it.
-	name := fmt.Sprintf("pid-%d.scope", pid)
-	return s.GetUnit(name)
+	return "", dbus.NewError(
+		"org.freedesktop.systemd1.NoSuchUnit",
+		[]any{"No unit for PID."})
 }
 
 func (s *systemd1Manager) GetUnitByInvocationID(id []byte) (dbus.ObjectPath, *dbus.Error) {
-	name := fmt.Sprintf("invocation-%x.scope", id)
-	return s.GetUnit(name)
+	return "", dbus.NewError(
+		"org.freedesktop.systemd1.NoSuchUnit",
+		[]any{"No unit for invocation ID."})
 }
 
 // -----------------------------------------------------------------------------
@@ -204,34 +259,114 @@ func (s *systemd1Manager) startJob(name, verb string) (dbus.ObjectPath, *dbus.Er
 }
 
 func (s *systemd1Manager) StartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	s.setActive(name, true)
+	s.maybeSpawnSessionLeaderMonitor(name)
 	return s.startJob(name, "start")
 }
 func (s *systemd1Manager) StartUnitWithFlags(name, mode string, flags uint64) (dbus.ObjectPath, *dbus.Error) {
+	s.setActive(name, true)
+	s.maybeSpawnSessionLeaderMonitor(name)
 	return s.startJob(name, "start")
 }
+
+// maybeSpawnSessionLeaderMonitor mirrors what gnome-session-ctl
+// --monitor does in a systemd-managed setup: hold the read end of
+// $XDG_RUNTIME_DIR/gnome-session-leader-fifo so gnome-session-binary's
+// later O_WRONLY|O_CLOEXEC open on the same path unblocks.
+//
+// Background — under a real systemd stack, `gnome-session-manager@
+// gnome.target` (started via StartUnit) pulls in `gnome-session-ctl
+// --monitor` as a dependency; that helper opens the FIFO read end
+// and blocks on read, then triggers `gnome-session-shutdown.target`
+// on EOF. Our stub's StartUnit is inert — no dependency chain fires —
+// so nothing opens the read end and gnome-session-binary deadlocks
+// on its own O_WRONLY open.
+//
+// We compensate by opening the FIFO read end ourselves on the first
+// StartUnit that names a gnome-session target. Held for the lifetime
+// of the (per-session) --user daemon; EOF (peer closes write end at
+// shutdown) is expected and cleanly logged.
+func (s *systemd1Manager) maybeSpawnSessionLeaderMonitor(unit string) {
+	if !strings.HasPrefix(unit, "gnome-session-") {
+		return
+	}
+	// Idempotency — only start one monitor goroutine.
+	if !atomic.CompareAndSwapUint32(&s.leaderMon, 0, 1) {
+		return
+	}
+	go s.holdSessionLeaderFIFO()
+}
+
+func (s *systemd1Manager) holdSessionLeaderFIFO() {
+	xdg := os.Getenv("XDG_RUNTIME_DIR")
+	if xdg == "" {
+		return
+	}
+	path := filepath.Join(xdg, "gnome-session-leader-fifo")
+	// Poll for the FIFO to appear — gnome-session-binary mkfifo's it
+	// after StartUnit succeeds, so we may briefly race. 20 attempts
+	// * 50ms = 1 s ceiling; that's ~10x margin over the observed
+	// gnome-session-binary latency between StartUnit and mkfifo.
+	var f *os.File
+	for i := 0; i < 20; i++ {
+		if _, err := os.Stat(path); err == nil {
+			// Open O_RDONLY WITHOUT O_NONBLOCK — blocks until a
+			// writer arrives, but that's fine: gnome-session-binary
+			// is about to become the writer, and our block resolves
+			// as soon as it does.
+			ff, err := os.OpenFile(path, os.O_RDONLY, 0)
+			if err == nil {
+				f = ff
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if f == nil {
+		return
+	}
+	defer f.Close()
+	// Drain the FIFO — reads block until the writer closes or sends a
+	// byte. On EOF (writer close at shutdown) we return; the deferred
+	// Close releases the fd.
+	_, _ = io.Copy(io.Discard, f)
+}
 func (s *systemd1Manager) StopUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	s.setActive(name, false)
 	return s.startJob(name, "stop")
 }
 func (s *systemd1Manager) RestartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	s.setActive(name, true)
 	return s.startJob(name, "restart")
 }
 func (s *systemd1Manager) ReloadUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
 	return s.startJob(name, "reload")
 }
 func (s *systemd1Manager) ReloadOrRestartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	s.setActive(name, true)
 	return s.startJob(name, "reload-or-restart")
 }
 func (s *systemd1Manager) TryRestartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
+	// try-restart is a nop if the unit isn't already active.
+	if s.isActive(name) {
+		return s.startJob(name, "try-restart")
+	}
 	return s.startJob(name, "try-restart")
 }
 func (s *systemd1Manager) ReloadOrTryRestartUnit(name, mode string) (dbus.ObjectPath, *dbus.Error) {
 	return s.startJob(name, "reload-or-try-restart")
 }
 
-// KillUnit / KillUnitSubgroup / ResetFailedUnit are noops — return
-// success so callers don't fail on cleanup paths.
+// KillUnit / KillUnitSubgroup / ResetFailedUnit / ResetFailed are
+// noops — return success so callers don't fail on cleanup paths.
+// gnome-session-binary calls `ResetFailed()` (no args, resets ALL
+// failed units) during greeter startup — it's one of the first
+// systemd1 calls after activation, and without it gnome-session
+// abandons startup with "Failed to reset failed state of units".
 func (s *systemd1Manager) KillUnit(name, who string, sig int32) *dbus.Error   { return nil }
 func (s *systemd1Manager) ResetFailedUnit(name string) *dbus.Error            { return nil }
+func (s *systemd1Manager) ResetFailed() *dbus.Error                            { return nil }
+func (s *systemd1Manager) ClearJobs() *dbus.Error                              { return nil }
 func (s *systemd1Manager) SetUnitProperties(name string, runtime bool, props []struct {
 	Name  string
 	Value dbus.Variant
@@ -397,27 +532,40 @@ func (p *systemd1Props) Set(iface, prop string, value dbus.Variant) *dbus.Error 
 
 // systemd1UnitStub answers the tiny slice of the Unit interface GNOME
 // actually reads: ActiveState / SubState / LoadState + Id / Names.
+// State derives from the outer manager's `started` map — a unit
+// reports active only after StartUnit has been called for it,
+// matching systemd's contract.
 type systemd1UnitStub struct {
 	name string
+	mgr  *systemd1Manager
+}
+
+func (u *systemd1UnitStub) activeState() (string, string) {
+	if u.mgr.isActive(u.name) {
+		return "active", "running"
+	}
+	return "inactive", "dead"
 }
 
 func (u *systemd1UnitStub) Get(iface, prop string) (dbus.Variant, *dbus.Error) {
-	if iface != systemd1UnitIf {
+	// Callers (glib GDBusProxy) occasionally probe with iface="" to
+	// mean "the primary interface of this object"; tolerate it.
+	if iface != systemd1UnitIf && iface != "" {
 		return dbus.Variant{}, dbus.NewError(
 			"org.freedesktop.DBus.Error.UnknownInterface", nil)
 	}
+	active, sub := u.activeState()
 	switch prop {
-	case "Id", "Names":
-		if prop == "Names" {
-			return dbus.MakeVariant([]string{u.name}), nil
-		}
+	case "Id":
 		return dbus.MakeVariant(u.name), nil
+	case "Names":
+		return dbus.MakeVariant([]string{u.name}), nil
 	case "LoadState":
 		return dbus.MakeVariant("loaded"), nil
 	case "ActiveState":
-		return dbus.MakeVariant("active"), nil
+		return dbus.MakeVariant(active), nil
 	case "SubState":
-		return dbus.MakeVariant("running"), nil
+		return dbus.MakeVariant(sub), nil
 	case "Description":
 		return dbus.MakeVariant("slinit-logind systemd1-compat stub"), nil
 	case "FragmentPath", "SourcePath":
@@ -433,7 +581,6 @@ func (u *systemd1UnitStub) Get(iface, prop string) (dbus.Variant, *dbus.Error) {
 	case "Following":
 		return dbus.MakeVariant(""), nil
 	case "Job":
-		// (uo) — job id + object path. No active job.
 		return dbus.MakeVariant(struct {
 			ID   uint32
 			Path dbus.ObjectPath
@@ -451,12 +598,13 @@ func (u *systemd1UnitStub) GetAll(iface string) (map[string]dbus.Variant, *dbus.
 		return nil, dbus.NewError(
 			"org.freedesktop.DBus.Error.UnknownInterface", nil)
 	}
+	active, sub := u.activeState()
 	return map[string]dbus.Variant{
 		"Id":               dbus.MakeVariant(u.name),
 		"Names":            dbus.MakeVariant([]string{u.name}),
 		"LoadState":        dbus.MakeVariant("loaded"),
-		"ActiveState":      dbus.MakeVariant("active"),
-		"SubState":         dbus.MakeVariant("running"),
+		"ActiveState":      dbus.MakeVariant(active),
+		"SubState":         dbus.MakeVariant(sub),
 		"Description":      dbus.MakeVariant("slinit-logind systemd1-compat stub"),
 		"FragmentPath":     dbus.MakeVariant(""),
 		"UnitFileState":    dbus.MakeVariant("enabled"),
@@ -479,7 +627,7 @@ func (s *systemd1Manager) registerUnitObject(name string, path dbus.ObjectPath) 
 	// dbus.Conn.Export is idempotent enough for our purposes; a
 	// re-export overwrites the handler and both point at the same
 	// answers, so we don't dedup.
-	unit := &systemd1UnitStub{name: name}
+	unit := &systemd1UnitStub{name: name, mgr: s}
 	_ = s.conn.Export(unit, path, systemd1UnitIf)
 	_ = s.conn.Export(unit, path, "org.freedesktop.DBus.Properties")
 	_ = s.conn.Export(
@@ -511,6 +659,8 @@ func systemd1ManagerIntrospect() string {
     <method name="ReloadOrTryRestartUnit"><arg direction="in" type="s"/><arg direction="in" type="s"/><arg direction="out" type="o"/></method>
     <method name="KillUnit"><arg direction="in" type="s"/><arg direction="in" type="s"/><arg direction="in" type="i"/></method>
     <method name="ResetFailedUnit"><arg direction="in" type="s"/></method>
+    <method name="ResetFailed"/>
+    <method name="ClearJobs"/>
     <method name="Subscribe"/>
     <method name="Unsubscribe"/>
     <method name="Reload"/>
@@ -573,8 +723,9 @@ func systemd1UnitIntrospect(name string, path dbus.ObjectPath) string {
 
 func registerSystemd1(conn *dbus.Conn, debug bool) *systemd1Manager {
 	s := &systemd1Manager{
-		conn: conn,
-		env:  make(map[string]string, 32),
+		conn:    conn,
+		env:     make(map[string]string, 32),
+		started: make(map[string]bool, 32),
 	}
 
 	if err := conn.Export(s, dbus.ObjectPath(systemd1ObjPath), systemd1Iface); err != nil {
@@ -609,4 +760,39 @@ func registerSystemd1(conn *dbus.Conn, debug bool) *systemd1Manager {
 		fmt.Fprintf(os.Stderr, "slinit-logind: registered as %s at %s (systemd1-compat stub)\n", systemd1BusName, systemd1ObjPath)
 	}
 	return s
+}
+
+// userMain runs slinit-logind in per-user session-bus mode. Invoked
+// via `slinit-logind --user`, typically by dbus-daemon --session's
+// activation of org.freedesktop.systemd1 when gnome-session-binary
+// probes for it. Connects to the session bus (DBUS_SESSION_BUS_
+// ADDRESS in env, populated by whatever spawned the session bus —
+// dbus-run-session, dbus-launch, or gnome-session's transient
+// dbus-daemon), registers the systemd1 stub, and blocks until
+// SIGTERM/SIGINT.
+//
+// Nothing else is registered — no login1 (session bus is per-user,
+// no hardware authority), no /run/systemd tree (that belongs to the
+// system-bus daemon), no bus-name policy dance (session bus is
+// per-user, dbus-daemon --session ships an `<allow own="*"/>`
+// default for the owner-user context).
+func userMain(debug bool) {
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-logind --user: connect session bus: %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	if s := registerSystemd1(conn, debug); s == nil {
+		fmt.Fprintln(os.Stderr, "slinit-logind --user: systemd1 registration failed on session bus")
+		os.Exit(1)
+	}
+
+	// Block on SIGTERM/SIGINT. dbus-daemon --session sends SIGTERM
+	// to activated peers when the session bus shuts down (user
+	// logout / DM stop), so we exit cleanly along with the session.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	<-sig
 }

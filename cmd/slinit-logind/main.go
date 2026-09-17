@@ -509,7 +509,20 @@ func splitFields(s string) []string {
 
 func main() {
 	debug := flag.Bool("debug", false, "log D-Bus method dispatch to stderr")
+	userMode := flag.Bool("user", false, "session-bus mode: only host org.freedesktop.systemd1 stub for per-user auto-activation (skips login1 + /run/systemd tree)")
 	flag.Parse()
+
+	// --user session-bus mode: connect to the caller's DBUS_SESSION_BUS
+	// (dbus-daemon --session, activated by gnome-session or an
+	// XDG_SESSION_TYPE=x11/wayland startup), register the systemd1
+	// compat stub only, and block until the session bus goes away.
+	// login1 doesn't make sense here — session bus is per-user, no
+	// hardware/power authority — so we skip its registration and the
+	// /run/systemd tree entirely.
+	if *userMode {
+		userMain(*debug)
+		return
+	}
 
 	// Ensure state dirs exist so PAM's later create-session writes
 	// don't have to race on mkdir.
@@ -523,6 +536,18 @@ func main() {
 	// (gdm, gnome-shell, xdg-desktop-portal) probe /run/systemd/*
 	// at startup and refuse to spawn a greeter if the tree doesn't
 	// exist. Mirror what elogind's daemon does on first launch.
+	//
+	// NOTE: we deliberately do NOT create /run/systemd/system —
+	// that's the sd_booted() beacon, and if it exists,
+	// gnome-session-binary takes the "under systemd" path where it
+	// expects a real user manager to actually spawn the units in
+	// gnome-login.session. Our systemd1 stub reports StartUnit as
+	// succeeded but does nothing, so nothing runs — no gnome-shell,
+	// no mutter, no greeter. With the beacon absent, sd_booted()
+	// returns false and gnome-session-binary falls into standalone
+	// autostart mode: it reads the .session file itself and
+	// spawns each RequiredComponent as a direct child process, which
+	// is what actually works on Sunlight.
 	for _, d := range []string{"sessions", "users", "seats", "machines", "inaccessible"} {
 		_ = os.MkdirAll(filepath.Join("/run/systemd", d), 0755)
 	}
