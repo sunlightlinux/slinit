@@ -583,6 +583,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "slinit-logind: registered as %s at %s\n", busName, objPath)
 	}
 
+	// systemd1-compat stub — hosts org.freedesktop.systemd1 on the
+	// same connection so gnome-session-binary and gdm-x-session can
+	// complete their startup handshake. Fails soft: if the name is
+	// already owned (live systemd, another shim), we log and keep
+	// login1 running.
+	_ = registerSystemd1(conn, *debug)
+
 	// Block on SIGTERM/SIGINT. Nothing else to do — dbus/v5 runs its
 	// own dispatch goroutine.
 	sig := make(chan os.Signal, 1)
