@@ -17,6 +17,202 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-09-17
+
+Point release on the 2.3.x line. Two focused feature additions
+(**slinit-logind**, the native `org.freedesktop.login1` daemon,
+and a **systemctl-style status/show** family for `slinitctl`) plus
+a small correctness cluster (one write-deadline leak, one PID-1
+hostname-seeding fix that had been silently mis-tagging early
+journal entries). No wire-protocol change; no removal of any
+existing surface.
+
+Development shape: 17 commits since v2.3.0 across three tracks
+covered in Highlights below. Full unit + acceptance + functional
+suite green on ceres (Void x86_64 KVM, kernel 7.2.3-lowlatency-
+sunlight1); slinit-logind additionally validated on a fresh
+XFCE + LightDM stack (session `c2` allocated on seat0/VT7, full
+xfce4-panel + xfce-polkit + xfsettingsd tree healthy) as a live
+elogind replacement.
+
+### Highlights
+
+- **slinit-logind — native `org.freedesktop.login1` daemon**
+  (`cmd/slinit-logind/`, ~1.9k LOC across 7 commits). First
+  runtime dep beyond `x/sys` (`godbus/dbus/v5`); pulled in
+  because reimplementing the D-Bus wire format for one consumer
+  was not the right complexity trade-off. Owns the login1 bus
+  name and provides:
+
+  - Manager: `GetSession`, `GetUser`, `GetSeat`,
+    `GetSessionByPID`, `GetUserByPID` (with `/proc/PID/cgroup`
+    fallback), `List{Sessions,Users,Seats,Inhibitors}`, session
+    lifecycle (`CreateSession`, `ReleaseSession`,
+    `ActivateSession`, `LockSession`, `UnlockSession`,
+    `KillSession`, `TerminateSession`), user + seat lifecycle
+    (`TerminateUser`, `TerminateSeat`, `KillUser`,
+    `SetUserLinger`), device routing (`AttachDevice`,
+    `FlushDevices`), the full 8-verb power family (`PowerOff`,
+    `Reboot`, `Halt`, `Suspend`, `Hibernate`, `HybridSleep`,
+    `SuspendThenHibernate`, `Sleep`) each with a `WithFlags`
+    variant and matching `Can*` capability query,
+    `ScheduleShutdown` + `CancelScheduledShutdown`, `Inhibit`,
+    `Reload`. Sender-injected PID resolution (`dbus.Sender`
+    magic-value + `GetConnectionUnixProcessID`) so callers
+    passing `pid=0` (pam_elogind, older greeters) resolve to
+    the caller.
+  - Per-Session / per-User / per-Seat D-Bus objects with the
+    full `loginctl` property surface (~25 per Session). Real
+    `Session.TakeDevice` — resolves `M:m` via
+    `/sys/dev/{char,block}/*/uevent` DEVNAME + hands the fd
+    back over the D-Bus unix-fd wire.
+  - Runtime layout follows the **elogind convention**, not
+    systemd's: per-session cgroup scope at `/sys/fs/cgroup/<id>`
+    (flat, NOT nested under `user.slice/…`) — libelogind's
+    `sd_pid_get_session()` takes the FIRST path component of
+    `/proc/PID/cgroup`, so systemd-style nesting would break it.
+    Compat records land in `/run/systemd/{sessions,users,seats,
+    machines}/` in shell-variable format so polkit's
+    `PolkitUnixSession` and `pam_elogind` continue to work
+    unmodified.
+  - `/run/user/<UID>` created 0700 owned by the user;
+    `/run/user` itself 0755 so the user can traverse into their
+    own dir (a 0700 parent silently breaks XFCE menu discovery
+    ~2-3 min into the session — caught the hard way).
+
+  Elogind stays installed on target distributions purely for
+  `libelogind.so.0` (dynamic dep of polkitd, gdm, pam_elogind,
+  loginctl); only the **daemon** is replaced. Runtime cutover
+  proven on Sunlight OS ceres — full XFCE stack, `loginctl`
+  reports the expected session, `sd_pid_get_session()` returns
+  `c2` for every user process, polkitd resolves subjects
+  successfully without a live elogind.
+
+- **`slinitctl status` / `show` / `status5` — systemctl parity**
+  (~1.3k LOC across 7 commits). `slinitctl` now renders a
+  status block that matches `systemctl status` line-for-line at
+  the human level (Unit + Loaded/State/Since triple + Main PID +
+  cgroup tree + last 10 journal lines), plus a `show` subcommand
+  that mirrors `systemctl show`'s `Key=Value` dump — ~70 fields
+  per service including live cgroup v2 accounting counters
+  (`MemoryCurrent`, `MemoryPeak`, `CPUUsageNSec`, `TasksCurrent`,
+  `IOReadBytes`/`WriteBytes`, `PSI-*`) read on demand from the
+  service's scope. `status5` (the s6-style variant) gained
+  Type + PID + `si_code`/`errno` symbol expansion, and a
+  `-l/--long` flag that promotes it to the same `show`-backed
+  Details block. `-l/--long` is now consistent across `status`,
+  `status5` and `show`. New wire opcode `CmdServiceShow` (with
+  the existing dinit-compat opcodes untouched).
+
+- **`writePacket` write-deadline leak fix** (`pkg/control`,
+  `5c73c95`) — the control-server writes a 5 s write deadline
+  onto every response so a stuck reader can't wedge a handler
+  goroutine indefinitely. Deadline is cleared with
+  `SetWriteDeadline(time.Time{})` after each successful write
+  and the connection is closed on timeout, matching the read
+  side's semantics. Found via a deadline-audit sweep prompted
+  by the `slinit-journalctl -f` hang fix in 2.3.0; no observed
+  hang triggered the fix but the leak-on-timeout path was real.
+
+### Added
+
+- `cmd/slinit-logind/` — native login1 daemon. See Highlights.
+  Ships as a standalone binary; no service file lands in the
+  `slinit` package itself (packaging concern; Sunlight OS ships
+  it via `sunlight-slinit-services` 1.4.0).
+- `slinitctl status` gained: cgroup process tree (indented under
+  the Main PID line) + last 10 journal lines (via
+  `slinit-journalctl` — same query the operator would run by
+  hand, filtered by the service's unit tag).
+- `slinitctl show <svc>` — new subcommand. `systemctl show`
+  analogue; dumps ~70 fields as `Key=Value` for machine
+  consumption. Fields cover config surface (Type,
+  ExecStart[Pre,Post,Reload], User, Group, RestartPolicy,
+  RestartLimitBurst / IntervalSec, WorkingDirectory,
+  environment sources, hardening knobs — DynamicUser,
+  NoNewPrivileges, AmbientCap, RestrictNamespaces,
+  CapabilityBoundingSet, ProtectHome, ProtectSystem,
+  ProtectKernel*, PrivateDevices, PrivateTmp, SystemCallFilter,
+  the full restrict-* set), runtime state (ActiveState,
+  SubState, LoadState, TriggeredBy, Triggers, MainPID, ExecMain*,
+  Result), and live cgroup v2 accounting counters read on demand
+  from the service's scope.
+- `slinitctl show -l/--long` — expands the standard field set
+  with additional secondary fields (Slice, ControlGroup,
+  ConditionResult, AssertResult, LimitCPU / LimitAS / LimitCORE
+  / LimitDATA / LimitFSIZE / LimitLOCKS / LimitMEMLOCK /
+  LimitMSGQUEUE / LimitNICE / LimitNOFILE / LimitNPROC /
+  LimitRSS / LimitRTPRIO / LimitRTTIME / LimitSIGPENDING /
+  LimitSTACK, TimeoutStartUSec / TimeoutStopUSec,
+  StartLimitBurst / IntervalUSec, OOMPolicy, IOWeight,
+  MemoryHigh / MemoryMax / MemorySwapMax, TasksMax). Same set
+  gated by the flag across `status`, `status5` and `show`.
+- `slinitctl status5` now shows Type + PID + last exit code
+  with `si_code` and `errno` symbol expansion (`SI_KILL` /
+  `SI_USER` / `EAGAIN`, not raw ints), and gained a
+  `-l/--long` flag that appends a Details block sourced from
+  `CmdServiceShow` (same content as `show`, indented inline
+  under the status5 block).
+- `CmdServiceShow` — new control-protocol opcode wrapping the
+  show payload. Additive; existing opcodes unchanged.
+
+### Fixed
+
+- `pkg/control writePacket`: writes now apply a 5 s write
+  deadline and close the connection on timeout, matching the
+  read side. Prior code left the deadline unset, so a stuck
+  reader on the control socket could park a server-side
+  handler goroutine indefinitely — the read-side deadline audit
+  that landed in 2.3.0's `slinit-journalctl -f` fix surfaced
+  the same class of leak on the write side.
+- `cmd/slinit` PID-1 hostname seeding: `os.Hostname()` at
+  journal-ID init time was returning the kernel default
+  `(none)` — `idCache.hostname` cached it for the rest of the
+  boot, so every Load / Start / Stop event shipped to the
+  journal tagged `(none)` even after a userspace early-setup
+  service later called `hostname -F /etc/hostname`. Now
+  seed `sethostname(2)` from `/etc/hostname` under `isPID1`
+  before the journal cache primes. Gated on isPID1 so
+  `--user` / `--container` invocations stay pure; missing or
+  unreadable `/etc/hostname` is silently tolerated.
+- `tests/functional/115-protect-hostname`: the Seccomp-install
+  poll (added in `0b3f378`) held at 10x200ms which occasionally
+  raced under full 218-case load — the sh child's
+  `hostname()`/`sethostname()` slipped through to the host
+  before the filter installed, mutating the host hostname for
+  every subsequent case in the run. Bumped to 25x200ms (5 s)
+  and added a best-effort restore-from-observed-value path so
+  the harness self-heals when the race does fire (assertion
+  still triggers, but the next case sees the original name
+  instead of `functional-probe`).
+
+### Changed
+
+- `slinitctl status` output now includes cgroup tree + journal
+  tail by default. `-l/--long` unchanged in scope but consistent
+  in meaning across `status` / `status5` / `show`.
+- `pkg/service.Show` renders the full expanded field set (~200
+  fields with `-l/--long`, ~70 default). Prior default was ~40.
+
+### Compat
+
+- Wire protocol: `CmdServiceShow` added; existing opcodes
+  unchanged. `slinitctl` 2.3.0 clients continue to work against
+  a 2.3.1 daemon (they simply won't send the new opcode); a
+  2.3.1 `slinitctl` falls back gracefully when talking to an
+  older daemon that returns `NotSupported` for `CmdServiceShow`
+  (renders the prior compact `status` block).
+- Config surface: unchanged. No new directives, no removal.
+- Cmdline: unchanged.
+- Package manifests: `cmd/slinit-logind/` is a new binary. The
+  slinit srcpkg does not yet list it in `go_package` (that bump
+  waits for the next tag cut); packaging currently side-loads
+  the binary via the sunlight-slinit-services 1.4.0 rootfs
+  drop-in. The next tag cut should pick it up in `go_package`.
+- Runtime deps: first non-`x/sys` runtime dep — `github.com/
+  godbus/dbus/v5`. Vendored via `go.mod`; adds ~4 MB to the
+  slinit-logind binary; no impact on the other cmd/ binaries.
+
 ## [2.3.0] — 2026-09-13
 
 Milestone release — first minor bump on the 2.x line, marking the
