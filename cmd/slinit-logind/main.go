@@ -430,8 +430,20 @@ func readJSON(path string, out interface{}) bool {
 	return json.Unmarshal(b, out) == nil
 }
 
-// runShutdown execs slinit-shutdown with the given verb. Errors are
+// runShutdown execs slinit-shutdown for the given action. Errors are
 // mapped to a systemd-compatible D-Bus error name.
+//
+// The verb-to-flag mapping matters: slinit-shutdown parses its argv
+// as short/long flags (`-r`, `--reboot`, `-p`, ...), NOT as
+// systemctl-style verbs (`slinit-shutdown reboot` prints
+// "Unrecognized option: reboot" and exits non-zero). An earlier
+// revision passed verbs; slinit-shutdown ran, failed the parse, and
+// exited fast — but exec.Command.Start() only reports fork/exec
+// errors, not the child's exit status, so the D-Bus call still
+// returned success. XFCE's Restart button would then trigger
+// `xfce4-session` to close (thinking the reboot was in flight) but
+// the machine stayed up, so the user got a silent logout instead of
+// a reboot. Map verbs to the actual flags to fix that.
 func runShutdown(verb string) *dbus.Error {
 	bin := slinitctlPath
 	if bin == "" {
@@ -442,7 +454,19 @@ func runShutdown(verb string) *dbus.Error {
 		}
 		bin = p
 	}
-	if err := exec.Command(bin, verb).Start(); err != nil {
+	var flag string
+	switch verb {
+	case "reboot":
+		flag = "-r"
+	case "halt":
+		flag = "-h"
+	case "poweroff":
+		flag = "-p"
+	default:
+		return dbus.NewError("org.freedesktop.login1.Error.OperationInProgress",
+			[]interface{}{"unknown shutdown verb: " + verb})
+	}
+	if err := exec.Command(bin, flag).Start(); err != nil {
 		return dbus.NewError("org.freedesktop.login1.Error.OperationInProgress",
 			[]interface{}{err.Error()})
 	}
