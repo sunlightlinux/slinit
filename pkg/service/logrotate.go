@@ -809,16 +809,22 @@ func (lr *LogRotator) rotateLocked() {
 	// file. Nanoseconds make same-tick collisions effectively impossible
 	// under mutex serialization.
 	rotatedName := fmt.Sprintf("%s.%s", lr.filePath, lr.lastRotate.Format("20060102-150405.000000000"))
+
+	// Prune BEFORE the rename, down to maxFiles-1, so the rename brings
+	// the count to exactly maxFiles. Pruning after the rename left a
+	// window with maxFiles+1 rotated files on disk; under a fast
+	// producer with a small max-size that window is open a large
+	// fraction of the time and any external observer sees the limit
+	// violated.
+	if lr.maxFiles > 0 {
+		lr.cleanOldFilesLocked(lr.maxFiles - 1)
+	}
+
 	if err := os.Rename(lr.filePath, rotatedName); err != nil {
 		if lr.logger != nil {
 			lr.logger.Error("Service '%s': logfile rotate rename failed: %v", lr.serviceName, err)
 		}
 		return
-	}
-
-	// Clean up old rotated files
-	if lr.maxFiles > 0 {
-		lr.cleanOldFilesLocked()
 	}
 
 	// Run log processor on rotated file
@@ -885,8 +891,9 @@ func (lr *LogRotator) freeSpaceLocked() bool {
 	return removed > 0
 }
 
-// cleanOldFilesLocked removes rotated files exceeding maxFiles. Must be called with mu held.
-func (lr *LogRotator) cleanOldFilesLocked() {
+// cleanOldFilesLocked removes the oldest rotated files until at most
+// keep remain. Must be called with mu held.
+func (lr *LogRotator) cleanOldFilesLocked(keep int) {
 	dir := filepath.Dir(lr.filePath)
 	base := filepath.Base(lr.filePath)
 	prefix := base + "."
@@ -906,7 +913,7 @@ func (lr *LogRotator) cleanOldFilesLocked() {
 		}
 	}
 
-	if len(rotated) <= lr.maxFiles {
+	if len(rotated) <= keep {
 		return
 	}
 
@@ -914,7 +921,7 @@ func (lr *LogRotator) cleanOldFilesLocked() {
 	sort.Strings(rotated)
 
 	// Remove oldest files
-	toRemove := len(rotated) - lr.maxFiles
+	toRemove := len(rotated) - keep
 	for i := 0; i < toRemove; i++ {
 		path := filepath.Join(dir, rotated[i])
 		os.Remove(path)

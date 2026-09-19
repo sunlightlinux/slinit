@@ -8,8 +8,17 @@ wait_for_service "logrot-svc" "STARTED" 10
 # yes(1) produces output at max speed — rotation triggers almost instantly
 sleep 5
 
-# Count all log files (main + rotated) — with fast rotation the main file
-# may be mid-rename at check time, so we count everything matching the prefix
+# Freeze the producer before counting. At 512-byte max-size, yes(1)
+# rotates tens of thousands of times per second, so each rotated file
+# lives well under a millisecond: a live `ls` races the rotator both
+# ways (glob sees N names, stat finds 0 left; or a snapshot lands
+# mid-rotation). SIGSTOP the writer, let the rotator drain the pipe,
+# count a quiescent directory, then SIGCONT so the service keeps running.
+yes_pids=$(pgrep -x yes)
+for p in $yes_pids; do kill -STOP "$p"; done
+sleep 1
+
+# Count all log files (main + rotated)
 all_count=$(ls /tmp/logrot-svc.log* 2>/dev/null | wc -l)
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ "$all_count" -gt 0 ]; then
@@ -45,6 +54,8 @@ else
     echo "FAIL: rotated file count $rotated_count > 3 (max-files=3 not enforced)"
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
 fi
+
+for p in $yes_pids; do kill -CONT "$p"; done
 
 # Service should still be running
 assert_service_state "logrot-svc" "STARTED" "logrot-svc is STARTED"

@@ -517,6 +517,87 @@ func countRotated(t *testing.T, dir, base string) int {
 	return n
 }
 
+// TestLogRotatorMaxFilesAfterRotate checks the steady state: with 5
+// stale rotated files and maxFiles=3, one rotation leaves exactly 3 —
+// the 2 newest seeds plus the freshly rotated file.
+func TestLogRotatorMaxFilesAfterRotate(t *testing.T) {
+	dir := t.TempDir()
+	base := "svc.log"
+	seedRotated(t, dir, base, 5)
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:    filepath.Join(dir, base),
+		FileUID:     -1,
+		FileGID:     -1,
+		ServiceName: "t",
+		LogLevelMax: -1,
+		MaxFiles:    3,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	lr.mu.Lock()
+	if err := lr.openFileLocked(); err != nil {
+		lr.mu.Unlock()
+		t.Fatalf("open: %v", err)
+	}
+	lr.rotateLocked()
+	lr.mu.Unlock()
+
+	if got := countRotated(t, dir, base); got != 3 {
+		t.Fatalf("after rotate: %d rotated files, want 3", got)
+	}
+	for _, i := range []int{3, 4} {
+		name := fmt.Sprintf("%s.20240101-000000-%03d", base, i)
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("newest seed %s was pruned: %v", name, err)
+		}
+	}
+}
+
+// TestLogRotatorPrunesBeforeRename pins the ordering that keeps the
+// rotated-file count from ever exceeding maxFiles: pruning must run
+// BEFORE the rename. We make the rename fail (live file removed from
+// disk) and check the prune already brought the count to maxFiles-1.
+// With prune-after-rename the count would stay at the seeded 5, and
+// in normal operation the directory would briefly hold maxFiles+1.
+func TestLogRotatorPrunesBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	base := "svc.log"
+	seedRotated(t, dir, base, 5)
+
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:    filepath.Join(dir, base),
+		FileUID:     -1,
+		FileGID:     -1,
+		ServiceName: "t",
+		LogLevelMax: -1,
+		MaxFiles:    3,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer lr.Close()
+
+	lr.mu.Lock()
+	if err := lr.openFileLocked(); err != nil {
+		lr.mu.Unlock()
+		t.Fatalf("open: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, base)); err != nil {
+		lr.mu.Unlock()
+		t.Fatalf("remove live file: %v", err)
+	}
+	lr.rotateLocked()
+	lr.mu.Unlock()
+
+	if got := countRotated(t, dir, base); got != 2 {
+		t.Fatalf("after failed-rename rotate: %d rotated files, want 2 (maxFiles-1)", got)
+	}
+}
+
 // TestLogRotatorFreeSpaceDrainsToMin verifies svlogd's Nmin behavior:
 // when freeSpaceLocked is invoked with 5 rotated files on disk and
 // minFiles=2, the 3 oldest files get deleted, 2 remain, and the
