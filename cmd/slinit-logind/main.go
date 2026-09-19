@@ -536,6 +536,20 @@ func main() {
 	userMode := flag.Bool("user", false, "session-bus mode: only host org.freedesktop.systemd1 stub for per-user auto-activation (skips login1 + /run/systemd tree)")
 	flag.Parse()
 
+	// --debug: redirect os.Stderr to /var/log/slinit-logind.log so the
+	// method-dispatch prints and the session-machinery diagnostics
+	// (cgroup migration path, CreateSession chain, ...) survive
+	// slinit's runner attaching fd 2 to /dev/null. Ignored when the
+	// file can't be opened; then debug output just goes to /dev/null
+	// like it did before, which is fine for the normal --debug=false
+	// path anyway.
+	if *debug && !*userMode {
+		if f, err := os.OpenFile("/var/log/slinit-logind.log",
+			os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644); err == nil {
+			os.Stderr = f
+		}
+	}
+
 	// --user session-bus mode: connect to the caller's DBUS_SESSION_BUS
 	// (dbus-daemon --session, activated by gnome-session or an
 	// XDG_SESSION_TYPE=x11/wayland startup), register the systemd1

@@ -188,12 +188,105 @@ func (m *manager) CreateSession(
 			dbus.NewError("org.freedesktop.login1.Error.CgroupSetupFailed",
 				[]interface{}{"session scope: " + err.Error()})
 	}
-	// Move the leader into the scope. Failure here is non-fatal — a
-	// PID that already exited between pam_open_session and here would
-	// give ESRCH; we still create the session record so pam_close
-	// finds something to release.
-	_ = os.WriteFile(sessionScope+"/cgroup.procs",
-		[]byte(strconv.FormatUint(uint64(pid), 10)), 0644)
+	// Move the caller's ancestor chain into the scope. The caller
+	// that reached CreateSession is usually a short-lived PAM helper
+	// (pam_elogind's account-helper or gdm's sudo-style wrapper) that
+	// exits between pam_open_session's D-Bus call and our WriteFile —
+	// leaving the write silent-successful (the kernel treats a
+	// dead-pid write as a no-op) but the scope empty. That
+	// desynchronises the session tree: gdm-session-worker,
+	// gdm-wayland-session, gnome-session-binary and gnome-shell get
+	// forked from the same PAM ancestry but stay in the root cgroup,
+	// so `sd_pid_get_session()` on any of them returns nothing.
+	// gnome-shell then dies with "Failed to setup: Failed to find any
+	// matching session" and gnome-session escalates that to
+	// "Unrecoverable failure in required component org.gnome.Shell".
+	//
+	// Walk up /proc/<pid>/status:PPid greedily — read the ancestor
+	// chain BEFORE it can die — and migrate the first live ancestor
+	// we can confirm (via cgroup.procs re-read). For the PAM chain
+	//   gdm-session-worker → sh → pam_elogind_helper → us
+	// the first stable ancestor is normally gdm-session-worker, which
+	// stays alive for the whole session and forks every user-facing
+	// process we want in the scope.
+	ancestors := []uint32{pid}
+	{
+		cur := pid
+		for i := 0; i < 8; i++ {
+			ppid, ok := readPPid(cur)
+			if !ok || ppid <= 1 || ppid == cur {
+				break
+			}
+			ancestors = append(ancestors, ppid)
+			cur = ppid
+		}
+	}
+	// Migrate every live ancestor in the chain plus every
+	// gdm-session-worker whose real uid matches this session's uid.
+	//
+	// The dbus caller is typically a transient PAM helper that exits
+	// inside microseconds of our WriteFile — kernel accepts the
+	// write, then removes the pid on process exit, leaving the scope
+	// empty just after we walk away. On Void's gdm layout the PAM
+	// helper's parent chain runs through /usr/bin/gdm itself, NOT
+	// through gdm-session-worker, so pure ancestor-walking never
+	// touches the process that actually forks the user-facing
+	// binaries (gdm-wayland-session → dbus-run-session →
+	// gnome-session-binary → gnome-shell). Migrating those
+	// gdm-session-worker processes explicitly by name gives the
+	// scope the long-lived root the downstream fork tree needs;
+	// kernel semantics carry the scope forward across every
+	// subsequent fork so `sd_pid_get_session()` reads back the
+	// session id on gnome-shell.
+	moved := 0
+	writeProc := func(candPID uint32) {
+		werr := os.WriteFile(sessionScope+"/cgroup.procs",
+			[]byte(strconv.FormatUint(uint64(candPID), 10)), 0644)
+		if werr == nil {
+			moved++
+		}
+	}
+	for _, cand := range ancestors {
+		writeProc(cand)
+	}
+	// Snapshot /proc: any gdm-session-worker (or gnome-session
+	// helper) belonging to this uid is a session-defining pivot.
+	// We check comm rather than the full argv to keep the scan
+	// cheap — /proc/<pid>/comm is a single 16-byte read.
+	if entries, err := os.ReadDir("/proc"); err == nil {
+		for _, ent := range entries {
+			if !ent.IsDir() {
+				continue
+			}
+			candPID, err := strconv.ParseUint(ent.Name(), 10, 32)
+			if err != nil {
+				continue
+			}
+			commBytes, err := os.ReadFile("/proc/" + ent.Name() + "/comm")
+			if err != nil {
+				continue
+			}
+			comm := strings.TrimSpace(string(commBytes))
+			// Match gdm-session-worker's short name. Kernel
+			// truncates comm to 15 chars; the process shows up as
+			// "gdm-session-wor" — startsWith covers both forms. We
+			// don't uid-filter: gdm-session-worker holds root
+			// throughout PAM setup and only switches to the target
+			// uid inside the exec'd session command, so a loginuid
+			// or ruid match would false-negative every fresh
+			// session at exactly the moment we need to migrate.
+			// The name filter is scope enough — gdm-session-worker
+			// only exists in the PAM-active gdm chain.
+			if !strings.HasPrefix(comm, "gdm-session-wor") {
+				continue
+			}
+			writeProc(uint32(candPID))
+		}
+	}
+	if moved == 0 {
+		fmt.Fprintf(os.Stderr, "slinit-logind: cgroup.procs %s: no ancestor migrated for pid=%d (chain: %v)\n",
+			sessionScope, pid, ancestors)
+	}
 
 	// Runtime dir: mode 0700, owned by the target uid. First session
 	// for the user creates it; subsequent sessions reuse it — safe
@@ -320,6 +413,31 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 		}
 	}
 	return nil
+}
+
+// readPPid parses PPid from /proc/<pid>/status. Returns (ppid, true)
+// on success; (0, false) if the process is gone or the field is
+// missing. Used by CreateSession's cgroup-migration fallback.
+func readPPid(pid uint32) (uint32, bool) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "PPid:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return 0, false
+		}
+		n, err := strconv.ParseUint(fields[1], 10, 32)
+		if err != nil {
+			return 0, false
+		}
+		return uint32(n), true
+	}
+	return 0, false
 }
 
 // callerPID asks the system bus daemon for the PID owning the given
