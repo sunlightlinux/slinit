@@ -76,6 +76,19 @@ type systemd1Manager struct {
 	started   map[string]bool   // unit name -> has been StartUnit'd
 	nextJ     uint64            // next job id, atomic-accessed
 	leaderMon uint32            // gnome-session-ctl-monitor compat: 0=off, 1=goroutine running
+	debug     bool              // set to true to log every dispatched call
+}
+
+// dbg is a one-liner tracer for stub calls. Enabled when the daemon
+// was started with --debug; the output goes to slinit's catch-all
+// log (slinit-logind runs under slinit's runner which captures
+// stderr). Used only during interop debugging, so the format is
+// deliberately terse.
+func (s *systemd1Manager) dbg(format string, args ...any) {
+	if !s.debug {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "systemd1-stub: "+format+"\n", args...)
 }
 
 func (s *systemd1Manager) isActive(name string) bool {
@@ -138,6 +151,7 @@ func (s *systemd1Manager) jobPath() dbus.ObjectPath {
 // SetEnvironment merges the given "KEY=VALUE" strings into the
 // manager's env. Idempotent; last write wins.
 func (s *systemd1Manager) SetEnvironment(assignments []string) *dbus.Error {
+	s.dbg("SetEnvironment(%d entries)", len(assignments))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, kv := range assignments {
@@ -153,6 +167,7 @@ func (s *systemd1Manager) SetEnvironment(assignments []string) *dbus.Error {
 // UnsetEnvironment drops any key that appears in the argument list.
 // Values-in-args are ignored — this matches systemd's semantics.
 func (s *systemd1Manager) UnsetEnvironment(names []string) *dbus.Error {
+	s.dbg("UnsetEnvironment(%d entries)", len(names))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, n := range names {
@@ -167,6 +182,7 @@ func (s *systemd1Manager) UnsetEnvironment(names []string) *dbus.Error {
 // UnsetAndSetEnvironment atomically clears then sets — used by
 // gnome-session to swap its whole env in one shot.
 func (s *systemd1Manager) UnsetAndSetEnvironment(unset, set []string) *dbus.Error {
+	s.dbg("UnsetAndSetEnvironment(unset=%d, set=%d)", len(unset), len(set))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, n := range unset {
@@ -198,10 +214,12 @@ func (s *systemd1Manager) UnsetAndSetEnvironment(unset, set []string) *dbus.Erro
 // not a load — LoadUnit is the load call.
 func (s *systemd1Manager) GetUnit(name string) (dbus.ObjectPath, *dbus.Error) {
 	if !s.isActive(name) {
+		s.dbg("GetUnit(%q) -> NoSuchUnit", name)
 		return "", dbus.NewError(
 			"org.freedesktop.systemd1.NoSuchUnit",
 			[]any{"Unit " + name + " not loaded."})
 	}
+	s.dbg("GetUnit(%q) -> ok", name)
 	p := s.unitPath(name)
 	s.registerUnitObject(name, p)
 	return p, nil
@@ -212,6 +230,7 @@ func (s *systemd1Manager) GetUnit(name string) (dbus.ObjectPath, *dbus.Error) {
 // Matches systemd where LoadUnit succeeds for any nameable unit
 // without changing its ActiveState.
 func (s *systemd1Manager) LoadUnit(name string) (dbus.ObjectPath, *dbus.Error) {
+	s.dbg("LoadUnit(%q)", name)
 	p := s.unitPath(name)
 	s.registerUnitObject(name, p)
 	return p, nil
@@ -222,6 +241,7 @@ func (s *systemd1Manager) LoadUnit(name string) (dbus.ObjectPath, *dbus.Error) {
 // active when nothing is. Callers that hit this fall back to a
 // looser path (usually reading /proc/PID/cgroup themselves).
 func (s *systemd1Manager) GetUnitByPID(pid uint32) (dbus.ObjectPath, *dbus.Error) {
+	s.dbg("GetUnitByPID(%d) -> NoSuchUnit", pid)
 	return "", dbus.NewError(
 		"org.freedesktop.systemd1.NoSuchUnit",
 		[]any{"No unit for PID."})
@@ -240,6 +260,30 @@ func (s *systemd1Manager) GetUnitByInvocationID(id []byte) (dbus.ObjectPath, *db
 // -----------------------------------------------------------------------------
 
 func (s *systemd1Manager) startJob(name, verb string) (dbus.ObjectPath, *dbus.Error) {
+	s.dbg("%s(%q)", verb, name)
+	// Route gnome-session's own top-level targets into gnome-session-
+	// binary's non-systemd fallback path. Reporting success on
+	// StartUnit + emitting only JobRemoved isn't enough to satisfy
+	// gnome-session-binary's post-start wait: it expects a full
+	// systemd signal stream (UnitNew, PropertiesChanged with
+	// ActiveState=active on the unit path, JobNew, Reloading...) —
+	// our stub only emits JobRemoved. After ~10 s of silence it
+	// prints "Session termination requested" and unwinds.
+	//
+	// The `Falling back to non-systemd startup procedure due to
+	// error: %s` code path in gnome-session's gsm-manager.c triggers
+	// on any StartUnit error and does the legacy autostart flow
+	// instead: read gnome-login.session's RequiredComponents, exec
+	// each .desktop's Exec directly. That's exactly what Chimera
+	// Linux forces at compile time with -Dsystemduserunitdir=/tmp.
+	// Returning a specific error here reaches the same end state
+	// without patching gnome-session.
+	if strings.HasPrefix(name, "gnome-session-") && verb == "start" {
+		s.dbg("%s(%q) -> LoadFailed (steer to non-systemd fallback)", verb, name)
+		return "", dbus.NewError(
+			"org.freedesktop.systemd1.LoadFailed",
+			[]any{"slinit-logind stub does not drive gnome-session targets; falling back to autostart"})
+	}
 	p := s.jobPath()
 	// job id is the last path component.
 	base := string(p)
@@ -363,10 +407,16 @@ func (s *systemd1Manager) ReloadOrTryRestartUnit(name, mode string) (dbus.Object
 // failed units) during greeter startup — it's one of the first
 // systemd1 calls after activation, and without it gnome-session
 // abandons startup with "Failed to reset failed state of units".
-func (s *systemd1Manager) KillUnit(name, who string, sig int32) *dbus.Error   { return nil }
-func (s *systemd1Manager) ResetFailedUnit(name string) *dbus.Error            { return nil }
-func (s *systemd1Manager) ResetFailed() *dbus.Error                            { return nil }
-func (s *systemd1Manager) ClearJobs() *dbus.Error                              { return nil }
+func (s *systemd1Manager) KillUnit(name, who string, sig int32) *dbus.Error {
+	s.dbg("KillUnit(%q, %q, %d)", name, who, sig)
+	return nil
+}
+func (s *systemd1Manager) ResetFailedUnit(name string) *dbus.Error {
+	s.dbg("ResetFailedUnit(%q)", name)
+	return nil
+}
+func (s *systemd1Manager) ResetFailed() *dbus.Error { s.dbg("ResetFailed"); return nil }
+func (s *systemd1Manager) ClearJobs() *dbus.Error   { s.dbg("ClearJobs"); return nil }
 func (s *systemd1Manager) SetUnitProperties(name string, runtime bool, props []struct {
 	Name  string
 	Value dbus.Variant
@@ -382,10 +432,10 @@ func (s *systemd1Manager) SetUnitProperties(name string, runtime bool, props []s
 // Subscribe is a pure success stub.
 // -----------------------------------------------------------------------------
 
-func (s *systemd1Manager) Subscribe() *dbus.Error   { return nil }
-func (s *systemd1Manager) Unsubscribe() *dbus.Error { return nil }
-func (s *systemd1Manager) Reload() *dbus.Error      { return nil }
-func (s *systemd1Manager) Reexecute() *dbus.Error   { return nil }
+func (s *systemd1Manager) Subscribe() *dbus.Error   { s.dbg("Subscribe"); return nil }
+func (s *systemd1Manager) Unsubscribe() *dbus.Error { s.dbg("Unsubscribe"); return nil }
+func (s *systemd1Manager) Reload() *dbus.Error      { s.dbg("Reload"); return nil }
+func (s *systemd1Manager) Reexecute() *dbus.Error   { s.dbg("Reexecute"); return nil }
 
 // -----------------------------------------------------------------------------
 // List methods — return empty arrays. GNOME doesn't rely on these to
@@ -726,6 +776,7 @@ func registerSystemd1(conn *dbus.Conn, debug bool) *systemd1Manager {
 		conn:    conn,
 		env:     make(map[string]string, 32),
 		started: make(map[string]bool, 32),
+		debug:   debug,
 	}
 
 	if err := conn.Export(s, dbus.ObjectPath(systemd1ObjPath), systemd1Iface); err != nil {
