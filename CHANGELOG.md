@@ -17,6 +17,169 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.2] — 2026-09-19
+
+Point release on the 2.3.x line — three focused corrections to the
+`slinit-logind` daemon shipped in 2.3.1, all surfaced by live
+integration testing on ceres (XFCE via LightDM and GDM+GNOME 48
+via elogind-reference). Three commits since v2.3.1; no wire
+protocol change; no config surface removal.
+
+### Highlights
+
+- **`login1.Manager.Reboot` (and PowerOff/Halt) now actually
+  reboot the machine** (`cmd/slinit-logind`, `6014144`).
+  `runShutdown()` was invoking `slinit-shutdown reboot`
+  positional-verb style, but slinit-shutdown parses its argv as
+  short/long flags (`-r`/`--reboot`, `-h`, `-p`). The child got
+  rejected with "Unrecognized option: reboot" and exited
+  non-zero, yet `exec.Command.Start()` only reports fork/exec
+  failures so `Manager.Reboot()` still returned success. XFCE's
+  Restart button called login1.Reboot on our stub, the D-Bus
+  reply said "yes", xfce4-session tore down the session
+  expecting a reboot in flight — but the machine stayed up.
+  Net effect was a silent logout with no reboot.
+
+  Fix: map the systemd-style verb (`reboot`/`halt`/`poweroff`)
+  to the correct slinit-shutdown flag (`-r`/`-h`/`-p`) in one
+  small switch before exec. Unknown verb returns
+  `org.freedesktop.login1.Error.OperationInProgress` so a future
+  caller for something unsupported (e.g. `kexec`) gets a real
+  error back instead of a silent no-op. Verified live: `sudo -u
+  sunlight busctl call ... Reboot` from an active XFCE session
+  triggers `execve("/usr/sbin/slinit-shutdown", ["-r"])` followed
+  by SIGTERM from PID 1.
+
+- **systemd1 stub steers `gnome-session-*` StartUnit into
+  gnome-session's non-systemd fallback path**
+  (`cmd/slinit-logind/systemd1.go`, `c8bdb6b`). The stub was
+  returning success + emitting JobRemoved on every StartUnit,
+  which convinced gnome-session-binary the target was starting
+  but not that it had reached `ActiveState=active` — elogind
+  + real systemd emit a rich signal stream (UnitNew,
+  PropertiesChanged on the unit path, JobNew, ...) on that
+  transition, which our stub can't fake without also faking the
+  entire dependency tree those signals refer to. After ~10s of
+  silence gnome-session-binary printed "Session termination
+  requested" and unwound without ever spawning gnome-shell.
+
+  Fix: return `org.freedesktop.systemd1.LoadFailed` from
+  StartUnit when the unit name starts with `gnome-session-`.
+  gsm-manager.c handles that error by falling into the
+  `Falling back to non-systemd startup procedure due to error:
+  %s` code path, which reads gnome-login.session's
+  RequiredComponents and execs each .desktop's Exec directly —
+  the same end state Chimera Linux forces at compile time with
+  `-Dsystemduserunitdir=/tmp`. gnome-session-binary now
+  progresses past StartUnit, loads
+  `/usr/share/gnome-session/sessions/gnome.session`, resolves
+  all 17 RequiredComponents (org.gnome.Shell + 16
+  org.gnome.SettingsDaemon.*), and reaches "Done adding required
+  components". Also adds a lightweight per-method dispatch
+  tracer behind the daemon's existing `--debug` flag —
+  `systemd1-stub: <method>(<args>)` per call.
+
+- **`CreateSession` migrates its whole PAM ancestor chain plus
+  any gdm-session-worker into the session cgroup**
+  (`cmd/slinit-logind/session.go`, `b0c6d2b`). libelogind's
+  `sd_pid_get_session()` reads `/proc/<pid>/cgroup` and takes
+  the first path component — every process under a session must
+  land inside `/sys/fs/cgroup/<sid>` or session lookup fails.
+  The prior code wrote only the raw D-Bus caller PID and
+  swallowed errors: when the caller was a transient PAM helper
+  (pam_elogind's account-helper) that exited between the write
+  and the scope's next observed state, the scope ended up
+  empty — polkit stopped granting "active local session" and
+  gnome-shell died with "Failed to setup: Failed to find any
+  matching session".
+
+  Fix does three things: (a) walks `/proc/<pid>/status:PPid`
+  synchronously inside CreateSession to snapshot the caller's
+  ancestor chain before any process in it can exit, then
+  migrates every entry (not just the first — kernel accepts a
+  dead-pid write silently, so a chain-wide migration is the
+  only way to guarantee the scope isn't left empty); (b) scans
+  `/proc` for any process whose comm starts with
+  `gdm-session-wor` and migrates that too, without a uid filter
+  (Void's PAM helper parent chain runs through `/usr/bin/gdm`
+  itself, not through gdm-session-worker; explicitly migrating
+  the worker gives the scope a long-lived root the fork tree
+  can inherit from); (c) redirects `os.Stderr` to
+  `/var/log/slinit-logind.log` when `--debug` is set, because
+  slinit's runner attaches services' fd 2 to `/dev/null` and
+  the stub's diagnostic prints were silently vanishing. Only
+  the redirect path is `--debug`-gated; production (`--debug`
+  off) behaviour is unchanged.
+
+  Live-tested on ceres: CreateSession fires with the expected
+  chain, both ancestors get written, /proc scan finds
+  `gdm-session-wor` and migrates it, gnome-session-binary
+  reaches the fallback path and resolves the full
+  RequiredComponents list. gnome-shell still surfaces "Failed
+  to find any matching session" on the very next stage — on
+  Void the gdm-session-worker → user-session fork chain
+  appears to detach from the migrated worker in a way this
+  scan doesn't fully catch. That gap is where the next
+  diagnostic pass lands; the `/var/log/slinit-logind.log`
+  redirection from this same commit is the input for it.
+
+### Added
+
+- `slinit-logind --debug` now redirects the daemon's own stderr
+  to `/var/log/slinit-logind.log`, so the systemd1 stub's
+  dispatch trace and the session-machinery's diagnostics
+  survive the slinit runner's default fd 2 → `/dev/null`.
+  `--debug` off (production default) is unchanged: stderr keeps
+  going to /dev/null the way it did in 2.3.1.
+- `readPPid(pid)` helper: parses `PPid:` out of
+  `/proc/<pid>/status`. Used by `CreateSession`'s synchronous
+  ancestor walk.
+- Per-method dispatch tracing in the systemd1 stub. Every call
+  through `Set/Unset/UnsetAndSetEnvironment`, `GetUnit`,
+  `LoadUnit`, `GetUnitByPID`, `Subscribe`/`Unsubscribe`,
+  `Reload`/`Reexecute`, `ResetFailed(Unit)`, `ClearJobs`,
+  `KillUnit`, and the shared `startJob` router prints one
+  `systemd1-stub: <method>(<args>)` line to the daemon's
+  stderr when `--debug` is set. Zero cost when off.
+
+### Fixed
+
+- `Manager.Reboot`/`PowerOff`/`Halt`/`WithFlags` variants now
+  invoke `slinit-shutdown` with the correct flag argument
+  (`-r`/`-p`/`-h`) instead of a positional systemd-style verb.
+  The prior code produced a silent no-op — the child exited
+  non-zero and the D-Bus reply reported success anyway. XFCE's
+  Restart button hits this path, so the practical outcome was
+  "click Restart, session logs out, machine stays up".
+- `CreateSession` no longer leaves session cgroups empty when
+  the D-Bus caller is a short-lived PAM helper. `sd_pid_get_
+  session()` on downstream processes now returns the session
+  id instead of nothing, which was the underlying cause of
+  polkit's "not an active local session" refusals under
+  slinit-logind and gnome-shell's "Failed to find any matching
+  session" abort.
+
+### Changed
+
+- systemd1 stub's `StartUnit` now returns
+  `org.freedesktop.systemd1.LoadFailed` when the unit name has
+  the `gnome-session-` prefix. This is a behavioural change vs
+  2.3.1 (the stub used to silently succeed on every StartUnit)
+  and steers gnome-session-binary into its non-systemd fallback
+  path, which actually spawns gnome-shell via the legacy
+  autostart flow. Other StartUnit callers (non-GNOME) still see
+  the inert success path from 2.3.1.
+
+### Compat
+
+- Wire protocol: unchanged from 2.3.1.
+- Config surface: unchanged.
+- Cmdline: unchanged.
+- Package manifests: no rename or removal. `slinit-logind` is
+  the only binary touched.
+- Runtime deps: unchanged (still `godbus/dbus/v5` as the only
+  non-`x/sys` runtime dep).
+
 ## [2.3.1] — 2026-09-17
 
 Point release on the 2.3.x line. Two focused feature additions
