@@ -17,6 +17,178 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.3] — 2026-09-20
+
+Point release on the 2.3.x line. Four `slinit-logind` commits plus one
+log-rotation fix, all driven by bringing GDM + GNOME 48 up on ceres
+against slinit-logind with elogind's daemon stopped. Five commits since
+v2.3.2; no wire protocol change; no config surface removal.
+
+The headline outcome: **GDM's greeter, a full GNOME login and a running
+GNOME desktop all work under slinit-logind on Xorg.** The Wayland
+greeter still comes up blank — that is called out under *Known issues*
+rather than glossed, and it is not fixed here.
+
+### Highlights
+
+- **`org.freedesktop.login1.Manager` now has a property dict**
+  (`cmd/slinit-logind/managerprops.go`, `802295b`). All 52 of
+  elogind's Manager properties are served; previously the path
+  answered method calls but carried no properties at all, so
+  `loginctl show` came back empty and anything reading lid, AC or
+  inhibitor state off the Manager silently used its own defaults.
+
+  Where elogind reports what its `logind.conf` *would* do, we report
+  what slinit-logind *actually* does: every `Handle*Key`,
+  `HandleLidSwitch*` and `IdleAction` is `ignore`, because there is no
+  evdev button watcher and no idle timer. That is also the better
+  answer for the desktop — gnome-settings-daemon and
+  xfce4-power-manager read these to decide whether logind already owns
+  the key, and `ignore` tells them to handle it themselves. Same
+  reasoning for `RemoveIPC=false` and `InhibitDelayMaxUSec=0`.
+  `LidClosed`, `OnExternalPower`, `NCurrentSessions`,
+  `NCurrentInhibitors`, `SleepOperation` and `RuntimeDirectorySize`
+  are genuinely derived from procfs, sysfs and `/sys/power/state`.
+
+- **`/run/systemd/users/<uid>` and `/run/systemd/seats/<id>` are
+  rebuilt from every live session** (`cmd/slinit-logind/session.go`,
+  `3b9381b`). This is what unblocked GDM.
+
+  `sd_uid_get_sessions()` — the lookup mutter falls back to when
+  `sd_pid_get_session()` comes up empty — reads nothing but the
+  `SESSIONS` / `ACTIVE_SESSIONS` / `ONLINE_SESSIONS` arrays out of the
+  user file, and we wrote only `NAME`, `STATE` and `RUNTIME` there. The
+  fallback enumerated zero sessions and gnome-shell exited before
+  painting. The seat record had the mirror-image bug: it was rendered
+  from the single session being created, which clobbered the
+  `IS_SEAT0` / `CAN_MULTI_SESSION` / `CAN_TTY` / `CAN_GRAPHICAL` flags
+  written at startup, so `sd_seat_can_graphical()` began answering "no"
+  the moment the first session appeared. Both are aggregates over every
+  live session, so neither can be derived from the one at hand.
+
+- **Sessions are reaped when their leader dies**
+  (`cmd/slinit-logind/session.go`, `ccb9fc9`). `pam_close_session`
+  calls `ReleaseSession` on a clean logout, but a crashed greeter or a
+  SIGKILLed session never got there and the record stayed registered
+  forever. The consequence is not subtle: gdm, seeing a greeter session
+  still listed on seat0, refuses to start a replacement, so one crashed
+  greeter wedges the display manager until the files under `/run` are
+  deleted by hand. A goroutine now parks in `poll()` on the leader's
+  pidfd — no timer, no cost while the session lives — and startup reaps
+  records whose leader is already gone, since the state in `/run`
+  outlives the daemon.
+
+- **`Session.TakeControl` / `TakeDevice` are real**
+  (`cmd/slinit-logind/device.go`, `ccb9fc9`). DRM master is claimed
+  explicitly on `TakeDevice`, with elogind's EBUSY retry, instead of
+  relying on the kernel's implicit grant to the first opener. Devices
+  are tracked per session, so `ReleaseDevice` closes the one it names
+  and `ReleaseControl` closes the rest — `TakeDevice` used to hand out
+  a descriptor and deliberately leak ours, which left a
+  master-holding DRM fd nobody could close.
+
+- **The `self` and `auto` session object paths are served**
+  (`cmd/slinit-logind/alias.go`, `7b757ad`).
+  `/org/freedesktop/login1/session/self` is the caller's own session;
+  `.../auto` is that, falling back to the display session of the
+  caller's user. gnome-shell's greeter runs without `XDG_SESSION_ID` in
+  its environment and builds a proxy on `.../session/auto` to find
+  itself; with no object there the proxy still constructed, `Id` came
+  back undefined, and the following `GetSession(null)` failed with
+  "Argument string may not be null".
+
+### Added
+
+- Manager properties: all 52 from elogind's vtable, name- and
+  signature-compatible. `TestManagerPropCoverage` pins the set against
+  that vtable and `TestManagerPropSignatures` checks each getter
+  marshals to the signature it declares.
+- `/org/freedesktop/login1/session/{self,auto}` object paths, with the
+  full Session method and property surface, resolved per caller.
+- `Manager.GetSession("self"|"auto")`; `loginctl` passes `auto`
+  whenever it is asked about the current session.
+- `pid == 0` meaning "the caller" on `Manager.GetSessionByPID` and
+  `Manager.GetUserByPID`, matching elogind, which resolves it from the
+  bus message's credentials.
+- `systemd1.Manager.GetUnitByPIDFD`, which polkitd reaches for before
+  `GetUnitByPID` on every authorisation check.
+- `--debug` now traces session setup: the leader pid, the resolved
+  ancestor chain with comms, each cgroup migration with a read-back of
+  where the pid actually landed, and the scope's settled membership.
+  Session setup is the one place a post-mortem is useless — the
+  gdm/gnome fork chain is gone within a second of a failure.
+
+### Fixed
+
+- `logfile-max-files` was briefly exceeded during rotation
+  (`pkg/service/logrotate.go`, `abcbefd`). `rotateLocked()` renamed
+  first and pruned second, leaving `maxFiles + 1` rotated files on disk
+  in between; it now prunes to `maxFiles - 1` before the rename, so the
+  rename brings the count to exactly `maxFiles`. Functional test 46 was
+  intermittently failing on this and now also freezes the producer
+  before counting — at `max-size=512` each rotated file lived under a
+  millisecond, so `ls` raced the rotator both ways.
+- The cgroup migration climbed the ancestor chain unconditionally. On
+  gdm the second entry is `/usr/bin/gdm` itself, so the display manager
+  was dragged into a session scope it could never be `rmdir`'d out of —
+  the source of the litter of empty `/sys/fs/cgroup/c*`. Migration now
+  stops at the first pid that verifiably lands in the scope; the trace
+  above shows the caller is `gdm-session-worker` and that migrating it
+  alone is sufficient.
+- The `gdm-session-worker` `/proc` scan is now the fallback it was
+  meant to be, running only when the ancestor chain found nothing. Run
+  unconditionally it swept up the workers of *other* live sessions and
+  moved them into the session being created, which on a machine with a
+  greeter plus a logged-in user re-parented the wrong one.
+
+### Changed
+
+- `ensureSeat` renders `/run/systemd/seats/<id>` through the shared
+  writer instead of keeping its own copy of the field list. Field sets
+  and ordering for both the user and seat records follow elogind's
+  `user_save()` and `seat_save()`.
+- `sessionPropValues()` is now the single source of truth for the
+  Session property dict; `registerSessionObject` builds its `prop.Prop`
+  table from it rather than carrying a second copy, so the per-session
+  objects and the new alias paths cannot drift apart.
+- Sessions are reported active across the board in the aggregate
+  records. Without VT-activity tracking there is no basis to call one
+  session foreground and another not, and the per-session records
+  already said `ACTIVE=1`.
+
+### Known issues
+
+- **GDM's Wayland greeter comes up blank.** mutter takes
+  `/dev/dri/card0` through `TakeDevice`, initialises KMS, and scans out
+  a framebuffer it allocated itself — but the shell's UI never appears
+  in it. The Xorg greeter on the same gnome-shell, in the same session
+  mode, renders and logs in normally, so this is not session lookup:
+  `.../session/auto` resolves on both. Workaround is
+  `WaylandEnable=false` in `/etc/gdm/custom.conf`. Root cause not yet
+  identified.
+- `PauseDevice` / `ResumeDevice` are still not emitted, so a VT switch
+  away from and back to a Wayland session is not expected to hand DRM
+  master over correctly. Untested.
+- `dropAndClose` calls `drmDropMaster` on our descriptor, which shares
+  an open file description with the client's. A compositor that calls
+  `ReleaseDevice` without closing its own copy would have master pulled
+  out from under it. Not observed in practice.
+
+### Compat
+
+- Wire protocol: unchanged from 2.3.2.
+- Config surface: unchanged.
+- Cmdline: unchanged.
+- Package manifests: no rename or removal. `slinit-logind` and
+  `pkg/service` are the only areas touched.
+- Runtime deps: unchanged (still `godbus/dbus/v5` as the only
+  non-`x/sys` runtime dep).
+- **elogind is still required.** `pam_elogind.so` is what calls
+  `CreateSession`; slinit-logind implements only the D-Bus server side.
+  On Void the `elogind` package also owns that module, `loginctl` and
+  `busctl`, and `gnome-shell` and `xfce4` depend on it. Removing it
+  needs a native `pam_slinit.so` first.
+
 ## [2.3.2] — 2026-09-19
 
 Point release on the 2.3.x line — three focused corrections to the
