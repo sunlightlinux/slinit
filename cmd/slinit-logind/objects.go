@@ -117,39 +117,66 @@ type seatObject struct {
 // Session properties + Terminate/Activate/Lock/Unlock/Kill methods.
 // Emits SessionNew on the Manager path so subscribers get the same
 // wake-up systemd delivers.
+// sessionPropValues is the single source of truth for a session's
+// property dict. Both the per-session object (via prop.Export) and the
+// self/auto alias paths (which have to compute per caller) render from
+// it, so the two can't drift apart.
+func sessionPropValues(rec SessionRecord) map[string]any {
+	return map[string]any{
+		"Id":                     rec.ID,
+		"User":                   userTuple(rec.UserID),
+		"Name":                   rec.UserName,
+		"Timestamp":              uint64(0),
+		"VTNr":                   rec.VTNr,
+		"Seat":                   seatTuple(rec.SeatID),
+		"TTY":                    rec.TTY,
+		"Display":                rec.Display,
+		"Remote":                 rec.Remote,
+		"RemoteHost":             rec.RemoteHost,
+		"RemoteUser":             rec.RemoteUser,
+		"Service":                rec.Service,
+		"Leader":                 rec.LeaderPID,
+		"Audit":                  uint32(0),
+		"Type":                   rec.Type,
+		"Class":                  rec.Class,
+		"Active":                 true,
+		"State":                  "active",
+		"IdleHint":               false,
+		"IdleSinceHint":          uint64(0),
+		"IdleSinceHintMonotonic": uint64(0),
+		"LockedHint":             false,
+		"Scope":                  rec.Scope,
+		"Desktop":                rec.Desktop,
+	}
+}
+
+// sessionWritableProps are the ones a client may Set.
+var sessionWritableProps = map[string]bool{
+	"IdleHint": true, "LockedHint": true,
+}
+
+// sessionMutableProps change over a session's life, so they emit
+// PropertiesChanged; everything else is fixed at creation.
+var sessionMutableProps = map[string]bool{
+	"Active": true, "State": true, "IdleHint": true,
+	"IdleSinceHint": true, "IdleSinceHintMonotonic": true, "LockedHint": true,
+}
+
 func (m *manager) registerSessionObject(rec SessionRecord) {
 	so := &sessionObject{m: m, id: rec.ID}
 	path := sessionPath(rec.ID)
 
-	// Properties. `prop.EmitTrue` fires PropertiesChanged when we
-	// call SetMust later; use EmitConst for values that never mutate.
-	propsSpec := map[string]map[string]*prop.Prop{
-		sessionIface: {
-			"Id":         {Value: rec.ID, Emit: prop.EmitConst},
-			"User":       {Value: userTuple(rec.UserID), Emit: prop.EmitConst},
-			"Name":       {Value: rec.UserName, Emit: prop.EmitConst},
-			"Timestamp":  {Value: uint64(0), Emit: prop.EmitConst},
-			"VTNr":       {Value: rec.VTNr, Emit: prop.EmitConst},
-			"Seat":       {Value: seatTuple(rec.SeatID), Emit: prop.EmitConst},
-			"TTY":        {Value: rec.TTY, Emit: prop.EmitConst},
-			"Display":    {Value: rec.Display, Emit: prop.EmitConst},
-			"Remote":     {Value: rec.Remote, Emit: prop.EmitConst},
-			"RemoteHost": {Value: rec.RemoteHost, Emit: prop.EmitConst},
-			"RemoteUser": {Value: rec.RemoteUser, Emit: prop.EmitConst},
-			"Service":    {Value: rec.Service, Emit: prop.EmitConst},
-			"Leader":     {Value: rec.LeaderPID, Emit: prop.EmitConst},
-			"Audit":      {Value: uint32(0), Emit: prop.EmitConst},
-			"Type":       {Value: rec.Type, Emit: prop.EmitConst},
-			"Class":      {Value: rec.Class, Emit: prop.EmitConst},
-			"Active":     {Value: true, Emit: prop.EmitTrue},
-			"State":      {Value: "active", Emit: prop.EmitTrue},
-			"IdleHint":   {Value: false, Writable: true, Emit: prop.EmitTrue},
-			"IdleSinceHint":        {Value: uint64(0), Emit: prop.EmitTrue},
-			"IdleSinceHintMonotonic": {Value: uint64(0), Emit: prop.EmitTrue},
-			"LockedHint": {Value: false, Writable: true, Emit: prop.EmitTrue},
-			"Scope":      {Value: rec.Scope, Emit: prop.EmitConst},
-			"Desktop":    {Value: rec.Desktop, Emit: prop.EmitConst},
-		},
+	propsSpec := map[string]map[string]*prop.Prop{sessionIface: {}}
+	for name, val := range sessionPropValues(rec) {
+		emit := prop.EmitConst
+		if sessionMutableProps[name] {
+			emit = prop.EmitTrue
+		}
+		propsSpec[sessionIface][name] = &prop.Prop{
+			Value:    val,
+			Writable: sessionWritableProps[name],
+			Emit:     emit,
+		}
 	}
 	props, err := prop.Export(m.conn, path, propsSpec)
 	if err != nil {

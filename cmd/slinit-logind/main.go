@@ -237,7 +237,20 @@ func (m *manager) ListInhibitors() ([]Inhibitor, *dbus.Error) {
 
 // GetSession / GetUser / GetSeat resolve by id → object path so
 // callers can talk to per-object interfaces.
-func (m *manager) GetSession(id string) (dbus.ObjectPath, *dbus.Error) {
+//
+// "self" and "auto" are the caller-relative names systemd defines:
+// loginctl passes "auto" whenever it is asked about the current
+// session, so without them `loginctl session-status` with no argument
+// fails outright.
+func (m *manager) GetSession(sender dbus.Sender, id string) (dbus.ObjectPath, *dbus.Error) {
+	if id == "self" || id == "auto" {
+		rec, ok := m.resolveAlias(sender, id)
+		if !ok {
+			return "/", dbus.NewError("org.freedesktop.login1.Error.NoSessionForPID",
+				[]interface{}{"caller is not part of any session"})
+		}
+		return sessionPath(rec.ID), nil
+	}
 	if !sessionExistsLocked(id) {
 		return "/", dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
 			[]interface{}{id})
@@ -261,7 +274,19 @@ func (m *manager) GetSeat(id string) (dbus.ObjectPath, *dbus.Error) {
 // and match on leader_pid; when the querying process is a descendant
 // of a session's leader we should still find it by /proc/PID/cgroup
 // reading — that fallback lands in Phase C+.
-func (m *manager) GetSessionByPID(pid uint32) (dbus.ObjectPath, *dbus.Error) {
+//
+// pid 0 means "the caller", as everywhere else in this API — elogind
+// resolves it from the bus message's credentials. Without that a client
+// asking about itself the short way gets NoSessionForPID for /proc/0.
+func (m *manager) GetSessionByPID(sender dbus.Sender, pid uint32) (dbus.ObjectPath, *dbus.Error) {
+	if pid == 0 {
+		callerPID, err := m.callerPID(string(sender))
+		if err != nil {
+			return "/", dbus.NewError("org.freedesktop.login1.Error.NoSessionForPID",
+				[]interface{}{"cannot resolve caller pid: " + err.Error()})
+		}
+		pid = callerPID
+	}
 	if id, _ := findSessionByLeaderLocked(pid); id != "" {
 		return sessionPath(id), nil
 	}
@@ -277,7 +302,15 @@ func (m *manager) GetSessionByPID(pid uint32) (dbus.ObjectPath, *dbus.Error) {
 
 // GetUserByPID resolves a PID → owning user's object path. XFCE
 // applications call this when talking to xdg-desktop-portal etc.
-func (m *manager) GetUserByPID(pid uint32) (dbus.ObjectPath, *dbus.Error) {
+func (m *manager) GetUserByPID(sender dbus.Sender, pid uint32) (dbus.ObjectPath, *dbus.Error) {
+	if pid == 0 {
+		callerPID, err := m.callerPID(string(sender))
+		if err != nil {
+			return "/", dbus.NewError("org.freedesktop.login1.Error.NoUserForPID",
+				[]interface{}{"cannot resolve caller pid: " + err.Error()})
+		}
+		pid = callerPID
+	}
 	if id, rec := findSessionByLeaderLocked(pid); id != "" {
 		return userPath(rec.UserID), nil
 	}
@@ -691,6 +724,9 @@ func main() {
 	// Ensure the always-on seat0 object exists so `loginctl seat-status`
 	// works out of the box.
 	m.ensureSeat("seat0")
+	// The self/auto session paths. gnome-shell's greeter has no
+	// XDG_SESSION_ID and reaches for .../session/auto to find itself.
+	m.registerSessionAliases()
 
 	// Request the well-known bus name. RequestNameFlagReplaceExisting
 	// makes us take over from elogind on a running system without
