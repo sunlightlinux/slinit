@@ -1,0 +1,10 @@
+type = process
+# NOTE: slinit's `command =` pre-expands $VAR at parse time, so runtime
+# shell expansions must be written $$ (see the counter below). Without
+# it every line comes out as a bare "chatty-line-".
+command = /bin/sh -c "i=0; while true; do i=$$((i+1)); echo chatty-line-$$i; done"
+depends-on: system-init
+restart = true
+logfile = /tmp/chatty.log
+logfile-max-size = 4096
+logfile-max-files = 3

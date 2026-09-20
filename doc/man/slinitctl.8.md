@@ -93,6 +93,16 @@ daemon, which is useful at install time or in initramfs.
 **start** *service*
 :   Activate *service*. Starts dependencies as needed.
 
+    Waits until *service* reaches a terminal state and exits non-zero
+    if it did not come up, so `slinitctl start foo && ...` is safe to
+    write. Pass **\--no-wait** to return as soon as the daemon has
+    accepted the request.
+
+    A **triggered** service is the one case where waiting is usually
+    wrong: it stays in STARTING by design until **trigger** fires, so
+    `slinitctl start` on one blocks until something else triggers it.
+    Use **\--no-wait** there.
+
 **wake** *service*
 :   Like **start**, but only if the service is currently stopped
     because none of its hard-dependents are active. Used to "rejoin"

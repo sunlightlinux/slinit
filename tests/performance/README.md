@@ -59,6 +59,15 @@ reaches STARTED?", "does `slinit-journalctl -f` add latency to
 concurrent emits?", "how does enable/disable round-trip compare to
 `systemctl enable`?"
 
+> **Numbers before and after the `slinitctl start` wait change are not
+> comparable.** `start` used to return as soon as the daemon accepted
+> the request, so the `CtlStart_*` cases measured an IPC round-trip.
+> It now waits for the service to reach a terminal state — which is
+> what the question above was always asking — so those figures include
+> service startup and are expected to be substantially larger. Use
+> `slinitctl --no-wait start` if you specifically want the old
+> accept-latency measurement.
+
 Requires: ssh access to a slinit VM (same env-var contract as
 `tests/acceptance/ssh/`: `ACCEPTANCE_HOST` / `_PORT` / `_USER`).
 

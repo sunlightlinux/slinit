@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "while true; do echo alive; sleep 1; done"
+depends-on: system-init
+restart = true

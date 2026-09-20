@@ -17,6 +17,64 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Changed
+
+- **`slinitctl start` now waits for the outcome and its exit code
+  reflects it.** This is a behaviour change for every caller.
+
+  It previously returned as soon as the daemon accepted the request:
+  `handleStartService` writes the ACK straight after queueing the
+  start, so `slinitctl start foo && echo ok` printed `ok` for a service
+  that had just failed to launch. `dinitctl` has always waited and
+  returned 1 on `FAILEDSTART`, so this was a parity gap as well as the
+  shape of systemd#6478 ("systemctl should not consider active->failed
+  as a successful operation").
+
+  `start` now blocks until the service reaches a terminal state and
+  exits non-zero on failed-start, start-cancelled, or stopped. The
+  events were already on the wire — `allocHandle` auto-subscribes and
+  `readReply` was discarding them; it now stashes them, because the
+  daemon emits from the service state-machine goroutines and a fast
+  service can report Started *before* the command reply arrives.
+
+  **What to change in your scripts:** pass `--no-wait` where you
+  relied on immediate return. The one case where this is not optional
+  is a `triggered` service: it sits in STARTING by design until
+  `slinitctl trigger` fires, so `slinitctl start` on one blocks until
+  something else triggers it. The in-tree demo hit exactly this and
+  deadlocked its own boot; `demo/services/trigger-autofire` now uses
+  `slinitctl --no-wait start`.
+
+  Performance figures move with it: the `CtlStart_*` cases in
+  `tests/performance/ssh/` used to measure an IPC round-trip and now
+  include service startup, which is what that tier's README always
+  claimed to be measuring.
+
+### Added
+
+- **Regression suite derived from the systemd bug list on
+  nosystemd.org.** Each case names the upstream issue it mirrors and
+  asserts slinit does not have the equivalent defect — the value is
+  less the regression cover than that each test documents a design
+  decision by contrast.
+
+  Unit: `#4863` (a NUL in a log line must not truncate the record),
+  `CVE-2018-16864` (oversized lines stay bounded), `#5644`
+  (`R! /dir/.*` must not escape the directory it was given — slinit
+  does no glob expansion, and the test exists so adding it later
+  cannot reintroduce the bug), `#1596` (`-n` selects the newest
+  entries, `-r` only reorders them), `#6369` (a trailing-dot FQDN is
+  refused cleanly, before anything is written).
+
+  Functional: `#1143` (a wall-clock step must not wedge or spin PID 1),
+  `#1312` + `#6478` (a failed hard dependency leaves the dependent down,
+  without a restart loop, and the CLI reports it), Debian `#825394`
+  (a detached background job survives session teardown), `#2402`
+  (efivarfs is never mounted read-write), `#6620` (the log sink can
+  turn over completely beneath a running producer without silencing
+  it — slinit has no separate journal process whose restart could
+  orphan a writer).
+
 ## [2.3.4] — 2026-09-20
 
 One commit, two `slinit-logind` fixes, both surfaced within hours of

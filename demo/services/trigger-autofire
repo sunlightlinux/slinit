@@ -15,7 +15,14 @@
 # unblocks the transition to STARTED. Doing them in one process
 # with && guarantees the trigger lands only if the start request
 # went through.
+#
+# `--no-wait` is required, not cosmetic. `slinitctl start` waits for
+# the service to reach a terminal state (dinit semantics, so the exit
+# code means something). A triggered service deliberately sits in
+# STARTING until its trigger fires — so waiting here would deadlock:
+# start waits for started, started needs the trigger, and the trigger
+# is the next command in this very line.
 type = scripted
 depends-on: system-init
-command = /bin/sh -c "slinitctl start trigger-test && slinitctl trigger trigger-test"
+command = /bin/sh -c "slinitctl --no-wait start trigger-test && slinitctl trigger trigger-test"
 stop-command = /bin/sh -c "slinitctl untrigger trigger-test; slinitctl stop trigger-test"

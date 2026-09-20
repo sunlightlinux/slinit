@@ -672,8 +672,17 @@ func readReply(conn net.Conn) (uint8, []byte, error) {
 			return 0, nil, err
 		}
 		switch rply {
-		case control.InfoServiceEvent, control.InfoServiceEvent5, control.InfoEnvEvent:
-			// Skip unsolicited push notifications
+		case control.InfoServiceEvent5, control.InfoServiceEvent:
+			// Push notifications are not the reply we are waiting for,
+			// but they must not be thrown away: the daemon emits them
+			// from the service state-machine goroutines, so a fast
+			// service can report Started *before* the command reply
+			// reaches us. Anything waiting on the outcome afterwards
+			// would then wait forever. Stash them and carry on.
+			recordServiceEvent(rply, payload)
+			continue
+		case control.InfoEnvEvent:
+			// Nothing consults these; dropping them is fine.
 			continue
 		default:
 			return rply, payload, nil
@@ -1188,7 +1197,18 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 
 	switch rply {
 	case control.RplyACK:
-		info("Service '%s' started.\n", name)
+		// ACK only says the request was accepted: the daemon writes it
+		// straight after queueing the start, before the service has
+		// gone anywhere. Wait for the outcome unless the caller opted
+		// out, so `slinitctl start foo && ...` means what it reads
+		// like. dinitctl has always done this; matching it is also the
+		// fix for the systemd#6478 shape, where the CLI reported
+		// success for a start that ended in failure.
+		if noWait {
+			info("Service '%s' started.\n", name)
+			return nil
+		}
+		return awaitStartOutcome(conn, handle, name)
 	case control.RplyAlreadySS:
 		info("Service '%s' is already started.\n", name)
 	case control.RplyPinnedStopped:
@@ -1201,6 +1221,118 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 		return fmt.Errorf("unexpected reply: %d", rply)
 	}
 	return nil
+}
+
+// awaitStartOutcome blocks until the service this handle refers to
+// reaches a terminal state, and turns a failed start into an error so
+// the process exit code carries it.
+//
+// The events are already on the wire: allocHandle auto-subscribes, and
+// readReply has simply been discarding them. We read them directly here
+// rather than through readReply for that reason.
+//
+// A start that is cancelled, or that ends with the service stopped,
+// counts as a failure — those are the two ways "it did not come up"
+// reaches us besides an explicit FailedStart.
+func awaitStartOutcome(conn net.Conn, handle uint32, name string) error {
+	// Events that arrived before the command reply were stashed by
+	// readReply; check those first.
+	if event, ok := takeServiceEvent(handle); ok {
+		return startOutcomeFor(event, name)
+	}
+
+	if waitTimeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(waitTimeout))
+		defer conn.SetReadDeadline(time.Time{})
+	}
+	for {
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			// The daemon went away mid-start, or the read deadline
+			// fired. Report it rather than claiming success.
+			return fmt.Errorf("waiting for '%s' to start: %w", name, err)
+		}
+		if rply != control.InfoServiceEvent5 && rply != control.InfoServiceEvent {
+			continue
+		}
+		recordServiceEvent(rply, payload)
+		if event, ok := takeServiceEvent(handle); ok {
+			return startOutcomeFor(event, name)
+		}
+	}
+}
+
+// startOutcomeFor maps a terminal service event to the CLI's verdict.
+func startOutcomeFor(event uint8, name string) error {
+	switch event {
+	case control.SvcEventFailedStart:
+		return fmt.Errorf("service '%s' failed to start", name)
+	case control.SvcEventStartCancelled:
+		return fmt.Errorf("start of service '%s' was cancelled", name)
+	case control.SvcEventStopped:
+		return fmt.Errorf("service '%s' stopped instead of starting", name)
+	default: // SvcEventStarted
+		info("Service '%s' started.\n", name)
+		return nil
+	}
+}
+
+// pendingEvents holds terminal service events seen while reading for
+// something else. slinitctl is a short-lived, single-threaded CLI, so a
+// package-level queue is the whole mechanism — it exists only to bridge
+// the gap between readReply and a later wait on the same connection.
+var pendingEvents []struct {
+	handle uint32
+	event  uint8
+}
+
+// isTerminalStartEvent reports whether an event ends a start attempt.
+// The pressure events (SvcEventPressure*) and stop-cancelled are
+// informational and must not be mistaken for an outcome.
+func isTerminalStartEvent(event uint8) bool {
+	switch event {
+	case control.SvcEventStarted, control.SvcEventFailedStart,
+		control.SvcEventStartCancelled, control.SvcEventStopped:
+		return true
+	}
+	return false
+}
+
+func recordServiceEvent(rply uint8, payload []byte) {
+	var handle uint32
+	var event uint8
+	var err error
+	if rply == control.InfoServiceEvent5 {
+		handle, event, _, err = control.DecodeServiceEvent5(payload)
+	} else {
+		handle, event, _, err = control.DecodeServiceEvent(payload)
+	}
+	if err != nil || !isTerminalStartEvent(event) {
+		return
+	}
+	// The daemon sends v5 and v4 for the same transition; one entry per
+	// (handle, event) pair is enough.
+	for _, p := range pendingEvents {
+		if p.handle == handle && p.event == event {
+			return
+		}
+	}
+	pendingEvents = append(pendingEvents, struct {
+		handle uint32
+		event  uint8
+	}{handle, event})
+}
+
+// takeServiceEvent removes and returns the first recorded event for the
+// handle, if any.
+func takeServiceEvent(handle uint32) (uint8, bool) {
+	for i, p := range pendingEvents {
+		if p.handle == handle {
+			pendingEvents = append(pendingEvents[:i], pendingEvents[i+1:]...)
+			return p.event, true
+		}
+	}
+	return 0, false
 }
 
 func cmdWake(conn net.Conn, name string) error {
@@ -2201,7 +2333,12 @@ commandStart:
 		}
 	}
 
-	if err := cmdStart(conn, unitName, false, false); err != nil {
+	// noWait: `run` does its own settling below, gated on --wait /
+	// --collect. Letting cmdStart wait too would make a plain
+	// `slinitctl run` block until the transient unit finished, which
+	// for a scripted one means until the command exits — the opposite
+	// of the fire-and-forget this is for.
+	if err := cmdStart(conn, unitName, false, true); err != nil {
 		cleanupOnErr()
 		return fmt.Errorf("run: start '%s': %w", unitName, err)
 	}
