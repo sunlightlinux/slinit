@@ -92,6 +92,38 @@ func (m *manager) exportPropsWrapper(path dbus.ObjectPath, props *prop.Propertie
 	_ = m.conn.Export(w, path, "org.freedesktop.DBus.Properties")
 }
 
+// rememberSessionProps keeps a session's exported property table so a
+// later write can update a value and emit PropertiesChanged.
+// prop.Export hands the handle back once and we used to drop it, which
+// froze every property at its creation-time value.
+func (m *manager) rememberSessionProps(id string, props *prop.Properties) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessionProps == nil {
+		m.sessionProps = map[string]*prop.Properties{}
+	}
+	m.sessionProps[id] = props
+}
+
+func (m *manager) forgetSessionProps(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessionProps, id)
+}
+
+// setSessionProp updates one property of a live session. No-op for a
+// session we don't have exported — a client may well be writing to one
+// that was just released.
+func (m *manager) setSessionProp(id, name string, value any) {
+	m.mu.RLock()
+	props := m.sessionProps[id]
+	m.mu.RUnlock()
+	if props == nil {
+		return
+	}
+	props.SetMust(sessionIface, name, value)
+}
+
 // sessionObject is the receiver for method calls on a session's D-Bus
 // object. All methods delegate to the manager's Manager-scoped
 // implementations so the per-object surface is a thin routing layer.
@@ -182,6 +214,11 @@ func (m *manager) registerSessionObject(rec SessionRecord) {
 	if err != nil {
 		return
 	}
+	// Keep the handle so later writes (SetLockedHint, SetIdleHint) can
+	// update the value and emit PropertiesChanged. Without it the
+	// property dict is frozen at whatever the session looked like when
+	// it was created.
+	m.rememberSessionProps(rec.ID, props)
 	// Override the default Properties handler so loginctl's empty-
 	// interface GetAll succeeds.
 	m.exportPropsWrapper(path, props, sessionIface)
@@ -198,6 +235,15 @@ func (m *manager) registerSessionObject(rec SessionRecord) {
 				Name:       sessionIface,
 				Methods:    introspect.Methods(so),
 				Properties: props.Introspection(sessionIface),
+				// Lock / Unlock are how logind asks whoever owns the
+				// session's screen to lock it or let go. gnome-shell's
+				// screenShield lifts the lock screen from Unlock and
+				// nothing else, so a client that introspects before
+				// subscribing has to find them declared here.
+				Signals: []introspect.Signal{
+					{Name: "Lock"},
+					{Name: "Unlock"},
+				},
 			},
 		},
 	}
@@ -213,6 +259,7 @@ func (m *manager) registerSessionObject(rec SessionRecord) {
 // unregisterSessionObject drops the object from the bus + fires
 // SessionRemoved. Called from ReleaseSession.
 func (m *manager) unregisterSessionObject(id string) {
+	m.forgetSessionProps(id)
 	path := sessionPath(id)
 	_ = m.conn.Export(nil, path, sessionIface)
 	_ = m.conn.Export(nil, path, "org.freedesktop.DBus.Properties")
@@ -511,7 +558,19 @@ func (s *sessionObject) SetIdleHint(idle bool) *dbus.Error {
 	// prop.Set landed already handles the change signal.
 	return nil
 }
-func (s *sessionObject) SetLockedHint(locked bool) *dbus.Error { return nil }
+// SetLockedHint records that the session's own screen lock is engaged.
+// gnome-shell calls it on both edges of a lock. Storing it is what
+// makes `loginctl show-session -p LockedHint` tell the truth — it used
+// to answer "no" while the screen was plainly locked — and the
+// PropertiesChanged that prop.Properties emits on the way is what lets
+// a watcher notice without polling.
+//
+// Distinct from the Lock/Unlock signals: those are a request aimed at
+// whoever owns the screen, this is that owner reporting back.
+func (s *sessionObject) SetLockedHint(locked bool) *dbus.Error {
+	s.m.setSessionProp(s.id, "LockedHint", locked)
+	return nil
+}
 
 // TakeControl / ReleaseControl are the compositor entry points —
 // a Wayland compositor claims the seat before asking for any device,

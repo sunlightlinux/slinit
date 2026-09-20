@@ -39,6 +39,7 @@ import (
 	"syscall"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/godbus/dbus/v5/prop"
 )
 
 const (
@@ -114,6 +115,11 @@ type manager struct {
 	// to broadcast.
 	enableWallMessages bool
 	wallMessage        string
+
+	// sessionProps holds each exported session's property table so a
+	// later SetLockedHint / SetIdleHint can write through it and emit
+	// PropertiesChanged. Guarded by mu like the rest of the struct.
+	sessionProps map[string]*prop.Properties
 
 	// debug mirrors the --debug flag. Session setup is the one place
 	// where a post-mortem is useless: the gdm/gnome fork chain we are
@@ -331,22 +337,50 @@ func (m *manager) GetUserByPID(sender dbus.Sender, pid uint32) (dbus.ObjectPath,
 }
 
 // findSessionByCgroup extracts the session id from /proc/PID/cgroup.
-// systemd's naming convention is session-<id>.scope; we grep for it
-// in the 0:: (unified v2) line. Empty string when the pid isn't in a
-// session scope.
+// Empty string when the pid isn't in a session scope.
+//
+// We place sessions flat, at /sys/fs/cgroup/<id>, which is elogind's
+// layout — so the session id is simply the FIRST path component of the
+// unified (0::) line. That is exactly what libelogind's
+// cg_path_get_session() reads, and matching it is the whole reason for
+// the flat layout (see CreateSession).
+//
+// This used to scan for systemd's nested `session-<id>.scope` naming
+// instead, which we never write. The result was that the lookup only
+// ever succeeded for a session's own leader — the one pid
+// findSessionByLeaderLocked already covers — and failed for every
+// process forked from it. GetSessionByPID on a desktop's gnome-shell
+// answered NoSessionForPID while /proc/<pid>/cgroup plainly read
+// `0::/c2`.
+//
+// The nested form is still accepted afterwards: it costs a few lines,
+// and a session record written by an older slinit-logind (or a host
+// that really does use systemd's layout) stays resolvable.
 func findSessionByCgroup(pid uint32) string {
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
 	if err != nil {
 		return ""
 	}
-	// Line format: 0::<path>. We're looking for .../session-<id>.scope
-	// somewhere in the path.
 	for _, line := range splitLines(string(b)) {
 		if !hasPrefix(line, "0::") {
 			continue
 		}
 		p := line[3:]
-		// scan for /session- ... .scope
+		if !hasPrefix(p, "/") {
+			continue
+		}
+		// First path component, flat elogind layout.
+		first := p[1:]
+		if i := indexByte(first, '/'); i >= 0 {
+			first = first[:i]
+		}
+		// Only trust it if a session record actually exists — the root
+		// cgroup ("") and unrelated cgroups must not be mistaken for a
+		// session id.
+		if first != "" && fileExists(sessionFile(first)) {
+			return first
+		}
+		// systemd's nested naming: .../session-<id>.scope
 		for i := 0; i+len("session-") < len(p); i++ {
 			if p[i:i+len("session-")] == "session-" {
 				end := i + len("session-")
@@ -358,6 +392,15 @@ func findSessionByCgroup(pid uint32) string {
 		}
 	}
 	return ""
+}
+
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
 }
 
 // procUID returns the real UID of a running process from

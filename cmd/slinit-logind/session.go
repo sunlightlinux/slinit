@@ -788,10 +788,57 @@ func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
 	}
 	return nil
 }
-func (m *manager) LockSession(id string) *dbus.Error   { return checkSess(id) }
-func (m *manager) UnlockSession(id string) *dbus.Error { return checkSess(id) }
-func (m *manager) LockSessions() *dbus.Error           { return nil }
-func (m *manager) UnlockSessions() *dbus.Error         { return nil }
+// LockSession / UnlockSession emit the Lock / Unlock signal on the
+// session's object. The signal is the whole point of these methods —
+// they don't lock anything themselves, they tell whoever owns the
+// screen to.
+//
+// Returning success without emitting left the desktop wedged on a
+// locked screen. GDM calls Manager.UnlockSession once it has
+// reauthenticated the user; gnome-shell's screenShield lifts the
+// shield only from the resulting Unlock signal
+// (`this._loginSession.connectSignal('Unlock', () => this.deactivate(false))`).
+// So the password was accepted, GDM logged "reauthenticated user
+// 1001", and the screen stayed locked forever.
+func (m *manager) LockSession(id string) *dbus.Error {
+	if err := checkSess(id); err != nil {
+		return err
+	}
+	m.sendSessionLock(id, true)
+	return nil
+}
+
+func (m *manager) UnlockSession(id string) *dbus.Error {
+	if err := checkSess(id); err != nil {
+		return err
+	}
+	m.sendSessionLock(id, false)
+	return nil
+}
+
+func (m *manager) LockSessions() *dbus.Error   { return m.lockAllSessions(true) }
+func (m *manager) UnlockSessions() *dbus.Error { return m.lockAllSessions(false) }
+
+func (m *manager) lockAllSessions(lock bool) *dbus.Error {
+	for _, rec := range loadSessionRecords() {
+		m.sendSessionLock(rec.ID, lock)
+	}
+	return nil
+}
+
+// sendSessionLock emits Lock or Unlock on the session's object path.
+// Both are argument-less signals on org.freedesktop.login1.Session.
+func (m *manager) sendSessionLock(id string, lock bool) {
+	if m.conn == nil {
+		return
+	}
+	name := "Unlock"
+	if lock {
+		name = "Lock"
+	}
+	m.dbgf("session %s: emitting %s", id, name)
+	_ = m.conn.Emit(sessionPath(id), sessionIface+"."+name)
+}
 
 // TerminateSession is Manager.TerminateSession — semantically the
 // same as ReleaseSession for our purposes (both tear the record
