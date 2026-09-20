@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -221,6 +222,15 @@ func (m *manager) CreateSession(
 			cur = ppid
 		}
 	}
+	if m.debug {
+		chain := make([]string, 0, len(ancestors))
+		for _, a := range ancestors {
+			chain = append(chain, fmt.Sprintf("%d(%s)", a, procComm(a)))
+		}
+		m.dbgf("CreateSession id=%s uid=%d leader=%d service=%q type=%q class=%q seat=%q vtnr=%d chain=%s",
+			id, uid, pid, service, sessionType, sessionClass, seatID, vtnr,
+			strings.Join(chain, " <- "))
+	}
 	// Migrate every live ancestor in the chain plus every
 	// gdm-session-worker whose real uid matches this session's uid.
 	//
@@ -239,15 +249,22 @@ func (m *manager) CreateSession(
 	// subsequent fork so `sd_pid_get_session()` reads back the
 	// session id on gnome-shell.
 	moved := 0
-	writeProc := func(candPID uint32) {
+	writeProc := func(candPID uint32, why string) {
 		werr := os.WriteFile(sessionScope+"/cgroup.procs",
 			[]byte(strconv.FormatUint(uint64(candPID), 10)), 0644)
 		if werr == nil {
 			moved++
 		}
+		// A successful write proves nothing — the kernel accepts
+		// cgroup.procs writes for a pid that has already exited, and
+		// the migration we care about is the one that survives long
+		// enough to fork the session tree. Read the pid's own cgroup
+		// back so the log records where it actually landed.
+		m.dbgf("cgroup %s <- pid=%d (%s, comm=%q) write=%v now=%s",
+			id, candPID, why, procComm(candPID), werr, procCgroup(candPID))
 	}
 	for _, cand := range ancestors {
-		writeProc(cand)
+		writeProc(cand, "ancestor")
 	}
 	// Snapshot /proc: any gdm-session-worker (or gnome-session
 	// helper) belonging to this uid is a session-defining pivot.
@@ -280,12 +297,18 @@ func (m *manager) CreateSession(
 			if !strings.HasPrefix(comm, "gdm-session-wor") {
 				continue
 			}
-			writeProc(uint32(candPID))
+			writeProc(uint32(candPID), "gdm-worker-scan")
 		}
 	}
 	if moved == 0 {
 		fmt.Fprintf(os.Stderr, "slinit-logind: cgroup.procs %s: no ancestor migrated for pid=%d (chain: %v)\n",
 			sessionScope, pid, ancestors)
+	}
+	// Final state of the scope, so the log says who is actually in it
+	// once every write has been attempted.
+	if procs, rerr := os.ReadFile(sessionScope + "/cgroup.procs"); rerr == nil {
+		m.dbgf("cgroup %s settled: procs=[%s]", id,
+			strings.Join(strings.Fields(string(procs)), " "))
 	}
 
 	// Runtime dir: mode 0700, owned by the target uid. First session
@@ -412,6 +435,10 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 			m.unregisterUserObject(rec.UserID)
 		}
 	}
+	// The user and seat records list sessions, so removing one has to
+	// rewrite them — otherwise sd_uid_get_sessions() keeps handing out
+	// a session id whose files are already gone.
+	rewriteCompatAggregates()
 	return nil
 }
 
@@ -502,24 +529,151 @@ func writeCompatSession(rec SessionRecord) error {
 	fmt.Fprintf(&b, "REALTIME=%d\n", time.Now().Unix())
 	fmt.Fprintf(&b, "MONOTONIC=%d\n", 0)
 
-	// User compat file — most consumers just need the UID + name to
-	// identify. State minimal (STATE + NAME + RUNTIME).
-	var u strings.Builder
-	fmt.Fprintf(&u, "# This is private data. Do not parse.\n")
-	fmt.Fprintf(&u, "NAME=%s\n", rec.UserName)
-	fmt.Fprintf(&u, "STATE=active\n")
-	fmt.Fprintf(&u, "RUNTIME=%s\n", rec.RuntimePath)
-	_ = os.WriteFile(compatUserFile(rec.UserID), []byte(u.String()), 0644)
+	if err := os.WriteFile(compatSessionFile(rec.ID), []byte(b.String()), 0644); err != nil {
+		return err
+	}
+	// The per-user and per-seat records are aggregates over every live
+	// session, so they can't be derived from the one being created.
+	rewriteCompatAggregates()
+	return nil
+}
 
-	if rec.SeatID != "" {
-		var s strings.Builder
-		fmt.Fprintf(&s, "# This is private data. Do not parse.\n")
-		fmt.Fprintf(&s, "ACTIVE=%s\n", rec.ID)
-		fmt.Fprintf(&s, "SESSIONS=%s\n", rec.ID)
-		_ = os.WriteFile(compatSeatFile(rec.SeatID), []byte(s.String()), 0644)
+// loadSessionRecords reads every live session record off disk. The
+// aggregates below need the whole set; there's no in-memory session
+// table to consult (state lives in /run so it survives a daemon
+// restart).
+func loadSessionRecords() []SessionRecord {
+	files, _ := filepath.Glob(filepath.Join(stateRoot, "sessions", "*.json"))
+	sort.Strings(files)
+	out := make([]SessionRecord, 0, len(files))
+	for _, f := range files {
+		var rec SessionRecord
+		if readJSON(f, &rec) {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+// rewriteCompatAggregates rebuilds /run/systemd/users/<uid> and
+// /run/systemd/seats/<id> from the full set of live sessions.
+//
+// These files are not decoration. sd_uid_get_sessions() — which is how
+// mutter finds its session when sd_pid_get_session() comes up empty —
+// reads nothing but the SESSIONS / ACTIVE_SESSIONS / ONLINE_SESSIONS
+// arrays out of the user file. An earlier revision wrote only
+// NAME/STATE/RUNTIME there, so the lookup returned zero sessions and
+// gnome-shell died with "Failed to find any matching session" even
+// though the session existed and the leader was correctly placed in
+// its cgroup.
+//
+// The seat file has the mirror-image hazard: writing it per-session
+// clobbered the CAN_TTY / CAN_GRAPHICAL / IS_SEAT0 flags that
+// ensureSeat had put there at startup, so sd_seat_can_graphical()
+// started answering "no" the moment the first session was created.
+// Everything is rewritten together here, from one source of truth.
+//
+// We report every session as active: without VT-activity tracking
+// there is no basis to call one session foreground and another not,
+// and the per-session records already say ACTIVE=1.
+func rewriteCompatAggregates() {
+	_ = os.MkdirAll("/run/systemd/users", 0755)
+	_ = os.MkdirAll("/run/systemd/seats", 0755)
+
+	sessions := loadSessionRecords()
+
+	byUID := map[uint32][]SessionRecord{}
+	bySeat := map[string][]SessionRecord{}
+	for _, rec := range sessions {
+		byUID[rec.UserID] = append(byUID[rec.UserID], rec)
+		if rec.SeatID != "" {
+			bySeat[rec.SeatID] = append(bySeat[rec.SeatID], rec)
+		}
 	}
 
-	return os.WriteFile(compatSessionFile(rec.ID), []byte(b.String()), 0644)
+	for uid, recs := range byUID {
+		var ids, seats []string
+		display := ""
+		for _, r := range recs {
+			ids = append(ids, r.ID)
+			if r.SeatID != "" {
+				seats = append(seats, r.SeatID)
+			}
+			// sd_uid_get_display() wants the user's graphical
+			// session; first wayland/x11 one wins, as in elogind.
+			if display == "" && (r.Type == "wayland" || r.Type == "x11") {
+				display = r.ID
+			}
+		}
+		seats = uniqueStrings(seats)
+
+		var u strings.Builder
+		fmt.Fprintf(&u, "# This is private data. Do not parse.\n")
+		fmt.Fprintf(&u, "NAME=%s\n", recs[0].UserName)
+		fmt.Fprintf(&u, "STATE=active\n")
+		fmt.Fprintf(&u, "STOPPING=no\n")
+		fmt.Fprintf(&u, "RUNTIME=%s\n", recs[0].RuntimePath)
+		if display != "" {
+			fmt.Fprintf(&u, "DISPLAY=%s\n", display)
+		}
+		fmt.Fprintf(&u, "SESSIONS=%s\n", strings.Join(ids, " "))
+		fmt.Fprintf(&u, "ACTIVE_SESSIONS=%s\n", strings.Join(ids, " "))
+		fmt.Fprintf(&u, "ONLINE_SESSIONS=%s\n", strings.Join(ids, " "))
+		fmt.Fprintf(&u, "SEATS=%s\n", strings.Join(seats, " "))
+		fmt.Fprintf(&u, "ACTIVE_SEATS=%s\n", strings.Join(seats, " "))
+		fmt.Fprintf(&u, "ONLINE_SEATS=%s\n", strings.Join(seats, " "))
+		_ = os.WriteFile(compatUserFile(uid), []byte(u.String()), 0644)
+	}
+
+	// Every registered seat, not just the ones with sessions — a seat
+	// with no session still has to advertise its capabilities or gdm
+	// won't spawn a greeter on it.
+	seatFiles, _ := filepath.Glob(filepath.Join(stateRoot, "seats", "*.json"))
+	for _, f := range seatFiles {
+		id := strings.TrimSuffix(filepath.Base(f), ".json")
+		writeCompatSeat(id, bySeat[id])
+	}
+}
+
+// writeCompatSeat renders /run/systemd/seats/<id>. Field set and order
+// follow elogind's seat_save().
+func writeCompatSeat(id string, sessions []SessionRecord) {
+	var s strings.Builder
+	fmt.Fprintf(&s, "# This is private data. Do not parse.\n")
+	fmt.Fprintf(&s, "IS_SEAT0=%d\n", boolInt(id == "seat0"))
+	fmt.Fprintf(&s, "CAN_MULTI_SESSION=1\n")
+	fmt.Fprintf(&s, "CAN_TTY=1\n")
+	fmt.Fprintf(&s, "CAN_GRAPHICAL=1\n")
+	if len(sessions) > 0 {
+		// Newest session is the foreground one — sessions arrive in
+		// id order from loadSessionRecords.
+		active := sessions[len(sessions)-1]
+		fmt.Fprintf(&s, "ACTIVE=%s\n", active.ID)
+		fmt.Fprintf(&s, "ACTIVE_UID=%d\n", active.UserID)
+
+		ids := make([]string, 0, len(sessions))
+		uids := make([]string, 0, len(sessions))
+		for _, r := range sessions {
+			ids = append(ids, r.ID)
+			uids = append(uids, strconv.FormatUint(uint64(r.UserID), 10))
+		}
+		fmt.Fprintf(&s, "SESSIONS=%s\n", strings.Join(ids, " "))
+		fmt.Fprintf(&s, "UIDS=%s\n", strings.Join(uids, " "))
+	}
+	_ = os.WriteFile(compatSeatFile(id), []byte(s.String()), 0644)
+}
+
+func uniqueStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := in[:0]
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 func boolInt(b bool) int {

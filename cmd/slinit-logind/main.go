@@ -114,6 +114,59 @@ type manager struct {
 	// to broadcast.
 	enableWallMessages bool
 	wallMessage        string
+
+	// debug mirrors the --debug flag. Session setup is the one place
+	// where a post-mortem is useless: the gdm/gnome fork chain we are
+	// trying to place in a cgroup is gone within a second of the
+	// failure, so the trace has to be written as it happens.
+	debug bool
+}
+
+// dbgf logs one line to stderr when --debug is set. main() points
+// os.Stderr at /var/log/slinit-logind.log in that mode, since slinit's
+// runner attaches fd 2 to /dev/null.
+func (m *manager) dbgf(format string, args ...any) {
+	if !m.debug {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "slinit-logind: "+format+"\n", args...)
+}
+
+// procComm reads /proc/<pid>/comm, for log lines that need to name a
+// process rather than just number it. Returns "?" when the process is
+// already gone — which is itself the interesting case here.
+func procComm(pid uint32) string {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	if err != nil {
+		return "?"
+	}
+	return string(bytesTrimSpace(b))
+}
+
+// procCgroup reads the unified (0::) cgroup path of a pid. "?" when the
+// process is gone, "" when it has no unified line.
+func procCgroup(pid uint32) string {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return "?"
+	}
+	for _, line := range splitLines(string(b)) {
+		if hasPrefix(line, "0::") {
+			return line[3:]
+		}
+	}
+	return ""
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	start, end := 0, len(b)
+	for start < end && (b[start] == ' ' || b[start] == '\t' || b[start] == '\n') {
+		start++
+	}
+	for end > start && (b[end-1] == ' ' || b[end-1] == '\t' || b[end-1] == '\n') {
+		end--
+	}
+	return b[start:end]
 }
 
 // ListSessions returns [(id, uid, user, seat, path)]. On a fresh
@@ -615,7 +668,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	m := &manager{conn: conn}
+	m := &manager{conn: conn, debug: *debug}
 	if err := conn.Export(m, dbus.ObjectPath(objPath), iface); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-logind: export: %v\n", err)
 		os.Exit(1)

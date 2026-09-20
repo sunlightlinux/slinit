@@ -274,13 +274,13 @@ func (m *manager) ensureSeat(id string) {
 	// unconditionally alongside our JSON. Fields match elogind's own
 	// on-disk format (checked against elogind source) — gdm won't
 	// spawn a greeter if CAN_GRAPHICAL / CAN_TTY are missing.
+	//
+	// Goes through the shared writer so a seat seeded here and a seat
+	// rewritten after a session change carry the same field set; an
+	// earlier split between the two dropped the CAN_* flags as soon as
+	// the first session appeared.
 	_ = os.MkdirAll("/run/systemd/seats", 0755)
-	seatBody := "# This is private data. Do not parse.\n"
-	if id == "seat0" {
-		seatBody += "IS_SEAT0=1\n"
-	}
-	seatBody += "CAN_MULTI_SESSION=1\nCAN_TTY=1\nCAN_GRAPHICAL=1\n"
-	_ = os.WriteFile("/run/systemd/seats/"+id, []byte(seatBody), 0644)
+	rewriteCompatAggregates()
 
 	so := &seatObject{m: m, id: id}
 	path := seatPath(id)
