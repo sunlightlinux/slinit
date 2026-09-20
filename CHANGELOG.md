@@ -17,6 +17,16 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.5] — 2026-09-20
+
+A correctness release for `slinitctl start`, plus the first slice of a
+regression suite built from the systemd bug list on nosystemd.org. One
+commit's worth of work; no wire protocol change, no config surface
+change.
+
+**Read the Changed section before upgrading if you script slinitctl** —
+`start` now blocks until it knows the answer.
+
 ### Changed
 
 - **`slinitctl start` now waits for the outcome and its exit code
@@ -50,6 +60,12 @@ the full commit-level record.
   include service startup, which is what that tier's README always
   claimed to be measuring.
 
+  `slinitctl run` is deliberately exempt. It has its own settling
+  logic gated on `--wait` / `--collect`, so it starts the transient
+  unit with `--no-wait`; otherwise a plain `slinitctl run` of a
+  scripted unit would block until the command finished, which is the
+  opposite of what that subcommand is for.
+
 ### Added
 
 - **Regression suite derived from the systemd bug list on
@@ -74,6 +90,20 @@ the full commit-level record.
   turn over completely beneath a running producer without silencing
   it — slinit has no separate journal process whose restart could
   orphan a writer).
+
+  Six items from the list remain: `#2913` (attributing messages from
+  a process that has already exited), `#6237` (user names starting
+  with a digit), system-wide resource limits, `#2460` (`status`
+  latency with a disk journal), `#11810` (suspending twice) and
+  `#72759` (ecryptfs unmount on logout). The last two need real
+  suspend hardware and an ecryptfs setup.
+
+### Compat
+
+- Wire protocol, config surface, package manifests: unchanged.
+- Runtime deps: unchanged.
+- **Scripts calling `slinitctl start` may need `--no-wait`** — see
+  Changed. This is the only upgrade action.
 
 ## [2.3.4] — 2026-09-20
 
