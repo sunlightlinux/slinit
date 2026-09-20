@@ -17,6 +17,79 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.4] — 2026-09-20
+
+One commit, two `slinit-logind` fixes, both surfaced within hours of
+v2.3.3's ISO landing on ceres — by using the GNOME desktop rather than
+by testing it. No wire protocol change; no config surface change.
+
+**Upgrade if you run a graphical session**: without this, locking the
+screen from the GNOME menu is a one-way trip.
+
+### Fixed
+
+- **A locked GNOME screen could never be unlocked.** The password was
+  accepted every time — GDM logged `pid 1491 reauthenticated user 1001
+  with service 'gdm-password'` — and the shield stayed up.
+
+  gnome-shell lifts the lock screen from exactly one place
+  (`js/ui/screenShield.js`):
+
+  ```js
+  this._loginSession.connectSignal('Unlock', () => this.deactivate(false));
+  ```
+
+  There is no verification-complete handler that does it. `/usr/bin/gdm`
+  carries the string `UnlockSession` next to
+  `org.freedesktop.login1.Manager`, so the chain is: shell asks GDM to
+  reauthenticate → GDM calls `Manager.UnlockSession` → logind emits
+  `Unlock` on the session object → the shell deactivates.
+
+  `UnlockSession` was `return checkSess(id)`: it confirmed the session
+  existed, answered success, and emitted nothing. GDM believed it had
+  done its job and the shell was never told. `LockSession`,
+  `UnlockSession` and the plural forms now emit, and the signals are
+  declared in the session's introspection.
+
+- **`Session.SetLockedHint` discarded the value**, so
+  `loginctl show-session -p LockedHint` answered `no` with the screen
+  plainly locked. It is stored now, and the write emits
+  `PropertiesChanged`. Keeping it needs the `prop.Properties` handle
+  that `prop.Export` returns and `registerSessionObject` used to drop on
+  the floor; it is retained per session, which is what any future
+  property update will need too.
+
+- **`GetSessionByPID` failed for every process except a session's own
+  leader.** `findSessionByCgroup` scanned for systemd's nested
+  `session-<id>.scope` naming, which slinit-logind never writes — we
+  place sessions flat at `/sys/fs/cgroup/<id>`, elogind's layout, where
+  the session id is the FIRST path component. That is precisely what
+  libelogind's `cg_path_get_session()` reads, and the whole reason the
+  layout is flat.
+
+  So the fallback only ever matched the one pid
+  `findSessionByLeaderLocked` already covers, and missed everything
+  forked from it: `GetSessionByPID` on a live desktop's gnome-shell
+  answered `NoSessionForPID` while `/proc/<pid>/cgroup` read `0::/c2`.
+  It also broke `/org/freedesktop/login1/session/self` for non-leaders;
+  `.../auto` only worked because it falls back to the user's display
+  session. The nested form is still accepted after the flat one, so a
+  host that really does use systemd's layout stays resolvable.
+
+### Known issues
+
+Unchanged from 2.3.3: GDM's Wayland greeter still paints nothing
+(`WaylandEnable=false` is the workaround), and `PauseDevice` /
+`ResumeDevice` are declared but not emitted, so a VT switch away from
+and back to a Wayland session is not expected to hand DRM master over
+correctly.
+
+### Compat
+
+- Wire protocol, config surface, cmdline, package manifests: unchanged.
+- Runtime deps: unchanged.
+- elogind is still required — see 2.3.3.
+
 ## [2.3.3] — 2026-09-20
 
 Point release on the 2.3.x line. Four `slinit-logind` commits plus one
