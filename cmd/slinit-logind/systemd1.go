@@ -247,6 +247,18 @@ func (s *systemd1Manager) GetUnitByPID(pid uint32) (dbus.ObjectPath, *dbus.Error
 		[]any{"No unit for PID."})
 }
 
+// GetUnitByPIDFD is the pidfd-carrying form systemd 253+ added, and the
+// one polkitd reaches for first when resolving a caller's unit. Without
+// it polkitd takes an UnknownMethod error on every authorisation check
+// before falling back — answering NoSuchUnit sends it down the same
+// fallback path as GetUnitByPID, without the error.
+func (s *systemd1Manager) GetUnitByPIDFD(pidfd dbus.UnixFD) (dbus.ObjectPath, *dbus.Error) {
+	s.dbg("GetUnitByPIDFD(fd=%d) -> NoSuchUnit", int(pidfd))
+	return "", dbus.NewError(
+		"org.freedesktop.systemd1.NoSuchUnit",
+		[]any{"No unit for PID."})
+}
+
 func (s *systemd1Manager) GetUnitByInvocationID(id []byte) (dbus.ObjectPath, *dbus.Error) {
 	return "", dbus.NewError(
 		"org.freedesktop.systemd1.NoSuchUnit",

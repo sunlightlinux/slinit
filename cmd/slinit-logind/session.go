@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"golang.org/x/sys/unix"
 )
 
 // Property mirrors the (sv) member of Manager.CreateSession's
@@ -231,46 +232,59 @@ func (m *manager) CreateSession(
 			id, uid, pid, service, sessionType, sessionClass, seatID, vtnr,
 			strings.Join(chain, " <- "))
 	}
-	// Migrate every live ancestor in the chain plus every
-	// gdm-session-worker whose real uid matches this session's uid.
+	// Migrate the caller, and walk further up only if that didn't
+	// stick.
 	//
-	// The dbus caller is typically a transient PAM helper that exits
-	// inside microseconds of our WriteFile — kernel accepts the
-	// write, then removes the pid on process exit, leaving the scope
-	// empty just after we walk away. On Void's gdm layout the PAM
-	// helper's parent chain runs through /usr/bin/gdm itself, NOT
-	// through gdm-session-worker, so pure ancestor-walking never
-	// touches the process that actually forks the user-facing
-	// binaries (gdm-wayland-session → dbus-run-session →
-	// gnome-session-binary → gnome-shell). Migrating those
-	// gdm-session-worker processes explicitly by name gives the
-	// scope the long-lived root the downstream fork tree needs;
-	// kernel semantics carry the scope forward across every
-	// subsequent fork so `sd_pid_get_session()` reads back the
-	// session id on gnome-shell.
+	// The caller is the PAM process, which is the right thing to move:
+	// everything the session will run is forked from it afterwards, and
+	// cgroup membership is inherited at fork. Tracing a gdm greeter
+	// start confirms it resolves to gdm-session-worker and that the
+	// write lands before any session process exists.
+	//
+	// Walking past it is a last resort for the layouts where the caller
+	// is a transient PAM helper that exits between the D-Bus call and
+	// our write — the kernel accepts a cgroup.procs write for a dead
+	// pid, so the write "succeeds" and leaves the scope empty. Climbing
+	// unconditionally is worse than not climbing: on gdm the next
+	// ancestor is /usr/bin/gdm itself, and dragging the display manager
+	// into a session scope means the scope can never be rmdir'd when
+	// the session ends.
 	moved := 0
-	writeProc := func(candPID uint32, why string) {
+	scopeSuffix := "/" + id
+	// writeProc migrates candPID and reports whether it is verifiably
+	// in the scope afterwards. A successful write proves nothing — the
+	// kernel accepts cgroup.procs writes for a pid that has already
+	// exited — so the pid's own cgroup is read back.
+	writeProc := func(candPID uint32, why string) bool {
 		werr := os.WriteFile(sessionScope+"/cgroup.procs",
 			[]byte(strconv.FormatUint(uint64(candPID), 10)), 0644)
-		if werr == nil {
+		landed := procCgroup(candPID) == scopeSuffix
+		if landed {
 			moved++
 		}
-		// A successful write proves nothing — the kernel accepts
-		// cgroup.procs writes for a pid that has already exited, and
-		// the migration we care about is the one that survives long
-		// enough to fork the session tree. Read the pid's own cgroup
-		// back so the log records where it actually landed.
-		m.dbgf("cgroup %s <- pid=%d (%s, comm=%q) write=%v now=%s",
-			id, candPID, why, procComm(candPID), werr, procCgroup(candPID))
+		m.dbgf("cgroup %s <- pid=%d (%s, comm=%q) write=%v landed=%v now=%s",
+			id, candPID, why, procComm(candPID), werr, landed, procCgroup(candPID))
+		return landed
 	}
-	for _, cand := range ancestors {
-		writeProc(cand, "ancestor")
+	for i, cand := range ancestors {
+		why := "caller"
+		if i > 0 {
+			why = "ancestor"
+		}
+		if writeProc(cand, why) {
+			break
+		}
 	}
-	// Snapshot /proc: any gdm-session-worker (or gnome-session
-	// helper) belonging to this uid is a session-defining pivot.
-	// We check comm rather than the full argv to keep the scan
-	// cheap — /proc/<pid>/comm is a single 16-byte read.
-	if entries, err := os.ReadDir("/proc"); err == nil {
+	// Last-resort fallback: nothing in the ancestor chain stuck, so
+	// look for a gdm-session-worker to anchor the scope on.
+	//
+	// Only when the chain failed. Running this unconditionally would
+	// sweep up the workers of *other* live sessions and move them into
+	// this session's scope — on a machine with a greeter plus a logged
+	// in user that silently re-parents the wrong session. We check comm
+	// rather than the full argv to keep the scan cheap: /proc/<pid>/comm
+	// is a single 16-byte read.
+	if entries, err := os.ReadDir("/proc"); err == nil && moved == 0 {
 		for _, ent := range entries {
 			if !ent.IsDir() {
 				continue
@@ -297,7 +311,9 @@ func (m *manager) CreateSession(
 			if !strings.HasPrefix(comm, "gdm-session-wor") {
 				continue
 			}
-			writeProc(uint32(candPID), "gdm-worker-scan")
+			if writeProc(uint32(candPID), "gdm-worker-scan") {
+				break
+			}
 		}
 	}
 	if moved == 0 {
@@ -384,6 +400,12 @@ func (m *manager) CreateSession(
 		}
 	}
 
+	// Reap the session when its leader dies. pam_close_session calls
+	// ReleaseSession on a clean logout, but a crashed greeter or a
+	// SIGKILLed session never gets there, and the stale record then
+	// blocks the display manager from starting a replacement.
+	m.watchSessionLeader(id, pid)
+
 	// FIFO fd: pam_open_session keeps this open; ReleaseSession
 	// happens implicitly on close if pam_close_session doesn't beat
 	// it there. Phase B ships the fd but relies on the explicit
@@ -435,11 +457,63 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 			m.unregisterUserObject(rec.UserID)
 		}
 	}
+	// Devices the session's compositor was handed: close our copies so
+	// DRM master goes back to the pool for the next session.
+	releaseControl(id)
 	// The user and seat records list sessions, so removing one has to
 	// rewrite them — otherwise sd_uid_get_sessions() keeps handing out
 	// a session id whose files are already gone.
 	rewriteCompatAggregates()
 	return nil
+}
+
+// watchSessionLeader drops the session once its leader process exits.
+//
+// Nothing else does this. A session whose leader is gone used to stay
+// registered forever, and the consequences were not subtle: gdm, seeing
+// a greeter session still listed on seat0, refuses to start a new one,
+// so a single crashed greeter wedges the display manager until the
+// records are deleted by hand. elogind watches the leader's pidfd for
+// exactly this reason.
+//
+// One goroutine per session, parked in poll() on a pidfd, costs nothing
+// while the session lives and needs no timer.
+func (m *manager) watchSessionLeader(id string, leader uint32) {
+	if leader == 0 {
+		return
+	}
+	go func() {
+		if err := waitForPidExit(leader); err != nil {
+			// ESRCH means the leader was already gone when we looked,
+			// which is a session to reap right now, not one to skip.
+			// Anything else means we can't watch it; say so rather
+			// than silently leaving a session unreaped.
+			if err != unix.ESRCH {
+				m.dbgf("session %s: cannot watch leader %d: %v", id, leader, err)
+				return
+			}
+		}
+		m.dbgf("session %s: leader %d exited, releasing", id, leader)
+		_ = m.ReleaseSession(id)
+	}()
+}
+
+// reapDeadSessions drops any session whose leader is already gone, then
+// arms a watcher on the rest. Called at startup so records that
+// outlived a daemon restart (or a crash that skipped ReleaseSession)
+// don't linger — the state lives in /run, so it survives us.
+func (m *manager) reapDeadSessions() {
+	for _, rec := range loadSessionRecords() {
+		if rec.LeaderPID == 0 {
+			continue
+		}
+		if _, err := os.Stat(fmt.Sprintf("/proc/%d", rec.LeaderPID)); err != nil {
+			m.dbgf("session %s: leader %d gone at startup, releasing", rec.ID, rec.LeaderPID)
+			_ = m.ReleaseSession(rec.ID)
+			continue
+		}
+		m.watchSessionLeader(rec.ID, rec.LeaderPID)
+	}
 }
 
 // readPPid parses PPid from /proc/<pid>/status. Returns (ppid, true)

@@ -684,6 +684,10 @@ func main() {
 	// would 404 on the object path for sessions that PAM created before
 	// we came up.
 	m.rehydrateObjects()
+	// Session state lives in /run, so it outlives us. Drop whatever
+	// belongs to a leader that is already gone, and watch the leaders
+	// that are still alive.
+	m.reapDeadSessions()
 	// Ensure the always-on seat0 object exists so `loginctl seat-status`
 	// works out of the box.
 	m.ensureSeat("seat0")

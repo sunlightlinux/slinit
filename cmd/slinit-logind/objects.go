@@ -486,43 +486,37 @@ func (s *sessionObject) SetIdleHint(idle bool) *dbus.Error {
 }
 func (s *sessionObject) SetLockedHint(locked bool) *dbus.Error { return nil }
 
-// TakeControl / ReleaseControl are the compositor entry points
-// (Xorg/Wayland call them to become the seat's session manager).
-// Stubbed successful so a compositor doesn't fail-init.
-func (s *sessionObject) TakeControl(force bool) *dbus.Error { return nil }
-func (s *sessionObject) ReleaseControl() *dbus.Error        { return nil }
+// TakeControl / ReleaseControl are the compositor entry points —
+// a Wayland compositor claims the seat before asking for any device,
+// and releasing drops every descriptor it was handed. See device.go.
+func (s *sessionObject) TakeControl(force bool) *dbus.Error {
+	return takeControl(s.id, force)
+}
+
+func (s *sessionObject) ReleaseControl() *dbus.Error {
+	releaseControl(s.id)
+	return nil
+}
 
 // TakeDevice hands the caller an fd for the requested device
 // major:minor. Wayland compositors (mutter for GDM's greeter and any
-// gnome-shell session) call this for /dev/dri/card0 + input devices;
-// if it errors, gnome-shell exits with "Failed to find any matching
-// session" and GDM's greeter tears down without ever painting.
-//
-// Systemd's logind opens the device with O_RDWR|O_CLOEXEC and passes
-// the fd back over D-Bus; a real seat manager would also take DRM
-// master here and drop it on ReleaseDevice / PauseDeviceComplete.
-// Slinit-logind's Phase C+ ships the fd hand-off unconditionally
-// (there's no other session competing for the device at this point in
-// our model) and returns inactive=false so the caller knows the device
-// is live.
+// gnome-shell session) call this for /dev/dri/card0 + input devices.
+// DRM master is claimed on the way out — without it a compositor holds
+// a descriptor it cannot modeset through. See device.go.
 func (s *sessionObject) TakeDevice(major, minor uint32) (dbus.UnixFD, bool, *dbus.Error) {
-	path, err := devPathForMajorMinor(major, minor)
-	if err != nil {
-		return 0, false, dbus.NewError("org.freedesktop.login1.Error.NoSuchDevice",
-			[]interface{}{fmt.Sprintf("%d:%d: %v", major, minor, err)})
-	}
-	f, err := openDevice(path)
-	if err != nil {
-		return 0, false, dbus.NewError("org.freedesktop.login1.Error.DeviceOpenFailed",
-			[]interface{}{path + ": " + err.Error()})
-	}
-	// D-Bus dupes the fd across the wire; we intentionally leak our
-	// end (Go's GC won't close it while the goroutine holds the
-	// return value). Session count is tiny so fd leakage is bounded.
-	return dbus.UnixFD(f.Fd()), false, nil
+	return takeDevice(s.id, major, minor)
 }
 
-func (s *sessionObject) ReleaseDevice(major, minor uint32) *dbus.Error       { return nil }
+func (s *sessionObject) ReleaseDevice(major, minor uint32) *dbus.Error {
+	releaseDevice(s.id, major, minor)
+	return nil
+}
+
+// PauseDeviceComplete is the client's acknowledgement of a PauseDevice
+// signal. We don't pause devices — that needs the VT-switch tracking
+// elogind does in logind-session-device.c — so there is nothing to
+// confirm, but the method has to exist or a compositor that acks
+// unconditionally takes an UnknownMethod error mid-handover.
 func (s *sessionObject) PauseDeviceComplete(major, minor uint32) *dbus.Error { return nil }
 
 // --- per-User methods ---
