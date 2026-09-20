@@ -327,6 +327,13 @@ func (m *manager) ensureSeat(id string) {
 // xdg-desktop-portal etc. treat the daemon as absent and downgrade
 // (broken right-click menus, no power controls, etc.).
 func (m *manager) registerManagerIntrospection() {
+	// Property dict (managerprops.go). Exported on the same path under
+	// org.freedesktop.DBus.Properties — nothing else claims that
+	// interface here, so there's no handler to replace the way the
+	// per-object registrars do with propsWrapper.
+	_ = m.conn.Export(&managerProperties{m: m}, dbus.ObjectPath(objPath),
+		"org.freedesktop.DBus.Properties")
+
 	// Use introspect.Methods to auto-generate the method table from
 	// the manager receiver's exported methods. The interface XML is
 	// then attached to a Node hosting only Manager — matches what
@@ -335,9 +342,11 @@ func (m *manager) registerManagerIntrospection() {
 		Name: objPath,
 		Interfaces: []introspect.Interface{
 			introspect.IntrospectData,
+			prop.IntrospectData,
 			{
-				Name:    iface,
-				Methods: introspect.Methods(m),
+				Name:       iface,
+				Properties: managerIntrospectProps(),
+				Methods:    introspect.Methods(m),
 				Signals: []introspect.Signal{
 					{Name: "SessionNew", Args: []introspect.Arg{
 						{Name: "session_id", Type: "s", Direction: "out"},

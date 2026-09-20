@@ -106,6 +106,14 @@ type Inhibitor struct {
 type manager struct {
 	mu   sync.RWMutex
 	conn *dbus.Conn
+
+	// Manager.WallMessage / EnableWallMessages are writable properties
+	// (see managerprops.go). We store what a client sets so the value
+	// round-trips through `loginctl` the way it does under elogind;
+	// nothing consumes it until ScheduleShutdown lands and has a wall
+	// to broadcast.
+	enableWallMessages bool
+	wallMessage        string
 }
 
 // ListSessions returns [(id, uid, user, seat, path)]. On a fresh
