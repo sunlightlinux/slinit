@@ -75,6 +75,22 @@ func main() {
 		return
 	}
 
+	// Claim the shutdown signals before anything else runs.
+	//
+	// The kernel only discards a signal sent to PID 1 when PID 1 has no
+	// handler for it — and the Go runtime installs handlers for
+	// everything at startup, so from the kernel's side we always have
+	// one. Until signal.Notify claims a signal the runtime's own
+	// disposition applies, and for SIGINT/SIGTERM/SIGQUIT that
+	// disposition is to die. As PID 1 that is a kernel panic.
+	//
+	// The event loop used to register these itself, ~1600 lines later,
+	// leaving the whole of boot unprotected: Ctrl+Alt+Del (which, with
+	// CAD disabled, arrives as SIGINT) panicked the machine instead of
+	// rebooting it. Signals that arrive before the loop starts queue on
+	// this channel and are acted on as soon as it turns.
+	earlySignals := eventloop.SetupEarlySignals()
+
 	// Parse command-line flags
 	var (
 		serviceDirs     string
@@ -1432,6 +1448,14 @@ func main() {
 	// Boot loop: runs the event loop, handles boot failures with recovery
 	for {
 		loop := eventloop.New(serviceSet, logger)
+
+		// Hand over the channel claimed at the top of main, once. Run
+		// closes it via StopSignals when it returns, so a second pass
+		// of this retry loop lets the loop register a fresh one.
+		if earlySignals != nil {
+			loop.AdoptSignals(earlySignals)
+			earlySignals = nil
+		}
 
 		if containerMode {
 			loop.SetContainerMode(true)

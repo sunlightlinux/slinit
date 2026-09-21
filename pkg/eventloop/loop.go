@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -136,11 +137,27 @@ func (el *EventLoop) GetShutdownType() service.ShutdownType {
 	return el.shutdownType
 }
 
+// AdoptSignals tells the loop to use a channel that has already been
+// registered with SetupEarlySignals, instead of registering its own
+// when Run starts. Everything that arrived during boot is still on it.
+func (el *EventLoop) AdoptSignals(sigCh chan os.Signal) {
+	el.sigCh = sigCh
+}
+
 // Run starts the event loop. It blocks until the context is cancelled,
 // a shutdown signal is received and all services stop, or an emergency
 // timeout forces exit.
 func (el *EventLoop) Run(ctx context.Context) error {
-	el.sigCh = SetupSignals()
+	if el.sigCh == nil {
+		el.sigCh = SetupSignals()
+	} else {
+		// Signals were claimed early (see SetupEarlySignals); anything
+		// the operator sent during boot is already queued on this
+		// channel and will be handled as soon as the loop turns. Only
+		// SIGCHLD is still outstanding, because there was no reader
+		// for it until now.
+		signal.Notify(el.sigCh, syscall.SIGCHLD)
+	}
 	defer StopSignals(el.sigCh)
 
 	el.logger.Info("slinit event loop started (PID %d)", os.Getpid())
