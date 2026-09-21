@@ -17,6 +17,107 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.6] — 2026-09-21
+
+A PID-1 safety release. **Upgrade if you run slinit as init on a machine
+with a keyboard:** on v2.3.5 and earlier, Ctrl+Alt+Del pressed during
+boot panics the kernel. No wire protocol change, no config surface
+change, no upgrade action.
+
+### Fixed
+
+- **Ctrl+Alt+Del during boot killed PID 1, and the kernel panicked.**
+  Observed as `Kernel panic - not syncing: Attempted to kill init!
+  exitcode=0x00000200` on a rescue-mode boot.
+
+  `InitPID1` turns off the kernel's own Ctrl+Alt+Del handling, so the
+  key arrives as SIGINT to PID 1. The kernel only drops a signal to
+  PID 1 when PID 1 has no handler for it. The Go runtime installs
+  handlers for every signal at startup, so that protection never
+  applies to slinit. Until `signal.Notify` claims a signal, the
+  runtime's default governs it, and for SIGINT that default is
+  `exit(2)`. slinit only claimed its signals in `EventLoop.Run`,
+  roughly 1600 lines into `main`. Mounts, service loading and the whole
+  start cascade ran before that point with nothing claimed. The same
+  applied to SIGTERM, SIGQUIT, SIGHUP, SIGUSR1, SIGUSR2 and the
+  systemd-compatible RT shutdown signals.
+
+  The shutdown signals are now claimed as the first thing `main` does,
+  and the event loop adopts that channel. SIGCHLD is deliberately still
+  claimed later, by `Run`. Nothing reads it during boot, orphan reaping
+  would fill the channel's buffer, and once the buffer is full the Go
+  runtime drops further signals, including the Ctrl+Alt+Del this fix
+  exists to catch.
+
+- **Ctrl+Alt+Del did nothing at a recovery prompt.** With the panic
+  fixed, the key was caught but never acted on while slinit waited at
+  the boot-failure menu (`recovery.Present`, before the loop starts) or
+  the collapse menu (`recovery.PresentCollapse`, after it returns). In
+  both places the event loop is not running. The only way out was the
+  60s auto-reboot. Both prompts now reboot on a shutdown signal. A
+  single press reboots in about 2s, confirmed on real hardware.
+
+- **Rescue and emergency mode read their own empty service set as a
+  collapse.** `checkInactive` saw no running services, which is the
+  whole point of rescue mode, and ended the event loop the moment the
+  mode started. That closed the signal channel, which is the other
+  reason Ctrl+Alt+Del did nothing there.
+
+### Security
+
+- **`_COMM`, `_EXE` and `_CMDLINE` in the journal could be forged.**
+  The receiver was meant to trust only its own `/proc` snapshot of the
+  sender, never the sender's word. But it overwrote those fields only
+  when the snapshot succeeded. A sender that exited straight after
+  logging kept whatever values it had claimed, so any local user could
+  stamp log lines with any command name. The fields are now cleared
+  before the snapshot: an entry from a vanished sender has no command
+  attribution, rather than a forged one.
+
+### Added
+
+- **`tests/functional/cad-recovery-test.sh`**, a host-driven test. It
+  boots a VM whose boot service cannot load, waits for the recovery
+  menu, and presses the real key combination through QEMU's monitor
+  (`sendkey ctrl-alt-delete`), not a `kill(2)` imitating it. Pass means
+  the guest rebooted. Against a pre-fix build it reproduces the
+  reported panic exactly, down to `exitcode=0x00000200`. `run-tests.sh`
+  does not run it; run it explicitly.
+
+- **Guards against the signal fix regressing.** Functional case 225
+  checks that PID 1 keeps running after the signals it should survive
+  (USR1, HUP, PIPE, KILL, STOP). `TestShutdownSignalSet` pins the
+  signals it must claim instead: a signal dropped from that set gets
+  Go's fatal default back. The unit test is needed because a guest VM
+  cannot tell its own orderly reboot from its own panic.
+
+- **The rest of the nosystemd.org checklist:** `#2913` (a message from
+  a process that has already exited keeps its attribution, which is
+  how the Security item above was found), `#6237` (an account named
+  `0day` resolves by name, not as UID 0), and system-wide resource
+  limits (a malformed rlimit is a load error, not silently ignored).
+
+### Corrected
+
+- **`#2460` is not a slinit bug.** v2.3.5 listed it as open and implied
+  `slinitctl status` gets slower as the disk journal grows. It does
+  not. `status` asks PID 1 over the control socket and is answered from
+  the in-memory ring of at most 4096 events, whatever the size of the
+  journal on disk. The linear scan only runs when you read a journal
+  file explicitly, with `--file`, `--directory` or `-b` for a past
+  boot. The test now bounds that path, and its comment says so. Of the
+  checklist, only `#11810` (suspending twice) and `#72759` (ecryptfs
+  unmount on logout) remain. Both need hardware or setup the test VM
+  does not have.
+
+### Compat
+
+- Wire protocol, config surface, package manifests: unchanged.
+- Runtime deps: unchanged.
+- Journal entries from a sender that exited before its `/proc`
+  snapshot now have empty `_COMM`/`_EXE`/`_CMDLINE`, where they
+  previously kept the sender's claimed values.
+
 ## [2.3.5] — 2026-09-20
 
 A correctness release for `slinitctl start`, plus the first slice of a
