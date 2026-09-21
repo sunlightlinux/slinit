@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1361,12 +1362,14 @@ func main() {
 			bootDebugger.Stop()
 			bootDebugger = nil
 		}
+		stopSigWatch := rebootOnSignalWhileBlocked(logger)
 		action := recovery.Present(recovery.Options{
 			Errors: append([]string{
 				fmt.Sprintf("No service files found in %v", dirs),
 				fmt.Sprintf("(bootService=%q)", bootServices[0]),
 			}, loadErrors...),
 		})
+		stopSigWatch()
 		logger.Notice("Rescue menu chose: %s", action)
 		switch action {
 		case recovery.ActionRetry:
@@ -1463,6 +1466,9 @@ func main() {
 		} else if isPID1 {
 			loop.SetPID1Mode(true)
 		}
+		// Rescue/emergency loads no boot services, so the loop must not
+		// read an empty service set as a collapse.
+		loop.SetRescueMode(rescueMode)
 
 		// --emergency-timeout override. Zero passes through to the
 		// event loop's built-in default (90s); the setter handles the
@@ -1752,7 +1758,10 @@ func main() {
 		// pkg/recovery. Distinct action set — no "drop to shell"
 		// here; instead 's' restarts the boot sequence and 'e'
 		// starts the recovery service.
-		switch recovery.PresentCollapse(recovery.CollapseOptions{}) {
+		stopCollapseSigWatch := rebootOnSignalWhileBlocked(logger)
+		collapseAction := recovery.PresentCollapse(recovery.CollapseOptions{})
+		stopCollapseSigWatch()
+		switch collapseAction {
 		case recovery.CollapseReboot:
 			logger.Notice("User chose reboot")
 			closeWatchdog(wd, logger)
@@ -2039,6 +2048,36 @@ func mountLocalFsBestEffort(logger *logging.Logger) {
 // reach us: eventloop's shutdown reap sends the signal, cmd.Wait sees
 // the child gone via signal, and complaining about a signaled exit
 // during shutdown is noise.
+// rebootOnSignalWhileBlocked makes a shutdown signal work while main is
+// parked on an interactive recovery prompt.
+//
+// Both recovery menus run with the event loop stopped: the load-failure
+// one before Run ever starts, the collapse one after it has returned.
+// Nothing reads the signal channel in either window, so Ctrl+Alt+Del —
+// delivered as SIGINT once InitPID1 has disabled CAD — just queued and
+// did nothing. The operator was left with the 60s auto-reboot as the
+// only way out of a prompt they were staring at.
+//
+// This registers its own channel, so it neither steals from nor
+// interferes with the one the event loop uses. The returned function
+// unregisters it; call it as soon as the prompt returns.
+func rebootOnSignalWhileBlocked(logger *logging.Logger) func() {
+	ch := eventloop.SetupEarlySignals()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-ch:
+			logger.Notice("Received %v at recovery prompt, rebooting", sig)
+			shutdown.Execute(service.ShutdownReboot, logger)
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(ch)
+		close(done)
+	}
+}
+
 func runRescueShell(label string, logger *logging.Logger) {
 	candidates := []string{"/sbin/sulogin", "/bin/sulogin", "/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"}
 	var shell string

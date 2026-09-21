@@ -49,6 +49,11 @@ type EventLoop struct {
 	// Container mode: SIGINT/SIGTERM trigger graceful halt instead of reboot
 	isContainer bool
 
+	// Rescue/emergency mode. There are no boot services by design, so
+	// "nothing is running" is the expected steady state rather than a
+	// collapse — see checkInactive.
+	isRescue bool
+
 	// Channel for forcing event loop exit (emergency timeout)
 	forceExitCh chan struct{}
 
@@ -108,6 +113,12 @@ func (el *EventLoop) SetPID1Mode(v bool) {
 // - Boot failure detection (same as PID 1)
 func (el *EventLoop) SetContainerMode(v bool) {
 	el.isContainer = v
+}
+
+// SetRescueMode tells the loop it is supervising a rescue/emergency
+// boot, where no boot services are loaded at all.
+func (el *EventLoop) SetRescueMode(v bool) {
+	el.isRescue = v
 }
 
 // SetEmergencyTimeout overrides the shutdown emergency-timeout guard
@@ -219,6 +230,15 @@ func (el *EventLoop) checkInactive() bool {
 			el.OnAllStopped()
 		}
 		return true
+	}
+
+	// Rescue/emergency: an empty service set is the whole point of the
+	// mode, so this is not a collapse. Returning true here exited the
+	// loop the moment rescue mode started, which closed the signal
+	// channel via StopSignals — Ctrl+Alt+Del then did nothing at all,
+	// and the collapse prompt fought the rescue shell for /dev/console.
+	if el.isRescue {
+		return false
 	}
 
 	// Boot failure: all services stopped without explicit shutdown (PID 1 only)
