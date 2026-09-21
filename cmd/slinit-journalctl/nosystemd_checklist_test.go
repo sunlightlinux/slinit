@@ -116,20 +116,25 @@ func TestLimitLargerThanMatchCount_systemd1596(t *testing.T) {
 // lines should not cost anything like the size of the journal.
 // https://github.com/systemd/systemd/issues/2460
 //
-// slinit is honest about where it stands here: `slinitctl status`
-// shells out to `slinit-journalctl -u NAME -n 10`, and the file path is
-// a linear scan that keeps the last N. The cost therefore does grow
-// with journal size — the same shape as upstream — but the constant is
-// roughly 13 ms per megabyte, so a 50 MB journal costs about half a
-// second rather than ten. `pkg/journald/idx.go` has an index built for
-// exactly this (its IdxReader hands back an offset to seek the paired
-// JSONL with); slinit-journalctl does not use it yet.
+// `slinitctl status` does not have this bug, and not because of
+// anything in this file: it runs `slinit-journalctl -u NAME -n 10`
+// with no --file, which asks PID 1 over the control socket and is
+// answered from the in-memory ring (pkg/journal, DefaultBufferCap
+// events). That cost is bounded by the ring, whatever the size of the
+// journal on disk, and there is no fallback to reading files.
 //
-// This test is a ceiling, not an endorsement. It is set well above the
-// measured cost so it does not flake on a loaded CI box, and low enough
-// to catch a regression into upstream's territory — if someone makes
-// the tail read super-linear, or drops the early-trim so the whole
-// journal is held in memory, this fails.
+// What does grow with journal size is the explicit file path —
+// --file, --directory, and -b for a past boot — where readJSONLFile is
+// a linear scan keeping the last N, at roughly 13 ms per megabyte. An
+// operator asking to read a file gets a file read; the .idx companion
+// does not shortcut it, since IdxReader bisects by timestamp and "last
+// N entries of unit X" can be anywhere in the file.
+//
+// This test is a ceiling on that file path, not an endorsement. It is
+// set well above the measured cost so it does not flake on a loaded CI
+// box, and low enough to catch a regression into upstream's territory —
+// if someone makes the tail read super-linear, or drops the early-trim
+// so the whole journal is held in memory, this fails.
 func TestTailReadDoesNotDegradeToSystemdLatency_systemd2460(t *testing.T) {
 	if testing.Short() {
 		t.Skip("allocates a ~10 MB journal")

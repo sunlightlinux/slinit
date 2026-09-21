@@ -1,11 +1,10 @@
 #!/bin/sh
-# PID 1 must survive every signal a local root can send it.
+# PID 1 must not die from a signal a local root can send it.
 #
 # Not from the nosystemd list — this came out of the question "in
 # emergency mode, can a keypress kill PID 1 and panic the kernel?".
 #
-# The answer is no, by two separate mechanisms, and this test pins both
-# so a refactor cannot quietly remove either:
+# The answer is no, by two separate mechanisms:
 #
 #  1. The keyboard cannot reach PID 1 at all. runRescueShell starts the
 #     shell with Setsid+Setctty, so it owns /dev/console and its own
@@ -13,17 +12,27 @@
 #     and Ctrl-Z go there; PID 1 is in a different session entirely.
 #
 #  2. Signals sent explicitly ARE delivered — the kernel only drops the
-#     ones PID 1 has no handler for, and pkg/eventloop/signals.go
-#     registers TERM, INT, QUIT, HUP, USR1, USR2 and the systemd RT
-#     range. Each is a deliberate, orderly action rather than a death:
-#     INT reboots (this is the Ctrl-Alt-Del path, since InitPID1 calls
-#     LINUX_REBOOT_CMD_CAD_OFF so the kernel signals init instead of
-#     hard-rebooting), QUIT powers off, TERM shuts down.
+#     ones PID 1 has no handler for, and the Go runtime installs a
+#     handler for everything at startup, so that protection never
+#     applies to us. pkg/eventloop/signals.go therefore claims each one
+#     and gives it a deliberate meaning.
 #
-# The failure this guards against is a future change that drops a
-# signal from SetupSignals. An unregistered signal whose Go-runtime
-# default is fatal — SIGQUIT dumps goroutine stacks and exit(2)s —
-# would then kill PID 1, and exit(2) as PID 1 is a kernel panic.
+# This case covers the half of that set whose deliberate meaning is
+# "keep running": SIGUSR1 reopens the control socket, SIGHUP is noted
+# and ignored, SIGPIPE was never a shutdown trigger, and SIGKILL/SIGSTOP
+# the kernel refuses outright for PID 1.
+#
+# The other half — TERM, INT, QUIT, USR2 — deliberately bring the system
+# down (loop.go:280-345), so "did PID 1 survive" is the wrong question
+# to ask of them and sending one here just reboots the VM mid-suite.
+# They are covered where the distinction is actually observable:
+#   - that they stay claimed at all: TestShutdownSignalSet in
+#     pkg/eventloop, which is what catches a refactor dropping one
+#     (an unclaimed SIGQUIT means Go's fatal default, and exit(2) as
+#     PID 1 is a kernel panic);
+#   - that they work from the keyboard, including at a recovery prompt:
+#     tests/functional/cad-recovery-test.sh, driven from the host
+#     because the guest cannot watch its own reboot.
 #
 # Each signal is announced before it is sent, so if the VM does die the
 # console log names the culprit rather than just timing out.
@@ -42,24 +51,20 @@ _survives() {
     fi
 }
 
-# Every registered shutdown signal. Each initiates an orderly shutdown
-# rather than killing PID 1; the service graph check at the end proves
-# the loop is still supervising afterwards.
-_survives TERM
-_survives INT
-_survives HUP
+# Claimed, and handled as a no-op or a side effect rather than a
+# shutdown. SIGUSR1 reopens the control socket, which the probe's own
+# `slinitctl list` then proves is still serving.
 _survives USR1
-_survives USR2
+_survives HUP
+
+# Never a shutdown trigger. Go ignores a SIGPIPE that did not come from
+# a write to fd 1 or 2, so an explicit kill -PIPE must be inert.
 _survives PIPE
 
 # SIGKILL and SIGSTOP cannot be sent to PID 1 at all — the kernel
 # refuses them outright rather than merely ignoring them.
 _survives KILL
-
-# SIGQUIT is the one with a fatal Go-runtime default, so it is the
-# canary: if SetupSignals ever stops registering it, this is where the
-# VM dies.
-_survives QUIT
+_survives STOP
 
 # Still healthy afterwards: not just alive, but supervising.
 out=$(slinitctl list 2>&1)

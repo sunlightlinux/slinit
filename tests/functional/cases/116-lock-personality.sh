@@ -22,10 +22,11 @@ assert_service_state "$SVC" "STARTED" "service reached STARTED"
 # seccomp filter is installed just before the runner exec's the real
 # command, so /proc/PID/status can briefly show Seccomp=0 in the
 # window between fork and runner's Install() call. Poll the field
-# for up to 2s to let the runner catch up on slow VMs.
+# for up to 5s to let the runner catch up on slow VMs — 2s passed in
+# isolation but missed once mid-suite (2026-09-21), under full load.
 _pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ { print $2; exit }')
 _seccomp=0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 1 25); do
     _seccomp=$(awk '/^Seccomp:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
     [ "$_seccomp" = "2" ] && break
     sleep 0.2
