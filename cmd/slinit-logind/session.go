@@ -399,6 +399,9 @@ func (m *manager) CreateSession(
 			m.registerUserObject(userRec)
 		}
 	}
+	// seat0's Sessions list grows, and ActiveSession moves if the new
+	// session is already on the foreground VT.
+	m.refreshActiveLocked()
 
 	// Reap the session when its leader dies. pam_close_session calls
 	// ReleaseSession on a clean logout, but a crashed greeter or a
@@ -462,8 +465,9 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 	releaseControl(id)
 	// The user and seat records list sessions, so removing one has to
 	// rewrite them — otherwise sd_uid_get_sessions() keeps handing out
-	// a session id whose files are already gone.
-	rewriteCompatAggregates()
+	// a session id whose files are already gone. Same for the seat's
+	// D-Bus Sessions / ActiveSession.
+	m.refreshActiveLocked()
 	return nil
 }
 
@@ -571,6 +575,19 @@ func compatSeatFile(id string) string { return "/run/systemd/seats/" + id }
 // created idempotently so a fresh boot doesn't need a separate
 // tmpfiles run for /run/systemd/.
 func writeCompatSession(rec SessionRecord) error {
+	if err := writeCompatSessionFile(rec); err != nil {
+		return err
+	}
+	// The per-user and per-seat records are aggregates over every live
+	// session, so they can't be derived from the one being created.
+	rewriteCompatAggregates()
+	return nil
+}
+
+// writeCompatSessionFile renders the one session's record. Split out so
+// a VT switch can rewrite ACTIVE/STATE for every session and then build
+// the aggregates once.
+func writeCompatSessionFile(rec SessionRecord) error {
 	_ = os.MkdirAll("/run/systemd/sessions", 0755)
 	_ = os.MkdirAll("/run/systemd/users", 0755)
 	_ = os.MkdirAll("/run/systemd/seats", 0755)
@@ -578,8 +595,8 @@ func writeCompatSession(rec SessionRecord) error {
 	fmt.Fprintf(&b, "# This is private data. Do not parse.\n")
 	fmt.Fprintf(&b, "UID=%d\n", rec.UserID)
 	fmt.Fprintf(&b, "USER=%s\n", rec.UserName)
-	fmt.Fprintf(&b, "ACTIVE=1\n")
-	fmt.Fprintf(&b, "STATE=active\n")
+	fmt.Fprintf(&b, "ACTIVE=%d\n", boolInt(sessionIsActive(rec)))
+	fmt.Fprintf(&b, "STATE=%s\n", sessionState(rec))
 	fmt.Fprintf(&b, "REMOTE=%d\n", boolInt(rec.Remote))
 	if rec.SeatID != "" {
 		fmt.Fprintf(&b, "SEAT=%s\n", rec.SeatID)
@@ -600,16 +617,16 @@ func writeCompatSession(rec SessionRecord) error {
 		fmt.Fprintf(&b, "DESKTOP=%s\n", rec.Desktop)
 	}
 	fmt.Fprintf(&b, "LEADER=%d\n", rec.LeaderPID)
-	fmt.Fprintf(&b, "REALTIME=%d\n", time.Now().Unix())
+	// The creation time, not the write time: this file is rewritten on
+	// every VT switch now, and the session did not start at each one.
+	created := time.Now()
+	if t, err := time.Parse(time.RFC3339, rec.CreatedAt); err == nil {
+		created = t
+	}
+	fmt.Fprintf(&b, "REALTIME=%d\n", created.Unix())
 	fmt.Fprintf(&b, "MONOTONIC=%d\n", 0)
 
-	if err := os.WriteFile(compatSessionFile(rec.ID), []byte(b.String()), 0644); err != nil {
-		return err
-	}
-	// The per-user and per-seat records are aggregates over every live
-	// session, so they can't be derived from the one being created.
-	rewriteCompatAggregates()
-	return nil
+	return os.WriteFile(compatSessionFile(rec.ID), []byte(b.String()), 0644)
 }
 
 // loadSessionRecords reads every live session record off disk. The
@@ -647,9 +664,9 @@ func loadSessionRecords() []SessionRecord {
 // started answering "no" the moment the first session was created.
 // Everything is rewritten together here, from one source of truth.
 //
-// We report every session as active: without VT-activity tracking
-// there is no basis to call one session foreground and another not,
-// and the per-session records already say ACTIVE=1.
+// Activity comes from the foreground VT (vt.go): ACTIVE_SESSIONS and the
+// seat's ACTIVE= list only the session on it, while SESSIONS and
+// ONLINE_SESSIONS keep listing everything.
 func rewriteCompatAggregates() {
 	_ = os.MkdirAll("/run/systemd/users", 0755)
 	_ = os.MkdirAll("/run/systemd/seats", 0755)
@@ -666,10 +683,13 @@ func rewriteCompatAggregates() {
 	}
 
 	for uid, recs := range byUID {
-		var ids, seats []string
+		var ids, activeIDs, seats []string
 		display := ""
 		for _, r := range recs {
 			ids = append(ids, r.ID)
+			if sessionIsActive(r) {
+				activeIDs = append(activeIDs, r.ID)
+			}
 			if r.SeatID != "" {
 				seats = append(seats, r.SeatID)
 			}
@@ -684,14 +704,18 @@ func rewriteCompatAggregates() {
 		var u strings.Builder
 		fmt.Fprintf(&u, "# This is private data. Do not parse.\n")
 		fmt.Fprintf(&u, "NAME=%s\n", recs[0].UserName)
-		fmt.Fprintf(&u, "STATE=active\n")
+		if len(activeIDs) > 0 {
+			fmt.Fprintf(&u, "STATE=active\n")
+		} else {
+			fmt.Fprintf(&u, "STATE=online\n")
+		}
 		fmt.Fprintf(&u, "STOPPING=no\n")
 		fmt.Fprintf(&u, "RUNTIME=%s\n", recs[0].RuntimePath)
 		if display != "" {
 			fmt.Fprintf(&u, "DISPLAY=%s\n", display)
 		}
 		fmt.Fprintf(&u, "SESSIONS=%s\n", strings.Join(ids, " "))
-		fmt.Fprintf(&u, "ACTIVE_SESSIONS=%s\n", strings.Join(ids, " "))
+		fmt.Fprintf(&u, "ACTIVE_SESSIONS=%s\n", strings.Join(activeIDs, " "))
 		fmt.Fprintf(&u, "ONLINE_SESSIONS=%s\n", strings.Join(ids, " "))
 		fmt.Fprintf(&u, "SEATS=%s\n", strings.Join(seats, " "))
 		fmt.Fprintf(&u, "ACTIVE_SEATS=%s\n", strings.Join(seats, " "))
@@ -719,11 +743,12 @@ func writeCompatSeat(id string, sessions []SessionRecord) {
 	fmt.Fprintf(&s, "CAN_TTY=1\n")
 	fmt.Fprintf(&s, "CAN_GRAPHICAL=1\n")
 	if len(sessions) > 0 {
-		// Newest session is the foreground one — sessions arrive in
-		// id order from loadSessionRecords.
-		active := sessions[len(sessions)-1]
-		fmt.Fprintf(&s, "ACTIVE=%s\n", active.ID)
-		fmt.Fprintf(&s, "ACTIVE_UID=%d\n", active.UserID)
+		// The session on the foreground VT; none when that VT has no
+		// session (a bare text console), as in elogind.
+		if active, ok := activeSessionOnSeat(sessions, id); ok {
+			fmt.Fprintf(&s, "ACTIVE=%s\n", active.ID)
+			fmt.Fprintf(&s, "ACTIVE_UID=%d\n", active.UserID)
+		}
 
 		ids := make([]string, 0, len(sessions))
 		uids := make([]string, 0, len(sessions))
@@ -764,29 +789,35 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// ActivateSession — sets a session as foreground. Phase B has no
-// seat/VT switching; this is a no-op stub that answers "success" so
-// clients don't error. Real VT_ACTIVATE lands with seat detection in
-// Phase C.
+// ActivateSession brings a session to the foreground by switching to
+// its VT. Its Active property then follows from the switch, through
+// watchActiveVT — the method does not set it directly, so a switch that
+// the kernel refuses cannot leave a session claiming to be in front.
+//
+// This is what GDM calls when a user session ends and it re-uses the
+// running greeter, via ActivateSessionOnSeat. It used to be a no-op.
 func (m *manager) ActivateSession(id string) *dbus.Error {
-	if !sessionExistsLocked(id) {
+	var rec SessionRecord
+	if !readJSON(sessionFile(id), &rec) {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
 			[]interface{}{id})
 	}
-	return nil
+	return activateSession(rec)
 }
 
-// ActivateSessionOnSeat, LockSession, UnlockSession, LockSessions,
-// UnlockSessions — stubs that answer success once we've verified the
-// session exists. Real lock semantics need a signal to the compositor
-// (systemd sends `Lock`/`Unlock` D-Bus signals on the session
-// object); Phase B silences them.
+// ActivateSessionOnSeat is ActivateSession with the seat checked, as in
+// elogind: activating a session through a seat it is not on is refused.
 func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
-	if !sessionExistsLocked(id) {
+	var rec SessionRecord
+	if !readJSON(sessionFile(id), &rec) {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
 			[]interface{}{id})
 	}
-	return nil
+	if seat != "" && rec.SeatID != seat {
+		return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs",
+			[]interface{}{fmt.Sprintf("session %s is not on seat %s", id, seat)})
+	}
+	return activateSession(rec)
 }
 // LockSession / UnlockSession emit the Lock / Unlock signal on the
 // session's object. The signal is the whole point of these methods —

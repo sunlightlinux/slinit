@@ -121,6 +121,10 @@ type manager struct {
 	// PropertiesChanged. Guarded by mu like the rest of the struct.
 	sessionProps map[string]*prop.Properties
 
+	// seatProps is the same for seats: ActiveSession and Sessions move
+	// with every session change and VT switch (see vt.go).
+	seatProps map[string]*prop.Properties
+
 	// debug mirrors the --debug flag. Session setup is the one place
 	// where a post-mortem is useless: the gdm/gnome fork chain we are
 	// trying to place in a cgroup is gone within a second of the
@@ -755,6 +759,11 @@ func main() {
 	// treat the daemon as absent and fall back into degraded modes
 	// (broken menus, missing power controls, etc.).
 	m.registerManagerIntrospection()
+	// Read the foreground VT before exporting anything, so sessions and
+	// seat0 are born with the right Active / ActiveSession values.
+	if vt, ok := readActiveVT(); ok {
+		currentVT.Store(vt)
+	}
 	// Re-register per-object exports for any sessions that persisted
 	// across a slinit-logind restart. Without this loginctl show-session
 	// would 404 on the object path for sessions that PAM created before
@@ -767,6 +776,9 @@ func main() {
 	// Ensure the always-on seat0 object exists so `loginctl seat-status`
 	// works out of the box.
 	m.ensureSeat("seat0")
+	// Session activity follows the foreground VT from here on. Started
+	// after ensureSeat so the first refresh has a seat to update.
+	go m.watchActiveVT()
 	// The self/auto session paths. gnome-shell's greeter has no
 	// XDG_SESSION_ID and reaches for .../session/auto to find itself.
 	m.registerSessionAliases()

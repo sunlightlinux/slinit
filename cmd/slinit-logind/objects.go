@@ -171,8 +171,8 @@ func sessionPropValues(rec SessionRecord) map[string]any {
 		"Audit":                  uint32(0),
 		"Type":                   rec.Type,
 		"Class":                  rec.Class,
-		"Active":                 true,
-		"State":                  "active",
+		"Active":                 sessionIsActive(rec),
+		"State":                  sessionState(rec),
 		"IdleHint":               false,
 		"IdleSinceHint":          uint64(0),
 		"IdleSinceHintMonotonic": uint64(0),
@@ -359,10 +359,14 @@ func (m *manager) ensureSeat(id string) {
 	so := &seatObject{m: m, id: id}
 	path := seatPath(id)
 
+	active := seatActiveTuple("")
+	if rec, ok := activeSessionOnSeat(loadSessionRecords(), id); ok {
+		active = seatActiveTuple(rec.ID)
+	}
 	propsSpec := map[string]map[string]*prop.Prop{
 		seatIface: {
 			"Id":            {Value: id, Emit: prop.EmitConst},
-			"ActiveSession": {Value: seatActiveTuple(""), Emit: prop.EmitTrue},
+			"ActiveSession": {Value: active, Emit: prop.EmitTrue},
 			"CanTTY":        {Value: true, Emit: prop.EmitConst},
 			"CanGraphical":  {Value: true, Emit: prop.EmitConst},
 			"Sessions":      {Value: m.seatSessions(id), Emit: prop.EmitTrue},
@@ -373,6 +377,14 @@ func (m *manager) ensureSeat(id string) {
 	if err != nil {
 		return
 	}
+	// Kept so refreshSeatProps can move ActiveSession / Sessions as
+	// sessions come, go and switch VTs.
+	m.mu.Lock()
+	if m.seatProps == nil {
+		m.seatProps = map[string]*prop.Properties{}
+	}
+	m.seatProps[id] = props
+	m.mu.Unlock()
 	m.exportPropsWrapper(path, props, seatIface)
 	_ = m.conn.Export(so, path, seatIface)
 
@@ -634,7 +646,10 @@ func (s *seatObject) Terminate() *dbus.Error {
 	return nil
 }
 func (s *seatObject) SwitchTo(vtnr uint32) *dbus.Error {
-	// VT_ACTIVATE lands in Phase C+.
+	if err := activateVT(vtnr); err != nil {
+		return dbus.NewError("org.freedesktop.DBus.Error.Failed",
+			[]any{fmt.Sprintf("switch to VT %d: %v", vtnr, err)})
+	}
 	return nil
 }
 func (s *seatObject) SwitchToNext() *dbus.Error     { return nil }
