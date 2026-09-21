@@ -246,10 +246,19 @@ func stampFromSCM(evt *journal.Event, oob []byte) {
 
 // snapshotProc reads /proc/<pid>/{comm,exe,cmdline} into the trusted
 // _comm/_exe/_cmdline fields. Failures (process already gone, race
-// with SIGKILL) silently leave the field empty rather than falling
-// back to whatever the client claimed — trust the /proc snapshot or
-// nothing, never the client's word.
+// with SIGKILL) leave the field empty rather than falling back to
+// whatever the client claimed — trust the /proc snapshot or nothing,
+// never the client's word.
+//
+// The fields are cleared first, which is the whole of that guarantee.
+// Overwriting only on a successful read left the client's value in
+// place whenever /proc was already gone, and a sender can arrange that
+// simply by exiting right after emitting: a local user could then
+// stamp any _comm/_exe they liked onto a log line. Clearing up front
+// turns a forgeable field into a missing one.
 func snapshotProc(evt *journal.Event) {
+	evt.Comm, evt.Exe, evt.Cmdline = "", "", ""
+
 	pidStr := fmt.Sprintf("%d", evt.Pid)
 	if b, err := os.ReadFile("/proc/" + pidStr + "/comm"); err == nil {
 		evt.Comm = strings.TrimRight(string(b), "\n")
