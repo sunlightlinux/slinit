@@ -41,3 +41,10 @@ which is how they would ship in a real deployment.
 | k04-restart-policy | with `restartPolicy: Always` the kubelet restarts the container and records the workload's exit code |
 | k05-probes | a readiness probe driven by `slinitctl status` holds the pod un-Ready until the service is up; liveness keeps passing |
 | k06-grace-period | a SIGTERM-ignoring service is killed by slinit after its stop-timeout, not by the kubelet at the end of the grace period |
+| k07-nginx-workload | nginx under slinit answers the kubelet's httpGet readiness probe and a second Pod's requests through a Service, with its access log in `kubectl logs` |
+
+k07 needs the `nginx:1.27-alpine` base image and skips itself when it
+cannot be fetched. It also shows the recipe for an application's own
+logs: slinit discards a service's output by default, and
+`options = runs-on-console` sends it to the container's log stream. See
+[../container/README.md](../container/README.md).
