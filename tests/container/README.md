@@ -56,6 +56,7 @@ contract these cases pin, but nothing here starts one.
 | 18-pids-limit | PID 1 survives `--pids-limit` exhaustion and still stops cleanly |
 | 19-process-tree-cleanup | stopping a service takes its background children and grandchildren with it |
 | 20-sighup-noop | SIGHUP is claimed but acted on by nobody |
+| 21-nginx-workload | nginx under slinit serving real HTTP through a published port, its access log visible in the container log, stopped on command |
 
 `soak.sh` runs the lifecycle over and over against a tree with a
 worker, an orphan generator and a SIGTERM-ignoring service. It rotates
@@ -64,6 +65,26 @@ fails on a 10s readiness timeout, a non-zero exit, a runtime SIGKILL
 (137), or a stop slower than `STOP_BUDGET_MS` (5000). It prints
 p50/p95/max for readiness and stop time, and keeps the logs of failed
 cycles in `_build/soak/`.
+
+## Getting an application's own logs out of a container
+
+slinit discards a service's output unless told otherwise: the default
+`log-type` is `none`, as it is in dinit. In a container that surprises,
+because images log to stdout and expect the runtime to collect it —
+nginx's access log is a symlink to `/dev/stdout`, and it ended up in
+`/dev/null`.
+
+Give the service slinit's own stdout:
+
+```
+options = runs-on-console
+```
+
+There is no `/dev/console` in a container without a tty, so the service
+falls back to slinit's stdout, which is the runtime's log stream. Case
+21 pins this. `logfile = /dev/stdout` does not work — opening it fails
+with ELOOP — and `log-type = buffer` keeps the output inside the
+container, readable with `slinitctl catlog`.
 
 ## Bugs this suite found
 

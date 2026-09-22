@@ -244,7 +244,10 @@ format to accommodate them.
 - **Shutdown**: orderly service stop, shutdown hooks, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec/softreboot
 - **Soft-reboot**: restart slinit without rebooting the kernel (with shutdown hooks)
 - **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
-- **Container mode**: `-o`/`--container` for Docker/LXC/Podman (SIGINT/SIGTERM → graceful halt)
+- **Container mode**: `-o`/`--container` for Docker/LXC/Podman (SIGINT/SIGTERM → graceful halt).
+  A service's output is discarded by default (`log-type = none`, as in dinit);
+  add `options = runs-on-console` to send it to the container's log stream.
+  See [tests/container/README.md](tests/container/README.md).
 - **Boot failure recovery**: interactive prompt or auto-recovery (`-r`) when all services stop without shutdown
 - **Multiple boot services**: `-t svc1 -t svc2` or positional args to start multiple services at boot
 - **Pass control socket**: `pass-cs-fd` passes a control connection fd to child processes
