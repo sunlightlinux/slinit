@@ -17,6 +17,29 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`docker logs` went silent once boot finished.** slinit mutes the
+  catch-all's console tee when the boot target comes up: on real
+  hardware that console is a serial line it shares with getty, and
+  `/run/slinit/catch-all.log` keeps the full record. A container has
+  neither — the console is the runtime's log stream, and the file dies
+  with the container — so everything after boot went nowhere an
+  operator could reach. A service crash-looping to its restart limit
+  produced no output at all, and neither did the boot failure that
+  ended the container. The tee is no longer muted in container mode.
+
+### Added
+
+- **Ten more container cases (11-20).** Shutdown requested from inside
+  with each type (`halt`, `poweroff`, `reboot`, `softreboot`), restart
+  after an external SIGKILL, the container ending when nothing keeps the
+  boot target up, post-boot log visibility, slinit as PID 2 under
+  `docker run --init`, `docker pause`/`unpause`, a service hitting
+  `--memory` without taking the container with it, PID 1 surviving
+  `--pids-limit` exhaustion, process-tree cleanup on stop, and SIGHUP
+  as a no-op.
+
 ## [2.3.7] — 2026-09-22
 
 A container-mode release, and the first to ship a written stability

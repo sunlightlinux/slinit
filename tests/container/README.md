@@ -46,6 +46,16 @@ contract these cases pin, but nothing here starts one.
 | 08-escalation | a third SIGTERM forces the exit (acceptance 69, as real PID 1) |
 | 09-control-socket | `docker exec … slinitctl start/stop/restart` work, with exit codes |
 | 10-read-only-rootfs | boots and stops with only `/run` and `/tmp` writable |
+| 11-shutdown-from-inside | `slinitctl shutdown halt/poweroff/reboot/softreboot` each exit 0 with their halt code |
+| 12-restart-after-kill | a `restart = yes` service killed from outside comes back; the container stays up |
+| 13-boot-target-lost | when nothing keeps the boot target up, the container ends with the reason logged |
+| 14-runtime-log-visibility | `docker logs` keeps receiving events after boot, not only during it |
+| 15-not-pid1 | works as PID 2 under `docker run --init` |
+| 16-pause-unpause | survives `docker pause` without restarting services or wrong timeouts |
+| 17-memory-limit | a service that hits `--memory` dies alone: slinit and the other services stay up |
+| 18-pids-limit | PID 1 survives `--pids-limit` exhaustion and still stops cleanly |
+| 19-process-tree-cleanup | stopping a service takes its background children and grandchildren with it |
+| 20-sighup-noop | SIGHUP is claimed but acted on by nobody |
 
 `soak.sh` runs the lifecycle over and over against a tree with a
 worker, an orphan generator and a SIGTERM-ignoring service. It rotates
@@ -55,7 +65,7 @@ fails on a 10s readiness timeout, a non-zero exit, a runtime SIGKILL
 p50/p95/max for readiness and stop time, and keeps the logs of failed
 cycles in `_build/soak/`.
 
-## Bugs this suite found on its first run
+## Bugs this suite found
 
 - **An instantly-exiting boot service hung slinit forever.** The service
   set created its inactive-notification channel lazily, when the event
@@ -68,3 +78,10 @@ cycles in `_build/soak/`.
   `Stop()`, so whatever was still in the catch-all pipe never reached
   the console. A container with a missing service exited 1 with nothing
   in `docker logs` but startup warnings. Case 04 checks for the reason.
+- **`docker logs` went silent once boot finished.** slinit mutes the
+  catch-all's console tee at boot-ready, because on real hardware that
+  console is a serial line shared with getty. A container has neither,
+  and `/run/slinit/catch-all.log` dies with the container, so everything
+  after boot — a crash loop, a restart limit, the reason for an exit —
+  was written nowhere an operator could reach. Not muted in container
+  mode any more. Regression test: case 14, which fails on the old code.

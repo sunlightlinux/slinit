@@ -940,7 +940,15 @@ func main() {
 			// interactive tty for terminal echo. File tee keeps the
 			// full log in /run/slinit/catch-all.log for post-hoc
 			// inspection.
-			if cal != nil {
+			//
+			// Not in container mode: there the console is the
+			// runtime's log stream (`docker logs`) and the only way
+			// to see anything, with no getty or serial line to
+			// protect. Muting it made slinit silent from boot-ready
+			// onwards — a service crash-looping to its restart limit
+			// produced no output at all, and /run/slinit/catch-all.log
+			// goes away with the container.
+			if cal != nil && !containerMode {
 				cal.SetConsoleMuted(true)
 			}
 			hooks.Run("system-up", logger)
