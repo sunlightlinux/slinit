@@ -243,7 +243,15 @@ func (el *EventLoop) checkInactive() bool {
 
 	// Boot failure: all services stopped without explicit shutdown (PID 1 only)
 	if el.isPID1 {
-		el.logger.Error("All services stopped without shutdown — boot failure")
+		// In a container this is also how a finished workload looks —
+		// the job ran, exited, and left nothing active. main decides
+		// which it was and logs that; calling it a failure here
+		// contradicted the "workload finished" line that followed.
+		if el.isContainer {
+			el.logger.Info("All services stopped, exiting")
+		} else {
+			el.logger.Error("All services stopped without shutdown — boot failure")
+		}
 		return true
 	}
 

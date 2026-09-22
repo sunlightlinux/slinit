@@ -19,8 +19,11 @@ func TestBootConsoleStatusLines(t *testing.T) {
 	l.ServiceFailed("sshd", false)
 	l.ServiceStopped("dbus")
 
+	// A stop renders as "[STOPPD]" whether or not the system is shutting
+	// down. It used to be "[ OK ]" outside shutdown, which announced
+	// success for a service that had just crashed.
 	got := buf.String()
-	want := "[ OK ] udevd\n[FAIL] sshd\n[ OK ] dbus\n"
+	want := "[ OK ] udevd\n[FAIL] sshd\n[STOPPD] dbus\n"
 	if got != want {
 		t.Errorf("boot console output:\n got %q\nwant %q", got, want)
 	}

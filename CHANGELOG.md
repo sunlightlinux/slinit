@@ -19,6 +19,24 @@ the full commit-level record.
 
 ### Fixed
 
+- **Three things wrong with what a container's log said.** Reading a
+  failing pod's output showed all of them at once:
+  - **ANSI colour was emitted even when the output is not a terminal.**
+    Colour depended on `NO_COLOR` alone. A container's stdout is the
+    runtime's log stream, so the escape sequences were noise, and
+    viewers that strip them partially rendered `[ OK ]` as `[ OK []`.
+    Colour is now decided by whether the output is a terminal, checked
+    before the catch-all logger redirects stdout (asking later always
+    answers "no").
+  - **A service that died printed `[ OK ]`.** Outside shutdown, a stop
+    event rendered with the success marker, so a crash produced an ERROR
+    line about the exit code followed by `[ OK ] name`. Stops now render
+    as `[STOPPD] name` whether or not the system is shutting down.
+  - **The exit reason contradicted itself.** The event loop called every
+    "all services stopped" a boot failure, which the container path then
+    followed with "workload finished". In container mode the loop now
+    reports the fact and lets the container path say what it meant.
+
 - **A workload that succeeded made the container exit 1.** With the boot
   service as the workload, slinit took its exit code — unless that code
   was 0, in which case "all services stopped without a shutdown" was

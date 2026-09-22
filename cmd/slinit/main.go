@@ -92,6 +92,13 @@ func main() {
 	// this channel and are acted on as soon as it turns.
 	earlySignals := eventloop.SetupEarlySignals()
 
+	// Whether our output is a terminal, decided here because the
+	// catch-all logger later points fd 1 at a pipe: asking afterwards
+	// always answers "no". Drives the ANSI colour in the boot console —
+	// a container's stdout is the runtime's log stream, where the escape
+	// sequences are noise that some viewers render as "[ OK []".
+	stdoutIsTTY := isTerminal(os.Stdout.Fd())
+
 	// Parse command-line flags
 	var (
 		serviceDirs     string
@@ -423,7 +430,7 @@ func main() {
 
 	logger := logging.New(consLevel)
 	logger.SetMainLevel(mainLogLevel)
-	logger.SetBootConsole(bootConsole, !noColor())
+	logger.SetBootConsole(bootConsole, stdoutIsTTY && !noColor())
 	if tf, err := logging.ParseTimestampFormat(timestampFormat); err == nil {
 		logging.SetTimestampFormat(tf)
 	} else {
@@ -2162,6 +2169,13 @@ func runRescueShell(label string, logger *logging.Logger) {
 func noColor() bool {
 	_, set := os.LookupEnv("NO_COLOR")
 	return set
+}
+
+// isTerminal reports whether fd refers to a terminal, by asking for its
+// terminal attributes: the ioctl only succeeds on a tty.
+func isTerminal(fd uintptr) bool {
+	_, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
+	return err == nil
 }
 
 func parseLogLevel(s string) logging.Level {

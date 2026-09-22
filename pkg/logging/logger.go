@@ -400,16 +400,17 @@ func (l *Logger) ServiceStarted(name string) {
 	l.log(LevelInfo, "Service '%s' started", name)
 }
 
-// ServiceStopped logs a service stop event. During shutdown the boot console
-// renders it as "[STOPPD] name"; otherwise (a stop during normal runtime) it
-// stays "[ OK ] name".
+// ServiceStopped logs a service stop event. The boot console renders it as
+// "[STOPPD] name".
+//
+// It used to render as "[ OK ] name" outside shutdown, which read as
+// success for a service that had just died: a crashed process produced
+// an ERROR line about its exit code followed by "[ OK ] name". "Stopped"
+// is what happened either way; whether it was wanted is the business of
+// the surrounding log lines.
 func (l *Logger) ServiceStopped(name string) {
 	if l.bootConsole {
-		if l.shuttingDown {
-			l.bootStatus(l.markerStopped(), name)
-		} else {
-			l.bootStatus(l.markerOK(), name)
-		}
+		l.bootStatus(l.markerStopped(), name)
 		l.mainLog(LevelInfo, "Service '%s' stopped", name)
 		return
 	}
