@@ -8,3 +8,8 @@
 /slinitctl
 /slinitctl-*
 /rc-*
+
+# Core dumps: slinit sends SIGABRT on the watchdog / timeout-abort
+# paths, so a crashed test child can drop one in the package dir.
+core
+core.[0-9]*

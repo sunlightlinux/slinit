@@ -120,8 +120,11 @@ func TestCPUsAndMemoryAcceptOps(t *testing.T) {
 		}
 	}
 	// Memory: >0 always true on a live host; malformed unit errors.
-	if ok, _ := checkMemory(">= 1"); !ok {
-		t.Error("checkMemory(>=1) should be true on any host with memory")
+	// The reason is reported, not discarded: this assertion compares
+	// against MemTotal, which cannot change, so a failure means the
+	// read itself failed and only the reason says why.
+	if ok, why := checkMemory(">= 1"); !ok {
+		t.Errorf("checkMemory(>=1) should be true on any host with memory: %s", why)
 	}
 	if ok, _ := checkMemory(">= 999T"); ok {
 		t.Error("checkMemory(>=999T) should be false on any real host")
