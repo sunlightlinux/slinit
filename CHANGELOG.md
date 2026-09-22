@@ -17,6 +17,20 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.7] — 2026-09-22
+
+A container-mode release, and the first to ship a written stability
+commitment ([STABILITY.md](STABILITY.md)). **Upgrade if you run slinit in
+containers:** a workload that exits immediately left `slinit -o` running
+forever, and a container that failed to start gave no reason in
+`docker logs`. No wire protocol change, no config surface change, no
+upgrade action.
+
+Verified with the new `tests/container/` suite on Docker 29.7: 10/10
+cases, and a 200-cycle spawn/shutdown soak with no failures and no
+runtime SIGKILLs (ready p50 403ms / max 591ms, stop p50 1219ms / max
+1290ms, stop time dominated by a deliberate 1s stop-timeout).
+
 ### Fixed
 
 - **A boot service that exited instantly left slinit waiting forever.**
@@ -75,6 +89,21 @@ the full commit-level record.
   records two earlier deviations. v2.3.5 changed `slinitctl start` in a
   patch release. The v2.3.0 entry below says an older parser silently
   skips an unknown directive, but it has always been a load error.
+
+### Compat
+
+- Wire protocol, config surface, package manifests: unchanged.
+- Runtime deps: unchanged.
+- **The boot debugger (Ctrl-B at boot) no longer runs in container
+  mode**, including under `docker run -t`. Under STABILITY.md's rules
+  this is a fix, not a removal: without a tty it could not start, and
+  with one its reboot and poweroff actions took the bare-metal shutdown
+  path, so the container's exit code was never written.
+- **`slinit-logind` sessions on a background VT now report
+  `Active=no`, `State=online`**, and `ACTIVE_SESSIONS` in
+  `/run/systemd/users/*` lists only foreground sessions. elogind has
+  always behaved this way. Sessions without a seat (ssh) and seat0
+  sessions without a VT number stay active, as before.
 
 ## [2.3.6] — 2026-09-21
 
