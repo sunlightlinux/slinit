@@ -430,6 +430,7 @@ func main() {
 
 	logger := logging.New(consLevel)
 	logger.SetMainLevel(mainLogLevel)
+	logger.SetConsoleIsTTY(stdoutIsTTY)
 	logger.SetBootConsole(bootConsole, stdoutIsTTY && !noColor())
 	if tf, err := logging.ParseTimestampFormat(timestampFormat); err == nil {
 		logging.SetTimestampFormat(tf)
@@ -476,6 +477,13 @@ func main() {
 		}
 	}
 	hostname, _ := os.Hostname()
+	// A container image without /etc/machine-id is the normal case, not
+	// something to complain about on every start: the identity belongs
+	// to the runtime, and there is no reboot for it to stay stable
+	// across. Mount one in if the journal's machine ID has to persist.
+	if containerMode {
+		journal.SetTransientIDWarning(false)
+	}
 	if err := journal.InitIDs(hostname); err != nil {
 		logger.Warn("Journal ID init failed: %v (events will still work with transient IDs)", err)
 	}

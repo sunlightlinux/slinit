@@ -155,6 +155,13 @@ type Logger struct {
 	// color enables ANSI color in the boot-console status markers.
 	color bool
 
+	// consoleIsTTY says whether the console can act on cursor control.
+	// Only the clear-line sequence at the start of shutdown depends on
+	// it: written into a pipe (a container's log stream) it is junk,
+	// and it is not covered by NO_COLOR, which is about colour.
+	// Defaults to true so a caller that never sets it behaves as before.
+	consoleIsTTY bool
+
 	// shuttingDown, when set, makes the boot console render service stop
 	// events as "[STOPPD] name" (the teardown look) instead of "[ OK ] name".
 	// Flipped on once when shutdown begins, via SetShutdownConsole.
@@ -175,7 +182,7 @@ const (
 
 // New creates a new Logger with the specified minimum level.
 func New(level Level) *Logger {
-	return &Logger{level: level, output: os.Stderr, mainLevel: level}
+	return &Logger{level: level, output: os.Stderr, mainLevel: level, consoleIsTTY: true}
 }
 
 // SetRingBuffer attaches a ring buffer that receives a copy of every
@@ -214,6 +221,11 @@ func (l *Logger) SetMainLevel(level Level) {
 // status lines on the console instead of the verbose timestamped stream;
 // the full events are still written to the main log (syslog/file). color
 // toggles ANSI coloring of the status marker.
+// SetConsoleIsTTY records whether the console can act on cursor-control
+// sequences. False suppresses the clear-line written at the start of
+// shutdown, which is junk in a log stream.
+func (l *Logger) SetConsoleIsTTY(v bool) { l.consoleIsTTY = v }
+
 func (l *Logger) SetBootConsole(enabled, color bool) {
 	l.bootConsole = enabled
 	l.color = color
@@ -228,7 +240,7 @@ func (l *Logger) SetBootConsole(enabled, color bool) {
 // even if the console still shows a lingering getty "login:" prompt from
 // tty1 (the two writers otherwise collide on the same visible row).
 func (l *Logger) SetShutdownConsole(enabled bool) {
-	if enabled && !l.shuttingDown && l.bootConsole {
+	if enabled && !l.shuttingDown && l.bootConsole && l.consoleIsTTY {
 		const clearLine = "\r\x1b[2K\n"
 		fmt.Fprint(l.output, clearLine)
 		if l.consoleDup != nil {

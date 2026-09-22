@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"strings"
@@ -28,7 +29,31 @@ const BootIDPath = "/run/slinit/boot-id"
 // prefers reading an existing file over generating one to keep the
 // invariant that a host's machine_id stays stable across init-system
 // swaps (systemd → slinit and back).
-const MachineIDPath = "/etc/machine-id"
+// A variable rather than a constant so tests can point it somewhere
+// that does not exist and exercise the transient branch on a host that
+// has a machine-id of its own.
+var MachineIDPath = "/etc/machine-id"
+
+// warnOut is where the transient-ID warning goes. A variable so tests
+// can capture it; it is deliberately not the logger, because InitIDs
+// runs before the journal has a sink.
+var warnOut io.Writer = os.Stderr
+
+// transientIDWarning controls whether a missing /etc/machine-id is
+// worth telling the operator about. See SetTransientIDWarning.
+var transientIDWarning = true
+
+// SetTransientIDWarning turns the "machine-id missing" warning on or
+// off. It stays on for a normal boot, where a missing machine-id means
+// the journal's host identity changes on every reboot and the operator
+// should fix it.
+//
+// Containers turn it off: images routinely ship without
+// /etc/machine-id, the container's identity is its runtime's business,
+// and there is no reboot to stay stable across. Warning on every
+// container start would be advice nobody can act on — and it was the
+// first line of every `docker logs`.
+func SetTransientIDWarning(v bool) { transientIDWarning = v }
 
 // idCache holds the resolved IDs after Init. Both are set once at
 // startup and never mutated, so plain values (no atomic) suffice
@@ -159,9 +184,11 @@ func resolveMachineID() (string, error) {
 	}
 
 	// Fall back to a transient one. Warn but don't fail.
-	fmt.Fprintf(os.Stderr,
-		"journal: warning: %s missing; using transient machine ID (see slinit-init-maker to fix)\n",
-		MachineIDPath)
+	if transientIDWarning {
+		fmt.Fprintf(warnOut,
+			"journal: warning: %s missing; using transient machine ID (see slinit-init-maker to fix)\n",
+			MachineIDPath)
+	}
 	return newRandomID()
 }
 

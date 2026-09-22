@@ -19,6 +19,17 @@ the full commit-level record.
 
 ### Fixed
 
+- **A container's log is clean now.** slinit no longer warns about a
+  missing `/etc/machine-id` in container mode: images routinely ship
+  without the file, the identity belongs to the runtime, and there is no
+  reboot for it to stay stable across, so the advice ("run
+  slinit-init-maker") was not actionable — and it was the first line of
+  every `docker logs`. Mount a machine-id in if the journal's host
+  identity has to persist. The warning is unchanged for a normal boot,
+  where it means something. `journal.SetTransientIDWarning` controls it.
+  The clear-line escape slinit writes when shutdown begins is also
+  skipped when the console is not a terminal.
+
 - **Three things wrong with what a container's log said.** Reading a
   failing pod's output showed all of them at once:
   - **ANSI colour was emitted even when the output is not a terminal.**

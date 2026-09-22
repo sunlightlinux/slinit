@@ -39,4 +39,14 @@ ec=$(ct_exit_code $N)
 ct_logs $N | grep -q "\[STOPPD\] worker"
 check $? "worker was stopped by slinit, not killed with the container"
 
+# Nothing in a container's log should be addressed to a terminal: no
+# colour, no cursor control. And a missing /etc/machine-id is the normal
+# case for an image, not something to warn about on every start — it
+# used to be the first line of every `docker logs`.
+logs=$(ct_logs $N)
+! printf '%s' "$logs" | grep -q "$(printf '\033')"
+check $? "no ANSI escapes anywhere in the log (colour or clear-line)"
+! echo "$logs" | grep -q "machine-id"
+check $? "no machine-id warning"
+
 summary
