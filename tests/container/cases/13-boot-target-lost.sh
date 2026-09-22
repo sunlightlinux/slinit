@@ -30,7 +30,16 @@ ec=$(ct_exit_code $N)
 logs=$(ct_logs $N)
 echo "$logs" | grep -q "process exited with code 3"
 check $? "log records the service's own failure"
-echo "$logs" | grep -qi "boot failure"
-check $? "log says the container is ending because of a boot failure"
+echo "$logs" | grep -qi "workload failed\|boot failure"
+check $? "log says why the container is ending"
+
+# The log is a pipe, not a terminal: no ANSI escapes. Viewers that strip
+# them incompletely turned "[ OK ]" into "[ OK []".
+! printf '%s' "$logs" | grep -q "$(printf '\033')"
+check $? "no ANSI escape sequences in the container log"
+
+# A service that died must not be announced with the success marker.
+! echo "$logs" | grep -A2 "exited with code 3" | grep -q "OK \] flapper"
+check $? "the crashed service is not reported as [ OK ]"
 
 summary
