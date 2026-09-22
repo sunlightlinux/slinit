@@ -127,8 +127,12 @@ check $? "nginx's own access log is in kubectl logs ($served requests recorded)"
 k exec $P -- slinitctl stop nginx >/dev/null 2>&1
 check $? "slinitctl stop nginx succeeded"
 
-wait_pod_phase $P Failed 30 || wait_pod_phase $P Succeeded 5
-check $? "pod terminated once its only workload was stopped"
+# Succeeded, not Failed: the operator asked for the stop, so slinit
+# exits 0 and Kubernetes records the pod as having completed.
+wait_pod_phase $P Succeeded 30
+check $? "pod is Succeeded after a requested stop"
+ec=$(term_exit_code $P)
+[ "$ec" = "0" ]; check $? "container exit code is 0 (got '$ec')"
 
 k logs $P 2>/dev/null | grep -q "\[STOPPD\] nginx"
 check $? "slinit reports the service stopped"

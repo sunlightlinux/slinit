@@ -1759,10 +1759,20 @@ func main() {
 				} else {
 					logger.Error("Workload failed (container mode, exit code %d)", code)
 				}
+			} else if serviceSet.OperatorStopRequested() {
+				// Nothing terminated on its own, but someone asked for a
+				// stop and it cascaded until nothing was left. That is a
+				// teardown, not a collapse: `slinitctl stop` on the
+				// workload used to end the container with "boot failure"
+				// and exit 1, which in Kubernetes is a Failed pod for
+				// something the operator asked for.
+				exitCode = 0
+				shutdownType = service.ShutdownHalt
+				logger.Notice("All services stopped on request (container mode, exit code 0)")
 			} else {
-				// Nothing ever terminated: the services stopped without
-				// running to completion, so there is no workload result
-				// to report and this is a boot failure.
+				// Nothing ever terminated and nobody asked: the services
+				// stopped without running to completion, so there is no
+				// workload result to report and this is a boot failure.
 				exitCode = 1
 				shutdownType = service.ShutdownPoweroff
 				logger.Error("Boot failure detected (container mode, exit code 1)")

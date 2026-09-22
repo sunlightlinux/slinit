@@ -712,6 +712,11 @@ func (c *Connection) handleStopService(payload []byte) error {
 		return err
 	}
 
+	// Someone asked for this. If the stop cascades until nothing is
+	// running, container mode reports a requested teardown rather than
+	// a boot failure.
+	c.server.services.MarkOperatorStop()
+
 	if force {
 		c.server.services.ForceStopService(svc)
 	} else {

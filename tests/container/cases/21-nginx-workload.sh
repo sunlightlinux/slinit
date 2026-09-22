@@ -85,6 +85,16 @@ check $? "the port stops answering once the service is stopped"
 ct_logs $N | grep -q "\[STOPPD\] nginx"
 check $? "slinit reports the service stopped"
 
+# Stopping the only workload ends the container, and because someone
+# asked for it, that is exit 0 — not the "boot failure" exit 1 a
+# collapse gets.
+ct_wait_exit $N 15
+check $? "container ended after its only workload was stopped"
+ec=$(ct_exit_code $N)
+[ "$ec" = "0" ]; check $? "exit 0 for a requested stop (got $ec)"
+! ct_logs $N | grep -qi "boot failure"
+check $? "the log does not call a requested stop a boot failure"
+
 "$RUNTIME" rm -f "$N" >/dev/null 2>&1
 "$RUNTIME" rmi "$IMG" >/dev/null 2>&1
 ! "$RUNTIME" inspect "$N" >/dev/null 2>&1

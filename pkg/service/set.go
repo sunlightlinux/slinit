@@ -193,6 +193,12 @@ type ServiceSet struct {
 	// the daemon's lifetime. Incremented atomically so the heartbeat
 	// reader doesn't need to hold mu.
 	watchdogMisses atomic.Uint64
+
+	// operatorStopped records that someone asked for a service to be
+	// stopped over the control socket. Container mode reads it to tell
+	// a requested teardown from a collapse: both end with nothing
+	// running, but only one of them is a failure.
+	operatorStopped atomic.Bool
 }
 
 // NewServiceSet creates a new ServiceSet.
@@ -834,6 +840,15 @@ func (ss *ServiceSet) NoteWatchdogMiss() {
 func (ss *ServiceSet) WatchdogMisses() uint64 {
 	return ss.watchdogMisses.Load()
 }
+
+// MarkOperatorStop records that a stop was asked for over the control
+// socket. The control server calls it before handing the request on.
+func (ss *ServiceSet) MarkOperatorStop() { ss.operatorStopped.Store(true) }
+
+// OperatorStopRequested reports whether anyone has asked for a service
+// to be stopped. Container mode uses it to decide what an empty service
+// set means: a collapse, or the teardown someone just asked for.
+func (ss *ServiceSet) OperatorStopRequested() bool { return ss.operatorStopped.Load() }
 
 // CountByState returns a snapshot of how many currently-loaded
 // services are in each of the health-relevant states. The heartbeat

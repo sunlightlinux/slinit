@@ -17,6 +17,24 @@ the full commit-level record.
 
 ## [Unreleased]
 
+**The next release is a minor one (2.4.0), not a patch.** Container mode
+changes an exit code, which [STABILITY.md](STABILITY.md) counts as a
+behaviour change rather than a fix — see the first entry below.
+
+### Changed
+
+- **A requested stop ends a container with 0, not 1.** `slinitctl stop`
+  on a container's workload left nothing running, and slinit called that
+  a boot failure: exit 1 and `ERROR: Boot failure detected`, for
+  something the operator had just asked for. In Kubernetes that is a
+  `Failed` pod after a deliberate `kubectl exec … slinitctl stop`.
+  Container mode now separates the two — nothing running because a stop
+  was requested exits 0 with `All services stopped on request`, while
+  nothing running with nobody asking is still a boot failure with exit 1.
+  A workload that ran to completion still reports its own code either
+  way. `slinitctl shutdown halt now` remains the direct way to end a
+  container.
+
 ### Fixed
 
 - **A container's log is clean now.** slinit no longer warns about a
