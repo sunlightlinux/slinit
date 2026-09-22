@@ -376,7 +376,7 @@ func main() {
 		for _, arg := range flag.Args() {
 			if len(arg) > 0 && arg[0] == '-' {
 				fmt.Fprintf(os.Stderr, "slinit: unrecognized option: %s\n", arg)
-				os.Exit(1)
+				exitFlushed(cal, 1)
 			}
 			bootServices = append(bootServices, arg)
 		}
@@ -453,9 +453,15 @@ func main() {
 	// Best-effort: a missing/unreadable /etc/hostname just leaves the
 	// kernel default in place, matching what happens without this
 	// helper.
+	//
+	// Skipped when the kernel already has that name. A container runtime
+	// writes /etc/hostname and sets the UTS hostname to the same value
+	// before starting us, and without CAP_SYS_ADMIN the redundant call
+	// failed, putting a WARN at the top of every container's log.
 	if isPID1 {
 		if data, err := os.ReadFile("/etc/hostname"); err == nil {
-			if h := strings.TrimSpace(string(data)); h != "" {
+			cur, _ := os.Hostname()
+			if h := strings.TrimSpace(string(data)); h != "" && h != cur {
 				if err := unix.Sethostname([]byte(h)); err != nil {
 					logger.Warn("sethostname(%q) failed: %v", h, err)
 				}
@@ -498,7 +504,7 @@ func main() {
 					logFile, err)
 			} else {
 				fmt.Fprintf(os.Stderr, "slinit: cannot open log file '%s': %v\n", logFile, err)
-				os.Exit(1)
+				exitFlushed(cal, 1)
 			}
 		} else {
 			defer lf.Close()
@@ -616,7 +622,7 @@ func main() {
 		parsedRlimits, err = shutdown.ParseBootRlimits(bootRlimits)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: --rlimits: %v\n", err)
-			os.Exit(1)
+			exitFlushed(cal, 1)
 		}
 	}
 
@@ -869,7 +875,7 @@ func main() {
 				logger.Error("Failed to read env-file '%s': %v (continuing)", effectiveEnvFile, err)
 			} else {
 				logger.Error("Failed to read env-file '%s': %v", effectiveEnvFile, err)
-				os.Exit(1)
+				exitFlushed(cal, 1)
 			}
 		} else {
 			env := make([]string, 0, len(fileEnv))
@@ -1015,7 +1021,7 @@ func main() {
 			logger.Info("Platform override: %s", detectedPlatform)
 		} else {
 			logger.Error("Invalid --sys value %q (valid: docker, lxc, podman, wsl, xen0, xenu, openvz, vserver, systemd-nspawn, uml, rkt, none)", sysOverride)
-			os.Exit(1)
+			exitFlushed(cal, 1)
 		}
 	} else {
 		detectedPlatform = platform.Detect()
@@ -1184,8 +1190,14 @@ func main() {
 	// wins — operator explicitly asked for per-service prompts.
 	// Also skipped in rescue/emergency mode — no boot services to
 	// debug, and the rescue shell owns /dev/console.
+	//
+	// And skipped in container mode. Its reboot/poweroff actions go
+	// through shutdown.Execute, the bare-metal path (kill -1, unmount,
+	// reboot(2)), which bypasses the container exit code and results
+	// directory. Without a tty there is no /dev/console at all, and the
+	// failed open put a WARN in every container's log.
 	var bootDebugger *recovery.Debugger
-	if isPID1 && systemMode && !kOpts.ConfirmSpawn && !rescueMode {
+	if isPID1 && systemMode && !containerMode && !kOpts.ConfirmSpawn && !rescueMode {
 		bootDebugger = recovery.NewDebugger(recovery.DebuggerOptions{
 			Timeout: 60 * time.Second,
 			StatusFn: func() recovery.StatusSnapshot {
@@ -1337,11 +1349,11 @@ func main() {
 		if containerMode {
 			logger.Error("No boot services could be loaded, exiting (container mode)")
 			closeWatchdog(wd, logger)
-			os.Exit(1)
+			exitFlushed(cal, 1)
 		}
 		if !isPID1 {
 			closeWatchdog(wd, logger)
-			os.Exit(1)
+			exitFlushed(cal, 1)
 		}
 		// PID 1 boot failure: present the interactive rescue menu
 		// instead of a blind 10-second reboot loop. Operator gets
@@ -1388,7 +1400,7 @@ func main() {
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 		// Unreachable — shutdown.Execute doesn't return on PID 1.
-		os.Exit(1)
+		exitFlushed(cal, 1)
 	}
 
 	// Replay operator intent from a prior slinit instance if requested.
@@ -1724,7 +1736,7 @@ func main() {
 				logger.Debug("Failed to write container results: %v", err)
 			}
 			closeWatchdog(wd, logger)
-			os.Exit(exitCode)
+			exitFlushed(cal, exitCode)
 		}
 
 		// Normal shutdown (non-PID1 or explicit shutdown requested)
@@ -2532,6 +2544,33 @@ func waitForFDClose(n int) error {
 
 // containerExitCode extracts the exit code from the first boot service
 // that has a non-zero exit status. Returns 0 if all services exited cleanly.
+// exitFlushed drains the catch-all logger, then exits.
+//
+// os.Exit skips main's deferred cal.Stop(), and the catch-all tees
+// through a pipe drained by a goroutine: whatever was still in the pipe
+// never reached the console. Those were exactly the lines explaining the
+// exit. In a container, a load failure printed nothing but the startup
+// warnings before exiting 1, so `docker logs` could not say which
+// service was missing.
+//
+// Bounded: Stop waits for EOF on the pipe, and an orphan that inherited
+// stdout keeps the pipe open. By the time the wait gives up, what slinit
+// wrote has been drained anyway; only the EOF is missing.
+func exitFlushed(cal *logging.CatchAllLogger, code int) {
+	if cal != nil {
+		done := make(chan struct{})
+		go func() {
+			cal.Stop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	os.Exit(code)
+}
+
 func containerExitCode(ss *service.ServiceSet, bootNames []string) int {
 	for _, name := range bootNames {
 		svc := ss.FindService(name, false)

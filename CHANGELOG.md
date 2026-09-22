@@ -17,7 +17,54 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A boot service that exited instantly left slinit waiting forever.**
+  The boot cascade runs before the event loop, and the service set only
+  created its "a service went inactive" channel when the loop first
+  asked for it. A service that died in that gap had its notification
+  dropped, so the loop never noticed that nothing was running. In a
+  container, `slinit -o` whose workload exited at once never exited
+  itself. As bare-metal PID 1, the same boot hung without reaching the
+  recovery menu. The channel now exists from the start, and the
+  notification waits for the loop.
+- **The last log lines before an exit were lost.** `os.Exit` skips the
+  deferred catch-all `Stop()`, so whatever was still in the catch-all
+  pipe never reached the console. Those are the lines that say why
+  slinit is exiting: a container with a missing service exited 1 with
+  nothing in `docker logs` but startup warnings. Every exit from `main`
+  now drains the catch-all first, with a 2s cap in case an orphan still
+  holds the pipe open.
+- **Two warnings on every container start.** slinit re-set the hostname
+  from `/etc/hostname`, although the runtime had already set it to the
+  same value, and the call failed without `CAP_SYS_ADMIN`. It now does
+  so only when the name differs. The interactive boot debugger no longer
+  starts in container mode. It failed to open a `/dev/console` that does
+  not exist without a tty, and its reboot and poweroff actions take the
+  bare-metal shutdown path, which bypasses the container exit code.
+- **`slinit-logind`: the GDM greeter stayed blank after a quick
+  logout.** Every session reported `Active=yes` forever, and
+  gnome-shell's greeter fades its login dialog back in only when its
+  session's `Active` changes to true. Session activity now follows the
+  foreground VT, the way elogind decides it. `Seat.ActiveSession` and
+  `Seat.Sessions` are updated as sessions change, where they used to be
+  fixed at startup. `ActivateSession*` and `Seat.SwitchTo` really switch
+  VTs. Still open: after a logout shorter than gdm-x-session's 10s
+  registration delay, the re-used greeter shows but its password field
+  stays inactive; `slinitctl restart gdm` recovers.
+
 ### Added
+
+- **`tests/container/`: slinit as PID 1 of a real container.** Ten
+  host-driven cases pin container mode's contract under Docker: exit
+  code propagation (including 128+signal), fast failure on a broken
+  service tree, zombie reaping, SIGINT and SIGRTMIN+3/+4/+5 halt codes,
+  stop-timeout and SIGTERM escalation, `docker exec slinitctl`, and a
+  read-only rootfs. `soak.sh` repeats the spawn/shutdown cycle (100 by
+  default) and reports non-zero exits, runtime SIGKILLs and slow stops.
+  Before this suite, container mode was only exercised with slinit as a
+  child of a shell. Its first run found the first three fixes above.
+  Podman is accepted but has not been run.
 
 - **`STABILITY.md` — a written stability commitment.** It says which
   surfaces are stable and for how long: `CPVersion=7` until v4.0.0,

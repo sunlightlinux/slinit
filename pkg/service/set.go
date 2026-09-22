@@ -204,6 +204,10 @@ func NewServiceSet(logger ServiceLogger) *ServiceSet {
 		restartEnabled: true,
 		logger:         logger,
 		readyFD:        -1,
+		// Created here, not on first InactiveCh call: the boot cascade
+		// runs before the event loop, and a boot service that dies in
+		// that gap must leave its notification buffered for Run.
+		inactiveCh: make(chan struct{}, 1),
 	}
 }
 
@@ -503,10 +507,12 @@ func (ss *ServiceSet) CountActiveServices() int {
 
 // InactiveCh returns a channel that receives a signal when any service
 // becomes inactive. The event loop selects on this to detect shutdown completion.
+//
+// The channel exists from NewServiceSet on. It used to be created here,
+// lazily, which dropped every notification sent before the event loop
+// first asked — so a boot service that exited before Run started left
+// Run waiting forever.
 func (ss *ServiceSet) InactiveCh() <-chan struct{} {
-	if ss.inactiveCh == nil {
-		ss.inactiveCh = make(chan struct{}, 1)
-	}
 	return ss.inactiveCh
 }
 
