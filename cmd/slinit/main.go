@@ -1728,17 +1728,29 @@ func main() {
 			exitCode := 0
 			if shutdownType != service.ShutdownNone {
 				// Normal shutdown — collect exit code from boot service.
-				exitCode = containerExitCode(serviceSet, bootServices)
+				exitCode, _ = containerBootOutcome(serviceSet, bootServices)
 				logger.Info("Container shutdown complete (exit code %d, type %s)",
 					exitCode, shutdownType)
-			} else {
-				// Boot failure — no explicit shutdown was requested.
-				exitCode = 1
-				if ec := containerExitCode(serviceSet, bootServices); ec != 0 {
-					exitCode = ec
-				}
+			} else if code, terminated := containerBootOutcome(serviceSet, bootServices); terminated {
+				// The workload ran and finished. Its code is the
+				// container's, including 0: a batch job that succeeds
+				// must not be reported as a failure. This used to exit 1
+				// for a workload that exited 0, so a Kubernetes Job that
+				// did its work landed in Failed.
+				exitCode = code
 				shutdownType = service.ShutdownPoweroff
-				logger.Error("Boot failure detected (container mode, exit code %d)", exitCode)
+				if code == 0 {
+					logger.Info("Workload finished (container mode, exit code 0)")
+				} else {
+					logger.Error("Workload failed (container mode, exit code %d)", code)
+				}
+			} else {
+				// Nothing ever terminated: the services stopped without
+				// running to completion, so there is no workload result
+				// to report and this is a boot failure.
+				exitCode = 1
+				shutdownType = service.ShutdownPoweroff
+				logger.Error("Boot failure detected (container mode, exit code 1)")
 			}
 			if err := shutdown.WriteContainerResults(exitCode, shutdownType); err != nil {
 				logger.Debug("Failed to write container results: %v", err)
@@ -2550,8 +2562,6 @@ func waitForFDClose(n int) error {
 	}
 }
 
-// containerExitCode extracts the exit code from the first boot service
-// that has a non-zero exit status. Returns 0 if all services exited cleanly.
 // exitFlushed drains the catch-all logger, then exits.
 //
 // os.Exit skips main's deferred cal.Stop(), and the catch-all tees
@@ -2579,20 +2589,34 @@ func exitFlushed(cal *logging.CatchAllLogger, code int) {
 	os.Exit(code)
 }
 
-func containerExitCode(ss *service.ServiceSet, bootNames []string) int {
+// containerBootOutcome reports what the boot services did: the exit code
+// to give the container, and whether any of them actually terminated.
+//
+// The second value is what separates "the workload finished" from "the
+// services stopped without ever producing a result". Both leave every
+// service inactive, but only the first has an exit code worth handing to
+// the container runtime — and a workload that exits 0 is a success, not
+// the absence of one.
+//
+// The first boot service with a terminal status wins. A signalled
+// service reports 128+signal, the shell convention container tooling
+// expects.
+func containerBootOutcome(ss *service.ServiceSet, bootNames []string) (int, bool) {
+	terminated := false
 	for _, name := range bootNames {
 		svc := ss.FindService(name, false)
 		if svc == nil {
 			continue
 		}
 		es := svc.GetExitStatus()
-		if es.Exited() && es.ExitCode() != 0 {
-			return es.ExitCode()
-		}
-		if es.Signaled() {
-			// Convention: 128 + signal number
-			return 128 + int(es.Signal())
+		switch {
+		case es.Signaled():
+			return 128 + int(es.Signal()), true
+		case es.Exited() && es.ExitCode() != 0:
+			return es.ExitCode(), true
+		case es.Exited():
+			terminated = true
 		}
 	}
-	return 0
+	return 0, terminated
 }

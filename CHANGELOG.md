@@ -19,6 +19,17 @@ the full commit-level record.
 
 ### Fixed
 
+- **A workload that succeeded made the container exit 1.** With the boot
+  service as the workload, slinit took its exit code — unless that code
+  was 0, in which case "all services stopped without a shutdown" was
+  read as a boot failure and reported as 1. A Kubernetes Job that did
+  its work landed in `Failed`, and `docker run` said the job had failed.
+  slinit now distinguishes a workload that ran and finished from
+  services that stopped without ever producing a result: the first hands
+  over its code, 0 included, and only the second is a boot failure.
+  Found by the new Kubernetes suite; the Docker suite only tested a
+  non-zero code.
+
 - **`docker logs` went silent once boot finished.** slinit mutes the
   catch-all's console tee when the boot target comes up: on real
   hardware that console is a serial line it shares with getty, and
@@ -39,6 +50,17 @@ the full commit-level record.
   `--memory` without taking the container with it, PID 1 surviving
   `--pids-limit` exhaustion, process-tree cleanup on stop, and SIGHUP
   as a no-op.
+
+- **`tests/k8s/`: slinit as a Kubernetes workload.** Six cases on a
+  local [kind](https://kind.sigs.k8s.io/) cluster, where a kubelet
+  rather than a runtime CLI is in the middle: pod lifecycle and
+  `kubectl exec`, a batch workload's exit code deciding Succeeded vs
+  Failed, `kubectl logs` carrying the reason a pod died, `restartPolicy:
+  Always` restarts, readiness and liveness probes driven by `slinitctl`,
+  and a SIGTERM-ignoring service killed by slinit rather than by the
+  kubelet at the end of the grace period. Service files arrive as a
+  ConfigMap. The cluster is created once and reused; its kubeconfig
+  stays in `tests/container/_build`, leaving `~/.kube/config` alone.
 
 ## [2.3.7] — 2026-09-22
 
