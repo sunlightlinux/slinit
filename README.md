@@ -1558,6 +1558,10 @@ Release history and per-version notes: [CHANGELOG.md](CHANGELOG.md).
 Development from v2.0.0 onward tracks three lanes — new features,
 security features, and code fixing.
 
+What slinit promises not to break across releases — the control
+protocol, service directives, CLI exit codes, on-disk formats — and how
+things get deprecated: [STABILITY.md](STABILITY.md).
+
 ## License
 
 [Apache License 2.0](LICENSE)

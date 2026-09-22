@@ -23,6 +23,7 @@ Brief description of the changes.
 - [ ] Code follows Go conventions (`gofmt`, `go vet`, no import cycles — see CONTRIBUTING.md)
 - [ ] Changes are focused and minimal — every changed line traces to the described feature/fix
 - [ ] Documentation updated if needed (README.md, doc/man/*.md, CHANGELOG.md's `[Unreleased]` section)
+- [ ] Stable surfaces respected — nothing in [STABILITY.md](../STABILITY.md) changes incompatibly, or the change is a major release / listed exception and the CHANGELOG says so
 - [ ] Dinit parity considered — for anything on the state-machine / config / control-protocol surface, checked upstream (`../dinit/src/`) first
 - [ ] Signed off (`git commit -s`) — DCO enforced
 - [ ] No security vulnerabilities introduced (see SECURITY.md for reporting)

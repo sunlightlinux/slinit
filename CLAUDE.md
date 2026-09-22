@@ -76,7 +76,8 @@ When your changes create orphans:
 **slinit-specific:**
 - **Don't break dinit protocol/config compatibility** without an explicit
   ask. The control protocol (current CPVersion=7, MinCompatVersion=1) and
-  config parser accept legacy forms on purpose.
+  config parser accept legacy forms on purpose. [STABILITY.md](STABILITY.md)
+  is the written contract: what may change in a patch, minor or major.
 - **Don't introduce import cycles.** `pkg/service` cannot import
   `pkg/config` — env-file parsing lives in `pkg/process` for this reason.
 

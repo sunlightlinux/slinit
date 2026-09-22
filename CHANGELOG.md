@@ -17,6 +17,18 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Added
+
+- **`STABILITY.md` — a written stability commitment.** It says which
+  surfaces are stable and for how long: `CPVersion=7` until v4.0.0,
+  service directives not removed or reinterpreted within a major, and
+  `slinitctl` exit statuses. It also sets the semver rules the releases
+  follow and the deprecation path, and says what is not covered: the Go
+  packages under `pkg/` and human-readable output. Its History section
+  records two earlier deviations. v2.3.5 changed `slinitctl start` in a
+  patch release. The v2.3.0 entry below says an older parser silently
+  skips an unknown directive, but it has always been a load error.
+
 ## [2.3.6] — 2026-09-21
 
 A PID-1 safety release. **Upgrade if you run slinit as init on a machine

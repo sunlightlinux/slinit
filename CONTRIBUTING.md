@@ -20,6 +20,8 @@ Thank you for your interest in contributing to slinit!
 6. Add a `[Unreleased]` entry to [CHANGELOG.md](CHANGELOG.md) if the
    change is user-visible (new feature, behavioural fix, security
    hardening). Internal refactors don't need one.
+   If the change touches a surface listed in [STABILITY.md](STABILITY.md),
+   check that it is allowed in the release it is aimed at.
 7. Commit with a clear message
 8. Push to your fork and open a Pull Request
 

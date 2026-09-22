@@ -1,0 +1,203 @@
+# Stability commitments
+
+This document says what slinit promises not to break, for how long, and
+what it does instead when something has to change. It is written for
+distributions and image builders deciding whether they can pin a
+version, and for contributors deciding whether a change is allowed in
+the release they are aiming at.
+
+It applies from the first release that ships this file. Releases before
+that were made without a written policy; the known deviations are listed
+under [History](#history) so nobody has to discover them.
+
+Which versions receive fixes is covered separately, in
+[SECURITY.md](SECURITY.md#supported-versions).
+
+## The short version
+
+- **The control protocol stays at `CPVersion=7` until v4.0.0.** New
+  commands can be added; existing ones do not change shape or meaning.
+- **Service directives are not removed or reinterpreted within a major
+  version.** A directive that is going away is deprecated first, keeps
+  working with a warning, and is removed no earlier than the next major.
+- **Service files are forward-compatible, not backward-compatible.** A
+  file that loads on 2.3.0 loads on every later 2.x. A file that uses a
+  directive introduced in 2.3.6 fails to load on 2.3.5 — see
+  [Service configuration](#service-configuration).
+- **The Go packages under `pkg/` are not a public API.** Import them at
+  your own risk.
+
+## Versioning
+
+slinit uses [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html),
+applied to the *stable surfaces* listed below. The Go package layout is
+not one of them.
+
+| Release | May contain |
+|---------|-------------|
+| **MAJOR** (`3.0.0`) | Incompatible changes to a stable surface: removing a deprecated directive, command or flag, or changing what an existing one does. Always listed under `Removed` or `Changed` in the CHANGELOG, with the migration. |
+| **MINOR** (`2.4.0`) | Everything a patch may contain, plus deprecations and new subsystems. |
+| **PATCH** (`2.3.7`) | Bug fixes, and *additive* changes: a new optional directive, a new control-protocol command, a new `slinitctl` subcommand or flag. Nothing that already works changes behaviour. |
+
+Additive changes are allowed in patch releases because slinit ships
+small, frequent releases and holding every new directive for a minor
+bump would hold back fixes that ride along with it. The cost is the one
+stated above: a service file that uses a new directive needs at least
+the version that introduced it. If you pin to a minor line, write
+service files against the oldest patch you deploy, and check them with
+that version's `slinit-check`.
+
+A change that corrects slinit to match its own documentation, or to
+match dinit where slinit claims dinit compatibility, is a bug fix, not
+a behaviour change. If existing setups could be relying on the wrong
+behaviour, it is still called out under `Changed`, with what to do, and
+it goes in a minor release rather than a patch.
+
+## Stable surfaces
+
+### Control protocol
+
+The binary protocol spoken over the control socket, by `slinitctl` and
+by anything else that implements it (`pkg/control/protocol.go`).
+
+- `CPVersion` stays `7` and `MinCompatVersion` stays `1` until **v4.0.0**.
+  This holds across 3.x as well.
+- Existing command codes and reply codes keep their numbers, payload
+  layout and meaning. Commands 0–28 and replies 50–79 are dinit's, and
+  stay wire-compatible with dinit's `cp_cmd` / `cp_rply` enums.
+- New commands are added with new code numbers. A daemon that does not
+  know a command answers `RplyBadReq`, so a newer client talking to an
+  older daemon gets a clean error, not a hang or a misread reply.
+- Any 2.x `slinitctl` works against any 2.x daemon for the commands both
+  know. This has been true in practice since CPVersion reached 7; it is
+  now a promise.
+- When a command's shape has to change, it gets a *new* code and the old
+  one keeps working. `CmdEnableServiceV7` (29) and `CmdRmDepV7` (30)
+  sit beside the dinit originals this way.
+
+### Service configuration
+
+The directives documented in `slinit-service(5)`, their operators (`=`
+and `:`), their accepted values, and what they do.
+
+- A directive is not removed, renamed or given a new meaning within a
+  major version.
+- Aliases stay aliases. `termsignal`, `rlimit-addrspace` and
+  `run-in-cgroup` are dinit spellings kept for compatibility and are
+  covered by the same rule.
+- A directive slinit does not recognise is a **load error**, not a
+  silent skip (`pkg/config/parser.go`). That is deliberate: a typo in a
+  hardening directive should stop the service, not start it unhardened.
+  It is also why service files are only forward-compatible.
+- New directives are listed in the CHANGELOG under the version that
+  introduced them. From this policy on, `slinit-service(5)` marks each
+  new directive with the version it appeared in.
+- The load directories (`/etc/slinit.d` and the others in `slinit(8)`)
+  and the `@include`, `@include-opt` and `@meta` lines are stable in the
+  same sense.
+
+### Command line
+
+- `slinit`'s options and the kernel command-line keys it reads, as
+  documented in `slinit(8)`.
+- `slinitctl`'s subcommands and flags, as documented in `slinitctl(8)`.
+- `slinitctl`'s exit statuses: `0` success, `1` failure, `2` usage
+  error. A subcommand that exits `0` today on an outcome does not start
+  exiting non-zero on the same outcome, or the reverse, outside a major
+  release — except under [Exceptions](#exceptions).
+- `slinitctl show`'s `Key=Value` output: keys are not removed or
+  renamed; new keys may appear. Parse it by key, not by line number.
+- The same applies to the companion tools with a man page in
+  `doc/man/`, for their documented flags and exit statuses.
+
+### On-disk formats
+
+- **Journal files.** A newer reader reads every file an older writer
+  produced, in both the JSONL format and the binary `SLJRNL01` format.
+  JSONL fields may be added, never removed or retyped. The binary
+  format evolves through its header flags: a writer that needs an
+  incompatible change sets a new `IncompatFlags` bit, and readers refuse
+  files carrying a bit they do not know (`pkg/journalbin/format.go`).
+- **Persisted state** that slinit reads back across a restart or an
+  upgrade (for example the persisted shutdown intent) stays readable by
+  later versions within the major.
+
+### Compatibility surfaces owned by other projects
+
+slinit implements some interfaces that another project defines:
+`org.freedesktop.login1` and `org.freedesktop.systemd1` on D-Bus
+(`slinit-logind`), the `/run/systemd/{sessions,users,seats}` records
+libelogind reads, the dinit protocol range above, and the OpenRC
+command shims (`rc-service`, `rc-update`, `rc-status`).
+
+For these, the upstream project's definition is the contract, not
+slinit's current behaviour. A change that brings slinit closer to
+upstream is a fix, even if something had started depending on the
+difference. Such changes are still called out under `Changed` when they
+are visible, as the move from "every login1 session is always active"
+to activity following the foreground VT was.
+
+## Not covered
+
+- **Go packages.** Everything under `pkg/` and `cmd/` is internal to
+  slinit, even where Go would let you import it. The module path has no
+  `/v2` suffix, so the 2.x tags are not usable as Go module versions in
+  the first place. Packages move, change signature or disappear in any
+  release.
+- **Human-readable output**: the wording of `slinitctl status`, `list`
+  and similar, log and journal messages, `--help` text, colours and
+  alignment. Scripts should use exit statuses, `slinitctl show`, or the
+  control protocol.
+- **Timing and performance**, beyond not regressing without reason.
+- **Private runtime state**, such as `/run/slinit-logind/*.json` and the
+  internals of the control socket's directory.
+- **Tests, demos and tooling**: `tests/`, `demo/`, `tools/`.
+- **Anything undocumented.** If a behaviour is not in a man page, the
+  README or this file, it is not promised. Ask for it to be documented
+  if you depend on it.
+
+## Deprecation
+
+When a stable interface has to go:
+
+1. It is marked deprecated in a **minor** release, with the replacement,
+   in the CHANGELOG and in its man page.
+2. It keeps working. Using it produces a warning from `slinit-check` and
+   in the daemon log, so the operator hears about it before the removal
+   rather than at it.
+3. It is removed no earlier than the **next major** release, and at
+   least one minor release after the deprecation.
+
+## Exceptions
+
+Two kinds of change may break a stable surface in any release, patch
+releases included:
+
+- **Security fixes.** If keeping the old behaviour keeps the
+  vulnerability, the behaviour changes. v2.3.6's journald fix is the
+  model: a sender that exits before its `/proc` snapshot now gets empty
+  `_COMM`/`_EXE`/`_CMDLINE` instead of the values it claimed, because
+  the claimed values were forgeable.
+- **Behaviour that loses data or takes the machine down**, where the old
+  behaviour cannot reasonably have been relied on.
+
+Either way, the change is listed under `Security` or `Changed` with a
+`Compat` note saying exactly what differs.
+
+## History
+
+Changes made before this policy that it would not have allowed:
+
+- **v2.3.5 changed `slinitctl start` in a patch release.** It used to
+  return as soon as the daemon accepted the request; it now waits for
+  the outcome and exits non-zero on a failed start. It was a dinit
+  parity fix, but scripts that relied on the immediate return, and
+  `triggered` services in particular, needed `--no-wait`. Under this
+  policy it would have gone in a minor release with the same `Changed`
+  note.
+- **The v2.3.0 CHANGELOG says an older parser silently skips an
+  unrecognised directive.** It does not: an unknown directive has been a
+  load error since the parser was written. The forward-only
+  compatibility described under
+  [Service configuration](#service-configuration) is how it has always
+  behaved.
