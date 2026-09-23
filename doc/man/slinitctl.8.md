@@ -385,6 +385,18 @@ daemon, which is useful at install time or in initramfs.
         cannot hold the machine up. Filesystems are still synced and
         unmounted.
 
+        A **stop-command** that is already running is the one thing
+        not killed on the spot: it gets one second first. For a
+        service whose daemon is detached — anything built on
+        **slinit-start-stop-daemon**(8) or
+        **slinit-supervise-daemon**(8) — that script is the only
+        thing that will ever stop the daemon, and killing it
+        mid-flight leaves the daemon running with its pidfile intact,
+        which makes the *next* boot fail to start it. One second is
+        far more than such a script needs and far less than the
+        **stop-timeout** it stands in for, so the promise above is
+        unaffected.
+
     **shutdown** *kind* **\--fast**
     :   Skip the teardown altogether — sync and the syscall, nothing
         else, which is what **reboot**(8) **-f** does. Services get no

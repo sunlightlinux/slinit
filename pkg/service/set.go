@@ -576,15 +576,66 @@ func (ss *ServiceSet) GetActiveServiceInfo() []ActiveServiceInfo {
 
 // KillActiveServices sends SIGKILL to all services with a valid PID.
 // Used during emergency shutdown escalation.
+// stopCommandGrace is how long a stop-command that is already running
+// gets to finish before the immediate-kill path shoots it.
+//
+// `shutdown <kind> now` promises that "a service with a long
+// stop-timeout cannot hold the machine up". What it is impatient with
+// is a slow stop — not the cleanup script itself, which for a service
+// that manages a detached daemon is the only thing that will ever stop
+// that daemon. Killing it mid-flight left sleepers and supervisors
+// running with their pidfiles intact, and the next boot's
+// start-stop-daemon refused to start over them: one hurried reboot cost
+// every later boot, until a full kernel boot cleared the orphans.
+//
+// A second is far more than a real stop-command needs (the ones that
+// exposed this finish in milliseconds) and far less than the 10s
+// default stop-timeout it stands in for, so the promise above holds.
+// A variable, not a constant, so tests need not sleep for a second.
+var stopCommandGrace = time.Second
+
+// killFunc is syscall.Kill, indirected for tests.
+var killFunc = syscall.Kill
+
 func (ss *ServiceSet) KillActiveServices() {
 	ss.mu.RLock()
-	defer ss.mu.RUnlock()
+	var cleaning []*ScriptedService
 	for _, svc := range ss.records {
+		// A scripted service reports its stop-command as its PID once
+		// the start command is gone (ScriptedService.PID), so without
+		// this check the loop kills the cleanup instead of the
+		// workload. No other service type does that: ProcessService
+		// reports its main process and BGProcessService its daemon, and
+		// both keep the stop-command's pid out of PID() entirely.
+		if sc, ok := svc.(*ScriptedService); ok && sc.runningStopCommand() {
+			cleaning = append(cleaning, sc)
+			continue
+		}
 		pid := svc.PID()
 		if pid > 0 {
-			syscall.Kill(pid, syscall.SIGKILL)
+			killFunc(pid, syscall.SIGKILL)
 		}
 	}
+	ss.mu.RUnlock()
+
+	if len(cleaning) == 0 {
+		return
+	}
+	// Off the caller's goroutine: the teardown carries on killing
+	// everything else while these finish. Each one re-reads its own pid
+	// when the grace expires, so a stop-command that exited in the
+	// meantime is not signalled at a number the kernel has since handed
+	// to somebody else.
+	// Read the grace once, here, and carry it in: the goroutine then
+	// touches no package-level state at all, which keeps it independent
+	// of anything a test does to those variables after this returns.
+	grace := stopCommandGrace
+	go func() {
+		time.Sleep(grace)
+		for _, sc := range cleaning {
+			sc.killStopCommand(grace)
+		}
+	}()
 }
 
 // GetShutdownType returns the current shutdown type.

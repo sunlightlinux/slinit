@@ -63,6 +63,21 @@ the full commit-level record.
   is left untouched, and a service with neither `cgroup` nor `slice` is
   skipped entirely — its effective path is the daemon-wide default that
   every other unconfigured service shares.
+- **One hurried soft reboot could break every boot after it.** `shutdown
+  <kind> now`, and `--fast`/`--superfast` on a soft reboot, SIGKILLed
+  every service PID at once — and a `scripted` service reports its
+  *stop-command* as its PID once the start command is gone. So the
+  cleanup script was shot mid-flight. For a service whose daemon is
+  detached (`slinit-start-stop-daemon`, `slinit-supervise-daemon`) that
+  script is the only thing that ever stops the daemon, so the daemon
+  survived with its pidfile intact and the next boot's `--start` refused
+  to start over it, exiting 1. The failure then repeated on every
+  subsequent boot, hurried or not, until a full kernel boot cleared the
+  orphan. A stop-command already running now gets one second before the
+  SIGKILL; everything else still dies at once. No other service type was
+  affected — `ProcessService` reports its main process and
+  `BGProcessService` its daemon, and neither puts the stop-command's pid
+  in `PID()`.
 
 ### Added
 

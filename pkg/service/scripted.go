@@ -172,6 +172,40 @@ func (s *ScriptedService) PID() int {
 	return s.stopPID
 }
 
+// runningStopCommand reports whether this service's current PID belongs
+// to a stop-command rather than to its own workload — the condition
+// under which PID() reports the stop-command (see PID above).
+//
+// Read without queueMu for the same reason PID() gives: the callers run
+// inside locks that make taking it unsafe, and a stale answer is
+// harmless here. Reading true a moment after the command exited costs a
+// signal to a pid that killStopCommand will then decline to send.
+func (s *ScriptedService) runningStopCommand() bool {
+	return s.startPID <= 0 && s.stopPID > 0
+}
+
+// killStopCommand SIGKILLs a stop-command that is still running when its
+// grace expires. Called from the immediate-kill shutdown path, a grace
+// period after the rest of the services were killed.
+//
+// grace is passed in rather than read from the package variable so the
+// calling goroutine touches no shared state once it is running.
+//
+// The pid is re-read under queueMu — the lock its writer holds — so a
+// command that finished during the grace is left alone rather than
+// signalled at a number that may now belong to something else.
+func (s *ScriptedService) killStopCommand(grace time.Duration) {
+	s.services.queueMu.Lock()
+	pid := s.stopPID
+	s.services.queueMu.Unlock()
+	if pid <= 0 {
+		return
+	}
+	s.services.logger.Error("Service '%s': stop command still running after %v, sending SIGKILL",
+		s.serviceName, grace)
+	process.SignalProcess(pid, 9, false) // SIGKILL
+}
+
 // BringUp runs the start command.
 func (s *ScriptedService) BringUp() bool {
 	if len(s.startCommand) == 0 {
