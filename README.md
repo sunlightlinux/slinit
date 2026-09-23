@@ -237,6 +237,10 @@ format to accommodate them.
 - **Pause/continue**: SIGSTOP/SIGCONT via `slinitctl pause`/`continue` with control-command override
 - **Down file**: `down` marker file prevents auto-start (cleared by explicit `slinitctl start`)
 - **Once mode**: `slinitctl once` starts a service without auto-restart
+- **Metrics**: `--metrics-listen host:port` (or `unix:/path`) serves Prometheus
+  metrics at `/metrics` — boot times, services by state, and per service its
+  state, startup time and restart count. Off unless asked for, and written
+  without `net/http`, so it costs the daemon 57 KB rather than megabytes
 - **Runtime dependencies**: add-dep/rm-dep, enable/disable via control socket
 - **Enable-via**: `@meta enable-via` directive for default enable/disable source service
 - **Push notifications**: SERVICEEVENT/ENVEVENT for real-time state and environment tracking

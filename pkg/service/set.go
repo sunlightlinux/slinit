@@ -194,6 +194,11 @@ type ServiceSet struct {
 	// reader doesn't need to hold mu.
 	watchdogMisses atomic.Uint64
 
+	// restartsTotal counts every supervisor-driven restart since the
+	// daemon started, alongside restartLog's one-hour window: a metric
+	// that a scraper rates itself has to be monotonic.
+	restartsTotal atomic.Uint64
+
 	// operatorStopped records that someone asked for a service to be
 	// stopped over the control socket. Container mode reads it to tell
 	// a requested teardown from a collapse: both end with nothing
@@ -795,6 +800,7 @@ func (ss *ServiceSet) SetLogReady() { ss.logReady = true }
 const restartLogHorizon = 1 * time.Hour
 
 func (ss *ServiceSet) NoteRestart() {
+	ss.restartsTotal.Add(1)
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	now := time.Now()
@@ -840,6 +846,10 @@ func (ss *ServiceSet) NoteWatchdogMiss() {
 func (ss *ServiceSet) WatchdogMisses() uint64 {
 	return ss.watchdogMisses.Load()
 }
+
+// RestartsTotal reports every supervisor-driven restart since the
+// daemon started. Unlike RestartsInLast it never decreases.
+func (ss *ServiceSet) RestartsTotal() uint64 { return ss.restartsTotal.Load() }
 
 // MarkOperatorStop records that a stop was asked for over the control
 // socket. The control server calls it before handing the request on.

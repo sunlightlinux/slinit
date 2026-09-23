@@ -22,20 +22,21 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
+	"github.com/sunlightlinux/slinit/pkg/hooks"
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/metrics"
+	"github.com/sunlightlinux/slinit/pkg/network"
 	"github.com/sunlightlinux/slinit/pkg/pathwatch"
 	"github.com/sunlightlinux/slinit/pkg/persist"
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/recovery"
 	"github.com/sunlightlinux/slinit/pkg/service"
-	"github.com/sunlightlinux/slinit/pkg/hooks"
-	"github.com/sunlightlinux/slinit/pkg/network"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
-	"github.com/sunlightlinux/slinit/pkg/switchroot"
 	"github.com/sunlightlinux/slinit/pkg/snapshot"
 	"github.com/sunlightlinux/slinit/pkg/svcdirwatch"
+	"github.com/sunlightlinux/slinit/pkg/switchroot"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
 	"github.com/sunlightlinux/slinit/pkg/watchdog"
 	"golang.org/x/sys/unix"
@@ -257,6 +258,10 @@ func main() {
 	var heartbeatWindow time.Duration
 	flag.DurationVar(&heartbeatWindow, "heartbeat-restart-window", time.Minute,
 		"window over which the heartbeat's 'restarts(N)' count is computed")
+
+	var metricsListen string
+	flag.StringVar(&metricsListen, "metrics-listen", "",
+		"serve Prometheus metrics on this address (TCP \"host:port\", or \"unix:/path\"); off when empty")
 
 	var emergencyTimeout time.Duration
 	flag.DurationVar(&emergencyTimeout, "emergency-timeout", 0,
@@ -1452,6 +1457,19 @@ func main() {
 		defer ctrlServer.Stop()
 	}
 
+	// --metrics-listen: a Prometheus endpoint, off unless asked for.
+	// Non-fatal on failure — an address already in use is a reason to
+	// lose the metrics, not the boot.
+	if metricsListen != "" {
+		if ln, err := listenMetrics(metricsListen); err != nil {
+			logger.Error("Metrics endpoint disabled: %v", err)
+		} else {
+			logger.Notice("Metrics on %s/metrics", metricsListen)
+			go metrics.Serve(ln, serviceSet, version, logger.Debug)
+			defer ln.Close()
+		}
+	}
+
 	// Replay any persisted pins BEFORE the boot cascade runs so a
 	// service marked pinned-stopped never briefly comes up first.
 	// Errors from the store are logged; a broken file for one service
@@ -2573,6 +2591,34 @@ func findSlinitRunner() string {
 // closeWatchdog disarms the kernel watchdog before any shutdown / reboot
 // path. Idempotent: safe to call from every exit point even if the
 // feeder was never opened or has already been closed.
+// listenMetrics opens the listener for --metrics-listen. "unix:/path"
+// gives a socket (removed first, since a crash leaves the node behind
+// and bind would fail with EADDRINUSE on a file nobody is listening
+// on); anything else is handed to TCP as "host:port".
+//
+// A unix socket is the safer default for a machine where the scraper
+// runs alongside — the metrics say which services exist and when they
+// restarted, which is not for everyone on the network.
+func listenMetrics(addr string) (net.Listener, error) {
+	if path, ok := strings.CutPrefix(addr, "unix:"); ok {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, fmt.Errorf("metrics socket dir: %w", err)
+		}
+		_ = os.Remove(path)
+		ln, err := net.Listen("unix", path)
+		if err != nil {
+			return nil, err
+		}
+		// Readable by the scraper, which does not run as root.
+		if err := os.Chmod(path, 0o666); err != nil {
+			ln.Close()
+			return nil, fmt.Errorf("metrics socket mode: %w", err)
+		}
+		return ln, nil
+	}
+	return net.Listen("tcp", addr)
+}
+
 func closeWatchdog(wd *watchdog.Feeder, logger *logging.Logger) {
 	if wd == nil {
 		return

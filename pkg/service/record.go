@@ -172,6 +172,12 @@ type ServiceRecord struct {
 	propStop    bool
 	propPinDpt  bool
 
+	// restarts counts supervisor-driven restarts of this service over
+	// the daemon's lifetime. Monotonic on purpose: the set's restart
+	// log is a one-hour window for the heartbeat's rate signal, which
+	// is the wrong shape for a metric a fleet scrapes and rates itself.
+	restarts atomic.Uint64
+
 	// Start status
 	startFailed  bool
 	startSkipped bool
@@ -1302,6 +1308,10 @@ func (sr *ServiceRecord) IsMarkedActive() bool    { return sr.startExplicit }
 func (sr *ServiceRecord) IsStartPinned() bool     { return sr.pinnedStarted || sr.deptPinnedStarted }
 func (sr *ServiceRecord) IsStopPinned() bool      { return sr.pinnedStopped }
 func (sr *ServiceRecord) DidStartFail() bool      { return sr.startFailed }
+
+// RestartCount reports how many times the supervisor has restarted this
+// service since slinit started. Never decreases.
+func (sr *ServiceRecord) RestartCount() uint64 { return sr.restarts.Load() }
 
 // ResetFailed clears the startFailed flag so subsequent status queries
 // no longer report the service as failed. Mirrors systemd's
@@ -2867,6 +2877,7 @@ func (sr *ServiceRecord) Stopped() {
 	if willRestart {
 		// Record this as a supervisor-driven restart for heartbeat /
 		// health-signal accounting. First-boot BringUp does not count.
+		sr.restarts.Add(1)
 		sr.services.NoteRestart()
 
 		// Restart any PREPARED_BY dependencies first. They are hard deps

@@ -420,6 +420,29 @@ service-file format.
     */var/lib/slinit/intent*. Inspired by s6-supervise's *wantup*/
     *wantdown* files.
 
+**\--metrics-listen** *address*
+:   Serve Prometheus metrics at **/metrics** on *address*, which is
+    either a TCP *host*:*port* or **unix:**\ */path*. Empty (the
+    default) means the endpoint is not started at all.
+
+    What is exposed is what slinit already counts: kernel and userspace
+    boot time, whether the boot target is up, services by state, and per
+    service whether it is up, whether its last start failed, how long it
+    took to start and how many times the supervisor has restarted it.
+    The restart counts and the watchdog count are counters that only go
+    up; everything else is a gauge read at scrape time. Nothing is
+    sampled or stored, so an endpoint nobody scrapes costs nothing.
+
+    A unix socket is the safer choice where the scraper runs on the same
+    host: the metrics name every service and say when each last
+    restarted, which is not information for the whole network. The
+    socket is created 0666, since the scraper is not usually root, and
+    replaced if a previous instance left one behind.
+
+    The HTTP is deliberately small — a request line, a status line and a
+    body, no keep-alive and no second route — so that PID 1 does not
+    have to carry **net/http**.
+
 **\--emergency-timeout** *duration*
 :   Maximum time slinit waits for services to drain during shutdown
     before flipping into the force-exit path (SIGKILL to any straggler,

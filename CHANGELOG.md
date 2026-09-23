@@ -120,6 +120,36 @@ behaviour change rather than a fix — see the first entry below.
 
 ### Added
 
+- **A Prometheus endpoint: `slinit --metrics-listen host:port`** (or
+  `unix:/path`), serving `/metrics`. Off unless asked for.
+
+  It exposes what slinit already counts, and nothing else: kernel and
+  userspace boot time, whether the boot target is up, services by state,
+  and per service whether it is up, whether its last start failed, how
+  long it took to start, and how many times the supervisor has restarted
+  it. Per-service series are the point — they are what says *which*
+  service is flapping. Restart and watchdog counts are counters that
+  only go up; the rest are gauges read at scrape time, so an endpoint
+  nobody scrapes costs nothing.
+
+  The HTTP is written out by hand rather than with `net/http`: this runs
+  in PID 1, and a scrape needs a request line, a status line and a body.
+  The endpoint costs the daemon 57 KB, against the megabytes `net/http`
+  would have added. There is no keep-alive, no second route, and a
+  deadline so a client that connects and says nothing cannot hold a
+  connection.
+
+  A unix socket is the safer choice where the scraper is local: the
+  metrics name every service and say when each restarted. The socket is
+  created 0666 for a non-root scraper, and replaces one left behind by a
+  crash.
+
+  Covered by container case 23 (scraped from the host, including a
+  service killed from outside and its counter moving) and k8s case k08
+  (the kubelet's own httpGet probe against `/metrics`, plus a scrape
+  from a second pod through a Service, with the `prometheus.io/*`
+  annotations).
+
 - **Ten more container cases (11-20).** Shutdown requested from inside
   with each type (`halt`, `poweroff`, `reboot`, `softreboot`), restart
   after an external SIGKILL, the container ending when nothing keeps the
