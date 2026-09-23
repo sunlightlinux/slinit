@@ -186,6 +186,16 @@ Either way, the change is listed under `Security` or `Changed` with a
 
 ## History
 
+Changes this policy would not have allowed:
+
+- **v2.3.8 is a patch carrying two behaviour changes.** A container that
+  is told to stop a service and ends up with nothing running exits 0
+  where it used to exit 1, and `slinitctl shutdown <kind> now` kills the
+  services instead of being a synonym for the plain form. Under the
+  rules above both belong in a minor. They were released as 2.3.8
+  deliberately; the CHANGELOG entry says so at the top, and both are in
+  its `Changed` section.
+
 Changes made before this policy that it would not have allowed:
 
 - **v2.3.5 changed `slinitctl start` in a patch release.** It used to

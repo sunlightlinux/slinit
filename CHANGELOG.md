@@ -17,9 +17,22 @@ the full commit-level record.
 
 ## [Unreleased]
 
-**The next release is a minor one (2.4.0), not a patch.** Container mode
-changes an exit code, which [STABILITY.md](STABILITY.md) counts as a
-behaviour change rather than a fix — see the first entry below.
+## [2.3.8] — 2026-09-23
+
+A container and observability release: slinit gets a Prometheus
+endpoint, `slinitctl shutdown` gets three faster gears, and the Docker
+and Kubernetes suites that found most of the fixes below are in the
+tree.
+
+**This is a patch number carrying two behaviour changes that
+[STABILITY.md](STABILITY.md) would have put in a minor** — the
+container exit code for a requested stop, and what `shutdown <kind> now`
+does. Both are in `Changed` below, with what to do about them. Read that
+section before upgrading if you script either. The deviation is recorded
+in STABILITY.md's History, next to v2.3.5's.
+
+Verified: 72 unit packages, 23/23 container cases, 8/8 Kubernetes cases
+on kind. The QEMU functional suite has not been re-run for this cut.
 
 ### Changed
 
