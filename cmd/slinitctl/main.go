@@ -3287,21 +3287,49 @@ func cmdBootTime(conn net.Conn) error {
 	kernelTime := time.Duration(info.KernelUptimeNs)
 	bootReady := info.BootReadyNs > 0
 
+	// A soft reboot leaves the kernel alone, so the daemon carries the
+	// original boot's kernel figure forward instead of re-reading
+	// /proc/uptime, which by then measures the machine's whole life.
+	// kernelTime == 0 after a soft reboot means the figure was never
+	// carried (the previous slinit predates it) — say so rather than
+	// print a zero that reads like an instant boot.
+	kernelKnown := kernelTime > 0 || info.SoftReboots == 0
+
 	if bootReady {
 		userspaceTime := time.Duration(info.BootReadyNs - info.BootStartNs)
-		totalTime := kernelTime + userspaceTime
-		fmt.Printf("Startup finished in %s (kernel) + %s (userspace) = %s\n",
-			formatDuration(kernelTime),
-			formatDuration(userspaceTime),
-			formatDuration(totalTime))
+		if kernelKnown {
+			fmt.Printf("Startup finished in %s (kernel) + %s (userspace) = %s\n",
+				formatDuration(kernelTime),
+				formatDuration(userspaceTime),
+				formatDuration(kernelTime+userspaceTime))
+		} else {
+			fmt.Printf("Startup finished in %s (userspace); kernel time not carried across the soft reboot\n",
+				formatDuration(userspaceTime))
+		}
 		fmt.Printf("%s reached after %s in userspace.\n",
 			info.BootSvcName,
 			formatDuration(userspaceTime))
 	} else {
-		fmt.Printf("Startup in progress: %s (kernel) + ... (userspace)\n",
-			formatDuration(kernelTime))
+		if kernelKnown {
+			fmt.Printf("Startup in progress: %s (kernel) + ... (userspace)\n",
+				formatDuration(kernelTime))
+		} else {
+			fmt.Printf("Startup in progress: kernel time not carried across the soft reboot\n")
+		}
 		fmt.Printf("Boot service '%s' has not yet reached STARTED.\n",
 			info.BootSvcName)
+	}
+
+	if info.SoftReboots > 0 {
+		line := fmt.Sprintf("Soft reboot #%d", info.SoftReboots)
+		if info.StartUptimeNs > 0 {
+			line += fmt.Sprintf(" — this generation started %s into machine uptime",
+				formatUptime(time.Duration(info.StartUptimeNs)))
+		}
+		if kernelKnown {
+			line += "; the kernel figure is from the original boot"
+		}
+		fmt.Println(line + ".")
 	}
 
 	// Collect services with timing data
@@ -3341,6 +3369,29 @@ func formatDuration(d time.Duration) string {
 		return strconv.FormatInt(d.Milliseconds(), 10) + "ms"
 	}
 	return strconv.FormatFloat(d.Seconds(), 'f', 3, 64) + "s"
+}
+
+// formatUptime renders a machine uptime coarsely. formatDuration is
+// tuned for boot timings, where milliseconds matter and nothing runs
+// for long; a box that soft-reboots to pick up upgrades can be up for
+// months, and "15811200.000s" tells the operator nothing. Under a
+// minute it defers to formatDuration, so short-lived test systems read
+// the same as before.
+func formatUptime(d time.Duration) string {
+	if d < time.Minute {
+		return formatDuration(d)
+	}
+	days := int(d / (24 * time.Hour))
+	hours := int(d/time.Hour) % 24
+	mins := int(d/time.Minute) % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	default:
+		return fmt.Sprintf("%dm", mins)
+	}
 }
 
 // cmdAnalyze is the dispatcher for `slinitctl analyze [sub]`. Extends

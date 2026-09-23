@@ -1045,7 +1045,13 @@ func main() {
 	serviceSet.SetBootStartTime(bootStartTime)
 	serviceSet.SetBootServiceName(bootServices[0])
 	if uptime, err := readKernelUptime(); err == nil {
+		// On a fresh boot the two are the same reading. After a soft
+		// reboot applySnapshot replaces the kernel figure with the one
+		// carried from the original boot and leaves this one alone,
+		// because this one is the honest answer to "how long had the
+		// machine been up when this generation started".
 		serviceSet.SetKernelUptime(uptime)
+		serviceSet.SetStartUptime(uptime)
 	}
 
 	// Detect or override platform for keyword-based service filtering
@@ -2467,6 +2473,24 @@ func applySnapshot(path string, serviceSet *service.ServiceSet, logger *logging.
 		logger.Error("Snapshot %s: %v — proceeding without restore", path, err)
 		return
 	}
+
+	// Boot timing carried across the soft reboot. The kernel did not
+	// restart, so this generation cannot measure how long it took to
+	// boot; without the carried figure `slinitctl boot-time` would print
+	// the machine's uptime under the "kernel" label, a number that grows
+	// with every soft reboot. A zero means the previous slinit was too
+	// old to record it — leave the field unset rather than substitute
+	// the uptime, so the client can say "unknown" instead of lying.
+	//
+	// A snapshot from an older slinit carries no count, but reaching
+	// here at all means a generation preceded this one, so floor it at
+	// one rather than report a fresh boot.
+	if snap.SoftReboots > 0 {
+		serviceSet.SetSoftReboots(snap.SoftReboots)
+	} else {
+		serviceSet.SetSoftReboots(1)
+	}
+	serviceSet.SetKernelUptime(time.Duration(snap.KernelBootNs))
 
 	// Pre-load any service that the snapshot names but the boot graph
 	// hasn't pulled in yet. Errors are non-fatal: restore.go logs and

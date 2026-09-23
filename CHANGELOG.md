@@ -33,6 +33,25 @@ the full commit-level record.
   repair path re-samples `isTerminal` so a soft reboot performed by an
   older slinit is handled too. Draining before the exec also stops the
   last lines of the outgoing generation from dying in the pipe.
+- **`slinitctl boot-time` reported the machine's uptime as the kernel's
+  boot time after a soft reboot**, a figure that grew with every
+  generation (`20.150s (kernel)`, then `22.180s`, on a machine whose
+  kernel took 550ms). The kernel does not restart during a soft reboot,
+  so the new generation cannot measure it; the real figure now travels
+  in the soft-reboot snapshot, alongside a count of generations.
+  `boot-time` gained a line saying which soft reboot this is and how
+  far into the machine's uptime it started. A snapshot from a slinit
+  that predates the fields says "kernel time not carried across the
+  soft reboot" instead of substituting the uptime.
+
+### Added
+
+- `BootTimeInfo` carries the soft-reboot count and the generation's
+  start uptime in an optional trailing block on `RplyBootTime`. Older
+  clients stop reading before it; a newer client talking to an older
+  daemon finds no tail and reports a plain boot.
+- The soft-reboot snapshot gained `kernel_boot_ns` and `soft_reboots`.
+  Both are optional, so snapshots round-trip in either direction.
 
 ## [2.3.8] — 2026-09-23
 

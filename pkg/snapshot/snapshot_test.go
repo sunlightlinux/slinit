@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/snapshot"
@@ -308,4 +309,50 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestCaptureCarriesBootTiming pins the two fields that make
+// `slinitctl boot-time` survive a soft reboot. Without them the new
+// generation re-reads /proc/uptime and prints the machine's whole
+// uptime under the "kernel" label, a figure that grows with every soft
+// reboot.
+func TestCaptureCarriesBootTiming(t *testing.T) {
+	set := newSet()
+	set.SetKernelUptime(550 * time.Millisecond)
+
+	snap := snapshot.Capture(set)
+	if snap.KernelBootNs != int64(550*time.Millisecond) {
+		t.Errorf("KernelBootNs = %d, want %d", snap.KernelBootNs, int64(550*time.Millisecond))
+	}
+	// A set that was never told otherwise is the original boot, so the
+	// snapshot it writes describes the first soft reboot.
+	if snap.SoftReboots != 1 {
+		t.Errorf("SoftReboots = %d, want 1 from the original boot", snap.SoftReboots)
+	}
+}
+
+// TestCaptureAccumulatesSoftReboots walks three generations to make
+// sure the count climbs instead of resetting, and that the kernel
+// figure is handed on unchanged rather than re-measured.
+func TestCaptureAccumulatesSoftReboots(t *testing.T) {
+	const kernelBoot = 550 * time.Millisecond
+
+	set := newSet()
+	set.SetKernelUptime(kernelBoot)
+
+	for gen := 1; gen <= 3; gen++ {
+		snap := snapshot.Capture(set)
+		if snap.SoftReboots != gen {
+			t.Fatalf("generation %d wrote SoftReboots = %d, want %d", gen, snap.SoftReboots, gen)
+		}
+		if snap.KernelBootNs != int64(kernelBoot) {
+			t.Fatalf("generation %d changed the kernel figure: got %d, want %d",
+				gen, snap.KernelBootNs, int64(kernelBoot))
+		}
+		// What cmd/slinit does on the next start.
+		next := newSet()
+		next.SetSoftReboots(snap.SoftReboots)
+		next.SetKernelUptime(time.Duration(snap.KernelBootNs))
+		set = next
+	}
 }

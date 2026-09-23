@@ -121,3 +121,68 @@ func TestBootTimeCommand(t *testing.T) {
 		t.Errorf("Kernel uptime mismatch: got %d, want %d", info.KernelUptimeNs, int64(2*time.Second))
 	}
 }
+
+// TestBootTimeSoftRebootTail round-trips the trailing extension that
+// carries soft-reboot bookkeeping.
+func TestBootTimeSoftRebootTail(t *testing.T) {
+	info := BootTimeInfo{
+		KernelUptimeNs: int64(550 * time.Millisecond),
+		BootSvcName:    "boot",
+		SoftReboots:    3,
+		StartUptimeNs:  int64(22180 * time.Millisecond),
+		Services: []BootTimeEntry{
+			{Name: "hello", StartupNs: int64(12 * time.Millisecond), State: service.StateStarted},
+		},
+	}
+
+	decoded, err := DecodeBootTime(EncodeBootTime(info))
+	if err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if decoded.SoftReboots != 3 {
+		t.Errorf("SoftReboots: got %d, want 3", decoded.SoftReboots)
+	}
+	if decoded.StartUptimeNs != info.StartUptimeNs {
+		t.Errorf("StartUptimeNs: got %d, want %d", decoded.StartUptimeNs, info.StartUptimeNs)
+	}
+	// The tail must not disturb what came before it.
+	if decoded.KernelUptimeNs != info.KernelUptimeNs {
+		t.Errorf("KernelUptimeNs: got %d, want %d", decoded.KernelUptimeNs, info.KernelUptimeNs)
+	}
+	if len(decoded.Services) != 1 || decoded.Services[0].Name != "hello" {
+		t.Errorf("service array damaged by the tail: %+v", decoded.Services)
+	}
+}
+
+// TestBootTimeTailAbsent covers a newer slinitctl talking to a daemon
+// that predates the tail: the payload simply ends after the service
+// array, which must decode cleanly and report a plain boot rather than
+// failing or inventing a soft-reboot count.
+func TestBootTimeTailAbsent(t *testing.T) {
+	info := BootTimeInfo{
+		KernelUptimeNs: int64(550 * time.Millisecond),
+		BootSvcName:    "boot",
+		SoftReboots:    3,
+		StartUptimeNs:  int64(22180 * time.Millisecond),
+		Services: []BootTimeEntry{
+			{Name: "hello", StartupNs: int64(12 * time.Millisecond), State: service.StateStarted},
+		},
+	}
+
+	full := EncodeBootTime(info)
+	old := full[:len(full)-bootTimeTailLen]
+
+	decoded, err := DecodeBootTime(old)
+	if err != nil {
+		t.Fatalf("Decode of a tail-less payload must succeed, got: %v", err)
+	}
+	if decoded.SoftReboots != 0 {
+		t.Errorf("SoftReboots: got %d, want 0 for a daemon without the tail", decoded.SoftReboots)
+	}
+	if decoded.StartUptimeNs != 0 {
+		t.Errorf("StartUptimeNs: got %d, want 0", decoded.StartUptimeNs)
+	}
+	if len(decoded.Services) != 1 || decoded.Services[0].Name != "hello" {
+		t.Errorf("services lost when the tail is absent: %+v", decoded.Services)
+	}
+}

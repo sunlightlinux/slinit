@@ -74,7 +74,9 @@ type ServiceSet struct {
 	bootStartTime   time.Time     // when slinit started (userspace begins)
 	bootReadyTime   time.Time     // when boot service reached STARTED
 	bootServiceName string        // name of the boot target service
-	kernelUptime    time.Duration // kernel uptime at slinit start
+	kernelUptime    time.Duration // how long the kernel took to reach slinit on the original boot
+	startUptime     time.Duration // machine uptime when THIS generation started
+	softReboots     int           // soft reboots between the original boot and this generation
 
 	// Filesystem/logging readiness flags (set by services with starts-rwfs / starts-log)
 	rwReady  bool
@@ -596,10 +598,22 @@ func (ss *ServiceSet) SetBootStartTime(t time.Time)    { ss.bootStartTime = t }
 func (ss *ServiceSet) SetBootServiceName(name string)  { ss.bootServiceName = name }
 func (ss *ServiceSet) SetKernelUptime(d time.Duration) { ss.kernelUptime = d }
 
+// SetStartUptime records the machine uptime at this generation's start.
+// On a fresh boot it equals the kernel figure; after a soft reboot the
+// two diverge, and the difference is how long the previous generation
+// ran. Zero means /proc/uptime could not be read.
+func (ss *ServiceSet) SetStartUptime(d time.Duration) { ss.startUptime = d }
+
+// SetSoftReboots records how many soft reboots separate this generation
+// from the original boot. Restored from the soft-reboot snapshot.
+func (ss *ServiceSet) SetSoftReboots(n int) { ss.softReboots = n }
+
 func (ss *ServiceSet) BootStartTime() time.Time    { return ss.bootStartTime }
 func (ss *ServiceSet) BootReadyTime() time.Time    { return ss.bootReadyTime }
 func (ss *ServiceSet) BootServiceName() string     { return ss.bootServiceName }
 func (ss *ServiceSet) KernelUptime() time.Duration { return ss.kernelUptime }
+func (ss *ServiceSet) StartUptime() time.Duration  { return ss.startUptime }
+func (ss *ServiceSet) SoftReboots() int            { return ss.softReboots }
 
 // ResetBootTiming resets boot timing for a fresh boot cycle (e.g., after recovery).
 // Sets bootStartTime to now and clears bootReadyTime so it will be set again

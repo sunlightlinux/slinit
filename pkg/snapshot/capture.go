@@ -24,6 +24,11 @@ func Capture(set *service.ServiceSet) *Snapshot {
 		Version:   CurrentVersion,
 		WrittenAt: time.Now().UTC().Format(time.RFC3339),
 		GlobalEnv: append([]string(nil), set.GlobalEnv()...),
+		// Hand the kernel's boot duration forward: the generation about
+		// to start cannot measure it, because by then /proc/uptime
+		// counts the time this generation ran as well.
+		KernelBootNs: int64(set.KernelUptime()),
+		SoftReboots:  set.SoftReboots() + 1,
 	}
 
 	for _, svc := range set.ListServices() {

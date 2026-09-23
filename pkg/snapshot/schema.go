@@ -54,6 +54,25 @@ type Snapshot struct {
 	// `slinitctl setenv-global`. Entries are stored as KEY=VALUE so the
 	// format matches what slinit already passes around internally.
 	GlobalEnv []string `json:"global_env,omitempty"`
+
+	// KernelBootNs is how long the kernel took to reach slinit on the
+	// *original* boot. A soft reboot does not touch the kernel, so the
+	// new generation cannot measure this: /proc/uptime by then says how
+	// long the machine has been up, which `slinitctl boot-time` used to
+	// print under the "kernel" label and which grew with every soft
+	// reboot. Carrying the real figure keeps that line meaningful.
+	//
+	// Zero means the writing daemon did not know it — either an older
+	// slinit wrote the snapshot, or /proc/uptime was unreadable at its
+	// start. Readers treat zero as "unknown", not as "instant".
+	KernelBootNs int64 `json:"kernel_boot_ns,omitempty"`
+
+	// SoftReboots counts how many soft reboots separate this generation
+	// from the original boot. A writer stores its own count plus one, so
+	// the first soft reboot writes 1. Absent (zero) in snapshots from an
+	// older slinit, which is indistinguishable from a fresh boot — the
+	// cost of that is one under-reported generation after an upgrade.
+	SoftReboots int `json:"soft_reboots,omitempty"`
 }
 
 // ServiceSnapshot captures the intent for a single service.

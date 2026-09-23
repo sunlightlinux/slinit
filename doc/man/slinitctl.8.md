@@ -232,6 +232,14 @@ daemon, which is useful at install time or in initramfs.
 :   Print boot-time analysis: kernel→userspace handoff, slinit
     startup, per-service start times, slow services.
 
+    After a soft reboot the kernel figure is the one from the original
+    boot, carried forward in the soft-reboot snapshot — the kernel did
+    not restart, so this generation cannot measure it. An extra line
+    reports which generation this is and how far into the machine's
+    uptime it started. A snapshot written by a slinit older than 2.3.9
+    carries no kernel figure, and the output says so rather than
+    substituting the uptime.
+
 **catlog** [**\--clear**] *service*
 :   Print *service*'s in-memory log buffer. **\--clear** truncates the
     buffer after printing.

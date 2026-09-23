@@ -1134,6 +1134,8 @@ func (c *Connection) handleBootTime() error {
 	info := BootTimeInfo{
 		KernelUptimeNs: int64(ss.KernelUptime()),
 		BootSvcName:    ss.BootServiceName(),
+		SoftReboots:    ss.SoftReboots(),
+		StartUptimeNs:  int64(ss.StartUptime()),
 	}
 	if !ss.BootStartTime().IsZero() {
 		info.BootStartNs = ss.BootStartTime().UnixNano()

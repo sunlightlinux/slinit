@@ -614,20 +614,40 @@ type BootTimeEntry struct {
 
 // BootTimeInfo holds the complete boot timing data.
 type BootTimeInfo struct {
+	// KernelUptimeNs is how long the kernel took to reach slinit on the
+	// original boot, carried across soft reboots. Zero means unknown,
+	// which a soft-rebooted daemon reports when the snapshot it restored
+	// came from a slinit too old to record it.
 	KernelUptimeNs int64
 	BootStartNs    int64
 	BootReadyNs    int64 // 0 if boot service hasn't reached STARTED yet
 	BootSvcName    string
 	Services       []BootTimeEntry
+
+	// SoftReboots and StartUptimeNs travel in an optional tail; see
+	// EncodeBootTime. Both are zero when the daemon predates the tail.
+	SoftReboots   int
+	StartUptimeNs int64
 }
+
+// bootTimeTailLen is the size of the optional trailing block:
+// softReboots(2) + startUptime(8).
+const bootTimeTailLen = 10
 
 // EncodeBootTime encodes boot timing info into bytes.
 // Wire format: kernelUptime(8) + bootStart(8) + bootReady(8) +
 // nameLen(2) + name(N) + numSvcs(2) +
 // [per svc: nameLen(2) + name(N) + startupNs(8) + state(1) + type(1) + pid(4)]
+// + softReboots(2) + startUptime(8)
+//
+// The last two fields are a trailing extension: a slinitctl that predates
+// them stops reading after the service array and ignores the tail, and a
+// newer slinitctl talking to an older daemon finds no tail and leaves
+// both at zero — which reads as "fresh boot", the honest answer when the
+// daemon cannot say otherwise.
 func EncodeBootTime(info BootTimeInfo) []byte {
 	// Calculate total size
-	size := 8 + 8 + 8 + 2 + len(info.BootSvcName) + 2
+	size := 8 + 8 + 8 + 2 + len(info.BootSvcName) + 2 + bootTimeTailLen
 	for _, s := range info.Services {
 		size += 2 + len(s.Name) + 8 + 1 + 1 + 4
 	}
@@ -664,6 +684,10 @@ func EncodeBootTime(info BootTimeInfo) []byte {
 		binary.LittleEndian.PutUint32(buf[off:], uint32(s.PID))
 		off += 4
 	}
+
+	binary.LittleEndian.PutUint16(buf[off:], uint16(info.SoftReboots))
+	off += 2
+	binary.LittleEndian.PutUint64(buf[off:], uint64(info.StartUptimeNs))
 
 	return buf
 }
@@ -720,6 +744,13 @@ func DecodeBootTime(data []byte) (BootTimeInfo, error) {
 		}
 		off += sNameLen + 14
 		info.Services = append(info.Services, entry)
+	}
+
+	// Optional tail. Absent when the daemon predates it, in which case
+	// both fields stay zero and the caller reports a plain boot.
+	if len(data) >= off+bootTimeTailLen {
+		info.SoftReboots = int(binary.LittleEndian.Uint16(data[off:]))
+		info.StartUptimeNs = int64(binary.LittleEndian.Uint64(data[off+2:]))
 	}
 
 	return info, nil
