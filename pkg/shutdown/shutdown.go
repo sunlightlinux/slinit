@@ -306,6 +306,12 @@ func ExecuteForce(shutdownType service.ShutdownType, logger *logging.Logger) {
 	signal.Ignore(syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE)
 
 	logger.Notice("Forced shutdown: %s (filesystems not unmounted)", shutdownType)
+	// Say so when the kernel has no such operation: it will be halted
+	// instead, and an operator who asked for a soft-reboot deserves to
+	// read why the machine went away.
+	if _, kernel := KernelShutdownCmd(shutdownType); !kernel {
+		logger.Error("%s is not a kernel operation; halting instead", shutdownType)
+	}
 
 	// utmp/wtmp shutdown record (respects --no-wtmp via SetWtmpEnabled).
 	// systemd only writes when its own systemd-update-utmp is absent;
@@ -373,6 +379,12 @@ func ExecuteImmediate(shutdownType service.ShutdownType, logger *logging.Logger)
 	// One line, because an operator reading the console afterwards
 	// should know the filesystems were never synced.
 	logger.Notice("Immediate shutdown: %s (no sync, no unmount — unwritten data is lost)", shutdownType)
+	// Say so when the kernel has no such operation: it will be halted
+	// instead, and an operator who asked for a soft-reboot deserves to
+	// read why the machine went away.
+	if _, kernel := KernelShutdownCmd(shutdownType); !kernel {
+		logger.Error("%s is not a kernel operation; halting instead", shutdownType)
+	}
 
 	rebootType := shutdownType
 	if err := rebootSystem(rebootType); err != nil {
@@ -419,23 +431,35 @@ func KillAllProcesses(logger *logging.Logger) {
 // rebootSystem maps a ShutdownType to the appropriate Linux reboot command
 // and issues the syscall.
 func rebootSystem(shutdownType service.ShutdownType) error {
-	var cmd int
+	cmd, _ := KernelShutdownCmd(shutdownType)
+	return rebootFunc(cmd)
+}
+
+// KernelShutdownCmd maps a shutdown type to the reboot(2) command that
+// performs it, and reports whether the kernel performs it at all.
+//
+// It does not for every type: a soft-reboot re-executes slinit in place
+// and ShutdownRemain keeps the machine up, both entirely in userspace.
+// Handing one of those to reboot(2) used to halt the machine, because
+// the mapping quietly fell through to HALT — `slinitctl shutdown
+// softreboot --fast` printed "reboot: System halted" and the box was
+// gone. Callers that can avoid the syscall should ask first; the halt
+// stays as the last resort for a caller already committed to it.
+func KernelShutdownCmd(shutdownType service.ShutdownType) (cmd int, kernel bool) {
 	switch shutdownType {
 	case service.ShutdownHalt:
-		cmd = syscall.LINUX_REBOOT_CMD_HALT
+		return syscall.LINUX_REBOOT_CMD_HALT, true
 	case service.ShutdownPoweroff:
-		cmd = syscall.LINUX_REBOOT_CMD_POWER_OFF
+		return syscall.LINUX_REBOOT_CMD_POWER_OFF, true
 	case service.ShutdownReboot:
-		cmd = syscall.LINUX_REBOOT_CMD_RESTART
+		return syscall.LINUX_REBOOT_CMD_RESTART, true
 	case service.ShutdownKexec:
 		// LINUX_REBOOT_CMD_KEXEC: reboot using a previously loaded kexec kernel.
 		// The constant 0x45584543 is defined in linux/reboot.h but not in Go's syscall package.
-		cmd = 0x45584543
+		return 0x45584543, true
 	default:
-		// For unknown types, default to halt
-		cmd = syscall.LINUX_REBOOT_CMD_HALT
+		return syscall.LINUX_REBOOT_CMD_HALT, false
 	}
-	return rebootFunc(cmd)
 }
 
 // InfiniteHold blocks the calling goroutine forever.

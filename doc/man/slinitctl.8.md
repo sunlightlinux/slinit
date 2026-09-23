@@ -383,8 +383,14 @@ daemon, which is useful at install time or in initramfs.
         stop-command and filesystems are not unmounted, so use it when
         the box has to go down now and the state on disk is expendable
         or already safe. Cannot be combined with a scheduled *time*.
-        In container mode there is no syscall to make, so it behaves
-        as **now**.
+
+        Both this and **\--superfast** below describe work skipped on
+        the way to the kernel, so they only differ from **now** when the
+        kernel is where the request ends. A **softreboot** re-executes
+        slinit in place and is not a **reboot**(2) operation at all, and
+        in container mode there is no syscall to make either; in both
+        cases the flags behave as **now**, hurrying the teardown, which
+        is the only part there is.
 
     **shutdown** *kind* **\--superfast**
     :   The syscall alone. Everything **\--fast** still did — the

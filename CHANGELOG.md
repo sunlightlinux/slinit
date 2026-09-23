@@ -59,6 +59,24 @@ behaviour change rather than a fix — see the first entry below.
 
 ### Fixed
 
+- **`slinitctl shutdown softreboot --fast` halted the machine.** Both
+  `--fast` and `--superfast` go to `reboot(2)`, and the type-to-command
+  mapping quietly fell through to `LINUX_REBOOT_CMD_HALT` for anything
+  it did not recognise. A soft-reboot is not a kernel operation — it
+  re-executes slinit in place — so asking for one in a hurry printed
+  `reboot: System halted` and the box was gone. `remain` had the same
+  hole.
+
+  The haste flags describe work skipped on the way to the kernel, so
+  they now only choose a syscall path when the kernel is where the
+  request ends. A soft-reboot, `remain`, container mode and anything
+  where slinit is not PID 1 all take the kill path instead, hurrying
+  the teardown — which for a soft-reboot is the whole of it.
+  `slinitctl shutdown softreboot now` was always correct and is
+  unchanged. `shutdown.KernelShutdownCmd` now reports whether a type is
+  a kernel operation at all, and the force paths say so in the log
+  before falling back to a halt.
+
 - **`slinitctl reboot`, `halt` and `poweroff` exist now.**
   `slinitctl.8` has described them as top-level shortcuts for a while —
   "provided so `slinitctl reboot` works as muscle-memory from other init
