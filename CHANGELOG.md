@@ -52,6 +52,17 @@ the full commit-level record.
   ("**cgroup** or **slice** must be set"), and `slinitctl run --slice`
   relied on exactly that. An explicit `cgroup` still wins when both are
   present.
+- **A service's cgroup directory is now reclaimed when it stops.**
+  slinit creates these itself and nothing removed them, so every
+  `slinitctl run --slice=NAME` left one behind — the transient units are
+  named `run-<rand>`, so the names never repeat and the directories
+  accumulate without bound, surviving soft reboots because a soft reboot
+  does not touch cgroupfs. Measured on the demo VM: five invocations,
+  five directories still present three soft reboots later. The removal
+  is an `rmdir`, so a cgroup that still holds processes or child cgroups
+  is left untouched, and a service with neither `cgroup` nor `slice` is
+  skipped entirely — its effective path is the daemon-wide default that
+  every other unconfigured service shares.
 
 ### Added
 

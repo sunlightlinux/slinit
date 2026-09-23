@@ -1947,6 +1947,34 @@ func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappin
 //  2. slice = name → /sys/fs/cgroup/<slice>/<svc-name>.
 //  3. Daemon default cgroup path.
 // Empty if none apply.
+// removeCgroupFunc is process.RemoveCgroup, indirected so tests can
+// observe the call without a writable /sys/fs/cgroup.
+var removeCgroupFunc = process.RemoveCgroup
+
+// removeOwnCgroup reclaims the cgroup directory slinit created for this
+// service, if the service has one of its own. A service with neither
+// `cgroup` nor `slice` shares the daemon-wide default cgroup with every
+// other unconfigured service, so there is nothing here that belongs to
+// it alone and nothing to remove.
+//
+// The removal is an rmdir, so it does nothing while processes or child
+// cgroups remain. That makes it safe to call unconditionally from
+// Stopped(), including on a service that failed to start and never had
+// a cgroup at all.
+func (sr *ServiceRecord) removeOwnCgroup() {
+	if sr.cgroupPath == "" && sr.slice == "" {
+		return
+	}
+	path := sr.EffectiveCgroupPath()
+	if path == "" {
+		return
+	}
+	if err := removeCgroupFunc(path); err != nil {
+		sr.services.logger.Info("Service '%s': cgroup %s not reclaimed: %v",
+			sr.serviceName, path, err)
+	}
+}
+
 func (sr *ServiceRecord) EffectiveCgroupPath() string {
 	if sr.cgroupPath != "" {
 		return sr.cgroupPath
@@ -2785,6 +2813,15 @@ func (sr *ServiceRecord) Stopped() {
 				"Service '%s': credentials cleanup: %v", sr.serviceName, err)
 		}
 	}
+
+	// Reclaim the service's own cgroup directory. Only when the service
+	// has one of its own: with neither `cgroup` nor `slice` set,
+	// EffectiveCgroupPath returns the daemon-wide default, which every
+	// other unconfigured service shares and which must outlive them all.
+	//
+	// Failure is the normal case while anything is still inside, so it
+	// is deliberately silent at anything above Debug.
+	sr.removeOwnCgroup()
 
 	// Release the dynamic-user transient UID (no-op when disabled).
 	sr.releaseDynamicUID()

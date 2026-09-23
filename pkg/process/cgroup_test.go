@@ -171,3 +171,72 @@ func TestValidateCgroupSettingFileRejectsTraversal(t *testing.T) {
 		}
 	}
 }
+
+// TestRemoveCgroupEmpty is the ordinary case: the service stopped and
+// nothing is left inside, so the directory goes away.
+func TestRemoveCgroupEmpty(t *testing.T) {
+	root := t.TempDir()
+	withCgroupRoot(t, root)
+	cgDir := filepath.Join(root, "run-4a696d93")
+	if err := os.MkdirAll(cgDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := RemoveCgroup(cgDir); err != nil {
+		t.Fatalf("RemoveCgroup: %v", err)
+	}
+	if _, err := os.Stat(cgDir); !os.IsNotExist(err) {
+		t.Errorf("directory still present after RemoveCgroup (stat err: %v)", err)
+	}
+}
+
+// TestRemoveCgroupNotEmpty pins the safety property that makes the call
+// safe to make unconditionally: a cgroup with a child cgroup — on a
+// real system, one that still holds processes — is left alone.
+func TestRemoveCgroupNotEmpty(t *testing.T) {
+	root := t.TempDir()
+	withCgroupRoot(t, root)
+	cgDir := filepath.Join(root, "busy")
+	if err := os.MkdirAll(filepath.Join(cgDir, "child"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := RemoveCgroup(cgDir); err == nil {
+		t.Error("RemoveCgroup succeeded on a non-empty cgroup; want an error")
+	}
+	if _, err := os.Stat(cgDir); err != nil {
+		t.Errorf("non-empty cgroup was disturbed: %v", err)
+	}
+}
+
+// TestRemoveCgroupRefusesRoot: the hierarchy root is shared by the whole
+// system and is never a service's own cgroup.
+func TestRemoveCgroupRefusesRoot(t *testing.T) {
+	root := t.TempDir()
+	withCgroupRoot(t, root)
+
+	if err := RemoveCgroup(root); err == nil {
+		t.Error("RemoveCgroup removed the cgroup root; want a refusal")
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("cgroup root was disturbed: %v", err)
+	}
+}
+
+// TestRemoveCgroupRefusesOutside reuses validateCgroupPath, so a path
+// that escapes the hierarchy is rejected before any unlink happens.
+func TestRemoveCgroupRefusesOutside(t *testing.T) {
+	root := t.TempDir()
+	withCgroupRoot(t, root)
+	outside := filepath.Join(t.TempDir(), "victim")
+	if err := os.MkdirAll(outside, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := RemoveCgroup(outside); err == nil {
+		t.Error("RemoveCgroup accepted a path outside the hierarchy")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("path outside the hierarchy was removed: %v", err)
+	}
+}

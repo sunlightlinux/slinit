@@ -157,6 +157,33 @@ func validateCgroupPath(p string) error {
 	return nil
 }
 
+// RemoveCgroup deletes a service's cgroup directory. slinit creates
+// these directories itself (applyCgroup and PrepareCgroupForFD both
+// MkdirAll), and nothing used to delete them, so a workload that keeps
+// producing new names — `slinitctl run --slice=NAME`, whose transient
+// units are called run-<rand> — left one behind per invocation. They
+// survive a soft reboot, because a soft reboot does not touch cgroupfs.
+//
+// This is an rmdir, never a recursive delete. A cgroup that still holds
+// processes or child cgroups fails with ENOTEMPTY and is left exactly
+// as it was, which is the outcome worth having: the directory is only
+// reclaimed once it is genuinely empty. Callers treat any error as
+// "nothing to do".
+//
+// A directory the operator pre-created is removed too, once empty. That
+// is the same directory slinit would have created had it been absent,
+// and the next start recreates it and rewrites every setting from the
+// service's configuration, so nothing slinit knows about is lost.
+func RemoveCgroup(path string) error {
+	if err := validateCgroupPath(path); err != nil {
+		return err
+	}
+	if filepath.Clean(path) == cgroupRoot {
+		return fmt.Errorf("refusing to remove the cgroup root %s", cgroupRoot)
+	}
+	return syscall.Rmdir(path)
+}
+
 // validateCgroupSettingFile rejects setting filenames that try to escape
 // the cgroup directory or address an unrelated file. Cgroup interface
 // files are all flat names (e.g. "memory.max", "cpu.weight"); a name
