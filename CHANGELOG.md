@@ -44,6 +44,15 @@ the full commit-level record.
   that predates the fields says "kernel time not carried across the
   soft reboot" instead of substituting the uptime.
 
+- **`slice` was ignored unless `cgroup` was set too.** The loader
+  applied it only inside the branch guarded by a non-empty `cgroup`, so
+  a service configured with `slice` alone ran in the daemon's default
+  cgroup — no grouping, no per-slice limits, and no diagnostic saying
+  so. `slinit-service(5)` documents slice as sufficient on its own
+  ("**cgroup** or **slice** must be set"), and `slinitctl run --slice`
+  relied on exactly that. An explicit `cgroup` still wins when both are
+  present.
+
 ### Added
 
 - `BootTimeInfo` carries the soft-reboot count and the generation's

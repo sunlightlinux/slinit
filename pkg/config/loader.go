@@ -1592,8 +1592,14 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	if desc.CgroupPath != "" {
 		rec.SetCgroupPath(desc.CgroupPath)
-		rec.SetSlice(desc.Slice)
 	}
+	// Outside the branch above on purpose: `slice` stands on its own.
+	// It used to be applied only alongside an explicit `cgroup`, so a
+	// service that set slice by itself was silently placed in the
+	// daemon's default cgroup instead of its slice — no grouping, and
+	// no diagnostic. EffectiveCgroupPath still prefers cgroupPath when
+	// both are set, so the precedence is unchanged.
+	rec.SetSlice(desc.Slice)
 	// Cgroup settings: user-declared cgroup-setting entries + Bucket C
 	// cpuset-partition + startup-allowed-cpus/mems. The Startup values
 	// win over the steady-state cgroup-cpuset-cpus at cgroup creation
