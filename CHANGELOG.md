@@ -17,6 +17,23 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A soft-rebooted slinit lost the boot console's colour and its
+  teardown separator.** `syscall.Exec` inherits fd 1 and fd 2, and the
+  outgoing instance had them pointing at its own catch-all pipe — whose
+  reader dies with the process image. The next generation repaired the
+  descriptors by reopening `/dev/console`, but only after it had already
+  asked `isTerminal(1)` at the top of `main`, so it spent the rest of
+  its life believing it was not on a terminal: no ANSI green on
+  `[ OK ]`, and no clear-line before the `[STOPPD]` cascade, which is
+  why the blank line after `Shutting down slinit (...)` was there in one
+  generation and missing in the next. `SoftReboot` now drains the
+  catch-all and puts fd 1/2 back on the console before the exec, and the
+  repair path re-samples `isTerminal` so a soft reboot performed by an
+  older slinit is handled too. Draining before the exec also stops the
+  last lines of the outgoing generation from dying in the pipe.
+
 ## [2.3.8] — 2026-09-23
 
 A container and observability release: slinit gets a Prometheus

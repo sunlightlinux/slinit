@@ -22,17 +22,21 @@ var statFunc = os.Stat
 // The sequence is:
 //  1. Resolve exec path while /proc is still mounted
 //  2. Run shutdown hook (if any) — hook may do its own cleanup
-//  3. Sync filesystems
-//  4. Re-exec slinit with original arguments (plus a --restore-from-snapshot
+//  3. Drain the catch-all and put fd 1/2 back on the console
+//  4. Sync filesystems
+//  5. Re-exec slinit with original arguments (plus a --restore-from-snapshot
 //     pointer if the event loop dropped a snapshot)
 //
 // Unlike a hard reboot/halt, soft reboot does NOT unmount filesystems or kill
 // all processes. Filesystems must remain mounted and writable so the new slinit
 // instance can create its control socket and load services normally.
 //
+// cal is the outgoing instance's catch-all logger, or nil when it was never
+// started (-B, or a start failure). See step 3 below for why it matters.
+//
 // If the exec fails, an error is returned and the caller should fall back
 // to a hard reboot.
-func SoftReboot(logger *logging.Logger) error {
+func SoftReboot(logger *logging.Logger, cal *logging.CatchAllLogger) error {
 	logger.Notice("Performing soft reboot...")
 
 	// Resolve the executable path NOW, before services stop and /proc
@@ -50,6 +54,24 @@ func SoftReboot(logger *logging.Logger) error {
 	// filesystems ourselves — keeping them mounted and writable is required
 	// so the re-exec'd slinit can create its control socket.
 	runHookFunc(service.ShutdownSoftReboot, logger)
+
+	// Hand the next generation a console on fd 1/2, not this generation's
+	// catch-all pipe. Those fds survive execve, and the pipe's reader (our
+	// drain goroutine) does not, so without this the new slinit inherits a
+	// write end nobody reads. cmd/slinit already repairs the fds by opening
+	// /dev/console before StartCatchAll, but it does so too late for
+	// isTerminal(1), which is sampled at the top of main: the new instance
+	// concludes it is not on a terminal and silently drops the boot
+	// console's ANSI colour and the clear-line that separates the boot
+	// cascade from the [STOPPD] teardown. Observed as a missing blank line
+	// after "Shutting down slinit (...)" in a soft-rebooted generation.
+	//
+	// Stop() also drains the pipe, so the last lines of this generation
+	// reach the log file instead of dying with the process image — which
+	// is why it runs before the sync below rather than after it.
+	if cal != nil {
+		cal.Stop()
+	}
 
 	// Sync filesystems to flush any pending writes before re-exec.
 	syncFunc()

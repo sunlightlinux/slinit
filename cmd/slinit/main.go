@@ -334,6 +334,15 @@ func main() {
 				syscall.Dup2(int(cf.Fd()), 1)
 				syscall.Dup2(int(cf.Fd()), 2)
 				cf.Close()
+				// fd 1 is trustworthy again, so re-sample. The value
+				// taken at the top of main described whatever the
+				// previous instance left behind; SoftReboot now hands
+				// over a console, but a soft reboot performed by an
+				// older slinit still hands over its catch-all pipe,
+				// which reads as "not a terminal" and costs this
+				// generation the boot console's colour and the
+				// clear-line before the [STOPPD] cascade.
+				stdoutIsTTY = isTerminal(os.Stdout.Fd())
 			}
 		}
 		var err error
@@ -1826,7 +1835,7 @@ func main() {
 		}
 		if shutdownType != service.ShutdownNone {
 			closeWatchdog(wd, logger)
-			handlePID1Shutdown(shutdownType, logger)
+			handlePID1Shutdown(shutdownType, cal, logger)
 			// handlePID1Shutdown does not return
 		}
 
@@ -1932,11 +1941,13 @@ func (l *pathRearmListener) ServiceEvent(svc service.Service, event service.Serv
 // handlePID1Shutdown performs the appropriate system action after all services
 // have stopped when running as PID 1. Called only for explicit shutdowns
 // (shutdownType != ShutdownNone). This function does not return.
-func handlePID1Shutdown(shutdownType service.ShutdownType, logger *logging.Logger) {
+func handlePID1Shutdown(shutdownType service.ShutdownType, cal *logging.CatchAllLogger, logger *logging.Logger) {
 	switch shutdownType {
 	case service.ShutdownSoftReboot:
 		logger.Notice("Performing soft reboot")
-		if err := shutdown.SoftReboot(logger); err != nil {
+		// cal goes along because the exec inherits fd 1/2 and the new
+		// instance has to find a console there, not a dead pipe.
+		if err := shutdown.SoftReboot(logger, cal); err != nil {
 			logger.Error("Soft reboot failed: %v, falling back to hard reboot", err)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}

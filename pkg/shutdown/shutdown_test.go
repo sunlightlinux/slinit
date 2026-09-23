@@ -546,7 +546,7 @@ func TestSoftReboot(t *testing.T) {
 		execFunc = origExec
 	}()
 
-	err := SoftReboot(testLogger())
+	err := SoftReboot(testLogger(), nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestSoftRebootRunsShutdownHook(t *testing.T) {
 		runHookFunc = origHook
 	}()
 
-	err := SoftReboot(testLogger())
+	err := SoftReboot(testLogger(), nil)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
