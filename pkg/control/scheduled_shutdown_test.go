@@ -14,7 +14,7 @@ func TestScheduleShutdownImmediate(t *testing.T) {
 
 	var called bool
 	var calledType service.ShutdownType
-	srv.ShutdownFunc = func(st service.ShutdownType) {
+	srv.ShutdownFunc = func(st service.ShutdownType, _ uint8) {
 		called = true
 		calledType = st
 	}
@@ -34,7 +34,7 @@ func TestScheduleShutdownDelayed(t *testing.T) {
 	srv := NewServer(nil, "/dev/null", logger)
 
 	done := make(chan struct{})
-	srv.ShutdownFunc = func(st service.ShutdownType) {
+	srv.ShutdownFunc = func(st service.ShutdownType, _ uint8) {
 		close(done)
 	}
 
@@ -78,7 +78,7 @@ func TestCancelShutdown(t *testing.T) {
 	srv := NewServer(nil, "/dev/null", logger)
 
 	fired := make(chan struct{}, 1)
-	srv.ShutdownFunc = func(st service.ShutdownType) {
+	srv.ShutdownFunc = func(st service.ShutdownType, _ uint8) {
 		fired <- struct{}{}
 	}
 
@@ -119,7 +119,7 @@ func TestScheduleShutdownReplace(t *testing.T) {
 	srv := NewServer(nil, "/dev/null", logger)
 
 	typeCh := make(chan service.ShutdownType, 1)
-	srv.ShutdownFunc = func(st service.ShutdownType) {
+	srv.ShutdownFunc = func(st service.ShutdownType, _ uint8) {
 		typeCh <- st
 	}
 

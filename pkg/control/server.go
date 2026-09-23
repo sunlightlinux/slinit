@@ -52,8 +52,10 @@ type Server struct {
 	// Replaced on each Reopen() call.
 	stopAccept chan struct{}
 
-	// ShutdownFunc is called when a shutdown command is received.
-	ShutdownFunc func(service.ShutdownType)
+	// ShutdownFunc is called when a shutdown command is received. The
+	// flags carry the operator's haste (see ShutdownFlagKill /
+	// ShutdownFlagFast); zero is the ordinary graceful teardown.
+	ShutdownFunc func(service.ShutdownType, uint8)
 
 	// WallFunc is an optional hook invoked when a shutdown is scheduled
 	// or cancelled. The delay argument is the time until execution
@@ -310,7 +312,7 @@ func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration, 
 		// Immediate shutdown.
 		s.scheduledDeadline = time.Time{}
 		if s.ShutdownFunc != nil {
-			s.ShutdownFunc(st)
+			s.ShutdownFunc(st, 0)
 		}
 		return
 	}
@@ -352,7 +354,9 @@ func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration, 
 
 		s.logger.Notice("Scheduled shutdown (%s) executing now", shutdownTypeName(st))
 		if s.ShutdownFunc != nil {
-			s.ShutdownFunc(st)
+			// A scheduled shutdown is always the graceful one: the
+			// haste flags belong to an immediate request.
+			s.ShutdownFunc(st, 0)
 		}
 	})
 }

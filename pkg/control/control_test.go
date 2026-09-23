@@ -508,7 +508,7 @@ func TestShutdown(t *testing.T) {
 	defer server.Stop()
 
 	var receivedShutdown service.ShutdownType
-	server.ShutdownFunc = func(st service.ShutdownType) {
+	server.ShutdownFunc = func(st service.ShutdownType, _ uint8) {
 		receivedShutdown = st
 	}
 

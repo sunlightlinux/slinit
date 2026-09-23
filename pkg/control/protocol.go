@@ -29,6 +29,25 @@ func encodeStatusFlags(svc service.Service) uint8 {
 	return flags
 }
 
+// Shutdown flags, sent as an optional second byte of a CmdShutdown
+// payload: [type(1)] [flags(1)?]. The byte is optional so the command
+// keeps its original shape — a daemon that predates these flags reads
+// the type and ignores the rest, which lands it on the ordinary
+// graceful path.
+//
+// They say how much haste the operator is in, not what to do:
+//
+//	(none)             stop every service the usual way — SIGTERM,
+//	                   then its stop-timeout, then SIGKILL
+//	ShutdownFlagKill   SIGKILL the services at once, then the normal
+//	                   sync + unmount + syscall
+//	ShutdownFlagFast   skip the teardown entirely: sync and the
+//	                   syscall, nothing else (what `reboot -f` does)
+const (
+	ShutdownFlagKill uint8 = 1 << 0
+	ShutdownFlagFast uint8 = 1 << 1
+)
+
 // Protocol versioning for slinit control protocol.
 // CPVersion is the current protocol version implemented by this build.
 // MinCompatVersion is the minimum version a peer must support.

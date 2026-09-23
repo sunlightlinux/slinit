@@ -552,7 +552,9 @@ Commands:
   is-started <service>     Exit 0 if started, 1 otherwise
   is-failed <service>      Exit 0 if failed, 1 otherwise
   shutdown [type] [time]   Shutdown: type=halt|poweroff|reboot|kexec|softreboot
-                           time=now|+N (min)|HH:MM (default: poweroff now)
+                           time=+N (min)|HH:MM, or 'now' to kill services
+                           instead of waiting out their stop-timeouts
+  shutdown [type] --fast   No teardown at all: sync + the syscall
   shutdown -c              Cancel scheduled shutdown
   shutdown --status        Show pending shutdown info
   trigger <service>        Trigger a triggered service
@@ -2460,8 +2462,13 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 	var (
 		interactive bool
 		warnOnly    bool
+		fast        bool
 		message     string
 	)
+	// Whether a time was actually typed, and which. `now` is the
+	// default when none is given, but typing it means something extra:
+	// don't wait the services out, kill them.
+	timeGiven := ""
 
 	// First pass: extract flags. We do this in a dedicated loop so the
 	// second pass (positional type/time/message parsing) stays simple
@@ -2472,6 +2479,8 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		switch {
 		case a == "-i" || a == "--interactive":
 			interactive = true
+		case a == "--fast":
+			fast = true
 		case a == "-k" || a == "--warn":
 			// LSB shutdown -k: warn-only. Broadcast the message and
 			// return without scheduling anything.
@@ -2503,6 +2512,7 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		default:
 			if _, err := parseShutdownTime(a); err == nil {
 				timeArg = a
+				timeGiven = a
 				positionalIdx++
 				continue
 			}
@@ -2564,9 +2574,32 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		return err
 	}
 
+	if fast && delay > 0 {
+		return fmt.Errorf("--fast cannot be scheduled: it skips the teardown, so it only makes sense right now")
+	}
+
 	if delay <= 0 {
 		// Immediate shutdown — use the existing CmdShutdown for compatibility.
+		//
+		// How much haste, in three steps:
+		//   `shutdown halt`        stop the services properly
+		//   `shutdown halt now`    kill them instead of waiting
+		//   `shutdown halt --fast` do not stop them at all
+		//
+		// The flags byte is appended only when it says something, so
+		// the plain form puts exactly the same bytes on the wire it
+		// always has.
+		var flags uint8
+		switch {
+		case fast:
+			flags = control.ShutdownFlagFast
+		case timeGiven == "now":
+			flags = control.ShutdownFlagKill
+		}
 		payload := []byte{uint8(st)}
+		if flags != 0 {
+			payload = append(payload, flags)
+		}
 		if err := control.WritePacket(conn, control.CmdShutdown, payload); err != nil {
 			return err
 		}
@@ -2575,7 +2608,14 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 			return err
 		}
 		if rply == control.RplyACK {
-			info("Shutdown (%s) initiated.\n", shutType)
+			switch flags {
+			case control.ShutdownFlagFast:
+				info("Shutdown (%s) initiated — no service teardown, no unmount.\n", shutType)
+			case control.ShutdownFlagKill:
+				info("Shutdown (%s) initiated — killing services immediately.\n", shutType)
+			default:
+				info("Shutdown (%s) initiated.\n", shutType)
+			}
 		} else {
 			return fmt.Errorf("shutdown failed: reply %d", rply)
 		}

@@ -828,8 +828,14 @@ func (c *Connection) handleShutdown(payload []byte) error {
 	}
 
 	shutType := service.ShutdownType(payload[0])
+	// Optional flags byte: absent from every pre-flags client, and from
+	// the SysV shims, both of which mean the graceful teardown.
+	var flags uint8
+	if len(payload) >= 2 {
+		flags = payload[1]
+	}
 	if c.server.ShutdownFunc != nil {
-		c.server.ShutdownFunc(shutType)
+		c.server.ShutdownFunc(shutType, flags)
 	}
 	return c.writePacket(RplyACK, nil)
 }

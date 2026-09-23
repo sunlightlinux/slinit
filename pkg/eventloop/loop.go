@@ -512,6 +512,20 @@ func (el *EventLoop) InitiateShutdown(shutdownType service.ShutdownType) {
 	el.initiateShutdown(shutdownType)
 }
 
+// InitiateShutdownKill shuts down without waiting services out: the
+// teardown is started so every service transitions and gets its
+// stop-command, and then each one is SIGKILLed instead of being given
+// its stop-timeout. This is `slinitctl shutdown <type> now`, for an
+// operator who wants the box down rather than the services happy.
+func (el *EventLoop) InitiateShutdownKill(shutdownType service.ShutdownType) {
+	el.initiateShutdown(shutdownType)
+	// After initiateShutdown, so the kill lands on services that are
+	// already in their stopping transition; their exits then drive the
+	// loop out through the normal inactive path.
+	el.logger.Warn("Killing services immediately (requested)")
+	el.services.KillActiveServices()
+}
+
 func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	el.mu.Lock()
 	if el.shutdownInitiated {

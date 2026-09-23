@@ -23,6 +23,26 @@ behaviour change rather than a fix — see the first entry below.
 
 ### Changed
 
+- **`slinitctl shutdown` now has three degrees of haste.** Typing `now`
+  used to be the same as leaving the time out, because `now` was
+  already the default. It now means what it sounds like:
+
+  | Command | What it does |
+  |---------|--------------|
+  | `slinitctl shutdown halt` | unchanged: SIGTERM, each service's `stop-timeout`, then SIGKILL; sync, unmount, syscall |
+  | `slinitctl shutdown halt now` | SIGKILL the services at once — a long `stop-timeout` can no longer hold the machine up; still syncs and unmounts |
+  | `slinitctl shutdown halt --fast` | no teardown at all: sync and the syscall, as `reboot -f` does |
+
+  Measured against a service that ignores SIGTERM and asks for a 10s
+  stop-timeout: 10.2s for the plain form, 0.2s for the other two.
+  `--fast` cannot be scheduled, and in container mode, where there is no
+  syscall to make, it behaves as `now`.
+
+  On the wire this is an optional flags byte after `CmdShutdown`'s type
+  byte. A daemon that does not know it reads the type and ignores the
+  rest, which is the graceful path — so a new `slinitctl` against an
+  older daemon degrades to today's behaviour rather than failing.
+
 - **A requested stop ends a container with 0, not 1.** `slinitctl stop`
   on a container's workload left nothing running, and slinit called that
   a boot failure: exit 1 and `ERROR: Boot failure detected`, for

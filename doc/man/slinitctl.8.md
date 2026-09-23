@@ -357,11 +357,34 @@ daemon, which is useful at install time or in initramfs.
 
 ### Shutdown
 
-**shutdown** *kind*
+**shutdown** *kind* [*time*] [**\--fast**]
 :   Initiate shutdown. *kind* is one of **halt**, **poweroff**,
     **reboot**, **kexec**, **softreboot** / **soft-reboot**. Same
     semantics as the **slinit-shutdown**(8) tool but routed through
     the control socket.
+
+    *time* is **+**\ *N* minutes or *HH:MM* to schedule one, or **now**.
+    How much of a hurry slinit is in comes in three steps:
+
+    **shutdown** *kind*
+    :   Stop every service properly: **SIGTERM**, then its
+        **stop-timeout**, then **SIGKILL** for whatever is left.
+        Then sync, unmount and the syscall.
+
+    **shutdown** *kind* **now**
+    :   Do not wait: services are **SIGKILL**ed as soon as the
+        teardown starts, so a service with a long **stop-timeout**
+        cannot hold the machine up. Filesystems are still synced and
+        unmounted.
+
+    **shutdown** *kind* **\--fast**
+    :   Skip the teardown altogether — sync and the syscall, nothing
+        else, which is what **reboot**(8) **-f** does. Services get no
+        stop-command and filesystems are not unmounted, so use it when
+        the box has to go down now and the state on disk is expendable
+        or already safe. Cannot be combined with a scheduled *time*.
+        In container mode there is no syscall to make, so it behaves
+        as **now**.
 
 **halt** | **poweroff** | **reboot** | **kexec** | **softreboot**
 :   Top-level shortcuts equivalent to **shutdown** with the same

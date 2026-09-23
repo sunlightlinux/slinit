@@ -1510,8 +1510,22 @@ func main() {
 		// fallback so we don't hard-code the default twice.
 		loop.SetEmergencyTimeout(emergencyTimeout)
 
-		ctrlServer.ShutdownFunc = func(st service.ShutdownType) {
-			loop.InitiateShutdown(st)
+		ctrlServer.ShutdownFunc = func(st service.ShutdownType, flags uint8) {
+			switch {
+			case flags&control.ShutdownFlagFast != 0 && isPID1 && !containerMode:
+				// `--fast`: no teardown, no unmount — sync and the
+				// syscall, the same path `reboot -f` takes. Only as
+				// PID 1 on a real machine: in a container the runtime
+				// owns the teardown and the reboot syscall is not ours
+				// to make, so it degrades to the kill path below.
+				logger.Warn("Fast shutdown requested (%s): skipping service teardown", st)
+				closeWatchdog(wd, logger)
+				shutdown.ExecuteForce(st, logger)
+			case flags&(control.ShutdownFlagFast|control.ShutdownFlagKill) != 0:
+				loop.InitiateShutdownKill(st)
+			default:
+				loop.InitiateShutdown(st)
+			}
 		}
 
 		// Per-service failure-action / success-action: route the
