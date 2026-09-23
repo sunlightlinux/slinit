@@ -17,6 +17,31 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.3.9] — 2026-09-23
+
+A soft-reboot release. Every fix below was found by driving the demo VM
+through repeated soft reboots and looking at what came back wrong — a
+missing blank line that turned out to be a lost terminal, a kernel boot
+time that grew with each generation, a `slice` directive that had never
+worked on its own, cgroup directories nobody reclaimed, and a hurried
+reboot that could break every boot after it.
+
+This is a patch. Everything here is a bug fix or an additive protocol
+extension, which is what [STABILITY.md](STABILITY.md) allows in one.
+Two of the fixes are visible from outside, though, so they are listed
+again under `Changed` with what to check.
+
+Verified: 72 unit packages including `-race` on `pkg/service` and
+`pkg/control`, plus the demo VM across repeated soft reboots. The
+stop-command grace got a controlled comparison: on 2.3.8 and on this
+build the immediate kill fires at the same point in the teardown, right
+after `persist-journal-mount`, and where 2.3.8 logged three
+`stop command failed (killed by signal 9)` and then failed to start
+`ssd-demo` and `supervise-demo` on the next boot — and on every boot
+after that — this build logs none and brings both back. The QEMU
+functional suite has not been re-run for this cut; it has not run since
+v2.3.5.
+
 ### Fixed
 
 - **A soft-rebooted slinit lost the boot console's colour and its
@@ -78,6 +103,24 @@ the full commit-level record.
   affected — `ProcessService` reports its main process and
   `BGProcessService` its daemon, and neither puts the stop-command's pid
   in `PID()`.
+
+### Changed
+
+- **A stopped service's cgroup directory disappears.** It used to
+  linger, so anything that wrote to `/sys/fs/cgroup/<slice>/<service>/`
+  while the service was down found it there. slinit recreates the
+  directory and rewrites every setting from the service's configuration
+  on the next start, so nothing slinit manages is lost — but an external
+  script that pokes at a stopped service's cgroup needs to create the
+  directory itself, or run while the service is up.
+- **`shutdown <kind> now` takes up to a second longer when a
+  stop-command is running.** That second is the fix above; services
+  themselves still die at once, and nothing waits on a stop-command that
+  has already finished, which is the normal case. To confirm which
+  behaviour a binary has: run a hurried shutdown and watch for
+  `stop command failed (killed by signal 9)` — present on 2.3.8 and
+  earlier, gone here. A script that outlives its second logs
+  `stop command still running after 1s, sending SIGKILL` instead.
 
 ### Added
 
