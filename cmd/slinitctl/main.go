@@ -324,6 +324,14 @@ doneFlags:
 		err = cmdResetFailedDispatch(conn, cmdArgs)
 	case "shutdown":
 		err = cmdShutdownDispatch(conn, cmdArgs)
+	case "halt", "poweroff", "reboot", "kexec", "softreboot", "soft-reboot":
+		// Top-level shortcuts: `slinitctl reboot` is muscle memory from
+		// other init systems, and slinitctl.8 has promised them for a
+		// while without anything implementing them — the dispatcher
+		// answered "Unknown command". They are the shutdown command
+		// with the kind already filled in, so every form works the same
+		// way: `slinitctl reboot now`, `slinitctl halt --fast`.
+		err = cmdShutdownDispatch(conn, append([]string{command}, cmdArgs...))
 	case "switch-root", "switch_root":
 		err = cmdSwitchRoot(conn, cmdArgs)
 	case "suspend":
@@ -558,6 +566,9 @@ Commands:
   shutdown [type] --superfast
                            The syscall alone — no sync either (careful:
                            unwritten data is lost)
+  halt | poweroff | reboot | kexec | softreboot
+                           Shortcut for "shutdown <that kind>", taking
+                           the same time argument and flags
   shutdown -c              Cancel scheduled shutdown
   shutdown --status        Show pending shutdown info
   trigger <service>        Trigger a triggered service

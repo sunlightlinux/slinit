@@ -59,6 +59,15 @@ behaviour change rather than a fix — see the first entry below.
 
 ### Fixed
 
+- **`slinitctl reboot`, `halt` and `poweroff` exist now.**
+  `slinitctl.8` has described them as top-level shortcuts for a while —
+  "provided so `slinitctl reboot` works as muscle-memory from other init
+  systems" — but nothing implemented them: the dispatcher answered
+  `Unknown command: reboot`. They now route to the same code the long
+  form uses, so they take the same time argument and the same flags:
+  `slinitctl reboot now`, `slinitctl halt --fast`, `slinitctl poweroff
+  +5`, and `kexec` / `softreboot` too.
+
 - **A container's log is clean now.** slinit no longer warns about a
   missing `/etc/machine-id` in container mode: images routinely ship
   without the file, the identity belongs to the runtime, and there is no

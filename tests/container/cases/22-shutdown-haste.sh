@@ -76,6 +76,18 @@ check $? "'--superfast' did not wait either (${super}ms)"
 [ "$(ct_exit_code $N)" = "0" ]
 check $? "'--superfast' exits 0"
 
+# Same hurry through the shortcut spelling.
+ct_rm $N
+ct_start $N "$SVC"
+ct_wait_ready $N 15
+t0=$(date +%s%N)
+"$RUNTIME" exec $N slinitctl reboot now >/dev/null 2>&1
+ct_wait_exit $N 30
+check $? "'slinitctl reboot now' completed"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+[ "$ms" -lt 3000 ]
+check $? "the shortcut is as hurried as the long form (${ms}ms)"
+
 # Two different amounts of hurry: asking for both is a contradiction.
 ct_rm $N
 ct_start $N "$SVC"
@@ -83,6 +95,17 @@ ct_wait_ready $N 15
 out=$("$RUNTIME" exec $N slinitctl shutdown halt --fast --superfast 2>&1)
 [ $? -ne 0 ]
 check $? "--fast together with --superfast is refused ($out)"
+
+# The top-level shortcuts take the same arguments. slinitctl.8 promised
+# them long before anything implemented them: the dispatcher answered
+# "Unknown command: reboot".
+"$RUNTIME" exec $N slinitctl reboot --status >/dev/null 2>&1
+check $? "'slinitctl reboot --status' is a command, not an error"
+"$RUNTIME" exec $N slinitctl halt +5 >/dev/null 2>&1 &&
+    "$RUNTIME" exec $N slinitctl shutdown --status 2>/dev/null | grep -qi "halt"
+check $? "'slinitctl halt +5' schedules the same way the long form does"
+"$RUNTIME" exec $N slinitctl shutdown -c >/dev/null 2>&1
+check $? "and it cancels the same way"
 
 # --fast is immediate by definition, so pairing it with a schedule is a
 # contradiction the CLI should refuse rather than silently resolve.
