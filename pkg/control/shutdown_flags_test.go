@@ -22,6 +22,7 @@ func TestShutdownFlagsReachTheDaemon(t *testing.T) {
 		{"explicit zero", []byte{uint8(service.ShutdownHalt), 0}, 0},
 		{"kill", []byte{uint8(service.ShutdownHalt), ShutdownFlagKill}, ShutdownFlagKill},
 		{"fast", []byte{uint8(service.ShutdownReboot), ShutdownFlagFast}, ShutdownFlagFast},
+		{"superfast", []byte{uint8(service.ShutdownPoweroff), ShutdownFlagSuper}, ShutdownFlagSuper},
 	}
 
 	for _, tc := range cases {

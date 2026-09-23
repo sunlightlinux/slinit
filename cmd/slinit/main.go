@@ -1512,6 +1512,13 @@ func main() {
 
 		ctrlServer.ShutdownFunc = func(st service.ShutdownType, flags uint8) {
 			switch {
+			case flags&control.ShutdownFlagSuper != 0 && isPID1 && !containerMode:
+				// `--superfast`: straight to the syscall. No teardown,
+				// no unmount, and no sync either — whatever is still in
+				// the page cache is gone. The operator asked for it.
+				logger.Warn("Immediate shutdown requested (%s): no sync, unwritten data will be lost", st)
+				closeWatchdog(wd, logger)
+				shutdown.ExecuteImmediate(st, logger)
 			case flags&control.ShutdownFlagFast != 0 && isPID1 && !containerMode:
 				// `--fast`: no teardown, no unmount — sync and the
 				// syscall, the same path `reboot -f` takes. Only as
@@ -1521,7 +1528,7 @@ func main() {
 				logger.Warn("Fast shutdown requested (%s): skipping service teardown", st)
 				closeWatchdog(wd, logger)
 				shutdown.ExecuteForce(st, logger)
-			case flags&(control.ShutdownFlagFast|control.ShutdownFlagKill) != 0:
+			case flags&(control.ShutdownFlagSuper|control.ShutdownFlagFast|control.ShutdownFlagKill) != 0:
 				loop.InitiateShutdownKill(st)
 			default:
 				loop.InitiateShutdown(st)

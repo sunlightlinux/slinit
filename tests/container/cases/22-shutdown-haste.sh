@@ -1,19 +1,21 @@
-# The three degrees of haste in `slinitctl shutdown`, measured against a
+# The four degrees of haste in `slinitctl shutdown`, measured against a
 # service that ignores SIGTERM and asks for a 10s stop-timeout:
 #
-#   shutdown halt          wait it out — SIGTERM, stop-timeout, SIGKILL
-#   shutdown halt now      kill it at once, then sync/unmount as usual
-#   shutdown halt --fast   no teardown at all
+#   shutdown halt              wait it out — SIGTERM, stop-timeout, KILL
+#   shutdown halt now          kill it at once, then sync/unmount as usual
+#   shutdown halt --fast       no teardown at all, but still sync
+#   shutdown halt --superfast  the syscall alone, not even a sync
 #
 # Timing is the assertion because that is the whole point of the
 # distinction: the plain form must still honour the stop-timeout the
-# service asked for, and the other two must not.
+# service asked for, and the others must not.
 #
-# Note what this cannot cover: `--fast` as PID 1 on real hardware goes
-# through shutdown.ExecuteForce — sync and the reboot syscall, no
-# unmount. In a container there is no syscall to make, so it lands on
-# the kill path instead. The bare-metal branch is exercised by
-# reboot(8) -f, not from here.
+# Note what this cannot cover. As PID 1 on real hardware, `--fast` goes
+# through shutdown.ExecuteForce and `--superfast` through
+# ExecuteImmediate, and the difference between them is what they skip
+# on the way to the syscall. A container has no syscall to make, so both
+# land on the kill path here and look alike. The omissions are pinned by
+# TestExecuteImmediateSkipsEverythingButTheSyscall instead.
 
 N=slinit-ct-haste-$$
 SVC=$(new_svcdir)
@@ -66,6 +68,21 @@ check $? "'--fast' shutdown completed"
 check $? "'--fast' did not wait either (${fast}ms)"
 [ "$(ct_exit_code $N)" = "0" ]
 check $? "'--fast' exits 0"
+
+super=$(run_shutdown --superfast)
+check $? "'--superfast' shutdown completed"
+[ "$super" -lt 3000 ]
+check $? "'--superfast' did not wait either (${super}ms)"
+[ "$(ct_exit_code $N)" = "0" ]
+check $? "'--superfast' exits 0"
+
+# Two different amounts of hurry: asking for both is a contradiction.
+ct_rm $N
+ct_start $N "$SVC"
+ct_wait_ready $N 15
+out=$("$RUNTIME" exec $N slinitctl shutdown halt --fast --superfast 2>&1)
+[ $? -ne 0 ]
+check $? "--fast together with --superfast is refused ($out)"
 
 # --fast is immediate by definition, so pairing it with a schedule is a
 # contradiction the CLI should refuse rather than silently resolve.

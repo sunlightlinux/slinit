@@ -357,7 +357,7 @@ daemon, which is useful at install time or in initramfs.
 
 ### Shutdown
 
-**shutdown** *kind* [*time*] [**\--fast**]
+**shutdown** *kind* [*time*] [**\--fast** | **\--superfast**]
 :   Initiate shutdown. *kind* is one of **halt**, **poweroff**,
     **reboot**, **kexec**, **softreboot** / **soft-reboot**. Same
     semantics as the **slinit-shutdown**(8) tool but routed through
@@ -385,6 +385,16 @@ daemon, which is useful at install time or in initramfs.
         or already safe. Cannot be combined with a scheduled *time*.
         In container mode there is no syscall to make, so it behaves
         as **now**.
+
+    **shutdown** *kind* **\--superfast**
+    :   The syscall alone. Everything **\--fast** still did — the
+        filesystem sync, the utmp/wtmp record, the saved clock
+        timestamp — is skipped as well, which is **reboot**(8) **-ff**.
+        Use it when the machine must go down this instant and you
+        accept the consequence: anything written but not yet flushed is
+        lost, and the next boot finds an unclean filesystem. Like
+        **\--fast**, it cannot be scheduled, and in container mode it
+        behaves as **now**.
 
 **halt** | **poweroff** | **reboot** | **kexec** | **softreboot**
 :   Top-level shortcuts equivalent to **shutdown** with the same

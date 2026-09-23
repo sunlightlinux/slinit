@@ -355,6 +355,41 @@ func ExecuteForce(shutdownType service.ShutdownType, logger *logging.Logger) {
 	InfiniteHold()
 }
 
+// ExecuteImmediate is the shortest path there is: the reboot syscall,
+// and nothing before it.
+//
+// Compared with ExecuteForce, which is already the `reboot -f` path, it
+// also drops the filesystem sync, the utmp/wtmp shutdown record and the
+// clock timestamp. That leaves no step between the operator's request
+// and the kernel, which is the point — and the danger: anything a
+// process has written but the kernel has not flushed is lost, and the
+// next boot sees an unclean filesystem. systemd's equivalent is
+// `reboot -ff`.
+//
+// Caller: `slinitctl shutdown <type> --superfast`.
+func ExecuteImmediate(shutdownType service.ShutdownType, logger *logging.Logger) {
+	signal.Ignore(syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE)
+
+	// One line, because an operator reading the console afterwards
+	// should know the filesystems were never synced.
+	logger.Notice("Immediate shutdown: %s (no sync, no unmount — unwritten data is lost)", shutdownType)
+
+	rebootType := shutdownType
+	if err := rebootSystem(rebootType); err != nil {
+		if rebootType == service.ShutdownKexec && errors.Is(err, syscall.EINVAL) {
+			logger.Error("kexec reboot: no kernel pre-loaded; falling back to normal reboot")
+			rebootType = service.ShutdownReboot
+			if err := rebootSystem(rebootType); err != nil {
+				logger.Error("Fallback reboot syscall failed: %v", err)
+			}
+		} else {
+			logger.Error("Reboot syscall failed: %v", err)
+		}
+	}
+	logger.Error("Immediate shutdown syscall returned unexpectedly")
+	InfiniteHold()
+}
+
 // KillAllProcesses sends SIGTERM to all processes, waits for the configured
 // grace period, then sends SIGKILL. This mirrors dinit's process cleanup in
 // shutdown.cc. kill(-1, sig) sends the signal to every process except PID 1.

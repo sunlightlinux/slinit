@@ -555,6 +555,9 @@ Commands:
                            time=+N (min)|HH:MM, or 'now' to kill services
                            instead of waiting out their stop-timeouts
   shutdown [type] --fast   No teardown at all: sync + the syscall
+  shutdown [type] --superfast
+                           The syscall alone — no sync either (careful:
+                           unwritten data is lost)
   shutdown -c              Cancel scheduled shutdown
   shutdown --status        Show pending shutdown info
   trigger <service>        Trigger a triggered service
@@ -2463,6 +2466,7 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		interactive bool
 		warnOnly    bool
 		fast        bool
+		superFast   bool
 		message     string
 	)
 	// Whether a time was actually typed, and which. `now` is the
@@ -2481,6 +2485,8 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 			interactive = true
 		case a == "--fast":
 			fast = true
+		case a == "--superfast":
+			superFast = true
 		case a == "-k" || a == "--warn":
 			// LSB shutdown -k: warn-only. Broadcast the message and
 			// return without scheduling anything.
@@ -2574,8 +2580,15 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		return err
 	}
 
-	if fast && delay > 0 {
-		return fmt.Errorf("--fast cannot be scheduled: it skips the teardown, so it only makes sense right now")
+	if fast && superFast {
+		return fmt.Errorf("--fast and --superfast are two different amounts of hurry; pick one")
+	}
+	if (fast || superFast) && delay > 0 {
+		flag := "--fast"
+		if superFast {
+			flag = "--superfast"
+		}
+		return fmt.Errorf("%s cannot be scheduled: it skips the teardown, so it only makes sense right now", flag)
 	}
 
 	if delay <= 0 {
@@ -2591,6 +2604,8 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		// always has.
 		var flags uint8
 		switch {
+		case superFast:
+			flags = control.ShutdownFlagSuper
 		case fast:
 			flags = control.ShutdownFlagFast
 		case timeGiven == "now":
@@ -2609,6 +2624,8 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		}
 		if rply == control.RplyACK {
 			switch flags {
+			case control.ShutdownFlagSuper:
+				info("Shutdown (%s) initiated — syscall only, no sync: unwritten data is lost.\n", shutType)
 			case control.ShutdownFlagFast:
 				info("Shutdown (%s) initiated — no service teardown, no unmount.\n", shutType)
 			case control.ShutdownFlagKill:

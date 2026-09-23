@@ -23,7 +23,7 @@ behaviour change rather than a fix — see the first entry below.
 
 ### Changed
 
-- **`slinitctl shutdown` now has three degrees of haste.** Typing `now`
+- **`slinitctl shutdown` now has four degrees of haste.** Typing `now`
   used to be the same as leaving the time out, because `now` was
   already the default. It now means what it sounds like:
 
@@ -32,11 +32,13 @@ behaviour change rather than a fix — see the first entry below.
   | `slinitctl shutdown halt` | unchanged: SIGTERM, each service's `stop-timeout`, then SIGKILL; sync, unmount, syscall |
   | `slinitctl shutdown halt now` | SIGKILL the services at once — a long `stop-timeout` can no longer hold the machine up; still syncs and unmounts |
   | `slinitctl shutdown halt --fast` | no teardown at all: sync and the syscall, as `reboot -f` does |
+  | `slinitctl shutdown halt --superfast` | the syscall alone — no sync, no utmp record, as `reboot -ff` does. Unwritten data is lost and the next boot finds an unclean filesystem |
 
   Measured against a service that ignores SIGTERM and asks for a 10s
-  stop-timeout: 10.2s for the plain form, 0.2s for the other two.
-  `--fast` cannot be scheduled, and in container mode, where there is no
-  syscall to make, it behaves as `now`.
+  stop-timeout: 10.3s for the plain form, 0.3s for the hurried ones.
+  Neither `--fast` nor `--superfast` can be scheduled, the two refuse to
+  be combined, and in container mode, where there is no syscall to make,
+  both behave as `now`.
 
   On the wire this is an optional flags byte after `CmdShutdown`'s type
   byte. A daemon that does not know it reads the type and ignores the

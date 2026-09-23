@@ -43,9 +43,12 @@ func encodeStatusFlags(svc service.Service) uint8 {
 //	                   sync + unmount + syscall
 //	ShutdownFlagFast   skip the teardown entirely: sync and the
 //	                   syscall, nothing else (what `reboot -f` does)
+//	ShutdownFlagSuper  the syscall and nothing else — not even the
+//	                   sync (what `reboot -ff` does)
 const (
-	ShutdownFlagKill uint8 = 1 << 0
-	ShutdownFlagFast uint8 = 1 << 1
+	ShutdownFlagKill  uint8 = 1 << 0
+	ShutdownFlagFast  uint8 = 1 << 1
+	ShutdownFlagSuper uint8 = 1 << 2
 )
 
 // Protocol versioning for slinit control protocol.
