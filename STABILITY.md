@@ -24,6 +24,9 @@ Which versions receive fixes is covered separately, in
   file that loads on 2.3.0 loads on every later 2.x. A file that uses a
   directive introduced in 2.3.6 fails to load on 2.3.5 — see
   [Service configuration](#service-configuration).
+- **Metric names are an interface.** A name served at `/metrics` is not
+  removed or renamed within a major version, and keeps its type — see
+  [Metrics](#metrics).
 - **The Go packages under `pkg/` are not a public API.** Import them at
   your own risk.
 
@@ -90,8 +93,10 @@ and `:`), their accepted values, and what they do.
   hardening directive should stop the service, not start it unhardened.
   It is also why service files are only forward-compatible.
 - New directives are listed in the CHANGELOG under the version that
-  introduced them. From this policy on, `slinit-service(5)` marks each
-  new directive with the version it appeared in.
+  introduced them. `slinit-service(5)` is *intended* to mark each new
+  directive with the version it appeared in; as of v2.3.9 it does not,
+  and the CHANGELOG is the only place to find out when a directive
+  arrived. Tracked as a work item below.
 - The load directories (`/etc/slinit.d` and the others in `slinit(8)`)
   and the `@include`, `@include-opt` and `@meta` lines are stable in the
   same sense.
@@ -110,6 +115,27 @@ and `:`), their accepted values, and what they do.
 - The same applies to the companion tools with a man page in
   `doc/man/`, for their documented flags and exit statuses.
 
+### Metrics
+
+The Prometheus exposition served at `/metrics` by `--metrics-listen`
+(`pkg/metrics`). Anyone scraping it builds dashboards and alerting
+rules on the names, which makes them an interface rather than an
+implementation detail.
+
+- A metric name is not removed or renamed within a major version, and
+  a metric keeps its type. New metrics and new labels may appear.
+- A counter — every name ending `_total` — stays monotonic across the
+  life of the process, as Prometheus requires. It resets to zero on
+  restart and never otherwise.
+- The current set is `slinit_build_info`, `slinit_boot_ready`,
+  `slinit_boot_kernel_seconds`, `slinit_boot_userspace_seconds`,
+  `slinit_services`, `slinit_service_up`, `slinit_service_failed`,
+  `slinit_service_startup_seconds`, `slinit_service_restarts_total`,
+  `slinit_restarts_total`, `slinit_watchdog_restarts_total`.
+- The endpoint is off unless `--metrics-listen` is given. Turning it on
+  is not a promise that the process serves anything else over HTTP; the
+  only paths are `/metrics` and `/`.
+
 ### On-disk formats
 
 - **Journal files.** A newer reader reads every file an older writer
@@ -119,8 +145,18 @@ and `:`), their accepted values, and what they do.
   incompatible change sets a new `IncompatFlags` bit, and readers refuse
   files carrying a bit they do not know (`pkg/journalbin/format.go`).
 - **Persisted state** that slinit reads back across a restart or an
-  upgrade (for example the persisted shutdown intent) stays readable by
-  later versions within the major.
+  upgrade (for example the persisted shutdown intent, and the
+  soft-reboot snapshot) stays readable by later versions within the
+  major. The snapshot is JSON with named fields, so a field may be
+  added; a reader ignores what it does not know and an absent field
+  means what its zero value meant before it existed.
+- **Container results.** `/run/slinit/container-results/exitcode` and
+  `.../haltcode`, written by `slinit -o` as it goes down, are read by
+  whatever supervises the container. The file names, and the meaning of
+  what is in them, are stable within the major. The exit code follows
+  the same rule as `slinitctl`'s: an outcome that writes `0` today does
+  not start writing non-zero, except under [Exceptions](#exceptions) —
+  v2.3.8 changed one such outcome and is recorded below.
 
 ### Compatibility surfaces owned by other projects
 
@@ -162,11 +198,26 @@ When a stable interface has to go:
 
 1. It is marked deprecated in a **minor** release, with the replacement,
    in the CHANGELOG and in its man page.
-2. It keeps working. Using it produces a warning from `slinit-check` and
-   in the daemon log, so the operator hears about it before the removal
-   rather than at it.
+2. It keeps working. Using it should produce a warning from
+   `slinit-check` and in the daemon log, so the operator hears about it
+   before the removal rather than at it. As of v2.3.9 neither warns:
+   nothing has been deprecated yet, so the machinery has never been
+   needed, but it has to exist before anything is. Tracked below.
 3. It is removed no earlier than the **next major** release, and at
    least one minor release after the deprecation.
+
+## Not yet implemented
+
+Two things this document describes do not exist yet. They are listed
+here rather than quietly promised, because a policy that describes
+machinery nobody built is worse than one that admits the gap.
+
+| Commitment | Status as of v2.3.9 |
+|------------|---------------------|
+| `slinit-service(5)` marks each directive with the version it appeared in | Not started. The CHANGELOG carries the information; the man page does not. |
+| A deprecated directive warns from `slinit-check` and in the daemon log | Not started. Nothing is deprecated yet, so nothing has been missed — but this has to land before the first deprecation, not with it. |
+
+Neither blocks anything today. Both block the first deprecation.
 
 ## Exceptions
 
@@ -187,6 +238,22 @@ Either way, the change is listed under `Security` or `Changed` with a
 ## History
 
 Changes this policy would not have allowed:
+
+- **v2.3.9 reclaimed a stopped service's cgroup directory in a patch.**
+  slinit creates those directories and had never removed them; leaving
+  them behind leaked one per `slinitctl run --slice=NAME`, whose
+  transient units never reuse a name. Nothing documented promised the
+  directory would outlive the service, so by the letter of the rules
+  this is a leak fix rather than a behaviour change — but an external
+  script that wrote into a stopped service's cgroup would now find it
+  gone, and "a setup could be relying on it" is the test this policy
+  actually applies. It belonged in a minor. It is in v2.3.9's `Changed`
+  section with what to check.
+
+  The same release's one-second grace for an in-flight stop-command is
+  *not* listed here: `shutdown <kind> now` is documented as being
+  impatient with a slow stop, and killing the cleanup script that a
+  detached daemon depends on was never what that promised.
 
 - **v2.3.8 is a patch carrying two behaviour changes.** A container that
   is told to stop a service and ends up with nothing running exits 0
