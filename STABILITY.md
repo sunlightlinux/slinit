@@ -93,10 +93,12 @@ and `:`), their accepted values, and what they do.
   hardening directive should stop the service, not start it unhardened.
   It is also why service files are only forward-compatible.
 - New directives are listed in the CHANGELOG under the version that
-  introduced them. `slinit-service(5)` is *intended* to mark each new
-  directive with the version it appeared in; as of v2.3.9 it does not,
-  and the CHANGELOG is the only place to find out when a directive
-  arrived. Tracked as a work item below.
+  introduced them, and `slinit-service(5)` marks each one with a
+  `(since X.Y.Z)` note so the page alone tells you the oldest slinit a
+  configuration will run on. A test enforces it: a directive the parser
+  accepts that is neither in the pre-2.4.2 baseline nor marked in the
+  man page fails the build. Directives that predate the convention
+  carry no marker and are available in every 2.x release.
 - The load directories (`/etc/slinit.d` and the others in `slinit(8)`)
   and the `@include`, `@include-opt` and `@meta` lines are stable in the
   same sense.
@@ -209,20 +211,19 @@ When a stable interface has to go:
 3. It is removed no earlier than the **next major** release, and at
    least one minor release after the deprecation.
 
-## Not yet implemented
+## How the commitments are enforced
 
-Two things this document describes do not exist yet. They are listed
-here rather than quietly promised, because a policy that describes
-machinery nobody built is worse than one that admits the gap.
+Both of the commitments this section used to list are now in place,
+as of 2.4.2:
 
-| Commitment | Status |
-|------------|--------|
-| `slinit-service(5)` marks each directive with the version it appeared in | Not started. The CHANGELOG carries the information; the man page does not. The wording above is forward-looking, so there is nothing to backfill: every directive slinit accepts today predates this policy. What is missing is the convention and a check that enforces it on the next one. |
-| A deprecated directive warns from `slinit-check` and in the daemon log | **Done in 2.4.2.** Nothing is marked deprecated, so nothing warns; the machinery is what had to exist first. |
+| Commitment | How it is kept |
+|------------|----------------|
+| `slinit-service(5)` marks each new directive with the version it appeared in | `TestNewDirectivesCarrySinceMarker`. Everything slinit accepts today predates the convention and is listed in a baseline file; anything added from now on must be documented *and* marked, or the build fails. |
+| A deprecated directive warns from `slinit-check` and in the daemon log | The parser consults the feature registry and calls a hook the two consumers wire to their own output. Nothing is marked deprecated yet, and `TestNothingIsDeprecatedYet` fails the moment something is — to force the CHANGELOG and man-page note the rule above requires. |
 
-The remaining item does not block anything today. It blocks nobody
-noticing when a new directive arrives undocumented — which has already
-happened once, to `no-boot-marker`.
+Neither had teeth before, and it showed: `no-boot-marker` was added in
+v2.2.9 and was still missing from `slinit-service(5)` entirely at
+v2.4.0.
 
 ## Exceptions
 

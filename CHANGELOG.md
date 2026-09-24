@@ -19,6 +19,25 @@ the full commit-level record.
 
 ### Added
 
+- **`slinit-service(5)` marks new directives with the release that
+  introduced them**, and a test makes sure the next one does. The page
+  opens with the convention — `(since X.Y.Z)` on the entry — and
+  explains why it matters: service files are forward-compatible only,
+  so the marker is what tells you the oldest slinit a configuration
+  will run on.
+
+  Nothing is backfilled and nothing needed to be. The commitment is
+  forward-looking, and every directive slinit accepts today predates
+  it: 286 shipped by v1.10.55 and `no-boot-marker` at v2.2.9, with
+  none added since. Those are listed in a baseline file;
+  `TestNewDirectivesCarrySinceMarker` fails on any directive that is
+  neither in it nor marked in the man page, and a second test fails if
+  a name lingers in the baseline after the parser drops it.
+
+  The gap this closes is not theoretical. `no-boot-marker` arrived in
+  v2.2.9 and was still absent from `slinit-service(5)` at v2.4.0 —
+  found by hand two releases later, because nothing was checking.
+
 - **Deprecation warnings, the machinery.** STABILITY.md has said since
   v2.3.7 that a deprecated directive "keeps working. Using it produces
   a warning from `slinit-check` and in the daemon log". Nothing did.

@@ -119,6 +119,21 @@ instance, with *$1* substitution still in effect.
         type       = internal
         bundle-of  = wired, wireless, resolver
 
+## HOW TO READ THIS PAGE
+
+A directive introduced after slinit 2.4.2 carries a marker naming the
+release it appeared in:
+
+    **shiny-new-thing**=*yes*|*no*
+    :   (since 2.5.0) Does the shiny new thing.
+
+No marker means the directive predates that convention and is
+available in every 2.x release. Service files are forward-compatible
+only — a file using a directive introduced in 2.5.0 fails to load on
+2.4.2, with a load error rather than a silent skip — so the marker is
+what tells you the oldest slinit your configuration will run on. See
+**STABILITY.md** for the full compatibility contract.
+
 ## CORE SETTINGS
 
 **description**=*text*
