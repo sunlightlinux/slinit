@@ -13,3 +13,9 @@
 # paths, so a crashed test child can drop one in the package dir.
 core
 core.[0-9]*
+
+# tools/stats builds to its own directory when run as
+# `go build ./tools/stats` from there, and to the repo root otherwise.
+# It is a 4 MB dev binary; neither copy belongs in a commit.
+/stats
+/tools/stats/stats

@@ -13,10 +13,12 @@
 //	* Structure counts: Go packages under pkg/, binary dirs under
 //	  cmd/, demo services, man pages.
 //	* Documentation size: CHANGELOG version count + LOC, doc/ LOC.
-//	* Feature surface: directive count (from pkg/config/parser.go
-//	  case labels) + opcode count (from pkg/control/protocol.go
-//	  Cmd*/Rply* constants). Grepped directly out of source so the
-//	  tool doesn't need any built binaries to run.
+//	* Feature surface: directives, service options and wire commands,
+//	  classified by pkg/features — the same registry slinit-supports
+//	  renders, so the two tools give one answer. Reply codes are
+//	  counted separately from protocol.go, since they are wire
+//	  surface but not commands. pkg/features reads the sources
+//	  itself, so this still needs no built binaries.
 //
 // Not part of the shipped slpkgs template — deliberately excluded
 // so operator systems don't carry the dev tooling. Build locally
@@ -38,6 +40,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/pkg/features"
 )
 
 // ---------------------------------------------------------------------
@@ -87,12 +91,21 @@ type DocStats struct {
 	ReadmeLines       int `json:"readme_lines"`
 }
 
-// FeatureStats counts the config + wire surface without needing the
-// built binaries — greps `case "X":` labels straight out of source
-// so the tool runs against a fresh checkout.
+// FeatureStats counts the config + wire surface. The classification
+// comes from pkg/features, the same registry slinit-supports renders,
+// so the two tools cannot disagree about what a directive is.
+//
+// That distinction is not pedantry. A `case "X":` label in the parser
+// is not necessarily a name an operator can type: the service types
+// (`process`, `bgprocess`), the scheduling policies (`rr`, `idle`),
+// the NUMA policies (`bind`, `interleave`) and the plain `yes`/`no`
+// literals all appear as case labels too. Counting them inflated this
+// figure by about 10%.
 type FeatureStats struct {
 	Directives int `json:"directives"`
-	Opcodes    int `json:"wire_opcodes"`
+	Options    int `json:"service_options"`
+	Commands   int `json:"wire_commands"`
+	Replies    int `json:"wire_replies"`
 }
 
 // Stats is the full report.
@@ -496,37 +509,45 @@ func sumFileLines(root string) int {
 }
 
 // ---------------------------------------------------------------------
-// Feature surface — greps source rather than shelling out to the
-// installed slinit-supports binary, so the tool works on a fresh
-// checkout with nothing built.
+// Feature surface — reads source through pkg/features rather than
+// shelling out to the installed slinit-supports binary, so the tool
+// still works on a fresh checkout with nothing built.
 // ---------------------------------------------------------------------
 
-var (
-	directiveCaseRE = regexp.MustCompile(`(?m)^\s*case\s+"([a-z][a-z0-9-]+)"\s*:`)
-	opcodeConstRE   = regexp.MustCompile(`(?m)^\s*(Cmd|Rply)[A-Z][A-Za-z0-9]*\s*(=\s*|CommandCode\s*=\s*|\s+CommandCode\s*=\s*|\s+ReplyCode\s*=\s*)`)
-)
+var replyConstRE = regexp.MustCompile(`(?m)^\s*(Rply[A-Z][A-Za-z0-9]*)\b`)
 
 func featureStats(root string) FeatureStats {
 	var out FeatureStats
-	if data, err := os.ReadFile(filepath.Join(root, "pkg/config/parser.go")); err == nil {
-		// Dedupe: some case labels appear inside a nested switch
-		// (options bag). Set count is the honest number of
-		// distinct directive names.
-		seen := map[string]bool{}
-		for _, m := range directiveCaseRE.FindAllSubmatch(data, -1) {
-			seen[string(m[1])] = true
+
+	// Discovery + the curated provenance table, exactly as
+	// slinit-supports assembles them. Errors leave the counts at zero
+	// rather than substituting a worse number: a missing figure is
+	// easier to notice than a wrong one.
+	opcodes, errO := features.DiscoverOpcodes(filepath.Join(root, "pkg/control/protocol.go"))
+	directives, errD := features.DiscoverDirectives(filepath.Join(root, "pkg/config/parser.go"))
+	if errO == nil && errD == nil {
+		reg, _ := features.Load(opcodes, directives)
+		for _, f := range reg.All() {
+			switch f.Kind {
+			case features.KindDirective:
+				out.Directives++
+			case features.KindOption:
+				out.Options++
+			case features.KindOpcode:
+				out.Commands++
+			}
 		}
-		out.Directives = len(seen)
 	}
-	// Opcodes: grep pkg/control/protocol.go for `Cmd*` and `Rply*`
-	// constant names. Simpler than pulling in the binary.
+
+	// Reply codes are wire surface but not commands, so the registry
+	// does not carry them. They are unambiguous in the source: every
+	// Rply* constant in protocol.go is one.
 	if data, err := os.ReadFile(filepath.Join(root, "pkg/control/protocol.go")); err == nil {
-		re := regexp.MustCompile(`(?m)^\s*(Cmd[A-Z][A-Za-z0-9]*|Rply[A-Z][A-Za-z0-9]*)\b`)
 		seen := map[string]bool{}
-		for _, m := range re.FindAllSubmatch(data, -1) {
+		for _, m := range replyConstRE.FindAllSubmatch(data, -1) {
 			seen[string(m[1])] = true
 		}
-		out.Opcodes = len(seen)
+		out.Replies = len(seen)
 	}
 	return out
 }
@@ -572,7 +593,9 @@ func renderText(s *Stats, w *os.File) {
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "== Feature surface ==\n")
 	fmt.Fprintf(w, "  Config directives:        %d\n", s.Features.Directives)
-	fmt.Fprintf(w, "  Wire opcodes (Cmd+Rply):  %d\n", s.Features.Opcodes)
+	fmt.Fprintf(w, "  Service options:          %d\n", s.Features.Options)
+	fmt.Fprintf(w, "  Wire commands (Cmd*):     %d\n", s.Features.Commands)
+	fmt.Fprintf(w, "  Wire replies  (Rply*):    %d\n", s.Features.Replies)
 
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "== Docs ==\n")
@@ -621,7 +644,9 @@ func renderMarkdown(s *Stats, w *os.File) {
 	fmt.Fprintf(w, "## Feature surface\n\n")
 	fmt.Fprintf(w, "| Surface | Count |\n|---|---:|\n")
 	fmt.Fprintf(w, "| Config directives | %d |\n", s.Features.Directives)
-	fmt.Fprintf(w, "| Wire opcodes (Cmd+Rply) | %d |\n\n", s.Features.Opcodes)
+	fmt.Fprintf(w, "| Service options | %d |\n", s.Features.Options)
+	fmt.Fprintf(w, "| Wire commands (Cmd*) | %d |\n", s.Features.Commands)
+	fmt.Fprintf(w, "| Wire replies (Rply*) | %d |\n\n", s.Features.Replies)
 
 	fmt.Fprintf(w, "## Docs\n\n")
 	fmt.Fprintf(w, "| Doc | Value |\n|---|---:|\n")
