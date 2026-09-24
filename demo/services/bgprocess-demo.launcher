@@ -1,6 +1,12 @@
 #!/bin/sh
 # Launcher for bgprocess-demo: forks a daemon in a new session,
 # writes its PID to the pid-file, and exits.
-setsid sh -c 'echo $$ > /run/bgprocess-demo.pid; exec sleep 3600' &
+#
+# A day, not an hour. The number is not a timeout — the service is
+# `restart = no`, so when this process exits slinit sees the tracked
+# pid disappear and takes the service down. At `sleep 3600` a demo
+# about pid-file tracking quietly stopped tracking anything an hour
+# in. Same reason ssd-demo's sleeper is a day; see its comments.
+setsid sh -c 'echo $$ > /run/bgprocess-demo.pid; exec sleep 86400' &
 sleep 1
 exit 0

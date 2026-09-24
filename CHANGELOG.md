@@ -80,6 +80,20 @@ the full commit-level record.
   is itself a `sleep` still matches, and the demo VM runs several
   `sleep` loops — but the service file now says so.
 
+  The sleeper itself is a day long now rather than five minutes. The
+  number was never a timeout: nothing wanted the daemon to stop by
+  itself, and while it did, the service kept reporting STARTED for the
+  rest of the session with nothing left to supervise.
+- **`bgprocess-demo` stopped supervising anything an hour in**, for
+  the same reason. Its launcher backgrounded `sleep 3600`, and the
+  service is `restart = no`, so once that exited slinit saw the
+  tracked pid disappear and took the service down — a demo about
+  pid-file tracking, quietly untracked. Also a day now.
+
+  `supervise-demo` is deliberately not changed: its child exits after
+  a second on purpose, because counting respawns is what it exists to
+  show.
+
 
 - **`namespace-demo` could not be stopped, only killed.** It runs as
   PID 1 of its own PID namespace, and the kernel does not deliver a

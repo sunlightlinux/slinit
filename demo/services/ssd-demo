@@ -11,14 +11,20 @@
 # The stop side carries two flags that are easy to leave off and that
 # a pidfile-based daemon almost always wants:
 #
-#   --oknodo   A daemon that is already gone is not a failed stop. The
-#              sleeper below exits on its own after 300 seconds, and
-#              without --oknodo every shutdown after that logged
-#              "stop command failed (exit code 5)" — the LSB code for
-#              "--stop given a pidfile whose process is gone". Clean
-#              within five minutes of boot, noisy after: it looks like
-#              a race and is a timer. See slinit-start-stop-daemon(8),
-#              EXIT STATUS.
+#   --oknodo   A daemon that is already gone is not a failed stop.
+#              Without it, --stop on a pidfile whose process has
+#              exited returns 5 — the LSB "not running" code — and
+#              slinit logs "stop command failed (exit code 5)". See
+#              slinit-start-stop-daemon(8), EXIT STATUS.
+#
+#              This used to fire on a schedule rather than by
+#              accident: the sleeper was `sleep 300`, so it expired
+#              five minutes into every boot. A shutdown before that
+#              was clean and one after it was not, which looks like a
+#              race and is a clock. The sleeper is a day long now (see
+#              below), but --oknodo stays: a daemon can also be killed
+#              by hand, or by a hurried shutdown, and neither makes
+#              stopping the service a failure.
 #
 #   --name     Matching on a pidfile alone checks only that /proc/PID
 #              exists. Pids are recycled, so a stale pidfile can name
@@ -36,9 +42,19 @@
 #              verify, which pidfiles do not carry. The start side
 #              above already passed --name; the stop side is where it
 #              changes an outcome.
+# The sleeper runs for a day, not for five minutes. The number is not
+# a timeout — nothing here wants the daemon to stop by itself — it is
+# just long enough that a demo session ends first. `sleep infinity`
+# would say it better but is a GNU extension, and Alpine's sleep is a
+# busybox applet.
+#
+# Note what a mortal sleeper did beyond the noisy stop: for the rest
+# of the session the service still reported STARTED while the process
+# it supervises no longer existed. A demo about supervising a daemon
+# should not quietly lose its daemon.
 type = scripted
 depends-on: system-init
-command = /bin/sh -c "mkdir -p /run/ssd-demo && slinit-start-stop-daemon --start --background --make-pidfile --pidfile /run/ssd-demo/sleeper.pid --name sleep --startas /bin/sleep -- 300 && echo \"ssd-demo: sleeper started as pid $$(cat /run/ssd-demo/sleeper.pid)\""
+command = /bin/sh -c "mkdir -p /run/ssd-demo && slinit-start-stop-daemon --start --background --make-pidfile --pidfile /run/ssd-demo/sleeper.pid --name sleep --startas /bin/sleep -- 86400 && echo \"ssd-demo: sleeper started as pid $$(cat /run/ssd-demo/sleeper.pid)\""
 stop-command = /bin/sh -c "slinit-start-stop-daemon --stop --oknodo --name sleep --pidfile /run/ssd-demo/sleeper.pid --retry TERM/2/KILL/2 && echo 'ssd-demo: sleeper stopped'"
 log-type = buffer
 log-buffer-size = 4096
