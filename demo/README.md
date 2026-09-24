@@ -9,6 +9,24 @@ Reproducible QEMU environment for testing slinit as PID 1 with Alpine Linux.
 ./run.sh      # Boot QEMU with slinit as init
 ```
 
+### Boot modes
+
+`run.sh` translates its flags into kernel-cmdline keys, so each one
+exercises the same path a real machine would take:
+
+| Flag | Kernel cmdline | What it gets you |
+|------|----------------|------------------|
+| `--rescue` | `slinit.rescue` | Boot to the rescue target instead of the full graph. |
+| `--emergency` | `slinit.emergency` | Straight to an emergency shell; no services start. |
+| `--debug-shell` | `slinit.debug-shell` | A shell on a spare console alongside the normal boot. |
+| `--crash-shell` | `slinit.crash-shell` | Drop to a shell if the boot cascade fails, instead of the recovery prompt. |
+| `--confirm-spawn` | `slinit.confirm-spawn` | Ask `[y/n]` before every fork+exec. Slow, but it names the service that misbehaves. |
+| `--debug` | `slinit.debug` | Debug-level logging; turns the boot console off so the full stream is visible. |
+| `--log-level=`*L* | `slinit.log-level=`*L* | Set the level without the other debug side effects. |
+| `--panic-after=`*N* | `slinit.panic-after=`*N* | Panic the kernel *N* seconds in — for testing what a watchdog sees. |
+| `--persist` | — | Attach a virtio disk so the journal survives a reboot. See `persist-journal-mount` below. |
+| `--no-monitor` | — | Serial on stdio with no QEMU monitor. Leave with `poweroff` from inside, or kill qemu elsewhere. |
+
 ## Requirements
 
 - Go 1.25+

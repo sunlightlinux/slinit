@@ -28,10 +28,10 @@ VERBOSE=1 ACCEPTANCE_HOST=ceres.ionutnechita.ro \
 Run a subset by passing case paths:
 
 ```
-./run.sh cases/30-ctl-status.sh cases/50-journalctl-fetch-n100.sh
+./run.sh cases/030-ctl-status.sh cases/050-journalctl-fetch-n100.sh
 ```
 
-## Cases (v2.2.10)
+## Cases
 
 Numbered with zero-padding so lexical sort matches numeric order.
 
@@ -402,7 +402,7 @@ quiescent moments — none currently warranted for an init.
 
 ## Adding a case
 
-Create `cases/NN-name.sh` — one line if the operation is
+Create `cases/NNN-name.sh` — one line if the operation is
 non-parameterised:
 
 ```sh

@@ -15,11 +15,11 @@ slinit - supervise processes and manage services (Go init system)
 **slinit** is a process supervisor and service manager that can also act as
 the system **init** process (PID 1) on Linux. It implements the dinit base
 model in Go, with additional features layered in from **runit**,
-**s6-linux-init**, **OpenRC**, **upstart**, and **systemd** (relevant
-service-manager subset — including a full **journalctl** at 65/65
-flag parity plus a **slinit-journald** binary log format with FSS
-sealing; the D-Bus object model, logind session/seat management,
-unit generators, and the systemd ecosystem daemons
+**s6-linux-init**, **OpenRC**, **upstart**, **finit**, and **systemd**
+(relevant service-manager subset — including a full **journalctl** at
+65/65 flag parity, a **slinit-journald** binary log format with FSS
+sealing, and **slinit-logind**(8) for session and seat management;
+systemd's unit object model on D-Bus and the ecosystem daemons
 networkd/resolved/homed remain intentionally out of scope). The
 control protocol and service-description file format are
 backwards-compatible with dinit; the CmdRmDepV7 opcode + `slinitctl
@@ -222,6 +222,14 @@ service-file format.
     The snapshot only records *intent*, not running PIDs: services
     are re-spawned, not re-attached. For zero-downtime per service
     use a HA cluster (see **slinit-resource**(7)) instead.
+
+    It also carries the kernel's boot duration and a count of how many
+    soft reboots have happened. A soft reboot leaves the kernel
+    running, so the new instance cannot measure that duration for
+    itself — */proc/uptime* by then includes however long its
+    predecessors ran. Carrying the original figure is what lets
+    **slinitctl boot-time** keep reporting a kernel time that means
+    something, and say which generation you are looking at.
 
 **-l** *path*, **\--log-file** *path*
 :   Append log messages to *path* instead of syslog. Console messages
@@ -712,22 +720,43 @@ In container mode, the exit status reflects the shutdown reason
 
 ## SEE ALSO
 
+Control and configuration:
 **slinitctl**(8), **slinit-service**(5), **slinit-check**(8),
-**slinit-monitor**(8), **slinit-shutdown**(8), **slinit-runner**(8),
-**slinit-cgtop**(8), **slinit-tmpfiles**(8),
-**slinit-sysusers**(8), **slinit-logouthookd**(8),
-**slinit-checkpath**(8), **slinit-mount**(8),
-**slinit-init-maker**(8), **slinit-nuke**(8),
-**slinit-seedrng**(8), **slinit-start-stop-daemon**(8),
-**slinit-supervise-daemon**(8), **slinit-binfmt**(8),
-**slinit-sysctl**(8), **slinit-fstabinfo**(8),
-**slinit-mountinfo**(8), **slinit-einfo**(8),
-**slinit-shell-var**(1), **slinit-svc-value**(1),
-**slinit-resource**(7), **rc-service**(8), **rc-update**(8),
+**slinit-monitor**(8), **slinit-supports**(8), **slinit-resource**(7).
+
+Shutdown and login:
+**slinit-shutdown**(8), **slinit-logind**(8),
+**slinit-logouthookd**(8), **slinit-getty**(8),
+**slinit-watchdogd**(8), **slinit-nuke**(8).
+
+Journal:
+**slinit-journalctl**(8), **slinit-journald**(8),
+**slinit-journal-migrate**(8).
+
+Containers:
+**slinit-nspawn**(8), **slinit-machinectl**(8).
+
+System setup:
+**slinit-runner**(8), **slinit-cgtop**(8), **slinit-tmpfiles**(8),
+**slinit-sysusers**(8), **slinit-checkpath**(8), **slinit-mount**(8),
+**slinit-init-maker**(8), **slinit-seedrng**(8),
+**slinit-binfmt**(8), **slinit-sysctl**(8),
+**hostnamectl**(1), **timedatectl**(1).
+
+Compatibility with other init systems:
+**slinit-start-stop-daemon**(8), **slinit-supervise-daemon**(8),
+**slinit-fstabinfo**(8), **slinit-mountinfo**(8),
+**slinit-einfo**(8), **slinit-shell-var**(1),
+**slinit-svc-value**(1), **rc-service**(8), **rc-update**(8),
 **rc-status**(8).
+
+Migration from another init system:
+**slinit-runit-convert**(8), **slinit-openrc-convert**(8),
+**slinit-systemd-convert**(8).
 
 ## AUTHORS
 
 slinit is a Go reimplementation of dinit (originally written by Davin
-McCall) with features ported from runit, s6-linux-init and OpenRC.
-Maintained by the sunlight-os project.
+McCall), with features ported from runit, s6-linux-init, OpenRC,
+upstart, finit, and the service-manager subset of systemd. Maintained
+by the sunlight-os project.

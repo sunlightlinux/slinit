@@ -688,6 +688,14 @@ apply OS-level changes:
 
 ## LOGGING
 
+**no-boot-marker**=*yes*|*no*
+:   Suppress this service's `[ OK ] `*name* line on the boot console
+    when it reaches *started*. Intended for milestone-style internal
+    services whose completion is implied by everything underneath them
+    having already reported — printing their marker after a login
+    prompt has appeared looks like something went wrong afterwards.
+    The main log is unaffected, so the transition is still recorded.
+
 **logfile**=*path*
 :   Append the service's stdout/stderr to *path*. Implies
     **log-type=file** when not set explicitly.
