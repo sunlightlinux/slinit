@@ -17,6 +17,131 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-09-24
+
+A documentation release. No change to how slinit runs: the control
+protocol, the service-file grammar, the CLI surface and every exit
+status are exactly what 2.3.9 shipped. What changed is how much of
+that a reader can trust, after a pass over all 66 Markdown files that
+checked each claim against the code rather than against the previous
+revision of the claim.
+
+Three of the findings were not stale numbers but statements that had
+become untrue:
+
+- **The README and `slinit(8)` both said logind session and seat
+  management remains "intentionally out of scope".** `slinit-logind`
+  has implemented it since v2.3.1 and runs GDM with GNOME 48. Both now
+  say what is actually out of scope — systemd's unit object model on
+  D-Bus, and the ecosystem daemons.
+- **`slinitctl(8)` never mentioned `show`**, while STABILITY.md points
+  scripts at `slinitctl show` twice as *the* stable machine-readable
+  surface. STABILITY.md's own rule is that anything undocumented is
+  not promised, so the two contradicted each other.
+- **CLAUDE.md and EXAMPLES.md both cited `activation-timeout`** as an
+  existing directive to reason about. It exists nowhere: not in the
+  parser, not in the man pages, not in dinit.
+
+### Added
+
+- **`slinit-logind(8)`** — the daemon had shipped in v2.3.1 without a
+  man page, and was the last binary without one. Covers the D-Bus
+  surface, the `/run` trees it owns and the ones it provides for
+  libelogind, why `/run/systemd/system` is deliberately absent, and
+  why session activity follows the foreground VT.
+- **`slinit-shutdown(8)` gained the seven options it accepted but
+  never documented**: `-f`/`--force`, `-n`/`--no-sync`, `-d`/
+  `--no-wtmp`, `-w`/`--wtmp-only`, `--no-wall`, `-i`/`--interactive`.
+- **`slinitctl(8)` gained `show`** and the `analyze` subcommands
+  (`critical-chain`, `dot`, and `plot`, which is a documented
+  not-implemented stub).
+- `slinit-journald(8)` gained `-version` and `-volatile-dir`;
+  `slinit-service(5)` gained `no-boot-marker`, the one directive of
+  287 it was missing.
+- **STABILITY.md now covers the metrics endpoint and the container
+  results file.** Eleven metric names are served at `/metrics` and
+  people build alerting rules on them, which makes them an interface:
+  names and types are fixed within a major, new ones may appear, and a
+  `_total` counter stays monotonic. `/run/slinit/container-results` is
+  read by whatever supervises a container, so its file names and their
+  meaning are covered too.
+- `pkg/features` gained a `finit` source. The README has listed finit
+  as an upstream since v2.2.9, but the enum had no value for it, so
+  `CmdSwitchRoot` and `CmdSuspend` were filed as slinit-native
+  inventions.
+
+### Changed
+
+- **`tools/stats` classifies the feature surface through
+  `pkg/features`** instead of its own regex, so it and
+  `slinit-supports` cannot disagree about what a directive is. It had
+  counted every `case "x":` label in the parser and reported 318; 290
+  are directives, and the rest are values an operator can never type —
+  service types, scheduling policies, NUMA policies, bare `yes`/`no`.
+  Service options and reply codes now get their own lines instead of
+  being folded into the directive and opcode totals.
+- **`doc/features.md` says how much of itself is curated.** 180 of its
+  366 entries are auto-placeholders that fall back to `slinit` as
+  their source, so the `slinit` group read as a list of 201 inventions
+  when 180 of them are simply un-triaged. The generator now counts its
+  own placeholders at render time, which means a regeneration cannot
+  drop the caveat — as it had dropped the previous hand-written
+  preamble.
+- **STABILITY.md admits what it describes but does not have.** Two of
+  its commitments — "since X.Y.Z" markers in `slinit-service(5)`, and
+  deprecation warnings from `slinit-check` and the daemon log — are
+  not built. Nothing is deprecated yet so nothing has been missed, but
+  a policy describing machinery nobody wrote is worse than one that
+  names the gap. Both now say so, with a section listing them.
+- STABILITY.md's History gained v2.3.9's cgroup-directory reclamation.
+  Nothing documented promised the directory would outlive the service,
+  but an external script writing into a stopped service's cgroup would
+  now find it gone, and "a setup could be relying on it" is the test
+  this policy applies. It belonged in a minor.
+
+### Fixed
+
+- **`tests/performance/ssh/README.md` printed a command that fails.**
+  It told the reader to run `cases/30-ctl-status.sh`; the file is
+  `030-ctl-status.sh`, as are all 92 cases. Its section heading had
+  also outlived four releases, and the template it hands new
+  contributors used a two-digit prefix.
+- **`demo/README.md` documented one of `run.sh`'s ten flags.** The
+  other nine are boot modes — rescue, emergency, the two debug shells,
+  `confirm-spawn`, `panic-after` — each mapping to the kernel-cmdline
+  key a real machine would use, which makes them the cheapest way to
+  exercise those paths. Now a table.
+- **`slinit(8)`'s `SEE ALSO` listed 28 pages and missed 14**,
+  including every journal binary, both container tools, all three
+  migration converters, and `slinit-logind` itself. `AUTHORS` credited
+  three of the seven upstreams.
+- **`tests/functional/README.md` now says that a skipped case reports
+  PASS.** Roughly one case in ten skips, for want of cgroup v2,
+  `util-linux`, `/etc/machine-id`, a TPM or NUMA in the VM. This is
+  not housekeeping: `164-slice-hierarchy` asserts exactly the
+  behaviour v2.3.9 fixed, and had been skipping since it was written —
+  which is how `slice` came to be dropped by the loader for the whole
+  life of the directive while keeping a green test.
+- Counts corrected wherever they appear: 2111 → 2196 unit tests, 79 →
+  81 Go dirs, 302 → 330 `_test.go` files, 29 → 34 packages, 35 → 42
+  binaries, 218 → 225 functional cases. "27 fuzz targets" was right
+  about `tests/fuzz` and wrong about the repo, which has 40 — the
+  other 13 sit beside the code they exercise, so `go test -fuzz=...
+  ./tests/fuzz` reaches two thirds of the surface.
+
+### Verification
+
+Checked across all 43 man pages and found clean: cross-references,
+cited filesystem paths, every flag of every binary against its page,
+and every declared default against the constant behind it.
+`slinit-service(5)` was checked in both directions — every directive
+the parser accepts is documented, and every directive documented still
+exists.
+
+72 unit packages pass. The QEMU functional suite has not been re-run
+for this cut; it last ran for v2.3.5. No binary behaviour changed, so
+nothing in this release could move it.
+
 ## [2.3.9] — 2026-09-23
 
 A soft-reboot release. Every fix below was found by driving the demo VM
