@@ -17,6 +17,33 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`slinit-logind` resolved any pid on a systemd host to a session it
+  had never heard of.** `findSessionByCgroup` has two layouts to
+  handle: the flat one slinit-logind writes
+  (`/sys/fs/cgroup/`*id*, elogind's), and systemd's nested
+  `.../session-`*id*`.scope`, kept so a record written by an older
+  daemon stays resolvable. The flat branch checked that a session
+  record existed before trusting the name; the nested branch returned
+  whatever it scraped out of the path. On a host running systemd every
+  process sits under a session scope, so `GetSessionByPID` answered
+  with an object path for a session that does not exist, instead of
+  `NoSessionForPID`. `GetUserByPID` was unaffected — it re-reads the
+  record and falls through when it is missing.
+
+  Both layouts now consult the same existence check. The parsing moved
+  into `sessionFromCgroup`, which takes the content and an `exists`
+  callback, so it can be driven against chosen input rather than
+  against whatever cgroup the test process happens to live in — the
+  previous test kept its own copy of the parser, which is how a bug in
+  the original went unnoticed while the copy stayed correct.
+
+  Found by CI. It could not reproduce from a desktop terminal, whose
+  cgroup has no `session-` component, and reproduced on every login
+  session and build agent.
+
+
 ## [2.4.0] — 2026-09-24
 
 A documentation release. No change to how slinit runs: the control

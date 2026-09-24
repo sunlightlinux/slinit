@@ -365,7 +365,22 @@ func findSessionByCgroup(pid uint32) string {
 	if err != nil {
 		return ""
 	}
-	for _, line := range splitLines(string(b)) {
+	return sessionFromCgroup(string(b), func(id string) bool {
+		return fileExists(sessionFile(id))
+	})
+}
+
+// sessionFromCgroup is the parsing half of findSessionByCgroup, split
+// out so it can be tested against content we choose rather than
+// against whatever cgroup the test runner happens to live in.
+//
+// exists reports whether a session record is on disk for an id. Both
+// layouts below consult it, because a path that merely looks like a
+// session is not one: on a systemd host every process sits under
+// .../session-<id>.scope, so a parser that trusts the name alone
+// resolves any pid at all to an id this daemon has never heard of.
+func sessionFromCgroup(content string, exists func(string) bool) string {
+	for _, line := range splitLines(content) {
 		if !hasPrefix(line, "0::") {
 			continue
 		}
@@ -378,21 +393,22 @@ func findSessionByCgroup(pid uint32) string {
 		if i := indexByte(first, '/'); i >= 0 {
 			first = first[:i]
 		}
-		// Only trust it if a session record actually exists — the root
-		// cgroup ("") and unrelated cgroups must not be mistaken for a
-		// session id.
-		if first != "" && fileExists(sessionFile(first)) {
+		if first != "" && exists(first) {
 			return first
 		}
 		// systemd's nested naming: .../session-<id>.scope
 		for i := 0; i+len("session-") < len(p); i++ {
-			if p[i:i+len("session-")] == "session-" {
-				end := i + len("session-")
-				for end < len(p) && p[end] != '.' && p[end] != '/' {
-					end++
-				}
-				return p[i+len("session-") : end]
+			if p[i:i+len("session-")] != "session-" {
+				continue
 			}
+			end := i + len("session-")
+			for end < len(p) && p[end] != '.' && p[end] != '/' {
+				end++
+			}
+			if id := p[i+len("session-") : end]; exists(id) {
+				return id
+			}
+			break
 		}
 	}
 	return ""
