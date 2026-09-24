@@ -32,27 +32,31 @@ func (p *ProcessService) BringUp() {
 }
 ```
 
-**Problem:** slinit already has **three** timeout-shaped concepts:
+**Problem:** slinit already has several timeout-shaped concepts, and
+they are not interchangeable:
 
-- `start-timeout` — how long exec-wait before declaring start-failure
-  (ProcessService).
-- `activation-timeout` — how long for a `ready-notification` fd to fire.
+- `start-timeout` — how long to wait before declaring start-failure.
 - `stop-timeout` — how long after SIGTERM before escalating to SIGKILL.
+- `timeout-sec` — sets both of the above at once (systemd parity).
+- `job-timeout-sec` — a cap on the whole job, start and stop together.
+- `ready-check-interval` — how often to re-run `ready-check-command`
+  while waiting for a service to report itself ready.
 
 Picking one silently will either duplicate an existing knob or change
 its semantics.
 
 **What should happen (surface the choice):**
 
-> slinit already has `start-timeout`, `activation-timeout`, and
-> `stop-timeout` (all parsed in `pkg/config/parser.go`). Which semantic
-> do you mean?
+> slinit already has `start-timeout`, `stop-timeout`, `timeout-sec` and
+> `job-timeout-sec` (all parsed in `pkg/config/parser.go`). Which
+> semantic do you mean?
 >
-> 1. Exec-wait cap on the initial fork+exec (`start-timeout`, already
->    present for ProcessService, missing for BGProcessService).
-> 2. Cap on a service reporting *ready* via `ready-notification`
->    (`activation-timeout`, already present).
-> 3. A new knob I haven't spotted?
+> 1. Exec-wait cap on the initial fork+exec (`start-timeout`).
+> 2. Cap on a service reporting *ready* — that is readiness, not a
+>    timeout: see `ready-notification` / `ready-check-command` /
+>    `ready-check-interval`.
+> 3. A cap on the whole job rather than one phase (`job-timeout-sec`).
+> 4. A new knob I haven't spotted?
 >
 > Also: should this apply to scripted + bgprocess, or only process?
 

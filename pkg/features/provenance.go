@@ -87,6 +87,9 @@ var provenanceTable = []Feature{
 	{Name: "CmdJournalSubscribe", Kind: KindOpcode, Source: SourceSystemd, Category: CatLogging, Notes: "opcode 61 — slinit-journalctl -f follow subscription"},
 	{Name: "CmdDisableServiceV7", Kind: KindOpcode, Source: SourceSlinit, Category: CatLifecycle, Notes: "opcode 62 — atomic disable + inline status reply (slinit-native V7)"},
 	{Name: "CmdQueryServiceLoadDir", Kind: KindOpcode, Source: SourceSlinit, Category: CatObservability, Notes: "opcode 63 — per-service load dir (for dinit-compat --dinit-compat client symlink cleanup)"},
+	{Name: "CmdSwitchRoot", Kind: KindOpcode, Source: SourceFinit, Category: CatLifecycle, Notes: "opcode 64 — pivot to a new root and exec its init (finit `initctl switch_root`)"},
+	{Name: "CmdSuspend", Kind: KindOpcode, Source: SourceFinit, Category: CatShutdown, Notes: "opcode 65 — write a state to /sys/power/state (finit `initctl suspend`)"},
+	{Name: "CmdServiceShow", Kind: KindOpcode, Source: SourceSystemd, Category: CatObservability, Notes: "opcode 66 — full config + live state as Key=Value lines (systemd `show` analogue)"},
 
 	// ---------- SERVICE DIRECTIVES: TOP-USED ----------
 	// Directives with well-known provenance. Rest get placeholder
@@ -127,6 +130,7 @@ var provenanceTable = []Feature{
 	{Name: "start-timeout", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle},
 	{Name: "stop-when-unneeded", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "StopWhenUnneeded="},
 	{Name: "smooth-recovery", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "restart w/o disturbing dependents"},
+	{Name: "no-boot-marker", Kind: KindDirective, Source: SourceSlinit, Category: CatObservability, Notes: "suppress this service's \"[ OK ] name\" boot-console line; main log unaffected"},
 	{Name: "manual", Kind: KindDirective, Source: SourceUpstart, Category: CatLifecycle, Notes: "requires explicit slinitctl start"},
 	{Name: "depends-on", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "hard dep — target must be running (starts + stops together)"},
 	{Name: "waits-for", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "soft dep — wait for target start but don't stop with it"},

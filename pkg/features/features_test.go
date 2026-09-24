@@ -113,13 +113,13 @@ func TestKindsAreValid(t *testing.T) {
 	}
 }
 
-// TestSourcesAreKnown — Feature.Source must be one of the seven
-// enum constants (dinit/systemd/runit/s6/openrc/upstart/slinit).
+// TestSourcesAreKnown — Feature.Source must be one of the eight
+// enum constants (dinit/systemd/runit/s6/openrc/upstart/finit/slinit).
 func TestSourcesAreKnown(t *testing.T) {
 	valid := map[Source]bool{
 		SourceDinit: true, SourceSystemd: true, SourceRunit: true,
 		SourceS6: true, SourceOpenRC: true, SourceUpstart: true,
-		SourceSlinit: true,
+		SourceFinit: true, SourceSlinit: true,
 	}
 	for _, f := range provenanceTable {
 		if !valid[f.Source] {

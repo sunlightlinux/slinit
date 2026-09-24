@@ -9,9 +9,9 @@ from [runit](http://smarden.org/runit/),
 [finit](https://github.com/troglobit/finit), and
 [systemd](https://systemd.io/) (relevant service-manager subset —
 including a full `journalctl` (65/65 flag parity) + `journald` binary
-format with FSS sealing; D-Bus object model, logind session/seat
-management, unit generators, and the systemd ecosystem daemons
-networkd/resolved/homed remain deliberately out of scope).
+format with FSS sealing, and `slinit-logind` for session/seat
+management; systemd's unit object model on D-Bus and the ecosystem
+daemons networkd/resolved/homed remain deliberately out of scope).
 
 slinit can run as PID 1 (init system) or as a user-level service
 manager. It uses a dinit-compatible configuration format and manages
@@ -120,10 +120,13 @@ should keep their muscle memory:
   **journalctl at 65/65 flag parity** (v2.1.0 → v2.1.12: Groups A-E
   + Sprints 1-4) with the Phase B binary format + FSS sealing,
   systemd-compatible message catalog, invocation tracking, journal
-  namespaces, and disk-image dissection. systemd's D-Bus object
-  model, logind session/seat management, unit generators, and
+  namespaces, and disk-image dissection. **Session and seat
+  management is implemented**, by `slinit-logind` — see its own
+  bullet below. systemd's unit object model on D-Bus and the
   ecosystem daemons (networkd, resolved, homed) remain intentionally
-  out of scope.
+  out of scope; the `org.freedesktop.systemd1` surface slinit-logind
+  answers is a compatibility stub for per-user activation, not a
+  second service manager.
 
 Runlevels, where present, are pure UX aliases over the dependency
 graph — slinit does not introduce a second state machine or config
@@ -246,7 +249,24 @@ format to accommodate them.
 - **Push notifications**: SERVICEEVENT/ENVEVENT for real-time state and environment tracking
 - **SIGUSR1 socket reopen**: recover control socket when filesystem becomes writable
 - **Shutdown**: orderly service stop, shutdown hooks, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec/softreboot
-- **Soft-reboot**: restart slinit without rebooting the kernel (with shutdown hooks)
+- **Four degrees of shutdown haste**: plain (stop every service properly);
+  `now` (SIGKILL them at once, so a long `stop-timeout` cannot hold the
+  machine up — a stop-command already running still gets a second, because
+  for a service with a detached daemon that script is the only thing that
+  will ever stop it); `--fast` (skip the teardown, sync and the syscall,
+  `reboot -f`); `--superfast` (the syscall alone, `reboot -ff` — unflushed
+  data is lost). `slinitctl reboot|halt|poweroff|softreboot` are top-level
+  shortcuts for the same thing.
+- **Soft-reboot**: restart slinit without rebooting the kernel (with shutdown hooks).
+  `slinitctl boot-time` keeps reporting the *original* kernel boot time
+  across generations, and says which soft reboot you are looking at.
+- **`slinit-logind`**: native `org.freedesktop.login1` daemon — sessions,
+  seats, users, inhibitors, and the power/sleep methods desktops call.
+  Session activity follows the foreground VT the way elogind decides it,
+  which is what makes a greeter reappear after logout. Replaces elogind's
+  *daemon*; the elogind package is still needed for `pam_elogind.so`,
+  which is what calls `CreateSession` at login. See
+  `doc/man/slinit-logind.8.md`.
 - **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
 - **Container mode**: `-o`/`--container` for Docker/LXC/Podman (SIGINT/SIGTERM → graceful halt).
   A service's output is discarded by default (`log-type = none`, as in dinit);
@@ -371,6 +391,14 @@ go build ./cmd/slinit-tmpfiles           # systemd-tmpfiles(1) clone
 go build ./cmd/slinit-logouthookd        # utmp logout daemon (UTMPX bookkeeping)
 go build ./cmd/slinit-getty              # finit-parity built-in login-prompt (agetty-free)
 go build ./cmd/slinit-watchdogd          # finit-parity runtime WDT petting daemon
+go build ./cmd/slinit-logind             # native org.freedesktop.login1 daemon (session/seat/inhibitor)
+go build ./cmd/slinit-hostnamectl        # hostnamectl(1) clone (slinit-native, D-Bus-free)
+go build ./cmd/slinit-timedatectl        # timedatectl(1) clone (slinit-native, D-Bus-free)
+go build ./cmd/slinit-resource           # OCF Resource Agent for slinit-managed services (Pacemaker)
+
+# Containers
+go build ./cmd/slinit-nspawn             # launch a slinit container in fresh Linux namespaces
+go build ./cmd/slinit-machinectl         # inspect and manage the local container registry
 
 # Journal pipeline (systemd journalctl parity — 65/65 flags)
 go build ./cmd/slinit-journalctl         # systemd journalctl 65/65-parity CLI (also as `journalctl` symlink)
@@ -1368,7 +1396,7 @@ slinit/
 │   ├── rc-service/        # OpenRC compat: thin shim over slinitctl
 │   ├── rc-update/         # OpenRC compat: runlevel membership via runlevel-<name> services
 │   └── rc-status/         # OpenRC compat: status listing
-├── pkg/                   # 29 packages total; live list: `ls pkg/`
+├── pkg/                   # 34 packages total; live list: `ls pkg/`
 │   ├── service/           # Service types, state machine, dependency graph, predicates, calendar, UID pool, per-start invocation-ID
 │   ├── config/            # Dinit-compatible config parser + loader, init.d/LSB, OpenRC conf.d wrapper
 │   ├── control/           # Control socket protocol (v7, min-compat v1) and server; journal query/subscribe wire
@@ -1401,19 +1429,21 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 218 QEMU-based integration tests
+├── tests/functional/      # 225 QEMU-based integration tests
 ├── tests/acceptance/ssh/  # 219 live-VM acceptance cases (SSH-driven)
 ├── tests/fuzz/            # 27 fuzz targets (config, protocol, autofs, process parsers)
+├── tests/container/       # 23 cases running slinit as PID 1 under Docker, plus a soak loop
+├── tests/k8s/             # 8 cases running the same image as a pod on a kind cluster
 └── tests/performance/     # Performance and stress harness (runtime + demo + 92 SSH cases)
 ```
 
 ## Testing
 
 ```bash
-# Unit tests (~2111 tests + benchmarks across 79 Go dirs, 302 _test.go files)
+# Unit tests (~2196 tests + benchmarks across 81 Go dirs, 330 _test.go files)
 go test ./...
 
-# Functional tests (218 QEMU-based integration tests)
+# Functional tests (225 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
 # Acceptance tests (219 SSH-driven cases against a live VM/host)
@@ -1558,6 +1588,48 @@ lives in [CHANGELOG.md](CHANGELOG.md). Highlights since v2.1.12:
   assertions), `tests/performance/demo` bimodal +1 s cold-boot
   spike (runit-svc `ready-check-interval` 1 s → 100 ms; boot
   distribution tightened from 2780-3790 ms to 2770-2830 ms).
+- **v2.3.0**: first minor bump on the 2.x line, closing the 2.2.x
+  correctness phase. The codebase had by then been validated
+  continuously against real desktop stacks — XFCE 4.20, GNOME 48,
+  KDE Plasma 6, Cinnamon 6 — rather than against test harnesses
+  alone.
+- **v2.3.1–v2.3.4**: `slinit-logind`, the native
+  `org.freedesktop.login1` daemon, and the work to make a graphical
+  desktop actually come up on it. Every fix in this stretch was
+  surfaced by *using* the desktop on ceres — GDM + GNOME 48 on Xorg
+  with elogind's daemon stopped — not by testing it. `slinitctl`
+  also gained a systemctl-style `status` / `show` family. elogind's
+  *package* is still required for `pam_elogind.so`; only its daemon
+  is replaced.
+- **v2.3.5–v2.3.6**: `slinitctl start` now waits for the outcome and
+  exits non-zero on a failed start (`triggered` services need
+  `--no-wait`), plus the first slice of a regression suite built from
+  the systemd bug list on nosystemd.org. **v2.3.6 is a PID-1 safety
+  release**: on v2.3.5 and earlier, Ctrl+Alt+Del pressed during boot
+  panicked the kernel, because signals were claimed far too late in
+  `main`.
+- **v2.3.7–v2.3.8**: containers and observability. slinit as real
+  PID 1 under Docker gained its own suite (`tests/container/`, 23
+  cases plus a soak loop) and a Kubernetes one on `kind`
+  (`tests/k8s/`, 8 cases); between them they found an early-exit
+  hang, lost exit logs and a container that reported a requested
+  stop as a boot failure. Also: a Prometheus `/metrics` endpoint
+  (`--metrics-listen`, hand-written HTTP so `net/http` stays out of
+  PID 1), four degrees of shutdown haste (plain / `now` / `--fast` /
+  `--superfast`), the `slinitctl reboot|halt|poweroff` shortcuts the
+  man page had been promising, and the first written stability
+  commitment in [STABILITY.md](STABILITY.md).
+- **v2.3.9**: a soft-reboot release, every fix found by driving the
+  demo VM through repeated soft reboots and looking at what came back
+  wrong. The console file descriptors handed to the next generation
+  (a soft-rebooted slinit had been concluding it was not on a
+  terminal, silently losing the boot console's colour); the kernel
+  boot time, which had been reported as the machine's uptime and grew
+  with every generation; `slice` without `cgroup`, which had never
+  worked since the directive was introduced; cgroup directories that
+  nobody reclaimed; and a hurried soft reboot that killed in-flight
+  stop-commands, orphaning detached daemons so that every *later*
+  boot failed too.
 
 ## Changelog
 

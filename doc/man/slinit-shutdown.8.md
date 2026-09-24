@@ -9,6 +9,7 @@ slinit-shutdown - issue a shutdown, halt, reboot, or soft-reboot to slinit
 # SYNOPSIS
 
 **slinit-shutdown** [**-r** | **-h** | **-p** | **-s** | **-k**]
+[**-f**] [**-n**] [**-d**] [**-w**] [**--no-wall**] [**-i**]
 [**--system**] [**--use-passed-cfd**] [**--grace=***DURATION*]
 
 **slinit-reboot** [*options*]
@@ -64,6 +65,37 @@ target.
     final reset call, which boots the new kernel instead.
 
 # OPTIONS
+
+**-f**, **--force**
+:   Minimal path to the kernel: sync, then the reset call. Services are
+    not stopped and filesystems are not unmounted, which matches
+    **reboot**(8) **-f**. Use it when the machine has to go down now and
+    the state on disk is either expendable or already safe. Combined
+    with **-n** it is **reboot**(8) **-ff** — the syscall and nothing
+    else. Note that **-s** is not a kernel operation, so a forced
+    soft-reboot halts instead; use **slinitctl shutdown softreboot
+    --fast** for a soft reboot in a hurry.
+
+**-n**, **--no-sync**
+:   Skip the filesystem sync. Anything written but not yet flushed is
+    lost and the next boot finds an unclean filesystem.
+
+**-d**, **--no-wtmp**
+:   Do not write a shutdown record to utmp/wtmp.
+
+**-w**, **--wtmp-only**
+:   Write the utmp/wtmp shutdown record and exit. Nothing else happens
+    — the init system is not contacted and no reset call is made. Same
+    contract as systemd's flag of the same name.
+
+**--no-wall**
+:   Do not broadcast the shutdown wall message to logged-in users.
+
+**-i**, **--interactive**
+:   Require the operator to type the machine's short hostname before
+    proceeding. Applies to every path — forced, **--system** and the
+    normal daemon route alike — so it is an equally good guard against
+    rebooting the wrong SSH session whichever one is in play.
 
 **--system**
 :   Skip the daemon and perform the shutdown sequence directly:

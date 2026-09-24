@@ -25,9 +25,9 @@ scenarios.
 Before implementing:
 - State assumptions explicitly. If uncertain, ask.
 - If multiple interpretations exist, present them — don't pick silently.
-  slinit has many near-synonyms (`start-timeout` vs `activation-timeout`,
-  `wake` vs `start`, `release` vs `stop`, soft-dep vs hard-dep). Surface which
-  is meant.
+  slinit has many near-synonyms (`start-timeout` vs `timeout-sec` vs
+  `job-timeout-sec`, `wake` vs `start`, `release` vs `stop`, soft-dep vs
+  hard-dep). Surface which is meant.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 - **Check dinit parity first.** For anything that looks like a feature
@@ -102,15 +102,20 @@ For multi-step tasks, state a brief plan:
 **Verification commands in slinit:**
 - `go build ./...` — full build, catches typos fast.
 - `go vet ./...` — catches misuse before tests.
-- `go test ./...` — ~2111 unit tests across 79 Go dirs (33 pkg/ + tests + tools).
+- `go test ./...` — ~2196 unit tests across 81 Go dirs (34 pkg/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
-- `./tests/functional/run-tests.sh` — 218 QEMU-based integration tests
+- `./tests/functional/run-tests.sh` — 225 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
 - `./tests/acceptance/ssh/run.sh` — 219 SSH-driven cases against a live VM.
 - `./tests/performance/ssh/run.sh` — 92 SSH-driven perf cases (comprehensive
   CLI + IPC + journal + lifecycle-scaling coverage). Env-var contract
   identical to the acceptance suite.
+- `./tests/container/run.sh` — 23 cases running slinit as real PID 1 under
+  Docker; `./tests/container/soak.sh` loops spawn+shutdown to catch the
+  races a single run misses.
+- `./tests/k8s/run.sh` — 8 cases running the same image as a pod on a local
+  `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
   single target. 27 targets.
 - `./slinit-check /etc/slinit.d/<svc>` — offline config linter.
@@ -143,7 +148,8 @@ Strong success criteria let you loop independently. Weak criteria
 - Config parser accepts both `=` and `:` (`:` for dependency keys).
 
 ### Key files (first places to look)
-- `pkg/service/record.go` — state machine (~3200 LOC; state transitions from line 2059).
+- `pkg/service/record.go` — state machine (~3400 LOC; `ExecuteTransition`
+  is the entry point to the transition half).
 - `pkg/service/types.go` — all enum types. When adding a new state or
   flag, this is where it goes.
 - `pkg/config/parser.go` — dinit-compatible text grammar.
@@ -155,7 +161,7 @@ Strong success criteria let you loop independently. Weak criteria
 - `cmd/slinit/main.go` — PID 1 / container-mode entry point.
 - `cmd/slinit-runner/` — post-fork hardening execve wrapper (LSM, ambient
   caps, close-fds, restrict-*).
-- `cmd/slinitctl/main.go` — ~70 subcommands + 15 global flags.
+- `cmd/slinitctl/main.go` — ~80 subcommands + the global flags.
 
 ### Reference sources
 - **dinit** (C++): `../dinit/src/` — key files `service.{h,cc}`,

@@ -51,6 +51,7 @@ const (
 	SourceS6          Source = "s6"           // s6 / s6-log / s6-rc family
 	SourceOpenRC      Source = "openrc"       // OpenRC init.d / conf.d / einfo family
 	SourceUpstart     Source = "upstart"      // Upstart-derived (normal-exit, reload-signal, .override, script sugar)
+	SourceFinit       Source = "finit"        // finit-derived (initctl switch_root / suspend)
 	SourceSlinit      Source = "slinit"       // slinit-native (no upstream analog)
 )
 

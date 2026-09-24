@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (218 cases)
+# Run all tests (225 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -50,6 +50,34 @@ If you hit this, pass `-cpu kvm64` to the QEMU invocation (or drop
 `-enable-kvm` and let it fall back to TCG at the cost of ~10-30× slower
 boot). Bare-metal hosts on older Intel, AMD Zen, or server SKUs are
 unaffected.
+
+### A green run is not full coverage
+
+A case that finds its precondition missing prints `SKIP: <reason>` and
+reports **PASS** — it ran one assertion, zero failed. That is the right
+outcome for a harness that has to run on whatever the VM happens to
+provide, but it means the summary line understates nothing and
+overstates plenty: around one case in ten skips on a normal run.
+
+The environment the VM does *not* provide, and what skips because of
+it:
+
+| Missing | Cases affected |
+|---------|----------------|
+| cgroup v2 as the mounted hierarchy | the `cgroup`, `slice` and delegation cases |
+| `util-linux` (`chrt`) | the scheduling-policy cases |
+| `/etc/machine-id` | `condition-fraction` and the PSI cases |
+| TPM | `condition-security = measured-os` |
+| NUMA (`CONFIG_NUMA`) | `numa-mempolicy` |
+
+This is not hypothetical. `164-slice-hierarchy` asserts that a service
+configured with `slice` alone lands in `/system.slice/<name>`, and it
+has been skipping for want of cgroup v2 since it was written — which is
+how `slice` came to be silently dropped by the loader for the whole
+life of the directive without the suite noticing (fixed in v2.3.9).
+
+So: read the skip lines, not just the tally. When a case covers
+something you are actually changing, check that it *ran*.
 
 ## Test Cases
 
@@ -273,6 +301,13 @@ unaffected.
 | 216 | journalctl-group-a-bundle | `--fields` / `--header` / `--disk-usage` / `-F` / `--utc` / `--no-hostname` / `--output-fields` / `-g` in one bundled case (v2.1.6 Group A) |
 | 217 | journalctl-vacuum-flush | `--vacuum-files` direct on files (current-day preserved); `--flush` + `--relinquish-var` via spawned daemon + admin control socket (v2.1.10) |
 | 218 | journalctl-namespace | `--namespace` daemon + `--list-namespaces` enumeration + filter on synthetic JSONL (v2.1.11) |
+| 219 | nosystemd-clock-jump | systemd#1143 — a wall-clock step made PID 1 spin printing "Time has been changed"; slinit's boot-time clock guard must absorb the jump without flooding the console (v2.3.5) |
+| 220 | nosystemd-dep-failure | systemd#1312 + #6478 — a service whose hard dependency failed must stay down rather than restart-loop, and `slinitctl start` must exit non-zero when the start ends in failure (v2.3.5) |
+| 221 | nosystemd-logout-survivors | Debian #825394 — nohup'd jobs, tmux and screen must survive their session ending; the most-cited systemd complaint from users who leave work running over ssh (v2.3.5) |
+| 222 | nosystemd-efivarfs-ro | systemd#2402 — efivarfs must be mounted read-only, so a careless recursive delete cannot wipe EFI variables and brick the firmware (v2.3.5) |
+| 223 | nosystemd-journald-restart | systemd#6620 — restarting the journal daemon must not silence already-running services; slinit's events sit in PID 1's own ring, so no service writes into a closed pipe (v2.3.5) |
+| 224 | nosystemd-numeric-username | systemd#6237 — a `run-as` value naming an account like `0day` must resolve as a *name*, not be read as UID 0 and run as root (v2.3.5) |
+| 225 | pid1-signal-survival | Not from the nosystemd list: PID 1 must not die from a signal a local root can send it. Host-driven — the harness presses the real Ctrl+Alt+Del (v2.3.6) |
 
 ## How It Works
 

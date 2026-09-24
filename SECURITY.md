@@ -8,6 +8,14 @@
 | 2.0.x, 2.1.x | Best-effort backports for critical fixes only |
 | < 2.0.0   | No (v1.x line closed at v1.10.55; upgrade to v2.x) |
 
+This table says which versions receive fixes. What a fix is allowed to
+change — and what stays put between releases — is a separate question,
+answered in [STABILITY.md](STABILITY.md). Security fixes are one of the
+two exceptions it allows to break a stable interface in any release,
+patch releases included: if keeping the old behaviour keeps the
+vulnerability, the behaviour changes, and the CHANGELOG says so under
+`Security` with a `Compat` note.
+
 ## Reporting a Vulnerability
 
 If you discover a security vulnerability in slinit, please report it responsibly.

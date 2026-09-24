@@ -45,6 +45,12 @@ before the daemon bound to its events socket are not lost.
 :   Directory for persistent journal files (default
     */var/log/slinit-journal*). Ignored under **-dry-run**.
 
+**-volatile-dir** *DIR*
+:   Fallback directory used when **-dir** is not writable — early boot
+    before */var* is mounted read-write, or a read-only root. Set it to
+    the empty string to disable the fallback, in which case an
+    unwritable **-dir** is fatal rather than silently redirected.
+
 **-format** *FORMAT*
 :   Storage format: **binary** (Phase B, default) or **jsonl**
     (Phase C, human-grep-friendly). Cannot be mixed inside one
@@ -122,6 +128,9 @@ before the daemon bound to its events socket are not lost.
 
 **-dry-run**
 :   Print received events to stdout instead of persisting.
+
+**-version**
+:   Print the version and exit.
 
 # EXIT STATUS
 

@@ -11,7 +11,7 @@ Brief description of the changes.
 
 ## Testing
 
-- [ ] Unit tests pass (`go test ./...` — ~2111 tests)
+- [ ] Unit tests pass (`go test ./...` — ~2196 tests)
 - [ ] Race check clean (`go test -race ./pkg/service/... ./pkg/control/...`)
 - [ ] Functional tests pass (`./tests/functional/run-tests.sh` — 218 QEMU cases; skip if no local qemu)
 - [ ] Acceptance tests pass against a VM (`./tests/acceptance/ssh/run.sh` — 219 SSH cases; skip if no live target)

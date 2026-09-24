@@ -43,16 +43,19 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (~2111 tests across 79 Go dirs, 302 _test.go files)
-- **Functional tests**: `./tests/functional/run-tests.sh` (218 QEMU-based cases)
+- **Unit tests**: `go test ./...` (~2196 tests across 81 Go dirs, 330 _test.go files)
+- **Functional tests**: `./tests/functional/run-tests.sh` (225 QEMU-based cases)
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (219 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (92 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
 - **Fuzz targets**: `go test -fuzz=FuzzConfigParse ./tests/fuzz` (27 targets)
-- Requires `qemu-system-x86_64` for functional tests
+- **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker) + `./tests/container/soak.sh` (spawn+shutdown loop)
+- **Kubernetes**: `./tests/k8s/run.sh` (8 cases against a local `kind` cluster)
+- Requires `qemu-system-x86_64` for functional tests, Docker for the container suite, `kind` + `kubectl` for the Kubernetes one
+- A functional case whose precondition is missing prints `SKIP:` and still reports PASS — read the skip lines, not just the tally (see `tests/functional/README.md`)
 
 ### Project Structure
 
-- `cmd/` - Entry points (35 binaries total; run `ls cmd/` for the live
+- `cmd/` - Entry points (42 binaries total; run `ls cmd/` for the live
   list). Highlights: `slinit` (PID 1), `slinitctl` (control CLI),
   `slinit-runner` (post-fork hardening wrapper), `slinit-check` (config
   linter), `slinit-monitor` / `slinit-shutdown`, `slinit-journalctl` /
@@ -72,14 +75,15 @@ go test ./...
   `fstab`, `journal`, `journalbin`, `journald`, `logging`, `mounts`,
   `pathwatch`, `persist`, `platform`, `process`, `recovery`, `rng`,
   `seccomp`, `service`, `shutdown`, `snapshot`, `svcdirwatch`, `utmp`,
-  `watchdog` (29 total; run `ls pkg/` for the live list).
+  `watchdog` (34 total; run `ls pkg/` for the live list).
 - `internal/util/` - Path and parsing utilities
 - `completions/` - Shell completions (bash, zsh, fish)
-- `tests/functional/` - QEMU integration tests (218 cases)
+- `tests/functional/` - QEMU integration tests (225 cases)
 - `tests/acceptance/ssh/` - SSH-driven live-VM cases (219)
 - `tests/performance/` - performance harnesses (92 SSH + 4 QEMU boot + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (27)
-- `tests/performance/` - Go benchmarks
+- `tests/container/` - slinit as PID 1 under Docker (23 cases + soak loop)
+- `tests/k8s/` - the same image as a pod on a `kind` cluster (8 cases)
 - `demo/` - QEMU demo environment
 - `doc/man/` - pandoc-flavored markdown → roff via `go tool md2man`
 

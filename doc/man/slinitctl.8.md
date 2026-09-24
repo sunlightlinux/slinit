@@ -196,7 +196,27 @@ daemon, which is useful at install time or in initramfs.
     starting / stopping / failed).
 
 **status** *service*
-:   Print a multi-line status block for *service*.
+:   Print a multi-line status block for *service*. Human-oriented: the
+    wording, colours and alignment are free to change between releases.
+    Use **show** for anything a script reads.
+
+**show** [**-l**] *service*
+:   Dump the service's full configuration and live state as
+    *Key=Value* lines, one per line, in the manner of **systemctl
+    show**. Fields are grouped semantically — identity, state,
+    timestamps, restart, kill, cgroup, security, dependencies, exec —
+    rather than alphabetically, so a naked **show** reads top to
+    bottom like a unit dump. Unset optional fields are omitted.
+
+    This is the machine-readable surface: parse it with `awk -F=` or
+    `grep '^Key='`, by key and never by line number. Keys are not
+    removed or renamed within a major version, and new ones may
+    appear — see **STABILITY.md**.
+
+    **-l** / **\--long** is accepted and does nothing, since **show**
+    already renders every field. It warns on stderr rather than
+    swallowing the flag silently, so a scripter reaching for it out of
+    **systemctl** habit notices and drops it.
 
 **is-started** *service*
 :   Exit 0 iff *service* is currently *started*; non-zero otherwise.
@@ -228,9 +248,20 @@ daemon, which is useful at install time or in initramfs.
 :   Print the daemon's load mechanism (which is currently always
     *file*; reserved for future load backends).
 
-**boot-time** (alias **analyze**)
+**boot-time** (alias **analyze** [*subcommand*])
 :   Print boot-time analysis: kernel→userspace handoff, slinit
-    startup, per-service start times, slow services.
+    startup, per-service start times, slow services. As **analyze** it
+    takes an optional subcommand:
+
+    - *time* / *blame* / omitted — the analysis described here.
+    - *critical-chain* [*service*] — the slowest dependency sequence
+      leading to *service* (or to the boot target), which is the one
+      worth attacking when a boot is slow.
+    - *dot* — the dependency graph as Graphviz DOT, identical to
+      **graph**; pipe it through `dot -Tsvg`.
+    - *plot* — **not implemented**, and says so rather than emitting
+      something misleading. An SVG timeline needs per-service *start
+      timestamps*; the boot-time protocol carries durations only.
 
     After a soft reboot the kernel figure is the one from the original
     boot, carried forward in the soft-reboot snapshot — the kernel did
