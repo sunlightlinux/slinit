@@ -17,6 +17,24 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.1] — 2026-09-24
+
+One fix, in `slinit-logind`. **Upgrade if anything on the machine asks
+login1 which session a pid belongs to** — a desktop portal, a session
+tracker, `loginctl`-style tooling — on a host where processes live
+under systemd-style session scopes.
+
+Verified the way CI does it — `go vet` clean, `go test -race -count=1
+./...` green across all 72 packages that have tests — and by mutation:
+with the check removed, the two cases that stand in for the CI failure
+fail again.
+
+The QEMU functional suite last ran at 225/225 against the v2.4.0 tree.
+It is not re-run here, and would not have caught this anyway: exactly
+one of its 225 cases touches `slinit-logind`, and it exercises
+`KillUserProcesses`, not pid-to-session resolution. This bug's natural
+habitat is a login session, which the demo VM does not have.
+
 ### Fixed
 
 - **`slinit-logind` resolved any pid on a systemd host to a session it
