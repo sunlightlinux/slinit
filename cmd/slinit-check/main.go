@@ -26,6 +26,26 @@ import (
 )
 
 func main() {
+	// STABILITY.md's deprecation rule: a deprecated directive keeps
+	// working and says so, so an operator hears about a removal before
+	// it lands rather than at it. Offline is the useful place for
+	// that — you find out while editing, not at the next boot.
+	//
+	// Deduplicated because slinit-check parses each file twice by
+	// design — once through the loader for the dependency graph, once
+	// directly for the per-file checks — and the operator does not
+	// need to hear it twice.
+	warned := map[string]bool{}
+	config.OnDeprecatedDirective = func(svc, directive, since, replacedBy string) {
+		if warned[svc+"\x00"+directive] {
+			return
+		}
+		warned[svc+"\x00"+directive] = true
+		fmt.Fprintf(os.Stderr,
+			"  WARNING [%s]: %s is deprecated since slinit %s (%s)\n",
+			svc, directive, since, replacedBy)
+	}
+
 	dirs := []string{}
 	services := []string{}
 	var envFile string

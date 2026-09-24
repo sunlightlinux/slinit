@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/features"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/seccomp"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -1286,7 +1287,34 @@ func parseDirMode(setting, value string) (*uint32, error) {
 }
 
 // applySetting applies a parsed setting to the service description.
+// OnDeprecatedDirective is called once per use of a deprecated
+// directive in a service file. It is how STABILITY.md's deprecation
+// rule — "using it produces a warning from slinit-check and in the
+// daemon log" — actually reaches an operator.
+//
+// A hook rather than a logger on the parser, because the two consumers
+// want different destinations: cmd/slinit writes to the daemon log at
+// warning level, slinit-check to its own WARNING channel on stderr.
+// nil (the default) is silent, which is what tests and library callers
+// want.
+//
+// It fires at parse time, so a service that is never started still
+// warns on `slinit-check` — the point being to hear about a removal
+// before it happens rather than at it.
+var OnDeprecatedDirective func(service, directive, since, replacedBy string)
+
+// deprecationLookup is features.Deprecation, indirected so a test can
+// supply a deprecated directive. Nothing in the shipped table is
+// deprecated yet, so without this the wiring below would have no way
+// to be exercised.
+var deprecationLookup = features.Deprecation
+
 func applySetting(desc *ServiceDescription, setting, value string, op OperatorType, serviceArg *string) error {
+	if OnDeprecatedDirective != nil {
+		if since, replacedBy, ok := deprecationLookup(setting); ok {
+			OnDeprecatedDirective(desc.Name, setting, since, replacedBy)
+		}
+	}
 	switch setting {
 	case "type":
 		return applyType(desc, value)

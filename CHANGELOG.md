@@ -17,6 +17,29 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Added
+
+- **Deprecation warnings, the machinery.** STABILITY.md has said since
+  v2.3.7 that a deprecated directive "keeps working. Using it produces
+  a warning from `slinit-check` and in the daemon log". Nothing did.
+  Now the parser consults `features.Deprecation` for every directive it
+  applies and calls `config.OnDeprecatedDirective`, which `slinit-check`
+  wires to its `WARNING` channel and `slinit` to the daemon log at
+  warning level. With no hook wired — every library caller, every test
+  — the lookup is not even consulted.
+
+  **Nothing is marked deprecated, so nothing warns yet.** That is the
+  point: the rule says a deprecation is announced in a *minor* release,
+  and the machinery had to exist before the first one rather than
+  arrive with it. Marking one is now a table entry in
+  `pkg/features/provenance.go` — `DeprecatedSince` and `ReplacedBy` —
+  and a test fails until the CHANGELOG and `slinit-service(5)` say so
+  too, so the announcement cannot be forgotten.
+
+  Aliases are explicitly not deprecations, and a test enforces it:
+  `termsignal`, `rlimit-addrspace` and `run-in-cgroup` are dinit
+  spellings kept deliberately for the life of the major version.
+
 ### Fixed
 
 - **`namespace-demo` could not be stopped, only killed.** It runs as

@@ -28,6 +28,8 @@
 //     assistants that need machine-readable feature data
 package features
 
+import "sync"
+
 // Kind categorizes what sort of feature an entry represents. Kept
 // small on purpose — three top-level kinds cover everything a user
 // might ask about; sub-categorisation goes into Category.
@@ -108,6 +110,67 @@ type Feature struct {
 	// empty for pre-v1 features (majority) — populated for new
 	// additions so operators know minimum slinit version.
 	Since string `json:"since,omitempty"`
+	// DeprecatedSince is the slinit version that deprecated this
+	// feature. Empty means not deprecated, which is the case for
+	// everything except the entries listed in provenance.go. A
+	// deprecated feature keeps working: STABILITY.md's deprecation
+	// rule is that it warns for at least one minor release and is
+	// removed no earlier than the next major.
+	//
+	// Aliases are NOT deprecations. `termsignal`, `rlimit-addrspace`
+	// and `run-in-cgroup` are dinit spellings kept deliberately and
+	// permanently; they carry no DeprecatedSince.
+	DeprecatedSince string `json:"deprecated_since,omitempty"`
+	// ReplacedBy names what to use instead — a directive name, or a
+	// short phrase when there is no drop-in replacement. Shown in the
+	// warning so the operator does not have to go looking.
+	ReplacedBy string `json:"replaced_by,omitempty"`
+}
+
+// deprecations indexes provenanceTable by name for the deprecation
+// lookup. Built once, from the compiled-in table only: this is on the
+// path the daemon takes while loading a service, so it must not read
+// the source tree the way Load's discovery does.
+var (
+	deprecationsOnce sync.Once
+	deprecations     map[string]*Feature
+)
+
+// Deprecation reports whether name is a deprecated directive, and if
+// so since when and what replaces it. Lookup covers aliases, so a
+// deprecated name reached through its alias warns too.
+func Deprecation(name string) (since, replacedBy string, ok bool) {
+	deprecationsOnce.Do(func() { deprecations = indexDeprecations(provenanceTable) })
+	return lookupDeprecation(deprecations, name)
+}
+
+// lookupDeprecation is the pure half, so the behaviour can be tested
+// without anything in the shipped table being deprecated. Today
+// nothing is: the machinery exists so the first deprecation can follow
+// STABILITY.md's rule rather than arrive with the rule unimplemented.
+func lookupDeprecation(index map[string]*Feature, name string) (since, replacedBy string, ok bool) {
+	f, found := index[name]
+	if !found {
+		return "", "", false
+	}
+	return f.DeprecatedSince, f.ReplacedBy, true
+}
+
+// indexDeprecations builds the lookup map from a table. Exported to
+// tests only through lookupDeprecation's signature.
+func indexDeprecations(table []Feature) map[string]*Feature {
+	m := map[string]*Feature{}
+	for i := range table {
+		f := &table[i]
+		if f.DeprecatedSince == "" {
+			continue
+		}
+		m[f.Name] = f
+		for _, a := range f.Aliases {
+			m[a] = f
+		}
+	}
+	return m
 }
 
 // Registry is the joined result of auto-discovery + provenance

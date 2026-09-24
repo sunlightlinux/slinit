@@ -452,6 +452,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "slinit: %v (using default wallclock)\n", err)
 	}
 
+	// STABILITY.md's deprecation rule: a deprecated directive keeps
+	// working and warns, so the operator hears about the removal
+	// before it lands. Wired as soon as the logger exists, which is
+	// before any service description is parsed.
+	config.OnDeprecatedDirective = func(svc, directive, since, replacedBy string) {
+		logger.Warn("Service '%s': %s is deprecated since slinit %s (%s)",
+			svc, directive, since, replacedBy)
+	}
+
 	// Initialise the journal pipeline: boot-id / machine-id / hostname
 	// cache + in-process ring buffer + Unix DGRAM emitter aimed at
 	// /run/slinit/events.sock. Wiring runs unconditionally so every

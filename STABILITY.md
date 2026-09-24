@@ -198,11 +198,14 @@ When a stable interface has to go:
 
 1. It is marked deprecated in a **minor** release, with the replacement,
    in the CHANGELOG and in its man page.
-2. It keeps working. Using it should produce a warning from
-   `slinit-check` and in the daemon log, so the operator hears about it
-   before the removal rather than at it. As of v2.3.9 neither warns:
-   nothing has been deprecated yet, so the machinery has never been
-   needed, but it has to exist before anything is. Tracked below.
+2. It keeps working. Using it produces a warning from `slinit-check`
+   and in the daemon log, so the operator hears about it before the
+   removal rather than at it. Nothing is deprecated today, so nothing
+   warns today — but the machinery is in place, which is the part that
+   had to exist before the first deprecation rather than with it.
+   Marking one is a table entry in `pkg/features/provenance.go`
+   (`DeprecatedSince` + `ReplacedBy`); a test fails until the CHANGELOG
+   and `slinit-service(5)` say so too.
 3. It is removed no earlier than the **next major** release, and at
    least one minor release after the deprecation.
 
@@ -212,12 +215,14 @@ Two things this document describes do not exist yet. They are listed
 here rather than quietly promised, because a policy that describes
 machinery nobody built is worse than one that admits the gap.
 
-| Commitment | Status as of v2.3.9 |
-|------------|---------------------|
-| `slinit-service(5)` marks each directive with the version it appeared in | Not started. The CHANGELOG carries the information; the man page does not. |
-| A deprecated directive warns from `slinit-check` and in the daemon log | Not started. Nothing is deprecated yet, so nothing has been missed — but this has to land before the first deprecation, not with it. |
+| Commitment | Status |
+|------------|--------|
+| `slinit-service(5)` marks each directive with the version it appeared in | Not started. The CHANGELOG carries the information; the man page does not. The wording above is forward-looking, so there is nothing to backfill: every directive slinit accepts today predates this policy. What is missing is the convention and a check that enforces it on the next one. |
+| A deprecated directive warns from `slinit-check` and in the daemon log | **Done in 2.4.2.** Nothing is marked deprecated, so nothing warns; the machinery is what had to exist first. |
 
-Neither blocks anything today. Both block the first deprecation.
+The remaining item does not block anything today. It blocks nobody
+noticing when a new directive arrives undocumented — which has already
+happened once, to `no-boot-marker`.
 
 ## Exceptions
 

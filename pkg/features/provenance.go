@@ -198,6 +198,7 @@ var provenanceTable = []Feature{
 	{Name: "apparmor-load", Kind: KindDirective, Source: SourceUpstart, Category: CatSandbox, Notes: "load AppArmor policy on start"},
 	{Name: "apparmor-switch", Kind: KindDirective, Source: SourceUpstart, Category: CatSandbox, Notes: "switch to AppArmor profile after exec"},
 	{Name: "bus-name", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "BusName= for D-Bus activation"},
+	{Name: "bus-policy", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "accepted-noop: systemd removed BusPolicy= around v242 with kdbus, and slinit parses it so a copy-pasted unit file does not fail"},
 	{Name: "cache-directory", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig, Notes: "CacheDirectory= — auto-managed /var/cache/<name>"},
 	{Name: "cache-directory-mode", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig},
 	{Name: "cache-directory-quota", Kind: KindDirective, Source: SourceSystemd, Category: CatServiceConfig, Notes: "systemd CacheDirectoryQuota= (v258)"},
