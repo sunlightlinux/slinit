@@ -91,7 +91,7 @@ func Load(discoveredOpcodes, discoveredDirectives []string) (*Registry, Reconcil
 			Kind:     kind,
 			Source:   SourceSlinit,
 			Category: CatServiceConfig, // most-likely default
-			Notes:    "TODO: annotate provenance (auto-placeholder from discover.go)",
+			Notes:    TODOProvenance,
 		}
 		if kind == KindOpcode {
 			placeholder.Category = CatControlProto

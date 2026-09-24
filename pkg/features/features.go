@@ -55,6 +55,14 @@ const (
 	SourceSlinit      Source = "slinit"       // slinit-native (no upstream analog)
 )
 
+// TODOProvenance is the Notes text given to a discovered name that the
+// hand-curated table does not cover. Such an entry also falls back to
+// SourceSlinit, which is a guess and not a claim — a reader counting
+// the "slinit" group has to subtract these to get the real number of
+// slinit-native features. Exported so the renderers can say how many
+// there are rather than let the grouping read as authoritative.
+const TODOProvenance = "TODO: annotate provenance (auto-placeholder from discover.go)"
+
 // Category groups features by internal subsystem so operators can
 // browse related knobs together. Independent of Source — a systemd-
 // parity feature and a dinit-native one may both live under "cgroup".
