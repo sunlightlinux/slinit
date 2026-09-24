@@ -1450,8 +1450,13 @@ go test ./...
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/acceptance/ssh/run.sh
 
-# Fuzz targets (27 targets)
+# Fuzz targets — 27 live in tests/fuzz, 13 more sit beside the code
+# they exercise (the converters, sysusers/tmpfiles line parsers, the
+# timedatectl/hostnamectl parsers, and the service state machine), so
+# `./tests/fuzz` alone reaches two thirds of them. 40 repo-wide:
+#   grep -rl '^func Fuzz' --include='*_test.go' .
 go test -fuzz=FuzzConfigParse ./tests/fuzz
+go test -fuzz=FuzzStateMachine ./pkg/service
 
 # Performance harnesses (92 SSH-driven cases + 4 QEMU boot harnesses
 # + runtime microbenchmarks — comprehensive control-surface coverage,

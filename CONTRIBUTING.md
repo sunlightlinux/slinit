@@ -47,7 +47,7 @@ go test ./...
 - **Functional tests**: `./tests/functional/run-tests.sh` (225 QEMU-based cases)
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (219 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (92 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
-- **Fuzz targets**: `go test -fuzz=FuzzConfigParse ./tests/fuzz` (27 targets)
+- **Fuzz targets**: 40 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 13 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the converters, the sysusers/tmpfiles/timedatectl/hostnamectl parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
 - **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker) + `./tests/container/soak.sh` (spawn+shutdown loop)
 - **Kubernetes**: `./tests/k8s/run.sh` (8 cases against a local `kind` cluster)
 - Requires `qemu-system-x86_64` for functional tests, Docker for the container suite, `kind` + `kubectl` for the Kubernetes one

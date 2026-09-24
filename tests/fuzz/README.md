@@ -2,6 +2,30 @@
 
 Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
+## This directory is not all of them
+
+27 targets live here. Another 13 sit beside the code they exercise,
+because a fuzz target for an unexported parser has to live in its own
+package:
+
+| Package | Targets |
+|---------|---------|
+| `pkg/service` | `FuzzStateMachine` |
+| `cmd/slinit-runit-convert` | `FuzzAnalyzeRunScript`, `FuzzParseChpst` |
+| `cmd/slinit-openrc-convert` | `FuzzParseOpenrcScript`, `FuzzParseDepend` |
+| `cmd/slinit-systemd-convert` | `FuzzParseSystemdUnit` |
+| `cmd/slinit-sysusers` | `FuzzSysusersParseLine` |
+| `cmd/slinit-tmpfiles` | `FuzzTmpfilesParseLine` |
+| `cmd/slinit-timedatectl` | `FuzzReadZoneTab`, `FuzzValidateZone` |
+| `cmd/slinit-hostnamectl` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
+
+So `go test -fuzz=... ./tests/fuzz/` reaches roughly two thirds of the
+fuzzing surface. The authoritative list is:
+
+```bash
+grep -rl '^func Fuzz' --include='*_test.go' .
+```
+
 ## Running
 
 ```bash
