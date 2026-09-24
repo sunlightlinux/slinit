@@ -17,6 +17,34 @@ the full commit-level record.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`namespace-demo` could not be stopped, only killed.** It runs as
+  PID 1 of its own PID namespace, and the kernel does not deliver a
+  signal to a namespace's init unless that process installed a handler
+  (`pid_namespaces(7)`). With no `trap`, SIGTERM was discarded, so
+  every shutdown waited out the 3-second `stop-timeout` and logged
+  `stop timeout exceeded, sending killed` for a service that was doing
+  exactly what the kernel specifies.
+
+  Adding `trap` is the obvious fix and does not work on its own: a
+  POSIX shell runs a trap only after the current foreground command
+  returns, so a trapped TERM sits behind `sleep 30` for up to thirty
+  seconds. The sleep is now backgrounded and the shell blocks in
+  `wait`, which is interruptible. Measured in a real PID namespace:
+  no trap and trap-with-plain-sleep both survive SIGTERM; trap with
+  `sleep & wait` exits in 0.01s.
+
+  Also on that line: the demo printed a literal `$` where it meant to
+  print its PID. slinit expands `$VAR` at parse time and collapses
+  `$$` to one `$`, so showing the shell's `$$` needs `$$$$`. It now
+  reports `PID inside namespace: 1`, which is the thing the demo
+  exists to show.
+
+  `stop-timeout-demo` is deliberately left alone — it carries
+  `trap '' TERM` on purpose, and its escalation message is the point.
+
+
 ## [2.4.1] — 2026-09-24
 
 One fix, in `slinit-logind`. **Upgrade if anything on the machine asks

@@ -2,8 +2,28 @@
 # Demonstrates namespace-pid and namespace-mount for container-like isolation.
 # The process sees itself as PID 1 inside its own PID namespace.
 # Try: slinitctl catlog namespace-demo
+#
+# Two details that are the whole point of a namespace demo, and that
+# both bite the naive version of this file:
+#
+#   1. The kernel does not deliver a signal to a PID namespace's init
+#      unless that process installed a handler for it (pid_namespaces(7)).
+#      Without the trap, SIGTERM is discarded, slinit waits out the
+#      stop-timeout and escalates to SIGKILL — so every shutdown logged
+#      "stop timeout exceeded, sending killed" for a service that was
+#      behaving exactly as the kernel specifies.
+#
+#   2. `trap` alone is not enough. A POSIX shell runs a trap only after
+#      the current foreground command returns, so a trapped TERM sits
+#      behind `sleep 30` for up to 30 seconds — well past the 3-second
+#      stop-timeout below. Backgrounding the sleep and blocking in
+#      `wait` fixes it: `wait` *is* interruptible by a trapped signal.
+#
+# $$$$ rather than $$ because slinit expands $VAR at parse time and
+# collapses $$ to a literal '$' — see slinit-service(5). $! needs no
+# escaping: '!' is not a variable character.
 type = process
-command = /bin/sh -c "echo \"[ns-demo] PID inside namespace: $$\"; cat /proc/self/status | grep NSpid; echo \"[ns-demo] mount namespace active\"; while true; do sleep 30; done"
+command = /bin/sh -c "trap 'exit 0' TERM; echo \"[ns-demo] PID inside namespace: $$$$\"; cat /proc/self/status | grep NSpid; echo \"[ns-demo] mount namespace active\"; while true; do sleep 30 & wait $!; done"
 namespace-pid = yes
 namespace-mount = yes
 stop-timeout = 3

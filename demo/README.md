@@ -629,6 +629,19 @@ it at load time. The service receives it as fd 3 via `LISTEN_FDS=1`.
 `namespace-pid = yes` gives the process its own PID namespace (sees itself
 as PID 1). `namespace-mount = yes` provides a private mount table.
 
+Being PID 1 of a namespace changes how the service has to handle
+shutdown, and the service file spells it out. The kernel does not
+deliver a signal to a namespace's init unless that process installed a
+handler — so without `trap`, SIGTERM is discarded and slinit has no
+choice but to escalate to SIGKILL. And `trap` alone is not enough: a
+POSIX shell runs a trap only after the current foreground command
+returns, so a trapped TERM would sit behind `sleep 30`. The service
+backgrounds the sleep and blocks in `wait`, which *is* interruptible.
+
+If you write a real service that runs as a namespace's init — a
+container-like workload — it needs the same two things, or it will be
+killed rather than stopped on every shutdown.
+
 ### Stop Timeout Escalation (`stop-timeout-demo`)
 The service ignores SIGTERM. After `stop-timeout = 3` seconds, slinit
 escalates to SIGKILL. Demonstrates graceful-to-forceful stop behavior.
