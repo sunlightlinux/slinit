@@ -61,6 +61,26 @@ the full commit-level record.
 
 ### Fixed
 
+- **`ssd-demo` reported a failed stop on any shutdown more than five
+  minutes after boot.** Its supervised daemon is `sleep 300`, which
+  exits on its own; the pidfile stays behind, and
+  `slinit-start-stop-daemon --stop` then returns 5 — the LSB code for
+  "`--stop` given a pidfile whose process is gone". Shutdown inside
+  five minutes was clean, after it logged `stop command failed (exit
+  code 5)`, which reads like a race and is a timer. The stop side now
+  passes `--oknodo`: a daemon that is already gone is not a failed
+  stop. The service reached STOPPED either way, so this was noise
+  rather than a stuck teardown.
+
+  It also now passes `--name`, which the start side always did. Without
+  it, matching by pidfile checks only that `/proc/PID` exists, so a
+  recycled pid would be signalled: measured, an unrelated `tail`
+  holding the pid is killed without `--name` and survives with it.
+  That narrows the window rather than closing it — a recycled pid that
+  is itself a `sleep` still matches, and the demo VM runs several
+  `sleep` loops — but the service file now says so.
+
+
 - **`namespace-demo` could not be stopped, only killed.** It runs as
   PID 1 of its own PID namespace, and the kernel does not deliver a
   signal to a namespace's init unless that process installed a handler

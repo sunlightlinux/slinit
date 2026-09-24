@@ -7,10 +7,39 @@
 # tears it down cleanly on service stop using --retry TERM/2/KILL/2.
 # Uses --name (comm-based match) because Alpine's sleep is a busybox
 # applet, so /proc/PID/exe always points to /bin/busybox.
+#
+# The stop side carries two flags that are easy to leave off and that
+# a pidfile-based daemon almost always wants:
+#
+#   --oknodo   A daemon that is already gone is not a failed stop. The
+#              sleeper below exits on its own after 300 seconds, and
+#              without --oknodo every shutdown after that logged
+#              "stop command failed (exit code 5)" — the LSB code for
+#              "--stop given a pidfile whose process is gone". Clean
+#              within five minutes of boot, noisy after: it looks like
+#              a race and is a timer. See slinit-start-stop-daemon(8),
+#              EXIT STATUS.
+#
+#   --name     Matching on a pidfile alone checks only that /proc/PID
+#              exists. Pids are recycled, so a stale pidfile can name
+#              a process that has nothing to do with this service, and
+#              --stop would signal it. Adding --name compares
+#              /proc/PID/comm too: an unrelated program under the
+#              recycled pid no longer matches. Measured — a `tail`
+#              holding the pid survives with --name and is killed
+#              without it.
+#
+#              It narrows the window rather than closing it: a
+#              recycled pid that is *also* a `sleep` still matches,
+#              and this demo VM runs several `sleep` loops. Closing it
+#              properly needs a start-time identity the stop side can
+#              verify, which pidfiles do not carry. The start side
+#              above already passed --name; the stop side is where it
+#              changes an outcome.
 type = scripted
 depends-on: system-init
 command = /bin/sh -c "mkdir -p /run/ssd-demo && slinit-start-stop-daemon --start --background --make-pidfile --pidfile /run/ssd-demo/sleeper.pid --name sleep --startas /bin/sleep -- 300 && echo \"ssd-demo: sleeper started as pid $$(cat /run/ssd-demo/sleeper.pid)\""
-stop-command = /bin/sh -c "slinit-start-stop-daemon --stop --pidfile /run/ssd-demo/sleeper.pid --retry TERM/2/KILL/2 && echo 'ssd-demo: sleeper stopped'"
+stop-command = /bin/sh -c "slinit-start-stop-daemon --stop --oknodo --name sleep --pidfile /run/ssd-demo/sleeper.pid --retry TERM/2/KILL/2 && echo 'ssd-demo: sleeper stopped'"
 log-type = buffer
 log-buffer-size = 4096
 @meta enable-via all-services
