@@ -1,0 +1,19 @@
+services:
+  slinit:
+    build: .
+    container_name: slinit-metrics-demo
+    # slinit is PID 1 here, so it wants the signals a normal init gets.
+    init: false
+    stop_signal: SIGTERM
+    ports:
+      # The raw exposition, if you want to read it without Prometheus.
+      - "9100:9100"
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: slinit-metrics-prometheus
+    depends_on: [slinit]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"

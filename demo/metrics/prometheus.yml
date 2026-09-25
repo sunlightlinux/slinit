@@ -1,0 +1,12 @@
+# Scrape slinit every 5 seconds. The endpoint is cheap — it renders
+# from the live ServiceSet, there is no collection loop behind it — so
+# a short interval costs nothing and makes the graphs move while you
+# watch.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: slinit
+    static_configs:
+      - targets: ["slinit:9100"]

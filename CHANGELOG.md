@@ -19,6 +19,27 @@ the full commit-level record.
 
 ### Added
 
+- **`demo/metrics/` — the metrics endpoint in a browser.** `./run.sh`
+  builds slinit, wraps it in a busybox image as PID 1 with
+  `--metrics-listen`, and brings it up alongside a Prometheus that
+  scrapes it every five seconds. Prometheus lands on
+  <http://localhost:9090>, the raw exposition on
+  <http://localhost:9100/metrics>.
+
+  Five demo services chosen so the numbers are not all zeroes: one
+  that runs forever, one that exits every five seconds so
+  `slinit_service_restarts_total` climbs at a visible rate, one that
+  takes four seconds to start so startup times differ, one that fails
+  on purpose so a service sits in `failed`, and the boot target. The
+  README lists the queries worth typing first.
+
+  It also says which two numbers lie in a container:
+  `slinit_boot_kernel_seconds` reports the *host's* uptime, because in
+  container mode there is no kernel of slinit's own to have booted,
+  and `slinit_build_info` says `dev` because the demo skips the
+  release `-ldflags`.
+
+
 - **`slinit-service(5)` marks new directives with the release that
   introduced them**, and a test makes sure the next one does. The page
   opens with the convention — `(since X.Y.Z)` on the entry — and

@@ -1,0 +1,4 @@
+# Runs for the life of the container: slinit_service_up stays 1.
+type = process
+command = /bin/sh -c "while true; do sleep 3600 & wait $$!; done"
+restart = yes

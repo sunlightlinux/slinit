@@ -1,0 +1,6 @@
+# Fails on purpose: its start command exits non-zero, so slinit marks
+# the service FAILED and leaves it there. Watch slinit_service_failed
+# and the state="failed" bucket of slinit_services.
+type = scripted
+command = /bin/sh -c "echo doomed: pretending the prerequisite is missing; exit 1"
+restart = no

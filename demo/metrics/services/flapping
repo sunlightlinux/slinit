@@ -1,0 +1,6 @@
+# Exits every few seconds, so slinit_service_restarts_total climbs and
+# you have something that actually moves on a graph.
+type = process
+command = /bin/sh -c "sleep 5"
+restart = yes
+restart-delay = 1

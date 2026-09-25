@@ -1,0 +1,6 @@
+# Boot target: pulls everything else up.
+type = internal
+waits-for: steady
+waits-for: flapping
+waits-for: slow-starter
+waits-for: doomed

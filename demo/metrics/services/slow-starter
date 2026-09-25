@@ -1,0 +1,5 @@
+# Takes a visible moment to come up, so slinit_service_startup_seconds
+# is not all zeroes.
+type = scripted
+command = /bin/sh -c "sleep 4; echo slow-starter ready"
+restart = no

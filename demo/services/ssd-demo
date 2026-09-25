@@ -42,6 +42,7 @@
 #              verify, which pidfiles do not carry. The start side
 #              above already passed --name; the stop side is where it
 #              changes an outcome.
+#
 # The sleeper runs for a day, not for five minutes. The number is not
 # a timeout — nothing here wants the daemon to stop by itself — it is
 # just long enough that a demo session ends first. `sleep infinity`
