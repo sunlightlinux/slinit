@@ -1,0 +1,110 @@
+# SLSA Go releaser — builds every slinit command with the OpenSSF SLSA3
+# Go builder and attaches a signed provenance file to the release.
+#
+# Verify a downloaded binary with slsa-verifier:
+#   slsa-verifier verify-artifact slinit-linux-amd64 \
+#     --provenance-path slinit-linux-amd64.intoto.jsonl \
+#     --source-uri github.com/sunlightlinux/slinit
+#
+# Two things about this builder drive the shape below:
+#  1. It builds ONE binary per invocation, so slinit's 41 Go commands
+#     need 41 config files under .slsa-goreleaser/ and a matrix over
+#     them. There is no way to emit several binaries from one run.
+#  2. It runs no shell of its own. Anything computed — here, the version
+#     string — has to be produced in a prior job and handed across via
+#     evaluated-envs.
+name: SLSA Go releaser
+
+on:
+  workflow_dispatch:
+  release:
+    types: [created]
+
+permissions: read-all
+
+jobs:
+  args:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Derive the version string
+        id: version
+        run: |
+          # A release fires with refs/tags/vX.Y.Z; use the tag verbatim so
+          # the binary reports what the xbps package would. A manual run
+          # off a branch has no tag, so mark it as such rather than
+          # letting a dispatch masquerade as a tagged build.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME}-${GITHUB_SHA:0:8}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: args
+    permissions:
+      id-token: write  # To sign the provenance.
+      contents: write  # To upload assets to the release.
+      actions: read    # To read the workflow path.
+    strategy:
+      # One command failing to build should not hide the other 40.
+      fail-fast: false
+      matrix:
+        # 41 entries, not the 42 directories under cmd/: slinit-resource
+        # is the OCF resource agent, POSIX shell rather than Go, and the
+        # xbps template leaves it out of go_package for the same reason.
+        # `go build ./cmd/slinit-resource` fails with "no non-test Go
+        # files" — so the count being one short is deliberate.
+        binary:
+          - rc-service
+          - rc-status
+          - rc-update
+          - slinit
+          - slinit-binfmt
+          - slinit-cgtop
+          - slinit-check
+          - slinit-checkpath
+          - slinitctl
+          - slinit-einfo
+          - slinit-fstabinfo
+          - slinit-getty
+          - slinit-hostnamectl
+          - slinit-init-maker
+          - slinit-journalctl
+          - slinit-journald
+          - slinit-journal-migrate
+          - slinit-logind
+          - slinit-logouthookd
+          - slinit-machinectl
+          - slinit-monitor
+          - slinit-mount
+          - slinit-mountinfo
+          - slinit-nspawn
+          - slinit-nuke
+          - slinit-openrc-convert
+          - slinit-runit-convert
+          - slinit-runner
+          - slinit-seedrng
+          - slinit-shell-var
+          - slinit-shutdown
+          - slinit-start-stop-daemon
+          - slinit-supervise-daemon
+          - slinit-supports
+          - slinit-svc-value
+          - slinit-sysctl
+          - slinit-systemd-convert
+          - slinit-sysusers
+          - slinit-timedatectl
+          - slinit-tmpfiles
+          - slinit-watchdogd
+    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
+    with:
+      # Tracks go.mod instead of pinning a literal, which would drift the
+      # day the module's Go directive moves.
+      go-version-file: go.mod
+      config-file: .slsa-goreleaser/linux-amd64-${{ matrix.binary }}.yml
+      evaluated-envs: "VERSION:${{ needs.args.outputs.version }}"
+      # There is no release to attach to on a manual dispatch; that run
+      # is a build-and-sign smoke test only.
+      upload-assets: ${{ github.event_name == 'release' }}

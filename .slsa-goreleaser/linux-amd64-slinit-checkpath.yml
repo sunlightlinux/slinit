@@ -1,0 +1,20 @@
+# SLSA provenance build config for slinit-checkpath (linux/amd64).
+#
+# One config per binary: the SLSA Go builder produces exactly one binary
+# per invocation, so slinit's 41 Go commands need 41 of these, driven by
+# the matrix in .github/workflows/slsa-goreleaser.yml.
+#
+# CGO_ENABLED=0 diverges from the xbps package, which builds with cgo.
+# pkg/utmp has a no-cgo fallback (utmp_other.go), so this compiles, but
+# slinit, slinitctl, slinit-shutdown and slinit-logouthookd then record
+# nothing to utmp/wtmp. Static, reproducible binaries are the trade.
+version: 1
+env:
+  - GO111MODULE=on
+  - CGO_ENABLED=0
+flags:
+  - -trimpath
+goos: linux
+goarch: amd64
+main: ./cmd/slinit-checkpath
+binary: slinit-checkpath-{{ .Os }}-{{ .Arch }}
