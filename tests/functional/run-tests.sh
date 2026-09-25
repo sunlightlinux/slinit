@@ -61,11 +61,20 @@ check_prereqs() {
 # changed — leading to confusing "fix doesn't work" sessions when in
 # fact the new code never reached the VM.
 build_base() {
-    if [ -f "${OUTPUT_DIR}/initramfs-base.cpio.gz" ] && [ -f "${OUTPUT_DIR}/vmlinuz-virt" ]; then
+    if [ "${KEEP_BUILD:-1}" = "0" ]; then
+        echo "KEEP_BUILD=0: forcing a rebuild"
+    elif [ -f "${OUTPUT_DIR}/initramfs-base.cpio.gz" ] && [ -f "${OUTPUT_DIR}/vmlinuz-virt" ]; then
         local newest_src
+        # build-vm.sh too, not just the Go sources: it decides which
+        # packages land in the image, and a change there used to leave
+        # the cache looking fresh while the image was missing whatever
+        # had just been added.
         newest_src=$(find "${PROJECT_DIR}/cmd" "${PROJECT_DIR}/pkg" \
             -name '*.go' -type f -newer "${OUTPUT_DIR}/initramfs-base.cpio.gz" \
             -print -quit 2>/dev/null)
+        if [ -z "$newest_src" ] && [ "${SCRIPT_DIR}/build-vm.sh" -nt "${OUTPUT_DIR}/initramfs-base.cpio.gz" ]; then
+            newest_src="tests/functional/build-vm.sh"
+        fi
         if [ -z "$newest_src" ]; then
             echo "Using cached VM image (pass KEEP_BUILD=0 to force rebuild)"
             return 0
@@ -139,6 +148,17 @@ SVC
         cp -r "${services_dir}/initd"/* "${overlay_dir}/etc/init.d/" 2>/dev/null || true
         # Remove from slinit.d (it was copied there too)
         rm -rf "${overlay_dir}/etc/slinit.d/initd" 2>/dev/null || true
+    fi
+
+    # Copy systemd units if a systemd/ subdirectory exists in the test .d
+    # dir. They go to /etc/systemd/system, where slinit's fallback looks —
+    # copying them into slinit.d would test nothing, since the loader would
+    # then find a native description instead of resolving a unit.
+    if [ -d "${services_dir}/systemd" ]; then
+        mkdir -p "${overlay_dir}/etc/systemd/system"
+        cp -r "${services_dir}/systemd"/* "${overlay_dir}/etc/systemd/system/" 2>/dev/null || true
+        # Remove from slinit.d (it was copied there too)
+        rm -rf "${overlay_dir}/etc/slinit.d/systemd" 2>/dev/null || true
     fi
 
     # Create the overlay cpio and concatenate with base

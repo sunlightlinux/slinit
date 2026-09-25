@@ -9,6 +9,20 @@ ALPINE_ARCH="x86_64"
 ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
 MINIROOTFS_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/alpine-minirootfs-${ALPINE_RELEASE}-${ALPINE_ARCH}.tar.gz"
 KERNEL_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/netboot/vmlinuz-virt"
+PACKAGES_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/${ALPINE_ARCH}"
+
+# nginx, for case 226 (a real daemon started from a systemd .service unit).
+# Two packages only: the minirootfs already carries libssl, libcrypto and
+# libz, so PCRE is the one shared library nginx adds.
+#
+# `pcre`, not `pcre2`: nginx on this branch links libpcre.so.1, the
+# original PCRE. Shipping pcre2 instead leaves the binary loadable but
+# unrelocatable — it dies with "Error relocating /usr/sbin/nginx:
+# pcre_free_study: symbol not found" and exit 127, which slinit reports
+# as a plain failed start. The 3.23 build does link pcre2, so this pin
+# has to be rechecked against `.PKGINFO` whenever ALPINE_VERSION moves.
+NGINX_PKG="nginx-1.26.3-r3.apk"
+PCRE_PKG="pcre-8.45-r3.apk"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -89,6 +103,46 @@ echo "[4/5] Preparing rootfs..."
 rm -rf "${ROOTFS_DIR}"
 mkdir -p "${ROOTFS_DIR}"
 tar xzf "${ROOTFS_TAR}" -C "${ROOTFS_DIR}"
+
+# nginx + pcre2 for the systemd-unit case. APKs are gzipped tars, so they
+# extract straight into the rootfs; the post-install script that would
+# normally create the user and chown the tree never runs, so the next
+# block does that part by hand.
+for pkg in "${PCRE_PKG}" "${NGINX_PKG}"; do
+    if [ ! -f "${CACHE_DIR}/${pkg}" ]; then
+        echo "  Fetching ${pkg}..."
+        curl -fSL -o "${CACHE_DIR}/${pkg}.tmp" "${PACKAGES_URL}/${pkg}"
+        mv "${CACHE_DIR}/${pkg}.tmp" "${CACHE_DIR}/${pkg}"
+    fi
+    tar xzf "${CACHE_DIR}/${pkg}" -C "${ROOTFS_DIR}" 2>/dev/null || true
+done
+rm -rf "${ROOTFS_DIR}/.PKGINFO" "${ROOTFS_DIR}/.SIGN."* \
+       "${ROOTFS_DIR}/.post-install" "${ROOTFS_DIR}/.pre-install" "${ROOTFS_DIR}/.trigger"
+
+if ! grep -q '^nginx:' "${ROOTFS_DIR}/etc/passwd"; then
+    echo 'nginx:x:100:101:nginx:/var/lib/nginx:/sbin/nologin' >> "${ROOTFS_DIR}/etc/passwd"
+    echo 'nginx:x:101:' >> "${ROOTFS_DIR}/etc/group"
+fi
+# Not /run/nginx: /run is a tmpfs at runtime, so anything created here is
+# wiped at boot. The unit's RuntimeDirectory=nginx creates it instead —
+# which is one of the things case 226 exists to prove.
+mkdir -p "${ROOTFS_DIR}/var/log/nginx" "${ROOTFS_DIR}/var/lib/nginx/tmp" \
+         "${ROOTFS_DIR}/etc/nginx/http.d"
+# The package ships /var/lib/nginx as 0750 and relies on a post-install
+# chown; cpio runs unprivileged here so the uid cannot be set. Making the
+# tree traversable is the part that matters — without it the worker runs
+# as nginx, cannot descend into the document root, and answers 403.
+chmod 0755 "${ROOTFS_DIR}/var/lib/nginx"
+chmod -R a+rX "${ROOTFS_DIR}/var/lib/nginx/html" 2>/dev/null || true
+cat > "${ROOTFS_DIR}/etc/nginx/http.d/default.conf" <<'NGINXCONF'
+server {
+    listen 127.0.0.1:80 default_server;
+    root /var/lib/nginx/html;
+    location / {
+        index index.html;
+    }
+}
+NGINXCONF
 
 install -m 755 "${BUILD_DIR}/slinit" "${ROOTFS_DIR}/sbin/slinit"
 install -m 755 "${BUILD_DIR}/slinitctl" "${ROOTFS_DIR}/usr/bin/slinitctl"

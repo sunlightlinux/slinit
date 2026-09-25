@@ -1,0 +1,7 @@
+type = internal
+depends-on: system-init
+depends-on: test-runner
+# Naming nginx here is what makes slinit look for it. The systemd
+# fallback resolves names and never enumerates a directory, so a unit
+# nothing asks for never runs — asserting that is part of the case.
+waits-for: nginx

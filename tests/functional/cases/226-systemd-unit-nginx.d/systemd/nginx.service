@@ -1,0 +1,27 @@
+# Deliberately a stock unit: Type=forking with a PIDFile, ExecReload and
+# ExecStop through nginx's own signalling, RuntimeDirectory, and a
+# hardening block. Nothing here is written for slinit, which is the
+# point — slinit has to run what a distribution ships.
+#
+# After=network.target is kept on purpose. It is in nearly every real
+# unit, and turning it into a dependency on a service called "network"
+# used to make such units unloadable. If that regresses, this case fails
+# at "nginx reached STARTED" rather than somewhere subtle.
+[Unit]
+Description=nginx test unit
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/run/nginx/nginx.pid
+RuntimeDirectory=nginx
+ExecStart=/usr/sbin/nginx
+ExecReload=/usr/sbin/nginx -s reload
+ExecStop=/usr/sbin/nginx -s quit
+Restart=no
+TimeoutStopSec=10
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
