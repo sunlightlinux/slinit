@@ -29,7 +29,13 @@ command = /bin/sh -c 'sleep 2; printf "READY=1\n" > /dev/fd/\$\$NOTIFY_FD; while
 restart = false
 EOF
 
-slinitctl --system start "$SVC" >/dev/null 2>&1
+# --no-wait is required, not cosmetic: since v2.3.5 a plain `start` blocks
+# until the service settles, so it would sit here for the full 2s and the
+# STARTING window would be over before the first check ran. That made this
+# case fail with "reached STARTED before READY=1 was sent" — a stale probe,
+# not a broken hold. (The block is itself proof the hold works, but we need
+# to observe the intermediate state, so return immediately instead.)
+slinitctl --system --no-wait start "$SVC" >/dev/null 2>&1
 
 # Poll for STARTING within the first second — must NOT yet be STARTED.
 sleep 1

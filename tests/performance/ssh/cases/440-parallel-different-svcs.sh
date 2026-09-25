@@ -3,6 +3,12 @@
 # (parallel-status on the same svc). Slower here would point at
 # per-service mutex serialising cross-service reads; equal-or-
 # faster confirms the ServiceSet's read path is properly parallel.
-_svcs="boot socklog dbus udevd elogind crond sshd network"
+#
+# Every name here must be a service that actually loads. A missing one
+# does not fail the case (status writes to /dev/null) — it silently times
+# slinitctl's error path instead of a real status read, which is exactly
+# what would corrupt the comparison against 060. `elogind` was such a
+# name until the slinit-logind migration; it is `logind` now.
+_svcs="boot socklog dbus udevd logind crond sshd network"
 perf_run_iters "$ITERS" "ParallelStatus8_diff_svcs" \
     "for _s in $_svcs; do slinitctl status \"\$_s\" > /dev/null & done; wait"
