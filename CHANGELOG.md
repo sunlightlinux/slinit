@@ -17,6 +17,26 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.2] — 2026-09-25
+
+slinit itself is unchanged: no directive, opcode, flag or exit status
+differs from 2.4.1. What lands here is the machinery STABILITY.md had
+been describing without having, a way to see the metrics endpoint in a
+browser, and three demo services that were teaching the wrong lesson.
+
+Both commitments STABILITY.md listed as unbuilt are now in place. A
+deprecated directive warns — from `slinit-check` while you edit, and in
+the daemon log at boot — and `slinit-service(5)` marks each new
+directive with the release it appeared in, with a test that fails if
+the next one arrives unmarked. Nothing is deprecated yet and nothing
+needed backfilling; the point was to have the machinery before the
+first deprecation rather than alongside it.
+
+Verified: 72 unit packages, 23/23 container cases, 10/10 Kubernetes
+cases on kind, the last two run together rather than separately. The
+QEMU functional suite last ran green at 225/225 for v2.4.0 and is not
+re-run here — nothing in this release touches PID 1.
+
 ### Added
 
 - **Two Kubernetes cases for the metrics endpoint**, `tests/k8s/`
