@@ -17,6 +17,95 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.3] — 2026-09-25
+
+One fix, and it is the one that matters: eight concurrent
+`slinitctl setenv` on a single service killed PID 1 and panicked the
+kernel. v2.4.2 shipped with it, and the ISO built from v2.4.2 carries
+it.
+
+The bug was reachable from the control socket the whole time, by an
+unprivileged-looking operation, with no unusual configuration. What
+kept it hidden was not its rarity — a test for it has existed for
+releases. That test had simply never run, because the performance
+suite was stopping silently at case 46 of 92 and the case that
+triggers the crash is number 47.
+
+Verified: the reproducer fails under `-race` before the fix and passes
+after; `go test -race ./pkg/service/... ./pkg/control/...` clean; the
+full unit suite clean; 219/219 acceptance against a live ceres with
+zero skips; and the crashing performance case itself now runs thirty
+iterations of 240 concurrent writes without incident.
+
+### Fixed
+
+- **Concurrent `setenv` on one service killed PID 1.** Every control
+  connection is served on its own goroutine, and `CmdSetEnv` reaches
+  the per-service environment map through `SetEnvVar`/`UnsetEnvVar`
+  without passing through the ServiceSet mutex. The map was bare. Two
+  connections writing it at once is a Go runtime *fatal error*, not a
+  panic any recover can catch — the process is gone, and when the
+  process is PID 1 the kernel panics with it.
+
+  "ServiceSet is mutex-protected, therefore the control path is safe"
+  was the assumption; it does not hold for state hanging off a
+  `ServiceRecord` that handlers reach into directly. Same shape as the
+  `DirLoader` race fixed in 2.2.7.
+
+  `envMu` now guards the map, taken in the leaf accessors only —
+  `SetEnvVar`, `UnsetEnvVar`, `ResetEnv`, `GetAllEnv`, `BuildEnvSlice`.
+  `BuildFullEnv` and `BuildEnvWithFile` reach the map through
+  `BuildEnvSlice` rather than touching it, so the lock cannot nest and
+  cannot deadlock against itself. `slinitctl show` was ranging over the
+  map directly from a connection goroutine and now goes through
+  `GetAllEnv`.
+
+  Regression tests `TestServiceRecord_ConcurrentEnvMutation` and
+  `TestServiceRecord_ConcurrentResetEnv`, both under `-race`.
+
+- **The performance suite had been silently truncated at case 46 of
+  92.** Case 430 ended with a best-effort cleanup — `rm-dep` for an
+  edge the loop had already removed — written without `|| true`.
+  Redirecting output to `/dev/null` hides the message but not the exit
+  status, and a sourced case's status is its last command's, so
+  `run.sh`'s `set -e` aborted the entire run there and printed nothing
+  explaining why. Case 470, which crashes PID 1, is past that line and
+  had never executed once.
+
+  Case 380 carried the identical latent pattern and is fixed with it.
+  `run.sh` now names the case and its exit code instead of stopping
+  mutely, and says that a case fails on its last command — the specific
+  confusion that let this sit, since every benchmark above the cut
+  printed normally.
+
+- **Two acceptance cases were asserting a world that no longer
+  exists.** `03-essential-services` required `elogind` to be STARTED;
+  sunlight-os runs the native `slinit-logind` and the elogind *service*
+  is gone, though the package stays, since `pam_elogind.so` lives in
+  it. `30-ready-notification` watched for the `STARTING` window after a
+  plain `start`, which has blocked until the service settles since
+  2.3.5 — the two-second hold was over before the first check, so the
+  case reported "reached STARTED before READY=1" while the hold was
+  working correctly. It reported a defect that was not there; the
+  blocking start was itself the proof. It now passes `--no-wait`.
+
+- **A performance case was timing an error path.** Case 440 listed
+  `elogind` among eight services to stat in parallel. A name that
+  fails to load does not fail the case, because output goes to
+  `/dev/null` — it quietly measures `slinitctl`'s error path instead of
+  a real status read, which corrupts the comparison against case 060
+  that the case exists to make.
+
+- **Case 310's premise was wrong.** It claimed to isolate the
+  marshalling cost of a larger payload. Both `status` and `status5`
+  issue exactly one handle lookup, one command and one reply; the
+  payload explains nothing. The roughly twofold gap is `status`
+  additionally walking the cgroup tree and fork+exec'ing an entire
+  `slinit-journalctl`, unconditionally rather than behind `-l`. Every
+  `status` figure in the suite is therefore about half subprocess
+  spawn, cases 030, 070, 150 and 250 included. Documented in place, so
+  nobody optimises marshalling chasing it.
+
 ## [2.4.2] — 2026-09-25
 
 slinit itself is unchanged: no directive, opcode, flag or exit status
