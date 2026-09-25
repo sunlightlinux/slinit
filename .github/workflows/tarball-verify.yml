@@ -1,0 +1,141 @@
+# Tarball verification — an independent second opinion on a released tag.
+#
+# This mirrors the Jenkins pipeline on debian13-1, deliberately. The point
+# is not to run the same tests twice on the same machine: it is that the
+# two runners disagree about almost everything that could hide a problem —
+# distribution, libc, Go toolchain origin, filesystem, CPU count — so a
+# failure here that Jenkins missed is information, and agreement is worth
+# something.
+#
+# It builds the PUBLISHED TARBALL, not the git checkout. That is the
+# artifact the xbps template feeds on (distfiles= + checksum=), and it is
+# what anyone downloading a release actually gets. A repository can build
+# perfectly while the tarball GitHub generates from the tag does not —
+# .gitattributes export-ignore, a missing generated file, a symlink that
+# does not survive the archive. Only building the tarball catches that.
+#
+# Complements the SLSA workflow rather than repeating it: that one builds
+# from git and signs provenance, this one proves the published archive
+# compiles and passes its own tests somewhere else entirely.
+name: Tarball verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to verify (e.g. v2.4.3). Empty means the latest release."
+        required: false
+        default: ""
+  release:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    # The race detector over the whole tree is the long pole here; the
+    # default 360-minute ceiling would let a hang burn an hour before
+    # anyone noticed.
+    timeout-minutes: 45
+
+    steps:
+      - name: Resolve the tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+          elif [ -n "${INPUT_TAG}" ]; then
+            tag="${INPUT_TAG}"
+          else
+            # No default baked in: a literal like v2.4.2 goes stale the
+            # day after it is written and then silently verifies an old
+            # release while looking like it verified the new one.
+            tag="$(gh release view --repo '${{ github.repository }}' --json tagName --jq .tagName)"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "Verifying ${tag}"
+
+      - name: Download and unpack the release tarball
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL --retry 3 -o "slinit-${TAG}.tar.gz" "$url"
+          echo "sha256: $(sha256sum "slinit-${TAG}.tar.gz" | cut -d' ' -f1)"
+          tar -xf "slinit-${TAG}.tar.gz"
+          # GitHub names the top-level directory after the tag with any
+          # leading v stripped: v2.4.3 -> slinit-2.4.3.
+          mv "slinit-${VERSION}" slinit
+          ls slinit | head
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # From the tarball's own go.mod, not the repository's. The
+          # toolchain a release asks for is part of what is being
+          # verified, and on an old tag the two can differ.
+          go-version-file: slinit/go.mod
+          cache: false
+
+      - name: Report the toolchain
+        run: |
+          go version
+          grep -E '^go |^toolchain' slinit/go.mod
+
+      - name: go vet
+        working-directory: slinit
+        run: go vet ./...
+
+      - name: Build every command
+        working-directory: slinit
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          # ./cmd/... yields 41 binaries, not 42: cmd/slinit-resource holds
+          # the OCF agent, POSIX shell rather than Go, and the ... pattern
+          # skips a directory with no Go files. Naming it explicitly would
+          # fail with "no non-test Go files".
+          go build -ldflags "-X main.version=${TAG}" -o bin/ ./cmd/...
+          echo "built $(ls bin | wc -l) binaries"
+          ls -la bin
+
+      - name: Unit tests with the race detector
+        working-directory: slinit
+        run: go test -race -count=1 ./...
+
+      - name: Smoke test
+        working-directory: slinit
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Assert the version rather than just printing it: -X against a
+          # symbol that no longer exists is silently dropped by the Go
+          # linker, so an unchecked --version can print "dev" and still
+          # look like a pass.
+          got="$(./bin/slinitctl --version)"
+          echo "$got"
+          case "$got" in
+            *"${TAG}"*) echo "OK: version carries ${TAG}" ;;
+            *) echo "FAIL: expected ${TAG} in '${got}'"; exit 1 ;;
+          esac
+          ./bin/slinit --version
+          ./bin/slinit-check --help > /dev/null
+
+      - name: Archive the binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: slinit-${{ steps.tag.outputs.tag }}-linux-amd64
+          path: slinit/bin/
+          retention-days: 30

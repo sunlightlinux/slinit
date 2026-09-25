@@ -221,7 +221,13 @@ func (d *Debugger) Start() error {
 	d.termiosMu.Lock()
 	d.termios = orig
 	d.termiosMu.Unlock()
-	go d.run()
+	// Read the fd here, not inside the goroutine. Stop() closes d.tty to
+	// unstick the blocking read, and os.File.Fd() touches the same
+	// internal state Close() writes without taking the file's mutex — so
+	// a Stop() landing in the window before the goroutine got that far
+	// was a data race, and a lost race means polling a descriptor number
+	// that has since been reused by something else.
+	go d.run(int(tty.Fd()))
 	if d.opts.Logger != nil {
 		d.opts.Logger.Info("Boot debugger active on %s (press Ctrl-B for menu)", d.opts.ConsolePath)
 	}
@@ -296,9 +302,10 @@ func (d *Debugger) Stop() {
 // another goroutine — the driver keeps the reader parked in the
 // wait queue independently of which fd initiated the read. Without
 // this loop Stop() would hang until the operator pressed a key.
-func (d *Debugger) run() {
+// fd is passed in rather than read from d.tty: see the comment at the
+// `go d.run(...)` call site.
+func (d *Debugger) run(fd int) {
 	defer close(d.doneCh)
-	fd := int(d.tty.Fd())
 	buf := make([]byte, 1)
 	pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	for {
