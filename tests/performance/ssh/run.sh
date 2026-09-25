@@ -111,7 +111,21 @@ for case_path in "${CASES[@]}"; do
     # when the operator explicitly opts in. ssh_run doesn't inherit
     # the local environment, so we pass it inline.
     _remote_env="ITERS=${ITERS} SLINIT_ALLOW_DISRUPTIVE=${SLINIT_ALLOW_DISRUPTIVE:-0}"
-    ssh_run "cd ${REMOTE_DIR} && ${_remote_env} sh -c '. ./remote-prelude.sh && . ./${case_name}.sh'"
+    # Don't let `set -e` abort the suite mutely. A case's exit status is
+    # its LAST command's, so a trailing best-effort cleanup without
+    # `|| true` fails the case even though every benchmark printed fine.
+    # That is exactly how this suite silently stopped at case 46 of 92
+    # for a whole release: 430's result appeared, then nothing, with no
+    # error to grep for. Abort as before, but say which case and why.
+    _rc=0
+    ssh_run "cd ${REMOTE_DIR} && ${_remote_env} sh -c '. ./remote-prelude.sh && . ./${case_name}.sh'" || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+        echo >&2
+        echo -e "${YELLOW}ERROR: case ${case_name} exited ${_rc} — aborting suite${RESET}" >&2
+        echo "  Its benchmarks may have printed fine above: a case fails on" >&2
+        echo "  its last command, which is often a cleanup missing '|| true'." >&2
+        exit "$_rc"
+    fi
     echo
 done
 

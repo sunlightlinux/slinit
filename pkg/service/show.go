@@ -459,9 +459,12 @@ func RenderShow(s Service) string {
 	}
 
 	// --- Environment (per-service extraEnv only; global env is on the set) ---
-	if len(sr.extraEnv) > 0 {
-		pairs := make([]string, 0, len(sr.extraEnv))
-		for k, v := range sr.extraEnv {
+	// Via GetAllEnv, not sr.extraEnv directly: `slinitctl show` runs on a
+	// control-connection goroutine and would otherwise range over the map
+	// while a concurrent setenv writes it. See envMu on ServiceRecord.
+	if extraEnv := sr.GetAllEnv(); len(extraEnv) > 0 {
+		pairs := make([]string, 0, len(extraEnv))
+		for k, v := range extraEnv {
 			pairs = append(pairs, fmt.Sprintf("%s=%s", k, v))
 		}
 		sort.Strings(pairs)

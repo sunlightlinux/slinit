@@ -6,4 +6,7 @@ _key="PERF_PROBE_KEY_$$"
 perf_run_iters "$ITERS" "CtlSetEnvCycle_socklog" \
     "slinitctl setenv socklog $_key=val && slinitctl unsetenv socklog $_key"
 # Belt-and-braces cleanup (in case a run aborted mid-cycle).
-slinitctl unsetenv socklog "$_key" > /dev/null 2>&1
+# `|| true` for the same reason as 430: a trailing cleanup's exit
+# status IS the case's exit status, and a non-zero one aborts the
+# whole suite under `set -e`.
+slinitctl unsetenv socklog "$_key" > /dev/null 2>&1 || true

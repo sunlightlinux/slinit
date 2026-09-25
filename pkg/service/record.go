@@ -255,7 +255,13 @@ type ServiceRecord struct {
 	extraCommands        map[string][]string
 	extraStartedCommands map[string][]string
 
-	// Runtime environment variables (set via control protocol)
+	// Runtime environment variables (set via control protocol), guarded
+	// by envMu. Every control connection is served on its own goroutine
+	// and CmdSetEnv reaches this map directly, without taking the
+	// ServiceSet lock — so concurrent `slinitctl setenv` on one service
+	// really does write it in parallel. Leaving it bare was a Go runtime
+	// "concurrent map writes" fatal, which in PID 1 is a kernel panic.
+	envMu    sync.Mutex
 	extraEnv map[string]string
 
 	// Process attributes (applied post-fork)
@@ -1327,6 +1333,8 @@ func (sr *ServiceRecord) WaitingForConsole() bool { return sr.waitingForConsole 
 // --- Environment variable management ---
 
 func (sr *ServiceRecord) SetEnvVar(key, value string) {
+	sr.envMu.Lock()
+	defer sr.envMu.Unlock()
 	if sr.extraEnv == nil {
 		sr.extraEnv = make(map[string]string)
 	}
@@ -1334,6 +1342,8 @@ func (sr *ServiceRecord) SetEnvVar(key, value string) {
 }
 
 func (sr *ServiceRecord) UnsetEnvVar(key string) {
+	sr.envMu.Lock()
+	defer sr.envMu.Unlock()
 	delete(sr.extraEnv, key)
 }
 
@@ -1342,10 +1352,14 @@ func (sr *ServiceRecord) UnsetEnvVar(key string) {
 // the service's env-file (the "defaults"). Mirrors upstart's
 // `initctl reset-env JOB`.
 func (sr *ServiceRecord) ResetEnv() {
+	sr.envMu.Lock()
+	defer sr.envMu.Unlock()
 	sr.extraEnv = nil
 }
 
 func (sr *ServiceRecord) GetAllEnv() map[string]string {
+	sr.envMu.Lock()
+	defer sr.envMu.Unlock()
 	if sr.extraEnv == nil {
 		return nil
 	}
@@ -1357,7 +1371,12 @@ func (sr *ServiceRecord) GetAllEnv() map[string]string {
 }
 
 // BuildEnvSlice converts extraEnv to []string for ExecParams.Env.
+// Callers that already hold envMu must not use this; BuildFullEnv and
+// BuildEnvWithFile go through it rather than touching extraEnv themselves,
+// which keeps the lock strictly leaf-level and deadlock-free.
 func (sr *ServiceRecord) BuildEnvSlice() []string {
+	sr.envMu.Lock()
+	defer sr.envMu.Unlock()
 	if len(sr.extraEnv) == 0 {
 		return nil
 	}
