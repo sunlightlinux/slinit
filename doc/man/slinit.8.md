@@ -538,6 +538,40 @@ no remaining active dependents. **slinitctl stop** also removes
 explicit activation, but additionally fails if other services still
 depend on the target.
 
+## FOREIGN SERVICE FORMATS
+
+When a service name has no native description in any service
+directory, slinit falls back to formats it understands, in order:
+SysV/LSB init scripts under the *init.d* directories, then systemd
+*.service* units under */etc/systemd/system*,
+*/run/systemd/system*, */usr/lib/systemd/system* and
+*/lib/systemd/system*, searched in that order so an administrator's
+override in */etc* beats the packaged unit.
+
+Both fallbacks resolve a name that something already asked for. A
+directory is never enumerated, so installing a package that ships
+units does not add anything to the boot graph — the unit runs only
+once it is named, by the boot service graph, a dependency, or
+**slinitctl start**. A native description always wins, so a package
+shipping both leaves slinit running the one the administrator wrote.
+
+The unit is read and translated in memory; nothing is written to
+disk. Name resolution takes both spellings: *foo* and *foo.service*
+find */etc/systemd/system/foo.service*.
+
+Only *.service* units load. *.timer*, *.socket*, *.path*, *.mount*
+and *.target* are systemd abstractions that map onto different slinit
+facilities — **cron=**, path-activation directives, the boot service
+graph — and translating them mechanically would produce a service
+that starts and does the wrong thing.
+
+Directives with no slinit equivalent are reported to the log at
+warning level rather than dropped silently, naming the unit and the
+directive. Use **slinit-systemd-convert**(8) to see the same notes on
+a terminal, and to produce an editable slinit file when a unit needs
+hand-finishing. Both paths share one translation, so a unit runs the
+same whether loaded directly or converted first.
+
 ## RUNNING AS SYSTEM MANAGER / PID 1
 
 When started as PID 1, slinit performs early init before opening the

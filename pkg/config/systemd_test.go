@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"bytes"
@@ -38,7 +38,7 @@ StandardInput=null
 [Install]
 WantedBy=multi-user.target
 `
-	cfg := &slinitConfig{svcType: "process", restart: "no", svcName: "example"}
+	cfg := &SystemdConfig{svcType: "process", restart: "no", svcName: "example"}
 	warns := parseSystemdUnit(cfg, unit)
 
 	if cfg.command != "/usr/bin/example --config /etc/example.conf" {
@@ -100,7 +100,7 @@ WantedBy=multi-user.target
 	// [Install] should generate a NOTE
 	var installNote bool
 	for _, w := range warns {
-		if strings.Contains(w.msg, "WantedBy") {
+		if strings.Contains(w.Msg, "WantedBy") {
 			installNote = true
 		}
 	}
@@ -121,7 +121,7 @@ func TestTypeMapping(t *testing.T) {
 	}
 	for typeVal, wantSvc := range cases {
 		t.Run(typeVal, func(t *testing.T) {
-			cfg := &slinitConfig{svcType: "process", restart: "no"}
+			cfg := &SystemdConfig{svcType: "process", restart: "no"}
 			parseSystemdUnit(cfg, "[Service]\nType="+typeVal+"\nExecStart=/x\n")
 			if cfg.svcType != wantSvc {
 				t.Errorf("Type=%s → %s, want %s", typeVal, cfg.svcType, wantSvc)
@@ -129,7 +129,7 @@ func TestTypeMapping(t *testing.T) {
 		})
 	}
 	// oneshot should also force restart=no
-	cfg := &slinitConfig{svcType: "process", restart: "yes"}
+	cfg := &SystemdConfig{svcType: "process", restart: "yes"}
 	parseSystemdUnit(cfg, "[Service]\nType=oneshot\nExecStart=/x\n")
 	if cfg.restart != "no" {
 		t.Errorf("Type=oneshot should force restart=no, got %q", cfg.restart)
@@ -151,7 +151,7 @@ func TestRestartMapping(t *testing.T) {
 	}
 	for restartVal, wantSlinit := range cases {
 		t.Run(restartVal, func(t *testing.T) {
-			cfg := &slinitConfig{svcType: "process", restart: "no"}
+			cfg := &SystemdConfig{svcType: "process", restart: "no"}
 			parseSystemdUnit(cfg, "[Service]\nExecStart=/x\nRestart="+restartVal+"\n")
 			if cfg.restart != wantSlinit {
 				t.Errorf("Restart=%s → %s, want %s", restartVal, cfg.restart, wantSlinit)
@@ -191,14 +191,14 @@ ExecStartPre=/usr/bin/prepare-first
 ExecStartPre=/usr/bin/prepare-second
 ExecStart=/usr/bin/main
 `
-	cfg := &slinitConfig{svcType: "process", restart: "no"}
+	cfg := &SystemdConfig{svcType: "process", restart: "no"}
 	warns := parseSystemdUnit(cfg, unit)
 	if cfg.preStart != "/usr/bin/prepare-first" {
 		t.Errorf("preStart = %q, want the first ExecStartPre value", cfg.preStart)
 	}
 	var multiWarned bool
 	for _, w := range warns {
-		if strings.Contains(w.msg, "multiple ExecStartPre") {
+		if strings.Contains(w.Msg, "multiple ExecStartPre") {
 			multiWarned = true
 		}
 	}
@@ -211,7 +211,7 @@ ExecStart=/usr/bin/main
 // parser must join those before matching KEY=VALUE.
 func TestMultiLineValue(t *testing.T) {
 	unit := "[Service]\nExecStart=/usr/bin/foo \\\n  --flag1 \\\n  --flag2 value\n"
-	cfg := &slinitConfig{svcType: "process", restart: "no"}
+	cfg := &SystemdConfig{svcType: "process", restart: "no"}
 	parseSystemdUnit(cfg, unit)
 	if !strings.Contains(cfg.command, "--flag1") || !strings.Contains(cfg.command, "--flag2 value") {
 		t.Errorf("multi-line join failed, command = %q", cfg.command)
@@ -252,7 +252,7 @@ func TestTrimSec(t *testing.T) {
 // TestEmitSlinitFile checks output contains every directive we
 // populated with the exact name slinit's parser accepts.
 func TestEmitSlinitFile(t *testing.T) {
-	cfg := &slinitConfig{
+	cfg := &SystemdConfig{
 		svcName:      "example",
 		svcType:      "process",
 		command:      "/usr/bin/example",
@@ -276,7 +276,7 @@ func TestEmitSlinitFile(t *testing.T) {
 		comments:     []string{"provenance-marker"},
 	}
 	var buf bytes.Buffer
-	emitSlinitFile(&buf, cfg)
+	EmitSlinitFile(&buf, cfg)
 	out := buf.String()
 
 	want := []string{
@@ -291,7 +291,12 @@ func TestEmitSlinitFile(t *testing.T) {
 		"pid-file = /run/example.pid",
 		"term-signal = SIGTERM",
 		"umask = 022",
-		"no-new-privs = yes",
+		// An options member, not a setting. This expectation used to read
+		// "no-new-privs = yes", which is what the code emitted and what the
+		// parser rejects — the test agreed with the bug because both came
+		// from the same misreading. TestSystemdEmittedFileParses now feeds
+		// the output to the real parser so that cannot recur.
+		"options = no-new-privs",
 		"close-stdin = yes",
 		"restart = on-failure",
 		"restart-delay = 5",

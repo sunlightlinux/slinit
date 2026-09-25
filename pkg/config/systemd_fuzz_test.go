@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"testing"
@@ -14,7 +14,7 @@ import (
 // SystemCallFilter, etc.) — pretty much every non-trivial format
 // systemd supports has a code path here.
 //
-// Invariant: must not panic on any input; the returned slinitConfig
+// Invariant: must not panic on any input; the returned SystemdConfig
 // (partially initialised on error) must expose accessor slice/map
 // fields without nil-deref.
 func FuzzParseSystemdUnit(f *testing.F) {
@@ -79,12 +79,12 @@ OnBootSec=15min
 	f.Add("[Service]\n\nExecStart=/bin/true\n\n\n[Service]\nExecStart=/bin/false")
 
 	f.Fuzz(func(t *testing.T, data string) {
-		cfg := &slinitConfig{}
+		cfg := &SystemdConfig{}
 		warns := parseSystemdUnit(cfg, data)
 		// Warnings slice must be accessible.
 		for _, w := range warns {
-			_ = w.level
-			_ = w.msg
+			_ = w.Level
+			_ = w.Msg
 		}
 		// The cfg's slice/map fields must be safe to traverse
 		// regardless of parse outcome (partial init on early error

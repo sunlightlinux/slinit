@@ -43,6 +43,7 @@ var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
 type DirLoader struct {
 	dirs        []string
 	initDirs    []string // init.d directories for fallback (empty = disabled)
+	systemdDirs []string // systemd unit directories for fallback (empty = disabled)
 	overlayDirs []string // conf.d overlay directories (default: /etc/slinit.conf.d)
 	set         *service.ServiceSet
 	loading     map[string]bool // tracks loading state for circular dependency detection
@@ -80,6 +81,14 @@ func (dl *DirLoader) Platform() platform.Type {
 // if a service is not found in the normal service directories.
 func (dl *DirLoader) SetInitDDirs(dirs []string) {
 	dl.initDirs = dirs
+}
+
+// SetSystemdDirs configures the systemd .service fallback directories.
+// Passing nil disables it. Like the init.d fallback, this only resolves
+// a name the caller already asked for — it never enumerates a directory
+// and pulls units into the boot graph on its own.
+func (dl *DirLoader) SetSystemdDirs(dirs []string) {
+	dl.systemdDirs = dirs
 }
 
 // SetOverlayDirs configures the conf.d overlay directories. Passing nil or
@@ -1030,6 +1039,33 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 					return nil, "", &ServiceLoadError{
 						ServiceName: name,
 						Message:     fmt.Sprintf("init.d script '%s': %v", path, err),
+					}
+				}
+				return desc, path, nil
+			}
+		}
+	}
+
+	// Fallback: search systemd unit directories for a .service unit.
+	// Last, so a native description or an init.d script always wins —
+	// a distro that ships both must not have slinit prefer the one the
+	// admin did not write.
+	if len(dl.systemdDirs) > 0 {
+		// A slinit service name carries no extension, so "foo" looks for
+		// foo.service; "foo.service" is accepted too, since that is what
+		// an operator migrating from systemctl will type.
+		unitName := name
+		if !strings.HasSuffix(unitName, ".service") {
+			unitName += ".service"
+		}
+		for _, dir := range dl.systemdDirs {
+			path := filepath.Join(dir, unitName)
+			if IsSystemdUnit(path) {
+				desc, err := SystemdUnitToServiceDescription(path, name)
+				if err != nil {
+					return nil, "", &ServiceLoadError{
+						ServiceName: name,
+						Message:     err.Error(),
 					}
 				}
 				return desc, path, nil

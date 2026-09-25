@@ -461,6 +461,18 @@ func main() {
 			svc, directive, since, replacedBy)
 	}
 
+	// A unit loaded directly has no terminal to print conversion notes
+	// to, unlike slinit-systemd-convert. Route them to the log so a
+	// directive with no slinit equivalent is something the operator can
+	// find, rather than something that silently did not happen.
+	config.OnSystemdUnitWarning = func(svc, unitPath, level, msg string) {
+		if level == "WARN" {
+			logger.Warn("Service '%s' (systemd unit %s): %s", svc, unitPath, msg)
+		} else {
+			logger.Info("Service '%s' (systemd unit %s): %s", svc, unitPath, msg)
+		}
+	}
+
 	// Initialise the journal pipeline: boot-id / machine-id / hostname
 	// cache + in-process ring buffer + Unix DGRAM emitter aimed at
 	// /run/slinit/events.sock. Wiring runs unconditionally so every
@@ -1113,6 +1125,20 @@ func main() {
 	}
 	if len(initDDirs) > 0 {
 		loader.SetInitDDirs(initDDirs)
+	}
+
+	// Enable systemd .service fallback. Searched last, after native
+	// descriptions and init.d scripts, and only for a name something
+	// already asked for — a unit directory is never enumerated, so
+	// nothing is pulled into the boot graph just by being installed.
+	var systemdDirs []string
+	for _, d := range config.DefaultSystemdDirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			systemdDirs = append(systemdDirs, d)
+		}
+	}
+	if len(systemdDirs) > 0 {
+		loader.SetSystemdDirs(systemdDirs)
 	}
 
 	serviceSet.SetLoader(loader)
