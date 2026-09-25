@@ -12,6 +12,15 @@
 # Kubernetes is the natural place to test the second half: replacing a
 # pod is one command, and restartCount gives an independent witness that
 # the container really was restarted rather than merely re-read.
+#
+# restart-limit-count = 0 on the flapping service is load-bearing. The
+# default is three restarts in ten seconds, and a service that lives one
+# second with no restart-delay exhausts that in about three — slinit
+# marks it failed, boot fails with it, and the container halts. The
+# first version of this case had no such line and passed anyway,
+# reading 0 -> 3 and finishing just before the pod went down. It was
+# measuring the restart limit, not a climbing counter, and would have
+# flaked on a slower cluster.
 
 P=k10
 trap 'k delete pod $P --now >/dev/null 2>&1; k delete configmap $P-svc --now >/dev/null 2>&1' EXIT
@@ -25,6 +34,7 @@ depends-on: flapping
 command = /bin/sh -c \"sleep 1\"
 restart = yes
 restart-delay = 0
+restart-limit-count = 0
 "
 
 start_pod() {

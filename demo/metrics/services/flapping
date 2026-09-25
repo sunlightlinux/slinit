@@ -1,6 +1,15 @@
 # Exits every few seconds, so slinit_service_restarts_total climbs and
 # you have something that actually moves on a graph.
+#
+# restart-limit-count = 0 disables the rate limiter, which defaults to
+# three restarts inside ten seconds. A six-second cycle stays under
+# that — but by one restart, and only because the window resets rather
+# than sliding. Shorten the sleep and slinit would mark the service
+# failed, boot would fail with it, and the container would halt a few
+# seconds after you opened Prometheus. A demo whose point is a counter
+# that keeps climbing should not depend on that margin.
 type = process
 command = /bin/sh -c "sleep 5"
 restart = yes
 restart-delay = 1
+restart-limit-count = 0

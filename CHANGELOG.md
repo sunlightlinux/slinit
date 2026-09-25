@@ -32,6 +32,16 @@ the full commit-level record.
   `slinit_service_up`, and that the restart counter is registered as a
   counter rather than a gauge, which is what `rate()` requires.
 
+  Both flapping services carry `restart-limit-count = 0`. The default
+  rate limiter is three restarts inside ten seconds, and a service that
+  lives one second exhausts it in about three — slinit marks it failed,
+  boot fails with it, and the container halts. k10's first version had
+  no such line and passed anyway, reading `0 -> 3` and finishing just
+  before the pod went down: it was measuring the restart limit rather
+  than a climbing counter, and would have flaked on a slower cluster.
+  It now reads `0 -> 7`. The demo's six-second cycle stayed under the
+  limit by one restart, which is not a margin worth depending on.
+
   k10 covers what a single read cannot: a counter's value at an
   instant says nothing. It samples `slinit_service_restarts_total`
   repeatedly to show it never goes backwards while the pod lives, then
