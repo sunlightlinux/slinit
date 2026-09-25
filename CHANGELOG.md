@@ -17,6 +17,76 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.4] — 2026-09-25
+
+Supply chain and a second opinion. slinit gains signed SLSA3 provenance
+for every command it ships, and a second CI that builds the published
+tarball somewhere the Jenkins pipeline is not. One behaviour change
+comes along with them, because writing the second CI is what found it:
+a data race in the recovery debugger.
+
+These are the repository's first two GitHub Actions workflows.
+
+Verified: the provenance run is green across all 41 binaries, with the
+attested digest checked by hand against the downloaded binary; the
+tarball job is green end to end; and `go test -race -count=1 ./...`,
+the command that caught the race, now exits 0 with none reported.
+
+### Fixed
+
+- **A data race in the recovery debugger.** `Start()` spawns a
+  goroutine that read `d.tty.Fd()`, while `Stop()` closes that same
+  file to unstick the goroutine's blocking read. `os.File.Fd()` reads
+  the state `Close()` writes without taking the file's mutex, so a
+  `Stop()` arriving before the goroutine got that far was a genuine
+  race — and losing it means polling a descriptor number the runtime
+  has since handed to something else. The fd is now read in `Start()`,
+  before the goroutine exists, and passed in.
+
+  It survived this long because it is timing-dependent. The test
+  covering it passes ten times out of ten on its own and fails only
+  under a full `go test -race ./...` on a loaded machine, which is why
+  it never showed up in CI. The window is narrow and the debugger only
+  runs in recovery mode, but the process it would corrupt is PID 1.
+
+### Added
+
+- **SLSA3 provenance for all 41 Go commands.** Each release binary now
+  ships a signed `.intoto.jsonl` recording the exact build: argv,
+  environment, Go toolchain, and the commit it came from, verifiable
+  with `slsa-verifier`.
+
+  The builder emits exactly one binary per invocation and offers no way
+  to batch, so this is 41 config files under `.slsa-goreleaser/` and a
+  matrix over them rather than a single file. 41, not the 42
+  directories under `cmd/`: `slinit-resource` is the OCF resource
+  agent, POSIX shell rather than Go, and the xbps template leaves it
+  out of `go_package` for the same reason.
+
+  `CGO_ENABLED=0` here, which diverges from the xbps package. `pkg/utmp`
+  carries a no-cgo fallback so everything still compiles, but `slinit`,
+  `slinitctl`, `slinit-shutdown` and `slinit-logouthookd` built this way
+  record nothing to utmp or wtmp — `who` and `last` go quiet. Static,
+  reproducible binaries were judged the better trade for an artifact
+  people download and verify; the packaged binaries are unaffected.
+
+- **Tarball verification.** A GitHub Actions mirror of the Jenkins
+  pipeline: vet, build every command, unit tests under the race
+  detector, smoke test, archive.
+
+  Running the same steps twice is only worth something because the two
+  runners agree about almost nothing else — distribution, libc, where
+  the Go toolchain came from, how many CPUs are visible. Agreement then
+  carries information, and a one-sided failure is a finding rather than
+  noise. The race above is what that looks like in practice.
+
+  It builds the published tarball rather than the git checkout. That
+  archive is what the xbps template consumes and what anyone
+  downloading a release actually gets, and a repository can build
+  cleanly while the tarball cut from its tag does not. With no tag
+  given it verifies the latest *release*, which is not the latest
+  *tag*: releases here exist only for minor versions.
+
 ## [2.4.3] — 2026-09-25
 
 One fix, and it is the one that matters: eight concurrent
