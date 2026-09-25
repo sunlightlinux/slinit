@@ -119,6 +119,32 @@ works as-is.
 
 `/etc/rc.local` ships as a trivial marker script too (finit-parity for the legacy SysV/Debian/Alpine one-shot escape hatch). Fires at end-of-boot after the `system-up` hook point — look for the `[rc.local] fired ...` line right after the modern hook marker.
 
+## nginx, from a systemd unit
+
+`nginx` is not a slinit service file. It is
+`/etc/systemd/system/nginx.service`, a stock unit in the shape a
+distribution ships one — `Type=forking` with a `PIDFile`, `ExecReload`,
+`RuntimeDirectory` and a hardening block — and slinit reads it directly.
+Nothing is converted to a file first.
+
+```sh
+slinitctl status nginx          # bgprocess; PID read from the pidfile
+wget -qO- http://127.0.0.1/     # served from /var/lib/nginx/html
+slinitctl reload nginx          # ExecReload -> nginx -s reload
+cat /etc/systemd/system/nginx.service
+```
+
+Naming it in `all-services.d/nginx` is what makes slinit look for it.
+The systemd fallback resolves names; it never enumerates a directory,
+so a unit nothing asks for never runs. A native description in
+`/etc/slinit.d` would win over the unit, and only `.service` loads —
+timers, sockets and targets map onto other slinit facilities.
+
+`slinit-systemd-convert /etc/systemd/system/nginx.service` prints the
+same translation as a file you can edit, plus the notes: `PrivateDevices`
+has no slinit equivalent, and `After=network.target` is dropped because
+slinit has no targets.
+
 ## Interactive Commands
 
 Run these from the shell inside the VM:

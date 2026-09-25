@@ -23,6 +23,12 @@ READLINE_PKG="readline-8.3.1-r0.apk"
 LIBNCURSESW_PKG="libncursesw-6.5_p20251123-r0.apk"
 NCURSES_TERMINFO_PKG="ncurses-terminfo-base-6.5_p20251123-r0.apk"
 
+# nginx, for the systemd-unit demo. Only two packages: the minirootfs
+# already carries libssl, libcrypto and libz, so pcre2 is the one
+# missing shared library nginx links against.
+NGINX_PKG="nginx-1.28.3-r7.apk"
+PCRE2_PKG="pcre2-10.48-r0.apk"
+
 # Directories
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -91,7 +97,8 @@ fi
 
 # Step 3: Download bash and dependencies (APK packages)
 echo "[3/7] Downloading bash packages..."
-for pkg in "${BASH_PKG}" "${READLINE_PKG}" "${LIBNCURSESW_PKG}" "${NCURSES_TERMINFO_PKG}"; do
+for pkg in "${BASH_PKG}" "${READLINE_PKG}" "${LIBNCURSESW_PKG}" "${NCURSES_TERMINFO_PKG}" \
+           "${PCRE2_PKG}" "${NGINX_PKG}"; do
     if [ ! -f "${CACHE_DIR}/${pkg}" ]; then
         echo "  Fetching ${pkg}..."
         curl -fSL -o "${CACHE_DIR}/${pkg}.tmp" "${PACKAGES_URL}/${pkg}"
@@ -133,7 +140,8 @@ tar xzf "${ROOTFS_TAR}" -C "${ROOTFS_DIR}"
 
 # Install bash and dependencies from APK packages
 # Alpine APK files are gzipped tars; extract directly into rootfs
-for pkg in "${NCURSES_TERMINFO_PKG}" "${LIBNCURSESW_PKG}" "${READLINE_PKG}" "${BASH_PKG}"; do
+for pkg in "${NCURSES_TERMINFO_PKG}" "${LIBNCURSESW_PKG}" "${READLINE_PKG}" "${BASH_PKG}" \
+           "${PCRE2_PKG}" "${NGINX_PKG}"; do
     tar xzf "${CACHE_DIR}/${pkg}" -C "${ROOTFS_DIR}" 2>/dev/null || true
 done
 # Clean up APK metadata extracted into rootfs
@@ -322,6 +330,46 @@ mkdir -p "${ROOTFS_DIR}/etc/slinit.d"
 # -R so env-dir subdirectories (e.g. runit-svc.env.d/) are copied intact;
 # slinit's loader skips directories, so they don't clash with service files.
 cp -R "${SCRIPT_DIR}/services/." "${ROOTFS_DIR}/etc/slinit.d/"
+
+# systemd units go where systemd would put them, NOT into slinit.d.
+# Copying them next to the native descriptions would prove nothing:
+# the point is that slinit finds and runs them where a distribution
+# left them, with no conversion step.
+mkdir -p "${ROOTFS_DIR}/etc/systemd/system"
+cp "${SCRIPT_DIR}/systemd-units/"*.service "${ROOTFS_DIR}/etc/systemd/system/"
+
+# nginx runtime setup the .apk would normally do from its post-install
+# script, which we never run because packages are extracted rather than
+# installed: the user its nginx.conf asks for, and the directories it
+# writes to. Without these nginx exits before the pidfile appears and
+# the bgprocess start times out.
+if ! grep -q '^nginx:' "${ROOTFS_DIR}/etc/passwd"; then
+    echo 'nginx:x:100:101:nginx:/var/lib/nginx:/sbin/nologin' >> "${ROOTFS_DIR}/etc/passwd"
+    echo 'nginx:x:101:' >> "${ROOTFS_DIR}/etc/group"
+fi
+# Not /run/nginx: that is a tmpfs at runtime and anything created here
+# is wiped at boot. The unit's RuntimeDirectory=nginx creates it instead.
+mkdir -p "${ROOTFS_DIR}/var/log/nginx" \
+         "${ROOTFS_DIR}/var/lib/nginx/tmp" "${ROOTFS_DIR}/etc/nginx/http.d"
+# The package ships /var/lib/nginx as 0750 and relies on its post-install
+# chown to nginx:nginx. cpio runs unprivileged here, so the uid cannot be
+# set; making the tree traversable is the part that matters — without it
+# the worker runs as nginx, cannot descend into the document root, and
+# every request is answered 403.
+chmod 0755 "${ROOTFS_DIR}/var/lib/nginx"
+chmod -R a+rX "${ROOTFS_DIR}/var/lib/nginx/html"
+# The packaged default server answers 404 to everything, which makes a
+# poor demonstration; serve the index.html the package already ships.
+cat > "${ROOTFS_DIR}/etc/nginx/http.d/default.conf" <<'NGINXCONF'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    root /var/lib/nginx/html;
+    location / {
+        index index.html;
+    }
+}
+NGINXCONF
 
 # Bootstrap hook scripts (/etc/slinit/hooks.d/<point>/*). Each is a
 # small shell script slinit spawns at the corresponding lifecycle

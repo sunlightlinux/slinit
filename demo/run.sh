@@ -48,7 +48,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/_output"
 KERNEL="${OUTPUT_DIR}/vmlinuz-virt"
 INITRAMFS="${OUTPUT_DIR}/initramfs.cpio.gz"
-MEMORY="${MEMORY:-256}"
+# 256 no longer boots. The whole rootfs is unpacked into a tmpfs, so RAM
+# has to hold ~90MB of files plus the compressed image during unpacking;
+# adding nginx crossed the line and the kernel dies with "Initramfs
+# unpacking failed: write error" and then a panic, which reads like a
+# corrupt image rather than an out-of-memory. The floor measured between
+# 256 and 272; 384 leaves room for the next demo service instead of
+# putting the next person through the same diagnosis.
+MEMORY="${MEMORY:-384}"
 
 # Base kernel cmdline: unchanged from the pre-refactor demo so a plain
 # `./run.sh` behaves as before.

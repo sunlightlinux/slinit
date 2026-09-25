@@ -69,7 +69,7 @@ type SystemdConfig struct {
 	rlimitAS     string
 
 	description string   // [Unit] Description=
-	hardening   []kvPair // protect-*, restrict-*, private-tmp, ...
+	mapped      []kvPair // directives translated 1:1, emitted in order
 	depends     []string // depends-on: X
 	waitsFor    []string // waits-for: X
 	conditions  []condDir
@@ -79,6 +79,16 @@ type SystemdConfig struct {
 // kvPair is one emitted "key = value" line, kept ordered so the output
 // is stable across runs.
 type kvPair struct{ key, value string }
+
+// systemdDirNames maps systemd's per-service directory directives to
+// slinit's, which take the same space-separated list of names.
+var systemdDirNames = map[string]string{
+	"RuntimeDirectory":       "runtime-directory",
+	"StateDirectory":         "state-directory",
+	"CacheDirectory":         "cache-directory",
+	"LogsDirectory":          "logs-directory",
+	"ConfigurationDirectory": "configuration-directory",
+}
 
 // systemdHardeningNames maps the systemd spelling to slinit's for the
 // plain yes/no hardening switches.
@@ -240,13 +250,19 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	case "Documentation", "DefaultDependencies", "IgnoreOnIsolate", "RefuseManualStart", "RefuseManualStop":
 		// Informational or systemd-internal; skip silently.
 	case "After":
-		cfg.waitsFor = append(cfg.waitsFor, splitTargets(val)...)
+		deps, targets := splitUnitRefs(val)
+		cfg.waitsFor = append(cfg.waitsFor, deps...)
+		warns = append(warns, noteDroppedTargets(key, targets)...)
 	case "Before":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Unit `Before=%s` not mappable — invert on the target side", val)})
 	case "Requires", "Requisite":
-		cfg.depends = append(cfg.depends, splitTargets(val)...)
+		deps, targets := splitUnitRefs(val)
+		cfg.depends = append(cfg.depends, deps...)
+		warns = append(warns, noteDroppedTargets(key, targets)...)
 	case "Wants":
-		cfg.waitsFor = append(cfg.waitsFor, splitTargets(val)...)
+		deps, targets := splitUnitRefs(val)
+		cfg.waitsFor = append(cfg.waitsFor, deps...)
+		warns = append(warns, noteDroppedTargets(key, targets)...)
 	case "Conflicts":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Unit `Conflicts=%s` — slinit has no negative dep; managed via stop-command / start-limit-action", val)})
 	case "OnFailure":
@@ -408,19 +424,19 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	case "PrivateTmp", "ProtectKernelTunables", "ProtectKernelModules",
 		"ProtectControlGroups", "ProtectClock", "RestrictRealtime",
 		"LockPersonality", "MemoryDenyWriteExecute":
-		cfg.hardening = append(cfg.hardening, kvPair{systemdHardeningNames[key], boolWord(val)})
+		cfg.mapped = append(cfg.mapped, kvPair{systemdHardeningNames[key], boolWord(val)})
 	case "ProtectSystem":
 		// no|yes|full|strict on both sides.
-		cfg.hardening = append(cfg.hardening, kvPair{"protect-system", strings.ToLower(trimQuotes(val))})
+		cfg.mapped = append(cfg.mapped, kvPair{"protect-system", strings.ToLower(trimQuotes(val))})
 	case "ProtectHome":
 		// no|yes|read-only|tmpfs on both sides.
-		cfg.hardening = append(cfg.hardening, kvPair{"protect-home", strings.ToLower(trimQuotes(val))})
+		cfg.mapped = append(cfg.mapped, kvPair{"protect-home", strings.ToLower(trimQuotes(val))})
 	case "RestrictNamespaces":
 		// systemd also accepts a list of namespace types to deny;
 		// slinit's directive is a blanket yes/no, so a list would
 		// silently become something stricter than asked for.
 		if v := strings.ToLower(trimQuotes(val)); v == "yes" || v == "no" || v == "true" || v == "false" {
-			cfg.hardening = append(cfg.hardening, kvPair{"restrict-namespaces", boolWord(val)})
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-namespaces", boolWord(val)})
 		} else {
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("RestrictNamespaces=%s lists namespace types; slinit's restrict-namespaces is all-or-nothing — set it by hand", val)})
 		}
@@ -431,22 +447,32 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		if strings.HasPrefix(strings.TrimSpace(val), "~") {
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("RestrictAddressFamilies=%s is a deny-list; slinit's restrict-address-families only allow-lists — invert it by hand", val)})
 		} else {
-			cfg.hardening = append(cfg.hardening, kvPair{"restrict-address-families", trimQuotes(val)})
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-address-families", trimQuotes(val)})
 		}
 	case "SystemCallFilter":
 		// Same grammar: syscall names, @groups, and a leading ~ on the
 		// first item to switch allow-list to deny-list.
-		cfg.hardening = append(cfg.hardening, kvPair{"system-call-filter", trimQuotes(val)})
+		cfg.mapped = append(cfg.mapped, kvPair{"system-call-filter", trimQuotes(val)})
 	// No slinit equivalent — these stay notes.
 	case "PrivateDevices", "PrivateNetwork", "PrivateUsers", "RestrictSUIDSGID",
 		"SystemCallArchitectures", "SystemCallErrorNumber":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("hardening %s=%s — no slinit equivalent; review by hand", key, val)})
+	// Same directive, same value shape: a space-separated list of names
+	// created under /run, /var/lib and so on. Deferring these was not a
+	// missing feature, and it mattered: a unit with RuntimeDirectory=
+	// relies on the directory existing before ExecStart runs, and /run
+	// is a tmpfs, so without it the service starts into a directory
+	// that is not there.
 	case "RuntimeDirectory", "StateDirectory", "CacheDirectory", "LogsDirectory", "ConfigurationDirectory":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s — slinit provides runtime-dir / state-dir directives; add manually", key, val)})
+		cfg.mapped = append(cfg.mapped, kvPair{systemdDirNames[key], trimQuotes(val)})
 	case "OOMScoreAdjust":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("OOMScoreAdjust=%s — slinit has oom-score-adjust directive; add manually", val)})
+		// oom-score-adj, not oom-score-adjust: the note this replaces
+		// named a directive that does not exist, so an operator
+		// following it wrote a file slinit rejects.
+		cfg.mapped = append(cfg.mapped, kvPair{"oom-score-adj", trimQuotes(val)})
 	case "Nice":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Nice=%s — slinit has nice-level directive; add manually", val)})
+		// `nice`, not `nice-level` as the old note claimed.
+		cfg.mapped = append(cfg.mapped, kvPair{"nice", trimQuotes(val)})
 	case "Slice":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Slice=%s — slinit cgroup grouping differs; review manually", val)})
 	case "WatchdogSec":
@@ -514,19 +540,51 @@ func stripExecPrefixes(v string) (string, []SystemdWarning) {
 // (socket/path/mount/timer are all reified as their own slinit
 // mechanisms rather than as separate service files).
 func splitTargets(v string) []string {
-	suffixes := []string{".service", ".target", ".socket", ".path", ".mount", ".timer", ".swap", ".device"}
-	fields := strings.Fields(v)
-	out := make([]string, 0, len(fields))
-	for _, f := range fields {
+	deps, _ := splitUnitRefs(v)
+	return deps
+}
+
+// splitUnitRefs splits a whitespace-separated list of unit names into
+// the ones that name a real unit and the .target references, which are
+// returned separately.
+//
+// slinit has no target concept at all: targets are systemd's grouping
+// and ordering abstraction, and the boot service graph covers the same
+// ground natively. Turning network.target into a dependency on a
+// service literally called "network" is what the suffix-stripping used
+// to do, and it makes almost every real-world unit unloadable — a
+// missing dependency is fatal, and After=network.target appears in
+// nearly all of them. Dropping the reference and saying so is the only
+// honest option; the operator adds depends-on: for a service that
+// actually exists on their system.
+func splitUnitRefs(v string) (deps []string, targets []string) {
+	suffixes := []string{".service", ".socket", ".path", ".mount", ".timer", ".swap", ".device"}
+	for _, f := range strings.Fields(v) {
+		if strings.HasSuffix(f, ".target") {
+			targets = append(targets, f)
+			continue
+		}
 		for _, s := range suffixes {
 			if strings.HasSuffix(f, s) {
 				f = strings.TrimSuffix(f, s)
 				break
 			}
 		}
-		out = append(out, f)
+		deps = append(deps, f)
 	}
-	return out
+	return deps, targets
+}
+
+// noteDroppedTargets turns dropped .target references into one note per
+// directive, so the ordering that was asked for is visible rather than
+// silently gone.
+func noteDroppedTargets(key string, targets []string) []SystemdWarning {
+	if len(targets) == 0 {
+		return nil
+	}
+	return []SystemdWarning{{"NOTE", fmt.Sprintf(
+		"%s=%s dropped — slinit has no targets; add `depends-on:`/`waits-for:` naming a real service if the ordering matters",
+		key, strings.Join(targets, " "))}}
 }
 
 // trimSec strips a trailing "s"/"sec"/"ms" unit — systemd allows
@@ -611,7 +669,7 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	if c.closeStdin {
 		fmt.Fprintln(w, "close-stdin = yes")
 	}
-	for _, h := range c.hardening {
+	for _, h := range c.mapped {
 		fmt.Fprintf(w, "%s = %s\n", h.key, h.value)
 	}
 	if c.restart != "" {

@@ -1,0 +1,4 @@
+# nginx is not a slinit service file — it is /etc/systemd/system/nginx.service,
+# read directly by the loader. Naming it here is what makes slinit look for
+# it: the systemd fallback resolves names, it never enumerates a directory,
+# so a unit nothing asks for is a unit that never runs.

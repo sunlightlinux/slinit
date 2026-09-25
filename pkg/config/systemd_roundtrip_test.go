@@ -183,3 +183,52 @@ RestrictNamespaces=net ipc
 		t.Errorf("both unconvertible directives should warn, got %d WARNs", warned)
 	}
 }
+
+// After=network.target is in nearly every unit a distribution ships. If
+// it becomes a dependency on a service named "network", the unit fails
+// to load anywhere that service does not exist — which is most places
+// that are not running systemd. The reference is dropped and noted.
+func TestSystemdTargetDepsAreDroppedNotInvented(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.service")
+	os.WriteFile(path, []byte(`[Unit]
+After=network.target sysinit.target real-dep.service
+Requires=basic.target another.service
+[Service]
+ExecStart=/bin/true
+`), 0o644)
+	cfg, warns, err := ConvertSystemdUnit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range append(cfg.waitsFor, cfg.depends...) {
+		switch d {
+		case "network", "sysinit", "basic":
+			t.Errorf("target %q was turned into a service dependency", d)
+		}
+	}
+	// Real unit references must still come through.
+	var sawReal, sawAnother bool
+	for _, d := range cfg.waitsFor {
+		if d == "real-dep" {
+			sawReal = true
+		}
+	}
+	for _, d := range cfg.depends {
+		if d == "another" {
+			sawAnother = true
+		}
+	}
+	if !sawReal || !sawAnother {
+		t.Errorf("real unit deps lost: waits-for=%v depends=%v", cfg.waitsFor, cfg.depends)
+	}
+	var noted int
+	for _, w := range warns {
+		if strings.Contains(w.Msg, "dropped") {
+			noted++
+		}
+	}
+	if noted < 2 {
+		t.Errorf("dropped targets must be reported, got %d notes", noted)
+	}
+}

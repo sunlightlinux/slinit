@@ -85,7 +85,11 @@ WantedBy=multi-user.target
 	if len(cfg.depends) != 1 || cfg.depends[0] != "other" {
 		t.Errorf("depends = %v, want [other]", cfg.depends)
 	}
-	wantWaits := map[string]bool{"network": true, "optional": true}
+	// network.target is dropped, not turned into a dependency on a
+	// service called "network". A missing dependency is fatal, and
+	// After=network.target is in nearly every real unit, so the old
+	// suffix-stripping made them unloadable.
+	wantWaits := map[string]bool{"optional": true}
 	for _, w := range cfg.waitsFor {
 		delete(wantWaits, w)
 	}
@@ -219,10 +223,12 @@ func TestMultiLineValue(t *testing.T) {
 }
 
 // TestSplitTargetsStripSuffixes — systemd deps carry .service /
-// .target / .socket etc. Bare names for slinit.
+// .socket etc; slinit wants bare names. .target is different: slinit
+// has no target concept, so those references are dropped rather than
+// becoming a dependency on a service that does not exist.
 func TestSplitTargetsStripSuffixes(t *testing.T) {
 	got := splitTargets("network.target syslog.socket dbus.service")
-	want := []string{"network", "syslog", "dbus"}
+	want := []string{"syslog", "dbus"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

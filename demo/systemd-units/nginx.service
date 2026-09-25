@@ -1,0 +1,46 @@
+# A stock nginx unit, in the shape distributions actually ship it —
+# Type=forking with a PIDFile, ExecReload/ExecStop through nginx's own
+# signalling, and a hardening block. Nothing here is written for slinit.
+#
+# It lives in /etc/systemd/system and is never converted to a file.
+# slinit reads it at the moment something asks for "nginx" and runs it.
+#
+# Try, inside the VM:
+#   slinitctl status nginx          # bgprocess, PID read from the pidfile
+#   wget -qO- http://127.0.0.1/     # served from /var/lib/nginx/html
+#   slinitctl reload nginx          # ExecReload -> nginx -s reload
+#   cat /etc/systemd/system/nginx.service
+[Unit]
+Description=nginx - high performance web server
+Documentation=https://nginx.org/en/docs/
+After=network.target
+
+[Service]
+Type=forking
+PIDFile=/run/nginx/nginx.pid
+# /run is a tmpfs, so the directory nginx writes its pidfile into has to
+# be created at start. This is how a systemd unit says that, and slinit
+# honours it — without it nginx exits before the pidfile appears and the
+# bgprocess start times out.
+RuntimeDirectory=nginx
+ExecStart=/usr/sbin/nginx
+ExecReload=/usr/sbin/nginx -s reload
+ExecStop=/usr/sbin/nginx -s quit
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+# Hardening. slinit implements these as equivalents of systemd's and
+# translates them; PrivateDevices has no counterpart and is reported
+# as a note rather than silently dropped.
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target
