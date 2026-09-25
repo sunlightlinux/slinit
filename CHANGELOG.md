@@ -19,6 +19,26 @@ the full commit-level record.
 
 ### Added
 
+- **Two Kubernetes cases for the metrics endpoint**, `tests/k8s/`
+  k09 and k10, taking the suite to ten.
+
+  k09 runs a real Prometheus in the cluster and asks *it* whether the
+  scrape worked. That is not what k08 does: reaching the endpoint and
+  liking what you read is not the same as being scrapable. Prometheus
+  parses the exposition itself and drops a scrape it dislikes — a HELP
+  line for a metric that never appears, a TYPE that disagrees with the
+  samples, a counter not ending `_total`. `curl` is happy with all of
+  those. k09 asserts the target reaches `up`, that PromQL returns
+  `slinit_service_up`, and that the restart counter is registered as a
+  counter rather than a gauge, which is what `rate()` requires.
+
+  k10 covers what a single read cannot: a counter's value at an
+  instant says nothing. It samples `slinit_service_restarts_total`
+  repeatedly to show it never goes backwards while the pod lives, then
+  replaces the pod and shows it starts lower — the reset semantics
+  `rate()` depends on. `restartCount` is checked as an independent
+  witness that the container really was replaced.
+
 - **`demo/metrics/` — the metrics endpoint in a browser.** `./run.sh`
   builds slinit, wraps it in a busybox image as PID 1 with
   `--metrics-listen`, and brings it up alongside a Prometheus that
