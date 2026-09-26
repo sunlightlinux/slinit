@@ -12,18 +12,6 @@
 # Nothing is converted to a file. /etc/slinit.d has no nginx description,
 # and if one appeared it would win — so this case also fails if the
 # fallback ordering regresses.
-#
-# KNOWN TO FAIL INTERMITTENTLY, roughly two runs in five, at the first
-# assertion with state STOPPED and FAILEDSTART in the journal. This is a
-# true positive, not a flaky test: pkg/service/bgprocess.go reads
-# pid-file exactly once, immediately after the launcher exits, and a
-# real forking daemon has not necessarily written it by then. Measured
-# in this VM: the pidfile was absent at that instant in 7 of 10 nginx
-# starts. dinit reads once too (proc-service.cc), so slinit is at parity
-# rather than regressed; systemd polls. Left ungated on purpose — the
-# case is reporting a defect that exists, and gating it would hide the
-# very thing it was written to find. Fix is a bounded poll honouring
-# start-timeout; this comment goes when that lands.
 
 wait_for_service "nginx" "STARTED" 25
 assert_service_state "nginx" "STARTED" "nginx from a .service unit is STARTED"

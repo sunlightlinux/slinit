@@ -11,6 +11,12 @@ import (
 )
 
 // PIDResult represents the outcome of reading a PID file.
+// ErrPIDFileEmpty reports a pid file that exists but has no content yet —
+// the normal intermediate state while a daemon is writing it. Callers tell
+// it apart from unparseable content, which is a real error rather than
+// something that will resolve itself.
+var ErrPIDFileEmpty = errors.New("PID file is empty")
+
 type PIDResult int
 
 const (
@@ -46,7 +52,7 @@ func ReadPIDFile(path string) (int, PIDResult, error) {
 
 	content := strings.TrimSpace(string(data))
 	if content == "" {
-		return 0, PIDResultFailed, errors.New("PID file is empty")
+		return 0, PIDResultFailed, ErrPIDFileEmpty
 	}
 
 	// PID file may contain PID on first line followed by other data

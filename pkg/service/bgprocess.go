@@ -2,6 +2,9 @@ package service
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"strconv"
 	"syscall"
@@ -13,6 +16,11 @@ import (
 const (
 	// daemonPollInterval is how often we check if the daemon process is alive.
 	daemonPollInterval = 1 * time.Second
+	// pidFilePollInterval is how often we re-check for a forking daemon's
+	// pid file after its launcher has exited. Measured windows with real
+	// daemons are tens to a few hundred milliseconds, so this resolves
+	// most starts in one or two ticks without busy-waiting.
+	pidFilePollInterval = 20 * time.Millisecond
 )
 
 // BGProcessService manages a self-backgrounding daemon process.
@@ -624,10 +632,26 @@ func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 // Runs in the monitorLauncher goroutine; acquires queueMu to serialize
 // state mutations with the main scheduling path.
 func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
-	// Kill remaining process group members from the launcher.
+	// Kill remaining process group members from the launcher — but only
+	// when the launcher failed.
+	//
+	// A forking service's launcher exits by design, leaving the daemon
+	// behind, and that daemon is still in the launcher's process group
+	// until it calls setsid() for itself. SIGKILLing the group here
+	// therefore races the daemon's own detach and sometimes wins:
+	// measured with nginx, the start failed about two runs in five with
+	// no nginx process left and an empty pid-file directory. dinit does
+	// not kill the group on this path either — kill_pg there is for
+	// interrupting a start, for stopping, and for the stop-timeout
+	// escalation — so skipping it restores parity as much as it fixes
+	// the race.
+	//
+	// A launcher that exited badly is different: nothing is going to be
+	// adopted, so anything still in its group is just litter.
+	//
 	// SignalProcessOnly opts out of pgroup signals for this service
 	// (dinit parity: baseproc-service.cc kill_pg gates on the same flag).
-	if !s.Flags.SignalProcessOnly {
+	if !s.Flags.SignalProcessOnly && !exit.ExitedClean() {
 		process.KillProcessGroup(exit.PID)
 	}
 
@@ -688,6 +712,20 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	)
 	if s.pidFile != "" {
 		pid, result, err = process.ReadPIDFile(s.pidFile)
+		if result == process.PIDResultFailed && pidFileStillComing(err) {
+			// A forking daemon writes its pid file in the child, after
+			// the launcher it forked from has already exited — so the
+			// file is routinely not there yet at this instant. Measured
+			// with nginx: absent in 7 of 10 starts, appearing within a
+			// few hundred milliseconds. Reading once and giving up made
+			// slinit fail real daemons at random.
+			//
+			// Poll instead, on a goroutine: this runs under queueMu, so
+			// waiting here would freeze every other service for the
+			// duration.
+			s.pollForPIDFile(s.pidFile, err)
+			return
+		}
 	} else if s.Record().GuessMainPID() {
 		pid, err = guessMainPIDFromCgroup(s.EffectiveCgroupPath())
 		if err != nil {
@@ -697,26 +735,23 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		}
 	}
 	if result == process.PIDResultFailed {
-		s.services.logger.Error("Service '%s': failed to discover daemon pid: %v",
-			s.serviceName, err)
-		s.cancelTimer()
-		s.stopReason = ReasonFailed
-		s.failedToStart(false, true)
-		s.services.processQueuesLocked()
+		s.failPIDDiscoveryLocked(fmt.Errorf("failed to discover daemon pid: %w", err))
 		return
 	}
 
 	if result == process.PIDResultTerminated {
-		s.services.logger.Error("Service '%s': daemon (PID %d) already terminated",
-			s.serviceName, pid)
-		s.cancelTimer()
-		s.stopReason = ReasonFailed
-		s.failedToStart(false, true)
-		s.services.processQueuesLocked()
+		s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
 		return
 	}
 
 	// PIDResultOK - daemon is running
+	s.finishPIDDiscoveryLocked(pid)
+}
+
+// finishPIDDiscoveryLocked completes a successful start once the daemon's
+// PID is known. Shared by the immediate read and the polling path so the
+// two cannot drift apart. Caller holds queueMu.
+func (s *BGProcessService) finishPIDDiscoveryLocked(pid int) {
 	s.daemonPID = pid
 
 	// Create utmp entry for the daemon process
@@ -730,6 +765,99 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 
 	// Start monitoring the daemon process
 	go s.monitorDaemon()
+}
+
+// failPIDDiscoveryLocked aborts the start when the daemon's PID cannot be
+// established. Caller holds queueMu.
+func (s *BGProcessService) failPIDDiscoveryLocked(err error) {
+	s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+	s.cancelTimer()
+	s.stopReason = ReasonFailed
+	s.failedToStart(false, true)
+	s.services.processQueuesLocked()
+}
+
+// pidFileStillComing reports whether a failed read looks like a daemon
+// that has not finished writing yet — the file is absent, or present and
+// empty. Anything else (unparseable content, a permission problem) is a
+// real error: waiting on it would only delay the failure by the whole
+// start timeout, which is what a misconfigured service used to be spared.
+func pidFileStillComing(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, process.ErrPIDFileEmpty)
+}
+
+// pollForPIDFile waits for a forking daemon to write its pid file, then
+// finishes or fails the start.
+//
+// It owns its own deadline rather than leaning on the start-timeout timer
+// already armed: that timer only acts when a PID is known
+// (bgTimerStartTimeout reads launcherPID, then daemonPID), and here both
+// are zero — the launcher has exited and the daemon is not identified yet.
+// Relying on it would leave the service wedged in STARTING forever.
+func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
+	deadline := s.startTimeout
+	if deadline <= 0 {
+		// start-timeout=0 means "no timeout" for the launcher, but a pid
+		// file that never appears must not hold a service in STARTING
+		// with nothing watching it.
+		deadline = defaultStartTimeout
+	}
+
+	go func() {
+		expiry := time.Now().Add(deadline)
+		ticker := time.NewTicker(pidFilePollInterval)
+		defer ticker.Stop()
+
+		lastErr := firstErr
+		for {
+			<-ticker.C
+
+			// Cheap unlocked pre-check: a stop or a failure elsewhere
+			// means there is nothing left to finish. Re-checked under
+			// the lock before acting on it.
+			if s.state.Load() != StateStarting {
+				return
+			}
+
+			pid, result, err := process.ReadPIDFile(pidFile)
+			if result == process.PIDResultFailed {
+				lastErr = err
+				if !pidFileStillComing(err) {
+					// Present but unparseable: that will not fix itself,
+					// so fail now rather than sit out the whole deadline.
+					s.services.queueMu.Lock()
+					if s.state.Load() == StateStarting {
+						s.failPIDDiscoveryLocked(fmt.Errorf("failed to discover daemon pid: %w", err))
+					}
+					s.services.queueMu.Unlock()
+					return
+				}
+				if time.Now().After(expiry) {
+					s.services.queueMu.Lock()
+					if s.state.Load() == StateStarting {
+						s.failPIDDiscoveryLocked(fmt.Errorf(
+							"failed to discover daemon pid within %s: %w", deadline, lastErr))
+					}
+					s.services.queueMu.Unlock()
+					return
+				}
+				continue
+			}
+
+			s.services.queueMu.Lock()
+			if s.state.Load() != StateStarting {
+				s.services.queueMu.Unlock()
+				return
+			}
+			if result == process.PIDResultTerminated {
+				s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
+			} else {
+				s.finishPIDDiscoveryLocked(pid)
+			}
+			s.services.queueMu.Unlock()
+			return
+		}
+	}()
 }
 
 // monitorDaemon polls for daemon process existence.
