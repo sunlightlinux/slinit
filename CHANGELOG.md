@@ -17,6 +17,157 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.5] — 2026-09-26
+
+slinit reads systemd `.service` units directly and runs them, with no
+file generated anywhere. Putting a real daemon through that path — nginx,
+in the demo VM — then found three ways slinit mishandled forking
+services, all of them older than this release and none of them visible
+from a shell stub.
+
+The compatibility layer is the feature. The three fixes are the reason it
+is usable.
+
+Verified: full unit suite and `-race` clean; the functional case that
+carries nginx passes six runs in a row where it failed two in five
+before; eight stop, kill and lifecycle cases pass beside it; and two
+consecutive `softreboot --fast` cycles leave nginx serving, which was the
+first thing to break.
+
+### Added
+
+- **systemd `.service` units load and run directly.** A service name with
+  no native description resolves to a unit under */etc/systemd/system*,
+  */run/systemd/system*, */usr/lib/systemd/system* or
+  */lib/systemd/system*, in that order so an administrator's override
+  beats the packaged copy. The unit is translated in memory; nothing is
+  written to disk, so there is no second copy to regenerate and no
+  question of which file is authoritative.
+
+  Both spellings resolve: *foo* and *foo.service*. A native description
+  always wins, so a package shipping both leaves slinit running the one
+  the administrator wrote. Only `.service` loads — timers, sockets and
+  targets are systemd abstractions that land on `cron=`, path-activation
+  directives and the boot graph, and translating them mechanically would
+  produce a service that starts and does the wrong thing.
+
+  The fallback resolves names; it never enumerates a directory. Installing
+  a package that ships units therefore adds nothing to the boot graph — a
+  unit runs only once something asks for it by name.
+
+  There is one translation in the tree, not two. `slinit-systemd-convert`'s
+  parser moved into `pkg/config` and both consumers share it, with the
+  live path going through the converter's own emitter and then the real
+  parser rather than assembling a description field by field. Two mappings
+  would disagree about what a unit means the first time either changed,
+  which is the worst failure available to a compatibility layer.
+
+- **nginx in the demo VM, as a systemd unit.** `demo/systemd-units/nginx.service`
+  is a stock unit in the shape distributions ship one — `Type=forking`
+  with a `PIDFile`, `ExecReload`, `RuntimeDirectory` and a hardening
+  block. It is the first end-to-end exercise of the path above, and what
+  surfaced everything below.
+
+- **A functional case that runs it**, and a `systemd/` subdirectory
+  convention in the test harness that installs units where the fallback
+  looks, mirroring the `initd/` convention already there.
+
+### Fixed
+
+- **Forking daemons were lost at startup, about two runs in five.** Two
+  independent causes, the first hiding the second.
+
+  The pid file was read exactly once, immediately after the launcher
+  exited. A forking daemon writes that file from the child, after the
+  parent it forked from is already gone, so it is routinely not there yet
+  at that instant — measured with nginx, absent in 7 of 10 starts and
+  appearing within a few hundred milliseconds. It is polled now, bounded,
+  and on a goroutine because that path holds the ServiceSet lock and
+  waiting inline would freeze every other service.
+
+  The wait owns its deadline rather than leaning on the start-timeout
+  timer already armed, because that timer only acts once a PID is known
+  and on this path there is none yet. Trusting it would have wedged the
+  service in STARTING forever, which is worse than the failure being
+  fixed. Waiting is limited to a file that is absent or empty; present
+  but unparseable is a real error and still fails at once, so a
+  misconfigured service is not made to sit out the whole timeout.
+
+  With that fixed the failures changed shape and exposed the second
+  cause: the launcher's whole process group was SIGKILLed the moment the
+  launcher was reaped. A forking service's daemon is in that group until
+  it calls `setsid()` for itself, so slinit was racing its own daemon's
+  detach and sometimes killing the process it was about to adopt. The
+  group kill now happens only when the launcher exited badly, where there
+  is nothing to adopt.
+
+- **Stopping a forking service orphaned its workers.** The daemon's pid
+  was signalled alone. Workers are the master's children and share its
+  process group, so the master died and they did not — reparented to
+  PID 1, outliving the generation that started them. nginx left a worker
+  holding port 80 across a soft reboot and every later start failed to
+  bind, so the demo VM came up failed from its second generation onward.
+
+  The group is signalled now, resolved through `getpgid` rather than
+  assuming it equals the pid, since an adopted daemon was forked by
+  something else. `signal-process-only` opts out.
+
+  The helper refuses to signal slinit's own process group. A pid file is
+  operator-supplied input, and one naming anything inside that group
+  would turn a service stop into a signal to PID 1 and every service
+  under it.
+
+  All three of these restore dinit behaviour rather than diverge from it:
+  dinit's `kill_pg` gates on the same flag with the group as its default,
+  and its bgproc path adopts a daemon with no group kill at all. The
+  polling is the one deliberate divergence — dinit reads once too, and
+  systemd polls.
+
+- **Three defects in `slinit-systemd-convert`, all shipping.** Routing
+  its output through the real parser found them immediately.
+
+  `NoNewPrivileges` was emitted as `no-new-privs = yes`, a setting that
+  does not exist; slinit rejects the file, so every converted unit that
+  hardened itself this way was unloadable. It is an `options` member.
+  `Description=` was emitted as a comment, so it survived in the file for
+  a human to read and never reached the service. And twenty directives
+  slinit implements as deliberate equivalents of systemd's were deferred
+  to the operator with a note — the `protect-*` and `restrict-*` cluster,
+  `private-tmp`, `system-call-filter`, the per-service directory
+  directives, `nice` and `oom-score-adj`. Two of those notes named
+  directives that do not exist, so an operator following them wrote a
+  file slinit rejects.
+
+  `RuntimeDirectory` was not cosmetic: */run* is a tmpfs, so a unit
+  relying on it starts into a directory that is not there.
+
+  The first defect survived because the converter's tests compared
+  emitted text against expected strings, and the expectation carried the
+  same misreading as the code. Round-trip tests now feed the output to
+  the parser, which is the contract a string comparison cannot check.
+
+- **`After=network.target` became a dependency on a service named
+  `network`.** A missing dependency is fatal and that line is in nearly
+  every unit a distribution ships, so almost none of them would have
+  loaded anywhere without such a service. slinit has no target concept;
+  `.target` references are dropped with a note naming them, mirroring how
+  the LSB path drops `$all`. Real unit references still pass through.
+
+- **The performance suite leaked services into PID 1.** Five cases
+  benchmarked `slinitctl start` in a loop and cleaned up with `unload`
+  alone. The benchmark leaves the service started, `unload` refuses a
+  service that is not stopped, and the error went to */dev/null* — so
+  every run leaked one loaded service, permanently, since removing the
+  file on disk does not unload what is already in memory.
+
+  62 had accumulated on the reference machine, invisible from the service
+  directory: 79 services loaded against 22 files. The cost landed on the
+  suite's own numbers — one case read 149ms against a 30ms baseline and
+  looked like a fivefold regression, and PID 1's RSS read 21MB against
+  15MB. Two cases exist specifically to detect a memory leak in slinit, so
+  a suite that leaks services into the process it measures would
+  eventually have been read as proof of the bug it was written to find.
+
 ## [2.4.4] — 2026-09-25
 
 Supply chain and a second opinion. slinit gains signed SLSA3 provenance
