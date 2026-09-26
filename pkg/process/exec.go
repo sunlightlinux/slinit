@@ -566,6 +566,41 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 
 // SignalProcess sends a signal to a process.
 // If signalGroupOnly is false, signals the process group (negative PID).
+// SignalDaemonGroup signals an adopted daemon and the rest of its process
+// group — its worker children, typically.
+//
+// Unlike SignalProcess it does not assume the group id equals the pid:
+// a daemon read from a pid file was forked by something else and need not
+// lead its own group. dinit resolves it the same way (baseproc-service.cc
+// kill_pg), including the fallback for a process in another session that
+// getpgid refuses to report on.
+//
+// Signalling only the main pid, which is what slinit used to do here,
+// leaves workers running. For nginx that meant an orphan holding port 80
+// across a soft reboot, and every later start failing to bind.
+func SignalDaemonGroup(pid int, sig syscall.Signal, processOnly bool) error {
+	if pid <= 0 {
+		return nil
+	}
+	if processOnly {
+		return syscall.Kill(pid, sig)
+	}
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		// Not queryable means a different session, which means the
+		// process leads its own group.
+		pgid = pid
+	}
+	// Never signal our own group. A pid file naming anything inside it
+	// would otherwise turn a service stop into a signal to PID 1 and
+	// every service it started — a pid file is operator-supplied input,
+	// so this is a boundary worth checking.
+	if own, ownErr := syscall.Getpgid(0); ownErr == nil && pgid == own {
+		return syscall.Kill(pid, sig)
+	}
+	return syscall.Kill(-pgid, sig)
+}
+
 func SignalProcess(pid int, sig syscall.Signal, processOnly bool) error {
 	if pid <= 0 {
 		return nil

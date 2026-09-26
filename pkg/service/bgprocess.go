@@ -481,8 +481,11 @@ func (s *BGProcessService) BringDown() {
 	s.services.logger.Info("Service '%s': sending %v to process %d",
 		s.serviceName, sig, pid)
 
-	// For bgprocess, signal only the daemon PID (not process group)
-	err := process.SignalProcess(pid, sig, true)
+	// Signal the daemon's whole process group, not just the daemon: a
+	// forking daemon's workers are its children and share its group, and
+	// signalling the master alone orphans them. SignalProcessOnly opts
+	// out, matching dinit, where kill_pg gates on the same flag.
+	err := process.SignalDaemonGroup(pid, sig, s.Flags.SignalProcessOnly)
 	if err != nil {
 		s.services.logger.Error("Service '%s': failed to signal process: %v",
 			s.serviceName, err)
@@ -537,7 +540,7 @@ func (s *BGProcessService) execStopCommand() bool {
 				if sig == 0 {
 					sig = syscall.SIGTERM
 				}
-				process.SignalProcess(daemonPID, sig, true)
+				process.SignalDaemonGroup(daemonPID, sig, s.Flags.SignalProcessOnly)
 			}
 		} else {
 			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
@@ -551,7 +554,7 @@ func (s *BGProcessService) execStopCommand() bool {
 				if sig == 0 {
 					sig = syscall.SIGTERM
 				}
-				process.SignalProcess(daemonPID, sig, true)
+				process.SignalDaemonGroup(daemonPID, sig, s.Flags.SignalProcessOnly)
 			}
 		}
 	}()

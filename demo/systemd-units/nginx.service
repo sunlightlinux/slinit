@@ -10,6 +10,13 @@
 #   wget -qO- http://127.0.0.1/     # served from /var/lib/nginx/html
 #   slinitctl reload nginx          # ExecReload -> nginx -s reload
 #   cat /etc/systemd/system/nginx.service
+#
+# `slinitctl shutdown softreboot --fast` logs one ERROR here:
+#   Service 'nginx': stop-command exited with status 256, sending signal
+# That is --fast keeping its word. It stops waiting for graceful stops, so
+# `nginx -s quit` loses the race and exits 1; slinit then signals the
+# daemon's process group, which stops nginx and its workers cleanly. A
+# plain softreboot shows no error at all. Nothing to chase.
 [Unit]
 Description=nginx - high performance web server
 Documentation=https://nginx.org/en/docs/
