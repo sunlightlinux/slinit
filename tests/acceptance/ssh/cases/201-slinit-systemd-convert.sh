@@ -34,8 +34,15 @@ assert_contains "$_out" "type = process" "Type=simple → process"
 assert_contains "$_out" "command = /usr/bin/simpled --daemon" "ExecStart extracted"
 assert_contains "$_out" "restart = yes" "Restart=always → yes"
 assert_contains "$_out" "run-as = nobody:nogroup" "User+Group merged into run-as"
-assert_contains "$_out" "waits-for: network" "After=network.target → waits-for: network (suffix stripped)"
 assert_contains "$_out" "depends-on: dbus" "Requires=dbus.service → depends-on: dbus"
+
+# After=network.target is dropped, not stripped to a `network` dep.
+# slinit has no target concept, and a dependency on a service that does
+# not exist is fatal — that one line appears in nearly every unit a
+# distribution ships, so inventing the dep made them unloadable.
+assert_not_contains "$_out" "network" "After=network.target not turned into a dep"
+_notes=$(slinit-systemd-convert -verbose "$WORK/simpled.service" 2>&1 >/dev/null)
+assert_contains "$_notes" "network.target" "the dropped target is named in the notes"
 
 # --- oneshot with no explicit Restart → restart=no default -----------
 # Systemd allows Restart= on Type=oneshot even though it's unusual;

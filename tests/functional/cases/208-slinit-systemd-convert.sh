@@ -2,7 +2,13 @@
 # 208-slinit-systemd-convert — v2.1.4 systemd .service converter.
 # INI parser handles `\`-line continuation, Type/Restart/PIDFile
 # mapping, User+Group merge, and dep-suffix stripping across
-# .service/.target/.socket/.path/.mount/.timer/.swap/.device.
+# .service/.socket/.path/.mount/.timer/.swap/.device.
+#
+# .target is the exception and is dropped, not stripped. slinit has no
+# target concept, and turning After=network.target into a dependency on
+# a service literally called "network" made units unloadable anywhere
+# that service does not exist — a missing dependency is fatal, and that
+# line is in nearly every unit a distribution ships.
 
 WORK=/tmp/sconv
 mkdir -p "$WORK"
@@ -27,8 +33,13 @@ assert_contains "$_out" "type = process" "Type=simple → process"
 assert_contains "$_out" "command = /usr/bin/simpled --daemon" "ExecStart extracted"
 assert_contains "$_out" "restart = yes" "Restart=always → yes"
 assert_contains "$_out" "run-as = nobody:nogroup" "User+Group → run-as"
-assert_contains "$_out" "waits-for: network" ".target suffix stripped"
 assert_contains "$_out" "depends-on: dbus" ".service suffix stripped"
+
+# .target references are dropped rather than turned into dependencies on
+# services of the same name, and the operator is told which ones went.
+assert_not_contains "$_out" "network" "After=network.target not invented as a dep"
+_notes=$(slinit-systemd-convert -verbose "$WORK/simple.service" 2>&1 >/dev/null)
+assert_contains "$_notes" "network.target" "dropped target is named in the notes"
 
 # --- forking service with PIDFile → bgprocess ---
 cat > "$WORK/fork.service" <<'EOF'
