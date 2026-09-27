@@ -95,12 +95,16 @@ else
 fi
 rm -f "$_marker"
 
-# ExecReload -> reload. nginx keeps the master PID across a reload, so a
-# changed PID here means slinit restarted it instead of reloading.
+# `slinitctl reload` re-reads the description from disk. It does NOT run
+# ExecReload — the converter cannot map that, since ExecReload is a command
+# and slinit's reload-signal is a signal — so this asserts what reload does
+# promise: a config re-read leaves the running daemon untouched. An earlier
+# version of this comment claimed ExecReload ran, which was wrong; the
+# assertion passed either way, which is how a wrong label survives.
 slinitctl --system reload nginx >/dev/null 2>&1
 sleep 2
 _pid_after=$(cat /run/nginx/nginx.pid 2>/dev/null | tr -d '[:space:]')
-assert_eq "$_pid_after" "$file_pid" "reload kept the master PID (ExecReload, not a restart)"
+assert_eq "$_pid_after" "$file_pid" "reload re-read the config without disturbing the daemon"
 assert_service_state "nginx" "STARTED" "nginx still STARTED after reload"
 
 # ExecStop -> stop-command. `nginx -s quit` is a graceful shutdown, so

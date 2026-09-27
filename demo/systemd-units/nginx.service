@@ -1,6 +1,8 @@
 # A stock nginx unit, in the shape distributions actually ship it —
-# Type=forking with a PIDFile, ExecReload/ExecStop through nginx's own
-# signalling, and a hardening block. Nothing here is written for slinit.
+# Type=forking with a PIDFile, ExecStop through nginx's own signalling, and
+# a hardening block. Nothing here is written for slinit. ExecReload is in
+# the unit too, and is one of the things slinit does not carry over — see
+# below.
 #
 # It lives in /etc/systemd/system and is never converted to a file.
 # slinit reads it at the moment something asks for "nginx" and runs it.
@@ -8,7 +10,16 @@
 # Try, inside the VM:
 #   slinitctl status nginx          # bgprocess, PID read from the pidfile
 #   wget -qO- http://127.0.0.1/     # served from /var/lib/nginx/html
-#   slinitctl reload nginx          # ExecReload -> nginx -s reload
+#   slinitctl reload nginx          # re-reads this file; does NOT run ExecReload
+#
+# slinitctl reload is not systemctl reload. It re-reads the service
+# description from disk; the running daemon is left alone. slinit's
+# equivalent of systemctl reload is `slinitctl reload-signal`, which needs
+# a `reload-signal =` directive — and the converter cannot produce one,
+# because ExecReload is a command to run and reload-signal is a signal to
+# send. So ExecReload=/usr/sbin/nginx -s reload is reported as a note and
+# dropped: under slinit this unit has no reload. nginx also reloads on
+# SIGHUP, so a native description could carry `reload-signal = HUP`.
 #   cat /etc/systemd/system/nginx.service
 #
 # `slinitctl shutdown softreboot --fast` logs one ERROR here:

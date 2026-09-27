@@ -13,6 +13,12 @@ format with FSS sealing, and `slinit-logind` for session/seat
 management; systemd's unit object model on D-Bus and the ecosystem
 daemons networkd/resolved/homed remain deliberately out of scope).
 
+> **New here, or coming from systemd?** This README is the reference —
+> every directive, every flag. Start with the
+> [operator's guide](doc/operators-guide.md) instead: a systemctl ↔
+> slinitctl cheat-sheet, the five differences that actually change what
+> you type, your first service, and troubleshooting.
+
 slinit can run as PID 1 (init system) or as a user-level service
 manager. It uses a dinit-compatible configuration format and manages
 services with dependency tracking, automatic restart, and process
