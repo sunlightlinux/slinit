@@ -465,66 +465,99 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 func (dl *DirLoader) updateDependencies(svc service.Service, desc *ServiceDescription, filePath string) error {
 	rec := svc.Record()
 
-	// Fast-path: if the description's declared deps match the
-	// currently installed deps by (target-name, dep-type), skip the
-	// tear-down/rebuild entirely.
-	//
-	// Without this, a `reload-all` on an unchanged service description
-	// still cycles RmDep → AddDep on every dep. RmDep synchronously
-	// calls Release(true) on the target, and when the target's
-	// requiredBy drops to 0 (svc was the only holder), Release fires
-	// doStop() before we get a chance to re-Require it via AddDep
-	// below. On a healthy Void install where `boot` holds sshd, dbus,
-	// docker, elogind, crond, socklog, getty-* alive, reloading the
-	// `boot` service transiently releases every one of them and the
-	// whole system cascades to STOPPED — including sshd, which then
-	// dies before any pgroup re-Require completes.
-	//
-	// The skip is safe because "no change" means we would end up with
-	// the same dep set anyway; the round-trip was pure churn.
+	// Nothing declared changed: no diff to compute, no directory to
+	// re-read. Purely an optimisation now — correctness comes from the
+	// diff below, which is why it costs nothing that this bails out for
+	// directory-based deps.
 	if descDepsMatchCurrent(rec, desc) {
 		return nil
 	}
 
-	// Save old deps for rollback
-	oldDeps := make([]*service.ServiceDep, len(rec.Dependencies()))
-	copy(oldDeps, rec.Dependencies())
-
-	// Remove all deps except BEFORE deps from other services
-	for i := len(rec.Dependencies()) - 1; i >= 0; i-- {
-		dep := rec.Dependencies()[i]
-		if dep.DepType != service.DepBefore {
-			rec.RmDep(dep.To, dep.DepType)
-		}
-	}
-
-	// Load and add new deps
-	if err := dl.loadDependencies(svc, desc, filePath); err != nil {
-		// Rollback: re-add old deps
-		for _, dep := range oldDeps {
-			if dep.DepType != service.DepBefore {
-				rec.AddDep(dep.To, dep.DepType)
-			}
-		}
+	// Resolve what the description asks for before touching anything.
+	wanted, err := dl.resolveDependencies(svc, desc, filePath)
+	if err != nil {
 		return err
 	}
 
-	// Recalculate dependency depth after dep changes
+	// Apply as a diff, adding before removing.
+	//
+	// The obvious implementation — drop every edge, then install the new
+	// set — cannot be used. RmDep synchronously calls Release on the
+	// target, and a target whose requiredBy reaches zero stops right
+	// then, before AddDep gets a chance to require it again. For a
+	// milestone that holds most of the system up, that is the whole
+	// system: reloading one service with a waits-for.d directory took a
+	// demo VM from 42 running services to 6, and on a real install it
+	// takes sshd with it.
+	//
+	// A guard used to skip the rebuild when the dep set was unchanged,
+	// but it opted out for directory-based deps — exactly the services
+	// that hold the most alive, and exactly the case where the directory
+	// having changed is why you are reloading. Diffing needs no such
+	// exception: an edge that survives the reload is never removed, so
+	// its target never transiently loses its last holder.
+	type depKeyLocal struct {
+		name    string
+		depType service.DependencyType
+	}
+
+	wantedSet := make(map[depKeyLocal]bool, len(wanted))
+	for _, d := range wanted {
+		wantedSet[depKeyLocal{d.to.Name(), d.depType}] = true
+	}
+	currentSet := make(map[depKeyLocal]bool)
+	for _, d := range rec.Dependencies() {
+		currentSet[depKeyLocal{d.To.Name(), d.DepType}] = true
+	}
+
+	// Add first. AddDep is not idempotent, so only genuinely new edges.
+	var added []resolvedDep
+	for _, d := range wanted {
+		k := depKeyLocal{d.to.Name(), d.depType}
+		if currentSet[k] {
+			continue
+		}
+		rec.AddDep(d.to, d.depType)
+		currentSet[k] = true
+		added = append(added, d)
+	}
+
+	// Then remove what the description no longer names. BEFORE edges are
+	// left alone: they can be installed on this record by another
+	// service's After, so this description does not own them.
+	var removed []resolvedDep
+	for i := len(rec.Dependencies()) - 1; i >= 0; i-- {
+		dep := rec.Dependencies()[i]
+		if dep.DepType == service.DepBefore {
+			continue
+		}
+		if wantedSet[depKeyLocal{dep.To.Name(), dep.DepType}] {
+			continue
+		}
+		to, dt := dep.To, dep.DepType
+		rec.RmDep(to, dt)
+		removed = append(removed, resolvedDep{to, dt})
+	}
+
+	// Undo this diff. Used when the depth recalculation below rejects the
+	// new graph.
+	rollback := func() {
+		for _, d := range removed {
+			rec.AddDep(d.to, d.depType)
+		}
+		for i := len(added) - 1; i >= 0; i-- {
+			rec.RmDep(added[i].to, added[i].depType)
+		}
+	}
+
+// Recalculate dependency depth after dep changes
 	var updater service.DepDepthUpdater
 	updater.AddPotentialUpdate(svc)
 	if err := updater.ProcessUpdates(); err != nil {
-		// Rollback deps on depth overflow
-		for i := len(rec.Dependencies()) - 1; i >= 0; i-- {
-			dep := rec.Dependencies()[i]
-			if dep.DepType != service.DepBefore {
-				rec.RmDep(dep.To, dep.DepType)
-			}
-		}
-		for _, dep := range oldDeps {
-			if dep.DepType != service.DepBefore {
-				rec.AddDep(dep.To, dep.DepType)
-			}
-		}
+		// Undo just this diff on depth overflow. The old code tore every
+		// edge down and re-added the saved set, which released targets
+		// the reload had never touched.
+		rollback()
 		updater.Rollback()
 		return &ServiceLoadError{ServiceName: svc.Name(), Message: err.Error()}
 	}
@@ -1315,6 +1348,17 @@ type depKey struct {
 // without a description-file rewrite — safest to fall through and
 // let the full path re-resolve them.
 //
+// This is an optimisation, not a safety mechanism. It was introduced as
+// one: a reload used to drop every edge and rebuild, which released each
+// target whose requiredBy hit zero and stopped it before AddDep could
+// require it again, so reloading `boot` took sshd and the rest down with
+// it. Skipping unchanged descriptions hid that for most services but not
+// for the ones with dependency directories — which are the milestones
+// holding everything up, and the case where a changed directory is the
+// reason you are reloading. updateDependencies now applies a diff,
+// adding before removing, so a surviving edge is never taken away and no
+// target loses its last holder in passing.
+//
 // BEFORE-typed deps are excluded on both sides because
 // updateDependencies also excludes them from the tear-down (they
 // belong to whichever service originally declared `before:` on
@@ -1361,7 +1405,21 @@ func descDepsMatchCurrent(rec *service.ServiceRecord, desc *ServiceDescription) 
 	return true
 }
 
-func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescription, filePath string) error {
+// resolvedDep is one dependency edge, with its target already loaded.
+type resolvedDep struct {
+	to      service.Service
+	depType service.DependencyType
+}
+
+// resolveDependencies loads every dependency target a description asks
+// for — including the ones behind depends-on.d / waits-for.d and friends —
+// and returns the edges without touching the graph.
+//
+// Resolution is separated from application so reload can diff the wanted
+// set against the installed one. It also means a failure to load a target
+// happens before any edge is added or removed, instead of halfway through
+// a tear-down that then needs unwinding.
+func (dl *DirLoader) resolveDependencies(svc service.Service, desc *ServiceDescription, filePath string) ([]resolvedDep, error) {
 	depSpecs := []struct {
 		names    []string
 		depType  service.DependencyType
@@ -1379,6 +1437,7 @@ func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescript
 		{desc.AfterOptional, service.DepAfter, true},
 	}
 
+	var out []resolvedDep
 	for _, spec := range depSpecs {
 		for _, depName := range spec.names {
 			depSvc, err := dl.loadServiceLocked(depName)
@@ -1386,14 +1445,14 @@ func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescript
 				if spec.optional && errors.Is(err, ErrServiceNotFound) {
 					continue
 				}
-				return fmt.Errorf("loading dependency '%s' for service '%s': %w",
+				return nil, fmt.Errorf("loading dependency '%s' for service '%s': %w",
 					depName, svc.Name(), err)
 			}
-			svc.Record().AddDep(depSvc, spec.depType)
+			out = append(out, resolvedDep{depSvc, spec.depType})
 		}
 	}
 
-	// Load dependencies from directories (e.g., waits-for.d)
+	// Dependencies named by directory (e.g. waits-for.d)
 	dirDepSpecs := []struct {
 		dirs    []string
 		depType service.DependencyType
@@ -1410,24 +1469,38 @@ func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescript
 			if !filepath.IsAbs(depDir) {
 				depDir = filepath.Join(filepath.Dir(filePath), dir)
 			}
-			if err := dl.loadDepsFromDir(svc, depDir, spec.depType); err != nil {
-				return err
+			dirDeps, err := dl.resolveDepsFromDir(svc, depDir, spec.depType)
+			if err != nil {
+				return nil, err
 			}
+			out = append(out, dirDeps...)
 		}
 	}
 
+	return out, nil
+}
+
+func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescription, filePath string) error {
+	deps, err := dl.resolveDependencies(svc, desc, filePath)
+	if err != nil {
+		return err
+	}
+	for _, d := range deps {
+		svc.Record().AddDep(d.to, d.depType)
+	}
 	return nil
 }
 
-func (dl *DirLoader) loadDepsFromDir(svc service.Service, dir string, depType service.DependencyType) error {
+func (dl *DirLoader) resolveDepsFromDir(svc service.Service, dir string, depType service.DependencyType) ([]resolvedDep, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // directory doesn't exist, that's OK
+			return nil, nil // directory doesn't exist, that's OK
 		}
-		return fmt.Errorf("reading dependency directory %s: %w", dir, err)
+		return nil, fmt.Errorf("reading dependency directory %s: %w", dir, err)
 	}
 
+	var out []resolvedDep
 	for _, entry := range entries {
 		if entry.IsDir() || entry.Name()[0] == '.' {
 			continue
@@ -1436,13 +1509,13 @@ func (dl *DirLoader) loadDepsFromDir(svc service.Service, dir string, depType se
 		depName := entry.Name()
 		depSvc, err := dl.loadServiceLocked(depName)
 		if err != nil {
-			return fmt.Errorf("loading dependency '%s' from directory '%s': %w",
+			return nil, fmt.Errorf("loading dependency '%s' from directory '%s': %w",
 				depName, dir, err)
 		}
-		svc.Record().AddDep(depSvc, depType)
+		out = append(out, resolvedDep{depSvc, depType})
 	}
 
-	return nil
+	return out, nil
 }
 
 // logSettable is implemented by process-based services that support log configuration.
