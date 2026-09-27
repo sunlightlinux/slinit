@@ -17,6 +17,101 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.6] — 2026-09-27
+
+One `slinitctl reload` of a milestone stopped most of the system. That is
+the release. Alongside it, a command for putting a machine back together
+afterwards.
+
+Verified: full unit suite and `-race` clean; the reload scenarios checked
+in the demo VM, where each previously collapsed the running set; the new
+command exercised there after `kill -9 -1`; functional converter cases
+207 and 208 green.
+
+### Fixed
+
+- **Reloading a service with a dependency directory stopped the services
+  it held up.** In the demo VM a clean boot went from 42 running services
+  to 6 on a single `slinitctl reload all-services`, and `reload-all` did
+  the same because it reaches that service too. On a real install it
+  takes sshd with it.
+
+  Dependencies were reloaded by dropping every edge and then installing
+  the new set. `RmDep` releases its target synchronously, so a target
+  whose `requiredBy` reaches zero stops right then — before `AddDep` can
+  require it again. For a milestone holding the system up, that is the
+  system.
+
+  A guard for this already existed, and its comment described the cascade
+  exactly, sshd included. It skipped the rebuild when the declared
+  dependencies had not changed — but it opted out for `depends-on.d`,
+  `waits-for.d` and friends, which is how milestones are written, and
+  which is precisely the case where a changed directory is the reason you
+  are reloading. The cure covered everything except the patient.
+
+  Dependencies are now resolved first and applied as a diff, adding
+  before removing. An edge that survives a reload is never taken away, so
+  no target loses its last holder in passing, whether or not anything
+  changed. The guard remains as an optimisation and its comment says so.
+
+  Resolution moving ahead of mutation has a second effect: a dependency
+  that fails to load now fails before any edge is touched, rather than
+  halfway through a tear-down that then needs unwinding. The
+  depth-overflow rollback shrank to undoing just this diff, where it used
+  to tear down every edge and re-add a saved set — releasing targets the
+  reload had never touched.
+
+  `reload-all` also now reports every service rather than a subset: 44
+  against 29 in the demo VM, because the tear-down used to leave later
+  services in transitional states that were silently skipped.
+
+- **Two converter test cases still expected `.target` to become a
+  dependency.** They asserted that `After=network.target` produces
+  `waits-for: network`, the behaviour removed in 2.4.5 — slinit has no
+  target concept, and inventing a dependency on a service called
+  "network" made units unloadable anywhere that service does not exist.
+  The `pkg/config` copies of the expectation were updated with the change
+  and these two were missed, so the functional case had been failing
+  since. They now assert both halves of the contract: nothing named
+  `network` in the output, and the dropped target named in the notes, so
+  a silent drop still fails.
+
+### Added
+
+- **`slinitctl start-all`** starts every loaded service that is not
+  already `STARTED`, in one round trip. A recovery command: after
+  processes have been killed out from under the daemon, or a batch was
+  stopped by hand, it brings the set back without scripting a loop over
+  `slinitctl ls` — a loop that is easy to get subtly wrong, since
+  internal services render with a double bracket that the obvious `sed`
+  strips badly, and `start` has blocked until a service settles since
+  2.3.5, so a triggered service hangs it.
+
+  Server-side, like `reload-all` and for the same reasons: the daemon
+  already knows each service's state and directives, so there is no round
+  trip per service and nothing changes between deciding and acting.
+  slinit-native — dinit has no bulk start.
+
+  Four kinds of service are passed over rather than started.
+  Transitional ones, matching `reload-all`. Stop-pinned ones, because a
+  pin is recorded operator intent and outranks a sweep. Those declaring
+  `refuse-manual-start`, since the bulk path has no business being more
+  permissive than the per-service path that refuses them. And
+  `manual = yes`, which `slinit-service(5)` documents as refusing every
+  activation path except an explicit `slinitctl start` of that service —
+  a sweep is not that, and starting them here would make the directive
+  mean less than it says.
+
+  The summary reports started and skipped, and no failure count on
+  purpose: starts are issued rather than awaited, so a synchronous figure
+  would always read zero. It prints "Starting N service(s)" rather than
+  claiming they started.
+
+  It marks what it starts active, so it does not reproduce the
+  dependency-only activation a boot produces. `slinitctl shutdown
+  softreboot` remains the way to get that state back, and the man page
+  says so.
+
 ## [2.4.5] — 2026-09-26
 
 slinit reads systemd `.service` units directly and runs them, with no
