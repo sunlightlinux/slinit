@@ -17,6 +17,55 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.7] — 2026-09-27
+
+Documentation. No directive, opcode, flag or exit status differs from
+2.4.6; the only code touched is a comment in a demo service file and a
+test's assertion message.
+
+### Added
+
+- **An operator's guide**, `doc/operators-guide.md`, linked from the top
+  of the README. The README is a reference and a poor first page — 1651
+  lines that assume you already know what a service description looks
+  like. This is the other document: a systemctl/slinitctl cheat-sheet,
+  the differences that change what an operator types rather than what
+  they call things, a first service, how to read the state column, and
+  troubleshooting entries drawn from problems this project actually hit.
+
+  The five differences it leads with, because they change behaviour and
+  not vocabulary: slinit has no targets; `slinitctl enable` also starts
+  the service, so it is `systemctl enable --now`; `slinitctl reload`
+  re-reads a description from disk and is therefore `daemon-reload` for
+  one service, while `systemctl reload` is `slinitctl reload-signal`;
+  there are no `.socket` / `.timer` / `.path` units, only directives on
+  the service; and a service can be running without being marked active,
+  which decides whether it survives its dependents going away.
+
+  Every command in it was run in the demo VM rather than read off the
+  help text. That caught three claims that would have shipped wrong:
+  there is no `log-file` directive (it is `log-type = file` with
+  `logfile =`), timers are the `cron-calendar` / `cron-interval` family
+  rather than a bare `cron =`, and `systemctl mask` needs `manual = yes`
+  together with `refuse-manual-start = yes` — `manual` alone still
+  permits an explicit start. The first-service example also named
+  `depends-on: network`, which is the exact trap the troubleshooting
+  section warns about, since a hard dependency on a service that does not
+  exist is fatal and `network` exists on some systems and not others.
+
+### Fixed
+
+- **The demo nginx unit and functional case 226 claimed `slinitctl
+  reload` runs `ExecReload`.** It does not. `ExecReload` is not mapped at
+  all: the converter reports it and drops it, because `ExecReload` names
+  a command to run while slinit's `reload-signal` names a signal to send.
+  A unit therefore cannot express a reload, and the demo nginx has none.
+
+  The assertion in case 226 passed either way — a config re-read leaves
+  the daemon alone, which is what it was really observing — so the wrong
+  label survived. Both now describe what happens, and the guide lists the
+  dropped-directive notes worth reading after a conversion.
+
 ## [2.4.6] — 2026-09-27
 
 One `slinitctl reload` of a milestone stopped most of the system. That is
