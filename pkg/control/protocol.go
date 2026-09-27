@@ -173,6 +173,10 @@ const (
 	// intentionally not versioned per-field — new keys append at the
 	// end of the render, callers ignore keys they don't recognise.
 	CmdServiceShow uint8 = 66
+	// CmdStartAll starts every service that is not already STARTED.
+	// slinit-native: dinit has no bulk start, so there is no opcode to
+	// stay compatible with. Additive, per STABILITY.md.
+	CmdStartAll uint8 = 67
 )
 
 // Reply codes (server → client).
@@ -235,6 +239,11 @@ const (
 	RplyJournalDone     uint8 = 116 // terminates a JournalQuery reply stream
 	RplyJournalErr      uint8 = 117 // JournalQuery/Subscribe rejected (bad JSON filter, buffer unset, etc.)
 	RplyServiceShow     uint8 = 118 // CmdServiceShow: UTF-8 body of `Key=Value\n` lines.
+	// RplyStartAllResult: started(2) + skipped(2), LE. No failure count:
+	// StartService is fire-and-forget and a start can fail long after the
+	// sweep returns, so a synchronous figure would always read zero.
+	// Failures show up in `slinitctl ls` and the log.
+	RplyStartAllResult uint8 = 119
 )
 
 // Info codes (server → client, unsolicited).

@@ -64,8 +64,13 @@ func readReply(t *testing.T, conn net.Conn) (uint8, []byte) {
 		if err != nil {
 			t.Fatalf("Read error: %v", err)
 		}
-		// Skip unsolicited info packets
-		if rply >= 100 {
+		// Skip unsolicited info packets. Matched by code, not by
+		// `>= 100`: reply codes pass 100 too (RplyJournalEntry is 115,
+		// RplyStartAllResult 119), and the blanket comparison silently
+		// swallowed them, so a test waiting for such a reply hung until
+		// the deadline. The daemon-side client filters by code for the
+		// same reason.
+		if rply == InfoServiceEvent || rply == InfoServiceEvent5 || rply == InfoEnvEvent {
 			continue
 		}
 		return rply, payload

@@ -307,6 +307,35 @@ daemon, which is useful at install time or in initramfs.
     ops applied a config update across many service files and want
     them all picked up without scripting a `for` loop.
 
+**start-all**
+:   Start every loaded service that is not already **STARTED**, in one
+    round trip. A recovery command: after processes have been killed out
+    from under the daemon, or a batch of services was stopped by hand,
+    it brings the set back up without scripting a loop over
+    **slinitctl ls**.
+
+    Prints a summary like "Starting 7 service(s); 35 already running or
+    skipped". It says *starting*, not *started*: the requests are
+    issued, not awaited, so a service can still fail afterwards — check
+    **slinitctl ls** or the log. There is deliberately no failure count,
+    since a synchronous one would always read zero.
+
+    Four kinds of service are passed over rather than started:
+    those in a transitional state (**STARTING** / **STOPPING**, same
+    reasoning as **reload-all**); those declaring **manual = yes**,
+    which is documented as refusing every activation path except an
+    explicit **slinitctl start** of that service, and a bulk sweep is
+    not that; those declaring **refuse-manual-start**, since the bulk
+    path has no business being more permissive than the per-service one;
+    and stop-pinned services, because a pin is recorded operator intent
+    and outranks a sweep.
+
+    slinit-native — dinit has no bulk-start equivalent. To bring a
+    machine all the way back to its post-boot state instead, including
+    the dependency-only activation markers that **start-all** cannot
+    reproduce (it marks what it starts active), use
+    **slinitctl shutdown softreboot**.
+
 **activate-profile** *name* | **-**
 :   Swap the active profile (runit *runsvchdir* analogue).
     Services declaring **profile = *name*** (see

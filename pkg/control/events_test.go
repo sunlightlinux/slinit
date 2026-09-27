@@ -9,7 +9,9 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
-// readInfoPacket reads packets until it gets an info packet (code >= 100),
+// readInfoPacket reads packets until it gets an info packet. Matched by
+// code rather than `>= 100`, because reply codes reach into that range too
+// and would otherwise be mistaken for notifications.
 // with a timeout to prevent hangs.
 func readInfoPacket(t *testing.T, conn net.Conn, timeout time.Duration) (uint8, []byte) {
 	t.Helper()
@@ -20,7 +22,7 @@ func readInfoPacket(t *testing.T, conn net.Conn, timeout time.Duration) (uint8, 
 		if err != nil {
 			t.Fatalf("Read error waiting for info packet: %v", err)
 		}
-		if rply >= 100 {
+		if rply == InfoServiceEvent || rply == InfoServiceEvent5 || rply == InfoEnvEvent {
 			return rply, payload
 		}
 		// Skip reply packets (shouldn't happen, but be safe)

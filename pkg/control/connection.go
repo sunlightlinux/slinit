@@ -277,6 +277,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleReloadService(payload)
 	case CmdReloadAll:
 		return c.handleReloadAll()
+	case CmdStartAll:
+		return c.handleStartAll()
 	case CmdReloadSignal:
 		return c.handleReloadSignal(payload)
 	case CmdUnloadService:
@@ -1275,6 +1277,66 @@ func (c *Connection) handleReloadService(payload []byte) error {
 
 	c.server.services.ProcessQueues()
 	return c.writePacket(RplyACK, nil)
+}
+
+// handleStartAll starts every loaded service that is not already STARTED.
+// The sibling of handleReloadAll, and server-side for the same reasons:
+// the daemon already knows each service's state and directives, so the
+// operator does not pay a round trip per service, and nothing can change
+// between deciding and acting.
+//
+// Three kinds of service are passed over rather than started:
+//
+//   - STARTING / STOPPING. Transitional, so the request is already in
+//     flight or a stop is; reload-all skips these for the same reason.
+//   - manual=yes. The directive is documented as refusing every
+//     activation path except an explicit `slinitctl start <service>`,
+//     and a bulk start is not that. Starting them here would make the
+//     directive mean less than it says.
+//   - refuse-manual-start. The per-service path answers
+//     RplyManualRefused; there is no reason for the bulk path to be more
+//     permissive than the single one.
+//
+// A stop-pinned service is also left alone: the pin is the operator's
+// recorded intent and outranks a sweep.
+//
+// Returns started + skipped. There is no failure count on purpose:
+// StartService is fire-and-forget and a start can fail long after this
+// returns, so any synchronous number would be zero and misleading.
+func (c *Connection) handleStartAll() error {
+	if c.server.services.IsShuttingDown() {
+		return c.writePacket(RplyShuttingDown, nil)
+	}
+
+	var started, skipped uint16
+
+	for _, svc := range c.server.services.ListServices() {
+		state := svc.State()
+		if state == service.StateStarted {
+			skipped++
+			continue
+		}
+		if state != service.StateStopped {
+			// STARTING or STOPPING.
+			skipped++
+			continue
+		}
+		rec := svc.Record()
+		if rec.IsManualStart() || rec.RefusesManualStart() || rec.IsStopPinned() {
+			skipped++
+			continue
+		}
+
+		c.server.services.StartService(svc)
+		started++
+	}
+
+	c.server.services.ProcessQueues()
+
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint16(payload[0:2], started)
+	binary.LittleEndian.PutUint16(payload[2:4], skipped)
+	return c.writePacket(RplyStartAllResult, payload)
 }
 
 // handleReloadAll rescans every currently-loaded service description
