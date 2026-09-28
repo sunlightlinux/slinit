@@ -65,3 +65,30 @@ socket-uid = notanumber
 		t.Errorf("expected 'invalid socket uid' in error, got: %v", err)
 	}
 }
+
+// socket-reuseport is what lets several services hold one host:port, so a
+// typo in the directive name must not pass silently as "off".
+func TestParseSocketReusePort(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{"type = process\ncommand = /bin/true\nsocket-listen = tcp:0.0.0.0:8080\nsocket-reuseport = yes\n", true},
+		{"type = process\ncommand = /bin/true\nsocket-listen = tcp:0.0.0.0:8080\nsocket-reuseport = no\n", false},
+		{"type = process\ncommand = /bin/true\nsocket-listen = tcp:0.0.0.0:8080\n", false},
+	} {
+		desc, err := Parse(strings.NewReader(tc.body), "svc", "svc")
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.body, err)
+		}
+		if desc.SocketReusePort != tc.want {
+			t.Errorf("SocketReusePort = %v, want %v for:\n%s",
+				desc.SocketReusePort, tc.want, tc.body)
+		}
+	}
+
+	if _, err := Parse(strings.NewReader(
+		"type = process\ncommand = /bin/true\nsocket-reuseport = maybe\n"), "svc", "svc"); err == nil {
+		t.Error("socket-reuseport = maybe should be rejected, not read as false")
+	}
+}

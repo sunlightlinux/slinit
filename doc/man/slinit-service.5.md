@@ -1472,17 +1472,42 @@ mlockall       = current+future
 
 ## SOCKET ACTIVATION
 
-**socket-listen**=*path*
-:   Listen on *path* (Unix socket); the listening fd is passed to
-    the service via the **LISTEN_FDS** / **LISTEN_PID** convention.
-    Use `+=` for multiple sockets.
+**socket-listen**=*path*|*tcp*[*4*|*6*]**:**\ *host*:*port*|*udp*[*4*|*6*]**:**\ *host*:*port*
+:   Listen on *path* (Unix socket) or, with a *tcp:* / *udp:* prefix, on
+    a host and port — e.g. *tcp:0.0.0.0:8080*, *udp6:[::1]:9000*. The
+    listening fd is passed to the service via the **LISTEN_FDS** /
+    **LISTEN_PID** convention. Use `+=` for multiple sockets, which
+    yields *LISTEN_FDS=N* in declaration order.
+
+**socket-reuseport**=*yes*|*no* (since 2.4.8)
+:   Set **SO_REUSEPORT** on the inet listeners of this service, before
+    bind. Several services may then hold the same *host*:*port*, and the
+    kernel hashes each incoming connection to one of them.
+
+    The shape this is for: N instances of one template — *web@1* …
+    *web@4*, each an ordinary service with its own supervised process —
+    sharing one hot port. Each worker is started, stopped and restarted
+    on its own, and a worker that dies takes only its own socket out of
+    the set, so its siblings keep serving the port while slinit brings it
+    back. That is the difference from passing a single shared fd to one
+    process, where the process dying takes the listener with it.
+
+    Every socket sharing a port this way must have been created by the
+    same effective UID; slinit opens all of them itself, so this holds
+    whatever each service's **run-as** is.
+
+    Applies to the *tcp:* and *udp:* forms only. On a Unix socket the
+    option is accepted by the kernel and does nothing, so slinit does not
+    set it there rather than imply a guarantee it is not making; a Unix
+    socket with this directive still opens normally.
 
 **socket-activation**=*immediate*|*on-demand*
 :   *immediate*: open the socket as soon as the service is loaded;
     *on-demand*: lazily start the service on the first connection.
 
 **socket-permissions**=*octal*, **socket-uid**=*N*, **socket-gid**=*N*
-:   Mode and ownership of the listening socket.
+:   Mode and ownership of the listening socket. Unix sockets only; both
+    ids default to *-1*, meaning slinit leaves ownership alone.
 
 ## PATH-BASED ACTIVATION
 

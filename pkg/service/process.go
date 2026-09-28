@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -1055,18 +1057,58 @@ func (s *ProcessService) openSocket() error {
 	return nil
 }
 
+// listenConfig returns the ListenConfig used for inet listeners. When
+// socket-reuseport is set it installs SO_REUSEPORT on the socket before
+// bind — which is the only moment the option can be set, so this has to go
+// through ListenConfig.Control rather than being applied to a finished
+// listener.
+//
+// SO_REUSEPORT is what lets several services hold the same host:port: the
+// kernel hashes each incoming connection to one of the bound sockets. The
+// intended shape is N instances of one template (web@1 … web@4), each its
+// own service with its own supervised process, sharing a port. A worker
+// that dies takes only its own socket out of the set, so the port keeps
+// being served by its siblings while slinit restarts it.
+//
+// Linux requires every socket sharing a port this way to have been created
+// by the same effective UID. slinit opens all of them itself, so that
+// holds regardless of each service's run-as.
+func (s *ProcessService) listenConfig() *net.ListenConfig {
+	if !s.SocketReusePort() {
+		return &net.ListenConfig{}
+	}
+	return &net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			var setErr error
+			if err := c.Control(func(fd uintptr) {
+				// SO_REUSEPORT is not in the stdlib syscall package on
+				// Linux, hence x/sys/unix.
+				setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET,
+					unix.SO_REUSEPORT, 1)
+			}); err != nil {
+				return err
+			}
+			return setErr
+		},
+	}
+}
+
 // openOneSocket opens a single listening socket. The path format determines
 // the socket type:
 //   - "tcp:host:port" or "tcp4:host:port" or "tcp6:host:port" → TCP
 //   - "udp:host:port" or "udp4:host:port" or "udp6:host:port" → UDP
 //   - anything else → Unix domain socket
+//
+// socket-reuseport applies to the tcp/udp forms only. On a Unix socket the
+// option is accepted by the kernel and does nothing, so applying it there
+// would only suggest a guarantee that is not being made.
 func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
 	// TCP socket
 	if strings.HasPrefix(path, "tcp:") || strings.HasPrefix(path, "tcp4:") || strings.HasPrefix(path, "tcp6:") {
 		parts := strings.SplitN(path, ":", 2)
 		network := parts[0]
 		addr := parts[1]
-		ln, err := net.Listen(network, addr)
+		ln, err := s.listenConfig().Listen(context.Background(), network, addr)
 		if err != nil {
 			return nil, fmt.Errorf("tcp listen: %w", err)
 		}
@@ -1084,7 +1126,7 @@ func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
 		parts := strings.SplitN(path, ":", 2)
 		network := parts[0]
 		addr := parts[1]
-		conn, err := net.ListenPacket(network, addr)
+		conn, err := s.listenConfig().ListenPacket(context.Background(), network, addr)
 		if err != nil {
 			return nil, fmt.Errorf("udp listen: %w", err)
 		}

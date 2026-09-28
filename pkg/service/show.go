@@ -451,6 +451,9 @@ func RenderShow(s Service) string {
 	if len(sr.socketPaths) > 0 {
 		p("SocketPaths", strings.Join(sr.socketPaths, " "))
 	}
+	if sr.socketReusePort {
+		p("SocketReusePort", "yes")
+	}
 	if sr.inittabID != "" {
 		p("InittabID", sr.inittabID)
 	}

@@ -88,6 +88,7 @@ works as-is.
 | slinit-mount  | process   | Autofs lazy-mount daemon                       |
 | recovery      | process   | Emergency shell after boot failure             |
 | template-worker | process | Service template with `$1` arg substitution (`slinitctl start template-worker@alpha`) |
+| reuseport-worker | process | N workers sharing one TCP port via `socket-reuseport` (`slinitctl start reuseport-worker@1`) |
 | logfile-demo  | process   | File logging with rotation + regex filtering   |
 | bgprocess-demo | bgprocess | Self-backgrounding daemon with pid-file tracking |
 | extra-actions | process   | Custom actions via extra-command / extra-started-command |
@@ -591,6 +592,29 @@ config-driven design:
 Service files without `@` in the name serve as templates. Start instances
 with `slinitctl start template-worker@alpha`. The `$1` variable expands
 to the argument (`alpha`). Each instance runs independently.
+
+### Multiworker on One Port (`reuseport-worker`)
+A template whose instances all bind `127.0.0.1:8099`, which
+`socket-reuseport = yes` makes legal — without it the second instance
+fails with `EADDRINUSE`. The kernel hashes each incoming connection to
+one of the bound sockets.
+
+```sh
+slinitctl start reuseport-worker@1
+slinitctl start reuseport-worker@2
+slinitctl start reuseport-worker@3
+netstat -ltn | grep 8099        # three listeners, one port
+slinitctl stop reuseport-worker@2
+netstat -ltn | grep 8099        # two left; the port is still served
+```
+
+That last pair of commands is the reason to prefer N services over one
+process holding one shared fd: a worker dying removes only its own socket
+from the set, so its siblings keep serving while slinit restarts it.
+
+Each instance only reports that the fd arrived — accepting on an
+inherited listening socket needs a real program rather than a shell,
+which is why `socket-demo` prints `LISTEN_FDS` too instead of serving.
 
 ### File Logging with Rotation (`logfile-demo`)
 Demonstrates `logfile`, `logfile-max-size`, `logfile-max-files`, `log-include`,

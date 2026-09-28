@@ -325,6 +325,10 @@ type ServiceDescription struct {
 	// Socket activation
 	SocketPath       string   // primary socket path (first socket-listen)
 	SocketPaths      []string // all socket-listen paths (for multiple sockets)
+	// SocketReusePort sets SO_REUSEPORT on inet listeners before bind, so
+	// several services (typically instances of one template) can hold the
+	// same host:port and have the kernel spread connections between them.
+	SocketReusePort  bool
 	SocketPerms      int
 	SocketUID        int
 	SocketGID        int
@@ -2856,6 +2860,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.NotifyAccess = n
 		desc.NotifyAccessSet = true
+	case "socket-reuseport":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("socket-reuseport: %w", err)
+		}
+		desc.SocketReusePort = b
 	case "guess-main-pid":
 		b, err := parseBool(value)
 		if err != nil {

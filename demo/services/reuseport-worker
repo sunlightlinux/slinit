@@ -1,0 +1,33 @@
+# reuseport-worker — N workers sharing one hot port via SO_REUSEPORT
+#
+# Each instance is an ordinary service with its own supervised process,
+# and each binds the same 127.0.0.1:8099. socket-reuseport makes that
+# legal; without it the second instance fails with EADDRINUSE. The kernel
+# then hashes each incoming connection to one of the bound sockets.
+#
+# Try:
+#   slinitctl start reuseport-worker@1
+#   slinitctl start reuseport-worker@2
+#   slinitctl start reuseport-worker@3
+#   netstat -ltn | grep 8099          # one listener per instance
+#   slinitctl catlog reuseport-worker@1
+#   slinitctl stop reuseport-worker@2 # the others keep serving the port
+#
+# The point of N services over one process with one shared fd: a worker
+# dying removes only its own socket from the set, so the port stays served
+# by its siblings while slinit restarts that one. With a single shared fd
+# the listener dies with the process holding it.
+#
+# This instance only reports that the fd arrived — accepting on an
+# inherited listening socket needs a real program, not a shell, which is
+# the same reason socket-demo just prints LISTEN_FDS.
+type = process
+command = /bin/sh -c "echo \"[reuseport:$1] LISTEN_FDS=$$LISTEN_FDS fd 3 = 127.0.0.1:8099\"; while true; do sleep 30; done"
+description = Reuseport worker $1 on :8099
+socket-listen = tcp:127.0.0.1:8099
+socket-reuseport = yes
+socket-activation = immediate
+log-type = buffer
+log-buffer-size = 4096
+restart = no
+depends-on: system-init

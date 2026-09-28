@@ -179,6 +179,57 @@ file` with `logfile = /var/log/hello.log` writes to a file instead.
 
 ---
 
+## Scaling a hot port across workers
+
+One process accepting on one socket is a ceiling. The usual answer is N
+worker processes behind the same port, and slinit builds it out of pieces
+it already has: a service template for the N, and `socket-reuseport` so
+they may all bind the same address.
+
+Write the worker once, as a template — a description whose name carries no
+`@`:
+
+```sh
+cat > /etc/slinit.d/web <<'EOF'
+type = process
+command = /usr/bin/myserver --listen-fd 3
+description = web worker $1
+socket-listen = tcp:0.0.0.0:8080
+socket-reuseport = yes
+socket-activation = immediate
+EOF
+```
+
+Then start as many as you want cores busy:
+
+```sh
+for i in 1 2 3 4; do slinitctl start "web@$i"; done
+```
+
+Each instance is an ordinary service: its own PID, its own `status`, its
+own restart policy. slinit opens a listening socket per instance, all on
+`0.0.0.0:8080`, and passes it as fd 3 under `LISTEN_FDS=1`. The kernel
+hashes each incoming connection to one of them.
+
+The reason to prefer this over one process handed a single shared fd is
+what happens when a worker dies: only its own socket leaves the set, so
+the remaining workers keep serving the port while slinit restarts that
+one. A single shared listener dies with the process holding it.
+
+Two constraints worth knowing before you build on it:
+
+- **The program must accept on the inherited fd.** slinit binds and
+  listens; it does not accept. A server that only knows how to bind its
+  own port cannot be used this way — it needs `--listen-fd`-style support,
+  or the systemd socket-activation convention (`LISTEN_FDS`, `LISTEN_PID`,
+  and fd 3 upward).
+- **`socket-reuseport` is for `tcp:` and `udp:` listeners.** On a Unix
+  socket the kernel accepts the option and does nothing with it, so slinit
+  does not set it there.
+
+To see the listeners, `netstat -ltn` (or `ss -ltn`) shows one line per
+instance on the shared port.
+
 ## Reading the state column
 
 `slinitctl list` prints an eight-character indicator. The distinction that

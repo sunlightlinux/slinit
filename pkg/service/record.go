@@ -212,6 +212,7 @@ type ServiceRecord struct {
 	reloadSignal syscall.Signal // 0 = unset; sent by `slinitctl reload-signal`
 	socketPath   string         // primary socket path (for backwards compat)
 	socketPaths  []string       // all socket-listen paths (for multiple sockets)
+	socketReusePort bool        // SO_REUSEPORT on inet listeners (see SetSocketReusePort)
 	socketPerms  int
 	socketUID    int
 	socketGID    int
@@ -1807,6 +1808,16 @@ func (sr *ServiceRecord) SetNotifyAccess(n NotifyAccess, set bool) {
 	sr.notifyAccess = n
 	sr.notifyAccessSet = set
 }
+// SetSocketReusePort enables SO_REUSEPORT on this service's inet
+// listeners. Set before bind, it lets several services hold the same
+// host:port; the kernel then hashes each incoming connection to one of
+// them. Meaningless for Unix sockets, which is why openOneSocket only
+// applies it to the tcp/udp forms.
+func (sr *ServiceRecord) SetSocketReusePort(b bool) { sr.socketReusePort = b }
+
+// SocketReusePort reports whether SO_REUSEPORT is requested.
+func (sr *ServiceRecord) SocketReusePort() bool { return sr.socketReusePort }
+
 func (sr *ServiceRecord) SetGuessMainPID(b bool) { sr.guessMainPID = b }
 func (sr *ServiceRecord) SetSELinuxContext(s string)     { sr.selinuxContext = s }
 func (sr *ServiceRecord) SetSMACKProcessLabel(s string)  { sr.smackProcessLabel = s }

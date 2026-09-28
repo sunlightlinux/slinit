@@ -700,6 +700,7 @@ command = /usr/bin/optional
 | `ready-notification`      | Readiness protocol (pipefd:N, pipevar:VARNAME)   |
 | `socket-listen`           | Pre-opened listening socket(s) passed to child (LISTEN_FDS), supports `+=` for multiple, `tcp:`/`udp:` prefix |
 | `socket-activation`       | Activation mode: `immediate` (default) or `on-demand` |
+| `socket-reuseport`        | `SO_REUSEPORT` on `tcp:`/`udp:` listeners, so N template instances can share one hot port ([guide](doc/operators-guide.md#scaling-a-hot-port-across-workers)) |
 | `socket-permissions`      | Socket file permissions                          |
 | `socket-uid/gid`          | Socket file ownership                            |
 | `pid-file`                | PID file path (bgprocess type)                   |
