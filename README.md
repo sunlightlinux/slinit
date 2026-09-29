@@ -213,11 +213,13 @@ format to accommodate them.
   stripping, `ExecStart` prefix chars, hardening directives). All three
   emit WARN/NOTE for anything without a 1:1 mapping; runit-convert output
   round-trips through `slinit-check` clean on real-world void services.
-- **`slinitctl analyze`** (v2.1.2): systemd-analyze parity — `time` (boot
-  summary), `blame` (per-svc durations sorted), `critical-chain` (slowest
-  dep-path walk), `dot` (GraphViz digraph). `plot` is a documented
-  not-implemented stub that suggests `analyze dot | dot -Tsvg` (protocol
-  needs per-svc start timestamps beyond the current duration-only surface).
+- **`slinitctl analyze`** (v2.1.2, `plot` in v2.4.8): systemd-analyze
+  parity — `time` (boot summary), `blame` (per-svc durations sorted),
+  `critical-chain` (slowest dep-path walk), `dot` (GraphViz digraph), and
+  `plot` (SVG boot timeline, one lane per service, dependency waits
+  visible as bars that start late). The boot-time reply carries each
+  service's start instants in an additive tail, so an older slinitctl
+  reads it unchanged.
 - **Boot recovery + debugger UX** (v2.1.1 → v2.1.2): interactive rescue
   menu on fatal boot failure (Ctrl-B trigger, cbreak tty mode, `EOF` from
   canonical-mode maps to Retry), Emergency vs Rescue split (Rescue keeps
@@ -1522,7 +1524,7 @@ ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
 - [x] **Phase 45** (v2.1.0): `slinit-supports` self-introspection CLI -- `--list-directives` / `--list-opcodes` / `--list-all` enumerations + direct lookup by name. Companion to `doc/features.md` so package managers and CI can query slinit's capability set without parsing source
 - [x] **Phase 46** (v2.1.1): Interactive boot debugger -- Ctrl-B trigger during boot opens a rescue menu (cbreak tty mode, EOF from canonical-mode maps to Retry). Aggregate services filtered out of force-fail target (they can't be force-failed meaningfully); boot debugger detaches BEFORE console-owning service exec so it doesn't clobber the child's terminal
 - [x] **Phase 47** (v2.1.2): Recovery + boot refactor -- Emergency vs Rescue split (Rescue keeps control socket + event loop alive so operators can debug live); tty9 debug-shell (respawn loop on kernel cmdline `slinit.debug-shell`); confirm-spawn gate at `allDepsStarted` (all 5 service types prompt with cbreak dispatch — single keypress); crash-shell end-to-end with service freeze during the drop; `bootmode` package with structured kernel-cmdline parser (`slinit.emergency`, `slinit.rescue`, `slinit.debug-shell`, `slinit.confirm-spawn`, `slinit.crash-shell`, `slinit.log-level=` wired to logger.SetLevel)
-- [x] **Phase 48** (v2.1.2): `slinitctl analyze` subcommand dispatcher -- `time` (boot summary), `blame` (per-svc durations desc), `critical-chain` (slowest dep-path walk, terminates at `boot`), `dot` (GraphViz digraph with edges), and `plot` (documented not-implemented stub pointing at `analyze dot | dot -Tsvg` since the BootTime protocol currently exposes durations but not per-svc start timestamps). Replaces the removed `slinit-analyze` binary
+- [x] **Phase 48** (v2.1.2): `slinitctl analyze` subcommand dispatcher -- `time` (boot summary), `blame` (per-svc durations desc), `critical-chain` (slowest dep-path walk, terminates at `boot`), `dot` (GraphViz digraph with edges), and `plot` (SVG timeline; landed in v2.4.8 once the BootTime reply grew an additive tail carrying per-svc start instants). Replaces the removed `slinit-analyze` binary
 - [x] **Phase 49** (v2.1.4): Migration converters -- three legacy-config → slinit converters land under `cmd/`: `slinit-runit-convert` (parses `/etc/sv/<name>/` with chpst flag extraction), `slinit-openrc-convert` (variable-only vs custom-start() dispatch to self-contained or `openrc-run`-wrapped output), `slinit-systemd-convert` (INI parser with `\`-line continuation, ~40 directive mappings). All three emit WARN/NOTE for anything without a 1:1 mapping so review is auditable
 - [x] **Phase 50** (v2.1.5): runit converter 1:1 refactor -- log companion generation (`log/run` → `<name>-log` service with `consumer-of` + `log-type = pipe` on primary), auto-detection of `finish` / `check` / `down` / `conf` auxiliary files (→ `finish-command` / `ready-check-command` / `manual` / `env-file`), `sv check DEP` in run scripts auto-emits `waits-for: DEP`, `working-dir` defaults to sv dir (runsv chdir compat), bare-name commands resolved via `exec.LookPath` (slinit's execve does no PATH search). Output round-trips through `slinit-check` clean on real Void `/etc/sv/*` services (46/46 lint clean)
 - [x] **Phase 51** (v2.1.6): journalctl systemd parity Groups A+B -- 30 flags land. Group A (25, client-side): `--no-hostname` / `--utc` / `--truncate-newline` / `--no-full` / `-l/--full` / `-a/--all` / `--no-tail` / `-e/--pager-end` / `-q/--quiet` / `--output-fields=A,B,C` / `-m/--merge` (display); `-t/--identifier` / `-T/--exclude-identifier` / `--facility` / `-g/--grep` / `--case-sensitive[=BOOL]` / `--this-boot` / `-U/--user-unit` (filtering); `--after-cursor` / `--cursor-file` / `-D/--directory` / `--root` (cursor+source); `-F/--field` / `--fields` / `--header` / `--disk-usage` (introspection). Group B (5, maintenance): `--sync` via SIGUSR1, `--rotate` via SIGUSR2, `--vacuum-size` / `--vacuum-files` / `--vacuum-time`. New JournalQueryRequest wire fields (Identifiers / ExcludeIdentifiers / GrepPattern / GrepInsensitive) with client-side re-filter fallback for older daemons

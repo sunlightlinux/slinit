@@ -77,6 +77,15 @@ by anything else that implements it (`pkg/control/protocol.go`).
 - When a command's shape has to change, it gets a *new* code and the old
   one keeps working. `CmdEnableServiceV7` (29) and `CmdRmDepV7` (30)
   sit beside the dinit originals this way.
+- A reply may grow a *trailing* block, never a wider field in the middle.
+  A client that predates the block stops reading where it always did and
+  ignores the rest; a newer client finding no block leaves those fields
+  zero and must treat zero as "the daemon cannot say", not as a value.
+  `RplyBootTime` carries two such blocks — soft-reboot bookkeeping, and
+  the per-service start instants `analyze plot` draws. Widening an entry
+  inside a repeated array is *not* allowed: it moves every entry after
+  it and an older client misparses the whole array rather than stopping
+  cleanly.
 
 ### Service configuration
 

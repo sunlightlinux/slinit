@@ -340,7 +340,7 @@ a `slinit` row with a TODO note as "unclassified", not as "invented here".
 
 | Name | Source | Category | Notes |
 |------|--------|----------|-------|
-| `CmdBootTime` | systemd | observability | opcode 40 — systemd-analyze equivalent (kernel+userspace boot times) |
+| `CmdBootTime` | systemd | observability | opcode 40 — systemd-analyze equivalent (kernel+userspace boot times, per-service durations and start instants; `slinitctl analyze time` / `plot`) |
 | `CmdContinueService` | systemd | lifecycle | opcode 44 — SIGCONT resume |
 | `CmdFreezeService` | systemd | cgroup | opcode 58 — cgroup v2 freezer (write 1 to cgroup.freeze) |
 | `CmdJournalQuery` | systemd | logging | opcode 60 — slinit-journalctl query (parity with systemd journalctl) |

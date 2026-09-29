@@ -1,0 +1,8 @@
+# Keeps the runner's own shape (waits-for test-runner, so boot reaches
+# STARTED while the test script is still running) and adds this case's
+# services so they are part of the boot window.
+type = internal
+depends-on: system-init
+waits-for: test-runner
+waits-for: quick-svc
+waits-for: slow-svc

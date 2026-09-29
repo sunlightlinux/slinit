@@ -3409,9 +3409,7 @@ func formatUptime(d time.Duration) string {
 //	slinitctl analyze blame               # alias for `time`
 //	slinitctl analyze critical-chain [S]  # longest dependency chain
 //	slinitctl analyze dot                 # dep graph in Graphviz DOT
-//	slinitctl analyze plot                # NOT YET — needs per-svc start
-//	                                      #   timestamps (BootTime protocol
-//	                                      #   only exposes durations)
+//	slinitctl analyze plot                # SVG boot timeline on stdout
 func cmdAnalyze(conn net.Conn, args []string) error {
 	sub := ""
 	if len(args) > 0 {
@@ -3429,14 +3427,41 @@ func cmdAnalyze(conn net.Conn, args []string) error {
 	case "dot":
 		return cmdGraph(conn)
 	case "plot":
-		return fmt.Errorf("analyze plot: not implemented — BootTime protocol " +
-			"exposes per-svc durations but not start timestamps, which SVG " +
-			"timeline layout needs; use `analyze critical-chain` for the " +
-			"slowest sequence or `analyze dot | dot -Tsvg` for the graph")
+		return cmdAnalyzePlot(conn)
 	default:
 		return fmt.Errorf("analyze: unknown subcommand %q (want: time, blame, "+
 			"critical-chain, dot, plot)", sub)
 	}
+}
+
+// cmdAnalyzePlot writes an SVG boot timeline to stdout — the equivalent
+// of `systemd-analyze plot`, and the picture form of what `analyze time`
+// prints as a list. It needs no second round trip: the boot-time reply
+// already carries every service's start instant.
+//
+//	slinitctl analyze plot > boot.svg
+func cmdAnalyzePlot(conn net.Conn) error {
+	if err := control.WritePacket(conn, control.CmdBootTime, nil); err != nil {
+		return err
+	}
+	rply, payload, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyBootTime {
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	info, err := control.DecodeBootTime(payload)
+	if err != nil {
+		return err
+	}
+
+	svg, err := renderBootPlot(info)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.WriteString(svg)
+	return err
 }
 
 // cmdAnalyzeCriticalChain walks the dependency graph from the boot

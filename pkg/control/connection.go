@@ -1153,9 +1153,19 @@ func (c *Connection) handleBootTime() error {
 			SvcType: svc.Type(),
 			PID:     int32(svc.PID()),
 		}
-		dur := svc.Record().StartupDuration()
+		rec := svc.Record()
+		dur := rec.StartupDuration()
 		if dur > 0 {
 			entry.StartupNs = int64(dur)
+		}
+		// Absolute instants for `analyze plot`. A service still starting
+		// has a request time but no started time; both stay zero for one
+		// that has never been asked to start.
+		if t := rec.StartRequestTime(); !t.IsZero() {
+			entry.StartReqNs = t.UnixNano()
+		}
+		if t := rec.StartedTime(); !t.IsZero() {
+			entry.StartedNs = t.UnixNano()
 		}
 		info.Services = append(info.Services, entry)
 	}

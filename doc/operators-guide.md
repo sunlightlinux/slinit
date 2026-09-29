@@ -68,6 +68,7 @@ column](#reading-the-state-column).
 | `systemctl mask X` | `manual = yes` **+** `refuse-manual-start = yes` | neither alone is mask: `manual` blocks auto-activation but still allows an explicit start; `refuse-manual-start` blocks the explicit start but still allows activation as a dependency |
 | `journalctl -u X` | `slinit-journalctl -u X` | the package also symlinks it as `journalctl` |
 | `systemd-analyze` | `slinitctl boot-time` | |
+| `systemd-analyze plot` | `slinitctl analyze plot` | SVG timeline on stdout; redirect it to a file |
 | `systemctl poweroff` / `reboot` | `slinitctl poweroff` / `reboot` | or `slinitctl shutdown <type>` |
 | `systemctl soft-reboot` | `slinitctl softreboot` | |
 | — | `slinitctl start-all` | start everything not already running; no systemd equivalent |
@@ -309,6 +310,30 @@ Look at the state column. Services showing `{+}` rather than `[+]` are
 running only because something depends on them, and they are released when
 that dependent goes away. `slinitctl start X` (not `wake`) marks a service
 active so it stays up on its own.
+
+### Boot got slower and I want to see where
+
+`slinitctl analyze time` ranks services by how long each took, which
+answers "what is slow". It cannot answer "what was everything else
+waiting for" — for that, `slinitctl analyze plot > boot.svg` draws the
+same data as a timeline, one lane per service, and open it in a browser.
+
+Read it by where bars *start*, not by how wide they are. A wide bar is a
+slow service. A bar that starts late is a service that was ready and
+blocked, and the thing that ends just before it is usually what it was
+blocked on. `slinitctl analyze critical-chain` then names that sequence
+in text.
+
+The bar covers the wait too: it runs from the moment slinit asked the
+service to start, which is before its dependencies were satisfied. That
+is deliberate and matches what `analyze time` reports as one number, so
+a service that does nothing slowly still shows a wide bar when it spent
+the time queued behind something else.
+
+Only the boot window is drawn. Anything started after the boot target
+came up is a restart or an operator action; it is counted in the header
+rather than plotted, because a service restarted a week into uptime
+would otherwise compress the whole boot into one pixel.
 
 ### Where did my service's output go?
 

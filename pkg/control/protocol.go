@@ -619,6 +619,16 @@ type BootTimeEntry struct {
 	State     service.ServiceState
 	SvcType   service.ServiceType
 	PID       int32
+
+	// StartReqNs and StartedNs are absolute wall-clock instants
+	// (UnixNano) for "start was requested" and "reached STARTED". A
+	// duration alone says how long a service took; only these say *when*
+	// it ran, which is what a timeline needs to place one service beside
+	// another. They travel in a second optional tail (see EncodeBootTime)
+	// and are zero when the daemon predates it, or when the service never
+	// started. StartedNs alone is zero for a service still starting.
+	StartReqNs int64
+	StartedNs  int64
 }
 
 // BootTimeInfo holds the complete boot timing data.
@@ -639,24 +649,35 @@ type BootTimeInfo struct {
 	StartUptimeNs int64
 }
 
-// bootTimeTailLen is the size of the optional trailing block:
+// bootTimeTailLen is the size of the first optional trailing block:
 // softReboots(2) + startUptime(8).
 const bootTimeTailLen = 10
+
+// bootTimeStampsLen returns the size of the second optional trailing
+// block for n services: count(2) + n * (startReq(8) + started(8)).
+func bootTimeStampsLen(n int) int { return 2 + n*16 }
 
 // EncodeBootTime encodes boot timing info into bytes.
 // Wire format: kernelUptime(8) + bootStart(8) + bootReady(8) +
 // nameLen(2) + name(N) + numSvcs(2) +
 // [per svc: nameLen(2) + name(N) + startupNs(8) + state(1) + type(1) + pid(4)]
 // + softReboots(2) + startUptime(8)
+// + numStamps(2) + [per svc: startReqNs(8) + startedNs(8)]
 //
-// The last two fields are a trailing extension: a slinitctl that predates
-// them stops reading after the service array and ignores the tail, and a
-// newer slinitctl talking to an older daemon finds no tail and leaves
-// both at zero — which reads as "fresh boot", the honest answer when the
-// daemon cannot say otherwise.
+// Everything after the service array is a trailing extension: a slinitctl
+// that predates a tail stops reading and ignores it, and a newer slinitctl
+// talking to an older daemon finds no tail and leaves those fields at
+// zero — which reads as "fresh boot" and "no timestamps", the honest
+// answers when the daemon cannot say otherwise.
+//
+// The timestamps are a parallel array rather than extra fields on each
+// service entry because entries are fixed-layout: widening one would move
+// every following entry and break a v7 client mid-array. Appending keeps
+// the one-past-the-end rule that makes these tails safe.
 func EncodeBootTime(info BootTimeInfo) []byte {
 	// Calculate total size
-	size := 8 + 8 + 8 + 2 + len(info.BootSvcName) + 2 + bootTimeTailLen
+	size := 8 + 8 + 8 + 2 + len(info.BootSvcName) + 2 +
+		bootTimeTailLen + bootTimeStampsLen(len(info.Services))
 	for _, s := range info.Services {
 		size += 2 + len(s.Name) + 8 + 1 + 1 + 4
 	}
@@ -697,6 +718,16 @@ func EncodeBootTime(info BootTimeInfo) []byte {
 	binary.LittleEndian.PutUint16(buf[off:], uint16(info.SoftReboots))
 	off += 2
 	binary.LittleEndian.PutUint64(buf[off:], uint64(info.StartUptimeNs))
+	off += 8
+
+	binary.LittleEndian.PutUint16(buf[off:], uint16(len(info.Services)))
+	off += 2
+	for _, s := range info.Services {
+		binary.LittleEndian.PutUint64(buf[off:], uint64(s.StartReqNs))
+		off += 8
+		binary.LittleEndian.PutUint64(buf[off:], uint64(s.StartedNs))
+		off += 8
+	}
 
 	return buf
 }
@@ -757,9 +788,29 @@ func DecodeBootTime(data []byte) (BootTimeInfo, error) {
 
 	// Optional tail. Absent when the daemon predates it, in which case
 	// both fields stay zero and the caller reports a plain boot.
-	if len(data) >= off+bootTimeTailLen {
-		info.SoftReboots = int(binary.LittleEndian.Uint16(data[off:]))
-		info.StartUptimeNs = int64(binary.LittleEndian.Uint64(data[off+2:]))
+	if len(data) < off+bootTimeTailLen {
+		return info, nil
+	}
+	info.SoftReboots = int(binary.LittleEndian.Uint16(data[off:]))
+	info.StartUptimeNs = int64(binary.LittleEndian.Uint64(data[off+2:]))
+	off += bootTimeTailLen
+
+	// Second optional tail: per-service start instants, in the same order
+	// as the service array. A count that disagrees with that array means
+	// the two do not describe the same services, so the block is dropped
+	// whole rather than pairing timestamps with the wrong names.
+	if len(data) < off+2 {
+		return info, nil
+	}
+	numStamps := int(binary.LittleEndian.Uint16(data[off:]))
+	off += 2
+	if numStamps != len(info.Services) || len(data) < off+numStamps*16 {
+		return info, nil
+	}
+	for i := 0; i < numStamps; i++ {
+		info.Services[i].StartReqNs = int64(binary.LittleEndian.Uint64(data[off:]))
+		info.Services[i].StartedNs = int64(binary.LittleEndian.Uint64(data[off+8:]))
+		off += 16
 	}
 
 	return info, nil

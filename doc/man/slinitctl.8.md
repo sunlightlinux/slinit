@@ -259,9 +259,27 @@ daemon, which is useful at install time or in initramfs.
       worth attacking when a boot is slow.
     - *dot* — the dependency graph as Graphviz DOT, identical to
       **graph**; pipe it through `dot -Tsvg`.
-    - *plot* — **not implemented**, and says so rather than emitting
-      something misleading. An SVG timeline needs per-service *start
-      timestamps*; the boot-time protocol carries durations only.
+    - *plot* (since 2.4.8) — the boot as an SVG timeline on stdout, one
+      lane per service, the equivalent of `systemd-analyze plot`:
+      `slinitctl analyze plot > boot.svg`. A lane runs from the moment
+      the service was asked to start to the moment it reported started,
+      so time spent *waiting on a dependency* is part of the bar — the
+      same span **blame** reports as a single number. A service still
+      starting gets a dashed open-ended bar, which is what makes the
+      plot worth taking during a boot that is hanging.
+
+      Only the boot window is plotted. A service whose start was
+      requested after the boot target came up is an operator action or
+      a restart, not part of the boot, and on a machine with weeks of
+      uptime it would stretch the axis until the boot was one pixel
+      wide; those are counted in the header instead. While the boot is
+      still in progress there is no such cutoff and everything is
+      drawn. The kernel gets a lane of its own when its figure adjoins
+      slinit's start and is in proportion to it — not after a soft
+      reboot, where the figure is carried from an older boot, and not
+      under **\--user**, where it is the machine's uptime. In those
+      cases the number moves to the header and the timeline starts
+      where slinit did.
 
     After a soft reboot the kernel figure is the one from the original
     boot, carried forward in the soft-reboot snapshot — the kernel did

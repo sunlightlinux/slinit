@@ -1,0 +1,5 @@
+# Depends on quick-svc, so its bar starts at the same instant as
+# quick-svc's but ends later: the dependency wait is inside the bar.
+type = scripted
+command = /bin/sh -c "sleep 0.3"
+depends-on: quick-svc
