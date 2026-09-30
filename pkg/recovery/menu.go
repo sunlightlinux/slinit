@@ -82,6 +82,12 @@ type Options struct {
 	// diagnosis without scrolling up (getty may have overwritten
 	// them).
 	Errors []string
+	// PauseBootConsoleFn / ResumeBootConsoleFn, when non-nil, mute the
+	// logger's console writes while this menu owns /dev/console. Without
+	// them any log line lands inside the box and cuts it open. Nil-safe,
+	// so a caller with no logger simply gets an unmuted console.
+	PauseBootConsoleFn  func()
+	ResumeBootConsoleFn func()
 
 	// tty is the console the caller opened — set by Present() and
 	// carried through so runShell can pause raw mode around the
@@ -156,6 +162,12 @@ func Present(opts Options) Action {
 	// a regular file for debug).
 	orig := setRawMode(tty)
 	defer restoreTermios(tty, orig)
+	if opts.PauseBootConsoleFn != nil {
+		opts.PauseBootConsoleFn()
+	}
+	if opts.ResumeBootConsoleFn != nil {
+		defer opts.ResumeBootConsoleFn()
+	}
 	opts.tty = tty
 	opts.runCanonical = func(fn func()) {
 		// Shells expect canonical mode + echo — restore original,

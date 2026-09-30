@@ -266,11 +266,20 @@ func (l *Logger) bootStatus(marker, name string) {
 	}
 }
 
-// PauseBootConsole silently suppresses the "[ OK ] name" compact
-// renderer while a caller holds /dev/console for an interactive menu
-// (recovery.Debugger, PresentCollapse, Present). Syslog / main log
-// continue to record events — this is UI-only. Idempotent under the
-// atomic; ResumeBootConsole is the inverse.
+// PauseBootConsole silently suppresses every console write — the
+// "[ OK ] name" compact renderer and ordinary log lines alike — while a
+// caller holds /dev/console for an interactive menu (recovery.Debugger,
+// PresentCollapse, Present).
+//
+// It covered only the compact renderer until 2.4.9, which was not enough:
+// a WARN from the menu's own dispatch landed between two rows of the box
+// it was drawing. Anything that writes to the console during a menu cuts
+// that menu open, whatever level it came in at.
+//
+// Syslog, the ring buffer and the journal continue to record events —
+// this is UI-only. Idempotent under the atomic; ResumeBootConsole is the
+// inverse, and every caller arms it with defer so a menu cannot leave the
+// console muted.
 func (l *Logger) PauseBootConsole()  { l.bootConsolePaused.Store(true) }
 func (l *Logger) ResumeBootConsole() { l.bootConsolePaused.Store(false) }
 
@@ -344,9 +353,22 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 		} else {
 			line = fmt.Sprintf("[%s] %s: %s\n", timestamp, level, msg)
 		}
-		fmt.Fprint(l.output, line)
-		if l.consoleDup != nil {
-			fmt.Fprint(l.consoleDup, line)
+		// An interactive menu on /dev/console owns the screen while it
+		// is up. Writing a log line into it cuts the menu's box open —
+		// observed with a WARN landing between two action rows of the
+		// boot debugger. Only the compact "[ OK ] name" renderer used to
+		// respect the pause, which left every other level free to
+		// scribble over the one screen an operator reads when something
+		// has already gone wrong.
+		//
+		// The record is not lost: syslog below, the ring buffer here,
+		// and the journal event bus are all outside this gate. Only the
+		// console write waits for the menu to let go.
+		if !l.bootConsolePaused.Load() {
+			fmt.Fprint(l.output, line)
+			if l.consoleDup != nil {
+				fmt.Fprint(l.consoleDup, line)
+			}
 		}
 		if l.ringBuf != nil {
 			// Ring buffer capture is best-effort — it returns nil

@@ -62,6 +62,12 @@ type CollapseOptions struct {
 	// ConsolePath is the tty to read/write. Empty selects
 	// /dev/console (correct for PID 1 on system-mode boot).
 	ConsolePath string
+	// PauseBootConsoleFn / ResumeBootConsoleFn, when non-nil, mute the
+	// logger's console writes while this menu owns /dev/console. Without
+	// them any log line lands inside the box and cuts it open. Nil-safe,
+	// so a caller with no logger simply gets an unmuted console.
+	PauseBootConsoleFn  func()
+	ResumeBootConsoleFn func()
 }
 
 // PresentCollapse displays the boot-collapse rescue menu on
@@ -96,6 +102,12 @@ func PresentCollapse(opts CollapseOptions) CollapseAction {
 	defer tty.Close()
 	orig := setRawMode(tty)
 	defer restoreTermios(tty, orig)
+	if opts.PauseBootConsoleFn != nil {
+		opts.PauseBootConsoleFn()
+	}
+	if opts.ResumeBootConsoleFn != nil {
+		defer opts.ResumeBootConsoleFn()
+	}
 	return presentCollapse(tty, tty, opts.Timeout)
 }
 

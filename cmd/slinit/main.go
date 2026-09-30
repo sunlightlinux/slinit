@@ -1469,6 +1469,10 @@ func main() {
 				fmt.Sprintf("No service files found in %v", dirs),
 				fmt.Sprintf("(bootService=%q)", bootServices[0]),
 			}, loadErrors...),
+			// The menu owns the console while it is up; an
+			// unmuted log line lands inside its box.
+			PauseBootConsoleFn:  logger.PauseBootConsole,
+			ResumeBootConsoleFn: logger.ResumeBootConsole,
 		})
 		stopSigWatch()
 		logger.Notice("Rescue menu chose: %s", action)
@@ -1913,7 +1917,10 @@ func main() {
 		// here; instead 's' restarts the boot sequence and 'e'
 		// starts the recovery service.
 		stopCollapseSigWatch := rebootOnSignalWhileBlocked(logger)
-		collapseAction := recovery.PresentCollapse(recovery.CollapseOptions{})
+		collapseAction := recovery.PresentCollapse(recovery.CollapseOptions{
+			PauseBootConsoleFn:  logger.PauseBootConsole,
+			ResumeBootConsoleFn: logger.ResumeBootConsole,
+		})
 		stopCollapseSigWatch()
 		switch collapseAction {
 		case recovery.CollapseReboot:
