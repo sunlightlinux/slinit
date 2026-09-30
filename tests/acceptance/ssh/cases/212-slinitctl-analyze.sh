@@ -37,14 +37,15 @@ else
 fi
 
 # `plot` is a documented not-implemented stub — the BootTime
-# protocol exposes durations but not per-svc start timestamps,
-# which SVG timeline layout needs. The stub prints a helpful
-# fallback pointing at `analyze dot | dot -Tsvg`. Test the stub
-# message rather than SVG output (the stub is the current
-# contract until the protocol grows the timestamps).
+# plot draws the boot as an SVG timeline. It was a documented stub
+# until 2.4.8, when the boot-time reply grew an additive tail carrying
+# each service's start instants — the daemon had always kept them, only
+# the wire did not. This checks it is a real SVG; the layout itself is
+# covered by functional case 227.
 _out=$(slinitctl analyze plot 2>&1)
-assert_contains "$_out" "not implemented" "analyze plot documents itself as unimplemented"
-assert_contains "$_out" "analyze dot" "stub message directs operator to analyze dot workaround"
+assert_contains "$_out" "<svg xmlns=" "analyze plot emits an SVG document"
+assert_contains "$_out" "</svg>" "analyze plot closes the SVG element"
+assert_not_contains "$_out" "not implemented" "analyze plot is no longer a stub"
 
 # Unknown subcommand → clean error naming the valid options.
 _out=$(slinitctl analyze bogus-op 2>&1)

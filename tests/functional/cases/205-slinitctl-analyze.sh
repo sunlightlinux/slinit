@@ -39,11 +39,13 @@ else
     echo "FAIL: analyze dot has no edges"
 fi
 
-# plot is a documented stub — must NOT crash + must name the
-# workaround (analyze dot | dot -Tsvg).
+# plot renders an SVG timeline (implemented in 2.4.8; this asserted the
+# old not-implemented stub until then). Case 227 covers the drawing in
+# detail — here it only has to be the real thing and not an error.
 _out=$(slinitctl --system analyze plot 2>&1)
-assert_contains "$_out" "not implemented" "analyze plot documents itself as unimplemented"
-assert_contains "$_out" "analyze dot" "stub message references analyze dot workaround"
+assert_contains "$_out" "<svg xmlns=" "analyze plot emits an SVG document"
+assert_contains "$_out" "</svg>" "analyze plot closes the SVG element"
+assert_not_contains "$_out" "not implemented" "analyze plot is no longer a stub"
 
 # Unknown subcommand errors cleanly, names valid ones.
 _out=$(slinitctl --system analyze bogus 2>&1)
