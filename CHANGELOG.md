@@ -17,6 +17,215 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.4.8] — 2026-09-30
+
+Three independent features. Two of them began as "add this" and turned
+into defect hunts, because the code already half-existed and the
+documentation described something other than what it did.
+
+Three behaviours change. They are listed under **Fixed** rather than
+**Changed** because in each case the old behaviour was the bug: a jitter
+setting that parsed and did nothing, a timer that could fire before the
+time it was given, and a one-shot calendar date that repeated for ever.
+An operator running timers should still read those three entries, since a
+schedule that was wrong before will move.
+
+Verified: full unit suite and `-race` on `pkg/service` + `pkg/config`
+clean. New functional cases 227 (`analyze plot` against a live PID 1,
+compared against what `analyze time` prints from the same reply) and 228
+(cron catch-up decided on the real boot path) pass, alongside the
+existing cron and boot-timing cases they could have broken — 09, 38, 161,
+201, 226. The wiring fix carries a mutation check: dropping it again fails
+the test. Not a full functional-suite run.
+
+### Added
+
+- **`socket-reuseport = yes`** sets `SO_REUSEPORT` on a service's `tcp:`
+  and `udp:` listeners, so several services can bind the same
+  *host:port* and the kernel hashes each connection to one of them. With
+  templates that is N workers on one hot port: `worker@1`, `worker@2`,
+  `worker@3` each bind `:8099` and each gets its own supervised process.
+
+  A `socket-workers = N` directive forking N children under one service
+  record was considered and rejected. It would need multi-PID tracking in
+  a `ProcessService` that has one `pid`, per-worker restart, a status
+  showing N pids and a protocol change — all to duplicate what templates
+  already do — and it contradicts the one-service-one-supervised-process
+  invariant. It also has the worse failure mode: one shared listening fd
+  dies with the process holding it, where N sockets lose only the dead
+  worker's and the port keeps being served.
+
+  The option can only be set before `bind()`, so it goes through
+  `net.ListenConfig.Control` rather than onto a finished listener, and
+  `SO_REUSEPORT` is absent from the standard library on Linux, so this
+  is the first use of `golang.org/x/sys/unix` in the socket path. Applied
+  to inet listeners only: on `AF_UNIX` the kernel accepts the option and
+  does nothing, and setting it there would imply a guarantee that is not
+  being made. Linux requires every socket sharing a port to come from the
+  same effective UID, which holds regardless of each service's `run-as`
+  because slinit opens them all — that is the usual reason this pattern
+  fails elsewhere.
+
+  The program must accept on the inherited fd (`LISTEN_FDS`, fd 3 up).
+  slinit binds and listens; it does not accept. A server that only knows
+  how to open its own port cannot use this.
+
+- **`slinitctl analyze plot`** writes the boot as an SVG timeline on
+  stdout — the `systemd-analyze plot` equivalent, and the picture form of
+  what `analyze time` prints as a list. One lane per service, running
+  from the moment the service was asked to start to the moment it
+  reported started.
+
+  Durations answer "what is slow". They cannot answer "what was
+  everything else waiting for", which is the question a slow boot
+  actually raises. Because a lane starts at the *request*, a dependency
+  wait is inside the bar: a service that was ready but blocked shows up
+  as a bar that begins late, next to whatever ended just before it. A
+  service still starting gets a dashed open-ended bar, which is what
+  makes the plot worth taking during a boot that is hanging.
+
+  Two things are deliberately not drawn to scale. A service whose start
+  was requested after the boot target came up is a restart or an operator
+  action, and on a machine with weeks of uptime it would stretch the axis
+  until the boot itself was one pixel; those are counted in the header
+  instead. The kernel gets a lane only when its figure adjoins slinit's
+  start and is within 3× of userspace — not after a soft reboot, where
+  the figure is carried from an older boot, and not under `--user`, where
+  it is the machine's uptime. Both cases keep the number, in the header,
+  and start the timeline where slinit did.
+
+- **`cron-fixed-random-delay = yes`** draws the `cron-randomized-delay`
+  offset once from the host's machine-id and the service name instead of
+  per fire. The offset is then stable: this machine always runs in the
+  same slot of the window while the fleet is still spread across it —
+  the difference between "nobody knows when this box runs its backup"
+  and "this box runs at 03:17, every time", the latter being what you
+  can plan a maintenance window around. systemd's `FixedRandomDelay=`.
+  Uses the same FNV-1a-over-machine-id shape as `ConditionFraction=`,
+  separator byte included, so the two features bucket independently, and
+  derives the value at first fire rather than at load: PID 1 parses
+  service descriptions before the filesystem holding `/etc/machine-id`
+  is necessarily readable. With no machine-id it draws once per process
+  and says so, which still stops per-fire herding but does not survive a
+  restart.
+
+- **`cron-calendar` accepts considerably more of the `OnCalendar=`
+  grammar.** Every date and time field now takes the same forms — `*`, a
+  value, a list, an inclusive range, a range with a step, or a step from
+  a start — where lists and steps used to work in the time fields and the
+  date fields accepted only `*` or a single number. So
+  `*-*-01..07 09:00` is 9am on the first week of every month and
+  `*-*-01/7` is every seventh day from the first.
+
+  Also new: `~N` for days counted back from the end of the month (`~1`
+  is the last day, `~3..~1` the last three) which cannot be written as a
+  fixed day because February disagrees with March; a two-field `MM-DD`
+  date with the year omitted; full weekday names (`Monday..Friday`); the
+  `quarterly` and `semiannually` aliases; expressions with no time field
+  at all, where `Mon` means `Mon *-*-* 00:00:00`; and a trailing
+  timezone, as in `Sun 03:00 Europe/Bucharest`.
+
+  **Daylight saving is now decided rather than incidental.** A fire time
+  that does not exist in its zone — the hour the clocks skip forward over
+  — is passed over rather than substituted, so `03:30 Europe/Bucharest`
+  simply does not run on the spring-forward day instead of running at
+  04:30. In the repeated hour at the other transition it fires once. Both
+  Bucharest transitions are tested, and the spring-forward test asserts
+  its own premise and skips if a tzdata update ever fills the hole.
+
+  The zone database is compiled into the binary (about 450KB): an init
+  system has to resolve a zone name with no `/usr/share/zoneinfo`,
+  because PID 1 parses service descriptions before the filesystems
+  holding tzdata are mounted, and a minimal rootfs may not ship it.
+
+- **`cron-persistent` records move under `$XDG_STATE_HOME/slinit/cron`
+  in user mode**, following the same XDG-then-`$HOME` shape the control
+  socket already used. A user-mode daemon cannot write `/var/lib`, so it
+  was logging a failure on every fire and never catching anything up.
+
+### Fixed
+
+- **`cron-randomized-delay` and `cron-persistent` did nothing in interval
+  mode.** Both were applied by the calendar loop only, and
+  `SetCronConfig` was never handed either value, so `cron-interval`
+  together with `cron-randomized-delay` parsed and then behaved exactly
+  as if unset. Both now reach both modes through a single
+  `SetCronModifiers` — which is also why that replaced
+  `SetCronAccuracy`: applying the modifiers per mode is what let two of
+  the three go missing in the first place. In interval mode the offset is
+  added to the initial `cron-delay` and waited out after each period, so
+  a slow run cannot make the cadence drift.
+
+  Honouring `cron-persistent` for a monotonic schedule is a deliberate
+  divergence from systemd, which restricts `Persistent=` to
+  `OnCalendar=` on the grounds that a monotonic timer has no absolute
+  time to have missed. slinit keeps the last-run instant on disk either
+  way, which makes "did the period elapse while we were down" a
+  well-defined question — and answering it is plainly what someone
+  writing `cron-interval = 24h` beside `cron-persistent = yes` means. A
+  catch-up run skips the initial `cron-delay`, which exists to stagger a
+  normal start rather than to hold back a run that is already late.
+
+- **`cron-accuracy-sec` could fire before the time it was given.** It
+  truncated the fire time *down* to a bucket, with a comment claiming
+  that matched `AccuracySec=`. It does not: systemd's window opens at the
+  nominal time and extends forward. Snapping now rounds up, so the window
+  is *[nominal, nominal+accuracy]* and a service never runs early.
+  Buckets are aligned to UTC, which is invisible unless a zone's offset
+  is not a whole number of buckets — coalescing only needs every timer on
+  the host to agree with the others, not with the local clock face.
+
+- **The year in a `cron-calendar` date was parsed and discarded**, so
+  `2027-01-01 00:00` fired every January 1st for ever instead of once.
+  It is a constraint now, which also required the forward search to skip
+  unmatched years wholesale — a spec naming 2044 would otherwise exhaust
+  the day budget — and to look further ahead than two years, since the
+  old bound could not find the next `*-02-29` either.
+
+- **A calendar fire time was constructed before it was checked**, which
+  in any zone with DST meant accepting whatever the standard library
+  normalised a nonexistent local time into. `NextAfter` now walks
+  wall-clock components and materialises a `time.Time` only for a
+  candidate that matches. This was latent rather than reported: slinit
+  runs in local time and only the tests were UTC.
+
+- **The documentation said `cron-persistent` could not survive a
+  restart.** Both the man page ("the persistence store is currently
+  in-memory only — a future on-disk store will let catch-up survive
+  daemon restarts") and the comment on `CronRunner` were wrong.
+  `readPersisted` and `writePersisted` have been reading and atomically
+  rewriting `/var/lib/slinit/cron` since the directive shipped. Nothing
+  changed in that path; the claim about it did.
+
+- **`socket-listen` was documented as taking a path only.** It has
+  accepted `tcp:` and `udp:` forms all along, which is what makes
+  `socket-reuseport` meaningful. `socket-uid` / `socket-gid` also
+  default to `-1`, not `0`, and the page did not say so.
+
+- **`doc/features.md` was stale and partly hand-edited.** It is generated
+  from `slinit-supports --format=markdown --list-all --group-by=source`,
+  and was missing `CmdStartAll` and `socket-reuseport` from earlier
+  releases. A note written directly into it for `CmdBootTime` has moved to
+  the curated table in `pkg/features/provenance.go`, where regenerating
+  cannot drop it. The `cron-*` directives still carry no provenance rows
+  at all and so render as `slinit` + TODO; annotating them is separate
+  work.
+
+### Changed
+
+- **`RplyBootTime` carries two trailing blocks**, the second holding each
+  service's start and started instants, which is what `analyze plot`
+  lays out. The stub it replaced refused with "the BootTime protocol
+  exposes durations but not start timestamps" — true of the wire and
+  never of the daemon, which has always kept both clocks on
+  `ServiceRecord` and simply subtracted them.
+
+  STABILITY.md now states the rule this relies on: a reply may grow a
+  *trailing* block, never a wider field inside a repeated array. A client
+  that predates the block stops reading where it always did; widening an
+  entry instead moves every entry after it, so an older client misparses
+  the whole array rather than stopping cleanly at a boundary it knows.
+
 ## [2.4.7] — 2026-09-27
 
 Documentation. No directive, opcode, flag or exit status differs from
