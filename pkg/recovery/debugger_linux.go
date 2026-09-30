@@ -376,31 +376,69 @@ func (d *Debugger) presentMenu() DebugAction {
 	if d.opts.ResumeBootConsoleFn != nil {
 		defer d.opts.ResumeBootConsoleFn()
 	}
-	// Fresh snapshot per menu open — state may have advanced since
-	// the previous Ctrl-B (or the state machine may have made
-	// progress while the menu was open a moment ago).
-	// One box per menu open: the console may have been resized, and a
-	// shell the operator dropped into could have changed its mode.
+	// Pausing the boot console only stops lines not yet started. Every
+	// service transition prints from its own goroutine, so one already
+	// past the paused check is still on its way to the console, and a
+	// status line on a serial console takes milliseconds to drain.
+	//
+	// A settle gives those writes somewhere to go before the frame is
+	// drawn, and the clear-screen in box.header then wipes whatever
+	// landed.
+	//
+	// UNVERIFIED against the symptom that prompted it: a demo boot
+	// showed five "[ OK ] name" lines sitting between the top bar and
+	// the title, with the box cut open around them. That could not be
+	// reproduced here — tests/functional/debugger-menu-test.sh drives
+	// Ctrl-B into a boot with forty services completing at the same
+	// instant and the box comes out clean three times out of three even
+	// with this settle and the clear-screen removed. So treat this as a
+	// cheap defence whose effect on that report is unproven, and do not
+	// record the report as fixed.
+	//
+	// It is a pause and not a lock on purpose: bootStatus is called from
+	// the state machine's goroutines, so a console mutex held across an
+	// interactive menu would stall boot progress for as long as the
+	// operator reads the screen — up to the whole timeout.
+	time.Sleep(consoleSettle)
+
+	// One snapshot and one box per pass: the state machine keeps
+	// running while the menu is open, the console may have been
+	// resized, and a shell the operator dropped into could have
+	// changed the tty mode.
 	for {
 		snap := d.opts.StatusFn()
 		snap.Elapsed = time.Since(d.startTime)
+		renderedAt := time.Now()
 		bx := newBox(d.tty)
 		renderDebugMenu(bx, snap, d.opts.Timeout)
 		c, ok := readByteWithTimeout(d.tty, bx, d.opts.Timeout, "continue")
 		if !ok {
 			return DebugTimeout
 		}
-		action := debugCharToAction(c)
-		if action != debugActionShell {
+
+		switch action := debugCharToAction(c); action {
+		case debugActionShell:
+			// Temporarily restore canonical mode, fork the shell,
+			// re-arm raw mode on return, then loop back so the
+			// operator gets a fresh look at status.
+			d.runShell()
+		case DebugForceFail:
+			// Acted on here rather than returned, so the loop can
+			// redraw afterwards. The list on screen is a still photo
+			// of a system that is still moving: without a redraw the
+			// operator is left reading seven in-progress services
+			// beside a message saying there are none.
+			d.forceFailFirst(time.Since(renderedAt))
+		default:
 			return action
 		}
-		// Shell: temporarily restore canonical mode, fork the shell,
-		// re-arm raw mode on return, then loop back to re-present
-		// the menu (operator may have fixed something and wants
-		// another look at status).
-		d.runShell()
 	}
 }
+
+// consoleSettle is how long to let in-flight boot-console writes land
+// before drawing over them. Long enough for a print already past the
+// paused check, short enough to be invisible to the operator.
+const consoleSettle = 50 * time.Millisecond
 
 // runShell drops into a shell with the same UX contract as the
 // load-fail menu's shell action — canonical mode restored so the
@@ -453,33 +491,49 @@ func (d *Debugger) dispatch(a DebugAction) {
 			d.opts.PoweroffFn() // does not return
 		}
 	case DebugForceFail:
-		snap := d.opts.StatusFn()
-		if len(snap.InProgress) == 0 {
-			if log != nil {
-				log.Warn("Debug menu: force-fail requested but no service in progress")
-			}
-			fmt.Fprintf(d.tty, "\n[debug] no service in progress — nothing to force-fail\n")
-			return
-		}
-		target := snap.InProgress[0].Name
-		if d.opts.ForceFailFn == nil {
-			if log != nil {
-				log.Warn("Debug menu: force-fail requested but no ForceFailFn wired")
-			}
-			return
-		}
-		if err := d.opts.ForceFailFn(target); err != nil {
-			if log != nil {
-				log.Error("Debug menu: force-fail %q failed: %v", target, err)
-			}
-			fmt.Fprintf(d.tty, "\n[debug] force-fail %q failed: %v\n", target, err)
-			return
-		}
-		if log != nil {
-			log.Notice("Debug menu: force-failed service %q", target)
-		}
-		fmt.Fprintf(d.tty, "\n[debug] force-failed %q\n", target)
+		// Reached only if something dispatches this out of band;
+		// presentMenu handles it in-loop so it can redraw after.
+		d.forceFailFirst(0)
 	}
+}
+
+// forceFailFirst force-fails the first service the last snapshot showed
+// as in progress. age is how old that snapshot was, and it is reported
+// rather than swallowed: the state machine keeps running while the menu
+// is open, so "nothing in progress" is a perfectly normal answer to a
+// list that was true a moment ago — and saying only "nothing to
+// force-fail" under a list of seven reads like a bug in slinit.
+func (d *Debugger) forceFailFirst(age time.Duration) {
+	log := d.opts.Logger
+	snap := d.opts.StatusFn()
+	if len(snap.InProgress) == 0 {
+		if log != nil {
+			log.Warn("Debug menu: force-fail requested but no service is in progress now "+
+				"(the list shown was %s old)", age.Round(time.Millisecond))
+		}
+		fmt.Fprintf(d.tty, "\n[debug] nothing in progress now — everything listed "+
+			"above finished while the menu was open (%s ago)\n",
+			age.Round(time.Millisecond))
+		return
+	}
+	target := snap.InProgress[0].Name
+	if d.opts.ForceFailFn == nil {
+		if log != nil {
+			log.Warn("Debug menu: force-fail requested but no ForceFailFn wired")
+		}
+		return
+	}
+	if err := d.opts.ForceFailFn(target); err != nil {
+		if log != nil {
+			log.Error("Debug menu: force-fail %q failed: %v", target, err)
+		}
+		fmt.Fprintf(d.tty, "\n[debug] force-fail %q failed: %v\n", target, err)
+		return
+	}
+	if log != nil {
+		log.Notice("Debug menu: force-failed service %q", target)
+	}
+	fmt.Fprintf(d.tty, "\n[debug] force-failed %q\n", target)
 }
 
 // renderDebugMenu writes the boxed debug menu on w. Uses the same

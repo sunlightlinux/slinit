@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -249,5 +250,89 @@ func TestTruncString(t *testing.T) {
 		if got := truncString(c.in, c.n); got != c.want {
 			t.Errorf("truncString(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
 		}
+	}
+}
+
+// Observed on a real demo boot: the menu listed seven services in
+// progress, the operator pressed [f], and the console answered "no
+// service in progress — nothing to force-fail". Both were true. The
+// state machine keeps running while the menu is open, so the list had
+// gone stale in the seconds it took to read it, and the message gave the
+// operator no way to know that. It now says so.
+func TestForceFailReportsStaleListRatherThanContradictingIt(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	called := false
+	d := &Debugger{
+		opts: DebuggerOptions{
+			// Everything the menu listed has since started.
+			StatusFn: func() StatusSnapshot { return StatusSnapshot{} },
+			ForceFailFn: func(_ string) error {
+				called = true
+				return nil
+			},
+		},
+		tty: w,
+	}
+	d.forceFailFirst(4200 * time.Millisecond)
+	w.Close()
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := string(out)
+
+	if called {
+		t.Error("ForceFailFn must not be called when nothing is in progress")
+	}
+	if !strings.Contains(msg, "4.2s") {
+		t.Errorf("the message must say how old the list was, got %q", msg)
+	}
+	for _, want := range []string{"nothing in progress now", "while the menu was open"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message should explain the staleness, missing %q: %q", want, msg)
+		}
+	}
+}
+
+// The ordinary path must be untouched: a list that is still accurate
+// force-fails its first entry and says which.
+func TestForceFailActsOnFirstInProgress(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	var target string
+	d := &Debugger{
+		opts: DebuggerOptions{
+			StatusFn: func() StatusSnapshot {
+				return StatusSnapshot{InProgress: []ServiceInfo{
+					{Name: "stuck-svc", State: "STARTING"},
+					{Name: "other-svc", State: "STARTING"},
+				}}
+			},
+			ForceFailFn: func(name string) error {
+				target = name
+				return nil
+			},
+		},
+		tty: w,
+	}
+	d.forceFailFirst(time.Second)
+	w.Close()
+
+	out, _ := io.ReadAll(r)
+	if target != "stuck-svc" {
+		t.Errorf("force-failed %q, want the first in-progress service", target)
+	}
+	if !strings.Contains(string(out), "stuck-svc") {
+		t.Errorf("the console should name what it force-failed, got %q", out)
 	}
 }
