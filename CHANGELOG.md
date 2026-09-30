@@ -17,6 +17,141 @@ the full commit-level record.
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-09-30
+
+The rescue prompts — the load-failure menu, the boot-collapse menu and the
+Ctrl-B debugger — now share one renderer that measures text in terminal
+columns, follows the console's real width, and is not written over by the
+log while it is on screen.
+
+**A minor, and the second cut today.** One behaviour someone could be
+relying on changes: while a rescue menu holds the console, log lines no
+longer appear there. STABILITY.md reserves that for a minor, so this is
+2.5.0 rather than 2.4.9, and the `(since)` markers were moved to match.
+2.4.8 went out hours earlier as a patch that also carried behaviour
+changes; that was a judgement call on fixes to code contradicting its own
+documentation, and it is not a precedent this release follows.
+
+Verified: full unit suite and `go vet` clean. Two mutation checks rather
+than assertions taken on trust — reverting the column measurement to
+`len()` fails the frame-width tests on both a diacritics case and a plain
+ASCII truncation, and removing the console gate fails with six log lines
+written into a buffer that must have stayed empty. New host-driven test
+`tests/functional/debugger-menu-test.sh` plus cases 76 and 01. Not a full
+functional-suite run.
+
+### Fixed
+
+- **The box frame broke on any content outside ASCII.** The shared box
+  helpers measured with `len()` and sliced byte-wise, so the right margin
+  moved by however many extra bytes a character took. The em dash in the
+  prompts' own titles did it on every menu, unconditionally, and
+  truncation appended a three-byte ellipsis so it broke again on every
+  shortened line. Rows are measured in columns and cut on rune
+  boundaries now; a service name in Japanese or an error with diacritics
+  keeps the frame square.
+
+  The truncation marker is also consistent: the box used `...` while the
+  debugger's service names used `…`. Both use the single-column `…`,
+  which leaves two more columns for content.
+
+- **A log line at any level could land inside a menu's box.** Observed as
+  a WARN sitting between two action rows:
+
+      |   [s] / Ctrl-B   drop to shell                             |
+      [12:56:37] WARN: Debug menu: force-fail requested but no ...
+      |   [f]            force-fail first in-progress service      |
+
+  `PauseBootConsole` gated only `bootStatus`, the compact `[ OK ] name`
+  renderer. Every other level went straight to the logger's output, which
+  for PID 1 is `/dev/console`. The name and the doc comment both said
+  "while a caller holds /dev/console for an interactive menu"; the
+  implementation delivered a fraction of it. The gate now covers the
+  console write for every level, and `Present` / `PresentCollapse` gained
+  the same hooks the debugger already had — they had the identical
+  defect, merely unwired.
+
+  Nothing is lost, only deferred from the screen: syslog, the ring buffer
+  and the journal are all outside the gate, so an error raised while an
+  operator reads the menu is still recorded.
+
+- **`[f]` contradicted the screen.** The debugger would list seven
+  services in progress, and pressing force-fail answered "no service in
+  progress — nothing to force-fail". Both were true: the state machine
+  keeps running while the menu is open and dispatch re-snapshots before
+  acting, so the list had gone stale in the seconds it took to read. The
+  message now says the list went stale and how old it was, and force-fail
+  is handled inside the menu loop so the box is redrawn with current
+  state instead of leaving the still photo up.
+
+### Added
+
+- **The box follows the console's width**, from `TIOCGWINSZ`, clamped to
+  44–100 columns, falling back to the historical 62 when the kernel has
+  no size recorded — the serial-console case. A 120-column console no
+  longer wastes half its width and a narrow one no longer wraps the
+  action rows.
+
+  Width comes from an ioctl and never from a cursor-position query, and
+  there is deliberately no full-screen cursor-addressed TUI. Terminals
+  answer queries, and the answers arrive as *input*: in a menu that acts
+  on a single keypress, a stray reply byte picks an action. `flushInput`
+  in that package exists because this already happened. Everything the
+  prompts emit is write-only.
+
+- **Colour, and a screen cleared first.** Errors red, actions green, the
+  countdown amber, the title cyan, using the same escapes pkg/einfo and
+  OpenRC use, so `EINFO_COLOR=no` silences the prompts together with the
+  rest of slinit's output and `TERM=dumb` is honoured. The screen is
+  cleared before each box so the prompt is not buried under the boot log
+  it was competing with.
+
+  An **unset** `TERM` does not disable colour here, which is the one
+  place this diverges from einfo's rule. The kernel hands PID 1 no
+  environment, so TERM is normally unset at exactly the moment these
+  prompts are the only thing on screen; deferring to einfo would have
+  made the colour unreachable in production while passing every test on a
+  developer's terminal. A character device is taken as a real terminal
+  instead, `/dev/console` understanding ANSI whether or not anyone named
+  it. Confirmed on a real boot, where the captured console carries the
+  escapes with TERM unset.
+
+- **An operator's guide entry for the prompts themselves.** Which of the
+  three is on screen, what each key does, that all three act on a single
+  keypress and auto-act on the countdown, and that the shell from `[s]`
+  tries `sulogin` before `bash` before `sh` — `sulogin` first on purpose,
+  since physical console access is not the same thing as a trusted user.
+
+- **A host-driven test for the Ctrl-B debugger**, which nothing exercised
+  before: it boots a busy system, opens the menu, presses `[f]`, and
+  checks that every line between the opening and closing bars is a box
+  row, redraw included. It also records why the QEMU monitor's `sendkey`
+  is no use for this — Ctrl-B on a serial console is the byte `0x02`
+  arriving on the line, not a keyboard event, so the console has to be a
+  bidirectional socket. `cad-recovery-test.sh` gets away with `sendkey`
+  only because Ctrl+Alt+Del is handled by the kernel's keyboard driver.
+
+  What it does not do is reproduce the interleaving, and the test says
+  so. That needs a console slow enough for one write to still be draining
+  when the next begins, and the harness drains its guest console as fast
+  as socat can read. Three shapes were tried — forty services completing
+  at once, a service flapping on a restart loop logging throughout, and
+  driving `[f]` so the menu logs — and the box stayed clean every time
+  even with the fix removed. The gate is asserted directly in pkg/logging
+  instead, where it is deterministic. A 50ms settle before drawing is
+  retained as a cheap defence, but it is not what fixes this and is
+  marked in the source as unproven.
+
+### Changed
+
+- **`PauseBootConsole` mutes the console entirely**, not just the compact
+  boot-status renderer. This is the behaviour change that makes the
+  release a minor: a log line emitted while a rescue menu is up no longer
+  reaches the console. It is still written to syslog, the ring buffer and
+  the journal, and it reaches the console again as soon as the menu
+  resumes — every caller arms the resume with `defer`, so a menu cannot
+  leave the console muted.
+
 ## [2.4.8] — 2026-09-30
 
 Three independent features. Two of them began as "add this" and turned

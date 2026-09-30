@@ -271,7 +271,7 @@ func (l *Logger) bootStatus(marker, name string) {
 // caller holds /dev/console for an interactive menu (recovery.Debugger,
 // PresentCollapse, Present).
 //
-// It covered only the compact renderer until 2.4.9, which was not enough:
+// It covered only the compact renderer until 2.5.0, which was not enough:
 // a WARN from the menu's own dispatch landed between two rows of the box
 // it was drawing. Anything that writes to the console during a menu cuts
 // that menu open, whatever level it came in at.

@@ -668,7 +668,7 @@ slinit itself reads two variables, both affecting only what it prints
 on the console:
 
 * **EINFO_COLOR**=*no* — suppress colour everywhere slinit colours its
-  output, the boot-failure prompts included (since 2.4.9).
+  output, the boot-failure prompts included (since 2.5.0).
 * **TERM**=*dumb* — same effect. An *unset* TERM does **not** disable
   colour on the rescue prompts: the kernel hands PID 1 no environment,
   so TERM is normally unset at exactly the moment those prompts are on

@@ -231,7 +231,7 @@ format to accommodate them.
   (`bootmode` package: `slinit.emergency`, `slinit.rescue`, `slinit.
   debug-shell`, `slinit.confirm-spawn`, `slinit.crash-shell`,
   `slinit.log-level=`).
-- **Rescue prompt rendering** (v2.4.9): the three boot-failure prompts
+- **Rescue prompt rendering** (v2.5.0): the three boot-failure prompts
   (load failure, boot collapse, Ctrl-B debugger) share one width-aware
   renderer. The box follows the console's real width from `TIOCGWINSZ`
   (clamped 44–100) instead of a fixed 62 columns; errors are red,
