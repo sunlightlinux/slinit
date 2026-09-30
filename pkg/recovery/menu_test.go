@@ -46,7 +46,7 @@ func TestReadActionWithTimeoutRespondsToLetter(t *testing.T) {
 		pw.Close()
 	}()
 	var out bytes.Buffer
-	got := readActionWithTimeout(pr, &out, 2*time.Second)
+	got := readActionWithTimeout(pr, newBox(&out), 2*time.Second)
 	if got != ActionReboot {
 		t.Fatalf("expected ActionReboot, got %v", got)
 	}
@@ -63,7 +63,7 @@ func TestReadActionWithTimeoutSkipsWhitespace(t *testing.T) {
 		pw.Close()
 	}()
 	var out bytes.Buffer
-	got := readActionWithTimeout(pr, &out, 2*time.Second)
+	got := readActionWithTimeout(pr, newBox(&out), 2*time.Second)
 	if got != ActionPoweroff {
 		t.Fatalf("expected ActionPoweroff, got %v", got)
 	}
@@ -87,7 +87,7 @@ func TestReadActionWithTimeoutEOFIsRetry(t *testing.T) {
 	defer pr.Close()
 
 	var out bytes.Buffer
-	got := readActionWithTimeout(pr, &out, 2*time.Second)
+	got := readActionWithTimeout(pr, newBox(&out), 2*time.Second)
 	if got != ActionRetry {
 		t.Fatalf("EOF should map to ActionRetry (Ctrl-D semantic), got %v", got)
 	}
@@ -104,7 +104,7 @@ func TestReadActionWithTimeoutTimesOut(t *testing.T) {
 
 	var out bytes.Buffer
 	start := time.Now()
-	got := readActionWithTimeout(pr, &out, 500*time.Millisecond)
+	got := readActionWithTimeout(pr, newBox(&out), 500*time.Millisecond)
 	elapsed := time.Since(start)
 	if got != ActionTimeout {
 		t.Fatalf("expected ActionTimeout, got %v", got)
@@ -162,9 +162,22 @@ func TestPresentTruncatesLongErrors(t *testing.T) {
 	if strings.Contains(out.String(), long) {
 		t.Fatal("long error line was not truncated")
 	}
-	// Truncated form ends in "..." somewhere.
-	if !strings.Contains(out.String(), "...") {
-		t.Fatal("expected truncation marker '...' in output")
+	// The cut is marked with a one-column ellipsis. The box used to use
+	// "..." here and "\u2026" in the debugger's service names; they agree
+	// now, and one column of marker leaves two more for content.
+	if !strings.Contains(out.String(), "\u2026") {
+		t.Fatal("expected a truncation marker in the output")
+	}
+	// Every rendered row must be exactly as wide as the frame. This is
+	// what broke before: the marker's extra bytes moved the right margin,
+	// because the width was measured with len().
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		if w := dispWidth(line); w != defaultBoxWidth {
+			t.Errorf("row is %d columns, want %d: %q", w, defaultBoxWidth, line)
+		}
 	}
 }
 

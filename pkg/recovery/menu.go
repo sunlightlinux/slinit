@@ -171,9 +171,10 @@ func Present(opts Options) Action {
 // tests can pipe mock console I/O without touching /dev/console.
 // The public Present wraps it with the real /dev/console fd.
 func present(r io.Reader, w io.Writer, opts Options) Action {
+	b := newBox(w)
 	for {
-		renderMenu(w, opts)
-		action := readActionWithTimeout(r, w, opts.Timeout)
+		renderMenu(b, opts)
+		action := readActionWithTimeout(r, b, opts.Timeout)
 		switch action {
 		case ActionReboot, ActionPoweroff, ActionRetry, ActionTimeout:
 			return action
@@ -184,66 +185,24 @@ func present(r io.Reader, w io.Writer, opts Options) Action {
 	}
 }
 
-// menuBoxBar is the horizontal bar used by every rescue-menu box
-// (Present, PresentCollapse, Debugger). Fixed 60-column width matches
-// serial-console defaults; changing it means changing all three
-// renderers plus their tests.
-const menuBoxBar = "+============================================================+"
-
-// writeBoxHeader opens a new menu box: leading newline, bar, then the
-// title line padded to the interior width. Callers follow with their
-// per-menu content (writeBoxBlank / writeBoxLine / any custom Fprintf)
-// and close via writeBoxFooter.
-func writeBoxHeader(w io.Writer, title string) {
-	fmt.Fprintf(w, "\n%s\n", menuBoxBar)
-	fmt.Fprintf(w, "| %-58s |\n", title)
-}
-
-// writeBoxBlank writes a spacer row inside the box — a `|` at each
-// margin, whitespace between. Used to visually separate sections
-// (title / errors / actions / footer) without cluttering the box.
-func writeBoxBlank(w io.Writer) {
-	fmt.Fprintf(w, "|                                                            |\n")
-}
-
-// writeBoxLine writes a single content row: `| <content> |`. content
-// is formatted from format+args and truncated to fit the 58-char
-// interior with "..." tail on overflow so a runaway string can't
-// break the box outline on an 80-col serial console.
-func writeBoxLine(w io.Writer, format string, args ...interface{}) {
-	line := fmt.Sprintf(format, args...)
-	if len(line) > 58 {
-		line = line[:55] + "..."
-	}
-	fmt.Fprintf(w, "| %-58s |\n", line)
-}
-
-// writeBoxFooter writes the auto-* countdown row + closing bar +
-// operator prompt. verb is "reboot" for rescue/collapse or "continue"
-// for the debugger — chosen to match what the timeout actually does.
-func writeBoxFooter(w io.Writer, verb string, timeout time.Duration) {
-	writeBoxLine(w, "Auto-%s in %2ds if no input.", verb, int(timeout.Seconds()))
-	fmt.Fprintf(w, "%s\n> ", menuBoxBar)
-}
-
-// renderMenu writes the boxed load-failure menu on w.
-func renderMenu(w io.Writer, opts Options) {
-	writeBoxHeader(w, "slinit: BOOT FAILURE — cannot continue")
+// renderMenu writes the boxed load-failure menu.
+func renderMenu(b *box, opts Options) {
+	b.header("slinit: BOOT FAILURE — cannot continue")
 	if len(opts.Errors) > 0 {
-		writeBoxBlank(w)
-		writeBoxLine(w, "Errors:")
+		b.blank()
+		b.line("Errors:")
 		for _, e := range opts.Errors {
-			writeBoxLine(w, "  %s", e)
+			b.bad("  %s", e)
 		}
 	}
-	writeBoxBlank(w)
-	writeBoxLine(w, "Choose an action:")
-	writeBoxLine(w, "  [r]  reboot now")
-	writeBoxLine(w, "  [p]  power off")
-	writeBoxLine(w, "  [s]  drop to shell   (Ctrl-B alias)")
-	writeBoxLine(w, "  [c]  continue — retry loading boot   (Ctrl-D alias)")
-	writeBoxBlank(w)
-	writeBoxFooter(w, "reboot", opts.Timeout)
+	b.blank()
+	b.line("Choose an action:")
+	b.action("  [r]  reboot now")
+	b.action("  [p]  power off")
+	b.action("  [s]  drop to shell   (Ctrl-B alias)")
+	b.action("  [c]  continue — retry loading boot   (Ctrl-D alias)")
+	b.blank()
+	b.footer("reboot", opts.Timeout)
 }
 
 // readActionWithTimeout is the load-failure-menu-flavored wrapper
@@ -252,12 +211,12 @@ func renderMenu(w io.Writer, opts Options) {
 // machinery lives in one place (readByteWithTimeout) and can be
 // reused by PresentCollapse without duplicating the goroutine +
 // countdown-tick logic.
-func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Action {
-	b, ok := readByteWithTimeout(r, w, timeout, "reboot")
+func readActionWithTimeout(r io.Reader, b *box, timeout time.Duration) Action {
+	c, ok := readByteWithTimeout(r, b, timeout, "reboot")
 	if !ok {
 		return ActionTimeout
 	}
-	return charToAction(b)
+	return charToAction(c)
 }
 
 // readByteWithTimeout reads a single non-whitespace byte from r or
@@ -280,7 +239,7 @@ func readActionWithTimeout(r io.Reader, w io.Writer, timeout time.Duration) Acti
 // Uses a goroutine + channel because os.File.Read has no native
 // deadline on non-socket fds (/dev/console is a tty character
 // device, not a socket).
-func readByteWithTimeout(r io.Reader, w io.Writer, timeout time.Duration, verb string) (byte, bool) {
+func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string) (byte, bool) {
 	inputCh := make(chan byte, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -314,7 +273,8 @@ func readByteWithTimeout(r io.Reader, w io.Writer, timeout time.Duration, verb s
 	// physical line for the follow-up output. Cheap enough to always
 	// run.
 	clearPrompt := func() {
-		fmt.Fprint(w, "\r\x1b[2K\n")
+		b.clearPrompt()
+		fmt.Fprint(b.w, "\n")
 	}
 
 	// Simpler than Ticker: one time.After per iteration, capped at
@@ -354,8 +314,7 @@ func readByteWithTimeout(r io.Reader, w io.Writer, timeout time.Duration, verb s
 			// through before PauseBootConsole caught up. Trailing
 			// "\r> " puts the prompt back so operator input still
 			// lands right after ">".
-			fmt.Fprintf(w, "\r%-64s\r> Auto-%s in %2ds if no input… (press any key)\r> ",
-				"", verb, secs)
+			b.countdown(verb, secs)
 		}
 	}
 }

@@ -335,6 +335,38 @@ came up is a restart or an operator action; it is counted in the header
 rather than plotted, because a service restarted a week into uptime
 would otherwise compress the whole boot into one pixel.
 
+### The boot stopped at a box asking me to press a letter
+
+That is one of three rescue prompts, and the title line says which:
+
+| Title | What happened | What to press |
+|---|---|---|
+| `BOOT FAILURE — cannot continue` | No boot service could be loaded at all — usually a typo in a name, or a missing file | `s` for a shell to fix it, then `c` to retry without rebooting |
+| `BOOT COLLAPSE — all services stopped` | Everything that was up has gone down | `s` to restart the boot sequence, `e` to start the recovery service |
+| `BOOT DEBUGGER — Ctrl-B intercepted` | You pressed Ctrl-B during boot; nothing is wrong | `c` to carry on, `f` to force-fail whatever is stuck |
+
+All three also take `r` to reboot and `p` to power off, act on a single
+keypress with no Enter, and auto-act if you say nothing — the countdown
+row says what and when, which is a reboot for the first two and
+*continue* for the debugger. `Ctrl-D` is an alias for continue and
+`Ctrl-B` for the shell, so the same fingers work as in a bootloader.
+
+The errors are printed in red inside the box. If the console is showing
+no colour, either `TERM=dumb` or `EINFO_COLOR=no` is set, or the output
+is not going to a terminal at all.
+
+The shell you get from `s` is the first of `sulogin`, `bash`, `sh` that
+exists. `sulogin` is tried first on purpose: it asks for the root
+password before handing over, because physical console access is not the
+same thing as a trusted user. `bash` is preferred over `sh` because
+busybox `ash`'s line editor sends cursor-position queries on a serial
+console and the replies land on its own stdin as stray commands. It runs
+on the console with the boot frozen behind it. Exit it and the
+prompt comes back. This is the one place to fix a service description
+without install media — the file you need is under `/etc/slinit.d/`, and
+`slinit-check /etc/slinit.d/<name>` will tell you whether your fix
+parses before you press `c`.
+
 ### Where did my service's output go?
 
 `slinit-journalctl -u X`. If the service sets `log-type = buffer`, output

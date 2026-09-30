@@ -119,3 +119,21 @@ func seedWinsize(f *os.File) {
 func flushInput(f *os.File) {
 	_ = unix.IoctlSetInt(int(f.Fd()), unix.TCFLSH, unix.TCIFLUSH)
 }
+
+// ttyColumns reports the console's width from the kernel's record of it.
+//
+// TIOCGWINSZ is an ioctl, not a terminal query: it cannot provoke the
+// emulator replies that flushInput exists to clean up. That rules out
+// the ESC[6n-style probing a general TUI library would reach for here,
+// because in this package a stray reply byte is not cosmetic — the menu
+// reads one keypress and acts on it.
+//
+// Returns 0 when the fd is not a tty or the kernel has no size recorded,
+// which the caller reads as "use the default width".
+func ttyColumns(f *os.File) int {
+	ws, err := unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ)
+	if err != nil || ws.Col == 0 {
+		return 0
+	}
+	return int(ws.Col)
+}

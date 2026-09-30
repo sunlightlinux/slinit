@@ -74,7 +74,7 @@ func TestRenderDebugMenuIncludesStatus(t *testing.T) {
 		},
 		RecentErrors: []string{"disk read failed: EIO"},
 	}
-	renderDebugMenu(&buf, snap, 30*time.Second)
+	renderDebugMenu(newBox(&buf), snap, 30*time.Second)
 	out := buf.String()
 	for _, want := range []string{
 		"BOOT DEBUGGER",
@@ -101,7 +101,7 @@ func TestRenderDebugMenuIncludesStatus(t *testing.T) {
 // contract in renderServiceBlock / renderErrorBlock.
 func TestRenderDebugMenuSkipsEmptyBlocks(t *testing.T) {
 	var buf bytes.Buffer
-	renderDebugMenu(&buf, StatusSnapshot{}, 60*time.Second)
+	renderDebugMenu(newBox(&buf), StatusSnapshot{}, 60*time.Second)
 	out := buf.String()
 	for _, unwanted := range []string{
 		"In progress",

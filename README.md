@@ -231,6 +231,18 @@ format to accommodate them.
   (`bootmode` package: `slinit.emergency`, `slinit.rescue`, `slinit.
   debug-shell`, `slinit.confirm-spawn`, `slinit.crash-shell`,
   `slinit.log-level=`).
+- **Rescue prompt rendering** (v2.4.9): the three boot-failure prompts
+  (load failure, boot collapse, Ctrl-B debugger) share one width-aware
+  renderer. The box follows the console's real width from `TIOCGWINSZ`
+  (clamped 44–100) instead of a fixed 62 columns; errors are red,
+  actions green, the countdown amber, reusing OpenRC's escapes so
+  `EINFO_COLOR=no` silences them with the rest of slinit's output; and
+  the screen is cleared first so the prompt is not buried under the boot
+  log. Rows are measured in terminal columns, which fixed a frame that
+  broke on any non-ASCII content — the em dash in its own titles did it
+  on every menu. Width comes from an ioctl and never from a cursor-position
+  query: terminals answer queries, and those answers arrive as input that
+  a single-keypress menu would read as a choice.
 - **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
 - **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
 - **Service aliases**: `provides` for alternative name lookup

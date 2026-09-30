@@ -2,7 +2,6 @@ package recovery
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -380,15 +379,18 @@ func (d *Debugger) presentMenu() DebugAction {
 	// Fresh snapshot per menu open — state may have advanced since
 	// the previous Ctrl-B (or the state machine may have made
 	// progress while the menu was open a moment ago).
+	// One box per menu open: the console may have been resized, and a
+	// shell the operator dropped into could have changed its mode.
 	for {
 		snap := d.opts.StatusFn()
 		snap.Elapsed = time.Since(d.startTime)
-		renderDebugMenu(d.tty, snap, d.opts.Timeout)
-		b, ok := readByteWithTimeout(d.tty, d.tty, d.opts.Timeout, "continue")
+		bx := newBox(d.tty)
+		renderDebugMenu(bx, snap, d.opts.Timeout)
+		c, ok := readByteWithTimeout(d.tty, bx, d.opts.Timeout, "continue")
 		if !ok {
 			return DebugTimeout
 		}
-		action := debugCharToAction(b)
+		action := debugCharToAction(c)
 		if action != debugActionShell {
 			return action
 		}
@@ -485,19 +487,19 @@ func (d *Debugger) dispatch(a DebugAction) {
 // so the three boot-failure prompts feel like siblings. Truncates
 // service names + notes so the box stays visually intact on
 // 80-col serial consoles.
-func renderDebugMenu(w io.Writer, snap StatusSnapshot, timeout time.Duration) {
-	writeBoxHeader(w, fmt.Sprintf("slinit: BOOT DEBUGGER — Ctrl-B intercepted at %6.2fs", snap.Elapsed.Seconds()))
-	renderServiceBlock(w, "In progress", snap.InProgress, 5)
-	renderServiceBlock(w, "Waiting on deps", snap.Waiting, 5)
-	renderErrorBlock(w, snap.RecentErrors)
-	writeBoxBlank(w)
-	writeBoxLine(w, "Actions:")
-	writeBoxLine(w, "  [c] / Ctrl-D   continue boot")
-	writeBoxLine(w, "  [s] / Ctrl-B   drop to shell")
-	writeBoxLine(w, "  [f]            force-fail first in-progress service")
-	writeBoxLine(w, "  [r]            reboot           [p]  power off")
-	writeBoxBlank(w)
-	writeBoxFooter(w, "continue", timeout)
+func renderDebugMenu(b *box, snap StatusSnapshot, timeout time.Duration) {
+	b.header(fmt.Sprintf("slinit: BOOT DEBUGGER — Ctrl-B intercepted at %6.2fs", snap.Elapsed.Seconds()))
+	renderServiceBlock(b, "In progress", snap.InProgress, 5)
+	renderServiceBlock(b, "Waiting on deps", snap.Waiting, 5)
+	renderErrorBlock(b, snap.RecentErrors)
+	b.blank()
+	b.line("Actions:")
+	b.action("  [c] / Ctrl-D   continue boot")
+	b.action("  [s] / Ctrl-B   drop to shell")
+	b.action("  [f]            force-fail first in-progress service")
+	b.action("  [r]            reboot           [p]  power off")
+	b.blank()
+	b.footer("continue", timeout)
 }
 
 // renderServiceBlock prints a section like:
@@ -510,59 +512,49 @@ func renderDebugMenu(w io.Writer, snap StatusSnapshot, timeout time.Duration) {
 // max caps the number of shown entries; overflow gets a "+N more"
 // tail so the operator knows they're seeing a truncated view.
 // Silently omits the whole block when svcs is empty.
-func renderServiceBlock(w io.Writer, title string, svcs []ServiceInfo, max int) {
+func renderServiceBlock(b *box, title string, svcs []ServiceInfo, max int) {
 	if len(svcs) == 0 {
 		return
 	}
-	writeBoxBlank(w)
-	writeBoxLine(w, "%s (%d):", title, len(svcs))
+	b.blank()
+	b.line("%s (%d):", title, len(svcs))
 	shown := svcs
 	if len(shown) > max {
 		shown = shown[:max]
 	}
 	for _, s := range shown {
+		// Pad the name by display columns rather than with %-20s, which
+		// counts bytes and so misaligns the State column for any name
+		// that is not pure ASCII.
+		name := padTo(truncString(s.Name, 20), 20)
 		if s.Note != "" {
-			writeBoxLine(w, "  %-20s %s (%s)", truncString(s.Name, 20), s.State, s.Note)
+			b.line("  %s %s (%s)", name, s.State, s.Note)
 		} else {
-			writeBoxLine(w, "  %-20s %s", truncString(s.Name, 20), s.State)
+			b.line("  %s %s", name, s.State)
 		}
 	}
 	if len(svcs) > max {
-		writeBoxLine(w, "  ... +%d more", len(svcs)-max)
+		b.line("  ... +%d more", len(svcs)-max)
 	}
 }
 
 // renderErrorBlock prints the "Recent errors" section, mirroring
 // renderServiceBlock's shape. Cap at 3 lines to keep the menu
 // tight; full history is in the log.
-func renderErrorBlock(w io.Writer, errs []string) {
+func renderErrorBlock(b *box, errs []string) {
 	if len(errs) == 0 {
 		return
 	}
-	writeBoxBlank(w)
-	writeBoxLine(w, "Recent errors (last %d):", len(errs))
+	b.blank()
+	b.line("Recent errors (last %d):", len(errs))
 	shown := errs
 	const max = 3
 	if len(shown) > max {
 		shown = shown[len(shown)-max:]
 	}
 	for _, e := range shown {
-		writeBoxLine(w, "  %s", e)
+		b.bad("  %s", e)
 	}
-}
-
-// truncString cuts s at n runes with a trailing "…" marker. Uses
-// byte length instead of rune length for simplicity — service
-// names in practice are ASCII, so bytes == runes. If we ever ship
-// UTF-8 service names we'll switch to utf8.RuneCountInString.
-func truncString(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	if n < 3 {
-		return s[:n]
-	}
-	return s[:n-1] + "…"
 }
 
 // debugCharToAction maps the operator's single-char input to a

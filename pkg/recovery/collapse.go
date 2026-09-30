@@ -103,27 +103,28 @@ func PresentCollapse(opts CollapseOptions) CollapseAction {
 // writer so tests can pipe mock console I/O without touching
 // /dev/console.
 func presentCollapse(r io.Reader, w io.Writer, timeout time.Duration) CollapseAction {
-	renderCollapseMenu(w, timeout)
-	b, ok := readByteWithTimeout(r, w, timeout, "reboot")
+	bx := newBox(w)
+	renderCollapseMenu(bx, timeout)
+	c, ok := readByteWithTimeout(r, bx, timeout, "reboot")
 	if !ok {
 		return CollapseTimeout
 	}
-	return collapseCharToAction(b)
+	return collapseCharToAction(c)
 }
 
 // renderCollapseMenu writes the boxed menu to w. Same visual
 // language as renderMenu (load-fail) so the two prompts feel like
 // siblings, different action set.
-func renderCollapseMenu(w io.Writer, timeout time.Duration) {
-	writeBoxHeader(w, "slinit: BOOT COLLAPSE — all services stopped")
-	writeBoxBlank(w)
-	writeBoxLine(w, "Choose an action:")
-	writeBoxLine(w, "  [r]  reboot now")
-	writeBoxLine(w, "  [p]  power off")
-	writeBoxLine(w, "  [s]  restart boot sequence           (Ctrl-D alias)")
-	writeBoxLine(w, "  [e]  start recovery service          (Ctrl-B alias)")
-	writeBoxBlank(w)
-	writeBoxFooter(w, "reboot", timeout)
+func renderCollapseMenu(b *box, timeout time.Duration) {
+	b.header("slinit: BOOT COLLAPSE — all services stopped")
+	b.blank()
+	b.line("Choose an action:")
+	b.action("  [r]  reboot now")
+	b.action("  [p]  power off")
+	b.action("  [s]  restart boot sequence           (Ctrl-D alias)")
+	b.action("  [e]  start recovery service          (Ctrl-B alias)")
+	b.blank()
+	b.footer("reboot", timeout)
 }
 
 // collapseCharToAction maps the operator's single-char input to a
