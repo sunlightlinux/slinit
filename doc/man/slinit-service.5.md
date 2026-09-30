@@ -1578,6 +1578,19 @@ watch; the service remains startable via `slinitctl start`.
     of cron-style services that would otherwise wake independently.
     Default `1s`. Mirrors systemd's **AccuracySec=**.
 
+    A fire time is snapped **up** to the next bucket, never down: the
+    window is *[nominal, nominal+duration]*, so a service never runs
+    earlier than the time you wrote. (Before 2.4.8 it was snapped down,
+    which could fire ahead of the calendar.) Buckets are aligned to UTC,
+    which is invisible unless your zone offset is not a whole number of
+    buckets — coalescing only needs every timer on the host to agree
+    with the others, not with the local clock face.
+
+    Keep this **smaller** than **cron-randomized-delay** when both are
+    set. Snapping happens after the jitter is added, so a bucket coarser
+    than the jitter window collapses the spread the jitter was there to
+    create.
+
 **cron-on-error**=*continue*|*stop*
 :   What to do when **cron-command** exits non-zero (default
     *continue*).
@@ -1589,39 +1602,106 @@ watch; the service remains startable via `slinitctl start`.
     Recognised forms:
 
     - **Aliases:** *minutely*, *hourly*, *daily* / *midnight*,
-      *weekly*, *monthly*, *yearly* / *annually*.
+      *weekly*, *monthly*, *quarterly* (since 2.4.8),
+      *semiannually* (since 2.4.8), *yearly* / *annually*.
     - **Time only:** `HH:MM`, `HH:MM:SS`. Bare time = daily.
-    - **Wildcards in time:** `*:0/15` (every 15 minutes at second 0),
-      `*:00` (top of every hour), `03:*` (every minute in the 3am
-      hour).
-    - **Weekday filters:** `Mon`, `Mon,Wed,Fri`, `Mon..Fri`. Combine
-      with a time: `Mon..Fri 09:00`.
-    - **Date pattern:** `YYYY-MM-DD` with `*` wildcards in any field,
-      e.g. `*-*-1 00:00` (first of every month). The year is parsed
-      but currently not used as a constraint.
+    - **Weekday filters:** `Mon`, `Mon,Wed,Fri`, `Mon..Fri`. Full names
+      work too (since 2.4.8): `Monday..Friday`. Combine with a time:
+      `Mon..Fri 09:00`.
+    - **Date pattern:** `YYYY-MM-DD`, or `MM-DD` with the year omitted
+      (since 2.4.8), e.g. `*-*-1 00:00` (first of every month).
+    - **Every field takes the same forms** (since 2.4.8 for the date
+      fields, which previously accepted only `*` or a single number):
+      `*` for any, a single value, a list `01,07`, an inclusive range
+      `01..07`, a range with a step `08..18/2`, or a step from a start
+      `01/7`. So `*-*-01..07 09:00` is 9am on the first week of every
+      month, and `*:0/15` is every 15 minutes.
+    - **Day counted from the end of the month** (since 2.4.8): `~1` is
+      the last day, `~3..~1` the last three. `*-*-~01 23:00` runs at
+      11pm on the 30th, 31st or 28th as the month requires — which is
+      why it cannot be written as a fixed day.
+    - **Timezone** (since 2.4.8): a trailing `UTC` or IANA zone name,
+      as in `Mon..Fri 09:00 Europe/Bucharest`. Without one the
+      expression is read in the daemon's local time. The zone database
+      is compiled into slinit, so a name resolves even before
+      `/usr/share/zoneinfo` is mounted.
+    - **Omitted time** (since 2.4.8): a weekday-only or date-only
+      expression means midnight. `Mon` is `Mon *-*-* 00:00:00`.
 
-    Out of scope: timezone shifts mid-expression, week-of-year,
-    negative day-of-month.
+    **The year is a real constraint** (since 2.4.8). It used to be
+    parsed and discarded, so `2027-01-01 00:00` fired every January 1st
+    for ever; it now fires once and then has no next match.
+
+    **Daylight saving.** When an expression names a zone, a fire time
+    that does not exist there — the hour the clocks skip forward over —
+    is passed over rather than substituted, so `03:30 Europe/Bucharest`
+    simply does not run on the spring-forward day. In the repeated hour
+    at the other transition it runs on the first occurrence only.
+
+    Out of scope: week-of-year, sub-second precision.
 
 **cron-randomized-delay**=*duration*
-:   Adds uniform jitter `[0,d)` to every fire time. Useful for
-    fleets that would otherwise herd on the same boundary
-    (everyone backing up at midnight, etc.).
+:   An **upper bound** on jitter: each fire is pushed later by an offset
+    drawn uniformly from `[0,duration)`. Useful for fleets that would
+    otherwise herd on the same boundary — everyone backing up at
+    midnight, every machine fetching updates the second the hour turns.
+    Mirrors systemd's **RandomizedDelaySec=**.
+
+    Since 2.4.8 this applies to **cron-interval** as well as
+    **cron-calendar**. Before, it was silently ignored in interval mode:
+    the directive parsed, and nothing jittered. In interval mode the
+    offset is added to the initial **cron-delay** and after each period.
+    Keep it smaller than the interval — jitter is waited out after the
+    period elapses, so a bound larger than the period stretches the
+    effective cadence.
+
+**cron-fixed-random-delay**=*yes*|*no* (since 2.4.8)
+:   Draw the **cron-randomized-delay** offset once instead of per fire,
+    from the host's machine-id and the service name. The offset is then
+    stable: this machine always runs in the same slot of the window,
+    while the fleet is still spread across it. That is the difference
+    between "nobody knows when this box runs its backup" and "this box
+    runs at 03:17, every time" — the latter being what you want to plan
+    a maintenance window around. Mirrors systemd's **FixedRandomDelay=**.
+
+    With no readable `/etc/machine-id` there is nothing stable to key
+    on, so slinit draws one offset and keeps it for the lifetime of the
+    process, logging that it did. That still stops per-fire herding; it
+    just does not survive a restart.
 
 **cron-persistent**=*yes*|*no*
-:   When *yes*, if the daemon was down through a scheduled fire,
-    run once immediately on startup to catch up. The persistence
-    store is currently in-memory only — a future on-disk store
-    will let catch-up survive daemon restarts.
+:   When *yes*, if a scheduled fire was missed while the daemon was
+    down, run once immediately on startup to catch up, then resume the
+    normal schedule. Mirrors systemd's **Persistent=**.
 
-    Example — backup every Sunday at 03:00 with ±30 min jitter,
-    catching up if a boot was missed:
+    The last-run instant is written to `/var/lib/slinit/cron/`*service*
+    after every run, atomically, so **catch-up survives a reboot** —
+    which is the whole point, and which the documentation up to 2.4.7
+    wrongly denied ("the persistence store is currently in-memory
+    only"). It has been on disk since the directive shipped. In user
+    mode the store moves under `$XDG_STATE_HOME/slinit/cron` (since
+    2.4.8), because `/var/lib` is not writable there and every fire was
+    logging a failure.
+
+    Since 2.4.8 this also applies to **cron-interval**, which is a
+    deliberate divergence: systemd honours **Persistent=** for
+    `OnCalendar=` only, on the grounds that a monotonic timer has no
+    absolute time to have missed. slinit stores the last-run instant
+    either way, which makes "did the period elapse while we were down"
+    answerable — and answering it is plainly what someone writing
+    `cron-interval = 24h` together with `cron-persistent = yes` means.
+    A catch-up run skips the initial **cron-delay**: that delay exists
+    to stagger a normal start, not to hold back a run already late.
+
+    Example — backup every Sunday at 03:00 in Bucharest time, in a
+    fixed slot of a 30-minute window, catching up if a boot was missed:
 
         type             = scripted
         command          = /usr/local/bin/backup
         cron-command     = /usr/local/bin/backup
-        cron-calendar    = Sun 03:00
-        cron-randomized-delay = 30m
+        cron-calendar    = Sun 03:00 Europe/Bucharest
+        cron-randomized-delay    = 30m
+        cron-fixed-random-delay  = yes
         cron-persistent  = yes
 
 ## CUSTOM ACTIONS (OpenRC / runit)

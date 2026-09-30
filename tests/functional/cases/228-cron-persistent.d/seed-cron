@@ -1,0 +1,11 @@
+# Stages the on-disk last-run records before any cron loop reads them, so
+# the catch-up decision happens on the real boot path rather than being
+# poked at afterwards from the test script.
+#
+# cron-overdue gets a record from 2020 — any period shorter than years is
+# overdue against it, and a fixed date needs no shell arithmetic, which
+# `command =` would mangle when it pre-expands $.
+# cron-fresh gets one written now, so nothing is due for it.
+type = scripted
+command = /bin/sh -c "mkdir -p /var/lib/slinit/cron && echo 2020-01-01T00:00:00Z > /var/lib/slinit/cron/cron-overdue && date -u +%Y-%m-%dT%H:%M:%SZ > /var/lib/slinit/cron/cron-fresh"
+depends-on: system-init

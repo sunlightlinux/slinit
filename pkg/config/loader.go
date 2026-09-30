@@ -399,9 +399,10 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 			} else {
 				s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
 			}
-			if desc.CronAccuracy > 0 {
-				s.SetCronAccuracy(desc.CronAccuracy)
-			}
+			// Unconditionally, and for both modes: these are the
+			// modifiers that interval mode used to be denied.
+			s.SetCronModifiers(desc.CronRandomizedDelay, desc.CronFixedRandomDelay,
+				desc.CronPersistent, desc.CronAccuracy)
 		}
 		if len(desc.HealthCheckCommand) > 0 {
 			s.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
@@ -1268,9 +1269,10 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 			} else {
 				svc.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
 			}
-			if desc.CronAccuracy > 0 {
-				svc.SetCronAccuracy(desc.CronAccuracy)
-			}
+			// Unconditionally, and for both modes: these are the
+			// modifiers that interval mode used to be denied.
+			svc.SetCronModifiers(desc.CronRandomizedDelay, desc.CronFixedRandomDelay,
+				desc.CronPersistent, desc.CronAccuracy)
 		}
 		if len(desc.HealthCheckCommand) > 0 {
 			svc.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,

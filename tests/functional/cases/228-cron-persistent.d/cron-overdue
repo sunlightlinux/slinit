@@ -1,0 +1,12 @@
+# A one-hour period whose last run was two hours ago. cron-persistent must
+# notice and run once at startup. The jitter bound is deliberately set:
+# before 2.4.8 it was ignored in interval mode, and a catch-up must not
+# wait it out anyway.
+type = process
+command = /bin/sh -c "while true; do sleep 30; done"
+cron-command = /bin/sh -c "echo caught-up >> /run/cron-overdue.log"
+cron-interval = 1h
+cron-delay = 45m
+cron-randomized-delay = 2s
+cron-persistent = yes
+depends-on: seed-cron

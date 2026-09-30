@@ -679,14 +679,20 @@ func (s *ProcessService) SetCronCalendar(
 		s, cmd, calendar, randomizedDelay, persistent, onError, s.services.logger)
 }
 
-// SetCronAccuracy applies AccuracySec=-style bucket coalescing to the
-// active cron runner. No-op when no cron is configured or when the
-// runner is in interval mode (accuracy only makes sense for calendar
-// fires, since interval already sets its own cadence).
-func (s *ProcessService) SetCronAccuracy(d time.Duration) {
-	if s.cronRunner != nil {
-		s.cronRunner.SetAccuracy(d)
+// SetCronModifiers applies the scheduling modifiers to whichever cron
+// runner was configured. One entry point for both modes on purpose: the
+// modifiers used to be applied per mode, and interval mode simply never
+// received jitter or persistence, so two of the three directives did
+// nothing when combined with cron-interval.
+func (s *ProcessService) SetCronModifiers(
+	randomizedDelay time.Duration, fixedRandom, persistent bool, accuracy time.Duration,
+) {
+	if s.cronRunner == nil {
+		return
 	}
+	s.cronRunner.SetRandomizedDelay(randomizedDelay, fixedRandom)
+	s.cronRunner.SetPersistent(persistent)
+	s.cronRunner.SetAccuracy(accuracy)
 }
 
 // SetHealthCheck configures the continuous health checker.

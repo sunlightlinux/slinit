@@ -1,0 +1,6 @@
+type = internal
+depends-on: system-init
+waits-for: test-runner
+waits-for: cron-overdue
+waits-for: cron-fresh
+waits-for: cron-ticker

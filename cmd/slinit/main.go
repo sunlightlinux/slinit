@@ -841,6 +841,17 @@ func main() {
 	sock := resolveSocketPath(socketPath, systemMode)
 	logger.Debug("Control socket: %s", sock)
 
+	// cron-persistent keeps each timer's last-run instant on disk so a
+	// missed fire is caught up after a reboot. The default lives under
+	// /var/lib, which a user-mode daemon cannot write — it would log a
+	// failure on every fire and silently never catch up.
+	if !systemMode {
+		if dir := userCronPersistDir(); dir != "" {
+			service.SetCronPersistDir(dir)
+			logger.Debug("Cron persistence directory: %s", dir)
+		}
+	}
+
 	// Create service set
 	serviceSet := service.NewServiceSet(logger)
 
@@ -2381,6 +2392,21 @@ func resolveSocketPath(flagValue string, systemMode bool) string {
 		return defaultUserSocket
 	}
 	return home + "/" + defaultUserSocket
+}
+
+// userCronPersistDir returns the per-user location for cron last-run
+// records, following the same XDG-then-$HOME shape as the control socket
+// above. Returns "" when neither is available, which leaves the system
+// default in place rather than guessing at a writable path.
+func userCronPersistDir() string {
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return xdg + "/slinit/cron"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home + "/.local/state/slinit/cron"
 }
 
 // sendShutdownAndExit connects to the running slinit instance via the control

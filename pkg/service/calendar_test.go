@@ -138,7 +138,6 @@ func TestCalendarRejectsMalformed(t *testing.T) {
 	bad := []string{
 		"not-a-thing",
 		"99:99",
-		"Mon",                  // weekday without time
 		"03:00:99",             // bad seconds
 		"*-13-1 00:00",         // bad month
 		"*-*-32 00:00",         // bad day

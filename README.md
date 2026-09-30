@@ -110,7 +110,8 @@ should keep their muscle memory:
   `log-level-max`, per-service credentials (tmpfs ro +
   `$CREDENTIALS_DIRECTORY`, `load-credential` / `set-credential` /
   `import-credential` glob), calendar timers (`cron-calendar`,
-  `cron-randomized-delay`, `cron-persistent`), env pipeline
+  `cron-randomized-delay`, `cron-fixed-random-delay`, `cron-persistent`),
+  env pipeline
   (`pass-environment`, `unset-environment`, `exec-search-path`,
   `env-generator`, `setenv`), `standard-input-text` /
   `standard-input-data`, `open-file` (v261+ fd pass-through),
@@ -161,7 +162,7 @@ format to accommodate them.
   - **Hooks**: `pre-start-command` (sync, non-zero exit fails start), `post-start-command` (async after Started, log-only)
   - **Log pipeline**: `log-rate-limit-interval`/`log-rate-limit-burst` (token bucket), `log-level-max` (syslog priority filter)
   - **Credentials**: `load-credential = NAME:PATH` (copy file), `set-credential = NAME:VALUE` (inline) — exposed via tmpfs ro at `/run/credentials/<svc>/` (mode 0700, files 0400, chown to run-as) and `$CREDENTIALS_DIRECTORY` env var
-  - **Calendar timers**: `cron-calendar = <expr>` (`daily`, `hourly`, `Mon..Fri 09:00`, `*-*-1 00:00`, `*:0/15`, ...) + `cron-randomized-delay` (jitter) + `cron-persistent` (catch-up on startup)
+  - **Calendar timers**: `cron-calendar = <expr>` (`daily`, `hourly`, `quarterly`, `Mon..Fri 09:00`, `*-*-01..07 09:00`, `*-*-~01 23:00` for the last day of the month, `*:0/15`, and a trailing zone as in `Sun 03:00 Europe/Bucharest`) + `cron-randomized-delay` (jitter bound) + `cron-fixed-random-delay` (stable per-host offset) + `cron-persistent` (catch-up from an on-disk last-run record). The zone database is compiled in, so a zone name resolves before `/usr` is mounted; DST gaps are skipped rather than substituted
   - **Dynamic user**: `dynamic-user = yes` allocates a transient UID/GID from a per-daemon pool (61184..65519, matching systemd) at every BringUp, released in Stopped; no `/etc/passwd` entry
   - **File-descriptor store**: `file-descriptor-store-max = N` creates a `$NOTIFY_SOCKET` Unix datagram socket; the child can sd_notify `FDSTORE=1` + `FDNAME=name` with fds via SCM_RIGHTS; on the next BringUp the stored fds are prepended to `LISTEN_FDS` (with names in `LISTEN_FDNAMES`) so a restart re-attaches its listening sockets without losing connections
 - **Path activation**: `start-on-path-exists`, `start-on-path-changed`, `start-on-path-modified`, `start-on-directory-not-empty` — inotify-driven, systemd-style one-shot triggers that start a service when a filesystem condition is met
@@ -757,8 +758,9 @@ command = /usr/bin/optional
 | `cron-delay`              | Initial delay before first cron execution (seconds) |
 | `cron-on-error`           | Behavior on cron command failure: `continue` (default) or `stop` |
 | `cron-calendar`           | systemd-style `OnCalendar=` expression (`daily`, `Mon..Fri 09:00`, `*:0/15`) |
-| `cron-randomized-delay`   | Jitter `[0,d)` added to each calendar fire        |
-| `cron-persistent`         | Catch-up run when a fire was missed across daemon downtime |
+| `cron-randomized-delay`   | Upper bound on jitter added to each fire, drawn from `[0,d)`; applies to interval and calendar modes |
+| `cron-fixed-random-delay` | Draw that offset once from the machine-id instead of per fire (systemd `FixedRandomDelay=`) |
+| `cron-persistent`         | Catch-up run when a fire was missed; last-run instant kept on disk, so it survives a reboot |
 | `prepared-by:`            | Hard dependency that also restarts when the dependent restarts |
 | `condition-*` / `assert-*` | Systemd-style start predicates (13 kinds, `!` negation) -- skip silently / fail start |
 | `runtime-directory`       | systemd-style auto-managed `/run/<svc>` (chowned to run-as) |

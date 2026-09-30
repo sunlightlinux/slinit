@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -35,14 +36,16 @@ func SetCronPersistDir(dir string) { cronPersistDir = dir }
 //   - Calendar mode: when `calendar != nil`, fire times are derived from
 //     a systemd-style OnCalendar expression. `interval` is unused.
 //
-// Optional modifiers:
+// Optional modifiers, all of which apply to both modes:
 //
-//   - randomizedDelay: jitter added to each fire time, uniform [0, d).
-//   - persistent: on startup, if lastRun is set and a fire time was
-//     missed (lastRun > 0 < now), run once immediately to catch up
-//     before resuming the schedule. Currently the persistence store is
-//     in-memory (per-process); a future on-disk store would survive
-//     daemon restarts.
+//   - randomizedDelay: an upper bound on jitter added to each fire time,
+//     drawn uniformly from [0, d).
+//   - fixedRandomDelay: draw that offset once, from the machine-id and
+//     the service name, instead of per fire. systemd FixedRandomDelay=.
+//   - accuracy: snap fire times up to a bucket so timers coalesce.
+//   - persistent: if a fire was missed while the daemon was down, run
+//     once immediately on startup to catch up. The last-run instant is
+//     kept on disk under cronPersistDir, so catch-up survives a reboot.
 type CronRunner struct {
 	command         []string
 	interval        time.Duration
@@ -55,9 +58,16 @@ type CronRunner struct {
 	// coalescing (fire at exact calendar match). Matches systemd
 	// AccuracySec= semantics: the effective fire time is picked from
 	// [nominal, nominal + accuracy) so a fleet averages out.
-	accuracy        time.Duration
-	persistent      bool
-	lastRun         time.Time
+	accuracy   time.Duration
+	persistent bool
+	lastRun    time.Time
+
+	// fixedRandomDelay pins the jitter offset for the life of the host
+	// instead of redrawing it. fixedOffset caches the derived value;
+	// both are touched only from the cron loop goroutine.
+	fixedRandomDelay bool
+	fixedOffset      time.Duration
+	fixedOffsetSet   bool
 
 	svc    Service // parent service (for logging context)
 	logger ServiceLogger
@@ -110,9 +120,22 @@ func NewCalendarCronRunner(
 }
 
 // SetAccuracy configures wake-up coalescing. When non-zero, each
-// computed fire time is snapped to a multiple of `d` (0 disables).
+// computed fire time is snapped up to a multiple of `d` (0 disables).
 // Matches systemd AccuracySec=. Safe to call before Start().
 func (cr *CronRunner) SetAccuracy(d time.Duration) { cr.accuracy = d }
+
+// SetRandomizedDelay sets the jitter bound and whether the offset is
+// fixed per host. Interval mode gets its modifiers this way; calendar
+// mode can take the bound through NewCalendarCronRunner as well, and
+// this overrides it. Safe to call before Start().
+func (cr *CronRunner) SetRandomizedDelay(d time.Duration, fixed bool) {
+	cr.randomizedDelay = d
+	cr.fixedRandomDelay = fixed
+}
+
+// SetPersistent enables missed-fire catch-up from the on-disk last-run
+// record. Safe to call before Start().
+func (cr *CronRunner) SetPersistent(b bool) { cr.persistent = b }
 
 // Start launches the periodic execution goroutine.
 // Must only be called once. Safe to call from any goroutine.
@@ -168,33 +191,164 @@ func (cr *CronRunner) loop() {
 	cr.loopInterval()
 }
 
-// loopInterval drives the original "every N seconds" schedule.
+// loopInterval drives the "every N seconds" schedule.
+//
+// Both modifiers used to be dropped here: jitter and persistence reached
+// only the calendar loop, so `cron-interval` plus `cron-randomized-delay`
+// did nothing at all. Jitter now applies to the initial delay and to
+// every period, and a missed period is caught up from the on-disk record.
+//
+// Honouring cron-persistent for a monotonic schedule is a deliberate
+// divergence: systemd's Persistent= applies to OnCalendar= only, because
+// a monotonic timer has no absolute time to have missed. slinit keeps the
+// last-run instant on disk either way, which makes "the period elapsed
+// while we were down" a well-defined question — and answering it is what
+// an operator writing `cron-interval = 24h` plainly means.
 func (cr *CronRunner) loopInterval() {
-	if cr.delay > 0 {
-		select {
-		case <-time.After(cr.delay):
-		case <-cr.stopCh:
-			return
+	if cr.persistent {
+		if t, ok := cr.readPersisted(); ok {
+			cr.lastRun = t
 		}
 	}
 
-	if !cr.runOnce() {
-		return
+	// A period that elapsed while the daemon was down: run now and skip
+	// the initial delay, which exists to stagger a normal start rather
+	// than to hold back a run that is already late.
+	caughtUp := false
+	if cr.persistent && !cr.lastRun.IsZero() {
+		if missed := cr.lastRun.Add(cr.interval); missed.Before(time.Now()) {
+			cr.logger.Info("Service '%s': cron catch-up (interval elapsed at %v while down)",
+				cr.svc.Name(), missed.Format(time.RFC3339))
+			if !cr.runOnce() {
+				return
+			}
+			cr.persist(time.Now())
+			caughtUp = true
+		}
 	}
 
+	if !caughtUp {
+		if d := cr.delay + cr.jitterFor(); d > 0 && !cr.sleep(d) {
+			return
+		}
+		if !cr.runOnce() {
+			return
+		}
+		cr.persist(time.Now())
+	}
+
+	// The ticker keeps the cadence anchored to the interval rather than to
+	// how long each run took; jitter is an extra wait after each tick, so
+	// a slow run cannot make the schedule drift. A jitter bound larger
+	// than the interval therefore stretches the effective period — the
+	// man page says to keep it smaller.
 	ticker := time.NewTicker(cr.interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
+			if j := cr.jitterFor(); j > 0 && !cr.sleep(j) {
+				return
+			}
 			if !cr.runOnce() {
 				return
 			}
+			cr.persist(time.Now())
 		case <-cr.stopCh:
 			return
 		}
 	}
+}
+
+// sleep waits for d, reporting false if a stop was requested first.
+func (cr *CronRunner) sleep(d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-cr.stopCh:
+		return false
+	}
+}
+
+// persist records a run instant when persistence is enabled, and does
+// nothing otherwise, so callers need no condition of their own.
+func (cr *CronRunner) persist(t time.Time) {
+	if cr.persistent {
+		cr.writePersisted(t)
+	}
+}
+
+// jitterFor returns the offset to add to a nominal fire time. The
+// configured value is an upper bound, never the offset itself.
+func (cr *CronRunner) jitterFor() time.Duration {
+	if cr.randomizedDelay <= 0 {
+		return 0
+	}
+	if cr.fixedRandomDelay {
+		return cr.stableJitter()
+	}
+	return time.Duration(rand.Int63n(int64(cr.randomizedDelay)))
+}
+
+// stableJitter derives an offset in [0, randomizedDelay) from the host's
+// machine-id and the service name, so this host fires in the same slot
+// every time while a fleet still spreads across the window. systemd's
+// FixedRandomDelay=. Same FNV-1a-over-machine-id shape as
+// ConditionFraction= in predicate.go, separator byte included, so the
+// two features bucket independently.
+//
+// Derived on first use rather than at construction: PID 1 parses service
+// descriptions before the filesystem holding /etc/machine-id is
+// necessarily readable, and the first fire is always later than that.
+func (cr *CronRunner) stableJitter() time.Duration {
+	if cr.fixedOffsetSet {
+		return cr.fixedOffset
+	}
+	cr.fixedOffsetSet = true
+
+	mid, err := os.ReadFile("/etc/machine-id")
+	if err != nil {
+		// Nothing stable to key on. One draw kept for the life of the
+		// process still avoids the per-fire herding the directive is
+		// about; it just cannot survive a restart.
+		cr.fixedOffset = time.Duration(rand.Int63n(int64(cr.randomizedDelay)))
+		cr.logger.Info(
+			"Service '%s': cron-fixed-random-delay: /etc/machine-id: %v; "+
+				"using a per-process offset of %v instead",
+			cr.svc.Name(), err, cr.fixedOffset)
+		return cr.fixedOffset
+	}
+	h := fnv.New32a()
+	h.Write([]byte(strings.TrimSpace(string(mid))))
+	h.Write([]byte{0})
+	h.Write([]byte(cr.svc.Name()))
+	cr.fixedOffset = time.Duration(uint64(h.Sum32()) % uint64(cr.randomizedDelay))
+	return cr.fixedOffset
+}
+
+// snapToAccuracy moves a fire time up to the next accuracy bucket so many
+// timers coalesce onto few wake-ups.
+//
+// Rounds up, where this used to truncate: systemd's AccuracySec= window
+// is [nominal, nominal+accuracy], and firing before the time the operator
+// wrote is wrong whatever it buys in coalescing. Buckets align to UTC, so
+// in a zone whose offset is not a whole number of buckets the boundaries
+// sit somewhere inside the hour — which costs nothing, since coalescing
+// only needs every timer on the host to agree with the others.
+func snapToAccuracy(t time.Time, acc time.Duration) time.Time {
+	if acc <= 0 {
+		return t
+	}
+	if b := t.Truncate(acc); b.Before(t) {
+		return b.Add(acc)
+	}
+	return t
 }
 
 // loopCalendar computes successive fire times from the CalendarSpec.
@@ -223,7 +377,7 @@ func (cr *CronRunner) loopCalendar() {
 			if !cr.runOnce() {
 				return
 			}
-			cr.writePersisted(nextMissed)
+			cr.persist(nextMissed)
 		}
 	}
 
@@ -231,37 +385,26 @@ func (cr *CronRunner) loopCalendar() {
 		now = time.Now()
 		next := cr.calendar.NextAfter(now)
 		if next.IsZero() {
-			// Spec has no future match — exit quietly.
+			// Spec has no future match — exit quietly. With a year
+			// constraint this is the normal end of a one-shot date.
 			return
 		}
-		// Apply jitter so a fleet of machines doesn't herd onto the same
-		// fire time. Uniform [0, randomizedDelay).
-		if cr.randomizedDelay > 0 {
-			next = next.Add(time.Duration(rand.Int63n(int64(cr.randomizedDelay))))
-		}
-		// Snap to accuracy bucket if configured. Truncate down: the
-		// bucketed fire may lie slightly before the nominal, which
-		// matches AccuracySec= — the operator asked to trade precision
-		// for wakeup coalescing.
-		if cr.accuracy > 0 {
-			next = next.Truncate(cr.accuracy)
-		}
-		delay := time.Until(next)
-		if delay < 0 {
-			delay = 0
-		}
-		select {
-		case <-time.After(delay):
-		case <-cr.stopCh:
+		// Jitter so a fleet does not herd onto the same instant, then
+		// coalesce onto a bucket. Order matters: snapping last keeps the
+		// guarantee that the fire is never earlier than the calendar
+		// says, and a bucket coarser than the jitter window will undo the
+		// spread — the man page says to keep accuracy the smaller of the
+		// two.
+		next = snapToAccuracy(next.Add(cr.jitterFor()), cr.accuracy)
+
+		if !cr.sleep(time.Until(next)) {
 			return
 		}
 		cr.lastRun = next
 		if !cr.runOnce() {
 			return
 		}
-		if cr.persistent {
-			cr.writePersisted(next)
-		}
+		cr.persist(next)
 	}
 }
 

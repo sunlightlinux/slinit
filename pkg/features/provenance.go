@@ -63,7 +63,7 @@ var provenanceTable = []Feature{
 	{Name: "CmdQueryShutdown", Kind: KindOpcode, Source: SourceSlinit, Category: CatShutdown, Notes: "opcode 37 — query pending shutdown state"},
 	{Name: "CmdReloadAll", Kind: KindOpcode, Source: SourceSlinit, Category: CatLifecycle, Notes: "opcode 38 — rescan every service description from disk"},
 	{Name: "CmdReloadSignal", Kind: KindOpcode, Source: SourceSystemd, Category: CatLifecycle, Notes: "opcode 39 — send configured reload-signal (systemd ExecReload analog)"},
-	{Name: "CmdBootTime", Kind: KindOpcode, Source: SourceSystemd, Category: CatObservability, Notes: "opcode 40 — systemd-analyze equivalent (kernel+userspace boot times)"},
+	{Name: "CmdBootTime", Kind: KindOpcode, Source: SourceSystemd, Category: CatObservability, Notes: "opcode 40 — systemd-analyze equivalent (kernel+userspace boot times, per-service durations and start instants; slinitctl analyze time / plot)"},
 	{Name: "CmdDisableService", Kind: KindOpcode, Source: SourceSlinit, Category: CatLifecycle, Notes: "opcode 41 — atomic rm-dep + remove waits-for.d symlink + stop"},
 	{Name: "CmdQueryDependents", Kind: KindOpcode, Source: SourceSlinit, Category: CatDependency, Notes: "opcode 42 — reverse dep lookup (what depends on X)"},
 	{Name: "CmdPauseService", Kind: KindOpcode, Source: SourceSystemd, Category: CatLifecycle, Notes: "opcode 43 — SIGSTOP-based pause (cgroup freezer analog for legacy)"},

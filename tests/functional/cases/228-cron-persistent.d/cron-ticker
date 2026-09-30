@@ -1,0 +1,9 @@
+# A short period with jitter, to prove the jittered interval loop still
+# fires at all — the rewrite replaced a bare ticker with ticker+sleep.
+type = process
+command = /bin/sh -c "while true; do sleep 30; done"
+cron-command = /bin/sh -c "echo tick >> /run/cron-ticker.log"
+cron-interval = 1s
+cron-randomized-delay = 300ms
+cron-fixed-random-delay = yes
+depends-on: system-init

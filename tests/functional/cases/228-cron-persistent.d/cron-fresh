@@ -1,0 +1,10 @@
+# Same shape, but the record says it just ran: nothing is due, so the
+# marker must stay absent. Without this, a catch-up that always fires
+# would look correct.
+type = process
+command = /bin/sh -c "while true; do sleep 30; done"
+cron-command = /bin/sh -c "echo should-not-run >> /run/cron-fresh.log"
+cron-interval = 1h
+cron-delay = 45m
+cron-persistent = yes
+depends-on: seed-cron

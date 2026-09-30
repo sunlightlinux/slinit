@@ -452,12 +452,18 @@ type ServiceDescription struct {
 
 	// Calendar-mode scheduling (systemd OnCalendar=-style). When set,
 	// CronInterval/CronDelay are ignored and fire times come from the
-	// CalendarSpec. RandomizedDelay adds uniform jitter [0,d) to each
-	// fire. Persistent triggers a catch-up run when the daemon misses
-	// a scheduled fire (e.g. across reboot — currently in-memory only).
-	CronCalendar        *service.CalendarSpec
-	CronRandomizedDelay time.Duration
-	CronPersistent      bool
+	// CalendarSpec.
+	CronCalendar *service.CalendarSpec
+	// RandomizedDelay is an upper bound: each fire is offset by a value
+	// drawn from [0,d). CronFixedRandomDelay draws that offset once from
+	// the machine-id instead of per fire (systemd FixedRandomDelay=), so
+	// a host keeps its slot while a fleet still spreads. Persistent runs
+	// a catch-up when a fire was missed while the daemon was down; the
+	// last-run instant is kept on disk, so it survives a reboot. All
+	// three apply to interval mode as well as calendar mode.
+	CronRandomizedDelay  time.Duration
+	CronFixedRandomDelay bool
+	CronPersistent       bool
 	// systemd AccuracySec=: snap fire times to a bucket so many timers
 	// coalesce onto a small set of wake-ups. 0 = no coalescing.
 	CronAccuracy time.Duration
@@ -1558,6 +1564,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("cron-randomized-delay must be >= 0")
 		}
 		desc.CronRandomizedDelay = d
+	case "cron-fixed-random-delay":
+		b, err := parseBool(value)
+		if err != nil {
+			return err
+		}
+		desc.CronFixedRandomDelay = b
 	case "cron-persistent":
 		b, err := parseBool(value)
 		if err != nil {
