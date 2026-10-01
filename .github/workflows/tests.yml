@@ -197,6 +197,17 @@ jobs:
       # loop: the point is that a boot completes and the block parses, and
       # five samples of an unreliable clock are no better than two.
       - name: cold-boot
+        env:
+          # cold-boot.sh dumps the full per-service breakdown for any
+          # iteration slower than this, to find out which service caused
+          # a spike. The 3000ms default is calibrated against a ~2870ms
+          # boot on hardware with KVM; a runner boots the same image in
+          # ~9900ms, so the default fires every single time and prints
+          # forty-odd lines per iteration that diagnose nothing.
+          #
+          # 12000 is that measured baseline plus about a fifth — still
+          # well under the +1s bimodal spikes the dump exists to catch.
+          COLD_BOOT_SPIKE_MS: 12000
         run: bash tests/performance/demo/cold-boot.sh 2
 
       - name: minimal-boot
