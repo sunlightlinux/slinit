@@ -71,8 +71,30 @@ if [ ! -f "${KERNEL}" ] || [ ! -f "${KVIRT_PKG_FILE}" ]; then
         rm -rf "${KSTAGE}"
         mkdir -p "${KSTAGE}"
         tar xzf "${CACHE_DIR}/${KVIRT_PKG}" -C "${KSTAGE}" 2>/dev/null || true
-        # Find and cache the kernel
-        KVMLINUZ=$(find "${KSTAGE}" -name 'vmlinuz-*' -o -name 'vmlinuz' 2>/dev/null | head -1)
+        # Find and cache the kernel.
+        #
+        # -type f, and the parentheses that make it apply to both names,
+        # are the whole point. The APK ships the kernel twice:
+        #
+        #   boot/vmlinuz-virt                      a real 12MB file
+        #   lib/modules/<ver>/vmlinuz -> /boot/vmlinuz-virt   a symlink
+        #
+        # That symlink is absolute, so inside the staging directory it
+        # dangles. Matching on name alone matches both, and which one
+        # `head -1` returns is whatever order the filesystem hands find
+        # its directory entries — which differs between machines. It
+        # picked the real file on the maintainer's ext4 and the dangling
+        # symlink on a CI runner, where the build then died on
+        # `cp: cannot stat .../lib/modules/6.18.54-0-virt/vmlinuz`.
+        #
+        # `tail -1` would only move the coin flip. Selecting by what the
+        # entry *is* removes it: find does not follow symlinks without
+        # -L, so -type f cannot return the dangling one. Note that
+        # -type f must be outside the alternation — `-a` binds tighter
+        # than `-o`, so without the parentheses it would qualify only
+        # the second name.
+        KVMLINUZ=$(find "${KSTAGE}" -type f \
+            \( -name 'vmlinuz-*' -o -name 'vmlinuz' \) 2>/dev/null | head -1)
         if [ -n "${KVMLINUZ}" ]; then
             cp "${KVMLINUZ}" "${KERNEL}"
             echo "  Kernel: $(basename "${KVMLINUZ}")"
