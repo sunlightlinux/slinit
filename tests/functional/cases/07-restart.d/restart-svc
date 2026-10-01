@@ -2,6 +2,17 @@ type = process
 command = /bin/sh -c "sleep 2; exit 1"
 restart = on-failure
 restart-delay = 1
-restart-limit-count = 5
+# Deliberately far above anything this test can reach. The service runs
+# 2s and waits 1s, so it burns a restart every three seconds, and a count
+# of 5 meant slinit correctly gave up at about seventeen seconds in. How
+# far into that window the assertion lands depends on how long the boot
+# and the first status calls took — fast enough with KVM, not on an
+# emulated runner, where this failed intermittently with a perfectly
+# correct 'STOPPED'.
+#
+# The limit being enforced is 69-restart-limit's job. This case only asks
+# whether a failed process comes back, so the limit is set where it
+# cannot interfere with the answer.
+restart-limit-count = 100
 restart-limit-interval = 60
 depends-on: system-init
