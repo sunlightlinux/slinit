@@ -162,7 +162,31 @@ func (mi *machineInfo) save() error {
 // decodeValue strips os-release(5) quoting: double-quoted values
 // interpret \" \\ \$ \` as literals; single-quoted values are literal;
 // bare values pass through. Whitespace outside quotes is discarded.
+//
+// NUL bytes are dropped from the result. They cannot occur in a
+// well-formed file, but these values reach consumers that hand them to
+// filesystem and exec APIs, where an embedded NUL truncates silently —
+// so a malformed /etc/machine-info or /etc/os-release must not be able to
+// smuggle one through. Dropped rather than rejected: a stray byte should
+// not cost the operator every other field in the file.
+//
+// Found by FuzzDecodeValue and FuzzParseOSRelease in under a fifth of a
+// second, the first time anything ever ran them — they went unnoticed
+// because no CI job existed to run a fuzz target.
 func decodeValue(raw string) string {
+	return stripNUL(decodeQuoting(raw))
+}
+
+func stripNUL(s string) string {
+	if !strings.ContainsRune(s, 0) {
+		return s
+	}
+	return strings.ReplaceAll(s, "\x00", "")
+}
+
+// decodeQuoting is decodeValue's quoting logic, kept separate so the NUL
+// guard above cannot be bypassed by a future early return added here.
+func decodeQuoting(raw string) string {
 	if raw == "" {
 		return ""
 	}
