@@ -22,6 +22,185 @@ their tagger wrote are kept in
 
 ## [Unreleased]
 
+## [2.5.1] — 2026-10-01
+
+Suspend stops being a one-line write to sysfs, the lid does something, and
+the test suites run in CI for the first time — which immediately found a
+real bug and three tests that were only ever right on fast hardware.
+
+**Why a patch.** One behaviour someone could be relying on changes:
+`slinitctl suspend` now goes through slinit-logind by default. The old
+path is still there behind `--no-coordination`, which is why this is not a
+minor. The login1 changes are not behaviour changes in the same sense —
+that interface is defined by systemd, slinit's own manual says "where the
+two differ, the difference is the bug", and an `Inhibit()` that handed out
+a descriptor it never honoured was the bug.
+
+Verified: full unit suite and `go vet` clean, 13 new unit tests across the
+inhibitor registry, the sleep handshake and the button config. The
+functional and fuzz suites now run on every pull request, which is how
+three of the fixes below were found. The evdev path has **not** been
+exercised against a real input device — see the note under its entry.
+
+### Added
+
+- **Suspend is coordinated.** Every sleep — `Suspend`, `Hibernate`,
+  `HybridSleep`, `SuspendThenHibernate` and the `Sleep` dispatcher — now
+  runs one sequence: refuse if a *block* inhibitor covers `sleep`, naming
+  the holder and its pid; announce `PrepareForSleep(true)`; wait out
+  *delay* inhibitors up to `InhibitDelayMaxSec`; ask PID 1 to perform it;
+  announce `PrepareForSleep(false)` whether it succeeded or not.
+
+  That signal is the point. A machine that sleeps without emitting it
+  wakes with an unlocked desktop, because every screen locker —
+  gnome-screensaver, xfce4-screensaver, the swaylock wrappers — locks in
+  response to it and nothing else. The property was hardcoded `false` and
+  the comment beside it said so.
+
+  `HybridSleep` and `SuspendThenHibernate` are honest aliases for a single
+  kernel state. A real hybrid sleep writes an image and *then* suspends,
+  and suspend-then-hibernate needs an RTC alarm to come back and finish;
+  doing something else under those names is how a laptop loses work.
+
+- **Inhibitor locks are real.** `Inhibit(what, who, why, mode)` registers
+  a lock keyed to the descriptor the client holds, and it lasts until that
+  descriptor is closed — there is no release method, which is the point: a
+  client that crashes cannot leave a machine permanently unsuspendable.
+  `block` refuses, `delay` buys time. `ListInhibitors` returns them and
+  `BlockInhibited` / `DelayInhibited` are computed from them instead of
+  returning `""`.
+
+  Previously the method created a pipe, closed the write end before
+  returning, and handed back a descriptor already at EOF — enough for code
+  that checks the call succeeded and nothing more.
+
+- **A sleep hook**, `/etc/slinit/sleep-hook`, run either side of the
+  kernel write as `hook pre|post suspend|hibernate freeze|standby|mem|disk`.
+  The first two arguments are systemd's vocabulary so a script copied from
+  */usr/lib/systemd/system-sleep/* reads what it expects; the third is the
+  raw kernel token for anything that needs to tell s2idle from S3. A
+  failing hook is logged and ignored, as in systemd — aborting would leave
+  a lid-shut laptop awake and cooking in a bag.
+
+- **The lid and the power keys do something.** An evdev watcher, driven
+  from `/dev/input/event*` rather than `/proc/acpi`: the procfs node
+  answers "is the lid shut now", which the `LidClosed` property still
+  uses, and cannot answer "the lid just shut".
+
+  Configured from `/etc/slinit/logind.conf`, systemd's `logind.conf`
+  format, falling back to `/etc/elogind/logind.conf` so a machine
+  migrating off elogind keeps its settings without copying them.
+  `HandleLidSwitch` and its ExternalPower/Docked variants,
+  `HandlePowerKey`, `HandleSuspendKey`, `HandleHibernateKey`,
+  `HoldoffTimeoutSec`, `InhibitDelayMaxSec`.
+
+  **Every handler defaults to `ignore`**, which is not systemd's default —
+  it powers off on the power key and suspends on lid close. Enabling those
+  would change what the hardware does the moment this daemon gained a
+  watcher, on every existing installation, with nothing edited to ask for
+  it. It is also often the better answer on a desktop: GNOME's
+  settings-daemon and XFCE's power manager read these properties to decide
+  whether logind already owns a key, and `ignore` tells them to handle it
+  themselves, which they do, with a UI and a user setting.
+
+  **Not yet exercised against real hardware.** The ioctl request numbers
+  and every event code are pinned against values compiled from
+  `linux/input.h`, because a wrong request returns EINVAL, every device
+  then looks uninteresting, and the symptom is a lid that does nothing
+  with no error anywhere. But no `/dev/input/event*` is readable as a
+  non-root user and uinput needs root, so device discovery has never run
+  against a live kernel. First exercise is on a laptop.
+
+- **The test suites run on every pull request** — 228 functional cases in
+  eight QEMU shards and all 40 fuzz targets, plus the four performance
+  harnesses as a smoke test. Nothing ran them before: the SLSA workflow
+  builds release binaries and tarball-verify runs `go test`, but only on
+  `release: created`, so no branch and no pull request was checked by
+  anything.
+
+  No KVM is required, and measurement rather than assumption says why
+  that is fine: software emulation costs 1.47x here (21.5s against 14.6s
+  per case), not the order of magnitude emulation usually implies, because
+  these cases wait on sleeps and boots rather than burning CPU.
+
+  The perf harnesses are a smoke test and not a measurement — a shared
+  runner's milliseconds are not comparable with anything and no threshold
+  is asserted. Its memory figures are: RSS and VmPeak came within 3-4% of
+  local, while cold boot was 3.4x slower.
+
+- **`slinitctl suspend --no-coordination`** for the direct path to PID 1.
+
+### Fixed
+
+- **A NUL byte survived `decodeValue`**, so one in `/etc/machine-info` or
+  `/etc/os-release` came back out and reached consumers that hand these
+  values to exec and filesystem APIs, where NUL truncates silently. Found
+  by `FuzzDecodeValue` and `FuzzParseOSRelease` in under a fifth of a
+  second the first time CI ran them — they were sitting on the surface,
+  and had gone unnoticed because nothing had ever run a fuzz target. Both
+  minimised crashers are committed as the regression corpus.
+
+- **Three independent writers of `/sys/power/state`** — the daemon's
+  `Suspend`, its `Sleep` dispatcher, and `slinitctl suspend` through
+  PID 1 — none of which knew about the others, so which door a request
+  came through decided whether anything else happened. There is one now,
+  which is also what lets the sleep hook bracket the only write.
+
+- **`demo/build.sh` picked the kernel by directory-traversal order.** The
+  linux-virt APK ships it twice: `boot/vmlinuz-virt`, a real file, and
+  `lib/modules/<ver>/vmlinuz`, an absolute symlink that dangles inside the
+  staging tree. Matching on name alone matched both, and `head -1`
+  returned whichever the filesystem happened to hand over first — the real
+  file here, the dangling symlink on a runner, where the build died on
+  `cp: cannot stat`. Selecting with `-type f` removes the coin flip
+  rather than moving it, as `tail -1` would have.
+
+- **The perf harnesses hid build failures** behind `>/dev/null 2>&1`, so
+  the above reported "demo/build.sh failed" and not one word about why.
+
+- **Three tests were only right on fast hardware**, all exposed by the
+  first CI runs and none of them a problem with slinit:
+
+  - `219-nosystemd-clock-jump` asserted PID 1's *cumulative* CPU from
+    `/proc/1/stat` was under 200 ticks, measuring how expensive the boot
+    was rather than what the clock step cost. 16 ticks with KVM, 361 on a
+    runner for identical work. Now sampled either side of the jump.
+  - `223-nosystemd-journald-restart` read the producer's counter from the
+    live log file alone, which the producer rotates several times a
+    second, so a rotation between samples left it reading a file that had
+    just been emptied — and an empty sample reads as "the producer went
+    silent". Now the highest counter across the live file and its
+    rotations.
+  - `07-restart` gave the service a five-restart allowance against a
+    three-second crash cycle, so slinit correctly gave up at about
+    seventeen seconds and the assertion sometimes landed after that.
+    Raised out of the way; `69-restart-limit` is what covers the limit.
+
+- **Two cases still asserted `analyze plot` was an unimplemented stub**,
+  which it stopped being in 2.4.8. Found by grepping the suites for the
+  stub's message — the sort of drift that passes.
+
+### Changed
+
+- **`slinitctl suspend` goes through slinit-logind by default**, so it
+  locks the screen like any other door. `freeze` and `standby` always take
+  the direct path because `org.freedesktop.login1` has no method for them,
+  and the command says so on stderr rather than letting the lock quietly
+  not happen. No bus or no daemon falls back rather than failing: a
+  container or an initramfs still has reason to suspend.
+
+- **`PauseBootConsole` is honoured by `Present` and `PresentCollapse`**,
+  not only the Ctrl-B debugger. They had the identical defect from 2.5.0,
+  merely unwired.
+
+- **Release tags are all lightweight.** Seven (v2.1.0, v2.2.1–v2.2.7)
+  were annotated; converting them for consistency discards the messages
+  their tagger wrote, so those are kept in
+  [doc/annotated-tag-archive.md](doc/annotated-tag-archive.md).
+
+- **The workflow actions moved off Node 20** before the runners stop
+  forcing them onto Node 24.
+
 ## [2.5.0] — 2026-09-30
 
 The rescue prompts — the load-failure menu, the boot-collapse menu and the
