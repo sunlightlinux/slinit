@@ -1,0 +1,218 @@
+# Functional (QEMU) + fuzz suites, on every pull request.
+#
+# Why this exists: until now nothing ran the test suites in CI. The SLSA
+# workflow builds release binaries and tarball-verify runs `go test` —
+# but only on `release: created` and `workflow_dispatch`, so no branch and
+# no pull request was ever checked by anything. A contributor had no way
+# to know whether their change broke one of the 228 functional cases
+# short of owning a machine and running them.
+#
+# What is deliberately NOT here: the acceptance (SSH), container (Docker)
+# and k8s (kind) tiers. Those need a live target — a VM or a real PC — and
+# are run downstream rather than pretended at in a runner.
+#
+# No KVM is required. tests/functional/run-tests.sh checks for a writable
+# /dev/kvm and falls back to `-cpu qemu64`, which is software emulation
+# and measured at 1.47x the KVM time on the maintainer's box (14.6s vs
+# 21.5s per case) — far from the order of magnitude emulation usually
+# costs, because these cases wait on sleeps and boots rather than burning
+# CPU. A runner is slower still, which is what the sharding is for.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The VM image is built once and handed to the shards. Building it in
+  # each shard would repeat the Alpine download and the Go build eight
+  # times for a byte-identical result.
+  vm-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install image-build tools
+        run: sudo apt-get update && sudo apt-get install -y cpio
+
+      # build-vm.sh caches the Alpine minirootfs, kernel and packages
+      # here. Keyed on the script because that is what pins the Alpine
+      # release and the package list.
+      - name: Cache Alpine downloads
+        uses: actions/cache@v4
+        with:
+          path: demo/_cache
+          key: alpine-${{ hashFiles('tests/functional/build-vm.sh') }}
+
+      - name: Build the VM image
+        run: bash tests/functional/build-vm.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vm-image
+          path: tests/functional/_output/
+          retention-days: 1
+
+  functional:
+    needs: vm-image
+    runs-on: ubuntu-latest
+    strategy:
+      # One shard failing should not cancel the rest: the point of a CI
+      # run is to learn everything that is broken, not the first thing.
+      fail-fast: false
+      matrix:
+        # This list is the only place the shard count lives. The split
+        # below reads strategy.job-total rather than a second constant,
+        # because a mismatch between the two would silently drop whole
+        # slices of the suite instead of failing.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 socat
+
+      - name: Report virtualisation support
+        run: |
+          # Printed rather than required. If /dev/kvm turns up the suite
+          # simply goes faster; the harness decides for itself.
+          if [ -w /dev/kvm ]; then
+            echo "/dev/kvm is writable — hardware acceleration in use"
+          elif [ -e /dev/kvm ]; then
+            echo "/dev/kvm exists but is not writable — falling back to emulation"
+            ls -l /dev/kvm
+          else
+            echo "no /dev/kvm — falling back to software emulation (TCG)"
+          fi
+          qemu-system-x86_64 --version | head -1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vm-image
+          path: tests/functional/_output/
+
+      - name: Keep the downloaded image from looking stale
+        run: |
+          # run-tests.sh rebuilds when any file under cmd/ or pkg/ is
+          # newer than the initramfs. Artifact extraction does not
+          # preserve mtimes, so without this the shard may decide the
+          # image it was just handed is out of date and spend minutes
+          # rebuilding an identical one.
+          touch tests/functional/_output/*
+
+      - name: Select this shard's cases
+        id: cases
+        run: |
+          # Chosen by index so the split is deterministic and every case
+          # lands in exactly one shard. Discovered from the directory
+          # rather than listed here: a workflow holding its own copy of
+          # the case list goes stale the first time someone adds one.
+          cases=$(ls tests/functional/cases/*.sh | \
+            awk -v n="${{ strategy.job-total }}" -v k="${{ strategy.job-index }}" \
+                'NR % n == k { printf "%s ", $0 }')
+          if [ -z "${cases}" ]; then
+            echo "shard ${{ strategy.job-index }} of ${{ strategy.job-total }} selected no cases" >&2
+            exit 1
+          fi
+          echo "count=$(echo ${cases} | wc -w)" >> "$GITHUB_OUTPUT"
+          echo "list=${cases}" >> "$GITHUB_OUTPUT"
+
+      - name: Run ${{ steps.cases.outputs.count }} functional cases
+        env:
+          # The image came from the artifact; keep it and do not rebuild.
+          KEEP_BUILD: "1"
+        run: bash tests/functional/run-tests.sh ${{ steps.cases.outputs.list }}
+
+      # A failed case leaves its console log behind, which is the only
+      # way to tell a real failure from a VM that never booted.
+      - name: Upload console logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-logs-shard-${{ strategy.job-index }}
+          path: |
+            tests/functional/_output/*.log
+            tests/functional/log.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Fuzzing, as a short burst per target rather than a long campaign.
+  # The value in CI is catching a crasher a change introduced, which
+  # usually surfaces in seconds; finding deep bugs needs hours and belongs
+  # on a machine that has them.
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Split by package so a slow one does not hold up the rest.
+        # tests/fuzz carries 27 of the 40 targets, hence its own shard.
+        package:
+          - tests/fuzz
+          - pkg/config
+          - pkg/service
+          - cmd/slinit-hostnamectl
+          - cmd/slinit-openrc-convert
+          - cmd/slinit-runit-convert
+          - cmd/slinit-sysusers
+          - cmd/slinit-timedatectl
+          - cmd/slinit-tmpfiles
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz every target in ${{ matrix.package }}
+        env:
+          FUZZTIME: 30s
+        run: |
+          set -u
+          pkg="${{ matrix.package }}"
+          # Targets are discovered from the source, not listed in this
+          # file, so a new one is fuzzed the moment it is committed.
+          targets=$(grep -h '^func Fuzz' "${pkg}"/*_test.go 2>/dev/null \
+            | sed 's/^func \(Fuzz[A-Za-z0-9_]*\).*/\1/' | sort -u)
+          if [ -z "${targets}" ]; then
+            echo "no fuzz targets found in ${pkg} — the matrix entry is stale" >&2
+            exit 1
+          fi
+          echo "targets: $(echo ${targets} | tr '\n' ' ')"
+          # go test fuzzes one target per invocation, so this is a loop
+          # and not a single -fuzz flag.
+          rc=0
+          for t in ${targets}; do
+            echo "::group::${t}"
+            if ! go test "./${pkg}" -run "^${t}$" -fuzz "^${t}$" \
+                 -fuzztime "${FUZZTIME}"; then
+              echo "FAIL: ${t}"
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${rc}"
+
+      # A crasher is written under testdata/fuzz/<Target>/ and is the
+      # whole output of a failed run — without it the log says a target
+      # failed and gives no way to reproduce.
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers-${{ strategy.job-index }}
+          path: |
+            **/testdata/fuzz/**
+          if-no-files-found: ignore
+          retention-days: 30
