@@ -35,9 +35,9 @@ jobs:
   vm-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -48,7 +48,7 @@ jobs:
       # here. Keyed on the script because that is what pins the Alpine
       # release and the package list.
       - name: Cache Alpine downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: demo/_cache
           key: alpine-${{ hashFiles('tests/functional/build-vm.sh') }}
@@ -56,7 +56,7 @@ jobs:
       - name: Build the VM image
         run: bash tests/functional/build-vm.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vm-image
           path: tests/functional/_output/
@@ -76,7 +76,7 @@ jobs:
         # slices of the suite instead of failing.
         shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install QEMU
         run: |
@@ -97,7 +97,7 @@ jobs:
           fi
           qemu-system-x86_64 --version | head -1
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: vm-image
           path: tests/functional/_output/
@@ -138,7 +138,7 @@ jobs:
       # way to tell a real failure from a VM that never booted.
       - name: Upload console logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: functional-logs-shard-${{ strategy.job-index }}
           path: |
@@ -169,9 +169,9 @@ jobs:
           - cmd/slinit-timedatectl
           - cmd/slinit-tmpfiles
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -209,7 +209,7 @@ jobs:
       # failed and gives no way to reproduce.
       - name: Upload crashers
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashers-${{ strategy.job-index }}
           path: |
