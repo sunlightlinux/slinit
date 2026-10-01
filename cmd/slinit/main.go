@@ -1657,7 +1657,7 @@ func main() {
 		// rejects the write when the caller lacks CAP_SYS_ADMIN.
 		ctrlServer.SuspendFunc = func(state string) error {
 			logger.Notice("suspend: writing %q to /sys/power/state", state)
-			return shutdown.Suspend(state)
+			return shutdown.Suspend(state, logger)
 		}
 
 		// switch-root wire-up. Only enabled when slinit runs as PID 1

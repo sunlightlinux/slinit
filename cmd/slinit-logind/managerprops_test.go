@@ -101,7 +101,11 @@ func TestManagerPropCoverage(t *testing.T) {
 // rejects at parse time — and without a live bus that only shows up on
 // the target machine.
 func TestManagerPropSignatures(t *testing.T) {
-	m := &manager{}
+	// Built the way main() builds it: the inhibitor-aggregation getters
+	// read the registry, and a nil one is a misconfiguration worth
+	// panicking on rather than papering over with a nil-safe receiver
+	// that would silently report "nothing is inhibited".
+	m := &manager{inhibitors: newInhibitRegistry()}
 	for _, mp := range managerPropSpec {
 		v := mp.Get(m)
 		if v == nil {
@@ -119,7 +123,7 @@ func TestManagerPropSignatures(t *testing.T) {
 // makes (`GetAll("")`), the explicit one, and rejection of a foreign
 // interface.
 func TestManagerPropertiesGetAll(t *testing.T) {
-	p := &managerProperties{m: &manager{}}
+	p := &managerProperties{m: &manager{inhibitors: newInhibitRegistry()}}
 
 	for _, name := range []string{"", iface} {
 		all, err := p.GetAll(name)
@@ -140,7 +144,7 @@ func TestManagerPropertiesGetAll(t *testing.T) {
 }
 
 func TestManagerPropertiesGet(t *testing.T) {
-	p := &managerProperties{m: &manager{}}
+	p := &managerProperties{m: &manager{inhibitors: newInhibitRegistry()}}
 
 	v, err := p.Get("", "SessionsMax")
 	if err != nil {
@@ -158,7 +162,7 @@ func TestManagerPropertiesGet(t *testing.T) {
 // TestManagerPropertiesSet covers the two writable properties and the
 // read-only rejection every other one must give.
 func TestManagerPropertiesSet(t *testing.T) {
-	m := &manager{}
+	m := &manager{inhibitors: newInhibitRegistry()}
 	p := &managerProperties{m: m}
 
 	if err := p.Set("", "WallMessage", dbus.MakeVariant("system going down")); err != nil {

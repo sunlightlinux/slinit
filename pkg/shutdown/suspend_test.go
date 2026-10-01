@@ -11,7 +11,7 @@ import (
 // TestSuspend_UnknownState: passing a state not in the kernel's
 // documented set fails cleanly before touching sysfs.
 func TestSuspend_UnknownState(t *testing.T) {
-	err := Suspend("hibernate2")
+	err := Suspend("hibernate2", nil)
 	if err == nil {
 		t.Fatal("Suspend(\"hibernate2\") should reject unknown state")
 	}
@@ -34,7 +34,7 @@ func TestSuspend_DefaultToMem(t *testing.T) {
 	powerStatePath = path
 	defer func() { powerStatePath = orig }()
 
-	if err := Suspend(""); err != nil {
+	if err := Suspend("", nil); err != nil {
 		t.Fatalf("Suspend(\"\"): %v", err)
 	}
 	data, _ := os.ReadFile(path)
@@ -57,7 +57,7 @@ func TestSuspend_UnsupportedByKernel(t *testing.T) {
 	powerStatePath = path
 	defer func() { powerStatePath = orig }()
 
-	err := Suspend("mem")
+	err := Suspend("mem", nil)
 	if err == nil {
 		t.Fatal("expected error when kernel doesn't advertise 'mem'")
 	}
@@ -73,7 +73,7 @@ func TestSuspend_WriteFailure(t *testing.T) {
 	powerStatePath = "/no/such/sysfs/state"
 	defer func() { powerStatePath = orig }()
 
-	err := Suspend("mem")
+	err := Suspend("mem", nil)
 	if err == nil {
 		t.Fatal("expected error when sysfs path is missing")
 	}

@@ -1,9 +1,13 @@
 package shutdown
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/pkg/logging"
 )
 
 // powerStatePath is the sysfs entry the kernel exposes for suspend /
@@ -22,12 +26,32 @@ var suspendAllowedStates = map[string]struct{}{
 	"disk":    {}, // hibernate (s4). Does not return on success.
 }
 
+// sleepHookPaths is where a pre/post sleep hook is looked for, first
+// match wins. Same shape as shutdownHookPaths and deliberately a single
+// file rather than systemd's directory of scripts: slinit's house
+// convention is one hook, and a hook that needs to fan out to several
+// scripts can source a directory itself — which is what sunlight-os
+// already does for its shutdown hook.
+var sleepHookPaths = []string{
+	"/etc/slinit/sleep-hook",
+	"/lib/slinit/sleep-hook",
+}
+
 // Suspend writes `state` to /sys/power/state, putting the system to
 // sleep. Blocks until wake for freeze/standby/mem; returns EINVAL if
 // the state isn't supported by the kernel or the request is
 // malformed. finit-parity for `initctl suspend`. Callers: the
 // CmdSuspend control handler in pkg/control.
-func Suspend(state string) error {
+//
+// The sleep hook runs before the write and again after the kernel
+// returns, which for suspend-to-RAM is after the machine has woken. A
+// nil logger silences the hook's own output but still runs it.
+//
+// This is the one place the kernel write happens, so it is also the one
+// place the hook can be guaranteed to bracket it — slinit-logind routes
+// its D-Bus Suspend() through here rather than writing sysfs itself, so
+// a lid close and `slinitctl suspend` get the same hooks.
+func Suspend(state string, logger *logging.Logger) error {
 	state = strings.TrimSpace(state)
 	if state == "" {
 		state = "mem"
@@ -45,10 +69,73 @@ func Suspend(state string) error {
 				state, strings.TrimSpace(string(data)))
 		}
 	}
-	if err := os.WriteFile(powerStatePath, []byte(state), 0); err != nil {
+	runSleepHook("pre", state, logger)
+	err := os.WriteFile(powerStatePath, []byte(state), 0)
+	// The post hook runs even when the write failed, so a pre hook that
+	// stopped something always gets its counterpart. Scripts tell the
+	// two apart by $1.
+	runSleepHook("post", state, logger)
+	if err != nil {
 		return fmt.Errorf("suspend: write %s: %w", powerStatePath, err)
 	}
 	return nil
+}
+
+// sleepOperationArg maps a kernel sleep state to the operation name
+// systemd passes its system-sleep scripts, so a script copied from
+// /usr/lib/systemd/system-sleep/ reads the argument it expects.
+func sleepOperationArg(state string) string {
+	if state == "disk" {
+		return "hibernate"
+	}
+	return "suspend"
+}
+
+// runSleepHook invokes the sleep hook as `hook <phase> <operation>
+// <state>`: phase is "pre" or "post", operation is systemd's vocabulary
+// for script compatibility, and state is the raw kernel token for
+// scripts that need to tell s2idle from S3.
+//
+// A failing hook is logged and otherwise ignored, matching systemd. The
+// alternative — aborting the suspend — is worse on the hardware this is
+// for: a laptop whose lid is shut and which then stays awake because a
+// script exited non-zero cooks itself in a bag.
+func runSleepHook(phase, state string, logger *logging.Logger) {
+	var hookPath string
+	for _, path := range sleepHookPaths {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+			continue
+		}
+		hookPath = path
+		break
+	}
+	if hookPath == "" {
+		return
+	}
+
+	op := sleepOperationArg(state)
+	if logger != nil {
+		logger.Notice("Running sleep hook: %s %s %s %s", hookPath, phase, op, state)
+	}
+
+	cmd := exec.Command(hookPath, phase, op, state)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+
+	if logger != nil {
+		for _, line := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
+			if len(line) > 0 {
+				logger.Info("sleep-hook: %s", string(line))
+			}
+		}
+		if err != nil {
+			logger.Error("Sleep hook %s failed: %v (continuing — a stuck "+
+				"suspend is worse than a failed script)", phase, err)
+		}
+	}
 }
 
 // stateIsSupported checks whether the requested state appears in the

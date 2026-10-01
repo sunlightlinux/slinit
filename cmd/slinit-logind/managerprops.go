@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
@@ -147,21 +148,24 @@ var managerPropSpec = []managerProp{
 	{Name: "IdleSinceHintMonotonic", Sig: "t", Emit: "false",
 		Get: func(m *manager) any { return uint64(0) }},
 
-	// Inhibitor aggregation. Inhibit() hands out an fd but keeps no
-	// registry, so nothing is ever blocked or delayed. The empty
-	// string is what elogind returns when no inhibitor of that class
-	// is held — clients parse it as a colon-separated "what" list.
+	// Inhibitor aggregation, computed from the live registry. Clients
+	// parse these as colon-separated "what" lists, and an empty string
+	// means no lock of that mode is held.
 	{Name: "BlockInhibited", Sig: "s", Emit: "false",
-		Get: func(m *manager) any { return "" }},
+		Get: func(m *manager) any { return m.inhibitors.inhibitedClasses("block") }},
+	// Weak inhibitors are a systemd addition we do not implement; no
+	// client of ours takes one, and reporting a class here would claim
+	// a guarantee nothing enforces.
 	{Name: "BlockWeakInhibited", Sig: "s", Emit: "false",
 		Get: func(m *manager) any { return "" }},
 	{Name: "DelayInhibited", Sig: "s", Emit: "false",
-		Get: func(m *manager) any { return "" }},
-	// With no registry there is no delay to wait out; report 0 rather
-	// than elogind's 5s so a client that honours the value doesn't
-	// stall for a handshake we never perform.
+		Get: func(m *manager) any { return m.inhibitors.inhibitedClasses("delay") }},
+	// How long a sleep waits for delay locks to clear. This used to be
+	// 0 because there was no handshake to wait for; it now bounds the
+	// real wait, and a client reading it learns how much time it has to
+	// lock the screen.
 	{Name: "InhibitDelayMaxUSec", Sig: "t", Emit: "const",
-		Get: func(m *manager) any { return uint64(0) }},
+		Get: func(m *manager) any { return uint64(inhibitDelayMax / time.Microsecond) }},
 	{Name: "UserStopDelayUSec", Sig: "t", Emit: "const",
 		Get: func(m *manager) any { return uint64(0) }},
 
@@ -210,7 +214,7 @@ var managerPropSpec = []managerProp{
 	{Name: "PreparingForShutdownWithMetadata", Sig: "a{sv}", Emit: "false",
 		Get: func(m *manager) any { return map[string]dbus.Variant{} }},
 	{Name: "PreparingForSleep", Sig: "b", Emit: "false",
-		Get: func(m *manager) any { return false }},
+		Get: func(m *manager) any { return m.preparingForSleepNow() }},
 
 	// ScheduleShutdown / CancelScheduledShutdown aren't implemented,
 	// so nothing is ever scheduled.

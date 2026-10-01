@@ -14,16 +14,19 @@
 //   CanPowerOff, CanReboot, CanHalt, CanSuspend,
 //     CanHibernate, CanHybridSleep,
 //     CanSuspendThenHibernate                          — capability probes
-//   Inhibit                                            — stub returns
-//                                                       a pipe fd; real
-//                                                       enforcement lands
-//                                                       with the inhibitor
-//                                                       registry in Phase C
+//   Inhibit                                            — block/delay locks,
+//                                                       enforced on sleep
+//                                                       (see inhibit.go)
 //
-// Not yet: signals (SessionNew/Removed, PrepareForShutdown),
-// per-Session/User/Seat object paths, and the CreateSession /
-// ReleaseSession / ActivateSession methods PAM invokes. Those land
-// alongside the pam_slinit.so module.
+// Sleep goes through the handshake in sleep.go: block locks refuse,
+// delay locks are waited out, PrepareForSleep is announced either side,
+// and the kernel write happens in PID 1 so the sleep hook brackets it.
+// Hibernate, HybridSleep, SuspendThenHibernate and Sleep all take that
+// path; none of them writes /sys/power/state here any more.
+//
+// Not yet: PrepareForShutdown (the shutdown half of the same
+// handshake), and the CreateSession / ReleaseSession / ActivateSession
+// methods PAM invokes, which land alongside the pam_slinit.so module.
 package main
 
 import (
@@ -83,9 +86,10 @@ type Seat struct {
 	Path dbus.ObjectPath `json:"-"`
 }
 
-// Inhibitor rows are read from /run/slinit-logind/inhibitors/*.json.
-// Phase A ships an empty registry — the Inhibit() method returns a
-// pipe fd but doesn't enforce anything yet.
+// Inhibitor is the wire shape ListInhibitors returns. The live locks
+// are held in memory by inhibitRegistry (inhibit.go), keyed to the
+// descriptor the client holds — not read from a file, because a lock
+// has to die with the process that took it.
 type Inhibitor struct {
 	What  string
 	Who   string
@@ -124,6 +128,15 @@ type manager struct {
 	// seatProps is the same for seats: ActiveSession and Sessions move
 	// with every session change and VT switch (see vt.go).
 	seatProps map[string]*prop.Properties
+
+	// preparingForSleep backs the PreparingForSleep property while a
+	// sleep handshake is in flight. Guarded by mu.
+	preparingForSleep bool
+
+	// inhibitors holds the Inhibit() locks. Its own mutex rather than
+	// m.mu: a delay wait holds the registry for seconds while the
+	// manager keeps answering property reads.
+	inhibitors *inhibitRegistry
 
 	// debug mirrors the --debug flag. Session setup is the one place
 	// where a post-mortem is useless: the gdm/gnome fork chain we are
@@ -236,13 +249,19 @@ func (m *manager) ListSeats() ([]Seat, *dbus.Error) {
 	return out, nil
 }
 
-// ListInhibitors returns [(what, who, why, mode, uid, pid)]. Phase A
-// ships an empty registry — the Inhibit() method below hands out fds
-// but doesn't record them yet.
+// ListInhibitors returns [(what, who, why, mode, uid, pid)] for the
+// locks currently held. `loginctl list-inhibitors` reads this, and it is
+// how an operator finds out what is keeping a machine awake.
 func (m *manager) ListInhibitors() ([]Inhibitor, *dbus.Error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return []Inhibitor{}, nil
+	held := m.inhibitors.list()
+	out := make([]Inhibitor, 0, len(held))
+	for _, in := range held {
+		out = append(out, Inhibitor{
+			What: in.What, Who: in.Who, Why: in.Why,
+			Mode: in.Mode, UID: in.UID, PID: in.PID,
+		})
+	}
+	return out, nil
 }
 
 // GetSession / GetUser / GetSeat resolve by id → object path so
@@ -470,15 +489,25 @@ func hasPrefix(s, prefix string) bool {
 func (m *manager) PowerOff(interactive bool) *dbus.Error { return runShutdown("poweroff") }
 func (m *manager) Reboot(interactive bool) *dbus.Error   { return runShutdown("reboot") }
 func (m *manager) Halt(interactive bool) *dbus.Error     { return runShutdown("halt") }
-func (m *manager) Suspend(interactive bool) *dbus.Error  { return writeSysPower("mem") }
-func (m *manager) Hibernate(interactive bool) *dbus.Error {
-	return writeSysPower("disk")
+func (m *manager) Suspend(interactive bool) *dbus.Error {
+	return m.sleep(sleepVerb{"Suspend", "mem"})
 }
+func (m *manager) Hibernate(interactive bool) *dbus.Error {
+	return m.sleep(sleepVerb{"Hibernate", "disk"})
+}
+
+// HybridSleep and SuspendThenHibernate are each reported as their
+// nearest single kernel state rather than emulated. A real hybrid sleep
+// writes the image and then suspends to RAM, and
+// suspend-then-hibernate needs an RTC alarm to come back and finish the
+// job — neither is a single write, and claiming them while doing
+// something else is how a laptop loses work. Honest aliases until the
+// two-stage machinery exists.
 func (m *manager) HybridSleep(interactive bool) *dbus.Error {
-	return writeSysPower("disk")
+	return m.sleep(sleepVerb{"HybridSleep", "disk"})
 }
 func (m *manager) SuspendThenHibernate(interactive bool) *dbus.Error {
-	return writeSysPower("mem")
+	return m.sleep(sleepVerb{"SuspendThenHibernate", "mem"})
 }
 
 // *WithFlags variants — systemd 246+ / elogind 246+ shape. GDM and
@@ -490,21 +519,27 @@ func (m *manager) SuspendThenHibernate(interactive bool) *dbus.Error {
 func (m *manager) PowerOffWithFlags(flags uint64) *dbus.Error { return runShutdown("poweroff") }
 func (m *manager) RebootWithFlags(flags uint64) *dbus.Error   { return runShutdown("reboot") }
 func (m *manager) HaltWithFlags(flags uint64) *dbus.Error     { return runShutdown("halt") }
-func (m *manager) SuspendWithFlags(flags uint64) *dbus.Error  { return writeSysPower("mem") }
+func (m *manager) SuspendWithFlags(flags uint64) *dbus.Error {
+	return m.sleep(sleepVerb{"Suspend", "mem"})
+}
 func (m *manager) HibernateWithFlags(flags uint64) *dbus.Error {
-	return writeSysPower("disk")
+	return m.sleep(sleepVerb{"Hibernate", "disk"})
 }
 func (m *manager) HybridSleepWithFlags(flags uint64) *dbus.Error {
-	return writeSysPower("disk")
+	return m.sleep(sleepVerb{"HybridSleep", "disk"})
 }
 func (m *manager) SuspendThenHibernateWithFlags(flags uint64) *dbus.Error {
-	return writeSysPower("mem")
+	return m.sleep(sleepVerb{"SuspendThenHibernate", "mem"})
 }
 
 // Sleep is the systemd 253+ dispatcher — the client asks the daemon
 // to pick the best sleep operation given the hardware. We proxy to
-// Suspend as the safest default.
-func (m *manager) Sleep(flags uint64) *dbus.Error { return writeSysPower("mem") }
+// Suspend as the safest default, through the same handshake: it was
+// writing sysfs directly, which made it a third door past the
+// inhibitors and the PrepareForSleep announcement.
+func (m *manager) Sleep(flags uint64) *dbus.Error {
+	return m.sleep(sleepVerb{"Sleep", "mem"})
+}
 func (m *manager) CanSleep() (string, *dbus.Error) { return canSleep("mem"), nil }
 
 // Reload is called by `loginctl reload` (used e.g. by
@@ -532,22 +567,45 @@ func (m *manager) CanSuspendThenHibernate() (string, *dbus.Error) {
 	return canSleep("mem"), nil
 }
 
-// Inhibit takes (what, who, why, mode). systemd returns a duplicated
-// file descriptor the caller must keep open until the inhibitor is
-// released. Phase A returns a pipe read-end so client code that
-// checks-then-uses the fd works; real enforcement (checking on
-// PowerOff/Suspend before actioning) lands with the inhibitor
-// registry in Phase C.
-func (m *manager) Inhibit(what, who, why, mode string) (dbus.UnixFD, *dbus.Error) {
-	r, w, err := os.Pipe()
+// Inhibit takes (what, who, why, mode) and returns a descriptor the
+// caller holds for as long as it wants the lock. Closing it releases;
+// there is no Release method, which is the point of the design — a
+// client that crashes cannot leave a machine permanently unsuspendable.
+//
+// The sender argument is godbus's injection of the caller's bus name,
+// used to attribute the lock to a uid and pid so `loginctl
+// list-inhibitors` names something an operator can act on.
+func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus.UnixFD, *dbus.Error) {
+	var uid, pid uint32
+	if p, err := m.callerPID(string(sender)); err == nil {
+		pid = p
+	}
+	if u, err := m.callerUID(string(sender)); err == nil {
+		uid = u
+	}
+
+	clientEnd, in, err := m.inhibitors.add(what, who, why, mode, uid, pid)
 	if err != nil {
-		return 0, dbus.NewError("org.freedesktop.login1.Error.PipeCreationFailed",
+		return 0, dbus.NewError("org.freedesktop.login1.Error.InvalidArguments",
 			[]interface{}{err.Error()})
 	}
-	// The client keeps the read-end; we drop the write-end so that
-	// when the client closes the fd there's no leak on our side.
-	_ = w.Close()
-	return dbus.UnixFD(r.Fd()), nil
+	if m.debug {
+		fmt.Fprintf(os.Stderr, "slinit-logind: inhibit %d %s mode=%s who=%q why=%q uid=%d pid=%d\n",
+			in.ID, in.What, in.Mode, in.Who, in.Why, in.UID, in.PID)
+	}
+	return dbus.UnixFD(clientEnd.Fd()), nil
+}
+
+// callerUID asks the bus daemon which user owns a connection. Same
+// shape as callerPID.
+func (m *manager) callerUID(sender string) (uint32, error) {
+	obj := m.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+	var uid uint32
+	if err := obj.Call("org.freedesktop.DBus.GetConnectionUnixUser",
+		0, sender).Store(&uid); err != nil {
+		return 0, err
+	}
+	return uid, nil
 }
 
 // --- helpers ---
@@ -625,18 +683,6 @@ func runShutdown(verb string) *dbus.Error {
 	}
 	if err := exec.Command(bin, flag).Start(); err != nil {
 		return dbus.NewError("org.freedesktop.login1.Error.OperationInProgress",
-			[]interface{}{err.Error()})
-	}
-	return nil
-}
-
-// writeSysPower drops the requested state token into /sys/power/state,
-// which is the kernel's sleep entry point. systemd-logind does the
-// same after coordinating inhibitors + PAM notifications; our
-// inhibitor registry is Phase C, so this is the minimal path.
-func writeSysPower(state string) *dbus.Error {
-	if err := os.WriteFile("/sys/power/state", []byte(state), 0); err != nil {
-		return dbus.NewError("org.freedesktop.login1.Error.SleepNotSupported",
 			[]interface{}{err.Error()})
 	}
 	return nil
@@ -764,7 +810,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	m := &manager{conn: conn, debug: *debug}
+	m := &manager{conn: conn, debug: *debug, inhibitors: newInhibitRegistry()}
 	if err := conn.Export(m, dbus.ObjectPath(objPath), iface); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-logind: export: %v\n", err)
 		os.Exit(1)
