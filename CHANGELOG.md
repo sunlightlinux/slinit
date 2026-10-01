@@ -15,6 +15,11 @@ Development from **v2.0.0** onward focuses on three tracks:
 Pre-v2.0.0 history is summarised at the bottom; `git log v1.10.55` has
 the full commit-level record.
 
+Release tags are lightweight. Seven of them (v2.1.0, v2.2.1–v2.2.7) were
+annotated and were converted on 2026-10-01 for consistency; the messages
+their tagger wrote are kept in
+[doc/annotated-tag-archive.md](doc/annotated-tag-archive.md).
+
 ## [Unreleased]
 
 ## [2.5.0] — 2026-09-30
