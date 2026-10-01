@@ -96,10 +96,18 @@ waits-for: perf-collect
 EOF
 
 echo "→ rebuilding initramfs (demo/build.sh)"
-(cd "${DEMO_DIR}" && ./build.sh >/dev/null 2>&1) || {
-    echo "fork-exec-throughput: demo/build.sh failed" >&2
+# Output is captured rather than discarded: a build that fails with
+# nothing on stderr cannot be diagnosed, which is exactly what happened
+# the first time this ran on a CI runner — "demo/build.sh failed" and not
+# one word about why.
+_build_log=$(mktemp)
+if ! (cd "${DEMO_DIR}" && ./build.sh) >"${_build_log}" 2>&1; then
+    echo "fork-exec-throughput: demo/build.sh failed; last 40 lines:" >&2
+    tail -40 "${_build_log}" >&2
+    rm -f "${_build_log}"
     exit 3
-}
+fi
+rm -f "${_build_log}"
 
 echo "→ running ${ITERATIONS} iterations (N=${NUM_SVCS})..."
 _boot_samples=()
