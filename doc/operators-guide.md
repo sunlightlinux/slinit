@@ -311,6 +311,75 @@ running only because something depends on them, and they are released when
 that dependent goes away. `slinitctl start X` (not `wake`) marks a service
 active so it stays up on its own.
 
+### My laptop does nothing when I close the lid
+
+By default that is correct: every lid and power-key handler ships as
+`ignore`. Turning them on would have changed what the hardware does on
+upgrade with nothing having asked for it, so it is opt-in.
+
+On GNOME or XFCE you may not want them on at all — both read logind's
+`HandleLidSwitch` property to decide whether logind already owns the key,
+and `ignore` tells them to handle it themselves, which they do, with a UI
+and a per-user setting. Configure slinit's side for a bare window
+manager, or when the policy must hold with no session running.
+
+Create `/etc/slinit/logind.conf`:
+
+```ini
+[Login]
+HandleLidSwitch=suspend
+HandleLidSwitchExternalPower=ignore
+HandlePowerKey=poweroff
+HoldoffTimeoutSec=30
+```
+
+Then restart the daemon: `slinitctl restart slinit-logind`. It reads the
+file once at start-up. If a value does not parse it says so on stderr and
+keeps the default, so check the log rather than assuming it took.
+
+`loginctl show-manager` reports what it actually believes, which is the
+quickest way to tell a config that was read from one that was not. An
+existing `/etc/elogind/logind.conf` is used when slinit's own file is
+absent, so a machine migrating off elogind needs no copying.
+
+### The screen does not lock when the machine suspends
+
+The locker listens for logind's `PrepareForSleep` signal, so this means
+either nothing is suspending through logind, or no locker is running.
+
+`slinitctl suspend` goes through logind by default, so it does lock. The
+exception is `slinitctl suspend --no-coordination`, which is the
+low-level door straight to PID 1: the sleep hook still runs either side,
+but no signal is emitted and no inhibitor is consulted, so nothing locks.
+Use that one for testing a hook. `freeze` and `standby` always take the
+direct path, because `org.freedesktop.login1` has no method for them —
+the command tells you so on stderr.
+
+To see whether the handshake is happening at all:
+
+```sh
+gdbus monitor --system --dest org.freedesktop.login1 | grep -i preparefor
+```
+
+Then suspend. Two lines, `true` then `false`, mean logind is announcing
+it. None means the suspend went around it.
+
+### Something is stopping the machine from suspending
+
+```sh
+loginctl list-inhibitors
+```
+
+A `block` lock on `sleep` refuses a suspend outright, and the error names
+the holder and its pid. A `delay` lock only buys time — up to
+`InhibitDelayMaxSec`, five seconds by default — and then the sleep
+proceeds whether the holder let go or not, deliberately: a locker that
+crashed holding one must not keep a lid-shut laptop awake.
+
+A lock lasts until the file descriptor its holder was given is closed.
+There is no release command, so a stuck lock means a stuck process; kill
+it and the lock goes with it.
+
 ### Boot got slower and I want to see where
 
 `slinitctl analyze time` ranks services by how long each took, which

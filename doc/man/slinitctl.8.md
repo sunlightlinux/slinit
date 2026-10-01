@@ -506,17 +506,32 @@ daemon, which is useful at install time or in initramfs.
     from other init systems without having to type the *kind*
     argument.
 
-**suspend** [*STATE*]
-:   Put the system to sleep by writing *STATE* to
-    */sys/power/state*. Default *STATE* is **mem** (suspend-to-RAM,
-    ACPI S3). Other kernel values: **freeze** (suspend-to-idle,
-    s2idle), **standby** (power-on suspend, S1), **disk**
-    (hibernate, S4 — successful hibernate does not return).
-    Slinit validates the state against the kernel-advertised list
-    in */sys/power/state* before writing so an unsupported target
-    produces a clear error rather than an opaque EINVAL. Blocks
-    the client until wake (freeze/standby/mem). finit-parity
-    (`initctl suspend`).
+**suspend** [**\--no-coordination**] [*STATE*]
+:   Put the system to sleep. Default *STATE* is **mem**
+    (suspend-to-RAM, ACPI S3). Other kernel values: **freeze**
+    (suspend-to-idle, s2idle), **standby** (power-on suspend, S1),
+    **disk** (hibernate, S4 — successful hibernate does not return).
+    The state is validated against the kernel-advertised list in
+    */sys/power/state* so an unsupported target produces a clear
+    error rather than an opaque EINVAL. Blocks until wake
+    (freeze/standby/mem). finit-parity (`initctl suspend`).
+
+    Since 2.5.1 the request goes through **slinit-logind**(8) by
+    default, which is what emits *PrepareForSleep* and so what makes
+    the screen lock before the machine sleeps. A *block* inhibitor
+    refuses the request and the error names its holder.
+
+    **\--no-coordination** writes the kernel state through PID 1
+    directly, which is what this command always used to do. The sleep
+    hook still runs either side, but no signal is emitted and no
+    inhibitor is consulted, so **nothing locks the screen**. Use it to
+    test a sleep hook, or on a system with no logind at all.
+
+    *freeze* and *standby* have no *org.freedesktop.login1* method, so
+    they always take the direct path; the command says so on stderr
+    rather than locking silently failing. The same fallback applies
+    when there is no system bus or no daemon on the name — a container
+    or an initramfs can still suspend.
 
 **edit** *NAME*
 :   Open the on-disk service description for *NAME* in **$VISUAL**

@@ -2833,14 +2833,50 @@ func cmdEdit(conn net.Conn, args []string) error {
 // (suspend-to-RAM); other kernel-recognised values are freeze,
 // standby, disk. The daemon blocks until the system wakes (for
 // freeze/standby/mem) so the client sees the reply post-resume.
+// cmdSuspend suspends the machine, by default through slinit-logind so
+// the screen gets locked first.
+//
+// The direct path — this command's original behaviour — asks PID 1 to
+// write /sys/power/state. PID 1 runs the sleep hook either side, but it
+// emits no PrepareForSleep signal and consults no inhibitor, so a screen
+// locker never hears about it and the machine can wake unlocked. That is
+// fine for testing a hook and wrong for everything else, so it is now
+// behind --no-coordination.
+//
+// Falling back rather than failing when there is no bus: a container, an
+// initramfs, or a system where slinit-logind is simply not installed
+// still has a reason to suspend, and refusing there would make this
+// command useless on exactly the systems that have no desktop to lock.
 func cmdSuspend(conn net.Conn, args []string) error {
+	direct := false
+	var rest []string
+	for _, a := range args {
+		switch a {
+		case "--no-coordination":
+			direct = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	args = rest
 	if len(args) > 1 {
-		return fmt.Errorf("usage: slinitctl suspend [STATE]")
+		return fmt.Errorf("usage: slinitctl suspend [--no-coordination] [STATE]")
 	}
 	state := ""
 	if len(args) == 1 {
 		state = args[0]
 	}
+
+	if !direct {
+		switch done, err := suspendViaLogind(state); {
+		case err != nil:
+			return err
+		case done:
+			return nil
+		}
+		// Not reachable through logind — carry on to the direct path.
+	}
+
 	stateBytes := []byte(state)
 	if len(stateBytes) > 0xFF {
 		return fmt.Errorf("suspend: state too long (max 255 bytes)")
@@ -2849,7 +2885,7 @@ func cmdSuspend(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdSuspend, payload); err != nil {
 		return err
 	}
-	rply, rest, err := control.ReadPacket(conn)
+	rply, reply, err := control.ReadPacket(conn)
 	if err != nil {
 		return err
 	}
@@ -2862,8 +2898,8 @@ func cmdSuspend(conn net.Conn, args []string) error {
 		return nil
 	case control.RplyBadReq:
 		msg := "invalid request"
-		if len(rest) > 0 {
-			msg = string(rest)
+		if len(reply) > 0 {
+			msg = string(reply)
 		}
 		return fmt.Errorf("suspend: %s", msg)
 	default:

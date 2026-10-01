@@ -691,6 +691,34 @@ on the console:
 */etc/slinit/environment*
 :   Default environment file for system mode.
 
+*/etc/slinit/sleep-hook*, */lib/slinit/sleep-hook*
+:   Run either side of a suspend or hibernate (since 2.5.1), first
+    executable path wins. Invoked as
+
+        sleep-hook pre|post suspend|hibernate freeze|standby|mem|disk
+
+    The first two arguments are systemd's vocabulary, so a script
+    copied from */usr/lib/systemd/system-sleep/* reads what it
+    expects; the third is the raw kernel state for anything that
+    needs to tell suspend-to-idle from S3.
+
+    The *post* call is the first thing to run after the machine
+    wakes, and runs even when the kernel write failed, so a *pre*
+    hook that stopped something always gets its counterpart.
+
+    A hook that exits non-zero is logged and otherwise ignored,
+    matching systemd. Aborting the sleep would be worse on the
+    hardware this is for: a laptop whose lid is shut and which then
+    stays awake because a script failed cooks itself in a bag.
+
+    This is the only place the kernel sleep write happens, which is
+    what lets the hook bracket it — **slinit-logind**(8) routes its
+    D-Bus *Suspend* through **slinitctl suspend** rather than
+    writing sysfs itself, so a lid close and a CLI suspend get the
+    same hooks. A single file rather than a directory of scripts,
+    matching *shutdown-hook*; a hook that needs to fan out can
+    source a directory itself.
+
 */etc/network/interfaces*
 :   Debian/BusyBox network integration. When slinit runs as PID 1
     and this file exists AND **ifup**(8) is on PATH, slinit

@@ -165,17 +165,26 @@ var managerPropSpec = []managerProp{
 	// real wait, and a client reading it learns how much time it has to
 	// lock the screen.
 	{Name: "InhibitDelayMaxUSec", Sig: "t", Emit: "const",
-		Get: func(m *manager) any { return uint64(inhibitDelayMax / time.Microsecond) }},
+		Get: func(m *manager) any {
+			return uint64(m.buttonCfg().InhibitDelayMax / time.Microsecond)
+		}},
 	{Name: "UserStopDelayUSec", Sig: "t", Emit: "const",
 		Get: func(m *manager) any { return uint64(0) }},
 
 	{Name: "SleepOperation", Sig: "as", Emit: "const",
 		Get: func(m *manager) any { return sleepOperations() }},
 
-	// Hardware key + lid handling: see the honesty note at the top of
-	// this file. All "ignore" until logind-button.c's equivalent lands.
+	// Hardware key + lid handling. These report what the watcher is
+	// configured to do (buttonconf.go), which until it existed was
+	// always "ignore" — see the honesty note at the top of this file.
+	// Still "ignore" on a machine with no config file, because enabling
+	// handlers on upgrade would change what the hardware does with
+	// nothing having asked for it.
 	{Name: "HandlePowerKey", Sig: "s", Emit: "const",
-		Get: func(m *manager) any { return "ignore" }},
+		Get: func(m *manager) any { return string(m.buttonCfg().PowerKey) }},
+	// LongPress and the reboot/secure-attention keys have no watcher
+	// path: no device reports them as distinct codes here, so claiming
+	// an action would promise something nothing delivers.
 	{Name: "HandlePowerKeyLongPress", Sig: "s", Emit: "const",
 		Get: func(m *manager) any { return "ignore" }},
 	{Name: "HandleRebootKey", Sig: "s", Emit: "const",
@@ -183,23 +192,25 @@ var managerPropSpec = []managerProp{
 	{Name: "HandleRebootKeyLongPress", Sig: "s", Emit: "const",
 		Get: func(m *manager) any { return "ignore" }},
 	{Name: "HandleSuspendKey", Sig: "s", Emit: "const",
-		Get: func(m *manager) any { return "ignore" }},
+		Get: func(m *manager) any { return string(m.buttonCfg().SuspendKey) }},
 	{Name: "HandleSuspendKeyLongPress", Sig: "s", Emit: "const",
 		Get: func(m *manager) any { return "ignore" }},
 	{Name: "HandleHibernateKey", Sig: "s", Emit: "const",
-		Get: func(m *manager) any { return "ignore" }},
+		Get: func(m *manager) any { return string(m.buttonCfg().HibernateKey) }},
 	{Name: "HandleHibernateKeyLongPress", Sig: "s", Emit: "const",
 		Get: func(m *manager) any { return "ignore" }},
 	{Name: "HandleLidSwitch", Sig: "s", Emit: "const",
-		Get: func(m *manager) any { return "ignore" }},
+		Get: func(m *manager) any { return string(m.buttonCfg().LidSwitch) }},
 	{Name: "HandleLidSwitchExternalPower", Sig: "s", Emit: "const",
-		Get: func(m *manager) any { return "ignore" }},
+		Get: func(m *manager) any { return string(m.buttonCfg().LidSwitchExternalPower) }},
 	{Name: "HandleLidSwitchDocked", Sig: "s", Emit: "const",
-		Get: func(m *manager) any { return "ignore" }},
+		Get: func(m *manager) any { return string(m.buttonCfg().LidSwitchDocked) }},
 	{Name: "HandleSecureAttentionKey", Sig: "s", Emit: "const",
 		Get: func(m *manager) any { return "ignore" }},
 	{Name: "HoldoffTimeoutUSec", Sig: "t", Emit: "const",
-		Get: func(m *manager) any { return uint64(0) }},
+		Get: func(m *manager) any {
+			return uint64(m.buttonCfg().HoldoffTimeout / time.Microsecond)
+		}},
 
 	{Name: "IdleAction", Sig: "s", Emit: "const",
 		Get: func(m *manager) any { return "ignore" }},

@@ -133,6 +133,11 @@ type manager struct {
 	// sleep handshake is in flight. Guarded by mu.
 	preparingForSleep bool
 
+	// buttons is the lid/power-key configuration, read once at start.
+	// The Handle* properties report it, so it has to be reachable from
+	// the property getters as well as the watcher.
+	buttons buttonConfig
+
 	// inhibitors holds the Inhibit() locks. Its own mutex rather than
 	// m.mu: a delay wait holds the registry for seconds while the
 	// manager keeps answering property reads.
@@ -596,6 +601,17 @@ func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus
 	return dbus.UnixFD(clientEnd.Fd()), nil
 }
 
+// buttonCfg returns the button configuration for the property getters.
+// A manager built without one — which is every unit test that does not
+// care — reports the all-"ignore" defaults rather than a zero value
+// whose empty strings would fail the signature check.
+func (m *manager) buttonCfg() buttonConfig {
+	if m.buttons.PowerKey == "" {
+		return defaultButtonConfig()
+	}
+	return m.buttons
+}
+
 // callerUID asks the bus daemon which user owns a connection. Same
 // shape as callerPID.
 func (m *manager) callerUID(sender string) (uint32, error) {
@@ -811,6 +827,17 @@ func main() {
 	defer conn.Close()
 
 	m := &manager{conn: conn, debug: *debug, inhibitors: newInhibitRegistry()}
+
+	// Button/lid configuration is read before anything is exported, so
+	// the Handle* properties answer with the real settings from the very
+	// first introspection a desktop stack performs — GNOME's
+	// settings-daemon and XFCE's power manager read them once at start
+	// to decide whether logind already owns the keys.
+	m.buttons = loadButtonConfig()
+	for _, warn := range m.buttons.Warnings {
+		fmt.Fprintf(os.Stderr, "slinit-logind: %s\n", warn)
+	}
+
 	if err := conn.Export(m, dbus.ObjectPath(objPath), iface); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-logind: export: %v\n", err)
 		os.Exit(1)
@@ -831,6 +858,12 @@ func main() {
 	// would 404 on the object path for sessions that PAM created before
 	// we came up.
 	m.rehydrateObjects()
+
+	// Lid and power-key watcher. A no-op unless something is configured,
+	// so a machine with no logind.conf holds no input descriptors.
+	buttons := newButtonWatcher(m, m.buttons)
+	buttons.Start()
+	defer buttons.Stop()
 	// Session state lives in /run, so it outlives us. Drop whatever
 	// belongs to a leader that is already gone, and watch the leaders
 	// that are still alive.
