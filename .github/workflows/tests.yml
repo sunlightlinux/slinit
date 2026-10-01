@@ -157,6 +157,66 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Performance harnesses, run as a smoke test and not as a measurement.
+  #
+  # The numbers a shared runner produces are not comparable with anything —
+  # no KVM guarantee, noisy neighbours, variable CPU. Nothing here tracks
+  # a regression threshold, and nobody should read the printed
+  # milliseconds as slinit's boot time.
+  #
+  # What this does catch is rot, which these harnesses are unusually prone
+  # to: each one injects a service into demo/services/, patches the boot
+  # target, rebuilds the initramfs, and parses a PERF-BEGIN..PERF-END
+  # block out of serial output. A change to the config parser, to the
+  # console format, or to demo/services breaks that silently, and without
+  # a job running them nobody would find out for months.
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install QEMU and image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 cpio socat
+
+      # The demo image is a different image from the functional one and
+      # each harness rebuilds it, so the Alpine downloads are worth
+      # caching even though the build itself is repeated.
+      - name: Cache Alpine downloads
+        uses: actions/cache@v6
+        with:
+          path: demo/_cache
+          key: alpine-demo-${{ hashFiles('demo/build.sh') }}
+
+      # Iteration counts are cut to the minimum that still exercises the
+      # loop: the point is that a boot completes and the block parses, and
+      # five samples of an unreliable clock are no better than two.
+      - name: cold-boot
+        run: bash tests/performance/demo/cold-boot.sh 2
+
+      - name: minimal-boot
+        run: bash tests/performance/demo/minimal-boot.sh 2
+
+      - name: fork-exec-throughput
+        run: bash tests/performance/demo/fork-exec-throughput.sh 50 2
+
+      # First argument is the idle period before the status read, not an
+      # iteration count. Shortened from ten seconds because it exists to
+      # let PID 1 quiesce, and four is enough for that.
+      - name: pid1-footprint
+        run: bash tests/performance/demo/pid1-footprint.sh 4 2
+
+      # -benchtime=10x rather than the default second per benchmark: the
+      # question is whether they still build and run, and ten iterations
+      # answers it in well under a second.
+      - name: runtime benchmarks
+        run: go test -bench=. -benchtime=10x -run='^$' ./tests/performance/runtime/
+
   # Fuzzing, as a short burst per target rather than a long campaign.
   # The value in CI is catching a crasher a change introduced, which
   # usually surfaces in seconds; finding deep bugs needs hours and belongs
