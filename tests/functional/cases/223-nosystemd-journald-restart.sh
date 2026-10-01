@@ -29,9 +29,10 @@ else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
 fi
 
-# Force the sink to turn over beneath the running writer. At
-# logfile-max-size=2048 with a line per second this rotates on its own;
-# wait long enough to be sure at least one rotation happened.
+# Force the sink to turn over beneath the running writer. The producer
+# writes in a tight loop with no sleep and logfile-max-size is 4096, so
+# this rotates many times a second on its own; wait long enough to be
+# sure at least one rotation happened.
 rotated_seen=0
 i=0
 while [ "$i" -lt 15 ]; do
@@ -52,11 +53,22 @@ else
 fi
 
 # The point of the test: after the sink turned over, output must still
-# be arriving. Measure by the producer's own monotonic counter rather
-# than by file size — at this rate the live file rotates several times a
-# second, so its size can legitimately shrink between two samples.
+# be arriving. Measured by the producer's own monotonic counter rather
+# than by file size, because at this rate the live file rotates several
+# times a second and its size can legitimately shrink between samples.
+#
+# Taken as the highest counter across the live file *and* its rotations,
+# not from the live file alone. Reading only the live one samples an
+# empty file whenever a rotation has just happened, and an empty sample
+# reads as "the producer went silent" when it did not — which is how this
+# case failed on a CI runner while passing locally. The rotations are
+# plain text (no compression directive on the service), so tail works on
+# all of them.
 counter_of() {
-    tail -n 1 /tmp/chatty.log 2>/dev/null | sed -n 's/^chatty-line-\([0-9]*\).*/\1/p'
+    for f in /tmp/chatty.log /tmp/chatty.log.*; do
+        [ -f "$f" ] || continue
+        tail -n 1 "$f" 2>/dev/null | sed -n 's/^chatty-line-\([0-9]*\).*/\1/p'
+    done | sort -n | tail -1
 }
 n_before=$(counter_of)
 sleep 3
