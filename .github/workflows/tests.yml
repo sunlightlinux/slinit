@@ -17,7 +17,7 @@
 # 21.5s per case) — far from the order of magnitude emulation usually
 # costs, because these cases wait on sleeps and boots rather than burning
 # CPU. A runner is slower still, which is what the sharding is for.
-name: tests
+name: Slinit tests
 
 on:
   pull_request:
@@ -118,15 +118,25 @@ jobs:
           # lands in exactly one shard. Discovered from the directory
           # rather than listed here: a workflow holding its own copy of
           # the case list goes stale the first time someone adds one.
+          # k comes from the matrix value, not strategy.job-index: the two
+          # are not the same, and the job label shows the matrix value. A
+          # run where "functional (5)" had actually selected index 4 sent
+          # a debugging session looking at the wrong 28 cases. n still
+          # comes from job-total so it cannot desync from the list length.
           cases=$(ls tests/functional/cases/*.sh | \
-            awk -v n="${{ strategy.job-total }}" -v k="${{ strategy.job-index }}" \
+            awk -v n="${{ strategy.job-total }}" -v k="${{ matrix.shard }}" \
                 'NR % n == k { printf "%s ", $0 }')
           if [ -z "${cases}" ]; then
-            echo "shard ${{ strategy.job-index }} of ${{ strategy.job-total }} selected no cases" >&2
+            echo "shard ${{ matrix.shard }} of ${{ strategy.job-total }} selected no cases" >&2
             exit 1
           fi
           echo "count=$(echo ${cases} | wc -w)" >> "$GITHUB_OUTPUT"
           echo "list=${cases}" >> "$GITHUB_OUTPUT"
+          # Printed so a failing shard can be mapped back to its cases
+          # from the log alone, which is the one thing you want and cannot
+          # reconstruct when a run has gone red.
+          echo "shard ${{ matrix.shard }} of ${{ strategy.job-total }} runs:"
+          for c in ${cases}; do echo "  ${c}"; done
 
       - name: Run ${{ steps.cases.outputs.count }} functional cases
         env:
