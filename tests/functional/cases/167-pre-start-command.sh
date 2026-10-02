@@ -12,6 +12,17 @@
 # whole BringUp and reports a start failure.
 
 wait_for_service "prehook-svc" "STARTED" 10
+
+# Printed on every run, pass or fail. This case fails on the CI runner and
+# passes here under every condition tried — fresh image, software
+# emulation, and a single starved core — so what is missing is not another
+# theory but the service's own account of itself at the moment of the
+# check. A passing run's dump is the baseline the failing one is read
+# against, which is why this is not conditional.
+echo "--- diag: prehook-svc at the moment of the check ---"
+slinitctl status prehook-svc 2>&1 || true
+echo "--- diag: end ---"
+
 assert_service_state "prehook-svc" "STARTED" "prehook-svc reaches STARTED"
 
 # Marker written by the hook — must already exist by the time the svc

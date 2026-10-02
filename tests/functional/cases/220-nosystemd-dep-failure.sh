@@ -18,6 +18,16 @@
 slinitctl start depfail-base >/dev/null 2>&1
 sleep 2
 
+# Printed on every run. On the CI runner depfail-user reaches STARTED and
+# the start exits 0, which can only happen if the hard dependency was not
+# failed at this point — so the dependency's own state is the fact worth
+# capturing, and it is the one the assertions below do not record. Passes
+# here under every condition tried, so a baseline from a green run is what
+# makes the red one readable.
+echo "--- diag: depfail-base (the dependency that must have failed) ---"
+slinitctl status depfail-base 2>&1 || true
+echo "--- diag: end ---"
+
 # #6478: the exit status has to reflect the outcome, not the fact that
 # the request was accepted.
 assert_exit_code "slinitctl start depfail-user" 1 \

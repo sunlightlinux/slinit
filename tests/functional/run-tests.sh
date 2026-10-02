@@ -173,9 +173,15 @@ SVC
     local chardev_path
     chardev_path=$(mktemp -u "/tmp/slinit-test-${test_name}-XXXXXX.sock")
 
-    # Detect KVM
+    # Detect KVM. SLINIT_NO_KVM=1 forces software emulation even where
+    # acceleration is available, which is how the CI runner executes these
+    # cases — it has no usable /dev/kvm. Several cases have turned out to
+    # assert something that only holds at hardware speed (219's CPU tick
+    # budget, 223's log sampling, 07's restart allowance), and each was
+    # found on the runner rather than here. This is the switch that
+    # reproduces the runner's conditions on a developer box.
     local kvm_args="-cpu qemu64"
-    if [ -w /dev/kvm ] 2>/dev/null; then
+    if [ -w /dev/kvm ] 2>/dev/null && [ "${SLINIT_NO_KVM:-0}" != "1" ]; then
         kvm_args="-enable-kvm -cpu host"
     fi
 
