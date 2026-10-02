@@ -644,12 +644,70 @@ When running as system manager (PID 1 or **-m**):
 * *SIGTERM* — halt
 * *SIGQUIT* — immediate shutdown, no service rollback
 * *SIGUSR1* — re-open the control socket if it has been deleted
+* *SIGPWR* — a UPS daemon reporting mains power lost or restored
+  (since 2.6.1). slinit reads why and runs the power hook; see
+  **POWER EVENTS** below. It does **not** shut anything down on its own.
 
 When running as a user or system service manager:
 
 * *SIGINT* / *SIGTERM* — stop services and exit
 * *SIGQUIT* — exit immediately
 * *SIGUSR1* — re-open the control socket
+
+## POWER EVENTS
+
+UPS daemons — **nut**, **apcupsd** and the like — tell init that mains
+power has gone by sending *SIGPWR* to PID 1 and leaving a single
+character in */run/powerstatus*:
+
+* **F** — mains lost, the UPS is carrying the load
+* **O** — mains restored
+* **L** — mains lost and the battery is nearly out
+
+*/var/run/powerstatus* and */etc/powerstatus* are accepted as fallbacks,
+in that order. sysvinit's own manual documents */etc/powerstatus*, but
+its code has preferred */var/run* since 2010; slinit reads the newest
+spelling first. Anything that is not **F**, **O** or **L** — including a
+missing or unreadable file — is treated as **F**, which is sysvinit's
+documented behaviour and the safe direction to be wrong in.
+
+The file is **removed** once read. The status is an event, not a state:
+the daemon writes it and then signals, so a file left in place would
+make the next *SIGPWR* replay a power failure that had already been
+handled.
+
+slinit then runs the first executable it finds of
+
+*/etc/slinit/power-hook*, */lib/slinit/power-hook*
+
+with one argument — *failing*, *ok* or *low* — and does nothing else.
+**No automatic shutdown, not even on a low battery.** What a machine
+should do when its UPS is draining is a policy decision: finish the
+transaction in flight, flush a cache, power off, or ignore it because
+another host owns that decision. An init system that picks one silently
+will be wrong on some machine in the most expensive way available. One
+line inside the hook settles it:
+
+    #!/bin/sh
+    # /etc/slinit/power-hook
+    case "$1" in
+        low)     slinitctl --system poweroff ;;
+        failing) logger -t ups "on battery" ;;
+        ok)      logger -t ups "mains restored" ;;
+    esac
+
+A hook that is absent, not executable, or exits non-zero is logged and
+otherwise ignored — by the time it runs the power event has already
+happened and there is nothing left to abort. A *SIGPWR* that arrives
+while a shutdown is already under way is ignored without consuming the
+status file.
+
+Note that sysvinit's manual calls *SIGPWR* and */etc/powerstatus*
+discouraged, pointing at its own control channel instead. slinit accepts
+the signal because that is what UPS daemons actually send; its own
+recommended path is the control socket, which a daemon can reach with
+**slinitctl**(8) directly and which carries more than three letters of
+information.
 
 ## ENVIRONMENT
 
@@ -690,6 +748,19 @@ on the console:
 
 */etc/slinit/environment*
 :   Default environment file for system mode.
+
+*/etc/slinit/power-hook*, */lib/slinit/power-hook*
+:   Run when a UPS daemon signals a mains power change (since 2.6.1),
+    first executable path wins. Invoked as
+
+        power-hook failing|ok|low
+
+    See **POWER EVENTS**. slinit takes no action of its own on a power
+    event; this script is where the policy lives.
+
+*/run/powerstatus*, */var/run/powerstatus*, */etc/powerstatus*
+:   Where a UPS daemon leaves the reason for *SIGPWR*, read in that
+    order and **removed** once read. One byte: **F**, **O** or **L**.
 
 */etc/slinit/sleep-hook*, */lib/slinit/sleep-hook*
 :   Run either side of a suspend or hibernate (since 2.5.1), first

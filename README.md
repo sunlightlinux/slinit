@@ -289,6 +289,7 @@ format to accommodate them.
   which is what calls `CreateSession` at login. See
   `doc/man/slinit-logind.8.md`.
 - **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
+- **UPS power events** (sysvinit compat): `SIGPWR` + `/run/powerstatus` (`F`/`O`/`L`) as nut and apcupsd send them, dispatched to `/etc/slinit/power-hook failing|ok|low`. slinit takes no action itself — not even on a low battery; the hook owns the policy. See `slinit(8)` POWER EVENTS.
 - **Container mode**: `-o`/`--container` for Docker/LXC/Podman (SIGINT/SIGTERM → graceful halt).
   A service's output is discarded by default (`log-type = none`, as in dinit);
   add `options = runs-on-console` to send it to the container's log stream.

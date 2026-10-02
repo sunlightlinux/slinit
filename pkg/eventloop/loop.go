@@ -14,6 +14,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/shutdown"
 )
 
 // Default emergency shutdown timeout. Configurable at daemon start
@@ -282,6 +283,28 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 		el.logger.Notice("Received %s, initiating %s", name, st)
 		el.initiateShutdown(st)
 		return true
+	}
+
+	// SIGPWR: a UPS daemon reporting that mains power went away or came
+	// back. Handled before the switch for the same reason as the RT
+	// signals — loop.go cannot name a Linux-only signal in a case label.
+	//
+	// This reads why and runs the operator's power hook. It deliberately
+	// does NOT shut anything down, not even on a low battery: what to do
+	// about a draining UPS is policy, and an init system that guesses
+	// will be wrong on some machine in the most expensive way there is.
+	// `slinitctl poweroff` is one line inside the hook.
+	if isPowerSignal(sysSignal) {
+		if shutting {
+			// Already going down. Reading the status would consume the
+			// file the hook might still want, and there is nothing left
+			// to decide.
+			el.logger.Info("Received SIGPWR while shutting down, ignoring")
+			return false
+		}
+		state := shutdown.HandlePowerSignal(el.logger)
+		el.logger.Notice("Received SIGPWR, power status: %s", state)
+		return false
 	}
 
 	switch sysSignal {

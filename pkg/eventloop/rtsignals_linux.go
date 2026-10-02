@@ -36,6 +36,26 @@ func extraShutdownSignals() []syscall.Signal {
 	return []syscall.Signal{sigHalt, sigPoweroff, sigReboot, sigKexec}
 }
 
+// powerSignals is SIGPWR, which UPS daemons (nut, apcupsd) send to PID 1
+// to report that mains power has gone or come back.
+//
+// Claimed separately from the shutdown set because it is not a shutdown
+// request: what the machine should do about a dying battery is the
+// operator's policy, not ours. Unclaimed it would simply be discarded —
+// SIGPWR is _SigNotify without _SigKill in the Go runtime's table, so
+// unlike SIGINT and SIGTERM an unhandled one does not kill the process,
+// it is ignored. So this is a missing feature rather than a latent way
+// to lose PID 1, which is worth stating because the opposite would have
+// been the Ctrl+Alt+Del bug again.
+func powerSignals() []syscall.Signal {
+	return []syscall.Signal{syscall.SIGPWR}
+}
+
+// isPowerSignal reports whether sig is the UPS power-event signal.
+// Split by platform for the same reason rtShutdownType is: SIGPWR does
+// not exist off Linux, so loop.go cannot name it directly.
+func isPowerSignal(sig syscall.Signal) bool { return sig == syscall.SIGPWR }
+
 // rtShutdownType maps a received RT signal to the corresponding
 // ShutdownType and a human-readable signal name. Returns ok=false if
 // sig is not one of the recognised shutdown RT signals.

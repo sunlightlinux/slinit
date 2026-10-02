@@ -29,6 +29,17 @@ func shutdownSignalSet() []os.Signal {
 	return sigs
 }
 
+// claimedSignalSet is everything slinit asks the runtime to deliver
+// rather than act on itself: the shutdown set plus SIGPWR, which is not
+// a shutdown request but still has to be claimed to be seen at all.
+func claimedSignalSet() []os.Signal {
+	sigs := shutdownSignalSet()
+	for _, s := range powerSignals() {
+		sigs = append(sigs, s)
+	}
+	return sigs
+}
+
 // SetupEarlySignals claims the shutdown signals and returns the channel
 // they will arrive on. Call it as the first thing in main, and hand the
 // result to EventLoop.AdoptSignals.
@@ -53,7 +64,7 @@ func shutdownSignalSet() []os.Signal {
 // catch.
 func SetupEarlySignals() chan os.Signal {
 	sigCh := make(chan os.Signal, 32)
-	signal.Notify(sigCh, shutdownSignalSet()...)
+	signal.Notify(sigCh, claimedSignalSet()...)
 	return sigCh
 }
 
@@ -63,7 +74,7 @@ func SetupEarlySignals() chan os.Signal {
 // many orphan processes exiting simultaneously).
 func SetupSignals() chan os.Signal {
 	sigCh := make(chan os.Signal, 32)
-	signal.Notify(sigCh, append(shutdownSignalSet(), syscall.SIGCHLD)...)
+	signal.Notify(sigCh, append(claimedSignalSet(), syscall.SIGCHLD)...)
 	return sigCh
 }
 

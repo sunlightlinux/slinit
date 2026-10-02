@@ -13,6 +13,12 @@ import (
 // not apply elsewhere.
 func extraShutdownSignals() []syscall.Signal { return nil }
 
+// powerSignals is empty off Linux: SIGPWR is a Linux signal.
+func powerSignals() []syscall.Signal { return nil }
+
+// isPowerSignal is always false off Linux.
+func isPowerSignal(_ syscall.Signal) bool { return false }
+
 // rtShutdownType always returns ok=false on non-Linux platforms.
 func rtShutdownType(_ syscall.Signal) (service.ShutdownType, string, bool) {
 	return 0, "", false
