@@ -22,6 +22,81 @@ their tagger wrote are kept in
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-10-02
+
+Workload isolation had the knobs but not the model: a service could be put
+in a cgroup, given a slice and capped per controller, but a payload that
+manages cgroups itself had no way to be handed its own subtree.
+
+**Why a minor rather than 2.5.3.** The new directive is additive and would
+have fitted a patch. What does not is the `Slice=` fix: a systemd unit that
+asked for a slice was silently getting none, and now gets the one it asked
+for — so a service that had been running ungrouped moves into that slice
+and starts inheriting whatever limits are already set on it. That is a
+behaviour change to something that was working, which STABILITY.md reserves
+for a minor. Operators with units that set `Slice=` should expect those
+services to appear under the slice after upgrading, which is what the unit
+always requested.
+
+Verified: `go test ./...` green, `-race` green on pkg/process, pkg/config
+and pkg/service, twelve new tests. The two kernel rules the design rests on
+were established by probing a real kernel, and one of them contradicted the
+expectation — see below. The ownership change needs root, so it is covered
+by that probe rather than by a test, and the commit says so rather than
+implying the tests cover it.
+
+### Added
+
+- **`delegate = yes | no | <controllers>`** hands a service its own cgroup
+  subtree, so a payload that manages cgroups — a container runtime, a
+  worker pool that caps its own workers, a nested service manager — can
+  create and configure children inside it without being root over the whole
+  hierarchy. A controller list is why this is not merely a boolean:
+  `delegate = memory pids` states what the payload may do, where `yes`
+  grants whatever the parent happens to offer and silently changes meaning
+  when the parent changes.
+
+  slinit enables the named controllers in the **parent's**
+  `cgroup.subtree_control`, because a controller is only usable in a cgroup
+  once the parent has passed it down — until then the child's
+  `cgroup.controllers` is empty and writing to its own `subtree_control`
+  fails with `ENOENT`. It deliberately does **not** write the delegated
+  cgroup's own `subtree_control`: the kernel refuses that while the cgroup
+  holds processes, and the service's main process is in it. Moving the
+  payload's processes into a child first is cgroup v2's "no inner
+  processes" rule and is the payload's half of the contract — documented in
+  slinit-service(5) rather than left to be discovered.
+
+  When the service runs unprivileged, the cgroup directory and the three
+  interface files a delegatee needs are chowned to that user and nothing
+  else is, so the payload can manage its subtree without being able to
+  widen the limits slinit set on it.
+
+- **`slice=` is documented.** It has worked for a long time and
+  slinit-service(5) referred to it — "cgroup or slice must be set" — while
+  never describing it. It has an entry now, as does the nesting
+  convention.
+
+### Fixed
+
+- **A systemd unit's `Slice=` no longer disappears.** It mapped to a note
+  reading "slinit cgroup grouping differs; review manually" and the value
+  was dropped, so the unit ran ungrouped. Both halves of that note were
+  wrong: slinit's `slice=` is systemd-style by construction, and the only
+  real difference is that systemd encodes nesting in the name with dashes
+  where slinit takes the path. `Slice=user-1000.slice` now becomes
+  `slice = user.slice/user-1000.slice`, in the direct unit loader and in
+  `slinit-systemd-convert` alike. `Delegate=` maps too.
+
+- **A delegated cgroup no longer leaks a directory tree per restart.**
+  Reclaiming a cgroup is a plain `rmdir`, which is correct while slinit is
+  the only thing populating it — it cannot destroy anything still in use.
+  But a delegated subtree is populated by the payload, and a payload that
+  exits without tidying up leaves children that make the parent's `rmdir`
+  fail from then on. Delegated cgroups are now reclaimed deepest-first.
+  Each removal is still an `rmdir`, so anything that still holds processes
+  is left exactly as it was.
+
 ## [2.5.2] — 2026-10-02
 
 A deadline audit of every socket-serving path in the tree, which found that
