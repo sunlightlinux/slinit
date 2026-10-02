@@ -26,11 +26,14 @@ assert_service_state "$SVC" "STARTED" "service reached STARTED"
 # isolation but missed once mid-suite (2026-09-21), under full load.
 _pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ { print $2; exit }')
 _seccomp=0
+_tries=0
 for _ in $(seq 1 25); do
+    _tries=$((_tries + 1))
     _seccomp=$(awk '/^Seccomp:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
     [ "$_seccomp" = "2" ] && break
     sleep 0.2
 done
+echo "MEASURE: seccomp became $_seccomp after $_tries poll(s) of 0.2s"
 assert_eq "$_seccomp" "2" "seccomp filter (mode 2) installed"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
