@@ -22,6 +22,123 @@ their tagger wrote are kept in
 
 ## [Unreleased]
 
+## [2.6.1] — 2026-10-02
+
+A review of sysvinit — the one legacy init slinit had never been measured
+against — found four gaps worth closing, and all four are here. Plus the
+discovery that CI's diagnostic artifact had been empty since the day it
+was added.
+
+**Why a patch.** Nothing that already worked behaves differently.
+`SIGPWR` was previously discarded by the Go runtime, so a UPS daemon's
+signal reached nothing; now it is claimed, and on a machine with no
+`/etc/slinit/power-hook` the only visible difference is one log line. The
+three new commands are standalone binaries that change nothing about
+slinit itself — they exist so that scripts written against sysvinit do not
+have to be rewritten. That is the line STABILITY.md draws, and it is the
+same reasoning v2.5.1 and v2.5.2 were cut on: judged on whether relied-on
+behaviour changed, not on volume.
+
+Verified: `go test ./...` green, `-race` green on the packages touched.
+`slinit-fstab-decode` was checked **against the real sysvinit binary**
+installed on the maintainer's box — fourteen arguments compared byte for
+byte with `od`, plus all four exit codes — rather than against a reading
+of its source. `slinit-killall5`'s selection rule is mutation-verified.
+SIGPWR is exercised by a new functional case that sends the real signal
+to PID 1 three times, because whether PID 1 *receives* it cannot be
+observed from anywhere else.
+
+### Added
+
+- **`SIGPWR` and `/run/powerstatus`** — the sysvinit UPS contract. A UPS
+  daemon (nut, apcupsd) reports mains failure by signalling PID 1 and
+  leaving one character behind: `F` failing, `O` restored, `L` battery
+  low. slinit reads it, removes it — the status is an event, not a state,
+  so one left in place would replay a handled failure — and runs
+  `/etc/slinit/power-hook` with `failing`, `ok` or `low`.
+
+  **It takes no action of its own, not even on a flat battery.** What a
+  machine should do when its UPS drains is policy: finish the transaction
+  in flight, flush a cache, power off, or ignore it because another host
+  owns the decision. An init system that picks one silently is wrong on
+  some machine in the most expensive way available. `slinitctl poweroff`
+  inside the hook is one line. Documented under POWER EVENTS in
+  `slinit(8)`, including sysvinit's own note that it considers the
+  mechanism discouraged — slinit accepts it because it is what UPS daemons
+  actually send.
+
+- **`slinit-sysvinit-convert`** — `/etc/inittab` to slinit service files,
+  completing the converter set beside the OpenRC, runit and systemd ones.
+  **Both dialects**, each read from its own source: sysvinit's fifteen
+  actions, and busybox's eight from the action table in its `init/init.c`.
+  Five action names are shared and mean the same thing in both; the one
+  genuinely ambiguous field is the first column, which is a utmp id for
+  sysvinit and the tty to run on for busybox, and that is all `--dialect`
+  decides.
+
+  Roughly half of inittab is **settings, not services**, and they are
+  reported with slinit's equivalent rather than faked into service files
+  that would look right and do nothing: `initdefault` names a runlevel
+  target, `ctrlaltdel` is already handled natively, the `powerfail` family
+  maps onto the power hook above, busybox's `shutdown` onto the shutdown
+  hook and its `restart` onto `slinitctl soft-reboot`. An action neither
+  dialect defines is refused by name and line number rather than guessed
+  at. Every file it emits is checked against the real config parser by its
+  own tests.
+
+- **`slinit-killall5`** — drop-in sysvinit `killall5`, so a distribution
+  can point `/sbin/killall5` at it and leave init.d shutdown paths alone.
+  `slinit-nuke` was the nearest thing and never a substitute: no signal
+  argument, no omit list, and a policy of its own. Spares PID 1, itself,
+  **everything in its own session** — without which the sweep kills the
+  shell running the shutdown script — kernel threads, zombies and the
+  `-o` list. Freezes the world with `SIGSTOP` while reading `/proc` only
+  when there is no `-o` list, as upstream does.
+
+- **`slinit-fstab-decode`** — drop-in sysvinit `fstab-decode`: unescape
+  `\040`-style mount-table fields and become the command. The escape
+  table is five fixed entries and deliberately not a general octal
+  parser, because decoding more would corrupt a path that legitimately
+  contains a backslash followed by digits.
+
+### Fixed
+
+- **CI's console-log artifact has been empty since it was added.** It
+  uploaded `tests/functional/_output/*.log` and
+  `tests/functional/log.txt`; `_output` holds the kernel and the
+  initramfs and nothing else, and `log.txt` does not exist — the real
+  per-case logs live under `_build/test-<case>/`. With
+  `if-no-files-found: ignore` on top, every failing run uploaded nothing
+  in silence, which is why three earlier failures were each written off
+  as needing an artifact that never had anything in it. Paths corrected,
+  and `warn` instead of `ignore` so the next drift is said out loud.
+
+- **The functional harness's `TIMEOUT` did not mean seconds.** The wait
+  loop counted iterations while the read inside it was allowed most of
+  the budget on its own, so the real worst case was 60+59+58+… —
+  measured at **950 seconds for a nominal 60**. A guest that boots, opens
+  its port and never writes hits exactly that. Now measured against the
+  clock. In CI that was up to a quarter-hour of runner time per wedged
+  case, per shard.
+
+- **A fuzz run that records no input is no longer treated as a finding.**
+  `FuzzDecodeSetEnv` failed CI with `context deadline exceeded` after
+  1.34M clean executions and nothing written — Go's coordinator timing out
+  while stopping its workers, not a bug. A real finding always writes the
+  offending input and says so, and that line now decides.
+
+### Changed
+
+- The functional job's per-case budget is 180s, up from 60. The 1.47×
+  emulation penalty measured when CI was set up does not generalise: it
+  came from cases that wait on sleeps, and a case that polls with
+  `slinitctl` pays Go process startup per poll under TCG and costs about
+  five times as much.
+
+- `SLINIT_NO_KVM=1` forces the functional harness into software
+  emulation, which is how CI runs it. Reach for it when a case passes
+  locally and fails on the runner — it is what finally reproduced one.
+
 ## [2.6.0] — 2026-10-02
 
 Workload isolation had the knobs but not the model: a service could be put
