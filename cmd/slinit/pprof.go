@@ -29,6 +29,7 @@ import (
 	"net/http"
 	_ "net/http/pprof" // registers /debug/pprof/* on http.DefaultServeMux
 	"os"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 )
@@ -50,8 +51,24 @@ func maybeStartPprof(logger *logging.Logger) {
 	if err := os.Chmod(pprofSockPath, 0o600); err != nil {
 		logger.Warn("pprof: chmod %s: %v", pprofSockPath, err)
 	}
+	// http.Serve(l, nil) would use a zero-value Server: no timeouts at
+	// all, so a client that connects and never finishes its request line
+	// holds a goroutine and a connection inside PID 1 for as long as it
+	// likes, and an idle keep-alive is never reclaimed. Both are bounded
+	// here.
+	//
+	// WriteTimeout is deliberately left unset. A CPU profile is a long
+	// response by design — /debug/pprof/profile?seconds=30 writes nothing
+	// for thirty seconds — so a write budget would break the feature it
+	// is meant to protect. The read side is where an unresponsive client
+	// costs something, and that is what is capped.
+	srv := &http.Server{
+		Handler:           nil, // http.DefaultServeMux, where pprof registers
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 	go func() {
-		if err := http.Serve(l, nil); err != nil {
+		if err := srv.Serve(l); err != nil {
 			logger.Warn("pprof: serve exited: %v", err)
 		}
 	}()

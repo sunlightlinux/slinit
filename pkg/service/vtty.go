@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -22,6 +23,34 @@ const (
 	defaultScrollback = 64 * 1024 // 64 KB ring buffer
 	vttyBufSize       = 4096      // read buffer size
 )
+
+// vttyWriteDeadline bounds how long a client may take to accept data
+// before it is dropped.
+//
+// Without it a single wedged client — one that has stopped reading, been
+// SIGSTOPped, or simply filled its socket buffer — blocks the pump loop
+// in Write, so the PTY master stops being drained, the service attached
+// to this tty blocks on its own console output, and no further client can
+// connect because the accept loop is blocked sending scrollback. One
+// inattentive viewer should not be able to freeze the service it is
+// watching.
+//
+// Five seconds to match the control socket's own write budget: both are
+// "a healthy reader is never near this" numbers, and a viewer that drops
+// out is recoverable by reattaching, where a stalled service is not.
+// `var` so tests can shorten it.
+var vttyWriteDeadline = 5 * time.Second
+
+// writeClient sends to a client under the deadline. A timeout is returned
+// as an error like any other, so the caller's existing "drop the client"
+// path handles a wedged reader without a second branch.
+func writeClient(conn net.Conn, data []byte) error {
+	if tc, ok := conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = tc.SetWriteDeadline(time.Now().Add(vttyWriteDeadline))
+	}
+	_, err := conn.Write(data)
+	return err
+}
 
 // VirtualTTY manages a pseudo-terminal for a service, allowing
 // screen-like attach/detach of client sessions.
@@ -214,7 +243,22 @@ func openPTY() (master *os.File, slavePath string, err error) {
 type readResult struct {
 	data []byte
 	err  error
+	// buf is the whole buffer data points into. The consumer returns it
+	// to the free list when it has finished, which is what stops the
+	// reader from overwriting bytes that are still in use.
+	buf []byte
 }
+
+// vttyReadQueue is how many reads may be in flight between the PTY reader
+// and the consumer.
+//
+// There is one buffer per queue slot plus one for the read in progress.
+// The previous code queued four results through two alternating buffers,
+// so a consumer that fell a single iteration behind had its bytes
+// overwritten underneath it — torn console output and a corrupted
+// scrollback ring, and a data race the race detector flags in ringWrite.
+// Two buffers can only ever be correct with a queue of one.
+const vttyReadQueue = 4
 
 // readLoop reads from the PTY master in a separate goroutine and
 // dispatches data to the ring buffer and clients. Stops when the
@@ -222,24 +266,40 @@ type readResult struct {
 func (vt *VirtualTTY) readLoop() {
 	defer close(vt.doneCh)
 
-	dataCh := make(chan readResult, 4)
+	dataCh := make(chan readResult, vttyReadQueue)
+
+	// Buffers are owned rather than shared: the reader takes one off free,
+	// fills it, and only gets it back once the consumer has finished with
+	// it. Still no allocation per read — the same buffers recycle — but a
+	// buffer in flight can no longer be written to. When every buffer is
+	// out the reader blocks, which is ordinary back-pressure: the PTY
+	// stops being drained and the service blocks on its console exactly
+	// as it would against a terminal nobody is reading. Bounded, because
+	// the consumer drops a client that exceeds vttyWriteDeadline.
+	free := make(chan []byte, vttyReadQueue+1)
+	for i := 0; i < vttyReadQueue+1; i++ {
+		free <- make([]byte, vttyBufSize)
+	}
 
 	// Use cached fd to avoid race with Close() on the os.File
 	fd := vt.masterFd
 
 	// Background reader goroutine — does blocking reads on the PTY master fd.
 	// Exits when the fd is closed (returns EIO or EBADF).
-	// Uses double-buffering: two fixed buffers alternate to avoid per-read allocations.
 	go func() {
 		defer close(dataCh)
-		bufs := [2][]byte{make([]byte, vttyBufSize), make([]byte, vttyBufSize)}
-		idx := 0
 		for {
-			buf := bufs[idx]
+			var buf []byte
+			select {
+			case buf = <-free:
+			case <-vt.stopCh:
+				return
+			}
 			n, err := syscall.Read(fd, buf)
 			if n > 0 {
-				dataCh <- readResult{data: buf[:n]}
-				idx ^= 1 // swap to other buffer while consumer uses this one
+				dataCh <- readResult{data: buf[:n], buf: buf}
+			} else {
+				free <- buf
 			}
 			if err != nil {
 				if err == syscall.EINTR || err == syscall.EAGAIN {
@@ -273,9 +333,18 @@ func (vt *VirtualTTY) readLoop() {
 			vt.mu.Unlock()
 
 			for _, c := range clientsBuf {
-				_, werr := c.conn.Write(res.data)
-				if werr != nil {
+				if werr := writeClient(c.conn, res.data); werr != nil {
 					vt.removeClient(c.id)
+				}
+			}
+
+			// Done with the bytes: hand the buffer back. Non-blocking
+			// because free is sized for every buffer that exists, so this
+			// can never be the thing that wedges the loop.
+			if res.buf != nil {
+				select {
+				case free <- res.buf:
+				default:
 				}
 			}
 		}
@@ -320,8 +389,14 @@ func (vt *VirtualTTY) addClient(conn net.Conn) {
 	scrollback := vt.ringSnapshot()
 	vt.mu.Unlock()
 
+	// Deadline here too: this runs on the accept loop, so a client that
+	// connects and never reads would otherwise stop every later client
+	// from being accepted at all.
 	if len(scrollback) > 0 {
-		conn.Write(scrollback)
+		if err := writeClient(conn, scrollback); err != nil {
+			vt.removeClient(id)
+			return
+		}
 	}
 
 	// Start input forwarder: client → master

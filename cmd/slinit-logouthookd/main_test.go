@@ -76,7 +76,7 @@ func TestHandleConnCleansOnEOF(t *testing.T) {
 			t.Errorf("accept: %v", err)
 			return
 		}
-		handleConn(conn)
+		handleConn(conn, nil)
 	}()
 
 	// Client side: connect, send identity, wait a moment, close.
@@ -137,7 +137,7 @@ func TestHandleConnRejectsMalformed(t *testing.T) {
 		if err != nil {
 			return
 		}
-		handleConn(conn)
+		handleConn(conn, nil)
 	}()
 
 	c, err := net.Dial("unix", sockPath)
@@ -202,4 +202,83 @@ func TestMainRemovesStaleSocket(t *testing.T) {
 		t.Fatalf("listen after cleanup: %v", err)
 	}
 	l.Close()
+}
+
+// SIGTERM has to stop the daemon even while a session is open.
+//
+// Every client goroutine parks in a blocking Read that only returns when
+// the session ends — that read is the logout detector. So closing the
+// listener alone leaves serve waiting on reads that will not return until
+// the last user logs out: the daemon never exits, PID 1's stop timeout
+// elapses and it is SIGKILLed instead. On a machine with anybody logged
+// in that is every shutdown.
+//
+// Driven through the real serve/shutdown pair rather than a reconstruction
+// of the loop, so the test cannot pass against a copy of the logic.
+func TestShutdownEndsSessionsThatAreStillOpen(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "hookd.sock")
+
+	l, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	origAuth := peerAuthFunc
+	peerAuthFunc = func(*net.UnixConn) error { return nil }
+	defer func() { peerAuthFunc = origAuth }()
+
+	// A session the daemon ends itself must NOT be marked dead: the user
+	// is still logged in, and saying otherwise is worse than a stale
+	// record because it is confidently wrong.
+	cleared := make(chan string, 4)
+	origClear := utmpClearFunc
+	utmpClearFunc = func(id, tty string) { cleared <- id }
+	defer func() { utmpClearFunc = origClear }()
+
+	srv := newServer()
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		srv.serve(l)
+	}()
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("sess1 pts/9\n")); err != nil {
+		t.Fatalf("write identity: %v", err)
+	}
+
+	// Wait until the daemon has the session registered and parked in its
+	// read, which is the state the bug was about.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		srv.mu.Lock()
+		n := len(srv.conns)
+		srv.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the session was never registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	srv.shutdown()
+
+	select {
+	case <-served:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not return after shutdown with a session still open")
+	}
+
+	select {
+	case id := <-cleared:
+		t.Fatalf("utmp record for %q was cleared on daemon shutdown, but that session is still live", id)
+	default:
+	}
 }

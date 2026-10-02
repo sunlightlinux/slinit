@@ -98,15 +98,96 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Graceful shutdown on SIGTERM / SIGINT: close the listener so
-	// Accept unblocks with an error, then let outstanding client
-	// goroutines finish on their own EOFs.
+	srv := newServer()
+
+	// Graceful shutdown on SIGTERM / SIGINT.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sig
-		l.Close()
+		srv.shutdown()
 	}()
+
+	srv.serve(l)
+}
+
+// server tracks the connections that are open so shutdown can end them.
+//
+// Closing the listener alone is not enough. Every client goroutine is
+// parked in a blocking Read that only returns when the session at the
+// other end goes away, which is the whole mechanism — that read IS the
+// logout detector. So on SIGTERM the accept loop breaks immediately and
+// then waits for reads that will not return until the last user logs
+// out. The daemon never exits, PID 1's stop timeout elapses, and it is
+// SIGKILLed instead: on any machine with somebody logged in, that is
+// every single shutdown.
+type server struct {
+	mu       sync.Mutex
+	ln       net.Listener
+	conns    map[net.Conn]struct{}
+	stopping bool
+}
+
+func newServer() *server {
+	return &server{conns: map[net.Conn]struct{}{}}
+}
+
+// add registers a connection, or refuses it if shutdown has begun.
+func (s *server) add(c net.Conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopping {
+		return false
+	}
+	s.conns[c] = struct{}{}
+	return true
+}
+
+func (s *server) remove(c net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.conns, c)
+}
+
+// isStopping reports whether the daemon, not the client, ended a session.
+func (s *server) isStopping() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopping
+}
+
+// shutdown closes the listener and every open connection, which is what
+// unblocks the parked reads.
+func (s *server) shutdown() {
+	s.mu.Lock()
+	s.stopping = true
+	ln := s.ln
+	conns := make([]net.Conn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+
+	if ln != nil {
+		ln.Close()
+	}
+	for _, c := range conns {
+		c.Close()
+	}
+}
+
+// serve accepts until the listener is closed, then waits for the client
+// goroutines — which shutdown has already unblocked.
+func (s *server) serve(l net.Listener) {
+	s.mu.Lock()
+	s.ln = l
+	stopping := s.stopping
+	s.mu.Unlock()
+	if stopping {
+		// A signal that arrived before serve was reached.
+		l.Close()
+		return
+	}
 
 	var wg sync.WaitGroup
 	for {
@@ -120,10 +201,15 @@ func main() {
 			fmt.Fprintf(os.Stderr, "slinit-logouthookd: accept: %v\n", err)
 			continue
 		}
+		if !s.add(conn) {
+			conn.Close()
+			continue
+		}
 		wg.Add(1)
 		go func(c net.Conn) {
 			defer wg.Done()
-			handleConn(c)
+			defer s.remove(c)
+			handleConn(c, s)
 		}(conn)
 	}
 	wg.Wait()
@@ -138,7 +224,7 @@ func main() {
 //
 // Errors are logged to stderr and terminate the goroutine without
 // affecting other clients.
-func handleConn(c net.Conn) {
+func handleConn(c net.Conn, s *server) {
 	defer c.Close()
 
 	uc, ok := c.(*net.UnixConn)
@@ -175,6 +261,14 @@ func handleConn(c net.Conn) {
 		}
 	}
 
+	// Only on a real logout. If the daemon is the one that closed this
+	// connection, the session is still live and marking its utmp record
+	// DEAD_PROCESS would be a lie about a user who is still logged in —
+	// worse than the record going stale, because stale is at least
+	// visibly wrong.
+	if s != nil && s.isStopping() {
+		return
+	}
 	utmpClearFunc(id, tty)
 }
 

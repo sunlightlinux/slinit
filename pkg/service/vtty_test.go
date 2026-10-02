@@ -316,3 +316,91 @@ func BenchmarkRingSnapshot(b *testing.B) {
 		_ = vt.ringSnapshot()
 	}
 }
+
+// A client that stops reading must not stall the pump that drains the
+// PTY. Without a write deadline the pump blocks in Write, the master
+// stops being drained, and the service attached to this tty blocks on
+// its own console output — one viewer freezing the thing it watches.
+//
+// The assertion is deliberately not "the write returned an error": that
+// would only prove the deadline fired. It is that a client attaching
+// afterwards still receives live output, which can only be true if the
+// pump survived.
+func TestVirtualTTY_WedgedClientDoesNotStallThePump(t *testing.T) {
+	restore := vttyWriteDeadline
+	vttyWriteDeadline = 200 * time.Millisecond
+	defer func() { vttyWriteDeadline = restore }()
+
+	tmpDir := t.TempDir()
+	vt, slavePath, err := OpenVirtualTTY("wedge-svc", 4096, tmpDir)
+	if err != nil {
+		t.Fatalf("OpenVirtualTTY failed: %v", err)
+	}
+	defer vt.Close()
+
+	slave, err := os.OpenFile(slavePath, os.O_WRONLY|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatalf("open slave failed: %v", err)
+	}
+	defer slave.Close()
+
+	// A client that connects and never reads a byte.
+	stuck, err := net.Dial("unix", vt.SocketPath())
+	if err != nil {
+		t.Fatalf("stuck client connect failed: %v", err)
+	}
+	defer stuck.Close()
+	waitForClients(t, vt, 1)
+
+	// Keep the service talking. More than any socket buffer will hold, so
+	// the pump has to block on the silent client or drop it.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		chunk := make([]byte, 4096)
+		for i := range chunk {
+			chunk[i] = 'x'
+		}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := slave.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+
+	// The wedged client is dropped rather than waited on.
+	waitForClients(t, vt, 0)
+
+	// The real question: is the pump still running? A fresh client must
+	// see output that is produced after the wedge.
+	fresh, err := net.Dial("unix", vt.SocketPath())
+	if err != nil {
+		t.Fatalf("fresh client connect failed: %v", err)
+	}
+	defer fresh.Close()
+
+	_ = fresh.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64)
+	if _, err := fresh.Read(buf); err != nil {
+		t.Fatalf("pump is stalled: a client attaching after the wedge read nothing: %v", err)
+	}
+}
+
+func waitForClients(t *testing.T, vt *VirtualTTY, want int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if vt.ClientCount() == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("client count stayed at %d, wanted %d", vt.ClientCount(), want)
+}
