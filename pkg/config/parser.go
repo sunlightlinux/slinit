@@ -402,6 +402,12 @@ type ServiceDescription struct {
 	// /sys/fs/cgroup/<Slice>/<name>. Cheap way to get cumulative limits
 	// across a family of services without touching each config.
 	Slice string
+	// Delegate hands the service's cgroup subtree to the service itself,
+	// for payloads that manage cgroups (container runtimes, worker pools,
+	// nested managers). DelegateControllers narrows it to named
+	// controllers; empty with Delegate means whatever the parent can offer.
+	Delegate            bool
+	DelegateControllers []string
 	CgroupSettings     []CgroupSetting // cgroup v2 controller knobs
 	CPUAffinity        []uint          // CPU numbers to pin to
 
@@ -2981,6 +2987,32 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 
 	case "cgroup", "run-in-cgroup":
 		desc.CgroupPath = value
+	case "delegate":
+		// yes/no, or a controller list. A list is the narrower and
+		// usually better answer: delegating `memory` to a worker pool
+		// says what it may do, where `yes` hands over everything the
+		// parent happens to have and changes meaning when the parent does.
+		if b, err := parseBool(strings.TrimSpace(value)); err == nil {
+			desc.Delegate = b
+			desc.DelegateControllers = nil
+		} else {
+			ctrls := strings.FieldsFunc(value, func(r rune) bool {
+				return r == ',' || r == ' ' || r == '\t'
+			})
+			if len(ctrls) == 0 {
+				return fmt.Errorf("delegate: expected yes/no or a controller list, got %q", value)
+			}
+			for _, c := range ctrls {
+				for _, r := range c {
+					if (r < 'a' || r > 'z') && r != '_' {
+						return fmt.Errorf("delegate: %q is not a cgroup controller name", c)
+					}
+				}
+			}
+			desc.Delegate = true
+			desc.DelegateControllers = ctrls
+		}
+
 	case "slice":
 		// Systemd-style hierarchical grouping. Value is a bare name
 		// (e.g. "system.slice") — no leading slash, no expansion beyond

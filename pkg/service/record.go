@@ -273,6 +273,12 @@ type ServiceRecord struct {
 	ioPrioLevel    int
 	cgroupPath     string
 	cgroupSettings []process.CgroupSetting // cgroup v2 resource limits
+	// delegate: hand the service's own cgroup subtree to the service, for
+	// payloads that manage cgroups themselves. delegateControllers names
+	// which controllers; empty means whatever the parent can offer.
+	delegate            bool
+	delegateControllers []string
+
 	// slice: systemd-style hierarchical grouping (e.g. "system.slice",
 	// "system.slice/database.slice"). When set with no explicit
 	// cgroupPath, the effective cgroup becomes
@@ -1522,6 +1528,13 @@ func (sr *ServiceRecord) SetIOPrio(class, level int)                  { sr.ioPri
 func (sr *ServiceRecord) SetCgroupPath(p string)                      { sr.cgroupPath = p }
 func (sr *ServiceRecord) SetSlice(s string)                           { sr.slice = s }
 func (sr *ServiceRecord) Slice() string                               { return sr.slice }
+
+func (sr *ServiceRecord) SetDelegate(on bool, controllers []string) {
+	sr.delegate = on
+	sr.delegateControllers = controllers
+}
+func (sr *ServiceRecord) Delegate() bool                { return sr.delegate }
+func (sr *ServiceRecord) DelegateControllers() []string { return sr.delegateControllers }
 func (sr *ServiceRecord) SetCgroupSettings(s []process.CgroupSetting) { sr.cgroupSettings = s }
 func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)              { sr.rlimits = rl }
 func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)                 { sr.rlimits = append(sr.rlimits, rl) }
@@ -1981,6 +1994,10 @@ func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappin
 // observe the call without a writable /sys/fs/cgroup.
 var removeCgroupFunc = process.RemoveCgroup
 
+// removeCgroupTreeFunc is the delegated-cgroup variant; separate var so a
+// test can tell which of the two a service chose.
+var removeCgroupTreeFunc = process.RemoveCgroupTree
+
 // removeOwnCgroup reclaims the cgroup directory slinit created for this
 // service, if the service has one of its own. A service with neither
 // `cgroup` nor `slice` shares the daemon-wide default cgroup with every
@@ -1999,7 +2016,16 @@ func (sr *ServiceRecord) removeOwnCgroup() {
 	if path == "" {
 		return
 	}
-	if err := removeCgroupFunc(path); err != nil {
+	remove := removeCgroupFunc
+	if sr.delegate {
+		// The payload owned this subtree and may have left children in
+		// it. A plain rmdir of the parent fails with ENOTEMPTY forever
+		// after, so the directories accumulate one set per restart.
+		// Still rmdir per directory, just bottom-up — anything still
+		// holding processes survives untouched.
+		remove = removeCgroupTreeFunc
+	}
+	if err := remove(path); err != nil {
 		sr.services.logger.Info("Service '%s': cgroup %s not reclaimed: %v",
 			sr.serviceName, path, err)
 	}
@@ -2024,6 +2050,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.IOPrioLevel = sr.ioPrioLevel
 	params.CgroupPath = sr.EffectiveCgroupPath()
 	params.CgroupSettings = sr.cgroupSettings
+	params.Delegate = sr.delegate
+	params.DelegateControllers = sr.delegateControllers
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
 	params.BoundingCaps = sr.boundingCaps

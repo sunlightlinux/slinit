@@ -186,6 +186,14 @@ type ExecParams struct {
 	// The cgroup directory is created if it does not exist.
 	CgroupSettings []CgroupSetting
 
+	// Delegate hands the service's own cgroup subtree to the service, so
+	// a payload that manages cgroups itself can create children inside it.
+	// DelegateControllers limits that to named controllers; empty with
+	// Delegate set means every controller the parent is able to offer.
+	// See DelegateCgroup for the two kernel rules this has to respect.
+	Delegate            bool
+	DelegateControllers []string
+
 	// NoNewPrivs sets PR_SET_NO_NEW_PRIVS on the child process.
 	NoNewPrivs bool
 

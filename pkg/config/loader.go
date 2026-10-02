@@ -1711,6 +1711,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	// no diagnostic. EffectiveCgroupPath still prefers cgroupPath when
 	// both are set, so the precedence is unchanged.
 	rec.SetSlice(desc.Slice)
+	rec.SetDelegate(desc.Delegate, desc.DelegateControllers)
 	// Cgroup settings: user-declared cgroup-setting entries + Bucket C
 	// cpuset-partition + startup-allowed-cpus/mems. The Startup values
 	// win over the steady-state cgroup-cpuset-cpus at cgroup creation

@@ -145,6 +145,7 @@ var KnownSettings = map[string]OperatorType{
 	// cgroup
 	"cgroup":        OpEquals,
 	"slice":         OpEquals,
+	"delegate":      OpEquals,
 	"run-in-cgroup": OpEquals, // dinit compat alias for cgroup
 
 	// cgroup v2 resource limits

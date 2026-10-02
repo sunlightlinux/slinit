@@ -750,6 +750,8 @@ command = /usr/bin/optional
 | `ioprio`                  | I/O priority class:level (be:4, rt:0, idle)      |
 | `cpu-affinity`            | CPU affinity mask (0-3, 0 1 2, 0,2,4)            |
 | `cgroup`                  | Cgroup path for the child process                |
+| `slice`                   | Hierarchical cgroup parent, systemd-style         |
+| `delegate`                | Hand the cgroup subtree to the service itself     |
 | `rlimit-nofile`           | File descriptor limit (soft:hard or unlimited)   |
 | `rlimit-core`             | Core dump size limit (soft:hard or unlimited)    |
 | `rlimit-data`             | Data segment size limit (soft:hard or unlimited) |

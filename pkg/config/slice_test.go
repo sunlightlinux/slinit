@@ -70,3 +70,90 @@ func TestNoSliceNoCgroup(t *testing.T) {
 		t.Errorf("EffectiveCgroupPath() = %q, want empty", got)
 	}
 }
+
+// Delegation has to survive the loader, not just the parser: `slice` once
+// did not (see TestSliceWithoutCgroupPath above), so the same end-to-end
+// check is worth having for its neighbour.
+func TestDelegateReachesTheRecord(t *testing.T) {
+	cases := []struct {
+		name        string
+		directive   string
+		wantOn      bool
+		wantControl []string
+	}{
+		{"yes", "delegate = yes\n", true, nil},
+		{"no", "delegate = no\n", false, nil},
+		{"absent", "", false, nil},
+		{"controller list", "delegate = memory pids\n", true, []string{"memory", "pids"}},
+		{"comma separated", "delegate = memory,io\n", true, []string{"memory", "io"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := loadSliceService(t, "payload",
+				"type = process\ncommand = /bin/app\nslice = system.slice\n"+tc.directive)
+			rec, ok := svc.(interface {
+				Delegate() bool
+				DelegateControllers() []string
+			})
+			if !ok {
+				t.Fatal("service does not expose the delegation accessors")
+			}
+			if rec.Delegate() != tc.wantOn {
+				t.Errorf("Delegate() = %v, want %v", rec.Delegate(), tc.wantOn)
+			}
+			got := rec.DelegateControllers()
+			if len(got) != len(tc.wantControl) {
+				t.Fatalf("controllers = %v, want %v", got, tc.wantControl)
+			}
+			for i := range got {
+				if got[i] != tc.wantControl[i] {
+					t.Errorf("controllers = %v, want %v", got, tc.wantControl)
+				}
+			}
+		})
+	}
+}
+
+func TestDelegateRejectsNonsense(t *testing.T) {
+	// "-memory" would reach a write to cgroup.subtree_control and disable
+	// a controller rather than delegate one. A fresh loader per case so a
+	// rejected load cannot leave state behind for the next.
+	for _, bad := range []string{"-memory", "+memory", "Memory", "mem/ory"} {
+		dir := t.TempDir()
+		ss := service.NewServiceSet(sliceTestLogger{})
+		loader := NewDirLoader(ss, []string{dir})
+		ss.SetLoader(loader)
+		if err := os.WriteFile(filepath.Join(dir, "bad"),
+			[]byte("type = process\ncommand = /bin/app\ndelegate = "+bad+"\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loader.LoadService("bad"); err == nil {
+			t.Errorf("delegate = %q was accepted", bad)
+		}
+	}
+}
+
+// systemd writes the slice hierarchy into the name with dashes; slinit
+// takes the path. The mapping used to warn "slinit cgroup grouping
+// differs; review manually" and drop the value, so a unit that said
+// Slice= silently lost its grouping — while slinit's own `slice=` is
+// systemd-style by construction and only the naming convention differed.
+func TestExpandSystemdSlice(t *testing.T) {
+	cases := map[string]string{
+		"system.slice":     "system.slice",
+		"user-1000.slice":  "user.slice/user-1000.slice",
+		"machine.slice":    "machine.slice",
+		"a-b-c.slice":      "a.slice/a-b.slice/a-b-c.slice",
+		"system":           "system.slice",
+		" system.slice ":   "system.slice",
+		"\"system.slice\"": "system.slice",
+		"-.slice":          "", // systemd's name for the root: no grouping
+		"":                 "",
+		".slice":           "",
+	}
+	for in, want := range cases {
+		if got := expandSystemdSlice(in); got != want {
+			t.Errorf("expandSystemdSlice(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

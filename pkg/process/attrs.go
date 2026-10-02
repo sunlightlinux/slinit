@@ -2,6 +2,7 @@ package process
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -266,6 +267,155 @@ func applyCgroupSettings(cgroupPath string, settings []CgroupSetting) error {
 		}
 	}
 	return lastErr
+}
+
+// AvailableControllers lists the controllers a cgroup may use, which is
+// what its parent has delegated down. An empty result is the normal
+// answer for a path whose parent delegated nothing, not an error.
+func AvailableControllers(cgroupPath string) []string {
+	b, err := os.ReadFile(cgroupPath + "/cgroup.controllers")
+	if err != nil {
+		return nil
+	}
+	return strings.Fields(string(b))
+}
+
+// DelegateCgroup hands a service's own cgroup subtree over to the service,
+// so a payload that manages cgroups itself — a container runtime, a
+// per-connection worker pool, a nested service manager — can create and
+// configure children inside it without being root over the whole
+// hierarchy.
+//
+// Two kernel rules decide what this can and cannot do, both confirmed by
+// probe rather than taken from documentation:
+//
+//  1. A controller is only usable in a cgroup if the PARENT lists it in
+//     cgroup.subtree_control. Until then the child's cgroup.controllers is
+//     empty and writing to its subtree_control fails with ENOENT. So the
+//     controllers are enabled one level up, which is what makes them
+//     available inside the delegated cgroup.
+//
+//  2. A cgroup that holds processes cannot have controllers enabled in its
+//     own subtree_control — the write is refused (EOPNOTSUPP on the kernel
+//     this was tested against, EBUSY on others; either way it fails). The
+//     service's main process lives in this cgroup, so slinit deliberately
+//     does NOT write its subtree_control. That belongs to the delegatee,
+//     after it has moved its processes into a child of its own. This is
+//     the "no inner processes" rule and it is the delegatee's half of the
+//     contract, not something slinit can do on its behalf.
+//
+// Ownership is the other half. An unprivileged payload cannot create a
+// child cgroup in a root-owned directory, so the directory and the three
+// interface files it needs are chowned to the service's user. Everything
+// else in the cgroup stays root-owned, so the payload can manage its own
+// subtree without being able to rewrite the limits slinit set on it —
+// which is the whole point of delegating rather than just loosening
+// permissions.
+//
+// uid/gid of -1 means the service runs as root and nothing is chowned.
+func DelegateCgroup(cgroupPath string, controllers []string, uid, gid int) error {
+	if err := validateCgroupPath(cgroupPath); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", cgroupPath, err)
+	}
+
+	// Rule 1: make the controllers available by enabling them one level up.
+	parent := filepath.Dir(cgroupPath)
+	if parent != cgroupPath && parent != "/" {
+		subtreeCtl := parent + "/cgroup.subtree_control"
+		for _, ctrl := range controllers {
+			if err := validateControllerName(ctrl); err != nil {
+				return err
+			}
+			// Best-effort per controller: a kernel without `misc` should
+			// not cost the service its `memory`. What actually reached the
+			// child is observable in its cgroup.controllers.
+			_ = os.WriteFile(subtreeCtl, []byte("+"+ctrl), 0200)
+		}
+	}
+
+	if uid < 0 && gid < 0 {
+		return nil
+	}
+
+	// Rule 2's consequence: these three are what a delegatee needs, and
+	// they are all it gets.
+	if err := os.Chown(cgroupPath, uid, gid); err != nil {
+		return fmt.Errorf("chown %s: %w", cgroupPath, err)
+	}
+	for _, f := range []string{"cgroup.procs", "cgroup.subtree_control", "cgroup.threads"} {
+		// cgroup.threads is absent on a domain cgroup in some kernels;
+		// a missing file is not a failure to delegate.
+		if err := os.Chown(cgroupPath+"/"+f, uid, gid); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("chown %s/%s: %w", cgroupPath, f, err)
+		}
+	}
+	return nil
+}
+
+// validateControllerName keeps a configured controller name from being
+// anything but a controller name. The value reaches a write to
+// cgroup.subtree_control, where "+x -memory" would silently disable a
+// controller the operator asked for.
+func validateControllerName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty controller name")
+	}
+	for _, r := range name {
+		if (r < 'a' || r > 'z') && r != '_' {
+			return fmt.Errorf("invalid cgroup controller name %q", name)
+		}
+	}
+	return nil
+}
+
+// RemoveCgroupTree removes a cgroup and the children left inside it,
+// deepest first.
+//
+// RemoveCgroup is a plain rmdir on purpose, and for a service whose
+// cgroup slinit alone populates that is the right thing: it cannot
+// destroy anything that is still in use. But a delegated subtree is
+// populated by the payload, and a payload that exits without tidying up
+// leaves directories that no rmdir of the parent can ever reclaim — the
+// leak compounds for every restart. So for delegated cgroups only, the
+// children slinit did not create are removed with it.
+//
+// Still never recursive in the dangerous sense: each removal is an rmdir,
+// so a cgroup that still holds processes fails and is left alone, and the
+// walk is bottom-up so a parent is only attempted after its children.
+// Call it after the subtree has been killed.
+func RemoveCgroupTree(path string) error {
+	if err := validateCgroupPath(path); err != nil {
+		return err
+	}
+	if filepath.Clean(path) == cgroupRoot {
+		return fmt.Errorf("refusing to remove the cgroup root %s", cgroupRoot)
+	}
+
+	var dirs []string
+	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// A cgroup that vanished under us is one less to remove.
+			return nil
+		}
+		if d.IsDir() {
+			dirs = append(dirs, p)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Deepest first, so each rmdir sees an empty directory.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if rmErr := syscall.Rmdir(dirs[i]); rmErr != nil && dirs[i] == path {
+			return rmErr
+		}
+	}
+	return nil
 }
 
 // enableSubtreeControllers enables the required controllers on the parent

@@ -474,7 +474,19 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		// `nice`, not `nice-level` as the old note claimed.
 		cfg.mapped = append(cfg.mapped, kvPair{"nice", trimQuotes(val)})
 	case "Slice":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Slice=%s — slinit cgroup grouping differs; review manually", val)})
+		// This used to warn that "slinit cgroup grouping differs; review
+		// manually", which was wrong on both counts: slinit's `slice=` is
+		// systemd-style by construction, and the only real difference is
+		// the naming convention. systemd encodes nesting in dashes, so
+		// user-1000.slice lives under user.slice, where slinit takes the
+		// path. Expanding one into the other is mechanical, and a unit
+		// that said Slice= was silently losing its grouping until now.
+		if sl := expandSystemdSlice(val); sl != "" {
+			cfg.mapped = append(cfg.mapped, kvPair{"slice", sl})
+		}
+	case "Delegate":
+		// Same grammar on both sides: yes/no or a controller list.
+		cfg.mapped = append(cfg.mapped, kvPair{"delegate", trimQuotes(val)})
 	case "WatchdogSec":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("WatchdogSec=%s — slinit watchdog-interval maps this; add manually", val)})
 	case "FileDescriptorStoreMax":
@@ -771,4 +783,30 @@ func SystemdUnitToServiceDescription(unitPath, name string) (*ServiceDescription
 			unitPath, err, buf.String())
 	}
 	return desc, nil
+}
+
+// expandSystemdSlice turns a systemd slice name into the path slinit's
+// `slice=` takes.
+//
+// systemd encodes the hierarchy in the name: a-b-c.slice is a child of
+// a-b.slice, which is a child of a.slice. slinit takes the path directly,
+// so the dashes become the levels they stand for. "-.slice" is systemd's
+// name for the root and means no grouping at all, which is the empty
+// string here.
+func expandSystemdSlice(val string) string {
+	name := strings.TrimSpace(trimQuotes(val))
+	name = strings.TrimSuffix(name, ".slice")
+	if name == "" || name == "-" {
+		return ""
+	}
+	parts := strings.Split(name, "-")
+	segs := make([]string, 0, len(parts))
+	for i := range parts {
+		seg := strings.Join(parts[:i+1], "-")
+		if seg == "" {
+			return ""
+		}
+		segs = append(segs, seg+".slice")
+	}
+	return strings.Join(segs, "/")
 }

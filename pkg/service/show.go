@@ -131,6 +131,13 @@ func RenderShow(s Service) string {
 	if sr.cgroupPath != "" {
 		p("CgroupPath", sr.cgroupPath)
 	}
+	if sr.delegate {
+		if len(sr.delegateControllers) > 0 {
+			p("Delegate", strings.Join(sr.delegateControllers, " "))
+		} else {
+			p("Delegate", "yes")
+		}
+	}
 	if sr.slice != "" {
 		p("Slice", sr.slice)
 	}

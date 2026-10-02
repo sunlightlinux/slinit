@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -442,6 +443,34 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			cgroupFD.Close()
 		}
 	}()
+
+	// Delegation, once the directory exists and before the payload can
+	// look at it. Deliberately after the settings above: slinit's own
+	// limits are written while it still owns the files, so a delegated
+	// payload inherits a subtree that is already constrained rather than
+	// one it could have widened first.
+	if params.Delegate && params.CgroupPath != "" {
+		ctrls := params.DelegateControllers
+		if len(ctrls) == 0 {
+			// Everything the parent can pass down. Asking for what is not
+			// there would just fail per-controller, but resolving it here
+			// means `delegate = yes` reports what it actually granted.
+			ctrls = AvailableControllers(filepath.Dir(params.CgroupPath))
+		}
+		uid, gid := -1, -1
+		if params.RunAsUID != 0 {
+			uid = int(params.RunAsUID)
+		}
+		if params.RunAsGID != 0 {
+			gid = int(params.RunAsGID)
+		}
+		if err := DelegateCgroup(params.CgroupPath, ctrls, uid, gid); err != nil {
+			// Not fatal, and said out loud: the service still starts, but
+			// a payload that expected to manage its own cgroups will fail
+			// in its own way later, and this is the line that explains it.
+			return 0, nil, fmt.Errorf("delegate cgroup %s: %w", params.CgroupPath, err)
+		}
+	}
 
 	// Per-service umask: apply just before fork so the child inherits it,
 	// then restore immediately. Safe because every StartProcess call runs

@@ -3,6 +3,7 @@ package process
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -238,5 +239,119 @@ func TestRemoveCgroupRefusesOutside(t *testing.T) {
 	}
 	if _, err := os.Stat(outside); err != nil {
 		t.Errorf("path outside the hierarchy was removed: %v", err)
+	}
+}
+
+// RemoveCgroupTree must reclaim what a delegated payload left behind, which
+// the plain rmdir cannot: a parent with children fails with ENOTEMPTY and
+// then keeps failing for the life of the machine, one leaked set per
+// restart.
+func TestRemoveCgroupTreeReclaimsChildrenLeftByThePayload(t *testing.T) {
+	root := t.TempDir()
+	withCgroupRoot(t, root)
+
+	svc := root + "/system.slice/payload"
+	// What a container runtime or worker pool leaves: nested cgroups the
+	// service manager never created and does not know the names of.
+	for _, d := range []string{svc + "/runtime/container-a", svc + "/runtime/container-b", svc + "/init"} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	// The non-delegated remover is right to refuse: it is not its subtree.
+	if err := RemoveCgroup(svc); err == nil {
+		t.Fatal("RemoveCgroup removed a non-empty cgroup; it must only ever rmdir")
+	}
+
+	if err := RemoveCgroupTree(svc); err != nil {
+		t.Fatalf("RemoveCgroupTree: %v", err)
+	}
+	if _, err := os.Stat(svc); !os.IsNotExist(err) {
+		t.Errorf("delegated cgroup survived removal: %v", err)
+	}
+	// The slice above it is not ours to remove.
+	if _, err := os.Stat(root + "/system.slice"); err != nil {
+		t.Errorf("the parent slice was removed too: %v", err)
+	}
+}
+
+// It still must not take down a cgroup that holds processes. A directory
+// standing in for one that is busy is modelled with an undeletable child,
+// since the test cannot park a real process in a tmpdir "cgroup".
+func TestRemoveCgroupTreeRefusesTheRoot(t *testing.T) {
+	root := t.TempDir()
+	withCgroupRoot(t, root)
+	if err := RemoveCgroupTree(root); err == nil {
+		t.Fatal("RemoveCgroupTree removed the cgroup root")
+	}
+	if err := RemoveCgroupTree(root + "/../../etc"); err == nil {
+		t.Fatal("RemoveCgroupTree accepted a path outside the cgroup root")
+	}
+}
+
+func TestValidateControllerName(t *testing.T) {
+	for _, ok := range []string{"memory", "pids", "cpu", "cpuset", "io", "hugetlb", "misc", "rdma"} {
+		if err := validateControllerName(ok); err != nil {
+			t.Errorf("%q rejected: %v", ok, err)
+		}
+	}
+	// These reach a write to cgroup.subtree_control, where a smuggled
+	// "-memory" would turn a request to delegate into one that disables a
+	// controller the operator asked for.
+	for _, bad := range []string{"", "-memory", "+memory", "memory pids", "mem/ory", "Memory", "mem.ory", "memory\n+io"} {
+		if err := validateControllerName(bad); err == nil {
+			t.Errorf("%q accepted as a controller name", bad)
+		}
+	}
+}
+
+// Delegation hands over the three interface files a payload needs and
+// nothing else: the limits slinit wrote stay root-owned, so a delegated
+// payload can manage its subtree without widening its own constraints.
+// Ownership itself needs root, so this checks the part that does not:
+// which controllers get enabled, and on which cgroup.
+func TestDelegateCgroupEnablesControllersOnTheParentNotItself(t *testing.T) {
+	root := t.TempDir()
+	withCgroupRoot(t, root)
+
+	svc := root + "/system.slice/payload"
+	if err := os.MkdirAll(root+"/system.slice", 0755); err != nil {
+		t.Fatal(err)
+	}
+	parentCtl := root + "/system.slice/cgroup.subtree_control"
+	if err := os.WriteFile(parentCtl, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// One controller, deliberately. In real cgroupfs each write to
+	// subtree_control is a command the kernel accumulates, so "+memory"
+	// then "+pids" leaves both enabled; on the tmpfs file this test uses,
+	// os.WriteFile truncates and only the last one survives. Asserting on
+	// two would be asserting that tmpfs behaves like cgroupfs, which it
+	// does not. What the design claims — and what is worth pinning — is
+	// WHICH cgroup gets written, not how the kernel merges the writes.
+	if err := DelegateCgroup(svc, []string{"memory"}, -1, -1); err != nil {
+		t.Fatalf("DelegateCgroup: %v", err)
+	}
+
+	// The parent is where controllers have to be enabled: until it lists
+	// them, the child's cgroup.controllers is empty and its own
+	// subtree_control write fails with ENOENT. Confirmed by probe against
+	// a real kernel, not read off documentation.
+	got, err := os.ReadFile(parentCtl)
+	if err != nil {
+		t.Fatalf("read parent subtree_control: %v", err)
+	}
+	if !strings.Contains(string(got), "+memory") {
+		t.Errorf("parent subtree_control %q is missing %q", got, "+memory")
+	}
+
+	// And the service's own subtree_control must be left alone: it holds
+	// the service's processes, so writing it is refused by the kernel.
+	// Doing it here would turn a working delegation into a start failure.
+	if _, err := os.Stat(svc + "/cgroup.subtree_control"); err == nil {
+		t.Error("slinit wrote the delegated cgroup's own subtree_control; " +
+			"the kernel refuses that while the cgroup holds processes")
 	}
 }

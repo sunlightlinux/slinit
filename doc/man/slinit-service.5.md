@@ -1194,6 +1194,47 @@ kernel stacks filters and takes the most restrictive result.
 :   Cgroup path the service is moved into before exec. May be
     relative — resolved against **slinit**(8)'s **\--cgroup-path**.
 
+**slice**=*name*
+:   Hierarchical parent, systemd-style. With no **cgroup** of its own the
+    service runs in */sys/fs/cgroup/*\<slice\>*/*\<service\>, so a family
+    of services can be capped together by setting limits on the slice
+    without editing any of them. Nested slices are written as a path
+    (`system.slice/database.slice`), where systemd encodes nesting in the
+    name with dashes; **slinit-systemd-convert**(8) and the direct unit
+    loader translate `Slice=user-1000.slice` into
+    `user.slice/user-1000.slice` for you.
+
+**delegate**=*yes*|*no*|*controller* [*controller*...] (since 2.6.0)
+:   Hand this service's own cgroup subtree to the service, so a payload
+    that manages cgroups itself — a container runtime, a worker pool that
+    caps its workers, a nested service manager — can create and configure
+    children inside it. Default *no*. A controller list is the narrower
+    and usually better answer: `delegate = memory pids` says what the
+    payload may do, where *yes* grants whatever the parent happens to
+    offer and so changes meaning when the parent does.
+
+    What slinit does: creates the cgroup, enables the named controllers in
+    the **parent's** *cgroup.subtree_control* so they are available inside
+    the service's cgroup, and — when the service runs unprivileged
+    (**run-as**) — chowns the cgroup directory, *cgroup.procs*,
+    *cgroup.subtree_control* and *cgroup.threads* to that user. Nothing
+    else is chowned, so the payload can manage its subtree without being
+    able to rewrite the limits set on it.
+
+    What the payload must do: move its own processes into a child cgroup
+    before enabling controllers in its *cgroup.subtree_control*. The
+    kernel refuses that write while the cgroup holds processes, and the
+    service's main process is in it, so slinit cannot do this on the
+    payload's behalf. This is cgroup v2's "no inner processes" rule and
+    delegation is the point at which it becomes the payload's problem.
+
+    On stop, a delegated cgroup is reclaimed together with the children
+    the payload left behind, deepest first. Each removal is still an
+    *rmdir*, so anything that still holds processes is left exactly as it
+    was. Without this a payload that exits untidily would leak one set of
+    directories per restart, since an *rmdir* of the parent can never
+    succeed again.
+
 **cgroup-memory-max**=*N*, **cgroup-memory-high**=*N*,
 **cgroup-memory-min**=*N*, **cgroup-memory-low**=*N*,
 **cgroup-swap-max**=*N*
