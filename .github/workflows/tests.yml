@@ -273,6 +273,7 @@ jobs:
           - pkg/config
           - pkg/service
           - cmd/slinit-hostnamectl
+          - cmd/slinit-killall5
           - cmd/slinit-openrc-convert
           - cmd/slinit-runit-convert
           - cmd/slinit-sysusers

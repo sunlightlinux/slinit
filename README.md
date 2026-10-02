@@ -342,7 +342,9 @@ format to accommodate them.
   - Named runlevel dispatch: `init default|single|nonetwork|boot|sysinit` → start `runlevel-<name>`
 - **SysV compat**: `init 0` → poweroff, `init 6` → reboot, `init N` (1..5) → start runlevel-N
 - **Standalone binaries**: `slinit-init-maker` (bootable layout generator), `slinit-nuke`
-  (emergency `kill -1`), `slinit-shutdown` (orderly shutdown shim, also invocable as
+  (emergency `kill -1`), `slinit-killall5` (drop-in sysvinit `killall5` for init.d
+  shutdown paths — `-signum` plus a repeatable `-o` omit list, sparing PID 1, its
+  own session, kernel threads and zombies), `slinit-shutdown` (orderly shutdown shim, also invocable as
   `slinit-reboot`/`slinit-halt`/`slinit-soft-reboot` symlinks), `slinit-seedrng` (SeedRNG
   entropy persistence — `RNDADDENTROPY` + fresh-seed rotation, systemd/OpenRC equivalent),
   `slinit-start-stop-daemon` (Debian/OpenRC-compatible daemon runner for ported init.d
@@ -405,7 +407,8 @@ go build ./cmd/slinit-check       # offline/online config linter
 go build ./cmd/slinit-monitor     # event watcher + command executor
 go build ./cmd/slinit-shutdown    # standalone shutdown utility
 go build ./cmd/slinit-init-maker  # bootable service-dir generator
-go build ./cmd/slinit-nuke        # emergency kill-all
+go build ./cmd/slinit-nuke        # emergency kill-all (SIGTERM, grace, SIGKILL)
+go build ./cmd/slinit-killall5    # drop-in sysvinit killall5: -signum + -o omit list
 go build ./cmd/slinit-mount       # autofs lazy-mount helper
 go build ./cmd/slinit-checkpath   # path-validation helper
 go build ./cmd/slinit-seedrng     # persist entropy across reboots (SeedRNG)
@@ -1491,7 +1494,7 @@ ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
 # Fuzz targets — 27 live in tests/fuzz, 13 more sit beside the code
 # they exercise (the converters, sysusers/tmpfiles line parsers, the
 # timedatectl/hostnamectl parsers, and the service state machine), so
-# `./tests/fuzz` alone reaches two thirds of them. 41 repo-wide:
+# `./tests/fuzz` alone reaches two thirds of them. 42 repo-wide:
 #   grep -rl '^func Fuzz' --include='*_test.go' .
 go test -fuzz=FuzzConfigParse ./tests/fuzz
 go test -fuzz=FuzzStateMachine ./pkg/service

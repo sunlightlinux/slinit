@@ -38,6 +38,7 @@ PAGES_8 = \
 	slinit-tmpfiles.8 \
 	slinit-supports.8 \
 	slinit-journalctl.8 \
+	slinit-killall5.8 \
 	slinit-journald.8 \
 	slinit-journal-migrate.8 \
 	slinit-machinectl.8 \
