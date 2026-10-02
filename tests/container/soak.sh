@@ -1,9 +1,12 @@
 #!/bin/sh
 # soak.sh — spawn and shut down slinit-as-PID-1 containers, many times.
 #
-#   ./tests/container/soak.sh              # 100 cycles
+#   ./tests/container/soak.sh                    # 100 cycles
 #   CYCLES=500 ./tests/container/soak.sh
-#   KEEP_IMAGE=1 ./tests/container/soak.sh # reuse the built image
+#   KEEP_IMAGE=1 ./tests/container/soak.sh       # reuse the built image
+#   SOAK_BUDGET_SEC=10800 CYCLES=999999 ./tests/container/soak.sh
+#                                         # run for three hours, however
+#                                         # many cycles that turns out to be
 #
 # A single case proves a path works once. Container mode's failures have
 # been timing-dependent (a boot service dying before the event loop
@@ -28,6 +31,18 @@ export CT_DIR
 
 CYCLES="${CYCLES:-100}"
 STOP_BUDGET_MS="${STOP_BUDGET_MS:-5000}"
+
+# SOAK_BUDGET_SEC stops the loop once this much wall time has passed,
+# whatever CYCLES says. 0 disables it, which is the default and the
+# behaviour every existing invocation keeps.
+#
+# For a scheduled soak this is what you want instead of a cycle count: a
+# count has to be guessed against the speed of whatever machine picks the
+# job up, and guessing low wastes the window while guessing high gets the
+# job killed mid-cycle with no summary. A budget fills the window on any
+# machine and always reaches the summary.
+SOAK_BUDGET_SEC="${SOAK_BUDGET_SEC:-0}"
+SOAK_STARTED=$(date +%s)
 OUT="$BUILD_DIR/soak"
 
 "$RUNTIME" info >/dev/null 2>&1 || { echo "soak: '$RUNTIME' is not usable" >&2; exit 2; }
@@ -64,7 +79,13 @@ EOF
 
 ready_ms="" stop_ms="" failures=0 killed=0
 i=1
+completed=0
 while [ "$i" -le "$CYCLES" ]; do
+    if [ "$SOAK_BUDGET_SEC" -gt 0 ] &&
+       [ "$(( $(date +%s) - SOAK_STARTED ))" -ge "$SOAK_BUDGET_SEC" ]; then
+        echo "  budget of ${SOAK_BUDGET_SEC}s reached after $completed cycles"
+        break
+    fi
     case $((i % 3)) in
         0) how=stop ;;
         1) how=INT ;;
@@ -109,7 +130,8 @@ while [ "$i" -le "$CYCLES" ]; do
     fi
     ct_rm $N
 
-    [ $((i % 25)) -eq 0 ] && echo "  ... $i/$CYCLES cycles, $failures failed"
+    completed=$i
+    [ $((i % 25)) -eq 0 ] && echo "  ... $i cycles, $failures failed"
     i=$((i + 1))
 done
 
@@ -122,7 +144,7 @@ pct() {
 }
 
 echo
-echo "Soak: $CYCLES cycles, $failures failed ($killed SIGKILLed by the runtime)"
+echo "Soak: $completed cycles, $failures failed ($killed SIGKILLed by the runtime)"
 echo "  ready: p50 $(pct 50 "$ready_ms")ms  p95 $(pct 95 "$ready_ms")ms  max $(pct 100 "$ready_ms")ms"
 echo "  stop:  p50 $(pct 50 "$stop_ms")ms  p95 $(pct 95 "$stop_ms")ms  max $(pct 100 "$stop_ms")ms"
 [ "$failures" -gt 0 ] && echo "  logs of failed cycles: $OUT/"

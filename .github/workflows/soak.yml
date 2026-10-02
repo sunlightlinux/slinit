@@ -1,0 +1,107 @@
+# Nightly container soak — slinit as PID 1, spawned and shut down over
+# and over for as long as the window allows.
+#
+# Why a soak and not another case: container mode's failures have been
+# timing-dependent. A boot service dying before the event loop started
+# hung slinit forever, and acceptance case 69 was flaky for the same kind
+# of reason. One case proves a path works once; this runs the lifecycle
+# thousands of times and reports every cycle that was not clean.
+#
+# About "24 hours". A GitHub-hosted job is killed at six hours, so a
+# literal day-long run is not possible here — it needs a self-hosted
+# runner. What this does instead is fill a three-hour window every night,
+# which at roughly two seconds a cycle is several thousand lifecycles per
+# run and tens of thousands a week. If a true 24h soak becomes the
+# requirement, the harness already takes SOAK_BUDGET_SEC and only the
+# runner has to change.
+name: Slinit soak
+
+on:
+  schedule:
+    # 02:17 UTC. Not on the hour: scheduled jobs queue heavily at :00 and
+    # a soak that starts late eats its own window.
+    #
+    # GitHub disables scheduled workflows in a repository with no pushes
+    # for 60 days, and does so quietly. If the nightly results stop
+    # arriving during a lull, check that before looking for a bug here.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      budget_minutes:
+        description: "How long to soak for, in minutes"
+        required: false
+        default: "180"
+
+permissions:
+  contents: read
+
+jobs:
+  container-soak:
+    runs-on: ubuntu-latest
+    # Above the budget, not equal to it: the image build and the summary
+    # happen outside the soak loop, and a job killed by the platform
+    # produces no summary at all.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Report the runtime
+        run: |
+          docker version --format 'docker {{.Server.Version}}'
+          nproc
+          free -m | awk '/Mem:/{print "RAM " $2 " MB"}'
+
+      - name: Soak
+        id: soak
+        env:
+          BUDGET_MINUTES: ${{ github.event.inputs.budget_minutes || '180' }}
+        run: |
+          set -u
+          budget=$((BUDGET_MINUTES * 60))
+          # CYCLES is left effectively unbounded so the budget is what
+          # ends the run. A cycle count would have to be guessed against
+          # whatever machine picks the job up: guess low and the window
+          # is wasted, guess high and the platform kills the job
+          # mid-cycle with no summary.
+          echo "soaking for ${budget}s"
+          set +e
+          SOAK_BUDGET_SEC="${budget}" CYCLES=9999999 \
+            ./tests/container/soak.sh 2>&1 | tee /tmp/soak.log
+          rc=${PIPESTATUS[0]}
+          set -e
+
+          # The numbers go in the job summary so a week of nightly runs
+          # can be compared without opening eight logs.
+          {
+            echo "## Container soak"
+            echo
+            echo '```'
+            sed -n '/^Soak:/,$p' /tmp/soak.log
+            echo '```'
+            if [ "${rc}" -ne 0 ]; then
+              echo
+              echo "Failed cycles — their logs are in the artifact below:"
+              echo
+              echo '```'
+              grep -E '^cycle [0-9]+ \(' /tmp/soak.log | head -40
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "${rc}"
+
+      # Only failed cycles leave logs behind, so this is empty on a clean
+      # run and is the whole diagnosis on a dirty one.
+      - name: Upload failed-cycle logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: soak-failed-cycles
+          path: |
+            tests/container/_build/soak/
+            /tmp/soak.log
+          if-no-files-found: ignore
+          retention-days: 30
