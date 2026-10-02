@@ -27,6 +27,7 @@ PAGES_8 = \
 	slinit-seedrng.8 \
 	slinit-start-stop-daemon.8 \
 	slinit-supervise-daemon.8 \
+	slinit-fstab-decode.8 \
 	slinit-fstabinfo.8 \
 	slinit-mountinfo.8 \
 	slinit-einfo.8 \

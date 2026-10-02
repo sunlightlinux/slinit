@@ -342,7 +342,9 @@ format to accommodate them.
   - Named runlevel dispatch: `init default|single|nonetwork|boot|sysinit` → start `runlevel-<name>`
 - **SysV compat**: `init 0` → poweroff, `init 6` → reboot, `init N` (1..5) → start runlevel-N
 - **Standalone binaries**: `slinit-init-maker` (bootable layout generator), `slinit-nuke`
-  (emergency `kill -1`), `slinit-killall5` (drop-in sysvinit `killall5` for init.d
+  (emergency `kill -1`), `slinit-fstab-decode` (drop-in sysvinit
+  `fstab-decode` — unescapes `\040`-style mount-table fields and becomes the
+  command), `slinit-killall5` (drop-in sysvinit `killall5` for init.d
   shutdown paths — `-signum` plus a repeatable `-o` omit list, sparing PID 1, its
   own session, kernel threads and zombies), `slinit-shutdown` (orderly shutdown shim, also invocable as
   `slinit-reboot`/`slinit-halt`/`slinit-soft-reboot` symlinks), `slinit-seedrng` (SeedRNG
@@ -409,6 +411,7 @@ go build ./cmd/slinit-shutdown    # standalone shutdown utility
 go build ./cmd/slinit-init-maker  # bootable service-dir generator
 go build ./cmd/slinit-nuke        # emergency kill-all (SIGTERM, grace, SIGKILL)
 go build ./cmd/slinit-killall5    # drop-in sysvinit killall5: -signum + -o omit list
+go build ./cmd/slinit-fstab-decode # drop-in sysvinit fstab-decode: unescape argv, exec
 go build ./cmd/slinit-mount       # autofs lazy-mount helper
 go build ./cmd/slinit-checkpath   # path-validation helper
 go build ./cmd/slinit-seedrng     # persist entropy across reboots (SeedRNG)

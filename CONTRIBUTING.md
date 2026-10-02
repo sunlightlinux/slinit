@@ -55,7 +55,7 @@ go test ./...
 
 ### Project Structure
 
-- `cmd/` - Entry points (44 binaries total; run `ls cmd/` for the live
+- `cmd/` - Entry points (45 binaries total; run `ls cmd/` for the live
   list). Highlights: `slinit` (PID 1), `slinitctl` (control CLI),
   `slinit-runner` (post-fork hardening wrapper), `slinit-check` (config
   linter), `slinit-monitor` / `slinit-shutdown`, `slinit-journalctl` /
