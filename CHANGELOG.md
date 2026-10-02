@@ -22,6 +22,97 @@ their tagger wrote are kept in
 
 ## [Unreleased]
 
+## [2.5.2] — 2026-10-02
+
+A deadline audit of every socket-serving path in the tree, which found that
+one inattentive console viewer could freeze the service it was watching.
+Plus a nightly soak, Podman as a real test target instead of a claim, and
+two CI failures narrowed down rather than guessed at.
+
+**Why a patch.** Every bound added here only takes effect in a state that
+was already broken. The vtty write deadline can only fire when the write
+would otherwise block — which is exactly the case that used to stall the
+PTY — so a client that keeps reading sees no change at all. The
+logouthookd fix replaces "hang until SIGKILL" with "exit", and both leave
+utmp untouched, so the observable outcome is the same minus the stop-timeout
+delay. Nothing that already worked behaves differently, which is the line
+STABILITY.md draws for a patch.
+
+Verified: `go test ./...` green, `-race` green on pkg/service, pkg/control,
+pkg/metrics and cmd/slinit-logouthookd. Both deadline fixes are proven by
+mutation — reverting each one fails its test, and for the vtty case the
+failure stack shows the service's own write blocked, which is the claim
+being made.
+
+### Fixed
+
+- **A stalled console viewer no longer freezes the service it is watching.**
+  The loop draining a service's PTY wrote to every attached client with no
+  deadline, so one client that stopped reading — stopped process, dead
+  socket, full buffer — blocked that write indefinitely. The master then
+  stopped being drained and the service blocked on its own console output.
+  The scrollback write had the same shape and runs on the accept loop, so a
+  single silent client also prevented every later client from connecting.
+  Both writes now carry a 5s budget and a timeout drops the client through
+  the existing error path.
+- **Torn console output and a corrupted scrollback ring under load.** The
+  PTY reader queued four results through two alternating buffers, so a
+  consumer one iteration behind had its bytes overwritten underneath it —
+  and a data race the detector flags inside the ring write. Two buffers can
+  only be correct with a queue of one. Buffers are now owned: taken from a
+  free list and returned when the consumer has finished, keeping the
+  no-allocation-per-read intent. When every buffer is out the reader blocks,
+  which is ordinary back-pressure and is bounded by the write deadline.
+- **`slinit-logouthookd` now exits on SIGTERM while sessions are open.** It
+  closed the listener and then waited on every client goroutine, each parked
+  in a read that only returns when its session ends — and that read is the
+  logout detector. So the daemon could not exit until the last user logged
+  out: PID 1's stop timeout elapsed and it was SIGKILLed, on every shutdown
+  with anybody logged in. Shutdown now closes the open connections, which
+  is what unblocks those reads. A session the daemon ends itself is
+  deliberately **not** marked `DEAD_PROCESS` — the user is still logged in,
+  and a confidently wrong utmp record is worse than a stale one.
+- **The pprof endpoint no longer lets a client hold a connection inside PID
+  1 forever.** `http.Serve` with a nil server means no timeouts at all, so a
+  client that connected and never finished its request line kept a goroutine
+  and a socket indefinitely. `ReadHeaderTimeout` and `IdleTimeout` now bound
+  it. `WriteTimeout` is deliberately left unset: a CPU profile writes
+  nothing for its full duration, so a write budget would break the feature
+  it was supposed to protect. Root-only socket behind a build tag, so low
+  severity, but the same shape as the rest.
+
+### Added
+
+- **Nightly container soak.** Nothing ran on a schedule, so nothing was
+  looking for the failures that only appear on the thousandth try — which is
+  where container mode's bugs have lived. `soak.sh` gained
+  `SOAK_BUDGET_SEC`, which ends the loop on wall time whatever `CYCLES`
+  says, because a scheduled run cannot guess the speed of the machine that
+  picks it up: guess low and the window is wasted, guess high and the job is
+  killed mid-cycle with no summary. A GitHub-hosted job is killed at six
+  hours, so this fills three hours a night rather than the twenty-four a
+  self-hosted runner would allow.
+- **`SLINIT_NO_KVM=1`** forces the functional harness into software
+  emulation even where acceleration works, which is how CI runs it. Three
+  cases so far asserted something that only held at hardware speed and each
+  was found on the runner rather than locally.
+
+### Changed
+
+- **The container suite runs under Podman, not just in principle.** 22 of 23
+  cases pass under rootless Podman 6.0 unchanged, and the soak loops
+  cleanly; the nightly runs both runtimes. Rootless is the more searching of
+  the two, because the container's root is a mapped uid with no real
+  `CAP_SYS_ADMIN`. The one case that does not run is `17-memory-limit`, and
+  the limit is the runtime's: applying `--memory` needs the `memory`
+  controller delegated to the user slice, and a host that delegates only
+  `pids` fails the container before slinit is executed. It now probes the
+  capability and skips with that reason.
+- **The container suite can report a skip.** It could not: a case returning
+  zero counted as a pass, which is how a case quietly stops covering
+  anything. Skips are counted apart and their reasons reprinted after the
+  tally.
+
 ## [2.5.1] — 2026-10-01
 
 Suspend stops being a one-line write to sysfs, the lid does something, and

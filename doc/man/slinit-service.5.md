@@ -1721,10 +1721,17 @@ watch; the service remains startable via `slinitctl start`.
 ## VTTY (sunlight-os)
 
 **vtty**=*yes*|*no*
-:   Reserve a virtual TTY for this service.
+:   Reserve a virtual TTY for this service. Clients attach over a Unix
+    socket and several may watch at once. A client that stops reading is
+    disconnected after five seconds rather than waited on (since 2.5.2):
+    the drain loop is shared, so a viewer that stalls would otherwise stop
+    the PTY being emptied and block the service on its own console output.
+    Reattach to resume; scrollback replays what was missed, up to the
+    buffer size.
 
 **vtty-scrollback**=*N*
-:   Scrollback buffer size (lines).
+:   Scrollback buffer size in **bytes** (default 65536). Earlier versions
+    of this page said lines, which was wrong.
 
 ## PRE-START GUARDS (OpenRC)
 
