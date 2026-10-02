@@ -216,8 +216,11 @@ format to accommodate them.
   entries, so each process-bearing entry becomes a service and the rest
   are reported with slinit's equivalent: `initdefault` → a runlevel
   target, `ctrlaltdel` → handled natively, the `powerfail` family →
-  `/etc/slinit/power-hook`. busybox's dialect is **not** supported and an
-  unrecognised action is refused by name rather than guessed). All four
+  `/etc/slinit/power-hook`. **busybox's dialect is supported too** — its
+  eight actions read from its own `init/init.c`, with `--dialect` deciding
+  the one genuinely ambiguous column: a utmp id for sysvinit, the tty to
+  run on for busybox. An action neither dialect defines is refused by
+  name rather than guessed). All four
   emit WARN/NOTE for anything without a 1:1 mapping; runit-convert output
   round-trips through `slinit-check` clean on real-world void services,
   and every file sysvinit-convert emits is checked against the real

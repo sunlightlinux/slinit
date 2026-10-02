@@ -29,7 +29,7 @@ bw::bootwait:/etc/init.d/early
 	if len(errs) != 0 {
 		t.Fatalf("parse errors on a valid inittab: %v", errs)
 	}
-	res := convert(entries)
+	res := convert(entries, dialectSysv)
 	if len(res.services) == 0 {
 		t.Fatal("no services produced")
 	}
@@ -75,20 +75,23 @@ func TestParseInittabRejectsMalformed(t *testing.T) {
 	}
 }
 
-// An action this converter does not know is refused by name, never
-// guessed. busybox init uses a different dialect and no busybox build on
-// hand carries the init applet to check it against, so a wrong guess
-// would emit a service that does the wrong thing silently.
+// An action neither dialect defines is refused by name, never guessed:
+// a service that silently does the wrong thing is the worst outcome
+// available mid-migration.
+//
+// `askfirst` was this test's example until busybox support landed and
+// made it a known action, so the example is now something genuinely
+// absent from both tables.
 func TestUnknownActionIsRefusedByName(t *testing.T) {
-	entries, _ := parseInittab(strings.NewReader("tty1::askfirst:/bin/sh\n"))
-	res := convert(entries)
+	entries, _ := parseInittab(strings.NewReader("tty1::sometimes:/bin/sh\n"))
+	res := convert(entries, dialectSysv)
 	if len(res.services) != 0 {
 		t.Errorf("an unknown action produced a service file: %v", res.services)
 	}
 	if len(res.warnings) != 1 {
 		t.Fatalf("got %d warnings, want 1: %v", len(res.warnings), res.warnings)
 	}
-	if !strings.Contains(res.warnings[0], "askfirst") {
+	if !strings.Contains(res.warnings[0], "sometimes") {
 		t.Errorf("the warning does not name the action: %q", res.warnings[0])
 	}
 }
@@ -113,7 +116,7 @@ func TestActionMapping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.action, func(t *testing.T) {
 			entries, _ := parseInittab(strings.NewReader("zz:2:" + tc.action + ":/bin/true\n"))
-			res := convert(entries)
+			res := convert(entries, dialectSysv)
 			if len(res.services) != 1 {
 				t.Fatalf("got %d services, want 1", len(res.services))
 			}
@@ -150,7 +153,7 @@ func TestPowerActionsPointAtThePowerHook(t *testing.T) {
 	}
 	for action, arg := range want {
 		entries, _ := parseInittab(strings.NewReader("pf::" + action + ":/etc/init.d/pf\n"))
-		res := convert(entries)
+		res := convert(entries, dialectSysv)
 		if len(res.services) != 0 {
 			t.Errorf("%s produced a service file; it is a hook case, not a service", action)
 		}
@@ -169,7 +172,7 @@ func TestPowerActionsPointAtThePowerHook(t *testing.T) {
 // but the values must not be.
 func TestGettyKeepsItsUtmpIdentity(t *testing.T) {
 	entries, _ := parseInittab(strings.NewReader("S0:3:respawn:/sbin/agetty -L 115200 ttyS0 vt100\n"))
-	res := convert(entries)
+	res := convert(entries, dialectSysv)
 	body, ok := res.services["getty-ttys0"]
 	if !ok {
 		t.Fatalf("expected a service named getty-ttys0, got %v", keys(res.services))
@@ -190,7 +193,7 @@ func TestNameClashIsRefusedNotOverwritten(t *testing.T) {
 	// the test was wrong, not the converter.)
 	in := "a-b:2:respawn:/bin/true\na.b:2:respawn:/bin/true\n"
 	entries, _ := parseInittab(strings.NewReader(in))
-	res := convert(entries)
+	res := convert(entries, dialectSysv)
 	if len(res.services) != 1 {
 		t.Fatalf("got %d services, want 1", len(res.services))
 	}
@@ -204,7 +207,7 @@ func TestNameClashIsRefusedNotOverwritten(t *testing.T) {
 // than membership, so they must not become enable commands.
 func TestHaltAndRebootLevelsAreNotWired(t *testing.T) {
 	entries, _ := parseInittab(strings.NewReader("zz:016:respawn:/bin/true\n"))
-	res := convert(entries)
+	res := convert(entries, dialectSysv)
 	for _, c := range res.enableCmds {
 		if strings.Contains(c, "runlevel-0") || strings.Contains(c, "runlevel-6") {
 			t.Errorf("wired a shutdown runlevel: %q", c)
@@ -221,4 +224,127 @@ func keys(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// The first column is the one place the dialects genuinely disagree:
+// sysvinit writes it to utmp as an id, busybox uses it as the tty to run
+// the command on. Both readings come from the respective sources.
+func TestFirstColumnMeansDifferentThingsPerDialect(t *testing.T) {
+	const line = "tty2::respawn:/sbin/getty 38400 tty2\n"
+
+	entries, _ := parseInittab(strings.NewReader(line))
+	for _, body := range convert(entries, dialectSysv).services {
+		if !strings.Contains(body, "inittab-id = tty2") {
+			t.Errorf("sysvinit: first column should become inittab-id:\n%s", body)
+		}
+		if strings.Contains(body, "tty-path") {
+			t.Errorf("sysvinit: must not emit tty-path:\n%s", body)
+		}
+	}
+
+	entries, _ = parseInittab(strings.NewReader(line))
+	for _, body := range convert(entries, dialectBusybox).services {
+		if !strings.Contains(body, "tty-path = /dev/tty2") {
+			t.Errorf("busybox: first column should become tty-path:\n%s", body)
+		}
+		if strings.Contains(body, "inittab-id") {
+			t.Errorf("busybox: must not emit inittab-id:\n%s", body)
+		}
+	}
+}
+
+// Detection, from the evidence each dialect leaves behind. A unique
+// action settles it; failing that, busybox's shape is an unread runlevel
+// column plus a tty in the first one.
+func TestDetectDialect(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want dialect
+	}{
+		{"busybox-only action", "tty1::askfirst:/bin/sh\n", dialectBusybox},
+		{"busybox shutdown", "::shutdown:/bin/umount -a\n", dialectBusybox},
+		{"sysv-only action", "id:3:initdefault:\n", dialectSysv},
+		{"sysv powerfail", "pf::powerwait:/etc/init.d/pf\n", dialectSysv},
+		{"no runlevels, tty ids", "tty1::respawn:/sbin/getty tty1\n::sysinit:/etc/rcS\n", dialectBusybox},
+		{"runlevels present", "1:2345:respawn:/sbin/agetty tty1\n", dialectSysv},
+		{"non-tty id", "si::sysinit:/etc/init.d/rcS\n", dialectSysv},
+		{"nothing to go on", "# just a comment\n", dialectSysv},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, _ := parseInittab(strings.NewReader(tc.in))
+			if got := detectDialect(entries); got != tc.want {
+				t.Errorf("detectDialect = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// busybox never reads the runlevel column, so turning it into runlevel
+// membership would invent behaviour the original file never had.
+func TestBusyboxRunlevelsAreNotWired(t *testing.T) {
+	entries, _ := parseInittab(strings.NewReader("tty1:2345:respawn:/sbin/getty tty1\n"))
+	res := convert(entries, dialectBusybox)
+	if len(res.enableCmds) != 0 {
+		t.Errorf("busybox runlevels were wired: %v", res.enableCmds)
+	}
+	if len(res.notes) == 0 {
+		t.Error("the ignored runlevel column was not reported")
+	}
+}
+
+// busybox strips a leading dash and gives the command a controlling tty.
+// tty-path already arranges that, so the dash has to come off the
+// command — left in, it would be exec'd as part of the path.
+func TestBusyboxLeadingDashIsStripped(t *testing.T) {
+	entries, _ := parseInittab(strings.NewReader("tty1::respawn:-/bin/sh\n"))
+	res := convert(entries, dialectBusybox)
+	if len(res.services) != 1 {
+		t.Fatalf("got %d services, want 1", len(res.services))
+	}
+	for _, body := range res.services {
+		if !strings.Contains(body, "command = /bin/sh") {
+			t.Errorf("the leading dash survived into the command:\n%s", body)
+		}
+	}
+	if !strings.Contains(strings.Join(res.notes, " "), "controlling tty") {
+		t.Errorf("dropping the dash was not explained: %v", res.notes)
+	}
+}
+
+// askfirst becomes a plain respawn and says so: slinit has no "wait for
+// Enter" equivalent, and a console meant to stay quiet would otherwise
+// come up without anyone noticing.
+func TestAskfirstIsConvertedAndFlagged(t *testing.T) {
+	entries, _ := parseInittab(strings.NewReader("tty3::askfirst:/bin/sh\n"))
+	res := convert(entries, dialectBusybox)
+	if len(res.services) != 1 {
+		t.Fatalf("got %d services, want 1", len(res.services))
+	}
+	for _, body := range res.services {
+		if !strings.Contains(body, "restart = yes") {
+			t.Errorf("askfirst should respawn:\n%s", body)
+		}
+	}
+	if !strings.Contains(strings.Join(res.notes, " "), "askfirst") {
+		t.Errorf("the lost prompt was not reported: %v", res.notes)
+	}
+}
+
+// busybox's shutdown and restart are not services at all.
+func TestBusyboxShutdownAndRestartAreReported(t *testing.T) {
+	in := "::shutdown:/bin/umount -a\n::restart:/sbin/init\n"
+	entries, _ := parseInittab(strings.NewReader(in))
+	res := convert(entries, dialectBusybox)
+	if len(res.services) != 0 {
+		t.Errorf("shutdown/restart produced service files: %v", keys(res.services))
+	}
+	joined := strings.Join(res.notes, " ")
+	if !strings.Contains(joined, "shutdown-hook") {
+		t.Errorf("shutdown was not pointed at the shutdown hook: %v", res.notes)
+	}
+	if !strings.Contains(joined, "soft-reboot") {
+		t.Errorf("restart was not pointed at soft-reboot: %v", res.notes)
+	}
 }

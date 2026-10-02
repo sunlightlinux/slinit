@@ -29,7 +29,7 @@ func FuzzParseInittab(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data string) {
 		entries, _ := parseInittab(strings.NewReader(data))
-		res := convert(entries)
+		res := convert(entries, dialectSysv)
 		// Every emitted name has to be usable as a filename: the
 		// converter writes one file per service, and a name carrying a
 		// slash or a NUL would escape the output directory or be

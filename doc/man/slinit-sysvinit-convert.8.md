@@ -12,8 +12,9 @@ slinit-sysvinit-convert - port /etc/inittab to slinit service files
 
 # DESCRIPTION
 
-**slinit-sysvinit-convert** reads a sysvinit */etc/inittab* and emits
-equivalent slinit service files, completing the converter set beside
+**slinit-sysvinit-convert** reads an */etc/inittab* — sysvinit's or
+busybox's — and emits equivalent slinit service files, completing the
+converter set beside
 **slinit-openrc-convert**(8), **slinit-runit-convert**(8) and
 **slinit-systemd-convert**(8).
 
@@ -80,18 +81,68 @@ Runlevels **0** and **6** are halt and reboot. A service "in" them runs
 while the system goes down, which slinit expresses with
 **stop-command** rather than membership, so they are not wired.
 
-## Scope
+## Dialects
 
-This implements **sysvinit's** inittab, whose grammar and actions were
-taken from sysvinit's own **inittab**(5) and *init.c*.
+Both inittab dialects are supported, each read out of its own source:
+sysvinit's fifteen actions from its **inittab**(5) and *init.c*,
+busybox's eight from the action table in *init/init.c*.
 
-busybox **init** uses a different dialect. It is not supported, and an
-action this converter does not recognise is **refused by name and line
-number** rather than guessed at — a wrong guess would emit a service
-that silently does the wrong thing. If the refused action turns out to
-be a busybox one, the message names exactly what needs adding.
+Five action names are shared — **sysinit**, **wait**, **once**,
+**respawn**, **ctrlaltdel** — and mean the same thing in both. The other
+thirteen belong to exactly one dialect, so the action column is never
+ambiguous.
+
+What *is* ambiguous is the **first column**, and it is the only thing
+**\--dialect** actually decides:
+
+| dialect | first column | becomes |
+|---|---|---|
+| sysvinit | a short utmp entry id | **inittab-id** |
+| busybox | the tty to run the command on | **tty-path** |
+
+busybox's parser also never reads the **runlevel** column at all, so in
+that dialect no runlevel wiring is emitted and the ignored column is
+reported. And a command with a leading **-** asks busybox for a
+controlling terminal; **tty-path** already arranges exactly that
+(*Setsid*+*Setctty*), so the dash is removed from the command — left in,
+it would be exec'd as part of the path — and the removal is reported.
+
+With **\--dialect**=*auto*, the choice is inferred and always printed. An
+action unique to one dialect settles it; failing that, busybox's shape is
+an empty runlevel column plus a tty in the first one. A file with neither
+signal is read as sysvinit, because applying its reading of the first
+column by mistake is the harmless direction.
+
+busybox's three own actions are not services:
+
+**askfirst**
+:   Respawn, but wait for Enter first so a console stays quiet until
+    someone wants it. slinit has no equivalent, so it is written as a
+    plain **respawn** — which *will* start immediately — and reported, so
+    the lost prompt is not a surprise. Add **manual**=*yes* if that
+    console should stay idle.
+
+**shutdown**
+:   Run and waited for while the system goes down. slinit's equivalent is
+    */etc/slinit/shutdown-hook*, which already receives the shutdown type
+    as *$1*; per service, **stop-command**.
+
+**restart**
+:   What busybox exec()s to replace itself on *SIGQUIT*, and only the
+    first such entry was ever used. slinit's equivalent is
+    **slinitctl soft-reboot**, which re-execs slinit and keeps the
+    service graph.
+
+An action neither dialect defines is **refused by name and line number**
+rather than guessed at: a wrong guess would emit a service that silently
+does the wrong thing, which mid-migration is the worst available
+outcome.
 
 # FLAGS
+
+**\--dialect**=*sysvinit*|*busybox*|*auto*
+:   Which inittab grammar the input is written in. Default *auto*, which
+    infers it from the file and prints what it chose. See **Dialects**.
 
 **\--output-dir**=*DIR*
 :   Write one file per service into *DIR*. Without it the files go to
@@ -142,4 +193,5 @@ Read the generated files without writing them:
 
 **slinit**(8), **slinit-service**(5), **slinitctl**(8),
 **slinit-openrc-convert**(8), **slinit-runit-convert**(8),
-**slinit-systemd-convert**(8), **rc-update**(8), **inittab**(5)
+**slinit-systemd-convert**(8), **rc-update**(8), **inittab**(5),
+**busybox**(1)

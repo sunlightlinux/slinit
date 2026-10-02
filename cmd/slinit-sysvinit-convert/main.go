@@ -7,13 +7,21 @@
 // carries a process becomes its own file, and the entries that do not
 // are reported with what slinit does instead.
 //
-// Scope, stated plainly: this implements **sysvinit's** inittab, whose
-// grammar and fifteen actions were read out of sysvinit's own
-// inittab(5) and init.c. busybox init uses a different dialect, and no
-// busybox build on hand carries the init applet — so rather than guess
-// at it, an action this does not recognise is refused by name and line
-// number. If that turns out to be a busybox action, the message says
-// exactly which one to add.
+// Both dialects are supported, each read out of its own source rather
+// than assumed: sysvinit's fifteen actions from its inittab(5) and
+// init.c, busybox's eight from the action table in its init/init.c
+// (1.39.0.git). Five names are shared — sysinit, wait, once, respawn,
+// ctrlaltdel — and mean the same thing in both; the other thirteen
+// belong to exactly one dialect, so the action column alone is never
+// ambiguous.
+//
+// What IS ambiguous is the first column: sysvinit treats it as a short
+// utmp id, busybox as the tty to run the command on. That is what
+// --dialect decides, and the chosen dialect is always reported rather
+// than applied silently.
+//
+// An action neither dialect defines is refused by name and line number
+// instead of guessed at.
 //
 // Usage:
 //
@@ -39,6 +47,8 @@ func main() {
 		dryRun    bool
 		verbose   bool
 	)
+	var dialect string
+	flag.StringVar(&dialect, "dialect", "auto", "inittab dialect: sysvinit, busybox, or auto")
 	flag.StringVar(&outputDir, "output-dir", "", "write one slinit file per entry into DIR (default: stdout)")
 	flag.BoolVar(&dryRun, "dry-run", false, "print what would be written without touching the filesystem")
 	flag.BoolVar(&verbose, "verbose", false, "print per-entry notes to stderr")
@@ -76,7 +86,16 @@ Flags:
 		fmt.Fprintf(os.Stderr, "slinit-sysvinit-convert: %s\n", e)
 	}
 
-	result := convert(entries)
+	d, err := resolveDialect(dialect, entries)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-sysvinit-convert: %v\n", err)
+		os.Exit(2)
+	}
+	// Reported, never silent: the first column means different things in
+	// the two dialects, so getting this wrong changes the output.
+	fmt.Fprintf(os.Stderr, "dialect: %s%s\n", d, dialectWhy(dialect, d))
+
+	result := convert(entries, d)
 
 	// Advisory notes first: an operator who reads nothing else should
 	// still see what was not turned into a file and why.
@@ -122,6 +141,110 @@ Flags:
 	if len(errs) > 0 {
 		os.Exit(1)
 	}
+}
+
+// dialect is which inittab grammar a file is written in. They differ in
+// the meaning of the first column and in six of their actions.
+type dialect string
+
+const (
+	dialectSysv    dialect = "sysvinit"
+	dialectBusybox dialect = "busybox"
+)
+
+// busyboxOnly and sysvOnly are the actions unique to each. Taken from
+// the sources: busybox's table is
+// "sysinit\0wait\0once\0respawn\0askfirst\0ctrlaltdel\0shutdown\0restart\0"
+// in init/init.c, sysvinit's fifteen from inittab(5).
+var busyboxOnly = map[string]bool{
+	"askfirst": true, "shutdown": true, "restart": true,
+}
+
+var sysvOnly = map[string]bool{
+	"boot": true, "bootwait": true, "off": true, "ondemand": true,
+	"initdefault": true, "kbrequest": true,
+	"powerwait": true, "powerfail": true, "powerokwait": true, "powerfailnow": true,
+}
+
+// resolveDialect honours an explicit choice and otherwise infers one.
+func resolveDialect(want string, entries []entry) (dialect, error) {
+	switch want {
+	case "sysvinit":
+		return dialectSysv, nil
+	case "busybox":
+		return dialectBusybox, nil
+	case "auto":
+		return detectDialect(entries), nil
+	default:
+		return "", fmt.Errorf("unknown dialect %q: want sysvinit, busybox or auto", want)
+	}
+}
+
+// detectDialect guesses from evidence in the file, in order of how much
+// the evidence is worth.
+//
+// An action unique to one dialect settles it outright. Failing that, the
+// giveaway is that busybox never reads the runlevel column and uses the
+// first column as a device: a file where every runlevel column is empty
+// and every first column names a tty is busybox's shape and not
+// sysvinit's, which would normally carry digits there.
+//
+// Ties go to sysvinit, because a file with neither signal is almost
+// certainly a conventional inittab and because its reading of the first
+// column (a utmp id) is the harmless one to apply by mistake.
+func detectDialect(entries []entry) dialect {
+	for _, e := range entries {
+		if busyboxOnly[e.action] {
+			return dialectBusybox
+		}
+		if sysvOnly[e.action] {
+			return dialectSysv
+		}
+	}
+	sawEntry := false
+	for _, e := range entries {
+		sawEntry = true
+		if e.levels != "" {
+			return dialectSysv
+		}
+		if e.id != "" && !looksLikeTTY(e.id) {
+			return dialectSysv
+		}
+	}
+	if sawEntry {
+		return dialectBusybox
+	}
+	return dialectSysv
+}
+
+func dialectWhy(want string, got dialect) string {
+	if want != "auto" {
+		return " (given)"
+	}
+	return fmt.Sprintf(" (detected; pass --dialect=%s to override)", oppositeOf(got))
+}
+
+func oppositeOf(d dialect) dialect {
+	if d == dialectSysv {
+		return dialectBusybox
+	}
+	return dialectSysv
+}
+
+// devPath turns busybox's first column into an absolute device path,
+// the way its parser does: strip any /dev/ prefix, then prepend it.
+func devPath(s string) string {
+	return "/dev/" + strings.TrimPrefix(s, "/dev/")
+}
+
+func looksLikeTTY(s string) bool {
+	s = strings.TrimPrefix(s, "/dev/")
+	for _, p := range []string{"tty", "console", "hvc", "ttyS", "ttyAMA", "ttyUSB"} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // entry is one inittab line: id:runlevels:action:process.
@@ -181,7 +304,7 @@ type conversion struct {
 // The fifteen actions split three ways: those that describe a process
 // slinit can supervise, those that are really settings slinit expresses
 // elsewhere, and one with no equivalent at all.
-func convert(entries []entry) conversion {
+func convert(entries []entry, d dialect) conversion {
 	res := conversion{services: map[string]string{}}
 
 	for _, e := range entries {
@@ -207,19 +330,36 @@ func convert(entries []entry) conversion {
 				"line %d: %s (%s) — slinit runs /etc/slinit/power-hook with %s; "+
 					"move this command there under that case.",
 				e.line, e.action, e.process, powerHookArg(e.action)))
+		case "shutdown":
+			// busybox runs these during shutdown and waits for them.
+			// slinit's equivalent is the shutdown hook, which already
+			// gets the shutdown type as $1.
+			res.notes = append(res.notes, fmt.Sprintf(
+				"line %d: busybox `shutdown` (%s) — slinit runs "+
+					"/etc/slinit/shutdown-hook with the shutdown type as $1; move this "+
+					"command there. A per-service equivalent is `stop-command`.",
+				e.line, e.process))
+		case "restart":
+			// busybox exec()s the first RESTART action on SIGQUIT,
+			// replacing init with it. That is a soft reboot.
+			res.notes = append(res.notes, fmt.Sprintf(
+				"line %d: busybox `restart` (%s) replaces init on SIGQUIT — slinit's "+
+					"equivalent is `slinitctl soft-reboot`, which re-execs slinit itself "+
+					"and keeps the service graph. Only busybox's first restart entry was "+
+					"ever used.", e.line, e.process))
 		case "kbrequest":
 			res.warnings = append(res.warnings, fmt.Sprintf(
 				"line %d: kbrequest has no slinit equivalent (it needs the kernel's "+
 					"KDSIGACCEPT); %s was not converted.", e.line, e.process))
 
 		// ---- processes slinit can supervise -------------------------
-		case "respawn", "wait", "once", "boot", "bootwait", "sysinit", "off", "ondemand":
+		case "respawn", "wait", "once", "boot", "bootwait", "sysinit", "off", "ondemand", "askfirst":
 			if e.process == "" {
 				res.warnings = append(res.warnings, fmt.Sprintf(
 					"line %d: %s with no command — skipped", e.line, e.action))
 				continue
 			}
-			name, body, notes := serviceFor(e)
+			name, body, notes := serviceFor(e, d)
 			if _, clash := res.services[name]; clash {
 				// Two entries whose ids sanitise to the same name would
 				// silently overwrite each other, which is worse than
@@ -232,20 +372,30 @@ func convert(entries []entry) conversion {
 			}
 			res.services[name] = body
 			res.notes = append(res.notes, notes...)
-			for _, lvl := range splitLevels(e.levels) {
-				res.enableCmds = append(res.enableCmds,
-					fmt.Sprintf("slinitctl --from runlevel-%s enable %s", lvl, name))
+			if d == dialectSysv {
+				for _, lvl := range splitLevels(e.levels) {
+					res.enableCmds = append(res.enableCmds,
+						fmt.Sprintf("slinitctl --from runlevel-%s enable %s", lvl, name))
+				}
+			} else if e.levels != "" {
+				// busybox's parser never reads token[1]. Converting it
+				// into runlevel membership would invent behaviour the
+				// original file never had.
+				res.notes = append(res.notes, fmt.Sprintf(
+					"line %d: runlevels %q ignored — busybox init does not read that "+
+						"column, so %s was not wired into any runlevel.",
+					e.line, e.levels, name))
 			}
 
 		default:
-			// Refused rather than guessed. busybox's dialect has actions
-			// sysvinit does not, and no busybox build here carries the
-			// init applet to check them against.
+			// Neither dialect defines it, so it is refused rather than
+			// guessed at: emitting a service that silently does the
+			// wrong thing is the worst outcome available mid-migration.
 			res.warnings = append(res.warnings, fmt.Sprintf(
-				"line %d: unknown action %q — not converted. sysvinit's actions are "+
-					"respawn, wait, once, boot, bootwait, off, ondemand, initdefault, "+
-					"sysinit, ctrlaltdel, kbrequest and the powerfail family. If this is "+
-					"a busybox action, it needs adding deliberately rather than guessed.",
+				"line %d: unknown action %q — not converted. sysvinit has respawn, wait, "+
+					"once, boot, bootwait, off, ondemand, initdefault, sysinit, ctrlaltdel, "+
+					"kbrequest and the powerfail family; busybox has sysinit, wait, once, "+
+					"respawn, askfirst, ctrlaltdel, shutdown and restart.",
 				e.line, e.action))
 		}
 	}
@@ -253,17 +403,30 @@ func convert(entries []entry) conversion {
 }
 
 // serviceFor renders one entry as a slinit service file.
-func serviceFor(e entry) (name, body string, notes []string) {
+func serviceFor(e entry, d dialect) (name, body string, notes []string) {
 	var b strings.Builder
 	name = serviceName(e)
 
-	fmt.Fprintf(&b, "# Converted from /etc/inittab line %d:\n", e.line)
+	fmt.Fprintf(&b, "# Converted from /etc/inittab line %d (%s):\n", e.line, d)
 	fmt.Fprintf(&b, "#   %s:%s:%s:%s\n", e.id, e.levels, e.action, e.process)
 
-	tty, isGetty := gettyTTY(e.process)
+	// busybox strips a leading dash and gives the command a controlling
+	// tty (FEATURE_INIT_SCTTY). slinit's tty-path already does the
+	// Setsid+Setctty part, so the dash has nowhere left to go — dropping
+	// it silently would be wrong, so it is dropped and said.
+	command := e.process
+	if d == dialectBusybox && strings.HasPrefix(command, "-") {
+		command = command[1:]
+		notes = append(notes, fmt.Sprintf(
+			"line %d: leading `-` dropped from the command — it asked busybox for a "+
+				"controlling tty, which `tty-path` already arranges (Setsid+Setctty).",
+			e.line))
+	}
+
+	tty, isGetty := gettyTTY(command)
 
 	switch e.action {
-	case "respawn":
+	case "respawn", "askfirst":
 		b.WriteString("type = process\n")
 	case "off":
 		b.WriteString("type = process\n")
@@ -275,10 +438,10 @@ func serviceFor(e entry) (name, body string, notes []string) {
 		b.WriteString("type = scripted\n")
 	}
 
-	fmt.Fprintf(&b, "command = %s\n", e.process)
+	fmt.Fprintf(&b, "command = %s\n", command)
 
 	switch e.action {
-	case "respawn":
+	case "respawn", "askfirst":
 		b.WriteString("restart = yes\n")
 		if isGetty {
 			// Matches what slinit-init-maker emits for a getty, so a
@@ -298,6 +461,14 @@ func serviceFor(e entry) (name, body string, notes []string) {
 				"start-on-* activation directive.", e.line, e.levels))
 	}
 
+	if e.action == "askfirst" {
+		notes = append(notes, fmt.Sprintf(
+			"line %d: `askfirst` waits for Enter before spawning, to keep a console "+
+				"quiet until someone wants it. slinit has no equivalent, so %s was "+
+				"written as a plain respawn and will start immediately — add "+
+				"`manual = yes` if that console should stay idle.", e.line, name))
+	}
+
 	if e.action == "sysinit" {
 		notes = append(notes, fmt.Sprintf(
 			"line %d: `sysinit` runs before everything else. %s has no dependencies; make "+
@@ -306,14 +477,28 @@ func serviceFor(e entry) (name, body string, notes []string) {
 		b.WriteString("depends-on: system-init\n")
 	}
 
-	// The id column is what sysvinit writes into utmp, and slinit has
-	// directives for exactly that — so a converted getty keeps showing
-	// up correctly in who(1) and last(1).
-	if e.id != "" {
-		fmt.Fprintf(&b, "inittab-id = %s\n", e.id)
-	}
-	if isGetty && tty != "" {
-		fmt.Fprintf(&b, "inittab-line = %s\n", tty)
+	// The first column is where the two dialects genuinely disagree.
+	//
+	// sysvinit writes it into utmp as the entry id, and slinit has
+	// directives for exactly that, so a converted getty keeps showing up
+	// correctly in who(1) and last(1).
+	//
+	// busybox instead treats it as the tty to run the command on
+	// (`.*TTY` becomes `/dev/TTY` in its parser), which is what slinit's
+	// tty-path does: open the device, wire it as stdin/stdout/stderr, and
+	// make the child a session leader with it as controlling terminal.
+	switch d {
+	case dialectBusybox:
+		if e.id != "" {
+			fmt.Fprintf(&b, "tty-path = %s\n", devPath(e.id))
+		}
+	default:
+		if e.id != "" {
+			fmt.Fprintf(&b, "inittab-id = %s\n", e.id)
+		}
+		if isGetty && tty != "" {
+			fmt.Fprintf(&b, "inittab-line = %s\n", tty)
+		}
 	}
 
 	return name, b.String(), notes
