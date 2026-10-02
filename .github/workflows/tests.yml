@@ -154,17 +154,36 @@ jobs:
           TIMEOUT: "180"
         run: bash tests/functional/run-tests.sh ${{ steps.cases.outputs.list }}
 
-      # A failed case leaves its console log behind, which is the only
-      # way to tell a real failure from a VM that never booted.
+      # A failed case leaves its console log behind, which is the only way
+      # to tell a real failure from a VM that never booted.
+      #
+      # These paths were wrong from the start and nothing said so. The
+      # globs were tests/functional/_output/*.log and
+      # tests/functional/log.txt: _output holds only the kernel and the
+      # initramfs (zero .log matches) and log.txt does not exist at all.
+      # run-tests.sh writes per-case logs under _build/test-<case>/. With
+      # if-no-files-found: ignore on top, every failing run uploaded an
+      # empty artifact in silence — which is why three earlier failures
+      # (116, 167, 220) could not be diagnosed from CI and were each
+      # written off as "need the artifact".
+      #
+      # warn, not ignore, so the next time these paths drift it is said
+      # out loud instead of leaving a future session with nothing again.
+      #
+      # The name uses matrix.shard rather than strategy.job-index: those
+      # are not the same number, the job label shows the matrix value, and
+      # an artifact named after the other one sends whoever downloads it
+      # to the wrong case list.
       - name: Upload console logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: functional-logs-shard-${{ strategy.job-index }}
+          name: functional-logs-shard-${{ matrix.shard }}
           path: |
-            tests/functional/_output/*.log
-            tests/functional/log.txt
-          if-no-files-found: ignore
+            tests/functional/_build/*/console.log
+            tests/functional/_build/*/qemu-stderr.log
+            tests/functional/_build/*/result.txt
+          if-no-files-found: warn
           retention-days: 7
 
   # Performance harnesses, run as a smoke test and not as a measurement.

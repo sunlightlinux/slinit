@@ -25,6 +25,21 @@ if [ ! -f /tmp/178-seccomp ]; then
     return
 fi
 
+# Printed on every run, pass or fail. This case went red on CI while 27
+# others in the same shard passed — including 149-no-new-privs,
+# 78-sandbox and 192-lsm-fail-closed, which all need slinit-runner, so the
+# runner was working. It passes here with and without KVM. What the
+# failure did not record is whether the body ran once or twice: a restart
+# that re-ran the command would overwrite the marker, and the state at
+# that moment is the fact worth having.
+echo "--- diag: restrict-svc ---"
+slinitctl --system status restrict-svc 2>&1 || true
+echo "--- diag: marker contents ---"
+cat /tmp/178-seccomp 2>&1 || true
+echo "--- diag: runner present? ---"
+ls -l /sbin/slinit-runner 2>&1 || true
+echo "--- diag: end ---"
+
 _mode=$(awk '{print $2; exit}' /tmp/178-seccomp)
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ "$_mode" = "2" ]; then
