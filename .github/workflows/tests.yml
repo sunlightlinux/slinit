@@ -142,6 +142,16 @@ jobs:
         env:
           # The image came from the artifact; keep it and do not rebuild.
           KEEP_BUILD: "1"
+          # Per-case budget, raised from the 60s default because the runner
+          # has no KVM. The 1.47x emulation penalty measured when this
+          # workflow was written does NOT generalise: it came from cases
+          # that wait on sleeps, and a case that spawns slinitctl in a poll
+          # loop pays Go process startup under TCG instead. Case 181 runs
+          # in 12s with KVM and about 60s without — right on the old budget,
+          # so it passed or failed depending on which side of it the run
+          # landed. 180s leaves headroom without hiding a genuinely wedged
+          # guest, which now fails in TIMEOUT seconds rather than ~16x it.
+          TIMEOUT: "180"
         run: bash tests/functional/run-tests.sh ${{ steps.cases.outputs.list }}
 
       # A failed case leaves its console log behind, which is the only

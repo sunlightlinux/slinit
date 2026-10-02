@@ -201,7 +201,19 @@ SVC
         &>"${test_dir}/qemu-stderr.log" &
     local qemu_pid=$!
 
-    # Wait for QEMU socket, then read results
+    # Wait for QEMU socket, then read results.
+    #
+    # elapsed is read off the clock, not counted in iterations. It used to
+    # be incremented by one per pass while the socat inside the loop was
+    # allowed to block for TIMEOUT-elapsed seconds on its own, so the real
+    # worst case was 60+59+58+... — about half an hour for a nominal 60s
+    # budget. A guest that boots, opens the port and then never writes
+    # hits exactly that: socat connects and blocks, costing nearly the
+    # whole budget per pass while charging one second against it. Measured
+    # at 950s for TIMEOUT=60 on case 181 under software emulation, which
+    # is what CI runs.
+    local started
+    started=$(date +%s)
     local elapsed=0
     local got_result=0
 
@@ -213,10 +225,12 @@ SVC
         # Try to connect and read from the socket
         if [ -S "${chardev_path}" ]; then
             # Use socat if available, otherwise nc
+            local left=$(( TIMEOUT - ($(date +%s) - started) ))
+            [ "$left" -lt 1 ] && break
             if command -v socat &>/dev/null; then
-                timeout $((TIMEOUT - elapsed)) socat -u UNIX-CONNECT:"${chardev_path}" STDOUT > "${result_file}" 2>/dev/null && got_result=1 || true
+                timeout "$left" socat -u UNIX-CONNECT:"${chardev_path}" STDOUT > "${result_file}" 2>/dev/null && got_result=1 || true
             else
-                timeout $((TIMEOUT - elapsed)) nc -U "${chardev_path}" > "${result_file}" 2>/dev/null && got_result=1 || true
+                timeout "$left" nc -U "${chardev_path}" > "${result_file}" 2>/dev/null && got_result=1 || true
             fi
             if [ -s "${result_file}" ]; then
                 got_result=1
@@ -224,7 +238,7 @@ SVC
             fi
         fi
         sleep 1
-        elapsed=$((elapsed + 1))
+        elapsed=$(( $(date +%s) - started ))
     done
 
     # Give QEMU a moment to shut down cleanly, then kill
