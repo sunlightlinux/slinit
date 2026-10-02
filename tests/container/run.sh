@@ -29,10 +29,22 @@ if [ $# -eq 0 ]; then
 fi
 
 passed=0 failed=0 failed_names=""
+skipped=0 skipped_names="" skipped_why=""
 for case in "$@"; do
     name=$(basename "$case" .sh)
     out=$(sh -c '. "$CT_DIR/lib.sh"; . "$1"' _ "$case" 2>&1)
-    if [ $? -eq 0 ]; then
+    rc=$?
+    if [ "$rc" -eq 77 ]; then
+        # skip_case. Counted apart from passes and its reason repeated in
+        # the summary: a skip folded into the pass tally is indisputably
+        # worse than a failure, because nobody goes looking for it.
+        skipped=$((skipped + 1))
+        why=$(echo "$out" | sed -n 's/^SKIP: //p' | head -1)
+        skipped_names="$skipped_names $name"
+        skipped_why="${skipped_why}  $name: ${why}
+"
+        echo "  SKIP $name — $why"
+    elif [ "$rc" -eq 0 ]; then
         passed=$((passed + 1))
         echo "  PASS $name"
         [ "${VERBOSE:-0}" = "1" ] && echo "$out" | sed 's/^/    /'
@@ -45,6 +57,10 @@ for case in "$@"; do
 done
 
 echo
-echo "Results: $passed passed, $failed failed ($((passed + failed)) total)"
+echo "Results: $passed passed, $skipped skipped, $failed failed ($((passed + skipped + failed)) total)"
 [ -n "$failed_names" ] && echo "Failed:$failed_names"
+# Reprinted at the end because the per-case SKIP line scrolls away, and a
+# run that silently stopped covering something should be visible from the
+# last few lines alone.
+[ -n "$skipped_why" ] && printf 'Skipped, and why:\n%s' "$skipped_why"
 [ "$failed" -eq 0 ]

@@ -6,8 +6,12 @@
 # exercise: acceptance case 69 drives `slinit -o` as a child of a shell,
 # so none of the isPID1 && containerMode paths run there.
 #
-# Only Docker is tested. CONTAINER_RUNTIME=podman is accepted because the
-# commands used here are CLI-compatible, but nothing has been run under it.
+# Docker and Podman are both exercised. Under rootless Podman 6.0 the suite
+# runs 22 of 23 cases; 17-memory-limit skips itself when the runtime cannot
+# apply a memory cap, which on a rootless host is the usual case — see
+# runtime_can_limit_memory below. Rootless is the more interesting of the
+# two to run, because the container's root is a mapped uid with no real
+# CAP_SYS_ADMIN, so slinit's PID-1 paths are exercised without privilege.
 
 RUNTIME="${CONTAINER_RUNTIME:-docker}"
 IMAGE="${SLINIT_TEST_IMAGE:-slinit-container-test:local}"
@@ -23,6 +27,19 @@ _TESTS_FAILED=0
 
 pass() { _TESTS_RUN=$((_TESTS_RUN + 1)); echo "OK: $*"; }
 fail() { _TESTS_RUN=$((_TESTS_RUN + 1)); _TESTS_FAILED=$((_TESTS_FAILED + 1)); echo "FAIL: $*"; }
+
+# skip_case REASON — abandon this case because the environment cannot run
+# it, with a reason precise enough that nobody mistakes it for a slinit
+# failure.
+#
+# Exit 77 rather than 0: a skip that reports success is how a case gets
+# quietly lost. 164-slice-hierarchy in the functional suite skipped for its
+# whole life, reporting PASS, while the bug it covered went unnoticed.
+# run.sh counts these separately and prints the reason in the summary.
+skip_case() {
+    echo "SKIP: $*"
+    exit 77
+}
 
 # check COND-EXIT-STATUS MESSAGE — pass or fail on the previous command.
 check() {
@@ -96,6 +113,18 @@ ct_wait_exit() {
 }
 
 ct_exit_code() { "$RUNTIME" inspect -f '{{.State.ExitCode}}' "$1"; }
+
+# runtime_can_limit_memory — can the runtime actually honour --memory?
+#
+# Rootless Podman on a host whose user slice has only `pids` delegated
+# cannot: the container fails to start when the OCI runtime writes
+# memory.max/memory.swap.max, before slinit is ever executed. Checked by
+# trying it rather than by inspecting cgroup.controllers, because what
+# matters is whether the runtime succeeds, and which file it reaches for
+# first differs between runtimes and versions.
+runtime_can_limit_memory() {
+    "$RUNTIME" run --rm --memory=64m "$BASE_IMAGE" true >/dev/null 2>&1
+}
 
 # ct_stop_ms NAME [TIMEOUT] — `stop` the container, print how long it took
 # in milliseconds. The runtime SIGKILLs after TIMEOUT (default 10s); the

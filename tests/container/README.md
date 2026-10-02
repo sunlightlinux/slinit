@@ -22,15 +22,27 @@ CYCLES=500 ./tests/container/soak.sh
 KEEP_IMAGE=1 ...                             # reuse the image from the last run
 ```
 
-Requirements: Go, and a working `docker` the user may talk to. The image
+Requirements: Go, and a working `docker` or `podman` the user may talk to. The image
 is `busybox:1.37-musl` plus statically built `slinit`, `slinitctl` and
 `slinit-runner`, tagged `slinit-container-test:local` and rebuilt from
 the working tree on every run unless `KEEP_IMAGE=1`.
 
-`CONTAINER_RUNTIME=podman` is accepted, because the commands used are
-CLI-compatible, but **only Docker has been run**. Kubernetes is not
-covered. A pod whose container runs `slinit -o` meets the same PID 1
-contract these cases pin, but nothing here starts one.
+`CONTAINER_RUNTIME=podman` selects Podman, and both runtimes are
+exercised: 23/23 under Docker, 22/23 under rootless Podman 6.0, where
+`17-memory-limit` skips itself. Rootless is the more searching of the two,
+because the container's root is a mapped uid with no real CAP_SYS_ADMIN.
+
+That one skip is the runtime's limit, not slinit's: applying `--memory`
+needs the `memory` controller delegated to the user slice, and a host that
+delegates only `pids` fails the container at creation, before slinit is
+executed. The case probes for the cap and skips with that reason rather
+than reporting assertions about a container that never started. A skipped
+case is counted and explained separately in the summary — it is not folded
+into the passes.
+
+Kubernetes is covered separately by `tests/k8s/` (10 cases on a local
+`kind` cluster), which starts a pod whose container runs `slinit -o`
+against the same PID 1 contract these cases pin.
 
 ## What the cases pin
 

@@ -48,7 +48,7 @@ go test ./...
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (219 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (92 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
 - **Fuzz targets**: 40 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 13 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the converters, the sysusers/tmpfiles/timedatectl/hostnamectl parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
-- **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker) + `./tests/container/soak.sh` (spawn+shutdown loop)
+- **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker or `CONTAINER_RUNTIME=podman`) + `./tests/container/soak.sh` (spawn+shutdown loop; `SOAK_BUDGET_SEC` bounds it by wall time)
 - **Kubernetes**: `./tests/k8s/run.sh` (8 cases against a local `kind` cluster)
 - Requires `qemu-system-x86_64` for functional tests, Docker for the container suite, `kind` + `kubectl` for the Kubernetes one
 - A functional case whose precondition is missing prints `SKIP:` and still reports PASS — read the skip lines, not just the tally (see `tests/functional/README.md`)
@@ -82,7 +82,7 @@ go test ./...
 - `tests/acceptance/ssh/` - SSH-driven live-VM cases (219)
 - `tests/performance/` - performance harnesses (92 SSH + 4 QEMU boot + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (27)
-- `tests/container/` - slinit as PID 1 under Docker (23 cases + soak loop)
+- `tests/container/` - slinit as PID 1 under Docker or Podman (23 cases + soak loop)
 - `tests/k8s/` - the same image as a pod on a `kind` cluster (8 cases)
 - `demo/` - QEMU demo environment
 - `doc/man/` - pandoc-flavored markdown → roff via `go tool md2man`

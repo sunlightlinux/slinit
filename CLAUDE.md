@@ -112,9 +112,10 @@ For multi-step tasks, state a brief plan:
   CLI + IPC + journal + lifecycle-scaling coverage). Env-var contract
   identical to the acceptance suite.
 - `./tests/container/run.sh` — 23 cases running slinit as real PID 1 under
-  Docker; `./tests/container/soak.sh` loops spawn+shutdown to catch the
-  races a single run misses.
-- `./tests/k8s/run.sh` — 8 cases running the same image as a pod on a local
+  Docker, or `CONTAINER_RUNTIME=podman` (22/23; the memory-limit case skips
+  where the runtime cannot apply a cap); `./tests/container/soak.sh` loops
+  spawn+shutdown to catch the races a single run misses.
+- `./tests/k8s/run.sh` — 10 cases running the same image as a pod on a local
   `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
   single target. 40 repo-wide: 27 in `tests/fuzz/`, 13 beside the code

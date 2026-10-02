@@ -1455,7 +1455,7 @@ slinit/
 ├── tests/functional/      # 225 QEMU-based integration tests
 ├── tests/acceptance/ssh/  # 219 live-VM acceptance cases (SSH-driven)
 ├── tests/fuzz/            # 27 fuzz targets (config, protocol, autofs, process parsers)
-├── tests/container/       # 23 cases running slinit as PID 1 under Docker, plus a soak loop
+├── tests/container/       # 23 cases running slinit as PID 1 under Docker or Podman, plus a soak loop
 ├── tests/k8s/             # 8 cases running the same image as a pod on a kind cluster
 └── tests/performance/     # Performance and stress harness (runtime + demo + 92 SSH cases)
 ```
