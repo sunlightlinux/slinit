@@ -286,8 +286,40 @@ jobs:
           rc=0
           for t in ${targets}; do
             echo "::group::${t}"
-            if ! go test "./${pkg}" -run "^${t}$" -fuzz "^${t}$" \
-                 -fuzztime "${FUZZTIME}"; then
+            out=$(mktemp)
+            if go test "./${pkg}" -run "^${t}$" -fuzz "^${t}$" \
+                 -fuzztime "${FUZZTIME}" 2>&1 | tee "${out}"; then
+              echo "::endgroup::"
+              continue
+            fi
+
+            # A fuzz FINDING always writes the offending input to
+            # testdata/fuzz/<target>/ and prints the path — that file is
+            # what makes it reproducible, and it is committed as the
+            # regression corpus. So the file, not the exit status, is what
+            # says a bug was found.
+            #
+            # Without that, `--- FAIL: <target> context deadline exceeded`
+            # is Go's own coordinator giving up while shutting its workers
+            # down at the end of a timed run: no input to blame, nothing to
+            # reproduce. It happened to FuzzDecodeSetEnv on a run that had
+            # executed 1.34M inputs cleanly at 45k/sec, and does not
+            # reproduce locally (three 30s runs, no crasher written). On a
+            # shared runner with four workers the final exchange can simply
+            # cross the deadline.
+            #
+            # Narrow on purpose: only that one message, and only when no
+            # input was recorded. Anything else still fails the job.
+            #
+            # "did Go say it wrote one", not "is the corpus directory
+            # empty": several targets already carry a committed regression
+            # corpus (FuzzParseCPUAffinity, FuzzJournalBinaryOpenReader),
+            # so emptiness would be false for exactly those and could not
+            # tell an old corpus entry from a new crasher anyway.
+            if grep -q 'context deadline exceeded' "${out}" &&
+               ! grep -q 'Failing input written to' "${out}"; then
+              echo "::warning title=fuzz coordinator timed out::${t}: Go stopped the run with 'context deadline exceeded' and recorded no input, so there is no finding to reproduce. Not treated as a failure."
+            else
               echo "FAIL: ${t}"
               rc=1
             fi
