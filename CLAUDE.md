@@ -118,7 +118,7 @@ For multi-step tasks, state a brief plan:
 - `./tests/k8s/run.sh` — 10 cases running the same image as a pod on a local
   `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
-  single target. 40 repo-wide: 27 in `tests/fuzz/`, 13 beside the code
+  single target. 41 repo-wide: 27 in `tests/fuzz/`, 14 beside the code
   they exercise (converters, sysusers/tmpfiles/timedatectl/hostnamectl
   parsers, `pkg/service` state machine), so `./tests/fuzz` alone is not
   all of them.

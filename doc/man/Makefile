@@ -45,6 +45,7 @@ PAGES_8 = \
 	slinit-openrc-convert.8 \
 	slinit-runit-convert.8 \
 	slinit-systemd-convert.8 \
+	slinit-sysvinit-convert.8 \
 	slinit-getty.8 \
 	slinit-watchdogd.8 \
 	slinit-logind.8 \

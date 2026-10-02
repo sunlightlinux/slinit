@@ -257,6 +257,7 @@ jobs:
           - cmd/slinit-openrc-convert
           - cmd/slinit-runit-convert
           - cmd/slinit-sysusers
+          - cmd/slinit-sysvinit-convert
           - cmd/slinit-timedatectl
           - cmd/slinit-tmpfiles
     steps:

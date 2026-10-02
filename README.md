@@ -201,8 +201,8 @@ format to accommodate them.
   directive (`--list-directives`), wire opcode (`--list-opcodes`), and
   feature name (`--list-all`); direct lookup by name returns descriptive
   text. Companion to `doc/features.md` for scripting-driven feature checks.
-- **Migration converters** (v2.1.4 + v2.1.5): three legacy-config →
-  slinit converters covering the common Void/Alpine/Debian migration
+- **Migration converters** (v2.1.4 + v2.1.5 + v2.6.1): four legacy-config →
+  slinit converters covering the common Void/Alpine/Debian/Devuan migration
   paths — `slinit-runit-convert` (runit `/etc/sv/<name>/` sv dirs with
   auto-detection of `finish`/`check`/`down`/`log/run` + `sv check DEP` →
   `waits-for: DEP` + `log-type = pipe` companion pairing), `slinit-openrc-
@@ -211,9 +211,17 @@ format to accommodate them.
   `slinit-systemd-convert` (systemd `.service` units mapping ~40 directives:
   `Type`, `Restart`, `User`+`Group`, `After`+`Requires` with `.service`/
   `.target`/`.socket`/`.path`/`.mount`/`.timer`/`.swap`/`.device` suffix
-  stripping, `ExecStart` prefix chars, hardening directives). All three
+  stripping, `ExecStart` prefix chars, hardening directives), and
+  `slinit-sysvinit-convert` (sysvinit `/etc/inittab` — one file, many
+  entries, so each process-bearing entry becomes a service and the rest
+  are reported with slinit's equivalent: `initdefault` → a runlevel
+  target, `ctrlaltdel` → handled natively, the `powerfail` family →
+  `/etc/slinit/power-hook`. busybox's dialect is **not** supported and an
+  unrecognised action is refused by name rather than guessed). All four
   emit WARN/NOTE for anything without a 1:1 mapping; runit-convert output
-  round-trips through `slinit-check` clean on real-world void services.
+  round-trips through `slinit-check` clean on real-world void services,
+  and every file sysvinit-convert emits is checked against the real
+  config parser by its own tests.
 - **`slinitctl analyze`** (v2.1.2, `plot` in v2.4.8): systemd-analyze
   parity — `time` (boot summary), `blame` (per-svc durations sorted),
   `critical-chain` (slowest dep-path walk), `dot` (GraphViz digraph), and
@@ -434,6 +442,7 @@ go build ./cmd/slinit-supports           # enumerate directives/opcodes/features
 go build ./cmd/slinit-runit-convert      # runit /etc/sv → slinit (log/run companion + sv check auto-waits-for)
 go build ./cmd/slinit-openrc-convert     # OpenRC /etc/init.d → slinit (openrc-run wrap for custom start())
 go build ./cmd/slinit-systemd-convert    # systemd .service → slinit (~40 directives mapped)
+go build ./cmd/slinit-sysvinit-convert   # sysvinit /etc/inittab → slinit (15 actions; settings reported, not faked)
 
 # OpenRC compat shims
 go build ./cmd/rc-service
@@ -1479,7 +1488,7 @@ ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
 # Fuzz targets — 27 live in tests/fuzz, 13 more sit beside the code
 # they exercise (the converters, sysusers/tmpfiles line parsers, the
 # timedatectl/hostnamectl parsers, and the service state machine), so
-# `./tests/fuzz` alone reaches two thirds of them. 40 repo-wide:
+# `./tests/fuzz` alone reaches two thirds of them. 41 repo-wide:
 #   grep -rl '^func Fuzz' --include='*_test.go' .
 go test -fuzz=FuzzConfigParse ./tests/fuzz
 go test -fuzz=FuzzStateMachine ./pkg/service
