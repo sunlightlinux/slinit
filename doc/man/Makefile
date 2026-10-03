@@ -38,6 +38,7 @@ PAGES_8 = \
 	slinit-sysusers.8 \
 	slinit-tmpfiles.8 \
 	slinit-supports.8 \
+	slinit-hostnamectl.8 \
 	slinit-journalctl.8 \
 	slinit-killall5.8 \
 	slinit-journald.8 \
@@ -48,6 +49,7 @@ PAGES_8 = \
 	slinit-runit-convert.8 \
 	slinit-systemd-convert.8 \
 	slinit-sysvinit-convert.8 \
+	slinit-timedatectl.8 \
 	slinit-getty.8 \
 	slinit-watchdogd.8 \
 	slinit-logind.8 \
