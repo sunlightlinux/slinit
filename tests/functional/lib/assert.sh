@@ -92,16 +92,41 @@ wait_for_service() {
     _svc="$1"
     _want="$2"
     _timeout="${3:-10}"
-    _elapsed=0
-    while [ "$_elapsed" -lt "$_timeout" ]; do
-        _cur=$(slinitctl --system status "$_svc" 2>/dev/null | grep 'State:' | awk '{print $2}')
+
+    # The deadline is read off the clock, and each slinitctl call is bounded.
+    #
+    # This used to count iterations — `_elapsed=$((_elapsed + 1))` once per
+    # pass — with an unbounded slinitctl inside the loop, so the timeout was
+    # a pass count and not a time at all. One call that never returned hung
+    # the whole case: 181-path-activation-full failed in CI three times with
+    # "no result received", and the marker in its console log showed the
+    # script sitting inside this function, which is supposed to give up after
+    # ten seconds. Same defect as run-tests.sh had, in a second place.
+    _deadline=$(( $(date +%s) + _timeout ))
+    _stuck=0
+    while [ "$(date +%s)" -lt "$_deadline" ]; do
+        if _cur=$(timeout 5 slinitctl --system status "$_svc" 2>/dev/null |
+                  grep 'State:' | awk '{print $2}'); then
+            :
+        else
+            _stuck=$((_stuck + 1))
+        fi
         if [ "$_cur" = "$_want" ]; then
             return 0
         fi
         sleep 1
-        _elapsed=$((_elapsed + 1))
     done
-    echo "TIMEOUT: service '$_svc' did not reach '$_want' within ${_timeout}s (current: $_cur)"
+
+    # Worth separating: a service that never reached the state is a result,
+    # while slinitctl not answering is a different and more interesting
+    # failure — the control socket, not the service.
+    if [ "$_stuck" -gt 0 ]; then
+        echo "TIMEOUT: service '$_svc' did not reach '$_want' within ${_timeout}s" \
+             "(current: $_cur) — and $_stuck slinitctl call(s) timed out," \
+             "so the control socket stopped answering"
+    else
+        echo "TIMEOUT: service '$_svc' did not reach '$_want' within ${_timeout}s (current: $_cur)"
+    fi
     return 1
 }
 
