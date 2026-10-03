@@ -940,6 +940,15 @@ func (s *BGProcessService) handleDaemonTermination() {
 		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
 	}
 
+	// The daemon was never our child, so there is no wait status for it —
+	// and exitStatus still holds the LAUNCHER's, which exited 0 to report
+	// that it had forked the daemon successfully. Leaving that in place is
+	// what stopped `restart = on-failure` from ever firing here: the policy
+	// asked whether the exit was signalled (no, it exited) or non-zero (no,
+	// it was 0) and concluded nothing had gone wrong. Replace it with what
+	// is actually true.
+	s.exitStatus = ExitStatus{Vanished: true}
+
 	s.daemonPID = 0
 	s.cancelTimer()
 

@@ -3163,6 +3163,16 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 					wantedRestart = true
 					forRestart = sr.self.CheckRestart()
 					sr.inAutoRestart = forRestart
+				} else if exitStatus.Vanished {
+					// A watched process that disappeared without a status
+					// we could collect — a bgprocess daemon, which is not
+					// our child. It was running and now it is not, which is
+					// a failure however it happened; the alternative is to
+					// decline the restart on the strength of a status that
+					// belongs to a different process.
+					wantedRestart = true
+					forRestart = sr.self.CheckRestart()
+					sr.inAutoRestart = forRestart
 				}
 			}
 		}

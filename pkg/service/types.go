@@ -376,6 +376,20 @@ type ExitStatus struct {
 	ExecStage uint8
 	// ExecErrno is the errno from the failed exec stage (valid when ExecFailed is true).
 	ExecErrno int32
+
+	// Vanished marks a process that terminated without slinit being able
+	// to obtain a wait status for it, because it was never slinit's child
+	// to wait on. A bgprocess daemon is the case: it is read from a
+	// pidfile and watched with kill(pid, 0), so its disappearance is
+	// observed rather than reaped.
+	//
+	// Deliberately not the same as HasStatus being false, which also
+	// covers "no status yet" — BringUp clears the struct before every
+	// start, so a service that failed to start reaches the restart policy
+	// with an empty one too, and treating absence as failure would make
+	// start failures restart. Vanished says something narrower: the
+	// process WAS running, it is gone, and nobody can say how it went.
+	Vanished bool
 }
 
 // Exited returns true if the process exited normally.
