@@ -4,7 +4,7 @@
 # workflow builds release binaries and tarball-verify runs `go test` —
 # but only on `release: created` and `workflow_dispatch`, so no branch and
 # no pull request was ever checked by anything. A contributor had no way
-# to know whether their change broke one of the 228 functional cases
+# to know whether their change broke one of the 230 functional cases
 # short of owning a machine and running them.
 #
 # What is deliberately NOT here: the acceptance (SSH), container (Docker)

@@ -1473,7 +1473,7 @@ slinit/
 ├── internal/util/         # Path and parsing utilities
 ├── completions/           # Shell completions (bash, zsh, fish)
 ├── demo/                  # QEMU demo environment
-├── tests/functional/      # 225 QEMU-based integration tests
+├── tests/functional/      # 230 QEMU-based integration tests
 ├── tests/acceptance/ssh/  # 219 live-VM acceptance cases (SSH-driven)
 ├── tests/fuzz/            # 27 fuzz targets (config, protocol, autofs, process parsers)
 ├── tests/container/       # 23 cases running slinit as PID 1 under Docker or Podman, plus a soak loop
@@ -1484,10 +1484,10 @@ slinit/
 ## Testing
 
 ```bash
-# Unit tests (~2196 tests + benchmarks across 81 Go dirs, 330 _test.go files)
+# Unit tests (~2387 tests + benchmarks across 84 Go dirs, 361 _test.go files)
 go test ./...
 
-# Functional tests (225 QEMU-based integration tests)
+# Functional tests (230 QEMU-based integration tests)
 ./tests/functional/run-tests.sh
 
 # Acceptance tests (219 SSH-driven cases against a live VM/host)

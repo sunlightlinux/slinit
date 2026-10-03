@@ -22,6 +22,171 @@ their tagger wrote are kept in
 
 ## [Unreleased]
 
+## [2.7.1] — 2026-10-03
+
+Five commits, and the first one changes how the previous release's test
+results should be read: **the functional suite had been reporting every
+case as PASS.** A case written to fail reported PASS. That was found with
+a two-line probe rather than by reasoning, and it had been true for the
+three green CI runs the v2.7.0 cut was taken on.
+
+Everything else here came out of the hole that opened up once the suite
+could fail again: a data race on the dependency graph reachable from any
+control connection, the path-activation stall characterised at last, and a
+watchdog so that a wedged PID 1 can no longer sit silent for twelve
+minutes.
+
+**Why a patch.** Nothing that already worked behaves differently. The
+graph locking fixes a race and changes no contract — `reload` now
+serialises against the state machine, which is the property dinit has by
+being single-threaded, and the only paths whose behaviour changes are the
+ones that were already wrong. The watchdog is additive: a new diagnostic
+file and one log line at boot. `slinit-supervise-daemon --start` returns
+the same exit code as before on the same failures, only sooner and with
+the reason. The harness changes ship nothing.
+
+**The suite has been re-run in full** under a harness that can fail:
+**229 cases, 215 pass, 14 skip, 0 fail.** The 14 skips are visible for the
+first time — they used to report PASS. The hardening cases quoted in
+v2.7.0's entry are among the passes. Three cases failed on the first
+attempt and all three were an artefact of two suites sharing one VM image
+on one machine; re-run alone, they pass. Case 230 below landed after that
+run and passes.
+
+### Fixed
+
+- **The functional harness reported every case as PASS.** Streaming a
+  case's output to the console turned the invocation into a pipeline, and
+  `$?` after a pipeline is the status of its *last* command — `tee`, which
+  always succeeds. A case asserting `assert_eq "one" "two"` was reported
+  PASS. The status now travels through a file, and an absent file counts as
+  a failure rather than a pass.
+
+  This was the second time. A commit in April fixed the same bug in its
+  `|| true` form, with the same summary in its message: "causing all
+  functional tests to report PASS even when assertions failed". Both were
+  found by accident, months later, because every case under `cases/` is
+  written to pass — so a harness that stops reporting failures just makes
+  the suite greener. `tests/functional/selftest.sh` now boots three cases
+  whose verdicts are known in advance (one must pass, one must fail, one
+  must skip) and checks what the harness said about each; CI runs it before
+  the cases, on shard 0.
+
+- **A skipping case was counted as a passing one, and eight cases threw
+  away their own verdict.** There was no skip mechanism at all: the idiom
+  was to print `SKIP:` and return 0. `164-slice-hierarchy` skipped that way
+  from the day it was written, which is how `slice` came to be dropped by
+  the loader for the whole life of the directive with a green line in the
+  suite. `skip_case` now exits 77 — the status the container suite already
+  used — and the runner counts it as skipped with the reason shown; 23 skip
+  points across 20 cases were converted. Separately, eight cases printed
+  `FAIL`, called `test_summary` (which returns 1) and then `return 0`,
+  overriding it: the one path where the case had found a real problem was
+  the path that reported success.
+
+- **The dependency graph was mutated without a lock from every control
+  connection.** The graph is two slices per record — `dependsOn` on the
+  source, `dependents` on the target — and everything else in the service
+  package touches them with the scheduling lock held. The control server
+  does not hold it, and it gives every connection its own goroutine. Two
+  concurrent `slinitctl add-dep`, or one of them against a propagation pass
+  walking the graph after a process exit, was a data race: a lost edge, or
+  a walk indexing a slice that was reallocated under it. Slices rather than
+  a map, so not the immediate runtime fatal that killed PID 1 in the
+  `setenv` race — quieter, and no more acceptable in PID 1.
+
+  Nine sites, not the two the audit started from: add-dep, rm-dep, enable,
+  disable, both query-deps handlers *(reads race too)*, reload and
+  reload-all, load, unload, and four in PID 1's own startup — the
+  service-directory watcher, the boot retry loop, the soft-reboot snapshot
+  pre-load and the boot-failure recovery path.
+
+  The lock cannot go in `AddDep`/`RmDep` or in the loader: `chain-to` loads
+  a service from inside the state machine, which already holds the lock, so
+  a lock taken there would deadlock against itself. The unlocked entry
+  points are what changed. Two behaviour differences fall out, both towards
+  dinit: the add-dep rollback on a depth-limit failure now removes the
+  record it added rather than the first edge matching the pair, and it
+  drains the queues afterwards as dinit does.
+
+- **The path-activation stall.** Two cases hung with "no result received",
+  twice in CI plus one twelve-minute wedge locally, and never reproduced on
+  demand. `start-on-directory-not-empty` on an already-non-empty directory
+  fires synchronously from `arm()`, which runs inside the loader's
+  service-loaded hook — and the loader fires a *dependency's* hook before
+  the parent's load finishes. So the started service's propagation walked
+  the graph while the load was still appending edges to it. Case 181
+  configures exactly that.
+
+  Measured, not inferred: with the load unlocked, the race detector puts
+  the two stacks on the same slice — the loader's `append` against the
+  "notify dependents" walk reached from the fired start. The root cause is
+  therefore the locking above. Its direct consequence is a *skipped*
+  dependent, which then waits forever — which is what 181's console showed
+  before it went quiet.
+
+  What this does not explain is why the control socket stopped answering; a
+  lost notification leaves a service STARTING, it does not block the
+  socket. That half is not attributed, and the watchdog below is the answer
+  to it rather than a fix for it.
+
+- **`slinit-supervise-daemon --start` waited out its full 30-second
+  timeout even when the supervisor had already exited**, then reported a
+  missing pidfile — the symptom, when the cause was sitting in the
+  discarded wait result. It now reports the supervisor's exit status
+  immediately (0.05s against 30s, measured) and, on a real timeout, says
+  the supervisor is still running and gives its pid. Same exit code in both
+  cases.
+
+### Added
+
+- **A wedged scheduling lock now reports itself.** Every state transition
+  holds that lock, so a transition that cannot finish stops every service
+  from starting or stopping and blocks the control connections that need
+  it: a system that is up, idle and answers nothing. A probe takes the lock
+  for reading every five seconds, and when one owner has held it for more
+  than thirty seconds slinit writes every goroutine's stack to
+  */run/slinit-stall.stack* and names the file on stderr.
+
+  The file is written first on purpose: the state machine logs *while
+  holding this lock*, so if what is stuck is the console write then the
+  stderr notice is lost too and the file is all that survives to be read
+  after a reboot. Recovery is logged as well — a long legitimate hold
+  leaves both the complaint and the line saying the lock came free, because
+  a log read later cannot otherwise tell a resolved episode from a dead
+  machine. PID 1 and `--container` only; one line at boot says it is armed
+  and with what threshold.
+
+  A failed try-lock is *not* a stall, and the first version of this got
+  that wrong: the state machine takes the lock for every transition, so a
+  probe can lose every race during a busy boot with nothing wrong at all.
+  A stall is the lock not *changing hands*, so acquisitions are counted and
+  a failed probe only counts while that count stays put. Its own test
+  caught the false positive, and the functional suite carries the
+  end-to-end guard against it.
+
+- **Functional case 230-path-activation-arm-storm**: three triggers that
+  fire at arm time, interleaved with ordinary services under one milestone,
+  so the overlap above gets three chances per boot instead of one. It also
+  fails if a stall dump exists afterwards.
+
+### Changed
+
+- The functional suite's numbers mean something different now, and better:
+  skips are counted as skips. A run that reported "229 passed" reports
+  "215 passed, 14 skipped" for the same machine. Read all three numbers —
+  roughly one case in ten skips for want of cgroup v2, `chrt`, a machine-id,
+  a TPM or NUMA in the VM, and the suite's README lists which.
+
+- `tests/functional/lib/` is part of the VM image staleness check. Those
+  files are installed *into* the initramfs, so editing them and re-running
+  silently used the old copies — which is how the harness fix above
+  appeared to do nothing on its first re-run.
+
+- Counts refreshed from `tools/stats` wherever they appear: 2196 → 2387
+  unit tests, 81 → 84 Go directories, 330 → 361 `_test.go` files, and 225
+  (CI's comment said 228) → 230 functional cases.
+
 ## [2.7.0] — 2026-10-03
 
 Three bugs that each made slinit report success it had not earned: a lost

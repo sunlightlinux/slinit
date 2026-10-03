@@ -43,8 +43,8 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (~2196 tests across 81 Go dirs, 330 _test.go files)
-- **Functional tests**: `./tests/functional/run-tests.sh` (225 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
+- **Unit tests**: `go test ./...` (~2387 tests across 84 Go dirs, 361 _test.go files)
+- **Functional tests**: `./tests/functional/run-tests.sh` (230 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (219 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (92 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
 - **Fuzz targets**: 42 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 15 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the four converters, the sysusers/tmpfiles/timedatectl/hostnamectl parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
@@ -78,7 +78,7 @@ go test ./...
   `watchdog` (34 total; run `ls pkg/` for the live list).
 - `internal/util/` - Path and parsing utilities
 - `completions/` - Shell completions (bash, zsh, fish)
-- `tests/functional/` - QEMU integration tests (225 cases)
+- `tests/functional/` - QEMU integration tests (230 cases)
 - `tests/acceptance/ssh/` - SSH-driven live-VM cases (219)
 - `tests/performance/` - performance harnesses (92 SSH + 4 QEMU boot + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (27)
