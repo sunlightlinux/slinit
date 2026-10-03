@@ -2,6 +2,7 @@ package process
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -27,6 +29,13 @@ func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 //
 // If the command cannot be started at all (e.g., binary not found),
 // an error is returned and no channel/PID is produced.
+// waitStatusGrace bounds how long the wait goroutine will hold out for a
+// routed status after cmd.Wait() admits it has none. It is a safety net
+// against a hang, not part of the normal path: the router keeps statuses
+// reaped before registration, so the value only has to be longer than the
+// gap between a reap and its Route call.
+var waitStatusGrace = 5 * time.Second
+
 func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	if len(params.Command) == 0 {
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: os.ErrInvalid}
@@ -532,6 +541,16 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	pid := cmd.Process.Pid
 
 	// Apply post-fork process attributes.
+	// Register with the exit router before anything else is done with the
+	// pid. The child is already running by now, and a short-lived one —
+	// /bin/false as a scripted service's command — can exit and be reaped
+	// by PID 1's Wait4(-1) while this function is still setting it up.
+	// The router holds a status reaped before registration, so arriving
+	// late is no longer fatal; registering first keeps that path rare
+	// rather than routine, because applyPostForkAttrs below writes cgroup
+	// files and is not instant.
+	routedCh := DefaultExitRouter.Register(pid)
+
 	// These are best-effort: failures are logged but don't prevent startup.
 	if errs := applyPostForkAttrs(pid, params); len(errs) > 0 {
 		for _, err := range errs {
@@ -540,13 +559,6 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	}
 
 	exitCh := make(chan ChildExit, 1)
-
-	// Register with the exit router BEFORE the wait goroutine starts. If
-	// PID 1's SIGCHLD handler reaps this child before cmd.Wait() does,
-	// the router delivers the real WaitStatus here; otherwise cmd.Wait()
-	// is the source of truth. Without this, an orphan-reaper win silently
-	// loses the exit code and finish-command sees ExitStatus()==0.
-	routedCh := DefaultExitRouter.Register(pid)
 
 	// Goroutine that waits for the process to finish
 	go func() {
@@ -560,16 +572,40 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		// Run cmd.Wait() in a sub-goroutine so we can race it against
 		// the router. Buffered cap 1 so the sub-goroutine's send never
 		// blocks if the router wins.
-		waitDone := make(chan syscall.WaitStatus, 1)
+		//
+		// `known` is the whole point. cmd.Wait() has three outcomes, not
+		// two: a clean exit (status 0, real), an ExitError (status from
+		// it, real), or a failure with no status at all — ECHILD, which
+		// is what it returns when PID 1's Wait4(-1) reaped the child
+		// first. That third case used to be flattened into a zero
+		// WaitStatus and raced against the router as though it were a
+		// genuine "exited cleanly with 0", and whenever it won, the real
+		// exit code was lost. /bin/false as a scripted service's command
+		// then looked successful, the service went STARTED, and a failing
+		// dependency stopped blocking its dependents — reproduced at
+		// about 6 losses in 3000 starts.
+		type waitResult struct {
+			status syscall.WaitStatus
+			known  bool
+		}
+		waitDone := make(chan waitResult, 1)
 		go func() {
 			err := cmd.Wait()
-			var status syscall.WaitStatus
-			if err != nil {
-				if exitErr, ok := err.(*exec.ExitError); ok {
-					status = exitErr.Sys().(syscall.WaitStatus)
+			switch {
+			case err == nil:
+				waitDone <- waitResult{known: true}
+			default:
+				var exitErr *exec.ExitError
+				if errors.As(err, &exitErr) {
+					waitDone <- waitResult{
+						status: exitErr.Sys().(syscall.WaitStatus),
+						known:  true,
+					}
+					return
 				}
+				// No status to report. Say so rather than inventing one.
+				waitDone <- waitResult{known: false}
 			}
-			waitDone <- status
 		}()
 
 		var status syscall.WaitStatus
@@ -579,9 +615,29 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			// in the background so it doesn't leak — Wait4 will eventually
 			// return ECHILD now that the child is reaped.
 			go func() { <-waitDone }()
-		case status = <-waitDone:
-			// cmd.Wait() won the race; routedCh will be unregistered by
-			// the deferred Unregister above.
+		case res := <-waitDone:
+			if res.known {
+				// cmd.Wait() won the race and has the real status.
+				status = res.status
+				break
+			}
+			// cmd.Wait() lost the child and has nothing to say. The real
+			// status went to the reaper, which routes it here — either
+			// already waiting in the router's pending table, or arriving
+			// within microseconds. Wait for it rather than reporting a
+			// zero we would be making up.
+			select {
+			case status = <-routedCh:
+			case <-time.After(waitStatusGrace):
+				// Should be unreachable: the router holds a status reaped
+				// before registration, so the only way here is a reaper
+				// that never routes. Loud, because a wrong exit code is
+				// worse than a late one and this would be the cause.
+				fmt.Fprintf(os.Stderr,
+					"slinit: pid %d: exit status lost — cmd.Wait() returned "+
+						"no status and none was routed within %s; reporting 0\n",
+					pid, waitStatusGrace)
+			}
 		}
 
 		exitCh <- ChildExit{
