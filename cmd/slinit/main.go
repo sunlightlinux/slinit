@@ -1175,15 +1175,28 @@ func main() {
 			kind := pathwatch.Trigger(trig)
 			s := svc
 			if err := pathWatcher.Add(path, kind, func() {
-				logger.Info("Service '%s': path activation fired (%s on %s)",
-					s.Name(), kind, path)
-				// Goroutine: pathwatch.arm() may fire this callback
-				// synchronously from pathRearmListener.ServiceEvent,
-				// which runs under queueMu inside the process-exit
-				// handler. StartService also takes queueMu, so a
-				// direct call self-deadlocks the moment the trigger
-				// path still exists when the service stops.
-				go serviceSet.StartService(s)
+				// The whole body goes on a goroutine, not just the
+				// start. pathwatch calls fire() -> fn() synchronously,
+				// from three places that must not run arbitrary work:
+				//
+				//   * arm(), during Add() — i.e. inside the loader's
+				//     OnServiceLoaded hook, for a trigger whose
+				//     condition already holds (a non-empty directory on
+				//     every boot). The load now holds the graph lock.
+				//   * Rearm(), from pathRearmListener.ServiceEvent,
+				//     which the state machine calls under the same lock
+				//     in the process-exit handler. StartService takes
+				//     that lock, so a direct call self-deadlocks the
+				//     moment the trigger path still exists when the
+				//     service stops.
+				//   * dispatch(), on the inotify read loop. Anything
+				//     slow here stops events being read at all, so a
+				//     later trigger is simply never seen.
+				go func() {
+					logger.Info("Service '%s': path activation fired (%s on %s)",
+						s.Name(), kind, path)
+					serviceSet.StartService(s)
+				}()
 			}); err != nil {
 				logger.Warn("Service '%s': %s disabled: %v", s.Name(), kind, err)
 				return

@@ -1,0 +1,8 @@
+type = process
+depends-on: system-init
+# start-on-directory-not-empty fires IMMEDIATELY at arm time when the
+# directory already has an entry — see pathwatch.arm(). The packaged
+# 230-dir-c/.keep guarantees that, so the trigger fires during the load.
+manual                       = yes
+start-on-directory-not-empty = /etc/slinit.d/230-dir-c
+command = /bin/sh -c "touch /tmp/armstorm-c-fired; exec sleep 600"

@@ -1,0 +1,15 @@
+type = internal
+depends-on: system-init
+# Three path-activated services whose trigger condition ALREADY HOLDS at
+# boot, plus three ordinary ones, all pulled in by this one milestone.
+# Loading `boot` loads each of them, and each armstorm-* fires from inside
+# its own OnServiceLoaded hook while this milestone's remaining edges are
+# still being appended. That overlap was an unsynchronized write to the
+# dependency slices until the graph lock covered the boot load.
+waits-for: armstorm-a
+waits-for: filler-a
+waits-for: armstorm-b
+waits-for: filler-b
+waits-for: armstorm-c
+waits-for: filler-c
+waits-for: test-runner
