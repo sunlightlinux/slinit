@@ -69,14 +69,31 @@ assert_exit_code() {
 # SSH acceptance harness ships. Useful when you want to compare state
 # without immediately asserting.
 svc_state() {
-    slinitctl --system status "$1" 2>/dev/null | awk '/State:/ {print $2; exit}'
+    # Bounded, like every other slinitctl call in here: an unanswered one
+    # used to hang the whole case with nothing to show for it.
+    timeout 5 slinitctl --system status "$1" 2>/dev/null | awk '/State:/ {print $2; exit}'
 }
 
 # assert_service_state SERVICE EXPECTED_STATE [MESSAGE]
 # Checks service state via slinitctl is-started / status.
 assert_service_state() {
     _TESTS_RUN=$((_TESTS_RUN + 1))
-    _state=$(slinitctl --system status "$1" 2>/dev/null | grep 'State:' | awk '{print $2}')
+    # `timeout` matters here more than anywhere: this is the first slinitctl
+    # call most cases make, and 72-path-activation hung on exactly this line
+    # — console stopped right after test-runner started, result file empty.
+    # An unanswered control socket is now a failed assertion with a reason,
+    # not a vanished test.
+    # slinitctl runs on its own so its exit status is readable. In a
+    # pipeline `$?` belongs to the last command — awk — so a timed-out
+    # slinitctl would look like a success with empty output, which is the
+    # mistake this avoids.
+    if ! _raw=$(timeout 5 slinitctl --system status "$1" 2>/dev/null); then
+        _TESTS_FAILED=$((_TESTS_FAILED + 1))
+        echo "FAIL: ${3:-service '$1' state}: slinitctl did not answer within 5s" \
+             "— the control socket stalled"
+        return 1
+    fi
+    _state=$(echo "$_raw" | grep 'State:' | awk '{print $2}')
     if [ "$_state" != "$2" ]; then
         _TESTS_FAILED=$((_TESTS_FAILED + 1))
         echo "FAIL: ${3:-service '$1' state}: got '$_state', expected '$2'"
@@ -105,11 +122,13 @@ wait_for_service() {
     _deadline=$(( $(date +%s) + _timeout ))
     _stuck=0
     while [ "$(date +%s)" -lt "$_deadline" ]; do
-        if _cur=$(timeout 5 slinitctl --system status "$_svc" 2>/dev/null |
-                  grep 'State:' | awk '{print $2}'); then
-            :
+        # Same reason as in assert_service_state: slinitctl alone, so its
+        # own exit status is what gets tested rather than awk's.
+        if _raw=$(timeout 5 slinitctl --system status "$_svc" 2>/dev/null); then
+            _cur=$(echo "$_raw" | grep 'State:' | awk '{print $2}')
         else
             _stuck=$((_stuck + 1))
+            _cur=""
         fi
         if [ "$_cur" = "$_want" ]; then
             return 0
