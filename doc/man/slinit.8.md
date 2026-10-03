@@ -846,6 +846,25 @@ on the console:
     consumed by the re-execed slinit via **\--restore-from-snapshot**.
     Lives on tmpfs so it does not survive a real reboot.
 
+*/run/slinit-stall.stack*
+:   Written when the scheduling lock has been held by one owner for
+    longer than 30 seconds (since 2.7.1). Every state transition takes
+    that lock, so a transition that cannot finish stops every service
+    from starting or stopping and blocks the control connections that
+    need it — a system that is up, idle and answers nothing. The file
+    holds every goroutine's stack at that moment, and its path is named
+    on stderr.
+
+    The file is written before the stderr notice on purpose: the state
+    machine logs while holding this lock, so if what is stuck is the
+    console write then the notice is lost too and the file is the only
+    thing left to read after a reboot.
+
+    Its presence is not proof of a bug — an unusually long legitimate
+    hold reports the same way, and the log says when the lock came free
+    again or changed hands. A system-instance facility only (PID 1 or
+    **\--container**); one line at boot says it is armed.
+
 */dev/watchdog0*, */dev/watchdog*
 :   Hardware-watchdog character devices fed by slinit when running as
     PID 1 (see **\--watchdog-device**, **\--no-watchdog**). The kernel

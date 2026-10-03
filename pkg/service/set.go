@@ -57,7 +57,7 @@ type ServiceSet struct {
 	// ServiceActive, ServiceInactive) can be called without re-locking.
 	// Monitor goroutines (process exit, timer expiry, daemon polling)
 	// acquire it before mutating state; getters (State, PID) RLock.
-	queueMu sync.RWMutex
+	queueMu schedLock
 
 	// Processing queues
 	propQueue    []Service // propagation queue

@@ -1532,6 +1532,22 @@ func main() {
 		applySnapshot(restoreSnapPath, serviceSet, logger)
 	}
 
+	// Watch for a wedged scheduling lock. Every transition happens with
+	// that lock held, so a transition that cannot finish takes the whole
+	// machine with it: nothing starts or stops, and control connections
+	// that need the lock block — a system that is up, idle and answers
+	// nothing. That is how the path-activation stall presented, and after
+	// twelve minutes of it there was nothing to read but an empty
+	// console. The watchdog does not prevent a stall; it makes one name
+	// itself and leaves every goroutine's stack in a file.
+	//
+	// System instance only. A stall in a user instance is a bug too, but
+	// /run is not its to write to and nothing else depends on it.
+	if isPID1 || containerMode {
+		stopStallWatch := serviceSet.WatchForStalls(service.StallDumpPath)
+		defer stopStallWatch()
+	}
+
 	// Start control socket server
 	ctx := context.Background()
 	ctrlServer := control.NewServer(serviceSet, sock, logger)

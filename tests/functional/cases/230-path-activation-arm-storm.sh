@@ -61,5 +61,21 @@ else
     echo "FAIL: slinitctl list did not answer within 5s — the control socket stalled"
 fi
 
+# The stall watchdog must have stayed quiet. This boot is the busiest
+# shape there is for the scheduling lock — three arm-time triggers each
+# starting a service while the loader is still appending edges — and the
+# first version of the watchdog reported a stall against a lock that was
+# merely busy rather than held. Its presence here is the end-to-end guard
+# that it does not cry wolf; a dump file means it did.
+mark "checking the stall watchdog stayed quiet"
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ -e /run/slinit-stall.stack ]; then
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: /run/slinit-stall.stack exists — the stall watchdog fired on a healthy boot"
+    head -5 /run/slinit-stall.stack
+else
+    echo "OK: no stall dump — the watchdog did not fire on a busy boot"
+fi
+
 mark "done: summary"
 test_summary
