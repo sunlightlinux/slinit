@@ -26,6 +26,9 @@ func encodeStatusFlags(svc service.Service) uint8 {
 	if svc.Record().DidStartFail() {
 		flags |= StatusFlagStartFailed
 	}
+	if svc.GetExitStatus().ExecFailed {
+		flags |= StatusFlagExecFailed
+	}
 	return flags
 }
 
@@ -276,6 +279,17 @@ const (
 	StatusFlagWaitingDeps  uint8 = 1 << 2
 	StatusFlagHasConsole   uint8 = 1 << 3
 	StatusFlagStartFailed  uint8 = 1 << 4
+	// StatusFlagExecFailed says the process never ran: setup or execve
+	// failed, so the status's stage and errno fields carry the reason in
+	// place of si_code/si_status.
+	//
+	// It exists because that layout switch could not be detected from the
+	// payload. A client had to infer it from the stage field being
+	// nonzero, and StageArrangeFDs is 0 — so a failure in the first stage
+	// read as an ordinary exit and its errno was printed as an si_code. A
+	// flag bit says it outright; clients that predate it keep their old
+	// heuristic, since unknown bits are ignored.
+	StatusFlagExecFailed uint8 = 1 << 5
 )
 
 // Packet header: 1-byte command/reply + 2-byte payload length (little-endian).

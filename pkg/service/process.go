@@ -2103,6 +2103,10 @@ func (s *ProcessService) startProcess() error {
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
+		// Record it before unwinding: the error names the stage and the
+		// errno, and without this the service was left with an empty
+		// status and a stop reason still saying "normal".
+		s.exitStatus = noteStartExecFailure(s.Record(), err)
 		if outputPipe != nil && s.logType == LogToBuffer {
 			s.logBuf.CloseWriteEnd()
 		} else if outputPipe != nil && s.logType == LogToFile {

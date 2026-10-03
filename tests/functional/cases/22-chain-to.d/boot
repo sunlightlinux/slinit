@@ -1,5 +1,10 @@
 type = internal
 depends-on: system-init
 depends-on: test-runner
+# Only the chain SOURCES are listed. The targets must NOT be, or they
+# start regardless and the test cannot fail — which is exactly what the
+# previous version of this case did: it listed `waits-for: chain-b` and
+# then asserted that chain-b had started.
 waits-for: chain-a
-waits-for: chain-b
+waits-for: chain-c
+waits-for: chain-e

@@ -5173,15 +5173,33 @@ func cmdServiceStatus5(conn net.Conn, svcName string, long bool) error {
 	if haveV1 && status.Flags&control.StatusFlagHasPID != 0 {
 		fmt.Printf("  PID:         %d\n", v1.PID)
 	}
-	// v1.ExitStatus is -1 while the service is running (no exit
-	// recorded yet); print only genuine post-exit status values.
-	if haveV1 && v1.ExitStatus > 0 {
+	// -1 is the sentinel for "no status": the daemon sends it while the
+	// service is running, and for a process killed by a signal (the code
+	// is then in si_status). Zero is a real exit code, so the guard is
+	// >= 0 — `> 0` hid every clean exit, which is the one an operator
+	// most often wants confirmed.
+	if haveV1 && v1.ExitStatus >= 0 {
 		fmt.Printf("  Exit:        %d\n", v1.ExitStatus)
 	}
-	// Exec-stage nonzero encodes a fork-time failure — the ExecErrno
-	// then rides in SiCode (see EncodeServiceStatus5 in
-	// pkg/control/protocol.go). Render both symbolically.
-	if status.ExecStage != 0 {
+	// A fork-time failure puts the stage in ExecStage and the errno in
+	// the SiCode field (see EncodeServiceStatus5 in
+	// pkg/control/protocol.go). Which of the two layouts is on the wire
+	// used to be inferred from the stage field being nonzero, and
+	// StageArrangeFDs is 0 — so a failure in the very first stage fell
+	// through to the else branch and printed its errno as if it were an
+	// si_code: "si_code: 9 (?)" for an EBADF, with the fact that exec
+	// never happened nowhere on screen.
+	//
+	// Two signals, because there are two wires. StatusFlagExecFailed is
+	// set by exactly the condition the encoder switches on, and is the
+	// authoritative answer from a slinit daemon that has it. The stop
+	// reason is the fallback: dinit chooses the layout that way too
+	// (fill_status_buffer in its control.cc keys on
+	// stopped_reason_t::EXECFAILED), so this keeps reading an older
+	// slinit, or a dinit, correctly.
+	execFailed := status.Flags&control.StatusFlagExecFailed != 0 ||
+		service.StoppedReason(status.StopReason) == service.ReasonExecFailed
+	if execFailed {
 		fmt.Printf("  Exec-stage:  %d (%s)\n", status.ExecStage, execStageName(status.ExecStage))
 		fmt.Printf("  Exec-errno:  %d (%s)\n", status.SiCode, errnoName(status.SiCode))
 	} else {

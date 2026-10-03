@@ -382,7 +382,18 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
 :   Ordering only: if both start, this one starts after *service*.
 
 **chain-to**=*service*
-:   When this service stops normally, automatically start *service*.
+:   Start *service* when this one finishes. Three conditions, all
+    required: this service **terminated on its own** rather than being
+    stopped, it **exited 0**, and it is **not about to restart**. A
+    shutdown in progress cancels it.
+
+    "Stopped" is not enough, and the distinction matters most for
+    **scripted** services: a scripted service's start command completing
+    makes it STARTED, so it never terminates on its own and never
+    satisfies the condition. For those, set the **always-chain** flag —
+    `options = always-chain`, not a setting of its own — which drops all
+    three conditions and chains whenever the service stops. Same
+    semantics as dinit's.
 
 **depends-on.d**=*directory*, **depends-ms.d**=*directory*, **waits-for.d**=*directory*, **prepared-by.d**=*directory*
 :   Drop-in directories: every entry inside *directory* (regardless of
@@ -1496,7 +1507,7 @@ mlockall       = current+future
     * **start-interruptible** — slinitctl stop may interrupt startup.
     * **skippable** — failure does not propagate to dependents.
     * **signal-process-only** — signal only the main PID, not the process group.
-    * **always-chain** — apply **chain-to** even on failure.
+    * **always-chain** — apply **chain-to** whenever the service stops, dropping all three of its conditions (see **chain-to**); the only way a **scripted** service can chain.
     * **kill-all-on-stop** — SIGKILL the entire process group on stop.
     * **unmask-intr** — unblock SIGINT before exec.
     * **starts-rwfs** — this service marks the read-write filesystem as ready (boot bootstrap).

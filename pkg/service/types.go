@@ -392,6 +392,22 @@ type ExitStatus struct {
 	Vanished bool
 }
 
+// ExecFailureStatus turns a StartProcess error into an ExitStatus for a
+// process that never ran.
+//
+// HasStatus stays false deliberately: there is no wait status, and a zero
+// syscall.WaitStatus means "exited with code 0" — setting HasStatus would
+// make every failed exec report a clean exit, which is the mistake that
+// cost a release when cmd.Wait()'s ECHILD was flattened the same way.
+// Only the exec fields are filled.
+func ExecFailureStatus(stage uint8, errno int32) ExitStatus {
+	return ExitStatus{
+		ExecFailed: true,
+		ExecStage:  stage,
+		ExecErrno:  errno,
+	}
+}
+
 // Exited returns true if the process exited normally.
 func (e ExitStatus) Exited() bool {
 	return e.HasStatus && e.WaitStatus.Exited()

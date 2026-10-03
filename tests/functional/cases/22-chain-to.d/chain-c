@@ -1,0 +1,5 @@
+type = process
+# Exits non-zero, so it must NOT chain.
+command = /bin/sh -c "echo chain-c-ran > /tmp/chain-c-marker; exit 3"
+chain-to = chain-d
+depends-on: system-init

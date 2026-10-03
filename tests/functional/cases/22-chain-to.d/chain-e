@@ -1,0 +1,8 @@
+type = scripted
+# A scripted service never self-terminates — its start command completing
+# makes it STARTED — so it can only chain with always-chain.
+command = /bin/sh -c "echo chain-e-ran > /tmp/chain-e-marker"
+stop-command = /bin/true
+chain-to = chain-f
+options = always-chain
+depends-on: system-init

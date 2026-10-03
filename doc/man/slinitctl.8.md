@@ -302,6 +302,18 @@ daemon, which is useful at install time or in initramfs.
     protocol, which adds *stop_reason*, *exec_stage* and *si_code* /
     *si_status* fields. Useful for debugging service exits.
 
+    How to read the exit fields. *Exit* is the process's own code, and
+    **0 is printed** — its absence means no exit has been recorded
+    (running, or killed by a signal, in which case *si_status* names the
+    signal). *Exec-stage* and *Exec-errno* appear instead of *si_code* /
+    *si_status* when the process never ran. The daemon now says so in the
+    status flags (since 2.7.2) instead of leaving the client to guess
+    from the stage number — stage 0 is a real stage, so a failure while
+    arranging file descriptors used to print its errno as though it were
+    an si_code. A stop reason of *exec-failed* is accepted as the same
+    signal, which is how dinit reports it, so an older daemon still reads
+    correctly.
+
 **attach** *service*
 :   Stream the service's log output (catlog plus a tail-follow on the
     pipe). Press *^C* to detach.

@@ -411,6 +411,7 @@ func (s *BGProcessService) BringUp() bool {
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
+		s.exitStatus = noteStartExecFailure(s.Record(), err)
 		if outputPipe != nil && s.logType == LogToBuffer {
 			s.logBuf.CloseWriteEnd()
 		} else if outputPipe != nil && s.logType == LogToFile {

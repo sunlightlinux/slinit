@@ -48,6 +48,20 @@ type ScriptedService struct {
 	logFileUID   int
 	logFileGID   int
 
+	// Last wait status of whichever script ran — the start command, or
+	// the stop command once that has run. Cleared at the top of every
+	// start, which is the invariant the restart policy relies on (see
+	// ExitStatus.Vanished): a status left over from the previous cycle
+	// would be taken for this one's.
+	//
+	// This type had none, so GetExitStatus() fell through to the record's
+	// default, which returns an empty struct. dinit's scripted_service
+	// derives from base_process_service and has a real one, and the
+	// absence showed: `slinitctl status` reported no exit code and
+	// si_code 0 for a scripted service whose command had just failed with
+	// one, and `normal-exit` could never match.
+	exitStatus ExitStatus
+
 	// Monitoring
 	doneCh        chan struct{}
 	timerUpdateCh chan struct{} // signaled when a new timer is armed
@@ -60,6 +74,26 @@ const (
 	scriptedTimerStartTimeout
 	scriptedTimerStopTimeout
 )
+
+// GetExitStatus returns the last status recorded by recordExit.
+func (s *ScriptedService) GetExitStatus() ExitStatus { return s.exitStatus }
+
+// recordExit stores a script's wait status. Caller holds queueMu.
+//
+// Both scripts land here, so the status describes whichever ran last —
+// the same single-slot behaviour dinit's base_process_service has, where
+// a stopped scripted service reports its stop script's status.
+func (s *ScriptedService) recordExit(exit process.ChildExit) {
+	s.exitStatus = ExitStatus{
+		WaitStatus: exit.Status,
+		HasStatus:  true,
+	}
+	if exit.ExecErr != nil {
+		s.exitStatus.ExecFailed = true
+		s.exitStatus.ExecStage = uint8(exit.ExecErr.Stage)
+		s.exitStatus.ExecErrno = extractErrno(exit.ExecErr.Err)
+	}
+}
 
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 func (s *ScriptedService) killCgroupTree(sig syscall.Signal) {
@@ -214,6 +248,8 @@ func (s *ScriptedService) BringUp() bool {
 		return true
 	}
 
+	s.exitStatus = ExitStatus{}
+
 	// Dynamic-user allocation (#13). Mirrors ProcessService.BringUp:
 	// happens before any UID-dependent setup.
 	if err := s.Record().allocateDynamicUID(); err != nil {
@@ -313,6 +349,7 @@ func (s *ScriptedService) BringUp() bool {
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
+		s.exitStatus = noteStartExecFailure(s.Record(), err)
 		if outputPipe != nil && s.logType == LogToBuffer {
 			s.logBuf.CloseWriteEnd()
 		} else if outputPipe != nil && s.logType == LogToFile {
@@ -484,6 +521,7 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	s.startPID = 0
 	s.startHandle.Clear()
 	s.cancelTimer()
+	s.recordExit(exit)
 
 	if exit.ExecErr != nil {
 		s.services.logger.Error("Service '%s': start command exec failed: %v",
@@ -540,6 +578,7 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 	s.stopPID = 0
 	s.stopHandle.Clear()
 	s.cancelTimer()
+	s.recordExit(exit)
 
 	if !exit.ExitedClean() {
 		// Decode the raw wait(2) status word into the operator-visible
