@@ -79,7 +79,15 @@ func cmdStart(opts Options) int {
 	// a zombie under our (top-level) process. Run in a goroutine
 	// because we return before the supervisor exits — that's the whole
 	// point of daemonising.
-	go func() { _ = cmd.Wait() }()
+	// The wait result is kept rather than discarded, because it is the
+	// one fact that distinguishes the two ways this can go wrong: a
+	// supervisor that is slow to write its pidfile, and one that died
+	// before writing it at all. Without it, both look identical — "did
+	// not write the pidfile" after a thirty-second wait — which is what
+	// a CI failure of 88-slinit-supervise-daemon reduced to, leaving
+	// nothing to tell slowness from a crash.
+	supervisorDone := make(chan error, 1)
+	go func() { supervisorDone <- cmd.Wait() }()
 
 	// Poll for the supervisor's pidfile. Once present, we know it has
 	// started the daemon; return so the init.d start() function
@@ -92,12 +100,44 @@ func cmdStart(opts Options) int {
 			}
 			return exitOK
 		}
+
+		// A supervisor that has already exited is never going to write
+		// the pidfile, so waiting out the rest of the timeout only
+		// delays the verdict — thirty seconds of an init.d start() for
+		// an answer that is already known. It also gives up with the
+		// reason instead of the symptom: the supervisor logs why it
+		// stopped (a daemon crashing past its respawn limit, say), and
+		// pointing at that is more use than reporting a missing file.
+		select {
+		case werr := <-supervisorDone:
+			fmt.Fprintf(os.Stderr,
+				"supervisor exited before writing %q (%v); "+
+					"its own output says why\n",
+				opts.PidFile, waitDescription(werr))
+			return exitInsufficientPri
+		default:
+		}
+
 		time.Sleep(50 * time.Millisecond)
 	}
+
+	// Timed out with the supervisor still running: genuinely slow or
+	// stuck, which is a different problem from having died, and the
+	// message now says which of the two happened.
 	fmt.Fprintf(os.Stderr,
-		"supervisor did not write %q within %s; giving up\n",
-		opts.PidFile, pidfileReadyTimeout)
+		"supervisor did not write %q within %s and is still running "+
+			"(pid %d); giving up\n",
+		opts.PidFile, pidfileReadyTimeout, cmd.Process.Pid)
 	return exitInsufficientPri
+}
+
+// waitDescription renders a wait result for an operator: "exit status N"
+// or "no error", rather than a bare <nil>.
+func waitDescription(err error) string {
+	if err == nil {
+		return "exited successfully"
+	}
+	return err.Error()
 }
 
 // readPIDFile parses PATH's integer contents. ok=false on missing or
