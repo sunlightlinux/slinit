@@ -1211,7 +1211,15 @@ func main() {
 		sdw, err := svcdirwatch.New(logger, svcdirwatch.Handler{
 			Appeared: func(name string) {
 				logger.Info("svcdirwatch: '%s' appeared, loading", name)
-				if _, err := serviceSet.LoadService(name); err != nil {
+				// Under the graph lock: this runs on the watcher's own
+				// goroutine, and a load installs dependency edges that
+				// the state machine may be walking. Disappeared needs no
+				// wrapper — UnloadService takes the lock itself.
+				var err error
+				serviceSet.WithGraphLock(func() {
+					_, err = serviceSet.LoadService(name)
+				})
+				if err != nil {
 					logger.Warn("svcdirwatch: load '%s' failed: %v", name, err)
 				}
 			},
@@ -1398,7 +1406,14 @@ func main() {
 		startedAny = false
 		loadErrors = loadErrors[:0]
 		for _, svcName := range bootServices {
-			svc, err := serviceSet.LoadService(svcName)
+			// Locked: by the second iteration of the retry loop, earlier
+			// services are running and their monitor goroutines take the
+			// same lock to report exits.
+			var svc service.Service
+			var err error
+			serviceSet.WithGraphLock(func() {
+				svc, err = serviceSet.LoadService(svcName)
+			})
 			if err != nil {
 				msg := fmt.Sprintf("load '%s': %v", svcName, err)
 				logger.Error("Failed to %s", msg)
@@ -2568,7 +2583,11 @@ func applySnapshot(path string, serviceSet *service.ServiceSet, logger *logging.
 		if e.Name == "" {
 			continue
 		}
-		if _, err := serviceSet.LoadService(e.Name); err != nil {
+		var err error
+		serviceSet.WithGraphLock(func() {
+			_, err = serviceSet.LoadService(e.Name)
+		})
+		if err != nil {
 			logger.Warn("Snapshot references service %q which failed to load: %v", e.Name, err)
 		}
 	}
@@ -2592,7 +2611,12 @@ func applySnapshot(path string, serviceSet *service.ServiceSet, logger *logging.
 // tryStartService attempts to load and start a named service. Returns true on success.
 // Used by the boot failure recovery loop to restart "boot" or "recovery" services.
 func tryStartService(name string, serviceSet *service.ServiceSet, loader *config.DirLoader, logger *logging.Logger) bool {
-	svc, err := serviceSet.LoadService(name)
+	// Locked for the load only; StartService below takes the lock itself.
+	var svc service.Service
+	var err error
+	serviceSet.WithGraphLock(func() {
+		svc, err = serviceSet.LoadService(name)
+	})
 	if err != nil {
 		logger.Error("Failed to load service '%s': %v", name, err)
 		return false

@@ -3468,3 +3468,16 @@ func (sr *ServiceRecord) PrepareForUnload() {
 		sr.consumerFor = nil
 	}
 }
+
+// rmDepRecord removes this exact dependency record, by identity rather
+// than by (target, type) pair. Returns false if it is not ours.
+// Caller must hold the graph lock.
+func (sr *ServiceRecord) rmDepRecord(dep *ServiceDep) bool {
+	for i, d := range sr.dependsOn {
+		if d == dep {
+			sr.rmDepByIndex(i)
+			return true
+		}
+	}
+	return false
+}

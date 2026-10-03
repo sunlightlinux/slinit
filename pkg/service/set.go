@@ -307,8 +307,16 @@ func (ss *ServiceSet) RemoveService(svc Service) {
 
 // UnloadService removes a service from the set after cleaning up all dependency links.
 // The service must be STOPPED before calling this.
+//
+// Takes the graph lock: PrepareForUnload splices this service out of
+// every neighbour's slice, and both callers — the unload control handler
+// and the service-directory watcher's Disappeared callback — run on
+// goroutines that hold nothing. Nothing calls this from inside the lock.
 func (ss *ServiceSet) UnloadService(svc Service) {
+	ss.queueMu.Lock()
 	svc.Record().PrepareForUnload()
+	ss.processQueuesLocked()
+	ss.queueMu.Unlock()
 	ss.RemoveService(svc)
 	if ss.OnServiceUnloaded != nil {
 		ss.OnServiceUnloaded(svc)

@@ -544,8 +544,16 @@ func (c *Connection) handleLoadService(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	svc, err := c.server.services.LoadService(name)
-	if err != nil {
+	// A fresh load creates the service and installs its dependency edges,
+	// so it goes under the graph lock like the reload path. Same reason
+	// the lock is taken here and not in LoadService: the state machine
+	// calls LoadService for chain-to while already holding it.
+	var svc service.Service
+	var loadErr error
+	c.server.services.WithGraphLock(func() {
+		svc, loadErr = c.server.services.LoadService(name)
+	})
+	if err := loadErr; err != nil {
 		// Use typed error checks instead of fragile string matching
 		var notFound *service.ServiceNotFound
 		var loadErr *config.ServiceLoadError
@@ -1275,8 +1283,21 @@ func (c *Connection) handleReloadService(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	newSvc, err := loader.ReloadService(svc)
-	if err != nil {
+	// Under the graph lock. A reload applies its dependency changes as a
+	// diff — adding before removing, since v2.5.1 — and the whole diff has
+	// to be one step as far as the state machine is concerned. The lock
+	// cannot go inside the loader: chain-to loads a service from inside
+	// the state machine, which already holds it.
+	//
+	// This does hold the lock across the description's file I/O. dinit is
+	// single-threaded and reloads on its main loop, so that is the same
+	// property it has, not a regression.
+	var newSvc service.Service
+	var reloadErr error
+	c.server.services.WithGraphLock(func() {
+		newSvc, reloadErr = loader.ReloadService(svc)
+	})
+	if reloadErr != nil {
 		return c.writePacket(RplyNAK, nil)
 	}
 
@@ -1379,8 +1400,16 @@ func (c *Connection) handleReloadAll() error {
 			continue
 		}
 
-		newSvc, err := loader.ReloadService(svc)
-		if err != nil {
+		// Per service rather than around the whole loop: each service's
+		// dep diff has to be atomic, but holding the lock across a
+		// rescan of every description would stall the state machine for
+		// the length of the scan.
+		var newSvc service.Service
+		var reloadErr error
+		c.server.services.WithGraphLock(func() {
+			newSvc, reloadErr = loader.ReloadService(svc)
+		})
+		if reloadErr != nil {
 			failed++
 			continue
 		}
@@ -1548,25 +1577,18 @@ func (c *Connection) handleAddDep(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	// Check for circular dependency before adding
-	if service.CheckCircularDep(from, to) {
+	// The circularity check, the append and the depth recalculation all
+	// happen under the service-graph lock, which this goroutine does not
+	// otherwise hold: every connection gets its own, and the graph is
+	// plain slices that the state machine walks. Doing the check here and
+	// the add there would also let two opposite add-deps each pass
+	// against the pre-add graph and between them build a cycle.
+	//
+	// Cycle and depth-limit both answer NAK, as before — the client
+	// distinguishes them from the daemon's log, not from the wire.
+	if err := c.server.services.AddDependency(from, to, service.DependencyType(depType)); err != nil {
 		return c.writePacket(RplyNAK, nil)
 	}
-
-	// Add the dependency
-	dep := from.Record().AddDep(to, service.DependencyType(depType))
-
-	// Update dependency depths with rollback on failure
-	var updater service.DepDepthUpdater
-	updater.AddPotentialUpdate(from)
-	if err := updater.ProcessUpdates(); err != nil {
-		// Depth limit exceeded — remove the dep we just added and rollback depths
-		from.Record().RmDep(to, service.DependencyType(depType))
-		updater.Rollback()
-		_ = dep
-		return c.writePacket(RplyNAK, nil)
-	}
-	updater.Commit()
 
 	return c.writePacket(RplyACK, nil)
 }
@@ -1595,26 +1617,13 @@ func (c *Connection) handleRmDep(payload []byte, v7 bool) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	if !from.Record().RmDep(to, service.DependencyType(depType)) {
+	// Under the graph lock, for the same reason as handleAddDep: RmDep
+	// splices both the source's and the target's slice. The depth
+	// recalculation and the queue drain that the release may have queued
+	// happen inside, so this is one atomic step.
+	if !c.server.services.RemoveDependency(from, to, service.DependencyType(depType)) {
 		return c.writePacket(RplyNAK, nil)
 	}
-
-	// Recalculate depths after removal
-	var updater service.DepDepthUpdater
-	updater.AddPotentialUpdate(from)
-	// Also queue dependents of from since its depth may decrease
-	for _, dept := range from.Record().Dependents() {
-		updater.AddPotentialUpdate(dept.From)
-	}
-	if err := updater.ProcessUpdates(); err != nil {
-		// Depth recalc on remove should never fail (depths only decrease),
-		// but commit anyway to be safe.
-		updater.Rollback()
-	} else {
-		updater.Commit()
-	}
-
-	c.server.services.ProcessQueues()
 
 	if v7 {
 		// Wire: [RplyServiceStatus][dep_exists(1B)][status_v6(22B)].
@@ -1665,34 +1674,26 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 			return c.writePacket(RplyNAK, nil)
 		}
 		var loadErr error
-		fromSvc, loadErr = c.server.services.LoadService(fromName)
+		c.server.services.WithGraphLock(func() {
+			fromSvc, loadErr = c.server.services.LoadService(fromName)
+		})
 		if loadErr != nil || fromSvc == nil {
 			return c.writePacket(RplyNAK, nil)
 		}
 	}
 
-	// Add waits-for dependency from source to target. Detect whether the
-	// dep already existed so v7 clients can report it (dinit exposes
-	// this via the dep_exists byte). We treat "already exists" as any
-	// non-BEFORE/AFTER dep of any type on the same target — matching
-	// dinit's `add_service_dep` behaviour where a WAITS_FOR request on a
-	// service that already has a REGULAR dep on the same target is a
-	// no-op.
-	depExists := false
-	for _, dep := range fromSvc.Record().Dependencies() {
-		if dep.To == svc && dep.DepType != service.DepBefore &&
-			dep.DepType != service.DepAfter {
-			depExists = true
-			break
-		}
+	// Add a waits-for dependency from source to target, and report whether
+	// one was already there so v7 clients can fill dinit's dep_exists
+	// byte. EnsureWaitsFor documents what counts as "already there" and
+	// does all three steps — existence check, circularity check, append —
+	// under one graph lock: two concurrent enables of the same service
+	// would otherwise both find nothing and both install an edge.
+	depExists, depErr := c.server.services.EnsureWaitsFor(fromSvc, svc)
+	if depErr != nil {
+		return c.writePacket(RplyNAK, nil)
 	}
 
 	if !depExists {
-		if service.CheckCircularDep(fromSvc, svc) {
-			return c.writePacket(RplyNAK, nil)
-		}
-		fromSvc.Record().AddDep(svc, service.DepWaitsFor)
-
 		// Persist by creating a waits-for.d symlink in the source
 		// service's load directory, so the dependency survives a
 		// daemon restart. A persistence failure is logged but does
@@ -1763,8 +1764,10 @@ func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 		}
 	}
 
-	// Remove waits-for dependency from source to target
-	fromSvc.Record().RmDep(svc, service.DepWaitsFor)
+	// Remove waits-for dependency from source to target, under the graph
+	// lock. The result is deliberately ignored: disabling a service that
+	// was never enabled still removes the symlink and stops the target.
+	c.server.services.RemoveDependency(fromSvc, svc, service.DepWaitsFor)
 
 	// Remove the persisted waits-for.d symlink (if any). Errors other
 	// than ENOENT are logged but not propagated — the in-memory dep is
@@ -2032,7 +2035,9 @@ func (c *Connection) handleQueryDependents(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	dependents := svc.Dependents()
+	// Snapshotted under the graph lock. Iterating the live slice from
+	// this goroutine raced with the state machine appending to it.
+	dependents := c.server.services.DependentsOf(svc)
 	// Allocate handles for each dependent and return them
 	// Wire format: count(4) + [handle(4)]*
 	buf := make([]byte, 4+4*len(dependents))
@@ -2057,7 +2062,7 @@ func (c *Connection) handleQueryDependencies(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	deps := svc.Record().Dependencies()
+	deps := c.server.services.DependenciesOf(svc)
 	// Wire format: count(4) + [handle(4) + depType(1)]*
 	buf := make([]byte, 4+5*len(deps))
 	binary.LittleEndian.PutUint32(buf, uint32(len(deps)))
