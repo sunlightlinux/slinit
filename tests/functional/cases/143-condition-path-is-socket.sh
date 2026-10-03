@@ -7,9 +7,7 @@
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -S /run/slinit.socket ]; then
-    echo "SKIP: /run/slinit.socket not present (test env)"
-    test_summary
-    return 0
+    skip_case "/run/slinit.socket not present (test env)"
 fi
 echo "OK: control socket present as expected"
 

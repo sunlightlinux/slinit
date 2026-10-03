@@ -30,7 +30,7 @@ else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: no socket at $SOCK"
     test_summary
-    return 0
+    return 1
 fi
 
 _TESTS_RUN=$((_TESTS_RUN + 1))

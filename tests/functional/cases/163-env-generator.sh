@@ -24,7 +24,7 @@ if [ -z "$_pid" ] || [ "$_pid" = "0" ]; then
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: no live PID for eg-svc after restart"
     test_summary
-    exit 0
+    exit 1
 fi
 echo "OK: eg-svc has PID $_pid post-restart"
 

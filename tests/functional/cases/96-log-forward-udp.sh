@@ -5,9 +5,7 @@
 # Requires nc (busybox on Alpine is fine).
 
 if ! command -v nc >/dev/null 2>&1; then
-    echo "SKIP: nc not available"
-    test_summary
-    return 0
+    skip_case "nc not available"
 fi
 
 SVC="test-udplogfwd"
@@ -41,9 +39,7 @@ printf 'SELF_TEST\n' | nc -u -w1 127.0.0.1 "$LOG_PORT" 2>/dev/null
 sleep 1
 if ! grep -q 'SELF_TEST' "$LOG_OUT" 2>/dev/null; then
     kill "$NC_PID" 2>/dev/null
-    echo "SKIP: BusyBox nc drops UDP datagrams (self-test failed)"
-    test_summary
-    return 0
+    skip_case "BusyBox nc drops UDP datagrams (self-test failed)"
 fi
 # BusyBox nc "-u -l" locks onto the first datagram's source port
 # after receiving (implicit connect), then drops packets from other

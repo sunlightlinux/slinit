@@ -24,9 +24,7 @@ slinitctl --system reload-all >/dev/null 2>&1
 sleep 1
 if ! slinitctl --system status "$_CANARY" >/dev/null 2>&1; then
     rm -f "$INITD/$_CANARY"
-    echo "SKIP: init.d fallback disabled at slinit boot"
-    test_summary
-    return 0
+    skip_case "init.d fallback disabled at slinit boot"
 fi
 slinitctl --system unload "$_CANARY" 2>/dev/null || true
 rm -f "$INITD/$_CANARY"

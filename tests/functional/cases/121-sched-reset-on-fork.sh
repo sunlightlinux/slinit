@@ -3,9 +3,7 @@
 # so forked+exec'd children revert to SCHED_OTHER.
 
 if ! command -v chrt >/dev/null 2>&1; then
-    echo "SKIP: chrt not on target (util-linux not installed)"
-    test_summary
-    return 0
+    skip_case "chrt not on target (util-linux not installed)"
 fi
 
 SVC="test-schedrof"

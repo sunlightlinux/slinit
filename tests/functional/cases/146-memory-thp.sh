@@ -29,7 +29,7 @@ else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: thp-svc has no live PID (got '$_pid')"
     test_summary
-    return 0
+    return 1
 fi
 
 # Best-effort THP_enabled check. Field format: "THP_enabled:  0".
@@ -37,7 +37,7 @@ fi
 _thp_line=$(awk '/^THP_enabled:/ { print $2; exit }' "/proc/$_pid/status" 2>/dev/null)
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -z "$_thp_line" ]; then
-    echo "SKIP: /proc/PID/status lacks THP_enabled field (kernel too old)"
+    skip_case "/proc/PID/status lacks THP_enabled field (kernel too old) — nothing here can judge THP"
 elif [ "$_thp_line" = "0" ]; then
     echo "OK: THP_enabled=0 on child (PR_SET_THP_DISABLE took effect)"
 elif [ "$_thp_line" = "1" ]; then

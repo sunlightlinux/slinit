@@ -6,9 +6,7 @@
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -e /sys/fs/cgroup/cgroup.controllers ]; then
-    echo "SKIP: cgroup v2 not present"
-    test_summary
-    return 0
+    skip_case "cgroup v2 not present"
 fi
 echo "OK: cgroup v2 hierarchy present"
 

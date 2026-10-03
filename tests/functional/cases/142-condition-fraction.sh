@@ -10,9 +10,7 @@
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -s /etc/machine-id ]; then
-    echo "SKIP: no /etc/machine-id in test VM"
-    test_summary
-    return 0
+    skip_case "no /etc/machine-id in test VM"
 fi
 echo "OK: /etc/machine-id present"
 

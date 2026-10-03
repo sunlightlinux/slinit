@@ -15,17 +15,13 @@ CG_ROOT="/sys/fs/cgroup/slinit/${SVC}"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -e /sys/fs/cgroup/cgroup.controllers ]; then
-    echo "SKIP: cgroup v2 not present"
-    test_summary
-    return 0
+    skip_case "cgroup v2 not present"
 fi
 echo "OK: cgroup v2 hierarchy present"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -e /proc/pressure/memory ]; then
-    echo "SKIP: kernel lacks PSI support (/proc/pressure/memory missing)"
-    test_summary
-    return 0
+    skip_case "kernel lacks PSI support (/proc/pressure/memory missing)"
 fi
 echo "OK: kernel PSI support present"
 
@@ -55,7 +51,7 @@ if [ ! -e "$CG_ROOT/memory.pressure" ]; then
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: $CG_ROOT/memory.pressure missing (memory controller not delegated?)"
     test_summary
-    return 0
+    return 1
 fi
 echo "OK: memory.pressure present under service cgroup"
 

@@ -53,11 +53,19 @@ unaffected.
 
 ### A green run is not full coverage
 
-A case that finds its precondition missing prints `SKIP: <reason>` and
-reports **PASS** — it ran one assertion, zero failed. That is the right
-outcome for a harness that has to run on whatever the VM happens to
-provide, but it means the summary line understates nothing and
-overstates plenty: around one case in ten skips on a normal run.
+A case that finds its precondition missing calls `skip_case "<reason>"`
+and is reported **SKIP**, counted under "skipped" and not under
+"passed". Around one case in ten skips on a normal run, so the tally to
+read is all three numbers, not the first one.
+
+It did not always work that way. A skipping case used to print `SKIP:`
+and then return 0, which the harness reported as **PASS** — a
+case that asserted nothing was indistinguishable from a case that
+verified everything. `164-slice-hierarchy` asserts that a service
+configured with `slice` alone lands in `/system.slice/<name>`, and it
+skipped for want of cgroup v2 from the day it was written, which is how
+`slice` came to be silently dropped by the loader for the whole life of
+the directive without the suite noticing (fixed in v2.3.9).
 
 The environment the VM does *not* provide, and what skips because of
 it:
@@ -69,15 +77,32 @@ it:
 | `/etc/machine-id` | `condition-fraction` and the PSI cases |
 | TPM | `condition-security = measured-os` |
 | NUMA (`CONFIG_NUMA`) | `numa-mempolicy` |
+| `nc` that does not drop UDP | `log-forward-udp` |
 
-This is not hypothetical. `164-slice-hierarchy` asserts that a service
-configured with `slice` alone lands in `/system.slice/<name>`, and it
-has been skipping for want of cgroup v2 since it was written — which is
-how `slice` came to be silently dropped by the loader for the whole
-life of the directive without the suite noticing (fixed in v2.3.9).
+So: when a case covers something you are actually changing, check that
+it *ran*.
 
-So: read the skip lines, not just the tally. When a case covers
-something you are actually changing, check that it *ran*.
+### Checking the harness itself
+
+```bash
+./tests/functional/selftest.sh
+```
+
+Every case under `cases/` is written to pass, so the suite cannot notice
+when the harness stops reporting failures — it just gets greener. That
+has happened twice, both times found by accident:
+
+* `e1673d4` — `_output=$(...) || true` made `$?` always 0, "causing all
+  functional tests to report PASS even when assertions failed".
+* the console-streaming change — `(. "$TEST_SCRIPT") | tee /dev/console`
+  followed by `_rc=$?`, which reads `tee`'s status and not the script's.
+  Same outcome, five months later, and it shipped in three green CI runs.
+
+`selftest.sh` boots three cases whose verdicts are known in advance — one
+that must pass, one that must fail, one that must skip — and checks what
+the harness said about each. CI runs it on shard 0 before the cases, so a
+harness that cannot fail a case fails there instead of returning eight
+green shards. Run it yourself after touching anything in `lib/`.
 
 ## Test Cases
 
@@ -335,9 +360,15 @@ something you are actually changing, check that it *ran*.
    - `assert_service_state "name" "STATE" "description"` — check via slinitctl
    - `wait_for_service "name" "STATE" timeout_secs` — poll until state reached
    - `test_summary` (must call at end of every test)
+   - `skip_case "reason"` — ends the case as SKIPPED when the VM cannot
+     provide what it needs (no cgroup v2, no `chrt`, no TPM). Use this
+     rather than printing a message and returning 0, which reports PASS.
 4. Manual assertions: increment `_TESTS_RUN` and `_TESTS_FAILED` directly for
    custom checks (see existing tests for examples)
-5. Exit 0 = pass, non-zero = fail
+5. Exit 0 = pass, 77 = skip (what `skip_case` exits with), anything else =
+   fail. A case that bails out early on a real failure must return
+   non-zero: `test_summary` already returns 1 when something failed, so
+   follow it with `return 1`, never `return 0`.
 
 Example:
 

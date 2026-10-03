@@ -4,9 +4,7 @@
 # kernel but worth guarding).
 if [ ! -e /sys/fs/cgroup/cgroup.controllers ]; then
     _TESTS_RUN=$((_TESTS_RUN + 1))
-    echo "SKIP: cgroup v2 not the mounted hierarchy"
-    test_summary
-    exit 0
+    skip_case "cgroup v2 not the mounted hierarchy"
 fi
 
 wait_for_service "freeze-svc" "STARTED" 10
@@ -16,7 +14,7 @@ if [ ! -e "$CG/cgroup.freeze" ]; then
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: no cgroup.freeze at $CG"
     test_summary
-    exit 0
+    exit 1
 else
     echo "OK: freeze knob exists"
 fi

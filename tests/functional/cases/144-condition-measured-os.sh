@@ -13,9 +13,7 @@ _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -e /sys/kernel/security/tpm0/binary_bios_measurements ]; then
     _sz=$(stat -c %s /sys/kernel/security/tpm0/binary_bios_measurements 2>/dev/null)
     if [ -n "$_sz" ] && [ "$_sz" -gt 0 ]; then
-        echo "SKIP: TPM measurement log unexpectedly present (size=$_sz); positive path not covered by this test"
-        test_summary
-        return 0
+        skip_case "TPM measurement log unexpectedly present (size=$_sz); positive path not covered by this test"
     fi
 fi
 echo "OK: no TPM event log present (expected for a bare QEMU VM)"

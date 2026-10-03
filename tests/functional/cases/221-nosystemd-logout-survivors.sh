@@ -17,9 +17,7 @@ mkdir -p "$scope" 2>/dev/null
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -d "$scope" ]; then
-    echo "SKIP: cgroup v2 not available in this VM"
-    test_summary
-    return 0 2>/dev/null || exit 0
+    skip_case "cgroup v2 not available in this VM"
 fi
 echo "OK: session scope cgroup created"
 

@@ -5,9 +5,7 @@
 
 if [ -r /sys/kernel/kexec_loaded ] && \
    [ "$(cat /sys/kernel/kexec_loaded)" = "1" ]; then
-    echo "SKIP: a kexec kernel is already loaded — preflight is silent by design"
-    test_summary
-    return 0
+    skip_case "a kexec kernel is already loaded — preflight is silent by design"
 fi
 
 NEST_ROOT=/tmp/functional-kexec

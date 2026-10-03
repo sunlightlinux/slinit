@@ -75,6 +75,16 @@ build_base() {
         if [ -z "$newest_src" ] && [ "${SCRIPT_DIR}/build-vm.sh" -nt "${OUTPUT_DIR}/initramfs-base.cpio.gz" ]; then
             newest_src="tests/functional/build-vm.sh"
         fi
+        # lib/ too. assert.sh and guest-runner.sh are installed INTO the
+        # image by build-vm.sh (as /test/assert.sh and /test/guest-runner.sh),
+        # so editing them and re-running kept the old copies in the VM and
+        # the change simply had no effect — the same trap this check was
+        # extended for once already, one directory over. It cost a round of
+        # "the harness fix did nothing" before being noticed.
+        if [ -z "$newest_src" ]; then
+            newest_src=$(find "${SCRIPT_DIR}/lib" -type f \
+                -newer "${OUTPUT_DIR}/initramfs-base.cpio.gz" -print -quit 2>/dev/null)
+        fi
         if [ -z "$newest_src" ]; then
             echo "Using cached VM image (pass KEEP_BUILD=0 to force rebuild)"
             return 0
@@ -279,6 +289,16 @@ SVC
         "TEST_RESULT:PASS")
             log_pass "${test_name}"
             PASSED=$((PASSED + 1))
+            return 0
+            ;;
+        "TEST_RESULT:SKIP")
+            # The reason is always shown, pass or no pass: a skip is only
+            # useful if you can see why, and a skip that quietly becomes
+            # permanent is how 164-slice-hierarchy covered nothing for
+            # months while reading as a pass.
+            log_skip "${test_name}"
+            grep "^SKIP:" "${result_file}" 2>/dev/null | sed 's/^/    /' || true
+            SKIPPED=$((SKIPPED + 1))
             return 0
             ;;
         *)

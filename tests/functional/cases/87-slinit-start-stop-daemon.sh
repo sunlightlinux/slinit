@@ -17,7 +17,7 @@ else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: no sleep in the VM"
     test_summary
-    exit 0
+    exit 1
 fi
 
 # ---------------------------------------------------------------

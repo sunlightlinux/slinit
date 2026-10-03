@@ -6,9 +6,7 @@
 SVC="test-numa"
 
 if [ ! -d /sys/devices/system/node ]; then
-    echo "SKIP: kernel does not expose /sys/devices/system/node (CONFIG_NUMA off)"
-    test_summary
-    return 0
+    skip_case "kernel does not expose /sys/devices/system/node (CONFIG_NUMA off)"
 fi
 
 cat > "/etc/slinit.d/$SVC" <<EOF

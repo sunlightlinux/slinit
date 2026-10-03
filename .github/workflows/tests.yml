@@ -111,6 +111,22 @@ jobs:
           # rebuilding an identical one.
           touch tests/functional/_output/*
 
+      # Before trusting any shard's verdict, check that the harness can
+      # still produce a failing one. Every case under cases/ is written to
+      # pass, so a harness that has stopped reporting failures looks like
+      # eight green shards — which is exactly what happened twice, and
+      # both times it was found by hand, long after the fact. selftest.sh
+      # boots three cases with known-in-advance verdicts (pass, fail,
+      # skip) and checks each one.
+      #
+      # Shard 0 only: three extra boots once per run is the price, and the
+      # harness is identical in all eight.
+      - name: Check the harness can still fail a case
+        if: matrix.shard == 0
+        env:
+          KEEP_BUILD: "1"
+        run: bash tests/functional/selftest.sh
+
       - name: Select this shard's cases
         id: cases
         run: |

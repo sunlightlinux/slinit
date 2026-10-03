@@ -12,9 +12,7 @@
 # on /bin/sleep; the acceptance suite covers this on Void where sleep
 # is real coreutils.
 if readlink -f /bin/sleep 2>/dev/null | grep -q busybox; then
-    echo "SKIP: /bin/sleep is busybox — argv[0] override causes 'applet not found'"
-    test_summary
-    return 0
+    skip_case "/bin/sleep is busybox — argv[0] override causes 'applet not found'"
 fi
 
 SVC="test-argv0"

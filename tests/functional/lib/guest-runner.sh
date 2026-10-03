@@ -38,18 +38,36 @@ set +e
 # and said nothing. The console log is captured as an artifact and survives
 # a hang, so sending the output there too means the next hang arrives with
 # every assertion up to that point and the line it died on.
-_output=$( (. "${TEST_SCRIPT}") 2>&1 | tee /dev/console )
-_rc=$?
+#
+# The status goes through a FILE and not through `$?`, which is the part
+# that matters. `$?` after a pipeline is the status of its LAST command —
+# `tee`, which always succeeds — so the obvious `... | tee /dev/console`
+# followed by `_rc=$?` reports every case as PASS no matter what it
+# asserted. That is not hypothetical: it is what this file did between the
+# console-streaming change and this one, and `fix: guest-runner exit code
+# capture masked test failures` (e1673d4, April) had already fixed the
+# same bug in its `|| true` form. `pipefail` would do here, but it is not
+# POSIX and the guest shell is whatever the image ships; a file is.
+_RC_FILE="/run/slinit-test-rc"
+rm -f "${_RC_FILE}"
+_output=$( { (. "${TEST_SCRIPT}"); echo "$?" > "${_RC_FILE}"; } 2>&1 | tee /dev/console )
+_rc=$(cat "${_RC_FILE}" 2>/dev/null)
+# No file means the group never reached its last command — treat an
+# unknown status as a failure rather than as a pass.
+[ -n "${_rc}" ] || _rc=1
 set -e
 
 # Write results to virtio-serial port
 {
     echo "${_output}"
-    if [ "$_rc" -eq 0 ]; then
-        echo "TEST_RESULT:PASS"
-    else
-        echo "TEST_RESULT:FAIL (exit code $_rc)"
-    fi
+    case "$_rc" in
+        0)  echo "TEST_RESULT:PASS" ;;
+        # 77 is "this case cannot run here", the convention the container
+        # suite already uses. It is deliberately not 0: a case that skips
+        # must not be counted as a case that verified something.
+        77) echo "TEST_RESULT:SKIP" ;;
+        *)  echo "TEST_RESULT:FAIL (exit code $_rc)" ;;
+    esac
 } > "${RESULT_DEV}"
 
 # Trigger clean shutdown

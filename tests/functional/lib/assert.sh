@@ -5,6 +5,24 @@
 _TESTS_RUN=0
 _TESTS_FAILED=0
 
+# skip_case REASON
+# Ends the case as SKIPPED — "this cannot be checked on this machine",
+# not "this was checked and was fine".
+#
+# Until this existed the idiom was `echo "SKIP: ..."; test_summary;
+# return 0`, which reports PASS: the suite counted a case that had asserted
+# nothing as a case that passed. 164-slice-hierarchy skipped that way for
+# its whole life, on every VM, while the `slice` bug it covers went
+# unnoticed — a green line in the suite for a check that never ran once.
+#
+# 77 is the status the container suite uses for the same thing, so the two
+# harnesses agree. The guest runner turns it into TEST_RESULT:SKIP and
+# run-tests.sh counts it under "skipped".
+skip_case() {
+    echo "SKIP: $1"
+    exit 77
+}
+
 # assert_eq VALUE EXPECTED [MESSAGE]
 # Fails if VALUE != EXPECTED.
 assert_eq() {

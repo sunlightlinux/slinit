@@ -7,9 +7,7 @@ CG_ROOT="/sys/fs/cgroup/slinit/${SVC}"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -e /sys/fs/cgroup/cgroup.controllers ]; then
-    echo "SKIP: /sys/fs/cgroup is not cgroup v2"
-    test_summary
-    return 0
+    skip_case "/sys/fs/cgroup is not cgroup v2"
 fi
 echo "OK: cgroup v2 hierarchy present"
 
@@ -29,9 +27,7 @@ case "$_root_subtree" in
     *memory*|*pids*|*cpu*)
         echo "OK: controllers delegated at root ($_root_subtree)" ;;
     *)
-        echo "SKIP: cgroup.subtree_control lacks required controllers"
-        test_summary
-        return 0 ;;
+        skip_case "cgroup.subtree_control lacks required controllers" ;;
 esac
 
 cat > "/etc/slinit.d/$SVC" <<EOF
@@ -55,7 +51,7 @@ else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: no cgroup directory at $CG_ROOT"
     test_summary
-    return 0
+    return 1
 fi
 
 _check_knob() {
