@@ -22,6 +22,110 @@ their tagger wrote are kept in
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-10-03
+
+Three bugs that each made slinit report success it had not earned: a lost
+exit code read as a clean exit, a killed daemon that never came back, and
+confinement silently skipped. All three were found by CI failures that had
+been dismissed as flaky tests.
+
+**Why a minor.** The hardening change alone requires it: a machine without
+**slinit-runner** that today starts hardened services *unconfined* will have
+those services fail to start after upgrading. That is deliberate, and it is
+exactly what STABILITY.md reserves a minor for.
+
+Two of the fixes also change what operators see, and both are worth
+expecting rather than discovering:
+
+* A `type = scripted` service whose command fails is now reliably reported
+  as failed, so **dependents that used to start will stop starting.** If a
+  machine has been working because a failing dependency was not blocking
+  anything, that will surface here — as the failure it always was.
+* A `bgprocess` daemon killed from outside now **restarts** under
+  `restart = on-failure`, where it used to stay down, and a crashed daemon
+  takes the **failure** action rather than the success one.
+
+Verified: `go test ./...` green, `-race` green on the packages touched
+across repeated runs, and the hardening set exercised end to end in a real
+VM — 116-lock-personality, 149-no-new-privs, 178-restrict-cluster,
+78-sandbox and 192-lsm-fail-closed all pass.
+
+### Fixed
+
+- **A child's exit code could be lost, and the loss read as success.**
+  Registration with the exit router happens just after `cmd.Start()` —
+  there is no pid before the fork — so a child that exits immediately can be
+  reaped by PID 1's `Wait4(-1)` mid-setup. The status was then discarded,
+  `cmd.Wait()` returned `ECHILD`, and that was flattened into "exited
+  cleanly with 0". A scripted service running `/bin/false` was therefore
+  sometimes reported **STARTED**, and `slinitctl start` on a service whose
+  dependency had failed exited 0.
+
+  Measured at roughly 6 losses in 3000 starts with a hot reaper — rare
+  enough to look like a flaky test, frequent enough to matter on a machine
+  that starts services all day. The router now holds a status nobody has
+  claimed yet, and a late registration collects it. Two supporting changes
+  were kept but are not what fixes it: registering before the post-fork
+  attributes are applied, and `cmd.Wait()` no longer reporting a status it
+  does not have.
+
+- **A killed `bgprocess` daemon never restarted under
+  `restart = on-failure`.** The daemon is not slinit's child — it is read
+  from a pidfile and watched with `kill(pid, 0)` — so its death is observed,
+  never reaped, and there is no wait status for it. The policy was shown the
+  **launcher's** instead: the start command that forked the daemon and
+  exited 0 to report success, often minutes earlier. `on-failure` asked
+  whether the exit was signalled (no, it exited) and whether it was non-zero
+  (no, it was 0), so neither branch fired.
+
+  `ExitStatus` gained a marker for a process that terminated without a
+  status being obtainable, which is treated as a failure. This also corrects
+  the success/failure action choice, which had the same stale status under
+  it: a crashed daemon could fire the **success** action.
+
+- **Confinement is no longer skipped in silence when `slinit-runner` is
+  missing.** Several directives are applied by the runner rather than by
+  slinit, because they act on the calling process. With no runner found,
+  every one of them was dropped with no error and no log line — a service
+  running with none of the seccomp filter, LSM label, capability bound or
+  sandbox its configuration asked for, looking perfectly healthy.
+  `no-new-privs` was the one exception and already refused to start.
+
+  Confinement now **fails closed**: seccomp, `protect-*`/`restrict-*`,
+  sandbox, AppArmor/SELinux/SMACK labels, bounding caps and `no-new-privs`
+  make the start fail, naming what is missing and where to put the runner. A
+  service whose configuration says it is confined and is not is a hole
+  nobody sees; a service that does not start is an error somebody fixes.
+
+  Everything else the runner applies — `mlockall`, `numa-mempolicy`,
+  `memory-thp`, `debug`, coredump and timer-slack options — is reported on
+  the console and skipped, and the service starts. Refusing to boot over a
+  lost performance knob would be the larger harm. Documented in
+  slinit-service(5) under **WHEN slinit-runner IS MISSING**.
+
+### Added
+
+- Man pages for **slinit-hostnamectl**(8) and **slinit-timedatectl**(8), the
+  last two binaries without one. Written from the code rather than from
+  systemd's pages, which caught a wrong claim about what `hostname` writes
+  when no scope flag is given.
+
+### Changed
+
+- The functional harness no longer loses a hanging case. Its helpers counted
+  loop iterations while the `slinitctl` calls inside them were unbounded, so
+  a single unanswered call hung a case forever; and the guest runner
+  collected a case's output into a variable, writing it only once the script
+  returned, so a hang delivered nothing at all. Deadlines now come off the
+  clock, every call is bounded, and output streams to the console as it
+  happens — which is captured, and survives a hang. An unanswered control
+  socket is now reported as such rather than looking like a service that
+  never started.
+
+  One intermittent failure in the path-activation cases remains open: the
+  control socket stalls moments after a path trigger fires. These changes do
+  not fix it; they make the next occurrence say so.
+
 ## [2.6.1] — 2026-10-02
 
 A review of sysvinit — the one legacy init slinit had never been measured

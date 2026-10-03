@@ -1786,7 +1786,7 @@ after the fork and before the exec: the seccomp filter, the
 
 If slinit cannot find the runner — it is looked for beside the slinit
 binary, then on *PATH*, then in */usr/sbin*, */sbin* and
-*/usr/local/sbin* — then **since 2.6.2**:
+*/usr/local/sbin* — then **since 2.7.0**:
 
 * a service asking for any **confinement** (seccomp, hardening, sandbox,
   LSM label, bounding caps, no-new-privs) **fails to start**, naming what
@@ -1798,7 +1798,7 @@ binary, then on *PATH*, then in */usr/sbin*, */sbin* and
   console**, and the service starts. Losing a performance knob is not worth
   refusing to boot over.
 
-Before 2.6.2 all of it was skipped in silence, with no error and no log
+Before 2.7.0 all of it was skipped in silence, with no error and no log
 line, so a service could run completely unconfined while looking healthy.
 **no-new-privs** was the one exception and already refused to start.
 
