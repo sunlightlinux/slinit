@@ -1774,6 +1774,34 @@ watch; the service remains startable via `slinitctl start`.
 :   Scrollback buffer size in **bytes** (default 65536). Earlier versions
     of this page said lines, which was wrong.
 
+## WHEN slinit-runner IS MISSING
+
+Several directives are applied by **slinit-runner**(8) rather than by
+slinit itself, because they act on the calling process and so must be set
+after the fork and before the exec: the seccomp filter, the
+**protect-\***/**restrict-\*** set, the sandbox directives, an LSM label
+(**apparmor-switch**, **selinux-context**, **smack-process-label**),
+**bounding-caps** and **no-new-privs**, plus **mlockall**,
+**numa-mempolicy**, **memory-thp** and **debug**.
+
+If slinit cannot find the runner — it is looked for beside the slinit
+binary, then on *PATH*, then in */usr/sbin*, */sbin* and
+*/usr/local/sbin* — then **since 2.6.2**:
+
+* a service asking for any **confinement** (seccomp, hardening, sandbox,
+  LSM label, bounding caps, no-new-privs) **fails to start**, naming what
+  is missing. A service whose configuration says it is confined and is not
+  is a hole nobody sees; a service that does not start is an error somebody
+  fixes.
+* the rest — **mlockall**, **numa-mempolicy**, **memory-thp**, **debug**,
+  coredump and timer-slack options — are **skipped with a message on the
+  console**, and the service starts. Losing a performance knob is not worth
+  refusing to boot over.
+
+Before 2.6.2 all of it was skipped in silence, with no error and no log
+line, so a service could run completely unconfined while looking healthy.
+**no-new-privs** was the one exception and already refused to start.
+
 ## PRE-START GUARDS (OpenRC)
 
 **required-files**=*path* [*path*...], **required-dirs**=*path* [*path*...]

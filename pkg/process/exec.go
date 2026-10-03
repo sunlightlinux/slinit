@@ -86,6 +86,34 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// supervises (PID and signals match).
 	command := params.Command
 	wrapped := needsRunnerWrap(params) && params.RunnerPath != ""
+
+	// Without the runner, everything it would have applied is silently
+	// skipped — and this used to be literally silent: no error, no log, a
+	// service running with none of the seccomp, LSM confinement or
+	// capability bounds its configuration asked for, looking perfectly
+	// healthy. no-new-privs already refused to start in that situation
+	// (see applyNoNewPrivs); the rest did not.
+	//
+	// Confinement now fails closed like it does, because a service whose
+	// configuration claims it is sandboxed and is not is worse than a
+	// service that does not start: the first is a hole nobody sees, the
+	// second is an error somebody fixes. Everything else the runner does —
+	// mlockall, NUMA policy, THP, coredump filters, debug=yes — is reported
+	// loudly and skipped, since refusing to boot over a lost performance
+	// knob would be the larger harm.
+	if needsRunnerWrap(params) && params.RunnerPath == "" {
+		if missing := runnerSecurityFeatures(params); len(missing) > 0 {
+			return 0, nil, fmt.Errorf(
+				"service asks for %s but slinit-runner was not found: refusing to "+
+					"start it unconfined (install slinit-runner beside the slinit "+
+					"binary, or in /sbin)", strings.Join(missing, ", "))
+		}
+		fmt.Fprintf(os.Stderr,
+			"slinit: %s: slinit-runner not found — mlockall/NUMA/THP/debug "+
+				"options were skipped; the service starts without them\n",
+			params.ServiceName)
+	}
+
 	if wrapped {
 		command = wrapWithRunner(params)
 	}
@@ -762,6 +790,46 @@ func loadAppArmorProfile(path string) error {
 // needsRunnerWrap reports whether the command needs to be prefixed with
 // slinit-runner because mlockall(2) and/or set_mempolicy(2) — both
 // per-calling-process syscalls — were requested.
+// runnerSecurityFeatures lists the confinement a service asked for that
+// only slinit-runner can apply, so a caller that cannot find the runner can
+// say what is missing instead of starting the service without it.
+//
+// The split is between confinement and everything else. A service that
+// asked for a seccomp filter, an LSM label, a capability bound or a sandbox
+// and does not get it is running unconfined while its configuration says
+// otherwise — that is a hole, and it fails closed. mlockall, NUMA policy,
+// THP, coredump filters and debug=yes are not confinement: losing one costs
+// performance or convenience, and refusing to boot over it would be the
+// larger harm.
+func runnerSecurityFeatures(p ExecParams) []string {
+	var missing []string
+	if seccompActive(p) {
+		missing = append(missing, "seccomp filter")
+	}
+	if hardeningActive(p) {
+		missing = append(missing, "hardening (protect-*/restrict-*)")
+	}
+	if sandboxActive(p) {
+		missing = append(missing, "sandbox (private-tmp/protect-system/...)")
+	}
+	if p.AppArmorProfile != "" {
+		missing = append(missing, "AppArmor profile")
+	}
+	if p.SELinuxContext != "" {
+		missing = append(missing, "SELinux context")
+	}
+	if p.SMACKProcessLabel != "" {
+		missing = append(missing, "SMACK label")
+	}
+	if len(p.BoundingCaps) > 0 {
+		missing = append(missing, "capability bounding set")
+	}
+	if p.NoNewPrivs {
+		missing = append(missing, "no-new-privs")
+	}
+	return missing
+}
+
 func needsRunnerWrap(p ExecParams) bool {
 	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
 		p.AppArmorProfile != "" || p.SELinuxContext != "" ||

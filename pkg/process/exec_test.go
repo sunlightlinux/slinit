@@ -3,6 +3,7 @@ package process
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -475,5 +476,112 @@ func TestWrapWithRunnerOmitsArgv0WhenUnset(t *testing.T) {
 		if len(a) >= 8 && a[:8] == "--argv0=" {
 			t.Errorf("--argv0 leaked into wrapped argv: %v", argv)
 		}
+	}
+}
+
+// Without slinit-runner, everything the runner would apply used to be
+// skipped in silence: no error, no log, and a service running with none of
+// the seccomp, LSM confinement or capability bounds its configuration asked
+// for, looking perfectly healthy. no-new-privs already refused to start in
+// that situation; the rest did not.
+//
+// Confinement now fails closed, because a service whose configuration says
+// it is sandboxed and is not is worse than one that does not start — the
+// first is a hole nobody sees, the second an error somebody fixes.
+func TestConfinementFailsClosedWithoutTheRunner(t *testing.T) {
+	cases := []struct {
+		name  string
+		apply func(*ExecParams)
+		want  string
+	}{
+		{"seccomp", func(p *ExecParams) { p.SeccompFilter = []string{"@system-service"} }, "seccomp filter"},
+		{"hardening", func(p *ExecParams) { p.RestrictRealtime = true }, "hardening"},
+		{"sandbox", func(p *ExecParams) { p.PrivateTmp = true }, "sandbox"},
+		{"apparmor", func(p *ExecParams) { p.AppArmorProfile = "slinit-test" }, "AppArmor"},
+		{"selinux", func(p *ExecParams) { p.SELinuxContext = "system_u:system_r:t" }, "SELinux"},
+		{"smack", func(p *ExecParams) { p.SMACKProcessLabel = "web" }, "SMACK"},
+		{"bounding caps", func(p *ExecParams) { p.BoundingCaps = []uintptr{10} }, "capability bounding set"},
+		{"no-new-privs", func(p *ExecParams) { p.NoNewPrivs = true }, "no-new-privs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := ExecParams{
+				ServiceName: "confined",
+				Command:     []string{"/bin/true"},
+				// RunnerPath deliberately empty.
+			}
+			tc.apply(&params)
+
+			pid, ch, err := StartProcess(params)
+			if err == nil {
+				t.Fatalf("started pid %d unconfined; %s was requested and silently dropped", pid, tc.name)
+			}
+			if ch != nil {
+				t.Error("an exit channel was returned for a start that failed")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not name the missing %s", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), "slinit-runner") {
+				t.Errorf("error %q does not say what is missing or where to put it", err)
+			}
+		})
+	}
+}
+
+// The other half of the decision: options that are not confinement must not
+// stop a service from starting. Losing mlockall costs performance; refusing
+// to boot over it would be the larger harm. They are reported instead.
+func TestNonConfinementStartsWithoutTheRunner(t *testing.T) {
+	cases := []struct {
+		name  string
+		apply func(*ExecParams)
+	}{
+		{"mlockall", func(p *ExecParams) { p.MlockallFlags = 1 }},
+		{"numa mempolicy", func(p *ExecParams) { p.NumaMempolicySet = true }},
+		{"memory thp", func(p *ExecParams) { p.MemoryTHP = "always" }},
+		{"debug stop", func(p *ExecParams) { p.DebugStop = true }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := ExecParams{
+				ServiceName: "unconfined-but-fine",
+				Command:     []string{"/bin/true"},
+			}
+			tc.apply(&params)
+
+			pid, ch, err := StartProcess(params)
+			if err != nil {
+				t.Fatalf("refused to start over %s, which is not confinement: %v", tc.name, err)
+			}
+			if pid <= 0 {
+				t.Errorf("pid = %d", pid)
+			}
+			if ch != nil {
+				<-ch
+			}
+		})
+	}
+}
+
+// With the runner present nothing changes: the wrap happens as before and no
+// error is produced. This is the guard that the new check only fires when the
+// runner is genuinely absent.
+func TestConfinementStartsNormallyWithARunner(t *testing.T) {
+	params := ExecParams{
+		ServiceName: "confined",
+		Command:     []string{"/bin/true"},
+		RunnerPath:  "/bin/true", // stands in for slinit-runner
+		PrivateTmp:  true,
+	}
+	pid, ch, err := StartProcess(params)
+	if err != nil {
+		t.Fatalf("refused to start with a runner available: %v", err)
+	}
+	if pid <= 0 {
+		t.Errorf("pid = %d", pid)
+	}
+	if ch != nil {
+		<-ch
 	}
 }
