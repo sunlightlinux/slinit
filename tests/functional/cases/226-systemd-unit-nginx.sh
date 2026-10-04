@@ -102,15 +102,30 @@ rm -f "$_marker"
 # version of this comment claimed ExecReload ran, which was wrong; the
 # assertion passed either way, which is how a wrong label survives.
 slinitctl --system reload nginx >/dev/null 2>&1
-sleep 2
-_pid_after=$(cat /run/nginx/nginx.pid 2>/dev/null | tr -d '[:space:]')
+
+# Wait for the pidfile to be readable rather than sampling it two
+# seconds later. The wait is only for a non-empty read: if the pid
+# really changed, the comparison below still fails, so this removes a
+# flake without weakening the assertion. An empty sample would have
+# failed the same comparison while meaning nothing.
+_i=0
+_pid_after=""
+while [ "$_i" -lt 15 ]; do
+    _pid_after=$(cat /run/nginx/nginx.pid 2>/dev/null | tr -d '[:space:]')
+    [ -n "$_pid_after" ] && break
+    _i=$((_i + 1))
+    sleep 1
+done
 assert_eq "$_pid_after" "$file_pid" "reload re-read the config without disturbing the daemon"
 assert_service_state "nginx" "STARTED" "nginx still STARTED after reload"
 
 # ExecStop -> stop-command. `nginx -s quit` is a graceful shutdown, so
 # the master must be gone afterwards.
 slinitctl --system stop nginx >/dev/null 2>&1
-sleep 3
+# `nginx -s quit` is graceful, so how long it takes is nginx's business,
+# not a number this test can know. wait_for_service polls with a
+# deadline and is already bounded per call.
+wait_for_service "nginx" "STOPPED" 20
 assert_service_state "nginx" "STOPPED" "nginx is STOPPED after stop"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))

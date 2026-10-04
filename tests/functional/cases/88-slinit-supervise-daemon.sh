@@ -66,7 +66,22 @@ fi
 # The daemon companion pidfile is written by the supervisor as it
 # spawns each daemon iteration. It should exist and point at
 # whatever iteration is currently running.
-sleep 0.4
+#
+# Waited for, not sampled after a fixed delay. This file is rewritten
+# once per iteration and the daemon only lives a second, so a lone
+# sample can land in the gap between iterations as easily as on one —
+# and 0.4s of budget on a runner under software emulation is not a
+# budget at all.
+_wait_for_file() {
+    _i=0
+    while [ "$_i" -lt "$2" ]; do
+        [ -f "$1" ] && return 0
+        _i=$((_i + 1))
+        sleep 1
+    done
+    return 1
+}
+_wait_for_file "$DAEMON_PIDFILE" 15
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -f "$DAEMON_PIDFILE" ]; then
     dpid=$(cat "$DAEMON_PIDFILE")
@@ -77,18 +92,36 @@ else
 fi
 
 # ---------------------------------------------------------------
-# Respawn: give the supervisor enough time to spawn the daemon at
-# least twice (each iteration exits after ~1s, plus 200ms delay).
+# Respawn: wait for the supervisor to spawn the daemon at least
+# twice. Each iteration lives ~1s and the respawn delay is 200ms,
+# so two of them need a little over two seconds of *daemon* time.
+#
+# This used to be `sleep 3` and one sample, which is a budget of
+# 0.6s over what two iterations need — and when the whole VM runs
+# 10-50x slower under software emulation, that wall-clock budget
+# buys proportionally fewer iterations. It failed in CI with
+# "only 0 iterations (want >= 2)". A deadline instead of a guess:
+# it returns as soon as the second iteration lands, and only a
+# supervisor that is genuinely not respawning takes the full wait.
 # ---------------------------------------------------------------
 
-sleep 3
-runs=$(cat "$COUNTER" 2>/dev/null || echo 0)
+runs=0
+_i=0
+while [ "$_i" -lt 30 ]; do
+    runs=$(cat "$COUNTER" 2>/dev/null || echo 0)
+    [ -n "$runs" ] || runs=0
+    if [ "$runs" -ge 2 ] 2>/dev/null; then
+        break
+    fi
+    _i=$((_i + 1))
+    sleep 1
+done
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ "$runs" -ge 2 ] 2>/dev/null; then
-    echo "OK: supervisor respawned daemon ($runs iterations)"
+    echo "OK: supervisor respawned daemon ($runs iterations in ${_i}s)"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: only $runs iterations (want >= 2)"
+    echo "FAIL: only $runs iterations in 30s (want >= 2)"
 fi
 
 # ---------------------------------------------------------------
@@ -106,14 +139,20 @@ else
     echo "FAIL: --stop rc=$rc — err: $(cat /tmp/ssd.err)"
 fi
 
-sleep 0.5
+# Teardown is a process exiting, so wait for it rather than assuming
+# half a second is enough.
+_i=0
+while [ "$_i" -lt 15 ] && [ -d "/proc/$sup_pid" ]; do
+    _i=$((_i + 1))
+    sleep 1
+done
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -d "/proc/$sup_pid" ]; then
-    echo "OK: supervisor exited after --stop"
+    echo "OK: supervisor exited after --stop (${_i}s)"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: supervisor pid $sup_pid still alive"
+    echo "FAIL: supervisor pid $sup_pid still alive 15s after --stop"
 fi
 
 # Both pidfiles should be gone after clean shutdown.
