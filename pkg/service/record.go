@@ -788,6 +788,25 @@ func (sr *ServiceRecord) OnNotify(msg process.NotifyMessage, fds []*os.File) {
 			sr.serviceName, len(fds), sr.fdStore.Len(), sr.fdStoreMax)
 		return
 	}
+	// Anything we were handed and did not take ownership of has to be
+	// closed here. The store's Add() closes on both of its rejection
+	// paths, so the leak was only this one: a datagram carrying
+	// SCM_RIGHTS *without* FDSTORE=1 — a plain STATUS= line with
+	// descriptors attached, say — fell through and dropped every
+	// *os.File on the floor. Their only release was then the GC
+	// finalizer, and PID 1 allocates little, so a service looping
+	// sd_notify with descriptors attached can accumulate them faster
+	// than they are reclaimed. A PID 1 at RLIMIT_NOFILE accepts no
+	// control connections, opens no log files and forks nothing.
+	//
+	// Found by turning the CVE classes on systemdfree.com into checks
+	// against slinit: this is the CVE-2021-33910 shape — unbounded
+	// resource use in PID 1 driven by untrusted input — reached from a
+	// service rather than from a mount path.
+	for _, f := range fds {
+		_ = f.Close()
+	}
+
 	if msg.Status != "" {
 		sr.services.logger.Info("Service '%s': status %q", sr.serviceName, msg.Status)
 	}
