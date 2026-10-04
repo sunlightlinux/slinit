@@ -3001,8 +3001,29 @@ func runVerify(opts options) error {
 		return nil
 	}
 	if res.OK() {
-		fmt.Printf("%s: OK (%d tags verified)\n", opts.sourceFile, res.TagsChecked)
+		fmt.Printf("%s: OK (%d tags verified, %d entries sealed)\n",
+			opts.sourceFile, res.TagsChecked, res.EntriesSealed)
+		// Say what was NOT checked. A tail after the last tag is sealed
+		// by nothing — normal for a journal whose daemon was killed —
+		// and an unqualified "OK" would imply otherwise.
+		if res.UnsealedTailBytes > 0 {
+			fmt.Printf("%s: note: %d bytes after the last tag are unsealed and "+
+				"cannot be verified\n", opts.sourceFile, res.UnsealedTailBytes)
+		}
 		return nil
+	}
+	// Hidden entries are not a bad HMAC: every tag can verify while an
+	// edit to the (unsealed) ENTRY_ARRAY removes entries from the
+	// array-based query path. Report that as its own finding, because
+	// "tamper at offset N" would send an operator looking at the wrong
+	// thing.
+	if res.HiddenEntries > 0 {
+		fmt.Printf("%s: TAMPER DETECTED: %d sealed entries are unreachable via the "+
+			"entry-array chain (%d tags verified) — entries were hidden without "+
+			"altering sealed bytes\n",
+			opts.sourceFile, res.HiddenEntries, res.TagsChecked)
+		return fmt.Errorf("verify: %d sealed entries hidden from the entry-array chain",
+			res.HiddenEntries)
 	}
 	fmt.Printf("%s: TAMPER DETECTED at tag offset %d (seqnum %d, %d prior tags OK)\n",
 		opts.sourceFile, res.FirstBadTagOffset, res.FirstBadTagSeqnum, res.TagsChecked)

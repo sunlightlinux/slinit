@@ -21,11 +21,37 @@ type VerifyResult struct {
 	// FirstBadTagSeqnum is the seqnum stored in that bad TAG (for
 	// operator-facing "corruption starts around tag N" messages).
 	FirstBadTagSeqnum uint64
+	// EntriesSealed is how many ENTRY objects lie inside a byte range
+	// that a TAG verified.
+	EntriesSealed int
+	// HiddenEntries is how many of those sealed entries cannot be
+	// reached by walking the ENTRY_ARRAY chain.
+	//
+	// Entry arrays are mutable metadata, rewritten as the journal
+	// grows, so they are deliberately outside HMAC scope — which left
+	// a gap: zeroing one slot of an array truncates what the
+	// array-based query path (EntryOffsets, SeekRealtime, and so
+	// `--since`/`--until`) can see, while every TAG still verifies.
+	// Measured: 4 of 10 entries vanished from that path with the file
+	// reporting "OK (2 tags verified)".
+	//
+	// The writer links an entry into the array before any TAG can seal
+	// it (appendEntryOffsetLocked runs before writeSealTagLocked), so a
+	// sealed entry that is unreachable is tampering, not a write race.
+	HiddenEntries int
+	// UnsealedTailBytes is how many bytes sit between the last verified
+	// TAG and the tail object. Nothing seals them — a journald killed
+	// before its closing TAG leaves such a tail — so they are
+	// reportable, not verifiable.
+	UnsealedTailBytes uint64
 }
 
 // OK returns true when the file is sealing-disabled OR every TAG
-// verified cleanly.
-func (v VerifyResult) OK() bool { return v.FirstBadTagOffset == 0 }
+// verified cleanly AND no sealed entry has been hidden from the
+// ENTRY_ARRAY chain.
+func (v VerifyResult) OK() bool {
+	return v.FirstBadTagOffset == 0 && v.HiddenEntries == 0
+}
 
 // Verify walks the TAG chain of a journal file, recomputing each
 // tag's HMAC over the covered byte range and comparing to the
@@ -72,6 +98,9 @@ func Verify(path string, key *FSSKey) (VerifyResult, error) {
 	// what that TAG covers.
 	prevTagEnd := uint64(HeaderSize)
 	off := uint64(HeaderSize)
+	// Entries seen since prevTagEnd; promoted to sealedEntries when the
+	// TAG covering them verifies.
+	var pendingEntries, sealedEntries []uint64
 	for off < h.TailObjectOffset {
 		var ohBuf [ObjectHeaderSize]byte
 		if _, err := f.ReadAt(ohBuf[:], int64(off)); err != nil {
@@ -86,6 +115,9 @@ func Verify(path string, key *FSSKey) (VerifyResult, error) {
 		}
 		if off+oh.Size > uint64(fileSize(f)) {
 			return res, fmt.Errorf("journalbin: verify: obj at %d claims size past file end", off)
+		}
+		if oh.Type == ObjectEntry {
+			pendingEntries = append(pendingEntries, off)
 		}
 		if oh.Type == ObjectTag {
 			// TAG covers [prevTagEnd .. off). Recompute HMAC, compare.
@@ -117,9 +149,39 @@ func Verify(path string, key *FSSKey) (VerifyResult, error) {
 				return res, nil
 			}
 			res.TagsChecked++
+			sealedEntries = append(sealedEntries, pendingEntries...)
+			pendingEntries = pendingEntries[:0]
 			prevTagEnd = off + AlignUp(oh.Size)
 		}
 		off += AlignUp(oh.Size)
+	}
+
+	// Anything after the last verified TAG is sealed by nothing. Say how
+	// much rather than leaving a clean verdict to imply it was checked.
+	if h.TailObjectOffset > prevTagEnd {
+		res.UnsealedTailBytes = h.TailObjectOffset - prevTagEnd
+	}
+
+	// Reconcile the two enumeration paths. A sealed ENTRY that the
+	// array chain cannot reach has been unlinked by someone editing
+	// metadata the HMAC does not cover.
+	res.EntriesSealed = len(sealedEntries)
+	if res.EntriesSealed > 0 {
+		reachable := make(map[uint64]struct{}, res.EntriesSealed)
+		if err := walkEntryOffsets(f, h.EntryArrayOffset, func(eo uint64) bool {
+			reachable[eo] = struct{}{}
+			return true
+		}); err != nil {
+			// A broken array chain is itself a finding, but it is a
+			// decode failure rather than a silent omission, so it goes
+			// back as an error the caller already surfaces.
+			return res, fmt.Errorf("journalbin: verify walk entry arrays: %w", err)
+		}
+		for _, eo := range sealedEntries {
+			if _, ok := reachable[eo]; !ok {
+				res.HiddenEntries++
+			}
+		}
 	}
 	return res, nil
 }

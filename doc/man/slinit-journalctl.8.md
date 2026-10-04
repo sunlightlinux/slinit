@@ -282,6 +282,21 @@ live queries.
 :   Walk the FSS TAG chain on **--file** (binary only); needs
     **--fss-key**.
 
+    Two things are checked, and one is reported but not checkable. Each
+    TAG's HMAC is recomputed over the entry and data bytes it covers, so
+    altering a sealed entry is detected. Separately, every sealed entry
+    must be reachable by walking the entry-array chain (since 3.0.1):
+    those arrays are mutable metadata and outside HMAC scope, so editing
+    one hides entries from the array-based query path — `--since`,
+    `--until`, any seek — while every TAG still verifies. Entries hidden
+    that way are now reported as tampering in their own right, naming the
+    count rather than a tag offset, since no sealed byte changed.
+
+    What cannot be verified is the tail after the last TAG: nothing seals
+    it, which is the normal state of a journal whose daemon was killed
+    before writing its closing TAG. A clean verify prints how many such
+    bytes there are rather than leaving "OK" to imply they were checked.
+
 **--fss-key=**\ *PATH*
 :   FSS key file for **--verify** (default */etc/slinit/journal-key*).
 
