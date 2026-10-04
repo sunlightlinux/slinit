@@ -16,16 +16,46 @@
 # without being restarted itself.
 
 wait_for_service "chatty" "STARTED" 10
-sleep 3
 
+# Wait for the first output rather than sampling once after a fixed
+# delay. This is a precondition — "is anything being captured at all" —
+# not a measurement of the property under test, so it must not carry a
+# timing assumption of its own.
+#
+# It did. `sleep 3` then one sample read zero on a CI runner while
+# passing locally; the same run's other four assertions all passed, so
+# output was flowing, the sink did turn over and the producer was never
+# restarted. Only the warm-up sample was early. Measured under software
+# emulation here: three seconds buys about 40 lines, against a counter
+# that reaches five figures by the end of the case — a margin of 40 lines
+# on a shared runner with eight shards in flight is no margin.
+#
+# Counted across the live file AND its rotations, for the same reason the
+# counter check below is: at this rate the live file turns over several
+# times a second, so a lone sample of it can legitimately catch a file
+# with no newline-terminated line in it yet.
+captured_lines() {
+    cat /tmp/chatty.log /tmp/chatty.log.* 2>/dev/null | wc -l
+}
+lines_before=0
+i=0
+while [ "$i" -lt 30 ]; do
+    lines_before=$(captured_lines)
+    [ "$lines_before" -gt 0 ] && break
+    i=$((i + 1))
+    sleep 1
+done
+
+# Taken after the wait: this is the pid that must survive the turnover,
+# and a warm-up that outlasted a restart would otherwise record one that
+# was already gone.
 pid_before=$(slinitctl status chatty 2>/dev/null | awk '/PID:/{print $2}')
 
-lines_before=$(wc -l < /tmp/chatty.log 2>/dev/null || echo 0)
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ "$lines_before" -gt 0 ]; then
-    echo "OK: producer output is being captured ($lines_before lines)"
+    echo "OK: producer output is being captured ($lines_before lines after ${i}s)"
 else
-    echo "FAIL: no output captured before the sink turned over"
+    echo "FAIL: no output captured in 30s — nothing reached the sink at all"
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
 fi
 
