@@ -1,11 +1,50 @@
-# slinit roadmap
+# slinit development history and roadmap
 
-What is planned and what has shipped. Release history with per-version
-notes lives in [CHANGELOG.md](../CHANGELOG.md); what slinit promises not
-to break is in [STABILITY.md](../STABILITY.md).
+Mostly history: the numbered phases below are the build-out of slinit
+from a dinit port to its current surface, and they run to **v2.3.9**.
+Everything after that — v2.4 through the current release — is in
+[CHANGELOG.md](../CHANGELOG.md), which is the authoritative per-release
+record and is not duplicated here. [STABILITY.md](../STABILITY.md) is
+what slinit promises not to break.
 
-This file was split out of the README when the README was trimmed for
-the 3.0 line.
+## Towards 3.0
+
+The 3.0 list was six items. Five are closed:
+
+1. **A skipped functional case reported PASS** — and in fact the harness
+   was reporting *every* case as PASS. Fixed in v2.7.1, with
+   `tests/functional/selftest.sh` to keep it honest.
+2. **The dependency graph was mutated without a lock** from every
+   control connection — nine sites, readers included.
+3. **The path-activation stall**: an arm-time trigger firing inside the
+   loader's service-loaded hook, so the start it triggered raced the
+   load. Root cause was (2); a watchdog now dumps goroutines to
+   */run/slinit-stall.stack* if the scheduling lock is ever held too
+   long.
+4. **The status structures were filled carelessly** — a service whose
+   command did not exist reported that it stopped *normally*. Fixed in
+   v2.7.2.
+5. **The logrotate EBADF flake**: one discarded `os.NewFile(w.Fd())` in
+   a test gave one descriptor two owners, and the orphan's finalizer
+   closed another test's file. `pkg/features/fdownership_test.go` now
+   fails the build on that pattern.
+
+What is left before the 3.0 cut:
+
+* **Packaging and the real-hardware proving ground.** The downstream
+  package recipe trails the repo, and "proves slinit as PID 1" deserves
+  a current ISO booted on real hardware rather than test counts alone.
+* **`slinitctl add-dep`'s argument order.** The code takes
+  `<from> <dep-type> <to>`, `slinitctl(8)` documents
+  `<kind> <from> <to>`, and dinit uses `<type> <from> <to>`. Changing
+  argv order after 3.0 would be a break, so it wants settling before.
+
+`pam_slinit.so` is scheduled for 3.0.1 rather than 3.0: a PAM module is
+a C shared object, so building one puts the Go runtime into every
+forking login process, and that trade needs its own release to get
+wrong in.
+
+## Phase history
 
 
 - [x] **Phase 1**: Foundation -- types, state machine, config parser, event loop
@@ -66,7 +105,7 @@ the 3.0 line.
 Post-v2.1.12 the phase-numbering system was retired in favour of the
 three-lane structure the CHANGELOG carries (new features / security
 features / code fixing). Per-version detail from v2.2.0 onward
-lives in [CHANGELOG.md](CHANGELOG.md). Highlights since v2.1.12:
+lives in [CHANGELOG.md](../CHANGELOG.md). Highlights since v2.1.12:
 
 - **v2.2.0–v2.2.4**: full `slinit-journalctl` systemd short-alias
   parity + first-class nspawn-style container integration + state-
@@ -163,7 +202,7 @@ lives in [CHANGELOG.md](CHANGELOG.md). Highlights since v2.1.12:
   PID 1), four degrees of shutdown haste (plain / `now` / `--fast` /
   `--superfast`), the `slinitctl reboot|halt|poweroff` shortcuts the
   man page had been promising, and the first written stability
-  commitment in [STABILITY.md](STABILITY.md).
+  commitment in [STABILITY.md](../STABILITY.md).
 - **v2.3.9**: a soft-reboot release, every fix found by driving the
   demo VM through repeated soft reboots and looking at what came back
   wrong. The console file descriptors handed to the next generation

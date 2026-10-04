@@ -38,7 +38,6 @@ PAGES_8 = \
 	slinit-sysusers.8 \
 	slinit-tmpfiles.8 \
 	slinit-supports.8 \
-	slinit-hostnamectl.8 \
 	slinit-journalctl.8 \
 	slinit-killall5.8 \
 	slinit-journald.8 \
@@ -49,7 +48,6 @@ PAGES_8 = \
 	slinit-runit-convert.8 \
 	slinit-systemd-convert.8 \
 	slinit-sysvinit-convert.8 \
-	slinit-timedatectl.8 \
 	slinit-getty.8 \
 	slinit-watchdogd.8 \
 	slinit-logind.8 \
@@ -61,7 +59,7 @@ PAGES_7 = slinit-resource.7
 
 PAGES_5 = slinit-service.5
 
-PAGES_1 = slinit-shell-var.1 slinit-svc-value.1 hostnamectl.1 timedatectl.1
+PAGES_1 = slinit-shell-var.1 slinit-svc-value.1 slinit-hostnamectl.1 slinit-timedatectl.1
 
 PAGES   = $(PAGES_8) $(PAGES_7) $(PAGES_5) $(PAGES_1)
 
@@ -69,6 +67,13 @@ PAGES   = $(PAGES_8) $(PAGES_7) $(PAGES_5) $(PAGES_1)
 # These mirror the symlinks the binary itself ships with, so
 # `man reboot` (etc.) lands on the right page.
 SHUTDOWN_ALIASES = slinit-reboot.8 slinit-halt.8 slinit-poweroff.8 slinit-soft-reboot.8
+
+# Same idea in section 1: the binaries are slinit-hostnamectl and
+# slinit-timedatectl, and the pages are named after them like every
+# other page here, but operators type the systemd name. Installing the
+# compat name as a symlink keeps `man hostnamectl` working with one
+# source file per tool — there used to be two divergent pages for each.
+COMPAT_ALIASES_1 = hostnamectl.1 timedatectl.1
 
 all: $(PAGES)
 
@@ -96,6 +101,9 @@ install: $(PAGES)
 	install -m644 $(PAGES_5) $(DESTDIR)$(MANDIR)/man5/
 	install -d $(DESTDIR)$(MANDIR)/man1
 	install -m644 $(PAGES_1) $(DESTDIR)$(MANDIR)/man1/
+	for alias in $(COMPAT_ALIASES_1); do \
+		ln -sf slinit-$$alias $(DESTDIR)$(MANDIR)/man1/$$alias; \
+	done
 
 clean:
 	rm -f $(PAGES)

@@ -102,7 +102,7 @@ For multi-step tasks, state a brief plan:
 **Verification commands in slinit:**
 - `go build ./...` — full build, catches typos fast.
 - `go vet ./...` — catches misuse before tests.
-- `go test ./...` — ~2387 unit tests across the Go tree (34 pkg/ + tests + tools).
+- `go test ./...` — ~2400 unit tests across the Go tree (34 pkg/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
 - `./tests/functional/run-tests.sh` — 230 QEMU-based integration tests
@@ -165,7 +165,7 @@ Strong success criteria let you loop independently. Weak criteria
 - `cmd/slinit/main.go` — PID 1 / container-mode entry point.
 - `cmd/slinit-runner/` — post-fork hardening execve wrapper (LSM, ambient
   caps, close-fds, restrict-*).
-- `cmd/slinitctl/main.go` — ~80 subcommands + the global flags.
+- `cmd/slinitctl/main.go` — ~90 verbs (aliases included) + the global flags.
 
 ### Reference sources
 - **dinit** (C++): `../dinit/src/` — key files `service.{h,cc}`,

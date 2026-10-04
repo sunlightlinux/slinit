@@ -1,10 +1,10 @@
-% TIMEDATECTL(1) slinit | Sunlight Linux
+% SLINIT-TIMEDATECTL(1) slinit | Sunlight Linux
 % Ionut Nechita
 % 2026-08-09
 
 # NAME
 
-timedatectl - control the system time and date (slinit-native, D-Bus-free)
+slinit-timedatectl, timedatectl - control the system time and date (slinit-native, D-Bus-free)
 
 # SYNOPSIS
 

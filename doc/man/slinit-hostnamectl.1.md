@@ -1,10 +1,10 @@
-% HOSTNAMECTL(1) slinit | Sunlight Linux
+% SLINIT-HOSTNAMECTL(1) slinit | Sunlight Linux
 % Ionut Nechita
 % 2026-08-09
 
 # NAME
 
-hostnamectl - control the system hostname (slinit-native, D-Bus-free)
+slinit-hostnamectl, hostnamectl - control the system hostname (slinit-native, D-Bus-free)
 
 # SYNOPSIS
 
@@ -65,6 +65,12 @@ variant is written.
     of **\--static** or **\--transient** is active, *NAME* must be a
     valid POSIX hostname (1..64 chars, alphanumerics, `-` or `.` not
     at start or end, no consecutive dots, not *localhost*).
+
+    With **no** scope flag, all three are set — the kernel name,
+    */etc/hostname* and the pretty name — except that the pretty name
+    is left alone when *NAME* is what would have been inferred from it
+    anyway. Setting a hostname therefore does not overwrite a
+    deliberately chosen pretty name with a duplicate of itself.
 
 **icon-name** [*NAME*]
 :   Get or set the icon name for the host (freedesktop.org icon

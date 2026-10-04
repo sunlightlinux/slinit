@@ -904,7 +904,7 @@ System setup:
 **slinit-sysusers**(8), **slinit-checkpath**(8), **slinit-mount**(8),
 **slinit-init-maker**(8), **slinit-seedrng**(8),
 **slinit-binfmt**(8), **slinit-sysctl**(8),
-**hostnamectl**(1), **timedatectl**(1).
+**slinit-hostnamectl**(1), **slinit-timedatectl**(1).
 
 Compatibility with other init systems:
 **slinit-start-stop-daemon**(8), **slinit-supervise-daemon**(8),

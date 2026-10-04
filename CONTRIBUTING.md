@@ -43,7 +43,7 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (~2387 tests across 84 Go dirs, 361 _test.go files)
+- **Unit tests**: `go test ./...` (~2400 tests across 84 Go dirs, 363 _test.go files)
 - **Functional tests**: `./tests/functional/run-tests.sh` (230 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (219 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (92 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
@@ -84,7 +84,7 @@ go test ./...
 - `tests/performance/` - performance harnesses (92 SSH + 4 QEMU boot + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (27)
 - `tests/container/` - slinit as PID 1 under Docker or Podman (23 cases + soak loop)
-- `tests/k8s/` - the same image as a pod on a `kind` cluster (8 cases)
+- `tests/k8s/` - the same image as a pod on a `kind` cluster (10 cases)
 - `demo/` - QEMU demo environment
 - `doc/man/` - pandoc-flavored markdown → roff via `go tool md2man`
 

@@ -457,6 +457,6 @@ goes to a per-service ring buffer instead — `slinitctl catlog X`. With
 - **slinit(8)** — PID 1 behaviour, kernel command line, foreign service
   formats.
 - **slinit-systemd-convert(8)** — the unit converter.
-- [`demo/`](../demo/README.md) — a QEMU VM with ~44 services covering most
+- [`demo/`](../demo/README.md) — a QEMU VM with 57 services covering most
   directives, including a stock nginx unit run straight from
   `/etc/systemd/system`.

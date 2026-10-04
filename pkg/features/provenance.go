@@ -162,6 +162,8 @@ var provenanceTable = []Feature{
 	{Name: "close-stdin", Kind: KindDirective, Source: SourceRunit, Category: CatSandbox, Notes: "chpst -0"},
 	{Name: "close-stdout", Kind: KindDirective, Source: SourceRunit, Category: CatSandbox, Notes: "chpst -1"},
 	{Name: "close-stderr", Kind: KindDirective, Source: SourceRunit, Category: CatSandbox, Notes: "chpst -2"},
+	{Name: "slice", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd Slice= — place the service under a named slice"},
+	{Name: "delegate", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd Delegate= — hand the subtree to the service"},
 	{Name: "cgroup-memory-max", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd MemoryMax="},
 	{Name: "cgroup-memory-high", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup, Notes: "systemd MemoryHigh="},
 	{Name: "cgroup-memory-low", Kind: KindDirective, Source: SourceSystemd, Category: CatCgroup},
