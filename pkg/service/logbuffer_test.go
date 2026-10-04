@@ -2,7 +2,6 @@ package service
 
 import (
 	"bytes"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -183,8 +182,26 @@ func TestLogBuffer_OutputPipeIntegration(t *testing.T) {
 	// Here we just write directly as a stand-in
 	lb.StartReader()
 
-	// Write as if from a child process
-	os.NewFile(w.Fd(), "pipe-write")
+	// Write as if from a child process.
+	//
+	// There used to be an `os.NewFile(w.Fd(), "pipe-write")` here whose
+	// result was discarded. It did nothing — the write below goes through
+	// `w` — but it wrapped `w`'s descriptor in a SECOND *os.File, which
+	// owns that fd and carries a finalizer. CloseWriteEnd() then closed
+	// `w`, the number was handed out to another test's log file, and
+	// whenever the GC got round to the orphan its finalizer closed that
+	// number out from under its new owner.
+	//
+	// That is the "logrotate EBADF" flake: some other test failed in
+	// `TempDir` cleanup with "bad file descriptor", never in an assertion,
+	// and never when the logrotate tests were run on their own — because
+	// the culprit was in this file and `-run TestLogRotator` did not
+	// select it. Traced with `strace -f -k -e trace=close -e status=failed`:
+	// `close(6) = -1 EBADF` under `runtime.runFinalizers` ->
+	// `os.(*file).close`.
+	//
+	// `w.Fd()` is a second trap on the same line: it takes the file out of
+	// nonblocking mode. Neither is needed, so neither is here.
 	w.Write([]byte("child output\n"))
 	lb.CloseWriteEnd()
 
