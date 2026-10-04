@@ -4,6 +4,7 @@
 
 | Version   | Supported |
 |-----------|-----------|
+| >= 3.0.0  | Yes       |
 | >= 2.2.0  | Yes       |
 | 2.0.x, 2.1.x | Best-effort backports for critical fixes only |
 | < 2.0.0   | No (v1.x line closed at v1.10.55; upgrade to v2.x) |

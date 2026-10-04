@@ -6,7 +6,7 @@ dinit-compatible configuration format.
 
 | | |
 |---|---|
-| **Latest release** | v3.0.0 — see [CHANGELOG.md](CHANGELOG.md) |
+| **Latest release** | v3.0.1 — see [CHANGELOG.md](CHANGELOG.md) |
 | **Compatibility contract** | [STABILITY.md](STABILITY.md) — control protocol v7 (min-compat v1) |
 | **Requires** | Go 1.25+ to build; Linux to run |
 | **License** | [Apache 2.0](LICENSE) |

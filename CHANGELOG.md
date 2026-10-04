@@ -24,6 +24,81 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.0.1] — 2026-10-05
+
+Two security fixes, both found the same way: by reading a published list
+of systemd CVEs as **classes to test slinit against** rather than as an
+argument about systemd. Three classes were worth checking; one came back
+clean twice over and two did not.
+
+**Why a patch.** Both are bug fixes. One changes what `--verify` reports
+about a tampered file, which STABILITY.md allows in any release under its
+security exception — keeping the old verdict keeps the vulnerability, the
+same reasoning v2.3.6's forgeable-`_COMM` fix was cut on. A legitimate
+journal verifies exactly as before; that is asserted at four different
+entry counts so the new check cannot cry wolf.
+
+**If you installed 3.0.0, note what it does not have.** 3.0.0's tag
+predates both of these, so an image built from it carries neither fix.
+
+### Fixed
+
+- **A service could exhaust PID 1's file descriptors through the notify
+  socket.** A `sd_notify` datagram can carry `SCM_RIGHTS` descriptors
+  whatever its body says. slinit handled the `FDSTORE=1` case and fell
+  through for everything else — so a plain `STATUS=` line with
+  descriptors attached dropped every one of them unclosed. Their only
+  release was the GC finalizer, and PID 1 allocates little, so a service
+  looping `sd_notify` with descriptors attached accumulates them faster
+  than they are reclaimed. A PID 1 at `RLIMIT_NOFILE` accepts no control
+  connections, opens no log files and forks nothing.
+
+  Narrow: the notify socket exists only for a service whose own
+  description sets `file-descriptor-store-max`, so an administrator opted
+  in, and the finalizer does eventually close what was dropped. Still not
+  something PID 1 should do. The store's own rejection paths were already
+  correct — `FDStore.Add` closes the file when the store is disabled or
+  full — so this was the one gap.
+
+- **Entries could be hidden from a sealed journal while `--verify`
+  reported it clean.** This is the shape of systemd's CVE-2023-31439, and
+  slinit had it because it ships the same sealing design.
+
+  There are two ways to enumerate a journal, and they had different trust
+  bases. `Reader.Iter` walks objects linearly; `EntryOffsets` and
+  `SeekRealtime` — and therefore `--since`, `--until` and every seek —
+  walk the `ENTRY_ARRAY` chain. The HMAC deliberately covers only
+  immutable bytes, because arrays and hash tables are rewritten as the
+  journal grows, so the array was unsealed. Measured on a sealed 10-entry
+  file: zeroing one array slot dropped the array path to 6 entries while
+  verification printed `OK (2 tags verified)` and exited 0.
+
+  Fixed by reconciliation rather than a format change: every entry inside
+  a byte range that a tag verified must be reachable through the array
+  chain. That is sound because the writer links an entry into the array
+  before any tag can seal it — checked in the source, since a wrong
+  assumption there would fail healthy journals. Hidden entries are
+  reported as their own finding with a count, not as "tamper at offset
+  N", because no sealed byte changed and a tag offset would send an
+  operator looking at the wrong place.
+
+  The matching truncation shape cannot be fixed, only reported: the tail
+  after the last tag is sealed by nothing, which is the normal state of a
+  journal whose daemon was killed before writing its closing tag. A clean
+  verify now prints how many such bytes exist instead of letting "OK"
+  imply they were checked.
+
+### Checked and clean
+
+Recorded so nobody re-derives them. **CVE-2023-26604** (pager privilege
+escalation through `less` without `LESSSECURE`) is structurally absent —
+slinit never spawns a pager; `--no-pager` is accepted as a no-op so
+scripts ported from systemd keep working. **CVE-2016-7795** (a
+zero-length datagram freezing PID 1) does not apply: a zero-length read
+parses as an empty message and the loop continues, and it is not mistaken
+for EOF, which on a datagram socket would silently stop all further
+notifications.
+
 ## [3.0.0] — 2026-10-04
 
 **Nothing breaks.** A major release usually means something was removed or
