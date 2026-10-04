@@ -22,6 +22,119 @@ their tagger wrote are kept in
 
 ## [Unreleased]
 
+## [2.7.2] — 2026-10-04
+
+One commit: an audit of the code that *fills* the status structures. Their
+accessors were already careful — `Exited`, `Signaled` and `ExitCode` all
+consult `HasStatus` — and the places that wrote them were not, so four
+readers took an empty field for fact. The worst of them: **a service whose
+command does not exist reported that it stopped *normally*.**
+
+**Why a patch.** Nothing stops working. What changes is what slinit
+*reports* about a failure it was already failing, and in each case the old
+value was wrong. The one change worth expecting rather than discovering is
+under **Changed** below — a stored file-descriptor set that used to
+survive a failed exec no longer does, because the stop reason that kept it
+alive was the incorrect one being fixed.
+
+### Fixed
+
+- **A command that could not be executed was recorded as a normal stop.**
+  `StartProcess` returns an error naming the stage it failed at and the
+  errno, and every caller logged it and dropped it. The service was left
+  with an empty `ExitStatus` and a stop reason still at its zero value —
+  which is `ReasonNormal`. Measured before the fix: `reason=normal`,
+  `hasStatus=false`, `execFailed=false`, `stage=0`, `errno=0`, for the
+  single most common way a start fails. After: `exec-failed`, stage
+  *do-exec*, errno 2 (ENOENT) for a missing file and 13 (EACCES) for one
+  that is not executable. `ReasonExecFailed` was already defined as
+  "failed to start (couldn't launch process)" and was only ever set for a
+  failure detected *after* the fork.
+
+  The recorded status deliberately leaves `HasStatus` false. There is no
+  wait status, and a zero `syscall.WaitStatus` reads as "exited with code
+  0" — the same flattening that cost v2.7.0 a release when `cmd.Wait()`'s
+  `ECHILD` was treated that way.
+
+- **A `scripted` service never reported an exit status at all.** It had no
+  field for one, so `GetExitStatus` fell through to the record's default,
+  which returns an empty struct. dinit's `scripted_service` derives from
+  `base_process_service` and has a real one. The absence showed:
+  **slinitctl status** printed no exit code and `si_code: 0` for a
+  scripted service whose command had just failed with a code the daemon
+  logged on the line above. It now records whichever script ran last —
+  dinit's single-slot behaviour — cleared at the top of every start, which
+  is the invariant the restart policy depends on.
+
+- **An exec failure in the first setup stage was rendered as an ordinary
+  exit.** Which of the two status layouts is on the wire — *si_code* /
+  *si_status*, or a stage and an errno — could not be read off the
+  payload, so the client inferred it from the stage being nonzero.
+  `StageArrangeFDs` is 0. An `EBADF` while arranging file descriptors
+  printed as `si_code: 9` with nothing on screen saying exec never
+  happened. A new status flag says it outright (bit 5 — dinit uses only
+  bits 0–4, so nothing collides), set by exactly the condition the encoder
+  switches on. The client also accepts a stop reason of *exec-failed* as
+  the same signal, because that is how dinit's own `fill_status_buffer`
+  decides it, so an older slinit daemon — or a dinit — still reads
+  correctly.
+
+- **`slinitctl status` hid every clean exit.** The guard was
+  `ExitStatus > 0`, but **-1** is the "no status" sentinel and **0** is a
+  real exit code. A oneshot that finished successfully showed no *Exit*
+  line at all.
+
+- **The test covering `chain-to` could not fail.** `22-chain-to` gave the
+  boot milestone a `waits-for` on the chain *target* and then asserted
+  that the target had started — which it would have whether chaining
+  worked or not. Its source was also a `scripted` service, which can never
+  satisfy the condition, so the case asserted a chain its own
+  configuration could not produce. Rewritten around the three clauses with
+  no target in the boot graph: a process exiting 0 must chain, one exiting
+  3 must not, and a scripted service chains only with the **always-chain**
+  option. Verified by mutation — with chaining disabled the case fails on
+  both positive sub-cases and the negative one stays quiet.
+
+### Changed
+
+- **`file-descriptor-store-preserve = on-success` no longer keeps the
+  store across a failed exec.** The rule is "retain only across a clean
+  exit", and it was implemented as "retain when the stop reason is
+  normal". Since a failed exec *was* leaving the reason at "normal", such
+  a service kept its stored descriptors; now the reason says *exec-failed*
+  and the store is closed, which is what the directive always said it
+  would do. Only reachable with that directive set and a service whose
+  command cannot be executed. Nothing to do if you were not relying on it;
+  if you were, **file-descriptor-store-preserve = yes** keeps the old
+  effect.
+
+- **`chain-to`'s documentation stated the wrong rule.** It said "when this
+  service stops normally", which is not the condition and is how the
+  broken test above came to be written. The real rule, matching dinit's:
+  the service terminated *on its own*, **and** exited 0, **and** is not
+  about to restart — or the **always-chain** option, which drops all
+  three. A scripted service can never meet the first clause, because its
+  start command completing makes it STARTED rather than stopped, so those
+  need **always-chain** — an `options =` flag, not a setting of its own.
+  The flag's own one-line description ("apply chain-to even on failure")
+  was wrong in the same way and now says what it does.
+
+### Audited, unchanged
+
+Three decisions read the exit status and were checked rather than assumed:
+`chooseStoppedAction`, the file-descriptor store's **on-success** rule and
+the `chain-to` condition all gate on the *terminated* stop reason, which a
+scripted service never reaches — so giving it a status does not alter
+them.
+
+`normal-exit` and `restart-force-exit-status` now evaluate against a real
+status for scripted services, where the predicates could previously never
+match. Measured, this changes no restart outcome: a scripted service whose
+start command fails never reaches the restart policy at all (one start
+attempt with and without `normal-exit`), and the force-restart path
+requires the service to still be wanted up, so an operator stop does not
+bounce back (stopped, one start attempt).
+
 ## [2.7.1] — 2026-10-03
 
 Five commits, and the first one changes how the previous release's test
