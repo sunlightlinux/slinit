@@ -274,14 +274,31 @@ func splitTimezone(fields []string) ([]string, *time.Location, error) {
 }
 
 func looksLikeTimezone(s string) bool {
-	if strings.Contains(s, "/") {
-		return true
-	}
 	switch s {
 	case "UTC", "GMT", "Local":
 		return true
 	}
-	return false
+	// An Area/City zone name is the only other thing we accept, and the
+	// slash is what identifies it. The slash is also the step separator
+	// in a time field, though, so it cannot decide this on its own: with
+	// `strings.Contains(s, "/")` alone, every stepped time field that
+	// happened to be last was read as a zone and rejected. `*-*-*
+	// *:*:*/5` failed with `unknown timezone "*:*:*/5"`, while the same
+	// time field with no date head in front of it parsed fine — the
+	// single-field case returns before this function is reached.
+	//
+	// A zone name has letters and neither ':' nor '*'; a time field has
+	// the opposite. Requiring that distinction keeps `Europe/Bucharest`
+	// a zone and leaves `*:0/5` alone.
+	if !strings.Contains(s, "/") {
+		return false
+	}
+	if strings.ContainsAny(s, ":*") {
+		return false
+	}
+	return strings.IndexFunc(s, func(r rune) bool {
+		return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+	}) >= 0
 }
 
 func calendarAlias(s string) (*CalendarSpec, bool) {
