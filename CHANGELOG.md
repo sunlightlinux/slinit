@@ -24,6 +24,61 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.0.2] — 2026-10-05
+
+One fix, found where it was always going to be found: by running the
+acceptance suite against a real target. slinit 3.0.0 as PID 1 on the ceres
+VM passed **218 of 219** cases, and the one failure was a calendar
+expression the manual documents and the parser refused.
+
+**Why a patch.** A directive that was rejected now works. Nothing that
+parsed before parses differently, and nothing that fired before fires at a
+different time — asserted by comparing the fixed expression against the
+spelling that always worked.
+
+### Fixed
+
+- **A stepped time field was mistaken for a timezone.** `cron-calendar`
+  accepts a trailing zone name, and it identified one by asking whether
+  the last field contained a slash. A slash is also the step separator, so
+  every expression whose last field carried a step was read as a zone and
+  refused:
+
+      *:*:*/5            accepted     (the whole expression is the time)
+      *-*-* *:*:*/5      rejected     unknown timezone "*:*:*/5"
+      *-*-* *:0/5        rejected
+      Mon..Fri *:0/10    rejected
+
+  A step therefore worked only while the time field stood alone. Both
+  features arrived in 2.4.8 — the timezone suffix, and "every field takes
+  the same forms" including `*:0/15` — and the first quietly took the
+  second away from every expression that also names a date or a weekday.
+
+  A zone name has letters and neither `:` nor `*`; a stepped time field
+  has the opposite. Requiring that keeps `Europe/Bucharest` a zone and
+  still rejects `Not/AZone`.
+
+  slinit-service(5) needed no change: it already documented both forms.
+  The code was wrong, not the manual — and the manual's examples all put
+  the step somewhere other than last, which is part of why this lasted
+  four minor releases.
+
+  A service using the affected spelling did not load at all, so the
+  symptom was an empty state from `slinitctl status` rather than a
+  mis-scheduled task, and the sub-task firing zero times was downstream of
+  that.
+
+### Verified
+
+Beyond the unit tests, the whole chain was re-run under a user-mode slinit
+with the exact service file from the failing case: it loads, reaches
+STARTED, and the sub-task fires five times in thirteen seconds at
+0, 5, 10, 15 — which is what the expression asks for and what the suite
+counts. The functional and acceptance tiers had this bug surrounded
+without catching it: functional case 161 uses the bare `*:*:0/30` that
+worked, and only the acceptance tier runs the date-head spelling, only
+against a real target.
+
 ## [3.0.1] — 2026-10-05
 
 Two security fixes, both found the same way: by reading a published list
