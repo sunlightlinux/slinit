@@ -1,9 +1,12 @@
 # slinit operator's guide
 
 For people who already run systems and now have to run this one. The
-[README](../README.md) is the reference — every directive, every flag,
-every feature. This is the other thing: what to type, what maps to what,
-and which differences will bite you.
+reference is the man pages — [slinit(8)](man/slinit.8.md) for the daemon,
+[slinit-service(5)](man/slinit-service.5.md) for every directive,
+[slinitctl(8)](man/slinitctl.8.md) for the CLI — with worked examples in
+[configuration.md](configuration.md) and the generated feature surface in
+[features.md](features.md). This is the other thing: what to type, what
+maps to what, and which differences will bite you.
 
 If you know systemd, start at [Coming from systemd](#coming-from-systemd).
 If you just need a service running, start at
@@ -446,7 +449,8 @@ goes to a per-service ring buffer instead — `slinitctl catlog X`. With
 
 ## See also
 
-- [README](../README.md) — the full reference: every directive, every flag.
+- [README](../README.md) — what slinit is, how to install it, and the
+  index to everything else.
 - **slinit-service(5)** — the service description format, directive by
   directive, with `(since X.Y.Z)` markers.
 - **slinitctl(8)** — every subcommand and its exact semantics.

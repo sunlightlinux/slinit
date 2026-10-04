@@ -1,547 +1,147 @@
 # slinit
 
-A service manager and init system written in Go. The core is a port of
-[dinit](https://github.com/davmac314/dinit), with features layered in
-from [runit](http://smarden.org/runit/),
+**A service manager and init system for Linux, written in Go.** Runs as
+PID 1 or as an unprivileged per-user service manager, with a
+dinit-compatible configuration format.
+
+| | |
+|---|---|
+| **Latest release** | v2.7.2 — see [CHANGELOG.md](CHANGELOG.md) |
+| **Compatibility contract** | [STABILITY.md](STABILITY.md) — control protocol v7 (min-compat v1) |
+| **Requires** | Go 1.25+ to build; Linux to run |
+| **License** | [Apache 2.0](LICENSE) |
+
+The core is a port of [dinit](https://github.com/davmac314/dinit), with
+features layered in from [runit](http://smarden.org/runit/),
 [s6-linux-init](https://skarnet.org/software/s6-linux-init/),
 [OpenRC](https://github.com/OpenRC/openrc),
 [upstart](https://code.launchpad.net/upstart),
-[finit](https://github.com/troglobit/finit), and
-[systemd](https://systemd.io/) (relevant service-manager subset —
-including a full `journalctl` (65/65 flag parity) + `journald` binary
-format with FSS sealing, and `slinit-logind` for session/seat
-management; systemd's unit object model on D-Bus and the ecosystem
-daemons networkd/resolved/homed remain deliberately out of scope).
+[finit](https://github.com/troglobit/finit),
+sysvinit and the service-manager
+subset of [systemd](https://systemd.io/). Runlevels, where present, are
+UX aliases over the dependency graph — slinit does not carry a second
+state machine or config format to accommodate them.
 
-> **New here, or coming from systemd?** This README is the reference —
-> every directive, every flag. Start with the
-> [operator's guide](doc/operators-guide.md) instead: a systemctl ↔
-> slinitctl cheat-sheet, the five differences that actually change what
-> you type, your first service, and troubleshooting.
+**Deliberately out of scope:** systemd's unit object model on D-Bus, and
+the ecosystem daemons (networkd, resolved, homed). What *is* implemented
+from that side is the service manager, a `journalctl` at 65/65 flag
+parity with its own journal format, and `slinit-logind` for session and
+seat management.
 
-slinit can run as PID 1 (init system) or as a user-level service
-manager. It uses a dinit-compatible configuration format and manages
-services with dependency tracking, automatic restart, and process
-lifecycle management. Admins moving from any of the seven upstreams
-should keep their muscle memory:
+> **New here, or coming from systemd?** Start with the
+> [operator's guide](doc/operators-guide.md): a systemctl ↔ slinitctl
+> cheat-sheet, the handful of differences that change what you type,
+> your first service, and troubleshooting.
 
-- **dinit**: service-description format, dep types, state machine, and
-  `slinitctl` verbs are 1:1 with dinit. Adds `prepared-by` (hard dep
-  that also restarts when the dependent restarts).
-- **runit**: `finish-command`, `ready-check-command`, `pre-stop-hook`,
-  `env-dir`, `control-command-<SIGNAL>`, `chroot`, `new-session`,
-  `lock-file`, log rotation/filtering/processor, down-file marker,
-  `once` command.
-- **s6-linux-init**: catch-all logger, TAI64N/ISO timestamps,
-  scheduled shutdown + cancel, wall messages, `/etc/shutdown.allow`
-  access control, global boot-time rlimits, container mode with
-  exit/halt codes + ready-fd, SysV compat symlinks, `slinit-init-maker`
-  generator, `slinit-nuke` emergency, RT-signal container shutdown.
-- **OpenRC**: `rc-service` / `rc-update` / `rc-status` CLI shims,
-  `/etc/rc.conf` + `/etc/conf.d/<service>` sourcing for init.d scripts,
-  named-runlevel dispatch (`init default|single|nonetwork|...`),
-  init.d/LSB auto-detection.
-- **upstart**: `manual`, `normal-exit`, `reload-signal`, `umask`,
-  `author`/`version`/`usage`, `apparmor-load`/`apparmor-switch`,
-  `debug`, `script ... end script`, `start-on-path-*` activation,
-  `<service>.override` drop-ins, `slinitctl reset-env` / `reload-all`.
-- **finit**: 22 of 23 upstream features shipped —
-  `slinitctl switch-root NEWROOT [INIT]` for the initramfs →
-  real-root transition (unlocks LUKS/LVM/NBD/iSCSI boot on any
-  distro shipping slinit as PID 1), hardware-watchdog-driven
-  reboot (`slinit.reboot-watchdog` kernel-cmdline flag — final
-  reset via `/dev/watchdog` for embedded boards whose SoC
-  `reboot(2)` is unreliable), `tty-path = @console` sentinel
-  that resolves at start time to `/sys/class/tty/console/active`
-  (single service definition boots the right getty across VGA
-  and serial images), `slinit.cond=foo,bar` kernel-cmdline
-  boot-mode selector (`condition-boot-cond = factory` gates
-  services on factory / upgrade / provisioning mode without
-  editing service files), zero-config `/etc/rc.local` +
-  `/etc/rc.local.d/*` runparts (SysV/Debian/Alpine compat),
-  Debian/BusyBox `/etc/network/interfaces` integration + always-
-  on loopback bring-up via SIOCSIFFLAGS, `slinit-getty` built-in
-  login-prompt binary (reduces util-linux dep on embedded
-  images), and `slinit-watchdogd` runtime WDT petting daemon
-  with SIGPWR hand-over (complements the shutdown-time
-  `reboot-watchdog` for full runtime + shutdown WDT lifecycle
-  coverage). Deferred by design (revisit if adoption demands
-  it): finit's `org.finit` D-Bus control API — slinit's
-  positioning stays Unix-socket-first, and exposing a D-Bus
-  object model would double the surface for negligible
-  operator gain today (any D-Bus-driven admin tool can talk to
-  `slinitctl` via a small wrapper). Also deferred: a dlopen-
-  style plugin ABI — Go's monolithic build model makes a
-  stable C-ABI plugin surface expensive, and the existing
-  hooks.d/* shell-script extension point + env-generator
-  binaries cover most operator customisation without the ABI
-  maintenance burden.
-- **systemd**: ~250 config directives across five deep-scan passes
-  covering v260 through v262-devel. Full clusters: declarative
-  start predicates (~35 `condition-*` / `assert-*`, including
-  `exec-condition`, `fraction` for staged fleet rollouts,
-  `machine-tag`, `firmware`, PSI pressure conditions), auto-
-  managed service directories (`runtime/state/cache/logs/`
-  `configuration-directory` + `*-mode` + `*-quota` +
-  `*-accounting`), filesystem sandbox (`private-tmp`,
-  `protect-system`, `read-only-paths`, `bind-paths`,
-  `inaccessible-paths`, `temporary-filesystem`, `protect-home`,
-  `protect-proc`/`proc-subset`), seccomp (`system-call-filter`
-  with curated groups + arg architectures; full `Restrict*`
-  hardening — `restrict-realtime`/`namespaces`/`suidsgid`/
-  `file-systems`/`address-families`, `memory-deny-write-execute`),
-  `Protect*` cluster (`protect-kernel-tunables/-modules/-logs/`
-  `-clock/-control-groups/-hostname`, `lock-personality`), LSM
-  domain transitions (`apparmor-switch`, `selinux-context`,
-  `smack-process-label`; all fail-closed on missing LSM),
-  `failure-action` / `success-action` / `start-limit-action` /
-  `reboot-argument`, restart cluster (`restart-randomized-delay`,
-  `restart-max-delay`, `restart-force-exit-status`,
-  `restart-mode`, `restart-kill-signal`), timeout cluster
-  (`timeout-sec`, `timeout-abort-sec`, `timeout-start-failure-mode`,
-  `timeout-stop-failure-mode`), kill semantics (`kill-mode`,
-  `final-kill-signal`, `survive-final-kill-signal`,
-  `watchdog-signal`), `runtime-max-sec` + `runtime-randomized-`
-  `extra`, `exit-type = main|cgroup`, `oom-policy`, PSI pressure
-  watches (`{memory,cpu,io}-pressure-{watch,threshold}`),
-  `pre-start-command` / `post-start-command`, cgroup v2
-  resources (`cgroup-*-max`/`*-weight`, `cpuset-partition`,
-  `startup-allowed-cpus`/`memory-nodes`), `log-rate-limit-*` +
-  `log-level-max`, per-service credentials (tmpfs ro +
-  `$CREDENTIALS_DIRECTORY`, `load-credential` / `set-credential` /
-  `import-credential` glob), calendar timers (`cron-calendar`,
-  `cron-randomized-delay`, `cron-fixed-random-delay`, `cron-persistent`),
-  env pipeline
-  (`pass-environment`, `unset-environment`, `exec-search-path`,
-  `env-generator`, `setenv`), `standard-input-text` /
-  `standard-input-data`, `open-file` (v261+ fd pass-through),
-  `notify-access`, `guess-main-pid`, `dynamic-user`,
-  `file-descriptor-store-max` + `-preserve` (sd_notify FDSTORE=1
-  with SCM_RIGHTS replay across restarts), console services
-  (`tty-path` + `tty-columns/rows/vhangup/vt-disallocate/reset`),
-  D-Bus name-based readiness (`bus-name` auto-wires ready-check
-  via `dbus-send` when installed — slinit ships zero D-Bus
-  dependency), Bucket B legacy niches (`coredump-filter`,
-  `timer-slack-nsec`, `memory-ksm`, `memory-thp`,
-  `ignore-sigpipe`, `personality`, `utmp-mode`, `remove-ipc`).
-  **journalctl at 65/65 flag parity** (v2.1.0 → v2.1.12: Groups A-E
-  + Sprints 1-4) with the Phase B binary format + FSS sealing,
-  systemd-compatible message catalog, invocation tracking, journal
-  namespaces, and disk-image dissection. **Session and seat
-  management is implemented**, by `slinit-logind` — see its own
-  bullet below. systemd's unit object model on D-Bus and the
-  ecosystem daemons (networkd, resolved, homed) remain intentionally
-  out of scope; the `org.freedesktop.systemd1` surface slinit-logind
-  answers is a compatibility stub for per-user activation, not a
-  second service manager.
-
-Runlevels, where present, are pure UX aliases over the dependency
-graph — slinit does not introduce a second state machine or config
-format to accommodate them.
-
-## Features
-
-- **Service types**: process, scripted, bgprocess, internal, triggered
-- **Dependency management**: 6 dependency types (depends-on, waits-for, depends-ms, before, after, prepared-by)
-- **Process lifecycle**: SIGTERM with configurable timeout, SIGKILL escalation
-- **Auto-restart**: configurable restart policy with rate limiting and smooth recovery
-- **Dinit-compatible config**: key=value service description files
-- **Environment substitution**: `$VAR`, `${VAR}`, `${VAR:-default}`, `${VAR:+alt}`, `$$` escape in config files
-- **Word-splitting expansion**: `$/VAR` splits variable value on whitespace into multiple command args
-- **Service templates**: `name@argument` pattern with `$1` substitution in config
-- **Config includes**: `@include` and `@include-opt` directives for modular config
-- **Runit-inspired features**: finish-command, ready-check-command, pre-stop-hook, env-dir, control-command, chroot, new-session, lock-file, close-fds, log rotation/filtering/processor, down-file marker
-- **Upstart-derived stanzas**: `manual` (opt-in services that refuse auto-activation), `normal-exit` (exit codes / signals declared as success — suppresses respawn under `restart=on-failure`/`restart=yes`), `reload-signal` (declarative signal sent by `slinitctl reload-signal`), `umask` (per-service file-creation mask), `author`/`version`/`usage` (informational metadata surfaced by `slinitctl status`)
-- **Systemd-derived features**:
-  - **Start predicates**: `condition-*` (skip silently on fail) and `assert-*` (fail start) — 13 kinds × cond/assert × `!` negation. Recognised: `path-exists`/`-glob`, `path-is-directory`/`-mount-point`, `file-not-empty`, `directory-not-empty`, `kernel-command-line`, `virtualization` (kvm/qemu/vmware/wsl/docker/lxc/...), `first-boot`, `host`, `security` (selinux/apparmor/tomoyo/smack/ima/audit), `needs-update`, `ac-power`
-  - **Service directories**: `runtime-directory`/`state-directory`/`cache-directory`/`logs-directory`/`configuration-directory` (+`-mode`) auto-create + chown to `run-as` under `/run`,`/var/lib`,`/var/cache`,`/var/log`,`/etc`; runtime dir removed on stop per `runtime-directory-preserve`
-  - **Filesystem sandbox**: `private-tmp`, `protect-system` (yes/full/strict), `read-only-paths`/`read-write-paths`/`inaccessible-paths`, `bind-paths`/`bind-read-only-paths`, `temporary-filesystem`, `protect-home` (yes/tmpfs/read-only), `protect-proc`/`proc-subset` — all applied via `slinit-runner` in the service's own mount namespace
-  - **Seccomp**: `system-call-filter` with curated groups (`@system-service`, `@privileged`, etc.) + `~deny` syntax, `system-call-architectures`, `system-call-error-number`, `system-call-log`; cBPF compiler in `pkg/seccomp`
-  - **Hardening**: `protect-kernel-tunables`/`-modules`/`-logs`/`-clock`/`-control-groups`/`-hostname`, `lock-personality` (mount-based + seccomp-based, batched in slinit-runner)
-  - **Appliance basics**: `failure-action`/`success-action` (none/reboot/poweroff/halt/exit) + `reboot-argument`, `runtime-max-sec` (hard cap on STARTED time), `oom-policy` (continue/stop/kill on cgroup-v2 memory.events)
-  - **Hooks**: `pre-start-command` (sync, non-zero exit fails start), `post-start-command` (async after Started, log-only)
-  - **Log pipeline**: `log-rate-limit-interval`/`log-rate-limit-burst` (token bucket), `log-level-max` (syslog priority filter)
-  - **Credentials**: `load-credential = NAME:PATH` (copy file), `set-credential = NAME:VALUE` (inline) — exposed via tmpfs ro at `/run/credentials/<svc>/` (mode 0700, files 0400, chown to run-as) and `$CREDENTIALS_DIRECTORY` env var
-  - **Calendar timers**: `cron-calendar = <expr>` (`daily`, `hourly`, `quarterly`, `Mon..Fri 09:00`, `*-*-01..07 09:00`, `*-*-~01 23:00` for the last day of the month, `*:0/15`, and a trailing zone as in `Sun 03:00 Europe/Bucharest`) + `cron-randomized-delay` (jitter bound) + `cron-fixed-random-delay` (stable per-host offset) + `cron-persistent` (catch-up from an on-disk last-run record). The zone database is compiled in, so a zone name resolves before `/usr` is mounted; DST gaps are skipped rather than substituted
-  - **Dynamic user**: `dynamic-user = yes` allocates a transient UID/GID from a per-daemon pool (61184..65519, matching systemd) at every BringUp, released in Stopped; no `/etc/passwd` entry
-  - **File-descriptor store**: `file-descriptor-store-max = N` creates a `$NOTIFY_SOCKET` Unix datagram socket; the child can sd_notify `FDSTORE=1` + `FDNAME=name` with fds via SCM_RIGHTS; on the next BringUp the stored fds are prepended to `LISTEN_FDS` (with names in `LISTEN_FDNAMES`) so a restart re-attaches its listening sockets without losing connections
-- **Path activation**: `start-on-path-exists`, `start-on-path-changed`, `start-on-path-modified`, `start-on-directory-not-empty` — inotify-driven, systemd-style one-shot triggers that start a service when a filesystem condition is met
-- **Services-dir auto-watch**: opt-in `--watch-services-dir` watches every services-dir with `inotify(7)`; a file dropped in the dir is auto-loaded (but not auto-started, matching dinit's explicit-start model), a removed file is auto-unloaded when the service is stopped. Editor artefacts (dotfiles, `~`, `.swp`, `.tmp`, `.bak`) and `.d` overlay dirs are filtered; a 300 ms debounce collapses editor multi-event bursts. Inspired by `runsvdir`'s inotify rescan (runit 2.3.1+)
-- **`.override` drop-ins**: an upstart-style `<service>.override` file next to the service file tweaks a packaged service's stanzas (scalars replace, `+=` appends) without editing the shipped file; applied after conf.d overlays so it has the final say
-- **Inline shell**: upstart-style `script ... end script` block becomes the service command via `/bin/sh -c` (verbatim multi-line body, same load-time `$VAR`/`$1` substitution as `command`, mutually exclusive with it)
-- **AppArmor confinement**: `apparmor-load` parses a service-shipped profile (`apparmor_parser -r`) before start; `apparmor-switch` transitions the process into a profile on exec (`aa_change_onexec` via slinit-runner) — both fail closed if the load/transition cannot be applied
-- **Debug stop**: `debug = yes` makes slinit-runner raise `SIGSTOP` before exec so a developer can `gdb -p` the process and resume it with `kill -CONT`
-- **Control socket**: binary protocol (v7 — adds `ENABLE_SERVICE_V7` for race-free enable+status round-trip) over Unix domain socket for runtime management
-- **slinitctl CLI**: list, start, stop, wake, release, restart, status, is-started, is-failed, is-newer-than, is-older-than, trigger, untrigger, signal, pause, continue, freeze, thaw, once, run (transient service, systemd-run analogue), reload, reload-all, reload-signal, unload, unpin, reset-failed, catlog, attach, setenv, unsetenv, getallenv, reset-env, setenv-global, unsetenv-global, getallenv-global, add-dep, rm-dep, enable, disable, action, list-actions, shutdown (with scheduled/cancel/status), graph, dependents, query-name, service-dirs, load-mech, boot-time, analyze, activate-profile / active-profile / list-profiles
-- **Journal pipeline** (v2.1.0 → v2.1.12): full systemd `journalctl` parity —
-  **65/65 flag surface** including query (`-t`/`-T` identifier filter, `-g` regex
-  grep with case-heuristic, `-p` priority, `-b`/`--boot` + `--this-boot`, `-c`/
-  `--cursor` + `--after-cursor` + `--cursor-file` atomic persist, `-u` unit
-  filter, `--since`/`--until` with `-1h`/`today`/`yesterday`), display
-  (`--utc`, `--no-hostname`, `--truncate-newline`, `--no-full`, `--output-fields`,
-  `-o {short,short-iso,cat,json,verbose,export}`), introspection (`-F` field
-  values, `--fields`, `--header`, `--disk-usage`, `--list-boots`), maintenance
-  (`--sync` via SIGUSR1, `--rotate` via SIGUSR2, `--vacuum-size/-files/-time`,
-  `--flush` / `--relinquish-var` / `--smart-relinquish-var` via UNIX DGRAM
-  admin socket), FSS sealing (`--setup-keys` + `--force` safety, `--verify`,
-  `--verify-key` inline, `--interval` epoch), message catalog (`--catalog`,
-  `--dump-catalog`, `--list-catalog`, `--update-catalog` with gob-compiled
-  cache), invocation tracking (per-start `SLINIT_INVOCATION_ID` UUID minted in
-  `initiateStart`, `--invocation` filter, `--list-invocations`), journal
-  namespaces (`slinit-journald --namespace=NS` auto-suffixes paths + tags
-  events, client-side `--namespace` filter + `--list-namespaces` enumeration),
-  and disk-image dissection (`--image` via `losetup`+`mount` shell-out with
-  clean detach on exit, `--image-policy=strict` refuses LUKS/LVM/verity).
-  Backing daemon `slinit-journald` writes both JSONL (Phase C, gzip-rotated)
-  and binary (Phase B, systemd-compatible with FSS TAG chain) at
-  `/var/log/slinit-journal/` with tmpfs fallback on unwritable primary.
-  `journalctl` ships as a `slinit-journalctl` symlink so systemd muscle
-  memory works unchanged.
-- **Self-introspection** (v2.1.0): `slinit-supports` CLI enumerates every
-  directive (`--list-directives`), wire opcode (`--list-opcodes`), and
-  feature name (`--list-all`); direct lookup by name returns descriptive
-  text. Companion to `doc/features.md` for scripting-driven feature checks.
-- **Migration converters** (v2.1.4 + v2.1.5 + v2.6.1): four legacy-config →
-  slinit converters covering the common Void/Alpine/Debian/Devuan migration
-  paths — `slinit-runit-convert` (runit `/etc/sv/<name>/` sv dirs with
-  auto-detection of `finish`/`check`/`down`/`log/run` + `sv check DEP` →
-  `waits-for: DEP` + `log-type = pipe` companion pairing), `slinit-openrc-
-  convert` (OpenRC `/etc/init.d/*` scripts with self-contained output for
-  variable-only + `openrc-run` wrap for custom `start()`/`stop()`), and
-  `slinit-systemd-convert` (systemd `.service` units mapping ~40 directives:
-  `Type`, `Restart`, `User`+`Group`, `After`+`Requires` with `.service`/
-  `.target`/`.socket`/`.path`/`.mount`/`.timer`/`.swap`/`.device` suffix
-  stripping, `ExecStart` prefix chars, hardening directives), and
-  `slinit-sysvinit-convert` (sysvinit `/etc/inittab` — one file, many
-  entries, so each process-bearing entry becomes a service and the rest
-  are reported with slinit's equivalent: `initdefault` → a runlevel
-  target, `ctrlaltdel` → handled natively, the `powerfail` family →
-  `/etc/slinit/power-hook`. **busybox's dialect is supported too** — its
-  eight actions read from its own `init/init.c`, with `--dialect` deciding
-  the one genuinely ambiguous column: a utmp id for sysvinit, the tty to
-  run on for busybox. An action neither dialect defines is refused by
-  name rather than guessed). All four
-  emit WARN/NOTE for anything without a 1:1 mapping; runit-convert output
-  round-trips through `slinit-check` clean on real-world void services,
-  and every file sysvinit-convert emits is checked against the real
-  config parser by its own tests.
-- **`slinitctl analyze`** (v2.1.2, `plot` in v2.4.8): systemd-analyze
-  parity — `time` (boot summary), `blame` (per-svc durations sorted),
-  `critical-chain` (slowest dep-path walk), `dot` (GraphViz digraph), and
-  `plot` (SVG boot timeline, one lane per service, dependency waits
-  visible as bars that start late). The boot-time reply carries each
-  service's start instants in an additive tail, so an older slinitctl
-  reads it unchanged.
-- **Boot recovery + debugger UX** (v2.1.1 → v2.1.2): interactive rescue
-  menu on fatal boot failure (Ctrl-B trigger, cbreak tty mode, `EOF` from
-  canonical-mode maps to Retry), Emergency vs Rescue split (Rescue keeps
-  control socket + event loop alive so operators can debug live), tty9
-  debug-shell (respawn loop on kernel cmdline `slinit.debug-shell`),
-  confirm-spawn prompt with cbreak dispatch, crash-shell drop with
-  service freeze during the shell, structured kernel-cmdline parser
-  (`bootmode` package: `slinit.emergency`, `slinit.rescue`, `slinit.
-  debug-shell`, `slinit.confirm-spawn`, `slinit.crash-shell`,
-  `slinit.log-level=`).
-- **Rescue prompt rendering** (v2.5.0): the three boot-failure prompts
-  (load failure, boot collapse, Ctrl-B debugger) share one width-aware
-  renderer. The box follows the console's real width from `TIOCGWINSZ`
-  (clamped 44–100) instead of a fixed 62 columns; errors are red,
-  actions green, the countdown amber, reusing OpenRC's escapes so
-  `EINFO_COLOR=no` silences them with the rest of slinit's output; and
-  the screen is cleared first so the prompt is not buried under the boot
-  log. Rows are measured in terminal columns, which fixed a frame that
-  broke on any non-ASCII content — the em dash in its own titles did it
-  on every menu. Width comes from an ioctl and never from a cursor-position
-  query: terminals answer queries, and those answers arrive as input that
-  a single-keypress menu would read as a choice.
-- **slinit-check**: offline and online config linter (validates executables, paths, dependencies; `--online` queries running daemon)
-- **slinit-monitor**: event watcher + command executor (`%n`/`%s`/`%v` substitution)
-- **Service aliases**: `provides` for alternative name lookup
-- **Consumer pipes**: `consumer-of` to pipe output from one service into another
-- **Log output**: buffer (in-memory, catlog), file (logfile with permissions/ownership + rotation/filtering), pipe (consumer-of)
-- **Log rotation**: size-based, time-based, max files, log processor script, include/exclude pattern filtering
-- **Ready notification**: pipefd/pipevar readiness protocol for services, ready-check-command polling
-- **Socket activation**: pre-opened listening sockets passed to child (LISTEN_FDS=N convention), supports Unix/TCP/UDP (`tcp:host:port`, `udp:host:port`), multiple sockets via `+=`, on-demand activation
-- **Hot reload**: reload service configuration from disk without restart
-- **Service unload**: remove stopped services from memory
-- **PID 1 init**: console setup, Ctrl+Alt+Del handling, child subreaper, orphan reaping
-- **Process attributes**: nice, oom-score-adj, rlimits, ioprio, cgroup, cpu-affinity, no-new-privs, capabilities, securebits
-- **Runtime environment**: setenv/unsetenv/getallenv via control socket, env-file loading (with `!clear`/`!unset`/`!import` meta-commands), env-dir (runit-style directory)
-- **Process isolation**: chroot, new-session (setsid), lock-file (exclusive flock), close-stdin/stdout/stderr
-- **Service lifecycle hooks**: finish-command (post-exit), pre-stop-hook (pre-SIGTERM), control-command (custom signal handlers)
-- **Pause/continue**: SIGSTOP/SIGCONT via `slinitctl pause`/`continue` with control-command override
-- **Down file**: `down` marker file prevents auto-start (cleared by explicit `slinitctl start`)
-- **Once mode**: `slinitctl once` starts a service without auto-restart
-- **Metrics**: `--metrics-listen host:port` (or `unix:/path`) serves Prometheus
-  metrics at `/metrics` — boot times, services by state, and per service its
-  state, startup time and restart count. Off unless asked for, and written
-  without `net/http`, so it costs the daemon 57 KB rather than megabytes
-- **Runtime dependencies**: add-dep/rm-dep, enable/disable via control socket
-- **Enable-via**: `@meta enable-via` directive for default enable/disable source service
-- **Push notifications**: SERVICEEVENT/ENVEVENT for real-time state and environment tracking
-- **SIGUSR1 socket reopen**: recover control socket when filesystem becomes writable
-- **Shutdown**: orderly service stop, shutdown hooks, process cleanup (SIGTERM/SIGKILL), filesystem sync, reboot/halt/poweroff/kexec/softreboot
-- **Four degrees of shutdown haste**: plain (stop every service properly);
-  `now` (SIGKILL them at once, so a long `stop-timeout` cannot hold the
-  machine up — a stop-command already running still gets a second, because
-  for a service with a detached daemon that script is the only thing that
-  will ever stop it); `--fast` (skip the teardown, sync and the syscall,
-  `reboot -f`); `--superfast` (the syscall alone, `reboot -ff` — unflushed
-  data is lost). `slinitctl reboot|halt|poweroff|softreboot` are top-level
-  shortcuts for the same thing.
-- **Soft-reboot**: restart slinit without rebooting the kernel (with shutdown hooks).
-  `slinitctl boot-time` keeps reporting the *original* kernel boot time
-  across generations, and says which soft reboot you are looking at.
-- **`slinit-logind`**: native `org.freedesktop.login1` daemon — sessions,
-  seats, users, inhibitors, and the power/sleep methods desktops call.
-  Session activity follows the foreground VT the way elogind decides it,
-  which is what makes a greeter reappear after logout. Replaces elogind's
-  *daemon*; the elogind package is still needed for `pam_elogind.so`,
-  which is what calls `CreateSession` at login. See
-  `doc/man/slinit-logind.8.md`.
-- **Kexec reboot**: reboot via kexec (skip firmware reinit, requires pre-loaded kernel)
-- **UPS power events** (sysvinit compat): `SIGPWR` + `/run/powerstatus` (`F`/`O`/`L`) as nut and apcupsd send them, dispatched to `/etc/slinit/power-hook failing|ok|low`. slinit takes no action itself — not even on a low battery; the hook owns the policy. See `slinit(8)` POWER EVENTS.
-- **Container mode**: `-o`/`--container` for Docker/LXC/Podman (SIGINT/SIGTERM → graceful halt).
-  A service's output is discarded by default (`log-type = none`, as in dinit);
-  add `options = runs-on-console` to send it to the container's log stream.
-  See [tests/container/README.md](tests/container/README.md).
-- **Boot failure recovery**: interactive prompt or auto-recovery (`-r`) when all services stop without shutdown
-- **Multiple boot services**: `-t svc1 -t svc2` or positional args to start multiple services at boot
-- **Pass control socket**: `pass-cs-fd` passes a control connection fd to child processes
-- **Readiness signaling**: `starts-rwfs` / `starts-log` flags for filesystem and logging readiness
-- **UTMPX support**: `inittab-id`/`inittab-line` for session tracking, boot logging
-- **/etc/init.d auto-detect**: automatic detection of SysV init scripts with LSB header parsing, BSD rc.d support
-- **Cron-like periodic tasks**: `cron-command` with configurable interval, delay, and on-error behavior
-- **Shutdown info display**: periodic reporter of blocking services during shutdown, escalating force shutdown (2nd signal reduces timeout, 3rd sends SIGKILL)
-- **Parallel start limit**: soft concurrency control for service startup (`--parallel-start-limit`), slow-threshold filtering
-- **Multi-service shared logger**: SharedLogMux multiplexes N service outputs into a single logger stdin with `[service-name]` line prefixes
-- **Virtual TTY**: screen-like attach/detach for services via PTY allocation, ring buffer scrollback, Unix socket client multiplexing (`slinitctl attach`)
-- **Boot-time clock guard**: prevents clock regression on systems without RTC / dead CMOS battery (compile-time floor + persistent timestamp file, similar to systemd-timesyncd)
-- **Dual mode**: system init (PID 1) or user-level service manager
-- **Offline enable/disable**: `--offline` mode creates/removes waits-for.d symlinks without a running daemon
-- **Dinit naming compat**: `rlimit-addrspace`, `run-in-cgroup`, `consumer-of =` all supported as aliases
-- **s6-linux-init features**:
-  - Catch-all logger capturing early-boot stdout/stderr (`--catch-all-log`, `-B` to disable)
-  - TAI64N / ISO-8601 / wallclock / none log timestamps (`--timestamp-format`)
-  - Scheduled shutdown (`shutdown +5`, `shutdown HH:MM`) with cancel (`shutdown -c`) and status
-  - Wall broadcasts to logged-in users on shutdown (disable with `--no-wall`)
-  - `/etc/slinit/shutdown.allow` / `/etc/shutdown.allow` access control for signal-driven shutdown
-  - Configurable `SIGTERM→SIGKILL` grace period (`--shutdown-grace`)
-  - Global rlimits at boot, inherited by all services (`--rlimits nofile=65536,core=0,...`)
-  - RT-signal container shutdown (SIGRTMIN+3..+6 → halt/poweroff/reboot/kexec)
-  - UTMPX logout records for every active session + RUN_LVL shutdown boundary in wtmp
-  - Kernel cmdline snapshot to `/run/slinit/kcmdline` (`--kcmdline-dest`)
-  - `/run` tmpfs staging modes (`--run-mode=mount|remount|keep`)
-  - Configurable devtmpfs mount point (`--devtmpfs-path`, empty disables)
-  - `/sbin/halt`, `/sbin/poweroff`, `/sbin/reboot` compat via argv[0] dispatch
-- **OpenRC UX compat**:
-  - `rc-service <svc> <action>` — translates to `slinitctl start|stop|restart|status|...`
-  - `rc-update add|del <svc> [runlevel]` — models runlevels as `runlevel-<name>` services
-  - `rc-status [runlevel]` — lists services grouped by runlevel dep graph
-  - Init.d scripts source `/etc/rc.conf` + `/etc/conf.d/<name>` automatically via `sh -c` wrapper
-  - Named runlevel dispatch: `init default|single|nonetwork|boot|sysinit` → start `runlevel-<name>`
-- **SysV compat**: `init 0` → poweroff, `init 6` → reboot, `init N` (1..5) → start runlevel-N
-- **Standalone binaries**: `slinit-init-maker` (bootable layout generator), `slinit-nuke`
-  (emergency `kill -1`), `slinit-fstab-decode` (drop-in sysvinit
-  `fstab-decode` — unescapes `\040`-style mount-table fields and becomes the
-  command), `slinit-killall5` (drop-in sysvinit `killall5` for init.d
-  shutdown paths — `-signum` plus a repeatable `-o` omit list, sparing PID 1, its
-  own session, kernel threads and zombies), `slinit-shutdown` (orderly shutdown shim, also invocable as
-  `slinit-reboot`/`slinit-halt`/`slinit-soft-reboot` symlinks), `slinit-seedrng` (SeedRNG
-  entropy persistence — `RNDADDENTROPY` + fresh-seed rotation, systemd/OpenRC equivalent),
-  `slinit-start-stop-daemon` (Debian/OpenRC-compatible daemon runner for ported init.d
-  scripts — `--start`/`--stop`/`--status` with pidfile/exec/name/user matching and
-  `TERM/30/KILL/5`-style retry schedules),
-  `slinit-supervise-daemon` (OpenRC-compatible detached supervisor for non-forking
-  daemons — rolling-window respawn rate limiter, linear-step backoff, `--signal`
-  bypass to daemon, `--stop` clean tear-down through supervisor),
-  `slinit-fstabinfo` (OpenRC-compatible `/etc/fstab` query utility —
-  `--blockdevice`/`--options`/`--mountargs`/`--passno` output modes,
-  `--fstype`/`--passno OP N`/positional filters, `--mount`/`--remount` actions),
-  `slinit-mountinfo` (OpenRC-compatible `/proc/mounts` query utility —
-  8 regex filters, netdev/nonetdev via fstab, reverse-order output for
-  umount sequencing, `--options`/`--fstype`/`--node` selectors),
-  `slinit-einfo` (OpenRC-compatible status-output multi-applet —
-  dispatches via `argv[0]` to `einfo`/`ewarn`/`eerror`/`ebegin`/`eend`
-  and 15 other applet names, colour-aware, `esyslog`+`ewaitfile` included),
-  `slinit-shell-var` (OpenRC-compatible `shell_var`(1) — sanitises argv
-  into shell-variable-safe names by replacing non-alnum bytes with `_`),
-  `slinit-binfmt` (systemd-binfmt clone — registers custom binary
-  formats from `/etc/binfmt.d/*.conf` via `/proc/sys/fs/binfmt_misc/register`;
-  needed for QEMU user-mode, Mono/.NET, WSL interop),
-  `slinit-sysctl` (systemd-sysctl clone — applies `sysctl.d/*.conf` +
-  `/etc/sysctl.conf` tunables to `/proc/sys/*`; supports the OpenRC/systemd
-  `-key = value` best-effort prefix and dotted-or-slashed keys),
-  `slinit-svc-value` (OpenRC `value`(1) clone — per-service persistent
-  key=value store via `service_get_value`/`service_set_value`/`service_export`
-  applets; backing at `/run/slinit/options/<svc>/<key>`),
-  `slinit-cgtop` (top-like viewer for cgroup v2 CPU / memory / task counts
-  under `/sys/fs/cgroup`, sortable by any column, `--once` for scripting),
-  `slinit-sysusers` (systemd-sysusers clone — declarative user/group
-  creation from `sysusers.d/*.conf`, honours `u`/`g`/`m`/`r` line types),
-  `slinit-tmpfiles` (systemd-tmpfiles clone — creates/cleans
-  `tmpfiles.d/*.conf` entries at boot, path-safe under `/run` and `/var`),
-  `slinit-logouthookd` (utmp logout daemon — writes `DEAD_PROCESS` /
-  session-end records for tty and pty sessions so `who`/`w`/`last` stay
-  correct without a hook in every login shell),
-  `slinit-getty` (finit-parity built-in login-prompt binary —
-  `setsid` + `TIOCSCTTY` + termios canonical/ICRNL/ONLCR/8N1,
-  `/etc/issue` rendering with `\d \l \m \n \o \r \s \t \u \v`
-  escapes, `/bin/login` → `sulogin` → `sh` fallback chain;
-  removes the util-linux `agetty` dependency on embedded images),
-  `slinit-watchdogd` (finit-parity runtime WDT petting daemon —
-  `WDIOC_SETTIMEOUT` + half-window `WDIOC_KEEPALIVE` loop, magic-
-  close `V` byte on SIGTERM/SIGINT, `SIGPWR` handover to a
-  successor daemon without disarm, `SIGHUP` re-arm; complements
-  the shutdown-time WDT already shipped in `pkg/shutdown` via
-  `slinit.reboot-watchdog`)
-
-## Building
+## Install
 
 ```bash
-# Core daemon + control CLI
-go build ./cmd/slinit
-go build ./cmd/slinitctl
-go build ./cmd/slinit-runner      # post-fork execve wrapper (LSM + hardening) — required by any service with LSM / seccomp / restrict-* knobs
+go build ./...          # the daemon, slinitctl and 43 companion tools
+```
 
-# Companion utilities
-go build ./cmd/slinit-check       # offline/online config linter
-go build ./cmd/slinit-monitor     # event watcher + command executor
-go build ./cmd/slinit-shutdown    # standalone shutdown utility
-go build ./cmd/slinit-init-maker  # bootable service-dir generator
-go build ./cmd/slinit-nuke        # emergency kill-all (SIGTERM, grace, SIGKILL)
-go build ./cmd/slinit-killall5    # drop-in sysvinit killall5: -signum + -o omit list
-go build ./cmd/slinit-fstab-decode # drop-in sysvinit fstab-decode: unescape argv, exec
-go build ./cmd/slinit-mount       # autofs lazy-mount helper
-go build ./cmd/slinit-checkpath   # path-validation helper
-go build ./cmd/slinit-seedrng     # persist entropy across reboots (SeedRNG)
-go build ./cmd/slinit-start-stop-daemon  # Debian/OpenRC start-stop-daemon(8) clone
-go build ./cmd/slinit-supervise-daemon   # OpenRC supervise-daemon(8) clone
-go build ./cmd/slinit-fstabinfo          # OpenRC fstabinfo(8) clone
-go build ./cmd/slinit-mountinfo          # OpenRC mountinfo(8) clone
-go build ./cmd/slinit-einfo              # OpenRC einfo(1) multi-applet
-go build ./cmd/slinit-shell-var          # OpenRC shell_var(1) clone
-go build ./cmd/slinit-binfmt             # systemd-binfmt(1) clone
-go build ./cmd/slinit-sysctl             # systemd-sysctl(1) clone
-go build ./cmd/slinit-svc-value          # OpenRC value(1) clone
-go build ./cmd/slinit-cgtop              # top-like viewer for cgroup v2 usage
-go build ./cmd/slinit-sysusers           # systemd-sysusers(1) clone
-go build ./cmd/slinit-tmpfiles           # systemd-tmpfiles(1) clone
-go build ./cmd/slinit-logouthookd        # utmp logout daemon (UTMPX bookkeeping)
-go build ./cmd/slinit-getty              # finit-parity built-in login-prompt (agetty-free)
-go build ./cmd/slinit-watchdogd          # finit-parity runtime WDT petting daemon
-go build ./cmd/slinit-logind             # native org.freedesktop.login1 daemon (session/seat/inhibitor)
-go build ./cmd/slinit-hostnamectl        # hostnamectl(1) clone (slinit-native, D-Bus-free)
-go build ./cmd/slinit-timedatectl        # timedatectl(1) clone (slinit-native, D-Bus-free)
-go build ./cmd/slinit-resource           # OCF Resource Agent for slinit-managed services (Pacemaker)
+Three binaries matter most:
 
-# Containers
-go build ./cmd/slinit-nspawn             # launch a slinit container in fresh Linux namespaces
-go build ./cmd/slinit-machinectl         # inspect and manage the local container registry
+| Binary | Role |
+|---|---|
+| `slinit` | the daemon — PID 1, system manager, or user manager |
+| `slinitctl` | the control CLI (around 90 verbs, aliases included) |
+| `slinit-runner` | post-fork execve wrapper; **required** by any service using LSM, seccomp or `restrict-*` |
 
-# Journal pipeline (systemd journalctl parity — 65/65 flags)
-go build ./cmd/slinit-journalctl         # systemd journalctl 65/65-parity CLI (also as `journalctl` symlink)
-go build ./cmd/slinit-journald           # persistent journal daemon (JSONL + Phase B binary + FSS sealing)
-go build ./cmd/slinit-journal-migrate    # journal-format migration helper
+The other 42 are linters, converters from other init systems, drop-in
+clones of OpenRC and systemd utilities, the journal pipeline and the
+container helpers — see [doc/tools.md](doc/tools.md). Every binary has a
+man page under [doc/man](doc/man).
 
-# Self-introspection
-go build ./cmd/slinit-supports           # enumerate directives/opcodes/features (companion to doc/features.md)
+Optional compatibility symlinks:
 
-# Legacy-config migration converters
-go build ./cmd/slinit-runit-convert      # runit /etc/sv → slinit (log/run companion + sv check auto-waits-for)
-go build ./cmd/slinit-openrc-convert     # OpenRC /etc/init.d → slinit (openrc-run wrap for custom start())
-go build ./cmd/slinit-systemd-convert    # systemd .service → slinit (~40 directives mapped)
-go build ./cmd/slinit-sysvinit-convert   # sysvinit /etc/inittab → slinit (15 actions; settings reported, not faked)
-
-# OpenRC compat shims
-go build ./cmd/rc-service
-go build ./cmd/rc-update
-go build ./cmd/rc-status
-
-# Or build everything at once
-go build ./...
-
-# Optional compat symlinks:
-ln -s slinit-shutdown slinit-reboot
-ln -s slinit-shutdown slinit-halt
-ln -s slinit-shutdown slinit-soft-reboot
-
-# SysV compat (slinit itself handles these via argv[0]):
-ln -s slinit /sbin/halt
+```bash
+ln -s slinit-shutdown slinit-reboot        # also slinit-halt, slinit-soft-reboot
+ln -s slinit /sbin/halt                    # slinit dispatches on argv[0]
 ln -s slinit /sbin/poweroff
 ln -s slinit /sbin/reboot
 ```
 
-## Running
+## Quick start
 
 ```bash
-# User mode (default)
-./slinit --services-dir /path/to/services
+# User mode (default) — no privileges needed
+slinit --services-dir ~/.config/slinit.d
 
 # System mode
-./slinit --system --services-dir /etc/slinit.d
+slinit --system --services-dir /etc/slinit.d
 
-# Multiple boot services
-./slinit -t network -t web-server -t database
+# As PID 1, starting several boot services
+slinit -t network -t web-server -t database
 
-# Container mode
-./slinit --container -t myapp
+# Container mode (Docker/LXC/Podman): SIGINT/SIGTERM become a graceful halt
+slinit --container -t myapp
 ```
 
-### Command-line options (slinit)
+Then, from another terminal:
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--services-dir` | Service description directory (comma-separated) | `~/.config/slinit.d` (user) or multiple system dirs |
-| `--socket-path` | Control socket path | `~/.slinitctl` or `/run/slinit.socket` |
-| `--system` / `-m` / `--system-mgr` | Run as system service manager | `false` |
-| `--user` | Run as user service manager | `true` |
-| `-t` / `--service` | Service to start at boot (repeatable, or use positional args) | `boot` |
-| `-o` / `--container` | Run in container mode (Docker/LXC/Podman) | `false` |
-| `--log-level` | Log level (debug, info, notice, warn, error) | `info` |
-| `--console-level` | Minimum level for console output | inherits `--log-level` |
-| `-q` / `--quiet` | Suppress all but error output | `false` |
-| `-r` / `--auto-recovery` | Auto-start `recovery` service on boot failure (PID 1) | `false` |
-| `-e` / `--env-file` | Environment file to load at startup | |
-| `-F` / `--ready-fd` | File descriptor to notify when boot service is ready | `-1` |
-| `-l` / `--log-file` | Log to file instead of console | |
-| `-b` / `--cgroup-path` | Default cgroup base path for services | |
-| `--parallel-start-limit` | Max concurrent service starts (0 = unlimited) | `0` |
-| `--parallel-start-slow-threshold` | Seconds before a starting service is considered "slow" | `10s` |
-| `--shutdown-grace` | SIGTERM→SIGKILL grace period during shutdown | `3s` |
-| `--emergency-timeout` | Max time slinit waits for services to drain during shutdown before the force-exit path (SIGKILL any straggler, log names of blocking services in the same error line, then reboot syscall). Tune up for heavy stop cascades (docker + full systemd-style graph) | `90s` |
-| `--persist-intent` | Directory where pin transitions are persisted; `stop --pin X` writes `<dir>/X` with `pinned-stopped` so the pin survives a reboot. Empty disables (opt-in). Recommended: `/var/lib/slinit/intent` | (empty) |
-| `--no-wall` | Disable wall broadcasts at shutdown | `false` |
-| `--banner` | Boot banner printed to console (empty disables) | `slinit booting...` |
-| `--umask` | Initial umask (octal) | `0022` |
-| `-1` / `--console-dup` | Duplicate log output to `/dev/console` even with `--log-file` | `false` |
-| `--catch-all-log` | Path for the early-boot catch-all log | `/run/slinit/catch-all.log` |
-| `-B` / `--no-catch-all` | Disable catch-all logger | `false` |
-| `--timestamp-format` | Log timestamp format (`wallclock`\|`iso`\|`tai64n`\|`none`) | `wallclock` |
-| `--rlimits` | Global rlimits applied to slinit and inherited by services (`name=soft[:hard]` comma-separated) | |
-| `--run-mode` | Stage `/run` at boot: `mount` (fresh tmpfs), `remount` (unmount+mount), `keep` (untouched) | `mount` |
-| `--devtmpfs-path` | Mount devtmpfs at this path (empty disables) | `/dev` |
-| `--kcmdline-dest` | Snapshot `/proc/cmdline` to this path (empty disables) | `/run/slinit/kcmdline` |
-| `-S` / `--sys` | Override platform detection (`docker`, `lxc`, `podman`, `systemd-nspawn`, `openvz`, `vserver`, `rkt`, `uml`, `wsl`, `xen0`, `xenu`, `kvm`, `qemu`, `vmware`, `microsoft` (Hyper-V), `oracle` (VirtualBox), `bochs`, `none`) | auto |
-| `--conf-dir` | Override `conf.d` overlay directories (comma-separated; `none` disables overlays) | |
-| `-a` / `--cpu-affinity` | Default CPU affinity for daemon and services (e.g. `0-3`, `0,2,4`) | |
-| `--restore-from-snapshot` | Replay operator-intent snapshot after soft-reboot (path to snapshot file) | |
-| `--watchdog-device` | Hardware watchdog character device to feed (PID 1 / container mode) | auto (`/dev/watchdog0` → `/dev/watchdog`) |
-| `--watchdog-timeout` | Kernel-side watchdog timeout (`WDIOC_SETTIMEOUT`) | `60s` |
-| `--watchdog-interval` | How often the feeder pings the device | `timeout / 3` |
-| `--no-watchdog` | Disable hardware-watchdog feeder even when PID 1 | `false` |
-| `--version` | Show version and exit | |
+```bash
+slinitctl list                 # what is loaded, and in what state
+slinitctl start myservice
+slinitctl status myservice
+```
 
-Default service directories (when `--services-dir` is not set):
-- **System mode**: `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d`
-- **User mode**: `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user`
+Default service directories when `--services-dir` is not given:
+
+* **system**: `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d`
+* **user**: `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user`
+
+The flags above are the common ones. [slinit(8)](doc/man/slinit.8.md)
+documents all 46; [doc/configuration.md](doc/configuration.md) keeps a
+table of them for convenience.
+
+## What it does
+
+| Area | What is there |
+|---|---|
+| **Service types** | `process`, `scripted`, `bgprocess`, `internal`, `triggered` |
+| **Dependencies** | 6 kinds — `depends-on`, `waits-for`, `depends-ms`, `before`, `after`, `prepared-by`; two-phase transitions; cycle and depth checks |
+| **Lifecycle** | SIGTERM with per-service timeout then SIGKILL, restart policies with rate limiting and smooth recovery, `normal-exit` codes, pause/continue, pinning |
+| **Activation** | explicit, dependency-driven, socket activation (`LISTEN_FDS`, Unix/TCP/UDP, `SO_REUSEPORT`), path activation via inotify, calendar timers, on-demand |
+| **Readiness** | `pipefd`/`pipevar` protocol, `ready-check-command` polling, D-Bus name readiness, `sd_notify` |
+| **Isolation & hardening** | filesystem sandbox (`private-tmp`, `protect-system`, bind/read-only/inaccessible paths), seccomp with curated syscall groups, the `restrict-*` and `protect-*` clusters, AppArmor/SELinux/SMACK transitions, capabilities, securebits — all fail-closed |
+| **Resources** | cgroup v2 limits and weights, slices and delegation, nice, ioprio, oom-score-adj, rlimits, CPU affinity, PSI pressure watches |
+| **Logging** | in-memory buffers, files with rotation/filtering/processors, consumer pipes, catch-all early-boot logger, a full journal pipeline (`slinit-journalctl` at 65/65 flag parity, FSS-sealed binary format, namespaces, message catalog) |
+| **Control** | binary protocol over a Unix socket, goroutine per connection, push notifications for state and environment changes, runtime env and dependency edits, Prometheus metrics endpoint |
+| **PID 1 duties** | console setup, Ctrl+Alt+Del, child subreaper and orphan reaping, four degrees of shutdown haste, soft-reboot, kexec, `switch-root`, hardware watchdog, UPS power events, boot-failure recovery with an interactive rescue prompt |
+
+Roughly 250 systemd directives, all 12 upstart stanzas, and the runit,
+s6, OpenRC, finit and sysvinit feature sets are covered;
+[doc/features.md](doc/features.md) is the generated list of every name
+the parser and the control protocol accept — grouped by upstream where
+the provenance has been traced, which is about half of them so far.
+[doc/roadmap.md](doc/roadmap.md) tracks what is planned.
+
+### Where each upstream shows up
+
+| Upstream | What slinit takes from it |
+|---|---|
+| **dinit** | the base: description format, dependency types, state machine, `slinitctl` verbs — 1:1. Adds `prepared-by` |
+| **runit** | `finish-command`, `ready-check-command`, `pre-stop-hook`, `env-dir`, `control-command-<SIG>`, `chroot`, `new-session`, `lock-file`, log rotation/filtering, down-file, `once` |
+| **s6-linux-init** | catch-all logger, TAI64N/ISO timestamps, scheduled shutdown and cancel, wall messages, `/etc/shutdown.allow`, global boot rlimits, container exit codes and ready-fd, `slinit-init-maker` |
+| **OpenRC** | `rc-service` / `rc-update` / `rc-status` shims, `/etc/rc.conf` + `/etc/conf.d/<svc>` sourcing, named-runlevel dispatch, init.d/LSB auto-detection, drop-in clones of eight utilities |
+| **upstart** | `manual`, `normal-exit`, `reload-signal`, `umask`, `author`/`version`/`usage`, AppArmor stanzas, `debug`, `script … end script`, `start-on-path-*`, `.override` drop-ins |
+| **finit** | `switch-root`, watchdog-driven reboot, `tty-path = @console`, `slinit.cond=` boot modes, `/etc/rc.local` runparts, `/etc/network/interfaces`, `slinit-getty`, `slinit-watchdogd` |
+| **sysvinit** | `SIGPWR` power events, `slinit-killall5`, `slinit-fstab-decode`, `/etc/inittab` conversion |
+| **systemd** | the service-manager subset — start predicates, managed service directories, the sandbox/seccomp/protect clusters, credentials, timers, `journalctl` parity, `logind` |
+
+Two things are deferred by design rather than missing: finit's
+`org.finit` D-Bus control API (slinit stays Unix-socket-first) and a
+dlopen-style plugin ABI (Go's build model makes a stable C ABI
+expensive; `hooks.d/*` scripts and env-generator binaries cover the same
+ground).
 
 ## Service configuration
 
-Service files use a dinit-compatible format:
+Service files are `key = value`, dinit-compatible. Four shapes cover
+most of what people write:
 
 ```ini
-# /etc/slinit.d/myservice
+# /etc/slinit.d/myservice — a long-running process
 type = process
 command = /usr/bin/myservice --config /etc/myservice.conf
 stop-command = /usr/bin/myservice --stop
@@ -556,10 +156,8 @@ log-type = buffer
 log-buffer-size = 4096
 ```
 
-Example bgprocess service:
-
 ```ini
-# /etc/slinit.d/mydaemon
+# /etc/slinit.d/mydaemon — a daemon that forks and writes a pidfile
 type = bgprocess
 command = /usr/sbin/mydaemon
 pid-file = /run/mydaemon.pid
@@ -567,10 +165,8 @@ stop-timeout = 15
 depends-on: network
 ```
 
-Example service with logfile output:
-
 ```ini
-# /etc/slinit.d/myapp
+# /etc/slinit.d/myapp — output to a file instead of a buffer
 type = process
 command = /usr/bin/myapp
 log-type = file
@@ -580,1115 +176,169 @@ logfile-uid = 1000
 logfile-gid = 1000
 ```
 
-Example service with process attributes and capabilities:
-
 ```ini
-# /etc/slinit.d/worker
+# /etc/slinit.d/worker — process attributes, limits and confinement
 type = process
 command = /usr/bin/worker
+run-as = worker:worker
 nice = 10
 oom-score-adj = 500
 ioprio = be:4
 cpu-affinity = 0-3
 rlimit-nofile = 1024:4096
-rlimit-core = unlimited
 cgroup = /sys/fs/cgroup/workers
 capabilities = cap_net_bind_service,cap_sys_nice
 securebits = noroot keep-caps
 options = no-new-privs
 env-file = /etc/worker.env
-run-as = worker:worker
 ```
 
-Example service with runit-inspired features:
+Templates (`name@argument` with `$1`), consumer pipes, socket and path
+activation, shared loggers, console services, credentials and the rest
+are in [doc/configuration.md](doc/configuration.md), with every
+directive in [slinit-service(5)](doc/man/slinit-service.5.md).
 
-```ini
-# /etc/slinit.d/webapp
-type = process
-command = /usr/bin/webapp
-finish-command = /usr/local/bin/cleanup.sh
-ready-check-command = /usr/bin/curl -sf http://localhost:8080/health
-ready-check-interval = 0.5
-pre-stop-hook = /usr/local/bin/drain-connections.sh
-control-command-HUP = /usr/local/bin/graceful-reload.sh
-env-dir = /etc/webapp/env.d
-chroot = /srv/webapp
-new-session = true
-lock-file = /run/webapp.lock
-log-type = file
-logfile = /var/log/webapp.log
-logfile-max-size = 10000000
-logfile-max-files = 5
-logfile-rotate-time = 86400
-log-processor = /usr/bin/gzip
-log-exclude = DEBUG
-restart = on-failure
-depends-on: network
-```
+`slinit-check <service>` validates a file offline — executables, paths,
+dependencies — and `--online` checks it against the running daemon.
 
-Example consumer pipe (service B reads service A stdout):
-
-```ini
-# /etc/slinit.d/producer
-type = process
-command = /usr/bin/generate-data
-log-type = pipe
-
-# /etc/slinit.d/consumer
-type = process
-command = /usr/bin/process-data
-consumer-of: producer
-```
-
-Example service template (`myservice@` base file):
-
-```ini
-# /etc/slinit.d/myservice@
-type = process
-command = /usr/bin/myservice --instance $1
-working-dir = /var/lib/myservice/${1}
-depends-on: network
-```
-
-Start with `slinitctl start myservice@web` — `$1` is replaced with `web`.
-
-Example multi-service shared logger:
-
-```ini
-# /etc/slinit.d/central-logger
-type = process
-command = /usr/bin/multilog t ./log
-
-# /etc/slinit.d/app-one
-type = process
-command = /usr/bin/app-one
-shared-logger = central-logger
-
-# /etc/slinit.d/app-two
-type = process
-command = /usr/bin/app-two
-shared-logger = central-logger
-```
-
-Logger receives lines prefixed: `[app-one] ...`, `[app-two] ...`.
-
-Example service with virtual TTY:
-
-```ini
-# /etc/slinit.d/interactive-svc
-type = process
-command = /usr/bin/myapp
-vtty = true
-vtty-scrollback = 131072
-```
-
-Attach with `slinitctl attach interactive-svc` (Ctrl+] to detach).
-
-Example service with cron task:
-
-```ini
-# /etc/slinit.d/worker
-type = process
-command = /usr/bin/worker
-cron-command = /usr/bin/cleanup-temp
-cron-interval = 3600
-cron-delay = 60
-cron-on-error = continue
-```
-
-Example with `@meta enable-via`:
-
-```ini
-# /etc/slinit.d/optional-svc
-type = process
-command = /usr/bin/optional
-@meta enable-via mygroup
-```
-
-`slinitctl enable optional-svc` will add a waits-for dep from `mygroup` instead of `boot`.
-
-### Configuration reference
-
-| Option                    | Description                                      |
-|---------------------------|--------------------------------------------------|
-| `type`                    | Service type (process, bgprocess, scripted, internal, triggered) |
-| `command`                 | Command to run (supports `+=` to append)         |
-| `stop-command`            | Command to run on stop (scripted, supports `+=`)  |
-| `depends-on:`             | Hard dependency                                  |
-| `depends-ms:`             | Milestone dependency (must start, then becomes soft) |
-| `waits-for:`              | Soft dependency (wait for start/fail)            |
-| `before:`                 | Ordering: start before target                    |
-| `after:`                  | Ordering: start after target                     |
-| `provides`                | Alias name for service lookup                    |
-| `consumer-of` / `consumer-of:` | Pipe output from named service into this one (= or :) |
-| `restart`                 | Auto-restart mode (yes, on-failure, no)          |
-| `restart-delay`           | Seconds to wait before restarting                |
-| `restart-limit-count`     | Max restarts within interval                     |
-| `restart-limit-interval`  | Interval (seconds) for restart limit             |
-| `log-type`                | Output logging (buffer, file, pipe, none)        |
-| `logfile`                 | Log file path (when log-type = file)             |
-| `log-buffer-size`         | Log buffer size in bytes (when log-type = buffer)|
-| `logfile-permissions`     | Log file permissions, octal (default 0600)       |
-| `logfile-uid`             | Log file owner UID                               |
-| `logfile-gid`             | Log file owner GID                               |
-| `ready-notification`      | Readiness protocol (pipefd:N, pipevar:VARNAME)   |
-| `socket-listen`           | Pre-opened listening socket(s) passed to child (LISTEN_FDS), supports `+=` for multiple, `tcp:`/`udp:` prefix |
-| `socket-activation`       | Activation mode: `immediate` (default) or `on-demand` |
-| `socket-reuseport`        | `SO_REUSEPORT` on `tcp:`/`udp:` listeners, so N template instances can share one hot port ([guide](doc/operators-guide.md#scaling-a-hot-port-across-workers)) |
-| `socket-permissions`      | Socket file permissions                          |
-| `socket-uid/gid`          | Socket file ownership                            |
-| `pid-file`                | PID file path (bgprocess type)                   |
-| `start-timeout`           | Timeout for service start (seconds)              |
-| `stop-timeout`            | Timeout for service stop (seconds)               |
-| `options`                 | Service flags (runs-on-console, unmask-intr, no-new-privs, etc.) |
-| `term-signal`             | Signal for graceful stop                         |
-| `working-dir`             | Working directory for the process                |
-| `run-as`                  | Run command as user:group                        |
-| `env-file`                | Environment variables file (KEY=VALUE, `!clear`, `!unset`, `!import`) |
-| `env-dir`                 | Runit-style env directory (one file per var)      |
-| `finish-command`          | Command run after process exit (before restart)   |
-| `ready-check-command`     | Polling readiness check (alternative to pipefd)   |
-| `ready-check-interval`    | Polling interval for ready-check (default 1s)     |
-| `pre-stop-hook`           | Command run before SIGTERM (receives PID as arg)  |
-| `control-command-SIGNAL`  | Custom signal handler (e.g., control-command-HUP) |
-| `chroot`                  | Chroot directory before exec                      |
-| `new-session`             | Create new session (setsid) for the process       |
-| `lock-file`               | Exclusive flock file (prevents duplicate instances)|
-| `close-stdin`             | Close stdin (redirect to /dev/null)               |
-| `close-stdout`            | Close stdout (redirect to /dev/null)              |
-| `close-stderr`            | Close stderr (redirect to /dev/null)              |
-| `logfile-max-size`        | Rotate logfile at this size (bytes)               |
-| `logfile-max-files`       | Max rotated log files to keep                     |
-| `logfile-rotate-time`     | Rotate logfile at time interval (seconds)         |
-| `log-processor`           | Command run on each rotated logfile               |
-| `log-include`             | Regex: only write matching lines to log           |
-| `log-exclude`             | Regex: drop matching lines from log               |
-| `chain-to`                | Service to start after this one stops            |
-| `nice`                    | Process scheduling priority (-20..19)            |
-| `oom-score-adj`           | OOM killer score adjustment (-1000..1000)        |
-| `ioprio`                  | I/O priority class:level (be:4, rt:0, idle)      |
-| `cpu-affinity`            | CPU affinity mask (0-3, 0 1 2, 0,2,4)            |
-| `cgroup`                  | Cgroup path for the child process                |
-| `slice`                   | Hierarchical cgroup parent, systemd-style         |
-| `delegate`                | Hand the cgroup subtree to the service itself     |
-| `rlimit-nofile`           | File descriptor limit (soft:hard or unlimited)   |
-| `rlimit-core`             | Core dump size limit (soft:hard or unlimited)    |
-| `rlimit-data`             | Data segment size limit (soft:hard or unlimited) |
-| `rlimit-as`               | Address space limit (soft:hard or unlimited)     |
-| `rlimit-addrspace`        | Alias for `rlimit-as` (dinit compat)             |
-| `run-in-cgroup`           | Alias for `cgroup` (dinit compat)                |
-| `capabilities`            | Ambient capabilities (cap_net_bind_service, etc.)|
-| `securebits`              | Securebits flags (noroot, keep-caps, etc.)       |
-| `inittab-id`              | UTMPX inittab ID for session tracking            |
-| `inittab-line`            | UTMPX inittab line for session tracking          |
-| `load-options`            | Loader flags (export-passwd-vars, export-service-name) |
-| `@meta enable-via`        | Default "from" service for enable/disable        |
-| `shared-logger`           | Name of shared logger service (multi-service → single logger) |
-| `vtty`                    | Enable virtual TTY for screen-like attach/detach  |
-| `vtty-scrollback`         | VirtualTTY scrollback buffer size in bytes (default 64KB) |
-| `cron-command`            | Periodic command to execute while service is running |
-| `cron-interval`           | Interval between cron executions (seconds)        |
-| `cron-delay`              | Initial delay before first cron execution (seconds) |
-| `cron-on-error`           | Behavior on cron command failure: `continue` (default) or `stop` |
-| `cron-calendar`           | systemd-style `OnCalendar=` expression (`daily`, `Mon..Fri 09:00`, `*:0/15`) |
-| `cron-randomized-delay`   | Upper bound on jitter added to each fire, drawn from `[0,d)`; applies to interval and calendar modes |
-| `cron-fixed-random-delay` | Draw that offset once from the machine-id instead of per fire (systemd `FixedRandomDelay=`) |
-| `cron-persistent`         | Catch-up run when a fire was missed; last-run instant kept on disk, so it survives a reboot |
-| `prepared-by:`            | Hard dependency that also restarts when the dependent restarts |
-| `condition-*` / `assert-*` | Systemd-style start predicates (13 kinds, `!` negation) -- skip silently / fail start |
-| `runtime-directory`       | systemd-style auto-managed `/run/<svc>` (chowned to run-as) |
-| `state-directory`         | Persistent `/var/lib/<svc>` (also `cache-`/`logs-`/`configuration-directory`) |
-| `private-tmp`             | Per-service `/tmp` and `/var/tmp` tmpfs           |
-| `protect-system`          | RO-remount `/usr`/`/boot`/`/efi` (yes/full/strict) |
-| `read-only-paths`         | Bind ro at given paths                            |
-| `read-write-paths`        | Bind rw at given paths (punches holes through protect-system) |
-| `inaccessible-paths`      | Hide paths via empty tmpfs mount                  |
-| `bind-paths`              | Bind host paths into the sandbox (rw)             |
-| `bind-read-only-paths`    | Bind host paths into the sandbox (ro)             |
-| `temporary-filesystem`    | Mount fresh tmpfs at given path                   |
-| `protect-home`            | yes/tmpfs/read-only on `/home`,`/root`,`/run/user`|
-| `protect-proc`            | proc-hidepid mode (`default`/`invisible`/`ptraceable`) |
-| `proc-subset`             | `/proc` view subset (`all`/`pid`)                 |
-| `system-call-filter`      | seccomp allow/deny list; supports `@group` and `~deny-first` |
-| `system-call-architectures` | Allowed architectures for seccomp                |
-| `system-call-error-number` | Errno returned for filtered syscalls (default EPERM) |
-| `protect-kernel-tunables` | Block writes to `/proc/sys`, `/sys`               |
-| `protect-kernel-modules`  | Block `init_module`/`finit_module`/`delete_module` |
-| `protect-kernel-logs`     | Block `syslog`                                    |
-| `protect-clock`           | Block `clock_settime`/`settimeofday`/`adjtimex`   |
-| `protect-control-groups`  | RO `/sys/fs/cgroup`                               |
-| `protect-hostname`        | Block `sethostname`/`setdomainname`               |
-| `lock-personality`        | Block `personality` syscall                       |
-| `failure-action`          | System action on permanent failure: none/reboot/poweroff/halt/exit |
-| `success-action`          | System action on clean finish: none/reboot/poweroff/halt/exit |
-| `reboot-argument`         | Argument for reboot syscall (kexec-style)        |
-| `runtime-max-sec`         | Hard cap on STARTED time; stop when exceeded     |
-| `oom-policy`              | Reaction to cgroup-v2 OOM kill: continue/stop/kill |
-| `pre-start-command`       | Hook before `command` (sync, non-zero exit fails start) |
-| `post-start-command`      | Hook after Started (async, log-only)             |
-| `log-rate-limit-interval` / `-burst` | Token-bucket limiter (drop excess lines) |
-| `log-level-max`           | Drop lines above syslog severity (emerg..debug)  |
-| `load-credential`         | `NAME:PATH` copy a file into `/run/credentials/<svc>/` |
-| `set-credential`          | `NAME:VALUE` write inline literal as a credential |
-| `dynamic-user`            | Allocate a transient UID/GID per BringUp, release on Stopped |
-| `file-descriptor-store-max` | Enable sd_notify FDSTORE=1 fd handover across restarts |
-| `bundle-of`               | s6-rc-style grouping: names a set of services this internal svc pulls up as a unit; accepts comma-/space-separated list or repeated directive |
-| `log-select`              | s6-log-style regex chain (`-* +alert +warn`); last-matched verdict wins per line; mutually exclusive with log-include / log-exclude |
-| `@include`                | Include another config file (error if not found) |
-| `@include-opt`            | Include another config file (ignore if not found)|
-
-### Service types
-
-| Type | Description |
-|------|-------------|
-| `process` | Long-running daemon managed by slinit |
-| `scripted` | Service controlled by start/stop commands |
-| `internal` | Milestone service with no associated process |
-| `bgprocess` | Self-backgrounding daemon (forks, writes PID file, monitored via polling) |
-| `triggered` | Service that waits for an external trigger before completing startup |
-
-### Dependency types
-
-| Directive | Description |
-|-----------|-------------|
-| `depends-on` | Hard dependency -- start required, stop propagates |
-| `depends-ms` | Milestone dependency -- must start, then becomes soft |
-| `waits-for` | Soft dependency -- waits for start, but failure doesn't propagate |
-| `prepared-by` | Hard dependency like `depends-on`, but each restart of the dependent also restarts the dependency (for prepare/cleanup per execution) |
-| `before` | Ordering -- this service starts before the named service |
-| `after` | Ordering -- this service starts after the named service |
-
-### Environment variable substitution
-
-Config values support environment variable expansion:
-
-| Syntax | Description |
-|--------|-------------|
-| `$VAR` | Expand variable |
-| `${VAR}` | Expand variable (explicit braces) |
-| `${VAR:-default}` | Use default if VAR is empty/unset |
-| `${VAR:+alt}` | Use alt if VAR is set and non-empty |
-| `$$` | Literal `$` |
-| `$/VAR` | Word-split: expand and split on whitespace into multiple args |
-| `$1` / `${1}` | Service template argument (for `name@arg` services) |
-
-## Control CLI (slinitctl)
-
-`slinitctl` communicates with a running slinit instance via the control socket.
-
-### Global options
-
-| Flag | Description |
-|------|-------------|
-| `--socket-path`, `-p` | Control socket path |
-| `--system`, `-s` | Connect to system service manager |
-| `--user`, `-u` | Connect to user service manager |
-| `--no-wait` | Suppress output (fire-and-forget) |
-| `--pin` | Pin service in started/stopped state (start/stop) |
-| `--force`, `-f` | Force stop even with dependents (stop/restart) |
-| `--ignore-unstarted` | Exit 0 if service already stopped (stop/restart) |
-| `--offline`, `-o` | Offline mode for enable/disable without daemon |
-| `--services-dir`, `-d` | Service directory for offline mode |
-| `--from <service>` | Source service for enable/disable (default: enable-via or boot) |
-| `--use-passed-cfd` | Use fd from `SLINIT_CS_FD` env var |
-
-### Commands
+## slinitctl
 
 ```bash
-# List all loaded services
-slinitctl list
+# State
+slinitctl list                          # every loaded service and its state
+slinitctl status myservice              # one service, in detail
+slinitctl is-started myservice          # exit code only, for scripts
+slinitctl graph                         # dependency graph, Graphviz DOT
 
-# Start/stop/restart
-slinitctl start myservice           # start and mark active
-slinitctl start --pin myservice     # start and pin in started state
-slinitctl wake myservice            # start without marking active
-slinitctl stop myservice            # stop
-slinitctl stop --force myservice    # force stop (even with dependents)
-slinitctl stop --pin myservice      # stop and pin in stopped state
-slinitctl release myservice         # unmark active (stop if unrequired)
-slinitctl restart myservice
-slinitctl restart --force myservice # force restart
-slinitctl unpin myservice           # remove start/stop pins
-
-# Service status
-slinitctl status myservice
-slinitctl is-started myservice      # exit 0 if started, 1 otherwise
-slinitctl is-failed myservice       # exit 0 if failed, 1 otherwise
-
-# Trigger / untrigger
-slinitctl trigger mytrigger
-slinitctl untrigger mytrigger       # reset trigger state
-
-# Send signal to a service process
+# Lifecycle
+slinitctl start|stop|restart myservice
+slinitctl wake|release myservice         # activate/deactivate without pinning
+slinitctl once myservice                 # start without auto-restart
 slinitctl signal HUP myservice
+slinitctl pause|continue myservice       # SIGSTOP / SIGCONT
+slinitctl run -- /usr/bin/thing          # transient service (systemd-run analogue)
 
-# Pause/continue (SIGSTOP/SIGCONT)
-slinitctl pause myservice
-slinitctl continue myservice
+# Configuration, at runtime
+slinitctl reload myservice               # re-read from disk, no restart
+slinitctl reload-all
+slinitctl unload myservice                # drop a stopped service from memory
+slinitctl enable|disable myservice        # add/remove a waits-for edge, persisted
+slinitctl add-dep|rm-dep myservice waits-for other   # from, kind, to
+slinitctl setenv KEY=VALUE                # also unsetenv, getallenv, reset-env
 
-# Start once (no auto-restart)
-slinitctl once myservice
+# Logs and attach
+slinitctl catlog myservice                # the in-memory buffer
+slinitctl attach myservice                # the service's virtual TTY, Ctrl+] detaches
 
-# View buffered service output
-slinitctl catlog myservice
-slinitctl catlog --clear myservice
-
-# Attach to service virtual TTY (screen-like, Ctrl+] to detach)
-slinitctl attach myservice
-
-# Reload config from disk (without restart)
-slinitctl reload myservice
-
-# Unload a stopped service from memory
-slinitctl unload myservice
-
-# Runtime environment management
-slinitctl setenv myservice KEY=VALUE
-slinitctl unsetenv myservice KEY
-slinitctl getallenv myservice
-
-# Runtime dependency management
-slinitctl add-dep myservice depends-on otherservice
-slinitctl rm-dep myservice waits-for otherservice
-
-# Enable/disable (add/remove waits-for dep on boot or enable-via service)
-slinitctl enable myservice
-slinitctl enable --from mygroup myservice   # enable from a specific service
-slinitctl disable myservice
-
-# Offline enable/disable (without daemon, operates on waits-for.d symlinks)
-slinitctl --offline enable myservice
-slinitctl --offline --services-dir /etc/slinit.d disable myservice
-slinitctl --offline --from mygroup enable myservice
-
-# Query service dependents
-slinitctl dependents myservice
-
-# Query loader mechanism
-slinitctl query-load-mech
-
-# Boot timing analysis
+# System
+slinitctl shutdown poweroff|reboot|halt|kexec|soft-reboot
+slinitctl shutdown reboot +5             # or HH:MM; `shutdown -c` cancels
+slinitctl analyze                         # boot timing; `analyze plot` draws an SVG
 slinitctl boot-time
-
-# Initiate system shutdown
-slinitctl shutdown poweroff
-slinitctl shutdown reboot
-slinitctl shutdown halt
-slinitctl shutdown softreboot       # restart slinit without kernel reboot
-
-# Scheduled shutdown + cancel
-slinitctl shutdown reboot +5        # in 5 minutes
-slinitctl shutdown poweroff 18:30   # at 18:30 today/tomorrow
-slinitctl shutdown -c               # cancel a pending shutdown
-slinitctl shutdown --status         # report pending shutdown, if any
-
-# Dependency inspection
-slinitctl graph myservice           # dep graph rooted at myservice
-slinitctl analyze                   # global dep-graph overview
-
-# Connect to system/user instance explicitly
-slinitctl --system list
-slinitctl --user list
-slinitctl -p /tmp/test.socket list  # custom socket path
 ```
 
-## Companion Tools
-
-### slinit-check
-
-Configuration linter. Validates service files offline or using a running daemon's context:
-
-```bash
-# Offline mode (default)
-slinit-check -d /etc/slinit.d myservice
-
-# Online mode (queries running daemon for service dirs and env)
-slinit-check --online myservice
-slinit-check --online -p /run/slinit.ctl myservice
-```
-
-Checks: file existence, type validity, command executability, dependency references, circular dependencies, depth limits.
-
-### slinit-monitor
-
-Subscribes to the daemon's SERVICEEVENT / ENVEVENT stream and runs a
-command for every change. Substitutions: `%n` (name), `%s` (status text
-— `started`/`stopped`/`failed` for services, `set`/`unset` for env),
-`%v` (env-var value, `-E` mode only), `%%` (literal percent).
-
-```bash
-# 1. Alert on failure of a specific critical service.
-#    The shell test filters — slinit-monitor runs the command on every
-#    transition; %s carries the resulting state.
-slinit-monitor -c '[ "%s" = failed ] && \
-    logger -p daemon.alert -t slinit "svc %n entered FAILED"' \
-    postgres
-
-# 2. Same idea via a webhook to the ops channel.
-slinit-monitor -c '[ "%s" = failed ] && \
-    curl -sS -X POST -d "%n went red" https://hooks.example/ops' \
-    nginx redis postgres
-
-# 3. Auto-remediation — restart a fallback svc when the primary drops.
-slinit-monitor -c '[ "%s" = stopped ] && slinitctl start nginx-standby' \
-    nginx
-
-# 4. Fire once when a service reaches started, then exit.
-#    Useful as a boot-time gate in shell scripts.
-slinit-monitor -i -e -c 'true' database
-
-# 5. Env-var watcher — mirror runtime env changes into an audit file.
-slinit-monitor -E -c 'printf "%%s %n=%v\n" "$(date -Is)" >> \
-    /var/log/slinit-env.log'
-```
-
-### slinit-journalctl / journalctl
-
-Systemd `journalctl` at 65/65 flag parity. Talks to slinit's control
-socket for live queries (the in-process ring buffer covers the
-current boot) and to `slinit-journald`'s admin socket for
-maintenance ops. Ships as a `journalctl` symlink so scripts written
-for systemd's binary keep working.
-
-```bash
-# Live query — last 20 events, short-format
-slinit-journalctl -n 20
-
-# Follow (Ctrl-C to stop) with unit + priority filter
-slinit-journalctl -u sshd -p err -f
-
-# Regex on MESSAGE; case-insensitive since pattern is all-lowercase
-slinit-journalctl -g "connection reset"
-
-# Filter by identifier + boot; show one row per invocation
-slinit-journalctl -t sshd --this-boot
-slinit-journalctl -u nginx --list-invocations
-
-# Introspection
-slinit-journalctl --fields                    # list every known field
-slinit-journalctl --header                    # ring-buffer / file metadata
-slinit-journalctl --disk-usage                # bytes across on-disk journals
-slinit-journalctl -F _HOSTNAME                # distinct values for a field
-
-# Maintenance (via admin socket to slinit-journald)
-slinit-journalctl --sync                      # fsync active sink
-slinit-journalctl --rotate                    # close + rename active file
-slinit-journalctl --vacuum-size=500M          # prune archived files
-slinit-journalctl --flush                     # migrate volatile → persistent
-
-# FSS sealing
-slinit-journalctl --setup-keys                # mint sealing key (needs --force to overwrite)
-slinit-journalctl --verify --file=/var/log/slinit-journal/2026-08-08.journal
-
-# Message catalog (systemd-compatible)
-slinit-journalctl --list-catalog              # every MESSAGE_ID with a catalog entry
-slinit-journalctl -x -u myservice             # augment output with catalog text
-
-# Journal namespaces
-slinit-journalctl --list-namespaces
-slinit-journalctl --namespace=prod -n 10
-
-# Disk-image query (via losetup + mount, requires root)
-slinit-journalctl --image=/path/to/disk.img --since=today
-```
-
-### slinit-journald
-
-Persistent daemon consuming events from slinit's event bus and
-writing them to disk. Supports both Phase C (JSONL, gzip-rotated,
-human-grep-friendly) and Phase B (binary, systemd-compatible with
-optional FSS TAG chain). Falls back to tmpfs at
-`/run/slinit-journal/` when the persistent primary is unwritable.
-`--flush` migrates volatile to persistent once /var comes online.
-
-```bash
-# JSONL, default paths, gzip-rotated after 128 MiB
-slinit-journald --format=jsonl
-
-# Binary with FSS sealing, tag every 10 entries
-slinit-journald --format=binary --fss-key=/etc/slinit/journal-key --fss-tag-every=10
-
-# Named namespace — auto-suffixes dir/socket/pid/admin paths
-slinit-journald --namespace=prod --format=jsonl
-
-# Retention: prune archived files past caps
-slinit-journald --vacuum-files=100 --vacuum-size=4G --vacuum-age=720h
-```
-
-### slinit-journal-migrate
-
-Cross-format journal migration helper. Converts a Phase C JSONL
-directory to Phase B binary (or vice versa) so operators can
-switch storage formats without losing history.
-
-```bash
-# JSONL → binary, seals with an existing FSS key
-slinit-journal-migrate --from=jsonl --to=binary \
-    --input-dir=/var/log/slinit-journal \
-    --output-dir=/var/log/slinit-journal.binary \
-    --fss-key=/etc/slinit/journal-key
-
-# Binary → JSONL (useful for grep pipelines on old archives)
-slinit-journal-migrate --from=binary --to=jsonl \
-    --input-dir=/var/log/slinit-journal \
-    --output-dir=/tmp/slinit-journal.jsonl
-```
-
-### slinit-supports
-
-Self-introspection CLI listing every directive slinit's parser
-recognises, every wire opcode the control protocol carries, and
-every named feature the daemon advertises. Companion to
-`doc/features.md` for scripting-driven capability checks (a package
-manager can query `slinit-supports <feature>` before enabling a
-service that depends on it).
-
-```bash
-# Enumeration
-slinit-supports --list-directives        # every `case "X":` in pkg/config/parser.go
-slinit-supports --list-opcodes           # every Cmd*/Rply* in pkg/control/protocol.go
-slinit-supports --list-all               # both, plus feature-name registry
-
-# Direct lookup — exit 0 + descriptive text on hit; non-zero on miss
-slinit-supports command
-slinit-supports CmdStartService
-slinit-supports journal-namespaces
-```
-
-### slinit-runit-convert
-
-Port a runit `/etc/sv/<name>/` directory to a slinit service file.
-Auto-detects `finish` (→ `finish-command`), `check` (→
-`ready-check-command`), `down` (→ `manual = yes`), `conf` (→
-`env-file`), and `log/run` (→ companion `<name>-log` service with
-`consumer-of` + `log-type = pipe` on the primary). Recognises
-`sv check DEP` inside run scripts and emits `waits-for: DEP`
-automatically. `chpst` flags map to slinit equivalents where
-possible (`-u` → `run-as`, `-C` → `working-dir`, `-o` →
-`rlimit-nofile`, `-A N` → WARN since slinit has no runtime alarm).
-
-```bash
-# Single service to stdout
-slinit-runit-convert /etc/sv/nginx
-
-# Batch — every void sv dir into /etc/slinit.d, WARN/NOTE to stderr
-slinit-runit-convert --output-dir=/etc/slinit.d --verbose /etc/sv/*
-
-# Preview + enable-map: also print `slinitctl enable` for services
-# that were enabled under runit (/var/service symlinks)
-slinit-runit-convert --dry-run --enable-map /etc/sv/*
-```
-
-### slinit-openrc-convert
-
-Port an OpenRC `/etc/init.d/*` script to a slinit service file.
-Two paths: (1) variable-only scripts (`command=`, `pidfile=`,
-`depend()`, no custom `start()`/`stop()`) become self-contained
-slinit files with no runtime openrc-run dependency; (2) scripts
-with custom shell functions (the common case) get wrapped as
-`command = /usr/sbin/openrc-run <script> start`, preserving every
-`ebegin`/`einfo`/`start-stop-daemon` call. `depend()` verbs map:
-`need` → `depends-on:`, `use`/`after` → `waits-for:`; `before`
-warns (invert on the target); `provide`/`keyword` note the
-semantic gap. Auto-detects `/etc/conf.d/<name>` as env-file.
-
-```bash
-# Single script to stdout
-slinit-openrc-convert /etc/init.d/dbus
-
-# Batch conversion + `slinitctl enable` hints for whatever was in
-# /etc/runlevels/*/  (--enable-map)
-slinit-openrc-convert --output-dir=/etc/slinit.d --enable-map /etc/init.d/*
-
-# Override the wrapper (default: /usr/sbin/openrc-run)
-slinit-openrc-convert --wrapper=/usr/bin/slinit-openrc-shim /etc/init.d/*
-```
-
-### slinit-systemd-convert
-
-Port a systemd `.service` unit to a slinit service file. Section-
-aware INI parser handles `\`-line continuation, and ~40 [Unit] +
-[Service] + [Install] directives are mapped. `Type=` maps as
-`simple`/`exec` → `process`, `forking` → `bgprocess`, `oneshot` →
-`scripted`; `Restart=` collapses systemd's 5 values into slinit's 3
-(no/yes/on-failure) with ambiguous cases warned. `User`+`Group`
-merge into `run-as = user:group`. Hardening directives (`Private*`,
-`Protect*`, `Restrict*`, `SystemCall*`) produce NOTEs naming the
-equivalent slinit directive. Dep names normalise — strips
-`.service`, `.target`, `.socket`, `.path`, `.mount`, `.timer`,
-`.swap`, `.device` so slinit sees bare names. Timer / socket /
-path / mount / target units are rejected at the guard — those
-need slinit-native equivalents, not mechanical translation.
-
-```bash
-# Single unit to stdout
-slinit-systemd-convert /lib/systemd/system/sshd.service
-
-# Batch — every service unit into /etc/slinit.d
-slinit-systemd-convert --output-dir=/etc/slinit.d /lib/systemd/system/*.service
-```
-
-### slinit-cgtop
-
-Top-like viewer for the cgroup v2 tree. Reads `/sys/fs/cgroup`
-periodically and surfaces per-cgroup CPU %, memory bytes, and task
-counts. Colour-free output is script-friendly with `--once`.
-
-```bash
-# Live view, refresh every second, top 3 levels of the cgroup tree
-slinit-cgtop
-
-# Sort by memory instead of CPU, drill deeper, refresh every 500ms
-slinit-cgtop --sort mem --depth 5 --delay 500ms
-
-# One snapshot for a cron / metrics scraper (single line per cgroup)
-slinit-cgtop --once --sort mem --depth 4
-
-# Show every cgroup — including idle ones with zero tasks / zero memory
-slinit-cgtop --all
-```
-
-### slinit-sysusers / slinit-tmpfiles
-
-Declarative bootstrap of system state, drop-in compatible with the
-`systemd-sysusers`(8) and `systemd-tmpfiles`(8) formats. Typically wired
-as `type = scripted` services early in the boot graph.
-
-```bash
-# Users & groups — reads /usr/lib/sysusers.d/*.conf + /etc/sysusers.d/*.conf
-slinit-sysusers                  # apply everything
-slinit-sysusers --dry-run        # preview actions without touching passwd/group
-slinit-sysusers --dirs /etc/sysusers.d  # override search path
-
-# Runtime paths — reads /usr/lib/tmpfiles.d/*.conf + /etc/tmpfiles.d/*.conf
-slinit-tmpfiles                  # create/clean per config
-slinit-tmpfiles --dry-run
-```
-
-### slinit-logouthookd
-
-Persistent daemon that writes UTMPX `DEAD_PROCESS` records when tty /
-pty sessions end. Login programs (agetty, sshd, su) can drop a session
-descriptor onto its Unix socket and forget about it — the daemon
-watches the session, and once the last process on that line is gone,
-it writes the logout record so `who`, `w`, and `last` stay accurate
-without every login shell needing a private hook.
-
-```bash
-# Standard invocation (as a slinit service — usually a `type = process`).
-slinit-logouthookd
-
-# Custom socket path + permissions (default: /run/slinit-logouthookd.sock, 0600)
-slinit-logouthookd --socket /run/slh.sock --perms 0660
-```
-
-### slinit-init-maker
-
-Generates a bootable service-description directory skeleton — top-level
-`boot` target, optional `system-mounts` + `network` stubs, N agetty
-services (with correct inittab-id), env-file with `HOSTNAME`/`TZ`/`PATH`,
-optional shutdown-hook sample, README. Inspired by
-[s6-linux-init-maker](https://skarnet.org/software/s6-linux-init/s6-linux-init-maker.html).
-
-```bash
-# Default layout to /etc/slinit/boot.d
-slinit-init-maker
-
-# Custom layout: 4 ttys, specific hostname/tz, no network stub
-slinit-init-maker --ttys 4 --hostname myhost --tz Europe/Bucharest \
-    --output /tmp/boot.d --with-shutdown-hook
-
-# Preview without touching the disk
-slinit-init-maker --dry-run
-```
-
-### slinit-nuke
-
-Emergency userspace cleanup: `kill(-1, SIGTERM)` → grace period →
-`kill(-1, SIGKILL)`. Intended for recovery scenarios where the orderly
-shutdown path is unavailable — not a replacement for
-`slinitctl shutdown`.
-
-```bash
-slinit-nuke                    # TERM, wait 2s, KILL
-slinit-nuke --grace 500ms
-slinit-nuke -9                 # skip TERM, SIGKILL immediately
-```
-
-### slinit-shutdown
-
-Standalone shutdown utility. Can talk to a running slinit or — with
-`--system` — perform the shutdown sequence directly. Invocable as
-`slinit-reboot`, `slinit-halt`, or `slinit-soft-reboot` via symlinks.
-
-```bash
-slinit-shutdown -r            # reboot
-slinit-shutdown -p            # poweroff
-slinit-shutdown -h            # halt
-slinit-shutdown -s            # soft reboot
-slinit-shutdown -k            # kexec
-```
-
-### OpenRC compat: rc-service / rc-update / rc-status
-
-Thin argv-translating shims over `slinitctl` for admins used to
-OpenRC. They exec `slinitctl` (resolved via `$PATH` or the `SLINITCTL`
-env var), so output, exit codes and flag precedence mirror
-`slinitctl`'s own.
-
-```bash
-# rc-service — service control
-rc-service nginx start
-rc-service nginx stop
-rc-service nginx status
-rc-service --exists nginx     # → slinitctl is-started nginx
-rc-service --list             # → slinitctl list
-
-# rc-update — runlevel membership (modelled as runlevel-<name> services)
-rc-update add  nginx default  # → slinitctl --from runlevel-default enable nginx
-rc-update del  nginx boot     # → slinitctl --from runlevel-boot disable nginx
-rc-update show                # → slinitctl graph runlevel-default
-rc-update update              # no-op (slinit has no dep cache)
-
-# rc-status — status listing
-rc-status                     # → slinitctl list
-rc-status default             # → slinitctl graph runlevel-default
-rc-status --list              # list known OpenRC runlevel names
-rc-status --runlevel          # print "default" (slinit has no current runlevel)
-```
-
-`/etc/rc.conf` and `/etc/conf.d/<name>` are sourced automatically
-before every init.d script action (see Project structure notes),
-so OpenRC per-service config files like `/etc/conf.d/nginx` keep
-working unchanged.
+Every subcommand, its flags and its exit codes:
+[slinitctl(8)](doc/man/slinitctl.8.md). `--system` and `--user` pick the
+instance explicitly.
 
 ## Architecture
 
-slinit follows Go-idiomatic patterns while preserving dinit's proven service management design:
+slinit keeps dinit's service-management design and expresses it in Go:
 
-- **Goroutines + channels** replace dinit's dasynq event loop
-- **Interface + struct embedding** replaces C++ virtual method dispatch
-- **Two-phase state transitions** (propagation + execution) preserve correctness from dinit
-- **One goroutine per child process** for monitoring, with channel-based notification
-- **Binary control protocol** (v7, min-compat v1) over Unix domain sockets, goroutine-per-connection
-- **Push notifications**: SERVICEEVENT5/ENVEVENT for real-time tracking
-- **PID 1 shutdown sequence**: shutdown hooks, process cleanup, filesystem sync, reboot syscalls
-
-### PID 1 Signal Handling
-
-| Signal        | Action                | Source                        |
-|---------------|-----------------------|-------------------------------|
-| `SIGTERM`     | reboot                | busybox `reboot`              |
-| `SIGINT`      | reboot                | Ctrl-Alt-Del (via CAD)        |
-| `SIGQUIT`     | poweroff              | --                            |
-| `SIGUSR1`     | reopen control socket | recovery when fs writable     |
-| `SIGUSR2`     | poweroff              | busybox `poweroff`            |
-| `SIGHUP`      | ignored               | --                            |
-| `SIGCHLD`     | reap orphans          | child process exit            |
-| `SIGRTMIN+3`  | halt                  | systemd-compat container      |
-| `SIGRTMIN+4`  | poweroff              | systemd-compat container      |
-| `SIGRTMIN+5`  | reboot                | systemd-compat container      |
-| `SIGRTMIN+6`  | kexec                 | systemd-compat container      |
-
-RT signals let `kill -s RTMIN+4 1` from inside a container trigger a
-clean shutdown without needing slinitctl present in the image.
-
-Signal-driven shutdown (SIGTERM/SIGINT/SIGQUIT/SIGUSR2/SIGRTMIN+3..+6)
-can be gated by `/etc/slinit/shutdown.allow` — see [Features](#features)
-above. The gate applies only to the initial trigger; a second press
-of Ctrl+Alt+Del or a repeated RT signal always escalates.
-
-## Project structure
+* **goroutines and channels** instead of dinit's dasynq event loop
+* **interfaces and struct embedding** instead of C++ virtual dispatch
+* **two-phase state transitions** (propagation, then execution) — the
+  correctness property inherited from dinit
+* **one goroutine per child**, with channel notification on exit
+* **one scheduling lock** held across every transition; a transition
+  that cannot finish is reported with a goroutine dump to
+  `/run/slinit-stall.stack` rather than hanging silently
+* **binary control protocol** over a Unix socket, goroutine per
+  connection, with push notifications for state and environment changes
 
 ```
-slinit/
-├── cmd/
-│   ├── slinit/            # Daemon entry point (incl. SysV argv[0] dispatch)
-│   ├── slinitctl/         # Control CLI (~70 subcommands + 15 global flags)
-│   ├── slinit-runner/     # Post-fork execve wrapper (LSM transitions, ambient caps, close-fds, restrict-* seccomp)
-│   ├── slinit-check/      # Config linter (offline + online)
-│   ├── slinit-monitor/    # Event watcher + command executor
-│   ├── slinit-shutdown/   # Standalone shutdown utility (+ reboot/halt/soft symlinks)
-│   ├── slinit-init-maker/ # Bootable service-dir generator (s6-linux-init-maker inspired)
-│   ├── slinit-nuke/       # Emergency kill-all (TERM → grace → KILL)
-│   ├── slinit-mount/      # Autofs lazy-mount helper
-│   ├── slinit-checkpath/  # Path-validation helper
-│   ├── slinit-seedrng/    # Persist entropy across reboots (SeedRNG protocol)
-│   ├── slinit-cgtop/      # Top-like viewer for cgroup v2 (CPU/mem/tasks)
-│   ├── slinit-sysusers/   # systemd-sysusers clone (declarative user/group)
-│   ├── slinit-tmpfiles/   # systemd-tmpfiles clone (/run + /var bootstrap)
-│   ├── slinit-logouthookd/# UTMPX logout daemon (DEAD_PROCESS bookkeeping)
-│   ├── slinit-getty/      # finit-parity built-in login-prompt binary (agetty-free)
-│   ├── slinit-watchdogd/  # finit-parity runtime WDT petting daemon (SIGPWR handover)
-│   ├── slinit-binfmt/     # systemd-binfmt clone (register /etc/binfmt.d/*.conf via binfmt_misc)
-│   ├── slinit-sysctl/     # systemd-sysctl clone (apply sysctl.d/*.conf to /proc/sys)
-│   ├── slinit-fstabinfo/  # OpenRC fstabinfo(8) clone (query /etc/fstab)
-│   ├── slinit-mountinfo/  # OpenRC mountinfo(8) clone (query /proc/mounts)
-│   ├── slinit-einfo/      # OpenRC einfo(1) multi-applet (einfo/ewarn/eerror/...)
-│   ├── slinit-shell-var/  # OpenRC shell_var(1) clone (sanitise into shell identifiers)
-│   ├── slinit-svc-value/  # OpenRC value(1) clone (per-service key=value store)
-│   ├── slinit-start-stop-daemon/   # Debian/OpenRC start-stop-daemon(8) clone
-│   ├── slinit-supervise-daemon/    # OpenRC supervise-daemon(8) clone (detached supervisor)
-│   ├── slinit-resource/   # OCF Pacemaker resource agent (shell — not Go)
-│   ├── slinit-journalctl/ # systemd journalctl 65/65-parity CLI (installed also as `journalctl` symlink)
-│   ├── slinit-journald/   # Persistent journal daemon (JSONL + binary + FSS sealing)
-│   ├── slinit-journal-migrate/ # Journal-format migration helper
-│   ├── slinit-supports/   # Self-introspection CLI (list directives / opcodes / features)
-│   ├── slinit-runit-convert/   # runit /etc/sv → slinit converter
-│   ├── slinit-openrc-convert/  # OpenRC /etc/init.d → slinit converter
-│   ├── slinit-systemd-convert/ # systemd .service → slinit converter
-│   ├── rc-service/        # OpenRC compat: thin shim over slinitctl
-│   ├── rc-update/         # OpenRC compat: runlevel membership via runlevel-<name> services
-│   └── rc-status/         # OpenRC compat: status listing
-├── pkg/                   # 34 packages total; live list: `ls pkg/`
-│   ├── service/           # Service types, state machine, dependency graph, predicates, calendar, UID pool, per-start invocation-ID
-│   ├── config/            # Dinit-compatible config parser + loader, init.d/LSB, OpenRC conf.d wrapper
-│   ├── control/           # Control socket protocol (v7, min-compat v1) and server; journal query/subscribe wire
-│   ├── shutdown/          # PID 1 init, shutdown executor, soft-reboot, clock guard, run-mode
-│   ├── process/           # Process execution, monitoring, attrs, caps, credentials, fd-store, sd_notify socket, DINIT_CS_FD/SLINIT_CS_FD env
-│   ├── seccomp/           # cBPF compiler + curated syscall groups (@system-service, @privileged, ...) + arg-checking restrict-*
-│   ├── pathwatch/         # inotify-driven path activation
-│   ├── svcdirwatch/       # inotify-driven services-dir auto-watch
-│   ├── eventloop/         # Event loop, signals, timers
-│   ├── logging/           # Console logger (wallclock / ISO / TAI64N / none)
-│   ├── utmp/              # UTMPX cgo wrapper (boot + logout + shutdown records)
-│   ├── autofs/            # Autofs direct-mount helper
-│   ├── checkpath/         # Path permission / ownership verifier
-│   ├── einfo/             # ANSI/colour helpers shared by slinit-einfo applets
-│   ├── fstab/             # /etc/fstab parser (shared by slinit-fstabinfo / -mount)
-│   ├── mounts/            # /proc/mounts + /proc/self/mountinfo parser
-│   ├── persist/           # On-disk pin-intent persistence (--persist-intent)
-│   ├── rng/               # SeedRNG protocol implementation (used by slinit-seedrng)
-│   ├── snapshot/          # Operator-intent snapshot (survives soft-reboot via --restore-from-snapshot)
-│   ├── watchdog/          # Hardware watchdog kicker (/dev/watchdogN, WDIOC ioctls)
-│   ├── platform/          # Container & VM auto-detect (docker/lxc/podman/wsl/xen/kvm/qemu/vmware/hyperv/vbox/bochs)
-│   ├── journal/           # Event bus + ring buffer + Event schema + QueryFilter (journalctl core)
-│   ├── journald/          # File/binary sinks + rotate/vacuum/migrate helpers; consumed by slinit-journald
-│   ├── journalbin/        # Phase B binary format (SLJRNL01 magic, 240-byte header, 7 object types) + FSS sealing (HKDF-SHA256 + HMAC)
-│   ├── catalog/           # systemd-compatible .catalog parser + gob-compiled cache (used by journalctl --catalog / -x)
-│   ├── dissect/           # Disk-image dissect via losetup+mount shell-out (used by journalctl --image)
-│   ├── recovery/          # Interactive rescue menu + boot debugger + crash-shell (v2.1.1-2 UX refactor)
-│   ├── bootmode/          # Structured kernel-cmdline parser (`slinit.emergency`, `slinit.rescue`, `slinit.debug-shell`, `slinit.log-level=`)
-│   └── features/          # Feature-name registry (backing store for slinit-supports)
-├── internal/util/         # Path and parsing utilities
-├── completions/           # Shell completions (bash, zsh, fish)
-├── demo/                  # QEMU demo environment
-├── tests/functional/      # 230 QEMU-based integration tests
-├── tests/acceptance/ssh/  # 219 live-VM acceptance cases (SSH-driven)
-├── tests/fuzz/            # 27 fuzz targets (config, protocol, autofs, process parsers)
-├── tests/container/       # 23 cases running slinit as PID 1 under Docker or Podman, plus a soak loop
-├── tests/k8s/             # 8 cases running the same image as a pod on a kind cluster
-└── tests/performance/     # Performance and stress harness (runtime + demo + 92 SSH cases)
+cmd/              the 45 binaries
+pkg/service/      state machine, service types, the dependency graph
+pkg/config/       dinit-compatible parser and the service loader
+pkg/control/      the binary protocol, server and connections
+pkg/process/      fork/exec, child monitoring, fd handling
+pkg/seccomp/      cBPF compiler, syscall groups, the restrict-* cluster
+pkg/journal/      journal readers, writers and the binary format
+pkg/shutdown/     shutdown sequences, power events, soft-reboot
+doc/man/          48 man pages — the reference for every binary
+tests/            unit, functional (QEMU), acceptance and container suites
 ```
+
+### PID 1 signal handling
+
+| Signal | Action | Sent by |
+|---|---|---|
+| `SIGTERM` | reboot | busybox `reboot` |
+| `SIGINT` | reboot | Ctrl+Alt+Del |
+| `SIGQUIT` | poweroff | — |
+| `SIGUSR1` | reopen the control socket | recovery once the fs is writable |
+| `SIGUSR2` | poweroff | busybox `poweroff` |
+| `SIGPWR` | run the power hook | UPS daemons (nut, apcupsd) |
+| `SIGHUP` | ignored | — |
+| `SIGCHLD` | reap orphans | child exit |
+| `SIGRTMIN+3…+6` | halt, poweroff, reboot, kexec | systemd-compatible containers |
+
+The RT signals let `kill -s RTMIN+4 1` shut a container down cleanly
+with no slinitctl in the image. Signal-driven shutdown can be gated by
+`/etc/slinit/shutdown.allow`; the gate applies to the first trigger
+only, so a second Ctrl+Alt+Del always escalates.
+
+## Documentation
+
+| | |
+|---|---|
+| [operator's guide](doc/operators-guide.md) | start here if you run systems: systemd mappings, first service, troubleshooting |
+| [doc/configuration.md](doc/configuration.md) | service examples by shape, directive tables, daemon flags |
+| [doc/tools.md](doc/tools.md) | the 43 companion binaries and how they are used |
+| [doc/features.md](doc/features.md) | generated list of every accepted directive and opcode, by upstream |
+| [doc/roadmap.md](doc/roadmap.md) | what is planned, and what has shipped |
+| [doc/man/](doc/man) | 48 man pages — the reference |
+| [STABILITY.md](STABILITY.md) | what will not break, and how deprecation works |
+| [CHANGELOG.md](CHANGELOG.md) | release history, with the reasoning behind each version number |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | how to build, test and send a change |
+| [SECURITY.md](SECURITY.md) | reporting a vulnerability |
 
 ## Testing
 
 ```bash
-# Unit tests (~2387 tests + benchmarks across 84 Go dirs, 361 _test.go files)
-go test ./...
-
-# Functional tests (230 QEMU-based integration tests)
-./tests/functional/run-tests.sh
-
-# Acceptance tests (219 SSH-driven cases against a live VM/host)
-ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
-  ./tests/acceptance/ssh/run.sh
-
-# Fuzz targets — 27 live in tests/fuzz, 13 more sit beside the code
-# they exercise (the converters, sysusers/tmpfiles line parsers, the
-# timedatectl/hostnamectl parsers, and the service state machine), so
-# `./tests/fuzz` alone reaches two thirds of them. 42 repo-wide:
-#   grep -rl '^func Fuzz' --include='*_test.go' .
+go test ./...                             # ~2400 unit tests and benchmarks
+./tests/functional/run-tests.sh           # 230 cases, each in its own QEMU VM
+./tests/functional/selftest.sh            # checks the harness can still fail a case
+./tests/container/run.sh                  # 23 cases with slinit as a container's PID 1
 go test -fuzz=FuzzConfigParse ./tests/fuzz
-go test -fuzz=FuzzStateMachine ./pkg/service
-
-# Performance harnesses (92 SSH-driven cases + 4 QEMU boot harnesses
-# + runtime microbenchmarks — comprehensive control-surface coverage,
-# CLI + IPC + journal + lifecycle scaling; see tests/performance/README.md)
-ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
-  ./tests/performance/ssh/run.sh
-./tests/performance/demo/cold-boot.sh
 ```
 
-## Roadmap
+The suites that need a live target take their host over SSH:
 
-- [x] **Phase 1**: Foundation -- types, state machine, config parser, event loop
-- [x] **Phase 2**: Process services -- fork/exec, child monitoring, restart logic
-- [x] **Phase 3**: Full dependency graph -- all 6 dep types, TriggeredService, BGProcessService
-- [x] **Phase 4**: Control protocol + `slinitctl` CLI
-- [x] **Phase 5**: PID 1 mode + shutdown sequence
-- [x] **Phase 6**: Advanced features -- catlog, reload, ready-notification, socket activation, provides, unload, consumer-of, logfile, wake/release, is-started/is-failed, setenv/getallenv, add-dep/rm-dep, enable/disable, nice/oom/ioprio/cgroup/rlimits, capabilities/securebits, unmask-intr, auto-recovery, starts-rwfs/starts-log, pass-cs-fd, kexec
-- [x] **Phase 7**: Container mode, env substitution, shutdown hooks, UTMPX
-- [x] **Phase 8**: CLI flags batch -- unpin, softreboot, --system/-s/--user/-u, --no-wait/--pin/--force, --ignore-unstarted, --offline/-o/--services-dir/-d, --use-passed-cfd/--from, multiple default service dirs
-- [x] **Phase 9**: Daemon flags -- --system-mgr, --env-file, --ready-fd, --log-file, --cgroup-path, SLINIT_SERVICENAME/SLINIT_SERVICEDSCDIR, advanced env substitution, command +=, load-options, kernel cmdline filtering
-- [x] **Phase 10**: Push notifications -- SERVICEEVENT, LISTENENV/ENVEVENT, mutex-serialized writes
-- [x] **Phase 11**: Protocol v5 -- LISTSERVICES5/SERVICESTATUS5/SERVICEEVENT5, slinit-check, slinit-monitor, @include/@include-opt
-- [x] **Phase 12**: Complete dinit parity -- @meta, env-file meta-commands, PINNEDSTOPPED/PINNEDSTARTED, SERVICE_DESC_ERR/SERVICE_LOAD_ERR, PREACK, QUERY_LOAD_MECH, DEPENDENTS, $/NAME word-splitting, service templates (name@arg), @meta enable-via, SIGUSR1 socket reopen, soft-reboot shutdown hooks
-- [x] **Phase 13**: Runit-inspired features -- finish-command, ready-check-command, pre-stop-hook, env-dir, control-command (custom signal handlers), chroot, new-session, lock-file, close-fds, pause/continue, log rotation (size/time/max-files), log filtering (include/exclude regex), log processor, down-file marker, once command
-- [x] **Phase 14**: /etc/init.d auto-detect with LSB header parsing, BSD rc.d support
-- [x] **Phase 15**: Shutdown info display, escalating force shutdown, cron-like periodic tasks, soft parallel start limit, proper socket activation (multiple sockets, TCP/UDP, on-demand)
-- [x] **Phase 16**: Multi-service shared logger (SharedLogMux -- N producers → single logger, line-prefixed)
-- [x] **Phase 17**: Virtual TTY -- screen-like attach/detach via PTY allocation, ring buffer scrollback, `slinitctl attach`
-- [x] **Phase 18**: s6-linux-init parity -- catch-all logger, TAI64N/ISO/none timestamps, scheduled shutdown + cancel + status, wall broadcasts, `/etc/shutdown.allow` access control, configurable grace, global rlimits, RT-signal container shutdown (SIGRTMIN+3..+6), UTMPX logout + wtmp RUN_LVL shutdown, kernel cmdline snapshot, `/run` tmpfs run-mode, configurable devtmpfs, SysV argv[0] compat (`halt`/`poweroff`/`reboot`), `slinit-init-maker`, `slinit-nuke`
-- [x] **Phase 19**: OpenRC UX compat -- `rc-service`/`rc-update`/`rc-status` argv shims, `/etc/rc.conf` + `/etc/conf.d/<name>` sourcing via `sh -c` wrapper, runlevels modelled as `runlevel-<name>` services, named-runlevel dispatch (`init default|single|nonetwork|boot|sysinit`)
-- [x] **Phase 20**: Telco-readiness -- hardware watchdog (`/dev/watchdog0` kicker with magic-close disarm), Pacemaker OCF resource agent for slinit services, operator-intent snapshot persisted across soft-reboot, /run remount semantics, catch-all logger consistency between PID 1 and soft-reboot, escalating force-shutdown surfacing blockers
-- [x] **Phase 21**: Upstart-derived adaptations -- `manual` stanza (opt-in services), `normal-exit` (declared success exit codes/signals), `reload-signal` (declarative SIGHUP-style reload + `slinitctl reload-signal`), `reload-all` (bulk rescan), `reset-env` (clear per-service runtime env), per-service `umask`, `author`/`version`/`usage` metadata stanzas surfaced by `slinitctl status`; service-watchdog timeout now respects `restart=on-failure` / `restart=yes` policy
-- [x] **Phase 22**: Path-based activation -- inotify-driven `start-on-path-exists` / `start-on-path-changed` / `start-on-path-modified` / `start-on-directory-not-empty` stanzas with systemd-style one-shot semantics (re-armed on `EventStopped`); single global watcher serves all services via the new `pkg/pathwatch` package
-- [x] **Phase 23**: Upstart-style `.override` drop-ins -- a sibling `<service>.override` file modifies a packaged service's stanzas (scalars replace, `+=` appends) without editing the shipped file; parsed after conf.d overlays so it has the final say, with template `$1` substitution preserved
-- [x] **Phase 24**: Upstart-style `script ... end script` inline shell -- a verbatim multi-line block becomes the service command via `/bin/sh -c`; pure sugar over `command` (same load-time `$VAR`/`$1` substitution, mutually exclusive with it), unterminated block is a fatal parse error
-- [x] **Phase 25**: AppArmor confinement (first LSM integration) -- `apparmor-load` parses a profile (`apparmor_parser -r`) parent-side before start; `apparmor-switch` transitions on exec via `slinit-runner` writing `/proc/self/attr/exec` (`aa_change_onexec`), since the kernel binds the transition to the task performing the `execve`; both fail closed
-- [x] **Phase 26**: `debug = yes` developer stop -- slinit-runner raises `SIGSTOP` after runner setup but before `execve` so `gdb -p` can attach pre-exec; `kill -CONT` resumes into the AppArmor transition + exec. Completes the upstart-feature adaptation backlog (all 12 candidates shipped)
-- [x] **Phase 27**: systemd-style auto-managed service directories -- `runtime-directory`/`state-directory`/`cache-directory`/`logs-directory`/`configuration-directory` (+`-mode`) created and chowned to `run-as` under `/run`,`/var/lib`,`/var/cache`,`/var/log`,`/etc` before start; runtime dir removed on stop per `runtime-directory-preserve` (no/yes/restart). First item of the systemd-adaptation backlog
-- [x] **Phase 28**: Filesystem sandbox cluster -- `private-tmp`, `protect-system`, `read-only-paths`/`read-write-paths`, `protect-home`, `inaccessible-paths`, `protect-proc`/`proc-subset`, `bind-paths`/`bind-read-only-paths`, `temporary-filesystem`; applied child-side via `slinit-runner` in a fresh mount namespace (MS_PRIVATE on `/`, then layered overlays)
-- [x] **Phase 29**: Seccomp filter -- `system-call-filter` with `~deny` prefix + curated `@group` allowlists (`@system-service`, `@privileged`, `@network-io`, ...), `system-call-architectures`, `system-call-error-number`, `system-call-log`; cBPF compiler in `pkg/seccomp` (multi-arch syscall tables, native + extra arches)
-- [x] **Phase 30**: Hardening cluster (`Restrict*`/`Protect*` v1) -- `protect-kernel-tunables/-modules/-logs/-clock/-control-groups/-hostname`, `lock-personality`; mount-based knobs (RO `/proc/sys`,`/sys/fs/cgroup`) compose with mount-namespace setup, seccomp-based knobs (`clock_settime`,`sethostname`,`personality`,`init_module`...) feed into the runner's seccomp install
-- [x] **Phase 31**: Dinit upstream parity refresh -- `prepared-by` dependency type (hard dep that also restarts when the dependent restarts), enable/disable persisted via `waits-for.d` symlink, `slinit-check` validates `consumer-of` (producer exists / right type / `log-type=pipe`); restart-limit-count entering a stable FAILED state instead of looping `initiateStart -> exit -> Stopped -> initiateStart`
-- [x] **Phase 32**: Start predicates -- `condition-*` (skip silently on fail) and `assert-*` (fail start) with `!` negation; 13 kinds (`path-exists`/`-glob`, `path-is-directory`/`-mount-point`, `file-not-empty`, `directory-not-empty`, `kernel-command-line`, `virtualization`, `first-boot`, `host`, `security`, `needs-update`, `ac-power`); SKIPPED short-circuits to STARTED so dependents proceed
-- [x] **Phase 33**: Appliance basics -- `failure-action` / `success-action` (none/reboot/poweroff/halt/exit) + `reboot-argument`; `runtime-max-sec` (hard cap on STARTED time, stop via normal path); `oom-policy` (continue/stop/kill) driven by a per-service cgroup-v2 `memory.events` watcher
-- [x] **Phase 34**: Pre-start / post-start hooks -- systemd-style `pre-start-command` (sync, non-zero exit fails start) and `post-start-command` (async, log-only); same working-dir / env / timeout as `finish-command`
-- [x] **Phase 35**: Log pipeline filters -- `log-rate-limit-interval`/`log-rate-limit-burst` (token bucket; drops with a single "limit hit" notice) + `log-level-max` (syslog `<N>` priority gate, lines without prefix treated as info)
-- [x] **Phase 36**: Credentials framework -- `load-credential=NAME:PATH` (copy file) and `set-credential=NAME:VALUE` (inline); materialised at `/run/credentials/<svc>/` on a fresh ro tmpfs (`size=1M`, `mode=0700`, `MS_NOSUID|MS_NODEV|MS_NOEXEC`), files `0400` chowned to run-as, `$CREDENTIALS_DIRECTORY` exported to the service. No env leakage via `/proc`.
-- [x] **Phase 37**: Calendar timers -- `cron-calendar` (`daily`, `hourly`, `weekly`, `Mon..Fri 09:00`, `Mon,Wed,Fri 12:00`, `*-*-1 00:00`, `*:0/15`); `cron-randomized-delay` jitter; `cron-persistent` catch-up; per-field advancement in NextAfter (no brute-force second iteration)
-- [x] **Phase 38**: Dynamic users -- `dynamic-user=yes` allocates a transient UID/GID from a per-daemon pool (61184..65519, matching systemd) at every BringUp via shared `UIDPool`; released in Stopped(); no `/etc/passwd` entry. UID-dependent setup (`runtime-directory`, `credentials`) sees the same transient identity
-- [x] **Phase 39**: File-descriptor store -- `file-descriptor-store-max=N` creates a per-service `$NOTIFY_SOCKET` Unix datagram socket at `/run/slinit/notify/<svc>.sock`; sd_notify packet parser routes `FDSTORE=1` + `FDNAME=name` with SCM_RIGHTS fds into an in-memory store; next BringUp prepends them to `LISTEN_FDS` (with names in `LISTEN_FDNAMES`). **Closes the systemd-adaptation backlog (14/14 items shipped; `#7 v2` arg-checking BPF for `RestrictRealtime`/`SUIDSGID`/`MDWE`/`Namespaces`/`AddressFamilies` deferred -- needs `pkg/seccomp` BPF compiler extension)**
-- [x] **Phase 40**: Services-dir auto-watch (`--watch-services-dir`) -- opt-in `inotify(7)`-based multiplexer (`pkg/svcdirwatch`) watches every services-dir; new file → `LoadService`, removed file → `UnloadService` (only when *STOPPED*), modified file → informational log (the existing *(modified since loaded)* marker still fires via `status`). Editor artefacts (`.`, `~`, `.swp`, `.tmp`, `.new`, `.bak`) and `.d` overlay dirs are filtered; a 300 ms debounce collapses editor multi-event bursts (write + close + rename) into a single dispatch per file. Inspired by `runsvdir`'s inotify rescan (runit 2.3.1+)
-- [x] **Phase 41** (v2.1.0): Journal Phase 1 -- event bus foundation. `pkg/journal.Event` schema (Ts/Mts/Msg/Prio/Unit/Fields + trusted metadata Pid/Uid/Gid/Comm/Exe/Cmdline/BootID/MachineID/Hostname), in-process `EventBuffer` ring, `Emit`/`Subscribe`/`ResolveIdentifier`, `QueryFilter` with Match. Wired into `pkg/service/journal_emit.go` so every state transition (Starting → Started → Stopping → Stopped, Failed variants) publishes a driver-transport event
-- [x] **Phase 42** (v2.1.0): Journal Phase 2+3 -- query CLI + persistent daemon. `slinit-journalctl` reads via `CmdJournalQuery` (single-shot) + `CmdJournalSubscribe` (follow mode); `slinit-journald` consumes `/run/slinit/events.sock` and writes JSONL to `/var/log/slinit-journal/*.jsonl` with size + age rotation; tmpfs fallback to `/run/slinit-journal/` on unwritable primary. Kernel events read directly from `/dev/kmsg` from boot start (`-k / --dmesg` returns current-boot kmsg with `unit=kernel` + no [PID] bracket). Backlog replay: daemon queries slinit's ring buffer at startup and persists everything emitted since boot but before its socket bound
-- [x] **Phase 43** (v2.1.0): Journal Phase B -- binary format (SLJRNL01 magic, 240-byte header, 7 object types DATA/FIELD/ENTRY/HASH_TABLEs/ENTRY_ARRAY/TAG, jenkins lookup3 hash) + FSS sealing via HKDF-SHA256 + HMAC-SHA256 TAG chain (per-epoch keys derived from a seed; forward-secrecy survives compromise of a sealing state at time T). `slinit-journalctl --verify --file=<binary>` walks the TAG chain against the key file. Also lands verbose + export output formats and binary-vacuum wired through the rotate hook
-- [x] **Phase 44** (v2.1.0): Dinit-parity sweep -- 5 env-var + bootstrap-path gaps closed (`DINIT_SERVICE`, `DINIT_CS_FD`, `DINIT_SOCKET_PATH`, `/etc/slinit/environment` auto-load, `XDG_CONFIG_HOME` + `$HOME/.config` dedup). Dual-wire disable: `CmdDisableServiceV7=62` (slinit-native atomic) is the default; `--dinit-compat` routes through `CmdRmDepV7=30` (race-free rm-dep, dinit-compatible) for interop with a real dinit daemon. Journal render rules: `unit[PID]:` bracket shows the SUBJECT service's PID via `SLINIT_TARGET_PID` (never the emitter's PID 1); slinit-internal driver-transport events without a target PID skip the bracket entirely
-- [x] **Phase 45** (v2.1.0): `slinit-supports` self-introspection CLI -- `--list-directives` / `--list-opcodes` / `--list-all` enumerations + direct lookup by name. Companion to `doc/features.md` so package managers and CI can query slinit's capability set without parsing source
-- [x] **Phase 46** (v2.1.1): Interactive boot debugger -- Ctrl-B trigger during boot opens a rescue menu (cbreak tty mode, EOF from canonical-mode maps to Retry). Aggregate services filtered out of force-fail target (they can't be force-failed meaningfully); boot debugger detaches BEFORE console-owning service exec so it doesn't clobber the child's terminal
-- [x] **Phase 47** (v2.1.2): Recovery + boot refactor -- Emergency vs Rescue split (Rescue keeps control socket + event loop alive so operators can debug live); tty9 debug-shell (respawn loop on kernel cmdline `slinit.debug-shell`); confirm-spawn gate at `allDepsStarted` (all 5 service types prompt with cbreak dispatch — single keypress); crash-shell end-to-end with service freeze during the drop; `bootmode` package with structured kernel-cmdline parser (`slinit.emergency`, `slinit.rescue`, `slinit.debug-shell`, `slinit.confirm-spawn`, `slinit.crash-shell`, `slinit.log-level=` wired to logger.SetLevel)
-- [x] **Phase 48** (v2.1.2): `slinitctl analyze` subcommand dispatcher -- `time` (boot summary), `blame` (per-svc durations desc), `critical-chain` (slowest dep-path walk, terminates at `boot`), `dot` (GraphViz digraph with edges), and `plot` (SVG timeline; landed in v2.4.8 once the BootTime reply grew an additive tail carrying per-svc start instants). Replaces the removed `slinit-analyze` binary
-- [x] **Phase 49** (v2.1.4): Migration converters -- three legacy-config → slinit converters land under `cmd/`: `slinit-runit-convert` (parses `/etc/sv/<name>/` with chpst flag extraction), `slinit-openrc-convert` (variable-only vs custom-start() dispatch to self-contained or `openrc-run`-wrapped output), `slinit-systemd-convert` (INI parser with `\`-line continuation, ~40 directive mappings). All three emit WARN/NOTE for anything without a 1:1 mapping so review is auditable
-- [x] **Phase 50** (v2.1.5): runit converter 1:1 refactor -- log companion generation (`log/run` → `<name>-log` service with `consumer-of` + `log-type = pipe` on primary), auto-detection of `finish` / `check` / `down` / `conf` auxiliary files (→ `finish-command` / `ready-check-command` / `manual` / `env-file`), `sv check DEP` in run scripts auto-emits `waits-for: DEP`, `working-dir` defaults to sv dir (runsv chdir compat), bare-name commands resolved via `exec.LookPath` (slinit's execve does no PATH search). Output round-trips through `slinit-check` clean on real Void `/etc/sv/*` services (46/46 lint clean)
-- [x] **Phase 51** (v2.1.6): journalctl systemd parity Groups A+B -- 30 flags land. Group A (25, client-side): `--no-hostname` / `--utc` / `--truncate-newline` / `--no-full` / `-l/--full` / `-a/--all` / `--no-tail` / `-e/--pager-end` / `-q/--quiet` / `--output-fields=A,B,C` / `-m/--merge` (display); `-t/--identifier` / `-T/--exclude-identifier` / `--facility` / `-g/--grep` / `--case-sensitive[=BOOL]` / `--this-boot` / `-U/--user-unit` (filtering); `--after-cursor` / `--cursor-file` / `-D/--directory` / `--root` (cursor+source); `-F/--field` / `--fields` / `--header` / `--disk-usage` (introspection). Group B (5, maintenance): `--sync` via SIGUSR1, `--rotate` via SIGUSR2, `--vacuum-size` / `--vacuum-files` / `--vacuum-time`. New JournalQueryRequest wire fields (Identifiers / ExcludeIdentifiers / GrepPattern / GrepInsensitive) with client-side re-filter fallback for older daemons
-- [x] **Phase 52** (v2.1.7): journalctl `-t/-T/-g` + small `-n` correctness fix -- `QueryFilter.isEmpty()` learned about the Group A dimensions so filtered queries take the slow path (Match per event) and trim AFTER filtering. Client also sends `Limit=0` when a Group A filter is populated + trims locally, so filters work against any daemon vintage
-- [x] **Phase 53** (v2.1.8): journalctl systemd parity Groups C+D+E -- 9 flags. Group C (FSS, 3): `--setup-keys` mints sealing key + prints verification token, `--verify-key=TOKEN` inline verification, `--interval=DUR` epoch duration. Group D (catalog, 4 + new `pkg/catalog`): systemd-compatible `.catalog` parser (ID normalization + RFC 822 headers title-cased); `-x/--catalog` augments output, `--dump-catalog`, `--list-catalog`, `--update-catalog` (gob-compiled cache at `/var/lib/slinit/catalog/catalog.compiled`). Group E (invocation, 2 + pkg/service emit): 128-bit hex `SLINIT_INVOCATION_ID` minted at each `initiateStart`, attached to every event in the lifecycle; `--invocation=UUID` filter, `--list-invocations` dedupe
-- [x] **Phase 54** (v2.1.9-v2.1.12): journalctl parity completion — 4 Sprints, 9 more flags. Sprint 1 (v2.1.9, 2): `--force` (safety gate for `--setup-keys`), `--synchronize-on-exit` (no-op alias — slinit's sinks always fsync on Close). Sprint 2 (v2.1.10, 3): `--flush` + `--relinquish-var` + `--smart-relinquish-var` via a UNIX DGRAM control socket (Go's `os/signal` doesn't deliver SIGRTMIN reliably, so the initial signal-based design was replaced). Sprint 3 (v2.1.11, 2): `--namespace` + `--list-namespaces` — `slinit-journald --namespace=NS` auto-suffixes every default path (`.NS` on dir/volatile/pid/admin, `-NS.sock` on events socket); `guardedSink` stamps every incoming event with the namespace. Sprint 4 (v2.1.12, 2): `--image` + `--image-policy` via pkg/dissect (losetup + mount + lsblk shell-out; `strict` policy refuses LUKS/LVM/verity partitions). **Journalctl parity project complete: 65 of 65 flags.**
+```bash
+ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
+  ./tests/acceptance/ssh/run.sh           # 219 cases
+ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
+  ./tests/performance/ssh/run.sh          # 92 cases; see tests/performance/README.md
+```
 
-Post-v2.1.12 the phase-numbering system was retired in favour of the
-three-lane structure the CHANGELOG carries (new features / security
-features / code fixing). Per-version detail from v2.2.0 onward
-lives in [CHANGELOG.md](CHANGELOG.md). Highlights since v2.1.12:
+42 fuzz targets in all: 27 under `tests/fuzz`, the rest beside the code
+they exercise, so `./tests/fuzz` alone does not reach them —
+`grep -rl '^func Fuzz' --include='*_test.go' .` finds every one. CI runs
+the unit, functional, fuzz and performance suites plus a nightly
+container soak; the SSH, container and k8s tiers run downstream against
+real targets.
 
-- **v2.2.0–v2.2.4**: full `slinit-journalctl` systemd short-alias
-  parity + first-class nspawn-style container integration + state-
-  machine race fixes surfaced by fuzz.
-- **v2.2.5**: journal multi-boot — `--list-boots` walks on-disk
-  journals, `-b -N` relative indexing via aggregator + `demo/run.sh
-  --persist` for multi-boot demos.
-- **v2.2.6**: journal recovery hardening (six truncation-tolerance
-  fixes to pkg/journalbin), enable/disable workflow polish, first
-  published cold-boot performance harnesses under
-  tests/performance/demo/.
-- **v2.2.7**: critical `pkg/config` DirLoader concurrent-map fix
-  (PID-1 panic under stress), optional `net/http/pprof` endpoint
-  behind `-tags pprof`, SSH performance suite expanded to 92 cases,
-  slpkgs `post_install` now creates `/usr/bin/{halt,reboot,poweroff,
-  shutdown}` symlinks (fresh installs get working `reboot` out of
-  the box), three upstream dinit state-machine consistency fixes
-  ported. Validated on both KVM (ceres) and bare-metal (Intel NUC
-  Gen7): 219/219 acceptance pass on both.
-- **v2.2.8**: docs + upstream-parity pass. 9 new man pages close
-  the binary→doc gap (`slinit-supports`, `slinit-{journalctl,
-  journald,journal-migrate}`, `slinit-machinectl`, `slinit-nspawn`,
-  `slinit-{openrc,runit,systemd}-convert`); 3 dinit state-machine
-  consistency ports (`queueForConsole` double-enqueue guard,
-  `startCheckDependencies` waiting_for_deps consistency,
-  `ExecuteTransition` waitingForDeps-before-queueForConsole
-  reorder); docs currency across 50+ Markdown files. No binary
-  or config behaviour change.
-- **v2.2.9**: finit-parity release — fresh look at finit 5.0-rc1
-  as a seventh upstream surfaced 9 actionable items, 8 shipped.
-  Highlights: `slinitctl switch-root NEWROOT [INIT]` (initramfs →
-  real-root, unlocks LUKS/LVM/NBD/iSCSI boot paths), `pkg/hooks`
-  (system-up / system-down / switch-root operator scripts) with
-  zero-config `/etc/rc.local` + Debian/BusyBox
-  `/etc/network/interfaces` integration + SIOCSIFFLAGS loopback
-  bring-up, `slinit.cond=` / `slinit.reboot-watchdog` /
-  `slinit.reboot-delay=` kernel-cmdline selectors, `slinitctl
-  suspend` / `edit` subcommands, `tty-path = @console` sentinel,
-  fuzz-found `pkg/journalbin` DATA-header bounds fix (Xeon
-  40-thread hit a `makeslice` panic on a hostile length),
-  boot-console UX rewrite so operator-hook / rc.local / ifup
-  output no longer races bash's login prompt on `/dev/console`.
-  (Skipped: `conflicts:` directive — no user demand, real
-  implementation costs 3-5× the audit's state-machine
-  integration estimate.)
-- **v2.2.10**: finit-parity finalisation + boot-console UX polish
-  + one pre-existing regression closed. The Finit 5.0-rc1 feature
-  comparison now stands at **22 of 23 items shipped** — the
-  remaining two (D-Bus `org.finit` API and dlopen plugin ABI)
-  are deliberate-defer notes (README's finit bullet spells out
-  the reasoning and revisit triggers). New binaries:
-  `slinit-getty` (built-in login-prompt, removes the util-linux
-  `agetty` dependency on embedded images) and `slinit-watchdogd`
-  (runtime WDT petting daemon with SIGPWR handover; complements
-  the shutdown-time WDT already shipped via
-  `slinit.reboot-watchdog`). Fixes: `log-forward-udp` standalone
-  (pre-existing regression from 2026-02-25 where the
-  SyslogForwarder only got constructed inside the LogRotator
-  branch), `SyslogFacilityCode` empty-string default (RFC 3164
-  says LOG_USER=1, not −1), boot-console catch-all mute
-  post-boot + `OnShutdownAnnounce` un-mute so operators still
-  see the reboot notice on `/dev/console`, `tests/functional/96`
-  BusyBox nc UDP sticky-connect (respawn between self-test and
-  assertions), `tests/performance/demo` bimodal +1 s cold-boot
-  spike (runit-svc `ready-check-interval` 1 s → 100 ms; boot
-  distribution tightened from 2780-3790 ms to 2770-2830 ms).
-- **v2.3.0**: first minor bump on the 2.x line, closing the 2.2.x
-  correctness phase. The codebase had by then been validated
-  continuously against real desktop stacks — XFCE 4.20, GNOME 48,
-  KDE Plasma 6, Cinnamon 6 — rather than against test harnesses
-  alone.
-- **v2.3.1–v2.3.4**: `slinit-logind`, the native
-  `org.freedesktop.login1` daemon, and the work to make a graphical
-  desktop actually come up on it. Every fix in this stretch was
-  surfaced by *using* the desktop on ceres — GDM + GNOME 48 on Xorg
-  with elogind's daemon stopped — not by testing it. `slinitctl`
-  also gained a systemctl-style `status` / `show` family. elogind's
-  *package* is still required for `pam_elogind.so`; only its daemon
-  is replaced.
-- **v2.3.5–v2.3.6**: `slinitctl start` now waits for the outcome and
-  exits non-zero on a failed start (`triggered` services need
-  `--no-wait`), plus the first slice of a regression suite built from
-  the systemd bug list on nosystemd.org. **v2.3.6 is a PID-1 safety
-  release**: on v2.3.5 and earlier, Ctrl+Alt+Del pressed during boot
-  panicked the kernel, because signals were claimed far too late in
-  `main`.
-- **v2.3.7–v2.3.8**: containers and observability. slinit as real
-  PID 1 under Docker gained its own suite (`tests/container/`, 23
-  cases plus a soak loop) and a Kubernetes one on `kind`
-  (`tests/k8s/`, 8 cases); between them they found an early-exit
-  hang, lost exit logs and a container that reported a requested
-  stop as a boot failure. Also: a Prometheus `/metrics` endpoint
-  (`--metrics-listen`, hand-written HTTP so `net/http` stays out of
-  PID 1), four degrees of shutdown haste (plain / `now` / `--fast` /
-  `--superfast`), the `slinitctl reboot|halt|poweroff` shortcuts the
-  man page had been promising, and the first written stability
-  commitment in [STABILITY.md](STABILITY.md).
-- **v2.3.9**: a soft-reboot release, every fix found by driving the
-  demo VM through repeated soft reboots and looking at what came back
-  wrong. The console file descriptors handed to the next generation
-  (a soft-rebooted slinit had been concluding it was not on a
-  terminal, silently losing the boot console's colour); the kernel
-  boot time, which had been reported as the machine's uptime and grew
-  with every generation; `slice` without `cgroup`, which had never
-  worked since the directive was introduced; cgroup directories that
-  nobody reclaimed; and a hurried soft reboot that killed in-flight
-  stop-commands, orphaning detached daemons so that every *later*
-  boot failed too.
+A functional run reports passes, skips and failures separately: around
+one case in ten skips for want of cgroup v2, `chrt`, a machine-id, a TPM
+or NUMA in the VM. Read all three numbers.
 
-## Changelog
+## Contributing
 
-Release history and per-version notes: [CHANGELOG.md](CHANGELOG.md).
-Development from v2.0.0 onward tracks three lanes — new features,
-security features, and code fixing.
-
-What slinit promises not to break across releases — the control
-protocol, service directives, CLI exit codes, on-disk formats — and how
-things get deprecated: [STABILITY.md](STABILITY.md).
+[CONTRIBUTING.md](CONTRIBUTING.md) has the build, test and review
+expectations. The short version: `go build ./...`, `go vet ./...`,
+`go test ./...`, and a functional case for anything that touches
+behaviour as PID 1.
 
 ## License
 

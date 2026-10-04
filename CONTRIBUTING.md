@@ -49,13 +49,14 @@ go test ./...
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (92 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
 - **Fuzz targets**: 42 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 15 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the four converters, the sysusers/tmpfiles/timedatectl/hostnamectl parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
 - **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker or `CONTAINER_RUNTIME=podman`) + `./tests/container/soak.sh` (spawn+shutdown loop; `SOAK_BUDGET_SEC` bounds it by wall time)
-- **Kubernetes**: `./tests/k8s/run.sh` (8 cases against a local `kind` cluster)
+- **Kubernetes**: `./tests/k8s/run.sh` (10 cases against a local `kind` cluster)
 - Requires `qemu-system-x86_64` for functional tests, Docker for the container suite, `kind` + `kubectl` for the Kubernetes one
-- A functional case whose precondition is missing prints `SKIP:` and still reports PASS — read the skip lines, not just the tally (see `tests/functional/README.md`)
+- A functional case whose precondition is missing calls `skip_case` and is counted as SKIPPED, not passed (since v2.7.1) — read all three numbers, since roughly one case in ten skips for want of cgroup v2, `chrt`, a machine-id, a TPM or NUMA (see `tests/functional/README.md`)
 
 ### Project Structure
 
-- `cmd/` - Entry points (45 binaries total; run `ls cmd/` for the live
+- `cmd/` - Entry points (45 directories: 44 Go binaries plus the
+  `slinit-resource` shell agent; run `ls cmd/` for the live
   list). Highlights: `slinit` (PID 1), `slinitctl` (control CLI),
   `slinit-runner` (post-fork hardening wrapper), `slinit-check` (config
   linter), `slinit-monitor` / `slinit-shutdown`, `slinit-journalctl` /
