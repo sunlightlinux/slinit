@@ -15,12 +15,117 @@ Development from **v2.0.0** onward focuses on three tracks:
 Pre-v2.0.0 history is summarised at the bottom; `git log v1.10.55` has
 the full commit-level record.
 
-Release tags are lightweight. Seven of them (v2.1.0, v2.2.1–v2.2.7) were
-annotated and were converted on 2026-10-01 for consistency; the messages
-their tagger wrote are kept in
+Release tags through the 2.x line are lightweight. Seven of them (v2.1.0,
+v2.2.1–v2.2.7) were annotated and were converted on 2026-10-01 for
+consistency; the messages their tagger wrote are kept in
 [doc/annotated-tag-archive.md](doc/annotated-tag-archive.md).
+**From v3.0.0 onward tags are annotated and signed**, so a release can be
+verified with `git tag -v`.
 
 ## [Unreleased]
+
+## [3.0.0] — 2026-10-04
+
+**Nothing breaks.** A major release usually means something was removed or
+changed under you; this one means the opposite, and says so first because
+the version number implies otherwise. A service file that loads on 2.x
+loads here. The control protocol stays at v7 with min-compat 1, so any 2.x
+`slinitctl` works against a 3.0 daemon and the reverse. Nothing is
+deprecated — STABILITY.md said so before this release and
+`TestNothingIsDeprecatedYet` keeps it true. The number marks the point at
+which slinit is offered for production use, not a migration.
+
+What the last stretch of 2.x was actually spent on, and what therefore
+stands behind that claim: six things that each reported success they had
+not earned. A lost exit code read as a clean exit, a killed daemon that
+never came back, confinement silently skipped when its helper was absent,
+a dependency graph mutated without a lock from every control connection, a
+service whose command did not exist reporting that it stopped *normally*,
+and a test harness that reported **every** case as PASS. The last one was
+found with a two-line probe after it had been true for three green CI runs.
+None of them was found by reading; each was measured, and the CHANGELOG
+entries for v2.7.0 through v2.7.2 say how.
+
+### Added
+
+- **`slinitctl add-dep` and `rm-dep` accept both argument orders.**
+  slinitctl has always taken `<from> <dep-type> <to>`; **dinitctl** takes
+  `<type> <from> <to>`, and slinitctl(8) documented dinit's order while
+  the implementation used its own — so the manual and the command
+  disagreed for as long as both existed, and whichever one you followed,
+  the other was wrong.
+
+  Both work now. The dependency-type names are a closed set
+  (`depends-on`/`regular`, `waits-for`/`soft`, `depends-ms`/`milestone`,
+  `prepared-by`, `before`, `after`), so whichever position holds one of
+  them is the type. The single ambiguous input — a service actually named
+  after a dependency type — resolves to the middle position, which is the
+  order this command has always implemented.
+
+  This was the last candidate for a breaking change in 3.0, and it turned
+  out not to need one.
+
+### Fixed
+
+- **The logrotate "flake" was a real bug, and a one-line one.** For three
+  weeks an unrelated test would occasionally fail in `t.TempDir()` cleanup
+  with "bad file descriptor" — never in an assertion, and never when the
+  logrotate tests were run on their own.
+
+  A discarded `os.NewFile(w.Fd(), "pipe-write")` in a logbuffer test gave
+  one descriptor two owners. Closing the pipe released the number, the
+  kernel handed it to another test's log file, and whenever the GC
+  collected the orphan its finalizer closed that file out from under its
+  new owner. It was never reproduced on demand; it was found by asking
+  what a double close returns — EBADF, which nobody checks — and then
+  looking for it: `strace -e trace=close -e status=failed` showed exactly
+  one per run, every run, with `runtime.runFinalizers` on the stack.
+
+  `pkg/features/fdownership_test.go` now fails the build on the two ways
+  to give one descriptor two owners, so the pattern cannot come back
+  quietly.
+
+- **Two functional cases carried timing assumptions of their own.** Case
+  223 sampled a log file three seconds after a service started and called
+  an empty sample a failure of the property it was testing; the other four
+  assertions in the same CI run had passed. Five fixed `sleep`s across
+  cases 88 and 226 — a transient pidfile sampled at 0.4s, a respawn
+  counter needing two iterations inside three seconds, a teardown given
+  half a second, a pidfile read two seconds after a reload, and a graceful
+  nginx stop given a flat three — are now bounded waits that return as
+  soon as their condition holds.
+
+### Changed
+
+- **The README is a front page again**, not the place everything went:
+  1695 lines to 345. The reference material moved to where it belongs —
+  `doc/configuration.md` (service examples, directive tables, the daemon's
+  flags), `doc/tools.md` (the 43 companion binaries), `doc/roadmap.md` —
+  byte-identical, so nothing was lost. What stayed is what someone needs
+  in front of them: four service shapes, a `slinitctl` cheat sheet, the
+  architecture notes and the PID 1 signal table.
+
+- **Two tools had two divergent man pages each.** `hostnamectl.1` and
+  `timedatectl.1` have shipped with the binaries since August; pages added
+  under the binaries' own names in v2.7.0 duplicated them, and the
+  Makefile installed all four, so `man hostnamectl` and
+  `man slinit-hostnamectl` gave different documents. There is now one page
+  per tool, named after the binary like the other 44, with the compat name
+  installed as a symlink through the mechanism already used for
+  `man reboot`. 46 pages, one per binary.
+
+- `doc/features.md` is generated and had been stale for two releases —
+  `delegate` was missing. Regenerated, and `slice` and `delegate` are
+  curated as systemd's rather than sitting in the unclassified backlog.
+
+- Documentation counts corrected against measurement across all 75 files,
+  and every relative link in them resolves.
+
+### Release engineering
+
+- **From this release, tags are annotated and signed** — `git tag -v
+  v3.0.0` verifies one. The 2.x tags are lightweight and stay that way;
+  the archive of the seven that were once annotated is unchanged.
 
 ## [2.7.2] — 2026-10-04
 

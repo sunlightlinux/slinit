@@ -29,15 +29,17 @@ The 3.0 list was six items. Five are closed:
    closed another test's file. `pkg/features/fdownership_test.go` now
    fails the build on that pattern.
 
-What is left before the 3.0 cut:
+What 3.0 does **not** include:
 
 * **Packaging and the real-hardware proving ground.** The downstream
   package recipe trails the repo, and "proves slinit as PID 1" deserves
   a current ISO booted on real hardware rather than test counts alone.
-* **`slinitctl add-dep`'s argument order.** The code takes
-  `<from> <dep-type> <to>`, `slinitctl(8)` documents
-  `<kind> <from> <to>`, and dinit uses `<type> <from> <to>`. Changing
-  argv order after 3.0 would be a break, so it wants settling before.
+  That is the first thing after the cut, not part of it.
+
+`slinitctl add-dep`'s argument order was the other open item, and it is
+settled in 3.0.0: both orders work, since the dependency-type names are a
+closed set and the position holding one of them is unambiguous. Nothing
+breaks, and dinit's order is accepted again.
 
 `pam_slinit.so` is scheduled for 3.0.1 rather than 3.0: a PAM module is
 a C shared object, so building one puts the Go runtime into every

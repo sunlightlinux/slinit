@@ -6,7 +6,7 @@ dinit-compatible configuration format.
 
 | | |
 |---|---|
-| **Latest release** | v2.7.2 — see [CHANGELOG.md](CHANGELOG.md) |
+| **Latest release** | v3.0.0 — see [CHANGELOG.md](CHANGELOG.md) |
 | **Compatibility contract** | [STABILITY.md](STABILITY.md) — control protocol v7 (min-compat v1) |
 | **Requires** | Go 1.25+ to build; Linux to run |
 | **License** | [Apache 2.0](LICENSE) |
@@ -223,7 +223,7 @@ slinitctl reload myservice               # re-read from disk, no restart
 slinitctl reload-all
 slinitctl unload myservice                # drop a stopped service from memory
 slinitctl enable|disable myservice        # add/remove a waits-for edge, persisted
-slinitctl add-dep|rm-dep myservice waits-for other   # from, kind, to
+slinitctl add-dep|rm-dep myservice waits-for other   # either argument order
 slinitctl setenv KEY=VALUE                # also unsetenv, getallenv, reset-env
 
 # Logs and attach

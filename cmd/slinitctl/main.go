@@ -455,14 +455,16 @@ doneFlags:
 		err = cmdGetAllEnvGlobal(conn)
 	case "add-dep":
 		if len(cmdArgs) < 3 {
-			fatal("Usage: slinitctl add-dep <from> <dep-type> <to>")
+			fatal("Usage: slinitctl add-dep <from> <dep-type> <to>  (or <dep-type> <from> <to>)")
 		}
-		err = cmdAddDep(conn, cmdArgs[0], cmdArgs[1], cmdArgs[2])
+		depFrom, depKind, depTo := orderDepArgs(cmdArgs[0], cmdArgs[1], cmdArgs[2])
+		err = cmdAddDep(conn, depFrom, depKind, depTo)
 	case "rm-dep":
 		if len(cmdArgs) < 3 {
-			fatal("Usage: slinitctl rm-dep <from> <dep-type> <to>")
+			fatal("Usage: slinitctl rm-dep <from> <dep-type> <to>  (or <dep-type> <from> <to>)")
 		}
-		err = cmdRmDep(conn, cmdArgs[0], cmdArgs[1], cmdArgs[2])
+		depFrom, depKind, depTo := orderDepArgs(cmdArgs[0], cmdArgs[1], cmdArgs[2])
+		err = cmdRmDep(conn, depFrom, depKind, depTo)
 	case "unpin":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdUnpin(conn, name)
@@ -4291,6 +4293,32 @@ func parseDepType(s string) (service.DependencyType, error) {
 	default:
 		return 0, fmt.Errorf("unknown dependency type: %s (use depends-on, waits-for, depends-ms, prepared-by, before, after)", s)
 	}
+}
+
+// orderDepArgs accepts both argument orders for add-dep / rm-dep and
+// returns (from, depType, to).
+//
+// slinitctl has always taken `<from> <dep-type> <to>`, while dinit takes
+// `add-dep <type> <from> <to>` — and slinitctl(8) documented dinit's
+// order, so the manual and the implementation disagreed for as long as
+// both existed. Rather than break whichever set of scripts was following
+// the other, both work: the dependency-type vocabulary is a closed set,
+// so whichever position holds one of its names is the type.
+//
+// The ambiguity is a service actually named `waits-for` (or another type
+// name) in the first position. The middle position wins there, because
+// that is the order this CLI has always implemented and the one its own
+// usage string prints.
+func orderDepArgs(a, b, c string) (from, depType, to string) {
+	if _, err := parseDepType(b); err == nil {
+		return a, b, c // <from> <dep-type> <to> — slinitctl's own order
+	}
+	if _, err := parseDepType(a); err == nil {
+		return b, a, c // <dep-type> <from> <to> — dinit's order
+	}
+	// Neither position names a type: pass the middle one through so the
+	// caller reports the same "unknown dependency type" it always did.
+	return a, b, c
 }
 
 func cmdAddDep(conn net.Conn, fromName, depTypeStr, toName string) error {

@@ -406,15 +406,24 @@ daemon, which is useful at install time or in initramfs.
 :   Drop *service* from the in-memory set. Only allowed when the
     service is stopped and not a dependency of an active service.
 
-**add-dep** *kind* *from* *to*
+**add-dep** *from* *kind* *to*, **add-dep** *kind* *from* *to*
 :   Add a dependency edge of *kind* (`depends-on`/`regular`,
     `waits-for`/`soft`, `depends-ms`/`milestone`, `prepared-by`,
     `before`, `after`) from *from* to *to*. `prepared-by` behaves as
     a hard dependency that also cascades a restart from *from* back to
     *to* — see **slinit-service**(5).
 
-**rm-dep** *kind* *from* *to*
-:   Remove a dependency edge of *kind*.
+    **Both argument orders work** (since 3.0.0). slinitctl has always
+    taken *from* *kind* *to*; **dinitctl**(8) takes *kind* *from* *to*,
+    and this page documented dinit's order while the implementation used
+    its own. Rather than break whichever set of scripts was following the
+    other, the type names are a closed set, so whichever position holds
+    one of them is the *kind*. A service named after a dependency type is
+    the one ambiguous case: the middle position wins, which is the order
+    this command has always implemented.
+
+**rm-dep** *from* *kind* *to*, **rm-dep** *kind* *from* *to*
+:   Remove a dependency edge of *kind*. Both orders, as for **add-dep**.
 
 **enable** *service* [\--from *src*]
 :   Enable *service* by creating a symlink in *src*'s *waits-for.d/*
