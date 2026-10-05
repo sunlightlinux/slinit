@@ -569,6 +569,18 @@ func (s *ProcessService) ScheduleRestartWithBackoff() bool {
 	return true
 }
 
+// CancelPendingRestart disarms the restart-delay timer and reports
+// whether one was armed. See the Service interface for why the state
+// machine needs to be able to call a deferred restart off.
+func (s *ProcessService) CancelPendingRestart() bool {
+	if s.restartDelayTimer == nil {
+		return false
+	}
+	s.restartDelayTimer.Stop()
+	s.restartDelayTimer = nil
+	return true
+}
+
 // fireDelayedInitiateStart is the AfterFunc callback armed by
 // ScheduleRestartWithBackoff. Re-checks the same gate that Stopped()
 // applied — desired might have flipped to Stopped while the timer
@@ -577,16 +589,22 @@ func (s *ProcessService) ScheduleRestartWithBackoff() bool {
 func (s *ProcessService) fireDelayedInitiateStart() {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
-	s.restartDelayTimer = nil
 	if s.state.Load() != StateStopped {
+		// Something else moved the service on while the timer was
+		// pending; whoever did owns its accounting now.
+		s.restartDelayTimer = nil
 		return
 	}
-	if s.desired.Load() != StateStarted {
+	if s.desired.Load() != StateStarted || s.pinnedStopped {
+		// Giving up the restart. Stopped() skipped the inactive
+		// transition because it expected this timer to restart the
+		// service, so settle it here instead — otherwise the service
+		// stays counted active while sitting in STOPPED forever.
+		s.Record().abandonPendingRestart()
+		s.services.processQueuesLocked()
 		return
 	}
-	if s.pinnedStopped {
-		return
-	}
+	s.restartDelayTimer = nil
 	s.Record().initiateStart()
 	s.services.processQueuesLocked()
 }

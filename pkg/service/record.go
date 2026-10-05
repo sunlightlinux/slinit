@@ -53,6 +53,14 @@ type Service interface {
 	// restart-delay semantics restart immediately, as they do today.
 	ScheduleRestartWithBackoff() bool
 
+	// CancelPendingRestart disarms a restart-delay timer armed by
+	// ScheduleRestartWithBackoff and reports whether there was one to
+	// disarm. It is the counterpart that lets the state machine call a
+	// deferred restart off, since a service parked on such a timer sits
+	// in STOPPED while still counted active. Default (ServiceRecord)
+	// returns false — nothing to cancel.
+	CancelPendingRestart() bool
+
 	// Process info (for process-based services; defaults return -1/{})
 	PID() int
 	GetExitStatus() ExitStatus
@@ -467,6 +475,23 @@ type ServiceRecord struct {
 	// and route the service into the FAILED stable state instead of
 	// re-entering initiateStart.
 	restartLimitExhausted bool
+
+	// restartPending is set while Stopped() has handed a wanted restart
+	// to a restart-delay timer instead of calling initiateStart itself.
+	// The service then sits in STOPPED while still counted among the
+	// active services, because the restart is part of the same
+	// activation — so STOPPED alone no longer means "inactive", and
+	// every place that keys off it has to consult this:
+	//
+	//   - doStart's wasActive test would otherwise take the active count
+	//     a second time (one `slinitctl restart` per extra count);
+	//   - Stop, Release and doStop are all guarded by `state != STOPPED`
+	//     and would find nothing to do, leaving the count up for good.
+	//
+	// A count that never returns to zero makes the event loop wait out
+	// the entire emergency timeout at shutdown with no service to blame,
+	// since every record really is STOPPED.
+	restartPending bool
 
 	// startedEmitted collapses redundant Started() calls within one
 	// session so the boot console shows exactly one "[ OK ] name"
@@ -1057,6 +1082,10 @@ func (sr *ServiceRecord) PID() int                    { return -1 }
 func (sr *ServiceRecord) GetExitStatus() ExitStatus   { return ExitStatus{} }
 func (sr *ServiceRecord) BecomingInactive()           {}
 func (sr *ServiceRecord) CheckRestart() bool          { return true }
+
+// CancelPendingRestart default: no restart-delay timer exists for this
+// service kind, so there is never one to disarm.
+func (sr *ServiceRecord) CancelPendingRestart() bool { return false }
 
 // ScheduleRestartWithBackoff default: no delay semantics for this
 // service kind. Types with a restart-delay knob (ProcessService,
@@ -2299,6 +2328,11 @@ func (sr *ServiceRecord) Stop(bringDown bool) {
 	if bringDown && sr.state.Load() != StateStopped {
 		sr.stopReason = ReasonNormal
 		sr.doStop(false)
+	} else if bringDown {
+		// Already STOPPED — but possibly only because a restart was
+		// deferred to a restart-delay timer, which leaves the service
+		// counted active. This is the stop that calls it off.
+		sr.abandonPendingRestart()
 	}
 }
 
@@ -2436,8 +2470,67 @@ func (sr *ServiceRecord) Release(issueStop bool) {
 		if sr.state.Load() != StateStopped && sr.state.Load() != StateStopping && issueStop {
 			sr.stopReason = ReasonNormal
 			sr.doStop(false)
+		} else if sr.state.Load() == StateStopped {
+			// Nothing requires this service any more. If it was only
+			// STOPPED because a restart-delay timer was going to bring
+			// it back, that restart is now pointless — call it off, so
+			// the active-service count it is still holding comes down.
+			sr.abandonPendingRestart()
 		}
 	}
+}
+
+// settleInactive runs the tail of a stop for a service that is not
+// going to restart: it gives up the explicit activation (or, if it was
+// held only by dependents, the active-service count directly). State is
+// already STOPPED by the time this runs.
+//
+// Factored out of Stopped() because the restart-delay path reaches the
+// same place later and by a different door — see abandonPendingRestart.
+func (sr *ServiceRecord) settleInactive() {
+	sr.self.BecomingInactive()
+
+	if sr.startExplicit {
+		sr.startExplicit = false
+		sr.Release(false)
+	} else if sr.requiredBy == 0 {
+		sr.services.ServiceInactive(sr.self)
+	}
+}
+
+// abandonPendingRestart calls off a restart that Stopped() deferred to a
+// restart-delay timer, and settles the service into the inactive state
+// Stopped() would have reached had it known the restart was not coming.
+// It is a no-op for a service with no such timer armed, which is every
+// service most of the time.
+//
+// Why every stop door has to call this: a service parked on a
+// restart-delay timer sits in STOPPED while still counted active,
+// because to the state machine it is mid-restart. Stop(), Release() and
+// doStop() are all guarded by `state != STOPPED`, so each of them finds
+// nothing to do and returns — leaving the timer armed and the count up.
+// The timer then declines to restart (desired is STOPPED now) and the
+// count never comes back down. CountActiveServices never reaches zero
+// again, so at shutdown the event loop waits out the entire emergency
+// timeout and cannot name a blocker, because every record really is
+// STOPPED. A single `slinitctl restart` of a type=process service was
+// enough to arm it.
+func (sr *ServiceRecord) abandonPendingRestart() {
+	if !sr.restartPending {
+		return
+	}
+	sr.restartPending = false
+	sr.self.CancelPendingRestart()
+	sr.desired.Store(StateStopped)
+	// Drop the explicit activation the way Stop() does. settleInactive
+	// otherwise hands off to Release(), which has nothing left to do on
+	// a service that is already STOPPED and so would not release the
+	// active count either.
+	if sr.startExplicit {
+		sr.startExplicit = false
+		sr.requiredBy--
+	}
+	sr.settleInactive()
 }
 
 // ReleaseDependencies releases all held dependency acquisitions.
@@ -2612,7 +2705,16 @@ func (sr *ServiceRecord) doStart() {
 		}
 		sr.notifyListeners(EventStopCancelled)
 	} else {
-		sr.services.ServiceActive(sr.self)
+		if sr.restartPending {
+			// STOPPED, but only because a restart-delay timer is
+			// holding the restart that belongs to this same activation.
+			// The service is already counted active, so take over the
+			// restart rather than counting it twice: disarm the timer
+			// and fall through to initiateStart below.
+			sr.self.CancelPendingRestart()
+		} else {
+			sr.services.ServiceActive(sr.self)
+		}
 		sr.propRequire = !sr.propRelease
 		sr.propRelease = false
 		if sr.propRequire {
@@ -2624,6 +2726,11 @@ func (sr *ServiceRecord) doStart() {
 }
 
 func (sr *ServiceRecord) initiateStart() {
+	// A start is underway, so the service is no longer parked on a
+	// restart-delay timer — whether this start IS that restart or took
+	// it over. The state leaves STOPPED just below, which is also what
+	// makes a timer that still fires bow out harmlessly.
+	sr.restartPending = false
 	sr.startFailed = false
 	// Clear the per-session Started()-emitted flag so the next
 	// successful start emits its own boot-console line.
@@ -3009,18 +3116,13 @@ func (sr *ServiceRecord) Stopped() {
 		// bail out here so the two paths don't race. Services without
 		// restart-delay semantics (default ServiceRecord) return false
 		// and the immediate initiateStart runs as before.
-		if !sr.self.ScheduleRestartWithBackoff() {
+		if sr.self.ScheduleRestartWithBackoff() {
+			sr.restartPending = true
+		} else {
 			sr.initiateStart()
 		}
 	} else {
-		sr.self.BecomingInactive()
-
-		if sr.startExplicit {
-			sr.startExplicit = false
-			sr.Release(false)
-		} else if sr.requiredBy == 0 {
-			sr.services.ServiceInactive(sr.self)
-		}
+		sr.settleInactive()
 	}
 
 	// systemd-style failure-action / success-action: pick whichever
@@ -3450,6 +3552,12 @@ func (sr *ServiceRecord) HasLoneRef(handleCount int) bool {
 // PrepareForUnload removes all dependency links bidirectionally before the
 // service is removed from the ServiceSet.
 func (sr *ServiceRecord) PrepareForUnload() {
+	// A record about to leave the set must not leave a restart-delay
+	// timer armed behind it, nor the active-service count it is still
+	// holding — GetActiveServiceInfo would no longer be able to name it
+	// as a blocker, since it is about to stop being a record at all.
+	sr.abandonPendingRestart()
+
 	// Remove ourselves from each dependency's dependents list
 	for _, dep := range sr.dependsOn {
 		toRec := dep.To.Record()
