@@ -176,6 +176,11 @@ type ServiceDescription struct {
 	LogFilePerms  int
 	LogFileUID    int
 	LogFileGID    int
+
+	// logTypeExplicit records that `log-type` was written out, so a
+	// deliberate choice is never second-guessed by resolveLogDestinations.
+	// Unexported: a parser detail, not configuration.
+	logTypeExplicit bool
 	LogBufMax     int
 	LogMaxSize    int64         // max logfile size before rotation (bytes)
 	LogMaxFiles   int           // max number of rotated log files to keep
@@ -958,7 +963,33 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 		return nil, fmt.Errorf("reading service description for %s: %w", name, err)
 	}
 
+	resolveLogDestinations(desc)
+
 	return desc, nil
+}
+
+// resolveLogDestinations settles what happens when a service names both
+// a logfile and an output-logger.
+//
+// `logfile` and `output-logger` each used to claim log-type only while
+// it was still unset, so whichever appeared FIRST in the file won and
+// the other was parsed, stored and then silently never used. The same
+// two directives in the other order produced the opposite destination.
+// Nothing reported the discarded one.
+//
+// Both are now honoured: log-type becomes `file`, which is the pipeline
+// that can carry a second destination (the rotator already feeds the
+// UDP forwarder the same way), and setupLogging attaches the logger
+// command to it as a sink. An explicit `log-type` is left alone — an
+// operator who wrote `log-type = command` next to a stale logfile line
+// meant the command.
+func resolveLogDestinations(desc *ServiceDescription) {
+	if desc.logTypeExplicit {
+		return
+	}
+	if desc.LogFile != "" && len(desc.OutputLogger) > 0 {
+		desc.LogType = service.LogToFile
+	}
 }
 
 // handleInclude processes @include and @include-opt directives.
@@ -3290,6 +3321,7 @@ func applyRestart(desc *ServiceDescription, value string) error {
 }
 
 func applyLogType(desc *ServiceDescription, value string) error {
+	desc.logTypeExplicit = true
 	switch strings.ToLower(value) {
 	case "none":
 		desc.LogType = service.LogNone

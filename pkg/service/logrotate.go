@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,6 +92,13 @@ type LogRotator struct {
 	// a syslog packet; failures on the UDP send do not backpressure
 	// the local write path.
 	forwarder *SyslogForwarder
+
+	// sink is an additional destination every accepted line is copied
+	// to, alongside the file. It exists so `logfile` and
+	// `output-logger` can both be honoured: the service writes to this
+	// rotator, and the rotator feeds the logger command's stdin. Nil
+	// when no second destination is configured.
+	sink io.Writer
 
 	// s6-log-style priority alert channel. alertFilePath="" disables.
 	// When enabled, lines with syslog priority <= alertLevel are ALSO
@@ -180,6 +188,11 @@ type LogRotatorConfig struct {
 	// nil = disabled.
 	Forwarder *SyslogForwarder
 
+	// Sink receives a copy of every accepted line, after filtering and
+	// rate limiting, in addition to the file. Used for an
+	// `output-logger` command running beside a `logfile`.
+	Sink io.Writer
+
 	// s6-log-style priority alert channel. When AlertFilePath is non-
 	// empty, every line whose syslog priority is <= AlertLevel is
 	// ALSO written to AlertFilePath (in addition to the main sink).
@@ -253,6 +266,7 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 	if cfg.Forwarder != nil {
 		lr.forwarder = cfg.Forwarder
 	}
+	lr.sink = cfg.Sink
 	lr.alertFilePath = cfg.AlertFilePath
 	if cfg.AlertLevel < 0 || cfg.AlertFilePath == "" {
 		lr.alertLevel = -1
@@ -601,6 +615,16 @@ func (lr *LogRotator) processLine(line []byte) {
 	// local write.
 	if lr.forwarder != nil {
 		lr.forwarder.Send(out)
+	}
+
+	// Second destination, if any. Errors are deliberately dropped: the
+	// sink is a pipe to a logger command, that command is supervised
+	// and restarted elsewhere (loggersupervise.go), and the whole point
+	// of this design is that a sick log consumer cannot disturb the
+	// service's own logging. The file write below is the one that
+	// matters.
+	if lr.sink != nil {
+		_, _ = lr.sink.Write(out)
 	}
 
 	// Journal emit — mirror the accepted line into the structured

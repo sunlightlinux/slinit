@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -73,6 +75,12 @@ type ProcessService struct {
 	stopPID    int // PID of stop-command process (0 if none)
 	exitStatus ExitStatus
 	procHandle process.ProcessHandle
+
+	// pidPublished mirrors pid for readers that cannot take queueMu —
+	// PID(), and through it the log rotator's GetPID callback and the
+	// status encoders. Written at pid's two assignment sites only; see
+	// PID() for why the bare int read it replaced was a data race.
+	pidPublished atomic.Int64
 
 	// Timer for start/stop/restart timeouts
 	processTimer *time.Timer
@@ -1341,12 +1349,23 @@ func (s *ProcessService) SetRestartLimits(interval time.Duration, maxCount int) 
 
 // PID returns the process ID of the running service.
 func (s *ProcessService) PID() int {
-	// pid is written under queueMu.Lock by the scheduler. We can't RLock
-	// here because PID() is also called from within queueMu.Lock via
-	// notifyListeners → encodeStatus5Into callbacks (RWMutex is not
-	// reentrant). Relies on int reads being atomic on supported archs;
-	// worst case a reader sees a stale value, never a torn one.
-	return s.pid
+	// Read from the atomic mirror, not from s.pid.
+	//
+	// s.pid is written under queueMu.Lock by the scheduler, and PID()
+	// cannot take that lock: it is also called from inside the locked
+	// region via notifyListeners → encodeStatus5Into, and the RWMutex
+	// is not reentrant. This used to read s.pid bare, on the argument
+	// that an int read is atomic on supported architectures — true of
+	// the hardware, but still a data race, and the race detector says
+	// so. It went unreported only because no test had a goroutine
+	// calling PID() while a start was writing it; the log rotator does
+	// exactly that through its GetPID callback, which the multiwriter
+	// test finally exercised.
+	//
+	// The mirror is written at both of s.pid's two assignments and
+	// nowhere else. Keep it that way, or make s.pid itself the atomic
+	// and convert its ~30 in-lock readers.
+	return int(s.pidPublished.Load())
 }
 
 // GetExitStatus returns the exit status of the last process.
@@ -1886,12 +1905,31 @@ func (s *ProcessService) startProcess() error {
 			s.logMaxLineLength > 0 ||
 			s.logTimestampMode != "" || s.logLinePrefix != "" ||
 			s.logForwardUDP != "" ||
+			len(s.outputLogger) > 0 ||
 			s.alertFile != "" {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 			}
 			// Build the UDP forwarder before the rotator so we can
 			// bail out cleanly if the destination doesn't resolve.
+			// output-logger beside a logfile: the service writes to
+			// the rotator, and the rotator copies each accepted line
+			// into the logger's stdin. Both destinations are honoured
+			// instead of one silently winning, and because slinit —
+			// not the service — writes to the logger, a sick logger
+			// cannot reach the service at all.
+			var loggerSink io.Writer
+			if len(s.outputLogger) > 0 {
+				w, sup, lerr := startLoggerSupervisor(
+					s.outputLogger, s.serviceName, "output-logger",
+					s.services.logger, s.hasRunningProcess)
+				if lerr != nil {
+					return fmt.Errorf("output-logger: %w", lerr)
+				}
+				s.loggerSup = sup
+				loggerSink = w
+			}
+
 			var forwarder *SyslogForwarder
 			if s.logForwardUDP != "" {
 				fw, ferr := NewSyslogForwarder(
@@ -1929,6 +1967,7 @@ func (s *ProcessService) startProcess() error {
 				LinePrefix:     s.logLinePrefix,
 				ReadBufferSize: s.logReadBufferSize,
 				Forwarder:      forwarder,
+				Sink:           loggerSink,
 				AlertFilePath: s.alertFile,
 				AlertLevel:    s.alertLevel,
 				ServiceName:   s.serviceName,
@@ -2221,6 +2260,7 @@ func (s *ProcessService) startProcess() error {
 	}
 
 	s.pid = pid
+	s.pidPublished.Store(int64(pid))
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Create utmp entry if inittab-id or inittab-line is configured
@@ -2425,6 +2465,7 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	}
 
 	s.pid = 0
+	s.pidPublished.Store(0)
 	s.procHandle.Clear()
 	s.cancelTimer()
 	s.stopWatchdogWatcherLocked()
