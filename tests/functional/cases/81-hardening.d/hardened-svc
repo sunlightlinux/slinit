@@ -30,6 +30,23 @@ if hostname slinit-pwn 2>/dev/null; then
 else
     host=protected
 fi
-echo "cgroup=$$cgroup clock=$$clock host=$$host" > /var/tmp/hardening-out/result
+# Record what the kernel thinks of this process, not only whether the
+# probes failed. 81-hardening failed in CI on 2026-10-05 with
+# clock=writable and host=writable while cgroup=protected, and could
+# not be reproduced in 10 local runs. Without these fields that failure
+# is unattributable: "Seccomp: 2" means the filter WAS installed and
+# does not cover what date/hostname called, while "Seccomp: 0" means it
+# never got installed and the question is slinit-side. There is no way
+# to tell after the fact, so record it up front.
+seccomp=$$(awk '/^Seccomp:/{print $$2}' /proc/self/status 2>/dev/null)
+nnp=$$(awk '/^NoNewPrivs:/{print $$2}' /proc/self/status 2>/dev/null)
+# Is /sys/fs/cgroup even a mount here? protect-control-groups remounts
+# it read-only only "if mount" — where it is not mounted the write
+# below fails for an unrelated reason and the assertion passes without
+# testing anything.
+cgmount=$$(awk '$$2 == "/sys/fs/cgroup" {print "yes:" $$3 ":" $$4; found=1} END{if(!found) print "no"}' \
+    /proc/self/mounts 2>/dev/null)
+echo "cgroup=$$cgroup clock=$$clock host=$$host seccomp=$${seccomp:-?} nnp=$${nnp:-?} cgmount=$$cgmount" \
+    > /var/tmp/hardening-out/result
 exec sleep 600
 end script
