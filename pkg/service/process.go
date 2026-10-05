@@ -208,10 +208,14 @@ type ProcessService struct {
 	// When set, stdout (and stderr unless errorLogger is set) is piped
 	// to the output-logger command. If errorLogger is set, stderr is
 	// piped to it separately.
-	outputLogger []string  // command + args for stdout logger
-	errorLogger  []string  // command + args for stderr logger (optional)
-	loggerCmd    *exec.Cmd // running output-logger process
-	errLoggerCmd *exec.Cmd // running error-logger process
+	outputLogger []string // command + args for stdout logger
+	errorLogger  []string // command + args for stderr logger (optional)
+	// Each logger runs under a supervisor that restarts it when it
+	// exits: slinit holds the pipe read end, so the service cannot be
+	// killed by SIGPIPE when its log consumer goes away. See
+	// loggersupervise.go.
+	loggerSup    *loggerSupervisor // output-logger
+	errLoggerSup *loggerSupervisor // error-logger
 
 	// Cron-like periodic task
 	cronRunner *CronRunner
@@ -1982,7 +1986,9 @@ func (s *ProcessService) startProcess() error {
 		// a separate error-logger is configured) to it. This is the
 		// OpenRC OUTPUT_LOGGER equivalent.
 		var err error
-		outputPipe, s.loggerCmd, err = spawnLoggerCommand(s.outputLogger, s.serviceName, "output-logger")
+		outputPipe, s.loggerSup, err = startLoggerSupervisor(
+			s.outputLogger, s.serviceName, "output-logger", s.services.logger,
+			s.hasRunningProcess)
 		if err != nil {
 			return fmt.Errorf("output-logger: %w", err)
 		}
@@ -1992,13 +1998,14 @@ func (s *ProcessService) startProcess() error {
 	var errorPipe *os.File
 	if s.logType == LogToCommand && len(s.errorLogger) > 0 {
 		var err error
-		errorPipe, s.errLoggerCmd, err = spawnLoggerCommand(s.errorLogger, s.serviceName, "error-logger")
+		errorPipe, s.errLoggerSup, err = startLoggerSupervisor(
+			s.errorLogger, s.serviceName, "error-logger", s.services.logger,
+			s.hasRunningProcess)
 		if err != nil {
 			// Clean up the output-logger we already started
-			if s.loggerCmd != nil {
-				s.loggerCmd.Process.Kill()
-				s.loggerCmd.Wait()
-				s.loggerCmd = nil
+			if s.loggerSup != nil {
+				s.loggerSup.Stop()
+				s.loggerSup = nil
 			}
 			if outputPipe != nil {
 				outputPipe.Close()
@@ -2934,48 +2941,16 @@ func (s *ProcessService) Continue() bool {
 // IsPaused returns whether the service is currently paused.
 func (s *ProcessService) IsPaused() bool { return s.paused }
 
-// spawnLoggerCommand starts an external command that reads from a pipe on its
-// stdin. Returns the write-end of the pipe (to be used as the child's stdout
-// or stderr) and the running *exec.Cmd. The caller must close the pipe after
-// passing it to StartProcess.
-func spawnLoggerCommand(cmdArgs []string, svcName, label string) (*os.File, *exec.Cmd, error) {
-	r, w, err := os.Pipe()
-	if err != nil {
-		return nil, nil, fmt.Errorf("pipe: %w", err)
-	}
-
-	cmd := exec.CommandContext(context.Background(), cmdArgs[0], cmdArgs[1:]...)
-	cmd.Stdin = r
-	// Logger's own stdout/stderr go to /dev/null to avoid feedback loops.
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	if err := cmd.Start(); err != nil {
-		r.Close()
-		w.Close()
-		return nil, nil, fmt.Errorf("start %s for %s: %w", label, svcName, err)
-	}
-
-	// Close the read-end in the parent — the child inherited it via fork.
-	r.Close()
-
-	// Reap the logger process in the background so it doesn't zombie.
-	go cmd.Wait()
-
-	return w, cmd, nil
-}
-
 // stopLoggerCommands kills any running output/error logger processes and
 // cleans up references. Called when the service stops or becomes inactive.
 func (s *ProcessService) stopLoggerCommands() {
-	if s.loggerCmd != nil && s.loggerCmd.Process != nil {
-		s.loggerCmd.Process.Kill()
-		s.loggerCmd = nil
+	if s.loggerSup != nil {
+		s.loggerSup.Stop()
+		s.loggerSup = nil
 	}
-	if s.errLoggerCmd != nil && s.errLoggerCmd.Process != nil {
-		s.errLoggerCmd.Process.Kill()
-		s.errLoggerCmd = nil
+	if s.errLoggerSup != nil {
+		s.errLoggerSup.Stop()
+		s.errLoggerSup = nil
 	}
 	// Standalone syslog-forward (no rotator) cleanup — closes the
 	// UDP socket the forwarder cached. Nil-safe.
