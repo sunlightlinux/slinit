@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // hooksDir is the base directory containing per-point subdirectories.
@@ -158,18 +159,18 @@ func runOne(point, path string, logger *logging.Logger) error {
 	go pipeLines(&wg, stdout, "hook", point, path, logger)
 	go pipeLines(&wg, stderr, "hook", point, path, logger)
 	wg.Wait()
-	if err := cmd.Wait(); err != nil {
+	if err := process.WaitAdhoc(cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("timeout after %v", perScriptTimeout)
 		}
-		// ECHILD == the PID-1 SIGCHLD reaper grabbed our child
-		// before cmd.Wait could waitid on it. Slinit-as-PID-1
-		// generic-reaps every zombie; that reaping widens with
-		// hooks that pipe stdout/stderr because Wait blocks on
-		// drain, extending the window. Exit status is lost when
-		// this happens — but hooks are best-effort by contract
-		// (a failure never gates boot), so treat ECHILD as
-		// success rather than logging a spurious "failed" warning.
+		// WaitAdhoc, not cmd.Wait: slinit-as-PID-1 generic-reaps
+		// every zombie, and the window is widest exactly here —
+		// a hook that pipes stdout/stderr makes Wait block on
+		// drain. The router hands the real status back, so ECHILD
+		// no longer stands in for a status we never got. It is kept
+		// as a fallback: hooks are best-effort by contract (a
+		// failure never gates boot), so absorbing it beats logging
+		// a spurious "failed" warning.
 		if errors.Is(err, syscall.ECHILD) {
 			return nil
 		}

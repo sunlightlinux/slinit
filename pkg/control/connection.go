@@ -16,6 +16,7 @@ import (
 
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/persist"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -2177,7 +2178,7 @@ func (c *Connection) handleRunAction(payload []byte) error {
 
 	// Execute the action command synchronously and capture output.
 	execCmd := exec.Command(cmd[0], cmd[1:]...)
-	output, execErr := execCmd.CombinedOutput()
+	output, execErr := process.CombinedOutputAdhoc(execCmd)
 	if execErr != nil {
 		// Return NAK with the error message + any partial output
 		msg := fmt.Sprintf("action '%s' failed: %v\n%s", actionName, execErr, string(output))

@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // HealthChecker runs periodic health checks on a STARTED service.
@@ -141,7 +143,7 @@ func (hc *HealthChecker) checkOnce() bool {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, hc.command[0], hc.command[1:]...)
-	err := cmd.Run()
+	err := process.RunAdhoc(cmd)
 
 	if err == nil {
 		// Healthy — reset failure counter
@@ -197,7 +199,7 @@ func (hc *HealthChecker) runUnhealthyCmd() {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, hc.unhealthyCmd[0], hc.unhealthyCmd[1:]...)
-	if err := cmd.Run(); err != nil {
+	if err := process.RunAdhoc(cmd); err != nil {
 		hc.logger.Info("Service '%s': unhealthy-command failed: %v", hc.svc.Name(), err)
 	}
 }

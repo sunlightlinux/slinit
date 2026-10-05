@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // PredicateKind identifies one of the systemd-style start preconditions.
@@ -408,12 +410,16 @@ func checkExecCondition(cmdline string) (bool, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), execConditionTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdline)
-	if err := cmd.Run(); err != nil {
+	if err := process.RunAdhoc(cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return false, fmt.Sprintf("exec-condition %q timed out after %s", cmdline, execConditionTimeout)
 		}
-		if ee, ok := err.(*exec.ExitError); ok {
-			return false, fmt.Sprintf("exec-condition %q exited %d", cmdline, ee.ExitCode())
+		// ExitCodeOf, not a type assertion on *exec.ExitError: when the
+		// PID-1 reaper took the child, the status comes back from the
+		// exit router instead and cannot be an *exec.ExitError, since
+		// that type can only be built from an os.ProcessState.
+		if code, ok := process.ExitCodeOf(err); ok {
+			return false, fmt.Sprintf("exec-condition %q exited %d", cmdline, code)
 		}
 		return false, fmt.Sprintf("exec-condition %q: %v", cmdline, err)
 	}

@@ -34,6 +34,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // JournalSubpaths is the set of directories, relative to the mounted
@@ -71,7 +73,7 @@ func Attach(path string, policy *Policy) (mountDir, journalDir string, detach fu
 
 	// losetup -Pf --show <img>  binds a free loop dev with partition
 	// scanning enabled. Read-only via --read-only (`-r`).
-	out, err := exec.Command("losetup", "--find", "--show", "--read-only", "--partscan", path).Output()
+	out, err := process.OutputAdhoc(exec.Command("losetup", "--find", "--show", "--read-only", "--partscan", path))
 	if err != nil {
 		return "", "", nil, fmt.Errorf("dissect: losetup %s: %w", path, err)
 	}
@@ -83,7 +85,7 @@ func Attach(path string, policy *Policy) (mountDir, journalDir string, detach fu
 	// detachLoop is used by every early-return path plus the final
 	// Detach we hand back to the caller.
 	detachLoop := func() error {
-		return exec.Command("losetup", "--detach", loopDev).Run()
+		return process.RunAdhoc(exec.Command("losetup", "--detach", loopDev))
 	}
 
 	// Probe candidates: the whole-device node first (raw fs images),
@@ -116,7 +118,7 @@ func Attach(path string, policy *Policy) (mountDir, journalDir string, detach fu
 			jdir := filepath.Join(tmpMount, sub)
 			if _, err := os.Stat(jdir); err == nil {
 				detach := func() error {
-					_ = exec.Command("umount", tmpMount).Run()
+					_ = process.RunAdhoc(exec.Command("umount", tmpMount))
 					_ = os.Remove(tmpMount)
 					return detachLoop()
 				}
@@ -124,7 +126,7 @@ func Attach(path string, policy *Policy) (mountDir, journalDir string, detach fu
 			}
 		}
 		// No journal in this partition — umount and try next.
-		_ = exec.Command("umount", tmpMount).Run()
+		_ = process.RunAdhoc(exec.Command("umount", tmpMount))
 	}
 	_ = os.Remove(tmpMount)
 	_ = detachLoop()
@@ -158,7 +160,7 @@ func loopPartitions(loopDev string) ([]string, error) {
 // knows about. Returns nil on success, wrapped error otherwise.
 func mountRO(dev, mountpoint string) error {
 	cmd := exec.Command("mount", "-o", "ro", dev, mountpoint)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := process.CombinedOutputAdhoc(cmd); err != nil {
 		return fmt.Errorf("mount %s → %s: %v (%s)", dev, mountpoint, err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -169,7 +171,7 @@ func mountRO(dev, mountpoint string) error {
 // Best-effort — a probe failure returns ("", err) so callers can
 // decide whether to skip or refuse.
 func probeDeviceKind(dev string) (string, error) {
-	out, err := exec.Command("lsblk", "-no", "FSTYPE", dev).Output()
+	out, err := process.OutputAdhoc(exec.Command("lsblk", "-no", "FSTYPE", dev))
 	if err != nil {
 		return "", err
 	}

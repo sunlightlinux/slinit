@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // cronPersistDir is the directory where CronRunner writes lastRun
@@ -510,19 +512,16 @@ func (cr *CronRunner) executeCommand() error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cr.command[0], cr.command[1:]...)
-	err := cmd.Run()
+	// RunAdhoc, not cmd.Run: slinit's global SIGCHLD reaper can claim
+	// the zombie before os/exec's own wait sees it, and the exit code
+	// gates on-error=stop. RunAdhoc registers the child so the reaper
+	// hands the real status back instead.
+	err := process.RunAdhoc(cmd)
 	if isECHILDErr(err) {
-		// PID-1 race: slinit's global SIGCHLD reaper (pkg/process/
-		// exitrouter.go) claimed the zombie before exec.Cmd's own
-		// Wait4 could see it. The command DID run and exit —
-		// there's just nobody left to read its status from. The
-		// same shape is handled inline for slinit-supervised
-		// children at pkg/process/exec.go:551 via routedCh; cron
-		// commands go through the vanilla os/exec path (they're
-		// not slinit services) so we absorb ECHILD here instead.
-		// Loses exit-code visibility for the on-error=stop branch
-		// on this one iteration — acceptable given the alternative
-		// is a spurious error line on every cron tick.
+		// Fallback only. With RunAdhoc the status is routed back, so
+		// getting here means the router had nothing either — the
+		// command still ran, and a spurious error line on every cron
+		// tick is the worse of the two outcomes.
 		return nil
 	}
 	return err

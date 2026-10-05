@@ -779,7 +779,7 @@ func loadAppArmorProfile(path string) error {
 			return fmt.Errorf("apparmor_parser not found: %w", err)
 		}
 	}
-	out, runErr := exec.Command(bin, "-r", path).CombinedOutput()
+	out, runErr := CombinedOutputAdhoc(exec.Command(bin, "-r", path))
 	if runErr != nil {
 		return fmt.Errorf("apparmor_parser -r %s: %w: %s",
 			path, runErr, strings.TrimSpace(string(out)))

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // PowerState is what a UPS daemon has told init about mains power.
@@ -127,7 +128,7 @@ func RunPowerHook(state PowerState, logger *logging.Logger) {
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	err := cmd.Run()
+	err := process.RunAdhoc(cmd)
 
 	if logger != nil {
 		for _, line := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {

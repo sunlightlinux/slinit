@@ -25,6 +25,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // Action is what the menu returns to the caller so the boot code
@@ -457,7 +459,7 @@ func forkShellOnConsole(w io.Writer, candidates []string, consolePath string, ru
 		// the caller's TERM instead of appending so ours wins.
 		cmd.Env = withTermDumb(os.Environ())
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-		if err := cmd.Run(); err != nil {
+		if err := process.RunAdhoc(cmd); err != nil {
 			fmt.Fprintf(w, "\n[recovery] shell exited with error: %v\n", err)
 		}
 	}

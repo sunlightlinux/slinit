@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"golang.org/x/sys/unix"
 )
 
@@ -140,15 +141,15 @@ func RunIfup(up bool, logger *logging.Logger) error {
 	// operators can grep the log stream.
 	go pipeLines(stdout, logger)
 	logger.Info("network: running %s %v", tool, args)
-	if err := cmd.Wait(); err != nil {
+	if err := process.WaitAdhoc(cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("ifup: timeout after %v", ifupTimeout)
 		}
-		// PID-1 SIGCHLD reaper race — see pkg/hooks/runOne
-		// comment. ECHILD means slinit's generic reaper grabbed
-		// the child before cmd.Wait could waitid on it. Exit
-		// status is lost but the ifup ran; treat as success
-		// under the best-effort contract.
+		// WaitAdhoc above registers the child with the exit
+		// router, so the PID-1 reaper claiming it first no longer
+		// costs us the status. ECHILD is kept as a fallback for a
+		// status the router did not have either: the ifup ran, and
+		// best-effort is the contract here.
 		if errors.Is(err, syscall.ECHILD) {
 			return nil
 		}

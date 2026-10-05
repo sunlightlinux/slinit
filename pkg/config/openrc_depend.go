@@ -22,6 +22,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // OpenRCDepend is the parsed shape of a `depend()` function.
@@ -139,7 +141,7 @@ func ParseOpenRCDepend(scriptPath string) (*OpenRCDepend, error) {
 	// the sandbox.
 	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
 
-	err := cmd.Run()
+	err := process.RunAdhoc(cmd)
 	// A non-zero exit is fine if the script errored after emitting
 	// some lines; report the error only when there's nothing to
 	// return.

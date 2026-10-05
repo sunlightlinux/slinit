@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // defaultReadBufferSize is the fallback read-chunk size used by
@@ -941,7 +943,7 @@ func (lr *LogRotator) runProcessor(rotatedFile string) {
 	if lr.logger != nil {
 		lr.logger.Info("Service '%s': running log-processor on %s", lr.serviceName, rotatedFile)
 	}
-	if err := cmd.Run(); err != nil {
+	if err := process.RunAdhoc(cmd); err != nil {
 		if lr.logger != nil {
 			lr.logger.Error("Service '%s': log-processor failed: %v", lr.serviceName, err)
 		}

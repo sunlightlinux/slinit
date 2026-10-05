@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // Legacy well-known paths honoured by SysV/Debian/Slackware/Alpine
@@ -145,7 +146,7 @@ func runRcLocalScript(path string, logger *logging.Logger) error {
 	go pipeLines(&wg, stdout, "rc.local", "rc-local", path, logger)
 	go pipeLines(&wg, stderr, "rc.local", "rc-local", path, logger)
 	wg.Wait()
-	if err := cmd.Wait(); err != nil {
+	if err := process.WaitAdhoc(cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("timeout after %v", rcLocalTimeout)
 		}

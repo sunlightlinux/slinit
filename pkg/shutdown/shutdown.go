@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
 )
@@ -526,7 +527,7 @@ func runShutdownHook(shutdownType service.ShutdownType, logger *logging.Logger) 
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 
-	err := cmd.Run()
+	err := process.RunAdhoc(cmd)
 
 	// Log any output from the hook
 	if output.Len() > 0 {

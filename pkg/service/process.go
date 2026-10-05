@@ -1519,7 +1519,7 @@ func (s *ProcessService) runHookCommand(cmd []string, label string) error {
 	c.Dir = s.workingDir
 	c.Env = s.buildEnv()
 	s.services.logger.Info("Service '%s': running %s", s.serviceName, label)
-	return c.Run()
+	return process.RunAdhoc(c)
 }
 
 // BringDown stops the service process.
@@ -1800,7 +1800,7 @@ func (s *ProcessService) buildEnv() []string {
 // comments. Non-zero exit yields an error.
 func runEnvGenerator(path string) (map[string]string, error) {
 	cmd := exec.Command(path)
-	out, err := cmd.Output()
+	out, err := process.OutputAdhoc(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -2747,15 +2747,14 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	cmd.Env = s.buildEnv()
 
 	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
-	if err := cmd.Run(); err != nil && !isECHILDErr(err) {
-		// Same PID-1 reaper race handled in pkg/service/cron.go:
-		// slinit's global SIGCHLD reaper (pkg/process/exitrouter.go)
-		// may claim the zombie before this cmd.Run()'s Wait4 sees
-		// it, producing waitid ECHILD. The finish-command DID run;
-		// its exit status is just unobservable on this path. Log
-		// only real failures — swallowing ECHILD avoids spurious
-		// "finish-command failed: waitid: no child processes" on
-		// every shutdown of a runit-style service.
+	if err := process.RunAdhoc(cmd); err != nil && !isECHILDErr(err) {
+		// RunAdhoc registers the child with the exit router, so the
+		// PID-1 reaper claiming the zombie first no longer turns a
+		// clean run into "waitid: no child processes". The ECHILD
+		// check stays as a fallback for the case where the router has
+		// no status either: the finish-command still ran, and a
+		// spurious failure line on every shutdown of a runit-style
+		// service is the worse outcome.
 		s.services.logger.Error("Service '%s': finish-command failed: %v",
 			s.serviceName, err)
 	}
@@ -2806,7 +2805,7 @@ func (s *ProcessService) runReadyCheckOnce() bool {
 	cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
-	return cmd.Run() == nil
+	return process.RunAdhoc(cmd) == nil
 }
 
 // execPreStopHook runs the pre-stop-hook before sending stop signal.
@@ -2825,7 +2824,7 @@ func (s *ProcessService) execPreStopHook() {
 	cmd.Env = s.buildEnv()
 
 	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
-	if err := cmd.Run(); err != nil {
+	if err := process.RunAdhoc(cmd); err != nil {
 		s.services.logger.Error("Service '%s': pre-stop-hook failed: %v",
 			s.serviceName, err)
 	}
@@ -2847,7 +2846,7 @@ func (s *ProcessService) execControlCommand(sigName string, command []string) {
 	cmd.Env = s.buildEnv()
 
 	s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
-	if err := cmd.Run(); err != nil {
+	if err := process.RunAdhoc(cmd); err != nil {
 		s.services.logger.Error("Service '%s': control-command-%s failed: %v",
 			s.serviceName, sigName, err)
 	}

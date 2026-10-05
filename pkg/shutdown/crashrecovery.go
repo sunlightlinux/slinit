@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/bootmode"
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // CrashPauseFn, when non-nil, is called by spawnCrashShell with `true`
@@ -163,5 +164,5 @@ func spawnCrashShell() {
 	cmd.Stdout = tty
 	cmd.Stderr = tty
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	_ = cmd.Run() // operator exit is expected; ignore error
+	_ = process.RunAdhoc(cmd) // operator exit is expected; ignore error
 }
