@@ -494,6 +494,30 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
 **start-timeout**=*duration*
 :   How long the service may take to reach *started*.
 
+**hook-timeout**=*duration*
+:   (since 3.0.5) How long each synchronous hook of a `type = process`
+    service may run: **pre-start-command**, **post-start-command**,
+    **finish-command**, **pre-stop-hook** and **control-command-**\*.
+    Default five seconds.
+
+    Raise it for a hook that legitimately waits on something — a mount
+    appearing, a socket starting to accept. At the default, such a hook
+    was killed after five seconds, and for **pre-start-command** that
+    fails the start outright.
+
+    Mind what the budget buys. These hooks run inside slinit's
+    scheduling lock, so the timeout is also how long one service's hook
+    can hold up *other* services' starts and stops: with a
+    pre-start-command that sleeps, an unrelated `slinitctl start` was
+    measured waiting 4 seconds for the remainder of the 5-second
+    default. Read-only queries such as `slinitctl list` stay
+    responsive. Set this to the time the hook genuinely needs, not to a
+    comfortable margin.
+
+    A hook killed at the deadline now says so, naming the timeout —
+    previously the log read only `signal: killed`, which named the
+    mechanism and hid the cause.
+
 **restart-delay**=*duration*
 :   Delay before a restart attempt.
 

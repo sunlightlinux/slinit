@@ -82,6 +82,21 @@ type ProcessService struct {
 	// PID() for why the bare int read it replaced was a data race.
 	pidPublished atomic.Int64
 
+	// hookTimeout bounds every synchronous hook: pre-start-command,
+	// post-start-command, finish-command, pre-stop-hook and
+	// control-command-*. Zero means defaultFinishTimeout.
+	//
+	// It is a per-service knob and not a constant because five seconds
+	// is too short for a hook that legitimately waits on something —
+	// a mount appearing, a socket accepting — and such a hook was
+	// killed and, for pre-start-command, failed the start outright.
+	// It stays a bounded wait rather than becoming optional because
+	// these hooks run inside the scheduling lock: measured, a service
+	// whose pre-start-command sleeps holds up an unrelated service's
+	// start for the remainder of this timeout. The budget is
+	// system-wide, which is why slinit-service(5) says so.
+	hookTimeout time.Duration
+
 	// Timer for start/stop/restart timeouts
 	processTimer *time.Timer
 	timerPurpose timerPurpose
@@ -1536,13 +1551,42 @@ func (s *ProcessService) runHookCommand(cmd []string, label string) error {
 	if len(cmd) == 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), defaultFinishTimeout)
+	timeout := s.effectiveHookTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
 	c.Dir = s.workingDir
 	c.Env = s.buildEnv()
 	s.services.logger.Info("Service '%s': running %s", s.serviceName, label)
-	return process.RunAdhoc(c)
+	return annotateHookTimeout(process.RunAdhoc(c), ctx, timeout)
+}
+
+// effectiveHookTimeout returns the configured hook-timeout, or the
+// built-in default when unset.
+func (s *ProcessService) effectiveHookTimeout() time.Duration {
+	if s.hookTimeout > 0 {
+		return s.hookTimeout
+	}
+	return defaultFinishTimeout
+}
+
+// SetHookTimeout sets the bound for the synchronous hooks. Values <= 0
+// select the default.
+func (s *ProcessService) SetHookTimeout(d time.Duration) { s.hookTimeout = d }
+
+// annotateHookTimeout turns the kill into an explanation. A hook that
+// outran its deadline was reported as "signal: killed", which names
+// the mechanism and hides the cause: nothing told the operator that
+// slinit's own timeout did it, or what the timeout was, so the only
+// way to find out was to read the source.
+func annotateHookTimeout(err error, ctx context.Context, timeout time.Duration) error {
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("timed out after %v (hook-timeout): %w", timeout, err)
+	}
+	return err
 }
 
 // BringDown stops the service process.
@@ -2787,7 +2831,8 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	copy(args, s.finishCommand[1:])
 	args = append(args, exitCode, waitStatus)
 
-	ctx, cancel := context.WithTimeout(context.Background(), defaultFinishTimeout)
+	timeout := s.effectiveHookTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, s.finishCommand[0], args...)
@@ -2795,7 +2840,7 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	cmd.Env = s.buildEnv()
 
 	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
-	if err := process.RunAdhoc(cmd); err != nil && !isECHILDErr(err) {
+	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil && !isECHILDErr(err) {
 		// RunAdhoc registers the child with the exit router, so the
 		// PID-1 reaper claiming the zombie first no longer turns a
 		// clean run into "waitid: no child processes". The ECHILD
@@ -2864,7 +2909,8 @@ func (s *ProcessService) execPreStopHook() {
 	copy(args, s.preStopHook[1:])
 	args = append(args, strconv.Itoa(s.pid))
 
-	ctx, cancel := context.WithTimeout(context.Background(), defaultFinishTimeout)
+	timeout := s.effectiveHookTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, s.preStopHook[0], args...)
@@ -2872,7 +2918,7 @@ func (s *ProcessService) execPreStopHook() {
 	cmd.Env = s.buildEnv()
 
 	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
-	if err := process.RunAdhoc(cmd); err != nil {
+	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
 		s.services.logger.Error("Service '%s': pre-stop-hook failed: %v",
 			s.serviceName, err)
 	}
@@ -2886,7 +2932,8 @@ func (s *ProcessService) execControlCommand(sigName string, command []string) {
 	copy(args, command[1:])
 	args = append(args, strconv.Itoa(s.pid))
 
-	ctx, cancel := context.WithTimeout(context.Background(), defaultFinishTimeout)
+	timeout := s.effectiveHookTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, command[0], args...)
@@ -2894,7 +2941,7 @@ func (s *ProcessService) execControlCommand(sigName string, command []string) {
 	cmd.Env = s.buildEnv()
 
 	s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
-	if err := process.RunAdhoc(cmd); err != nil {
+	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
 		s.services.logger.Error("Service '%s': control-command-%s failed: %v",
 			s.serviceName, sigName, err)
 	}
