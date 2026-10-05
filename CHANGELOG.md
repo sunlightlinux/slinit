@@ -24,6 +24,92 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.0.3] — 2026-10-05
+
+One fix, reported the way the best ones are: "reboot takes a very long
+time after I run the performance suite." It took ninety seconds — the
+whole emergency-shutdown timeout — on every reboot after a single
+`slinitctl restart` of a `type=process` service, and the log could not
+name a culprit because by then there was no service left to name.
+
+**Why a patch.** A bug fix. Nothing that worked stops working: a restart
+still restarts, a stop still stops, and the only behaviour that changes
+is that shutdown stops waiting for a service that had already stopped.
+
+### Fixed
+
+- **A service parked on a restart-delay timer stayed counted as active
+  forever.** `Stopped()` hands a wanted restart to a restart-delay timer
+  (`restart-delay`, 200ms by default) instead of calling `initiateStart`
+  itself. The service then sits in `STOPPED` while still counted among
+  the active services — which is correct, because the restart belongs to
+  the same activation. But `STOPPED` is also what the rest of the state
+  machine keys off, so that parked state was invisible twice over:
+
+  - `doStart`'s `wasActive` test saw `STOPPED` and took the active count
+    a **second** time, so a start arriving inside the delay window
+    counted the same service twice;
+  - `Stop`, `Release` and `doStop` are each guarded by
+    `state != STOPPED`, found nothing to do, and left the timer armed
+    and the count up. The timer then declined the restart — `desired`
+    was `STOPPED` by then — without releasing the count either.
+
+  Either way `CountActiveServices` never returned to zero again. The
+  event loop waits for that count to reach zero before it stops, so
+  every later shutdown sat out the full emergency timeout, and the
+  "all services stopped without shutdown" boot-failure check could
+  never fire again for the life of the boot.
+
+  One `slinitctl restart` left the count one too high; three left it
+  two too high. Performance case `730-cycle-restart-only` does thirty.
+
+  The parked state is now explicit (`ServiceRecord.restartPending`) and
+  consulted everywhere `STOPPED` is read: `doStart` takes the pending
+  restart over rather than recounting it, and `Stop`, `Release`,
+  `PrepareForUnload` and the timer's own callback call it off through
+  `abandonPendingRestart`, which settles the service inactive exactly
+  as `Stopped()` would have. The new `CancelPendingRestart` hook is the
+  counterpart to `ScheduleRestartWithBackoff`; `ServiceRecord`'s default
+  has no timer to disarm.
+
+### Diagnosis
+
+The log signature is worth recognising, because it reads like a
+contradiction:
+
+    ERROR: Services did not stop within 1m30s, forcing shutdown
+    ERROR: Emergency shutdown timeout reached, forcing exit
+
+The first line appends `; still blocking: <names>` whenever any record
+is in a state other than `STOPPED`, and it is absent here. The second
+is printed only when the active count is non-zero. Together they say
+the count disagrees with the records — a counter residue, not a slow
+service. The minutes of complete log silence before them say the same
+thing: the ten-second shutdown reporter prints nothing when the blocker
+list is empty.
+
+### Verified
+
+The oracle is shutdown wall time, not the counter, which nothing
+exposes — there is no metric and no `slinitctl` verb for it. Case 730's
+exact shape was replayed against a user-mode daemon with the emergency
+timeout lowered to 8s:
+
+    restarts     before     after
+    1             8.14s     0.12s
+    3             8.12s     0.11s
+    5             8.10s     0.09s
+    30            8.06s     0.13s
+
+and a restart still restarts. Three unit tests cover the three doors
+(stop, abandoning timer, re-count), each confirmed to fail against the
+previous release rather than merely to pass against this one.
+
+That the counter has no test asserting it returns to zero after a
+lifecycle is why ~2400 unit tests, 230 functional cases and 219
+acceptance cases all passed for the entire life of this bug. The three
+new tests are the first to assert it.
+
 ## [3.0.2] — 2026-10-05
 
 One fix, found where it was always going to be found: by running the
