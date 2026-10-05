@@ -24,6 +24,86 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.0.4] — 2026-10-05
+
+One fix, reached from the other end than usual: a functional test that
+failed in CI and could not be blamed on the thing it was testing. The
+env-generator case reported its variables missing; the generator had run
+perfectly and printed them.
+
+**Why a patch.** A bug fix. Commands the daemon runs stop being reported
+as failures when they succeeded; nothing that worked before behaves
+differently.
+
+### Fixed
+
+- **PID 1's reaper was taking children `os/exec` was waiting on.**
+  slinit as PID 1 reaps on SIGCHLD with `Wait4(-1, WNOHANG)` in a loop,
+  which collects whatever zombie is available — including a child that
+  `os/exec` is in the middle of waiting on. `cmd.Wait()` then returns
+  `waitid: no child processes` and the caller is handed a failure for a
+  command that ran fine.
+
+  `StartProcess` has been guarded against exactly this since the
+  lost-exit-status fix in 2.7.0, by registering the child with the exit
+  router so the reaper hands the real status back. Every *other* command
+  the daemon runs went through plain `cmd.Run()`, `cmd.Output()` or
+  `cmd.Wait()` with no such guard — about twenty-five call sites:
+
+      env-generator          ready-check-command     health-check
+      cron commands          logrotate processor     exec-conditions
+      boot/shutdown hooks    rc.local                ifup
+      control actions        openrc depend scan      image dissection
+
+  The env-generator was the worst-affected shape, because on its error
+  path it discards stdout **it already has**: `os/exec` drains the output
+  copy goroutines even when the wait itself failed. So a stolen child did
+  not merely lose an exit status — it lost the generated variables, and
+  the service started without them. That is the whole of functional case
+  163's failure.
+
+  Four places had already met this race and papered over it by absorbing
+  ECHILD — cron, finish-command, hooks and ifup — each one trading a
+  spurious error line for a lost exit code. cron's comment said so
+  outright about `on-error=stop`. They keep the absorption as a
+  fallback, with comments that no longer claim the status is unknowable.
+
+  `RunAdhoc`, `OutputAdhoc`, `CombinedOutputAdhoc` and `WaitAdhoc` in
+  `pkg/process` now stand in for the `os/exec` calls and take the routed
+  status when `cmd.Wait()` has none to give. `ExitCodeOf` reads a code
+  out of either error shape — a routed status cannot be an
+  `*exec.ExitError`, since that type can only be built from an
+  `os.ProcessState` — and reports "no status" rather than inventing a
+  zero for an error that never carried one.
+
+### Verified
+
+Under a tight reaper loop, plain `cmd.Output()` lost 397 of 400
+children; `OutputAdhoc` lost none, and a real exit 7 still reports 7.
+Functional case 163-env-generator went 20 for 20 in QEMU, against two
+failures in thirteen runs before.
+
+The first test in `pkg/process/adhoc_test.go` asserts the hazard itself
+rather than the fix, and **skips** if a future Go release makes
+`os/exec` immune — at which point these helpers can be removed instead
+of maintained on faith.
+
+One honest limit: no live failure of case 163 was ever captured with the
+new diagnostics in place, because the case passed forty consecutive runs
+once hardened. The attribution rests on the mechanism reproduced in
+isolation and on the error string, which cannot come from anywhere else,
+not on a captured instance.
+
+### Changed
+
+- **163-env-generator stops taking its own restart on trust.** It
+  checked neither `slinitctl restart`'s exit status nor whether the
+  service's PID had changed, so any reason the restart did not happen
+  surfaced as a missing variable — the most misleading shape a failure
+  there can take, since the environment read is then simply the boot
+  process's. It now names that case, and on failure dumps the generator
+  file, what the generator prints, and what slinit logged about it.
+
 ## [3.0.3] — 2026-10-05
 
 One fix, reported the way the best ones are: "reboot takes a very long
