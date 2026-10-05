@@ -76,3 +76,19 @@ func TestSingleLogDestinationUnchanged(t *testing.T) {
 		t.Errorf("output-logger alone: LogType = %v, want LogToCommand", cmdOnly.LogType)
 	}
 }
+
+// stderr-logfile selects the file pipeline on its own, the same way
+// logfile does, so a service can name only it.
+func TestStderrLogfileImpliesFileLogging(t *testing.T) {
+	desc, err := Parse(strings.NewReader(
+		"type = process\ncommand = /bin/true\nstderr-logfile = /var/log/x.err\n"), "s", "s")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if desc.LogType != service.LogToFile {
+		t.Errorf("LogType = %v, want LogToFile", desc.LogType)
+	}
+	if desc.StderrLogFile != "/var/log/x.err" {
+		t.Errorf("StderrLogFile = %q, want /var/log/x.err", desc.StderrLogFile)
+	}
+}

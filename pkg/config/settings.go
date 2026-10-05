@@ -98,6 +98,7 @@ var KnownSettings = map[string]OperatorType{
 
 	// Logging
 	"logfile":             OpEquals,
+	"stderr-logfile":      OpEquals,
 	"log-type":            OpEquals,
 	"log-buffer-size":     OpEquals,
 	"logfile-permissions": OpEquals,

@@ -173,6 +173,7 @@ type ServiceDescription struct {
 	// Logging
 	LogType       service.LogType
 	LogFile       string
+	StderrLogFile string
 	LogFilePerms  int
 	LogFileUID    int
 	LogFileGID    int
@@ -2075,6 +2076,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	// Logging
 	case "logfile":
 		desc.LogFile = expandEnvVars(value, serviceArg)
+		if desc.LogType == service.LogNone {
+			desc.LogType = service.LogToFile
+		}
+	case "stderr-logfile":
+		desc.StderrLogFile = expandEnvVars(value, serviceArg)
 		if desc.LogType == service.LogNone {
 			desc.LogType = service.LogToFile
 		}

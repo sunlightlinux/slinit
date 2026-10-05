@@ -1560,6 +1560,15 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 	case service.LogToFile:
 		svc.SetLogType(desc.LogType)
 		svc.SetLogFileDetails(desc.LogFile, desc.LogFilePerms, desc.LogFileUID, desc.LogFileGID)
+		// stderr-logfile is a process-service knob: scripted and
+		// bgprocess services do not run the stdio plumbing it hooks
+		// into. Asserted rather than added to logSettable so the
+		// interface keeps describing what every type can do.
+		if desc.StderrLogFile != "" {
+			if ps, ok := svc.(interface{ SetStderrLogFile(string) }); ok {
+				ps.SetStderrLogFile(desc.StderrLogFile)
+			}
+		}
 	case service.LogToCommand:
 		svc.SetLogType(desc.LogType)
 	}

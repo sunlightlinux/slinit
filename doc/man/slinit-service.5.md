@@ -750,6 +750,22 @@ apply OS-level changes:
 :   Append the service's stdout/stderr to *path*. Implies
     **log-type=file** when not set explicitly.
 
+**stderr-logfile**=*path*
+:   (since 3.0.5) Send the service's stderr to *path* instead of
+    merging it into **logfile**, so the two streams land in two files.
+    Implies **log-type=file** when not set explicitly. `type = process`
+    only.
+
+    Rotation and filtering follow the **logfile-**\* settings: one
+    directive buys the separate stream rather than a second set of
+    fifteen knobs. What stays on stdout alone is the UDP forwarder
+    (**log-forward-udp**), the **output-logger** sink and the
+    **alert-file**, so a service with both files does not get its
+    remote syslog or its alert lines duplicated.
+
+    Both files carry the bare service name in the journal, so
+    `slinit-journalctl -u` still finds every line from either stream.
+
 **log-type**=*none*|*file*|*buffer*|*pipe*|*command*
 :   *none*: drop output; *file*: append to **logfile**; *buffer*:
     keep an in-memory ring buffer (queryable via **slinitctl

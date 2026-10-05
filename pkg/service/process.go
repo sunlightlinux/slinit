@@ -227,6 +227,14 @@ type ProcessService struct {
 	alertFile  string
 	alertLevel int
 
+	// stderrLogFile sends the service's stderr to its own file instead
+	// of merging it into logfile. Rotation and filtering follow the
+	// logfile-* settings: one knob buys the separate stream, and
+	// duplicating fifteen logfile-* directives per stream would buy
+	// very little more.
+	stderrLogFile string
+	stderrRotator *LogRotator
+
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
 	// to the output-logger command. If errorLogger is set, stderr is
@@ -698,6 +706,53 @@ func (s *ProcessService) SetLogMinFiles(n int) {
 
 // SetLogProcessor sets the log processor command.
 func (s *ProcessService) SetLogProcessor(cmd []string) { s.logProcessor = cmd }
+
+// SetStderrLogFile routes stderr to its own file, rotated by the same
+// rules as logfile.
+func (s *ProcessService) SetStderrLogFile(path string) { s.stderrLogFile = path }
+
+// rotatorConfigFor builds the log-pipeline settings shared by the
+// service's streams. Extracted when stderr gained a file of its own:
+// the alternative was a second copy of thirty fields that had to be
+// kept in step by hand.
+//
+// The caller adds what belongs to one stream only — the UDP forwarder,
+// the output-logger sink and the alert file stay on stdout, so a
+// service with both files does not get its remote syslog or its alert
+// lines duplicated.
+//
+// ServiceName stays the bare service name for both streams. It is what
+// emitJournalLogLine records, so qualifying it per stream would have
+// renamed the unit in the journal for every service with a rotator and
+// broken `slinit-journalctl -u <svc>`.
+func (s *ProcessService) rotatorConfigFor(path string) LogRotatorConfig {
+	return LogRotatorConfig{
+		GetPID:         s.PID,
+		FilePath:       path,
+		FilePerms:      os.FileMode(s.logFilePerms),
+		FileUID:        s.logFileUID,
+		FileGID:        s.logFileGID,
+		MaxSize:        s.logMaxSize,
+		MaxFiles:       s.logMaxFiles,
+		MinFiles:       s.logMinFiles,
+		RotateTime:     s.logRotateTime,
+		Processor:      s.logProcessor,
+		Includes:       s.logIncludes,
+		Excludes:       s.logExcludes,
+		Select:         s.logSelect,
+		RateInterval:   s.logRateLimitInterval,
+		RateBurst:      s.logRateLimitBurst,
+		LogLevelMax:    s.logLevelMax,
+		SanitizeChar:   s.logSanitizeChar,
+		SanitizeExtra:  s.logSanitizeExtra,
+		MaxLineLength:  s.logMaxLineLength,
+		TimestampMode:  s.logTimestampMode,
+		LinePrefix:     s.logLinePrefix,
+		ReadBufferSize: s.logReadBufferSize,
+		ServiceName:    s.serviceName,
+		Logger:         s.services.logger,
+	}
+}
 
 // SetOutputLogger sets the output-logger command (OpenRC OUTPUT_LOGGER).
 // When configured, stdout (and stderr unless an error-logger is set) is
@@ -1950,6 +2005,7 @@ func (s *ProcessService) startProcess() error {
 			s.logTimestampMode != "" || s.logLinePrefix != "" ||
 			s.logForwardUDP != "" ||
 			len(s.outputLogger) > 0 ||
+			s.stderrLogFile != "" ||
 			s.alertFile != "" {
 			if s.logRotator != nil {
 				s.logRotator.Close()
@@ -1986,37 +2042,13 @@ func (s *ProcessService) startProcess() error {
 					forwarder = fw
 				}
 			}
+			cfg := s.rotatorConfigFor(s.logFile)
+			cfg.Forwarder = forwarder
+			cfg.Sink = loggerSink
+			cfg.AlertFilePath = s.alertFile
+			cfg.AlertLevel = s.alertLevel
 			var err error
-			s.logRotator, err = NewLogRotator(LogRotatorConfig{
-				GetPID:        s.PID,
-				FilePath:      s.logFile,
-				FilePerms:     os.FileMode(s.logFilePerms),
-				FileUID:       s.logFileUID,
-				FileGID:       s.logFileGID,
-				MaxSize:       s.logMaxSize,
-				MaxFiles:      s.logMaxFiles,
-				MinFiles:      s.logMinFiles,
-				RotateTime:    s.logRotateTime,
-				Processor:     s.logProcessor,
-				Includes:      s.logIncludes,
-				Excludes:      s.logExcludes,
-				Select:        s.logSelect,
-				RateInterval:  s.logRateLimitInterval,
-				RateBurst:     s.logRateLimitBurst,
-				LogLevelMax:   s.logLevelMax,
-				SanitizeChar:  s.logSanitizeChar,
-				SanitizeExtra: s.logSanitizeExtra,
-				MaxLineLength: s.logMaxLineLength,
-				TimestampMode:  s.logTimestampMode,
-				LinePrefix:     s.logLinePrefix,
-				ReadBufferSize: s.logReadBufferSize,
-				Forwarder:      forwarder,
-				Sink:           loggerSink,
-				AlertFilePath: s.alertFile,
-				AlertLevel:    s.alertLevel,
-				ServiceName:   s.serviceName,
-				Logger:        s.services.logger,
-			})
+			s.logRotator, err = NewLogRotator(cfg)
 			if err != nil {
 				return fmt.Errorf("failed to create log rotator: %w", err)
 			}
@@ -2077,8 +2109,25 @@ func (s *ProcessService) startProcess() error {
 		}
 	}
 
-	// Optional separate error-logger: stderr goes to a different command.
+	// Optional separate stderr file: stderr gets its own rotator, so
+	// the two streams land in two files instead of interleaving in one.
 	var errorPipe *os.File
+	if s.logType == LogToFile && s.stderrLogFile != "" {
+		if s.stderrRotator != nil {
+			s.stderrRotator.Close()
+		}
+		var rerr error
+		s.stderrRotator, rerr = NewLogRotator(s.rotatorConfigFor(s.stderrLogFile))
+		if rerr != nil {
+			return fmt.Errorf("stderr-logfile: %w", rerr)
+		}
+		errorPipe, rerr = s.stderrRotator.CreatePipe()
+		if rerr != nil {
+			return fmt.Errorf("stderr-logfile pipe: %w", rerr)
+		}
+	}
+
+	// Optional separate error-logger: stderr goes to a different command.
 	if s.logType == LogToCommand && len(s.errorLogger) > 0 {
 		var err error
 		errorPipe, s.errLoggerSup, err = startLoggerSupervisor(
@@ -2221,6 +2270,10 @@ func (s *ProcessService) startProcess() error {
 			if s.logRotator != nil {
 				s.logRotator.Close()
 				s.logRotator = nil
+			}
+			if s.stderrRotator != nil {
+				s.stderrRotator.Close()
+				s.stderrRotator = nil
 			} else {
 				outputPipe.Close()
 			}
@@ -2269,6 +2322,10 @@ func (s *ProcessService) startProcess() error {
 			s.logRotator.StartReader()
 		} else {
 			outputPipe.Close()
+		}
+		if s.stderrRotator != nil {
+			s.stderrRotator.CloseWriteEnd()
+			s.stderrRotator.StartReader()
 		}
 	} else if s.logType == LogToCommand {
 		// Close the write-ends in the parent — the child inherited them.
@@ -3035,6 +3092,10 @@ func (s *ProcessService) stopLoggerCommands() {
 	if s.loggerSup != nil {
 		s.loggerSup.Stop()
 		s.loggerSup = nil
+	}
+	if s.stderrRotator != nil {
+		s.stderrRotator.Close()
+		s.stderrRotator = nil
 	}
 	if s.errLoggerSup != nil {
 		s.errLoggerSup.Stop()
