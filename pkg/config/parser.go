@@ -256,6 +256,7 @@ type ServiceDescription struct {
 
 	// Process management
 	StopTimeout       time.Duration
+	StartDelay        time.Duration
 	HookTimeout       time.Duration
 	StartTimeout      time.Duration
 	// systemd TimeoutAbortSec= — SIGABRT phase between SIGTERM and
@@ -1937,6 +1938,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.StopTimeout = d
+	case "start-delay":
+		d, err := parseDuration(value)
+		if err != nil {
+			return err
+		}
+		desc.StartDelay = d
 	case "hook-timeout":
 		d, err := parseDuration(value)
 		if err != nil {

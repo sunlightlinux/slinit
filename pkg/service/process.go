@@ -97,6 +97,12 @@ type ProcessService struct {
 	// system-wide, which is why slinit-service(5) says so.
 	hookTimeout time.Duration
 
+	// start-delay: wait before each attempt's fork/exec. See
+	// startdelay.go for why this is a timer and not a sleeping hook.
+	startDelay     time.Duration
+	startDelayT    *time.Timer
+	startDelayDone bool
+
 	// Timer for start/stop/restart timeouts
 	processTimer *time.Timer
 	timerPurpose timerPurpose
@@ -1574,6 +1580,19 @@ func (s *ProcessService) BringUp() bool {
 		}
 	}
 
+	// start-delay: hold off the fork/exec without holding the
+	// scheduling lock. The service stays STARTING until the timer
+	// fires, so a stop arriving meanwhile still finds it actionable.
+	if s.startDelayTimer(func() {
+		if err := s.startProcess(); err != nil {
+			s.services.logger.Error("Service '%s': failed to start: %v",
+				s.serviceName, err)
+			s.failedToStart(false, true)
+		}
+	}) {
+		return true
+	}
+
 	if err := s.startProcess(); err != nil {
 		s.services.logger.Error("Service '%s': failed to start: %v", s.serviceName, err)
 		return false
@@ -1649,6 +1668,8 @@ func annotateHookTimeout(err error, ctx context.Context, timeout time.Duration) 
 // Then if a stop-command is configured, it is executed. If it fails to
 // start, we fall back to sending the termination signal directly.
 func (s *ProcessService) BringDown() {
+	// A start-delay still counting down has nothing left to launch.
+	s.cancelStartDelay()
 	// Stop health checker and cron runner if active
 	s.stopHealthChecker()
 	s.stopCronRunner()
@@ -1954,6 +1975,7 @@ func (s *ProcessService) startProcess() error {
 		return fmt.Errorf("service '%s': start suppressed (crash-shell freeze)", s.serviceName)
 	}
 	s.lastStartTime = time.Now()
+	s.startDelayDone = false
 	s.stopIssued = false
 	s.exitStatus = ExitStatus{}
 

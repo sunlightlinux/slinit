@@ -73,6 +73,7 @@ var KnownSettings = map[string]OperatorType{
 	"normal-exit":            OpEquals | OpPlusEqual,
 	"restart-force-exit-status": OpEquals | OpPlusEqual,
 	"stop-timeout":           OpEquals,
+	"start-delay":           OpEquals,
 	"hook-timeout":          OpEquals,
 	"start-timeout":          OpEquals,
 	"timeout-sec":            OpEquals,

@@ -494,6 +494,21 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
 **start-timeout**=*duration*
 :   How long the service may take to reach *started*.
 
+**start-delay**=*duration*
+:   (since 3.0.7) Wait this long before each start attempt's fork/exec.
+    `type = process` only. **restart-delay** governs the gap before a
+    *re*-start; this governs the start itself, including the first one.
+
+    The service waits in *STARTING*, and the wait is a timer: slinit
+    holds no lock during it, so other services start and stop normally.
+    Prefer it to `pre-start-command = /bin/sleep N`, which does the same
+    thing from inside the scheduling lock and stalls every other
+    service's transitions for the duration.
+
+    A stop arriving during the wait cancels it; the service never
+    launches. Set both this and **restart-delay** and a restart waits
+    for each in turn.
+
 **hook-timeout**=*duration*
 :   (since 3.0.5) How long each synchronous hook of a `type = process`
     service may run: **pre-start-command**, **post-start-command**,
