@@ -1004,7 +1004,15 @@ func (sr *ServiceRecord) CheckPredicates() (PredicateOutcome, string) {
 		failReason      string
 	)
 	for _, p := range sr.predicates {
-		ok, why := p.Evaluate()
+		var (
+			ok  bool
+			why string
+		)
+		if p.Kind == PredServiceStarted {
+			ok, why = sr.checkServiceStarted(p)
+		} else {
+			ok, why = p.Evaluate()
+		}
 		if ok {
 			continue
 		}
@@ -1025,6 +1033,49 @@ func (sr *ServiceRecord) CheckPredicates() (PredicateOutcome, string) {
 		return PredSkip, firstSkipReason
 	}
 	return PredOK, ""
+}
+
+// checkServiceStarted answers the one predicate that asks about slinit
+// rather than the machine: is the named service already STARTED?
+//
+// This is `Requisite=`'s semantic, and it is a precondition rather than
+// a dependency on purpose. A dependency type would have to either start
+// the target (depends-on, depends-ms, prepared-by) or merely order
+// against it (before, after) — and the point of Requisite= is that it
+// does neither: the service must already be up, this one does not bring
+// it up, and if it is down the start fails.
+//
+// Ordering is the caller's business, exactly as in systemd: pair it with
+// `after:` when the two could be starting at the same moment, or the
+// answer depends on who got there first.
+//
+// Lives here and not in Predicate.Evaluate because it needs the service
+// set, and keeping Evaluate a pure function of the machine is worth more
+// than putting every predicate behind one call.
+func (sr *ServiceRecord) checkServiceStarted(p Predicate) (bool, string) {
+	name := p.Param
+	if name == "" {
+		return p.Negate, "no service named"
+	}
+	// findPlaceholders=false: a placeholder stands for a service that
+	// was referenced but never loaded, and "referenced" is not
+	// "running".
+	svc := sr.services.FindService(name, false)
+	found := svc != nil
+	started := found && svc.State() == StateStarted
+	if p.Negate {
+		if started {
+			return false, fmt.Sprintf("service %q is started", name)
+		}
+		return true, ""
+	}
+	if started {
+		return true, ""
+	}
+	if !found {
+		return false, fmt.Sprintf("service %q is not loaded", name)
+	}
+	return false, fmt.Sprintf("service %q is %s, not STARTED", name, svc.State())
 }
 
 // CheckRequiredPaths verifies all configured required paths exist. Returns

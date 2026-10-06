@@ -2019,7 +2019,37 @@ form):
     unchanged finit boot cmdline still triggers the right services
     after a switch to slinit.
 
+**condition-service-started**=*name*, **assert-service-started**=*name*
+:   (since 3.0.6) The named service must already be *STARTED*. This is
+    the only predicate that asks about slinit's own state rather than
+    the machine's, and it is how systemd's **Requisite=** is expressed:
+    the service must already be running, *this* service does not bring
+    it up, and if it is down the start fails (**assert-**) or is
+    skipped (**condition-**).
+
+    No dependency type says this. **depends-on**, **depends-ms** and
+    **prepared-by** start the target; **before** and **after** only
+    order against it; **waits-for** waits but does not require success.
+    A precondition that refuses to start rather than pulling the other
+    service up had no spelling before this.
+
+    It does not order. Pair it with **after:** when the two services
+    could be starting at the same moment, or the answer depends on
+    which one got there first — the same caveat systemd's Requisite=
+    carries. `slinit-systemd-convert` emits that note when it
+    translates a unit.
+
+    Prefix the name with `!` to require the opposite: that the named
+    service is *not* running.
+
+    `type = process`, `scripted` and `bgprocess` honour predicates;
+    `internal` and `triggered` services do not evaluate them at all.
+
 Examples:
+
+    # Refuse to start unless the database is already up (does not
+    # start it; add `after: db` if they may race):
+    assert-service-started = db
 
     # Skip the service on first boot (silent skip, dependents proceed):
     condition-first-boot = no

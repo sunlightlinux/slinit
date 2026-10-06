@@ -103,6 +103,18 @@ const (
 	// /proc/cmdline) so an operator can layer both: a token-level
 	// check plus a comma-list mode selector.
 	PredBootCond
+
+	// PredServiceStarted is the one predicate that asks about slinit's
+	// own state rather than the machine's: the named service must
+	// already be STARTED. It is how `Requisite=` is expressed — "the
+	// dependency must already be running, do not start it, fail if it
+	// is not" — which no dependency type says, because every one of
+	// them either starts the target or merely orders against it.
+	//
+	// Evaluated in ServiceRecord.CheckPredicates, not in
+	// Predicate.Evaluate, because it needs the service set and
+	// Evaluate stays a pure function of the machine.
+	PredServiceStarted
 )
 
 // execConditionTimeout caps how long the pre-flight command may run
@@ -208,6 +220,8 @@ func (p Predicate) String() string {
 		name = "io-pressure"
 	case PredBootCond:
 		name = "boot-cond"
+	case PredServiceStarted:
+		name = "service-started"
 	case PredFileValue:
 		name = "file-value"
 	case PredExecCondition:
@@ -357,6 +371,12 @@ func evalRaw(p Predicate) (bool, string) {
 		return checkBootCond(p.Param)
 	case PredFileValue:
 		return checkFileValue(p.Param)
+	case PredServiceStarted:
+		// Unreachable in practice: CheckPredicates handles this kind
+		// before it gets here, because the answer lives in the service
+		// set. Saying so beats reporting it as an unknown kind if some
+		// future caller evaluates a predicate list on its own.
+		return false, "service-started must be evaluated against the service set"
 	}
 	return false, fmt.Sprintf("unknown predicate kind %d", p.Kind)
 }
@@ -571,6 +591,8 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredBootCond, true
 	case "file-value":
 		return PredFileValue, true
+	case "service-started":
+		return PredServiceStarted, true
 	}
 	return 0, false
 }

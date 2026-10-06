@@ -255,10 +255,33 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		warns = append(warns, noteDroppedTargets(key, targets)...)
 	case "Before":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Unit `Before=%s` not mappable — invert on the target side", val)})
-	case "Requires", "Requisite":
+	case "Requires":
 		deps, targets := splitUnitRefs(val)
 		cfg.depends = append(cfg.depends, deps...)
 		warns = append(warns, noteDroppedTargets(key, targets)...)
+	case "Requisite":
+		// NOT the same directive as Requires=, though this used to map
+		// them to the same thing. Requires=B starts B alongside the
+		// unit; Requisite=B says B must ALREADY be active, must not be
+		// started by this unit, and the unit fails if it is not. Mapped
+		// to depends-on, a unit written to refuse to start without a
+		// precondition instead pulled the precondition up and
+		// succeeded — the opposite of what it asked for, and silently.
+		//
+		// assert-service-started is the precondition form: it fails the
+		// start (as a dependency failure should) rather than skipping
+		// the service the way a condition- would.
+		deps, targets := splitUnitRefs(val)
+		for _, d := range deps {
+			cfg.conditions = append(cfg.conditions,
+				condDir{"assert-service-started", d})
+		}
+		warns = append(warns, noteDroppedTargets(key, targets)...)
+		if len(deps) > 0 {
+			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+				"Unit `Requisite=%s` mapped to assert-service-started — add `after:` "+
+					"if the two could be starting at the same moment", val)})
+		}
 	case "Wants":
 		deps, targets := splitUnitRefs(val)
 		cfg.waitsFor = append(cfg.waitsFor, deps...)
