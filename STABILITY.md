@@ -270,6 +270,17 @@ Changes this policy would not have allowed:
   impatient with a slow stop, and killing the cleanup script that a
   detached daemon depends on was never what that promised.
 
+- **v3.0.5 honours `logfile` and `output-logger` together in a patch.**
+  Each used to claim `log-type` only while it was unset, so whichever
+  came first in the file won and the other was parsed and then silently
+  never used. Correcting that makes both directives do what they say,
+  which the first rule calls a bug fix — but a service that named both
+  now spawns a logger process it did not spawn before, or writes a file
+  it did not write, and "a setup could be relying on it" is the test
+  this policy applies. It belonged in a minor. It was released as 3.0.5
+  deliberately; the entry says so at the top and puts the change in its
+  `Changed` section with what to check.
+
 - **v2.3.8 is a patch carrying two behaviour changes.** A container that
   is told to stop a service and ends up with nothing running exits 0
   where it used to exit 1, and `slinitctl shutdown <kind> now` kills the

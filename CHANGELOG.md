@@ -24,6 +24,140 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.0.5] — 2026-10-06
+
+Four changes to the log pipeline and the hooks, all of them reached by
+triaging **immortal** (a *nix supervisor) against slinit. Nothing in that
+project turned out to be a capability slinit lacked — but looking for
+each equivalent found places where slinit had the knob and not the
+contract.
+
+**Why a patch, and where it bends the rules.** Three of the four are a
+bug fix or purely additive. The fourth is not: honouring `logfile` and
+`output-logger` together changes what a service that named both does,
+and under [STABILITY.md](STABILITY.md)'s own rule that belongs in a
+minor. It is released here deliberately, it is in `Changed` below with
+what to check, and STABILITY.md's History section lists it alongside the
+other patches that carried a behaviour change.
+
+### Fixed
+
+- **A dying `output-logger` took its service down with it.** The logger
+  command was started once and forgotten: the parent closed the pipe's
+  read end right after the fork and reaped the child only so it would
+  not zombie. When the logger exited — crashed, was killed, or simply
+  returned — the pipe had no reader left and the **service** died of
+  SIGPIPE on its next write. Measured against a logger that exits after
+  one second:
+
+      restart = no    killed by signal broken pipe, STOPPED, stays dead
+      restart = yes   4 broken-pipe kills and 4 restarts in 8 seconds
+
+  A log consumer taking down the thing it logs for is the wrong failure
+  direction, and with `restart = no` it turned a logger crash into
+  permanent loss of the service.
+
+  Each logger now runs under a supervisor that restarts it. slinit keeps
+  the pipe's read end for as long as the service lives and hands that
+  same descriptor to every logger it starts. Holding it rather than
+  relaying through the daemon buys two things: the service can never see
+  EPIPE, because a reader always exists, and a restarted logger inherits
+  what is still in the pipe, so the lines written while it was down are
+  delivered rather than dropped. After five consecutive failed restarts
+  the supervisor drains the pipe itself and says so, loudly — a service
+  whose logger is gone for good keeps running instead of blocking on a
+  pipe nobody reads.
+
+- **A data race on `PID()`.** It read the pid field bare, with a comment
+  arguing that an int read is atomic on supported architectures. True of
+  the hardware, still a race, and `go test -race ./...` is what CI runs.
+  It had never fired because no test had a goroutine calling `PID()`
+  while a start was writing it; the log rotator does, through its
+  `GetPID` callback, and the new multiwriter test put the two together.
+
+### Changed
+
+- **`logfile` and `output-logger` now both take effect, in either
+  order.** They were not merely exclusive: each claimed `log-type` only
+  while it was still unset, so **whichever appeared first in the service
+  file won**, and the other was parsed, stored, and then never used,
+  with nothing said about it. The same two lines in the other order
+  produced the opposite destination.
+
+  Both are honoured now. `output-logger` beside a `logfile` routes the
+  service through the log-rotator pipeline, exactly as `log-forward-udp`
+  already does, and the rotator copies each accepted line into the
+  logger's stdin alongside the file write. An explicit `log-type` is
+  still obeyed: `log-type = command` next to a stale `logfile` line
+  means the command.
+
+  **Compat.** A service that named both and relied on only one taking
+  effect now gets both — a logger process that did not run before, or a
+  file that was not written before. Check services that set both: if the
+  intent was one destination, say which with `log-type`. Services naming
+  one directive are unaffected.
+
+  A side effect worth knowing: in this configuration slinit, not the
+  service, writes to the logger, so the SIGPIPE above cannot reach the
+  service at all.
+
+### Added
+
+- **`hook-timeout`** bounds a `type = process` service's synchronous
+  hooks — `pre-start-command`, `post-start-command`, `finish-command`,
+  `pre-stop-hook`, `control-command-*` — which all shared one hardcoded
+  five seconds with no way to change it. A hook that legitimately waits
+  on something, a mount appearing or a socket starting to accept, was
+  killed at five seconds, and because a non-zero exit from
+  `pre-start-command` fails the start, the service went with it.
+
+  The default is unchanged. What slinit-service(5) spends its words on
+  is that the budget is system-wide: these hooks run inside the
+  scheduling lock, so the timeout is also how long one service's hook
+  holds up other services' starts and stops. Measured, with a
+  pre-start-command that sleeps: an unrelated `slinitctl start` waited
+  4.01 seconds, the remainder of the 5-second default. Read-only
+  queries such as `slinitctl list` stay responsive. Set the time the
+  hook genuinely needs, not a comfortable margin.
+
+  Also, a hook killed at the deadline used to say `signal: killed`,
+  which names the mechanism and hides the cause. It now reads
+  `timed out after 2s (hook-timeout): signal: killed`.
+
+- **`stderr-logfile`** sends a `type = process` service's stderr to its
+  own file instead of merging it into `logfile`. Rotation and filtering
+  follow the `logfile-*` settings — one directive rather than a second
+  set of fifteen knobs to keep in step. The UDP forwarder, the
+  `output-logger` sink and the alert file stay on stdout, so a service
+  with both files does not get its remote syslog or its alert lines
+  duplicated, and both streams keep the bare service name in the
+  journal so `slinit-journalctl -u` still finds every line.
+
+### Verified
+
+Beyond the unit tests and `go test -race ./...` over the whole tree,
+each log change was measured against the daemon it is about. The
+supervised logger: `restart = no` keeps the service STARTED where it
+used to die, and `restart = yes` goes from four broken-pipe kills in
+eight seconds to none. `hook-timeout`: a 7-second pre-start-command
+under `hook-timeout = 20` reaches STARTED, where at the default it was
+killed and failed the start.
+
+Two of the four new log tests fail against 3.0.4 — the logger receives
+nothing, and the order-independence case picks the wrong destination.
+The two new directives have no behaviour to regress, so no mutation
+check is claimed for them.
+
+`81-hardening` also stops being unattributable. It failed once in CI
+with `clock=writable` and `host=writable` while `cgroup=protected`, on a
+commit whose only difference from a passing one was CHANGELOG.md and
+README.md — so a flake, not a regression, and not reproduced in 25 local
+runs. The cause is still open. The probe now records
+`/proc/self/status`'s `Seccomp:` and `NoNewPrivs:` and the
+`/sys/fs/cgroup` mount entry, and the case asserts the filter is present
+before asserting what it blocks, so the next occurrence names which half
+failed instead of leaving two unrelated causes behind one symptom.
+
 ## [3.0.4] — 2026-10-05
 
 One fix, reached from the other end than usual: a functional test that
