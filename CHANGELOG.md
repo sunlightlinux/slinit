@@ -24,6 +24,90 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.0.7] — 2026-10-06
+
+Two additions, closing all but two items of the immortal triage.
+
+**Why a patch, with nothing to qualify this time.** Both are additive: a
+new optional directive and a new HTTP route. Nothing that already works
+behaves differently, which is what [STABILITY.md](STABILITY.md) asks of
+a patch — unlike 3.0.5 and 3.0.6, which carried behaviour changes
+deliberately and are listed in its History for it. This release adds
+nothing to that list.
+
+### Added
+
+- **`start-delay`** waits before each start attempt's fork/exec, for a
+  service that must not launch the instant its dependencies are up — a
+  device settling, a mount appearing. `restart-delay` governs the gap
+  before a *re*-start; nothing governed the start itself.
+
+  The nearest existing spelling was `pre-start-command = /bin/sleep N`,
+  which 3.0.6's `hook-timeout` made workable for any N. It is still the
+  wrong shape, and the reason is the measurement that came out of adding
+  `hook-timeout`: the synchronous hooks run inside the scheduling lock,
+  so sleeping in one stalls every other service's transitions for the
+  whole wait — an unrelated `slinitctl start` was measured waiting 4.01
+  seconds behind one. `start-delay` is a timer and slinit holds nothing
+  while it runs; a test asserts an unrelated service starts in under a
+  second while another sits in a three-second delay.
+
+  The service waits in *STARTING*, which is deliberate rather than
+  incidental. The active-service count is already taken by then, and
+  every stop door is guarded by `state != STOPPED`, so a stop arriving
+  mid-delay still finds the service actionable. Parking in STOPPED is
+  what left a pending restart-delay holding the active count
+  unreleasable in 3.0.3; this has neither failure mode. A stop cancels
+  the timer, and the callback re-checks the state before launching
+  rather than assuming nothing moved.
+
+- **`/status`** on the metrics endpoint serves the same state as JSON,
+  for a script or a container with no `slinitctl` in it:
+
+      curl --unix-socket /run/slinit/metrics.sock \
+           http://localhost/status | jq
+
+  The endpoint had only `/metrics` in the Prometheus text format, and
+  `slinitctl` has no JSON mode, so reading slinit's state from a script
+  meant parsing the exposition format or parsing output written to be
+  read by people.
+
+  The document carries the version, whether the boot target is up, the
+  per-state tally, and one entry per service: name, state, type, pid,
+  restart count, whether the last start failed, and how long it has been
+  up. `uptime_seconds` is **absent rather than zero** for a service that
+  is not running, so a reader cannot mistake "not started" for "started
+  just now", and services are sorted by name so a diff between two polls
+  is a diff in the state rather than in map order. Same contract as
+  `/metrics`: a view of the service set at request time, nothing
+  sampled, stored or computed that `slinitctl` does not already report.
+  The field names are a stable surface.
+
+  The index page at `/` now links both routes and the 404 body names
+  both, which is the only thing about an existing route that changed.
+
+### Verified
+
+`start-delay` holds the launch back and then performs it, does not stall
+an unrelated service, is cancelled by a stop with no process appearing
+afterwards, and does nothing when unset. `/status` was exercised over a
+real unix socket with curl and jq, not only through its builder: valid
+JSON, the right content type, `/metrics` unchanged.
+
+One trap is recorded in slinit(8) because it cost real minutes here:
+`curl --unix-socket S http:/status` makes curl read the first path
+segment as a hostname and request `/`, which returns the index page.
+That looks exactly like broken routing in the server. Use a URL with a
+host.
+
+### Known
+
+Unchanged from 3.0.6 and worth repeating while it is open: `internal`
+and `triggered` services do not evaluate start predicates at all, so
+`condition-*` and `assert-*` on an internal milestone are silently
+ignored. Fixing it would let internal services fail to start where they
+always have, so it waits for a release that can say so properly.
+
 ## [3.0.6] — 2026-10-06
 
 One fix, and it is the last item from the immortal triage: `Requisite=`
