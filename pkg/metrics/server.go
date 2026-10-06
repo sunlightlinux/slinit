@@ -90,11 +90,21 @@ func handle(conn net.Conn, ss *service.ServiceSet, version string) error {
 		// the text format; scrapers accept it and humans reading with
 		// curl get plain text rather than a download prompt.
 		return respond(conn, "200 OK", "text/plain; version=0.0.4; charset=utf-8", body.String())
+	case "/status":
+		// JSON, for a script or a container with no slinitctl in it.
+		// Built into a buffer first: respond needs a Content-Length,
+		// and a half-written body with the wrong length is worse than
+		// a 500.
+		var body strings.Builder
+		if err := WriteStatus(&body, ss, version); err != nil {
+			return respond(conn, "500 Internal Server Error", "text/plain", "status failed\n")
+		}
+		return respond(conn, "200 OK", "application/json; charset=utf-8", body.String())
 	case "/":
 		return respond(conn, "200 OK", "text/html; charset=utf-8",
-			"<html><body><a href=\"/metrics\">metrics</a></body></html>\n")
+			"<html><body><a href=\"/metrics\">metrics</a> <a href=\"/status\">status</a></body></html>\n")
 	default:
-		return respond(conn, "404 Not Found", "text/plain", "try /metrics\n")
+		return respond(conn, "404 Not Found", "text/plain", "try /metrics or /status\n")
 	}
 }
 

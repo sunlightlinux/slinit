@@ -447,9 +447,32 @@ service-file format.
     socket is created 0666, since the scraper is not usually root, and
     replaced if a previous instance left one behind.
 
+    **/status** (since 3.0.7) serves the same state as JSON, for a
+    script or a container with no **slinitctl** in it:
+
+        curl --unix-socket /run/slinit/metrics.sock \
+             http://localhost/status | jq
+
+    Use a URL with a host. `http:/status` makes curl read the first
+    path segment as the hostname and request **/**, which quietly
+    returns the index page instead of what was asked for.
+
+    The document carries the version, whether the boot target is up, the
+    per-state tally, and one entry per service: name, state, type, pid,
+    restart count, whether the last start failed, and how long it has
+    been up. `uptime_seconds` is absent rather than zero for a service
+    that is not running, so a reader cannot mistake "not started" for
+    "started just now". Services are sorted by name, so a diff between
+    two polls is a diff in the state.
+
+    It is a view of the service set at request time, like **/metrics**:
+    nothing is sampled, stored or computed that **slinitctl** does not
+    already report. The field names are a stable surface under
+    STABILITY.md.
+
     The HTTP is deliberately small — a request line, a status line and a
-    body, no keep-alive and no second route — so that PID 1 does not
-    have to carry **net/http**.
+    body, no keep-alive — so that PID 1 does not have to carry
+    **net/http**.
 
 **\--emergency-timeout** *duration*
 :   Maximum time slinit waits for services to drain during shutdown
