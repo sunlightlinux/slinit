@@ -270,6 +270,17 @@ Changes this policy would not have allowed:
   impatient with a slow stop, and killing the cleanup script that a
   detached daemon depends on was never what that promised.
 
+- **v3.0.6 made `Requisite=` refuse to start in a patch.** The unit
+  translator had mapped it to `Requires=`, which starts the dependency
+  instead of requiring it to be up already — the directive inverted. A
+  unit that started because slinit was starting its precondition for it
+  now fails unless that precondition is running. Correcting a mapping to
+  match the thing it maps is a bug fix by the first rule, but existing
+  setups could be relying on the unit starting, so by the test this
+  policy applies it belonged in a minor. It is in v3.0.6's `Changed`
+  section with a Compat note saying what to do if `Requires=` was what
+  was meant.
+
 - **v3.0.5 honours `logfile` and `output-logger` together in a patch.**
   Each used to claim `log-type` only while it was unset, so whichever
   came first in the file won and the other was parsed and then silently

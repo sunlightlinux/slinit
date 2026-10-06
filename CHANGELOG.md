@@ -24,6 +24,95 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.0.6] — 2026-10-06
+
+One fix, and it is the last item from the immortal triage: `Requisite=`
+had been mapped to `Requires=`, which inverts the directive. Looking for
+slinit's equivalent of immortal's `require:` is what exposed it.
+
+**Why a patch.** A unit that names `Requisite=` and used to start may now
+refuse to, which is the directive finally doing what it says — but
+existing setups could be relying on the old behaviour, and
+[STABILITY.md](STABILITY.md)'s rule puts that in a minor. Released here
+deliberately, for the same reason 3.0.5 was: it is under `Changed` with
+a Compat note, and STABILITY.md's History lists it. The two new
+predicates are additive and need no such note.
+
+### Changed
+
+- **`Requisite=` no longer means `Requires=`.** They shared one case arm
+  in the unit translator and both became `depends-on`. The two are not
+  the same directive:
+
+      Requires=B    start B alongside this unit; fail if B fails
+      Requisite=B   B must ALREADY be active; do not start it;
+                    fail immediately if it is not
+
+  So a unit written to refuse to start without a precondition instead
+  **pulled the precondition up and succeeded** — the opposite of what it
+  asked for. It was silent too, unlike `Before=`, `Conflicts=` and
+  `OnFailure=`, which all emit a warning when they cannot be mapped.
+
+  `Requisite=` now becomes `assert-service-started`, and the conversion
+  emits a NOTE about ordering (see below).
+
+  **Compat.** A unit with `Requisite=B` that started because slinit was
+  starting B for it will now fail to start unless B is already running.
+  That is the semantic the unit asked for. If what you actually wanted
+  was "start B too", the directive for that is `Requires=`, and
+  translating the unit again after changing it will produce
+  `depends-on`.
+
+### Added
+
+- **`condition-service-started`** and **`assert-service-started`** take a
+  service name and require it to already be *STARTED*. The `assert-`
+  form fails the start, the `condition-` form skips it, matching what
+  the condition/assert split means for every other predicate; a leading
+  `!` requires the opposite.
+
+  This is the first predicate that asks about slinit's own state rather
+  than the machine's, and it exists because nothing else could express
+  the idea. No dependency type does: `depends-on`, `depends-ms` and
+  `prepared-by` start the target, `before` and `after` only order
+  against it, `waits-for` waits without requiring success. A
+  precondition that refuses to start rather than pulling the other
+  service up had no spelling at all.
+
+  It deliberately does not order, exactly as systemd's `Requisite=`
+  does not: pair it with `after:` when the two services could be
+  starting at the same moment, or the answer depends on which one got
+  there first. `slinit-systemd-convert` says so when it translates a
+  unit, because that decision is the operator's.
+
+### Verified
+
+The translation test fails against 3.0.5 on all three counts — the
+dependency became a `depends-on`, no precondition was emitted, and no
+ordering note was given. Six more tests cover the predicate itself:
+the assert form fails while the other service is down **and leaves it
+down**, which is the whole distinction from `Requires=`; the condition
+form skips instead; negation; and the two failure reasons ("not loaded"
+versus the actual state) stay distinct, because an operator reading a
+skipped service wants to know which it was.
+
+### Known
+
+- **`internal` and `triggered` services do not evaluate predicates at
+  all.** Only `process`, `scripted` and `bgprocess` consult them, so
+  `condition-*` and `assert-*` on an internal milestone are silently
+  ignored — including the two added above. This is longstanding, not new
+  here, and it is the same silent-discard shape as the bug this release
+  fixes; it was found while writing these tests, whose first version
+  passed for the wrong reason because of it.
+
+  It is not fixed in this release on purpose: making those types honour
+  predicates would let internal services fail to start where they have
+  always started, for every such service in every configuration, and
+  that deserves its own release note rather than riding along in a
+  patch. slinit-service(5) now states which service types evaluate
+  predicates.
+
 ## [3.0.5] — 2026-10-06
 
 Four changes to the log pipeline and the hooks, all of them reached by
