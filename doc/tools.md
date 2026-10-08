@@ -231,17 +231,18 @@ slinit-journald --vacuum-files=100 --vacuum-size=4294967296 --vacuum-age=720h  #
 ### slinit-journal-migrate
 
 One-time upgrade path from the JSONL format to the binary format. It
-reads every `.jsonl` and `.jsonl.gz` file under `--from`, preserving
-event order, and writes a fresh binary journal under `--to`. The source
-directory is left untouched, so it can be archived or removed once the
-destination has been checked with `slinit-journalctl --verify`.
+reads every `.jsonl` and `.jsonl.gz` file under `--from`, in filename
+order, and appends the events to a single `YYYY-MM-DD.journal` file
+under `--to`. Unparseable lines are skipped and counted. The source
+directory is left untouched. The output is not FSS-sealed, and running
+the tool twice on the same day appends the events again.
 
 ```bash
-# Preview: source files, destination layout and event totals
+# Preview: list the source files that would be read
 slinit-journal-migrate --from /var/log/slinit-journal \
     --to /var/log/slinit-journal-bin --dry-run
 
-# Migrate; --to must not already contain journal files
+# Migrate
 slinit-journal-migrate --from /var/log/slinit-journal \
     --to /var/log/slinit-journal-bin
 ```
@@ -397,9 +398,11 @@ slinit-logouthookd --socket /run/slh.sock --perms 0660
 ### slinit-init-maker
 
 Generates a bootable service-description directory skeleton — top-level
-`boot` target, optional `system-mounts` + `network` stubs, N agetty
-services (with correct inittab-id), env-file with `HOSTNAME`/`TZ`/`PATH`,
-optional shutdown-hook sample, README. Inspired by
+`boot` target, a `system-init` marker, `system-mounts` (on by default)
+and an optional `network` stub, N agetty services with their
+inittab-id, an `env` file with `PATH` (plus `HOSTNAME`/`TZ` when given)
+to pass to `slinit --env-file`, an optional shutdown-hook sample, and a
+README. Inspired by
 [s6-linux-init-maker](https://skarnet.org/software/s6-linux-init/s6-linux-init-maker.html).
 
 ```bash
@@ -459,12 +462,12 @@ rc-service --list             # → slinitctl list
 # rc-update — runlevel membership (modelled as runlevel-<name> services)
 rc-update add  nginx default  # → slinitctl --from runlevel-default enable nginx
 rc-update del  nginx boot     # → slinitctl --from runlevel-boot disable nginx
-rc-update show                # → slinitctl graph runlevel-default
+rc-update show                # → slinitctl graph (full graph, DOT)
 rc-update update              # no-op (slinit has no dep cache)
 
 # rc-status — status listing
 rc-status                     # → slinitctl list
-rc-status default             # → slinitctl graph runlevel-default
+rc-status default             # → slinitctl graph (full graph, DOT)
 rc-status --list              # list known OpenRC runlevel names
 rc-status --runlevel          # print "default" (slinit has no current runlevel)
 ```

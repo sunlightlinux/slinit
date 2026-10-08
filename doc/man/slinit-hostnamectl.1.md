@@ -66,11 +66,11 @@ variant is written.
     valid POSIX hostname (1..64 chars, alphanumerics, `-` or `.` not
     at start or end, no consecutive dots, not *localhost*).
 
-    With **no** scope flag, all three are set — the kernel name,
-    */etc/hostname* and the pretty name — except that the pretty name
-    is left alone when *NAME* is what would have been inferred from it
-    anyway. Setting a hostname therefore does not overwrite a
-    deliberately chosen pretty name with a duplicate of itself.
+    With **no** scope flag, all three are set to *NAME* — the kernel
+    name, */etc/hostname* and the pretty name. A pretty name chosen
+    earlier is therefore overwritten; set the static and transient
+    names with **\--static \--transient** to keep it. An empty *NAME*
+    with **\--pretty** removes **PRETTY_HOSTNAME**.
 
 **icon-name** [*NAME*]
 :   Get or set the icon name for the host (freedesktop.org icon
@@ -113,8 +113,9 @@ variant is written.
     */etc/machine-info*.
 
 **\--json**=*MODE*
-:   Emit output as JSON. *MODE* is *off* (text; the default), *pretty*
-    (indented), or *short* (single line).
+:   Emit **status** output as JSON. *MODE* is *off* (text; the
+    default), *pretty* (indented), or *short* (single line). The other
+    commands ignore it.
 
 **-j**
 :   Shorthand for **\--json**=*pretty* on a TTY, or **\--json**=*short*

@@ -22,11 +22,12 @@ If no *service-name* is given, **boot** is checked by default.
 The linter performs four passes over the loaded service graph:
 
 1. **Parse** every service description reachable from the named roots.
-2. **Detect dependency cycles** via DFS with explicit-stack pruning. The
-   first cycle found is reported with the full path; the run then aborts
-   with exit status 1.
-3. **Check dependency depth** against **MaxDepDepth**. Services that
-   exceed the limit are flagged as errors.
+2. **Detect dependency cycles** via DFS with explicit-stack pruning. Only
+   the first cycle found is reported, with its full path, and counts as
+   one error; the remaining passes still run.
+3. **Check dependency depth** against the limit of 32 levels
+   (**before** and **after** edges are not counted). Services that
+   exceed it are flagged as errors.
 4. **Secondary checks** on every loaded service — see *CHECKS PERFORMED*
    below.
 
@@ -35,12 +36,16 @@ The linter performs four passes over the loaded service graph:
 **-d**, **--services-dir** *DIR*
 :   Add *DIR* to the list of service-description directories to search.
     May be repeated. If no **-d** is given (and **-s**/**-u** are also
-    absent), the default system directories are used.
+    absent), the default system directories are used. A later **-s** or
+    **-u** replaces the list built so far.
 
 **-s**, **--system**
 :   Use the default system service directories: */etc/slinit.d*,
     */usr/lib/slinit.d*, */lib/slinit.d*. This is the default when no
-    explicit **-d** is given.
+    explicit **-d** is given. Note that this list differs from the
+    daemon's own defaults (see **slinit**(8)); pass **-d** for each
+    directory, or use **--online**, to check exactly what the daemon
+    loads.
 
 **-u**, **--user**
 :   Use the default user service directories — *$XDG_CONFIG_HOME/slinit.d*
@@ -51,20 +56,21 @@ The linter performs four passes over the loaded service graph:
 **-n**, **--online**
 :   Online mode. Connect to the running daemon, retrieve its current
     service-directory list and global environment, and use those for
-    the lint pass. Useful for catching drift between a running system
-    and freshly-edited service files.
+    the lint pass, in place of any **-d** / **-s** / **-u**. Useful for
+    catching drift between a running system and freshly-edited service
+    files.
 
 **-p**, **--socket-path** *PATH*
 :   Override the control-socket path used by **--online**. Defaults to
-    */run/slinit.socket* when running as root, or
-    *$XDG_RUNTIME_DIR/slinitctl* (falling back to *~/.slinitctl*)
-    otherwise.
+    */run/slinit.socket* when running as root without **-u**, otherwise
+    *$XDG_RUNTIME_DIR/slinitctl* (falling back to *~/.slinitctl*).
 
 **-e**, **--env-file** *FILE*
 :   Load environment variables from *FILE* (KEY=VALUE per line, blank
     lines and lines starting with **#** are ignored) before evaluating
     services. Variables loaded this way are visible to substitution
-    inside service-description bodies.
+    inside service-description bodies. An unreadable *FILE* produces a
+    warning on stderr, not an error.
 
 **-h**, **--help**
 :   Print a usage summary and exit.
@@ -72,15 +78,19 @@ The linter performs four passes over the loaded service graph:
 # CHECKS PERFORMED
 
 For every service that is successfully loaded, **slinit-check** verifies
-that filesystem paths referenced by the description are usable:
+that filesystem paths referenced by the description are usable. Each
+failure below is a **WARNING**, because a path may legitimately exist
+only on the target system:
 
 - **command** and **stop-command** point to absolute paths that exist
-  and are executable.
+  and are executable. A non-**internal**, non-**triggered** service
+  with no **command** also warns.
 - **working-dir**, **chroot**, and **env-dir** point to existing
   directories.
 - **env-file** exists.
-- The directories holding **pid-file**, **logfile**, **lock-file**, and
-  **socket-listen** exist.
+- The directories holding **pid-file**, **logfile** (with
+  **log-type = file**), **lock-file**, and a Unix **socket-listen**
+  path exist.
 
 **consumer-of** is validated against the producer's service file:
 
@@ -109,8 +119,8 @@ Namespace settings are checked for self-consistency:
   warning — there is no process for them to apply to.
 
 Directive-syntax validation is delegated to the parser: every
-setting recognised by **slinit-service**(5) is accepted here (~250
-directives across the systemd v260→v262 parity surface, including
+setting recognised by **slinit-service**(5) is accepted here
+(**slinit-supports --list-directives** prints them all, including
 recent additions like **bus-name**, **tty-path**, LSM setters
 **selinux-context** / **smack-process-label**, the **restrict-\***
 hardening cluster, **notify-access**, **guess-main-pid**, and the
@@ -126,12 +136,13 @@ emitted as **ERROR**.
 # EXIT STATUS
 
 **0**
-:   No errors and no warnings.
+:   No errors. Warnings may have been reported; they do not change the
+    exit status, which lets CI pipelines distinguish "broken" from
+    "questionable but tolerated".
 
 **1**
-:   At least one error was reported. Warnings alone do not cause a
-    nonzero exit; this lets CI pipelines distinguish "broken" from
-    "questionable but tolerated".
+:   At least one error was reported, including a named service that
+    could not be loaded.
 
 **2**
 :   A usage error or unrecoverable startup failure (bad option, missing

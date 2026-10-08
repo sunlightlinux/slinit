@@ -32,12 +32,14 @@ supporting the classic getty argument shape (any existing
 4. Configure **termios**(3) for canonical line input with echo,
    *ONLCR* output post-processing, *ICRNL* input CR-to-NL, 8N1
    character format. *BAUD*, when a recognised decimal rate, is
-   applied via *TCSETS*; ignored on virtual terminals.
+   applied via *TCSETS*; an unrecognised value is ignored, and the
+   rate has no effect on a virtual terminal. A failure here is
+   reported on stderr and the login prompt still appears.
 5. Render */etc/issue* with the classic getty backslash escapes
    (see **ESCAPES** below). Missing file is silent.
 6. Print `<hostname> login: ` and read a username. Blank entries
    loop back to re-print the prompt (matches finit's
-   `goto restart`).
+   `goto restart`); a name longer than 256 bytes is truncated.
 7. **execve**(2) `/bin/login [-p] -- USERNAME` with the current
    environment (plus *TERM* if given as the third positional
    argument).
@@ -60,7 +62,8 @@ supporting the classic getty argument shape (any existing
 :   Serial baud rate as a decimal integer. Accepted values:
     0, 50, 75, 110, 134, 150, 200, 300, 600, 1200, 1800, 2400,
     4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800,
-    921600, 1500000. Ignored on virtual terminals.
+    921600, 1500000. Any other value is ignored. Has no effect on
+    virtual terminals.
 
 *TERM*
 :   Value exported as *TERM* in the login environment. Omitted:
@@ -82,6 +85,7 @@ supporting the classic getty argument shape (any existing
   slinit-getty does not walk utmp)
 * **\\v** — kernel version string (uname *version*)
 
+**\\b** (baud rate in other gettys) is removed and prints nothing.
 Unknown escapes (**\\e**, **\\a**, …) are passed through
 verbatim so operator-authored ANSI sequences survive.
 
@@ -96,23 +100,21 @@ gets an interactive prompt instead of a boot-time hang.
 
 # EXAMPLES
 
-Serial console on ttyS0 at 115200 baud:
+Serial console on ttyS0 at 115200 baud, as the service description
+*/etc/slinit.d/tty-serial*:
 
-    tty-serial {
-        type = process
-        command = /sbin/slinit-getty ttyS0 115200 vt100
-        restart = yes
-        restart-limit-count = 0
-    }
+    type = process
+    command = /sbin/slinit-getty ttyS0 115200 vt100
+    restart = yes
+    restart-limit-count = 0
 
-Virtual terminal on tty1 (baud ignored on VTs):
+Virtual terminal on tty1, as */etc/slinit.d/tty-vt1* (no baud rate
+needed on a VT):
 
-    tty-vt1 {
-        type = process
-        command = /sbin/slinit-getty tty1
-        restart = yes
-        restart-limit-count = 0
-    }
+    type = process
+    command = /sbin/slinit-getty tty1
+    restart = yes
+    restart-limit-count = 0
 
 # EXIT STATUS
 
@@ -121,9 +123,13 @@ Virtual terminal on tty1 (baud ignored on VTs):
     (this process was replaced — exit status is that of the
     successor).
 
-**non-zero**
-:   Terminal open failed, dup2 failed, or both /bin/login and
-    every rescue-shell candidate are missing.
+**1**
+:   No *TTY* argument, the terminal could not be opened or
+    duplicated, reading the username failed (for example end of file),
+    or neither a login binary nor a rescue shell could be executed.
+
+**2**
+:   Unknown option.
 
 # NOTES
 
@@ -132,9 +138,8 @@ Virtual terminal on tty1 (baud ignored on VTs):
   a session. Skipping the intermediate record avoids duplicate
   entries with **who**(1) / **last**(1).
 
-- The **-h** / **?** finit flag (usage banner) is exposed via
-  Go's stdlib `-h` / `-help` conventions. **-p** is the only
-  behaviour flag.
+- **-h** / **-help** print the usage line. finit's **?** form is
+  not supported. **-p** is the only behaviour flag.
 
 - Login binary path resolution happens each invocation, so a
   post-boot **/bin/login** install works without restarting

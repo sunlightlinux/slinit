@@ -39,7 +39,10 @@ apply filters ahead of the positional intersection.
 **-p**, **--passno** {**=***N* | **<***N* | **>***N*}
 :   Filter by **fs_passno**. **=***N* keeps entries whose passno
     equals *N*; **<***N* keeps entries whose passno is present
-    (non-zero) and less than *N*; **>***N* the reverse.
+    (non-zero) and less than *N*; **>***N* the reverse. Entries whose
+    mount point is **none** (swap) are always skipped. When **--fstype**
+    is also given but matches nothing, the **--passno** filter is
+    applied to the whole of fstab instead.
 
 **-p**, **--passno** *MOUNTPOINT*
 :   In its plain form, prints the **fs_passno** of the specified
@@ -49,8 +52,9 @@ apply filters ahead of the positional intersection.
 # ACTION MODES
 
 **-M**, **--mount**
-:   Invoke **mount**(8) for every matching entry, propagating
-    exit codes.
+:   Invoke **mount**(8) for every matching entry, then print the
+    entries as in the default mode. If any **mount** fails the exit
+    status is 1.
 
 **-R**, **--remount**
 :   Same as **-M** but with **-o remount** so options can be
@@ -74,6 +78,10 @@ apply filters ahead of the positional intersection.
 :   Read from *PATH* instead of **/etc/fstab**. Non-standard, useful
     for tests.
 
+**-q**, **--quiet**, **-v**, **--verbose**
+:   Accepted for OpenRC compatibility and ignored; use **EINFO_QUIET**
+    to suppress output.
+
 **-h**, **--help**
 :   Print usage.
 
@@ -90,7 +98,8 @@ propagate. This is the OpenRC convention.
 # EXIT STATUS
 
 - **0**: at least one entry matched (and every action succeeded)
-- **1**: no matches, or **mount**(8) failed
+- **1**: no matches, **mount**(8) failed, or the fstab file is
+  missing, unparseable or empty
 - **2**: syntax / bad usage
 
 # EXAMPLES

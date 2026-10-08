@@ -31,7 +31,8 @@ Without positional arguments the tool scans, in order:
 Files whose basenames collide are resolved by last-directory-wins, so
 an operator override at **/etc/binfmt.d/foo.conf** always beats the
 distro-shipped **/usr/lib/binfmt.d/foo.conf**. Only files ending in
-**.conf** are considered.
+**.conf** are considered, and they are applied in alphabetical order
+of their basenames.
 
 # CONFIG FORMAT
 
@@ -75,6 +76,8 @@ already registered, it is unregistered first (write **-1** to
 :   Prefix *DIR* onto every hardcoded path: the binfmt.d/ scan roots
     **and** **/proc/sys/fs/binfmt_misc/**. Useful for previewing a
     config in a chroot or a fixture tree; never needed in production.
+    *DIR*/proc/sys/fs/binfmt_misc/register must exist, or the tool
+    exits with status 3. *FILE* arguments are not prefixed.
 
 **-h**, **--help**
 :   Print usage.
@@ -85,7 +88,9 @@ already registered, it is unregistered first (write **-1** to
 # EXIT STATUS
 
 - **0**: every discovered spec applied cleanly.
-- **1**: at least one spec failed (parse error, kernel refused it, etc.).
+- **1**: at least one spec failed (the kernel refused it, etc.), or a
+  file could not be read or parsed. A file with a parse error is
+  skipped as a whole; the other files are still applied.
 - **2**: bad usage / unknown flag.
 - **3**: **binfmt_misc** kernel filesystem is not mounted (module not
   loaded); nothing to do.

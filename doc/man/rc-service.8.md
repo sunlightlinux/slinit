@@ -38,11 +38,14 @@ The following OpenRC verbs are recognised and translated:
 
 **zap**
 :   OpenRC's "force back to stopped regardless of current state".
-    Translated to **slinitctl release** *service*, which clears any
-    pinning so the service is free to be stopped by ordinary means.
+    Translated to **slinitctl release** *service*, which removes the
+    service's explicit activation, so it stops unless another service
+    still requires it. Pins are not cleared; use **slinitctl unpin**
+    for that.
 
-Any other action is passed through verbatim, so future OpenRC verbs
-that happen to have a slinitctl equivalent keep working.
+Any other action is passed through as **slinitctl** *action* *service*,
+so OpenRC verbs that have a same-named **slinitctl** subcommand keep
+working. Arguments after *action* are appended unchanged.
 
 # OPTIONS
 
@@ -83,6 +86,9 @@ verbatim. Additionally:
 
 **2**
 :   Usage error (bad argv shape).
+
+**1**
+:   **slinitctl** was found but could not be executed.
 
 # EXAMPLES
 
