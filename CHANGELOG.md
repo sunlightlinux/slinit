@@ -26,6 +26,12 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`tty-vhangup` hung up nothing.** It called vhangup(2), which acts on
+  the caller's controlling terminal — slinit's own, or none for PID 1 —
+  and never on `tty-path`, so a previous session kept the terminal. It
+  now uses `ioctl(TIOCVHANGUP)` on the opened tty, as systemd's
+  `TTYVHangup=` does, and reopens the tty for the service, since the
+  hangup kills slinit's own fd as well.
 - **`mlockall` did not lock the service's memory.** The runner called
   mlockall(2) on itself, and memory locks end at execve(2); the service
   only ever got the raised `RLIMIT_MEMLOCK`. No syscall locks another

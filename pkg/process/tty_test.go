@@ -3,7 +3,11 @@ package process
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestSetupTTYNoPath: TTYPath empty = no work, returns (nil, nil).
@@ -212,4 +216,47 @@ func TestVTDisallocateNonVT(t *testing.T) {
 	vtDisallocate("relative-path")
 	vtDisallocate("/dev/tty") // no number
 	vtDisallocate("/dev/tty99999")
+}
+
+// tty-vhangup must hang up whoever still holds tty-path. It used to call
+// vhangup(2), which acts on the caller's controlling terminal — slinit's
+// own, not tty-path — so a prior session kept its terminal.
+func TestSetupTTYVHangupHangsUpPriorHolder(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("TIOCVHANGUP needs CAP_SYS_ADMIN")
+	}
+	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Skipf("no pty support: %v", err)
+	}
+	defer master.Close()
+	if err := unix.IoctlSetPointerInt(int(master.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+		t.Fatal(err)
+	}
+	n, err := unix.IoctlGetInt(int(master.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slave := "/dev/pts/" + strconv.Itoa(n)
+
+	// The "prior session": an fd on the tty opened before the service.
+	prior, err := os.OpenFile(slave, os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prior.Close()
+
+	f, err := setupTTY(ExecParams{TTYPath: slave, TTYVHangup: true})
+	if err != nil {
+		t.Fatalf("setupTTY: %v", err)
+	}
+	defer f.Close()
+
+	if _, err := prior.Write([]byte("x")); err == nil {
+		t.Error("prior holder can still write: the tty was not hung up")
+	}
+	// The fd handed to the service is a fresh open, unaffected.
+	if _, err := f.Write([]byte("y")); err != nil {
+		t.Errorf("service fd unusable after vhangup: %v", err)
+	}
 }

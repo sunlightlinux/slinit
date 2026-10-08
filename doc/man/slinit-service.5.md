@@ -2311,11 +2311,12 @@ are set — a getty configures a specific tty and doesn't want
     single-axis winsize is ill-defined.
 
 **tty-vhangup**=*yes*|*no*
-:   Call **vhangup**(2) after opening the tty. **vhangup**(2) takes no
-    fd and acts on the *caller's* controlling terminal, and the call
-    is made by the daemon before the fork, so it does not hang up
-    *tty-path*; for slinit as PID 1, which has no controlling
-    terminal, it does nothing.
+:   Hang up *tty-path* before the service gets it (**ioctl**(2)
+    *TIOCVHANGUP*, as systemd's *TTYVHangup=*): every process still
+    holding the terminal — a previous login session, say — loses it.
+    The tty is then reopened for the service. Best-effort: without
+    *CAP_SYS_ADMIN* the hangup is skipped and the service still gets
+    its tty.
 
 **tty-vt-disallocate**=*yes*|*no*
 :   For `/dev/ttyN` (virtual terminals), call
@@ -2329,8 +2330,8 @@ are set — a getty configures a specific tty and doesn't want
     mode / color state / cursor position doesn't leak in.
 
 Load-bearing ordering: (1) VT_DISALLOCATE first — frees the VT
-number, next open reallocates clean. (2) Open TTY. (3) vhangup (see
-above for its actual effect). (4) Reset — after vhangup so it lands on fresh
+number, next open reallocates clean. (2) Open TTY. (3) Hang up
+(**tty-vhangup**), then reopen. (4) Reset — after vhangup so it lands on fresh
 state. (5) Winsize — after reset (reset would clobber it).
 
 ## D-BUS INTEGRATION (dbus-optional)
