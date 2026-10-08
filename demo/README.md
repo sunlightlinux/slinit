@@ -544,7 +544,7 @@ line to `/run/shared-log.txt` with a timestamp.
 ### Runit Feature Bundle (`runit-svc`)
 One service exercises most runit-inspired knobs:
 - `env-dir = /etc/slinit.d/runit-svc.env.d` (one file per variable)
-- `ready-check-command` with `ready-check-interval = 1`
+- `ready-check-command` with `ready-check-interval = 100ms`
 - `pre-stop-hook` receives the PID as `$1`
 - `control-command-HUP` — `slinitctl signal HUP runit-svc` triggers it
 - `finish-command` receives exit code + signal as `$1` + `$2`
