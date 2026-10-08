@@ -1,20 +1,50 @@
 # slinit configuration reference
 
-Service description files and the daemon's command-line surface.
+This document covers service description files and the daemon's
+command line: worked examples organised by service shape, followed by
+reference tables grouped by topic.
 
-The authoritative references are the man pages:
-[slinit-service(5)](man/slinit-service.5.md) for every directive and
-[slinit(8)](man/slinit.8.md) for every flag. This file is the worked
-version — examples by service shape, then the tables.
-[doc/features.md](features.md) is the generated list of everything the
-parser and control protocol accept.
+| Reference | Covers |
+|---|---|
+| [slinit-service(5)](man/slinit-service.5.md) | Every service directive — **authoritative** |
+| [slinit(8)](man/slinit.8.md) | Every daemon flag, PID 1 behaviour, kernel command line — **authoritative** |
+| [features.md](features.md) | Generated list of every name the parser and control protocol accept |
+| [operators-guide.md](operators-guide.md) | Task-oriented guide: systemd mappings, first service, troubleshooting |
 
-The README keeps a short version of the examples below; this is the long
-one, split out when the README was trimmed for the 3.0 line.
+Where this document and a man page disagree, the man page is correct
+and this document has a bug.
+
+## Contents
+
+- [File format](#file-format)
+- [Examples by service shape](#examples-by-service-shape)
+- [Directive reference](#directive-reference)
+- [Service types](#service-types)
+- [Environment variable substitution](#environment-variable-substitution)
+- [Appendix: daemon command-line options](#appendix-daemon-command-line-options)
+
+## File format
+
+A service description is a single file whose name is the service name —
+no extension and no `[Section]` headers. Each line holds one setting:
+
+```ini
+# Comments start with '#'
+key = value          # scalar setting
+command += --verbose # append to a list-valued setting
+depends-on: network  # dependency keys also accept ':' (dinit convention)
+```
+
+Files are searched in the service directories listed under
+[Default service directories](#default-service-directories); the first
+match wins.
 
 ## Examples by service shape
 
-Service files use a dinit-compatible format:
+### Long-running process
+
+The common case: a program that stays in the foreground, supervised
+directly by slinit.
 
 ```ini
 # /etc/slinit.d/myservice
@@ -32,7 +62,10 @@ log-type = buffer
 log-buffer-size = 4096
 ```
 
-Example bgprocess service:
+### Self-backgrounding daemon
+
+For a program that forks and lets its parent exit. slinit learns the
+daemon's PID from the pidfile.
 
 ```ini
 # /etc/slinit.d/mydaemon
@@ -43,7 +76,7 @@ stop-timeout = 15
 depends-on: network
 ```
 
-Example service with logfile output:
+### Output to a log file
 
 ```ini
 # /etc/slinit.d/myapp
@@ -56,7 +89,7 @@ logfile-uid = 1000
 logfile-gid = 1000
 ```
 
-Example service with process attributes and capabilities:
+### Process attributes, limits and capabilities
 
 ```ini
 # /etc/slinit.d/worker
@@ -76,7 +109,10 @@ env-file = /etc/worker.env
 run-as = worker:worker
 ```
 
-Example service with runit-inspired features:
+### runit-style supervision
+
+Finish scripts, polled readiness, a pre-stop hook, a custom signal
+handler, and log rotation with filtering.
 
 ```ini
 # /etc/slinit.d/webapp
@@ -84,7 +120,7 @@ type = process
 command = /usr/bin/webapp
 finish-command = /usr/local/bin/cleanup.sh
 ready-check-command = /usr/bin/curl -sf http://localhost:8080/health
-ready-check-interval = 0.5
+ready-check-interval = 500ms
 pre-stop-hook = /usr/local/bin/drain-connections.sh
 control-command-HUP = /usr/local/bin/graceful-reload.sh
 env-dir = /etc/webapp/env.d
@@ -102,7 +138,9 @@ restart = on-failure
 depends-on: network
 ```
 
-Example consumer pipe (service B reads service A stdout):
+### Consumer pipe
+
+The consumer reads the producer's standard output on its standard input.
 
 ```ini
 # /etc/slinit.d/producer
@@ -116,7 +154,11 @@ command = /usr/bin/process-data
 consumer-of: producer
 ```
 
-Example service template (`myservice@` base file):
+### Service template
+
+A description whose filename ends in `@` is a template. Each instance
+is started as `name@argument`, and `$1` (or `${1}`) expands to the
+argument.
 
 ```ini
 # /etc/slinit.d/myservice@
@@ -126,9 +168,15 @@ working-dir = /var/lib/myservice/${1}
 depends-on: network
 ```
 
-Start with `slinitctl start myservice@web` — `$1` is replaced with `web`.
+```bash
+slinitctl start myservice@web     # $1 expands to "web"
+```
 
-Example multi-service shared logger:
+### Shared logger
+
+Several services feed a single logger process. Each line the logger
+receives is prefixed with its producer's name: `[app-one] …`,
+`[app-two] …`.
 
 ```ini
 # /etc/slinit.d/central-logger
@@ -146,9 +194,9 @@ command = /usr/bin/app-two
 shared-logger = central-logger
 ```
 
-Logger receives lines prefixed: `[app-one] ...`, `[app-two] ...`.
+### Virtual TTY
 
-Example service with virtual TTY:
+A screen-like terminal that can be attached and detached at runtime.
 
 ```ini
 # /etc/slinit.d/interactive-svc
@@ -158,9 +206,14 @@ vtty = true
 vtty-scrollback = 131072
 ```
 
-Attach with `slinitctl attach interactive-svc` (Ctrl+] to detach).
+```bash
+slinitctl attach interactive-svc  # Ctrl+] detaches
+```
 
-Example service with cron task:
+### Periodic task
+
+A command run on a schedule for as long as the parent service is
+running.
 
 ```ini
 # /etc/slinit.d/worker
@@ -172,7 +225,10 @@ cron-delay = 60
 cron-on-error = continue
 ```
 
-Example with `@meta enable-via`:
+### Custom enable target
+
+By default `slinitctl enable` adds a `waits-for` edge from `boot`.
+`@meta enable-via` names a different service to hang the edge from.
 
 ```ini
 # /etc/slinit.d/optional-svc
@@ -181,222 +237,320 @@ command = /usr/bin/optional
 @meta enable-via mygroup
 ```
 
-`slinitctl enable optional-svc` will add a waits-for dep from `mygroup` instead of `boot`.
+```bash
+slinitctl enable optional-svc     # adds the edge mygroup → optional-svc
+```
 
-## Configuration reference
+## Directive reference
 
-| Option                    | Description                                      |
-|---------------------------|--------------------------------------------------|
-| `type`                    | Service type (process, bgprocess, scripted, internal, triggered) |
-| `command`                 | Command to run (supports `+=` to append)         |
-| `stop-command`            | Command to run on stop (scripted, supports `+=`)  |
-| `depends-on:`             | Hard dependency                                  |
-| `depends-ms:`             | Milestone dependency (must start, then becomes soft) |
-| `waits-for:`              | Soft dependency (wait for start/fail)            |
-| `before:`                 | Ordering: start before target                    |
-| `after:`                  | Ordering: start after target                     |
-| `provides`                | Alias name for service lookup                    |
-| `consumer-of` / `consumer-of:` | Pipe output from named service into this one (= or :) |
-| `restart`                 | Auto-restart mode (yes, on-failure, no)          |
-| `restart-delay`           | Seconds to wait before restarting                |
-| `restart-limit-count`     | Max restarts within interval                     |
-| `restart-limit-interval`  | Interval (seconds) for restart limit             |
-| `log-type`                | Output logging (buffer, file, pipe, none)        |
-| `logfile`                 | Log file path (when log-type = file)             |
-| `log-buffer-size`         | Log buffer size in bytes (when log-type = buffer)|
-| `logfile-permissions`     | Log file permissions, octal (default 0600)       |
-| `logfile-uid`             | Log file owner UID                               |
-| `logfile-gid`             | Log file owner GID                               |
-| `ready-notification`      | Readiness protocol (pipefd:N, pipevar:VARNAME)   |
-| `socket-listen`           | Pre-opened listening socket(s) passed to child (LISTEN_FDS), supports `+=` for multiple, `tcp:`/`udp:` prefix |
-| `socket-activation`       | Activation mode: `immediate` (default) or `on-demand` |
-| `socket-reuseport`        | `SO_REUSEPORT` on `tcp:`/`udp:` listeners, so N template instances can share one hot port ([guide](operators-guide.md#scaling-a-hot-port-across-workers)) |
-| `socket-permissions`      | Socket file permissions                          |
-| `socket-uid/gid`          | Socket file ownership                            |
-| `pid-file`                | PID file path (bgprocess type)                   |
-| `start-timeout`           | Timeout for service start (seconds)              |
-| `stop-timeout`            | Timeout for service stop (seconds)               |
-| `options`                 | Service flags (runs-on-console, unmask-intr, no-new-privs, etc.) |
-| `term-signal`             | Signal for graceful stop                         |
-| `working-dir`             | Working directory for the process                |
-| `run-as`                  | Run command as user:group                        |
-| `env-file`                | Environment variables file (KEY=VALUE, `!clear`, `!unset`, `!import`) |
-| `env-dir`                 | Runit-style env directory (one file per var)      |
-| `finish-command`          | Command run after process exit (before restart)   |
-| `ready-check-command`     | Polling readiness check (alternative to pipefd)   |
-| `ready-check-interval`    | Polling interval for ready-check (default 1s)     |
-| `pre-stop-hook`           | Command run before SIGTERM (receives PID as arg)  |
-| `control-command-SIGNAL`  | Custom signal handler (e.g., control-command-HUP) |
-| `chroot`                  | Chroot directory before exec                      |
-| `new-session`             | Create new session (setsid) for the process       |
-| `lock-file`               | Exclusive flock file (prevents duplicate instances)|
-| `close-stdin`             | Close stdin (redirect to /dev/null)               |
-| `close-stdout`            | Close stdout (redirect to /dev/null)              |
-| `close-stderr`            | Close stderr (redirect to /dev/null)              |
-| `logfile-max-size`        | Rotate logfile at this size (bytes)               |
-| `logfile-max-files`       | Max rotated log files to keep                     |
-| `logfile-rotate-time`     | Rotate logfile at time interval (seconds)         |
-| `log-processor`           | Command run on each rotated logfile               |
-| `log-include`             | Regex: only write matching lines to log           |
-| `log-exclude`             | Regex: drop matching lines from log               |
-| `chain-to`                | Service to start after this one stops            |
-| `nice`                    | Process scheduling priority (-20..19)            |
-| `oom-score-adj`           | OOM killer score adjustment (-1000..1000)        |
-| `ioprio`                  | I/O priority class:level (be:4, rt:0, idle)      |
-| `cpu-affinity`            | CPU affinity mask (0-3, 0 1 2, 0,2,4)            |
-| `cgroup`                  | Cgroup path for the child process                |
-| `slice`                   | Hierarchical cgroup parent, systemd-style         |
-| `delegate`                | Hand the cgroup subtree to the service itself     |
-| `rlimit-nofile`           | File descriptor limit (soft:hard or unlimited)   |
-| `rlimit-core`             | Core dump size limit (soft:hard or unlimited)    |
-| `rlimit-data`             | Data segment size limit (soft:hard or unlimited) |
-| `rlimit-as`               | Address space limit (soft:hard or unlimited)     |
-| `rlimit-addrspace`        | Alias for `rlimit-as` (dinit compat)             |
-| `run-in-cgroup`           | Alias for `cgroup` (dinit compat)                |
-| `capabilities`            | Ambient capabilities (cap_net_bind_service, etc.)|
-| `securebits`              | Securebits flags (noroot, keep-caps, etc.)       |
-| `inittab-id`              | UTMPX inittab ID for session tracking            |
-| `inittab-line`            | UTMPX inittab line for session tracking          |
-| `load-options`            | Loader flags (export-passwd-vars, export-service-name) |
-| `@meta enable-via`        | Default "from" service for enable/disable        |
-| `shared-logger`           | Name of shared logger service (multi-service → single logger) |
-| `vtty`                    | Enable virtual TTY for screen-like attach/detach  |
-| `vtty-scrollback`         | VirtualTTY scrollback buffer size in bytes (default 64KB) |
-| `cron-command`            | Periodic command to execute while service is running |
-| `cron-interval`           | Interval between cron executions (seconds)        |
-| `cron-delay`              | Initial delay before first cron execution (seconds) |
-| `cron-on-error`           | Behavior on cron command failure: `continue` (default) or `stop` |
-| `cron-calendar`           | systemd-style `OnCalendar=` expression (`daily`, `Mon..Fri 09:00`, `*:0/15`) |
-| `cron-randomized-delay`   | Upper bound on jitter added to each fire, drawn from `[0,d)`; applies to interval and calendar modes |
-| `cron-fixed-random-delay` | Draw that offset once from the machine-id instead of per fire (systemd `FixedRandomDelay=`) |
-| `cron-persistent`         | Catch-up run when a fire was missed; last-run instant kept on disk, so it survives a reboot |
-| `prepared-by:`            | Hard dependency that also restarts when the dependent restarts |
-| `condition-*` / `assert-*` | Systemd-style start predicates (13 kinds, `!` negation) -- skip silently / fail start |
-| `runtime-directory`       | systemd-style auto-managed `/run/<svc>` (chowned to run-as) |
-| `state-directory`         | Persistent `/var/lib/<svc>` (also `cache-`/`logs-`/`configuration-directory`) |
-| `private-tmp`             | Per-service `/tmp` and `/var/tmp` tmpfs           |
-| `protect-system`          | RO-remount `/usr`/`/boot`/`/efi` (yes/full/strict) |
-| `read-only-paths`         | Bind ro at given paths                            |
-| `read-write-paths`        | Bind rw at given paths (punches holes through protect-system) |
-| `inaccessible-paths`      | Hide paths via empty tmpfs mount                  |
-| `bind-paths`              | Bind host paths into the sandbox (rw)             |
-| `bind-read-only-paths`    | Bind host paths into the sandbox (ro)             |
-| `temporary-filesystem`    | Mount fresh tmpfs at given path                   |
-| `protect-home`            | yes/tmpfs/read-only on `/home`,`/root`,`/run/user`|
-| `protect-proc`            | proc-hidepid mode (`default`/`invisible`/`ptraceable`) |
-| `proc-subset`             | `/proc` view subset (`all`/`pid`)                 |
-| `system-call-filter`      | seccomp allow/deny list; supports `@group` and `~deny-first` |
-| `system-call-architectures` | Allowed architectures for seccomp                |
-| `system-call-error-number` | Errno returned for filtered syscalls (default EPERM) |
-| `protect-kernel-tunables` | Block writes to `/proc/sys`, `/sys`               |
-| `protect-kernel-modules`  | Block `init_module`/`finit_module`/`delete_module` |
-| `protect-kernel-logs`     | Block `syslog`                                    |
-| `protect-clock`           | Block `clock_settime`/`settimeofday`/`adjtimex`   |
-| `protect-control-groups`  | RO `/sys/fs/cgroup`                               |
-| `protect-hostname`        | Block `sethostname`/`setdomainname`               |
-| `lock-personality`        | Block `personality` syscall                       |
-| `failure-action`          | System action on permanent failure: none/reboot/poweroff/halt/exit |
-| `success-action`          | System action on clean finish: none/reboot/poweroff/halt/exit |
-| `reboot-argument`         | Argument for reboot syscall (kexec-style)        |
-| `runtime-max-sec`         | Hard cap on STARTED time; stop when exceeded     |
-| `oom-policy`              | Reaction to cgroup-v2 OOM kill: continue/stop/kill |
-| `pre-start-command`       | Hook before `command` (sync, non-zero exit fails start) |
-| `post-start-command`      | Hook after Started (async, log-only)             |
-| `log-rate-limit-interval` / `-burst` | Token-bucket limiter (drop excess lines) |
-| `log-level-max`           | Drop lines above syslog severity (emerg..debug)  |
-| `load-credential`         | `NAME:PATH` copy a file into `/run/credentials/<svc>/` |
-| `set-credential`          | `NAME:VALUE` write inline literal as a credential |
-| `dynamic-user`            | Allocate a transient UID/GID per BringUp, release on Stopped |
-| `file-descriptor-store-max` | Enable sd_notify FDSTORE=1 fd handover across restarts |
-| `bundle-of`               | s6-rc-style grouping: names a set of services this internal svc pulls up as a unit; accepts comma-/space-separated list or repeated directive |
-| `log-select`              | s6-log-style regex chain (`-* +alert +warn`); last-matched verdict wins per line; mutually exclusive with log-include / log-exclude |
-| `@include`                | Include another config file (error if not found) |
-| `@include-opt`            | Include another config file (ignore if not found)|
+The tables below group the most commonly used directives by topic. They
+are a summary: [slinit-service(5)](man/slinit-service.5.md) documents
+every directive, including those not listed here, with full value
+syntax and the release that introduced it.
+
+**Value conventions.** Time values come in two forms, and each
+directive accepts the form shown in its row:
+
+| Notation | Syntax | Examples |
+|---|---|---|
+| *seconds* | Decimal number of seconds | `10`, `0.5` |
+| *Go duration* | Number with a unit suffix | `500ms`, `30s`, `1h30m` |
+
+*bool* values are `yes` / `no`; `true` / `false` and `1` / `0` are also
+accepted. List-valued settings accept `+=` to append.
+
+### Core
+
+| Directive | Value | Description |
+|---|---|---|
+| `type` | `process` \| `bgprocess` \| `scripted` \| `internal` \| `triggered` | Service type — see [Service types](#service-types) |
+| `command` | program [args…] | Command to run; supports `+=` |
+| `stop-command` | program [args…] | Command run on stop (`scripted`); supports `+=` |
+| `working-dir` | path | Working directory for the process |
+| `run-as` | user[:group] | Run the command as this user and group |
+| `provides` | name | Alias under which the service can also be looked up |
+| `options` | flag… | Service flags: `runs-on-console`, `unmask-intr`, `no-new-privs`, … |
+| `load-options` | flag… | Loader flags: `export-passwd-vars`, `export-service-name` |
+| `@include` | path | Include another file; error if it does not exist |
+| `@include-opt` | path | Include another file; ignored if it does not exist |
+| `@meta enable-via` | service | Default source service for `enable` / `disable` |
+
+### Dependencies
+
+| Directive | Value | Description |
+|---|---|---|
+| `depends-on:` | service | Hard dependency — must start; stopping it stops this service |
+| `depends-ms:` | service | Milestone dependency — must start, then behaves as a soft dependency |
+| `waits-for:` | service | Soft dependency — waits for it to start or fail; failure does not propagate |
+| `prepared-by:` | service | Hard dependency that is also restarted every time this service restarts |
+| `before:` | service | Ordering only — this service starts before the named one |
+| `after:` | service | Ordering only — this service starts after the named one |
+| `chain-to` | service | Service to start once this one has stopped |
+| `consumer-of` | service | Read the named service's output on stdin (`=` or `:`) |
+| `bundle-of` | service, … | s6-rc-style group: an `internal` service that brings the named services up as one unit; comma- or space-separated, or repeated |
+
+### Lifecycle and restart
+
+| Directive | Value | Description |
+|---|---|---|
+| `restart` | `yes` \| `no` \| `on-failure` | Automatic restart policy |
+| `restart-delay` | seconds | Delay before a restart |
+| `restart-limit-count` | integer | Maximum restarts within `restart-limit-interval` |
+| `restart-limit-interval` | seconds | Window over which restarts are counted |
+| `start-timeout` | seconds | Time allowed to reach *started* |
+| `stop-timeout` | seconds | Time between `term-signal` and SIGKILL |
+| `term-signal` | signal | Signal used for a graceful stop |
+| `runtime-max-sec` | Go duration | Hard cap on time spent *started*; the service is stopped when it is reached |
+| `pre-start-command` | program [args…] | Runs before `command`; synchronous, a non-zero exit fails the start |
+| `post-start-command` | program [args…] | Runs once started; asynchronous, result is only logged |
+| `finish-command` | program [args…] | Runs after the process exits, before any restart |
+| `pre-stop-hook` | program [args…] | Runs before SIGTERM; receives the PID as an argument |
+| `control-command-SIG` | program [args…] | Run by `slinitctl signal SIG` in place of sending the signal, e.g. `control-command-HUP` |
+| `oom-policy` | `continue` \| `stop` \| `kill` | Reaction to a cgroup v2 OOM kill |
+| `failure-action` | `none` \| `reboot` \| `poweroff` \| `halt` \| `exit` | System action when the service fails permanently |
+| `success-action` | `none` \| `reboot` \| `poweroff` \| `halt` \| `exit` | System action when the service finishes cleanly |
+| `reboot-argument` | string | Argument passed to the reboot system call |
+
+### Readiness and activation
+
+| Directive | Value | Description |
+|---|---|---|
+| `ready-notification` | `pipefd:N` \| `pipevar:VAR` | Readiness protocol |
+| `ready-check-command` | program [args…] | Polled readiness check, an alternative to `ready-notification` |
+| `ready-check-interval` | Go duration | Polling interval for `ready-check-command` (default `1s`) |
+| `pid-file` | path | PID file written by a `bgprocess` daemon |
+| `socket-listen` | path \| `tcp:host:port` \| `udp:host:port` | Listening socket passed to the child via `LISTEN_FDS`; repeat or `+=` for several |
+| `socket-activation` | `immediate` \| `on-demand` | `immediate` (default) opens the socket when the service loads; `on-demand` starts the service on the first connection |
+| `socket-reuseport` | bool | Set `SO_REUSEPORT` on `tcp:` / `udp:` listeners so several instances can share a port — see the [operator's guide](operators-guide.md#scaling-a-hot-port-across-workers) |
+| `socket-permissions` | octal | Mode of a Unix socket file |
+| `socket-uid`, `socket-gid` | integer | Ownership of a Unix socket file |
+| `file-descriptor-store-max` | integer | Enable the `sd_notify` `FDSTORE=1` file-descriptor store across restarts |
+| `condition-*`, `assert-*` | predicate | systemd-style start predicates (13 kinds, `!` negates); a failed condition skips the start silently, a failed assertion fails it |
+
+### Environment and process I/O
+
+| Directive | Value | Description |
+|---|---|---|
+| `env-file` | path | `KEY=VALUE` file; supports the `!clear`, `!unset` and `!import` meta-commands |
+| `env-dir` | directory | runit-style environment directory, one file per variable |
+| `chroot` | path | `chroot(2)` into this directory before exec |
+| `new-session` | bool | Start the process in a new session (`setsid`) |
+| `lock-file` | path | Exclusive `flock` held while running, preventing duplicate instances |
+| `close-stdin`, `close-stdout`, `close-stderr` | bool | Redirect the stream to `/dev/null` |
+| `vtty` | bool | Allocate a virtual TTY for attach / detach |
+| `vtty-scrollback` | bytes | Virtual TTY scrollback buffer (default 64 KiB) |
+| `inittab-id`, `inittab-line` | string | UTMPX inittab ID and line for session tracking |
+
+### Logging
+
+| Directive | Value | Description |
+|---|---|---|
+| `log-type` | `none` \| `buffer` \| `file` \| `pipe` \| `command` | Where the service's output goes |
+| `log-buffer-size` | bytes | In-memory buffer size (`log-type = buffer`) |
+| `logfile` | path | Log file path (`log-type = file`) |
+| `logfile-permissions` | octal | Log file mode (default `0600`) |
+| `logfile-uid`, `logfile-gid` | integer | Log file ownership |
+| `logfile-max-size` | bytes | Rotate when the file reaches this size |
+| `logfile-max-files` | integer | Number of rotated files to keep |
+| `logfile-rotate-time` | seconds | Rotate at this interval |
+| `log-processor` | program [args…] | Command run on each rotated file |
+| `log-include` | regex | Write only matching lines |
+| `log-exclude` | regex | Drop matching lines |
+| `log-select` | `+prefix` `-prefix` … | s6-log-style selection chain; the last match decides; exclusive with `log-include` / `log-exclude` |
+| `log-rate-limit-interval` | Go duration | Token-bucket window; excess lines are dropped |
+| `log-rate-limit-burst` | integer | Lines allowed per window |
+| `log-level-max` | `emerg` … `debug` | Drop lines above this syslog severity |
+| `shared-logger` | service | Send output to a shared logger, prefixed with this service's name |
+
+### Resources and scheduling
+
+| Directive | Value | Description |
+|---|---|---|
+| `nice` | −20 … 19 | Scheduling priority |
+| `oom-score-adj` | −1000 … 1000 | OOM-killer score adjustment |
+| `ioprio` | `be:N` \| `rt:N` \| `idle` | I/O scheduling class and level |
+| `cpu-affinity` | list | CPU set, e.g. `0-3`, `0 1 2`, `0,2,4` |
+| `cgroup` | path | cgroup for the child process (alias `run-in-cgroup`, dinit) |
+| `slice` | name | Hierarchical cgroup parent, systemd-style |
+| `delegate` | bool \| controller… | Delegate the cgroup subtree to the service |
+| `rlimit-nofile` | soft[:hard] \| `unlimited` | Open file descriptors |
+| `rlimit-core` | soft[:hard] \| `unlimited` | Core dump size |
+| `rlimit-data` | soft[:hard] \| `unlimited` | Data segment size |
+| `rlimit-as` | soft[:hard] \| `unlimited` | Address space (alias `rlimit-addrspace`, dinit) |
+
+### Identity, privileges and credentials
+
+| Directive | Value | Description |
+|---|---|---|
+| `capabilities` | cap,… | Ambient capabilities, e.g. `cap_net_bind_service` |
+| `securebits` | bit… | Securebits flags, e.g. `noroot keep-caps` |
+| `dynamic-user` | bool | Allocate a transient UID/GID for each start; released when the service stops |
+| `load-credential` | `NAME:PATH` | Copy a file into `/run/credentials/<svc>/` |
+| `set-credential` | `NAME:VALUE` | Write an inline value as a credential |
+| `runtime-directory` | name… | Managed `/run/<name>`, owned by `run-as` |
+| `state-directory` | name… | Persistent `/var/lib/<name>`; also `cache-`, `logs-` and `configuration-directory` |
+
+### Filesystem sandbox
+
+Applied in a private mount namespace by `slinit-runner`, which must be
+installed for any service that uses these directives.
+
+| Directive | Value | Description |
+|---|---|---|
+| `private-tmp` | bool | Private tmpfs on `/tmp` and `/var/tmp` |
+| `protect-system` | `no` \| `yes` \| `full` \| `strict` | Mount `/usr`, `/boot`, `/efi` (and more at higher levels) read-only |
+| `protect-home` | `no` \| `yes` \| `read-only` \| `tmpfs` | Restrict `/home`, `/root`, `/run/user` |
+| `read-only-paths` | path… | Bind read-only |
+| `read-write-paths` | path… | Bind read-write; punches holes through `protect-system` |
+| `inaccessible-paths` | path… | Hide behind an empty mount |
+| `bind-paths` | src[:dst]… | Bind host paths into the sandbox, read-write |
+| `bind-read-only-paths` | src[:dst]… | Bind host paths into the sandbox, read-only |
+| `temporary-filesystem` | path[:options]… | Mount a fresh tmpfs |
+| `protect-proc` | `default` \| `noaccess` \| `invisible` \| `ptraceable` | `/proc` `hidepid` mode |
+| `proc-subset` | `all` \| `pid` | Subset of `/proc` that is visible |
+
+### System-call filtering and kernel protection
+
+Also enforced by `slinit-runner`; every setting fails closed.
+
+| Directive | Value | Description |
+|---|---|---|
+| `system-call-filter` | item… | seccomp allow list; `@group` names a curated set, a leading `~` makes it a deny list |
+| `system-call-architectures` | name… | Architectures allowed to make system calls |
+| `system-call-error-number` | errno \| `kill` \| `log` \| `trap` | Result of a filtered call (default `EPERM`) |
+| `protect-kernel-tunables` | bool | Read-only `/proc/sys` and `/sys` |
+| `protect-kernel-modules` | bool | Block `init_module`, `finit_module`, `delete_module` |
+| `protect-kernel-logs` | bool | Block `syslog` |
+| `protect-clock` | bool | Block `clock_settime`, `settimeofday`, `adjtimex` |
+| `protect-control-groups` | bool | Read-only `/sys/fs/cgroup` |
+| `protect-hostname` | bool | Block `sethostname`, `setdomainname` |
+| `lock-personality` | bool | Block `personality` |
+
+### Periodic tasks
+
+| Directive | Value | Description |
+|---|---|---|
+| `cron-command` | program [args…] | Command run periodically while the service is running |
+| `cron-interval` | seconds or Go duration | Interval between runs |
+| `cron-delay` | seconds or Go duration | Delay before the first run |
+| `cron-on-error` | `continue` \| `stop` | Behaviour when the command fails (default `continue`) |
+| `cron-calendar` | expression | systemd `OnCalendar=` syntax: `daily`, `Mon..Fri 09:00`, `*:0/15` |
+| `cron-randomized-delay` | Go duration | Upper bound of random jitter added to each run, interval and calendar modes alike |
+| `cron-fixed-random-delay` | bool | Derive the jitter once from the machine ID instead of per run (systemd `FixedRandomDelay=`) |
+| `cron-persistent` | bool | Catch-up run when a scheduled run was missed; the last-run time is kept on disk, so it survives a reboot |
 
 ## Service types
 
-| Type | Description |
-|------|-------------|
-| `process` | Long-running daemon managed by slinit |
-| `scripted` | Service controlled by start/stop commands |
-| `internal` | Milestone service with no associated process |
-| `bgprocess` | Self-backgrounding daemon (forks, writes PID file, monitored via polling) |
-| `triggered` | Service that waits for an external trigger before completing startup |
-
-## Dependency types
-
-| Directive | Description |
-|-----------|-------------|
-| `depends-on` | Hard dependency -- start required, stop propagates |
-| `depends-ms` | Milestone dependency -- must start, then becomes soft |
-| `waits-for` | Soft dependency -- waits for start, but failure doesn't propagate |
-| `prepared-by` | Hard dependency like `depends-on`, but each restart of the dependent also restarts the dependency (for prepare/cleanup per execution) |
-| `before` | Ordering -- this service starts before the named service |
-| `after` | Ordering -- this service starts after the named service |
+| Type | Use it for | Notes |
+|---|---|---|
+| `process` | A long-running program that stays in the foreground | slinit supervises the PID it forked |
+| `bgprocess` | A daemon that forks and lets its parent exit | Requires `pid-file`; monitored by polling |
+| `scripted` | A job that runs to completion | `command` starts it, the optional `stop-command` stops it |
+| `internal` | A milestone or grouping name | No process |
+| `triggered` | A service that waits for an external trigger | Completes its start on `slinitctl trigger` |
 
 ## Environment variable substitution
 
-Config values support environment variable expansion:
+Values are expanded at load time:
 
-| Syntax | Description |
-|--------|-------------|
-| `$VAR` | Expand variable |
-| `${VAR}` | Expand variable (explicit braces) |
-| `${VAR:-default}` | Use default if VAR is empty/unset |
-| `${VAR:+alt}` | Use alt if VAR is set and non-empty |
-| `$$` | Literal `$` |
-| `$/VAR` | Word-split: expand and split on whitespace into multiple args |
-| `$1` / `${1}` | Service template argument (for `name@arg` services) |
-
+| Syntax | Expands to |
+|---|---|
+| `$VAR`, `${VAR}` | The value of `VAR` |
+| `${VAR:-default}` | `default` if `VAR` is unset or empty |
+| `${VAR:+alt}` | `alt` if `VAR` is set and non-empty, otherwise nothing |
+| `$$` | A literal `$` |
+| `$/VAR` | The value of `VAR`, split on whitespace into separate arguments |
+| `$1`, `${1}` | The template argument of a `name@argument` service |
 
 ## Appendix: daemon command-line options
 
-Kept here for convenience. [slinit(8)](man/slinit.8.md) is authoritative
-and documents all 46 flags.
+A summary for convenience; [slinit(8)](man/slinit.8.md) is
+authoritative and documents all 46 flags.
+
+### Mode and instance
 
 | Flag | Description | Default |
-|------|-------------|---------|
-| `--services-dir` | Service description directory (comma-separated) | `~/.config/slinit.d` (user) or multiple system dirs |
-| `--socket-path` | Control socket path | `~/.slinitctl` or `/run/slinit.socket` |
-| `--system` / `-m` / `--system-mgr` | Run as system service manager | `false` |
-| `--user` | Run as user service manager | `true` |
-| `-t` / `--service` | Service to start at boot (repeatable, or use positional args) | `boot` |
-| `-o` / `--container` | Run in container mode (Docker/LXC/Podman) | `false` |
-| `--log-level` | Log level (debug, info, notice, warn, error) | `info` |
-| `--console-level` | Minimum level for console output | inherits `--log-level` |
-| `-q` / `--quiet` | Suppress all but error output | `false` |
-| `-r` / `--auto-recovery` | Auto-start `recovery` service on boot failure (PID 1) | `false` |
-| `-e` / `--env-file` | Environment file to load at startup | |
-| `-F` / `--ready-fd` | File descriptor to notify when boot service is ready | `-1` |
-| `-l` / `--log-file` | Log to file instead of console | |
-| `-b` / `--cgroup-path` | Default cgroup base path for services | |
-| `--parallel-start-limit` | Max concurrent service starts (0 = unlimited) | `0` |
-| `--parallel-start-slow-threshold` | Seconds before a starting service is considered "slow" | `10s` |
-| `--shutdown-grace` | SIGTERM→SIGKILL grace period during shutdown | `3s` |
-| `--emergency-timeout` | Max time slinit waits for services to drain during shutdown before the force-exit path (SIGKILL any straggler, log names of blocking services in the same error line, then reboot syscall). Tune up for heavy stop cascades (docker + full systemd-style graph) | `90s` |
-| `--persist-intent` | Directory where pin transitions are persisted; `stop --pin X` writes `<dir>/X` with `pinned-stopped` so the pin survives a reboot. Empty disables (opt-in). Recommended: `/var/lib/slinit/intent` | (empty) |
-| `--no-wall` | Disable wall broadcasts at shutdown | `false` |
-| `--banner` | Boot banner printed to console (empty disables) | `slinit booting...` |
-| `--umask` | Initial umask (octal) | `0022` |
-| `-1` / `--console-dup` | Duplicate log output to `/dev/console` even with `--log-file` | `false` |
-| `--catch-all-log` | Path for the early-boot catch-all log | `/run/slinit/catch-all.log` |
-| `-B` / `--no-catch-all` | Disable catch-all logger | `false` |
-| `--timestamp-format` | Log timestamp format (`wallclock`\|`iso`\|`tai64n`\|`none`) | `wallclock` |
-| `--rlimits` | Global rlimits applied to slinit and inherited by services (`name=soft[:hard]` comma-separated) | |
-| `--run-mode` | Stage `/run` at boot: `mount` (fresh tmpfs), `remount` (unmount+mount), `keep` (untouched) | `mount` |
-| `--devtmpfs-path` | Mount devtmpfs at this path (empty disables) | `/dev` |
-| `--kcmdline-dest` | Snapshot `/proc/cmdline` to this path (empty disables) | `/run/slinit/kcmdline` |
-| `-S` / `--sys` | Override platform detection (`docker`, `lxc`, `podman`, `systemd-nspawn`, `openvz`, `vserver`, `rkt`, `uml`, `wsl`, `xen0`, `xenu`, `kvm`, `qemu`, `vmware`, `microsoft` (Hyper-V), `oracle` (VirtualBox), `bochs`, `none`) | auto |
-| `--conf-dir` | Override `conf.d` overlay directories (comma-separated; `none` disables overlays) | |
-| `-a` / `--cpu-affinity` | Default CPU affinity for daemon and services (e.g. `0-3`, `0,2,4`) | |
-| `--restore-from-snapshot` | Replay operator-intent snapshot after soft-reboot (path to snapshot file) | |
-| `--watchdog-device` | Hardware watchdog character device to feed (PID 1 / container mode) | auto (`/dev/watchdog0` → `/dev/watchdog`) |
-| `--watchdog-timeout` | Kernel-side watchdog timeout (`WDIOC_SETTIMEOUT`) | `60s` |
-| `--watchdog-interval` | How often the feeder pings the device | `timeout / 3` |
-| `--no-watchdog` | Disable hardware-watchdog feeder even when PID 1 | `false` |
-| `--version` | Show version and exit | |
+|---|---|---|
+| `--system`, `-m`, `--system-mgr` | Run as the system service manager | `false` |
+| `--user` | Run as a per-user service manager | `true` |
+| `-o`, `--container` | Container mode (Docker, LXC, Podman) | `false` |
+| `-S`, `--sys` | Override platform detection — see [below](#platform-names) | auto |
+| `--services-dir` | Service directories, comma-separated | see [below](#default-service-directories) |
+| `--conf-dir` | `conf.d` overlay directories, comma-separated; `none` disables overlays | |
+| `--socket-path` | Control socket path | `~/.slinitctl` (user), `/run/slinit.socket` (system) |
+| `--version` | Print the version and exit | |
 
-Default service directories (when `--services-dir` is not set):
-- **System mode**: `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d`
-- **User mode**: `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user`
+### Boot
 
+| Flag | Description | Default |
+|---|---|---|
+| `-t`, `--service` | Service to start at boot; repeatable, positional arguments also accepted | `boot` |
+| `-r`, `--auto-recovery` | Start the `recovery` service on boot failure (PID 1) | `false` |
+| `-e`, `--env-file` | Environment file loaded at startup | |
+| `-F`, `--ready-fd` | File descriptor notified when the boot service is ready | `-1` |
+| `--banner` | Boot banner printed to the console; empty disables it | `slinit booting...` |
+| `--umask` | Initial umask, octal | `0022` |
+| `--run-mode` | How `/run` is staged: `mount` (fresh tmpfs), `remount` (unmount and mount), `keep` (untouched) | `mount` |
+| `--devtmpfs-path` | Mount devtmpfs here; empty disables | `/dev` |
+| `--kcmdline-dest` | Snapshot `/proc/cmdline` here; empty disables | `/run/slinit/kcmdline` |
+| `--restore-from-snapshot` | Replay an operator-intent snapshot after a soft reboot | |
+| `--persist-intent` | Directory where pin transitions are persisted, so `stop --pin X` survives a reboot; empty disables. Recommended: `/var/lib/slinit/intent` | |
+
+### Scheduling and resources
+
+| Flag | Description | Default |
+|---|---|---|
+| `--parallel-start-limit` | Maximum concurrent service starts; `0` is unlimited | `0` |
+| `--parallel-start-slow-threshold` | Time after which a starting service counts as slow | `10s` |
+| `-b`, `--cgroup-path` | Default cgroup base path for services | |
+| `-a`, `--cpu-affinity` | Default CPU affinity for the daemon and services, e.g. `0-3` | |
+| `--rlimits` | Global rlimits inherited by services: `name=soft[:hard]`, comma-separated | |
+
+### Shutdown
+
+| Flag | Description | Default |
+|---|---|---|
+| `--shutdown-grace` | SIGTERM → SIGKILL grace period during shutdown | `3s` |
+| `--emergency-timeout` | How long to wait for services to drain before the forced path: SIGKILL stragglers, log the services that blocked, issue the reboot call. Raise it for large stop cascades | `90s` |
+| `--no-wall` | Do not broadcast wall messages at shutdown | `false` |
+
+### Logging
+
+| Flag | Description | Default |
+|---|---|---|
+| `--log-level` | `debug`, `info`, `notice`, `warn` or `error` | `info` |
+| `--console-level` | Minimum level shown on the console | `--log-level` |
+| `-q`, `--quiet` | Show errors only | `false` |
+| `-l`, `--log-file` | Log to a file instead of the console | |
+| `-1`, `--console-dup` | Also copy log output to `/dev/console` when `--log-file` is set | `false` |
+| `--catch-all-log` | Early-boot catch-all log path | `/run/slinit/catch-all.log` |
+| `-B`, `--no-catch-all` | Disable the catch-all logger | `false` |
+| `--timestamp-format` | `wallclock`, `iso`, `tai64n` or `none` | `wallclock` |
+
+### Hardware watchdog
+
+| Flag | Description | Default |
+|---|---|---|
+| `--watchdog-device` | Watchdog device to feed (PID 1 and container mode) | `/dev/watchdog0`, then `/dev/watchdog` |
+| `--watchdog-timeout` | Kernel-side timeout (`WDIOC_SETTIMEOUT`) | `60s` |
+| `--watchdog-interval` | How often the device is pinged | timeout ÷ 3 |
+| `--no-watchdog` | Do not feed the watchdog even as PID 1 | `false` |
+
+### Default service directories
+
+Used when `--services-dir` is not given, searched in this order:
+
+| Mode | Directories |
+|---|---|
+| System | `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d` |
+| User | `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user` |
+
+### Platform names
+
+Accepted by `-S` / `--sys`:
+
+| Kind | Names |
+|---|---|
+| Containers | `docker`, `lxc`, `podman`, `systemd-nspawn`, `openvz`, `vserver`, `rkt`, `wsl` |
+| Hypervisors | `kvm`, `qemu`, `vmware`, `microsoft` (Hyper-V), `oracle` (VirtualBox), `bochs`, `xen0`, `xenu`, `uml` |
+| None | `none` — bare metal, no platform-specific behaviour |
