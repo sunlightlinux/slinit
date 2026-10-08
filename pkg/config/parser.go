@@ -3225,7 +3225,7 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	// left the service without any of the confinement it declared.
 	case "capabilities":
 		if _, err := process.ParseCapabilities(value); err != nil {
-			return fmt.Errorf("capabilities: %w", err)
+			return err
 		}
 		desc.Capabilities = appendWords(desc.Capabilities, value, op)
 
@@ -3235,13 +3235,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		// before exec. systemd-style `~` drop prefix is not supported
 		// in this first cut — narrow to what's named, full stop.
 		if _, err := process.ParseCapabilities(value); err != nil {
-			return fmt.Errorf("capability-bounding-set: %w", err)
+			return err
 		}
 		desc.CapabilityBoundingSet = appendWords(desc.CapabilityBoundingSet, value, op)
 
 	case "securebits":
 		if _, err := process.ParseSecurebits(value); err != nil {
-			return fmt.Errorf("securebits: %w", err)
+			return err
 		}
 		desc.Securebits = appendWords(desc.Securebits, value, op)
 
