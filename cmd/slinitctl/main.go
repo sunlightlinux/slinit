@@ -2186,7 +2186,7 @@ func shellSingleQuote(s string) string {
 }
 
 // buildRunBody assembles the transient service description that
-// cmdRun writes into /run/slinit.d/. Kept as a pure helper so the
+// cmdRun writes into the runtime service dir. Kept as a pure helper so the
 // generated shape is unit-testable without touching the filesystem
 // or the control socket. Command tokens are minimally-quoted
 // (double-quote each, escape embedded double quotes) so dinit-style
@@ -2260,9 +2260,10 @@ func buildRunBody(svcType, description string, cmdParts []string, slice, niceVal
 // is the systemd-run --user analogue; a `run`-local --user would
 // only duplicate the same routing.
 //
-// Writes a service description into /run/slinit.d/<name> — that path is
-// tmpfs on any real system, so the file evaporates at the next boot
-// without polluting /etc/slinit.d. The daemon picks it up via the
+// Writes a service description into /run/slinit.d/<name> (system) or
+// $XDG_RUNTIME_DIR/slinit.d/<name> (user) — tmpfs on any real system, so
+// the file evaporates at the next boot or logout without polluting the
+// config dirs; see pickTransientDir. The daemon picks it up via the
 // existing load-on-demand path (CmdLoadService reads every default
 // service dir), so no new protocol command is needed.
 func cmdRun(conn net.Conn, args []string) error {
@@ -2433,10 +2434,18 @@ commandStart:
 		}
 	}
 
-	if err := os.MkdirAll("/run/slinit.d", 0755); err != nil {
-		return fmt.Errorf("run: mkdir /run/slinit.d: %w", err)
+	searched, err := queryServiceDirs(conn)
+	if err != nil {
+		return fmt.Errorf("run: %w", err)
 	}
-	path := "/run/slinit.d/" + unitName
+	dir, err := pickTransientDir(searched, os.Getenv("XDG_RUNTIME_DIR"))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("run: mkdir %s: %w", dir, err)
+	}
+	path := filepath.Join(dir, unitName)
 	envPath := ""
 	if len(setenvs) > 0 {
 		envPath = path + ".env"
@@ -4848,36 +4857,72 @@ func cmdQueryServiceName(conn net.Conn, svcName string) error {
 }
 
 func cmdQueryServiceDscDir(conn net.Conn) error {
-	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, nil); err != nil {
-		return err
-	}
-
-	rply, payload, err := control.ReadPacket(conn)
+	dirs, err := queryServiceDirs(conn)
 	if err != nil {
 		return err
 	}
+	for _, d := range dirs {
+		fmt.Println(d)
+	}
+	return nil
+}
+
+// queryServiceDirs returns the directories the daemon searches for
+// service descriptions, in search order.
+func queryServiceDirs(conn net.Conn) ([]string, error) {
+	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, nil); err != nil {
+		return nil, err
+	}
+
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return nil, err
+	}
 	if rply != control.RplyServiceDscDir {
-		return fmt.Errorf("service-dirs failed: reply %d", rply)
+		return nil, fmt.Errorf("service-dirs failed: reply %d", rply)
 	}
 
 	if len(payload) < 2 {
-		return fmt.Errorf("response too short")
+		return nil, fmt.Errorf("response too short")
 	}
 	count := int(binary.LittleEndian.Uint16(payload))
 	off := 2
+	dirs := make([]string, 0, count)
 	for i := 0; i < count; i++ {
 		if len(payload) < off+2 {
-			return fmt.Errorf("truncated response at dir %d", i)
+			return nil, fmt.Errorf("truncated response at dir %d", i)
 		}
 		dirLen := int(binary.LittleEndian.Uint16(payload[off:]))
 		off += 2
 		if len(payload) < off+dirLen {
-			return fmt.Errorf("truncated response at dir %d", i)
+			return nil, fmt.Errorf("truncated response at dir %d", i)
 		}
-		fmt.Println(string(payload[off : off+dirLen]))
+		dirs = append(dirs, string(payload[off:off+dirLen]))
 		off += dirLen
 	}
-	return nil
+	return dirs, nil
+}
+
+// pickTransientDir chooses where `run` writes a transient service: the
+// first runtime (tmpfs) service directory the daemon actually searches —
+// /run/slinit.d for a system instance, $XDG_RUNTIME_DIR/slinit.d for a
+// user one. Writing anywhere else would leave a file the daemon never
+// reads, so no match is an error naming what the daemon does search.
+func pickTransientDir(searched []string, runtimeDir string) (string, error) {
+	candidates := []string{"/run/slinit.d"}
+	if runtimeDir != "" {
+		candidates = append(candidates, filepath.Clean(runtimeDir)+"/slinit.d")
+	}
+	for _, d := range searched {
+		for _, c := range candidates {
+			if filepath.Clean(d) == c {
+				return c, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("run: the daemon searches %s, none of them a runtime directory "+
+		"(/run/slinit.d, or $XDG_RUNTIME_DIR/slinit.d for a user instance); "+
+		"add one to its --services-dir", strings.Join(searched, ", "))
 }
 
 func cmdDependents(conn net.Conn, name string) error {
