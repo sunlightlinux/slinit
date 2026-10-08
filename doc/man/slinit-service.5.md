@@ -1888,7 +1888,8 @@ and before fork/exec. Predicates come in two flavours:
   systemd's *Assert\** directives.
 
 Negate any predicate by prefixing the value with `!` (whitespace
-between the bang and the value is tolerated).
+between the bang and the value is tolerated) — except **exec-condition**,
+whose value is a raw command.
 
 Recognised predicates (each has both a `condition-` and an `assert-`
 form):
@@ -1917,12 +1918,13 @@ form):
     (`quiet`) or a `key=value` pair.
 
 **\*-virtualization**=[*kind*|`yes`|`no`]
-:   Detect the running virtualization (probe order: `/proc/1/cgroup`,
-    `$container` env var, cpuinfo `hypervisor` flag, DMI strings,
-    WSL fingerprint). Specific kinds: `kvm`, `qemu`, `vmware`,
-    `virtualbox`, `microsoft`, `xen`, `wsl`, `docker`, `lxc`,
-    `podman`, `kubernetes`. `yes` / empty matches any virt; `no`
-    matches bare metal.
+:   Detect the running virtualization. Probe order: the `$container`
+    env var (value used verbatim), `/proc/1/cgroup` (`docker`, `lxc`,
+    `kubernetes`, `podman`), the cpuinfo `hypervisor` flag refined by
+    DMI (`qemu`, `vmware`, `virtualbox`, `microsoft`, `xen`,
+    `google`, else `vm`), then the WSL fingerprint (`wsl`). A KVM
+    guest reports `qemu`; `kvm` is never returned. `yes` / empty
+    matches any virtualization; `no` matches bare metal.
 
 **\*-first-boot**[=`yes`|`no`]
 :   `/etc/machine-id` is missing or `uninitialized`. Defaults to `yes`.
@@ -1931,8 +1933,10 @@ form):
 :   System hostname matches *hostname* (case-insensitive).
 
 **\*-security**=*lsm*
-:   Named LSM is active. Recognised: `selinux`, `apparmor`, `tomoyo`,
-    `smack`, `ima`, `audit`.
+:   Named LSM or feature is active. Recognised: `selinux`, `apparmor`,
+    `tomoyo`, `smack`, `ima`, `audit`, `measured-os` (a non-empty TPM
+    measurement log) and `measured-uki` (the same, plus the sd-stub
+    *StubPcrKernelImage* EFI variable).
 
 **\*-needs-update**[=`yes`|`no`]
 :   `/run/systemd/update-on-next-boot` or `/run/needs-update` exists.
@@ -1946,27 +1950,32 @@ form):
 :   *path* exists and is a socket file (S_ISSOCK).
 
 **\*-fraction**=*TAG*:*PERCENT*
-:   Staged rollout. FNV-1a hash of the machine-id XOR *TAG* is
-    compared against *PERCENT* (0-100). Same *(TAG, machine)* pair
-    always produces the same decision. Enables gradual fleet
-    rollouts without an external orchestrator.
+:   Staged rollout. An FNV-1a hash of the machine-id and *TAG* gives a
+    bucket from 0.00 to 99.99; the predicate holds when the bucket is
+    below *PERCENT* (decimals allowed). The same *(TAG, machine)* pair
+    always produces the same decision. Fails when */etc/machine-id* is
+    missing.
 
-**\*-architecture**=*x86_64*|*arm64*|*386*|...
-:   Runtime CPU architecture (`GOARCH` values). Selective service
-    files per-arch.
+**\*-architecture**=*x86_64*|*x86*|*arm64*|*arm*|*ppc64-le*|...
+:   Runtime CPU architecture, in systemd's spelling: `x86_64`, not
+    `amd64`; `x86`, not `386`; `ppc64-le` and `mips64-le` for the
+    little-endian 64-bit variants.
 
-**\*-cpu-feature**=*avx2*|*sha_ni*|...
-:   Named cpuinfo flag present in `/proc/cpuinfo`. HW-accel /
-    crypto services.
+**\*-cpu-feature**=[*ARCH*.]*avx2*|*sha_ni*|...
+:   Named cpuinfo flag present in `/proc/cpuinfo`. An *ARCH*`.`
+    prefix (`x86_64.avx2`) restricts the check to that architecture;
+    on any other it fails.
 
-**\*-cpus**[=*OP N*]
-:   Number of online CPUs matches. Accepts operators `>=`, `<=`,
-    `<`, `>`, `=`, `!=` followed by an integer.
+**\*-cpus**=[*OP*]*N*
+:   Number of usable CPUs (the affinity mask) compared with *OP*:
+    `>=`, `<=`, `>`, `<`, `=` or `==`; no operator means equality.
+    There is no `!=`; negate with a leading `!` instead. The same
+    operators apply to the two predicates below.
 
-**\*-memory**[=*OP SIZE*]
+**\*-memory**=[*OP*]*SIZE*
 :   `MemTotal` from `/proc/meminfo` matches, with K/M/G/T suffix.
 
-**\*-kernel-version**[=*OP VERSION*]
+**\*-kernel-version**=[*OP*]*VERSION*
 :   `uname(2)` `release` field compared as semver-ish; `6.0`,
     `>= 6.6.5`, etc.
 
@@ -1974,16 +1983,20 @@ form):
 :   Module `name` appears in `/proc/modules`.
 
 **\*-os-release**=*KEY*=*VALUE*
-:   `/etc/os-release` line matches. `condition-os-release = ID=voidlinux`.
+:   Field *KEY* of `/etc/os-release` (or `/usr/lib/os-release`)
+    equals *VALUE*, quotes stripped. `condition-os-release = ID=voidlinux`.
 
-**\*-user**=*uid*|*name*
-:   Current daemon UID matches (`os.Getuid` vs `getpwnam` lookup).
+**\*-user**=*uid*|*name*|`@system`
+:   The daemon's effective UID matches (*name* is looked up; a `uid:`
+    prefix is accepted). `@system` matches any UID below 1000.
 
-**\*-group**=*gid*|*name*
-:   Current daemon GID or supplementary groups include the value.
+**\*-group**=*gid*|*name*|`@system`
+:   The daemon's effective GID or supplementary groups include the
+    value (`gid:` prefix accepted). `@system` as for **\*-user**.
 
-**\*-environment**=*KEY*=*VALUE*
-:   Daemon environment contains the exact assignment.
+**\*-environment**=*KEY*=*VALUE* | *KEY*
+:   Daemon environment contains the exact assignment, or, for a bare
+    *KEY*, the variable set to any value.
 
 **\*-file-is-executable**=*path*
 :   *path* is a regular file with at least one execute bit set.
@@ -1995,14 +2008,20 @@ form):
 :   *path* resides on a read-write filesystem (statfs MS_RDONLY
     check).
 
-**\*-firmware**=*uefi*|*bios*|*device-tree*|*dmi:KEY=VALUE*
-:   Boot firmware type. `dmi:` prefix probes a DMI/SMBIOS field.
+**\*-firmware**=*uefi*|*bios*|*device-tree*|*smbios*|*string*
+:   `uefi`: */sys/firmware/efi* exists. `bios`: the DMI *bios_vendor*
+    is non-empty, which is also true on most UEFI machines.
+    `device-tree`, `smbios`: the matching */sys/firmware* node exists.
+    Any other value is a case-insensitive substring match on the DMI
+    *product_name*.
 
 **\*-machine-tag**=*tag*
 :   `/etc/machine-info` has a `TAGS=` line containing *tag*.
 
 **\*-credential**=*name*
-:   Credential *name* is present under `$CREDENTIALS_DIRECTORY`.
+:   Credential *name* is present under the slinit daemon's own
+    `$CREDENTIALS_DIRECTORY` (set only when slinit itself was handed
+    credentials), not the service's. Fails when that is unset.
 
 **\*-control-group-controller**=*memory*|*cpu*|*io*|...
 :   Named cgroup v2 controller enabled in
@@ -2014,7 +2033,13 @@ form):
     pressure watches (see **memory-pressure-watch**).
 
 **\*-cpu-pressure**=*OP N*, **\*-io-pressure**=*OP N*
-:   Same shape for CPU and IO PSI.
+:   Same shape for CPU and IO PSI. For all three, a bare *N* means
+    `>=` *N*, and *N* may be fractional.
+
+**\*-file-value**=*PATH*:*VALUE*
+:   The first 4 KiB of *PATH*, trailing whitespace trimmed, equal
+    *VALUE* (split on the last `:`). Meant for sysfs enum and boolean
+    files.
 
 **exec-condition**=*shell command*, **assert-exec-condition**=*shell command*
 :   Pre-flight command run through `/bin/sh -c`, 10-second timeout.
@@ -2023,7 +2048,7 @@ form):
     (matches other **condition-\*** family); **assert-** form
     fails the start and cascades. Systemd's **ExecCondition=**.
 
-**condition-boot-cond**=*name*
+**condition-boot-cond**=*name*, **assert-boot-cond**=*name*
 :   Match a value from the comma-separated **slinit.cond=** kernel-
     command-line argument. `slinit.cond=factory,upgrade` sets two
     boot conditions; a service with `condition-boot-cond = factory`
@@ -2070,7 +2095,7 @@ Examples:
     condition-first-boot = no
 
     # Refuse to start outside a KVM guest:
-    assert-virtualization = kvm
+    assert-virtualization = qemu
 
     # Only run when the laptop is on AC:
     condition-ac-power = yes
@@ -2090,22 +2115,29 @@ Examples:
 ## PLATFORM KEYWORDS
 
 **keyword**=[*-*]*platform* [...]
-:   OpenRC-style platform gate. Prefix with `-` to skip the service
-    on that platform. Recognised platforms include `docker`, `lxc`,
-    `podman`, `wsl`, `xen0`, `xenu`, `prefix`, `containers`. The
-    daemon's auto-detection can be overridden with **slinit**(8)
-    `--sys`.
+:   OpenRC-style platform gate: the service is not loaded when any
+    listed platform is the detected one. Every entry is a skip entry —
+    a leading `-` (or OpenRC's `no` prefix) is accepted and stripped,
+    so `docker`, `-docker` and `nodocker` mean the same. Platforms:
+    `docker`, `podman`, `lxc`, `systemd-nspawn`, `openvz`, `vserver`,
+    `rkt`, `uml`, `wsl`, `xen0`, `xenu`, `kvm`, `qemu`, `vmware`,
+    `microsoft`, `oracle` (VirtualBox), `bochs`. The form without `=`
+    (`keyword -docker`) is accepted too. The daemon's auto-detection
+    can be overridden with **slinit**(8) `--sys`.
 
 ## CONSUMER / PROVIDER
 
 **provides**=*name*
 :   Register *name* as an alias for this service. Other services may
-    `depends-on=`*name* and resolve to this one.
+    `depends-on:` *name* and resolve to this one — but only once this
+    service has been loaded; before that, the loader looks for a file
+    called *name*.
 
 **consumer-of**=*service*
-:   Mark this service as a consumer of *service*. The service file
-    descriptor of *service* is passed to this service's process via
-    *SLINIT_CS_FD* (and **options**=*pass-cs-fd*).
+:   Consume the output of *service*: its stdout/stderr pipe becomes
+    this service's stdin. *service* must be a **process**,
+    **bgprocess** or **scripted** service with **log-type**=*pipe*,
+    and can have only one consumer. Accepts `:` or `=`.
 
 ## TTY CLUSTER (console services)
 
@@ -2113,7 +2145,11 @@ For getty-style services that connect to a specific TTY. All knobs
 except **tty-path** are no-ops without it. When **tty-path** is
 set, slinit opens the device with *O_RDWR|O_NOCTTY*, wires it as
 stdin/stdout/stderr, and makes the child session-leader with the
-tty as its controlling terminal (**Setsid** + **Setctty**). Wins
+tty on fds 0-2. The tty becomes its controlling terminal only with
+**options**=*unmask-intr*; otherwise the child is shielded from
+keyboard signals. If the tty cannot be opened (including an
+unresolvable **@console**), the service starts with the daemon's own
+stdio instead of failing. Wins
 over **options**=*runs-on-console* / *starts-on-console* when both
 are set — a getty configures a specific tty and doesn't want
 `/dev/console` instead.
@@ -2127,8 +2163,8 @@ are set — a getty configures a specific tty and doesn't want
     where kernel oops messages land. Lets one service description
     boot the right getty across VGA and serial installs of the same
     image without patching per-target. If sysfs is unmounted or the
-    file is empty, the service fails to start rather than opening
-    the wrong tty. finit-parity (finit spawns a getty per console
+    file is empty, the tty cannot be resolved and the fallback above
+    applies. finit-parity (finit spawns a getty per console
     when multiple are active — slinit resolves to the primary; run
     a second service pointed at the other tty if both are needed).
 
@@ -2137,7 +2173,11 @@ are set — a getty configures a specific tty and doesn't want
     single-axis winsize is ill-defined.
 
 **tty-vhangup**=*yes*|*no*
-:   Call **vhangup**(2) on the fd to force any prior session off.
+:   Call **vhangup**(2) after opening the tty. **vhangup**(2) takes no
+    fd and acts on the *caller's* controlling terminal, and the call
+    is made by the daemon before the fork, so it does not hang up
+    *tty-path*; for slinit as PID 1, which has no controlling
+    terminal, it does nothing.
 
 **tty-vt-disallocate**=*yes*|*no*
 :   For `/dev/ttyN` (virtual terminals), call
@@ -2151,8 +2191,8 @@ are set — a getty configures a specific tty and doesn't want
     mode / color state / cursor position doesn't leak in.
 
 Load-bearing ordering: (1) VT_DISALLOCATE first — frees the VT
-number, next open reallocates clean. (2) Open TTY. (3) vhangup —
-needs an open fd. (4) Reset — after vhangup so it lands on fresh
+number, next open reallocates clean. (2) Open TTY. (3) vhangup (see
+above for its actual effect). (4) Reset — after vhangup so it lands on fresh
 state. (5) Winsize — after reset (reset would clobber it).
 
 ## D-BUS INTEGRATION (dbus-optional)
@@ -2160,9 +2200,10 @@ state. (5) Winsize — after reset (reset would clobber it).
 **bus-name**=*org.example.MyService*
 :   Well-known D-Bus name the service acquires. When set AND no
     explicit **ready-check-command** is configured AND `dbus-send`
-    is on PATH at load time, slinit auto-installs a shell one-
-    liner that polls *NameHasOwner* via `dbus-send` as the
-    readiness gate. On hosts without `dbus-send`, **bus-name**
+    is found in */usr/bin*, */bin* or */usr/local/bin* at load time
+    (**type**=*process* only), slinit auto-installs a shell one-
+    liner that polls *NameHasOwner* via `dbus-send` (every 100 ms)
+    as the readiness gate. On hosts without `dbus-send`, **bus-name**
     stays informational — one config file ports between "no
     D-Bus" appliance hosts and GNOME/KDE workstations without
     editing. slinit itself ships ZERO D-Bus client dependency.
@@ -2196,7 +2237,8 @@ mounted at `/run/credentials/<name>/`).
 :   Glob pattern resolved against `/etc/credstore` (overridable
     via *SYSTEM_CREDSTORE* env for tests). Each match adds a
     credential named by its basename. Silent on empty match sets
-    per systemd's best-effort semantics.
+    per systemd's best-effort semantics. The glob is expanded when
+    the service is loaded; reload it to pick up new credstore files.
 
 ## OTHER RUNNER-SIDE SETTINGS
 
@@ -2214,24 +2256,26 @@ mounted at `/run/credentials/<name>/`).
     older kernels fail-close.
 
 **memory-thp**=*madvise*|*never*|*always*
-:   Transparent Huge Pages policy applied via **prctl**(2)
-    *PR_SET_THP_DISABLE*.
+:   Only *never* has an effect (**prctl**(2) *PR_SET_THP_DISABLE*);
+    *madvise* and *always* keep the system-wide THP policy.
 
 **ignore-sigpipe**=*yes*|*no*
 :   Install *SIG_IGN* for **SIGPIPE** (systemd default). Explicit
     *no* restores the shell/runit default (*SIG_DFL*, terminate
     on write-to-closed-pipe).
 
-**personality**=*x86-64*|*x86*|*arm*|*arm64*|*linux32*
-:   **personality**(2) domain. Bare numeric value also accepted
-    for advanced flags.
+**personality**=*x86-64*|*x86_64*|*x86*|*linux32*|*arm*|*arm64*|*aarch64*
+:   **personality**(2) domain: the 64-bit names select *PER_LINUX*,
+    *x86*, *arm* and *linux32* select *PER_LINUX32*. Numeric values
+    are rejected.
 
 **remove-ipc**=*yes*|*no*
 :   At stop, sweep POSIX shm under `/dev/shm/` and SysV IPC
     (parsed via `/proc/sysvipc/{shm,msg,sem}`) for objects owned
     by the service UID and release them via **shmctl**(2) /
     **msgctl**(2) / **semctl**(2) *IPC_RMID*. UID 0 is skipped
-    by design (would clobber shared system state).
+    by design (would clobber shared system state). Applies to
+    **type**=*process* only.
 
 **utmp-mode**=*init*|*login*|*user*
 :   Picks the *ut_type* for the utmp record when **inittab-id**
@@ -2240,8 +2284,9 @@ mounted at `/run/credentials/<name>/`).
 **guess-main-pid**=*yes*|*no*
 :   For **type**=*bgprocess* without a **pid-file**: scan the
     delegated cgroup's *cgroup.procs* and pick the lowest non-
-    self pid as the daemon. Requires a delegated cgroup (**cgroup**
-    or **slice** must be set).
+    self pid as the daemon. Uses the service's effective cgroup:
+    **cgroup**, else **slice**, else the daemon's **\--cgroup-path**
+    default.
 
 **notify-access**=*main*|*all*|*exec*|*none*
 :   Restricts who can post to the readiness pipe. slinit's pipe-
@@ -2258,7 +2303,11 @@ mounted at `/run/credentials/<name>/`).
     and fd-store handoffs. *OPTIONS* is a comma-separated subset
     of {*read-only*, *append*, *truncate*, *graceful*}. *graceful*
     falls back to `/dev/null` on open failure so the fd slot
-    stays stable. Unknown option = parse error. Repeatable via *+=*.
+    stays stable. An unknown option fails the start (it is not
+    caught at parse time). *PATH* must be absolute, *FDNAME*
+    defaults to its basename, and without options the file is opened
+    read-write and created (mode 0644) if absent. Repeatable via
+    *+=*.
 
 ## CGROUP (additional settings)
 
@@ -2269,8 +2318,8 @@ mounted at `/run/credentials/<name>/`).
 :   Cpuset used at cgroup creation. When set alongside the
     steady-state **cgroup-cpuset-cpus** / **cgroup-cpuset-mems**,
     slinit retunes the cgroup to the steady value after the
-    service reaches STARTED. No-op unless both a startup-\*
-    directive AND its steady-state counterpart are configured.
+    service reaches STARTED. Without the steady-state counterpart,
+    the startup value stays for the service's lifetime.
 
 **cache-directory-quota**, **logs-directory-quota**, **state-directory-quota**=*bytes*
 :   Filesystem quota bytes on the auto-managed service directories.
@@ -2291,15 +2340,15 @@ log through a shared logger:
     command = /usr/sbin/nginx -g "daemon off;"
     working-dir = /
 
-    depends-on = network
-    waits-for  = mysql
-    after      = filesystems
+    depends-on: network
+    waits-for:  mysql
+    after:      filesystems
 
     restart = on-failure
-    restart-delay = 1s
+    restart-delay = 1
     restart-delay-step = 1s
     restart-delay-cap = 30s
-    stop-timeout = 10s
+    stop-timeout = 10
 
     run-as = www-data:www-data
     capabilities = cap_net_bind_service
@@ -2317,8 +2366,8 @@ reached:
     type = scripted
     description = mount /srv
 
-    depends-ms = network
-    after = filesystems
+    depends-ms: network
+    after: filesystems
 
     command = /usr/bin/mount /srv
     stop-command = /usr/bin/umount /srv
