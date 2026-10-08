@@ -89,6 +89,13 @@ func (hc *HealthChecker) Stop() {
 	if doneCh != nil {
 		<-doneCh
 	}
+
+	// Reset, so the next Start (after a restart of the service) runs
+	// again instead of finding stopCh set and returning.
+	hc.mu.Lock()
+	hc.stopCh = nil
+	hc.doneCh = nil
+	hc.mu.Unlock()
 }
 
 // ConsecutiveFailures returns the current consecutive failure count.
@@ -171,12 +178,12 @@ func (hc *HealthChecker) checkOnce() bool {
 
 	// Check if we've reached max failures
 	if hc.maxFailures > 0 && failures >= hc.maxFailures {
-		hc.logger.Error("Service '%s': health check failed %d consecutive times, triggering restart",
+		hc.logger.Error("Service '%s': health check failed %d consecutive times",
 			hc.svc.Name(), failures)
 		if hc.onFail != nil {
 			hc.onFail()
 		}
-		return false // stop checking — service will restart
+		return false // stop checking — the service is stopped, and restarted per its policy
 	}
 
 	return true

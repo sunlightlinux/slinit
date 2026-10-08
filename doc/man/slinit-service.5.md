@@ -1775,10 +1775,12 @@ watch; the service remains startable via `slinitctl start`.
 **healthcheck-command**=*program* [*args*...]
 :   Run *program* every **healthcheck-interval** after
     **healthcheck-delay**; each run is killed after one interval.
-    After **healthcheck-max-failures** consecutive non-zero exits,
-    checking stops and slinit stops the service — or rather drops
-    its explicit activation, so a service still required by a
-    started dependent keeps running. **type**=*process* only.
+    After **healthcheck-max-failures** consecutive non-zero exits the
+    process is stopped as having failed, exactly as when
+    **watchdog-timeout** expires: hard dependents stop with it, and the
+    **restart** policy decides whether it comes back (and its
+    dependents with it). After a restart, checking starts over.
+    **type**=*process* only.
 
 **healthcheck-interval**=*duration*, **healthcheck-delay**=*duration*,
 **healthcheck-max-failures**=*N*

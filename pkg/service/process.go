@@ -804,10 +804,10 @@ func (s *ProcessService) SetCronModifiers(
 func (s *ProcessService) SetHealthCheck(cmd []string, interval, delay time.Duration,
 	maxFailures int, unhealthyCmd []string) {
 	onFail := func() {
-		// Trigger a restart by sending SIGTERM to the process.
-		// Auto-restart policy will handle the restart.
-		s.services.logger.Info("Service '%s': health check triggering restart", s.serviceName)
-		s.Stop(false)
+		// Not inline: the checker's Stop() waits for this goroutine
+		// and is called with queueMu held (BringDown), so taking the
+		// lock here would deadlock against it.
+		go s.fireHealthCheckStop(s.PID())
 	}
 	s.healthChecker = NewHealthChecker(s, cmd, interval, delay, maxFailures, unhealthyCmd,
 		s.services.logger, onFail)
@@ -989,6 +989,38 @@ func (s *ProcessService) fireWatchdogStop() {
 	} else {
 		s.pendingStopSignal = syscall.SIGABRT
 	}
+
+	withRestart := false
+	switch s.autoRestart {
+	case RestartAlways, RestartOnFailure:
+		withRestart = s.CheckRestart()
+	}
+
+	s.doStop(withRestart)
+	s.services.processQueuesLocked()
+}
+
+// fireHealthCheckStop acts on a health check that reached its failure
+// threshold: the process is stopped as having failed, and the restart
+// policy decides what follows — the same path as a watchdog expiry. It
+// used to call Stop(false), which only dropped the explicit activation:
+// a service a started dependent still required kept running unhealthy,
+// and one that did stop had its desired state set to STOPPED, so
+// restart = yes never brought it back.
+//
+// pid is the process the checker judged; if the service has moved on
+// since (stopped, restarted), the verdict no longer applies.
+func (s *ProcessService) fireHealthCheckStop(pid int) {
+	s.services.queueMu.Lock()
+	defer s.services.queueMu.Unlock()
+
+	if pid <= 0 || s.pid != pid || s.state.Load() != StateStarted {
+		return
+	}
+	s.services.logger.Error("Service '%s': unhealthy, stopping process %d", s.serviceName, pid)
+
+	s.stopReason = ReasonTerminated
+	s.forceStop = true
 
 	withRestart := false
 	switch s.autoRestart {

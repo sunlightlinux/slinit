@@ -26,6 +26,19 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A failed health check did not stop or restart the service.** At the
+  failure threshold the checker called `Stop(false)`, which only drops
+  an explicit activation: a service a started dependent still required
+  kept running unhealthy, and one that did stop had its desired state
+  set to STOPPED, so `restart = yes` never brought it back. It now goes
+  the watchdog's way — the process is stopped as failed, hard dependents
+  with it, and the restart policy decides. The call also ran without
+  the scheduling lock; it now takes it, from its own goroutine so it
+  cannot deadlock against the checker's shutdown.
+
+  And checking now resumes after a restart: `HealthChecker.Stop` left
+  its stop channel set, so every later `Start` returned at once and a
+  restarted service was never checked again.
 - **`tty-vhangup` hung up nothing.** It called vhangup(2), which acts on
   the caller's controlling terminal — slinit's own, or none for PID 1 —
   and never on `tty-path`, so a previous session kept the terminal. It
