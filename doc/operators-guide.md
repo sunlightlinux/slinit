@@ -54,12 +54,12 @@ column](#reading-the-state-column).
 | systemd | slinit | Notes |
 |---|---|---|
 | `systemctl start X` | `slinitctl start X` | blocks until the service settles; `--no-wait` to return immediately |
-| `systemctl stop X` | `slinitctl stop X` | |
+| `systemctl stop X` | `slinitctl stop X` | returns once accepted; hard dependents stop too |
 | `systemctl restart X` | `slinitctl restart X` | |
 | `systemctl status X` | `slinitctl status X` | |
 | `systemctl cat X` | `slinitctl show X` | dumps effective config as `Key=Value`, not the file text |
 | `systemctl list-units` | `slinitctl list` (`ls`) | |
-| `systemctl is-active X` | `slinitctl is-started X` | exit status, no output |
+| `systemctl is-active X` | `slinitctl is-started X` | prints the state; exit 0 only when started |
 | `systemctl is-failed X` | `slinitctl is-failed X` | |
 | `systemctl enable X` | `slinitctl enable X` | **also starts it** — see difference 3 |
 | `systemctl disable X` | `slinitctl disable X` | also stops it |

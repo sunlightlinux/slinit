@@ -369,12 +369,13 @@ Declarative bootstrap of system state, drop-in compatible with the
 as `type = scripted` services early in the boot graph.
 
 ```bash
-# Users & groups — reads /usr/lib/sysusers.d/*.conf + /etc/sysusers.d/*.conf
+# Users & groups — reads /usr/lib, /etc and /run sysusers.d/*.conf
+# (same file name: the later directory wins, so /run beats /etc)
 slinit-sysusers                  # apply everything
 slinit-sysusers --dry-run        # preview actions without touching passwd/group
 slinit-sysusers --dirs /etc/sysusers.d  # override search path
 
-# Runtime paths — reads /usr/lib/tmpfiles.d/*.conf + /etc/tmpfiles.d/*.conf
+# Runtime paths — reads /usr/lib, /etc and /run tmpfiles.d/*.conf, same precedence
 slinit-tmpfiles                  # create/clean per config
 slinit-tmpfiles --dry-run
 ```
