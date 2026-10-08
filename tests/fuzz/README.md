@@ -4,7 +4,7 @@ Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
 ## This directory is not all of them
 
-27 targets live here. Another 13 sit beside the code they exercise,
+27 targets live here. Another 15 sit beside the code they exercise,
 because a fuzz target for an unexported parser has to live in its own
 package:
 
@@ -13,7 +13,9 @@ package:
 | `pkg/service` | `FuzzStateMachine` |
 | `cmd/slinit-runit-convert` | `FuzzAnalyzeRunScript`, `FuzzParseChpst` |
 | `cmd/slinit-openrc-convert` | `FuzzParseOpenrcScript`, `FuzzParseDepend` |
-| `cmd/slinit-systemd-convert` | `FuzzParseSystemdUnit` |
+| `pkg/config` | `FuzzParseSystemdUnit` |
+| `cmd/slinit-sysvinit-convert` | `FuzzParseInittab` |
+| `cmd/slinit-killall5` | `FuzzParseStat` |
 | `cmd/slinit-sysusers` | `FuzzSysusersParseLine` |
 | `cmd/slinit-tmpfiles` | `FuzzTmpfilesParseLine` |
 | `cmd/slinit-timedatectl` | `FuzzReadZoneTab`, `FuzzValidateZone` |
@@ -125,7 +127,7 @@ also enforces:
 
 ## In-package fuzz targets
 
-Fuzz targets that need access to `main`-package internals live next
+Fuzz targets that need access to unexported internals live next
 to their code as `_fuzz_test.go` files. Run per-package rather than
 via `./tests/fuzz/`.
 
@@ -138,15 +140,17 @@ via `./tests/fuzz/`.
 | cmd/slinit-timedatectl | FuzzValidateZone | Zone-name validator (last line of defense before filepath.Join with zoneinfoDir) |
 | cmd/slinit-tmpfiles | FuzzTmpfilesParseLine | systemd-tmpfiles.d(5) directive lines |
 | cmd/slinit-sysusers | FuzzSysusersParseLine | systemd-sysusers.d(5) directive lines |
-| cmd/slinit-systemd-convert | FuzzParseSystemdUnit | .service/.socket/.mount INI-shaped parser (~200 systemd directives, each with domain-specific value parsers) |
+| pkg/config | FuzzParseSystemdUnit | .service/.socket/.mount INI-shaped parser (~200 systemd directives, each with domain-specific value parsers) |
 | cmd/slinit-runit-convert | FuzzAnalyzeRunScript | /etc/sv/`<svc>`/run shell script analyzer |
 | cmd/slinit-runit-convert | FuzzParseChpst | chpst argument parser (~15 short flags with optional args) |
 | cmd/slinit-openrc-convert | FuzzParseOpenrcScript | /etc/init.d/`<svc>` openrc-run script parser |
 | cmd/slinit-openrc-convert | FuzzParseDepend | `depend()` body mini-DSL parser |
+| cmd/slinit-sysvinit-convert | FuzzParseInittab | `/etc/inittab` reader (truncated lines, DOS line endings, stray colons) |
+| cmd/slinit-killall5 | FuzzParseStat | `/proc/<pid>/stat` reader; a crafted process name must not shift the field indexing |
 
 Run per-package:
 ```bash
-go test -fuzz=FuzzParseSystemdUnit -fuzztime=30s ./cmd/slinit-systemd-convert/
+go test -fuzz=FuzzParseSystemdUnit -fuzztime=30s ./pkg/config/
 go test -fuzz=FuzzDecodeValue -fuzztime=30s ./cmd/slinit-hostnamectl/
 ```
 

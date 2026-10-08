@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-| Version   | Supported |
-|-----------|-----------|
-| >= 3.0.0  | Yes       |
-| >= 2.2.0  | Yes       |
-| 2.0.x, 2.1.x | Best-effort backports for critical fixes only |
-| < 2.0.0   | No (v1.x line closed at v1.10.55; upgrade to v2.x) |
+| Version | Supported |
+|---|---|
+| 3.x | Yes |
+| 2.2.0 – 2.x | Yes |
+| 2.0.x, 2.1.x | Best-effort backports of critical fixes only |
+| < 2.0.0 | No — the 1.x line closed at v1.10.55; upgrade to a supported release |
 
 This table says which versions receive fixes. What a fix is allowed to
 change — and what stays put between releases — is a separate question,

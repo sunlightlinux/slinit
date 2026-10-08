@@ -222,24 +222,13 @@ seccomp filter plus a small set of mount operations applied before
 
 ### TTY setup
 
-**\--tty-path**=*path*
-:   Open the TTY at *path* (O_RDWR|O_NOCTTY) and wire it as
-    stdin/stdout/stderr. Setsid + Setctty via SysProcAttr.
+**slinit-runner** has no TTY options. The **tty-path**, **tty-columns**,
+**tty-rows**, **tty-vhangup**, **tty-vt-disallocate** and **tty-reset**
+service directives are applied by **slinit**(8) itself while it
+prepares the child, before the runner (or the service command) is
+executed; see **slinit-service**(5).
 
-**\--tty-columns**=*N*, **\--tty-rows**=*N*
-:   TIOCSWINSZ. Both required.
-
-**\--tty-vhangup**
-:   **vhangup**(2) after open (drop prior session).
-
-**\--tty-vt-disallocate**
-:   For /dev/ttyN, VT_DISALLOCATE ioctl BEFORE open (reallocate
-    clean).
-
-**\--tty-reset**
-:   Write ESC c (RIS) after open.
-
-### Bucket B legacy niches
+### Other process attributes
 
 **\--coredump-filter**=*mask*
 :   Write to `/proc/self/coredump_filter` (inherited across
@@ -258,6 +247,11 @@ seccomp filter plus a small set of mount operations applied before
 **\--personality**=*x86-64*|*x86*|*arm*|*arm64*|*linux32*
 :   **personality**(2) domain. Bare numeric also accepted.
 
+**\--memory-thp**=*never*|*madvise*|*always*
+:   Transparent Huge Page policy (systemd *MemoryTHP=*). Only *never*
+    has a per-process effect (**PR_SET_THP_DISABLE**); *madvise* and
+    *always* leave the system default in place.
+
 ### Credentials & capabilities
 
 The runner stays root through the setup phase because mount and
@@ -272,6 +266,10 @@ on UID change otherwise.
 
 **\--run-as-gid**=*GID*
 :   Drop to *GID* just before **execve**. **-1** disables the drop.
+
+**\--supp-gid**=*GID*
+:   Supplementary group to install before the UID/GID drop.
+    Repeatable. Requires **\--run-as-uid** / **\--run-as-gid**.
 
 **\--ambient-cap**=*NUM*
 :   Capability number to raise in the ambient set after the run-as
@@ -290,6 +288,16 @@ on UID change otherwise.
     kernel refuses to grant new privileges via setuid, capabilities,
     or file-capabilities for the process and every subsequent
     execve. Mirrors dinit's *options=no-new-privs*.
+
+**\--securebits**=*MASK*
+:   **PR_SET_SECUREBITS** bitmask applied before **execve**. **-1**
+    (the default) leaves the securebits untouched.
+
+### Exec
+
+**\--argv0**=*NAME*
+:   Present *NAME* as *argv[0]* to the executed command instead of
+    the first word of *COMMAND*.
 
 ## EXIT STATUS
 

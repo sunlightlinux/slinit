@@ -143,9 +143,14 @@ implementation detail.
   `slinit_services`, `slinit_service_up`, `slinit_service_failed`,
   `slinit_service_startup_seconds`, `slinit_service_restarts_total`,
   `slinit_restarts_total`, `slinit_watchdog_restarts_total`.
+- `/status` (since 3.0.7) serves the same state as JSON. Its field
+  names follow the same rule as metric names: not removed or renamed
+  within a major version, and a field keeps its type; new fields may
+  appear. An optional field (`pid`, `start_failed`, `uptime_seconds`)
+  is omitted rather than zero when it does not apply.
 - The endpoint is off unless `--metrics-listen` is given. Turning it on
   is not a promise that the process serves anything else over HTTP; the
-  only paths are `/metrics` and `/`.
+  only paths are `/metrics`, `/status` and `/`.
 
 ### On-disk formats
 

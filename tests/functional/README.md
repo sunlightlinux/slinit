@@ -263,10 +263,10 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 153 | protect-proc | `protect-proc = invisible` (hidepid=invisible) hides PID 1 (root-owned) from a `run-as = nobody` service; own PID still visible |
 | 154 | proc-subset=pid | `/proc/uptime`, `/proc/meminfo` disappear inside the service's mount ns; PID dirs remain; host `/proc/uptime` unaffected |
 | 155 | condition-measured-uki | Predicate skips when the boot wasn't measured via UKI + TPM PCR 4/5/7; asserts on measured host |
-| 156 | dynamic-user | Transient UID from the per-daemon pool; `/etc/passwd` unchanged, `/proc/PID/status Uid:` reports new UID |
-| 157 | fdstore-preserve | `file-descriptor-store-preserve = on-success` retains FDSTORE=1 entries across restart; explicit `no` drops them |
-| 158 | psi-pressure-watch | `memory-pressure-watch = yes` + threshold fires SvcEventPressureMemory when cgroup memory PSI crosses limit |
-| 159 | measured-os | `condition-security = measured-os` verifies TPM event log; skip on TPM-less host |
+| 156 | refuse-manual-start-stop | `refuse-manual-start` blocks a direct `slinitctl start` once stopped; `refuse-manual-stop` blocks a direct stop while running; `--force` overrides the stop |
+| 157 | restart-randomized-delay | `restart-randomized-delay` parses and does not wedge the start path |
+| 158 | reset-failed | `slinitctl reset-failed` clears the internal start-failed flag |
+| 159 | stop-when-unneeded | `stop-when-unneeded` stops a helper once its last dependent is gone |
 | 160 | freeze-thaw | `slinitctl freeze/thaw` toggles cgroup v2 `cgroup.freeze`; atomic vs SIGSTOP for whole subtree |
 | 161 | cron-accuracy-sec | Cron fires are coalesced into buckets of the configured accuracy for RTC wakeup batching |
 | 162 | job-timeout-sec | Whole-job timer aborts the start even when the underlying command hasn't blown its start-timeout |
@@ -333,6 +333,11 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 223 | nosystemd-journald-restart | systemd#6620 — restarting the journal daemon must not silence already-running services; slinit's events sit in PID 1's own ring, so no service writes into a closed pipe (v2.3.5) |
 | 224 | nosystemd-numeric-username | systemd#6237 — a `run-as` value naming an account like `0day` must resolve as a *name*, not be read as UID 0 and run as root (v2.3.5) |
 | 225 | pid1-signal-survival | Not from the nosystemd list: PID 1 must not die from a signal a local root can send it. Host-driven — the harness presses the real Ctrl+Alt+Del (v2.3.6) |
+| 226 | systemd-unit-nginx | A stock systemd `.service` unit runs a real daemon: resolution from `/etc/systemd/system`, `Type=forking` → `bgprocess` with the PID from `PIDFile`, `RuntimeDirectory`, `PrivateTmp`, `NoNewPrivileges`, `ExecStop`; `reload` re-reads the unit without touching the daemon |
+| 227 | analyze-plot | `slinitctl analyze plot` renders the boot as an SVG timeline that agrees with `analyze time` |
+| 228 | cron-persistent | `cron-persistent` catch-up from the on-disk last-run store; jitter and fixed jitter do not break the interval loop |
+| 229 | sigpwr-power-hook | `SIGPWR` + `/run/powerstatus` — the sysvinit UPS contract, which only a real PID 1 can prove |
+| 230 | path-activation-arm-storm | Several path triggers firing at arm time, during the load, do not stall the loader |
 
 ## How It Works
 

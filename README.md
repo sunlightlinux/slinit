@@ -94,8 +94,8 @@ in these directories, in order:
 | User | `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user` |
 
 The flags above are the common ones. [slinit(8)](doc/man/slinit.8.md)
-documents all 46; [doc/configuration.md](doc/configuration.md) summarises
-them by topic.
+documents every one; [doc/configuration.md](doc/configuration.md)
+summarises them by topic.
 
 ## What it does
 

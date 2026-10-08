@@ -2198,7 +2198,7 @@ mounted at `/run/credentials/<name>/`).
     credential named by its basename. Silent on empty match sets
     per systemd's best-effort semantics.
 
-## OTHER RUNNER-SIDE KNOBS (Bucket B)
+## OTHER RUNNER-SIDE SETTINGS
 
 **coredump-filter**=*mask*
 :   Hex or decimal mask written to `/proc/self/coredump_filter`;
@@ -2260,7 +2260,7 @@ mounted at `/run/credentials/<name>/`).
     falls back to `/dev/null` on open failure so the fd slot
     stays stable. Unknown option = parse error. Repeatable via *+=*.
 
-## CGROUP (Bucket C additions)
+## CGROUP (additional settings)
 
 **cpuset-partition**=*root*|*isolated*|*member*
 :   Cgroup v2 `cpuset.cpus.partition` value.

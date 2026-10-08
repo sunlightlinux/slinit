@@ -131,7 +131,7 @@ Nothing is converted to a file first.
 ```sh
 slinitctl status nginx          # bgprocess; PID read from the pidfile
 wget -qO- http://127.0.0.1/     # served from /var/lib/nginx/html
-slinitctl reload nginx          # ExecReload -> nginx -s reload
+slinitctl reload nginx          # re-reads the unit; does NOT run ExecReload
 cat /etc/systemd/system/nginx.service
 ```
 
@@ -141,10 +141,17 @@ so a unit nothing asks for never runs. A native description in
 `/etc/slinit.d` would win over the unit, and only `.service` loads —
 timers, sockets and targets map onto other slinit facilities.
 
+`slinitctl reload` re-reads the service description; it is not
+`systemctl reload`. `ExecReload` is a command to run, while slinit's
+reload of a running daemon is a signal (`slinitctl reload-signal` with a
+`reload-signal =` directive), so the unit's `ExecReload` is reported as a
+note and dropped. A native description for nginx could carry
+`reload-signal = HUP`.
+
 `slinit-systemd-convert /etc/systemd/system/nginx.service` prints the
-same translation as a file you can edit, plus the notes: `PrivateDevices`
-has no slinit equivalent, and `After=network.target` is dropped because
-slinit has no targets.
+same translation as a file you can edit, plus the notes: `ExecReload` is
+dropped, `PrivateDevices` has no slinit equivalent, and
+`After=network.target` is dropped because slinit has no targets.
 
 ## Interactive Commands
 

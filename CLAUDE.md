@@ -152,7 +152,7 @@ Strong success criteria let you loop independently. Weak criteria
 - Config parser accepts both `=` and `:` (`:` for dependency keys).
 
 ### Key files (first places to look)
-- `pkg/service/record.go` — state machine (~3400 LOC; `ExecuteTransition`
+- `pkg/service/record.go` — state machine (~3700 LOC; `ExecuteTransition`
   is the entry point to the transition half).
 - `pkg/service/types.go` — all enum types. When adding a new state or
   flag, this is where it goes.
