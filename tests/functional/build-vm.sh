@@ -152,6 +152,14 @@ install -m 755 "${BUILD_DIR}/slinit-monitor" "${ROOTFS_DIR}/usr/bin/slinit-monit
 # checks the slinit binary's own directory first. Without it, services
 # using apparmor-switch / debug / mlockall silently skip the runner wrap.
 install -m 755 "${BUILD_DIR}/slinit-runner" "${ROOTFS_DIR}/sbin/slinit-runner"
+# The runner preloads libslinit-mlock.so into services with `mlockall =`;
+# it looks in <runner prefix>/../lib/slinit, i.e. /lib/slinit for /sbin.
+# Built with the host compiler: the library uses only libc calls musl
+# also provides, and musl's loader maps glibc's libc.so.6 onto itself.
+make -s -C "${PROJECT_DIR}/lib/slinit-mlock" clean all
+install -d "${ROOTFS_DIR}/lib/slinit"
+install -m 644 "${PROJECT_DIR}/lib/slinit-mlock/libslinit-mlock.so" "${ROOTFS_DIR}/lib/slinit/libslinit-mlock.so"
+make -s -C "${PROJECT_DIR}/lib/slinit-mlock" clean
 install -m 755 "${BUILD_DIR}/slinit-binfmt" "${ROOTFS_DIR}/usr/bin/slinit-binfmt"
 install -m 755 "${BUILD_DIR}/slinit-sysctl" "${ROOTFS_DIR}/usr/bin/slinit-sysctl"
 install -m 755 "${BUILD_DIR}/slinit-svc-value" "${ROOTFS_DIR}/usr/bin/slinit-svc-value"

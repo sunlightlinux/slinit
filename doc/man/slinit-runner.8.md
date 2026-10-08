@@ -64,6 +64,20 @@ and **\--syscall-filter** carries **system-call-filter**).
     config keywords (*current*, *future*, *both*, *onfault*) into the
     numeric mask before invoking the helper.
 
+    The runner's own lock ends at **execve**(2), so it also preloads
+    *libslinit-mlock.so* into *COMMAND* (**LD_PRELOAD**, plus
+    **SLINIT_MLOCKALL**=*N* and **SLINIT_MLOCKALL_PID**=*its PID*); the
+    library calls **mlockall**(2) in that process before *main*, and in
+    every program the process later execs into. It refuses (exit 2)
+    when the library is not found beside the runner, in
+    *\<prefix\>/lib/slinit/*, */usr/lib/slinit*, */usr/local/lib/slinit*
+    or */lib/slinit*, is writable by group or others or (when run as
+    root) not owned by root, is not visible after the sandbox setup, or
+    when *COMMAND* (or a script's interpreter) is not a dynamically
+    linked ELF of the library's class and machine, is setuid/setgid,
+    or has file capabilities — every case in which the loader would
+    run the program unlocked with only a warning.
+
 **\--mempolicy**=*MODE*
 :   NUMA memory allocation mode for **set_mempolicy**(2). One of
     **bind**, **preferred**, **interleave**, **local**, **default**.

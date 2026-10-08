@@ -19,3 +19,6 @@ core.[0-9]*
 # It is a 4 MB dev binary; neither copy belongs in a commit.
 /stats
 /tools/stats/stats
+
+# lib/slinit-mlock builds in place.
+/lib/slinit-mlock/libslinit-mlock.so

@@ -232,7 +232,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 122 | securebits | `securebits = keep-caps,no-setuid-fixup` parses; child comes up |
 | 123 | normal-exit | `normal-exit = 42` — scripted svc exiting 42 lands in STOPPED (not FAILED) |
 | 124 | success-action | `success-action = none` parses cleanly and svc reaches a terminal state |
-| 125 | mlockall | `mlockall = current+future` → `RLIMIT_MEMLOCK = unlimited` in `/proc/PID/limits` (mlockall is not inherited across execve; the durable effect is the raised rlimit) |
+| 125 | mlockall | `mlockall = current+future` → service memory locked (`VmLck` > 0, via the `libslinit-mlock.so` preload) and `RLIMIT_MEMLOCK = unlimited` in `/proc/PID/limits` |
 | 126 | numa-mempolicy | `numa-mempolicy = bind` on node 0; SKIPs if CONFIG_NUMA is off |
 | 127 | state-directory-mode | `state-directory` + `state-directory-mode` creates `/var/lib/<svc>` with the requested mode |
 | 128 | cache-directory | `cache-directory` + `cache-directory-mode` at `/var/cache/<svc>` |

@@ -37,6 +37,7 @@ seat management.
 
 ```bash
 go build ./...          # the daemon, slinitctl and 43 companion tools
+make -C lib/slinit-mlock install   # libslinit-mlock.so, needed for `mlockall =`
 ```
 
 Three binaries matter most:
@@ -45,7 +46,7 @@ Three binaries matter most:
 |---|---|
 | `slinit` | The daemon — PID 1, system manager, or user manager |
 | `slinitctl` | The control CLI (around 90 verbs, aliases included) |
-| `slinit-runner` | Post-fork exec wrapper; **required** by any service using LSM, seccomp or `restrict-*` |
+| `slinit-runner` | Post-fork exec wrapper; **required** by any service using LSM, seccomp or `restrict-*` (and, with `libslinit-mlock.so` from `lib/slinit-mlock`, by `mlockall`) |
 
 The other 42 are linters, converters from other init systems, drop-in
 clones of OpenRC and systemd utilities, the journal pipeline and the
