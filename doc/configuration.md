@@ -103,7 +103,6 @@ rlimit-nofile = 1024:4096
 rlimit-core = unlimited
 cgroup = /sys/fs/cgroup/workers
 capabilities = cap_net_bind_service,cap_sys_nice
-securebits = noroot keep-caps
 options = no-new-privs
 env-file = /etc/worker.env
 run-as = worker:worker
@@ -265,7 +264,7 @@ accepted. List-valued settings accept `+=` to append.
 |---|---|---|
 | `type` | `process` \| `bgprocess` \| `scripted` \| `internal` \| `triggered` | Service type — see [Service types](#service-types) |
 | `command` | program [args…] | Command to run; supports `+=` |
-| `stop-command` | program [args…] | Command run on stop (`scripted`); supports `+=` |
+| `stop-command` | program [args…] | The stop script (`scripted`); for `process` / `bgprocess`, run instead of sending the stop signal; supports `+=` |
 | `working-dir` | path | Working directory for the process |
 | `run-as` | user[:group] | Run the command as this user and group |
 | `provides` | name | Alias under which the service can also be looked up |
@@ -302,10 +301,10 @@ accepted. List-valued settings accept `+=` to append.
 | `term-signal` | signal | Signal used for a graceful stop |
 | `runtime-max-sec` | Go duration | Hard cap on time spent *started*; the service is stopped when it is reached |
 | `pre-start-command` | program [args…] | Runs before `command`; synchronous, a non-zero exit fails the start |
-| `post-start-command` | program [args…] | Runs once started; asynchronous, result is only logged |
+| `post-start-command` | program [args…] | Runs right after the fork, before readiness is confirmed; asynchronous, result only logged; skipped when `start-delay` is set |
 | `finish-command` | program [args…] | Runs after the process exits, before any restart |
 | `pre-stop-hook` | program [args…] | Runs before SIGTERM; receives the PID as an argument |
-| `control-command-SIG` | program [args…] | Run by `slinitctl signal SIG` in place of sending the signal, e.g. `control-command-HUP` |
+| `control-command-SIG` | program [args…] | Run in place of sending SIG — by `slinitctl signal`, a stop (`TERM`) or pause/continue (`STOP`/`CONT`), e.g. `control-command-HUP` |
 | `oom-policy` | `continue` \| `stop` \| `kill` | Reaction to a cgroup v2 OOM kill |
 | `failure-action` | `none` \| `reboot` \| `poweroff` \| `halt` \| `exit` | System action when the service fails permanently |
 | `success-action` | `none` \| `reboot` \| `poweroff` \| `halt` \| `exit` | System action when the service finishes cleanly |
@@ -317,10 +316,10 @@ accepted. List-valued settings accept `+=` to append.
 |---|---|---|
 | `ready-notification` | `pipefd:N` \| `pipevar:VAR` | Readiness protocol |
 | `ready-check-command` | program [args…] | Polled readiness check, an alternative to `ready-notification` |
-| `ready-check-interval` | Go duration | Polling interval for `ready-check-command` (default `1s`) |
+| `ready-check-interval` | Go duration | Polling interval for `ready-check-command` (default `100ms`) |
 | `pid-file` | path | PID file written by a `bgprocess` daemon |
 | `socket-listen` | path \| `tcp:host:port` \| `udp:host:port` | Listening socket passed to the child via `LISTEN_FDS`; repeat or `+=` for several |
-| `socket-activation` | `immediate` \| `on-demand` | `immediate` (default) opens the socket when the service loads; `on-demand` starts the service on the first connection |
+| `socket-activation` | `immediate` \| `on-demand` | The socket opens when the service starts; `on-demand` is accepted but not implemented and behaves like `immediate` |
 | `socket-reuseport` | bool | Set `SO_REUSEPORT` on `tcp:` / `udp:` listeners so several instances can share a port — see the [operator's guide](operators-guide.md#scaling-a-hot-port-across-workers) |
 | `socket-permissions` | octal | Mode of a Unix socket file |
 | `socket-uid`, `socket-gid` | integer | Ownership of a Unix socket file |
@@ -356,7 +355,7 @@ accepted. List-valued settings accept `+=` to append.
 | `log-processor` | program [args…] | Command run on each rotated file |
 | `log-include` | regex | Write only matching lines |
 | `log-exclude` | regex | Drop matching lines |
-| `log-select` | `+prefix` `-prefix` … | s6-log-style selection chain; the last match decides; exclusive with `log-include` / `log-exclude` |
+| `log-select` | `+regex` `-regex` … | s6-log-style selection chain; the last match decides; exclusive with `log-include` / `log-exclude` |
 | `log-rate-limit-interval` | Go duration | Token-bucket window; excess lines are dropped |
 | `log-rate-limit-burst` | integer | Lines allowed per window |
 | `log-level-max` | `emerg` … `debug` | Drop lines above this syslog severity |
@@ -370,7 +369,7 @@ accepted. List-valued settings accept `+=` to append.
 | `oom-score-adj` | −1000 … 1000 | OOM-killer score adjustment |
 | `ioprio` | `be:N` \| `rt:N` \| `idle` | I/O scheduling class and level |
 | `cpu-affinity` | list | CPU set, e.g. `0-3`, `0 1 2`, `0,2,4` |
-| `cgroup` | path | cgroup for the child process (alias `run-in-cgroup`, dinit) |
+| `cgroup` | path | cgroup for the child process, absolute and under `/sys/fs/cgroup` (alias `run-in-cgroup`, dinit) |
 | `slice` | name | Hierarchical cgroup parent, systemd-style |
 | `delegate` | bool \| controller… | Delegate the cgroup subtree to the service |
 | `rlimit-nofile` | soft[:hard] \| `unlimited` | Open file descriptors |
@@ -383,7 +382,7 @@ accepted. List-valued settings accept `+=` to append.
 | Directive | Value | Description |
 |---|---|---|
 | `capabilities` | cap,… | Ambient capabilities, e.g. `cap_net_bind_service` |
-| `securebits` | bit… | Securebits flags, e.g. `noroot keep-caps` |
+| `securebits` | bit… | Securebits flags, e.g. `noroot keep-caps` — parsed but not yet applied to services |
 | `dynamic-user` | bool | Allocate a transient UID/GID for each start; released when the service stops |
 | `load-credential` | `NAME:PATH` | Copy a file into `/run/credentials/<svc>/` |
 | `set-credential` | `NAME:VALUE` | Write an inline value as a credential |
@@ -430,7 +429,7 @@ Also enforced by `slinit-runner`; every setting fails closed.
 
 | Directive | Value | Description |
 |---|---|---|
-| `cron-command` | program [args…] | Command run periodically while the service is running |
+| `cron-command` | program [args…] | Command run periodically while the service is running (`process` services only) |
 | `cron-interval` | seconds or Go duration | Interval between runs |
 | `cron-delay` | seconds or Go duration | Delay before the first run |
 | `cron-on-error` | `continue` \| `stop` | Behaviour when the command fails (default `continue`) |
