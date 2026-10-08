@@ -142,3 +142,68 @@ func TestHealthChecker_DoubleStartStop(t *testing.T) {
 	hc.Stop()
 	hc.Stop()
 }
+
+// An unhealthy service must go down even when a started dependent holds
+// it. onFail used to call Stop(false), which only dropped the explicit
+// activation: with a dependent still requiring it, nothing happened.
+func TestHealthCheckStopsServiceHeldByDependent(t *testing.T) {
+	set, _ := newTestSet()
+	sick := NewProcessService(set, "hc-sick")
+	sick.SetCommand([]string{"/bin/sh", "-c", "while :; do sleep 60; done"})
+	sick.SetHealthCheck([]string{"/bin/false"}, 100*time.Millisecond, 0, 2, nil)
+	set.AddService(sick)
+
+	user := NewProcessService(set, "hc-user")
+	user.SetCommand([]string{"/bin/sh", "-c", "while :; do sleep 60; done"})
+	user.Record().AddDep(sick, DepRegular)
+	set.AddService(user)
+
+	set.StartService(sick)
+	set.StartService(user)
+	if got := waitState(t, user, StateStarted, 3*time.Second); got != StateStarted {
+		t.Fatalf("dependent state = %v, want STARTED", got)
+	}
+
+	if got := waitState(t, sick, StateStopped, 5*time.Second); got != StateStopped {
+		t.Fatalf("unhealthy service state = %v, want STOPPED", got)
+	}
+	// Its hard dependent goes down with it, as for any forced stop.
+	if got := waitState(t, user, StateStopped, 5*time.Second); got != StateStopped {
+		t.Errorf("hard dependent state = %v, want STOPPED", got)
+	}
+}
+
+// With restart = yes the process is replaced and checking resumes: the
+// checker used to refuse to Start again after its first Stop, so an
+// unhealthy service was restarted once and then never checked again.
+func TestHealthCheckRestartsAndKeepsChecking(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "hc-restart")
+	svc.SetCommand([]string{"/bin/sh", "-c", "while :; do sleep 60; done"})
+	svc.Record().SetAutoRestart(RestartAlways)
+	svc.SetRestartDelay(50 * time.Millisecond)
+	svc.SetRestartLimits(time.Minute, 100)
+	svc.SetHealthCheck([]string{"/bin/false"}, 100*time.Millisecond, 0, 2, nil)
+	set.AddService(svc)
+	defer func() {
+		set.StopService(svc)
+		waitState(t, svc, StateStopped, 5*time.Second)
+	}()
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 3*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+
+	seen := map[int]bool{svc.PID(): true}
+	deadline := time.Now().Add(8 * time.Second)
+	for len(seen) < 3 && time.Now().Before(deadline) {
+		if pid := svc.PID(); pid > 0 {
+			seen[pid] = true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(seen) < 3 {
+		t.Fatalf("saw %d distinct PIDs, want 3: the health check did not keep restarting the service", len(seen))
+	}
+}
