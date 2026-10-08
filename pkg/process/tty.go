@@ -54,8 +54,9 @@ func resolveConsolePath() (string, error) {
 //   2. Open the TTY (O_RDWR|O_NOCTTY so we don't accidentally
 //      steal it as controlling terminal — the caller does that
 //      later via Setctty).
-//   3. vhangup() drops any prior session on the fd. Must happen
-//      AFTER open (needs a valid fd for the calling task).
+//   3. Hang up any prior session (TIOCVHANGUP on the fd), then reopen:
+//      the hangup also kills our own fd, so the service gets a fresh
+//      one.
 //   4. Reset (ESC c) — after vhangup so the reset lands on the
 //      fresh state, not on a hanging-up terminal.
 //   5. WinSize — after reset (reset would otherwise clobber it).
@@ -79,13 +80,21 @@ func setupTTY(p ExecParams) (*os.File, error) {
 		return nil, err
 	}
 	if p.TTYVHangup {
-		// vhangup(2) applies to the calling task's controlling
-		// terminal; on a task that has none, it operates on the
-		// tty referenced by the currently-open fd. Best-effort:
-		// unprivileged callers may hit EPERM, and the operator
-		// asked for it in configuration — surface the error only
-		// if it prevents the rest of the setup.
-		_, _, _ = unix.Syscall(unix.SYS_VHANGUP, 0, 0, 0)
+		// TIOCVHANGUP hangs up the tty the fd refers to — what
+		// systemd's TTYVHangup= does. vhangup(2) would not do: it
+		// acts on the caller's controlling terminal, which is
+		// slinit's own (or none), not tty-path. Best-effort like
+		// systemd: without CAP_SYS_ADMIN the ioctl fails and the
+		// service still gets its tty.
+		if unix.IoctlSetInt(int(fd.Fd()), unix.TIOCVHANGUP, 0) == nil {
+			// Our fd is hung up too; reads now see EOF and writes
+			// fail. Reopen for the service.
+			fd.Close()
+			fd, err = os.OpenFile(ttyPath, os.O_RDWR|syscall.O_NOCTTY, 0)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if p.TTYReset {
 		// ESC c = RIS (Reset to Initial State) — full terminal
