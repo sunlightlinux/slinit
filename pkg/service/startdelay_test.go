@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -106,6 +107,37 @@ func TestNoStartDelayLaunchesImmediately(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 700*time.Millisecond {
 		t.Errorf("took %v with no start-delay configured", elapsed)
+	}
+
+	set.StopService(svc)
+	time.Sleep(500 * time.Millisecond)
+}
+
+// post-start-command lived after the start-delay early return, so a
+// service with both never ran its post-start hook.
+func TestStartDelayStillRunsPostStartCommand(t *testing.T) {
+	set, _ := newTestSet()
+	marker := t.TempDir() + "/post-start-ran"
+	svc := NewProcessService(set, "delayed-hook")
+	svc.SetCommand([]string{"/bin/sh", "-c", "while :; do sleep 60; done"})
+	svc.SetStartDelay(300 * time.Millisecond)
+	svc.SetPostStartCommand([]string{"/bin/touch", marker})
+	set.AddService(svc)
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 5*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("post-start-command never ran with start-delay set")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	set.StopService(svc)

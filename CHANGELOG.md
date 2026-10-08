@@ -26,6 +26,10 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`post-start-command` never ran when `start-delay` was set.** The hook
+  was launched after the start path's early return for the delayed fork,
+  so the delay timer started the process but nothing ever started the
+  hook. It now runs after a successful fork on both paths.
 - **`slinitctl --offline enable|disable`** wrote the link to
   `<dir>/<src>/waits-for.d/<service>`, which needs the source service to
   be a directory. It is a file, so the ordinary install-time call failed

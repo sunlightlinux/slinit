@@ -301,7 +301,7 @@ accepted. List-valued settings accept `+=` to append.
 | `term-signal` | signal | Signal used for a graceful stop |
 | `runtime-max-sec` | Go duration | Hard cap on time spent *started*; the service is stopped when it is reached |
 | `pre-start-command` | program [args…] | Runs before `command`; synchronous, a non-zero exit fails the start |
-| `post-start-command` | program [args…] | Runs right after the fork, before readiness is confirmed; asynchronous, result only logged; skipped when `start-delay` is set |
+| `post-start-command` | program [args…] | Runs right after the fork, before readiness is confirmed; asynchronous, result only logged |
 | `finish-command` | program [args…] | Runs after the process exits, before any restart |
 | `pre-stop-hook` | program [args…] | Runs before SIGTERM; receives the PID as an argument |
 | `control-command-SIG` | program [args…] | Run in place of sending SIG — by `slinitctl signal`, a stop (`TERM`) or pause/continue (`STOP`/`CONT`), e.g. `control-command-HUP` |
