@@ -192,10 +192,11 @@ service name or rejected.
 
 **run** [*flags*] **\--** *COMMAND* [*ARGS*...]
 :   Spawn a transient one-shot service without writing a service
-    file (systemd-run analogue). The description is written to
-    */run/slinit.d/\<name\>* (tmpfs, evaporates at boot) and the
-    service is loaded + started via the standard code path — no
-    protocol change needed.
+    file (systemd-run analogue). The description is written to the
+    daemon's runtime service directory — */run/slinit.d* for a system
+    instance, *$XDG_RUNTIME_DIR/slinit.d* for a user one, both tmpfs
+    and emptied at reboot or logout — and the service is loaded and
+    started via the standard code path.
 
     Flags:
 
@@ -224,11 +225,12 @@ service name or rejected.
       the transient description + .env sidecar. No cap; Ctrl-C
       is the escape hatch.
 
-    The description is always written to */run/slinit.d*, which
-    requires write access there and is among the default service
-    directories of a system instance only. **\--user** targets the
-    user socket, but a user instance finds the transient service only
-    if */run/slinit.d* is one of its **\--services-dir** entries.
+    The directory is taken from what the daemon reports it searches
+    (**service-dirs**), so the file always lands where the daemon will
+    find it. If the daemon searches neither — it was started with its
+    own **\--services-dir**, or this client's *XDG_RUNTIME_DIR* differs
+    from the daemon's — **run** refuses and lists the directories it
+    does search.
 
     The transient service is started without waiting; **\--wait**
     and **\--collect** then poll its state. A failed start removes

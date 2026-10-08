@@ -2398,6 +2398,14 @@ func resolveServiceDirs(flagValue string, systemMode bool) []string {
 	} else {
 		dirs = append(dirs, defaultUserDir)
 	}
+	// The user-mode counterpart of /run/slinit.d: a per-user tmpfs that
+	// `slinitctl --user run` writes transient services into, and that
+	// is emptied at logout or reboot (systemd's
+	// $XDG_RUNTIME_DIR/systemd/transient). It sits after the config
+	// dirs, as /run/slinit.d sits after /etc/slinit.d.
+	if rt := os.Getenv("XDG_RUNTIME_DIR"); rt != "" {
+		dirs = append(dirs, rt+"/slinit.d")
+	}
 	dirs = append(dirs,
 		"/etc/slinit.d/user",
 		"/usr/lib/slinit.d/user",

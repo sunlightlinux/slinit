@@ -560,7 +560,7 @@ Used when `--services-dir` is not given, searched in this order:
 | Mode | Directories |
 |---|---|
 | System | `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d` |
-| User | `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user` |
+| User | `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `$XDG_RUNTIME_DIR/slinit.d`, `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user` |
 
 ### Platform names
 

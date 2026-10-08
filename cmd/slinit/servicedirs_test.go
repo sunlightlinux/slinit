@@ -104,3 +104,22 @@ func TestResolveServiceDirsSystemModeUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A user instance searches $XDG_RUNTIME_DIR/slinit.d, the user-mode
+// counterpart of /run/slinit.d: where `slinitctl --user run` puts its
+// transient services. Without it they were written to /run/slinit.d,
+// which a user instance never reads.
+func TestResolveServiceDirsUserModeRuntimeDir(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/4242")
+	dirs := resolveServiceDirs("", false)
+	if !contains(dirs, "/run/user/4242/slinit.d") {
+		t.Errorf("runtime dir missing from %v", dirs)
+	}
+
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	for _, d := range resolveServiceDirs("", false) {
+		if d == "/slinit.d" || strings.HasPrefix(d, "slinit.d") {
+			t.Errorf("unset XDG_RUNTIME_DIR produced %q", d)
+		}
+	}
+}

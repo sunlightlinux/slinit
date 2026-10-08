@@ -24,6 +24,13 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- A user instance also searches **`$XDG_RUNTIME_DIR/slinit.d`** (when
+  `XDG_RUNTIME_DIR` is set), after its config directories — the
+  user-mode counterpart of `/run/slinit.d`, and where
+  `slinitctl --user run` now puts transient services.
+
 ### Security
 
 - **A `run-as` user that did not exist made the service run as root.**
@@ -37,6 +44,14 @@ verified with `git tag -v`.
   (it used to fall back silently to the user's primary group).
 
 ### Fixed
+
+- **`slinitctl --user run` wrote its service where a user instance never
+  looks.** `run` always wrote to `/run/slinit.d`, which only a system
+  instance searches (and which an unprivileged user usually cannot write
+  to anyway). It now asks the daemon which directories it searches and
+  writes to the runtime one among them — `/run/slinit.d` or
+  `$XDG_RUNTIME_DIR/slinit.d` — and refuses, listing them, when there is
+  none, instead of leaving a file the daemon never reads.
 
 - **slinitctl exited 1 on usage errors, where STABILITY.md promises 2.**
   Every error went through one exit path, so a script could not tell

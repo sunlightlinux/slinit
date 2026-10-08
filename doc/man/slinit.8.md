@@ -728,8 +728,10 @@ on the console:
 :   Default service description directories for system mode. Searched
     in this order; the first match wins.
 
-*$XDG_CONFIG_HOME/slinit.d*, *~/.config/slinit.d*, */etc/slinit.d/user*, */usr/lib/slinit.d/user*, */usr/local/lib/slinit.d/user*
-:   Default service description directories for user mode.
+*$XDG_CONFIG_HOME/slinit.d*, *~/.config/slinit.d*, *$XDG_RUNTIME_DIR/slinit.d*, */etc/slinit.d/user*, */usr/lib/slinit.d/user*, */usr/local/lib/slinit.d/user*
+:   Default service description directories for user mode. The
+    runtime one (only when *XDG_RUNTIME_DIR* is set) is where
+    **slinitctl --user run** writes transient services.
 
 */etc/slinit.conf.d*
 :   Default conf.d overlay directory. Files dropped here override
