@@ -20,11 +20,11 @@
 //      brief pre-exec setup phase — cheap (~5 MB), lets an RT-adjacent
 //      operator reason about the setup window, but the state is
 //      released at execve regardless.
-//
-// The `mlockall = current+future` config directive is thus best read
-// as "enable memory-locking for this service" — the resource permission
-// is durable, but the actual pin has to be requested by the service
-// itself. This matches every other init system's behaviour.
+//   3. Preload libslinit-mlock.so into the service, whose constructor
+//      makes the mlockall(2) call inside the service before main() —
+//      the only place a lock that outlives the exec can be taken. See
+//      mlock.go for what is checked so the preload cannot silently
+//      fail.
 //
 // Usage (always synthesised by slinit, never invoked by humans):
 //
@@ -181,6 +181,7 @@ func run() error {
 		return fmt.Errorf("numa-nodes set without mempolicy")
 	}
 
+	var mlockLib string
 	if *mlockall != 0 {
 		// Raise RLIMIT_MEMLOCK to unlimited FIRST so the exec'd service
 		// can call mlockall/mlock/mlock2 without CAP_IPC_LOCK. Rlimits
@@ -199,6 +200,16 @@ func run() error {
 		if err := unix.Mlockall(*mlockall); err != nil {
 			return fmt.Errorf("mlockall(0x%x): %w", *mlockall, err)
 		}
+		// Checked now, as root and before any setup, so a service that
+		// cannot be locked fails fast with the reason.
+		lib, err := findMlockLib(mlockLibCandidates())
+		if err != nil {
+			return fmt.Errorf("mlockall: %w", err)
+		}
+		if err := checkPreloadTarget(args[0], lib); err != nil {
+			return fmt.Errorf("mlockall: %w", err)
+		}
+		mlockLib = lib
 	}
 
 	if *memoryTHP != "" {
@@ -401,6 +412,18 @@ func run() error {
 	// argv0 override honours Debian's --startas semantics when the
 	// runner is prepended by slinit-start-stop-daemon: the child sees a
 	// distinct argv[0] while the kernel exec's a different path.
+	// The mlock library must still be reachable from here: a sandbox set
+	// up above (protect-system, inaccessible-paths, ...) can hide it, and
+	// ld.so would then run the service unlocked with only a warning.
+	if mlockLib != "" {
+		if _, err := os.Stat(mlockLib); err != nil {
+			return fmt.Errorf("mlockall: %s not visible to the service: %w", mlockLib, err)
+		}
+		if err := setPreloadEnv(mlockLib, *mlockall); err != nil {
+			return fmt.Errorf("mlockall: %w", err)
+		}
+	}
+
 	execArgv := args
 	if *argv0 != "" {
 		execArgv = append([]string{*argv0}, args[1:]...)

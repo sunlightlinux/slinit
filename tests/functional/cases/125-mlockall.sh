@@ -1,9 +1,7 @@
 #!/bin/sh
-# Test: mlockall = current+future raises RLIMIT_MEMLOCK to unlimited
-# so the service can itself call mlockall(2)/mlock(2). Runner's own
-# mlockall does NOT survive execve into the service (per POSIX), so
-# checking /proc/PID/status VmLck races against exec and is unreliable
-# under load — /proc/PID/limits carries the durable state.
+# Test: mlockall = current+future locks the service's memory (VmLck > 0,
+# via the libslinit-mlock.so preload) and raises RLIMIT_MEMLOCK to
+# unlimited so the service may lock more itself.
 
 SVC="test-mlk"
 
@@ -37,6 +35,17 @@ if [ "$_soft" = "unlimited" ] && [ "$_hard" = "unlimited" ]; then
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: RLIMIT_MEMLOCK not raised — line='$_line' (soft='$_soft' hard='$_hard')"
+fi
+
+# The lock itself: slinit-runner preloads libslinit-mlock.so, which calls
+# mlockall(2) inside the service's main process, so VmLck is non-zero.
+_lck=$(awk '/^VmLck:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ -n "$_lck" ] && [ "$_lck" -gt 0 ]; then
+    echo "OK: service memory locked (VmLck=${_lck} kB)"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: service memory not locked (VmLck='${_lck}')"
 fi
 
 test_summary

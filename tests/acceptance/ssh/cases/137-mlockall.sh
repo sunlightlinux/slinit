@@ -1,12 +1,10 @@
 #!/bin/sh
-# 137-mlockall — checks that `mlockall = current+future` raises the
-# service's RLIMIT_MEMLOCK to unlimited so the service can itself call
-# mlockall(2)/mlock(2). We deliberately do NOT check /proc/PID/status
-# VmLck: per POSIX ("Memory locks are ... automatically removed
-# (unlocked) during an execve(2)."), the runner's own mlockall call is
-# torn down before the exec'd service ever runs — VmLck on the exec'd
-# task is expected to be zero. Rlimits do survive execve, and that's
-# the durable resource-permission that `mlockall = ...` delivers.
+# 137-mlockall — checks that `mlockall = current+future` locks the
+# service's memory and raises its RLIMIT_MEMLOCK to unlimited. Locks do
+# not survive execve(2), so the runner preloads libslinit-mlock.so, which
+# calls mlockall(2) inside the service: VmLck must be non-zero. The VM
+# needs the library installed (<prefix>/lib/slinit/), or the service
+# refuses to start.
 
 SVC="${ACCEPTANCE_NS_PREFIX}mlk"
 
@@ -52,6 +50,17 @@ if [ "$_soft" = "unlimited" ] && [ "$_hard" = "unlimited" ]; then
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: RLIMIT_MEMLOCK not raised — line='$_line' (soft='$_soft' hard='$_hard')"
+fi
+
+# The lock itself: slinit-runner preloads libslinit-mlock.so, which calls
+# mlockall(2) inside the service's main process, so VmLck is non-zero.
+_lck=$(awk '/^VmLck:/ { print $2 }' "/proc/$_pid/status" 2>/dev/null)
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ -n "$_lck" ] && [ "$_lck" -gt 0 ]; then
+    echo "OK: service memory locked (VmLck=${_lck} kB)"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: service memory not locked (VmLck='${_lck}')"
 fi
 
 test_summary

@@ -1535,12 +1535,27 @@ message and the service still starts.
     combinations are accepted (`current+future+onfault`). *yes* is an
     alias for *both*; spaces also separate flags; *no*/*off* disable.
 
-    Memory locks do not survive **execve**(2), so the service is not
-    actually locked by this setting. The runner raises
-    **RLIMIT_MEMLOCK** to unlimited (which does survive exec, and
-    lets the service call **mlockall**(2)/**mlock**(2) itself without
-    **CAP_IPC_LOCK**) and applies the flags to its own short pre-exec
-    setup. Read it as "enable memory locking for this service".
+    Memory locks do not survive **execve**(2), and nothing locks
+    another process's memory, so the call has to be made inside the
+    service: **slinit-runner**(8) preloads *libslinit-mlock.so*
+    (**LD_PRELOAD**), whose constructor calls **mlockall**(2) with these
+    flags before the program's *main*. The lock follows the service's
+    main process through further execs (`sh -c '... exec daemon'` ends
+    with the daemon locked); processes the service forks are not
+    locked. The runner also raises **RLIMIT_MEMLOCK** to unlimited, so
+    the service may lock more memory itself.
+
+    The preload only works for a dynamically linked program, so the
+    start is refused — rather than the service running unlocked — when
+    the library is missing (it is looked for beside the runner, in
+    *\<prefix\>/lib/slinit/*, then */usr/lib/slinit*,
+    */usr/local/lib/slinit* and */lib/slinit*), is writable by anyone
+    but root, is hidden by the service's sandbox, or when *command* is
+    statically linked, of a different architecture than the library,
+    setuid/setgid, or carries file capabilities. A failing
+    **mlockall**(2) call ends the service's process with exit status
+    127. A static binary the service execs *later* cannot be checked
+    and simply runs unlocked.
 
 **numa-mempolicy**=*bind*|*preferred*|*interleave*|*local*|*default*
 :   NUMA memory-allocation policy applied via **set_mempolicy**(2).

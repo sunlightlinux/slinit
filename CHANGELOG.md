@@ -26,6 +26,27 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`mlockall` did not lock the service's memory.** The runner called
+  mlockall(2) on itself, and memory locks end at execve(2); the service
+  only ever got the raised `RLIMIT_MEMLOCK`. No syscall locks another
+  process's memory, so the lock is now taken inside the service: the
+  runner preloads the new `libslinit-mlock.so` (`lib/slinit-mlock/`, C,
+  no dependencies beyond libc), whose constructor calls mlockall(2)
+  before `main`. The lock follows the service's main process through
+  further execs (`sh -c '... exec daemon'`), and forked children are
+  left alone.
+
+  ld.so ignores a preload it cannot use with only a warning, so the
+  runner refuses the start in every such case rather than letting the
+  service run unlocked: library missing, replaceable by non-root, or
+  hidden by the sandbox; target statically linked (Go binaries built
+  with `CGO_ENABLED=0`, for one), of another architecture, setuid/setgid,
+  or with file capabilities.
+
+  **Packaging:** install the library with
+  `make -C lib/slinit-mlock install` (default `/usr/lib/slinit/`). A
+  service with `mlockall =` now fails to start where it is absent; it
+  used to start, unlocked.
 - **`socket-activation = on-demand` did nothing.** It parsed, and a
   watcher existed, but nothing called the watcher, so an on-demand service
   launched its process at start exactly like `immediate`. The watcher
