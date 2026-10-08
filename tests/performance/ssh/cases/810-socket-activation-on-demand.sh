@@ -1,20 +1,17 @@
 # 810-socket-activation-on-demand — INTENDED to measure true
 # cold-start latency via socket-activation=on-demand: arm the
-# listen socket, connect via nc, time until svc reaches STARTED.
+# listen socket, connect, time until the process is running.
 #
-# NOT working as authored (ceres v2.2.6, 2026-09-06):
-#   1. slinitctl start on a socket-activation=on-demand svc puts
-#      it directly into STARTED — slinit does NOT defer the exec
-#      to the first client connection the way systemd would.
-#      Semantics of `on-demand` here need spec review before we
-#      can measure the systemd-parity claim.
-#   2. Bundled `netcat` (netcat-0.7.1_7) doesn't accept `-q 0`
-#      (traditional variant, not GNU) — client-side connect+
-#      close needs a different tool (socat, ncat, python).
+# Still skipped, but no longer for the semantics. Since on-demand was
+# implemented systemd-style, `slinitctl start` arms the socket and the
+# service is STARTED at once with no PID; the first client launches the
+# process. So the body below, which polls is-started, measures nothing:
+# it must poll for a PID (`slinitctl status`) instead. And the bundled
+# netcat (netcat-0.7.1_7, traditional) still rejects `-q 0`, so the
+# client needs another tool (socat, ncat, python).
 #
-# Skipping until the semantics + tooling are pinned down. Kept
-# in-tree as a placeholder so the follow-up doesn't get lost.
-echo "SKIP: on-demand socket-activation semantics + netcat -q 0 both need pinning"
+# Kept in-tree as a placeholder so the follow-up doesn't get lost.
+echo "SKIP: needs PID-based polling and a netcat replacement (see header)"
 return 0 2>/dev/null || exit 0
 _name="perf-sock-lazy-$$"
 _svcfile="/etc/slinit.d/$_name"

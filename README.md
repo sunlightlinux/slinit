@@ -104,7 +104,7 @@ summarises them by topic.
 | **Service types** | `process`, `scripted`, `bgprocess`, `internal`, `triggered` |
 | **Dependencies** | 6 kinds — `depends-on`, `waits-for`, `depends-ms`, `before`, `after`, `prepared-by`; two-phase transitions; cycle and depth checks |
 | **Lifecycle** | SIGTERM with per-service timeout then SIGKILL, restart policies with rate limiting and smooth recovery, `normal-exit` codes, pause/continue, pinning |
-| **Activation** | explicit, dependency-driven, socket activation (`LISTEN_FDS`, Unix/TCP/UDP, `SO_REUSEPORT`), path activation via inotify, calendar timers |
+| **Activation** | explicit, dependency-driven, socket activation (`LISTEN_FDS`, Unix/TCP/UDP, `SO_REUSEPORT`), path activation via inotify, calendar timers, on-demand (lazy) socket activation |
 | **Readiness** | `pipefd`/`pipevar` protocol, `ready-check-command` polling, D-Bus name readiness, `sd_notify` |
 | **Isolation & hardening** | filesystem sandbox (`private-tmp`, `protect-system`, bind/read-only/inaccessible paths), seccomp with curated syscall groups, the `restrict-*` and `protect-*` clusters, AppArmor/SELinux/SMACK transitions, capabilities, securebits — all fail-closed |
 | **Resources** | cgroup v2 limits and weights, slices and delegation, nice, ioprio, oom-score-adj, rlimits, CPU affinity, PSI pressure watches |

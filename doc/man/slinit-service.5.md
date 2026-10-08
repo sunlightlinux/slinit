@@ -1702,10 +1702,23 @@ mlockall       = current+future
     socket with this directive still opens normally.
 
 **socket-activation**=*immediate*|*on-demand*
-:   *immediate* (default) and *on-demand* are accepted. The listening
-    socket(s) are opened when the service starts. *on-demand* is not
-    implemented yet and behaves like *immediate*. Socket activation
-    applies to **type**=*process* only.
+:   *immediate* (default): starting the service opens its socket(s)
+    and launches the process, which inherits them.
+
+    *on-demand*: starting the service opens the socket(s) and marks it
+    **STARTED** without launching anything — the socket already accepts,
+    so dependents proceed and an early client waits in the backlog. The
+    first connection (or, for *udp:*, datagram) on any of the sockets
+    launches the process, which inherits them and accepts that client
+    itself; slinit never accepts on its behalf. **pre-start-command**,
+    **start-delay** and **post-start-command** run at that launch. When
+    the process exits — cleanly, with an error, or because it failed to
+    exec — the service stays **STARTED** and listens again, so the next
+    client launches it anew; **restart** does not apply. **slinitctl
+    status** shows no PID while it is listening. Only stopping the
+    service closes the sockets.
+
+    Socket activation applies to **type**=*process* only.
 
 **socket-permissions**=*octal*, **socket-uid**=*N*, **socket-gid**=*N*
 :   Mode and ownership of the listening socket. Unix sockets only; both

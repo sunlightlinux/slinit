@@ -26,6 +26,22 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`socket-activation = on-demand` did nothing.** It parsed, and a
+  watcher existed, but nothing called the watcher, so an on-demand service
+  launched its process at start exactly like `immediate`. The watcher
+  could not have worked either: it `Accept()`ed the first connection and
+  closed it, dropping the very client that triggered the launch, and it
+  watched only the first socket and only stream sockets.
+
+  It now works the way systemd socket units do. Starting the service
+  opens its sockets and marks it STARTED with no process; the first
+  connection or datagram on any socket launches the process, which
+  inherits the sockets and accepts that client itself — slinit polls for
+  readability and never accepts. When the process exits the service
+  stays STARTED and listens again; only a stop closes the sockets.
+  `pre-start-command`, `start-delay` and `post-start-command` run at the
+  launch. A service that relied on `on-demand` launching at start (the
+  old, accidental behaviour) should say `immediate`.
 - **`securebits` was never applied to slinit services.** The parent-side
   path was a stub that always failed (`PR_SET_SECUREBITS` acts on the
   calling task, so setting it in the parent would change slinit's own

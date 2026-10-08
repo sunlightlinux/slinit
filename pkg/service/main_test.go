@@ -3,6 +3,7 @@
 package service
 
 import (
+	"net"
 	"os"
 	"testing"
 
@@ -26,5 +27,27 @@ import (
 // wants a core from.
 func TestMain(m *testing.M) {
 	_ = unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{Cur: 0, Max: 0})
+	if os.Getenv(acceptOneEnv) != "" {
+		os.Exit(acceptOneHelper())
+	}
 	os.Exit(m.Run())
+}
+
+// acceptOneEnv turns the test binary into a socket-activated server for
+// tests that need a real child: it accepts one connection on the
+// inherited LISTEN_FDS socket (fd 3), writes "hello\n" and exits.
+const acceptOneEnv = "SLINIT_TEST_ACCEPT_ONE"
+
+func acceptOneHelper() int {
+	ln, err := net.FileListener(os.NewFile(3, "listen-fd"))
+	if err != nil {
+		return 2
+	}
+	conn, err := ln.Accept()
+	if err != nil {
+		return 3
+	}
+	conn.Write([]byte("hello\n"))
+	conn.Close()
+	return 0
 }
