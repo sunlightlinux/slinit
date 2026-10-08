@@ -1591,11 +1591,15 @@ mlockall       = current+future
     raised into the inheritable and ambient sets, so a **run-as**
     service keeps them across exec. Nothing is dropped: a service
     running as root keeps its full set — use
-    **capability-bounding-set** to remove capabilities. An unknown
-    name makes the whole directive be ignored.
+    **capability-bounding-set** to remove capabilities.
+
+    For this setting, **capability-bounding-set** and **securebits**,
+    an unknown name is a load error naming the setting, and **+=**
+    appends to the list.
 
 **capability-bounding-set**=*caps*
-:   Comma-separated positive list of capability names retained in the
+:   Comma- or space-separated positive list of capability names (same
+    forms as **capabilities**) retained in the
     bounding set (`CapBnd`). All other capabilities are dropped via
     `PR_CAPBSET_DROP` in **slinit-runner**(8) before `execve`,
     permanently — the process cannot re-acquire them for the rest of
@@ -1605,9 +1609,9 @@ mlockall       = current+future
     interpreted positively (only the listed caps survive).
 
 **securebits**=*bits*
-:   Space-separated securebit names (*noroot*, *no-setuid-fixup*,
-    *keep-caps*, *no-cap-ambient-raise*, each with a *-locked*
-    variant); no bitmask, and a comma-separated value is ignored.
+:   Comma- or space-separated securebit names (*noroot*,
+    *no-setuid-fixup*, *keep-caps*, *no-cap-ambient-raise*, each with a
+    *-locked* variant); no bitmask.
     Applied by **slinit-runner**(8) with **PR_SET_SECUREBITS** just
     before exec, after the **run-as** drop. Without the runner the
     service does not start.
