@@ -1,10 +1,15 @@
 package config
 
 import (
+	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // Regression: desc.RunAs was parsed but never plumbed to the service
@@ -181,4 +186,35 @@ func stringSliceEq(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// End to end through the loader: a service file naming a user that does
+// not exist must not run its command. It used to load with run-as
+// dropped and run as slinit's own user — root, for PID 1.
+func TestLoadedServiceWithUnknownRunAsDoesNotRun(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	writeServiceFile(t, dir, "svc",
+		"type = process\nrun-as = nosuchuser-slinit-test\ncommand = /bin/sh -c 'touch "+marker+"; sleep 60'\n")
+
+	svc, err := loader.LoadService("svc")
+	if err != nil {
+		t.Fatalf("load: %v", err) // still loads: the user may appear before the start
+	}
+	ss.StartService(svc)
+	deadline := time.Now().Add(2 * time.Second)
+	for svc.State() != service.StateStopped && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st := svc.State(); st != service.StateStopped {
+		ss.StopService(svc)
+		t.Fatalf("state = %v, want STOPPED (start refused)", st)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("command ran although its run-as user does not exist")
+	}
 }

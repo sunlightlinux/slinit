@@ -2165,59 +2165,29 @@ func applyLoadOptions(svc service.Service, desc *ServiceDescription) {
 // service, because dropping the description for a typoed user would
 // surprise admins more than logging would.
 func resolveRunAs(spec string) (uid uint32, gid uint32, ok bool) {
-	userPart, groupPart, _ := strings.Cut(spec, ":")
-	userPart = strings.TrimSpace(userPart)
-	groupPart = strings.TrimSpace(groupPart)
-	if userPart == "" {
-		return 0, 0, false
-	}
-
-	u, err := user.Lookup(userPart)
-	if err != nil {
-		u, err = user.LookupId(userPart)
-		if err != nil {
-			return 0, 0, false
-		}
-	}
-	uid64, err := strconv.ParseUint(u.Uid, 10, 32)
-	if err != nil {
-		return 0, 0, false
-	}
-	gid64, err := strconv.ParseUint(u.Gid, 10, 32)
-	if err != nil {
-		return 0, 0, false
-	}
-
-	if groupPart != "" {
-		g, gerr := user.LookupGroup(groupPart)
-		if gerr != nil {
-			g, gerr = user.LookupGroupId(groupPart)
-		}
-		if gerr == nil {
-			if ggid, perr := strconv.ParseUint(g.Gid, 10, 32); perr == nil {
-				gid64 = ggid
-			}
-		}
-	}
-
-	return uint32(uid64), uint32(gid64), true
+	uid, gid, err := process.ResolveRunAs(spec)
+	return uid, gid, err == nil
 }
 
 // applyRunAs resolves desc.RunAs and calls the type-specific
-// SetRunAs setter. No-op when the field is empty or the user can't
-// be resolved — the latter case prints a warning to stderr and lets
-// the service still load as the parent's UID. slinit-check would
-// catch the typo offline.
+// SetRunAs setter. A value that does not resolve yet is not dropped —
+// that used to leave the service running as slinit itself, root under
+// PID 1. It is kept on the record and resolved again when the service
+// starts (a user slinit-sysusers creates during boot exists by then),
+// and the start is refused if it still does not resolve.
 func (dl *DirLoader) applyRunAs(svc service.Service, desc *ServiceDescription) {
 	if desc.RunAs == "" {
 		return
 	}
 	uid, gid, ok := resolveRunAs(desc.RunAs)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "slinit: service %q: run-as=%q — user unresolved, ignored\n",
+		fmt.Fprintf(os.Stderr, "slinit: service %q: run-as=%q does not resolve yet; "+
+			"it is looked up again at start, which fails if it still does not\n",
 			svc.Name(), desc.RunAs)
+		svc.Record().SetRunAsSpec(desc.RunAs)
 		return
 	}
+	svc.Record().SetRunAsSpec("")
 	switch s := svc.(type) {
 	case *service.ProcessService:
 		s.SetRunAs(uid, gid)

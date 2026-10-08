@@ -266,7 +266,7 @@ accepted. List-valued settings accept `+=` to append.
 | `command` | program [args…] | Command to run; supports `+=` |
 | `stop-command` | program [args…] | The stop script (`scripted`); for `process` / `bgprocess`, run instead of sending the stop signal; supports `+=` |
 | `working-dir` | path | Working directory for the process |
-| `run-as` | user[:group] | Run the command as this user and group |
+| `run-as` | user[:group] | Run the command as this user and group; if either is still unknown at start, the start fails |
 | `provides` | name | Alias under which the service can also be looked up |
 | `options` | flag… | Service flags: `runs-on-console`, `unmask-intr`, `no-new-privs`, … |
 | `load-options` | flag… | Loader flags: `export-passwd-vars`, `export-service-name` |

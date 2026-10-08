@@ -303,6 +303,11 @@ func (s *BGProcessService) BringUp() bool {
 		return false
 	}
 
+	if err := s.Record().resolveDeferredRunAs(); err != nil {
+		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+		return false
+	}
+
 	// Dynamic-user allocation (#13).
 	if err := s.Record().allocateDynamicUID(); err != nil {
 		s.services.logger.Error("Service '%s': dynamic-user: %v", s.serviceName, err)

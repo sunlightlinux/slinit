@@ -556,6 +556,9 @@ type ServiceRecord struct {
 	dynamicUser bool
 	dynamicUID  uint32
 
+	// run-as value that did not resolve at load; resolved at start.
+	runAsSpec string
+
 	// file-descriptor-store (systemd #14). When fdStoreMax > 0 a
 	// $NOTIFY_SOCKET is created at BringUp and the parent listens for
 	// sd_notify FDSTORE=1 messages. Stored fds are kept across
@@ -743,6 +746,30 @@ func (sr *ServiceRecord) DynamicUser() bool { return sr.dynamicUser }
 // none. Concrete services check this in BringUp; the record exposes it
 // for introspection and tests.
 func (sr *ServiceRecord) DynamicUID() uint32 { return sr.dynamicUID }
+
+// SetRunAsSpec records a run-as value that did not resolve when the
+// service was loaded; "" clears it. See resolveDeferredRunAs.
+func (sr *ServiceRecord) SetRunAsSpec(spec string) { sr.runAsSpec = spec }
+
+// resolveDeferredRunAs looks up a run-as value the loader could not
+// resolve, at start time — when a user created during boot (by
+// slinit-sysusers, say) exists. Failing here refuses the start: the
+// alternative is the process running as slinit itself, root for PID 1.
+// Called from each concrete BringUp before any UID-dependent setup.
+func (sr *ServiceRecord) resolveDeferredRunAs() error {
+	if sr.runAsSpec == "" {
+		return nil
+	}
+	uid, gid, err := process.ResolveRunAs(sr.runAsSpec)
+	if err != nil {
+		return fmt.Errorf("%w; refusing to start rather than run as slinit's own user", err)
+	}
+	if setter, ok := sr.self.(interface{ SetRunAs(uid, gid uint32) }); ok {
+		setter.SetRunAs(uid, gid)
+	}
+	sr.runAsSpec = ""
+	return nil
+}
 
 // allocateDynamicUID reserves a UID from the set's pool and records it
 // on the record. No-op when dynamic-user is disabled or a UID is
