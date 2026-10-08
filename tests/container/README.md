@@ -69,6 +69,8 @@ against the same PID 1 contract these cases pin.
 | 19-process-tree-cleanup | stopping a service takes its background children and grandchildren with it |
 | 20-sighup-noop | SIGHUP is claimed but acted on by nobody |
 | 21-nginx-workload | nginx under slinit serving real HTTP through a published port, its access log visible in the container log, stopped on command |
+| 22-shutdown-haste | the four degrees of shutdown haste (plain, `now`, `--fast`, `--superfast`) against a service that ignores SIGTERM |
+| 23-metrics | the Prometheus endpoint scraped from outside the container; a service's restart counter moves after it is killed and does not reset |
 
 `soak.sh` runs the lifecycle over and over against a tree with a
 worker, an orphan generator and a SIGTERM-ignoring service. It rotates

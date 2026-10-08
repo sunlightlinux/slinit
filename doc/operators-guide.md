@@ -462,6 +462,6 @@ goes to a per-service ring buffer instead — `slinitctl catlog X`. With
   unit converter.
 - [configuration.md](configuration.md) and [tools.md](tools.md) —
   worked examples and the companion-tool index.
-- [`demo/`](../demo/README.md) — a QEMU VM with 57 services covering most
+- [`demo/`](../demo/README.md) — a QEMU VM with more than 50 services covering most
   directives, including a stock nginx unit run straight from
   `/etc/systemd/system`.

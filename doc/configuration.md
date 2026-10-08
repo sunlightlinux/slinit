@@ -464,20 +464,21 @@ Values are expanded at load time:
 
 ## Appendix: daemon command-line options
 
-A summary for convenience; [slinit(8)](man/slinit.8.md) is
-authoritative and documents all 46 flags.
+A summary of every option, grouped by topic;
+[slinit(8)](man/slinit.8.md) is authoritative.
 
 ### Mode and instance
 
 | Flag | Description | Default |
 |---|---|---|
-| `--system`, `-m`, `--system-mgr` | Run as the system service manager | `false` |
-| `--user` | Run as a per-user service manager | `true` |
+| `-s`, `--system` | Run as the system service manager | |
+| `-m`, `--system-mgr` | Run as the system manager even when not PID 1 | |
+| `-u`, `--user` | Run as a per-user service manager | default mode |
 | `-o`, `--container` | Container mode (Docker, LXC, Podman) | `false` |
 | `-S`, `--sys` | Override platform detection — see [below](#platform-names) | auto |
-| `--services-dir` | Service directories, comma-separated | see [below](#default-service-directories) |
+| `-d`, `--services-dir` | Service directories, comma-separated | see [below](#default-service-directories) |
 | `--conf-dir` | `conf.d` overlay directories, comma-separated; `none` disables overlays | |
-| `--socket-path` | Control socket path | `~/.slinitctl` (user), `/run/slinit.socket` (system) |
+| `-p`, `--socket-path` | Control socket path | `~/.slinitctl` (user), `/run/slinit.socket` (system) |
 | `--version` | Print the version and exit | |
 
 ### Boot
@@ -488,11 +489,16 @@ authoritative and documents all 46 flags.
 | `-r`, `--auto-recovery` | Start the `recovery` service on boot failure (PID 1) | `false` |
 | `-e`, `--env-file` | Environment file loaded at startup | |
 | `-F`, `--ready-fd` | File descriptor notified when the boot service is ready | `-1` |
+| `-W`, `--wait-fd` | Block until EOF on this descriptor before booting (container entrypoint sync) | `-1` |
+| `--active-profile` | Activate a named profile; only services declaring `profile = <name>` (or none) are eligible | |
+| `--watch-services-dir` | Load and unload services as files appear and disappear in the service directories (inotify) | `false` |
+| `--sentinel-dir` | Watch for runit-compatible sentinel files (`stopit`, `reboot`, `poweroff`) | |
 | `--banner` | Boot banner printed to the console; empty disables it | `slinit booting...` |
 | `--umask` | Initial umask, octal | `0022` |
 | `--run-mode` | How `/run` is staged: `mount` (fresh tmpfs), `remount` (unmount and mount), `keep` (untouched) | `mount` |
 | `--devtmpfs-path` | Mount devtmpfs here; empty disables | `/dev` |
 | `--kcmdline-dest` | Snapshot `/proc/cmdline` here; empty disables | `/run/slinit/kcmdline` |
+| `--kernel-env-store` | Extract `KEY=VALUE` tokens from the kernel command line into this env-file, for services to load with `env-file`; empty disables | |
 | `--restore-from-snapshot` | Replay an operator-intent snapshot after a soft reboot | |
 | `--persist-intent` | Directory where pin transitions are persisted, so `stop --pin X` survives a reboot; empty disables. Recommended: `/var/lib/slinit/intent` | |
 
@@ -512,6 +518,8 @@ authoritative and documents all 46 flags.
 |---|---|---|
 | `--shutdown-grace` | SIGTERM → SIGKILL grace period during shutdown | `3s` |
 | `--emergency-timeout` | How long to wait for services to drain before the forced path: SIGKILL stragglers, log the services that blocked, issue the reboot call. Raise it for large stop cascades | `90s` |
+| `--shutdown-final-sleep` | Settle pause between the final SIGKILL and unmounting, e.g. `500ms` | `0` |
+| `--minimum-uptime-sec` | Anti-boot-loop floor: delay shutdown or reboot until the system has been up this long | `0` |
 | `--no-wall` | Do not broadcast wall messages at shutdown | `false` |
 
 ### Logging
@@ -526,6 +534,16 @@ authoritative and documents all 46 flags.
 | `--catch-all-log` | Early-boot catch-all log path | `/run/slinit/catch-all.log` |
 | `-B`, `--no-catch-all` | Disable the catch-all logger | `false` |
 | `--timestamp-format` | `wallclock`, `iso`, `tai64n` or `none` | `wallclock` |
+| `--stderr-ring-buffer-size` | Keep the daemon's recent log lines in a ring buffer of this many bytes, re-emitted periodically | `0` (off) |
+| `--stderr-ring-buffer-interval` | How often the ring buffer is re-emitted | `15m` |
+
+### Observability
+
+| Flag | Description | Default |
+|---|---|---|
+| `--metrics-listen` | Serve Prometheus metrics on `host:port` or `unix:/path` | off |
+| `--heartbeat-interval` | Log a one-line health summary at this interval | `0` (off) |
+| `--heartbeat-restart-window` | Window over which the heartbeat's restart count is computed | `1m` |
 
 ### Hardware watchdog
 

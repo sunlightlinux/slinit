@@ -97,6 +97,14 @@ cases/
                          # unsetenv), metadata render (author/version/usage in
                          # `slinitctl status`), cron-persistent + randomized-delay
                          # behavior over a fire window
+  198-…-201-…            # migration converters: runit (basic + log
+                         # companion), openrc, systemd
+  202-…-219-…            # journal pipeline and dinit parity: journalctl
+                         # filters, invocations, catalog, setup-keys,
+                         # vacuum, namespaces, --image, -b, kernel events,
+                         # verbose/export, binary FSS verify, journald
+                         # backlog replay; slinit-supports, analyze,
+                         # disable --dinit-compat, dinit env vars
   999-cleanup.sh         # tears down acceptance-test-* namespace
 ```
 

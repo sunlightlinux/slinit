@@ -58,10 +58,72 @@ service-file format.
 
 ## OPTIONS
 
+Single-letter options and their long forms are interchangeable, and
+long options may be written with one or two leading dashes.
+
+### Mode and instance
+
+**-s**, **\--system**, **-m**, **\--system-mgr**
+:   Run as the system service manager, even when not PID 1. Selects
+    the system-scope socket path and default service directories.
+    System mode is implied when slinit runs as PID 1 or with
+    **\--container**.
+
+**-u**, **\--user**
+:   Run as a per-user service manager. This is the default when slinit
+    is not PID 1 and neither **\--system** nor **\--container** is
+    given. The socket goes to *$XDG_RUNTIME_DIR/slinitctl* (or
+    *$HOME/.slinitctl*) and the default service directories shift to
+    user-scope paths.
+
+**-o**, **\--container**
+:   Container mode, for PID 1 inside Docker, LXC, Podman and similar.
+    Skips the PID-1-only setup (Ctrl+Alt+Del handler, */dev/tty0*,
+    kernel log takeover) and exits with a status code on stop instead
+    of making a reboot system call. SIGINT and SIGTERM become a
+    graceful halt.
+
+**-S** *kind*, **\--sys** *kind*
+:   Override platform auto-detection. Accepted values match the set
+    detected by **pkg/platform**: `docker`, `lxc`, `podman`,
+    `systemd-nspawn`, `openvz`, `vserver`, `rkt`, `uml`, `wsl`,
+    `xen0`, `xenu`, `kvm`, `qemu`, `vmware`, `microsoft` (Hyper-V),
+    `oracle` (VirtualBox), `bochs`, or `none`. Mostly useful for
+    testing container-mode / VM-specific behaviour outside a real
+    environment.
+
 **-d** *dir*, **\--services-dir** *dir*
 :   Directory containing service description files. Comma-separated for
     multiple, or repeated. When given, the built-in defaults listed in
     **FILES** are *not* searched.
+
+**\--conf-dir** *dirs*
+:   Override the default conf.d overlay directories
+    (*/etc/slinit.conf.d* in system mode). Comma-separated; the
+    literal `none` disables overlays entirely.
+
+**-p** *path*, **\--socket-path** *path*
+:   Path of the control socket used by **slinitctl**(8). Default for
+    system mode is */run/slinit.socket*; for user mode,
+    *$XDG_RUNTIME_DIR/slinitctl* if set, otherwise *$HOME/.slinitctl*.
+
+**\--version**
+:   Print the slinit version and exit.
+
+**\--help**
+:   Print a brief help text and exit.
+
+### Boot
+
+**-t** *service-name*, **\--service** *service-name*
+:   Start *service-name* (and its dependencies) at boot. May be
+    repeated; positional arguments are accepted too. If no service is
+    named, the **boot** service is started.
+
+**-r**, **\--auto-recovery**
+:   On apparent boot failure (every service has stopped without a
+    shutdown command), start the **recovery** service automatically
+    rather than prompting on the console.
 
 **-e** *file*, **\--env-file** *file*
 :   Read initial environment from *file* (one *KEY*=*VALUE* per line).
@@ -69,15 +131,11 @@ service-file format.
     `!clear`, `!unset VAR...` and `!import VAR...` are honoured. For
     PID 1 the default is */etc/slinit/environment*.
 
-**-p** *path*, **\--socket-path** *path*
-:   Path of the control socket used by **slinitctl**(8). Default for
-    system mode is */run/slinit.socket*; for user mode,
-    *$XDG_RUNTIME_DIR/slinitctl* if set, otherwise *$HOME/.slinitctl*.
-
 **-F** *fd*, **\--ready-fd** *fd*
-:   File descriptor on which to write the control-socket path once
-    listening. Used by parent processes to detect that slinit has come
-    up and is accepting commands.
+:   Once the boot service has started, write the control-socket path,
+    followed by a NUL byte, to *fd* and close it (dinit-compatible).
+    Lets a parent process wait until slinit is up and accepting
+    commands. Default *-1* (disabled); *fd* may not be 0.
 
 **-W** *fd*, **\--wait-fd** *fd*
 :   Block until EOF on *fd* before booting. Docker-style entrypoint
@@ -86,110 +144,51 @@ service-file format.
     mounted). Useful in orchestrated container startup where
     slinit must not race the surrounding init.
 
-**-s**, **\--system**, **\--sys**, **\--system-mgr**
-:   Run as system manager (even if not PID 1). Selects the system-
-    scope socket path and default services directory. Aliases
-    accepted for parity with dinit / systemd conventions.
+**\--active-profile** *name*
+:   Activate profile *name* at boot (runit *runsvchdir* analogue).
+    Services declaring **profile = *name*** (or **profile = ...,
+    *name*, ...** — see **slinit-service**(5)) become eligible
+    for the boot-service auto-start pass; services tagged with
+    other profiles are loaded but not started. Services with no
+    profile tag ("global infrastructure") are always eligible
+    regardless. The active profile can also be switched at
+    runtime via **slinitctl activate-profile**. Empty (default)
+    means no filter — every boot service starts as normal.
 
-**-u**, **\--user**
-:   Run as user-scope service manager. Socket goes to
-    *$XDG_RUNTIME_DIR/slinitctl* (or *$HOME/.slinitctl*), default
-    service dirs shift to user-scope paths.
+**\--watch-services-dir**
+:   Opt-in: watch every **\--services-dir** with **inotify**(7) and
+    auto-load a service when a new file appears (or is renamed in),
+    auto-unload it when the file is removed. Modified files are
+    logged; slinit's existing *(modified since loaded)* marker still
+    surfaces the change via `slinitctl status`. Services are loaded
+    but **not** auto-started (matches dinit's explicit-start model);
+    the operator can then `slinitctl start <name>`. Unload happens
+    only when the service is *STOPPED* — running services are left
+    loaded with a warning. Editor artefacts (dotfiles, `~`, `.swp`,
+    `.tmp`, `.new`, `.bak`) and `.d` overlay dirs are ignored. A
+    300 ms debounce window collapses rapid multi-event bursts (write
+    + close + rename) into a single dispatch per file. Inspired by
+    **runsvdir**(8)'s inotify rescan (runit 2.3.1+).
 
-**-o**, **\--container**
-:   Container mode (Docker / LXC / Podman). Skips the PID-1-only
-    setup branches (console CAD handler, /dev/tty0 opens, kernel
-    log ownership takeover) and prefers exit-with-code shutdown
-    over reboot syscalls.
-
-**\--cgroup-path** *path*
-:   Default cgroup base under which per-service subgroups get
-    created. Defaults to */sys/fs/cgroup/slinit* for PID 1,
-    a per-user path in user mode.
-
-**\--cpu-affinity** *cpuset*
-:   CPU affinity for the daemon AND for services that don't
-    specify their own **cpu-affinity=**. Format: kernel cpuset
-    string like *0-3* or *0,2,4*.
-
-**\--auto-recovery**
-:   Auto-run the *recovery* service if the boot cascade fails.
-    Standard sysinit-style rescue drop-in.
-
-**\--minimum-uptime-sec** *duration*
-:   Anti-boot-loop floor. If shutdown reaches slinit before the
-    system has been up *duration* seconds, slinit blocks the
-    shutdown until the floor is reached. Prevents tight
-    crash-restart loops from making the box unusable for
-    recovery. Real-value for telco / appliance workloads. Mirror
-    of systemd v261 **MinimumUptimeSec=**.
-
-**\--shutdown-final-sleep** *duration*
-:   Extra sleep after all services have stopped but before slinit
-    hands off to the reboot/halt/kexec syscall. Gives the kernel
-    time to flush pending dirty pages / final log lines to disk
-    on hosts where the storage stack is slow to settle.
-
-**\--catch-all-log** *path*
-:   Path to the catch-all log file that captures every service's
-    output when no per-service log target is configured. Default
-    */run/slinit/catch-all.log*.
-
-**\--no-catch-all**
-:   Disable the catch-all logger entirely. Services without a
-    log target write to /dev/null.
-
-**\--kernel-env-store** *path*
-:   Persist kernel command-line KEY=VALUE tokens into *path*
-    (default: disabled) so subsequent boots + slinitctl can query
-    them without re-parsing */proc/cmdline*. Companion to
-    **\--kcmdline-dest** (which snapshots the raw line).
-
-**-q**, **\--quiet**
-:   Suppress all but error output (equivalent to
-    **\--console-level=error**).
-
-**\--log-file** *path*
-:   Log to a file instead of the console. Combined with
-    **\--console-dup** (or **-1**), the daemon writes to both.
-
-**-1**, **\--console-dup**
-:   Duplicate log output to */dev/console* even when
-    **\--log-file** is set. Useful during install / bring-up so
-    the operator sees the daemon's own log without tailing the
-    file.
-
-**\--umask** *octal*
-:   Initial umask for slinit and (unless overridden) its
-    services. Default *0022*.
-
-**\--parallel-start-limit** *N*
-:   Cap on concurrent service starts. 0 (default) = unlimited.
-    Useful on storage-constrained hosts where too many parallel
-    starts (each doing its own fork + exec + config load) can
-    thrash the page cache.
-
-**\--parallel-start-slow-threshold** *duration*
-:   Time before a starting service is flagged as slow. Slow
-    services block the parallel-start counter from advancing,
-    forcing sequentialisation. Default *10s*.
-
-**\--stderr-ring-buffer-size** *N*, **\--stderr-ring-buffer-interval** *duration*
-:   Ring-buffer captures the last N bytes of daemon stderr and
-    flushes to log periodically. Diagnostic aid for reproducing
-    "why did slinit misbehave 5 minutes ago" without keeping
-    every stderr line forever.
-
-**\--heartbeat-interval** *duration*, **\--heartbeat-restart-window** *duration*
-:   Periodic self-check that services still meet their auto-
-    restart limits. Fires every *heartbeat-interval*; a service
-    that has failed within the last *heartbeat-restart-window*
-    but hasn't been restarted gets a nudge. Default disabled;
-    real value in unattended appliances.
-
-**\--timestamp-format** *format*
-:   Log timestamp format: *wallclock* (default), *iso*,
-    *tai64n* (s6-log-style), or *none*.
+**\--sentinel-dir** *dir*
+:   Opt-in: watch *dir* with **inotify**(7) for runit-compatible
+    sentinel files that, when armed with **+x**, drive slinit's own
+    shutdown surface out-of-band from the control socket. Recognized
+    filenames: **stopit** (halt), **reboot**, **poweroff**. A file
+    without the executable bit is treated as staged-but-unarmed —
+    the operator can prepare it in advance and flip `chmod +x` when
+    the trigger should fire (this matches **runit**(8)'s workflow).
+    Every trigger logs an audit line with the file owner's UID and
+    mtime before the file is unlinked, so a compliance regime that
+    requires forensic evidence of who requested a system state
+    change gets a durable filesystem-anchored record. Pre-existing
+    armed files are honoured at boot via an initial scan, so an
+    admin who dropped **reboot** while slinit was down still gets
+    the reboot when it comes back up. Empty (default) disables the
+    watcher — the vast majority of installations don't need this,
+    and the socket + signal surface already covers the common cases.
+    Intended for database servers, telco control planes, and other
+    workloads where the audit trail matters as much as the trigger.
 
 **\--restore-from-snapshot** *path*
 :   Replay operator intent from a snapshot file written by a prior
@@ -231,134 +230,149 @@ service-file format.
     **slinitctl boot-time** keep reporting a kernel time that means
     something, and say which generation you are looking at.
 
-**-l** *path*, **\--log-file** *path*
-:   Append log messages to *path* instead of syslog. Console messages
-    are still emitted unless **-q** is given. When running as PID 1 and
-    the file cannot be opened (e.g. root FS still read-only), slinit
-    keeps going and retries later; otherwise it exits with an error.
-
-**-1**, **\--console-dup**
-:   When **\--log-file** is also set, duplicate every log line to
-    */dev/console* in addition to the file. Useful for headless boots
-    where you want both a persistent log and live console output.
-
-**-s**, **\--system**
-:   Run as a system service manager. Default when invoked as root.
-
-**-m**, **\--system-mgr**
-:   Run as the system manager (i.e. own shutdown / reboot). Default
-    when running as PID 1. The main observable effect is that slinit
-    will execute **slinit-shutdown**(8) once all services have stopped.
-
-**-u**, **\--user**
-:   Run as a user service manager. Default for non-root invocations.
-
-**-o**, **\--container**
-:   Run in container mode. slinit will not perform machine shutdown
-    on stop; it simply exits with the appropriate status. Intended for
-    use as PID 1 inside Docker, LXC, Podman, etc.
-
-**-r**, **\--auto-recovery**
-:   On apparent boot failure (every service has stopped without a
-    shutdown command), automatically start the **recovery** service
-    rather than prompting on the console.
-
-**-q**, **\--quiet**
-:   Suppress all but error-level console output. Equivalent to
-    **\--console-level error**.
-
-**-t** *service-name*, **\--service** *service-name*
-:   Start *service-name* (and its dependencies) at boot. May be
-    repeated. If no service is named, the **boot** service is started.
-
-**-b** *path*, **\--cgroup-path** *path*
-:   Default cgroup base path. Relative cgroup paths in service files
-    are resolved against this. Linux only.
-
-**-a** *list*, **\--cpu-affinity** *list*
-:   Default CPU affinity for the daemon and its services, e.g. `0-3`
-    or `0,2,4`.
-
-**-B**, **\--no-catch-all**
-:   Disable the catch-all logger (otherwise: *services that did not
-    open their own log file have their stdout/stderr captured and
-    appended to* */run/slinit/catch-all.log* *or* the path given via
-    **\--catch-all-log**).
-
-**\--catch-all-log** *path*
-:   Override the catch-all log file path.
-
-**\--shutdown-grace** *duration*
-:   Per-service SIGTERM→SIGKILL grace period during shutdown. Accepts
-    Go duration syntax (`3s`, `5000ms`, `1m`). Default `3s`.
+**\--persist-intent** *dir*
+:   Opt-in: persist pin transitions to *dir* so `slinitctl stop --pin
+    X` stays effective across a reboot. One file per service is
+    written atomically with contents `pinned-started` or
+    `pinned-stopped`; `slinitctl unpin` removes the file. At boot the
+    daemon replays these intents BEFORE the boot cascade so a service
+    marked pinned-stopped never briefly comes up first. Empty
+    (default) disables the feature — every hook site short-circuits
+    so runtime cost is zero when unused. Recommended value:
+    */var/lib/slinit/intent*. Inspired by s6-supervise's *wantup*/
+    *wantdown* files.
 
 **\--banner** *text*
-:   Boot banner printed on the console at startup. Empty disables.
+:   Boot banner printed on the console at startup. Default
+    *slinit booting...*; empty disables it.
 
 **\--umask** *octal*
-:   Initial umask, e.g. `0022`. Default `0022`.
+:   Initial umask for slinit and, unless they override it, its
+    services. Default *0022*.
 
-**\--devtmpfs-path** *path*
-:   Mount *devtmpfs* at *path* during PID-1 init (default `/dev`).
-    Empty disables the mount entirely (useful when the initramfs
-    has already populated */dev*).
+### PID 1 environment
 
 **\--run-mode** *mode*
-:   How */run* is staged at boot: `mount` (mount a fresh tmpfs),
-    `remount` (re-mount the existing one with safe options) or `keep`
-    (leave it as-is). Default `mount`.
+:   How */run* is staged at boot: *mount* (mount a fresh tmpfs),
+    *remount* (re-mount the existing one with safe options) or *keep*
+    (leave it as-is). Default *mount*.
+
+**\--devtmpfs-path** *path*
+:   Mount *devtmpfs* at *path* during PID-1 init. Default */dev*.
+    Empty disables the mount, which is useful when the initramfs has
+    already populated */dev*.
 
 **\--kcmdline-dest** *path*
 :   Snapshot */proc/cmdline* to *path* during PID-1 init for later
-    inspection. Default `/run/slinit/kcmdline`. Empty disables.
+    inspection. Default */run/slinit/kcmdline*. Empty disables.
 
-**\--timestamp-format** *fmt*
-:   Log timestamp format: `wallclock`, `iso`, `tai64n`, or `none`.
-    Default `wallclock`.
+**\--kernel-env-store** *path*
+:   Extract the *KEY*=*VALUE* tokens of the kernel command line and
+    write them to *path* in env-file format, one per line, so services
+    can load them with **env-file**. Empty (the default) disables the
+    extraction. Companion to **\--kcmdline-dest**, which snapshots the
+    raw line.
 
-**\--no-wall**
-:   Suppress wall(1)-style broadcasts to logged-in users at shutdown.
-
-**\--rlimits** *spec*
-:   Default resource limits for services that do not override them.
-    See **slinit-service**(5) for the syntax (`RES=soft:hard,...`).
+### Scheduling and resources
 
 **\--parallel-start-limit** *N*
-:   Maximum concurrent service starts (`0` = unlimited, the default).
-    Useful on slow IO substrates to throttle parallel boot.
+:   Maximum number of concurrent service starts. *0* (the default)
+    means unlimited. Useful on slow storage, where many parallel
+    starts thrash the page cache.
 
 **\--parallel-start-slow-threshold** *duration*
-:   How long a service must remain in the *starting* state before it
-    is reported as slow. Default `10s`.
+:   How long a service must remain *starting* before it is reported
+    as slow. Slow services do not count against
+    **\--parallel-start-limit**. Default *10s*.
 
-**-S** *kind*, **\--sys** *kind*
-:   Override platform auto-detection. Accepted values match the set
-    detected by **pkg/platform**: `docker`, `lxc`, `podman`,
-    `systemd-nspawn`, `openvz`, `vserver`, `rkt`, `uml`, `wsl`,
-    `xen0`, `xenu`, `kvm`, `qemu`, `vmware`, `microsoft` (Hyper-V),
-    `oracle` (VirtualBox), `bochs`, or `none`. Mostly useful for
-    testing container-mode / VM-specific behaviour outside a real
-    environment.
+**-b** *path*, **\--cgroup-path** *path*
+:   Default cgroup base path. Relative cgroup paths in service files
+    are resolved against it. Linux only.
 
-**\--conf-dir** *dirs*
-:   Override the default conf.d overlay directories
-    (*/etc/slinit.conf.d* in system mode). Comma-separated; the
-    literal `none` disables overlays entirely.
+**-a** *list*, **\--cpu-affinity** *list*
+:   CPU affinity for the daemon and for services that do not set their
+    own **cpu-affinity**, as a kernel cpuset string such as *0-3* or
+    *0,2,4*.
 
-**\--watch-services-dir**
-:   Opt-in: watch every **\--services-dir** with **inotify**(7) and
-    auto-load a service when a new file appears (or is renamed in),
-    auto-unload it when the file is removed. Modified files are
-    logged; slinit's existing *(modified since loaded)* marker still
-    surfaces the change via `slinitctl status`. Services are loaded
-    but **not** auto-started (matches dinit's explicit-start model);
-    the operator can then `slinitctl start <name>`. Unload happens
-    only when the service is *STOPPED* — running services are left
-    loaded with a warning. Editor artefacts (dotfiles, `~`, `.swp`,
-    `.tmp`, `.new`, `.bak`) and `.d` overlay dirs are ignored. A
-    300 ms debounce window collapses rapid multi-event bursts (write
-    + close + rename) into a single dispatch per file. Inspired by
-    **runsvdir**(8)'s inotify rescan (runit 2.3.1+).
+**\--rlimits** *spec*
+:   Global resource limits applied to slinit and inherited by every
+    service that does not override them: *name*=*soft*[:*hard*],
+    comma-separated. See **slinit-service**(5).
+
+### Shutdown
+
+**\--shutdown-grace** *duration*
+:   SIGTERM→SIGKILL grace period during shutdown. Accepts Go duration
+    syntax (*3s*, *5000ms*, *1m*). Default *3s*.
+
+**\--emergency-timeout** *duration*
+:   Maximum time slinit waits for services to drain during shutdown
+    before flipping into the force-exit path (SIGKILL to any straggler,
+    then hand off to the reboot/halt/kexec syscall). Default *90s*.
+    Zero (the flag's zero-value on daemon start) falls through to the
+    default; negatives are treated the same. When the timer fires the
+    error log line names every still-blocking service in-line
+    (**"Services did not stop within Xs, forcing shutdown; still
+    blocking: docker (STOPPING, pid 1234), elogind (STOPPING, pid
+    5678)"**) so the operator doesn't have to correlate with the
+    periodic reporter that was scrolling past. Workloads with a heavy
+    stop cascade (docker + dbus + full systemd-style service graph)
+    can safely tune this up to **3m** or **5m**.
+
+**\--shutdown-final-sleep** *duration*
+:   Settle pause between the final SIGKILL wave and unmounting the
+    filesystems, e.g. *500ms*. Gives a slow storage stack time to
+    quiesce. Default *0* (disabled).
+
+**\--minimum-uptime-sec** *duration*
+:   Anti-boot-loop floor. If shutdown reaches slinit before the
+    system has been up *duration* seconds, slinit blocks the
+    shutdown until the floor is reached. Prevents tight
+    crash-restart loops from making the box unusable for
+    recovery. Real-value for telco / appliance workloads. Mirror
+    of systemd v261 **MinimumUptimeSec=**.
+
+**\--no-wall**
+:   Suppress **wall**(1)-style broadcasts to logged-in users at
+    shutdown.
+
+### Logging
+
+**\--log-level** *level*
+:   Minimum level for the main log facility. One of *debug*, *info*,
+    *notice*, *warn*, *error*. Default *info*.
+
+**\--console-level** *level*
+:   Minimum level for the console. Defaults to **\--log-level**;
+    overriding it keeps a detailed file log alongside a quieter console,
+    or the reverse.
+
+**-q**, **\--quiet**
+:   Suppress all but error output; equivalent to
+    **\--console-level=error**.
+
+**-l** *path*, **\--log-file** *path*
+:   Append log messages to *path* instead of the default target (the
+    console, or syslog in system mode). If the file cannot be opened,
+    a system-mode slinit continues with the default target; a user-mode
+    slinit exits with an error.
+
+**-1**, **\--console-dup**
+:   When **\--log-file** is set, also copy every log line to
+    */dev/console*. Useful for headless boots that need both a
+    persistent log and live console output.
+
+**\--catch-all-log** *path*
+:   Path of the catch-all log, which captures the output of services
+    that have no log target of their own. Default
+    */run/slinit/catch-all.log*.
+
+**-B**, **\--no-catch-all**
+:   Disable the catch-all logger.
+
+**\--timestamp-format** *format*
+:   Log timestamp format: *wallclock* (default), *iso*, *tai64n*
+    (s6-log style) or *none*.
 
 **\--stderr-ring-buffer-size** *bytes*, **\--stderr-ring-buffer-interval** *duration*
 :   Opt-in: capture the daemon's own recent log output in an
@@ -374,59 +388,7 @@ service-file format.
     period between ticks produces no output rather than repeating
     the previous dump.
 
-**\--heartbeat-interval** *duration*, **\--heartbeat-restart-window** *duration*
-:   Opt-in: emit a single grep-friendly summary line at each
-    *interval* with the supervisor's own health signals. Fields:
-    **active**, **failed**, **stopped**, **starting**, **stopping**
-    service counts; **restarts(N)** count over the sliding
-    *restart-window* (default 1m); **watchdog-misses** cumulative
-    counter; **rss** in kilobytes read from /proc/self/status.
-    0 (default) disables. Useful as a lightweight SLI feed for
-    monitoring systems that don't need to open the control socket
-    to check whether the supervisor is healthy.
-
-**\--active-profile** *name*
-:   Activate profile *name* at boot (runit *runsvchdir* analogue).
-    Services declaring **profile = *name*** (or **profile = ...,
-    *name*, ...** — see **slinit-service**(5)) become eligible
-    for the boot-service auto-start pass; services tagged with
-    other profiles are loaded but not started. Services with no
-    profile tag ("global infrastructure") are always eligible
-    regardless. The active profile can also be switched at
-    runtime via **slinitctl activate-profile**. Empty (default)
-    means no filter — every boot service starts as normal.
-
-**\--sentinel-dir** *dir*
-:   Opt-in: watch *dir* with **inotify**(7) for runit-compatible
-    sentinel files that, when armed with **+x**, drive slinit's own
-    shutdown surface out-of-band from the control socket. Recognized
-    filenames: **stopit** (halt), **reboot**, **poweroff**. A file
-    without the executable bit is treated as staged-but-unarmed —
-    the operator can prepare it in advance and flip `chmod +x` when
-    the trigger should fire (this matches **runit**(8)'s workflow).
-    Every trigger logs an audit line with the file owner's UID and
-    mtime before the file is unlinked, so a compliance regime that
-    requires forensic evidence of who requested a system state
-    change gets a durable filesystem-anchored record. Pre-existing
-    armed files are honoured at boot via an initial scan, so an
-    admin who dropped **reboot** while slinit was down still gets
-    the reboot when it comes back up. Empty (default) disables the
-    watcher — the vast majority of installations don't need this,
-    and the socket + signal surface already covers the common cases.
-    Intended for database servers, telco control planes, and other
-    workloads where the audit trail matters as much as the trigger.
-
-**\--persist-intent** *dir*
-:   Opt-in: persist pin transitions to *dir* so `slinitctl stop --pin
-    X` stays effective across a reboot. One file per service is
-    written atomically with contents `pinned-started` or
-    `pinned-stopped`; `slinitctl unpin` removes the file. At boot the
-    daemon replays these intents BEFORE the boot cascade so a service
-    marked pinned-stopped never briefly comes up first. Empty
-    (default) disables the feature — every hook site short-circuits
-    so runtime cost is zero when unused. Recommended value:
-    */var/lib/slinit/intent*. Inspired by s6-supervise's *wantup*/
-    *wantdown* files.
+### Observability
 
 **\--metrics-listen** *address*
 :   Serve Prometheus metrics at **/metrics** on *address*, which is
@@ -474,28 +436,18 @@ service-file format.
     body, no keep-alive — so that PID 1 does not have to carry
     **net/http**.
 
-**\--emergency-timeout** *duration*
-:   Maximum time slinit waits for services to drain during shutdown
-    before flipping into the force-exit path (SIGKILL to any straggler,
-    then hand off to the reboot/halt/kexec syscall). Default *90s*.
-    Zero (the flag's zero-value on daemon start) falls through to the
-    default; negatives are treated the same. When the timer fires the
-    error log line names every still-blocking service in-line
-    (**"Services did not stop within Xs, forcing shutdown; still
-    blocking: docker (STOPPING, pid 1234), elogind (STOPPING, pid
-    5678)"**) so the operator doesn't have to correlate with the
-    periodic reporter that was scrolling past. Workloads with a heavy
-    stop cascade (docker + dbus + full systemd-style service graph)
-    can safely tune this up to **3m** or **5m**.
+**\--heartbeat-interval** *duration*, **\--heartbeat-restart-window** *duration*
+:   Opt-in: emit a single grep-friendly summary line at each
+    *interval* with the supervisor's own health signals. Fields:
+    **active**, **failed**, **stopped**, **starting**, **stopping**
+    service counts; **restarts(N)** count over the sliding
+    *restart-window* (default 1m); **watchdog-misses** cumulative
+    counter; **rss** in kilobytes read from /proc/self/status.
+    0 (default) disables. Useful as a lightweight SLI feed for
+    monitoring systems that don't need to open the control socket
+    to check whether the supervisor is healthy.
 
-**\--log-level** *level*
-:   Minimum level for the main log facility (file or syslog). One of
-    `debug`, `info`, `notice`, `warn`, `error`. Default `info`.
-
-**\--console-level** *level*
-:   Minimum level for the console. Defaults to **\--log-level**;
-    overriding lets you keep a chatty file log while the console is
-    quieter (or vice-versa).
+### Hardware watchdog
 
 **\--watchdog-device** *path*
 :   Hardware watchdog character device to feed. When empty (the
@@ -520,12 +472,6 @@ service-file format.
     with a watchdog device present. Useful for development VMs and
     test rigs where a stuck slinit must NOT trigger a hardware
     reset.
-
-**\--version**
-:   Print the slinit version and exit.
-
-**\--help**
-:   Print a brief help text and exit.
 
 ## SPECIAL SERVICE NAMES
 

@@ -43,11 +43,11 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (~2400 tests across 84 Go dirs, 363 _test.go files)
+- **Unit tests**: `go test ./...` (~2400 tests across 84 Go dirs, 379 _test.go files)
 - **Functional tests**: `./tests/functional/run-tests.sh` (230 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (219 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (92 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
-- **Fuzz targets**: 42 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 15 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the four converters, the sysusers/tmpfiles/timedatectl/hostnamectl parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
+- **Fuzz targets**: 42 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 15 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the four converters, the sysusers/tmpfiles/timedatectl/hostnamectl/killall5 parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
 - **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker or `CONTAINER_RUNTIME=podman`) + `./tests/container/soak.sh` (spawn+shutdown loop; `SOAK_BUDGET_SEC` bounds it by wall time)
 - **Kubernetes**: `./tests/k8s/run.sh` (10 cases against a local `kind` cluster)
 - Requires `qemu-system-x86_64` for functional tests, Docker for the container suite, `kind` + `kubectl` for the Kubernetes one
@@ -73,9 +73,10 @@ go test ./...
   `slinit-init-maker`, `slinit-resource`).
 - `pkg/` - Core packages: `autofs`, `bootmode`, `catalog`, `checkpath`,
   `config`, `control`, `dissect`, `einfo`, `eventloop`, `features`,
-  `fstab`, `journal`, `journalbin`, `journald`, `logging`, `mounts`,
-  `pathwatch`, `persist`, `platform`, `process`, `recovery`, `rng`,
-  `seccomp`, `service`, `shutdown`, `snapshot`, `svcdirwatch`, `utmp`,
+  `fstab`, `hooks`, `journal`, `journalbin`, `journald`, `logging`,
+  `machine`, `metrics`, `mounts`, `network`, `pathwatch`, `persist`,
+  `platform`, `process`, `recovery`, `rng`, `seccomp`, `service`,
+  `shutdown`, `snapshot`, `svcdirwatch`, `switchroot`, `utmp`,
   `watchdog` (34 total; run `ls pkg/` for the live list).
 - `internal/util/` - Path and parsing utilities
 - `completions/` - Shell completions (bash, zsh, fish)

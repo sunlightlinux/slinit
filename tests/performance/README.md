@@ -35,7 +35,7 @@ Requires: `qemu-system-x86_64`. Run from repo root:
 `./tests/performance/demo/cold-boot.sh`
 
 Four harnesses shipped:
-- `cold-boot.sh` — full-demo boot (34 services, ~3020 ms median)
+- `cold-boot.sh` — boot of the full demo service set; reports median and p95
 - `minimal-boot.sh` — single-service boot for parity-comparison with
   dinit / runit / s6 published numbers
 - `fork-exec-throughput.sh` — N mock services (default N=50); per-svc

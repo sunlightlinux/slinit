@@ -41,14 +41,14 @@ target.
 
 # ACTIONS
 
-**-r**
+**-r**, **--reboot**
 :   Reboot. Default when invoked as **slinit-reboot**.
 
-**-h**
+**-h**, **--halt**
 :   Halt the system (CPU stopped, no power-off). Default when invoked
     as **slinit-halt**.
 
-**-p**
+**-p**, **--poweroff**
 :   Power off. Default action when invoked as **slinit-shutdown** or
     **slinit-poweroff**.
 

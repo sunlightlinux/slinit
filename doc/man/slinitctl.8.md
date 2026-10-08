@@ -195,10 +195,11 @@ daemon, which is useful at install time or in initramfs.
 :   List all loaded services and their state (started / stopped /
     starting / stopping / failed).
 
-**status** *service*
+**status** [**-l** | **\--long** | **\--full**] *service*
 :   Print a multi-line status block for *service*. Human-oriented: the
     wording, colours and alignment are free to change between releases.
-    Use **show** for anything a script reads.
+    Use **show** for anything a script reads. **-l** appends a
+    *Details:* block with the service's full configuration.
 
 **show** [**-l**] *service*
 :   Dump the service's full configuration and live state as
@@ -520,6 +521,26 @@ daemon, which is useful at install time or in initramfs.
         lost, and the next boot finds an unclean filesystem. Like
         **\--fast**, it cannot be scheduled, and in container mode it
         behaves as **now**.
+
+    Further options:
+
+    **-c**, **\--cancel**
+    :   Cancel a scheduled shutdown.
+
+    **\--status**
+    :   Print the pending scheduled shutdown, if any.
+
+    **-k**, **\--warn**
+    :   Broadcast the wall message only; nothing is scheduled. Without
+        **-m**, a default maintenance notice is sent.
+
+    **-m**, **\--message** *TEXT*
+    :   Wall message to broadcast. Words after *kind* and *time* are
+        also joined into the message, as with SysV **shutdown**.
+
+    **-i**, **\--interactive**
+    :   Ask for the host name and refuse to proceed unless it matches,
+        before anything is sent to the daemon.
 
 **halt** | **poweroff** | **reboot** | **kexec** | **softreboot**
 :   Top-level shortcuts equivalent to **shutdown** with the same
