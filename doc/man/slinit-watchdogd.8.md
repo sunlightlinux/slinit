@@ -74,15 +74,14 @@ plus-shutdown WDT lifecycle a real embedded deployment needs.
 
 # EXAMPLES
 
-Basic slinit service pinning the WDT with the defaults:
+Basic slinit service pinning the WDT with the defaults, as the
+service description */etc/slinit.d/watchdog-pet*:
 
-    watchdog-pet {
-        type = process
-        command = /sbin/slinit-watchdogd
-        restart = yes
-        restart-limit-count = 0
-        depends-on: system-init
-    }
+    type = process
+    command = /sbin/slinit-watchdogd
+    restart = yes
+    restart-limit-count = 0
+    depends-on: system-init
 
 Short-window embedded deployment (15 s reset, pet every 5 s):
 

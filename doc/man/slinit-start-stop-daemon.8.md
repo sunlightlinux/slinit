@@ -29,7 +29,9 @@ restart, and hardening.
 
 **-S**, **--start**
 :   Fork the requested binary. Refuses to start if a matching process
-    is already running (see **PROCESS MATCHING** below).
+    is already running (see **PROCESS MATCHING** below). Without
+    **--background** the tool waits for the child and exits with the
+    child's exit status.
 
 **-K**, **--stop**
 :   Send a signal to every matching process, optionally following an
@@ -37,7 +39,8 @@ restart, and hardening.
 
 **--status**
 :   Query whether a matching process is running. Prints matched PIDs
-    on stdout and exits **0** if any were found.
+    on stdout (unless **--quiet**) and exits **0** if any were found;
+    see **EXIT STATUS** for the other outcomes.
 
 # PROCESS MATCHING
 
@@ -91,6 +94,11 @@ When multiple are provided, a process must satisfy **all** of them.
 
 **-N**, **--nicelevel** *N*
 :   **setpriority**(2) applied post-fork.
+
+**--nicelevel**, **--oom-score-adj**, **--ionice** and **--scheduler**
+are applied by the parent to the child's PID right after the fork, on a
+best-effort basis: a failure is reported only with **--verbose** and
+does not stop the start.
 
 **--oom-score-adj** *N*
 :   Write /proc/*PID*/oom_score_adj. Value range **-1000** to **1000**.
@@ -215,20 +223,28 @@ child before **exec**(2) — a peer task cannot set them from outside.
 :   Print extra diagnostics on stderr.
 
 **-o**, **--oknodo**
-:   Return **0** instead of **1** when the operation was a no-op
-    (already running for **--start**, not running for **--stop**).
+:   Return **0** instead of **1** when **--start** finds the process
+    already running, and **0** instead of **5** when **--stop** finds
+    nothing to stop but the **--pidfile** still exists.
 
 # EXIT STATUS
 
-Following the Debian/LSB convention:
-
-- **0**: success
-- **1**: already running (for **--start**) or not running (for **--status**)
+- **0**: success. **--stop** also returns 0 when nothing matched and
+  no **--pidfile** exists (or none was given). **--status**: a matching
+  process is running.
+- **1**: **--start** found the process already running. **--status**:
+  not running, but the **--pidfile** exists.
 - **2**: syntax / bad usage
-- **3**: unimplemented feature or **--status** target not found
-- **4**: insufficient privileges or spawn failure
-- **5**: **--stop** invoked with a **--pidfile** whose target is gone
+- **3**: **--status**: not running and no pidfile.
+- **4**: **/proc** could not be scanned, the spawn failed, or **--stop**
+  could not signal a process or it did not exit within the last
+  **--retry** step.
+- **5**: **--stop** found nothing to stop but the **--pidfile** exists
   (stale pidfile). Use **--oknodo** to reduce this to **0**.
+
+Without **--background**, **--start** exits with the child's own status
+once it terminates. A failed **--notify** readiness wait has its own
+non-zero status.
 
 # INTEROP NOTES
 

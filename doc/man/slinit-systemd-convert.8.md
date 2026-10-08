@@ -22,39 +22,59 @@ service, socket to **socket-listen** on the target service, path to
 **start-on-path-\*** directives, mount to **slinit-mount**(8), target
 to a **type = internal** aggregate. Convert those by hand.
 
-The converter recognises the [Unit], [Service], and [Install]
-section vocabulary that maps onto slinit: **Description**,
-**ExecStart**, **ExecStop**, **ExecStartPre**, **ExecStartPost**,
-**Type**, **Restart**, **RestartSec**, **User**/**Group**,
-**Environment**/**EnvironmentFile**, **WorkingDirectory**,
-**PIDFile**, **RemainAfterExit**, **KillMode**, **KillSignal**,
-**TimeoutStartSec** / **TimeoutStopSec**, **Nice**,
-**OOMScoreAdjust**, **LimitNPROC**/**LimitNOFILE**/etc.,
-**Requires** / **Wants** / **After** / **Before**,
-**WantedBy** / **RequiredBy**, and the sandbox hardening surface
-(**NoNewPrivileges**, **ProtectSystem**, **ProtectHome**,
-**PrivateTmp**, **PrivateDevices**, the whole **Protect*** and
-**Restrict*** family). Directives with no slinit equivalent are
-listed on stderr under **--verbose**.
+The converter recognises the [Unit], [Service] and [Install] keys that
+have a slinit counterpart, among them **Description**, **Type**
+(**simple**/**exec** → **process**, **forking** → **bgprocess**,
+**oneshot** → **scripted**), **ExecStart**, **ExecStop**,
+**ExecStartPre**, **ExecStartPost**, **Restart**,
+**RestartSec**, **User** / **Group** (merged into **run-as**),
+**EnvironmentFile**, **WorkingDirectory**, **RootDirectory**,
+**PIDFile**, **KillSignal**, **TimeoutSec** / **TimeoutStartSec** /
+**TimeoutStopSec**, **Nice**, **OOMScoreAdjust**, **UMask**,
+**LimitNOFILE** / **LimitCORE** / **LimitDATA** / **LimitAS**, the
+service directories (**RuntimeDirectory** and its siblings),
+**Slice**, **Delegate**, the **Condition\*** keys slinit has,
+**NoNewPrivileges**, **PrivateTmp**, **ProtectSystem**,
+**ProtectHome**, the **ProtectKernel\***, **ProtectClock** and
+**ProtectControlGroups** family, **SystemCallFilter**,
+**RestrictAddressFamilies** (allow-lists only) and
+**RestrictNamespaces** (**yes** / **no** only).
+
+Dependencies: **Requires** becomes **depends-on**; **Wants** and
+**After** become **waits-for**; references to **.target** units are
+dropped with a note, since slinit has no targets. **Before** cannot be
+mapped and is warned about; **WantedBy** / **RequiredBy** produce a
+note suggesting **slinitctl enable**.
+
+Not carried over, and reported: inline **Environment=** (slinit takes
+an **EnvironmentFile** only), **ExecReload** (slinit's reload is a
+signal — see **reload-signal**), **ExecStopPost**, **WatchdogSec**,
+**LoadCredential** / **SetCredential** / **ImportCredential**,
+**CapabilityBoundingSet** / **AmbientCapabilities**,
+**PrivateDevices**, **PrivateNetwork**, **RestrictSUIDSGID**, and any
+other key the converter does not know — **KillMode**,
+**RemainAfterExit** and **LimitNPROC** among them. Notes and warnings are printed only with
+**--verbose**.
 
 Single-input mode writes to standard output. Batch mode
 (**--output-dir**) writes one file per input into *DIR*, named
-after the input basename with the *.service* suffix stripped.
+after the input basename with the *.service* (and any trailing *.in*)
+suffix stripped.
 
 # FLAGS
 
 **-output-dir** *DIR*
-:   Batch mode: write one slinit file per input into *DIR*. Without
-    this flag, output goes to stdout and only one unit may be passed
-    at a time.
+:   Batch mode: write one slinit file per input into *DIR*, which is
+    created if missing. Without this flag, output goes to stdout and
+    only one unit may be passed at a time.
 
 **-dry-run**
-:   Print what would be written without touching the filesystem.
+:   With **-output-dir**: print each file that would be written, on
+    stderr, without touching the filesystem.
 
 **-verbose**
-:   Print per-service conversion notes to stderr — mapped directives,
-    dropped directives, hardening flags that required a **slinit-
-    runner** post-fork execve, and any manual-follow-up TODOs.
+:   Print per-service conversion notes to stderr — dropped directives,
+    dropped target dependencies, and manual follow-ups.
 
 # EXAMPLES
 
@@ -72,8 +92,8 @@ staging area for review:
 
 Preview a bulk conversion:
 
-    slinit-systemd-convert --dry-run --verbose \
-      /usr/lib/systemd/system/*.service
+    slinit-systemd-convert --output-dir=/tmp/staging --dry-run \
+      --verbose /usr/lib/systemd/system/*.service
 
 # EXIT STATUS
 
@@ -81,10 +101,12 @@ Preview a bulk conversion:
 :   All requested conversions completed.
 
 **1**
-:   One or more inputs could not be read or parsed.
+:   No input, several inputs without **-output-dir**, the output
+    directory could not be created, or one or more inputs could not be
+    read, parsed or written — a non-**.service** unit included.
 
 **2**
-:   Usage error, or a non-**.service** unit was passed.
+:   Unknown flag.
 
 # SEE ALSO
 

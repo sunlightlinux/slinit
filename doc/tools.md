@@ -119,35 +119,33 @@ dependency references, dependency cycles and depth limits.
 
 ### slinit-monitor
 
-Subscribes to the daemon's SERVICEEVENT / ENVEVENT stream and runs a
-command for every change. Substitutions: `%n` (name), `%s` (status text
-— `started`/`stopped`/`failed` for services, `set`/`unset` for env),
+Subscribes to the daemon's service-event or environment-event stream and
+runs a command for every change. Substitutions: `%n` (name), `%s` (status
+text — `started`/`stopped`/`failed` for services, `set`/`unset` for env),
 `%v` (env-var value, `-E` mode only), `%%` (literal percent).
 
+The command is **not** run through a shell: it is split on whitespace,
+with double quotes grouping words, so `&&`, `|`, `>>` or `[ … ]` would be
+passed through as plain arguments. Filtering and redirection belong in a
+script, or in an explicit `sh -c` that receives `%n` / `%s` as arguments.
+
 ```bash
-# 1. Alert on failure of a specific critical service.
-#    The shell test filters — slinit-monitor runs the command on every
-#    transition; %s carries the resulting state.
-slinit-monitor -c '[ "%s" = failed ] && \
-    logger -p daemon.alert -t slinit "svc %n entered FAILED"' \
-    postgres
+# 1. Alert when a critical service fails. The handler filters, because
+#    slinit-monitor runs the command on every transition:
+#      /usr/local/libexec/svc-alert:
+#        #!/bin/sh
+#        [ "$2" = failed ] && logger -p daemon.alert -t slinit "$1 entered FAILED"
+slinit-monitor -c '/usr/local/libexec/svc-alert %n %s' postgres
 
-# 2. Same idea via a webhook to the ops channel.
-slinit-monitor -c '[ "%s" = failed ] && \
-    curl -sS -X POST -d "%n went red" https://hooks.example/ops' \
-    nginx redis postgres
-
-# 3. Auto-remediation — restart a fallback svc when the primary drops.
-slinit-monitor -c '[ "%s" = stopped ] && slinitctl start nginx-standby' \
+# 2. The same filter inline, with sh -c taking the name and status as $1 and $2.
+slinit-monitor -c 'sh -c "test $2 = stopped && slinitctl start nginx-standby" _ %n %s' \
     nginx
 
-# 4. Fire once when a service reaches started, then exit.
-#    Useful as a boot-time gate in shell scripts.
-slinit-monitor -i -e -c 'true' database
+# 3. Report a service's current state, then exit at its next change.
+slinit-monitor -i -e -c 'echo database is %s' database
 
-# 5. Env-var watcher — mirror runtime env changes into an audit file.
-slinit-monitor -E -c 'printf "%%s %n=%v\n" "$(date -Is)" >> \
-    /var/log/slinit-env.log'
+# 4. Env-var watcher — hand every runtime env change to an audit script.
+slinit-monitor -E -c '/usr/local/libexec/env-audit %n %s %v'
 ```
 
 ### slinit-journalctl
@@ -289,7 +287,7 @@ slinit-runit-convert --output-dir=/etc/slinit.d --verbose /etc/sv/*
 
 # Preview + enable-map: also print `slinitctl enable` for services
 # that were enabled under runit (/var/service symlinks)
-slinit-runit-convert --dry-run --enable-map /etc/sv/*
+slinit-runit-convert --output-dir=/etc/slinit.d --dry-run --enable-map /etc/sv/*
 ```
 
 ### slinit-openrc-convert
@@ -298,8 +296,9 @@ Port an OpenRC `/etc/init.d/*` script to a slinit service file.
 Two paths: (1) variable-only scripts (`command=`, `pidfile=`,
 `depend()`, no custom `start()`/`stop()`) become self-contained
 slinit files with no runtime openrc-run dependency; (2) scripts
-with custom shell functions (the common case) get wrapped as
-`command = /usr/sbin/openrc-run <script> start`, preserving every
+with custom shell functions (the common case) become `scripted`
+services wrapped as `command = /usr/sbin/openrc-run <script> start`
+(and `stop-command = … stop`), preserving every
 `ebegin`/`einfo`/`start-stop-daemon` call. `depend()` verbs map:
 `need` → `depends-on:`, `use`/`after` → `waits-for:`; `before`
 warns (invert on the target); `provide`/`keyword` note the
@@ -314,24 +313,26 @@ slinit-openrc-convert /etc/init.d/dbus
 slinit-openrc-convert --output-dir=/etc/slinit.d --enable-map /etc/init.d/*
 
 # Override the wrapper (default: /usr/sbin/openrc-run)
-slinit-openrc-convert --wrapper=/usr/bin/slinit-openrc-shim /etc/init.d/*
+slinit-openrc-convert --output-dir=/etc/slinit.d \
+    --wrapper=/usr/bin/slinit-openrc-shim /etc/init.d/*
 ```
 
 ### slinit-systemd-convert
 
-Port a systemd `.service` unit to a slinit service file. Section-
-aware INI parser handles `\`-line continuation, and ~40 [Unit] +
-[Service] + [Install] directives are mapped. `Type=` maps as
+Port a systemd `.service` unit to a slinit service file. The
+section-aware INI parser handles `\`-line continuation. `Type=` maps as
 `simple`/`exec` → `process`, `forking` → `bgprocess`, `oneshot` →
-`scripted`; `Restart=` collapses systemd's 5 values into slinit's 3
-(no/yes/on-failure) with ambiguous cases warned. `User`+`Group`
-merge into `run-as = user:group`. Hardening directives (`Private*`,
-`Protect*`, `Restrict*`, `SystemCall*`) produce NOTEs naming the
-equivalent slinit directive. Dep names normalise — strips
-`.service`, `.target`, `.socket`, `.path`, `.mount`, `.timer`,
-`.swap`, `.device` so slinit sees bare names. Timer / socket /
-path / mount / target units are rejected at the guard — those
-need slinit-native equivalents, not mechanical translation.
+`scripted`; `Restart=` collapses systemd's values into slinit's
+`no`/`yes`/`on-failure`, with ambiguous cases noted. `User` + `Group`
+merge into `run-as = user:group`. Hardening directives slinit
+implements under the same vocabulary (`PrivateTmp`, `ProtectSystem`,
+`ProtectHome`, `ProtectKernel*`, `SystemCallFilter`, …) are translated
+directly; the rest (`PrivateDevices`, `PrivateNetwork`,
+`RestrictSUIDSGID`, …) are reported. Dependency names lose their
+`.service`, `.socket`, `.path`, `.mount`, `.timer`, `.swap` or `.device`
+suffix; references to `.target` units are dropped with a note. Timer /
+socket / path / mount / target unit files are rejected — those need
+slinit-native equivalents, not mechanical translation.
 
 ```bash
 # Single unit to stdout
@@ -380,12 +381,13 @@ slinit-tmpfiles --dry-run
 
 ### slinit-logouthookd
 
-Persistent daemon that writes UTMPX `DEAD_PROCESS` records when tty /
-pty sessions end. Login programs (agetty, sshd, su) can drop a session
-descriptor onto its Unix socket and forget about it — the daemon
-watches the session, and once the last process on that line is gone,
-it writes the logout record so `who`, `w`, and `last` stay accurate
-without every login shell needing a private hook.
+Persistent daemon that writes a UTMPX `DEAD_PROCESS` record when a
+login session ends. A root-owned helper in the login path connects to
+its Unix socket, sends one `ID LINE` line, and leaves the connection
+open across the exec of the user's shell; when the shell exits and the
+connection closes, the daemon clears that utmp entry so `who` and `w`
+stay accurate. Only utmp is updated, not wtmp. Nothing connects unless
+the login stack is wired to do so.
 
 ```bash
 # Standard invocation (as a slinit service — usually a `type = process`).

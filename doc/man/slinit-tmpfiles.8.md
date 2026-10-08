@@ -12,23 +12,20 @@ slinit-tmpfiles - declarative /run and /var bootstrap
 
 # DESCRIPTION
 
-**slinit-tmpfiles** applies **systemd-tmpfiles.d**(5) directives at
-boot to create files, directories, symlinks, character/block
-devices, and pipes on volatile filesystems (*/run*, */var/run*,
-*/tmp*) or persistent ones (*/var*). Reads config from
-*/usr/lib/tmpfiles.d/\*.conf*, */etc/tmpfiles.d/\*.conf*, and
-*/run/tmpfiles.d/\*.conf* by default with later directories
-overriding earlier ones by basename.
+**slinit-tmpfiles** applies a subset of **systemd-tmpfiles.d**(5)
+directives at boot to create and adjust files, directories and
+symlinks on volatile filesystems (*/run*, */tmp*) or persistent ones
+(*/var*). Reads config from */usr/lib/tmpfiles.d/\*.conf*,
+*/etc/tmpfiles.d/\*.conf* and */run/tmpfiles.d/\*.conf* by default.
+When the same basename exists in more than one directory, the one in
+the later directory of that list wins (so */run* overrides */etc*,
+unlike systemd). Files are applied in alphabetical order of their
+basenames.
 
 Where **slinit-checkpath**(8) is a *repair* tool (fix permissions
 on an existing path), **slinit-tmpfiles** is a *creation* tool:
 declare a path with mode + owner + type once in a *.conf*, and it
 appears at every boot. The two are complementary.
-
-Idempotent by design — running twice produces the same result. On
-persistent filesystems where a file already exists at the target
-path, most directives (**f**, **d**) leave the content alone and
-just fix mode/owner; **F** / **D** truncate and recreate.
 
 # CONFIG FORMAT
 
@@ -36,37 +33,50 @@ Each line is one directive:
 
     TYPE  PATH  MODE  UID  GID  AGE  ARG
 
-Common directive types (subset shipped in slinit):
+Fields may be double-quoted to contain spaces. Missing fields, or
+**-**, take the defaults: mode **0644** (for directories too), owner
+**root** (UID 0) and group GID 0. *UID* and *GID* may be numbers or
+names; names are looked up in */etc/passwd* and */etc/group* directly,
+and an unknown name makes the whole file fail to parse. *AGE* is
+accepted and ignored — no age-based cleanup is performed. Type
+modifiers (**!**, **+**, **=**, **-**) are accepted and ignored.
 
-**f** *path* *mode* *uid* *gid* *age* *arg*
-:   Create a regular file with *arg* as content if the file does
-    not exist. Leaves existing files alone.
+Supported types:
 
-**F** *path* *mode* *uid* *gid* *age* *arg*
-:   Same as **f** but truncates + rewrites if the file already
-    exists.
+**f** *path* *mode* *uid* *gid* *age*
+:   Create an empty regular file if it does not exist; if it exists,
+    only set its mode and owner. *ARG* is **not** written.
+
+**F** *path* *mode* *uid* *gid* *age*
+:   Create the file, or truncate it to zero length if it exists, then
+    set the owner. *ARG* is **not** written.
 
 **d** *path* *mode* *uid* *gid* *age*
-:   Create a directory. Leaves an existing directory alone (fixes
-    mode/owner).
+:   Create the directory, and any missing parents, then set its mode
+    and owner (also when it already exists).
 
 **D** *path* *mode* *uid* *gid* *age*
-:   Create a directory + wipe its contents at boot.
+:   Remove the directory and everything in it, then create it as
+    **d** does.
 
-**L** *path* — *arg*
-:   Create *path* as a symlink pointing at *arg*.
+**L** *path* — — — — *arg*
+:   Create *path* as a symlink pointing at *arg*. An existing *path*
+    is left untouched.
 
 **w** *path* — — — — *arg*
-:   Write *arg* into *path* (append). *path* must already exist —
-    typically used to poke a sysctl or a proc/sysfs knob.
+:   Write *arg* to *path*, replacing its contents (the file is created
+    with mode 0644 if missing) — typically used to poke a proc or
+    sysfs knob.
 
-**e** *path* *mode* *uid* *gid* *age*
-:   Adjust an existing path's attributes (mode/uid/gid); do NOT
-    create.
+**r** *path*, **R** *path*
+:   Remove *path*; **R** removes a directory recursively. A missing
+    path is not an error.
 
-Missing fields at end-of-line are treated as **-** (default). Age
-is a duration parseable by **time.ParseDuration**; blank / **-**
-disables age-based cleanup.
+**z** *path* *mode* *uid* *gid*, **Z** *path* *mode* *uid* *gid*
+:   Set the mode and owner of an existing path; **Z** applies them
+    recursively to everything below a directory.
+
+Any other type is an error for that line.
 
 # OPTIONS
 
@@ -75,8 +85,8 @@ disables age-based cleanup.
     defaults.
 
 **\--dry-run**
-:   Print the actions that would be applied without executing
-    them.
+:   Print each entry as **would** *TYPE* *PATH* without executing
+    anything.
 
 **-h**, **\--help**
 :   Print a usage summary and exit.
@@ -87,12 +97,12 @@ disables age-based cleanup.
 :   All directives applied successfully.
 
 **1**
-:   At least one directive failed. The error is written to stderr
-    with the failing file + directive; other directives are still
-    attempted.
+:   At least one directive failed, or a file could not be parsed (that
+    whole file is then skipped). Each error is written to stderr;
+    other directives and files are still attempted.
 
 **2**
-:   Bad **\--dirs** value or unrecognised option.
+:   Unrecognised option.
 
 # EXAMPLES
 
@@ -100,7 +110,7 @@ Bootstrap a service's runtime directory at boot:
 
     # /usr/lib/tmpfiles.d/myapp.conf
     d /run/myapp        0755 myapp myapp -
-    f /run/myapp/state  0644 myapp myapp - initial-content
+    f /run/myapp/state  0644 myapp myapp -
     L /var/log/myapp    -    -     -     - /var/log/myapp.d/current
 
 Poke a sysctl-style knob without shelling out:

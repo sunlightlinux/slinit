@@ -41,7 +41,9 @@ is the mountpoint.
 
 # REGEX FILTERS
 
-All regexes are POSIX-extended (Go's **regexp**). **--skip-** variants
+All regexes use Go's **regexp** (RE2) syntax, which for ordinary
+patterns reads like POSIX extended regular expressions; back-references
+are not supported. Patterns are unanchored. **--skip-** variants
 exclude any entry that matches.
 
 **-f**, **--fstype-regex** *REGEX*  /  **-F**, **--skip-fstype-regex** *REGEX*
@@ -88,6 +90,10 @@ Non-standard, but useful for automated testing:
 :   Read the fstab from *PATH* instead of **/etc/fstab** (only used
     when a netdev filter is active).
 
+**-q**, **--quiet**, **-v**, **--verbose**
+:   Accepted for OpenRC compatibility and ignored; use **EINFO_QUIET**
+    to suppress output.
+
 # ENVIRONMENT
 
 **EINFO_QUIET** — when set to a truthy value (**yes**, **1**,
@@ -98,8 +104,10 @@ reflects whether any entry matched. Same convention as
 # EXIT STATUS
 
 - **0**: at least one entry matched
-- **1**: no matches
-- **2**: syntax / bad usage
+- **1**: no matches, or the mount table (or, with a netdev filter, an
+  existing fstab) could not be read
+- **2**: syntax / bad usage, including an invalid regex or a relative
+  positional path
 
 # EXAMPLES
 

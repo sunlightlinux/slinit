@@ -461,23 +461,22 @@ slinit-nuke -9                   # skip TERM, SIGKILL immediately
 
 ## slinit-monitor (Event Watcher)
 
-Real-time service event monitoring with optional command execution.
+Runs a command every time a named service changes state, or every time
+the global environment changes. A command (`-c`) is required, and in
+service mode so is at least one service name.
 
 ```bash
-# Watch all service events
-slinit-monitor
+# Run a command on each state change of two services (%n=name, %s=status)
+slinit-monitor -c 'echo "Service %n changed to %s"' hello ticker
 
-# Watch and execute a command on each event (%n=name, %s=status, %v=event)
-slinit-monitor -c 'echo "Service %n changed to %s (%v)"'
+# Also report the current state at startup
+slinit-monitor --initial -c 'echo "%n is %s"' hello
 
-# Watch with initial state dump
-slinit-monitor --initial
+# Watch environment changes (%v = the new value)
+slinit-monitor --env -c 'echo "%n %s %v"'
 
-# Watch environment changes
-slinit-monitor --env
-
-# Exit after first event
-slinit-monitor --exit
+# Exit after the first change
+slinit-monitor --exit -c 'echo "%n is now %s"' hello
 ```
 
 ## Dependency Graph

@@ -31,7 +31,7 @@ tooling. Typical uses are:
   failure event.
 
 By default, **slinit-monitor** runs forever, firing *COMMAND* once per
-event. Use **--exit** to make it exit after the first command run.
+event. Use **--exit** to make it exit after the first event.
 
 # MODES
 
@@ -39,21 +39,22 @@ event. Use **--exit** to make it exit after the first command run.
 
 Each positional argument is a service name. **slinit-monitor** loads
 each service to obtain a control-protocol handle, then subscribes to
-its event stream. Event types reported:
+its event stream. Every event runs *COMMAND*; **%s** is set as
+follows:
 
-- **started** — the service reached the started state.
-- **stopped** — the service reached the stopped state.
-- **failed** — the service failed to start.
-- **start-cancelled** — a pending start was cancelled.
-- **stop-cancelled** — a pending stop was cancelled.
-- **pressure-memory** — cgroup v2 memory PSI crossed the threshold
-  set via **memory-pressure-watch** / **memory-pressure-threshold**.
-  Fires whenever the *some* avg-window value exceeds the threshold
-  within a 2-second polling window; no repeat suppression, so a
-  service that stays under pressure fires every window until it
-  drops back.
-- **pressure-cpu** — analogous for CPU PSI (**cpu-pressure-\***).
-- **pressure-io** — analogous for IO PSI (**io-pressure-\***).
+| Event | **%s** |
+|---|---|
+| the service reached the started state | **started** |
+| the service reached the stopped state | **stopped** |
+| the service failed to start | **failed** |
+| a pending start was cancelled | **stopped** |
+| a pending stop was cancelled | **started** |
+| memory, CPU or IO pressure (PSI) crossed the threshold set by **memory-pressure-\***, **cpu-pressure-\*** or **io-pressure-\*** | **unknown(5)**, **unknown(6)** or **unknown(7)** respectively |
+
+The pressure events fire whenever the *some* avg-window value exceeds
+the threshold within a 2-second polling window; there is no repeat
+suppression, so a service that stays under pressure fires every window
+until it drops back.
 
 ## Environment mode (**-E**)
 
@@ -74,6 +75,7 @@ Before *COMMAND* is executed, the following placeholders are replaced:
 **%s**
 :   Status text. Defaults are **started**, **stopped**, **failed**,
     **set**, **unset**; override via the **--str-...** options below.
+    See **MODES** for which text each event produces.
 
 **%v**
 :   Variable value (env mode only; empty for unsets and in service
@@ -83,9 +85,14 @@ Before *COMMAND* is executed, the following placeholders are replaced:
 :   A literal **%** sign.
 
 The result is split on unquoted whitespace; double-quoted segments are
-preserved as a single argument. **slinit-monitor** does **not** spawn
-a shell — quote your command accordingly, or wrap it in
-**sh -c "..."**.
+preserved as a single argument (the quotes themselves are removed, and
+there is no escape character, so a double quote cannot appear inside
+an argument). Single quotes have no special meaning. **slinit-monitor**
+does **not** spawn a shell: shell syntax such as **&&**, **|** or
+**[ ... ]** is passed to the command as plain arguments. Put any logic
+in a script and call that, passing **%n** and **%s** as arguments.
+
+A command that fails is reported on stderr; monitoring continues.
 
 # OPTIONS
 
@@ -98,27 +105,33 @@ a shell — quote your command accordingly, or wrap it in
 **-i**, **--initial**
 :   Fire *COMMAND* once for the **current** state at startup, before
     waiting for events. In service mode this delivers each service's
-    state right after the load. In env mode it walks the global
-    environment table.
+    state right after the load: **%s** is the started text when the
+    service is started and the stopped text in every other state. In
+    env mode it walks the global environment table, reporting each
+    variable as **set**.
 
 **-e**, **--exit**
-:   Exit after the first command run. Combined with **--initial**, this
-    yields a one-shot "fetch current state and report".
+:   Exit after the first event has run *COMMAND*. The commands run by
+    **--initial** do not count, so **--initial --exit** reports the
+    current state and then waits for one change.
 
 **-s**, **--system**
 :   Use the system socket (*/run/slinit.socket*).
 
 **-u**, **--user**
-:   Use the per-user socket (default *~/.slinitctl*).
+:   Use the per-user socket, *~/.slinitctl*. Without **-s**, **-u** or
+    **-p**, root uses the system socket and other users the per-user
+    one.
 
 **-p**, **--socket-path** *PATH*
 :   Override the control socket path explicitly.
 
 **--str-started** *TEXT*
-:   Replace the default text emitted as **%s** for **started** events.
+:   Replace the default text emitted as **%s** for **started** and
+    stop-cancelled events.
 
 **--str-stopped** *TEXT*
-:   Same, for **stopped** and **stop-cancelled** events.
+:   Same, for **stopped** and start-cancelled events.
 
 **--str-failed** *TEXT*
 :   Same, for **failed** events.
@@ -146,10 +159,10 @@ Reload a downstream consumer when DATABASE_URL is set or unset:
 slinit-monitor -E -c '/usr/local/bin/reconfigure %n %s' DATABASE_URL
 ```
 
-Wait for **postgres** to become **started**, then exit:
+Report **postgres**'s current state, then exit at its next change:
 
 ```
-slinit-monitor --initial --exit -c 'true' postgres
+slinit-monitor --initial --exit -c 'echo postgres is %s' postgres
 ```
 
 Run a recovery script the first time **worker** fails:
@@ -164,11 +177,14 @@ slinit-monitor --exit \
 
 **0**
 :   Normal exit (only reachable with **--exit**, when an event has
-    been observed and the command finished).
+    been observed and the command finished). A failing *COMMAND* does
+    not change the exit status.
 
 **1**
-:   Connection error, version-handshake failure, or a fatal usage
-    problem (no services in service mode, no command, etc.).
+:   Connection error (including the daemon closing the connection),
+    version-handshake failure, a service that cannot be loaded, or a
+    usage problem (no services in service mode, no command, unknown
+    option, etc.).
 
 # SEE ALSO
 

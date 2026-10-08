@@ -13,43 +13,63 @@ slinit-runit-convert - port a runit service directory to a slinit service file
 # DESCRIPTION
 
 **slinit-runit-convert** reads one or more runit service directories
-(the *./run*, *./finish*, *./conf* set under */etc/sv/*\ *name*) and
-emits equivalent slinit service files. The intended workflow is a
-one-time port during migration: run once per svdir, review the
-generated file, remove the runit svdir.
+(*/etc/sv/*\ *name*) and emits equivalent slinit service files. The
+intended workflow is a one-time port during migration: run once per
+svdir, review the generated file, remove the runit svdir.
 
-The converter recognises the runit vocabulary that maps 1:1 onto
-slinit directives (**./run** → **command**, **./finish** →
-**finish-command**, **./log/run** → **log-processor**,
-**./conf** → **env-file**, **down** marker → **manual = yes**,
-**./control/\*** → **control-command-\*** map, **chpst -u** →
-**run-as**, **chpst -e** → **env-dir**, **chpst -/** → **chroot**).
+Each svdir becomes a **process** service with **restart = yes**,
+**restart-delay = 1** and **working-dir** set to the svdir (runsv runs
+*./run* from there). The files in the svdir map as follows:
 
-Single-input mode writes to standard output. Batch mode
-(**--output-dir**) writes one file per input into *DIR*, named
-after the input svdir's basename.
+| runit | slinit |
+|---|---|
+| *run* | **command**: the daemon line of the script, with a bare command name resolved through **PATH** |
+| *finish* | **finish-command = /bin/sh** *svdir*/finish |
+| *check* | **ready-check-command = /bin/sh** *svdir*/check |
+| *down* | **manual = yes** |
+| *conf* | **env-file** |
+| *log/run* | a companion service *name*-log with **consumer-of** *name*, and **log-type = pipe** on the primary |
+| *control/\** | not mapped; each script produces a warning |
+| `sv check DEP` in *run* | **waits-for: DEP** |
+
+**chpst** options in the *run* script map where slinit has an
+equivalent: **-u** → **run-as**, **-b** → argv[0], **-e** → **env-file**
+(with a warning, since runit's directory of files is a different
+format), **-d** / **-m** → **rlimit-data**, **-o** → **rlimit-nofile**,
+**-c** → **rlimit-core**, **-/** → **chroot**, **-C** → **working-dir**,
+**-l** / **-L** → **lock-file**, **-P** → **new-session**, **-0**,
+**-1**, **-2**, **-N** → **close-stdin** / **-stdout** / **-stderr**.
+**-U**, **-n**, **-A**, **-p**, **-f**, **-r**, **-t**, **-F** and
+**-I** are reported as not mapped.
+
+Single-input mode writes to standard output, the companion log
+service (if any) following the primary after a separator comment.
+Batch mode (**--output-dir**) writes one file per service into *DIR*,
+named after the svdir's basename (and *name*-log).
+
+Warnings and notes are printed only with **-verbose**.
 
 # FLAGS
 
 **-output-dir** *DIR*
-:   Batch mode: write one slinit file per input into *DIR*. Without
-    this flag, output goes to stdout and only one svdir may be
-    passed at a time.
+:   Batch mode: write the slinit files into *DIR*, which is created if
+    missing. Without this flag, output goes to stdout and only one
+    svdir may be passed at a time.
 
 **-dry-run**
-:   Print what would be written without touching the filesystem.
+:   With **-output-dir**: print each file that would be written, on
+    stderr, without touching the filesystem.
 
-**-enable-map** *slinitctl-command*
-:   Check */var/service/*\ *name* symlink for each input; when the
-    symlink exists (i.e. runit had it enabled), suggest a **slinitctl
-    enable** command on stderr so the operator knows which converted
-    services to auto-start. Argument is the exact CLI verb — defaults
-    to **slinitctl enable**.
+**-enable-map**
+:   For each converted svdir whose name has a */var/service/*\ *name*
+    symlink (runit had it enabled), print a **slinitctl enable** *name*
+    line on stderr at the end, so the operator knows which converted
+    services to auto-start.
 
 **-verbose**
 :   Print per-service conversion notes to stderr — which runit files
-    mapped to which slinit directives, and anything that had to be
-    dropped.
+    and **chpst** options could not be mapped, and which dependencies
+    were inferred.
 
 # EXAMPLES
 
@@ -64,8 +84,8 @@ Bulk-convert every runit svdir into a slinit config directory:
 
 Preview a bulk conversion with enable-mapping suggestions:
 
-    slinit-runit-convert --dry-run --verbose \
-      --enable-map='slinitctl enable' /etc/sv/*
+    slinit-runit-convert --output-dir=/etc/slinit.d --dry-run \
+      --verbose --enable-map /etc/sv/*
 
 # EXIT STATUS
 
@@ -73,11 +93,12 @@ Preview a bulk conversion with enable-mapping suggestions:
 :   All requested conversions completed.
 
 **1**
-:   One or more svdirs could not be read (missing *./run*, permission
-    denied, unreadable helper file).
+:   No input, several inputs without **-output-dir**, the output
+    directory could not be created, or one or more svdirs could not be
+    read (missing *./run*, permission denied) or written.
 
 **2**
-:   Usage error.
+:   Unknown flag.
 
 # SEE ALSO
 

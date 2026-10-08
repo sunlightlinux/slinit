@@ -43,8 +43,11 @@ daemon.
 
 **-K**, **--stop**
 :   Read the supervisor pidfile, deliver **SIGTERM**, and wait for
-    the supervisor to exit. The supervisor's own shutdown path kills
-    the daemon and cleans both pidfiles.
+    the supervisor to exit (30 seconds, or the total of the **--retry**
+    timeouts given here); if it is still alive then, it is sent
+    **SIGKILL**. The supervisor's own shutdown path stops the daemon
+    and cleans both pidfiles. Sending **SIGHUP** to the supervisor
+    forwards it to the daemon.
 
 **-s**, **--signal** *SIG*
 :   Deliver *SIG* directly to the supervised daemon (via
@@ -135,8 +138,10 @@ Go's **time.ParseDuration** style (**500ms**, **2h**).
 # STOP ESCALATION
 
 **-R**, **--retry** *SPEC*
-:   Retry schedule applied when the supervisor's shutdown path signals
-    the daemon. Two forms:
+:   Given with **--start**, the schedule the supervisor uses to stop
+    the daemon when it is told to shut down. Given with **--stop**, it
+    only sets how long **--stop** waits for the supervisor to exit (the
+    sum of the timeouts). Two forms:
 
     - Integer seconds: **--retry 5** is shorthand for
       **--retry TERM/5/KILL/5**.
@@ -184,12 +189,17 @@ skipped:
 
 # EXIT STATUS
 
-- **0**: success
-- **1**: already running (**--start**) or not running
+- **0**: success. **--stop** also returns 0 when there is no
+  supervisor pidfile.
+- **1**: already running (**--start**), or no daemon pidfile
+  (**--signal**)
 - **2**: syntax / bad usage
-- **3**: unsupported feature
-- **4**: insufficient privileges or spawn failure
-- **5**: stale pidfile (supervisor gone; **--stop**/**--signal**)
+- **4**: the supervisor could not be started or did not write its
+  pidfile in time, a signal could not be delivered, or the supervisor
+  survived **--stop**
+- **5**: stale pidfile: the supervisor (**--stop**) or daemon
+  (**--signal**) it names is gone. **--stop** removes the stale
+  pidfiles.
 
 # EXAMPLES
 

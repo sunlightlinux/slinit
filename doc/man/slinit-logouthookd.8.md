@@ -67,10 +67,17 @@ Each connection sends exactly one line before going quiet:
 - **LINE** — utmp *ut_line* value (tty name, e.g. **tty1**,
   **pts/0**).
 
+Exactly two whitespace-separated fields are expected; anything else
+is logged as malformed and the connection is dropped.
+
 The daemon acknowledges implicitly by staying connected. When the
 client closes the fd (typically because the shell it belongs to
 died), the daemon writes a *DEAD_PROCESS* record for the (*ID*,
-*LINE*) pair to */var/run/utmp* and */var/log/wtmp*.
+*LINE*) pair to the utmp database through **pututxline**(3), keeping
+the PID of the existing entry. Nothing is written to wtmp.
+
+Connections that are still open when the daemon is told to stop are
+closed without writing a record.
 
 # EXIT STATUS
 
@@ -78,8 +85,13 @@ died), the daemon writes a *DEAD_PROCESS* record for the (*ID*,
 :   Received *SIGTERM* / *SIGINT* and shut down cleanly.
 
 **1**
-:   Cannot bind the socket (already in use, permission denied,
-    parent directory missing) or non-root at start.
+:   Cannot set up the socket: a stale socket file cannot be removed,
+    the parent directory cannot be created, the socket cannot be bound,
+    or its mode cannot be set. The daemon does not check its own UID at
+    start; the root requirement applies to connecting peers.
+
+**2**
+:   Unknown option.
 
 # SEE ALSO
 

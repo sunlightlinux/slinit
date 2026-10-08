@@ -28,8 +28,8 @@ coordinate with slinit. For orderly shutdowns use
 **--grace** *DURATION*
 :   Time between **SIGTERM** and **SIGKILL**. Accepts any duration
     parseable by **time.ParseDuration** (e.g. *2s*, *250ms*, *1m*).
-    A zero or negative value sends **SIGKILL** immediately.
-    Default: **2s**.
+    With a zero or negative value **SIGTERM** is still sent, followed
+    by **SIGKILL** without waiting. Default: **2s**.
 
 **-9**, **--kill-only**
 :   Skip the **SIGTERM** phase and send **SIGKILL** directly. Useful
@@ -37,9 +37,13 @@ coordinate with slinit. For orderly shutdowns use
     period is just lost time.
 
 **-h**, **--help**
-:   Print a usage summary and exit.
+:   Print a usage summary and exit with status 2.
 
 # BEHAVIOUR
+
+**kill(-1, sig)** reaches every process the caller may signal, other
+than PID 1 and the caller itself. Run as root, that is the whole of
+userspace; run as another user, only that user's processes.
 
 The signals are best-effort. **ESRCH** ("no processes matched") is
 silently ignored — it is a valid outcome (the only userspace process
@@ -59,7 +63,7 @@ is the only one that produces a nonzero exit.
 :   The final **SIGKILL** broadcast failed for a non-**ESRCH** reason.
 
 **2**
-:   Bad command-line arguments.
+:   Bad command-line arguments, or **--help**.
 
 # EXAMPLES
 

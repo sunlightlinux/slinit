@@ -15,16 +15,17 @@ slinit-sysusers - declarative user and group creation at boot
 **slinit-sysusers** applies **systemd-sysusers.d**(5) directives at
 boot to create system users, groups, and group memberships. Reads
 config from */usr/lib/sysusers.d/\*.conf*, */etc/sysusers.d/\*.conf*,
-and */run/sysusers.d/\*.conf* by default (later directories override
-earlier ones by basename — same overlay semantics as
-**tmpfiles.d**(5) and systemd's own sysusers).
+and */run/sysusers.d/\*.conf* by default. When the same basename
+exists in more than one directory, the one in the later directory of
+that list wins — so */run* overrides */etc*, unlike systemd, where
+*/etc* has the final say. Files are applied in alphabetical order of
+their basenames.
 
-The tool shells out to **useradd**(8), **groupadd**(8), and
-**usermod**(8) for the actual account manipulation, so it inherits
-whatever password-database backend the host uses (files, LDAP,
-sssd, etc.) via the standard nss stack. Idempotent — pre-existing
-entries with matching UID/GID are left alone; conflicts are
-reported.
+The tool shells out to **useradd**(8), **groupadd**(8) and
+**gpasswd**(1) for the actual account manipulation, so it inherits
+whatever password-database backend those tools use. It is idempotent
+by name: a user or group that already exists is left alone, whatever
+its UID or GID — a mismatch is not detected or reported.
 
 Typical use is boot-time bootstrap: a package's *.conf* declares the
 service account it needs, and the account is present the next time
@@ -39,19 +40,24 @@ Each line in a *.conf* file is one directive:
 
 Directives:
 
-**u** *name* *uid*[:*gid*] *"gecos"* *home* *shell*
-:   Create a user. *uid* may be a specific number, **-** for
-    "kernel picks", or **uid:gid** to bind both.
+**u** *name* *uid* *"gecos"* *home* *shell*
+:   Create a system user (**useradd --system**). *uid* is a number, or
+    **-** to let **useradd** pick one. It is passed to **useradd
+    --uid** as given; the *uid*:*gid* form is not split, so declare
+    the group with a **g** line instead. Without *home* no home
+    directory is created; without *shell* the shell is
+    */sbin/nologin*.
 
 **g** *name* *gid*
-:   Create a group. *gid* may be a specific number or **-**.
+:   Create a system group. *gid* may be a specific number or **-**.
 
 **m** *user* *group*
-:   Add *user* to supplementary group *group*.
+:   Add *user* to supplementary group *group* (**gpasswd -a**).
 
 **r** — *lo*-*hi*
-:   Reserve a UID/GID range for kernel/system use. Advisory;
-    slinit-sysusers just records the range.
+:   Accepted and ignored.
+
+Any other type is an error for that line.
 
 Comments start with **#**. Fields containing whitespace go in
 double quotes. Missing fields at end-of-line are treated as **-**
@@ -65,9 +71,9 @@ double quotes. Missing fields at end-of-line are treated as **-**
     for staged rollout (**\--dirs=/etc/sysusers.d.new**).
 
 **\--dry-run**
-:   Print the actions that would be performed without executing
-    them. Reports each entry as **would u foo**, **would g bar**,
-    etc.
+:   Print each entry as **would u foo**, **would g bar**, etc.,
+    without executing anything, and without checking whether the
+    account already exists.
 
 **-h**, **\--help**
 :   Print a usage summary and exit.
@@ -78,12 +84,12 @@ double quotes. Missing fields at end-of-line are treated as **-**
 :   All directives applied successfully (or already existed).
 
 **1**
-:   At least one directive failed to apply. The error is written
-    to stderr with the file and directive that failed; other
-    directives are still attempted.
+:   At least one directive failed to apply, or a file could not be
+    parsed (that whole file is then skipped). Each error is written to
+    stderr; other directives and files are still attempted.
 
 **2**
-:   Bad **\--dirs** value or unrecognised option.
+:   Unrecognised option.
 
 # EXAMPLES
 
