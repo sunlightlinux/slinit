@@ -515,7 +515,9 @@ doneFlags:
 		if conn != nil {
 			conn.Close()
 		}
-		err = cmdAttach(cmdArgs[0], socketPath, systemMode)
+		// Same instance choice as the control socket: -s / -u, else
+		// root means the system instance.
+		err = cmdAttach(cmdArgs[0], userMode || (!systemMode && os.Getuid() != 0))
 	case "action":
 		if len(cmdArgs) < 2 {
 			usageFatal("Usage: slinitctl action <service> <action-name>")
@@ -5858,16 +5860,8 @@ complete -c slinitctl -n "__fish_seen_subcommand_from completion" -a 'bash zsh f
 // cmdAttach connects to a service's vtty Unix socket for interactive terminal access.
 // Puts the local terminal in raw mode, forwards I/O bidirectionally, and
 // detaches on Ctrl+] (0x1d).
-func cmdAttach(svcName, socketPath string, systemMode bool) error {
-	// Determine vtty socket path
-	vttyDir := "/run/slinit"
-	if !systemMode {
-		home := os.Getenv("HOME")
-		if home != "" {
-			vttyDir = filepath.Join(home, ".slinit")
-		}
-	}
-	vttyPath := filepath.Join(vttyDir, fmt.Sprintf("vtty-%s.sock", svcName))
+func cmdAttach(svcName string, userMode bool) error {
+	vttyPath := filepath.Join(service.VTTYSocketDir(userMode), fmt.Sprintf("vtty-%s.sock", svcName))
 
 	conn, err := net.Dial("unix", vttyPath)
 	if err != nil {

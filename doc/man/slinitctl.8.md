@@ -367,10 +367,13 @@ service name or rejected.
 :   Connect the terminal to the service's virtual TTY (a service with
     **vtty = yes**), screen-style: output is shown and keystrokes are
     forwarded. Press **Ctrl+]** to detach; the service keeps running.
-    Works without the control socket: with **\--system** it connects
-    to */run/slinit/vtty-*\ *service*\ *.sock*, otherwise to the same
-    name under *$HOME/.slinit/* — so pass **\--system** for a system
-    service even when running as root.
+    Works without the control socket: it connects to
+    *vtty-*\ *service*\ *.sock* in */run/slinit* for the system
+    instance, or in *$XDG_RUNTIME_DIR/slinit* (*$HOME/.slinit* when
+    *XDG_RUNTIME_DIR* is unset) for a user instance — the same
+    directories slinit creates the sockets in. The instance is chosen
+    as for the control socket: **\--system** / **\--user**, otherwise
+    root means the system instance.
 
 ### Configuration & environment
 

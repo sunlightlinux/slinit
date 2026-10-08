@@ -49,7 +49,20 @@ type DirLoader struct {
 	loading     map[string]bool // tracks loading state for circular dependency detection
 	curDepth    int             // current recursion depth during loading
 	platformSys platform.Type   // detected (or overridden) platform for keyword filtering
+	vttyDir     string          // vtty attach socket dir; see SetVTTYDir
 	mu          sync.Mutex      // serialises loading + curDepth mutation
+}
+
+// SetVTTYDir sets where services with `vtty = yes` create their attach
+// socket. slinit passes service.VTTYSocketDir for its mode; unset means
+// the system instance's /run/slinit.
+func (dl *DirLoader) SetVTTYDir(dir string) { dl.vttyDir = dir }
+
+func (dl *DirLoader) vttySockDir() string {
+	if dl.vttyDir == "" {
+		return service.VTTYSocketDir(false)
+	}
+	return dl.vttyDir
 }
 
 // defaultOverlayDir is the default conf.d overlay location.
@@ -418,7 +431,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 			s.SetSocketOnDemand(true)
 		}
 		if desc.VTTYEnabled {
-			s.SetVTTY(true, desc.VTTYScrollback, "/run/slinit")
+			s.SetVTTY(true, desc.VTTYScrollback, dl.vttySockDir())
 		}
 	case *service.ScriptedService:
 		s.SetStartCommand(desc.Command)
@@ -1294,7 +1307,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 			svc.SetSocketOnDemand(true)
 		}
 		if desc.VTTYEnabled {
-			svc.SetVTTY(true, desc.VTTYScrollback, "/run/slinit")
+			svc.SetVTTY(true, desc.VTTYScrollback, dl.vttySockDir())
 		}
 		dl.applyRunAs(svc, desc)
 		dl.applySupplementaryGroups(svc, desc)

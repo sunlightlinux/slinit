@@ -1108,6 +1108,7 @@ func main() {
 	// Create and configure the loader
 	loader := config.NewDirLoader(serviceSet, dirs)
 	loader.SetPlatform(detectedPlatform)
+	loader.SetVTTYDir(service.VTTYSocketDir(!systemMode))
 
 	// Configure conf.d overlay directories.
 	// Default (--conf-dir not passed) keeps built-in /etc/slinit.conf.d.

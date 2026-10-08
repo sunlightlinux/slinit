@@ -99,6 +99,20 @@ type vttyClient struct {
 	done chan struct{} // closed when input forwarder exits
 }
 
+// VTTYSocketDir returns where vtty attach sockets live: /run/slinit for
+// a system instance; for a user instance $XDG_RUNTIME_DIR/slinit, or
+// ~/.slinit when XDG_RUNTIME_DIR is unset. slinit creates the sockets
+// there and `slinitctl attach` looks there, so both must use this.
+func VTTYSocketDir(user bool) string {
+	if !user {
+		return "/run/slinit"
+	}
+	if rt := os.Getenv("XDG_RUNTIME_DIR"); rt != "" {
+		return filepath.Join(rt, "slinit")
+	}
+	return filepath.Join(os.Getenv("HOME"), ".slinit")
+}
+
 // OpenVirtualTTY allocates a PTY, creates the attach socket, and starts
 // the reader goroutine. Returns the slave path for the child process.
 func OpenVirtualTTY(serviceName string, scrollback int, sockDir string) (*VirtualTTY, string, error) {
