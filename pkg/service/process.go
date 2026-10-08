@@ -169,10 +169,9 @@ type ProcessService struct {
 	// Socket activation
 	socketFD         *os.File      // primary listening socket (fd 3, nil if no socket-listen)
 	socketFDs        []*os.File    // additional sockets (fd 4, 5, ... for multiple socket-listen)
-	socketOnDemand   bool          // start service on first connection (socket-activation = on-demand)
-	socketDemandStop chan struct{} // signal to stop on-demand watcher
-	socketDemandDone chan struct{} // closed when watcher goroutine exits
-	socketDemandLn   net.Listener  // listener owned by watcher; closed to break Accept
+	socketOnDemand bool       // launch the process on the first client (socket-activation = on-demand)
+	demandWake     *os.File   // write end of the watcher's wake pipe; closing it disarms
+	demandGen      uint64     // bumped on every arm/disarm; a stale watcher's activation is a no-op
 
 	// Readiness notification
 	readyNotifyFD  int       // fd number child writes to (-1 if none)
@@ -1324,81 +1323,9 @@ func (s *ProcessService) closeSocket() {
 	}
 }
 
-// startOnDemandWatcher starts a goroutine that watches the primary socket
-// for incoming connections. On first activity, it starts the service.
-// The watcher uses epoll-like polling (Accept with timeout) to detect connections.
-func (s *ProcessService) startOnDemandWatcher() {
-	if s.socketFD == nil || !s.socketOnDemand {
-		return
-	}
-	s.socketDemandStop = make(chan struct{})
-	s.socketDemandDone = make(chan struct{})
-
-	// Dup the fd on the caller's goroutine so a concurrent closeSocket
-	// cannot race the child's read of s.socketFD.
-	fdDup, err := syscall.Dup(int(s.socketFD.Fd()))
-	if err != nil {
-		s.services.logger.Error("Service '%s': on-demand socket dup failed: %v", s.serviceName, err)
-		close(s.socketDemandDone)
-		return
-	}
-
-	f := os.NewFile(uintptr(fdDup), "on-demand-socket")
-	ln, err := net.FileListener(f)
-	f.Close()
-	if err != nil {
-		s.services.logger.Error("Service '%s': on-demand listener failed: %v", s.serviceName, err)
-		close(s.socketDemandDone)
-		return
-	}
-	s.socketDemandLn = ln
-
-	go func() {
-		defer close(s.socketDemandDone)
-		defer ln.Close()
-
-		conn, err := ln.Accept()
-		if err != nil {
-			// Listener closed (stop) or other error — exit.
-			return
-		}
-		// Got a connection! Close it back (the real service will accept it
-		// after being started — the connection stays in the socket backlog).
-		conn.Close()
-
-		select {
-		case <-s.socketDemandStop:
-			return
-		default:
-		}
-
-		s.services.logger.Info("Service '%s': on-demand socket activation triggered", s.serviceName)
-
-		// Start the service via the normal path
-		s.services.StartService(s.self)
-	}()
-}
-
-// stopOnDemandWatcher stops the on-demand socket watcher and waits for
-// its goroutine to exit, so the caller can safely close the socket after.
-func (s *ProcessService) stopOnDemandWatcher() {
-	if s.socketDemandStop != nil {
-		close(s.socketDemandStop)
-		s.socketDemandStop = nil
-		if s.socketDemandLn != nil {
-			s.socketDemandLn.Close() // unblocks Accept
-			s.socketDemandLn = nil
-		}
-		if s.socketDemandDone != nil {
-			<-s.socketDemandDone
-			s.socketDemandDone = nil
-		}
-	}
-}
-
 // BecomingInactive is called when the service won't restart. Cleans up socket.
 func (s *ProcessService) BecomingInactive() {
-	s.stopOnDemandWatcher()
+	s.disarmOnDemand()
 	s.closeDoneCh()
 	s.closeSocket()
 	s.CloseOutputPipe()
@@ -1568,6 +1495,20 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	// socket-activation = on-demand: the sockets are open and accepting,
+	// which is all a dependent needs, so the service is STARTED now and
+	// the process waits for the first client (see ondemand.go).
+	if s.socketOnDemand && s.socketFD != nil {
+		if err := s.armOnDemand(); err != nil {
+			s.services.logger.Error("Service '%s': socket activation: %v", s.serviceName, err)
+			return false
+		}
+		s.services.logger.Info("Service '%s': listening, process starts on the first client",
+			s.serviceName)
+		s.Started()
+		return true
+	}
+
 	// systemd-style ExecStartPre=: synchronous, non-zero exit fails
 	// the start. Runs after sandbox prep / required paths but before
 	// the main fork, so a failed pre-hook never leaves a half-started
@@ -1677,6 +1618,8 @@ func annotateHookTimeout(err error, ctx context.Context, timeout time.Duration) 
 func (s *ProcessService) BringDown() {
 	// A start-delay still counting down has nothing left to launch.
 	s.cancelStartDelay()
+	// Nor does a socket watcher still waiting for its first client.
+	s.disarmOnDemand()
 	// Stop health checker and cron runner if active
 	s.stopHealthChecker()
 	s.stopCronRunner()
@@ -2516,6 +2459,17 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		// (2026-08-30, "Better handling of smooth recovery failure":
 		// treat smooth-recovery failure universally as termination
 		// rather than start failure).
+		if s.onDemandListening() {
+			// An on-demand launch: the service has been STARTED since
+			// its sockets opened. Readiness only gates the extras; a
+			// failed launch is handled when the process exits.
+			if ready {
+				s.cancelTimer()
+				s.startCronIfConfigured()
+				s.startHealthCheckIfConfigured()
+			}
+			return
+		}
 		if !ready && s.state.Load() == StateStarted {
 			s.services.logger.Error(
 				"Service '%s': readiness pipe closed during smooth recovery — treating as unexpected termination",
@@ -2621,6 +2575,13 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 		// Process failed during exec/setup
 		s.services.logger.Error("Service '%s': exec failed: %v",
 			s.serviceName, exit.ExecErr)
+		if s.onDemandListening() {
+			// The service is up — its sockets are — and only this
+			// launch failed. Wait for the next client instead.
+			s.rearmOnDemandLocked()
+			s.services.processQueuesLocked()
+			return
+		}
 		s.stopReason = ReasonExecFailed
 		s.state.Store(StateStopping)
 		s.failedToStart(false, true)
@@ -2680,6 +2641,14 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 		} else if exit.Signaled() {
 			s.services.logger.Error("Service '%s': process killed by signal %v",
 				s.serviceName, exit.Status.Signal())
+		}
+
+		if s.socketOnDemand {
+			// On-demand: the process ending is not the service ending.
+			// Its sockets stay open; the next client launches it again.
+			s.rearmOnDemandLocked()
+			s.services.processQueuesLocked()
+			return
 		}
 
 		if s.smoothRecovery && s.CheckRestart() {
@@ -2762,6 +2731,10 @@ func (s *ProcessService) handleTimerExpired() {
 			s.services.logger.Error("Service '%s': start timeout exceeded, sending %s",
 				s.serviceName, label)
 			process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+			if s.onDemandListening() {
+				// The service stays up; the exit re-arms the sockets.
+				return
+			}
 			s.stopReason = ReasonTimedOut
 			s.failedToStart(false, false) // Don't immediately stop, wait for process
 		}

@@ -296,28 +296,3 @@ func TestMultipleSocketsPassedToChild(t *testing.T) {
 	set.StopService(svc)
 	time.Sleep(500 * time.Millisecond)
 }
-
-func TestOnDemandWatcherStartStop(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "demand.sock")
-
-	set, _ := newTestSet()
-	svc := NewProcessService(set, "demand-svc")
-	svc.SetCommand([]string{"/bin/sleep", "60"})
-	svc.Record().SetSocketDetails(sockPath, 0600, -1, -1)
-	svc.SetSocketOnDemand(true)
-	set.AddService(svc)
-
-	// Open socket first (on-demand needs the socket pre-created)
-	if err := svc.openSocket(); err != nil {
-		t.Fatalf("openSocket failed: %v", err)
-	}
-	defer svc.closeSocket()
-
-	// Start watcher
-	svc.startOnDemandWatcher()
-	time.Sleep(100 * time.Millisecond)
-
-	// Stop watcher — should not panic
-	svc.stopOnDemandWatcher()
-}

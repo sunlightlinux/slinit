@@ -319,7 +319,7 @@ accepted. List-valued settings accept `+=` to append.
 | `ready-check-interval` | Go duration | Polling interval for `ready-check-command` (default `100ms`) |
 | `pid-file` | path | PID file written by a `bgprocess` daemon |
 | `socket-listen` | path \| `tcp:host:port` \| `udp:host:port` | Listening socket passed to the child via `LISTEN_FDS`; repeat or `+=` for several |
-| `socket-activation` | `immediate` \| `on-demand` | The socket opens when the service starts; `on-demand` is accepted but not implemented and behaves like `immediate` |
+| `socket-activation` | `immediate` \| `on-demand` | `immediate` (default) launches the process when the service starts; `on-demand` opens the socket, marks the service started, and launches the process on the first client — and again after it exits |
 | `socket-reuseport` | bool | Set `SO_REUSEPORT` on `tcp:` / `udp:` listeners so several instances can share a port — see the [operator's guide](operators-guide.md#scaling-a-hot-port-across-workers) |
 | `socket-permissions` | octal | Mode of a Unix socket file |
 | `socket-uid`, `socket-gid` | integer | Ownership of a Unix socket file |
