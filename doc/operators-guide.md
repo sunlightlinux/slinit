@@ -51,7 +51,7 @@ column](#reading-the-state-column).
 
 ### Command cheat-sheet
 
-| systemd | slinit | notes |
+| systemd | slinit | Notes |
 |---|---|---|
 | `systemctl start X` | `slinitctl start X` | blocks until the service settles; `--no-wait` to return immediately |
 | `systemctl stop X` | `slinitctl stop X` | |
@@ -160,7 +160,7 @@ slinitctl enable hello       # at boot, and now (enable starts it)
 
 ### Picking a type
 
-| the program… | `type =` | also needs |
+| If the program… | `type =` | Also needs |
 |---|---|---|
 | runs in the foreground and stays there | `process` | — |
 | forks and the parent exits | `bgprocess` | `pid-file =` |
@@ -451,12 +451,17 @@ goes to a per-service ring buffer instead — `slinitctl catlog X`. With
 
 - [README](../README.md) — what slinit is, how to install it, and the
   index to everything else.
-- **slinit-service(5)** — the service description format, directive by
-  directive, with `(since X.Y.Z)` markers.
-- **slinitctl(8)** — every subcommand and its exact semantics.
-- **slinit(8)** — PID 1 behaviour, kernel command line, foreign service
-  formats.
-- **slinit-systemd-convert(8)** — the unit converter.
+- [slinit-service(5)](man/slinit-service.5.md) — the service
+  description format, directive by directive, with `(since X.Y.Z)`
+  markers.
+- [slinitctl(8)](man/slinitctl.8.md) — every subcommand and its exact
+  semantics.
+- [slinit(8)](man/slinit.8.md) — PID 1 behaviour, kernel command line,
+  foreign service formats.
+- [slinit-systemd-convert(8)](man/slinit-systemd-convert.8.md) — the
+  unit converter.
+- [configuration.md](configuration.md) and [tools.md](tools.md) —
+  worked examples and the companion-tool index.
 - [`demo/`](../demo/README.md) — a QEMU VM with 57 services covering most
   directives, including a stock nginx unit run straight from
   `/etc/systemd/system`.

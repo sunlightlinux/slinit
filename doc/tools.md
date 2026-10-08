@@ -1,22 +1,109 @@
 # slinit companion tools
 
-slinit ships 43 tools besides the daemon and `slinitctl` (42 Go binaries
-plus `slinit-resource`, a shell OCF resource agent): linters,
-converters from other init systems, drop-in clones of OpenRC and systemd
-utilities, the journal pipeline, and the container helpers. Every one of
-them has a man page under [doc/man](man) — those are the reference. This
-file is the tour: what each tool is for, and the invocations worth
-knowing.
+Besides the daemon (`slinit`) and its control CLI (`slinitctl`), slinit
+ships 43 tools: 42 Go binaries and `slinit-resource`, a shell OCF
+resource agent. `go build ./...` builds all of them.
 
-`go build ./...` builds all of them.
+Each tool has a man page under [doc/man](man), which is the
+authoritative reference. This document is an overview: what each tool
+is for, followed by the invocations most worth knowing.
 
-This file was split out of the README when the README was trimmed for
-the 3.0 line.
+## Tool index
 
+### Service execution and configuration
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| `slinit-runner` | Post-fork exec wrapper that applies sandboxing, seccomp, LSM transitions and capabilities. **Required** by any service using them | [slinit-runner(8)](man/slinit-runner.8.md) |
+| [`slinit-check`](#slinit-check) | Offline (or `--online`) linter for service descriptions | [slinit-check(8)](man/slinit-check.8.md) |
+| [`slinit-supports`](#slinit-supports) | Query whether a directive, opcode or feature is supported | [slinit-supports(8)](man/slinit-supports.8.md) |
+| [`slinit-monitor`](#slinit-monitor) | Run a command on every service or environment change | [slinit-monitor(8)](man/slinit-monitor.8.md) |
+| [`slinit-init-maker`](#slinit-init-maker) | Generate a minimal, bootable service directory | [slinit-init-maker(8)](man/slinit-init-maker.8.md) |
+
+### Migration from other init systems
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| [`slinit-systemd-convert`](#slinit-systemd-convert) | Convert a systemd `.service` unit | [slinit-systemd-convert(8)](man/slinit-systemd-convert.8.md) |
+| [`slinit-openrc-convert`](#slinit-openrc-convert) | Convert an OpenRC `init.d` script | [slinit-openrc-convert(8)](man/slinit-openrc-convert.8.md) |
+| [`slinit-runit-convert`](#slinit-runit-convert) | Convert a runit service directory | [slinit-runit-convert(8)](man/slinit-runit-convert.8.md) |
+| `slinit-sysvinit-convert` | Convert `/etc/inittab` | [slinit-sysvinit-convert(8)](man/slinit-sysvinit-convert.8.md) |
+
+### Journal
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| [`slinit-journalctl`](#slinit-journalctl) | Query the journal; `journalctl`-compatible (65/65 flags) | [slinit-journalctl(8)](man/slinit-journalctl.8.md) |
+| [`slinit-journald`](#slinit-journald) | Persistent journal daemon | [slinit-journald(8)](man/slinit-journald.8.md) |
+| [`slinit-journal-migrate`](#slinit-journal-migrate) | Convert JSONL journal history to the binary format | [slinit-journal-migrate(8)](man/slinit-journal-migrate.8.md) |
+
+### System daemons
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| `slinit-logind` | Login, seat and session manager (`org.freedesktop.login1`) | [slinit-logind(8)](man/slinit-logind.8.md) |
+| [`slinit-logouthookd`](#slinit-logouthookd) | Write utmp logout records when sessions end | [slinit-logouthookd(8)](man/slinit-logouthookd.8.md) |
+| `slinit-getty` | Minimal built-in login prompt | [slinit-getty(8)](man/slinit-getty.8.md) |
+| `slinit-watchdogd` | Runtime hardware-watchdog petting daemon | [slinit-watchdogd(8)](man/slinit-watchdogd.8.md) |
+| `slinit-mount` | autofs lazy-mount daemon | [slinit-mount(8)](man/slinit-mount.8.md) |
+| `slinit-seedrng` | Persist entropy across reboots (SeedRNG) | [slinit-seedrng(8)](man/slinit-seedrng.8.md) |
+
+### systemd-compatible utilities
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| [`slinit-sysusers`](#slinit-sysusers--slinit-tmpfiles) | Declarative user and group creation (`sysusers.d`) | [slinit-sysusers(8)](man/slinit-sysusers.8.md) |
+| [`slinit-tmpfiles`](#slinit-sysusers--slinit-tmpfiles) | Declarative `/run` and `/var` bootstrap (`tmpfiles.d`) | [slinit-tmpfiles(8)](man/slinit-tmpfiles.8.md) |
+| `slinit-sysctl` | Apply `sysctl.d` tunables | [slinit-sysctl(8)](man/slinit-sysctl.8.md) |
+| `slinit-binfmt` | Register `binfmt_misc` formats | [slinit-binfmt(8)](man/slinit-binfmt.8.md) |
+| `slinit-hostnamectl` | Query and set the hostname, without D-Bus | [slinit-hostnamectl(1)](man/slinit-hostnamectl.1.md) |
+| `slinit-timedatectl` | Query and set time and date, without D-Bus | [slinit-timedatectl(1)](man/slinit-timedatectl.1.md) |
+| [`slinit-cgtop`](#slinit-cgtop) | `top`-like viewer for the cgroup v2 tree | [slinit-cgtop(8)](man/slinit-cgtop.8.md) |
+
+### OpenRC-compatible utilities
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| [`rc-service`](#openrc-compatibility-rc-service-rc-update-rc-status) | Service control shim over `slinitctl` | [rc-service(8)](man/rc-service.8.md) |
+| [`rc-update`](#openrc-compatibility-rc-service-rc-update-rc-status) | Runlevel membership shim | [rc-update(8)](man/rc-update.8.md) |
+| [`rc-status`](#openrc-compatibility-rc-service-rc-update-rc-status) | Status listing shim | [rc-status(8)](man/rc-status.8.md) |
+| `slinit-start-stop-daemon` | Start or stop system daemons | [slinit-start-stop-daemon(8)](man/slinit-start-stop-daemon.8.md) |
+| `slinit-supervise-daemon` | Run a non-forking daemon and restart it on crash | [slinit-supervise-daemon(8)](man/slinit-supervise-daemon.8.md) |
+| `slinit-einfo` | `einfo` / `ewarn` / `ebegin` / `eend` status output | [slinit-einfo(8)](man/slinit-einfo.8.md) |
+| `slinit-checkpath` | Create or verify paths with type, mode and ownership | [slinit-checkpath(8)](man/slinit-checkpath.8.md) |
+| `slinit-fstabinfo` | Query `/etc/fstab` entries | [slinit-fstabinfo(8)](man/slinit-fstabinfo.8.md) |
+| `slinit-mountinfo` | Query the kernel mount table | [slinit-mountinfo(8)](man/slinit-mountinfo.8.md) |
+| `slinit-shell-var` | Sanitise strings into shell variable names | [slinit-shell-var(1)](man/slinit-shell-var.1.md) |
+| `slinit-svc-value` | Per-service persistent key=value store | [slinit-svc-value(1)](man/slinit-svc-value.1.md) |
+
+### sysvinit-compatible utilities
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| `slinit-killall5` | Signal every process except init, the caller and its session | [slinit-killall5(8)](man/slinit-killall5.8.md) |
+| `slinit-fstab-decode` | Run a command with fstab-escaped arguments decoded | [slinit-fstab-decode(8)](man/slinit-fstab-decode.8.md) |
+
+### Containers and high availability
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| `slinit-nspawn` | Launch a slinit container in new namespaces | [slinit-nspawn(8)](man/slinit-nspawn.8.md) |
+| `slinit-machinectl` | Inspect and manage the local container registry | [slinit-machinectl(8)](man/slinit-machinectl.8.md) |
+| `slinit-resource` | Pacemaker OCF resource agent for slinit services | [slinit-resource(7)](man/slinit-resource.7.md) |
+
+### Shutdown and recovery
+
+| Tool | Purpose | Manual |
+|---|---|---|
+| [`slinit-shutdown`](#slinit-shutdown) | Shut down, halt, reboot or soft-reboot | [slinit-shutdown(8)](man/slinit-shutdown.8.md) |
+| [`slinit-nuke`](#slinit-nuke) | Emergency kill-all when orderly shutdown is unavailable | [slinit-nuke(8)](man/slinit-nuke.8.md) |
+
+## Usage notes
 
 ### slinit-check
 
-Configuration linter. Validates service files offline or using a running daemon's context:
+Configuration linter. It parses a service description exactly as the
+daemon would, either offline or in the context of a running daemon:
 
 ```bash
 # Offline mode (default)
@@ -27,7 +114,8 @@ slinit-check --online myservice
 slinit-check --online -p /run/slinit.ctl myservice
 ```
 
-Checks: file existence, type validity, command executability, dependency references, circular dependencies, depth limits.
+It checks file existence, type validity, command executability,
+dependency references, dependency cycles and depth limits.
 
 ### slinit-monitor
 
@@ -62,13 +150,13 @@ slinit-monitor -E -c 'printf "%%s %n=%v\n" "$(date -Is)" >> \
     /var/log/slinit-env.log'
 ```
 
-### slinit-journalctl / journalctl
+### slinit-journalctl
 
-Systemd `journalctl` at 65/65 flag parity. Talks to slinit's control
-socket for live queries (the in-process ring buffer covers the
-current boot) and to `slinit-journald`'s admin socket for
-maintenance ops. Ships as a `journalctl` symlink so scripts written
-for systemd's binary keep working.
+A `journalctl` implementation at 65/65 flag parity with systemd's. Live
+queries go to slinit's control socket, whose in-memory ring buffer
+covers the current boot; maintenance operations go to
+`slinit-journald`'s admin socket. Packages install it as `journalctl`
+too, so scripts written for systemd keep working.
 
 ```bash
 # Live query — last 20 events, short-format
@@ -114,12 +202,17 @@ slinit-journalctl --image=/path/to/disk.img --since=today
 
 ### slinit-journald
 
-Persistent daemon consuming events from slinit's event bus and
-writing them to disk. Supports both Phase C (JSONL, gzip-rotated,
-human-grep-friendly) and Phase B (binary, systemd-compatible with
-optional FSS TAG chain). Falls back to tmpfs at
-`/run/slinit-journal/` when the persistent primary is unwritable.
-`--flush` migrates volatile to persistent once /var comes online.
+Persistent daemon that consumes events from slinit's event bus and
+writes them to disk in one of two formats:
+
+| Format | Properties |
+|---|---|
+| `binary` (default) | Compact, systemd-style layout; optional FSS sealing (TAG chain) |
+| `jsonl` | One JSON object per line, gzip-compressed on rotation; easy to `grep` |
+
+When the persistent directory is not writable, it falls back to a tmpfs
+at `/run/slinit-journal/`; `slinit-journalctl --flush` moves the
+volatile journal to persistent storage once `/var` is available.
 
 ```bash
 # JSONL, default paths, gzip-rotated after 128 MiB
@@ -132,26 +225,25 @@ slinit-journald --format=binary --fss-key=/etc/slinit/journal-key --fss-tag-ever
 slinit-journald --namespace=prod --format=jsonl
 
 # Retention: prune archived files past caps
-slinit-journald --vacuum-files=100 --vacuum-size=4G --vacuum-age=720h
+slinit-journald --vacuum-files=100 --vacuum-size=4294967296 --vacuum-age=720h  # size in bytes
 ```
 
 ### slinit-journal-migrate
 
-Cross-format journal migration helper. Converts a Phase C JSONL
-directory to Phase B binary (or vice versa) so operators can
-switch storage formats without losing history.
+One-time upgrade path from the JSONL format to the binary format. It
+reads every `.jsonl` and `.jsonl.gz` file under `--from`, preserving
+event order, and writes a fresh binary journal under `--to`. The source
+directory is left untouched, so it can be archived or removed once the
+destination has been checked with `slinit-journalctl --verify`.
 
 ```bash
-# JSONL → binary, seals with an existing FSS key
-slinit-journal-migrate --from=jsonl --to=binary \
-    --input-dir=/var/log/slinit-journal \
-    --output-dir=/var/log/slinit-journal.binary \
-    --fss-key=/etc/slinit/journal-key
+# Preview: source files, destination layout and event totals
+slinit-journal-migrate --from /var/log/slinit-journal \
+    --to /var/log/slinit-journal-bin --dry-run
 
-# Binary → JSONL (useful for grep pipelines on old archives)
-slinit-journal-migrate --from=binary --to=jsonl \
-    --input-dir=/var/log/slinit-journal \
-    --output-dir=/tmp/slinit-journal.jsonl
+# Migrate; --to must not already contain journal files
+slinit-journal-migrate --from /var/log/slinit-journal \
+    --to /var/log/slinit-journal-bin
 ```
 
 ### slinit-supports
@@ -349,12 +441,12 @@ slinit-shutdown -s            # soft reboot
 slinit-shutdown -k            # kexec
 ```
 
-### OpenRC compat: rc-service / rc-update / rc-status
+### OpenRC compatibility: rc-service, rc-update, rc-status
 
-Thin argv-translating shims over `slinitctl` for admins used to
-OpenRC. They exec `slinitctl` (resolved via `$PATH` or the `SLINITCTL`
-env var), so output, exit codes and flag precedence mirror
-`slinitctl`'s own.
+Thin argument-translating shims over `slinitctl` for administrators
+used to OpenRC. Each one executes `slinitctl` (found via `$PATH`, or
+the `SLINITCTL` environment variable), so output, exit codes and flag
+handling are exactly `slinitctl`'s.
 
 ```bash
 # rc-service — service control
@@ -378,7 +470,6 @@ rc-status --runlevel          # print "default" (slinit has no current runlevel)
 ```
 
 `/etc/rc.conf` and `/etc/conf.d/<name>` are sourced automatically
-before every init.d script action (see Project structure notes),
-so OpenRC per-service config files like `/etc/conf.d/nginx` keep
-working unchanged.
+before every `init.d` script action, so OpenRC per-service
+configuration such as `/etc/conf.d/nginx` keeps working unchanged.
 

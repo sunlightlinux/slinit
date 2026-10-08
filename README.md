@@ -4,7 +4,7 @@
 PID 1 or as an unprivileged per-user service manager, with a
 dinit-compatible configuration format.
 
-| | |
+| Project | Details |
 |---|---|
 | **Latest release** | v3.0.7 — see [CHANGELOG.md](CHANGELOG.md) |
 | **Compatibility contract** | [STABILITY.md](STABILITY.md) — control protocol v7 (min-compat v1) |
@@ -43,9 +43,9 @@ Three binaries matter most:
 
 | Binary | Role |
 |---|---|
-| `slinit` | the daemon — PID 1, system manager, or user manager |
-| `slinitctl` | the control CLI (around 90 verbs, aliases included) |
-| `slinit-runner` | post-fork execve wrapper; **required** by any service using LSM, seccomp or `restrict-*` |
+| `slinit` | The daemon — PID 1, system manager, or user manager |
+| `slinitctl` | The control CLI (around 90 verbs, aliases included) |
+| `slinit-runner` | Post-fork exec wrapper; **required** by any service using LSM, seccomp or `restrict-*` |
 
 The other 42 are linters, converters from other init systems, drop-in
 clones of OpenRC and systemd utilities, the journal pipeline and the
@@ -85,18 +85,21 @@ slinitctl start myservice
 slinitctl status myservice
 ```
 
-Default service directories when `--services-dir` is not given:
+When `--services-dir` is not given, service descriptions are searched
+in these directories, in order:
 
-* **system**: `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d`
-* **user**: `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user`
+| Mode | Directories |
+|---|---|
+| System | `/etc/slinit.d`, `/run/slinit.d`, `/usr/local/lib/slinit.d`, `/lib/slinit.d` |
+| User | `$XDG_CONFIG_HOME/slinit.d` (or `~/.config/slinit.d`), `/etc/slinit.d/user`, `/usr/lib/slinit.d/user`, `/usr/local/lib/slinit.d/user` |
 
 The flags above are the common ones. [slinit(8)](doc/man/slinit.8.md)
-documents all 46; [doc/configuration.md](doc/configuration.md) keeps a
-table of them for convenience.
+documents all 46; [doc/configuration.md](doc/configuration.md) summarises
+them by topic.
 
 ## What it does
 
-| Area | What is there |
+| Area | Capabilities |
 |---|---|
 | **Service types** | `process`, `scripted`, `bgprocess`, `internal`, `triggered` |
 | **Dependencies** | 6 kinds — `depends-on`, `waits-for`, `depends-ms`, `before`, `after`, `prepared-by`; two-phase transitions; cycle and depth checks |
@@ -120,14 +123,14 @@ the provenance has been traced, which is about half of them so far.
 
 | Upstream | What slinit takes from it |
 |---|---|
-| **dinit** | the base: description format, dependency types, state machine, `slinitctl` verbs — 1:1. Adds `prepared-by` |
+| **dinit** | The base: description format, dependency types, state machine, `slinitctl` verbs — 1:1. Adds `prepared-by` |
 | **runit** | `finish-command`, `ready-check-command`, `pre-stop-hook`, `env-dir`, `control-command-<SIG>`, `chroot`, `new-session`, `lock-file`, log rotation/filtering, down-file, `once` |
 | **s6-linux-init** | catch-all logger, TAI64N/ISO timestamps, scheduled shutdown and cancel, wall messages, `/etc/shutdown.allow`, global boot rlimits, container exit codes and ready-fd, `slinit-init-maker` |
 | **OpenRC** | `rc-service` / `rc-update` / `rc-status` shims, `/etc/rc.conf` + `/etc/conf.d/<svc>` sourcing, named-runlevel dispatch, init.d/LSB auto-detection, drop-in clones of eight utilities |
 | **upstart** | `manual`, `normal-exit`, `reload-signal`, `umask`, `author`/`version`/`usage`, AppArmor stanzas, `debug`, `script … end script`, `start-on-path-*`, `.override` drop-ins |
 | **finit** | `switch-root`, watchdog-driven reboot, `tty-path = @console`, `slinit.cond=` boot modes, `/etc/rc.local` runparts, `/etc/network/interfaces`, `slinit-getty`, `slinit-watchdogd` |
 | **sysvinit** | `SIGPWR` power events, `slinit-killall5`, `slinit-fstab-decode`, `/etc/inittab` conversion |
-| **systemd** | the service-manager subset — start predicates, managed service directories, the sandbox/seccomp/protect clusters, credentials, timers, `journalctl` parity, `logind` |
+| **systemd** | The service-manager subset — start predicates, managed service directories, the sandbox/seccomp/protect clusters, credentials, timers, `journalctl` parity, `logind` |
 
 Two things are deferred by design rather than missing: finit's
 `org.finit` D-Bus control API (slinit stays Unix-socket-first) and a
@@ -276,7 +279,7 @@ tests/            unit, functional (QEMU), acceptance and container suites
 | `SIGTERM` | reboot | busybox `reboot` |
 | `SIGINT` | reboot | Ctrl+Alt+Del |
 | `SIGQUIT` | poweroff | — |
-| `SIGUSR1` | reopen the control socket | recovery once the fs is writable |
+| `SIGUSR1` | reopen the control socket | recovery, once the filesystem is writable |
 | `SIGUSR2` | poweroff | busybox `poweroff` |
 | `SIGPWR` | run the power hook | UPS daemons (nut, apcupsd) |
 | `SIGHUP` | ignored | — |
@@ -290,18 +293,18 @@ only, so a second Ctrl+Alt+Del always escalates.
 
 ## Documentation
 
-| | |
+| Document | Contents |
 |---|---|
-| [operator's guide](doc/operators-guide.md) | start here if you run systems: systemd mappings, first service, troubleshooting |
-| [doc/configuration.md](doc/configuration.md) | service examples by shape, directive tables, daemon flags |
-| [doc/tools.md](doc/tools.md) | the 43 companion binaries and how they are used |
-| [doc/features.md](doc/features.md) | generated list of every accepted directive and opcode, by upstream |
-| [doc/roadmap.md](doc/roadmap.md) | what is planned, and what has shipped |
+| [doc/operators-guide.md](doc/operators-guide.md) | Start here if you run systems: systemd mappings, first service, troubleshooting |
+| [doc/configuration.md](doc/configuration.md) | Service examples by shape, directive tables by topic, daemon flags |
+| [doc/tools.md](doc/tools.md) | Index of the 43 companion tools, with usage examples |
+| [doc/features.md](doc/features.md) | Generated list of every accepted directive and opcode, by upstream |
+| [doc/roadmap.md](doc/roadmap.md) | Development history and what is planned |
 | [doc/man/](doc/man) | 46 man pages — one per binary, plus slinit-service(5) |
-| [STABILITY.md](STABILITY.md) | what will not break, and how deprecation works |
-| [CHANGELOG.md](CHANGELOG.md) | release history, with the reasoning behind each version number |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | how to build, test and send a change |
-| [SECURITY.md](SECURITY.md) | reporting a vulnerability |
+| [STABILITY.md](STABILITY.md) | What will not break, and how deprecation works |
+| [CHANGELOG.md](CHANGELOG.md) | Release history, with the reasoning behind each version number |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, test and submit a change |
+| [SECURITY.md](SECURITY.md) | How to report a vulnerability |
 
 ## Testing
 
