@@ -207,8 +207,8 @@ type ExecParams struct {
 	// set" (no narrowing).
 	BoundingCaps []uintptr
 
-	// Securebits is a bitmask of securebits flags to apply post-fork
-	// via prctl(PR_SET_SECUREBITS). Best-effort from parent.
+	// Securebits is a bitmask of securebits flags, set by slinit-runner
+	// via prctl(PR_SET_SECUREBITS) in its own task just before exec.
 	Securebits uint32
 
 	// CPUAffinity is a set of CPU numbers to pin the child process to

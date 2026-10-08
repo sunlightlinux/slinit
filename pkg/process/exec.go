@@ -827,6 +827,9 @@ func runnerSecurityFeatures(p ExecParams) []string {
 	if p.NoNewPrivs {
 		missing = append(missing, "no-new-privs")
 	}
+	if p.Securebits != 0 {
+		missing = append(missing, "securebits")
+	}
 	return missing
 }
 
@@ -836,7 +839,7 @@ func needsRunnerWrap(p ExecParams) bool {
 		p.SMACKProcessLabel != "" ||
 		p.DebugStop || p.MemoryTHP != "" ||
 		sandboxActive(p) || seccompActive(p) || hardeningActive(p) ||
-		len(p.BoundingCaps) > 0 || p.NoNewPrivs ||
+		len(p.BoundingCaps) > 0 || p.NoNewPrivs || p.Securebits != 0 ||
 		bucketBActive(p)
 }
 
@@ -1047,6 +1050,11 @@ func wrapWithRunner(p ExecParams) []string {
 	// PR_SET_NO_NEW_PRIVS on its own task before exec.
 	if p.NoNewPrivs {
 		args = append(args, "--no-new-privs")
+	}
+	// securebits: PR_SET_SECUREBITS acts on the calling task only, so it
+	// cannot be set from the parent without changing slinit's own bits.
+	if p.Securebits != 0 {
+		args = append(args, "--securebits="+strconv.FormatUint(uint64(p.Securebits), 10))
 	}
 	// argv[0] override survives the runner's own exec via --argv0.
 	if p.Argv0 != "" {

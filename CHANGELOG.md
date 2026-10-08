@@ -26,6 +26,20 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`securebits` was never applied to slinit services.** The parent-side
+  path was a stub that always failed (`PR_SET_SECUREBITS` acts on the
+  calling task, so setting it in the parent would change slinit's own
+  bits) and only logged a post-fork warning. The setting now wraps the
+  service in `slinit-runner`, which sets the bits in its own task just
+  before exec; like the other confinement settings, a missing runner
+  refuses the start instead of running the service without them.
+
+  The runner itself could not apply them together with `run-as`: it set
+  the bits after the UID drop, when `CAP_SETPCAP` is no longer
+  effective, and failed with EPERM. It now raises
+  `CAP_SETPCAP` back from the permitted set (kept by `PR_SET_KEEPCAPS`)
+  for that one call; execve recomputes the effective set, so the
+  service does not inherit it.
 - **`post-start-command` never ran when `start-delay` was set.** The hook
   was launched after the start path's early return for the delayed fork,
   so the delay timer started the process but nothing ever started the

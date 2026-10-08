@@ -382,7 +382,7 @@ accepted. List-valued settings accept `+=` to append.
 | Directive | Value | Description |
 |---|---|---|
 | `capabilities` | cap,… | Ambient capabilities, e.g. `cap_net_bind_service` |
-| `securebits` | bit… | Securebits flags, e.g. `noroot keep-caps` — parsed but not yet applied to services |
+| `securebits` | bit… | Securebits flags, e.g. `noroot keep-caps`; set by `slinit-runner` before exec |
 | `dynamic-user` | bool | Allocate a transient UID/GID for each start; released when the service stops |
 | `load-credential` | `NAME:PATH` | Copy a file into `/run/credentials/<svc>/` |
 | `set-credential` | `NAME:VALUE` | Write an inline value as a credential |

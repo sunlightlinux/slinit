@@ -1593,10 +1593,9 @@ mlockall       = current+future
 :   Space-separated securebit names (*noroot*, *no-setuid-fixup*,
     *keep-caps*, *no-cap-ambient-raise*, each with a *-locked*
     variant); no bitmask, and a comma-separated value is ignored.
-    Currently parsed but not applied to slinit services: the start
-    logs a "post-fork attr warning". (**slinit-start-stop-daemon**(8)
-    and **slinit-supervise-daemon**(8) do apply their own
-    **\--securebits**.)
+    Applied by **slinit-runner**(8) with **PR_SET_SECUREBITS** just
+    before exec, after the **run-as** drop. Without the runner the
+    service does not start.
 
 **apparmor-load**=*path*
 :   Absolute path to an AppArmor profile loaded with
@@ -1953,7 +1952,7 @@ slinit itself, because they act on the calling process and so must be set
 after the fork and before the exec: the seccomp filter, the
 **protect-\***/**restrict-\*** set, the sandbox directives, an LSM label
 (**apparmor-switch**, **selinux-context**, **smack-process-label**),
-**capability-bounding-set** and **options**=*no-new-privs*, plus
+**capability-bounding-set**, **securebits** and **options**=*no-new-privs*, plus
 **mlockall**, **numa-mempolicy**, **memory-thp**, **debug**,
 **coredump-filter**, **timer-slack-nsec**, **memory-ksm**,
 **personality** and **ignore-sigpipe**.
@@ -1963,7 +1962,7 @@ binary, then on *PATH*, then in */usr/sbin*, */sbin* and
 */usr/local/sbin* — then **since 2.7.0**:
 
 * a service asking for any **confinement** (seccomp, hardening, sandbox,
-  LSM label, bounding caps, no-new-privs) **fails to start**, naming what
+  LSM label, bounding caps, securebits, no-new-privs) **fails to start**, naming what
   is missing. A service whose configuration says it is confined and is not
   is a hole nobody sees; a service that does not start is an error somebody
   fixes.
