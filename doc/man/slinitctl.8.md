@@ -704,18 +704,21 @@ service name or rejected.
     true).
 
 **1**
-:   Command failed: transport error, daemon-side rejection, predicate
-    false, unknown command or missing argument. The message on stderr
-    says which. Running **slinitctl** with no command at all also exits
-    1, after printing the usage text.
+:   Command failed: transport error, daemon-side rejection, unknown
+    service, predicate false. The message on stderr says which.
 
 **2**
-:   Used only by **is-newer-than** and **is-older-than**, when a path
-    cannot be examined for a reason other than not existing.
+:   Usage error: an unknown command or global option value, a missing
+    or malformed argument (no service name, an unknown signal,
+    dependency type or shutdown kind, *KEY* without *=VALUE*, …), or no
+    command at all (the usage text is printed). **is-newer-than** and
+    **is-older-than** also exit 2 when a path cannot be examined for a
+    reason other than not existing.
 
-Arguments are checked after the connection to the daemon is made, so
-with no daemon running every daemon-bound command, including a
-mistyped one, fails with the connection error.
+An unknown command and a bad global option are reported without
+contacting the daemon. A command's own arguments are checked once it is
+connected, so with no daemon running a malformed but known command fails
+with the connection error (1) first.
 
 ## EXAMPLES
 
