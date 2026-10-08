@@ -210,13 +210,13 @@ dependencies — and `--online` checks it against the running daemon.
 # State
 slinitctl list                          # every loaded service and its state
 slinitctl status myservice              # one service, in detail
-slinitctl is-started myservice          # exit code only, for scripts
+slinitctl is-started myservice          # prints the state; exit 0 iff started
 slinitctl graph                         # dependency graph, Graphviz DOT
 
 # Lifecycle
 slinitctl start|stop|restart myservice
-slinitctl wake|release myservice         # activate/deactivate without pinning
-slinitctl once myservice                 # start without auto-restart
+slinitctl wake|release myservice         # start for dependents only / drop explicit activation
+slinitctl once myservice                 # start with restart=never (until reload)
 slinitctl signal HUP myservice
 slinitctl pause|continue myservice       # SIGSTOP / SIGCONT
 slinitctl run -- /usr/bin/thing          # transient service (systemd-run analogue)

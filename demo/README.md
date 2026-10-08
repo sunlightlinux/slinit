@@ -188,10 +188,10 @@ slinitctl untrigger trigger-test # reset trigger flag
 
 # Service lifecycle
 slinitctl stop ticker
-slinitctl stop --force ticker    # force stop (even with dependents)
+slinitctl --force stop ticker    # stop even if pinned started
 slinitctl list
 slinitctl start ticker           # marks active (stays running)
-slinitctl start --pin ticker     # start and pin in started state
+slinitctl --pin start ticker     # start and pin in started state
 slinitctl wake ticker             # start without marking active
 slinitctl release ticker          # unmark active (stop if unrequired)
 slinitctl restart hello
@@ -241,7 +241,7 @@ slinitctl rm-dep hello waits-for dep-a
 
 # Enable/disable (add/remove waits-for dep on boot or enable-via service)
 slinitctl enable ticker
-slinitctl enable --from boot ticker  # explicit source service
+slinitctl --from boot enable ticker  # explicit source service
 slinitctl disable ticker
 
 # Offline enable/disable (no daemon needed)

@@ -23,6 +23,12 @@ daemon, which is useful at install time or in initramfs.
 
 ## GLOBAL OPTIONS
 
+Global options go before the command: `slinitctl --force stop db`, not
+`slinitctl stop --force db`. Parsing stops at the first word that is not
+one of them, and that word is the command; anything after it is the
+command's own arguments, so a global option placed there is taken as a
+service name or rejected.
+
 **-p** *path*, **\--socket-path** *path*, **\--socket-path=***path*
 :   Path to the slinit control socket. Without it, *$DINIT_SOCKET_PATH*
     is used, then *$SLINIT_SOCKET_PATH*; failing both, the default is
@@ -259,11 +265,14 @@ daemon, which is useful at install time or in initramfs.
     **systemctl** habit notices and drops it.
 
 **is-started** *service*
-:   Exit 0 iff *service* is currently *started*; non-zero otherwise.
-    Suitable for shell scripting.
+:   Print the service's state and exit 0 iff it is **STARTED**, 1
+    otherwise. The state is printed even with **\--quiet**; redirect
+    stdout when only the exit status matters.
 
 **is-failed** *service*
-:   Exit 0 iff *service* failed at its last attempt.
+:   Exit 0 iff *service* failed: its last start failed, or it is
+    stopped with a non-zero exit status. Prints *FAILED* in that case
+    and the state otherwise, even with **\--quiet**.
 
 **reset-failed** [*service*]
 :   Clear the internal *start failed* mark, which **is-failed** and
@@ -474,7 +483,7 @@ daemon, which is useful at install time or in initramfs.
 **rm-dep** *from* *kind* *to*, **rm-dep** *kind* *from* *to*
 :   Remove a dependency edge of *kind*. Both orders, as for **add-dep**.
 
-**enable** *service* [\--from *src*]
+[**\--from** *src*] **enable** *service*
 :   Add a **waits-for** edge from *src* (default: the service's
     **@meta enable-via**, else the boot service) to *service*, persist
     it as a symlink, and start *service* — the equivalent of
@@ -491,7 +500,7 @@ daemon, which is useful at install time or in initramfs.
     directory", and the link has to be made by hand in the directory
     *src*'s **waits-for.d** names.
 
-**disable** *service* [\--from *src*]
+[**\--from** *src*] **disable** *service*
 :   Inverse of **enable**: remove the edge and the symlink, and stop
     *service*. With **\--offline**, only the symlink at
     *dir*/*src*/*waits-for.d*/*service* is removed (a missing link is

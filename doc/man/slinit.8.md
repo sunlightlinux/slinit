@@ -241,7 +241,7 @@ long options may be written with one or two leading dashes.
     something, and say which generation you are looking at.
 
 **\--persist-intent** *dir*
-:   Opt-in: persist pin transitions to *dir* so `slinitctl stop --pin
+:   Opt-in: persist pin transitions to *dir* so `slinitctl --pin stop
     X` stays effective across a reboot. One file per service is
     written atomically with contents `pinned-started` or
     `pinned-stopped`; `slinitctl unpin` removes the file. At boot the
