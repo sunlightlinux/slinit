@@ -27,7 +27,7 @@ they are modelled as ordinary services named *runlevel-NAME* whose
 **rc-update add nginx default** therefore becomes
 **slinitctl --from runlevel-default enable nginx**, which writes a
 **waits-for.d/** symlink under the runlevel service's description
-directory. The change persists across reboots because slinit reads
+directory and, like any **enable**, starts the service. The change persists across reboots because slinit reads
 the symlink on every load — there is no separate cache to rebuild.
 
 # ACTIONS
@@ -43,8 +43,11 @@ the symlink on every load — there is no separate cache to rebuild.
     **slinitctl --from** *runlevel-NAME* **disable** *service*
 
 **show** [*runlevel*]
-:   Print the dependency graph rooted at the runlevel. Translates to
-    **slinitctl graph** *runlevel-NAME*. Defaults to **default**.
+:   Translates to **slinitctl graph** *runlevel-NAME* (*runlevel*
+    defaults to **default**). **slinitctl graph** ignores its argument,
+    so the output is the full dependency graph in Graphviz DOT; the
+    runlevel's members are the targets of the edges leaving
+    *runlevel-NAME*.
 
 **update**, **-u**
 :   No-op. Reports success and exits 0. OpenRC uses this verb to
@@ -88,8 +91,15 @@ verbatim. Additionally:
 **127**
 :   **SLINITCTL** could not be located on **PATH**.
 
+**0**
+:   Also returned for **--help**, and when run with no arguments (the
+    usage text is printed).
+
 **2**
 :   Usage error (bad argv shape, invalid service or runlevel name).
+
+**1**
+:   **slinitctl** was found but could not be executed.
 
 # EXAMPLES
 

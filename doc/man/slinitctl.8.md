@@ -294,9 +294,9 @@ daemon, which is useful at install time or in initramfs.
 :   Print *service*'s in-memory log buffer. **\--clear** truncates the
     buffer after printing.
 
-**graph** [*service*]
-:   Print the dependency graph as Graphviz DOT. With no argument the
-    full graph is printed; with a service name only that subgraph.
+**graph**
+:   Print the dependency graph of every loaded service as Graphviz DOT.
+    Arguments are ignored: the full graph is always printed.
 
 **list5**, **status5** *service*
 :   Same output as **list** / **status** but using the v5 wire
@@ -600,18 +600,27 @@ daemon, which is useful at install time or in initramfs.
 
 ### Misc
 
-**action** *service* *action-name* [*args...*]
-:   Invoke a custom *action* defined on *service* via its
-    *action.d/* directory or *control-command-N=* settings.
+**action** *service* *action-name*
+:   Run the custom action *action-name* defined on *service* by an
+    **extra-command** or **extra-started-command** directive (see
+    **slinit-service**(5)). Extra arguments are not passed through.
 
 **list-actions** *service*
-:   Print available actions for *service*.
+:   Print the custom actions defined on *service*.
 
 **is-newer-than** *path1* *path2* / **is-older-than** *path1* *path2*
-:   Compare mtime of two paths. Exit 0 if the relation holds.
+:   Compare the modification times of two paths, as OpenRC's helpers of
+    the same name do. Exit 0 if the relation holds, 1 if it does not or
+    a path does not exist, 2 if a path cannot be examined for another
+    reason. Needs no running daemon.
 
-**bash** | **zsh** | **fish**
-:   Print a shell completion script.
+**platform**
+:   Detect and print the virtualisation or container platform. Needs no
+    running daemon.
+
+**completion** [**bash** | **zsh** | **fish**]
+:   Print a shell completion script; the default is **bash**. Needs no
+    running daemon.
 
 ## EXIT STATUS
 
@@ -620,11 +629,18 @@ daemon, which is useful at install time or in initramfs.
     true).
 
 **1**
-:   Command failed (transport error, daemon-side rejection, predicate
-    false, …). The error message on stderr distinguishes.
+:   Command failed: transport error, daemon-side rejection, predicate
+    false, unknown command or missing argument. The message on stderr
+    says which. Running **slinitctl** with no command at all also exits
+    1, after printing the usage text.
 
 **2**
-:   Usage error (bad option, missing argument).
+:   Used only by **is-newer-than** and **is-older-than**, when a path
+    cannot be examined for a reason other than not existing.
+
+Arguments are checked after the connection to the daemon is made, so
+with no daemon running every daemon-bound command, including a
+mistyped one, fails with the connection error.
 
 ## EXAMPLES
 

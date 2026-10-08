@@ -27,7 +27,8 @@ Three query paths, chosen automatically or forced by flags:
 - **File** (**-i** / **--file**) — read one specific journal file
   (binary or JSONL; magic-detected; **.gz** auto-decompressed).
 - **Directory** (**-D** / **--directory**) — iterate every
-  *\*.jsonl* / *\*.jsonl.gz* / *\*.slj* file under a directory.
+  *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* / *\*.slj* file under a
+  directory, recursively.
 
 The daemon (**slinit-journald**(8)) does NOT need to be running for
 the live path — slinit itself owns the ring buffer that
@@ -40,12 +41,12 @@ live queries.
 ## Event selection
 
 **-n**, **--lines=**\ *N*
-:   Show only the last *N* matching events. **0** = all. The default
-    heuristic caps output at 10 for interactive terminals.
+:   Show only the last *N* matching events. **0**, the default, shows
+    all of them.
 
 **--no-tail**
-:   Inverse of the **-n** default — show every match, not just the
-    tail slice.
+:   Accepted for parity; every match is already shown unless **-n**
+    is given.
 
 **-u**, **--unit=**\ *NAME*
 :   Filter by service unit name. Repeatable — becomes an OR-set.
@@ -71,7 +72,7 @@ live queries.
     **emerg**, **alert**, **crit**, **err**, **warning**, **notice**,
     **info**, **debug**.
 
-**-S**, **--since=**\ *TIME*, **-U**, **--until=**\ *TIME*
+**-S**, **--since=**\ *TIME*, **--until=**\ *TIME*
 :   Restrict to a time range. See **TIME FORMATS** below.
 
 **--facility=**\ *NAME*\|\ *N*
@@ -98,7 +99,9 @@ live queries.
     full 32-hex ID also accepted.
 
 **--this-boot**
-:   Alias for **--boot=0**.
+:   Accepted for parity and ignored. The live path only holds the
+    current boot anyway; with **--file** or **--directory** use
+    **-b** to restrict to a boot.
 
 ## Cursor navigation (resume from a known position)
 
@@ -122,24 +125,24 @@ live queries.
     **.gz** auto-decompress).
 
 **-D**, **--directory=**\ *DIR*
-:   Iterate every *\*.jsonl* / *\*.jsonl.gz* / *\*.slj* file under
-    *DIR*.
+:   Iterate every *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* /
+    *\*.slj* file under *DIR*, recursively, in walk order.
 
 **--root=**\ *PATH*
-:   Prefix applied to default filesystem paths (**--directory**,
-    **--disk-usage**). Useful for offline analysis of a rescue
-    filesystem.
+:   Prefix applied to filesystem paths: the **--directory** (or the
+    default */var/log/slinit-journal*) used by the directory, disk-usage
+    and vacuum paths, and the catalog source directories. Useful for
+    offline analysis of a rescue filesystem.
 
 ## Follow mode
 
 **-f**, **--follow**
-:   Stream new events as they arrive (Ctrl-C to stop). Not
-    compatible with **-r**.
+:   Stream new events as they arrive (Ctrl-C to stop). **-r** is
+    ignored in this mode.
 
 **-r**, **--reverse**
-:   Print newest first (ignored under **-f**). The reader seeks to
-    the tail and walks backward — not a re-sort, so it's actually
-    faster than forward for the same *N*.
+:   Print newest first. The matching events are selected as usual
+    (including **-n**) and then printed in reverse order.
 
 ## Output format
 
@@ -176,13 +179,11 @@ live queries.
 :   Cut MESSAGE at the first newline.
 
 **--no-full**
-:   Ellipsize long fields (~256 chars).
+:   Truncate MESSAGE to 256 bytes, ending in "...".
 
-**-l**, **--full**
-:   Show full fields (default; kept for parity).
-
-**-a**, **--all**
-:   Show every field value with no ellipsis.
+**-l**, **--full**, **-a**, **--all**
+:   Accepted for parity; output is never truncated unless
+    **--no-full** is given.
 
 **-e**, **--pager-end**, **--no-pager**
 :   Accepted for parity; slinit never invokes a pager.
@@ -211,10 +212,12 @@ live queries.
 ## Machine target (nspawn integration)
 
 **-M**, **--machine=**\ *CONTAINER*
-:   Query *CONTAINER*'s journal via the machine registry. On systems
-    without a running **slinit-machinectl** registry entry for
-    *CONTAINER* a warning is emitted and the query hits the host
-    journal.
+:   Query *CONTAINER*'s journal via the machine registry
+    (**slinit-machinectl**(8)): through the container's control socket
+    when it has one, otherwise from its journal files. An unregistered
+    *CONTAINER*, or one whose registered PID is no longer alive, is an
+    error. Ignored, with a warning, when **--file**, **--directory**,
+    **--root** or **--image** is also given.
 
 ## Maintenance (short-circuit — talks to slinit-journald)
 
@@ -365,12 +368,12 @@ live queries.
 
 Live queries go:
 
-    slinit-journalctl → CmdJournalQuery (opcode 32)
+    slinit-journalctl → CmdJournalQuery (opcode 60)
     → /run/slinit.socket
     → RplyJournalEntry* (streamed)
     → RplyJournalDone
 
-Follow mode substitutes **CmdJournalSubscribe** (opcode 33) for the
+Follow mode substitutes **CmdJournalSubscribe** (opcode 61) for the
 query, then reads streamed frames until the client disconnects.
 
 # EXIT STATUS
@@ -411,7 +414,7 @@ Filtered live tail with grep + tag:
 
 Verify an on-disk binary journal file:
 
-    slinit-journalctl --file=/var/log/slinit-journal/system.journal \
+    slinit-journalctl --file=/var/log/slinit-journal/2026-10-08.journal \
       --verify --fss-key=/etc/slinit/journal-key
 
 Vacuum rotated files down to 500 MiB:
@@ -433,8 +436,9 @@ Query a rescue image:
 :   Control socket for live queries.
 
 */var/log/slinit-journal/*
-:   Persistent journal directory. Files here are either binary
-    (*\*.journal*) or JSONL (*\*.jsonl*, *\*.jsonl.gz* rotated).
+:   Persistent journal directory. The active file is named after the
+    current date, *YYYY-MM-DD.journal* (binary) or *YYYY-MM-DD.jsonl*;
+    rotated JSONL files are gzip-compressed (*\*.jsonl.gz*).
 
 */run/slinit-journal/*
 :   Volatile (tmpfs) journal directory used when the persistent one

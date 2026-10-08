@@ -28,10 +28,10 @@ Two on-disk formats are supported:
 - **jsonl** (Phase C) — one JSON object per line, gzip-compressed
   on rotation. Human-greppable at the cost of size.
 
-Format is chosen at daemon start via **--format** and cannot be
-changed for an existing directory without migration; use
-**slinit-journal-migrate**(8) to convert JSONL history into the
-binary format.
+Format is chosen at daemon start via **--format**. The daemon does
+not check what an existing directory already holds, so keep one format
+per directory; use **slinit-journal-migrate**(8) to convert JSONL
+history into the binary format.
 
 The daemon opens */run/slinit.socket* on startup and replays any
 events slinit's ring buffer already holds, so events emitted
@@ -46,15 +46,17 @@ before the daemon bound to its events socket are not lost.
     */var/log/slinit-journal*). Ignored under **-dry-run**.
 
 **-volatile-dir** *DIR*
-:   Fallback directory used when **-dir** is not writable — early boot
-    before */var* is mounted read-write, or a read-only root. Set it to
-    the empty string to disable the fallback, in which case an
-    unwritable **-dir** is fatal rather than silently redirected.
+:   Fallback directory (default */run/slinit-journal*) used when
+    **-dir** is not writable at start-up — early boot before */var* is
+    mounted read-write, or a read-only root. The start-up fallback
+    applies to **-format=jsonl** only; with **-format=binary** an
+    unwritable **-dir** is fatal. Set it to the empty string to disable
+    the fallback. **slinit-journalctl --flush** moves a volatile journal
+    to **-dir** once it is writable.
 
 **-format** *FORMAT*
 :   Storage format: **binary** (Phase B, default) or **jsonl**
-    (Phase C, human-grep-friendly). Cannot be mixed inside one
-    directory.
+    (Phase C, human-grep-friendly). Any other value is a usage error.
 
 **-compress**
 :   Gzip-compress rotated JSONL files (default true). No effect
@@ -103,9 +105,11 @@ before the daemon bound to its events socket are not lost.
     Default */run/slinit/events.sock*.
 
 **-admin-socket** *PATH*
-:   UNIX SOCK_DGRAM admin control socket. Listens for flush /
-    relinquish / rotate / sync commands from
-    **slinit-journalctl**. Default */run/slinit-journald.ctl*;
+:   UNIX SOCK_DGRAM admin control socket, mode 0666. Accepts the
+    commands **flush** (sent by **slinit-journalctl --flush**) and
+    **relinquish-var** (sent by **--relinquish-var**, and by
+    **--smart-relinquish-var** when */var* is a separate mount);
+    **smart-relinquish** is accepted as an alias. Default */run/slinit-journald.ctl*;
     empty string disables.
 
 **-control-socket** *PATH*
@@ -113,16 +117,19 @@ before the daemon bound to its events socket are not lost.
     */run/slinit.socket*; empty string disables replay.
 
 **-pid-file** *PATH*
-:   Path to write the daemon's PID. Used by **slinit-journalctl
-    --sync** / **--rotate** to identify the target. Default
-    */run/slinit-journald.pid*; empty string disables.
+:   Path to write the daemon's PID. **slinit-journalctl --sync** and
+    **--rotate** read it to send **SIGUSR1** and **SIGUSR2** (see
+    **SIGNALS**). Default */run/slinit-journald.pid*; empty string
+    disables.
 
 **-namespace** *NAME*
 :   Journal namespace label — systemd **LogNamespace** equivalent.
-    When set, the defaults for **-dir**, **-socket**, **-pid-file**,
-    **-admin-socket** all gain the *.NAME* suffix (so multiple
-    daemons can coexist), and every incoming event is tagged with
-    the namespace so **slinit-journalctl --namespace** can filter.
+    When set, the defaults that were not overridden gain a suffix so
+    several daemons can coexist: **-dir** and **-volatile-dir** become
+    *DIR.NAME*, **-pid-file** */run/slinit-journald.NAME.pid*,
+    **-admin-socket** */run/slinit-journald.NAME.ctl*, and **-socket**
+    */run/slinit/events-NAME.sock*. Every incoming event is tagged
+    with the namespace so **slinit-journalctl --namespace** can filter.
 
 ## Diagnostics
 
@@ -132,17 +139,28 @@ before the daemon bound to its events socket are not lost.
 **-version**
 :   Print the version and exit.
 
+# SIGNALS
+
+**SIGTERM**, **SIGINT**
+:   Shut down cleanly.
+
+**SIGUSR1**
+:   Flush (fsync) the active journal file.
+
+**SIGUSR2**
+:   Rotate the active journal file.
+
 # EXIT STATUS
 
 **0**
 :   Clean shutdown (SIGTERM/SIGINT).
 
 **1**
-:   Runtime error (bind failed, directory unwritable, format
-    mismatch on an existing directory).
+:   Runtime error: the events socket cannot be bound, the journal
+    directory is unusable, or the FSS key cannot be loaded.
 
 **2**
-:   Usage error.
+:   Usage error, including an unknown **-format**.
 
 # FILES
 
@@ -156,7 +174,7 @@ before the daemon bound to its events socket are not lost.
 :   Events socket that slinit's emitters connect to.
 
 */run/slinit-journald.ctl*
-:   Admin control socket (flush/rotate/sync).
+:   Admin control socket (flush / relinquish).
 
 */run/slinit-journald.pid*
 :   Daemon PID file.
@@ -187,5 +205,5 @@ Dry-run to a terminal for debugging:
 **slinit-journalctl**(8), **slinit-journal-migrate**(8),
 **slinit**(8), **slinit-service**(5)
 
-The on-disk binary format is specified in the source tree at
-*pkg/journalbin/README.md*.
+The on-disk binary format is described in the source tree, in the
+package documentation of *pkg/journalbin/format.go*.

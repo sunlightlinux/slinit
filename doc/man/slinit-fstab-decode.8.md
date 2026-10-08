@@ -49,6 +49,9 @@ trailing lone backslash is left alone.
 Only the *ARGUMENT*s are decoded. *COMMAND* is not: it is a path to look
 up, not a field out of a mount table.
 
+There are no options. The first argument is always *COMMAND*, so
+**--help** is looked up as a command name and fails with status 127.
+
 ## Becoming the command
 
 The command replaces this process rather than running as a child of it,

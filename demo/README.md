@@ -268,7 +268,7 @@ reboot                           # invokes slinit → ShutdownReboot
 # OpenRC compat shims (argv-translate over slinitctl)
 rc-service hello status          # → slinitctl status hello
 rc-update add hello default      # → slinitctl --from runlevel-default enable hello
-rc-status default                # → slinitctl graph runlevel-default
+rc-status default                # → slinitctl graph (full graph, DOT)
 
 # Clean shutdown (exits QEMU due to -no-reboot)
 slinitctl shutdown reboot
@@ -570,7 +570,7 @@ Try:
 ```bash
 rc-service hello-initd start       # argv shim over slinitctl
 rc-update add hello-initd default  # adds waits-for: hello-initd on runlevel-default
-rc-status default                  # graph runlevel-default
+rc-status default                  # full dependency graph (DOT)
 cat /run/hello-initd.log           # see HELLO_MESSAGE from /etc/conf.d/
 # (scripted stdout goes to /dev/null by default — init.d wrapper
 #  tees to /run/hello-initd.log so the sourcing is inspectable)

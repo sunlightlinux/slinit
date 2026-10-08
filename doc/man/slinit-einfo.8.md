@@ -23,8 +23,8 @@ family. It dispatches via **basename**(**argv[0]**) so installers
 ship a symlink per applet — `einfo`, `ewarn`, `eend`, and so on —
 each pointing at the single **slinit-einfo** binary.
 
-Each applet prints an OpenRC-style " * *MSG*" line (green info,
-yellow warning, red error) and, for the **ebegin** / **eend** pair,
+Each applet prints an OpenRC-style " * *MSG*" line, with the asterisk
+coloured green (info), yellow (warning) or red (error), and, for the **ebegin** / **eend** pair,
 a right-aligned `[ ok ]` or `[ !! ]` marker on column 80 (or
 **$COLUMNS**). Colours are auto-detected from the target stream's
 TTY-ness and can be forced off with **EINFO_COLOR=no**.
@@ -53,10 +53,12 @@ TTY-ness and can be forced off with **EINFO_COLOR=no**.
 :   " * *MSG* ..." in green, no newline. Sets up an **eend** on the
     same visual row.
 
-**eend** *STATUS* [*MSG*]
-:   Prints "[ ok ]" (green) when *STATUS* is 0, "[ !! ]" (red)
-    otherwise; if *MSG* is given, prints it as a warning/error line
-    first. Propagates *STATUS* as the exit code.
+**eend** [*STATUS* [*MSG*]]
+:   Prints "[ ok ]" (green) when *STATUS* is 0 or omitted, "[ !! ]"
+    (red) otherwise. If *MSG* is given it is printed first, as an info
+    line when *STATUS* is 0 and as an error line otherwise. Propagates
+    *STATUS* as the exit code; a *STATUS* that is not an integer is an
+    error (exit 1).
 
 **ewend** *STATUS* [*MSG*]
 :   Like **eend** but uses the yellow warning palette for non-zero
@@ -64,7 +66,8 @@ TTY-ness and can be forced off with **EINFO_COLOR=no**.
 
 **veinfo**, **veinfon**, **vewarn**, **vewarnn**, **vebegin**, **veend**, **vewend**
 :   Verbose variants — only emit output when **EINFO_VERBOSE** is
-    truthy. Otherwise silently return.
+    truthy (**1**, **y**, **yes**, **true** or **on**). Otherwise they
+    print nothing; **veend** and **vewend** still return *STATUS*.
 
 **eindent**, **eoutdent**, **veindent**, **veoutdent**
 :   No-op stubs — indent tracking requires mutating **EINFO_INDENT**
@@ -80,13 +83,17 @@ TTY-ness and can be forced off with **EINFO_COLOR=no**.
     **err**, **crit**, **alert**, **emerg**, **debug**) or a numeric
     priority. *FACILITY* defaults to **user** and accepts the standard
     names (**daemon**, **auth**, **cron**, **local0**-**local7**, …).
-    Falls back to stderr when **/dev/log** is unreachable.
+    Falls back to printing "*TAG*: *MSG*" on stderr when **/dev/log** is
+    unreachable. Fewer than three arguments, or an unknown severity or
+    facility, is an error (exit 1).
 
 **ewaitfile** *TIMEOUT* *PATH*...
-:   Poll for each *PATH* to exist. *TIMEOUT* is in seconds; **0**
-    means wait forever. Prints a "Waiting for *PATH*" verbose-mode
-    line per path and closes with **eend** on success or **ewend**
-    on timeout.
+:   Wait for each *PATH* in turn to exist, polling every 20 ms.
+    *TIMEOUT* is in seconds and applies to each path separately; **0**
+    or a negative value means wait forever. The first path that times
+    out ends the command with exit 1. When **EINFO_VERBOSE** is set, a
+    "Waiting for *PATH*" line is framed by an **eend** marker on
+    success or an **ewend** marker on timeout.
 
 **eval_ecolors**
 :   Print the current colour palette as **KEY='value'** shell
@@ -96,8 +103,8 @@ TTY-ness and can be forced off with **EINFO_COLOR=no**.
 # ENVIRONMENT
 
 **EINFO_QUIET**
-:   Truthy value suppresses every applet's output. Exit codes are
-    unaffected.
+:   Truthy value (**1**, **y**, **yes**, **true**, **on**) suppresses
+    every applet's output. Exit codes are unaffected.
 
 **EINFO_VERBOSE**
 :   Truthy value enables the **v** variants (**veinfo**, etc.) and
@@ -123,9 +130,13 @@ TTY-ness and can be forced off with **EINFO_COLOR=no**.
 # EXIT STATUS
 
 - **eerror** / **eerrorn**: always **1**.
-- **eend** / **ewend**: the status argument passed on the command line.
-- **ewaitfile**: **0** if every path appeared before timeout; **1**
-  otherwise (or on usage errors).
+- **eend** / **ewend** (and their **v** variants): the *STATUS*
+  argument, **0** when it is omitted, **1** when it is not an integer.
+- **ewaitfile**: **0** if every path appeared before its timeout; **1**
+  otherwise, or on a usage error.
+- **esyslog** / **elog**: **0**, including when syslog is unreachable;
+  **1** on a usage error.
+- An applet name that is not recognised: **1**.
 - Everything else: **0**.
 
 # EXAMPLES

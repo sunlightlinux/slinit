@@ -29,25 +29,33 @@ existing init-script idioms transfer unchanged.
 ## Path type (mutually exclusive)
 
 At most one of the following may be set. Omitting all of them is legal
-when only **-W** is requested (writable check, no creation).
+when the path already exists (its mode and owner are then adjusted) or
+only **-W** is requested; a missing path with no type is an error.
+
+A path that already exists must be of the requested type. Symbolic links
+are refused rather than followed.
 
 **-d**, **--directory**
-:   Ensure *PATH* is a directory; create it (and any missing parents)
-    if necessary.
+:   Ensure *PATH* is a directory; create it if necessary. Parent
+    directories are not created and must already exist. A new directory
+    gets mode 0755 unless **-m** is given.
 
 **-D**, **--directory-truncate**
 :   As **-d**, but also truncates the directory by removing every entry
     inside it. Useful for rebuilding stale runtime state at boot.
 
 **-f**, **--file**
-:   Ensure *PATH* is a regular file; create it if missing.
+:   Ensure *PATH* is a regular file; create it if missing, with mode
+    0644 unless **-m** is given.
 
 **-F**, **--file-truncate**
 :   As **-f**, but truncates the file to zero length on every run.
 
 **-p**, **--pipe**
 :   Ensure *PATH* is a named pipe (FIFO); create it via **mkfifo**(3)
-    if missing.
+    if missing, with mode 0644 unless **-m** is given.
+
+New paths are created subject to the process umask.
 
 ## Attributes
 
@@ -59,12 +67,15 @@ when only **-W** is requested (writable check, no creation).
 **-o**, **--owner** *USER*[**:***GROUP*]
 :   Desired ownership. *USER* and *GROUP* may each be a name or a
     numeric ID. The colon-separated form sets both; a bare *USER*
-    leaves the group untouched.
+    leaves the group untouched, and **:***GROUP* alone leaves the user
+    untouched.
 
 **-W**, **--writable**
-:   Treat the call as a success when *PATH* is already writable, even
-    if the type/mode/owner do not match. Useful for "fix it if you
-    can, otherwise let me decide" patterns in pre-start hooks.
+:   If *PATH* is already writable by the caller, succeed at once without
+    checking or changing type, mode or owner. If it does not exist and a
+    type is given, it is created as usual; if it exists but is not
+    writable, or does not exist and no type is given, that is a
+    failure.
 
 # EXIT STATUS
 
@@ -74,9 +85,13 @@ when only **-W** is requested (writable check, no creation).
 
 **1**
 :   At least one *PATH* could not be made to satisfy the constraints.
-    The first such failure is reported on stderr and execution
-    continues for the remaining paths so the operator can see all
-    the work needed; the exit status remains nonzero.
+    Every failure is reported on stderr and the remaining paths are
+    still processed. Also returned for a usage error detected after
+    option parsing: no *PATH*, more than one type flag, or an invalid
+    **-m** or **-o** value.
+
+**2**
+:   Unknown option.
 
 # EXAMPLES
 

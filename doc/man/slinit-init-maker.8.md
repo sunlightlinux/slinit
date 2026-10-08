@@ -25,7 +25,9 @@ optional **network**, *N* gettys — wired to a single top-level
 their own service files in alongside the ones produced here.
 
 The default output directory is */etc/slinit/boot.d*. Existing files
-are preserved unless **--force** is given.
+are preserved unless **--force** is given: the first file that already
+exists stops the run with an error, and files written before it are
+left in place.
 
 # OPTIONS
 
@@ -38,8 +40,9 @@ are preserved unless **--force** is given.
     touch any file that already exists in *DIR*.
 
 **-n**, **--dry-run**
-:   Print the plan (every file that would be written, including a
-    short preview of its contents) without touching the filesystem.
+:   Print the plan — the path and size of every file that would be
+    written, marked **x** when executable — without touching the
+    filesystem.
     Combine with **--with-mounts** / **--with-network** etc. to
     inspect the full layout before committing.
 
@@ -74,7 +77,7 @@ are preserved unless **--force** is given.
 
 **--with-mounts**
 :   Emit a **system-mounts** service that runs **mount -a**. Enabled
-    by default.
+    by default; **--with-mounts=false** disables it.
 
 **--with-network**
 :   Emit a stub **network** service the user can replace with
@@ -90,21 +93,23 @@ are preserved unless **--force** is given.
 :   Print the binary version (set at build time via
     **-ldflags '-X main.version=...'**) and exit.
 
+**-h**, **--help**
+:   Print the option list and exit with status 2.
+
 # GENERATED LAYOUT
 
 A typical run with the defaults emits, into *DIR*:
 
-| Path                 | Purpose                                          |
-|----------------------|--------------------------------------------------|
-| boot                 | Top-level **internal** target; **waits-for**     |
-|                      | every other generated service.                   |
-| system-init          | One-shot scripted service: hostname, /proc, etc. |
-| system-mounts        | One-shot **mount -a** wrapper (if **--with-mounts**). |
-| network              | Stub bring-up (if **--with-network**).           |
-| getty-ttyN           | One per VT, **runs-on-console=true**.            |
-| environment          | env-file consumed by every generated service.    |
-| README               | Hints for wiring the kernel cmdline.             |
-| shutdown-hook.sample | Commented template (if **--with-shutdown-hook**).|
+| Path | Purpose |
+|---|---|
+| boot | Top-level **internal** target (named by **--name**); **waits-for** every other generated service. |
+| system-init | **internal** synchronisation marker that the other services depend on; runs nothing. |
+| system-mounts | **scripted** service running */bin/mount -a* (unless **--with-mounts=false**). |
+| network | Stub bring-up (only with **--with-network**). |
+| getty-ttyN | One **process** service per VT running *GETTY* **--keep-baud** *BAUD* *ttyN* **linux**, with **restart = true** and an **inittab-id** / **inittab-line**. |
+| env | **KEY=VALUE** file with **PATH**, and **HOSTNAME** / **TZ** when given. It is not loaded automatically: pass it to **slinit --env-file**. |
+| README.md | Hints for wiring the kernel command line. |
+| shutdown-hook.sample | Commented template, not executable (only with **--with-shutdown-hook**). |
 
 # EXIT STATUS
 
@@ -116,7 +121,7 @@ A typical run with the defaults emits, into *DIR*:
     other recoverable failure.
 
 **2**
-:   Bad command-line arguments.
+:   Bad command-line arguments, or **--help**.
 
 # EXAMPLES
 

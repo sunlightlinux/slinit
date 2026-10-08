@@ -25,9 +25,8 @@ rc-status - OpenRC-compatible service status listing for slinit
 # DESCRIPTION
 
 **rc-status** is a thin projection of **slinitctl list** under the
-OpenRC argv shape. It prints the current state of every loaded service
-or, when given a runlevel name, the dependency graph rooted at that
-runlevel.
+OpenRC argv shape. It prints the current state of every loaded
+service, or, when given a runlevel name, the dependency graph.
 
 OpenRC's native **rc-status** ships a per-runlevel grouped layout with
 coloured **OK** / **STOPPED** markers. **rc-status** under slinit does
@@ -42,9 +41,11 @@ the exact OpenRC look can script it on top of **slinitctl list5**.
 :   Print every loaded service. Translates to **slinitctl list**.
 
 *runlevel*
-:   A bare positional argument is treated as a runlevel name. Translates
-    to **slinitctl graph** *runlevel-NAME* — the dependency graph
-    rooted at that runlevel service.
+:   A bare positional argument is treated as a runlevel name and
+    translated to **slinitctl graph** *runlevel-NAME*. **slinitctl
+    graph** ignores its argument, so the output is the full dependency
+    graph in Graphviz DOT, not only the runlevel's members; look for
+    the edges leaving *runlevel-NAME*.
 
 **-a**, **--all**
 :   Same as no arguments.
@@ -85,8 +86,11 @@ The exit status of the underlying **slinitctl** invocation is returned
 verbatim. Additionally:
 
 **0**
-:   Returned for **--list** and **--runlevel** without dispatching to
-    **slinitctl**.
+:   Returned for **--list**, **--runlevel** and **--help** without
+    dispatching to **slinitctl**.
+
+**1**
+:   **slinitctl** was found but could not be executed.
 
 **127**
 :   **SLINITCTL** could not be located on **PATH**.
@@ -98,7 +102,7 @@ verbatim. Additionally:
 
 ```
 rc-status                # all services
-rc-status default        # graph rooted at runlevel-default
+rc-status default        # full dependency graph (DOT)
 rc-status --list         # canonical runlevel names
 rc-status --runlevel     # always "default"
 ```
