@@ -24,6 +24,22 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`slinitctl --offline enable|disable`** wrote the link to
+  `<dir>/<src>/waits-for.d/<service>`, which needs the source service to
+  be a directory. It is a file, so the ordinary install-time call failed
+  with "not a directory", and even where it worked the link was not where
+  the daemon's `enable` puts it or where the loader looks. The offline
+  path now reads the service files the way the loader does and uses the
+  same rules as the daemon: the source defaults to the target's
+  `@meta enable-via`, then `boot`; the link goes into the source's first
+  `waits-for.d` directory, resolved against the source file's directory;
+  template instances (`getty@tty1`) resolve to their base file. A source
+  that declares no `waits-for.d` is refused: the daemon's fallback
+  directory is one the loader never reads, so a link there would do
+  nothing offline.
+
 ## [3.0.7] — 2026-10-06
 
 Two additions, closing all but two items of the immortal triage.
