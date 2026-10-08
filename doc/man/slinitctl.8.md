@@ -92,8 +92,8 @@ service name or rejected.
 **\--from** *service*, **\--from=***service*
 :   For **enable** / **disable**: name of the *source* service the
     **waits-for** edge hangs from. Without it, the daemon uses the
-    target's **@meta enable-via**, then the boot service; **\--offline**
-    uses **boot**.
+    target's **@meta enable-via**, then the boot service (**boot**
+    with **\--offline**).
 
 **\--use-passed-cfd**
 :   Take the control-socket file descriptor from the environment
@@ -493,18 +493,17 @@ service name or rejected.
     *waits-for.d/* beside *src*'s file, which the loader does not
     scan, so the edge then lasts only until the daemon restarts.
 
-    With **\--offline**, nothing is started and the symlink is written
-    to *dir*/*src*/*waits-for.d*/*service* (*src* defaulting to
-    **boot**). That path only works when *src* is a directory; for
-    the usual case, a service file, the command fails with "not a
-    directory", and the link has to be made by hand in the directory
-    *src*'s **waits-for.d** names.
+    With **\--offline**, nothing is started: the service files in *dir*
+    are read to find the same directory, and the symlink is written
+    there. Since the daemon's fallback directory would never be read,
+    an offline **enable** of a *src* that declares no **waits-for.d**
+    is refused with an error instead.
 
 [**\--from** *src*] **disable** *service*
 :   Inverse of **enable**: remove the edge and the symlink, and stop
-    *service*. With **\--offline**, only the symlink at
-    *dir*/*src*/*waits-for.d*/*service* is removed (a missing link is
-    reported, not an error).
+    *service*. With **\--offline**, only the symlink is removed, from
+    the directory **enable** would use (a missing link is reported,
+    not an error).
 
 **setenv** *service* *KEY*=*VALUE*
 :   Set an environment variable on *service*; it applies from the
@@ -736,11 +735,10 @@ Reboot the machine:
 Enable a service to start at boot:
 
     slinitctl enable nginx                  # daemon running
+    slinitctl --offline -d /etc/slinit.d enable nginx   # install time
 
-Without a daemon (install time), link it into the directory *boot*'s
-**waits-for.d** setting names, e.g. for `waits-for.d: boot.d`:
-
-    ln -s ../nginx /etc/slinit.d/boot.d/nginx
+The offline form needs *boot* to declare its **waits-for.d**
+(e.g. `waits-for.d: boot.d`); the link lands in that directory.
 
 Inspect the dependency graph as DOT:
 

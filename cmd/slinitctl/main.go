@@ -17,6 +17,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -867,25 +868,89 @@ func stripServiceArg(name string) string {
 	return name
 }
 
-// offlineEnable creates a waits-for.d symlink (offline mode).
-func offlineEnable(svcDir, from, to string) error {
+// offlineDesc finds and parses service name in svcDir the way the
+// loader does: the full name first, then the template base name with
+// the instance argument substituted.
+func offlineDesc(svcDir, name string) (*config.ServiceDescription, string, error) {
+	baseName := stripServiceArg(name)
+	searchNames := []string{name}
+	if baseName != name {
+		searchNames = append(searchNames, baseName)
+	}
+	for _, sn := range searchNames {
+		path := filepath.Join(svcDir, sn)
+		f, err := os.Open(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, "", err
+		}
+		var desc *config.ServiceDescription
+		if baseName != name {
+			desc, err = config.ParseWithArg(f, name, path, name[len(baseName)+1:])
+		} else {
+			desc, err = config.Parse(f, name, path)
+		}
+		f.Close()
+		if err != nil {
+			return nil, "", err
+		}
+		return desc, path, nil
+	}
+	return nil, "", fmt.Errorf("service '%s' not found in %s", name, svcDir)
+}
+
+// offlineLinkPath returns the waits-for.d symlink path for enabling to
+// from from, matching the daemon's enable: from defaults to to's
+// @meta enable-via, then boot, and the link goes into from's first
+// waits-for.d entry, resolved against from's directory. A source with
+// no waits-for.d is refused — the daemon's fallback directory is not
+// one the loader reads, so offline a link there would do nothing.
+// For disable (needTarget false) a missing target file is tolerated,
+// so the link of a service whose file is already gone can be removed.
+func offlineLinkPath(svcDir, from, to string, needTarget bool) (string, string, error) {
+	toDesc, _, err := offlineDesc(svcDir, to)
+	if err != nil && needTarget {
+		return "", "", err
+	}
+	if from == "" && toDesc != nil {
+		from = toDesc.EnableVia
+	}
 	if from == "" {
 		from = "boot"
 	}
-	// Strip @arg from "from" for directory lookup
-	fromBase := stripServiceArg(from)
-	waitsDir := svcDir + "/" + fromBase + "/waits-for.d"
-	if err := os.MkdirAll(waitsDir, 0755); err != nil {
+	fromDesc, fromPath, err := offlineDesc(svcDir, from)
+	if err != nil {
+		return "", "", err
+	}
+	if len(fromDesc.WaitsForD) == 0 {
+		return "", "", fmt.Errorf("service '%s' declares no waits-for.d directory to enable '%s' in", from, to)
+	}
+	waitsDir := fromDesc.WaitsForD[0]
+	if !filepath.IsAbs(waitsDir) {
+		waitsDir = filepath.Join(filepath.Dir(fromPath), waitsDir)
+	}
+	return filepath.Join(waitsDir, to), from, nil
+}
+
+// offlineEnable creates a waits-for.d symlink (offline mode).
+func offlineEnable(svcDir, from, to string) error {
+	link, from, err := offlineLinkPath(svcDir, from, to, true)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
 		return fmt.Errorf("creating waits-for.d: %w", err)
 	}
-	link := waitsDir + "/" + to
 	// Check if link already exists
 	if _, err := os.Lstat(link); err == nil {
 		info("Service '%s' is already enabled (from '%s').\n", to, from)
 		return nil
 	}
-	// Create relative symlink pointing to the service file (use base name for target)
-	target := "../../" + stripServiceArg(to)
+	// Relative symlink to the service file (base name for templates);
+	// the loader only reads the link's name.
+	target := "../" + stripServiceArg(to)
 	if err := os.Symlink(target, link); err != nil {
 		return fmt.Errorf("creating symlink: %w", err)
 	}
@@ -895,12 +960,10 @@ func offlineEnable(svcDir, from, to string) error {
 
 // offlineDisable removes a waits-for.d symlink (offline mode).
 func offlineDisable(svcDir, from, to string) error {
-	if from == "" {
-		from = "boot"
+	link, from, err := offlineLinkPath(svcDir, from, to, false)
+	if err != nil {
+		return err
 	}
-	// Strip @arg from "from" for directory lookup
-	fromBase := stripServiceArg(from)
-	link := svcDir + "/" + fromBase + "/waits-for.d/" + to
 	if err := os.Remove(link); err != nil {
 		if os.IsNotExist(err) {
 			info("Service '%s' is not enabled (from '%s').\n", to, from)
