@@ -38,6 +38,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **slinitctl exited 1 on usage errors, where STABILITY.md promises 2.**
+  Every error went through one exit path, so a script could not tell
+  "called wrongly" from "the command failed". Usage errors — an unknown
+  command, a bad global option value, a missing or malformed argument,
+  no command at all — now exit 2, as the contract and slinitctl(8)
+  always said; failures keep 1. An unknown command is also caught
+  before connecting, so it is reported as such even with no daemon
+  running, instead of as a connection error.
+
 - **A misspelt name in `capabilities`, `capability-bounding-set` or
   `securebits` dropped the whole setting without a word.** The parser
   stored the text and the loader discarded anything it could not parse,

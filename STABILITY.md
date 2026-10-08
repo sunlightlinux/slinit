@@ -117,9 +117,9 @@ and `:`), their accepted values, and what they do.
 - `slinit`'s options and the kernel command-line keys it reads, as
   documented in `slinit(8)`.
 - `slinitctl`'s subcommands and flags, as documented in `slinitctl(8)`.
-- `slinitctl`'s exit statuses: `0` success, `1` failure (usage errors
-  included), and `2` only from `is-newer-than` / `is-older-than` when a
-  path cannot be examined. A subcommand that exits `0` today on an outcome does not start
+- `slinitctl`'s exit statuses: `0` success, `1` failure, `2` usage
+  error (and, for `is-newer-than` / `is-older-than`, a path that cannot
+  be examined). A subcommand that exits `0` today on an outcome does not start
   exiting non-zero on the same outcome, or the reverse, outside a major
   release — except under [Exceptions](#exceptions).
 - `slinitctl show`'s `Key=Value` output: keys are not removed or

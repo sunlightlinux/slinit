@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -76,7 +77,7 @@ func main() {
 		switch {
 		case args[0] == "--socket-path" || args[0] == "-p":
 			if len(args) < 2 {
-				fatal("--socket-path requires an argument")
+				usageFatal("--socket-path requires an argument")
 			}
 			socketPath = args[1]
 			args = args[2:]
@@ -94,11 +95,11 @@ func main() {
 			args = args[1:]
 		case args[0] == "-w" || args[0] == "--wait":
 			if len(args) < 2 {
-				fatal("-w requires an argument (seconds)")
+				usageFatal("-w requires an argument (seconds)")
 			}
 			n, err := strconv.Atoi(args[1])
 			if err != nil || n < 0 {
-				fatal("-w: must be a non-negative integer (got %q)", args[1])
+				usageFatal("-w: must be a non-negative integer (got %q)", args[1])
 			}
 			waitSecs = n
 			args = args[2:]
@@ -106,7 +107,7 @@ func main() {
 			val := strings.TrimPrefix(strings.TrimPrefix(args[0], "--wait="), "-w=")
 			n, err := strconv.Atoi(val)
 			if err != nil || n < 0 {
-				fatal("-w: must be a non-negative integer (got %q)", val)
+				usageFatal("-w: must be a non-negative integer (got %q)", val)
 			}
 			waitSecs = n
 			args = args[1:]
@@ -124,7 +125,7 @@ func main() {
 			args = args[1:]
 		case args[0] == "--services-dir" || args[0] == "-d":
 			if len(args) < 2 {
-				fatal("--services-dir requires an argument")
+				usageFatal("--services-dir requires an argument")
 			}
 			servicesDir = args[1]
 			args = args[2:]
@@ -133,7 +134,7 @@ func main() {
 			args = args[1:]
 		case args[0] == "--from":
 			if len(args) < 2 {
-				fatal("--from requires an argument")
+				usageFatal("--from requires an argument")
 			}
 			fromSvc = args[1]
 			args = args[2:]
@@ -168,11 +169,14 @@ doneFlags:
 
 	if len(args) == 0 {
 		printUsage()
-		os.Exit(1)
+		os.Exit(exitUsage)
 	}
 
 	command := args[0]
 	cmdArgs := args[1:]
+	if !commandNames[command] {
+		usageFatal("Unknown command: %s", command)
+	}
 
 	// Commands that don't need a daemon connection
 	if command == "platform" {
@@ -189,7 +193,7 @@ doneFlags:
 	}
 	if command == "is-newer-than" || command == "is-older-than" {
 		if len(cmdArgs) != 2 {
-			fatal("Usage: slinitctl %s <file-a> <file-b>", command)
+			usageFatal("Usage: slinitctl %s <file-a> <file-b>", command)
 		}
 		cmdFileCompare(command, cmdArgs[0], cmdArgs[1])
 		return
@@ -223,7 +227,7 @@ doneFlags:
 		switch command {
 		case "enable":
 			if len(cmdArgs) < 1 {
-				fatal("Service name required")
+				usageFatal("Service name required")
 			}
 			err := offlineEnable(svcDir, fromSvc, cmdArgs[0])
 			if err != nil {
@@ -231,14 +235,14 @@ doneFlags:
 			}
 		case "disable":
 			if len(cmdArgs) < 1 {
-				fatal("Service name required")
+				usageFatal("Service name required")
 			}
 			err := offlineDisable(svcDir, fromSvc, cmdArgs[0])
 			if err != nil {
 				fatal("Error: %v", err)
 			}
 		default:
-			fatal("Offline mode only supports enable/disable commands")
+			usageFatal("Offline mode only supports enable/disable commands")
 		}
 		return
 	}
@@ -353,7 +357,7 @@ doneFlags:
 			return
 		}
 		if len(cmdArgs) < 2 {
-			fatal("Usage: slinitctl signal [-l|--list] <signal> <service>")
+			usageFatal("Usage: slinitctl signal [-l|--list] <signal> <service>")
 		}
 		err = cmdSignal(conn, cmdArgs[1], cmdArgs[0])
 	case "pause":
@@ -421,17 +425,17 @@ doneFlags:
 			}
 		}
 		if svcName == "" {
-			fatal("Usage: slinitctl catlog [--clear] <service>")
+			usageFatal("Usage: slinitctl catlog [--clear] <service>")
 		}
 		err = cmdCatLog(conn, svcName, clearFlag)
 	case "setenv":
 		if len(cmdArgs) < 2 {
-			fatal("Usage: slinitctl setenv <service> KEY=VALUE")
+			usageFatal("Usage: slinitctl setenv <service> KEY=VALUE")
 		}
 		err = cmdSetEnv(conn, cmdArgs[0], cmdArgs[1])
 	case "unsetenv":
 		if len(cmdArgs) < 2 {
-			fatal("Usage: slinitctl unsetenv <service> KEY")
+			usageFatal("Usage: slinitctl unsetenv <service> KEY")
 		}
 		err = cmdUnsetEnv(conn, cmdArgs[0], cmdArgs[1])
 	case "getallenv":
@@ -444,25 +448,25 @@ doneFlags:
 		})
 	case "setenv-global":
 		if len(cmdArgs) < 1 {
-			fatal("Usage: slinitctl setenv-global KEY=VALUE")
+			usageFatal("Usage: slinitctl setenv-global KEY=VALUE")
 		}
 		err = cmdSetEnvGlobal(conn, cmdArgs[0])
 	case "unsetenv-global":
 		if len(cmdArgs) < 1 {
-			fatal("Usage: slinitctl unsetenv-global KEY")
+			usageFatal("Usage: slinitctl unsetenv-global KEY")
 		}
 		err = cmdUnsetEnvGlobal(conn, cmdArgs[0])
 	case "getallenv-global":
 		err = cmdGetAllEnvGlobal(conn)
 	case "add-dep":
 		if len(cmdArgs) < 3 {
-			fatal("Usage: slinitctl add-dep <from> <dep-type> <to>  (or <dep-type> <from> <to>)")
+			usageFatal("Usage: slinitctl add-dep <from> <dep-type> <to>  (or <dep-type> <from> <to>)")
 		}
 		depFrom, depKind, depTo := orderDepArgs(cmdArgs[0], cmdArgs[1], cmdArgs[2])
 		err = cmdAddDep(conn, depFrom, depKind, depTo)
 	case "rm-dep":
 		if len(cmdArgs) < 3 {
-			fatal("Usage: slinitctl rm-dep <from> <dep-type> <to>  (or <dep-type> <from> <to>)")
+			usageFatal("Usage: slinitctl rm-dep <from> <dep-type> <to>  (or <dep-type> <from> <to>)")
 		}
 		depFrom, depKind, depTo := orderDepArgs(cmdArgs[0], cmdArgs[1], cmdArgs[2])
 		err = cmdRmDep(conn, depFrom, depKind, depTo)
@@ -488,8 +492,7 @@ doneFlags:
 		err = cmdQueryLoadMech(conn)
 	case "dependents":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintf(os.Stderr, "usage: slinitctl dependents <service>\n")
-			os.Exit(1)
+			usageFatal("Usage: slinitctl dependents <service>")
 		}
 		err = cmdDependents(conn, cmdArgs[0])
 	case "list5":
@@ -506,7 +509,7 @@ doneFlags:
 		err = cmdGraph(conn)
 	case "attach":
 		if len(cmdArgs) < 1 {
-			fatal("Usage: slinitctl attach <service>")
+			usageFatal("Usage: slinitctl attach <service>")
 		}
 		// attach doesn't use the control protocol — connects directly to vtty socket
 		if conn != nil {
@@ -515,7 +518,7 @@ doneFlags:
 		err = cmdAttach(cmdArgs[0], socketPath, systemMode)
 	case "action":
 		if len(cmdArgs) < 2 {
-			fatal("Usage: slinitctl action <service> <action-name>")
+			usageFatal("Usage: slinitctl action <service> <action-name>")
 		}
 		err = cmdRunAction(conn, cmdArgs[0], cmdArgs[1])
 	case "list-actions":
@@ -523,10 +526,14 @@ doneFlags:
 			return cmdListActions(conn, name)
 		})
 	default:
-		fatal("Unknown command: %s", command)
+		usageFatal("Unknown command: %s", command)
 	}
 
 	if err != nil {
+		var ue usageError
+		if errors.As(err, &ue) {
+			usageFatal("Error: %v", err)
+		}
 		fatal("Error: %v", err)
 	}
 }
@@ -623,6 +630,52 @@ func fatal(format string, args ...interface{}) {
 	os.Exit(1)
 }
 
+// exitUsage is the exit status for a usage error — a bad flag, an
+// unknown command, a missing or malformed argument. STABILITY.md promises
+// it apart from 1 (the command failed), so a script can tell "I called it
+// wrong" from "it did not work".
+const exitUsage = 2
+
+// usageFatal reports a usage error and exits with exitUsage.
+func usageFatal(format string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "slinitctl: "+format+"\n", args...)
+	os.Exit(exitUsage)
+}
+
+// usageError marks an error a subcommand returns because of how it was
+// invoked, so main exits with exitUsage for it rather than 1.
+type usageError struct{ error }
+
+func usagef(format string, args ...interface{}) error {
+	return usageError{fmt.Errorf(format, args...)}
+}
+
+// commandNames lists every command, so an unknown one is a usage error
+// even when no daemon is running — the dispatch switch only runs after
+// connecting. TestCommandNamesMatchDispatch keeps it in step with the
+// switch statements below.
+var commandNames = map[string]bool{
+	"platform": true, "completion": true, "is-newer-than": true, "is-older-than": true,
+	"action": true, "activate-profile": true, "active-profile": true,
+	"add-dep": true, "analyze": true, "attach": true, "boot-time": true,
+	"catlog": true, "cont": true, "continue": true, "dependents": true,
+	"disable": true, "edit": true, "enable": true, "freeze": true,
+	"getallenv": true, "getallenv-global": true, "graph": true, "halt": true,
+	"is-failed": true, "is-started": true, "kexec": true, "list": true,
+	"list-actions": true, "list-profiles": true, "list5": true,
+	"load-mech": true, "ls": true, "once": true, "pause": true,
+	"poweroff": true, "query-load-mech": true, "query-name": true,
+	"reboot": true, "release": true, "reload": true, "reload-all": true,
+	"reload-signal": true, "reset-env": true, "reset-failed": true,
+	"restart": true, "rm-dep": true, "run": true, "service-dirs": true,
+	"setenv": true, "setenv-global": true, "show": true, "shutdown": true,
+	"signal": true, "soft-reboot": true, "softreboot": true, "start": true,
+	"start-all": true, "status": true, "status5": true, "stop": true,
+	"suspend": true, "switch-root": true, "switch_root": true, "thaw": true,
+	"trigger": true, "unload": true, "unpin": true, "unsetenv": true,
+	"unsetenv-global": true, "untrigger": true, "wake": true,
+}
+
 // info prints an informational message unless quiet mode is active.
 func info(format string, args ...interface{}) {
 	if !quiet {
@@ -632,7 +685,7 @@ func info(format string, args ...interface{}) {
 
 func requireServiceArg(args []string, fn func(string) error) error {
 	if len(args) < 1 {
-		fatal("Service name required")
+		usageFatal("Service name required")
 	}
 	return fn(args[0])
 }
@@ -2101,7 +2154,7 @@ func parseOnActive(s string) (time.Duration, error) {
 	// Bare integer → seconds.
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {
-		return 0, fmt.Errorf("expected duration like 5s / 200ms / 1h or seconds integer, got %q", s)
+		return 0, usagef("expected duration like 5s / 200ms / 1h or seconds integer, got %q", s)
 	}
 	return time.Duration(n) * time.Second, nil
 }
@@ -2233,7 +2286,7 @@ func cmdRun(conn net.Conn, args []string) error {
 	takeVal := func(flag string) (string, error) {
 		i++
 		if i >= len(args) {
-			return "", fmt.Errorf("run: %s requires a value", flag)
+			return "", usagef("run: %s requires a value", flag)
 		}
 		return args[i], nil
 	}
@@ -2337,14 +2390,14 @@ func cmdRun(conn net.Conn, args []string) error {
 commandStart:
 	cmdParts := args[i:]
 	if len(cmdParts) == 0 {
-		return fmt.Errorf("run: no command given (expected: slinitctl run [flags] -- CMD [ARGS...])")
+		return usagef("run: no command given (expected: slinitctl run [flags] -- CMD [ARGS...])")
 	}
 	switch svcType {
 	case "process", "scripted":
 		// Accepted types for a transient one-shot. bgprocess needs a
 		// pidfile which doesn't fit the "one shot from CLI" model.
 	default:
-		return fmt.Errorf("run: --type must be process or scripted, got %q", svcType)
+		return usagef("run: --type must be process or scripted, got %q", svcType)
 	}
 	if unitName == "" {
 		var randbuf [4]byte
@@ -2354,17 +2407,17 @@ commandStart:
 		unitName = fmt.Sprintf("run-%x", randbuf)
 	}
 	if strings.ContainsAny(unitName, "/\x00") {
-		return fmt.Errorf("run: unit name must not contain '/' or NUL")
+		return usagef("run: unit name must not contain '/' or NUL")
 	}
 
 	if niceVal != "" {
 		if _, err := strconv.Atoi(niceVal); err != nil {
-			return fmt.Errorf("run: --nice must be an integer, got %q", niceVal)
+			return usagef("run: --nice must be an integer, got %q", niceVal)
 		}
 	}
 	for _, kv := range properties {
 		if !strings.Contains(kv, "=") {
-			return fmt.Errorf("run: --property must be KEY=VALUE, got %q", kv)
+			return usagef("run: --property must be KEY=VALUE, got %q", kv)
 		}
 	}
 	// --on-active accepts durations spelled the same way parseDuration
@@ -2608,7 +2661,7 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 			// a typo of the shutdown type. Guard so `shutdown wobble`
 			// still fails cleanly.
 			if positionalIdx == 0 {
-				return fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", a)
+				return usagef("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", a)
 			}
 			messageTokens = append(messageTokens, a)
 		}
@@ -2788,7 +2841,7 @@ func sendWallNotice(conn net.Conn, msg string) error {
 // server-side handler enforces that.
 func cmdSwitchRoot(conn net.Conn, args []string) error {
 	if len(args) < 1 || len(args) > 2 {
-		return fmt.Errorf("usage: slinitctl switch-root NEWROOT [INIT]")
+		return usagef("usage: slinitctl switch-root NEWROOT [INIT]")
 	}
 	newroot := args[0]
 	newinit := ""
@@ -2843,7 +2896,7 @@ func cmdSwitchRoot(conn net.Conn, args []string) error {
 // finit-parity `initctl edit NAME` polish.
 func cmdEdit(conn net.Conn, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: slinitctl edit NAME")
+		return usagef("usage: slinitctl edit NAME")
 	}
 	name := args[0]
 	// Resolve the description file path by loading the service and
@@ -2925,7 +2978,7 @@ func cmdSuspend(conn net.Conn, args []string) error {
 	}
 	args = rest
 	if len(args) > 1 {
-		return fmt.Errorf("usage: slinitctl suspend [--no-coordination] [STATE]")
+		return usagef("usage: slinitctl suspend [--no-coordination] [STATE]")
 	}
 	state := ""
 	if len(args) == 1 {
@@ -3025,7 +3078,7 @@ func parseShutdownType(s string) (service.ShutdownType, error) {
 	case "softreboot", "soft-reboot":
 		return service.ShutdownSoftReboot, nil
 	default:
-		return 0, fmt.Errorf("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", s)
+		return 0, usagef("unknown shutdown type: %s (use halt, poweroff, reboot, kexec, or softreboot)", s)
 	}
 }
 
@@ -3056,7 +3109,7 @@ func parseShutdownTime(s string) (time.Duration, error) {
 	if strings.HasPrefix(s, "+") {
 		mins, err := strconv.Atoi(s[1:])
 		if err != nil || mins < 0 {
-			return 0, fmt.Errorf("invalid time: %s (use +N for minutes)", s)
+			return 0, usagef("invalid time: %s (use +N for minutes)", s)
 		}
 		return time.Duration(mins) * time.Minute, nil
 	}
@@ -3082,7 +3135,7 @@ func parseShutdownTime(s string) (time.Duration, error) {
 		}
 	}
 
-	return 0, fmt.Errorf("invalid time: %s (use 'now', '+N' for minutes, or 'HH:MM')", s)
+	return 0, usagef("invalid time: %s (use 'now', '+N' for minutes, or 'HH:MM')", s)
 }
 
 func shutdownTypeToString(st service.ShutdownType) string {
@@ -4120,7 +4173,7 @@ func parseSignal(s string) (syscall.Signal, error) {
 	default:
 		n, err := strconv.Atoi(s)
 		if err != nil {
-			return 0, fmt.Errorf("unknown signal: %s", s)
+			return 0, usagef("unknown signal: %s", s)
 		}
 		return syscall.Signal(n), nil
 	}
@@ -4155,7 +4208,7 @@ func formatTarget(s service.ServiceState) string {
 func cmdSetEnv(conn net.Conn, svcName, kvPair string) error {
 	idx := strings.IndexByte(kvPair, '=')
 	if idx < 0 {
-		return fmt.Errorf("invalid format: expected KEY=VALUE, got %q", kvPair)
+		return usagef("invalid format: expected KEY=VALUE, got %q", kvPair)
 	}
 	key := kvPair[:idx]
 	value := kvPair[idx+1:]
@@ -4267,7 +4320,7 @@ func cmdGetAllEnv(conn net.Conn, svcName string) error {
 func cmdSetEnvGlobal(conn net.Conn, kvPair string) error {
 	idx := strings.IndexByte(kvPair, '=')
 	if idx < 0 {
-		return fmt.Errorf("invalid format: expected KEY=VALUE, got %q", kvPair)
+		return usagef("invalid format: expected KEY=VALUE, got %q", kvPair)
 	}
 	key := kvPair[:idx]
 	value := kvPair[idx+1:]
@@ -4354,7 +4407,7 @@ func parseDepType(s string) (service.DependencyType, error) {
 	case "after":
 		return service.DepAfter, nil
 	default:
-		return 0, fmt.Errorf("unknown dependency type: %s (use depends-on, waits-for, depends-ms, prepared-by, before, after)", s)
+		return 0, usagef("unknown dependency type: %s (use depends-on, waits-for, depends-ms, prepared-by, before, after)", s)
 	}
 }
 
@@ -5541,7 +5594,7 @@ func cmdCompletion(shell string) {
 	case "fish":
 		printFishCompletion()
 	default:
-		fatal("Unsupported shell: %s (use bash, zsh, or fish)", shell)
+		usageFatal("Unsupported shell: %s (use bash, zsh, or fish)", shell)
 	}
 }
 
