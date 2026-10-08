@@ -408,6 +408,9 @@ func (s *ProcessService) SetVTTY(enabled bool, scrollback int, sockDir string) {
 // VTTY returns the virtual TTY instance, or nil if not configured.
 func (s *ProcessService) VTTY() *VirtualTTY { return s.vtty }
 
+// VTTYSockDir returns the directory the vtty attach socket is created in.
+func (s *ProcessService) VTTYSockDir() string { return s.vttySockDir }
+
 // SetWorkingDir sets the working directory.
 func (s *ProcessService) SetWorkingDir(dir string) { s.workingDir = dir }
 

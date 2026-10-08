@@ -45,6 +45,16 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **vtty sockets of a user instance, and `attach` as root.** slinit
+  always created vtty sockets in `/run/slinit`, which a user instance
+  usually cannot write, while `slinitctl attach` looked in `~/.slinit`
+  whenever `--system` was not given — so a user instance's vtty did not
+  work, and root attaching to a system service had to pass `--system`.
+  Both sides now use one rule: `/run/slinit` for the system instance,
+  `$XDG_RUNTIME_DIR/slinit` (or `~/.slinit`) for a user one, and attach
+  picks the instance the way the control socket does (`-s`/`-u`,
+  otherwise root means system).
+
 - **`slinitctl --user run` wrote its service where a user instance never
   looks.** `run` always wrote to `/run/slinit.d`, which only a system
   instance searches (and which an unprivileged user usually cannot write
