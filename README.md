@@ -225,9 +225,9 @@ slinitctl run -- /usr/bin/thing          # transient service (systemd-run analog
 slinitctl reload myservice               # re-read from disk, no restart
 slinitctl reload-all
 slinitctl unload myservice                # drop a stopped service from memory
-slinitctl enable|disable myservice        # add/remove a waits-for edge, persisted
+slinitctl enable|disable myservice        # persisted waits-for edge from boot; also starts/stops
 slinitctl add-dep|rm-dep myservice waits-for other   # either argument order
-slinitctl setenv KEY=VALUE                # also unsetenv, getallenv, reset-env
+slinitctl setenv myservice KEY=VALUE      # per service; setenv-global for all
 
 # Logs and attach
 slinitctl catlog myservice                # the in-memory buffer
@@ -287,9 +287,10 @@ tests/            unit, functional (QEMU), acceptance and container suites
 | `SIGRTMIN+3…+6` | halt, poweroff, reboot, kexec | systemd-compatible containers |
 
 The RT signals let `kill -s RTMIN+4 1` shut a container down cleanly
-with no slinitctl in the image. Signal-driven shutdown can be gated by
-`/etc/slinit/shutdown.allow`; the gate applies to the first trigger
-only, so a second Ctrl+Alt+Del always escalates.
+with no slinitctl in the image. On a PID 1 that is not a container,
+signal-driven shutdown can be gated by `/etc/slinit/shutdown.allow`.
+Once a shutdown is under way, a further shutdown signal is not gated:
+it escalates the shutdown instead.
 
 ## Documentation
 
