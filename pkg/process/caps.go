@@ -162,15 +162,15 @@ var secbitNames = map[string]uint32{
 	"no-cap-ambient-raise-locked": SecbitNoCapAmbientRaiseLocked,
 }
 
-// ParseSecurebits parses a space-separated list of securebits flag names
-// into a combined bitmask.
+// ParseSecurebits parses a list of securebits flag names, separated by
+// spaces and/or commas as capabilities are, into a combined bitmask.
 func ParseSecurebits(s string) (uint32, error) {
 	if s == "" {
 		return 0, nil
 	}
 
 	var bits uint32
-	for _, name := range strings.Fields(s) {
+	for _, name := range strings.Fields(strings.ReplaceAll(s, ",", " ")) {
 		name = strings.ToLower(strings.TrimSpace(name))
 		if name == "" {
 			continue

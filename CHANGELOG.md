@@ -26,6 +26,21 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A misspelt name in `capabilities`, `capability-bounding-set` or
+  `securebits` dropped the whole setting without a word.** The parser
+  stored the text and the loader discarded anything it could not parse,
+  so one typo left the service without its ambient caps, its bounding
+  set or its securebits while the file said otherwise. The names are now
+  checked when the file is parsed: the service fails to load with an
+  error naming the setting, and `slinit-check` reports it.
+
+  In the same three settings `+=` replaced the previous value instead of
+  appending to it, and `securebits` now accepts commas as
+  `capabilities` always has (`keep-caps,no-setuid-fixup`, the form the
+  old documentation showed, used to be dropped).
+
+  A service file carrying such a typo used to start, quietly
+  unconfined; it now fails to load.
 - **A failed health check did not stop or restart the service.** At the
   failure threshold the checker called `Stop(false)`, which only drops
   an explicit activation: a service a started dependent still required

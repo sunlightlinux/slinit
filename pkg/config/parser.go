@@ -3220,18 +3220,30 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.RlimitAs = lim
 
+	// The three below are validated here: the loader used to drop a
+	// value it could not parse without a word, so one misspelt name
+	// left the service without any of the confinement it declared.
 	case "capabilities":
-		desc.Capabilities = value
+		if _, err := process.ParseCapabilities(value); err != nil {
+			return fmt.Errorf("capabilities: %w", err)
+		}
+		desc.Capabilities = appendWords(desc.Capabilities, value, op)
 
 	case "capability-bounding-set":
 		// Positive list of capabilities to retain in CapBnd. Every
 		// other cap is dropped via PR_CAPBSET_DROP in slinit-runner
 		// before exec. systemd-style `~` drop prefix is not supported
 		// in this first cut — narrow to what's named, full stop.
-		desc.CapabilityBoundingSet = value
+		if _, err := process.ParseCapabilities(value); err != nil {
+			return fmt.Errorf("capability-bounding-set: %w", err)
+		}
+		desc.CapabilityBoundingSet = appendWords(desc.CapabilityBoundingSet, value, op)
 
 	case "securebits":
-		desc.Securebits = value
+		if _, err := process.ParseSecurebits(value); err != nil {
+			return fmt.Errorf("securebits: %w", err)
+		}
+		desc.Securebits = appendWords(desc.Securebits, value, op)
 
 	case "inittab-id":
 		desc.InittabID = value
@@ -4099,6 +4111,15 @@ func parseNormalExit(value string) ([]int, []syscall.Signal, error) {
 	}
 
 	return codes, sigs, nil
+}
+
+// appendWords implements += for settings kept as a word list in one
+// string: append with a separator, where = replaces.
+func appendWords(cur, value string, op OperatorType) string {
+	if op == OpPlusEqual && cur != "" {
+		return cur + " " + value
+	}
+	return value
 }
 
 // ParseCPUAffinity parses a CPU affinity spec like "0 1 2 3", "0-3",
