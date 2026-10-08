@@ -43,18 +43,24 @@ one executable agent.
 ## OCF ACTIONS
 
 **start**
-:   Bring the slinit service up by issuing **slinitctl start**. If the
-    service is already **STARTED**, returns **OCF_SUCCESS** without
-    contacting the daemon, as required by the OCF idempotency rule.
+:   Run **monitor** first; if the service is already **STARTED**,
+    return **OCF_SUCCESS** without issuing a start, as required by the
+    OCF idempotency rule. Otherwise run **slinitctl start** and return
+    the result of a second **monitor** — so a service still
+    **STARTING** at that point reports **OCF_NOT_RUNNING**.
 
 **stop**
-:   Bring the slinit service down by issuing
-    **slinitctl stop \--ignore-unstarted**. If the service is already
-    **STOPPED**, returns **OCF_SUCCESS** without contacting the daemon.
+:   Run **monitor** first; if it reports **OCF_NOT_RUNNING**, return
+    **OCF_SUCCESS** without issuing a stop. Note that this includes a
+    service that is **STARTING** or **STOPPING**. Otherwise run
+    **slinitctl stop \--ignore-unstarted** and return **OCF_SUCCESS**
+    only if a second **monitor** reports the service not running.
 
 **monitor**
-:   Probe the service via **slinitctl status** and translate the State
-    field to OCF return codes:
+:   Probe the service via **slinitctl status** and translate its
+    *State:* line to OCF return codes. (That output is meant for
+    people and its wording may change; the agent depends on the
+    *State:* line keeping its shape.)
 
     | slinit State        | OCF return code      |
     |---------------------|----------------------|
@@ -65,7 +71,8 @@ one executable agent.
     If the **slinit** daemon is unreachable (socket missing, connection
     refused), the agent reports **OCF_NOT_RUNNING** so Pacemaker can
     place the resource elsewhere rather than treating the node as
-    failed.
+    failed. Any other **slinitctl status** failure, such as an unknown
+    service, is **OCF_ERR_GENERIC**.
 
 **status**
 :   Alias for **monitor** (kept for OCF 1.0 compatibility).
@@ -91,7 +98,8 @@ The agent uses the standard OCF return codes:
 :   Generic operation failure.
 
 **OCF_ERR_ARGS**=2
-:   Invocation without an action.
+:   Invocation without an action, or with **usage** / **help** (the
+    usage text is printed).
 
 **OCF_ERR_UNIMPLEMENTED**=3
 :   Action name not recognised.

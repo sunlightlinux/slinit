@@ -33,9 +33,14 @@ applied to the *calling* process rather than to the parent. Examples:
 The helper:
 
 1. Parses the flags below.
-2. Applies each active setup step in a defined order (sandbox mounts
-   → capability bounding → seccomp → run-as UID/GID drop → ambient
-   caps restore → **PR_SET_NO_NEW_PRIVS** → AppArmor `exec` label).
+2. Applies each active setup step in a fixed order: memory locking,
+   NUMA and THP policy → sandbox mounts → the **system-call-filter**
+   seccomp filter → other process attributes (coredump filter, timer
+   slack, KSM, SIGPIPE, personality) → the **restrict-\*** /
+   **protect-\*** hardening filters → the **--debug** stop →
+   capability bounding set → run-as UID/GID drop with ambient caps
+   restored → **PR_SET_NO_NEW_PRIVS** → securebits → SMACK label →
+   SELinux `exec` context → AppArmor `exec` profile.
 3. Replaces itself with *COMMAND* via **execve**(2).
 
 After **execve**(2) the running process is the real service binary,
@@ -44,7 +49,9 @@ and signals reach the right place.
 
 slinit-runner is not intended for direct human use; the daemon
 synthesises invocations from the corresponding keys in
-**slinit-service**(5). The flag names below map 1:1 to those keys.
+**slinit-service**(5). Most flags are named after their key, but not
+all (for example **\--tmpfs-path** carries **temporary-filesystem**,
+and **\--syscall-filter** carries **system-call-filter**).
 
 ## OPTIONS
 
@@ -305,7 +312,8 @@ on UID change otherwise.
 by the target program. Failures of the helper itself produce:
 
 **2**
-:   Bad command line, unknown mode/action, or a required syscall
+:   Bad command line, unknown mode/action, **execve**(2) of *COMMAND*
+    failed, or a required syscall
     (**set_mempolicy**, **mlockall**, **mount**, **seccomp**,
     **prctl**, **setresuid**, …) failed. Typical causes: missing
     **CAP_SYS_ADMIN** / **CAP_IPC_LOCK** / **CAP_SYS_NICE**, invalid

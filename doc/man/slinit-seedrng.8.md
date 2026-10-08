@@ -38,7 +38,7 @@ Every invocation:
    */dev/urandom*.
 5. Mixes wallclock + boottime + prior state via SHA-256 and folds the
    digest into the trailing 32 bytes of the fresh seed.
-6. Writes the fresh seed as **seed.no-credit** first, then
+6. Writes the fresh seed (mode 0400, fsynced) as **seed.no-credit** first, then
    **renameat(2)**-s to **seed.credit** iff **getrandom(GRND_NONBLOCK)**
    returned real entropy. If the kernel pool was not yet initialised,
    the seed stays non-creditable — replaying it on the next boot must
@@ -78,8 +78,9 @@ cannot silently replay the same entropy on the next boot.
 :   One or more steps failed. **slinit-seedrng** always tries to write
     a fresh seed even on partial failure; a non-zero exit signals that
     an operator should investigate (typical causes: filesystem
-    read-only, **CAP_SYS_ADMIN** missing for the ioctl, pool not
-    initialised so the new seed is non-creditable).
+    read-only, **CAP_SYS_ADMIN** missing for the ioctl, no new random
+    bytes could be read). A new seed that is merely non-creditable,
+    because the pool was not yet initialised, is not an error.
 
 The program refuses to run as non-root (**RNDADDENTROPY** requires
 **CAP_SYS_ADMIN**) and exits with status 1 immediately.

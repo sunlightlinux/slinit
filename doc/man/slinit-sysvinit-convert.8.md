@@ -145,8 +145,9 @@ outcome.
     infers it from the file and prints what it chose. See **Dialects**.
 
 **\--output-dir**=*DIR*
-:   Write one file per service into *DIR*. Without it the files go to
-    standard output, separated by a header comment naming each one.
+:   Write one file per service into *DIR*, which must already exist.
+    Without it the files go to standard output, separated by a header
+    comment naming each one.
 
 **\--dry-run**
 :   Report what would be written, with sizes, and touch nothing.
@@ -175,11 +176,13 @@ Read the generated files without writing them:
     read standard error.
 
 **1**
-:   At least one line was not an inittab entry, or a file could not be
-    written. The lines that did parse are still converted.
+:   The input could not be read, at least one line was not an inittab
+    entry (the lines that did parse are still converted), or a file
+    could not be written — which stops the run at that file.
 
 **2**
-:   Wrong number of arguments.
+:   Wrong number of arguments, an unknown flag, or an unknown
+    **\--dialect** value.
 
 # FILES
 

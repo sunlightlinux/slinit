@@ -20,8 +20,9 @@ accesses them, and (optionally) unmounted again after an idle timeout.
 
 It is meant to be supervised as an ordinary slinit service and acts as
 a slinit-native replacement for systemd's automount unit type. Mount
-points are described by **.mount** files in one or more
-"mount-unit" directories; **slinit-mount** scans those directories,
+points are described by **\*.mount** files directly inside one or
+more "mount-unit" directories (a directory that does not exist is
+skipped); **slinit-mount** scans those directories,
 sets up an autofs trigger for each entry, and reconciles the live state
 on **SIGHUP**.
 
@@ -36,8 +37,9 @@ case where the operator prefers paying the mount cost on first access.
     */etc/slinit.d/mount.d*.
 
 **-f**, **--foreground**
-:   Run in the foreground (don't daemonise). Required for use as a
-    slinit-supervised process.
+:   Accepted for compatibility. **slinit-mount** never daemonises; it
+    always runs in the foreground, as a slinit-supervised process
+    should.
 
 **-v**, **--verbose**
 :   Verbose logging — every mount/unmount and every reconcile pass
@@ -45,17 +47,23 @@ case where the operator prefers paying the mount cost on first access.
 
 **--expire-interval** *N*
 :   Seconds between idle-timeout sweeps. Default: **60**. Mount units
-    with **timeout=0** are never expired regardless of this value.
+    with **timeout=0** (or no **timeout**) are never expired regardless
+    of this value.
 
 **-h**, **--help**
 :   Print a usage summary and exit.
 
 # MOUNT UNIT FORMAT
 
-A mount-unit file is a key=value document. Recognised keys:
+A mount-unit file is a key=value document; the unit's name is the file
+name without **.mount**. Blank lines and lines starting with **#** are
+ignored, and an unrecognised key is an error. Recognised keys:
+
+**description**
+:   Free-form description.
 
 **what**
-:   Source device or path (e.g. */dev/sda1*).
+:   Source device or path (e.g. */dev/sda1*; required).
 
 **where**
 :   Mount point (absolute path; required).
@@ -67,24 +75,27 @@ A mount-unit file is a key=value document. Recognised keys:
 :   Mount options (passed verbatim to **mount**(2)).
 
 **timeout**
-:   Idle timeout in seconds. **0** means "never auto-unmount".
+:   Idle timeout in whole seconds. **0**, the default, means "never
+    auto-unmount".
 
 **autofs-type**
 :   **indirect** (default) or **direct**, matching the autofs flavours.
 
 **directory-mode**
-:   Permissions used for auto-created mount-point directories
-    (e.g. **0755**).
+:   Permissions, in octal, used for auto-created mount-point
+    directories. Default **0755**.
 
 **after**
-:   slinit service-dependency expression — for example
-    **after: network-online** to defer mount setup until that
-    service has started.
+:   Accepted and parsed (**after: a b** for several names), but it
+    currently has no effect: mount setup is not deferred. Order the
+    **slinit-mount** service itself with **after:** / **waits-for:** in
+    its service description instead.
 
 # RELOAD
 
 On **SIGHUP**, **slinit-mount** re-reads every mount-unit directory,
-diffs the result against the running state, and:
+diffs the result against the running state (units are matched by
+**where**), and:
 
 - tears down units that have been removed or whose configuration
   changed in a way that requires re-establishing the autofs mount,
@@ -92,15 +103,20 @@ diffs the result against the running state, and:
 - leaves unchanged units alone.
 
 This is the recommended way to deploy a new mount unit without
-disturbing in-flight access to the others.
+disturbing in-flight access to the others. If any file fails to parse
+or validate, the whole reload is abandoned and the running state is
+kept.
 
 # EXIT STATUS
 
 **0**
-:   Clean shutdown (received **SIGTERM** or **SIGINT**).
+:   Clean shutdown (received **SIGTERM** or **SIGINT**), or no mount
+    units were found at start-up — the daemon logs that and exits.
 
 **1**
-:   Fatal startup or runtime error.
+:   Fatal error: a mount-unit file failed to parse or validate at
+    start-up (one bad file stops all of them), no autofs mount could be
+    established, an unknown option, or a runtime failure.
 
 # EXAMPLES
 

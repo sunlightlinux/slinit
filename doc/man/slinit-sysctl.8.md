@@ -31,7 +31,9 @@ Without positional arguments the tool scans, in order:
 then appends **/etc/sysctl.conf** if it exists. Same-basename
 collisions across the .d directories resolve to the later directory
 so an operator override at **/etc/sysctl.d/foo.conf** always beats
-**/usr/lib/sysctl.d/foo.conf**.
+**/usr/lib/sysctl.d/foo.conf**. Only files ending in **.conf** are read; they
+are applied in alphabetical order of their basenames, then
+**/etc/sysctl.conf** last.
 
 # CONFIG FORMAT
 
@@ -58,7 +60,9 @@ kernel.printk = 4 4 1 7
 ```
 
 Wildcards (**\***, **?**) in keys are **not** supported and reject the
-line — v1 does not expand them.
+line — v1 does not expand them. A line that cannot be parsed (no
+**=**, empty key, wildcard) makes the whole file it is in be skipped
+and counted as an error; the other files are still applied.
 
 # OPTIONS
 
@@ -72,8 +76,10 @@ line — v1 does not expand them.
 
 **--root** *DIR*
 :   Prefix *DIR* onto every hardcoded path — the four scan roots,
-    the legacy /etc/sysctl.conf, and **/proc/sys**. Useful for
-    previewing a config in a fixture tree; never needed in production.
+    the legacy /etc/sysctl.conf, and **/proc/sys**. Values are then
+    written as files under *DIR*/proc/sys (whose directories must
+    exist). Useful for previewing a config in a fixture tree; never
+    needed in production. *FILE* arguments are not prefixed.
 
 **-h**, **--help**
 :   Print usage.

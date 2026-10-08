@@ -14,8 +14,8 @@ slinit-supports - query whether slinit supports a given directive, opcode, or op
 
 # DESCRIPTION
 
-**slinit-supports** answers two questions about the running slinit
-build: "does this feature exist?" and "which upstream did it come
+**slinit-supports** answers two questions about the slinit build it
+belongs to: "does this feature exist?" and "which upstream did it come
 from?". The answers are auto-discovered from source at compile time
 — the tool cannot go stale versus the binary that ships alongside
 it. Provenance annotations (dinit / systemd / runit /
@@ -29,13 +29,16 @@ Three feature spaces are covered:
 - **Opcodes** — every command the control-socket protocol accepts.
   Names like *CmdStartService*, *CmdReloadAll*, *CmdSetTrigger*.
 - **Options** — every value valid under an *options:* directive
-  line. Names like *starts-on-console*, *pass-cs-fd*, *skippable*.
+  line. They are named with an **option:** prefix, e.g.
+  *option:starts-on-console*, *option:pass-cs-fd*; the prefix is
+  needed for a look-up as well.
 
-Look-up mode (positional *NAME*, no **--list-\***) returns exit 0
-with a one-line "yes + provenance" if the name is recognised, or
-exit 1 with a diagnostic if not. Enumeration mode (**--list-\***
-flag, no positional) prints the whole surface, optionally regrouped
-or reformatted.
+Look-up mode (positional *NAME*, no **--list-\***) prints "Yes", the
+name, its kind, and its source, category and notes, and exits 0 if the
+name is recognised; otherwise it prints a "No" line and exits 1.
+Enumeration mode (**--list-\*** flag) prints the whole surface,
+optionally regrouped or reformatted; a positional *NAME* given
+alongside it is ignored.
 
 # POSITIONAL
 
@@ -64,14 +67,16 @@ or reformatted.
     - **category** — by functional area (lifecycle / dependency / logging / cgroup / …)
     - **kind** — by feature space (directive / opcode / option)
 
-    Default is **kind**. The **source** grouping is the one
-    *doc/features.md* pins for schema stability.
+    Without it, text output is one list sorted by name, and markdown
+    output is grouped by **kind**. JSON output is always a single flat
+    array. The **source** grouping is the one *doc/features.md* uses.
 
 **--format=**\ *SPEC*
 :   Output format for enumeration. *SPEC* is one of:
 
     - **text** (default) — plain aligned columns for terminal reading
-    - **json** — machine-readable, one array of objects per group
+    - **json** — machine-readable, one array of objects (name, kind,
+      source, category, notes)
     - **markdown** — regenerable tables suitable for docs
 
 **--version**
@@ -87,6 +92,7 @@ Check whether a specific directive is supported:
     slinit-supports restart
     slinit-supports memory-pressure-watch
     slinit-supports CmdReloadAll
+    slinit-supports option:pass-cs-fd
 
 Enumerate every directive the parser accepts:
 
@@ -112,12 +118,12 @@ regressions or additions in a release-candidate:
     output emitted successfully.
 
 **1**
-:   Look-up mode: the named feature is unknown. A diagnostic line
-    goes to stderr with the closest known name (if any) as a hint.
+:   Look-up mode: the named feature is unknown. A "No" line is printed
+    on stdout and "slinit-supports: no" on stderr. Also returned when
+    neither a *NAME* nor a **--list-\*** flag is given.
 
 **2**
-:   Usage error (incompatible flags, unknown *SPEC* value, positional
-    given together with a **--list-\*** flag, etc.).
+:   Usage error (unknown flag, unknown *SPEC* or **--format** value).
 
 # SEE ALSO
 

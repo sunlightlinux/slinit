@@ -25,19 +25,21 @@ slinit-shutdown - issue a shutdown, halt, reboot, or soft-reboot to slinit
 **slinit-shutdown** is the standalone shutdown utility for **slinit**(8).
 By default it connects to the running daemon over the control socket
 and asks it to perform an orderly shutdown — services are stopped in
-reverse dependency order, the **shutdown** target is brought up,
-filesystems are flushed, and the kernel is reset.
+reverse dependency order, filesystems are synced and unmounted, and
+the kernel is reset. Once the daemon has acknowledged the request,
+**slinit-shutdown** waits until it is killed by the shutdown itself.
 
 The action is selected by either an option flag or by the name the
 binary was invoked under (so the conventional **halt**, **reboot**,
 **poweroff**, **soft-reboot** wrappers all map onto the same code path).
+When invoked under a name ending in **reboot**, **--poweroff** is
+ignored, matching systemd.
 
 Most operators should prefer **slinitctl shutdown** — it does the same
 thing through the same protocol. **slinit-shutdown** exists for the
 narrower class of contexts where slinitctl is unavailable: minimal
-recovery shells, install media, container images shipping only a
-pinned shutdown helper, and the daemon's own internal **shutdown**
-target.
+recovery shells, install media, and container images shipping only a
+pinned shutdown helper.
 
 # ACTIONS
 
@@ -99,12 +101,12 @@ target.
 
 **--system**
 :   Skip the daemon and perform the shutdown sequence directly:
-    kill every process, run the configured kill-grace timer, sync
+    kill every process, wait the kill-grace period, unmount and sync
     filesystems, then issue the kernel reset for the chosen action.
-    Reserved for slinit's own internal use during the **shutdown**
-    target — invoking it manually on a running system bypasses
-    every dependency and timeout the daemon would otherwise honour
-    and will cause data loss.
+    Meant for a system with no running slinit (a recovery shell, for
+    example) — invoking it on a running system bypasses every
+    dependency and timeout the daemon would otherwise honour and can
+    cause data loss.
 
 **--use-passed-cfd**
 :   Use the file descriptor exported in **$SLINIT_CS_FD** as the
@@ -142,14 +144,18 @@ If invoked as **slinit-shutdown** with no action flag, the default is
 
 # EXIT STATUS
 
+**slinit-shutdown** normally does not return: the kernel is reset or
+the process is killed during the shutdown it requested.
+
 **0**
-:   Reserved — **slinit-shutdown** normally does not return: the daemon
-    runs the **shutdown** target around it, and either the kernel is
-    reset or the process is killed.
+:   **--help**, **--wtmp-only**, or **--system -s** after the
+    userspace teardown has finished.
 
 **1**
-:   Failed to connect to the daemon, malformed argument, protocol
-    version mismatch, or a fatal failure during **--system** mode.
+:   Failed to connect to the daemon, the daemon refused the request,
+    an unknown option or invalid **--grace** value, the **-i** host
+    name did not match, protocol version mismatch, or the **-f** /
+    **--system** path returned instead of resetting the machine.
 
 # SEE ALSO
 

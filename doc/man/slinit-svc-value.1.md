@@ -26,7 +26,9 @@ controllers were mounted, which pidfile the daemon wrote, which
 config knob was active — so **stop()** can undo it precisely.
 
 One binary dispatches every applet by inspecting **basename**
-(**argv[0]**); installers ship a symlink per applet.
+(**argv[0]**, with any **slinit-** prefix removed); installers ship a
+symlink per applet. Invoked under its own name, the binary is not an
+applet and exits with status 2.
 
 Backing: one file per key at
 
@@ -57,13 +59,14 @@ default is **/run/slinit**.
     into the store — but only if the key is not already present. A
     variable that is unset in the environment is reported to stderr
     and skipped. Idempotent: repeated calls with the same list are
-    safe.
+    safe. Always exits **0** once given at least one name; a failed
+    write is not reported.
 
 # ENVIRONMENT
 
-**RC_SVCNAME** (or **SLINIT_SERVICENAME**) — service the values
-belong to. Required; the applet exits with code **2** when neither
-is set.
+**RC_SVCNAME** (or, when it is unset or empty,
+**SLINIT_SERVICENAME**) — service the values belong to. Required; the
+applet exits with code **2** when neither is set.
 
 **RC_SVCDIR** — alternative runtime dir. Defaults to
 **/run/slinit**.
@@ -71,10 +74,11 @@ is set.
 # EXIT STATUS
 
 - **0**: success.
-- **1**: **service_get_value** could not find the key, or a write
-  failed.
+- **1**: **service_get_value** could not find the key, a read or
+  write failed, or the key is invalid (empty, containing **/** or
+  **\0**, or **.** / **..**).
 - **2**: bad usage — missing arguments, missing service name, or an
-  invalid key (empty, containing **/** or **\0**, or **.** / **..**).
+  unknown applet name.
 
 # EXAMPLES
 
