@@ -23,25 +23,30 @@ daemon, which is useful at install time or in initramfs.
 
 ## GLOBAL OPTIONS
 
-**-p** *path*, **\--socket-path** *path*
-:   Path to the slinit control socket. Defaults to */run/slinit.socket*
-    in system mode and *$XDG_RUNTIME_DIR/slinitctl* (or
-    *$HOME/.slinitctl*) in user mode.
+**-p** *path*, **\--socket-path** *path*, **\--socket-path=***path*
+:   Path to the slinit control socket. Without it, *$DINIT_SOCKET_PATH*
+    is used, then *$SLINIT_SOCKET_PATH*; failing both, the default is
+    */run/slinit.socket* in system mode and *$XDG_RUNTIME_DIR/slinitctl*
+    (or *$HOME/.slinitctl* when *XDG_RUNTIME_DIR* is unset) in user
+    mode.
 
 **-s**, **\--system**
 :   Connect to the system service manager.
 
 **-u**, **\--user**
-:   Connect to the user service manager (default for non-root users).
+:   Connect to the user service manager. This is the default for
+    non-root users; root gets the system manager unless **-u** is
+    given.
 
 **-q**, **\--quiet**
 :   Suppress informational output.
 
 **\--no-wait**
-:   For commands that normally wait for the target state to be
-    reached, return as soon as the request has been accepted.
+:   For **start**, return as soon as the daemon has accepted the
+    request instead of waiting for the service to reach **STARTED** or
+    fail. Also implies **\--quiet**.
 
-**-w**, **\--wait**=*SEC*
+**-w** *SEC*, **\--wait** *SEC*, **\--wait=***SEC*
 :   Fail with a timeout error if the daemon does not reply within
     *SEC* seconds. 0 (default) disables the CLI-side cap — the
     daemon's own start/stop/reload timeouts still apply. Mirrors
@@ -54,31 +59,46 @@ daemon, which is useful at install time or in initramfs.
 **\--pin**
 :   For **start** and **stop**: pin the service in the requested state
     so that automatic restart / dependency-driven stop cannot move it.
-    Use **unpin** to clear.
+    For **restart**, the pin is applied by the start half. Use
+    **unpin** to clear.
 
 **-f**, **\--force**
-:   For **stop** and **restart**: stop the service even if other
-    services still depend on it (forces a cascade stop of dependents).
+:   For **stop** and **restart**: stop the service even when it is
+    pinned started or declares **refuse-manual-stop**. Dependents are
+    force-stopped along with it, pins and all.
 
 **\--ignore-unstarted**
-:   For **stop** and **restart**: exit 0 silently if the service is
-    already stopped, rather than failing.
+:   Accepted for **dinitctl**(8) compatibility. It changes nothing:
+    **stop** and **restart** already succeed (exit 0, with an
+    "already stopped" note unless **\--quiet**) when the service is
+    not running.
 
 **-o**, **\--offline**
 :   For **enable** / **disable**: work directly on the service files
     without talking to a daemon.
 
-**-d** *dir*, **\--services-dir** *dir*
-:   Service directory used by **\--offline** mode.
+**-d** *dir*, **\--services-dir** *dir*, **\--services-dir=***dir*
+:   Service directory used by **\--offline** mode. Defaults to
+    */etc/slinit.d* with **\--system**, and otherwise — root included —
+    to *$XDG_CONFIG_HOME/slinit.d* or *$HOME/.config/slinit.d*. A
+    relative path is resolved against the current directory.
 
-**\--from** *service*
-:   For **enable** / **disable**: name of the *source* service whose
-    *waits-for.d/* directory is being modified. Defaults to **boot**.
+**\--from** *service*, **\--from=***service*
+:   For **enable** / **disable**: name of the *source* service the
+    **waits-for** edge hangs from. Without it, the daemon uses the
+    target's **@meta enable-via**, then the boot service; **\--offline**
+    uses **boot**.
 
 **\--use-passed-cfd**
 :   Take the control-socket file descriptor from the environment
-    variable *SLINIT_CS_FD* instead of opening one. Used internally
-    when slinit spawns a service that wants to make control calls.
+    variable *SLINIT_CS_FD* instead of opening one. slinit sets it
+    (and *DINIT_CS_FD*) for services declaring **options = pass-cs-fd**.
+
+**\--dinit-compat**
+:   For **disable**: use the dinit-compatible request (remove the
+    dependency, then delete the symlink client-side) instead of the
+    slinit-native single request. Needed only when talking to a real
+    **dinit** daemon.
 
 **-h**, **\--help**
 :   Show usage and exit.
@@ -104,20 +124,28 @@ daemon, which is useful at install time or in initramfs.
     Use **\--no-wait** there.
 
 **wake** *service*
-:   Like **start**, but only if the service is currently stopped
-    because none of its hard-dependents are active. Used to "rejoin"
-    a previously released service.
+:   Start *service* without marking it explicitly active, on behalf of
+    its dependents: it succeeds only if at least one service that
+    depends on it is started or starting, and the service then stays up
+    only as long as such a dependent needs it. Refused for a
+    stop-pinned service, and for a **manual** service that has not been
+    started explicitly. Used to "rejoin" a previously released service.
 
 **stop** *service*
-:   Stop *service*. Fails (without effect) if other services still
-    depend on it, unless **\--force** is given.
+:   Stop *service*. Services with a hard dependency on it are stopped
+    too; **waits-for** dependents lose the link and keep running.
+    Refused for a service pinned started or declaring
+    **refuse-manual-stop**, unless **\--force** is given. Unlike
+    **start**, the command returns once the daemon has accepted the
+    request; it does not wait for **STOPPED**.
 
 **release** *service*
 :   Remove explicit activation from *service*. Stops it iff no other
     active service still requires it.
 
 **restart** *service*
-:   Stop and then start *service*.
+:   Stop and then start *service*: two requests sent back to back,
+    without waiting for the outcome of either.
 
 **signal** [**-l** | **\--list**] *signal* *service*
 :   Send *signal* to the service's main process. *signal* may be a
@@ -125,8 +153,10 @@ daemon, which is useful at install time or in initramfs.
     accepted signal names.
 
 **pause** *service*
-:   Send SIGSTOP to the service's process group. The service remains
-    in the *running* state from slinit's point of view.
+:   Send SIGSTOP to the service's process group (only the main process
+    with **options = signal-process-only**), or run its
+    **control-command-STOP** if it has one. The service remains in the
+    *running* state from slinit's point of view.
 
 **continue** *service* (alias **cont**)
 :   Counterpart to **pause**: send SIGCONT.
@@ -145,8 +175,11 @@ daemon, which is useful at install time or in initramfs.
 :   Counterpart to **freeze**: clear *cgroup.freeze*.
 
 **once** *service*
-:   Like **start**, but disable any *restart=on-failure* policy for
-    this run — a one-shot-style execution.
+:   Like **start**, but set the service's restart policy to never
+    first, so it is not restarted when it exits — a one-shot-style
+    execution. The policy is not restored afterwards: it stays at
+    never for later starts too, until the description is reloaded
+    (**reload**, **reload-all**).
 
 **unpin** *service*
 :   Clear a previous **\--pin** on *service*.
@@ -185,9 +218,15 @@ daemon, which is useful at install time or in initramfs.
       the transient description + .env sidecar. No cap; Ctrl-C
       is the escape hatch.
 
-    User service manager: use the global **\--user** flag to
-    target the user socket — `slinitctl --user run -- …` is the
-    systemd-run **\--user** analogue.
+    The description is always written to */run/slinit.d*, which
+    requires write access there and is among the default service
+    directories of a system instance only. **\--user** targets the
+    user socket, but a user instance finds the transient service only
+    if */run/slinit.d* is one of its **\--services-dir** entries.
+
+    The transient service is started without waiting; **\--wait**
+    and **\--collect** then poll its state. A failed start removes
+    the description again.
 
 ### Status & queries
 
@@ -227,20 +266,18 @@ daemon, which is useful at install time or in initramfs.
 :   Exit 0 iff *service* failed at its last attempt.
 
 **reset-failed** [*service*]
-:   Clear the *failed* mark so the service can be started again
-    without an operator having to force-clear via **stop** +
-    **start**. Also resets the restart-limit counter (**restart-limit-count**)
-    so the next start is treated as a fresh attempt. With no argument,
-    clears the mark on every service currently in *failed*.
-    Mirrors systemd's **reset-failed** subcommand.
+:   Clear the internal *start failed* mark, which **is-failed** and
+    **status** report. The restart-limit counter is not touched. With
+    no argument, clears the mark on every loaded service. Mirrors
+    systemd's **reset-failed** subcommand.
 
 **dependents** *service*
-:   Print services that hard-depend on *service*.
+:   Print the services that have a dependency of any type on
+    *service*.
 
-**query-name**
-:   Print the daemon's idea of its own service-name (set via
-    *SLINIT_SERVICENAME* in slinit's own environment, used by
-    consumer-of). Useful from inside a service.
+**query-name** *service*
+:   Load *service* and print the canonical name the daemon knows it
+    under — for example the name a **provides** alias resolves to.
 
 **service-dirs**
 :   Print the list of service directories the daemon is searching.
@@ -316,25 +353,34 @@ daemon, which is useful at install time or in initramfs.
     correctly.
 
 **attach** *service*
-:   Stream the service's log output (catlog plus a tail-follow on the
-    pipe). Press *^C* to detach.
+:   Connect the terminal to the service's virtual TTY (a service with
+    **vtty = yes**), screen-style: output is shown and keystrokes are
+    forwarded. Press **Ctrl+]** to detach; the service keeps running.
+    Works without the control socket: with **\--system** it connects
+    to */run/slinit/vtty-*\ *service*\ *.sock*, otherwise to the same
+    name under *$HOME/.slinit/* — so pass **\--system** for a system
+    service even when running as root.
 
 ### Configuration & environment
 
 **reload** *service*
-:   Re-read *service*'s description from disk. Some changes apply
-    immediately; others require the service to restart. The daemon
-    rejects reloads that would change the service type or invalidate
-    in-flight state.
+:   Re-read *service*'s description from disk. Refused while the
+    service is **STARTING** or **STOPPING**. A **STOPPED** service is
+    replaced outright, type changes included. A **STARTED** service is
+    updated in place — the running process is not touched, and a new
+    command or similar takes effect on the next start — and the reload
+    is refused if it would change the type, the console flags, the log
+    type or (for **bgprocess**) the pid-file, or add a hard dependency
+    that is not already **STARTED**.
 
 **reload-all**
 :   Re-read every loaded service description from disk in one round
     trip. Services in transitional states (**STARTING** / **STOPPING**)
     are skipped silently — operators retry once the service settles.
-    Prints a summary like "Reloaded 12 service(s)" on success or
-    "Reloaded 11 service(s); 1 failed" with a non-zero exit when one
-    or more reloads were rejected. The per-service rules of **reload**
-    apply (no type change, must be in a stable state). Typical use:
+    Prints a summary like "Reloaded 12 service(s)." on success or
+    "Reloaded 11 service(s); 1 failed (see daemon log)." with a
+    non-zero exit when one or more reloads were rejected. The
+    per-service rules of **reload** apply. Typical use:
     ops applied a config update across many service files and want
     them all picked up without scripting a `for` loop.
 
@@ -405,7 +451,9 @@ daemon, which is useful at install time or in initramfs.
 
 **unload** *service*
 :   Drop *service* from the in-memory set. Only allowed when the
-    service is stopped and not a dependency of an active service.
+    service is stopped, no loaded service depends on it other than
+    through **before**/**after** ordering, and it is not consuming
+    another service's log output.
 
 **add-dep** *from* *kind* *to*, **add-dep** *kind* *from* *to*
 :   Add a dependency edge of *kind* (`depends-on`/`regular`,
@@ -427,22 +475,38 @@ daemon, which is useful at install time or in initramfs.
 :   Remove a dependency edge of *kind*. Both orders, as for **add-dep**.
 
 **enable** *service* [\--from *src*]
-:   Enable *service* by creating a symlink in *src*'s *waits-for.d/*
-    directory (default *src* is **boot**). Without a daemon, with
-    **\--offline**.
+:   Add a **waits-for** edge from *src* (default: the service's
+    **@meta enable-via**, else the boot service) to *service*, persist
+    it as a symlink, and start *service* — the equivalent of
+    **systemctl enable --now**. The symlink goes into the first
+    **waits-for.d** directory *src* declares, resolved against *src*'s
+    service directory; when *src* declares none, into
+    *waits-for.d/* beside *src*'s file, which the loader does not
+    scan, so the edge then lasts only until the daemon restarts.
+
+    With **\--offline**, nothing is started and the symlink is written
+    to *dir*/*src*/*waits-for.d*/*service* (*src* defaulting to
+    **boot**). That path only works when *src* is a directory; for
+    the usual case, a service file, the command fails with "not a
+    directory", and the link has to be made by hand in the directory
+    *src*'s **waits-for.d** names.
 
 **disable** *service* [\--from *src*]
-:   Inverse of **enable**.
+:   Inverse of **enable**: remove the edge and the symlink, and stop
+    *service*. With **\--offline**, only the symlink at
+    *dir*/*src*/*waits-for.d*/*service* is removed (a missing link is
+    reported, not an error).
 
-**setenv** *KEY*[=*VALUE*]
-:   Set an environment variable for newly-started services. Without
-    *=VALUE*, copies from slinitctl's own environment.
+**setenv** *service* *KEY*=*VALUE*
+:   Set an environment variable on *service*; it applies from the
+    service's next start.
 
-**unsetenv** *KEY*
-:   Remove a previously-set environment variable.
+**unsetenv** *service* *KEY*
+:   Remove a variable previously set with **setenv**.
 
-**getallenv**
-:   Print the daemon's full environment (one *KEY*=*VALUE* per line).
+**getallenv** *service*
+:   Print the variables set on *service* at runtime (one *KEY*=*VALUE*
+    per line).
 
 **reset-env** *service*
 :   Clear all runtime **setenv** mutations on *service*. After reset,
@@ -457,11 +521,14 @@ daemon, which is useful at install time or in initramfs.
     rather than installed on a single one.
 
 **trigger** *service*
-:   Mark a *type=triggered* service as triggered (it will start
-    once its dependencies are satisfied).
+:   Set the trigger on a *type = triggered* service. It does not start
+    the service: a triggered service that is started waits in
+    **STARTING** until the trigger is set, and then reaches
+    **STARTED**. Rejected for services of other types.
 
 **untrigger** *service*
-:   Reset the triggered flag.
+:   Clear the trigger. A service already **STARTED** stays started;
+    the next start waits for a new **trigger**.
 
 ### Shutdown
 
@@ -644,14 +711,14 @@ mistyped one, fails with the connection error.
 
 ## EXAMPLES
 
-Bring a service up and tail its log:
+Bring a service up and print its buffered log:
 
     slinitctl start nginx
-    slinitctl attach nginx
+    slinitctl catlog nginx
 
-Forcefully stop a service that has dependents:
+Stop a service even though it is pinned started:
 
-    slinitctl stop --force database
+    slinitctl --force stop database
 
 Reboot the machine:
 
@@ -660,7 +727,11 @@ Reboot the machine:
 Enable a service to start at boot:
 
     slinitctl enable nginx                  # daemon running
-    slinitctl --offline -d /etc/slinit.d enable nginx   # initramfs / install time
+
+Without a daemon (install time), link it into the directory *boot*'s
+**waits-for.d** setting names, e.g. for `waits-for.d = boot.d`:
+
+    ln -s ../nginx /etc/slinit.d/boot.d/nginx
 
 Inspect the dependency graph as DOT:
 

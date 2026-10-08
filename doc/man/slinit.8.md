@@ -32,23 +32,30 @@ directories, init.d scripts, and .service units to slinit's
 key=value format with per-directive WARN/NOTE for anything that
 doesn't have a 1:1 mapping.
 
-slinit can run in three modes:
+slinit can run in these modes:
 
-* **System manager** (PID 1): supervises services and is responsible for
-  shutdown, reboot, soft-reboot, kernel-cmdline parsing, console set-up
-  and orphan reaping. Selected automatically when started as PID 1, or
-  explicitly with **-m** / **\--system-mgr**.
+* **PID 1**: supervises services and is responsible for shutdown,
+  reboot, soft-reboot, kernel-cmdline parsing, console set-up and
+  orphan reaping. System mode is implied.
 
-* **System service manager**: supervises services system-wide but does
-  not own machine shutdown (the primary init does). Selected with
-  **-s** / **\--system**, the default when invoked as root.
+* **System service manager**, not PID 1: supervises services
+  system-wide, using the system socket and service directories, but
+  does not own the machine: a shutdown request stops the services and
+  slinit exits. Selected with **-s** / **\--system** or its alias
+  **-m** / **\--system-mgr**.
 
-* **User service manager**: supervises a per-user service tree. Selected
-  with **-u** / **\--user**, the default when invoked as a non-root user.
+* **User service manager**: supervises a per-user service tree. This
+  is the default whenever slinit is not PID 1 and neither **-s** nor
+  **-o** is given — whether or not it runs as root.
 
-* **Container mode**: like system-mgr but exits cleanly instead of
-  rebooting/halting the machine, suitable as PID 1 inside Docker / LXC /
-  Podman. Selected with **-o** / **\--container**.
+* **Container mode**: like PID 1, but exits cleanly instead of
+  rebooting or halting the machine, suitable as PID 1 inside Docker,
+  LXC or Podman. Selected with **-o** / **\--container**.
+
+When not PID 1, a first positional argument of **0** or **6** asks the
+running instance to power off or reboot, and **1**–**5** or an
+OpenRC runlevel name asks it to start the matching *runlevel-*
+service; slinit then exits (SysV **telinit** compatibility).
 
 Service descriptions are read from one of several directories (see
 **FILES**), and only on demand: a service file is loaded the first time
@@ -128,8 +135,11 @@ long options may be written with one or two leading dashes.
 **-e** *file*, **\--env-file** *file*
 :   Read initial environment from *file* (one *KEY*=*VALUE* per line).
     Lines starting with `#` are comments. The special directives
-    `!clear`, `!unset VAR...` and `!import VAR...` are honoured. For
-    PID 1 the default is */etc/slinit/environment*.
+    `!clear`, `!unset VAR...` and `!import VAR...` are honoured.
+    Without this option */etc/slinit/environment* (or
+    */etc/dinit/environment*) is read if it exists. A *file* that
+    cannot be read is fatal in user mode; a system instance logs the
+    error and continues.
 
 **-F** *fd*, **\--ready-fd** *fd*
 :   Once the boot service has started, write the control-socket path,
@@ -545,9 +555,8 @@ same whether loaded directly or converted first.
 
 When started as PID 1, slinit performs early init before opening the
 control socket: console set-up, kernel-cmdline parsing,
-*/proc*/*/sys*/*/run* / *devtmpfs* mounting, signal handling
-(SIGINT → reboot, SIGTERM → halt, SIGQUIT → immediate shutdown),
-subreaper / orphan reaping, control-alt-delete handling, and a
+*/proc*/*/sys*/*/run* / *devtmpfs* mounting, signal handling (see
+**SIGNALS**), subreaper / orphan reaping, control-alt-delete handling, and a
 boot-time clock guard (a compile-time floor plus a persistent
 timestamp file at */var/lib/slinit/clock*) to avoid running with a
 silently-reset RTC.
@@ -592,8 +601,12 @@ Recognised **slinit.**-prefixed selectors:
 * **slinit.confirm-spawn** — prompt before each service is brought up.
 * **slinit.crash-shell** — drop to sulogin instead of exiting on PID-1
   panic.
-* **slinit.debug** — verbose console logging (equivalent to
-  **slinit.log-level=debug**).
+* **slinit.debug** — verbose console logging: debug level, with the
+  compact boot console replaced by the full timestamped log stream.
+* **slinit.quiet**, or the bare token **splash** — a quiet boot: no
+  boot banner and no **[OK]** / **[FAIL]** boot console, so slinit's
+  output does not overwrite a splash screen. Messages still reach the
+  journal.
 * **slinit.log-level=**\<level\> — systemd.log_level parity.
 * **slinit.cond=**\<name\>[,\<name\>...] — set one or more boot
   conditions matched by **condition-boot-cond=** in service files
@@ -604,24 +617,30 @@ Recognised **slinit.**-prefixed selectors:
   unreliable).
 * **slinit.reboot-delay=**\<N\> — sleep N seconds between the
   shutdown-hook and the reboot syscall. Clamped to [0, 60].
+* **slinit.panic-after=**\<N\> — panic PID 1 after N seconds, for
+  testing **slinit.crash-shell**. Only honoured by builds made with the
+  *paniconce* build tag (the demo image); ignored otherwise.
 
 ## SIGNALS
 
-When running as system manager (PID 1 or **-m**):
+| Signal | PID 1 | Container mode | Otherwise |
+|---|---|---|---|
+| *SIGTERM*, *SIGINT* | reboot | halt (exit) | stop services and exit |
+| *SIGQUIT*, *SIGUSR2* | power off | power off (exit) | stop services and exit |
+| *SIGRTMIN+3* / *+4* / *+5* / *+6* | halt / power off / reboot / kexec | the same, ending in exit | stop services and exit |
+| *SIGUSR1* | re-open the control socket | the same | the same |
+| *SIGPWR* | run the power hook (since 2.6.1); see **POWER EVENTS** | the same | the same |
+| *SIGHUP* | logged, otherwise ignored | the same | the same |
+| *SIGCHLD* | reap orphaned children | — | — |
 
-* *SIGINT* — reboot (also generated by control-alt-delete on Linux)
-* *SIGTERM* — halt
-* *SIGQUIT* — immediate shutdown, no service rollback
-* *SIGUSR1* — re-open the control socket if it has been deleted
-* *SIGPWR* — a UPS daemon reporting mains power lost or restored
-  (since 2.6.1). slinit reads why and runs the power hook; see
-  **POWER EVENTS** below. It does **not** shut anything down on its own.
+*SIGINT* is also what the kernel sends PID 1 for Ctrl+Alt+Del. A
+signal-driven shutdown can be refused by */etc/slinit/shutdown.allow*
+(see **FILES**). *SIGPWR* never shuts anything down on its own.
 
-When running as a user or system service manager:
-
-* *SIGINT* / *SIGTERM* — stop services and exit
-* *SIGQUIT* — exit immediately
-* *SIGUSR1* — re-open the control socket
+A shutdown signal received while a shutdown is already in progress
+escalates instead: the second cuts the remaining emergency timeout to a
+quarter and logs the services still blocking; the third kills every
+remaining process and forces the exit.
 
 ## POWER EVENTS
 
@@ -715,8 +734,14 @@ on the console:
 :   Default conf.d overlay directory. Files dropped here override
     matching settings on top of any service description.
 
-*/etc/slinit/environment*
-:   Default environment file for system mode.
+*/etc/slinit/environment*, */etc/dinit/environment*
+:   Environment file read at start-up when **\--env-file** is not
+    given, in any mode; the first that exists is used, and a missing
+    file is not an error.
+
+*/etc/slinit/shutdown-hook*, */lib/slinit/shutdown-hook*, */etc/dinit/shutdown-hook*, */lib/dinit/shutdown-hook*
+:   Run during shutdown, first executable path wins, with one argument:
+    **reboot**, **halt**, **poweroff**, **soft** or **kexec**.
 
 */etc/slinit/power-hook*, */lib/slinit/power-hook*
 :   Run when a UPS daemon signals a mains power change (since 2.6.1),
@@ -792,9 +817,13 @@ on the console:
     **switch-root** (fires at the top of switch-root, before
     initramfs teardown). finit-parity for its hook-script plugin.
 
-*/etc/slinit/shutdown.allow*
-:   When present, controls which users may invoke **slinit-shutdown**
-    in delegated mode.
+*/etc/slinit/shutdown.allow*, */etc/shutdown.allow*
+:   When present and slinit is PID 1 (not in container mode), a
+    signal-driven shutdown — Ctrl+Alt+Del, *SIGTERM*, *SIGINT*, the
+    real-time signals — goes ahead only if a user listed in the file
+    (one name per line, **#** comments) is logged in according to
+    utmp. An empty or unreadable file denies them all. Shutdowns
+    requested through **slinitctl** are not affected.
 
 */run/slinit.socket*
 :   Default control socket for system mode.
@@ -847,8 +876,21 @@ When run as a non-PID-1 service manager, slinit exits 0 on a clean
 shutdown. As PID 1 it normally does not exit; on error before init it
 exits with a non-zero status.
 
-In container mode, the exit status reflects the shutdown reason
-(*0* for **slinitctl shutdown**, *1* if forced).
+In container mode the exit status is the workload's:
+
+* after a requested shutdown, the exit status of the boot service(s):
+  their exit code if one exited non-zero, 128 + the signal number if
+  one was killed by a signal, otherwise 0;
+* when the boot service terminated on its own and nothing else was
+  left, that same code — so a batch job that succeeds exits 0;
+* when every service stopped because an operator asked
+  (**slinitctl stop**), 0;
+* when the services stopped without anyone asking and nothing ran to
+  completion, 1 (boot failure).
+
+The code is also written to */run/slinit/container-results/exitcode*
+(and the shutdown type to *.../haltcode*) for whatever supervises the
+container.
 
 ## SEE ALSO
 
