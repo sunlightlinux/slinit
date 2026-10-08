@@ -60,6 +60,17 @@ func narrowBoundingSet(keepRaw []string) error {
 // cap into the ambient set if it isn't already in (Permitted ∩
 // Inheritable).
 func capRaiseInheritable(capNum uintptr) error {
+	return capRaise(capNum, func(d *capUserData, bit uint32) { d.inheritable |= bit })
+}
+
+// capRaiseEffective raises capNum into the effective set. It must already
+// be in the permitted set — after a run-as drop it is there only because
+// PR_SET_KEEPCAPS preserved it.
+func capRaiseEffective(capNum uintptr) error {
+	return capRaise(capNum, func(d *capUserData, bit uint32) { d.effective |= bit })
+}
+
+func capRaise(capNum uintptr, set func(*capUserData, uint32)) error {
 	hdr := capUserHeader{version: linuxCapabilityVersion3, pid: 0}
 	var data [2]capUserData
 
@@ -77,7 +88,7 @@ func capRaiseInheritable(capNum uintptr) error {
 	if idx > 1 {
 		return fmt.Errorf("cap number %d out of range", capNum)
 	}
-	data[idx].inheritable |= bit
+	set(&data[idx], bit)
 
 	_, _, errno = syscall.Syscall(syscall.SYS_CAPSET,
 		uintptr(unsafe.Pointer(&hdr)),

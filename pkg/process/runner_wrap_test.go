@@ -149,3 +149,26 @@ func TestMempolicyName(t *testing.T) {
 		}
 	}
 }
+
+// securebits must be set in the task that becomes the service, which is
+// the runner: the parent-side path was a stub that always failed.
+func TestWrapWithRunnerSecurebits(t *testing.T) {
+	p := ExecParams{
+		Command:    []string{"/usr/bin/svc"},
+		Securebits: SecbitNoroot | SecbitKeepCaps,
+		RunnerPath: "/usr/sbin/slinit-runner",
+	}
+	if !needsRunnerWrap(p) {
+		t.Fatal("securebits alone does not wrap the command in the runner")
+	}
+	want := []string{"/usr/sbin/slinit-runner", "--securebits=17", "--", "/usr/bin/svc"}
+	if got := wrapWithRunner(p); !reflect.DeepEqual(got, want) {
+		t.Errorf("wrapWithRunner argv mismatch:\n got %v\nwant %v", got, want)
+	}
+	// Securebits are confinement: without the runner the service must not
+	// start with them silently dropped.
+	missing := runnerSecurityFeatures(p)
+	if len(missing) != 1 || missing[0] != "securebits" {
+		t.Errorf("runnerSecurityFeatures = %v, want [securebits]", missing)
+	}
+}

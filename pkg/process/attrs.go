@@ -69,11 +69,6 @@ func applyPostForkAttrs(pid int, params ExecParams) []error {
 			errs = append(errs, fmt.Errorf("no_new_privs: %w", err))
 		}
 	}
-	if params.Securebits != 0 {
-		if err := applySecurebits(params.Securebits); err != nil {
-			errs = append(errs, fmt.Errorf("securebits(%d): %w", params.Securebits, err))
-		}
-	}
 	if len(params.CPUAffinity) > 0 {
 		if err := applyCPUAffinity(pid, params.CPUAffinity); err != nil {
 			errs = append(errs, fmt.Errorf("cpu-affinity: %w", err))
@@ -567,25 +562,6 @@ func applyCPUAffinity(pid int, cpus []uint) error {
 		set.Set(int(cpu))
 	}
 	return unix.SchedSetaffinity(pid, &set)
-}
-
-const prSetSecurebits = 28 // PR_SET_SECUREBITS
-
-func applySecurebits(bits uint32) error {
-	// NOTE: PR_SET_SECUREBITS affects the calling thread only.
-	// Setting it in the parent is intentionally skipped because it would
-	// permanently alter slinit's own securebits, affecting ALL future
-	// child processes — not just the target service.
-	//
-	// Securebits are inherited across fork, so the correct approach is
-	// to set them in the child before exec. Since Go's os/exec does not
-	// expose a pre-exec hook that runs in the child, this is a known
-	// limitation. The ambient capabilities mechanism (SysProcAttr.AmbientCaps)
-	// handles the most common use case.
-	//
-	// TODO: implement via a small C helper or clone3+CLONE_CLEAR_SIGHAND
-	// to set securebits in the child process.
-	return fmt.Errorf("securebits cannot be safely set from parent process (would affect slinit itself)")
 }
 
 // applySched programs the scheduling policy and, where applicable,

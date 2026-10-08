@@ -106,7 +106,7 @@ summarises them by topic.
 | **Lifecycle** | SIGTERM with per-service timeout then SIGKILL, restart policies with rate limiting and smooth recovery, `normal-exit` codes, pause/continue, pinning |
 | **Activation** | explicit, dependency-driven, socket activation (`LISTEN_FDS`, Unix/TCP/UDP, `SO_REUSEPORT`), path activation via inotify, calendar timers |
 | **Readiness** | `pipefd`/`pipevar` protocol, `ready-check-command` polling, D-Bus name readiness, `sd_notify` |
-| **Isolation & hardening** | filesystem sandbox (`private-tmp`, `protect-system`, bind/read-only/inaccessible paths), seccomp with curated syscall groups, the `restrict-*` and `protect-*` clusters, AppArmor/SELinux/SMACK transitions, capabilities — all fail-closed |
+| **Isolation & hardening** | filesystem sandbox (`private-tmp`, `protect-system`, bind/read-only/inaccessible paths), seccomp with curated syscall groups, the `restrict-*` and `protect-*` clusters, AppArmor/SELinux/SMACK transitions, capabilities, securebits — all fail-closed |
 | **Resources** | cgroup v2 limits and weights, slices and delegation, nice, ioprio, oom-score-adj, rlimits, CPU affinity, PSI pressure watches |
 | **Logging** | in-memory buffers, files with rotation/filtering/processors, consumer pipes, catch-all early-boot logger, a full journal pipeline (`slinit-journalctl` at 65/65 flag parity, FSS-sealed binary format, namespaces, message catalog) |
 | **Control** | binary protocol over a Unix socket, goroutine per connection, push notifications for state and environment changes, runtime env and dependency edits, Prometheus metrics endpoint |

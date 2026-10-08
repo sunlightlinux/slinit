@@ -342,8 +342,20 @@ func run() error {
 	// Setting it here (post-run-as, pre-exec) is the safe seam: this
 	// process is about to become the child via syscall.Exec, so bits are
 	// inherited by the target program and no other slinit-managed task
-	// is affected.
+	// is affected. Setting them after the drop rather than before keeps
+	// no-setuid-fixup from changing what the drop itself does (systemd
+	// orders it the same way).
+	//
+	// PR_SET_SECUREBITS needs CAP_SETPCAP in the effective set, which the
+	// UID change cleared. KEEPCAPS kept it in permitted, so raise it back
+	// for this one call; execve recomputes the effective set for a
+	// non-root task, so it does not reach the service.
 	if *securebits >= 0 {
+		if *runAsUID > 0 {
+			if err := capRaiseEffective(unix.CAP_SETPCAP); err != nil {
+				return fmt.Errorf("securebits: regain CAP_SETPCAP after run-as: %w", err)
+			}
+		}
 		if _, _, errno := syscall.Syscall(unix.SYS_PRCTL,
 			uintptr(unix.PR_SET_SECUREBITS), uintptr(*securebits), 0); errno != 0 {
 			return fmt.Errorf("PR_SET_SECUREBITS(0x%x): %w", *securebits, errno)
