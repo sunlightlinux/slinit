@@ -1588,7 +1588,9 @@ func (s *ProcessService) BringUp() bool {
 			s.services.logger.Error("Service '%s': failed to start: %v",
 				s.serviceName, err)
 			s.failedToStart(false, true)
+			return
 		}
+		s.launchPostStartCommand()
 	}) {
 		return true
 	}
@@ -1603,19 +1605,24 @@ func (s *ProcessService) BringUp() bool {
 	// the start timeout should be armed BEFORE startProcess() and cancelled
 	// inside startProcess() when readiness is confirmed.
 
-	// systemd-style ExecStartPost=: asynchronous, exit code is only
-	// logged. Runs in a goroutine so a slow hook doesn't block the
-	// scheduling loop.
-	if len(s.postStartCommand) > 0 {
-		go func() {
-			if err := s.runHookCommand(s.postStartCommand, "post-start-command"); err != nil {
-				s.services.logger.Error("Service '%s': post-start-command failed: %v",
-					s.serviceName, err)
-			}
-		}()
-	}
-
+	s.launchPostStartCommand()
 	return true
+}
+
+// launchPostStartCommand runs the systemd-style ExecStartPost= hook:
+// asynchronous, exit code only logged. Runs in a goroutine so a slow
+// hook doesn't block the scheduling loop. Called after a successful
+// startProcess on both the immediate and the start-delay path.
+func (s *ProcessService) launchPostStartCommand() {
+	if len(s.postStartCommand) == 0 {
+		return
+	}
+	go func() {
+		if err := s.runHookCommand(s.postStartCommand, "post-start-command"); err != nil {
+			s.services.logger.Error("Service '%s': post-start-command failed: %v",
+				s.serviceName, err)
+		}
+	}()
 }
 
 // runHookCommand executes a one-shot hook (pre-start-command,

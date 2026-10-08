@@ -223,9 +223,9 @@ what tells you the oldest slinit your configuration will run on. See
 **post-start-command**=*program* [*args*...]
 :   systemd-style *ExecStartPost=*: a program executed asynchronously
     right after the main process is forked — before readiness is
-    confirmed, when a readiness protocol is configured. Currently not
-    run at all when **start-delay** is set. A non-zero exit is logged
-    but does not fail the service. Useful for "service is up, notify
+    confirmed, when a readiness protocol is configured. With
+    **start-delay**, it runs once the delayed fork has happened. A
+    non-zero exit is logged but does not fail the service. Useful for "service is up, notify
     something" hooks. **+=** appends arguments. Process services only.
 
 **ready-check-command**=*program* [*args*...]
