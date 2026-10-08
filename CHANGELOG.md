@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Security
+
+- **A `run-as` user that did not exist made the service run as root.**
+  The loader printed a warning, dropped the setting, and the service
+  started with slinit's own credentials — root under PID 1. A typo in
+  the user name, or a package that forgot to create its user, gave the
+  daemon full privileges. An unresolved value is now kept and looked up
+  again when the service starts, so a user `slinit-sysusers` creates
+  earlier in the same boot still works; if it still does not resolve,
+  the start fails. A group that does not resolve is treated the same way
+  (it used to fall back silently to the user's primary group).
+
 ### Fixed
 
 - **A misspelt name in `capabilities`, `capability-bounding-set` or

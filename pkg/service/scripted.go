@@ -250,6 +250,11 @@ func (s *ScriptedService) BringUp() bool {
 
 	s.exitStatus = ExitStatus{}
 
+	if err := s.Record().resolveDeferredRunAs(); err != nil {
+		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+		return false
+	}
+
 	// Dynamic-user allocation (#13). Mirrors ProcessService.BringUp:
 	// happens before any UID-dependent setup.
 	if err := s.Record().allocateDynamicUID(); err != nil {

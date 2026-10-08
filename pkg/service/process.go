@@ -1480,6 +1480,11 @@ func (s *ProcessService) BringUp() bool {
 		return false
 	}
 
+	if err := s.Record().resolveDeferredRunAs(); err != nil {
+		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+		return false
+	}
+
 	// Dynamic-user: allocate a transient UID/GID from the pool. This
 	// must happen before any UID-dependent setup (ServiceDirs chown,
 	// credentials chown) so they all see the same effective identity.

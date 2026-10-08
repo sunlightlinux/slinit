@@ -248,8 +248,12 @@ what tells you the oldest slinit your configuration will run on. See
     groups from `/etc/group` are NOT loaded automatically. Use
     **supplementary-groups**= to opt in explicitly, matching the
     principle of least surprise across sysvinit / OpenRC / systemd.
-    If *user* cannot be resolved, the setting is ignored with a warning
-    on stderr and the service runs with slinit's own credentials.
+    *user* and *group* may be names or numeric ids. If either does not
+    resolve when the service is loaded, a note goes to stderr and it is
+    looked up again when the service starts — so a user that
+    **slinit-sysusers**(8) creates earlier in the same boot works. If it
+    still does not resolve then, the start fails; the service never
+    falls back to slinit's own credentials (root, under PID 1).
 
 **supplementary-groups**=*grp1* [*grp2*...]
 :   Space-separated list of group names (or numeric GIDs) installed
