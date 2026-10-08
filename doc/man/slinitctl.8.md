@@ -738,7 +738,7 @@ Enable a service to start at boot:
     slinitctl enable nginx                  # daemon running
 
 Without a daemon (install time), link it into the directory *boot*'s
-**waits-for.d** setting names, e.g. for `waits-for.d = boot.d`:
+**waits-for.d** setting names, e.g. for `waits-for.d: boot.d`:
 
     ln -s ../nginx /etc/slinit.d/boot.d/nginx
 

@@ -296,8 +296,9 @@ long options may be written with one or two leading dashes.
     **\--parallel-start-limit**. Default *10s*.
 
 **-b** *path*, **\--cgroup-path** *path*
-:   Default cgroup base path. Relative cgroup paths in service files
-    are resolved against it. Linux only.
+:   Cgroup used for services that set neither **cgroup** nor
+    **slice**. It is not a base for relative paths: a service's
+    **cgroup** is taken as written. Linux only.
 
 **-a** *list*, **\--cpu-affinity** *list*
 :   CPU affinity for the daemon and for services that do not set their

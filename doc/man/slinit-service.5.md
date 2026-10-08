@@ -14,7 +14,7 @@ slinit-service - slinit service description file format
 
 Each file describes a single service. The filename is the service name.
 Settings are written one per line as *KEY*=*VALUE* (or, for
-dependencies, *KEY*:*VALUE* — see **DEPENDENCY KEYS**). Lines beginning
+dependencies, *KEY*:*VALUE* — see **DEPENDENCIES**). Lines beginning
 with `#` are comments. Blank lines are ignored. Trailing whitespace is
 stripped.
 
@@ -32,18 +32,37 @@ slinit-specific extensions.
 **+=**
 :   Append. For list-valued settings (commands, dependencies, log
     processors, ...) appends to the existing list rather than replacing
-    it. For scalars it has the same meaning as **=**.
+    it. Only list-valued settings accept it (commands, hooks,
+    **normal-exit**, **supplementary-groups**, **pass-environment**,
+    ...); **+=** on any other setting is a parse error.
 
 **:**
-:   Same as **=**, accepted in dependency keys for parity with dinit
-    (e.g. `depends-on:network`).
+:   Required by the dependency keys (**depends-on**, **depends-ms**,
+    **waits-for**, **prepared-by**, their **.d** forms, **before**,
+    **after**), which reject **=** and **+=**: write
+    `depends-on: network` and repeat the line for more targets.
+    **bundle-of** and **consumer-of** accept both **=** and **:**.
+
+Each setting accepts only its own set of operators; any other is a
+parse error ("invalid operator, expected ...").
+
+### Durations
+
+Duration values are not parsed uniformly. **start-timeout**,
+**stop-timeout**, **start-delay**, **hook-timeout**, **restart-delay**,
+**restart-limit-interval**, **timeout-sec**, **timeout-abort-sec** and
+**restart-max-delay** take plain decimal seconds (*10*, *0.5*) and reject
+a unit. **ready-check-interval**, **runtime-max-sec** and the
+**\*-pressure-threshold** settings require a unit (*500ms*, *30s*).
+**job-timeout-sec**, **restart-delay-step**, **restart-delay-cap** and
+**restart-randomized-delay** accept either.
 
 ### Includes
 
 **@include** *path*
 :   Inline another file at this point. Relative paths are resolved
     against the directory of the file containing the directive. Up
-    to 8 levels of nesting are allowed.
+    to 10 levels of nesting are allowed.
 
 **@include-opt** *path*
 :   Like **@include**, but missing files are silently ignored rather
@@ -51,18 +70,32 @@ slinit-specific extensions.
 
 ### Variable substitution
 
-Values undergo environment-variable substitution at load time:
-*$VAR*, *${VAR}*, *${VAR:-default}* and *${VAR:+alternate}* are
-recognised. Use *$$* for a literal dollar. The pseudo-variable
-*$1* expands to the service argument when the service is loaded
-with one (e.g. `getty@tty1` → `$1` = `tty1`).
+Command, hook, path and service-name values undergo
+environment-variable substitution at load time; descriptive text
+(**description**, **author**), **run-as**, **supplementary-groups**,
+numbers, durations and booleans are stored as written. *$VAR*,
+*${VAR}*, *${VAR:-default}*, *${VAR-default}*, *${VAR:+alternate}* and
+*${VAR+alternate}* are recognised, and in command settings *$/VAR*
+expands with word splitting. Unset variables expand to the empty
+string. Use *$$* for a literal dollar. The pseudo-variable *$1*
+expands to the service argument (e.g. `getty@tty1` → `$1` = `tty1`),
+or to nothing when there is none. **@include** paths expand plain
+*$VAR* only.
+
+**@meta** *text* lines are ignored metadata, except
+`@meta enable-via` *service*, which names the default source service
+for **slinitctl enable**/**disable**. Any other `@` directive is a
+parse error.
 
 ### conf.d overlays
 
 Files dropped into */etc/slinit.conf.d/*\*service-name*\*` are loaded
 *after* the main service file using the same parser, so they may
 override scalars or append (`+=`) to lists. Overlays do not need to
-exist; if they do, they may not change the service type.
+exist, and nothing stops one from changing the service type. For a
+template instance *name*@*arg*, both *name*@*arg* and *name* are tried.
+The overlay directories are set with **slinit**(8) **\--conf-dir**
+(*none* disables them).
 
 ### .override files
 
@@ -102,15 +135,16 @@ instance, with *$1* substitution still in effect.
 
 ### Bundle (aggregate) services
 
-**bundle-of**=*svc1*, *svc2*, ... (also accepts `:` and repeat/`+=`)
+**bundle-of**=*svc1*, *svc2*, ... (also accepts `:`; repeat the line to add members)
 :   Marks the current service as an s6-rc-style bundle: it has no
     process, but starting it starts every named member, and stopping
-    it stops them. Requires **type**=*internal* — bundles are pure
+    it stops them. Implies **type**=*internal* (an explicit different
+    **type** is an error) — bundles are pure
     aggregation, not supervision. Members are looked up by name and
     joined as hard dependencies (**depends-on**) at load time.
 
-    Member names may not begin with `.` (parser rejects it), and the
-    bundle itself is never a member of another bundle. Reload of a
+    Member names may not begin with `.` (parser rejects it). Bundles
+    may be nested. Reload of a
     bundle re-reads the member list; adds and removes propagate.
     Convenient for boot-time groupings like `system.target` or
     `all-network`.
@@ -128,7 +162,8 @@ release it appeared in:
     :   (since 2.5.0) Does the shiny new thing.
 
 No marker means the directive predates that convention and is
-available in every 2.x release. Service files are forward-compatible
+available in every 2.x release (except **no-boot-marker**, 2.2.9+).
+Service files are forward-compatible
 only — a file using a directive introduced in 2.5.0 fails to load on
 2.4.2, with a load error rather than a silent skip — so the marker is
 what tells you the oldest slinit your configuration will run on. See
@@ -170,7 +205,9 @@ what tells you the oldest slinit your configuration will run on. See
     fatal parse error.
 
 **stop-command**=*program* [*args*...]
-:   For **scripted**: program executed when the service stops.
+:   Program run to stop the service. For **scripted** it is the stop
+    script; for **process** and **bgprocess** it is run instead of
+    sending **term-signal** (the stop timeout still applies).
 
 **finish-command**=*program* [*args*...]
 :   Runit-style: a program executed *after* **command** exits, before
@@ -185,7 +222,9 @@ what tells you the oldest slinit your configuration will run on. See
 
 **post-start-command**=*program* [*args*...]
 :   systemd-style *ExecStartPost=*: a program executed asynchronously
-    after the service reaches **started**. A non-zero exit is logged
+    right after the main process is forked — before readiness is
+    confirmed, when a readiness protocol is configured. Currently not
+    run at all when **start-delay** is set. A non-zero exit is logged
     but does not fail the service. Useful for "service is up, notify
     something" hooks. **+=** appends arguments. Process services only.
 
@@ -194,7 +233,8 @@ what tells you the oldest slinit your configuration will run on. See
     started only when the check passes.
 
 **ready-check-interval**=*duration*
-:   How often to retry **ready-check-command**.
+:   How often to retry **ready-check-command**, with a unit (*500ms*,
+    *2s*); a bare number is rejected. Default *100ms*.
 
 **pre-stop-hook**=*program* [*args*...]
 :   Hook run before the stop signal is delivered.
@@ -208,6 +248,8 @@ what tells you the oldest slinit your configuration will run on. See
     groups from `/etc/group` are NOT loaded automatically. Use
     **supplementary-groups**= to opt in explicitly, matching the
     principle of least surprise across sysvinit / OpenRC / systemd.
+    If *user* cannot be resolved, the setting is ignored with a warning
+    on stderr and the service runs with slinit's own credentials.
 
 **supplementary-groups**=*grp1* [*grp2*...]
 :   Space-separated list of group names (or numeric GIDs) installed
@@ -311,17 +353,21 @@ what tells you the oldest slinit your configuration will run on. See
 
 **env-dir**=*directory*
 :   Read environment from `envdir`-style directory (one variable per
-    file; filename is the variable name, contents the value).
+    file; filename is the variable name, contents the value). An
+    empty file removes the variable. **process** services only.
 
 **env-generator**=*path*
 :   Executable that emits *KEY*=*VALUE* lines on stdout at start
     time. Merged after **env-file** and **env-dir** so it wins
-    conflicts. Failure aborts the start (systemd
-    **EnvironmentGenerator** semantics).
+    conflicts. A failing generator is logged and its output ignored;
+    the start proceeds. **process** services only.
 
 **pass-environment**=*NAME*...
-:   Allow-list filter on PID-1 env inheritance. When set, only
-    listed names are forwarded to the child. Empty value = drop
+:   Allow-list filter applied to the inherited environment, the
+    **env-file** variables and **slinitctl setenv** variables (not to
+    **env-dir** / **env-generator** output, which is merged
+    afterwards). When set, only listed names are forwarded to the
+    child. Empty value = drop
     everything. **SLINIT_SERVICENAME** and **SLINIT_SERVICEDSCDIR**
     are always forwarded regardless (dinit-compat query env vars).
     Repeatable via *+=*. Systemd **PassEnvironment=**.
@@ -351,22 +397,24 @@ always set in the service environment (see **slinit**(8)).
 
 ## DEPENDENCIES
 
-slinit supports seven dependency kinds. Names accept either `=` or `:`
-(`depends-on=foo` and `depends-on:foo` are equivalent).
+slinit supports seven dependency kinds. These keys take the **:**
+operator only (`depends-on: foo`); `depends-on = foo` is a parse
+error. Repeat the line for several targets.
 
-**depends-on**=*service*
+**depends-on**: *service*
 :   Hard dependency. *service* must start before this one; if it
     fails, this one fails too.
 
-**depends-ms**=*service*
+**depends-ms**: *service*
 :   Milestone dependency: *service* must reach *started* once, but
     its later state does not affect this one.
 
-**waits-for**=*service*
-:   Soft dependency: starts *service* alongside this one, but does
-    not block startup if *service* fails.
+**waits-for**: *service*
+:   Soft dependency: *service* is started too, and this one waits for
+    it to start (or fail) before starting; its failure does not fail
+    this one.
 
-**prepared-by**=*service*
+**prepared-by**: *service*
 :   Hard dependency like **depends-on**, with one extra rule: each
     time this service restarts, *service* is restarted first. Use
     for per-execution prepare / cleanup steps that must run fresh
@@ -374,11 +422,11 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
     rotating a sandbox). Avoid combining with `smooth-recovery=yes`
     — the restart cascade is what gives this dependency its value.
 
-**before**=*service*
+**before**: *service*
 :   Ordering only: if both end up starting, this one starts before
     *service*. No forced activation.
 
-**after**=*service*
+**after**: *service*
 :   Ordering only: if both start, this one starts after *service*.
 
 **chain-to**=*service*
@@ -395,9 +443,11 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
     three conditions and chains whenever the service stops. Same
     semantics as dinit's.
 
-**depends-on.d**=*directory*, **depends-ms.d**=*directory*, **waits-for.d**=*directory*, **prepared-by.d**=*directory*
-:   Drop-in directories: every entry inside *directory* (regardless of
-    type) is treated as a dependency of the corresponding kind.
+**depends-on.d**: *directory*, **depends-ms.d**: *directory*, **waits-for.d**: *directory*, **prepared-by.d**: *directory*
+:   Drop-in directories: every non-hidden, non-directory entry inside
+    *directory* is treated as a dependency of the corresponding kind.
+    A relative *directory* is resolved against the service file's
+    directory; a missing directory is ignored.
 
 ## ACTIVATION
 
@@ -442,7 +492,8 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
     service still stops when its dependents stop, when a milestone
     dependency releases it, or during shutdown. Useful for critical
     infrastructure services the operator should not stop by hand
-    (e.g. `dbus`, `journald`).
+    (e.g. `dbus`, `journald`). **slinitctl \--force stop** overrides
+    it.
 
 **stop-when-unneeded**=*yes*|*no*
 :   When *yes*, the service stops as soon as no dependent needs it
@@ -521,7 +572,8 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
     fails the start outright.
 
     Mind what the budget buys. These hooks run inside slinit's
-    scheduling lock, so the timeout is also how long one service's hook
+    scheduling lock (except **post-start-command**, which runs
+    asynchronously and only shares the timeout), so the timeout is also how long one service's hook
     can hold up *other* services' starts and stops: with a
     pre-start-command that sleeps, an unrelated `slinitctl start` was
     measured waiting 4 seconds for the remainder of the 5-second
@@ -579,7 +631,8 @@ slinit supports seven dependency kinds. Names accept either `=` or `:`
 
 **runtime-max-sec**=*duration*, **runtime-randomized-extra**=*duration*
 :   Force-stop the service after *runtime-max-sec* elapsed since
-    start. **runtime-randomized-extra** adds fleet jitter so a
+    start. **runtime-max-sec** requires a unit (*30s*, *5m*);
+    **runtime-randomized-extra** takes decimal seconds. **runtime-randomized-extra** adds fleet jitter so a
     thousand identical services don't all hit the runtime cap at
     the same wallclock instant.
 
@@ -703,9 +756,9 @@ trigger either action.
     contain `/` or NUL.
 
     *Out of scope (v1):* `load-credential-encrypted` (TPM-sealed
-    secrets), `import-credential` (inheritance from the daemon's
-    own credentials). Plain on-disk and inline forms cover the
-    immediate "secrets without env leakage" use case.
+    secrets). See **import-credential** below for pulling
+    credentials from the system credstore. Plain on-disk and inline
+    forms cover the immediate "secrets without env leakage" use case.
 
     Example:
 
@@ -729,9 +782,9 @@ trigger either action.
 
     The watcher samples **<cgroup>/memory.events** once per second
     while the service is STARTED; *continue* is a no-op and arms no
-    watcher. Requires a configured **cgroup-path** (or a default
-    via the daemon's **--cgroup-path**); otherwise the policy is
-    parsed and stored but cannot fire.
+    watcher. Requires a cgroup — **cgroup** (alias **run-in-cgroup**),
+    **slice**, or the daemon's **\--cgroup-path** default; otherwise
+    the policy is parsed and stored but cannot fire.
 
 The values map onto the same shutdown machinery used by
 **slinitctl shutdown**: *reboot* / *poweroff* / *halt* go through
@@ -784,21 +837,22 @@ apply OS-level changes:
 **log-type**=*none*|*file*|*buffer*|*pipe*|*command*
 :   *none*: drop output; *file*: append to **logfile**; *buffer*:
     keep an in-memory ring buffer (queryable via **slinitctl
-    catlog**); *pipe*: pipe to **shared-logger**; *command*: pipe to
+    catlog**); *pipe*: pipe to a service declaring **consumer-of** this one, or
+    to **shared-logger** when that is set; *command*: pipe to
     **output-logger** / **error-logger**.
 
-**log-select**=*+prefix* *-prefix* ...
-:   Per-service line filter applied before the log stream leaves the
-    reader — s6-log-select style. Tokens are `+`-prefixed to keep
-    lines starting with *prefix* or `-`-prefixed to drop them; the
-    first matching rule wins, and unmatched lines are dropped by
-    default (add a trailing `+ ` — literal `+` followed by empty
-    string — to keep everything unmatched). Mutually exclusive with
-    **log-include** / **log-exclude** (regex-based). Tokens without
-    a leading `+`/`-` are a parse error.
+**log-select**=*+regex* *-regex* ...
+:   s6-log-style selection chain. Each token is `+`*regex* (keep) or
+    `-`*regex* (drop); the regex matches anywhere in the line. Tokens
+    are evaluated left to right and the **last** matching one
+    decides; lines matching no token are kept. `+*` / `-*` match
+    everything. Repeated directives append. Mutually exclusive with
+    **log-include** / **log-exclude**. A token without a leading
+    `+`/`-`, or with nothing after it, is a parse error. Requires a
+    configured **logfile**.
 
-        # keep NOTICE and ERROR lines, drop the rest
-        log-select = +NOTICE +ERROR -
+        # keep only NOTICE and ERROR lines
+        log-select = -* +NOTICE +ERROR
 
 **log-buffer-size**=*N*
 :   Size in bytes of the in-memory log buffer.
@@ -816,13 +870,14 @@ apply OS-level changes:
     aggressively deletes the oldest rotated files down to this count
     and retries the write once. Better a shorter log history than a
     lost stream of live events. Must be a positive integer strictly
-    less than **logfile-max-files** — the parser rejects
-    misconfigurations at load time. 0 (default) disables the recovery
+    less than **logfile-max-files**; the parser enforces that only
+    when **logfile-max-files** appears earlier in the file. 0 (default) disables the recovery
     path; the write is simply lost on disk-full.
 
 **log-include**=*regex*, **log-exclude**=*regex*
 :   Filter lines that reach the log target. Multiple patterns OR
-    together.
+    together. Like **log-level-max** and **log-processor**, requires
+    a configured **logfile**.
 
 **log-rate-limit-interval**=*duration*, **log-rate-limit-burst**=*N*
 :   Token-bucket rate limit for the log pipeline. At most *N* lines
@@ -834,7 +889,8 @@ apply OS-level changes:
 
 **log-level-max**=*emerg*|*alert*|*crit*|*err*|*warn*|*notice*|*info*|*debug*
 :   Drop log lines whose syslog severity is higher than the
-    threshold. Lines without a `<N>` priority prefix are treated as
+    threshold. Lines without a `<N>` priority prefix or a leading
+    uppercase *KEYWORD*`:` (`ERROR:`, `WARN:`, ...) are treated as
     *info* (6), so plain text passes any threshold >= info. Accepts
     the kebab-case keyword (`warning`, `error` are also accepted)
     or the numeric 0..7. *off* / *none* / *any* disable the filter.
@@ -862,13 +918,13 @@ apply OS-level changes:
     **log-level-max**, rate limit, sanitizer, cap) is also emitted
     as a syslog packet aimed at *host:port*. Framing is either
     classic BSD **rfc3164** (default) or the modern structured
-    **rfc5424**. The facility field (default *daemon*) accepts the
+    **rfc5424**. The facility field (default *user*) accepts the
     standard names *kern*, *user*, *mail*, *daemon*, *auth*,
     *syslog*, *lpr*, *news*, *uucp*, *cron*, *authpriv*, *ftp*,
     and *local0..local7*. The tag defaults to the service name
     and is what appears in the syslog PROGRAM slot. Severity is
-    derived from an inline `<N>` PRI prefix on the source line
-    when present, otherwise defaults to *info*. Failures on the
+    derived from an inline `<N>` PRI prefix or a leading
+    *KEYWORD*`:` on the source line, otherwise *info*. Failures on the
     UDP send do NOT backpressure the local write path — a downed
     collector logs a coalesced warning at most every 30 s and
     silently drops until it recovers. Useful for
@@ -890,7 +946,7 @@ apply OS-level changes:
     ensuring the two streams stay comparable. Rotation on the alert
     file is not managed by slinit in the MVP: use external logrotate
     or a symlink into an already-rotated directory. Files are opened
-    with `O_NOFOLLOW` and inherit **logfile-perms** / **logfile-uid**
+    with `O_NOFOLLOW` and inherit **logfile-permissions** / **logfile-uid**
     / **logfile-gid** from the main sink.
 
 **profile**=*name1,name2,...*
@@ -911,9 +967,11 @@ apply OS-level changes:
     syscall. Bigger buffers reduce syscall overhead on chatty
     producers (metrics collectors, verbose loggers) at the cost of
     slightly more memory per rotator; smaller values shave memory on
-    quiet services. Must be in the [512..1048576] envelope; 0
-    (default) selects the built-in 4096-byte chunk that slinit has
-    always shipped. Rarely worth tuning — this exists for parity
+    quiet services. Must be in the [512..1048576] envelope; when
+    unset, the built-in 4096-byte chunk is used. It does not by
+    itself turn the LogRotator on, so it takes effect only when
+    another LogRotator feature (rotation, filtering, decoration,
+    forwarding) is configured as well. Rarely worth tuning — this exists for parity
     with **svlogd**(8) and for the tiny-footprint embedded case.
     Requires a configured **logfile**.
 
@@ -926,7 +984,7 @@ apply OS-level changes:
     common runaway case) triggers the same truncate + marker, then the
     LogRotator silently discards further input until it sees the next
     newline — guarding against unbounded lineBuf growth. Minimum
-    accepted value is 16 bytes; 0 disables the cap. Requires a
+    accepted value is 16 bytes; leave it unset for no cap. Requires a
     configured **logfile**.
 
 **log-sanitize**=*char*, **log-sanitize-extra**=*bytes*
@@ -984,7 +1042,6 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
       read end on receipt unless **watchdog-timeout** is also set.
     * `pipevar:VARNAME` — slinit allocates an fd, sets *VARNAME* in
       the service environment, and the child writes to that fd.
-    * `s6` — s6-style readiness on fd 1 (close stdout).
 
 **watchdog-timeout**=*duration*
 :   Per-service software watchdog. Reuses the **ready-notification**
@@ -1057,9 +1114,10 @@ before exec'ing the service. The host filesystem is untouched.
 **protect-system**=*no*|*yes*|*full*|*strict*
 :   *yes* read-only remounts */usr*, */boot* and */efi*. *full* adds
     */etc*. *strict* remounts the whole root */* read-only; only the
-    paths listed in **read-write-paths** plus the standard
-    runtime mountpoints (*/dev*, */proc*, */sys*, */run*, */tmp*,
-    */var/tmp*) stay writable. *no* (default) disables the remount.
+    paths listed in **read-write-paths**, plus whichever of */dev*,
+    */proc*, */sys*, */run*, */tmp* and */var/tmp* are separate
+    mount points, stay writable (use **private-tmp** to guarantee a
+    writable */tmp*). *no* (default) disables the remount.
 
 **read-only-paths**=*path*...
 :   Bind-mount each absolute path on top of itself and remount it
@@ -1068,8 +1126,8 @@ before exec'ing the service. The host filesystem is untouched.
 
 **read-write-paths**=*path*...
 :   Punch a writable hole through **protect-system**=*strict* for the
-    listed paths. Applied before **read-only-paths**, so a path may
-    appear in both (rw first wins). Repeatable with `+=`.
+    listed paths. Applied before **read-only-paths**, so a path
+    listed in both ends up read-only. Repeatable with `+=`.
 
 **protect-home**=*no*|*yes*|*read-only*|*tmpfs*
 :   Hide */home*, */root* and */run/user* from the service. *yes*
@@ -1139,8 +1197,10 @@ the internal **seccomp** package and installs it via the
 **system-call-error-number**=*kill*|*log*|*trap*|*errno-name*|*errno-number*
 :   Action for syscalls that do NOT match an allow entry (or DO match
     a deny entry). *kill* (default) sends **SECCOMP_RET_KILL_PROCESS**;
-    *log* / *trap* use the corresponding seccomp returns; an errno
-    name (e.g. *EPERM*) or numeric value (1..4095) returns
+    *kill-process* is an alias of *kill*; *log* / *trap* use the
+    corresponding seccomp returns; an errno name (*EPERM*, *ENOENT*,
+    *EACCES*, *EINVAL*, *ENOSYS* — others only by number) or numeric
+    value (1..4095) returns
     **SECCOMP_RET_ERRNO** with that value. Equivalent to systemd's
     **SystemCallErrorNumber=**.
 
@@ -1156,8 +1216,11 @@ systemd-style hardening knobs. Each is a yes/no toggle. Active knobs
 expand at runner-side to a fixed seccomp deny filter (installed
 alongside any user **system-call-filter** — the kernel picks the most
 restrictive action across all loaded filters) and/or a small mount
-operation. **PR_SET_NO_NEW_PRIVS** is auto-implied when any knob is
-set. The mount-based knobs (**protect-kernel-tunables**,
+operation. **PR_SET_NO_NEW_PRIVS** is set whenever a knob installs a
+seccomp filter (every knob except **protect-control-groups** and
+**memory-deny-write-execute**). A blocked call kills the process
+(*SECCOMP_RET_KILL_PROCESS*); **system-call-error-number** does not
+apply to these filters. The mount-based knobs (**protect-kernel-tunables**,
 **protect-control-groups**, **protect-kernel-logs**) additionally
 auto-imply *CLONE_NEWNS* so the operations are confined to the
 service's private mount namespace.
@@ -1227,8 +1290,11 @@ service's private mount namespace.
 :   Allow-list of address families for **socket**(2) and
     **socketpair**(2); anything not listed is denied. Empty
     directive value = deny every socket call. Repeatable via *+=*.
-    Family names are the *AF_\** constants (case-insensitive, with
-    or without the *AF_* prefix) or numeric values.
+    Recognised names: *AF_UNIX*/*AF_LOCAL*, *AF_INET*, *AF_INET6*,
+    *AF_NETLINK*, *AF_PACKET*, *AF_AX25*, *AF_IPX*, *AF_APPLETALK*,
+    *AF_BLUETOOTH*, *AF_VSOCK* (case-insensitive, *AF_* optional);
+    use numbers for any other family. An unknown name is not caught
+    at parse time — it fails the start.
 
 **memory-deny-write-execute**=*yes*|*no*
 :   **prctl**(2) *PR_SET_MDWE* with *PR_MDWE_REFUSE_EXEC_GAIN*.
@@ -1236,8 +1302,9 @@ service's private mount namespace.
     fail-closes to match the operator's stated intent.
 
 Runner-side ordering: **memory-deny-write-execute** and the shared
-*PR_SET_NO_NEW_PRIVS* prctl run BEFORE any seccomp install so a
-filter that later blocks prctl can't lock the runner out. Each
+*PR_SET_NO_NEW_PRIVS* prctl run before the hardening filters are
+installed, but after any user **system-call-filter** — so a user filter
+that denies **prctl**(2) breaks **memory-deny-write-execute**. Each
 **restrict-\*** directive installs as its OWN seccomp filter; the
 kernel stacks filters and takes the most restrictive result.
 
@@ -1249,16 +1316,20 @@ kernel stacks filters and takes the most restrictive result.
 **namespace-cgroup**=*yes*|*no*
 :   Create the corresponding new namespace before exec.
 
-**namespace-uid-map**=*inside outside count*, **namespace-gid-map**=*inside outside count*
+**namespace-uid-map**=*inside*:*outside*:*count*, **namespace-gid-map**=*inside*:*outside*:*count*
 :   ID mappings written into */proc/PID/uid_map* and */proc/PID/gid_map*
-    when **namespace-user=yes**. Multiple lines may be appended with
-    `+=`.
+    when **namespace-user=yes**; *count* must be positive. Several
+    mappings may be given with `+=`; a plain `=` replaces the list.
 
 ## CGROUPS (cgroup v2)
 
 **cgroup**=*path* (alias **run-in-cgroup**)
-:   Cgroup path the service is moved into before exec. May be
-    relative — resolved against **slinit**(8)'s **\--cgroup-path**.
+:   Absolute cgroup v2 directory the service is moved into before
+    exec; it must lie under */sys/fs/cgroup* and is created if
+    missing. A path outside it is not rejected at load: the start
+    logs a warning and the service runs without the cgroup. When
+    neither **cgroup** nor **slice** is set, the daemon's
+    **\--cgroup-path** is used.
 
 **slice**=*name*
 :   Hierarchical parent, systemd-style. With no **cgroup** of its own the
@@ -1328,31 +1399,33 @@ kernel stacks filters and takes the most restrictive result.
 
 ### PSI pressure watches (Linux ≥ 5.13)
 
-Reactive resource events rather than static limits: slinit polls
-the cgroup's `memory.pressure`, `cpu.pressure`, or `io.pressure`
-files and emits events when the `some avg10` share crosses a
-threshold. Consumed by **slinit-monitor**(8) as `pressure-*`
-events. Requires the service to be placed in a cgroup (**cgroup=**
-or the daemon's **\--cgroup-path**) and cgroup v2.
+Reactive resource events rather than static limits: slinit arms a
+kernel PSI trigger on the cgroup's `memory.pressure`, `cpu.pressure`
+or `io.pressure` file and emits a pressure service event each time
+the kernel signals it, while the service is STARTED. **slinit-monitor**(8)
+does not name these events yet (it prints them as `unknown(N)`).
+Requires cgroup v2 and a cgroup (**cgroup**, **slice**, or the
+daemon's **\--cgroup-path**).
 
 **memory-pressure-watch**=*yes*|*no*, **cpu-pressure-watch**=*yes*|*no*,
 **io-pressure-watch**=*yes*|*no*
 :   Arm the pressure watcher for the given controller. Default *no*.
     Watchers are per-service; a single service may arm all three.
 
-**memory-pressure-threshold**=*N*, **cpu-pressure-threshold**=*N*,
-**io-pressure-threshold**=*N*
-:   Percent (0..100) at which the pressure event fires. Default 10.
-    The watcher emits a `pressure-<type>-high` event when the share
-    crosses *N* upward and a `pressure-<type>-low` event when it
-    drops back below. Hysteresis is handled internally so a value
-    oscillating at the threshold does not flap.
+**memory-pressure-threshold**=*duration*, **cpu-pressure-threshold**=*duration*,
+**io-pressure-threshold**=*duration*
+:   Stall time within a fixed 2-second window at which the event
+    fires, as a duration with a unit (*150ms*); a bare number is a
+    parse error. Default *200ms*, clamped to 500us..2s. slinit writes
+    the kernel trigger `some <threshold> 2s`; the kernel signals at
+    most once per window, and each signal is one event — there are
+    no separate high/low events.
 
 Example — page a scaler when memory pressure spikes for a workload:
 
-    cgroup                    = /workload
+    cgroup                    = /sys/fs/cgroup/workload
     memory-pressure-watch     = yes
-    memory-pressure-threshold = 20
+    memory-pressure-threshold = 200ms
 
 ## RESOURCE LIMITS
 
@@ -1396,7 +1469,9 @@ will not inherit FIFO priority.
     classes (priority 1-99); *deadline* (Linux 3.14+) is bandwidth-
     reservation EDF. *batch* / *idle* are throughput-friendly variants
     of OTHER. Aliases: *realtime* → *fifo*, *normal* → *other*. Unset
-    means "inherit slinit's policy".
+    means "inherit slinit's policy", and so does *other*: selecting
+    it changes nothing (and **sched-reset-on-fork** is not applied
+    with it).
 
 **sched-priority**=*1..99*
 :   Static priority for **SCHED_FIFO** / **SCHED_RR**. Required when
@@ -1448,9 +1523,9 @@ helper (**slinit-runner**) that slinit transparently prepends to the
 service command — the running process is the real binary, not the
 helper, so signals and PIDs match what slinitctl reports.
 
-**slinit-runner** must be on **PATH** or in the same directory as the
-**slinit** binary. When it cannot be located, mlockall and
-numa-mempolicy are silently ignored (slinit logs a startup warning).
+See **WHEN slinit-runner IS MISSING** below for where the runner is
+looked up; without it these two settings are skipped with a console
+message and the service still starts.
 
 **mlockall**=*current*|*future*|*both*|*onfault*|*no*
 :   Lock the service's pages in RAM via **mlockall**(2). *current*
@@ -1458,8 +1533,14 @@ numa-mempolicy are silently ignored (slinit logs a startup warning).
     the call, *both* combines them. *onfault* (Linux 4.4+) defers the
     lock until the page is faulted in. Comma- or `+`-separated
     combinations are accepted (`current+future+onfault`). *yes* is an
-    alias for *both*. Requires **CAP_IPC_LOCK** or sufficient
-    **rlimit-memlock**; without those, the service fails to start.
+    alias for *both*; spaces also separate flags; *no*/*off* disable.
+
+    Memory locks do not survive **execve**(2), so the service is not
+    actually locked by this setting. The runner raises
+    **RLIMIT_MEMLOCK** to unlimited (which does survive exec, and
+    lets the service call **mlockall**(2)/**mlock**(2) itself without
+    **CAP_IPC_LOCK**) and applies the flags to its own short pre-exec
+    setup. Read it as "enable memory locking for this service".
 
 **numa-mempolicy**=*bind*|*preferred*|*interleave*|*local*|*default*
 :   NUMA memory-allocation policy applied via **set_mempolicy**(2).
@@ -1490,9 +1571,13 @@ mlockall       = current+future
 ## CAPABILITIES & SANDBOXING
 
 **capabilities**=*caps*
-:   Comma-separated list of Linux capabilities to retain (e.g.
-    `cap_net_bind_service,cap_chown`). Unlisted capabilities are
-    dropped from all sets including *ambient*.
+:   Comma- or space-separated capabilities (with or without the
+    *cap_* prefix, or numeric; e.g. `cap_net_bind_service,cap_chown`)
+    raised into the inheritable and ambient sets, so a **run-as**
+    service keeps them across exec. Nothing is dropped: a service
+    running as root keeps its full set — use
+    **capability-bounding-set** to remove capabilities. An unknown
+    name makes the whole directive be ignored.
 
 **capability-bounding-set**=*caps*
 :   Comma-separated positive list of capability names retained in the
@@ -1505,7 +1590,13 @@ mlockall       = current+future
     interpreted positively (only the listed caps survive).
 
 **securebits**=*bits*
-:   Securebit names or bitmask (e.g. `keep-caps,no-setuid-fixup`).
+:   Space-separated securebit names (*noroot*, *no-setuid-fixup*,
+    *keep-caps*, *no-cap-ambient-raise*, each with a *-locked*
+    variant); no bitmask, and a comma-separated value is ignored.
+    Currently parsed but not applied to slinit services: the start
+    logs a "post-fork attr warning". (**slinit-start-stop-daemon**(8)
+    and **slinit-supervise-daemon**(8) do apply their own
+    **\--securebits**.)
 
 **apparmor-load**=*path*
 :   Absolute path to an AppArmor profile loaded with
@@ -1546,11 +1637,12 @@ mlockall       = current+future
 
 **debug**=*bool*
 :   Developer aid. When `yes`, the service is wrapped with
-    **slinit-runner**, which raises `SIGSTOP` on itself after all
-    runner-side setup but *before* `execve`. Attach a debugger to that
-    PID (`gdb -p`), set breakpoints, then resume it with `kill -CONT`
-    *pid*; the runner then performs any AppArmor transition and exec's
-    the real command, so the debugger lands in the service from its
+    **slinit-runner**, which raises `SIGSTOP` on itself after the
+    memory, sandbox and seccomp setup. Attach a debugger to that PID
+    (`gdb -p`), set breakpoints, then resume it with `kill -CONT`
+    *pid*; the runner then narrows the bounding set, drops to
+    **run-as**, sets no-new-privs, applies any SMACK/SELinux/AppArmor
+    label and exec's the real command, so the debugger lands in the service from its
     first instruction. Off by default.
 
 **options**=*flag* [*flag*...]
@@ -1563,11 +1655,13 @@ mlockall       = current+future
     * **skippable** — failure does not propagate to dependents.
     * **signal-process-only** — signal only the main PID, not the process group.
     * **always-chain** — apply **chain-to** whenever the service stops, dropping all three of its conditions (see **chain-to**); the only way a **scripted** service can chain.
-    * **kill-all-on-stop** — SIGKILL the entire process group on stop.
+    * **kill-all-on-stop** — deliver the stop signal (and any later
+      escalation) to every process in the service's cgroup, not just
+      the main process.
     * **unmask-intr** — unblock SIGINT before exec.
     * **starts-rwfs** — this service marks the read-write filesystem as ready (boot bootstrap).
     * **starts-log** — this service marks the system logger as ready.
-    * **pass-cs-fd** — pass the slinit control-socket fd to the child via *SLINIT_CS_FD*.
+    * **pass-cs-fd** — pass the slinit control-socket fd to the child via *SLINIT_CS_FD* (and *DINIT_CS_FD*).
     * **no-new-privs** — set the `no_new_privs` prctl bit on the child.
 
 **load-options**=*flag*...
@@ -1609,8 +1703,10 @@ mlockall       = current+future
     socket with this directive still opens normally.
 
 **socket-activation**=*immediate*|*on-demand*
-:   *immediate*: open the socket as soon as the service is loaded;
-    *on-demand*: lazily start the service on the first connection.
+:   *immediate* (default) and *on-demand* are accepted. The listening
+    socket(s) are opened when the service starts. *on-demand* is not
+    implemented yet and behaves like *immediate*. Socket activation
+    applies to **type**=*process* only.
 
 **socket-permissions**=*octal*, **socket-uid**=*N*, **socket-gid**=*N*
 :   Mode and ownership of the listening socket. Unix sockets only; both
@@ -1650,25 +1746,31 @@ watch; the service remains startable via `slinitctl start`.
 ## HEALTH CHECKS
 
 **healthcheck-command**=*program* [*args*...]
-:   Periodically run *program*; if it exits non-zero
-    **healthcheck-max-failures** times in a row, the service is
-    declared unhealthy.
+:   Run *program* every **healthcheck-interval** after
+    **healthcheck-delay**; each run is killed after one interval.
+    After **healthcheck-max-failures** consecutive non-zero exits,
+    checking stops and slinit stops the service — or rather drops
+    its explicit activation, so a service still required by a
+    started dependent keeps running. **type**=*process* only.
 
 **healthcheck-interval**=*duration*, **healthcheck-delay**=*duration*,
 **healthcheck-max-failures**=*N*
-:   Polling interval, initial delay, and consecutive-failure threshold.
+:   Polling interval (default *30s*), initial delay, and
+    consecutive-failure threshold (default *0*: never act).
 
 **unhealthy-command**=*program* [*args*...]
-:   Action to run when the service becomes unhealthy (e.g. send a
-    notification, kick a circuit breaker).
+:   Run after *each* failed check, with a 10-second timeout (e.g. send
+    a notification, kick a circuit breaker).
 
 ## CRON-LIKE PERIODIC TASKS
 
 **cron-command**=*program* [*args*...]
-:   A sub-task that runs while the service is up.
+:   A sub-task that runs while the service is up. Honoured for
+    **type**=*process* only; other types ignore every **cron-\***
+    setting.
 
 **cron-interval**=*duration*, **cron-delay**=*duration*
-:   Period and initial delay (interval mode).
+:   Period (default *60s*) and initial delay (interval mode).
 
 **cron-on-unit-active**=*duration*
 :   Systemd-portability alias for **cron-interval**. Use whichever
@@ -1683,7 +1785,8 @@ watch; the service remains startable via `slinitctl start`.
     can batch wake-ups instead of firing on the exact microsecond.
     Mostly relevant on battery-powered devices and for large fleets
     of cron-style services that would otherwise wake independently.
-    Default `1s`. Mirrors systemd's **AccuracySec=**.
+    Default *0* (no coalescing). Applies to **cron-calendar** only.
+    Mirrors systemd's **AccuracySec=**.
 
     A fire time is snapped **up** to the next bucket, never down: the
     window is *[nominal, nominal+duration]*, so a service never runs
@@ -1700,7 +1803,8 @@ watch; the service remains startable via `slinitctl start`.
 
 **cron-on-error**=*continue*|*stop*
 :   What to do when **cron-command** exits non-zero (default
-    *continue*).
+    *continue*). *stop* ends further cron runs for this start of the
+    service; the service itself keeps running.
 
 **cron-calendar**=*expression*
 :   systemd-style **OnCalendar=** expression. When set, replaces the
@@ -1803,8 +1907,8 @@ watch; the service remains startable via `slinitctl start`.
     Example — backup every Sunday at 03:00 in Bucharest time, in a
     fixed slot of a 30-minute window, catching up if a boot was missed:
 
-        type             = scripted
-        command          = /usr/local/bin/backup
+        type             = process
+        command          = /bin/sleep infinity
         cron-command     = /usr/local/bin/backup
         cron-calendar    = Sun 03:00 Europe/Bucharest
         cron-randomized-delay    = 30m
@@ -1822,8 +1926,10 @@ watch; the service remains startable via `slinitctl start`.
     *started*.
 
 **control-command-***SIG*=*program* [*args*...]
-:   Custom handler invoked when **slinitctl signal** *SIG* is called.
-    Replaces the default `kill -SIG`.
+:   Run *program* instead of sending signal *SIG* to the service,
+    whether the signal comes from **slinitctl signal**, from a stop
+    (**control-command-TERM**), or from **slinitctl pause** /
+    **continue** (*STOP* / *CONT*).
 
 ## VTTY (sunlight-os)
 
@@ -1847,8 +1953,10 @@ slinit itself, because they act on the calling process and so must be set
 after the fork and before the exec: the seccomp filter, the
 **protect-\***/**restrict-\*** set, the sandbox directives, an LSM label
 (**apparmor-switch**, **selinux-context**, **smack-process-label**),
-**bounding-caps** and **no-new-privs**, plus **mlockall**,
-**numa-mempolicy**, **memory-thp** and **debug**.
+**capability-bounding-set** and **options**=*no-new-privs*, plus
+**mlockall**, **numa-mempolicy**, **memory-thp**, **debug**,
+**coredump-filter**, **timer-slack-nsec**, **memory-ksm**,
+**personality** and **ignore-sigpipe**.
 
 If slinit cannot find the runner — it is looked for beside the slinit
 binary, then on *PATH*, then in */usr/sbin*, */sbin* and
@@ -1860,7 +1968,8 @@ binary, then on *PATH*, then in */usr/sbin*, */sbin* and
   is a hole nobody sees; a service that does not start is an error somebody
   fixes.
 * the rest — **mlockall**, **numa-mempolicy**, **memory-thp**, **debug**,
-  coredump and timer-slack options — are **skipped with a message on the
+  **coredump-filter**, **timer-slack-nsec**, **memory-ksm**,
+  **personality** and **ignore-sigpipe** — are **skipped with a message on the
   console**, and the service starts. Losing a performance knob is not worth
   refusing to boot over.
 
@@ -1871,8 +1980,10 @@ line, so a service could run completely unconfined while looking healthy.
 ## PRE-START GUARDS (OpenRC)
 
 **required-files**=*path* [*path*...], **required-dirs**=*path* [*path*...]
-:   Existence checks performed before exec; the service fails
-    immediately if any path is missing.
+:   Checked before exec: each **required-files** entry must exist, be
+    readable and not be a directory; each **required-dirs** entry must
+    be a directory. The start fails on the first violation. Not
+    checked for **internal** and **triggered** services.
 
 ## START PREDICATES (systemd-style)
 
