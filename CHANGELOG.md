@@ -77,7 +77,8 @@ verified with `git tag -v`.
     when `X` matched nothing; an empty selection now stays empty (exit 1).
   - `slinit-tmpfiles` `f` / `F` wrote nothing: the argument is now written
     (by `f` only when it creates the file), with the C-style escapes of
-    tmpfiles.d(5); `-` still means no argument.
+    tmpfiles.d(5); `-` still means no argument. `w` takes the same
+    escapes.
   - `slinit-sysusers` passed a `UID:GID` ID field to `useradd` whole; it is
     split, and the GID part (number or group name) goes to `--gid`.
   - Both tools let `/run` override `/etc` for the same file name. The

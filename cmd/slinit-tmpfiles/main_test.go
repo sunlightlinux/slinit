@@ -217,3 +217,19 @@ func TestApplyFileDashArgumentIsEmpty(t *testing.T) {
 		t.Errorf("content = %q, want empty", data)
 	}
 }
+
+// w takes the same C-style escapes as f and F (systemd unescapes them
+// for w as well), so a sysfs knob can be given a newline-terminated value.
+func TestApplyWriteUnescapesArgument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "knob")
+	e, err := parseLine(`w ` + path + ` - - - - on\n`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := apply(e); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "on\n" {
+		t.Errorf("content = %q, want %q", data, "on\n")
+	}
+}

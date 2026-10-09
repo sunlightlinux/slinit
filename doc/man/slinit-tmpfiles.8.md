@@ -41,7 +41,7 @@ and an unknown name makes the whole file fail to parse. *AGE* is
 accepted and ignored — no age-based cleanup is performed. Type
 modifiers (**!**, **+**, **=**, **-**) are accepted and ignored.
 
-For **f** and **F**, *ARG* may contain C-style escapes: **\\a**,
+For **f**, **F** and **w**, *ARG* may contain C-style escapes: **\\a**,
 **\\b**, **\\f**, **\\n**, **\\r**, **\\t**, **\\v**, **\\\\**,
 **\\"**, **\\'**, **\\s** (space), **\\x** plus two hex digits, and
 **\\** plus three octal digits. An invalid escape makes the whole file
