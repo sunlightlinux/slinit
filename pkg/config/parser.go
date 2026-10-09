@@ -2880,8 +2880,10 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		text := expandEnvVars(value, serviceArg)
 		if op == OpPlusEqual && desc.StandardInputSet {
 			desc.StandardInput = append(desc.StandardInput, '\n')
+			desc.StandardInput = append(desc.StandardInput, []byte(text)...)
+		} else {
+			desc.StandardInput = []byte(text)
 		}
-		desc.StandardInput = append(desc.StandardInput, []byte(text)...)
 		desc.StandardInputSet = true
 	case "standard-input-data":
 		// Base64 payload; systemd allows the operator to embed

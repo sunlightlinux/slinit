@@ -45,6 +45,11 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`standard-input-text =` appended instead of replacing**, and with no
+  separator: two `=` lines `a` and `b` gave the service `ab` on stdin.
+  `=` now replaces, as for every setting and as `standard-input-data`
+  already did; `+=` still appends on a new line.
+
 - **slinit-check warned about every bundle without a `type`** — "no
   command specified for process service". Its secondary checks re-parse
   the file and saw the parser's default type, while the loader (and so
