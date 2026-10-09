@@ -45,6 +45,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A bgprocess daemon that had exited was still seen as running until
+  reaped.** Stop detection polls with `kill(pid, 0)`, which succeeds on a
+  zombie, and a daemon is reparented away from slinit, so whether it is
+  reaped promptly depends on another process — under a user instance or
+  in a container, often not. Each poll that found the zombie added a
+  second to the stop. A zombie now counts as terminated. This was also
+  the cause of the intermittent `TestBGProcessServiceWithDependency`
+  failure.
+
 - **Companion tools:**
   - `slinit-supervise-daemon` ignored SIGTERM/SIGINT after forwarding a
     SIGHUP, until the daemon exited (it blocked on the daemon instead of

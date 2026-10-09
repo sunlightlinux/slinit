@@ -75,7 +75,17 @@ func TestStoppingServiceStopsItsLogger(t *testing.T) {
 	if got := waitState(t, svc, StateStarted, 5*time.Second); got != StateStarted {
 		t.Fatalf("service state = %v, want STARTED", got)
 	}
+	// The logger starts asynchronously; wait for its first start to be
+	// recorded, or a slow first start (under -race, say) would be counted
+	// below as a restart after the stop.
+	deadline := time.Now().Add(5 * time.Second)
+	for countLines(t, marks) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 	started := countLines(t, marks)
+	if started == 0 {
+		t.Fatal("logger never started")
+	}
 
 	set.StopService(svc)
 	if got := waitState(t, svc, StateStopped, 5*time.Second); got != StateStopped {

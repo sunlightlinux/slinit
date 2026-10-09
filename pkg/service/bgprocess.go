@@ -893,8 +893,10 @@ func (s *BGProcessService) monitorDaemon() {
 				return
 			}
 			err := syscall.Kill(s.daemonPID, 0)
-			if err != nil {
-				// Process is gone
+			if err != nil || procIsZombie(s.daemonPID) {
+				// Process is gone — or exited and waiting to be reaped
+				// by its parent (not us: a daemon is reparented away),
+				// which kill(pid, 0) cannot tell from running.
 				s.handleDaemonTermination()
 				return
 			}
@@ -1110,6 +1112,18 @@ func (s *BGProcessService) getTimerChan() <-chan time.Time {
 // This value is the process start time in clock ticks since boot and is
 // unique enough (combined with PID) to detect PID recycling.
 // Returns "" on any error.
+// procIsZombie reports whether pid has exited but not been reaped yet
+// (state Z in /proc/PID/stat).
+func procIsZombie(pid int) bool {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	// pid (comm) state ...: comm may contain ')', so use the last one.
+	idx := bytes.LastIndexByte(data, ')')
+	return idx >= 0 && idx+2 < len(data) && data[idx+2] == 'Z'
+}
+
 func readProcStartTime(pid int) string {
 	// Build path without fmt.Sprintf; use stack buffer for /proc/PID/stat read
 	path := "/proc/" + strconv.Itoa(pid) + "/stat"
