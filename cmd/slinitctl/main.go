@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -174,8 +175,11 @@ doneFlags:
 
 	command := args[0]
 	cmdArgs := args[1:]
-	if !commandNames[command] {
+	if _, ok := commands[command]; !ok {
 		usageFatal("Unknown command: %s", command)
+	}
+	if msg := arityError(command, cmdArgs); msg != "" {
+		usageFatal("%s", msg)
 	}
 
 	// Commands that don't need a daemon connection
@@ -652,30 +656,95 @@ func usagef(format string, args ...interface{}) error {
 	return usageError{fmt.Errorf(format, args...)}
 }
 
-// commandNames lists every command, so an unknown one is a usage error
-// even when no daemon is running — the dispatch switch only runs after
-// connecting. TestCommandNamesMatchDispatch keeps it in step with the
-// switch statements below.
-var commandNames = map[string]bool{
-	"platform": true, "completion": true, "is-newer-than": true, "is-older-than": true,
-	"action": true, "activate-profile": true, "active-profile": true,
-	"add-dep": true, "analyze": true, "attach": true, "boot-time": true,
-	"catlog": true, "cont": true, "continue": true, "dependents": true,
-	"disable": true, "edit": true, "enable": true, "freeze": true,
-	"getallenv": true, "getallenv-global": true, "graph": true, "halt": true,
-	"is-failed": true, "is-started": true, "kexec": true, "list": true,
-	"list-actions": true, "list-profiles": true, "list5": true,
-	"load-mech": true, "ls": true, "once": true, "pause": true,
-	"poweroff": true, "query-load-mech": true, "query-name": true,
-	"reboot": true, "release": true, "reload": true, "reload-all": true,
-	"reload-signal": true, "reset-env": true, "reset-failed": true,
-	"restart": true, "rm-dep": true, "run": true, "service-dirs": true,
-	"setenv": true, "setenv-global": true, "show": true, "shutdown": true,
-	"signal": true, "soft-reboot": true, "softreboot": true, "start": true,
-	"start-all": true, "status": true, "status5": true, "stop": true,
-	"suspend": true, "switch-root": true, "switch_root": true, "thaw": true,
-	"trigger": true, "unload": true, "unpin": true, "unsetenv": true,
-	"unsetenv-global": true, "untrigger": true, "wake": true,
+// cmdArity is how many positional arguments a command takes, after its
+// own flags are set aside. It is checked before connecting, so a call
+// missing an argument is a usage error even when no daemon is running;
+// the values themselves are still checked once connected. max < 0 means
+// no upper bound: most commands ignore extra arguments, and only the
+// ones that already rejected them enforce a maximum here.
+type cmdArity struct {
+	min, max int
+	usage    string   // printed when the count is wrong
+	flags    []string // the command's own flags, not counted
+}
+
+var (
+	noArgs  = cmdArity{max: -1}
+	svcArg  = cmdArity{min: 1, max: -1, usage: "Service name required"}
+	longArg = cmdArity{min: 1, max: -1, usage: "Service name required",
+		flags: []string{"-l", "--long", "--full"}}
+	shutdownArgs = cmdArity{max: -1} // kind, time and wall message are all optional
+)
+
+// commands lists every command with its arity, so an unknown command or
+// a missing argument is a usage error even when no daemon is running —
+// the dispatch switch only runs after connecting.
+// TestCommandNamesMatchDispatch keeps it in step with the switch
+// statements above.
+var commands = map[string]cmdArity{
+	"platform":      noArgs,
+	"completion":    noArgs,
+	"is-newer-than": {min: 2, max: 2, usage: "Usage: slinitctl is-newer-than <file-a> <file-b>"},
+	"is-older-than": {min: 2, max: 2, usage: "Usage: slinitctl is-older-than <file-a> <file-b>"},
+
+	"list": noArgs, "ls": noArgs, "reload-all": noArgs, "start-all": noArgs,
+	"active-profile": noArgs, "list-profiles": noArgs, "getallenv-global": noArgs,
+	"service-dirs": noArgs, "query-load-mech": noArgs, "load-mech": noArgs,
+	"list5": noArgs, "graph": noArgs, "analyze": noArgs, "boot-time": noArgs,
+
+	"start": svcArg, "wake": svcArg, "stop": svcArg, "release": svcArg,
+	"restart": svcArg, "is-started": svcArg, "is-failed": svcArg,
+	"trigger": svcArg, "untrigger": svcArg, "pause": svcArg,
+	"continue": svcArg, "cont": svcArg, "freeze": svcArg, "thaw": svcArg,
+	"once": svcArg, "reload": svcArg, "reload-signal": svcArg,
+	"unload": svcArg, "getallenv": svcArg, "reset-env": svcArg,
+	"unpin": svcArg, "enable": svcArg, "disable": svcArg,
+	"query-name": svcArg, "list-actions": svcArg,
+	"status": longArg, "status5": longArg, "show": longArg,
+
+	"shutdown": shutdownArgs, "halt": shutdownArgs, "poweroff": shutdownArgs,
+	"reboot": shutdownArgs, "kexec": shutdownArgs, "softreboot": shutdownArgs,
+	"soft-reboot": shutdownArgs,
+
+	"run":              {min: 1, max: -1, usage: "Error: run: no command given (expected: slinitctl run [flags] -- CMD [ARGS...])"},
+	"reset-failed":     {min: 1, max: -1, usage: "Error: reset-failed: expected a service name or --all"},
+	"activate-profile": {min: 1, max: -1, usage: "Error: usage: activate-profile <name> (or '-' to deactivate)"},
+	"switch-root":      {min: 1, max: 2, usage: "Error: usage: slinitctl switch-root NEWROOT [INIT]"},
+	"switch_root":      {min: 1, max: 2, usage: "Error: usage: slinitctl switch-root NEWROOT [INIT]"},
+	"suspend": {max: 1, usage: "Error: usage: slinitctl suspend [--no-coordination] [STATE]",
+		flags: []string{"--no-coordination"}},
+	"edit":            {min: 1, max: 1, usage: "Error: usage: slinitctl edit NAME"},
+	"signal":          {min: 2, max: -1, usage: "Usage: slinitctl signal [-l|--list] <signal> <service>"},
+	"catlog":          {min: 1, max: -1, usage: "Usage: slinitctl catlog [--clear] <service>", flags: []string{"--clear"}},
+	"setenv":          {min: 2, max: -1, usage: "Usage: slinitctl setenv <service> KEY=VALUE"},
+	"unsetenv":        {min: 2, max: -1, usage: "Usage: slinitctl unsetenv <service> KEY"},
+	"setenv-global":   {min: 1, max: -1, usage: "Usage: slinitctl setenv-global KEY=VALUE"},
+	"unsetenv-global": {min: 1, max: -1, usage: "Usage: slinitctl unsetenv-global KEY"},
+	"add-dep":         {min: 3, max: -1, usage: "Usage: slinitctl add-dep <from> <dep-type> <to>  (or <dep-type> <from> <to>)"},
+	"rm-dep":          {min: 3, max: -1, usage: "Usage: slinitctl rm-dep <from> <dep-type> <to>  (or <dep-type> <from> <to>)"},
+	"dependents":      {min: 1, max: -1, usage: "Usage: slinitctl dependents <service>"},
+	"attach":          {min: 1, max: -1, usage: "Usage: slinitctl attach <service>"},
+	"action":          {min: 2, max: -1, usage: "Usage: slinitctl action <service> <action-name>"},
+}
+
+// arityError returns the usage message if args has the wrong number of
+// positional arguments for command, or "" if the count is fine.
+// command must be in commands.
+func arityError(command string, args []string) string {
+	a := commands[command]
+	if command == "signal" && len(args) > 0 && (args[0] == "-l" || args[0] == "--list") {
+		return "" // signal --list takes nothing else
+	}
+	n := 0
+	for _, arg := range args {
+		if !slices.Contains(a.flags, arg) {
+			n++
+		}
+	}
+	if n < a.min || (a.max >= 0 && n > a.max) {
+		return a.usage
+	}
+	return ""
 }
 
 // info prints an informational message unless quiet mode is active.
