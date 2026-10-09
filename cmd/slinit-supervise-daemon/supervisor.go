@@ -74,12 +74,24 @@ func runSupervisor(opts Options) int {
 				respawn++
 				delay := backoffDelay(opts, respawn)
 				if delay > 0 {
-					select {
-					case <-time.After(delay):
-					case sig := <-sigs:
-						// Shutdown request during backoff: propagate exit.
-						superLogf(opts, "shutdown during backoff (%s)", sig)
-						return exitOK
+					timer := time.NewTimer(delay)
+				backoff:
+					for {
+						select {
+						case <-timer.C:
+							break backoff
+						case sig := <-sigs:
+							if sig == syscall.SIGHUP {
+								// No daemon to forward it to; the
+								// respawned one reads its config anew.
+								superLogf(opts, "SIGHUP during backoff ignored")
+								continue
+							}
+							// Shutdown request during backoff: propagate exit.
+							timer.Stop()
+							superLogf(opts, "shutdown during backoff (%s)", sig)
+							return exitOK
+						}
 					}
 				}
 				// Loop → respawn.

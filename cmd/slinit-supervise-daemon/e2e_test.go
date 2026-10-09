@@ -212,3 +212,62 @@ func TestSupervisorHonoursSIGTERMAfterSIGHUP(t *testing.T) {
 		t.Errorf("daemon pid %d still alive after supervisor SIGTERM", daemonPID)
 	}
 }
+
+// While waiting out the respawn delay there is no daemon to forward a
+// SIGHUP to. It used to end the supervisor (exit 0) like SIGTERM, so a
+// config reload that happened to land between a crash and the respawn
+// took the service down. It must be ignored; SIGTERM still stops.
+func TestSupervisorIgnoresSIGHUPDuringBackoff(t *testing.T) {
+	falseBin, err := exec.LookPath("false")
+	if err != nil {
+		t.Skipf("no false: %v", err)
+	}
+	opts := Options{
+		Service:      "test",
+		PidFile:      filepath.Join(t.TempDir(), "svc.pid"),
+		Exec:         falseBin,
+		Retry:        "TERM/2/KILL/2",
+		RespawnDelay: 2 * time.Second,
+	}
+
+	done := make(chan int, 1)
+	exited := false
+	go func() { done <- runSupervisor(opts) }()
+	t.Cleanup(func() {
+		// Only while it still runs: once runSupervisor has returned, its
+		// signal handler is gone and SIGTERM would kill the test binary.
+		if exited {
+			return
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
+	})
+
+	// The daemon exits at once; the supervisor is now in its 2s delay.
+	time.Sleep(500 * time.Millisecond)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		exited = true
+		t.Fatalf("supervisor exited (%d) on SIGHUP during the respawn delay", code)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-done:
+		exited = true
+		if code != exitOK {
+			t.Errorf("exit = %d, want %d", code, exitOK)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor ignored SIGTERM during the respawn delay")
+	}
+}

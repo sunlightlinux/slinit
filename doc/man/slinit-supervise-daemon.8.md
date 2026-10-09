@@ -47,7 +47,8 @@ daemon.
     timeouts given here); if it is still alive then, it is sent
     **SIGKILL**. The supervisor's own shutdown path stops the daemon
     and cleans both pidfiles. Sending **SIGHUP** to the supervisor
-    forwards it to the daemon.
+    forwards it to the daemon; while it waits out a respawn delay there
+    is no daemon, and **SIGHUP** is ignored.
 
 **-s**, **--signal** *SIG*
 :   Deliver *SIG* directly to the supervised daemon (via
