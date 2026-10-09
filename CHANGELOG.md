@@ -58,7 +58,9 @@ verified with `git tag -v`.
   - `slinit-supervise-daemon` ignored SIGTERM/SIGINT after forwarding a
     SIGHUP, until the daemon exited (it blocked on the daemon instead of
     returning to its signal loop), and that exit then skipped the respawn
-    rate limiter. Both fixed.
+    rate limiter. And a SIGHUP that arrived while it waited out a respawn
+    delay made it exit like SIGTERM; with no daemon to forward to, it is
+    now ignored.
   - `slinit-fstabinfo --fstype X --passno N` filtered the whole fstab
     when `X` matched nothing; an empty selection now stays empty (exit 1).
   - `slinit-tmpfiles` `f` / `F` wrote nothing: the argument is now written
