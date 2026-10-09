@@ -191,7 +191,7 @@ func parseLine(line string) (entry, error) {
 	if len(fields) > 6 {
 		e.arg = strings.Join(fields[6:], " ")
 	}
-	if e.kind == "f" || e.kind == "F" {
+	if e.kind == "f" || e.kind == "F" || e.kind == "w" {
 		if e.arg == "-" { // "-" means no argument, as in every column
 			e.arg = ""
 		}
