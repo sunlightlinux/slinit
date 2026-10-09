@@ -90,9 +90,9 @@ func run(entries []fstab.Entry, opts options) int {
 		}
 	}
 	if opts.passnoOp != 0 {
-		filtered = true
 		src := entries
-		if len(candidates) > 0 {
+		if filtered {
+			// --fstype ran: narrow its result, even when it is empty.
 			src = candidates
 			candidates = nil
 		}
@@ -117,6 +117,7 @@ func run(entries []fstab.Entry, opts options) int {
 				}
 			}
 		}
+		filtered = true
 	}
 
 	if len(opts.files) > 0 {

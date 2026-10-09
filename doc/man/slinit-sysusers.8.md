@@ -14,12 +14,11 @@ slinit-sysusers - declarative user and group creation at boot
 
 **slinit-sysusers** applies **systemd-sysusers.d**(5) directives at
 boot to create system users, groups, and group memberships. Reads
-config from */usr/lib/sysusers.d/\*.conf*, */etc/sysusers.d/\*.conf*,
-and */run/sysusers.d/\*.conf* by default. When the same basename
-exists in more than one directory, the one in the later directory of
-that list wins — so */run* overrides */etc*, unlike systemd, where
-*/etc* has the final say. Files are applied in alphabetical order of
-their basenames.
+config from */etc/sysusers.d/\*.conf*, */run/sysusers.d/\*.conf*,
+and */usr/lib/sysusers.d/\*.conf* by default. When the same basename
+exists in more than one directory, */etc* overrides */run*, which
+overrides */usr/lib* (as in systemd). The surviving files from all
+directories are applied in alphabetical order of their basenames.
 
 The tool shells out to **useradd**(8), **groupadd**(8) and
 **gpasswd**(1) for the actual account manipulation, so it inherits
@@ -40,13 +39,14 @@ Each line in a *.conf* file is one directive:
 
 Directives:
 
-**u** *name* *uid* *"gecos"* *home* *shell*
+**u** *name* *uid*[:*gid*] *"gecos"* *home* *shell*
 :   Create a system user (**useradd --system**). *uid* is a number, or
-    **-** to let **useradd** pick one. It is passed to **useradd
-    --uid** as given; the *uid*:*gid* form is not split, so declare
-    the group with a **g** line instead. Without *home* no home
-    directory is created; without *shell* the shell is
-    */sbin/nologin*.
+    **-** to let **useradd** pick one (passed to **useradd --uid**).
+    With the *uid*:*gid* form, *gid* (a number or a group name) becomes
+    the user's primary group (**useradd --gid**); that group must
+    already exist, so declare it with a **g** line in an earlier file
+    or earlier in the same file. Without *home* no home directory is
+    created; without *shell* the shell is */sbin/nologin*.
 
 **g** *name* *gid*
 :   Create a system group. *gid* may be a specific number or **-**.
@@ -67,7 +67,11 @@ double quotes. Missing fields at end-of-line are treated as **-**
 
 **\--dirs** *DIRS*
 :   Comma-separated list of directories to scan instead of the
-    defaults. Useful for testing (**\--dirs=./test/fixtures**) or
+    defaults, lowest precedence first: for the same basename, a later
+    directory in *DIRS* overrides an earlier one. The default is
+    equivalent to
+    **\--dirs=/usr/lib/sysusers.d,/run/sysusers.d,/etc/sysusers.d**.
+    Useful for testing (**\--dirs=./test/fixtures**) or
     for staged rollout (**\--dirs=/etc/sysusers.d.new**).
 
 **\--dry-run**

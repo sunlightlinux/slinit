@@ -138,3 +138,77 @@ func TestCmdStopMissingPidfileIsOK(t *testing.T) {
 		t.Errorf("cmdStop missing: got %d, want %d", code, exitOK)
 	}
 }
+
+// TestSupervisorHonoursSIGTERMAfterSIGHUP drives runSupervisor in-process:
+// a SIGHUP (forwarded to the daemon) must not leave the supervisor
+// deaf to a following SIGTERM while the daemon keeps running.
+func TestSupervisorHonoursSIGTERMAfterSIGHUP(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("no sleep: %v", err)
+	}
+	// sh traps HUP so the forwarded signal does not kill the daemon.
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skipf("no sh: %v", err)
+	}
+	pidfile := filepath.Join(t.TempDir(), "svc.pid")
+	opts := Options{
+		Service: "test",
+		PidFile: pidfile,
+		Exec:    sh,
+		Args:    []string{"-c", "trap '' HUP; exec " + sleep + " 60"},
+		Retry:   "TERM/2/KILL/2",
+	}
+
+	done := make(chan int, 1)
+	go func() { done <- runSupervisor(opts) }()
+
+	var daemonPID int
+	deadline := time.Now().Add(5 * time.Second)
+	for daemonPID == 0 && time.Now().Before(deadline) {
+		if b, err := os.ReadFile(pidfile + ".daemon"); err == nil {
+			daemonPID, _ = strconv.Atoi(string(b[:len(b)-1]))
+		}
+		if daemonPID == 0 {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if daemonPID == 0 {
+		t.Fatal("daemon pidfile not written")
+	}
+	t.Cleanup(func() {
+		// On failure the supervisor is stuck on the daemon; kill it so
+		// the buffered SIGTERM is consumed and runSupervisor returns.
+		_ = syscall.Kill(daemonPID, syscall.SIGKILL)
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
+	})
+	// Let sh install its trap and exec sleep before the HUP arrives.
+	time.Sleep(200 * time.Millisecond)
+
+	if err := syscall.Kill(os.Getpid(), syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if !processAlive(daemonPID) {
+		t.Fatalf("daemon pid %d died on forwarded SIGHUP", daemonPID)
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case code := <-done:
+		if code != exitOK {
+			t.Errorf("runSupervisor: got %d, want %d", code, exitOK)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor ignored SIGTERM after SIGHUP")
+	}
+	if processAlive(daemonPID) {
+		t.Errorf("daemon pid %d still alive after supervisor SIGTERM", daemonPID)
+	}
+}

@@ -1,11 +1,11 @@
 // slinit-sysusers applies systemd-sysusers.d(5) directives at boot.
-// Reads /usr/lib/sysusers.d/*.conf, /etc/sysusers.d/*.conf, and
-// /run/sysusers.d/*.conf; per-filename overrides win (later dirs
-// override earlier).
+// Reads /usr/lib/sysusers.d/*.conf, /run/sysusers.d/*.conf, and
+// /etc/sysusers.d/*.conf; for the same file name /etc overrides /run
+// overrides /usr/lib (systemd precedence).
 //
 // Implemented directives:
 //
-//	u Name ID GECOS HomeDir Shell   create a user
+//	u Name ID GECOS HomeDir Shell   create a user (ID may be UID:GID)
 //	g Name GID                       create a group
 //	m Name Group                     add user to group
 //	r -    Range                     range reservation (informational, no-op)
@@ -27,16 +27,19 @@ import (
 	"strings"
 )
 
+// defaultDirs is in ascending precedence: for the same file name a
+// later directory overrides an earlier one (/etc > /run > /usr/lib).
 var defaultDirs = []string{
 	"/usr/lib/sysusers.d",
-	"/etc/sysusers.d",
 	"/run/sysusers.d",
+	"/etc/sysusers.d",
 }
 
 type entry struct {
 	kind   string
 	name   string
 	idOrGid string
+	gid     string // for u: GID or group name from a UID:GID ID field
 	gecos   string
 	home    string
 	shell   string
@@ -46,7 +49,7 @@ type entry struct {
 func main() {
 	var dirsFlag string
 	flag.StringVar(&dirsFlag, "dirs", "",
-		"comma-separated sysusers.d dirs (defaults to /usr/lib+/etc+/run/sysusers.d)")
+		"comma-separated sysusers.d dirs, lowest precedence first (defaults to /usr/lib+/run+/etc/sysusers.d)")
 	dryRun := flag.Bool("dry-run", false, "print actions without executing them")
 	flag.Parse()
 
@@ -142,6 +145,16 @@ func parseLine(line string) (entry, error) {
 	if len(fields) > 2 && fields[2] != "-" {
 		e.idOrGid = fields[2]
 	}
+	// sysusers.d(5): a u line's ID may be UID:GID, the GID part being
+	// a number or a group name.
+	if e.kind == "u" {
+		if uid, gid, ok := strings.Cut(e.idOrGid, ":"); ok {
+			e.idOrGid, e.gid = uid, gid
+			if e.idOrGid == "-" {
+				e.idOrGid = ""
+			}
+		}
+	}
 	if len(fields) > 3 && fields[3] != "-" {
 		e.gecos = fields[3]
 	}
@@ -211,9 +224,16 @@ func applyUser(e entry) error {
 	if _, err := exec.LookPath("useradd"); err != nil {
 		return fmt.Errorf("useradd(8) not in PATH — shadow-utils required")
 	}
+	return runCmd("useradd", userAddArgs(e)...)
+}
+
+func userAddArgs(e entry) []string {
 	args := []string{"--system"}
 	if e.idOrGid != "" {
 		args = append(args, "--uid", e.idOrGid)
+	}
+	if e.gid != "" {
+		args = append(args, "--gid", e.gid)
 	}
 	if e.gecos != "" {
 		args = append(args, "--comment", strings.Trim(e.gecos, `"`))
@@ -229,7 +249,7 @@ func applyUser(e entry) error {
 		args = append(args, "--shell", "/sbin/nologin")
 	}
 	args = append(args, e.name)
-	return runCmd("useradd", args...)
+	return args
 }
 
 func applyGroup(e entry) error {

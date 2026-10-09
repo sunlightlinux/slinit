@@ -54,48 +54,52 @@ func runSupervisor(opts Options) int {
 		}
 
 		// Wait for either the daemon to exit or a supervisor-directed
-		// signal.
-		select {
-		case exitInfo := <-waitCh:
-			if opts.Verbose {
-				superLogf(opts, "daemon pid=%d exited: %s",
-					daemonPID, exitInfo)
-			}
-			// Rate check: if we've crashed too much too fast, give up.
-			if !limiter.allowRespawn(time.Now()) {
-				superLogf(opts,
-					"daemon crashed %d times within %s; giving up",
-					limiter.count, opts.RespawnPeriod)
-				return exitInsufficientPri
-			}
-			respawn++
-			delay := backoffDelay(opts, respawn)
-			if delay > 0 {
-				select {
-				case <-time.After(delay):
-				case sig := <-sigs:
-					// Shutdown request during backoff: propagate exit.
-					superLogf(opts, "shutdown during backoff (%s)", sig)
+		// signal. SIGHUP is forwarded and we keep waiting on the same
+		// daemon, still listening for SIGTERM/SIGINT.
+	wait:
+		for {
+			select {
+			case exitInfo := <-waitCh:
+				if opts.Verbose {
+					superLogf(opts, "daemon pid=%d exited: %s",
+						daemonPID, exitInfo)
+				}
+				// Rate check: if we've crashed too much too fast, give up.
+				if !limiter.allowRespawn(time.Now()) {
+					superLogf(opts,
+						"daemon crashed %d times within %s; giving up",
+						limiter.count, opts.RespawnPeriod)
+					return exitInsufficientPri
+				}
+				respawn++
+				delay := backoffDelay(opts, respawn)
+				if delay > 0 {
+					select {
+					case <-time.After(delay):
+					case sig := <-sigs:
+						// Shutdown request during backoff: propagate exit.
+						superLogf(opts, "shutdown during backoff (%s)", sig)
+						return exitOK
+					}
+				}
+				// Loop → respawn.
+				break wait
+			case sig := <-sigs:
+				switch sig {
+				case syscall.SIGTERM, syscall.SIGINT:
+					// Clean shutdown: kill the daemon and exit.
+					superLogf(opts, "shutdown signal %s → stopping daemon pid=%d",
+						sig, daemonPID)
+					if err := stopDaemon(opts, daemonPID); err != nil {
+						superLogf(opts, "stop daemon: %v", err)
+					}
 					return exitOK
+				case syscall.SIGHUP:
+					// Forward to daemon. We do NOT respawn — the daemon
+					// stays alive and re-reads its config on HUP.
+					_ = syscall.Kill(daemonPID, syscall.SIGHUP)
+					// Continue supervising the same daemon.
 				}
-			}
-			// Loop → respawn.
-		case sig := <-sigs:
-			switch sig {
-			case syscall.SIGTERM, syscall.SIGINT:
-				// Clean shutdown: kill the daemon and exit.
-				superLogf(opts, "shutdown signal %s → stopping daemon pid=%d",
-					sig, daemonPID)
-				if err := stopDaemon(opts, daemonPID); err != nil {
-					superLogf(opts, "stop daemon: %v", err)
-				}
-				return exitOK
-			case syscall.SIGHUP:
-				// Forward to daemon. We do NOT respawn — the daemon
-				// stays alive and re-reads its config on HUP.
-				_ = syscall.Kill(daemonPID, syscall.SIGHUP)
-				// Continue supervising the same daemon.
-				<-waitCh
 			}
 		}
 	}

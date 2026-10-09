@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,5 +79,23 @@ func TestMountUnitChangedDirMode(t *testing.T) {
 	b := &autofs.MountUnit{What: "/dev/sda1", Type: "ext4", DirMode: 0700}
 	if !mountUnitChanged(a, b) {
 		t.Error("different DirMode should be reported as changed")
+	}
+}
+
+// `after:` parses but does nothing yet; it must at least be reported, so
+// a unit relying on it is not set up early without a word.
+func TestWarnIgnoredAfter(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	warnIgnoredAfter(logger, []*autofs.MountUnit{
+		{Name: "home", After: []string{"network-online"}},
+		{Name: "data"},
+	})
+	out := buf.String()
+	if !strings.Contains(out, "home") || !strings.Contains(out, "network-online") {
+		t.Errorf("no warning for a unit with after: %q", out)
+	}
+	if strings.Contains(out, "data") {
+		t.Errorf("warned about a unit without after: %q", out)
 	}
 }

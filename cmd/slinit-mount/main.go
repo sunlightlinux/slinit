@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/autofs"
@@ -58,6 +59,19 @@ func mountUnitChanged(old, new *autofs.MountUnit) bool {
 // - removed units → tear down + deregister from epoll
 // - changed units → tear down old + setup new
 // - unchanged → keep as-is
+// warnIgnoredAfter says out loud that `after:` does nothing yet. The key
+// parses, so a unit relying on it would otherwise be set up immediately
+// with no hint that the ordering it asked for never happened.
+func warnIgnoredAfter(logger *log.Logger, units []*autofs.MountUnit) {
+	for _, u := range units {
+		if len(u.After) > 0 {
+			logger.Printf("WARNING: %s: after: %s is not supported and is ignored; "+
+				"order the slinit-mount service itself with after:/waits-for: instead",
+				u.Name, strings.Join(u.After, " "))
+		}
+	}
+}
+
 func reloadConfig(cfg *daemonConfig, logger *log.Logger, epfd int,
 	fdMap map[int]*mountInfo, activeMounts *[]*autofs.AutofsMount) {
 
@@ -68,6 +82,7 @@ func reloadConfig(cfg *daemonConfig, logger *log.Logger, epfd int,
 		logger.Printf("reload failed: load mount units: %v", err)
 		return
 	}
+	warnIgnoredAfter(logger, newUnits)
 
 	// Index new units by Where path
 	newByKey := make(map[string]*autofs.MountUnit, len(newUnits))
@@ -157,6 +172,7 @@ func main() {
 	if err != nil {
 		fatal("load mount units: %v", err)
 	}
+	warnIgnoredAfter(logger, units)
 
 	if len(units) == 0 {
 		logger.Println("no mount units found, exiting")

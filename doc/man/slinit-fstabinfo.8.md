@@ -41,8 +41,8 @@ apply filters ahead of the positional intersection.
     equals *N*; **<***N* keeps entries whose passno is present
     (non-zero) and less than *N*; **>***N* the reverse. Entries whose
     mount point is **none** (swap) are always skipped. When **--fstype**
-    is also given but matches nothing, the **--passno** filter is
-    applied to the whole of fstab instead.
+    is also given, **--passno** narrows its result; if **--fstype**
+    matches nothing, the selection stays empty (exit status 1).
 
 **-p**, **--passno** *MOUNTPOINT*
 :   In its plain form, prints the **fs_passno** of the specified

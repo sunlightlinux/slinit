@@ -370,7 +370,7 @@ as `type = scripted` services early in the boot graph.
 
 ```bash
 # Users & groups — reads /usr/lib, /etc and /run sysusers.d/*.conf
-# (same file name: the later directory wins, so /run beats /etc)
+# (same file name: /etc beats /run beats /usr/lib, as in systemd)
 slinit-sysusers                  # apply everything
 slinit-sysusers --dry-run        # preview actions without touching passwd/group
 slinit-sysusers --dirs /etc/sysusers.d  # override search path

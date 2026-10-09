@@ -249,3 +249,25 @@ func TestEndToEndFromFile(t *testing.T) {
 		t.Errorf("out=%q", out)
 	}
 }
+
+// An --fstype that matches nothing must leave the selection empty; the
+// --passno filter then narrows that empty set rather than falling back
+// to the whole fstab.
+func TestRunFstypeNoMatchWithPassnoIsEmpty(t *testing.T) {
+	path := writeSample(t)
+	opts, err := parseArgs([]string{"--file", path, "--fstype", "nfs", "--passno", "=2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fstab.ReadFile(opts.fstabPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, code := captureStdout(t, func() int { return run(entries, opts) })
+	if out != "" {
+		t.Errorf("want no output, got %q", out)
+	}
+	if code != exitFailure {
+		t.Errorf("code=%d, want %d", code, exitFailure)
+	}
+}

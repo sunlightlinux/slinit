@@ -95,3 +95,125 @@ func TestApplyWriteAndRemove(t *testing.T) {
 		t.Errorf("r on missing file should be silent: %v", err)
 	}
 }
+
+func TestApplyFileWritesArgument(t *testing.T) {
+	dir := t.TempDir()
+	uid, gid := os.Getuid(), os.Getgid()
+
+	// f writes its (unescaped) argument when it creates the file.
+	fpath := filepath.Join(dir, "f-new")
+	e, err := parseLine(`f ` + fpath + ` 0644 - - - line1\nline2\ttab\x41\101\\`)
+	if err != nil {
+		t.Fatalf("parseLine f: %v", err)
+	}
+	e.uid, e.gid = uid, gid
+	if err := apply(e); err != nil {
+		t.Fatalf("apply f: %v", err)
+	}
+	if data, _ := os.ReadFile(fpath); string(data) != "line1\nline2\ttabAA\\" {
+		t.Errorf("f content: got %q, want %q", data, "line1\nline2\ttabAA\\")
+	}
+
+	// f leaves an existing file's content alone.
+	e.arg = "other"
+	if err := apply(e); err != nil {
+		t.Fatalf("second apply f: %v", err)
+	}
+	if data, _ := os.ReadFile(fpath); string(data) != "line1\nline2\ttabAA\\" {
+		t.Errorf("f must not rewrite an existing file: got %q", data)
+	}
+
+	// F truncates an existing file and writes the argument.
+	Fpath := filepath.Join(dir, "F-existing")
+	if err := os.WriteFile(Fpath, []byte("old content that is long"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	e, err = parseLine(`F ` + Fpath + ` 0644 - - - new\n`)
+	if err != nil {
+		t.Fatalf("parseLine F: %v", err)
+	}
+	e.uid, e.gid = uid, gid
+	if err := apply(e); err != nil {
+		t.Fatalf("apply F: %v", err)
+	}
+	if data, _ := os.ReadFile(Fpath); string(data) != "new\n" {
+		t.Errorf("F content: got %q, want %q", data, "new\n")
+	}
+}
+
+func TestCunescape(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`plain`, "plain"},
+		{`a\nb`, "a\nb"},
+		{`\a\b\f\r\t\v`, "\a\b\f\r\t\v"},
+		{`\\ \" \' x\sy`, `\ " ' x y`},
+		{`\x7e\176`, "~~"},
+	} {
+		got, err := cunescape(tc.in)
+		if err != nil || got != tc.want {
+			t.Errorf("cunescape(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+	}
+	for _, bad := range []string{`trailing\`, `\q`, `\x4`, `\xzz`, `\12`, `\400`} {
+		if _, err := cunescape(bad); err == nil {
+			t.Errorf("cunescape(%q): expected error", bad)
+		}
+	}
+}
+
+// TestCollectPrecedence: for the same file name /etc beats /run beats
+// /usr/lib (systemd order), and files are merged and sorted by name.
+func TestCollectPrecedence(t *testing.T) {
+	root := t.TempDir()
+	dirs := make([]string, len(defaultDirs))
+	for i, d := range defaultDirs {
+		dirs[i] = filepath.Join(root, d)
+		if err := os.MkdirAll(dirs[i], 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(dir, name string) {
+		if err := os.WriteFile(filepath.Join(root, dir, name), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("/usr/lib/tmpfiles.d", "all.conf")
+	write("/run/tmpfiles.d", "all.conf")
+	write("/etc/tmpfiles.d", "all.conf")
+	write("/usr/lib/tmpfiles.d", "run-usr.conf")
+	write("/run/tmpfiles.d", "run-usr.conf")
+	write("/usr/lib/tmpfiles.d", "only-usr.conf")
+
+	got := collect(dirs)
+	want := map[string]string{
+		"all.conf":      filepath.Join(root, "/etc/tmpfiles.d/all.conf"),
+		"run-usr.conf":  filepath.Join(root, "/run/tmpfiles.d/run-usr.conf"),
+		"only-usr.conf": filepath.Join(root, "/usr/lib/tmpfiles.d/only-usr.conf"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("collect: got %v, want %v", got, want)
+	}
+	for n, p := range want {
+		if got[n] != p {
+			t.Errorf("collect[%q] = %q, want %q", n, got[n], p)
+		}
+	}
+}
+
+// "-" in the Argument column means no argument, as in every other
+// column: `f /path 0644 - - - -` creates an empty file, not one holding
+// a dash.
+func TestApplyFileDashArgumentIsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty")
+	e, err := parseLine("f " + path + " 0644 - - - -")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.uid, e.gid = os.Getuid(), os.Getgid()
+	if err := apply(e); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); len(data) != 0 {
+		t.Errorf("content = %q, want empty", data)
+	}
+}
