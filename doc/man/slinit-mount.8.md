@@ -45,6 +45,15 @@ case where the operator prefers paying the mount cost on first access.
 :   Verbose logging — every mount/unmount and every reconcile pass
     is logged.
 
+**-p**, **--socket-path** *PATH*
+:   slinit control socket used to wait for **after** services.
+    Default: the socket of the instance **slinit-mount** runs under,
+    resolved as **slinitctl**(8) does — *$DINIT_SOCKET_PATH* or
+    *$SLINIT_SOCKET_PATH* if set, else */run/slinit.socket* when run
+    as root, otherwise *$XDG_RUNTIME_DIR/slinitctl*, or
+    *$HOME/.slinitctl* when **XDG_RUNTIME_DIR** is unset. Only
+    contacted when some unit uses **after**.
+
 **--expire-interval** *N*
 :   Seconds between idle-timeout sweeps. Default: **60**. Mount units
     with **timeout=0** (or no **timeout**) are never expired regardless
@@ -86,11 +95,17 @@ ignored, and an unrecognised key is an error. Recognised keys:
     directories. Default **0755**.
 
 **after**
-:   Accepted and parsed (**after: a b** for several names), but it
-    currently has no effect: mount setup is not deferred, and a warning
-    naming the unit is logged at load and on reload. Order the
-    **slinit-mount** service itself with **after:** / **waits-for:** in
-    its service description instead.
+:   slinit services that must be STARTED before the autofs mount is
+    set up (**after: a b** for several names). The unit is set up
+    only once all of them are started, however long that takes: there
+    is no timeout. **slinit-mount** logs once that the unit is waiting
+    and on which services, and follows their state over the control
+    socket (see **--socket-path**). If the socket cannot be reached,
+    or a named service does not exist, that is logged and retried
+    every few seconds. A service that stops after the mount is set up
+    does not tear it down: the mount stays until the unit is removed
+    or changed on reload, or the daemon exits. Units without **after**
+    are set up immediately.
 
 # RELOAD
 
@@ -101,7 +116,12 @@ diffs the result against the running state (units are matched by
 - tears down units that have been removed or whose configuration
   changed in a way that requires re-establishing the autofs mount,
 - registers any new units,
-- leaves unchanged units alone.
+- leaves unchanged units alone, whether already set up or still
+  waiting for their **after** services.
+
+A change to **after** counts as a configuration change like any other
+key: the unit is torn down (or stops waiting) and is then deferred
+again until its new **after** services are all started.
 
 This is the recommended way to deploy a new mount unit without
 disturbing in-flight access to the others. If any file fails to parse
@@ -117,7 +137,8 @@ kept.
 **1**
 :   Fatal error: a mount-unit file failed to parse or validate at
     start-up (one bad file stops all of them), no autofs mount could be
-    established, an unknown option, or a runtime failure.
+    established and no unit is waiting for its **after** services, an
+    unknown option, or a runtime failure.
 
 # EXAMPLES
 

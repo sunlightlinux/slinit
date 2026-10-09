@@ -14,8 +14,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
+	"slices"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/autofs"
 	"golang.org/x/sys/unix"
@@ -30,12 +32,30 @@ type daemonConfig struct {
 	mountDirs      []string
 	foreground     bool
 	verbose        bool
-	expireInterval int // seconds
+	expireInterval int    // seconds
+	socketPath     string // -p override of the control socket
 }
 
 type mountInfo struct {
 	am   *autofs.AutofsMount
 	unit *autofs.MountUnit
+}
+
+// daemon is the state owned by the main event loop. Only the waiter
+// goroutines of deferred units run elsewhere, and they touch nothing but
+// ready (under readyMu) and readyFD.
+type daemon struct {
+	cfg          *daemonConfig
+	logger       *log.Logger
+	epfd         int
+	fdMap        map[int]*mountInfo // pipe fd → mount info
+	activeMounts []*autofs.AutofsMount
+	pending      map[string]*pendingUnit // key → unit waiting for after:
+	readyMu      sync.Mutex
+	ready        []*pendingUnit // units whose after: services all started
+	readyFD      int            // eventfd that wakes the loop for ready; -1 if none
+	dial         dialFunc
+	retry        time.Duration
 }
 
 // mountUnitKey returns the identity key for a mount unit (its Where path).
@@ -51,38 +71,72 @@ func mountUnitChanged(old, new *autofs.MountUnit) bool {
 		old.Options != new.Options ||
 		old.Timeout != new.Timeout ||
 		old.AutofsType != new.AutofsType ||
-		old.DirMode != new.DirMode
+		old.DirMode != new.DirMode ||
+		!slices.Equal(old.After, new.After)
+}
+
+// addUnit sets mu up now, or defers it until its after: services are
+// STARTED.
+func (d *daemon) addUnit(mu *autofs.MountUnit, how string) {
+	if len(mu.After) > 0 {
+		d.deferUnit(mu)
+		return
+	}
+	d.setupUnit(mu, how)
+}
+
+// setupUnit establishes the autofs mount for mu and registers its pipe
+// with epoll. how is "" or a tag for the log line (e.g. "reload").
+func (d *daemon) setupUnit(mu *autofs.MountUnit, how string) bool {
+	prefix := ""
+	if how != "" {
+		prefix = how + ": "
+	}
+	am, err := autofs.Setup(mu)
+	if err != nil {
+		d.logger.Printf("WARNING: %sfailed to set up autofs for %s (%s): %v",
+			prefix, mu.Name, mu.Where, err)
+		return false
+	}
+	fd := am.PipeFD()
+	event := unix.EpollEvent{
+		Events: unix.EPOLLIN,
+		Fd:     int32(fd),
+	}
+	if err := unix.EpollCtl(d.epfd, unix.EPOLL_CTL_ADD, fd, &event); err != nil {
+		d.logger.Printf("%sepoll_ctl add fd %d: %v", prefix, fd, err)
+		am.Close()
+		return false
+	}
+	d.fdMap[fd] = &mountInfo{am: am, unit: mu}
+	d.activeMounts = append(d.activeMounts, am)
+	if how != "" {
+		d.logger.Printf("autofs mounted (%s): %s → %s (%s)", how, mu.Name, mu.Where, mu.Type)
+	} else {
+		d.logger.Printf("autofs mounted: %s → %s (%s)", mu.Name, mu.Where, mu.Type)
+	}
+	return true
+}
+
+// idle reports that nothing is mounted and nothing is waiting to be.
+func (d *daemon) idle() bool {
+	return len(d.fdMap) == 0 && len(d.pending) == 0
 }
 
 // reloadConfig re-reads mount unit files and reconciles the running state:
-// - new units → setup autofs + register with epoll
-// - removed units → tear down + deregister from epoll
+// - new units → setup autofs + register with epoll (or wait for after:)
+// - removed units → tear down + deregister from epoll (or stop waiting)
 // - changed units → tear down old + setup new
-// - unchanged → keep as-is
-// warnIgnoredAfter says out loud that `after:` does nothing yet. The key
-// parses, so a unit relying on it would otherwise be set up immediately
-// with no hint that the ordering it asked for never happened.
-func warnIgnoredAfter(logger *log.Logger, units []*autofs.MountUnit) {
-	for _, u := range units {
-		if len(u.After) > 0 {
-			logger.Printf("WARNING: %s: after: %s is not supported and is ignored; "+
-				"order the slinit-mount service itself with after:/waits-for: instead",
-				u.Name, strings.Join(u.After, " "))
-		}
-	}
-}
-
-func reloadConfig(cfg *daemonConfig, logger *log.Logger, epfd int,
-	fdMap map[int]*mountInfo, activeMounts *[]*autofs.AutofsMount) {
-
+// - unchanged → keep as-is, set up or still waiting
+func (d *daemon) reloadConfig() {
+	logger := d.logger
 	logger.Println("reloading mount unit configuration...")
 
-	newUnits, err := autofs.LoadMountUnits(cfg.mountDirs)
+	newUnits, err := autofs.LoadMountUnits(d.cfg.mountDirs)
 	if err != nil {
 		logger.Printf("reload failed: load mount units: %v", err)
 		return
 	}
-	warnIgnoredAfter(logger, newUnits)
 
 	// Index new units by Where path
 	newByKey := make(map[string]*autofs.MountUnit, len(newUnits))
@@ -90,9 +144,18 @@ func reloadConfig(cfg *daemonConfig, logger *log.Logger, epfd int,
 		newByKey[mountUnitKey(u)] = u
 	}
 
+	// Units still waiting for after: are dropped if gone or changed.
+	for key, pu := range d.pending {
+		nu, exists := newByKey[key]
+		if !exists || mountUnitChanged(pu.unit, nu) {
+			logger.Printf("dropping pending mount unit: %s (%s)", pu.unit.Name, pu.unit.Where)
+			d.cancelPending(key)
+		}
+	}
+
 	// Index current mounts by Where path (fd → key mapping for removal)
 	oldByKey := make(map[string]int) // key → pipe fd
-	for fd, mi := range fdMap {
+	for fd, mi := range d.fdMap {
 		oldByKey[mountUnitKey(mi.unit)] = fd
 	}
 
@@ -100,15 +163,15 @@ func reloadConfig(cfg *daemonConfig, logger *log.Logger, epfd int,
 	removedMounts := make(map[*autofs.AutofsMount]bool)
 	for key, fd := range oldByKey {
 		nu, exists := newByKey[key]
-		if !exists || mountUnitChanged(fdMap[fd].unit, nu) {
-			mi := fdMap[fd]
+		if !exists || mountUnitChanged(d.fdMap[fd].unit, nu) {
+			mi := d.fdMap[fd]
 			removedMounts[mi.am] = true
 			logger.Printf("removing autofs mount: %s (%s)", mi.unit.Name, mi.unit.Where)
-			unix.EpollCtl(epfd, unix.EPOLL_CTL_DEL, fd, nil)
+			unix.EpollCtl(d.epfd, unix.EPOLL_CTL_DEL, fd, nil)
 			if err := mi.am.Close(); err != nil {
 				logger.Printf("close %s: %v", mi.unit.Where, err)
 			}
-			delete(fdMap, fd)
+			delete(d.fdMap, fd)
 			delete(oldByKey, key)
 		}
 	}
@@ -116,45 +179,36 @@ func reloadConfig(cfg *daemonConfig, logger *log.Logger, epfd int,
 	// Rebuild activeMounts slice (remove closed entries)
 	if len(removedMounts) > 0 {
 		var kept []*autofs.AutofsMount
-		for _, am := range *activeMounts {
+		for _, am := range d.activeMounts {
 			if !removedMounts[am] {
 				kept = append(kept, am)
 			}
 		}
-		*activeMounts = kept
+		d.activeMounts = kept
 	}
 
 	// Phase 2: add new units and re-add changed units
-	var added int
+	var added, deferred int
 	for _, nu := range newUnits {
 		key := mountUnitKey(nu)
 		if _, stillActive := oldByKey[key]; stillActive {
 			continue // unchanged, already running
 		}
-		am, err := autofs.Setup(nu)
-		if err != nil {
-			logger.Printf("WARNING: reload: failed to set up autofs for %s (%s): %v",
-				nu.Name, nu.Where, err)
+		if _, stillPending := d.pending[key]; stillPending {
+			continue // unchanged, still waiting
+		}
+		if len(nu.After) > 0 {
+			d.deferUnit(nu)
+			deferred++
 			continue
 		}
-		fd := am.PipeFD()
-		event := unix.EpollEvent{
-			Events: unix.EPOLLIN,
-			Fd:     int32(fd),
+		if d.setupUnit(nu, "reload") {
+			added++
 		}
-		if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, fd, &event); err != nil {
-			logger.Printf("reload: epoll_ctl add fd %d: %v", fd, err)
-			am.Close()
-			continue
-		}
-		fdMap[fd] = &mountInfo{am: am, unit: nu}
-		*activeMounts = append(*activeMounts, am)
-		logger.Printf("autofs mounted (reload): %s → %s (%s)", nu.Name, nu.Where, nu.Type)
-		added++
 	}
 
-	logger.Printf("reload complete: %d removed/changed, %d added, %d total active",
-		len(removedMounts), added, len(*activeMounts))
+	logger.Printf("reload complete: %d removed/changed, %d added, %d deferred, %d total active, %d pending",
+		len(removedMounts), added, deferred, len(d.activeMounts), len(d.pending))
 }
 
 func main() {
@@ -172,7 +226,6 @@ func main() {
 	if err != nil {
 		fatal("load mount units: %v", err)
 	}
-	warnIgnoredAfter(logger, units)
 
 	if len(units) == 0 {
 		logger.Println("no mount units found, exiting")
@@ -184,26 +237,6 @@ func main() {
 	// Create mount handler
 	handler := autofs.NewMountHandler(logger)
 
-	// Set up autofs mounts and register pipe fds
-	fdMap := make(map[int]*mountInfo) // pipe fd → mount info
-	var activeMounts []*autofs.AutofsMount
-
-	for _, unit := range units {
-		am, err := autofs.Setup(unit)
-		if err != nil {
-			logger.Printf("WARNING: failed to set up autofs for %s (%s): %v",
-				unit.Name, unit.Where, err)
-			continue
-		}
-		fdMap[am.PipeFD()] = &mountInfo{am: am, unit: unit}
-		activeMounts = append(activeMounts, am)
-		logger.Printf("autofs mounted: %s → %s (%s)", unit.Name, unit.Where, unit.Type)
-	}
-
-	if len(activeMounts) == 0 {
-		fatal("no autofs mounts could be established")
-	}
-
 	// Create epoll instance
 	epfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
 	if err != nil {
@@ -211,15 +244,39 @@ func main() {
 	}
 	defer unix.Close(epfd)
 
-	// Register pipe fds with epoll
-	for fd := range fdMap {
-		event := unix.EpollEvent{
-			Events: unix.EPOLLIN,
-			Fd:     int32(fd),
-		}
-		if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, fd, &event); err != nil {
-			fatal("epoll_ctl add fd %d: %v", fd, err)
-		}
+	// eventfd through which waiter goroutines wake the loop when a
+	// deferred unit's after: services have all started
+	readyFD, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		fatal("eventfd: %v", err)
+	}
+	defer unix.Close(readyFD)
+	readyEvent := unix.EpollEvent{
+		Events: unix.EPOLLIN,
+		Fd:     int32(readyFD),
+	}
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, readyFD, &readyEvent); err != nil {
+		fatal("epoll_ctl add eventfd: %v", err)
+	}
+
+	d := &daemon{
+		cfg:     &cfg,
+		logger:  logger,
+		epfd:    epfd,
+		fdMap:   make(map[int]*mountInfo),
+		pending: make(map[string]*pendingUnit),
+		readyFD: readyFD,
+		dial:    dialControl(resolveSocketPath(cfg.socketPath)),
+		retry:   controlRetryInterval,
+	}
+
+	// Set up autofs mounts (or start waiting) and register pipe fds
+	for _, unit := range units {
+		d.addUnit(unit, "")
+	}
+
+	if d.idle() {
+		fatal("no autofs mounts could be established")
 	}
 
 	// Create timerfd for periodic expiry sweeps
@@ -256,7 +313,7 @@ func main() {
 	// Main event loop
 	logger.Println("daemon ready, entering event loop")
 	buf := make([]byte, autofs.V5PacketSize)
-	events := make([]unix.EpollEvent, len(fdMap)+2)
+	events := make([]unix.EpollEvent, len(d.fdMap)+3)
 
 	running := true
 	for running {
@@ -267,10 +324,10 @@ func main() {
 				select {
 				case sig := <-sigCh:
 					if sig == syscall.SIGHUP {
-						reloadConfig(&cfg, logger, epfd, fdMap, &activeMounts)
+						d.reloadConfig()
 						// Resize events slice in case mount count changed
-						if cap(events) < len(fdMap)+2 {
-							events = make([]unix.EpollEvent, len(fdMap)+2)
+						if cap(events) < len(d.fdMap)+3 {
+							events = make([]unix.EpollEvent, len(d.fdMap)+3)
 						}
 						continue
 					}
@@ -292,7 +349,7 @@ func main() {
 				var tbuf [8]byte
 				unix.Read(timerFD, tbuf[:])
 
-				for _, am := range activeMounts {
+				for _, am := range d.activeMounts {
 					expired, err := am.ExpireMulti()
 					if err != nil {
 						logger.Printf("expire sweep on %s: %v", am.Mountpoint(), err)
@@ -304,7 +361,15 @@ func main() {
 				continue
 			}
 
-			mi, ok := fdMap[fd]
+			if fd == readyFD {
+				// Deferred unit(s) ready — drain eventfd and set them up
+				var ebuf [8]byte
+				unix.Read(readyFD, ebuf[:])
+				d.takeReady()
+				continue
+			}
+
+			mi, ok := d.fdMap[fd]
 			if !ok {
 				continue
 			}
@@ -339,21 +404,24 @@ func main() {
 		select {
 		case sig := <-sigCh:
 			if sig == syscall.SIGHUP {
-				reloadConfig(&cfg, logger, epfd, fdMap, &activeMounts)
-				if cap(events) < len(fdMap)+2 {
-					events = make([]unix.EpollEvent, len(fdMap)+2)
-				}
+				d.reloadConfig()
 			} else {
 				logger.Printf("signal %v received, shutting down", sig)
 				running = false
 			}
 		default:
 		}
+		if cap(events) < len(d.fdMap)+3 {
+			events = make([]unix.EpollEvent, len(d.fdMap)+3)
+		}
 	}
 
-	// Graceful shutdown: close all autofs mounts
+	// Graceful shutdown: stop waiters, close all autofs mounts
 	logger.Println("shutting down, unmounting all autofs entries...")
-	for _, am := range activeMounts {
+	for key := range d.pending {
+		d.cancelPending(key)
+	}
+	for _, am := range d.activeMounts {
 		if err := am.Close(); err != nil {
 			logger.Printf("close %s: %v", am.Mountpoint(), err)
 		}
@@ -379,6 +447,12 @@ func parseArgs() daemonConfig {
 			cfg.foreground = true
 		case "-v", "--verbose":
 			cfg.verbose = true
+		case "-p", "--socket-path":
+			if i+1 >= len(args) {
+				fatal("--socket-path requires an argument")
+			}
+			i++
+			cfg.socketPath = args[i]
 		case "--expire-interval":
 			if i+1 >= len(args) {
 				fatal("--expire-interval requires an argument")
@@ -408,6 +482,8 @@ Options:
                             Can be specified multiple times
   -f, --foreground         Run in foreground (don't daemonize)
   -v, --verbose            Verbose logging
+  -p, --socket-path PATH   slinit control socket, for after: (default:
+                            /run/slinit.socket as root, else the user socket)
       --expire-interval N  Seconds between expiry sweeps (default: %d)
   -h, --help               Show this help
 
@@ -419,7 +495,7 @@ Mount unit files (*.mount) use key=value format:
   timeout = 300             Idle timeout in seconds (0 = never unmount)
   autofs-type = indirect    "indirect" (default) or "direct"
   directory-mode = 0755     Permissions for auto-created directories
-  after: network-online     slinit service dependency
+  after: network-online     Set up only once these slinit services are started
 
 `, exe, defaultSystemMountDir, defaultExpireInterval)
 }
