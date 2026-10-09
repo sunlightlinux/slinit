@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -55,8 +56,8 @@ func TestParseArgsPassnoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.passnoOp != '=' || opts.passnoValue != 2 {
-		t.Errorf("op=%c val=%d", opts.passnoOp, opts.passnoValue)
+	if len(opts.selectors) != 1 || opts.selectors[0].passnoOp != '=' || opts.selectors[0].passnoValue != 2 {
+		t.Errorf("selectors=%+v", opts.selectors)
 	}
 }
 
@@ -68,8 +69,8 @@ func TestParseArgsPassnoPlain(t *testing.T) {
 	if opts.mode != outputPassno {
 		t.Errorf("mode=%d", opts.mode)
 	}
-	if len(opts.files) != 1 || opts.files[0] != "/home" {
-		t.Errorf("files=%v", opts.files)
+	if len(opts.selectors) != 1 || opts.selectors[0].file != "/home" || len(opts.files) != 0 {
+		t.Errorf("selectors=%+v files=%v", opts.selectors, opts.files)
 	}
 }
 
@@ -78,8 +79,8 @@ func TestParseArgsFstype(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(opts.fstypes) != 2 || opts.fstypes[0] != "ext4" || opts.fstypes[1] != "xfs" {
-		t.Errorf("fstypes=%v", opts.fstypes)
+	if len(opts.selectors) != 1 || !slices.Equal(opts.selectors[0].fstypes, []string{"ext4", "xfs"}) {
+		t.Errorf("selectors=%+v", opts.selectors)
 	}
 }
 
@@ -126,7 +127,7 @@ func TestRunOptionsForMountpoint(t *testing.T) {
 func TestRunFstypeFilter(t *testing.T) {
 	entries := parseSample(t)
 	out, code := captureStdout(t, func() int {
-		return run(entries, options{mode: outputFile, fstypes: []string{"ext4"}})
+		return run(entries, options{mode: outputFile, selectors: []selector{{fstypes: []string{"ext4"}}}})
 	})
 	if code != exitOK {
 		t.Errorf("code=%d", code)
@@ -143,7 +144,7 @@ func TestRunFstypeFilter(t *testing.T) {
 func TestRunPassnoEquals(t *testing.T) {
 	entries := parseSample(t)
 	out, _ := captureStdout(t, func() int {
-		return run(entries, options{mode: outputFile, passnoOp: '=', passnoValue: 2})
+		return run(entries, options{mode: outputFile, selectors: []selector{{passnoOp: '=', passnoValue: 2}}})
 	})
 	// passno=2 → /home, /boot.
 	got := strings.TrimSpace(out)
@@ -164,7 +165,7 @@ func TestRunPassnoLessThan(t *testing.T) {
 	entries := parseSample(t)
 	// --passno <2 → entries with passno > 0 and < 2 → passno=1 only.
 	out, _ := captureStdout(t, func() int {
-		return run(entries, options{mode: outputFile, passnoOp: '<', passnoValue: 2})
+		return run(entries, options{mode: outputFile, selectors: []selector{{passnoOp: '<', passnoValue: 2}}})
 	})
 	if strings.TrimSpace(out) != "/" {
 		t.Errorf("want /, got %q", out)
@@ -250,12 +251,10 @@ func TestEndToEndFromFile(t *testing.T) {
 	}
 }
 
-// An --fstype that matches nothing must leave the selection empty; the
-// --passno filter then narrows that empty set rather than falling back
-// to the whole fstab.
-func TestRunFstypeNoMatchWithPassnoIsEmpty(t *testing.T) {
-	path := writeSample(t)
-	opts, err := parseArgs([]string{"--file", path, "--fstype", "nfs", "--passno", "=2"})
+// runArgs runs the tool against the sample fstab via the --file seam.
+func runArgs(t *testing.T, args ...string) (string, int) {
+	t.Helper()
+	opts, err := parseArgs(append([]string{"--file", writeSample(t)}, args...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,11 +262,50 @@ func TestRunFstypeNoMatchWithPassnoIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, code := captureStdout(t, func() int { return run(entries, opts) })
-	if out != "" {
-		t.Errorf("want no output, got %q", out)
+	return captureStdout(t, func() int { return run(entries, opts) })
+}
+
+// Selection semantics of OpenRC's fstabinfo.c: every -t and -p OP N
+// scans the whole fstab and appends to one list (union, duplicates
+// kept, command-line order); positional names then filter that list,
+// or become the list when it is empty.
+func TestRunSelectionMatchesOpenRC(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		out  string
+		code int
+	}{
+		{"fstype only", []string{"-t", "ext4"}, "/\n/home\n", exitOK},
+		{"fstype list in token order", []string{"-t", "vfat,ext4"}, "/boot\n/\n/home\n", exitOK},
+		{"fstype no match", []string{"-t", "nfs"}, "", exitFailure},
+		{"passno only", []string{"-p", "=2"}, "/home\n/boot\n", exitOK},
+		{"passno greater skips 0", []string{"-p", ">0"}, "/\n/home\n/boot\n", exitOK},
+		{"fstype + passno is a union", []string{"-t", "ext4", "-p", "=2"}, "/\n/home\n/home\n/boot\n", exitOK},
+		{"union in option order", []string{"-p", "=2", "-t", "vfat"}, "/home\n/boot\n/boot\n", exitOK},
+		{"fstype no match + passno", []string{"-t", "nfs", "-p", "=2"}, "/home\n/boot\n", exitOK},
+		{"repeated fstype", []string{"-t", "vfat", "-t", "tmpfs"}, "/boot\n/tmp\n", exitOK},
+		{"positional only", []string{"/tmp", "/"}, "/tmp\n/\n", exitOK},
+		{"positional missing sets 1", []string{"/home", "/nope"}, "/home\n", exitFailure},
+		{"filter then positional keeps list order", []string{"-t", "ext4", "/home", "/", "/boot"}, "/\n/home\n", exitOK},
+		{"filter then positional disjoint", []string{"-t", "ext4", "/boot"}, "", exitFailure},
+		{"empty filter falls back to positional", []string{"-t", "nfs", "/boot"}, "/boot\n", exitOK},
+		{"positional before options", []string{"/home", "-p", "=2"}, "/home\n", exitOK},
+		{"mountargs over union", []string{"-m", "-t", "tmpfs", "-p", "=1"}, "-o mode=1777 -t tmpfs tmpfs /tmp\n-o defaults,noatime -t ext4 /dev/sda1 /\n", exitOK},
+		// Plain -p is not a filter: with no positional arguments the
+		// whole fstab is appended after the named mountpoint.
+		{"plain passno", []string{"-p", "/home"}, "2\n1\n0\n2\n2\n0\n", exitOK},
+		{"plain passno + positional", []string{"-p", "/home", "/home"}, "2\n", exitOK},
 	}
-	if code != exitFailure {
-		t.Errorf("code=%d, want %d", code, exitFailure)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out, code := runArgs(t, c.args...)
+			if out != c.out {
+				t.Errorf("out=%q, want %q", out, c.out)
+			}
+			if code != c.code {
+				t.Errorf("code=%d, want %d", code, c.code)
+			}
+		})
 	}
 }

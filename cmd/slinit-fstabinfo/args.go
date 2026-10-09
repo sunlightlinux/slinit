@@ -72,11 +72,10 @@ func parseArgs(args []string) (options, error) {
 				return opts, err
 			}
 			if op != 0 {
-				opts.passnoOp = op
-				opts.passnoValue = val
+				opts.selectors = append(opts.selectors, selector{passnoOp: op, passnoValue: val})
 			} else {
-				// Plain form: look up the passno of an explicit mountpoint.
-				opts.files = append(opts.files, plain)
+				// Plain form: print the passno of an explicit mountpoint.
+				opts.selectors = append(opts.selectors, selector{file: plain})
 				opts.mode = outputPassno
 			}
 		case "-t", "--fstype":
@@ -84,12 +83,7 @@ func parseArgs(args []string) (options, error) {
 			if err != nil {
 				return opts, err
 			}
-			for _, tok := range strings.Split(v, ",") {
-				tok = strings.TrimSpace(tok)
-				if tok != "" {
-					opts.fstypes = append(opts.fstypes, tok)
-				}
-			}
+			opts.selectors = append(opts.selectors, selector{fstypes: strings.Split(v, ",")})
 		case "--file":
 			// Non-standard but useful: override fstab path (test seam).
 			v, err := need(name, attached)
@@ -134,15 +128,17 @@ Actions:
   -M, --mount                 invoke mount(8) for matching entries
   -R, --remount               invoke mount -o remount for matching entries
 
-Filters:
-  -t, --fstype TYPE[,TYPE]    only entries with the given fs type(s)
-      MOUNTPOINT...           restrict output to the listed mountpoints
+Selection (each -t / -p OP N adds its matches to one list):
+  -t, --fstype TYPE[,TYPE]    entries with the given fs type(s)
+      MOUNTPOINT...           keep only these from the list; if the list
+                              is empty, select these mountpoints instead
 
 Misc:
       --file PATH             use PATH instead of /etc/fstab (test seam)
   -h, --help                  this help
   -V, --version               version string
 
-Exit: 0 = at least one entry matched  1 = no match / mount failure  2 = usage
+Exit: 0 = ok  1 = nothing selected / mountpoint not in fstab
+      other = sum of mount(8) exit codes  2 = usage
 `)
 }
