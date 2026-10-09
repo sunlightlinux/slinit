@@ -202,3 +202,50 @@ func TestRunnerLocksServiceMemory(t *testing.T) {
 		t.Errorf("preload variables leaked to a forked child:\n%s", out)
 	}
 }
+
+// The library is built against glibc but must also load into musl
+// programs (the Alpine test VM, any musl distro): musl's loader maps the
+// libc.so.6 dependency onto itself, which works only while the library
+// uses no glibc-only symbols. Runs where musl-gcc is installed.
+func TestRunnerLocksMuslProgram(t *testing.T) {
+	muslgcc, err := exec.LookPath("musl-gcc")
+	if err != nil {
+		t.Skip("no musl-gcc")
+	}
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go toolchain")
+	}
+	if os.Geteuid() != 0 {
+		var lim unix.Rlimit
+		if unix.Getrlimit(unix.RLIMIT_MEMLOCK, &lim) == nil && lim.Cur != unix.RLIM_INFINITY && lim.Cur < 64<<20 {
+			t.Skip("RLIMIT_MEMLOCK too low to lock a process without privileges")
+		}
+	}
+	dir := t.TempDir()
+	buildMlockLib(t, dir)
+	runner := filepath.Join(dir, "slinit-runner")
+	if out, err := exec.Command(gobin, "build", "-o", runner, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	src := filepath.Join(dir, "vmlck.c")
+	prog := filepath.Join(dir, "vmlck")
+	if err := os.WriteFile(src, []byte(`#include <stdio.h>
+#include <string.h>
+int main(void){char l[256];FILE*f=fopen("/proc/self/status","r");
+while(fgets(l,sizeof l,f))if(!strncmp(l,"VmLck",5))fputs(l,stdout);return 0;}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(muslgcc, "-O2", "-o", prog, src).CombinedOutput(); err != nil {
+		t.Skipf("musl-gcc cannot build: %v\n%s", err, out)
+	}
+	out, err := exec.Command(runner, "--mlockall="+strconv.Itoa(unix.MCL_CURRENT), "--", prog).CombinedOutput()
+	if err != nil {
+		t.Fatalf("runner: %v\n%s", err, out)
+	}
+	m := regexp.MustCompile(`VmLck:\s+(\d+) kB`).FindSubmatch(out)
+	if m == nil || string(m[1]) == "0" {
+		t.Errorf("musl program not locked: %q", out)
+	}
+}
