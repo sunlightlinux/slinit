@@ -276,10 +276,11 @@ service name or rejected.
     stopped with a non-zero exit status. Prints *FAILED* in that case
     and the state otherwise, even with **\--quiet**.
 
-**reset-failed** [*service*]
+**reset-failed** *service* | **\--all**
 :   Clear the internal *start failed* mark, which **is-failed** and
     **status** report. The restart-limit counter is not touched. With
-    no argument, clears the mark on every loaded service. Mirrors
+    **\--all**, clears the mark on every loaded service; with no
+    argument at all it is a usage error. Mirrors
     systemd's **reset-failed** subcommand.
 
 **dependents** *service*
@@ -720,10 +721,12 @@ service name or rejected.
     **is-older-than** also exit 2 when a path cannot be examined for a
     reason other than not existing.
 
-An unknown command and a bad global option are reported without
-contacting the daemon. A command's own arguments are checked once it is
-connected, so with no daemon running a malformed but known command fails
-with the connection error (1) first.
+An unknown command, a bad global option and a wrong number of arguments
+to a command are reported without contacting the daemon. The argument
+values themselves (a signal name, a dependency type, a shutdown kind,
+*KEY=VALUE*, …) are checked once it is connected, so with no daemon
+running a command with the right count but a bad value fails with the
+connection error (1) first.
 
 ## EXAMPLES
 

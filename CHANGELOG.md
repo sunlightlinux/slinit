@@ -116,6 +116,12 @@ verified with `git tag -v`.
   `$XDG_RUNTIME_DIR/slinit.d` — and refuses, listing them, when there is
   none, instead of leaving a file the daemon never reads.
 
+- **slinitctl now checks each command's argument count before
+  connecting**, so a missing argument (`slinitctl start`, `setenv x`,
+  `add-dep a b`, …) exits 2 even when no daemon is running, instead of
+  failing first with the connection error. Argument values are still
+  checked once connected.
+
 - **slinitctl exited 1 on usage errors, where STABILITY.md promises 2.**
   Every error went through one exit path, so a script could not tell
   "called wrongly" from "the command failed". Usage errors — an unknown
