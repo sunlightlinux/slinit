@@ -179,6 +179,10 @@ func main() {
 		if desc == nil {
 			continue // Already reported during load
 		}
+		// The re-parse sees the parser's default type; the loader may
+		// have settled on another (a bundle with no `type` is internal).
+		// Judge the service the daemon would actually run.
+		desc.Type = svc.Type()
 
 		// Check command executable
 		if len(desc.Command) > 0 {
