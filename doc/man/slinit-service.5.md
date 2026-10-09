@@ -387,7 +387,8 @@ what tells you the oldest slinit your configuration will run on. See
 
 **standard-input-text**=*string*
 :   Baked stdin content for one-shot services (systemd's answer
-    to runit's `data/`). *+=* concatenates with newline separator.
+    to runit's `data/`). **=** replaces any earlier value; *+=* appends
+    on a new line.
 
 **standard-input-data**=*base64*
 :   Same as **standard-input-text** but the payload is base64-
