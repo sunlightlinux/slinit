@@ -163,3 +163,51 @@ func TestOnDemandStopClosesSocket(t *testing.T) {
 		t.Error("process launched after the service was stopped")
 	}
 }
+
+// watchdog-timeout must cover a process launched on demand. The watchdog
+// was armed only on the STARTING → STARTED readiness transition, which
+// an on-demand launch never makes (the service is STARTED from the
+// moment its sockets open), so such a process ran unwatched. A missed
+// keepalive kills the process; the service stays up and listens again.
+func TestOnDemandWatchdogCoversLaunchedProcess(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "od.sock")
+	set, _ := newTestSet()
+	// Signals readiness once, then never sends a keepalive.
+	svc := newOnDemand(t, set, "od-watchdog", sock,
+		[]string{"/bin/sh", "-c", `echo x >&$NOTIFY_FD; sleep 60`})
+	svc.SetReadyNotification(-1, "NOTIFY_FD")
+	svc.SetWatchdogTimeout(300 * time.Millisecond)
+	defer stopAndWait(t, set, svc)
+
+	set.StartService(svc)
+	if got := waitState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("state = %v, want STARTED", got)
+	}
+	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for svc.PID() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	first := svc.PID()
+	if first == 0 {
+		t.Fatal("process never launched")
+	}
+	// Within a few watchdog periods the silent process must be killed.
+	// The client is still waiting in the backlog (sh never accepts it),
+	// so the service, still STARTED, launches a fresh process for it.
+	deadline = time.Now().Add(3 * time.Second)
+	for svc.PID() == first && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if svc.PID() == first {
+		t.Fatalf("process %d still running: the watchdog never fired", first)
+	}
+	if st := svc.State(); st != StateStarted {
+		t.Errorf("state after watchdog = %v, want STARTED (listening)", st)
+	}
+}

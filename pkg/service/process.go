@@ -980,6 +980,22 @@ func (s *ProcessService) fireWatchdogStop() {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
 
+	sig := s.Record().WatchdogSignal()
+	if sig == 0 {
+		sig = syscall.SIGABRT
+	}
+
+	// On-demand: the process is not the service. Kill just the process;
+	// its exit puts the service back to listening, as any exit does.
+	if s.onDemandListening() {
+		if s.pid > 0 {
+			s.services.logger.Error("Service '%s': watchdog expired, sending %v to process %d",
+				s.serviceName, sig, s.pid)
+			process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+		}
+		return
+	}
+
 	s.stopReason = ReasonTerminated
 	s.forceStop = true
 
@@ -987,11 +1003,7 @@ func (s *ProcessService) fireWatchdogStop() {
 	// but with the operator-picked signal (default SIGABRT — that's
 	// what the systemd docs specify). pickStopSignal consumes and
 	// clears this per invocation.
-	if sig := s.Record().WatchdogSignal(); sig != 0 {
-		s.pendingStopSignal = sig
-	} else {
-		s.pendingStopSignal = syscall.SIGABRT
-	}
+	s.pendingStopSignal = sig
 
 	withRestart := false
 	switch s.autoRestart {
@@ -2390,7 +2402,7 @@ func (s *ProcessService) startProcess() error {
 	// on the notification pipe and defer Started() until data arrives.
 	if s.readyPipeRead != nil {
 		s.readyCh = make(chan bool, 1)
-		go s.watchReadyPipe()
+		go s.watchReadyPipe(s.readyPipeRead, s.readyCh)
 		go s.monitorProcess(exitCh)
 
 		// Arm start timeout while waiting for readiness
@@ -2400,7 +2412,7 @@ func (s *ProcessService) startProcess() error {
 	} else if len(s.readyCheckCommand) > 0 {
 		// Ready-check-command: poll external command until it succeeds
 		s.readyCh = make(chan bool, 1)
-		go s.watchReadyCheck()
+		go s.watchReadyCheck(s.readyCh, s.doneCh)
 		go s.monitorProcess(exitCh)
 
 		if s.startTimeout > 0 {
@@ -2421,14 +2433,15 @@ func (s *ProcessService) startProcess() error {
 
 // watchReadyPipe monitors the read-end of the readiness notification pipe.
 // Sends true on readyCh if data is received, false if EOF/error.
-func (s *ProcessService) watchReadyPipe() {
+//
+// The pipe and channel are passed in, not read from s: closeReadyPipe and
+// handleReadyNotification reset those fields under queueMu while this
+// goroutine runs without it. A closed pipe makes Read return, which
+// reports false.
+func (s *ProcessService) watchReadyPipe(pipe *os.File, ch chan bool) {
 	buf := make([]byte, 128)
-	n, _ := s.readyPipeRead.Read(buf)
-	if n > 0 {
-		s.readyCh <- true
-	} else {
-		s.readyCh <- false
-	}
+	n, _ := pipe.Read(buf)
+	ch <- n > 0
 }
 
 // monitorProcess runs in a goroutine, waiting for the process to exit,
@@ -2479,7 +2492,8 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 	// When a watchdog is configured we keep the pipe open after the
 	// initial readiness signal: subsequent writes act as keepalives.
 	// Without a watchdog the pipe is one-shot, mirroring dinit.
-	keepPipe := ready && s.HasWatchdog() && s.state.Load() == StateStarting
+	keepPipe := ready && s.HasWatchdog() &&
+		(s.state.Load() == StateStarting || s.onDemandListening())
 	if !keepPipe {
 		s.closeReadyPipe()
 	}
@@ -2507,6 +2521,9 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 				s.cancelTimer()
 				s.startCronIfConfigured()
 				s.startHealthCheckIfConfigured()
+				if keepPipe {
+					s.startWatchdogWatcher()
+				}
 			}
 			return
 		}
@@ -2958,7 +2975,10 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 // service that is already ready pays a single exec latency instead of one
 // full interval — matters for sockets that bind in microseconds (dbus,
 // most listen(2)-then-fork daemons).
-func (s *ProcessService) watchReadyCheck() {
+//
+// ch and done are passed in rather than read from s, for the reason given
+// at watchReadyPipe.
+func (s *ProcessService) watchReadyCheck(ch chan bool, done chan struct{}) {
 	interval := s.readyCheckInterval
 	if interval <= 0 {
 		interval = defaultReadyCheckInterval
@@ -2969,7 +2989,7 @@ func (s *ProcessService) watchReadyCheck() {
 	// fails, fall through to the polling loop which will also serve
 	// any pending doneCh signal.
 	if s.runReadyCheckOnce() {
-		s.readyCh <- true
+		ch <- true
 		return
 	}
 
@@ -2978,12 +2998,12 @@ func (s *ProcessService) watchReadyCheck() {
 
 	for {
 		select {
-		case <-s.doneCh:
-			s.readyCh <- false
+		case <-done:
+			ch <- false
 			return
 		case <-ticker.C:
 			if s.runReadyCheckOnce() {
-				s.readyCh <- true
+				ch <- true
 				return
 			}
 		}

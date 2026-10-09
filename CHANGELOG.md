@@ -45,6 +45,18 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`watchdog-timeout` did not cover a process launched by on-demand
+  socket activation.** The watchdog was armed only on the STARTING →
+  STARTED readiness transition, which such a launch never makes. It is
+  now armed for it too, and a miss kills only the process — the service
+  keeps listening, as after any exit.
+
+- **Race in readiness waiting.** The goroutines waiting on a
+  `ready-notification` pipe or a `ready-check-command` read the pipe,
+  channel and done-channel fields of the service without the lock, while
+  a stop or the readiness handler reset them. Found with `-race`; they
+  now get their own copies when started.
+
 - **A bgprocess daemon that had exited was still seen as running until
   reaped.** Stop detection polls with `kill(pid, 0)`, which succeeds on a
   zombie, and a daemon is reparented away from slinit, so whether it is

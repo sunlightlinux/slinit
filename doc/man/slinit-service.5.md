@@ -1738,7 +1738,10 @@ mlockall       = current+future
     **start-delay** and **post-start-command** run at that launch. When
     the process exits — cleanly, with an error, or because it failed to
     exec — the service stays **STARTED** and listens again, so the next
-    client launches it anew; **restart** does not apply. **slinitctl
+    client launches it anew; **restart** does not apply. With
+    **watchdog-timeout**, a launched process that stops sending
+    keepalives is sent **watchdog-signal** and, once it exits, the
+    service listens again the same way. **slinitctl
     status** shows no PID while it is listening. Only stopping the
     service closes the sockets.
 
