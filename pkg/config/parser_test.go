@@ -2442,10 +2442,10 @@ alert-level = urgent
 // RestartLimitCountSet flag.
 func TestParseRestartLimitCountZero(t *testing.T) {
 	cases := []struct {
-		name          string
-		input         string
-		wantCount     int
-		wantSet       bool
+		name      string
+		input     string
+		wantCount int
+		wantSet   bool
 	}{
 		{"explicit zero", `
 type = process

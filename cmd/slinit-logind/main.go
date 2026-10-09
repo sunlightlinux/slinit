@@ -7,16 +7,17 @@
 // Phase B by pam_slinit.so at login.
 //
 // Method inventory shipped in this cut (org.freedesktop.login1.Manager):
-//   ListSessions, ListUsers, ListSeats, ListInhibitors — read-only
-//   GetSession, GetUser, GetSeat                       — lookup by id
-//   PowerOff, Reboot, Halt, Suspend, Hibernate,
-//     HybridSleep, SuspendThenHibernate               — power ops
-//   CanPowerOff, CanReboot, CanHalt, CanSuspend,
-//     CanHibernate, CanHybridSleep,
-//     CanSuspendThenHibernate                          — capability probes
-//   Inhibit                                            — block/delay locks,
-//                                                       enforced on sleep
-//                                                       (see inhibit.go)
+//
+//	ListSessions, ListUsers, ListSeats, ListInhibitors — read-only
+//	GetSession, GetUser, GetSeat                       — lookup by id
+//	PowerOff, Reboot, Halt, Suspend, Hibernate,
+//	  HybridSleep, SuspendThenHibernate               — power ops
+//	CanPowerOff, CanReboot, CanHalt, CanSuspend,
+//	  CanHibernate, CanHybridSleep,
+//	  CanSuspendThenHibernate                          — capability probes
+//	Inhibit                                            — block/delay locks,
+//	                                                    enforced on sleep
+//	                                                    (see inhibit.go)
 //
 // Sleep goes through the handshake in sleep.go: block locks refuse,
 // delay locks are waited out, PrepareForSleep is announced either side,
@@ -91,12 +92,12 @@ type Seat struct {
 // descriptor the client holds — not read from a file, because a lock
 // has to die with the process that took it.
 type Inhibitor struct {
-	What  string
-	Who   string
-	Why   string
-	Mode  string
-	UID   uint32
-	PID   uint32
+	What string
+	Who  string
+	Why  string
+	Mode string
+	UID  uint32
+	PID  uint32
 }
 
 // manager holds the mutable state visible over D-Bus. Locked as a

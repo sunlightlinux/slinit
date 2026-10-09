@@ -22,11 +22,11 @@ func TestCharToAction(t *testing.T) {
 		{'P', ActionPoweroff},
 		{'c', ActionRetry},
 		{'C', ActionRetry},
-		{0x04, ActionRetry},     // Ctrl-D alias for continue
-		{'s', actionShell},      // internal sentinel — recovery loops on it
+		{0x04, ActionRetry}, // Ctrl-D alias for continue
+		{'s', actionShell},  // internal sentinel — recovery loops on it
 		{'S', actionShell},
-		{0x02, actionShell},     // Ctrl-B alias for shell
-		{'x', ActionTimeout},    // unknown key → safest = timeout
+		{0x02, actionShell},  // Ctrl-B alias for shell
+		{'x', ActionTimeout}, // unknown key → safest = timeout
 		{0x00, ActionTimeout},
 	}
 	for _, c := range cases {

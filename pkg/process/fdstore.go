@@ -136,4 +136,3 @@ func ParseNotifyMessage(body []byte) NotifyMessage {
 	}
 	return m
 }
-

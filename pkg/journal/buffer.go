@@ -33,6 +33,7 @@ const MinBufferCap = 32
 //   - Slinit emit path holds a single writer.
 //   - Multiple readers (control-socket handlers replying to
 //     slinit-journalctl queries) call Snapshot concurrently.
+//
 // A sync.RWMutex would let us optimize the reader-heavy case, but
 // Push has to hold the write lock briefly regardless and the ring is
 // small enough that lock contention isn't a practical concern.

@@ -140,9 +140,9 @@ func TestEmitStampsTrustedMetadata(t *testing.T) {
 	// overwritten by Emit.
 	err := fx.emitter.Emit(&Event{
 		Msg:      "x",
-		Pid:      9999,       // should be replaced with os.Getpid()
-		BootID:   "spoofed",  // should be replaced with real boot id
-		Hostname: "wrong",    // should be replaced with test-host
+		Pid:      9999,      // should be replaced with os.Getpid()
+		BootID:   "spoofed", // should be replaced with real boot id
+		Hostname: "wrong",   // should be replaced with test-host
 	})
 	if err != nil {
 		t.Fatalf("Emit: %v", err)

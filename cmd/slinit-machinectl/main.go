@@ -2,16 +2,16 @@
 // registry (/run/slinit/machines/). Modelled on systemd machinectl's
 // most useful subset for slinit's simpler runtime model:
 //
-//   register <name> <pid> [--class=…] [--service=…] [--root=…]
-//       Write a registry entry. Overwrites atomically.
-//   unregister <name>
-//       Delete a registry entry.
-//   list
-//       Table of every registered machine + Alive status.
-//   status <name>
-//       Verbose dump of one machine's registry fields + liveness.
-//   show <name>
-//       Raw contents of the registry file (for scripting/debug).
+//	register <name> <pid> [--class=…] [--service=…] [--root=…]
+//	    Write a registry entry. Overwrites atomically.
+//	unregister <name>
+//	    Delete a registry entry.
+//	list
+//	    Table of every registered machine + Alive status.
+//	status <name>
+//	    Verbose dump of one machine's registry fields + liveness.
+//	show <name>
+//	    Raw contents of the registry file (for scripting/debug).
 //
 // No D-Bus, no machined daemon. slinit-nspawn (Tier 3) and any
 // operator scripts write registry entries directly via pkg/machine;

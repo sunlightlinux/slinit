@@ -48,11 +48,11 @@ func TestPSIPressureParseAndCompare(t *testing.T) {
 		param string
 		want  bool
 	}{
-		{"< 50", true},   // 12.34 < 50 ✓
-		{">= 12", true},  // 12.34 >= 12 ✓
-		{"> 20", false},  // 12.34 > 20 ✗
+		{"< 50", true},     // 12.34 < 50 ✓
+		{">= 12", true},    // 12.34 >= 12 ✓
+		{"> 20", false},    // 12.34 > 20 ✗
 		{"<= 12.34", true}, // exact upper edge ✓
-		{"12.34", false},  // bare form defaults to >= per checker: 12.34 >= 12.34 → true
+		{"12.34", false},   // bare form defaults to >= per checker: 12.34 >= 12.34 → true
 	} {
 		ok, why := checkPSIPressure(file, tc.param)
 		// Special-case: bare "12.34" — per our design the missing op

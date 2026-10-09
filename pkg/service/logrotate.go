@@ -114,18 +114,18 @@ type LogRotator struct {
 	alertOpenFailed bool
 
 	// State
-	file            *os.File
-	currentSize     int64
-	lastRotate      time.Time
-	rotateTimer     *time.Timer
-	enospcReported  bool // one-shot: we already logged the ENOSPC drain event
-	pipeR       *os.File
-	pipeW       *os.File
-	doneCh      chan struct{}
-	running     bool
-	serviceName string
-	getPID      func() int
-	logger      interface {
+	file           *os.File
+	currentSize    int64
+	lastRotate     time.Time
+	rotateTimer    *time.Timer
+	enospcReported bool // one-shot: we already logged the ENOSPC drain event
+	pipeR          *os.File
+	pipeW          *os.File
+	doneCh         chan struct{}
+	running        bool
+	serviceName    string
+	getPID         func() int
+	logger         interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
 	}
@@ -133,17 +133,17 @@ type LogRotator struct {
 
 // LogRotatorConfig holds configuration for a LogRotator.
 type LogRotatorConfig struct {
-	FilePath    string
-	FilePerms   os.FileMode
-	FileUID     int
-	FileGID     int
-	MaxSize     int64
-	MaxFiles    int
-	MinFiles    int // svlogd Nmin: floor for ENOSPC drain (0 = disabled)
-	RotateTime  time.Duration
-	Processor   []string
-	Includes    []string
-	Excludes    []string
+	FilePath   string
+	FilePerms  os.FileMode
+	FileUID    int
+	FileGID    int
+	MaxSize    int64
+	MaxFiles   int
+	MinFiles   int // svlogd Nmin: floor for ENOSPC drain (0 = disabled)
+	RotateTime time.Duration
+	Processor  []string
+	Includes   []string
+	Excludes   []string
 	// Select is the s6-log-style chain (see LogRotator.selectChain).
 	// Each token is `+regex` or `-regex`; `+*`/`-*` are match-all
 	// shortcuts. Must be empty if Includes/Excludes are set.
@@ -202,7 +202,7 @@ type LogRotatorConfig struct {
 	AlertFilePath string
 	AlertLevel    int
 
-	Logger      interface {
+	Logger interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
 	}

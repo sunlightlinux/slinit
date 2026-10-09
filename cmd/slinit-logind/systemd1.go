@@ -458,16 +458,16 @@ func (s *systemd1Manager) Reexecute() *dbus.Error   { s.dbg("Reexecute"); return
 // UnitStatus mirrors the wire tuple systemd returns from ListUnits:
 // (ssssssouso). We ship an empty slice.
 type unitStatus struct {
-	Name          string
-	Description   string
-	LoadState     string
-	ActiveState   string
-	SubState      string
-	Following     string
-	Unit          dbus.ObjectPath
-	JobID         uint32
-	JobType       string
-	Job           dbus.ObjectPath
+	Name        string
+	Description string
+	LoadState   string
+	ActiveState string
+	SubState    string
+	Following   string
+	Unit        dbus.ObjectPath
+	JobID       uint32
+	JobType     string
+	Job         dbus.ObjectPath
 }
 
 func (s *systemd1Manager) ListUnits() ([]unitStatus, *dbus.Error) {

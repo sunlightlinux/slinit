@@ -162,7 +162,7 @@ func AlignUp(n uint64) uint64 {
 // for wire I/O.
 type Header struct {
 	// Magic is copied from the constant on write and verified on read.
-	Magic          [8]byte
+	Magic         [8]byte
 	CompatFlags   uint32
 	IncompatFlags uint32
 	State         uint8
@@ -180,15 +180,15 @@ type Header struct {
 	FieldHashTableSize   uint64
 	TailObjectOffset     uint64
 
-	NObjects        uint64
-	NEntries        uint64
-	TailEntrySeqnum uint64
-	HeadEntrySeqnum uint64
+	NObjects         uint64
+	NEntries         uint64
+	TailEntrySeqnum  uint64
+	HeadEntrySeqnum  uint64
 	EntryArrayOffset uint64
 
-	HeadEntryRealtime   uint64
-	TailEntryRealtime   uint64
-	TailEntryMonotonic  uint64
+	HeadEntryRealtime  uint64
+	TailEntryRealtime  uint64
+	TailEntryMonotonic uint64
 
 	NData        uint64
 	NFields      uint64

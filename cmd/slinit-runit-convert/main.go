@@ -29,10 +29,10 @@ import (
 
 func main() {
 	var (
-		outputDir  string
-		dryRun     bool
-		verbose    bool
-		enableMap  bool
+		outputDir string
+		dryRun    bool
+		verbose   bool
+		enableMap bool
 	)
 	flag.StringVar(&outputDir, "output-dir", "", "batch mode: write one slinit file per input into DIR (default: stdout single file)")
 	flag.BoolVar(&dryRun, "dry-run", false, "print what would be written without touching the filesystem")
@@ -197,10 +197,10 @@ type slinitConfig struct {
 	restart       string
 	restartDelay  string
 
-	waitsFor   []string      // auto-emitted from `sv check DEP` in run script
-	consumerOf string        // set only on log-companion configs
-	logChild   *slinitConfig // set on primary when log/run exists — emitted separately
-	logTypePipe bool         // primary needs `log-type = pipe` when a consumer companion attaches
+	waitsFor    []string      // auto-emitted from `sv check DEP` in run script
+	consumerOf  string        // set only on log-companion configs
+	logChild    *slinitConfig // set on primary when log/run exists — emitted separately
+	logTypePipe bool          // primary needs `log-type = pipe` when a consumer companion attaches
 
 	comments []string // free-form comments prepended to the output
 }
@@ -228,9 +228,9 @@ func convertService(dir string) (*slinitConfig, []warning, error) {
 
 	name := filepath.Base(absDir)
 	cfg := &slinitConfig{
-		svcName:      name,
-		runitDir:     absDir,
-		svcType:      "process",
+		svcName:  name,
+		runitDir: absDir,
+		svcType:  "process",
 		// runsv chdir()s into the service dir before starting run/finish,
 		// so scripts that reference ./conf, use ${PWD##*-} in finish
 		// (agetty), etc. rely on it. Set the same default so any finish
@@ -710,4 +710,3 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 		fmt.Fprintf(w, "waits-for: %s\n", d)
 	}
 }
-

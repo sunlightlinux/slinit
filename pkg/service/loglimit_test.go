@@ -69,10 +69,10 @@ func TestExtractSyslogLevel(t *testing.T) {
 		// Malformed / prose that must NOT trigger keyword match.
 		{"info: lowercase does not count", 6},
 		{"INFOno colon here", 6},
-		{"the ERROR message is", 6},   // not at start
-		{"plain text line", 6},        // no prefix → info default
-		{"<no-num>not numeric", 6}, // malformed <> → keyword fallback → info
-		{"<>", 6},                  // empty digits → keyword fallback → info
+		{"the ERROR message is", 6}, // not at start
+		{"plain text line", 6},      // no prefix → info default
+		{"<no-num>not numeric", 6},  // malformed <> → keyword fallback → info
+		{"<>", 6},                   // empty digits → keyword fallback → info
 		{"", 6},
 	}
 	for _, c := range cases {

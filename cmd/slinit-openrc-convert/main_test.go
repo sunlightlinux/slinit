@@ -191,13 +191,13 @@ command=/usr/sbin/foo
 // alone (would need a full shell parser we don't have).
 func TestStripQuotes(t *testing.T) {
 	cases := map[string]string{
-		`unquoted`:     "unquoted",
-		`"double"`:     "double",
-		`'single'`:     "single",
+		`unquoted`:      "unquoted",
+		`"double"`:      "double",
+		`'single'`:      "single",
 		`"with spaces"`: "with spaces",
-		`  padded  `:   "padded",
-		`""`:           "",
-		`"unbalanced`:  `"unbalanced`,
+		`  padded  `:    "padded",
+		`""`:            "",
+		`"unbalanced`:   `"unbalanced`,
 	}
 	for in, want := range cases {
 		if got := stripQuotes(in); got != want {

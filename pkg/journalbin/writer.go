@@ -576,11 +576,11 @@ func (w *Writer) Append(evt *journal.Event) (uint64, error) {
 // hash + payload bytes exactly. Callers hold w.mu.
 //
 // On insert:
-//   1. Append a fresh DATA object at TailObjectOffset (hash-chain
-//      fields zeroed — next_hash gets patched by the previous tail
-//      when we link it into the bucket).
-//   2. Update the bucket: if empty, head=tail=new; else patch old
-//      tail's next_hash to point to new, then tail=new.
+//  1. Append a fresh DATA object at TailObjectOffset (hash-chain
+//     fields zeroed — next_hash gets patched by the previous tail
+//     when we link it into the bucket).
+//  2. Update the bucket: if empty, head=tail=new; else patch old
+//     tail's next_hash to point to new, then tail=new.
 //
 // Returns (offset, hash).
 func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) {

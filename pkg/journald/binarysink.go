@@ -21,14 +21,14 @@ import (
 // pkg/journalbin.compress-related design. Adding gzip on rotate is a
 // follow-up mirroring pkg/journald.CompressingRotationHook.
 type BinarySink struct {
-	dir        string
-	fsyncEvery int
-	maxSize    int64
-	maxAge     time.Duration
-	fssKey     *journalbin.FSSKey
-	tagEvery   int
-	bootID     string
-	machineID  string
+	dir         string
+	fsyncEvery  int
+	maxSize     int64
+	maxAge      time.Duration
+	fssKey      *journalbin.FSSKey
+	tagEvery    int
+	bootID      string
+	machineID   string
 	rotatedHook func(rotatedPath, currentPath string)
 
 	mu       sync.Mutex
@@ -45,10 +45,10 @@ type BinarySink struct {
 // struct so adding new knobs (compression, custom rotation trigger)
 // doesn't churn every callsite.
 type BinarySinkOptions struct {
-	Dir         string
-	FsyncEvery  int
-	MaxSize     int64
-	MaxAge      time.Duration
+	Dir        string
+	FsyncEvery int
+	MaxSize    int64
+	MaxAge     time.Duration
 	// FSSKey enables sealing when non-nil. Loaded from the operator's
 	// journal-key file (see cmd/slinit-journald and
 	// pkg/journalbin.NewFSSKey).

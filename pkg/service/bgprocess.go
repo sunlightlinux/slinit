@@ -143,14 +143,14 @@ func NewBGProcessService(set *ServiceSet, name string) *BGProcessService {
 
 // Setters
 
-func (s *BGProcessService) SetCommand(cmd []string)         { s.command = cmd }
-func (s *BGProcessService) SetArgv0(a string)               { s.argv0 = a }
-func (s *BGProcessService) SetStopCommand(cmd []string)     { s.stopCommand = cmd }
-func (s *BGProcessService) SetWorkingDir(dir string)        { s.workingDir = dir }
-func (s *BGProcessService) SetEnvFile(path string)          { s.envFile = path }
-func (s *BGProcessService) SetPIDFile(path string)          { s.pidFile = path }
-func (s *BGProcessService) GetPIDFile() string              { return s.pidFile }
-func (s *BGProcessService) SetRunAs(uid, gid uint32)        { s.runAsUID = uid; s.runAsGID = gid }
+func (s *BGProcessService) SetCommand(cmd []string)     { s.command = cmd }
+func (s *BGProcessService) SetArgv0(a string)           { s.argv0 = a }
+func (s *BGProcessService) SetStopCommand(cmd []string) { s.stopCommand = cmd }
+func (s *BGProcessService) SetWorkingDir(dir string)    { s.workingDir = dir }
+func (s *BGProcessService) SetEnvFile(path string)      { s.envFile = path }
+func (s *BGProcessService) SetPIDFile(path string)      { s.pidFile = path }
+func (s *BGProcessService) GetPIDFile() string          { return s.pidFile }
+func (s *BGProcessService) SetRunAs(uid, gid uint32)    { s.runAsUID = uid; s.runAsGID = gid }
 func (s *BGProcessService) SetSupplementaryGroups(gids []uint32) {
 	s.supplementaryGIDs = gids
 }
@@ -169,13 +169,13 @@ func (s *BGProcessService) effectiveRunAsGID() uint32 {
 	}
 	return s.runAsGID
 }
-func (s *BGProcessService) SetStartTimeout(d time.Duration) { s.startTimeout = d }
-func (s *BGProcessService) SetStopTimeout(d time.Duration)  { s.stopTimeout = d }
+func (s *BGProcessService) SetStartTimeout(d time.Duration)    { s.startTimeout = d }
+func (s *BGProcessService) SetStopTimeout(d time.Duration)     { s.stopTimeout = d }
 func (s *BGProcessService) SetTimeoutAbortSec(d time.Duration) { s.timeoutAbortSec = d }
 func (s *BGProcessService) SetTimeoutStartFailureMode(m TimeoutFailureMode) {
 	s.timeoutStartFailureMode = m
 }
-func (s *BGProcessService) SetExitType(t ExitType) { s.exitType = t }
+func (s *BGProcessService) SetExitType(t ExitType)          { s.exitType = t }
 func (s *BGProcessService) SetRestartDelay(d time.Duration) { s.restartDelay = d }
 
 // SetRestartBackoff configures progressive (linear additive) restart backoff.

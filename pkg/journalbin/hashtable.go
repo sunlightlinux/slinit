@@ -21,13 +21,13 @@ const HashItemSize = 16
 // DATA object payload offsets (relative to the start of the DATA
 // object, i.e. include the 16-byte ObjectHeader).
 const (
-	dataHashOffset            = ObjectHeaderSize       // 16
-	dataNextHashOffset        = ObjectHeaderSize + 8   // 24
-	dataNextFieldOffset       = ObjectHeaderSize + 16  // 32
-	dataEntryOffsetOffset     = ObjectHeaderSize + 24  // 40
-	dataEntryArrayOffsetOff   = ObjectHeaderSize + 32  // 48
-	dataNEntriesOffset        = ObjectHeaderSize + 40  // 56
-	dataPayloadStartOff       = ObjectHeaderSize + 48  // 64
+	dataHashOffset          = ObjectHeaderSize      // 16
+	dataNextHashOffset      = ObjectHeaderSize + 8  // 24
+	dataNextFieldOffset     = ObjectHeaderSize + 16 // 32
+	dataEntryOffsetOffset   = ObjectHeaderSize + 24 // 40
+	dataEntryArrayOffsetOff = ObjectHeaderSize + 32 // 48
+	dataNEntriesOffset      = ObjectHeaderSize + 40 // 56
+	dataPayloadStartOff     = ObjectHeaderSize + 48 // 64
 )
 
 // dataFixedPart is the number of bytes in a DATA object before the

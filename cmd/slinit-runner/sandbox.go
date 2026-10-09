@@ -18,8 +18,8 @@ type sandboxSpec struct {
 	readWritePaths      []string
 	protectHome         string // "" | "yes" | "read-only" | "tmpfs"
 	inaccessiblePaths   []string
-	protectProc         string // "" | "noaccess" | "invisible" | "ptraceable"
-	procSubset          string // "" | "pid"
+	protectProc         string   // "" | "noaccess" | "invisible" | "ptraceable"
+	procSubset          string   // "" | "pid"
 	bindPaths           []string // "src:dst" entries, writable
 	bindROPaths         []string // "src:dst" entries, read-only
 	temporaryFilesystem []string // "path[:opts]" entries

@@ -111,26 +111,26 @@ const (
 	CmdRmDepV7 uint8 = 30
 
 	// slinit extensions (beyond dinit's range)
-	CmdBootTime          uint8 = 40
-	CmdDisableService    uint8 = 41
-	CmdQueryDependents   uint8 = 42
-	CmdPauseService      uint8 = 43
-	CmdContinueService   uint8 = 44
-	CmdOnceService       uint8 = 45
-	CmdQueryDependencies uint8 = 46
-	CmdQueryDescription  uint8 = 47 // query human-readable service description
-	CmdRunAction         uint8 = 48 // run an extra-command action
-	CmdListActions       uint8 = 49 // list available extra-command actions
-	CmdScheduleShutdown  uint8 = 35 // schedule a delayed shutdown (type + delay_secs)
-	CmdCancelShutdown    uint8 = 36 // cancel a pending scheduled shutdown
-	CmdQueryShutdown     uint8 = 37 // query pending shutdown status
-	CmdReloadAll         uint8 = 38 // rescan all loaded service descriptions from disk
-	CmdReloadSignal      uint8 = 39 // send the service's configured reload-signal to its main process
-	CmdResetEnv          uint8 = 50 // clear all runtime setenv mutations for a service
-	CmdQueryMetadata     uint8 = 51 // query author/version/usage metadata strings for a service
-	CmdActivateProfile   uint8 = 52 // runsvchdir analogue: swap the active profile
-	CmdQueryProfile      uint8 = 53 // report the currently active profile name
-	CmdListProfiles      uint8 = 54 // enumerate every profile tag declared by loaded services
+	CmdBootTime           uint8 = 40
+	CmdDisableService     uint8 = 41
+	CmdQueryDependents    uint8 = 42
+	CmdPauseService       uint8 = 43
+	CmdContinueService    uint8 = 44
+	CmdOnceService        uint8 = 45
+	CmdQueryDependencies  uint8 = 46
+	CmdQueryDescription   uint8 = 47 // query human-readable service description
+	CmdRunAction          uint8 = 48 // run an extra-command action
+	CmdListActions        uint8 = 49 // list available extra-command actions
+	CmdScheduleShutdown   uint8 = 35 // schedule a delayed shutdown (type + delay_secs)
+	CmdCancelShutdown     uint8 = 36 // cancel a pending scheduled shutdown
+	CmdQueryShutdown      uint8 = 37 // query pending shutdown status
+	CmdReloadAll          uint8 = 38 // rescan all loaded service descriptions from disk
+	CmdReloadSignal       uint8 = 39 // send the service's configured reload-signal to its main process
+	CmdResetEnv           uint8 = 50 // clear all runtime setenv mutations for a service
+	CmdQueryMetadata      uint8 = 51 // query author/version/usage metadata strings for a service
+	CmdActivateProfile    uint8 = 52 // runsvchdir analogue: swap the active profile
+	CmdQueryProfile       uint8 = 53 // report the currently active profile name
+	CmdListProfiles       uint8 = 54 // enumerate every profile tag declared by loaded services
 	CmdQueryBundleMembers uint8 = 55 // s6-rc analogue: names of a bundle's declared members
 	CmdWallNotice         uint8 = 56 // LSB shutdown -k: broadcast a wall message without scheduling
 	CmdResetFailed        uint8 = 57 // clear the startFailed flag on a specific service or all
@@ -145,7 +145,7 @@ const (
 	// with the V7 wait-for-stop semantic mirroring CmdEnableServiceV7 /
 	// CmdRmDepV7. Distinct from CmdRmDepV7 (30) which is dinit-compat
 	// but doesn't touch the on-disk waits-for.d symlink.
-	CmdDisableServiceV7  uint8 = 62
+	CmdDisableServiceV7 uint8 = 62
 	// Query the on-disk load directory for a specific service (returns
 	// the path where its description file lives). Used by
 	// slinitctl disable --dinit-compat to locate the waits-for.d
@@ -233,15 +233,15 @@ const (
 	// list-profiles / active-profile call. Renumbered above the
 	// push range (which is 100-102) so the two families never
 	// overlap again.
-	RplyProfile         uint8 = 110 // single length-prefixed string (active profile name; "" = none)
-	RplyProfileList     uint8 = 111 // uint16 count + [uint16 len + name]*
-	RplyActivateResult  uint8 = 112 // active profile name + 3 lists (stopped/started/kept) all length-prefixed
-	RplyBundleMembers   uint8 = 113 // uint16 count + [uint16 len + name]* (empty when not a bundle)
-	RplyManualRefused   uint8 = 114 // systemd-style refuse-manual-start / refuse-manual-stop rejection
-	RplyJournalEntry    uint8 = 115 // one JSONL-encoded Event; multiple per JournalQuery/Subscribe reply
-	RplyJournalDone     uint8 = 116 // terminates a JournalQuery reply stream
-	RplyJournalErr      uint8 = 117 // JournalQuery/Subscribe rejected (bad JSON filter, buffer unset, etc.)
-	RplyServiceShow     uint8 = 118 // CmdServiceShow: UTF-8 body of `Key=Value\n` lines.
+	RplyProfile        uint8 = 110 // single length-prefixed string (active profile name; "" = none)
+	RplyProfileList    uint8 = 111 // uint16 count + [uint16 len + name]*
+	RplyActivateResult uint8 = 112 // active profile name + 3 lists (stopped/started/kept) all length-prefixed
+	RplyBundleMembers  uint8 = 113 // uint16 count + [uint16 len + name]* (empty when not a bundle)
+	RplyManualRefused  uint8 = 114 // systemd-style refuse-manual-start / refuse-manual-stop rejection
+	RplyJournalEntry   uint8 = 115 // one JSONL-encoded Event; multiple per JournalQuery/Subscribe reply
+	RplyJournalDone    uint8 = 116 // terminates a JournalQuery reply stream
+	RplyJournalErr     uint8 = 117 // JournalQuery/Subscribe rejected (bad JSON filter, buffer unset, etc.)
+	RplyServiceShow    uint8 = 118 // CmdServiceShow: UTF-8 body of `Key=Value\n` lines.
 	// RplyStartAllResult: started(2) + skipped(2), LE. No failure count:
 	// StartService is fire-and-forget and a start can fail long after the
 	// sweep returns, so a synchronous figure would always read zero.

@@ -58,9 +58,9 @@ func TestParsePriorityName(t *testing.T) {
 
 func TestStripSyslogPriority(t *testing.T) {
 	cases := []struct {
-		in       string
-		wantPri  Priority
-		wantMsg  string
+		in      string
+		wantPri Priority
+		wantMsg string
 	}{
 		// Well-formed severities.
 		{"<0>emergency", PriorityEmergency, "emergency"},

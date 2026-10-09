@@ -15,11 +15,11 @@ import (
 // (Size - ObjectHeaderSize - 8) / 8.
 
 const (
-	entryArrayFixedPart      = ObjectHeaderSize + 8 // header + next_offset
-	entryArrayInitialCap     = 4
-	entryArrayGrowthFactor   = 2
-	entryArrayMaxCap         = 4096
-	entryArrayItemStride     = 8
+	entryArrayFixedPart    = ObjectHeaderSize + 8 // header + next_offset
+	entryArrayInitialCap   = 4
+	entryArrayGrowthFactor = 2
+	entryArrayMaxCap       = 4096
+	entryArrayItemStride   = 8
 )
 
 // maxEntryArrayObjectSize is the largest on-disk ENTRY_ARRAY object a

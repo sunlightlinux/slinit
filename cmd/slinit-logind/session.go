@@ -7,7 +7,9 @@
 // pam_close_session invokes ReleaseSession by id.
 //
 // Cgroup allocation follows systemd's naming:
-//   /sys/fs/cgroup/user.slice/user-<uid>.slice/session-<id>.scope
+//
+//	/sys/fs/cgroup/user.slice/user-<uid>.slice/session-<id>.scope
+//
 // The leader PID is written into that scope's cgroup.procs so every
 // child process the shell forks inherits the scope for accounting
 // and kill-tree semantics.
@@ -47,24 +49,24 @@ type Property struct {
 // Session tuple — carries the extra metadata operator queries and
 // per-object interfaces would need.
 type SessionRecord struct {
-	ID         string `json:"id"`
-	UserID     uint32 `json:"user_id"`
-	UserName   string `json:"user_name"`
-	LeaderPID  uint32 `json:"leader_pid"`
-	SeatID     string `json:"seat_id"`
-	VTNr       uint32 `json:"vtnr"`
-	TTY        string `json:"tty"`
-	Display    string `json:"display"`
-	Remote     bool   `json:"remote"`
-	RemoteHost string `json:"remote_host"`
-	RemoteUser string `json:"remote_user"`
-	Service    string `json:"service"`
-	Type       string `json:"type"`
-	Class      string `json:"class"`
-	Desktop    string `json:"desktop"`
-	Scope      string `json:"scope"`
+	ID          string `json:"id"`
+	UserID      uint32 `json:"user_id"`
+	UserName    string `json:"user_name"`
+	LeaderPID   uint32 `json:"leader_pid"`
+	SeatID      string `json:"seat_id"`
+	VTNr        uint32 `json:"vtnr"`
+	TTY         string `json:"tty"`
+	Display     string `json:"display"`
+	Remote      bool   `json:"remote"`
+	RemoteHost  string `json:"remote_host"`
+	RemoteUser  string `json:"remote_user"`
+	Service     string `json:"service"`
+	Type        string `json:"type"`
+	Class       string `json:"class"`
+	Desktop     string `json:"desktop"`
+	Scope       string `json:"scope"`
 	RuntimePath string `json:"runtime_path"`
-	CreatedAt  string `json:"created_at"`
+	CreatedAt   string `json:"created_at"`
 }
 
 // UserRecord is /run/slinit-logind/users/<uid>.json.
@@ -819,6 +821,7 @@ func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
 	}
 	return activateSession(rec)
 }
+
 // LockSession / UnlockSession emit the Lock / Unlock signal on the
 // session's object. The signal is the whole point of these methods —
 // they don't lock anything themselves, they tell whoever owns the

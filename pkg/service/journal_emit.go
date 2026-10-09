@@ -36,7 +36,6 @@ func emitJournalLogLine(serviceName string, lineLevel int, matchLine []byte, ser
 	journal.Emit(evt)
 }
 
-
 // emitJournalStateEvent publishes a state-transition record to the
 // journal pipeline. Called from notifyListeners so every legitimate
 // state change surfaces in `slinit-journalctl -u <svc>` output even

@@ -813,9 +813,9 @@ func TestParseCursorRoundtrip(t *testing.T) {
 func TestParseCursorErrors(t *testing.T) {
 	cases := []string{
 		"",
-		"s=42",           // missing b=
-		"b=abc",          // missing s=
-		"s=NaN;b=abc",    // bad seq
+		"s=42",            // missing b=
+		"b=abc",           // missing s=
+		"s=NaN;b=abc",     // bad seq
 		"garbage;s=1;b=x", // unknown component
 	}
 	for _, c := range cases {
@@ -851,9 +851,9 @@ func TestParseArgsCursorFlags(t *testing.T) {
 
 func TestParseArgsBootShortForm(t *testing.T) {
 	cases := []struct {
-		name    string
-		args    []string
-		wantID  string
+		name   string
+		args   []string
+		wantID string
 	}{
 		{"-b alone", []string{"-b"}, ""},
 		{"-b 0 (current)", []string{"-b", "0"}, "0"},
@@ -1312,15 +1312,15 @@ func TestParseSizeArg(t *testing.T) {
 // rejected.
 func TestParseDurationArg(t *testing.T) {
 	cases := map[string]time.Duration{
-		"5s":     5 * time.Second,
-		"30m":    30 * time.Minute,
-		"2h":     2 * time.Hour,
-		"1d":     24 * time.Hour,
-		"2w":     14 * 24 * time.Hour,
-		"6M":     6 * 30 * 24 * time.Hour,
-		"1y":     365 * 24 * time.Hour,
-		"1h30m":  time.Hour + 30*time.Minute, // Go-native
-		"250ms":  250 * time.Millisecond,     // Go-native
+		"5s":    5 * time.Second,
+		"30m":   30 * time.Minute,
+		"2h":    2 * time.Hour,
+		"1d":    24 * time.Hour,
+		"2w":    14 * 24 * time.Hour,
+		"6M":    6 * 30 * 24 * time.Hour,
+		"1y":    365 * 24 * time.Hour,
+		"1h30m": time.Hour + 30*time.Minute, // Go-native
+		"250ms": 250 * time.Millisecond,     // Go-native
 	}
 	for in, want := range cases {
 		got, err := parseDurationArg(in)
@@ -1817,10 +1817,10 @@ func TestJSONSSEFraming(t *testing.T) {
 // against timestamp-source mixing (e.Ts vs e.Mts).
 func TestMonotonicFormat(t *testing.T) {
 	e := &journal.Event{
-		Ts:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
-		Mts:       5_123_456_000, // 5.123456 s since boot
-		Msg:       "mono-test",
-		Unit:      "svc",
+		Ts:               time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano(),
+		Mts:              5_123_456_000, // 5.123456 s since boot
+		Msg:              "mono-test",
+		Unit:             "svc",
 		SyslogIdentifier: "svc",
 	}
 	var buf bytes.Buffer

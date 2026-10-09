@@ -48,12 +48,12 @@ const (
 	PredEnvironment        // Environment= — daemon env KEY=VALUE
 	// Bucket A2: mid-complexity predicates. Each reads a specific
 	// sysfs/procfs/etc source and interprets a small format.
-	PredFileIsExecutable     // FileIsExecutable= — regular file with any exec bit set
-	PredPathIsSymbolicLink   // PathIsSymbolicLink= — lstat + S_ISLNK
-	PredPathIsReadWrite      // PathIsReadWrite= — statfs, MS_RDONLY not set
-	PredFirmware             // Firmware= — uefi | bios | device-tree | smbios | DMI keys
-	PredMachineTag           // MachineTag= — TAGS= line from /etc/machine-info
-	PredCredential           // Credential= — file present under $CREDENTIALS_DIRECTORY
+	PredFileIsExecutable       // FileIsExecutable= — regular file with any exec bit set
+	PredPathIsSymbolicLink     // PathIsSymbolicLink= — lstat + S_ISLNK
+	PredPathIsReadWrite        // PathIsReadWrite= — statfs, MS_RDONLY not set
+	PredFirmware               // Firmware= — uefi | bios | device-tree | smbios | DMI keys
+	PredMachineTag             // MachineTag= — TAGS= line from /etc/machine-info
+	PredCredential             // Credential= — file present under $CREDENTIALS_DIRECTORY
 	PredControlGroupController // ControlGroupController= — cgroup v2 controller enabled
 	// Bucket A3: PSI-based instantaneous conditions. Sibling of the
 	// v261 pressure watches — those subscribe to threshold events at

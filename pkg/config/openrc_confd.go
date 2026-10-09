@@ -21,9 +21,9 @@ import (
 // ship the files elsewhere (or tests that stage them in temp dirs)
 // can still exercise the code path.
 var (
-	openrcRCConf     = "/etc/rc.conf"
-	openrcConfDDir   = "/etc/conf.d"
-	openrcShellPath  = "/bin/sh"
+	openrcRCConf    = "/etc/rc.conf"
+	openrcConfDDir  = "/etc/conf.d"
+	openrcShellPath = "/bin/sh"
 )
 
 // SetOpenRCPaths overrides the rc.conf path and the conf.d directory.
@@ -62,8 +62,11 @@ func SetOpenRCShell(shell string) {
 // Shell-quoting note: scriptPath and name flow from the filesystem, so
 // they're trusted to contain valid path characters. They're
 // single-quoted with any embedded single quotes escaped via the
-// standard `'\''` idiom to be defensive against surprise characters
-// (a service named "weird'one" is unlikely but we handle it cleanly).
+// standard close/escaped-quote/reopen idiom to be defensive against
+// surprise characters (a service named "weird'one" is unlikely but we
+// handle it cleanly):
+//
+//	'\''
 func wrapInitdWithConfD(scriptPath, name, action string) []string {
 	snippet := fmt.Sprintf(
 		"set -a; [ -r %s ] && . %s; [ -r %s/%s ] && . %s/%s; set +a; exec %s %s",
@@ -99,8 +102,11 @@ func wrapOpenRCScript(scriptPath, name, action string) []string {
 }
 
 // shellQuote produces a single-quoted POSIX-shell literal for s.
-// Embedded single quotes become '\'' which terminates the current
-// quoted run, emits a literal quote, then starts a new quoted run.
+// Embedded single quotes become the sequence below, which terminates
+// the current quoted run, emits a literal quote, then starts a new
+// quoted run:
+//
+//	'\''
 func shellQuote(s string) string {
 	// Hot path: no quotes inside → one pair of quotes around it.
 	if !containsRune(s, '\'') {

@@ -10,12 +10,14 @@ import (
 // constant; this test locks them in.
 //
 // Encoding recap (asm-generic/ioctl.h):
-//   _IOWR(type, nr, sz) = 3 << 30 | sz << 16 | type << 8 | nr
-//   _IOR (type, nr, sz) = 2 << 30 | sz << 16 | type << 8 | nr
+//
+//	_IOWR(type, nr, sz) = 3 << 30 | sz << 16 | type << 8 | nr
+//	_IOR (type, nr, sz) = 2 << 30 | sz << 16 | type << 8 | nr
 //
 // WATCHDOG_IOCTL_BASE = 'W' = 0x57. sizeof(int) = 4.
-//   WDIOC_SETTIMEOUT = _IOWR(0x57, 6, int) = 0xC0045706
-//   WDIOC_KEEPALIVE  = _IOR (0x57, 5, int) = 0x80045705
+//
+//	WDIOC_SETTIMEOUT = _IOWR(0x57, 6, int) = 0xC0045706
+//	WDIOC_KEEPALIVE  = _IOR (0x57, 5, int) = 0x80045705
 func TestIoctlConstants(t *testing.T) {
 	cases := []struct {
 		name string
@@ -37,9 +39,9 @@ func TestIoctlConstants(t *testing.T) {
 // checked here so the +/-1 edge cases don't rot silently.
 func TestIntervalClamping(t *testing.T) {
 	cases := []struct {
-		name              string
-		timeoutSec, iv    int
-		wantInterval      int
+		name           string
+		timeoutSec, iv int
+		wantInterval   int
 	}{
 		{"default (interval=0)", 60, 0, 30},
 		{"explicit positive", 60, 20, 20},

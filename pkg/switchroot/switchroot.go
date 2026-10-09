@@ -5,14 +5,14 @@
 // root at /newroot) and then hands off to slinit-in-newroot by
 // calling Do, which:
 //
-//   1. Stops all initramfs services cleanly.
-//   2. Kills any lingering processes (SIGTERM then SIGKILL).
-//   3. Moves /dev, /proc, /sys, /run into the new root via MS_MOVE.
-//   4. chdir(newroot), mount --move newroot / , chroot("."), chdir(/).
-//   5. If the old root was ramfs/tmpfs (initramfs), deletes its
-//      contents to free RAM before the exec.
-//   6. syscall.Exec(newinit, argv, environ) — PID 1 stays PID 1,
-//      the kernel keeps its init reference intact.
+//  1. Stops all initramfs services cleanly.
+//  2. Kills any lingering processes (SIGTERM then SIGKILL).
+//  3. Moves /dev, /proc, /sys, /run into the new root via MS_MOVE.
+//  4. chdir(newroot), mount --move newroot / , chroot("."), chdir(/).
+//  5. If the old root was ramfs/tmpfs (initramfs), deletes its
+//     contents to free RAM before the exec.
+//  6. syscall.Exec(newinit, argv, environ) — PID 1 stays PID 1,
+//     the kernel keeps its init reference intact.
 //
 // finit-parity (Finit `switch_root` in src/initramfs.c). Deliberate
 // divergences from finit:

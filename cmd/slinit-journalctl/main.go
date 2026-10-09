@@ -115,7 +115,7 @@ type options struct {
 	socketPath  string
 	systemMode  bool
 	userMode    bool
-	units       []string        // -u NAME (repeatable) — OR-set of units
+	units       []string         // -u NAME (repeatable) — OR-set of units
 	priority    journal.Priority // -p LEVEL — highest priority kept (0..7)
 	prioritySet bool             // sentinel distinguishing "not set" from "-p emerg"
 	since       int64            // --since — Unix nanoseconds; 0 = unbounded
@@ -159,10 +159,10 @@ type options struct {
 	userUnitFilters    []string // -U/--user-unit — user-scope unit filter
 
 	// Introspection sub-commands (short-circuit before running a query).
-	fieldName    string // -F/--field FIELD — list unique values for FIELD
-	fieldsList   bool   // --fields — list all known field names
-	headerDump   bool   // --header — dump journal file headers (--file mode)
-	diskUsage    bool   // --disk-usage — total bytes across on-disk journals
+	fieldName  string // -F/--field FIELD — list unique values for FIELD
+	fieldsList bool   // --fields — list all known field names
+	headerDump bool   // --header — dump journal file headers (--file mode)
+	diskUsage  bool   // --disk-usage — total bytes across on-disk journals
 
 	// Cursor / source extensions.
 	afterCursor string // --after-cursor — same as -c but positions strictly after
@@ -182,11 +182,11 @@ type options struct {
 
 	// --- Group C: FSS ---
 
-	setupKeys    bool          // --setup-keys — mint fresh FSS key + print verification token
-	verifyKey    string        // --verify-key=KEY — inline verification token (alternative to --fss-key)
-	fssInterval  time.Duration // --interval=DUR — epoch duration for --setup-keys
-	force        bool          // --force — overwrite existing --setup-keys output
-	syncOnExit   bool          // --synchronize-on-exit — accepted for parity; we always fsync on Close
+	setupKeys   bool          // --setup-keys — mint fresh FSS key + print verification token
+	verifyKey   string        // --verify-key=KEY — inline verification token (alternative to --fss-key)
+	fssInterval time.Duration // --interval=DUR — epoch duration for --setup-keys
+	force       bool          // --force — overwrite existing --setup-keys output
+	syncOnExit  bool          // --synchronize-on-exit — accepted for parity; we always fsync on Close
 
 	// --- Sprint 2: volatile ⇄ persistent switching ---
 
@@ -213,10 +213,10 @@ type options struct {
 
 	// --- Group E: invocation ---
 
-	invocation           string // --invocation=UUID — filter events by SLINIT_INVOCATION_ID
-	latestInvocation     bool   // -I — resolve to the latest invocation ID for -u UNIT at run time
-	listInvocations      bool   // --list-invocations — list invocations for --unit
-	machineTarget        string // -M --machine=CONTAINER — accepted for parity, WARN-and-skip
+	invocation       string // --invocation=UUID — filter events by SLINIT_INVOCATION_ID
+	latestInvocation bool   // -I — resolve to the latest invocation ID for -u UNIT at run time
+	listInvocations  bool   // --list-invocations — list invocations for --unit
+	machineTarget    string // -M --machine=CONTAINER — accepted for parity, WARN-and-skip
 
 	showHelp    bool
 	showVersion bool
@@ -969,7 +969,7 @@ var facilityNames = map[string]int{
 	"syslog": 5, "lpr": 6, "news": 7, "uucp": 8, "cron": 9,
 	"authpriv": 10, "ftp": 11, "ntp": 12, "security": 13, "console": 14,
 	"solaris-cron": 15,
-	"local0": 16, "local1": 17, "local2": 18, "local3": 19,
+	"local0":       16, "local1": 17, "local2": 18, "local3": 19,
 	"local4": 20, "local5": 21, "local6": 22, "local7": 23,
 }
 
@@ -1260,11 +1260,12 @@ func resolveSocketPath(opts options) string {
 }
 
 // runQuery dispatches to one of three paths based on opts:
-//   --file=PATH   → runFromFile: parse a JSONL file, filter in-process
-//                   (works offline / on rotated journals / in containers
-//                   with no control socket)
-//   --follow      → runFollow: subscribe to live events via CmdJournalSubscribe
-//   default       → runOneShot: single CmdJournalQuery round-trip
+//
+//	--file=PATH   → runFromFile: parse a JSONL file, filter in-process
+//	                (works offline / on rotated journals / in containers
+//	                with no control socket)
+//	--follow      → runFollow: subscribe to live events via CmdJournalSubscribe
+//	default       → runOneShot: single CmdJournalQuery round-trip
 //
 // The file path never dials a socket, so --file + --follow is rejected
 // (inotify-based file follow arrives with Phase 3 / 2h cursor work).
@@ -2348,9 +2349,9 @@ func runListInvocationsShortCircuit(opts options) error {
 		return err
 	}
 	type inv struct {
-		id        string
-		first     int64
-		last      int64
+		id    string
+		first int64
+		last  int64
 	}
 	seen := map[string]*inv{}
 	var order []string
@@ -2651,11 +2652,11 @@ func aggregateBootsFromDir(dir string, byID map[string]*bootRange) error {
 //   - io.ErrUnexpectedEOF                 (JSONL line ends mid-record)
 //   - fmt.Errorf-wrapped "…: EOF"         (same, before %w plumbing)
 //   - "expected ENTRY_ARRAY … got …"      (chain pointer landed on
-//                                          a zero-filled or wrong-
-//                                          type object left by an
-//                                          uninitialised writer)
+//     a zero-filled or wrong-
+//     type object left by an
+//     uninitialised writer)
 //   - "object size … < header size …"     (zero-region masquerading
-//                                          as a header)
+//     as a header)
 //
 // The writer-side recovery paths (recoverEntryArrayTailLocked,
 // recoverFSSStateLocked) already treat these the same way; keeping
@@ -2810,11 +2811,12 @@ func isAllHex(s string) bool {
 
 // verifyBootID checks whether the requested boot spec matches the
 // current boot. Accepts:
-//   ""       → current boot (--boot / -b without arg)
-//   "0"      → current boot (systemd shorthand)
-//   <32 hex> → specific boot ID; must match current OR fall through
-//              to on-disk read via opts.directory when set by
-//              resolveBootSpec
+//
+//	""       → current boot (--boot / -b without arg)
+//	"0"      → current boot (systemd shorthand)
+//	<32 hex> → specific boot ID; must match current OR fall through
+//	           to on-disk read via opts.directory when set by
+//	           resolveBootSpec
 func verifyBootID(conn net.Conn, want string) error {
 	if want == "" || want == "0" {
 		return nil
@@ -2843,6 +2845,7 @@ func verifyBootID(conn net.Conn, want string) error {
 // than a separate flag. Accepts:
 //   - anything that doesn't start with '-' (positive index or hex ID)
 //   - "-N" where N is all digits (relative boot index)
+//
 // Rejects other "-…" tokens which are always flags.
 func looksLikeBootSpec(s string) bool {
 	if s == "" {
@@ -3406,7 +3409,7 @@ type renderOpts struct {
 	noHostname      bool
 	truncateNewline bool
 	noFull          bool
-	outputFields    map[string]bool // nil = all fields; non-empty = keep only these
+	outputFields    map[string]bool  // nil = all fields; non-empty = keep only these
 	catalog         *catalog.Catalog // non-nil when -x/--catalog is on; augments short output
 }
 
@@ -3533,13 +3536,13 @@ func render(out io.Writer, f outputFormat, e *journal.Event, ro renderOpts) erro
 type timeFormat int
 
 const (
-	timeShort           timeFormat = iota // "Jan 02 15:04:05"
-	timeShortPrecise                      // "Jan 02 15:04:05.uuuuuu"
-	timeISO                               // RFC3339: "2026-09-03T22:53:17+02:00"
-	timeISOPrecise                        // RFC3339 + microseconds
-	timeFull                              // "Wed 2026-09-03 22:53:17 CEST"
-	timeMonotonic                         // "[    5.123456]" seconds since boot
-	timeUnix                              // "1234567890.123456"
+	timeShort        timeFormat = iota // "Jan 02 15:04:05"
+	timeShortPrecise                   // "Jan 02 15:04:05.uuuuuu"
+	timeISO                            // RFC3339: "2026-09-03T22:53:17+02:00"
+	timeISOPrecise                     // RFC3339 + microseconds
+	timeFull                           // "Wed 2026-09-03 22:53:17 CEST"
+	timeMonotonic                      // "[    5.123456]" seconds since boot
+	timeUnix                           // "1234567890.123456"
 )
 
 // formatTime turns a nanosecond Unix timestamp into the display string

@@ -11,9 +11,9 @@ import (
 // systemd-sysctl's semantics: non-zero only when at least one
 // non-ignored spec failed.
 type applyResult struct {
-	applied  int
-	ignored  int // errors swallowed because of `-` prefix
-	errors   []error
+	applied int
+	ignored int // errors swallowed because of `-` prefix
+	errors  []error
 }
 
 func (r *applyResult) String() string {

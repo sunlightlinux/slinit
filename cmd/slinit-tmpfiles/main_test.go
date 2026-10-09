@@ -8,10 +8,10 @@ import (
 
 func TestParseLineBasic(t *testing.T) {
 	for _, tc := range []struct {
-		in    string
-		kind  string
-		path  string
-		mode  uint32
+		in     string
+		kind   string
+		path   string
+		mode   uint32
 		hasArg bool
 	}{
 		{"f /run/foo 0644 - - -", "f", "/run/foo", 0644, false},

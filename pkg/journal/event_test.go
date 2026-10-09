@@ -48,12 +48,12 @@ func TestIsValidFieldName(t *testing.T) {
 		{"", false},           // empty
 		{"_TRANSPORT", false}, // underscore prefix reserved
 		{"_PID", false},
-		{"a", false},                                   // lowercase
-		{"Message", false},                             // mixed case
-		{"MESSAGE!", false},                            // punctuation
-		{"1FIRST", false},                              // starts with digit
+		{"a", false},        // lowercase
+		{"Message", false},  // mixed case
+		{"MESSAGE!", false}, // punctuation
+		{"1FIRST", false},   // starts with digit
 		{strings.Repeat("A", MaxFieldNameLen+1), false}, // too long
-		{strings.Repeat("A", MaxFieldNameLen), true},   // max length OK
+		{strings.Repeat("A", MaxFieldNameLen), true},    // max length OK
 	}
 	for _, c := range cases {
 		if got := IsValidFieldName(c.name); got != c.want {

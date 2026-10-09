@@ -47,14 +47,14 @@ const (
 type Source string
 
 const (
-	SourceDinit       Source = "dinit"        // dinit-wire-compat or lifted directly from dinit-service.5
-	SourceSystemd     Source = "systemd"      // parity with systemd [Service]/[Unit] directive semantics
-	SourceRunit       Source = "runit"        // runit / runsv / svlogd family
-	SourceS6          Source = "s6"           // s6 / s6-log / s6-rc family
-	SourceOpenRC      Source = "openrc"       // OpenRC init.d / conf.d / einfo family
-	SourceUpstart     Source = "upstart"      // Upstart-derived (normal-exit, reload-signal, .override, script sugar)
-	SourceFinit       Source = "finit"        // finit-derived (initctl switch_root / suspend)
-	SourceSlinit      Source = "slinit"       // slinit-native (no upstream analog)
+	SourceDinit   Source = "dinit"   // dinit-wire-compat or lifted directly from dinit-service.5
+	SourceSystemd Source = "systemd" // parity with systemd [Service]/[Unit] directive semantics
+	SourceRunit   Source = "runit"   // runit / runsv / svlogd family
+	SourceS6      Source = "s6"      // s6 / s6-log / s6-rc family
+	SourceOpenRC  Source = "openrc"  // OpenRC init.d / conf.d / einfo family
+	SourceUpstart Source = "upstart" // Upstart-derived (normal-exit, reload-signal, .override, script sugar)
+	SourceFinit   Source = "finit"   // finit-derived (initctl switch_root / suspend)
+	SourceSlinit  Source = "slinit"  // slinit-native (no upstream analog)
 )
 
 // TODOProvenance is the Notes text given to a discovered name that the
@@ -71,18 +71,18 @@ const TODOProvenance = "TODO: annotate provenance (auto-placeholder from discove
 type Category string
 
 const (
-	CatServiceConfig   Category = "service-config"   // service description keys (command, args, workdir, env)
-	CatLifecycle       Category = "lifecycle"        // restart, stop-timeout, ready-notification, activation
-	CatDependency      Category = "dependency"       // depends-on, waits-for, before/after, chain
-	CatLogging         Category = "logging"          // log-type, log-file, log-buffer, forwarders, journal
-	CatCgroup          Category = "cgroup"           // memory-max, cpu-quota, PSI pressure, freezer
-	CatSandbox         Category = "sandbox"          // seccomp, capabilities, no-new-privs, mount namespaces
-	CatEnv             Category = "env"              // env-file, setenv, exported vars (DINIT_SERVICE etc)
-	CatControlProto    Category = "control-protocol" // opcodes only
-	CatShutdown        Category = "shutdown"         // reboot, poweroff, softreboot, kexec, wall notices
-	CatObservability   Category = "observability"    // slinitctl status/list/graph, journal query
-	CatSocket          Category = "socket-activation" // sd-socket, systemd sockets, listen-*
-	CatOpenRCCompat    Category = "openrc-compat"    // rc-service / rc-update / rc-status / einfo / conf.d
+	CatServiceConfig Category = "service-config"    // service description keys (command, args, workdir, env)
+	CatLifecycle     Category = "lifecycle"         // restart, stop-timeout, ready-notification, activation
+	CatDependency    Category = "dependency"        // depends-on, waits-for, before/after, chain
+	CatLogging       Category = "logging"           // log-type, log-file, log-buffer, forwarders, journal
+	CatCgroup        Category = "cgroup"            // memory-max, cpu-quota, PSI pressure, freezer
+	CatSandbox       Category = "sandbox"           // seccomp, capabilities, no-new-privs, mount namespaces
+	CatEnv           Category = "env"               // env-file, setenv, exported vars (DINIT_SERVICE etc)
+	CatControlProto  Category = "control-protocol"  // opcodes only
+	CatShutdown      Category = "shutdown"          // reboot, poweroff, softreboot, kexec, wall notices
+	CatObservability Category = "observability"     // slinitctl status/list/graph, journal query
+	CatSocket        Category = "socket-activation" // sd-socket, systemd sockets, listen-*
+	CatOpenRCCompat  Category = "openrc-compat"     // rc-service / rc-update / rc-status / einfo / conf.d
 )
 
 // Feature is one row in the annotated feature surface. All strings

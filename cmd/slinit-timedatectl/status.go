@@ -22,17 +22,17 @@ import (
 )
 
 type statusFields struct {
-	Timezone              string    `json:"Timezone,omitempty"`
-	LocalTime             time.Time `json:"LocalTime,omitempty"`
-	UniversalTime         time.Time `json:"UniversalTime,omitempty"`
-	RTCTime               time.Time `json:"RTCTime,omitempty"`
-	RTCTimeValid          bool      `json:"-"`
-	RTCInLocalTZ          bool      `json:"RTCInLocalTZ"`
-	NTP                   string    `json:"NTP,omitempty"`
-	NTPService            string    `json:"NTPService,omitempty"`
-	NTPServiceRunning     bool      `json:"NTPSynchronized"`
-	CanNTP                bool      `json:"CanNTP"`
-	SystemClockSynchronized bool    `json:"SystemClockSynchronized"`
+	Timezone                string    `json:"Timezone,omitempty"`
+	LocalTime               time.Time `json:"LocalTime,omitempty"`
+	UniversalTime           time.Time `json:"UniversalTime,omitempty"`
+	RTCTime                 time.Time `json:"RTCTime,omitempty"`
+	RTCTimeValid            bool      `json:"-"`
+	RTCInLocalTZ            bool      `json:"RTCInLocalTZ"`
+	NTP                     string    `json:"NTP,omitempty"`
+	NTPService              string    `json:"NTPService,omitempty"`
+	NTPServiceRunning       bool      `json:"NTPSynchronized"`
+	CanNTP                  bool      `json:"CanNTP"`
+	SystemClockSynchronized bool      `json:"SystemClockSynchronized"`
 }
 
 func runStatus(out io.Writer, opts options, mode string) error {

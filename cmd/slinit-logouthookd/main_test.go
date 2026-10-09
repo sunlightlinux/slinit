@@ -13,9 +13,9 @@ import (
 // Explicit table so a future change to the protocol lands loudly.
 func TestSplitIdentity(t *testing.T) {
 	cases := []struct {
-		in            string
-		id, tty       string
-		ok            bool
+		in      string
+		id, tty string
+		ok      bool
 	}{
 		{"1 pts/0\n", "1", "pts/0", true},
 		{"tty1 tty1\r\n", "tty1", "tty1", true},

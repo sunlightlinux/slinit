@@ -7,10 +7,10 @@ import (
 
 func TestParseLineHappyPath(t *testing.T) {
 	cases := []struct {
-		in       string
-		wantKey  string
-		wantVal  string
-		wantIgn  bool
+		in      string
+		wantKey string
+		wantVal string
+		wantIgn bool
 	}{
 		{"net.ipv4.ip_forward = 1", "net/ipv4/ip_forward", "1", false},
 		{"kernel.printk = 4 4 1 7", "kernel/printk", "4 4 1 7", false},
@@ -40,13 +40,13 @@ func TestParseLineHappyPath(t *testing.T) {
 
 func TestParseLineRejectsBad(t *testing.T) {
 	bad := []string{
-		"",               // empty
-		"no equals",      // missing '='
-		"= 1",            // empty key
-		"- = 1",          // key is only the dash prefix
+		"",                     // empty
+		"no equals",            // missing '='
+		"= 1",                  // empty key
+		"- = 1",                // key is only the dash prefix
 		"net.*.forwarding = 1", // wildcard
-		"/net.ipv4 = 1",  // leading slash
-		"net..ipv4 = 1",  // consecutive dots produce '//' after normalization
+		"/net.ipv4 = 1",        // leading slash
+		"net..ipv4 = 1",        // consecutive dots produce '//' after normalization
 	}
 	for _, in := range bad {
 		if _, err := parseLine(in); err == nil {

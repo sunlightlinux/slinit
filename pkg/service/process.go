@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	defaultStopTimeout        = 10 * time.Second
-	defaultStartTimeout       = 60 * time.Second
-	defaultRestartDelay       = 200 * time.Millisecond
-	defaultRestartInterval    = 10 * time.Second
-	defaultMaxRestarts        = 3
-	defaultFinishTimeout      = 5 * time.Second
+	defaultStopTimeout     = 10 * time.Second
+	defaultStartTimeout    = 60 * time.Second
+	defaultRestartDelay    = 200 * time.Millisecond
+	defaultRestartInterval = 10 * time.Second
+	defaultMaxRestarts     = 3
+	defaultFinishTimeout   = 5 * time.Second
 	// 100ms is short enough that sockets binding in microseconds don't
 	// pay a visible boot-time cost, and long enough that a slower
 	// readiness (systemd unit, real database open) doesn't turn into
@@ -58,12 +58,12 @@ type ProcessService struct {
 	// so it wins conflicts. Failure aborts the start (systemd
 	// EnvironmentGenerator semantics; non-zero exit = fail).
 	envGenerator string
-	chroot             string // chroot before exec
-	lockFile           string // exclusive flock path
-	newSession         bool   // setsid() before exec
-	closeStdin         bool   // close fd 0
-	closeStdout        bool   // close fd 1
-	closeStderr        bool   // close fd 2
+	chroot       string // chroot before exec
+	lockFile     string // exclusive flock path
+	newSession   bool   // setsid() before exec
+	closeStdin   bool   // close fd 0
+	closeStdout  bool   // close fd 1
+	closeStderr  bool   // close fd 2
 
 	// Credentials
 	runAsUID          uint32
@@ -167,8 +167,8 @@ type ProcessService struct {
 	paused           bool // true when service is SIGSTOP'd (pause/continue)
 
 	// Socket activation
-	socketFD         *os.File      // primary listening socket (fd 3, nil if no socket-listen)
-	socketFDs        []*os.File    // additional sockets (fd 4, 5, ... for multiple socket-listen)
+	socketFD       *os.File   // primary listening socket (fd 3, nil if no socket-listen)
+	socketFDs      []*os.File // additional sockets (fd 4, 5, ... for multiple socket-listen)
 	socketOnDemand bool       // launch the process on the first client (socket-activation = on-demand)
 	demandWake     *os.File   // write end of the watcher's wake pipe; closing it disarms
 	demandGen      uint64     // bumped on every arm/disarm; a stale watcher's activation is a no-op
@@ -204,11 +204,11 @@ type ProcessService struct {
 	logMinFiles   int // svlogd Nmin: floor for ENOSPC drain
 	logRotateTime time.Duration
 	logProcessor  []string
-	logIncludes          []string
-	logExcludes          []string
+	logIncludes   []string
+	logExcludes   []string
 	// s6-log-style regex selection chain. Populated by SetLogSelect;
 	// mutually exclusive with the include/exclude pair at load time.
-	logSelect []string
+	logSelect            []string
 	logRateLimitInterval time.Duration
 	logRateLimitBurst    int
 	logLevelMax          int
@@ -506,6 +506,7 @@ func (s *ProcessService) killsToGroup() bool {
 //     timeoutAbortSec is set — legacy path preserved).
 //   - abort: SIGABRT immediately (skip the timeoutAbortSec branch).
 //   - kill: SIGKILL immediately, bypass any SIGABRT phase.
+//
 // The escalation SIGKILL after abort is still finalKillSignal()
 // per FinalKillSignal=.
 func (s *ProcessService) stopTimeoutSignal() (syscall.Signal, string) {

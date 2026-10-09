@@ -462,12 +462,12 @@ type ExecParams struct {
 	// (master-side stop-time cleanup). Zero-value on each is "leave
 	// untouched"; the loader sets these only when the operator opted
 	// in.
-	CoredumpFilter    string
-	TimerSlackNsec    int64
-	MemoryKSM         bool
-	IgnoreSIGPIPE     bool
-	IgnoreSIGPIPESet  bool   // distinguishes explicit "no" from unset (default is yes)
-	Personality       string
+	CoredumpFilter   string
+	TimerSlackNsec   int64
+	MemoryKSM        bool
+	IgnoreSIGPIPE    bool
+	IgnoreSIGPIPESet bool // distinguishes explicit "no" from unset (default is yes)
+	Personality      string
 
 	// Cloneflags specifies Linux clone flags for namespace isolation.
 	// OR'd into SysProcAttr.Cloneflags (e.g. syscall.CLONE_NEWPID).

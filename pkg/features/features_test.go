@@ -49,7 +49,7 @@ func TestProvenanceRequiredFields(t *testing.T) {
 func TestLoadPopulatesRegistry(t *testing.T) {
 	reg, _ := Load(
 		[]string{"CmdQueryVersion", "CmdFindService"}, // discovered opcodes
-		[]string{"restart", "command"},                 // discovered directives
+		[]string{"restart", "command"},                // discovered directives
 	)
 	if reg == nil {
 		t.Fatal("Load returned nil registry")

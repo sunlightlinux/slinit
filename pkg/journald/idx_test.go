@@ -100,12 +100,12 @@ func TestIdxLowerBound(t *testing.T) {
 		q     int64
 		wantI int64
 	}{
-		{50_000, 0},   // before all
-		{100_000, 0},  // exact first
-		{150_000, 1},  // between 1 and 2
-		{300_000, 2},  // exact middle
-		{500_000, 4},  // exact last
-		{600_000, 5},  // past all → Len
+		{50_000, 0},  // before all
+		{100_000, 0}, // exact first
+		{150_000, 1}, // between 1 and 2
+		{300_000, 2}, // exact middle
+		{500_000, 4}, // exact last
+		{600_000, 5}, // past all → Len
 	}
 	for _, c := range cases {
 		got, err := idxR.LowerBound(c.q)
@@ -180,10 +180,10 @@ func TestPeekTsUsec(t *testing.T) {
 		want int64
 		ok   bool
 	}{
-		{`{"ts":123000,"msg":"hi"}`, 123, true},          // 123000 ns → 123 us
-		{`{"msg":"hi","ts":1000000}`, 1000, true},        // works mid-line
-		{`{"ts": 500000, "msg":"hi"}`, 500, true},        // whitespace after colon
-		{`{"ts":-2000,"msg":"neg"}`, -2, true},           // negative
+		{`{"ts":123000,"msg":"hi"}`, 123, true},   // 123000 ns → 123 us
+		{`{"msg":"hi","ts":1000000}`, 1000, true}, // works mid-line
+		{`{"ts": 500000, "msg":"hi"}`, 500, true}, // whitespace after colon
+		{`{"ts":-2000,"msg":"neg"}`, -2, true},    // negative
 		{`{"msg":"no ts here"}`, 0, false},
 		{`{"ts":"not a number"}`, 0, false},
 	}

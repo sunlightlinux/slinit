@@ -89,12 +89,12 @@ type ServiceDescription struct {
 	// is parsed as KEY=VALUE lines and merged into the service env.
 	// systemd EnvironmentGenerator sibling.
 	EnvGenerator string
-	Chroot               string // chroot directory before exec
-	LockFile             string // exclusive flock file path
-	NewSession           bool   // setsid() before exec
-	CloseStdin           bool   // close fd 0
-	CloseStdout          bool   // close fd 1
-	CloseStderr          bool   // close fd 2
+	Chroot       string // chroot directory before exec
+	LockFile     string // exclusive flock file path
+	NewSession   bool   // setsid() before exec
+	CloseStdin   bool   // close fd 0
+	CloseStdout  bool   // close fd 1
+	CloseStderr  bool   // close fd 2
 
 	// Namespace isolation (Linux clone flags)
 	NamespacePID    bool // CLONE_NEWPID
@@ -162,13 +162,13 @@ type ServiceDescription struct {
 	// success and suppress respawn even with restart=yes. Empty means
 	// "use the built-in defaults" (code 0 + admin signals like SIGTERM
 	// for restart=on-failure; nothing extra for restart=yes).
-	NormalExitCodes   []int
+	NormalExitCodes []int
 	// systemd RestartForceExitStatus: exit codes that force a restart
 	// independent of the `restart =` setting. Sibling of NormalExitCodes;
 	// a code in both wins the force interpretation.
 	RestartForceExitCodes []int
-	NormalExitSignals []syscall.Signal
-	Flags             service.ServiceFlags
+	NormalExitSignals     []syscall.Signal
+	Flags                 service.ServiceFlags
 
 	// Logging
 	LogType       service.LogType
@@ -182,14 +182,14 @@ type ServiceDescription struct {
 	// deliberate choice is never second-guessed by resolveLogDestinations.
 	// Unexported: a parser detail, not configuration.
 	logTypeExplicit bool
-	LogBufMax     int
-	LogMaxSize    int64         // max logfile size before rotation (bytes)
-	LogMaxFiles   int           // max number of rotated log files to keep
-	LogMinFiles   int           // svlogd Nmin: minimum rotated files to keep during ENOSPC recovery (0 = disabled)
-	LogRotateTime time.Duration // rotate logfile at this interval
-	LogProcessor  []string      // command to run on rotated logfile
-	LogInclude    []string      // include only lines matching these patterns
-	LogExclude    []string      // exclude lines matching these patterns
+	LogBufMax       int
+	LogMaxSize      int64         // max logfile size before rotation (bytes)
+	LogMaxFiles     int           // max number of rotated log files to keep
+	LogMinFiles     int           // svlogd Nmin: minimum rotated files to keep during ENOSPC recovery (0 = disabled)
+	LogRotateTime   time.Duration // rotate logfile at this interval
+	LogProcessor    []string      // command to run on rotated logfile
+	LogInclude      []string      // include only lines matching these patterns
+	LogExclude      []string      // exclude lines matching these patterns
 	// s6-log-style regex selection chain. Each token is either `+regex`
 	// (include if matches) or `-regex` (exclude if matches); `+*`/`-*`
 	// match every line. Tokens are evaluated in order per line and the
@@ -249,16 +249,16 @@ type ServiceDescription struct {
 	// independent of LogLevelMax: a line can appear in both, only in
 	// the alert channel, or only in the main file depending on the
 	// two thresholds. -1 disables the alert channel.
-	AlertFile  string
-	AlertLevel int
-	OutputLogger  []string      // OpenRC OUTPUT_LOGGER: pipe stdout to external command
-	ErrorLogger   []string      // OpenRC ERROR_LOGGER: pipe stderr to external command
+	AlertFile    string
+	AlertLevel   int
+	OutputLogger []string // OpenRC OUTPUT_LOGGER: pipe stdout to external command
+	ErrorLogger  []string // OpenRC ERROR_LOGGER: pipe stderr to external command
 
 	// Process management
-	StopTimeout       time.Duration
-	StartDelay        time.Duration
-	HookTimeout       time.Duration
-	StartTimeout      time.Duration
+	StopTimeout  time.Duration
+	StartDelay   time.Duration
+	HookTimeout  time.Duration
+	StartTimeout time.Duration
 	// systemd TimeoutAbortSec= — SIGABRT phase between SIGTERM and
 	// SIGKILL during a stop-timeout escalation. Zero disables.
 	TimeoutAbortSec time.Duration
@@ -268,17 +268,17 @@ type ServiceDescription struct {
 	// systemd RestartMode= — normal|direct.
 	RestartMode service.RestartMode
 	// systemd ExitType= — main|cgroup.
-	ExitType service.ExitType
-	RestartDelay      time.Duration
-	RestartDelayStep  time.Duration // additive backoff increment per failed restart
-	RestartDelayCap   time.Duration // max capped delay for progressive backoff
+	ExitType         service.ExitType
+	RestartDelay     time.Duration
+	RestartDelayStep time.Duration // additive backoff increment per failed restart
+	RestartDelayCap  time.Duration // max capped delay for progressive backoff
 	// systemd RestartRandomizedDelaySec: additive jitter added to each
 	// computed restart delay to spread reconnect storms.
 	RestartRandomizedDelay time.Duration
 	// systemd RestartMaxDelaySec: hard cap on the sum of restart-delay
 	// (+ backoff step) + restart-randomized-delay. Zero disables the
 	// cap (jitter can push arbitrarily large — matches systemd default).
-	RestartMaxDelay time.Duration
+	RestartMaxDelay   time.Duration
 	RestartInterval   time.Duration
 	RestartLimitCount int
 	// RestartLimitCountSet distinguishes "operator never wrote
@@ -287,13 +287,13 @@ type ServiceDescription struct {
 	// maxRestartCount > 0 gate), but the plain int field can't tell
 	// the two cases apart because Go zero-init also gives 0.
 	RestartLimitCountSet bool
-	TermSignal        syscall.Signal
-	ReloadSignal      syscall.Signal // upstart-inspired; 0 = unset
-	PIDFile           string
-	ReadyNotification string
-	ReadyNotifyFD     int           // parsed from pipefd:N (-1 if unset)
-	ReadyNotifyVar    string        // parsed from pipevar:VARNAME
-	WatchdogTimeout   time.Duration // 0 = disabled; piggybacks on ready-notification pipe
+	TermSignal           syscall.Signal
+	ReloadSignal         syscall.Signal // upstart-inspired; 0 = unset
+	PIDFile              string
+	ReadyNotification    string
+	ReadyNotifyFD        int           // parsed from pipefd:N (-1 if unset)
+	ReadyNotifyVar       string        // parsed from pipevar:VARNAME
+	WatchdogTimeout      time.Duration // 0 = disabled; piggybacks on ready-notification pipe
 
 	// Credentials
 	RunAs string
@@ -331,8 +331,8 @@ type ServiceDescription struct {
 	MemoryTHP string
 
 	// Socket activation
-	SocketPath       string   // primary socket path (first socket-listen)
-	SocketPaths      []string // all socket-listen paths (for multiple sockets)
+	SocketPath  string   // primary socket path (first socket-listen)
+	SocketPaths []string // all socket-listen paths (for multiple sockets)
 	// SocketReusePort sets SO_REUSEPORT on inet listeners before bind, so
 	// several services (typically instances of one template) can hold the
 	// same host:port and have the kernel spread connections between them.
@@ -403,8 +403,8 @@ type ServiceDescription struct {
 	StartOnPath        string
 	StartOnPathTrigger int
 	NoNewPrivs         bool
-	IOPrio             string          // "class:level" e.g. "be:4", "idle"
-	CgroupPath         string          // run-in-cgroup path
+	IOPrio             string // "class:level" e.g. "be:4", "idle"
+	CgroupPath         string // run-in-cgroup path
 	// Slice: systemd-style hierarchical parent (e.g. "system.slice").
 	// When set with no explicit CgroupPath, the effective cgroup is
 	// /sys/fs/cgroup/<Slice>/<name>. Cheap way to get cumulative limits
@@ -416,8 +416,8 @@ type ServiceDescription struct {
 	// controllers; empty with Delegate means whatever the parent can offer.
 	Delegate            bool
 	DelegateControllers []string
-	CgroupSettings     []CgroupSetting // cgroup v2 controller knobs
-	CPUAffinity        []uint          // CPU numbers to pin to
+	CgroupSettings      []CgroupSetting // cgroup v2 controller knobs
+	CPUAffinity         []uint          // CPU numbers to pin to
 
 	// Real-time scheduling
 	SchedPolicy         uint32 // unix.SCHED_* (0 = unset / SCHED_NORMAL)
@@ -446,9 +446,9 @@ type ServiceDescription struct {
 	RlimitAs     *[2]uint64
 
 	// Capabilities and securebits
-	Capabilities           string // comma/space-separated capability names
-	CapabilityBoundingSet  string // positive list kept in CapBnd; others PR_CAPBSET_DROP'd
-	Securebits             string // space-separated securebits flag names
+	Capabilities          string // comma/space-separated capability names
+	CapabilityBoundingSet string // positive list kept in CapBnd; others PR_CAPBSET_DROP'd
+	Securebits            string // space-separated securebits flag names
 
 	// UTMP/WTMP
 	InittabID   string // inittab-id for utmpx
@@ -513,8 +513,8 @@ type ServiceDescription struct {
 	// reaches STOPPED in a failure (start failed, non-zero exit, etc.)
 	// or clean-finish state respectively. RebootArgument is forwarded
 	// to reboot(2) for kexec-style transitions.
-	FailureAction    service.SystemAction
-	SuccessAction    service.SystemAction
+	FailureAction service.SystemAction
+	SuccessAction service.SystemAction
 	// StartLimitAction fires when restart-limit-count is exhausted, in
 	// addition to (or instead of) FailureAction. systemd names it
 	// StartLimitAction=; slinit uses start-limit-action=.
@@ -633,23 +633,23 @@ type ServiceDescription struct {
 	// Arg-checking hardening variants — shipped as Bucket A follow-on
 	// to Tier B. Each maps to a per-directive BPF fragment in
 	// pkg/seccomp/restrict_linux.go, installed by slinit-runner.
-	RestrictRealtime         bool
-	RestrictNamespaces       bool
-	RestrictSUIDSGID         bool
-	RestrictFileSystems      bool
-	RestrictAddressFamilies  []string // AF_* tokens or numeric; empty when directive absent
-	RestrictAFEnabled        bool     // distinguishes "unset" from "empty allow-list"
-	MemoryDenyWriteExecute   bool
+	RestrictRealtime        bool
+	RestrictNamespaces      bool
+	RestrictSUIDSGID        bool
+	RestrictFileSystems     bool
+	RestrictAddressFamilies []string // AF_* tokens or numeric; empty when directive absent
+	RestrictAFEnabled       bool     // distinguishes "unset" from "empty allow-list"
+	MemoryDenyWriteExecute  bool
 
 	// Bucket B — legacy-safe niches. See settings.go docstring for
 	// grouping rationale.
-	CoredumpFilter  string // hex mask or "" when unset; empty string means "don't touch /proc/self/coredump_filter"
-	TimerSlackNsec  int64  // 0 = don't touch (kernel default is 50µs, so zero is not a meaningful setting anyway)
-	MemoryKSM       bool
-	RemoveIPC       bool
-	IgnoreSIGPIPE   *bool  // nil = default (yes, matching systemd); pointer disambiguates unset from explicit no
-	Personality     string // "" = leave; "x86-64" / "x86" / native arch names
-	UtmpMode        string // "" (default init) | "init" | "login" | "user"
+	CoredumpFilter string // hex mask or "" when unset; empty string means "don't touch /proc/self/coredump_filter"
+	TimerSlackNsec int64  // 0 = don't touch (kernel default is 50µs, so zero is not a meaningful setting anyway)
+	MemoryKSM      bool
+	RemoveIPC      bool
+	IgnoreSIGPIPE  *bool  // nil = default (yes, matching systemd); pointer disambiguates unset from explicit no
+	Personality    string // "" = leave; "x86-64" / "x86" / native arch names
+	UtmpMode       string // "" (default init) | "init" | "login" | "user"
 
 	// Bucket C — v261/262 catch-up.
 	CpusetPartition           string // "" | "root" | "isolated" | "member"
@@ -672,35 +672,35 @@ type ServiceDescription struct {
 	// PassEnvironment filters which env vars from PID 1 are forwarded
 	// to the child. Unset = forward everything (dinit compat); a set
 	// list restricts to just those names. `+=` extends.
-	PassEnvironment    []string
-	PassEnvSet         bool
+	PassEnvironment []string
+	PassEnvSet      bool
 	// UnsetEnvironment names env vars to remove after all other env-
 	// building has run. `+=` extends.
-	UnsetEnvironment   []string
+	UnsetEnvironment []string
 	// ExecSearchPath overrides $PATH for the child. Empty = inherit.
-	ExecSearchPath     string
+	ExecSearchPath string
 	// StandardInput* bake stdin content: -text is a literal string,
 	// -data is base64-encoded bytes. Both feed the same runner stdin
 	// pipe; the parser stashes the raw bytes.
-	StandardInput      []byte
-	StandardInputSet   bool
+	StandardInput    []byte
+	StandardInputSet bool
 	// OpenFile is a v261+ knob: pre-open a path and pass the fd to
 	// the child via the same LISTEN_FDS/LISTEN_FDNAMES protocol used
 	// for socket-listen. Format: PATH[:FDNAME[:OPTIONS]] where
 	// OPTIONS is a comma-separated subset of {read-only, append,
 	// truncate, graceful}. Repeatable via `+=`.
-	OpenFiles          []OpenFileSpec
+	OpenFiles []OpenFileSpec
 	// ImportCredential globs credentials from $CREDENTIALS_DIRECTORY
 	// (usually /etc/credstore/*). Adds each match as an available
 	// credential name; complements load-credential/set-credential.
-	ImportCredentials  []string
+	ImportCredentials []string
 	// NotifyAccess = main|all|exec|none. See service.NotifyAccess.
-	NotifyAccess       service.NotifyAccess
-	NotifyAccessSet    bool
+	NotifyAccess    service.NotifyAccess
+	NotifyAccessSet bool
 	// GuessMainPID enables cgroup-scan fallback for Type=bgprocess
 	// services that don't provide a pid-file. Reads cgroup.procs and
 	// picks the first non-init pid.
-	GuessMainPID       bool
+	GuessMainPID bool
 
 	// SELinux domain transition applied at runner side via
 	// /proc/self/attr/exec (mirror of apparmor-switch's write path).
@@ -3969,7 +3969,9 @@ func isValidDBusName(s string) bool {
 }
 
 // parseOpenFile decodes systemd's OpenFile= grammar:
-//   PATH[:FDNAME[:OPTIONS]]
+//
+//	PATH[:FDNAME[:OPTIONS]]
+//
 // FDNAME is optional (defaults to the basename); OPTIONS is a comma-
 // separated list of flags the runner honours when opening the file.
 // The parser only splits on ':' — validation of unknown options is

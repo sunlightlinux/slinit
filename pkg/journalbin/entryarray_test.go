@@ -81,12 +81,12 @@ func TestSeekRealtime(t *testing.T) {
 		wantOK  bool
 		wantMsg string
 	}{
-		{500, true, "e1"},   // before all → first
-		{1000, true, "e1"},  // exact hit on first
-		{1500, true, "e2"},  // between 1 and 2 → second
-		{3000, true, "e3"},  // exact middle
-		{5000, true, "e5"},  // exact last
-		{5001, false, ""},   // past tail → not found
+		{500, true, "e1"},  // before all → first
+		{1000, true, "e1"}, // exact hit on first
+		{1500, true, "e2"}, // between 1 and 2 → second
+		{3000, true, "e3"}, // exact middle
+		{5000, true, "e5"}, // exact last
+		{5001, false, ""},  // past tail → not found
 	}
 	for _, c := range cases {
 		got, ok, err := r.SeekRealtime(c.target)
