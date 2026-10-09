@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -35,13 +36,20 @@ const (
 	outputRemount
 )
 
-type options struct {
-	mode        outputMode
-	fstypes     []string // --fstype: keep entries with a matching type
-	passnoOp    byte     // '=', '<', '>', or 0 for none / plain query
+// selector is one --fstype or --passno option, kept in command-line
+// order because OpenRC appends each one's matches to a single list.
+type selector struct {
+	fstypes     []string // --fstype TYPE[,TYPE...]
+	passnoOp    byte     // --passno OP N: '=', '<' or '>'
 	passnoValue int
-	files       []string // positional filter list
-	fstabPath   string
+	file        string // --passno MOUNTPOINT (plain form)
+}
+
+type options struct {
+	mode      outputMode
+	selectors []selector
+	files     []string // positional mountpoints
+	fstabPath string
 }
 
 func main() {
@@ -72,101 +80,88 @@ func main() {
 // run applies filters and executes the chosen output mode, mirroring
 // fstabinfo.c's post-getopt block.
 func run(entries []fstab.Entry, opts options) int {
-	// Filter chain: --fstype, --passno OP N, positional filter list.
-	// A positional list without prior filtering just names mountpoints
-	// to look up; combined with a filter, it narrows the earlier list.
-	var candidates []fstab.Entry
+	// Each --fstype / --passno OP N scans the whole fstab and appends its
+	// matches to one list, so several of them select the union (an entry
+	// matched twice is listed twice). A plain --passno MOUNTPOINT appends
+	// that name without counting as a filter.
+	var list []string
 	filtered := false
-
-	if len(opts.fstypes) > 0 {
-		filtered = true
-		for _, e := range entries {
-			for _, t := range opts.fstypes {
-				if e.VFSType == t {
-					candidates = append(candidates, e)
-					break
-				}
-			}
-		}
-	}
-	if opts.passnoOp != 0 {
-		src := entries
-		if filtered {
-			// --fstype ran: narrow its result, even when it is empty.
-			src = candidates
-			candidates = nil
-		}
-		for _, e := range src {
-			if e.File == "none" {
-				continue
-			}
-			p := e.PassNo
-			switch opts.passnoOp {
-			case '=':
-				if opts.passnoValue == p {
-					candidates = append(candidates, e)
-				}
-			case '<':
-				// C op: `i > p && p != 0` → "passno present and less than i".
-				if p != 0 && opts.passnoValue > p {
-					candidates = append(candidates, e)
-				}
-			case '>':
-				if p != 0 && opts.passnoValue < p {
-					candidates = append(candidates, e)
-				}
-			}
-		}
-		filtered = true
-	}
-
-	if len(opts.files) > 0 {
-		if filtered {
-			// Intersect the filter output with the positional list.
-			var kept []fstab.Entry
-			for _, e := range candidates {
-				for _, f := range opts.files {
-					if e.File == f {
-						kept = append(kept, e)
-						break
+	for _, s := range opts.selectors {
+		switch {
+		case s.fstypes != nil:
+			filtered = true
+			for _, t := range s.fstypes {
+				for _, e := range entries {
+					if e.VFSType == t {
+						list = append(list, e.File)
 					}
 				}
 			}
-			candidates = kept
-		} else {
-			// Positional list without a filter: look up each name.
-			for _, f := range opts.files {
-				if e := fstab.FindByFile(entries, f); e != nil {
-					candidates = append(candidates, *e)
+		case s.passnoOp != 0:
+			filtered = true
+			for _, e := range entries {
+				if e.File == "none" {
+					continue
+				}
+				p := e.PassNo
+				// C ops: `i == p`, `i > p && p != 0`, `i < p && p != 0`.
+				if (s.passnoOp == '=' && s.passnoValue == p) ||
+					(s.passnoOp == '<' && s.passnoValue > p && p != 0) ||
+					(s.passnoOp == '>' && s.passnoValue < p && p != 0) {
+					list = append(list, e.File)
 				}
 			}
+		default:
+			list = append(list, s.file)
+		}
+	}
+
+	if len(opts.files) > 0 {
+		if len(list) > 0 {
+			// Keep the listed names that are also positional arguments.
+			var kept []string
+			for _, f := range list {
+				if slices.Contains(opts.files, f) {
+					kept = append(kept, f)
+				}
+			}
+			list = kept
+		} else {
+			// Nothing selected (even by a filter that matched
+			// nothing): the positional names are the list.
+			list = opts.files
 		}
 	} else if !filtered {
-		if len(entries) == 0 {
+		for _, e := range entries {
+			list = append(list, e.File)
+		}
+		if len(list) == 0 {
 			fmt.Fprintln(os.Stderr, "empty fstab")
 			return exitFailure
 		}
-		candidates = entries
 	}
 
-	if len(candidates) == 0 {
+	if len(list) == 0 {
 		return exitFailure
 	}
 
 	// Suppress printing when EINFO_QUIET is truthy (OpenRC convention).
 	quiet := isTruthy(os.Getenv("EINFO_QUIET"))
-	result := 0
+	result := exitOK
 
-	for _, e := range candidates {
+	for _, f := range list {
+		// Like getmntfile(3): the first entry with this mountpoint.
+		ep := fstab.FindByFile(entries, f)
+		if ep == nil {
+			result = exitFailure
+			continue
+		}
+		e := *ep
 		switch opts.mode {
 		case outputMount:
-			if rc := doMount(e, false); rc != 0 {
-				result += rc
-			}
+			result += doMount(e, false)
 		case outputRemount:
-			if rc := doMount(e, true); rc != 0 {
-				result += rc
-			}
+			result += doMount(e, true)
 		}
 		if quiet {
 			continue
@@ -175,19 +170,18 @@ func run(entries []fstab.Entry, opts options) int {
 		case outputBlockDev:
 			fmt.Println(e.Spec)
 		case outputMountArgs:
-			fmt.Printf("-o %s -t %s %s %s\n", e.MntOps, e.VFSType, e.Spec, e.File)
+			fmt.Printf("-o %s -t %s %s %s\n", e.MntOps, e.VFSType, e.Spec, f)
 		case outputOptions:
 			fmt.Println(e.MntOps)
 		case outputFile:
-			fmt.Println(e.File)
+			fmt.Println(f)
 		case outputPassno:
 			fmt.Println(e.PassNo)
 		}
 	}
-	if result > 0 {
-		return exitFailure
-	}
-	return exitOK
+	// As in fstabinfo.c: mount(8) exit codes add up, and a name missing
+	// from fstab sets the status to 1.
+	return result
 }
 
 // doMount shells out to mount(8) to actually (re)mount an entry.

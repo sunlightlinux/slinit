@@ -73,8 +73,14 @@ verified with `git tag -v`.
     rate limiter. And a SIGHUP that arrived while it waited out a respawn
     delay made it exit like SIGTERM; with no daemon to forward to, it is
     now ignored.
-  - `slinit-fstabinfo --fstype X --passno N` filtered the whole fstab
-    when `X` matched nothing; an empty selection now stays empty (exit 1).
+  - `slinit-fstabinfo` now selects entries exactly as OpenRC's
+    fstabinfo does: each `--fstype` and `--passno OP N` scans the whole
+    fstab and adds its matches to one list (a union, in option order,
+    duplicates kept); positional mountpoints narrow that list, or stand
+    in for it when it is empty; a plain `--passno MOUNTPOINT` is a name,
+    not a filter; mount exit codes add up. It used to intersect the
+    filters, and with `--fstype` matching nothing it ran `--passno` over
+    the whole fstab.
   - `slinit-tmpfiles` `f` / `F` wrote nothing: the argument is now written
     (by `f` only when it creates the file), with the C-style escapes of
     tmpfiles.d(5); `-` still means no argument. `w` takes the same
