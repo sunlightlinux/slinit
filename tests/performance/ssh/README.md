@@ -120,7 +120,7 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `780-config-parse-error`       | Parse-error return latency (malformed svc file) |
 | `790-list-scaling-100`         | Provision 100 svcs → list at N=113 (10x scaling) |
 | `800-many-directive-svc`       | Load svc with 50 directives — parser stress |
-| `810-socket-activation-on-demand` | **SKIP** — semantics + netcat -q 0 both need pinning |
+| `810-socket-activation-on-demand` | connect → served latency of an on-demand socket-activated service (builds a small C client/server helper with `cc`; SKIP without one) |
 | `820-openrc-rc-service`        | `rc-service status <svc>` OpenRC-shim overhead |
 | `830-openrc-rc-status`         | `rc-status` overview shim |
 | `840-openrc-rc-update-show`    | `rc-update show` enable-state view |
