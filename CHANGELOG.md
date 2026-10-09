@@ -45,6 +45,12 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **slinit-check warned about every bundle without a `type`** — "no
+  command specified for process service". Its secondary checks re-parse
+  the file and saw the parser's default type, while the loader (and so
+  the daemon) makes such a bundle `internal`. They now judge the type
+  the loader settled on.
+
 - **vtty sockets of a user instance, and `attach` as root.** slinit
   always created vtty sockets in `/run/slinit`, which a user instance
   usually cannot write, while `slinitctl attach` looked in `~/.slinit`
