@@ -90,8 +90,14 @@ verified with `git tag -v`.
   - Both tools let `/run` override `/etc` for the same file name. The
     precedence is now systemd's: `/etc` > `/run` > `/usr/lib`. `--dirs`
     keeps its meaning (later directory wins).
-  - `slinit-mount` logs a warning for a unit with `after:`, which is still
-    not implemented, instead of ignoring it silently.
+  - `slinit-mount` implements `after:`: a unit that names slinit
+    services is set up only once all of them are STARTED, followed over
+    the control socket (`-p` / `--socket-path`, default the instance
+    slinit-mount runs under). It waits indefinitely, retrying if the
+    socket is unreachable; a service stopping later leaves the mount in
+    place; reload treats an `after:` change like any other; and the
+    daemon no longer exits when every unit is still waiting. It used to
+    parse `after:` and ignore it.
 
 - **`standard-input-text =` appended instead of replacing**, and with no
   separator: two `=` lines `a` and `b` gave the service `ab` on stdin.
