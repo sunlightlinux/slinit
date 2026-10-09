@@ -43,4 +43,3 @@ func parseIOSchedClass(name string) (int, bool) {
 	}
 	return 0, false
 }
-

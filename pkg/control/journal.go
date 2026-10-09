@@ -24,8 +24,8 @@ type JournalQueryRequest struct {
 	// is less urgent). Zero + PrioritySet=false means "no filter";
 	// PrioritySet=true is the sentinel that distinguishes "MinPriority=0
 	// = keep only emerg" from the default.
-	MinPriority  int  `json:"min_priority,omitempty"`
-	PrioritySet  bool `json:"prio_set,omitempty"`
+	MinPriority int  `json:"min_priority,omitempty"`
+	PrioritySet bool `json:"prio_set,omitempty"`
 
 	// Since / Until bound the wall-clock time range (Unix nanoseconds).
 	// Zero means unbounded on that side.

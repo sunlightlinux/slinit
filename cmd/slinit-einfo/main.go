@@ -41,16 +41,16 @@ type applet struct {
 // applets covers every OpenRC name we support. The zero-value fields
 // pick sensible defaults so entries stay short.
 var applets = map[string]applet{
-	"einfo":    {stream: os.Stdout, newline: true, level: einfo.LevelInfo},
-	"einfon":   {stream: os.Stdout, newline: false, level: einfo.LevelInfo},
-	"ewarn":    {stream: os.Stderr, newline: true, level: einfo.LevelWarn},
-	"ewarnn":   {stream: os.Stderr, newline: false, level: einfo.LevelWarn},
-	"eerror":   {stream: os.Stderr, newline: true, level: einfo.LevelError, failCode: 1},
-	"eerrorn":  {stream: os.Stderr, newline: false, level: einfo.LevelError, failCode: 1},
-	"veinfo":   {stream: os.Stdout, verbose: true, newline: true, level: einfo.LevelInfo},
-	"veinfon":  {stream: os.Stdout, verbose: true, newline: false, level: einfo.LevelInfo},
-	"vewarn":   {stream: os.Stderr, verbose: true, newline: true, level: einfo.LevelWarn},
-	"vewarnn":  {stream: os.Stderr, verbose: true, newline: false, level: einfo.LevelWarn},
+	"einfo":   {stream: os.Stdout, newline: true, level: einfo.LevelInfo},
+	"einfon":  {stream: os.Stdout, newline: false, level: einfo.LevelInfo},
+	"ewarn":   {stream: os.Stderr, newline: true, level: einfo.LevelWarn},
+	"ewarnn":  {stream: os.Stderr, newline: false, level: einfo.LevelWarn},
+	"eerror":  {stream: os.Stderr, newline: true, level: einfo.LevelError, failCode: 1},
+	"eerrorn": {stream: os.Stderr, newline: false, level: einfo.LevelError, failCode: 1},
+	"veinfo":  {stream: os.Stdout, verbose: true, newline: true, level: einfo.LevelInfo},
+	"veinfon": {stream: os.Stdout, verbose: true, newline: false, level: einfo.LevelInfo},
+	"vewarn":  {stream: os.Stderr, verbose: true, newline: true, level: einfo.LevelWarn},
+	"vewarnn": {stream: os.Stderr, verbose: true, newline: false, level: einfo.LevelWarn},
 }
 
 func main() {

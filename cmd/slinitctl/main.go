@@ -2250,7 +2250,10 @@ func wrapWithSleep(dur string, argv []string) []string {
 }
 
 // shellSingleQuote wraps s in POSIX-safe single quotes: any embedded
-// single quote is expanded to `'\''` (close, escaped-quote, reopen).
+// single quote is expanded to close, escaped-quote, reopen:
+//
+//	'\''
+//
 // Enough to safely embed arbitrary strings inside `sh -c 'blob'`.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, `'`, `'\''`) + "'"
@@ -2304,27 +2307,28 @@ func buildRunBody(svcType, description string, cmdParts []string, slice, niceVal
 
 // cmdRun spawns a transient one-shot service (systemd-run analogue).
 // Usage: slinitctl run [flags] -- COMMAND [ARGS...]
-//   flags:
-//     --unit NAME              transient unit name (default: run-<rand>)
-//     --description STR
-//     --type process|scripted  (default: process)
-//     --slice NAME
-//     --nice N
-//     --run-as USER[:GROUP]    drop privileges before exec (per the
-//                              existing run-as directive)
-//     --on-active DURATION     one-shot timer form: sleep DURATION
-//                              before exec'ing the target. Wraps the
-//                              argv in /bin/sh -c 'sleep N; exec …'
-//                              (systemd-run --on-active).
-//     --setenv VAR=VAL         repeatable
-//     --property KEY=VAL       repeatable pass-through of any slinit
-//                              config directive (KEY is slinit-native
-//                              kebab-case, not systemd CamelCase)
-//     --wait                   block until STARTED (or STOPPED for
-//                              scripted); 60s cap
-//     --collect                block until STOPPED, then unload +
-//                              remove the transient description; no
-//                              cap (Ctrl-C is the escape hatch)
+//
+//	flags:
+//	  --unit NAME              transient unit name (default: run-<rand>)
+//	  --description STR
+//	  --type process|scripted  (default: process)
+//	  --slice NAME
+//	  --nice N
+//	  --run-as USER[:GROUP]    drop privileges before exec (per the
+//	                           existing run-as directive)
+//	  --on-active DURATION     one-shot timer form: sleep DURATION
+//	                           before exec'ing the target. Wraps the
+//	                           argv in /bin/sh -c 'sleep N; exec …'
+//	                           (systemd-run --on-active).
+//	  --setenv VAR=VAL         repeatable
+//	  --property KEY=VAL       repeatable pass-through of any slinit
+//	                           config directive (KEY is slinit-native
+//	                           kebab-case, not systemd CamelCase)
+//	  --wait                   block until STARTED (or STOPPED for
+//	                           scripted); 60s cap
+//	  --collect                block until STOPPED, then unload +
+//	                           remove the transient description; no
+//	                           cap (Ctrl-C is the escape hatch)
 //
 // Note on --user: use the global slinitctl `--user` / `-u` flag to
 // target the user service manager socket. `slinitctl --user run --`
@@ -4719,23 +4723,23 @@ func cmdUnpin(conn net.Conn, name string) error {
 // cmdDisable takes the target service name and (optional) explicit
 // "from" service, and routes to one of two wires:
 //
-//   dinitCompat=true (or --dinit-compat flag): emits the dinit-native
-//     wire — CmdRmDepV7 removes the runtime dep, then client-side
-//     symlink cleanup uses CmdQueryServiceLoadDir to find the
-//     from-service's on-disk dir and remove waits-for.d/<target>.
-//     Wire-compatible with real dinit daemons that don't know
-//     slinit's CmdDisableService opcode. Requires the client to be
-//     on the same machine as the daemon (or on a filesystem where
-//     the symlink is reachable) for the on-disk cleanup step;
-//     runtime removal succeeds either way and the on-disk artifact
-//     is orphaned with a warning otherwise.
+//	dinitCompat=true (or --dinit-compat flag): emits the dinit-native
+//	  wire — CmdRmDepV7 removes the runtime dep, then client-side
+//	  symlink cleanup uses CmdQueryServiceLoadDir to find the
+//	  from-service's on-disk dir and remove waits-for.d/<target>.
+//	  Wire-compatible with real dinit daemons that don't know
+//	  slinit's CmdDisableService opcode. Requires the client to be
+//	  on the same machine as the daemon (or on a filesystem where
+//	  the symlink is reachable) for the on-disk cleanup step;
+//	  runtime removal succeeds either way and the on-disk artifact
+//	  is orphaned with a warning otherwise.
 //
-//   dinitCompat=false (default): uses CmdDisableServiceV7 when
-//     peerCPVersion >= 7 (falling back to CmdDisableService for
-//     older peers). Slinit-native atomic path — server does rm-dep +
-//     symlink cleanup + StopService in one round-trip. Works
-//     remote. V7 reply carries the target's status so we can print
-//     the resulting state ("target now STOPPED").
+//	dinitCompat=false (default): uses CmdDisableServiceV7 when
+//	  peerCPVersion >= 7 (falling back to CmdDisableService for
+//	  older peers). Slinit-native atomic path — server does rm-dep +
+//	  symlink cleanup + StopService in one round-trip. Works
+//	  remote. V7 reply carries the target's status so we can print
+//	  the resulting state ("target now STOPPED").
 func cmdDisable(conn net.Conn, name string, from string, dinitCompat bool) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {

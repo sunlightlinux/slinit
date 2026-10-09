@@ -11,20 +11,20 @@
 // the service binary — VmLck on the exec'd task will be zero. The
 // runner therefore does two things:
 //
-//   1. Raise RLIMIT_MEMLOCK to RLIM_INFINITY — rlimits DO survive
-//      execve, so the exec'd service can now itself call
-//      mlockall(2)/mlock(2) without hitting EPERM if it wants
-//      pinned memory. This is what LimitMEMLOCK= gives you in
-//      systemd and what rc_ulimit -l covers in OpenRC.
-//   2. Call mlockall(2) on the runner's own address space for the
-//      brief pre-exec setup phase — cheap (~5 MB), lets an RT-adjacent
-//      operator reason about the setup window, but the state is
-//      released at execve regardless.
-//   3. Preload libslinit-mlock.so into the service, whose constructor
-//      makes the mlockall(2) call inside the service before main() —
-//      the only place a lock that outlives the exec can be taken. See
-//      mlock.go for what is checked so the preload cannot silently
-//      fail.
+//  1. Raise RLIMIT_MEMLOCK to RLIM_INFINITY — rlimits DO survive
+//     execve, so the exec'd service can now itself call
+//     mlockall(2)/mlock(2) without hitting EPERM if it wants
+//     pinned memory. This is what LimitMEMLOCK= gives you in
+//     systemd and what rc_ulimit -l covers in OpenRC.
+//  2. Call mlockall(2) on the runner's own address space for the
+//     brief pre-exec setup phase — cheap (~5 MB), lets an RT-adjacent
+//     operator reason about the setup window, but the state is
+//     released at execve regardless.
+//  3. Preload libslinit-mlock.so into the service, whose constructor
+//     makes the mlockall(2) call inside the service before main() —
+//     the only place a lock that outlives the exec can be taken. See
+//     mlock.go for what is checked so the preload cannot silently
+//     fail.
 //
 // Usage (always synthesised by slinit, never invoked by humans):
 //
@@ -275,12 +275,12 @@ func run() error {
 	// installed). Ignore-sigpipe writes the SIG_IGN handler which is
 	// inherited across execve.
 	if err := applyBucketB(bucketBSpec{
-		coredumpFilter:    *coredumpFilter,
-		timerSlackNsec:    *timerSlack,
-		memoryKSM:         *memoryKSM,
-		ignoreSigpipeYes:  *ignoreSigpipeYes,
-		ignoreSigpipeNo:   *ignoreSigpipeNo,
-		personality:       *personality,
+		coredumpFilter:   *coredumpFilter,
+		timerSlackNsec:   *timerSlack,
+		memoryKSM:        *memoryKSM,
+		ignoreSigpipeYes: *ignoreSigpipeYes,
+		ignoreSigpipeNo:  *ignoreSigpipeNo,
+		personality:      *personality,
 	}); err != nil {
 		return err
 	}

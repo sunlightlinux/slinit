@@ -570,6 +570,7 @@ func (s *sessionObject) SetIdleHint(idle bool) *dbus.Error {
 	// prop.Set landed already handles the change signal.
 	return nil
 }
+
 // SetLockedHint records that the session's own screen lock is engaged.
 // gnome-shell calls it on both edges of a lock. Storing it is what
 // makes `loginctl show-session -p LockedHint` tell the truth — it used

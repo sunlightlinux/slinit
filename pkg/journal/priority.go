@@ -59,9 +59,9 @@ func ParsePriorityName(s string) (Priority, error) {
 // Handles both:
 //   - "<3>message"      → severity 3 (err), payload "message"
 //   - "<27>message"     → 27 & 7 = 3 (err), payload "message" — the
-//                         upper bits are the syslog facility, which
-//                         we don't track since slinit's Unit field
-//                         already carries the equivalent context.
+//     upper bits are the syslog facility, which
+//     we don't track since slinit's Unit field
+//     already carries the equivalent context.
 //
 // Malformed prefixes (missing digits, missing `>`, digits out of
 // range) are left in place and the whole line becomes payload.

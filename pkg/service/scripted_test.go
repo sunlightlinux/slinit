@@ -80,13 +80,13 @@ func TestScriptedServiceExecFail(t *testing.T) {
 // moves the cancel into a conditional is caught.
 func TestScriptedServiceNoStrayTimers(t *testing.T) {
 	cases := []struct {
-		name        string
-		startCmd    []string
-		stopCmd     []string
-		alsoStop    bool
-		startTO     time.Duration
-		stopTO      time.Duration
-		wantState   ServiceState
+		name      string
+		startCmd  []string
+		stopCmd   []string
+		alsoStop  bool
+		startTO   time.Duration
+		stopTO    time.Duration
+		wantState ServiceState
 	}{
 		{
 			name:      "successful start + stop",

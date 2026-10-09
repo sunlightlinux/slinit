@@ -76,12 +76,12 @@ func TestEpochFor(t *testing.T) {
 		usec int64
 		want int64
 	}{
-		{500, -1},   // before start
-		{1000, 0},   // exact start → epoch 0
-		{1099, 0},   // in epoch 0
-		{1100, 1},   // rollover
-		{1250, 2},   // mid-epoch 2
-		{9000, 80},  // far future
+		{500, -1},  // before start
+		{1000, 0},  // exact start → epoch 0
+		{1099, 0},  // in epoch 0
+		{1100, 1},  // rollover
+		{1250, 2},  // mid-epoch 2
+		{9000, 80}, // far future
 	}
 	for _, c := range cases {
 		if got := k.EpochFor(c.usec); got != c.want {

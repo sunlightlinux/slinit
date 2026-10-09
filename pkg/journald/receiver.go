@@ -295,4 +295,3 @@ func (StdoutSink) Handle(evt *journal.Event) error {
 
 // Close is a no-op — os.Stdout is owned by the process.
 func (StdoutSink) Close() error { return nil }
-

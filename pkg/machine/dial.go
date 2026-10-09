@@ -96,4 +96,3 @@ func (m *Machine) ListJournalFiles() ([]string, error) {
 	sort.Strings(files)
 	return files, nil
 }
-

@@ -83,57 +83,57 @@ func TestParseChpstBasics(t *testing.T) {
 			wantCmd: "daemon --flag",
 		},
 		{
-			name: "run-as",
-			args: []string{"-u", "nobody", "daemon"},
-			want: slinitConfig{runAs: "nobody"},
+			name:    "run-as",
+			args:    []string{"-u", "nobody", "daemon"},
+			want:    slinitConfig{runAs: "nobody"},
 			wantCmd: "daemon",
 		},
 		{
-			name: "run-as combined form",
-			args: []string{"-unobody:nogroup", "daemon"},
-			want: slinitConfig{runAs: "nobody:nogroup"},
+			name:    "run-as combined form",
+			args:    []string{"-unobody:nogroup", "daemon"},
+			want:    slinitConfig{runAs: "nobody:nogroup"},
 			wantCmd: "daemon",
 		},
 		{
-			name: "argv0",
-			args: []string{"-b", "renamed", "daemon"},
-			want: slinitConfig{argv0: "renamed"},
+			name:    "argv0",
+			args:    []string{"-b", "renamed", "daemon"},
+			want:    slinitConfig{argv0: "renamed"},
 			wantCmd: "daemon",
 		},
 		{
-			name: "working-dir + chroot",
-			args: []string{"-C", "/var/lib/svc", "-/", "/srv/chroot", "daemon"},
-			want: slinitConfig{workingDir: "/var/lib/svc", chroot: "/srv/chroot"},
+			name:    "working-dir + chroot",
+			args:    []string{"-C", "/var/lib/svc", "-/", "/srv/chroot", "daemon"},
+			want:    slinitConfig{workingDir: "/var/lib/svc", chroot: "/srv/chroot"},
 			wantCmd: "daemon",
 		},
 		{
-			name: "close fds bundle",
-			args: []string{"-N", "daemon"},
-			want: slinitConfig{closeStdin: true, closeStdout: true, closeStderr: true},
+			name:    "close fds bundle",
+			args:    []string{"-N", "daemon"},
+			want:    slinitConfig{closeStdin: true, closeStdout: true, closeStderr: true},
 			wantCmd: "daemon",
 		},
 		{
-			name: "individual close fds",
-			args: []string{"-0", "-1", "-2", "daemon"},
-			want: slinitConfig{closeStdin: true, closeStdout: true, closeStderr: true},
+			name:    "individual close fds",
+			args:    []string{"-0", "-1", "-2", "daemon"},
+			want:    slinitConfig{closeStdin: true, closeStdout: true, closeStderr: true},
 			wantCmd: "daemon",
 		},
 		{
-			name: "new-session",
-			args: []string{"-P", "daemon"},
-			want: slinitConfig{newSession: true},
+			name:    "new-session",
+			args:    []string{"-P", "daemon"},
+			want:    slinitConfig{newSession: true},
 			wantCmd: "daemon",
 		},
 		{
-			name: "rlimit-nofile",
-			args: []string{"-o", "1024", "daemon"},
-			want: slinitConfig{rlimitNofile: "1024"},
+			name:    "rlimit-nofile",
+			args:    []string{"-o", "1024", "daemon"},
+			want:    slinitConfig{rlimitNofile: "1024"},
 			wantCmd: "daemon",
 		},
 		{
-			name: "lock-file",
-			args: []string{"-l", "/run/svc.lock", "daemon"},
-			want: slinitConfig{lockFile: "/run/svc.lock"},
+			name:    "lock-file",
+			args:    []string{"-l", "/run/svc.lock", "daemon"},
+			want:    slinitConfig{lockFile: "/run/svc.lock"},
 			wantCmd: "daemon",
 		},
 	}
@@ -159,9 +159,9 @@ func TestParseChpstBasics(t *testing.T) {
 // (memory rlimit approximation, envdir vs env-file).
 func TestParseChpstWarnings(t *testing.T) {
 	cases := []struct {
-		name       string
-		args       []string
-		wantWarn   string
+		name     string
+		args     []string
+		wantWarn string
 	}{
 		{"nice level", []string{"-n", "5", "daemon"}, "chpst -n 5"},
 		{"envdir approximation", []string{"-e", "/etc/env", "daemon"}, "chpst -e /etc/env"},
@@ -206,13 +206,13 @@ func TestParseChpstAlarmDoesNotEatCommand(t *testing.T) {
 // conf-sourcing detection.
 func TestAnalyzeRunScriptCases(t *testing.T) {
 	cases := []struct {
-		name          string
-		script        string
-		wantCommand   string
-		wantRunAs     string
-		wantEnvFile   string
-		wantFallback  bool
-		wantNoteHint  string
+		name         string
+		script       string
+		wantCommand  string
+		wantRunAs    string
+		wantEnvFile  string
+		wantFallback bool
+		wantNoteHint string
 	}{
 		{
 			name:        "simple exec",
@@ -266,9 +266,9 @@ func TestAnalyzeRunScriptCases(t *testing.T) {
 			wantNoteHint: "waits-for: dbus",
 		},
 		{
-			name:        "no exec line at all",
-			script:      "#!/bin/sh\ndaemon --run-inline\n",
-			wantCommand: "/bin/sh /tmp/dir/run",
+			name:         "no exec line at all",
+			script:       "#!/bin/sh\ndaemon --run-inline\n",
+			wantCommand:  "/bin/sh /tmp/dir/run",
 			wantNoteHint: "no `exec`",
 		},
 	}

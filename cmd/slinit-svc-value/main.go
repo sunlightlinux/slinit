@@ -9,9 +9,9 @@
 // The tool is stateless per invocation. Service identity and store
 // root come from the environment:
 //
-//   RC_SVCNAME | SLINIT_SERVICENAME   service the values belong to
-//   RC_SVCDIR                         alternative runtime dir
-//                                     (defaults to /run/slinit)
+//	RC_SVCNAME | SLINIT_SERVICENAME   service the values belong to
+//	RC_SVCDIR                         alternative runtime dir
+//	                                  (defaults to /run/slinit)
 //
 // Backing: one file per key under $RC_SVCDIR/options/$SVC/$KEY, byte-
 // for-byte compatible with OpenRC's librc layout.

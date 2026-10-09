@@ -91,12 +91,12 @@ type Watcher struct {
 	handler Handler
 	opts    Options
 
-	mu       sync.Mutex
-	byWd     map[int32]string   // inotify wd → dir path
-	pending  map[string]*pending // "dir/name" key → debounced event
-	known    map[string]struct{} // "dir/name" for files present at Add()
-	quit     chan struct{}
-	done     chan struct{}
+	mu      sync.Mutex
+	byWd    map[int32]string    // inotify wd → dir path
+	pending map[string]*pending // "dir/name" key → debounced event
+	known   map[string]struct{} // "dir/name" for files present at Add()
+	quit    chan struct{}
+	done    chan struct{}
 }
 
 // New creates a Watcher with its own inotify fd. The caller must

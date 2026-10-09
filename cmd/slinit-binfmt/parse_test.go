@@ -7,11 +7,11 @@ import (
 
 func TestParseNameStandard(t *testing.T) {
 	cases := map[string]string{
-		":qemu-x86_64:M::\\x7fELF:...":                        "qemu-x86_64",
-		":wsl-interop:M::MZ:\\xff\\xff:/usr/bin/wsl:P":        "wsl-interop",
-		":mono:E::exe::/usr/bin/mono:":                        "mono",
-		"|other|M::AAA::/bin/x:":                              "other",
-		":aa:M::x::y:":                                        "aa",
+		":qemu-x86_64:M::\\x7fELF:...":                 "qemu-x86_64",
+		":wsl-interop:M::MZ:\\xff\\xff:/usr/bin/wsl:P": "wsl-interop",
+		":mono:E::exe::/usr/bin/mono:":                 "mono",
+		"|other|M::AAA::/bin/x:":                       "other",
+		":aa:M::x::y:":                                 "aa",
 	}
 	for in, want := range cases {
 		got, err := parseName(in)

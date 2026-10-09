@@ -3,22 +3,22 @@
 // Walks the repo root (defaults to CWD, override with --root) and
 // reports:
 //
-//	* Lines of code by language, split into code / comments / blank.
-//	  Recognised: Go, Shell (.sh / .bash), Markdown, YAML, Makefile,
-//	  and a slinit-specific "Service config" bucket for the
-//	  dinit-style key=value files that don't carry a file extension.
-//	* Test counts: `func Test*` and `func Fuzz*` across every
-//	  `*_test.go`, plus per-suite functional and acceptance case
-//	  file counts.
-//	* Structure counts: Go packages under pkg/, binary dirs under
-//	  cmd/, demo services, man pages.
-//	* Documentation size: CHANGELOG version count + LOC, doc/ LOC.
-//	* Feature surface: directives, service options and wire commands,
-//	  classified by pkg/features — the same registry slinit-supports
-//	  renders, so the two tools give one answer. Reply codes are
-//	  counted separately from protocol.go, since they are wire
-//	  surface but not commands. pkg/features reads the sources
-//	  itself, so this still needs no built binaries.
+//   - Lines of code by language, split into code / comments / blank.
+//     Recognised: Go, Shell (.sh / .bash), Markdown, YAML, Makefile,
+//     and a slinit-specific "Service config" bucket for the
+//     dinit-style key=value files that don't carry a file extension.
+//   - Test counts: `func Test*` and `func Fuzz*` across every
+//     `*_test.go`, plus per-suite functional and acceptance case
+//     file counts.
+//   - Structure counts: Go packages under pkg/, binary dirs under
+//     cmd/, demo services, man pages.
+//   - Documentation size: CHANGELOG version count + LOC, doc/ LOC.
+//   - Feature surface: directives, service options and wire commands,
+//     classified by pkg/features — the same registry slinit-supports
+//     renders, so the two tools give one answer. Reply codes are
+//     counted separately from protocol.go, since they are wire
+//     surface but not commands. pkg/features reads the sources
+//     itself, so this still needs no built binaries.
 //
 // Not part of the shipped slpkgs template — deliberately excluded
 // so operator systems don't carry the dev tooling. Build locally
@@ -66,13 +66,13 @@ type LangStats struct {
 // differ by 1 per suite — surfaces the number an operator cares
 // about ("tests I run for value") alongside the on-disk truth.
 type TestStats struct {
-	UnitFuncs        int      `json:"unit_test_funcs"`
-	FuzzFuncs        int      `json:"fuzz_targets"`
-	FuzzFiles        []string `json:"fuzz_files,omitempty"`
-	FunctionalFiles  int      `json:"functional_files"`
-	FunctionalCases  int      `json:"functional_cases"`
-	AcceptanceFiles  int      `json:"acceptance_files"`
-	AcceptanceCases  int      `json:"acceptance_cases"`
+	UnitFuncs       int      `json:"unit_test_funcs"`
+	FuzzFuncs       int      `json:"fuzz_targets"`
+	FuzzFiles       []string `json:"fuzz_files,omitempty"`
+	FunctionalFiles int      `json:"functional_files"`
+	FunctionalCases int      `json:"functional_cases"`
+	AcceptanceFiles int      `json:"acceptance_files"`
+	AcceptanceCases int      `json:"acceptance_cases"`
 }
 
 // StructStats counts top-level project shape.
@@ -234,12 +234,12 @@ func countLines(path, lang string) (LangStats, error) {
 // specially or exclude from source LOC (test fixtures, generated
 // output, third-party mirrors).
 var skipDirNames = map[string]bool{
-	".git":              true,
-	"_build":            true,
-	"_output":           true,
-	"node_modules":      true,
-	"vendor":            true, // Go vendor tree (rare in slinit)
-	"testdata":          true, // Go convention — fixtures, not source
+	".git":         true,
+	"_build":       true,
+	"_output":      true,
+	"node_modules": true,
+	"vendor":       true, // Go vendor tree (rare in slinit)
+	"testdata":     true, // Go convention — fixtures, not source
 }
 
 // walkSource walks root and returns per-language stats plus grand
@@ -675,9 +675,9 @@ func sortedLangs(m map[string]*LangStats) []string {
 
 func main() {
 	var (
-		root     = flag.String("root", ".", "slinit repo root")
-		asJSON   = flag.Bool("json", false, "emit JSON instead of the text table")
-		asMD     = flag.Bool("markdown", false, "emit Markdown tables (embed in README/CHANGELOG)")
+		root   = flag.String("root", ".", "slinit repo root")
+		asJSON = flag.Bool("json", false, "emit JSON instead of the text table")
+		asMD   = flag.Bool("markdown", false, "emit Markdown tables (embed in README/CHANGELOG)")
 	)
 	flag.Parse()
 

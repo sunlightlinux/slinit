@@ -13,9 +13,10 @@ import (
 // which surprised users with non-default XDG_CONFIG_HOME.
 //
 // Behaviour matrix:
-//   XDG unset             → $HOME/.config/slinit.d only
-//   XDG = ~/.config       → $HOME/.config/slinit.d only (dedup)
-//   XDG = /custom/xdg     → both /custom/xdg/slinit.d AND $HOME/.config/slinit.d
+//
+//	XDG unset             → $HOME/.config/slinit.d only
+//	XDG = ~/.config       → $HOME/.config/slinit.d only (dedup)
+//	XDG = /custom/xdg     → both /custom/xdg/slinit.d AND $HOME/.config/slinit.d
 func TestResolveServiceDirsUserModeXDGDedup(t *testing.T) {
 	prev, had := os.LookupEnv("XDG_CONFIG_HOME")
 	defer func() {

@@ -61,13 +61,13 @@ const reexecEnv = "_SLINIT_NSPAWN_CHILD"
 // Kept env-based (not a pipe) so the child can be a bare re-exec of
 // this same binary — no fork/exec dance, no fd inheritance juggling.
 type childPayload struct {
-	Name           string   // registry name
-	Rootfs         string   // absolute path to the container rootfs
-	Init           string   // init binary inside the container (default /sbin/slinit)
-	InitArgs       []string // args passed after --
-	PrivateNet     bool     // CLONE_NEWNET
-	Hostname       string   // container UTS hostname (default = name)
-	RegistryDir    string   // override for machine.SetDir (default /run/slinit/machines)
+	Name        string   // registry name
+	Rootfs      string   // absolute path to the container rootfs
+	Init        string   // init binary inside the container (default /sbin/slinit)
+	InitArgs    []string // args passed after --
+	PrivateNet  bool     // CLONE_NEWNET
+	Hostname    string   // container UTS hostname (default = name)
+	RegistryDir string   // override for machine.SetDir (default /run/slinit/machines)
 }
 
 func main() {
@@ -89,13 +89,13 @@ func main() {
 func parentMain() error {
 	fs := flag.NewFlagSet("slinit-nspawn", flag.ContinueOnError)
 	var (
-		name        = fs.String("name", "", "container name (registry key + default hostname); required")
-		rootfs      = fs.String("boot", "", "path to the container rootfs; required")
-		initBin     = fs.String("init", "/sbin/slinit", "init binary inside the container")
-		hostname    = fs.String("hostname", "", "container UTS hostname (default: --name)")
-		privateNet  = fs.Bool("private-network", false, "create CLONE_NEWNET so container has an empty network stack")
-		machineDir  = fs.String("machine-dir", machine.DefaultDir, "registry directory to write into")
-		showHelp    = fs.Bool("h", false, "show help")
+		name       = fs.String("name", "", "container name (registry key + default hostname); required")
+		rootfs     = fs.String("boot", "", "path to the container rootfs; required")
+		initBin    = fs.String("init", "/sbin/slinit", "init binary inside the container")
+		hostname   = fs.String("hostname", "", "container UTS hostname (default: --name)")
+		privateNet = fs.Bool("private-network", false, "create CLONE_NEWNET so container has an empty network stack")
+		machineDir = fs.String("machine-dir", machine.DefaultDir, "registry directory to write into")
+		showHelp   = fs.Bool("h", false, "show help")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `Usage: slinit-nspawn --name NAME --boot ROOTFS [flags] [-- INIT-ARGS...]
@@ -182,8 +182,8 @@ func runParent(p childPayload) error {
 		flagsUnshare |= unix.CLONE_NEWNET
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:  flagsUnshare,
-		Setpgid:     true,
+		Cloneflags:   flagsUnshare,
+		Setpgid:      true,
 		Unshareflags: unix.CLONE_NEWNS,
 	}
 	if err := cmd.Start(); err != nil {

@@ -112,11 +112,11 @@ type ServiceRecord struct {
 	// waits-for.d/ and dropping the enable to a place the loader
 	// ignores.
 	waitsForDirs []string
-	description string // human-readable description for status/list output
-	author      string // upstart-style metadata (informational)
-	version     string
-	usage       string
-	recordType  ServiceType
+	description  string // human-readable description for status/list output
+	author       string // upstart-style metadata (informational)
+	version      string
+	usage        string
+	recordType   ServiceType
 
 	// State (atomic: written under queueMu.Lock, read lockless)
 	state   atomicServiceState
@@ -135,11 +135,11 @@ type ServiceRecord struct {
 	// systemd StopWhenUnneeded=: when true, the service auto-stops once
 	// no dependent is holding it up AND the operator hasn't explicitly
 	// started it. Checked in dependentStopped after the usual bookkeeping.
-	stopWhenUnneeded  bool
+	stopWhenUnneeded bool
 
 	// upstart-style "normal exit": exit codes / signals that count as
 	// success, suppressing respawn even when autoRestart=RestartAlways.
-	normalExitCodes   []int
+	normalExitCodes []int
 	// systemd RestartForceExitStatus: exit codes/signals that FORCE a
 	// restart independent of the `restart =` setting. Sibling of
 	// normalExitCodes (which suppresses restart); this override wins
@@ -149,7 +149,7 @@ type ServiceRecord struct {
 	// systemd RestartMode=. `direct` skips the cascade to hard
 	// dependents on a user-initiated or auto-restart; `normal`
 	// (default) preserves the historical cascade.
-	restartMode RestartMode
+	restartMode       RestartMode
 	normalExitSignals []syscall.Signal
 
 	// invocationID is the 128-bit-hex identifier minted at each
@@ -216,16 +216,16 @@ type ServiceRecord struct {
 	listeners  []ServiceListener
 
 	// Process settings (shared across service types)
-	termSignal   syscall.Signal
-	reloadSignal syscall.Signal // 0 = unset; sent by `slinitctl reload-signal`
-	socketPath   string         // primary socket path (for backwards compat)
-	socketPaths  []string       // all socket-listen paths (for multiple sockets)
-	socketReusePort bool        // SO_REUSEPORT on inet listeners (see SetSocketReusePort)
-	socketPerms  int
-	socketUID    int
-	socketGID    int
-	stopReason   StoppedReason
-	chainTo      string // service to start when this one completes
+	termSignal      syscall.Signal
+	reloadSignal    syscall.Signal // 0 = unset; sent by `slinitctl reload-signal`
+	socketPath      string         // primary socket path (for backwards compat)
+	socketPaths     []string       // all socket-listen paths (for multiple sockets)
+	socketReusePort bool           // SO_REUSEPORT on inet listeners (see SetSocketReusePort)
+	socketPerms     int
+	socketUID       int
+	socketGID       int
+	stopReason      StoppedReason
+	chainTo         string // service to start when this one completes
 
 	// Service alias (alternative name for lookup)
 	provides string
@@ -244,9 +244,9 @@ type ServiceRecord struct {
 	consumerFor Service  // which service we consume (set on consumer)
 
 	// Shared logger: multiple producers → single logger service
-	sharedLoggerName       string // name of the shared logger service (empty if not used)
-	sharedLoggerLossy      bool   // (on the logger svc) drop instead of block on backpressure
-	sharedLoggerQueueSize  int    // (on the logger svc) buffered channel depth (0 = default)
+	sharedLoggerName      string // name of the shared logger service (empty if not used)
+	sharedLoggerLossy     bool   // (on the logger svc) drop instead of block on backpressure
+	sharedLoggerQueueSize int    // (on the logger svc) buffered channel depth (0 = default)
 
 	// profiles is the set of profile tags this service belongs to
 	// (runsvchdir analogue). Empty = global (always eligible).
@@ -293,13 +293,13 @@ type ServiceRecord struct {
 	// /sys/fs/cgroup/<slice>/<svc-name>, letting a fleet of services
 	// share cumulative limits at the slice level. Explicit cgroupPath
 	// still wins for backward compatibility.
-	slice string
-	rlimits        []process.Rlimit
-	ambientCaps    []uintptr
-	boundingCaps   []uintptr // positive keep-list for CapBnd; nil = inherit
-	securebits     uint32
-	cpuAffinity    []uint
-	umask          *uint32 // file-creation mask for the service process (nil = inherit slinit's)
+	slice        string
+	rlimits      []process.Rlimit
+	ambientCaps  []uintptr
+	boundingCaps []uintptr // positive keep-list for CapBnd; nil = inherit
+	securebits   uint32
+	cpuAffinity  []uint
+	umask        *uint32 // file-creation mask for the service process (nil = inherit slinit's)
 
 	// Path-based activation. startOnPath is the filesystem path (or
 	// directory) whose state triggers start; startOnPathTrigger names
@@ -381,13 +381,13 @@ type ServiceRecord struct {
 	// utmp knob (utmpMode). Kept as flat fields rather than a struct
 	// because they don't share cluster semantics — an operator can
 	// enable memory-ksm without any other Bucket B directive.
-	coredumpFilter   string
-	timerSlackNsec   int64
-	memoryKSM        bool
-	personality      string
-	ignoreSIGPIPE    *bool // nil = default (yes)
-	removeIPC        bool
-	utmpMode         string // "" (init) | "init" | "login" | "user"
+	coredumpFilter string
+	timerSlackNsec int64
+	memoryKSM      bool
+	personality    string
+	ignoreSIGPIPE  *bool // nil = default (yes)
+	removeIPC      bool
+	utmpMode       string // "" (init) | "init" | "login" | "user"
 
 	// Bucket C — v261/262 catch-up.
 	cpusetPartition           string
@@ -403,31 +403,31 @@ type ServiceRecord struct {
 	// that the cgroup should carry AFTER Started() fires. Populated by
 	// the loader only when the startup-* twin is set; retune fires in
 	// applySteadyStateCgroup().
-	steadyAllowedCPUs         string
-	steadyAllowedMemoryNodes  string
-	timeoutStopFailureMode    TimeoutFailureMode
-	watchdogSignal            syscall.Signal // 0 = default SIGABRT (systemd), or SIGTERM if the operator hasn't opted in — see fireWatchdogStop.
-	finalKillSignal           syscall.Signal // 0 = default SIGKILL
-	surviveFinalKillSignal    bool
-	restartKillSignal         syscall.Signal
-	killMode                  KillMode
+	steadyAllowedCPUs        string
+	steadyAllowedMemoryNodes string
+	timeoutStopFailureMode   TimeoutFailureMode
+	watchdogSignal           syscall.Signal // 0 = default SIGABRT (systemd), or SIGTERM if the operator hasn't opted in — see fireWatchdogStop.
+	finalKillSignal          syscall.Signal // 0 = default SIGKILL
+	surviveFinalKillSignal   bool
+	restartKillSignal        syscall.Signal
+	killMode                 KillMode
 
 	// Bucket D — env + credential pipeline. Flat fields, none share
 	// cluster semantics with each other.
-	passEnvironment    []string
-	passEnvSet         bool
-	unsetEnvironment   []string
-	execSearchPath     string
-	standardInput      []byte
-	standardInputSet   bool
-	openFiles          []OpenFileRecord
-	importCredentials  []string
-	notifyAccess       NotifyAccess
-	notifyAccessSet    bool
-	guessMainPID       bool
+	passEnvironment   []string
+	passEnvSet        bool
+	unsetEnvironment  []string
+	execSearchPath    string
+	standardInput     []byte
+	standardInputSet  bool
+	openFiles         []OpenFileRecord
+	importCredentials []string
+	notifyAccess      NotifyAccess
+	notifyAccessSet   bool
+	guessMainPID      bool
 	// Bucket E partial — LSM domain transition mirrors of AppArmor.
-	selinuxContext     string
-	smackProcessLabel  string
+	selinuxContext    string
+	smackProcessLabel string
 	// TTY cluster — no-ops unless ttyPath is set.
 	ttyPath          string
 	ttyColumns       uint16
@@ -462,8 +462,8 @@ type ServiceRecord struct {
 
 	predicates []Predicate
 
-	failureAction    SystemAction
-	successAction    SystemAction
+	failureAction SystemAction
+	successAction SystemAction
 	// startLimitAction fires when restart-limit-count is exhausted,
 	// independently of failure-action/success-action which are gated on
 	// stopReason. This mirrors systemd's StartLimitAction=.
@@ -567,7 +567,7 @@ type ServiceRecord struct {
 	fdStoreMax      int
 	fdStore         *process.FDStore
 	fdStorePreserve string // "" | "no" | "yes" | "on-success" (systemd v261)
-	notifySock *process.NotifySocketListener
+	notifySock      *process.NotifySocketListener
 }
 
 // NewServiceRecord creates a new ServiceRecord with default values.
@@ -601,14 +601,14 @@ func (sr *ServiceRecord) WaitsForDirs() []string { return sr.waitsForDirs }
 // SetWaitsForDirs is called by the config loader with the parsed
 // list. Mirrors SetServiceDir's shape.
 func (sr *ServiceRecord) SetWaitsForDirs(dirs []string) { sr.waitsForDirs = dirs }
-func (sr *ServiceRecord) Description() string      { return sr.description }
-func (sr *ServiceRecord) SetDescription(d string)  { sr.description = d }
-func (sr *ServiceRecord) Author() string           { return sr.author }
-func (sr *ServiceRecord) SetAuthor(s string)       { sr.author = s }
-func (sr *ServiceRecord) Version() string          { return sr.version }
-func (sr *ServiceRecord) SetVersion(s string)      { sr.version = s }
-func (sr *ServiceRecord) Usage() string            { return sr.usage }
-func (sr *ServiceRecord) SetUsage(s string)        { sr.usage = s }
+func (sr *ServiceRecord) Description() string           { return sr.description }
+func (sr *ServiceRecord) SetDescription(d string)       { sr.description = d }
+func (sr *ServiceRecord) Author() string                { return sr.author }
+func (sr *ServiceRecord) SetAuthor(s string)            { sr.author = s }
+func (sr *ServiceRecord) Version() string               { return sr.version }
+func (sr *ServiceRecord) SetVersion(s string)           { sr.version = s }
+func (sr *ServiceRecord) Usage() string                 { return sr.usage }
+func (sr *ServiceRecord) SetUsage(s string)             { sr.usage = s }
 
 // SetRequiredPaths records files and directories that must exist before
 // the service can start. Copies the slices so the caller may reuse them.
@@ -1013,9 +1013,9 @@ func (sr *ServiceRecord) markSkippedStart() {
 type PredicateOutcome uint8
 
 const (
-	PredOK      PredicateOutcome = iota // all checks passed (or none configured)
-	PredSkip                            // a condition-* failed → skip silently
-	PredFailed                          // an assert-* failed → fail start
+	PredOK     PredicateOutcome = iota // all checks passed (or none configured)
+	PredSkip                           // a condition-* failed → skip silently
+	PredFailed                         // an assert-* failed → fail start
 )
 
 // CheckPredicates evaluates every configured predicate in order and
@@ -1169,11 +1169,11 @@ func (sr *ServiceRecord) CancelPendingRestart() bool { return false }
 // service kind. Types with a restart-delay knob (ProcessService,
 // BGProcessService) override this.
 func (sr *ServiceRecord) ScheduleRestartWithBackoff() bool { return false }
-func (sr *ServiceRecord) GetSmoothRecovery() bool     { return sr.smoothRecovery }
-func (sr *ServiceRecord) IsManualStart() bool         { return sr.manualStart }
-func (sr *ServiceRecord) RefusesManualStart() bool    { return sr.refuseManualStart }
-func (sr *ServiceRecord) RefusesManualStop() bool     { return sr.refuseManualStop }
-func (sr *ServiceRecord) StopsWhenUnneeded() bool     { return sr.stopWhenUnneeded }
+func (sr *ServiceRecord) GetSmoothRecovery() bool          { return sr.smoothRecovery }
+func (sr *ServiceRecord) IsManualStart() bool              { return sr.manualStart }
+func (sr *ServiceRecord) RefusesManualStart() bool         { return sr.refuseManualStart }
+func (sr *ServiceRecord) RefusesManualStop() bool          { return sr.refuseManualStop }
+func (sr *ServiceRecord) StopsWhenUnneeded() bool          { return sr.stopWhenUnneeded }
 
 // UnrecoverableStop forces the service to stop without possibility of restart.
 func (sr *ServiceRecord) UnrecoverableStop() {
@@ -1288,10 +1288,10 @@ func (sr *ServiceRecord) SharedLoggerName() string        { return sr.sharedLogg
 // SharedLoggerLossy / QueueSize are read from the *logger* service
 // (the sink), not from producers. Set at load time; passed to
 // GetOrCreateSharedLogMux when a producer registers with the mux.
-func (sr *ServiceRecord) SetSharedLoggerLossy(b bool)      { sr.sharedLoggerLossy = b }
-func (sr *ServiceRecord) SharedLoggerLossy() bool          { return sr.sharedLoggerLossy }
-func (sr *ServiceRecord) SetSharedLoggerQueueSize(n int)   { sr.sharedLoggerQueueSize = n }
-func (sr *ServiceRecord) SharedLoggerQueueSize() int       { return sr.sharedLoggerQueueSize }
+func (sr *ServiceRecord) SetSharedLoggerLossy(b bool)    { sr.sharedLoggerLossy = b }
+func (sr *ServiceRecord) SharedLoggerLossy() bool        { return sr.sharedLoggerLossy }
+func (sr *ServiceRecord) SetSharedLoggerQueueSize(n int) { sr.sharedLoggerQueueSize = n }
+func (sr *ServiceRecord) SharedLoggerQueueSize() int     { return sr.sharedLoggerQueueSize }
 
 // SetBundleMembers records the s6-rc-style member list for this
 // bundle. The loader has already added each member as a depends-on
@@ -1443,10 +1443,10 @@ func (sr *ServiceRecord) InittabID() string { return sr.inittabID }
 // InittabLine returns the inittab-line.
 func (sr *ServiceRecord) InittabLine() string { return sr.inittabLine }
 
-func (sr *ServiceRecord) IsMarkedActive() bool    { return sr.startExplicit }
-func (sr *ServiceRecord) IsStartPinned() bool     { return sr.pinnedStarted || sr.deptPinnedStarted }
-func (sr *ServiceRecord) IsStopPinned() bool      { return sr.pinnedStopped }
-func (sr *ServiceRecord) DidStartFail() bool      { return sr.startFailed }
+func (sr *ServiceRecord) IsMarkedActive() bool { return sr.startExplicit }
+func (sr *ServiceRecord) IsStartPinned() bool  { return sr.pinnedStarted || sr.deptPinnedStarted }
+func (sr *ServiceRecord) IsStopPinned() bool   { return sr.pinnedStopped }
+func (sr *ServiceRecord) DidStartFail() bool   { return sr.startFailed }
 
 // RestartCount reports how many times the supervisor has restarted this
 // service since slinit started. Never decreases.
@@ -1567,11 +1567,11 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 // systemd's PassEnvironment= / UnsetEnvironment= / ExecSearchPath=
 // semantics in that order:
 //
-//   1. If PassEnvironment was set explicitly, drop every var whose
-//      NAME is not in the allow-list. Empty list = drop everything.
-//   2. Remove every var whose NAME appears in UnsetEnvironment.
-//   3. If ExecSearchPath is set, override PATH= (or append if not
-//      present).
+//  1. If PassEnvironment was set explicitly, drop every var whose
+//     NAME is not in the allow-list. Empty list = drop everything.
+//  2. Remove every var whose NAME appears in UnsetEnvironment.
+//  3. If ExecSearchPath is set, override PATH= (or append if not
+//     present).
 //
 // The dinit-compatible default (nothing set) is a no-op so existing
 // services see no behaviour change.
@@ -1647,20 +1647,20 @@ func replaceOrAppendEnv(env []string, name, value string) []string {
 
 // --- Process attribute setters ---
 
-func (sr *ServiceRecord) SetNice(n *int)                              { sr.nice = n }
-func (sr *ServiceRecord) SetOOMScoreAdj(n *int)                       { sr.oomScoreAdj = n }
-func (sr *ServiceRecord) SetNoNewPrivs(v bool)                        { sr.noNewPrivs = v }
-func (sr *ServiceRecord) SetIOPrio(class, level int)                  { sr.ioPrioClass = class; sr.ioPrioLevel = level }
-func (sr *ServiceRecord) SetCgroupPath(p string)                      { sr.cgroupPath = p }
-func (sr *ServiceRecord) SetSlice(s string)                           { sr.slice = s }
-func (sr *ServiceRecord) Slice() string                               { return sr.slice }
+func (sr *ServiceRecord) SetNice(n *int)             { sr.nice = n }
+func (sr *ServiceRecord) SetOOMScoreAdj(n *int)      { sr.oomScoreAdj = n }
+func (sr *ServiceRecord) SetNoNewPrivs(v bool)       { sr.noNewPrivs = v }
+func (sr *ServiceRecord) SetIOPrio(class, level int) { sr.ioPrioClass = class; sr.ioPrioLevel = level }
+func (sr *ServiceRecord) SetCgroupPath(p string)     { sr.cgroupPath = p }
+func (sr *ServiceRecord) SetSlice(s string)          { sr.slice = s }
+func (sr *ServiceRecord) Slice() string              { return sr.slice }
 
 func (sr *ServiceRecord) SetDelegate(on bool, controllers []string) {
 	sr.delegate = on
 	sr.delegateControllers = controllers
 }
-func (sr *ServiceRecord) Delegate() bool                { return sr.delegate }
-func (sr *ServiceRecord) DelegateControllers() []string { return sr.delegateControllers }
+func (sr *ServiceRecord) Delegate() bool                              { return sr.delegate }
+func (sr *ServiceRecord) DelegateControllers() []string               { return sr.delegateControllers }
 func (sr *ServiceRecord) SetCgroupSettings(s []process.CgroupSetting) { sr.cgroupSettings = s }
 func (sr *ServiceRecord) SetRlimits(rl []process.Rlimit)              { sr.rlimits = rl }
 func (sr *ServiceRecord) AddRlimit(rl process.Rlimit)                 { sr.rlimits = append(sr.rlimits, rl) }
@@ -1698,8 +1698,8 @@ type SandboxConfig struct {
 	ReadWritePaths      []string
 	ProtectHome         string // "" | "yes" | "read-only" | "tmpfs"
 	InaccessiblePaths   []string
-	ProtectProc         string // "" | "noaccess" | "invisible" | "ptraceable"
-	ProcSubset          string // "" | "pid"
+	ProtectProc         string   // "" | "noaccess" | "invisible" | "ptraceable"
+	ProcSubset          string   // "" | "pid"
 	BindPaths           []string // "src:dst" pairs (writable)
 	BindReadOnlyPaths   []string // "src:dst" pairs (read-only)
 	TemporaryFileSystem []string // "path[:options]" tmpfs mounts
@@ -1768,13 +1768,13 @@ type HardeningConfig struct {
 	// Bucket A extension — argument-checking BPF fragments + one
 	// prctl. Landed as a follow-on to Tier B once pkg/seccomp grew
 	// arg-inspection support.
-	RestrictRealtime         bool
-	RestrictNamespaces       bool
-	RestrictSUIDSGID         bool
-	RestrictFileSystems      bool
-	RestrictAddressFamilies  []string
-	RestrictAFEnabled        bool
-	MemoryDenyWriteExecute   bool
+	RestrictRealtime        bool
+	RestrictNamespaces      bool
+	RestrictSUIDSGID        bool
+	RestrictFileSystems     bool
+	RestrictAddressFamilies []string
+	RestrictAFEnabled       bool
+	MemoryDenyWriteExecute  bool
 }
 
 // Active reports whether any hardening knob is set.
@@ -1799,13 +1799,13 @@ func (sr *ServiceRecord) Hardening() HardeningConfig { return sr.hardening }
 func (sr *ServiceRecord) HardeningActive() bool { return sr.hardening.Active() }
 
 // Bucket B setters + accessors.
-func (sr *ServiceRecord) SetCoredumpFilter(s string)      { sr.coredumpFilter = s }
-func (sr *ServiceRecord) SetTimerSlackNsec(n int64)       { sr.timerSlackNsec = n }
-func (sr *ServiceRecord) SetMemoryKSM(b bool)             { sr.memoryKSM = b }
-func (sr *ServiceRecord) SetPersonality(s string)         { sr.personality = s }
-func (sr *ServiceRecord) SetIgnoreSIGPIPE(b *bool)        { sr.ignoreSIGPIPE = b }
-func (sr *ServiceRecord) SetRemoveIPC(b bool)             { sr.removeIPC = b }
-func (sr *ServiceRecord) SetUtmpMode(s string)            { sr.utmpMode = s }
+func (sr *ServiceRecord) SetCoredumpFilter(s string) { sr.coredumpFilter = s }
+func (sr *ServiceRecord) SetTimerSlackNsec(n int64)  { sr.timerSlackNsec = n }
+func (sr *ServiceRecord) SetMemoryKSM(b bool)        { sr.memoryKSM = b }
+func (sr *ServiceRecord) SetPersonality(s string)    { sr.personality = s }
+func (sr *ServiceRecord) SetIgnoreSIGPIPE(b *bool)   { sr.ignoreSIGPIPE = b }
+func (sr *ServiceRecord) SetRemoveIPC(b bool)        { sr.removeIPC = b }
+func (sr *ServiceRecord) SetUtmpMode(s string)       { sr.utmpMode = s }
 
 // RemoveIPCEnabled reports whether the operator asked slinit to clean
 // up SysV IPC + POSIX shm for the service's UID after each stop.
@@ -1817,17 +1817,17 @@ func (sr *ServiceRecord) RemoveIPCEnabled() bool { return sr.removeIPC }
 func (sr *ServiceRecord) UtmpMode() string { return sr.utmpMode }
 
 // Bucket C setters + accessors.
-func (sr *ServiceRecord) SetCpusetPartition(s string)              { sr.cpusetPartition = s }
-func (sr *ServiceRecord) SetCacheDirectoryQuota(n int64)           { sr.cacheDirectoryQuota = n }
-func (sr *ServiceRecord) SetLogsDirectoryQuota(n int64)            { sr.logsDirectoryQuota = n }
-func (sr *ServiceRecord) SetStateDirectoryQuota(n int64)           { sr.stateDirectoryQuota = n }
-func (sr *ServiceRecord) SetCacheDirectoryAccounting(b bool)       { sr.cacheDirectoryAccounting = b }
-func (sr *ServiceRecord) SetLogsDirectoryAccounting(b bool)        { sr.logsDirectoryAccounting = b }
-func (sr *ServiceRecord) SetStateDirectoryAccounting(b bool)       { sr.stateDirectoryAccounting = b }
-func (sr *ServiceRecord) SetStartupAllowedCPUs(s string)           { sr.startupAllowedCPUs = s }
-func (sr *ServiceRecord) SetStartupAllowedMemoryNodes(s string)    { sr.startupAllowedMemoryNodes = s }
-func (sr *ServiceRecord) SetSteadyAllowedCPUs(s string)            { sr.steadyAllowedCPUs = s }
-func (sr *ServiceRecord) SetSteadyAllowedMemoryNodes(s string)     { sr.steadyAllowedMemoryNodes = s }
+func (sr *ServiceRecord) SetCpusetPartition(s string)           { sr.cpusetPartition = s }
+func (sr *ServiceRecord) SetCacheDirectoryQuota(n int64)        { sr.cacheDirectoryQuota = n }
+func (sr *ServiceRecord) SetLogsDirectoryQuota(n int64)         { sr.logsDirectoryQuota = n }
+func (sr *ServiceRecord) SetStateDirectoryQuota(n int64)        { sr.stateDirectoryQuota = n }
+func (sr *ServiceRecord) SetCacheDirectoryAccounting(b bool)    { sr.cacheDirectoryAccounting = b }
+func (sr *ServiceRecord) SetLogsDirectoryAccounting(b bool)     { sr.logsDirectoryAccounting = b }
+func (sr *ServiceRecord) SetStateDirectoryAccounting(b bool)    { sr.stateDirectoryAccounting = b }
+func (sr *ServiceRecord) SetStartupAllowedCPUs(s string)        { sr.startupAllowedCPUs = s }
+func (sr *ServiceRecord) SetStartupAllowedMemoryNodes(s string) { sr.startupAllowedMemoryNodes = s }
+func (sr *ServiceRecord) SetSteadyAllowedCPUs(s string)         { sr.steadyAllowedCPUs = s }
+func (sr *ServiceRecord) SetSteadyAllowedMemoryNodes(s string)  { sr.steadyAllowedMemoryNodes = s }
 
 // applySteadyStateCgroup rewrites cpuset.cpus / cpuset.mems to the
 // operator's steady-state values after the service reaches Started.
@@ -1865,11 +1865,11 @@ func writeCgroupFile(cgPath, name, value string, sr *ServiceRecord) {
 func (sr *ServiceRecord) SetTimeoutStopFailureMode(m TimeoutFailureMode) {
 	sr.timeoutStopFailureMode = m
 }
-func (sr *ServiceRecord) SetWatchdogSignal(s syscall.Signal)       { sr.watchdogSignal = s }
-func (sr *ServiceRecord) SetFinalKillSignal(s syscall.Signal)      { sr.finalKillSignal = s }
-func (sr *ServiceRecord) SetSurviveFinalKillSignal(b bool)         { sr.surviveFinalKillSignal = b }
-func (sr *ServiceRecord) SetRestartKillSignal(s syscall.Signal)    { sr.restartKillSignal = s }
-func (sr *ServiceRecord) SetKillMode(m KillMode)                   { sr.killMode = m }
+func (sr *ServiceRecord) SetWatchdogSignal(s syscall.Signal)    { sr.watchdogSignal = s }
+func (sr *ServiceRecord) SetFinalKillSignal(s syscall.Signal)   { sr.finalKillSignal = s }
+func (sr *ServiceRecord) SetSurviveFinalKillSignal(b bool)      { sr.surviveFinalKillSignal = b }
+func (sr *ServiceRecord) SetRestartKillSignal(s syscall.Signal) { sr.restartKillSignal = s }
+func (sr *ServiceRecord) SetKillMode(m KillMode)                { sr.killMode = m }
 
 // TimeoutStopFailureMode returns the signal picker used when the stop
 // timeout expires.
@@ -1941,12 +1941,13 @@ func (sr *ServiceRecord) SetStandardInput(data []byte, set bool) {
 	sr.standardInput = data
 	sr.standardInputSet = set
 }
-func (sr *ServiceRecord) SetOpenFiles(files []OpenFileRecord)  { sr.openFiles = files }
-func (sr *ServiceRecord) SetImportCredentials(pats []string)   { sr.importCredentials = pats }
+func (sr *ServiceRecord) SetOpenFiles(files []OpenFileRecord) { sr.openFiles = files }
+func (sr *ServiceRecord) SetImportCredentials(pats []string)  { sr.importCredentials = pats }
 func (sr *ServiceRecord) SetNotifyAccess(n NotifyAccess, set bool) {
 	sr.notifyAccess = n
 	sr.notifyAccessSet = set
 }
+
 // SetSocketReusePort enables SO_REUSEPORT on this service's inet
 // listeners. Set before bind, it lets several services hold the same
 // host:port; the kernel then hashes each incoming connection to one of
@@ -1957,15 +1958,15 @@ func (sr *ServiceRecord) SetSocketReusePort(b bool) { sr.socketReusePort = b }
 // SocketReusePort reports whether SO_REUSEPORT is requested.
 func (sr *ServiceRecord) SocketReusePort() bool { return sr.socketReusePort }
 
-func (sr *ServiceRecord) SetGuessMainPID(b bool) { sr.guessMainPID = b }
-func (sr *ServiceRecord) SetSELinuxContext(s string)     { sr.selinuxContext = s }
-func (sr *ServiceRecord) SetSMACKProcessLabel(s string)  { sr.smackProcessLabel = s }
-func (sr *ServiceRecord) SetTTYPath(s string)            { sr.ttyPath = s }
-func (sr *ServiceRecord) SetTTYColumns(n uint16)         { sr.ttyColumns = n }
-func (sr *ServiceRecord) SetTTYRows(n uint16)            { sr.ttyRows = n }
-func (sr *ServiceRecord) SetTTYVHangup(b bool)           { sr.ttyVHangup = b }
-func (sr *ServiceRecord) SetTTYVTDisallocate(b bool)     { sr.ttyVTDisallocate = b }
-func (sr *ServiceRecord) SetTTYReset(b bool)             { sr.ttyReset = b }
+func (sr *ServiceRecord) SetGuessMainPID(b bool)        { sr.guessMainPID = b }
+func (sr *ServiceRecord) SetSELinuxContext(s string)    { sr.selinuxContext = s }
+func (sr *ServiceRecord) SetSMACKProcessLabel(s string) { sr.smackProcessLabel = s }
+func (sr *ServiceRecord) SetTTYPath(s string)           { sr.ttyPath = s }
+func (sr *ServiceRecord) SetTTYColumns(n uint16)        { sr.ttyColumns = n }
+func (sr *ServiceRecord) SetTTYRows(n uint16)           { sr.ttyRows = n }
+func (sr *ServiceRecord) SetTTYVHangup(b bool)          { sr.ttyVHangup = b }
+func (sr *ServiceRecord) SetTTYVTDisallocate(b bool)    { sr.ttyVTDisallocate = b }
+func (sr *ServiceRecord) SetTTYReset(b bool)            { sr.ttyReset = b }
 
 // TTYPath returns the tty device path (empty = no TTY handling).
 func (sr *ServiceRecord) TTYPath() string { return sr.ttyPath }
@@ -2115,6 +2116,7 @@ func (sr *ServiceRecord) SetGidMappings(m []syscall.SysProcIDMap) { sr.gidMappin
 //  1. Explicit cgroup = path (backward compat, wins outright).
 //  2. slice = name → /sys/fs/cgroup/<slice>/<svc-name>.
 //  3. Daemon default cgroup path.
+//
 // Empty if none apply.
 // removeCgroupFunc is process.RemoveCgroup, indirected so tests can
 // observe the call without a writable /sys/fs/cgroup.

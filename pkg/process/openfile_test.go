@@ -30,7 +30,7 @@ func TestOpenConfiguredFileReadOnly(t *testing.T) {
 // non-existent file falls back to /dev/null (never errors).
 func TestOpenConfiguredFileGracefulMissing(t *testing.T) {
 	f, err := openConfiguredFile(OpenFileEntry{
-		Path: "/definitely/does/not/exist/anywhere/blah",
+		Path:    "/definitely/does/not/exist/anywhere/blah",
 		Options: "graceful",
 	})
 	if err != nil {

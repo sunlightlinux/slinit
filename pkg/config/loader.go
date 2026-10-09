@@ -570,7 +570,7 @@ func (dl *DirLoader) updateDependencies(svc service.Service, desc *ServiceDescri
 		}
 	}
 
-// Recalculate dependency depth after dep changes
+	// Recalculate dependency depth after dep changes
 	var updater service.DepDepthUpdater
 	updater.AddPotentialUpdate(svc)
 	if err := updater.ProcessUpdates(); err != nil {

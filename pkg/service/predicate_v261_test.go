@@ -55,8 +55,8 @@ func TestFractionRejectsMalformed(t *testing.T) {
 	cases := []string{
 		"no-colon",
 		"tag:not-a-number",
-		"tag:150",  // > 100
-		"tag:-10",  // negative
+		"tag:150", // > 100
+		"tag:-10", // negative
 	}
 	for _, c := range cases {
 		ok, why := checkFraction(c)

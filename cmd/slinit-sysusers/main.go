@@ -36,8 +36,8 @@ var defaultDirs = []string{
 }
 
 type entry struct {
-	kind   string
-	name   string
+	kind    string
+	name    string
 	idOrGid string
 	gid     string // for u: GID or group name from a UID:GID ID field
 	gecos   string

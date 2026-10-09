@@ -19,8 +19,8 @@ import (
 // Legacy well-known paths honoured by SysV/Debian/Slackware/Alpine
 // operators. Overridable at package level for tests.
 var (
-	rcLocalPath   = "/etc/rc.local"
-	rcLocalDPath  = "/etc/rc.local.d"
+	rcLocalPath    = "/etc/rc.local"
+	rcLocalDPath   = "/etc/rc.local.d"
 	rcLocalTimeout = 5 * time.Minute
 )
 

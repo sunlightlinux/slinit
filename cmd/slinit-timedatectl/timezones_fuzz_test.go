@@ -14,14 +14,14 @@ import (
 // `timedatectl list-timezones` caller.
 //
 // Invariants:
-//   1. Parser must not panic on any bytes.
-//   2. Returned zone list must contain only strings without embedded
-//      NUL or path-separator escape (../, absolute paths) — the
-//      caller uses these names to build filesystem paths under
-//      /usr/share/zoneinfo/, so a malicious entry could target
-//      arbitrary paths.
-//   3. Every returned zone must survive validateZone if the fixture
-//      tree is set up; skip when unset.
+//  1. Parser must not panic on any bytes.
+//  2. Returned zone list must contain only strings without embedded
+//     NUL or path-separator escape (../, absolute paths) — the
+//     caller uses these names to build filesystem paths under
+//     /usr/share/zoneinfo/, so a malicious entry could target
+//     arbitrary paths.
+//  3. Every returned zone must survive validateZone if the fixture
+//     tree is set up; skip when unset.
 func FuzzReadZoneTab(f *testing.F) {
 	// Real zone.tab shape (POSIX 2001):
 	f.Add("# comment\nRO\t+4426+02606\tEurope/Bucharest\nUS\t+404251-0740023\tAmerica/New_York\n")

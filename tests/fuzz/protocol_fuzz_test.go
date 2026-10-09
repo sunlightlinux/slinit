@@ -289,13 +289,13 @@ func FuzzDecodeCatLogRequest(f *testing.F) {
 func FuzzServiceNameSemantics(f *testing.F) {
 	// Seeds designed to exercise the boundary: each of these decodes
 	// via DecodeServiceName but should NOT pass ValidateServiceName.
-	f.Add(control.EncodeServiceName(""))                    // empty
-	f.Add(control.EncodeServiceName(".hidden"))             // leading dot
-	f.Add(control.EncodeServiceName("@template"))           // leading @
-	f.Add(control.EncodeServiceName("foo\x00bar"))          // NUL in name
-	f.Add(control.EncodeServiceName("foo bar"))             // space
-	f.Add(control.EncodeServiceName("foo\nbar"))            // newline
-	f.Add(control.EncodeServiceName("foo:bar"))             // colon (dep separator)
+	f.Add(control.EncodeServiceName(""))           // empty
+	f.Add(control.EncodeServiceName(".hidden"))    // leading dot
+	f.Add(control.EncodeServiceName("@template"))  // leading @
+	f.Add(control.EncodeServiceName("foo\x00bar")) // NUL in name
+	f.Add(control.EncodeServiceName("foo bar"))    // space
+	f.Add(control.EncodeServiceName("foo\nbar"))   // newline
+	f.Add(control.EncodeServiceName("foo:bar"))    // colon (dep separator)
 	// Seeds that SHOULD pass validation:
 	f.Add(control.EncodeServiceName("normal-svc"))
 	f.Add(control.EncodeServiceName("worker@1"))

@@ -68,11 +68,11 @@ type FileSink struct {
 	// would deadlock — the hook fires with s.mu held).
 	rotatedHook func(rotatedPath, currentPath string)
 
-	mu         sync.Mutex
-	f          *os.File
-	bw         *bufio.Writer
-	curPath    string
-	openedAt   time.Time
+	mu       sync.Mutex
+	f        *os.File
+	bw       *bufio.Writer
+	curPath  string
+	openedAt time.Time
 
 	// idxF is the companion .idx file (see idx.go). Writes are
 	// batched: entries queue in pendingIdx until the next flush, so
@@ -96,9 +96,9 @@ type FileSink struct {
 // so 3e/3f can add vacuum + LZ4 options without churning the
 // constructor signature at every callsite.
 type FileSinkOptions struct {
-	FsyncEvery  int
-	MaxSize     int64
-	MaxAge      time.Duration
+	FsyncEvery int
+	MaxSize    int64
+	MaxAge     time.Duration
 	// RotatedHook fires after a successful rotation with the path
 	// of the file that was closed and renamed, plus the new
 	// current path. Vacuum (3e) uses this to prune old files

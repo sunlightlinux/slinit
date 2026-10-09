@@ -9,11 +9,11 @@ import (
 // assert on ServiceLogger interactions but must satisfy the type.
 type profileTestLogger struct{}
 
-func (profileTestLogger) ServiceStarted(string)          {}
-func (profileTestLogger) ServiceStopped(string)          {}
-func (profileTestLogger) ServiceFailed(string, bool)     {}
-func (profileTestLogger) Error(string, ...interface{})   {}
-func (profileTestLogger) Info(string, ...interface{})    {}
+func (profileTestLogger) ServiceStarted(string)        {}
+func (profileTestLogger) ServiceStopped(string)        {}
+func (profileTestLogger) ServiceFailed(string, bool)   {}
+func (profileTestLogger) Error(string, ...interface{}) {}
+func (profileTestLogger) Info(string, ...interface{})  {}
 
 // TestProfileInProfileGlobalService confirms that a service without
 // any profile tags is always considered "in" every profile — the
@@ -147,10 +147,10 @@ func TestActivateProfileCategorizes(t *testing.T) {
 		ss.mu.Unlock()
 		return svc
 	}
-	inject("web", []string{"prod"})       // prod-only → new
-	inject("batch", []string{"dev"})      // dev-only → old
+	inject("web", []string{"prod"})           // prod-only → new
+	inject("batch", []string{"dev"})          // dev-only → old
 	inject("common", []string{"prod", "dev"}) // both → keep
-	inject("sshd", nil)                    // global → keep untouched
+	inject("sshd", nil)                       // global → keep untouched
 
 	// Start with dev active.
 	ss.SetActiveProfile("dev")

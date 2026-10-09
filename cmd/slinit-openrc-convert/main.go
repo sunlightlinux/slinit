@@ -191,7 +191,7 @@ func convertScript(path, wrapper string) (*slinitConfig, []warning, error) {
 		svcName:    name,
 		scriptPath: abs,
 		svcType:    "process",
-		restart:    "yes",   // openrc respawns supervised daemons by default
+		restart:    "yes", // openrc respawns supervised daemons by default
 	}
 
 	warns := parseOpenrcScript(cfg, string(data), wrapper)

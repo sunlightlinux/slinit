@@ -49,7 +49,7 @@ func TestRingBufferAppendsBelowCapacity(t *testing.T) {
 // dropped from the head, keeping the newest N bytes.
 func TestRingBufferWrapsAcrossCapacity(t *testing.T) {
 	rb := NewRingBuffer(16)
-	rb.Write([]byte("AAAAAAAA"))       // 8 bytes → no wrap
+	rb.Write([]byte("AAAAAAAA"))         // 8 bytes → no wrap
 	rb.Write([]byte("BBBBBBBBCCCCCCCC")) // 16 bytes → wrap; total 24, keep last 16
 	got := rb.Bytes()
 	want := "BBBBBBBBCCCCCCCC"

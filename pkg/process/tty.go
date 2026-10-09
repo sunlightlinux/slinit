@@ -48,18 +48,18 @@ func resolveConsolePath() (string, error) {
 // TTYPath is unset (no work to do).
 //
 // Ordering is load-bearing:
-//   1. VT_DISALLOCATE first — the ioctl works on /dev/tty0 (parent
-//      of every VT); disallocation FREES the VT number, and the
-//      subsequent open reallocates a fresh one with clean state.
-//   2. Open the TTY (O_RDWR|O_NOCTTY so we don't accidentally
-//      steal it as controlling terminal — the caller does that
-//      later via Setctty).
-//   3. Hang up any prior session (TIOCVHANGUP on the fd), then reopen:
-//      the hangup also kills our own fd, so the service gets a fresh
-//      one.
-//   4. Reset (ESC c) — after vhangup so the reset lands on the
-//      fresh state, not on a hanging-up terminal.
-//   5. WinSize — after reset (reset would otherwise clobber it).
+//  1. VT_DISALLOCATE first — the ioctl works on /dev/tty0 (parent
+//     of every VT); disallocation FREES the VT number, and the
+//     subsequent open reallocates a fresh one with clean state.
+//  2. Open the TTY (O_RDWR|O_NOCTTY so we don't accidentally
+//     steal it as controlling terminal — the caller does that
+//     later via Setctty).
+//  3. Hang up any prior session (TIOCVHANGUP on the fd), then reopen:
+//     the hangup also kills our own fd, so the service gets a fresh
+//     one.
+//  4. Reset (ESC c) — after vhangup so the reset lands on the
+//     fresh state, not on a hanging-up terminal.
+//  5. WinSize — after reset (reset would otherwise clobber it).
 func setupTTY(p ExecParams) (*os.File, error) {
 	if p.TTYPath == "" {
 		return nil, nil

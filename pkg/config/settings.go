@@ -59,43 +59,43 @@ var KnownSettings = map[string]OperatorType{
 	"env-file": OpEquals,
 
 	// Process management
-	"run-as":                 OpEquals,
-	"supplementary-groups":   OpEquals | OpPlusEqual,
-	"dynamic-user":           OpEquals,
-	"file-descriptor-store-max": OpEquals,
-	"manual":                 OpEquals,
-	"refuse-manual-start":    OpEquals,
-	"refuse-manual-stop":     OpEquals,
-	"stop-when-unneeded":     OpEquals,
-	"restart":                OpEquals,
-	"smooth-recovery":        OpEquals,
-	"no-boot-marker":         OpEquals,
-	"normal-exit":            OpEquals | OpPlusEqual,
-	"restart-force-exit-status": OpEquals | OpPlusEqual,
-	"stop-timeout":           OpEquals,
-	"start-delay":           OpEquals,
-	"hook-timeout":          OpEquals,
-	"start-timeout":          OpEquals,
-	"timeout-sec":            OpEquals,
-	"timeout-abort-sec":      OpEquals,
+	"run-as":                     OpEquals,
+	"supplementary-groups":       OpEquals | OpPlusEqual,
+	"dynamic-user":               OpEquals,
+	"file-descriptor-store-max":  OpEquals,
+	"manual":                     OpEquals,
+	"refuse-manual-start":        OpEquals,
+	"refuse-manual-stop":         OpEquals,
+	"stop-when-unneeded":         OpEquals,
+	"restart":                    OpEquals,
+	"smooth-recovery":            OpEquals,
+	"no-boot-marker":             OpEquals,
+	"normal-exit":                OpEquals | OpPlusEqual,
+	"restart-force-exit-status":  OpEquals | OpPlusEqual,
+	"stop-timeout":               OpEquals,
+	"start-delay":                OpEquals,
+	"hook-timeout":               OpEquals,
+	"start-timeout":              OpEquals,
+	"timeout-sec":                OpEquals,
+	"timeout-abort-sec":          OpEquals,
 	"timeout-start-failure-mode": OpEquals,
-	"restart-mode":           OpEquals,
-	"exec-condition":         OpEquals,
-	"exit-type":              OpEquals,
-	"restart-delay":          OpEquals,
-	"restart-delay-step":     OpEquals,
-	"restart-delay-cap":      OpEquals,
-	"restart-randomized-delay": OpEquals,
-	"restart-max-delay":      OpEquals,
-	"restart-limit-interval": OpEquals,
-	"restart-limit-count":    OpEquals,
-	"term-signal":            OpEquals,
-	"termsignal":             OpEquals, // deprecated alias (dinit compat)
-	"stopsig":                OpEquals, // OpenRC alias
-	"reload-signal":          OpEquals, // upstart-inspired: signal sent by `slinitctl reload-signal`
-	"pid-file":               OpEquals,
-	"ready-notification":     OpEquals,
-	"watchdog-timeout":       OpEquals,
+	"restart-mode":               OpEquals,
+	"exec-condition":             OpEquals,
+	"exit-type":                  OpEquals,
+	"restart-delay":              OpEquals,
+	"restart-delay-step":         OpEquals,
+	"restart-delay-cap":          OpEquals,
+	"restart-randomized-delay":   OpEquals,
+	"restart-max-delay":          OpEquals,
+	"restart-limit-interval":     OpEquals,
+	"restart-limit-count":        OpEquals,
+	"term-signal":                OpEquals,
+	"termsignal":                 OpEquals, // deprecated alias (dinit compat)
+	"stopsig":                    OpEquals, // OpenRC alias
+	"reload-signal":              OpEquals, // upstart-inspired: signal sent by `slinitctl reload-signal`
+	"pid-file":                   OpEquals,
+	"ready-notification":         OpEquals,
+	"watchdog-timeout":           OpEquals,
 
 	// Logging
 	"logfile":             OpEquals,
@@ -295,32 +295,32 @@ var KnownSettings = map[string]OperatorType{
 	"utmp-mode":        OpEquals,
 
 	// Bucket C — v261/262 catch-up.
-	"cpuset-partition":                 OpEquals,
-	"cache-directory-quota":            OpEquals,
-	"logs-directory-quota":             OpEquals,
-	"state-directory-quota":            OpEquals,
-	"cache-directory-accounting":       OpEquals,
-	"logs-directory-accounting":        OpEquals,
-	"state-directory-accounting":       OpEquals,
-	"startup-allowed-cpus":             OpEquals,
-	"startup-allowed-memory-nodes":     OpEquals,
-	"timeout-stop-failure-mode":        OpEquals,
-	"watchdog-signal":                  OpEquals,
-	"final-kill-signal":                OpEquals,
-	"survive-final-kill-signal":        OpEquals,
-	"restart-kill-signal":              OpEquals,
-	"kill-mode":                        OpEquals,
+	"cpuset-partition":             OpEquals,
+	"cache-directory-quota":        OpEquals,
+	"logs-directory-quota":         OpEquals,
+	"state-directory-quota":        OpEquals,
+	"cache-directory-accounting":   OpEquals,
+	"logs-directory-accounting":    OpEquals,
+	"state-directory-accounting":   OpEquals,
+	"startup-allowed-cpus":         OpEquals,
+	"startup-allowed-memory-nodes": OpEquals,
+	"timeout-stop-failure-mode":    OpEquals,
+	"watchdog-signal":              OpEquals,
+	"final-kill-signal":            OpEquals,
+	"survive-final-kill-signal":    OpEquals,
+	"restart-kill-signal":          OpEquals,
+	"kill-mode":                    OpEquals,
 
 	// Bucket D — env + credential pipeline.
-	"pass-environment":     OpEquals | OpPlusEqual,
-	"unset-environment":    OpEquals | OpPlusEqual,
-	"exec-search-path":     OpEquals,
-	"standard-input-text":  OpEquals | OpPlusEqual,
-	"standard-input-data":  OpEquals | OpPlusEqual,
-	"open-file":            OpEquals | OpPlusEqual,
-	"import-credential":    OpEquals | OpPlusEqual,
-	"notify-access":        OpEquals,
-	"guess-main-pid":       OpEquals,
+	"pass-environment":    OpEquals | OpPlusEqual,
+	"unset-environment":   OpEquals | OpPlusEqual,
+	"exec-search-path":    OpEquals,
+	"standard-input-text": OpEquals | OpPlusEqual,
+	"standard-input-data": OpEquals | OpPlusEqual,
+	"open-file":           OpEquals | OpPlusEqual,
+	"import-credential":   OpEquals | OpPlusEqual,
+	"notify-access":       OpEquals,
+	"guess-main-pid":      OpEquals,
 
 	// Bucket E (partial, "Bucket A+"): SELinux + SMACK LSM domain
 	// setters. Complement apparmor-switch — a service that opted into
@@ -340,22 +340,22 @@ var KnownSettings = map[string]OperatorType{
 	// ready-check-command via `dbus-send` when available; bus-policy
 	// is deprecated in systemd (removed with kdbus abandonment)
 	// and slinit accepts-warns.
-	"bus-name":         OpEquals,
-	"bus-policy":       OpEquals,
-	"bus-name-scope":   OpEquals, // system|session, default system
+	"bus-name":       OpEquals,
+	"bus-policy":     OpEquals,
+	"bus-name-scope": OpEquals, // system|session, default system
 
-	"tty-path":           OpEquals,
-	"tty-columns":        OpEquals,
-	"tty-rows":           OpEquals,
-	"tty-vhangup":        OpEquals,
-	"tty-vt-disallocate": OpEquals,
-	"tty-reset":          OpEquals,
-	"restrict-realtime":           OpEquals,
-	"restrict-namespaces":         OpEquals,
-	"restrict-suidsgid":           OpEquals,
-	"restrict-file-systems":       OpEquals,
-	"restrict-address-families":   OpEquals | OpPlusEqual,
-	"memory-deny-write-execute":   OpEquals,
+	"tty-path":                  OpEquals,
+	"tty-columns":               OpEquals,
+	"tty-rows":                  OpEquals,
+	"tty-vhangup":               OpEquals,
+	"tty-vt-disallocate":        OpEquals,
+	"tty-reset":                 OpEquals,
+	"restrict-realtime":         OpEquals,
+	"restrict-namespaces":       OpEquals,
+	"restrict-suidsgid":         OpEquals,
+	"restrict-file-systems":     OpEquals,
+	"restrict-address-families": OpEquals | OpPlusEqual,
+	"memory-deny-write-execute": OpEquals,
 
 	// systemd-style filesystem sandbox (applied via slinit-runner in a
 	// fresh mount namespace; CLONE_NEWNS is auto-implied)
@@ -403,26 +403,26 @@ var KnownSettings = map[string]OperatorType{
 	"error-logger":  OpEquals | OpPlusEqual,
 
 	// Log rotation and filtering
-	"logfile-max-size":    OpEquals,
-	"logfile-max-files":   OpEquals,
-	"logfile-min-files":   OpEquals, // svlogd Nmin: keep at least N old files on ENOSPC drain
-	"logfile-rotate-time": OpEquals,
-	"log-processor":       OpEquals | OpPlusEqual,
-	"log-include":              OpEquals,
-	"log-exclude":              OpEquals,
-	"log-rate-limit-interval":  OpEquals,
-	"log-rate-limit-burst":     OpEquals,
-	"log-level-max":            OpEquals,
-	"log-sanitize":             OpEquals, // svlogd -r: replace control chars with this single ASCII char
-	"log-sanitize-extra":       OpEquals, // svlogd -R: additional bytes to treat as replaceable
-	"log-max-line-length":      OpEquals, // svlogd -l: truncate lines longer than N bytes with '+' marker
-	"log-timestamp":            OpEquals, // svlogd -t/-tt/-ttt: prepend timestamp to each line
-	"log-line-prefix":          OpEquals, // svlogd log/config p<prefix>: static per-line prefix
-	"log-read-buffer-size":     OpEquals, // svlogd -b: bytes per pipe Read call (default 4096)
-	"log-forward-udp":          OpEquals, // svlogd u/U: forward each line via UDP as a syslog packet
-	"log-forward-format":       OpEquals, // rfc3164 (default) or rfc5424
-	"log-forward-facility":     OpEquals, // syslog facility name (default "daemon")
-	"log-forward-tag":          OpEquals, // syslog tag (default = service name)
+	"logfile-max-size":        OpEquals,
+	"logfile-max-files":       OpEquals,
+	"logfile-min-files":       OpEquals, // svlogd Nmin: keep at least N old files on ENOSPC drain
+	"logfile-rotate-time":     OpEquals,
+	"log-processor":           OpEquals | OpPlusEqual,
+	"log-include":             OpEquals,
+	"log-exclude":             OpEquals,
+	"log-rate-limit-interval": OpEquals,
+	"log-rate-limit-burst":    OpEquals,
+	"log-level-max":           OpEquals,
+	"log-sanitize":            OpEquals, // svlogd -r: replace control chars with this single ASCII char
+	"log-sanitize-extra":      OpEquals, // svlogd -R: additional bytes to treat as replaceable
+	"log-max-line-length":     OpEquals, // svlogd -l: truncate lines longer than N bytes with '+' marker
+	"log-timestamp":           OpEquals, // svlogd -t/-tt/-ttt: prepend timestamp to each line
+	"log-line-prefix":         OpEquals, // svlogd log/config p<prefix>: static per-line prefix
+	"log-read-buffer-size":    OpEquals, // svlogd -b: bytes per pipe Read call (default 4096)
+	"log-forward-udp":         OpEquals, // svlogd u/U: forward each line via UDP as a syslog packet
+	"log-forward-format":      OpEquals, // rfc3164 (default) or rfc5424
+	"log-forward-facility":    OpEquals, // syslog facility name (default "daemon")
+	"log-forward-tag":         OpEquals, // syslog tag (default = service name)
 	// s6-log-style priority alert channel: high-severity lines are
 	// also copied to alert-file. Independent of log-level-max (which
 	// drops from the main file); a line can appear in both, only in
@@ -432,14 +432,14 @@ var KnownSettings = map[string]OperatorType{
 	"alert-level": OpEquals,
 
 	// systemd-style appliance actions
-	"failure-action":     OpEquals,
-	"success-action":     OpEquals,
-	"start-limit-action": OpEquals,
-	"reboot-argument":    OpEquals,
-	"runtime-max-sec":         OpEquals,
+	"failure-action":           OpEquals,
+	"success-action":           OpEquals,
+	"start-limit-action":       OpEquals,
+	"reboot-argument":          OpEquals,
+	"runtime-max-sec":          OpEquals,
 	"runtime-randomized-extra": OpEquals,
-	"job-timeout-sec": OpEquals,
-	"oom-policy":      OpEquals,
+	"job-timeout-sec":          OpEquals,
+	"oom-policy":               OpEquals,
 
 	// systemd-style PSI pressure watches (cgroup v2). Both keys per
 	// resource are needed to arm the trigger: the *-watch key opts in,

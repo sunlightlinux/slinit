@@ -123,4 +123,3 @@ func writeCoredumpFilter(value string) error {
 	}
 	return os.WriteFile("/proc/self/coredump_filter", []byte(v+"\n"), 0)
 }
-

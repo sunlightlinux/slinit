@@ -12,12 +12,12 @@ import (
 // prefix means "apply best-effort, don't fail the pass if the key
 // is missing or write is refused").
 type spec struct {
-	key           string // slashed form, ready to append to procSysRoot
-	rawKey        string // dotted form, for diagnostics
-	value         string
-	ignoreErrors  bool
-	source        string
-	sourceLineNo  int
+	key          string // slashed form, ready to append to procSysRoot
+	rawKey       string // dotted form, for diagnostics
+	value        string
+	ignoreErrors bool
+	source       string
+	sourceLineNo int
 }
 
 // parseFile iterates r and returns one spec per key=value line.

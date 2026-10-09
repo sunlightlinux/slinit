@@ -60,11 +60,11 @@ func SetTransientIDWarning(v bool) { transientIDWarning = v }
 // under the guard of initOnce.
 var (
 	idCache struct {
-		mu        sync.RWMutex
-		boot      string
-		machine   string
-		hostname  string
-		initDone  bool
+		mu       sync.RWMutex
+		boot     string
+		machine  string
+		hostname string
+		initDone bool
 	}
 )
 

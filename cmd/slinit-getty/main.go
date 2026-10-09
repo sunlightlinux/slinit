@@ -25,7 +25,9 @@
 //  6. execve /bin/login [-p] -- USERNAME.
 //
 // Fallback chain if /bin/login is missing:
-//   /sbin/login → /usr/bin/login → /bin/sh (interactive rescue).
+//
+//	/sbin/login → /usr/bin/login → /bin/sh (interactive rescue).
+//
 // Same shape as finit's getty.c fallback so an operator without
 // a proper login binary still gets a shell, not a boot-time hang.
 package main
@@ -401,4 +403,3 @@ func firstExisting(candidates []string) string {
 	}
 	return ""
 }
-

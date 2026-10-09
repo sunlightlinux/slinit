@@ -35,12 +35,13 @@ const DefaultFSSEpochUsec = int64(15 * 60 * 1_000_000)
 const FSSSealTagSize = 32
 
 // TAG object payload layout on disk (past the 16-byte ObjectHeader):
-//   seqnum(8) + epoch(8) + hmac_sha256(32) = 48 bytes payload
-//   total TAG object size = ObjectHeaderSize + 48 = 64 bytes
+//
+//	seqnum(8) + epoch(8) + hmac_sha256(32) = 48 bytes payload
+//	total TAG object size = ObjectHeaderSize + 48 = 64 bytes
 const (
-	tagSeqnumOffset = ObjectHeaderSize      // 16
-	tagEpochOffset  = ObjectHeaderSize + 8  // 24
-	tagHmacOffset   = ObjectHeaderSize + 16 // 32
+	tagSeqnumOffset = ObjectHeaderSize                                  // 16
+	tagEpochOffset  = ObjectHeaderSize + 8                              // 24
+	tagHmacOffset   = ObjectHeaderSize + 16                             // 32
 	tagObjectSize   = uint64(ObjectHeaderSize + 8 + 8 + FSSSealTagSize) // 64
 )
 

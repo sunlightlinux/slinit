@@ -9,12 +9,12 @@ import (
 // openConfiguredFile opens the path in e per the systemd OpenFile=
 // semantics. Options is a comma-separated list; recognised tokens:
 //
-//   read-only   — O_RDONLY (default is O_RDWR|O_CREATE).
-//   append      — O_APPEND (with default write flags).
-//   truncate    — O_TRUNC on open (with default write flags).
-//   graceful    — treat "open failed" as non-fatal: the parent
-//                 substitutes /dev/null so ExtraFiles keeps the fd
-//                 slot stable. Systemd's exact semantics.
+//	read-only   — O_RDONLY (default is O_RDWR|O_CREATE).
+//	append      — O_APPEND (with default write flags).
+//	truncate    — O_TRUNC on open (with default write flags).
+//	graceful    — treat "open failed" as non-fatal: the parent
+//	              substitutes /dev/null so ExtraFiles keeps the fd
+//	              slot stable. Systemd's exact semantics.
 //
 // Unknown tokens are refused so a typo surfaces at start time rather
 // than silently downgrading protection.

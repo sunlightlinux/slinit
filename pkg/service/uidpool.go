@@ -21,10 +21,10 @@ const (
 // Allocation is deterministic for testing: the smallest free UID is
 // always returned first. Releasing a UID makes it available again.
 type UIDPool struct {
-	mu     sync.Mutex
-	min    uint32
-	max    uint32
-	inUse  map[uint32]string // uid → service name (for diagnostics)
+	mu    sync.Mutex
+	min   uint32
+	max   uint32
+	inUse map[uint32]string // uid → service name (for diagnostics)
 }
 
 // NewUIDPool creates an allocator covering [min, max] inclusive.

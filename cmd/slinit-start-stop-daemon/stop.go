@@ -140,4 +140,3 @@ func lookupPrimaryGID(userSpec string) (int, error) {
 	}
 	return strconv.Atoi(u.Gid)
 }
-

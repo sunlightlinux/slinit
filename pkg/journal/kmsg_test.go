@@ -4,12 +4,12 @@ import "testing"
 
 func TestParseKmsgLine(t *testing.T) {
 	cases := []struct {
-		name     string
-		in       string
-		wantMsg  string
-		wantPri  Priority
-		wantTr   Transport
-		wantNil  bool
+		name    string
+		in      string
+		wantMsg string
+		wantPri Priority
+		wantTr  Transport
+		wantNil bool
 	}{
 		{
 			name:    "typical kernel err",

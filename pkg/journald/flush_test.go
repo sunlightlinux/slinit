@@ -54,12 +54,12 @@ func TestMigrateJournalArtefacts(t *testing.T) {
 	// Seed a mix: journal files, sidecar idx, and a non-journal file
 	// (must be left alone).
 	files := map[string]string{
-		"2026-08-01.jsonl":         "day1 jsonl",
-		"2026-08-01.jsonl.idx":     "day1 idx",
-		"2026-08-02.jsonl.gz":      "day2 gz",
-		"2026-08-03.journal":       "day3 binary",
-		"ignore-me.txt":            "not a journal",
-		"lock":                     "not a journal",
+		"2026-08-01.jsonl":     "day1 jsonl",
+		"2026-08-01.jsonl.idx": "day1 idx",
+		"2026-08-02.jsonl.gz":  "day2 gz",
+		"2026-08-03.journal":   "day3 binary",
+		"ignore-me.txt":        "not a journal",
+		"lock":                 "not a journal",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o644); err != nil {

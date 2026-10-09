@@ -278,14 +278,14 @@ func TestAtomicSymlink(t *testing.T) {
 
 func TestRenderShow(t *testing.T) {
 	s := statusFields{
-		Timezone:              "Europe/Bucharest",
-		LocalTime:             time.Unix(1700000000, 0),
-		RTCTimeValid:          true,
-		RTCTime:               time.Unix(1699999900, 0),
-		RTCInLocalTZ:          true,
-		CanNTP:                true,
-		NTPService:            "chronyd",
-		NTPServiceRunning:     true,
+		Timezone:                "Europe/Bucharest",
+		LocalTime:               time.Unix(1700000000, 0),
+		RTCTimeValid:            true,
+		RTCTime:                 time.Unix(1699999900, 0),
+		RTCInLocalTZ:            true,
+		CanNTP:                  true,
+		NTPService:              "chronyd",
+		NTPServiceRunning:       true,
 		SystemClockSynchronized: true,
 	}
 	var buf bytes.Buffer

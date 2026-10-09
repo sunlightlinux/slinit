@@ -14,11 +14,11 @@ import (
 // systemd eb5ee83c1f fstab-filter escape round-trip).
 //
 // Invariants:
-//   1. Parser must not panic on any input.
-//   2. Every parsed Entry must expose accessor methods (Options())
-//      without panicking, including on synthesised weird inputs like
-//      empty options, all-comma sequences, and embedded escapes.
-//   3. FindByFile lookups must be safe on any parse result.
+//  1. Parser must not panic on any input.
+//  2. Every parsed Entry must expose accessor methods (Options())
+//     without panicking, including on synthesised weird inputs like
+//     empty options, all-comma sequences, and embedded escapes.
+//  3. FindByFile lookups must be safe on any parse result.
 func FuzzFstabParse(f *testing.F) {
 	// Realistic fstab seeds.
 	f.Add("/dev/sda1 / ext4 defaults 0 1\n")

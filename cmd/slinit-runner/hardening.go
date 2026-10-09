@@ -18,16 +18,16 @@ import (
 // gets enforced.
 func parseAFList(toks []string) ([]int, error) {
 	names := map[string]int{
-		"UNIX":   1, "LOCAL": 1,
-		"INET":   2,
-		"AX25":   3,
-		"IPX":    4,
+		"UNIX": 1, "LOCAL": 1,
+		"INET":      2,
+		"AX25":      3,
+		"IPX":       4,
 		"APPLETALK": 5,
-		"NETLINK": 16,
-		"PACKET": 17,
-		"INET6":  10,
+		"NETLINK":   16,
+		"PACKET":    17,
+		"INET6":     10,
 		"BLUETOOTH": 31,
-		"VSOCK":  40,
+		"VSOCK":     40,
 	}
 	var out []int
 	for _, raw := range toks {
@@ -55,13 +55,13 @@ func parseAFList(toks []string) ([]int, error) {
 // main system-call-filter) and a small set of mount operations.
 //
 // Two seccomp filter families are used:
-//   1. A single deny-mode filter with the union of all "block-outright"
-//      syscall lists (protect-kernel-*, protect-clock, protect-hostname,
-//      lock-personality). Cheapest to build; one filter, many syscalls.
-//   2. Per-restriction arg-checking BPF programs (restrict-realtime,
-//      restrict-namespaces, restrict-suidsgid, restrict-address-families,
-//      restrict-file-systems). Each is its own tiny filter; the kernel
-//      stacks them and applies the most-restrictive result.
+//  1. A single deny-mode filter with the union of all "block-outright"
+//     syscall lists (protect-kernel-*, protect-clock, protect-hostname,
+//     lock-personality). Cheapest to build; one filter, many syscalls.
+//  2. Per-restriction arg-checking BPF programs (restrict-realtime,
+//     restrict-namespaces, restrict-suidsgid, restrict-address-families,
+//     restrict-file-systems). Each is its own tiny filter; the kernel
+//     stacks them and applies the most-restrictive result.
 //
 // memory-deny-write-execute is a straight prctl, not seccomp.
 type hardeningSpec struct {
@@ -74,13 +74,13 @@ type hardeningSpec struct {
 	lockPersonality       bool
 	// Arg-checking variants — see pkg/seccomp/restrict_linux.go for the
 	// per-directive BPF programs.
-	restrictRealtime         bool
-	restrictNamespaces       bool
-	restrictSUIDSGID         bool
-	restrictFileSystems      bool
-	restrictAddressFamilies  []int // empty when the directive is not set; explicit "no families" is len == 0 sentinel below
-	restrictAFEnabled        bool  // true when the directive appeared, distinguishes "unset" from "empty allow-list"
-	memoryDenyWriteExecute   bool
+	restrictRealtime        bool
+	restrictNamespaces      bool
+	restrictSUIDSGID        bool
+	restrictFileSystems     bool
+	restrictAddressFamilies []int // empty when the directive is not set; explicit "no families" is len == 0 sentinel below
+	restrictAFEnabled       bool  // true when the directive appeared, distinguishes "unset" from "empty allow-list"
+	memoryDenyWriteExecute  bool
 }
 
 func (h hardeningSpec) active() bool {

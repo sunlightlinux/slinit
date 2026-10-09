@@ -279,4 +279,3 @@ func TestPrepareNotifyStderrRejectsConflict(t *testing.T) {
 		t.Errorf("expected conflict error for --stderr + readiness=stderr")
 	}
 }
-

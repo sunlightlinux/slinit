@@ -19,10 +19,10 @@ type stallLogger struct {
 	lines []string
 }
 
-func (l *stallLogger) ServiceStarted(string)        {}
-func (l *stallLogger) ServiceStopped(string)        {}
-func (l *stallLogger) ServiceFailed(string, bool)   {}
-func (l *stallLogger) Info(string, ...interface{})  {}
+func (l *stallLogger) ServiceStarted(string)       {}
+func (l *stallLogger) ServiceStopped(string)       {}
+func (l *stallLogger) ServiceFailed(string, bool)  {}
+func (l *stallLogger) Info(string, ...interface{}) {}
 func (l *stallLogger) Error(format string, args ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

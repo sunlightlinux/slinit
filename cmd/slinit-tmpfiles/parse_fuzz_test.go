@@ -30,9 +30,9 @@ func FuzzTmpfilesParseLine(f *testing.F) {
 	f.Add("")
 	f.Add("   ")
 	// Adversarial malformed shapes.
-	f.Add("d")                   // only type char
-	f.Add("d /path")             // missing mode
-	f.Add("badtype /path 0755")  // unknown type
+	f.Add("d")                    // only type char
+	f.Add("d /path")              // missing mode
+	f.Add("badtype /path 0755")   // unknown type
 	f.Add("d /path '0755' u g -") // quoted mode
 	f.Add("d \"/path with spaces\" 0755 u g -")
 	f.Add("d /path 07777 root root -") // invalid mode

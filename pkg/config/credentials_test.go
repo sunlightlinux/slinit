@@ -75,9 +75,9 @@ func TestParseCredentialRejectsEmptyName(t *testing.T) {
 
 func TestSplitNameValue(t *testing.T) {
 	cases := []struct {
-		in         string
-		name, val  string
-		ok         bool
+		in        string
+		name, val string
+		ok        bool
 	}{
 		{"k:v", "k", "v", true},
 		{"k: v", "k", "v", true},

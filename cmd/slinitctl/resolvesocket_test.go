@@ -26,12 +26,12 @@ func TestResolveSocketPathEnvFallback(t *testing.T) {
 	defer restore("SLINIT_SOCKET_PATH", slinitPrev, slinitHad)
 
 	cases := []struct {
-		name        string
-		flagValue   string
-		dinitEnv    string
-		slinitEnv   string
-		systemMode  bool
-		want        string
+		name       string
+		flagValue  string
+		dinitEnv   string
+		slinitEnv  string
+		systemMode bool
+		want       string
 	}{
 		{
 			name:      "flag wins over everything",
