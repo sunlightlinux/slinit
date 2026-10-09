@@ -15,12 +15,12 @@ slinit-tmpfiles - declarative /run and /var bootstrap
 **slinit-tmpfiles** applies a subset of **systemd-tmpfiles.d**(5)
 directives at boot to create and adjust files, directories and
 symlinks on volatile filesystems (*/run*, */tmp*) or persistent ones
-(*/var*). Reads config from */usr/lib/tmpfiles.d/\*.conf*,
-*/etc/tmpfiles.d/\*.conf* and */run/tmpfiles.d/\*.conf* by default.
-When the same basename exists in more than one directory, the one in
-the later directory of that list wins (so */run* overrides */etc*,
-unlike systemd). Files are applied in alphabetical order of their
-basenames.
+(*/var*). Reads config from */etc/tmpfiles.d/\*.conf*,
+*/run/tmpfiles.d/\*.conf* and */usr/lib/tmpfiles.d/\*.conf* by
+default. When the same basename exists in more than one directory,
+*/etc* overrides */run*, which overrides */usr/lib* (as in systemd).
+The surviving files from all directories are applied in alphabetical
+order of their basenames.
 
 Where **slinit-checkpath**(8) is a *repair* tool (fix permissions
 on an existing path), **slinit-tmpfiles** is a *creation* tool:
@@ -41,15 +41,22 @@ and an unknown name makes the whole file fail to parse. *AGE* is
 accepted and ignored — no age-based cleanup is performed. Type
 modifiers (**!**, **+**, **=**, **-**) are accepted and ignored.
 
+For **f** and **F**, *ARG* may contain C-style escapes: **\\a**,
+**\\b**, **\\f**, **\\n**, **\\r**, **\\t**, **\\v**, **\\\\**,
+**\\"**, **\\'**, **\\s** (space), **\\x** plus two hex digits, and
+**\\** plus three octal digits. An invalid escape makes the whole file
+fail to parse.
+
 Supported types:
 
-**f** *path* *mode* *uid* *gid* *age*
-:   Create an empty regular file if it does not exist; if it exists,
-    only set its mode and owner. *ARG* is **not** written.
+**f** *path* *mode* *uid* *gid* *age* *arg*
+:   Create a regular file if it does not exist, writing *arg* (if
+    given) into it; if it exists, only set its mode and owner — its
+    content is left alone.
 
-**F** *path* *mode* *uid* *gid* *age*
-:   Create the file, or truncate it to zero length if it exists, then
-    set the owner. *ARG* is **not** written.
+**F** *path* *mode* *uid* *gid* *age* *arg*
+:   Create the file, or truncate it to zero length if it exists, write
+    *arg* (if given), then set the owner.
 
 **d** *path* *mode* *uid* *gid* *age*
 :   Create the directory, and any missing parents, then set its mode
@@ -82,7 +89,10 @@ Any other type is an error for that line.
 
 **\--dirs** *DIRS*
 :   Comma-separated list of directories to scan instead of the
-    defaults.
+    defaults, lowest precedence first: for the same basename, a later
+    directory in *DIRS* overrides an earlier one. The default is
+    equivalent to
+    **\--dirs=/usr/lib/tmpfiles.d,/run/tmpfiles.d,/etc/tmpfiles.d**.
 
 **\--dry-run**
 :   Print each entry as **would** *TYPE* *PATH* without executing

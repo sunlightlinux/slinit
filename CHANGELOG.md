@@ -45,6 +45,24 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **Companion tools:**
+  - `slinit-supervise-daemon` ignored SIGTERM/SIGINT after forwarding a
+    SIGHUP, until the daemon exited (it blocked on the daemon instead of
+    returning to its signal loop), and that exit then skipped the respawn
+    rate limiter. Both fixed.
+  - `slinit-fstabinfo --fstype X --passno N` filtered the whole fstab
+    when `X` matched nothing; an empty selection now stays empty (exit 1).
+  - `slinit-tmpfiles` `f` / `F` wrote nothing: the argument is now written
+    (by `f` only when it creates the file), with the C-style escapes of
+    tmpfiles.d(5); `-` still means no argument.
+  - `slinit-sysusers` passed a `UID:GID` ID field to `useradd` whole; it is
+    split, and the GID part (number or group name) goes to `--gid`.
+  - Both tools let `/run` override `/etc` for the same file name. The
+    precedence is now systemd's: `/etc` > `/run` > `/usr/lib`. `--dirs`
+    keeps its meaning (later directory wins).
+  - `slinit-mount` logs a warning for a unit with `after:`, which is still
+    not implemented, instead of ignoring it silently.
+
 - **`standard-input-text =` appended instead of replacing**, and with no
   separator: two `=` lines `a` and `b` gave the service `ab` on stdin.
   `=` now replaces, as for every setting and as `standard-input-data`

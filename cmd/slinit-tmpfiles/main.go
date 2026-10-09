@@ -1,12 +1,12 @@
 // slinit-tmpfiles applies systemd-tmpfiles.d(5) directives at boot.
-// Reads /usr/lib/tmpfiles.d/*.conf, /etc/tmpfiles.d/*.conf, and
-// /run/tmpfiles.d/*.conf; per-filename overrides win (later dirs
-// override earlier). Only a subset of the systemd directive set is
+// Reads /usr/lib/tmpfiles.d/*.conf, /run/tmpfiles.d/*.conf, and
+// /etc/tmpfiles.d/*.conf; for the same file name /etc overrides /run
+// overrides /usr/lib (systemd precedence). Only a subset of the systemd directive set is
 // implemented — the ones actually used to bootstrap /run and /var
 // on real distros:
 //
-//	f  create a file if missing (chmod, chown)
-//	F  create/truncate a file
+//	f  create a file if missing (chmod, chown), writing Argument
+//	F  create/truncate a file, writing Argument
 //	d  create a directory
 //	D  create a directory, wipe contents
 //	L  create a symlink (respects Argument as target)
@@ -33,10 +33,12 @@ import (
 	"strings"
 )
 
+// defaultDirs is in ascending precedence: for the same file name a
+// later directory overrides an earlier one (/etc > /run > /usr/lib).
 var defaultDirs = []string{
 	"/usr/lib/tmpfiles.d",
-	"/etc/tmpfiles.d",
 	"/run/tmpfiles.d",
+	"/etc/tmpfiles.d",
 }
 
 type entry struct {
@@ -52,7 +54,7 @@ type entry struct {
 func main() {
 	var dirsFlag string
 	flag.StringVar(&dirsFlag, "dirs", "",
-		"comma-separated tmpfiles.d directories (defaults to /usr/lib+/etc+/run/tmpfiles.d)")
+		"comma-separated tmpfiles.d directories, lowest precedence first (defaults to /usr/lib+/run+/etc/tmpfiles.d)")
 	dryRun := flag.Bool("dry-run", false, "print actions without applying them")
 	flag.Parse()
 
@@ -61,7 +63,7 @@ func main() {
 		dirs = strings.Split(dirsFlag, ",")
 	}
 
-	// Collect files by basename so later dirs (/etc, /run) override
+	// Collect files by basename so later dirs (/run, then /etc) override
 	// earlier ones (/usr/lib). Matches systemd-tmpfiles precedence.
 	confs := collect(dirs)
 	names := make([]string, 0, len(confs))
@@ -189,7 +191,78 @@ func parseLine(line string) (entry, error) {
 	if len(fields) > 6 {
 		e.arg = strings.Join(fields[6:], " ")
 	}
+	if e.kind == "f" || e.kind == "F" {
+		if e.arg == "-" { // "-" means no argument, as in every column
+			e.arg = ""
+		}
+		arg, err := cunescape(e.arg)
+		if err != nil {
+			return entry{}, fmt.Errorf("argument %q: %w", e.arg, err)
+		}
+		e.arg = arg
+	}
 	return e, nil
+}
+
+// cunescape resolves the C-style escapes tmpfiles.d(5) allows in the
+// Argument column: \a \b \f \n \r \t \v \\ \" \' \s (space),
+// \xNN (hex) and \NNN (octal).
+func cunescape(s string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '\\' {
+			b.WriteByte(c)
+			continue
+		}
+		i++
+		if i >= len(s) {
+			return "", fmt.Errorf("trailing backslash")
+		}
+		switch c = s[i]; c {
+		case 'a':
+			b.WriteByte('\a')
+		case 'b':
+			b.WriteByte('\b')
+		case 'f':
+			b.WriteByte('\f')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'v':
+			b.WriteByte('\v')
+		case 's':
+			b.WriteByte(' ')
+		case '\\', '"', '\'':
+			b.WriteByte(c)
+		case 'x':
+			if i+3 > len(s) {
+				return "", fmt.Errorf("short \\x escape")
+			}
+			n, err := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			if err != nil {
+				return "", fmt.Errorf("bad \\x escape %q", s[i-1:i+3])
+			}
+			b.WriteByte(byte(n))
+			i += 2
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			if i+3 > len(s) {
+				return "", fmt.Errorf("short octal escape")
+			}
+			n, err := strconv.ParseUint(s[i:i+3], 8, 8)
+			if err != nil {
+				return "", fmt.Errorf("bad octal escape %q", s[i-1:i+3])
+			}
+			b.WriteByte(byte(n))
+			i += 2
+		default:
+			return "", fmt.Errorf("unknown escape \\%c", c)
+		}
+	}
+	return b.String(), nil
 }
 
 // splitFields is a whitespace splitter that respects double-quoted
@@ -296,7 +369,15 @@ func applyFile(e entry, force bool) error {
 		}
 		return err
 	}
-	f.Close()
+	if e.arg != "" {
+		if _, err := f.WriteString(e.arg); err != nil {
+			f.Close()
+			return err
+		}
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
 	return os.Chown(e.path, e.uid, e.gid)
 }
 

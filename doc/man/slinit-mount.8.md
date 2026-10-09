@@ -87,7 +87,8 @@ ignored, and an unrecognised key is an error. Recognised keys:
 
 **after**
 :   Accepted and parsed (**after: a b** for several names), but it
-    currently has no effect: mount setup is not deferred. Order the
+    currently has no effect: mount setup is not deferred, and a warning
+    naming the unit is logged at load and on reload. Order the
     **slinit-mount** service itself with **after:** / **waits-for:** in
     its service description instead.
 
