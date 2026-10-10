@@ -8,10 +8,18 @@
 # ratio: the case reported 1.06x on one run and 0.87x on the next, and
 # 0.87x says adding 100 services made `list` faster. Whatever the real
 # scaling is, a figure that can come out below 1.0 cannot detect it.
+#
+# $ITERS samples a side rather than a fixed 15, for about 70 ms of extra
+# work. Doubling the samples was expected to tighten a noisy figure and
+# did something more useful: 15 samples gave 1.15x and 30 gave 1.14x on
+# the same install, so ~1.14x is signal, not spread — adding 100
+# services really does cost `list` about 14%. The 1.00x seen once before
+# that was on a different install with a different service set, not a
+# contradiction of these two.
 _prefix="perf-list100-$$"
 _before=$(slinitctl list 2>/dev/null | wc -l)
 
-_list_before_ns=$(perf_median_ns 15 "slinitctl list")
+_list_before_ns=$(perf_median_ns "$ITERS" "slinitctl list")
 
 # Provision 100 svcs — start them so they populate the list
 _i=0
@@ -24,7 +32,7 @@ done
 _after=$(slinitctl list 2>/dev/null | wc -l)
 
 # Measure list at the larger size
-_list_after_ns=$(perf_median_ns 15 "slinitctl list")
+_list_after_ns=$(perf_median_ns "$ITERS" "slinitctl list")
 
 # Teardown
 _i=0
@@ -39,5 +47,5 @@ _before_ms=$(awk -v n=$_list_before_ns 'BEGIN{printf "%.3f", n/1e6}')
 _after_ms=$(awk -v n=$_list_after_ns 'BEGIN{printf "%.3f", n/1e6}')
 _ratio=$(awk -v a=$_list_after_ns -v b=$_list_before_ns 'BEGIN{if(b>0) printf "%.2f", a/b; else print "n/a"}')
 
-printf "BenchmarkList_scaling 15  N=%d→%d  before=%s ms  after=%s ms  ratio=%sx\n" \
-    "$_before" "$_after" "$_before_ms" "$_after_ms" "$_ratio"
+printf "BenchmarkList_scaling %s  N=%d→%d  before=%s ms  after=%s ms  ratio=%sx\n" \
+    "$ITERS" "$_before" "$_after" "$_before_ms" "$_after_ms" "$_ratio"
