@@ -188,7 +188,11 @@ func main() {
 		if len(desc.Command) > 0 {
 			w := checkExecutable(desc.Command[0], name, "command", path)
 			warnings += w
-		} else if desc.Type != service.TypeInternal && desc.Type != service.TypeTriggered {
+		} else if desc.Type != service.TypeInternal && desc.Type != service.TypeTriggered &&
+			desc.FollowPID == "" {
+			// follow-pid is the third case with nothing to exec: it
+			// adopts a process started elsewhere, so a missing command
+			// is the configuration working as intended, not an omission.
 			fmt.Fprintf(os.Stderr, "  WARNING [%s]: no command specified for %s service\n",
 				name, desc.Type)
 			warnings++

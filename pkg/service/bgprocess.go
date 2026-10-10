@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,6 +40,11 @@ type BGProcessService struct {
 	// PID file path (required)
 	pidFile string
 
+	// followPID adopts a process slinit did not start: the path of a pid
+	// file written by somebody else. Set, it makes `command` optional and
+	// turns BringUp into an attach rather than a launch.
+	followPID string
+
 	// Credentials
 	runAsUID          uint32
 	runAsGID          uint32
@@ -47,9 +53,19 @@ type BGProcessService struct {
 	// Process state
 	launcherPID int
 	daemonPID   int
-	stopPID     int // PID of stop-command process (0 if none)
-	exitStatus  ExitStatus
-	procHandle  process.ProcessHandle
+
+	// pidPublished mirrors the PID that PID() reports, for readers that
+	// cannot take queueMu — the status encoders, and the log rotator's
+	// GetPID callback. ProcessService has carried this for the same
+	// reason; bgprocess did not, so PID() read daemonPID bare while
+	// monitorDaemon's termination path wrote it under the lock. `go test
+	// -race` reports it as soon as anything polls PID() across a daemon
+	// exit, which a follow-pid restart test does. Written at the five
+	// assignment sites of launcherPID/daemonPID, nowhere else.
+	pidPublished atomic.Int64
+	stopPID      int // PID of stop-command process (0 if none)
+	exitStatus   ExitStatus
+	procHandle   process.ProcessHandle
 
 	// Timer for start/stop/restart timeouts
 	processTimer *time.Timer
@@ -116,6 +132,32 @@ const (
 	bgTimerRestartDelay
 )
 
+// signalProcessOnly decides whether a stop signals just the process or its
+// whole group.
+//
+// For a daemon slinit launched, the group is one slinit set up, so
+// signalling it is how a forking daemon's workers get stopped with their
+// master instead of orphaned. An ADOPTED process is different: we did not
+// create its group, and if it is not the group leader the group belongs to
+// whoever started it — plausibly an operator's login shell, whose job would
+// then be killed by a service stop. So when following, the group is only
+// signalled if the adopted process leads it, which means the group is its
+// own.
+func (s *BGProcessService) signalProcessOnly(pid int) bool {
+	if s.Flags.SignalProcessOnly {
+		return true
+	}
+	if s.followPID == "" || pid <= 0 {
+		return false
+	}
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		// Not queryable: a different session, so it leads its own group.
+		return false
+	}
+	return pgid != pid
+}
+
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 func (s *BGProcessService) killCgroupTree(sig syscall.Signal) {
 	cgPath := s.EffectiveCgroupPath()
@@ -150,7 +192,18 @@ func (s *BGProcessService) SetWorkingDir(dir string)    { s.workingDir = dir }
 func (s *BGProcessService) SetEnvFile(path string)      { s.envFile = path }
 func (s *BGProcessService) SetPIDFile(path string)      { s.pidFile = path }
 func (s *BGProcessService) GetPIDFile() string          { return s.pidFile }
-func (s *BGProcessService) SetRunAs(uid, gid uint32)    { s.runAsUID = uid; s.runAsGID = gid }
+func (s *BGProcessService) SetFollowPID(path string)    { s.followPID = path }
+func (s *BGProcessService) GetFollowPID() string        { return s.followPID }
+
+// pidFileToWatch is the file the daemon's pid is read from: the one an
+// adopted process's owner writes, or the one our own launcher writes.
+func (s *BGProcessService) pidFileToWatch() string {
+	if s.followPID != "" {
+		return s.followPID
+	}
+	return s.pidFile
+}
+func (s *BGProcessService) SetRunAs(uid, gid uint32) { s.runAsUID = uid; s.runAsGID = gid }
 func (s *BGProcessService) SetSupplementaryGroups(gids []uint32) {
 	s.supplementaryGIDs = gids
 }
@@ -268,11 +321,21 @@ func (s *BGProcessService) SetRestartLimits(interval time.Duration, maxCount int
 
 // PID returns the daemon PID if known, otherwise the launcher PID.
 func (s *BGProcessService) PID() int {
-	// See ProcessService.PID() — same reentrancy rationale.
+	// See ProcessService.PID() — same reentrancy rationale, and the same
+	// reason for an atomic mirror rather than a bare read: callers here
+	// do not hold queueMu, and the monitor goroutine writes daemonPID
+	// when the daemon exits.
+	return int(s.pidPublished.Load())
+}
+
+// publishPID keeps the mirror in step with whichever pid PID() should
+// report: the daemon once known, the launcher before that.
+func (s *BGProcessService) publishPID() {
 	if s.daemonPID > 0 {
-		return s.daemonPID
+		s.pidPublished.Store(int64(s.daemonPID))
+		return
 	}
-	return s.launcherPID
+	s.pidPublished.Store(int64(s.launcherPID))
 }
 
 // GetExitStatus returns the exit status of the last process.
@@ -287,7 +350,7 @@ func (s *BGProcessService) buildEnv() []string {
 // Unlike ProcessService, does NOT call Started() immediately.
 // Waits for the launcher to exit and then reads the PID file.
 func (s *BGProcessService) BringUp() bool {
-	if len(s.command) == 0 {
+	if len(s.command) == 0 && s.followPID == "" {
 		s.services.logger.Error("Service '%s': no command specified", s.serviceName)
 		return false
 	}
@@ -298,7 +361,7 @@ func (s *BGProcessService) BringUp() bool {
 	// init pid. If neither pid-file nor guess-main-pid is set, we
 	// still refuse (a bgprocess without either has no way to track
 	// its lifecycle).
-	if s.pidFile == "" && !s.Record().GuessMainPID() {
+	if s.pidFile == "" && s.followPID == "" && !s.Record().GuessMainPID() {
 		s.services.logger.Error("Service '%s': no pid-file specified for bgprocess (or set guess-main-pid = yes)", s.serviceName)
 		return false
 	}
@@ -336,6 +399,26 @@ func (s *BGProcessService) BringUp() bool {
 	s.stopIssued = false
 	s.exitStatus = ExitStatus{}
 	s.daemonPID = 0
+	s.publishPID()
+
+	// follow-pid: there is nothing to launch. Adopt the process the pid
+	// file names and hand it to the same supervisor a launched daemon
+	// gets — the poll already tolerates a reparented process, notices a
+	// zombie, and checks /proc start time so a recycled pid is not
+	// mistaken for the original.
+	//
+	// None of the launch machinery below applies: no pipe to create,
+	// because the process's stdio belongs to whoever started it and
+	// cannot be redirected after the fact, and no exec to configure,
+	// because the credentials, cgroup and hardening of a process we did
+	// not start are already fixed. The loader refuses the directives that
+	// contradict following outright (command, pid-file, a non-bgprocess
+	// type); the exec-time ones are documented as not applying rather
+	// than enumerated here, because that list lives in pkg/process and a
+	// copy of it would drift.
+	if s.followPID != "" {
+		return s.adoptFollowedPID()
+	}
 
 	// Set up output pipe based on log type
 	var outputPipe *os.File
@@ -434,6 +517,7 @@ func (s *BGProcessService) BringUp() bool {
 	}
 
 	s.launcherPID = pid
+	s.publishPID()
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Start monitoring goroutine for the launcher process
@@ -491,7 +575,7 @@ func (s *BGProcessService) BringDown() {
 	// forking daemon's workers are its children and share its group, and
 	// signalling the master alone orphans them. SignalProcessOnly opts
 	// out, matching dinit, where kill_pg gates on the same flag.
-	err := process.SignalDaemonGroup(pid, sig, s.Flags.SignalProcessOnly)
+	err := process.SignalDaemonGroup(pid, sig, s.signalProcessOnly(pid))
 	if err != nil {
 		s.services.logger.Error("Service '%s': failed to signal process: %v",
 			s.serviceName, err)
@@ -546,7 +630,7 @@ func (s *BGProcessService) execStopCommand() bool {
 				if sig == 0 {
 					sig = syscall.SIGTERM
 				}
-				process.SignalDaemonGroup(daemonPID, sig, s.Flags.SignalProcessOnly)
+				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
 			}
 		} else {
 			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
@@ -560,7 +644,7 @@ func (s *BGProcessService) execStopCommand() bool {
 				if sig == 0 {
 					sig = syscall.SIGTERM
 				}
-				process.SignalDaemonGroup(daemonPID, sig, s.Flags.SignalProcessOnly)
+				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
 			}
 		}
 	}()
@@ -673,6 +757,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	defer s.services.queueMu.Unlock()
 
 	s.launcherPID = 0
+	s.publishPID()
 	s.procHandle.Clear()
 
 	// Record exit status
@@ -757,11 +842,38 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	s.finishPIDDiscoveryLocked(pid)
 }
 
+// adoptFollowedPID starts a follow-pid service: read the pid file, attach
+// to what it names, and let monitorDaemon supervise it. Caller holds
+// queueMu, as for every BringUp.
+//
+// A pid file that is absent, or that names a process which is not running,
+// is NOT a failure here — it is the normal case when slinit is asked to
+// follow something that has not been started yet, or whose file is left
+// over from a previous run. Both wait for the start-timeout, which is the
+// only honest reading: we cannot distinguish "about to appear" from "never
+// going to" except by waiting. A launched bgprocess treats the same result
+// as fatal, because there the daemon was just forked and a dead pid means
+// it died; pollForPIDFile tells the two apart by s.followPID.
+func (s *BGProcessService) adoptFollowedPID() bool {
+	pid, result, err := process.ReadPIDFile(s.followPID)
+	switch result {
+	case process.PIDResultOK:
+		s.services.logger.Info("Service '%s': following existing process %d from %s",
+			s.serviceName, pid, s.followPID)
+		s.finishPIDDiscoveryLocked(pid)
+	default:
+		// Absent, stale or unparseable — wait for the owner to write it.
+		s.pollForPIDFile(s.followPID, err)
+	}
+	return true
+}
+
 // finishPIDDiscoveryLocked completes a successful start once the daemon's
 // PID is known. Shared by the immediate read and the polling path so the
 // two cannot drift apart. Caller holds queueMu.
 func (s *BGProcessService) finishPIDDiscoveryLocked(pid int) {
 	s.daemonPID = pid
+	s.publishPID()
 
 	// Create utmp entry for the daemon process
 	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
@@ -858,8 +970,23 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				s.services.queueMu.Unlock()
 				return
 			}
-			if result == process.PIDResultTerminated {
+			if result == process.PIDResultTerminated && s.followPID == "" {
 				s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
+			} else if result == process.PIDResultTerminated {
+				// Following: the file is stale, or names a process that
+				// has not started yet. Keep waiting rather than failing
+				// on somebody else's leftover file.
+				if time.Now().After(expiry) {
+					if s.state.Load() == StateStarting {
+						s.failPIDDiscoveryLocked(fmt.Errorf(
+							"pid file %s still names a process that is not running (PID %d) after %s",
+							pidFile, pid, deadline))
+					}
+					s.services.queueMu.Unlock()
+					return
+				}
+				s.services.queueMu.Unlock()
+				continue
 			} else {
 				s.finishPIDDiscoveryLocked(pid)
 			}
@@ -958,6 +1085,7 @@ func (s *BGProcessService) handleDaemonTermination() {
 	s.exitStatus = ExitStatus{Vanished: true}
 
 	s.daemonPID = 0
+	s.publishPID()
 	s.cancelTimer()
 
 	switch state {

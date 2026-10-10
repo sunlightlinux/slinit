@@ -93,6 +93,7 @@ var KnownSettings = map[string]OperatorType{
 	"termsignal":                 OpEquals, // deprecated alias (dinit compat)
 	"stopsig":                    OpEquals, // OpenRC alias
 	"reload-signal":              OpEquals, // upstart-inspired: signal sent by `slinitctl reload-signal`
+	"follow-pid":    OpEquals,
 	"pid-file":                   OpEquals,
 	"ready-notification":         OpEquals,
 	"watchdog-timeout":           OpEquals,

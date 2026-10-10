@@ -290,6 +290,7 @@ type ServiceDescription struct {
 	TermSignal           syscall.Signal
 	ReloadSignal         syscall.Signal // upstart-inspired; 0 = unset
 	PIDFile              string
+	FollowPID            string // adopt an already-running process named by this pid file
 	ReadyNotification    string
 	ReadyNotifyFD        int           // parsed from pipefd:N (-1 if unset)
 	ReadyNotifyVar       string        // parsed from pipevar:VARNAME
@@ -2294,6 +2295,8 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	// Process management
 	case "pid-file":
 		desc.PIDFile = expandEnvVars(value, serviceArg)
+	case "follow-pid":
+		desc.FollowPID = expandEnvVars(value, serviceArg)
 	case "ready-notification":
 		desc.ReadyNotification = value
 		if err := parseReadyNotification(desc, value); err != nil {

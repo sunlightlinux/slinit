@@ -451,6 +451,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetWorkingDir(desc.WorkingDir)
 		s.SetEnvFile(desc.EnvFile)
 		s.SetPIDFile(desc.PIDFile)
+		s.SetFollowPID(desc.FollowPID)
 		if desc.StartTimeout > 0 {
 			s.SetStartTimeout(desc.StartTimeout)
 		}
@@ -924,6 +925,31 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: follow-pid adopts a process slinit did not start, so the
+	// directives that describe starting one have nothing to act on.
+	if desc.FollowPID != "" {
+		if desc.Type != service.TypeBGProcess {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message:     "follow-pid is only meaningful for type = bgprocess",
+			}
+		}
+		if len(desc.Command) > 0 {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message: "follow-pid and command are mutually exclusive — follow-pid adopts a " +
+					"process started elsewhere; use pid-file if slinit should launch it",
+			}
+		}
+		if desc.PIDFile != "" {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message: "follow-pid and pid-file are mutually exclusive — both name the file the " +
+					"daemon's pid is read from, and only follow-pid means slinit must not start it",
+			}
+		}
+	}
+
 	// Validate: NUMA policy + nodes cross-fields
 	if desc.NumaMempolicySet {
 		switch desc.NumaMempolicy {
@@ -1335,6 +1361,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		svc.SetWorkingDir(desc.WorkingDir)
 		svc.SetEnvFile(desc.EnvFile)
 		svc.SetPIDFile(desc.PIDFile)
+		svc.SetFollowPID(desc.FollowPID)
 		if desc.StartTimeout > 0 {
 			svc.SetStartTimeout(desc.StartTimeout)
 		}

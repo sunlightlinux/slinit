@@ -1040,6 +1040,45 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 **pid-file**=*path*
 :   For **bgprocess**: file the daemon will write its PID to.
 
+**follow-pid**=*path* (since 3.1.3)
+:   For **bgprocess**: supervise a process slinit did **not** start,
+    whose PID is in *path*. slinit adopts whatever the file names and
+    watches it the same way it watches a daemon it launched — polling,
+    detecting a zombie, and comparing /proc start time so a recycled PID
+    is not mistaken for the original.
+
+    Mutually exclusive with **command** and **pid-file**: following means
+    there is nothing for slinit to launch, and no **command** is needed
+    or accepted. Only meaningful for **bgprocess**.
+
+    A pid file that is missing, or that names a process which is not
+    running, is not an immediate failure: both are indistinguishable from
+    one about to be written, so slinit waits up to **start-timeout**
+    (default applies when unset) and fails the start only then. This is
+    the opposite of a launched **bgprocess**, where the daemon was just
+    forked and a dead PID means it died.
+
+    **Stopping** signals the adopted process. Where a launched daemon's
+    whole process group is signalled — so a forking daemon's workers stop
+    with their master instead of being orphaned — an adopted process's
+    group is signalled only when that process **leads** it. slinit did not
+    create the group, and if the process is not its leader the group
+    belongs to whoever started it, plausibly an interactive shell whose
+    job a service stop must not kill. **signal-process-only** = yes
+    forces the narrow behaviour in either case.
+
+    Settings that only take effect when slinit execs a process — the
+    credential, cgroup, resource-limit and hardening directives, and the
+    log directives that need slinit to own the process's stdio — do
+    **not** apply to an adopted process, because its credentials and file
+    descriptors were fixed by whoever started it. They are accepted
+    without effect rather than rejected; `slinit-check` does not flag
+    them.
+
+    When the adopted process exits, the configured **restart** policy
+    applies as usual. With nothing to launch, a restart means reading the
+    pid file again and waiting for a live PID to appear in it.
+
 **ready-notification**=*spec*
 :   How the service signals readiness. Supported forms:
 
