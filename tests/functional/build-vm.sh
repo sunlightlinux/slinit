@@ -129,9 +129,10 @@ fi
 mkdir -p "${ROOTFS_DIR}/var/log/nginx" "${ROOTFS_DIR}/var/lib/nginx/tmp" \
          "${ROOTFS_DIR}/etc/nginx/http.d"
 # The package ships /var/lib/nginx as 0750 and relies on a post-install
-# chown; cpio runs unprivileged here so the uid cannot be set. Making the
-# tree traversable is the part that matters — without it the worker runs
-# as nginx, cannot descend into the document root, and answers 403.
+# chown to the nginx user, which this build cannot do: cpio records root
+# for everything (-R 0:0 below), not a per-path owner. Making the tree
+# traversable is the part that matters — without it the worker runs as
+# nginx, cannot descend into the document root, and answers 403.
 chmod 0755 "${ROOTFS_DIR}/var/lib/nginx"
 chmod -R a+rX "${ROOTFS_DIR}/var/lib/nginx/html" 2>/dev/null || true
 cat > "${ROOTFS_DIR}/etc/nginx/http.d/default.conf" <<'NGINXCONF'
@@ -229,7 +230,17 @@ install -m 755 "${SCRIPT_DIR}/lib/guest-runner.sh" "${ROOTFS_DIR}/test/guest-run
 # Create initramfs
 echo "[5/5] Creating initramfs..."
 cd "${ROOTFS_DIR}"
-find . | cpio -o -H newc 2>/dev/null | gzip > "${OUTPUT_DIR}/initramfs-base.cpio.gz"
+# -R 0:0 records root ownership in the archive. cpio cannot chown as an
+# unprivileged user, but the owner it *writes into the archive* is just
+# metadata, so the VM gets a rootfs that looks like a real one instead of
+# one owned by whoever ran the build. Without it every file came up owned
+# by the build uid, and slinit-runner refused to preload
+# libslinit-mlock.so into a service with "not owned by root" — correctly,
+# since a library it loads into a root service must not be replaceable by
+# a normal user. That refusal killed every `mlockall =` service, and
+# 125-mlockall still reported PASS because it sampled the PID while the
+# process was still the runner (see the case).
+find . | cpio -o -H newc -R 0:0 2>/dev/null | gzip > "${OUTPUT_DIR}/initramfs-base.cpio.gz"
 cp "${KERNEL}" "${OUTPUT_DIR}/vmlinuz-virt"
 
 echo "VM build complete."

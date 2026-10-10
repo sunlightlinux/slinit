@@ -55,11 +55,30 @@ assert_service_state "$SVC" "STARTED" "service reached STARTED"
 # reported "RLIMIT_MEMLOCK not raised — line=''": a timing failure
 # wearing the words of a broken feature. An empty value and a zero mean
 # different things, and the message now cannot confuse them.
+# The PID slinit reports is the forked child, which is slinit-runner
+# until it execs into the service. Sampling it too early measures the
+# WRAPPER: the runner calls mlockall(2) on itself before exec, and being
+# a Go program its whole runtime arena gets locked, so /proc/PID/status
+# showed VmLck=1227496 kB with VmSize=1227528 kB — the two within 32 kB
+# of each other, which is the giveaway that what was locked is the Go
+# address space and not the service.
+#
+# That is how this case passed for its whole life while the feature was
+# broken. It asserted at t~0, saw the runner's 1.2 GB, and reported
+# locked memory; three seconds later the service was STOPPED because the
+# runner had refused the preload. So the case must wait for the exec to
+# happen and refuse to measure anything still named slinit-runner.
 _pid=""
 _deadline=$(( $(date +%s) + 15 ))
 while [ "$(date +%s)" -lt "$_deadline" ]; do
     _pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ { print $2; exit }')
-    [ -n "$_pid" ] && [ "$_pid" != "0" ] && break
+    if [ -n "$_pid" ] && [ "$_pid" != "0" ]; then
+        case "$(cat "/proc/$_pid/comm" 2>/dev/null)" in
+            slinit-runner) ;;          # still the wrapper; keep waiting
+            "") ;;                     # vanished between the two reads
+            *) break ;;
+        esac
+    fi
     sleep 0.5
 done
 
