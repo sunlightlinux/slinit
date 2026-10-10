@@ -35,9 +35,11 @@ command = /bin/true
 EOF
 
 slinitctl --system start "$IDENT" >/dev/null 2>&1
-# A scripted service runs to completion and settles back to STOPPED;
-# what matters is that starting it emitted a STARTED event carrying
-# its Unit name, which is what the identifier chain has to resolve.
+# A scripted service stays STARTED once its command has succeeded — it
+# does not fall back to STOPPED, which an earlier version of this comment
+# claimed. Either way the case does not depend on the state: what matters
+# is that starting it emitted a STARTED event carrying its Unit name,
+# which is what the identifier chain has to resolve.
 _e=0
 while [ "$_e" -lt 10 ]; do
     slinit-journalctl -t "$IDENT" -n 5 2>/dev/null | grep -q "$IDENT" && break
