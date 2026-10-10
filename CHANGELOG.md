@@ -24,6 +24,84 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.4] — 2026-10-10
+
+**No product code changed.** Two commits, both under `tests/`. As with
+v3.1.2, the reason to cut it is what the tests were hiding.
+
+### Fixed
+
+- **Three performance cases reported more work costing less**, which is
+  the only reason anyone looked at them. Each was broken differently:
+
+  * **`750`** built a **100-deep** dependency chain. `MaxDepDepth` is
+    32, so the tip never loaded: `slinitctl start` answered "service
+    could not be loaded", the case discarded that output, and then timed
+    `slinitctl status` against the same error reply. An error is cheaper
+    than a real status, which is why the 100-deep figure beat `560`'s
+    10-deep one on every run — 1.824 ms against 2.192, then 1.378
+    against 2.296. For its whole life the case measured a failure path.
+
+    It is now `750-deep-chain-depth`, since the old name claimed a depth
+    that cannot exist. It builds depth 4 and depth 31 in one run and
+    reports ratios, so both arms are measured under one set of
+    conditions rather than across two cases at two times, and it checks
+    the tip's start instead of discarding it.
+
+    The second measurement is new, because `status` cannot show an
+    O(depth) dependency walk: it renders one service's own fields and
+    its journal tail and traverses nothing — checked against the running
+    daemon. So status is measured as the claim it can support, that its
+    cost does not grow with depth (**1.05x for 7.8x the depth**), and
+    the walk is measured where it happens, the cold start of the chain
+    (**3.41x for 7.8x**, sub-linear).
+
+  * **`790`** timed one `slinitctl list` on each side of provisioning
+    100 services. A single sample of a ~1.2 ms command cannot carry a
+    ratio: it reported 1.06x on one run and 0.87x on the next, and
+    0.87x says adding 100 services made `list` faster. Medians of
+    warmed-up runs give **1.00x**, which is believable and is itself a
+    result.
+
+  * **`160`** is the one the first diagnosis got wrong. Its -17% was
+    attributed to a cold "before" against a warm "after"; the delta
+    survived warm-up and tripled samples almost unchanged, at -14%. The
+    real reason is that the case cannot observe what it varies:
+    `slinit-journalctl` reads PID 1's ring, that ring is capped at 4096
+    entries and already full on any box that has been up a while, so
+    emitting 5000 more **replaces** contents rather than growing
+    anything. Entry length is identical either side, measured.
+
+    The measurement is now stable enough to mean something — both
+    medians are of nine warmed reads — but **the premise is not fixed**,
+    and the case says so. A real size-scaling test has to read the
+    on-disk journal `slinit-journald` writes, where the file does grow,
+    rather than a ring that cannot.
+
+- **`560`'s comment claimed `status` "walks the full chain".** It does
+  not. Corrected, and it now points at `750` for the depth comparison.
+
+- **`202`'s comment claimed a scripted service "settles back to
+  STOPPED"** after its command completes. It stays STARTED — checked
+  against the running daemon. The case never depended on it, so nothing
+  behaves differently, but a wrong comment in a test is how the next
+  reader learns the wrong thing: the musl claim in `build-vm.sh` sat
+  there for months and cost a release to unwind.
+
+- One median implementation in the perf prelude, used by
+  `perf_run_iters` and by the new `perf_median_ns`. Three copies of that
+  awk had accumulated, and a median that disagrees with itself between
+  cases is worse than none.
+
+### Known
+
+**"Faster with more load" is physically impossible, so it is a free
+oracle — and nothing watches for it.** It is what exposed a case that
+had been timing an error reply through years of green runs. Two habits
+follow: scan performance output for ratios below 1.0 and negative deltas
+before anything else, and never discard a setup command's exit status,
+which is precisely what hid the unloadable chain.
+
 ## [3.1.3] — 2026-10-10
 
 One commit: `follow-pid`, the last of the immortal adaptations. Purely
