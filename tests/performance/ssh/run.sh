@@ -107,10 +107,11 @@ for case_path in "${CASES[@]}"; do
     if [ "$VERBOSE" = "1" ]; then
         echo "  (ssh: cd ${REMOTE_DIR} && ITERS=${ITERS} sh -c ...)"
     fi
-    # Forward SLINIT_ALLOW_DISRUPTIVE so disruptive-gated cases run
-    # when the operator explicitly opts in. ssh_run doesn't inherit
-    # the local environment, so we pass it inline.
-    _remote_env="ITERS=${ITERS} SLINIT_ALLOW_DISRUPTIVE=${SLINIT_ALLOW_DISRUPTIVE:-0}"
+    # ssh_run doesn't inherit the local environment, so case knobs are
+    # passed inline. SLINIT_ALLOW_DISRUPTIVE used to be forwarded here
+    # for 580/600; it was dropped when they were ungated, since nothing
+    # reads it any more.
+    _remote_env="ITERS=${ITERS}"
     # Don't let `set -e` abort the suite mutely. A case's exit status is
     # its LAST command's, so a trailing best-effort cleanup without
     # `|| true` fails the case even though every benchmark printed fine.

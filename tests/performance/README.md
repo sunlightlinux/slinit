@@ -82,6 +82,8 @@ parser stress, and dep-tree scaling.
 See [ssh/README.md](ssh/README.md) for the full case list and the
 architectural findings extracted from them.
 
-Two cases (`580` + `600`) are gated behind `SLINIT_ALLOW_DISRUPTIVE=1`
-and one (`810` socket-activation-on-demand) is a documented SKIP
-pending semantics review.
+`580` + `600` used to be gated behind `SLINIT_ALLOW_DISRUPTIVE=1`
+after panicking PID 1 on v2.2.6; the gate was retired once both were
+verified on v3.1.1, so they now run with the rest. One case (`810`
+socket-activation-on-demand) is a documented SKIP pending semantics
+review.

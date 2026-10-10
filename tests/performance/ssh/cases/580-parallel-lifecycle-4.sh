@@ -5,15 +5,15 @@
 # is parallel-safe (writes to different files, different svc
 # names in slinit's map).
 #
-# DISRUPTIVE: crashed slinit as PID 1 on ceres (v2.2.6) —
-# concurrent write→start→stop→unload of throwaway svcs hits a
-# state-machine race that panics the kernel. Gated behind
-# SLINIT_ALLOW_DISRUPTIVE=1; kept in-tree so it can validate
-# the fix. Rebuild the ISO with the fix before rerunning.
-if [ "${SLINIT_ALLOW_DISRUPTIVE:-0}" != "1" ]; then
-    echo "SKIP: known to crash slinit PID 1 (v2.2.6); set SLINIT_ALLOW_DISRUPTIVE=1 to run"
-    return 0 2>/dev/null || exit 0
-fi
+# This case found a real one: on v2.2.6 the concurrent
+# write→start→stop→unload raced `pkg/config`'s unguarded
+# DirLoader map, Go's runtime killed PID 1, and the kernel
+# panicked. Fixed in v2.2.7 (`cfe16ab`), and it ran gated behind
+# SLINIT_ALLOW_DISRUPTIVE=1 for nine releases after the fix
+# shipped — so the only integration-level guard for that panic
+# never executed again. The gate is gone: it runs, and if the
+# mutex is ever removed this case is what takes PID 1 down and
+# says why.
 _lifecycle_one() {
     _name="perf-throwaway-plc-$$-$1"
     _svcfile="/etc/slinit.d/$_name"

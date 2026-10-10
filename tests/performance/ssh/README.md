@@ -130,16 +130,12 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `880-fd-store-preserve`        | file-descriptor-store-preserve setup cost |
 | `890-slinit-check-boot`        | `slinit-check boot` recursive dep-tree parse |
 
-### Disruptive cases (opt-in only)
+### The cases that once took PID 1 down
 
-Cases marked **DISRUPTIVE** are known to crash slinit as PID 1 on
-the versions where they surfaced the bug. They stay in-tree so
-they can validate the fix, but skip themselves by default unless
-`SLINIT_ALLOW_DISRUPTIVE=1` is set in the case's environment.
-Never run against a production target without a recovery plan
-(console access + power-cycle capability).
+Nothing is gated any more. This section records why two cases were,
+and what retiring the gate cost to learn.
 
-Currently gated:
+Previously gated:
 - **`580-parallel-lifecycle-4`** — 4 concurrent throwaway
   provision+start+stop+unload lifecycles panicked slinit PID 1
   on v2.2.6.
@@ -155,15 +151,25 @@ kernel panicked. Fix adds `sync.Mutex` to DirLoader plus a
 `loadServiceLocked` bypass so a single goroutine holds the lock
 through the whole dep-tree load without self-deadlocking.
 Regression test `TestDirLoader_ConcurrentLoadService` in
-`pkg/config` reproduces the race in 9 ms with 32 goroutines. The
-gated cases stay in-tree so any future regression that removes
-the mutex fails them immediately.
+`pkg/config` reproduces the race in 9 ms with 32 goroutines.
 
-All cases are **read-only** or write to the journal (which is
-designed to absorb high write volume). No case starts/stops real
-services. Start/stop throughput cases should ship as separate
-scripts that provision a throwaway `type=oneshot` service at setup
-and remove it at teardown.
+**The gate outlived the bug by nine releases.** This README already
+said "Fixed in v2.2.7", and the two cases went on skipping anyway, so
+the only integration-level guard for a kernel panic stopped running at
+the moment it became able to pass. Both were verified against v3.1.1
+on 2026-10-10 — 580 at median 4.5 ms, 600 at status p99 5.1 ms, PID 1's
+`starttime` unchanged either side — and ungated. If the mutex ever goes
+away, these two take the target down, which is what they are for; run
+them where you have console access.
+
+The lesson generalises past this suite: a skipped case is a verdict of
+its own, and a gate added for a specific bug needs retiring in the same
+commit that fixes it, or it quietly becomes permanent.
+
+Most cases are **read-only** or write to the journal (which is designed
+to absorb high write volume). The lifecycle family (`460`, `530`, `540`,
+`580`, `600`, `640`-`660`, `670`, `680`, `710`-`740`) does provision and
+start/stop throwaway services, each cleaning up its own at teardown.
 
 ### Naming variables inside cases
 

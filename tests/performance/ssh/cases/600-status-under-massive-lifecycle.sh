@@ -4,16 +4,10 @@
 # reads get starved when the whole state machine is churning.
 # Healthy: status p99 stays within ~2x isolated baseline.
 #
-# DISRUPTIVE: same class of crash as `580` — parallel throwaway
-# lifecycles panic slinit PID 1 on v2.2.6. This case fans out
-# 5x more aggressively than 580, so it will crash faster. Gated
-# behind SLINIT_ALLOW_DISRUPTIVE=1; kept in-tree so it can
-# validate the fix. Rebuild + install the fixed ISO before
-# rerunning.
-if [ "${SLINIT_ALLOW_DISRUPTIVE:-0}" != "1" ]; then
-    echo "SKIP: known to crash slinit PID 1 (v2.2.6); set SLINIT_ALLOW_DISRUPTIVE=1 to run"
-    return 0 2>/dev/null || exit 0
-fi
+# Same class of crash as `580` on v2.2.6, fanned out 5x harder,
+# so it panicked faster. Fixed in v2.2.7 (`cfe16ab`) and ungated
+# once both were verified on v3.1.1 — see 580's header for why
+# leaving them gated after the fix was worse than running them.
 _hammer_lifecycle() {
     _name="perf-throwaway-mass-$$-$1"
     _svcfile="/etc/slinit.d/$_name"
