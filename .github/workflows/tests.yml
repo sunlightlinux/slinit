@@ -42,7 +42,15 @@ jobs:
           go-version-file: go.mod
 
       - name: Install image-build tools
-        run: sudo apt-get update && sudo apt-get install -y cpio
+        # musl-tools provides musl-gcc. The rootfs is Alpine, so the
+        # libslinit-mlock.so that slinit-runner preloads for `mlockall =`
+        # has to be built for musl; built against glibc it carries an
+        # unsatisfiable DT_NEEDED on libc.so.6, which ld.so skips with a
+        # warning, leaving the service unlocked. build-vm.sh installs
+        # nothing when it has no musl compiler, and 125-mlockall then
+        # SKIPs — green, and testing nothing. This is what keeps it
+        # running for real here.
+        run: sudo apt-get update && sudo apt-get install -y cpio musl-tools
 
       # build-vm.sh caches the Alpine minirootfs, kernel and packages
       # here. Keyed on the script because that is what pins the Alpine
