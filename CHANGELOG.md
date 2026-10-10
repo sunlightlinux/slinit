@@ -24,6 +24,73 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.0] — 2026-10-10
+
+Thirty-eight commits, mostly one sweep: taking each tool and directive
+that documented more than it delivered, and making the code match. The
+list under `Fixed` is long because that sweep found a lot, and because
+most of what it found was silent — a directive that parsed and did
+nothing reads exactly like a directive that works.
+
+**Why a minor and not a patch.** Nearly every entry here is a bug fix
+by [STABILITY.md](STABILITY.md)'s first rule: the behaviour now matches
+what slinit already documented. But several of them change what an
+existing, working configuration does — a misspelt capability used to
+load, `standard-input-text` used to append, a failing health check used
+to be ignored — and that is the test the policy actually applies. They
+are collected under `Changed` with what to check. `socket-activation =
+on-demand` going from a no-op to a working path is a subsystem arriving,
+which the policy also puts in a minor.
+
+**The one exception worth reading first** is under `Security`: a service
+whose `run-as` user did not resolve ran as **root**. If you run slinit
+as PID 1, that is the entry to check your service files against.
+
+### Changed
+
+Each of these corrects slinit to its documentation, and each can change
+what a configuration that works today does. Nothing here is a new
+feature; the `Fixed` section below has the detail.
+
+- **A misspelt name in `capabilities`, `capability-bounding-set` or
+  `securebits` is now rejected at load.** It used to be accepted and
+  dropped, so the service started with less confinement than its file
+  asked for.
+  **Compat:** a service file with a typo loaded before and will now
+  fail to load. Run `slinit-check` over `/etc/slinit.d` before
+  rebooting into this version — that is exactly what it is for.
+
+- **`standard-input-text =` replaces rather than appends.** Repeating
+  the directive used to concatenate, which no other `=` directive does
+  and which the manual did not say.
+  **Compat:** a service that repeated the directive to build up a
+  multi-line stdin now gets only the last line. Use `+=` to append.
+
+- **A failing health check now stops or restarts the service**, the way
+  a watchdog expiry does. It used to be logged and otherwise ignored.
+  **Compat:** a service with a `health-check-command` that has been
+  failing quietly will now be acted on. Check what your health checks
+  actually return before rebooting into this.
+
+- **`slinitctl` exits 2 on a usage error**, which STABILITY.md has
+  always promised; it exited 1.
+  **Compat:** a script that treats 1 as "usage error" and 2 as
+  something else needs a look. A script that only tests for non-zero
+  does not.
+
+- **`socket-activation = on-demand` works.** It parsed and did nothing,
+  so a service declaring it was started eagerly like any other.
+  **Compat:** such a service now waits for its first connection
+  instead of starting at boot. If something depended on it being up
+  early, say so with `depends-on` rather than relying on the eager
+  start.
+
+- **`mlockall`, `securebits` and `tty-vhangup` take effect.** All three
+  parsed and did nothing.
+  **Compat:** a service asking for `mlockall` now actually locks its
+  memory, which consumes it. `RLIMIT_MEMLOCK` is raised to unlimited
+  for that service, so a value set by the operator no longer caps it.
+
 ### Added
 
 - A user instance also searches **`$XDG_RUNTIME_DIR/slinit.d`** (when
