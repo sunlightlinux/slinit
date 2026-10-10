@@ -22,6 +22,30 @@ EOF
 
 slinitctl --system start "$SVC" 2>/dev/null
 wait_for_service "$SVC" STARTED 10
+
+# Diagnose before asserting. When the preload library loads and its
+# mlockall(2) fails, it writes "slinit-mlock: mlockall: <errno>" to the
+# service's stderr and _exit(127)s — by design, since a service that
+# asked for locked memory and did not get it is the failure the setting
+# exists to prevent. That message goes to the service's log, not the
+# console, so the case used to report only "got 'STOPPED'" and left the
+# reason in the VM. Everything needed to tell the three candidate causes
+# apart — library absent, library present but unloadable, library loaded
+# and the syscall refused — is printed here.
+if [ "$(slinitctl --system status "$SVC" 2>/dev/null | awk '/^ *State:/ { print $2; exit }')" != "STARTED" ]; then
+    echo "INFO: $SVC is not STARTED — gathering why"
+    echo "INFO:   runner:  $(command -v slinit-runner || echo ABSENT)"
+    if [ -f /lib/slinit/libslinit-mlock.so ]; then
+        echo "INFO:   library: present ($(wc -c < /lib/slinit/libslinit-mlock.so) bytes)"
+        echo "INFO:   NEEDED:  $(strings /lib/slinit/libslinit-mlock.so 2>/dev/null | grep -m3 '^libc' | tr '\n' ' ')"
+    else
+        echo "INFO:   library: ABSENT from /lib/slinit"
+    fi
+    echo "INFO:   service log:"
+    slinitctl --system catlog "$SVC" 2>/dev/null | tail -5 | sed 's/^/INFO:     /'
+    slinit-journalctl -u "$SVC" -n 5 --no-pager 2>/dev/null | sed 's/^/INFO:     /'
+fi
+
 assert_service_state "$SVC" "STARTED" "service reached STARTED"
 
 # Wait off the clock, not off an iteration count. This loop used to try
