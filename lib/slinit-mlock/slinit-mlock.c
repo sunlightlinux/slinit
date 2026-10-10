@@ -21,8 +21,20 @@
  * and everything they run are left alone.
  *
  * Only plain libc calls are used — no stdio, no strtol, nothing FORTIFY
- * rewrites — so one build loads under glibc of any age and under musl,
- * whose loader resolves a glibc DT_NEEDED on libc.so.6 to itself.
+ * rewrites — so one build loads under any version of the libc it was
+ * built against.
+ *
+ * It must be built for the libc of the system it will be preloaded on.
+ * A comment here used to claim that musl's loader resolves a glibc
+ * DT_NEEDED on libc.so.6 to itself. It does not: musl answers for the
+ * names `libc.so` and `libc.musl-<arch>.so.1`, and base Alpine has no
+ * libc.so.6 at all, so a glibc build is simply skipped by ld.so with a
+ * warning and the service runs unlocked. slinit-runner now refuses to
+ * start a service when the two libcs disagree, rather than leaving that
+ * to be discovered later.
+ *
+ * setenv/unsetenv rule out a freestanding build: they mutate libc's own
+ * environ, so there is no version of this that needs no libc.
  *
  * Build: see Makefile.
  */

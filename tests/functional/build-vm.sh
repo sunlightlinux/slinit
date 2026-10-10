@@ -154,12 +154,43 @@ install -m 755 "${BUILD_DIR}/slinit-monitor" "${ROOTFS_DIR}/usr/bin/slinit-monit
 install -m 755 "${BUILD_DIR}/slinit-runner" "${ROOTFS_DIR}/sbin/slinit-runner"
 # The runner preloads libslinit-mlock.so into services with `mlockall =`;
 # it looks in <runner prefix>/../lib/slinit, i.e. /lib/slinit for /sbin.
-# Built with the host compiler: the library uses only libc calls musl
-# also provides, and musl's loader maps glibc's libc.so.6 onto itself.
-make -s -C "${PROJECT_DIR}/lib/slinit-mlock" clean all
-install -d "${ROOTFS_DIR}/lib/slinit"
-install -m 644 "${PROJECT_DIR}/lib/slinit-mlock/libslinit-mlock.so" "${ROOTFS_DIR}/lib/slinit/libslinit-mlock.so"
-make -s -C "${PROJECT_DIR}/lib/slinit-mlock" clean
+#
+# It must be built for the libc of the ROOTFS, not of the host. This
+# rootfs is Alpine, so musl — and a comment here used to claim that
+# "musl's loader maps glibc's libc.so.6 onto itself", which it does not:
+# base Alpine ships ld-musl and libc.musl-x86_64.so.1 and no libc.so.6
+# at all. A host-built library therefore carried an unsatisfiable
+# DT_NEEDED, ld.so skipped the preload with a warning, and the service
+# ran unlocked. 125-mlockall still passed locally and failed in CI,
+# which is what a silent preload failure looks like.
+#
+# musl's own loader answers DT_NEEDED for the names `libc.so` and
+# `libc.musl-*.so.1` itself, so either is fine; what is not fine is
+# libc.so.6.
+MLOCK_CC=""
+for cc in musl-gcc x86_64-linux-musl-gcc x86_64-alpine-linux-musl-gcc; do
+    if command -v "$cc" >/dev/null 2>&1; then MLOCK_CC="$cc"; break; fi
+done
+if [ -z "${MLOCK_CC}" ] && command -v zig >/dev/null 2>&1; then
+    MLOCK_CC="zig cc -target x86_64-linux-musl"
+fi
+
+if [ -n "${MLOCK_CC}" ]; then
+    make -s -C "${PROJECT_DIR}/lib/slinit-mlock" clean
+    make -s -C "${PROJECT_DIR}/lib/slinit-mlock" CC="${MLOCK_CC}" all
+    install -d "${ROOTFS_DIR}/lib/slinit"
+    install -m 644 "${PROJECT_DIR}/lib/slinit-mlock/libslinit-mlock.so" \
+        "${ROOTFS_DIR}/lib/slinit/libslinit-mlock.so"
+    make -s -C "${PROJECT_DIR}/lib/slinit-mlock" clean
+else
+    # Deliberately install nothing. A glibc library here would be worse
+    # than none: the runner now refuses to start a service whose
+    # mlockall it cannot honour, so an absent library is a clear
+    # failure, while a wrong one was a silent one. 125-mlockall skips
+    # when the library is missing.
+    echo "  note: no musl compiler (musl-gcc or zig); skipping libslinit-mlock.so" >&2
+    echo "        — 125-mlockall will skip. Install musl-tools or zig to run it."
+fi
 install -m 755 "${BUILD_DIR}/slinit-binfmt" "${ROOTFS_DIR}/usr/bin/slinit-binfmt"
 install -m 755 "${BUILD_DIR}/slinit-sysctl" "${ROOTFS_DIR}/usr/bin/slinit-sysctl"
 install -m 755 "${BUILD_DIR}/slinit-svc-value" "${ROOTFS_DIR}/usr/bin/slinit-svc-value"

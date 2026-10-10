@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"debug/elf"
 	"fmt"
 	"os"
@@ -130,7 +131,105 @@ func checkPreloadTarget(target, lib string) error {
 		return fmt.Errorf("%s is %v/%v but %s is %v/%v", path, tf.Class, tf.Machine,
 			lib, lf.Class, lf.Machine)
 	}
+	return checkLibcMatch(tf, lf, path, lib)
+}
+
+// checkLibcMatch refuses a library built against a different libc from
+// the program it is to be preloaded into.
+//
+// This was the hole the other checks left. The library is built by
+// whoever packages slinit, against whatever libc that machine has; the
+// service can be a musl binary on the same system, or the whole rootfs
+// can be musl while the library was built on a glibc host. ld.so then
+// cannot resolve the library's DT_NEEDED, treats the preload as a
+// warning, and runs the program anyway — so `mlockall = current+future`
+// produced a service that was not locked and said nothing. In the
+// functional VM that passed locally and failed in CI, which is what a
+// silent preload failure looks like from the outside.
+//
+// The test is the libc each side names, not a version: musl's loader
+// answers DT_NEEDED for `libc.so` and `libc.musl-<arch>.so.1` itself,
+// while glibc's is `libc.so.6`. A library naming neither (built
+// freestanding) is left alone — it needs no libc and loads under both.
+func checkLibcMatch(target, lib *elf.File, targetPath, libPath string) error {
+	libLibc, err := libcFlavourOfNeeded(lib)
+	if err != nil {
+		return fmt.Errorf("%s: %w", libPath, err)
+	}
+	if libLibc == libcUnknown {
+		return nil // no libc dependency to mismatch
+	}
+
+	targetLibc := libcFlavourOfInterp(target)
+	if targetLibc == libcUnknown {
+		// An interpreter we do not recognise. Say so rather than
+		// guessing: a wrong guess here either refuses a service that
+		// would have worked or lets a silent no-op through, and the
+		// second is the failure this function exists to stop.
+		return fmt.Errorf("cannot tell which libc %s uses, so cannot tell whether "+
+			"%s (%s) will load into it", targetPath, libPath, libLibc)
+	}
+	if targetLibc != libLibc {
+		return fmt.Errorf("%s is %s but %s is built for %s: the loader would skip "+
+			"the preload and the service would run unlocked",
+			targetPath, targetLibc, libPath, libLibc)
+	}
 	return nil
+}
+
+type libcFlavour string
+
+const (
+	libcUnknown libcFlavour = ""
+	libcGlibc   libcFlavour = "glibc"
+	libcMusl    libcFlavour = "musl"
+)
+
+func (l libcFlavour) String() string {
+	if l == libcUnknown {
+		return "an unrecognised libc"
+	}
+	return string(l)
+}
+
+// libcFlavourOfNeeded reads the library's DT_NEEDED entries.
+func libcFlavourOfNeeded(f *elf.File) (libcFlavour, error) {
+	needed, err := f.DynString(elf.DT_NEEDED)
+	if err != nil {
+		return libcUnknown, err
+	}
+	for _, n := range needed {
+		switch {
+		case n == "libc.so.6":
+			return libcGlibc, nil
+		case n == "libc.so" || strings.HasPrefix(n, "libc.musl-"):
+			return libcMusl, nil
+		}
+	}
+	return libcUnknown, nil
+}
+
+// libcFlavourOfInterp reads the program interpreter, which names the
+// libc that will do the loading.
+func libcFlavourOfInterp(f *elf.File) libcFlavour {
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_INTERP {
+			continue
+		}
+		buf := make([]byte, p.Filesz)
+		if _, err := p.ReadAt(buf, 0); err != nil {
+			return libcUnknown
+		}
+		interp := string(bytes.TrimRight(buf, "\x00"))
+		switch {
+		case strings.Contains(interp, "ld-musl"):
+			return libcMusl
+		case strings.Contains(interp, "ld-linux") || strings.Contains(interp, "ld.so"):
+			return libcGlibc
+		}
+		return libcUnknown
+	}
+	return libcUnknown
 }
 
 // resolveInterpreter follows a "#!" line one level: the kernel does not
