@@ -73,9 +73,25 @@ case "$out" in
         ;;
 esac
 
-# Plain --passno <mountpoint> prints just that mount's passno.
+# Plain --passno <mountpoint> is a NAME, not a filter — OpenRC's
+# fstabinfo.c adds the mountpoint to the same list positional arguments
+# go into, and its `else if (!filtered)` branch then appends every fstab
+# entry because the plain form does not set `filtered`. So the real tool
+# prints /home's passno and then each entry's, and slinit matches it.
+#
+# This case used to assert "2" alone, from before slinit-fstabinfo was
+# rewritten to follow OpenRC's union semantics. The rewrite updated the
+# unit test and the man page and missed this case, so the suite was left
+# asserting behaviour the tool it imitates does not have.
 out=$(slinit-fstabinfo --file "$FSTAB" --passno /home 2>&1)
-assert_eq "$(echo "$out" | tr -d '\n')" "2" "--passno /home prints the passno"
+assert_eq "$(echo "$out" | tr -d '\n')" "210220" \
+    "--passno /home prints /home's passno then every entry's (OpenRC)"
+
+# Naming the mountpoint positionally as well is the documented way to
+# get just one passno: the positional argument narrows the list.
+out=$(slinit-fstabinfo --file "$FSTAB" --passno /home /home 2>&1)
+assert_eq "$(echo "$out" | tr -d '\n')" "2" \
+    "--passno /home /home prints only /home's passno"
 
 # Empty result: query for a mountpoint that doesn't exist.
 _TESTS_RUN=$((_TESTS_RUN + 1))

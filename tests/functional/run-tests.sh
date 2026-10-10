@@ -72,6 +72,21 @@ build_base() {
         newest_src=$(find "${PROJECT_DIR}/cmd" "${PROJECT_DIR}/pkg" \
             -name '*.go' -type f -newer "${OUTPUT_DIR}/initramfs-base.cpio.gz" \
             -print -quit 2>/dev/null)
+        # The project's lib/ too, and not only its Go. build-vm.sh
+        # compiles lib/slinit-mlock/slinit-mlock.c into the
+        # libslinit-mlock.so that slinit-runner preloads for `mlockall
+        # =`, so a change there belongs in the image like any other —
+        # and nothing here watched it. 125-mlockall then failed against
+        # a cached image with no such library, reporting an empty
+        # RLIMIT_MEMLOCK line and an empty VmLck as though the feature
+        # were broken, when a rebuild passes. Third directory this check
+        # has had to learn about; the pattern is that anything
+        # build-vm.sh reads has to be watched here.
+        if [ -z "$newest_src" ] && [ -d "${PROJECT_DIR}/lib" ]; then
+            newest_src=$(find "${PROJECT_DIR}/lib" -type f \
+                -newer "${OUTPUT_DIR}/initramfs-base.cpio.gz" \
+                -print -quit 2>/dev/null)
+        fi
         if [ -z "$newest_src" ] && [ "${SCRIPT_DIR}/build-vm.sh" -nt "${OUTPUT_DIR}/initramfs-base.cpio.gz" ]; then
             newest_src="tests/functional/build-vm.sh"
         fi
