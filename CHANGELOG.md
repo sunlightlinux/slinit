@@ -24,6 +24,76 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.3] — 2026-10-10
+
+One commit: `follow-pid`, the last of the immortal adaptations. Purely
+additive — no existing behaviour changes.
+
+### Added
+
+- **`follow-pid`**=*path* on **type = bgprocess**: supervise a process
+  slinit did **not** start, named by a pid file somebody else writes.
+  `command` becomes optional, and the start attaches instead of
+  launching.
+
+  The supervision is the one bgprocess already had, not a new watcher.
+  slinit has never been the parent of a forking daemon either, so the
+  poll that serves it already notices a zombie — `kill(pid, 0)` cannot
+  tell one from a running process — and compares `/proc` start time so a
+  recycled pid is not taken for the original. immortal's reference
+  implementation polls `/proc/<pid>` and nothing else; what was borrowed
+  is the shape, not the code.
+
+  Four decisions that could each reasonably have gone the other way:
+
+  * **A missing or stale pid file waits** for **start-timeout** rather
+    than failing. Both are indistinguishable from a file about to be
+    written, which is the normal case when slinit is asked to follow
+    something started later in the boot, and the only honest way to tell
+    "about to appear" from "never" is to wait. A launched bgprocess still
+    fails fast on the same result, because there the daemon was just
+    forked and a dead pid means it died.
+  * **The stop signals the adopted process's group only if that process
+    leads it.** For a daemon slinit launched, the group is one slinit set
+    up, and signalling it is how a forking daemon's workers stop with
+    their master instead of being orphaned. slinit did not create an
+    adopted process's group, and if the process is not its leader the
+    group belongs to whoever started it — plausibly an interactive shell
+    whose job a service stop must not kill. **signal-process-only** = yes
+    still forces the narrow behaviour either way.
+  * **`command` and `pid-file` are rejected**, not quietly ignored.
+    immortal's launch-then-follow — run the command, and on its exit read
+    the pid file again — is deliberately not implemented: the capability
+    asked for was supervising a process slinit did not start, and that is
+    one semantic rather than two.
+  * **The exec-time directives do not apply** to an adopted process,
+    whose credentials and file descriptors were fixed by whoever started
+    it: the credential, cgroup, resource-limit and hardening settings,
+    and the log settings that need slinit to own its stdio. They are
+    accepted without effect. That is documented rather than enumerated in
+    the loader, because the list lives in `pkg/process` and a copy of it
+    would drift the first time one is added.
+
+  When the adopted process exits, the configured **restart** policy
+  applies; with nothing to launch, a restart means reading the pid file
+  again and waiting for a live pid to appear in it.
+
+- `slinit-check` no longer warns "no command specified" for a follow-pid
+  service. It exempted **internal** and **triggered**; following is the
+  third case with nothing to exec.
+
+### Fixed
+
+- **`BGProcessService.PID()` was a data race.** It read `daemonPID`
+  without holding `queueMu` while `monitorDaemon`'s termination path
+  wrote it under the lock. `ProcessService` has carried an atomic mirror
+  for exactly this since the status-struct audit; bgprocess had the same
+  shape and not the fix. `go test -race` reports it as soon as anything
+  polls `PID()` across a daemon exit, which is what the new restart test
+  does — it was found by writing the test, not by reading the code.
+  Mirrored now, published at all five assignment sites of
+  `daemonPID`/`launcherPID`.
+
 ## [3.1.2] — 2026-10-10
 
 **No product code changed in this release.** Five commits, all under
