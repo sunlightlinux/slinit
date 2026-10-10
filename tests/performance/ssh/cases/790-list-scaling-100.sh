@@ -10,12 +10,19 @@
 # scaling is, a figure that can come out below 1.0 cannot detect it.
 #
 # $ITERS samples a side rather than a fixed 15, for about 70 ms of extra
-# work. Doubling the samples was expected to tighten a noisy figure and
-# did something more useful: 15 samples gave 1.15x and 30 gave 1.14x on
-# the same install, so ~1.14x is signal, not spread — adding 100
-# services really does cost `list` about 14%. The 1.00x seen once before
-# that was on a different install with a different service set, not a
-# contradiction of these two.
+# work.
+#
+# KNOW THE RESOLUTION BEFORE READING THE RATIO. Measured across four
+# runs: 1.00x, 1.15x, 1.14x, 1.08x. Two of those agreed closely enough
+# that ~1.14x looked like a real 14% cost, and a third run undercut it —
+# so the honest reading is that `list` is roughly flat for 100 extra
+# services and this case cannot resolve anything below about 15%.
+#
+# More samples will not fix that. 15 and 30 samples agreed within one
+# install while different installs disagreed, so the spread is
+# per-run box state — service set, page cache — not sampling error.
+# Treat a ratio inside 0.9x-1.2x as "no change detected"; a real
+# regression in list has to be larger than that to show up here.
 _prefix="perf-list100-$$"
 _before=$(slinitctl list 2>/dev/null | wc -l)
 

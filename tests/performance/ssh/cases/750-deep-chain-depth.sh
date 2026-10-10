@@ -106,10 +106,16 @@ for _tip in "$_s_tip" "$_d_tip"; do
 done
 
 # Claim 1: status does not grow with depth.
+#
+# The ratio's own resolution, measured across three runs: 1.05x, 0.99x,
+# 1.20x. So anything inside roughly 0.9x-1.2x is "no growth detected"
+# and a 1.2x reading is not a finding. What would be one is a ratio
+# approaching the depth ratio itself, 7.8x, which is what a per-node
+# walk on the status path would produce.
 _st_s=$(perf_median_ns "$ITERS" "slinitctl status $_s_tip")
 _st_d=$(perf_median_ns "$ITERS" "slinitctl status $_d_tip")
 _st_ratio=$(awk -v a="$_st_d" -v b="$_st_s" 'BEGIN{if(b>0) printf "%.2f", a/b; else print "n/a"}')
-printf "BenchmarkStatus_DeepChain_depth_ratio %4d  d%s=%s ms  d%s=%s ms  ratio=%sx (want ~1x)\n" \
+printf "BenchmarkStatus_DeepChain_depth_ratio %4d  d%s=%s ms  d%s=%s ms  ratio=%sx (flat within 0.9-1.2x)\n" \
     "$ITERS" "$_SHALLOW" \
     "$(awk -v n="$_st_s" 'BEGIN{printf "%.3f", n/1e6}')" "$_DEEP" \
     "$(awk -v n="$_st_d" 'BEGIN{printf "%.3f", n/1e6}')" \
