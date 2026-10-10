@@ -13,6 +13,49 @@ perf_now_ns() {
     date +%s%N
 }
 
+# perf_median_of_file FILE
+#   Median of the newline-separated ns samples in FILE, on stdout. One
+#   implementation, because three copies of this awk had already appeared
+#   and a median that disagrees with itself between cases is worse than no
+#   median at all.
+perf_median_of_file() {
+    sort -n "$1" | awk 'BEGIN{c=0} {a[c++]=$1} END{
+        if (c%2) print a[int(c/2)]; else print (a[c/2-1]+a[c/2])/2}'
+}
+
+# perf_median_ns ITERS "command..."
+#   Median in ns on stdout, with no benchmark line printed — for cases
+#   that compare two medians and report a ratio rather than one figure.
+#
+#   It warms up first, so a cold "before" is not compared against a warm
+#   "after". 790 needed that and the sample count: it timed ONE `list`
+#   each side and reported 1.06x on one run and 0.87x on the next, where
+#   0.87x says adding 100 services made `list` faster. With medians of
+#   warmed runs it reads 1.00x.
+#
+#   Warm-up was NOT the explanation for 160's negative delta, which
+#   survived it almost unchanged (-17% to -14%). See that case: its ring
+#   is capped, so the size it claims to vary never changes.
+perf_median_ns() {
+    _pmn_iters="$1"; _pmn_cmd="$2"
+    _pmn_w=0
+    while [ "$_pmn_w" -lt 3 ]; do
+        eval "$_pmn_cmd" > /dev/null 2>&1
+        _pmn_w=$(( _pmn_w + 1 ))
+    done
+    _pmn_f="$(mktemp)"
+    _pmn_i=0
+    while [ "$_pmn_i" -lt "$_pmn_iters" ]; do
+        _pmn_t0="$(perf_now_ns)"
+        eval "$_pmn_cmd" > /dev/null 2>&1
+        _pmn_t1="$(perf_now_ns)"
+        echo $(( _pmn_t1 - _pmn_t0 )) >> "$_pmn_f"
+        _pmn_i=$(( _pmn_i + 1 ))
+    done
+    perf_median_of_file "$_pmn_f"
+    rm -f "$_pmn_f"
+}
+
 # perf_run_iters ITERS LABEL "command..."
 #   Runs the command ITERS times, timing each with perf_now_ns.
 #   Silences stdout/stderr so the timing is not swamped by tty flush.
@@ -37,8 +80,7 @@ perf_run_iters() {
         echo "  [trace $_prf_label] samples file:" >&2
         cat "$_prf_samples" >&2
     }
-    _prf_med="$(sort -n "$_prf_samples" | awk 'BEGIN{c=0} {a[c++]=$1} END{
-        if (c%2) print a[int(c/2)]; else print (a[c/2-1]+a[c/2])/2}')"
+    _prf_med="$(perf_median_of_file "$_prf_samples")"
     _prf_p95="$(sort -n "$_prf_samples" | awk 'BEGIN{c=0} {a[c++]=$1} END{
         i=int(0.95*(c-1)+0.5); print a[i]}')"
     _prf_min="$(sort -n "$_prf_samples" | head -1)"

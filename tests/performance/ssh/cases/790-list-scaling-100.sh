@@ -2,11 +2,16 @@
 # from 13 to 113), measure `list` cost at that size. Extends
 # `550`'s 30-svc measurement to a 10x-larger set to catch any
 # quadratic/superlinear scaling that a linear-N test would miss.
+#
+# Both sides are medians of warmed-up runs. They used to be ONE timed
+# `list` each, and a single sample of a ~1.2 ms command cannot measure a
+# ratio: the case reported 1.06x on one run and 0.87x on the next, and
+# 0.87x says adding 100 services made `list` faster. Whatever the real
+# scaling is, a figure that can come out below 1.0 cannot detect it.
 _prefix="perf-list100-$$"
 _before=$(slinitctl list 2>/dev/null | wc -l)
 
-_t0=$(perf_now_ns); slinitctl list > /dev/null; _t1=$(perf_now_ns)
-_list_before_ns=$(( _t1 - _t0 ))
+_list_before_ns=$(perf_median_ns 15 "slinitctl list")
 
 # Provision 100 svcs — start them so they populate the list
 _i=0
@@ -19,8 +24,7 @@ done
 _after=$(slinitctl list 2>/dev/null | wc -l)
 
 # Measure list at the larger size
-_t0=$(perf_now_ns); slinitctl list > /dev/null; _t1=$(perf_now_ns)
-_list_after_ns=$(( _t1 - _t0 ))
+_list_after_ns=$(perf_median_ns 15 "slinitctl list")
 
 # Teardown
 _i=0
@@ -35,5 +39,5 @@ _before_ms=$(awk -v n=$_list_before_ns 'BEGIN{printf "%.3f", n/1e6}')
 _after_ms=$(awk -v n=$_list_after_ns 'BEGIN{printf "%.3f", n/1e6}')
 _ratio=$(awk -v a=$_list_after_ns -v b=$_list_before_ns 'BEGIN{if(b>0) printf "%.2f", a/b; else print "n/a"}')
 
-printf "BenchmarkList_scaling  1  N=%d→%d  before=%s ms  after=%s ms  ratio=%sx\n" \
+printf "BenchmarkList_scaling 15  N=%d→%d  before=%s ms  after=%s ms  ratio=%sx\n" \
     "$_before" "$_after" "$_before_ms" "$_after_ms" "$_ratio"

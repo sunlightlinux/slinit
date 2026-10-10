@@ -1,8 +1,13 @@
 # 560-deep-dep-chain — build a 10-deep dep chain (svc_9 depends
 # on svc_8, ..., svc_1 depends on svc_0), start the tip, measure
-# `status` on the tip (walks the full chain). Teardown reverses
-# the chain. Reveals whether status cost scales with dep-chain
-# depth (worst case: N times slower than single-node status).
+# `status` on the tip. Teardown reverses the chain.
+#
+# `status` does NOT walk the chain, which this comment used to claim:
+# it renders that one service's own fields and its journal tail, and
+# traverses nothing — checked against the running daemon. So this is a
+# baseline figure for status with a chain present, not a measurement of
+# depth, and it cannot reveal depth scaling on its own. `750` does that,
+# by building two depths in one run and reporting the ratio.
 _prefix="perf-chain-$$"
 # Build chain: svc-0 has no dep, svc-1 depends on svc-0, ...
 _i=0
