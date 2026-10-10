@@ -48,8 +48,13 @@ done
 
 _after=$(slinitctl list 2>/dev/null | wc -l)
 
-# Measure list at the larger size
-_list_after_ns=$(perf_median_ns "$ITERS" "slinitctl list")
+# Measure list at the larger size — twice, for the same reason the small
+# side is measured twice. A minimum taken on one arm and a single
+# reading on the other compares a contaminant-free number against a
+# contaminated one and biases the ratio upward.
+_list_after1_ns=$(perf_median_ns "$ITERS" "slinitctl list")
+_list_after2_ns=$(perf_median_ns "$ITERS" "slinitctl list")
+_list_after_ns=$(perf_baseline_ns "$_list_after1_ns" "$_list_after2_ns")
 
 # Teardown, then the second small-size reading.
 _i=0
@@ -70,7 +75,7 @@ _after_ms=$(awk -v n=$_list_after_ns 'BEGIN{printf "%.3f", n/1e6}')
 # The two brackets' mean is the baseline; their disagreement is printed
 # as the measurement's own error bar, because a ratio taken against a
 # drifting baseline means nothing and should look like it.
-_base_ns=$(awk -v a=$_list_before1_ns -v b=$_list_before2_ns 'BEGIN{print (a+b)/2}')
+_base_ns=$(perf_baseline_ns "$_list_before1_ns" "$_list_before2_ns")
 _base_ms=$(awk -v n="$_base_ns" 'BEGIN{printf "%.3f", n/1e6}')
 _ratio=$(awk -v a=$_list_after_ns -v b="$_base_ns" 'BEGIN{if(b>0) printf "%.2f", a/b; else print "n/a"}')
 _spread=$(awk -v a=$_list_before1_ns -v b=$_list_before2_ns 'BEGIN{

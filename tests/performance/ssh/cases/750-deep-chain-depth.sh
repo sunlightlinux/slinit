@@ -114,15 +114,30 @@ done
 # five runs — a spread that brackets 1.0 from both directions and so
 # cannot distinguish "no growth" from a 20% effect either way.
 #
-# The two shallow readings are printed with their disagreement, which is
-# this measurement's own error bar. When they are far apart the ratio is
-# worth nothing, and it should be visible rather than inferred. A real
-# finding here would be a ratio approaching the depth ratio itself,
-# 7.8x, which is what a per-node walk on the status path would produce.
+# Both arms' readings are printed with their disagreement, which is this
+# measurement's own error bar. When they are far apart the ratio is
+# worth nothing, and it should be visible rather than inferred.
+#
+# HOW MUCH PRECISION THIS NEEDS, so nobody tightens it further. With
+# clean brackets the ratio lands between 0.97x and 1.09x, so about ±10%
+# run to run. That is ample: the thing it has to detect is a per-node
+# walk on the status path, which would put the ratio near the depth
+# ratio itself, 7.8x. Distinguishing 1x from 7.8x does not need 1%
+# resolution, and four passes were spent discovering that before anyone
+# asked what resolution the question actually required.
+# BOTH arms are bracketed and interleaved, and both take their minimum.
+# Bracketing only the shallow arm was worse than bracketing neither: the
+# minimum of two readings is outlier-free while a single reading is not,
+# so the ratio compared a clean denominator against a contaminated
+# numerator and rose to 1.25x, 1.18x, 1.06x where the symmetric version
+# reads ~1.0x. An asymmetric estimator manufactures the very growth this
+# case exists to rule out.
 _st_s1=$(perf_median_ns "$ITERS" "slinitctl status $_s_tip")
-_st_d=$(perf_median_ns "$ITERS" "slinitctl status $_d_tip")
+_st_d1=$(perf_median_ns "$ITERS" "slinitctl status $_d_tip")
 _st_s2=$(perf_median_ns "$ITERS" "slinitctl status $_s_tip")
-_st_base=$(awk -v a="$_st_s1" -v b="$_st_s2" 'BEGIN{print (a+b)/2}')
+_st_d2=$(perf_median_ns "$ITERS" "slinitctl status $_d_tip")
+_st_base=$(perf_baseline_ns "$_st_s1" "$_st_s2")
+_st_d=$(perf_baseline_ns "$_st_d1" "$_st_d2")
 _st_ratio=$(awk -v a="$_st_d" -v b="$_st_base" 'BEGIN{if(b>0) printf "%.2f", a/b; else print "n/a"}')
 _st_spread=$(awk -v a="$_st_s1" -v b="$_st_s2" 'BEGIN{
     m=(a+b)/2; d=a-b; if(d<0) d=-d; if(m>0) printf "%.0f", 100*d/m; else print "n/a"}')

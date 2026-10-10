@@ -45,7 +45,12 @@ while [ $_i -lt 5000 ]; do
 done
 sleep 0.5
 
-_after_med=$(perf_median_ns 9 "$_fetch")
+# The post-pump arm is measured twice as well: a minimum on one side
+# against a single reading on the other biases the delta, which is why
+# this case printed +1% and +2% where the symmetric form reads ~0%.
+_after1_med=$(perf_median_ns 9 "$_fetch")
+_after2_med=$(perf_median_ns 9 "$_fetch")
+_after_med=$(perf_baseline_ns "$_after1_med" "$_after2_med")
 
 # Second bracket. The pump's own aftermath is what the first version of
 # this case mistook for a size effect, so this reading is taken once the
@@ -53,7 +58,7 @@ _after_med=$(perf_median_ns 9 "$_fetch")
 sleep 1
 _b2_med=$(perf_median_ns 9 "$_fetch")
 
-_base_med=$(awk -v a="$_b1_med" -v b="$_b2_med" 'BEGIN{print (a+b)/2}')
+_base_med=$(perf_baseline_ns "$_b1_med" "$_b2_med")
 _delta=$(awk -v a="$_after_med" -v b="$_base_med" 'BEGIN{print a-b}')
 _pct=$(awk -v b="$_base_med" -v d="$_delta" 'BEGIN{if(b>0) printf "%+.0f", 100*d/b; else print "n/a"}')
 _spread=$(awk -v a="$_b1_med" -v b="$_b2_med" 'BEGIN{

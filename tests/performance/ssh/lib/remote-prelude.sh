@@ -56,6 +56,27 @@ perf_median_ns() {
     rm -f "$_pmn_f"
 }
 
+# perf_baseline_ns A B
+#   The baseline to compare a bracketed measurement against, given the
+#   two bracket readings in ns. It returns the SMALLER one, not their
+#   mean, and the reason is the shape of the distribution rather than a
+#   preference.
+#
+#   Latency has a hard floor — the work cannot take less than it takes —
+#   so contamination is one-sided: an interrupted sample is always slow,
+#   never fast. Measured on the target, a ~1.7 ms journal read produces
+#   occasional 2.2-2.9 ms brackets, and across six runs the outlier
+#   landed on the first reading as often as the second, so it is not
+#   something an ordering change can avoid. A mean splits the difference
+#   with a contaminant and drags the baseline up, which is what made a
+#   delta of zero print as -18%. The minimum discards it.
+#
+#   The spread between the two is still what says whether to trust the
+#   result, and every caller prints it.
+perf_baseline_ns() {
+    awk -v a="$1" -v b="$2" 'BEGIN{ print (a<b) ? a : b }'
+}
+
 # perf_run_iters ITERS LABEL "command..."
 #   Runs the command ITERS times, timing each with perf_now_ns.
 #   Silences stdout/stderr so the timing is not swamped by tty flush.
