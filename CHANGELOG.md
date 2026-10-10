@@ -24,6 +24,96 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.2] — 2026-10-10
+
+**No product code changed in this release.** Five commits, all under
+`tests/`, and the reason to cut it is what they found rather than what
+they altered: `mlockall =` had never worked in the functional VM, and
+the case covering it had reported PASS for its whole life.
+
+### Fixed
+
+- **`mlockall =` now works in the functional VM, and its case measures
+  the service.** Four separate things had to be true for this to stay
+  hidden, and only one of them was the bug:
+
+  1. `cpio -o` ran unprivileged and recorded the **build user** as the
+     owner of every file in the rootfs. slinit-runner refuses to preload
+     a library a normal user could replace into a service that may run
+     as root, so it refused with `not owned by root`, returned exit 2,
+     and the service went STOPPED about three seconds after start. That
+     was the bug. `cpio -o -R 0:0` records root instead — cpio cannot
+     chown as a normal user, but the owner written into the archive is
+     only metadata.
+  2. The case measured **slinit-runner**, not the service. The PID slinit
+     reports is the forked child, which is the runner until it execs,
+     and the runner calls `mlockall(2)` on itself. Being a Go program,
+     that locks its whole runtime arena: `VmLck=1227496 kB` against
+     `VmSize=1227528 kB`, 32 kB apart, on a VM with 217 MB of RAM. The
+     case sampled at t~0, saw 1.2 GB, and asserted the service's memory
+     was locked. Both cases now wait for `comm` to stop being
+     `slinit-runner`. The functional case reads **1628 kB** now, and the
+     acceptance case on real hardware reads 2624 kB.
+  3. The library had been built for the host's libc rather than the
+     rootfs's — fixed in v3.1.1, which is why that release could not see
+     past it.
+  4. The PID wait was five tries at 0.2s, so under CI's TCG emulation it
+     gave up before the service appeared and printed an empty value as
+     though the feature were broken — also v3.1.1.
+
+  **Nothing was ever wrong on a real target.** Probed against the
+  installed package on the proving-ground VM: `comm=sh`, VmLck 2624 kB of
+  VmSize 2660 kB, the library mapped five times, `LD_PRELOAD` pointing at
+  it and `SLINIT_MLOCKALL_PID` equal to the service's own pid. The xbps
+  package installs root-owned, so the check that killed the test VM never
+  applied there.
+
+- **This resolves v3.1.1's `Known` section.** That entry said the lock
+  did not come from the preload and that what did was unestablished. It
+  came from the runner locking its own address space, read off the wrong
+  process. The section was right that the documented mechanism was not
+  producing the number.
+
+- **Two performance cases had been skipping on a bug fixed nine releases
+  earlier.** `580-parallel-lifecycle-4` and
+  `600-status-under-massive-lifecycle` gated themselves behind
+  `SLINIT_ALLOW_DISRUPTIVE=1`, citing a PID-1 panic on v2.2.6 that
+  `cfe16ab` fixed in v2.2.7. So the only integration-level guard for a
+  kernel panic stopped running at the moment it became able to pass.
+  `ssh/README.md` already said "Fixed in v2.2.7" in the same section that
+  described them as gated — nobody had to discover anything; the gate
+  just never got retired. Verified on the target first (580 at median
+  4.5 ms, 600 at status p99 5.1 ms, `/proc/1/stat` starttime unchanged
+  either side), then ungated.
+
+- **`202-journalctl-identifier-filter` depended on boot-era journal.** It
+  probed getty-tty1's boot STARTED event, and PID 1's journal is a
+  4096-event ring. After a performance run the ring held none of boot:
+  the oldest surviving entry was a throwaway service timestamped 95
+  minutes after it. The case then fails on every run until the box
+  reboots, which reads as flakiness and is not. It now emits its own
+  event. Its `-T` assertion was worse than fragile — it excluded
+  `kernel` and looked for a boot-time XFRM line, so after the ring turned
+  over it passed while testing nothing.
+
+- **`89-slinit-fstabinfo` asserted behaviour OpenRC does not have**, in
+  the acceptance copy this time. `--passno /home` prints /home's passno
+  and then every entry's, because `fstabinfo.c`'s plain form does not set
+  `filtered` and the later `else if (!filtered)` appends the whole table.
+  The functional copy was corrected in v3.1.1 without noticing the twin.
+
+### Known
+
+**The runner's self-`mlockall` is a capability probe that never releases.**
+It exists so a service that cannot be locked fails fast with a reason,
+which is worth keeping, but `execve` discards the lock, so until then it
+leaves around 1.2 GB of a Go runtime arena in `locked_vm` on every
+`mlockall =` start. It is also what let two test cases disagree about the
+same working feature, in opposite directions, depending on when they
+sampled. Calling `munlockall(2)` straight after the probe keeps the
+check and drops both problems; it is not in this release because it is a
+change to the runner and this one is tests only.
+
 ## [3.1.1] — 2026-10-10
 
 Two commits on `mlockall`, and the correction of what CI was actually
@@ -109,6 +199,11 @@ established. The changes above are still right — a preload that cannot
 load should not be installed or silently tolerated — but none of them
 explains this, and it is recorded here rather than left to be
 rediscovered.
+
+*Resolved in v3.1.2: the lock was the runner's own `mlockall` on its Go
+address space, read off the wrong process — the case was measuring
+slinit-runner before it execed. The paragraph above was right that the
+preload was not producing the number.*
 
 ## [3.1.0] — 2026-10-10
 
