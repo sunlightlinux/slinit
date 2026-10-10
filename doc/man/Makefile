@@ -44,6 +44,7 @@ PAGES_8 = \
 	slinit-journal-migrate.8 \
 	slinit-machinectl.8 \
 	slinit-nspawn.8 \
+	slinit-immortal-convert.8 \
 	slinit-openrc-convert.8 \
 	slinit-runit-convert.8 \
 	slinit-systemd-convert.8 \
