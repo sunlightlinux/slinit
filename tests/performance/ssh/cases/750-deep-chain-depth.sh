@@ -107,17 +107,31 @@ done
 
 # Claim 1: status does not grow with depth.
 #
-# The ratio's own resolution, measured across three runs: 1.05x, 0.99x,
-# 1.20x. So anything inside roughly 0.9x-1.2x is "no growth detected"
-# and a 1.2x reading is not a finding. What would be one is a ratio
-# approaching the depth ratio itself, 7.8x, which is what a per-node
-# walk on the status path would produce.
-_st_s=$(perf_median_ns "$ITERS" "slinitctl status $_s_tip")
+# The shallow arm is measured on BOTH sides of the deep one, and the
+# ratio uses their mean, because the two arms are measured sequentially
+# and whatever drifts in between lands entirely in the ratio. Taken
+# straight, this figure read 1.05x, 0.99x, 1.20x, 1.05x and 0.85x across
+# five runs — a spread that brackets 1.0 from both directions and so
+# cannot distinguish "no growth" from a 20% effect either way.
+#
+# The two shallow readings are printed with their disagreement, which is
+# this measurement's own error bar. When they are far apart the ratio is
+# worth nothing, and it should be visible rather than inferred. A real
+# finding here would be a ratio approaching the depth ratio itself,
+# 7.8x, which is what a per-node walk on the status path would produce.
+_st_s1=$(perf_median_ns "$ITERS" "slinitctl status $_s_tip")
 _st_d=$(perf_median_ns "$ITERS" "slinitctl status $_d_tip")
-_st_ratio=$(awk -v a="$_st_d" -v b="$_st_s" 'BEGIN{if(b>0) printf "%.2f", a/b; else print "n/a"}')
-printf "BenchmarkStatus_DeepChain_depth_ratio %4d  d%s=%s ms  d%s=%s ms  ratio=%sx (flat within 0.9-1.2x)\n" \
+_st_s2=$(perf_median_ns "$ITERS" "slinitctl status $_s_tip")
+_st_base=$(awk -v a="$_st_s1" -v b="$_st_s2" 'BEGIN{print (a+b)/2}')
+_st_ratio=$(awk -v a="$_st_d" -v b="$_st_base" 'BEGIN{if(b>0) printf "%.2f", a/b; else print "n/a"}')
+_st_spread=$(awk -v a="$_st_s1" -v b="$_st_s2" 'BEGIN{
+    m=(a+b)/2; d=a-b; if(d<0) d=-d; if(m>0) printf "%.0f", 100*d/m; else print "n/a"}')
+printf "BenchmarkStatus_DeepChain_depth_ratio %4d  d%s=%s ms (%s/%s, spread %s%%)  d%s=%s ms  ratio=%sx\n" \
     "$ITERS" "$_SHALLOW" \
-    "$(awk -v n="$_st_s" 'BEGIN{printf "%.3f", n/1e6}')" "$_DEEP" \
+    "$(awk -v n="$_st_base" 'BEGIN{printf "%.3f", n/1e6}')" \
+    "$(awk -v n="$_st_s1" 'BEGIN{printf "%.3f", n/1e6}')" \
+    "$(awk -v n="$_st_s2" 'BEGIN{printf "%.3f", n/1e6}')" \
+    "$_st_spread" "$_DEEP" \
     "$(awk -v n="$_st_d" 'BEGIN{printf "%.3f", n/1e6}')" \
     "$_st_ratio"
 
