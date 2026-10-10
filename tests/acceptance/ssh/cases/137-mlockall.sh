@@ -25,17 +25,44 @@ slinitctl --system start "$SVC" 2>/dev/null
 wait_for_service "$SVC" STARTED 10
 assert_eq "$(svc_state "$SVC")" "STARTED" "service reached STARTED"
 
-# PID may briefly be absent from status output right after STARTED
-# reports terminal — poll a couple of times so a late-suite SSH
-# round-trip doesn't spuriously fail the assertion.
+# The PID slinit reports is the forked child, which is slinit-runner
+# until it execs into the service. Measuring it before the exec reads
+# the WRAPPER, and the wrapper gives a wrong answer in both directions:
+# it raises RLIMIT_MEMLOCK and then calls mlockall(2) on itself, so a
+# sample landing between the two shows an unlimited rlimit with
+# VmLck=0 (what this case reported on ceres), and one landing after
+# shows VmLck≈VmSize — around 1.2 GB, because the runner is a Go
+# program and that is its runtime arena, not the service's memory.
+# The functional twin 125 passed for its whole life on the second
+# reading while the feature was broken.
+#
+# So wait for the exec, and never measure anything still called
+# slinit-runner. Verified on ceres: comm=sh, VmLck=2624 kB with
+# VmSize=2660 kB, library mapped, SLINIT_MLOCKALL_PID equal to the
+# service's own pid.
 _pid=""
-_i=0
-while [ "$_i" -lt 5 ]; do
+_deadline=$(( $(date +%s) + 15 ))
+while [ "$(date +%s)" -lt "$_deadline" ]; do
     _pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/^  PID:/ { print $2 }')
-    [ -n "$_pid" ] && [ "$_pid" != "0" ] && break
-    sleep 0.2
-    _i=$((_i + 1))
+    if [ -n "$_pid" ] && [ "$_pid" != "0" ]; then
+        case "$(cat "/proc/$_pid/comm" 2>/dev/null)" in
+            slinit-runner) ;;          # still the wrapper; keep waiting
+            "") ;;                     # vanished between the two reads
+            *) break ;;
+        esac
+    fi
+    sleep 0.5
 done
+
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ -z "$_pid" ] || [ "$_pid" = "0" ]; then
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: no post-exec PID for $SVC within 15s — the assertions below" \
+         "would read /proc//… and report the feature broken"
+    test_summary
+    exit 1
+fi
+echo "OK: $SVC is past the runner's exec (pid $_pid, comm $(cat "/proc/$_pid/comm" 2>/dev/null))"
 
 # /proc/PID/limits format:
 #   "Max locked memory     unlimited unlimited bytes"
