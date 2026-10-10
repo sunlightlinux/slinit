@@ -276,6 +276,16 @@ Changes this policy would not have allowed:
   impatient with a slow stop, and killing the cleanup script that a
   detached daemon depends on was never what that promised.
 
+- **v3.1.1 made a service with an unhonourable `mlockall` refuse to
+  start, in a patch.** By the reasoning that called the hardening
+  fail-open fix a minor, a change from "starts" to "does not start"
+  belongs in one. The argument for a patch is that only a service whose
+  memory was never actually locked can be affected — the preload it
+  needed could not load — so nothing that worked stops working. That is
+  a judgement about what "works" means, not a rule, which is why it is
+  written down here. It is in v3.1.1's `Changed` section with a Compat
+  note.
+
 - **v3.0.6 made `Requisite=` refuse to start in a patch.** The unit
   translator had mapped it to `Requires=`, which starts the dependency
   instead of requiring it to be up already — the directive inverted. A

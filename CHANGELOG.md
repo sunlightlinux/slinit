@@ -24,6 +24,92 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.1] — 2026-10-10
+
+Two commits on `mlockall`, and the correction of what CI was actually
+reporting about it — which turned out to be none of the things the
+investigation started with.
+
+**Why a patch, and where it is arguable.** The runner now refuses to
+start a service whose `mlockall` preload it cannot honour, and
+refusing-to-start is the kind of change the hardening fail-open fix was
+called a minor for. The difference claimed here is that only a service
+whose memory was *never actually being locked* can be affected: the
+preload it needed could not load, so it was running unlocked and silent.
+Nothing that worked stops working. It is under `Changed` with a Compat
+note all the same, and STABILITY.md's History records the reasoning so
+the next reader can disagree with it.
+
+### Changed
+
+- **A service whose `mlockall` cannot be honoured no longer starts.**
+  slinit-runner preloads `libslinit-mlock.so` to call `mlockall(2)`
+  inside the service, because locks do not survive `execve(2)`. Its
+  checks already refused everything that makes `LD_PRELOAD` a no-op — a
+  static target, the wrong ELF class or machine, setuid, file
+  capabilities — and left out the libc each side names, which is the one
+  that bites when the library is packaged on one distribution and the
+  service runs on another.
+
+  **Compat.** On a system where the library and the service disagree
+  about libc, a service with `mlockall =` used to start and run
+  unlocked; it now fails to start with a message naming both libcs. The
+  fix is to build the library for the libc the services use. If the
+  service genuinely does not need locked memory, drop the directive —
+  that is the honest spelling of what was happening before.
+
+  This sits deliberately against the runner's own split, which classes
+  `mlockall` with the performance knobs that are "reported loudly and
+  skipped, since refusing to boot over a lost performance knob would be
+  the larger harm". That split is about a *missing runner*. Here the
+  runner is present and can see that the lock will not happen, and the
+  library itself already treats a failed `mlockall` as fatal — a
+  real-time service quietly running unlocked is the failure the setting
+  exists to prevent.
+
+### Fixed
+
+- **The preload library was built for the wrong libc in the functional
+  VM.** Two comments — in `build-vm.sh` and in `slinit-mlock.c` —
+  claimed that "musl's loader maps glibc's `libc.so.6` onto itself". It
+  does not: musl answers `DT_NEEDED` for `libc.so` and
+  `libc.musl-<arch>.so.1`, and base Alpine ships no `libc.so.6` at all.
+  A host-built library therefore carried an unsatisfiable dependency,
+  `ld.so` skipped the preload with a warning, and the service ran
+  unlocked.
+
+  The image build now compiles it for the rootfs's libc — `musl-gcc`,
+  `x86_64-linux-musl-gcc` or `zig cc -target x86_64-linux-musl` — and
+  installs nothing when it has none, rather than installing something
+  that cannot load. CI gained `musl-tools` so it builds the real thing
+  instead of skipping the case.
+
+  A freestanding build would avoid the question and is not possible:
+  `setenv`/`unsetenv` mutate libc's own `environ`.
+
+- **`125-mlockall` reported a broken feature when it had run out of
+  patience.** It looked for the service's PID five times at 0.2s — a
+  one-second budget, enough under KVM and not under the TCG emulation CI
+  runs — and then read `/proc//limits`, printing `RLIMIT_MEMLOCK not
+  raised — line=''`. An empty value and a zero mean different things.
+  The wait is now off the clock, and a missing PID fails with its own
+  message instead of borrowing the words of the assertions below it.
+
+### Known
+
+**The lock does not come from the preload.** Measured in the functional
+VM against a control service that omits the directive: without
+`mlockall`, `VmLck` is 0 and the limit is the default 8 MB; with it,
+`VmLck` is 1.2 GB and the limit is unlimited. So the setting takes
+effect. But the library is not mapped in the service and `LD_PRELOAD`
+is not in its environment, with either the musl or the glibc build, and
+1.2 GB is more memory than that VM has. Something other than the
+documented mechanism is locking the pages, and what has not been
+established. The changes above are still right — a preload that cannot
+load should not be installed or silently tolerated — but none of them
+explains this, and it is recorded here rather than left to be
+rediscovered.
+
 ## [3.1.0] — 2026-10-10
 
 Thirty-eight commits, mostly one sweep: taking each tool and directive
