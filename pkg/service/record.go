@@ -221,6 +221,7 @@ type ServiceRecord struct {
 	socketPath      string         // primary socket path (for backwards compat)
 	socketPaths     []string       // all socket-listen paths (for multiple sockets)
 	socketReusePort bool           // SO_REUSEPORT on inet listeners (see SetSocketReusePort)
+	socketMcastGrp  string         // multicast group a datagram listener joins after bind
 	socketPerms     int
 	socketUID       int
 	socketGID       int
@@ -1964,6 +1965,13 @@ func (sr *ServiceRecord) SetSocketReusePort(b bool) { sr.socketReusePort = b }
 
 // SocketReusePort reports whether SO_REUSEPORT is requested.
 func (sr *ServiceRecord) SocketReusePort() bool { return sr.socketReusePort }
+
+// SetSocketMulticastGroup sets the multicast group that datagram listeners
+// join after bind. Empty = no membership.
+func (sr *ServiceRecord) SetSocketMulticastGroup(g string) { sr.socketMcastGrp = g }
+
+// SocketMulticastGroup returns the configured multicast group, or "".
+func (sr *ServiceRecord) SocketMulticastGroup() string { return sr.socketMcastGrp }
 
 func (sr *ServiceRecord) SetGuessMainPID(b bool)        { sr.guessMainPID = b }
 func (sr *ServiceRecord) SetSELinuxContext(s string)    { sr.selinuxContext = s }

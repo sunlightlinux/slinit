@@ -1,6 +1,13 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/service"
+)
 
 func TestParseIOPrio(t *testing.T) {
 	tests := []struct {
@@ -79,5 +86,48 @@ func TestResolveAlertLevel(t *testing.T) {
 			t.Errorf("%s: resolveAlertLevel(%q, %d) = %d, want %d",
 				tt.name, tt.file, tt.parsed, got, tt.expected)
 		}
+	}
+}
+
+func TestSocketMulticastGroupRequiresUDPListener(t *testing.T) {
+	// A membership can only be added to a datagram socket, so the
+	// directive must be refused where it would be stored and never used.
+	cases := []struct {
+		name    string
+		listen  string
+		wantErr bool
+	}{
+		{"udp accepted", "socket-listen = udp:0.0.0.0:5353", false},
+		{"udp4 accepted", "socket-listen = udp4:0.0.0.0:5353", false},
+		{"udp6 accepted", "socket-listen = udp6:[::]:5353", false},
+		{"tcp refused", "socket-listen = tcp:0.0.0.0:5353", true},
+		{"unix refused", "socket-listen = /run/test.sock", true},
+		{"no listener refused", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			body := "type = process\ncommand = /bin/true\n" +
+				"socket-multicast-group = 224.0.0.251\n"
+			if c.listen != "" {
+				body += c.listen + "\n"
+			}
+			if err := os.WriteFile(filepath.Join(dir, "mcast"), []byte(body), 0644); err != nil {
+				t.Fatal(err)
+			}
+			set := service.NewServiceSet(&testReloadLogger{})
+			dl := NewDirLoader(set, []string{dir})
+			_, err := dl.LoadService("mcast")
+			if c.wantErr && err == nil {
+				t.Error("loaded with no udp listener, want refusal")
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("refused a udp listener: %v", err)
+			}
+			if c.wantErr && err != nil &&
+				!strings.Contains(err.Error(), "socket-multicast-group") {
+				t.Errorf("error does not name the directive: %v", err)
+			}
+		})
 	}
 }

@@ -959,6 +959,29 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: a multicast membership can only be added to a datagram
+	// socket, so the directive needs a udp listener to act on. launchd
+	// leaves the mismatched cases "undefined"; refusing is better here
+	// because an unjoined socket is indistinguishable from a working one
+	// — it binds, the service starts, and traffic simply never arrives.
+	if desc.SocketMulticastGroup != "" {
+		hasUDP := false
+		for _, p := range desc.SocketPaths {
+			if strings.HasPrefix(p, "udp:") || strings.HasPrefix(p, "udp4:") ||
+				strings.HasPrefix(p, "udp6:") {
+				hasUDP = true
+				break
+			}
+		}
+		if !hasUDP {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message: "socket-multicast-group requires a udp: socket-listen " +
+					"(a multicast group can only be joined on a datagram socket)",
+			}
+		}
+	}
+
 	// Validate: follow-pid adopts a process slinit did not start, so the
 	// directives that describe starting one have nothing to act on.
 	if desc.FollowPID != "" {
@@ -2030,6 +2053,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetImportCredentials(desc.ImportCredentials)
 	rec.SetNotifyAccess(desc.NotifyAccess, desc.NotifyAccessSet)
 	rec.SetSocketReusePort(desc.SocketReusePort)
+	rec.SetSocketMulticastGroup(desc.SocketMulticastGroup)
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)
 	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)

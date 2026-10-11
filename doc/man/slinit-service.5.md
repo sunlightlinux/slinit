@@ -1792,6 +1792,33 @@ mlockall       = current+future
     **LISTEN_PID** convention. Use `+=` for multiple sockets, which
     yields *LISTEN_FDS=N* in declaration order.
 
+**socket-multicast-group**=*address*|*hostname* (since 3.1.6)
+:   Join a multicast group on this service's datagram listeners, after
+    bind. This is launchd's **MulticastGroup** key. The common use is a
+    service that must receive mDNS (*224.0.0.251*, *ff02::fb*) or SSDP
+    (*239.255.255.250*) without doing the join itself — slinit opens the
+    socket, so slinit is where the membership has to be added.
+
+    A *hostname* is resolved and the first multicast address it yields is
+    used, as launchd does with **getaddrinfo**. A literal address must
+    match the listener's family: an IPv6 group on a *udp4:* listener is a
+    load error, and the reverse likewise. launchd calls that case
+    "undefined"; refusing is better, because a socket that failed to join
+    is indistinguishable from a working one — it binds, the service
+    starts, and the traffic simply never arrives.
+
+    A unicast address is also refused by name. Both kernels reject the
+    join with a bare **EINVAL** that does not say why.
+
+    **Requires a *udp:*, *udp4:* or *udp6:* socket-listen.** A group can
+    only be joined on a datagram socket, so on a *tcp:* or Unix listener
+    this directive would be stored and never used; it is a load error
+    instead of being ignored.
+
+    The interface is left to the kernel, which selects it from the
+    routing table. Joining on one specific interface would need a second
+    directive and has no caller yet.
+
 **socket-reuseport**=*yes*|*no* (since 2.4.8)
 :   Set **SO_REUSEPORT** on the inet listeners of this service, before
     bind. Several services may then hold the same *host*:*port*, and the

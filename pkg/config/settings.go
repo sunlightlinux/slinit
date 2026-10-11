@@ -111,12 +111,13 @@ var KnownSettings = map[string]OperatorType{
 	"logfile-gid":                OpEquals,
 
 	// Socket activation
-	"socket-listen":      OpEquals | OpPlusEqual, // multiple sockets via +=
-	"socket-reuseport":   OpEquals,
-	"socket-permissions": OpEquals,
-	"socket-uid":         OpEquals,
-	"socket-gid":         OpEquals,
-	"socket-activation":  OpEquals, // "immediate" (default) or "on-demand"
+	"socket-listen":          OpEquals | OpPlusEqual, // multiple sockets via +=
+	"socket-reuseport":       OpEquals,
+	"socket-multicast-group": OpEquals,
+	"socket-permissions":     OpEquals,
+	"socket-uid":             OpEquals,
+	"socket-gid":             OpEquals,
+	"socket-activation":      OpEquals, // "immediate" (default) or "on-demand"
 
 	// Chaining
 	"chain-to": OpEquals,

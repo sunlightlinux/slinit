@@ -342,8 +342,12 @@ type ServiceDescription struct {
 	// SocketReusePort sets SO_REUSEPORT on inet listeners before bind, so
 	// several services (typically instances of one template) can hold the
 	// same host:port and have the kernel spread connections between them.
-	SocketReusePort  bool
-	SocketPerms      int
+	SocketReusePort bool
+	// SocketMulticastGroup asks a datagram listener to join a multicast
+	// group after bind. A hostname is resolved; an explicit address must
+	// match the listener's family.
+	SocketMulticastGroup string
+	SocketPerms          int
 	SocketUID        int
 	SocketGID        int
 	SocketActivation string // "immediate" (default) or "on-demand"
@@ -2969,6 +2973,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("socket-reuseport: %w", err)
 		}
 		desc.SocketReusePort = b
+	case "socket-multicast-group":
+		if value == "" {
+			return fmt.Errorf("socket-multicast-group: empty value")
+		}
+		desc.SocketMulticastGroup = expandEnvVars(value, serviceArg)
 	case "guess-main-pid":
 		b, err := parseBool(value)
 		if err != nil {

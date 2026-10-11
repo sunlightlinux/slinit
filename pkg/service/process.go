@@ -1336,6 +1336,16 @@ func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
 			return nil, fmt.Errorf("udp fd: %w", err)
 		}
 		conn.Close()
+		// File() returned a dup, so it and the closed conn name the same
+		// socket: joining on either applies to the membership the child
+		// inherits. Joining after bind is also the only valid order —
+		// IP_ADD_MEMBERSHIP on an unbound socket has no port to deliver to.
+		if grp := s.SocketMulticastGroup(); grp != "" {
+			if err := joinMulticastGroup(int(fd.Fd()), network, grp); err != nil {
+				fd.Close()
+				return nil, err
+			}
+		}
 		return fd, nil
 	}
 
