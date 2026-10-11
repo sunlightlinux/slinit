@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"os/exec"
 	"strings"
 )
 
@@ -28,8 +29,22 @@ func emitSlinitFile(w io.Writer, cfg *immortalConfig, name string) []warning {
 	// immortal supervises one long-running command, which is slinit's
 	// `process`. A service that exits on its own is immortal's business
 	// to restart, so `process` is right rather than `scripted`.
-	fmt.Fprintf(w, "type = process\n")
-	fmt.Fprintf(w, "command = %s\n", cfg.Cmd)
+	// pid.follow changes the shape of the service, not just a field:
+	// slinit adopts an existing process rather than starting one, which
+	// is `bgprocess` + follow-pid and no command. The loader refuses
+	// command alongside follow-pid, so emitting both would produce a
+	// file that does not load.
+	if cfg.PidFollow != "" {
+		fmt.Fprintf(w, "type = bgprocess\n")
+		fmt.Fprintf(w, "follow-pid = %s\n", cfg.PidFollow)
+	} else {
+		fmt.Fprintf(w, "type = process\n")
+		cmdLine, cmdWarn := absoluteCommand(cfg.Cmd)
+		fmt.Fprintf(w, "command = %s\n", cmdLine)
+		if cmdWarn != nil {
+			warns = append(warns, *cmdWarn)
+		}
+	}
 
 	if cfg.Cwd != "" {
 		fmt.Fprintf(w, "working-dir = %s\n", cfg.Cwd)
@@ -212,16 +227,59 @@ func emitPid(w io.Writer, cfg *immortalConfig) []warning {
 	}
 	if cfg.PidParent != "" {
 		warns = append(warns, warning{"NOTE", fmt.Sprintf(
-			"pid.parent (%s) not mapped: it is immortal's own supervisor pid, and "+
-				"slinit is PID 1 rather than one supervisor per service",
+			"pid.parent (%s) has no per-service equivalent: it is immortal's own "+
+				"supervisor pid, and slinit is PID 1 rather than one supervisor per "+
+				"service. If this target runs slinit as --system-mgr or --user, its "+
+				"own pid is available with the daemon's --pidfile flag",
 			cfg.PidParent)})
 	}
 	if cfg.PidFollow != "" {
-		warns = append(warns, warning{"WARN", fmt.Sprintf(
-			"pid.follow (%s) not mapped: supervising a process slinit did not "+
-				"start has no equivalent yet. The service will be started and "+
-				"supervised by slinit instead, which is a different arrangement — "+
-				"check it is the one you want", cfg.PidFollow)})
+		// follow-pid landed in 3.1.3. This used to warn that the
+		// arrangement had no equivalent "yet" and that slinit would
+		// start the service itself instead — which, once follow-pid
+		// existed, told the operator the opposite of the truth and
+		// quietly produced a different service than the one asked for.
+		warns = append(warns, warning{"NOTE", fmt.Sprintf(
+			"pid.follow became follow-pid (%s), so slinit adopts the process "+
+				"instead of starting one. command is dropped because the two are "+
+				"mutually exclusive: following means there is nothing to launch",
+			cfg.PidFollow)})
 	}
 	return warns
+}
+
+// absoluteCommand makes argv[0] an absolute path, which slinit requires
+// and immortal does not.
+//
+// immortal relies on PATH: its own examples say `cmd: sleep 30`. slinit
+// execs argv[0] directly, so that converts into a service that cannot
+// start — measured, not assumed: `command = sleep 60` goes STOPPED with
+// no PID, because the only exec.LookPath in the daemon is for
+// apparmor_parser. Every one of immortal's nine example configs has a
+// bare command, so the conversion was emitting files that slinit-check
+// itself warned about and that would never have run.
+//
+// The lookup happens on the converting machine, which may not be the
+// target, so the note says which path was chosen and where it came
+// from. When the binary cannot be found the original is kept and the
+// warning is loud: guessing a path would be worse than saying so.
+func absoluteCommand(cmd string) (string, *warning) {
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 || strings.HasPrefix(fields[0], "/") {
+		return cmd, nil
+	}
+	resolved, err := exec.LookPath(fields[0])
+	if err != nil {
+		return cmd, &warning{"WARN", fmt.Sprintf(
+			"command %q is not an absolute path and was not found in PATH on this "+
+				"machine. slinit execs argv[0] directly and will not search PATH, so "+
+				"this service will not start until the path is made absolute.",
+			fields[0])}
+	}
+	fields[0] = resolved
+	return strings.Join(fields, " "), &warning{"NOTE", fmt.Sprintf(
+		"command %q resolved to %s. immortal searches PATH and slinit does not, so "+
+			"the absolute path was written in. It was looked up on the converting "+
+			"machine — check it exists at that path on the target.",
+		strings.Fields(cmd)[0], resolved)}
 }

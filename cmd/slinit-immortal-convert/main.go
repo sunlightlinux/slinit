@@ -113,8 +113,16 @@ Flags:
 			}
 		}
 
-		if verbose {
-			for _, w := range warns {
+		// WARN is printed always; NOTE needs --verbose.
+		//
+		// Both used to be verbose-only, which meant a plain conversion
+		// of immortal's own `test.yml` — inline `env:` dropped,
+		// `pid.child` unmapped — printed nothing at all, and the
+		// operator had no way to know the file was lossy. A warning that
+		// has to be asked for is not a warning. Notes stay quiet: they
+		// describe mappings that did happen.
+		for _, w := range warns {
+			if w.level == "WARN" || verbose {
 				fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", w.level, name, w.msg)
 			}
 		}

@@ -1,0 +1,13 @@
+Verbatim copies of example/*.yml from github.com/immortal/immortal
+(v0.24.7, commit 35afc96), the configurations its author ships as
+documentation.
+
+They are here as fuzz seeds and as a conversion smoke test, because
+synthesized input missed what these caught at once: every one of them
+uses a bare command (`cmd: sleep 30`), immortal resolves it through
+PATH, slinit does not, and the conversion was emitting services that
+could not start. A hand-written seed corpus had no reason to look like
+that; the upstream's own examples did.
+
+Licence: immortal is MIT (see the upstream repository). Kept verbatim so
+a diff against a newer upstream is meaningful.

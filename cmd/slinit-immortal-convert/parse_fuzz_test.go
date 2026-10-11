@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -57,6 +59,18 @@ pid:
 `)
 	// Adversarial: shapes the grammar does not cover, which must be
 	// reported rather than crash or be silently taken as something else.
+	// Seed from immortal's own documented examples. The hand-written
+	// seeds above are shapes I imagined; these are shapes its author
+	// ships, and they immediately exposed one the imagined ones did not
+	// — a bare `cmd:` relying on PATH, which slinit does not search.
+	for _, path := range immortalExampleFiles(f) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			f.Fatalf("reading seed %s: %v", path, err)
+		}
+		f.Add(string(b))
+	}
+
 	f.Add("")
 	f.Add("cmd:")
 	f.Add(":")
@@ -91,4 +105,28 @@ pid:
 			_ = w
 		}
 	})
+}
+
+// immortalExampleFiles lists the vendored upstream examples. Missing is
+// not fatal — the directory is documentation, not a dependency — but an
+// empty one is worth saying, because a seed corpus that silently
+// shrinks to the hand-written cases is the kind of quiet loss this
+// suite has spent a release learning to distrust.
+func immortalExampleFiles(f *testing.F) []string {
+	dir := filepath.Join("testdata", "immortal-examples")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		f.Logf("no vendored immortal examples (%v); seeding from the written cases only", err)
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".yml" {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(out) == 0 {
+		f.Log("vendored immortal examples directory is empty")
+	}
+	return out
 }

@@ -157,3 +157,77 @@ func hasWarning(warns []warning, substr string) bool {
 	}
 	return false
 }
+
+// absoluteCommand exists because immortal relies on PATH and slinit
+// does not: `command = sleep 60` goes STOPPED with no PID, measured in
+// the VM. Every one of immortal's nine examples has a bare command, so
+// before this the conversion produced files that could not start.
+func TestAbsoluteCommandResolvesBareArgv0(t *testing.T) {
+	got, w := absoluteCommand("sh -c true")
+	if !strings.HasPrefix(got, "/") {
+		t.Errorf("argv[0] not absolute: %q", got)
+	}
+	if !strings.HasSuffix(got, " -c true") {
+		t.Errorf("arguments lost: %q", got)
+	}
+	if w == nil || w.level != "NOTE" {
+		t.Errorf("expected a NOTE recording the lookup, got %v", w)
+	}
+}
+
+func TestAbsoluteCommandLeavesAbsoluteAlone(t *testing.T) {
+	got, w := absoluteCommand("/usr/bin/nginx -g daemon off;")
+	if got != "/usr/bin/nginx -g daemon off;" {
+		t.Errorf("rewrote an absolute command: %q", got)
+	}
+	if w != nil {
+		t.Errorf("unexpected note for an absolute path: %v", w)
+	}
+}
+
+// Not found must keep the original and say so loudly rather than guess
+// a path.
+func TestAbsoluteCommandMissingBinaryWarns(t *testing.T) {
+	got, w := absoluteCommand("definitely-not-a-real-binary-xyz --flag")
+	if got != "definitely-not-a-real-binary-xyz --flag" {
+		t.Errorf("command altered: %q", got)
+	}
+	if w == nil || w.level != "WARN" {
+		t.Fatalf("expected a WARN, got %v", w)
+	}
+	if !strings.Contains(w.msg, "will not start") {
+		t.Errorf("warning does not say the consequence: %q", w.msg)
+	}
+}
+
+// pid.follow changes the shape of the service: slinit adopts a process
+// rather than starting one, which is bgprocess + follow-pid and no
+// command. Emitting both would produce a file the loader refuses.
+func TestPidFollowEmitsBgprocessWithoutCommand(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &immortalConfig{Cmd: "/usr/bin/nginx", PidFollow: "/run/nginx.pid"}
+	warns := emitSlinitFile(&buf, cfg, "nf")
+	out := buf.String()
+
+	if !strings.Contains(out, "type = bgprocess") {
+		t.Errorf("expected type = bgprocess, got:\n%s", out)
+	}
+	if !strings.Contains(out, "follow-pid = /run/nginx.pid") {
+		t.Errorf("follow-pid missing:\n%s", out)
+	}
+	if strings.Contains(out, "command =") {
+		t.Errorf("command emitted alongside follow-pid; the loader refuses that:\n%s", out)
+	}
+	var sawNote bool
+	for _, w := range warns {
+		if strings.Contains(w.msg, "became follow-pid") {
+			sawNote = true
+		}
+		if w.level == "WARN" && strings.Contains(w.msg, "no equivalent") {
+			t.Errorf("stale warning says follow-pid has no equivalent: %q", w.msg)
+		}
+	}
+	if !sawNote {
+		t.Error("no note explaining that pid.follow became follow-pid")
+	}
+}
