@@ -24,6 +24,130 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.5] — 2026-10-11
+
+**No product code changed** — nine files, all under `tests/`, as in
+v3.1.2 and v3.1.4. Eight commits, almost all of them about one thing:
+performance figures that could not mean what they appeared to mean, and
+what it took to make them mean it.
+
+### Fixed
+
+- **Every before/after and A-vs-B figure in the perf suite now brackets
+  both of its arms.** They were measured sequentially, so anything that
+  drifted between them landed entirely in the result. Three cases
+  produced impossible numbers from this — `790` reported 0.71x (adding
+  100 services making `list` faster), `750`'s status arm 0.85x, and
+  `160` swung from -36% to +51% on a quantity that cannot change at
+  all. The worst `790` run read before=1.839 ms against after=1.298: the
+  baseline was the outlier, taken just as `750` finished unloading 35
+  services ahead of it.
+
+  Each arm is now measured on both sides of the other, interleaved, and
+  the two readings are printed with their disagreement — so a figure
+  states its own error bar instead of leaving a reader to infer one.
+  `750`'s status ratio went from 1.05x/0.99x/1.20x/1.05x/0.85x to
+  1.01x/0.99x/1.02x/0.98x with the baseline pair agreeing to 1-3%, which
+  makes it a real result for the first time: status cost does not grow
+  with dependency depth.
+
+- **The estimator is each arm's minimum, and only for latency.** Latency
+  has a hard floor, so contamination is one-sided — an interrupted
+  sample is slow, never fast — and a mean splits the difference with the
+  contaminant, which is how a true delta of zero printed as -18%.
+
+  Taking the minimum on *one* arm proved worse than on neither: a
+  minimum of two readings is outlier-free while a single reading is not,
+  so `750`'s ratio rose to 1.25x where the symmetric form reads ~1.0x.
+  An asymmetric estimator manufactures the effect the case exists to
+  rule out.
+
+  And the rule does **not** generalise to levels. `140`/`141` measure
+  RSS, which has no floor — the GC releases pages — so a low sample is
+  as ordinary as a high one and a minimum would read every sweep as a
+  saving. Both cases keep an exact single read, after a median of five
+  reads 200ms apart was tried and reported a spread of 0%: PID 1's
+  VmRSS is exactly constant at rest, fifteen reads over thirty seconds.
+
+- **`750` had been timing an error reply for its whole life.** It built
+  a 100-deep dependency chain; `MaxDepDepth` is 32, so the tip never
+  loaded, `slinitctl start` answered "service could not be loaded", the
+  case discarded that output and timed `slinitctl status` against the
+  same error. An error is cheaper than a real status, which is why the
+  100-deep figure beat `560`'s 10-deep one every run. It is now
+  `750-deep-chain-depth`, builds depth 4 and 31, and checks the tip's
+  start instead of discarding it.
+
+  Its second measurement is new, because `status` cannot show an
+  O(depth) dependency walk: it renders one service's own fields and its
+  journal tail and traverses nothing, checked against the running
+  daemon. The walk is measured where it happens — the cold start of the
+  chain, 3.3x-4.1x for 7.8x the depth.
+
+- **`080`'s unexplained 3x swing was ring occupancy.** Labelling the top
+  of the curve with the count actually served, discovered rather than
+  hardcoded, closed a question that had stood for a day: a run on a
+  loaded desktop printed `N1987_ring_capped` at 7.4 ms against ~18-19 ms
+  for 4096 entries. The figure tracks how full PID 1's ring is, and the
+  ring is only full on a box that has been up long enough to fill it.
+
+  The previous note asserted occupancy was *not* the cause "since the
+  ring was full in each case, measured". It was full when it was
+  measured — at moments other than the runs being explained. Checking a
+  quantity at a different moment from the measurement it is meant to
+  explain proves nothing about it.
+
+- **Two perf cases had been skipping since v2.2.7 on a bug that release
+  fixed.** `580` and `600` gated themselves behind
+  `SLINIT_ALLOW_DISRUPTIVE=1` citing a PID-1 panic that `cfe16ab` fixed,
+  so the only integration-level guard for a kernel panic stopped running
+  the moment it became able to pass. Verified on the target first, then
+  ungated.
+
+- **`115-protect-hostname` carried an assertion that could not fail.**
+  Both branches of its `case` printed OK, so when CI caught the seccomp
+  filter genuinely missing — mode 0, and a hostname the guarded service
+  had changed — the case printed "OK: seccomp installed" on the evidence
+  that it was absent. Empty stderr cannot distinguish the outcomes
+  either way: the deny action is SIGSYS, so a blocked `hostname` is
+  killed and prints nothing, and a working filter yields "Bad system
+  call", never a permission error.
+
+  The probe now reports its own Seccomp/NoNewPrivs and whether
+  sethostname succeeded from inside the service, as `81-hardening`
+  already did; the external /proc read stays as INFO so a disagreement
+  between the two is visible.
+
+- **`202-journalctl-identifier-filter` depended on boot-era journal**,
+  and **`89-slinit-fstabinfo`'s acceptance copy** asserted behaviour
+  OpenRC does not have. Both detailed in v3.1.2's entry; the second
+  halves landed here.
+
+### Known
+
+- **Why the seccomp filter was missing in that CI run is still
+  unidentified.** Every seccomp install path in slinit-runner returns
+  its error, so a failed install stops the service rather than running
+  it unprotected, and `protect-hostname` is inside `hardeningActive()`,
+  so a missing runner fails closed too. Neither explains a *started*
+  service with mode 0. The instrumentation means the next occurrence
+  arrives with its cause attached; it does not prevent one.
+
+- **`140` cannot resolve an RSS leak below about 2 MB.** Its delta has
+  been measured from -72 to +2184 kB, and neither sampling noise nor an
+  unsettled daemon explains the range — PID 1's RSS is exactly flat at
+  rest, and the widest readings came from a daemon with zero thread and
+  peak deltas. What is left is where the Go GC leaves the heap after
+  2500 requests. The leak question belongs to `141`'s curve shape
+  instead, and `peak_delta`/`thread_delta` plus PID 1's uptime are
+  printed so an unsettled reading is identifiable.
+
+- **`160`'s premise remains untestable on this path.** Its measurement
+  is now stable (+1%, -5%, +4% across runs, which is the correct answer)
+  but the ring it reads is capped, so the total size it claims to vary
+  cannot change. A real size-scaling test needs the on-disk journal
+  `slinit-journald` writes, where the file does grow.
+
 ## [3.1.4] — 2026-10-10
 
 **No product code changed.** Two commits, both under `tests/`. As with
