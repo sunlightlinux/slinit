@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -428,4 +429,71 @@ func detectACPower() (bool, bool) {
 		}
 	}
 	return false, false
+}
+
+// checkNetworkOnline reports whether the machine has usable networking,
+// using launchd's definition of "up" verbatim: at least one
+// non-loopback interface that is up and has an IPv4 or IPv6 address
+// assigned. Adapted from KeepAlive{NetworkState}.
+//
+// All three parts of that definition matter, and dropping any one of
+// them is how this check starts lying. An interface that is up with no
+// address cannot carry traffic. A loopback that is up always is, so
+// counting it makes the predicate constant. And an address on a down
+// interface is configuration, not connectivity.
+//
+// This says nothing about reachability — no route is consulted and
+// nothing is pinged. An interface with a link-local address and no
+// gateway reads as online, because that is what launchd reports too and
+// because a predicate that probes the network would block a start on a
+// timeout.
+func checkNetworkOnline(param string) (bool, string) {
+	online, detail := detectNetworkOnline()
+	switch strings.TrimSpace(param) {
+	case "", "yes":
+		if online {
+			return true, ""
+		}
+		return false, "no non-loopback interface is up with an address"
+	case "no":
+		if !online {
+			return true, ""
+		}
+		return false, "network is up (" + detail + ")"
+	}
+	return false, fmt.Sprintf("invalid network-online param %q", param)
+}
+
+// detectNetworkOnline returns whether a qualifying interface exists and,
+// when one does, names it for the failure message of the negated form.
+func detectNetworkOnline() (bool, string) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		// Unknowable rather than false: refusing every start because
+		// the interface list could not be read would turn a transient
+		// kernel or permission problem into a boot failure.
+		return true, "interface list unavailable"
+	}
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagLoopback != 0 || ifi.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip != nil && !ip.IsUnspecified() {
+				return true, ifi.Name + " " + ip.String()
+			}
+		}
+	}
+	return false, ""
 }

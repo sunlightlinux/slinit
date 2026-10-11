@@ -2189,6 +2189,31 @@ form):
     power-supply class entries (server / VM) the system is assumed to
     be on AC.
 
+**\*-network-online**[=`yes`|`no`] (since 3.1.6)
+:   At least one non-loopback interface is up and has an IPv4 or IPv6
+    address assigned. That is launchd's definition of "up" for
+    `KeepAlive{NetworkState}`, used verbatim, and all three parts of it
+    matter: an interface up with no address cannot carry traffic, a
+    loopback is always up so counting it would make the predicate
+    constant, and an address on a down interface is configuration
+    rather than connectivity.
+
+    **This is not reachability.** No route is consulted and nothing is
+    probed, so an interface holding only a link-local address and no
+    gateway reads as online. launchd reports the same, and a predicate
+    that probed the network would block a start on a timeout.
+
+    **It is evaluated at each start, including each restart, not
+    continuously.** So it expresses "do not start without a network",
+    not "stop when the network drops" — which is where it differs from
+    launchd, whose `KeepAlive` conditions are a keep-alive test. For the
+    continuous behaviour, pair the service with something that watches
+    the link and stops it.
+
+    If the interface list cannot be read at all, the predicate passes:
+    turning a transient kernel or permission error into a refusal to
+    start would be the larger harm.
+
 **\*-path-is-socket**=*path*
 :   *path* exists and is a socket file (S_ISSOCK).
 

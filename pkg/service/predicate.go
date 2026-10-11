@@ -31,6 +31,7 @@ const (
 	PredSecurity                               // a security framework is active
 	PredNeedsUpdate                            // distro update marker present
 	PredACPower                                // on AC power (not battery)
+	PredNetworkOnline                          // a non-loopback iface is up with an IP
 	PredPathIsSocket                           // path exists and is a socket (S_ISSOCK)
 	PredFraction                               // fleet rollout: machine-id⊕tag hash < percent
 	// Bucket A1: cheap-win predicates — all self-contained, all read a
@@ -174,6 +175,8 @@ func (p Predicate) String() string {
 		name = "needs-update"
 	case PredACPower:
 		name = "ac-power"
+	case PredNetworkOnline:
+		name = "network-online"
 	case PredPathIsSocket:
 		name = "path-is-socket"
 	case PredFraction:
@@ -321,6 +324,8 @@ func evalRaw(p Predicate) (bool, string) {
 		return checkNeedsUpdate(p.Param)
 	case PredACPower:
 		return checkACPower(p.Param)
+	case PredNetworkOnline:
+		return checkNetworkOnline(p.Param)
 	case PredPathIsSocket:
 		return pathIsSocket(p.Param)
 	case PredFraction:
@@ -541,6 +546,8 @@ func PredicateKindByName(name string) (PredicateKind, bool) {
 		return PredSecurity, true
 	case "needs-update":
 		return PredNeedsUpdate, true
+	case "network-online":
+		return PredNetworkOnline, true
 	case "ac-power":
 		return PredACPower, true
 	case "path-is-socket":
