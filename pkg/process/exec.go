@@ -84,6 +84,34 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// the runner applies the syscalls then exec()s the real program
 	// in place, so the running process is the one slinit ultimately
 	// supervises (PID and signals match).
+	// inetd `nowait`: prepend slinit-inetd, which takes the listener,
+	// accepts, and runs one instance of the real program per connection
+	// with the connected socket on stdio.
+	//
+	// This happens BEFORE the runner decision, so when both apply the
+	// composition is runner -> slinit-inetd -> program. That order is
+	// deliberate: the hardening lands on the helper, and seccomp
+	// filters, the capability bounding set, namespaces and the dropped
+	// credential are all inherited across the helper's fork and exec,
+	// so every per-connection instance runs confined too.
+	//
+	// Fail closed when the helper is absent. Starting anyway would hand
+	// the service its LISTENER instead, which is not a degraded version
+	// of per-connection semantics but a different protocol: the program
+	// would accept once itself, or read a listening socket as if it
+	// were a connection, and look like it started fine either way. That
+	// is the same reasoning confinement uses — an invisible behaviour
+	// change is worse than a service that does not start.
+	if params.SocketAccept {
+		if params.InetdPath == "" {
+			return 0, nil, fmt.Errorf(
+				"service asks for socket-accept but slinit-inetd was not found: " +
+					"refusing to start it with the listener on stdio instead " +
+					"(install slinit-inetd beside the slinit binary, or in /sbin)")
+		}
+		params.Command = append([]string{params.InetdPath, "--"}, params.Command...)
+	}
+
 	command := params.Command
 	wrapped := needsRunnerWrap(params) && params.RunnerPath != ""
 

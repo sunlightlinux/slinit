@@ -64,6 +64,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-check" ./cmd/slinit-check
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-monitor" ./cmd/slinit-monitor
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-runner" ./cmd/slinit-runner
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-inetd" ./cmd/slinit-inetd
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-binfmt" ./cmd/slinit-binfmt
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-sysctl" ./cmd/slinit-sysctl
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-svc-value" ./cmd/slinit-svc-value
@@ -153,6 +154,10 @@ install -m 755 "${BUILD_DIR}/slinit-monitor" "${ROOTFS_DIR}/usr/bin/slinit-monit
 # checks the slinit binary's own directory first. Without it, services
 # using apparmor-switch / debug / mlockall silently skip the runner wrap.
 install -m 755 "${BUILD_DIR}/slinit-runner" "${ROOTFS_DIR}/sbin/slinit-runner"
+# slinit-inetd likewise: findSlinitInetd looks beside the slinit binary
+# first, and a service with socket-accept = yes refuses to start without
+# it rather than running with the listener on stdio.
+install -m 755 "${BUILD_DIR}/slinit-inetd" "${ROOTFS_DIR}/sbin/slinit-inetd"
 # The runner preloads libslinit-mlock.so into services with `mlockall =`;
 # it looks in <runner prefix>/../lib/slinit, i.e. /lib/slinit for /sbin.
 #

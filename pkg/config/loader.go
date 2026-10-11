@@ -982,6 +982,30 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: socket-accept needs a socket that can accept. Every
+	// socket-listen form except udp: is a stream socket; a datagram one
+	// has no accept call at all, so the directive could never fire and
+	// the service would run as if it had never been set.
+	if desc.SocketAccept {
+		if len(desc.SocketPaths) == 0 {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message:     "socket-accept requires a socket-listen",
+			}
+		}
+		for _, p := range desc.SocketPaths {
+			if strings.HasPrefix(p, "udp:") || strings.HasPrefix(p, "udp4:") ||
+				strings.HasPrefix(p, "udp6:") {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message: "socket-accept cannot be used with a udp: socket-listen " +
+						"(a datagram socket has no accept; drop socket-accept and let " +
+						"the service read the socket it is passed)",
+				}
+			}
+		}
+	}
+
 	// Validate: follow-pid adopts a process slinit did not start, so the
 	// directives that describe starting one have nothing to act on.
 	if desc.FollowPID != "" {
@@ -2054,6 +2078,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetNotifyAccess(desc.NotifyAccess, desc.NotifyAccessSet)
 	rec.SetSocketReusePort(desc.SocketReusePort)
 	rec.SetSocketMulticastGroup(desc.SocketMulticastGroup)
+	rec.SetSocketAccept(desc.SocketAccept)
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)
 	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)

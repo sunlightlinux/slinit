@@ -986,6 +986,16 @@ func main() {
 		logger.Debug("slinit-runner discovered at %s", runner)
 	}
 
+	// Same for slinit-inetd, which services with socket-accept = yes are
+	// wrapped in. Unlike the runner's settings this one does not degrade
+	// — a service whose protocol is one-instance-per-connection cannot
+	// be started with the bare listener instead — so the absence is an
+	// error at start time rather than a warning here.
+	if inetd := findSlinitInetd(); inetd != "" {
+		serviceSet.SetInetdPath(inetd)
+		logger.Debug("slinit-inetd discovered at %s", inetd)
+	}
+
 	// Set global CPU affinity (--cpu-affinity/-a)
 	if cpuAffinityStr != "" {
 		cpus, err := config.ParseCPUAffinity(cpuAffinityStr)
@@ -2753,8 +2763,14 @@ func startWatchdog(isPID1, containerMode, noWatchdog bool,
 //
 // Returns "" when none are present — services that configure mlockall
 // or NUMA will then log a warning and start without those settings.
-func findSlinitRunner() string {
-	const name = "slinit-runner"
+func findSlinitRunner() string { return findSlinitHelper("slinit-runner") }
+
+// findSlinitInetd locates the slinit-inetd exec helper, which services
+// with socket-accept = yes are wrapped in. Same search order as the
+// runner.
+func findSlinitInetd() string { return findSlinitHelper("slinit-inetd") }
+
+func findSlinitHelper(name string) string {
 	if exe, err := os.Executable(); err == nil {
 		candidate := filepath.Join(filepath.Dir(exe), name)
 		if _, err := os.Stat(candidate); err == nil {

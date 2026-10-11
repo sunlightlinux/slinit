@@ -113,6 +113,7 @@ var KnownSettings = map[string]OperatorType{
 	// Socket activation
 	"socket-listen":          OpEquals | OpPlusEqual, // multiple sockets via +=
 	"socket-reuseport":       OpEquals,
+	"socket-accept":          OpEquals,
 	"socket-multicast-group": OpEquals,
 	"socket-permissions":     OpEquals,
 	"socket-uid":             OpEquals,

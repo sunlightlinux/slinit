@@ -1792,6 +1792,37 @@ mlockall       = current+future
     **LISTEN_PID** convention. Use `+=` for multiple sockets, which
     yields *LISTEN_FDS=N* in declaration order.
 
+**socket-accept**=*yes*|*no* (since 3.1.6)
+:   Run one instance of the service's command per accepted connection,
+    with the **connected** socket on standard input, output and error.
+    This is inetd's `nowait` mode, launchd's **InetdCompatibility** with
+    *Wait* false, and systemd's **Accept=yes**.
+
+    The default, *no*, hands the service its **listener** and lets the
+    service accept for itself — inetd's `wait` mode, and what
+    **socket-listen** has always done.
+
+    slinit implements this by prepending **slinit-inetd**(8) to the
+    command. The helper holds the listener and owns the per-connection
+    processes, so they are never children of slinit itself; read that
+    page for why. When the helper is not installed the service **fails
+    to start** rather than starting with the listener on stdio, because
+    the latter is a different protocol rather than a degraded one: the
+    program would accept once itself, or read a listening socket as
+    though it were a connection, and look healthy either way.
+
+    **Requires a stream socket-listen.** A *udp:* listener has no accept
+    call, so the combination is a load error instead of a directive that
+    could never fire.
+
+    Combines with the security directives in the expected order:
+    **slinit-runner**(8) wraps the helper, so seccomp filters, the
+    capability bounding set, namespaces and **run-as** are inherited by
+    every per-connection instance.
+
+    Each instance's stderr is the client's socket, which is inetd
+    behaviour and worth knowing before using this on a chatty program.
+
 **socket-multicast-group**=*address*|*hostname* (since 3.1.6)
 :   Join a multicast group on this service's datagram listeners, after
     bind. This is launchd's **MulticastGroup** key. The common use is a

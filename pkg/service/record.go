@@ -222,6 +222,7 @@ type ServiceRecord struct {
 	socketPaths     []string       // all socket-listen paths (for multiple sockets)
 	socketReusePort bool           // SO_REUSEPORT on inet listeners (see SetSocketReusePort)
 	socketMcastGrp  string         // multicast group a datagram listener joins after bind
+	socketAccept    bool           // inetd nowait: one instance per accepted connection
 	socketPerms     int
 	socketUID       int
 	socketGID       int
@@ -1973,6 +1974,13 @@ func (sr *ServiceRecord) SetSocketMulticastGroup(g string) { sr.socketMcastGrp =
 // SocketMulticastGroup returns the configured multicast group, or "".
 func (sr *ServiceRecord) SocketMulticastGroup() string { return sr.socketMcastGrp }
 
+// SetSocketAccept turns on inetd `nowait` semantics for this service.
+func (sr *ServiceRecord) SetSocketAccept(b bool) { sr.socketAccept = b }
+
+// SocketAccept reports whether the service runs one instance per
+// accepted connection.
+func (sr *ServiceRecord) SocketAccept() bool { return sr.socketAccept }
+
 func (sr *ServiceRecord) SetGuessMainPID(b bool)        { sr.guessMainPID = b }
 func (sr *ServiceRecord) SetSELinuxContext(s string)    { sr.selinuxContext = s }
 func (sr *ServiceRecord) SetSMACKProcessLabel(s string) { sr.smackProcessLabel = s }
@@ -2232,6 +2240,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.NumaNodes = sr.numaNodes
 	params.MemoryTHP = sr.memoryTHP
 	params.RunnerPath = sr.services.RunnerPath()
+	params.InetdPath = sr.services.InetdPath()
+	params.SocketAccept = sr.socketAccept
 	params.Cloneflags = sr.cloneflags
 	params.UidMappings = sr.uidMappings
 	params.GidMappings = sr.gidMappings

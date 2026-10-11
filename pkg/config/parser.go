@@ -343,14 +343,19 @@ type ServiceDescription struct {
 	// several services (typically instances of one template) can hold the
 	// same host:port and have the kernel spread connections between them.
 	SocketReusePort bool
+	// SocketAccept turns on inetd `nowait` semantics: slinit accepts
+	// each connection and runs one instance of the command per
+	// connection with the connected socket on stdio, instead of handing
+	// the service the listener. systemd calls this Accept=yes.
+	SocketAccept bool
 	// SocketMulticastGroup asks a datagram listener to join a multicast
 	// group after bind. A hostname is resolved; an explicit address must
 	// match the listener's family.
 	SocketMulticastGroup string
 	SocketPerms          int
-	SocketUID        int
-	SocketGID        int
-	SocketActivation string // "immediate" (default) or "on-demand"
+	SocketUID            int
+	SocketGID            int
+	SocketActivation     string // "immediate" (default) or "on-demand"
 
 	// Chaining
 	ChainTo string
@@ -2973,6 +2978,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("socket-reuseport: %w", err)
 		}
 		desc.SocketReusePort = b
+	case "socket-accept":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("socket-accept: %w", err)
+		}
+		desc.SocketAccept = b
 	case "socket-multicast-group":
 		if value == "" {
 			return fmt.Errorf("socket-multicast-group: empty value")

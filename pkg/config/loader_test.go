@@ -131,3 +131,65 @@ func TestSocketMulticastGroupRequiresUDPListener(t *testing.T) {
 		})
 	}
 }
+
+func TestSocketAcceptRequiresAnAcceptableSocket(t *testing.T) {
+	cases := []struct {
+		name    string
+		listen  string
+		wantErr bool
+	}{
+		{"tcp accepted", "socket-listen = tcp:0.0.0.0:7777", false},
+		{"unix accepted", "socket-listen = /run/test-accept.sock", false},
+		{"udp refused", "socket-listen = udp:0.0.0.0:7777", true},
+		{"udp4 refused", "socket-listen = udp4:0.0.0.0:7777", true},
+		{"no listener refused", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			body := "type = process\ncommand = /bin/true\nsocket-accept = yes\n"
+			if c.listen != "" {
+				body += c.listen + "\n"
+			}
+			if err := os.WriteFile(filepath.Join(dir, "acc"), []byte(body), 0644); err != nil {
+				t.Fatal(err)
+			}
+			set := service.NewServiceSet(&testReloadLogger{})
+			dl := NewDirLoader(set, []string{dir})
+			_, err := dl.LoadService("acc")
+			if c.wantErr && err == nil {
+				t.Error("loaded a service socket-accept cannot work on")
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("refused a stream listener: %v", err)
+			}
+			if c.wantErr && err != nil &&
+				!strings.Contains(err.Error(), "socket-accept") {
+				t.Errorf("error does not name the directive: %v", err)
+			}
+		})
+	}
+}
+
+func TestSocketAcceptParsesBothWays(t *testing.T) {
+	for _, c := range []struct {
+		val  string
+		want bool
+	}{{"yes", true}, {"no", false}, {"true", true}, {"false", false}} {
+		dir := t.TempDir()
+		body := "type = process\ncommand = /bin/true\n" +
+			"socket-listen = tcp:0.0.0.0:7777\nsocket-accept = " + c.val + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "acc"), []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+		set := service.NewServiceSet(&testReloadLogger{})
+		dl := NewDirLoader(set, []string{dir})
+		svc, err := dl.LoadService("acc")
+		if err != nil {
+			t.Fatalf("socket-accept = %s: %v", c.val, err)
+		}
+		if got := svc.Record().SocketAccept(); got != c.want {
+			t.Errorf("socket-accept = %s gave %v, want %v", c.val, got, c.want)
+		}
+	}
+}

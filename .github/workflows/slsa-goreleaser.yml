@@ -51,11 +51,17 @@ jobs:
       # One command failing to build should not hide the other 40.
       fail-fast: false
       matrix:
-        # 41 entries, not the 42 directories under cmd/: slinit-resource
+        # 46 entries, not the 47 directories under cmd/: slinit-resource
         # is the OCF resource agent, POSIX shell rather than Go, and the
         # xbps template leaves it out of go_package for the same reason.
         # `go build ./cmd/slinit-resource` fails with "no non-test Go
         # files" — so the count being one short is deliberate.
+        #
+        # It had drifted to 41 against 46 Go binaries: fstab-decode,
+        # immortal-convert, killall5 and sysvinit-convert shipped
+        # without provenance because nothing ties this list to cmd/.
+        # The count above is the check — compare it against
+        # `ls -d cmd/*/ | wc -l` when adding a binary.
         binary:
           - rc-service
           - rc-status
@@ -65,11 +71,16 @@ jobs:
           - slinit-cgtop
           - slinit-check
           - slinit-checkpath
+          - slinit-fstab-decode
+          - slinit-immortal-convert
+          - slinit-killall5
+          - slinit-sysvinit-convert
           - slinitctl
           - slinit-einfo
           - slinit-fstabinfo
           - slinit-getty
           - slinit-hostnamectl
+          - slinit-inetd
           - slinit-init-maker
           - slinit-journalctl
           - slinit-journald

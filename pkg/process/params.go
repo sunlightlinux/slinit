@@ -273,6 +273,15 @@ type ExecParams struct {
 	// not have to discover it.
 	RunnerPath string
 
+	// InetdPath is the absolute path to slinit-inetd, and SocketAccept
+	// says whether to use it. With both set the helper is prepended to
+	// the command: it holds the listener, accepts, and runs one
+	// instance of the real program per connection with the connected
+	// socket on stdio. See cmd/slinit-inetd for why this is a separate
+	// process and not something slinit does itself.
+	InetdPath    string
+	SocketAccept bool
+
 	// AppArmorLoadProfile, if non-empty, is an absolute path to an
 	// AppArmor profile loaded with `apparmor_parser -r` in the parent
 	// before the child is started. A load failure fails the start

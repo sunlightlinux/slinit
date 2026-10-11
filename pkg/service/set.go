@@ -171,6 +171,7 @@ type ServiceSet struct {
 	// mlockall(2) or set_mempolicy(2). Empty means "no helper found,
 	// fall back to ignoring those settings".
 	runnerPath string
+	inetdPath  string
 
 	// Ready notification fd (from --ready-fd/-F), -1 if unset
 	readyFD int
@@ -850,6 +851,8 @@ func (ss *ServiceSet) SetDefaultCPUAffinity(cpus []uint) { ss.defaultCPUAffinity
 func (ss *ServiceSet) DefaultCPUAffinity() []uint        { return ss.defaultCPUAffinity }
 func (ss *ServiceSet) SetRunnerPath(p string)            { ss.runnerPath = p }
 func (ss *ServiceSet) RunnerPath() string                { return ss.runnerPath }
+func (ss *ServiceSet) SetInetdPath(p string)             { ss.inetdPath = p }
+func (ss *ServiceSet) InetdPath() string                 { return ss.inetdPath }
 func (ss *ServiceSet) SetReadyFD(fd int)                 { ss.readyFD = fd }
 func (ss *ServiceSet) ReadyFD() int                      { return ss.readyFD }
 

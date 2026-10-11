@@ -260,7 +260,7 @@ slinit keeps dinit's service-management design and expresses it in Go:
   connection, with push notifications for state and environment changes
 
 ```
-cmd/              45 directories: 44 Go binaries + a shell resource agent
+cmd/              47 directories: 46 Go binaries + a shell resource agent
 pkg/service/      state machine, service types, the dependency graph
 pkg/config/       dinit-compatible parser and the service loader
 pkg/control/      the binary protocol, server and connections
