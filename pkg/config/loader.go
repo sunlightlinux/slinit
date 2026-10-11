@@ -925,6 +925,27 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: three ways to fill fd 0, one descriptor. Refused rather
+	// than resolved by precedence, because a silent winner among them is
+	// how an operator ends up debugging the input they did not get.
+	if desc.StandardInputFile != "" {
+		if desc.StandardInputSet {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message: "standard-input-file and standard-input-text/-data both fill " +
+					"stdin — pick one",
+			}
+		}
+		if desc.ConsumerOf != "" {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message: "standard-input-file and consumer-of both fill stdin: " +
+					"consumer-of wires another service's output to it, so the file " +
+					"would be ignored",
+			}
+		}
+	}
+
 	// Validate: the stderr rotation overrides need a stderr file to
 	// rotate. Without one they would be parsed, stored and never read —
 	// the shape of defect this suite has spent a release finding, so it
@@ -1998,6 +2019,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetUnsetEnvironment(desc.UnsetEnvironment)
 	rec.SetExecSearchPath(desc.ExecSearchPath)
 	rec.SetStandardInput(desc.StandardInput, desc.StandardInputSet)
+	rec.SetStandardInputFile(desc.StandardInputFile)
 	if len(desc.OpenFiles) > 0 {
 		ofs := make([]service.OpenFileRecord, len(desc.OpenFiles))
 		for i, f := range desc.OpenFiles {

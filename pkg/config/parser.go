@@ -690,6 +690,10 @@ type ServiceDescription struct {
 	// pipe; the parser stashes the raw bytes.
 	StandardInput    []byte
 	StandardInputSet bool
+	// StandardInputFile is launchd's StandardInPath: fd 0 reads from
+	// this file. Mutually exclusive with the two above and with
+	// consumer-of; the loader refuses the combinations.
+	StandardInputFile string
 	// OpenFile is a v261+ knob: pre-open a path and pass the fd to
 	// the child via the same LISTEN_FDS/LISTEN_FDNAMES protocol used
 	// for socket-listen. Format: PATH[:FDNAME[:OPTIONS]] where
@@ -2898,6 +2902,8 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 	case "exec-search-path":
 		desc.ExecSearchPath = strings.TrimSpace(expandEnvVars(value, serviceArg))
+	case "standard-input-file":
+		desc.StandardInputFile = expandEnvVars(value, serviceArg)
 	case "standard-input-text":
 		// Literal text; append with newline separators when += is
 		// used (matches systemd's multi-line semantics). The parser

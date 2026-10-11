@@ -387,6 +387,16 @@ type ExecParams struct {
 	// semantics for one-shot services.
 	StdinBytes []byte
 
+	// StdinFile, when non-empty, is opened read-only and becomes the
+	// child's fd 0 (launchd StandardInPath). It is the counterpart of
+	// the logfile/stderr-logfile pair, which stdin had no form of.
+	//
+	// Mutually exclusive with StdinBytes and with an InputPipe, and the
+	// loader refuses those combinations rather than picking one here: a
+	// silent winner among three ways to fill the same descriptor is how
+	// an operator ends up debugging the wrong one.
+	StdinFile string
+
 	// OpenFiles is the systemd OpenFile= list: each entry becomes an
 	// inherited fd on top of the socket-listen range, with a matching
 	// LISTEN_FDNAMES token so the child can identify it by name.

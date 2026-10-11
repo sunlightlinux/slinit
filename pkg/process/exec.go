@@ -308,6 +308,19 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Stdin = bytesReader(params.StdinBytes)
 	}
 
+	// launchd StandardInPath: fd 0 reads from a file. Opened here
+	// rather than in the child because a failure has to be reported as
+	// a start failure — a service told to read a file that is not there
+	// should not come up reading /dev/null instead and look healthy.
+	if params.StdinFile != "" {
+		f, err := os.Open(params.StdinFile)
+		if err != nil {
+			return 0, nil, fmt.Errorf("standard-input-file %s: %w", params.StdinFile, err)
+		}
+		defer f.Close()
+		cmd.Stdin = f
+	}
+
 	// Close stdin/stdout/stderr: redirect to /dev/null (runit -0/-1/-2 style)
 	if params.CloseStdin && cmd.Stdin == nil {
 		devNull, err := os.Open("/dev/null")

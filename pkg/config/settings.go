@@ -319,6 +319,7 @@ var KnownSettings = map[string]OperatorType{
 	"pass-environment":    OpEquals | OpPlusEqual,
 	"unset-environment":   OpEquals | OpPlusEqual,
 	"exec-search-path":    OpEquals,
+	"standard-input-file": OpEquals,
 	"standard-input-text": OpEquals | OpPlusEqual,
 	"standard-input-data": OpEquals | OpPlusEqual,
 	"open-file":           OpEquals | OpPlusEqual,

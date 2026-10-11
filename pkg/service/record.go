@@ -420,6 +420,7 @@ type ServiceRecord struct {
 	execSearchPath    string
 	standardInput     []byte
 	standardInputSet  bool
+	standardInputFile string
 	openFiles         []OpenFileRecord
 	importCredentials []string
 	notifyAccess      NotifyAccess
@@ -1937,6 +1938,12 @@ func (sr *ServiceRecord) SetPassEnvironment(names []string, set bool) {
 }
 func (sr *ServiceRecord) SetUnsetEnvironment(names []string) { sr.unsetEnvironment = names }
 func (sr *ServiceRecord) SetExecSearchPath(p string)         { sr.execSearchPath = p }
+
+// SetStandardInputFile routes fd 0 from a file (launchd StandardInPath).
+func (sr *ServiceRecord) SetStandardInputFile(path string) {
+	sr.standardInputFile = path
+}
+
 func (sr *ServiceRecord) SetStandardInput(data []byte, set bool) {
 	sr.standardInput = data
 	sr.standardInputSet = set
@@ -2272,6 +2279,9 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 		// and a caller stashing this slice for retry would otherwise
 		// see it mutated by the child's stdin pipe writer goroutine.
 		params.StdinBytes = append([]byte(nil), sr.standardInput...)
+	}
+	if sr.standardInputFile != "" {
+		params.StdinFile = sr.standardInputFile
 	}
 	if len(sr.openFiles) > 0 {
 		ofs := make([]process.OpenFileEntry, len(sr.openFiles))

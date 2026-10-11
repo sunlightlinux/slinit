@@ -385,6 +385,20 @@ what tells you the oldest slinit your configuration will run on. See
     entry rather than appending, so operators don't have to chase
     which duplicate wins.
 
+**standard-input-file**=*path* (since 3.1.6)
+:   Read the service's stdin from *path*. The counterpart of **logfile**
+    and **stderr-logfile**, which stdin had no file form of until now.
+
+    The file is opened before the exec, so a path that does not exist
+    **fails the start**. A service told to read a file that is not there
+    should not come up reading an empty descriptor and look healthy.
+
+    Mutually exclusive with **standard-input-text**,
+    **standard-input-data** and **consumer-of**, all of which also fill
+    fd 0. The combination is a load error rather than a precedence rule:
+    a silent winner among three ways to fill one descriptor is how an
+    operator ends up debugging the input they did not get.
+
 **standard-input-text**=*string*
 :   Baked stdin content for one-shot services (systemd's answer
     to runit's `data/`). **=** replaces any earlier value; *+=* appends
