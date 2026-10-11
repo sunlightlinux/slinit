@@ -3374,8 +3374,10 @@ func applyRestart(desc *ServiceDescription, value string) error {
 		desc.AutoRestart = service.RestartNever
 	case "on-failure":
 		desc.AutoRestart = service.RestartOnFailure
+	case "on-success":
+		desc.AutoRestart = service.RestartOnSuccess
 	default:
-		return fmt.Errorf("invalid restart value: %s (expected yes/no/on-failure)", value)
+		return fmt.Errorf("invalid restart value: %s (expected yes/no/on-failure/on-success)", value)
 	}
 	return nil
 }

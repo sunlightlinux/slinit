@@ -509,8 +509,25 @@ error. Repeat the line for several targets.
 
 ## RESTART POLICY
 
-**restart**=*yes*|*no*|*on-failure*
+**restart**=*yes*|*no*|*on-failure*|*on-success*
 :   Whether the service is restarted automatically on exit.
+
+    *on-success* (since 3.1.6) is the inverse of *on-failure*: the
+    service is restarted while it keeps exiting with status 0, and the
+    first failure ends the cycle. It is for a job meant to run
+    repeatedly whose first failure should stop it being retried, which
+    is the opposite assumption from *on-failure* and cannot be written
+    with it.
+
+    *on-success* is strict about what counts. Only a real exit with code
+    0 restarts: a signal is not a clean exit whatever the signal, since
+    a job killed by SIGTERM has not finished its work, and a vanished
+    process — a **bgprocess** daemon seen to be gone without a status —
+    carries no exit code at all and so ends the cycle rather than
+    looping on an unknown.
+
+    **normal-exit** still shadows every mode, and
+    **restart-force-exit-status** still overrides all of them.
 
 **smooth-recovery**=*yes*|*no*
 :   Restart in-place without notifying dependents (useful for

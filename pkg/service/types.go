@@ -339,6 +339,16 @@ const (
 	RestartNever     AutoRestartMode = iota // Never automatically restart
 	RestartAlways                           // Always restart
 	RestartOnFailure                        // Only restart when process fails
+	// RestartOnSuccess is the inverse of RestartOnFailure: restart only
+	// while the process keeps exiting cleanly, and stop as soon as it
+	// fails. Adapted from launchd's KeepAlive{SuccessfulExit: true},
+	// whose stated meaning is "restarted as long as the program exits
+	// and with an exit status of zero".
+	//
+	// The use is a job that is meant to run repeatedly and whose first
+	// failure should end the cycle rather than be retried — the
+	// opposite assumption from on-failure, and not expressible with it.
+	RestartOnSuccess
 )
 
 func (a AutoRestartMode) String() string {
@@ -349,6 +359,8 @@ func (a AutoRestartMode) String() string {
 		return "always"
 	case RestartOnFailure:
 		return "on-failure"
+	case RestartOnSuccess:
+		return "on-success"
 	default:
 		return fmt.Sprintf("AutoRestartMode(%d)", a)
 	}

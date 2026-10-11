@@ -1049,7 +1049,7 @@ func (s *ProcessService) fireWatchdogStop() {
 
 	withRestart := false
 	switch s.autoRestart {
-	case RestartAlways, RestartOnFailure:
+	case RestartAlways, RestartOnFailure, RestartOnSuccess:
 		withRestart = s.CheckRestart()
 	}
 
@@ -1081,7 +1081,7 @@ func (s *ProcessService) fireHealthCheckStop(pid int) {
 
 	withRestart := false
 	switch s.autoRestart {
-	case RestartAlways, RestartOnFailure:
+	case RestartAlways, RestartOnFailure, RestartOnSuccess:
 		withRestart = s.CheckRestart()
 	}
 

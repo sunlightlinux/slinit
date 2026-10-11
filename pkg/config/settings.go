@@ -93,22 +93,22 @@ var KnownSettings = map[string]OperatorType{
 	"termsignal":                 OpEquals, // deprecated alias (dinit compat)
 	"stopsig":                    OpEquals, // OpenRC alias
 	"reload-signal":              OpEquals, // upstart-inspired: signal sent by `slinitctl reload-signal`
-	"follow-pid":    OpEquals,
+	"follow-pid":                 OpEquals,
 	"pid-file":                   OpEquals,
 	"ready-notification":         OpEquals,
 	"watchdog-timeout":           OpEquals,
 
 	// Logging
-	"logfile":             OpEquals,
-	"stderr-logfile":      OpEquals,
+	"logfile":                    OpEquals,
+	"stderr-logfile":             OpEquals,
 	"stderr-logfile-max-size":    OpEquals,
 	"stderr-logfile-max-files":   OpEquals,
 	"stderr-logfile-rotate-time": OpEquals,
-	"log-type":            OpEquals,
-	"log-buffer-size":     OpEquals,
-	"logfile-permissions": OpEquals,
-	"logfile-uid":         OpEquals,
-	"logfile-gid":         OpEquals,
+	"log-type":                   OpEquals,
+	"log-buffer-size":            OpEquals,
+	"logfile-permissions":        OpEquals,
+	"logfile-uid":                OpEquals,
+	"logfile-gid":                OpEquals,
 
 	// Socket activation
 	"socket-listen":      OpEquals | OpPlusEqual, // multiple sockets via +=

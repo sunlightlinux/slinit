@@ -3376,6 +3376,23 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 					sr.inAutoRestart = forRestart
 				}
 			}
+		} else if sr.autoRestart == RestartOnSuccess && sr.desired.Load() == StateStarted {
+			if !normal {
+				// The inverse of on-failure, and deliberately strict
+				// about what counts: only a real exit with code 0.
+				//
+				// A signal is not a clean exit, whatever the signal —
+				// launchd's wording is "exits and with an exit status of
+				// zero", and a job killed by SIGTERM has not finished its
+				// work. And Vanished carries no status at all: a daemon
+				// that disappeared cannot be said to have succeeded, so
+				// the cycle ends rather than looping on an unknown.
+				if exitStatus.Exited() && exitStatus.ExitCode() == 0 {
+					wantedRestart = true
+					forRestart = sr.self.CheckRestart()
+					sr.inAutoRestart = forRestart
+				}
+			}
 		}
 
 		// Remember whether auto-restart was wanted but denied so the
