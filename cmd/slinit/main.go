@@ -104,6 +104,7 @@ func main() {
 	var (
 		serviceDirs     string
 		socketPath      string
+		ownPidFile      string
 		systemMode      bool
 		userMode        bool
 		containerMode   bool
@@ -123,6 +124,7 @@ func main() {
 
 	flag.StringVar(&serviceDirs, "services-dir", "", "service description directory (comma-separated for multiple)")
 	flag.StringVar(&serviceDirs, "d", "", "service description directory (comma-separated for multiple)")
+	flag.StringVar(&ownPidFile, "pidfile", "", "write slinit's own PID to this file")
 	flag.StringVar(&socketPath, "socket-path", "", "control socket path")
 	flag.StringVar(&socketPath, "p", "", "control socket path")
 	flag.BoolVar(&systemMode, "system", false, "run as system service manager")
@@ -294,6 +296,26 @@ func main() {
 
 	// Determine mode
 	isPID1 := os.Getpid() == 1
+
+	// --pidfile: record our own PID for an external supervisor.
+	//
+	// Useless as PID 1, where the answer is 1, and in a container, where
+	// it is 1 inside the namespace. It exists for --system-mgr and
+	// --user, where slinit is an ordinary process something else may
+	// want to signal without first finding the control socket. Adapted
+	// from immortal's -P, which needs it because every service there
+	// gets its own supervisor process.
+	//
+	// A write failure is reported and not fatal: the services are the
+	// job, and refusing to boot because a convenience file could not be
+	// created would be the larger harm.
+	if ownPidFile != "" {
+		if err := writeOwnPidFile(ownPidFile); err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: warn: pidfile %s: %v\n", ownPidFile, err)
+		} else {
+			defer os.Remove(ownPidFile)
+		}
+	}
 
 	// Safety net: if slinit panics, catch it and perform emergency cleanup.
 	// PID 1: kill all processes + force reboot. Container: exit(111).

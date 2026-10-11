@@ -829,6 +829,25 @@ apply OS-level changes:
     Implies **log-type=file** when not set explicitly. `type = process`
     only.
 
+    Rotation follows the **logfile-\*** settings unless the three
+    directives below override them.
+
+**stderr-logfile-max-size**=*bytes* (since 3.1.6)
+**stderr-logfile-max-files**=*count* (since 3.1.6)
+**stderr-logfile-rotate-time**=*duration* (since 3.1.6)
+:   Rotation for the stderr file alone. Each mirrors its **logfile-\***
+    counterpart and takes precedence over it for that one stream; a
+    setting left unset inherits, so changing only the size keeps the
+    file count and interval.
+
+    This is for the service that is quiet on stdout and noisy on
+    stderr, where one shared policy forces a single compromise:
+    **stderr-logfile** alone gave stderr its own *file* but not its own
+    *policy*, because the rotator configuration varied only the path.
+
+    All three require **stderr-logfile**. Setting one without it is a
+    load error rather than a silently ignored directive.
+
     Rotation and filtering follow the **logfile-**\* settings: one
     directive buys the separate stream rather than a second set of
     fifteen knobs. What stays on stdout alone is the UDP forwarder

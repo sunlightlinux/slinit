@@ -174,6 +174,11 @@ type ServiceDescription struct {
 	LogType       service.LogType
 	LogFile       string
 	StderrLogFile string
+	// Rotation overrides for the stderr file. Zero inherits the
+	// corresponding logfile-* value; see slinit-service(5).
+	StderrMaxSize    int64
+	StderrMaxFiles   int
+	StderrRotateTime time.Duration
 	LogFilePerms  int
 	LogFileUID    int
 	LogFileGID    int
@@ -2148,6 +2153,24 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid logfile-rotate-time: %w", err)
 		}
 		desc.LogRotateTime = d
+	case "stderr-logfile-max-size":
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid stderr-logfile-max-size: %w", err)
+		}
+		desc.StderrMaxSize = n
+	case "stderr-logfile-max-files":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid stderr-logfile-max-files: %w", err)
+		}
+		desc.StderrMaxFiles = n
+	case "stderr-logfile-rotate-time":
+		d, err := parseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid stderr-logfile-rotate-time: %w", err)
+		}
+		desc.StderrRotateTime = d
 	case "log-processor":
 		if op == OpPlusEqual {
 			desc.LogProcessor = append(desc.LogProcessor, splitCommand(expandEnvVarsForCommand(value, serviceArg))...)

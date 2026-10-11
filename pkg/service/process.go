@@ -240,6 +240,15 @@ type ProcessService struct {
 	stderrLogFile string
 	stderrRotator *LogRotator
 
+	// stderr rotation overrides. Zero means "use the stdout stream's
+	// value", which is what stderr-logfile did on its own: it gave
+	// stderr a file but left it sharing one rotation policy, because
+	// rotatorConfigFor varied only the path. A service that is quiet on
+	// stdout and noisy on stderr could not rotate them differently.
+	stderrMaxSize    int64
+	stderrMaxFiles   int
+	stderrRotateTime time.Duration
+
 	// Output/error logger commands (OpenRC OUTPUT_LOGGER / ERROR_LOGGER)
 	// When set, stdout (and stderr unless errorLogger is set) is piped
 	// to the output-logger command. If errorLogger is set, stderr is
@@ -716,9 +725,18 @@ func (s *ProcessService) SetLogMinFiles(n int) {
 // SetLogProcessor sets the log processor command.
 func (s *ProcessService) SetLogProcessor(cmd []string) { s.logProcessor = cmd }
 
-// SetStderrLogFile routes stderr to its own file, rotated by the same
-// rules as logfile.
+// SetStderrLogFile routes stderr to its own file. Rotation follows
+// logfile's rules unless SetStderrLogRotation overrides them.
 func (s *ProcessService) SetStderrLogFile(path string) { s.stderrLogFile = path }
+
+// SetStderrLogRotation overrides rotation for the stderr file only. A
+// zero in any position keeps the stdout stream's value for that one
+// setting, so a service can change just the size and inherit the rest.
+func (s *ProcessService) SetStderrLogRotation(maxSize int64, maxFiles int, rotateTime time.Duration) {
+	s.stderrMaxSize = maxSize
+	s.stderrMaxFiles = maxFiles
+	s.stderrRotateTime = rotateTime
+}
 
 // rotatorConfigFor builds the log-pipeline settings shared by the
 // service's streams. Extracted when stderr gained a file of its own:
@@ -735,16 +753,39 @@ func (s *ProcessService) SetStderrLogFile(path string) { s.stderrLogFile = path 
 // renamed the unit in the journal for every service with a rotator and
 // broken `slinit-journalctl -u <svc>`.
 func (s *ProcessService) rotatorConfigFor(path string) LogRotatorConfig {
+	return s.rotatorConfig(path, 0, 0, 0)
+}
+
+// rotatorConfigForStderr is rotatorConfigFor with the stderr overrides
+// applied. Kept as a separate entry point rather than a flag on the
+// first so the stdout path is literally unchanged.
+func (s *ProcessService) rotatorConfigForStderr(path string) LogRotatorConfig {
+	return s.rotatorConfig(path, s.stderrMaxSize, s.stderrMaxFiles, s.stderrRotateTime)
+}
+
+// rotatorConfig builds the pipeline settings. A non-zero override
+// replaces the stream-shared value for that one field; zero inherits.
+func (s *ProcessService) rotatorConfig(path string, maxSize int64, maxFiles int,
+	rotateTime time.Duration) LogRotatorConfig {
+	if maxSize == 0 {
+		maxSize = s.logMaxSize
+	}
+	if maxFiles == 0 {
+		maxFiles = s.logMaxFiles
+	}
+	if rotateTime == 0 {
+		rotateTime = s.logRotateTime
+	}
 	return LogRotatorConfig{
 		GetPID:         s.PID,
 		FilePath:       path,
 		FilePerms:      os.FileMode(s.logFilePerms),
 		FileUID:        s.logFileUID,
 		FileGID:        s.logFileGID,
-		MaxSize:        s.logMaxSize,
-		MaxFiles:       s.logMaxFiles,
+		MaxSize:        maxSize,
+		MaxFiles:       maxFiles,
 		MinFiles:       s.logMinFiles,
-		RotateTime:     s.logRotateTime,
+		RotateTime:     rotateTime,
 		Processor:      s.logProcessor,
 		Includes:       s.logIncludes,
 		Excludes:       s.logExcludes,
@@ -2142,7 +2183,7 @@ func (s *ProcessService) startProcess() error {
 			s.stderrRotator.Close()
 		}
 		var rerr error
-		s.stderrRotator, rerr = NewLogRotator(s.rotatorConfigFor(s.stderrLogFile))
+		s.stderrRotator, rerr = NewLogRotator(s.rotatorConfigForStderr(s.stderrLogFile))
 		if rerr != nil {
 			return fmt.Errorf("stderr-logfile: %w", rerr)
 		}

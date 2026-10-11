@@ -114,6 +114,21 @@ long options may be written with one or two leading dashes.
     system mode is */run/slinit.socket*; for user mode,
     *$XDG_RUNTIME_DIR/slinitctl* if set, otherwise *$HOME/.slinitctl*.
 
+**\--pidfile** *path* (since 3.1.6)
+:   Write slinit's own PID to *path*, replacing the file atomically so a
+    reader polling it never sees a partial write. The file is removed on
+    a clean exit.
+
+    There is nothing to learn from this as PID 1, where the answer is 1,
+    nor inside a container, where it is 1 in the namespace. It is for
+    **\--system-mgr** and **\--user**, where slinit is an ordinary
+    process that something else may want to signal without first
+    locating the control socket.
+
+    A failure to write is reported and does not stop the boot: the
+    services are the job, and refusing to start over a convenience file
+    would be the larger harm.
+
 **\--version**
 :   Print the slinit version and exit.
 

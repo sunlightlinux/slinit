@@ -925,6 +925,19 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: the stderr rotation overrides need a stderr file to
+	// rotate. Without one they would be parsed, stored and never read —
+	// the shape of defect this suite has spent a release finding, so it
+	// is refused rather than ignored.
+	if desc.StderrLogFile == "" &&
+		(desc.StderrMaxSize != 0 || desc.StderrMaxFiles != 0 || desc.StderrRotateTime != 0) {
+		return nil, &ServiceLoadError{
+			ServiceName: name,
+			Message: "stderr-logfile-max-size / -max-files / -rotate-time have no effect " +
+				"without stderr-logfile",
+		}
+	}
+
 	// Validate: follow-pid adopts a process slinit did not start, so the
 	// directives that describe starting one have nothing to act on.
 	if desc.FollowPID != "" {
@@ -1613,6 +1626,12 @@ func applyLogSettings(svc logSettable, desc *ServiceDescription) {
 		if desc.StderrLogFile != "" {
 			if ps, ok := svc.(interface{ SetStderrLogFile(string) }); ok {
 				ps.SetStderrLogFile(desc.StderrLogFile)
+			}
+			if ps, ok := svc.(interface {
+				SetStderrLogRotation(int64, int, time.Duration)
+			}); ok {
+				ps.SetStderrLogRotation(desc.StderrMaxSize, desc.StderrMaxFiles,
+					desc.StderrRotateTime)
 			}
 		}
 	case service.LogToCommand:
