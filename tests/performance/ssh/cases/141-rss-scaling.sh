@@ -1,9 +1,16 @@
-# 141-rss-scaling — measure RSS growth at 3 load points (500,
-# 2500, 10000 ops) to distinguish a genuine per-op leak (delta
-# scales linearly) from Go runtime arena growth that plateaus
-# (delta stops rising after the first few hundred ops). Also
-# lets us see whether repeated runs of the same size see the
-# same growth (repeatable) or converge to zero (one-time init).
+# 141-rss-scaling — measure RSS growth at 3 load points (500, 2500,
+# 10000 ops) to distinguish a genuine per-op leak (delta scales
+# linearly) from Go runtime arena growth that plateaus (delta stops
+# rising after the first few hundred ops). Also lets us see whether
+# repeated runs of the same size see the same growth (repeatable) or
+# converge to zero (one-time init).
+#
+# One exact read per checkpoint, deliberately: PID 1's VmRSS does not
+# drift at rest (fifteen reads over thirty seconds on the target gave
+# the same number), so sampling adds time and no information — see the
+# note in `140`. The curve is what carries the signal here. A per-op
+# leak keeps rising with the op count; one-time arena growth does not,
+# and that is what the measured shape shows.
 _read_rss() {
     awk '/^VmRSS:/ {print $2; exit}' /proc/1/status
 }

@@ -77,6 +77,16 @@ perf_baseline_ns() {
     awk -v a="$1" -v b="$2" 'BEGIN{ print (a<b) ? a : b }'
 }
 
+# perf_spread_pct A B
+#   Their disagreement as a percentage of their mean, which is how every
+#   bracketed case states its own error bar. Third copy of this awk, so
+#   it lives here now.
+perf_spread_pct() {
+    awk -v a="$1" -v b="$2" 'BEGIN{
+        m=(a+b)/2; d=a-b; if(d<0) d=-d;
+        if(m>0) printf "%.0f", 100*d/m; else print "n/a" }'
+}
+
 # perf_run_iters ITERS LABEL "command..."
 #   Runs the command ITERS times, timing each with perf_now_ns.
 #   Silences stdout/stderr so the timing is not swamped by tty flush.
