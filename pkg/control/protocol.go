@@ -180,6 +180,20 @@ const (
 	// slinit-native: dinit has no bulk start, so there is no opcode to
 	// stay compatible with. Additive, per STABILITY.md.
 	CmdStartAll uint8 = 67
+	// CmdServiceRusage reports resource usage: launchd's
+	// `launchctl getrusage`. Payload: [scope(1)], plus [handle(4)] when
+	// scope is RusageScopeService. Reply: RplyServiceRusage with a
+	// UTF-8 `Key=Value\n` body, same shape as CmdServiceShow.
+	// Additive, per STABILITY.md.
+	CmdServiceRusage uint8 = 68
+)
+
+// Scopes for CmdServiceRusage. self and children are launchd's two
+// arguments; service is slinit's per-service adaptation.
+const (
+	RusageScopeSelf     uint8 = 0
+	RusageScopeChildren uint8 = 1
+	RusageScopeService  uint8 = 2
 )
 
 // Reply codes (server → client).
@@ -247,6 +261,8 @@ const (
 	// sweep returns, so a synchronous figure would always read zero.
 	// Failures show up in `slinitctl ls` and the log.
 	RplyStartAllResult uint8 = 119
+	// RplyServiceRusage: CmdServiceRusage's UTF-8 `Key=Value\n` body.
+	RplyServiceRusage uint8 = 120
 )
 
 // Info codes (server → client, unsolicited).

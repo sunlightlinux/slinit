@@ -22,6 +22,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/platform"
+	"github.com/sunlightlinux/slinit/pkg/rusage"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/shutdown"
 )
@@ -321,6 +322,13 @@ doneFlags:
 		err = requireServiceArg(showArgs, func(name string) error {
 			return cmdShow(conn, name)
 		})
+	case "rusage":
+		// launchd takes self|children only; a service name is slinit's
+		// addition. A service actually named "self" or "children" is
+		// unreachable here — launchd never had the clash because it
+		// never took a name, and the two keywords are worth more than
+		// the two names.
+		err = cmdRusage(conn, cmdArgs[0])
 	case "is-started":
 		err = requireServiceArg(cmdArgs, func(name string) error {
 			return cmdIsStarted(conn, name)
@@ -575,6 +583,9 @@ Commands:
   restart <service>        Restart a service (stop + start)
   status <service>         Show detailed service status
   show <service>           Dump every configured field as Key=Value (scripting)
+  rusage self|children|<service>
+                           Resource usage: slinit's own, all reaped children,
+                           or one running service's main process
   is-started <service>     Exit 0 if started, 1 otherwise
   is-failed <service>      Exit 0 if failed, 1 otherwise
   shutdown [type] [time]   Shutdown: type=halt|poweroff|reboot|kexec|softreboot
@@ -685,6 +696,7 @@ var commands = map[string]cmdArity{
 	"platform":      noArgs,
 	"completion":    noArgs,
 	"is-newer-than": {min: 2, max: 2, usage: "Usage: slinitctl is-newer-than <file-a> <file-b>"},
+	"rusage":        {min: 1, max: 1, usage: "Usage: slinitctl rusage self|children|<service>"},
 	"is-older-than": {min: 2, max: 2, usage: "Usage: slinitctl is-older-than <file-a> <file-b>"},
 
 	"list": noArgs, "ls": noArgs, "reload-all": noArgs, "start-all": noArgs,
@@ -1885,6 +1897,56 @@ func printRecentJournal(name string, n int) {
 // numbers systemd reports as MemoryCurrent / CPUUsageNSec / OOMKills.
 // Output ordering is stable, so scripting via `awk -F=` or
 // `grep '^KillMode='` is safe.
+// cmdRusage implements launchd's `launchctl getrusage`, with a third
+// scope launchd does not have: one named service.
+//
+// The body is printed as it arrives — the same `Key=Value` shape as
+// `show`, so the same awk works on both — followed by a note naming the
+// struct rusage fields Linux never fills. launchd prints those seven as
+// zeros; a zero that was never measured is worse than an admission.
+func cmdRusage(conn net.Conn, target string) error {
+	var payload []byte
+	switch target {
+	case "self":
+		payload = []byte{control.RusageScopeSelf}
+	case "children":
+		payload = []byte{control.RusageScopeChildren}
+	default:
+		handle, err := loadServiceHandle(conn, target)
+		if err != nil {
+			return err
+		}
+		payload = append([]byte{control.RusageScopeService},
+			control.EncodeHandle(handle)...)
+	}
+
+	if err := control.WritePacket(conn, control.CmdServiceRusage, payload); err != nil {
+		return err
+	}
+	rply, body, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply == control.RplyBadReq {
+		if len(body) > 0 {
+			return fmt.Errorf("rusage: %s", string(body))
+		}
+		return fmt.Errorf("rusage: request refused")
+	}
+	if rply != control.RplyServiceRusage {
+		return fmt.Errorf("rusage: unexpected reply %d", rply)
+	}
+	fmt.Print(string(body))
+
+	fmt.Printf("# not maintained by the Linux kernel, so not reported: %s\n",
+		strings.Join(rusage.Unmaintained, "; "))
+	if target != "self" && target != "children" {
+		fmt.Println("# covers the service's main process only; " +
+			"use `slinitctl show` for its cgroup subtree totals")
+	}
+	return nil
+}
+
 func cmdShow(conn net.Conn, name string) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {

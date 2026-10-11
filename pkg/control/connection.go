@@ -17,6 +17,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/persist"
 	"github.com/sunlightlinux/slinit/pkg/process"
+	"github.com/sunlightlinux/slinit/pkg/rusage"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -344,6 +345,8 @@ func (c *Connection) dispatch(cmd uint8, payload []byte) error {
 		return c.handleServiceStatus6(payload)
 	case CmdServiceShow:
 		return c.handleServiceShow(payload)
+	case CmdServiceRusage:
+		return c.handleServiceRusage(payload)
 	case CmdRunAction:
 		return c.handleRunAction(payload)
 	case CmdListActions:
@@ -2143,6 +2146,42 @@ func (c *Connection) handleServiceShow(payload []byte) error {
 		body = body[:MaxPayloadSize]
 	}
 	return c.writePacket(RplyServiceShow, []byte(body))
+}
+
+// handleServiceRusage answers launchd's getrusage in slinit's three
+// scopes. The per-service scope reads /proc for the service's main pid,
+// because getrusage has no form that can report a process which is
+// still running and is not our own.
+func (c *Connection) handleServiceRusage(payload []byte) error {
+	if len(payload) < 1 {
+		return c.writePacket(RplyBadReq, nil)
+	}
+	var (
+		snap *rusage.Snapshot
+		err  error
+	)
+	switch payload[0] {
+	case RusageScopeSelf:
+		snap, err = rusage.Self()
+	case RusageScopeChildren:
+		snap, err = rusage.Children()
+	case RusageScopeService:
+		handle, herr := DecodeHandle(payload[1:])
+		if herr != nil {
+			return c.writePacket(RplyBadReq, nil)
+		}
+		svc := c.getService(handle)
+		if svc == nil {
+			return c.writePacket(RplyBadReq, nil)
+		}
+		snap, err = rusage.Live(svc.Name(), svc.PID())
+	default:
+		return c.writePacket(RplyBadReq, nil)
+	}
+	if err != nil {
+		return c.writePacket(RplyBadReq, []byte(err.Error()))
+	}
+	return c.writePacket(RplyServiceRusage, []byte(rusage.Render(snap)))
 }
 
 func (c *Connection) handleListenEnv() error {

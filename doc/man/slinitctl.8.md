@@ -266,6 +266,48 @@ service name or rejected.
     swallowing the flag silently, so a scripter reaching for it out of
     **systemctl** habit notices and drops it.
 
+**rusage** **self**|**children**|*service* (since 3.1.6)
+:   Report resource usage as *Key=Value* lines, the same
+    machine-readable shape as **show**. This is **launchctl
+    getrusage**, with one scope launchd does not have.
+
+    **self** is slinit's own usage, **getrusage(RUSAGE_SELF)**.
+
+    **children** is **getrusage(RUSAGE_CHILDREN)**: the aggregate of
+    every child slinit has reaped *and waited for*. Read that twice
+    before using it. As PID 1 slinit reaps the whole system's orphans,
+    so the total includes processes it never started and cannot name;
+    and a service running right now has not been waited for, so it
+    contributes nothing. For one service, ask for that service.
+
+    *service* reads **/proc** for the service's main process. launchd
+    has no equivalent — **getrusage** can only report a process's own
+    usage or that of children already reaped, and slinit is neither of
+    those for a service still running. The figures therefore cover
+    **that one process, not the processes it forked**: a forking
+    daemon's workers and a scripted service's grandchildren are
+    outside them. Use the cgroup totals that **show** prints for a
+    subtree figure. A service with no running process is an error, not
+    a row of zeros.
+
+    **Seven fields are missing on purpose.** The Linux kernel does not
+    maintain *ru_ixrss*, *ru_idrss*, *ru_isrss*, *ru_nswap*,
+    *ru_msgsnd*, *ru_msgrcv* or *ru_nsignals* — they are always zero.
+    launchd prints all sixteen; slinit omits these and names them in a
+    trailing comment, because a zero beside "swaps" or "signals
+    received" is indistinguishable from a measurement and there would
+    be no way to tell it from a real zero.
+
+    An **Unavailable=** line names any remaining field this particular
+    source could not supply, which is again not the same as zero:
+    block-I/O counts have no per-live-task source, so a *service*
+    query declares them rather than reporting none.
+
+    *MaxRSSKiB* is kibibytes, as the kernel reports *ru_maxrss*; the
+    two time fields are seconds. A service named **self** or
+    **children** cannot be reached through this verb — the keywords
+    win.
+
 **is-started** *service*
 :   Print the service's state and exit 0 iff it is **STARTED**, 1
     otherwise. The state is printed even with **\--quiet**; redirect
