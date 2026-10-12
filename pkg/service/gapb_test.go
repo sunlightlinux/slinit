@@ -179,3 +179,37 @@ func TestExecConditionTimeout(t *testing.T) {
 		t.Fatalf("timeout not enforced: %s (reason %q)", elapsed, reason)
 	}
 }
+
+// TestExecConditionExpressesBooleanLogic pins the reason slinit has no
+// `condition-any` OR combinator: exec-condition runs through /bin/sh -c,
+// so OR, AND and NOT are already expressible with the shell's own
+// grammar. If this ever stops holding — someone dropping the shell for a
+// direct exec, say — that decision has to be revisited, and this test is
+// what will say so.
+func TestExecConditionExpressesBooleanLogic(t *testing.T) {
+	cases := []struct {
+		cmdline string
+		want    bool
+		what    string
+	}{
+		{"false || true", true, "OR, second branch true"},
+		{"true || false", true, "OR, first branch true"},
+		{"false || false", false, "OR, neither branch"},
+		{"true && true", true, "AND, both true"},
+		{"true && false", false, "AND, one false"},
+		{"! false", true, "NOT"},
+		{"{ false || true; } && true", true, "grouping"},
+		// The shape an operator would actually reach for, and the one
+		// `condition-any` was imagined for: either of two paths.
+		{"test -d / || test -d /definitely-absent-xyz", true, "either of two paths"},
+		{"test -d /definitely-absent-xyz || test -d /", true, "either of two paths, reversed"},
+		{"test -d /absent-a-xyz || test -d /absent-b-xyz", false, "neither path"},
+	}
+	for _, c := range cases {
+		got, reason := checkExecCondition(c.cmdline)
+		if got != c.want {
+			t.Errorf("checkExecCondition(%q) = %v (%s), want %v — %s",
+				c.cmdline, got, reason, c.want, c.what)
+		}
+	}
+}
