@@ -158,7 +158,18 @@ type ServiceSet struct {
 	// service so set-ups that never use the feature pay nothing.
 	uidPool *UIDPool
 
-	// Shared log multiplexers: logger service name → mux
+	// Shared log multiplexers: logger service name → mux.
+	//
+	// Guarded by muxMu. The map is written from the loader
+	// (DirLoader.setupSharedLogger, on a service load) and read from the
+	// start path (ScriptedService.BringUp), which are different
+	// goroutines — one per control connection for the first, the state
+	// machine for the second. Whether an outer lock happens to serialise
+	// every pair of callers today was not the thing to rely on: all
+	// three of slinit's recorded map-race kernel panics were accidentally
+	// safe until a new caller appeared, and this map is cold enough that
+	// a mutex costs nothing.
+	muxMu          sync.Mutex
 	sharedLogMuxes map[string]*SharedLogMux
 
 	// Default cgroup base path (from --cgroup-path/-b)
@@ -821,9 +832,14 @@ func (ss *ServiceSet) UIDPool() *UIDPool {
 // to the logger service, and its lossy/blocking mode is a property of
 // that sink, not of the producers that happen to connect to it.
 func (ss *ServiceSet) GetOrCreateSharedLogMux(loggerName string, opts SharedLogMuxOptions) (*SharedLogMux, error) {
+	ss.muxMu.Lock()
+	defer ss.muxMu.Unlock()
 	if mux, ok := ss.sharedLogMuxes[loggerName]; ok {
 		return mux, nil
 	}
+	// Created under the lock so two concurrent first-callers cannot each
+	// build a mux and have one of them silently dropped, which would
+	// leave its producers writing into a sink nothing reads.
 	mux, err := NewSharedLogMuxWithOptions(opts)
 	if err != nil {
 		return nil, err
@@ -834,14 +850,24 @@ func (ss *ServiceSet) GetOrCreateSharedLogMux(loggerName string, opts SharedLogM
 
 // GetSharedLogMux returns the shared log mux for a logger, or nil if none exists.
 func (ss *ServiceSet) GetSharedLogMux(loggerName string) *SharedLogMux {
+	ss.muxMu.Lock()
+	defer ss.muxMu.Unlock()
 	return ss.sharedLogMuxes[loggerName]
 }
 
 // RemoveSharedLogMux closes and removes the shared log mux for a logger.
 func (ss *ServiceSet) RemoveSharedLogMux(loggerName string) {
-	if mux, ok := ss.sharedLogMuxes[loggerName]; ok {
-		mux.Close()
+	ss.muxMu.Lock()
+	mux, ok := ss.sharedLogMuxes[loggerName]
+	if ok {
 		delete(ss.sharedLogMuxes, loggerName)
+	}
+	ss.muxMu.Unlock()
+	// Closed outside the lock: Close drains the mux, and holding muxMu
+	// across it would block every service start that wants to look up a
+	// different logger.
+	if ok {
+		mux.Close()
 	}
 }
 
