@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // commands is checked before connecting, so it must name exactly the
@@ -169,6 +171,34 @@ func TestExitStatuses(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("slinitctl %v: exit %d, want %d", c.args, got, c.want)
+		}
+	}
+}
+
+// TestCanBeSkippedMatchesWhoEvaluatesPredicates pins the rule that
+// makes `slinitctl status` cheap again: only process, scripted and
+// bgprocess call CheckPredicates, so only those can report a skipped
+// start.
+//
+// It matters because every internal service is STARTED with no PID,
+// which is the same shape a skipped service has. Without the type test
+// status asked `show` a question with a known answer on every milestone
+// — measured on ceres as 2.34ms against 1.15ms for the v5 status path.
+//
+// If a future change makes internal or triggered services evaluate
+// predicates, this test fails and the gate has to be revisited rather
+// than silently hiding the skip.
+func TestCanBeSkippedMatchesWhoEvaluatesPredicates(t *testing.T) {
+	canSkip := map[service.ServiceType]bool{
+		service.TypeProcess:   true,
+		service.TypeScripted:  true,
+		service.TypeBGProcess: true,
+		service.TypeInternal:  false,
+		service.TypeTriggered: false,
+	}
+	for st, want := range canSkip {
+		if got := canBeSkipped(st); got != want {
+			t.Errorf("canBeSkipped(%v) = %v, want %v", st, got, want)
 		}
 	}
 }

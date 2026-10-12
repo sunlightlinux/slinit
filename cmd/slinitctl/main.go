@@ -1791,10 +1791,18 @@ func cmdStatus(conn net.Conn, name string, long bool) error {
 	// process, which is systemd's ConditionXxx semantics but leaves the
 	// operator unable to tell it from a service that ran and finished.
 	// Nothing in the status wire says "skipped", so it is read from
-	// `show` — and only for the narrow case that can be one, a STARTED
-	// service with no PID, so an ordinary status pays no extra
-	// round-trip.
-	if status.State == service.StateStarted &&
+	// `show`.
+	//
+	// The type test is not belt-and-braces, it is the whole point. Only
+	// process, scripted and bgprocess call CheckPredicates, so an
+	// internal or triggered service can never have been skipped — and
+	// every internal service is STARTED with no PID, which is exactly
+	// the shape the first two conditions match. Without the type test
+	// this asks `show` a question with a known answer on every
+	// `slinitctl status` of a milestone: measured on ceres as 2.34ms
+	// against 1.15ms for the v5 status path, half of it this round-trip.
+	if canBeSkipped(status.SvcType) &&
+		status.State == service.StateStarted &&
 		status.Flags&control.StatusFlagHasPID == 0 {
 		if skipped, reason := fetchSkipped(conn, handle); skipped {
 			if reason != "" {
@@ -1963,6 +1971,17 @@ func cmdRusage(conn net.Conn, target string) error {
 			"use `slinitctl show` for its cgroup subtree totals")
 	}
 	return nil
+}
+
+// canBeSkipped reports whether this service type evaluates predicates
+// at all. Only these three call CheckPredicates, so only these three
+// can report a skipped start.
+func canBeSkipped(t service.ServiceType) bool {
+	switch t {
+	case service.TypeProcess, service.TypeScripted, service.TypeBGProcess:
+		return true
+	}
+	return false
 }
 
 // fetchSkipped asks `show` whether this service's last start was
