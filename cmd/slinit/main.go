@@ -1260,7 +1260,6 @@ func main() {
 	if mwErr != nil {
 		logger.Warn("Mount activation disabled: %v", mwErr)
 	} else {
-		go mountWatcher.Run()
 		defer mountWatcher.Close()
 
 		prevLoaded := serviceSet.OnServiceLoaded

@@ -4,7 +4,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type testLogger struct{}
@@ -229,5 +231,47 @@ func TestReadMountpointsMatchesProc(t *testing.T) {
 	// count; being wildly smaller would mean field 5 was misread.
 	if len(got) == 0 || len(got)*2 < want {
 		t.Errorf("parsed %d mountpoints from %d lines", len(got), want)
+	}
+}
+
+// TestRunCostsNothingUntilSomethingRegisters is the test that holds the
+// idle-cost promise, which is the whole reason the loop starts lazily:
+// a once-per-second wakeup in PID 1 on every system that never uses
+// start-on-mount would be a regression nobody asked for.
+//
+// It counts mount-table reads rather than wakeups, because a read is
+// what a poll iteration costs and it is observable from here.
+func TestRunCostsNothingUntilSomethingRegisters(t *testing.T) {
+	w, err := New(testLogger{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer w.Close()
+
+	var reads int32
+	w.onRead = func() { atomic.AddInt32(&reads, 1) }
+
+	// Comfortably longer than pollInterval: if Run polled, this would
+	// have produced several reads by now.
+	time.Sleep(3 * pollInterval)
+
+	if n := atomic.LoadInt32(&reads); n != 0 {
+		t.Errorf("Run performed %d mount-table reads with no registrations; "+
+			"it must not poll until a service asks", n)
+	}
+	if w.Watching() {
+		t.Error("Watching() is true with no registrations")
+	}
+
+	// Registering must start it.
+	if err := w.Add("/definitely-not-a-mountpoint-xyz", func() {}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !w.Watching() {
+		t.Error("Watching() is false after a registration")
+	}
+	time.Sleep(2 * pollInterval)
+	if n := atomic.LoadInt32(&reads); n == 0 {
+		t.Error("Run performed no reads after a registration; the loop never started")
 	}
 }

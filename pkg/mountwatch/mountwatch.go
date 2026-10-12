@@ -64,6 +64,21 @@ type Watcher struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 
+	// wake is signalled by the first Add. Until then Run does not poll
+	// at all — see Run for why that matters.
+	wake     chan struct{}
+	wakeOnce sync.Once
+
+	// done is closed by the poll loop when it exits, so Close can wait
+	// for it to stop touching w.f before closing the file. Closing an fd
+	// another thread is polling is not merely untidy: the number can be
+	// reused by the next open and the poll then watches something else.
+	done chan struct{}
+
+	// onRead, when set, is called on each mount-table read. Test seam
+	// for the idle-cost guarantee; nil in production.
+	onRead func()
+
 	mu    sync.Mutex
 	regs  map[string]*registration
 	known map[string]bool // mountpoints present at the last read
@@ -79,6 +94,8 @@ func New(logger Logger) (*Watcher, error) {
 		logger: logger,
 		f:      f,
 		stop:   make(chan struct{}),
+		wake:   make(chan struct{}),
+		done:   make(chan struct{}),
 		regs:   make(map[string]*registration),
 	}
 	// Seed the known set, so the first poll reports what changed rather
@@ -89,6 +106,10 @@ func New(logger Logger) (*Watcher, error) {
 		return nil, err
 	}
 	w.known = known
+
+	// The loop is started here rather than by the caller so the file has
+	// exactly one owner. It costs nothing until a service registers.
+	go w.run()
 	return w, nil
 }
 
@@ -109,10 +130,21 @@ func (w *Watcher) Add(path string, fn func()) error {
 		return fmt.Errorf("mount path %q is not absolute", path)
 	}
 
+	// Checked against a fresh read, not the set seeded at New: a path
+	// mounted between startup and this registration is mounted now, and
+	// that is the question being asked.
+	already := false
+	if path != AnyMount {
+		if current, err := w.readMountpoints(); err == nil {
+			already = current[path]
+		}
+	}
+
 	w.mu.Lock()
 	w.regs[path] = &registration{path: path, fn: fn}
-	already := path != AnyMount && w.known[path]
 	w.mu.Unlock()
+
+	w.wakeOnce.Do(func() { close(w.wake) })
 
 	if already {
 		w.logger.Debug("mountwatch: %s is already mounted, firing on arm", path)
@@ -128,9 +160,31 @@ func (w *Watcher) Remove(path string) {
 	w.mu.Unlock()
 }
 
-// Run polls the mount table until Close. It is meant to be its own
-// goroutine.
-func (w *Watcher) Run() {
+// run polls the mount table until Close. Started by New.
+func (w *Watcher) run() {
+	defer close(w.done)
+	// Idle cost has to be zero. Until some service declares
+	// start-on-mount there is nothing to notice, and a once-per-second
+	// wakeup in PID 1 on every system that never uses the directive
+	// would be a regression nobody asked for — path activation sets the
+	// bar here, since an inotify read costs literally nothing while it
+	// waits. So this blocks until the first Add.
+	select {
+	case <-w.wake:
+	case <-w.stop:
+		return
+	}
+
+	// Re-seed now that watching has actually begun. Filesystems the boot
+	// sequence mounted between New and the first registration are not
+	// news: without this the wildcard form fires for /dev/pts and
+	// friends on every boot.
+	if known, err := w.readMountpoints(); err == nil {
+		w.mu.Lock()
+		w.known = known
+		w.mu.Unlock()
+	}
+
 	for {
 		select {
 		case <-w.stop:
@@ -226,6 +280,9 @@ func (w *Watcher) dispatch() {
 // space, tab, newline and backslash, so a path with a space in it would
 // otherwise never match a registration.
 func (w *Watcher) readMountpoints() (map[string]bool, error) {
+	if w.onRead != nil {
+		w.onRead()
+	}
 	f, err := os.Open(mountInfoPath)
 	if err != nil {
 		return nil, fmt.Errorf("opening the mount table: %w", err)
@@ -285,5 +342,15 @@ func unescapeMountPath(s string) string {
 // Close stops Run and releases the mount table.
 func (w *Watcher) Close() {
 	w.stopOnce.Do(func() { close(w.stop) })
+	<-w.done
 	w.f.Close()
+}
+
+// Watching reports whether any service has registered, i.e. whether the
+// poll loop is doing anything at all. Exists for the test that holds the
+// idle-cost promise.
+func (w *Watcher) Watching() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.regs) > 0
 }
