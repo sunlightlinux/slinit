@@ -24,6 +24,92 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.8] — 2026-10-12
+
+A concurrency audit of the state that lives inside PID 1, prompted by a
+pattern rather than a bug report: **three of slinit's four recorded
+kernel panics are the same mistake.** Shared state on a daemon
+singleton, mutated from one goroutine per control connection, with no
+lock — `DirLoader.loading` (v2.2.7), the per-service `extraEnv` map
+(v3.0.x), `AddDep` (v3.0.x). Each was a Go runtime `fatal error:
+concurrent map read and map write`, which is unrecoverable, and slinit
+is PID 1, so the kernel panicked. All three were found *after* they
+killed a machine.
+
+A patch: one bug fix on a path that could panic PID 1, plus tests and
+CI. Nothing that already works changes behaviour.
+
+### Fixed
+
+- **`sharedLogMuxes` had no lock at all.** The map is written from the
+  loader (on a service load) and read from the start path, which are
+  different goroutines — one per control connection for the first, the
+  state machine for the second. Called concurrently it fails in 7ms with
+  the fatal error above, and the race detector reports two distinct data
+  races.
+
+  Whether an outer lock happened to serialise every pair of callers was
+  not the thing to rely on: all three panics above were accidentally
+  safe until a new caller appeared. The map is touched once per load and
+  once per start, so a mutex costs nothing against a failure mode that
+  costs the machine.
+
+  Creating a mux is now atomic too. Two concurrent first-callers could
+  each build one and have one silently dropped, leaving its producers
+  writing into a sink nothing reads. `Close` runs outside the lock,
+  since draining a mux should not block every service start that wants a
+  different logger.
+
+### Added
+
+- **CI runs the unit suite on every push, with the race detector.** It
+  did not run it at all: the functional, perf and fuzz tiers ran, while
+  `go test` lived only in the release-event workflow. A push could break
+  all 2600-odd tests — including every concurrency guard — and CI would
+  stay green.
+
+  `-race` is on because it is nearly free, measured at 133s against 114s
+  without on the whole tree. There is no version of that trade worth
+  taking the other way when the failure it catches costs a machine. The
+  explicit test timeout is because a lock-ordering mistake deadlocks
+  rather than failing, and a hung test that burns the runner budget
+  tells you less than a stack dump.
+
+- **Concurrency tests for the shared state on `ServiceSet` that had
+  none**: the global environment (five fields kept in step, mutated by
+  `setenv`/`unsetenv`/`reset-env` and read by `getallenv-global` and
+  every service start), the name registry and alias map, and the
+  propagation and transition queues.
+
+  Each guard was checked by reintroducing the bug rather than by reading
+  the code, which mattered: the existing `env_race_test.go` covers the
+  *per-service* environment and passes with the global environment's
+  mutex removed entirely, because it never touches that state.
+
+### Known
+
+- **A shell storm against the running daemon cannot catch this class of
+  bug**, which is worth knowing before writing one. Functional case 241
+  drives eight concurrent clients through the real control protocol over
+  every mutating verb, and it passed every assertion with the global
+  environment's mutex deliberately stripped out. One `slinitctl`
+  invocation is a fork, an exec, a connect and a round-trip, so a shell
+  loop produces a few hundred operations that almost never overlap
+  inside the daemon — process spawn dominates and contention is
+  microscopic. The case stays as a daemon-survival smoke test with that
+  negative result recorded in its header; contention has to be
+  manufactured in Go, where it happens.
+- **`consoleQueue` is vestigial.** `AppendConsoleQueue` and
+  `PullConsoleQueue` have no callers anywhere, so nothing ever adds to
+  the queue and the one live function on it always walks an empty slice.
+  Left in place, since removing dead code is its own change, but
+  recorded so the next audit does not spend time on it.
+- The audit's sweep for shared state over-reports: most structs with a
+  map or slice field and no mutex are request and response values, not
+  long-lived state. `ServiceSet` is now covered; the useful narrowing
+  for next time is long-lived daemon singletons mutated from more than
+  one goroutine.
+
 ## [3.1.7] — 2026-10-12
 
 Two of v3.1.6's three `Known` entries, closed. The third is not a defect
