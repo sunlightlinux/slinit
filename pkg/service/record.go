@@ -189,6 +189,10 @@ type ServiceRecord struct {
 	// Start status
 	startFailed  bool
 	startSkipped bool
+	// startSkipReason is why the start was skipped, kept so `status` and
+	// `show` can say so. Without it a skipped service is reported as
+	// STARTED and nothing anywhere names the condition that skipped it.
+	startSkipReason string
 
 	// Restart tracking
 	inAutoRestart bool
@@ -1012,6 +1016,16 @@ func (sr *ServiceRecord) markSkippedStart() {
 	sr.startSkipped = true
 	sr.Started()
 }
+
+// markSkippedStartReason is markSkippedStart with the predicate's own
+// words kept for reporting.
+func (sr *ServiceRecord) markSkippedStartReason(reason string) {
+	sr.startSkipReason = reason
+	sr.markSkippedStart()
+}
+
+// StartSkipReason returns why the last start was skipped, or "".
+func (sr *ServiceRecord) StartSkipReason() string { return sr.startSkipReason }
 
 // PredicateOutcome is the result of evaluating CheckPredicates.
 type PredicateOutcome uint8
@@ -2852,6 +2866,7 @@ func (sr *ServiceRecord) initiateStart() {
 	// successful start emits its own boot-console line.
 	sr.startedEmitted = false
 	sr.startSkipped = false
+	sr.startSkipReason = ""
 	sr.startRequestTime = time.Now()
 	// Mint a fresh invocation ID so every event this cycle emits
 	// carries the same SLINIT_INVOCATION_ID. Matches systemd's

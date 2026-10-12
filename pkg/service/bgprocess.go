@@ -384,7 +384,7 @@ func (s *BGProcessService) BringUp() bool {
 		return false
 	case PredSkip:
 		s.services.logger.Info("Service '%s': skipped (%s)", s.serviceName, reason)
-		s.markSkippedStart()
+		s.markSkippedStartReason(reason)
 		return true
 	}
 

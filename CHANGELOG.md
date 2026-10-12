@@ -92,6 +92,23 @@ shipped, and is described under `Fixed`.
   clean exit.
 - **`StartOnMount` in `slinitctl show`**, alongside the existing
   `StartOnPath`.
+- **A skipped service now says so.** A start skipped by an unmet
+  `condition-*` still reports `State: STARTED` — that is systemd's
+  `ConditionXXX` semantics and is deliberate, since an unmet condition
+  means "nothing to do" rather than "failed" — but until now nothing
+  named the skip: not the state, not `show`, not the journal, so the
+  only way to tell a skipped service from a trivially successful one was
+  whether its command had run. `status` gains a `Skipped: yes (reason)`
+  line and `show` gains `StartSkipped` / `StartSkipReason`. The reason
+  is the predicate's own words, so it names *which* condition skipped
+  it. `status` pays no extra round-trip for this unless the service is
+  STARTED with no process, which is the only shape that can be a skip.
+- **`SourceLaunchd` in the feature registry**, so the launchd-derived
+  directives and the new opcode carry their provenance in
+  `doc/features.md` instead of its auto-placeholder. Five of the seven
+  ports are registry-visible; `restart` stays attributed to dinit, since
+  only its new *on-success* value comes from launchd, and
+  `condition-network-online` is a predicate — see `Known`.
 
 ### Fixed
 
@@ -119,20 +136,18 @@ shipped, and is described under `Fixed`.
 
 ### Known
 
-- **A service skipped by an unmet `condition-*` is not visible as
-  skipped.** It reports `State: STARTED` — systemd's `ConditionXXX`
-  semantics, where an unmet condition means "nothing to do" rather than
-  "failed" — and no journal line names the skip either, so the only way
-  to tell a skipped service from a trivially successful one is whether
-  its command ran. Found while testing `condition-network-online`; not
-  changed here, because making it visible is a reporting change rather
-  than part of a predicate port.
-- **`pkg/features/provenance.go` has no launchd source**, so all seven
-  items above fall through to its auto-placeholder. Adding one means
-  backfilling the set, which belongs in its own change.
 - **`start-on-mount` = *yes* fires during boot**, for each filesystem
-  the boot sequence mounts after the watcher starts watching. That is
-  what launchd's boolean means; use the path form.
+  the boot sequence mounts after the watcher starts watching. This is
+  not a defect: it is exactly what launchd's boolean means, and changing
+  it would make `yes` mean something upstream does not. Use the path
+  form.
+- **The feature registry has no notion of predicates.** None of the 40
+  `condition-*`/`assert-*` predicates appear in `doc/features.md`,
+  because `discover.go` reads the settings table and the opcode list and
+  never `PredicateKindByName`. So `condition-network-online` cannot be
+  annotated — `TestReconcileNoOrphansAgainstReal` rejects the entry as
+  an orphan. Giving predicates a `KindPredicate` and a discovery pass is
+  its own change, and it is about all 40, not about this release.
 
 ## [3.1.5] — 2026-10-11
 

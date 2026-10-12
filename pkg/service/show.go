@@ -428,6 +428,12 @@ func RenderShow(s Service) string {
 	}
 
 	// --- Path-based activation ---
+	if sr.startSkipped {
+		p("StartSkipped", "yes")
+		if sr.startSkipReason != "" {
+			p("StartSkipReason", sr.startSkipReason)
+		}
+	}
 	if sr.startOnMount != "" {
 		p("StartOnMount", sr.startOnMount)
 	}

@@ -89,6 +89,11 @@ var provenanceTable = []Feature{
 	{Name: "CmdQueryServiceLoadDir", Kind: KindOpcode, Source: SourceSlinit, Category: CatObservability, Notes: "opcode 63 — per-service load dir (for dinit-compat --dinit-compat client symlink cleanup)"},
 	{Name: "CmdSwitchRoot", Kind: KindOpcode, Source: SourceFinit, Category: CatLifecycle, Notes: "opcode 64 — pivot to a new root and exec its init (finit `initctl switch_root`)"},
 	{Name: "CmdSuspend", Kind: KindOpcode, Source: SourceFinit, Category: CatShutdown, Notes: "opcode 65 — write a state to /sys/power/state (finit `initctl suspend`)"},
+	{Name: "CmdServiceRusage", Kind: KindOpcode, Source: SourceLaunchd, Category: CatObservability, Notes: "opcode 68 — resource usage (launchctl getrusage); 7 of 16 struct rusage fields are unmaintained on Linux and omitted"},
+	{Name: "socket-accept", Kind: KindDirective, Source: SourceLaunchd, Category: CatServiceConfig, Notes: "inetd nowait / InetdCompatibility Wait=false / systemd Accept=yes — one instance per connection via slinit-inetd"},
+	{Name: "socket-multicast-group", Kind: KindDirective, Source: SourceLaunchd, Category: CatServiceConfig, Notes: "MulticastGroup — join a group on a datagram listener after bind"},
+	{Name: "start-on-mount", Kind: KindDirective, Source: SourceLaunchd, Category: CatServiceConfig, Notes: "StartOnMount — inotify cannot see a mount, so this follows /proc/self/mountinfo"},
+	{Name: "standard-input-file", Kind: KindDirective, Source: SourceLaunchd, Category: CatServiceConfig, Notes: "StandardInPath — a file on fd 0"},
 	{Name: "CmdServiceShow", Kind: KindOpcode, Source: SourceSystemd, Category: CatObservability, Notes: "opcode 66 — full config + live state as Key=Value lines (systemd `show` analogue)"},
 
 	// ---------- SERVICE DIRECTIVES: TOP-USED ----------

@@ -119,7 +119,7 @@ func TestSourcesAreKnown(t *testing.T) {
 	valid := map[Source]bool{
 		SourceDinit: true, SourceSystemd: true, SourceRunit: true,
 		SourceS6: true, SourceOpenRC: true, SourceUpstart: true,
-		SourceFinit: true, SourceSlinit: true,
+		SourceFinit: true, SourceLaunchd: true, SourceSlinit: true,
 	}
 	for _, f := range provenanceTable {
 		if !valid[f.Source] {

@@ -1787,6 +1787,24 @@ func cmdStatus(conn net.Conn, name string, long bool) error {
 		}
 	}
 
+	// A service skipped by an unmet condition-* reports STARTED with no
+	// process, which is systemd's ConditionXxx semantics but leaves the
+	// operator unable to tell it from a service that ran and finished.
+	// Nothing in the status wire says "skipped", so it is read from
+	// `show` — and only for the narrow case that can be one, a STARTED
+	// service with no PID, so an ordinary status pays no extra
+	// round-trip.
+	if status.State == service.StateStarted &&
+		status.Flags&control.StatusFlagHasPID == 0 {
+		if skipped, reason := fetchSkipped(conn, handle); skipped {
+			if reason != "" {
+				fmt.Printf("  Skipped: yes (%s)\n", reason)
+			} else {
+				fmt.Printf("  Skipped: yes\n")
+			}
+		}
+	}
+
 	// systemctl-style extras: cgroup tree + recent journal. Both are
 	// best-effort — no error is fatal because status still worked, and
 	// the state/PID lines above are the authoritative wire truth.
@@ -1945,6 +1963,30 @@ func cmdRusage(conn net.Conn, target string) error {
 			"use `slinitctl show` for its cgroup subtree totals")
 	}
 	return nil
+}
+
+// fetchSkipped asks `show` whether this service's last start was
+// skipped by a predicate, and why. Best-effort: a failure here means no
+// line, never a failed status.
+func fetchSkipped(conn net.Conn, handle uint32) (bool, string) {
+	if err := control.WritePacket(conn, control.CmdServiceShow,
+		control.EncodeHandle(handle)); err != nil {
+		return false, ""
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil || rply != control.RplyServiceShow {
+		return false, ""
+	}
+	skipped, reason := false, ""
+	for _, line := range strings.Split(string(payload), "\n") {
+		if v, ok := strings.CutPrefix(line, "StartSkipped="); ok {
+			skipped = v == "yes"
+		}
+		if v, ok := strings.CutPrefix(line, "StartSkipReason="); ok {
+			reason = v
+		}
+	}
+	return skipped, reason
 }
 
 func cmdShow(conn net.Conn, name string) error {

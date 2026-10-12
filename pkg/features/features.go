@@ -54,6 +54,7 @@ const (
 	SourceOpenRC  Source = "openrc"  // OpenRC init.d / conf.d / einfo family
 	SourceUpstart Source = "upstart" // Upstart-derived (normal-exit, reload-signal, .override, script sugar)
 	SourceFinit   Source = "finit"   // finit-derived (initctl switch_root / suspend)
+	SourceLaunchd Source = "launchd" // launchd-derived (launchd-842.1.4, Apple's last OSS drop)
 	SourceSlinit  Source = "slinit"  // slinit-native (no upstream analog)
 )
 
