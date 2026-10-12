@@ -24,6 +24,116 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.6] — 2026-10-12
+
+**The launchd backlog, closed.** launchd-842.1.4 — Apple's last
+open-source drop — was triaged against all 78 of its plist keys in
+v3.1.5's cycle; seven items came out of it worth building and two worth
+refusing with a reason. All nine are settled here, in eleven commits.
+
+**A patch, not a minor**, and the reasoning is worth stating because
+eight of the eleven commits add a directive. Every one of them is
+additive in the sense STABILITY.md requires: the new directives did not
+exist, so no service file can have been using them, and the new load
+errors they bring are reachable only through them. Nothing that already
+works changes behaviour. The one thing that would have forced a minor —
+a new always-running watcher in PID 1, which every installation would
+have paid for whether or not it used the feature — was fixed rather than
+shipped, and is described under `Fixed`.
+
+### Added
+
+- **`socket-accept` = *yes*** runs one instance of a service per
+  accepted connection, with the connected socket on stdin, stdout and
+  stderr. This is inetd's `nowait`, launchd's `InetdCompatibility` with
+  *Wait* false, and systemd's `Accept=yes`. The accept loop lives in a
+  new helper, **`slinit-inetd`**(8), not in slinit — which is also where
+  launchd puts it (`launchproxy`(8)), and matters more here because
+  slinit may be PID 1: a per-connection process lifecycle inside the
+  code that supervises the system is the shape that once turned a
+  concurrent-map race into a kernel panic. A service with the directive
+  refuses to start when the helper is absent, since being handed the
+  listener instead is a different protocol, not a degraded one.
+  `--max-concurrent` defaults to 64 because an unbounded fork per
+  inbound connection costs the whole machine, not one service.
+- **`start-on-mount`** starts a service when a filesystem is mounted
+  (launchd `StartOnMount`). `yes` keeps launchd's boolean meaning — every
+  mount, which is noisy — and an absolute path is the useful form. It
+  cannot be a `start-on-path-*` variant: mounting creates no directory
+  entry, so inotify produces no event for it at all.
+- **`socket-multicast-group`** joins a multicast group on a datagram
+  listener after bind (launchd `MulticastGroup`), for a service that must
+  receive mDNS or SSDP without doing the join itself. A literal address
+  must match the listener's family and a non-`udp:` listener is a load
+  error, where launchd leaves both "undefined" — a socket that failed to
+  join is indistinguishable from a working one.
+- **`condition-network-online`** is launchd's `KeepAlive{NetworkState}`
+  definition verbatim: a non-loopback interface, up, with an IPv4 or IPv6
+  address. It is not reachability, and it is evaluated at each start
+  rather than continuously, so it means "do not start without a network"
+  rather than "stop when the network drops".
+- **`standard-input-file`** puts a file on fd 0 (launchd
+  `StandardInPath`).
+- **`restart` = *on-success*** restarts only after a clean exit, the
+  inverse of `on-failure`.
+- **`slinitctl rusage self|children|<service>`** reports resource usage
+  (launchd `launchctl getrusage`), as `Key=Value` lines like `show`. The
+  per-service scope has no launchd equivalent and reads `/proc`, because
+  `getrusage` can only report a process's own usage or that of children
+  already reaped. **Seven of struct rusage's sixteen fields are
+  unmaintained on Linux and are omitted rather than printed as zeros** —
+  a zero that was never measured cannot be told from a real one. New
+  control-protocol command 68 / reply 120; `CPVersion` stays 7.
+- **`stderr-logfile-max-size`, `-max-files` and `-rotate-time`** give
+  stderr its own rotation policy instead of inheriting stdout's. Setting
+  them without `stderr-logfile` is a load error rather than three
+  directives that are stored and never read.
+- **`--pidfile`** on the daemon, written atomically and removed on a
+  clean exit.
+- **`StartOnMount` in `slinitctl show`**, alongside the existing
+  `StartOnPath`.
+
+### Fixed
+
+- **The mount watcher no longer polls when nothing uses it.** As first
+  written it re-read `/proc/self/mountinfo` every second for the life of
+  the system regardless of configuration — 249us per read, so 0.025% of
+  a core, small but not zero and not something to hand people silently.
+  It now blocks until a service registers, which also stops the
+  wildcard form firing for the filesystems the boot sequence mounts.
+- **The mount watcher closed its file while the poll loop was using the
+  descriptor.** Found by the race detector. Closing an fd another thread
+  is polling is wrong rather than untidy: the number can be reused by
+  the next open, and the poll then watches an unrelated file.
+- **`slinit-immortal-convert` defects found by running it on immortal's
+  own `example/*.yml`.** One produced output that could not start at
+  all — a bare `cmd:` relies on `PATH`, which slinit does not search —
+  while `slinit-check` had been warning about it the whole time. Its
+  warnings now print by default.
+- **Four binaries were shipping without SLSA provenance.** The release
+  workflow's matrix is maintained by hand and had drifted to 41 entries
+  against 46 Go commands; `slinit-fstab-decode`,
+  `slinit-immortal-convert`, `slinit-killall5` and
+  `slinit-sysvinit-convert` were missing. The count in the comment is
+  now the check against `ls -d cmd/*/ | wc -l`.
+
+### Known
+
+- **A service skipped by an unmet `condition-*` is not visible as
+  skipped.** It reports `State: STARTED` — systemd's `ConditionXXX`
+  semantics, where an unmet condition means "nothing to do" rather than
+  "failed" — and no journal line names the skip either, so the only way
+  to tell a skipped service from a trivially successful one is whether
+  its command ran. Found while testing `condition-network-online`; not
+  changed here, because making it visible is a reporting change rather
+  than part of a predicate port.
+- **`pkg/features/provenance.go` has no launchd source**, so all seven
+  items above fall through to its auto-placeholder. Adding one means
+  backfilling the set, which belongs in its own change.
+- **`start-on-mount` = *yes* fires during boot**, for each filesystem
+  the boot sequence mounts after the watcher starts watching. That is
+  what launchd's boolean means; use the path form.
+
 ## [3.1.5] — 2026-10-11
 
 **No product code changed** — nine files, all under `tests/`, as in
