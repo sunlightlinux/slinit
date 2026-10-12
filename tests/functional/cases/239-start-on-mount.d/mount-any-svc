@@ -1,0 +1,6 @@
+type = scripted
+command = /bin/sh -c "echo fired > /run/mount-any-marker"
+stop-command = /bin/true
+# The launchd boolean form: every mount on the system fires it.
+start-on-mount = yes
+manual = yes

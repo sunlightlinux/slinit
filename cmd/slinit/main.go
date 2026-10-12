@@ -26,6 +26,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/metrics"
+	"github.com/sunlightlinux/slinit/pkg/mountwatch"
 	"github.com/sunlightlinux/slinit/pkg/network"
 	"github.com/sunlightlinux/slinit/pkg/pathwatch"
 	"github.com/sunlightlinux/slinit/pkg/persist"
@@ -1241,6 +1242,60 @@ func main() {
 		serviceSet.OnServiceUnloaded = func(svc service.Service) {
 			if path, _ := svc.Record().StartOnPath(); path != "" {
 				pathWatcher.Remove(path)
+			}
+		}
+	}
+
+	// Mount-based activation: start a service when a filesystem is
+	// mounted (launchd StartOnMount). This cannot go through pathwatch —
+	// a mount creates no directory entry, so inotify reports nothing for
+	// it; see pkg/mountwatch.
+	//
+	// The hooks below CHAIN onto whatever path activation installed
+	// rather than replacing it. OnServiceLoaded / OnServiceUnloaded are
+	// single function fields, so assigning over them would silently
+	// disable every start-on-path-* stanza on the system — a failure
+	// with no error and no log.
+	mountWatcher, mwErr := mountwatch.New(logger)
+	if mwErr != nil {
+		logger.Warn("Mount activation disabled: %v", mwErr)
+	} else {
+		go mountWatcher.Run()
+		defer mountWatcher.Close()
+
+		prevLoaded := serviceSet.OnServiceLoaded
+		serviceSet.OnServiceLoaded = func(svc service.Service) {
+			if prevLoaded != nil {
+				prevLoaded(svc)
+			}
+			mp := svc.Record().StartOnMount()
+			if mp == "" {
+				return
+			}
+			s := svc
+			if err := mountWatcher.Add(mp, func() {
+				// On a goroutine for the same reason path activation
+				// does it: Add fires synchronously for an already
+				// mounted path, from inside OnServiceLoaded, which the
+				// loader calls holding the dependency-graph lock that
+				// StartService also takes.
+				go func() {
+					logger.Info("Service '%s': mount activation fired (%s)",
+						s.Name(), mp)
+					serviceSet.StartService(s)
+				}()
+			}); err != nil {
+				logger.Warn("Service '%s': start-on-mount disabled: %v", s.Name(), err)
+			}
+		}
+
+		prevUnloaded := serviceSet.OnServiceUnloaded
+		serviceSet.OnServiceUnloaded = func(svc service.Service) {
+			if prevUnloaded != nil {
+				prevUnloaded(svc)
+			}
+			if mp := svc.Record().StartOnMount(); mp != "" {
+				mountWatcher.Remove(mp)
 			}
 		}
 	}

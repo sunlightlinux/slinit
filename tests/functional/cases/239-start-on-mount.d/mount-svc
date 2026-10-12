@@ -1,0 +1,10 @@
+type = scripted
+command = /bin/sh -c "echo fired > /run/mount-marker"
+stop-command = /bin/true
+start-on-mount = /mnt/trigger
+# manual: the dependency graph loads this service so the mount watcher
+# arms, but must NOT start it — only the mount trigger may. Same
+# pattern as the path-activated services in case 72, and for the same
+# reason: `slinitctl load` does not fire OnServiceLoaded for a service
+# the set already holds, so the dep graph is what arms a watcher.
+manual = yes

@@ -223,6 +223,7 @@ type ServiceRecord struct {
 	socketReusePort bool           // SO_REUSEPORT on inet listeners (see SetSocketReusePort)
 	socketMcastGrp  string         // multicast group a datagram listener joins after bind
 	socketAccept    bool           // inetd nowait: one instance per accepted connection
+	startOnMount    string         // mount point whose appearance starts this service ("*" = any)
 	socketPerms     int
 	socketUID       int
 	socketGID       int
@@ -1980,6 +1981,13 @@ func (sr *ServiceRecord) SetSocketAccept(b bool) { sr.socketAccept = b }
 // SocketAccept reports whether the service runs one instance per
 // accepted connection.
 func (sr *ServiceRecord) SocketAccept() bool { return sr.socketAccept }
+
+// SetStartOnMount sets the mount point whose appearance starts this
+// service. "*" means any new mount.
+func (sr *ServiceRecord) SetStartOnMount(p string) { sr.startOnMount = p }
+
+// StartOnMount returns the configured mount trigger, or "".
+func (sr *ServiceRecord) StartOnMount() string { return sr.startOnMount }
 
 func (sr *ServiceRecord) SetGuessMainPID(b bool)        { sr.guessMainPID = b }
 func (sr *ServiceRecord) SetSELinuxContext(s string)    { sr.selinuxContext = s }

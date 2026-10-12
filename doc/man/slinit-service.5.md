@@ -1910,6 +1910,39 @@ If the configured path (or its parent, for **start-on-path-exists**)
 does not exist at load time, slinit logs a warning and skips the
 watch; the service remains startable via `slinitctl start`.
 
+**start-on-mount**=*yes*|*no*|*path* (since 3.1.6)
+:   Start the service when a filesystem is mounted. This is launchd's
+    **StartOnMount**.
+
+    launchd's key is a boolean, and *yes* keeps that meaning exactly:
+    the service starts every time **any** filesystem is mounted.
+    **Expect that to be noisy.** It fires for each tmpfs, bind mount,
+    container mount and **for the filesystems the boot sequence mounts
+    while the system is still coming up**. It is here for parity; the
+    path form is almost certainly what you want.
+
+    With an absolute *path*, the service starts when that path becomes a
+    mount point and nothing else fires it. A relative path is a load
+    error rather than a trigger that could never match.
+
+    It is a **transition**, not a one-shot: an unmount followed by a
+    remount fires it again. If the path is already mounted when the
+    service loads, it fires then — "start when /mnt/data is mounted" is
+    a statement about the state the service needs, and waiting for an
+    unmount-remount cycle that may never come would be useless.
+
+    **Why this is not a start-on-path-\* variant.** It cannot be one.
+    Mounting creates no directory entry, so **inotify produces no event
+    for it** — measured, not assumed: an IN_ALL_EVENTS watch on a
+    mountpoint reports nothing at all across a mount, and the watch
+    stays attached to the now-hidden underlying inode. inotify has
+    IN_UNMOUNT and no counterpart for mounting. This trigger therefore
+    follows **/proc/self/mountinfo** instead, with its own watcher; see
+    **slinit**(8).
+
+    The service's own state still applies: pair it with **manual** =
+    *yes* if the trigger should be the only thing that starts it.
+
 **start-on-path-exists**=*path*
 :   Fire when *path* exists. If *path* already exists at load time the
     service starts immediately; otherwise slinit watches the parent

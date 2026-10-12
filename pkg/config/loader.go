@@ -2079,6 +2079,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetSocketReusePort(desc.SocketReusePort)
 	rec.SetSocketMulticastGroup(desc.SocketMulticastGroup)
 	rec.SetSocketAccept(desc.SocketAccept)
+	rec.SetStartOnMount(desc.StartOnMount)
 	rec.SetGuessMainPID(desc.GuessMainPID)
 	rec.SetSELinuxContext(desc.SELinuxContext)
 	rec.SetSMACKProcessLabel(desc.SMACKProcessLabel)

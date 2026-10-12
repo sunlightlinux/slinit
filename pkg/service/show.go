@@ -428,6 +428,9 @@ func RenderShow(s Service) string {
 	}
 
 	// --- Path-based activation ---
+	if sr.startOnMount != "" {
+		p("StartOnMount", sr.startOnMount)
+	}
 	if sr.startOnPath != "" {
 		p("StartOnPath", sr.startOnPath)
 		if sr.startOnPathTrigger != 0 {

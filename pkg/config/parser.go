@@ -336,6 +336,11 @@ type ServiceDescription struct {
 	// system default in place. Empty = no change.
 	MemoryTHP string
 
+	// StartOnMount is launchd's StartOnMount. "*" fires on every new
+	// mount (launchd's boolean form); an absolute path fires when that
+	// path becomes a mount point.
+	StartOnMount string
+
 	// Socket activation
 	SocketPath  string   // primary socket path (first socket-listen)
 	SocketPaths []string // all socket-listen paths (for multiple sockets)
@@ -2978,6 +2983,23 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("socket-reuseport: %w", err)
 		}
 		desc.SocketReusePort = b
+	case "start-on-mount":
+		// Two forms: the launchd boolean, and a path — which is the one
+		// anybody actually wants, since "every mount on the system"
+		// fires for each tmpfs, bind mount and container mount too.
+		switch value {
+		case "yes", "true", "1", "on":
+			desc.StartOnMount = "*"
+		case "no", "false", "0", "off":
+			desc.StartOnMount = ""
+		default:
+			path := expandEnvVars(value, serviceArg)
+			if !strings.HasPrefix(path, "/") {
+				return fmt.Errorf("start-on-mount: expected yes|no or an "+
+					"absolute path, got %q", value)
+			}
+			desc.StartOnMount = path
+		}
 	case "socket-accept":
 		b, err := parseBool(value)
 		if err != nil {
