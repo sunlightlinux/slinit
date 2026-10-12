@@ -1,11 +1,17 @@
-# Functional (QEMU) + fuzz suites, on every pull request.
+# Unit (with -race) + functional (QEMU) + perf + fuzz suites, on every
+# push and pull request.
 #
-# Why this exists: until now nothing ran the test suites in CI. The SLSA
-# workflow builds release binaries and tarball-verify runs `go test` —
-# but only on `release: created` and `workflow_dispatch`, so no branch and
-# no pull request was ever checked by anything. A contributor had no way
-# to know whether their change broke one of the 230 functional cases
-# short of owning a machine and running them.
+# Why this exists: until this workflow, nothing ran the test suites in
+# CI. The SLSA workflow builds release binaries, and tarball-verify ran
+# `go test` but only on `release: created` and `workflow_dispatch`, so no
+# branch and no pull request was ever checked by anything. A contributor
+# had no way to know whether their change broke one of the functional
+# cases short of owning a machine and running them.
+#
+# The `unit` job closed the last part of that gap: this workflow ran the
+# functional, perf and fuzz tiers for a while without running the unit
+# suite at all, so a push could break all 2600-odd tests and CI would
+# stay green.
 #
 # What is deliberately NOT here: the acceptance (SSH), container (Docker)
 # and k8s (kind) tiers. Those need a live target — a VM or a real PC — and
@@ -285,6 +291,36 @@ jobs:
   # The value in CI is catching a crasher a change introduced, which
   # usually surfaces in seconds; finding deep bugs needs hours and belongs
   # on a machine that has them.
+  # The unit suite, which this workflow did not run at all until now:
+  # the 2600-odd tests only ever executed in tarball-verify.yml, which
+  # fires on release events. So a push could break every one of them and
+  # CI would stay green, including the concurrency guards that exist
+  # precisely because three of slinit's recorded kernel panics were
+  # unlocked shared state in PID 1.
+  #
+  # -race is on because it is nearly free here: 133s against 114s
+  # without, measured on the whole tree. The failure it catches costs a
+  # machine, so there is no version of this trade worth taking the other
+  # way, and no reason to narrow it to "the concurrency packages" when
+  # the whole tree fits in the same couple of minutes.
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Unit tests with the race detector
+        # -timeout well under the job default: a lock-ordering mistake
+        # deadlocks rather than failing, and a hung test that burns the
+        # whole runner budget tells you much less than a stack dump.
+        run: go test -race -count=1 -timeout 10m ./...
+
   fuzz:
     runs-on: ubuntu-latest
     strategy:
