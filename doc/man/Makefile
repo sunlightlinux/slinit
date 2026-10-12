@@ -16,6 +16,7 @@ MD2MAN  ?= go tool github.com/cpuguy83/go-md2man/v2
 PAGES_8 = \
 	slinit.8 \
 	slinit-runner.8 \
+	slinit-inetd.8 \
 	slinitctl.8 \
 	slinit-check.8 \
 	slinit-monitor.8 \

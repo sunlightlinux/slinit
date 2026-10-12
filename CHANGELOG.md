@@ -24,6 +24,19 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.9] — 2026-10-12
+
+### Fixed
+
+- **`slinit-inetd`'s man page was not installed.** `doc/man/Makefile`
+  enumerates its pages rather than globbing the directory, so the page
+  added with the binary in v3.1.6 rendered but never shipped — every
+  other `cmd/` binary had one in the package and this one did not.
+  Caught by diffing the man sources against what landed in the
+  distribution rootfs while building the v3.1.8 ISO, which is the only
+  place the omission is visible: the source tree, the test suites and
+  `make -C doc/man` were all happy.
+
 ## [3.1.8] — 2026-10-12
 
 A concurrency audit of the state that lives inside PID 1, prompted by a
