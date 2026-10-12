@@ -24,6 +24,63 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.7] — 2026-10-12
+
+Two of v3.1.6's three `Known` entries, closed. The third is not a defect
+and now says so.
+
+A patch: one additive report line and a registry annotation. Nothing
+that already works changes behaviour.
+
+### Added
+
+- **A skipped service now says so.** A start skipped by an unmet
+  `condition-*` still reports `State: STARTED` — that is systemd's
+  `ConditionXXX` semantics and is deliberate, since an unmet condition
+  means "nothing to do" rather than "failed" — but nothing named the
+  skip: not the state, not `show`, not the journal, so the only way to
+  tell a skipped service from a trivially successful one was whether its
+  command had run. `slinitctl status` gains a `Skipped: yes (reason)`
+  line and `show` gains `StartSkipped` / `StartSkipReason`.
+
+  The reason is the predicate's own words, so the line names *which*
+  condition skipped it rather than only that one did. The flag had been
+  tracked internally the whole time and simply never surfaced. `status`
+  reads it from `show` rather than widening the status wire, and only
+  when the service is STARTED with no process — the only shape a skip
+  can take — so an ordinary `status` pays no extra round-trip.
+
+- **`SourceLaunchd` in the feature registry**, so the launchd-derived
+  directives and the new opcode carry provenance in `doc/features.md`
+  instead of its auto-placeholder.
+
+  v3.1.6 described this as seven items needing a backfill. That was
+  wrong, and checking it is what produced the `Known` entry below.
+  **Five** of the ports are registry-visible and are annotated.
+  **`restart` stays attributed to dinit**: the directive is dinit's and
+  only its new *on-success* value comes from launchd, so re-sourcing the
+  whole directive would be a worse answer than leaving it.
+
+### Known
+
+- **The feature registry has no notion of predicates.** None of the 40
+  `condition-*` / `assert-*` predicates appear in `doc/features.md`,
+  because `discover.go` reads the settings table and the opcode list and
+  never `PredicateKindByName`. So `condition-network-online` cannot be
+  annotated at all — `TestReconcileNoOrphansAgainstReal` rejects the
+  entry as an orphan, which is that guard working. Giving predicates a
+  `KindPredicate` and a discovery pass is its own change, and it is
+  about all 40 of them rather than about any one port.
+- **`start-on-mount` = *yes* firing during boot stays**, and is not a
+  defect: it is exactly what launchd's boolean means, and changing it
+  would make *yes* mean something upstream does not. Use the path form.
+
+### Note
+
+Regenerating `doc/features.md` needs `--group-by=source`, as the
+committed file's own header says. The default grouping produces a
+different, shorter document.
+
 ## [3.1.6] — 2026-10-12
 
 **The launchd backlog, closed.** launchd-842.1.4 — Apple's last
@@ -92,23 +149,6 @@ shipped, and is described under `Fixed`.
   clean exit.
 - **`StartOnMount` in `slinitctl show`**, alongside the existing
   `StartOnPath`.
-- **A skipped service now says so.** A start skipped by an unmet
-  `condition-*` still reports `State: STARTED` — that is systemd's
-  `ConditionXXX` semantics and is deliberate, since an unmet condition
-  means "nothing to do" rather than "failed" — but until now nothing
-  named the skip: not the state, not `show`, not the journal, so the
-  only way to tell a skipped service from a trivially successful one was
-  whether its command had run. `status` gains a `Skipped: yes (reason)`
-  line and `show` gains `StartSkipped` / `StartSkipReason`. The reason
-  is the predicate's own words, so it names *which* condition skipped
-  it. `status` pays no extra round-trip for this unless the service is
-  STARTED with no process, which is the only shape that can be a skip.
-- **`SourceLaunchd` in the feature registry**, so the launchd-derived
-  directives and the new opcode carry their provenance in
-  `doc/features.md` instead of its auto-placeholder. Five of the seven
-  ports are registry-visible; `restart` stays attributed to dinit, since
-  only its new *on-success* value comes from launchd, and
-  `condition-network-online` is a predicate — see `Known`.
 
 ### Fixed
 
@@ -136,18 +176,20 @@ shipped, and is described under `Fixed`.
 
 ### Known
 
+- **A service skipped by an unmet `condition-*` is not visible as
+  skipped.** It reports `State: STARTED` — systemd's `ConditionXXX`
+  semantics, where an unmet condition means "nothing to do" rather than
+  "failed" — and no journal line names the skip either, so the only way
+  to tell a skipped service from a trivially successful one is whether
+  its command ran. Found while testing `condition-network-online`; not
+  changed here, because making it visible is a reporting change rather
+  than part of a predicate port.
+- **`pkg/features/provenance.go` has no launchd source**, so all seven
+  items above fall through to its auto-placeholder. Adding one means
+  backfilling the set, which belongs in its own change.
 - **`start-on-mount` = *yes* fires during boot**, for each filesystem
-  the boot sequence mounts after the watcher starts watching. This is
-  not a defect: it is exactly what launchd's boolean means, and changing
-  it would make `yes` mean something upstream does not. Use the path
-  form.
-- **The feature registry has no notion of predicates.** None of the 40
-  `condition-*`/`assert-*` predicates appear in `doc/features.md`,
-  because `discover.go` reads the settings table and the opcode list and
-  never `PredicateKindByName`. So `condition-network-online` cannot be
-  annotated — `TestReconcileNoOrphansAgainstReal` rejects the entry as
-  an orphan. Giving predicates a `KindPredicate` and a discovery pass is
-  its own change, and it is about all 40, not about this release.
+  the boot sequence mounts after the watcher starts watching. That is
+  what launchd's boolean means; use the path form.
 
 ## [3.1.5] — 2026-10-11
 
