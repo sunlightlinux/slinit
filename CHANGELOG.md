@@ -24,6 +24,52 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.1.10] — 2026-10-13
+
+A patch, and a small one: output is unchanged, there is simply less work
+behind it.
+
+### Fixed
+
+- **`slinitctl status` no longer asks `show` about a skip that cannot
+  exist.** The skip lookup added in v3.1.7 fired for any service that is
+  STARTED with no process, described at the time as "the only shape a
+  skip can take". It is also the shape of **every `internal` service**,
+  so each `status` of a milestone spent a round-trip asking a question
+  whose answer was already known — and the answer was known because only
+  `process`, `scripted` and `bgprocess` evaluate predicates at all, so
+  an `internal` or `triggered` service can never have been skipped.
+
+  The lookup is now gated on the service type, which the status reply
+  already carries, so the extra round-trip happens only where a skip is
+  possible.
+
+  Found in a performance run against a live system rather than by
+  reading: `status` on the v7 path reported 2.34ms against 1.15ms for
+  the v5 path on the same service, and the benchmark's subject was
+  `boot`. Roughly half the gap was this.
+
+  The rule is pinned by a test across all five service types, because
+  the interesting failure is the other direction: if `internal` or
+  `triggered` ever start evaluating predicates, the gate would silently
+  hide a real skip. The test fails instead of the report going quiet.
+
+### Known
+
+- **The perf suite's `slinitctl` cases carry a ~0.9ms floor** that is
+  process spawn, not daemon work. `ctl-version`, the cheapest verb
+  there is, measures 1.06ms; the one case that does not spawn
+  `slinitctl` at all — on-demand socket activation — measures 0.17ms.
+  About a third of the suite sits within 0.3ms of that floor, so those
+  cases cannot detect a daemon-side regression smaller than the spawn
+  cost. The v7-versus-v5 gap above was visible precisely because it was
+  larger than it.
+- Two perf cases still cannot support a conclusion either way.
+  `rss-scaling` reports negative deltas from a single sample while
+  admitting ±2MB of noise, and `journal-scan-vs-size` reports +0%
+  because its premise is unobservable: the event ring is already full at
+  4096 entries, so pumping more through it changes nothing.
+
 ## [3.1.9] — 2026-10-12
 
 ### Fixed
