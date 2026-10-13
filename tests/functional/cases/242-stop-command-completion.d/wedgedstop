@@ -1,0 +1,7 @@
+type = process
+command = /bin/sleep 301
+# A stop-command that kills the process and then never returns. The
+# stop-timeout, not the main process exit, is what has to end this.
+stop-command = /bin/sh -c 'kill -9 $(pgrep -f "sleep 301" | head -1); sleep 600'
+stop-timeout = 4
+manual = yes

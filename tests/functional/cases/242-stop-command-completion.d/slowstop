@@ -1,0 +1,7 @@
+type = process
+command = /bin/sleep 300
+# The common stop-command shape: kill the daemon, then clean up after
+# it. The cleanup is what must not be cut short.
+stop-command = /bin/sh -c 'kill -9 $(pgrep -f "sleep 300" | head -1); sleep 5; date +%s > /run/cleanup-done'
+stop-timeout = 30
+manual = yes

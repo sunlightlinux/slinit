@@ -71,10 +71,14 @@ type ProcessService struct {
 	supplementaryGIDs []uint32
 
 	// Process state
-	pid        int
-	stopPID    int // PID of stop-command process (0 if none)
-	exitStatus ExitStatus
-	procHandle process.ProcessHandle
+	pid     int
+	stopPID int // PID of stop-command process (0 if none)
+	// mainGoneDuringStop records that the main process exited while the
+	// stop-command was still running, so the stop-command's own
+	// completion is what finishes the transition to STOPPED.
+	mainGoneDuringStop bool
+	exitStatus         ExitStatus
+	procHandle         process.ProcessHandle
 
 	// pidPublished mirrors pid for readers that cannot take queueMu —
 	// PID(), and through it the log rotator's GetPID callback and the
@@ -1833,34 +1837,80 @@ func (s *ProcessService) execStopCommand() bool {
 	s.stopPID = pid
 	s.services.logger.Info("Service '%s': stop-command started (pid %d)", s.serviceName, pid)
 
-	// Monitor stop-command in a goroutine
+	// Monitor stop-command in a goroutine.
+	//
+	// It takes queueMu for the same reason every other writer of this
+	// state does: stopPID and pid are read by the state machine, and
+	// this goroutine used to write stopPID with no lock at all. The
+	// signal is sent outside the lock, since SignalProcess can block
+	// and nothing in the state machine should wait on it.
 	go func() {
-		exit := <-exitCh
-		s.stopPID = 0
+		// The stop-command's own timeout. It cannot lean on the
+		// stop-timeout armed by the caller: processTimer is read only
+		// by monitorProcess, which returns when the main process exits,
+		// and the usual shape of a stop-command is to kill that process
+		// first. So past that moment the caller's timer has no reader
+		// and a wedged stop-command would hold the service in STOPPING
+		// for good — measured at 20s with stop-timeout = 4 before this
+		// existed.
+		var timeoutCh <-chan time.Time
+		if s.stopTimeout > 0 {
+			t := time.NewTimer(s.stopTimeout)
+			defer t.Stop()
+			timeoutCh = t.C
+		}
+
+		var exit process.ChildExit
+		select {
+		case exit = <-exitCh:
+		case <-timeoutCh:
+			s.services.queueMu.Lock()
+			pid := s.stopPID
+			s.services.queueMu.Unlock()
+			if pid > 0 {
+				s.services.logger.Error(
+					"Service '%s': stop-command exceeded stop-timeout, killing (pid %d)",
+					s.serviceName, pid)
+				process.SignalProcess(pid, syscall.SIGKILL, false)
+			}
+			// Still wait for the exit so the transition below runs
+			// exactly once, from one place.
+			exit = <-exitCh
+		}
 		process.KillProcessGroup(exit.PID)
+
+		s.services.queueMu.Lock()
+		s.stopPID = 0
+		mainGone := s.mainGoneDuringStop
+		mainPID := s.pid
+		if mainGone {
+			// The main process already exited while this command was
+			// running, so its exit could not complete the stop. Do it
+			// here instead — this is the transition dinit 4da302f /
+			// 798e037 guard for.
+			s.mainGoneDuringStop = false
+			s.stopIssued = false
+			s.Stopped()
+			s.services.processQueuesLocked()
+		}
+		s.services.queueMu.Unlock()
 
 		if exit.Exited() && exit.Status.ExitStatus() == 0 {
 			s.services.logger.Info("Service '%s': stop-command completed successfully",
 				s.serviceName)
-			// Stop-command succeeded — now send term signal to main process
-			if s.pid > 0 {
-				sig := s.termSignal
-				if sig == 0 {
-					sig = syscall.SIGTERM
-				}
-				process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
-			}
 		} else {
 			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
 				s.serviceName, exit.Status)
-			// Stop-command failed — send signal to main process as fallback
-			if s.pid > 0 {
-				sig := s.termSignal
-				if sig == 0 {
-					sig = syscall.SIGTERM
-				}
-				process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
+		}
+		// Signal the main process if it is still there. Skipped when it
+		// has already gone: the pid would either be stale or, worse,
+		// reused by something unrelated.
+		if !mainGone && mainPID > 0 {
+			sig := s.termSignal
+			if sig == 0 {
+				sig = syscall.SIGTERM
 			}
+			process.SignalProcess(mainPID, sig, s.Flags.SignalProcessOnly)
 		}
 	}()
 
@@ -2660,6 +2710,12 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	s.pid = 0
 	s.pidPublished.Store(0)
 	s.procHandle.Clear()
+	// Cancelled unconditionally. Keeping the stop-timeout armed here
+	// would be pointless: processTimer is only ever read by
+	// monitorProcess, which returns with the process, so once the main
+	// process is gone nothing reads that channel. A stop-command still
+	// running past this point is bounded by its own timeout instead —
+	// see execStopCommand.
 	s.cancelTimer()
 	s.stopWatchdogWatcherLocked()
 	s.closeReadyPipe()
@@ -2733,7 +2789,30 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 		s.services.processQueuesLocked()
 
 	case StateStopping:
-		// Expected - we asked it to stop
+		// Expected — we asked it to stop. But the main process exiting
+		// is not the same event as the stop having finished: a
+		// stop-command is commonly written to kill the daemon first and
+		// then clean up after it, so it is still running at this point.
+		//
+		// Declaring Stopped here let dependents and shutdown proceed as
+		// though the cleanup had completed. Measured before this guard:
+		// a stop-command that killed the process and then slept five
+		// seconds reported STOPPED for the whole five, with the cleanup
+		// marker still absent. Same shape as dinit 4da302f / 798e037,
+		// which guard on stop_pid for the same reason, and the other
+		// half of the orphaned-daemon problem --fast caused in v2.3.9.
+		//
+		// The stop-command's own monitor finishes the transition. The
+		// stop-timeout armed alongside it still governs, so a wedged
+		// stop-command cannot hold the service in STOPPING forever.
+		if s.stopPID > 0 {
+			s.mainGoneDuringStop = true
+			s.services.logger.Info(
+				"Service '%s': main process gone, waiting for stop-command (pid %d)",
+				s.serviceName, s.stopPID)
+			s.services.processQueuesLocked()
+			return
+		}
 		s.stopIssued = false
 		s.Stopped()
 		s.services.processQueuesLocked()
