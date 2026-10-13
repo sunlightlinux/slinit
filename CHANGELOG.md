@@ -24,6 +24,67 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-10-13
+
+A minor, for one fix, because of what the fix changes about timing
+rather than about correctness. Found reconciling dinit upstream
+`ef992a4..96da7a8`, where three commits guard the same transition.
+
+### Changed
+
+- **A stop is no longer finished until the stop-command is.** The main
+  process exiting is not the same event as the stop having completed: a
+  stop-command is commonly written to kill the daemon and then clean up
+  after it, so when slinit saw the main process go, that cleanup was
+  still in flight — and it reported the service STOPPED anyway.
+
+  Measured before the fix: a stop-command that killed the process and
+  then slept five seconds reported STOPPED for the whole five, with its
+  cleanup marker still absent, leaving dependents and shutdown free to
+  proceed as though the work had been done. It is the other half of the
+  orphaned-daemon problem `--fast` caused in v2.3.9.
+
+  **Compat.** `slinitctl stop` on such a service now returns when the
+  stop-command finishes rather than when the main process dies, and a
+  shutdown takes as long as the slowest stop-command still running —
+  bounded by that service's `stop-timeout`, which now actually governs
+  it. A script that stopped a service and moved straight on will see
+  the delay it was previously skipping. Nothing to change if the wait
+  is wanted; if it is not, the stop-command is doing work that belongs
+  somewhere else, or `stop-timeout` is the knob for bounding it.
+
+  This is **why the release is a minor rather than a patch**, and the
+  reasoning is in STABILITY.md's History. By the letter of the rules it
+  is a bug fix — STOPPED meant stopped, `stop-timeout` is documented as
+  bounding the stop — but the policy's own test is whether a setup
+  could be relying on the old behaviour, and a timing-sensitive caller
+  could be.
+
+### Fixed
+
+- **The stop-command's monitor goroutine never took `queueMu`.** It
+  wrote `stopPID` and read `pid` while the state machine read them
+  under the lock — the same unlocked-shared-state shape as the three
+  map races that have killed PID 1 in this project's history.
+
+- **A wedged stop-command is now bounded by `stop-timeout`.** It was
+  not, once the transition started waiting for it, and the reason is
+  worth recording because it is structural rather than an oversight:
+  the process timer is read only by the main process's monitor, which
+  returns together with the process it monitors. So after the main
+  process exits nothing reads that channel at all, and guarding the
+  timer cancellation — which is how dinit fixes this — achieves nothing
+  here. The stop-command's own monitor carries its own timeout instead,
+  since it is the goroutine still running.
+
+### Known
+
+- Two upstream commits from this reconciliation are **not yet
+  examined**: one on restart-limit checks and one removing a queue
+  flush from smooth recovery. A coarse probe showed slinit bounded
+  rather than spinning on repeated dependency crashes, so there is no
+  known loop, but the limit semantics are not pinned by a test.
+
 ## [3.1.10] — 2026-10-13
 
 A patch, and a small one: output is unchanged, there is simply less work

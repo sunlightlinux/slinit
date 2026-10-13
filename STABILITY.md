@@ -260,6 +260,25 @@ Either way, the change is listed under `Security` or `Changed` with a
 
 Changes this policy would not have allowed:
 
+- **v3.2.0 made a stop wait for its stop-command, in a minor.** The
+  main process exiting is not the stop having finished, so slinit was
+  reporting STOPPED while a stop-command's cleanup was still running —
+  measured at five seconds of false STOPPED. By the letter of the rules
+  that is a bug fix: STOPPED is documented as meaning stopped, and
+  `stop-timeout` is documented as bounding the stop, which it now
+  actually does. The argument for a patch is the v3.1.1 one, that only
+  a service whose stop-command outlives its main process is affected
+  and for those the old STOPPED was simply false, so nothing that
+  worked stops working.
+
+  It went in a minor anyway, because what changes is not only
+  correctness but **duration**: `slinitctl stop` returns later, and a
+  shutdown takes as long as the slowest stop-command still running. A
+  timing-sensitive caller could be relying on the early return, and
+  "a setup could be relying on it" is the test this policy applies.
+  Correctness arguments do not override it. It is in v3.2.0's `Changed`
+  section with a Compat note.
+
 - **v2.3.9 reclaimed a stopped service's cgroup directory in a patch.**
   slinit creates those directories and had never removed them; leaving
   them behind leaked one per `slinitctl run --slice=NAME`, whose
