@@ -1899,17 +1899,26 @@ func (s *ProcessService) execStopCommand() bool {
 			s.services.logger.Info("Service '%s': stop-command completed successfully",
 				s.serviceName)
 		} else {
-			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
-				s.serviceName, exit.Status)
+			s.services.logger.Error("Service '%s': stop-command failed (%s)",
+				s.serviceName, exitDetail(exit))
 		}
 		// Signal the main process if it is still there. Skipped when it
 		// has already gone: the pid would either be stale or, worse,
 		// reused by something unrelated.
+		//
+		// The message about it is inside the branch on purpose. It used
+		// to be part of the failure line above, which then announced
+		// "sending signal" whether or not one was sent — and after the
+		// stop-command transition started waiting for the main process
+		// to be gone, the common case became exactly the one where no
+		// signal follows.
 		if !mainGone && mainPID > 0 {
 			sig := s.termSignal
 			if sig == 0 {
 				sig = syscall.SIGTERM
 			}
+			s.services.logger.Info("Service '%s': sending %v to the main process (pid %d)",
+				s.serviceName, sig, mainPID)
 			process.SignalProcess(mainPID, sig, s.Flags.SignalProcessOnly)
 		}
 	}()

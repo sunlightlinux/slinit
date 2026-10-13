@@ -1,7 +1,6 @@
 package service
 
 import (
-	"fmt"
 	"os"
 	"syscall"
 	"time"
@@ -590,18 +589,8 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 		// form. Without this the log line reads "status: 1280" instead
 		// of "exit code 5" (1280 = 5<<8, i.e. exit_status=5 signal=0),
 		// which is confusing every time.
-		var detail string
-		switch {
-		case exit.Signaled():
-			detail = fmt.Sprintf("killed by signal %d (%s)",
-				int(exit.Status.Signal()), exit.Status.Signal())
-		case exit.Status.Exited():
-			detail = fmt.Sprintf("exit code %d", exit.Status.ExitStatus())
-		default:
-			detail = fmt.Sprintf("raw wait status %d", int(exit.Status))
-		}
 		s.services.logger.Error("Service '%s': stop command failed (%s)",
-			s.serviceName, detail)
+			s.serviceName, exitDetail(exit))
 	}
 
 	// Whether stop command succeeded or not, the service is stopped
