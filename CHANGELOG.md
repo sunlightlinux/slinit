@@ -67,6 +67,15 @@ rather than about correctness. Found reconciling dinit upstream
   under the lock — the same unlocked-shared-state shape as the three
   map races that have killed PID 1 in this project's history.
 
+- **A stop-command's exit status is reported in a form someone can act
+  on.** `ERROR: ... stop-command exited with status 256` names the
+  packed wait status, not the exit code — 256 is exit code 1, and 5
+  would have read 1280. The same line also announced "sending signal"
+  whether or not one followed, which this release's own change made the
+  usual case rather than the occasional one. It now reads
+  `stop-command failed (exit code 1)`, and the signal is logged where
+  it is actually sent, with the pid.
+
 - **A wedged stop-command is now bounded by `stop-timeout`.** It was
   not, once the transition started waiting for it, and the reason is
   worth recording because it is structural rather than an oversight:
