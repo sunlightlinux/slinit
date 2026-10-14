@@ -27,7 +27,7 @@ NCURSES_TERMINFO_PKG="ncurses-terminfo-base-6.5_p20251123-r0.apk"
 # already carries libssl, libcrypto and libz, so pcre2 is the one
 # missing shared library nginx links against.
 NGINX_PKG="nginx-1.28.3-r7.apk"
-PCRE2_PKG="pcre2-10.48-r0.apk"
+PCRE2_PKG="pcre2-10.49-r0.apk"
 
 # Directories
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
