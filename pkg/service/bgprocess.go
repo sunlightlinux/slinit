@@ -628,7 +628,7 @@ func (s *BGProcessService) execStopCommand() bool {
 			if daemonPID > 0 {
 				sig := s.termSignal
 				if sig == 0 {
-					sig = syscall.SIGTERM
+					sig = syscall.SIGKILL
 				}
 				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
 			}
