@@ -22,6 +22,13 @@ BASH_PKG="bash-5.3.3-r1.apk"
 READLINE_PKG="readline-8.3.1-r0.apk"
 LIBNCURSESW_PKG="libncursesw-6.5_p20251123-r0.apk"
 NCURSES_TERMINFO_PKG="ncurses-terminfo-base-6.5_p20251123-r0.apk"
+STRACE_PKG="strace-6.17-r0.apk"
+LIBDW_PKG="libdw-0.194-r0.apk"
+LIBELF_PKG="libelf-0.194-r0.apk"
+MUSL_FTS_PKG="musl-fts-1.2.7-r7.apk"
+ZSTD_LIBS_PKG="zstd-libs-1.5.7-r2.apk"
+XZ_LIBS_PKG="xz-libs-5.8.4-r0.apk"
+LIBBZ2_PKG="libbz2-1.0.8-r6.apk"
 
 # nginx, for the systemd-unit demo. Only two packages: the minirootfs
 # already carries libssl, libcrypto and libz, so pcre2 is the one
@@ -120,7 +127,9 @@ fi
 # Step 3: Download bash and dependencies (APK packages)
 echo "[3/7] Downloading bash packages..."
 for pkg in "${BASH_PKG}" "${READLINE_PKG}" "${LIBNCURSESW_PKG}" "${NCURSES_TERMINFO_PKG}" \
-           "${PCRE2_PKG}" "${NGINX_PKG}"; do
+           "${PCRE2_PKG}" "${NGINX_PKG}" "${STRACE_PKG}" "${LIBDW_PKG}" \
+           "${LIBELF_PKG}" "${MUSL_FTS_PKG}" "${ZSTD_LIBS_PKG}" \
+           "${XZ_LIBS_PKG}" "${LIBBZ2_PKG}"; do
     if [ ! -f "${CACHE_DIR}/${pkg}" ]; then
         echo "  Fetching ${pkg}..."
         curl -fSL -o "${CACHE_DIR}/${pkg}.tmp" "${PACKAGES_URL}/${pkg}"
@@ -163,7 +172,8 @@ tar xzf "${ROOTFS_TAR}" -C "${ROOTFS_DIR}"
 # Install bash and dependencies from APK packages
 # Alpine APK files are gzipped tars; extract directly into rootfs
 for pkg in "${NCURSES_TERMINFO_PKG}" "${LIBNCURSESW_PKG}" "${READLINE_PKG}" "${BASH_PKG}" \
-           "${PCRE2_PKG}" "${NGINX_PKG}"; do
+           "${PCRE2_PKG}" "${NGINX_PKG}" "${STRACE_PKG}" "${LIBDW_PKG}" "${LIBELF_PKG}" \
+           "${MUSL_FTS_PKG}" "${ZSTD_LIBS_PKG}" "${XZ_LIBS_PKG}" "${LIBBZ2_PKG}"; do
     tar xzf "${CACHE_DIR}/${pkg}" -C "${ROOTFS_DIR}" 2>/dev/null || true
 done
 # Clean up APK metadata extracted into rootfs
