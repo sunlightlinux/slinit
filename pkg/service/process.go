@@ -1035,8 +1035,8 @@ func (s *ProcessService) fireWatchdogStop() {
 	// its exit puts the service back to listening, as any exit does.
 	if s.onDemandListening() {
 		if s.pid > 0 {
-			s.services.logger.Error("Service '%s': watchdog expired, sending %v to process %d",
-				s.serviceName, sig, s.pid)
+			s.services.logger.Error("Service '%s': watchdog expired, sending %s to process %d",
+				s.serviceName, signalName(sig), s.pid)
 			process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
 		}
 		return
@@ -1789,8 +1789,8 @@ func (s *ProcessService) BringDown() {
 		// Run custom control command instead of raw signal
 		s.execControlCommand(sigName, cmd)
 	} else {
-		s.services.logger.Info("Service '%s': sending %v to process %d",
-			s.serviceName, sig, s.pid)
+		s.services.logger.Info("Service '%s': sending %s to process %d",
+			s.serviceName, signalName(sig), s.pid)
 
 		err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
 		if err != nil {
@@ -1917,8 +1917,8 @@ func (s *ProcessService) execStopCommand() bool {
 			if sig == 0 {
 				sig = syscall.SIGTERM
 			}
-			s.services.logger.Info("Service '%s': sending %v to the main process (pid %d)",
-				s.serviceName, sig, mainPID)
+			s.services.logger.Info("Service '%s': sending %s to the main process (pid %d)",
+				s.serviceName, signalName(sig), mainPID)
 			process.SignalProcess(mainPID, sig, s.Flags.SignalProcessOnly)
 		}
 	}()
@@ -2836,8 +2836,8 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 					s.serviceName, code)
 			}
 		} else if exit.Signaled() {
-			s.services.logger.Error("Service '%s': process killed by signal %v",
-				s.serviceName, exit.Status.Signal())
+			s.services.logger.Error("Service '%s': process killed by %s",
+				s.serviceName, signalName(exit.Status.Signal()))
 		}
 
 		if s.socketOnDemand {
@@ -2979,8 +2979,8 @@ func (s *ProcessService) handleTimerExpired() {
 		}
 		finalSig := s.Record().FinalKillSignal()
 		if s.pid > 0 {
-			s.services.logger.Error("Service '%s': stop timeout exceeded, sending %v",
-				s.serviceName, finalSig)
+			s.services.logger.Error("Service '%s': stop timeout exceeded, sending %s",
+				s.serviceName, signalName(finalSig))
 			process.SignalProcess(s.pid, finalSig, false) // Always kill group
 		}
 		// Kill entire cgroup tree on final-signal escalation, per
@@ -3006,8 +3006,8 @@ func (s *ProcessService) handleTimerExpired() {
 		}
 		finalSig := s.Record().FinalKillSignal()
 		if s.pid > 0 {
-			s.services.logger.Error("Service '%s': abort timeout exceeded, sending %v",
-				s.serviceName, finalSig)
+			s.services.logger.Error("Service '%s': abort timeout exceeded, sending %s",
+				s.serviceName, signalName(finalSig))
 			process.SignalProcess(s.pid, finalSig, false)
 		}
 		if s.killsToGroup() {

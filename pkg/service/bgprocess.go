@@ -568,8 +568,8 @@ func (s *BGProcessService) BringDown() {
 		sig = syscall.SIGTERM
 	}
 
-	s.services.logger.Info("Service '%s': sending %v to process %d",
-		s.serviceName, sig, pid)
+	s.services.logger.Info("Service '%s': sending %s to process %d",
+		s.serviceName, signalName(sig), pid)
 
 	// Signal the daemon's whole process group, not just the daemon: a
 	// forking daemon's workers are its children and share its group, and

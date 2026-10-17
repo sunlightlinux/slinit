@@ -24,6 +24,45 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Signals in log lines read as the config spells them.** `%v` on a
+  signal gives the strerror description rather than the name, so SIGKILL
+  rendered as "killed" and SIGTERM as "terminated" — a stop timeout
+  logged `sending killed`, which is both ungrammatical and vague about
+  what was sent. Seven operator-facing messages had it.
+
+  The bare form is deliberate rather than a compromise:
+  **slinit-service**(5) documents `term-signal` as defaulting to *TERM*,
+  so the word in the log is now the word in the service file. A test
+  reads every source in the package and fails on an operator-facing
+  message that formats a signal with `%v`, or a wait status raw, naming
+  the file and line.
+
+  This is the other half of v3.2.0's reporting fix. That release
+  corrected the packed exit status and left the signals, because the
+  work went in on a branch that `main` only partly took — the released
+  v3.2.0 has the first half and not this one.
+
+- **A soft reboot kills the old userspace before re-exec.** It never
+  did: the hard-shutdown path has always swept with
+  `kill(-1, SIGTERM)` then `SIGKILL`, and the soft-reboot path went
+  straight from the hook to `sync` and `execve`. A soft reboot keeps the
+  kernel and the mounts, so nothing else was going to.
+
+  Every service had been stopped, but "stopped" means the signal was
+  sent, not that the process finished dying, and an impatient shutdown
+  does not wait. Anything still alive crossed into the next generation,
+  unknown to the new PID 1 and unsupervised, still holding whatever it
+  held. In the demo VM that was nginx keeping port 80, so the next
+  generation's master exited 1 — sporadically, because it is a race
+  against the re-exec.
+
+  **`KillAllProcesses` now refuses unless it is PID 1.** `kill(-1, …)`
+  reaches every process the caller may signal; from init that is the
+  system, from anything else it is the user's whole session. Adding the
+  sweep made five existing tests do the latter before the guard went in.
+
 ## [3.2.0] — 2026-10-13
 
 A minor, for one fix, because of what the fix changes about timing

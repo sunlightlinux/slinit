@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -43,5 +44,76 @@ func TestExitDetailFallsBackForAnUndecodableStatus(t *testing.T) {
 	got := exitDetail(process.ChildExit{Status: syscall.WaitStatus(0x7f)})
 	if !strings.Contains(got, "raw wait status") {
 		t.Errorf("exitDetail = %q, want the raw-status fallback named as such", got)
+	}
+}
+
+// Signals must never reach a log line through %v. `%v` on a
+// syscall.Signal gives the strerror description, which is how a real
+// softreboot came to log "stop timeout exceeded, sending killed".
+// signalName gives the bare form the config uses, so the operator reads
+// the same word in their service file and in the log.
+func TestSignalNameMatchesTheConfigVocabulary(t *testing.T) {
+	cases := map[syscall.Signal]string{
+		syscall.SIGTERM: "TERM",
+		syscall.SIGKILL: "KILL",
+		syscall.SIGHUP:  "HUP",
+		syscall.SIGUSR1: "USR1",
+	}
+	for sig, want := range cases {
+		if got := signalName(sig); got != want {
+			t.Errorf("signalName(%d) = %q, want %q", int(sig), got, want)
+		}
+		// And it must not be the description %v would have produced.
+		if got := signalName(sig); got == sig.String() {
+			t.Errorf("signalName(%d) returned the %%v description %q", int(sig), got)
+		}
+	}
+}
+
+// TestNoSignalReachesALogLineViaPercentV is the guard that keeps this
+// from coming back: it reads the sources and fails on an operator-facing
+// message that formats a signal with %v.
+func TestNoSignalReachesALogLineViaPercentV(t *testing.T) {
+	// Every file in the package, not a hand-listed three: the miss this
+	// guards against was a file not on the list.
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading the package dir: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		n := e.Name()
+		if strings.HasSuffix(n, ".go") && !strings.HasSuffix(n, "_test.go") {
+			files = append(files, n)
+		}
+	}
+	if len(files) < 10 {
+		t.Fatalf("only %d sources found; the sweep is not looking where it should", len(files))
+	}
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("reading %s: %v", f, err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if !strings.Contains(line, "logger.") {
+				continue
+			}
+			// "sending %v" / "signal %v" are the shapes that produced
+			// the report. A signal rendered any other way is fine.
+			if strings.Contains(line, "sending %v") || strings.Contains(line, "signal %v") {
+				t.Errorf("%s:%d formats a signal with %%v: %s",
+					f, i+1, strings.TrimSpace(line))
+			}
+			// And the packed wait status. This half is here because
+			// fixing the type = process path first left the bgprocess
+			// one — which is where the reported line actually came
+			// from, since a forking daemon's stop goes through there.
+			// One file looking right is not the file being right.
+			if strings.Contains(line, "status %v") || strings.Contains(line, "with status %d") {
+				t.Errorf("%s:%d formats a wait status raw: %s",
+					f, i+1, strings.TrimSpace(line))
+			}
+		}
 	}
 }

@@ -22,12 +22,22 @@
 # SIGHUP, so a native description could carry `reload-signal = HUP`.
 #   cat /etc/systemd/system/nginx.service
 #
-# `slinitctl shutdown softreboot --fast` logs one ERROR here:
-#   Service 'nginx': stop-command exited with status 256, sending signal
-# That is --fast keeping its word. It stops waiting for graceful stops, so
-# `nginx -s quit` loses the race and exits 1; slinit then signals the
+# An impatient softreboot — `now`, `--fast` or `--superfast` — logs one
+# ERROR here, followed by the signal it sends:
+#   Service 'nginx': stop-command failed (exit code 1)
+#   Service 'nginx': sending TERM to the daemon group (pid N)
+# That is the flag keeping its word. It stops waiting for graceful stops,
+# so `nginx -s quit` loses the race and exits 1; slinit then signals the
 # daemon's process group, which stops nginx and its workers cleanly. A
 # plain softreboot shows no error at all. Nothing to chase.
+#
+# The wording here is the wording slinit prints, and both halves of it
+# were wrong until recently: the exit status came out as the packed wait
+# value ("status 256" for exit code 1), fixed in v3.2.0, and the signal
+# was rendered with %v, which gives the strerror description — so the
+# line read "sending terminated" rather than naming TERM. This comment
+# quoted the old text verbatim and went stale with the fix. Prose that
+# quotes a log line has to move with it.
 [Unit]
 Description=nginx - high performance web server
 Documentation=https://nginx.org/en/docs/
