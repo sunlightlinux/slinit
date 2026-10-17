@@ -15,6 +15,13 @@ import (
 // saying the raw form is "confusing every time"; process.go's
 // stop-command path had not, and it is what an operator actually reads
 // during a shutdown. Shared rather than copied a third time.
+// Signals are rendered by signalName in process.go, which predates this
+// and returns the bare form ("TERM", "KILL"). That is deliberately the
+// vocabulary the config uses — slinit-service.5 documents term-signal as
+// defaulting to TERM — so an operator reads the same word in their
+// service file and in the log. `%v` on a syscall.Signal does not: it
+// gives the strerror description, which is how a real softreboot came
+// to log "stop timeout exceeded, sending killed".
 func exitDetail(exit process.ChildExit) string {
 	switch {
 	case exit.Signaled():
