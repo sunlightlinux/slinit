@@ -26,6 +26,28 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A successful stop-command is followed by SIGTERM again, not
+  SIGKILL.** v3.2.0 shipped SIGKILL there and did not say so: its entry
+  describes how the signal is *reported*, never that the signal itself
+  changed. Every release up to v3.1.10 sent TERM, so this restores the
+  long-standing behaviour rather than introducing new behaviour.
+
+  The SIGKILL went in to stop a daemon surviving a soft reboot and
+  holding its port against the next generation. That cause is fixed
+  properly in this same release — `SoftReboot` never swept the old
+  userspace at all — so the hard kill is no longer buying anything.
+
+  It was costly, and on every stop rather than only on soft reboots.
+  Reaching that branch means the service's own stop procedure ran and
+  *succeeded*: `nginx -s quit` returned, so nginx had begun draining
+  connections. SIGKILL on top discarded the drain and made `ExecStop`
+  decorative, and a daemon that flushes state on exit lost the flush.
+
+  Force still arrives for a daemon that ignores TERM: the stop-timeout,
+  10s by default, escalates to SIGKILL and sweeps the cgroup tree. If
+  you were relying on the immediate kill, set `term-signal = KILL` on
+  that service to ask for it explicitly.
+
 - **Signals in log lines read as the config spells them.** `%v` on a
   signal gives the strerror description rather than the name, so SIGKILL
   rendered as "killed" and SIGTERM as "terminated" — a stop timeout

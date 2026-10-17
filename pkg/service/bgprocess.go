@@ -626,19 +626,35 @@ func (s *BGProcessService) execStopCommand() bool {
 				daemonPID = s.launcherPID
 			}
 			if daemonPID > 0 {
-				// NOTE: this branch falls back to SIGKILL where the
-				// failure branch below falls back to SIGTERM. The
-				// asymmetry is left exactly as it was: a reading that
-				// fits is that a successful stop-command has already
-				// asked the daemon to quit, so what follows is the
-				// escalation, while a failed one never asked and TERM
-				// is the first request. It is undocumented either way,
-				// and collapsing the two branches to share one default
-				// silently turns this into TERM — which is what an
-				// earlier version of this change did.
+				// SIGTERM, deliberately, and both branches below agree.
+				//
+				// This fell back to SIGKILL for a while (e96e761,
+				// "bgprocess: change signal for softreboot"), to stop a
+				// daemon surviving a soft reboot and holding its port
+				// against the next generation — nginx and :80. The
+				// cause of that was elsewhere: SoftReboot never swept
+				// the old userspace at all, so a process that had been
+				// signalled but had not finished dying crossed the
+				// re-exec. It sweeps now, and SIGKILL here is no longer
+				// buying anything.
+				//
+				// What it did cost is the point. Reaching this branch
+				// means the service's own stop procedure ran and
+				// succeeded: `nginx -s quit` returned, so nginx has
+				// begun draining connections and closing listeners.
+				// SIGKILL on top of that throws the drain away and
+				// makes ExecStop decorative, and a daemon that flushes
+				// state on exit loses the flush. It applied to every
+				// stop of every bgprocess with a stop-command, not only
+				// to soft reboots.
+				//
+				// A daemon that ignores TERM is still dealt with: the
+				// stop-timeout (10s by default) escalates to SIGKILL
+				// and sweeps the cgroup tree. That ladder is the right
+				// place for force, not this line.
 				sig := s.termSignal
 				if sig == 0 {
-					sig = syscall.SIGKILL
+					sig = syscall.SIGTERM
 				}
 				s.services.logger.Info("Service '%s': sending %s to the daemon group (pid %d)",
 					s.serviceName, signalName(sig), daemonPID)
