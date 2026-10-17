@@ -24,7 +24,37 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
-### Fixed
+## [3.2.1] — 2026-10-17
+
+This is a patch carrying two behaviour changes, released as a patch
+deliberately. By the rules in STABILITY.md both belong in a minor: what
+happens to a process across a soft reboot changes, and the signal after
+a successful stop-command changes. They are in `Changed` below with what
+to check. The reasoning is in STABILITY.md's release-decision notes; in
+short, neither behaviour was documented, one of them was a race nobody
+could depend on, and the other restores what every release through
+v3.1.10 did.
+
+### Changed
+
+- **A soft reboot kills the old userspace before re-exec.** It never
+  did: the hard-shutdown path has always swept with
+  `kill(-1, SIGTERM)` then `SIGKILL`, and the soft-reboot path went
+  straight from the hook to `sync` and `execve`. A soft reboot keeps the
+  kernel and the mounts, so nothing else was going to.
+
+  Every service had been stopped, but "stopped" means the signal was
+  sent, not that the process finished dying, and an impatient shutdown
+  does not wait. Anything still alive crossed into the next generation,
+  unknown to the new PID 1 and unsupervised, still holding whatever it
+  held. In the demo VM that was nginx keeping port 80, so the next
+  generation's master exited 1 — sporadically, because it is a race
+  against the re-exec.
+
+  **`KillAllProcesses` now refuses unless it is PID 1.** `kill(-1, …)`
+  reaches every process the caller may signal; from init that is the
+  system, from anything else it is the user's whole session. Adding the
+  sweep made five existing tests do the latter before the guard went in.
 
 - **A successful stop-command is followed by SIGTERM again, not
   SIGKILL.** v3.2.0 shipped SIGKILL there and did not say so: its entry
@@ -48,6 +78,8 @@ verified with `git tag -v`.
   you were relying on the immediate kill, set `term-signal = KILL` on
   that service to ask for it explicitly.
 
+### Fixed
+
 - **Signals in log lines read as the config spells them.** `%v` on a
   signal gives the strerror description rather than the name, so SIGKILL
   rendered as "killed" and SIGTERM as "terminated" — a stop timeout
@@ -65,26 +97,6 @@ verified with `git tag -v`.
   corrected the packed exit status and left the signals, because the
   work went in on a branch that `main` only partly took — the released
   v3.2.0 has the first half and not this one.
-
-- **A soft reboot kills the old userspace before re-exec.** It never
-  did: the hard-shutdown path has always swept with
-  `kill(-1, SIGTERM)` then `SIGKILL`, and the soft-reboot path went
-  straight from the hook to `sync` and `execve`. A soft reboot keeps the
-  kernel and the mounts, so nothing else was going to.
-
-  Every service had been stopped, but "stopped" means the signal was
-  sent, not that the process finished dying, and an impatient shutdown
-  does not wait. Anything still alive crossed into the next generation,
-  unknown to the new PID 1 and unsupervised, still holding whatever it
-  held. In the demo VM that was nginx keeping port 80, so the next
-  generation's master exited 1 — sporadically, because it is a race
-  against the re-exec.
-
-  **`KillAllProcesses` now refuses unless it is PID 1.** `kill(-1, …)`
-  reaches every process the caller may signal; from init that is the
-  system, from anything else it is the user's whole session. Adding the
-  sweep made five existing tests do the latter before the guard went in.
-
 ## [3.2.0] — 2026-10-13
 
 A minor, for one fix, because of what the fix changes about timing

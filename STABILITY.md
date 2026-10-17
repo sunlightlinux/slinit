@@ -327,6 +327,31 @@ Changes this policy would not have allowed:
   deliberately; the entry says so at the top and puts the change in its
   `Changed` section with what to check.
 
+- **v3.2.1 is a patch carrying two behaviour changes.** A process that
+  survived a soft reboot is now killed before the re-exec, and a
+  successful stop-command is followed by SIGTERM rather than the SIGKILL
+  v3.2.0 shipped. Under the rules above both belong in a minor. They
+  were released as 3.2.1 deliberately; the CHANGELOG entry says so at
+  the top and both are in its `Changed` section.
+
+  The soft-reboot sweep is the weaker of the two to argue. What it
+  removes is not a feature but a failure mode: survival was a race
+  against the re-exec, the survivor was unknown to the new PID 1 and
+  unsupervised, and when it did happen it broke the following boot by
+  holding a port. "A setup could be relying on it" is the test this
+  policy applies, and a setup cannot rely on a race that sometimes
+  fails the next boot. Soft reboot is also documented as re-running the
+  boot and as the equivalent of `systemctl soft-reboot`, which kills
+  every process; not sweeping was a divergence from what slinit claims.
+  Nothing documented process survival.
+
+  The SIGTERM change restores what every release through v3.1.10 did.
+  v3.2.0 shipped the SIGKILL without announcing it — that entry
+  describes how the signal is reported, not that the signal changed —
+  so this corrects a four-day-old unannounced change rather than
+  altering long-standing behaviour. A service that wants the immediate
+  kill asks with `term-signal = KILL`.
+
 - **v2.3.8 is a patch carrying two behaviour changes.** A container that
   is told to stop a service and ends up with nothing running exits 0
   where it used to exit 1, and `slinitctl shutdown <kind> now` kills the
