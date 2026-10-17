@@ -73,6 +73,32 @@ func SoftReboot(logger *logging.Logger, cal *logging.CatchAllLogger) error {
 		cal.Stop()
 	}
 
+	// Sweep whatever is still running, the same way a hard shutdown
+	// does — and this is the point of the whole function, not tidiness.
+	//
+	// A soft reboot keeps the kernel and the mounts; nothing kills the
+	// old userspace for us. Every service has been stopped by now, but
+	// "stopped" means the signal was sent, not that the process has
+	// finished dying, and an impatient shutdown (`now`, `--fast`,
+	// `--superfast`) deliberately does not wait. Anything still alive
+	// when execFunc fires survives into the next generation, where the
+	// new PID 1 does not know about it, cannot supervise it, and still
+	// has to live with whatever it holds.
+	//
+	// That is how nginx broke the following boot in the demo VM:
+	// `nginx -s quit` lost the race to an impatient shutdown, the
+	// daemon group was signalled but not waited for, and a surviving
+	// process kept port 80 — so the next generation's nginx exited 1
+	// with "launcher exited with code 1". Sporadic, because it is a
+	// race against the re-exec.
+	//
+	// The hard-shutdown path has always called this; the soft-reboot
+	// path never did. systemd's soft-reboot kills everything too: the
+	// only things meant to cross the boundary are handed over
+	// explicitly, like the fd store, or left on a filesystem, like the
+	// snapshot below.
+	KillAllProcesses(logger)
+
 	// Sync filesystems to flush any pending writes before re-exec.
 	syncFunc()
 

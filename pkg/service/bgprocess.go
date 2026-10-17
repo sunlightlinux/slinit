@@ -626,15 +626,27 @@ func (s *BGProcessService) execStopCommand() bool {
 				daemonPID = s.launcherPID
 			}
 			if daemonPID > 0 {
+				// NOTE: this branch falls back to SIGKILL where the
+				// failure branch below falls back to SIGTERM. The
+				// asymmetry is left exactly as it was: a reading that
+				// fits is that a successful stop-command has already
+				// asked the daemon to quit, so what follows is the
+				// escalation, while a failed one never asked and TERM
+				// is the first request. It is undocumented either way,
+				// and collapsing the two branches to share one default
+				// silently turns this into TERM — which is what an
+				// earlier version of this change did.
 				sig := s.termSignal
 				if sig == 0 {
 					sig = syscall.SIGKILL
 				}
+				s.services.logger.Info("Service '%s': sending %s to the daemon group (pid %d)",
+					s.serviceName, signalName(sig), daemonPID)
 				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
 			}
 		} else {
-			s.services.logger.Error("Service '%s': stop-command exited with status %v, sending signal",
-				s.serviceName, exit.Status)
+			s.services.logger.Error("Service '%s': stop-command failed (%s)",
+				s.serviceName, exitDetail(exit))
 			daemonPID := s.daemonPID
 			if daemonPID <= 0 {
 				daemonPID = s.launcherPID
@@ -644,6 +656,8 @@ func (s *BGProcessService) execStopCommand() bool {
 				if sig == 0 {
 					sig = syscall.SIGTERM
 				}
+				s.services.logger.Info("Service '%s': sending %s to the daemon group (pid %d)",
+					s.serviceName, signalName(sig), daemonPID)
 				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
 			}
 		}

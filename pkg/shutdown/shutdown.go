@@ -133,7 +133,12 @@ var shutdownHookPaths = []string{
 
 // Mockable syscall functions for testing.
 var (
-	killFunc           = syscall.Kill
+	killFunc = syscall.Kill
+	// getpidFunc exists so the tests that legitimately exercise the
+	// kill(-1) sweep can claim to be PID 1, while every other test —
+	// and anything else that is not init — is refused by the guard in
+	// KillAllProcesses.
+	getpidFunc         = os.Getpid
 	syncFunc           = syscall.Sync
 	rebootFunc         = syscall.Reboot
 	runHookFunc        = runShutdownHook
@@ -407,6 +412,21 @@ func ExecuteImmediate(shutdownType service.ShutdownType, logger *logging.Logger)
 // grace period, then sends SIGKILL. This mirrors dinit's process cleanup in
 // shutdown.cc. kill(-1, sig) sends the signal to every process except PID 1.
 func KillAllProcesses(logger *logging.Logger) {
+	// kill(-1, ...) signals every process the caller may signal. From
+	// PID 1 that is the system, which is the intent; from anything else
+	// it is the user's whole session, which never is.
+	//
+	// This guard is not defensive decoration. Adding the sweep to the
+	// soft-reboot path made five existing tests — which call SoftReboot
+	// and do not replace killFunc — send SIGTERM and then SIGKILL to
+	// everything the developer running `go test` owned. A function
+	// whose only correct caller is PID 1 should say so itself rather
+	// than rely on every caller and every test knowing.
+	if pid := getpidFunc(); pid != 1 {
+		logger.Debug("KillAllProcesses: not PID 1 (pid %d) — refusing kill(-1)", pid)
+		return
+	}
+
 	grace := killGracePeriod
 
 	logger.Info("Sending SIGTERM to all processes (grace %v)...", grace)

@@ -15,6 +15,15 @@ import (
 // on a filesystem that has already been unmounted or whose writers have
 // been signalled.
 func TestExecuteLogsOutUsersBeforeKill(t *testing.T) {
+	// KillAllProcesses refuses kill(-1) unless it is PID 1, so a test
+	// that means to exercise the sweep has to say it is. Everything
+	// else in this package is refused by that guard, which is the
+	// point: it exists because adding the sweep to the soft-reboot path
+	// made five tests signal the developer's own session.
+	origGetpid := getpidFunc
+	getpidFunc = func() int { return 1 }
+	defer func() { getpidFunc = origGetpid }()
+
 	origKill := killFunc
 	origSync := syncFunc
 	origReboot := rebootFunc
