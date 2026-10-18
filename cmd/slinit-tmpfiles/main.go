@@ -422,10 +422,25 @@ func applyRemove(e entry, recursive bool) error {
 	return err
 }
 
+// applyChown implements z (this path) and Z (this path, recursively).
+//
+// Symlinks are skipped rather than followed. os.Chmod and os.Chown both
+// follow one, and filepath.Walk hands us every symlink it finds without
+// descending into it, so following them let a Z entry re-mode and
+// re-own a file anywhere on the filesystem: plant a link inside a tree
+// that this tool fixes up as root at boot, and the target is what
+// changes. There is nothing worth setting on a symlink itself on Linux
+// — the mode is ignored and the ownership only governs removal from a
+// sticky directory — so skipping is both the safe and the correct
+// reading. systemd's tmpfiles opens with O_NOFOLLOW for the same
+// reason, and finit moved this work onto an fd in 9bfbdc6b.
 func applyChown(e entry, recursive bool) error {
 	fi, err := os.Lstat(e.path)
 	if err != nil {
 		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil
 	}
 	if err := os.Chmod(e.path, os.FileMode(e.mode)); err != nil {
 		return err
@@ -440,7 +455,7 @@ func applyChown(e entry, recursive bool) error {
 		if err != nil {
 			return err
 		}
-		if p == e.path {
+		if p == e.path || info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 		if err := os.Chmod(p, os.FileMode(e.mode)); err != nil {
