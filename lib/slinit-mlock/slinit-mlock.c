@@ -36,6 +36,16 @@
  * setenv/unsetenv rule out a freestanding build: they mutate libc's own
  * environ, so there is no version of this that needs no libc.
  *
+ * It is also the reason this file is not Go, which slinit-service(5)
+ * now records so the question does not come back: the library loads
+ * into the service's own process, so a Go build would carry the Go
+ * runtime there. Measured against this build, a do-nothing Go shared
+ * library is 1.9 MB rather than 17 kB, and preloading it takes a
+ * trivial process from 2.8 MB of address space and one thread to 78 MB
+ * and two. mlockall() would lock all of it, in every service using the
+ * setting, and the GC's thread would run inside a process that
+ * cpu-affinity, numa-mempolicy and sched-policy exist to keep quiet.
+ *
  * Build: see Makefile.
  */
 #include <errno.h>

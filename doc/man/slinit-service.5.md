@@ -1666,6 +1666,23 @@ message and the service still starts.
     127. A static binary the service execs *later* cannot be checked
     and simply runs unlocked.
 
+    *libslinit-mlock.so* is the one piece of C in slinit, and it is C
+    because of what this setting asks for rather than for historical
+    reasons. The library runs **inside the service's own process**, so
+    whatever it is written in is loaded there too. Built as a Go shared
+    library it would carry the Go runtime: measured against the C build,
+    a do-nothing Go equivalent is 1.9 MB rather than 17 kB, and
+    preloading it takes a trivial process from 2.8 MB of address space
+    and one thread to 78 MB and two.
+    **mlockall**(2) would then lock all of that into RAM, in every
+    service using this setting, and the garbage collector's thread would
+    run inside a process that **cpu-affinity**, **numa-mempolicy** and
+    **sched-policy** exist to keep quiet — so a Go rewrite would not
+    merely be larger, it would work against the directive it
+    implements, and against **numa-mempolicy** shipped beside it. The
+    C file uses no stdio and parses its own integers so that one build
+    loads under any version of the libc it was built against.
+
 **numa-mempolicy**=*bind*|*preferred*|*preferred-many*|*interleave*|*weighted-interleave*|*local*|*default*
 :   NUMA memory-allocation policy applied via **set_mempolicy**(2).
     *bind* hard-restricts allocation to **numa-nodes**; *preferred*
