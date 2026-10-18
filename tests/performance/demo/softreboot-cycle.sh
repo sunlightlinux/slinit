@@ -122,12 +122,23 @@ fi
 # Parse, and check liveness per generation before any timing. A fast
 # cycle that came back missing a service is a failure, not a good score.
 #
-# The check is CONSTANCY, not started == total. The demo tree has
-# services that are deliberately never running — manual ones, triggered
-# ones — so on a healthy boot `started` is 43 of 45, and demanding
-# equality would fail every cycle including the cold one. What matters
-# is that each generation brings back exactly what the one before it
-# had: a service that failed to restart shows up as a drop in
+# The check is CONSTANCY, not started == total, and it reads 43 of 45
+# on a healthy boot for a reason that cannot be designed away: the two
+# that are not started are **this service and `boot`**. sr-cycle is
+# STARTING while its own command runs, and `boot` waits-for sr-cycle,
+# so it is still waiting. A service cannot observe a state in which it
+# has already finished, so 45 of 45 is unreachable from inside.
+#
+# Verified by booting the demo with a probe that dumps `slinitctl list`:
+# 45 entries, 43 carrying `+`, the two without being the probe
+# (`[{ }<<`) and `boot` (`[[ ]<<`). It is NOT the demo tree's manual or
+# triggered services, which is what this comment used to claim —
+# `trigger-test` is loaded and STARTED, and `tty-autoconsole`
+# (manual = yes) is not loaded at all, since nothing depends on it.
+#
+# So demanding equality would fail every cycle including the cold one.
+# What matters is that each generation brings back exactly what the one
+# before it had: a service that failed to restart shows up as a drop in
 # `started`, one that vanished from the set as a change in `total`. The
 # first generation sets the baseline, having booted cold.
 _ups=() _fail=0 _total0="" _started0=""
