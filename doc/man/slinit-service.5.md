@@ -341,6 +341,18 @@ what tells you the oldest slinit your configuration will run on. See
     sshd, syslog). No default — when unset, **slinitctl
     reload-signal** rejects the request with an explanatory error.
 
+    For a service using readiness notification, slinit checks at
+    readiness time whether the process has actually arranged for this
+    signal, reading **SigCgt**, **SigBlk** and **SigIgn** from
+    */proc/PID/status*, and logs a warning if it has not: a signal left
+    at its default action **terminates** the service instead of
+    reloading it, and one that is ignored makes the reload a silent
+    no-op. The service still starts either way — the warning names the
+    signal and the pid. systemd refuses to start such a service
+    (*Type=notify-reload*, v262); slinit warns, because refusing would
+    stop services that run fine today from starting at all.
+    (since 3.2.2)
+
     Distinct from **slinitctl reload** *service*, which re-reads
     the slinit-side service description from disk (the slinit
     operator's view of the service) without touching the running

@@ -2655,6 +2655,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		// Child signaled readiness
 		s.cancelTimer()
 		s.services.logger.Info("Service '%s': readiness notification received", s.serviceName)
+		s.warnIfReloadSignalUnhandled()
 		s.Started()
 		s.startCronIfConfigured()
 		s.startHealthCheckIfConfigured()
@@ -3327,5 +3328,54 @@ func (s *ProcessService) forwardOnlyLoop(pr *os.File, fw *SyslogForwarder) {
 	sc.Buffer(buf, 65536)
 	for sc.Scan() {
 		fw.Send(sc.Bytes())
+	}
+}
+
+// warnIfReloadSignalUnhandled says so when a service declares a
+// reload-signal that its process neither catches nor blocks.
+//
+// Readiness is the moment to ask: the process has finished setting
+// itself up, so its signal dispositions are the ones it means to run
+// with. If the reload signal is not among them, `slinitctl reload` will
+// not reload this service — it will kill it, because the default action
+// for most signals is to terminate. The service works perfectly until
+// the first reload, which is exactly the kind of fault that is cheap to
+// mention now and expensive to find later.
+//
+// systemd v262 made this a startup failure for Type=notify-reload.
+// slinit warns instead: refusing would stop services that run fine
+// today from starting at all, and that is a behaviour change an
+// existing setup could be relying on. The check is the same either way.
+//
+// Silence on error is deliberate — an unreadable or unexpected status
+// file means "could not tell", and a warning nobody can act on is
+// worse than none.
+func (s *ProcessService) warnIfReloadSignalUnhandled() {
+	if s.reloadSignal == 0 || s.pid <= 0 {
+		return
+	}
+	disp, err := process.ReloadSignalDisposition(s.pid, s.reloadSignal)
+	if err != nil || disp == process.SignalHandled {
+		return
+	}
+	// ServiceLogger carries Error and Info and nothing between them.
+	// Info is the honest level: nothing has failed, the service is
+	// running. The wording has to carry the weight instead.
+	//
+	// Two different faults, and saying the wrong one would be worse
+	// than saying nothing: an ignored signal is discarded, so a reload
+	// is a no-op, while a defaulted one terminates the service.
+	switch disp {
+	case process.SignalIgnored:
+		s.services.logger.Info(
+			"Service '%s': WARNING: reload-signal is %s but pid %d ignores it — "+
+				"a reload would do nothing at all",
+			s.serviceName, signalName(s.reloadSignal), s.pid)
+	default:
+		s.services.logger.Info(
+			"Service '%s': WARNING: reload-signal is %s but pid %d neither catches, "+
+				"blocks nor ignores it — a reload would terminate this service "+
+				"instead of reloading it",
+			s.serviceName, signalName(s.reloadSignal), s.pid)
 	}
 }
