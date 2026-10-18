@@ -1800,7 +1800,16 @@ func cmdStatus(conn net.Conn, name string, long bool) error {
 	// the shape the first two conditions match. Without the type test
 	// this asks `show` a question with a known answer on every
 	// `slinitctl status` of a milestone: measured on ceres as 2.34ms
-	// against 1.15ms for the v5 status path, half of it this round-trip.
+	// against 1.15ms for the v5 status path.
+	//
+	// "half of it this round-trip" is what this comment used to claim,
+	// and perf case 900 has since measured it: the round-trip was worth
+	// about 0.1ms, not the ~0.6ms half the gap would have been. The gap
+	// is almost entirely printRecentJournal's fork+exec — 1.08ms of a
+	// 1.08ms gap, against 1.16ms for that spawn timed on its own. This
+	// test is still worth keeping, because asking a question with a
+	// known answer is wrong regardless of what it costs, but it is not
+	// where the time went.
 	if canBeSkipped(status.SvcType) &&
 		status.State == service.StateStarted &&
 		status.Flags&control.StatusFlagHasPID == 0 {

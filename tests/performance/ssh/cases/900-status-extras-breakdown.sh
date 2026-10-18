@@ -33,6 +33,12 @@
 # carry the conclusion. perf_baseline_ns documents why the minimum and
 # not the mean.
 #
+# First run, on ceres v3.2.2 with ITERS=30: v5 1.147ms, internal 2.229ms
+# (spread 14% — the fork+exec reading is the noisy one), process
+# 2.224ms, spawn alone 1.159ms. So journal_in_status 1.082ms at 49% of
+# status, agreeing with the spawn to 7%, and cgroup_tree -0.005ms. The
+# attribution 310 asserted holds, and the cgroup tree is free.
+#
 # Note the whole gap is conditional on slinit-journalctl being on PATH:
 # printRecentJournal does exec.LookPath and returns silently if it is
 # missing, so on a target without it `status` is cheap and this case
@@ -95,8 +101,14 @@ printf "BenchmarkStatusExtras_4_journal_spawn    %4d  %s ms (spread %s%%)\n" \
 
 # The attribution, stated as arithmetic so a future reader does not have
 # to redo it from four numbers.
-_journal_share=$(( _int - _v5 ))
-_cgroup_share=$(( _proc - _int ))
+# awk, not $(( )). perf_median_of_file averages the two middle samples
+# when the count is even — ITERS is 30, so always — and awk prints the
+# result in scientific notation (1.14653e+06), which POSIX shell integer
+# arithmetic rejects outright: "Illegal number". Every other bracketed
+# case in this suite does its maths in awk for the same reason. My local
+# check fed clean integers and so never saw the real format.
+_journal_share=$(awk -v a="$_int"  -v b="$_v5"  'BEGIN{printf "%.0f", a-b}')
+_cgroup_share=$(awk -v a="$_proc" -v b="$_int" 'BEGIN{printf "%.0f", a-b}')
 _share_pct=$(awk -v a="$_journal_share" -v b="$_int" 'BEGIN{
     if (b>0) printf "%.0f", 100*a/b; else print "n/a"}')
 _agree_pct=$(awk -v a="$_journal_share" -v b="$_spawn" 'BEGIN{
