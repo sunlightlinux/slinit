@@ -1034,11 +1034,17 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// Validate: NUMA policy + nodes cross-fields
 	if desc.NumaMempolicySet {
 		switch desc.NumaMempolicy {
-		case unix.MPOL_BIND, unix.MPOL_INTERLEAVE, unix.MPOL_PREFERRED:
+		case unix.MPOL_BIND, unix.MPOL_INTERLEAVE, unix.MPOL_PREFERRED,
+			mpolPreferredMany, mpolWeightedInterleave:
+			// systemd's numa_policy_is_valid() exempts only DEFAULT,
+			// LOCAL and PREFERRED from needing a nodemask, so the two
+			// newer modes belong here with bind and interleave rather
+			// than with default and local.
 			if len(desc.NumaNodes) == 0 {
 				return nil, &ServiceLoadError{
 					ServiceName: name,
-					Message:     "numa-mempolicy=bind|interleave|preferred requires numa-nodes",
+					Message: "numa-mempolicy=bind|interleave|preferred|preferred-many|" +
+						"weighted-interleave requires numa-nodes",
 				}
 			}
 		case unix.MPOL_DEFAULT, unix.MPOL_LOCAL:

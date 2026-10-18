@@ -1651,19 +1651,24 @@ message and the service still starts.
     127. A static binary the service execs *later* cannot be checked
     and simply runs unlocked.
 
-**numa-mempolicy**=*bind*|*preferred*|*interleave*|*local*|*default*
+**numa-mempolicy**=*bind*|*preferred*|*preferred-many*|*interleave*|*weighted-interleave*|*local*|*default*
 :   NUMA memory-allocation policy applied via **set_mempolicy**(2).
     *bind* hard-restricts allocation to **numa-nodes**; *preferred*
     tries those nodes first but allows fallback; *interleave*
     round-robins across them; *local* allocates from whatever node the
     thread is running on at allocation time; *default* clears any
-    inherited policy. *bind*, *preferred*, *interleave* require
-    **numa-nodes**.
+    inherited policy.
+    *preferred-many* is *preferred* over a set of nodes rather than one
+    (since Linux 5.15), and *weighted-interleave* interleaves in
+    proportion to the per-node weights in the kernel's
+    *weighted_interleave* sysfs files rather than evenly (since Linux
+    6.9) — the weights are the kernel's, so there is nothing to set
+    here beyond the node list. (since 3.2.2)
+    Every mode except *local* and *default* requires **numa-nodes**.
 
 **numa-nodes**=*list*
-:   Comma- or hyphen-spec like *0-3* or *0,2,4*. Required for
-    mempolicy *bind*/*preferred*/*interleave*; rejected for *local*
-    and *default*.
+:   Comma- or hyphen-spec like *0-3* or *0,2,4*. Required for every
+    mempolicy except *local* and *default*, which reject it.
 
 Example — a 5G mediation service pinned to NUMA node 0, locking all
 its pages:
@@ -1704,8 +1709,16 @@ mlockall       = current+future
 
 **securebits**=*bits*
 :   Comma- or space-separated securebit names (*noroot*,
-    *no-setuid-fixup*, *keep-caps*, *no-cap-ambient-raise*, each with a
+    *no-setuid-fixup*, *keep-caps*, *no-cap-ambient-raise*,
+    *exec-restrict-file*, *exec-deny-interactive*, each with a
     *-locked* variant); no bitmask.
+    The last two come from the kernel's **AT_EXECVE_CHECK** work:
+    *exec-restrict-file* refuses to execute a file the caller could not
+    have executed directly, and *exec-deny-interactive* refuses
+    interactive interpretation of a script. A kernel that does not know
+    a bit rejects the whole **PR_SET_SECUREBITS** call, so an
+    unsupported name shows up as a start failure rather than as
+    silently absent enforcement. (since 3.2.2)
     Applied by **slinit-runner**(8) with **PR_SET_SECUREBITS** just
     before exec, after the **run-as** drop. Without the runner the
     service does not start.

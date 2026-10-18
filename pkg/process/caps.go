@@ -148,6 +148,18 @@ const (
 	SecbitKeepCapsLocked          uint32 = 1 << 5
 	SecbitNoCapAmbientRaise       uint32 = 1 << 6
 	SecbitNoCapAmbientRaiseLocked uint32 = 1 << 7
+	// The exec-restriction pair arrived with the kernel's
+	// AT_EXECVE_CHECK work: SECURE_EXEC_RESTRICT_FILE refuses to
+	// execute a file the caller could not have executed directly, and
+	// SECURE_EXEC_DENY_INTERACTIVE refuses interactive interpretation
+	// of a script. Setting one on a kernel that does not know it is
+	// harmless — prctl(PR_SET_SECUREBITS) rejects unknown bits, which
+	// surfaces as a start failure rather than as silent non-
+	// enforcement. (since 3.2.2)
+	SecbitExecRestrictFile          uint32 = 1 << 8
+	SecbitExecRestrictFileLocked    uint32 = 1 << 9
+	SecbitExecDenyInteractive       uint32 = 1 << 10
+	SecbitExecDenyInteractiveLocked uint32 = 1 << 11
 )
 
 // secbitNames maps securebits string names to their values.
@@ -160,6 +172,11 @@ var secbitNames = map[string]uint32{
 	"keep-caps-locked":            SecbitKeepCapsLocked,
 	"no-cap-ambient-raise":        SecbitNoCapAmbientRaise,
 	"no-cap-ambient-raise-locked": SecbitNoCapAmbientRaiseLocked,
+
+	"exec-restrict-file":           SecbitExecRestrictFile,
+	"exec-restrict-file-locked":    SecbitExecRestrictFileLocked,
+	"exec-deny-interactive":        SecbitExecDenyInteractive,
+	"exec-deny-interactive-locked": SecbitExecDenyInteractiveLocked,
 }
 
 // ParseSecurebits parses a list of securebits flag names, separated by

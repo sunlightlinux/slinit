@@ -3663,6 +3663,21 @@ func parseMlockallFlags(value string) (int, error) {
 	return out, nil
 }
 
+// golang.org/x/sys/unix names MPOL_DEFAULT through MPOL_LOCAL but stops
+// there, so the two newer modes are spelled out. The values are read
+// from the kernel's own enum (linux/mempolicy.h: DEFAULT, PREFERRED,
+// BIND, INTERLEAVE, LOCAL, PREFERRED_MANY, WEIGHTED_INTERLEAVE, MAX),
+// not guessed: unix.MPOL_MAX is 7, which is the cross-check that these
+// two are 5 and 6 and that nothing sits between them.
+//
+// preferred-many needs Linux 5.15, weighted-interleave needs 6.9. The
+// latter takes its weights from the kernel's weighted_interleave sysfs
+// files, so there is nothing further to configure here.
+const (
+	mpolPreferredMany      uint32 = 5
+	mpolWeightedInterleave uint32 = 6
+)
+
 // parseMempolicyMode maps a config string to a Linux MPOL_* constant.
 func parseMempolicyMode(value string) (uint32, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -3676,8 +3691,12 @@ func parseMempolicyMode(value string) (uint32, error) {
 		return unix.MPOL_INTERLEAVE, nil
 	case "local":
 		return unix.MPOL_LOCAL, nil
+	case "preferred-many":
+		return mpolPreferredMany, nil
+	case "weighted-interleave":
+		return mpolWeightedInterleave, nil
 	default:
-		return 0, fmt.Errorf("numa-mempolicy: unknown mode %q (expected bind|preferred|interleave|local|default)", value)
+		return 0, fmt.Errorf("numa-mempolicy: unknown mode %q (expected bind|preferred|preferred-many|interleave|weighted-interleave|local|default)", value)
 	}
 }
 
