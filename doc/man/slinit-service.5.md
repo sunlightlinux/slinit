@@ -21,8 +21,9 @@ stripped.
 The format is backwards-compatible with **dinit** service files: every
 dinit setting that has a meaningful counterpart in slinit is accepted
 under the same name. slinit additionally accepts settings ported from
-runit, s6-linux-init and OpenRC, as well as a small number of
-slinit-specific extensions.
+the service-manager subset of systemd, runit, s6-linux-init, OpenRC,
+upstart, finit, launchd and immortal, as well as slinit-specific
+extensions.
 
 ### Operators
 

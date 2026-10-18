@@ -950,5 +950,5 @@ Migration from another init system:
 
 slinit is a Go reimplementation of dinit (originally written by Davin
 McCall), with features ported from runit, s6-linux-init, OpenRC,
-upstart, finit, and the service-manager subset of systemd. Maintained
-by the sunlight-os project.
+upstart, finit, launchd, immortal, sysvinit, and the service-manager
+subset of systemd. Maintained by the sunlight-os project.

@@ -30,8 +30,8 @@ implementation risk and preserves muscle memory for admins moving in:
 
 - **dinit** (`../dinit/src/`) — the state-machine + config-format base
 - **systemd** — service-manager directive/CLI surface
-- **runit** / **s6-linux-init** / **OpenRC** / **upstart** — feature-
-  specific ports
+- **runit** / **s6-linux-init** / **OpenRC** / **upstart** / **finit** /
+  **launchd** / **immortal** / **sysvinit** — feature-specific ports
 
 If the feature has no upstream analogue, say so — slinit is willing to
 ship native features, but the bar for surface-growth without upstream

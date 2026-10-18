@@ -2,7 +2,7 @@
 
 Behavioral guidelines for LLM-assisted work on **slinit** — a Go init system
 (dinit-in-Go base + runit + s6-linux-init + OpenRC UX + upstart + finit +
-systemd relevant service-manager subset).
+launchd + immortal + sysvinit + systemd relevant service-manager subset).
 
 > Derived from [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills)
 > (MIT), based on [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876)
@@ -133,10 +133,10 @@ Strong success criteria let you loop independently. Weak criteria
 
 ### Positioning
 - **dinit-in-Go base** + features from **runit**, **s6-linux-init**,
-  **OpenRC**, **upstart**, **finit**, and the relevant service-manager
-  subset of **systemd**. See memory file `project_positioning.md` for
-  how features from the 7 upstreams fit together without creating
-  parallel subsystems.
+  **OpenRC**, **upstart**, **finit**, **launchd**, **immortal**,
+  **sysvinit**, and the relevant service-manager subset of **systemd**.
+  See memory file `project_positioning.md` for how features from the 9
+  upstreams fit together without creating parallel subsystems.
 - Config format: dinit-compatible `key=value`.
 - Control CLI: `slinitctl` + OpenRC shims (`rc-service`, `rc-update`,
   `rc-status`).

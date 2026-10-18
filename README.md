@@ -17,6 +17,8 @@ features layered in from [runit](http://smarden.org/runit/),
 [OpenRC](https://github.com/OpenRC/openrc),
 [upstart](https://code.launchpad.net/upstart),
 [finit](https://github.com/troglobit/finit),
+[launchd](https://github.com/apple-oss-distributions/launchd),
+[immortal](https://github.com/immortal/immortal),
 sysvinit and the service-manager
 subset of [systemd](https://systemd.io/). Runlevels, where present, are
 UX aliases over the dependency graph — slinit does not carry a second
