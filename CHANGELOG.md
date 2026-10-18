@@ -24,6 +24,114 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.2.2] — 2026-10-18
+
+A patch. The two tmpfiles fixes change behaviour, and STABILITY.md's
+security clause covers that in any release including a patch: keeping
+the old behaviour keeps the hole. They are under `Security` with a
+`Compat` note. Everything else is additive or documentation.
+
+### Security
+
+- **slinit-tmpfiles followed symlinks out of the tree it was given.**
+  `os.Chmod`, `os.Chown` and `os.WriteFile` all follow a symlink, and
+  `filepath.Walk` hands back every symlink it finds without descending
+  into it. slinit-tmpfiles runs as root at boot, so:
+
+  - a recursive `Z` re-moded and re-owned whatever a link inside the
+    named tree pointed at, anywhere on the filesystem;
+  - a `z` naming a symlink directly did the same to its target;
+  - an `F` opened the target with `O_TRUNC` and wrote the entry's
+    argument into it;
+  - a `w`, whose whole purpose is writing into a file that already
+    exists, did the same.
+
+  Any directory a lesser user could write to, covered by one of those
+  entries, was therefore a way to redirect a root chmod, chown or
+  truncation onto a path of their choosing.
+
+  `z`/`Z` now skip symlinks: on Linux there is nothing worth setting on
+  one — the mode is ignored and the ownership only governs removal from
+  a sticky directory — so skipping is the correct reading and not just
+  the safe one. `F` and `w` pass `O_NOFOLLOW`, which constrains only the
+  final component, so the ordinary targets still work:
+  `/sys/class/backlight/*/brightness` reaches a regular file through
+  symlinked directories, and those are still followed.
+
+  A plain `f` was already safe, for a reason worth not optimising away:
+  `O_EXCL` refuses a symlink, the open fails `EEXIST`, and the
+  fallthrough lands in the chown path, which now skips it.
+
+  Measured rather than argued: before the fix the tests report
+  `-rw-------` → `-rwxr-xr-x` on a file outside the named tree, and
+  `"must survive"` → `"clobbered"` through a link.
+
+  **Compat:** a `Z`, `z`, `F` or `w` entry whose path or tree contains a
+  symlink no longer affects that link's target. If a tmpfiles.d snippet
+  depended on reaching a file through a link, name the file directly.
+
+### Added
+
+- **`securebits` accepts `exec-restrict-file` and
+  `exec-deny-interactive`**, with their `-locked` variants, for systemd
+  v262 parity. They come from the kernel's `AT_EXECVE_CHECK` work: the
+  first refuses to execute a file the caller could not have executed
+  directly, the second refuses interactive interpretation of a script.
+  An unsupported bit fails the whole `PR_SET_SECUREBITS` call, so it
+  shows up as a start failure rather than as silently absent
+  enforcement.
+
+- **`numa-mempolicy` accepts `preferred-many` and
+  `weighted-interleave`** (Linux 5.15 and 6.9 respectively). The weights
+  for the latter are the kernel's, from its `weighted_interleave` sysfs
+  files, so there is nothing further to configure. Both require
+  `numa-nodes`, matching the only three modes systemd exempts
+  (`default`, `local`, `preferred`).
+
+- **A service whose `reload-signal` it does not handle says so at
+  startup.** slinit reads `SigCgt`, `SigBlk` and `SigIgn` from
+  `/proc/PID/status` when the service signals readiness and warns if
+  the signal is in none of them: a reload would then land the signal's
+  default action and *terminate* the service instead of reloading it.
+  A signal that is merely ignored gets a different warning, because
+  there the reload is a silent no-op rather than a kill.
+
+  The service still starts. systemd v262 made this a startup failure
+  for `Type=notify-reload`; slinit warns, because refusing would stop
+  services that run fine today from starting at all.
+
+### Fixed
+
+- **`ready-check-interval` was documented as `100ms` and is `1s`.**
+  A `defaultReadyCheckInterval` constant holds 100ms and a unit test
+  asserts its value, but no path reaches it:
+  `SetReadyCheckCommand` always assigns the field, using one second
+  when the directive gave no value. The documentation now states 1s,
+  in **slinit-service**(5) and in `doc/configuration.md`'s table, along
+  with the immediate first check that made the smaller number look
+  plausible. The behaviour is unchanged — polling ten times as often
+  for every service with a ready-check is not a fix anyone asked for.
+
+- **`tools/stats` counted every man page twice** once the tree had been
+  built, because its pattern matched the generated roff as well as the
+  Markdown source: 48 on a fresh checkout, 96 after `make -C doc/man`.
+
+- Documentation counts refreshed against the code rather than against
+  each other, and the upstream list now names **launchd** and
+  **immortal**, whose backlogs closed with code shipped. The claim is
+  made in five places and they had drifted apart.
+
+### Internal
+
+- Tests pin the stop reason a dependency's stop leaves on its
+  dependents, in both directions: a dependency force-stopped by the
+  operator leaves `normal`, and one that cannot start leaves
+  `dependency-failed`. The two travel different code paths, so a test
+  covering only the first would pass on a slinit that could never
+  report the second. Found while reconciling dinit `96da7a8..b679a7f`,
+  where the same spot was a real bug upstream and measurably is not
+  one here.
+
 ## [3.2.1] — 2026-10-17
 
 This is a patch carrying two behaviour changes, released as a patch
