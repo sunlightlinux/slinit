@@ -31,6 +31,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // defaultDirs is in ascending precedence: for the same file name a
@@ -358,7 +359,13 @@ func apply(e entry) error {
 func applyFile(e entry, force bool) error {
 	flag := os.O_CREATE | os.O_WRONLY
 	if force {
-		flag |= os.O_TRUNC
+		// O_NOFOLLOW because this branch has no O_EXCL to refuse a
+		// symlink for us, and it does have O_TRUNC: without it, an F
+		// naming a symlink opened and emptied whatever the link
+		// pointed at, as root, at boot. O_EXCL covers the plain f
+		// below — a symlink there fails with EEXIST and falls through
+		// to applyChown, which skips it.
+		flag |= os.O_TRUNC | syscall.O_NOFOLLOW
 	} else {
 		flag |= os.O_EXCL
 	}
@@ -408,7 +415,20 @@ func applyWrite(e entry) error {
 	if e.arg == "" {
 		return fmt.Errorf("w: missing value Argument")
 	}
-	return os.WriteFile(e.path, []byte(e.arg), 0644)
+	// os.WriteFile is O_WRONLY|O_CREATE|O_TRUNC, which follows a
+	// symlink and empties what it names. O_NOFOLLOW only constrains the
+	// final component, so the usual w targets still work: a path like
+	// /sys/class/backlight/*/brightness reaches a regular file through
+	// symlinked directories, and those are still followed.
+	f, err := os.OpenFile(e.path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(e.arg); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func applyRemove(e entry, recursive bool) error {

@@ -91,3 +91,59 @@ func TestNonRecursiveChownOnASymlinkDoesNotTouchItsTarget(t *testing.T) {
 			link, fi.Mode().Perm())
 	}
 }
+
+// An F entry must not write through a symlink. F opens with
+// O_CREATE|O_WRONLY|O_TRUNC and no O_EXCL, so without O_NOFOLLOW it
+// opens whatever the link names and truncates it — a plain f is saved
+// only by O_EXCL, which refuses a symlink and falls through to the
+// chown path instead.
+func TestForcedFileDoesNotWriteThroughASymlink(t *testing.T) {
+	root := t.TempDir()
+
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("must survive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	e := entry{kind: "F", path: link, mode: 0o644, uid: -1, gid: -1, arg: "clobbered"}
+	_ = applyFile(e, true)
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "must survive" {
+		t.Errorf("F on the symlink %s rewrote its target: %q", link, string(got))
+	}
+}
+
+// Same class for w, which is the one type whose whole job is to write
+// into a file that already exists. os.WriteFile is
+// O_WRONLY|O_CREATE|O_TRUNC and follows a symlink.
+func TestWriteDoesNotWriteThroughASymlink(t *testing.T) {
+	root := t.TempDir()
+
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("must survive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	e := entry{kind: "w", path: link, arg: "clobbered"}
+	_ = applyWrite(e)
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "must survive" {
+		t.Errorf("w on the symlink %s rewrote its target: %q", link, string(got))
+	}
+}
