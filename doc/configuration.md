@@ -316,7 +316,7 @@ accepted. List-valued settings accept `+=` to append.
 |---|---|---|
 | `ready-notification` | `pipefd:N` \| `pipevar:VAR` | Readiness protocol |
 | `ready-check-command` | program [args…] | Polled readiness check, an alternative to `ready-notification` |
-| `ready-check-interval` | Go duration | Polling interval for `ready-check-command` (default `100ms`) |
+| `ready-check-interval` | Go duration | Polling interval for `ready-check-command` (default `1s`; the check also runs once immediately) |
 | `pid-file` | path | PID file written by a `bgprocess` daemon |
 | `socket-listen` | path \| `tcp:host:port` \| `udp:host:port` | Listening socket passed to the child via `LISTEN_FDS`; repeat or `+=` for several |
 | `socket-activation` | `immediate` \| `on-demand` | `immediate` (default) launches the process when the service starts; `on-demand` opens the socket, marks the service started, and launches the process on the first client — and again after it exits |

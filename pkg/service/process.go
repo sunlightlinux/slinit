@@ -32,6 +32,18 @@ const (
 	// readiness (systemd unit, real database open) doesn't turn into
 	// a busy-loop. Combined with the immediate first check inside
 	// watchReadyCheck the fast path costs one command exec only.
+	// NOTE: this is not the effective default for the directive.
+	// SetReadyCheckCommand always assigns readyCheckInterval — the
+	// given value, or time.Second when none was given — so the guard
+	// in watchReadyCheck that falls back to this constant is only
+	// reached if the field was never set at all. The documented and
+	// actual default for ready-check-interval is therefore 1s, and
+	// slinit-service(5) said 100ms until this was noticed.
+	//
+	// Left as it is rather than wired up: making the constant
+	// effective would poll ten times as often for every service with
+	// a ready-check, which is a behaviour change nobody asked for.
+	// Change both halves together if that is ever wanted.
 	defaultReadyCheckInterval = 100 * time.Millisecond
 )
 

@@ -235,7 +235,9 @@ what tells you the oldest slinit your configuration will run on. See
 
 **ready-check-interval**=*duration*
 :   How often to retry **ready-check-command**, with a unit (*500ms*,
-    *2s*); a bare number is rejected. Default *100ms*.
+    *2s*); a bare number is rejected. Default *1s*. The check also runs
+    once immediately, before the first interval elapses, so a service
+    that is already ready does not wait for a tick.
 
 **pre-stop-hook**=*program* [*args*...]
 :   Hook run before the stop signal is delivered.
