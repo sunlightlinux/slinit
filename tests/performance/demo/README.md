@@ -121,6 +121,33 @@ dump, etc.); driver + parsing is identical.
   ./tests/performance/demo/pid1-footprint.sh 10 5
   ```
 
+- **`softreboot-cycle.sh`** — repeated `slinitctl shutdown
+  softreboot now` against the full demo tree. The odd one out in
+  this directory: every other harness runs N QEMU boots and
+  measures one boot each, while this runs **one** boot and N soft
+  reboots inside it, because consecutive soft reboots are where
+  the interesting failure lives. Reports the round trip per cycle
+  and fails if a generation does not bring back what the one
+  before it had. Args: `[CYCLES]` (default 10).
+
+  The loop is driven from inside the VM: the cycle counter is a
+  file on the initramfs root, which survives a soft reboot by
+  definition — same kernel, same mounts — and a service at the
+  end of each boot reports, then asks for the next soft reboot or
+  powers off. The host only reads the serial console. Nothing on
+  the host can be swept, because nothing on the host is in the VM,
+  which is why this cannot be an SSH or in-guest-runner test: a
+  soft reboot kills the old userspace, including sshd and
+  including a guest runner that has not written its results yet.
+
+  `now` is deliberate — it is the impatient form that stops
+  waiting for graceful stops, which is what leaves processes still
+  dying when the re-exec fires.
+
+  ```
+  ./tests/performance/demo/softreboot-cycle.sh 10
+  ```
+
 ## Output format
 
 Each harness prints one line per measurement in a
