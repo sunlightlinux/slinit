@@ -16,14 +16,13 @@
 # read path.
 #
 # Case 900 has since measured the split this header asserts, on v3.2.2,
-# and "roughly half" is right: the journal spawn is 1.08ms of a 2.23ms
+# and "roughly half" is right: the journal spawn is 1.08ms of a 2.22ms
 # status, 49%, and timed on its own it is 1.16ms — a 7% disagreement,
 # which is what confirms the attribution rather than it just being the
 # plausible candidate.
 #
-# It also found that the cgroup-tree walk, the other extra named above,
-# costs nothing measurable: status on a process service with a live PID
-# came out 0.005ms BELOW status on an internal service without one. So
-# the gap is the fork, all of it, and the cgroup tree is free.
+# The cgroup-tree walk, the other extra named above, is the smaller
+# half by a long way but not nothing: 0.08ms, about 3% of a status on a
+# service that has a live PID. An internal service skips it entirely.
 perf_run_iters "$ITERS" "CtlStatus_v7" "slinitctl status boot"
 perf_run_iters "$ITERS" "CtlStatus5_v5" "slinitctl status5 boot"

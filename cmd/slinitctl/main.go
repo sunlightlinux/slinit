@@ -1804,12 +1804,14 @@ func cmdStatus(conn net.Conn, name string, long bool) error {
 	//
 	// "half of it this round-trip" is what this comment used to claim,
 	// and perf case 900 has since measured it: the round-trip was worth
-	// about 0.1ms, not the ~0.6ms half the gap would have been. The gap
-	// is almost entirely printRecentJournal's fork+exec — 1.08ms of a
-	// 1.08ms gap, against 1.16ms for that spawn timed on its own. This
-	// test is still worth keeping, because asking a question with a
-	// known answer is wrong regardless of what it costs, but it is not
-	// where the time went.
+	// about 0.1ms, not the ~0.6ms half the gap would have been. For an
+	// internal service the gap is almost entirely
+	// printRecentJournal's fork+exec — 1.08ms of a 1.08ms gap, against
+	// 1.16ms for that spawn timed on its own. (A service with a live
+	// PID pays a further 0.08ms for the cgroup tree, which an internal
+	// one skips.) This test is still worth keeping, because asking a
+	// question with a known answer is wrong regardless of what it
+	// costs, but it is not where the time went.
 	if canBeSkipped(status.SvcType) &&
 		status.State == service.StateStarted &&
 		status.Flags&control.StatusFlagHasPID == 0 {

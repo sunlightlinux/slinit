@@ -33,11 +33,18 @@
 # carry the conclusion. perf_baseline_ns documents why the minimum and
 # not the mean.
 #
-# First run, on ceres v3.2.2 with ITERS=30: v5 1.147ms, internal 2.229ms
-# (spread 14% — the fork+exec reading is the noisy one), process
-# 2.224ms, spawn alone 1.159ms. So journal_in_status 1.082ms at 49% of
-# status, agreeing with the spawn to 7%, and cgroup_tree -0.005ms. The
-# attribution 310 asserted holds, and the cgroup tree is free.
+# Measured on ceres v3.2.2, ITERS=30, all four spreads 1-2%: v5
+# 1.144ms, internal 2.221ms, process 2.301ms, spawn alone 1.156ms. So
+# journal_in_status 1.078ms at 49% of status, agreeing with the spawn
+# timed directly to 7%, and cgroup_tree 0.080ms. The attribution 310
+# asserted holds.
+#
+# Read the spreads before the deltas. An earlier run of this case had
+# 14% on the internal reading and produced cgroup_tree = -0.005ms,
+# which reads as "the cgroup tree is free" and is not true — 0.08ms is
+# well inside a 14% band on a 2.2ms reading. That is what the
+# bracketing is for; a delta smaller than the spread of its own inputs
+# is not a measurement.
 #
 # Note the whole gap is conditional on slinit-journalctl being on PATH:
 # printRecentJournal does exec.LookPath and returns silently if it is
