@@ -38,7 +38,7 @@ seat management.
 ## Install
 
 ```bash
-go build ./...          # the daemon, slinitctl and 43 companion tools
+go build ./...          # the daemon, slinitctl and 44 companion tools
 make -C lib/slinit-mlock install   # libslinit-mlock.so, needed for `mlockall =`
 ```
 
@@ -270,7 +270,7 @@ pkg/process/      fork/exec, child monitoring, fd handling
 pkg/seccomp/      cBPF compiler, syscall groups, the restrict-* cluster
 pkg/journal/      journal readers, writers and the binary format
 pkg/shutdown/     shutdown sequences, power events, soft-reboot
-doc/man/          46 man pages — the reference for every binary
+doc/man/          48 man pages — the reference for every binary
 tests/            unit, functional (QEMU), acceptance and container suites
 ```
 
@@ -300,10 +300,10 @@ it escalates the shutdown instead.
 |---|---|
 | [doc/operators-guide.md](doc/operators-guide.md) | Start here if you run systems: systemd mappings, first service, troubleshooting |
 | [doc/configuration.md](doc/configuration.md) | Service examples by shape, directive tables by topic, daemon flags |
-| [doc/tools.md](doc/tools.md) | Index of the 43 companion tools, with usage examples |
+| [doc/tools.md](doc/tools.md) | Index of the 45 companion tools, with usage examples |
 | [doc/features.md](doc/features.md) | Generated list of every accepted directive and opcode, by upstream |
 | [doc/roadmap.md](doc/roadmap.md) | Development history and what is planned |
-| [doc/man/](doc/man) | 46 man pages — one per binary, plus slinit-service(5) |
+| [doc/man/](doc/man) | 48 man pages — one per binary, plus slinit-service(5) |
 | [STABILITY.md](STABILITY.md) | What will not break, and how deprecation works |
 | [CHANGELOG.md](CHANGELOG.md) | Release history, with the reasoning behind each version number |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to build, test and submit a change |
@@ -312,8 +312,8 @@ it escalates the shutdown instead.
 ## Testing
 
 ```bash
-go test ./...                             # ~2400 unit tests and benchmarks
-./tests/functional/run-tests.sh           # 230 cases, each in its own QEMU VM
+go test ./...                             # ~2640 unit tests and benchmarks
+./tests/functional/run-tests.sh           # 242 cases, each in its own QEMU VM
 ./tests/functional/selftest.sh            # checks the harness can still fail a case
 ./tests/container/run.sh                  # 23 cases with slinit as a container's PID 1
 go test -fuzz=FuzzConfigParse ./tests/fuzz
@@ -323,7 +323,7 @@ The suites that need a live target take their host over SSH:
 
 ```bash
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
-  ./tests/acceptance/ssh/run.sh           # 219 cases
+  ./tests/acceptance/ssh/run.sh           # 218 cases
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/performance/ssh/run.sh          # 92 cases; see tests/performance/README.md
 ```

@@ -452,7 +452,12 @@ func countRegularFiles(root string) int {
 // countManPages counts man source files under dir. Recognises both
 // rendered groff (`.1`..`.9`) and go-md2man source (`.N.md`) since
 // slinit ships the latter.
-var manPageRE = regexp.MustCompile(`\.[1-9](\.md)?$`)
+// Only the Markdown sources count. The roff beside them is generated
+// by doc/man/Makefile and gitignored, so matching both made this number
+// depend on whether the tree had been built: 48 on a fresh checkout, 96
+// right after `make -C doc/man`. A statistic that moves when you build
+// is worse than no statistic.
+var manPageRE = regexp.MustCompile(`\.[1-9]\.md$`)
 
 func countManPages(dir string) int {
 	entries, err := os.ReadDir(dir)

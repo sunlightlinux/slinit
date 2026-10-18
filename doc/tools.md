@@ -1,8 +1,8 @@
 # slinit companion tools
 
 Besides the daemon (`slinit`) and its control CLI (`slinitctl`), slinit
-ships 43 tools: 42 Go binaries and `slinit-resource`, a shell OCF
-resource agent. `go build ./...` builds all of them.
+ships 45 tools: 44 Go binaries and `slinit-resource`, a shell OCF
+resource agent. `go build ./...` builds the 44 Go ones.
 
 Each tool has a man page under [doc/man](man), which is the
 authoritative reference. This document is an overview: what each tool
