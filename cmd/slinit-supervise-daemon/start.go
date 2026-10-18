@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -62,8 +63,27 @@ func cmdStart(opts Options) int {
 	// can inspect. Silent by default because the release path is
 	// meant to be quiet.
 	if opts.Verbose {
-		if errLog, err := os.OpenFile("/tmp/slinit-supervise-daemon.err",
-			os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644); err == nil {
+		// /run/slinit, not /tmp, and O_NOFOLLOW.
+		//
+		// This used to be the fixed path /tmp/slinit-supervise-daemon.err
+		// opened O_CREATE|O_APPEND. /tmp is world-writable and the name
+		// was predictable, so any local user could create it first as a
+		// symlink and have this process — running as root — append the
+		// supervisor's stderr to whatever it named. Append rather than
+		// truncate, so the shape is content injection into a root-owned
+		// file rather than destruction of one, which is worse in a
+		// sudoers.d or a shell rc than it sounds. A plain file planted
+		// there instead leaks the supervisor's stderr to its owner.
+		// /tmp's sticky bit does not help: it stops you deleting someone
+		// else's entry, not creating one that does not exist yet.
+		//
+		// /run/slinit is root-owned, which is what actually fixes it;
+		// O_NOFOLLOW only states the intent for the final component.
+		// Failure stays silent, as before — this is a debugging
+		// convenience and not a reason to refuse to start a service.
+		_ = os.MkdirAll("/run/slinit", 0755)
+		if errLog, err := os.OpenFile("/run/slinit/supervise-daemon.err",
+			os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0644); err == nil {
 			cmd.Stderr = errLog
 			defer errLog.Close()
 		}
