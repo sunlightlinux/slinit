@@ -129,6 +129,7 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `870-cgroup-svc`               | cgroup= directive: mkdir + cgroup.procs write cost |
 | `880-fd-store-preserve`        | file-descriptor-store-preserve setup cost |
 | `890-slinit-check-boot`        | `slinit-check boot` recursive dep-tree parse |
+| `900-status-extras-breakdown`  | splits the `status` vs `status5` gap into the journal spawn and the cgroup tree, and prices the spawn alone |
 
 ### The cases that once took PID 1 down
 
