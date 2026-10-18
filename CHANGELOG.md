@@ -24,6 +24,66 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.2.3] — 2026-10-18
+
+**Nothing in the shipped binaries behaves differently.** The only change
+outside `tests/` is a corrected comment. This release is test coverage
+for two things that were previously taken on trust, and the corrections
+that measuring them produced — there is no behaviour reason to upgrade
+from 3.2.2.
+
+### Added
+
+- **A soft-reboot cycle harness**,
+  `tests/performance/demo/softreboot-cycle.sh [CYCLES]`, for the failure
+  3.2.2 fixed: a service exiting 1 in the generation after a soft reboot
+  because nothing swept the old userspace before the re-exec. That was
+  sporadic, so one cycle proved nothing. This runs **one** QEMU boot and
+  N soft reboots inside it, with `shutdown softreboot now` — the
+  impatient form, which is what leaves processes still dying when the
+  re-exec fires — and fails if a generation does not bring back what the
+  one before it had. Ten cycles: 43 of 45 services in every generation,
+  round trip median 6280 ms.
+
+  Where it lives took eliminating the alternatives. The SSH suites share
+  one live VM and a soft reboot now kills sshd; the functional harness
+  says in case 21 that a real shutdown "would kill the VM before
+  guest-runner writes results", and the sweep kills that runner too; and
+  container mode cannot soft reboot at all — by design, not as a defect,
+  since `cmd/slinit`'s container branch writes its results and exits
+  rather than reaching the re-exec. So the driver is on the host and the
+  loop is driven from inside, with the cycle counter on the initramfs
+  root, which survives a soft reboot by definition.
+
+- **`900-status-extras-breakdown`**, which measures what case 310 has
+  asserted since v2.4.2: that `status` costs about twice `status5`
+  because `printRecentJournal` fork+execs a whole `slinit-journalctl`.
+  Four readings, each pair differing by one thing, so the journal spawn
+  can be compared against the same spawn timed on its own.
+
+  It holds: **1.078 ms of a 2.221 ms status, 49%**, against 1.156 ms for
+  the spawn alone — a 7% disagreement. The cgroup-tree walk, the other
+  extra, is **0.080 ms**, roughly 3% of a status on a service with a
+  live PID; an internal service skips it.
+
+### Fixed
+
+- **Case 900 aborted the perf suite** on its own last lines with
+  `Illegal number: 1.14653e+06`. `perf_median_of_file` averages the two
+  middle samples when the count is even — it always is — and awk prints
+  that in scientific notation, which POSIX shell integer arithmetic
+  rejects. Every other bracketed case in the suite does its maths in
+  awk; these two subtractions now do too.
+
+- **Two claims the measurement corrected.** `slinitctl`'s comment said
+  half the status gap was the `show` round-trip the 3.1.10 fix removed;
+  that round-trip was worth about 0.1 ms, and the gap is the journal
+  fork. And the first, crashed run of case 900 produced a cgroup figure
+  of −0.005 ms, which was reported as "the cgroup tree is free" — it was
+  a delta well inside a 14% spread on its own inputs, and the clean run
+  reads 0.080 ms. Case 900's header now says to read the spreads before
+  the deltas, and names that as the example.
+
 ## [3.2.2] — 2026-10-18
 
 A patch. The two tmpfiles fixes change behaviour, and STABILITY.md's
