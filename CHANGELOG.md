@@ -24,6 +24,91 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.2.4] — 2026-10-19
+
+Two security fixes, both from a pass over the tools that run as root
+looking for the class v3.2.2's tmpfiles fixes came from: filesystem
+operations on a path a non-root user can influence. They are under
+`Security` with `Compat` notes, which STABILITY.md's security clause
+permits in any release including a patch — keeping the old behaviour
+keeps the hole.
+
+### Security
+
+- **slinit-logind accepted an unvalidated session id and turned it into
+  a filesystem path.** The part worth checking first was not the code
+  but who can reach it: the shipped
+  *org.freedesktop.login1* bus policy is a per-member allowlist, and
+  **ReleaseSession**, **TerminateSession** and **KillSession** are on it
+  in the `default` context — every local user. That is the normal
+  elogind and systemd policy, because they authorise inside the method,
+  through polkit or by checking the caller owns the session.
+  slinit-logind did neither.
+
+  `filepath.Join` cleans but does not confine, so an id containing `..`
+  walked out of */run/slinit-logind/sessions* and the record-read gate
+  could be satisfied by a file the caller had planted anywhere
+  readable. The compat path is plain concatenation with no suffix, so
+  the removal that follows took an arbitrary path: an unlink as root,
+  chosen by any local user. The scope recorded in that same file was a
+  second, unconstrained path into both a removal and a
+  create-or-truncate of *\<scope\>/cgroup.kill*.
+
+  Session ids are now rejected unless they are `[A-Za-z0-9_-]` within
+  64 bytes, at every manager entry point that takes one, and a recorded
+  scope has to resolve under */sys/fs/cgroup/*. A charset rather than
+  the generated `c<N>` shape on purpose: **ListSessions** hands ids back
+  to callers and elogind's own state uses bare decimals, so matching the
+  format would have broken compatibility without adding protection.
+
+  **Compat:** a session id containing a path separator or `..` now gets
+  `NoSuchSession` instead of being acted on. Nothing that creates
+  sessions through this daemon produces such an id.
+
+- **slinit-supervise-daemon opened a predictable name in /tmp as
+  root.** Under `--verbose`, the supervisor's stderr went to the fixed
+  path */tmp/slinit-supervise-daemon.err*, opened `O_CREATE|O_APPEND`
+  with no `O_NOFOLLOW`. A local user could create that name first as a
+  symlink and have root append to whatever it pointed at — content
+  injection into a root-owned file rather than destruction of one,
+  which in a *sudoers.d* fragment or a shell rc is worse than it
+  sounds. A plain file planted there instead has root write the
+  supervisor's stderr somewhere the attacker can read. The sticky bit
+  does not help: it stops you deleting someone else's entry, not
+  creating one that does not exist yet.
+
+  It is now */run/slinit/supervise-daemon.err*, where the rest of
+  slinit keeps root-owned runtime state. The root-owned parent is what
+  fixes it; `O_NOFOLLOW` states the intent for the final component.
+
+  **Compat:** `--verbose` writes to */run/slinit/* instead of */tmp/*.
+  Anything reading the old path by name finds nothing there.
+
+### Fixed
+
+- **Five defaults the code decides were not documented at all**, and
+  **stop-timeout** was the one that mattered: **slinit-service**(5) did
+  not say how long a stop waits before SIGKILL. Also added:
+  **start-timeout**, **restart-delay**, **restart-limit-interval** and
+  **restart-limit-count**. A test in `pkg/service` now pins each
+  directive's documented value against the constant behind it, in both
+  directions, so the page and the code cannot drift apart again.
+
+- The soft-reboot cycle harness explained its own `43 of 45` baseline
+  wrongly, blaming the demo tree's manual and triggered services. It is
+  the observer: the injected service is *starting* while its command
+  runs and `boot` waits for it, so 45 of 45 is unreachable from inside.
+  Both halves of the old claim were wrong — a triggered service is
+  counted, and the `manual = yes` one is not even loaded.
+
+- **slinit-service**(5) now records why *libslinit-mlock.so* is the one
+  piece of C in slinit and cannot be Go, with the measurements: the
+  library loads into the service's own process, a do-nothing Go shared
+  library is 1.9 MB against 17 kB and takes a trivial process from
+  2.8 MB of address space and one thread to 78 MB and two, and
+  **mlockall**(2) would lock all of that into RAM in every service
+  using the setting.
+
 ## [3.2.3] — 2026-10-18
 
 **Nothing in the shipped binaries behaves differently.** The only change
