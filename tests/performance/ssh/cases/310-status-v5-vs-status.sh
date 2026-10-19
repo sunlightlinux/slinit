@@ -21,8 +21,10 @@
 # which is what confirms the attribution rather than it just being the
 # plausible candidate.
 #
-# The cgroup-tree walk, the other extra named above, is the smaller
-# half by a long way but not nothing: 0.08ms, about 3% of a status on a
-# service that has a live PID. An internal service skips it entirely.
+# The cgroup-tree walk, the other extra named above, is **too small for
+# case 900 to resolve**: three runs read -0.005, +0.080 and -0.048 ms
+# and the sign never settled. So the gap is the fork, and the cgroup
+# tree is somewhere under the noise floor rather than a known figure.
+# An internal service skips it entirely in any case.
 perf_run_iters "$ITERS" "CtlStatus_v7" "slinitctl status boot"
 perf_run_iters "$ITERS" "CtlStatus5_v5" "slinitctl status5 boot"

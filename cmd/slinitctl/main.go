@@ -1808,8 +1808,10 @@ func cmdStatus(conn net.Conn, name string, long bool) error {
 	// internal service the gap is almost entirely
 	// printRecentJournal's fork+exec — 1.08ms of a 1.08ms gap, against
 	// 1.16ms for that spawn timed on its own. (A service with a live
-	// PID pays a further 0.08ms for the cgroup tree, which an internal
-	// one skips.) This test is still worth keeping, because asking a
+	// PID also walks the cgroup tree, which an internal one skips, but
+	// three runs of case 900 put that below what it can resolve — the
+	// sign did not settle, so there is no figure to quote.) This test
+	// is still worth keeping, because asking a
 	// question with a known answer is wrong regardless of what it
 	// costs, but it is not where the time went.
 	if canBeSkipped(status.SvcType) &&

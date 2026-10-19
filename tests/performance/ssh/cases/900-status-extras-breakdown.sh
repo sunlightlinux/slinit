@@ -39,12 +39,24 @@
 # timed directly to 7%, and cgroup_tree 0.080ms. The attribution 310
 # asserted holds.
 #
-# Read the spreads before the deltas. An earlier run of this case had
-# 14% on the internal reading and produced cgroup_tree = -0.005ms,
-# which reads as "the cgroup tree is free" and is not true — 0.08ms is
-# well inside a 14% band on a 2.2ms reading. That is what the
-# bracketing is for; a delta smaller than the spread of its own inputs
-# is not a measurement.
+# The cgroup share has read -0.005, +0.080 and -0.048 ms across three
+# runs on the same host. The sign never settled, so **the cgroup-tree
+# cost is below what this case can resolve**, and the figure should not
+# be quoted as a measurement whatever one run prints.
+#
+# Worth spelling out because I got it wrong twice in opposite
+# directions. The first run had 14% spread on the internal reading and
+# gave -0.005, which I reported as "the cgroup tree is free". The
+# second had 1-2% spreads throughout and gave +0.080, which I then
+# published as a measured cost — and it passes the case's own
+# within-run test, because tight brackets in one run say nothing about
+# agreement across runs. A single run cannot tell you that; only this
+# comment can.
+#
+# The verdict line below is the best a single run can do: it compares
+# each delta against the bracket spread of the readings it came from
+# and refuses to dignify anything smaller. Treat `measured` as "not
+# obviously noise in this run", not as settled.
 #
 # Note the whole gap is conditional on slinit-journalctl being on PATH:
 # printRecentJournal does exec.LookPath and returns silently if it is
@@ -122,6 +134,21 @@ _agree_pct=$(awk -v a="$_journal_share" -v b="$_spawn" 'BEGIN{
     m=(a+b)/2; d=a-b; if(d<0) d=-d;
     if (m>0) printf "%.0f", 100*d/m; else print "n/a"}')
 
-printf "StatusExtras_breakdown  journal_in_status=%s ms (%s%% of status)  cgroup_tree=%s ms  spawn_alone=%s ms  disagreement=%s%%\n" \
+# A delta is only reported as a figure when it is bigger than the
+# bracket spread of the readings it came from. Otherwise the case says
+# so, because a number invites belief and this one did not deserve it:
+# across three runs the cgroup share read -0.005, +0.080 and -0.048 ms,
+# and I published the middle one as a measured 0.08 ms purely because
+# that run's spreads happened to be tight. The sign never settled. The
+# honest output is "below resolution", and printing the noise floor
+# beside it is what makes that checkable rather than a dodge.
+_cgroup_noise=$(awk -v a="$_proc_1" -v b="$_proc_2" -v c="$_int_1" -v d="$_int_2" 'BEGIN{
+    p=a-b; if(p<0) p=-p; i=c-d; if(i<0) i=-i; print (p>i) ? p : i }')
+_cgroup_verdict=$(awk -v d="$_cgroup_share" -v n="$_cgroup_noise" 'BEGIN{
+    a=d; if(a<0) a=-a; print (a>n) ? "measured" : "below-resolution" }')
+
+printf "StatusExtras_breakdown  journal_in_status=%s ms (%s%% of status)  spawn_alone=%s ms  disagreement=%s%%\n" \
     "$(_ms "$_journal_share")" "$_share_pct" \
-    "$(_ms "$_cgroup_share")"  "$(_ms "$_spawn")" "$_agree_pct"
+    "$(_ms "$_spawn")" "$_agree_pct"
+printf "StatusExtras_cgroup_tree  %s ms  noise_floor=%s ms  verdict=%s\n" \
+    "$(_ms "$_cgroup_share")" "$(_ms "$_cgroup_noise")" "$_cgroup_verdict"
