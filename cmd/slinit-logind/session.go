@@ -432,6 +432,9 @@ func (m *manager) CreateSession(
 // the scope alive on the kernel side, we'll get rmdir=EBUSY and
 // leave it for the reaper).
 func (m *manager) ReleaseSession(id string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 
@@ -443,7 +446,7 @@ func (m *manager) ReleaseSession(id string) *dbus.Error {
 	_ = os.Remove(sessionFile(id))
 	_ = os.Remove(fifoPath(id))
 	_ = os.Remove(compatSessionFile(id))
-	if rec.Scope != "" {
+	if scopeUnderCgroupFS(rec.Scope) {
 		_ = os.Remove(rec.Scope) // rmdir; EBUSY tolerated
 	}
 	// Drop the per-Session D-Bus object + fire SessionRemoved.
@@ -799,6 +802,9 @@ func fileExists(path string) bool {
 // This is what GDM calls when a user session ends and it re-uses the
 // running greeter, via ActivateSessionOnSeat. It used to be a no-op.
 func (m *manager) ActivateSession(id string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	var rec SessionRecord
 	if !readJSON(sessionFile(id), &rec) {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
@@ -835,6 +841,9 @@ func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
 // So the password was accepted, GDM logged "reauthenticated user
 // 1001", and the screen stayed locked forever.
 func (m *manager) LockSession(id string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	if err := checkSess(id); err != nil {
 		return err
 	}
@@ -843,6 +852,9 @@ func (m *manager) LockSession(id string) *dbus.Error {
 }
 
 func (m *manager) UnlockSession(id string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	if err := checkSess(id); err != nil {
 		return err
 	}
@@ -879,6 +891,9 @@ func (m *manager) sendSessionLock(id string, lock bool) {
 // down). GDM's greeter and lightdm's session-switch button call
 // TerminateSession; without it the greeter switch-user hangs.
 func (m *manager) TerminateSession(id string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	return m.ReleaseSession(id)
 }
 
@@ -897,6 +912,9 @@ func (m *manager) TerminateUser(uid uint32) *dbus.Error {
 
 // TerminateSeat tears down every session on the seat.
 func (m *manager) TerminateSeat(id string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	files, _ := filepath.Glob(filepath.Join(stateRoot, "sessions", "*.json"))
 	for _, f := range files {
 		var rec SessionRecord
@@ -932,10 +950,16 @@ func (m *manager) SetUserLinger(uid uint32, b bool, interactive bool) *dbus.Erro
 // KillSession sends the given signal to every process in the session
 // cgroup, or just the leader if `who = "leader"`.
 func (m *manager) KillSession(id, who string, sig int32) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	var rec SessionRecord
 	if !readJSON(sessionFile(id), &rec) {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
 			[]interface{}{id})
+	}
+	if !scopeUnderCgroupFS(rec.Scope) {
+		return errBadSessionID(id)
 	}
 	if who == "leader" {
 		_ = writeInt(rec.Scope+"/cgroup.kill", 1) // fastest path on newer kernels
@@ -1073,4 +1097,76 @@ func lookupUsername(uid uint32) string {
 		}
 	}
 	return fmt.Sprintf("uid=%d", uid)
+}
+
+// validSessionID reports whether id is safe to put in a filesystem
+// path.
+//
+// It has to exist because a session id arrives as a raw D-Bus string
+// from a caller this daemon does not authenticate, and several paths
+// are built from it by concatenation. The shipped
+// org.freedesktop.login1 bus policy allows ReleaseSession,
+// TerminateSession and KillSession from the `default` context — every
+// local user — because elogind and systemd authorise inside the method
+// instead, via polkit or by checking the caller owns the session. This
+// daemon does neither, so the id itself is the only gate there is.
+//
+// Without this, `id` containing `..` walked out of
+// /run/slinit-logind/sessions: filepath.Join cleans but does not
+// confine, so the readJSON gate could be satisfied by a file the
+// caller planted anywhere readable, and compatSessionFile — plain
+// string concatenation, no suffix — then handed os.Remove an arbitrary
+// path. Root unlink, chosen by any local user.
+//
+// A charset test rather than the generated "c<N>" shape, deliberately:
+// legitimate ids also come back from ListSessions and from elogind's
+// own state, where bare decimals like "3" are what exist on disk. The
+// charset is what blocks the attack — no '/', no '.' — and it does not
+// take a view on anyone's id format. The length bound keeps a
+// multi-kilobyte string out of a path.
+func validSessionID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '_' || c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// errBadSessionID is what every entry point returns for an id that
+// cannot name a session. NoSuchSession rather than InvalidArgs so a
+// caller probing for traversal learns nothing it could not learn by
+// asking for a session that does not exist.
+func errBadSessionID(id string) *dbus.Error {
+	return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
+		[]interface{}{id})
+}
+
+// scopeUnderCgroupFS reports whether a scope path read back from a
+// session record is one this daemon could have written.
+//
+// CreateSession builds it as "/sys/fs/cgroup/<id>" and nothing else
+// ever sets it, but it is read back from JSON, and the readJSON gate
+// can be satisfied by a file a caller planted — so the value is
+// untrusted input even though we are the only writer. Unconfined it
+// was an arbitrary root rmdir at ReleaseSession, and a root
+// create-or-truncate of <path>/cgroup.kill at KillSession.
+//
+// Clean first so "/sys/fs/cgroup/../../etc" does not pass on the
+// prefix alone, and require a component after the slash so the root
+// itself is not a valid scope.
+func scopeUnderCgroupFS(scope string) bool {
+	const root = "/sys/fs/cgroup/"
+	if scope == "" {
+		return false
+	}
+	c := filepath.Clean(scope)
+	return strings.HasPrefix(c, root) && len(c) > len(root)
 }
