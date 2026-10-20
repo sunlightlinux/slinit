@@ -796,6 +796,33 @@ func ensureServiceDirs(dirs []ServiceDir, uid, gid uint32) error {
 		if err := os.MkdirAll(d.Path, d.Mode); err != nil {
 			return fmt.Errorf("service directory %s: %w", d.Path, err)
 		}
+		// MkdirAll short-circuits on an existing path via os.Stat,
+		// which FOLLOWS a symlink — measured: MkdirAll on a
+		// symlink-to-directory returns nil, and a Chmod on the same
+		// path then changes the target's mode. So without this check
+		// the correction below re-owned and re-moded whatever the link
+		// named, as root.
+		//
+		// That is reachable without any race. These names may have
+		// several components — parseServiceDirNames rejects absolute
+		// paths and '.'/'..' but permits "myapp/data" — and the first
+		// start chowns "myapp" to the service user, so on the next
+		// start the user owns the parent of the leaf and can leave a
+		// symlink standing there. Structurally the slinit-tmpfiles Z
+		// bug with MkdirAll in filepath.Walk's role.
+		//
+		// Refused rather than skipped, unlike tmpfiles. There,
+		// skipping is right because a symlink has no mode worth
+		// setting. Here the admin asked for a directory with a mode
+		// and an owner, and quietly not applying them would leave the
+		// service running against permissions nobody chose — the
+		// fail-open shape slinit rejected for confinement. A service
+		// directory slinit owns is not a place for a symlink; point
+		// the directory elsewhere, or bind-mount it.
+		if lst, err := os.Lstat(d.Path); err == nil && lst.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("service directory %s: is a symbolic link; "+
+				"refusing to chmod/chown its target", d.Path)
+		}
 		if err := os.Chmod(d.Path, d.Mode); err != nil {
 			return fmt.Errorf("service directory %s: chmod: %w", d.Path, err)
 		}
