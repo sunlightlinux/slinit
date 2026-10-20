@@ -286,7 +286,7 @@ func setupStdio(cmd *exec.Cmd, opts Options) error {
 		}
 		cmd.Stdout = w
 	} else if opts.Stdout != "" {
-		f, err := os.OpenFile(opts.Stdout, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		f, err := os.OpenFile(opts.Stdout, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0644)
 		if err != nil {
 			return fmt.Errorf("open --stdout: %w", err)
 		}
@@ -303,7 +303,7 @@ func setupStdio(cmd *exec.Cmd, opts Options) error {
 		}
 		cmd.Stderr = w
 	} else if opts.Stderr != "" {
-		f, err := os.OpenFile(opts.Stderr, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		f, err := os.OpenFile(opts.Stderr, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0644)
 		if err != nil {
 			return fmt.Errorf("open --stderr: %w", err)
 		}

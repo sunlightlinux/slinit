@@ -251,7 +251,7 @@ func setupStdio(cmd *exec.Cmd, opts Options) error {
 		}
 		cmd.Stdout = w
 	} else if opts.Stdout != "" {
-		f, err := os.OpenFile(opts.Stdout, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		f, err := os.OpenFile(opts.Stdout, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0644)
 		if err != nil {
 			return fmt.Errorf("open --stdout: %w", err)
 		}
@@ -267,7 +267,7 @@ func setupStdio(cmd *exec.Cmd, opts Options) error {
 		}
 		cmd.Stderr = w
 	} else if opts.Stderr != "" {
-		f, err := os.OpenFile(opts.Stderr, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		f, err := os.OpenFile(opts.Stderr, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0644)
 		if err != nil {
 			return fmt.Errorf("open --stderr: %w", err)
 		}
@@ -354,8 +354,32 @@ func waitExit(pid int, timeout time.Duration) bool {
 	return !processAlive(pid)
 }
 
+// writePIDFile writes pid to path, refusing to follow a symlink.
+//
+// O_NOFOLLOW because the path comes from --pidfile and a pid-file's
+// directory is routinely writable by the daemon's own user — that is
+// how an unprivileged daemon rewrites its own pid-file. slinit says so
+// itself where it *reads* these files: pkg/process/pidfile.go opens
+// them O_NOFOLLOW with the note that "services often write their
+// pid-file into world-writable locations". Writing them as root
+// without the same flag made this a truncate-to-a-pid-line of whatever
+// the name resolved to, which pkg/service/bgprocess.go calls "an
+// arbitrary write primitive" where it opens service logs.
+//
+// A pre-existing symlink now fails with ELOOP rather than being
+// followed; a stale regular pid-file is still replaced, which is what
+// O_TRUNC is for.
 func writePIDFile(path string, pid int) error {
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0644)
+	f, err := os.OpenFile(path,
+		os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(strconv.Itoa(pid) + "\n"); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // superLogf writes verbose supervisor diagnostics through syslog when
