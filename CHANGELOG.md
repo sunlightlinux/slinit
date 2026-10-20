@@ -24,6 +24,79 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.2.5] — 2026-10-20
+
+Two more security fixes from the same pass over the tools and code
+paths that run as root, and **one of them can stop a service that
+starts today**. Read the `Compat` note on the service-directory fix
+before upgrading: a *runtime-directory*, *state-directory*,
+*cache-directory*, *logs-directory* or *configuration-directory* that
+an operator deliberately pointed at a symlink now fails the start
+instead of being followed.
+
+That is the sharpest compatibility break in the 3.2 series, and it is
+still a patch, because STABILITY.md's security clause permits a
+stable-surface break in any release when keeping the old behaviour
+keeps the hole — here an arbitrary chmod and chown as root. The clause
+is the reason, not the convenience.
+
+### Security
+
+- **A service directory that is a symlink was followed, not refused.**
+  `os.MkdirAll` short-circuits on an existing path through `os.Stat`,
+  which follows a symlink, so a standing symlink-to-directory made it
+  return success — and the mode and ownership correction that follows
+  re-resolved the path and acted on the link's target, as root.
+  Measured rather than inferred: `MkdirAll` on such a link returns no
+  error, and a `chmod` on the same path then changes the target.
+
+  **No race is required**, which is what separates this from an
+  ordinary check-then-act window. Directory names may have several
+  components — absolute paths and `..` are rejected, `myapp/data` is
+  not — and the first start hands *myapp* to the service user, so from
+  then on that user owns the parent of the leaf and can leave a symlink
+  standing there.
+
+  Refused rather than skipped, which is the opposite of what
+  **slinit-tmpfiles**(8) does with a symlink, and deliberately: there a
+  link has no mode worth setting, whereas here the operator asked for a
+  mode and an owner, and quietly not applying them would leave the
+  service running against permissions nobody chose.
+
+  **Compat:** a service directory that is a symlink now fails the
+  service's start, with an error naming the path. Point the directive
+  at the real location, or bind-mount it there.
+
+- **Pid-files and log redirects in slinit-start-stop-daemon**(8) **and
+  slinit-supervise-daemon**(8) **followed symlinks.** Six sites across
+  the two tools wrote as root without `O_NOFOLLOW`: the pid-file write
+  in each, and both `--stdout` and `--stderr` redirects in each. A
+  pid-file's directory being writable by the daemon's own user is not a
+  misconfiguration — it is how an unprivileged daemon rewrites its own
+  pid-file — so the exposure was the ordinary case.
+
+  slinit already had the answer in its own tree, which is why this is a
+  gap between tools rather than a question of design: `pkg/process`
+  opens pid-files `O_NOFOLLOW` to *read* them, noting that services
+  often write them into world-writable locations, and the service log
+  paths in `pkg/service` do the same because a followed symlink would
+  otherwise be an arbitrary write primitive.
+
+  **Compat:** a pid-file or redirect target that is a symlink is now
+  refused. A stale regular pid-file is still replaced, as before.
+
+### Fixed
+
+- The cgroup-tree figure this suite reported is withdrawn. Three runs
+  of the status breakdown read -0.005, +0.080 and -0.048 ms and the
+  sign never settled, so the cost is below what the measurement
+  resolves; the middle value had been published as a measured 0.08 ms
+  on the strength of one run's tight error bars, which say nothing
+  about agreement between runs. The case now prints its own noise floor
+  beside each delta and labels anything smaller `below-resolution`.
+  The journal fork+exec half is unchanged and confirmed three times at
+  48-49% of a `status`.
+
 ## [3.2.4] — 2026-10-19
 
 Two security fixes, both from a pass over the tools that run as root
