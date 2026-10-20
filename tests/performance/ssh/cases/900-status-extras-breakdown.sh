@@ -36,8 +36,18 @@
 # Measured on ceres v3.2.2, ITERS=30, all four spreads 1-2%: v5
 # 1.144ms, internal 2.221ms, process 2.301ms, spawn alone 1.156ms. So
 # journal_in_status 1.078ms at 49% of status, agreeing with the spawn
-# timed directly to 7%, and cgroup_tree 0.080ms. The attribution 310
-# asserted holds.
+# timed directly to 7%. The attribution 310 asserted holds.
+#
+# Four runs now, and the journal half is the stable part: 1.082/49%,
+# 1.078/49%, 1.094/48%, 1.148/50%. That is the finding worth quoting.
+#
+# The fourth run is also why both deltas carry a floor rather than only
+# the cgroup one. It came back with 38% spread on the v5 reading, which
+# put the journal share at 1.148 against a floor of 0.453 — still a
+# measurement, at 3x its floor instead of the 37x a quiet run gives.
+# Same conclusion, much coarser, and a reader cannot tell those apart
+# from a bare millisecond figure. Printing the ratio is the whole
+# point: it says how much the number is worth, not just what it is.
 #
 # The cgroup share has read -0.005, +0.080 and -0.048 ms across three
 # runs on the same host. The sign never settled, so **the cgroup-tree
@@ -147,8 +157,27 @@ _cgroup_noise=$(awk -v a="$_proc_1" -v b="$_proc_2" -v c="$_int_1" -v d="$_int_2
 _cgroup_verdict=$(awk -v d="$_cgroup_share" -v n="$_cgroup_noise" 'BEGIN{
     a=d; if(a<0) a=-a; print (a>n) ? "measured" : "below-resolution" }')
 
-printf "StatusExtras_breakdown  journal_in_status=%s ms (%s%% of status)  spawn_alone=%s ms  disagreement=%s%%\n" \
+# The journal share gets the same treatment, because the rule applies to
+# whichever delta it is applied to and printing it for only one of them
+# invites the reader to trust the other unconditionally. It normally
+# clears its floor by a wide margin — 1.077 against 0.029 ms on a quiet
+# run — but a noisy one brought it to 1.148 against 0.453, still a
+# measurement and a much coarser one, and the line should say which.
+_journal_noise=$(awk -v a="$_int_1" -v b="$_int_2" -v c="$_v5_1" -v d="$_v5_2" 'BEGIN{
+    i=a-b; if(i<0) i=-i; v=c-d; if(v<0) v=-v; print (i>v) ? i : v }')
+# n==0 is reachable: two brackets can land on the identical median on a
+# quiet host, and awk division by zero is fatal in some awks and gives
+# "inf" in others. Either way it would take the case down, which is how
+# the scientific-notation crash got here in the first place.
+_journal_verdict=$(awk -v d="$_journal_share" -v n="$_journal_noise" 'BEGIN{
+    a=d; if(a<0) a=-a;
+    if (n<=0) { print (a>0) ? "measured-floor-0" : "below-resolution"; exit }
+    if (a<=n) { print "below-resolution"; exit }
+    printf "measured-%.0fx-floor", a/n }')
+
+printf "StatusExtras_breakdown  journal_in_status=%s ms (%s%% of status)  spawn_alone=%s ms  disagreement=%s%%  noise_floor=%s ms  verdict=%s\n" \
     "$(_ms "$_journal_share")" "$_share_pct" \
-    "$(_ms "$_spawn")" "$_agree_pct"
+    "$(_ms "$_spawn")" "$_agree_pct" \
+    "$(_ms "$_journal_noise")" "$_journal_verdict"
 printf "StatusExtras_cgroup_tree  %s ms  noise_floor=%s ms  verdict=%s\n" \
     "$(_ms "$_cgroup_share")" "$(_ms "$_cgroup_noise")" "$_cgroup_verdict"
