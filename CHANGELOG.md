@@ -24,6 +24,49 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.4.0] — 2026-10-21
+
+**No behaviour changed in this release.** It exists so that every
+binary slinit ships has SLSA provenance, which 3.3.0 does not: five of
+its build jobs failed, and because the provenance workflow builds from
+the tag, nothing added afterwards can repair that tag. Only a new one
+can, and that is what this is.
+
+The version number is a deliberate choice rather than a semantic
+requirement. By the project's own precedent this would be a patch —
+3.2.3 carried tests only and was numbered that way — and nothing here
+changes an interface. It is numbered as a minor to open a release line
+whose provenance is complete end to end, so "3.4.x" means every
+artifact is signed and 3.3.0 stays on the record as the release where
+five were not.
+
+### Fixed
+
+- **Five commands had no SLSA build config, so the 3.3.0 release could
+  not produce provenance for them**: `slinit-fstab-decode`,
+  `slinit-immortal-convert`, `slinit-killall5`,
+  `slinit-sysvinit-convert` and `slinit-inetd`. The release matrix
+  listed 46 binaries while `.slsa-goreleaser/` held 41 configs. Each
+  binary builds correctly under the builder's own environment — this
+  was missing plumbing, not a build problem.
+
+  This pair has now drifted twice, in opposite directions. The earlier
+  drift left binaries out of the matrix and four shipped **unsigned**,
+  which is the worse failure: an absent entry builds nothing and
+  reports nothing. This one failed loudly but unhelpfully — five jobs
+  exited non-zero and none of them mentioned a missing config.
+
+  So the invariant is now asserted in the test suite: every Go command
+  under `cmd/` has a matrix entry, every matrix entry has a config, and
+  neither side may hold something the other does not. It runs on every
+  push, which is where this belongs — the previous drift was found by a
+  failed release, and so was this one.
+
+  The configs themselves each claimed "slinit's 41 Go commands need 41
+  of these". That number was already wrong, and a reader had no reason
+  to doubt it. All of them now describe the two-sided invariant and
+  state that the count is not fixed.
+
 ## [3.3.0] — 2026-10-21
 
 A minor, and the version number is the point: **a service that signals
