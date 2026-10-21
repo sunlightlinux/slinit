@@ -97,6 +97,12 @@ func parentMain() error {
 		machineDir = fs.String("machine-dir", machine.DefaultDir, "registry directory to write into")
 		showHelp   = fs.Bool("h", false, "show help")
 	)
+	// --help as well as -h. Only "h" was registered, so --help reached
+	// Go's flag package as an undefined flag: it printed the usage and
+	// returned ErrHelp, which this command turned into exit 1. Every
+	// other slinit tool that takes a help flag accepts both spellings.
+	fs.BoolVar(showHelp, "help", false, "show help")
+
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `Usage: slinit-nspawn --name NAME --boot ROOTFS [flags] [-- INIT-ARGS...]
 

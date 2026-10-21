@@ -42,15 +42,26 @@ func main() {
 }
 
 func dispatch(applet string, argv []string) int {
-	switch applet {
-	case "-h", "--help", "help":
-		printUsage()
-		return exitOK
-	case "-V", "--version", "version":
-		fmt.Printf("slinit-svc-value %s\n", version)
-		return exitOK
+	// Help and version are asked for with an ARGUMENT, not by renaming
+	// the binary. These cases used to switch on `applet`, which is the
+	// program name, so neither could ever run: the only way to reach
+	// them was to install this binary under the name "-h". Both fell
+	// through to newStore() instead, and `slinit-svc-value --help`
+	// answered "service name required".
+	if len(argv) > 0 {
+		switch argv[0] {
+		case "-h", "--help", "help":
+			printUsage()
+			return exitOK
+		case "-V", "--version", "version":
+			fmt.Printf("slinit-svc-value %s\n", version)
+			return exitOK
+		}
 	}
 
+	// After the above, so asking for help works without a service
+	// context: newStore() needs RC_SVCNAME and fails first otherwise,
+	// which is what hid the dead cases.
 	s, err := newStore()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", applet, err)

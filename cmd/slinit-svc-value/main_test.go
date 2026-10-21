@@ -154,8 +154,13 @@ func TestDispatchNoServiceEnvFailsFast(t *testing.T) {
 }
 
 func TestPrintUsageMentionsAllApplets(t *testing.T) {
+	// "--help" as an ARGUMENT, with the applet being the program name,
+	// which is the only shape main can produce. This used to pass
+	// `dispatch("--help", nil)` — "--help" as the applet — and that is
+	// why the dead help path looked covered: no real invocation can
+	// reach it that way, since main always passes the program name.
 	out, rc := captureStdout(t, func() int {
-		return dispatch("--help", nil)
+		return dispatch("svc-value", []string{"--help"})
 	})
 	if rc != exitOK {
 		t.Errorf("rc=%d", rc)
