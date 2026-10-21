@@ -1,9 +1,12 @@
 package shutdown
 
 import (
+	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -580,29 +583,100 @@ func TestSoftRebootArgvNoSnapshot(t *testing.T) {
 	}
 }
 
-func TestSoftRebootArgvAppendsFlags(t *testing.T) {
-	// Snapshot present → both --restore-from-snapshot and --run-mode=keep
-	// must be appended. --run-mode=keep is critical: the default `mount`
-	// mode would stack a fresh tmpfs over /run, hiding the snapshot.
+// parseSoftRebootArgv runs argv through flag parsing the way cmd/slinit
+// does, and reports what the new generation would actually see.
+//
+// Asserting on this instead of on argv's layout is the point. The tests
+// these replaced compared against an exact slice with the flags
+// appended, which is precisely the arrangement that does not work: the
+// kernel hands init its command-line words as positional arguments, Go's
+// flag package stops at the first one, and both injected flags were
+// silently ignored on every real installation. The layout was pinned;
+// the requirement was not.
+func parseSoftRebootArgv(t *testing.T, argv []string) (snapPath, runMode string) {
+	t.Helper()
+	fs := flag.NewFlagSet("slinit", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&snapPath, "restore-from-snapshot", "", "")
+	fs.StringVar(&runMode, "run-mode", "mount", "")
+	// slinit has many more flags than the two under test; declaring the
+	// ones that appear in these argvs keeps the harness from failing on
+	// its own incompleteness instead of on the code.
+	fs.Bool("s", false, "system mode")
+	if err := fs.Parse(argv[1:]); err != nil {
+		t.Fatalf("parsing %v: %v", argv, err)
+	}
+	return snapPath, runMode
+}
+
+func TestSoftRebootArgvFlagsAreParseable(t *testing.T) {
 	orig := statFunc
 	statFunc = func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }
 	defer func() { statFunc = orig }()
 
-	args := []string{"/sbin/slinit", "-s"}
-	got := softRebootArgv(args, "/run/slinit/x.json")
-	want := []string{
-		"/sbin/slinit", "-s",
-		"--restore-from-snapshot=/run/slinit/x.json",
-		"--run-mode=keep",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("argv = %v, want %v", got, want)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"flags only", []string{"/sbin/slinit", "-s"}},
+		// The shape every real install has: the kernel passes its own
+		// cmdline words to init as positionals. Observed on hardware as
+		// `slinit slinit.debug quiet loglevel=3 fbcon=nodefer`.
+		{"kernel positionals", []string{
+			"/usr/bin/slinit", "slinit.debug", "quiet", "loglevel=3", "fbcon=nodefer",
+		}},
+		// A second soft reboot inherits the previous generation's argv.
+		{"second soft reboot", []string{
+			"/usr/bin/slinit", "quiet",
+			"--restore-from-snapshot=/run/slinit/old.json", "--run-mode=keep",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := softRebootArgv(tc.args, "/run/slinit/x.json")
+			snapPath, runMode := parseSoftRebootArgv(t, got)
+			if snapPath != "/run/slinit/x.json" {
+				t.Errorf("restore-from-snapshot = %q, want the snapshot path; argv = %v",
+					snapPath, got)
+			}
+			// run-mode=keep is what stops slinit re-staging /run and
+			// stacking a fresh tmpfs over the snapshot it just wrote.
+			if runMode != "keep" {
+				t.Errorf("run-mode = %q, want \"keep\"; argv = %v", runMode, got)
+			}
+		})
 	}
 }
 
-func TestSoftRebootArgvReplacesExistingFlags(t *testing.T) {
-	// Both flags already in argv → values are rewritten in place,
-	// not duplicated (which would confuse flag.Parse).
+func TestSoftRebootArgvKeepsKernelPositionals(t *testing.T) {
+	// slinit reads the kernel's words via flag.Args(), so injecting must
+	// not drop them.
+	orig := statFunc
+	statFunc = func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }
+	defer func() { statFunc = orig }()
+
+	args := []string{"/usr/bin/slinit", "slinit.debug", "quiet", "fbcon=nodefer"}
+	got := softRebootArgv(args, "/run/slinit/x.json")
+	for _, want := range []string{"slinit.debug", "quiet", "fbcon=nodefer"} {
+		found := false
+		for _, a := range got {
+			if a == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("kernel argument %q was dropped; argv = %v", want, got)
+		}
+	}
+	if got[0] != args[0] {
+		t.Errorf("argv[0] = %q, want %q", got[0], args[0])
+	}
+}
+
+func TestSoftRebootArgvDoesNotDuplicateFlags(t *testing.T) {
+	// A stale copy from the previous generation must be removed, not
+	// left in place: replacing in position would leave the flag exactly
+	// where flag.Parse cannot reach it.
 	orig := statFunc
 	statFunc = func(string) (os.FileInfo, error) { return fakeFileInfo{}, nil }
 	defer func() { statFunc = orig }()
@@ -614,14 +688,21 @@ func TestSoftRebootArgvReplacesExistingFlags(t *testing.T) {
 		"-s",
 	}
 	got := softRebootArgv(args, "/run/slinit/new.json")
-	want := []string{
-		"/sbin/slinit",
-		"--restore-from-snapshot=/run/slinit/new.json",
-		"--run-mode=keep",
-		"-s",
+	counts := map[string]int{}
+	for _, a := range got {
+		switch {
+		case strings.HasPrefix(a, "--restore-from-snapshot="):
+			counts["snap"]++
+		case strings.HasPrefix(a, "--run-mode="):
+			counts["mode"]++
+		}
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("argv = %v, want %v", got, want)
+	if counts["snap"] != 1 || counts["mode"] != 1 {
+		t.Errorf("flags duplicated: snap=%d mode=%d; argv = %v",
+			counts["snap"], counts["mode"], got)
+	}
+	if strings.Contains(strings.Join(got, " "), "/old.json") {
+		t.Errorf("stale snapshot path survived; argv = %v", got)
 	}
 }
 

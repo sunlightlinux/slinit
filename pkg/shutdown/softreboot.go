@@ -147,20 +147,48 @@ func softRebootArgv(args []string, path string) []string {
 // injectFlag rewrites or appends `<prefix><value>` in args. Used by
 // softRebootArgv to set both --restore-from-snapshot and --run-mode
 // without duplicating either when chained.
+// injectFlag puts prefix+value immediately after argv[0], dropping any
+// stale copy of the same flag from anywhere in the list.
+//
+// Position 1 is the whole point. This used to append, and appending is
+// broken on any real installation: the kernel hands init its own
+// command-line words as POSITIONAL arguments, so argv looks like
+//
+//	slinit slinit.debug quiet loglevel=3 fbcon=nodefer --restore-from-snapshot=… --run-mode=keep
+//
+// and Go's flag package stops parsing at the first non-flag argument.
+// Both injected flags landed in flag.Args() and were never seen.
+// Measured: with that argv, restore-from-snapshot parses as "" and
+// run-mode as the default "mount". So every soft reboot silently lost
+// the operator intent the snapshot exists to carry — global env, manual
+// activations, pins, triggers — and also ignored --run-mode=keep, which
+// made slinit re-stage /run and stack a fresh tmpfs per generation.
+// None of it logged, because the code that would log was never reached.
+//
+// It survived because the demo VM invokes slinit with no positional
+// arguments, so the only environment the mechanism was exercised in was
+// the only one where the bug could not appear.
+//
+// Not "before the first positional": an argument that does not start
+// with '-' may be the VALUE of a preceding flag (`-log-level info`), and
+// inserting ahead of it would hand that flag the wrong value. Index 1 is
+// always ahead of every positional and never splits a flag from its
+// value.
+//
+// A stale copy is dropped rather than replaced in place, because a
+// second soft reboot inherits the previous generation's argv: replacing
+// in position would leave the flag exactly where it cannot be parsed.
 func injectFlag(args []string, prefix, value string) []string {
-	flag := prefix + value
+	if len(args) == 0 {
+		return []string{prefix + value}
+	}
 	out := make([]string, 0, len(args)+1)
-	replaced := false
-	for _, a := range args {
+	out = append(out, args[0], prefix+value)
+	for _, a := range args[1:] {
 		if strings.HasPrefix(a, prefix) {
-			out = append(out, flag)
-			replaced = true
 			continue
 		}
 		out = append(out, a)
-	}
-	if !replaced {
-		out = append(out, flag)
 	}
 	return out
 }
