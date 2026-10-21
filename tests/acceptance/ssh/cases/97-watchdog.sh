@@ -17,15 +17,17 @@ cleanup() {
 trap cleanup EXIT INT TERM
 cleanup
 
-# printf 'r\n' >&3 signals READY -- the newline is the signal, as
-# s6 requires and as slinit enforces since 3.3.0. After that we
-# intentionally sit idle
+# echo r >&3 signals READY -- the NEWLINE is the signal, as s6
+# requires and as slinit enforces since 3.3.0, and `echo` supplies one.
+# NOT printf 'r\n': slinit's config parser eats a single backslash, so
+# that reaches the shell as printf 'rn' and never signals at all.
+# After that we intentionally sit idle
 # — watchdog-timeout=3s kicks in and slinit kills the process.
 # restart=on-failure brings it back → the counter file gets a new
 # line each time.
 svc_deploy "$SVC" <<EOF
 type = process
-command = /bin/sh -c "date +%s >> $STARTS; printf 'r\n' >&3; while true; do sleep 60; done"
+command = /bin/sh -c "date +%s >> $STARTS; echo r >&3; while true; do sleep 60; done"
 ready-notification = pipefd:3
 watchdog-timeout = 3
 restart = on-failure

@@ -22,10 +22,16 @@ trap 'svc_remove "$SVC"' EXIT INT TERM
 #     (parser.go:1000 expandEnvVarsForCommand). The doubled $$ collapses
 #     to a single literal $ in the service description; only then does
 #     the child shell see $NOTIFY_FD and expand it from the runtime env.
+#  3. `echo`, not printf "READY=1\n". The same parser eats a single
+#     backslash, so that form reaches the shell as printf "READY=1n" --
+#     measured -- and since 3.3.0 readiness IS the newline, so the
+#     service would sit in STARTING until its start timeout. This case
+#     read as correct for exactly that reason: the \n was right there in
+#     the source and never survived to the shell.
 svc_deploy "$SVC" <<EOF
 type = process
 ready-notification = pipevar:NOTIFY_FD
-command = /bin/sh -c 'sleep 2; printf "READY=1\n" > /dev/fd/\$\$NOTIFY_FD; while :; do sleep 60; done'
+command = /bin/sh -c 'sleep 2; echo READY=1 > /dev/fd/\$\$NOTIFY_FD; while :; do sleep 60; done'
 restart = false
 EOF
 
