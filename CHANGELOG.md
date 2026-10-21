@@ -24,6 +24,45 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.4.1] — 2026-10-21
+
+Test fixtures only. **No shipped code changed**, and nothing an operator
+configures behaves differently from 3.4.0.
+
+It matters anyway, because the fixtures were wrong in a way that says
+something about writing service files. 3.3.0 made readiness the newline;
+three test services were signalling in forms that never produce one, and
+two of them looked correct on the page.
+
+### Fixed
+
+- **Three readiness fixtures never sent a newline**, so the functional
+  watchdog case failed after 3.3.0 with the service held in STARTING:
+  `tests/functional/cases/67-watchdog.d/watchdog-svc`,
+  `tests/acceptance/ssh/cases/30-ready-notification.sh` and
+  `tests/acceptance/ssh/cases/97-watchdog.sh`. All three now use `echo`,
+  which supplies the newline itself and was already the idiom in the
+  fixtures that were right.
+
+  **The reason two of them read as correct is worth knowing if you write
+  service files**: `command =` is parsed by slinit before the shell ever
+  sees it, and the parser consumes a single backslash. `printf 'r\n'`
+  in a service file reaches the shell as `printf 'rn'` and emits the
+  letter *n*. Measured, not inferred — the parser turns `printf 'r\n'`
+  into `printf 'rn'` and `printf 'r\\n'` into `printf 'r\n'`. This is
+  the same class of trap as `$VAR` being pre-expanded at parse time,
+  which is why a runtime variable has to be written `$$VAR`.
+
+  So in a service command, write a newline with `echo`. Documented
+  alongside the `ready-notification` directive.
+
+- **A guard, in pkg/config, where the trap is.** It walks every file
+  regardless of name and rejects both a readiness write that produces no
+  newline and a single-backslash `\n` in a command. The name filter is
+  what allowed this: the original sweep used `--include=*.sh` and
+  `--include=*.go`, and a service definition in a `.d/` directory has no
+  extension, so one of the three files was never searched.
+
 ## [3.4.0] — 2026-10-21
 
 **No behaviour changed in this release.** It exists so that every

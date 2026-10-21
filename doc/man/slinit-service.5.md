@@ -1162,6 +1162,13 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
     * `pipevar:VARNAME` — slinit allocates an fd, sets *VARNAME* in
       the service environment, and the child writes to that fd.
 
+    Write the newline with `echo`, not `printf '...\n'`. A **command**
+    is parsed before the shell sees it and a single backslash is
+    consumed, so `printf 'r\n'` reaches the shell as `printf 'rn'` and
+    emits the letter *n* — the service then never signals ready. Use
+    `\\n` if you must have **printf**, for the same reason a runtime
+    variable is written `$$VAR`.
+
 **watchdog-timeout**=*duration*
 :   Per-service software watchdog. Reuses the **ready-notification**
     pipe: after the initial readiness byte the pipe stays open and
