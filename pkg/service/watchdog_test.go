@@ -156,7 +156,10 @@ func TestWatchdogTriggersRestartOnFailure(t *testing.T) {
 
 	svc := NewProcessService(set, "wd-restart")
 	svc.SetCommand([]string{"/bin/sh", "-c",
-		"date +%s%N >> " + tmp.Name() + "; printf r >&3; sleep 60"})
+		// 'r\n', not a bare 'r': readiness is the newline since 3.3.0,
+		// matching s6. The byte was incidental to this test, which is
+		// about the watchdog arming after readiness, not the protocol.
+		"date +%s%N >> " + tmp.Name() + "; printf 'r\n' >&3; sleep 60"})
 	svc.SetReadyNotification(3, "")
 	svc.SetWatchdogTimeout(300 * time.Millisecond)
 	svc.SetStartTimeout(2 * time.Second)

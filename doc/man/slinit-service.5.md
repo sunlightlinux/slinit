@@ -1150,8 +1150,15 @@ see **slinit**(8) `\--catch-all-log` and `--no-catch-all`.
 **ready-notification**=*spec*
 :   How the service signals readiness. Supported forms:
 
-    * `pipefd:N` — write a single byte to fd *N*; slinit closes the
-      read end on receipt unless **watchdog-timeout** is also set.
+    * `pipefd:N` — write a message ending in a newline to fd *N*;
+      slinit closes the read end on receipt unless **watchdog-timeout**
+      is also set. The newline is the signal: bytes may precede it, and
+      may be split across several writes, but the service is not
+      considered ready until one arrives. This is the s6 convention —
+      s6 itself reads until it sees a newline and warns if the pipe
+      closes first. Before 3.3.0 slinit treated *any* byte as readiness,
+      so a progress line or a stray diagnostic written to that fd marked
+      the service started.
     * `pipevar:VARNAME` — slinit allocates an fd, sets *VARNAME* in
       the service environment, and the child writes to that fd.
 

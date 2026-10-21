@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -2561,10 +2562,59 @@ func (s *ProcessService) startProcess() error {
 // handleReadyNotification reset those fields under queueMu while this
 // goroutine runs without it. A closed pipe makes Read return, which
 // reports false.
+// watchReadyPipe waits for the s6-style readiness signal: bytes written
+// to the notification pipe up to and including a newline.
+//
+// The newline is the signal, not merely the first byte, which is what
+// s6 itself requires — s6-linux-init's own reader loops
+// `read()` until `memchr(buf, '\n', r)` succeeds and warns when the
+// pipe closes first. dinit took any byte as readiness until it adopted
+// the same rule in 5d5ea44; slinit had the same gap, and it mattered:
+// anything a service wrote to that fd marked it started, so a progress
+// line or a stray diagnostic was indistinguishable from "ready".
+//
+// The loop is load-bearing, not polish. A service may split its signal
+// across writes — "rea" then "dy\n" — and a single Read would see the
+// first chunk, find no newline and wrongly give up. Measured: with one
+// read the split form fails, with the loop it succeeds.
+//
+// Returns false on EOF with no newline seen, which is the service
+// exiting or closing the fd without ever signalling, and on a read
+// error. Both are logged, because the old code discarded the error and
+// a failed pipe was indistinguishable from a service that simply never
+// reported ready.
 func (s *ProcessService) watchReadyPipe(pipe *os.File, ch chan bool) {
 	buf := make([]byte, 128)
-	n, _ := pipe.Read(buf)
-	ch <- n > 0
+	for {
+		n, err := pipe.Read(buf)
+		if bytes.IndexByte(buf[:n], '\n') >= 0 {
+			ch <- true
+			return
+		}
+		if err != nil {
+			// A deadline pushed into the past is how stopping a service
+			// unblocks this goroutine on purpose, so it is not a fault
+			// and must not be reported as one.
+			if !errors.Is(err, os.ErrDeadlineExceeded) {
+				// Info, not Error: a process that exits without
+				// signalling is already reported as a start failure by
+				// the exit path, and a second Error line for the same
+				// event is noise. This adds the detail that line lacks.
+				if errors.Is(err, io.EOF) {
+					s.services.logger.Info(
+						"Service '%s': readiness pipe closed with no newline — "+
+							"the service never signalled ready",
+						s.serviceName)
+				} else {
+					s.services.logger.Error(
+						"Service '%s': readiness pipe not readable: %v",
+						s.serviceName, err)
+				}
+			}
+			ch <- false
+			return
+		}
+	}
 }
 
 // monitorProcess runs in a goroutine, waiting for the process to exit,
