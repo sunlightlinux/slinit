@@ -24,6 +24,56 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.3.0] — 2026-10-21
+
+A minor, and the version number is the point: **a service that signals
+readiness through `ready-notification = pipefd:N` or `pipevar:VAR` must
+now write a newline.** Bytes may precede it and may be split across
+writes, but until a newline arrives the service is not ready. A service
+that writes to that descriptor and never sends one, and keeps running,
+will now sit in STARTING until its start timeout.
+
+Unlike 3.2.2, 3.2.4 and 3.2.5, this is not a security fix, so there is
+no clause permitting a stable-surface break in a patch. The man page
+documented "write a single byte to fd *N*", a setup could be relying on
+it, and STABILITY.md's rule for that case is a minor release.
+
+### Changed
+
+- **s6-style readiness now requires a newline, and the pipe is read
+  until one arrives.** Previously any byte marked the service started,
+  so a progress line or a stray diagnostic written to the notification
+  descriptor was indistinguishable from a ready signal.
+
+  This follows s6 itself rather than an interpretation of it: s6's own
+  reader loops `read(2)` until `memchr(buf, '\n', r)` succeeds and warns
+  when the pipe closes first. dinit accepted any byte until it adopted
+  the same rule upstream; slinit had the identical gap.
+
+  Reading in a loop is part of the fix and not a refinement of it. A
+  service may write its signal in pieces — `rea` then `dy\n` — and a
+  single read would see the first chunk, find no newline, and have to
+  decide without the rest. Verified across four writer shapes: a
+  newline-terminated message works, a split message needs the loop, and
+  a bare byte or an unterminated progress line from a live service now
+  waits instead of reporting ready.
+
+  **Compat:** send a newline. `echo` and `printf '...\n'` already do;
+  a bare `printf r` does not. Keepalive writes for
+  **watchdog-timeout** are unaffected — any read still counts, as
+  before — and only the readiness signal itself changed.
+
+### Fixed
+
+- **A failed readiness pipe was silent.** The read error was discarded,
+  so a pipe that could not be read looked exactly like a service that
+  never reported ready. A genuine read error is now logged, and a pipe
+  closed with no newline is reported at Info — the process exiting is
+  already surfaced as a start failure by the exit path, and a second
+  error line for one event is noise rather than information. The
+  deadline slinit uses deliberately to unblock that read when stopping
+  a service is excluded, or stopping anything would log a fault.
+
 ## [3.2.5] — 2026-10-20
 
 Two more security fixes from the same pass over the tools and code
