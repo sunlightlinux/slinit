@@ -24,6 +24,60 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.4.2] — 2026-10-21
+
+A correctness fix in the dependency engine, two command-line fixes, and
+the test capability that should have caught the first one.
+
+Nothing documented changes behaviour here, so this is a patch: the stop
+ordering below was always meant to work the way it now does, and the
+two tools were meant to answer `--help`.
+
+### Fixed
+
+- **A dependency could stop while a hard dependent was still
+  stopping.** The check for "have my dependents stopped" read the
+  dependency link's internal holding flag, which is released when a
+  dependent *begins* stopping — so it answered "has it been asked to
+  stop" rather than "has it stopped", and a service could go down
+  underneath something that still needed it. Reachable with a soft
+  dependent alongside a hard one, which is an ordinary shape:
+  *s2* requires *s1*, *s3* waits for both, and stopping *s3* took *s1*
+  down while *s2* was mid-stop.
+
+  dinit carried the identical defect and fixed it upstream; its author
+  noted that no test there failed on it, and none of slinit's did
+  either. Confirmed here by driving the transitions by hand and watching
+  *s1* be brought down a step early.
+
+- **slinit-svc-value**(8) **could not answer** `--help` **or**
+  `--version`. The dispatcher matched them against the program name
+  rather than the argument, so the only way to reach either was to
+  install the binary under the name `-h`; every real invocation fell
+  through and reported a missing service context instead. Both now work
+  without one, since asking a tool for help should not require it.
+
+- **slinit-nspawn**(8) **accepted only** `-h`. The long spelling reached
+  Go's flag parser as an unknown option, which printed the usage and
+  then failed, so `--help` produced correct output with a non-zero exit.
+  39 of the other tools already took both.
+
+### Added
+
+- **A test harness that can observe a service mid-transition**, ported
+  from dinit's, together with eleven of its dependency and ordering
+  cases. slinit's internal test services complete their start and stop
+  inside the call that requests it, so no test could see a service while
+  it was STARTING or STOPPING — which is the structural reason the stop
+  ordering above, and the readiness change in 3.3.0, were both found
+  upstream rather than here.
+
+  Worth stating plainly: the eleven ported cases do **not** catch the
+  ordering bug. Reinstating it fails exactly one test, the one written
+  for it. dinit's history is the same — it held those eleven for years
+  and had to add a twelfth. The value here is the capability and the
+  regression cover, not detection.
+
 ## [3.4.1] — 2026-10-21
 
 Test fixtures only. **No shipped code changed**, and nothing an operator
