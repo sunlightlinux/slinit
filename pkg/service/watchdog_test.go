@@ -156,10 +156,15 @@ func TestWatchdogTriggersRestartOnFailure(t *testing.T) {
 
 	svc := NewProcessService(set, "wd-restart")
 	svc.SetCommand([]string{"/bin/sh", "-c",
-		// 'r\n', not a bare 'r': readiness is the newline since 3.3.0,
-		// matching s6. The byte was incidental to this test, which is
-		// about the watchdog arming after readiness, not the protocol.
-		"date +%s%N >> " + tmp.Name() + "; printf 'r\n' >&3; sleep 60"})
+		// echo, not a bare `printf r`: readiness is the newline since
+		// 3.3.0, matching s6, and echo supplies one. The byte was
+		// incidental to this test, which is about the watchdog arming
+		// after readiness rather than the protocol. echo also matches
+		// what slinit-service(5) now tells operators to write, and it
+		// avoids the question of whose escape a "\n" belongs to — in Go
+		// source that is a real newline inside the shell's quotes, which
+		// happens to work and reads like something else entirely.
+		"date +%s%N >> " + tmp.Name() + "; echo r >&3; sleep 60"})
 	svc.SetReadyNotification(3, "")
 	svc.SetWatchdogTimeout(300 * time.Millisecond)
 	svc.SetStartTimeout(2 * time.Second)

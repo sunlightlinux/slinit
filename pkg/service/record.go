@@ -3522,7 +3522,18 @@ func (sr *ServiceRecord) dependentStopped() {
 
 func (sr *ServiceRecord) stopCheckDependents() bool {
 	for _, dept := range sr.dependents {
-		if dept.IsHard() && dept.HoldingAcq && !dept.WaitingOn {
+		// The dependent's actual state, not HoldingAcq. HoldingAcq is
+		// released when the dependent *begins* stopping, so reading it
+		// here answered "has it been asked to stop", not "has it
+		// stopped" — and we would go down underneath a hard dependent
+		// still in STOPPING. dinit carried the same bug and fixed it in
+		// 5409175 (its issue #591); neither project's tests caught it.
+		//
+		// WaitingOn still means restarting: the flag is cleared when we
+		// stop and is only set again if the dependent tries to come back
+		// up, so such a dependent counts as stopped for this decision.
+		if dept.IsHard() && !dept.WaitingOn &&
+			dept.From.Record().state.Load() != StateStopped {
 			return false
 		}
 	}
