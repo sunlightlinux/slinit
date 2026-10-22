@@ -24,6 +24,56 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.4.3] — 2026-10-22
+
+**Every soft reboot on a real installation silently lost all operator
+intent.** If you use `slinitctl shutdown softreboot` on an installed
+system, this release is the one that makes it carry state again.
+
+### Fixed
+
+- **Soft reboot discarded the snapshot it had just written.** The two
+  flags slinit passes to its own next generation —
+  `--restore-from-snapshot` and `--run-mode=keep` — were appended to the
+  end of the argument list. The kernel hands an init its command-line
+  words as *positional* arguments, and argument parsing stops at the
+  first of those, so neither flag was ever read.
+
+  Four consequences, all from the one cause, and all silent:
+
+  * **Operator intent was lost**: global environment variables, manual
+    activations, pins and triggers. Services still came back only
+    because they are in the boot graph; anything started by hand was
+    gone.
+  * **`/run` was re-staged on every generation**, because
+    `--run-mode=keep` was equally unread. A fresh tmpfs stacked over the
+    previous one each time — observed as six layers on `/run` and
+    `/proc` on a running machine, which is also a leak.
+  * **`slinitctl boot-time` reported the machine's uptime as the kernel
+    figure**, growing with each generation: 696s, then 743s, where the
+    real kernel time was 590ms. The `Soft reboot #N` line that exists to
+    explain exactly that never appeared either, since the count comes
+    from the same snapshot.
+  * **Nothing was logged**, because the code that would have said
+    "No snapshot at …" was never reached.
+
+  The snapshot was never at fault. The file written on the affected
+  machine parses correctly, with the global environment and the soft
+  reboot count intact, and a watcher caught it on disk mid-shutdown.
+
+  Flags are now inserted immediately after the program name, ahead of
+  any positional argument, and a stale copy inherited from the previous
+  generation is removed rather than rewritten where it sits.
+
+  **This was invisible in testing** because the development VM starts
+  slinit with no positional arguments — the only environment the
+  mechanism was exercised in was the only one where the defect could not
+  appear. Two tests asserted the broken arrangement, one of them named
+  for it. They now parse the argument list the way slinit itself does
+  and check what the next generation actually receives, across three
+  argument shapes including an installed system's and a second
+  consecutive soft reboot.
+
 ## [3.4.2] — 2026-10-21
 
 A correctness fix in the dependency engine, two command-line fixes, and
