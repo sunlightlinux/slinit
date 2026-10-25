@@ -50,7 +50,7 @@ Three binaries matter most:
 | `slinitctl` | The control CLI (around 90 verbs, aliases included) |
 | `slinit-runner` | Post-fork exec wrapper; **required** by any service using LSM, seccomp or `restrict-*` (and, with `libslinit-mlock.so` from `lib/slinit-mlock`, by `mlockall`) |
 
-The other 42 are linters, converters from other init systems, drop-in
+The other 44 are linters, converters from other init systems, drop-in
 clones of OpenRC and systemd utilities, the journal pipeline and the
 container helpers — see [doc/tools.md](doc/tools.md). Every binary has a
 man page under [doc/man](doc/man).
@@ -115,8 +115,10 @@ summarises them by topic.
 | **Control** | binary protocol over a Unix socket, goroutine per connection, push notifications for state and environment changes, runtime env and dependency edits, Prometheus metrics endpoint |
 | **PID 1 duties** | console setup, Ctrl+Alt+Del, child subreaper and orphan reaping, four degrees of shutdown haste, soft-reboot, kexec, `switch-root`, hardware watchdog, UPS power events, boot-failure recovery with an interactive rescue prompt |
 
-Roughly 250 systemd directives, all 12 upstart stanzas, and the runit,
-s6, OpenRC, finit, sysvinit, launchd and immortal feature sets are covered;
+Roughly 250 systemd directives, every upstart stanza that fits a
+dependency graph (its event-driven `start on` / `stop on` model does
+not), and the runit, s6, OpenRC, finit, sysvinit, launchd and immortal
+feature sets are covered;
 [doc/features.md](doc/features.md) is the generated list of every name
 the parser and the control protocol accept — grouped by upstream where
 the provenance has been traced, which is about half of them so far.
@@ -132,6 +134,8 @@ the provenance has been traced, which is about half of them so far.
 | **OpenRC** | `rc-service` / `rc-update` / `rc-status` shims, `/etc/rc.conf` + `/etc/conf.d/<svc>` sourcing, named-runlevel dispatch, init.d/LSB auto-detection, drop-in clones of eight utilities |
 | **upstart** | `manual`, `normal-exit`, `reload-signal`, `umask`, `author`/`version`/`usage`, AppArmor stanzas, `debug`, `script … end script`, `start-on-path-*`, `.override` drop-ins |
 | **finit** | `switch-root`, watchdog-driven reboot, `tty-path = @console`, `slinit.cond=` boot modes, `/etc/rc.local` runparts, `/etc/network/interfaces`, `slinit-getty`, `slinit-watchdogd` |
+| **launchd** | `start-on-mount` (watches `/proc/self/mountinfo`, since inotify cannot see a mount), `socket-accept` (one instance per connection via `slinit-inetd`), `socket-multicast-group`, `standard-input-file`, `slinitctl rusage` |
+| **immortal** | a supervised `output-logger` (slinit holds the pipe, so a dying logger cannot SIGPIPE its service), `logfile` and `output-logger` together, `stderr-logfile`, `hook-timeout`, `start-delay`, `follow-pid`, `slinit-immortal-convert` |
 | **sysvinit** | `SIGPWR` power events, `slinit-killall5`, `slinit-fstab-decode`, `/etc/inittab` conversion |
 | **systemd** | The service-manager subset — start predicates, managed service directories, the sandbox/seccomp/protect clusters, credentials, timers, `journalctl` parity, `logind` |
 
@@ -312,7 +316,7 @@ it escalates the shutdown instead.
 ## Testing
 
 ```bash
-go test ./...                             # ~2640 unit tests and benchmarks
+go test ./...                             # ~2670 unit tests and benchmarks
 ./tests/functional/run-tests.sh           # 242 cases, each in its own QEMU VM
 ./tests/functional/selftest.sh            # checks the harness can still fail a case
 ./tests/container/run.sh                  # 23 cases with slinit as a container's PID 1
@@ -328,7 +332,7 @@ ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/performance/ssh/run.sh          # 93 cases; see tests/performance/README.md
 ```
 
-42 fuzz targets in all: 27 under `tests/fuzz`, the rest beside the code
+43 fuzz targets in all: 27 under `tests/fuzz`, the rest beside the code
 they exercise, so `./tests/fuzz` alone does not reach them —
 `grep -rl '^func Fuzz' --include='*_test.go' .` finds every one. CI runs
 the unit, functional, fuzz and performance suites plus a nightly

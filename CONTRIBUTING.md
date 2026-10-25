@@ -43,7 +43,7 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (~2640 tests across 88 Go dirs, 419 _test.go files)
+- **Unit tests**: `go test ./...` (~2670 tests across 88 Go dirs, 433 _test.go files)
 - **Functional tests**: `./tests/functional/run-tests.sh` (242 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (218 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (93 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
