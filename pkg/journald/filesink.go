@@ -68,6 +68,9 @@ type FileSink struct {
 	// would deadlock — the hook fires with s.mu held).
 	rotatedHook func(rotatedPath, currentPath string)
 
+	// now is the clock the age trigger reads; time.Now outside tests.
+	now func() time.Time
+
 	mu       sync.Mutex
 	f        *os.File
 	bw       *bufio.Writer
@@ -142,6 +145,7 @@ func NewFileSinkWithOptions(dir string, opts FileSinkOptions) (*FileSink, error)
 		maxSize:     opts.MaxSize,
 		maxAge:      opts.MaxAge,
 		rotatedHook: opts.RotatedHook,
+		now:         time.Now,
 	}
 	if err := s.openCurrent(); err != nil {
 		return nil, err
@@ -227,7 +231,7 @@ func (s *FileSink) shouldRotateLocked() bool {
 	if s.maxSize > 0 && s.totalWritten >= s.maxSize {
 		return true
 	}
-	if s.maxAge > 0 && !s.openedAt.IsZero() && time.Since(s.openedAt) >= s.maxAge {
+	if s.maxAge > 0 && !s.openedAt.IsZero() && s.now().Sub(s.openedAt) >= s.maxAge {
 		return true
 	}
 	return false
@@ -366,7 +370,7 @@ func (s *FileSink) openCurrent() error {
 	s.curPath = path
 	s.idxF = idxF
 	s.totalWritten = st.Size()
-	s.openedAt = time.Now()
+	s.openedAt = s.now()
 	s.unflushed = 0
 	s.pendingIdx = s.pendingIdx[:0]
 	return nil

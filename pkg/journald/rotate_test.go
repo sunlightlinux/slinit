@@ -66,6 +66,12 @@ func TestRotateOnAge(t *testing.T) {
 	}
 	defer fs.Close()
 
+	// The age is read from a controlled clock, not the wall. With the
+	// wall clock the first write's fsync alone could exceed MaxAge on
+	// a real disk, rotating early: 12 failures in 300 under sync load.
+	clock := fs.openedAt
+	fs.now = func() time.Time { return clock }
+
 	// First event lands in current — no rotation yet.
 	if err := fs.Handle(&journal.Event{Ts: 1_000_000_000, Msg: "first"}); err != nil {
 		t.Fatal(err)
@@ -73,8 +79,8 @@ func TestRotateOnAge(t *testing.T) {
 	if fs.Rotations() != 0 {
 		t.Fatalf("premature rotation: %d", fs.Rotations())
 	}
-	// Wait past the age threshold, then next event triggers rotate.
-	time.Sleep(20 * time.Millisecond)
+	// Move past the age threshold, then next event triggers rotate.
+	clock = clock.Add(20 * time.Millisecond)
 	if err := fs.Handle(&journal.Event{Ts: 2_000_000_000, Msg: "second"}); err != nil {
 		t.Fatal(err)
 	}
