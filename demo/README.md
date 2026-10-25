@@ -362,7 +362,7 @@ hostnamectl chassis vm                   # persist to /etc/machine-info
 hostnamectl deployment production        # tag deployment environment
 hostnamectl location 'Bucharest, RO'     # free-form location string
 
-# --- slinit-journalctl: systemd journalctl(1) parity (65/65) ---
+# --- slinit-journalctl: systemd v262 journalctl(1) options (28/28 short, 70/72 long) ---
 # See the journal-demo service block above for the full flag menu.
 journalctl -n 20                         # last 20 events
 journalctl -f                            # follow mode

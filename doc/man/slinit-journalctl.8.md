@@ -16,8 +16,12 @@ slinit-journalctl - query the slinit journal
 It queries slinit's in-process event bus over the control socket for
 live and recent events, and can also read persisted journals directly
 from disk (both the Phase B binary format and the Phase C JSONL fall-
-back). The tool ships full 65-of-65 systemd short-alias parity — a
-diff of the systemd flag list against slinit's yields the empty set.
+back). Measured against systemd v262's journalctl, it accepts all 28 of its
+short options and 70 of its 72 long ones. The two missing are not
+query options: **--new-id128**, which systemd itself leaves
+undocumented, and **--introspect-cli**, which describes v262's new
+option framework. slinit adds options of its own on top, such as
+**--socket-path** and **--fss-key**.
 
 Three query paths, chosen automatically or forced by flags:
 
