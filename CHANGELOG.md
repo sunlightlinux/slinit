@@ -24,6 +24,38 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.4.5] — 2026-10-25
+
+**Nothing you run behaves differently.** One commit, and it fixes a
+test: CI failed on it, and a release whose own suite fails
+intermittently is not one whose suite can be trusted to catch the next
+real regression.
+
+### Fixed
+
+- **`TestRotateOnAge` failed intermittently, and only where fsync costs
+  something.** It set a 10 ms maximum file age and expected the first
+  event not to rotate. But a journal file's age runs from when it was
+  opened, and with `FsyncEvery: 1` that first write includes an fsync.
+  Whenever opening, writing and syncing together took longer than 10
+  ms, the file really was older than its limit and rotating it was
+  correct — the test had assumed that cannot happen. It failed in CI
+  under `-race` with "premature rotation: 1".
+
+  It never failed on the development host because `/tmp` there is
+  tmpfs, where fsync is free; 300 runs under 16 cores of CPU load did
+  not produce it either. With the test's directory on a real disk and a
+  background writer doing synchronous writes it failed 12 times in 300,
+  with CI's exact message.
+
+  The journal sink now reads file age through a clock that defaults to
+  the wall clock, and the test drives that clock by hand, so nothing it
+  asserts depends on how fast a disk is. A bigger margin was the
+  alternative and was rejected: it would have made the failure rarer,
+  not gone. Verified at 0 in 300 under the load that produced 12, and
+  the test still fails both ways it should — when age-based rotation is
+  disabled, and when it fires on the first write.
+
 ## [3.4.4] — 2026-10-25
 
 **No product code changed** — twelve files, all documentation except one
