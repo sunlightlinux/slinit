@@ -16,8 +16,8 @@ slinit - supervise processes and manage services (Go init system)
 the system **init** process (PID 1) on Linux. It implements the dinit base
 model in Go, with additional features layered in from **runit**,
 **s6-linux-init**, **OpenRC**, **upstart**, **finit**, and **systemd**
-(relevant service-manager subset — including a full **journalctl** at
-65/65 flag parity, a **slinit-journald** binary log format with FSS
+(relevant service-manager subset — including a **journalctl** at
+65/65 short-alias parity, a **slinit-journald** binary log format with FSS
 sealing, and **slinit-logind**(8) for session and seat management;
 systemd's unit object model on D-Bus and the ecosystem daemons
 networkd/resolved/homed remain intentionally out of scope). The

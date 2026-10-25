@@ -102,13 +102,13 @@ For multi-step tasks, state a brief plan:
 **Verification commands in slinit:**
 - `go build ./...` — full build, catches typos fast.
 - `go vet ./...` — catches misuse before tests.
-- `go test ./...` — ~2400 unit tests across the Go tree (34 pkg/ + tests + tools).
+- `go test ./...` — ~2670 unit tests across the Go tree (36 pkg/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
-- `./tests/functional/run-tests.sh` — 230 QEMU-based integration tests
+- `./tests/functional/run-tests.sh` — 242 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
-- `./tests/acceptance/ssh/run.sh` — 219 SSH-driven cases against a live VM.
-- `./tests/performance/ssh/run.sh` — 92 SSH-driven perf cases (comprehensive
+- `./tests/acceptance/ssh/run.sh` — 218 SSH-driven cases against a live VM.
+- `./tests/performance/ssh/run.sh` — 93 SSH-driven perf cases (comprehensive
   CLI + IPC + journal + lifecycle-scaling coverage). Env-var contract
   identical to the acceptance suite.
 - `./tests/container/run.sh` — 23 cases running slinit as real PID 1 under
@@ -118,7 +118,7 @@ For multi-step tasks, state a brief plan:
 - `./tests/k8s/run.sh` — 10 cases running the same image as a pod on a local
   `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
-  single target. 42 repo-wide: 27 in `tests/fuzz/`, 15 beside the code
+  single target. 43 repo-wide: 27 in `tests/fuzz/`, 16 beside the code
   they exercise (converters, sysusers/tmpfiles/timedatectl/hostnamectl
   parsers, `pkg/service` state machine), so `./tests/fuzz` alone is not
   all of them.

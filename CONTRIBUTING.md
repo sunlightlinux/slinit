@@ -46,8 +46,8 @@ go test ./...
 - **Unit tests**: `go test ./...` (~2640 tests across 88 Go dirs, 419 _test.go files)
 - **Functional tests**: `./tests/functional/run-tests.sh` (242 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (218 SSH-driven cases against a live VM)
-- **Performance harnesses**: `./tests/performance/ssh/run.sh` (92 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
-- **Fuzz targets**: 42 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 15 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the four converters, the sysusers/tmpfiles/timedatectl/hostnamectl/killall5 parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
+- **Performance harnesses**: `./tests/performance/ssh/run.sh` (93 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
+- **Fuzz targets**: 43 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 16 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the four converters, the sysusers/tmpfiles/timedatectl/hostnamectl/killall5 parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
 - **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker or `CONTAINER_RUNTIME=podman`) + `./tests/container/soak.sh` (spawn+shutdown loop; `SOAK_BUDGET_SEC` bounds it by wall time)
 - **Kubernetes**: `./tests/k8s/run.sh` (10 cases against a local `kind` cluster)
 - Requires `qemu-system-x86_64` for functional tests, Docker for the container suite, `kind` + `kubectl` for the Kubernetes one
@@ -82,7 +82,7 @@ go test ./...
 - `completions/` - Shell completions (bash, zsh, fish)
 - `tests/functional/` - QEMU integration tests (242 cases)
 - `tests/acceptance/ssh/` - SSH-driven live-VM cases (218)
-- `tests/performance/` - performance harnesses (92 SSH + 4 QEMU boot + runtime microbenchmarks)
+- `tests/performance/` - performance harnesses (93 SSH + 5 QEMU harnesses + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (27)
 - `tests/container/` - slinit as PID 1 under Docker or Podman (23 cases + soak loop)
 - `tests/k8s/` - the same image as a pod on a `kind` cluster (10 cases)

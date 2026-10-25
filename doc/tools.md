@@ -33,7 +33,7 @@ is for, followed by the invocations most worth knowing.
 
 | Tool | Purpose | Manual |
 |---|---|---|
-| [`slinit-journalctl`](#slinit-journalctl) | Query the journal; `journalctl`-compatible (65/65 flags) | [slinit-journalctl(8)](man/slinit-journalctl.8.md) |
+| [`slinit-journalctl`](#slinit-journalctl) | Query the journal; `journalctl`-compatible (65/65 short aliases) | [slinit-journalctl(8)](man/slinit-journalctl.8.md) |
 | [`slinit-journald`](#slinit-journald) | Persistent journal daemon | [slinit-journald(8)](man/slinit-journald.8.md) |
 | [`slinit-journal-migrate`](#slinit-journal-migrate) | Convert JSONL journal history to the binary format | [slinit-journal-migrate(8)](man/slinit-journal-migrate.8.md) |
 
@@ -150,7 +150,7 @@ slinit-monitor -E -c '/usr/local/libexec/env-audit %n %s %v'
 
 ### slinit-journalctl
 
-A `journalctl` implementation at 65/65 flag parity with systemd's. Live
+A `journalctl` implementation at 65/65 short-alias parity with systemd's. Live
 queries go to slinit's control socket, whose in-memory ring buffer
 covers the current boot; maintenance operations go to
 `slinit-journald`'s admin socket. Packages install it as `journalctl`

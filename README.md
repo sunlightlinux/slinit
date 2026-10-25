@@ -26,7 +26,7 @@ state machine or config format to accommodate them.
 
 **Deliberately out of scope:** systemd's unit object model on D-Bus, and
 the ecosystem daemons (networkd, resolved, homed). What *is* implemented
-from that side is the service manager, a `journalctl` at 65/65 flag
+from that side is the service manager, a `journalctl` at 65/65 short-alias
 parity with its own journal format, and `slinit-logind` for session and
 seat management.
 
@@ -111,12 +111,12 @@ summarises them by topic.
 | **Readiness** | `pipefd`/`pipevar` protocol, `ready-check-command` polling, D-Bus name readiness, `sd_notify` |
 | **Isolation & hardening** | filesystem sandbox (`private-tmp`, `protect-system`, bind/read-only/inaccessible paths), seccomp with curated syscall groups, the `restrict-*` and `protect-*` clusters, AppArmor/SELinux/SMACK transitions, capabilities, securebits — all fail-closed |
 | **Resources** | cgroup v2 limits and weights, slices and delegation, nice, ioprio, oom-score-adj, rlimits, CPU affinity, PSI pressure watches |
-| **Logging** | in-memory buffers, files with rotation/filtering/processors, consumer pipes, catch-all early-boot logger, a full journal pipeline (`slinit-journalctl` at 65/65 flag parity, FSS-sealed binary format, namespaces, message catalog) |
+| **Logging** | in-memory buffers, files with rotation/filtering/processors, consumer pipes, catch-all early-boot logger, a full journal pipeline (`slinit-journalctl` at 65/65 short-alias parity, FSS-sealed binary format, namespaces, message catalog) |
 | **Control** | binary protocol over a Unix socket, goroutine per connection, push notifications for state and environment changes, runtime env and dependency edits, Prometheus metrics endpoint |
 | **PID 1 duties** | console setup, Ctrl+Alt+Del, child subreaper and orphan reaping, four degrees of shutdown haste, soft-reboot, kexec, `switch-root`, hardware watchdog, UPS power events, boot-failure recovery with an interactive rescue prompt |
 
 Roughly 250 systemd directives, all 12 upstart stanzas, and the runit,
-s6, OpenRC, finit and sysvinit feature sets are covered;
+s6, OpenRC, finit, sysvinit, launchd and immortal feature sets are covered;
 [doc/features.md](doc/features.md) is the generated list of every name
 the parser and the control protocol accept — grouped by upstream where
 the provenance has been traced, which is about half of them so far.
@@ -325,7 +325,7 @@ The suites that need a live target take their host over SSH:
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
   ./tests/acceptance/ssh/run.sh           # 218 cases
 ACCEPTANCE_HOST=... ACCEPTANCE_PORT=... ACCEPTANCE_USER=root \
-  ./tests/performance/ssh/run.sh          # 92 cases; see tests/performance/README.md
+  ./tests/performance/ssh/run.sh          # 93 cases; see tests/performance/README.md
 ```
 
 42 fuzz targets in all: 27 under `tests/fuzz`, the rest beside the code

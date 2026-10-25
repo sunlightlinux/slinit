@@ -7,9 +7,10 @@ Everything after that — v2.4 through the current release — is in
 record and is not duplicated here. [STABILITY.md](../STABILITY.md) is
 what slinit promises not to break.
 
-## Towards 3.0
+## 3.0, and what has happened since
 
-The 3.0 list was six items. Five are closed:
+3.0 shipped, and the current release is v3.4.3. The 3.0 list was six
+items; five closed before the cut:
 
 1. **A skipped functional case reported PASS** — and in fact the harness
    was reporting *every* case as PASS. Fixed in v2.7.1, with
@@ -29,22 +30,51 @@ The 3.0 list was six items. Five are closed:
    closed another test's file. `pkg/features/fdownership_test.go` now
    fails the build on that pattern.
 
-What 3.0 does **not** include:
-
-* **Packaging and the real-hardware proving ground.** The downstream
-  package recipe trails the repo, and "proves slinit as PID 1" deserves
-  a current ISO booted on real hardware rather than test counts alone.
-  That is the first thing after the cut, not part of it.
-
-`slinitctl add-dep`'s argument order was the other open item, and it is
+`slinitctl add-dep`'s argument order was the other open item, and it was
 settled in 3.0.0: both orders work, since the dependency-type names are a
 closed set and the position holding one of them is unambiguous. Nothing
-breaks, and dinit's order is accepted again.
+broke, and dinit's order is accepted again.
 
-`pam_slinit.so` is scheduled for 3.0.1 rather than 3.0: a PAM module is
-a C shared object, so building one puts the Go runtime into every
-forking login process, and that trade needs its own release to get
-wrong in.
+**The real-hardware proving ground, deferred past the cut, is done.**
+Every tagged release is now built into a Sunlight ISO and installed on a
+real machine, and that is where defects the test suites could not see
+have surfaced: the soft-reboot state loss fixed in v3.4.3 was invisible
+in the development VM, which passes slinit no positional arguments, and
+appeared only on an installed system that does.
+
+**`pam_slinit.so` slipped, and moved.** It was scheduled for 3.0.1. It
+is now its own repository,
+[slpam](https://github.com/sunlightlinux/slpam), written in C — a PAM
+module is a shared object dlopened into `login`, `sshd`, `gdm` and `su`,
+and a Go one would put the Go runtime inside every one of them. Its
+build and exported-symbol contract are settled; its session logic is
+not yet written. Until it ships *and* the distribution's package
+dependencies change, the elogind package stays installed even though
+its daemon is no longer used.
+
+## Open now
+
+Things known to be unfinished in slinit itself, not a wish list. Each
+has a record of what is known about it.
+
+- **One root-path finding remains** of the five from the audit:
+  `pkg/checkpath`'s correction branch re-resolves a path after checking
+  it, a genuine check-then-act window. The other four are fixed.
+- **`requisite` predicates are not applied to `internal` and `triggered`
+  services**, which ignore predicates entirely.
+- **Three intermittent test failures are open**, and one of them may be
+  a real defect: `TestWatchdogTriggersRestartOnFailure` fails about one
+  run in ten, and "the watchdog sometimes does not fire" would be a bug
+  rather than a slow test. The other two are a `VirtualTTY` close that
+  hung once in CI and a seccomp case.
+- **The transition test harness needs scenarios, not more ports.** It
+  can finally observe a service while it is starting or stopping. The
+  eleven cases ported from dinit do not catch the stop-ordering defect
+  they are about; only a new scenario did, which was also dinit's own
+  experience.
+- **18 of the 46 command-line tools have no `--version`.** A
+  consistency question rather than a defect, and one that deserves a
+  decision rather than a drive-by edit.
 
 ## Phase history
 
