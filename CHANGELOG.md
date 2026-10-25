@@ -24,6 +24,76 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.4.4] — 2026-10-25
+
+**No product code changed** — twelve files, all documentation except one
+comment in a development tool, as in v3.1.2, v3.1.4 and v3.1.5. But two
+of the changed files are manual pages that ship in the package, and one
+of them stated something that could not be true.
+
+### Fixed
+
+- **slinit-journalctl(8) claimed "65-of-65 systemd short-alias parity",
+  which is impossible: systemd's journalctl has 28 short options.** The
+  page added that "a diff of the systemd flag list against slinit's
+  yields the empty set", and the same figure appeared in slinit(8),
+  README, doc/tools.md and the demo notes. It was most likely the
+  long-option count of an earlier systemd, kept after it stopped being
+  checkable.
+
+  Measured against the systemd v262 source instead: slinit-journalctl
+  accepts **all 28 short options and 70 of the 72 long ones**. The two
+  missing are not query options — `--new-id128`, which systemd leaves
+  undocumented, and `--introspect-cli`, which describes v262's new
+  option framework. The claim now names the systemd version it was
+  measured against, everywhere it appears, so that the next time it
+  goes stale it does so visibly.
+
+  If you chose slinit-journalctl on the strength of the old wording: no
+  option it accepted before has changed. The documentation overstated
+  it; the tool did not regress.
+
+- **slinit(8)'s description named six of the nine projects slinit draws
+  from**, missing launchd, immortal and sysvinit, which every other
+  statement of the positioning lists. README's table of what each
+  upstream contributed had no rows for launchd or immortal; it now has
+  both, built from directives checked present in the parser.
+
+- **README said "all 12 upstart stanzas" are covered.** Upstart has 35.
+  The 12 were the adaptation candidates its triage identified, all of
+  which shipped; its event-driven `start on` / `stop on` model was
+  rejected by design, because slinit is a dependency graph. The sentence
+  now says that.
+
+### Changed
+
+- **doc/roadmap.md describes the present.** Its "Towards 3.0" section
+  still read as future tense four releases into 3.4, and scheduled
+  `pam_slinit.so` for 3.0.1. It now records 3.0 as shipped, the
+  real-hardware proving ground as done — with what it found, the v3.4.3
+  soft-reboot defect, which the development VM could not show — and
+  `pam_slinit.so` as moved to its own repository, slpam, in C. A new
+  "Open now" section lists what is known to be unfinished in slinit.
+
+- **Test and structure counts brought up to date** across README,
+  CONTRIBUTING, CLAUDE.md, the pull-request template and the suite
+  READMEs: ~2670 unit tests, 43 fuzz targets, 242 functional, 218
+  acceptance and 93 performance cases, 36 packages, five QEMU
+  performance harnesses.
+
+### Known
+
+- **README's "roughly 250 systemd directives" is unconfirmed.** The unit
+  loader handles about 77 systemd keys directly, and doc/features.md
+  attributes provenance for 194 of its 382 entries, so neither source
+  reproduces 250. It is left as written rather than replaced by another
+  unmeasured number.
+
+- **A `tools/stats/stats` binary built before v3.2.2 reports 96 man
+  pages.** v3.2.2 fixed the source to count only the Markdown sources
+  (48), but the binary is gitignored and nothing rebuilds it, so an old
+  build goes on printing the old number. Use `go run ./tools/stats`.
+
 ## [3.4.3] — 2026-10-22
 
 **Every soft reboot on a real installation silently lost all operator
