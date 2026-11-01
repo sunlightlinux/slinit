@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -210,6 +211,10 @@ func main() {
 
 	var noWall bool
 	flag.BoolVar(&noWall, "no-wall", false, "disable wall broadcasts at shutdown")
+
+	var managerSecurebits string
+	flag.StringVar(&managerSecurebits, "securebits", "",
+		"secure bits every service gets on top of its own (names as for the securebits directive, e.g. 'exec-restrict-file exec-restrict-file-locked')")
 
 	var bootRlimits string
 	flag.StringVar(&bootRlimits, "rlimits", "",
@@ -702,6 +707,16 @@ func main() {
 		}
 	}
 
+	var parsedSecurebits uint32
+	if managerSecurebits != "" {
+		var err error
+		parsedSecurebits, err = process.ParseSecurebits(managerSecurebits)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "slinit: --securebits: %v\n", err)
+			exitFlushed(cal, 1)
+		}
+	}
+
 	// Kernel-cmdline boot-mode selectors (emergency / rescue /
 	// debug-shell / confirm-spawn / crash-shell / log-level). Parsed
 	// once and consumed at several call sites below. Zero value =
@@ -1059,6 +1074,34 @@ func main() {
 			// Set as default for all child services
 			serviceSet.SetDefaultCPUAffinity(cpus)
 		}
+	}
+
+	// Manager secure bits (systemd's SecureBits= in system.conf): every
+	// service gets them on top of its own and cannot clear them. They
+	// are applied by slinit-runner, between fork and exec, not set on
+	// slinit itself: PR_SET_SECUREBITS acts on one thread, a Go PID 1
+	// has many and forks from any of them, and the call that reaches
+	// them all (AllThreadsSyscall) is unavailable in a cgo build, which
+	// is how the distribution package builds slinit. So the bits reach
+	// every service's processes, and not the commands slinit runs
+	// directly (health checks, hooks, the shutdown hook, the emergency
+	// shell).
+	//
+	// A pair already locked in what slinit inherited cannot change, and
+	// asking for it would only make every service fail to start, so it
+	// is kept as it is, with a notice, as systemd does.
+	if parsedSecurebits != 0 {
+		bits := parsedSecurebits
+		if cur, err := unix.PrctlRetInt(unix.PR_GET_SECUREBITS, 0, 0, 0, 0); err == nil {
+			bits = process.SecurebitsKeepLocked(uint32(cur), parsedSecurebits)
+			if bits != parsedSecurebits {
+				logger.Notice("Some configured secure bits are locked differently already, applying %q instead",
+					process.SecurebitsString(bits))
+			}
+		}
+		serviceSet.SetManagerSecurebits(bits)
+		logger.Info("Manager secure bits for every service: %s", process.SecurebitsString(bits))
+		checkManagerSecurebits(serviceSet.RunnerPath(), bits, logger)
 	}
 
 	// finit-parity system-up hook: operator scripts under
@@ -2861,6 +2904,35 @@ func startWatchdog(isPID1, containerMode, noWatchdog bool,
 // Returns "" when none are present — services that configure mlockall
 // or NUMA will then log a warning and start without those settings.
 func findSlinitRunner() string { return findSlinitHelper("slinit-runner") }
+
+// checkManagerSecurebits runs slinit-runner once with the manager's
+// secure bits on true(1), the way every service will be run. If that
+// fails, every service will: the bits are applied fail-closed, and a
+// kernel before 6.14 refuses the exec- pair outright. systemd treats a
+// SecureBits= it cannot apply as fatal at startup; PID 1 cannot exit,
+// so this says why now, once, rather than in each failed start.
+func checkManagerSecurebits(runner string, bits uint32, logger *logging.Logger) {
+	if runner == "" {
+		logger.Error("--securebits needs slinit-runner, which was not found: every service will fail to start")
+		return
+	}
+	truePath, err := exec.LookPath("true")
+	if err != nil {
+		return // nothing harmless to run; services will report it
+	}
+	var stderr bytes.Buffer
+	cmd := exec.Command(runner, "--securebits="+strconv.FormatUint(uint64(bits), 10), "--", truePath)
+	cmd.Stderr = &stderr
+	if err := process.RunAdhoc(cmd); err != nil {
+		hint := ""
+		if bits&(process.SecbitExecRestrictFile|process.SecbitExecRestrictFileLocked|
+			process.SecbitExecDenyInteractive|process.SecbitExecDenyInteractiveLocked) != 0 {
+			hint = " (the exec- bits need kernel 6.14 or newer)"
+		}
+		logger.Error("--securebits %q cannot be applied%s, so every service will fail to start: %v %s",
+			process.SecurebitsString(bits), hint, err, strings.TrimSpace(stderr.String()))
+	}
+}
 
 // findSlinitInetd locates the slinit-inetd exec helper, which services
 // with socket-accept = yes are wrapped in. Same search order as the

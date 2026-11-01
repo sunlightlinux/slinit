@@ -289,6 +289,21 @@ long options may be written with one or two leading dashes.
     Empty disables the mount, which is useful when the initramfs has
     already populated */dev*.
 
+**\--securebits** *names*
+:   Secure bits every service gets on top of its own **securebits**
+    (same names, space- or comma-separated, e.g.
+    `exec-restrict-file exec-restrict-file-locked`); a service can add
+    to them and cannot clear them. systemd's **SecureBits=** in
+    *system.conf* (v263). They are applied by **slinit-runner**, so
+    every service runs through it; the commands slinit runs itself
+    (health checks, hooks, the shutdown hook, the emergency shell) do
+    not get them. A pair already locked in what slinit inherited is
+    kept as it is, with a notice. At startup slinit runs the runner
+    once with the bits: if that fails (no runner, no **CAP_SETPCAP**,
+    or a kernel before 6.14 for the *exec-* pair) it logs that every
+    service will fail to start, since the bits are applied
+    fail-closed.
+
 **\--syslog-socket** *path*
 :   In system mode, serve the syslog socket at *path* and put every
     message sent to it in the journal with transport *syslog*, so what

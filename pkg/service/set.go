@@ -177,6 +177,10 @@ type ServiceSet struct {
 
 	// Default CPU affinity (from --cpu-affinity/-a)
 	defaultCPUAffinity []uint
+	// managerSecurebits are added to every service's own securebits
+	// (slinit --securebits). Applied by slinit-runner, so setting them
+	// routes every service through it.
+	managerSecurebits uint32
 
 	// Path to slinit-runner, used to wrap commands that configure
 	// mlockall(2) or set_mempolicy(2). Empty means "no helper found,
@@ -881,6 +885,13 @@ func (ss *ServiceSet) SetInetdPath(p string)             { ss.inetdPath = p }
 func (ss *ServiceSet) InetdPath() string                 { return ss.inetdPath }
 func (ss *ServiceSet) SetReadyFD(fd int)                 { ss.readyFD = fd }
 func (ss *ServiceSet) ReadyFD() int                      { return ss.readyFD }
+
+// SetManagerSecurebits sets the securebits every service gets on top of
+// its own (systemd's manager SecureBits=).
+func (ss *ServiceSet) SetManagerSecurebits(bits uint32) { ss.managerSecurebits = bits }
+
+// ManagerSecurebits returns the bits set by SetManagerSecurebits.
+func (ss *ServiceSet) ManagerSecurebits() uint32 { return ss.managerSecurebits }
 
 // RWReady returns true when a service with starts-rwfs has reached STARTED.
 func (ss *ServiceSet) RWReady() bool { return ss.rwReady }

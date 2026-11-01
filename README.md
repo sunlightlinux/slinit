@@ -317,7 +317,7 @@ it escalates the shutdown instead.
 
 ```bash
 go test ./...                             # ~2670 unit tests and benchmarks
-./tests/functional/run-tests.sh           # 243 cases, each in its own QEMU VM
+./tests/functional/run-tests.sh           # 244 cases, each in its own QEMU VM
 ./tests/functional/selftest.sh            # checks the harness can still fail a case
 ./tests/container/run.sh                  # 23 cases with slinit as a container's PID 1
 go test -fuzz=FuzzConfigParse ./tests/fuzz

@@ -57,6 +57,17 @@ func main() {
 }
 
 func run() error {
+	// The secure bits this process came with, read before anything here
+	// can change them: --securebits adds to them rather than replacing
+	// them, as systemd does since it gained a manager SecureBits=
+	// (d2818fbcfa), so bits slinit was started with are not cleared by a
+	// service that does not list them, and a locked one does not make
+	// the service fail.
+	inheritedSecurebits, err := unix.PrctlRetInt(unix.PR_GET_SECUREBITS, 0, 0, 0, 0)
+	if err != nil {
+		inheritedSecurebits = 0
+	}
+
 	fs := flag.NewFlagSet("slinit-runner", flag.ExitOnError)
 	mlockall := fs.Int("mlockall", 0,
 		"bitmask passed to mlockall(2): MCL_CURRENT=1, MCL_FUTURE=2, MCL_ONFAULT=4")
@@ -361,15 +372,15 @@ func run() error {
 	// UID change cleared. KEEPCAPS kept it in permitted, so raise it back
 	// for this one call; execve recomputes the effective set for a
 	// non-root task, so it does not reach the service.
-	if *securebits >= 0 {
+	if bits := uint32(*securebits) | uint32(inheritedSecurebits); *securebits >= 0 && int(bits) != inheritedSecurebits {
 		if *runAsUID > 0 {
 			if err := capRaiseEffective(unix.CAP_SETPCAP); err != nil {
 				return fmt.Errorf("securebits: regain CAP_SETPCAP after run-as: %w", err)
 			}
 		}
 		if _, _, errno := syscall.Syscall(unix.SYS_PRCTL,
-			uintptr(unix.PR_SET_SECUREBITS), uintptr(*securebits), 0); errno != 0 {
-			return fmt.Errorf("PR_SET_SECUREBITS(0x%x): %w", *securebits, errno)
+			uintptr(unix.PR_SET_SECUREBITS), uintptr(bits), 0); errno != 0 {
+			return fmt.Errorf("PR_SET_SECUREBITS(0x%x): %w", bits, errno)
 		}
 	}
 

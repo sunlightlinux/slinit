@@ -73,6 +73,32 @@ verified with `git tag -v`.
   takes exponential time on `*a*a*a...b`, which the fuzz reference
   showed by tripping the fuzzer's hang limit.
 
+- **`slinit --securebits` sets secure bits for every service**, as
+  systemd's `SecureBits=` in system.conf does since v263 (`59d8dd3b95`).
+  Each service gets them on top of its own `securebits` and cannot clear
+  them; that is how the `exec-restrict-file` pair is meant to be used,
+  set and locked once so script interpreters enforce it. They are
+  applied by slinit-runner, between fork and exec, so every service runs
+  through it, and not set on slinit itself: secure bits belong to one
+  thread, a Go PID 1 forks from any of its threads, and the call that
+  sets them on all threads is unavailable in a cgo build, which is how
+  the distribution package builds slinit. The commands slinit runs
+  itself — health checks, hooks, the emergency shell — do not get them.
+  - A pair already locked in what slinit inherited is kept, with a
+    notice, as systemd does. slinit-runner now adds a service's bits to
+    the ones it inherited instead of replacing them (systemd
+    `d2818fbcfa`), so a locked inherited bit no longer makes the service
+    fail.
+  - The bits are applied fail-closed, so a set the kernel refuses would
+    stop every service. systemd makes that fatal at startup; PID 1
+    cannot exit, so slinit runs the runner once with the bits when it
+    starts and logs, once, that every service will fail and why (a
+    kernel before 6.14 refuses the `exec-` pair).
+  - Functional case `244-manager-securebits` runs a service under
+    `--securebits=noroot` and checks it has no effective capabilities,
+    beside a control instance that has them; with the flag parsed but
+    not applied, it fails.
+
 ### Changed
 
 - **`condition-credential` also finds credentials in the credential

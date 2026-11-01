@@ -65,3 +65,45 @@ func TestParseSecurebits(t *testing.T) {
 		}
 	}
 }
+
+// A locked pair keeps whatever value it has; unlocked pairs take the
+// wanted value, set or clear.
+func TestSecurebitsKeepLocked(t *testing.T) {
+	for _, c := range []struct {
+		name                string
+		current, bits, want uint32
+	}{
+		{"nothing locked: wanted value wins", SecbitKeepCaps, SecbitNoroot, SecbitNoroot},
+		{"locked on stays on although not wanted",
+			SecbitNoroot | SecbitNorootLocked, SecbitKeepCaps,
+			SecbitNoroot | SecbitNorootLocked | SecbitKeepCaps},
+		{"locked off stays off although wanted",
+			SecbitNorootLocked, SecbitNoroot,
+			SecbitNorootLocked},
+		{"a lock wanted on an unlocked pair is applied",
+			0, SecbitExecRestrictFile | SecbitExecRestrictFileLocked,
+			SecbitExecRestrictFile | SecbitExecRestrictFileLocked},
+		{"other pairs are unaffected by one lock",
+			SecbitNoSetuidFixupLocked, SecbitNoroot | SecbitNoCapAmbientRaise,
+			SecbitNoSetuidFixupLocked | SecbitNoroot | SecbitNoCapAmbientRaise},
+	} {
+		if got := SecurebitsKeepLocked(c.current, c.bits); got != c.want {
+			t.Errorf("%s: SecurebitsKeepLocked(%#x, %#x) = %#x, want %#x",
+				c.name, c.current, c.bits, got, c.want)
+		}
+	}
+}
+
+func TestSecurebitsStringRoundTrips(t *testing.T) {
+	bits := SecbitNoroot | SecbitExecRestrictFile | SecbitExecRestrictFileLocked
+	s := SecurebitsString(bits)
+	if s != "noroot exec-restrict-file exec-restrict-file-locked" {
+		t.Errorf("SecurebitsString = %q", s)
+	}
+	if back, err := ParseSecurebits(s); err != nil || back != bits {
+		t.Errorf("ParseSecurebits(%q) = %#x, %v; want %#x", s, back, err, bits)
+	}
+	if SecurebitsString(0) != "" {
+		t.Errorf("SecurebitsString(0) = %q, want empty", SecurebitsString(0))
+	}
+}

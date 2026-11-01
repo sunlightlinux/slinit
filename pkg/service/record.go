@@ -2257,7 +2257,9 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps
 	params.BoundingCaps = sr.boundingCaps
-	params.Securebits = sr.securebits
+	// The manager's bits are a floor: a service adds to them and cannot
+	// clear them, as with systemd's manager SecureBits=.
+	params.Securebits = sr.securebits | sr.services.ManagerSecurebits()
 	params.Umask = sr.umask
 	params.CPUAffinity = sr.cpuAffinity
 	if len(params.CPUAffinity) == 0 {

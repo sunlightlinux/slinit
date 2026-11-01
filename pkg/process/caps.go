@@ -162,6 +162,22 @@ const (
 	SecbitExecDenyInteractiveLocked uint32 = 1 << 11
 )
 
+// secbitAllLocks has the lock bit of every pair; a pair's lock is the
+// bit just above its value bit.
+const secbitAllLocks = SecbitNorootLocked | SecbitNoSetuidFixupLocked |
+	SecbitKeepCapsLocked | SecbitNoCapAmbientRaiseLocked |
+	SecbitExecRestrictFileLocked | SecbitExecDenyInteractiveLocked
+
+// SecurebitsKeepLocked returns bits with every pair that is locked in
+// current kept as current has it: the kernel refuses to change a locked
+// pair, so asking for anything else there only fails. systemd's
+// secure_bits_keep_locked(), used for its manager SecureBits=.
+func SecurebitsKeepLocked(current, bits uint32) uint32 {
+	locked := current & secbitAllLocks
+	locked |= locked >> 1
+	return bits&^locked | current&locked
+}
+
 // secbitNames maps securebits string names to their values.
 var secbitNames = map[string]uint32{
 	"noroot":                      SecbitNoroot,
@@ -177,6 +193,26 @@ var secbitNames = map[string]uint32{
 	"exec-restrict-file-locked":    SecbitExecRestrictFileLocked,
 	"exec-deny-interactive":        SecbitExecDenyInteractive,
 	"exec-deny-interactive-locked": SecbitExecDenyInteractiveLocked,
+}
+
+// SecurebitsString renders bits as the space-separated names
+// ParseSecurebits takes, lowest bit first.
+func SecurebitsString(bits uint32) string {
+	var names []string
+	for b := uint32(1); b != 0 && b <= bits; b <<= 1 {
+		if bits&b == 0 {
+			continue
+		}
+		name := fmt.Sprintf("0x%x", b)
+		for n, v := range secbitNames {
+			if v == b {
+				name = n
+				break
+			}
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, " ")
 }
 
 // ParseSecurebits parses a list of securebits flag names, separated by

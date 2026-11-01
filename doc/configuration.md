@@ -496,6 +496,7 @@ A summary of every option, grouped by topic;
 | `--umask` | Initial umask, octal | `0022` |
 | `--run-mode` | How `/run` is staged: `mount` (fresh tmpfs), `remount` (unmount and mount), `keep` (untouched) | `mount` |
 | `--devtmpfs-path` | Mount devtmpfs here; empty disables | `/dev` |
+| `--securebits` | Secure bits every service gets on top of its own `securebits` (systemd's manager `SecureBits=`); applied through slinit-runner | |
 | `--syslog-socket` | In system mode, serve this syslog socket into the journal (`_transport` syslog); empty disables. A syslog daemon already on it keeps it | `/dev/log` |
 | `--kcmdline-dest` | Snapshot `/proc/cmdline` here; empty disables | `/run/slinit/kcmdline` |
 | `--kernel-env-store` | Extract `KEY=VALUE` tokens from the kernel command line into this env-file, for services to load with `env-file`; empty disables | |
