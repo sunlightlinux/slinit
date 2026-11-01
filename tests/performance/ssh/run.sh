@@ -84,8 +84,12 @@ fi
 REMOTE_DIR="/tmp/slinit-perf.$$"
 ssh_run "mkdir -p ${REMOTE_DIR}"
 scp_to "${LIB_DIR}/remote-prelude.sh" "${REMOTE_DIR}/remote-prelude.sh"
+scp_to "${LIB_DIR}/fixture.sh" "${REMOTE_DIR}/fixture.sh"
 
 cleanup_remote() {
+    # The fixture's script lives in REMOTE_DIR, so take the services down
+    # first, KEEP_REMOTE or not: they are not something to leave running.
+    ssh_run "sh ${REMOTE_DIR}/fixture.sh down ${REMOTE_DIR}" || true
     if [ "$KEEP_REMOTE" = "1" ]; then
         echo "KEEP_REMOTE=1; leaving ${REMOTE_DIR} on target."
     else
@@ -97,6 +101,14 @@ cleanup_remote() {
     _ssh_mux_cleanup
 }
 trap cleanup_remote EXIT
+
+# ---- fixture ------------------------------------------------------------
+# Services the cases aim at, so the suite does not depend on what the host
+# runs (see lib/fixture.sh).
+if ! ssh_run "sh ${REMOTE_DIR}/fixture.sh up ${REMOTE_DIR}"; then
+    echo "ERROR: could not provision the perf-target fixture on the target" >&2
+    exit 3
+fi
 
 # ---- runner -------------------------------------------------------------
 echo
@@ -111,7 +123,9 @@ for case_path in "${CASES[@]}"; do
     # passed inline. SLINIT_ALLOW_DISRUPTIVE used to be forwarded here
     # for 580/600; it was dropped when they were ungated, since nothing
     # reads it any more.
-    _remote_env="ITERS=${ITERS}"
+    # PERF_FAIL_MARK: the prelude creates it when a timed command fails.
+    _mark="${REMOTE_DIR}/failed.${case_name}"
+    _remote_env="ITERS=${ITERS} PERF_FAIL_MARK=${_mark}"
     # Don't let `set -e` abort the suite mutely. A case's exit status is
     # its LAST command's, so a trailing best-effort cleanup without
     # `|| true` fails the case even though every benchmark printed fine.
@@ -120,6 +134,12 @@ for case_path in "${CASES[@]}"; do
     # error to grep for. Abort as before, but say which case and why.
     _rc=0
     ssh_run "cd ${REMOTE_DIR} && ${_remote_env} sh -c '. ./remote-prelude.sh && . ./${case_name}.sh'" || _rc=$?
+    if ssh_run "test -e ${_mark}"; then
+        echo >&2
+        echo -e "${YELLOW}ERROR: case ${case_name}: a timed command failed — aborting suite${RESET}" >&2
+        echo "  Its numbers are of an error path; the FAILED lines above say which." >&2
+        exit 1
+    fi
     if [ "$_rc" -ne 0 ]; then
         echo >&2
         echo -e "${YELLOW}ERROR: case ${case_name} exited ${_rc} — aborting suite${RESET}" >&2

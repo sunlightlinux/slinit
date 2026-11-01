@@ -4,6 +4,8 @@
 # racing with that emitter. Reveals whether the reader path
 # contends with the writer path (would show as elevated fetch
 # latency vs baseline `50-journalctl-fetch-n100`).
+# Needs logger(1) to reach the journal; see perf_require_syslog.
+perf_require_syslog || { return 0 2>/dev/null || exit 0; }
 _write_pressure() {
     _n=0
     while [ $_n -lt 500 ]; do

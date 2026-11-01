@@ -47,7 +47,7 @@ perf_median_ns() {
     _pmn_i=0
     while [ "$_pmn_i" -lt "$_pmn_iters" ]; do
         _pmn_t0="$(perf_now_ns)"
-        eval "$_pmn_cmd" > /dev/null 2>&1
+        eval "$_pmn_cmd" > /dev/null 2>&1 || _prf_note_failure "$_pmn_cmd"
         _pmn_t1="$(perf_now_ns)"
         echo $(( _pmn_t1 - _pmn_t0 )) >> "$_pmn_f"
         _pmn_i=$(( _pmn_i + 1 ))
@@ -97,9 +97,10 @@ perf_run_iters() {
     _prf_iters="$1"; _prf_label="$2"; _prf_cmd="$3"
     _prf_samples="$(mktemp)"
     _prf_i=0
+    _prf_nfail=0
     while [ "$_prf_i" -lt "$_prf_iters" ]; do
         _prf_t0="$(perf_now_ns)"
-        eval "$_prf_cmd" > /dev/null 2>&1
+        eval "$_prf_cmd" > /dev/null 2>&1 || _prf_nfail=$(( _prf_nfail + 1 ))
         _prf_t1="$(perf_now_ns)"
         _prf_d=$(( _prf_t1 - _prf_t0 ))
         echo "$_prf_d" >> "$_prf_samples"
@@ -121,4 +122,63 @@ perf_run_iters() {
     _prf_min_ms="$(awk -v n="$_prf_min" 'BEGIN{printf "%.3f", n/1e6}')"
     printf "Benchmark%-24s %4d  median=%8s ms  p95=%8s ms  min=%8s ms\n" \
         "$_prf_label" "$_prf_iters" "$_prf_med_ms" "$_prf_p95_ms" "$_prf_min_ms"
+    if [ "$_prf_nfail" -gt 0 ]; then
+        echo "  FAILED: $_prf_nfail of $_prf_iters iterations exited non-zero;" \
+             "the times above are of an error path, not of $_prf_label"
+        _prf_note_failure "$_prf_cmd"
+        return 1
+    fi
 }
+
+# _prf_note_failure "command..."
+#   Marks the case failed and shows why, by running the command once more
+#   with its output visible. run.sh fails the case on the mark, whatever
+#   the case's own exit status. The mark is a file, not a variable,
+#   because perf_median_ns runs in a $(...) subshell. Its path is
+#   absolute ($PERF_FAIL_MARK, set by run.sh) so a case may cd.
+#
+#   Both timing helpers used to throw the exit status away. Every case
+#   aimed at a service the target did not have still printed a time: it
+#   was slinitctl's "could not be loaded" reply, ~1.1 ms, indistinguish-
+#   able from a real answer. Ten cases did that for socklog and crond
+#   once ceres was reinstalled without them, and `signal WINCH` had
+#   timed a client-side parse error since the case was written.
+#   A command expected to fail must say so with `|| true`, as 450, 690
+#   and 780 do.
+_prf_note_failure() {
+    _prf_mark="${PERF_FAIL_MARK:-./.perf-failed}"
+    [ -e "$_prf_mark" ] && return 0
+    : > "$_prf_mark"
+    echo "  FAILED: a timed command exited non-zero: $1" >&2
+    echo "  its output on one more run:" >&2
+    eval "$1" 2>&1 | head -5 | sed 's/^/    | /' >&2
+}
+
+# perf_require_syslog
+#   Returns non-zero, with a SKIP line, unless a logger(1) message reaches
+#   the journal. The journal-write cases pump logger and read the tag
+#   back; on a host with nothing listening on /dev/log every logger call
+#   fails and the read finds nothing, so they would time an empty fetch.
+#   Use as:  perf_require_syslog || { return 0 2>/dev/null || exit 0; }
+perf_require_syslog() {
+    _prs_tag="perf_syslog_probe_$$"
+    if logger -t "$_prs_tag" probe 2>/dev/null; then
+        _prs_n=0
+        while [ "$_prs_n" -lt 10 ]; do
+            slinit-journalctl -t "$_prs_tag" -n 1 2>/dev/null | grep -q probe && return 0
+            sleep 0.1
+            _prs_n=$(( _prs_n + 1 ))
+        done
+    fi
+    echo "SKIP: logger(1) messages do not reach the journal on this host" \
+         "(nothing on /dev/log?)"
+    return 1
+}
+
+# The suite's own target services, provisioned by run.sh (lib/fixture.sh)
+# before the first case and removed after the last. Cases that signal,
+# reload, setenv or catlog a service use these instead of whatever the
+# host happens to run: they used socklog and crond, and a host without
+# them turned ten cases into timings of an error reply.
+PERF_TARGET=perf-target
+PERF_TARGET_DEP=perf-target-dep

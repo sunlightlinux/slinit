@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -189,6 +190,7 @@ func main() {
 	var devtmpfsPath string
 	var runMode string
 	var kcmdlineDest string
+	var syslogSocket string
 	flag.StringVar(&bootBanner, "banner", "slinit booting...", "boot banner (empty to disable)")
 	flag.StringVar(&initUmask, "umask", "0022", "initial umask (octal)")
 	flag.BoolVar(&consoleDup, "1", false, "duplicate log output to /dev/console (when using --log-file)")
@@ -196,6 +198,7 @@ func main() {
 	flag.StringVar(&devtmpfsPath, "devtmpfs-path", "/dev", "mount devtmpfs at this path (empty disables the mount)")
 	flag.StringVar(&runMode, "run-mode", "mount", "how to stage /run at boot (mount|remount|keep)")
 	flag.StringVar(&kcmdlineDest, "kcmdline-dest", "/run/slinit/kcmdline", "snapshot /proc/cmdline to this path (empty disables)")
+	flag.StringVar(&syslogSocket, "syslog-socket", journal.SyslogPath, "serve this syslog socket into the journal in system mode (empty disables)")
 
 	var kernelEnvStorePath string
 	flag.StringVar(&kernelEnvStorePath, "kernel-env-store", "",
@@ -830,6 +833,27 @@ func main() {
 		logger.Notice("slinit starting in system mode")
 	} else {
 		logger.Info("slinit starting in user mode")
+	}
+
+	// Syslog socket — /dev/log into the journal, Transport=syslog, so
+	// what sudo, login and dhcpcd log through syslog(3) is kept on a
+	// system without a syslog daemon. System mode only: /dev/log is the
+	// machine's, not a user instance's. Started here, after InitPID1 has
+	// mounted /dev and after SetSyslog above has tried /dev/log for
+	// slinit's own main log: that attempt still finds no socket, so
+	// slinit's log does not start flowing back into the journal (the
+	// reader drops its own pid as well). A syslog daemon already
+	// serving the path keeps it; one started later as a service takes
+	// the path over, as they all unlink it before binding.
+	if systemMode && syslogSocket != "" {
+		if sr, err := journal.NewSyslogReader(journalEmitter, syslogSocket); err == nil {
+			go sr.Run(context.Background())
+			defer sr.Stop()
+		} else if errors.Is(err, journal.ErrSyslogActive) {
+			logger.Info("%s already served by a syslog daemon; leaving it", syslogSocket)
+		} else {
+			logger.Warn("syslog socket: %v (syslog(3) messages will not reach the journal)", err)
+		}
 	}
 
 	// Apply global rlimits to slinit itself. Every child forked from here

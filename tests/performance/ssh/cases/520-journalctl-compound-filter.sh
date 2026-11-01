@@ -8,6 +8,8 @@
 # single filter (both push-downs stacking). Higher than either
 # individually would point at inefficient AND-composition in the
 # scan predicate.
+# Needs logger(1) to reach the journal; see perf_require_syslog.
+perf_require_syslog || { return 0 2>/dev/null || exit 0; }
 _tag="perfcompound_$$"
 _n=0
 while [ $_n -lt 100 ]; do

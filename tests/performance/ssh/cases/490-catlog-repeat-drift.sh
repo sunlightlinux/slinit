@@ -1,5 +1,5 @@
 # 490-catlog-repeat-drift — 10 batches × 50 catlog calls on
-# socklog. Drift on the log-read path would show as monotonic
+# the suite's perf-target (log-type = buffer). Drift on the log-read path would show as monotonic
 # increase (buffer growth un-managed) or spikes (buffer rollover).
 # Complements `130`/`260` drift detectors on the read side.
 #
@@ -8,9 +8,9 @@
 # service doesn't carry either, the CLI returns an error immediately
 # and this case is measuring the error-return path, not the log-
 # read path. Detect + skip so the result isn't misinterpreted.
-if ! slinitctl catlog socklog > /dev/null 2>&1; then
-    echo "SKIP: 'socklog' has no log-type=buffer / log-file — catlog unsupported"
-    return 0 2>/dev/null || exit 0
+if ! slinitctl catlog "$PERF_TARGET" > /dev/null 2>&1; then
+    echo "FAIL: catlog $PERF_TARGET failed; the fixture sets log-type = buffer" >&2
+    exit 1
 fi
 _bat=0
 while [ $_bat -lt 10 ]; do
@@ -18,7 +18,7 @@ while [ $_bat -lt 10 ]; do
     _t0=$(perf_now_ns)
     _n=0
     while [ $_n -lt 50 ]; do
-        slinitctl catlog socklog > /dev/null
+        slinitctl catlog "$PERF_TARGET" > /dev/null
         _n=$((_n + 1))
     done
     _t1=$(perf_now_ns)

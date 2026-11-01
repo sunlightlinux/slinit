@@ -31,6 +31,30 @@ Run a subset by passing case paths:
 ./run.sh cases/030-ctl-status.sh cases/050-journalctl-fetch-n100.sh
 ```
 
+## What the suite needs from the target
+
+Only slinit. The cases that signal, reload, setenv or catlog a service
+aim at **`perf-target`** and **`perf-target-dep`**, which `run.sh`
+provisions before the first case (`lib/fixture.sh`) and removes after
+the last; a leftover from a run killed before cleanup is replaced at the
+next start. They used to aim at socklog and crond, and
+on a host without them every one of those cases timed slinitctl's
+"could not be loaded" reply instead — a plausible ~1.1 ms nobody could
+tell from a real answer.
+
+**A timed command that exits non-zero fails the case** and stops the
+suite, with the command's output shown. A case that means to time a
+failure says so with `|| true` (450, 690, 780). Background jobs are
+waited for by pid, since a bare `wait` returns 0 whatever they returned.
+
+Two things are optional, and a case that needs one prints `SKIP:`
+instead of timing its absence:
+
+- **syslog into the journal** — the journal-write cases (090, 110, 160,
+  210, 520, 570) pump `logger(1)`. On a host with nothing on `/dev/log`
+  they skip.
+- **the OpenRC shims** (`slinit-openrc-shims`) — 820, 830, 840.
+
 ## Cases
 
 Numbered with zero-padding so lexical sort matches numeric order.
@@ -58,7 +82,7 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `160-journal-scan-vs-size`     | Fetch(N=100) before + after 5k-pump — reveals full-scan bugs |
 | `170-ls-long-tail`             | 500x `slinitctl ls` — p50/p95/p99/max for enumeration path |
 | `180-boot-time-long-tail`      | 500x `slinitctl boot-time` — heavier aggregation code path |
-| `190-slinit-check-offline`     | `slinit-check /etc/slinit.d/boot` — offline parser latency |
+| `190-slinit-check-offline`     | `slinit-check perf-target-dep` — offline parse of one file |
 | `200-journalctl-output-json`   | short-vs-json format — encode cost |
 | `210-journalctl-tag-filter`    | tag-filtered vs unfiltered — scan-time push-down check |
 | `220-journalctl-priority-filter` | `-p err` vs unfiltered — filter-push-down check |
@@ -74,7 +98,7 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `320-slinitctl-catlog`         | Read service's buffered stdout |
 | `330-slinitctl-service-dirs`   | Configured svc-dir list (floor check) |
 | `340-slinitctl-platform`       | Platform detect via /proc + /sys |
-| `350-slinitctl-signal-safe`    | Send SIGWINCH (ignored) — signal path |
+| `350-slinitctl-signal-safe`    | Send SIGWINCH (ignored) to `perf-target` — signal path |
 | `360-slinitctl-reload`         | Re-read single svc config from disk |
 | `370-slinitctl-reload-all`     | Bulk reload every loaded svc |
 | `380-slinitctl-setenv-cycle`   | Set + unset per-svc env var — mutation path |
@@ -88,7 +112,7 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `460-throwaway-lifecycle`      | Full lifecycle: write file → start → stop → unload → rm |
 | `470-concurrent-setenv-8`      | 8 parallel setenv on same svc, different keys — env mutex |
 | `480-slinitctl-signal-hup-safe` | SIGHUP delivery (svc reloads on HUP but stays up) |
-| `490-catlog-repeat-drift`      | 10×50 catlog batches — read-path drift (SKIPs if unsupported) |
+| `490-catlog-repeat-drift`      | 10×50 catlog batches on `perf-target` — read-path drift |
 | `500-status-during-reload-all` | Light status p99 while reload-all hammers — mutex-hold check |
 | `510-journalctl-long-tail`     | 300x journalctl fetch — p50/p95/p99/max |
 | `520-journalctl-compound-filter` | tag+priority AND vs each alone vs unfiltered |
@@ -119,7 +143,7 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `770-socket-listen-overhead`   | Start cost of svc with socket-listen vs plain start |
 | `780-config-parse-error`       | Parse-error return latency (malformed svc file) |
 | `790-list-scaling-100`         | Provision 100 svcs → list at N=113 (10x scaling) |
-| `800-many-directive-svc`       | Load svc with 50 directives — parser stress |
+| `800-many-directive-svc`       | Start a svc with 43 directives — parser stress |
 | `810-socket-activation-on-demand` | connect → served latency of an on-demand socket-activated service (builds a small C client/server helper with `cc`; SKIP without one) |
 | `820-openrc-rc-service`        | `rc-service status <svc>` OpenRC-shim overhead |
 | `830-openrc-rc-status`         | `rc-status` overview shim |

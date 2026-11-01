@@ -4344,20 +4344,27 @@ func cmdCatLog(conn net.Conn, name string, clear bool) error {
 	}
 }
 
+// signalTable is every name `signal` accepts, and exactly what
+// `signal --list` prints. parseSignal and printSignalList both read it:
+// they used to keep separate copies, and the list advertised 31 names
+// while the parser knew 9, so `slinitctl signal WINCH svc` failed with
+// "unknown signal" next to a list that offered SIGWINCH.
+var signalTable = []struct {
+	name string
+	num  int
+}{
+	{"HUP", 1}, {"INT", 2}, {"QUIT", 3}, {"ILL", 4},
+	{"TRAP", 5}, {"ABRT", 6}, {"BUS", 7}, {"FPE", 8},
+	{"KILL", 9}, {"USR1", 10}, {"SEGV", 11}, {"USR2", 12},
+	{"PIPE", 13}, {"ALRM", 14}, {"TERM", 15}, {"STKFLT", 16},
+	{"CHLD", 17}, {"CONT", 18}, {"STOP", 19}, {"TSTP", 20},
+	{"TTIN", 21}, {"TTOU", 22}, {"URG", 23}, {"XCPU", 24},
+	{"XFSZ", 25}, {"VTALRM", 26}, {"PROF", 27}, {"WINCH", 28},
+	{"IO", 29}, {"PWR", 30}, {"SYS", 31},
+}
+
 func printSignalList() {
-	signals := []struct {
-		name string
-		num  int
-	}{
-		{"HUP", 1}, {"INT", 2}, {"QUIT", 3}, {"ILL", 4},
-		{"TRAP", 5}, {"ABRT", 6}, {"BUS", 7}, {"FPE", 8},
-		{"KILL", 9}, {"USR1", 10}, {"SEGV", 11}, {"USR2", 12},
-		{"PIPE", 13}, {"ALRM", 14}, {"TERM", 15}, {"STKFLT", 16},
-		{"CHLD", 17}, {"CONT", 18}, {"STOP", 19}, {"TSTP", 20},
-		{"TTIN", 21}, {"TTOU", 22}, {"URG", 23}, {"XCPU", 24},
-		{"XFSZ", 25}, {"VTALRM", 26}, {"PROF", 27}, {"WINCH", 28},
-		{"IO", 29}, {"PWR", 30}, {"SYS", 31},
-	}
+	signals := signalTable
 	for _, s := range signals {
 		fmt.Printf("%2d) SIG%-8s", s.num, s.name)
 		if s.num%4 == 0 {
@@ -4371,32 +4378,16 @@ func printSignalList() {
 
 func parseSignal(s string) (syscall.Signal, error) {
 	s = strings.TrimPrefix(strings.ToUpper(s), "SIG")
-	switch s {
-	case "HUP", "1":
-		return syscall.SIGHUP, nil
-	case "INT", "2":
-		return syscall.SIGINT, nil
-	case "QUIT", "3":
-		return syscall.SIGQUIT, nil
-	case "KILL", "9":
-		return syscall.SIGKILL, nil
-	case "TERM", "15":
-		return syscall.SIGTERM, nil
-	case "USR1", "10":
-		return syscall.SIGUSR1, nil
-	case "USR2", "12":
-		return syscall.SIGUSR2, nil
-	case "STOP", "19":
-		return syscall.SIGSTOP, nil
-	case "CONT", "18":
-		return syscall.SIGCONT, nil
-	default:
-		n, err := strconv.Atoi(s)
-		if err != nil {
-			return 0, usagef("unknown signal: %s", s)
+	for _, sig := range signalTable {
+		if sig.name == s {
+			return syscall.Signal(sig.num), nil
 		}
-		return syscall.Signal(n), nil
 	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, usagef("unknown signal: %s", s)
+	}
+	return syscall.Signal(n), nil
 }
 
 func formatState(s service.ServiceState) string {

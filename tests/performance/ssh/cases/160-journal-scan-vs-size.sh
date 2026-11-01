@@ -31,6 +31,8 @@
 # None of this fixes the premise. A real size-scaling test has to read
 # the on-disk journal that slinit-journald writes, where the file does
 # grow, rather than a ring that cannot.
+# Needs logger(1) to reach the journal; see perf_require_syslog.
+perf_require_syslog || { return 0 2>/dev/null || exit 0; }
 
 _fetch="slinit-journalctl -n 100"
 

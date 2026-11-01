@@ -105,7 +105,7 @@ For multi-step tasks, state a brief plan:
 - `go test ./...` — ~2670 unit tests across the Go tree (36 pkg/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
-- `./tests/functional/run-tests.sh` — 242 QEMU-based integration tests
+- `./tests/functional/run-tests.sh` — 243 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
 - `./tests/acceptance/ssh/run.sh` — 218 SSH-driven cases against a live VM.
 - `./tests/performance/ssh/run.sh` — 93 SSH-driven perf cases (comprehensive
@@ -118,11 +118,13 @@ For multi-step tasks, state a brief plan:
 - `./tests/k8s/run.sh` — 10 cases running the same image as a pod on a local
   `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
-  single target. 43 repo-wide: 27 in `tests/fuzz/`, 16 beside the code
+  single target. 44 repo-wide: 27 in `tests/fuzz/`, 17 beside the code
   they exercise (converters, sysusers/tmpfiles/timedatectl/hostnamectl
-  parsers, `pkg/service` state machine), so `./tests/fuzz` alone is not
-  all of them.
-- `./slinit-check /etc/slinit.d/<svc>` — offline config linter.
+  parsers, the syslog parser, `pkg/service` state machine), so
+  `./tests/fuzz` alone is not all of them.
+- `./slinit-check <svc>` — offline config linter. Takes a service
+  NAME, as dinit-check does (`-d <dir>` to search another directory);
+  a path is looked up as a name and reported "not found".
 
 Strong success criteria let you loop independently. Weak criteria
 ("make it work") require constant clarification.

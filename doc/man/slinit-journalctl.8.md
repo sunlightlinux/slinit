@@ -59,7 +59,11 @@ live queries.
 :   Filter by user-scope unit. Also forces **--user**.
 
 **-t**, **--identifier=**\ *IDENT*
-:   Include events whose SYSLOG_IDENTIFIER matches. Repeatable.
+:   Include events whose SYSLOG_IDENTIFIER matches. Repeatable. For a
+    message sent to */dev/log* (see **\--syslog-socket** in
+    **slinit**(8)) it is the word before the colon, as in
+    `sudo[123]:`; that word is the sender's own claim, so check
+    *_uid* and *_exe* in **-o verbose** before trusting it.
 
 **-T**, **--exclude-identifier=**\ *IDENT*
 :   Drop events whose SYSLOG_IDENTIFIER matches. Repeatable.

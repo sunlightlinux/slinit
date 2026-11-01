@@ -222,8 +222,11 @@ func (e *Emitter) stampTrusted(evt *Event) {
 		evt.Transport = TransportDriver
 	}
 
-	// Userspace identity: skip for kernel-origin events (see doc).
-	if evt.Transport != TransportKernel {
+	// Userspace identity: skip for kernel-origin events (see doc), and
+	// for syslog ones, whose sender's pid/uid/gid the syslog reader took
+	// from SCM_CREDENTIALS. Stamping ours would claim PID 1 wrote what
+	// sudo did.
+	if evt.Transport != TransportKernel && evt.Transport != TransportSyslog {
 		evt.Pid = os.Getpid()
 		evt.Uid = os.Getuid()
 		evt.Gid = os.Getgid()

@@ -24,6 +24,89 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- **slinit serves `/dev/log`, so syslog(3) messages reach the journal on
+  a system with no syslog daemon.** Without one there was no `/dev/log`
+  at all, and syslog(3) discards silently: on a minimal Sunlight install
+  (sunlight-base, no socklog) everything sudo, login, su, dhcpcd and
+  acpid log through syslog was lost. The journal had a `syslog`
+  transport since its first phase, marked "Phase 2+", and nothing ever
+  produced it. In system mode PID 1 now binds the socket (new flag
+  `--syslog-socket`, default `/dev/log`, empty disables) and emits each
+  message with `_transport` syslog, the severity from `<PRI>`, and the
+  identifier from `ident[pid]:`, parsed the way systemd-journald does,
+  so `slinit-journalctl -t sudo` finds them.
+  - The sender's `_pid`, `_uid` and `_gid` come from the kernel
+    (`SCM_CREDENTIALS`), `_comm` and `_exe` from `/proc`. The identifier
+    is the sender's claim — any local user can write `sudo:` — so the
+    trusted fields are what to check. Emit used to stamp PID 1's own
+    identity on every event that was not a kernel message; syslog
+    events keep the sender's.
+  - `/dev/log` is writable by every user and the journal ring in PID 1
+    holds 4096 events, so each uid may send 1000 (root) or 200 (others)
+    messages per 10 seconds; the next message after a window that
+    dropped some is preceded by a note saying how many.
+  - The parser runs in PID 1 on untrusted bytes: it is fuzzed
+    (`FuzzParseSyslog`), and a panic in it drops the message, not the
+    system.
+  - A syslog daemon already serving the path keeps it, and one started
+    later as a service (socklog, rsyslog, busybox syslogd) takes it
+    over, as they all unlink it before binding. slinit's own main log,
+    which system mode sends to syslog, is not read back: the reader is
+    started after that connection is attempted, and drops its own pid.
+  - Functional case `243-syslog-dev-log` checks it as PID 1, and fails
+    on 4 of its 5 checks with the reader turned off.
+
+- **`slinitctl signal` accepts every name `slinitctl signal --list`
+  shows.** The list and the parser were two tables: the list offered 31
+  names, the parser knew 9 (HUP INT QUIT KILL TERM USR1 USR2 STOP CONT),
+  so `slinitctl signal WINCH svc` failed with *unknown signal* next to a
+  list that offered SIGWINCH. Both now read one table, and a test checks
+  every listed name parses to its number. Numbers were always accepted,
+  so `signal 28 svc` worked throughout. dinit's `dinitctl` accepts the
+  same 9 names, but its list prints exactly those 9; slinit keeps the
+  longer list and makes it true. Only input that used to be rejected is
+  affected.
+
+### Tests
+
+- **The SSH perf suite no longer reports the time of an error as a
+  result.** Its timing helpers threw the exit status of the timed
+  command away, so a case aimed at something the target lacked still
+  printed a plausible ~1.1 ms: slinitctl's error reply. On ceres
+  reinstalled without socklog or crond, ten cases did that unseen, and
+  the run stopped only because 470's cleanup happened to be its last
+  command. Four had never measured anything:
+  - 350 sent `signal WINCH`, rejected by slinitctl itself (above);
+  - 190 passed `slinit-check` a path, `/etc/slinit.d/boot`, where it
+    takes a service name, as dinit-check does. The operators' guide and
+    CLAUDE.md gave the same path form, and now give the name;
+  - 610 passed systemd's `--since '1 min ago'`, which slinit-journalctl
+    does not accept (its man page lists the forms it does); it uses
+    `-1m` now;
+  - 800's 50-directive service had 20 lines slinit does not accept —
+    names it never had, `10s` where it takes seconds, dependencies on
+    absent services — so it never loaded, and `load ... || true` hid it.
+
+  What changed:
+  - A timed command that exits non-zero now fails its case, shows the
+    command's output, and stops the suite. A command expected to fail
+    says so with `|| true`, as 450, 690 and 780 already did.
+  - The suite provisions its own target services (`perf-target`,
+    `perf-target-dep`, `lib/fixture.sh`) and removes them at the end,
+    instead of assuming the host runs socklog and crond. 440 takes its
+    8 services from what is loaded, and 440 and 470 wait for each
+    background job by pid: a bare `wait` returns 0 whatever they
+    returned.
+  - 800 uses only directives slinit accepts (43; checked with
+    `slinit-check`). Its benchmark is renamed accordingly.
+  - Cases that need something optional say SKIP instead of timing its
+    absence: the six journal-write cases when `logger` does not reach
+    the journal, and 820-840 when the OpenRC shims are not installed.
+  - Benchmarks aimed at the new target are renamed `*_perftarget`, so
+    they are not compared with the old socklog figures by mistake.
+
 ## [3.5.0] — 2026-11-01
 
 **No behaviour changed in this release.** It opens the 3.5 line. Next to

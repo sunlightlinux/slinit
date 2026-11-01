@@ -4,6 +4,8 @@
 # journal write path shares a mutex with the per-service state
 # table, boot-time would stall. Healthy slinit: boot-time
 # latency close to isolated baseline (~1.1 ms).
+# Needs logger(1) to reach the journal; see perf_require_syslog.
+perf_require_syslog || { return 0 2>/dev/null || exit 0; }
 _writer() {
     _n=0
     while [ $_n -lt 200 ]; do

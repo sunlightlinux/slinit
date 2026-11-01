@@ -91,7 +91,7 @@ const (
 	// TransportNative is an external client emitting over the events
 	// socket (slinit-native protocol equivalent).
 	TransportNative Transport = "native"
-	// TransportSyslog is a message received via /dev/log (Phase 2+).
+	// TransportSyslog is a message received on /dev/log (SyslogReader).
 	TransportSyslog Transport = "syslog"
 )
 

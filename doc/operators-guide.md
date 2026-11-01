@@ -436,14 +436,18 @@ console and the replies land on its own stdin as stray commands. It runs
 on the console with the boot frozen behind it. Exit it and the
 prompt comes back. This is the one place to fix a service description
 without install media — the file you need is under `/etc/slinit.d/`, and
-`slinit-check /etc/slinit.d/<name>` will tell you whether your fix
-parses before you press `c`.
+`slinit-check <name>` will tell you whether your fix parses before you
+press `c`. It takes the service's name, not its path.
 
 ### Where did my service's output go?
 
 `slinit-journalctl -u X`. If the service sets `log-type = buffer`, output
 goes to a per-service ring buffer instead — `slinitctl catlog X`. With
 `log-type = file` it goes to the path in `logfile =`.
+
+A program that logs through syslog(3) — sudo, login, su, dhcpcd — is
+found by its name instead: `slinit-journalctl -t sudo`. slinit serves
+`/dev/log` itself when no syslog daemon does (`--syslog-socket`).
 
 ---
 

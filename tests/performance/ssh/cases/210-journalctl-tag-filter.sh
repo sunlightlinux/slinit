@@ -4,6 +4,8 @@
 # most a few percent slower than unfiltered — if it's much
 # slower, the tag filter is applied AFTER decode instead of at
 # scan time.
+# Needs logger(1) to reach the journal; see perf_require_syslog.
+perf_require_syslog || { return 0 2>/dev/null || exit 0; }
 _tag="perftag_$$"
 _n=0
 while [ $_n -lt 100 ]; do

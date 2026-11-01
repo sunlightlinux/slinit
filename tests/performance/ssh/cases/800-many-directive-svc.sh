@@ -1,35 +1,41 @@
 # 800-many-directive-svc — parser stress: load a svc file with
-# ~50 directives (real-world upper-bound for a heavy service).
+# 43 directives (real-world upper-bound for a heavy service).
 # Measures start latency (which includes parse) vs the plain
 # scripted-start baseline (case 740 = 1.126 ms). Delta = parse
 # cost for the full-directive svc.
 _name="perf-heavy-svc-$$"
 _svcfile="/etc/slinit.d/$_name"
-cat > "$_svcfile" <<'EOF'
+# Every line must be a directive slinit accepts, or the service does not
+# load and every start times the load error. Until 2026-11-01 it had 20
+# that were not: names slinit never had (env-var, ionice-class,
+# private-devices, timeout-stop-sec...), durations written `10s` where
+# slinit takes seconds, and dependencies on system-init, socklog and
+# crond. `slinitctl load ... || true` hid it, so the figure was never a
+# parse of this file. Check edits with slinit-check before trusting it.
+#
+# Unquoted EOF so the dependency lines name the suite's fixture.
+cat > "$_svcfile" <<EOF
 type = scripted
 command = /bin/true
 description = perf heavy-directive stress test
 umask = 0022
 working-dir = /tmp
 nice = 5
-oom-score-adjust = 500
-stop-timeout = 10s
-start-timeout = 10s
+oom-score-adj = 500
+stop-timeout = 10
+start-timeout = 10
 restart = no
-restart-delay = 1s
+restart-delay = 1
 restart-limit-count = 3
-restart-limit-interval = 60s
+restart-limit-interval = 60
 log-type = none
-env-var = FOO=bar
-env-var = BAZ=qux
-depends-on: system-init
-after: socklog
-before: crond
+depends-on: $PERF_TARGET_DEP
+after: $PERF_TARGET
+before: boot
 run-as = root
 cpu-affinity = 0-1
-ionice-class = 2
-ionice-level = 4
-no-new-privs = yes
+ioprio = be:4
+options = no-new-privs
 protect-home = read-only
 protect-system = full
 protect-kernel-tunables = yes
@@ -39,29 +45,23 @@ protect-control-groups = yes
 protect-proc = invisible
 proc-subset = pid
 private-tmp = yes
-private-devices = yes
-private-network = no
 lock-personality = yes
 restrict-namespaces = yes
 restrict-realtime = yes
-restrict-suid-sgid = yes
+restrict-suidsgid = yes
 memory-deny-write-execute = yes
 memory-pressure-watch = yes
 cpu-pressure-watch = yes
 io-pressure-watch = yes
-capabilities-bounding-set = CAP_NET_BIND_SERVICE
-capabilities-ambient-set =
+capability-bounding-set = cap_net_bind_service
 rlimit-nofile = 1024
-rlimit-nproc = 100
+rlimit-data = 1073741824
 rlimit-core = 0
-rlimit-stack = 8388608
-rlimit-memlock = 65536
-timeout-stop-sec = 10s
-success-exit-status = 0
+rlimit-as = 4294967296
 EOF
 slinitctl load "$_name" > /dev/null 2>&1 || true
 
-perf_run_iters "$ITERS" "CtlStart_heavy_50directive_svc" "slinitctl start $_name"
+perf_run_iters "$ITERS" "CtlStart_heavy_43directive_svc" "slinitctl start $_name"
 
 # stop before unload: the benchmark above leaves the service STARTED,
 # and unload refuses a service that is not stopped ("service is not

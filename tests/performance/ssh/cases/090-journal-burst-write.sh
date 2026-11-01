@@ -6,6 +6,8 @@
 # don't accumulate. Batch size kept modest (200) because each
 # logger invocation costs 5-10ms of fork/exec — with ITERS=10
 # that is already 2000 fork/exec pairs (~20s).
+# Needs logger(1) to reach the journal; see perf_require_syslog.
+perf_require_syslog || { return 0 2>/dev/null || exit 0; }
 _BURST_N="${PERF_BURST_N:-200}"
 _burst_and_fetch() {
     _tag="perftest_$$_$1"

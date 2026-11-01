@@ -289,6 +289,17 @@ long options may be written with one or two leading dashes.
     Empty disables the mount, which is useful when the initramfs has
     already populated */dev*.
 
+**\--syslog-socket** *path*
+:   In system mode, serve the syslog socket at *path* and put every
+    message sent to it in the journal with transport *syslog*, so what
+    syslog(3) clients log (sudo, login, su, dhcpcd) is kept on a system
+    with no syslog daemon. Default */dev/log*. Empty disables. The
+    sender's pid, uid and gid come from the kernel, not from the
+    message; each uid may send 1000 (root) or 200 (others) messages
+    per 10 seconds, and a note says how many were dropped. A syslog
+    daemon already serving *path* keeps it, and one started later as a
+    service takes it over, as they unlink the path before binding.
+
 **\--kcmdline-dest** *path*
 :   Snapshot */proc/cmdline* to *path* during PID-1 init for later
     inspection. Default */run/slinit/kcmdline*. Empty disables.
