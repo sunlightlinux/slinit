@@ -24,6 +24,35 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.6.0] — 2026-11-01
+
+**If a service sets `lock-personality = yes`, upgrade: until now it
+refused nothing.** The filter it installed was empty, because the
+syscall table lacked `personality`; see *Changed*. From 3.6.0 it refuses
+changing the personality, as it always claimed to, and a service that
+does so under the lock now dies with SIGSYS.
+
+It is a minor for new interfaces — `--syslog-socket`, `--securebits`,
+the `FDSTOREREMOVE=` and `FDSTOREWIPE=` notify commands — and because
+two changes under *Changed* could break a setup that relied on the old
+behaviour, which STABILITY.md puts in a minor even when it is a
+correction: `lock-personality` now does what it says, and
+`condition-credential` also looks in the credential stores. Each has a
+*Compat* note.
+
+The other change to notice on upgrade: on a system with no syslog daemon
+PID 1 now serves `/dev/log`, so what sudo, login and dhcpcd log through
+syslog(3) reaches `slinit-journalctl -t <name>` instead of being
+dropped. A syslog daemon started later takes the socket over, and
+`--syslog-socket=` turns it off.
+
+Four items follow systemd v263 — `lock-personality` allowing the
+query, `FDSTOREWIPE=`, the credential stores and the manager secure
+bits — from the systemd range `7197de996d..87da7901bb`.
+
+Coming from 3.4.x or 3.5.0, nothing else needs attention. From 3.2.x,
+read 3.3.0's notes first — s6 readiness there requires a newline.
+
 ### Added
 
 - **slinit serves `/dev/log`, so syslog(3) messages reach the journal on
@@ -101,6 +130,26 @@ verified with `git tag -v`.
 
 ### Changed
 
+- **`lock-personality = yes` refused nothing.** The runner put
+  `personality` in its seccomp deny list, but the syscall table it is
+  compiled against had no entry for it, and the compiler skips a name it
+  does not know: the filter it installed allowed every call. The
+  functional case only checked that some filter was installed. The table
+  now has the entry, and a test fails if any name the runner denies is
+  not in it; every other name was. The call is now arg-checked, as
+  systemd's LockPersonality= is: querying the personality (0xffffffff)
+  and setting the current one are allowed — systemd allows the query
+  since v263 (`d21d96fe77`) — and any other value kills the process
+  with SIGSYS, which a test checks on the real kernel. The personality
+  locked is the one at exec, after `personality =` if the service sets
+  it.
+  - *Compat:* a service with `lock-personality = yes` that changes its
+    personality now dies with SIGSYS, where it silently succeeded. That
+    is what the setting always claimed to do. If the service needs
+    another personality, set it with `personality =`, which is applied
+    before the lock and is what the lock then keeps; if it needs to
+    change it while running, drop `lock-personality`.
+
 - **`condition-credential` also finds credentials in the credential
   stores.** It looked in slinit's own `$CREDENTIALS_DIRECTORY` only; it
   now also looks in `$ENCRYPTED_CREDENTIALS_DIRECTORY`, then in
@@ -120,23 +169,6 @@ verified with `git tag -v`.
     imported.
 
 ### Fixed
-
-- **`lock-personality = yes` refused nothing.** The runner put
-  `personality` in its seccomp deny list, but the syscall table it is
-  compiled against had no entry for it, and the compiler skips a name it
-  does not know: the filter it installed allowed every call. The
-  functional case only checked that some filter was installed. The table
-  now has the entry, and a test fails if any name the runner denies is
-  not in it; every other name was. The call is now arg-checked, as
-  systemd's LockPersonality= is: querying the personality (0xffffffff)
-  and setting the current one are allowed — systemd allows the query
-  since v263 (`d21d96fe77`) — and any other value kills the process
-  with SIGSYS, which a test checks on the real kernel. The personality
-  locked is the one at exec, after `personality =` if the service sets
-  it.
-  - *Compat:* a service with `lock-personality = yes` that changes its
-    personality now dies with SIGSYS, where it silently succeeded. That
-    is what the setting always claimed to do.
 
 - **`slinitctl signal` accepts every name `slinitctl signal --list`
   shows.** The list and the parser were two tables: the list offered 31

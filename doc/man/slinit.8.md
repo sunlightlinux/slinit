@@ -289,7 +289,7 @@ long options may be written with one or two leading dashes.
     Empty disables the mount, which is useful when the initramfs has
     already populated */dev*.
 
-**\--securebits** *names*
+**\--securebits** *names* (since 3.6.0)
 :   Secure bits every service gets on top of its own **securebits**
     (same names, space- or comma-separated, e.g.
     `exec-restrict-file exec-restrict-file-locked`); a service can add
@@ -304,7 +304,7 @@ long options may be written with one or two leading dashes.
     service will fail to start, since the bits are applied
     fail-closed.
 
-**\--syslog-socket** *path*
+**\--syslog-socket** *path* (since 3.6.0)
 :   In system mode, serve the syslog socket at *path* and put every
     message sent to it in the journal with transport *syslog*, so what
     syslog(3) clients log (sudo, login, su, dhcpcd) is kept on a system
