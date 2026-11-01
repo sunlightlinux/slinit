@@ -170,7 +170,7 @@ func applyHardening(h hardeningSpec) error {
 	// PR_SET_NO_NEW_PRIVS is the shared prerequisite for every seccomp
 	// install below. Set it once; each install() is a no-op on the
 	// prctl side after the first.
-	seccompNeeded := len(collectDenyList(h)) > 0 ||
+	seccompNeeded := len(collectDenyList(h)) > 0 || h.lockPersonality ||
 		h.restrictRealtime || h.restrictNamespaces ||
 		h.restrictSUIDSGID || h.restrictFileSystems || h.restrictAFEnabled
 	if seccompNeeded {
@@ -209,6 +209,19 @@ func applyHardening(h hardeningSpec) error {
 			return fmt.Errorf("%s install: %w", name, err)
 		}
 		return nil
+	}
+	if h.lockPersonality {
+		// The personality to lock is the one the runner has now, which
+		// is what the service is about to exec with.
+		cur, _, errno := unix.Syscall(unix.SYS_PERSONALITY, 0xffffffff, 0, 0)
+		if errno != 0 {
+			return fmt.Errorf("lock-personality: query current personality: %w", errno)
+		}
+		if err := installArg("lock-personality", func() ([]unix.SockFilter, error) {
+			return seccomp.CompileLockPersonality(uint32(cur))
+		}); err != nil {
+			return err
+		}
 	}
 	if h.restrictRealtime {
 		if err := installArg("restrict-realtime", seccomp.CompileRestrictRealtime); err != nil {
@@ -267,13 +280,9 @@ func collectDenyList(h hardeningSpec) []string {
 	if h.protectHostname {
 		out = append(out, "sethostname", "setdomainname")
 	}
-	if h.lockPersonality {
-		// systemd's LockPersonality= actually arg-checks the
-		// personality() syscall and only denies arg != current. In v1
-		// we blanket-deny; almost no service legitimately calls
-		// personality() and a blanket deny is easy to audit.
-		out = append(out, "personality")
-	}
+	// lock-personality is not in this list: it arg-checks personality()
+	// (seccomp.CompileLockPersonality), so the query and a no-op set
+	// pass. It used to be here, which also refused the query.
 	return out
 }
 

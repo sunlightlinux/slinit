@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -168,13 +169,25 @@ func checkMachineTag(param string) (bool, string) {
 
 // -------- credential -----------------------------------------------------
 
-// checkCredential succeeds when the named credential is available at
-// $CREDENTIALS_DIRECTORY/<name>. Matches systemd's
-// ConditionCredential=. The predicate is evaluated in the manager's
-// environment; a service being started by slinit that declared its own
-// credentials sees $CREDENTIALS_DIRECTORY pointing at
-// /run/credentials/<svc>/, so this check is meaningful for services
-// that need to gate on a specific credential having been provisioned.
+// credentialStores are the system credential stores, searched after the
+// manager's own credentials: the CONF_PATHS order systemd uses, plain
+// stores first, then the .encrypted ones. A variable so tests can point
+// it elsewhere.
+var credentialStores = []string{"/etc/credstore", "/run/credstore", "/usr/local/lib/credstore", "/usr/lib/credstore"}
+
+// checkCredential succeeds when the named credential exists in the
+// manager's own credentials ($CREDENTIALS_DIRECTORY, then
+// $ENCRYPTED_CREDENTIALS_DIRECTORY) or in a system credential store.
+// Matches systemd's ConditionCredential= since v263 (1592d554e5),
+// which added the stores so a credential that can configure a service
+// through ImportCredential= can also decide whether it runs. Only
+// existence is checked: nothing is read or decrypted, and the entry is
+// not followed if it is a symlink.
+//
+// A store the caller may not read counts as not having it, as for
+// systemd's unprivileged callers. Any other error is reported only when
+// the credential is found nowhere, so a broken directory does not hide
+// a match in a later one.
 func checkCredential(param string) (bool, string) {
 	name := strings.TrimSpace(param)
 	if name == "" {
@@ -185,14 +198,36 @@ func checkCredential(param string) (bool, string) {
 	if strings.ContainsAny(name, "/\x00") {
 		return false, "credential: name must not contain '/' or NUL"
 	}
-	dir := os.Getenv("CREDENTIALS_DIRECTORY")
-	if dir == "" {
-		return false, "credential: CREDENTIALS_DIRECTORY unset"
+	var dirs []string
+	for _, env := range []string{"CREDENTIALS_DIRECTORY", "ENCRYPTED_CREDENTIALS_DIRECTORY"} {
+		if d := os.Getenv(env); d != "" {
+			dirs = append(dirs, d)
+		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-		return false, fmt.Sprintf("credential: %v", err)
+	own := len(dirs)
+	dirs = append(dirs, credentialStores...)
+	for _, d := range credentialStores {
+		dirs = append(dirs, d+".encrypted")
 	}
-	return true, ""
+
+	var firstErr error
+	for i, d := range dirs {
+		_, err := os.Lstat(filepath.Join(d, name))
+		switch {
+		case err == nil:
+			return true, ""
+		case errors.Is(err, os.ErrNotExist):
+		case i >= own && errors.Is(err, os.ErrPermission):
+		default:
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if firstErr != nil {
+		return false, fmt.Sprintf("credential: %v", firstErr)
+	}
+	return false, fmt.Sprintf("credential: %q not in the manager's credentials or any credential store", name)
 }
 
 // -------- control-group-controller ---------------------------------------

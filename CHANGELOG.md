@@ -58,6 +58,60 @@ verified with `git tag -v`.
   - Functional case `243-syslog-dev-log` checks it as PID 1, and fails
     on 4 of its 5 checks with the reader turned off.
 
+- **A service can remove fds from its fd store: `FDSTOREREMOVE=1` and
+  `FDSTOREWIPE=`.** The store only ever grew: slinit understood
+  `FDSTORE=1` and none of the removal commands, so a service that
+  stashed a connection could not drop it again short of a stop that
+  cleared the store. `FDSTOREREMOVE=1` with `FDNAME=` removes the fds of
+  that name, as systemd has since v236; `FDSTOREWIPE=<glob>`, new in
+  systemd v263 (`c5db3b2276`), removes those whose names match the glob,
+  as fnmatch(3) does with no flags. The order of precedence is
+  systemd's: a wipe makes the message's other fd-store commands
+  ignored, and a removal without a valid `FDNAME=` is ignored. Fds
+  attached to a removal are closed. The pattern comes from the service
+  and is matched in PID 1, so the matcher is linear: a backtracking `*`
+  takes exponential time on `*a*a*a...b`, which the fuzz reference
+  showed by tripping the fuzzer's hang limit.
+
+### Changed
+
+- **`condition-credential` also finds credentials in the credential
+  stores.** It looked in slinit's own `$CREDENTIALS_DIRECTORY` only; it
+  now also looks in `$ENCRYPTED_CREDENTIALS_DIRECTORY`, then in
+  `credstore` and `credstore.encrypted` under `/etc`, `/run`,
+  `/usr/local/lib` and `/usr/lib`, as systemd's ConditionCredential=
+  does since v263 (`1592d554e5`), so a credential written to a store
+  (by `systemd-imds --import`, say) can gate a service as well as
+  configure it. Only existence is checked, a symlink counts without
+  being followed, and a store the caller cannot read counts as not
+  having it.
+  - *Compat:* a service with `condition-credential` (or `!`) may now
+    start, or be skipped, because of a credential in a store that was
+    not meant as a switch. Check `/etc/credstore` and `/run/credstore`
+    for names your conditions use.
+  - `import-credential` still searches `/etc/credstore` only, so a
+    credential found by the condition in another store is not
+    imported.
+
+### Fixed
+
+- **`lock-personality = yes` refused nothing.** The runner put
+  `personality` in its seccomp deny list, but the syscall table it is
+  compiled against had no entry for it, and the compiler skips a name it
+  does not know: the filter it installed allowed every call. The
+  functional case only checked that some filter was installed. The table
+  now has the entry, and a test fails if any name the runner denies is
+  not in it; every other name was. The call is now arg-checked, as
+  systemd's LockPersonality= is: querying the personality (0xffffffff)
+  and setting the current one are allowed — systemd allows the query
+  since v263 (`d21d96fe77`) — and any other value kills the process
+  with SIGSYS, which a test checks on the real kernel. The personality
+  locked is the one at exec, after `personality =` if the service sets
+  it.
+  - *Compat:* a service with `lock-personality = yes` that changes its
+    personality now dies with SIGSYS, where it silently succeeded. That
+    is what the setting always claimed to do.
+
 - **`slinitctl signal` accepts every name `slinitctl signal --list`
   shows.** The list and the parser were two tables: the list offered 31
   names, the parser knew 9 (HUP INT QUIT KILL TERM USR1 USR2 STOP CONT),

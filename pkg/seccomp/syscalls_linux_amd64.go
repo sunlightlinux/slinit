@@ -315,6 +315,7 @@ var syscallNumbers = map[string]int{
 	"swapon":            unix.SYS_SWAPON,
 	"swapoff":           unix.SYS_SWAPOFF,
 	"syslog":            unix.SYS_SYSLOG,
+	"personality":       unix.SYS_PERSONALITY,
 	"acct":              unix.SYS_ACCT,
 	"ptrace":            unix.SYS_PTRACE,
 	"process_vm_readv":  unix.SYS_PROCESS_VM_READV,

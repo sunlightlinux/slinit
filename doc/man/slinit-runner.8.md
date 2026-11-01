@@ -195,7 +195,8 @@ seccomp filter plus a small set of mount operations applied before
     **ProtectHostname=**.
 
 **\--lock-personality**
-:   Block **personality**(2). Mirrors **LockPersonality=**.
+:   Kill on **personality**(2) unless it queries (0xffffffff) or sets
+    the current personality. Mirrors **LockPersonality=**.
 
 **\--restrict-realtime**
 :   Block **sched_setscheduler**(2) with *SCHED_FIFO*/*RR*/*DEADLINE*

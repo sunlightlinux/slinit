@@ -118,10 +118,10 @@ For multi-step tasks, state a brief plan:
 - `./tests/k8s/run.sh` — 10 cases running the same image as a pod on a local
   `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
-  single target. 44 repo-wide: 27 in `tests/fuzz/`, 17 beside the code
+  single target. 45 repo-wide: 27 in `tests/fuzz/`, 18 beside the code
   they exercise (converters, sysusers/tmpfiles/timedatectl/hostnamectl
-  parsers, the syslog parser, `pkg/service` state machine), so
-  `./tests/fuzz` alone is not all of them.
+  parsers, the syslog parser, the fd-store glob, `pkg/service` state
+  machine), so `./tests/fuzz` alone is not all of them.
 - `./slinit-check <svc>` — offline config linter. Takes a service
   NAME, as dinit-check does (`-d <dir>` to search another directory);
   a path is looked up as a name and reported "not found".

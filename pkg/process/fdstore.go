@@ -58,6 +58,137 @@ func (s *FDStore) Add(e FDStoreEntry) error {
 	return nil
 }
 
+// Remove closes and drops every entry whose name match accepts, and
+// returns how many it dropped. Backs FDSTOREREMOVE=1 (exact name) and
+// FDSTOREWIPE= (glob).
+func (s *FDStore) Remove(match func(name string) bool) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.entries[:0]
+	n := 0
+	for _, e := range s.entries {
+		if !match(e.Name) {
+			kept = append(kept, e)
+			continue
+		}
+		if e.File != nil {
+			e.File.Close()
+		}
+		n++
+	}
+	clear(s.entries[len(kept):]) // no stale *os.File left in the backing array
+	s.entries = kept
+	return n
+}
+
+// ValidFDName reports whether name may name a stored fd, or (as a
+// pattern) select them: 1 to 255 printable ASCII characters, no ':'.
+// systemd's rule for FDNAME= and FDSTOREWIPE= alike.
+func ValidFDName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; c < 0x20 || c > 0x7e || c == ':' {
+			return false
+		}
+	}
+	return true
+}
+
+// MatchFDName reports whether name matches pattern as fnmatch(3) does
+// with no flags, which is how systemd applies FDSTOREWIPE=: '*' and '?'
+// also match '/' and a leading '.', "[...]" is a set ('!' or '^'
+// negates), and a backslash makes the next character literal.
+//
+// The pattern comes from a service and is matched in PID 1, so this is
+// the linear-time form: every element but '*' consumes exactly one
+// character, so only the last '*' needs a resume point, and the work is
+// bounded by len(pattern) * len(name). A recursive '*' is exponential
+// on "*a*a*a...b".
+func MatchFDName(pattern, name string) bool {
+	p, n := 0, 0
+	starP, starN := -1, 0
+	for n < len(name) {
+		if p < len(pattern) {
+			if pattern[p] == '*' {
+				starP, starN = p, n
+				p++
+				continue
+			}
+			if next, ok := matchFDNameOne(pattern, p, name[n]); ok {
+				p, n = next, n+1
+				continue
+			}
+		}
+		if starP < 0 {
+			return false
+		}
+		// Let the last '*' take one more character and retry after it.
+		starN++
+		p, n = starP+1, starN
+	}
+	for p < len(pattern) && pattern[p] == '*' {
+		p++
+	}
+	return p == len(pattern)
+}
+
+// matchFDNameOne matches the single-character element at pattern[p]
+// (anything but '*') against c, returning the index past the element.
+func matchFDNameOne(pattern string, p int, c byte) (int, bool) {
+	switch pattern[p] {
+	case '?':
+		return p + 1, true
+	case '[':
+		rest, in, closed := matchFDNameSet(pattern[p+1:], c)
+		if !closed {
+			// No closing ']': fnmatch takes the '[' literally.
+			return p + 1, c == '['
+		}
+		return len(pattern) - len(rest), in
+	case '\\':
+		if p+1 < len(pattern) {
+			return p + 2, pattern[p+1] == c
+		}
+	}
+	return p + 1, pattern[p] == c
+}
+
+// matchFDNameSet matches c against the set that starts at p (just past
+// the '['): the pattern after the closing ']', whether c is in the set,
+// and whether there was a closing ']' at all. A ']' first in the set is
+// a member, not the end.
+func matchFDNameSet(p string, c byte) (rest string, in, closed bool) {
+	negate := false
+	if p != "" && (p[0] == '!' || p[0] == '^') {
+		negate, p = true, p[1:]
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] == ']' && i > 0 {
+			return p[i+1:], in != negate, true
+		}
+		lo := p[i]
+		if lo == '\\' && i+1 < len(p) {
+			i++
+			lo = p[i]
+		}
+		hi := lo
+		if i+2 < len(p) && p[i+1] == '-' && p[i+2] != ']' {
+			hi = p[i+2]
+			if hi == '\\' && i+3 < len(p) {
+				i++
+				hi = p[i+2]
+			}
+			i += 2
+		}
+		if lo <= c && c <= hi {
+			in = true
+		}
+	}
+	return "", false, false
+}
+
 // Drain returns the current entries and resets the store. Used by
 // StartProcess so each restart hands out the stashed fds exactly
 // once — re-storing must come from the new child's sd_notify.
@@ -94,15 +225,20 @@ func (s *FDStore) Close() {
 
 // ParseNotifyMessage decodes one sd_notify packet body. systemd's
 // wire format is one VAR=VAL per line; we extract the subset slinit
-// understands (READY, STATUS, FDSTORE, FDNAME, WATCHDOG, STOPPING).
-// Unknown keys are ignored.
+// understands (READY, STATUS, FDSTORE, FDSTOREREMOVE, FDSTOREWIPE,
+// FDNAME, WATCHDOG, STOPPING). Unknown keys are ignored.
 type NotifyMessage struct {
-	Ready    bool
-	Stopping bool
-	FDStore  bool
-	FDName   string
-	Watchdog bool
-	Status   string
+	Ready         bool
+	Stopping      bool
+	FDStore       bool
+	FDStoreRemove bool
+	// FDStoreWipe is the FDSTOREWIPE= glob; HasFDStoreWipe tells an
+	// empty one (invalid, and ignored) from none at all.
+	FDStoreWipe    string
+	HasFDStoreWipe bool
+	FDName         string
+	Watchdog       bool
+	Status         string
 }
 
 // ParseNotifyMessage parses the text portion of a sd_notify datagram.
@@ -126,6 +262,10 @@ func ParseNotifyMessage(body []byte) NotifyMessage {
 			m.Stopping = string(val) == "1"
 		case "FDSTORE":
 			m.FDStore = string(val) == "1"
+		case "FDSTOREREMOVE":
+			m.FDStoreRemove = string(val) == "1"
+		case "FDSTOREWIPE":
+			m.FDStoreWipe, m.HasFDStoreWipe = string(val), true
 		case "FDNAME":
 			m.FDName = string(val)
 		case "WATCHDOG":

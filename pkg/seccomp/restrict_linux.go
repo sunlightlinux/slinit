@@ -128,6 +128,30 @@ func CompileRestrictRealtime() ([]unix.SockFilter, error) {
 	return prog, nil
 }
 
+// CompileLockPersonality builds the filter for lock-personality: it
+// kills on personality(2) unless the argument is 0xffffffff, which only
+// queries the current personality, or current itself, which changes
+// nothing. That is systemd's LockPersonality= since v263 (d21d96fe77),
+// which stopped refusing the query; slinit used to deny every call,
+// query included. Only the low 32 bits are compared: the kernel takes
+// the argument as an unsigned int, so the high word cannot matter.
+func CompileLockPersonality(current uint32) ([]unix.SockFilter, error) {
+	nr, ok := SyscallNumber("personality")
+	if !ok {
+		return nil, fmt.Errorf("lock-personality: personality unknown")
+	}
+	prog := archHeader()
+	prog = append(prog,
+		jne(uint32(nr), 4), // not personality → ALLOW
+		loadArgLow32(0),
+		unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: 0xffffffff, Jt: 2, Jf: 0}, // query → ALLOW
+		unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: current, Jt: 1, Jf: 0},    // no change → ALLOW
+		retInsn(ActionKill),
+		retInsn(ActionAllow),
+	)
+	return prog, nil
+}
+
 // CompileRestrictNamespaces builds a filter that denies unshare/setns/
 // clone when the flags include any CLONE_NEW* bit, and blanket-denies
 // clone3 (its args live behind a user pointer). The CLONE_NEW* mask is

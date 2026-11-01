@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/seccomp"
 )
 
 // TestCollectDenyListSpotChecks verifies each active knob contributes
@@ -23,8 +25,6 @@ func TestCollectDenyListSpotChecks(t *testing.T) {
 			[]string{"clock_settime", "clock_adjtime", "settimeofday", "adjtimex"}},
 		{"hostname", hardeningSpec{protectHostname: true},
 			[]string{"sethostname", "setdomainname"}},
-		{"personality", hardeningSpec{lockPersonality: true},
-			[]string{"personality"}},
 	}
 	for _, c := range cases {
 		got := collectDenyList(c.spec)
@@ -71,6 +71,25 @@ func TestHardeningSpecNeedsMountNS(t *testing.T) {
 	for _, s := range seccompOnly {
 		if s.needsMountNS() {
 			t.Errorf("%+v should NOT need mount NS", s)
+		}
+	}
+}
+
+// The deny filter is compiled by seccomp.Compile, which skips a name it
+// has no number for. lock-personality listed "personality" for months
+// while the table lacked it, so the filter it installed refused nothing
+// and every test still saw seccomp mode 2. Every name the runner denies
+// must resolve.
+func TestDenyListNamesAreKnown(t *testing.T) {
+	all := hardeningSpec{
+		protectKernelTunables: true, protectKernelModules: true,
+		protectKernelLogs: true, protectClock: true,
+		protectControlGroups: true, protectHostname: true,
+		lockPersonality: true,
+	}
+	for _, name := range collectDenyList(all) {
+		if _, ok := seccomp.SyscallNumber(name); !ok {
+			t.Errorf("deny list names %q, which the syscall table does not know: the filter would skip it", name)
 		}
 	}
 }

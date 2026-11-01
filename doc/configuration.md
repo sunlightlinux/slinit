@@ -423,7 +423,7 @@ Also enforced by `slinit-runner`; every setting fails closed.
 | `protect-clock` | bool | Block `clock_settime`, `settimeofday`, `adjtimex` |
 | `protect-control-groups` | bool | Read-only `/sys/fs/cgroup` |
 | `protect-hostname` | bool | Block `sethostname`, `setdomainname` |
-| `lock-personality` | bool | Block `personality` |
+| `lock-personality` | bool | Refuse changing the personality; querying it is allowed |
 
 ### Periodic tasks
 

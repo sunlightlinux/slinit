@@ -830,7 +830,36 @@ func (sr *ServiceRecord) FDStore() *process.FDStore { return sr.fdStore }
 // goroutine calls it for every sd_notify packet. FDSTORE=1 messages
 // stash their attached fds; other messages are currently logged-only
 // (READY=1 is handled via the legacy pipe path in ProcessService).
+//
+// The fd-store commands are taken in systemd's order of precedence:
+// FDSTOREWIPE=<glob> drops every stored fd whose name matches, and
+// makes the message's other fd-store commands ignored; else
+// FDSTOREREMOVE=1 drops the fds named by FDNAME=, which it requires;
+// else FDSTORE=1 adds. Descriptors attached to a removal are not
+// stored, and are closed below with the rest.
 func (sr *ServiceRecord) OnNotify(msg process.NotifyMessage, fds []*os.File) {
+	switch {
+	case msg.HasFDStoreWipe:
+		if !process.ValidFDName(msg.FDStoreWipe) {
+			sr.services.logger.Error("Service '%s': FDSTOREWIPE=%q is not a valid pattern, ignoring",
+				sr.serviceName, msg.FDStoreWipe)
+		} else if sr.fdStore != nil {
+			n := sr.fdStore.Remove(func(name string) bool { return process.MatchFDName(msg.FDStoreWipe, name) })
+			sr.services.logger.Info("Service '%s': fd-store wiped %d fd(s) matching %q; store=%d/%d",
+				sr.serviceName, n, msg.FDStoreWipe, sr.fdStore.Len(), sr.fdStoreMax)
+		}
+		msg.FDStore = false
+	case msg.FDStoreRemove:
+		if !process.ValidFDName(msg.FDName) {
+			sr.services.logger.Error("Service '%s': FDSTOREREMOVE=1 without a valid FDNAME=, ignoring",
+				sr.serviceName)
+		} else if sr.fdStore != nil {
+			n := sr.fdStore.Remove(func(name string) bool { return name == msg.FDName })
+			sr.services.logger.Info("Service '%s': fd-store removed %d fd(s) named %q; store=%d/%d",
+				sr.serviceName, n, msg.FDName, sr.fdStore.Len(), sr.fdStoreMax)
+		}
+		msg.FDStore = false
+	}
 	if msg.FDStore && sr.fdStore != nil {
 		for _, f := range fds {
 			name := msg.FDName

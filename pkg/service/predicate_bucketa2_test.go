@@ -3,6 +3,7 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -111,6 +112,7 @@ func TestMachineTagShapesFail(t *testing.T) {
 // TestCredentialAgainstEnv exercises the presence/absence + safety
 // guards without touching any real credential dir.
 func TestCredentialAgainstEnv(t *testing.T) {
+	withCredentialStores(t, t.TempDir())
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "api-key"), []byte("secret"), 0400); err != nil {
 		t.Fatalf("write cred: %v", err)
@@ -130,6 +132,84 @@ func TestCredentialAgainstEnv(t *testing.T) {
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
 	if ok, _ := checkCredential("api-key"); ok {
 		t.Error("expected false when CREDENTIALS_DIRECTORY unset")
+	}
+}
+
+func withCredentialStores(t *testing.T, dirs ...string) {
+	t.Helper()
+	saved := credentialStores
+	credentialStores = dirs
+	t.Cleanup(func() { credentialStores = saved })
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	t.Setenv("ENCRYPTED_CREDENTIALS_DIRECTORY", "")
+}
+
+// systemd v263: ConditionCredential= also finds credentials in the
+// credential stores, plain and .encrypted, the way ImportCredential=
+// does, so a credential that configures a service can gate it too.
+func TestCredentialInStores(t *testing.T) {
+	root := t.TempDir()
+	etc, run := filepath.Join(root, "etc-credstore"), filepath.Join(root, "run-credstore")
+	for _, d := range []string{etc, run, run + ".encrypted"} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withCredentialStores(t, etc, run)
+	if err := os.WriteFile(filepath.Join(run, "imds.token"), nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(run+".encrypted", "sealed"), nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	// Present but dangling: existence is checked, the link not followed.
+	if err := os.Symlink("/nonexistent", filepath.Join(etc, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"imds.token", "sealed", "link"} {
+		if ok, why := checkCredential(name); !ok {
+			t.Errorf("%s: not found in the stores: %s", name, why)
+		}
+	}
+	if ok, _ := checkCredential("absent"); ok {
+		t.Error("absent credential reported present")
+	}
+
+	// The manager's own credentials are still searched, and first.
+	own := t.TempDir()
+	if err := os.WriteFile(filepath.Join(own, "mine"), nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ENCRYPTED_CREDENTIALS_DIRECTORY", own)
+	if ok, why := checkCredential("mine"); !ok {
+		t.Errorf("credential in $ENCRYPTED_CREDENTIALS_DIRECTORY not found: %s", why)
+	}
+}
+
+// A broken store must not hide a match in a later one, and is reported
+// only when the credential is found nowhere.
+func TestCredentialStoreErrors(t *testing.T) {
+	root := t.TempDir()
+	notDir := filepath.Join(root, "file") // Lstat(file/x) fails with ENOTDIR
+	if err := os.WriteFile(notDir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	good := filepath.Join(root, "good")
+	if err := os.Mkdir(good, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(good, "c"), nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+
+	withCredentialStores(t, notDir, good)
+	if ok, why := checkCredential("c"); !ok {
+		t.Errorf("an unreadable first store hid the match in the second: %s", why)
+	}
+	withCredentialStores(t, notDir)
+	if ok, why := checkCredential("c"); ok || !strings.Contains(why, "not a directory") {
+		t.Errorf("found nowhere with a broken store: ok=%v why=%q, want the error reported", ok, why)
 	}
 }
 

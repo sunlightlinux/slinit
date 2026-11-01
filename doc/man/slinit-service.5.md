@@ -287,6 +287,15 @@ what tells you the oldest slinit your configuration will run on. See
     restart re-attaches the previous run's listening sockets without
     dropping connections.
 
+    The service can also drop stored fds: `FDSTOREREMOVE=1` with
+    `FDNAME=`*name* removes those named *name*, and
+    `FDSTOREWIPE=`*glob* removes those whose names match a shell glob
+    as **fnmatch**(3) does with no flags (`*` removes all of them,
+    including names with a dot or a slash). **FDSTOREWIPE=** wins over
+    the other two in the same message; an empty pattern, or one with a
+    `:` or a non-printable character, is ignored. Fds attached to a
+    removal are closed, not stored.
+
     The store lives in slinit's memory — a daemon restart loses
     everything, matching systemd. `0` (default) disables the
     feature; an unconfigured service has no `$NOTIFY_SOCKET`.
@@ -1379,10 +1388,13 @@ service's private mount namespace.
     systemd's **ProtectHostname=**.
 
 **lock-personality**=*yes*|*no*
-:   Deny **personality**(2). Equivalent to systemd's
-    **LockPersonality=** (slinit blanket-denies the call; systemd
-    arg-checks for non-current personalities — the practical effect
-    is identical for almost every workload).
+:   Refuse changing the execution domain: a **personality**(2) call
+    with any argument but the current personality, or 0xffffffff to
+    query it, kills the process with SIGSYS. The personality locked
+    is the one in effect at exec, after **personality=** if set.
+    Equivalent to systemd's **LockPersonality=**, which allows the
+    query since v263. Before 3.6.0 slinit meant to refuse every call
+    but, through a missing syscall-table entry, refused none.
 
 **restrict-realtime**=*yes*|*no*
 :   Deny **sched_setscheduler**(2) with *SCHED_FIFO* / *SCHED_RR* /
@@ -2440,9 +2452,15 @@ form):
 :   `/etc/machine-info` has a `TAGS=` line containing *tag*.
 
 **\*-credential**=*name*
-:   Credential *name* is present under the slinit daemon's own
-    `$CREDENTIALS_DIRECTORY` (set only when slinit itself was handed
-    credentials), not the service's. Fails when that is unset.
+:   Credential *name* exists in the slinit daemon's own credentials
+    (`$CREDENTIALS_DIRECTORY`, then `$ENCRYPTED_CREDENTIALS_DIRECTORY`,
+    set only when slinit itself was handed credentials — not the
+    service's), or in a system credential store: *credstore* and then
+    *credstore.encrypted* under */etc*, */run*, */usr/local/lib* and
+    */usr/lib*. Only existence is checked; a symlink counts without
+    being followed, and a store the caller cannot read counts as not
+    having it. Matches systemd's **ConditionCredential=** since v263;
+    before 3.6.0 slinit looked in `$CREDENTIALS_DIRECTORY` only.
 
 **\*-control-group-controller**=*memory*|*cpu*|*io*|...
 :   Named cgroup v2 controller enabled in

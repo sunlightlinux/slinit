@@ -117,7 +117,7 @@ func run() error {
 	pClock := fs.Bool("protect-clock", false, "block clock_settime/adjtime/settimeofday/adjtimex")
 	pCG := fs.Bool("protect-control-groups", false, "remount /sys/fs/cgroup read-only")
 	pHost := fs.Bool("protect-hostname", false, "block sethostname/setdomainname")
-	pPersonality := fs.Bool("lock-personality", false, "block personality(2)")
+	pPersonality := fs.Bool("lock-personality", false, "refuse personality(2) changes; querying is allowed")
 	rRealtime := fs.Bool("restrict-realtime", false, "block sched_setscheduler with SCHED_FIFO/RR/DEADLINE + sched_setattr")
 	rNamespaces := fs.Bool("restrict-namespaces", false, "block unshare/setns/clone with CLONE_NEW* + clone3 outright")
 	rSUIDSGID := fs.Bool("restrict-suidsgid", false, "block chmod/fchmod/fchmodat modes with SUID/SGID bits")
