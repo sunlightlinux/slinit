@@ -24,6 +24,35 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-11-01
+
+**No behaviour changed in this release.** It opens the 3.5 line. Next to
+3.4.6 it carries a single test, and nothing a service file, the control
+protocol or a script can observe is different.
+
+The version number is a deliberate choice, as 3.4.0's was: by the
+project's own precedent a release with tests only is a patch (3.1.5,
+3.2.3), and nothing here changes an interface. It is numbered as a minor
+to start a new line, and as a minor it gets a GitHub release, so its
+binaries are built with SLSA provenance from this tag.
+
+Upgrading from 3.4.6 changes nothing at runtime. Coming from 3.2.x, read
+3.3.0's notes first — s6 readiness there requires a newline.
+
+### Tests
+
+- **slinitctl's table of launch stages is checked against the daemon's.**
+  `slinitctl status` names the stage at which a service failed to
+  launch from a copy of the table in `pkg/process`, kept so the client
+  does not import the package for one table. A stage added on the daemon
+  side and not copied would show as *unknown*. slinitctl already treats
+  an index past its table as unknown, so it could not crash — dinit
+  hardened `dinitctl` against exactly that out-of-range read in
+  `e518520`, which is how the copy was noticed — but it could go
+  quietly wrong. The test walks the daemon's stages until it reaches one
+  it does not know, so a new stage is covered without touching the test,
+  and fails if either side has a stage the other lacks.
+
 ## [3.4.6] — 2026-11-01
 
 **A second slinit started on the same control socket now refuses to run,
