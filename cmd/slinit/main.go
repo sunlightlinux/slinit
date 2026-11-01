@@ -864,6 +864,25 @@ func main() {
 	sock := resolveSocketPath(socketPath, systemMode)
 	logger.Debug("Control socket: %s", sock)
 
+	// Refuse to run beside a live instance on the same control socket,
+	// before any service starts. `slinit -m` on a booted system used to
+	// run the boot services a second time -- remounting filesystems,
+	// starting a second udevd and dhcpcd -- then, on exit, stop them all
+	// and delete the running PID 1's socket, leaving it unreachable. dinit
+	// makes the same check (open_control_socket). PID 1 cannot exit
+	// without panicking the kernel, so it only warns; the control server
+	// still refuses to take the socket over.
+	if control.SocketActive(sock) {
+		if isPID1 {
+			logger.Error("Control socket %s is already active (another instance already running?); "+
+				"continuing without taking it over", sock)
+		} else {
+			logger.Error("Control socket %s is already active (another instance already running?); "+
+				"not starting. To manage the running instance, use slinitctl", sock)
+			exitFlushed(cal, 1)
+		}
+	}
+
 	// cron-persistent keeps each timer's last-run instant on disk so a
 	// missed fire is caught up after a reboot. The default lives under
 	// /var/lib, which a user-mode daemon cannot write — it would log a

@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -108,6 +110,28 @@ type Server struct {
 	Pins *persist.PinStore
 }
 
+// ErrSocketActive means another process answers on the control socket:
+// an instance of slinit is already running there.
+var ErrSocketActive = errors.New("control socket is already active (another instance already running?)")
+
+// SocketActive reports whether something answers on the Unix socket at
+// path. A stale file left by an instance that died refuses the
+// connection and does not count.
+//
+// There is no atomic way to ask whether a socket file is stale, so this
+// can race with an instance starting at the same moment -- dinit, which
+// makes the same check, accepts the same window. What it does stop is
+// the common case, and the severe one: starting a second system manager
+// beside a running one.
+func SocketActive(path string) bool {
+	c, err := net.DialTimeout("unix", path, time.Second)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
+}
+
 // NewServer creates a new control socket server.
 func NewServer(services *service.ServiceSet, sockPath string, logger *logging.Logger) *Server {
 	return &Server{
@@ -120,6 +144,14 @@ func NewServer(services *service.ServiceSet, sockPath string, logger *logging.Lo
 
 // Start binds the Unix socket and begins accepting connections.
 func (s *Server) Start(ctx context.Context) error {
+	// Never take over a live socket. Removing it would leave the instance
+	// that owns it running but unreachable: its listener stays open on a
+	// file that no longer has a name, so slinitctl -- shutdown included --
+	// can no longer find it.
+	if SocketActive(s.sockPath) {
+		return fmt.Errorf("%s: %w", s.sockPath, ErrSocketActive)
+	}
+
 	// Remove stale socket file if it exists
 	if err := os.Remove(s.sockPath); err != nil && !os.IsNotExist(err) {
 		return err
@@ -255,6 +287,12 @@ func (s *Server) Reopen() error {
 
 	// Wait for the old acceptLoop goroutine to finish before starting a new one
 	s.acceptWg.Wait()
+
+	// Our own listener is closed, so anything still answering at the path
+	// is another instance's socket. Leave it alone, as Start does.
+	if SocketActive(s.sockPath) {
+		return fmt.Errorf("%s: %w", s.sockPath, ErrSocketActive)
+	}
 
 	// Remove stale socket file
 	os.Remove(s.sockPath)
