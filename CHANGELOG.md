@@ -24,6 +24,46 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.4.6] — 2026-11-01
+
+**A second slinit started on the same control socket now refuses to run,
+instead of re-running the boot and leaving the running instance
+unreachable.** If you have ever typed `slinit -m` on a booted system to
+see what it does, this is the release that stops it.
+
+### Changed
+
+- **slinit no longer starts beside a running instance on the same
+  control socket.** On a machine booted with slinit as PID 1, `slinit -m`
+  started a second system manager. It ran every boot service again —
+  remounting filesystems, starting a second `udevd` and `dhcpcd`, failing
+  `sshd` on a port already taken — and on exit stopped them all. Worse,
+  it removed the running PID 1's control socket and bound its own, then
+  deleted that too on exit: PID 1 kept running, listening on a socket
+  file that no longer existed, and `slinitctl` — `shutdown` included —
+  could no longer reach it.
+
+  slinit now connects to the socket before touching it. If anything
+  answers, a new instance exits with *control socket … is already active
+  (another instance already running?)* before starting a single service,
+  and points at `slinitctl`. The same rule holds when the socket is
+  opened, and when it is reopened on `SIGUSR1`. A socket file left behind
+  by an instance that died does not answer, and is replaced as before.
+  This is dinit's behaviour, which slinit's port had dropped.
+
+  *Compat:* the only case that behaves differently is a second instance
+  pointed at a socket another instance is serving. That never worked: it
+  left the first one unreachable, so nothing could rely on it. Instances
+  with different sockets (`--socket-path`) are unaffected. PID 1 itself
+  never exits over this — that would panic the kernel — it logs the error
+  and carries on without taking the socket over.
+
+### Fixed
+
+- **A running slinit made unreachable this way can be recovered without
+  a reboot:** `kill -USR1 1` reopens its control socket, recreating the
+  missing file. That already worked; it is now tested.
+
 ## [3.4.5] — 2026-10-25
 
 **Nothing you run behaves differently.** One commit, and it fixes a
