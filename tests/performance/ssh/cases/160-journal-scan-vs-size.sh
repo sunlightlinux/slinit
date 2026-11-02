@@ -74,3 +74,4 @@ printf "BenchmarkJournalFetchN100_scan    27  base=%6.3f ms (%6.3f/%6.3f, spread
     "$(awk -v n="$_after_med" 'BEGIN{print n/1e6}')" \
     "$(awk -v n="$_delta" 'BEGIN{print n/1e6}')" \
     "$_pct"
+perf_report_delivered 5000 "$_pump_tag"

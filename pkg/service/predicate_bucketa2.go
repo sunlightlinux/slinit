@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // Bucket A2 predicates — mid-complexity checks that inspect a specific
@@ -169,12 +171,6 @@ func checkMachineTag(param string) (bool, string) {
 
 // -------- credential -----------------------------------------------------
 
-// credentialStores are the system credential stores, searched after the
-// manager's own credentials: the CONF_PATHS order systemd uses, plain
-// stores first, then the .encrypted ones. A variable so tests can point
-// it elsewhere.
-var credentialStores = []string{"/etc/credstore", "/run/credstore", "/usr/local/lib/credstore", "/usr/lib/credstore"}
-
 // checkCredential succeeds when the named credential exists in the
 // manager's own credentials ($CREDENTIALS_DIRECTORY, then
 // $ENCRYPTED_CREDENTIALS_DIRECTORY) or in a system credential store.
@@ -205,8 +201,9 @@ func checkCredential(param string) (bool, string) {
 		}
 	}
 	own := len(dirs)
-	dirs = append(dirs, credentialStores...)
-	for _, d := range credentialStores {
+	stores := process.CredentialStoreDirs()
+	dirs = append(dirs, stores...)
+	for _, d := range stores {
 		dirs = append(dirs, d+".encrypted")
 	}
 

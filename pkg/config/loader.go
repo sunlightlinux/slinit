@@ -1762,33 +1762,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetPSIMemoryWatch(desc.MemoryPressureWatch, desc.MemoryPressureThreshold)
 	rec.SetPSICPUWatch(desc.CPUPressureWatch, desc.CPUPressureThreshold)
 	rec.SetPSIIOWatch(desc.IOPressureWatch, desc.IOPressureThreshold)
-	// systemd ImportCredential= — glob patterns resolved against
-	// the system credstore root (default /etc/credstore, override
-	// via $SYSTEM_CREDSTORE for tests). Each match
-	// becomes a credential named by its basename, added on top of
-	// load-credential / set-credential. Silent on empty match sets:
-	// systemd treats ImportCredential= as best-effort so an operator
-	// can list every candidate credstore without requiring all be
-	// present at start time.
-	creds := desc.Credentials
-	credRoot := credstoreRoot()
-	for _, pat := range desc.ImportCredentials {
-		full := filepath.Join(credRoot, pat)
-		matches, err := filepath.Glob(full)
-		if err != nil {
-			// Bad glob patterns surface at the runner side via
-			// SetupCredentials returning no data; log so the operator
-			// sees the syntax error but don't fail the whole loader.
-			continue
-		}
-		for _, m := range matches {
-			creds = append(creds, process.CredentialSource{
-				Name: filepath.Base(m),
-				Path: m,
-			})
-		}
-	}
-	rec.SetCredentials(creds)
+	rec.SetCredentials(importCredentials(desc.Credentials, desc.ImportCredentials))
 	rec.SetDynamicUser(desc.DynamicUser)
 	rec.SetFDStoreMax(desc.FileDescriptorStoreMax)
 	rec.SetFDStorePreserve(desc.FileDescriptorStorePreserve)
@@ -2572,12 +2546,47 @@ func dbusReadyCheckCommand(name, scope string) []string {
 	return []string{"/bin/sh", "-c", cmd}
 }
 
-// credstoreRoot returns the base directory ImportCredential= globs
-// against. Defaults to /etc/credstore per the systemd docs; a test
-// or an alternate distro layout can override via SYSTEM_CREDSTORE.
-func credstoreRoot() string {
-	if v := os.Getenv("SYSTEM_CREDSTORE"); v != "" {
-		return v
+// importCredentials adds the import-credential matches to a service's
+// explicit credentials, as systemd's ImportCredential= does. Each glob
+// is matched in slinit's own $CREDENTIALS_DIRECTORY, then in every
+// plain credential store (process.CredentialStoreDirs); a match becomes
+// a credential named by its file name. A name already taken is skipped,
+// so the first store that has it wins and an import never replaces a
+// load-credential or set-credential of the same name. It used to append
+// every match: an import named like an explicit credential was written
+// over it (as root), or failed the start (non-root, the 0400 file). The
+// .encrypted stores are not searched, since slinit cannot decrypt.
+// Best-effort, as in systemd: a glob matching nothing, or a bad one,
+// adds nothing.
+func importCredentials(explicit []process.CredentialSource, globs []string) []process.CredentialSource {
+	if len(globs) == 0 {
+		return explicit
 	}
-	return "/etc/credstore"
+	creds := append([]process.CredentialSource(nil), explicit...)
+	taken := make(map[string]bool, len(creds))
+	for _, c := range creds {
+		taken[c.Name] = true
+	}
+	var dirs []string
+	if d := os.Getenv("CREDENTIALS_DIRECTORY"); d != "" {
+		dirs = append(dirs, d)
+	}
+	dirs = append(dirs, process.CredentialStoreDirs()...)
+	for _, pat := range globs {
+		for _, dir := range dirs {
+			matches, err := filepath.Glob(filepath.Join(dir, pat))
+			if err != nil {
+				break // the pattern is bad in every directory
+			}
+			for _, m := range matches {
+				name := filepath.Base(m)
+				if taken[name] {
+					continue
+				}
+				taken[name] = true
+				creds = append(creds, process.CredentialSource{Name: name, Path: m})
+			}
+		}
+	}
+	return creds
 }

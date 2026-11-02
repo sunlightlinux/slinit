@@ -24,6 +24,46 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`import-credential` searches the same credential stores as
+  `condition-credential`.** 3.6.0 taught the condition systemd's store
+  list and left the import on `/etc/credstore` alone, so a condition
+  could find a credential the import would not bring in. Both now use
+  one list: slinit's own `$CREDENTIALS_DIRECTORY`, then `credstore`
+  under `/etc`, `/run`, `/usr/local/lib` and `/usr/lib`, the first that
+  has a name winning, as systemd's ImportCredential= does. The
+  `.encrypted` stores are still not imported, since slinit cannot
+  decrypt; the condition only checks they exist.
+  - *Compat:* a service may now get a credential from `/run/credstore`
+    or `/usr/lib/credstore` that it did not get before. A credential of
+    the same name in `/etc/credstore` still wins.
+
+### Fixed
+
+- **An imported credential no longer replaces an explicit one of the
+  same name.** Imports were appended after `load-credential` and
+  `set-credential`, and every entry was written in order: as root the
+  import overwrote the explicit value, and without root the second write
+  hit the 0400 file and the service failed to start. A name already
+  taken is now skipped, as in systemd, and the first store with a name
+  wins.
+
+### Tests
+
+- **The perf suite's syslog probe tells the rate limit from a missing
+  listener.** On ceres v3.6.0, 210 skipped with "nothing on /dev/log?"
+  on a host where `/dev/log` worked: 160 had just pumped 5000 messages
+  as root, past the 1000-per-10-seconds limit, and the probe fell in
+  the same window. The probe now waits the window out and tries once
+  more, and the SKIP names which of three things failed (no `logger`,
+  no socket, messages lost anyway).
+- **The journal-write cases print `delivered=N/M`.** 090, 110, 160,
+  210, 520 and 570 send hundreds or thousands of messages and none
+  checked how many arrived, so part of what they timed was the drop
+  path unseen; 160's "after a 5000-entry pump" put about 1000 in. Each
+  now counts its messages in the journal after the timed loop.
+
 ## [3.6.0] — 2026-11-01
 
 **If a service sets `lock-personality = yes`, upgrade: until now it

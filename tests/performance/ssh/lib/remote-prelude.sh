@@ -157,22 +157,73 @@ _prf_note_failure() {
 # perf_require_syslog
 #   Returns non-zero, with a SKIP line, unless a logger(1) message reaches
 #   the journal. The journal-write cases pump logger and read the tag
-#   back; on a host with nothing listening on /dev/log every logger call
-#   fails and the read finds nothing, so they would time an empty fetch.
-#   Use as:  perf_require_syslog || { return 0 2>/dev/null || exit 0; }
+#   back; on a host where that cannot work they would time an empty
+#   fetch. Use as:  perf_require_syslog || { return 0 2>/dev/null || exit 0; }
+#
+#   A message that does not arrive is not proof that nothing listens.
+#   slinit (3.6.0+) rate-limits /dev/log per sending uid, 1000 messages
+#   per 10 s for root, and the cases before this one may have used the
+#   window up: 160 pumps 5000. That made 210 skip with "nothing on
+#   /dev/log?" on a host where /dev/log worked. So a socket that is there
+#   gets a second chance once the window has passed, and the SKIP says
+#   which of the three things went wrong.
 perf_require_syslog() {
-    _prs_tag="perf_syslog_probe_$$"
-    if logger -t "$_prs_tag" probe 2>/dev/null; then
+    if ! command -v logger > /dev/null; then
+        echo "SKIP: logger(1) is not installed"
+        return 1
+    fi
+    if [ ! -S /dev/log ]; then
+        echo "SKIP: nothing listens on /dev/log (no syslog daemon, slinit before 3.6.0, or --syslog-socket=)"
+        return 1
+    fi
+    _prs_try=1
+    while :; do
+        _prs_tag="perf_syslog_probe_$$_$_prs_try"
+        logger -t "$_prs_tag" probe 2>/dev/null
         _prs_n=0
         while [ "$_prs_n" -lt 10 ]; do
             slinit-journalctl -t "$_prs_tag" -n 1 2>/dev/null | grep -q probe && return 0
             sleep 0.1
             _prs_n=$(( _prs_n + 1 ))
         done
-    fi
-    echo "SKIP: logger(1) messages do not reach the journal on this host" \
-         "(nothing on /dev/log?)"
+        [ "$_prs_try" -ge 2 ] && break
+        _prs_try=2
+        sleep 11 # past slinit's 10 s rate-limit window
+    done
+    echo "SKIP: /dev/log exists but logger(1) messages do not reach the journal," \
+         "even after waiting out a rate-limit window"
     return 1
+}
+
+# perf_syslog_count TAG...
+#   How many syslog entries the journal holds under the given tags, summed.
+perf_syslog_count() {
+    _psc_total=0
+    for _psc_tag in "$@"; do
+        _psc_n=$(slinit-journalctl -t "$_psc_tag" -n 100000 -o json 2>/dev/null |
+            grep -c '"_transport":"syslog"')
+        _psc_total=$(( _psc_total + _psc_n ))
+    done
+    echo "$_psc_total"
+}
+
+# perf_report_delivered SENT TAG...
+#   Prints how many of the SENT logger messages under TAG... reached the
+#   journal. The journal-write cases send hundreds or thousands as root,
+#   past slinit's /dev/log rate limit, so part of what they time is the
+#   drop path; without this line nothing said so. Counted after the
+#   timed loop, so it does not change the figures. The ring holds 4096
+#   entries, which caps what can be counted as well.
+perf_report_delivered() {
+    _prd_sent=$1
+    shift
+    _prd_got=$(perf_syslog_count "$@")
+    if [ "$_prd_got" -ge "$_prd_sent" ]; then
+        echo "  delivered=$_prd_got/$_prd_sent"
+    else
+        echo "  delivered=$_prd_got/$_prd_sent  ($(( _prd_sent - _prd_got )) not in the journal:" \
+             "dropped by the /dev/log rate limit, or rotated out of the 4096-entry ring)"
+    fi
 }
 
 # The suite's own target services, provisioned by run.sh (lib/fixture.sh)

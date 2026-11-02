@@ -22,3 +22,8 @@ _fetch_under_pressure() {
 _iter=0
 perf_run_iters "$ITERS" "JournalFetchUnderWrite_500" \
     '_iter=$((_iter+1)); _fetch_under_pressure $_iter'
+_tags=
+_i=1
+while [ "$_i" -le "$ITERS" ]; do _tags="$_tags perf_writer_$_i"; _i=$((_i + 1)); done
+# shellcheck disable=SC2086
+perf_report_delivered $((ITERS * 500)) $_tags

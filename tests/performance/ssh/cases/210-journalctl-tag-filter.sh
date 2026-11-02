@@ -16,3 +16,4 @@ sleep 0.2
 
 perf_run_iters "$ITERS" "JournalFetchN100_unfiltered" "slinit-journalctl -n 100"
 perf_run_iters "$ITERS" "JournalFetchN100_taggrep"    "slinit-journalctl -t $_tag -n 100"
+perf_report_delivered 100 "$_tag"

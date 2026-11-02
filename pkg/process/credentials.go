@@ -22,6 +22,24 @@ type CredentialSource struct {
 	Value string // set-credential = NAME:VALUE literal
 }
 
+// CredentialStores are the system credential stores, in systemd's
+// order of precedence (CONF_PATHS: /etc, /run, /usr/local/lib,
+// /usr/lib). import-credential and condition-credential both search
+// them, through CredentialStoreDirs, so the two cannot disagree about
+// where a credential is: they did, when import-credential knew only
+// /etc/credstore. A variable so tests can point it elsewhere.
+var CredentialStores = []string{"/etc/credstore", "/run/credstore", "/usr/local/lib/credstore", "/usr/lib/credstore"}
+
+// CredentialStoreDirs returns the plain credential stores to search.
+// $SYSTEM_CREDSTORE, when set, replaces them all with one directory (an
+// override kept from when import-credential had a single root).
+func CredentialStoreDirs() []string {
+	if v := os.Getenv("SYSTEM_CREDSTORE"); v != "" {
+		return []string{v}
+	}
+	return CredentialStores
+}
+
 // CredentialsDir returns the per-service credentials directory path
 // (created and populated by SetupCredentials, removed by
 // CleanupCredentials). Exposed to the service as $CREDENTIALS_DIRECTORY.

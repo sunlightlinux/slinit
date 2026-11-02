@@ -22,3 +22,8 @@ _boot_time_under_load() {
 _iter=0
 perf_run_iters "$ITERS" "BootTime_UnderWrites_200" \
     '_iter=$((_iter+1)); _boot_time_under_load $_iter'
+_tags=
+_i=1
+while [ "$_i" -le "$ITERS" ]; do _tags="$_tags perf_bt_writer_$_i"; _i=$((_i + 1)); done
+# shellcheck disable=SC2086
+perf_report_delivered $((ITERS * 200)) $_tags

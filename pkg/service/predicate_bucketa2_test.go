@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 func TestBucketA2KindByNameRoundtrip(t *testing.T) {
@@ -137,9 +139,10 @@ func TestCredentialAgainstEnv(t *testing.T) {
 
 func withCredentialStores(t *testing.T, dirs ...string) {
 	t.Helper()
-	saved := credentialStores
-	credentialStores = dirs
-	t.Cleanup(func() { credentialStores = saved })
+	saved := process.CredentialStores
+	process.CredentialStores = dirs
+	t.Cleanup(func() { process.CredentialStores = saved })
+	t.Setenv("SYSTEM_CREDSTORE", "")
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
 	t.Setenv("ENCRYPTED_CREDENTIALS_DIRECTORY", "")
 }

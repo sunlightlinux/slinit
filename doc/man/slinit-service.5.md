@@ -2674,11 +2674,19 @@ mounted at `/run/credentials/<name>/`).
     interpretation — use **load-credential** for binary data.
 
 **import-credential**=*GLOB*
-:   Glob pattern resolved against `/etc/credstore` (overridable
-    via *SYSTEM_CREDSTORE* env for tests). Each match adds a
-    credential named by its basename. Silent on empty match sets
-    per systemd's best-effort semantics. The glob is expanded when
-    the service is loaded; reload it to pick up new credstore files.
+:   Glob pattern matched in slinit's own `$CREDENTIALS_DIRECTORY`,
+    then in the credential stores */etc/credstore*,
+    */run/credstore*, */usr/local/lib/credstore* and
+    */usr/lib/credstore*, in that order — the stores
+    **condition-credential** searches. Each match adds a credential
+    named by its file name; the first directory that has a name wins,
+    and an import never replaces a **load-credential** or
+    **set-credential** of the same name. The *.encrypted* stores are
+    not searched: slinit cannot decrypt. *SYSTEM_CREDSTORE*, if set,
+    replaces the store list with one directory. Silent on empty match
+    sets per systemd's best-effort semantics. The glob is expanded
+    when the service is loaded; reload it to pick up new credstore
+    files. Before 3.7.0 only */etc/credstore* was searched.
 
 ## OTHER RUNNER-SIDE SETTINGS
 

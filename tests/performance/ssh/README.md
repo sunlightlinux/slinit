@@ -52,7 +52,17 @@ instead of timing its absence:
 
 - **syslog into the journal** — the journal-write cases (090, 110, 160,
   210, 520, 570) pump `logger(1)`. On a host with nothing on `/dev/log`
-  they skip.
+  they skip, and the SKIP says whether `logger` is missing, nothing
+  listens on `/dev/log`, or messages are lost even after waiting out a
+  rate-limit window.
+
+slinit (3.6.0+) rate-limits `/dev/log` per sending uid, 1000 messages
+per 10 seconds for root, and these cases send more than that. Each
+prints a `delivered=N/M` line after its figures, counted once the timed
+loop is over: how many of its messages reached the journal. Below `M`,
+part of what was timed is the drop path; 160's "5k pump" puts about
+1000 entries in, not 5000. The limit protects PID 1's ring from any
+local user, so the suite reports it rather than working around it.
 - **the OpenRC shims** (`slinit-openrc-shims`) — 820, 830, 840.
 
 ## Cases

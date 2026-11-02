@@ -1,7 +1,7 @@
 # 090-journal-burst-write — burst-emit N log entries via `logger`
 # into a case-scoped tag, then measure the time to fetch them all
 # back via `slinit-journalctl -t <tag> -n N`. Reveals the write-
-# path throughput (logger → socklog → journald) plus the tag-
+# path throughput (logger → /dev/log → PID 1's journal) plus the tag-
 # filtered read cost. Uses a fresh tag per iteration so entries
 # don't accumulate. Batch size kept modest (200) because each
 # logger invocation costs 5-10ms of fork/exec — with ITERS=10
@@ -16,8 +16,8 @@ _burst_and_fetch() {
         logger -t "$_tag" "burst-msg-$_i"
         _i=$((_i + 1))
     done
-    # Small settle so socklog forwarders drain into the journal
-    # before we ask journalctl to see them.
+    # Small settle so the last messages are in the journal before we
+    # ask journalctl to see them.
     sleep 0.1
     slinit-journalctl -t "$_tag" -n "$_BURST_N" > /dev/null 2>&1
 }
@@ -26,3 +26,8 @@ _burst_and_fetch() {
 _iter=0
 perf_run_iters "$ITERS" "JournalBurstWriteFetch_${_BURST_N}" \
     '_iter=$((_iter+1)); _burst_and_fetch $_iter'
+_tags=
+_i=1
+while [ "$_i" -le "$ITERS" ]; do _tags="$_tags perftest_$$_$_i"; _i=$((_i + 1)); done
+# shellcheck disable=SC2086
+perf_report_delivered $((ITERS * _BURST_N)) $_tags
