@@ -24,6 +24,20 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.7.1] — 2026-11-02
+
+**A patch with one fix: the virtual-TTY output loss 3.7.0 listed as
+known, now explained and fixed.** A service with `vtty = yes` could lose
+output from its scrollback and its attached clients when another vtty
+service had just stopped: the stopped one's reader took it. Nothing
+else changed, and no setup can have relied on output going missing, so
+it is a patch.
+
+Upgrading from 3.7.0 changes nothing else. Coming from 3.6.0 or older,
+read 3.7.0's notes first — it fixed confinement that slinit-runner
+could fail to apply, and changed how predicates and `import-credential`
+behave.
+
 ### Fixed
 
 - **A closed virtual TTY no longer takes the output of the next one.**
