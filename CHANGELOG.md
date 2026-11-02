@@ -24,6 +24,30 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.7.0] — 2026-11-02
+
+**If any service uses `options = no-new-privs`, `system-call-filter`, a
+`restrict-*` or `protect-*` setting, `lock-personality`, `capabilities`
+or `securebits`, upgrade: slinit-runner could start it without them.** All
+of those are per-thread kernel state, and the runner never kept its
+goroutine on one thread, so now and then the exec ran on another and the
+service came up unconfined, with nothing logged — about 1 start in 600
+under GC pressure (`GOGC=1`), measured on the real binary. Two more
+security fixes: slinit-checkpath, which runs as root, could be steered
+onto another file between its check and its change, and slinit-journald
+recorded every relayed syslog and kernel message as PID 1's.
+
+It is a minor because two changes under *Changed* could break a setup
+that relied on the old behaviour, which STABILITY.md keeps out of
+patches: `internal` and `triggered` services now obey `condition-*` and
+`assert-*`, which they used to ignore, and `import-credential` searches
+every credential store. Each has a *Compat* note; the first is the one
+to check before upgrading, with the command given there.
+
+Coming from 3.6.0, read those two notes. From 3.4.x or 3.5.0, read
+3.6.0's as well: `lock-personality` began to work there. From 3.2.x,
+read 3.3.0's notes first — s6 readiness there requires a newline.
+
 ### Added
 
 - **Every command answers `--version`.** 28 of the 46 Go commands did
@@ -139,6 +163,27 @@ verified with `git tag -v`.
   the same as 360's 3-line service: the parse is below the
   control-socket floor), and a real `start` + `stop`, 3.0 ms where the
   old figure said 1.15. The benchmark names change with it.
+
+- **The watchdog restart test polls instead of sleeping 2.5 s.** It
+  failed about one run in ten in 2026-10; it now passes 100 of 100 idle,
+  under 16 busy cores, with `GOMAXPROCS=1` and with `-race`, and the
+  restart lands about 326 ms after the start was asked for. A 2.5 s
+  window was seven times that, so the old failures were a restart that
+  did not happen, not a slow one, and they stopped with the
+  timing fixes since. A watchdog that never fires still fails it, after
+  15 s.
+
+- **The virtual-TTY tests poll instead of sleeping, and one of them can
+  now fail.** Under CPU load their fixed 100-200 ms waits failed about 1
+  run in 15; `RingBufferOverflow` only checked that the scrollback held
+  at most 16 bytes, which an empty one does, and now checks they are the
+  last 16 written.
+  - *Known, not fixed:* with the waits gone, `TestVirtualTTY_RingBuffer`
+    still loses its data for good about 1 run in 60 under load, and only
+    when the vtty tests run together: the reader stops on EIO having
+    read nothing. Holding the pty slave open does not cure it. A service
+    that writes and exits at once could lose its last output from the
+    scrollback the same way.
 
 - **The journal-write cases print `delivered=N/M`.** 090, 110, 160,
   210, 520 and 570 send hundreds or thousands of messages and none
