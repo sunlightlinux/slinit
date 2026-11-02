@@ -15,11 +15,20 @@ func TestCronRunner_BasicExecution(t *testing.T) {
 
 	marker := filepath.Join(t.TempDir(), "cron-ran")
 
+	// The per-run timeout is the interval. At 100ms a loaded CI runner
+	// killed sh after `>` had truncated the marker and before echo wrote,
+	// and the file read back empty. A 1s interval leaves the first run
+	// room; poll for it instead of sleeping a fixed time.
 	cr := NewCronRunner(svc, []string{"/bin/sh", "-c", "echo ok > " + marker},
-		100*time.Millisecond, 0, "continue", set.logger)
+		time.Second, 0, "continue", set.logger)
 
 	cr.Start()
-	time.Sleep(350 * time.Millisecond)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if st, err := os.Stat(marker); err == nil && st.Size() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	cr.Stop()
 
 	data, err := os.ReadFile(marker)
