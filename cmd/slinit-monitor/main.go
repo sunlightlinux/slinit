@@ -44,7 +44,17 @@ type config struct {
 	names []string
 }
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
 func main() {
+	// --version, alone: checked before anything else runs, so no other
+	// argument changes meaning. The value is stamped by the package
+	// build (-X main.version=...).
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("slinit-monitor version %s\n", version)
+		return
+	}
 	cfg := parseArgs()
 
 	sockPath := resolveSocketPath(cfg.socketPath, cfg.systemMode, cfg.userMode)

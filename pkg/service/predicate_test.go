@@ -163,12 +163,48 @@ func TestCheckPredicatesAssertOutranksCondition(t *testing.T) {
 
 // --- Integration: condition-* skip path through ServiceSet ---
 
-func TestInternalServiceSkipOnConditionFail(t *testing.T) {
-	// InternalService doesn't run a BringUp predicate check, so use
-	// scripted-with-no-start-command path? Easier: reach into a
-	// real-ish flow via internal. Predicates only fire from BringUp
-	// of process/scripted/bgprocess.
-	t.Skip("predicates only fire from process/scripted/bgprocess BringUp; covered by record_test.go-style flows below")
+// Since 3.7.0 internal and triggered services evaluate predicates like
+// every other type. They used to ignore them without a word; this test
+// was a t.Skip saying so.
+func TestInternalAndTriggeredHonourPredicates(t *testing.T) {
+	missing := "/nonexistent/predicate-internal-test"
+	type mk func(*ServiceSet, string) Service
+	internal := func(set *ServiceSet, n string) Service { return NewInternalService(set, n) }
+	triggered := func(set *ServiceSet, n string) Service { return NewTriggeredService(set, n) }
+	for _, tc := range []struct {
+		name    string
+		make    mk
+		assert  bool
+		pass    bool // the predicate holds
+		want    ServiceState
+		skipped bool
+	}{
+		{"internal, condition false: skipped", internal, false, false, StateStarted, true},
+		{"internal, assert false: fails", internal, true, false, StateStopped, false},
+		{"internal, condition true: starts", internal, false, true, StateStarted, false},
+		// Untriggered, so without the skip it would wait in STARTING.
+		{"triggered, condition false: skipped without a trigger", triggered, false, false, StateStarted, true},
+		{"triggered, assert false: fails", triggered, true, false, StateStopped, false},
+		{"triggered, condition true: waits for its trigger", triggered, false, true, StateStarting, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set, _ := newTestSet()
+			svc := tc.make(set, "svc")
+			set.AddService(svc)
+			param := missing
+			if tc.pass {
+				param = "/"
+			}
+			svc.Record().SetPredicates([]Predicate{{Kind: PredPathExists, Param: param, IsAssert: tc.assert}})
+			set.StartService(svc)
+			if got := svc.State(); got != tc.want {
+				t.Errorf("state = %v, want %v", got, tc.want)
+			}
+			if got := svc.Record().WasStartSkipped(); got != tc.skipped {
+				t.Errorf("WasStartSkipped = %v, want %v", got, tc.skipped)
+			}
+		})
+	}
 }
 
 // TestScriptedServiceConditionSkip simulates a scripted service whose

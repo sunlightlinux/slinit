@@ -53,6 +53,9 @@ plus-shutdown WDT lifecycle a real embedded deployment needs.
     level to stderr. Default is quiet (only startup + exit
     lines).
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # SIGNALS
 
 *SIGTERM*, *SIGINT*

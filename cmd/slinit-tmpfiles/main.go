@@ -52,7 +52,17 @@ type entry struct {
 	force bool // '!' modifier (only-at-boot); we treat as always-apply
 }
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
 func main() {
+	// --version, alone: checked before anything else runs, so no other
+	// argument changes meaning. The value is stamped by the package
+	// build (-X main.version=...).
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("slinit-tmpfiles version %s\n", version)
+		return
+	}
 	var dirsFlag string
 	flag.StringVar(&dirsFlag, "dirs", "",
 		"comma-separated tmpfiles.d directories, lowest precedence first (defaults to /usr/lib+/run+/etc/tmpfiles.d)")

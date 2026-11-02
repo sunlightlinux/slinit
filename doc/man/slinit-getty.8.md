@@ -51,6 +51,9 @@ supporting the classic getty argument shape (any existing
     environment (useful when slinit's operator has curated the
     login-session env-file).
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # ARGUMENTS
 
 *TTY*

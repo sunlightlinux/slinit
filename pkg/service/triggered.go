@@ -19,6 +19,19 @@ func NewTriggeredService(set *ServiceSet, name string) *TriggeredService {
 // BringUp starts the triggered service. If already triggered, transitions to
 // STARTED immediately. Otherwise, stays in STARTING state until triggered.
 func (s *TriggeredService) BringUp() bool {
+	// Predicates first, as for every other type since 3.7.0: a false
+	// condition skips the service at once (STARTED, marked skipped)
+	// rather than leaving it waiting for a trigger, a false assert fails
+	// it.
+	switch outcome, reason := s.CheckPredicates(); outcome {
+	case PredFailed:
+		s.services.logger.Error("Service '%s': %s", s.serviceName, reason)
+		return false
+	case PredSkip:
+		s.services.logger.Info("Service '%s': skipped (%s)", s.serviceName, reason)
+		s.markSkippedStartReason(reason)
+		return true
+	}
 	if s.isTriggered {
 		s.Started()
 	}

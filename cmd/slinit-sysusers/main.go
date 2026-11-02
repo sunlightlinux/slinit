@@ -46,7 +46,17 @@ type entry struct {
 	arg     string // for m: group name; for r: range
 }
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
 func main() {
+	// --version, alone: checked before anything else runs, so no other
+	// argument changes meaning. The value is stamped by the package
+	// build (-X main.version=...).
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("slinit-sysusers version %s\n", version)
+		return
+	}
 	var dirsFlag string
 	flag.StringVar(&dirsFlag, "dirs", "",
 		"comma-separated sysusers.d dirs, lowest precedence first (defaults to /usr/lib+/run+/etc/sysusers.d)")

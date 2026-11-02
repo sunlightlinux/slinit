@@ -2521,8 +2521,12 @@ form):
     Prefix the name with `!` to require the opposite: that the named
     service is *not* running.
 
-    `type = process`, `scripted` and `bgprocess` honour predicates;
-    `internal` and `triggered` services do not evaluate them at all.
+    Every service type honours predicates. On an `internal` service a
+    false **condition-** skips the milestone (it is marked started, so
+    its dependents proceed) and a false **assert-** fails it; a
+    `triggered` service skipped by a condition does not wait for its
+    trigger. Before 3.7.0 `internal` and `triggered` services ignored
+    predicates altogether.
 
 Examples:
 

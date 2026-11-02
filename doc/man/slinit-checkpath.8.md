@@ -26,6 +26,10 @@ existing init-script idioms transfer unchanged.
 
 # OPTIONS
 
+
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 ## Path type (mutually exclusive)
 
 At most one of the following may be set. Omitting all of them is legal
@@ -33,7 +37,11 @@ when the path already exists (its mode and owner are then adjusted) or
 only **-W** is requested; a missing path with no type is an error.
 
 A path that already exists must be of the requested type. Symbolic links
-are refused rather than followed.
+are refused rather than followed. The final component is resolved once,
+and the type check and every change to it — mode, owner, truncation,
+emptying a directory — act on that one inode, so a user who owns the
+parent directory cannot swap the entry for a symlink between the check
+and the change. This needs */proc* mounted (since 3.7.0).
 
 **-d**, **--directory**
 :   Ensure *PATH* is a directory; create it if necessary. Parent

@@ -1,8 +1,20 @@
-# 800-many-directive-svc — parser stress: load a svc file with
-# 43 directives (real-world upper-bound for a heavy service).
-# Measures start latency (which includes parse) vs the plain
-# scripted-start baseline (case 740 = 1.126 ms). Delta = parse
-# cost for the full-directive svc.
+# 800-many-directive-svc — a service file with 43 directives (a real-
+# world upper bound for a heavy service), measured two ways:
+#
+#   - reload: re-reads and re-parses the file. Against 360 (reload of
+#     the 3-line perf-target) the difference is the parse cost of the
+#     heavy file. On ceres (v3.6.0) the two read 1.198 and 1.216 ms: the
+#     cost of 40 more directives is below the ~1.1 ms floor of a
+#     control-socket round trip, so read a gap here as noise unless it
+#     is well clear of that.
+#   - start + stop: each iteration really starts the service, with every
+#     hardening directive in it applied by slinit-runner.
+#
+# It used to time `slinitctl start` alone and call that parse cost. But
+# a service file is parsed when it is loaded, not when it is started,
+# and after the first iteration the service was already STARTED, so 29
+# of 30 timed a start that had nothing to do (median ~1.15 ms, p95
+# 14.9 ms: the one real start).
 _name="perf-heavy-svc-$$"
 _svcfile="/etc/slinit.d/$_name"
 # Every line must be a directive slinit accepts, or the service does not
@@ -61,9 +73,11 @@ rlimit-as = 4294967296
 EOF
 slinitctl load "$_name" > /dev/null 2>&1 || true
 
-perf_run_iters "$ITERS" "CtlStart_heavy_43directive_svc" "slinitctl start $_name"
+perf_run_iters "$ITERS" "CtlReload_heavy_43directive_svc" "slinitctl reload $_name"
+perf_run_iters "$ITERS" "CtlStartStop_heavy_43directive_svc" \
+    "slinitctl start $_name && slinitctl stop $_name"
 
-# stop before unload: the benchmark above leaves the service STARTED,
+# stop before unload: the benchmark above may leave the service STARTED,
 # and unload refuses a service that is not stopped ("service is not
 # stopped"). The error went to /dev/null, so every run leaked one
 # loaded service into PID 1 — 62 had accumulated on the reference

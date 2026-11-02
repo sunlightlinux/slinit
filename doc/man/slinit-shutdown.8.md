@@ -123,6 +123,9 @@ pinned shutdown helper.
 **--help**
 :   Print a usage summary and exit.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # DEFAULT ACTION
 
 If invoked as **slinit-shutdown** with no action flag, the default is

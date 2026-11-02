@@ -57,11 +57,6 @@ its daemon is no longer used.
 Things known to be unfinished in slinit itself, not a wish list. Each
 has a record of what is known about it.
 
-- **One root-path finding remains** of the five from the audit:
-  `pkg/checkpath`'s correction branch re-resolves a path after checking
-  it, a genuine check-then-act window. The other four are fixed.
-- **`requisite` predicates are not applied to `internal` and `triggered`
-  services**, which ignore predicates entirely.
 - **Three intermittent test failures are open**, and one of them may be
   a real defect: `TestWatchdogTriggersRestartOnFailure` fails about one
   run in ten, and "the watchdog sometimes does not fire" would be a bug
@@ -72,9 +67,6 @@ has a record of what is known about it.
   eleven cases ported from dinit do not catch the stop-ordering defect
   they are about; only a new scenario did, which was also dinit's own
   experience.
-- **18 of the 46 command-line tools have no `--version`.** A
-  consistency question rather than a defect, and one that deserves a
-  decision rather than a drive-by edit.
 
 ## Phase history
 

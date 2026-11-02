@@ -67,6 +67,9 @@ working. Arguments after *action* are appended unchanged.
 **-h**, **--help**
 :   Print a usage summary and exit.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # ENVIRONMENT
 
 **SLINITCTL**

@@ -55,6 +55,10 @@ and **\--syscall-filter** carries **system-call-filter**).
 
 ## OPTIONS
 
+
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 ### NUMA & memory locking
 
 **\--mlockall**=*N*

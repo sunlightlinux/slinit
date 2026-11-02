@@ -219,6 +219,17 @@ func (r *Receiver) readLoop(ctx context.Context) {
 // The /proc snapshot fields (_comm, _exe, _cmdline) are refreshed from
 // /proc/<pid>/ for external clients so stale rename-yourself games
 // don't fool the log stream.
+//
+// One sender is not the author of what it sends: slinit relays kernel
+// messages and syslog(3) messages, each with the identity it took from
+// the kernel (none for the kernel, the syslog sender's from its own
+// SCM_CREDENTIALS). Stamping the relay's credentials over that wrote
+// _pid=1 _uid=0 _comm=slinit on every such entry on disk. So an event
+// with a relayed transport keeps its identity when the socket says the
+// sender is root or the daemon's own user, who could put any pid in
+// SCM_CREDENTIALS anyway, so trusting them adds no forgery. Anyone else
+// is stamped from the kernel as before, and may not claim a relayed
+// transport: theirs becomes native.
 func stampFromSCM(evt *journal.Event, oob []byte) {
 	if len(oob) == 0 {
 		return
@@ -235,6 +246,14 @@ func stampFromSCM(evt *journal.Event, oob []byte) {
 			continue
 		}
 		ucred := castUcred(cm.Data)
+		relayed := evt.Transport == journal.TransportKernel || evt.Transport == journal.TransportSyslog
+		trusted := ucred.Uid == 0 || int(ucred.Uid) == os.Getuid()
+		if relayed && trusted {
+			continue
+		}
+		if !trusted {
+			evt.Transport = journal.TransportNative
+		}
 		evt.Pid = int(ucred.Pid)
 		evt.Uid = int(ucred.Uid)
 		evt.Gid = int(ucred.Gid)

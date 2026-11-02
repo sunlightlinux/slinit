@@ -111,7 +111,7 @@ summarises them by topic.
 | **Readiness** | `pipefd`/`pipevar` protocol, `ready-check-command` polling, D-Bus name readiness, `sd_notify` |
 | **Isolation & hardening** | filesystem sandbox (`private-tmp`, `protect-system`, bind/read-only/inaccessible paths), seccomp with curated syscall groups, the `restrict-*` and `protect-*` clusters, AppArmor/SELinux/SMACK transitions, capabilities, securebits — all fail-closed |
 | **Resources** | cgroup v2 limits and weights, slices and delegation, nice, ioprio, oom-score-adj, rlimits, CPU affinity, PSI pressure watches |
-| **Logging** | in-memory buffers, files with rotation/filtering/processors, consumer pipes, catch-all early-boot logger, a full journal pipeline (`slinit-journalctl`: all 28 short and 70/72 long options of systemd v262's, FSS-sealed binary format, namespaces, message catalog) |
+| **Logging** | in-memory buffers, files with rotation/filtering/processors, consumer pipes, catch-all early-boot logger, `/dev/log` served into the journal for syslog(3) clients, a full journal pipeline (`slinit-journalctl`: all 28 short and 70/72 long options of systemd v262's, FSS-sealed binary format, namespaces, message catalog) |
 | **Control** | binary protocol over a Unix socket, goroutine per connection, push notifications for state and environment changes, runtime env and dependency edits, Prometheus metrics endpoint |
 | **PID 1 duties** | console setup, Ctrl+Alt+Del, child subreaper and orphan reaping, four degrees of shutdown haste, soft-reboot, kexec, `switch-root`, hardware watchdog, UPS power events, boot-failure recovery with an interactive rescue prompt |
 
@@ -316,7 +316,7 @@ it escalates the shutdown instead.
 ## Testing
 
 ```bash
-go test ./...                             # ~2670 unit tests and benchmarks
+go test ./...                             # ~2700 unit tests and benchmarks
 ./tests/functional/run-tests.sh           # 244 cases, each in its own QEMU VM
 ./tests/functional/selftest.sh            # checks the harness can still fail a case
 ./tests/container/run.sh                  # 23 cases with slinit as a container's PID 1

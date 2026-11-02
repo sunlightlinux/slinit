@@ -39,6 +39,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -49,7 +50,29 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/seccomp"
 )
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
+// The main goroutine stays on the main OS thread from here to the exec.
+// Most of what this program sets is per thread, not per process: the
+// seccomp filters (installed without TSYNC), no-new-privs, the bounding
+// and ambient capabilities, securebits, personality, setgroups(2). The
+// execve inherits only the calling thread's, so if the scheduler moved
+// the goroutine between applying them and syscall.Exec, the service
+// started without them. It did: under GOGC=1 about 1 run in 400 lost
+// no-new-privs, and a functional case once saw every protect-* filter
+// missing at once. Locking in init, before main, means nothing can run
+// on another thread first; the lock is never released.
+func init() { runtime.LockOSThread() }
+
 func main() {
+	// --version, alone: checked before anything else runs, so no other
+	// argument changes meaning. The value is stamped by the package
+	// build (-X main.version=...).
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("slinit-runner version %s\n", version)
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-runner: %v\n", err)
 		os.Exit(2)

@@ -8,8 +8,10 @@
 // Behavior is intentionally conservative:
 //   - Parent directories are not created recursively. Missing parents
 //     produce a clear error, mirroring OpenRC.
-//   - Symlinks are not followed on the final path component (O_NOFOLLOW);
-//     callers that need symlink traversal can resolve the path themselves.
+//   - Symlinks are not followed on the final path component (O_NOFOLLOW),
+//     and the component is resolved once: every check and change goes
+//     through the descriptor, so the entry cannot be swapped in between.
+//     Callers that need symlink traversal can resolve the path themselves.
 //   - Mode and owner are corrected only when the path already exists; they
 //     are set as part of creation otherwise.
 package checkpath
@@ -20,7 +22,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -85,42 +86,59 @@ func Apply(spec Spec) (Result, error) {
 		}
 	}
 
-	// Stat the target without following the final component's symlink.
-	// We deliberately use Lstat so a dangling symlink is reported as a type
-	// mismatch rather than being silently replaced.
-	st, statErr := os.Lstat(spec.Path)
+	// Resolve the final component ONCE, to an O_PATH descriptor that does
+	// not follow a symlink, and do every check and change through it.
+	// This used to Lstat the path and then Truncate, Chmod and Chown it
+	// by name: between the check and each change, whoever owns the parent
+	// (the documented use hands paths like /var/run/myapp to a service
+	// user) could swap the entry for a symlink, and root would change the
+	// target. -D emptied a directory by name the same way, so the swap
+	// could make root delete another directory's contents.
+	fd, openErr := openNoFollow(spec.Path)
 	switch {
-	case statErr == nil:
-		// Exists — verify the type matches what the caller asked for.
-		if err := verifyType(spec.Path, st, spec.Type); err != nil {
-			return res, err
-		}
-	case os.IsNotExist(statErr):
-		// Missing — create per the requested type.
+	case openErr == nil:
+	case errors.Is(openErr, unix.ENOENT):
 		if err := createPath(spec.Path, spec.Type, spec.Mode); err != nil {
 			return res, err
 		}
 		res.Created = true
-		// Re-stat so the subsequent mode/owner correction code sees the
-		// new inode.
-		st, statErr = os.Lstat(spec.Path)
-		if statErr != nil {
-			return res, fmt.Errorf("checkpath: %s: stat after create: %w", spec.Path, statErr)
+		// The new inode is opened the same way: the window between
+		// creating it and correcting its owner is the same window.
+		if fd, openErr = openNoFollow(spec.Path); openErr != nil {
+			return res, fmt.Errorf("checkpath: %s: open after create: %w", spec.Path, openErr)
 		}
 	default:
-		return res, fmt.Errorf("checkpath: %s: stat: %w", spec.Path, statErr)
+		return res, fmt.Errorf("checkpath: %s: stat: %w", spec.Path, openErr)
 	}
+	defer unix.Close(fd)
+	if afterOpenHook != nil {
+		afterOpenHook()
+	}
+
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return res, fmt.Errorf("checkpath: %s: stat: %w", spec.Path, err)
+	}
+	// A symlink opened with O_PATH|O_NOFOLLOW is the link itself, which
+	// verifyType refuses, as it refused an Lstat'd one.
+	if err := verifyType(spec.Path, fileMode(st.Mode), spec.Type); err != nil {
+		return res, err
+	}
+	// /proc/self/fd/N names the opened inode, whatever the path names now.
+	inode := "/proc/self/fd/" + strconv.Itoa(fd)
 
 	// Truncation is only meaningful for files and directories.
 	if spec.Truncate {
 		switch spec.Type {
 		case TypeFile:
-			if err := os.Truncate(spec.Path, 0); err != nil {
+			f, err := os.OpenFile(inode, os.O_WRONLY|os.O_TRUNC, 0)
+			if err != nil {
 				return res, fmt.Errorf("checkpath: %s: truncate: %w", spec.Path, err)
 			}
+			f.Close()
 			res.Truncated = true
 		case TypeDir:
-			if err := emptyDirectory(spec.Path); err != nil {
+			if err := emptyDirectory(spec.Path, inode); err != nil {
 				return res, err
 			}
 			res.Truncated = true
@@ -130,9 +148,9 @@ func Apply(spec Spec) (Result, error) {
 	// Mode correction: honour exactly the caller's requested bits
 	// (permission bits only — never sticky/setuid unless asked).
 	if spec.Mode != 0 {
-		current := st.Mode().Perm()
+		current := fileMode(st.Mode).Perm()
 		if current != (spec.Mode & os.ModePerm) {
-			if err := os.Chmod(spec.Path, spec.Mode&os.ModePerm); err != nil {
+			if err := os.Chmod(inode, spec.Mode&os.ModePerm); err != nil {
 				return res, fmt.Errorf("checkpath: %s: chmod: %w", spec.Path, err)
 			}
 			res.ChMod = true
@@ -140,18 +158,9 @@ func Apply(spec Spec) (Result, error) {
 	}
 
 	// Owner correction: only touch whichever of uid/gid the caller asked
-	// for (-1 means leave alone).
+	// for (-1 means leave alone), and only when it differs.
 	if spec.Owner.UID >= 0 || spec.Owner.GID >= 0 {
-		// Pull current uid/gid via syscall Stat_t so we don't chown
-		// gratuitously when the values already match. Note: os.FileInfo
-		// returns *syscall.Stat_t on Linux, NOT *unix.Stat_t — even though
-		// both types have the same layout, the type assertion is strict.
-		sys, ok := st.Sys().(*syscall.Stat_t)
-		curUID, curGID := -1, -1
-		if ok {
-			curUID = int(sys.Uid)
-			curGID = int(sys.Gid)
-		}
+		curUID, curGID := int(st.Uid), int(st.Gid)
 		wantUID, wantGID := spec.Owner.UID, spec.Owner.GID
 		if wantUID < 0 {
 			wantUID = curUID
@@ -160,7 +169,7 @@ func Apply(spec Spec) (Result, error) {
 			wantGID = curGID
 		}
 		if wantUID != curUID || wantGID != curGID {
-			if err := os.Chown(spec.Path, wantUID, wantGID); err != nil {
+			if err := os.Chown(inode, wantUID, wantGID); err != nil {
 				return res, fmt.Errorf("checkpath: %s: chown: %w", spec.Path, err)
 			}
 			res.ChOwn = true
@@ -170,13 +179,39 @@ func Apply(spec Spec) (Result, error) {
 	return res, nil
 }
 
-func verifyType(path string, st os.FileInfo, want PathType) error {
-	mode := st.Mode()
+// afterOpenHook, when set, runs right after the target is opened: tests
+// use it to swap the path in exactly the window this code must survive.
+var afterOpenHook func()
+
+// openNoFollow opens path's final component without following it.
+func openNoFollow(path string) (int, error) {
+	return unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+}
+
+// fileMode converts a stat(2) st_mode to the os.FileMode bits verifyType
+// and the mode check read.
+func fileMode(m uint32) os.FileMode {
+	mode := os.FileMode(m & 0o777)
+	switch m & unix.S_IFMT {
+	case unix.S_IFDIR:
+		mode |= os.ModeDir
+	case unix.S_IFLNK:
+		mode |= os.ModeSymlink
+	case unix.S_IFIFO:
+		mode |= os.ModeNamedPipe
+	case unix.S_IFREG:
+	default:
+		mode |= os.ModeIrregular
+	}
+	return mode
+}
+
+func verifyType(path string, mode os.FileMode, want PathType) error {
 	// Refuse symlinks at the final component first — we will not silently
 	// chown/chmod a link target that a caller did not explicitly resolve.
-	// This check must precede the type checks because Lstat on a symlink
-	// reports ModeSymlink, which also fails IsRegular() and IsDir() and
-	// would otherwise produce a confusing "not a X" error.
+	// This check must precede the type checks because a symlink also
+	// fails IsRegular() and IsDir() and would otherwise produce a
+	// confusing "not a X" error.
 	if mode&os.ModeSymlink != 0 {
 		return fmt.Errorf("checkpath: %s: refusing to operate on a symbolic link", path)
 	}
@@ -231,13 +266,26 @@ func createPath(path string, typ PathType, mode os.FileMode) error {
 	return nil
 }
 
-func emptyDirectory(path string) error {
-	entries, err := os.ReadDir(path)
+// emptyDirectory removes everything inside the directory opened as inode
+// (a /proc/self/fd path), through an os.Root on it: nothing it removes
+// can be outside that directory, whatever happens to path meanwhile.
+func emptyDirectory(path, inode string) error {
+	root, err := os.OpenRoot(inode)
+	if err != nil {
+		return fmt.Errorf("checkpath: %s: open: %w", path, err)
+	}
+	defer root.Close()
+	dir, err := root.Open(".")
+	if err != nil {
+		return fmt.Errorf("checkpath: %s: open: %w", path, err)
+	}
+	entries, err := dir.ReadDir(-1)
+	dir.Close()
 	if err != nil {
 		return fmt.Errorf("checkpath: %s: read: %w", path, err)
 	}
 	for _, e := range entries {
-		if err := os.RemoveAll(path + string(os.PathSeparator) + e.Name()); err != nil {
+		if err := root.RemoveAll(e.Name()); err != nil {
 			return fmt.Errorf("checkpath: %s: remove %s: %w", path, e.Name(), err)
 		}
 	}

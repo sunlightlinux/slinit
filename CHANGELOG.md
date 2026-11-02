@@ -24,7 +24,34 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- **Every command answers `--version`.** 28 of the 46 Go commands did
+  not; 26 of them now do, and none of those 26 had a `version` variable
+  at all, so the `-X main.version=` the package build passes set
+  nothing in them. Each now prints `<name> version <version>` when `--version` is its only
+  argument, checked before anything else runs, so no other argument
+  changes meaning — `slinit-shutdown -h` is still halt, and
+  `slinit-shutdown --version extra` is still an unrecognised option.
+  `slinit-einfo` and `slinit-shell-var` are left out on purpose: like
+  the OpenRC originals they print their arguments. A test in
+  `tools/stats` fails when a new command lacks it.
+
 ### Changed
+
+- **`internal` and `triggered` services evaluate `condition-*` and
+  `assert-*`.** Only `process`, `scripted` and `bgprocess` did; on the
+  other two the predicates were ignored without a word, the same silent
+  discard that made `Requisite=` start what it should have required. They
+  now behave as on every other type, and as systemd's conditions do on
+  a target: a false condition skips the service (marked started, so its
+  dependents proceed; a skipped `triggered` service does not wait for
+  its trigger), a false assert fails it.
+  - *Compat:* a milestone with a predicate that was being ignored now
+    obeys it. An `assert-*` that does not hold on `boot` or another
+    milestone stops what depends on it, where it used to start anyway.
+    To find them before upgrading:
+    `grep -l '^type *= *\(internal\|triggered\)' /etc/slinit.d/* | xargs grep -l '^\(condition\|assert\)-'`.
 
 - **`import-credential` searches the same credential stores as
   `condition-credential`.** 3.6.0 taught the condition systemd's store
@@ -40,6 +67,52 @@ verified with `git tag -v`.
     the same name in `/etc/credstore` still wins.
 
 ### Fixed
+
+- **slinit-runner no longer starts a service without the confinement it
+  applied.** Almost everything the runner sets is per thread, not per
+  process — seccomp filters (installed without TSYNC), no-new-privs, the
+  bounding and ambient capabilities, securebits, personality,
+  setgroups(2) — and execve keeps only the calling thread's. The runner
+  never pinned its goroutine to a thread, so when the Go scheduler moved
+  it between applying those and `syscall.Exec`, the service started
+  without them, fail-open and silent. Measured on the real binary under
+  GOGC=1 GOMAXPROCS=16: 3 runs in about 1700 started their command with
+  `NoNewPrivs: 0` although `--no-new-privs` was asked for; a
+  demonstration that installs a filter on one thread and execs from
+  another shows `Seccomp: 0` as well. It also fits a functional flake
+  that saw every `protect-*` filter missing at once. The main goroutine
+  is now locked to the main thread in `init`, before anything runs; 0
+  losses in 4000 runs under the same load. uid and gid were not
+  affected: those calls apply to every thread.
+
+- **slinit-checkpath can no longer be turned on another file between its
+  check and its change.** It checked the path with Lstat, refusing a
+  symlink, and then truncated, chmod-ed, chown-ed or (`-D`) emptied it by
+  name, as root. Its own documented use hands the path to a service user
+  (`-o app:app /var/run/myapp`), so that user owns the parent and could
+  swap the entry for a symlink in between: root would then chmod or
+  truncate the link's target, or empty another directory. The same
+  window followed creation. The final component is now opened once,
+  `O_PATH|O_NOFOLLOW`, and the type check and every change go through
+  that descriptor (`/proc/self/fd/N`, and an `os.Root` on it for `-D`).
+  Tests swap the path in exactly that window and check the target is
+  untouched; on the old code all three come out changed. The last of
+  the five findings from the audit of root path operations.
+  - It now needs `/proc` mounted, which a pre-start command has.
+
+- **slinit-journald keeps the sender's identity on relayed messages.**
+  PID 1 relays kernel messages and, since 3.6.0, syslog(3) messages to
+  slinit-journald, each carrying the identity it took from the kernel.
+  The daemon stamped the relaying socket's credentials over it, so in
+  the on-disk journal every such entry read `_pid=1 _uid=0
+  _comm=slinit` — a `sudo:` line from any local user looked like PID
+  1's. An event with a relayed transport now keeps its identity when the
+  socket says the sender is root or the daemon's own user, who could
+  claim any pid in SCM_CREDENTIALS anyway. Any other sender is stamped
+  from the kernel as before, and can no longer claim a relayed
+  transport: a client writing `"_transport":"syslog"` is recorded as
+  `native`. The Sunlight image runs no slinit-journald, so nothing
+  persisted there was affected.
 
 - **An imported credential no longer replaces an explicit one of the
   same name.** Imports were appended after `load-credential` and
@@ -58,6 +131,15 @@ verified with `git tag -v`.
   the same window. The probe now waits the window out and tries once
   more, and the SKIP names which of three things failed (no `logger`,
   no socket, messages lost anyway).
+- **Perf case 800 measures what it is named for.** It timed `slinitctl
+  start` of a 43-directive service and called that parse cost, but a
+  service file is parsed at load, and after the first iteration the
+  service was already started, so 29 of 30 timed a start with nothing to
+  do. It now times `reload`, which re-parses the file (on ceres it reads
+  the same as 360's 3-line service: the parse is below the
+  control-socket floor), and a real `start` + `stop`, 3.0 ms where the
+  old figure said 1.15. The benchmark names change with it.
+
 - **The journal-write cases print `delivered=N/M`.** 090, 110, 160,
   210, 520 and 570 send hundreds or thousands of messages and none
   checked how many arrived, so part of what they timed was the drop

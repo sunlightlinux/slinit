@@ -78,10 +78,16 @@ func TestVirtualTTY_RingBuffer(t *testing.T) {
 	slave.WriteString("hello from pty\n")
 	slave.Close()
 
-	// Give reader goroutine time to process
-	time.Sleep(200 * time.Millisecond)
-
-	scrollback := vt.Scrollback()
+	// Poll for the reader goroutine rather than sleeping a fixed 200 ms,
+	// which failed 8 runs in 120 under CPU load (16 busy cores) with an
+	// empty scrollback: slow, not lost — polled, 0 in 120 under the same
+	// load. A reader that never delivers still fails, after 5 s.
+	var scrollback []byte
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if scrollback = vt.Scrollback(); strings.Contains(string(scrollback), "hello from pty") {
+			break
+		}
+	}
 	if len(scrollback) == 0 {
 		t.Error("scrollback should contain data")
 	}
@@ -109,12 +115,25 @@ func TestVirtualTTY_RingBufferOverflow(t *testing.T) {
 	slave.WriteString("AAAAAAAAAABBBBBBBBBB")
 	slave.Close()
 
-	time.Sleep(200 * time.Millisecond)
-
-	scrollback := vt.Scrollback()
-	if len(scrollback) > 16 {
-		t.Errorf("scrollback should be <= 16 bytes, got %d", len(scrollback))
+	// The ring keeps the last 16 bytes. This used to check only <= 16,
+	// which an empty scrollback passes, so it could not fail; it now
+	// waits for the data and checks which bytes survived.
+	want := "AAAAAABBBBBBBBBB"
+	if !waitFor(5*time.Second, func() bool { return string(vt.Scrollback()) == want }) {
+		t.Errorf("scrollback = %q, want the last 16 bytes %q", vt.Scrollback(), want)
 	}
+}
+
+// waitFor polls cond until it holds or the timeout passes. The vtty
+// tests used fixed sleeps, and under CPU load (16 busy cores) the reader
+// or the accept loop was not there yet: 8 runs in 120 failed.
+func waitFor(timeout time.Duration, cond func() bool) bool {
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if cond() {
+			return true
+		}
+	}
+	return cond()
 }
 
 func TestVirtualTTY_ClientAttach(t *testing.T) {
@@ -132,7 +151,7 @@ func TestVirtualTTY_ClientAttach(t *testing.T) {
 		t.Fatalf("open slave failed: %v", err)
 	}
 	slave.WriteString("pre-attach output\n")
-	time.Sleep(200 * time.Millisecond)
+	waitFor(5*time.Second, func() bool { return strings.Contains(string(vt.Scrollback()), "pre-attach output") })
 
 	// Connect a client
 	conn, err := net.Dial("unix", vt.SocketPath())
@@ -141,10 +160,8 @@ func TestVirtualTTY_ClientAttach(t *testing.T) {
 		t.Fatalf("client connect failed: %v", err)
 	}
 
-	// Give accept loop time to register the client
-	time.Sleep(100 * time.Millisecond)
-
-	if vt.ClientCount() != 1 {
+	// Wait for the accept loop to register the client.
+	if !waitFor(5*time.Second, func() bool { return vt.ClientCount() == 1 }) {
 		t.Errorf("expected 1 client, got %d", vt.ClientCount())
 	}
 
@@ -244,9 +261,7 @@ func TestVirtualTTY_MultipleClients(t *testing.T) {
 	}
 	defer conn2.Close()
 
-	time.Sleep(100 * time.Millisecond)
-
-	if vt.ClientCount() != 2 {
+	if !waitFor(5*time.Second, func() bool { return vt.ClientCount() == 2 }) {
 		t.Errorf("expected 2 clients, got %d", vt.ClientCount())
 	}
 

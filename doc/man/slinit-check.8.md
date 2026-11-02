@@ -75,6 +75,9 @@ The linter performs four passes over the loaded service graph:
 **-h**, **--help**
 :   Print a usage summary and exit.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # CHECKS PERFORMED
 
 For every service that is successfully loaded, **slinit-check** verifies

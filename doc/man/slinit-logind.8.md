@@ -56,6 +56,9 @@ until a native PAM module exists.
 **--debug**
 :   Log every D-Bus method dispatch to stderr.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # SESSION ACTIVITY
 
 A session's *Active* property follows the foreground VT, which is how

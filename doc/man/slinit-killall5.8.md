@@ -80,6 +80,9 @@ process by something else cannot cut a sweep short.
     comma-separated list. **-o**\ *pid* with no space works too, as it
     does upstream.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # EXIT STATUS
 
 **0**

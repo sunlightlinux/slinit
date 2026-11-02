@@ -70,7 +70,17 @@ type childPayload struct {
 	RegistryDir string   // override for machine.SetDir (default /run/slinit/machines)
 }
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
 func main() {
+	// --version, alone: checked before anything else runs, so no other
+	// argument changes meaning. The value is stamped by the package
+	// build (-X main.version=...).
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("slinit-nspawn version %s\n", version)
+		return
+	}
 	if os.Getenv(reexecEnv) != "" {
 		if err := childMain(); err != nil {
 			fmt.Fprintf(os.Stderr, "slinit-nspawn (child): %v\n", err)

@@ -102,7 +102,7 @@ For multi-step tasks, state a brief plan:
 **Verification commands in slinit:**
 - `go build ./...` — full build, catches typos fast.
 - `go vet ./...` — catches misuse before tests.
-- `go test ./...` — ~2670 unit tests across the Go tree (36 pkg/ + tests + tools).
+- `go test ./...` — ~2700 unit tests across the Go tree (36 pkg/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
 - `./tests/functional/run-tests.sh` — 244 QEMU-based integration tests
@@ -154,7 +154,7 @@ Strong success criteria let you loop independently. Weak criteria
 - Config parser accepts both `=` and `:` (`:` for dependency keys).
 
 ### Key files (first places to look)
-- `pkg/service/record.go` — state machine (~3700 LOC; `ExecuteTransition`
+- `pkg/service/record.go` — state machine (~3800 LOC; `ExecuteTransition`
   is the entry point to the transition half).
 - `pkg/service/types.go` — all enum types. When adding a new state or
   flag, this is where it goes.

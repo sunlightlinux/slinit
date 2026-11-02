@@ -51,7 +51,17 @@ type row struct {
 	ioWriteRate uint64
 }
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
 func main() {
+	// --version, alone: checked before anything else runs, so no other
+	// argument changes meaning. The value is stamped by the package
+	// build (-X main.version=...).
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("slinit-cgtop version %s\n", version)
+		return
+	}
 	delay := flag.Duration("delay", time.Second, "refresh interval")
 	iterations := flag.Int("iterations", 0, "number of refreshes (0 = infinite)")
 	depth := flag.Int("depth", 3, "max cgroup tree depth (root = 0)")

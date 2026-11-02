@@ -71,7 +71,17 @@ var rescueShellCandidates = []string{
 	"/bin/sh",
 }
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
 func main() {
+	// --version, alone: checked before anything else runs, so no other
+	// argument changes meaning. The value is stamped by the package
+	// build (-X main.version=...).
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("slinit-getty version %s\n", version)
+		return
+	}
 	var passEnv bool
 	flag.BoolVar(&passEnv, "p", false, "pass -p to /bin/login (preserve caller environment)")
 	flag.Usage = func() {

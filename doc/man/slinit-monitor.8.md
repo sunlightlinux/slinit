@@ -145,6 +145,9 @@ A command that fails is reported on stderr; monitoring continues.
 **-h**, **--help**
 :   Print a usage summary and exit.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # EXAMPLES
 
 Send a desktop notification whenever **nginx** changes state:

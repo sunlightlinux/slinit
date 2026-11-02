@@ -82,6 +82,9 @@ double quotes. Missing fields at end-of-line are treated as **-**
 **-h**, **\--help**
 :   Print a usage summary and exit.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # EXIT STATUS
 
 **0**

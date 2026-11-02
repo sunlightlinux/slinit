@@ -173,20 +173,37 @@ func TestWatchdogTriggersRestartOnFailure(t *testing.T) {
 	svc.SetRestartDelay(50 * time.Millisecond)
 	set.AddService(svc)
 
+	begin := time.Now()
 	set.StartService(svc)
 
 	// First start + watchdog fires (~300ms) + SIGTERM exit + restart.
-	time.Sleep(2500 * time.Millisecond)
-
-	data, _ := os.ReadFile(tmp.Name())
-	starts := 0
-	for _, b := range data {
-		if b == '\n' {
-			starts++
+	// Polled up to a deadline rather than one fixed 2.5 s sleep, which
+	// failed about one run in ten in 2026-10 and passed 100 of 100 by
+	// 2026-11-02 (idle, 16 busy CPUs, GOMAXPROCS=1, -race): a slow
+	// machine no longer fails it, and a watchdog that never fires still
+	// does, after the deadline. The time to the second start is logged
+	// so a failure comes with a figure.
+	count := func() (int, string) {
+		data, _ := os.ReadFile(tmp.Name())
+		n := 0
+		for _, b := range data {
+			if b == '\n' {
+				n++
+			}
 		}
+		return n, string(data)
 	}
-	if starts < 2 {
-		t.Errorf("expected >=2 starts, got %d (file=%q)", starts, string(data))
+	deadline := begin.Add(15 * time.Second)
+	for {
+		starts, data := count()
+		if starts >= 2 {
+			t.Logf("second start %v after the first was requested", time.Since(begin).Round(time.Millisecond))
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected >=2 starts within 15s, got %d (file=%q): the watchdog did not restart the service", starts, data)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -153,7 +153,7 @@ Numbered with zero-padding so lexical sort matches numeric order.
 | `770-socket-listen-overhead`   | Start cost of svc with socket-listen vs plain start |
 | `780-config-parse-error`       | Parse-error return latency (malformed svc file) |
 | `790-list-scaling-100`         | Provision 100 svcs → list at N=113 (10x scaling) |
-| `800-many-directive-svc`       | Start a svc with 43 directives — parser stress |
+| `800-many-directive-svc`       | 43-directive svc: reload (re-parse) and real start+stop |
 | `810-socket-activation-on-demand` | connect → served latency of an on-demand socket-activated service (builds a small C client/server helper with `cc`; SKIP without one) |
 | `820-openrc-rc-service`        | `rc-service status <svc>` OpenRC-shim overhead |
 | `830-openrc-rc-status`         | `rc-status` overview shim |

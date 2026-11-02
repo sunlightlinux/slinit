@@ -39,6 +39,9 @@ coordinate with slinit. For orderly shutdowns use
 **-h**, **--help**
 :   Print a usage summary and exit with status 2.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # BEHAVIOUR
 
 **kill(-1, sig)** reaches every process the caller may signal, other

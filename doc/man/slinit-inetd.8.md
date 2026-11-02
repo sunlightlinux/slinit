@@ -60,6 +60,9 @@ path.
 :   Do not log accepted connections. By default each one is logged with
     its peer and local address, as **launchproxy**(8) does.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 ## ENVIRONMENT
 
 **LISTEN_FDS**

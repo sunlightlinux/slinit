@@ -37,7 +37,17 @@ import (
 // at 3.
 const listenFDsStart = 3
 
+// version is set at build time with -ldflags "-X main.version=vX.Y.Z".
+var version = "dev"
+
 func main() {
+	// --version, alone: checked before anything else runs, so no other
+	// argument changes meaning. The value is stamped by the package
+	// build (-X main.version=...).
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("slinit-inetd version %s\n", version)
+		return
+	}
 	maxConc := flag.Int("max-concurrent", 64,
 		"maximum simultaneous connection handlers; further connections wait")
 	quiet := flag.Bool("quiet", false, "do not log accepted connections")

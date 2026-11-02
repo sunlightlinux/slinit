@@ -70,6 +70,9 @@ now" without opening a full monitoring stack.
 :   Include idle cgroups (0 processes, 0 memory, 0% CPU). Off by default so
     the output focuses on active workloads.
 
+**\--version** (since 3.7.0)
+:   Print the version and exit. Recognised only as the sole argument.
+
 # EXAMPLES
 
 Live view refreshing every second, sorted by CPU:
