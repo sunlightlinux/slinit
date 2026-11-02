@@ -24,6 +24,24 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A closed virtual TTY no longer takes the output of the next one.**
+  The vtty reader kept the pty master's fd number and read it with a
+  raw syscall. A read already past its stop check when the VirtualTTY
+  closed went to whatever the kernel had given that number next — the
+  pty of the service started after it — so that service's output went
+  to the dead reader and never reached its scrollback or attached
+  clients. This is the loss 3.7.0 listed as known: instrumented, a
+  closed VirtualTTY's reader was caught returning the next test's
+  `hello from pty`. The reader now goes through the `*os.File` in the
+  runtime poller, so Close interrupts it and the number is not reused
+  under it, and the ioctls that set the pty up use `SyscallConn`
+  instead of `Fd()`, which had taken the file out of the poller. A
+  test that closes one VirtualTTY and opens the next 300 times fails
+  on the old code from the first iteration; under CPU load the vtty
+  tests went from about 1 loss in 60 runs to 0 in 240.
+
 ## [3.7.0] — 2026-11-02
 
 **If any service uses `options = no-new-privs`, `system-call-filter`, a

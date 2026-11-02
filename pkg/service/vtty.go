@@ -66,9 +66,9 @@ func writeClient(conn net.Conn, data []byte) error {
 type VirtualTTY struct {
 	mu sync.Mutex
 
-	// PTY master/slave
+	// PTY master/slave. The master is read through the *os.File, in the
+	// runtime poller, never through a raw fd number: see readLoop.
 	master    *os.File
-	masterFd  int // cached fd for race-free goroutine access
 	slavePath string
 
 	// Ring buffer for scrollback
@@ -143,7 +143,6 @@ func OpenVirtualTTY(serviceName string, scrollback int, sockDir string) (*Virtua
 
 	vt := &VirtualTTY{
 		master:      master,
-		masterFd:    int(master.Fd()), // cache fd before goroutines start
 		slavePath:   slavePath,
 		ring:        make([]byte, scrollback),
 		ringSize:    scrollback,
@@ -189,8 +188,9 @@ func (vt *VirtualTTY) Close() {
 
 	close(vt.stopCh)
 	vt.listener.Close()
-	// Set O_NONBLOCK before closing to unblock readLoop's blocking Read
-	syscall.SetNonblock(vt.masterFd, true)
+	// The master is in the runtime poller, so Close interrupts a Read in
+	// progress (it returns os.ErrClosed), and the number is not released
+	// while that Read still holds it.
 	vt.master.Close()
 
 	// Wait for reader goroutine
@@ -231,22 +231,34 @@ func openPTY() (master *os.File, slavePath string, err error) {
 		return nil, "", err
 	}
 
-	// Get pts number
-	var ptsNum uint32
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(),
-		uintptr(ioctlTIOCGPTN), uintptr(unsafe.Pointer(&ptsNum)))
-	if errno != 0 {
+	// The ioctls go through SyscallConn: master.Fd() would take the file
+	// out of the runtime poller for good, and readLoop relies on it.
+	rc, err := master.SyscallConn()
+	if err != nil {
 		master.Close()
-		return nil, "", fmt.Errorf("TIOCGPTN: %v", errno)
+		return nil, "", err
 	}
-
-	// Unlock pts
+	var ptsNum uint32
 	var unlock int32
-	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, master.Fd(),
-		uintptr(ioctlTIOCSPTLCK), uintptr(unsafe.Pointer(&unlock)))
-	if errno != 0 {
+	var ioctlErr error
+	if err := rc.Control(func(fd uintptr) {
+		// Get pts number, then unlock it.
+		if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd,
+			uintptr(ioctlTIOCGPTN), uintptr(unsafe.Pointer(&ptsNum))); e != 0 {
+			ioctlErr = fmt.Errorf("TIOCGPTN: %v", e)
+			return
+		}
+		if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd,
+			uintptr(ioctlTIOCSPTLCK), uintptr(unsafe.Pointer(&unlock))); e != 0 {
+			ioctlErr = fmt.Errorf("TIOCSPTLCK: %v", e)
+		}
+	}); err != nil {
 		master.Close()
-		return nil, "", fmt.Errorf("TIOCSPTLCK: %v", errno)
+		return nil, "", err
+	}
+	if ioctlErr != nil {
+		master.Close()
+		return nil, "", ioctlErr
 	}
 
 	slavePath = "/dev/pts/" + strconv.Itoa(int(ptsNum))
@@ -295,13 +307,25 @@ func (vt *VirtualTTY) readLoop() {
 		free <- make([]byte, vttyBufSize)
 	}
 
-	// Use cached fd to avoid race with Close() on the os.File
-	fd := vt.masterFd
-
-	// Background reader goroutine — does blocking reads on the PTY master fd.
-	// Exits when the fd is closed (returns EIO or EBADF).
+	// Background reader goroutine. It reads through the *os.File, not a
+	// cached fd number: it used to keep int(master.Fd()) and syscall.Read
+	// it, and after Close a read already past its stopCh check went to a
+	// number the kernel had handed to the next pty opened. Caught in the
+	// act, a closed VirtualTTY's reader returned the next one's "hello
+	// from pty", so the new terminal lost that output for good — about 1
+	// run in 60 of the vtty tests under CPU load. (Fd() also took the
+	// file out of the poller, which is why Close had to flip O_NONBLOCK
+	// to unblock it.) Exits when Close interrupts the read, or on EIO.
 	go func() {
 		defer close(dataCh)
+		send := func(r readResult) bool {
+			select {
+			case dataCh <- r:
+				return true
+			case <-vt.stopCh:
+				return false
+			}
+		}
 		for {
 			var buf []byte
 			select {
@@ -309,17 +333,16 @@ func (vt *VirtualTTY) readLoop() {
 			case <-vt.stopCh:
 				return
 			}
-			n, err := syscall.Read(fd, buf)
+			n, err := vt.master.Read(buf)
 			if n > 0 {
-				dataCh <- readResult{data: buf[:n], buf: buf}
+				if !send(readResult{data: buf[:n], buf: buf}) {
+					return
+				}
 			} else {
 				free <- buf
 			}
 			if err != nil {
-				if err == syscall.EINTR || err == syscall.EAGAIN {
-					continue
-				}
-				dataCh <- readResult{err: err}
+				send(readResult{err: err})
 				return
 			}
 		}

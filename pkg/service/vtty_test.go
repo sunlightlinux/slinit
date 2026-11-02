@@ -419,3 +419,36 @@ func waitForClients(t *testing.T, vt *VirtualTTY, want int) {
 	}
 	t.Fatalf("client count stayed at %d, wanted %d", vt.ClientCount(), want)
 }
+
+// A closed VirtualTTY must not read from the pty opened after it. Its
+// reader used to keep the master's fd number and read it again after
+// Close, and the kernel hands that number to the next pty opened: the
+// old reader then took the new terminal's output, and it was lost. Close
+// and reopen back to back is exactly that reuse, so this loops on it.
+func TestVirtualTTYCloseDoesNotStealNextPTY(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 300; i++ {
+		old, _, err := OpenVirtualTTY("steal-old", 4096, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old.Close()
+
+		vt, slavePath, err := OpenVirtualTTY("steal-new", 4096, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		slave, err := os.OpenFile(slavePath, os.O_WRONLY|syscall.O_NOCTTY, 0)
+		if err != nil {
+			vt.Close()
+			t.Fatal(err)
+		}
+		slave.WriteString("mine\n")
+		got := waitFor(2*time.Second, func() bool { return strings.Contains(string(vt.Scrollback()), "mine") })
+		slave.Close()
+		vt.Close()
+		if !got {
+			t.Fatalf("iteration %d: the new pty's output never reached its scrollback — a closed VirtualTTY's reader took it", i)
+		}
+	}
+}
