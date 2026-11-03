@@ -57,7 +57,12 @@ verified with `git tag -v`.
   the service, as systemd does; the host's `/proc` is not touched. On
   newer kernels the remount was refused outright (EINVAL on `subset=`),
   so these settings now also work there. Functional case 153 now checks
-  the host's `/proc` after the service runs, which it never did.
+  the host's `/proc` after the service runs, which it never did; the SSH
+  perf case 800 and acceptance case 46, which hit the bug on every run,
+  now report it and repair the target's `/proc` with a fresh instance,
+  so a run against an older slinit no longer leaves it broken until
+  reboot. A perf case that finds a defect in the target no longer
+  aborts the suite: it goes on, and fails at the end.
 - **An allowlist without `rt_sigaction` killed slinit-runner before the
   service ran.** The runner installed the service's filter before its
   own remaining setup — the SIGPIPE handler, bucket B's `prctl`, the

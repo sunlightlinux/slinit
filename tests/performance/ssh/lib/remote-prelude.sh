@@ -233,3 +233,40 @@ perf_report_delivered() {
 # them turned ten cases into timings of an error reply.
 PERF_TARGET=perf-target
 PERF_TARGET_DEP=perf-target-dep
+
+# perf_proc_state
+#   Prints the target's /proc mount stack, one "device options" line per
+#   procfs layer, for perf_proc_restore to compare against.
+perf_proc_state() {
+    awk '$5 == "/proc" { print $3, $NF }' /proc/self/mountinfo
+}
+
+# perf_proc_restore BEFORE
+#   Compares the target's /proc with BEFORE (a perf_proc_state taken
+#   before the case started a sandboxed service) and puts it right if it
+#   changed. Before 3.10.0 slinit-runner applied protect-proc and
+#   proc-subset by remounting /proc in the service's mount namespace,
+#   which changed the procfs superblock the host shares: after case 800
+#   the target's own /proc had hidepid=invisible,subset=pid, and
+#   /proc/meminfo, /proc/stat and /proc/uptime were gone until reboot —
+#   htop, free, uptime and the QEMU guest agent all failed.
+#
+#   A changed /proc is a defect in the target, not in the numbers: it is
+#   reported through $PERF_DEFECT_MARK, so the suite finishes and then
+#   fails, and is repaired by mounting a fresh procfs instance over it.
+#   That works whatever the broken layer is; unmounting it would leave
+#   an empty /proc if nothing were mounted underneath.
+perf_proc_restore() {
+    _ppr_now="$(perf_proc_state)"
+    [ "$_ppr_now" = "$1" ] && return 0
+    echo "  DEFECT: the service's /proc options reached the target's own /proc"
+    echo "  (slinit-runner before 3.10.0 remounted the procfs the host shares):"
+    echo "$_ppr_now" | sed 's/^/    | /'
+    : > "${PERF_DEFECT_MARK:-./.perf-defect}"
+    if mount -t proc -o nosuid,nodev,noexec proc /proc 2>/dev/null &&
+        [ -r /proc/meminfo ] && [ -r /proc/stat ]; then
+        echo "  restored: mounted a fresh procfs over /proc"
+    else
+        echo "  could not restore /proc; reboot the target" >&2
+    fi
+}

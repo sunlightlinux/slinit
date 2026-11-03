@@ -112,6 +112,7 @@ fi
 
 # ---- runner -------------------------------------------------------------
 echo
+DEFECTS=""
 for case_path in "${CASES[@]}"; do
     case_name="$(basename "$case_path" .sh)"
     echo -e "${BOLD}--- ${case_name} ---${RESET}"
@@ -124,8 +125,12 @@ for case_path in "${CASES[@]}"; do
     # for 580/600; it was dropped when they were ungated, since nothing
     # reads it any more.
     # PERF_FAIL_MARK: the prelude creates it when a timed command fails.
+    # PERF_DEFECT_MARK: a case found a defect in the target that does not
+    # make its numbers wrong (perf_proc_restore); the suite goes on and
+    # fails at the end.
     _mark="${REMOTE_DIR}/failed.${case_name}"
-    _remote_env="ITERS=${ITERS} PERF_FAIL_MARK=${_mark}"
+    _defect="${REMOTE_DIR}/defect.${case_name}"
+    _remote_env="ITERS=${ITERS} PERF_FAIL_MARK=${_mark} PERF_DEFECT_MARK=${_defect}"
     # Don't let `set -e` abort the suite mutely. A case's exit status is
     # its LAST command's, so a trailing best-effort cleanup without
     # `|| true` fails the case even though every benchmark printed fine.
@@ -140,6 +145,10 @@ for case_path in "${CASES[@]}"; do
         echo "  Its numbers are of an error path; the FAILED lines above say which." >&2
         exit 1
     fi
+    if ssh_run "test -e ${_defect}"; then
+        DEFECTS="${DEFECTS:+$DEFECTS }${case_name}"
+        echo -e "${YELLOW}  DEFECT in the target (see above); its numbers stand, the suite goes on${RESET}"
+    fi
     if [ "$_rc" -ne 0 ]; then
         echo >&2
         echo -e "${YELLOW}ERROR: case ${case_name} exited ${_rc} — aborting suite${RESET}" >&2
@@ -150,4 +159,8 @@ for case_path in "${CASES[@]}"; do
     echo
 done
 
+if [ -n "${DEFECTS:-}" ]; then
+    echo -e "${YELLOW}done, but these cases found a defect in the target: ${DEFECTS}${RESET}"
+    exit 1
+fi
 echo -e "${GREEN}done.${RESET}"

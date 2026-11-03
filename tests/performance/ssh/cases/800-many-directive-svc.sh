@@ -17,6 +17,9 @@
 # 14.9 ms: the one real start).
 _name="perf-heavy-svc-$$"
 _svcfile="/etc/slinit.d/$_name"
+# The service sets protect-proc + proc-subset; check the target's own
+# /proc is unchanged afterwards (see perf_proc_restore).
+_proc_before="$(perf_proc_state)"
 # Every line must be a directive slinit accepts, or the service does not
 # load and every start times the load error. Until 2026-11-01 it had 20
 # that were not: names slinit never had (env-var, ionice-class,
@@ -86,3 +89,4 @@ perf_run_iters "$ITERS" "CtlStartStop_heavy_43directive_svc" \
 slinitctl stop "$_name" > /dev/null 2>&1
 slinitctl unload "$_name" > /dev/null 2>&1
 rm -f "$_svcfile"
+perf_proc_restore "$_proc_before"

@@ -18,9 +18,22 @@ SVC="acceptance-test-sandbox-hp"
 MARK="/run/acceptance-test-sandbox-hp.log"
 INACC="/etc/acceptance-test-inacc"
 
+# The target's own /proc, before the sandboxed service starts. Before
+# 3.10.0 slinit-runner applied protect-proc by remounting /proc in the
+# service's mount namespace, and procfs options belong to the superblock
+# the host shares — so the host's /proc took hidepid=invisible too.
+_proc_state() { awk '$5 == "/proc" { print $3, $NF }' /proc/self/mountinfo; }
+_proc_before=$(_proc_state)
+
 cleanup() {
     svc_remove "$SVC"
     rm -f "$MARK" "$INACC"
+    # Repair a leaked /proc with a fresh instance over it, so one run of
+    # the suite cannot leave the target broken until reboot.
+    if [ "$(_proc_state)" != "$_proc_before" ]; then
+        mount -t proc -o nosuid,nodev,noexec proc /proc 2>/dev/null &&
+            echo "  restored the target's /proc (fresh procfs mounted over it)"
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -108,5 +121,9 @@ case "$_inacc_section" in
         echo "OK: inaccessible-paths hid the content (got: '$_inacc_section')"
         ;;
 esac
+
+# protect-proc is the service's alone: the target's own /proc must not
+# have changed.
+assert_eq "$(_proc_state)" "$_proc_before" "protect-proc left the host's /proc untouched"
 
 test_summary
