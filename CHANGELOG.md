@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.8.0] — 2026-11-03
+
+**A minor: one new directive, and one change to what `is-failed`
+reports.** `failure-conditions` says when a service that had started
+counts as failed rather than merely stopped, and is new configuration,
+so this cannot be a patch. Without it nothing behaves differently — the
+default is exactly the rule each part of slinit already applied.
+
+The one change a setup could notice is `slinitctl is-failed`: it used to
+call every service stopped on request FAILED, and no longer does. A
+script could have relied on that, which STABILITY.md reserves for a
+minor; it is under *Changed* with a compat note.
+
+Upgrading from 3.7.1 needs no configuration change.
+
 ### Added
 
 - **`failure-conditions`** — when a service that had started counts as
