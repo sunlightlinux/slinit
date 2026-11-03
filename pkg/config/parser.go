@@ -468,6 +468,10 @@ type ServiceDescription struct {
 	RlimitData   *[2]uint64
 	RlimitAs     *[2]uint64
 
+	// RlimitMemlock: RLIMIT_MEMLOCK. With mlockall it replaces the
+	// runner's raise to unlimited.
+	RlimitMemlock *[2]uint64
+
 	// Capabilities and securebits
 	Capabilities          string // comma/space-separated capability names
 	CapabilityBoundingSet string // positive list kept in CapBnd; others PR_CAPBSET_DROP'd
@@ -3297,6 +3301,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return fmt.Errorf("invalid rlimit-data: %v", err)
 		}
 		desc.RlimitData = lim
+
+	case "rlimit-memlock":
+		lim, err := parseRlimit(value)
+		if err != nil {
+			return fmt.Errorf("invalid rlimit-memlock: %v", err)
+		}
+		desc.RlimitMemlock = lim
 
 	case "rlimit-as", "rlimit-addrspace":
 		lim, err := parseRlimit(value)

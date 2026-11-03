@@ -6,6 +6,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // --- Namespace / clone flags tests ---
@@ -583,5 +585,38 @@ func TestConfinementStartsNormallyWithARunner(t *testing.T) {
 	}
 	if ch != nil {
 		<-ch
+	}
+}
+
+// With mlockall the runner raises RLIMIT_MEMLOCK to unlimited, which
+// would undo an explicit rlimit-memlock: slinit applies that before the
+// runner gets there. --keep-memlock tells it not to, and only then.
+func TestWrapWithRunnerKeepsExplicitMemlock(t *testing.T) {
+	memlock := Rlimit{Resource: unix.RLIMIT_MEMLOCK, Soft: 1 << 20, Hard: 1 << 20}
+	nofile := Rlimit{Resource: unix.RLIMIT_NOFILE, Soft: 1024, Hard: 1024}
+	for _, c := range []struct {
+		name    string
+		mlock   int
+		limits  []Rlimit
+		wantArg bool
+	}{
+		{"mlockall+memlock", 3, []Rlimit{nofile, memlock}, true},
+		{"mlockall-only", 3, []Rlimit{nofile}, false},
+	} {
+		p := ExecParams{
+			RunnerPath:    "/usr/lib/slinit/slinit-runner",
+			Command:       []string{"/bin/true"},
+			MlockallFlags: c.mlock,
+			Rlimits:       c.limits,
+		}
+		got := false
+		for _, a := range wrapWithRunner(p) {
+			if a == "--keep-memlock" {
+				got = true
+			}
+		}
+		if got != c.wantArg {
+			t.Errorf("%s: --keep-memlock present = %v, want %v", c.name, got, c.wantArg)
+		}
 	}
 }

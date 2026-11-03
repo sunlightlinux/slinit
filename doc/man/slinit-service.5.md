@@ -1614,6 +1614,21 @@ Example — page a scaler when memory pressure spikes for a workload:
 :   Each *spec* is *soft*[:*hard*]. The literal `unlimited` is also
     accepted.
 
+**rlimit-memlock**=*spec* (since 3.9.0)
+:   **RLIMIT_MEMLOCK**: how many bytes of memory the service may lock,
+    with **mlock**(2), **mlockall**(2), or a DMA mapping such as a
+    DPDK application makes through VFIO. Same *spec* as above. A
+    service that runs as root has **CAP_IPC_LOCK** and is not bound by
+    it; one that runs as another user is.
+
+    **mlockall** raises this limit to `unlimited` on its own. Set both,
+    and **rlimit-memlock** wins: the runner then leaves the limit as
+    configured, so a lock bigger than it fails and the service does not
+    start.
+
+    A systemd unit's **LimitMEMLOCK=** maps to it, with systemd's
+    `infinity` and its base-1024 suffixes (`64M`) translated.
+
 **nice**=*-20..19*
 :   Process scheduling niceness.
 

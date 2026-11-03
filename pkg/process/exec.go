@@ -953,12 +953,25 @@ func sandboxActive(p ExecParams) bool {
 		len(p.TemporaryFileSystem) > 0
 }
 
+// hasRlimit reports whether limits sets resource.
+func hasRlimit(limits []Rlimit, resource int) bool {
+	for _, rl := range limits {
+		if rl.Resource == resource {
+			return true
+		}
+	}
+	return false
+}
+
 // wrapWithRunner returns a new argv that invokes slinit-runner with
 // the appropriate flags before the real command.
 func wrapWithRunner(p ExecParams) []string {
 	args := []string{p.RunnerPath}
 	if p.MlockallFlags != 0 {
 		args = append(args, "--mlockall="+strconv.Itoa(p.MlockallFlags))
+		if hasRlimit(p.Rlimits, unix.RLIMIT_MEMLOCK) {
+			args = append(args, "--keep-memlock")
+		}
 	}
 	if p.NumaMempolicySet {
 		args = append(args, "--mempolicy="+mempolicyName(p.NumaMempolicy))

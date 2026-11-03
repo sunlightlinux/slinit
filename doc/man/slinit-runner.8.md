@@ -68,6 +68,9 @@ and **\--syscall-filter** carries **system-call-filter**).
     config keywords (*current*, *future*, *both*, *onfault*) into the
     numeric mask before invoking the helper.
 
+    The runner raises **RLIMIT_MEMLOCK** to unlimited before the call,
+    unless **\--keep-memlock** is given.
+
     The runner's own lock ends at **execve**(2), so it also preloads
     *libslinit-mlock.so* into *COMMAND* (**LD_PRELOAD**, plus
     **SLINIT_MLOCKALL**=*N* and **SLINIT_MLOCKALL_PID**=*its PID*); the
@@ -81,6 +84,11 @@ and **\--syscall-filter** carries **system-call-filter**).
     linked ELF of the library's class and machine, is setuid/setgid,
     or has file capabilities — every case in which the loader would
     run the program unlocked with only a warning.
+
+**\--keep-memlock** (since 3.9.0)
+:   With **\--mlockall**, leave **RLIMIT_MEMLOCK** as it is instead of
+    raising it to unlimited. slinit passes it when the service sets
+    **rlimit-memlock**, which it has already applied to this process.
 
 **\--mempolicy**=*MODE*
 :   NUMA memory allocation mode for **set_mempolicy**(2). One of

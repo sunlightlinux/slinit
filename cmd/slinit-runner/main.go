@@ -94,6 +94,8 @@ func run() error {
 	fs := flag.NewFlagSet("slinit-runner", flag.ExitOnError)
 	mlockall := fs.Int("mlockall", 0,
 		"bitmask passed to mlockall(2): MCL_CURRENT=1, MCL_FUTURE=2, MCL_ONFAULT=4")
+	keepMemlock := fs.Bool("keep-memlock", false,
+		"with --mlockall, leave RLIMIT_MEMLOCK as set (rlimit-memlock) instead of raising it to unlimited")
 	mempolicy := fs.String("mempolicy", "",
 		"NUMA memory policy: bind, preferred, interleave, local, default")
 	numaNodes := fs.String("numa-nodes", "",
@@ -226,10 +228,16 @@ func run() error {
 		// the whole service over it, since the intent is expressed
 		// declaratively and the target may still work without a real
 		// lock.
-		inf := unix.Rlimit{Cur: unix.RLIM_INFINITY, Max: unix.RLIM_INFINITY}
-		if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &inf); err != nil {
-			fmt.Fprintf(os.Stderr,
-				"slinit-runner: warn: setrlimit(RLIMIT_MEMLOCK, INF): %v\n", err)
+		//
+		// An explicit rlimit-memlock wins: slinit has already set it on
+		// this process, and raising it here would undo what the
+		// configuration asked for.
+		if !*keepMemlock {
+			inf := unix.Rlimit{Cur: unix.RLIM_INFINITY, Max: unix.RLIM_INFINITY}
+			if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &inf); err != nil {
+				fmt.Fprintf(os.Stderr,
+					"slinit-runner: warn: setrlimit(RLIMIT_MEMLOCK, INF): %v\n", err)
+			}
 		}
 		if err := unix.Mlockall(*mlockall); err != nil {
 			return fmt.Errorf("mlockall(0x%x): %w", *mlockall, err)

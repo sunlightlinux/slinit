@@ -24,6 +24,28 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- **`rlimit-memlock`** — `RLIMIT_MEMLOCK` on its own, as `soft[:hard]`
+  or `unlimited` like the other limits. The limit was only reachable
+  through `mlockall`, which raises it to unlimited and also locks the
+  whole process; a service that needs room to lock memory itself — a
+  DPDK application mapping its buffers for DMA through VFIO, run as a
+  non-root user — had no way to ask for just that. With both set,
+  `rlimit-memlock` wins: slinit-runner gets a new `--keep-memlock` flag
+  and leaves the limit as configured. A systemd unit's `LimitMEMLOCK=`
+  now maps to it.
+
+### Fixed
+
+- **A systemd unit with `Limit*=infinity` could not be loaded.**
+  `LimitNOFILE=infinity`, one of the most common lines in a unit, was
+  copied through unchanged, and slinit's own word for it is
+  `unlimited`; the unit failed to load, and the converter wrote a file
+  slinit rejected. `infinity` is now translated, and so are systemd's
+  base-1024 size suffixes (`LimitCORE=64M`) on the size limits — CORE,
+  DATA, AS and MEMLOCK — as systemd's own `rlimit_parse_size` reads them.
+
 ## [3.8.0] — 2026-11-03
 
 **A minor: one new directive, and one change to what `is-failed`

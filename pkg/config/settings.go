@@ -150,6 +150,7 @@ var KnownSettings = map[string]OperatorType{
 	"rlimit-core":      OpEquals,
 	"rlimit-data":      OpEquals,
 	"rlimit-as":        OpEquals,
+	"rlimit-memlock":   OpEquals,
 	"rlimit-addrspace": OpEquals, // dinit compat alias for rlimit-as
 
 	// cgroup

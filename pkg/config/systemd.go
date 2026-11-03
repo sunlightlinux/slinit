@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -67,6 +68,8 @@ type SystemdConfig struct {
 	rlimitCore   string
 	rlimitData   string
 	rlimitAS     string
+
+	rlimitMemlock string
 
 	description string   // [Unit] Description=
 	mapped      []kvPair // directives translated 1:1, emitted in order
@@ -432,13 +435,15 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s — slinit routes stdout/err to its logger; other targets need manual wiring", key, val)})
 		}
 	case "LimitNOFILE":
-		cfg.rlimitNofile = val
+		cfg.rlimitNofile = systemdRlimit(val, false)
 	case "LimitCORE":
-		cfg.rlimitCore = val
+		cfg.rlimitCore = systemdRlimit(val, true)
 	case "LimitDATA":
-		cfg.rlimitData = val
+		cfg.rlimitData = systemdRlimit(val, true)
 	case "LimitAS":
-		cfg.rlimitAS = val
+		cfg.rlimitAS = systemdRlimit(val, true)
+	case "LimitMEMLOCK":
+		cfg.rlimitMemlock = systemdRlimit(val, true)
 	case "CapabilityBoundingSet", "AmbientCapabilities":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s — map to slinit capabilities / ambient-caps directives manually", key, val)})
 	// Hardening directives slinit implements as deliberate equivalents of
@@ -650,6 +655,52 @@ func truthy(v string) bool {
 	return v == "yes" || v == "true" || v == "1" || v == "on"
 }
 
+// systemdRlimit translates a systemd Limit*= value into slinit's rlimit
+// syntax. systemd writes "infinity" where slinit writes "unlimited", and
+// takes the size limits (CORE, DATA, AS, MEMLOCK) with base-1024
+// suffixes, as its rlimit_parse_size does: LimitMEMLOCK=64M. Copied
+// through unchanged, a unit with LimitNOFILE=infinity — one of the most
+// common lines in a unit — could not be loaded at all. A value this does
+// not recognise is passed through for the parser to reject by name.
+func systemdRlimit(val string, size bool) string {
+	parts := strings.SplitN(val, ":", 2)
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		parts[i] = p
+		if p == "infinity" {
+			parts[i] = "unlimited"
+			continue
+		}
+		if !size || p == "" {
+			continue
+		}
+		var shift uint
+		switch p[len(p)-1] {
+		case 'K':
+			shift = 10
+		case 'M':
+			shift = 20
+		case 'G':
+			shift = 30
+		case 'T':
+			shift = 40
+		case 'P':
+			shift = 50
+		case 'E':
+			shift = 60
+		case 'B':
+		default:
+			continue
+		}
+		n, err := strconv.ParseUint(p[:len(p)-1], 10, 64)
+		if err != nil || n > ^uint64(0)>>shift {
+			continue
+		}
+		parts[i] = strconv.FormatUint(n<<shift, 10)
+	}
+	return strings.Join(parts, ":")
+}
+
 // --- Emitter ---
 
 func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
@@ -727,6 +778,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	}
 	if c.rlimitAS != "" {
 		fmt.Fprintf(w, "rlimit-as = %s\n", c.rlimitAS)
+	}
+	if c.rlimitMemlock != "" {
+		fmt.Fprintf(w, "rlimit-memlock = %s\n", c.rlimitMemlock)
 	}
 	for _, cnd := range c.conditions {
 		fmt.Fprintf(w, "%s = %s\n", cnd.name, cnd.value)

@@ -2465,6 +2465,8 @@ const (
 	rlimitCore   = syscall.RLIMIT_CORE   // 4
 	rlimitData   = syscall.RLIMIT_DATA   // 2
 	rlimitAs     = syscall.RLIMIT_AS     // 9
+
+	rlimitMemlock = unix.RLIMIT_MEMLOCK // 8; syscall has no name for it
 )
 
 // applyRlimits adds parsed resource limits to the service record.
@@ -2480,6 +2482,9 @@ func applyRlimits(rec *service.ServiceRecord, desc *ServiceDescription) {
 	}
 	if desc.RlimitAs != nil {
 		rec.AddRlimit(process.Rlimit{Resource: rlimitAs, Soft: desc.RlimitAs[0], Hard: desc.RlimitAs[1]})
+	}
+	if desc.RlimitMemlock != nil {
+		rec.AddRlimit(process.Rlimit{Resource: rlimitMemlock, Soft: desc.RlimitMemlock[0], Hard: desc.RlimitMemlock[1]})
 	}
 }
 
