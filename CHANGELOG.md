@@ -46,6 +46,18 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`protect-proc` / `proc-subset` changed the whole system's `/proc`.**
+  slinit-runner remounted the `/proc` it found in the service's mount
+  namespace, but procfs options belong to the superblock, which that
+  namespace shares with the host — so after one such service the host's
+  `/proc` had `hidepid=invisible,subset=pid` too: `/proc/meminfo`,
+  `/proc/stat` and `/proc/uptime` were gone, and `htop`, `free` and
+  `uptime` failed until reboot. Seen on a test VM after the perf suite's
+  heavy-directive case. The runner now mounts a new procfs instance for
+  the service, as systemd does; the host's `/proc` is not touched. On
+  newer kernels the remount was refused outright (EINVAL on `subset=`),
+  so these settings now also work there. Functional case 153 now checks
+  the host's `/proc` after the service runs, which it never did.
 - **An allowlist without `rt_sigaction` killed slinit-runner before the
   service ran.** The runner installed the service's filter before its
   own remaining setup — the SIGPIPE handler, bucket B's `prctl`, the

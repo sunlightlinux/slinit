@@ -2,3 +2,4 @@ type = internal
 depends-on: system-init
 depends-on: test-runner
 waits-for: pp-svc
+waits-for: pp2-svc

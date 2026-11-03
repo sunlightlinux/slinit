@@ -168,10 +168,18 @@ func applyProtectHome(mode string) error {
 	return nil
 }
 
-// applyProtectProc remounts /proc with hidepid= and/or subset= options
-// per the requested mode. /proc must already be a mount point — the
-// kernel rejects mount options on non-mount paths, which is exactly
-// what we want (no silent no-op).
+// applyProtectProc mounts a new procfs instance on /proc with hidepid=
+// and/or subset= options, as systemd's mount_procfs does.
+//
+// It used to remount the /proc it found. procfs options belong to the
+// superblock, not to the mount, and CLONE_NEWNS copies mounts but shares
+// their superblocks — so the remount, made in the service's own mount
+// namespace, changed the host's /proc too. After one service with
+// protect-proc + proc-subset the whole system saw hidepid=invisible,
+// subset=pid: /proc/meminfo, /proc/stat and /proc/uptime were gone, and
+// htop, free and uptime stopped working. A new instance is the service's
+// alone. (A remount that changes subset= is also refused with EINVAL by
+// newer kernels, so the old way failed there outright.)
 func applyProtectProc(hidepid, subset string) error {
 	if hidepid == "" && subset == "" {
 		return nil
@@ -185,8 +193,8 @@ func applyProtectProc(hidepid, subset string) error {
 	}
 	data := strings.Join(opts, ",")
 	if err := unix.Mount("proc", "/proc", "proc",
-		unix.MS_REMOUNT|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, data); err != nil {
-		return fmt.Errorf("remount /proc with %q: %w", data, err)
+		unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, data); err != nil {
+		return fmt.Errorf("mount /proc with %q: %w", data, err)
 	}
 	return nil
 }

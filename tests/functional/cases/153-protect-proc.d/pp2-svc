@@ -1,0 +1,9 @@
+type = scripted
+depends-on: system-init
+# The perf suite's heavy-directive case, reduced to the two settings
+# that change /proc: a scripted service whose command finishes at once.
+# Whatever its sandbox does to /proc must stay in its own mount
+# namespace — the test checks the host's /proc afterwards.
+command = /bin/true
+protect-proc = invisible
+proc-subset = pid
