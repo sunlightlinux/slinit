@@ -4,7 +4,8 @@
 // reports:
 //
 //   - Lines of code by language, split into code / comments / blank.
-//     Recognised: Go, Shell (.sh / .bash), Markdown, YAML, Makefile,
+//     Recognised: Go, C (.c / .h), C++ (.cc / .cpp / .cxx / .hh / .hpp /
+//     .hxx), Shell (.sh / .bash), Markdown, YAML, Makefile,
 //     and a slinit-specific "Service config" bucket for the
 //     dinit-style key=value files that don't carry a file extension.
 //   - Test counts: `func Test*` and `func Fuzz*` across every
@@ -130,6 +131,14 @@ func langOf(path string) string {
 	switch {
 	case strings.HasSuffix(base, ".go"):
 		return "Go"
+	// .h goes to C: a header alone does not say which, and the C++
+	// spellings below are unambiguous.
+	case strings.HasSuffix(base, ".c"), strings.HasSuffix(base, ".h"):
+		return "C"
+	case strings.HasSuffix(base, ".cc"), strings.HasSuffix(base, ".cpp"),
+		strings.HasSuffix(base, ".cxx"), strings.HasSuffix(base, ".hh"),
+		strings.HasSuffix(base, ".hpp"), strings.HasSuffix(base, ".hxx"):
+		return "C++"
 	case strings.HasSuffix(base, ".sh"), strings.HasSuffix(base, ".bash"):
 		return "Shell"
 	case strings.HasSuffix(base, ".md"):
@@ -163,6 +172,8 @@ type commentRule struct {
 
 var commentRules = map[string]commentRule{
 	"Go":       {linePrefix: []string{"//"}, blockStart: "/*", blockEnd: "*/"},
+	"C":        {linePrefix: []string{"//"}, blockStart: "/*", blockEnd: "*/"},
+	"C++":      {linePrefix: []string{"//"}, blockStart: "/*", blockEnd: "*/"},
 	"Shell":    {linePrefix: []string{"#"}},
 	"Markdown": {linePrefix: []string{"<!--"}, blockStart: "<!--", blockEnd: "-->"},
 	"YAML":     {linePrefix: []string{"#"}},
