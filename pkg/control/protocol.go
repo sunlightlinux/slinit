@@ -26,8 +26,12 @@ func encodeStatusFlags(svc service.Service) uint8 {
 	if svc.Record().DidStartFail() {
 		flags |= StatusFlagStartFailed
 	}
-	if svc.GetExitStatus().ExecFailed {
+	es := svc.GetExitStatus()
+	if es.ExecFailed {
 		flags |= StatusFlagExecFailed
+	}
+	if svc.Record().IsFailed() != StatusImpliesFailure(svc.State(), flags, svc.StopReason(), es.SiCode(), es.SiStatus()) {
+		flags |= StatusFlagFailedFlip
 	}
 	return flags
 }
@@ -306,7 +310,48 @@ const (
 	// flag bit says it outright; clients that predate it keep their old
 	// heuristic, since unknown bits are ignored.
 	StatusFlagExecFailed uint8 = 1 << 5
+	// StatusFlagFailedFlip says the service's failure-conditions turn the
+	// verdict that StatusImpliesFailure reads from the rest of the status:
+	// a clean exit that counts as a failure under process-stops, or a
+	// failing one that does not under none. A daemon sets it only where
+	// the two disagree, so with the default conditions it is never set,
+	// and a daemon that predates it never sets it at all — either way
+	// the client's reading of the status stands.
+	StatusFlagFailedFlip uint8 = 1 << 6
 )
+
+// cldExited is siginfo's CLD_EXITED: si_status is then the exit code.
+const cldExited = 1
+
+// StatusImpliesFailure is what a status says about failure on its own,
+// before failure-conditions: a start that failed, a stop for a failure
+// reason, or a process that ended after starting other than by exiting
+// with 0. A service stopped on request has not failed.
+//
+// dinit's is-failed reads the stop reason the same way; the clause for
+// a terminated process is slinit's, since dinit reports such a stop as
+// failed only through its (not yet released) failure-conditions.
+func StatusImpliesFailure(state service.ServiceState, flags uint8, reason service.StoppedReason, siCode, siStatus int32) bool {
+	if flags&StatusFlagStartFailed != 0 {
+		return true
+	}
+	if state != service.StateStopped {
+		return false
+	}
+	switch reason {
+	case service.ReasonDepFailed, service.ReasonFailed, service.ReasonExecFailed, service.ReasonTimedOut:
+		return true
+	case service.ReasonTerminated:
+		return siCode != cldExited || siStatus != 0
+	}
+	return false
+}
+
+// StatusShowsFailure is `slinitctl is-failed`'s verdict for a v5 status.
+func StatusShowsFailure(st ServiceStatusInfo5) bool {
+	implied := StatusImpliesFailure(st.State, st.Flags, service.StoppedReason(st.StopReason), st.SiCode, st.SiStatus)
+	return implied != (st.Flags&StatusFlagFailedFlip != 0)
+}
 
 // Packet header: 1-byte command/reply + 2-byte payload length (little-endian).
 // Maximum payload size.

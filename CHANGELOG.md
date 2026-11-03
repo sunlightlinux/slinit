@@ -24,6 +24,36 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- **`failure-conditions`** — when a service that had started counts as
+  failed rather than merely stopped: `process-fails` (the default),
+  `process-stops`, `dependency-fails`, `none`. One verdict now drives
+  `restart = on-failure`, `failure-action`/`success-action`, a
+  dependent's stop reason and `slinitctl is-failed`. Adapted from
+  dinit's directive of the same name, which is on its development
+  branch and not yet released. Without the directive nothing changes:
+  the default keeps each consumer's long-standing rule, and leaves
+  `dependency-fails` off where dinit turns it on, because slinit never
+  marked a dependent failed when a running dependency died. Stop reasons
+  on the wire are unchanged; where the conditions overrule what a status
+  shows, the daemon sets a new status flag bit (`0x40`), which older
+  clients ignore.
+
+### Changed
+
+- **`slinitctl is-failed` no longer reports a service stopped on request
+  as FAILED.** Its rule was "stopped with a non-zero exit status", read
+  from the v1 status, whose exit field is -1 for any process that did
+  not exit by itself and for a service with no process — so every
+  service an operator had stopped read as FAILED. It now reads the stop
+  reason from the v5 status, as dinitctl does: a failed start, a
+  dependency failure, a timeout, a launch failure, or a process that
+  ended after starting other than by exiting with 0. **Compat:** a
+  script that took FAILED after `slinitctl stop` as meaningful now sees
+  the service's state instead, with exit 1; the cases above, including a
+  service whose restart limit ran out, still report FAILED.
+
 ## [3.7.1] — 2026-11-02
 
 **A patch with one fix: the virtual-TTY output loss 3.7.0 listed as

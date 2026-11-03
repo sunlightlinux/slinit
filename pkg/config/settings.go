@@ -69,6 +69,7 @@ var KnownSettings = map[string]OperatorType{
 	"stop-when-unneeded":         OpEquals,
 	"restart":                    OpEquals,
 	"smooth-recovery":            OpEquals,
+	"failure-conditions":         OpEquals,
 	"no-boot-marker":             OpEquals,
 	"normal-exit":                OpEquals | OpPlusEqual,
 	"restart-force-exit-status":  OpEquals | OpPlusEqual,

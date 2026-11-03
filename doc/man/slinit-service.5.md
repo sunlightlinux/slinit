@@ -567,6 +567,48 @@ error. Repeat the line for several targets.
     **normal-exit** still shadows every mode, and
     **restart-force-exit-status** still overrides all of them.
 
+**failure-conditions**=*condition*... (since 3.8.0)
+:   When a service that had started counts as *failed* rather than
+    merely stopped. A space-separated list of:
+
+    *process-fails*
+    :   The process ending other than cleanly is a failure. This is the
+        default, and the rule each consumer always applied: for
+        **restart**=*on-failure* a non-zero exit, a signal other than
+        **SIGHUP**, **SIGINT**, **SIGUSR1**, **SIGUSR2** or **SIGTERM**,
+        or a vanished **bgprocess** daemon; for **failure-action** and
+        **is-failed**, anything but an exit with code 0.
+
+    *process-stops*
+    :   Any end of the process is a failure, an exit with code 0
+        included. **restart**=*on-failure* then restarts on every exit,
+        and **failure-action** fires where **success-action** would have.
+
+    *dependency-fails*
+    :   A hard dependency that stops with a failure stops this service
+        with the reason *dependency-failed*, which **is-failed** and
+        **failure-action** count as a failure. Without it the reason is
+        *normal*, as it always was. A dependency's own conditions decide
+        whether its stop was a failure, so the reason travels down a
+        chain of services that all name it.
+
+    *none*
+    :   Nothing; the list is otherwise empty.
+
+    The value replaces the whole set: *dependency-fails* alone means no
+    end of the process is a failure. *process-fails* and
+    *process-stops* together are refused, since the second already
+    contains the first. A failed *start* is a failure under every
+    setting.
+
+    Adapted from dinit's **failure-conditions**, which is on its
+    development branch and not yet in a release. Two differences: the
+    default leaves *dependency-fails* off, because slinit never marked a
+    dependent failed when a running dependency died and a setup may rely
+    on that; and the stop reasons a client sees are unchanged — a
+    process that ended is still *terminated*, and the verdict travels
+    beside it in the status flags.
+
 **smooth-recovery**=*yes*|*no*
 :   Restart in-place without notifying dependents (useful for
     short crash-restart loops).

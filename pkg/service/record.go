@@ -152,6 +152,9 @@ type ServiceRecord struct {
 	restartMode       RestartMode
 	normalExitSignals []syscall.Signal
 
+	// failure-conditions: when a stop after starting counts as failed.
+	failureConditions FailureConditions
+
 	// invocationID is the 128-bit-hex identifier minted at each
 	// initiateStart. Rides on every journal event emitted during the
 	// invocation lifecycle (Starting → Started → Stopping → Stopped
@@ -1024,9 +1027,12 @@ func (sr *ServiceRecord) chooseStoppedAction(willRestart bool) SystemAction {
 		sr.stopReason == ReasonFailed ||
 		sr.stopReason == ReasonExecFailed ||
 		sr.stopReason == ReasonTimedOut ||
-		(sr.stopReason == ReasonTerminated && !cleanFinish) {
+		(sr.stopReason == ReasonTerminated && sr.processEndIsFailure(exitStatus, !cleanFinish)) ||
+		(sr.stopReason == ReasonDepFailed && sr.failureConditions.Dependency) {
 		return sr.failureAction
 	}
+	// failure-conditions = none can leave a non-clean end that is
+	// neither: it is not a failure, and it is not a success either.
 	// Success path: only fire for a service that finished on its own
 	// with a clean exit. Operator-issued stops (ReasonNormal without a
 	// terminated process) do not count.
@@ -1034,6 +1040,79 @@ func (sr *ServiceRecord) chooseStoppedAction(willRestart bool) SystemAction {
 		return sr.successAction
 	}
 	return ActionNone
+}
+
+// processEndIsFailure applies failure-conditions to the end of a process
+// that had started. legacy is the caller's own long-standing answer, which
+// "process-fails" (the default) keeps: on-failure and failure-action have
+// always disagreed about the admin signals, and the directive is not the
+// place to settle that.
+func (sr *ServiceRecord) processEndIsFailure(es ExitStatus, legacy bool) bool {
+	switch sr.failureConditions.Primary {
+	case FailOnProcessStop:
+		return es.Exited() || es.Signaled() || es.Vanished
+	case FailNever:
+		return false
+	}
+	return legacy
+}
+
+// restartableFailure is the process-fails reading that restart =
+// on-failure has always used: a non-zero exit, a signal other than the
+// administrative ones (matching dinit), or a vanished bgprocess daemon.
+func restartableFailure(es ExitStatus) bool {
+	if es.Signaled() {
+		switch es.Signal() {
+		case syscall.SIGHUP, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGTERM:
+			return false
+		}
+		return true
+	}
+	if es.Exited() {
+		return es.ExitCode() != 0
+	}
+	// A watched process that disappeared without a status we could
+	// collect — a bgprocess daemon, which is not our child. It was
+	// running and now it is not, which is a failure however it happened;
+	// the alternative is to decline the restart on the strength of a
+	// status that belongs to a different process.
+	return es.Vanished
+}
+
+// stopIsFailure reports whether the stop in progress counts as a failure,
+// for the dependents that opted into dependency-fails. The rule for a
+// process end is on-failure's, as dinit's is: its FAILED reason comes from
+// the same test.
+func (sr *ServiceRecord) stopIsFailure() bool {
+	switch sr.stopReason {
+	case ReasonFailed, ReasonExecFailed, ReasonTimedOut, ReasonDepFailed:
+		return true
+	case ReasonTerminated:
+		es := sr.self.GetExitStatus()
+		return sr.processEndIsFailure(es, restartableFailure(es))
+	}
+	return sr.startFailed
+}
+
+// IsFailed is the daemon's verdict for `slinitctl is-failed`: a stopped
+// service whose start failed, or whose stop counts as a failure under
+// its failure-conditions. A service stopped on request has not failed.
+func (sr *ServiceRecord) IsFailed() bool {
+	if sr.startFailed {
+		return true
+	}
+	if sr.state.Load() != StateStopped {
+		return false
+	}
+	switch sr.stopReason {
+	case ReasonFailed, ReasonExecFailed, ReasonTimedOut, ReasonDepFailed:
+		return true
+	case ReasonTerminated:
+		es := sr.self.GetExitStatus()
+		clean := es.Exited() && es.ExitCode() == 0
+		return sr.processEndIsFailure(es, !clean)
+	}
+	return false
 }
 
 // markSkippedStart short-circuits the start path when a condition-*
@@ -1498,6 +1577,12 @@ func (sr *ServiceRecord) DidStartFail() bool   { return sr.startFailed }
 // RestartCount reports how many times the supervisor has restarted this
 // service since slinit started. Never decreases.
 func (sr *ServiceRecord) RestartCount() uint64 { return sr.restarts.Load() }
+
+// SetFailureConditions sets failure-conditions.
+func (sr *ServiceRecord) SetFailureConditions(fc FailureConditions) { sr.failureConditions = fc }
+
+// GetFailureConditions returns failure-conditions.
+func (sr *ServiceRecord) GetFailureConditions() FailureConditions { return sr.failureConditions }
 
 // ResetFailed clears the startFailed flag so subsequent status queries
 // no longer report the service as failed. Mirrors systemd's
@@ -3431,32 +3516,12 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 				sr.inAutoRestart = forRestart
 			}
 		} else if sr.autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
-			if !normal {
-				if exitStatus.Signaled() {
-					// Don't auto-restart for administrative signals (matching dinit)
-					sig := exitStatus.Signal()
-					if sig != syscall.SIGHUP && sig != syscall.SIGINT &&
-						sig != syscall.SIGUSR1 && sig != syscall.SIGUSR2 &&
-						sig != syscall.SIGTERM {
-						wantedRestart = true
-						forRestart = sr.self.CheckRestart()
-						sr.inAutoRestart = forRestart
-					}
-				} else if exitStatus.Exited() && exitStatus.ExitCode() != 0 {
-					wantedRestart = true
-					forRestart = sr.self.CheckRestart()
-					sr.inAutoRestart = forRestart
-				} else if exitStatus.Vanished {
-					// A watched process that disappeared without a status
-					// we could collect — a bgprocess daemon, which is not
-					// our child. It was running and now it is not, which is
-					// a failure however it happened; the alternative is to
-					// decline the restart on the strength of a status that
-					// belongs to a different process.
-					wantedRestart = true
-					forRestart = sr.self.CheckRestart()
-					sr.inAutoRestart = forRestart
-				}
+			// failure-conditions decides what "failure" means here;
+			// its default is the exit-status reading below.
+			if !normal && sr.processEndIsFailure(exitStatus, restartableFailure(exitStatus)) {
+				wantedRestart = true
+				forRestart = sr.self.CheckRestart()
+				sr.inAutoRestart = forRestart
 			}
 		} else if sr.autoRestart == RestartOnSuccess && sr.desired.Load() == StateStarted {
 			if !normal {
@@ -3587,6 +3652,12 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 					depFrom.stopReason = ReasonDepFailed
 					depFrom.UnrecoverableStop()
 				} else {
+					// The path a dying dependency takes: its desired
+					// state is still STARTED here. dependency-fails is
+					// decided on this branch in dinit too.
+					if depFrom.failureConditions.Dependency && sr.stopIsFailure() {
+						depFrom.stopReason = ReasonDepFailed
+					}
 					depFrom.ForcedStop()
 				}
 			}

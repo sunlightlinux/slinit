@@ -2321,13 +2321,31 @@ func cmdIsStarted(conn net.Conn, name string) error {
 }
 
 func cmdIsFailed(conn net.Conn, name string) error {
-	status, err := getServiceStatus(conn, name)
+	handle, err := loadServiceHandle(conn, name)
+	if err != nil {
+		return err
+	}
+	if err := control.WritePacket(conn, control.CmdServiceStatus5, control.EncodeHandle(handle)); err != nil {
+		return err
+	}
+	rply, payload, err := readReply(conn)
+	if err != nil {
+		return err
+	}
+	if rply != control.RplyServiceStatus {
+		return fmt.Errorf("unexpected reply: %d", rply)
+	}
+	status, err := control.DecodeServiceStatus5(payload)
 	if err != nil {
 		return err
 	}
 
-	failed := status.Flags&control.StatusFlagStartFailed != 0 ||
-		(status.State == service.StateStopped && status.ExitStatus != 0)
+	// The verdict used to be "start failed, or stopped with an exit
+	// status other than 0" from the v1 status, whose exit field is -1
+	// for any process that did not exit by itself — so every service
+	// stopped on request read as FAILED. The v5 status carries the stop
+	// reason, which is what says whether a stop was a failure.
+	failed := control.StatusShowsFailure(status)
 
 	if failed {
 		fmt.Println("FAILED")

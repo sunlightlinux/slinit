@@ -135,6 +135,7 @@ var provenanceTable = []Feature{
 	{Name: "start-timeout", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle},
 	{Name: "stop-when-unneeded", Kind: KindDirective, Source: SourceSystemd, Category: CatLifecycle, Notes: "StopWhenUnneeded="},
 	{Name: "smooth-recovery", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "restart w/o disturbing dependents"},
+	{Name: "failure-conditions", Kind: KindDirective, Source: SourceDinit, Category: CatLifecycle, Notes: "when a stop counts as failed (dinit development branch)"},
 	{Name: "no-boot-marker", Kind: KindDirective, Source: SourceSlinit, Category: CatObservability, Notes: "suppress this service's \"[ OK ] name\" boot-console line; main log unaffected"},
 	{Name: "manual", Kind: KindDirective, Source: SourceUpstart, Category: CatLifecycle, Notes: "requires explicit slinitctl start"},
 	{Name: "depends-on", Kind: KindDirective, Source: SourceDinit, Category: CatDependency, Notes: "hard dep — target must be running (starts + stops together)"},

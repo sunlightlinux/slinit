@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"syscall"
 )
 
@@ -364,6 +365,91 @@ func (a AutoRestartMode) String() string {
 	default:
 		return fmt.Sprintf("AutoRestartMode(%d)", a)
 	}
+}
+
+// FailurePrimary says which ends of the service's own process count as
+// a failure. The zero value is the rule slinit always applied.
+type FailurePrimary uint8
+
+const (
+	// FailOnProcessError: an exit with a non-zero code, or death by a
+	// signal, is a failure ("process-fails"). Each consumer keeps its
+	// own long-standing reading of that — on-failure exempts the admin
+	// signals, failure-action does not — so the default changes nothing.
+	FailOnProcessError FailurePrimary = iota
+	// FailOnProcessStop: any end of the process is a failure, a clean
+	// exit 0 included ("process-stops").
+	FailOnProcessStop
+	// FailNever: no end of the process is a failure ("none").
+	FailNever
+)
+
+// FailureConditions is the failure-conditions setting: when a service
+// that had started counts as failed rather than merely stopped.
+// Adapted from dinit's failure-conditions (development branch, not yet
+// in a release); the zero value is slinit's behaviour before it, which
+// differs from dinit's default in leaving Dependency off — slinit never
+// marked a dependent failed because a running dependency died.
+//
+// Start failures are failures under every setting, as in dinit.
+type FailureConditions struct {
+	Primary FailurePrimary
+	// Dependency: a hard dependency that stops with a failure makes this
+	// service stop with dependency-failed instead of normal
+	// ("dependency-fails").
+	Dependency bool
+}
+
+// ParseFailureConditions reads the space-separated value of
+// failure-conditions. The value replaces the whole set, as in dinit:
+// "dependency-fails" alone means no end of the process is a failure.
+func ParseFailureConditions(s string) (FailureConditions, error) {
+	fc := FailureConditions{Primary: FailNever}
+	var sawFails, sawStops bool
+	for _, tok := range strings.Fields(s) {
+		switch tok {
+		case "none":
+		case "process-fails":
+			sawFails = true
+		case "process-stops":
+			sawStops = true
+		case "dependency-fails":
+			fc.Dependency = true
+		default:
+			return FailureConditions{}, fmt.Errorf("failure-conditions: unknown condition %q "+
+				"(use none, process-fails, process-stops, dependency-fails)", tok)
+		}
+	}
+	switch {
+	case sawFails && sawStops:
+		// dinit ORs the bits and then matches neither, so the pair
+		// means no failure at all there. Refusing is better than
+		// copying that, and better than guessing.
+		return FailureConditions{}, fmt.Errorf("failure-conditions: process-fails and " +
+			"process-stops together are ambiguous; process-stops already includes every failure")
+	case sawStops:
+		fc.Primary = FailOnProcessStop
+	case sawFails:
+		fc.Primary = FailOnProcessError
+	}
+	return fc, nil
+}
+
+func (fc FailureConditions) String() string {
+	var parts []string
+	switch fc.Primary {
+	case FailOnProcessError:
+		parts = append(parts, "process-fails")
+	case FailOnProcessStop:
+		parts = append(parts, "process-stops")
+	}
+	if fc.Dependency {
+		parts = append(parts, "dependency-fails")
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " ")
 }
 
 // LogType identifies the type of logging output.

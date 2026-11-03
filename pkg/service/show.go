@@ -86,6 +86,10 @@ func RenderShow(s Service) string {
 	p("Restart", sr.autoRestart.String())
 	p("RestartMode", sr.restartMode.String())
 	pb("SmoothRecovery", sr.smoothRecovery)
+	// Only when set, so the output of existing setups is unchanged.
+	if sr.failureConditions != (FailureConditions{}) {
+		p("FailureConditions", sr.failureConditions.String())
+	}
 	pb("RefuseManualStart", sr.refuseManualStart)
 	pb("RefuseManualStop", sr.refuseManualStop)
 	pb("StopWhenUnneeded", sr.stopWhenUnneeded)

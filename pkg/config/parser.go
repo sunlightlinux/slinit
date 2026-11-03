@@ -170,6 +170,9 @@ type ServiceDescription struct {
 	NormalExitSignals     []syscall.Signal
 	Flags                 service.ServiceFlags
 
+	// failure-conditions: when a stop after starting counts as failed.
+	FailureConditions service.FailureConditions
+
 	// Logging
 	LogType       service.LogType
 	LogFile       string
@@ -1885,6 +1888,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	// Restart
 	case "restart":
 		return applyRestart(desc, value)
+	case "failure-conditions":
+		fc, err := service.ParseFailureConditions(value)
+		if err != nil {
+			return err
+		}
+		desc.FailureConditions = fc
 	case "smooth-recovery":
 		b, err := parseBool(value)
 		if err != nil {

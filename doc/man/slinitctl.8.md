@@ -315,8 +315,18 @@ service name or rejected.
 
 **is-failed** *service*
 :   Exit 0 iff *service* failed: its last start failed, or it is
-    stopped with a non-zero exit status. Prints *FAILED* in that case
-    and the state otherwise, even with **\--quiet**.
+    stopped for a failure — a dependency that failed, a timeout, a
+    process that could not be launched, or a process that ended after
+    starting other than by exiting with 0. The service's
+    **failure-conditions** can change the last of those (see
+    slinit-service(5)). A service stopped on request has not failed.
+    Prints *FAILED* in that case and the state otherwise, even with
+    **\--quiet**.
+
+    Before 3.8.0 the rule was "stopped with a non-zero exit status",
+    read from a field that holds -1 for any process that did not exit
+    by itself, so every service stopped on request was reported
+    *FAILED*.
 
 **reset-failed** *service* | **\--all**
 :   Clear the internal *start failed* mark, which **is-failed** and

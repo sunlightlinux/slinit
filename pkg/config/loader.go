@@ -1774,6 +1774,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	rec.SetAutoRestart(desc.AutoRestart)
 	rec.SetSmoothRecovery(desc.SmoothRecovery)
+	rec.SetFailureConditions(desc.FailureConditions)
 	rec.SetManualStart(desc.ManualStart)
 	rec.SetRefuseManualStart(desc.RefuseManualStart)
 	rec.SetRefuseManualStop(desc.RefuseManualStop)
