@@ -24,6 +24,19 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.9.0] — 2026-11-03
+
+**A minor for one new directive, `rlimit-memlock`, with one fix that
+came out of mapping it: systemd units with `Limit*=infinity` now load.**
+A new directive is new configuration, so this cannot be a patch;
+nothing else changes behaviour that worked before. The fix only turns a
+unit slinit refused to load into one it loads, which no setup can have
+relied on.
+
+Upgrading from 3.8.0 needs no configuration change. Coming from 3.7.1
+or older, read 3.8.0's notes first: it changed what `slinitctl
+is-failed` reports for a service stopped on request.
+
 ### Added
 
 - **`rlimit-memlock`** — `RLIMIT_MEMLOCK` on its own, as `soft[:hard]`
