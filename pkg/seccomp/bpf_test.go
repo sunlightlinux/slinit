@@ -36,9 +36,9 @@ func TestCompileAllowMode(t *testing.T) {
 			last.Code, last.K)
 	}
 
-	// Per-syscall hit count: we expect exactly two ALLOW returns
-	// (one per syscall) and one KILL (the trailing default + arch
-	// reject = 2 KILL returns total).
+	// Per-syscall hit count: one ALLOW return per allowed syscall —
+	// read and write, plus the @default set every allowlist admits —
+	// and two KILL returns (the trailing default + arch reject).
 	var allowCount, killCount int
 	for _, in := range prog {
 		if in.Code != bpfRET|bpfK {
@@ -51,8 +51,8 @@ func TestCompileAllowMode(t *testing.T) {
 			killCount++
 		}
 	}
-	if allowCount != 2 {
-		t.Errorf("expected 2 ALLOW returns, got %d", allowCount)
+	if allowCount != len(f.Syscalls) {
+		t.Errorf("expected %d ALLOW returns (one per syscall), got %d", len(f.Syscalls), allowCount)
 	}
 	if killCount != 2 {
 		t.Errorf("expected 2 KILL returns (arch + default), got %d", killCount)

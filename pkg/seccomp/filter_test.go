@@ -164,3 +164,59 @@ func sliceEq(a, b []string) bool {
 	}
 	return true
 }
+
+// An allowlist admits systemd's @default without naming it, so a
+// service whose filter is installed before its execve survives the
+// execve. A denylist gets nothing added: what it names is what it denies.
+func TestAllowlistAdmitsDefault(t *testing.T) {
+	f, err := Build([]string{"@network-io"}, ModeAllow, nil, ActionKill, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := map[string]bool{}
+	for _, s := range f.Syscalls {
+		has[s] = true
+	}
+	for _, want := range []string{"execve", "exit_group", "clock_gettime", "socket"} {
+		if !has[want] {
+			t.Errorf("allowlist @network-io lacks %q", want)
+		}
+	}
+
+	d, err := Build([]string{"~ptrace"}, ModeAllow, nil, ActionKill, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Syscalls) != 1 || d.Syscalls[0] != "ptrace" {
+		t.Errorf("denylist ~ptrace expanded to %v, want only ptrace", d.Syscalls)
+	}
+}
+
+// The groups are systemd's: spot-check the ones a ported unit relies
+// on, including the five that the hand-written set used to lack.
+func TestGroupsAreSystemds(t *testing.T) {
+	for _, g := range []string{"@resources", "@module", "@cpu-emulation", "@default", "@basic-io", "@known", "@setuid"} {
+		if _, ok := ExpandGroup(g); !ok {
+			t.Errorf("group %s missing", g)
+		}
+	}
+	in := func(group, name string) bool {
+		s, _ := ExpandGroup(group)
+		for _, x := range s {
+			if x == name {
+				return true
+			}
+		}
+		return false
+	}
+	// systemd keeps these out of @privileged, in their own groups.
+	if in("@privileged", "ptrace") || !in("@debug", "ptrace") {
+		t.Error("ptrace belongs to @debug, not @privileged, as in systemd")
+	}
+	if !in("@mount", "fsopen") || !in("@system-service", "flock") {
+		t.Error("@mount must include the new mount API, @system-service flock")
+	}
+	if n, ok := SyscallNumber("open_by_handle_at"); !ok || n == 0 {
+		t.Error("open_by_handle_at is an x86_64 syscall and must be in the table")
+	}
+}

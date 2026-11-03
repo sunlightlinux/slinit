@@ -1355,15 +1355,28 @@ the internal **seccomp** package and installs it via the
 **seccomp**(2) syscall; an install failure aborts the start.
 
 **system-call-filter**=*item*...
-:   Each *item* is one of: a syscall name (e.g. *openat*), a curated
-    group token (e.g. *@system-service*), or a leading **~** prefix
-    *only on the first item* to switch from allowlist (default) to
-    denylist mode. The list is composable with `+=` across multiple
-    lines. Unknown syscall names or groups are rejected at parse time.
-    Equivalent to systemd's **SystemCallFilter=**.
-    Predefined groups: *@system-service*, *@privileged*, *@network-io*,
-    *@file-system*, *@process*, *@clock*, *@debug*, *@ipc*, *@mount*,
-    *@raw-io*, *@reboot*, *@swap*.
+:   Each *item* is one of: a syscall name (e.g. *openat*; every x86_64
+    syscall is known), a group token (e.g. *@system-service*), or a
+    leading **~** prefix *only on the first item* to switch from
+    allowlist (default) to denylist mode. The list is composable with
+    `+=` across multiple lines. Unknown syscall names or groups are
+    rejected at parse time. Equivalent to systemd's
+    **SystemCallFilter=**.
+
+    The groups are systemd's, generated from its *seccomp-util.c*
+    (since 3.10.0; before, slinit kept twelve of its own whose members
+    differed): *@aio*, *@basic-io*, *@chown*, *@clock*,
+    *@cpu-emulation*, *@debug*, *@default*, *@file-system*,
+    *@io-event*, *@ipc*, *@keyring*, *@known*, *@memlock*, *@module*,
+    *@mount*, *@network-io*, *@obsolete*, *@pkey*, *@privileged*,
+    *@process*, *@raw-io*, *@reboot*, *@resources*, *@sandbox*,
+    *@setuid*, *@signal*, *@swap*, *@sync*, *@system-service*,
+    *@timer*. `systemd-analyze syscall-filter` lists what each holds.
+
+    An allowlist always admits *@default* (execve, exit, the time and
+    sleep calls), as systemd's does, and the filter is installed last,
+    right before the service's **execve**(2), so it filters the
+    service and not the setup slinit-runner does for it.
 
 **system-call-architectures**=*name*...
 :   Architectures the filter accepts: *native* (default — the running

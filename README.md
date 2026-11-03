@@ -109,7 +109,7 @@ summarises them by topic.
 | **Lifecycle** | SIGTERM with per-service timeout then SIGKILL, restart policies with rate limiting and smooth recovery, `normal-exit` codes, pause/continue, pinning |
 | **Activation** | explicit, dependency-driven, socket activation (`LISTEN_FDS`, Unix/TCP/UDP, `SO_REUSEPORT`), path activation via inotify, calendar timers, on-demand (lazy) socket activation |
 | **Readiness** | `pipefd`/`pipevar` protocol, `ready-check-command` polling, D-Bus name readiness, `sd_notify` |
-| **Isolation & hardening** | filesystem sandbox (`private-tmp`, `protect-system`, bind/read-only/inaccessible paths), seccomp with curated syscall groups, the `restrict-*` and `protect-*` clusters, AppArmor/SELinux/SMACK transitions, capabilities, securebits — all fail-closed |
+| **Isolation & hardening** | filesystem sandbox (`private-tmp`, `protect-system`, bind/read-only/inaccessible paths), seccomp with systemd's syscall groups, the `restrict-*` and `protect-*` clusters, AppArmor/SELinux/SMACK transitions, capabilities, securebits — all fail-closed |
 | **Resources** | cgroup v2 limits and weights, slices and delegation, nice, ioprio, oom-score-adj, rlimits, CPU affinity, PSI pressure watches |
 | **Logging** | in-memory buffers, files with rotation/filtering/processors, consumer pipes, catch-all early-boot logger, `/dev/log` served into the journal for syslog(3) clients, a full journal pipeline (`slinit-journalctl`: all 28 short and 70/72 long options of systemd v262's, FSS-sealed binary format, namespaces, message catalog) |
 | **Control** | binary protocol over a Unix socket, goroutine per connection, push notifications for state and environment changes, runtime env and dependency edits, Prometheus metrics endpoint |

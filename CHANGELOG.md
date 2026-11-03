@@ -24,6 +24,58 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- **`system-call-filter` groups are now systemd's.** slinit kept twelve
+  groups of its own, written by hand, and their members had drifted
+  from systemd's: `@system-service` allowed 207 syscalls where systemd
+  allows 313, so a unit ported from systemd could be killed by a call
+  systemd lets through. The groups are now generated from systemd's
+  `seccomp-util.c` by `tools/seccompgroups`, and all 30 exist
+  (`@resources`, `@module`, `@basic-io`, `@cpu-emulation`, `@default`
+  and the rest were refused before). **Compat:** a filter that names a
+  group now gets systemd's members. Most groups grow; `@privileged`
+  shrinks from 52 to 38, because systemd keeps `ptrace`, `mount`,
+  `unshare`, `setns`, `setgid` and `setrlimit` in `@debug`, `@mount`,
+  `@setuid` and `@resources` instead — so `~@privileged` alone now denies
+  less, and a denylist meant to cover those should name those groups,
+  as it would under systemd. No service slinit ships uses a group.
+- **An allowlist always admits `@default`** — `execve`, `exit`, the time
+  and sleep calls — as systemd's does. **Compat:** an allowlist now
+  permits those calls without naming them.
+
+### Fixed
+
+- **An allowlist without `rt_sigaction` killed slinit-runner before the
+  service ran.** The runner installed the service's filter before its
+  own remaining setup — the SIGPIPE handler, bucket B's `prctl`, the
+  hardening filters' `seccomp()` calls, the credential drop — so the
+  filter applied to the runner too, and only a list as wide as
+  `@system-service` survived it. The filter is now installed last,
+  right before the service's `execve`, as systemd does. A list such as
+  `@basic-io @file-system` died with SIGSYS before; it runs now.
+- **93 x86_64 syscalls were unknown** — `flock`, the `*xattr` family,
+  `io_uring_*`, `utimensat`, `open_by_handle_at`, `quotactl_fd` among
+  them — so a filter naming one was refused. The table is generated from
+  `golang.org/x/sys/unix` and holds all 380.
+- **systemd time spans in `TimeoutStopSec=` / `TimeoutSec=` /
+  `RestartSec=`** were copied through: `TimeoutStopSec=6min` made a unit
+  fail to load, and `500ms` became `500m`. They are translated as
+  systemd's `parse_time` reads them (`1min 30s`, `infinity`).
+- **An empty `Delegate=` made a unit fail to load.** In systemd it turns
+  delegation on with no controllers, which slinit cannot express; the
+  unit now loads undelegated, with a warning, rather than being refused
+  or handed every controller.
+- **`UMask=` up to `07777`**, which systemd accepts, made a unit fail to
+  load; the `0777` bits umask(2) uses are kept.
+
+Every unit systemd ships that is not a template now loads (147 of 147;
+before, 7 failed), and so does every non-template unit installed on a
+systemd host used for the check (367; before, 18 failed).
+`TestSystemdShippedUnitsLoad` checks the systemd tree when it sits
+beside slinit. Template units (`foo@.service`) are not yet
+supported by the direct loader.
+
 ## [3.9.0] — 2026-11-03
 
 **A minor for one new directive, `rlimit-memlock`, with one fix that

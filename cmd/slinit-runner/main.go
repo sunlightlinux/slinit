@@ -286,22 +286,6 @@ func run() error {
 		}
 	}
 
-	// seccomp filter install. Must come after the mount/mempolicy
-	// setup above (those are privileged operations the kernel would
-	// refuse with NO_NEW_PRIVS set) and before the AppArmor onexec
-	// transition (AppArmor only attaches to the next execve, which is
-	// our trailing syscall.Exec). The install also sets
-	// PR_SET_NO_NEW_PRIVS as a prerequisite so non-root services can
-	// use it without CAP_SYS_ADMIN.
-	if err := installSeccomp(seccompSpec{
-		filter:    syscallFilter,
-		archs:     syscallArchs,
-		errorAct:  *syscallAction,
-		logFilter: syscallLog,
-	}); err != nil {
-		return err
-	}
-
 	// Restrict*/Protect* hardening cluster (#7). Layered on top of the
 	// user filter: the kernel runs every loaded seccomp filter on
 	// every syscall and picks the most restrictive action, so a deny
@@ -469,6 +453,25 @@ func run() error {
 	execArgv := args
 	if *argv0 != "" {
 		execArgv = append([]string{*argv0}, args[1:]...)
+	}
+
+	// The service's own system-call-filter goes on last, with nothing
+	// but the execve after it, as systemd keeps its filter "as close to
+	// the execve() as possible". Installed earlier, it filtered the
+	// runner's own work too: the SIGPIPE handler, prctl for bucket B,
+	// the seccomp() calls of the hardening filters, the credential drop.
+	// An allowlist then had to admit all of that, and one that did not —
+	// any list without rt_sigaction — killed the runner with SIGSYS
+	// before the service ever ran. The install also sets
+	// PR_SET_NO_NEW_PRIVS, so a service run as another user can still
+	// install it without CAP_SYS_ADMIN.
+	if err := installSeccomp(seccompSpec{
+		filter:    syscallFilter,
+		archs:     syscallArchs,
+		errorAct:  *syscallAction,
+		logFilter: syscallLog,
+	}); err != nil {
+		return err
 	}
 	if err := syscall.Exec(args[0], execArgv, os.Environ()); err != nil {
 		return fmt.Errorf("exec %s: %w", args[0], err)

@@ -239,19 +239,37 @@ func TestSplitTargetsStripSuffixes(t *testing.T) {
 	}
 }
 
-// TestTrimSec — RestartSec / TimeoutStopSec accept `5`, `5s`, `5sec`.
-// Slinit takes the bare integer.
-func TestTrimSec(t *testing.T) {
+// TestSystemdSeconds — RestartSec / TimeoutStopSec take systemd time
+// spans; slinit takes plain decimal seconds. The cases from systemd's
+// units that used to be copied through and rejected are here: 6min,
+// 5m, 10min. "500ms" used to come out as "500m".
+func TestSystemdSeconds(t *testing.T) {
 	cases := map[string]string{
-		"5":    "5",
-		"5s":   "5",
-		"5sec": "5",
-		"90":   "90",
+		"5":            "5",
+		"5s":           "5",
+		"5sec":         "5",
+		"90":           "90",
+		"6min":         "360",
+		"5m":           "300",
+		"10min":        "600",
+		"500ms":        "0.5",
+		"1min 30s":     "90",
+		"1h":           "3600",
+		"1.5":          "1.5",
+		"2.5s":         "2.5",
+		"100us":        "0.0001",
+		"infinity":     "0",
+		"not-a-number": "not-a-number",
+		"5parsecs":     "5parsecs",
 	}
 	for in, want := range cases {
-		if got := trimSec(in); got != want {
-			t.Errorf("trimSec(%q) = %q, want %q", in, got, want)
+		if got := systemdSeconds(in, "0"); got != want {
+			t.Errorf("systemdSeconds(%q) = %q, want %q", in, got, want)
 		}
+	}
+	// Without an infinity spelling it is left for the parser to reject.
+	if got := systemdSeconds("infinity", ""); got != "infinity" {
+		t.Errorf("systemdSeconds(infinity, \"\") = %q", got)
 	}
 }
 
@@ -316,5 +334,36 @@ func TestEmitSlinitFile(t *testing.T) {
 		if !strings.Contains(out, w) {
 			t.Errorf("output missing %q\n---\n%s", w, out)
 		}
+	}
+}
+
+// UMask= takes up to 07777 in systemd; umask(2) keeps the 0777 bits,
+// which is the range slinit accepts. A value already in range is kept
+// as written.
+func TestSystemdUMaskRange(t *testing.T) {
+	for in, want := range map[string]string{"7777": "0777", "0022": "0022", "022": "022", "0777": "0777", "17777": "17777"} {
+		cfg := &SystemdConfig{}
+		var pre, post int
+		applyServiceKey(cfg, "UMask", in, &pre, &post)
+		if cfg.umask != want {
+			t.Errorf("UMask=%s → umask %q, want %q", in, cfg.umask, want)
+		}
+	}
+}
+
+// An empty Delegate= turns delegation on with no controllers in systemd.
+// slinit cannot say that; the unit must still load, undelegated, with a
+// warning — not be refused, and not be handed every controller.
+func TestSystemdEmptyDelegate(t *testing.T) {
+	cfg := &SystemdConfig{}
+	var pre, post int
+	warns := applyServiceKey(cfg, "Delegate", "", &pre, &post)
+	for _, kv := range cfg.mapped {
+		if kv.key == "delegate" {
+			t.Errorf("empty Delegate= mapped to delegate = %q", kv.value)
+		}
+	}
+	if len(warns) == 0 || warns[0].Level != "WARN" {
+		t.Errorf("empty Delegate= gave no WARN: %+v", warns)
 	}
 }

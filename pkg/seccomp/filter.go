@@ -143,6 +143,16 @@ func Build(items []string, mode Mode, archs []string, def Action, logList []stri
 			return nil, err
 		}
 	}
+	// An allowlist always admits @default — execve, exit, the time and
+	// sleep calls — as systemd's does (load-fragment.c adds it with the
+	// first allowlist entry). Without it a filter installed before the
+	// service's execve killed the service at that execve: a list such as
+	// "@network-io @file-system" started and died with SIGSYS at once.
+	if mode == ModeAllow && len(out) > 0 {
+		if err := appendItem("@default", seen, &out); err != nil {
+			return nil, err
+		}
+	}
 	for _, it := range logList {
 		// LogSyscalls are validated the same way but stored separately
 		// so the compiler can emit a distinct ret-log branch for them.

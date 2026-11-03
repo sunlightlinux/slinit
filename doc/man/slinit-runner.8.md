@@ -162,9 +162,11 @@ and **\--syscall-filter** carries **system-call-filter**).
 
 **\--syscall-filter**=*ITEM*
 :   Add a seccomp filter item: a syscall name, an **@**-prefixed
-    curated group (e.g. `@system-service`, `@privileged`, `@debug`),
-    or **~**-prefixed drop item as the first entry to switch the
-    list from allowlist to denylist. Repeatable.
+    group — systemd's, e.g. `@system-service`, `@privileged`,
+    `@debug` — or **~**-prefixed drop item as the first entry to
+    switch the list from allowlist to denylist. Repeatable. The filter
+    is installed after every other step, right before the exec, and an
+    allowlist always admits *@default*.
 
 **\--syscall-arch**=*ARCH*
 :   Additional accepted architecture for the seccomp filter (e.g.

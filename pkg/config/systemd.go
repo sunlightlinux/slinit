@@ -411,9 +411,10 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Restart=%s → on-failure", val)})
 		}
 	case "RestartSec":
-		cfg.restartDelay = trimSec(val)
+		cfg.restartDelay = systemdSeconds(val, "")
 	case "TimeoutStopSec", "TimeoutSec":
-		cfg.stopTimeout = trimSec(val)
+		// infinity disables the timeout in both; slinit spells it 0.
+		cfg.stopTimeout = systemdSeconds(val, "0")
 	case "TimeoutStartSec":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("TimeoutStartSec=%s — slinit start-timeout maps this; add manually", val)})
 	case "PIDFile":
@@ -421,7 +422,12 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	case "NoNewPrivileges":
 		cfg.noNewPrivs = truthy(val)
 	case "UMask":
+		// systemd takes up to 07777 (parse_mode); umask(2) keeps the
+		// 0777 bits, which is all slinit's umask accepts.
 		cfg.umask = val
+		if m, err := strconv.ParseUint(strings.TrimSpace(val), 8, 32); err == nil && m > 0o777 && m <= 0o7777 {
+			cfg.umask = fmt.Sprintf("%04o", m&0o777)
+		}
 	case "KillSignal":
 		cfg.termSignal = val
 	case "StandardInput":
@@ -513,8 +519,17 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			cfg.mapped = append(cfg.mapped, kvPair{"slice", sl})
 		}
 	case "Delegate":
-		// Same grammar on both sides: yes/no or a controller list.
-		cfg.mapped = append(cfg.mapped, kvPair{"delegate", trimQuotes(val)})
+		// Same grammar on both sides: yes/no or a controller list —
+		// except empty, which in systemd turns delegation ON with no
+		// controllers (config_parse_delegate). slinit has no such form:
+		// yes would grant every controller the parent has. Leave it out
+		// and say so, rather than refuse the unit or grant more.
+		if v := trimQuotes(val); v != "" {
+			cfg.mapped = append(cfg.mapped, kvPair{"delegate", v})
+		} else {
+			warns = append(warns, SystemdWarning{"WARN", "Delegate= (empty) delegates the cgroup with no controllers; " +
+				"slinit has no such form — not delegated. Use `delegate = yes` or a controller list if the service needs it"})
+		}
 	case "WatchdogSec":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("WatchdogSec=%s — slinit watchdog-interval maps this; add manually", val)})
 	case "FileDescriptorStoreMax":
@@ -630,14 +645,94 @@ func noteDroppedTargets(key string, targets []string) []SystemdWarning {
 // trimSec strips a trailing "s"/"sec"/"ms" unit — systemd allows
 // `5`, `5s`, `5sec`. Slinit's *-delay/*-timeout directives take a
 // bare integer number of seconds.
-func trimSec(v string) string {
+// systemdUnits is parse_time's multiplier table from systemd's
+// time-util.c, in its order: suffixes match as prefixes, first hit wins,
+// so "min" and "ms" are tried before "m".
+var systemdUnits = []struct {
+	suffix string
+	usec   uint64
+}{
+	{"seconds", 1e6}, {"second", 1e6}, {"sec", 1e6}, {"s", 1e6},
+	{"minutes", 60e6}, {"minute", 60e6}, {"min", 60e6},
+	{"months", 2629800e6}, {"month", 2629800e6}, {"M", 2629800e6},
+	{"msec", 1e3}, {"ms", 1e3},
+	{"m", 60e6},
+	{"hours", 3600e6}, {"hour", 3600e6}, {"hr", 3600e6}, {"h", 3600e6},
+	{"days", 86400e6}, {"day", 86400e6}, {"d", 86400e6},
+	{"weeks", 604800e6}, {"week", 604800e6}, {"w", 604800e6},
+	{"years", 31557600e6}, {"year", 31557600e6}, {"y", 31557600e6},
+	{"usec", 1}, {"us", 1}, {"μs", 1}, {"µs", 1},
+}
+
+// systemdSeconds translates a systemd time span (RestartSec=,
+// TimeoutStopSec=) into slinit's plain decimal seconds, following
+// systemd's parse_time: a bare number is seconds, and a span is a list
+// of numbers with units, "1min 30s" or "5min". This replaced a helper
+// that only cut a trailing "sec"/"s"/"ms", so "5min" was copied through
+// and rejected, and "500ms" became "500m". "infinity" becomes inf; a
+// value that is not a span is passed through for the parser to reject
+// by name.
+func systemdSeconds(v, inf string) string {
 	v = strings.TrimSpace(v)
-	for _, suf := range []string{"sec", "s", "ms"} {
-		if strings.HasSuffix(v, suf) {
-			v = strings.TrimSuffix(v, suf)
-		}
+	if v == "infinity" && inf != "" {
+		return inf
 	}
-	return strings.TrimSpace(v)
+	var usec uint64
+	p := v
+	something := false
+	for {
+		p = strings.TrimLeft(p, " \t")
+		if p == "" {
+			break
+		}
+		i := 0
+		for i < len(p) && p[i] >= '0' && p[i] <= '9' {
+			i++
+		}
+		if i == 0 {
+			return v
+		}
+		whole, err := strconv.ParseUint(p[:i], 10, 64)
+		if err != nil {
+			return v
+		}
+		p = p[i:]
+		frac := ""
+		if strings.HasPrefix(p, ".") {
+			j := 1
+			for j < len(p) && p[j] >= '0' && p[j] <= '9' {
+				j++
+			}
+			if j == 1 {
+				return v
+			}
+			frac, p = p[1:j], p[j:]
+		}
+		mult := uint64(1e6)
+		rest := strings.TrimLeft(p, " \t")
+		for _, u := range systemdUnits {
+			if strings.HasPrefix(rest, u.suffix) {
+				mult, p = u.usec, rest[len(u.suffix):]
+				break
+			}
+		}
+		if whole > ^uint64(0)/mult {
+			return v
+		}
+		usec += whole * mult
+		for k, m := 0, mult/10; k < len(frac) && m > 0; k, m = k+1, m/10 {
+			usec += uint64(frac[k]-'0') * m
+		}
+		something = true
+	}
+	if !something {
+		return v
+	}
+	s := strconv.FormatUint(usec/1e6, 10)
+	if r := usec % 1e6; r != 0 {
+		s += strings.TrimRight(fmt.Sprintf(".%06d", r), "0")
+	}
+	return s
 }
 
 func trimQuotes(s string) string {
