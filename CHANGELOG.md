@@ -24,6 +24,24 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.10.0] — 2026-11-03
+
+**A minor, for two changes a setup could notice: seccomp groups are now
+systemd's, and an allowlist admits `@default`.** Both are under *Changed*
+with compat notes, which STABILITY.md reserves for a minor. The rest are
+fixes, two of them serious.
+
+Upgrade from 3.9.0 if you use `protect-proc` or `proc-subset`: before
+this release they changed the whole system's `/proc`, not the
+service's, and `htop`, `free` and `uptime` failed until reboot. Upgrade
+too if you use `system-call-filter` with an allowlist: one narrower than
+`@system-service` killed slinit-runner before the service ran. And
+review any denylist built on `~@privileged`, which now denies less, as
+it does under systemd.
+
+These came out of loading every unit systemd ships through slinit's
+direct loader. All 147 that are not templates now load.
+
 ### Changed
 
 - **`system-call-filter` groups are now systemd's.** slinit kept twelve
