@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.10.1] — 2026-11-05
+
+**A patch with one fix: console status lines no longer form a staircase
+when sudo has the console in raw mode.** What a terminal shows is now
+right whatever its settings, and is unchanged where it was right
+before. The bytes differ only on a terminal: a line now ends "\r\n"
+where it ended "\n", so a serial log captured with ONLCR on carries
+"\r\r\n", the same as systemd's status lines. Nothing in a setup can
+have relied on the staircase, so it is a patch.
+
+Upgrading from 3.10.0 needs no configuration change.
+
 ### Fixed
 
 - **Console status lines could form a staircase.** slinit ended them
