@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/syslog"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -241,7 +242,7 @@ func (l *Logger) SetBootConsole(enabled, color bool) {
 // tty1 (the two writers otherwise collide on the same visible row).
 func (l *Logger) SetShutdownConsole(enabled bool) {
 	if enabled && !l.shuttingDown && l.bootConsole && l.consoleIsTTY {
-		const clearLine = "\r\x1b[2K\n"
+		const clearLine = "\r\x1b[2K\r\n"
 		fmt.Fprint(l.output, clearLine)
 		if l.consoleDup != nil {
 			fmt.Fprint(l.consoleDup, clearLine)
@@ -260,9 +261,33 @@ func (l *Logger) bootStatus(marker, name string) {
 		return
 	}
 	line := fmt.Sprintf("%s %s\n", marker, name)
-	fmt.Fprint(l.output, line)
+	l.writeConsole(line)
+}
+
+// writeConsole writes one console line to l.output and the console-dup
+// writer, ending it with "\r\n" where the writer is a terminal.
+//
+// The kernel turns "\n" into "\r\n" only while the tty has OPOST and
+// ONLCR set, and whatever holds the console's VT decides that. sudo does,
+// by default since 1.9.14: with use_pty it runs the command on a pty of
+// its own and puts the user's terminal in raw mode, OPOST cleared, for as
+// long as the command runs (measured: "opost" outside sudo, "-opost"
+// inside). So after `sudo su` and `reboot` on tty1, every shutdown status
+// line on the VGA screen began where the one above it ended — a staircase
+// — until sudo itself was stopped. systemd ends its status lines with
+// "\r\n" on a terminal so as not to depend on the tty's settings
+// (show-status.c); dinit ends them with "\n" and shows the same staircase. The dup writer is always a console device; l.output is a
+// terminal unless consoleIsTTY says otherwise (a container's log pipe,
+// where a "\r" would be junk).
+func (l *Logger) writeConsole(line string) {
+	ttyLine := strings.TrimSuffix(line, "\n") + "\r\n"
+	if l.consoleIsTTY {
+		fmt.Fprint(l.output, ttyLine)
+	} else {
+		fmt.Fprint(l.output, line)
+	}
 	if l.consoleDup != nil {
-		fmt.Fprint(l.consoleDup, line)
+		fmt.Fprint(l.consoleDup, ttyLine)
 	}
 }
 
@@ -365,10 +390,7 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 		// and the journal event bus are all outside this gate. Only the
 		// console write waits for the menu to let go.
 		if !l.bootConsolePaused.Load() {
-			fmt.Fprint(l.output, line)
-			if l.consoleDup != nil {
-				fmt.Fprint(l.consoleDup, line)
-			}
+			l.writeConsole(line)
 		}
 		if l.ringBuf != nil {
 			// Ring buffer capture is best-effort — it returns nil

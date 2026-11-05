@@ -23,7 +23,7 @@ func TestBootConsoleStatusLines(t *testing.T) {
 	// down. It used to be "[ OK ]" outside shutdown, which announced
 	// success for a service that had just crashed.
 	got := buf.String()
-	want := "[ OK ] udevd\n[FAIL] sshd\n[STOPPD] dbus\n"
+	want := "[ OK ] udevd\r\n[FAIL] sshd\r\n[STOPPD] dbus\r\n"
 	if got != want {
 		t.Errorf("boot console output:\n got %q\nwant %q", got, want)
 	}
@@ -47,7 +47,7 @@ func TestBootConsoleShutdownMarkers(t *testing.T) {
 	l.ServiceFailed("dbus", false)
 
 	got := buf.String()
-	want := "\r\x1b[2K\n[STOPPD] network\n[STOPPD] sshd\n[FAIL] dbus\n"
+	want := "\r\x1b[2K\r\n[STOPPD] network\r\n[STOPPD] sshd\r\n[FAIL] dbus\r\n"
 	if got != want {
 		t.Errorf("shutdown console output:\n got %q\nwant %q", got, want)
 	}
@@ -67,7 +67,7 @@ func TestShutdownConsoleClearLineOnceOnly(t *testing.T) {
 		l.SetShutdownConsole(true) // idempotent — should NOT emit again
 
 		got := buf.String()
-		want := "\r\x1b[2K\n"
+		want := "\r\x1b[2K\r\n"
 		if got != want {
 			t.Errorf("clear-line should fire once: got %q, want %q", got, want)
 		}
@@ -95,7 +95,7 @@ func TestShutdownConsoleClearLineOnceOnly(t *testing.T) {
 
 		l.SetShutdownConsole(true)
 
-		want := "\r\x1b[2K\n"
+		want := "\r\x1b[2K\r\n"
 		if out.String() != want {
 			t.Errorf("output: got %q, want %q", out.String(), want)
 		}
@@ -157,7 +157,45 @@ func TestBootConsoleDisabledKeepsVerbose(t *testing.T) {
 	l.ServiceStarted("udevd")
 
 	got := buf.String()
-	if got != "INFO: Service 'udevd' started\n" {
+	if got != "INFO: Service 'udevd' started\r\n" {
 		t.Errorf("verbose console output: got %q", got)
+	}
+}
+
+// A console line ends with "\r\n" on a terminal: the kernel adds the
+// "\r" only while the tty has OPOST and ONLCR set, and sudo (use_pty, the
+// default since 1.9.14) clears OPOST on the user's terminal while its
+// command runs. After `sudo su` and `reboot` on tty1, the shutdown status
+// lines on the VGA screen became a staircase. Where the console is a pipe (a
+// container's log stream) the line keeps a bare "\n"; the dup writer is
+// always a console device and always gets "\r\n".
+func TestConsoleLineEndings(t *testing.T) {
+	for _, tty := range []bool{true, false} {
+		var out, dup bytes.Buffer
+		l := New(LevelInfo)
+		l.SetOutput(&out)
+		l.SetConsoleDup(&dup)
+		l.SetConsoleIsTTY(tty)
+		l.SetBootConsole(true, false)
+		l.ServiceStopped("sshd")
+		l.Warn("going down")
+
+		want := "\n"
+		if tty {
+			want = "\r\n"
+		}
+		for _, line := range strings.SplitAfter(out.String(), "\n") {
+			if line != "" && !strings.HasSuffix(line, want) {
+				t.Errorf("tty=%v: output line %q does not end in %q", tty, line, want)
+			}
+			if !tty && strings.Contains(line, "\r") {
+				t.Errorf("tty=false: output line %q carries a \\r", line)
+			}
+		}
+		for _, line := range strings.SplitAfter(dup.String(), "\n") {
+			if line != "" && !strings.HasSuffix(line, "\r\n") {
+				t.Errorf("tty=%v: console-dup line %q does not end in \\r\\n", tty, line)
+			}
+		}
 	}
 }

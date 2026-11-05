@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Console status lines could form a staircase.** slinit ended them
+  with a bare "\n" and relied on the tty turning it into "\r\n", which
+  it does only while OPOST and ONLCR are set. sudo clears OPOST on the
+  user's terminal while its command runs (`use_pty`, the default since
+  sudo 1.9.14), so after `sudo su` and `reboot` on the console each
+  `[STOPPD]` line began where the one above it ended, until sudo itself
+  was stopped. Lines written to a terminal now end with "\r\n", as systemd's
+  do; a console that is a pipe (a container's log stream) still gets
+  "\n".
+
 ## [3.10.0] — 2026-11-03
 
 **A minor, for two changes a setup could notice: seccomp groups are now
