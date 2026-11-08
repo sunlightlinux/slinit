@@ -1,9 +1,28 @@
 package service
 
+import "time"
+
 // InternalService is a service that has no external process.
-// It transitions to STARTED immediately when brought up.
+// It transitions to STARTED immediately when brought up. It can carry a cron
+// task, for a periodic job with nothing to supervise in between: as a process
+// service that took a placeholder such as `sleep infinity`.
 type InternalService struct {
 	ServiceRecord
+	cronSlot
+}
+
+// SetCronConfig configures the cron task in interval mode.
+func (s *InternalService) SetCronConfig(cmd []string, interval, delay time.Duration, onError string) {
+	s.setCronRunner(NewCronRunner(s, cmd, interval, delay, onError, s.services.logger))
+}
+
+// SetCronCalendar configures the cron task in calendar mode.
+func (s *InternalService) SetCronCalendar(
+	cmd []string, calendar *CalendarSpec,
+	randomizedDelay time.Duration, persistent bool, onError string,
+) {
+	s.setCronRunner(NewCalendarCronRunner(
+		s, cmd, calendar, randomizedDelay, persistent, onError, s.services.logger))
 }
 
 // NewInternalService creates a new internal service.
@@ -30,11 +49,18 @@ func (s *InternalService) BringUp() bool {
 		return true
 	}
 	s.Started()
+	if s.cronRunner != nil {
+		s.services.logger.Info("Service '%s': starting cron task (%s)", s.serviceName, s.cronRunner.Schedule(time.Now()))
+		s.cronRunner.Start()
+	}
 	return true
 }
 
 // BringDown for an internal service calls stopped immediately.
 func (s *InternalService) BringDown() {
+	if s.cronRunner != nil {
+		s.cronRunner.Stop()
+	}
 	s.Stopped()
 }
 

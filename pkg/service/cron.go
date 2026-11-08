@@ -148,13 +148,35 @@ func (cr *CronRunner) SetRandomizedDelay(d time.Duration, fixed bool) {
 // record. Safe to call before Start().
 func (cr *CronRunner) SetPersistent(b bool) { cr.persistent = b }
 
-// Start launches the periodic execution goroutine.
-// Must only be called once. Safe to call from any goroutine.
+// cronStopWait is how long a stopping runner lets a run finish by itself, and
+// cronStopGrace how long a run told to end gets between SIGTERM and SIGKILL.
+// Variables for the tests. The wait holds a shutdown back, so it has a limit;
+// killing at once would be the worst moment to interrupt a system update.
+var (
+	cronStopWait  = time.Minute
+	cronStopGrace = 10 * time.Second
+)
+
+// Start launches the periodic execution goroutine. Safe to call from any
+// goroutine, and again after Stop: a service restarted used to come back with
+// a runner that refused to start, so its task never ran again until a reboot.
 func (cr *CronRunner) Start() {
 	cr.mu.Lock()
 	if cr.stopCh != nil {
+		select {
+		case <-cr.stopCh:
+		default:
+			select {
+			case <-cr.doneCh: // ended on its own, by on-error=stop
+			default:
+				cr.mu.Unlock()
+				return // already running
+			}
+		}
+		doneCh := cr.doneCh
 		cr.mu.Unlock()
-		return // already running
+		<-doneCh
+		cr.mu.Lock()
 	}
 	cr.stopCh = make(chan struct{})
 	cr.doneCh = make(chan struct{})
@@ -163,8 +185,26 @@ func (cr *CronRunner) Start() {
 	go cr.loop()
 }
 
-// Stop signals the cron loop to exit and waits for any in-progress
-// execution to complete. Safe to call multiple times.
+// active reports whether the loop is running and has not been told to stop.
+func (cr *CronRunner) active() bool {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	if cr.stopCh == nil {
+		return false
+	}
+	select {
+	case <-cr.stopCh:
+		return false
+	case <-cr.doneCh:
+		return false
+	default:
+		return true
+	}
+}
+
+// Stop signals the cron loop to exit and waits for a command under way, which
+// has cronStopWait to finish before it is ended (see executeCommand). Safe to
+// call multiple times.
 func (cr *CronRunner) Stop() {
 	cr.mu.Lock()
 	if cr.stopCh == nil {
@@ -503,29 +543,68 @@ func (cr *CronRunner) runOnce() bool {
 	return true
 }
 
-// executeCommand runs the cron command with a per-fire timeout.
-// Interval mode uses cr.interval as the cap (a fire shouldn't outlive
-// its scheduled gap). Calendar mode has no natural per-fire cap so it
-// falls back to one minute — matching the interval-mode default at
-// NewCronRunner.
+// fireContext bounds one run. An interval run may not outlive its period. A
+// calendar run has no such limit: it used to get a minute, which killed a
+// nightly system update part way through. A runner being stopped lets either
+// finish, for up to cronStopWait.
+func (cr *CronRunner) fireContext() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if cr.interval > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), cr.interval)
+	}
+	stopCh := cr.stopCh
+	go func() {
+		select {
+		case <-stopCh:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case <-time.After(cronStopWait):
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
+// executeCommand runs the cron command in a process group of its own. Ending
+// it means SIGTERM to the group and SIGKILL after cronStopGrace: a kill of the
+// direct child alone left the rest of `sh -c "a; b"` running with nobody
+// watching. A command that finishes by itself may leave a daemon behind.
 func (cr *CronRunner) executeCommand() error {
 	if len(cr.command) == 0 {
 		return nil
 	}
 
-	timeout := cr.interval
-	if timeout <= 0 {
-		timeout = time.Minute
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := cr.fireContext()
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cr.command[0], cr.command[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = cronStopGrace
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		if err == syscall.ESRCH {
+			return os.ErrProcessDone
+		}
+		return err
+	}
 	// RunAdhoc, not cmd.Run: slinit's global SIGCHLD reaper can claim
 	// the zombie before os/exec's own wait sees it, and the exit code
 	// gates on-error=stop. RunAdhoc registers the child so the reaper
 	// hands the real status back instead.
 	err := process.RunAdhoc(cmd)
+	if ctx.Err() != nil && cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	if ctx.Err() != nil {
+		select {
+		case <-cr.stopCh:
+			return nil // ended because of the stop: not the command's failure
+		default:
+		}
+	}
 	if isECHILDErr(err) {
 		// Fallback only. With RunAdhoc the status is routed back, so
 		// getting here means the router had nothing either — the
@@ -534,6 +613,52 @@ func (cr *CronRunner) executeCommand() error {
 		return nil
 	}
 	return err
+}
+
+// cronSlot is the cron task of a service, for the types that can have one. A
+// reload swaps the runner; the running one has to be stopped first, or it runs
+// on with nothing left that can stop it. The replacement starts once the
+// modifiers, which the loader applies last, are in.
+type cronSlot struct {
+	cronRunner  *CronRunner
+	cronRestart bool
+}
+
+func (c *cronSlot) setCronRunner(r *CronRunner) {
+	if c.cronRunner != nil && c.cronRunner.active() {
+		c.cronRunner.Stop()
+		c.cronRestart = true
+	}
+	c.cronRunner = r
+}
+
+// SetCronModifiers applies the scheduling modifiers to whichever cron runner
+// was configured. One entry point for both modes on purpose: the modifiers used
+// to be applied per mode, and interval mode simply never received jitter or
+// persistence, so two of the three directives did nothing when combined with
+// cron-interval.
+func (c *cronSlot) SetCronModifiers(
+	randomizedDelay time.Duration, fixedRandom, persistent bool, accuracy time.Duration,
+) {
+	if c.cronRunner == nil {
+		return
+	}
+	c.cronRunner.SetRandomizedDelay(randomizedDelay, fixedRandom)
+	c.cronRunner.SetPersistent(persistent)
+	c.cronRunner.SetAccuracy(accuracy)
+	if c.cronRestart {
+		c.cronRestart = false
+		c.cronRunner.Start()
+	}
+}
+
+// ClearCron removes the task, as a reload of a file without one does.
+func (c *cronSlot) ClearCron() {
+	if c.cronRunner != nil {
+		c.cronRunner.Stop()
+	}
+	c.cronRunner = nil
+	c.cronRestart = false
 }
 
 // isECHILDErr reports whether err is a waitid/wait4 ECHILD wrapped

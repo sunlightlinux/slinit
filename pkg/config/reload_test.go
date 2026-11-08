@@ -522,3 +522,42 @@ func TestReloadRecordsModTime(t *testing.T) {
 		})
 	}
 }
+
+// The directives reach an internal service, at load and at reload.
+func TestInternalServiceCronFromDescription(t *testing.T) {
+	dir := t.TempDir()
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	marker := filepath.Join(dir, "ran")
+
+	writeServiceFile(t, dir, "periodic", "type = internal\ncron-command = /usr/bin/touch "+marker+"\ncron-interval = 1s\n")
+	svc, err := loader.LoadService("periodic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss.StartService(svc)
+	ss.ProcessQueues()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the cron task never ran")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	writeServiceFile(t, dir, "periodic", "type = internal\n")
+	if _, err := loader.ReloadService(svc); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(marker)
+	time.Sleep(1300 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the task outlived a reload that removed it")
+	}
+	ss.StopService(svc)
+	ss.ProcessQueues()
+}

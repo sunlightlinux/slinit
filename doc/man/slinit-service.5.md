@@ -2144,8 +2144,15 @@ watch; the service remains startable via `slinitctl start`.
 
 **cron-command**=*program* [*args*...]
 :   A sub-task that runs while the service is up. Honoured for
-    **type**=*process* only; other types ignore every **cron-\***
-    setting.
+    **type**=*process* and, since 3.13.0, **type**=*internal*, which is
+    the way to write a periodic job with nothing to supervise between
+    runs; other types ignore every **cron-\*** setting.
+
+    A run under **cron-interval** may not outlive its period. A run under
+    **cron-calendar** has no limit (until 3.13.0 it had a minute); wrap the
+    command in **timeout**(1) to give it one. A service stopping lets a run
+    finish, for up to a minute. A run that has to end gets SIGTERM with its
+    process group, then SIGKILL 10 seconds later.
 
 **cron-interval**=*duration*, **cron-delay**=*duration*
 :   Period (default *60s*) and initial delay (interval mode).

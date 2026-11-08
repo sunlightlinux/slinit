@@ -306,6 +306,32 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	return svc, nil
 }
 
+// cronTarget is a service type that can carry a cron task.
+type cronTarget interface {
+	SetCronConfig(cmd []string, interval, delay time.Duration, onError string)
+	SetCronCalendar(cmd []string, calendar *service.CalendarSpec,
+		randomizedDelay time.Duration, persistent bool, onError string)
+	SetCronModifiers(randomizedDelay time.Duration, fixedRandom, persistent bool, accuracy time.Duration)
+	ClearCron()
+}
+
+// applyCron gives a service the task its description says, or none. The
+// modifiers come last, and for both modes: interval mode used to be denied them.
+func applyCron(t cronTarget, desc *ServiceDescription) {
+	if len(desc.CronCommand) == 0 {
+		t.ClearCron()
+		return
+	}
+	if desc.CronCalendar != nil {
+		t.SetCronCalendar(desc.CronCommand, desc.CronCalendar,
+			desc.CronRandomizedDelay, desc.CronPersistent, desc.CronOnError)
+	} else {
+		t.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
+	}
+	t.SetCronModifiers(desc.CronRandomizedDelay, desc.CronFixedRandomDelay,
+		desc.CronPersistent, desc.CronAccuracy)
+}
+
 // recordSource notes where a new service record came from.
 func recordSource(svc service.Service, desc *ServiceDescription, filePath string) {
 	svc.Record().SetServiceDir(filepath.Dir(filePath))
@@ -328,6 +354,8 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 	dl.applyRunAs(svc, desc)
 	dl.applySupplementaryGroups(svc, desc)
 	switch s := svc.(type) {
+	case *service.InternalService:
+		applyCron(s, desc)
 	case *service.ProcessService:
 		s.SetCommand(desc.Command)
 		s.SetArgv0(desc.Argv0)
@@ -431,18 +459,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.WatchdogTimeout > 0 {
 			s.SetWatchdogTimeout(desc.WatchdogTimeout)
 		}
-		if len(desc.CronCommand) > 0 {
-			if desc.CronCalendar != nil {
-				s.SetCronCalendar(desc.CronCommand, desc.CronCalendar,
-					desc.CronRandomizedDelay, desc.CronPersistent, desc.CronOnError)
-			} else {
-				s.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
-			}
-			// Unconditionally, and for both modes: these are the
-			// modifiers that interval mode used to be denied.
-			s.SetCronModifiers(desc.CronRandomizedDelay, desc.CronFixedRandomDelay,
-				desc.CronPersistent, desc.CronAccuracy)
-		}
+		applyCron(s, desc)
 		if len(desc.HealthCheckCommand) > 0 {
 			s.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
 				desc.HealthCheckDelay, desc.HealthCheckMaxFail, desc.UnhealthyCommand)
@@ -1339,7 +1356,9 @@ func (dl *DirLoader) applySiblingOverride(desc *ServiceDescription, name, basePa
 func (dl *DirLoader) createService(name string, desc *ServiceDescription) service.Service {
 	switch desc.Type {
 	case service.TypeInternal:
-		return service.NewInternalService(dl.set, name)
+		svc := service.NewInternalService(dl.set, name)
+		applyCron(svc, desc)
+		return svc
 	case service.TypeProcess:
 		svc := service.NewProcessService(dl.set, name)
 		svc.SetCommand(desc.Command)
@@ -1417,18 +1436,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.WatchdogTimeout > 0 {
 			svc.SetWatchdogTimeout(desc.WatchdogTimeout)
 		}
-		if len(desc.CronCommand) > 0 {
-			if desc.CronCalendar != nil {
-				svc.SetCronCalendar(desc.CronCommand, desc.CronCalendar,
-					desc.CronRandomizedDelay, desc.CronPersistent, desc.CronOnError)
-			} else {
-				svc.SetCronConfig(desc.CronCommand, desc.CronInterval, desc.CronDelay, desc.CronOnError)
-			}
-			// Unconditionally, and for both modes: these are the
-			// modifiers that interval mode used to be denied.
-			svc.SetCronModifiers(desc.CronRandomizedDelay, desc.CronFixedRandomDelay,
-				desc.CronPersistent, desc.CronAccuracy)
-		}
+		applyCron(svc, desc)
 		if len(desc.HealthCheckCommand) > 0 {
 			svc.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
 				desc.HealthCheckDelay, desc.HealthCheckMaxFail, desc.UnhealthyCommand)

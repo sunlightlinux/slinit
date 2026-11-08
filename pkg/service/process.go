@@ -284,7 +284,7 @@ type ProcessService struct {
 	errLoggerSup *loggerSupervisor // error-logger
 
 	// Cron-like periodic task
-	cronRunner *CronRunner
+	cronSlot
 
 	// Continuous health checking (post-STARTED)
 	healthChecker *HealthChecker
@@ -836,7 +836,7 @@ func (s *ProcessService) SetErrorLogger(cmd []string) { s.errorLogger = cmd }
 
 // SetCronConfig configures the periodic cron task in interval mode.
 func (s *ProcessService) SetCronConfig(cmd []string, interval, delay time.Duration, onError string) {
-	s.cronRunner = NewCronRunner(s, cmd, interval, delay, onError, s.services.logger)
+	s.setCronRunner(NewCronRunner(s, cmd, interval, delay, onError, s.services.logger))
 }
 
 // SetCronCalendar configures the periodic cron task in calendar mode.
@@ -846,24 +846,8 @@ func (s *ProcessService) SetCronCalendar(
 	cmd []string, calendar *CalendarSpec,
 	randomizedDelay time.Duration, persistent bool, onError string,
 ) {
-	s.cronRunner = NewCalendarCronRunner(
-		s, cmd, calendar, randomizedDelay, persistent, onError, s.services.logger)
-}
-
-// SetCronModifiers applies the scheduling modifiers to whichever cron
-// runner was configured. One entry point for both modes on purpose: the
-// modifiers used to be applied per mode, and interval mode simply never
-// received jitter or persistence, so two of the three directives did
-// nothing when combined with cron-interval.
-func (s *ProcessService) SetCronModifiers(
-	randomizedDelay time.Duration, fixedRandom, persistent bool, accuracy time.Duration,
-) {
-	if s.cronRunner == nil {
-		return
-	}
-	s.cronRunner.SetRandomizedDelay(randomizedDelay, fixedRandom)
-	s.cronRunner.SetPersistent(persistent)
-	s.cronRunner.SetAccuracy(accuracy)
+	s.setCronRunner(NewCalendarCronRunner(
+		s, cmd, calendar, randomizedDelay, persistent, onError, s.services.logger))
 }
 
 // SetHealthCheck configures the continuous health checker.

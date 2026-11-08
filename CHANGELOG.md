@@ -24,6 +24,31 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- `cron-*` on `type = internal` (since 3.13.0): a periodic job with nothing to
+  supervise between runs no longer needs a placeholder such as `sleep infinity`.
+
+### Changed
+
+- A `cron-calendar` run has no time limit. It used to be killed after a minute,
+  which could stop a nightly system update part way through. Wrap the command in
+  `timeout` for a limit. `cron-interval` keeps its limit of one period.
+- A cron run that has to end gets SIGTERM with its process group, then SIGKILL
+  after 10 s, where only the direct child got SIGKILL at once. A service stopping
+  lets a run finish for up to a minute, under `cron-interval` too, where that
+  wait could last a whole period.
+- `cron-*` on `type = internal` used to be ignored. A description that had them
+  will now run them; remove them to keep the old result.
+
+### Fixed
+
+- After a service was stopped and started again, as `slinitctl restart` does, its
+  cron task never ran again until the next boot.
+- `slinitctl reload` of a running service with a cron task left the old task
+  running with nothing able to stop it, beside the new one. A reload of a file
+  without a task now removes it.
+
 ## [3.12.2] — 2026-11-08
 
 **A patch with one fix: a crash no longer loses the journal of that boot.**
