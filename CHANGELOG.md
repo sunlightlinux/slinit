@@ -24,6 +24,15 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.12.0] — 2026-11-08
+
+**A minor with two changes in behaviour: a hardware watchdog whose driver loads
+after slinit starts is now armed, and `shutdown -h` powers off.** Check before
+upgrading if a machine with such a driver should not reset itself when PID 1
+hangs (`--no-watchdog`), if `slinit-watchdogd` shares the device with slinit, or
+if a script means halt by `shutdown -h` (`-H`). The control protocol and the
+service format do not change.
+
 ### Changed
 
 - **A hardware watchdog whose driver loads after slinit starts is now armed.**
