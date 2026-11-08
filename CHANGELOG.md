@@ -24,6 +24,15 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `slinit-journald` lost the journal of a crashed boot. In the binary format,
+  the default, `-fsync-every` was ignored, so nothing reached the disk until the
+  kernel wrote it back on its own: a reset less than about 30 s after boot lost
+  that whole boot. It now syncs every N events. In either format the last few
+  events of a quiet system also waited for the count, so they now reach the disk
+  within a second, and an idle system still writes nothing.
+
 ## [3.12.1] — 2026-11-08
 
 **A patch with one fix: `slinitctl` no longer keeps warning about a description

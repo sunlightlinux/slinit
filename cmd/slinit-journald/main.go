@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/journal"
@@ -94,6 +95,12 @@ type guardedSink struct {
 	// may pick volatile if primary refuses); third return is an
 	// error if construction failed outright.
 	factory func(dir string) (journald.Sink, string, error)
+
+	// flushDelay is how long an event can wait for an fsync; zero means
+	// journald.DefaultFlushDelay.
+	flushDelay time.Duration
+	flushOnce  sync.Once
+	flushLater *journald.DelayedFlush
 }
 
 func (g *guardedSink) Handle(evt *journal.Event) error {
@@ -105,12 +112,28 @@ func (g *guardedSink) Handle(evt *journal.Event) error {
 	if g.namespace != "" && evt.Namespace == "" {
 		evt.Namespace = g.namespace
 	}
-	return g.inner.Handle(evt)
+	err := g.inner.Handle(evt)
+	g.flushOnce.Do(func() {
+		delay := g.flushDelay
+		if delay == 0 {
+			delay = journald.DefaultFlushDelay
+		}
+		g.flushLater = journald.NewDelayedFlush(delay, func() {
+			if err := g.Flush(); err != nil {
+				fmt.Fprintf(os.Stderr, "slinit-journald: flush: %v\n", err)
+			}
+		})
+	})
+	g.flushLater.Note()
+	return err
 }
 
 func (g *guardedSink) Close() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.flushLater != nil {
+		g.flushLater.Stop()
+	}
 	return g.inner.Close()
 }
 

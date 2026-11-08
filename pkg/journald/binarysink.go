@@ -31,12 +31,14 @@ type BinarySink struct {
 	machineID   string
 	rotatedHook func(rotatedPath, currentPath string)
 
-	mu       sync.Mutex
-	w        *journalbin.Writer
-	curPath  string
-	openedAt time.Time
+	mu        sync.Mutex
+	w         *journalbin.Writer
+	curPath   string
+	openedAt  time.Time
+	unflushed int
 
 	written   atomic.Uint64
+	flushes   atomic.Uint64
 	writeErrs atomic.Uint64
 	rotations atomic.Uint64
 }
@@ -136,6 +138,16 @@ func (s *BinarySink) Handle(evt *journal.Event) error {
 		return err
 	}
 	s.written.Add(1)
+	// The count used to stop here: fsyncEvery was stored and never read, so
+	// nothing reached the disk until the kernel chose to write it back. A
+	// crash within about 30 s of booting lost that whole boot's journal.
+	s.unflushed++
+	if s.unflushed >= s.fsyncEvery {
+		if err := s.flushLocked(); err != nil {
+			s.writeErrs.Add(1)
+			return err
+		}
+	}
 	// Poll rotation triggers. Cheap: stat is one syscall per event —
 	// same overhead FileSink pays. A future optimisation could batch
 	// this every N appends.
@@ -176,6 +188,7 @@ func (s *BinarySink) openCurrent() error {
 	s.w = w
 	s.curPath = path
 	s.openedAt = time.Now()
+	s.unflushed = 0
 	return nil
 }
 
@@ -234,7 +247,17 @@ func (s *BinarySink) Flush() error {
 	if s.w == nil {
 		return nil
 	}
-	return s.w.Flush()
+	return s.flushLocked()
+}
+
+// flushLocked fsyncs the current file. Caller holds s.mu with s.w set.
+func (s *BinarySink) flushLocked() error {
+	if err := s.w.Flush(); err != nil {
+		return err
+	}
+	s.unflushed = 0
+	s.flushes.Add(1)
+	return nil
 }
 
 // Rotate forces an immediate rotation regardless of size/age triggers.

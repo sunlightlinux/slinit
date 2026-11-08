@@ -63,7 +63,10 @@ before the daemon bound to its events socket are not lost.
     under **-format=binary** (v1 binary is not compressed).
 
 **-fsync-every** *N*
-:   Fsync the journal every *N* events (default 32).
+:   Fsync the journal every *N* events (default 32), and in any case
+    within a second of the last event, so a quiet system loses at most
+    the last second on a crash. Before 3.12.2 this was ignored under
+    **-format=binary**.
 
 **-max-size** *BYTES*
 :   Rotate the current file when it exceeds *BYTES* (default
