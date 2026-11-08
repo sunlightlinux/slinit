@@ -24,6 +24,12 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.12.2] — 2026-11-08
+
+**A patch with one fix: a crash no longer loses the journal of that boot.**
+Upgrade if you run `slinit-journald`. It now does what `-fsync-every` always said,
+so it syncs more often than it did under the binary format; nothing else changes.
+
 ### Fixed
 
 - `slinit-journald` lost the journal of a crashed boot. In the binary format,
