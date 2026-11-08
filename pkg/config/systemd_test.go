@@ -367,3 +367,24 @@ func TestSystemdEmptyDelegate(t *testing.T) {
 		t.Errorf("empty Delegate= gave no WARN: %+v", warns)
 	}
 }
+
+// Type=idle maps to start-when-idle, end to end through the emitted file,
+// and without the note it carried while slinit had no such wait.
+func TestSystemdTypeIdle(t *testing.T) {
+	cfg := &SystemdConfig{svcType: "process", restart: "no"}
+	warns := parseSystemdUnit(cfg, "[Service]\nType=idle\nExecStart=/sbin/agetty tty1\n")
+	for _, w := range warns {
+		if strings.Contains(w.Msg, "idle") {
+			t.Errorf("still warns about Type=idle: %v", w)
+		}
+	}
+	var buf bytes.Buffer
+	EmitSlinitFile(&buf, cfg)
+	desc, err := Parse(bytes.NewReader(buf.Bytes()), "x", "x.service")
+	if err != nil {
+		t.Fatalf("emitted file does not parse: %v\n%s", err, buf.String())
+	}
+	if !desc.StartWhenIdle {
+		t.Errorf("StartWhenIdle not set by:\n%s", buf.String())
+	}
+}

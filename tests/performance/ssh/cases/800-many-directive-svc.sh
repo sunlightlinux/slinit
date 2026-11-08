@@ -74,7 +74,7 @@ rlimit-data = 1073741824
 rlimit-core = 0
 rlimit-as = 4294967296
 EOF
-slinitctl load "$_name" > /dev/null 2>&1 || true
+slinitctl status "$_name" > /dev/null 2>&1
 
 perf_run_iters "$ITERS" "CtlReload_heavy_43directive_svc" "slinitctl reload $_name"
 perf_run_iters "$ITERS" "CtlStartStop_heavy_43directive_svc" \

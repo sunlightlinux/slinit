@@ -82,6 +82,13 @@ func TestStopDuringStartDelayCancelsTheLaunch(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	set.StopService(svc)
 
+	// The stop has only a timer to cancel, so it does not wait for it. It
+	// used to: the process was launched when the timer fired, then stopped.
+	time.Sleep(200 * time.Millisecond)
+	if st := svc.State(); st != StateStopped {
+		t.Errorf("state = %v 200ms after the stop, want STOPPED", st)
+	}
+
 	// Well past when the timer would have fired.
 	time.Sleep(2 * time.Second)
 

@@ -43,8 +43,11 @@ type SystemdWarning struct {
 }
 
 type SystemdConfig struct {
-	svcName      string
-	unitPath     string
+	svcName  string
+	unitPath string
+
+	startWhenIdle bool // Type=idle
+
 	svcType      string // process | bgprocess | scripted
 	command      string
 	stopCommand  string
@@ -334,7 +337,8 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		case "dbus":
 			warns = append(warns, SystemdWarning{"WARN", "Type=dbus not supported — slinit has no dbus activation; convert to Type=simple manually"})
 		case "idle":
-			warns = append(warns, SystemdWarning{"NOTE", "Type=idle — slinit has no idle-wait; treated as process"})
+			cfg.svcType = "process"
+			cfg.startWhenIdle = true
 		default:
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Type=%s not recognised", val)})
 		}
@@ -855,6 +859,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	}
 	if c.restart != "" {
 		fmt.Fprintf(w, "restart = %s\n", c.restart)
+	}
+	if c.startWhenIdle {
+		fmt.Fprintln(w, "start-when-idle = yes")
 	}
 	if c.restartDelay != "" {
 		fmt.Fprintf(w, "restart-delay = %s\n", c.restartDelay)

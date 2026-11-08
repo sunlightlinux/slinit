@@ -1430,7 +1430,10 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 			info("Service '%s' started.\n", name)
 			return nil
 		}
-		return awaitStartOutcome(conn, handle, name)
+		if err := awaitStartOutcome(conn, handle, name); err != nil {
+			return err
+		}
+		info("Service '%s' started.\n", name)
 	case control.RplyAlreadySS:
 		info("Service '%s' is already started.\n", name)
 	case control.RplyPinnedStopped:
@@ -1459,7 +1462,7 @@ func cmdStart(conn net.Conn, name string, pin bool, noWait bool) error {
 func awaitStartOutcome(conn net.Conn, handle uint32, name string) error {
 	// Events that arrived before the command reply were stashed by
 	// readReply; check those first.
-	if event, ok := takeServiceEvent(handle); ok {
+	if event, ok := takeServiceEvent(handle, isStartOutcome); ok {
 		return startOutcomeFor(event, name)
 	}
 
@@ -1478,10 +1481,61 @@ func awaitStartOutcome(conn net.Conn, handle uint32, name string) error {
 			continue
 		}
 		recordServiceEvent(rply, payload)
-		if event, ok := takeServiceEvent(handle); ok {
+		if event, ok := takeServiceEvent(handle, isStartOutcome); ok {
 			return startOutcomeFor(event, name)
 		}
 	}
+}
+
+// awaitStopOutcome blocks until the service this handle refers to has
+// stopped, and turns a cancelled stop (something started it again) into an
+// error, the counterpart of awaitStartOutcome.
+//
+// It returns on the v4 Stopped packet, never the v5 one. The daemon writes
+// each transition as v5 then v4, so returning on v5 would leave the v4 on
+// the wire, and restart, which goes on to wait for its start on this same
+// connection, would read that as "stopped instead of starting".
+func awaitStopOutcome(conn net.Conn, handle uint32, name string) error {
+	if done, err := takeStopOutcome(handle, name); done {
+		return err
+	}
+	if waitTimeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(waitTimeout))
+		defer conn.SetReadDeadline(time.Time{})
+	}
+	for {
+		rply, payload, err := control.ReadPacket(conn)
+		if err != nil {
+			return fmt.Errorf("waiting for '%s' to stop: %w", name, err)
+		}
+		if rply != control.InfoServiceEvent5 && rply != control.InfoServiceEvent {
+			continue
+		}
+		recordServiceEvent(rply, payload)
+		if done, err := takeStopOutcome(handle, name); done {
+			return err
+		}
+	}
+}
+
+// takeStopOutcome consumes the recorded event that ends a stop, if there
+// is one yet: a cancelled stop, or a Stopped whose v4 packet has been read.
+func takeStopOutcome(handle uint32, name string) (done bool, err error) {
+	for i, p := range pendingEvents {
+		if p.handle != handle {
+			continue
+		}
+		switch {
+		case p.event == control.SvcEventStopCancelled:
+			err = fmt.Errorf("stop of service '%s' was cancelled", name)
+		case p.event == control.SvcEventStopped && p.v4:
+		default:
+			continue
+		}
+		pendingEvents = append(pendingEvents[:i], pendingEvents[i+1:]...)
+		return true, err
+	}
+	return false, nil
 }
 
 // startOutcomeFor maps a terminal service event to the CLI's verdict.
@@ -1494,7 +1548,6 @@ func startOutcomeFor(event uint8, name string) error {
 	case control.SvcEventStopped:
 		return fmt.Errorf("service '%s' stopped instead of starting", name)
 	default: // SvcEventStarted
-		info("Service '%s' started.\n", name)
 		return nil
 	}
 }
@@ -1503,21 +1556,31 @@ func startOutcomeFor(event uint8, name string) error {
 // something else. slinitctl is a short-lived, single-threaded CLI, so a
 // package-level queue is the whole mechanism — it exists only to bridge
 // the gap between readReply and a later wait on the same connection.
-var pendingEvents []struct {
+var pendingEvents []pendingEvent
+
+type pendingEvent struct {
 	handle uint32
 	event  uint8
+	v4     bool // the transition's v4 packet, its last, has been read
 }
 
-// isTerminalStartEvent reports whether an event ends a start attempt.
-// The pressure events (SvcEventPressure*) and stop-cancelled are
-// informational and must not be mistaken for an outcome.
-func isTerminalStartEvent(event uint8) bool {
+// isStartOutcome reports whether an event ends a start attempt.
+// Stop-cancelled is what starting a stopping service begins with, not how
+// it ends.
+func isStartOutcome(event uint8) bool {
 	switch event {
 	case control.SvcEventStarted, control.SvcEventFailedStart,
 		control.SvcEventStartCancelled, control.SvcEventStopped:
 		return true
 	}
 	return false
+}
+
+// isOutcomeEvent reports whether an event can end a start or a stop. The
+// pressure events (SvcEventPressure*) are informational and must not be
+// mistaken for an outcome.
+func isOutcomeEvent(event uint8) bool {
+	return isStartOutcome(event) || event == control.SvcEventStopCancelled
 }
 
 func recordServiceEvent(rply uint8, payload []byte) {
@@ -1529,27 +1592,26 @@ func recordServiceEvent(rply uint8, payload []byte) {
 	} else {
 		handle, event, _, err = control.DecodeServiceEvent(payload)
 	}
-	if err != nil || !isTerminalStartEvent(event) {
+	if err != nil || !isOutcomeEvent(event) {
 		return
 	}
+	v4 := rply == control.InfoServiceEvent
 	// The daemon sends v5 and v4 for the same transition; one entry per
 	// (handle, event) pair is enough.
-	for _, p := range pendingEvents {
-		if p.handle == handle && p.event == event {
+	for i := range pendingEvents {
+		if p := &pendingEvents[i]; p.handle == handle && p.event == event {
+			p.v4 = p.v4 || v4
 			return
 		}
 	}
-	pendingEvents = append(pendingEvents, struct {
-		handle uint32
-		event  uint8
-	}{handle, event})
+	pendingEvents = append(pendingEvents, pendingEvent{handle, event, v4})
 }
 
 // takeServiceEvent removes and returns the first recorded event for the
-// handle, if any.
-func takeServiceEvent(handle uint32) (uint8, bool) {
+// handle that accept admits, if any.
+func takeServiceEvent(handle uint32, accept func(uint8) bool) (uint8, bool) {
 	for i, p := range pendingEvents {
-		if p.handle == handle {
+		if p.handle == handle && accept(p.event) {
 			pendingEvents = append(pendingEvents[:i], pendingEvents[i+1:]...)
 			return p.event, true
 		}
@@ -1631,6 +1693,14 @@ func cmdStop(conn net.Conn, name string, pin bool, force bool, ignoreUnstarted b
 
 	switch rply {
 	case control.RplyACK:
+		// As for start: ACK only says the request was accepted, and a
+		// service may take its whole stop-timeout to go. Wait, so
+		// `slinitctl stop foo && ...` means what it reads like.
+		if !noWait {
+			if err := awaitStopOutcome(conn, handle, name); err != nil {
+				return err
+			}
+		}
 		info("Service '%s' stopped.\n", name)
 	case control.RplyAlreadySS:
 		info("Service '%s' is already stopped.\n", name)
@@ -1668,6 +1738,14 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 			return fmt.Errorf("stop failed: reply %d", rply)
 		}
 	}
+	if rply == control.RplyACK && !noWait {
+		if err := awaitStopOutcome(conn, handle, name); err != nil {
+			return err
+		}
+	}
+	// What the stop reported is over; the start's outcome comes next, and
+	// a StartCancelled left from the stop must not be read as that.
+	pendingEvents = nil
 
 	// Then start
 	startPayload := encodeStartStopFlags(handle, pin, false)
@@ -1681,6 +1759,11 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 
 	switch rply {
 	case control.RplyACK:
+		if !noWait {
+			if err := awaitStartOutcome(conn, handle, name); err != nil {
+				return err
+			}
+		}
 		info("Service '%s' restarted.\n", name)
 	case control.RplyShuttingDown:
 		return fmt.Errorf("system is shutting down")

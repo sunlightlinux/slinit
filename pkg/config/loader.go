@@ -348,6 +348,7 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		if desc.StartDelay > 0 {
 			s.SetStartDelay(desc.StartDelay)
 		}
+		s.SetStartWhenIdle(desc.StartWhenIdle)
 		if desc.HookTimeout > 0 {
 			s.SetHookTimeout(desc.HookTimeout)
 		}
@@ -1357,6 +1358,7 @@ func (dl *DirLoader) createService(name string, desc *ServiceDescription) servic
 		if desc.StartDelay > 0 {
 			svc.SetStartDelay(desc.StartDelay)
 		}
+		svc.SetStartWhenIdle(desc.StartWhenIdle)
 		if desc.HookTimeout > 0 {
 			svc.SetHookTimeout(desc.HookTimeout)
 		}

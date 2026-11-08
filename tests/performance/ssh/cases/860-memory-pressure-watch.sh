@@ -1,24 +1,18 @@
-# 860-memory-pressure-watch — startup cost of a svc that arms a
-# PSI memory-pressure watcher. slinit hooks into /proc/pressure/
-# memory + poll(2)s on it. Delta vs plain scripted-start (case
-# 740 = 1.126 ms) = PSI watcher setup overhead.
+# 860-memory-pressure-watch — start + stop of a service that arms a PSI
+# memory-pressure watcher on its cgroup. The difference from 870, the same
+# service without the watcher, is arming and disarming it.
 _name="perf-psi-mem-$$"
 _svcfile="/etc/slinit.d/$_name"
-cat > "$_svcfile" <<EOF
-type = scripted
-command = /bin/true
+_cg="/sys/fs/cgroup/perftest-psi.slice"
+cat > "$_svcfile" <<EOS
+type = process
+command = /bin/sleep 3600
+restart = no
+cgroup = $_cg
 memory-pressure-watch = yes
-EOF
-slinitctl load "$_name" > /dev/null 2>&1 || true
-
-perf_run_iters "$ITERS" "CtlStart_psi_memory_svc" "slinitctl start $_name"
-
-# stop before unload: the benchmark above leaves the service STARTED,
-# and unload refuses a service that is not stopped ("service is not
-# stopped"). The error went to /dev/null, so every run leaked one
-# loaded service into PID 1 — 62 had accumulated on the reference
-# machine, inflating every later measurement and the RSS the leak
-# cases watch.
-slinitctl stop "$_name" > /dev/null 2>&1
+EOS
+perf_run_iters "$ITERS" "CtlStartStop_psi_memory_svc" \
+    "slinitctl start $_name && slinitctl stop $_name"
 slinitctl unload "$_name" > /dev/null 2>&1
 rm -f "$_svcfile"
+rmdir "$_cg" 2>/dev/null || true

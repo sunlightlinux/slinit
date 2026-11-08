@@ -664,6 +664,19 @@ error. Repeat the line for several targets.
     launches. Set both this and **restart-delay** and a restart waits
     for each in turn.
 
+**start-when-idle**=*yes*|*no*
+:   (since 3.11.0) Hold each start attempt's fork/exec back until no other
+    service is busy starting, for at most five seconds, as systemd's
+    **Type=idle** does. `type = process` only. It is for a service whose
+    output must not be interleaved with the others', a login prompt above
+    all. Default *no*.
+
+    A service waiting for its dependencies does not count as busy, nor does
+    another in this same wait. One that stays in *STARTING* by design, such
+    as a **triggered** service, holds it back for the whole five seconds.
+    The wait is a timer in *STARTING*, as for **start-delay**, and comes
+    before it; a stop arriving during it cancels the start.
+
 **hook-timeout**=*duration*
 :   (since 3.0.5) How long each synchronous hook of a `type = process`
     service may run: **pre-start-command**, **post-start-command**,

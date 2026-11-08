@@ -574,6 +574,9 @@ type ServiceDescription struct {
 	// that must be exceeded before a SERVICEEVENT is emitted; a zero value
 	// means "use the default" (200 ms) — matches systemd's behaviour when
 	// only the enable knob is set. Requires a cgroup path on the service.
+	// StartWhenIdle waits for the other services to finish starting.
+	StartWhenIdle bool
+
 	MemoryPressureWatch     bool
 	MemoryPressureThreshold time.Duration
 	CPUPressureWatch        bool
@@ -1981,6 +1984,12 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.StartDelay = d
+	case "start-when-idle":
+		b, err := parseBool(strings.TrimSpace(value))
+		if err != nil {
+			return fmt.Errorf("start-when-idle: %w", err)
+		}
+		desc.StartWhenIdle = b
 	case "hook-timeout":
 		d, err := parseDuration(value)
 		if err != nil {

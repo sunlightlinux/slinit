@@ -7,7 +7,6 @@
 _name="perf-cycle-ss-$$"
 _svcfile="/etc/slinit.d/$_name"
 printf "type = process\ncommand = /bin/sleep 3600\nrestart = no\n" > "$_svcfile"
-slinitctl load $_name > /dev/null 2>&1 || true
 
 perf_run_iters "$ITERS" "Cycle_Start_Stop_process" \
     "slinitctl start $_name && slinitctl stop $_name"

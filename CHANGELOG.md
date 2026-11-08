@@ -24,6 +24,44 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- `slinitctl stop` and `restart` wait for the outcome, as `start` has since
+  v2.3.5 and as `dinitctl` does. `stop` said "stopped" with the service still
+  STOPPING, and `restart` said "restarted", exit 0, when its start half had
+  failed, so `slinitctl restart foo && ...` went on regardless. They now
+  return when the service has stopped or come back up, and exit non-zero if
+  a stop was cancelled or the restart's start failed. *Compatibility:* both
+  can now block for a service's whole `stop-timeout`, and a script run by a
+  service that stops or restarts that same service would wait for its own
+  end: such a script, and any caller that relied on returning at once, needs
+  `--no-wait`, which they accepted and ignored until now and which keeps the
+  old behaviour.
+
+### Added
+
+- `start-when-idle = yes`, systemd's `Type=idle`: hold a `type = process`
+  service back until no other service is busy starting, for at most five
+  seconds, so a login prompt is not printed over by a service still coming
+  up. The systemd converter maps `Type=idle` to it, in place of the note
+  that slinit had no such wait.
+
+### Fixed
+
+- A stop during `start-delay` waited for the timer, launched the process and
+  only then stopped it, though the manual says it never launches. It now
+  cancels the timer and the service stops at once.
+- Performance suite: 740, 770, 860 and 870 ran a bare `start` on a service
+  that stays STARTED, so 29 of 30 iterations timed the "already started"
+  reply, and the socket, PSI and cgroup costs they are named for were never
+  measured. 770, 860 and 870 also used a `type` or a cgroup path on which
+  their directive had no effect. They now time start + stop on a real process
+  (`Cycle_Start_Stop_scripted`, `CtlStartStop_*`, renamed since the figures
+  are not comparable). 730 and the cycles with a stop go up with this
+  release, for the reason above, which is not a regression. The first real
+  figure for the PSI watcher is about 11 ms against 2.3 ms without it. The
+  calls to `slinitctl load`, a command that does not exist, are gone.
+
 ## [3.10.1] — 2026-11-05
 
 **A patch with one fix: console status lines no longer form a staircase

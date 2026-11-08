@@ -1,25 +1,19 @@
-# 770-socket-listen-overhead — start-cost delta of a service with
-# `socket-listen` vs a plain service. slinit has to bind the
-# socket + set up FD passing on start, before exec'ing the
-# service command. Compare vs a plain scripted-start (case 740)
-# to isolate the socket-setup overhead. Uses socket-activation
-# = immediate so the svc starts eagerly on `slinitctl start`
-# (matches 740's semantics — comparison stays clean).
+# 770-socket-listen-overhead — start + stop of a service with
+# `socket-listen`, against the plain one in 710: the difference is binding
+# the socket and passing its fd. It has to be `type=process` (a scripted
+# service does not get the socket), and `socket-activation = immediate` so
+# `start` starts it rather than waiting for a connection.
 _name="perf-sock-listen-$$"
 _svcfile="/etc/slinit.d/$_name"
 _sock="/tmp/perf-sock-$$"
-cat > "$_svcfile" <<EOF
-type = scripted
-command = /bin/true
+cat > "$_svcfile" <<EOS
+type = process
+command = /bin/sleep 3600
+restart = no
 socket-listen = $_sock
 socket-activation = immediate
-EOF
-slinitctl load "$_name" > /dev/null 2>&1 || true
-
-perf_run_iters "$ITERS" "CtlStart_socket_listen_svc" "slinitctl start $_name"
-
-# Teardown
-rm -f "$_sock"
-slinitctl stop "$_name"   > /dev/null 2>&1
+EOS
+perf_run_iters "$ITERS" "CtlStartStop_socket_listen_svc" \
+    "slinitctl start $_name && slinitctl stop $_name"
 slinitctl unload "$_name" > /dev/null 2>&1
-rm -f "$_svcfile"
+rm -f "$_sock" "$_svcfile"

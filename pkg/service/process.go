@@ -120,6 +120,10 @@ type ProcessService struct {
 	startDelayT    *time.Timer
 	startDelayDone bool
 
+	// start-when-idle: wait for the other services to finish starting.
+	startWhenIdle bool
+	idleT         *time.Timer // the wait in progress, nil otherwise
+
 	// Timer for start/stop/restart timeouts
 	processTimer *time.Timer
 	timerPurpose timerPurpose
@@ -1642,10 +1646,9 @@ func (s *ProcessService) BringUp() bool {
 		}
 	}
 
-	// start-delay: hold off the fork/exec without holding the
-	// scheduling lock. The service stays STARTING until the timer
-	// fires, so a stop arriving meanwhile still finds it actionable.
-	if s.startDelayTimer(func() {
+	// launchLater is the launch from a timer's callback, where a failure
+	// can no longer be BringUp's return value.
+	launchLater := func() {
 		if err := s.startProcess(); err != nil {
 			s.services.logger.Error("Service '%s': failed to start: %v",
 				s.serviceName, err)
@@ -1653,7 +1656,19 @@ func (s *ProcessService) BringUp() bool {
 			return
 		}
 		s.launchPostStartCommand()
+	}
+
+	// start-when-idle, then start-delay: hold off the fork/exec without
+	// holding the scheduling lock. The service stays STARTING until the
+	// timer fires, so a stop arriving meanwhile still finds it actionable.
+	if s.idleWaitTimer(func() {
+		if !s.startDelayTimer(launchLater) {
+			launchLater()
+		}
 	}) {
+		return true
+	}
+	if s.startDelayTimer(launchLater) {
 		return true
 	}
 
@@ -1737,8 +1752,10 @@ func annotateHookTimeout(err error, ctx context.Context, timeout time.Duration) 
 // Then if a stop-command is configured, it is executed. If it fails to
 // start, we fall back to sending the termination signal directly.
 func (s *ProcessService) BringDown() {
-	// A start-delay still counting down has nothing left to launch.
+	// A start-delay still counting down has nothing left to launch, nor
+	// has a start-when-idle wait.
 	s.cancelStartDelay()
+	s.cancelIdleWait()
 	// Nor does a socket watcher still waiting for its first client.
 	s.disarmOnDemand()
 	// Stop health checker and cron runner if active
@@ -1941,16 +1958,29 @@ func (s *ProcessService) execStopCommand() bool {
 
 // CanInterruptStart returns true if the starting process can be interrupted.
 func (s *ProcessService) CanInterruptStart() bool {
-	if s.waitingForDeps {
+	if s.waitingForDeps || s.waitingToLaunch() {
 		return true
 	}
 	// Can interrupt if process is running (we'll send SIGINT)
 	return s.pid > 0
 }
 
+// waitingToLaunch reports whether a start-delay or start-when-idle timer
+// is still holding the fork/exec back. There is then no process, and a stop
+// has only the timer to cancel; refusing it because there is no process to
+// signal let the timer launch one just to stop it.
+func (s *ProcessService) waitingToLaunch() bool {
+	return s.startDelayT != nil || s.idleT != nil
+}
+
 // InterruptStart cancels the start by sending SIGINT to the process.
 func (s *ProcessService) InterruptStart() bool {
 	if s.waitingForDeps {
+		return true
+	}
+	if s.waitingToLaunch() {
+		s.cancelStartDelay()
+		s.cancelIdleWait()
 		return true
 	}
 

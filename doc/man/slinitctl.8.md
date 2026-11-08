@@ -48,9 +48,9 @@ service name or rejected.
 :   Suppress informational output.
 
 **\--no-wait**
-:   For **start**, return as soon as the daemon has accepted the
-    request instead of waiting for the service to reach **STARTED** or
-    fail. Also implies **\--quiet**.
+:   For **start**, **stop** and **restart**, return as soon as the daemon
+    has accepted the request instead of waiting for the service to reach
+    **STARTED** or **STOPPED**, or fail. Also implies **\--quiet**.
 
 **-w** *SEC*, **\--wait** *SEC*, **\--wait=***SEC*
 :   Fail with a timeout error if the daemon does not reply within
@@ -141,17 +141,23 @@ service name or rejected.
 :   Stop *service*. Services with a hard dependency on it are stopped
     too; **waits-for** dependents lose the link and keep running.
     Refused for a service pinned started or declaring
-    **refuse-manual-stop**, unless **\--force** is given. Unlike
-    **start**, the command returns once the daemon has accepted the
-    request; it does not wait for **STOPPED**.
+    **refuse-manual-stop**, unless **\--force** is given.
+
+    Waits until *service* has stopped (since 3.11.0), which can take its
+    whole **stop-timeout**, and exits non-zero if the stop was cancelled
+    by a start. Pass **\--no-wait** to return as soon as the daemon has
+    accepted the request: a script run by the service itself must, as it
+    would otherwise wait for its own end.
 
 **release** *service*
 :   Remove explicit activation from *service*. Stops it iff no other
     active service still requires it.
 
 **restart** *service*
-:   Stop and then start *service*: two requests sent back to back,
-    without waiting for the outcome of either.
+:   Stop *service*, wait until it has stopped, start it, and wait for the
+    outcome (since 3.11.0), exiting non-zero if it did not come back up.
+    **\--no-wait** sends the two requests back to back without waiting
+    for either, as restart always did before.
 
 **signal** [**-l** | **\--list**] *signal* *service*
 :   Send *signal* to the service's main process. *signal* may be a

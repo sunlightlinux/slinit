@@ -15,8 +15,8 @@ command = /bin/true
 start-on-path-exists = $_trigger
 manual = yes
 EOF
-# Load service so path watcher gets armed
-slinitctl load "$_name" > /dev/null 2>&1 || true
+# Asking for its status loads it, which arms the path watcher.
+slinitctl status "$_name" > /dev/null 2>&1
 
 _fire_and_wait() {
     rm -f "$_trigger"

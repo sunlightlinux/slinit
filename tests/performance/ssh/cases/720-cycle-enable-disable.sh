@@ -7,7 +7,6 @@
 _name="perf-cycle-ed-$$"
 _svcfile="/etc/slinit.d/$_name"
 printf "type = process\ncommand = /bin/sleep 3600\nrestart = no\n" > "$_svcfile"
-slinitctl load $_name > /dev/null 2>&1 || true
 
 perf_run_iters "$ITERS" "Cycle_Enable_Disable_process" \
     "slinitctl enable $_name && slinitctl disable $_name"

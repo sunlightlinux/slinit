@@ -316,6 +316,7 @@ a `slinit` row with a TODO note as "unclassified", not as "invented here".
 | `start-on-path-changed` | slinit | service-config | TODO: annotate provenance (auto-placeholder from discover.go) |
 | `start-on-path-exists` | slinit | service-config | TODO: annotate provenance (auto-placeholder from discover.go) |
 | `start-on-path-modified` | slinit | service-config | TODO: annotate provenance (auto-placeholder from discover.go) |
+| `start-when-idle` | systemd | lifecycle | systemd Type=idle: wait for the other services to finish starting, at most 5s |
 | `startup-allowed-cpus` | slinit | service-config | TODO: annotate provenance (auto-placeholder from discover.go) |
 | `startup-allowed-memory-nodes` | slinit | service-config | TODO: annotate provenance (auto-placeholder from discover.go) |
 | `state-directory` | slinit | service-config | TODO: annotate provenance (auto-placeholder from discover.go) |

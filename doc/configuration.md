@@ -294,6 +294,7 @@ accepted. List-valued settings accept `+=` to append.
 |---|---|---|
 | `restart` | `yes` \| `no` \| `on-failure` | Automatic restart policy |
 | `restart-delay` | seconds | Delay before a restart |
+| `start-when-idle` | bool | Wait for the other services to finish starting, at most 5 s (systemd `Type=idle`) |
 | `restart-limit-count` | integer | Maximum restarts within `restart-limit-interval` |
 | `restart-limit-interval` | seconds | Window over which restarts are counted |
 | `start-timeout` | seconds | Time allowed to reach *started* |

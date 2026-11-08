@@ -1,0 +1,5 @@
+type = process
+command = /bin/sleep 300
+restart = no
+start-when-idle = yes
+manual = yes

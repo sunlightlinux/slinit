@@ -9,7 +9,6 @@ type = process
 command = /bin/true
 file-descriptor-store-preserve = yes
 EOF
-slinitctl load "$_name" > /dev/null 2>&1 || true
 
 perf_run_iters "$ITERS" "CtlStart_fdstore_svc" "slinitctl start $_name"
 
