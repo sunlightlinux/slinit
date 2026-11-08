@@ -24,6 +24,12 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.12.1] — 2026-11-08
+
+**A patch with one fix: `slinitctl` no longer keeps warning about a description
+after a reload has applied it.** Upgrade if you reload running services. Nothing
+else changes.
+
 ### Fixed
 
 - `slinitctl` kept warning that a description "has changed since it was loaded"
