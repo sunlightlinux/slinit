@@ -181,6 +181,7 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 	if typeChanged {
 		// Create new service record of the new type
 		newSvc := dl.createService(svc.Name(), desc)
+		recordSource(newSvc, desc, filePath)
 
 		// Load dependencies for the new service
 		dl.loading[svc.Name()] = true
@@ -300,8 +301,26 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
 	svc.Record().SetProfiles(desc.Profiles)
 	svc.Record().SetBundleMembers(desc.BundleMembers)
+	recordModTime(svc, filePath)
 
 	return svc, nil
+}
+
+// recordSource notes where a new service record came from.
+func recordSource(svc service.Service, desc *ServiceDescription, filePath string) {
+	svc.Record().SetServiceDir(filepath.Dir(filePath))
+	svc.Record().SetWaitsForDirs(desc.WaitsForD)
+	recordModTime(svc, filePath)
+}
+
+// recordModTime keeps the time slinitctl compares against to warn that a
+// description changed since it was loaded. A reload has to update it, or the
+// warning outlives the change it reports, for as long as slinit runs. A record
+// replaced by a change of type started with none, which turned the warning off.
+func recordModTime(svc service.Service, filePath string) {
+	if fi, err := os.Stat(filePath); err == nil {
+		svc.Record().SetLoadModTime(fi.ModTime())
+	}
 }
 
 // updateTypeSpecificFields applies type-specific setters from the description.
@@ -1067,11 +1086,7 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	svc := dl.createService(name, desc)
 
 	// Record the directory and modification time of the service description
-	svc.Record().SetServiceDir(filepath.Dir(filePath))
-	svc.Record().SetWaitsForDirs(desc.WaitsForD)
-	if fi, err := os.Stat(filePath); err == nil {
-		svc.Record().SetLoadModTime(fi.ModTime())
-	}
+	recordSource(svc, desc, filePath)
 
 	// Add to set before loading dependencies (allows circular detection)
 	dl.set.AddService(svc)

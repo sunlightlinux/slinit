@@ -24,6 +24,15 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `slinitctl` kept warning that a description "has changed since it was loaded"
+  after a reload had applied it, on every later start and restart until the
+  next boot, so the warning could not be cleared. A reload that fails keeps the
+  warning, as the running service still differs from the file. A reload that
+  changed a service's type had the opposite fault: it turned the warning off
+  for that service, and lost the record of its directory.
+
 ## [3.12.0] — 2026-11-08
 
 **A minor with two changes in behaviour: a hardware watchdog whose driver loads

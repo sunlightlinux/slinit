@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -452,5 +453,72 @@ func TestBundleOfRejectsIncompatibleType(t *testing.T) {
 
 	if _, err := loader.LoadService("bad-bundle"); err == nil {
 		t.Fatal("expected type=process + bundle-of to fail load, got nil")
+	}
+}
+
+// A reload that applied the file ends the "changed since it was loaded" warning,
+// by every path, and one that did not apply it leaves the warning in place.
+func TestReloadRecordsModTime(t *testing.T) {
+	old := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, c := range []struct {
+		name, first, second string
+		started, wantFail   bool
+	}{
+		{name: "stopped", first: "type = internal\n", second: "type = internal\nrestart = true\n"},
+		{name: "started", first: "type = internal\n", second: "type = internal\nrestart = true\n", started: true},
+		{name: "type change", first: "type = internal\n", second: "type = process\ncommand = /bin/true\n"},
+		{name: "refused", first: "type = internal\n", second: "type = process\ncommand = /bin/true\n", started: true, wantFail: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ss := service.NewServiceSet(&testReloadLogger{})
+			loader := NewDirLoader(ss, []string{dir})
+			ss.SetLoader(loader)
+
+			path := filepath.Join(dir, "test-svc")
+			writeServiceFile(t, dir, "test-svc", c.first)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+			svc, err := loader.LoadService("test-svc")
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if !svc.Record().LoadModTime().Equal(old) {
+				t.Fatalf("setup: LoadModTime %v", svc.Record().LoadModTime())
+			}
+			if c.started {
+				svc.Start()
+				ss.ProcessQueues()
+				if svc.State() != service.StateStarted {
+					t.Fatalf("setup: state %d", svc.State())
+				}
+			}
+
+			writeServiceFile(t, dir, "test-svc", c.second)
+			fi, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := loader.ReloadService(svc)
+			if c.wantFail {
+				if err == nil {
+					t.Fatal("reload succeeded")
+				}
+				if !svc.Record().LoadModTime().Equal(old) {
+					t.Errorf("a refused reload cleared the warning: %v", svc.Record().LoadModTime())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if !got.Record().LoadModTime().Equal(fi.ModTime()) {
+				t.Errorf("LoadModTime %v, file %v", got.Record().LoadModTime(), fi.ModTime())
+			}
+			if got.Record().ServiceDir() != dir {
+				t.Errorf("ServiceDir %q", got.Record().ServiceDir())
+			}
+		})
 	}
 }
