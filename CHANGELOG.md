@@ -24,6 +24,25 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `shutdown -h now` and `shutdown -P now` were refused as an unrecognized
+  option, so they did nothing, nor did acpid's handler on the power button,
+  which calls the latter. The `shutdown` name of slinit-shutdown now takes
+  shutdown(8)'s `-P`, `-H` and a time meaning now (`now`, `+0`, `0`), then an
+  optional message, which is ignored. A later time is refused, not taken for
+  now.
+- `start-when-idle` started its service ahead of one queued behind the same
+  dependency, whose status line then landed on the login prompt: it counted a
+  service as waiting for its dependencies after they had all started.
+- Reboot, poweroff and soft reboot always waited the whole kill grace period
+  (3 s) after signalling the remaining processes, with or without anything
+  left to wait for. The grace is now a limit: it ends when `/proc` shows no
+  process left, kernel threads and zombies aside. A process that ignores
+  SIGTERM still gets all of it, then SIGKILL.
+- A `cron-calendar` task logged `interval=0s` when it started, which read as a
+  task in a tight loop. It now logs its next run.
+
 ## [3.11.2] — 2026-11-08
 
 **A patch with one fix: the login name no longer comes out twice at the first

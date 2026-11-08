@@ -2,6 +2,7 @@ package shutdown
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -792,5 +793,81 @@ func TestExecuteKexecFallsBackToNormalReboot(t *testing.T) {
 	}
 	if seen[1] != syscall.LINUX_REBOOT_CMD_RESTART {
 		t.Errorf("fallback: got 0x%x, want 0x%x (RESTART)", seen[1], syscall.LINUX_REBOOT_CMD_RESTART)
+	}
+}
+
+// The grace is a limit, not a delay: with nothing left it ends at once, and
+// with a survivor it runs out, then SIGKILL still goes.
+func TestKillAllProcessesStopsWaitingWhenNothingIsLeft(t *testing.T) {
+	origGetpid, origKill, origGrace, origPoll := getpidFunc, killFunc, killGracePeriod, killPollInterval
+	origSurvivors := survivorsFunc
+	defer func() {
+		getpidFunc, killFunc, killGracePeriod, killPollInterval = origGetpid, origKill, origGrace, origPoll
+		survivorsFunc = origSurvivors
+	}()
+	getpidFunc = func() int { return 1 }
+	killGracePeriod, killPollInterval = 400*time.Millisecond, 5*time.Millisecond
+
+	for _, c := range []struct {
+		name     string
+		survives int // probes that still find a process; -1 is all of them
+		fast     bool
+	}{{"nothing left", 0, true}, {"exits soon", 3, true}, {"survivor", -1, false}} {
+		var sigkill bool
+		probes := 0
+		killFunc = func(pid int, sig syscall.Signal) error {
+			if sig == syscall.SIGKILL {
+				sigkill = true
+			}
+			return nil
+		}
+		survivorsFunc = func() bool {
+			probes++
+			return c.survives < 0 || probes <= c.survives
+		}
+		begin := time.Now()
+		KillAllProcesses(testLogger())
+		d := time.Since(begin)
+		if c.fast && d >= 300*time.Millisecond {
+			t.Errorf("%s: waited %v", c.name, d)
+		}
+		if !c.fast && d < 400*time.Millisecond {
+			t.Errorf("%s: gave up after %v, before the grace", c.name, d)
+		}
+		if !sigkill {
+			t.Errorf("%s: no SIGKILL", c.name)
+		}
+	}
+}
+
+func TestStatNeedsWait(t *testing.T) {
+	line := func(comm, state string, flags uint) string {
+		return fmt.Sprintf("42 (%s) %s 1 42 42 0 -1 %d 0 0 0", comm, state, flags)
+	}
+	for _, c := range []struct {
+		name, stat string
+		want       bool
+	}{
+		{"running", line("sshd", "S", 0x400100), true},
+		{"name with space and paren", line("a) Z (b", "R", 0x400100), true},
+		{"uninterruptible", line("sync", "D", 0x400100), true},
+		{"kernel thread", line("kworker/0:1", "I", 0x208040), false},
+		{"zombie", line("sh", "Z", 0x400100), false},
+		{"unparsable", "garbage", true},
+		{"short", "42 (sh) S 1", true},
+	} {
+		if got := statNeedsWait(c.stat); got != c.want {
+			t.Errorf("%s: %v", c.name, got)
+		}
+	}
+}
+
+// A /proc that does not show this process is not to be believed.
+func TestUserProcessesLeftNeedsToSeeItself(t *testing.T) {
+	orig := getpidFunc
+	defer func() { getpidFunc = orig }()
+	getpidFunc = func() int { return 1 << 30 }
+	if !userProcessesLeft() {
+		t.Error("did not see itself, yet reported nothing left")
 	}
 }

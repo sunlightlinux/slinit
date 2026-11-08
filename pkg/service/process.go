@@ -1113,7 +1113,7 @@ func (s *ProcessService) fireHealthCheckStop(pid int) {
 // startCronIfConfigured starts the cron runner if a cron-command is configured.
 func (s *ProcessService) startCronIfConfigured() {
 	if s.cronRunner != nil {
-		s.services.logger.Info("Service '%s': starting cron task (interval=%v)", s.serviceName, s.cronRunner.interval)
+		s.services.logger.Info("Service '%s': starting cron task (%s)", s.serviceName, s.cronRunner.Schedule(time.Now()))
 		s.cronRunner.Start()
 	}
 }

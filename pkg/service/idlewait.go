@@ -62,16 +62,24 @@ func (s *ProcessService) cancelIdleWait() {
 }
 
 // othersStarting reports whether a service other than self is busy
-// starting. One waiting for its dependencies is not: those are counted
-// themselves, and boot, which waits for getty, would otherwise hold getty
+// starting. One still waiting for a dependency is not: that dependency is
+// counted itself, and boot, which waits for getty, would otherwise hold getty
 // for the whole wait. Nor is one itself in a start-when-idle wait, or two
 // gettys would each wait out the other.
+//
+// One whose dependencies have all started is busy, though its flag still says
+// it is waiting: it is only further down the queue. When getty and chronyd
+// both depend on the service that started last, getty took chronyd for idle
+// and came up first, and chronyd's status line landed on the login prompt.
 //
 // Caller must hold queueMu; ListServices then takes ss.mu, and nothing
 // takes queueMu while holding ss.mu.
 func (ss *ServiceSet) othersStarting(self Service) bool {
 	for _, svc := range ss.ListServices() {
-		if svc == self || svc.State() != StateStarting || svc.Record().waitingForDeps {
+		if svc == self || svc.State() != StateStarting {
+			continue
+		}
+		if rec := svc.Record(); rec.waitingForDeps && !rec.checkDepsStarted() {
 			continue
 		}
 		if p, ok := svc.(*ProcessService); ok && p.idleT != nil {

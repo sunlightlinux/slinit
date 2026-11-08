@@ -437,9 +437,7 @@ func KillAllProcesses(logger *logging.Logger) {
 		}
 	}
 
-	if grace > 0 {
-		time.Sleep(grace)
-	}
+	waitForExit(grace)
 
 	logger.Info("Sending SIGKILL to remaining processes...")
 	if err := killFunc(-1, syscall.SIGKILL); err != nil {
@@ -447,6 +445,79 @@ func KillAllProcesses(logger *logging.Logger) {
 			logger.Debug("kill(-1, SIGKILL): %v", err)
 		}
 	}
+}
+
+// killPollInterval is how often waitForExit looks for survivors.
+var killPollInterval = 50 * time.Millisecond
+
+// survivorsFunc reports whether a process is left to wait for.
+var survivorsFunc = userProcessesLeft
+
+// waitForExit waits up to grace for every process to be gone. The grace is the
+// most a process gets to finish, not a delay: a fixed sleep made every reboot,
+// poweroff and soft reboot take three seconds with nothing left to wait for.
+func waitForExit(grace time.Duration) {
+	deadline := time.Now().Add(grace)
+	for time.Now().Before(deadline) {
+		if !survivorsFunc() {
+			return
+		}
+		time.Sleep(killPollInterval)
+	}
+}
+
+// userProcessesLeft looks in /proc, as kill(-1, 0) cannot answer: it counts
+// kernel threads, so it never reports ESRCH on a running kernel. When /proc
+// cannot be read or does not show us, the answer is yes, which keeps the whole
+// grace: a process cut short is worse than a slow shutdown.
+func userProcessesLeft() bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return true
+	}
+	self := getpidFunc()
+	sawSelf := false
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		if pid == self {
+			sawSelf = true
+			continue
+		}
+		stat, err := os.ReadFile("/proc/" + e.Name() + "/stat")
+		if err != nil {
+			continue // gone between the listing and the read
+		}
+		if statNeedsWait(string(stat)) {
+			return true
+		}
+	}
+	return !sawSelf
+}
+
+// pfKthread is the kernel's PF_KTHREAD, in the flags field of /proc/PID/stat.
+const pfKthread = 0x00200000
+
+// statNeedsWait reads a /proc/PID/stat line. A kernel thread ignores signals
+// and a zombie has nothing left to finish, so neither is worth waiting for. The
+// name in parentheses may hold spaces and parentheses, hence the last one. A
+// line that cannot be parsed counts as a process.
+func statNeedsWait(stat string) bool {
+	i := strings.LastIndexByte(stat, ')')
+	if i < 0 {
+		return true
+	}
+	f := strings.Fields(stat[i+1:])
+	if len(f) < 7 {
+		return true
+	}
+	if f[0] == "Z" || f[0] == "X" {
+		return false
+	}
+	flags, err := strconv.ParseUint(f[6], 10, 64)
+	return err != nil || flags&pfKthread == 0
 }
 
 // rebootSystem maps a ShutdownType to the appropriate Linux reboot command

@@ -80,6 +80,15 @@ type CronRunner struct {
 	doneCh  chan struct{} // closed when the cron loop has fully exited
 }
 
+// Schedule describes when the task runs, for the log. A calendar runner has no
+// interval: printing its zero value read as a task in a tight loop.
+func (cr *CronRunner) Schedule(now time.Time) string {
+	if cr.calendar == nil {
+		return fmt.Sprintf("interval=%v", cr.interval)
+	}
+	return "calendar, next at " + cr.calendar.NextAfter(now).Format("2006-01-02 15:04:05")
+}
+
 // NewCronRunner creates a new CronRunner in interval mode.
 func NewCronRunner(svc Service, cmd []string, interval, delay time.Duration, onError string, logger ServiceLogger) *CronRunner {
 	if onError == "" {

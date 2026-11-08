@@ -131,6 +131,20 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Invalid --grace value: %s\n", arg[len("--grace="):])
 				os.Exit(1)
 			}
+		case execName == "shutdown" && arg == "-P":
+			shutdownType = service.ShutdownPoweroff
+		case execName == "shutdown" && arg == "-H":
+			shutdownType = service.ShutdownHalt
+		case execName == "shutdown" && !strings.HasPrefix(arg, "-"):
+			// shutdown(8)'s operands: a time, then an optional wall message,
+			// which the daemon has its own text for. `shutdown -h now` and
+			// the acpid handler's `shutdown -P now` were refused as an
+			// unrecognized option, so neither did anything.
+			if err := checkShutdownTime(arg); err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				os.Exit(1)
+			}
+			i = len(os.Args)
 		default:
 			fmt.Fprintf(os.Stderr, "Unrecognized option: %s\n", arg)
 			os.Exit(1)
@@ -354,4 +368,15 @@ func checkProtocolVersion(conn net.Conn) error {
 		}
 	}
 	return nil
+}
+
+// checkShutdownTime accepts shutdown(8)'s time operand when it means now. A
+// later time is refused rather than taken for now: going down at once when
+// someone asked for ten minutes is the one wrong answer.
+func checkShutdownTime(t string) error {
+	switch t {
+	case "now", "+0", "0":
+		return nil
+	}
+	return fmt.Errorf("shutdown: only the time \"now\" is supported, not %q; for a later time use: slinitctl shutdown --help", t)
 }

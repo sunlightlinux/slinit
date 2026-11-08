@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -155,4 +156,55 @@ func TestIdleStopCancelsTheWait(t *testing.T) {
 		t.Errorf("launched after being stopped: state %v pid %d", svc.State(), svc.PID())
 	}
 	stopAll(set, busy)
+}
+
+// Two services depend on the one that starts last: the idle one must wait for
+// the other, which it took for idle while that was still queued.
+func TestIdleWaitsForAServiceQueuedBehindTheSameDependency(t *testing.T) {
+	for _, gettyFirst := range []bool{true, false} {
+		set, _ := newTestSet()
+		misc := newScripted(t, set, "misc", []string{"/bin/sleep", "0.2"}, nil)
+		getty := newIdleService(set, "getty")
+		chronyd := newScripted(t, set, "chronyd", []string{"/bin/sleep", "0.8"}, nil)
+		getty.Record().AddDep(misc, DepRegular)
+		chronyd.Record().AddDep(misc, DepRegular)
+		if gettyFirst {
+			set.StartService(getty)
+			set.StartService(chronyd)
+		} else {
+			set.StartService(chronyd)
+			set.StartService(getty)
+		}
+		if got := waitState(t, misc, StateStarted, 3*time.Second); got != StateStarted {
+			t.Fatalf("setup: misc = %v", got)
+		}
+		time.Sleep(200 * time.Millisecond)
+		if chronyd.State() != StateStarting {
+			t.Fatalf("setup: chronyd = %v, want STARTING", chronyd.State())
+		}
+		if st := getty.State(); st != StateStarting || getty.PID() > 0 {
+			t.Errorf("gettyFirst=%v: getty %v pid %d while chronyd is starting", gettyFirst, st, getty.PID())
+		}
+		if got := waitState(t, getty, StateStarted, 3*time.Second); got != StateStarted {
+			t.Errorf("getty = %v after chronyd finished", got)
+		}
+		stopAll(set, getty, chronyd, misc)
+	}
+}
+
+// A calendar task says when it runs: its interval is unused, and "interval=0s"
+// read as a task in a tight loop.
+func TestCronScheduleDescription(t *testing.T) {
+	spec, err := ParseCalendar("daily")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 8, 16, 0, 0, 0, time.UTC)
+	got := (&CronRunner{calendar: spec}).Schedule(now)
+	if !strings.HasPrefix(got, "calendar, next at 2026-11-") || strings.Contains(got, "interval") {
+		t.Errorf("calendar: %q", got)
+	}
+	if got := (&CronRunner{interval: time.Minute}).Schedule(now); got != "interval=1m0s" {
+		t.Errorf("interval: %q", got)
+	}
 }
