@@ -24,6 +24,14 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.11.2] — 2026-11-08
+
+**A patch with one fix: the login name no longer comes out twice at the first
+login on the console.** Upgrade if no service of yours is `runs-on-console`,
+which is what used to hide this; `slinit-services` gave that up in its
+20261108 package. Nothing else changes: the debugger still restores the
+console when nothing else has taken it.
+
 ### Fixed
 
 - The login name came out twice at the first login on the console, as
