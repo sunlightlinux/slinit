@@ -22,22 +22,7 @@ func setRawMode(f *os.File) *unix.Termios {
 	if err != nil {
 		return nil // not a tty — leave untouched
 	}
-	raw := *orig
-	// Disable canonical input processing (deliver chars as they
-	// arrive, not line-by-line) and echo (don't clutter the
-	// menu with typed keys — the menu re-renders on state changes
-	// so echo would just noise up the box).
-	//
-	// Keep ISIG so Ctrl-C still terminates slinit — an operator
-	// stuck in the menu on a truly wedged system needs an escape
-	// hatch, and slinit's parent (kernel) will restart PID 1
-	// however it likes.
-	raw.Lflag &^= unix.ICANON | unix.ECHO
-	// VMIN=1, VTIME=0: read blocks until at least one byte
-	// arrives, no interbyte timeout. Suits our
-	// "wait-for-keypress-then-act" model.
-	raw.Cc[unix.VMIN] = 1
-	raw.Cc[unix.VTIME] = 0
+	raw := rawFrom(orig)
 	if err := unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, &raw); err != nil {
 		return nil
 	}
@@ -54,6 +39,27 @@ func setRawMode(f *os.File) *unix.Termios {
 	return orig
 }
 
+// rawFrom is the mode setRawMode derives from orig.
+func rawFrom(orig *unix.Termios) unix.Termios {
+	raw := *orig
+	// Disable canonical input processing (deliver chars as they
+	// arrive, not line-by-line) and echo (don't clutter the
+	// menu with typed keys — the menu re-renders on state changes
+	// so echo would just noise up the box).
+	//
+	// Keep ISIG so Ctrl-C still terminates slinit — an operator
+	// stuck in the menu on a truly wedged system needs an escape
+	// hatch, and slinit's parent (kernel) will restart PID 1
+	// however it likes.
+	raw.Lflag &^= unix.ICANON | unix.ECHO
+	// VMIN=1, VTIME=0: read blocks until at least one byte
+	// arrives, no interbyte timeout. Suits our
+	// "wait-for-keypress-then-act" model.
+	raw.Cc[unix.VMIN] = 1
+	raw.Cc[unix.VTIME] = 0
+	return raw
+}
+
 // restoreTermios reverses setRawMode. Safe to call with a nil
 // orig (no-op) — that matches the "not a tty" bail-out path in
 // setRawMode.
@@ -62,6 +68,28 @@ func restoreTermios(f *os.File, orig *unix.Termios) {
 		return
 	}
 	_ = unix.IoctlSetTermios(int(f.Fd()), unix.TCSETS, orig)
+}
+
+// restoreIfStillRaw reverses setRawMode unless something else has set the
+// terminal up since. The boot debugger stops when boot reaches STARTED, and
+// boot waits for getty, so agetty is already reading its login name by then.
+// Put back blindly, the original canonical, echoing mode was laid over
+// agetty's: the terminal echoed the name and agetty echoed it again, on the
+// first login after every boot.
+func restoreIfStillRaw(f *os.File, orig *unix.Termios) {
+	if orig == nil {
+		return
+	}
+	cur, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
+	if err != nil {
+		return
+	}
+	raw := rawFrom(orig)
+	if cur.Iflag != raw.Iflag || cur.Oflag != raw.Oflag || cur.Cflag != raw.Cflag || cur.Lflag != raw.Lflag ||
+		cur.Cc[unix.VMIN] != raw.Cc[unix.VMIN] || cur.Cc[unix.VTIME] != raw.Cc[unix.VTIME] {
+		return
+	}
+	restoreTermios(f, orig)
 }
 
 // SeedWinsize is the exported form of seedWinsize for callers outside

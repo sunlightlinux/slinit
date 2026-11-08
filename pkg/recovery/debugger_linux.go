@@ -281,7 +281,7 @@ func (d *Debugger) Stop() {
 	d.termiosMu.Unlock()
 	if orig != nil {
 		if f, err := os.OpenFile(d.opts.ConsolePath, os.O_RDWR, 0); err == nil {
-			restoreTermios(f, orig)
+			restoreIfStillRaw(f, orig)
 			f.Close()
 		}
 	}

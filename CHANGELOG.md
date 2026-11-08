@@ -24,6 +24,15 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- The login name came out twice at the first login on the console, as
+  `login: user` and `user` on the next line, when no service on the console
+  stopped the boot debugger first. The debugger stops when boot reaches
+  STARTED, and boot waits for getty, so agetty was already reading; putting
+  back the mode it had saved turned echo on under agetty. It now restores only
+  if the terminal is still in the raw mode it set.
+
 ## [3.11.1] — 2026-11-08
 
 **A patch with two console fixes.** What a terminal shows is now what 3.10.1
