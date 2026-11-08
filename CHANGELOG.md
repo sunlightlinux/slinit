@@ -24,6 +24,20 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.11.0] — 2026-11-08
+
+**A minor, for one change a setup could notice: `slinitctl stop` and
+`restart` now wait for the outcome.** It is under *Changed* with a compat
+note, which STABILITY.md reserves for a minor, and `--no-wait` keeps the old
+behaviour. The rest is one new directive and fixes.
+
+Upgrade if a script relies on `slinitctl restart foo && ...`: until now that
+went on with exit 0 even when foo failed to come back up. Before upgrading,
+look for a script run by a service that stops or restarts that same service:
+it needs `--no-wait`, or it waits for its own end. The login prompt no longer
+being printed over by services still starting takes `start-when-idle = yes`
+on the getty service.
+
 ### Changed
 
 - `slinitctl stop` and `restart` wait for the outcome, as `start` has since
