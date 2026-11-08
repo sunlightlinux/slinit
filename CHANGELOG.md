@@ -24,6 +24,14 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.11.1] — 2026-11-08
+
+**A patch with two console fixes.** What a terminal shows is now what 3.10.1
+said it would be, and nothing changes where the console is a pipe. Upgrade if
+you log in on the console as PID 1 with `sudo su`: v3.10.1's fix for the
+staircase never reached a real console, and its entry says otherwise. Both
+fixes change only what reaches the screen; the catch-all log file is as it was.
+
 ### Fixed
 
 - Shutdown status lines still staircased on the console after `sudo su` and
