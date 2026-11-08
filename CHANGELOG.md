@@ -24,6 +24,16 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.13.0] — 2026-11-08
+
+**A minor about cron tasks: they work on `type = internal`, a calendar run is no
+longer killed after a minute, and a restart or reload no longer breaks them.**
+Upgrade if you use `cron-*`: a service restarted on an older version stops running
+its task until the next boot, and a nightly update can be killed part way
+through. Check before upgrading if you rely on the old limit of a minute (wrap the
+command in `timeout`), or have `cron-*` on an internal service, which used to be
+ignored and will now run. The control protocol does not change.
+
 ### Added
 
 - `cron-*` on `type = internal` (since 3.13.0): a periodic job with nothing to
