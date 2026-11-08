@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -29,9 +32,17 @@ const (
 //
 // Inspired by s6-linux-init's catch-all logger (s6-svscan-log).
 type CatchAllLogger struct {
-	pipeR     *os.File // read end of the capture pipe
-	pipeW     *os.File // write end (replaces fd 1 & 2)
-	console   *os.File // original console (saved before redirect)
+	pipeR   *os.File // read end of the capture pipe
+	pipeW   *os.File // write end (replaces fd 1 & 2)
+	console *os.File // original console (saved before redirect)
+
+	// consoleEOL ends each line on the console: "\r\n" on a terminal, as
+	// writeConsole explains. The scanner below strips the "\r" of a line
+	// that had one, so it has to be put back here; written with a bare
+	// "\n", the shutdown lines of PID 1 staircased under sudo's raw mode
+	// although the logger wrote them correctly. A pipe keeps "\n".
+	consoleEOL string
+
 	logFile   *os.File // persistent log file
 	logPath   string
 	wg        sync.WaitGroup
@@ -94,10 +105,14 @@ func StartCatchAll(logPath string) (*CatchAllLogger, error) {
 	os.Stderr = os.NewFile(2, "/dev/stderr")
 
 	cal := &CatchAllLogger{
-		pipeR:   pr,
-		pipeW:   pw,
-		console: console,
-		logPath: logPath,
+		pipeR:      pr,
+		pipeW:      pw,
+		console:    console,
+		consoleEOL: "\n",
+		logPath:    logPath,
+	}
+	if _, err := unix.IoctlGetTermios(int(console.Fd()), unix.TCGETS); err == nil {
+		cal.consoleEOL = "\r\n"
 	}
 
 	// Open persistent log file.
@@ -132,6 +147,16 @@ func (c *CatchAllLogger) drain() {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		// The marker can land behind a child's unterminated output: what
+		// precedes it is still a line, and the mute applies after it.
+		mute := bytes.HasSuffix(line, []byte(muteMarker))
+		if mute {
+			line = line[:len(line)-len(muteMarker)]
+			if len(line) == 0 {
+				c.consoleMuted.Store(true)
+				continue
+			}
+		}
 		ts := time.Now().Format("2006-01-02T15:04:05.000")
 
 		// Write to console (original stdout) unless the operator (or
@@ -140,7 +165,7 @@ func (c *CatchAllLogger) drain() {
 		// stream stays in /run/slinit/catch-all.log for post-hoc
 		// inspection.
 		if !c.consoleMuted.Load() {
-			fmt.Fprintf(c.console, "%s\n", line)
+			fmt.Fprintf(c.console, "%s%s", line, c.consoleEOL)
 		}
 
 		// Write to persistent log file with timestamp.
@@ -156,6 +181,9 @@ func (c *CatchAllLogger) drain() {
 				written = 0
 			}
 		}
+		if mute {
+			c.consoleMuted.Store(true)
+		}
 	}
 }
 
@@ -165,15 +193,29 @@ func (c *CatchAllLogger) Console() *os.File {
 	return c.console
 }
 
+// muteMarker, passing through the pipe, mutes the console tee. No real line
+// looks like it: a log line cannot start with a NUL.
+const muteMarker = "\x00slinit-catch-all-mute"
+
 // SetConsoleMuted toggles the console-side of the tee. When true,
 // captured stdout+stderr lines are still written to the persistent
 // log file but skipped for the console. cmd/slinit flips this on
 // once the boot service reaches STARTED so an interactive tty is
 // not swamped by workload echoes — the boot phase still gets its
 // console mirror. Concurrent-safe.
+//
+// Muting goes through the pipe, so it takes effect after what was written
+// before it. Set directly, it overtook the lines still in the pipe, and the
+// last "[ OK ]" of the boot, the service whose start made boot ready, never
+// reached the screen.
 func (c *CatchAllLogger) SetConsoleMuted(v bool) {
 	if c == nil {
 		return
+	}
+	if v && c.pipeW != nil {
+		if _, err := fmt.Fprintln(c.pipeW, muteMarker); err == nil {
+			return
+		}
 	}
 	c.consoleMuted.Store(v)
 }

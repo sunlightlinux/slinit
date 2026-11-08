@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Shutdown status lines still staircased on the console after `sudo su` and
+  `reboot`, on a real PID 1. v3.10.1's fix ended them with "\r\n", but as PID 1
+  they pass through the catch-all logger, whose scanner strips the "\r" and
+  which wrote them on with a bare "\n"; the fix's tests stopped at the logger.
+  The catch-all now ends every line with "\r\n" on a terminal, a child's
+  output included, and with "\n" on a pipe. Measured on PID 1 with the console
+  `-opost`, captured from a serial file: three bare newlines in the shutdown
+  list before, none after.
+- The last `[ OK ]` lines of the boot were missing from the console, the
+  service whose start completed the boot among them. Muting the console at
+  boot-ready overtook what was still in the catch-all's pipe; it now goes
+  through the pipe, in order.
+
 ## [3.11.0] — 2026-11-08
 
 **A minor, for one change a setup could notice: `slinitctl stop` and

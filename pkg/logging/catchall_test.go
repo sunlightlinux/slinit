@@ -1,12 +1,16 @@
 package logging
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestCatchAllCaptures(t *testing.T) {
@@ -214,4 +218,104 @@ func TestCatchAllStopIdempotent(t *testing.T) {
 	cal.Stop()
 	cal.Stop()
 	cal.Stop()
+}
+
+// drainThrough runs the drain over a pipe with the given line ending, feeds
+// it, and returns what reached the console.
+func drainThrough(t *testing.T, eol string, feed func(c *CatchAllLogger)) string {
+	t.Helper()
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	consR, consW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &CatchAllLogger{pipeR: pr, pipeW: pw, console: consW, consoleEOL: eol}
+	c.wg.Add(1)
+	go c.drain()
+	feed(c)
+	pw.Close()
+	c.wg.Wait()
+	consW.Close()
+	out, err := io.ReadAll(consR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+// A line the logger ends with "\r\n" for a terminal reaches it that way. The
+// scanner strips the "\r", and the drain used to end every line with a bare
+// "\n", so as PID 1 the shutdown lines staircased under sudo's raw mode.
+// Every line gets it, not only the logger's: a child's too.
+func TestCatchAllConsoleLineEndings(t *testing.T) {
+	feed := func(c *CatchAllLogger) {
+		l := New(LevelInfo)
+		l.SetOutput(c.pipeW)
+		l.SetConsoleIsTTY(true)
+		l.SetBootConsole(true, false)
+		l.SetShutdownConsole(true)
+		l.ServiceStopped("sshd")
+		fmt.Fprintln(c.pipeW, "a child's own line")
+	}
+	got := drainThrough(t, "\r\n", feed)
+	if !strings.Contains(got, "[STOPPD] sshd\r\n") || !strings.Contains(got, "a child's own line\r\n") {
+		t.Errorf("terminal console got %q", got)
+	}
+	for i := 0; i < len(got); i++ {
+		if got[i] == '\n' && (i == 0 || got[i-1] != '\r') {
+			t.Fatalf("a bare newline at %d reached the terminal: %q", i, got)
+		}
+	}
+	if got := drainThrough(t, "\n", func(c *CatchAllLogger) { fmt.Fprintln(c.pipeW, "line") }); got != "line\n" {
+		t.Errorf("a pipe console got %q", got)
+	}
+}
+
+// What was written before the mute still reaches the console: it used to be
+// overtaken, and the boot's last "[ OK ]" never showed.
+func TestCatchAllMuteKeepsWhatWasWrittenBefore(t *testing.T) {
+	got := drainThrough(t, "\n", func(c *CatchAllLogger) {
+		fmt.Fprintln(c.pipeW, "[ OK ] getty-tty1")
+		c.SetConsoleMuted(true)
+		fmt.Fprintln(c.pipeW, "after the mute")
+	})
+	if got != "[ OK ] getty-tty1\n" {
+		t.Errorf("console got %q", got)
+	}
+}
+
+// A mute behind a child's unterminated output keeps that output and mutes.
+func TestCatchAllMuteAfterPartialLine(t *testing.T) {
+	got := drainThrough(t, "\n", func(c *CatchAllLogger) {
+		fmt.Fprint(c.pipeW, "partial")
+		c.SetConsoleMuted(true)
+		fmt.Fprintln(c.pipeW, "after")
+	})
+	if got != "partial\n" {
+		t.Errorf("console got %q", got)
+	}
+}
+
+// A real terminal is recognised, a pipe is not.
+func TestStartCatchAllDetectsATerminal(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if _, err := unix.IoctlGetTermios(int(w.Fd()), unix.TCGETS); err == nil {
+		t.Error("a pipe reads as a terminal")
+	}
+	ptmx, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no pty here: %v", err)
+	}
+	defer ptmx.Close()
+	if _, err := unix.IoctlGetTermios(int(ptmx.Fd()), unix.TCGETS); err != nil {
+		t.Errorf("a pty does not read as a terminal: %v", err)
+	}
 }
