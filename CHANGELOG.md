@@ -24,6 +24,15 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.11.3] — 2026-11-08
+
+**A patch with four fixes: the power button works with acpid, shutting down no
+longer waits 3 s for nothing, a getty starts after what is queued beside it, and
+a calendar task logs its next run.** Upgrade if you run acpid or script
+`shutdown ... now`. Nothing that used to work changes. Note that `shutdown -h`
+halts, as `-h` always has here, where systemd's powers off; use `-P` on a machine
+that should lose power.
+
 ### Fixed
 
 - `shutdown -h now` and `shutdown -P now` were refused as an unrecognized
