@@ -132,8 +132,8 @@ func Open(cfg Config) (*Feeder, error) {
 		} else if _, err := os.Stat(FallbackDevice); err == nil {
 			device = FallbackDevice
 		} else {
-			return nil, fmt.Errorf("no watchdog device found (looked at %s, %s)",
-				DefaultDevice, FallbackDevice)
+			return nil, fmt.Errorf("%w (looked at %s, %s)",
+				ErrNoDevice, DefaultDevice, FallbackDevice)
 		}
 		resolved.Device = device
 	}
@@ -210,6 +210,10 @@ func (f *Feeder) Run(ctx context.Context) error {
 }
 
 var errClosed = errors.New("watchdog: feeder closed")
+
+// ErrNoDevice is Open failing to discover a device, which a driver loaded later
+// may yet change. A path given explicitly fails differently.
+var ErrNoDevice = errors.New("no watchdog device found")
 
 // Ping resets the kernel-side timer. Safe to call concurrently with Run
 // (e.g. from a service-level health-check probe in a future phase).

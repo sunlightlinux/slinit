@@ -24,6 +24,22 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- **A hardware watchdog whose driver loads after slinit starts is now armed.**
+  slinit looked once, ahead of anything that loads modules, so such a machine
+  ran without one until a soft reboot, when the module was already there. PID 1
+  of a system now keeps looking every 500 ms until 30 s after boot is ready.
+  A machine in that position will now reset itself if PID 1 hangs, which is
+  what the feeder is for; `--no-watchdog` keeps the old result. A
+  `slinit-watchdogd` on the same device may now lose the race for it, as the
+  device has one owner: give it its own, or pass `--no-watchdog`. A
+  `--watchdog-device` path is still tried once, so a missing one still turns
+  the feeder off, and containers still look once.
+- `shutdown -h` powers off, as in shutdown(8), where it used to halt. It keeps
+  a halt asked for before it, as in `shutdown -H -h`. Use `-H` to halt. Only the
+  name `shutdown` changes: `slinit-shutdown -h` and `halt -h` still halt.
+
 ## [3.11.3] — 2026-11-08
 
 **A patch with four fixes: the power button works with acpid, shutting down no

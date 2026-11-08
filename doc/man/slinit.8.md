@@ -508,6 +508,12 @@ long options may be written with one or two leading dashes.
     default) slinit auto-discovers */dev/watchdog0*, falling back to
     */dev/watchdog* on systems that only expose the legacy alias.
     Only applied when slinit runs as PID 1 or in container mode.
+    As a system's PID 1, slinit starts ahead of whatever loads the driver,
+    so it keeps looking until 30 seconds after boot is ready, and arms the
+    device when it appears. A *path* given here is tried once, so a missing
+    one turns the feeder off; a container looks once as well. The device can
+    have one owner: give **slinit-watchdogd**(8) a device of its own, or pass
+    **\--no-watchdog** (since 3.12.0).
 
 **\--watchdog-timeout** *duration*
 :   Kernel-side timeout programmed via *WDIOC_SETTIMEOUT*. The

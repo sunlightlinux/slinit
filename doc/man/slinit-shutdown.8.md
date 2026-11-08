@@ -139,6 +139,12 @@ If invoked as **slinit-shutdown** with no action flag, the default is
 | slinit-soft-reboot     | soft-reboot (-s)   |
 | slinit-shutdown        | poweroff (-p)      |
 
+Under the plain name **shutdown** the command also takes the syntax of
+**shutdown**(8): **-P** powers off, **-H** halts, and **-h** powers off unless
+a halt was already asked for (since 3.12.0; it halted before). The only time
+accepted is one meaning now (*now*, *+0*, *0*), and a message after it is
+ignored. Under every other name **-h** halts, as above.
+
 # ENVIRONMENT
 
 **SLINIT_CS_FD**

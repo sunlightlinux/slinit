@@ -1113,6 +1113,8 @@ func main() {
 	if isPID1 || systemMode {
 		prev := serviceSet.OnBootReady
 		serviceSet.OnBootReady = func() {
+			wd.BootReady()
+
 			// Mute the catch-all's console tee once boot completes.
 			// During boot, mirroring every service's stdout to the
 			// console gives the operator a visible progress stream;
@@ -2849,7 +2851,7 @@ func tryStartService(name string, serviceSet *service.ServiceSet, loader *config
 func startWatchdog(isPID1, containerMode, noWatchdog bool,
 	device, timeoutStr, intervalStr string,
 	logger *logging.Logger,
-) *watchdog.Feeder {
+) *watchdog.Late {
 	if noWatchdog {
 		return nil
 	}
@@ -2871,28 +2873,41 @@ func startWatchdog(isPID1, containerMode, noWatchdog bool,
 		}
 	}
 
-	wd, err := watchdog.Open(watchdog.Config{
+	wd := watchdog.NewLate(watchdog.Config{
 		Device:   device,
 		Timeout:  timeout,
 		Interval: interval,
+	}, watchdog.LateHooks{
+		Waiting: func(err error) {
+			logger.Info("Hardware watchdog not found yet, will keep looking: %v", err)
+		},
+		Armed: func(f *watchdog.Feeder) {
+			logger.Notice("Hardware watchdog armed: device=%s timeout=%s interval=%s",
+				f.Device(), f.Timeout(), f.Interval())
+			go func() {
+				if err := f.Run(context.Background()); err != nil {
+					logger.Error("Watchdog feeder stopped: %v", err)
+				}
+			}()
+		},
+		Unavailable: func(err error) {
+			// Most common cause is "no device" on bare-metal kernels without
+			// a watchdog driver, or in containers. Surface as Notice not
+			// Error — running without a watchdog is degraded but expected
+			// in many environments.
+			logger.Notice("Hardware watchdog unavailable: %v (continuing without)", err)
+		},
 	})
-	if err != nil {
-		// Most common cause is "no device" on bare-metal kernels without
-		// a watchdog driver, or in containers. Surface as Notice not
-		// Error — running without a watchdog is degraded but expected
-		// in many environments.
-		logger.Notice("Hardware watchdog unavailable: %v (continuing without)", err)
-		return nil
-	}
-	logger.Notice("Hardware watchdog armed: device=%s timeout=%s interval=%s",
-		wd.Device(), wd.Timeout(), wd.Interval())
-
-	go func() {
-		if err := wd.Run(context.Background()); err != nil {
-			logger.Error("Watchdog feeder stopped: %v", err)
-		}
-	}()
+	wd.Start(watchdogMayAppearLater(isPID1, containerMode, device))
 	return wd
+}
+
+// watchdogMayAppearLater says whether a missing device is worth waiting for. A
+// system's PID 1 starts ahead of whatever loads the driver. A container gets no
+// new devices, and --watchdog-device at a missing path is the documented way
+// of turning the feeder off.
+func watchdogMayAppearLater(isPID1, containerMode bool, device string) bool {
+	return isPID1 && !containerMode && device == ""
 }
 
 // findSlinitRunner locates the slinit-runner exec helper. Order:
@@ -2988,7 +3003,7 @@ func listenMetrics(addr string) (net.Listener, error) {
 	return net.Listen("tcp", addr)
 }
 
-func closeWatchdog(wd *watchdog.Feeder, logger *logging.Logger) {
+func closeWatchdog(wd *watchdog.Late, logger *logging.Logger) {
 	if wd == nil {
 		return
 	}

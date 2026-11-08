@@ -90,6 +90,8 @@ func main() {
 			}
 		case arg == "-r":
 			shutdownType = service.ShutdownReboot
+		case execName == "shutdown" && arg == "-h":
+			shutdownType = shutdownDashH(shutdownType)
 		case arg == "-h":
 			// systemd: `-h` is short for --halt only for the poweroff
 			// binary; for others it's already a shutdown type toggle.
@@ -379,4 +381,13 @@ func checkShutdownTime(t string) error {
 		return nil
 	}
 	return fmt.Errorf("shutdown: only the time \"now\" is supported, not %q; for a later time use: slinitctl shutdown --help", t)
+}
+
+// shutdownDashH is -h under the name shutdown: power off, unless a halt was
+// already asked for, as in shutdown(8). The other names keep -h as halt.
+func shutdownDashH(current service.ShutdownType) service.ShutdownType {
+	if current == service.ShutdownHalt {
+		return current
+	}
+	return service.ShutdownPoweroff
 }
