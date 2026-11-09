@@ -487,6 +487,10 @@ type ServiceRecord struct {
 	// re-entering initiateStart.
 	restartLimitExhausted bool
 
+	// depRestartDenied says the dependency whose failure is stopping this
+	// service has used up its restart limit, so this restart is refused too.
+	depRestartDenied bool
+
 	// restartPending is set while Stopped() has handed a wanted restart
 	// to a restart-delay timer instead of calling initiateStart itself.
 	// The service then sits in STOPPED while still counted among the
@@ -3518,7 +3522,13 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 		} else if sr.autoRestart == RestartOnFailure && sr.desired.Load() == StateStarted {
 			// failure-conditions decides what "failure" means here;
 			// its default is the exit-status reading below.
-			if !normal && sr.processEndIsFailure(exitStatus, restartableFailure(exitStatus)) {
+			if sr.stopReason == ReasonDepFailed && sr.failureConditions.Dependency {
+				wantedRestart = true
+				forRestart = !sr.depRestartDenied && sr.self.CheckRestart()
+				sr.inAutoRestart = forRestart
+				sr.depRestartDenied = false
+			} else if sr.stopReason == ReasonFailed ||
+				(!normal && sr.processEndIsFailure(exitStatus, restartableFailure(exitStatus))) {
 				wantedRestart = true
 				forRestart = sr.self.CheckRestart()
 				sr.inAutoRestart = forRestart
@@ -3639,6 +3649,16 @@ func (sr *ServiceRecord) stopCheckDependents() bool {
 func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool {
 	allStopped := true
 
+	// Restarting a dependent restarts this service with it, so what limits
+	// this one has to limit that: otherwise a dependency that dies as soon as
+	// it starts, and has no restart of its own to count, loops for ever. Asked
+	// once per stop, however many dependents, and inherited down a chain.
+	depFailure, depRestartDenied := false, false
+	if sr.forceStop && sr.desired.Load() != StateStopped && sr.stopIsFailure() {
+		depFailure = true
+		depRestartDenied = sr.depRestartDenied || !sr.self.CheckRestart()
+	}
+
 	for _, dept := range sr.dependents {
 		if dept.IsHard() {
 			depFrom := dept.From.Record()
@@ -3655,8 +3675,18 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 					// The path a dying dependency takes: its desired
 					// state is still STARTED here. dependency-fails is
 					// decided on this branch in dinit too.
-					if depFrom.failureConditions.Dependency && sr.stopIsFailure() {
-						depFrom.stopReason = ReasonDepFailed
+					if depFrom.failureConditions.Dependency {
+						if depFailure {
+							depFrom.stopReason = ReasonDepFailed
+							depFrom.depRestartDenied = depRestartDenied
+						} else if depFrom.stopReason != ReasonDepFailed ||
+							depFrom.state.Load() != StateStopping {
+							// A dependent still stopping for this failure
+							// keeps it. A restart that outruns the dependent
+							// brings this service here a second time, its
+							// exit status gone, looking like a clean stop.
+							depFrom.stopReason = ReasonNormal
+						}
 					}
 					depFrom.ForcedStop()
 				}

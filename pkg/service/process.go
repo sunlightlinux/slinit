@@ -2719,7 +2719,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 				"Service '%s': readiness pipe closed during smooth recovery — treating as unexpected termination",
 				s.serviceName)
 			s.cancelTimer()
-			s.handleUnexpectedTerminationLocked()
+			s.handleRecoveryFailureLocked()
 			return
 		}
 		// Any other combination (ready=true while STARTED, or state
@@ -2936,10 +2936,22 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 	}
 }
 
+// handleRecoveryFailureLocked stops a service whose smooth recovery failed. That
+// is a failure whatever the exit status left by the process it was replacing:
+// reading that one could report a recovery that never ran as a clean stop.
+// Caller must hold queueMu.
+func (s *ProcessService) handleRecoveryFailureLocked() {
+	s.handleTerminationLocked(ReasonFailed)
+}
+
 // handleUnexpectedTerminationLocked handles when a started process dies
 // unexpectedly. Caller must hold queueMu.
 func (s *ProcessService) handleUnexpectedTerminationLocked() {
-	s.stopReason = ReasonTerminated
+	s.handleTerminationLocked(ReasonTerminated)
+}
+
+func (s *ProcessService) handleTerminationLocked(reason StoppedReason) {
+	s.stopReason = reason
 	s.forceStop = true
 
 	s.doStop(false)
@@ -2975,7 +2987,7 @@ func (s *ProcessService) doSmoothRecovery() {
 			s.services.logger.Error("Service '%s': smooth recovery failed: %v",
 				s.serviceName, err)
 			s.doingSmoothRecov = false
-			s.handleUnexpectedTerminationLocked()
+			s.handleRecoveryFailureLocked()
 		} else {
 			s.doingSmoothRecov = false
 		}

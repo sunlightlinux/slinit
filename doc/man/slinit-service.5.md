@@ -590,7 +590,9 @@ error. Repeat the line for several targets.
         **failure-action** count as a failure. Without it the reason is
         *normal*, as it always was. A dependency's own conditions decide
         whether its stop was a failure, so the reason travels down a
-        chain of services that all name it.
+        chain of services that all name it. Since 3.14.0,
+        **restart**=*on-failure* restarts the service too, of any type,
+        unless the failing dependency has used up its **restart-limit-count**.
 
     *none*
     :   Nothing; the list is otherwise empty.
@@ -601,13 +603,14 @@ error. Repeat the line for several targets.
     contains the first. A failed *start* is a failure under every
     setting.
 
-    Adapted from dinit's **failure-conditions**, which is on its
-    development branch and not yet in a release. Two differences: the
-    default leaves *dependency-fails* off, because slinit never marked a
-    dependent failed when a running dependency died and a setup may rely
-    on that; and the stop reasons a client sees are unchanged — a
-    process that ended is still *terminated*, and the verdict travels
-    beside it in the status flags.
+    Adapted from dinit's **failure-conditions**, from version 0.23.0,
+    whose *none*, *process-fails* and *process-stops* mean the same here.
+    The difference is that dinit always takes a hard dependency's failure
+    for a failure of the dependent, and has no token for it; slinit leaves
+    *dependency-fails* off by default, because it never marked a dependent
+    failed when a running dependency died and a setup may rely on that.
+    Name it to get dinit's behaviour. As in dinit, the stop reasons a
+    client sees are unchanged: a process that ended is still *terminated*.
 
 **smooth-recovery**=*yes*|*no*
 :   Restart in-place without notifying dependents (useful for

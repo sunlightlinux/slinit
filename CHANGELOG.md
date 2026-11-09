@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- `restart = on-failure` now restarts a service stopped by a failing hard
+  dependency, if the service names `failure-conditions = dependency-fails`, and
+  for any type, `internal` included. It used to report `dependency-failed` and
+  stay down. dinit 0.23.0 does this for every service; here the default does not
+  change, so a service without that token behaves as before. A dependency that
+  has used up its `restart-limit-count` refuses the restart, so one that dies
+  as soon as it starts cannot loop. Remove the token to keep the old result.
+- A failed smooth recovery stops the service with the reason `failed`, as in
+  dinit 0.23.0, where it was `terminated`. `is-failed` and `failure-action` read
+  it as a failure whatever exit status the replaced process had left, and
+  `restart = on-failure` restarts it. A script matching the reason text sees a
+  different word.
+
 ## [3.13.0] — 2026-11-08
 
 **A minor about cron tasks: they work on `type = internal`, a calendar run is no
