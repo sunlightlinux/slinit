@@ -24,6 +24,16 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.14.0] — 2026-11-09
+
+**A minor aligning `enable`, `disable` and `failure-conditions` with dinit 0.23.0,
+compared against a real one.** `enable` and `disable` wait for the outcome and work
+through the dependency edge alone. Check before upgrading if a script relies on
+`disable` stopping a service something else holds or that was started by hand
+(use `slinitctl stop`), on `enable` returning at once (`--no-wait`), on `enable`
+starting a service whose source is down, or on the reason `terminated` after a
+failed smooth recovery. The control protocol does not change.
+
 ### Changed
 
 - `restart = on-failure` now restarts a service stopped by a failing hard
