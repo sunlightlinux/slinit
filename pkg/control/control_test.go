@@ -1309,6 +1309,121 @@ func TestDisableServiceV7ReturnsStatus(t *testing.T) {
 	}
 }
 
+// What enable and disable do, each measured against dinit 0.23.0.
+func TestEnableDisableHoldThroughTheEdge(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	add := func(name string) *service.InternalService {
+		s := service.NewInternalService(server.services, name)
+		server.services.AddService(s)
+		return s
+	}
+	boot, off := add("boot"), add("off")
+	alone, explicit, required, holder, downfrom, stopped, late :=
+		add("alone"), add("explicit"), add("required"), add("holder"), add("downfrom"), add("stopped"), add("late")
+	server.services.SetBootServiceName("boot")
+	server.services.StartService(boot)
+
+	// A connection per request, skipping events: holding a handle subscribes
+	// to them, and they come ahead of the reply.
+	request := func(cmd uint8, names ...string) {
+		t.Helper()
+		conn := connectTest(t, sockPath)
+		defer conn.Close()
+		var payload []byte
+		for _, n := range names {
+			payload = append(payload, EncodeHandle(findHandle(t, conn, n))...)
+		}
+		WritePacket(conn, cmd, payload)
+		for {
+			rply, _ := readReply(t, conn)
+			if rply == InfoServiceEvent || rply == InfoServiceEvent5 {
+				continue
+			}
+			if rply != RplyServiceStatus {
+				t.Fatalf("%v: reply %d", names, rply)
+			}
+			return
+		}
+	}
+	enable := func(names ...string) { t.Helper(); request(CmdEnableServiceV7, names...) }
+	disable := func(name string) { t.Helper(); request(CmdDisableServiceV7, name) }
+	want := func(what string, s service.Service, st service.ServiceState) {
+		t.Helper()
+		if s.State() != st {
+			t.Errorf("%s: %s is %v, want %v", what, s.Name(), s.State(), st)
+		}
+	}
+
+	enable("alone")
+	want("enable", alone, service.StateStarted)
+	disable("alone")
+	want("disable with only the edge holding it", alone, service.StateStopped)
+
+	server.services.StartService(explicit)
+	enable("explicit")
+	disable("explicit")
+	want("disable of an explicit start", explicit, service.StateStarted)
+
+	holder.Record().AddDep(required, service.DepRegular)
+	enable("required")
+	server.services.StartService(holder)
+	disable("required")
+	want("disable of what another requires", required, service.StateStarted)
+	want("disable of what another requires", holder, service.StateStarted)
+
+	enable("late")
+	server.services.StartService(late)
+	disable("late")
+	want("disable after a start of what was already up", late, service.StateStarted)
+
+	enable("downfrom", "off")
+	want("enable from a stopped service", off, service.StateStopped)
+	want("enable from a stopped service", downfrom, service.StateStopped)
+
+	enable("stopped")
+	server.services.StopService(stopped)
+	want("setup", stopped, service.StateStopped)
+	enable("stopped")
+	want("enable of what is enabled and stopped", stopped, service.StateStopped)
+}
+
+// A start of a service already up still takes effect, and answers as before.
+func TestStartOfAStartedServiceHolds(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	dep := service.NewInternalService(server.services, "held")
+	top := service.NewInternalService(server.services, "top")
+	refuser := service.NewInternalService(server.services, "refuser")
+	refuser.Record().SetRefuseManualStart(true)
+	for _, s := range []service.Service{dep, top, refuser} {
+		server.services.AddService(s)
+	}
+	top.Record().AddDep(dep, service.DepRegular)
+	top.Record().AddDep(refuser, service.DepRegular)
+	server.services.StartService(top)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	WritePacket(conn, CmdStartService, append(EncodeHandle(findHandle(t, conn, "held")), 0))
+	if rply, _ := readReply(t, conn); rply != RplyAlreadySS {
+		t.Errorf("reply %d, want already started", rply)
+	}
+	WritePacket(conn, CmdStartService, append(EncodeHandle(findHandle(t, conn, "refuser")), 0))
+	if rply, _ := readReply(t, conn); rply != RplyAlreadySS {
+		t.Errorf("refuse-manual-start, already up: reply %d", rply)
+	}
+
+	server.services.StopService(top)
+	if dep.State() != service.StateStarted {
+		t.Errorf("held is %v: the start did not hold it once its dependent left", dep.State())
+	}
+	if refuser.State() != service.StateStopped {
+		t.Errorf("refuser is %v: a refused start held it", refuser.State())
+	}
+}
+
 func TestQueryServiceLoadDirEmpty(t *testing.T) {
 	// Programmatically-added services have no ServiceDir → count=0.
 	server, sockPath := setupTestServer(t)

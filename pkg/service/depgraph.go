@@ -145,6 +145,28 @@ func (ss *ServiceSet) EnsureWaitsFor(from, to Service) (existed bool, err error)
 	return false, ss.addDependencyLocked(from, to, DepWaitsFor)
 }
 
+// StartWaitsFor starts to through the waits-for edge enable just added, if from
+// is up, as dinit's start_dep does. The edge holds it rather than an explicit
+// start, so removing the edge is what stops it, and a start of its own survives.
+// With from stopped nothing starts: the edge takes effect when from starts.
+func (ss *ServiceSet) StartWaitsFor(from, to Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+
+	switch from.Record().state.Load() {
+	case StateStarted, StateStarting:
+	default:
+		return
+	}
+	for _, dep := range from.Record().Dependencies() {
+		if dep.To == to && dep.DepType == DepWaitsFor && !dep.HoldingAcq {
+			to.Record().Require()
+			dep.HoldingAcq = true
+		}
+	}
+	ss.processQueuesLocked()
+}
+
 // DepView is a copy of one graph edge, safe to read after the lock has
 // been dropped.
 //

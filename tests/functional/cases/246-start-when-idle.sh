@@ -3,10 +3,14 @@
 # to finish starting, at most five seconds. It keeps a login prompt from
 # being printed over by a service still coming up.
 
+# From /proc/uptime: the VM's busybox date has no %N, which made every elapsed
+# time 0, so the check below could not fail.
+now_ms() { read -r _u _ < /proc/uptime; echo $(( ${_u%.*}${_u#*.} * 10 )); }
+
 # --- nothing else is starting: no wait ---
-t0=$(date +%s%N)
+t0=$(now_ms)
 slinitctl --system start idler > /dev/null 2>&1
-elapsed=$(( ($(date +%s%N) - t0) / 1000000 ))
+elapsed=$(( $(now_ms) - t0 ))
 assert_eq "$(svc_state idler)" "STARTED" "idler starts with nothing else starting"
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ "$elapsed" -lt 1000 ]; then

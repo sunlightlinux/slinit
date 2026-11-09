@@ -27,7 +27,8 @@ command = /bin/sh -c 'while :; do sleep 60; done'
 restart = false
 EOF
 
-# enable
+# enable starts the child through the edge, so only with the parent up
+slinitctl --system start "$PARENT" >/dev/null 2>&1
 slinitctl --system --from "$PARENT" enable "$CHILD" >/dev/null 2>&1
 assert_eq "$(test -L "$WAITS_LINK" && echo yes || echo no)" "yes" \
     "enable created waits-for.d/${CHILD}"

@@ -38,6 +38,24 @@ verified with `git tag -v`.
   it as a failure whatever exit status the replaced process had left, and
   `restart = on-failure` restarts it. A script matching the reason text sees a
   different word.
+- `slinitctl enable` waits for the service to start and fails if it does not;
+  `slinitctl disable` waits for it to stop. As `start` and `stop` have since
+  3.11.0, and as dinitctl does. Both used to return at once, so `enable foo && ...`
+  reported success for a service that then failed. `--no-wait` keeps the old
+  timing. A service that never finishes starting, such as a `triggered` one, needs
+  `--no-wait` or `--timeout`, as with `start`.
+- `enable` and `disable` now work through the edge alone, as in dinit, measured
+  against 0.23.0. `enable` no longer counts as an explicit start. It starts nothing
+  when the source service is not up, or when the edge is already there, so
+  enabling what was stopped on purpose leaves it stopped; `enable` of something
+  already enabled still exits 0 here, where dinitctl exits 1. `disable` only removes
+  the edge: it no longer ends a start asked for with `slinitctl start`, or takes
+  down what depends on the service, leaving those up with a note and exit 0. Use
+  `slinitctl stop` for the old result.
+- `slinitctl start` of a service already up now takes effect, as in dinit, where
+  it only answered "already started". The service then stays up after what brought
+  it up is gone, until `slinitctl stop`. `--pin start` of such a service now pins
+  it; the pin was silently lost.
 
 ## [3.13.0] — 2026-11-08
 

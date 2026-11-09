@@ -97,3 +97,69 @@ func TestAwaitStartIgnoresStopCancelled(t *testing.T) {
 		t.Errorf("awaitStartOutcome = %v, want failed to start", err)
 	}
 }
+
+func TestAwaitEnabled(t *testing.T) {
+	const h = 7
+	silent := func(net.Conn) {}
+	for _, c := range []struct {
+		name    string
+		status  []byte
+		noWait  bool
+		daemon  func(net.Conn)
+		wantErr string
+	}{
+		{"already started: nothing to wait for", []byte{statusStarted, statusStarted}, false, silent, ""},
+		{"failed in the reply", []byte{statusStopped, statusStopped, control.StatusFlagStartFailed}, false, silent, "failed to start"},
+		{"not started: the source is down", []byte{statusStopped, statusStopped, 0}, false, silent, ""},
+		{"no-wait", []byte{1, statusStarted}, true, silent, ""},
+		{"starting, then started", []byte{1, statusStarted}, false, func(d net.Conn) {
+			sendEvent(d, control.InfoServiceEvent5, h, control.SvcEventStarted)
+			sendEvent(d, control.InfoServiceEvent, h, control.SvcEventStarted)
+		}, ""},
+		{"starting, then failed", []byte{1, statusStarted}, false, func(d net.Conn) {
+			sendEvent(d, control.InfoServiceEvent5, h, control.SvcEventFailedStart)
+			sendEvent(d, control.InfoServiceEvent, h, control.SvcEventFailedStart)
+		}, "failed"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			conn := scripted(t, c.daemon)
+			err := awaitEnabled(conn, h, "x", c.status, c.noWait)
+			if c.wantErr == "" && err != nil {
+				t.Errorf("err = %v", err)
+			}
+			if c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)) {
+				t.Errorf("err = %v, want %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestAwaitDisabled(t *testing.T) {
+	const h = 7
+	silent := func(net.Conn) {}
+	stopped := func(d net.Conn) {
+		sendEvent(d, control.InfoServiceEvent5, h, control.SvcEventStopped)
+		sendEvent(d, control.InfoServiceEvent, h, control.SvcEventStopped)
+	}
+	for _, c := range []struct {
+		name   string
+		status []byte
+		noWait bool
+		daemon func(net.Conn)
+	}{
+		{"already stopped: nothing to wait for", []byte{statusStopped, statusStopped}, false, silent},
+		{"stopping, then stopped", []byte{statusStopping, statusStopped}, false, stopped},
+		// These two would hang here if they waited, as no event comes.
+		{"required by something else", []byte{statusStarted, statusStarted}, false, silent},
+		{"restarting", []byte{statusStopping, statusStarted}, false, silent},
+		{"no-wait", []byte{statusStopping, statusStopped}, true, silent},
+		{"old daemon, no status", nil, false, silent},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			conn := scripted(t, c.daemon)
+			if err := awaitDisabled(conn, h, "x", c.status, c.noWait); err != nil {
+				t.Errorf("err = %v", err)
+			}
+		})
+	}
+}

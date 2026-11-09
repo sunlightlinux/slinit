@@ -617,11 +617,9 @@ func (c *Connection) handleStartService(payload []byte) error {
 		return c.writePacket(RplyShuttingDown, nil)
 	}
 
-	if svc.State() == service.StateStarted {
-		return c.writePacket(RplyAlreadySS, nil)
-	}
+	started := svc.State() == service.StateStarted
 
-	if svc.Record().IsStopPinned() {
+	if svc.Record().IsStopPinned() && !started {
 		return c.writePacket(RplyPinnedStopped, nil)
 	}
 
@@ -630,6 +628,9 @@ func (c *Connection) handleStartService(payload []byte) error {
 	// from the control connection, so gating at this call site is
 	// exactly the systemd semantics.
 	if svc.Record().RefusesManualStart() {
+		if started {
+			return c.writePacket(RplyAlreadySS, nil)
+		}
 		return c.writePacket(RplyManualRefused, nil)
 	}
 
@@ -637,6 +638,10 @@ func (c *Connection) handleStartService(payload []byte) error {
 		return err
 	}
 
+	// Also on a service already up, as dinit does: what the operator asks for
+	// is that it stays up, whatever brought it up. Answering "already started"
+	// first dropped that, so disable or a dependent leaving then stopped it,
+	// and --pin was lost.
 	c.server.services.StartService(svc)
 	if pin {
 		c.server.services.PinStartService(svc)
@@ -645,6 +650,9 @@ func (c *Connection) handleStartService(payload []byte) error {
 		if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStarted); err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
 		}
+	}
+	if started {
+		return c.writePacket(RplyAlreadySS, nil)
 	}
 	return c.writePacket(RplyACK, nil)
 }
@@ -1707,10 +1715,13 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 		if err := persistEnable(fromSvc, svc); err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: enable: persist waits-for.d link: %v\n", err)
 		}
-	}
 
-	// Start the target service
-	c.server.services.StartService(svc)
+		// Start it through the new edge, not explicitly: disable removes
+		// that edge, and must not end a start the operator asked for. An
+		// edge already there starts nothing, so enabling what was stopped
+		// on purpose leaves it stopped, as in dinit.
+		c.server.services.StartWaitsFor(fromSvc, svc)
+	}
 
 	if v7 {
 		// Wire: [RplyServiceStatus][dep_exists(1B)][status_v6(22B)]
@@ -1727,7 +1738,7 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 
 // handleDisableService removes the persistent waits-for dependency
 // from an inferred (or explicit) "from" service to the target,
-// deletes the on-disk waits-for.d symlink, and stops the target.
+// and deletes the on-disk waits-for.d symlink.
 // When v7 is true the reply carries the target's status inline via
 // SERVICESTATUS + dep_exists prefix + v6 buffer — matches
 // CmdEnableServiceV7 / CmdRmDepV7 patterns so `slinitctl disable`
@@ -1769,8 +1780,11 @@ func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 	}
 
 	// Remove waits-for dependency from source to target, under the graph
-	// lock. The result is deliberately ignored: disabling a service that
-	// was never enabled still removes the symlink and stops the target.
+	// lock. That alone is what stops the target, if the edge was all that
+	// held it: as in dinit, a request about one edge does not take down what
+	// else requires the service, or end a start the operator asked for. The
+	// client reads the status below and says so when it stays up. The result
+	// is ignored: disabling a service never enabled still removes the symlink.
 	c.server.services.RemoveDependency(fromSvc, svc, service.DepWaitsFor)
 
 	// Remove the persisted waits-for.d symlink (if any). Errors other
@@ -1780,9 +1794,6 @@ func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 	if err := persistDisable(fromSvc, svc); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit: disable: remove waits-for.d link: %v\n", err)
 	}
-
-	// Stop the target service
-	c.server.services.StopService(svc)
 
 	if v7 {
 		status := EncodeServiceStatus6(svc)

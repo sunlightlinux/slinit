@@ -488,11 +488,11 @@ doneFlags:
 		})
 	case "enable":
 		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdEnable(conn, name, fromSvc)
+			return cmdEnable(conn, name, fromSvc, noWait)
 		})
 	case "disable":
 		err = requireServiceArg(cmdArgs, func(name string) error {
-			return cmdDisable(conn, name, fromSvc, dinitCompat)
+			return cmdDisable(conn, name, fromSvc, dinitCompat, noWait)
 		})
 	case "query-name":
 		err = requireServiceArg(cmdArgs, func(name string) error {
@@ -4862,7 +4862,7 @@ func decodeServiceState(status []byte) string {
 	}
 }
 
-func cmdEnable(conn net.Conn, name string, from string) error {
+func cmdEnable(conn net.Conn, name string, from string, noWait bool) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
@@ -4910,10 +4910,13 @@ func cmdEnable(conn net.Conn, name string, from string) error {
 		}
 		depExists := replyPayload[0] != 0
 		if depExists {
+			// As in dinit, it starts nothing: enabling what was stopped on
+			// purpose leaves it stopped.
 			info("Service '%s' already enabled.\n", name)
-		} else {
-			info("Service '%s' enabled.\n", name)
+			return nil
 		}
+		info("Service '%s' enabled.\n", name)
+		return awaitEnabled(conn, handle, name, replyPayload[1:], noWait)
 	case control.RplyNAK:
 		return fmt.Errorf("could not enable service '%s': no boot service configured", name)
 	case control.RplyShuttingDown:
@@ -4921,6 +4924,59 @@ func cmdEnable(conn net.Conn, name string, from string) error {
 	default:
 		return fmt.Errorf("enable failed: reply %d", rply)
 	}
+	return nil
+}
+
+// Status bytes in a v6 status: the service's state, then its target.
+const (
+	statusStopped  = 0
+	statusStarted  = 2
+	statusStopping = 3
+)
+
+// awaitEnabled waits for a service just enabled to start, as dinitctl does and
+// as `start` does here: without it `slinitctl enable foo && ...` reported success
+// for a service that then failed to start. status is the daemon's reply, taken
+// after the request, so a service already there sends no event to wait for.
+func awaitEnabled(conn net.Conn, handle uint32, name string, status []byte, noWait bool) error {
+	if noWait || len(status) < 1 {
+		return nil
+	}
+	switch status[0] {
+	case statusStarted:
+	case statusStopped:
+		if len(status) > 2 && status[2]&control.StatusFlagStartFailed != 0 {
+			return fmt.Errorf("service '%s' failed to start", name)
+		}
+		info("Note: service '%s' was not started; the service it is enabled from may not be running.\n", name)
+		return nil
+	default:
+		if err := awaitStartOutcome(conn, handle, name); err != nil {
+			return err
+		}
+	}
+	info("Service '%s' started.\n", name)
+	return nil
+}
+
+// awaitDisabled waits for a service just disabled to stop, or says that it is
+// not going to: something else may require it, and disabling does not take that
+// down, so a script reading "disabled" should not assume it is gone.
+func awaitDisabled(conn net.Conn, handle uint32, name string, status []byte, noWait bool) error {
+	if noWait || len(status) < 2 {
+		return nil
+	}
+	switch {
+	case status[0] == statusStopped:
+	case status[0] == statusStopping && status[1] == statusStopped:
+		if err := awaitStopOutcome(conn, handle, name); err != nil {
+			return err
+		}
+	default:
+		info("Note: service '%s' is not stopping; it was started explicitly, or something else requires it. Use 'slinitctl stop' to stop it.\n", name)
+		return nil
+	}
+	info("Service '%s' stopped.\n", name)
 	return nil
 }
 
@@ -4968,14 +5024,14 @@ func cmdUnpin(conn net.Conn, name string) error {
 //	  symlink cleanup + StopService in one round-trip. Works
 //	  remote. V7 reply carries the target's status so we can print
 //	  the resulting state ("target now STOPPED").
-func cmdDisable(conn net.Conn, name string, from string, dinitCompat bool) error {
+func cmdDisable(conn net.Conn, name string, from string, dinitCompat, noWait bool) error {
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
 	}
 
 	if dinitCompat {
-		return cmdDisableDinitWire(conn, name, handle, from)
+		return cmdDisableDinitWire(conn, name, handle, from, noWait)
 	}
 
 	// Slinit-native atomic path.
@@ -5015,8 +5071,8 @@ func cmdDisable(conn net.Conn, name string, from string, dinitCompat bool) error
 		if !useV7 || len(replyPayload) < 2 {
 			return fmt.Errorf("disable: malformed status reply")
 		}
-		state := decodeServiceState(replyPayload[1:])
-		info("Service '%s' disabled (target now %s).\n", name, state)
+		info("Service '%s' disabled.\n", name)
+		return awaitDisabled(conn, handle, name, replyPayload[1:], noWait)
 	case control.RplyNAK:
 		return fmt.Errorf("could not disable service '%s': no boot service configured", name)
 	default:
@@ -5030,7 +5086,7 @@ func cmdDisable(conn net.Conn, name string, from string, dinitCompat bool) error
 // remove the on-disk waits-for.d symlink client-side. Falls back to
 // "boot" for the "from" service when --from wasn't specified, matching
 // slinit's own server-side auto-detection default.
-func cmdDisableDinitWire(conn net.Conn, name string, targetHandle uint32, from string) error {
+func cmdDisableDinitWire(conn net.Conn, name string, targetHandle uint32, from string, noWait bool) error {
 	if from == "" {
 		from = "boot"
 	}
@@ -5065,13 +5121,13 @@ func cmdDisableDinitWire(conn net.Conn, name string, targetHandle uint32, from s
 	if err != nil {
 		return err
 	}
-	var stateLabel string
+	var status []byte
 	switch rply {
 	case control.RplyACK:
-		// pre-V7 daemon; no inline status
+		// pre-V7 daemon; no inline status, so nothing to wait from
 	case control.RplyServiceStatus:
 		if useV7 && len(replyPayload) >= 2 {
-			stateLabel = decodeServiceState(replyPayload[1:])
+			status = replyPayload[1:]
 		}
 	case control.RplyNAK:
 		return fmt.Errorf("--dinit-compat: dep %s -> %s not present", from, name)
@@ -5089,12 +5145,8 @@ func cmdDisableDinitWire(conn net.Conn, name string, targetHandle uint32, from s
 				linkPath, err)
 		}
 	}
-	if stateLabel != "" {
-		info("Service '%s' disabled via --dinit-compat wire (target now %s).\n", name, stateLabel)
-	} else {
-		info("Service '%s' disabled via --dinit-compat wire.\n", name)
-	}
-	return nil
+	info("Service '%s' disabled via --dinit-compat wire.\n", name)
+	return awaitDisabled(conn, targetHandle, name, status, noWait)
 }
 
 // queryServiceLoadDir asks the daemon for the on-disk directory

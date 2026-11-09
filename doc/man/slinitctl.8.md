@@ -103,8 +103,9 @@ service name or rejected.
 **\--dinit-compat**
 :   For **disable**: use the dinit-compatible request (remove the
     dependency, then delete the symlink client-side) instead of the
-    slinit-native single request. Needed only when talking to a real
-    **dinit** daemon.
+    slinit-native single request. It does not reach a real **dinit**
+    daemon: the command numbers match dinit's, but slinit's packets carry a
+    length field that dinit's do not, so **slinitctl** cannot talk to one.
 
 **-h**, **\--help**
 :   Show usage and exit.
@@ -550,12 +551,18 @@ service name or rejected.
 [**\--from** *src*] **enable** *service*
 :   Add a **waits-for** edge from *src* (default: the service's
     **@meta enable-via**, else the boot service) to *service*, persist
-    it as a symlink, and start *service* — the equivalent of
-    **systemctl enable --now**. The symlink goes into the first
+    it as a symlink, and start *service* through that edge, if *src* is
+    up. The symlink goes into the first
     **waits-for.d** directory *src* declares, resolved against *src*'s
     service directory; when *src* declares none, into
     *waits-for.d/* beside *src*'s file, which the loader does not
     scan, so the edge then lasts only until the daemon restarts.
+
+    Since 3.14.0 it waits for the start, as **start** does, and fails if
+    the service fails to start, the symlink staying in place; **\--no-wait**
+    returns at once. It starts nothing when *src* is not up, or when the
+    edge is already there, so a service enabled and then stopped on purpose
+    stays stopped; **start** starts it.
 
     With **\--offline**, nothing is started: the service files in *dir*
     are read to find the same directory, and the symlink is written
@@ -564,10 +571,15 @@ service name or rejected.
     is refused with an error instead.
 
 [**\--from** *src*] **disable** *service*
-:   Inverse of **enable**: remove the edge and the symlink, and stop
-    *service*. With **\--offline**, only the symlink is removed, from
-    the directory **enable** would use (a missing link is reported,
-    not an error).
+:   Inverse of **enable**: remove the edge and the symlink. That stops
+    *service* if the edge was all that held it. If it was also started
+    explicitly with **start**, or something else requires it, it stays
+    up, with a note, and **stop** is what stops it, along with whatever
+    depends on it. Since 3.14.0 it waits for the stop, and no longer
+    ends an explicit start or takes down what depends on *service*.
+    **\--no-wait** returns at once. With **\--offline**, only the
+    symlink is removed, from the directory **enable** would use (a
+    missing link is reported, not an error).
 
 **setenv** *service* *KEY*=*VALUE*
 :   Set an environment variable on *service*; it applies from the
