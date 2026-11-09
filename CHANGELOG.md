@@ -24,6 +24,15 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.14.1] — 2026-11-09
+
+**A patch with four fixes the acceptance suite found on a real system: a dangling
+`waits-for.d` entry no longer stops the boot, `read-write-paths` is writable under
+`protect-system = strict`, `slinitctl restart` keeps the file-descriptor store, and
+`--dinit-compat disable` removes the right link.** Upgrade if you enable services, as
+removing an enabled service's file could leave the machine unable to boot. Nothing
+that worked changes.
+
 ### Fixed
 
 - A dangling entry in a `waits-for.d` directory stopped the service holding it from
