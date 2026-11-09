@@ -85,6 +85,7 @@ trap cleanup_remote EXIT
 
 # ---- runner -------------------------------------------------------------
 PASSED=0
+SKIPPED=0
 FAILED=0
 declare -a FAILED_NAMES=()
 
@@ -100,6 +101,14 @@ run_case() {
     local rc
     out="$(ssh_run "cd ${REMOTE_DIR} && sh -c '. ./remote-prelude.sh && . ./${case_name}.sh'" 2>&1)" \
         && rc=0 || rc=$?
+
+    # 77 says the case does not apply to this system, such as a package it tests
+    # not being installed. Neither a pass nor a failure, and counted apart.
+    if [ "$rc" -eq 77 ]; then
+        echo -e "  ${YELLOW}SKIP${RESET} ${case_name}: $(grep -m1 '^SKIP:' <<<"$out" | cut -c7-)"
+        SKIPPED=$((SKIPPED + 1))
+        return 0
+    fi
 
     # A case passes iff rc==0 AND no 'FAIL:' line slipped through.
     if [ "$rc" -eq 0 ] && ! grep -q '^FAIL:' <<<"$out"; then
@@ -130,6 +139,7 @@ echo -e "${BOLD}=== Acceptance suite ===${RESET}"
 echo -e "  Target:  ${REMOTE}:${ACCEPTANCE_PORT} (slinit ${REMOTE_VERSION})"
 echo -e "  Passed:  ${GREEN}${PASSED}${RESET}"
 echo -e "  Failed:  ${RED}${FAILED}${RESET}"
+echo -e "  Skipped: ${YELLOW}${SKIPPED}${RESET}"
 
 if [ "$FAILED" -gt 0 ]; then
     echo ""

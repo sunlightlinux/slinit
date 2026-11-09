@@ -2,6 +2,8 @@
 # 13-rc-status — rc-status lists every loaded service; a freshly started
 # one of ours must show up with the "+" running mark.
 
+command -v rc-status >/dev/null 2>&1 || { echo "SKIP: rc-status not installed (package slinit-openrc-shims)"; exit 77; }
+
 SVC="acceptance-test-rc-status"
 
 trap 'svc_remove "$SVC"' EXIT INT TERM

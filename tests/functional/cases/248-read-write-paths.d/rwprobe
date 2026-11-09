@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "if touch /var/zzrw/p 2>/dev/null; then echo rw-path-writable > /run/zzrw.result; else echo rw-path-readonly > /run/zzrw.result; fi; if touch /etc/zzp 2>/dev/null; then echo etc-writable >> /run/zzrw.result; else echo etc-readonly >> /run/zzrw.result; fi; exec sleep 60"
+protect-system = strict
+read-write-paths = /var/zzrw

@@ -3,6 +3,8 @@
 # Applet symlinks live under /usr/bin/ (installed by
 # slinit-openrc-shims).
 
+command -v einfo >/dev/null 2>&1 || { echo "SKIP: einfo not installed (package slinit-openrc-shims)"; exit 77; }
+
 _check_ap() {
     _TESTS_RUN=$((_TESTS_RUN + 1))
     if [ -x "/usr/bin/$1" ]; then

@@ -310,9 +310,9 @@ func applyProtectSystem(level string, rwPaths []string) error {
 		// volatile state) plus any caller-supplied read-write-paths.
 		// The simplest correct implementation is: remount / ro, then
 		// the rwPaths loop in applySandbox punches writable holes
-		// back through. The kernel mounts kept writable (/dev, /proc,
-		// /sys, /run, /tmp, /var/tmp) are separate mount points so a
-		// ro remount of / does not touch them.
+		// back through. /dev, /proc, /sys and /run stay writable, being
+		// separate mounts. /tmp and /var/tmp do only where they are too: on
+		// a system without a tmpfs there they go read-only with /.
 		return remountRO("/")
 	default:
 		return fmt.Errorf("unknown protect-system level %q", level)
@@ -363,6 +363,15 @@ func bindMount(src, dst string, ro bool) error {
 		return fmt.Errorf("bind %s -> %s: %w", src, dst, err)
 	}
 	if !ro {
+		// A bind inherits the flags of the mount it comes from, so under a
+		// read-only / a read-write path stayed read-only until said otherwise.
+		var st unix.Statfs_t
+		if err := unix.Statfs(dst, &st); err != nil {
+			return fmt.Errorf("statfs %s: %w", dst, err)
+		}
+		if err := unix.Mount("", dst, "", rwRemountFlags(uint64(st.Flags)), ""); err != nil {
+			return fmt.Errorf("remount-rw %s: %w", dst, err)
+		}
 		return nil
 	}
 	if err := unix.Mount("", dst, "",
@@ -370,6 +379,19 @@ func bindMount(src, dst string, ro bool) error {
 		return fmt.Errorf("remount-ro %s: %w", dst, err)
 	}
 	return nil
+}
+
+// rwRemountFlags makes a bind writable and keeps the rest of what it had: a remount
+// replaces these flags, so leaving them out would drop nosuid or noexec.
+func rwRemountFlags(statFlags uint64) uintptr {
+	const keep = unix.ST_NOSUID | unix.ST_NODEV | unix.ST_NOEXEC |
+		unix.ST_NOATIME | unix.ST_NODIRATIME
+	flags := unix.MS_REMOUNT | unix.MS_BIND | uintptr(statFlags&uint64(keep))
+	// The one whose ST_ and MS_ values differ.
+	if statFlags&unix.ST_RELATIME != 0 {
+		flags |= unix.MS_RELATIME
+	}
+	return flags
 }
 
 // stringList implements flag.Value for repeated string args. The runner

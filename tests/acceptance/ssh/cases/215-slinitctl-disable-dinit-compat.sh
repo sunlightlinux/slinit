@@ -6,11 +6,21 @@
 # daemon too. Both paths must be accessible via the CLI.
 
 SVC="acceptance-test-dinit-disable"
-# slinit enable creates a symlink at /etc/slinit.d/waits-for.d/<svc>
-# (not boot.d — that's a different mechanism). Both disable paths
-# must remove the symlink to be considered successful.
-LINK="/etc/slinit.d/waits-for.d/${SVC}"
-cleanup() { svc_remove "$SVC"; rm -f "$LINK"; }
+# Both disable paths must remove the symlink enable created.
+# Wherever boot declares its directory: on Sunlight that is boot.d. A link left
+# behind goes dangling once svc_remove takes the service's file.
+LINKDIR="/etc/slinit.d/waits-for.d"
+_wfd=$(cat /etc/slinit.d/boot /usr/lib/slinit.d/boot 2>/dev/null |
+    awk '/^waits-for\.d/ { sub(/^[^:=]*[:=][ \t]*/, ""); print; exit }')
+case "$_wfd" in
+    "") ;;
+    /*) LINKDIR="$_wfd" ;;
+    *) [ -d "/etc/slinit.d/$_wfd" ] && LINKDIR="/etc/slinit.d/$_wfd" ;;
+esac
+LINK="${LINKDIR}/${SVC}"
+# Both places, whatever the binary under test did: a link left in boot's directory
+# stops the next boot on a slinit older than 3.14.1.
+cleanup() { svc_remove "$SVC"; rm -f "$LINK" "/etc/slinit.d/waits-for.d/${SVC}"; }
 trap cleanup EXIT INT TERM
 
 svc_deploy "$SVC" <<'EOF'

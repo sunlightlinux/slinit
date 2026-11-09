@@ -2,6 +2,8 @@ package main
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -161,5 +163,24 @@ func TestAwaitDisabled(t *testing.T) {
 				t.Errorf("err = %v", err)
 			}
 		})
+	}
+}
+
+// The directory the source declares, as enable used; a link left elsewhere dangles.
+func TestCompatLinkPath(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("boot", "type = internal\nwaits-for.d: boot.d\n")
+	write("plain", "type = internal\n")
+	if got, want := compatLinkPath(dir, "boot", "x"), filepath.Join(dir, "boot.d", "x"); got != want {
+		t.Errorf("declared: %q, want %q", got, want)
+	}
+	if got, want := compatLinkPath(dir, "plain", "x"), filepath.Join(dir, "waits-for.d", "x"); got != want {
+		t.Errorf("none declared: %q, want %q", got, want)
 	}
 }

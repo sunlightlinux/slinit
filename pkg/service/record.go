@@ -491,6 +491,9 @@ type ServiceRecord struct {
 	// service has used up its restart limit, so this restart is refused too.
 	depRestartDenied bool
 
+	// restarting says this stop is the first half of a client-side restart.
+	restarting bool
+
 	// restartPending is set while Stopped() has handed a wanted restart
 	// to a restart-delay timer instead of calling initiateStart itself.
 	// The service then sits in STOPPED while still counted among the
@@ -1574,9 +1577,13 @@ func (sr *ServiceRecord) InittabID() string { return sr.inittabID }
 func (sr *ServiceRecord) InittabLine() string { return sr.inittabLine }
 
 func (sr *ServiceRecord) IsMarkedActive() bool { return sr.startExplicit }
-func (sr *ServiceRecord) IsStartPinned() bool  { return sr.pinnedStarted || sr.deptPinnedStarted }
-func (sr *ServiceRecord) IsStopPinned() bool   { return sr.pinnedStopped }
-func (sr *ServiceRecord) DidStartFail() bool   { return sr.startFailed }
+
+// MarkRestarting says the coming stop is the first half of a restart.
+func (sr *ServiceRecord) MarkRestarting() { sr.restarting = true }
+
+func (sr *ServiceRecord) IsStartPinned() bool { return sr.pinnedStarted || sr.deptPinnedStarted }
+func (sr *ServiceRecord) IsStopPinned() bool  { return sr.pinnedStopped }
+func (sr *ServiceRecord) DidStartFail() bool  { return sr.startFailed }
 
 // RestartCount reports how many times the supervisor has restarted this
 // service since slinit started. Never decreases.
@@ -3305,7 +3312,10 @@ func (sr *ServiceRecord) Stopped() {
 	//   "yes"        → keep across deactivation until daemon exits
 	//   "on-success" → keep only if this stop is a clean exit
 	if sr.fdStore != nil {
-		keep := willRestart
+		// slinitctl restart stops and starts as two requests, so willRestart
+		// alone would call it a final deactivation, and the store is documented
+		// to survive a restart.
+		keep := willRestart || sr.restarting
 		if !keep {
 			switch sr.fdStorePreserve {
 			case "yes":
@@ -3320,6 +3330,7 @@ func (sr *ServiceRecord) Stopped() {
 			sr.fdStore.Close()
 		}
 	}
+	sr.restarting = false
 
 	sr.cleanupServiceDirs(willRestart)
 

@@ -2,6 +2,8 @@
 # 11-rc-service — slinit's OpenRC-compatible rc-service wrapper must drive
 # the same lifecycle as slinitctl: start, status, stop, -e exists, -r resolve.
 
+command -v rc-service >/dev/null 2>&1 || { echo "SKIP: rc-service not installed (package slinit-openrc-shims)"; exit 77; }
+
 SVC="acceptance-test-rc-svc"
 
 trap 'svc_remove "$SVC"' EXIT INT TERM

@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- A dangling entry in a `waits-for.d` directory stopped the service holding it from
+  loading, and with `boot` that meant no boot, for having removed one service's
+  file. It is now ignored with a warning, as in dinit. A syntax error in the
+  entry's file, or a dependency missing further down, is still an error.
+- `slinitctl --dinit-compat disable` removed the symlink from `waits-for.d/` beside
+  the source's file, not from the directory the source declares, so on a system
+  whose `boot` says `waits-for.d: boot.d` the link stayed behind.
+- `read-write-paths` and `bind-paths` stayed read-only under `protect-system =
+  strict`, as a bind inherits the flags of the mount it comes from. They keep
+  `nosuid`, `nodev` and `noexec` if the mount had them.
+- `slinitctl restart` cleared the file-descriptor store, which is documented to
+  survive a restart. Dependents are treated as before.
+
 ## [3.14.0] — 2026-11-09
 
 **A minor aligning `enable`, `disable` and `failure-conditions` with dinit 0.23.0,

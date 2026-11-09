@@ -1675,6 +1675,18 @@ func (dl *DirLoader) resolveDepsFromDir(svc service.Service, dir string, depType
 		depName := entry.Name()
 		depSvc, err := dl.loadServiceLocked(depName)
 		if err != nil {
+			// An entry whose service is gone is ignored, as in dinit. It used
+			// to fail the service holding the directory, and with boot that
+			// means no boot, for having removed one service's file. Only this
+			// entry being missing counts: anything else, such as a syntax error
+			// or a missing dependency further down, is still an error.
+			var loadErr *ServiceLoadError
+			if errors.As(err, &loadErr) && loadErr.ServiceName == depName &&
+				errors.Is(loadErr.Err, ErrServiceNotFound) {
+				fmt.Fprintf(os.Stderr, "slinit: ignoring unresolved dependency '%s' in dependency directory '%s'\n",
+					depName, dir)
+				continue
+			}
 			return nil, fmt.Errorf("loading dependency '%s' from directory '%s': %w",
 				depName, dir, err)
 		}

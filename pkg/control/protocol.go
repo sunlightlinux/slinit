@@ -294,6 +294,10 @@ const (
 
 // Status flags byte bits.
 const (
+	// StopFlagRestarting on CmdStopService: a start follows, so what survives a
+	// restart should survive this stop. Dependents are treated as for any stop.
+	StopFlagRestarting uint8 = 1 << 3
+
 	StatusFlagHasPID       uint8 = 1 << 0
 	StatusFlagMarkedActive uint8 = 1 << 1
 	StatusFlagWaitingDeps  uint8 = 1 << 2

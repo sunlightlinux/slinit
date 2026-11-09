@@ -126,13 +126,13 @@ else
 fi
 
 # --- Probe 3: parent PID 1 socket still works (isolation check) ----
-_psl=$(slinitctl --system list 2>&1 | grep -c socklog || true)
+_psl=$(slinitctl --system list 2>&1 | grep -c sshd || true)
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ "$_psl" -ge 1 ]; then
-    echo "OK: parent PID 1 socket still responsive (socklog visible)"
+    echo "OK: parent PID 1 socket still responsive (sshd visible)"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: parent PID 1 socket misbehaving (no socklog in list)"
+    echo "FAIL: parent PID 1 socket misbehaving (no sshd in list)"
 fi
 
 test_summary

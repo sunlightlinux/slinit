@@ -120,3 +120,32 @@ func TestFDStorePreservedAcrossFinalDeactivationWhenPreserveYes(t *testing.T) {
 		t.Errorf("fdstore lost entry with preserve=yes on final deactivation: len=%d, want 1", rec.FDStore().Len())
 	}
 }
+
+// slinitctl restart is a stop then a start, so a stop marked as its first half has
+// to keep the store, and only that one stop.
+func TestFDStoreKeptByAStopMarkedRestarting(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "fds-client-restart")
+	set.AddService(svc)
+	rec := svc.Record()
+	rec.SetFDStoreMax(2)
+	rec.SetFDStorePreserve("")
+	if err := rec.FDStore().Add(process.FDStoreEntry{Name: "s", File: fdstoreScratch(t)}); err != nil {
+		t.Fatalf("store add: %v", err)
+	}
+
+	rec.MarkRestarting()
+	rec.desired.Store(StateStopped)
+	rec.state.Store(StateStopping)
+	rec.Stopped()
+	if rec.FDStore().Len() != 1 {
+		t.Fatalf("store lost on a stop marked restarting: len=%d", rec.FDStore().Len())
+	}
+
+	rec.desired.Store(StateStopped)
+	rec.state.Store(StateStopping)
+	rec.Stopped()
+	if rec.FDStore().Len() != 0 {
+		t.Errorf("the mark outlived its stop: len=%d", rec.FDStore().Len())
+	}
+}

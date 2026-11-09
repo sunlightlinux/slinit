@@ -1,7 +1,7 @@
 #!/bin/sh
 # 03-essential-services — read-only check that the expected daemons made it
 # to STARTED. Subset reflects the slinit + sunlight-os reference install
-# (socklog/sshd/crond/dbus/logind/udevd). Each is checked individually so a
+# (journald/sshd/crond/dbus/logind/udevd). Each is checked individually so a
 # missing one yields a specific FAIL, not a vague aggregate.
 #
 # `logind`, not `elogind`: sunlight-os runs the native slinit-logind daemon
@@ -10,7 +10,7 @@
 # lives in it and gnome-shell/xfce4 depend on it — but nothing supervises
 # the daemon any more. See the elogind-cannot-be-dropped note.
 
-ESSENTIALS="boot sshd crond socklog dbus logind udevd"
+ESSENTIALS="boot sshd crond journald dbus logind udevd"
 
 for svc in $ESSENTIALS; do
     assert_service_state "$svc" "STARTED" "$svc is STARTED"

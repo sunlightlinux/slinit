@@ -5,6 +5,8 @@
 # service_export + legacy get_options / save_options aliases), the
 # empty-value delete rule, and the SLINIT_SERVICENAME env fallback.
 
+command -v service_get_value >/dev/null 2>&1 || { echo "SKIP: service_get_value not installed (package slinit-openrc-shims)"; exit 77; }
+
 SVCDIR="/tmp/acceptance-svcvalue"
 cleanup() {
     rm -rf "$SVCDIR" /tmp/svcvalue.err

@@ -978,6 +978,9 @@ func connectPassedFD() (net.Conn, error) {
 
 // encodeStartStopFlags encodes handle + optional flags byte.
 // Bit 0 = pin, Bit 1 = force (relevant only for stop).
+// stopFlagRestarting marks a stop as the first half of a client-side restart.
+const stopFlagRestarting = control.StopFlagRestarting
+
 func encodeStartStopFlags(handle uint32, pin bool, force bool) []byte {
 	var flags uint8
 	if pin {
@@ -1722,8 +1725,13 @@ func cmdRestart(conn net.Conn, name string, pin bool, force bool, ignoreUnstarte
 
 	warnIfDescriptionChanged(conn, handle, name)
 
-	// Stop first
+	// Stop first, saying that a start follows, so that what a restart keeps is
+	// kept. An older daemon ignores the flag.
 	stopPayload := encodeStartStopFlags(handle, false, force)
+	if len(stopPayload) < 5 {
+		stopPayload = append(stopPayload, 0)
+	}
+	stopPayload[4] |= stopFlagRestarting
 	if err := control.WritePacket(conn, control.CmdStopService, stopPayload); err != nil {
 		return err
 	}
@@ -5138,7 +5146,7 @@ func cmdDisableDinitWire(conn net.Conn, name string, targetHandle uint32, from s
 	// Client-side symlink cleanup. ENOENT is not an error (the disable
 	// still succeeded runtime; someone else may have removed the file).
 	if fromDir != "" {
-		linkPath := filepath.Join(fromDir, "waits-for.d", name)
+		linkPath := compatLinkPath(fromDir, from, name)
 		if err := os.Remove(linkPath); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr,
 				"slinit: --dinit-compat: warn: remove %s: %v (runtime dep already gone)\n",
@@ -5147,6 +5155,17 @@ func cmdDisableDinitWire(conn net.Conn, name string, targetHandle uint32, from s
 	}
 	info("Service '%s' disabled via --dinit-compat wire.\n", name)
 	return awaitDisabled(conn, targetHandle, name, status, noWait)
+}
+
+// compatLinkPath is where enable put the symlink: the directory from declares,
+// and waits-for.d beside its file only when it declares none. Assuming the latter
+// left the link behind on a system whose boot says waits-for.d: boot.d, where it
+// goes dangling as soon as the service's file is removed.
+func compatLinkPath(fromDir, from, name string) string {
+	if link, _, err := offlineLinkPath(fromDir, from, name, false); err == nil {
+		return link
+	}
+	return filepath.Join(fromDir, "waits-for.d", name)
 }
 
 // queryServiceLoadDir asks the daemon for the on-disk directory

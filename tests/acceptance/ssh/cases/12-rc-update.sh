@@ -7,6 +7,8 @@
 # Slinit doesn't ship a built-in runlevel-* meta-service; the test creates
 # one (internal/milestone) for the duration of this case.
 
+command -v rc-update >/dev/null 2>&1 || { echo "SKIP: rc-update not installed (package slinit-openrc-shims)"; exit 77; }
+
 RL_NAME="acceptance-test-rl"
 RL_META="runlevel-${RL_NAME}"   # rc-update prefix is hard-coded
 SVC="acceptance-test-rc-member"
