@@ -36,8 +36,11 @@ assert_eq "$_state" "STOPPED" "the service waits while its path is unmounted"
 # What the VM can show is that a fresh mount fires it, so the marker is
 # cleared first and the assertion is made against a mount this case
 # performs itself.
-rm -f /run/mount-any-marker
+# Stop first, then clear: a run fired by a boot mount may still be writing
+# the marker, and clearing before the stop let it reappear and pass this
+# case without the trigger under test.
 slinitctl --system --ignore-unstarted stop mount-any-svc > /dev/null 2>&1
+rm -f /run/mount-any-marker
 
 # --- the path form ---
 mount -t tmpfs none /mnt/trigger 2>&1 | sed 's/^/INFO: mount: /'
@@ -58,6 +61,17 @@ else
 fi
 
 # --- the wildcard form, fired by the same mount ---
+# Waited for on its own. The same pass over the mount table fires both
+# services, path first, and each runs its command by itself, so the path
+# marker appearing says nothing about this one. It used to be checked at
+# once, and a slow CI runner failed it.
+_w=0
+while [ "$_w" -lt 40 ]; do
+    [ -f /run/mount-any-marker ] && break
+    sleep 0.25
+    _w=$((_w + 1))
+done
+echo "INFO: wildcard marker=$([ -f /run/mount-any-marker ] && echo yes || echo no) (${_w} ticks)"
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -f /run/mount-any-marker ]; then
     echo "OK: the wildcard fired for a new mount"
