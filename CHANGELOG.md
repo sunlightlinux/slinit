@@ -24,6 +24,16 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.15.0] — 2026-11-12
+
+**A minor: a `cron-command`'s output reaches the journal, stopping a service
+during a cron run no longer freezes PID 1, `slinit-logind` checks who calls, and
+services with a cgroup start faster.** Check before upgrading if a cron command
+writes to stdout expecting nobody to read it (it now fills the journal), or if a
+non-root program calls `Inhibit`, `SetUserLinger` or a power call through a D-Bus
+policy that allows it (it now gets `AccessDenied`; the shipped policy already
+refused them). The control protocol does not change.
+
 ### Changed
 
 - The output of a `cron-command` goes to the journal of its service instead of
