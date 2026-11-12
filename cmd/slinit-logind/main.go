@@ -32,6 +32,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -47,13 +48,16 @@ import (
 )
 
 const (
-	busName   = "org.freedesktop.login1"
-	objPath   = "/org/freedesktop/login1"
-	iface     = "org.freedesktop.login1.Manager"
-	stateRoot = "/run/slinit-logind"
+	busName = "org.freedesktop.login1"
+	objPath = "/org/freedesktop/login1"
+	iface   = "org.freedesktop.login1.Manager"
 )
 
 var (
+	// stateRoot holds the session and user records. A variable so tests
+	// can keep them in a temporary directory.
+	stateRoot = "/run/slinit-logind"
+
 	// slinitctlPath is where power methods look for the shutdown CLI.
 	// Overridable so a nested test build can point at a hermetic
 	// binary; unset in production for exec.LookPath discovery.
@@ -492,14 +496,37 @@ func hasPrefix(s, prefix string) bool {
 // gates who can call these). Errors are surfaced as
 // org.freedesktop.login1.Error.OperationInProgress so clients get a
 // standard failure code.
-func (m *manager) PowerOff(interactive bool) *dbus.Error { return runShutdown("poweroff") }
-func (m *manager) Reboot(interactive bool) *dbus.Error   { return runShutdown("reboot") }
-func (m *manager) Halt(interactive bool) *dbus.Error     { return runShutdown("halt") }
-func (m *manager) Suspend(interactive bool) *dbus.Error {
-	return m.sleep(sleepVerb{"Suspend", "mem"})
+// The power and sleep calls are root's alone, as in systemd-logind without
+// polkit. The power and lid keys reach the same actions through
+// runShutdown and m.sleep directly, so they are not affected.
+func (m *manager) shutdownAs(sender dbus.Sender, verb string) *dbus.Error {
+	if err := m.authorize(sender, noGoodUser, verb); err != nil {
+		return err
+	}
+	return runShutdown(verb)
 }
-func (m *manager) Hibernate(interactive bool) *dbus.Error {
-	return m.sleep(sleepVerb{"Hibernate", "disk"})
+
+func (m *manager) sleepAs(sender dbus.Sender, v sleepVerb) *dbus.Error {
+	if err := m.authorize(sender, noGoodUser, v.method); err != nil {
+		return err
+	}
+	return m.sleep(v)
+}
+
+func (m *manager) PowerOff(sender dbus.Sender, interactive bool) *dbus.Error {
+	return m.shutdownAs(sender, "poweroff")
+}
+func (m *manager) Reboot(sender dbus.Sender, interactive bool) *dbus.Error {
+	return m.shutdownAs(sender, "reboot")
+}
+func (m *manager) Halt(sender dbus.Sender, interactive bool) *dbus.Error {
+	return m.shutdownAs(sender, "halt")
+}
+func (m *manager) Suspend(sender dbus.Sender, interactive bool) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"Suspend", "mem"})
+}
+func (m *manager) Hibernate(sender dbus.Sender, interactive bool) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"Hibernate", "disk"})
 }
 
 // HybridSleep and SuspendThenHibernate are each reported as their
@@ -509,11 +536,11 @@ func (m *manager) Hibernate(interactive bool) *dbus.Error {
 // job — neither is a single write, and claiming them while doing
 // something else is how a laptop loses work. Honest aliases until the
 // two-stage machinery exists.
-func (m *manager) HybridSleep(interactive bool) *dbus.Error {
-	return m.sleep(sleepVerb{"HybridSleep", "disk"})
+func (m *manager) HybridSleep(sender dbus.Sender, interactive bool) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"HybridSleep", "disk"})
 }
-func (m *manager) SuspendThenHibernate(interactive bool) *dbus.Error {
-	return m.sleep(sleepVerb{"SuspendThenHibernate", "mem"})
+func (m *manager) SuspendThenHibernate(sender dbus.Sender, interactive bool) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"SuspendThenHibernate", "mem"})
 }
 
 // *WithFlags variants — systemd 246+ / elogind 246+ shape. GDM and
@@ -522,20 +549,26 @@ func (m *manager) SuspendThenHibernate(interactive bool) *dbus.Error {
 // UnknownMethod and the operator has to drop to a TTY. flags is a
 // bitfield (SD_LOGIND_ROOT_CHECK_INHIBITORS etc.) — we don't consult
 // inhibitors yet, so the flag argument is accepted and ignored.
-func (m *manager) PowerOffWithFlags(flags uint64) *dbus.Error { return runShutdown("poweroff") }
-func (m *manager) RebootWithFlags(flags uint64) *dbus.Error   { return runShutdown("reboot") }
-func (m *manager) HaltWithFlags(flags uint64) *dbus.Error     { return runShutdown("halt") }
-func (m *manager) SuspendWithFlags(flags uint64) *dbus.Error {
-	return m.sleep(sleepVerb{"Suspend", "mem"})
+func (m *manager) PowerOffWithFlags(sender dbus.Sender, flags uint64) *dbus.Error {
+	return m.shutdownAs(sender, "poweroff")
 }
-func (m *manager) HibernateWithFlags(flags uint64) *dbus.Error {
-	return m.sleep(sleepVerb{"Hibernate", "disk"})
+func (m *manager) RebootWithFlags(sender dbus.Sender, flags uint64) *dbus.Error {
+	return m.shutdownAs(sender, "reboot")
 }
-func (m *manager) HybridSleepWithFlags(flags uint64) *dbus.Error {
-	return m.sleep(sleepVerb{"HybridSleep", "disk"})
+func (m *manager) HaltWithFlags(sender dbus.Sender, flags uint64) *dbus.Error {
+	return m.shutdownAs(sender, "halt")
 }
-func (m *manager) SuspendThenHibernateWithFlags(flags uint64) *dbus.Error {
-	return m.sleep(sleepVerb{"SuspendThenHibernate", "mem"})
+func (m *manager) SuspendWithFlags(sender dbus.Sender, flags uint64) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"Suspend", "mem"})
+}
+func (m *manager) HibernateWithFlags(sender dbus.Sender, flags uint64) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"Hibernate", "disk"})
+}
+func (m *manager) HybridSleepWithFlags(sender dbus.Sender, flags uint64) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"HybridSleep", "disk"})
+}
+func (m *manager) SuspendThenHibernateWithFlags(sender dbus.Sender, flags uint64) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"SuspendThenHibernate", "mem"})
 }
 
 // Sleep is the systemd 253+ dispatcher — the client asks the daemon
@@ -543,8 +576,8 @@ func (m *manager) SuspendThenHibernateWithFlags(flags uint64) *dbus.Error {
 // Suspend as the safest default, through the same handshake: it was
 // writing sysfs directly, which made it a third door past the
 // inhibitors and the PrepareForSleep announcement.
-func (m *manager) Sleep(flags uint64) *dbus.Error {
-	return m.sleep(sleepVerb{"Sleep", "mem"})
+func (m *manager) Sleep(sender dbus.Sender, flags uint64) *dbus.Error {
+	return m.sleepAs(sender, sleepVerb{"Sleep", "mem"})
 }
 func (m *manager) CanSleep() (string, *dbus.Error) { return canSleep("mem"), nil }
 
@@ -582,6 +615,11 @@ func (m *manager) CanSuspendThenHibernate() (string, *dbus.Error) {
 // used to attribute the lock to a uid and pid so `loginctl
 // list-inhibitors` names something an operator can act on.
 func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus.UnixFD, *dbus.Error) {
+	// Root only, as in systemd-logind without polkit: a lock can hold off
+	// a shutdown or sleep that root asked for.
+	if err := m.authorize(sender, noGoodUser, "Inhibit"); err != nil {
+		return -1, err
+	}
 	var uid, pid uint32
 	if p, err := m.callerPID(string(sender)); err == nil {
 		pid = p
@@ -616,6 +654,9 @@ func (m *manager) buttonCfg() buttonConfig {
 // callerUID asks the bus daemon which user owns a connection. Same
 // shape as callerPID.
 func (m *manager) callerUID(sender string) (uint32, error) {
+	if m.conn == nil {
+		return 0, errors.New("no bus connection")
+	}
 	obj := m.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
 	var uid uint32
 	if err := obj.Call("org.freedesktop.DBus.GetConnectionUnixUser",

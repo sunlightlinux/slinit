@@ -88,8 +88,19 @@ func ExitCodeOf(err error) (code int, ok bool) {
 // Stdout, Stderr, Env, Dir, the context from CommandContext — behaves
 // as it does under cmd.Run().
 func RunAdhoc(cmd *exec.Cmd) error {
+	return RunAdhocStarted(cmd, nil)
+}
+
+// RunAdhocStarted is RunAdhoc that calls started with the child's PID
+// once it runs, before the wait. Another goroutine that wants the PID
+// must get it this way: reading cmd.Process while Start sets it is a
+// data race.
+func RunAdhocStarted(cmd *exec.Cmd, started func(pid int)) error {
 	if err := cmd.Start(); err != nil {
 		return err
+	}
+	if started != nil {
+		started(cmd.Process.Pid)
 	}
 	return waitAdhoc(cmd)
 }

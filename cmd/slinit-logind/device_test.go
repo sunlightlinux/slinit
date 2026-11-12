@@ -19,17 +19,17 @@ func TestTakeControlIsExclusive(t *testing.T) {
 	resetDevices()
 	defer resetDevices()
 
-	if err := takeControl("c1", false); err != nil {
+	if err := takeControl("c1", ":1.ctl", false); err != nil {
 		t.Fatalf("first TakeControl: %v", err)
 	}
-	if err := takeControl("c1", false); err == nil {
+	if err := takeControl("c1", ":1.ctl", false); err == nil {
 		t.Error("second TakeControl without force should fail")
 	}
-	if err := takeControl("c1", true); err != nil {
+	if err := takeControl("c1", ":1.ctl", true); err != nil {
 		t.Errorf("TakeControl with force should displace the incumbent: %v", err)
 	}
 	// A different session is unaffected by c1's controller.
-	if err := takeControl("c2", false); err != nil {
+	if err := takeControl("c2", ":1.ctl", false); err != nil {
 		t.Errorf("TakeControl on a second session: %v", err)
 	}
 }

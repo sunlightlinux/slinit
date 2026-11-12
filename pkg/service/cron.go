@@ -78,6 +78,10 @@ type CronRunner struct {
 	running bool          // true while a cron-command execution is in progress
 	stopCh  chan struct{} // closed to signal the cron loop to exit
 	doneCh  chan struct{} // closed when the cron loop has fully exited
+	// startPending is a Start made while a stopped loop was still
+	// finishing its run. The loop starts its successor as it exits, so
+	// Start never waits: it is called under the queue lock.
+	startPending bool
 }
 
 // Schedule describes when the task runs, for the log. A calendar runner has no
@@ -160,28 +164,27 @@ var (
 // Start launches the periodic execution goroutine. Safe to call from any
 // goroutine, and again after Stop: a service restarted used to come back with
 // a runner that refused to start, so its task never ran again until a reboot.
+//
+// A Start while a stopped loop still finishes its run does not wait for it:
+// the next loop begins when that one exits.
 func (cr *CronRunner) Start() {
 	cr.mu.Lock()
+	defer cr.mu.Unlock()
 	if cr.stopCh != nil {
 		select {
-		case <-cr.stopCh:
+		case <-cr.doneCh: // stopped and exited, or ended by on-error=stop
 		default:
 			select {
-			case <-cr.doneCh: // ended on its own, by on-error=stop
+			case <-cr.stopCh:
+				cr.startPending = true // stopped, still exiting
 			default:
-				cr.mu.Unlock()
-				return // already running
+				// already running
 			}
+			return
 		}
-		doneCh := cr.doneCh
-		cr.mu.Unlock()
-		<-doneCh
-		cr.mu.Lock()
 	}
 	cr.stopCh = make(chan struct{})
 	cr.doneCh = make(chan struct{})
-	cr.mu.Unlock()
-
 	go cr.loop()
 }
 
@@ -205,11 +208,24 @@ func (cr *CronRunner) active() bool {
 // Stop signals the cron loop to exit and waits for a command under way, which
 // has cronStopWait to finish before it is ended (see executeCommand). Safe to
 // call multiple times.
+//
+// The state machine must not call it: it holds the queue lock, and a minute's
+// wait there froze PID 1 for every other request. It uses signalStop.
 func (cr *CronRunner) Stop() {
+	if done := cr.signalStop(); done != nil {
+		<-done
+	}
+}
+
+// signalStop tells the loop to exit, cancels a pending Start, and returns
+// without waiting. The channel it returns is closed once the loop has exited;
+// nil means there was never a loop.
+func (cr *CronRunner) signalStop() <-chan struct{} {
 	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	cr.startPending = false
 	if cr.stopCh == nil {
-		cr.mu.Unlock()
-		return
+		return nil
 	}
 	select {
 	case <-cr.stopCh:
@@ -217,12 +233,7 @@ func (cr *CronRunner) Stop() {
 	default:
 		close(cr.stopCh)
 	}
-	doneCh := cr.doneCh
-	cr.mu.Unlock()
-
-	if doneCh != nil {
-		<-doneCh
-	}
+	return cr.doneCh
 }
 
 // IsRunning returns true if a cron-command is currently executing.
@@ -233,13 +244,29 @@ func (cr *CronRunner) IsRunning() bool {
 }
 
 func (cr *CronRunner) loop() {
-	defer close(cr.doneCh)
+	defer cr.loopExited()
 
 	if cr.calendar != nil {
 		cr.loopCalendar()
 		return
 	}
 	cr.loopInterval()
+}
+
+// loopExited marks the loop gone and starts the next one if a Start came in
+// while this one was finishing. Both under mu, so a Stop either cancels that
+// Start or stops the loop it started.
+func (cr *CronRunner) loopExited() {
+	cr.mu.Lock()
+	defer cr.mu.Unlock()
+	close(cr.doneCh)
+	if !cr.startPending {
+		return
+	}
+	cr.startPending = false
+	cr.stopCh = make(chan struct{})
+	cr.doneCh = make(chan struct{})
+	go cr.loop()
 }
 
 // loopInterval drives the "every N seconds" schedule.
@@ -590,18 +617,34 @@ func (cr *CronRunner) executeCommand() error {
 		}
 		return err
 	}
+	name := cr.svc.Name()
+	out, outErr := startCronOutput(cmd, name)
+	if outErr != nil {
+		cr.logger.Error("Service '%s': cron output pipe: %v", name, outErr)
+	}
+	began := time.Now()
 	// RunAdhoc, not cmd.Run: slinit's global SIGCHLD reaper can claim
 	// the zombie before os/exec's own wait sees it, and the exit code
 	// gates on-error=stop. RunAdhoc registers the child so the reaper
 	// hands the real status back instead.
-	err := process.RunAdhoc(cmd)
+	pid := 0
+	err := process.RunAdhocStarted(cmd, func(p int) {
+		pid = p
+		if out != nil {
+			out.pid.Store(int64(p))
+		}
+	})
 	if ctx.Err() != nil && cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+	if out != nil {
+		out.finish()
+	}
+	stopped := false
 	if ctx.Err() != nil {
 		select {
 		case <-cr.stopCh:
-			return nil // ended because of the stop: not the command's failure
+			stopped = true // ended because of the stop: not the command's failure
 		default:
 		}
 	}
@@ -610,6 +653,10 @@ func (cr *CronRunner) executeCommand() error {
 		// getting here means the router had nothing either — the
 		// command still ran, and a spurious error line on every cron
 		// tick is the worse of the two outcomes.
+		err = nil
+	}
+	emitCronRunResult(name, pid, time.Since(began), err, stopped)
+	if stopped {
 		return nil
 	}
 	return err
@@ -619,17 +666,70 @@ func (cr *CronRunner) executeCommand() error {
 // reload swaps the runner; the running one has to be stopped first, or it runs
 // on with nothing left that can stop it. The replacement starts once the
 // modifiers, which the loader applies last, are in.
+//
+// Nothing here waits for a run: these are called under the queue lock. A
+// replaced runner finishes its run on its own, and cronHold waits for it.
 type cronSlot struct {
 	cronRunner  *CronRunner
 	cronRestart bool
+	replaced    <-chan struct{} // a replaced runner's loop, until it exits
 }
 
 func (c *cronSlot) setCronRunner(r *CronRunner) {
-	if c.cronRunner != nil && c.cronRunner.active() {
-		c.cronRunner.Stop()
-		c.cronRestart = true
+	if c.cronRunner != nil {
+		if c.cronRunner.active() {
+			c.cronRestart = true
+		}
+		c.replaced = c.cronRunner.signalStop()
 	}
 	c.cronRunner = r
+}
+
+// stopCron tells the task to stop, without waiting for a run under way.
+func (c *cronSlot) stopCron() {
+	if c.cronRunner != nil {
+		c.cronRunner.signalStop()
+	}
+}
+
+// cronHold stops the task and returns a channel closed once no run of it is
+// under way, or nil when none is. Stopped uses it to keep the service in
+// STOPPING until then without holding the queue lock: a shutdown still lets a
+// nightly update finish, and nothing else waits for it.
+func (c *cronSlot) cronHold() <-chan struct{} {
+	var pending []<-chan struct{}
+	for _, ch := range []<-chan struct{}{c.replaced, c.cronRunnerDone()} {
+		if ch == nil {
+			continue
+		}
+		select {
+		case <-ch:
+		default:
+			pending = append(pending, ch)
+		}
+	}
+	if len(pending) == 0 {
+		c.replaced = nil
+		return nil
+	}
+	if len(pending) == 1 {
+		return pending[0]
+	}
+	all := make(chan struct{})
+	go func() {
+		for _, ch := range pending {
+			<-ch
+		}
+		close(all)
+	}()
+	return all
+}
+
+func (c *cronSlot) cronRunnerDone() <-chan struct{} {
+	if c.cronRunner == nil {
+		return nil
+	}
+	return c.cronRunner.signalStop()
 }
 
 // SetCronModifiers applies the scheduling modifiers to whichever cron runner
@@ -655,7 +755,7 @@ func (c *cronSlot) SetCronModifiers(
 // ClearCron removes the task, as a reload of a file without one does.
 func (c *cronSlot) ClearCron() {
 	if c.cronRunner != nil {
-		c.cronRunner.Stop()
+		c.replaced = c.cronRunner.signalStop()
 	}
 	c.cronRunner = nil
 	c.cronRestart = false

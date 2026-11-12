@@ -21,6 +21,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -132,6 +133,11 @@ func (m *manager) CreateSession(
 	existing bool,
 	dbErr *dbus.Error,
 ) {
+	// Root only: pam_slinit calls it from the login process, as root. The
+	// bus policy says the same, but the daemon no longer relies on it.
+	if err := m.authorize(sender, noGoodUser, "CreateSession"); err != nil {
+		return "", "", "", -1, 0, "", 0, false, err
+	}
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 
@@ -431,7 +437,23 @@ func (m *manager) CreateSession(
 // record + fifo + cgroup scope (best-effort — a leftover PID keeps
 // the scope alive on the kernel side, we'll get rmdir=EBUSY and
 // leave it for the reaper).
-func (m *manager) ReleaseSession(id string) *dbus.Error {
+// ReleaseSession is for the session itself (pam_slinit at logout, from
+// inside it) or root. systemd-logind refuses any other caller with the
+// same error.
+func (m *manager) ReleaseSession(sender dbus.Sender, id string) *dbus.Error {
+	if err := m.authorize(sender, noGoodUser, "ReleaseSession"); err != nil {
+		own, ok := m.resolveAlias(sender, "self")
+		if !ok || own.ID != id {
+			return errAccessDenied("Refused to release session, since it doesn't match the one of the client")
+		}
+	}
+	return m.releaseSession(id)
+}
+
+// releaseSession is ReleaseSession without the check, for slinit-logind's
+// own paths: a leader exiting, records left from before a restart, and the
+// Terminate calls once they have been authorized.
+func (m *manager) releaseSession(id string) *dbus.Error {
 	if !validSessionID(id) {
 		return errBadSessionID(id)
 	}
@@ -503,7 +525,7 @@ func (m *manager) watchSessionLeader(id string, leader uint32) {
 			}
 		}
 		m.dbgf("session %s: leader %d exited, releasing", id, leader)
-		_ = m.ReleaseSession(id)
+		_ = m.releaseSession(id)
 	}()
 }
 
@@ -518,7 +540,7 @@ func (m *manager) reapDeadSessions() {
 		}
 		if _, err := os.Stat(fmt.Sprintf("/proc/%d", rec.LeaderPID)); err != nil {
 			m.dbgf("session %s: leader %d gone at startup, releasing", rec.ID, rec.LeaderPID)
-			_ = m.ReleaseSession(rec.ID)
+			_ = m.releaseSession(rec.ID)
 			continue
 		}
 		m.watchSessionLeader(rec.ID, rec.LeaderPID)
@@ -554,6 +576,9 @@ func readPPid(pid uint32) (uint32, bool) {
 // well-known/unique bus name. Used to resolve CreateSession's pid=0
 // (systemd convention for "use my PID") to the actual client PID.
 func (m *manager) callerPID(sender string) (uint32, error) {
+	if m.conn == nil {
+		return 0, errors.New("no bus connection")
+	}
 	obj := m.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
 	var pid uint32
 	if err := obj.Call("org.freedesktop.DBus.GetConnectionUnixProcessID",
@@ -840,30 +865,34 @@ func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
 // (`this._loginSession.connectSignal('Unlock', () => this.deactivate(false))`).
 // So the password was accepted, GDM logged "reauthenticated user
 // 1001", and the screen stayed locked forever.
-func (m *manager) LockSession(id string) *dbus.Error {
-	if !validSessionID(id) {
-		return errBadSessionID(id)
-	}
-	if err := checkSess(id); err != nil {
+func (m *manager) LockSession(sender dbus.Sender, id string) *dbus.Error {
+	if err := m.authorizeSessionOwner(sender, id, "LockSession"); err != nil {
 		return err
 	}
 	m.sendSessionLock(id, true)
 	return nil
 }
 
-func (m *manager) UnlockSession(id string) *dbus.Error {
-	if !validSessionID(id) {
-		return errBadSessionID(id)
-	}
-	if err := checkSess(id); err != nil {
+func (m *manager) UnlockSession(sender dbus.Sender, id string) *dbus.Error {
+	if err := m.authorizeSessionOwner(sender, id, "UnlockSession"); err != nil {
 		return err
 	}
 	m.sendSessionLock(id, false)
 	return nil
 }
 
-func (m *manager) LockSessions() *dbus.Error   { return m.lockAllSessions(true) }
-func (m *manager) UnlockSessions() *dbus.Error { return m.lockAllSessions(false) }
+func (m *manager) LockSessions(sender dbus.Sender) *dbus.Error {
+	if err := m.authorize(sender, noGoodUser, "LockSessions"); err != nil {
+		return err
+	}
+	return m.lockAllSessions(true)
+}
+func (m *manager) UnlockSessions(sender dbus.Sender) *dbus.Error {
+	if err := m.authorize(sender, noGoodUser, "UnlockSessions"); err != nil {
+		return err
+	}
+	return m.lockAllSessions(false)
+}
 
 func (m *manager) lockAllSessions(lock bool) *dbus.Error {
 	for _, rec := range loadSessionRecords() {
@@ -890,28 +919,34 @@ func (m *manager) sendSessionLock(id string, lock bool) {
 // same as ReleaseSession for our purposes (both tear the record
 // down). GDM's greeter and lightdm's session-switch button call
 // TerminateSession; without it the greeter switch-user hangs.
-func (m *manager) TerminateSession(id string) *dbus.Error {
-	if !validSessionID(id) {
-		return errBadSessionID(id)
+func (m *manager) TerminateSession(sender dbus.Sender, id string) *dbus.Error {
+	if err := m.authorizeSessionOwner(sender, id, "TerminateSession"); err != nil {
+		return err
 	}
-	return m.ReleaseSession(id)
+	return m.releaseSession(id)
 }
 
 // TerminateUser tears down every session owned by the uid then drops
 // the user record. Called by loginctl terminate-user.
-func (m *manager) TerminateUser(uid uint32) *dbus.Error {
+func (m *manager) TerminateUser(sender dbus.Sender, uid uint32) *dbus.Error {
+	if err := m.authorize(sender, int64(uid), "TerminateUser"); err != nil {
+		return err
+	}
 	files, _ := filepath.Glob(filepath.Join(stateRoot, "sessions", "*.json"))
 	for _, f := range files {
 		var rec SessionRecord
 		if readJSON(f, &rec) && rec.UserID == uid {
-			_ = m.ReleaseSession(rec.ID)
+			_ = m.releaseSession(rec.ID)
 		}
 	}
 	return nil
 }
 
 // TerminateSeat tears down every session on the seat.
-func (m *manager) TerminateSeat(id string) *dbus.Error {
+func (m *manager) TerminateSeat(sender dbus.Sender, id string) *dbus.Error {
+	if err := m.authorize(sender, noGoodUser, "TerminateSeat"); err != nil {
+		return err
+	}
 	if !validSessionID(id) {
 		return errBadSessionID(id)
 	}
@@ -919,7 +954,7 @@ func (m *manager) TerminateSeat(id string) *dbus.Error {
 	for _, f := range files {
 		var rec SessionRecord
 		if readJSON(f, &rec) && rec.SeatID == id {
-			_ = m.ReleaseSession(rec.ID)
+			_ = m.releaseSession(rec.ID)
 		}
 	}
 	return nil
@@ -927,12 +962,15 @@ func (m *manager) TerminateSeat(id string) *dbus.Error {
 
 // KillUser sends a signal to every process in every session owned by
 // uid. Iterates KillSession over the user's sessions.
-func (m *manager) KillUser(uid uint32, sig int32) *dbus.Error {
+func (m *manager) KillUser(sender dbus.Sender, uid uint32, sig int32) *dbus.Error {
+	if err := m.authorize(sender, int64(uid), "KillUser"); err != nil {
+		return err
+	}
 	files, _ := filepath.Glob(filepath.Join(stateRoot, "sessions", "*.json"))
 	for _, f := range files {
 		var rec SessionRecord
 		if readJSON(f, &rec) && rec.UserID == uid {
-			_ = m.KillSession(rec.ID, "all", sig)
+			_ = m.killSession(rec.ID, "all", sig)
 		}
 	}
 	return nil
@@ -941,15 +979,25 @@ func (m *manager) KillUser(uid uint32, sig int32) *dbus.Error {
 // SetUserLinger persists a "keep the user manager running across
 // logout" flag. loginctl enable-linger / disable-linger. We track it
 // in the user JSON record so the property surface can report it.
-func (m *manager) SetUserLinger(uid uint32, b bool, interactive bool) *dbus.Error {
+//
+// Root's alone, even for the caller's own uid: systemd without polkit asks
+// for set-self-linger with no good user.
+func (m *manager) SetUserLinger(sender dbus.Sender, uid uint32, b bool, interactive bool) *dbus.Error {
 	// Phase C+ persistence — for now accept the call so `loginctl
 	// enable-linger sunlight` doesn't error.
-	return nil
+	return m.authorize(sender, noGoodUser, "SetUserLinger")
 }
 
 // KillSession sends the given signal to every process in the session
 // cgroup, or just the leader if `who = "leader"`.
-func (m *manager) KillSession(id, who string, sig int32) *dbus.Error {
+func (m *manager) KillSession(sender dbus.Sender, id, who string, sig int32) *dbus.Error {
+	if err := m.authorizeSessionOwner(sender, id, "KillSession"); err != nil {
+		return err
+	}
+	return m.killSession(id, who, sig)
+}
+
+func (m *manager) killSession(id, who string, sig int32) *dbus.Error {
 	if !validSessionID(id) {
 		return errBadSessionID(id)
 	}
@@ -989,14 +1037,6 @@ func fifoPath(id string) string { return filepath.Join(stateRoot, "sessions", id
 func sessionExistsLocked(id string) bool {
 	_, err := os.Stat(sessionFile(id))
 	return err == nil
-}
-
-func checkSess(id string) *dbus.Error {
-	if !sessionExistsLocked(id) {
-		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
-			[]interface{}{id})
-	}
-	return nil
 }
 
 func findSessionByLeaderLocked(pid uint32) (string, *SessionRecord) {

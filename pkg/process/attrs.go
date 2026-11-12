@@ -26,7 +26,9 @@ const (
 // applyPostForkAttrs applies process attributes after fork.
 // These operate on the child PID from the parent process.
 // Errors are collected and returned for logging by the caller.
-func applyPostForkAttrs(pid int, params ExecParams) []error {
+// inCgroup says the child was born in params.CgroupPath (clone3 with
+// CLONE_INTO_CGROUP), so it is not moved there again.
+func applyPostForkAttrs(pid int, params ExecParams, inCgroup bool) []error {
 	var errs []error
 	if params.Nice != nil {
 		if err := applyNice(pid, *params.Nice); err != nil {
@@ -56,8 +58,13 @@ func applyPostForkAttrs(pid int, params ExecParams) []error {
 				errs = append(errs, fmt.Errorf("cgroup-settings: %w", err))
 			}
 		}
-		if err := applyCgroup(pid, params.CgroupPath); err != nil {
-			errs = append(errs, fmt.Errorf("cgroup(%s): %w", params.CgroupPath, err))
+		// A move into the cgroup the child is already in still takes the
+		// kernel's cgroup_threadgroup_rwsem for writing, which can mean an
+		// RCU grace period: 7-14ms measured on a 12-CPU VM, on every start.
+		if !inCgroup {
+			if err := applyCgroup(pid, params.CgroupPath); err != nil {
+				errs = append(errs, fmt.Errorf("cgroup(%s): %w", params.CgroupPath, err))
+			}
 		}
 	}
 	if params.NoNewPrivs && params.RunnerPath == "" {

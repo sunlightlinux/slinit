@@ -312,9 +312,14 @@ func (p *managerProperties) GetAll(ifaceName string) (map[string]dbus.Variant, *
 	return out, nil
 }
 
-func (p *managerProperties) Set(ifaceName, name string, v dbus.Variant) *dbus.Error {
+// Set is root's alone: systemd without polkit asks set-wall-message with no
+// good user, and the wall properties are the only writable ones.
+func (p *managerProperties) Set(sender dbus.Sender, ifaceName, name string, v dbus.Variant) *dbus.Error {
 	if ifaceName != "" && ifaceName != iface {
 		return prop.ErrIfaceNotFound
+	}
+	if err := p.m.authorize(sender, noGoodUser, "Set "+name); err != nil {
+		return err
 	}
 	mp, ok := managerPropByName[name]
 	if !ok {

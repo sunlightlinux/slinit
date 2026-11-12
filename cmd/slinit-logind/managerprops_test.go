@@ -165,7 +165,7 @@ func TestManagerPropertiesSet(t *testing.T) {
 	m := &manager{inhibitors: newInhibitRegistry()}
 	p := &managerProperties{m: m}
 
-	if err := p.Set("", "WallMessage", dbus.MakeVariant("system going down")); err != nil {
+	if err := p.Set(asRoot(t), "", "WallMessage", dbus.MakeVariant("system going down")); err != nil {
 		t.Fatalf("Set(WallMessage): %v", err)
 	}
 	if m.wallMessage != "system going down" {
@@ -176,7 +176,7 @@ func TestManagerPropertiesSet(t *testing.T) {
 		t.Errorf("WallMessage reads back %q", got)
 	}
 
-	if err := p.Set("", "EnableWallMessages", dbus.MakeVariant(true)); err != nil {
+	if err := p.Set(asRoot(t), "", "EnableWallMessages", dbus.MakeVariant(true)); err != nil {
 		t.Fatalf("Set(EnableWallMessages): %v", err)
 	}
 	if !m.enableWallMessages {
@@ -184,14 +184,14 @@ func TestManagerPropertiesSet(t *testing.T) {
 	}
 
 	// Wrong type must not clobber the stored value.
-	if err := p.Set("", "WallMessage", dbus.MakeVariant(uint32(7))); err == nil {
+	if err := p.Set(asRoot(t), "", "WallMessage", dbus.MakeVariant(uint32(7))); err == nil {
 		t.Error("Set(WallMessage) with a uint32 should fail")
 	}
 	if m.wallMessage != "system going down" {
 		t.Errorf("failed Set clobbered wallMessage to %q", m.wallMessage)
 	}
 
-	if err := p.Set("", "SessionsMax", dbus.MakeVariant(uint64(1))); err != prop.ErrReadOnly {
+	if err := p.Set(asRoot(t), "", "SessionsMax", dbus.MakeVariant(uint64(1))); err != prop.ErrReadOnly {
 		t.Errorf("Set on a read-only property returned %v, want ErrReadOnly", err)
 	}
 }

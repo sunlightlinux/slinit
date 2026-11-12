@@ -1104,9 +1104,7 @@ func (s *ProcessService) startCronIfConfigured() {
 
 // stopCronRunner stops the cron runner if active.
 func (s *ProcessService) stopCronRunner() {
-	if s.cronRunner != nil {
-		s.cronRunner.Stop()
-	}
+	s.stopCron()
 }
 
 // SetLogFilters sets log include/exclude patterns.

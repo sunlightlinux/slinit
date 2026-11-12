@@ -1,6 +1,11 @@
 package journal
 
-import "testing"
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+)
 
 func TestParseKmsgLine(t *testing.T) {
 	cases := []struct {
@@ -156,4 +161,34 @@ func TestEmitDriverTransportStampsPID(t *testing.T) {
 	if evt.Transport != TransportDriver {
 		t.Errorf("empty transport should default to driver, got %q", evt.Transport)
 	}
+}
+
+// Stop must return while Run is parked in a read with nothing to read.
+// Go's netpoller turns the nonblocking read into a wait, so Stop used to
+// wait for Run for ever: slinit hung on exit until the kernel logged
+// something. A pipe parks the same way /dev/kmsg does.
+func TestKmsgReaderStopWhileIdle(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	// No r.Fd(): it would switch the pipe to blocking mode and out of
+	// the netpoller, which is the case this test is about.
+	kr := &KmsgReader{
+		emitter: NewEmitter(NewEventBuffer(16), ""),
+		file:    r,
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	go kr.Run(context.Background())
+	time.Sleep(50 * time.Millisecond) // let Run park in the read
+	stopped := make(chan struct{})
+	go func() { kr.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return while the reader was idle")
+	}
+	kr.Stop() // idempotent
 }

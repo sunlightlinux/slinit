@@ -255,6 +255,41 @@ before calling anything, and treat a missing response as the daemon
 being absent, which drops them into degraded modes with broken menus
 and no power controls.
 
+## Who may call what
+
+There is no polkit. Since 3.15.0 each call is checked against the caller's
+uid, with the rules systemd-logind applies when built without polkit: a
+call is allowed from root, or from the user it is about, and refused with
+*org.freedesktop.DBus.Error.AccessDenied* otherwise. Until then nothing was
+checked, and the D-Bus policy was the only barrier.
+
+Root only
+:   the power and sleep calls, *Inhibit*, *CreateSession*, *LockSessions*,
+    *UnlockSessions*, *TerminateSeat*, *SetUserLinger* (even for the
+    caller's own uid), and writing the manager's properties.
+
+The session's owner, or root
+:   *LockSession*, *UnlockSession*, *KillSession*, *TerminateSession* and
+    their session-object forms, *SetIdleHint*, *SetLockedHint*, and
+    *TakeControl* (only root may force it).
+
+The user's own uid, or root
+:   *KillUser*, *TerminateUser*, and the user object's *Kill* and
+    *Terminate*.
+
+The session's controller only
+:   *TakeDevice*, *ReleaseDevice*, *PauseDeviceComplete*, *ReleaseControl*:
+    the bus name that called *TakeControl*, not root nor the owner's other
+    processes.
+
+Anyone
+:   *ActivateSession*, *ActivateSessionOnSeat* and the seat's *SwitchTo*
+    (systemd without polkit allows a VT switch so a graphical session can
+    start without root), and every query.
+
+*ReleaseSession* is allowed from inside the session it names, or from root.
+The power and lid keys are not calls and are not affected.
+
 # EXIT STATUS
 
 Exits non-zero if the state directories cannot be created, the system

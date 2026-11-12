@@ -3,6 +3,7 @@ package process
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -207,5 +208,28 @@ func TestKillCgroupRecursiveSkipsNonDirs(t *testing.T) {
 
 	if err := KillCgroup(root, syscall.SIGTERM); err != nil {
 		t.Fatalf("KillCgroup: %v", err)
+	}
+}
+
+// A child cloned into its cgroup is not moved there again: the move is a
+// no-op that can still cost the kernel an RCU grace period on every start.
+func TestApplyPostForkAttrsSkipsMoveWhenBornInCgroup(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root the move into a fresh cgroup would succeed; the test needs it to fail")
+	}
+	params := ExecParams{CgroupPath: "/sys/fs/cgroup/slinit-test-no-such-cgroup/x"}
+	hasCgroupErr := func(errs []error) bool {
+		for _, e := range errs {
+			if strings.HasPrefix(e.Error(), "cgroup(") {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasCgroupErr(applyPostForkAttrs(os.Getpid(), params, false)) {
+		t.Fatal("move not attempted for a child outside its cgroup")
+	}
+	if hasCgroupErr(applyPostForkAttrs(os.Getpid(), params, true)) {
+		t.Fatal("move attempted for a child born in its cgroup")
 	}
 }

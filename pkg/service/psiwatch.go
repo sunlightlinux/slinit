@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,17 +20,25 @@ const psiWindowUsec = 2_000_000
 // systemd's default of 200ms within a 2s window.
 const psiDefaultThreshold = 200 * time.Millisecond
 
-// psiPollTimeoutMs is how often the watcher wakes to re-check the quit
-// channel when no pressure event is pending. Long enough to keep idle
-// wakeups cheap, short enough that Stopped() returns promptly.
-const psiPollTimeoutMs = 500
-
 // psiWatcher runs one goroutine per service that has any pressure watch
 // enabled. It multiplexes up to three fds (mem/cpu/io) into a single
 // poll(2) loop and emits a SERVICEEVENT per resource when the kernel
 // signals POLLPRI on that fd.
+//
+// wake is an eventfd in the same poll set. Cancelling writes to it so the
+// goroutine closes the trigger fds at once. It used to notice only on a
+// 500ms poll timeout, which kept the triggers alive past the cgroup's
+// rmdir in Stopped(). Destroying a trigger costs the kernel a
+// synchronize_rcu, 4-8ms on a 12-CPU VM, and rmdir waits for it: every
+// stop of a watched service paid it, under the queue lock. Closing when
+// the stop begins lets the kernel do it while the process exits.
+//
+// The goroutine can also end by itself, and then closes wake: mu and closed
+// keep a later cancel from writing to an fd number reused by another file.
 type psiWatcher struct {
-	stop chan struct{}
+	mu     sync.Mutex
+	wake   int
+	closed bool
 }
 
 // armPSIWatcher opens the configured pressure files, writes the trigger
@@ -75,8 +84,17 @@ func (sr *ServiceRecord) armPSIWatcher() {
 		return
 	}
 
-	stop := make(chan struct{})
-	sr.psiWatch = &psiWatcher{stop: stop}
+	wake, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		for _, e := range entries {
+			unix.Close(e.fd)
+		}
+		sr.services.logger.Error("Service '%s': pressure watch disabled: eventfd: %v",
+			sr.serviceName, err)
+		return
+	}
+	w := &psiWatcher{wake: wake}
+	sr.psiWatch = w
 
 	svc := sr.self
 	set := sr.services
@@ -87,30 +105,34 @@ func (sr *ServiceRecord) armPSIWatcher() {
 			for _, e := range entries {
 				unix.Close(e.fd)
 			}
+			w.mu.Lock()
+			unix.Close(wake)
+			w.closed = true
+			w.mu.Unlock()
 		}()
-		fds := make([]unix.PollFd, len(entries))
+		// The eventfd goes last, so fds[i] stays entries[i].
+		fds := make([]unix.PollFd, len(entries)+1)
 		for i, e := range entries {
 			fds[i] = unix.PollFd{Fd: int32(e.fd), Events: unix.POLLPRI}
 		}
+		fds[len(entries)] = unix.PollFd{Fd: int32(wake), Events: unix.POLLIN}
 		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
 			// Reset revents in case the kernel left stale bits (some
 			// architectures reuse the field between calls).
 			for i := range fds {
 				fds[i].Revents = 0
 			}
-			_, err := unix.Poll(fds, psiPollTimeoutMs)
+			_, err := unix.Poll(fds, -1)
 			if err != nil {
 				if errors.Is(err, syscall.EINTR) {
 					continue
 				}
 				return
 			}
-			for i, pfd := range fds {
+			if fds[len(entries)].Revents != 0 {
+				return
+			}
+			for i, pfd := range fds[:len(entries)] {
 				if pfd.Revents&unix.POLLPRI == 0 {
 					continue
 				}
@@ -136,10 +158,17 @@ func (sr *ServiceRecord) armPSIWatcher() {
 }
 
 // cancelPSIWatcher stops the watcher goroutine if armed. The goroutine
-// closes its own fds on exit.
+// closes its own fds, the eventfd included, on exit; the write only
+// wakes it, so this never waits for the kernel's trigger teardown.
 func (sr *ServiceRecord) cancelPSIWatcher() {
-	if sr.psiWatch != nil {
-		close(sr.psiWatch.stop)
+	if w := sr.psiWatch; w != nil {
+		w.mu.Lock()
+		if !w.closed {
+			var one [8]byte
+			one[0] = 1 // eventfd counters are host-endian; 1 is nonzero either way
+			_, _ = unix.Write(w.wake, one[:])
+		}
+		w.mu.Unlock()
 		sr.psiWatch = nil
 	}
 }

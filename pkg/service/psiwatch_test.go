@@ -98,3 +98,75 @@ func TestSetPSIWatchers(t *testing.T) {
 		t.Errorf("io: got (%v,%v)", sr.psiIOWatch, sr.psiIOThr)
 	}
 }
+
+// psiOpenFds counts this process's fds open on path.
+func psiOpenFds(t *testing.T, path string) int {
+	t.Helper()
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skipf("no /proc/self/fd: %v", err)
+	}
+	n := 0
+	for _, e := range ents {
+		if l, _ := os.Readlink("/proc/self/fd/" + e.Name()); l == path {
+			n++
+		}
+	}
+	return n
+}
+
+// Cancelling must close the trigger at once. The goroutine used to notice
+// only on a 500ms poll timeout, so the trigger outlived the cgroup's rmdir,
+// and destroying it there cost every stop a kernel synchronize_rcu.
+func TestPSIWatcherCancelClosesTriggerAtOnce(t *testing.T) {
+	set, _ := newTestSet()
+	dir := t.TempDir()
+	pressure := filepath.Join(dir, "memory.pressure")
+	if err := os.WriteFile(pressure, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewInternalService(set, "psi-cancel")
+	sr := svc.Record()
+	sr.SetCgroupPath(dir)
+	sr.SetPSIMemoryWatch(true, 0)
+	sr.armPSIWatcher()
+	if sr.psiWatch == nil || psiOpenFds(t, pressure) != 1 {
+		t.Fatalf("watcher not armed (open fds on the trigger: %d)", psiOpenFds(t, pressure))
+	}
+	began := time.Now()
+	sr.cancelPSIWatcher()
+	for psiOpenFds(t, pressure) != 0 {
+		if time.Since(began) > 200*time.Millisecond {
+			t.Fatal("trigger fd still open 200ms after cancel")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	sr.cancelPSIWatcher() // a second cancel is a no-op
+}
+
+// A stop has to cancel the watcher when it begins, not in Stopped(): the
+// rmdir there waits for a trigger teardown still in progress.
+func TestPSIWatcherCancelledWhenStopBegins(t *testing.T) {
+	set, _ := newTestSet()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "memory.pressure"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewInternalService(set, "psi-stop")
+	sr := svc.Record()
+	sr.SetCgroupPath(dir)
+	sr.SetPSIMemoryWatch(true, 0)
+	set.AddService(svc)
+	set.StartService(svc)
+	sr.armPSIWatcher()
+	if sr.psiWatch == nil {
+		t.Fatal("watcher not armed")
+	}
+	set.queueMu.Lock()
+	sr.doStop(false)
+	stillArmed := sr.psiWatch != nil
+	set.queueMu.Unlock()
+	if stillArmed {
+		t.Fatal("watcher still armed after the stop began")
+	}
+}

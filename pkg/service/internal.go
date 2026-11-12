@@ -58,9 +58,7 @@ func (s *InternalService) BringUp() bool {
 
 // BringDown for an internal service calls stopped immediately.
 func (s *InternalService) BringDown() {
-	if s.cronRunner != nil {
-		s.cronRunner.Stop()
-	}
+	s.stopCron()
 	s.Stopped()
 }
 

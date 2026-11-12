@@ -24,6 +24,46 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- The output of a `cron-command` goes to the journal of its service instead of
+  `/dev/null`, one event per line of stdout and stderr, at the level a `<N>` or
+  `ERROR:` prefix gives it. Every run ends with one event saying how it ended:
+  `SLINIT_CRON_RESULT` is `success`, `exit-code` (with `SLINIT_EXIT_STATUS`),
+  `error` or `stopped`. Before, a nightly job left no record, and its failure
+  line never reached the journal. One run sends at most 10000 lines; the rest
+  is read and counted. A command that wrote to stdout expecting nobody to read
+  it now fills the journal: redirect it in the command.
+
+- `slinit-logind` checks who calls. It checked nobody: `PowerOff`, `KillUser`,
+  `TerminateSession` and the rest ran for whoever the D-Bus policy let through.
+  The rules are systemd-logind's without polkit: root, or the user the call is
+  about (the session's owner, the uid being killed); the device calls belong to
+  the bus name that took control. Check before upgrading if a non-root program
+  calls `Inhibit`, `SetUserLinger` or a power call through a policy that allows
+  it: it now gets `AccessDenied`. The shipped policy already refused them, so
+  with it nothing changes. slinit-logind(8) lists every call.
+
+### Fixed
+
+- Stopping a service while its `cron-command` ran froze PID 1 until the run
+  ended, up to a minute and ten seconds: the wait happened under the lock every
+  request needs, so `slinitctl` answered nothing. The service still stays in
+  `STOPPING` until the run ends, so a shutdown still lets a nightly job finish,
+  but everything else goes on. Starting the task again while a stopped run
+  finishes no longer waits either.
+- A service with `memory-pressure-watch` (or the cpu or io variants) took about
+  6ms longer to start and 10ms longer to stop than without, measured on a 12-CPU
+  VM. The start cost was not the watch at all: every service with a cgroup was
+  moved into the cgroup it had been cloned into, a no-op the kernel can still
+  charge an RCU grace period for. The stop cost is the kernel's teardown of the
+  trigger, which `rmdir` of the cgroup waits for; the trigger is now closed when
+  the stop begins, so a service that takes longer than that to exit no longer
+  pays for it.
+- A `slinit` that was not PID 1 but could read `/dev/kmsg` (root with `-u` or
+  `-m`, a privileged container) hung on exit after "Control socket stopped",
+  until the kernel next logged something.
+
 ## [3.14.1] — 2026-11-09
 
 **A patch with four fixes the acceptance suite found on a real system: a dangling

@@ -36,6 +36,7 @@ type devKey struct {
 // controller, plus whether anyone has claimed control at all.
 type sessionDevices struct {
 	controlled bool
+	controller string // bus name of the caller that took control
 	files      map[devKey]*os.File
 }
 
@@ -48,7 +49,11 @@ var (
 // allows exactly one; `force` lets a caller displace the incumbent.
 // Returning DeviceIsTaken for a second, non-forcing caller is what
 // keeps two compositors from fighting over the same seat.
-func takeControl(id string, force bool) *dbus.Error {
+//
+// controller is the caller's bus name. The device calls are refused to
+// anyone else, as in systemd: a session's owner may run many processes, and
+// only the one that took control may ask for its devices.
+func takeControl(id, controller string, force bool) *dbus.Error {
 	devicesMu.Lock()
 	defer devicesMu.Unlock()
 
@@ -56,8 +61,26 @@ func takeControl(id string, force bool) *dbus.Error {
 		return dbus.NewError("org.freedesktop.login1.Error.DeviceIsTaken",
 			[]any{"session " + id + " already has a controller"})
 	}
-	devices[id] = &sessionDevices{controlled: true, files: map[devKey]*os.File{}}
+	if sd := devices[id]; sd != nil {
+		// A forced take displaces the incumbent: its descriptors go
+		// with it, or it would keep DRM master behind the new owner.
+		closeSessionDevicesLocked(id)
+	}
+	devices[id] = &sessionDevices{controlled: true, controller: controller, files: map[devKey]*os.File{}}
 	return nil
+}
+
+// isController reports whether sender holds control of session id.
+func isController(id, sender string) bool {
+	devicesMu.Lock()
+	defer devicesMu.Unlock()
+	sd := devices[id]
+	return sd != nil && sd.controlled && sd.controller == sender
+}
+
+func errNotController() *dbus.Error {
+	return dbus.NewError("org.freedesktop.login1.Error.NotInControl",
+		[]any{"You are not in control of this session"})
 }
 
 // releaseControl drops every descriptor the session was handed and

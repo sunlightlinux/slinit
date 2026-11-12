@@ -621,7 +621,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	routedCh := DefaultExitRouter.Register(pid)
 
 	// These are best-effort: failures are logged but don't prevent startup.
-	if errs := applyPostForkAttrs(pid, params); len(errs) > 0 {
+	if errs := applyPostForkAttrs(pid, params, cgroupFD != nil); len(errs) > 0 {
 		for _, err := range errs {
 			fmt.Fprintf(os.Stderr, "slinit: pid %d: post-fork attr warning: %v\n", pid, err)
 		}

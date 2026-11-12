@@ -61,6 +61,10 @@ type SessionRef struct {
 type propsWrapper struct {
 	props   *prop.Properties
 	primary string
+	// session is set on a session's object: its writable hints are the
+	// owner's to set, as SetIdleHint and SetLockedHint are.
+	session string
+	m       *manager
 }
 
 func (p *propsWrapper) Get(iface, property string) (dbus.Variant, *dbus.Error) {
@@ -77,9 +81,16 @@ func (p *propsWrapper) GetAll(iface string) (map[string]dbus.Variant, *dbus.Erro
 	return p.props.GetAll(iface)
 }
 
-func (p *propsWrapper) Set(iface, property string, newVal dbus.Variant) *dbus.Error {
+func (p *propsWrapper) Set(sender dbus.Sender, iface, property string, newVal dbus.Variant) *dbus.Error {
 	if iface == "" {
 		iface = p.primary
+	}
+	if p.session != "" {
+		if err := p.m.authorizeSessionOwner(sender, p.session, "Set "+property); err != nil {
+			return err
+		}
+	} else if err := p.m.authorize(sender, noGoodUser, "Set "+property); err != nil {
+		return err
 	}
 	return p.props.Set(iface, property, newVal)
 }
@@ -87,8 +98,10 @@ func (p *propsWrapper) Set(iface, property string, newVal dbus.Variant) *dbus.Er
 // exportPropsWrapper replaces the default Properties handler that
 // prop.Export installed with our loginctl-friendly wrapper. Called
 // right after each register* helper.
-func (m *manager) exportPropsWrapper(path dbus.ObjectPath, props *prop.Properties, primary string) {
-	w := &propsWrapper{props: props, primary: primary}
+//
+// session names the session the object belongs to, "" for a user or seat.
+func (m *manager) exportPropsWrapper(path dbus.ObjectPath, props *prop.Properties, primary, session string) {
+	w := &propsWrapper{props: props, primary: primary, session: session, m: m}
 	_ = m.conn.Export(w, path, "org.freedesktop.DBus.Properties")
 }
 
@@ -221,7 +234,7 @@ func (m *manager) registerSessionObject(rec SessionRecord) {
 	m.rememberSessionProps(rec.ID, props)
 	// Override the default Properties handler so loginctl's empty-
 	// interface GetAll succeeds.
-	m.exportPropsWrapper(path, props, sessionIface)
+	m.exportPropsWrapper(path, props, sessionIface, rec.ID)
 	// Method handlers on the object itself.
 	_ = m.conn.Export(so, path, sessionIface)
 
@@ -293,7 +306,7 @@ func (m *manager) registerUserObject(rec UserRecord) {
 	if err != nil {
 		return
 	}
-	m.exportPropsWrapper(path, props, userIface)
+	m.exportPropsWrapper(path, props, userIface, "")
 	_ = m.conn.Export(uo, path, userIface)
 
 	node := &introspect.Node{
@@ -385,7 +398,7 @@ func (m *manager) ensureSeat(id string) {
 	}
 	m.seatProps[id] = props
 	m.mu.Unlock()
-	m.exportPropsWrapper(path, props, seatIface)
+	m.exportPropsWrapper(path, props, seatIface, "")
 	_ = m.conn.Export(so, path, seatIface)
 
 	node := &introspect.Node{
@@ -554,18 +567,30 @@ func (m *manager) seatSessions(seatID string) []SessionRef {
 
 // --- per-Session methods (routed to Manager equivalents) ---
 
-func (s *sessionObject) Terminate() *dbus.Error {
-	return s.m.ReleaseSession(s.id)
+//
+// Each takes the caller so it can be checked (see authz.go): the owner of the
+// session or root, except Activate, which systemd without polkit allows
+// anyone, and the device calls, which belong to the session's controller.
+
+func (s *sessionObject) Terminate(sender dbus.Sender) *dbus.Error {
+	return s.m.TerminateSession(sender, s.id)
 }
-func (s *sessionObject) Activate() *dbus.Error {
+func (s *sessionObject) Activate(sender dbus.Sender) *dbus.Error {
 	return s.m.ActivateSession(s.id)
 }
-func (s *sessionObject) Lock() *dbus.Error   { return s.m.LockSession(s.id) }
-func (s *sessionObject) Unlock() *dbus.Error { return s.m.UnlockSession(s.id) }
-func (s *sessionObject) Kill(who string, sig int32) *dbus.Error {
-	return s.m.KillSession(s.id, who, sig)
+func (s *sessionObject) Lock(sender dbus.Sender) *dbus.Error {
+	return s.m.LockSession(sender, s.id)
 }
-func (s *sessionObject) SetIdleHint(idle bool) *dbus.Error {
+func (s *sessionObject) Unlock(sender dbus.Sender) *dbus.Error {
+	return s.m.UnlockSession(sender, s.id)
+}
+func (s *sessionObject) Kill(sender dbus.Sender, who string, sig int32) *dbus.Error {
+	return s.m.KillSession(sender, s.id, who, sig)
+}
+func (s *sessionObject) SetIdleHint(sender dbus.Sender, idle bool) *dbus.Error {
+	if err := s.m.authorizeSessionOwner(sender, s.id, "SetIdleHint"); err != nil {
+		return err
+	}
 	// Storage hook lives in Phase C+; the property is Writable so
 	// prop.Set landed already handles the change signal.
 	return nil
@@ -580,7 +605,10 @@ func (s *sessionObject) SetIdleHint(idle bool) *dbus.Error {
 //
 // Distinct from the Lock/Unlock signals: those are a request aimed at
 // whoever owns the screen, this is that owner reporting back.
-func (s *sessionObject) SetLockedHint(locked bool) *dbus.Error {
+func (s *sessionObject) SetLockedHint(sender dbus.Sender, locked bool) *dbus.Error {
+	if err := s.m.authorizeSessionOwner(sender, s.id, "SetLockedHint"); err != nil {
+		return err
+	}
 	s.m.setSessionProp(s.id, "LockedHint", locked)
 	return nil
 }
@@ -588,11 +616,25 @@ func (s *sessionObject) SetLockedHint(locked bool) *dbus.Error {
 // TakeControl / ReleaseControl are the compositor entry points —
 // a Wayland compositor claims the seat before asking for any device,
 // and releasing drops every descriptor it was handed. See device.go.
-func (s *sessionObject) TakeControl(force bool) *dbus.Error {
-	return takeControl(s.id, force)
+//
+// TakeControl is the owner's, and only root may force it, as in systemd: a
+// forced take from another user would hand them the seat's devices.
+func (s *sessionObject) TakeControl(sender dbus.Sender, force bool) *dbus.Error {
+	var rec SessionRecord
+	if !readJSON(sessionFile(s.id), &rec) {
+		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession", []any{s.id})
+	}
+	uid, err := senderUID(s.m, sender)
+	if err != nil || (uid != 0 && (force || uid != rec.UserID)) {
+		return errAccessDenied("Only owner of session may take control")
+	}
+	return takeControl(s.id, string(sender), force)
 }
 
-func (s *sessionObject) ReleaseControl() *dbus.Error {
+func (s *sessionObject) ReleaseControl(sender dbus.Sender) *dbus.Error {
+	if !isController(s.id, string(sender)) {
+		return errNotController()
+	}
 	releaseControl(s.id)
 	return nil
 }
@@ -602,11 +644,17 @@ func (s *sessionObject) ReleaseControl() *dbus.Error {
 // gnome-shell session) call this for /dev/dri/card0 + input devices.
 // DRM master is claimed on the way out — without it a compositor holds
 // a descriptor it cannot modeset through. See device.go.
-func (s *sessionObject) TakeDevice(major, minor uint32) (dbus.UnixFD, bool, *dbus.Error) {
+func (s *sessionObject) TakeDevice(sender dbus.Sender, major, minor uint32) (dbus.UnixFD, bool, *dbus.Error) {
+	if !isController(s.id, string(sender)) {
+		return -1, false, errNotController()
+	}
 	return takeDevice(s.id, major, minor)
 }
 
-func (s *sessionObject) ReleaseDevice(major, minor uint32) *dbus.Error {
+func (s *sessionObject) ReleaseDevice(sender dbus.Sender, major, minor uint32) *dbus.Error {
+	if !isController(s.id, string(sender)) {
+		return errNotController()
+	}
 	releaseDevice(s.id, major, minor)
 	return nil
 }
@@ -616,21 +664,32 @@ func (s *sessionObject) ReleaseDevice(major, minor uint32) *dbus.Error {
 // elogind does in logind-session-device.c — so there is nothing to
 // confirm, but the method has to exist or a compositor that acks
 // unconditionally takes an UnknownMethod error mid-handover.
-func (s *sessionObject) PauseDeviceComplete(major, minor uint32) *dbus.Error { return nil }
-
-// --- per-User methods ---
-
-func (u *userObject) Terminate() *dbus.Error {
-	// Terminate every session owned by this UID. Iterate over a
-	// snapshot because ReleaseSession mutates the session file set.
-	for _, ref := range u.m.userSessions(u.uid) {
-		_ = u.m.ReleaseSession(ref.ID)
+func (s *sessionObject) PauseDeviceComplete(sender dbus.Sender, major, minor uint32) *dbus.Error {
+	if !isController(s.id, string(sender)) {
+		return errNotController()
 	}
 	return nil
 }
-func (u *userObject) Kill(sig int32) *dbus.Error {
+
+// --- per-User methods ---
+
+func (u *userObject) Terminate(sender dbus.Sender) *dbus.Error {
+	if err := u.m.authorize(sender, int64(u.uid), "Terminate"); err != nil {
+		return err
+	}
+	// Terminate every session owned by this UID. Iterate over a
+	// snapshot because ReleaseSession mutates the session file set.
 	for _, ref := range u.m.userSessions(u.uid) {
-		_ = u.m.KillSession(ref.ID, "all", sig)
+		_ = u.m.releaseSession(ref.ID)
+	}
+	return nil
+}
+func (u *userObject) Kill(sender dbus.Sender, sig int32) *dbus.Error {
+	if err := u.m.authorize(sender, int64(u.uid), "Kill"); err != nil {
+		return err
+	}
+	for _, ref := range u.m.userSessions(u.uid) {
+		_ = u.m.killSession(ref.ID, "all", sig)
 	}
 	return nil
 }
@@ -640,9 +699,12 @@ func (u *userObject) Kill(sig int32) *dbus.Error {
 func (s *seatObject) ActivateSession(sessionID string) *dbus.Error {
 	return s.m.ActivateSession(sessionID)
 }
-func (s *seatObject) Terminate() *dbus.Error {
+func (s *seatObject) Terminate(sender dbus.Sender) *dbus.Error {
+	if err := s.m.authorize(sender, noGoodUser, "Terminate"); err != nil {
+		return err
+	}
 	for _, ref := range s.m.seatSessions(s.id) {
-		_ = s.m.ReleaseSession(ref.ID)
+		_ = s.m.releaseSession(ref.ID)
 	}
 	return nil
 }

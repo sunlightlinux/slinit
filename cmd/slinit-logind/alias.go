@@ -112,7 +112,7 @@ func (a *sessionAlias) Terminate(sender dbus.Sender) *dbus.Error {
 	if err != nil {
 		return err
 	}
-	return so.Terminate()
+	return so.Terminate(sender)
 }
 
 func (a *sessionAlias) Activate(sender dbus.Sender) *dbus.Error {
@@ -120,7 +120,7 @@ func (a *sessionAlias) Activate(sender dbus.Sender) *dbus.Error {
 	if err != nil {
 		return err
 	}
-	return so.Activate()
+	return so.Activate(sender)
 }
 
 func (a *sessionAlias) Lock(sender dbus.Sender) *dbus.Error {
@@ -128,7 +128,7 @@ func (a *sessionAlias) Lock(sender dbus.Sender) *dbus.Error {
 	if err != nil {
 		return err
 	}
-	return so.Lock()
+	return so.Lock(sender)
 }
 
 func (a *sessionAlias) Unlock(sender dbus.Sender) *dbus.Error {
@@ -136,7 +136,7 @@ func (a *sessionAlias) Unlock(sender dbus.Sender) *dbus.Error {
 	if err != nil {
 		return err
 	}
-	return so.Unlock()
+	return so.Unlock(sender)
 }
 
 func (a *sessionAlias) SetIdleHint(sender dbus.Sender, idle bool) *dbus.Error {
@@ -144,7 +144,7 @@ func (a *sessionAlias) SetIdleHint(sender dbus.Sender, idle bool) *dbus.Error {
 	if err != nil {
 		return err
 	}
-	return so.SetIdleHint(idle)
+	return so.SetIdleHint(sender, idle)
 }
 
 func (a *sessionAlias) SetLockedHint(sender dbus.Sender, locked bool) *dbus.Error {
@@ -152,7 +152,7 @@ func (a *sessionAlias) SetLockedHint(sender dbus.Sender, locked bool) *dbus.Erro
 	if err != nil {
 		return err
 	}
-	return so.SetLockedHint(locked)
+	return so.SetLockedHint(sender, locked)
 }
 
 func (a *sessionAlias) Kill(sender dbus.Sender, who string, sig int32) *dbus.Error {
@@ -160,7 +160,7 @@ func (a *sessionAlias) Kill(sender dbus.Sender, who string, sig int32) *dbus.Err
 	if err != nil {
 		return err
 	}
-	return so.Kill(who, sig)
+	return so.Kill(sender, who, sig)
 }
 
 func (a *sessionAlias) TakeControl(sender dbus.Sender, force bool) *dbus.Error {
@@ -168,7 +168,7 @@ func (a *sessionAlias) TakeControl(sender dbus.Sender, force bool) *dbus.Error {
 	if err != nil {
 		return err
 	}
-	return so.TakeControl(force)
+	return so.TakeControl(sender, force)
 }
 
 func (a *sessionAlias) ReleaseControl(sender dbus.Sender) *dbus.Error {
@@ -176,7 +176,7 @@ func (a *sessionAlias) ReleaseControl(sender dbus.Sender) *dbus.Error {
 	if err != nil {
 		return err
 	}
-	return so.ReleaseControl()
+	return so.ReleaseControl(sender)
 }
 
 func (a *sessionAlias) TakeDevice(sender dbus.Sender, major, minor uint32) (dbus.UnixFD, bool, *dbus.Error) {
@@ -184,7 +184,7 @@ func (a *sessionAlias) TakeDevice(sender dbus.Sender, major, minor uint32) (dbus
 	if err != nil {
 		return 0, false, err
 	}
-	return so.TakeDevice(major, minor)
+	return so.TakeDevice(sender, major, minor)
 }
 
 func (a *sessionAlias) ReleaseDevice(sender dbus.Sender, major, minor uint32) *dbus.Error {
@@ -192,11 +192,15 @@ func (a *sessionAlias) ReleaseDevice(sender dbus.Sender, major, minor uint32) *d
 	if err != nil {
 		return err
 	}
-	return so.ReleaseDevice(major, minor)
+	return so.ReleaseDevice(sender, major, minor)
 }
 
 func (a *sessionAlias) PauseDeviceComplete(sender dbus.Sender, major, minor uint32) *dbus.Error {
-	return nil
+	so, err := a.resolve(sender)
+	if err != nil {
+		return err
+	}
+	return so.PauseDeviceComplete(sender, major, minor)
 }
 
 // aliasProps serves org.freedesktop.DBus.Properties on an alias path,
@@ -245,6 +249,13 @@ func (p *aliasProps) Set(sender dbus.Sender, ifaceName, name string, v dbus.Vari
 	}
 	if !sessionWritableProps[name] {
 		return prop.ErrReadOnly
+	}
+	so, err := p.a.resolve(sender)
+	if err != nil {
+		return err
+	}
+	if err := p.a.m.authorizeSessionOwner(sender, so.id, "Set "+name); err != nil {
+		return err
 	}
 	// IdleHint / LockedHint aren't stored yet (see the Session object's
 	// setters), so accept and drop rather than fail a caller that is

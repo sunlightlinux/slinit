@@ -135,6 +135,10 @@ func (r *KmsgReader) Run(ctx context.Context) {
 					continue
 				}
 			}
+			// Stop closed the file under the read: not an error.
+			if errors.Is(err, os.ErrClosed) {
+				return
+			}
 			// Non-recoverable read error. Bail so caller sees Run
 			// return; caller can restart if desired.
 			fmt.Fprintf(os.Stderr, "journal: kmsg read error: %v\n", err)
@@ -157,6 +161,13 @@ func (r *KmsgReader) Run(ctx context.Context) {
 // Stop signals Run to return. Idempotent — safe to call multiple
 // times. Blocks until Run has fully exited so a caller can rely on
 // no more Emit calls happening from this reader after Stop returns.
+//
+// The file is closed before the wait, not after. Go puts the
+// nonblocking fd in its netpoller, so a read parks until the kernel
+// logs something instead of returning EAGAIN, and Run never looks at
+// r.stop while parked. Closing the file is what wakes it: a slinit
+// that was not PID 1 but could read /dev/kmsg (root with -u or -m, a
+// privileged container) hung on exit until the next kernel message.
 func (r *KmsgReader) Stop() {
 	select {
 	case <-r.stop:
@@ -164,8 +175,8 @@ func (r *KmsgReader) Stop() {
 	default:
 		close(r.stop)
 	}
-	<-r.done
 	_ = r.file.Close()
+	<-r.done
 }
 
 // parseKmsgLine turns one raw /dev/kmsg line into an Event. Continuation

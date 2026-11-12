@@ -3227,6 +3227,24 @@ func (sr *ServiceRecord) Started() {
 
 // Stopped is called when the service has actually stopped.
 func (sr *ServiceRecord) Stopped() {
+	// A cron run still under way keeps the service in STOPPING until it
+	// ends, without holding the queue lock (see cronSlot.cronHold).
+	if h, ok := sr.self.(interface{ cronHold() <-chan struct{} }); ok {
+		if hold := h.cronHold(); hold != nil {
+			sr.services.logger.Info("Service '%s': waiting for its cron-command to finish",
+				sr.serviceName)
+			go func() {
+				<-hold
+				sr.services.queueMu.Lock()
+				defer sr.services.queueMu.Unlock()
+				if sr.state.Load() == StateStopping {
+					sr.Stopped()
+				}
+				sr.services.processQueuesLocked()
+			}()
+			return
+		}
+	}
 	sr.stoppedTime = time.Now()
 
 	// Disarm the runtime-max-sec timer (if any). Safe to call when no
@@ -3605,6 +3623,10 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 	}
 
 	sr.state.Store(StateStopping)
+	// A pressure event is of no use once the service is on its way down,
+	// and closing the triggers now keeps their teardown off the rmdir in
+	// Stopped (see psiWatcher).
+	sr.cancelPSIWatcher()
 	sr.waitingForDeps = !allDepsStopped
 	if allDepsStopped {
 		sr.services.AddTransitionQueue(sr.self)

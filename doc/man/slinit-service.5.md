@@ -2154,8 +2154,18 @@ watch; the service remains startable via `slinitctl start`.
     A run under **cron-interval** may not outlive its period. A run under
     **cron-calendar** has no limit (until 3.13.0 it had a minute); wrap the
     command in **timeout**(1) to give it one. A service stopping lets a run
-    finish, for up to a minute. A run that has to end gets SIGTERM with its
-    process group, then SIGKILL 10 seconds later.
+    finish, for up to a minute, and stays in *stopping* until then; slinit
+    goes on answering other requests meanwhile (until 3.15.0 it did not). A
+    run that has to end gets SIGTERM with its process group, then SIGKILL 10
+    seconds later.
+
+    Since 3.15.0, each line the command writes to stdout or stderr is an
+    event of the service in the journal (**slinit-journalctl -u**
+    *service*), at the level a **<**_N_**>** or **ERROR:** prefix gives it,
+    and every run ends with one event saying how it ended:
+    **SLINIT_CRON_RESULT** is *success*, *exit-code* (with
+    **SLINIT_EXIT_STATUS**), *error* or *stopped*. One run sends at most
+    10000 lines. Until 3.15.0 the output went to */dev/null*.
 
 **cron-interval**=*duration*, **cron-delay**=*duration*
 :   Period (default *60s*) and initial delay (interval mode).
