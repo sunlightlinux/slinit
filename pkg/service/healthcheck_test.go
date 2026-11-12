@@ -3,9 +3,33 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// hcWait polls cond until it holds or 5 s pass. These tests used to sleep a
+// fixed 150-300 ms and count on one to three 50 ms checks fitting inside it;
+// under CI load a check ran late or, timed out at its interval, counted as a
+// failure, and TestHealthChecker_Healthy failed a release's tarball check.
+func hcWait(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func fileExists(path string) func() bool {
+	return func() bool { _, err := os.Stat(path); return err == nil }
+}
+
+// A check expected to pass gets an interval, which is also its time limit, long
+// enough that a loaded machine does not turn it into a failure.
+const hcPassInterval = 2 * time.Second
 
 func TestHealthChecker_Healthy(t *testing.T) {
 	set, _ := newTestSet()
@@ -13,15 +37,12 @@ func TestHealthChecker_Healthy(t *testing.T) {
 
 	marker := filepath.Join(t.TempDir(), "healthy")
 	hc := NewHealthChecker(svc, []string{"/bin/sh", "-c", "echo ok > " + marker},
-		50*time.Millisecond, 0, 3, nil, set.logger, nil)
+		hcPassInterval, 0, 3, nil, set.logger, nil)
 
 	hc.Start()
-	time.Sleep(200 * time.Millisecond)
-	hc.Stop()
+	hcWait(t, "the health check to run", fileExists(marker))
+	hc.Stop() // waits for the check under way to be counted
 
-	if _, err := os.Stat(marker); err != nil {
-		t.Errorf("health check command did not execute: %v", err)
-	}
 	if hc.ConsecutiveFailures() != 0 {
 		t.Errorf("expected 0 failures, got %d", hc.ConsecutiveFailures())
 	}
@@ -35,53 +56,44 @@ func TestHealthChecker_Failure(t *testing.T) {
 		50*time.Millisecond, 0, 0, nil, set.logger, nil)
 
 	hc.Start()
-	time.Sleep(200 * time.Millisecond)
+	hcWait(t, "a failure to be counted", func() bool { return hc.ConsecutiveFailures() > 0 })
 	hc.Stop()
-
-	if hc.ConsecutiveFailures() == 0 {
-		t.Error("expected failures > 0")
-	}
 }
 
 func TestHealthChecker_MaxFailuresRestart(t *testing.T) {
 	set, _ := newTestSet()
 	svc := NewInternalService(set, "hc-restart")
 
-	restartCalled := false
-	onFail := func() { restartCalled = true }
+	var restartCalled atomic.Bool
+	onFail := func() { restartCalled.Store(true) }
 
 	hc := NewHealthChecker(svc, []string{"/bin/sh", "-c", "exit 1"},
 		50*time.Millisecond, 0, 3, nil, set.logger, onFail)
 
 	hc.Start()
-	time.Sleep(300 * time.Millisecond)
+	hcWait(t, "the restart after 3 failures", restartCalled.Load)
 	hc.Stop()
-
-	if !restartCalled {
-		t.Error("expected onFail callback after max failures")
-	}
 }
 
 func TestHealthChecker_RecoveryResetsCounter(t *testing.T) {
 	set, _ := newTestSet()
 	svc := NewInternalService(set, "hc-recover")
 
-	// Command that fails once then succeeds
+	// Fails the first time, succeeds after; "ok" marks a success having run.
 	dir := t.TempDir()
-	marker := filepath.Join(dir, "attempt")
-
-	// Script: fail if marker doesn't exist, then create it and succeed next time
+	attempt, ok := filepath.Join(dir, "attempt"), filepath.Join(dir, "ok")
 	cmd := []string{"/bin/sh", "-c",
-		"if [ -f " + marker + " ]; then exit 0; else touch " + marker + " && exit 1; fi"}
+		"if [ -f " + attempt + " ]; then touch " + ok + "; exit 0; else touch " + attempt + "; exit 1; fi"}
 
-	hc := NewHealthChecker(svc, cmd,
-		50*time.Millisecond, 0, 5, nil, set.logger, nil)
+	// Short enough for the second check to come soon, long enough not to be
+	// a time limit a loaded machine runs into.
+	hc := NewHealthChecker(svc, cmd, 500*time.Millisecond, 0, 5, nil, set.logger, nil)
 
 	hc.Start()
-	time.Sleep(200 * time.Millisecond)
+	hcWait(t, "the failing first check", func() bool { return hc.ConsecutiveFailures() > 0 })
+	hcWait(t, "the passing second check", fileExists(ok))
 	hc.Stop()
 
-	// After recovery, counter should be reset to 0
 	if hc.ConsecutiveFailures() != 0 {
 		t.Errorf("expected 0 failures after recovery, got %d", hc.ConsecutiveFailures())
 	}
@@ -98,35 +110,31 @@ func TestHealthChecker_UnhealthyCommand(t *testing.T) {
 		50*time.Millisecond, 0, 0, unhealthyCmd, set.logger, nil)
 
 	hc.Start()
-	time.Sleep(150 * time.Millisecond)
+	hcWait(t, "unhealthy-command to run", fileExists(marker))
 	hc.Stop()
-
-	if _, err := os.Stat(marker); err != nil {
-		t.Errorf("unhealthy-command did not execute: %v", err)
-	}
 }
 
 func TestHealthChecker_InitialDelay(t *testing.T) {
 	set, _ := newTestSet()
 	svc := NewInternalService(set, "hc-delay")
 
+	// A delay far longer than the probe, so a loaded machine oversleeping the
+	// probe does not reach it.
 	marker := filepath.Join(t.TempDir(), "delayed")
 	hc := NewHealthChecker(svc, []string{"/bin/sh", "-c", "touch " + marker},
-		50*time.Millisecond, 200*time.Millisecond, 0, nil, set.logger, nil)
+		hcPassInterval, 1500*time.Millisecond, 0, nil, set.logger, nil)
 
+	start := time.Now()
 	hc.Start()
-	time.Sleep(100 * time.Millisecond)
-	// Should NOT have run yet (delay is 200ms)
-	if _, err := os.Stat(marker); err == nil {
+	time.Sleep(200 * time.Millisecond)
+	if fileExists(marker)() && time.Since(start) < 1500*time.Millisecond {
 		t.Error("health check ran before delay expired")
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	hcWait(t, "the delayed health check", fileExists(marker))
 	hc.Stop()
-
-	// Now it should have run
-	if _, err := os.Stat(marker); err != nil {
-		t.Errorf("health check did not run after delay: %v", err)
+	if time.Since(start) < 1500*time.Millisecond {
+		t.Errorf("health check ran %v after start, before the 1.5 s delay", time.Since(start))
 	}
 }
 
