@@ -6,20 +6,53 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"golang.org/x/sys/unix"
 )
 
-// nonblock is unix.O_NONBLOCK — imported inline so session.go's fifo
-// open doesn't have to reach into unix directly.
-const nonblock = unix.O_NONBLOCK
+// sessionFD is what CreateSession returns in the slot that used to carry
+// the session FIFO. Since systemd v258 logind tracks a session by its
+// leader's pidfd and hands back "something" there, a fresh eventfd per
+// call. One shared eventfd does the same job: godbus does not dup a reply
+// fd, so a per-call one could never be closed, and pam_systemd keeps the
+// fd only when it is a FIFO (talking to an older logind), so nobody reads
+// this one.
+var sessionFD = sync.OnceValue(func() dbus.UnixFD {
+	fd, err := unix.Eventfd(0, unix.EFD_CLOEXEC)
+	if err != nil {
+		return -1
+	}
+	return dbus.UnixFD(fd)
+})
 
-// makeFifo creates a FIFO node at path. Wraps unix.Mkfifo — the
-// stdlib doesn't expose one.
-func makeFifo(path string, mode uint32) error {
-	return unix.Mkfifo(path, mode)
+// pidFromPidfd reads the pid a pidfd refers to from /proc/self/fdinfo.
+// The kernel reports -1 once the process has exited and 0 when it lives
+// in a pid namespace we cannot see; neither can lead a session.
+func pidFromPidfd(fd int) (uint32, error) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/self/fdinfo/%d", fd))
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		v, ok := strings.CutPrefix(line, "Pid:")
+		if !ok {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0, err
+		}
+		if n <= 0 {
+			return 0, fmt.Errorf("pidfd refers to no visible process (Pid: %d)", n)
+		}
+		return uint32(n), nil
+	}
+	return 0, fmt.Errorf("fd %d is not a pidfd", fd)
 }
 
 // killPID sends the given signal to the process. Broken out so

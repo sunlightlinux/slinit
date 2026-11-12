@@ -24,6 +24,27 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- `slinit-logind` implements `CreateSessionWithPIDFD`, with systemd's
+  signature: the session leader is given as a pidfd, so a reused pid cannot
+  make another process the leader. `pam_systemd` prefers it, and so will
+  `pam_slinit.so`.
+
+### Changed
+
+- The file descriptor `CreateSession` returns is a placeholder eventfd, as in
+  systemd since v258. It was the read end of a FIFO that nothing watched, and
+  the wrong end for the pre-v258 contract besides. A session ends when its
+  leader exits or on `ReleaseSession`, as it already did; no FIFO files are
+  created under `/run/slinit-logind/sessions` any more.
+- `CreateSession` places a session whose tty is a virtual console (`tty1`) or
+  `console` on `seat0` and reads its VT number from the tty, as systemd-logind
+  does. PAM modules send the tty and leave seat and VT empty, so a console
+  login had no seat: never active, and invisible to a "local active session"
+  rule. A seat other than `seat0` with a virtual console, or a VT number that
+  contradicts the tty, is refused with `InvalidArgs`.
+
 ## [3.15.0] — 2026-11-12
 
 **A minor: a `cron-command`'s output reaches the journal, stopping a service

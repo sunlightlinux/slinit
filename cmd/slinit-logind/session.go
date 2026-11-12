@@ -100,10 +100,80 @@ func nextSessionID() (string, error) {
 	return "c" + strconv.FormatUint(n, 10), nil
 }
 
+// seatFromTTY places a session on seat0 when its tty is a virtual console
+// or the console, and reads the VT number from a "ttyN", as systemd-logind
+// does on CreateSession. PAM modules pass the tty and leave seat and VT
+// empty, so without this a login on tty1 had no seat: never active, no VT
+// to follow, and nothing for a "local active session" rule to match.
+// A "/dev/" prefix, which some callers send, is dropped.
+func seatFromTTY(seat, tty string, vtnr uint32) (string, string, uint32, error) {
+	tty = strings.TrimPrefix(tty, "/dev/")
+	if tty == "console" {
+		if seat != "" && seat != "seat0" {
+			return "", "", 0, fmt.Errorf("console TTY specified but seat is not seat0")
+		}
+		return "seat0", tty, vtnr, nil
+	}
+	n, ok := strings.CutPrefix(tty, "tty")
+	v, err := strconv.ParseUint(n, 10, 32)
+	if !ok || err != nil || v == 0 {
+		return seat, tty, vtnr, nil // not a virtual console
+	}
+	if seat != "" && seat != "seat0" {
+		return "", "", 0, fmt.Errorf("TTY %s is virtual console but seat %s is not seat0", tty, seat)
+	}
+	if vtnr != 0 && vtnr != uint32(v) {
+		return "", "", 0, fmt.Errorf("specified TTY and VT number do not match")
+	}
+	return "seat0", tty, uint32(v), nil
+}
+
+// CreateSessionWithPIDFD is CreateSession with the leader given as a
+// pidfd, which pam_systemd has preferred since v254: a pid can be reused
+// between the caller reading it and logind acting on it, a pidfd cannot.
+// Same signature as systemd's (uhsssssussbsst + properties); flags must be
+// 0, as there. The pid is read from the pidfd once and the session then
+// goes the way of CreateSession, whose leader watch opens its own pidfd.
+func (m *manager) CreateSessionWithPIDFD(
+	sender dbus.Sender,
+	uid uint32,
+	pidfd dbus.UnixFD,
+	service, sessionType, sessionClass, desktop string,
+	seatID string,
+	vtnr uint32,
+	tty, display string,
+	remote bool,
+	remoteUser, remoteHost string,
+	flags uint64,
+	properties []Property,
+) (string, dbus.ObjectPath, string, dbus.UnixFD, uint32, string, uint32, bool, *dbus.Error) {
+	// The fd is ours once godbus has received it, whatever happens next.
+	defer unix.Close(int(pidfd))
+	if err := m.authorize(sender, noGoodUser, "CreateSessionWithPIDFD"); err != nil {
+		return "", "", "", -1, 0, "", 0, false, err
+	}
+	invalid := func(msg string) (string, dbus.ObjectPath, string, dbus.UnixFD, uint32, string, uint32, bool, *dbus.Error) {
+		return "", "", "", -1, 0, "", 0, false,
+			dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{msg})
+	}
+	if flags != 0 {
+		return invalid("Flags must be zero.")
+	}
+	pid, err := pidFromPidfd(int(pidfd))
+	if err != nil {
+		return invalid("Invalid leader PIDFD: " + err.Error())
+	}
+	if pid == 1 || pid == uint32(os.Getpid()) {
+		return invalid("Invalid leader PID")
+	}
+	return m.CreateSession(sender, uid, pid, service, sessionType, sessionClass, desktop,
+		seatID, vtnr, tty, display, remote, remoteUser, remoteHost, properties)
+}
+
 // CreateSession — org.freedesktop.login1.Manager.CreateSession.
 // Signature matches elogind's introspection verbatim so pam_elogind
 // (or pam_systemd) can invoke it unchanged. Returns the wire tuple
-// with the fifo fd as a dbus.UnixFD.
+// with a placeholder fd where the session FIFO used to be (see sessionFD).
 //
 // The leading `dbus.Sender` argument is godbus's magic-value injection
 // mechanism: at dispatch time it receives the caller's bus name so we
@@ -138,6 +208,11 @@ func (m *manager) CreateSession(
 	if err := m.authorize(sender, noGoodUser, "CreateSession"); err != nil {
 		return "", "", "", -1, 0, "", 0, false, err
 	}
+	var terr error
+	if seatID, tty, vtnr, terr = seatFromTTY(seatID, tty, vtnr); terr != nil {
+		return "", "", "", -1, 0, "", 0, false,
+			dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{terr.Error()})
+	}
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 
@@ -156,7 +231,7 @@ func (m *manager) CreateSession(
 		return existingID,
 			sessionPath(existingID),
 			existingRec.RuntimePath,
-			openFifoLocked(existingID),
+			sessionFD(),
 			existingRec.UserID,
 			existingRec.SeatID,
 			existingRec.VTNr,
@@ -417,15 +492,13 @@ func (m *manager) CreateSession(
 	// blocks the display manager from starting a replacement.
 	m.watchSessionLeader(id, pid)
 
-	// FIFO fd: pam_open_session keeps this open; ReleaseSession
-	// happens implicitly on close if pam_close_session doesn't beat
-	// it there. Phase B ships the fd but relies on the explicit
-	// ReleaseSession call for cleanup — a watch-goroutine on the
-	// read-end is Phase C.
+	// The session ends with its leader (watchSessionLeader) or an
+	// explicit ReleaseSession; the fd slot is a placeholder, as in
+	// systemd since v258 (see sessionFD).
 	return id,
 		sessionPath(id),
 		runtimePath,
-		openFifoLocked(id),
+		sessionFD(),
 		uid,
 		seatID,
 		vtnr,
@@ -466,7 +539,7 @@ func (m *manager) releaseSession(id string) *dbus.Error {
 			[]interface{}{id})
 	}
 	_ = os.Remove(sessionFile(id))
-	_ = os.Remove(fifoPath(id))
+	_ = os.Remove(fifoPath(id)) // left by a slinit-logind before 3.16
 	_ = os.Remove(compatSessionFile(id))
 	if scopeUnderCgroupFS(rec.Scope) {
 		_ = os.Remove(rec.Scope) // rmdir; EBUSY tolerated
@@ -1065,30 +1138,6 @@ func userHasOtherSessionsLocked(uid uint32, excludeID string) bool {
 		}
 	}
 	return false
-}
-
-// openFifoLocked returns a read-end fd for the session fifo, creating
-// the pipe file if it doesn't exist yet. systemd's contract is that
-// closing this fd (from the CreateSession caller side) marks the
-// session as released; Phase B doesn't watch it yet — clients must
-// still call ReleaseSession explicitly.
-func openFifoLocked(id string) dbus.UnixFD {
-	p := fifoPath(id)
-	_ = os.Remove(p) // stale from a previous session with recycled id
-	if err := makeFifo(p, 0600); err != nil {
-		return 0
-	}
-	// O_NONBLOCK|O_RDONLY on the read side so the open doesn't block
-	// waiting for a writer.
-	f, err := os.OpenFile(p, os.O_RDONLY|nonblock, 0)
-	if err != nil {
-		return 0
-	}
-	// We keep the fd numbered by our runtime — D-Bus dupes it before
-	// sending to the client, and Go's GC won't close it as long as
-	// `f` stays reachable; we intentionally leak it (small: one fd
-	// per session, small session count).
-	return dbus.UnixFD(f.Fd())
 }
 
 // writeJSONAtomic writes via temp-file + rename so a concurrent

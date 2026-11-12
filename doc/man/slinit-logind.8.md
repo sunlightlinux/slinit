@@ -73,6 +73,20 @@ session, and brings it back only when it observes its own session's
 permanently active never produces that transition, and the greeter
 comes back as a blank screen after logout.
 
+# SESSION LIFETIME
+
+A session ends when its leader process exits, which the daemon watches
+through a pidfd, or on an explicit *ReleaseSession*. This is how
+systemd-logind has worked since v258. *CreateSessionWithPIDFD* names the
+leader by a pidfd instead of a pid, so a pid reused between the caller
+reading it and the daemon acting on it cannot make another process the
+leader.
+
+The file descriptor *CreateSession* returns is a placeholder, as it is in
+systemd since v258: a session no longer ends when it is closed. Before
+3.16 it was the read end of a FIFO under */run/slinit-logind/sessions*,
+which nothing watched.
+
 # FILES
 
 */run/slinit-logind/sessions/*<id>*.json*
@@ -232,7 +246,7 @@ Bus name *org.freedesktop.login1*, object */org/freedesktop/login1*,
 interface *org.freedesktop.login1.Manager*.
 
 Sessions, users and seats
-:   *CreateSession*, *ReleaseSession*, *ActivateSession*,
+:   *CreateSession*, *CreateSessionWithPIDFD*, *ReleaseSession*, *ActivateSession*,
     *ActivateSessionOnSeat*, *LockSession*, *UnlockSession*,
     *LockSessions*, *UnlockSessions*, *KillSession*, *KillUser*,
     *TerminateSession*, *TerminateUser*, *TerminateSeat*,
@@ -264,7 +278,8 @@ call is allowed from root, or from the user it is about, and refused with
 checked, and the D-Bus policy was the only barrier.
 
 Root only
-:   the power and sleep calls, *Inhibit*, *CreateSession*, *LockSessions*,
+:   the power and sleep calls, *Inhibit*, *CreateSession* and
+    *CreateSessionWithPIDFD*, *LockSessions*,
     *UnlockSessions*, *TerminateSeat*, *SetUserLinger* (even for the
     caller's own uid), and writing the manager's properties.
 
