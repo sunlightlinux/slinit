@@ -13,6 +13,9 @@
 #   ACCEPTANCE_SSH_KEY  — explicit identity file
 #   VERBOSE=1           — echo each SSH invocation
 #   ITERS=N             — iterations per case (default 30)
+#   PERF_MEAN_ITERS=N   — for operations under PERF_MEAN_MAX_MS (default 5),
+#                         also the mean of N runs timed as one interval
+#                         (default 200; 0 turns it off)
 #   KEEP_REMOTE=1       — leave /tmp/slinit-perf.$$ on target for inspection
 #
 # Usage:
@@ -130,7 +133,7 @@ for case_path in "${CASES[@]}"; do
     # fails at the end.
     _mark="${REMOTE_DIR}/failed.${case_name}"
     _defect="${REMOTE_DIR}/defect.${case_name}"
-    _remote_env="ITERS=${ITERS} PERF_FAIL_MARK=${_mark} PERF_DEFECT_MARK=${_defect}"
+    _remote_env="ITERS=${ITERS} PERF_MEAN_ITERS=${PERF_MEAN_ITERS:-200} PERF_MEAN_MAX_MS=${PERF_MEAN_MAX_MS:-5} PERF_FAIL_MARK=${_mark} PERF_DEFECT_MARK=${_defect}"
     # Don't let `set -e` abort the suite mutely. A case's exit status is
     # its LAST command's, so a trailing best-effort cleanup without
     # `|| true` fails the case even though every benchmark printed fine.

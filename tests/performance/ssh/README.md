@@ -23,6 +23,9 @@ VERBOSE=1 ACCEPTANCE_HOST=ceres.ionutnechita.ro \
 - `ACCEPTANCE_SSH_KEY` — optional explicit identity file
 - `VERBOSE=1` — echo the SSH invocation per case
 - `ITERS=N` — iterations per case (default 30)
+- `PERF_MEAN_ITERS=N` — for an operation whose median is under
+  `PERF_MEAN_MAX_MS` (default 5), also time N more runs as one interval and
+  report their mean (default 200; `0` turns it off)
 - `KEEP_REMOTE=1` — leave `/tmp/slinit-perf.$$` on target for inspection
 
 Run a subset by passing case paths:
@@ -222,6 +225,13 @@ Bench-style lines with median + p95 + min in milliseconds:
 
     BenchmarkCtlVersion                 20  median=   1.017 ms  p95=   1.199 ms  min=   0.910 ms
     BenchmarkCtlLs                      20  median=   1.214 ms  p95=   1.735 ms  min=   1.046 ms
+
+A short operation also gets `mean(200)=`, the mean of 200 more runs timed as
+one interval. **Compare that, not the median, when looking for a change under a
+millisecond.** Each per-iteration sample includes a fork of `date`, the clock,
+and 30 samples of a 2 ms operation are noisy: on ceres, 730 read 1.6 ms one day
+and 2.1-2.4 ms the next, for a `restart` whose mean over 200 runs was 1.6 ms
+on both days.
 
 First measurement on ceres (KVM x86_64, v2.2.7, `ITERS=15`; numbers
 originally captured on v2.2.6+hot-patched-cfe16ab and re-verified

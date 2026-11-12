@@ -93,6 +93,38 @@ perf_spread_pct() {
 #   Records deltas to a scratch file, prints benchstat-style summary
 #   line: `Benchmark<LABEL>  N  median=X ms  p95=Y ms  min=Z ms`.
 #   Set PERF_TRACE=1 to dump every sample to stderr for debugging.
+# perf_batch_mean MEDIAN_NS "command..."
+#   For a short operation, the mean of PERF_MEAN_ITERS runs (default 200)
+#   timed as one interval, as "  mean(N)=  x.xxx ms" in _prf_mean_txt; empty
+#   for a long one (median at or over PERF_MEAN_MAX_MS, default 5) or when
+#   PERF_MEAN_ITERS=0. Not printed on stdout to be captured: a $(...)
+#   subshell would lose the failures it counts, and did.
+#
+#   The per-iteration median carries the clock itself: perf_now_ns forks
+#   date inside every interval, and 30 samples of a ~2 ms operation are
+#   noisy. On ceres, 730 read 1.6 ms one day and 2.1-2.4 ms the next for a
+#   restart whose mean over 200 runs was 1.6 ms on both. One interval for the
+#   whole batch takes the clock out, and hundreds of runs take out the noise.
+#   A failure inside the batch counts into _prf_nfail like any other, and its
+#   runs into _prf_nruns.
+perf_batch_mean() {
+    _prf_mean_txt=""
+    _prf_bn="${PERF_MEAN_ITERS:-200}"
+    [ "$_prf_bn" -gt 0 ] 2>/dev/null || return 0
+    _prf_bmax=$(( ${PERF_MEAN_MAX_MS:-5} * 1000000 ))
+    awk -v m="$1" -v x="$_prf_bmax" 'BEGIN{exit !(m < x)}' || return 0
+    _prf_bi=0
+    _prf_bt0="$(perf_now_ns)"
+    while [ "$_prf_bi" -lt "$_prf_bn" ]; do
+        eval "$2" > /dev/null 2>&1 || _prf_nfail=$(( _prf_nfail + 1 ))
+        _prf_bi=$(( _prf_bi + 1 ))
+    done
+    _prf_bt1="$(perf_now_ns)"
+    _prf_nruns=$(( _prf_nruns + _prf_bn ))
+    _prf_mean_txt="$(awk -v a="$_prf_bt0" -v b="$_prf_bt1" -v n="$_prf_bn" \
+        'BEGIN{printf "  mean(%d)=%8.3f ms", n, (b-a)/n/1e6}')"
+}
+
 perf_run_iters() {
     _prf_iters="$1"; _prf_label="$2"; _prf_cmd="$3"
     _prf_samples="$(mktemp)"
@@ -120,10 +152,12 @@ perf_run_iters() {
     _prf_med_ms="$(awk -v n="$_prf_med" 'BEGIN{printf "%.3f", n/1e6}')"
     _prf_p95_ms="$(awk -v n="$_prf_p95" 'BEGIN{printf "%.3f", n/1e6}')"
     _prf_min_ms="$(awk -v n="$_prf_min" 'BEGIN{printf "%.3f", n/1e6}')"
-    printf "Benchmark%-24s %4d  median=%8s ms  p95=%8s ms  min=%8s ms\n" \
-        "$_prf_label" "$_prf_iters" "$_prf_med_ms" "$_prf_p95_ms" "$_prf_min_ms"
+    _prf_nruns="$_prf_iters"
+    perf_batch_mean "$_prf_med" "$_prf_cmd"
+    printf "Benchmark%-24s %4d  median=%8s ms  p95=%8s ms  min=%8s ms%s\n" \
+        "$_prf_label" "$_prf_iters" "$_prf_med_ms" "$_prf_p95_ms" "$_prf_min_ms" "$_prf_mean_txt"
     if [ "$_prf_nfail" -gt 0 ]; then
-        echo "  FAILED: $_prf_nfail of $_prf_iters iterations exited non-zero;" \
+        echo "  FAILED: $_prf_nfail of $_prf_nruns runs exited non-zero;" \
              "the times above are of an error path, not of $_prf_label"
         _prf_note_failure "$_prf_cmd"
         return 1
