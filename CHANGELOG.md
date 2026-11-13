@@ -24,6 +24,17 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.16.0] — 2026-11-13
+
+**A minor aligning `slinit-logind`'s session creation with systemd-logind v258,
+for `pam_slinit.so`: `CreateSessionWithPIDFD`, a placeholder session fd, seat and
+VT from the tty, and `SessionBusy` for a nested session or an occupied VT.** Check
+before upgrading if something calls `CreateSession` from inside a session and
+expects the old session back with `existing = true` (it now gets `SessionBusy`,
+which `pam_systemd`, `pam_elogind` and `pam_slinit.so` read as nothing to open),
+or relies on two non-greeter sessions on one VT. The control protocol does not
+change.
+
 ### Added
 
 - `slinit-logind` implements `CreateSessionWithPIDFD`, with systemd's
