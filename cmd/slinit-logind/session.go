@@ -100,6 +100,41 @@ func nextSessionID() (string, error) {
 	return "c" + strconv.FormatUint(n, 10), nil
 }
 
+// busyReason says why a new session may not be created, or "" when it may.
+//
+// A leader that already leads or sits inside a session is refused: that is
+// su and sudo run from a session, and a nested session would make whatever
+// they run look like a separate login, with a seat and possibly the active
+// VT. systemd answers SessionBusy, and stopped returning the old session
+// with existing=true; so does this, which pam_slinit.so treats as success
+// with nothing to open.
+//
+// A VT on seat0 that a non-greeter session already holds is refused too.
+// Being "active" follows the foreground VT, so a second session claiming
+// the same VT would be counted active, and local, on someone else's
+// console — what a polkit allow_active rule hands privileges to. A greeter
+// may share a VT, either way round, because display managers start the
+// user session on the greeter's VT and end the greeter after it.
+func busyReason(pid uint32, seat string, vtnr uint32, class string, sessions []SessionRecord) string {
+	if pid != 0 {
+		if id, _ := findSessionByLeaderLocked(pid); id != "" {
+			return "Already running in a session or user slice"
+		}
+		if findSessionByCgroup(pid) != "" {
+			return "Already running in a session or user slice"
+		}
+	}
+	if class == "greeter" || seat != "seat0" || vtnr == 0 {
+		return ""
+	}
+	for _, rec := range sessions {
+		if rec.SeatID == "seat0" && rec.VTNr == vtnr && rec.Class != "greeter" {
+			return "Virtual terminal already occupied by a session"
+		}
+	}
+	return ""
+}
+
 // seatFromTTY places a session on seat0 when its tty is a virtual console
 // or the console, and reads the VT number from a "ttyN", as systemd-logind
 // does on CreateSession. PAM modules pass the tty and leave seat and VT
@@ -223,20 +258,12 @@ func (m *manager) CreateSession(
 		}
 	}
 
-	// If a session for this leader PID already exists, systemd's
-	// contract is to return the existing one with existing=true rather
-	// than allocate a new one. Cheap linear scan — session counts stay
-	// small (dozens, not thousands) so a hash isn't worth it.
-	if existingID, existingRec := findSessionByLeaderLocked(pid); existingID != "" {
-		return existingID,
-			sessionPath(existingID),
-			existingRec.RuntimePath,
-			sessionFD(),
-			existingRec.UserID,
-			existingRec.SeatID,
-			existingRec.VTNr,
-			true,
-			nil
+	// Refused as systemd-logind refuses them (logind-dbus.c, 87da7901bb),
+	// for the same reasons; see busyReason.
+	if why := busyReason(pid, seatID, vtnr, sessionClass, loadSessionRecords()); why != "" {
+		m.dbgf("CreateSession uid=%d leader=%d refused: %s", uid, pid, why)
+		return "", "", "", -1, 0, "", 0, false,
+			dbus.NewError("org.freedesktop.login1.SessionBusy", []any{why})
 	}
 
 	id, err := nextSessionID()

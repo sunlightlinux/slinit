@@ -44,6 +44,14 @@ verified with `git tag -v`.
   login had no seat: never active, and invisible to a "local active session"
   rule. A seat other than `seat0` with a virtual console, or a VT number that
   contradicts the tty, is refused with `InvalidArgs`.
+- `CreateSession` refuses with `org.freedesktop.login1.SessionBusy`, as
+  systemd-logind does, when the leader already leads or sits inside a session
+  (`su` or `sudo` run from a session), and when a non-greeter session already
+  holds the requested VT on `seat0`. It used to return the leader's session
+  with `existing = true`, and created a second session on a held VT or inside
+  another session, which could then be counted active and local: what a polkit
+  `allow_active` rule hands privileges to. A greeter may still share a VT, so a
+  display manager can hand its VT over to the user session.
 
 ## [3.15.0] — 2026-11-12
 

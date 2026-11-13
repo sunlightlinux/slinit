@@ -82,6 +82,15 @@ leader by a pidfd instead of a pid, so a pid reused between the caller
 reading it and the daemon acting on it cannot make another process the
 leader.
 
+*CreateSession* refuses with *org.freedesktop.login1.SessionBusy*, as
+systemd-logind does, when the leader already leads or runs inside a
+session (**su**(1) or **sudo**(8) from a session; **pam_slinit**(8) takes
+that as nothing to open), and when a session other than a greeter
+already holds the requested VT on *seat0*. Being active follows the
+foreground VT, so either would let a second session count as active and
+local on somebody else's console. A greeter may share a VT either way
+round, which is how a display manager hands its VT to the user session.
+
 The file descriptor *CreateSession* returns is a placeholder, as it is in
 systemd since v258: a session no longer ends when it is closed. Before
 3.16 it was the read end of a FIFO under */run/slinit-logind/sessions*,

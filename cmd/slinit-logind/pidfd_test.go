@@ -121,3 +121,54 @@ func TestSeatFromTTY(t *testing.T) {
 		}
 	}
 }
+
+// A session may not be opened from inside another, nor on a VT another
+// non-greeter session holds: either would let a nested or second session be
+// counted active, and local, which is what polkit grants privileges to.
+func TestBusyReason(t *testing.T) {
+	usersBus(t) // temporary state root with session c1
+	leader := SessionRecord{ID: "c9", UserID: 1000, SeatID: "seat0", VTNr: 1, LeaderPID: 4242, Class: "user"}
+	if err := writeJSONAtomic(sessionFile("c9"), leader); err != nil {
+		t.Fatal(err)
+	}
+	onVT1 := []SessionRecord{leader}
+	greeterOnVT1 := []SessionRecord{{ID: "c8", SeatID: "seat0", VTNr: 1, Class: "greeter"}}
+
+	cases := []struct {
+		name     string
+		pid      uint32
+		seat     string
+		vtnr     uint32
+		class    string
+		sessions []SessionRecord
+		busy     bool
+	}{
+		{"leader of a session already (su from it)", 4242, "", 0, "user", nil, true},
+		{"fresh leader, free VT", 5555, "seat0", 2, "user", onVT1, false},
+		{"VT held by a user session", 5555, "seat0", 1, "user", onVT1, true},
+		{"VT held, class left empty", 5555, "seat0", 1, "", onVT1, true},
+		{"greeter may take a held VT (re-login)", 5555, "seat0", 1, "greeter", onVT1, false},
+		{"user session may take a greeter's VT", 5555, "seat0", 1, "user", greeterOnVT1, false},
+		{"no VT", 5555, "seat0", 0, "user", onVT1, false},
+		{"other seat", 5555, "seat1", 1, "user", onVT1, false},
+	}
+	for _, c := range cases {
+		why := busyReason(c.pid, c.seat, c.vtnr, c.class, c.sessions)
+		if (why != "") != c.busy {
+			t.Errorf("%s: busyReason = %q, want busy=%v", c.name, why, c.busy)
+		}
+	}
+}
+
+// The refusal reaches the caller as systemd's SessionBusy, which
+// pam_slinit.so reads as "nothing to open" and pam_systemd the same way.
+func TestCreateSessionRefusesNestedAsSessionBusy(t *testing.T) {
+	m := usersBus(t)
+	if err := writeJSONAtomic(sessionFile("c9"), SessionRecord{ID: "c9", UserID: 1000, LeaderPID: 4242}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _, _, _, _, _, err := m.CreateSession(root, 1000, 4242, "su", "tty", "user", "", "", 0, "", "", false, "", "", nil)
+	if err == nil || err.Name != "org.freedesktop.login1.SessionBusy" {
+		t.Fatalf("nested CreateSession: %v, want org.freedesktop.login1.SessionBusy", err)
+	}
+}
