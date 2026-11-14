@@ -11,7 +11,11 @@ NS_PID="/run/slinit-journald.$NS.pid"
 NS_SOCK="/run/slinit/events-$NS.sock"
 NS_CTL="/run/slinit-journald.$NS.ctl"
 
+_daemon=""
 cleanup() {
+    # By the pid we started, not only the pid-file: a run that failed
+    # before the file appeared used to leave the daemon running.
+    [ -n "$_daemon" ] && kill "$_daemon" 2>/dev/null
     [ -f "$NS_PID" ] && kill "$(cat "$NS_PID")" 2>/dev/null
     rm -f "$NS_PID" "$NS_SOCK" "$NS_CTL"
     rm -rf "$NS_DIR_PERSIST" "$NS_DIR_VOLATILE"
@@ -29,7 +33,15 @@ assert_not_contains "$_out" "$NS" "--list-namespaces empty before daemon starts"
 # Spawn the namespaced daemon. --namespace suffixes the default
 # paths automatically; we only supply --namespace and the format.
 slinit-journald --namespace="$NS" --format=jsonl >/dev/null 2>&1 &
-sleep 0.4
+_daemon=$!
+# The pid-file is written once the daemon is ready, after it has replayed
+# slinit's ring buffer. With the ring full (4096 events, as after the
+# performance suite) that took 0.6-1.4s on ceres; a fixed 0.4s wait failed.
+_w=0
+while [ ! -f "$NS_PID" ] && [ "$_w" -lt 50 ]; do
+    sleep 0.1
+    _w=$((_w + 1))
+done
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -f "$NS_PID" ]; then
