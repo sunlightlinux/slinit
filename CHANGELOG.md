@@ -24,6 +24,26 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.16.1] — 2026-11-15
+
+**A patch: on a serial console the getty's `login:` banner no longer lands on
+the tail of slinit's last `[ OK ]` boot line. Nothing behavioural changes and
+the control protocol stays at version 7.**
+
+### Fixed
+
+- On a serial console (`console=ttyS0`, where `/dev/console` and the getty's
+  tty are the same device) slinit's final `[ OK ]` status line and agetty's
+  `login:` banner shared one row, leaving a stray truncated `[ OK` above the
+  prompt. slinit now writes a blank line at end of boot — the boot-side
+  companion of the clear-line it already emits before the first `[STOPPD]` at
+  shutdown — so the banner starts on its own row. It is a plain newline, not a
+  clear-line, so a banner the getty has already printed is never wiped.
+- Functional case 207 (`journalctl --namespace`) waited a fixed interval for
+  journald's pid-file, which a loaded host does not always meet; it now polls
+  until journald is ready and kills the daemon it started, not just its
+  pid-file.
+
 ## [3.16.0] — 2026-11-13
 
 **A minor aligning `slinit-logind`'s session creation with systemd-logind v258,
