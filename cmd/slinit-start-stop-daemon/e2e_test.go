@@ -10,6 +10,26 @@ import (
 	"time"
 )
 
+// waitExe blocks until /proc/<pid>/exe resolves to want, the same symlink
+// the match code reads. Start()/spawn() return after the fork but before the
+// child execs, so the symlink points at the test binary for a while; under
+// load a fixed sleep raced the exec and the running/status probes then found
+// "no matching process" and started a second daemon. Polling removes the
+// guessed duration.
+func waitExe(t *testing.T, pid int, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if exe, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); exe == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/proc/%d/exe never became %s", pid, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestE2EStartBackgroundStop exercises the real spawn → pidfile → stop
 // cycle against /bin/sleep, the smallest widely-available "hangs until
 // killed" binary. Uses spawn() and cmdStop() directly rather than
@@ -51,9 +71,9 @@ func TestE2EStartBackgroundStop(t *testing.T) {
 		t.Fatalf("pid %d exited before we could probe", pid)
 	}
 
-	// Give the exec syscall a moment to complete so /proc/PID/exe points
-	// at sleep and not our test binary.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the exec to complete so /proc/PID/exe points at sleep and
+	// not our test binary.
+	waitExe(t, pid, sleep)
 
 	// Status: should report running.
 	statusOpts := Options{PidFile: pidfile}
@@ -123,7 +143,7 @@ func TestE2EStartAlreadyRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Wait for /proc/PID/exe to reflect sleep.
-	time.Sleep(100 * time.Millisecond)
+	waitExe(t, pid, sleep)
 
 	// Second start with same pidfile should refuse.
 	opts := Options{
