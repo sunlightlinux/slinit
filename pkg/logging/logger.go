@@ -251,6 +251,29 @@ func (l *Logger) SetShutdownConsole(enabled bool) {
 	l.shuttingDown = enabled
 }
 
+// FinishBootConsole emits one blank line on the boot console at end of boot,
+// so a getty's "login:" banner — which on a serial console (console=ttyS0,
+// where /dev/console and the getty's tty are the same device) shares the
+// line with slinit's "[ OK ]" status output — starts on its own row instead
+// of landing on the last "[ OK ]" marker, whose tail the banner would
+// otherwise overwrite. It is the boot-side companion of SetShutdownConsole,
+// but writes a plain "\r\n" rather than a clear-line: at boot the getty may
+// already have printed, and "\x1b[2K" would wipe its banner, whereas a
+// newline only ever adds separation. Called once from OnBootReady, before
+// the console tee is muted, so it passes through in order after the final
+// "[ OK ]". No-op off a TTY (a container's log pipe) or when the boot
+// console is disabled.
+func (l *Logger) FinishBootConsole() {
+	if !l.bootConsole || !l.consoleIsTTY {
+		return
+	}
+	const nl = "\r\n"
+	fmt.Fprint(l.output, nl)
+	if l.consoleDup != nil {
+		fmt.Fprint(l.consoleDup, nl)
+	}
+}
+
 // bootStatus writes a "<marker> name" status line to the console (and the
 // console-dup writer, if any). The marker comes from markerOK/markerFail/
 // markerStopped, which apply ANSI color when l.color is set. Suppressed

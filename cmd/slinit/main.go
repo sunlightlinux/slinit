@@ -1130,8 +1130,16 @@ func main() {
 			// onwards — a service crash-looping to its restart limit
 			// produced no output at all, and /run/slinit/catch-all.log
 			// goes away with the container.
-			if cal != nil && !containerMode {
-				cal.SetConsoleMuted(true)
+			if !containerMode {
+				// Blank line so a getty "login:" banner, which shares
+				// the serial console device with the "[ OK ]" output,
+				// starts below the last marker instead of overwriting
+				// its tail. Emitted before the mute so it passes through
+				// the tee in order after the final "[ OK ]".
+				logger.FinishBootConsole()
+				if cal != nil {
+					cal.SetConsoleMuted(true)
+				}
 			}
 			hooks.Run("system-up", logger)
 			// finit-parity Debian/BusyBox network integration:

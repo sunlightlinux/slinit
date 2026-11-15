@@ -29,6 +29,50 @@ func TestBootConsoleStatusLines(t *testing.T) {
 	}
 }
 
+// TestFinishBootConsole verifies the end-of-boot separator: a single blank
+// "\r\n" after the last status line, so a getty "login:" banner that shares
+// the serial console starts below the last "[ OK ]" instead of overwriting
+// it. It is a plain newline, never a clear-line, so a banner the getty has
+// already printed is never wiped.
+func TestFinishBootConsole(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(LevelWarn)
+	l.SetOutput(&buf)
+	l.SetBootConsole(true, false)
+
+	l.ServiceStarted("getty-ttyS0")
+	l.FinishBootConsole()
+
+	got := buf.String()
+	want := "[ OK ] getty-ttyS0\r\n\r\n"
+	if got != want {
+		t.Errorf("boot console output:\n got %q\nwant %q", got, want)
+	}
+}
+
+// TestFinishBootConsoleSuppressed verifies the separator is a no-op off a TTY
+// (a container's log pipe, where a stray "\r\n" is noise) and when the boot
+// console is disabled.
+func TestFinishBootConsoleSuppressed(t *testing.T) {
+	var offTTY bytes.Buffer
+	l := New(LevelWarn)
+	l.SetOutput(&offTTY)
+	l.SetBootConsole(true, false)
+	l.SetConsoleIsTTY(false)
+	l.FinishBootConsole()
+	if got := offTTY.String(); got != "" {
+		t.Errorf("off a TTY, want no separator, got %q", got)
+	}
+
+	var bootOff bytes.Buffer
+	l2 := New(LevelWarn)
+	l2.SetOutput(&bootOff)
+	l2.FinishBootConsole() // boot console never enabled
+	if got := bootOff.String(); got != "" {
+		t.Errorf("boot console off, want no separator, got %q", got)
+	}
+}
+
 // TestBootConsoleShutdownMarkers verifies that once shutdown is signalled,
 // service stop events render as "[STOPPD] name" while starts and failures
 // keep their boot markers. The output is prefixed with a cursor-reset +
