@@ -24,6 +24,22 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.16.2] — 2026-11-15
+
+**A patch: a test-only flake fix. No shipped code changes — nothing but
+`_test.go` is touched — and the control protocol stays at version 7.**
+
+### Fixed
+
+- The `slinit-start-stop-daemon` E2E tests (`TestE2EStartAlreadyRunning`,
+  `TestE2EStartBackgroundStop`) slept a fixed 100 ms for a spawned daemon to
+  reach its `exec` before reading `/proc/PID/exe`. `Start()`/`spawn()` return
+  after the fork but before the exec, so under the full suite's parallel load
+  the symlink still named the test binary, the match found "no matching
+  process", and a case that should detect an already-running daemon started a
+  second one and ran ~120 s. They now poll the symlink until it is the daemon
+  binary. Test-only; the runtime is unchanged.
+
 ## [3.16.1] — 2026-11-15
 
 **A patch: on a serial console the getty's `login:` banner no longer lands on
