@@ -24,6 +24,22 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.17.1] — 2026-11-17
+
+**A patch: a test-only fix so the suite is green on a runner whose `sleep` is
+a symlink, as the GitHub ubuntu runner's is. No shipped code changes; the
+control protocol stays at version 7.**
+
+### Fixed
+
+- The `slinit-start-stop-daemon` E2E tests matched a spawned daemon by
+  `/proc/<pid>/exe`, comparing it to the path `exec.LookPath` returns. The two
+  differ when `sleep` in `PATH` is a symlink — the kernel names the target it
+  was exec'd from, `LookPath` the link — so on the CI runner the match never
+  succeeded and the cases failed deterministically at their timeout. They
+  resolve the path with `filepath.EvalSymlinks` now, so the expected path and
+  the one `/proc/<pid>/exe` reports agree. Test-only; the runtime is unchanged.
+
 ## [3.17.0] — 2026-11-17
 
 **A minor: `slinitctl` can now control a `dinit` daemon, over dinit's own
