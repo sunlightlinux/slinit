@@ -21,6 +21,22 @@ A few commands (currently **enable**, **disable**) accept the **\--offline**
 flag and operate directly on service files without contacting a running
 daemon, which is useful at install time or in initramfs.
 
+### dinit daemons
+
+**slinitctl** can also control a **dinit** daemon. It recognises dinit at
+connection time and speaks dinit's own control protocol for the commands the
+two share — the whole of dinit's command set: **list**, **status**,
+**start**, **stop**, **wake**, **release**, **restart**, **unpin**,
+**unload**, **reload**, **enable**, **disable**, **trigger**, **untrigger**,
+**signal**, **catlog**, **add-dep**, **rm-dep**, **setenv-global**,
+**getallenv-global**, **shutdown**, and the queries behind **service-dirs**
+and **load-mech**. **enable** and **disable** create and remove the
+**waits-for.d** symlink on disk as **dinitctl**(8) does. Commands that are
+slinit's own (**boot-time**, **pause**, **show**, **profiles**, the journal
+commands, and the rest) report that a dinit daemon does not support them.
+dinit's environment is global, so **setenv** and **getallenv** with a
+service name are refused; use the **-global** forms.
+
 ## GLOBAL OPTIONS
 
 Global options go before the command: `slinitctl --force stop db`, not

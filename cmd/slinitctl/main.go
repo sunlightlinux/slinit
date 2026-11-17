@@ -3,10 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/control"
+	"github.com/sunlightlinux/slinit/pkg/dinitwire"
 	"github.com/sunlightlinux/slinit/pkg/platform"
 	"github.com/sunlightlinux/slinit/pkg/rusage"
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -269,8 +272,10 @@ doneFlags:
 	}
 	defer conn.Close()
 
-	// Protocol version handshake
-	if err := versionHandshake(conn); err != nil {
+	// Protocol version handshake. A dinit daemon comes back wrapped in an
+	// adapter that speaks dinit's wire format underneath.
+	conn, err = versionHandshake(conn)
+	if err != nil {
 		fatal("%v", err)
 	}
 
@@ -910,47 +915,109 @@ func readReplyWithProgress(conn net.Conn, action string) (uint8, []byte, error) 
 	}
 }
 
-// versionHandshake performs a two-way protocol version check with the server.
-// Server sends: min_compat_version(2) + actual_version(2).
-// Client checks bidirectional compatibility.
-func versionHandshake(conn net.Conn) error {
-	if err := control.WritePacket(conn, control.CmdQueryVersion, nil); err != nil {
-		return fmt.Errorf("version handshake write: %w", err)
+// checkVersions is the two-way compatibility check: the server's actual
+// version must reach our minimum, and ours must reach the server's.
+func checkVersions(serverMin, serverActual uint16) error {
+	if serverActual < control.MinCompatVersion {
+		return fmt.Errorf("server protocol version %d is too old (need >= %d)", serverActual, control.MinCompatVersion)
 	}
-
-	rply, payload, err := control.ReadPacket(conn)
-	if err != nil {
-		return fmt.Errorf("version handshake read: %w", err)
-	}
-	if rply != control.RplyCPVersion {
-		return fmt.Errorf("unexpected version reply: %d", rply)
-	}
-
-	if len(payload) >= 4 {
-		// New format: min_compat(2) + actual(2)
-		serverMin := binary.LittleEndian.Uint16(payload[0:])
-		serverActual := binary.LittleEndian.Uint16(payload[2:])
-
-		// Check: server's actual version must be >= our min compat
-		if serverActual < control.MinCompatVersion {
-			return fmt.Errorf("server protocol version %d is too old (need >= %d)", serverActual, control.MinCompatVersion)
-		}
-		// Check: our actual version must be >= server's min compat
-		if control.CPVersion < serverMin {
-			return fmt.Errorf("client protocol version %d is too old for server (server needs >= %d)", control.CPVersion, serverMin)
-		}
-		peerCPVersion = serverActual
-	} else if len(payload) >= 2 {
-		// Legacy format: just version(2) — v1 server
-		serverVer := binary.LittleEndian.Uint16(payload)
-		if serverVer < control.MinCompatVersion {
-			return fmt.Errorf("server protocol version %d is too old (need >= %d)", serverVer, control.MinCompatVersion)
-		}
-		peerCPVersion = serverVer
-	} else {
-		return fmt.Errorf("invalid version reply payload (len=%d)", len(payload))
+	if control.CPVersion < serverMin {
+		return fmt.Errorf("client protocol version %d is too old for server (server needs >= %d)", control.CPVersion, serverMin)
 	}
 	return nil
+}
+
+// versionHandshake checks protocol versions with the daemon and finds out
+// which daemon it is. It returns the connection to use from here on: conn
+// itself for slinit, or conn wrapped in a dinitConn for dinit.
+//
+// slinit and dinit share command numbers but not a wire format, and neither
+// announces itself. What tells them apart is how each reads the one request
+// both understand. The request goes out in slinit's framing, three bytes:
+// QueryVersion and a zero payload length.
+//
+//   - slinit answers once: the reply code, a payload length of 4, then its
+//     minimum and actual versions.
+//   - dinit has no length prefix, so it sees three QueryVersion commands and
+//     answers three times, five bytes each: the reply code, minimum, actual.
+//
+// So bytes 5 and 6 of what comes back are, from slinit, its actual version,
+// and from dinit the start of its second answer: the reply code again and
+// the low byte of the same minimum. slinit would have to be at protocol
+// version 1082 or later to look like that.
+func versionHandshake(conn net.Conn) (net.Conn, error) {
+	if err := control.WritePacket(conn, control.CmdQueryVersion, nil); err != nil {
+		return nil, fmt.Errorf("version handshake write: %w", err)
+	}
+
+	var hd [3]byte
+	if _, err := io.ReadFull(conn, hd[:]); err != nil {
+		return nil, fmt.Errorf("version handshake read: %w", err)
+	}
+	if hd[0] != control.RplyCPVersion {
+		return nil, fmt.Errorf("unexpected version reply: %d", hd[0])
+	}
+	n := binary.LittleEndian.Uint16(hd[1:])
+
+	if n == 2 {
+		// A v1 slinit: the payload is just its version. (A dinit whose
+		// minimum compatible version were 2 would land here too and be
+		// misread; dinit's minimum is 1.)
+		var v [2]byte
+		if _, err := io.ReadFull(conn, v[:]); err != nil {
+			return nil, fmt.Errorf("version handshake read: %w", err)
+		}
+		ver := binary.LittleEndian.Uint16(v[:])
+		if err := checkVersions(0, ver); err != nil {
+			return nil, err
+		}
+		peerCPVersion = ver
+		return conn, nil
+	}
+
+	// Either daemon has at least four more bytes for us.
+	var x [4]byte
+	if _, err := io.ReadFull(conn, x[:]); err != nil {
+		return nil, fmt.Errorf("version handshake read: %w", err)
+	}
+
+	if x[2] == control.RplyCPVersion && x[3] == hd[1] {
+		// dinit. n was its minimum version and x starts with its actual
+		// one; the rest of its second answer and all of its third are
+		// still to come, and must repeat the first.
+		minVer, ver := n, binary.LittleEndian.Uint16(x[:])
+		first := []byte{hd[0], hd[1], hd[2], x[0], x[1]}
+		rest := make([]byte, 8)
+		if _, err := io.ReadFull(conn, rest); err != nil {
+			return nil, fmt.Errorf("version handshake read: %w", err)
+		}
+		got := append([]byte{x[2], x[3]}, rest...)
+		if !bytes.Equal(got, append(append([]byte{}, first...), first...)) {
+			return nil, fmt.Errorf("unrecognised version reply: neither slinit's nor dinit's")
+		}
+		if err := checkVersions(minVer, ver); err != nil {
+			return nil, err
+		}
+		peerCPVersion = ver
+		peerIsDinit = true
+		return newDinitConn(conn, dinitwire.New(conn), minVer, ver), nil
+	}
+
+	if n < 4 {
+		return nil, fmt.Errorf("invalid version reply payload (len=%d)", n)
+	}
+	// slinit: minimum, actual, and possibly more that a later version adds.
+	if n > 4 {
+		if _, err := io.CopyN(io.Discard, conn, int64(n-4)); err != nil {
+			return nil, fmt.Errorf("version handshake read: %w", err)
+		}
+	}
+	serverMin, serverActual := binary.LittleEndian.Uint16(x[:]), binary.LittleEndian.Uint16(x[2:])
+	if err := checkVersions(serverMin, serverActual); err != nil {
+		return nil, err
+	}
+	peerCPVersion = serverActual
+	return conn, nil
 }
 
 // connectPassedFD creates a net.Conn from a file descriptor passed via
@@ -4871,6 +4938,9 @@ func decodeServiceState(status []byte) string {
 }
 
 func cmdEnable(conn net.Conn, name string, from string, noWait bool) error {
+	if peerIsDinit {
+		return enableDisableDinit(conn, true, name, from, noWait)
+	}
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
@@ -5033,6 +5103,9 @@ func cmdUnpin(conn net.Conn, name string) error {
 //	  remote. V7 reply carries the target's status so we can print
 //	  the resulting state ("target now STOPPED").
 func cmdDisable(conn net.Conn, name string, from string, dinitCompat, noWait bool) error {
+	if peerIsDinit {
+		return enableDisableDinit(conn, false, name, from, noWait)
+	}
 	handle, err := loadServiceHandle(conn, name)
 	if err != nil {
 		return err
