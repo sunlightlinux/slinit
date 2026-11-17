@@ -10,6 +10,23 @@ import (
 	"time"
 )
 
+// sleepBinary is the sleep executable, with symlinks resolved so that it is
+// the path /proc/<pid>/exe will report. Where sleep in PATH is a symlink (a
+// busybox applet, or a usr-merge /bin that ubuntu's CI runner has),
+// exec.LookPath returns the link but the kernel names the target it was
+// exec'd from, and the match would never see the two as equal.
+func sleepBinary(t *testing.T) string {
+	t.Helper()
+	p, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("no sleep binary: %v", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
+}
+
 // waitExe blocks until /proc/<pid>/exe resolves to want, the same symlink
 // the match code reads. Start()/spawn() return after the fork but before the
 // child execs, so the symlink points at the test binary for a while; under
@@ -35,10 +52,7 @@ func waitExe(t *testing.T, pid int, want string) {
 // killed" binary. Uses spawn() and cmdStop() directly rather than
 // shelling out to the compiled binary so tests stay hermetic.
 func TestE2EStartBackgroundStop(t *testing.T) {
-	sleep, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Skipf("no sleep binary: %v", err)
-	}
+	sleep := sleepBinary(t)
 
 	dir := t.TempDir()
 	pidfile := filepath.Join(dir, "sleep.pid")
@@ -122,10 +136,7 @@ func TestE2EStopStalePidFile(t *testing.T) {
 }
 
 func TestE2EStartAlreadyRunning(t *testing.T) {
-	sleep, err := exec.LookPath("sleep")
-	if err != nil {
-		t.Skipf("no sleep binary: %v", err)
-	}
+	sleep := sleepBinary(t)
 	dir := t.TempDir()
 	pidfile := filepath.Join(dir, "sleep.pid")
 
