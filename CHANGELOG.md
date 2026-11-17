@@ -24,6 +24,29 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.17.0] — 2026-11-17
+
+**A minor: `slinitctl` can now control a `dinit` daemon, over dinit's own
+control protocol. Additive — slinit's own daemon and wire format do not
+change, and the control protocol stays at version 7.**
+
+### Added
+
+- `slinitctl` recognises a dinit daemon at connection time and speaks dinit's
+  wire format for the commands the two share — dinit numbers its control
+  commands as slinit does but frames them differently, so without this they
+  could not talk to each other at all. The whole of dinit's command set works
+  and interoperates both ways: `list`, `status`, `start`, `stop`, `wake`,
+  `release`, `restart`, `unpin`, `unload`, `reload`, `enable`, `disable`
+  (including the `waits-for.d` symlink on disk, as `dinitctl` does), `trigger`,
+  `untrigger`, `signal`, `catlog`, `add-dep`, `rm-dep`, `setenv-global`,
+  `getallenv-global`, `shutdown`, and the service-directory and load-mechanism
+  queries. Commands that are slinit's own (`boot-time`, `pause`, `show`,
+  profiles, the journal commands, and the rest) report that a dinit daemon
+  does not support them, and the per-service environment, which dinit has no
+  concept of, is refused in favour of the `-global` forms. New package
+  `pkg/dinitwire` is dinit's protocol as a client, tested against a real dinit.
+
 ## [3.16.2] — 2026-11-15
 
 **A patch: a test-only flake fix. No shipped code changes — nothing but
