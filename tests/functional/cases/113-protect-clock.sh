@@ -29,15 +29,18 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 assert_eq "$_seccomp" "2" "seccomp filter (mode 2) installed on child"
 
+# Since 3.18.0 protect-clock refuses with EPERM, as systemd's does,
+# rather than killing date, so date must have reported the refusal.
+# This used to accept anything at all (an empty stderr, from the kill,
+# or any message), so it could not fail.
 _err=$(cat "$OUT" 2>/dev/null)
 _TESTS_RUN=$((_TESTS_RUN + 1))
 case "$_err" in
-    *"Operation not permitted"*|*"denied"*|*"not permitted"*)
-        echo "OK: clock_settime rejected" ;;
-    "")
-        echo "OK: seccomp installed (date -s silent — filter active)" ;;
+    *"not permitted"*)
+        echo "OK: clock_settime refused with EPERM ($_err)" ;;
     *)
-        echo "OK: clock write blocked ($_err)" ;;
+        _TESTS_FAILED=$((_TESTS_FAILED + 1))
+        echo "FAIL: date -s was not refused with EPERM; stderr: '${_err}'" ;;
 esac
 
 test_summary
