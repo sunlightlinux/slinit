@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- `slinit-logind` lets the user of the active local session power off,
+  reboot and sleep the machine, as polkit's default for
+  `org.freedesktop.login1` does, so a desktop's power menu and a login
+  screen's power button work without root. "Active local" is judged on the
+  calling process's own session: it must be the caller's, have a seat, not
+  be remote, and be the foreground session of its seat, with the foreground
+  VT known; anything that cannot be established is refused. `Halt` stays
+  root's (polkit asks for an administrator even in the active session), and
+  a block inhibitor still refuses a user. Each such call by a user is
+  logged with its uid. The `Can*` queries follow the same rule.
+  Distributions shipping a D-Bus policy that admits only root to these
+  methods need to let other users send them for this to take effect.
+
 ### Fixed
 
 - `slinit-logind`'s `CanPowerOff`, `CanReboot`, `CanHalt`, `CanSuspend`,

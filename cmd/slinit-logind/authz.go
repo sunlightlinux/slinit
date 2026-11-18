@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -52,9 +53,116 @@ func (m *manager) authorize(sender dbus.Sender, goodUser int64, what string) *db
 
 // mayPower is the one rule for the power and sleep calls, used both by
 // the actions and by the Can* probes that predict them, so the two cannot
-// disagree. As in systemd-logind without polkit, the calls are root's.
+// disagree.
+//
+// Root may make every one of them. Beyond root, the rule is polkit's
+// default for org.freedesktop.login1, which is what lets a desktop user
+// press Power Off: power-off, reboot, suspend and hibernate are allow_active
+// = yes, and so are their -multiple-sessions forms, so the user of the
+// active local session may make them whoever else is logged in. halt is
+// auth_admin_keep even for the active session, and so is every
+// -ignore-inhibit form; there is no authentication agent here, so those
+// stay root's. "Active" is polkit's sense, judged on the session of the
+// calling process: local (it has a seat, and is not remote) and the
+// foreground session of that seat.
+//
+// Everything this cannot establish is a refusal: an unknown caller, a
+// process in no session or in someone else's, a seat whose foreground
+// cannot be read.
 func (m *manager) mayPower(sender dbus.Sender, what string) *dbus.Error {
-	return m.authorize(sender, noGoodUser, what)
+	uid, err := senderUID(m, sender)
+	if err != nil {
+		m.dbgf("%s: refused %s, uid unknown: %v", what, sender, err)
+		return errAccessDenied("%s: cannot identify the caller", what)
+	}
+	if uid == 0 {
+		return nil
+	}
+	rule, ok := powerRules[what]
+	if !ok || !rule.activeMay {
+		m.dbgf("%s: refused uid %d, root only", what, uid)
+		return errAccessDenied("%s: access denied", what)
+	}
+	if m.inhibitors != nil {
+		if in := m.inhibitors.blockedBy(rule.class); in != nil {
+			m.dbgf("%s: refused uid %d, blocked by %q", what, uid, in.Who)
+			return errAccessDenied("%s: blocked by an inhibitor held by %s", what, in.Who)
+		}
+	}
+	if id, why := m.callerActiveLocalSession(sender, uid); id == "" {
+		m.dbgf("%s: refused uid %d: %s", what, uid, why)
+		return errAccessDenied("%s: access denied", what)
+	}
+	return nil
+}
+
+// powerRules maps each power and sleep call to the inhibitor class that
+// can block it and to polkit's allow_active for it.
+var powerRules = map[string]struct {
+	class     string
+	activeMay bool
+}{
+	"poweroff":             {"shutdown", true},
+	"reboot":               {"shutdown", true},
+	"halt":                 {"shutdown", false},
+	"Suspend":              {"sleep", true},
+	"Hibernate":            {"sleep", true},
+	"HybridSleep":          {"sleep", true},
+	"SuspendThenHibernate": {"sleep", true},
+	"Sleep":                {"sleep", true},
+}
+
+// senderPID and sessionOfPID are variables so tests can stand in for the
+// bus daemon and for /proc.
+var (
+	senderPID = func(m *manager, sender dbus.Sender) (uint32, error) {
+		return m.callerPID(string(sender))
+	}
+	sessionOfPID = func(pid uint32) string {
+		if id, _ := findSessionByLeaderLocked(pid); id != "" {
+			return id
+		}
+		return findSessionByCgroup(pid)
+	}
+)
+
+// callerActiveLocalSession returns the id of the session the calling
+// process belongs to when that session is uid's own, local and in the
+// foreground of its seat, and otherwise "" with the reason.
+//
+// The session must be uid's own because the process is found by pid, and
+// a pid can be reused between the bus naming it and this lookup: with the
+// uid check, a reused pid can only land in a session of the same user.
+func (m *manager) callerActiveLocalSession(sender dbus.Sender, uid uint32) (string, string) {
+	pid, err := senderPID(m, sender)
+	if err != nil || pid == 0 {
+		return "", "caller pid unknown"
+	}
+	id := sessionOfPID(pid)
+	if id == "" {
+		return "", "caller is in no session"
+	}
+	var rec SessionRecord
+	if !readJSON(sessionFile(id), &rec) {
+		return "", "caller's session has no record"
+	}
+	if rec.UserID != uid {
+		return "", "caller's session belongs to another user"
+	}
+	if rec.Remote || rec.SeatID == "" {
+		return "", "caller's session is not local"
+	}
+	// sessionIsActive calls a session with no VT active, which is right
+	// for what a desktop is shown and wrong for granting power: here the
+	// foreground has to be known, and this has to be the session in it.
+	if currentVT.Load() == 0 {
+		return "", "foreground VT unknown"
+	}
+	active, ok := activeSessionOnSeat(loadSessionRecords(), rec.SeatID)
+	if !ok || active.ID != rec.ID {
+		return "", "caller's session is not in the foreground"
+	}
+	return rec.ID, ""
 }
 
 // authorizeSessionOwner allows root and the user owning session id.
@@ -67,4 +175,15 @@ func (m *manager) authorizeSessionOwner(sender dbus.Sender, id, what string) *db
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession", []any{id})
 	}
 	return m.authorize(sender, int64(rec.UserID), what)
+}
+
+// noteUserPower leaves a line on stderr when someone other than root
+// powers off or sleeps the machine, so the journal says who did. Root's
+// calls are the administrator's own and were never logged here.
+func (m *manager) noteUserPower(sender dbus.Sender, what string) {
+	uid, err := senderUID(m, sender)
+	if err != nil || uid == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "slinit-logind: %s requested by uid %d (%s), user of the active session\n", what, uid, sender)
 }

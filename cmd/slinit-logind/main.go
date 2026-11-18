@@ -503,6 +503,7 @@ func (m *manager) shutdownAs(sender dbus.Sender, verb string) *dbus.Error {
 	if err := m.mayPower(sender, verb); err != nil {
 		return err
 	}
+	m.noteUserPower(sender, verb)
 	return runShutdown(verb)
 }
 
@@ -510,6 +511,7 @@ func (m *manager) sleepAs(sender dbus.Sender, v sleepVerb) *dbus.Error {
 	if err := m.mayPower(sender, v.method); err != nil {
 		return err
 	}
+	m.noteUserPower(sender, v.method)
 	return m.sleep(v)
 }
 

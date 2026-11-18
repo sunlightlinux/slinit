@@ -287,10 +287,27 @@ call is allowed from root, or from the user it is about, and refused with
 checked, and the D-Bus policy was the only barrier.
 
 Root only
-:   the power and sleep calls, *Inhibit*, *CreateSession* and
+:   *Halt* and *HaltWithFlags*, *Inhibit*, *CreateSession* and
     *CreateSessionWithPIDFD*, *LockSessions*,
     *UnlockSessions*, *TerminateSeat*, *SetUserLinger* (even for the
     caller's own uid), and writing the manager's properties.
+
+Root, or the user of the active local session
+:   *PowerOff*, *Reboot*, *Suspend*, *Hibernate*, *HybridSleep*,
+    *SuspendThenHibernate* and *Sleep*, with their *...WithFlags*
+    variants. This is polkit's default for these actions (*allow_active*),
+    which is what a desktop's power menu and a login screen's power button
+    rely on. *Halt* is excluded because polkit's default asks for an
+    administrator even then, and there is no agent here to ask.
+
+    "Active local session" is judged on the session of the calling
+    process. That session must belong to the caller's uid, must have a
+    seat, must not be remote, and must be the foreground session of its
+    seat, which needs the foreground VT to be known. Anything that cannot
+    be established is a refusal. A *block* inhibitor covering the action
+    also refuses a user, since overriding one is polkit's
+    *...-ignore-inhibit*, which is an administrator's. When a user is
+    allowed, a line naming the uid is written to standard error.
 
 The session's owner, or root
 :   *LockSession*, *UnlockSession*, *KillSession*, *TerminateSession* and
