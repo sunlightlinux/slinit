@@ -37,6 +37,11 @@ type testSvc struct {
 	autoStart     bool
 	autoStop      bool
 	interruptible bool
+	// upCount and downCount count every BringUp and BringDown, so a
+	// scenario can assert "not asked yet" and "asked exactly once" where
+	// the two bools above cannot tell a second request from the first.
+	upCount   int
+	downCount int
 }
 
 func newTestSvc(t *testing.T, set *ServiceSet, name string) *testSvc {
@@ -47,6 +52,7 @@ func newTestSvc(t *testing.T, set *ServiceSet, name string) *testSvc {
 
 func (s *testSvc) BringUp() bool {
 	s.upReqd = true
+	s.upCount++
 	if s.autoStart {
 		s.Started()
 	}
@@ -55,6 +61,7 @@ func (s *testSvc) BringUp() bool {
 
 func (s *testSvc) BringDown() {
 	s.downReqd = true
+	s.downCount++
 	if s.autoStop {
 		s.Stopped()
 	}

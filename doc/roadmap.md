@@ -57,16 +57,28 @@ its daemon is no longer used.
 Things known to be unfinished in slinit itself, not a wish list. Each
 has a record of what is known about it.
 
-- **Three intermittent test failures are open**, and one of them may be
-  a real defect: `TestWatchdogTriggersRestartOnFailure` fails about one
-  run in ten, and "the watchdog sometimes does not fire" would be a bug
-  rather than a slow test. The other two are a `VirtualTTY` close that
-  hung once in CI and a seccomp case.
-- **The transition test harness needs scenarios, not more ports.** It
-  can finally observe a service while it is starting or stopping. The
-  eleven cases ported from dinit do not catch the stop-ordering defect
-  they are about; only a new scenario did, which was also dinit's own
-  experience.
+- **The three intermittent test failures are resolved or quiesced.**
+  `TestWatchdogTriggersRestartOnFailure` was the one that might have been
+  a real defect; it was rewritten to poll a 15 s deadline instead of a
+  fixed 2.5 s sleep, and measures 60 of 60 with the restart landing by
+  ~330 ms against a 300 ms watchdog timeout — so the watchdog fires
+  reliably and the old one-in-ten was test timing, not a missed restart
+  (the test still fails if a watchdog truly never fires). The `VirtualTTY`
+  close that hung once in CI has not reproduced locally (40 of 40 of the
+  full vtty set, `-race`); if it recurs, capture the full goroutine dump —
+  the leaked VirtualTTYs in the one dump point at cross-test contamination,
+  not a deadlock in the test. The seccomp case was traced to the runner
+  not pinning its thread (`runtime.LockOSThread`) and is fixed.
+- **The transition test harness wants more scenarios, not more ports.**
+  It can observe a service while it is starting or stopping. The cases
+  ported from dinit did not catch the stop-ordering defect they are
+  about; only a new scenario did, which was also dinit's own experience.
+  Eight more scenarios now cover requests that arrive mid-transition (a
+  start during a stop, a stop during a start, interruptible and not, a
+  dependency failing or being forced down under a waiting dependent).
+  Checked against seven injected state-machine defects, they catch six,
+  three of which no ported case notices. None found a defect in the
+  current code. The next useful ones are the restart and pin paths.
 
 ## Phase history
 
