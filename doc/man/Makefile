@@ -54,6 +54,7 @@ PAGES_8 = \
 	slinit-watchdogd.8 \
 	slinit-logind.8 \
 	slinit-timedated.8 \
+	slinit-hostnamed.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8

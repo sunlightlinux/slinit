@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/hostname"
 )
 
 func TestParseArgs_Defaults(t *testing.T) {
@@ -97,134 +99,6 @@ func TestParseArgs_UnknownFlag(t *testing.T) {
 	}
 }
 
-func TestMachineInfo_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "machine-info")
-	restore := swapPath(&machineInfoPath, path)
-	defer restore()
-
-	// Author-style seed with a comment we must preserve.
-	seed := "# hand-written comment\n" +
-		"PRETTY_HOSTNAME=\"Ionut's Laptop\"\n" +
-		"ICON_NAME=computer-laptop\n" +
-		"CHASSIS=laptop\n" +
-		"# trailing comment\n"
-	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	mi, err := loadMachineInfo()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if got := mi.get("PRETTY_HOSTNAME"); got != "Ionut's Laptop" {
-		t.Errorf("PRETTY_HOSTNAME = %q, want Ionut's Laptop", got)
-	}
-	if got := mi.get("ICON_NAME"); got != "computer-laptop" {
-		t.Errorf("ICON_NAME = %q", got)
-	}
-	// Overwrite existing key + add a new one.
-	mi.set("PRETTY_HOSTNAME", "Ceres VM")
-	mi.set("DEPLOYMENT", "production")
-	if err := mi.save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	txt := string(got)
-	for _, want := range []string{
-		"# hand-written comment",
-		"# trailing comment",
-		`PRETTY_HOSTNAME="Ceres VM"`,
-		"ICON_NAME=computer-laptop",
-		"CHASSIS=laptop",
-		"DEPLOYMENT=production",
-	} {
-		if !strings.Contains(txt, want) {
-			t.Errorf("missing %q in:\n%s", want, txt)
-		}
-	}
-}
-
-func TestMachineInfo_DeleteViaEmptySet(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "machine-info")
-	restore := swapPath(&machineInfoPath, path)
-	defer restore()
-
-	if err := os.WriteFile(path, []byte("CHASSIS=laptop\nICON_NAME=x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	mi, err := loadMachineInfo()
-	if err != nil {
-		t.Fatal(err)
-	}
-	mi.set("CHASSIS", "") // delete
-	if err := mi.save(); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := os.ReadFile(path)
-	if strings.Contains(string(got), "CHASSIS") {
-		t.Errorf("CHASSIS not removed:\n%s", got)
-	}
-	if !strings.Contains(string(got), "ICON_NAME=x") {
-		t.Errorf("ICON_NAME dropped:\n%s", got)
-	}
-}
-
-func TestDecodeValue(t *testing.T) {
-	cases := map[string]string{
-		`bare`:                    `bare`,
-		`"double quoted"`:         `double quoted`,
-		`'single quoted'`:         `single quoted`,
-		`"esc \"inner\""`:         `esc "inner"`,
-		`"back \\ slash"`:         `back \ slash`,
-		`bare # trailing comment`: `bare`,
-	}
-	for in, want := range cases {
-		if got := decodeValue(in); got != want {
-			t.Errorf("decodeValue(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestEncodeValue(t *testing.T) {
-	cases := map[string]string{
-		`plain`:            `plain`,
-		`has space`:        `"has space"`,
-		`has"quote`:        `"has\"quote"`,
-		`has$dollar`:       `"has\$dollar"`,
-		`has#hash`:         `"has#hash"`,
-		`no-issue-here.42`: `no-issue-here.42`,
-	}
-	for in, want := range cases {
-		if got := encodeValue(in); got != want {
-			t.Errorf("encodeValue(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestChassisFromSMBIOS(t *testing.T) {
-	cases := map[int]string{
-		3:  "desktop",
-		7:  "desktop",
-		9:  "laptop",
-		10: "laptop",
-		17: "server",
-		23: "server",
-		30: "tablet",
-		31: "convertible",
-		1:  "", // Other → unmapped
-		2:  "", // Unknown → unmapped
-	}
-	for in, want := range cases {
-		if got := chassisFromSMBIOS(in); got != want {
-			t.Errorf("chassisFromSMBIOS(%d) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestValidateHostname(t *testing.T) {
 	ok := []string{"srv-01", "host.example.com", "a", "A1"}
 	for _, n := range ok {
@@ -263,72 +137,6 @@ func TestTransientDisplay(t *testing.T) {
 	}
 }
 
-func TestValidChassis(t *testing.T) {
-	for _, ok := range []string{"desktop", "laptop", "convertible", "server", "tablet", "vm", "container"} {
-		if !validChassis(ok) {
-			t.Errorf("validChassis(%q) = false", ok)
-		}
-	}
-	for _, bad := range []string{"", "phone", "workstation", "SERVER"} {
-		if validChassis(bad) {
-			t.Errorf("validChassis(%q) = true", bad)
-		}
-	}
-}
-
-func TestParseOSRelease(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "os-release")
-	os.WriteFile(path, []byte(
-		"NAME=\"Sunlight OS\"\n"+
-			"PRETTY_NAME=\"Sunlight OS 2.2\"\n"+
-			"# a comment\n"+
-			"HOME_URL=https://example.invalid\n"), 0o644)
-	got, err := parseOSRelease(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got["PRETTY_NAME"] != "Sunlight OS 2.2" {
-		t.Errorf("PRETTY_NAME = %q", got["PRETTY_NAME"])
-	}
-	if got["HOME_URL"] != "https://example.invalid" {
-		t.Errorf("HOME_URL = %q", got["HOME_URL"])
-	}
-}
-
-// TestDetectVM_DMIMatches walks the DMI vendor table with fixture
-// values to lock in each hypervisor's canonical mapping. Added
-// alongside the "Alibaba Cloud ECS" entry (mirrored from systemd
-// abffa868a8) — if that regressed to bare "Alibaba Cloud" the test
-// would catch it, and the same coverage is useful for the older
-// entries as regression insurance.
-func TestDetectVM_DMIMatches(t *testing.T) {
-	cases := []struct{ vendor, want string }{
-		{"QEMU", "qemu"},
-		{"KVM", "kvm"},
-		{"VMware, Inc.", "vmware"},
-		{"innotek GmbH", "oracle"},
-		{"Xen", "xen"},
-		{"Microsoft Corporation", "microsoft"},
-		{"Amazon EC2", "amazon"},
-		{"Alibaba Cloud ECS", "kvm"},
-	}
-	dir := t.TempDir()
-	sv := filepath.Join(dir, "sys_vendor")
-	defer withPath(&dmiSysVendorPath, sv)()
-	// Product + bios are unset so only sys_vendor drives the match.
-	defer withPath(&dmiProductNamePath, filepath.Join(dir, "missing"))()
-	defer withPath(&dmiBiosVendorPath, filepath.Join(dir, "missing"))()
-	for _, c := range cases {
-		if err := os.WriteFile(sv, []byte(c.vendor+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if got := detectVM(); got != c.want {
-			t.Errorf("detectVM() for %q = %q, want %q", c.vendor, got, c.want)
-		}
-	}
-}
-
 func TestRunStatus_TextFromFixtures(t *testing.T) {
 	dir := t.TempDir()
 	seed := func(name, contents string) string {
@@ -336,21 +144,21 @@ func TestRunStatus_TextFromFixtures(t *testing.T) {
 		os.WriteFile(p, []byte(contents), 0o644)
 		return p
 	}
-	defer withPath(&hostnamePath, seed("hostname", "ceres\n"))()
-	defer withPath(&machineInfoPath, seed("machine-info",
+	defer withPath(&hostname.HostnamePath, seed("hostname", "ceres\n"))()
+	defer withPath(&hostname.MachineInfoPath, seed("machine-info",
 		`PRETTY_HOSTNAME="Ceres VM"`+"\nCHASSIS=vm\n"))()
-	defer withPath(&machineIDPath, seed("machine-id", "abcdef1234567890abcdef1234567890\n"))()
-	defer withPath(&bootIDPath, seed("boot-id", "11111111-2222-3333-4444-555555555555\n"))()
-	defer withPath(&osReleasePath, seed("os-release", `PRETTY_NAME="Sunlight OS 2.2"`+"\n"))()
+	defer withPath(&hostname.MachineIDPath, seed("machine-id", "abcdef1234567890abcdef1234567890\n"))()
+	defer withPath(&hostname.BootIDPath, seed("boot-id", "11111111-2222-3333-4444-555555555555\n"))()
+	defer withPath(&hostname.OSReleasePath, seed("os-release", `PRETTY_NAME="Sunlight OS 2.2"`+"\n"))()
 	// Empty DMI dir → chassis auto-detect falls back to "" or VM.
-	defer withPath(&dmiChassisTypePath, filepath.Join(dir, "missing"))()
-	defer withPath(&dmiSysVendorPath, filepath.Join(dir, "missing"))()
-	defer withPath(&dmiProductNamePath, filepath.Join(dir, "missing"))()
-	defer withPath(&dmiBiosVendorPath, filepath.Join(dir, "missing"))()
-	defer withPath(&dmiBiosVersionPath, filepath.Join(dir, "missing"))()
-	defer withPath(&dmiBiosDatePath, filepath.Join(dir, "missing"))()
-	defer withPath(&proc1EnvironPath, filepath.Join(dir, "missing"))()
-	defer withPath(&proc1CgroupPath, filepath.Join(dir, "missing"))()
+	defer withPath(&hostname.DMIChassisTypePath, filepath.Join(dir, "missing"))()
+	defer withPath(&hostname.DMISysVendorPath, filepath.Join(dir, "missing"))()
+	defer withPath(&hostname.DMIProductNamePath, filepath.Join(dir, "missing"))()
+	defer withPath(&hostname.DMIBiosVendorPath, filepath.Join(dir, "missing"))()
+	defer withPath(&hostname.DMIBiosVersionPath, filepath.Join(dir, "missing"))()
+	defer withPath(&hostname.DMIBiosDatePath, filepath.Join(dir, "missing"))()
+	defer withPath(&hostname.Proc1EnvironPath, filepath.Join(dir, "missing"))()
+	defer withPath(&hostname.Proc1CgroupPath, filepath.Join(dir, "missing"))()
 
 	var buf bytes.Buffer
 	if err := runStatus(&buf, options{cmd: "status"}); err != nil {

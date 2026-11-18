@@ -1,0 +1,6 @@
+# Started on demand by dbus-daemon when a client calls the name; it exits
+# again after 30 seconds without requests.
+[D-BUS Service]
+Name=org.freedesktop.hostname1
+Exec=/usr/bin/slinit-hostnamed
+User=root

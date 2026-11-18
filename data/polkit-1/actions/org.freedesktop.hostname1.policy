@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- The actions slinit-hostnamed asks polkit about. The ids and defaults
+     are systemd-hostnamed's, so rules written for one apply to the other:
+     every change, and reading the serial number or product UUID, needs an
+     administrator. -->
+<policyconfig>
+  <vendor>slinit</vendor>
+  <vendor_url>https://github.com/sunlightlinux/slinit</vendor_url>
+
+  <action id="org.freedesktop.hostname1.set-hostname">
+    <description>Set the transient hostname</description>
+    <message>Authentication is required to set the hostname.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.freedesktop.hostname1.set-static-hostname">
+    <description>Set the static hostname</description>
+    <message>Authentication is required to set the static and pretty hostname.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.imply">org.freedesktop.hostname1.set-hostname org.freedesktop.hostname1.set-machine-info</annotate>
+  </action>
+
+  <action id="org.freedesktop.hostname1.set-machine-info">
+    <description>Set machine information</description>
+    <message>Authentication is required to set the machine's icon, chassis, deployment, location and tags.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.freedesktop.hostname1.get-product-uuid">
+    <description>Read the product UUID</description>
+    <message>Authentication is required to read the product UUID.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.freedesktop.hostname1.get-hardware-serial">
+    <description>Read the hardware serial number</description>
+    <message>Authentication is required to read the hardware serial number.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.freedesktop.hostname1.get-description">
+    <description>Read the full machine description</description>
+    <message>Authentication is required to read the machine description, including its serial number and product UUID.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

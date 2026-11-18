@@ -72,28 +72,26 @@ func newWorld(t *testing.T) *world {
 
 	w := &world{t: t, etc: etc, allow: true}
 	now := time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC)
-	w.s = &server{
-		pk: &polkit.Checker{
-			UID: func(dbus.Sender) (uint32, error) { return 1000, nil },
-			Check: func(_ dbus.Sender, action string, d map[string]string, _ bool) (bool, bool, error) {
-				w.asked = append(w.asked, action)
-				w.details = append(w.details, d)
-				return w.allow, !w.allow, nil
-			},
+	w.s = newServer(nil, &polkit.Checker{
+		UID: func(dbus.Sender) (uint32, error) { return 1000, nil },
+		Check: func(_ dbus.Sender, action string, d map[string]string, _ bool) (bool, bool, error) {
+			w.asked = append(w.asked, action)
+			w.details = append(w.details, d)
+			return w.allow, !w.allow, nil
 		},
-		m: machine{
-			setSystemTime: func(tm time.Time) error { w.setTime = append(w.setTime, tm); return nil },
-			rtcFromSystem: func(l bool) error { w.rtcWrites = append(w.rtcWrites, l); return nil },
-			systemFromRTC: func(l bool) error { w.sysFromRT = append(w.sysFromRT, l); return nil },
-			readRTC:       func() (time.Time, bool) { return now, true },
-			findNTP:       func() string { return w.ntpSvc },
-			ntpRunning:    func(string) bool { return w.ntpOn },
-			setNTP:        func(b bool) error { w.ntpSet = append(w.ntpSet, b); w.ntpOn = b; return nil },
-			ntpSynced:     func() bool { return true },
-			kernelTZ:      func() {},
-			now:           func() time.Time { return now },
-		},
-	}
+	}, machine{
+		setSystemTime: func(tm time.Time) error { w.setTime = append(w.setTime, tm); return nil },
+		rtcFromSystem: func(l bool) error { w.rtcWrites = append(w.rtcWrites, l); return nil },
+		systemFromRTC: func(l bool) error { w.sysFromRT = append(w.sysFromRT, l); return nil },
+		readRTC:       func() (time.Time, bool) { return now, true },
+		findNTP:       func() string { return w.ntpSvc },
+		ntpRunning:    func(string) bool { return w.ntpOn },
+		setNTP:        func(b bool) error { w.ntpSet = append(w.ntpSet, b); w.ntpOn = b; return nil },
+		ntpSynced:     func() bool { return true },
+		kernelTZ:      func() {},
+		now:           func() time.Time { return now },
+	},
+	)
 	return w
 }
 
@@ -249,7 +247,7 @@ func TestSetNTP(t *testing.T) {
 func TestProperties(t *testing.T) {
 	w := newWorld(t)
 	w.ntpSvc, w.ntpOn = "chronyd", true
-	all, err := props{w.s}.GetAll(iface)
+	all, err := w.s.svc.Properties().GetAll(iface)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +265,7 @@ func TestProperties(t *testing.T) {
 			t.Errorf("%s = %#v, want %#v", k, all[k].Value(), v)
 		}
 	}
-	if e := (props{w.s}).Set(iface, "Timezone", dbus.MakeVariant("x")); errName(e) != "org.freedesktop.DBus.Error.PropertyReadOnly" {
+	if e := w.s.svc.Properties().Set(iface, "Timezone", dbus.MakeVariant("x")); errName(e) != "org.freedesktop.DBus.Error.PropertyReadOnly" {
 		t.Errorf("Set: %v", e)
 	}
 }

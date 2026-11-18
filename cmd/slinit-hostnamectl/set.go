@@ -19,10 +19,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/pkg/hostname"
 )
 
 // runHostname implements `hostnamectl hostname [NAME]`. No args → print
@@ -56,17 +57,17 @@ func runHostname(out io.Writer, opts options) error {
 		}
 	}
 	if sc.has(scopeStatic) {
-		if err := writeAtomic(hostnamePath, []byte(name+"\n"), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", hostnamePath, err)
+		if err := hostname.WriteAtomic(hostname.HostnamePath, []byte(name+"\n"), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", hostname.HostnamePath, err)
 		}
 	}
 	if sc.has(scopePretty) {
-		mi, err := loadMachineInfo()
+		mi, err := hostname.LoadMachineInfo()
 		if err != nil {
 			return err
 		}
-		mi.set("PRETTY_HOSTNAME", name)
-		if err := mi.save(); err != nil {
+		mi.Set("PRETTY_HOSTNAME", name)
+		if err := mi.Save(); err != nil {
 			return err
 		}
 	}
@@ -77,27 +78,27 @@ func runHostname(out io.Writer, opts options) error {
 // location subcommands: no arg → print, one arg → set (empty string
 // clears the field).
 func runSimpleField(out io.Writer, key string, opts options) error {
-	mi, err := loadMachineInfo()
+	mi, err := hostname.LoadMachineInfo()
 	if err != nil {
 		return err
 	}
 	if len(opts.args) == 0 {
-		v := mi.get(key)
+		v := mi.Get(key)
 		// Chassis auto-detects when unset.
 		if v == "" && key == "CHASSIS" {
-			v = detectChassis()
+			v = hostname.DetectChassis()
 		}
 		fmt.Fprintln(out, v)
 		return nil
 	}
 	value := opts.args[0]
 	if key == "CHASSIS" && value != "" {
-		if !validChassis(value) {
+		if !hostname.ValidChassis(value) {
 			return fmt.Errorf("invalid chassis %q (want: desktop|laptop|convertible|server|tablet|handset|watch|embedded|vm|container)", value)
 		}
 	}
-	mi.set(key, value)
-	return mi.save()
+	mi.Set(key, value)
+	return mi.Save()
 }
 
 // validateHostname enforces the RFC 1123 subset systemd-hostnamed uses:
@@ -130,47 +131,4 @@ func validateHostname(name string) error {
 		return fmt.Errorf("hostname %q contains consecutive dots", name)
 	}
 	return nil
-}
-
-// validChassis mirrors systemd's accepted set.
-func validChassis(v string) bool {
-	switch v {
-	case "desktop", "laptop", "convertible", "server", "tablet",
-		"handset", "watch", "embedded", "vm", "container":
-		return true
-	}
-	return false
-}
-
-// writeAtomic writes buf to path via tmp+rename in the same dir so
-// concurrent readers never see a partial file.
-func writeAtomic(path string, buf []byte, mode os.FileMode) error {
-	dir := "."
-	if idx := strings.LastIndex(path, "/"); idx > 0 {
-		dir = path[:idx]
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".hostnamectl.")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(buf); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
 }

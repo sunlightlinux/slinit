@@ -26,6 +26,16 @@ verified with `git tag -v`.
 
 ### Added
 
+- `slinit-hostnamed` serves `org.freedesktop.hostname1`, which GNOME
+  Settings' About panel, NetworkManager, bluetoothd and GTK use to read
+  and change the machine's names, chassis and hardware information.
+  Nothing on a slinit system provided it. It is systemd-hostnamed's
+  interface (all 13 methods and 31 properties), backed by the same code
+  as `slinit-hostnamectl` (now in `pkg/hostname`), with the kernel
+  hostname following systemd's order (static, then transient, then
+  default) and hostnames validated as systemd validates them. Changes, and
+  reading the serial number or product UUID, are authorized by polkit
+  with systemd's action ids.
 - `slinit-timedated` serves `org.freedesktop.timedate1`, the interface
   GNOME Settings' Date & Time panel and gnome-settings-daemon's automatic
   time zone use. Nothing on a slinit system provided it, so the panel

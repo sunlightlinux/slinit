@@ -9,22 +9,23 @@
 // round-trips so operator-authored files aren't reformatted when
 // hostnamectl touches only one key.
 
-package main
+package hostname
 
 import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
-// machineInfoPath is the canonical location; overridable in tests.
-var machineInfoPath = "/etc/machine-info"
+// MachineInfoPath is the canonical location; overridable in tests.
+var MachineInfoPath = "/etc/machine-info"
 
-// machineInfo holds the parsed representation of the file. Lines
+// MachineInfo holds the parsed representation of the file. Lines
 // preserve their original text; keys is a lookup index by canonical
 // name pointing back into lines[].
-type machineInfo struct {
+type MachineInfo struct {
 	lines []miLine
 }
 
@@ -34,19 +35,19 @@ type miLine struct {
 	value string // decoded value (quotes stripped, escapes resolved)
 }
 
-// loadMachineInfo reads the file; missing file yields an empty struct
+// LoadMachineInfo reads the file; missing file yields an empty struct
 // so the setter path can freely create it.
-func loadMachineInfo() (*machineInfo, error) {
-	f, err := os.Open(machineInfoPath)
+func LoadMachineInfo() (*MachineInfo, error) {
+	f, err := os.Open(MachineInfoPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &machineInfo{}, nil
+			return &MachineInfo{}, nil
 		}
 		return nil, err
 	}
 	defer f.Close()
 
-	mi := &machineInfo{}
+	mi := &MachineInfo{}
 	s := bufio.NewScanner(f)
 	// os-release lines are typically short but be generous.
 	s.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -73,7 +74,7 @@ func loadMachineInfo() (*machineInfo, error) {
 }
 
 // get returns the decoded value for KEY (last-wins if repeated).
-func (mi *machineInfo) get(key string) string {
+func (mi *MachineInfo) Get(key string) string {
 	key = strings.ToUpper(key)
 	var v string
 	for _, l := range mi.lines {
@@ -87,10 +88,10 @@ func (mi *machineInfo) get(key string) string {
 // set rewrites the first occurrence of KEY in-place; missing keys are
 // appended. Passing an empty value deletes the key (matches systemd's
 // "set to empty string clears" semantics).
-func (mi *machineInfo) set(key, value string) {
+func (mi *MachineInfo) Set(key, value string) {
 	key = strings.ToUpper(key)
 	if value == "" {
-		mi.delete(key)
+		mi.Delete(key)
 		return
 	}
 	line := fmt.Sprintf("%s=%s", key, encodeValue(value))
@@ -107,7 +108,7 @@ func (mi *machineInfo) set(key, value string) {
 
 // delete removes every assignment for KEY (blank/comment lines are
 // kept in place).
-func (mi *machineInfo) delete(key string) {
+func (mi *MachineInfo) Delete(key string) {
 	key = strings.ToUpper(key)
 	out := mi.lines[:0]
 	for _, l := range mi.lines {
@@ -121,10 +122,10 @@ func (mi *machineInfo) delete(key string) {
 
 // save writes the file back atomically (tmp + rename), creating parent
 // dirs if needed. Mode 0644 matches systemd's tmpfiles-installed default.
-func (mi *machineInfo) save() error {
+func (mi *MachineInfo) Save() error {
 	dir := "/etc"
-	if idx := strings.LastIndex(machineInfoPath, "/"); idx > 0 {
-		dir = machineInfoPath[:idx]
+	if idx := strings.LastIndex(MachineInfoPath, "/"); idx > 0 {
+		dir = MachineInfoPath[:idx]
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -156,7 +157,7 @@ func (mi *machineInfo) save() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), machineInfoPath)
+	return os.Rename(tmp.Name(), MachineInfoPath)
 }
 
 // decodeValue strips os-release(5) quoting: double-quoted values
@@ -270,5 +271,22 @@ func removeDupes(lines []miLine, key string, keep int) []miLine {
 		}
 		out = append(out, l)
 	}
+	return out
+}
+
+// Pairs returns the assignments as KEY=VALUE, last value per key winning,
+// sorted, the shape systemd's Describe reports machine-info in.
+func (mi *MachineInfo) Pairs() []string {
+	seen := map[string]string{}
+	for _, l := range mi.lines {
+		if l.key != "" {
+			seen[l.key] = l.value
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for k, v := range seen {
+		out = append(out, k+"="+v)
+	}
+	sort.Strings(out)
 	return out
 }

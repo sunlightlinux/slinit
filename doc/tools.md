@@ -59,6 +59,7 @@ is for, followed by the invocations most worth knowing.
 | `slinit-hostnamectl` | Query and set the hostname, without D-Bus | [slinit-hostnamectl(1)](man/slinit-hostnamectl.1.md) |
 | `slinit-timedatectl` | Query and set time and date, without D-Bus | [slinit-timedatectl(1)](man/slinit-timedatectl.1.md) |
 | `slinit-timedated` | *org.freedesktop.timedate1* on the system bus, for GNOME's Date & Time panel; polkit-authorized | [slinit-timedated(8)](man/slinit-timedated.8.md) |
+| `slinit-hostnamed` | *org.freedesktop.hostname1* on the system bus, for GNOME's About panel, NetworkManager and bluetoothd; polkit-authorized | [slinit-hostnamed(8)](man/slinit-hostnamed.8.md) |
 | [`slinit-cgtop`](#slinit-cgtop) | `top`-like viewer for the cgroup v2 tree | [slinit-cgtop(8)](man/slinit-cgtop.8.md) |
 
 ### OpenRC-compatible utilities

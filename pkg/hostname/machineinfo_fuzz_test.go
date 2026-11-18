@@ -1,4 +1,4 @@
-package main
+package hostname
 
 import (
 	"os"
@@ -49,7 +49,7 @@ func FuzzDecodeValue(f *testing.F) {
 }
 
 // FuzzLoadMachineInfo fuzzes the /etc/machine-info file reader end
-// to end. Every parsed line goes through decodeValue; every mi.get()
+// to end. Every parsed line goes through decodeValue; every mi.Get()
 // downstream reads from the parsed lines slice, so a bad parse that
 // left a nil pointer or malformed key would trip the getter.
 //
@@ -75,31 +75,31 @@ func FuzzLoadMachineInfo(f *testing.F) {
 		restore := swapMIPath(path)
 		defer restore()
 
-		mi, err := loadMachineInfo()
+		mi, err := LoadMachineInfo()
 		if err != nil {
 			return
 		}
 		// Every getter must survive on any parsed mi.
-		_ = mi.get("PRETTY_HOSTNAME")
-		_ = mi.get("ICON_NAME")
-		_ = mi.get("CHASSIS")
+		_ = mi.Get("PRETTY_HOSTNAME")
+		_ = mi.Get("ICON_NAME")
+		_ = mi.Get("CHASSIS")
 		// save() must succeed if load succeeded — the file is
 		// bytes-in, bytes-out (with normalisation).
-		if err := mi.save(); err != nil {
+		if err := mi.Save(); err != nil {
 			t.Errorf("save after successful load failed: %v", err)
 			return
 		}
 		// Reload the saved bytes and confirm the same key set
 		// survives round-trip (values equal on every key we get).
-		mi2, err := loadMachineInfo()
+		mi2, err := LoadMachineInfo()
 		if err != nil {
 			t.Errorf("reload after save failed: %v", err)
 			return
 		}
 		for _, k := range []string{"PRETTY_HOSTNAME", "ICON_NAME", "CHASSIS", "DEPLOYMENT", "LOCATION"} {
-			if mi.get(k) != mi2.get(k) {
+			if mi.Get(k) != mi2.Get(k) {
 				t.Errorf("key %q drifted through save/reload: %q → %q",
-					k, mi.get(k), mi2.get(k))
+					k, mi.Get(k), mi2.Get(k))
 			}
 		}
 	})
@@ -128,7 +128,7 @@ HOME_URL=https://sunlight.example
 		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 			t.Skip()
 		}
-		m, err := parseOSRelease(path)
+		m, err := ParseOSRelease(path)
 		if err != nil {
 			return
 		}
@@ -143,11 +143,11 @@ HOME_URL=https://sunlight.example
 	})
 }
 
-// swapMIPath swaps the package-level machineInfoPath var so
-// loadMachineInfo/save target the fuzz's temp file. Restore
+// swapMIPath swaps the package-level MachineInfoPath var so
+// LoadMachineInfo/save target the fuzz's temp file. Restore
 // function returns the previous value.
 func swapMIPath(p string) func() {
-	old := machineInfoPath
-	machineInfoPath = p
-	return func() { machineInfoPath = old }
+	old := MachineInfoPath
+	MachineInfoPath = p
+	return func() { MachineInfoPath = old }
 }

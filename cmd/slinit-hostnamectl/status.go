@@ -11,7 +11,7 @@
 //   - hardware vendor / model: /sys/class/dmi/id/{sys_vendor,product_name}
 //   - firmware: /sys/class/dmi/id/bios_{vendor,version,date}
 //   - chassis (auto): DMI chassis_type mapped to systemd's names
-//   - virtualization: DMI + /proc hints; detectVirt.go handles it
+//   - virtualization: DMI + /proc hints; hostname.DetectVirt.go handles it
 
 package main
 
@@ -19,10 +19,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/pkg/hostname"
 )
 
 // statusFields is the payload for both text and JSON rendering.
@@ -68,20 +69,20 @@ func runStatus(out io.Writer, opts options) error {
 
 func collectStatus() statusFields {
 	var s statusFields
-	mi, _ := loadMachineInfo()
+	mi, _ := hostname.LoadMachineInfo()
 
-	s.StaticHostname = readTrimmed(hostnamePath)
+	s.StaticHostname = hostname.ReadTrimmed(hostname.HostnamePath)
 	if mi != nil {
-		s.PrettyHostname = mi.get("PRETTY_HOSTNAME")
-		s.IconName = mi.get("ICON_NAME")
-		s.Chassis = mi.get("CHASSIS")
-		s.Deployment = mi.get("DEPLOYMENT")
-		s.Location = mi.get("LOCATION")
-		s.HardwareVendor = mi.get("HARDWARE_VENDOR")
-		s.HardwareModel = mi.get("HARDWARE_MODEL")
-		s.FirmwareVersion = mi.get("FIRMWARE_VERSION")
-		s.FirmwareVendor = mi.get("FIRMWARE_VENDOR")
-		s.FirmwareDate = mi.get("FIRMWARE_DATE")
+		s.PrettyHostname = mi.Get("PRETTY_HOSTNAME")
+		s.IconName = mi.Get("ICON_NAME")
+		s.Chassis = mi.Get("CHASSIS")
+		s.Deployment = mi.Get("DEPLOYMENT")
+		s.Location = mi.Get("LOCATION")
+		s.HardwareVendor = mi.Get("HARDWARE_VENDOR")
+		s.HardwareModel = mi.Get("HARDWARE_MODEL")
+		s.FirmwareVersion = mi.Get("FIRMWARE_VERSION")
+		s.FirmwareVendor = mi.Get("FIRMWARE_VENDOR")
+		s.FirmwareDate = mi.Get("FIRMWARE_DATE")
 	}
 
 	var uname unix.Utsname
@@ -94,10 +95,10 @@ func collectStatus() statusFields {
 	}
 	s.TransientHostname = transientDisplay(s.Hostname, s.StaticHostname)
 
-	s.MachineID = readTrimmed(machineIDPath)
-	s.BootID = readTrimmed(bootIDPath)
+	s.MachineID = hostname.ReadTrimmed(hostname.MachineIDPath)
+	s.BootID = hostname.ReadTrimmed(hostname.BootIDPath)
 
-	if osrel, err := parseOSRelease(osReleasePath); err == nil {
+	if osrel, err := hostname.ParseOSRelease(hostname.OSReleasePath); err == nil {
 		s.OSPrettyName = osrel["PRETTY_NAME"]
 		s.OSCPEName = osrel["CPE_NAME"]
 		s.OSHomeURL = osrel["HOME_URL"]
@@ -105,26 +106,26 @@ func collectStatus() statusFields {
 	}
 
 	if s.HardwareVendor == "" {
-		s.HardwareVendor = readTrimmed(dmiSysVendorPath)
+		s.HardwareVendor = hostname.ReadTrimmed(hostname.DMISysVendorPath)
 	}
 	if s.HardwareModel == "" {
-		s.HardwareModel = readTrimmed(dmiProductNamePath)
+		s.HardwareModel = hostname.ReadTrimmed(hostname.DMIProductNamePath)
 	}
 	if s.FirmwareVendor == "" {
-		s.FirmwareVendor = readTrimmed(dmiBiosVendorPath)
+		s.FirmwareVendor = hostname.ReadTrimmed(hostname.DMIBiosVendorPath)
 	}
 	if s.FirmwareVersion == "" {
-		s.FirmwareVersion = readTrimmed(dmiBiosVersionPath)
+		s.FirmwareVersion = hostname.ReadTrimmed(hostname.DMIBiosVersionPath)
 	}
 	if s.FirmwareDate == "" {
-		s.FirmwareDate = readTrimmed(dmiBiosDatePath)
+		s.FirmwareDate = hostname.ReadTrimmed(hostname.DMIBiosDatePath)
 	}
 
 	// Chassis: honor operator override; else auto-detect.
 	if s.Chassis == "" {
-		s.Chassis = detectChassis()
+		s.Chassis = hostname.DetectChassis()
 	}
-	s.Virtualization = detectVirt()
+	s.Virtualization = hostname.DetectVirt()
 
 	return s
 }
@@ -220,50 +221,3 @@ func cstring(b []byte) string {
 	}
 	return string(b)
 }
-
-// readTrimmed reads a file and returns its whitespace-trimmed
-// contents, or "" if the file is missing / unreadable. Used liberally
-// for /proc, /sys, and small config files.
-func readTrimmed(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
-
-// parseOSRelease is a tiny os-release(5) reader. Reuses the
-// machine-info decoder since the grammar is identical.
-func parseOSRelease(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]string{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		eq := strings.IndexByte(line, '=')
-		if eq <= 0 {
-			continue
-		}
-		out[strings.TrimSpace(line[:eq])] = decodeValue(strings.TrimSpace(line[eq+1:]))
-	}
-	return out, nil
-}
-
-// Paths overridable in tests. `hostnamePath` is also used by set.go.
-var (
-	hostnamePath       = "/etc/hostname"
-	machineIDPath      = "/etc/machine-id"
-	bootIDPath         = "/proc/sys/kernel/random/boot_id"
-	osReleasePath      = "/etc/os-release"
-	dmiSysVendorPath   = "/sys/class/dmi/id/sys_vendor"
-	dmiProductNamePath = "/sys/class/dmi/id/product_name"
-	dmiChassisTypePath = "/sys/class/dmi/id/chassis_type"
-	dmiBiosVendorPath  = "/sys/class/dmi/id/bios_vendor"
-	dmiBiosVersionPath = "/sys/class/dmi/id/bios_version"
-	dmiBiosDatePath    = "/sys/class/dmi/id/bios_date"
-)

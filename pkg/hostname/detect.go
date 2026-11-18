@@ -9,7 +9,7 @@
 // hypervisor hints via DMI and CPUID leaves exposed by /proc/cpuinfo.
 // Returns "none" when nothing matches, matching systemd's default.
 
-package main
+package hostname
 
 import (
 	"os"
@@ -17,18 +17,18 @@ import (
 	"strings"
 )
 
-// detectChassis reads DMI chassis_type and maps SMBIOS numbers to
+// DetectChassis reads DMI chassis_type and maps SMBIOS numbers to
 // systemd's chassis name set. When mapping fails, falls back to VM /
 // container detection so a virtualized guest reports as "vm" or
 // "container" rather than the almost-always-"other" DMI default.
-func detectChassis() string {
-	if v := detectVirt(); v != "" && v != "none" {
+func DetectChassis() string {
+	if v := DetectVirt(); v != "" && v != "none" {
 		if isContainer(v) {
 			return "container"
 		}
 		return "vm"
 	}
-	raw := readTrimmed(dmiChassisTypePath)
+	raw := ReadTrimmed(DMIChassisTypePath)
 	if raw == "" {
 		return ""
 	}
@@ -65,11 +65,11 @@ func chassisFromSMBIOS(n int) string {
 	return ""
 }
 
-// detectVirt returns a systemd-style virtualization ID or "none".
+// DetectVirt returns a systemd-style virtualization ID or "none".
 // Order matters: container tests come first because a container inside
 // a VM should still be identified as a container (matches
 // systemd-detect-virt --container preference).
-func detectVirt() string {
+func DetectVirt() string {
 	if v := detectContainer(); v != "" {
 		return v
 	}
@@ -83,10 +83,10 @@ func detectVirt() string {
 // /proc/self/cgroup / /proc/1/cgroup for cgroup-name hints. Matches
 // what systemd-detect-virt --container looks at for the common cases.
 func detectContainer() string {
-	if v := envValue(proc1EnvironPath, "container"); v != "" {
+	if v := envValue(Proc1EnvironPath, "container"); v != "" {
 		return v
 	}
-	if b, err := os.ReadFile(proc1CgroupPath); err == nil {
+	if b, err := os.ReadFile(Proc1CgroupPath); err == nil {
 		s := string(b)
 		switch {
 		case strings.Contains(s, "docker"):
@@ -113,9 +113,9 @@ func detectContainer() string {
 // The DMI table is the primary source; falling back to cpuinfo lets
 // us catch minimal or DMI-less hypervisors.
 func detectVM() string {
-	sysVendor := strings.ToLower(readTrimmed(dmiSysVendorPath))
-	product := strings.ToLower(readTrimmed(dmiProductNamePath))
-	bios := strings.ToLower(readTrimmed(dmiBiosVendorPath))
+	sysVendor := strings.ToLower(ReadTrimmed(DMISysVendorPath))
+	product := strings.ToLower(ReadTrimmed(DMIProductNamePath))
+	bios := strings.ToLower(ReadTrimmed(DMIBiosVendorPath))
 	for _, hit := range []struct{ needle, id string }{
 		{"kvm", "kvm"},
 		{"qemu", "qemu"},
@@ -150,7 +150,7 @@ func detectVM() string {
 	return ""
 }
 
-// isContainer returns true when the given detectVirt result names a
+// isContainer returns true when the given DetectVirt result names a
 // container runtime rather than a hypervisor.
 func isContainer(v string) bool {
 	switch v {
@@ -178,6 +178,6 @@ func envValue(path, key string) string {
 
 // Paths overridable in tests.
 var (
-	proc1EnvironPath = "/proc/1/environ"
-	proc1CgroupPath  = "/proc/1/cgroup"
+	Proc1EnvironPath = "/proc/1/environ"
+	Proc1CgroupPath  = "/proc/1/cgroup"
 )

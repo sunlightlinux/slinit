@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/hostname"
 )
 
 // systemd#6369: "hostnamed does not like fqdns with trailing dots".
@@ -52,9 +54,9 @@ func TestRejectedHostnameLeavesNoTrace_systemd6369(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hostname")
 
-	saved := hostnamePath
-	hostnamePath = path
-	defer func() { hostnamePath = saved }()
+	saved := hostname.HostnamePath
+	hostname.HostnamePath = path
+	defer func() { hostname.HostnamePath = saved }()
 
 	// Static scope only, so the test never calls sethostname(2) on the
 	// machine running it.
