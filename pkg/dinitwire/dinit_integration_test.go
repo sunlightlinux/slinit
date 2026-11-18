@@ -125,11 +125,11 @@ func waitState(t *testing.T, c *Conn, h uint32, want uint8) Status {
 }
 
 const (
-	stStopped = 0
-	stStarted = 2
-	rplyACK   = 50
-	rplyNAK   = 51
-	rplyNoSvc = 60
+	stStopped   = 0
+	stStarted   = 2
+	rplyACK     = 50
+	rplyNAK     = 51
+	rplyNoSvc   = 60
 	rplyAlready = 61
 )
 

@@ -122,7 +122,7 @@ func main() {
 func run(device string, timeoutSec, intervalSec int, verbose bool) error {
 	// syscall.Open (not os.OpenFile) so no *os.File finalizer can
 	// race the magic-close ceremony below.
-	fd, err := syscall.Open(device, syscall.O_WRONLY, 0)
+	fd, err := syscall.Open(device, syscall.O_WRONLY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", device, err)
 	}

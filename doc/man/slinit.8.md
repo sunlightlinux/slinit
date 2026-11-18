@@ -409,7 +409,11 @@ long options may be written with one or two leading dashes.
 :   Append log messages to *path* instead of the default target (the
     console, or syslog in system mode). If the file cannot be opened,
     a system-mode slinit continues with the default target; a user-mode
-    slinit exits with an error.
+    slinit exits with an error. A missing file is created, but never
+    through a symlink whose target does not exist: that is refused with
+    *ELOOP*, as systemd refuses it, so whoever can plant a symlink in the
+    log's directory cannot choose where slinit creates a file. A symlink
+    to an existing file is followed.
 
 **-1**, **\--console-dup**
 :   When **\--log-file** is set, also copy every log line to
@@ -419,7 +423,8 @@ long options may be written with one or two leading dashes.
 **\--catch-all-log** *path*
 :   Path of the catch-all log, which captures the output of services
     that have no log target of their own. Default
-    */run/slinit/catch-all.log*.
+    */run/slinit/catch-all.log*. Created the way **\--log-file** is: never
+    through a dangling symlink.
 
 **-B**, **\--no-catch-all**
 :   Disable the catch-all logger.

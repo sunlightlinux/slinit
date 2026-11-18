@@ -39,6 +39,24 @@ verified with `git tag -v`.
   Distributions shipping a D-Bus policy that admits only root to these
   methods need to let other users send them for this to take effect.
 
+### Security
+
+- Every service inherited an open descriptor on slinit's console. The
+  catch-all logger saved the console with a plain `dup(2)`, which is not
+  close-on-exec, and Go's `os/exec` closes nothing it was not given, so in
+  PID 1 any service, however unprivileged, held a writable `/dev/console`.
+  Measured in container mode: a service found fd 3 open on slinit's
+  original stdout. The console is now duplicated close-on-exec. The
+  autofs control descriptor, the loopback set-up socket and both watchdog
+  descriptors are opened close-on-exec as well. Found while porting
+  systemd's tree-wide close-on-exec sweep.
+- `--log-file` and the catch-all log are no longer created through a
+  dangling symlink: if the path is a symlink whose target does not exist,
+  opening fails with `ELOOP` instead of creating the target wherever it
+  points, as systemd now refuses for `StandardOutput=file:` and the other
+  files it creates. A symlink to an existing file is still followed.
+  Service log files were already opened with `O_NOFOLLOW`.
+
 ### Fixed
 
 - `slinit-logind`'s `CanPowerOff`, `CanReboot`, `CanHalt`, `CanSuspend`,
@@ -51,6 +69,14 @@ verified with `git tag -v`.
   allowed, and still "na" for everyone when the machine cannot do it. The
   actions and their queries share one rule, so they cannot disagree. The
   D-Bus signatures are unchanged.
+
+### Documentation
+
+- `restart-delay-step` was described in the feature list as an
+  exponential backoff step; it is linear, as its man page says.
+  `doc/features.md` is regenerated from the source, which also restores
+  `start-when-idle`'s provenance to the source it had only in the
+  generated file.
 
 ### Tests
 

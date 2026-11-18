@@ -114,7 +114,7 @@ func armWatchdogAndWait(logger *logging.Logger) error {
 // defaultWatchdogOpen is the production Open path (bypasses os.File
 // so the returned fd has no Go finalizer to accidentally close it).
 func defaultWatchdogOpen(path string) (int, error) {
-	return syscall.Open(path, syscall.O_WRONLY, 0)
+	return syscall.Open(path, syscall.O_WRONLY|syscall.O_CLOEXEC, 0)
 }
 
 // defaultWatchdogIoctl wraps unix.Syscall(SYS_IOCTL, …) with an

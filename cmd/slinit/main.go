@@ -577,7 +577,7 @@ func main() {
 	// usable fallback. User-mode slinit bails out so the operator sees
 	// the bad path right away.
 	if logFile != "" {
-		lf, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+		lf, err := logging.OpenAppend(logFile, 0640)
 		if err != nil {
 			if isPID1 || systemMode || containerMode {
 				fmt.Fprintf(os.Stderr,

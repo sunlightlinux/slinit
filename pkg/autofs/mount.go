@@ -52,7 +52,7 @@ func Setup(unit *MountUnit) (*AutofsMount, error) {
 	}
 
 	// Open mount point to get an fd for ioctl
-	ioctlFD, err := unix.Open(unit.Where, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	ioctlFD, err := unix.Open(unit.Where, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		unix.Unmount(unit.Where, 0)
 		unix.Close(pipeFDs[0])

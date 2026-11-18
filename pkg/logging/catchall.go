@@ -72,8 +72,13 @@ func StartCatchAll(logPath string) (*CatchAllLogger, error) {
 	}
 
 	// Save current stdout fd (the console) before we replace it.
-	// Dup it so we own the fd independently.
-	consoleFD, err := syscall.Dup(1)
+	// Dup it so we own the fd independently, and close-on-exec: a plain
+	// dup(2) is inherited by every process slinit starts, since os/exec
+	// closes nothing it was not given, and under PID 1 that handed every
+	// service, however unprivileged, a writable /dev/console. Nothing
+	// needs this fd across exec: a soft reboot hands the console over on
+	// fd 1/2 (Stop dup2's it there, which clears close-on-exec).
+	consoleFD, err := unix.FcntlInt(1, unix.F_DUPFD_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("dup stdout: %w", err)
 	}
@@ -119,7 +124,7 @@ func StartCatchAll(logPath string) (*CatchAllLogger, error) {
 	if logPath != "-" {
 		// Ensure parent directory exists.
 		os.MkdirAll(filepath.Dir(logPath), 0755)
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+		f, err := OpenAppend(logPath, 0640)
 		if err != nil {
 			// Non-fatal: log only to console.
 			fmt.Fprintf(console, "slinit: catch-all log file: %v (console only)\n", err)

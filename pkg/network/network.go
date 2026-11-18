@@ -69,7 +69,7 @@ func SetIfupBins(bins []string) { ifupBins = bins }
 // returned to the caller; init's usual policy is to log and
 // continue.
 func BringUpLoopback() error {
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return fmt.Errorf("loopback: socket: %w", err)
 	}
