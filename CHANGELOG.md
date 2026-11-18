@@ -26,6 +26,23 @@ verified with `git tag -v`.
 
 ### Added
 
+- `slinit-localed` serves `org.freedesktop.locale1`, which GNOME
+  Settings' Region panel sets the system language and the login screen's
+  keyboard through, and which GNOME Shell's login screen, mutter and
+  gnome-settings-daemon read the keyboard layout from. Nothing on a slinit
+  system provided it. It is systemd-localed's interface, writing
+  `/etc/locale.conf`, `/etc/vconsole.conf` (keymap and XKB keys, other
+  lines kept) and `00-keyboard.conf` with systemd's merge and validation
+  rules, plus an active `KEYMAP=` in `/etc/rc.conf`, which the boot
+  scripts load. Changes are authorized by polkit with systemd's action
+  ids, and worked out again once polkit has answered, so a change made
+  meanwhile is not overwritten. Keymap/layout conversion and the
+  `LANGUAGE` fallback use systemd's `kbd-model-map` and
+  `language-fallback-map` when installed; Sunlight has neither, so no
+  conversion is found, as systemd behaves when its map has no row.
+- `slinit-localectl`, systemd's `localectl` without a bus: `status`,
+  `set-locale`, `set-keymap`, `set-x11-keymap` and the `list-*` commands,
+  on the same code as `slinit-localed` (`pkg/locale`).
 - `slinit-hostnamed` serves `org.freedesktop.hostname1`, which GNOME
   Settings' About panel, NetworkManager, bluetoothd and GTK use to read
   and change the machine's names, chassis and hardware information.

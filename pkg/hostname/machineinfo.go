@@ -27,6 +27,7 @@ var MachineInfoPath = "/etc/machine-info"
 // name pointing back into lines[].
 type MachineInfo struct {
 	lines []miLine
+	path  string // the file it was loaded from and is saved to
 }
 
 type miLine struct {
@@ -37,17 +38,22 @@ type miLine struct {
 
 // LoadMachineInfo reads the file; missing file yields an empty struct
 // so the setter path can freely create it.
-func LoadMachineInfo() (*MachineInfo, error) {
-	f, err := os.Open(MachineInfoPath)
+func LoadMachineInfo() (*MachineInfo, error) { return LoadEnvFile(MachineInfoPath) }
+
+// LoadEnvFile reads any file in the same KEY=VALUE grammar (os-release(5),
+// vconsole.conf(5), locale.conf(5)), keeping comments and every line it
+// does not change; Save writes it back to the same path.
+func LoadEnvFile(path string) (*MachineInfo, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &MachineInfo{}, nil
+			return &MachineInfo{path: path}, nil
 		}
 		return nil, err
 	}
 	defer f.Close()
 
-	mi := &MachineInfo{}
+	mi := &MachineInfo{path: path}
 	s := bufio.NewScanner(f)
 	// os-release lines are typically short but be generous.
 	s.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -123,14 +129,18 @@ func (mi *MachineInfo) Delete(key string) {
 // save writes the file back atomically (tmp + rename), creating parent
 // dirs if needed. Mode 0644 matches systemd's tmpfiles-installed default.
 func (mi *MachineInfo) Save() error {
+	path := mi.path
+	if path == "" {
+		path = MachineInfoPath
+	}
 	dir := "/etc"
-	if idx := strings.LastIndex(MachineInfoPath, "/"); idx > 0 {
-		dir = MachineInfoPath[:idx]
+	if idx := strings.LastIndex(path, "/"); idx > 0 {
+		dir = path[:idx]
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".machine-info.")
+	tmp, err := os.CreateTemp(dir, ".envfile.")
 	if err != nil {
 		return err
 	}
@@ -157,7 +167,7 @@ func (mi *MachineInfo) Save() error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), MachineInfoPath)
+	return os.Rename(tmp.Name(), path)
 }
 
 // decodeValue strips os-release(5) quoting: double-quoted values

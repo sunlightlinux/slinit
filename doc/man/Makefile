@@ -55,6 +55,7 @@ PAGES_8 = \
 	slinit-logind.8 \
 	slinit-timedated.8 \
 	slinit-hostnamed.8 \
+	slinit-localed.8 \
 	rc-service.8 \
 	rc-update.8 \
 	rc-status.8
@@ -63,7 +64,7 @@ PAGES_7 = slinit-resource.7
 
 PAGES_5 = slinit-service.5
 
-PAGES_1 = slinit-shell-var.1 slinit-svc-value.1 slinit-hostnamectl.1 slinit-timedatectl.1
+PAGES_1 = slinit-shell-var.1 slinit-svc-value.1 slinit-hostnamectl.1 slinit-timedatectl.1 slinit-localectl.1
 
 PAGES   = $(PAGES_8) $(PAGES_7) $(PAGES_5) $(PAGES_1)
 
@@ -77,7 +78,7 @@ SHUTDOWN_ALIASES = slinit-reboot.8 slinit-halt.8 slinit-poweroff.8 slinit-soft-r
 # other page here, but operators type the systemd name. Installing the
 # compat name as a symlink keeps `man hostnamectl` working with one
 # source file per tool — there used to be two divergent pages for each.
-COMPAT_ALIASES_1 = hostnamectl.1 timedatectl.1
+COMPAT_ALIASES_1 = hostnamectl.1 timedatectl.1 localectl.1
 
 all: $(PAGES)
 

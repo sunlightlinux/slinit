@@ -367,13 +367,20 @@ func (s *server) SetLocation(sender dbus.Sender, name string, interactive bool) 
 	return s.setMachineInfo(sender, "LOCATION", "Location", name, safe, interactive)
 }
 
-// writeTags stores the tag list as TAGS= (an empty list removes it).
-func (s *server) writeTags(sender dbus.Sender, tags []string) *dbus.Error {
+// writeTags stores the tag list compute returns as TAGS= (an empty list
+// removes it). compute runs again once polkit has answered, on the tags as
+// they are then, so a change made while the caller was authenticating is
+// not overwritten with a stale list.
+func (s *server) writeTags(sender dbus.Sender, compute func(cur []string) ([]string, *dbus.Error)) *dbus.Error {
 	if err := s.pk.Authorize(sender, iface+".set-machine-info", nil, false); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	tags, derr := compute(hostname.ParseTags(miGet("TAGS")))
+	if derr != nil {
+		return derr
+	}
 	mi, err := hostname.LoadMachineInfo()
 	if err != nil {
 		return dbusservice.Failed("Failed to read machine info: %v", err)
@@ -400,7 +407,7 @@ func (s *server) SetTags(sender dbus.Sender, tags []string) *dbus.Error {
 	if strings.Join(norm, ":") == strings.Join(hostname.ParseTags(miGet("TAGS")), ":") {
 		return nil
 	}
-	return s.writeTags(sender, norm)
+	return s.writeTags(sender, func([]string) ([]string, *dbus.Error) { return norm, nil })
 }
 
 // AddAndRemoveTags removes the tags whose key matches a pattern in remove,
@@ -413,15 +420,22 @@ func (s *server) AddAndRemoveTags(sender dbus.Sender, add, remove []string) *dbu
 	if len(remove) > hostname.MaxTags {
 		return dbusservice.InvalidArgs("Too many tags patterns to remove.")
 	}
+	compute := func(cur []string) ([]string, *dbus.Error) {
+		next, err := hostname.NormalizeTags(append(hostname.RemoveTags(cur, remove), add...))
+		if err != nil {
+			return nil, dbusservice.InvalidArgs("Too many machine tags specified.")
+		}
+		return next, nil
+	}
 	cur := hostname.ParseTags(miGet("TAGS"))
-	next, err := hostname.NormalizeTags(append(hostname.RemoveTags(cur, remove), add...))
-	if err != nil {
-		return dbusservice.InvalidArgs("Too many machine tags specified.")
+	next, derr := compute(cur)
+	if derr != nil {
+		return derr
 	}
 	if strings.Join(next, ":") == strings.Join(cur, ":") {
 		return nil
 	}
-	return s.writeTags(sender, next)
+	return s.writeTags(sender, compute)
 }
 
 // GetProductUUID returns the firmware's product UUID.
