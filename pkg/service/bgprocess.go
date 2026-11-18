@@ -577,8 +577,7 @@ func (s *BGProcessService) BringDown() {
 	// out, matching dinit, where kill_pg gates on the same flag.
 	err := process.SignalDaemonGroup(pid, sig, s.signalProcessOnly(pid))
 	if err != nil {
-		s.services.logger.Error("Service '%s': failed to signal process: %v",
-			s.serviceName, err)
+		s.logStopSignalFailure(err)
 	}
 
 	s.stopIssued = true

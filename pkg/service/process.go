@@ -1806,8 +1806,7 @@ func (s *ProcessService) BringDown() {
 
 		err := process.SignalProcess(s.pid, sig, s.Flags.SignalProcessOnly)
 		if err != nil {
-			s.services.logger.Error("Service '%s': failed to signal process: %v",
-				s.serviceName, err)
+			s.logStopSignalFailure(err)
 		}
 	}
 
@@ -1825,6 +1824,23 @@ func (s *ProcessService) BringDown() {
 	if s.stopTimeout > 0 {
 		s.armTimer(s.stopTimeout, timerStopTimeout)
 	}
+}
+
+// logStopSignalFailure reports a failure to deliver a stop signal. ESRCH —
+// "no such process" — means the process, or its whole group, is already
+// gone: a service that exits the moment a stop begins (a pipe consumer whose
+// writers have just stopped, say) or one reaped a hair before we signalled
+// it. During a stop that is the outcome we wanted, not a failure, so it is
+// noted at info rather than logged as an error. Any other failure is a real
+// error. (KillProcessGroup already treats an empty group's ESRCH as benign.)
+func (s *ServiceRecord) logStopSignalFailure(err error) {
+	if errors.Is(err, syscall.ESRCH) {
+		s.services.logger.Info("Service '%s': already exited before the stop signal",
+			s.serviceName)
+		return
+	}
+	s.services.logger.Error("Service '%s': failed to signal process: %v",
+		s.serviceName, err)
 }
 
 // execStopCommand starts the stop-command process. Returns true if it was
