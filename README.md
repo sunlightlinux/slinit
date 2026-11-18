@@ -128,7 +128,7 @@ the provenance has been traced, which is about half of them so far.
 
 | Upstream | What slinit takes from it |
 |---|---|
-| **dinit** | The base: description format, dependency types, state machine, `slinitctl` verbs — 1:1. Adds `prepared-by` |
+| **dinit** | The base: description format, dependency types, state machine, `slinitctl` verbs — 1:1. Adds `prepared-by`; `slinitctl` also drives a live dinit daemon over dinit's own protocol |
 | **runit** | `finish-command`, `ready-check-command`, `pre-stop-hook`, `env-dir`, `control-command-<SIG>`, `chroot`, `new-session`, `lock-file`, log rotation/filtering, down-file, `once` |
 | **s6-linux-init** | catch-all logger, TAI64N/ISO timestamps, scheduled shutdown and cancel, wall messages, `/etc/shutdown.allow`, global boot rlimits, container exit codes and ready-fd, `slinit-init-maker` |
 | **OpenRC** | `rc-service` / `rc-update` / `rc-status` shims, `/etc/rc.conf` + `/etc/conf.d/<svc>` sourcing, named-runlevel dispatch, init.d/LSB auto-detection, drop-in clones of eight utilities |
@@ -249,6 +249,11 @@ slinitctl boot-time
 Every subcommand, its flags and its exit codes:
 [slinitctl(8)](doc/man/slinitctl.8.md). `--system` and `--user` pick the
 instance explicitly.
+
+**slinitctl** also controls a live [dinit](https://github.com/davmac314/dinit)
+daemon — it detects dinit at connection time and speaks dinit's own control
+protocol for every command the two share; slinit-only verbs report that a
+dinit daemon does not support them.
 
 ## Architecture
 
