@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.18.0] — 2026-11-18
+
+**A minor, from a pass over systemd up to 4bd7f6d336. io_uring requests
+are now filtered like the system calls they stand for (Linux 7.0+), with
+a new `io-uring-filter` directive; the `restrict-*`/`protect-*` filters
+refuse a call with an error, as systemd's do, instead of killing the
+process, which under `restrict-namespaces` killed every threaded program;
+`restrict-suidsgid` now covers creating SUID files, not only chmod; and
+`slinit-logind` lets the user of the active local session power off.
+Services no longer inherit slinit's console. The control protocol stays
+at version 7; dinit compatibility is unchanged.**
+
 ### Added
 
 - `io-uring-filter`, systemd's `IOUringFilter=`: an allow or deny list of
