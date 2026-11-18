@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.19.0] — 2026-11-18
+
+**A minor: the three systemd settings daemons GNOME talks to and nothing
+on a slinit system provided. `slinit-timedated`, `slinit-hostnamed` and
+`slinit-localed` serve `org.freedesktop.timedate1`, `hostname1` and
+`locale1` with systemd's methods, errors and polkit action ids, so GNOME
+Settings' Date & Time, About and Region panels, NetworkManager,
+bluetoothd and the login screen's keyboard work against them unchanged;
+`slinit-localectl` joins the bus-free `hostnamectl`/`timedatectl`. They
+are bus-activated: a distribution has to install the D-Bus policy,
+activation and polkit files under `data/` for them to start. One existing
+tool changes: `slinit-timedatectl set-timezone` now survives a reboot
+(see Changed). PID 1, the control protocol (version 7) and dinit
+compatibility are untouched.**
+
 ### Added
 
 - `slinit-localed` serves `org.freedesktop.locale1`, which GNOME
@@ -65,6 +80,19 @@ verified with `git tag -v`.
   otherwise re-apply at the next boot. It is started by D-Bus activation;
   the D-Bus policy, the activation file and the polkit policy are under
   `data/`.
+
+### Changed
+
+- `slinit-timedatectl set-timezone` also rewrites an uncommented
+  `TIMEZONE=` in `/etc/rc.conf`. slinit-services' boot script re-points
+  `/etc/localtime` from that line on every boot, so a zone set with
+  `timedatectl` used to last only until the next reboot. It now shares
+  `pkg/timedate` with `slinit-timedated`, which must keep the two in
+  step for GNOME's panel. An rc.conf without an active `TIMEZONE=` is
+  not touched.
+  - **Compat:** a setup that relied on rc.conf winning at boot (setting a
+    temporary zone with `timedatectl` and expecting the reboot to undo
+    it) now keeps the new zone; set it back explicitly instead.
 
 ## [3.18.0] — 2026-11-18
 

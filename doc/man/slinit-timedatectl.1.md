@@ -69,8 +69,11 @@ concurrent readers never observe an inconsistent state.
 **set-timezone** *ZONE*
 :   Validate *ZONE* against */usr/share/zoneinfo* and update
     */etc/localtime* atomically. If */etc/timezone* is already
-    present, it is refreshed too. Rejects paths containing `..` or
-    starting with `/`.
+    present, it is refreshed too. An uncommented **TIMEZONE=** in
+    */etc/rc.conf*, which slinit-services' boot script applies on
+    every boot, is rewritten to *ZONE* as well (since 3.19.0); an
+    rc.conf without one is left alone. Rejects paths containing `..`
+    or starting with `/`.
 
 **list-timezones**
 :   Print every known zone, one per line, sorted. Prefers
