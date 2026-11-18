@@ -24,6 +24,45 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.19.1] — 2026-11-18
+
+**No product code changed**: CI, `tools/stats` and two functional
+cases, as in v3.1.2, v3.1.4 and v3.1.5. The binaries are the same as
+v3.19.0's. Cut because v3.19.0's test results did not mean what they
+appeared to: its fuzz job failed on a stale matrix and never fuzzed
+three packages, and a hardening case had failed on every run since
+v3.18.0 while the product was right.
+
+### Tests
+
+- **81-hardening failed on every run since v3.18.0, and the filter was
+  right.** The probe judged `protect-clock` by `date -s`'s exit status.
+  The functional VM's `date` is Alpine's busybox 1.37, which prints
+  "can't set date: Operation not permitted", then the date, and exits 0.
+  While `protect-clock` killed the process the exit status was never 0,
+  so this stayed hidden until v3.18.0 made the filter refuse with EPERM,
+  as systemd's does. The probe now requires the EPERM message and reads
+  the clock back. The same run showed `Seccomp: 2` and `protect-hostname`
+  refusing, which is what pointed at the probe rather than the filter.
+- **113-protect-clock could not fail**: all three branches of its check
+  printed OK, including an empty stderr (from the old kill) and any
+  message at all. It now requires the EPERM message. Both cases were
+  verified in the VM to fail with the clock calls taken out of the
+  runner's deny list, and all eight hardening cases (81, 111-116, 152)
+  pass with them in.
+- **The fuzz job's matrix pointed at `cmd/slinit-hostnamectl` and
+  `cmd/slinit-timedatectl`**, whose fuzz targets v3.19.0 moved into
+  `pkg/hostname` and `pkg/timedate`, so the job failed with "the matrix
+  entry is stale". The same comparison found three packages CI had
+  never fuzzed: `pkg/journal` (`FuzzParseSyslog`), `pkg/process`
+  (`FuzzMatchFDName`) and `cmd/slinit-immortal-convert`
+  (`FuzzParseImmortalYAML`). All five are listed now, and each newly
+  listed target ran locally without a finding.
+- `tools/stats/fuzzmatrix_test.go` checks the matrix against every
+  package holding a `Fuzz` target, in both directions, before a push
+  (the job itself sees only stale entries, and only once pushed), as
+  `slsamatrix_test.go` does for the release matrix.
+
 ## [3.19.0] — 2026-11-18
 
 **A minor: the three systemd settings daemons GNOME talks to and nothing
