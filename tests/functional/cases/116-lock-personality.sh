@@ -5,9 +5,10 @@
 # this setting refuse nothing for months: the filter was there, and
 # empty, because "personality" was missing from the syscall table. So
 # the service also runs busybox linux64 (personality(PER_LINUX), the
-# current one: allowed) and linux32 (PER_LINUX32, a change: killed by
-# SIGSYS, exit 159), and a control service without the lock must run
-# linux32 fine, so the check can tell the two apart.
+# current one: allowed) and linux32 (PER_LINUX32, a change: refused with
+# EPERM, so linux32 fails but lives — exit non-zero and not 159, which
+# was SIGSYS before 3.18.0), and a control service without the lock must
+# run linux32 fine, so the check can tell the two apart.
 
 SVC="test-lockp"
 CTL="test-lockp-off"
@@ -72,7 +73,12 @@ for _ in $(seq 1 25); do
     sleep 0.2
 done
 assert_eq "$(cat /run/$SVC.64 2>/dev/null)" "0" "locked: setting the current personality is allowed"
-assert_eq "$(cat /run/$SVC.32 2>/dev/null)" "159" "locked: changing the personality is killed by SIGSYS"
+_rc32=$(cat /run/$SVC.32 2>/dev/null)
+case "$_rc32" in
+    0|159|"") _lock32="rc=${_rc32:-none}" ;;
+    *) _lock32=refused ;;
+esac
+assert_eq "$_lock32" "refused" "locked: changing the personality is refused (EPERM), not killed"
 assert_eq "$(cat /run/$CTL.32 2>/dev/null)" "0" "unlocked control: changing the personality works"
 
 slinitctl --system stop "$SVC" >/dev/null 2>&1

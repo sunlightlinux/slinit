@@ -11,10 +11,11 @@
 # evidence that it was not — an empty stderr from `hostname`, which
 # means the call SUCCEEDED.
 #
-# Empty stderr cannot distinguish the two outcomes either way: the deny
-# filter's action is SIGSYS, so a blocked `hostname` is killed and
-# prints nothing, exactly like one that worked. Only the exit status
-# and the resulting hostname separate them, so the probe reports both.
+# Stderr alone cannot be trusted to distinguish the two outcomes: before
+# 3.18.0 the deny filter killed a blocked `hostname`, which then printed
+# nothing, exactly like one that worked; now it fails with EPERM. Only
+# the exit status and the resulting hostname separate them reliably, so
+# the probe reports both.
 #
 # The self-report uses `grep | tr` rather than awk, to keep quoting out
 # of it. An awk program needs braces, field refs and inner quotes, and
@@ -65,8 +66,8 @@ echo "INFO: external view: pid=${_pid:-none}" \
 _probe_seccomp=$(printf '%s' "$_self" | sed -n 's/.*Seccomp:[[:space:]]*\([0-9]*\).*/\1/p')
 assert_eq "$_probe_seccomp" "2" "service sees its own seccomp filter (mode 2)"
 
-# The call itself. A deny filter kills with SIGSYS, so `hostname` must
-# not report success — this is the assertion the old one only pretended
+# The call itself. The deny filter refuses it with EPERM, so `hostname`
+# must not report success — this is the assertion the old one only pretended
 # to make.
 _probe_call=$(printf '%s' "$_self" | sed -n 's/.*sethostname=\([a-z]*\).*/\1/p')
 assert_eq "$_probe_call" "refused" "sethostname did not succeed inside the guarded service"

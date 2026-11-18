@@ -1424,17 +1424,25 @@ alongside any user **system-call-filter** — the kernel picks the most
 restrictive action across all loaded filters) and/or a small mount
 operation. **PR_SET_NO_NEW_PRIVS** is set whenever a knob installs a
 seccomp filter (every knob except **protect-control-groups** and
-**memory-deny-write-execute**). A blocked call kills the process
-(*SECCOMP_RET_KILL_PROCESS*); **system-call-error-number** does not
-apply to these filters. The mount-based knobs (**protect-kernel-tunables**,
+**memory-deny-write-execute**). A blocked call fails with an error and
+the process carries on, as under systemd: *EPERM* for a refusal,
+*EAFNOSUPPORT* from **restrict-address-families**, and *ENOSYS* where the
+caller is meant to fall back to an older call that can be checked
+(**clone3**(2), **openat2**(2)). Until 3.18.0 a blocked call killed the
+process, which took down any program that probes and copes without the
+call — under **restrict-namespaces**, every threaded program, since
+glibc's **pthread_create**(3) tries **clone3** first. A syscall made
+through a foreign ABI (a 32-bit call on x86-64) is still killed.
+**system-call-error-number** does not apply to these filters. The mount-based knobs (**protect-kernel-tunables**,
 **protect-control-groups**, **protect-kernel-logs**) additionally
 auto-imply *CLONE_NEWNS* so the operations are confined to the
 service's private mount namespace.
 
 **protect-kernel-tunables**=*yes*|*no*
-:   Read-only remount */proc/sys* and deny **iopl**(2), **ioperm**(2),
-    **swapon**(2), **swapoff**(2). Equivalent to systemd's
-    **ProtectKernelTunables=**.
+:   Read-only remount */proc/sys* and deny **_sysctl**(2), as systemd's
+    **ProtectKernelTunables=** does, and also **iopl**(2),
+    **ioperm**(2), **swapon**(2), **swapoff**(2), which systemd leaves
+    to **SystemCallFilter=**.
 
 **protect-kernel-modules**=*yes*|*no*
 :   Deny **init_module**(2), **finit_module**(2),
@@ -1461,31 +1469,42 @@ service's private mount namespace.
 **lock-personality**=*yes*|*no*
 :   Refuse changing the execution domain: a **personality**(2) call
     with any argument but the current personality, or 0xffffffff to
-    query it, kills the process with SIGSYS. The personality locked
+    query it, fails with *EPERM*. The personality locked
     is the one in effect at exec, after **personality=** if set.
     Equivalent to systemd's **LockPersonality=**, which allows the
     query since v263. Before 3.6.0 slinit meant to refuse every call
     but, through a missing syscall-table entry, refused none.
 
 **restrict-realtime**=*yes*|*no*
-:   Deny **sched_setscheduler**(2) with *SCHED_FIFO* / *SCHED_RR* /
-    *SCHED_DEADLINE* (mask includes *SCHED_RESET_ON_FORK*); blanket-
-    deny **sched_setattr**(2) since its argument is a struct pointer
-    the kernel can't inspect from seccomp. Equivalent to systemd's
+:   Allow **sched_setscheduler**(2) to select only *SCHED_OTHER*,
+    *SCHED_BATCH* or *SCHED_IDLE* (with or without
+    *SCHED_RESET_ON_FORK*); any other policy, *SCHED_FIFO*, *SCHED_RR*,
+    *SCHED_DEADLINE* or one added later, fails with *EPERM*.
+    **sched_setattr**(2) is refused outright, since its argument is a
+    struct pointer the filter can't inspect. Equivalent to systemd's
     **RestrictRealtime=**.
 
 **restrict-namespaces**=*yes*|*no*
 :   Deny **unshare**(2) / **setns**(2) / **clone**(2) when the flags
-    include any *CLONE_NEW\** bit; blanket-deny **clone3**(2) since
-    its args live behind a user pointer. Equivalent to systemd's
+    include any *CLONE_NEW\** bit, and **setns**(2) with an *nstype*
+    of 0, which joins whatever namespace the descriptor names.
+    **clone3**(2) keeps its flags behind a user pointer, so it fails
+    with *ENOSYS*: glibc and others then fall back to **clone**(2),
+    which is checked, so threads still work. Equivalent to systemd's
     **RestrictNamespaces=** (yes/no form; per-namespace allow-list
     not shipped).
 
 **restrict-suidsgid**=*yes*|*no*
-:   Deny **chmod**(2) / **fchmod**(2) / **fchmodat**(2) calls whose
-    mode argument sets *S_ISUID* or *S_ISGID*. Equivalent to
-    systemd's **RestrictSUIDSGID=** — chmod family only per
-    systemd's documented behaviour.
+:   Deny every call that would give a file or directory the *S_ISUID*
+    or *S_ISGID* bit: **chmod**(2), **fchmod**(2), **fchmodat**(2),
+    **fchmodat2**(2), and creating with such a mode through
+    **open**(2) / **openat**(2) (with *O_CREAT* or *O_TMPFILE*),
+    **creat**(2), **mkdir**(2), **mkdirat**(2), **mknod**(2) and
+    **mknodat**(2). **openat2**(2) keeps its flags in a structure the
+    filter cannot read, so it fails with *ENOSYS* and callers use
+    **openat**(2). Equivalent to systemd's **RestrictSUIDSGID=**.
+    Before 3.18.0 only the chmod family was covered, so a service could
+    still create a set-user-ID file with **open**(2).
 
 **restrict-file-systems**=*yes*|*no*
 :   Deny the entire mount syscall family: **mount**(2),
@@ -1496,8 +1515,10 @@ service's private mount namespace.
     fstype allow-list variant requires BPF-LSM.
 
 **restrict-address-families**=*AF_INET* *AF_UNIX* *AF_INET6* ...
-:   Allow-list of address families for **socket**(2) and
-    **socketpair**(2); anything not listed is denied. Empty
+:   Allow-list of address families for **socket**(2); anything not
+    listed fails with *EAFNOSUPPORT*, so a program that tries IPv6 and
+    falls back to IPv4 still works. **socketpair**(2) is not affected,
+    as under systemd: it only makes connected *AF_UNIX* pairs. Empty
     directive value = deny every socket call. Repeatable via *+=*.
     Recognised names: *AF_UNIX*/*AF_LOCAL*, *AF_INET*, *AF_INET6*,
     *AF_NETLINK*, *AF_PACKET*, *AF_AX25*, *AF_IPX*, *AF_APPLETALK*,

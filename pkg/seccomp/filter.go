@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // Mode controls how the syscall list is interpreted.
@@ -50,6 +52,14 @@ const (
 	// on the calling task. Useful for debugging filters.
 	ActionTrap Action = 0x00030000
 )
+
+// ErrnoAction returns SECCOMP_RET_ERRNO with errno e: the call fails with
+// e and the process carries on. This is what systemd's Restrict*/Protect*
+// filters answer, so a program that probes for a feature and copes
+// without it keeps running.
+func ErrnoAction(e unix.Errno) Action {
+	return actionErrnoBase | Action(uint32(e)&0xffff)
+}
 
 // ParseAction interprets a user-facing string ("kill" | "log" | errno
 // name | numeric errno) into an Action value. Empty string returns

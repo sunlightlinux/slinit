@@ -53,16 +53,6 @@ func jne(k uint32, skip uint8) unix.SockFilter {
 	return unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: k, Jt: 0, Jf: skip}
 }
 
-// jsetFall guards a KILL insn that follows immediately: fall-through
-// on bits-set (Jt=0 lands on the KILL), and skip forward `skipOnClear`
-// insns on bits-clear (Jf jumps past the KILL and any per-syscall
-// trailer). Chosen this shape because every restrict-* fragment kills
-// on match; centralising the polarity avoids off-by-one bugs at every
-// call site.
-func jsetFall(k uint32, skipOnClear uint8) unix.SockFilter {
-	return unix.SockFilter{Code: bpfJMP | bpfJSET | bpfK, K: k, Jt: 0, Jf: skipOnClear}
-}
-
 // alu_and emits A = A & K.
 func aluAnd(k uint32) unix.SockFilter {
 	return unix.SockFilter{Code: bpfALU | bpfAND | bpfK, K: k}
@@ -81,265 +71,250 @@ func archHeader() []unix.SockFilter {
 	}
 }
 
-// CompileRestrictRealtime builds a filter that denies
-// sched_setscheduler(_, policy, _) when policy is SCHED_FIFO, SCHED_RR,
-// or SCHED_DEADLINE, with or without SCHED_RESET_ON_FORK.
-// sched_setattr uses a struct pointer — the kernel can't safely read
-// arbitrary user pointers in seccomp, so we blanket-deny that syscall.
-// Same reasoning as systemd's implementation.
-func CompileRestrictRealtime() ([]unix.SockFilter, error) {
-	nrSchedSet, ok := SyscallNumber("sched_setscheduler")
-	if !ok {
-		return nil, fmt.Errorf("restrict-realtime: sched_setscheduler unknown")
-	}
-	nrSchedAttr, hasAttr := SyscallNumber("sched_setattr")
+// The Restrict*/Lock* filters below answer like systemd's
+// (src/shared/seccomp-util.c): a refused call fails with an error and the
+// process carries on — EPERM for a policy refusal, EAFNOSUPPORT for an
+// address family, ENOSYS where the caller should fall back to an older
+// call that can be checked. They used to kill instead, which took down
+// any program that probes and copes: glibc's pthread_create tries clone3
+// first, so restrict-namespaces killed every threaded service.
+//
+// A foreign-architecture syscall still kills (archHeader): these filters
+// only describe the native ABI.
 
-	prog := archHeader()
+// cond is one test on a syscall argument's low 32 bits: the bits in k are
+// set (bpfJSET), or the argument equals k (bpfJEQ).
+type cond struct {
+	arg  int
+	code uint16
+	k    uint32
+}
 
-	// If nr != sched_setscheduler, jump ahead to the sched_setattr
-	// dispatch. Layout below the dispatch is fixed to 6 insns for
-	// sched_setscheduler (load arg[1] → AND → 3× JEQ→KILL → RET ALLOW),
-	// so "skip past setscheduler" is 6 insns.
-	prog = append(prog, jne(uint32(nrSchedSet), 6))
+func bitsSet(arg int, mask uint32) cond { return cond{arg, bpfJSET, mask} }
+func equals(arg int, v uint32) cond     { return cond{arg, bpfJEQ, v} }
 
-	// arg[1] is the policy int. Mask out SCHED_RESET_ON_FORK (0x40000000).
-	prog = append(prog,
-		loadArgLow32(1),
-		aluAnd(^uint32(0x40000000)),
-		// SCHED_FIFO=1, SCHED_RR=2, SCHED_DEADLINE=6. Each JEQ→KILL is
-		// jt=0 skip-target of the next non-KILL insn; use jt to jump
-		// forward to the shared KILL below.
-		unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: 1, Jt: 2, Jf: 0}, // FIFO → KILL
-		unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: 2, Jt: 1, Jf: 0}, // RR → KILL
-		unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: 6, Jt: 0, Jf: 1}, // DEADLINE → KILL (fallthrough for non-match)
-		retInsn(ActionKill),
-	)
+// rule refuses a syscall with action when every one of its conds holds;
+// with no conds it refuses the syscall outright.
+type rule struct {
+	syscall string
+	conds   []cond
+	action  Action
+}
 
-	// sched_setattr blanket deny — struct pointer, can't inspect.
-	if hasAttr {
+// exceptRule refuses a syscall with action unless args[arg]&mask is one of
+// allowed.
+type exceptRule struct {
+	syscall string
+	arg     int
+	mask    uint32
+	allowed []uint32
+	action  Action
+}
+
+// Every block below has the same shape and ends on a loadNR, so a block
+// that does not match — wrong syscall, or a condition that fails — lands
+// on that reload and the next block sees the syscall number again. The
+// jump offsets are derived here once rather than by hand per filter:
+//
+//	rule:   jne nr ; (load arg ; test)×k ; ret action ; loadNR
+//	except: jne nr ; load arg ; [and mask] ; (jeq v)×n ; ret action ; loadNR
+func appendRule(prog []unix.SockFilter, nr int, r rule) []unix.SockFilter {
+	k := len(r.conds)
+	prog = append(prog, jne(uint32(nr), uint8(2*k+1)))
+	for i, c := range r.conds {
 		prog = append(prog,
-			loadNR(),
-			jne(uint32(nrSchedAttr), 1),
-			retInsn(ActionKill),
+			loadArgLow32(c.arg),
+			unix.SockFilter{Code: bpfJMP | c.code | bpfK, K: c.k, Jt: 0, Jf: uint8(2*(k-1-i) + 1)},
 		)
 	}
+	return append(prog, retInsn(r.action), loadNR())
+}
 
+func appendExcept(prog []unix.SockFilter, nr int, r exceptRule) []unix.SockFilter {
+	n := len(r.allowed)
+	masked := r.mask != ^uint32(0)
+	body := 1 + n + 1 // load, the jeqs, ret
+	if masked {
+		body++
+	}
+	prog = append(prog, jne(uint32(nr), uint8(body)), loadArgLow32(r.arg))
+	if masked {
+		prog = append(prog, aluAnd(r.mask))
+	}
+	for i, v := range r.allowed {
+		// A match skips the remaining jeqs and the ret, onto the loadNR.
+		prog = append(prog, unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: v, Jt: uint8(n - i), Jf: 0})
+	}
+	return append(prog, retInsn(r.action), loadNR())
+}
+
+// compileRules builds one filter from rules and exceptRules. A syscall the
+// native table does not know is skipped: the legacy calls (open, chmod,
+// mkdir, creat, mknod) do not exist on arm64, and a call that does not
+// exist cannot be made. restrict_semantics_test checks that every name
+// resolves on amd64, so a misspelt name cannot fail open unnoticed there.
+func compileRules(rules []rule, excepts []exceptRule) ([]unix.SockFilter, error) {
+	prog := archHeader()
+	for _, r := range excepts {
+		if nr, ok := SyscallNumber(r.syscall); ok {
+			prog = appendExcept(prog, nr, r)
+		}
+	}
+	for _, r := range rules {
+		if nr, ok := SyscallNumber(r.syscall); ok {
+			prog = appendRule(prog, nr, r)
+		}
+	}
 	prog = append(prog, retInsn(ActionAllow))
+	if len(prog) > 4096 {
+		return nil, fmt.Errorf("seccomp: program exceeds 4096 instructions (got %d)", len(prog))
+	}
 	return prog, nil
+}
+
+var (
+	errEPERM        = ErrnoAction(unix.EPERM)
+	errENOSYS       = ErrnoAction(unix.ENOSYS)
+	errEAFNOSUPPORT = ErrnoAction(unix.EAFNOSUPPORT)
+)
+
+// realtimeRules: sched_setscheduler may only select SCHED_OTHER, SCHED_BATCH
+// or SCHED_IDLE, as systemd allows; every other policy, present or future,
+// is refused. SCHED_RESET_ON_FORK is masked off first: it changes nothing
+// about whether the policy is realtime. sched_setattr carries the policy in
+// a struct the filter cannot read, and is the only way to SCHED_DEADLINE,
+// so it is refused outright, as systemd does.
+var (
+	realtimeExcepts = []exceptRule{{
+		syscall: "sched_setscheduler", arg: 1, mask: ^uint32(0x40000000),
+		allowed: []uint32{0 /* OTHER */, 3 /* BATCH */, 5 /* IDLE */}, action: errEPERM,
+	}}
+	realtimeRules = []rule{{syscall: "sched_setattr", action: errEPERM}}
+)
+
+// CompileRestrictRealtime builds the restrict-realtime filter.
+func CompileRestrictRealtime() ([]unix.SockFilter, error) {
+	return compileRules(realtimeRules, realtimeExcepts)
 }
 
 // CompileLockPersonality builds the filter for lock-personality: it
-// kills on personality(2) unless the argument is 0xffffffff, which only
-// queries the current personality, or current itself, which changes
-// nothing. That is systemd's LockPersonality= since v263 (d21d96fe77),
-// which stopped refusing the query; slinit used to deny every call,
-// query included. Only the low 32 bits are compared: the kernel takes
-// the argument as an unsigned int, so the high word cannot matter.
+// refuses personality() calls that would change the execution domain.
+// The query (0xffffffff) and setting the current value again are allowed,
+// as systemd allows them (d21d96fe77): libraries query the personality,
+// and refusing that broke them.
 func CompileLockPersonality(current uint32) ([]unix.SockFilter, error) {
-	nr, ok := SyscallNumber("personality")
-	if !ok {
+	if _, ok := SyscallNumber("personality"); !ok {
 		return nil, fmt.Errorf("lock-personality: personality unknown")
 	}
-	prog := archHeader()
-	prog = append(prog,
-		jne(uint32(nr), 4), // not personality → ALLOW
-		loadArgLow32(0),
-		unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: 0xffffffff, Jt: 2, Jf: 0}, // query → ALLOW
-		unix.SockFilter{Code: bpfJMP | bpfJEQ | bpfK, K: current, Jt: 1, Jf: 0},    // no change → ALLOW
-		retInsn(ActionKill),
-		retInsn(ActionAllow),
-	)
-	return prog, nil
+	return compileRules(nil, []exceptRule{{
+		syscall: "personality", arg: 0, mask: ^uint32(0),
+		allowed: []uint32{0xffffffff, current}, action: errEPERM,
+	}})
 }
 
-// CompileRestrictNamespaces builds a filter that denies unshare/setns/
-// clone when the flags include any CLONE_NEW* bit, and blanket-denies
-// clone3 (its args live behind a user pointer). The CLONE_NEW* mask is
-// the union of every namespace flag defined at time of writing.
+// cloneNewMask is every CLONE_NEW* flag.
+const cloneNewMask = uint32(0 |
+	0x00000080 | // CLONE_NEWTIME
+	0x00020000 | // CLONE_NEWNS
+	0x02000000 | // CLONE_NEWCGROUP
+	0x04000000 | // CLONE_NEWUTS
+	0x08000000 | // CLONE_NEWIPC
+	0x10000000 | // CLONE_NEWUSER
+	0x20000000 | // CLONE_NEWPID
+	0x40000000) // CLONE_NEWNET
+
+// namespaceRules refuses creating or joining any namespace, as systemd's
+// RestrictNamespaces=yes does. clone3 passes its flags in a struct, so it
+// is refused with ENOSYS: glibc and others then fall back to clone, whose
+// flags are checked. setns with nstype 0 joins whatever namespace the fd
+// names, so it is refused too.
+var namespaceRules = []rule{
+	{syscall: "clone3", action: errENOSYS},
+	{syscall: "unshare", conds: []cond{bitsSet(0, cloneNewMask)}, action: errEPERM},
+	{syscall: "clone", conds: []cond{bitsSet(0, cloneNewMask)}, action: errEPERM},
+	{syscall: "setns", conds: []cond{bitsSet(1, cloneNewMask)}, action: errEPERM},
+	{syscall: "setns", conds: []cond{equals(1, 0)}, action: errEPERM},
+}
+
+// CompileRestrictNamespaces builds the restrict-namespaces filter.
 func CompileRestrictNamespaces() ([]unix.SockFilter, error) {
-	const cloneNewMask = uint32(0 |
-		0x00000080 | // CLONE_NEWTIME
-		0x00020000 | // CLONE_NEWNS
-		0x02000000 | // CLONE_NEWCGROUP
-		0x04000000 | // CLONE_NEWUTS
-		0x08000000 | // CLONE_NEWIPC
-		0x10000000 | // CLONE_NEWUSER
-		0x20000000 | // CLONE_NEWPID
-		0x40000000) // CLONE_NEWNET
-
-	syscalls := map[string]int{}
-	for _, name := range []string{"unshare", "setns", "clone", "clone3"} {
-		if n, ok := SyscallNumber(name); ok {
-			syscalls[name] = n
-		}
-	}
-
-	prog := archHeader()
-
-	// unshare(flags) — flags in arg[0].
-	if n, ok := syscalls["unshare"]; ok {
-		prog = append(prog,
-			jne(uint32(n), 3),
-			loadArgLow32(0),
-			jsetFall(cloneNewMask, 1),
-			retInsn(ActionKill),
-		)
-		prog = append(prog, loadNR())
-	}
-	// setns(fd, nstype) — nstype in arg[1].
-	if n, ok := syscalls["setns"]; ok {
-		prog = append(prog,
-			jne(uint32(n), 3),
-			loadArgLow32(1),
-			jsetFall(cloneNewMask, 1),
-			retInsn(ActionKill),
-		)
-		prog = append(prog, loadNR())
-	}
-	// clone(flags, ...) — flags in arg[0] on x86-64 glibc (kernel ABI:
-	// clone(flags, stack, ptid, ctid, tls) with flags first). Same shape
-	// as unshare.
-	if n, ok := syscalls["clone"]; ok {
-		prog = append(prog,
-			jne(uint32(n), 3),
-			loadArgLow32(0),
-			jsetFall(cloneNewMask, 1),
-			retInsn(ActionKill),
-		)
-		prog = append(prog, loadNR())
-	}
-	// clone3 — struct pointer, can't inspect. Blanket deny.
-	if n, ok := syscalls["clone3"]; ok {
-		prog = append(prog,
-			jne(uint32(n), 1),
-			retInsn(ActionKill),
-		)
-	}
-
-	prog = append(prog, retInsn(ActionAllow))
-	return prog, nil
+	return compileRules(namespaceRules, nil)
 }
 
-// CompileRestrictSUIDSGID builds a filter that denies chmod/fchmod/
-// fchmodat calls whose mode argument sets S_ISUID (04000) or S_ISGID
-// (02000). Also denies chown-type calls that would grant setuid on a
-// changed owner? — no, systemd only covers the chmod family (the
-// documented behaviour), so we stop there.
+const (
+	suidSGIDMask = uint32(0o4000 | 0o2000) // S_ISUID | S_ISGID
+	// oCreatOrTmpfile is O_CREAT plus the bit of O_TMPFILE that is not
+	// O_DIRECTORY: either one makes open(2) create a file whose mode is
+	// taken from the mode argument.
+	oCreatOrTmpfile = uint32(unix.O_CREAT | (unix.O_TMPFILE &^ unix.O_DIRECTORY))
+)
+
+// suidSGIDRules refuses every call that can give a file or directory the
+// set-user-ID or set-group-ID bit, the set systemd's RestrictSUIDSGID=
+// covers: the chmod family, and creating with such a mode through open,
+// openat, creat, mkdir and mknod. O_TMPFILE creates too, and is checked
+// with O_CREAT (systemd's seccomp rule checks O_CREAT only; its io_uring
+// rule checks both). openat2 keeps its flags in a struct the filter
+// cannot read, and is refused with ENOSYS so callers use openat.
+var suidSGIDRules = []rule{
+	{syscall: "chmod", conds: []cond{bitsSet(1, suidSGIDMask)}, action: errEPERM},
+	{syscall: "fchmod", conds: []cond{bitsSet(1, suidSGIDMask)}, action: errEPERM},
+	{syscall: "fchmodat", conds: []cond{bitsSet(2, suidSGIDMask)}, action: errEPERM},
+	{syscall: "fchmodat2", conds: []cond{bitsSet(2, suidSGIDMask)}, action: errEPERM},
+	{syscall: "mkdir", conds: []cond{bitsSet(1, suidSGIDMask)}, action: errEPERM},
+	{syscall: "mkdirat", conds: []cond{bitsSet(2, suidSGIDMask)}, action: errEPERM},
+	{syscall: "mknod", conds: []cond{bitsSet(1, suidSGIDMask)}, action: errEPERM},
+	{syscall: "mknodat", conds: []cond{bitsSet(2, suidSGIDMask)}, action: errEPERM},
+	{syscall: "open", conds: []cond{bitsSet(1, oCreatOrTmpfile), bitsSet(2, suidSGIDMask)}, action: errEPERM},
+	{syscall: "openat", conds: []cond{bitsSet(2, oCreatOrTmpfile), bitsSet(3, suidSGIDMask)}, action: errEPERM},
+	{syscall: "creat", conds: []cond{bitsSet(1, suidSGIDMask)}, action: errEPERM},
+	{syscall: "openat2", action: errENOSYS},
+}
+
+// CompileRestrictSUIDSGID builds the restrict-suidsgid filter.
 func CompileRestrictSUIDSGID() ([]unix.SockFilter, error) {
-	const suidMask = uint32(0o4000 | 0o2000) // S_ISUID | S_ISGID
-
-	prog := archHeader()
-
-	// chmod(path, mode) — mode is arg[1].
-	if n, ok := SyscallNumber("chmod"); ok {
-		prog = append(prog,
-			jne(uint32(n), 3),
-			loadArgLow32(1),
-			jsetFall(suidMask, 1),
-			retInsn(ActionKill),
-		)
-		prog = append(prog, loadNR())
-	}
-	// fchmod(fd, mode) — mode is arg[1] too.
-	if n, ok := SyscallNumber("fchmod"); ok {
-		prog = append(prog,
-			jne(uint32(n), 3),
-			loadArgLow32(1),
-			jsetFall(suidMask, 1),
-			retInsn(ActionKill),
-		)
-		prog = append(prog, loadNR())
-	}
-	// fchmodat(dirfd, path, mode, flags) — mode is arg[2].
-	if n, ok := SyscallNumber("fchmodat"); ok {
-		prog = append(prog,
-			jne(uint32(n), 3),
-			loadArgLow32(2),
-			jsetFall(suidMask, 1),
-			retInsn(ActionKill),
-		)
-	}
-
-	prog = append(prog, retInsn(ActionAllow))
-	return prog, nil
+	return compileRules(suidSGIDRules, nil)
 }
 
-// CompileRestrictAddressFamilies builds a filter that denies socket(2)
-// and socketpair(2) unless the address family is in `allowed`. Empty
-// list means "no families allowed" — socket()/socketpair() are killed
-// entirely. Values outside [0, 65535] are rejected.
+// CompileRestrictAddressFamilies builds a filter that refuses socket(2)
+// with EAFNOSUPPORT unless the address family is in allowed, as systemd
+// does. An empty list refuses every family. socketpair(2) is left alone,
+// as systemd leaves it: it only makes connected AF_UNIX pairs, which
+// programs use internally whatever network families they are allowed.
+// Values outside [0, 65535] are rejected.
 func CompileRestrictAddressFamilies(allowed []int) ([]unix.SockFilter, error) {
+	afs := make([]uint32, 0, len(allowed))
 	for _, af := range allowed {
 		if af < 0 || af > 0xffff {
 			return nil, fmt.Errorf("restrict-address-families: family %d out of range [0,65535]", af)
 		}
+		afs = append(afs, uint32(af))
 	}
-
-	prog := archHeader()
-
-	emitCheck := func(syscallName string, argIdx int, isLast bool) {
-		n, ok := SyscallNumber(syscallName)
-		if !ok {
-			return
-		}
-		// Layout after this jne:
-		//   loadArg        (1)
-		//   JEQ × len(allowed)
-		//   retKill        (1)
-		//   retAllow       (1)
-		//   loadNR trailer (1, only if another block follows)
-		// perSyscallLen = insns to skip to LAND on the trailer (or on
-		// the final retAllow if this is the last block).
-		trailerLen := uint8(0)
-		if !isLast {
-			trailerLen = 1
-		}
-		perSyscallLen := uint8(len(allowed)) + 3 + trailerLen
-		prog = append(prog, jne(uint32(n), perSyscallLen))
-		prog = append(prog, loadArgLow32(argIdx))
-		for i, af := range allowed {
-			jt := uint8(len(allowed) - i) // past all remaining JEQ + retKill, land on retAllow
-			prog = append(prog, unix.SockFilter{
-				Code: bpfJMP | bpfJEQ | bpfK, K: uint32(af), Jt: jt, Jf: 0,
-			})
-		}
-		prog = append(prog, retInsn(ActionKill))
-		prog = append(prog, retInsn(ActionAllow))
-		if !isLast {
-			prog = append(prog, loadNR())
-		}
+	if len(afs) > 200 {
+		return nil, fmt.Errorf("restrict-address-families: %d families, more than a filter can list", len(afs))
 	}
-	emitCheck("socket", 0, false)
-	emitCheck("socketpair", 0, true)
-
-	prog = append(prog, retInsn(ActionAllow))
-	return prog, nil
+	return compileRules(nil, []exceptRule{{
+		syscall: "socket", arg: 0, mask: ^uint32(0), allowed: afs, action: errEAFNOSUPPORT,
+	}})
 }
 
-// CompileRestrictFileSystems builds a filter that blanket-denies every
-// mount-family syscall. Classic seccomp-BPF cannot inspect the fsname
-// string that mount(2) receives, so we cannot honour a curated
-// filesystem allow-list the way systemd's BPF-LSM implementation does.
-// Denying the full mount surface is the most-restrictive interpretation
-// available in classic BPF and matches what an operator asking for
-// RestrictFileSystems=~ (deny-all) expects.
-func CompileRestrictFileSystems() ([]unix.SockFilter, error) {
-	names := []string{
-		"mount", "umount2", "fsopen", "fsconfig", "fsmount", "fspick",
-		"move_mount", "open_tree",
-	}
+// fileSystemRules refuses every mount-family syscall. Classic seccomp-BPF
+// cannot read the fsname passed to mount(2), which is what systemd's
+// RestrictFileSystems= inspects through BPF-LSM; refusing the whole mount
+// surface is the most restrictive reading, matching what a deny-all
+// RestrictFileSystems=~ expects.
+var fileSystemRules = []rule{
+	{syscall: "mount", action: errEPERM},
+	{syscall: "umount2", action: errEPERM},
+	{syscall: "fsopen", action: errEPERM},
+	{syscall: "fsconfig", action: errEPERM},
+	{syscall: "fsmount", action: errEPERM},
+	{syscall: "fspick", action: errEPERM},
+	{syscall: "move_mount", action: errEPERM},
+	{syscall: "open_tree", action: errEPERM},
+}
 
-	prog := archHeader()
-	for _, name := range names {
-		n, ok := SyscallNumber(name)
-		if !ok {
-			continue
-		}
-		prog = append(prog,
-			jne(uint32(n), 1),
-			retInsn(ActionKill),
-		)
-	}
-	prog = append(prog, retInsn(ActionAllow))
-	return prog, nil
+// CompileRestrictFileSystems builds the restrict-file-systems filter.
+func CompileRestrictFileSystems() ([]unix.SockFilter, error) {
+	return compileRules(fileSystemRules, nil)
 }

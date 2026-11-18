@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
-	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -45,13 +44,15 @@ func init() {
 	if v == 0 { // "current": set the personality it already has
 		v = uint64(cur)
 	}
-	unix.Syscall(unix.SYS_PERSONALITY, uintptr(v), 0, 0)
+	if _, _, errno := unix.Syscall(unix.SYS_PERSONALITY, uintptr(v), 0, 0); errno == unix.EPERM {
+		os.Exit(7) // refused by the filter, and the process lived
+	}
 	os.Exit(0) // the filter let the call through
 }
 
-// Runs the filter on the real kernel: the query and a no-op set pass,
-// a change kills the caller with SIGSYS, as the other lock-personality
-// refusals always did.
+// Runs the filter on the real kernel: the query and a no-op set pass, and
+// a change is refused with EPERM while the process carries on, as under
+// systemd. It used to kill the caller with SIGSYS.
 func TestLockPersonalityOnKernel(t *testing.T) {
 	run := func(arg string) error {
 		cmd := exec.Command(os.Args[0], "-test.run=^$")
@@ -73,12 +74,8 @@ func TestLockPersonalityOnKernel(t *testing.T) {
 	// PER_LINUX32 differs from the PER_LINUX the test runs with.
 	err := run("0x0008")
 	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
-		t.Fatalf("changing the personality: child exited %v, want killed by SIGSYS", err)
-	}
-	ws := ee.Sys().(syscall.WaitStatus)
-	if !ws.Signaled() || ws.Signal() != syscall.SIGSYS {
-		t.Fatalf("changing the personality: child %v, want killed by SIGSYS", ws)
+	if !errors.As(err, &ee) || ee.ExitCode() != 7 {
+		t.Fatalf("changing the personality: child %v, want refused with EPERM (exit 7)", err)
 	}
 }
 

@@ -39,8 +39,39 @@ verified with `git tag -v`.
   Distributions shipping a D-Bus policy that admits only root to these
   methods need to let other users send them for this to take effect.
 
+### Changed
+
+- The `restrict-*`, `protect-*` and `lock-personality` hardening filters
+  now refuse a call the way systemd's do: it fails with `EPERM`
+  (`EAFNOSUPPORT` from `restrict-address-families`, `ENOSYS` for `clone3`
+  and `openat2`, so the caller falls back to a call the filter can check)
+  and the process carries on. They used to kill it with `SIGSYS`, which
+  took down any program that probes and copes. Under
+  `restrict-namespaces` that was every threaded program, since glibc's
+  `pthread_create` tries `clone3` first: a Python service starting a
+  thread was killed, and now runs. A syscall made through a foreign ABI is
+  still killed. `restrict-address-families` no longer filters
+  `socketpair`, which systemd leaves alone too: it only makes connected
+  `AF_UNIX` pairs, so a service allowed only `AF_INET` was killed by its
+  own internal plumbing.
+
 ### Security
 
+- `restrict-suidsgid` covered only the chmod family, while its man page
+  claimed that was systemd's scope; a service could still create a
+  set-user-ID file with `open(O_CREAT, 04755)`. It now covers what
+  systemd's `RestrictSUIDSGID=` covers: `fchmodat2`, and creating with
+  such a mode through `open`, `openat`, `creat`, `mkdir`, `mkdirat`,
+  `mknod` and `mknodat` (with `O_TMPFILE` as well as `O_CREAT`), with
+  `openat2` refused by `ENOSYS`.
+- `restrict-namespaces` let `setns` with an nstype of 0 through, which
+  joins whatever namespace the descriptor names. It is refused now, as
+  under systemd.
+- `restrict-realtime` refused three named realtime policies and allowed
+  any other; it now allows only `SCHED_OTHER`, `SCHED_BATCH` and
+  `SCHED_IDLE`, as systemd does, so a policy number it does not know is
+  refused too. `protect-kernel-tunables` also refuses `_sysctl`, as
+  systemd's does.
 - Every service inherited an open descriptor on slinit's console. The
   catch-all logger saved the console with a plain `dup(2)`, which is not
   close-on-exec, and Go's `os/exec` closes nothing it was not given, so in

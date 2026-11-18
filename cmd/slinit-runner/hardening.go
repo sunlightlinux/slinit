@@ -183,11 +183,14 @@ func applyHardening(h hardeningSpec) error {
 	// Constructed directly rather than via seccomp.Build because the
 	// input is a curated list — no user expansion to do.
 	if denyList := collectDenyList(h); len(denyList) > 0 {
+		// EPERM, as systemd's ProtectKernel*/ProtectClock/
+		// ProtectHostname filters answer: the call fails, the
+		// service lives. These used to kill.
 		filter := &seccomp.Filter{
 			Mode:          seccomp.ModeDeny,
 			Syscalls:      denyList,
 			Archs:         []string{seccomp.NativeArch()},
-			DefaultAction: seccomp.ActionKill,
+			DefaultAction: seccomp.ErrnoAction(unix.EPERM),
 		}
 		prog, err := seccomp.Compile(filter)
 		if err != nil {
@@ -261,11 +264,13 @@ func applyHardening(h hardeningSpec) error {
 func collectDenyList(h hardeningSpec) []string {
 	var out []string
 	if h.protectKernelTunables {
+		// _sysctl is what systemd's ProtectKernelTunables= refuses
+		// (removed from x86-64 kernels in 5.5, still in the table).
 		// iopl/ioperm grant raw port I/O — a pre-cgroup era escape
 		// route. swapon/swapoff aren't tunables per se but are widely
 		// grouped with them as "the kernel surface a service should
 		// never touch".
-		out = append(out, "iopl", "ioperm", "swapon", "swapoff")
+		out = append(out, "_sysctl", "iopl", "ioperm", "swapon", "swapoff")
 	}
 	if h.protectKernelModules {
 		out = append(out, "init_module", "finit_module", "delete_module")
