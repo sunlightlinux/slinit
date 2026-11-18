@@ -24,6 +24,29 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.17.2] — 2026-11-18
+
+**A patch: an already-exited process no longer logs an error when its stop
+signals it, and the README now records that `slinitctl` can control a
+`dinit` daemon. No protocol change; the control protocol stays at version 7.**
+
+### Fixed
+
+- Stopping a service whose process had already exited on its own — a pipe
+  consumer whose writers just stopped, so its read loop ended, for one —
+  logged `failed to signal process: no such process` at ERROR level, because
+  the stop signal returned `ESRCH`. An already-gone process is the outcome a
+  stop wants, so it is logged at info level now ("already exited before the
+  stop signal"), matching the group-kill path that has always treated an
+  empty group's `ESRCH` as benign. Every other signal failure is still an
+  error. Affects `process` and `bgprocess` services.
+
+### Documentation
+
+- The README now records, in the upstream table and the `slinitctl` section,
+  that `slinitctl` can control a live `dinit` daemon over dinit's own control
+  protocol — a v3.17.0 capability that until now only `slinitctl(8)` noted.
+
 ## [3.17.1] — 2026-11-17
 
 **A patch: a test-only fix so the suite is green on a runner whose `sleep` is
