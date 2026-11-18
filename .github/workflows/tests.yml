@@ -327,18 +327,24 @@ jobs:
       fail-fast: false
       matrix:
         # Split by package so a slow one does not hold up the rest.
-        # tests/fuzz carries 27 of the 40 targets, hence its own shard.
+        # tests/fuzz carries most of the targets, hence its own shard.
+        # Every package with a Fuzz target must be listed:
+        # tools/stats/fuzzmatrix_test.go fails when one is missing or an
+        # entry has none left.
         package:
           - tests/fuzz
           - pkg/config
+          - pkg/hostname
+          - pkg/journal
+          - pkg/process
           - pkg/service
-          - cmd/slinit-hostnamectl
+          - pkg/timedate
+          - cmd/slinit-immortal-convert
           - cmd/slinit-killall5
           - cmd/slinit-openrc-convert
           - cmd/slinit-runit-convert
           - cmd/slinit-sysusers
           - cmd/slinit-sysvinit-convert
-          - cmd/slinit-timedatectl
           - cmd/slinit-tmpfiles
     steps:
       - uses: actions/checkout@v7
