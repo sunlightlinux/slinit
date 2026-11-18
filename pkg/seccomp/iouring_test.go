@@ -191,3 +191,51 @@ func TestIOUringAddressFamiliesOnKernel(t *testing.T) { runIOUringChild(t, "addr
 func TestIOUringSUIDSGIDOnKernel(t *testing.T)        { runIOUringChild(t, "suid") }
 func TestIOUringSyscallFilterOnKernel(t *testing.T)   { runIOUringChild(t, "syscall-filter") }
 func TestIOUringAllowListOnKernel(t *testing.T)       { runIOUringChild(t, "allow-list") }
+
+func TestParseIOUringFilter(t *testing.T) {
+	op := func(n string) int { o, _ := IOUringOpNumber(n); return o }
+	for _, c := range []struct {
+		in    []string
+		ops   []string
+		allow bool
+	}{
+		{[]string{"read write"}, []string{"read", "write"}, true},
+		{[]string{"~socket,connect"}, []string{"socket", "connect"}, false},
+		{[]string{"read write", "~write"}, []string{"read"}, true},        // other kind removes
+		{[]string{"~socket", "socket", "~bind"}, []string{"bind"}, false}, // deny list: allow removes
+		{[]string{"read", "", "~socket"}, []string{"socket"}, false},      // empty resets
+	} {
+		got, allow, err := ParseIOUringFilter(c.in)
+		if err != nil {
+			t.Fatalf("%v: %v", c.in, err)
+		}
+		want := map[int]bool{}
+		for _, n := range c.ops {
+			want[op(n)] = true
+		}
+		if allow != c.allow || len(got) != len(want) {
+			t.Errorf("%v: got %v allow=%v, want %v allow=%v", c.in, got, allow, c.ops, c.allow)
+			continue
+		}
+		for o := range want {
+			if !got[o] {
+				t.Errorf("%v: missing %s", c.in, ioUringOps[o])
+			}
+		}
+	}
+	if _, _, err := ParseIOUringFilter([]string{"~sockett"}); err == nil {
+		t.Error("a misspelt operation must be refused, not ignored")
+	}
+}
+
+func TestParseActionKnowsEveryErrnoName(t *testing.T) {
+	for name, want := range map[string]unix.Errno{"EPERM": unix.EPERM, "eafnosupport": unix.EAFNOSUPPORT, "EOPNOTSUPP": unix.EOPNOTSUPP, "ENOTSUP": unix.EOPNOTSUPP, "EWOULDBLOCK": unix.EAGAIN} {
+		a, err := ParseAction(name)
+		if err != nil || a != ErrnoAction(want) {
+			t.Errorf("ParseAction(%s) = %#x, %v; want errno %d", name, uint32(a), err, want)
+		}
+	}
+	if _, err := ParseAction("ENOTANERRNO"); err == nil {
+		t.Error("an unknown errno name must be refused")
+	}
+}

@@ -276,6 +276,9 @@ var KnownSettings = map[string]OperatorType{
 	"system-call-architectures": OpEquals | OpPlusEqual,
 	"system-call-error-number":  OpEquals,
 	"system-call-log":           OpEquals | OpPlusEqual,
+	// io_uring operations: names, comma- or space-separated, '~' on an
+	// assignment to deny rather than allow. systemd's IOUringFilter=.
+	"io-uring-filter": OpEquals | OpPlusEqual,
 
 	// systemd-style Restrict*/Protect* hardening cluster (#7 v1).
 	// Each is a yes/no toggle. Some apply via an additional seccomp

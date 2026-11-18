@@ -142,6 +142,9 @@ func run() error {
 		"add a seccomp filter item: syscall name, @group, or ~ prefix on first item (repeatable)")
 	fs.Var(&syscallArchs, "syscall-arch",
 		"add an accepted architecture for seccomp filtering (repeatable)")
+	var ioUringFilter stringList
+	fs.Var(&ioUringFilter, "io-uring-filter",
+		"an io-uring-filter assignment: io_uring operation names, '~' to deny (repeatable)")
 	fs.Var(&syscallLog, "syscall-log",
 		"add a syscall (or @group) always logged via SECCOMP_RET_LOG (repeatable)")
 	// systemd-style Restrict*/Protect* hardening knobs (#7 v1). Each
@@ -474,6 +477,7 @@ func run() error {
 		restrictAF:    *rAFEnabled,
 		afs:           afsParsed,
 		restrictSUID:  *rSUIDSGID,
+		opFilter:      ioUringFilter,
 	}); err != nil {
 		return err
 	}

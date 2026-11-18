@@ -86,23 +86,25 @@ func ParseAction(s string) (Action, error) {
 	return actionErrnoBase | Action(n&0xffff), nil
 }
 
-// errnoByName maps a small set of Linux errno names to their numeric
-// values. The list covers the cases that actually appear in systemd
-// SystemCallErrorNumber= settings in the wild; an exhaustive table is
-// not worth the maintenance burden when callers can fall back to a
-// numeric literal.
+// errnoByName maps an errno name to its value. Every name the kernel
+// defines is accepted, as systemd's SystemCallErrorNumber= accepts them
+// all; a unit asking for EAFNOSUPPORT must not fail to load here.
 func errnoByName(s string) (int, bool) {
-	switch strings.ToUpper(strings.TrimSpace(s)) {
-	case "EPERM":
-		return 1, true
-	case "ENOENT":
-		return 2, true
-	case "EACCES":
-		return 13, true
-	case "EINVAL":
-		return 22, true
-	case "ENOSYS":
-		return 38, true
+	name := strings.ToUpper(strings.TrimSpace(s))
+	// Names that share a number with another: ErrnoName returns only one
+	// of each pair.
+	switch name {
+	case "EWOULDBLOCK":
+		return int(unix.EAGAIN), true
+	case "EDEADLOCK":
+		return int(unix.EDEADLK), true
+	case "EOPNOTSUPP", "ENOTSUP":
+		return int(unix.EOPNOTSUPP), true
+	}
+	for e := 1; e < 4096; e++ {
+		if unix.ErrnoName(unix.Errno(e)) == name {
+			return e, true
+		}
 	}
 	return 0, false
 }

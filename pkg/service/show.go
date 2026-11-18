@@ -259,6 +259,9 @@ func RenderShow(s Service) string {
 		if len(sr.seccomp.Filter) > 0 {
 			p("SystemCallFilter", strings.Join(sr.seccomp.Filter, " "))
 		}
+		if len(sr.seccomp.IOUringFilter) > 0 {
+			p("IOUringFilter", strings.Join(sr.seccomp.IOUringFilter, "; "))
+		}
 		if len(sr.seccomp.Architectures) > 0 {
 			p("SystemCallArchitectures", strings.Join(sr.seccomp.Architectures, " "))
 		}

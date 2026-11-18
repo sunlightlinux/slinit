@@ -126,3 +126,46 @@ func TestSeccompFlowsToRecord(t *testing.T) {
 		t.Errorf("Filter[0] = %q", cfg.Filter[0])
 	}
 }
+
+// io-uring-filter keeps each assignment whole, since its '~' and an empty
+// reset apply per assignment; a misspelt operation is refused at parse
+// time, as a misspelt syscall is.
+func TestParseIOUringFilterDirective(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceFile(t, dir, "ring",
+		"type = process\ncommand = /usr/bin/svc\n"+
+			"io-uring-filter = read write\n"+
+			"io-uring-filter += ~write\n")
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	svc, err := loader.LoadService("ring")
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	rec := svc.Record()
+	if !rec.SeccompActive() {
+		t.Fatal("io-uring-filter alone must make the seccomp step active")
+	}
+	got := rec.Seccomp().IOUringFilter
+	if len(got) != 2 || got[0] != "read write" || got[1] != "~write" {
+		t.Errorf("IOUringFilter = %q, want the two assignments as written", got)
+	}
+
+	writeServiceFile(t, dir, "ring-typo",
+		"type = process\ncommand = /usr/bin/svc\nio-uring-filter = ~sockett\n")
+	if _, err := loader.LoadService("ring-typo"); err == nil ||
+		!strings.Contains(err.Error(), "sockett") {
+		t.Errorf("a misspelt operation must fail the load, got %v", err)
+	}
+
+	writeServiceFile(t, dir, "ring-reset",
+		"type = process\ncommand = /usr/bin/svc\nio-uring-filter = read\nio-uring-filter =\n")
+	svc, err = loader.LoadService("ring-reset")
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if f := svc.Record().Seccomp().IOUringFilter; len(f) != 0 {
+		t.Errorf("an empty assignment must reset the list, got %q", f)
+	}
+}

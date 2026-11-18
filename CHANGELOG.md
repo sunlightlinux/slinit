@@ -26,6 +26,16 @@ verified with `git tag -v`.
 
 ### Added
 
+- `io-uring-filter`, systemd's `IOUringFilter=`: an allow or deny list of
+  io_uring operations by name (`read`, `openat`, `socket`, ...), with
+  systemd's rules for merging assignments. A refused request fails with
+  `EACCES`; an allow list also refuses operations of a newer kernel that
+  slinit does not know of. Where the kernel cannot filter io_uring
+  (before Linux 7.0), `io_uring_setup` fails with `ENOSYS` instead, so
+  programs fall back to plain system calls. An unknown operation name is
+  an error, not ignored with a warning as in systemd, since in a deny
+  list it would leave that operation allowed. `.service` units with
+  `IOUringFilter=` load with it.
 - `slinit-logind` lets the user of the active local session power off,
   reboot and sleep the machine, as polkit's default for
   `org.freedesktop.login1` does, so a desktop's power menu and a login
@@ -103,6 +113,16 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- A systemd `.service` unit, loaded directly or converted, lost seven
+  hardening settings slinit implements: `RestrictSUIDSGID=`,
+  `SystemCallArchitectures=` and `SystemCallErrorNumber=` were dropped
+  with a "no slinit equivalent" note, and `ProtectKernelLogs=`,
+  `ProtectHostname=` and `SystemCallLog=` with a "not recognised"
+  warning, so the service ran without them. They are translated now.
+  `system-call-error-number` accepts every errno name, as systemd's
+  `SystemCallErrorNumber=` does, instead of five, so a unit asking for
+  `EAFNOSUPPORT` loads. `ProtectHostname=private` still warns: slinit's
+  `protect-hostname` refuses the calls but has no private UTS namespace.
 - `slinit-logind`'s `CanPowerOff`, `CanReboot`, `CanHalt`, `CanSuspend`,
   `CanHibernate`, `CanHybridSleep`, `CanSuspendThenHibernate` and
   `CanSleep` answered "yes" to every caller whenever the machine could do

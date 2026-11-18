@@ -1418,8 +1418,9 @@ the internal **seccomp** package and installs it via the
 :   Action for syscalls that do NOT match an allow entry (or DO match
     a deny entry). *kill* (default) sends **SECCOMP_RET_KILL_PROCESS**;
     *kill-process* is an alias of *kill*; *log* / *trap* use the
-    corresponding seccomp returns; an errno name (*EPERM*, *ENOENT*,
-    *EACCES*, *EINVAL*, *ENOSYS* — others only by number) or numeric
+    corresponding seccomp returns; any errno name (*EPERM*,
+    *EAFNOSUPPORT*, *ENOSYS*, ...; until 3.18.0 only five were known and
+    the rest had to be given by number) or numeric
     value (1..4095) returns
     **SECCOMP_RET_ERRNO** with that value. Equivalent to systemd's
     **SystemCallErrorNumber=**.
@@ -1429,6 +1430,24 @@ the internal **seccomp** package and installs it via the
     **SECCOMP_RET_LOG** independent of the main filter. Useful for
     observing a process before tightening the filter. Repeatable with
     `+=`. Equivalent to systemd's **SystemCallLog=**.
+
+**io-uring-filter**=[**~**]*operation*...
+:   (since 3.18.0) Restricts the **io_uring**(7) operations the service
+    may submit.
+    Each *operation* is an *IORING_OP_* constant in lower case without
+    the prefix (*read*, *openat*, *socket*, *uring_cmd*, ...), separated
+    by spaces or commas. Without **~** only the listed operations are
+    allowed, and so are none of the operations of a newer kernel that
+    slinit does not know of; with **~** the listed operations are
+    denied. The first assignment decides which kind of list it is; a
+    later assignment of the other kind removes its operations from the
+    list, and an empty assignment resets it. A denied request fails with
+    *EACCES*. Where the kernel cannot filter io_uring (before Linux
+    7.0), **io_uring_setup**(2) fails with *ENOSYS* instead, so programs
+    fall back to plain system calls. Equivalent to systemd's
+    **IOUringFilter=**, except that an operation name slinit does not
+    know is an error rather than ignored with a warning: in a deny list,
+    a misspelt name would otherwise leave that operation allowed.
 
 ## RESTRICT*/PROTECT* HARDENING (Linux)
 

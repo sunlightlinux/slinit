@@ -1875,12 +1875,14 @@ type SeccompConfig struct {
 	Architectures []string
 	ErrorAction   string // "" | "kill" | "log" | "trap" | errno name | errno number
 	LogFilter     []string
+	IOUringFilter []string // io-uring-filter assignments, as written
 }
 
 // Active reports whether any seccomp knob is set.
 func (c SeccompConfig) Active() bool {
 	return len(c.Filter) > 0 || len(c.LogFilter) > 0 ||
-		c.ErrorAction != "" || len(c.Architectures) > 0
+		c.ErrorAction != "" || len(c.Architectures) > 0 ||
+		len(c.IOUringFilter) > 0
 }
 
 // SetSeccomp records the seccomp filter spec. The loader auto-implies
@@ -2410,6 +2412,7 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.SeccompArchitectures = sr.seccomp.Architectures
 	params.SeccompErrorAction = sr.seccomp.ErrorAction
 	params.SeccompLogFilter = sr.seccomp.LogFilter
+	params.IOUringFilter = sr.seccomp.IOUringFilter
 	// seccomp(2) requires PR_SET_NO_NEW_PRIVS for non-root callers.
 	// Auto-implying it is safer than failing the install with a
 	// confusing EACCES; the operator can still set

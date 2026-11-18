@@ -78,6 +78,7 @@ func TestNeedsRunnerWrapSeccomp(t *testing.T) {
 		{"arch", ExecParams{SeccompArchitectures: []string{"native"}}},
 		{"errno", ExecParams{SeccompErrorAction: "EPERM"}},
 		{"log", ExecParams{SeccompLogFilter: []string{"ptrace"}}},
+		{"io_uring", ExecParams{IOUringFilter: []string{"~socket"}}},
 	}
 	for _, c := range cases {
 		if !needsRunnerWrap(c.p) {
@@ -106,6 +107,31 @@ func TestWrapWithRunnerSeccomp(t *testing.T) {
 		"--syscall-arch=native",
 		"--syscall-action=EPERM",
 		"--syscall-log=ptrace",
+		"--",
+		"/usr/bin/svc",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("argv mismatch:\n got %v\nwant %v", got, want)
+	}
+}
+
+// io-uring-filter is confinement: a service that asked for it and has no
+// runner must not start unconfined, and the runner must get each
+// assignment as written.
+func TestIOUringFilterNeedsTheRunner(t *testing.T) {
+	p := ExecParams{
+		Command:       []string{"/usr/bin/svc"},
+		IOUringFilter: []string{"read write", "~write"},
+		RunnerPath:    "/sbin/slinit-runner",
+	}
+	if got := runnerSecurityFeatures(p); len(got) == 0 {
+		t.Error("io-uring-filter must count as confinement the runner applies")
+	}
+	got := wrapWithRunner(p)
+	want := []string{
+		"/sbin/slinit-runner",
+		"--io-uring-filter=read write",
+		"--io-uring-filter=~write",
 		"--",
 		"/usr/bin/svc",
 	}

@@ -937,7 +937,8 @@ func hardeningActive(p ExecParams) bool {
 // which is the runner, so any presence flips this on.
 func seccompActive(p ExecParams) bool {
 	return len(p.SeccompFilter) > 0 || len(p.SeccompLogFilter) > 0 ||
-		p.SeccompErrorAction != "" || len(p.SeccompArchitectures) > 0
+		p.SeccompErrorAction != "" || len(p.SeccompArchitectures) > 0 ||
+		len(p.IOUringFilter) > 0
 }
 
 // sandboxActive reports whether any filesystem-sandbox field is set.
@@ -1041,6 +1042,9 @@ func wrapWithRunner(p ExecParams) []string {
 	}
 	for _, s := range p.SeccompLogFilter {
 		args = append(args, "--syscall-log="+s)
+	}
+	for _, s := range p.IOUringFilter {
+		args = append(args, "--io-uring-filter="+s)
 	}
 	if p.ProtectKernelTunables {
 		args = append(args, "--protect-kernel-tunables")

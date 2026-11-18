@@ -454,6 +454,10 @@ type ExecParams struct {
 	SeccompArchitectures []string
 	SeccompErrorAction   string
 	SeccompLogFilter     []string
+	// IOUringFilter: io-uring-filter assignments, passed through to the
+	// runner, which registers io_uring BPF filters (or, on a kernel
+	// without them, refuses io_uring_setup).
+	IOUringFilter []string
 
 	// systemd-style Restrict*/Protect* hardening cluster (#7). Each
 	// active knob expands at runner-side to a small fixed deny syscall

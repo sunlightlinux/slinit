@@ -20,6 +20,8 @@ package seccomp
 import (
 	"fmt"
 	"runtime"
+	"strings"
+	"unicode"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -318,4 +320,44 @@ func IOUringOpsDeniedBy(f *Filter) map[int]bool {
 		}
 	}
 	return out
+}
+
+// ParseIOUringFilter turns io-uring-filter assignments into the set of
+// operations and whether it is an allow list, with systemd's
+// IOUringFilter= semantics (config_parse_io_uring_filter): each
+// assignment is a space- or comma-separated list of operation names,
+// prefixed with ~ to deny the listed operations rather than allow them.
+// The first assignment decides the kind of list; a later assignment of
+// the other kind removes its operations from it. An empty assignment
+// resets the list.
+//
+// Unlike systemd, which warns and ignores a name it does not know, an
+// unknown name is an error here, as an unknown syscall is for
+// system-call-filter: in a deny list a misspelt name would leave that
+// operation allowed without a word.
+func ParseIOUringFilter(assignments []string) (ops map[int]bool, allowList bool, err error) {
+	for _, a := range assignments {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			ops, allowList = nil, false
+			continue
+		}
+		invert := strings.HasPrefix(a, "~")
+		a = strings.TrimPrefix(a, "~")
+		if ops == nil {
+			ops, allowList = map[int]bool{}, !invert
+		}
+		for _, name := range strings.FieldsFunc(a, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+			op, ok := IOUringOpNumber(name)
+			if !ok {
+				return nil, false, fmt.Errorf("io-uring-filter: unknown io_uring operation %q", name)
+			}
+			if invert != allowList {
+				ops[op] = true
+			} else {
+				delete(ops, op)
+			}
+		}
+	}
+	return ops, allowList, nil
 }

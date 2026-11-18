@@ -2026,6 +2026,7 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		Architectures: desc.SystemCallArchitectures,
 		ErrorAction:   desc.SystemCallErrorNumber,
 		LogFilter:     desc.SystemCallLog,
+		IOUringFilter: desc.IOUringFilter,
 	}
 	if seccompCfg.Active() {
 		rec.SetSeccomp(seccompCfg)

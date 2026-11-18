@@ -107,6 +107,8 @@ var systemdHardeningNames = map[string]string{
 	"RestrictRealtime":       "restrict-realtime",
 	"LockPersonality":        "lock-personality",
 	"MemoryDenyWriteExecute": "memory-deny-write-execute",
+	"RestrictSUIDSGID":       "restrict-suidsgid",
+	"ProtectKernelLogs":      "protect-kernel-logs",
 }
 
 // boolWord normalises systemd's true/false/1/0/on/off to slinit's yes/no.
@@ -461,7 +463,8 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	// rather than earning a "look it up yourself" note.
 	case "PrivateTmp", "ProtectKernelTunables", "ProtectKernelModules",
 		"ProtectControlGroups", "ProtectClock", "RestrictRealtime",
-		"LockPersonality", "MemoryDenyWriteExecute":
+		"LockPersonality", "MemoryDenyWriteExecute", "RestrictSUIDSGID",
+		"ProtectKernelLogs":
 		cfg.mapped = append(cfg.mapped, kvPair{systemdHardeningNames[key], boolWord(val)})
 	case "ProtectSystem":
 		// no|yes|full|strict on both sides.
@@ -491,9 +494,31 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		// Same grammar: syscall names, @groups, and a leading ~ on the
 		// first item to switch allow-list to deny-list.
 		cfg.mapped = append(cfg.mapped, kvPair{"system-call-filter", trimQuotes(val)})
+	// The rest of the seccomp family has the same value shape on both
+	// sides. These used to be dropped with a "no slinit equivalent"
+	// note, or a "not recognised" warning, while slinit implements each:
+	// a unit asking for them ran without them.
+	case "SystemCallArchitectures":
+		cfg.mapped = append(cfg.mapped, kvPair{"system-call-architectures", trimQuotes(val)})
+	case "SystemCallErrorNumber":
+		// kill, or any errno name — slinit knows every one.
+		cfg.mapped = append(cfg.mapped, kvPair{"system-call-error-number", trimQuotes(val)})
+	case "SystemCallLog":
+		cfg.mapped = append(cfg.mapped, kvPair{"system-call-log", trimQuotes(val)})
+	case "IOUringFilter":
+		// Operation names, comma- or space-separated, ~ to deny.
+		cfg.mapped = append(cfg.mapped, kvPair{"io-uring-filter", trimQuotes(val)})
+	case "ProtectHostname":
+		// systemd also has private[:name], a UTS namespace with its own
+		// hostname; slinit's protect-hostname only refuses the calls.
+		switch v := strings.ToLower(trimQuotes(val)); v {
+		case "yes", "no", "true", "false", "1", "0", "on", "off":
+			cfg.mapped = append(cfg.mapped, kvPair{"protect-hostname", boolWord(val)})
+		default:
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectHostname=%s — slinit's protect-hostname is yes/no only; set it by hand", val)})
+		}
 	// No slinit equivalent — these stay notes.
-	case "PrivateDevices", "PrivateNetwork", "PrivateUsers", "RestrictSUIDSGID",
-		"SystemCallArchitectures", "SystemCallErrorNumber":
+	case "PrivateDevices", "PrivateNetwork", "PrivateUsers":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("hardening %s=%s — no slinit equivalent; review by hand", key, val)})
 	// Same directive, same value shape: a space-separated list of names
 	// created under /run, /var/lib and so on. Deferring these was not a

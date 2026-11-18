@@ -149,6 +149,70 @@ SystemCallFilter=@system-service
 	}
 }
 
+// The rest of the seccomp family, which used to be dropped: three with a
+// "no slinit equivalent" note although slinit has each, three with a
+// "not recognised" warning. A unit that asked for them ran without them.
+func TestSystemdSeccompFamilyIsTranslated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.service")
+	os.WriteFile(path, []byte(`[Service]
+ExecStart=/bin/true
+RestrictSUIDSGID=yes
+ProtectKernelLogs=true
+ProtectHostname=yes
+SystemCallArchitectures=native
+SystemCallErrorNumber=EAFNOSUPPORT
+SystemCallLog=@privileged
+IOUringFilter=~socket,connect
+`), 0o644)
+	cfg, warns, err := ConvertSystemdUnit(path)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	var buf bytes.Buffer
+	EmitSlinitFile(&buf, cfg)
+	out := buf.String()
+	for _, want := range []string{
+		"restrict-suidsgid = yes",
+		"protect-kernel-logs = yes",
+		"protect-hostname = yes",
+		"system-call-architectures = native",
+		"system-call-error-number = EAFNOSUPPORT",
+		"system-call-log = @privileged",
+		"io-uring-filter = ~socket,connect",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in emitted file:\n%s", want, out)
+		}
+	}
+	for _, w := range warns {
+		if strings.Contains(w.Msg, "no slinit equivalent") || strings.Contains(w.Msg, "not recognised") {
+			t.Errorf("dropped a directive slinit implements: %s", w.Msg)
+		}
+	}
+	desc, err := Parse(bytes.NewReader(buf.Bytes()), "s", path)
+	if err != nil {
+		t.Fatalf("output does not parse: %v\n%s", err, out)
+	}
+	if !desc.RestrictSUIDSGID || len(desc.IOUringFilter) != 1 || desc.SystemCallErrorNumber != "EAFNOSUPPORT" {
+		t.Errorf("description lost settings: suid=%v io_uring=%q errno=%q",
+			desc.RestrictSUIDSGID, desc.IOUringFilter, desc.SystemCallErrorNumber)
+	}
+
+	// systemd's ProtectHostname=private has no slinit counterpart: say
+	// so rather than emit something weaker.
+	os.WriteFile(path, []byte("[Service]\nExecStart=/bin/true\nProtectHostname=private\n"), 0o644)
+	cfg, warns, _ = ConvertSystemdUnit(path)
+	buf.Reset()
+	EmitSlinitFile(&buf, cfg)
+	if strings.Contains(buf.String(), "protect-hostname") {
+		t.Errorf("ProtectHostname=private emitted as a switch:\n%s", buf.String())
+	}
+	if len(warns) == 0 {
+		t.Error("ProtectHostname=private must warn")
+	}
+}
+
 // A deny-list cannot be expressed by an allow-list directive; converting
 // it anyway would invert the operator's intent, which is worse than
 // declining to convert it.

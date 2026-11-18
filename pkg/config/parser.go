@@ -649,6 +649,10 @@ type ServiceDescription struct {
 	SystemCallArchitectures []string
 	SystemCallErrorNumber   string
 	SystemCallLog           []string
+	// IOUringFilter: one entry per io-uring-filter assignment, kept
+	// whole, since a leading '~' applies to its own assignment and an
+	// empty assignment resets the list (seccomp.ParseIOUringFilter).
+	IOUringFilter []string
 
 	// systemd-style Restrict*/Protect* hardening cluster (#7 v1). Each
 	// is a bool that expands at runner-side to a small fixed deny
@@ -2692,6 +2696,17 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			return err
 		}
 		desc.SystemCallLog = append(desc.SystemCallLog, items...)
+
+	case "io-uring-filter":
+		v := strings.TrimSpace(expandEnvVars(value, serviceArg))
+		if v == "" {
+			desc.IOUringFilter = nil
+			break
+		}
+		if _, _, err := seccomp.ParseIOUringFilter(append(append([]string(nil), desc.IOUringFilter...), v)); err != nil {
+			return err
+		}
+		desc.IOUringFilter = append(desc.IOUringFilter, v)
 
 	case "protect-kernel-tunables", "protect-kernel-modules",
 		"protect-kernel-logs", "protect-clock",
