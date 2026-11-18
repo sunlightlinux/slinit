@@ -500,14 +500,14 @@ func hasPrefix(s, prefix string) bool {
 // polkit. The power and lid keys reach the same actions through
 // runShutdown and m.sleep directly, so they are not affected.
 func (m *manager) shutdownAs(sender dbus.Sender, verb string) *dbus.Error {
-	if err := m.authorize(sender, noGoodUser, verb); err != nil {
+	if err := m.mayPower(sender, verb); err != nil {
 		return err
 	}
 	return runShutdown(verb)
 }
 
 func (m *manager) sleepAs(sender dbus.Sender, v sleepVerb) *dbus.Error {
-	if err := m.authorize(sender, noGoodUser, v.method); err != nil {
+	if err := m.mayPower(sender, v.method); err != nil {
 		return err
 	}
 	return m.sleep(v)
@@ -579,7 +579,9 @@ func (m *manager) SuspendThenHibernateWithFlags(sender dbus.Sender, flags uint64
 func (m *manager) Sleep(sender dbus.Sender, flags uint64) *dbus.Error {
 	return m.sleepAs(sender, sleepVerb{"Sleep", "mem"})
 }
-func (m *manager) CanSleep() (string, *dbus.Error) { return canSleep("mem"), nil }
+func (m *manager) CanSleep(sender dbus.Sender) (string, *dbus.Error) {
+	return m.canAnswer(sender, probeSleep("mem"), "Sleep"), nil
+}
 
 // Reload is called by `loginctl reload` (used e.g. by
 // /etc/gdm/custom.conf edits when the operator drops in new drop-ins).
@@ -587,23 +589,55 @@ func (m *manager) CanSleep() (string, *dbus.Error) { return canSleep("mem"), nil
 // success — clients that call it expect ACK, not implementation.
 func (m *manager) Reload() *dbus.Error { return nil }
 
-// Can<Op> methods answer whether the corresponding action is
-// available. systemd returns "yes"/"no"/"challenge"/"na". slinit-
-// logind returns "yes" whenever the underlying capability exists,
-// "na" otherwise; polkit-style challenges are out of scope until we
-// wire an authorization backend.
-func (m *manager) CanPowerOff() (string, *dbus.Error) { return canShutdown(), nil }
-func (m *manager) CanReboot() (string, *dbus.Error)   { return canShutdown(), nil }
-func (m *manager) CanHalt() (string, *dbus.Error)     { return canShutdown(), nil }
-func (m *manager) CanSuspend() (string, *dbus.Error)  { return canSleep("mem"), nil }
-func (m *manager) CanHibernate() (string, *dbus.Error) {
-	return canSleep("disk"), nil
+// Can<Op> methods answer whether the corresponding action would work for
+// the caller asking. systemd returns "yes"/"no"/"challenge"/"na"; there is
+// no authorization agent here, so "challenge" never arises.
+//
+// They used to say "yes" to anyone whenever the capability existed, while
+// the action itself refused everyone but root: a desktop showed a user a
+// Power Off button that answered AccessDenied. systemd-logind does not
+// (method_can_shutdown_or_sleep asks the same authorization question the
+// action will), and now neither does this. The capability probe still
+// comes first, so an unsupported action is "na" for every caller.
+//
+// probeShutdown and probeSleep are variables so tests can fix the
+// capability instead of depending on the host's /sys/power/state.
+var (
+	probeShutdown = canShutdown
+	probeSleep    = canSleep
+)
+
+// canAnswer turns a capability probe into the reply for this caller.
+func (m *manager) canAnswer(sender dbus.Sender, capability, what string) string {
+	if capability != "yes" {
+		return capability
+	}
+	if m.mayPower(sender, what) != nil {
+		return "no"
+	}
+	return "yes"
 }
-func (m *manager) CanHybridSleep() (string, *dbus.Error) {
-	return canSleep("disk"), nil
+
+func (m *manager) CanPowerOff(sender dbus.Sender) (string, *dbus.Error) {
+	return m.canAnswer(sender, probeShutdown(), "poweroff"), nil
 }
-func (m *manager) CanSuspendThenHibernate() (string, *dbus.Error) {
-	return canSleep("mem"), nil
+func (m *manager) CanReboot(sender dbus.Sender) (string, *dbus.Error) {
+	return m.canAnswer(sender, probeShutdown(), "reboot"), nil
+}
+func (m *manager) CanHalt(sender dbus.Sender) (string, *dbus.Error) {
+	return m.canAnswer(sender, probeShutdown(), "halt"), nil
+}
+func (m *manager) CanSuspend(sender dbus.Sender) (string, *dbus.Error) {
+	return m.canAnswer(sender, probeSleep("mem"), "Suspend"), nil
+}
+func (m *manager) CanHibernate(sender dbus.Sender) (string, *dbus.Error) {
+	return m.canAnswer(sender, probeSleep("disk"), "Hibernate"), nil
+}
+func (m *manager) CanHybridSleep(sender dbus.Sender) (string, *dbus.Error) {
+	return m.canAnswer(sender, probeSleep("disk"), "HybridSleep"), nil
+}
+func (m *manager) CanSuspendThenHibernate(sender dbus.Sender) (string, *dbus.Error) {
+	return m.canAnswer(sender, probeSleep("mem"), "SuspendThenHibernate"), nil
 }
 
 // Inhibit takes (what, who, why, mode) and returns a descriptor the

@@ -50,6 +50,13 @@ func (m *manager) authorize(sender dbus.Sender, goodUser int64, what string) *db
 	return errAccessDenied("%s: access denied", what)
 }
 
+// mayPower is the one rule for the power and sleep calls, used both by
+// the actions and by the Can* probes that predict them, so the two cannot
+// disagree. As in systemd-logind without polkit, the calls are root's.
+func (m *manager) mayPower(sender dbus.Sender, what string) *dbus.Error {
+	return m.authorize(sender, noGoodUser, what)
+}
+
 // authorizeSessionOwner allows root and the user owning session id.
 func (m *manager) authorizeSessionOwner(sender dbus.Sender, id, what string) *dbus.Error {
 	if !validSessionID(id) {

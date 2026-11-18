@@ -314,6 +314,13 @@ Anyone
 *ReleaseSession* is allowed from inside the session it names, or from root.
 The power and lid keys are not calls and are not affected.
 
+The *Can...* queries are open to anyone, but they answer for the caller,
+as systemd-logind's do: *yes* only where the matching call would be
+allowed, *no* where it would be refused, and *na* where the machine cannot
+do it at all, whoever asks. A desktop therefore hides or greys out Power
+Off for a user it would refuse, instead of offering a button that answers
+*AccessDenied*.
+
 # EXIT STATUS
 
 Exits non-zero if the state directories cannot be created, the system

@@ -24,6 +24,26 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `slinit-logind`'s `CanPowerOff`, `CanReboot`, `CanHalt`, `CanSuspend`,
+  `CanHibernate`, `CanHybridSleep`, `CanSuspendThenHibernate` and
+  `CanSleep` answered "yes" to every caller whenever the machine could do
+  the action, while the action itself is root's alone. A desktop therefore
+  showed an ordinary user a Power Off button that answered `AccessDenied`.
+  They now answer for the caller, as systemd-logind does without polkit:
+  "no" to a caller the action would refuse, "yes" only where it would be
+  allowed, and still "na" for everyone when the machine cannot do it. The
+  actions and their queries share one rule, so they cannot disagree. The
+  D-Bus signatures are unchanged.
+
+### Tests
+
+- Eight new transition scenarios exercise requests that arrive while a
+  service is STARTING or STOPPING. Checked against seven injected
+  state-machine defects, they catch six, three of which no case ported
+  from dinit notices.
+
 ## [3.17.2] — 2026-11-18
 
 **A patch: an already-exited process no longer logs an error when its stop

@@ -4,9 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/godbus/dbus/v5/introspect"
 )
 
 // fakeBus stands in for the bus daemon's GetConnectionUnixUser: each bus
@@ -177,5 +179,84 @@ func TestDeviceCallsAreTheControllers(t *testing.T) {
 	}
 	if err := so.ReleaseDevice(alice, 1, 3); err == nil {
 		t.Error("displaced controller still allowed")
+	}
+}
+
+// fixedCapability makes every power and sleep capability probe answer v.
+func fixedCapability(t *testing.T, v string) {
+	t.Helper()
+	ps, pl := probeShutdown, probeSleep
+	probeShutdown = func() string { return v }
+	probeSleep = func(string) string { return v }
+	t.Cleanup(func() { probeShutdown, probeSleep = ps, pl })
+}
+
+// A Can* probe must predict its action: a caller the action refuses is
+// told "no", not shown a button that answers AccessDenied. That is what
+// systemd-logind does without polkit (method_can_shutdown_or_sleep asks
+// the action's own authorization question). The actions are only called
+// for callers they refuse, so nothing here powers anything off.
+func TestCanAnswersMatchTheAction(t *testing.T) {
+	m := usersBus(t)
+	fixedCapability(t, "yes")
+	pairs := []struct {
+		name   string
+		can    func(dbus.Sender) (string, *dbus.Error)
+		action func(dbus.Sender) *dbus.Error
+	}{
+		{"PowerOff", m.CanPowerOff, func(s dbus.Sender) *dbus.Error { return m.PowerOff(s, false) }},
+		{"Reboot", m.CanReboot, func(s dbus.Sender) *dbus.Error { return m.Reboot(s, false) }},
+		{"Halt", m.CanHalt, func(s dbus.Sender) *dbus.Error { return m.Halt(s, false) }},
+		{"Suspend", m.CanSuspend, func(s dbus.Sender) *dbus.Error { return m.Suspend(s, false) }},
+		{"Hibernate", m.CanHibernate, func(s dbus.Sender) *dbus.Error { return m.Hibernate(s, false) }},
+		{"HybridSleep", m.CanHybridSleep, func(s dbus.Sender) *dbus.Error { return m.HybridSleep(s, false) }},
+		{"SuspendThenHibernate", m.CanSuspendThenHibernate, func(s dbus.Sender) *dbus.Error { return m.SuspendThenHibernate(s, false) }},
+		{"Sleep", m.CanSleep, func(s dbus.Sender) *dbus.Error { return m.Sleep(s, 0) }},
+	}
+	for _, p := range pairs {
+		for _, who := range []dbus.Sender{alice, bob, ghost} {
+			got, err := p.can(who)
+			if err != nil {
+				t.Errorf("Can%s(%s): error %v", p.name, who, err)
+			}
+			if got != "no" {
+				t.Errorf("Can%s(%s) = %q, want \"no\"", p.name, who, got)
+			}
+			if !denied(p.action(who)) {
+				t.Errorf("%s(%s) was not refused, yet Can%s said %q", p.name, who, p.name, got)
+			}
+		}
+		if got, _ := p.can(root); got != "yes" {
+			t.Errorf("Can%s(root) = %q, want \"yes\"", p.name, got)
+		}
+	}
+}
+
+// An action the machine cannot do is "na" for everyone, root included:
+// the capability is decided before the caller is.
+func TestCanReportsUnsupportedToEveryone(t *testing.T) {
+	m := usersBus(t)
+	fixedCapability(t, "na")
+	for _, who := range []dbus.Sender{root, alice, ghost} {
+		if got, _ := m.CanPowerOff(who); got != "na" {
+			t.Errorf("CanPowerOff(%s) = %q, want \"na\"", who, got)
+		}
+		if got, _ := m.CanHibernate(who); got != "na" {
+			t.Errorf("CanHibernate(%s) = %q, want \"na\"", who, got)
+		}
+	}
+}
+
+// Taking the sender is a Go-side change only: godbus fills it in and
+// leaves it out of the signature, so clients still see "out s" and no
+// arguments. A desktop calling CanPowerOff() with none must still match.
+func TestCanSignatureUnchanged(t *testing.T) {
+	for _, meth := range introspect.Methods(&manager{}) {
+		if !strings.HasPrefix(meth.Name, "Can") {
+			continue
+		}
+		if len(meth.Args) != 1 || meth.Args[0].Direction != "out" || meth.Args[0].Type != "s" {
+			t.Errorf("%s: signature %+v, want a single out s", meth.Name, meth.Args)
+		}
 	}
 }
