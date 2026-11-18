@@ -1394,6 +1394,20 @@ the internal **seccomp** package and installs it via the
     right before the service's **execve**(2), so it filters the
     service and not the setup slinit-runner does for it.
 
+    An **io_uring**(7) request does the work of a system call without
+    making one, so a seccomp filter never sees it. Where the kernel can
+    filter io_uring (Linux 7.0 and later), every io_uring operation that
+    stands for a refused system call is refused too, and the request
+    fails with *EACCES*: *IORING_OP_OPENAT* when **open** or **openat**
+    is refused, *IORING_OP_SOCKET* when **socket** is, and so on, with
+    the mapping systemd uses. Only operations slinit knows of are
+    refused, since a program cannot fall back from one the kernel still
+    reports as supported. A filter that refuses **io_uring_setup**
+    leaves nothing to do: the service cannot create a ring. On older
+    kernels io_uring requests are not filtered, as under systemd; refuse
+    **io_uring_setup** (or leave *@aio* out of an allowlist) to close
+    that path there.
+
 **system-call-architectures**=*name*...
 :   Architectures the filter accepts: *native* (default — the running
     arch), *x86-64* / *amd64*, *x86* / *i386*, *arm64* / *aarch64*,
@@ -1502,7 +1516,10 @@ service's private mount namespace.
     **creat**(2), **mkdir**(2), **mkdirat**(2), **mknod**(2) and
     **mknodat**(2). **openat2**(2) keeps its flags in a structure the
     filter cannot read, so it fails with *ENOSYS* and callers use
-    **openat**(2). Equivalent to systemd's **RestrictSUIDSGID=**.
+    **openat**(2). On Linux 7.0 and later the same check applies to
+    files created through **io_uring**(7) (*IORING_OP_OPENAT* and
+    *IORING_OP_OPENAT2*, whose flags io_uring does expose), which fail
+    with *EACCES*. Equivalent to systemd's **RestrictSUIDSGID=**.
     Before 3.18.0 only the chmod family was covered, so a service could
     still create a set-user-ID file with **open**(2).
 
@@ -1518,7 +1535,9 @@ service's private mount namespace.
 :   Allow-list of address families for **socket**(2); anything not
     listed fails with *EAFNOSUPPORT*, so a program that tries IPv6 and
     falls back to IPv4 still works. **socketpair**(2) is not affected,
-    as under systemd: it only makes connected *AF_UNIX* pairs. Empty
+    as under systemd: it only makes connected *AF_UNIX* pairs. On Linux
+    7.0 and later the same list applies to sockets created through
+    **io_uring**(7) (*IORING_OP_SOCKET*), which fail with *EACCES*. Empty
     directive value = deny every socket call. Repeatable via *+=*.
     Recognised names: *AF_UNIX*/*AF_LOCAL*, *AF_INET*, *AF_INET6*,
     *AF_NETLINK*, *AF_PACKET*, *AF_AX25*, *AF_IPX*, *AF_APPLETALK*,

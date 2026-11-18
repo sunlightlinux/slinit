@@ -57,6 +57,19 @@ verified with `git tag -v`.
 
 ### Security
 
+- An io_uring request does the work of a system call without making one,
+  so `system-call-filter`, `restrict-address-families` and
+  `restrict-suidsgid` could be bypassed through a ring: under
+  `restrict-address-families = AF_UNIX` a service created an `AF_INET`
+  socket with `IORING_OP_SOCKET`, and under `restrict-suidsgid` a 04755
+  file with `IORING_OP_OPENAT`. On Linux 7.0 and later, which can attach
+  BPF filters to io_uring operations, slinit-runner now registers them as
+  systemd v263 does: an operation standing for a refused system call is
+  refused, socket requests are held to the allowed address families, and
+  open requests may not create SUID/SGID files. Refused requests fail with
+  `EACCES`. The filters are registered before the system call filter, which
+  may refuse `io_uring_register()` itself. Older kernels cannot filter
+  io_uring, and the path stays open there, as under systemd.
 - `restrict-suidsgid` covered only the chmod family, while its man page
   claimed that was systemd's scope; a service could still create a
   set-user-ID file with `open(O_CREAT, 04755)`. It now covers what

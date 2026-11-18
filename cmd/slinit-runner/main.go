@@ -465,6 +465,18 @@ func run() error {
 	// before the service ever ran. The install also sets
 	// PR_SET_NO_NEW_PRIVS, so a service run as another user can still
 	// install it without CAP_SYS_ADMIN.
+	// io_uring filters first: the system call filter below may refuse
+	// io_uring_register(), which registering them needs.
+	if err := applyIOUring(ioUringSpec{
+		syscallFilter: syscallFilter,
+		syscallArchs:  syscallArchs,
+		syscallAction: *syscallAction,
+		restrictAF:    *rAFEnabled,
+		afs:           afsParsed,
+		restrictSUID:  *rSUIDSGID,
+	}); err != nil {
+		return err
+	}
 	if err := installSeccomp(seccompSpec{
 		filter:    syscallFilter,
 		archs:     syscallArchs,
