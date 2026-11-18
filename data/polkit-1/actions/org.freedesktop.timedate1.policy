@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- The actions slinit-timedated asks polkit about. The ids and defaults
+     are systemd-timedated's, so rules written for one apply to the other:
+     every change needs an administrator, even from the active session. -->
+<policyconfig>
+  <vendor>slinit</vendor>
+  <vendor_url>https://github.com/sunlightlinux/slinit</vendor_url>
+
+  <action id="org.freedesktop.timedate1.set-time">
+    <description>Set the system clock</description>
+    <message>Authentication is required to set the system clock.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.imply">org.freedesktop.timedate1.set-timezone org.freedesktop.timedate1.set-ntp</annotate>
+  </action>
+
+  <action id="org.freedesktop.timedate1.set-timezone">
+    <description>Set the system time zone</description>
+    <message>Authentication is required to set the system time zone.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.freedesktop.timedate1.set-local-rtc">
+    <description>Set whether the hardware clock keeps local time or UTC</description>
+    <message>Authentication is required to control whether the hardware clock keeps local time or UTC.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.freedesktop.timedate1.set-ntp">
+    <description>Turn network time synchronization on or off</description>
+    <message>Authentication is required to control whether network time synchronization is enabled.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

@@ -58,6 +58,7 @@ is for, followed by the invocations most worth knowing.
 | `slinit-binfmt` | Register `binfmt_misc` formats | [slinit-binfmt(8)](man/slinit-binfmt.8.md) |
 | `slinit-hostnamectl` | Query and set the hostname, without D-Bus | [slinit-hostnamectl(1)](man/slinit-hostnamectl.1.md) |
 | `slinit-timedatectl` | Query and set time and date, without D-Bus | [slinit-timedatectl(1)](man/slinit-timedatectl.1.md) |
+| `slinit-timedated` | *org.freedesktop.timedate1* on the system bus, for GNOME's Date & Time panel; polkit-authorized | [slinit-timedated(8)](man/slinit-timedated.8.md) |
 | [`slinit-cgtop`](#slinit-cgtop) | `top`-like viewer for the cgroup v2 tree | [slinit-cgtop(8)](man/slinit-cgtop.8.md) |
 
 ### OpenRC-compatible utilities

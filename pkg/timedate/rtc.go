@@ -6,7 +6,7 @@
 // writes. When the file is absent, the kernel default is UTC — same
 // assumption systemd's timedated makes.
 
-package main
+package timedate
 
 import (
 	"bufio"
@@ -20,11 +20,11 @@ import (
 
 // Paths overridable in tests.
 var (
-	rtcDevice   = "/dev/rtc"
-	adjtimePath = "/etc/adjtime"
+	RTCDevice   = "/dev/rtc"
+	AdjtimePath = "/etc/adjtime"
 )
 
-// readRTCTime reads /dev/rtc via RTC_RD_TIME. The kernel returns a
+// ReadRTC reads /dev/rtc via RTC_RD_TIME. The kernel returns a
 // naked struct rtc_time (broken-down calendar fields with no
 // timezone); interpret those fields according to the /etc/adjtime
 // LOCAL/UTC flag when converting back to a wall-clock instant.
@@ -32,8 +32,8 @@ var (
 // Returns (nil, err) on any failure — callers treat that as "RTC
 // unavailable" and drop the field from the status output rather
 // than propagating the error.
-func readRTCTime(inLocalTZ bool) (*time.Time, error) {
-	f, err := os.Open(rtcDevice)
+func ReadRTC(inLocalTZ bool) (*time.Time, error) {
+	f, err := os.Open(RTCDevice)
 	if err != nil {
 		return nil, err
 	}
@@ -55,19 +55,19 @@ func readRTCTime(inLocalTZ bool) (*time.Time, error) {
 	return &t, nil
 }
 
-// rtcInLocal returns true when /etc/adjtime pins the RTC to local
+// RTCInLocal returns true when /etc/adjtime pins the RTC to local
 // time. Missing file or missing/unknown line 3 → false (UTC default).
-func rtcInLocal() bool {
-	mode, _ := readAdjtimeMode()
+func RTCInLocal() bool {
+	mode, _ := ReadAdjtimeMode()
 	return mode == "LOCAL"
 }
 
-// readAdjtimeMode returns the RTC storage mode as written on
+// ReadAdjtimeMode returns the RTC storage mode as written on
 // /etc/adjtime line 3 — "UTC" or "LOCAL" — plus any error worth
 // surfacing (I/O failure other than "missing"). Missing file is not
 // an error; it yields ("UTC", nil) to match the kernel default.
-func readAdjtimeMode() (string, error) {
-	f, err := os.Open(adjtimePath)
+func ReadAdjtimeMode() (string, error) {
+	f, err := os.Open(AdjtimePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "UTC", nil
@@ -93,11 +93,11 @@ func readAdjtimeMode() (string, error) {
 	}
 }
 
-// writeAdjtimeMode rewrites the storage-mode line (line 3) of
+// WriteAdjtimeMode rewrites the storage-mode line (line 3) of
 // /etc/adjtime while preserving the drift factor + last-adjust
 // timestamp on lines 1-2. Creates a fresh file with zeroed drift
 // values when adjtime is missing.
-func writeAdjtimeMode(mode string) error {
+func WriteAdjtimeMode(mode string) error {
 	mode = strings.ToUpper(mode)
 	if mode != "UTC" && mode != "LOCAL" {
 		return fmt.Errorf("invalid RTC mode %q (want UTC or LOCAL)", mode)
@@ -107,7 +107,7 @@ func writeAdjtimeMode(mode string) error {
 	// with hwclock's canonical zeroed drift record.
 	line1 := "0.000000 0 0.000000"
 	line2 := "0"
-	if f, err := os.Open(adjtimePath); err == nil {
+	if f, err := os.Open(AdjtimePath); err == nil {
 		s := bufio.NewScanner(f)
 		if s.Scan() {
 			if got := strings.TrimSpace(s.Text()); got != "" {
@@ -125,7 +125,7 @@ func writeAdjtimeMode(mode string) error {
 	}
 
 	body := line1 + "\n" + line2 + "\n" + mode + "\n"
-	return writeAtomic(adjtimePath, []byte(body), 0o644)
+	return writeAtomic(AdjtimePath, []byte(body), 0o644)
 }
 
 // writeAtomic writes buf via tmp+rename in the same dir so partial

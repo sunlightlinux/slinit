@@ -22,14 +22,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/sunlightlinux/slinit/pkg/timedate"
 )
 
 // runSetTime parses TIME per systemd's accepted forms and calls
@@ -42,11 +39,7 @@ func runSetTime(opts options) error {
 	if err != nil {
 		return err
 	}
-	ts := unix.Timespec{Sec: int64(t.Unix()), Nsec: int64(t.Nanosecond())}
-	if err := unix.ClockSettime(unix.CLOCK_REALTIME, &ts); err != nil {
-		return fmt.Errorf("clock_settime: %w", err)
-	}
-	return nil
+	return timedate.SetSystemTime(t)
 }
 
 // parseTime accepts (in order of specificity):
@@ -158,50 +151,7 @@ func runSetTimezone(opts options) error {
 	if len(opts.args) == 0 {
 		return errors.New("set-timezone requires a ZONE argument")
 	}
-	zone := opts.args[0]
-	if err := validateZone(zone); err != nil {
-		return err
-	}
-	target := filepath.Join(zoneinfoDir, zone)
-	if err := atomicSymlink(target, localtimeSym); err != nil {
-		return fmt.Errorf("write %s: %w", localtimeSym, err)
-	}
-	// /etc/timezone is Debian-family convention; only update if
-	// present, to avoid creating spurious files on distros that
-	// don't use it.
-	if _, err := os.Stat(timezoneFile); err == nil {
-		if err := writeAtomic(timezoneFile, []byte(zone+"\n"), 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", timezoneFile, err)
-		}
-	}
-	return nil
-}
-
-// atomicSymlink creates a symlink at path pointing to target, using
-// the tmp-name + rename dance so readers never see a partial state.
-func atomicSymlink(target, path string) error {
-	dir := "."
-	if idx := strings.LastIndex(path, "/"); idx > 0 {
-		dir = path[:idx]
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".timedatectl.")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	tmp.Close()
-	os.Remove(tmpName) // Symlink target must not exist yet.
-	if err := os.Symlink(target, tmpName); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return timedate.SetTimezone(opts.args[0])
 }
 
 // runSetLocalRTC parses BOOL, writes /etc/adjtime, and — when
@@ -219,34 +169,13 @@ func runSetLocalRTC(opts options) error {
 	if b {
 		mode = "LOCAL"
 	}
-	if err := writeAdjtimeMode(mode); err != nil {
+	if err := timedate.WriteAdjtimeMode(mode); err != nil {
 		return err
 	}
 	if opts.adjustClock {
-		if err := writeRTCFromWall(b); err != nil {
+		if err := timedate.WriteRTCFromSystem(b); err != nil {
 			return fmt.Errorf("adjust RTC: %w", err)
 		}
-	}
-	return nil
-}
-
-// writeRTCFromWall writes the current wall-clock time to /dev/rtc,
-// interpreting it as UTC or local per the `inLocal` flag. Uses the
-// hwclock(8) trick: shell out to hwclock when it is available, since
-// RTC_SET_TIME requires CAP_SYS_TIME and slightly nontrivial ioctl
-// plumbing that x/sys/unix does not wrap. Falls back to a friendly
-// "hwclock missing" error rather than pretending success.
-func writeRTCFromWall(inLocal bool) error {
-	if _, err := exec.LookPath("hwclock"); err != nil {
-		return errors.New("hwclock(8) not available; install util-linux to use --adjust-system-clock")
-	}
-	arg := "--utc"
-	if inLocal {
-		arg = "--localtime"
-	}
-	cmd := exec.Command("hwclock", "--systohc", arg)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("hwclock: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -263,28 +192,12 @@ func runSetNTP(opts options) error {
 	if err != nil {
 		return err
 	}
-	svc := findNTPService()
-	if svc == "" {
-		return errors.New("no known time-sync service found under /etc/slinit.d/ (systemd-timesyncd, chronyd, ntpd, openntpd, sntp)")
-	}
-	action := "start"
-	enable := "enable"
-	if !b {
-		action = "stop"
-		enable = "disable"
-	}
-	if err := slinitctl(enable, svc); err != nil {
-		return fmt.Errorf("slinitctl %s %s: %w", enable, svc, err)
-	}
-	if err := slinitctl(action, svc); err != nil {
-		return fmt.Errorf("slinitctl %s %s: %w", action, svc, err)
-	}
-	return nil
+	return timedate.SetNTP(b)
 }
 
 // runListTimezones prints the zone list one per line.
 func runListTimezones(out io.Writer, opts options) error {
-	zones, err := listTimezones()
+	zones, err := timedate.ListTimezones()
 	if err != nil {
 		return err
 	}
@@ -310,48 +223,9 @@ func parseBool(s string) (bool, error) {
 // service present on the host. Used only by status output — set-ntp
 // uses findNTPService for the same probe minus the running check.
 func detectNTPService() (string, bool) {
-	svc := findNTPService()
+	svc := timedate.FindNTPService()
 	if svc == "" {
 		return "", false
 	}
-	return svc, isRunning(svc)
+	return svc, timedate.ServiceRunning(svc)
 }
-
-// findNTPService walks a known list of time-sync service names and
-// returns the first one that has a config file under /etc/slinit.d/.
-// Probe order matches likelihood on a slinit host.
-func findNTPService() string {
-	for _, name := range []string{
-		"chronyd", "systemd-timesyncd", "ntpd", "openntpd", "sntp",
-	} {
-		if _, err := os.Stat(filepath.Join(slinitConfDir, name)); err == nil {
-			return name
-		}
-	}
-	return ""
-}
-
-// isRunning asks slinitctl whether the named service is up. Any
-// non-zero exit is treated as "not running" — we don't want status
-// output to fail just because the daemon isn't up yet.
-func isRunning(name string) bool {
-	cmd := exec.Command(slinitctlBin, "is-started", name)
-	return cmd.Run() == nil
-}
-
-// slinitctl invokes `slinitctl SUB NAME` and surfaces its output on
-// failure so operators see the real reason.
-func slinitctl(subcmd, name string) error {
-	cmd := exec.Command(slinitctlBin, subcmd, name)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// Overridable in tests / when running from a container-mode slinit
-// with a non-default socket path.
-var (
-	slinitConfDir = "/etc/slinit.d"
-	slinitctlBin  = "slinitctl"
-)

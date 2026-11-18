@@ -107,6 +107,7 @@ jobs:
           - slinit-systemd-convert
           - slinit-sysusers
           - slinit-timedatectl
+          - slinit-timedated
           - slinit-tmpfiles
           - slinit-watchdogd
     uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0

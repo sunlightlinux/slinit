@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- `slinit-timedated` serves `org.freedesktop.timedate1`, the interface
+  GNOME Settings' Date & Time panel and gnome-settings-daemon's automatic
+  time zone use. Nothing on a slinit system provided it, so the panel
+  could not change the time zone, the clock or network time. It is
+  systemd-timedated's interface, backed by the same code as
+  `slinit-timedatectl` (now in `pkg/timedate`), and every change is
+  authorized by polkit with systemd's action ids; when polkitd is not
+  running only root is allowed. Setting the time zone also rewrites an
+  active `TIMEZONE=` in `/etc/rc.conf`, which the boot scripts would
+  otherwise re-apply at the next boot. It is started by D-Bus activation;
+  the D-Bus policy, the activation file and the polkit policy are under
+  `data/`.
+
 ## [3.18.0] — 2026-11-18
 
 **A minor, from a pass over systemd up to 4bd7f6d336. io_uring requests

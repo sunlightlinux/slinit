@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/timedate"
 )
 
 type statusFields struct {
@@ -51,9 +53,9 @@ func collectStatus() statusFields {
 	now := time.Now()
 	s.LocalTime = now.In(time.Local)
 	s.UniversalTime = now.UTC()
-	s.Timezone = currentZoneName()
-	s.RTCInLocalTZ = rtcInLocal()
-	if rt, err := readRTCTime(s.RTCInLocalTZ); err == nil && rt != nil {
+	s.Timezone = timedate.CurrentZone()
+	s.RTCInLocalTZ = timedate.RTCInLocal()
+	if rt, err := timedate.ReadRTC(s.RTCInLocalTZ); err == nil && rt != nil {
 		s.RTCTime = *rt
 		s.RTCTimeValid = true
 	}

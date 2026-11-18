@@ -1,0 +1,25 @@
+# SLSA provenance build config for slinit-timedated (linux/amd64).
+#
+# One config per binary: the SLSA Go builder produces exactly one binary
+# per invocation, so every entry in the matrix in
+# .github/workflows/slsa-goreleaser.yml needs a file here with a
+# matching name. The count is NOT fixed: it drifted twice, once with
+# binaries missing from the matrix and once with five matrix entries
+# whose configs were never added, which failed the v3.3.0 release.
+#
+# CGO_ENABLED=0 diverges from the xbps package, which builds with cgo.
+# pkg/utmp has a no-cgo fallback (utmp_other.go), so this compiles, but
+# slinit, slinitctl, slinit-shutdown and slinit-logouthookd then record
+# nothing to utmp/wtmp. Static, reproducible binaries are the trade.
+version: 1
+env:
+  - GO111MODULE=on
+  - CGO_ENABLED=0
+flags:
+  - -trimpath
+goos: linux
+goarch: amd64
+main: ./cmd/slinit-timedated
+binary: slinit-timedated-{{ .Os }}-{{ .Arch }}
+ldflags:
+  - "-X main.version={{ .Env.VERSION }}"

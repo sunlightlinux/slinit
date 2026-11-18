@@ -1,4 +1,4 @@
-package main
+package timedate
 
 import (
 	"os"
@@ -20,7 +20,7 @@ import (
 //     caller uses these names to build filesystem paths under
 //     /usr/share/zoneinfo/, so a malicious entry could target
 //     arbitrary paths.
-//  3. Every returned zone must survive validateZone if the fixture
+//  3. Every returned zone must survive ValidateZone if the fixture
 //     tree is set up; skip when unset.
 func FuzzReadZoneTab(f *testing.F) {
 	// Real zone.tab shape (POSIX 2001):
@@ -81,18 +81,18 @@ func FuzzValidateZone(f *testing.F) {
 	f.Add("Europe\nBucharest")
 
 	f.Fuzz(func(t *testing.T, data string) {
-		// Standalone: validateZone returns an error on any input
+		// Standalone: ValidateZone returns an error on any input
 		// that would let the caller escape the zoneinfo tree. Any
 		// path with `..` or a leading `/` must be rejected —
 		// regardless of the on-disk state.
-		err := validateZone(data)
+		err := ValidateZone(data)
 		if err == nil {
-			// Non-error path: the zoneinfoDir default may or may
+			// Non-error path: the ZoneinfoDir default may or may
 			// not exist under test — we can't assert existence.
 			// But the string itself must be safe.
 			if strings.HasPrefix(data, "/") || strings.Contains(data, "..") ||
 				strings.ContainsRune(data, '\x00') {
-				t.Errorf("validateZone accepted unsafe string: %q", data)
+				t.Errorf("ValidateZone accepted unsafe string: %q", data)
 			}
 		}
 	})

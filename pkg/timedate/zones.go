@@ -7,7 +7,7 @@
 // tzfile(5) magic — so we do not surface pseudo-entries like
 // leap-seconds.list or posixrules.
 
-package main
+package timedate
 
 import (
 	"bufio"
@@ -23,23 +23,23 @@ import (
 
 // Overridable in tests.
 var (
-	zoneinfoDir  = "/usr/share/zoneinfo"
-	localtimeSym = "/etc/localtime"
-	timezoneFile = "/etc/timezone"
+	ZoneinfoDir   = "/usr/share/zoneinfo"
+	LocaltimePath = "/etc/localtime"
+	TimezoneFile  = "/etc/timezone"
 )
 
-// listTimezones returns the sorted, deduplicated list of IANA zone
+// ListTimezones returns the sorted, deduplicated list of IANA zone
 // names available on the host. Empty result with err=nil means the
 // zone directory exists but is genuinely empty (should never happen
 // on a real host, but the tests rely on it being non-fatal).
-func listTimezones() ([]string, error) {
-	if zones, ok := readZoneTab(filepath.Join(zoneinfoDir, "zone1970.tab")); ok {
+func ListTimezones() ([]string, error) {
+	if zones, ok := readZoneTab(filepath.Join(ZoneinfoDir, "zone1970.tab")); ok {
 		return zones, nil
 	}
-	if zones, ok := readZoneTab(filepath.Join(zoneinfoDir, "zone.tab")); ok {
+	if zones, ok := readZoneTab(filepath.Join(ZoneinfoDir, "zone.tab")); ok {
 		return zones, nil
 	}
-	return walkZoneinfo(zoneinfoDir)
+	return walkZoneinfo(ZoneinfoDir)
 }
 
 // readZoneTab parses zone1970.tab / zone.tab. Both files have the
@@ -68,7 +68,7 @@ func readZoneTab(path string) ([]string, bool) {
 		// Defense-in-depth: an entry whose zone name would let a
 		// downstream filepath.Join escape the zoneinfo tree, or one
 		// with an embedded NUL that would truncate at a filesystem
-		// boundary, gets dropped at enumeration time. validateZone
+		// boundary, gets dropped at enumeration time. ValidateZone
 		// catches this again at set-timezone time, but a corrupted
 		// zone.tab shouldn't even surface such names to callers
 		// listing timezones. Caught by FuzzReadZoneTab.
@@ -137,19 +137,19 @@ func isTZif(path string) bool {
 	return bytes.Equal(head[:], []byte("TZif"))
 }
 
-// validateZone confirms that ZONE names a file under zoneinfoDir with
+// ValidateZone confirms that ZONE names a file under ZoneinfoDir with
 // the tzfile magic. Rejects path-escape attempts (../..) and absolute
 // paths so a hostile caller cannot symlink /etc/localtime out of the
 // zoneinfo tree.
-func validateZone(name string) error {
+func ValidateZone(name string) error {
 	if name == "" {
 		return errors.New("timezone is empty")
 	}
 	if strings.HasPrefix(name, "/") || strings.Contains(name, "..") {
 		return fmt.Errorf("invalid timezone %q", name)
 	}
-	full := filepath.Join(zoneinfoDir, name)
-	rel, err := filepath.Rel(zoneinfoDir, full)
+	full := filepath.Join(ZoneinfoDir, name)
+	rel, err := filepath.Rel(ZoneinfoDir, full)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return fmt.Errorf("invalid timezone %q", name)
 	}
@@ -166,20 +166,20 @@ func validateZone(name string) error {
 	return nil
 }
 
-// currentZoneName returns the IANA zone name for the running system,
+// CurrentZone returns the IANA zone name for the running system,
 // derived from /etc/localtime's symlink target. Empty string when
 // the symlink is missing or points outside the zoneinfo tree.
-func currentZoneName() string {
-	target, err := os.Readlink(localtimeSym)
+func CurrentZone() string {
+	target, err := os.Readlink(LocaltimePath)
 	if err != nil {
 		return ""
 	}
 	// The link may be absolute or relative to /etc.
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(localtimeSym), target)
+		target = filepath.Join(filepath.Dir(LocaltimePath), target)
 	}
 	target = filepath.Clean(target)
-	prefix := filepath.Clean(zoneinfoDir) + string(os.PathSeparator)
+	prefix := filepath.Clean(ZoneinfoDir) + string(os.PathSeparator)
 	if !strings.HasPrefix(target, prefix) {
 		return ""
 	}
