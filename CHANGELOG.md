@@ -24,6 +24,57 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Security
+
+- **`reload` kept settings that the new file no longer had.** The loader
+  applied most settings only when present, so a reload that removed
+  `run-as` left the service running as the old user, and removing
+  `supplementary-groups`, `capabilities`, `capability-bounding-set`, an
+  rlimit or a user-namespace mapping kept those privileges until slinit
+  restarted (removing a seccomp, sandbox or `protect-*` setting kept the
+  restriction). 37 fields in all. A reload now leaves a service exactly
+  as a fresh load of the same file would; `TestReloadEqualsFreshLoad`
+  checks that over every service file in the functional and acceptance
+  suites, in three directions. Found while reviewing finit `bf42811a`,
+  which fixed the same thing for groups. Variables from `setenv` are
+  kept on purpose.
+
+### Changed
+
+- **`start-timeout = 0` and `stop-timeout = 0` now wait forever**, as
+  slinit-service(5) always said; an explicit 0 used to leave the 60 s /
+  10 s default in place. `restart-delay = 0` likewise restarts at once
+  instead of after 0.2 s.
+  - **Compat:** a service with an explicit 0 that relied on the default
+    timing should state the value it wants.
+- **`restart-limit-interval` without `restart-limit-count` keeps the
+  default count of 3.** It set the count to 0, which means unlimited
+  restarts.
+  - **Compat:** for unlimited restarts, say `restart-limit-count = 0`.
+- **`timeout-abort-sec`, `timeout-start-failure-mode`, `exit-type`,
+  `restart-randomized-delay`, `restart-max-delay` and `notify-access =
+  none` take effect when a service is first loaded.** A first load and a
+  reload used two copies of the same setters, and the first-load copy
+  lacked these, so they applied only after a reload. There is now one
+  copy.
+  - **Compat:** a service that sets one of them now gets it from boot.
+
+### Fixed
+
+- A reload kept a service's old `provides` alias resolvable and did not
+  register a new one.
+- Each reload appended the service's rlimits again.
+- A reload of a started service with a health check left the old
+  checker running and unreachable after the service stopped, and never
+  started the new one. The new checker now takes over at once, and a
+  removed health check stops.
+
+### Tests
+
+- `TestBGProcessStopDuringPIDFileWait` now requires the daemon that
+  writes its pid file after a stop to be killed, not only the state to
+  stay stopped (finit `35c313c2` had that bug; slinit does not).
+
 ## [3.19.1] — 2026-11-18
 
 **No product code changed**: CI, `tools/stats` and two functional

@@ -311,6 +311,18 @@ func (ss *ServiceSet) RegisterAlias(alias string, svc Service) {
 	ss.aliases[alias] = svc
 }
 
+// UnregisterAlias drops a provides alias, if it still names svc.
+func (ss *ServiceSet) UnregisterAlias(alias string, svc Service) {
+	if alias == "" {
+		return
+	}
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.aliases[alias] == svc {
+		delete(ss.aliases, alias)
+	}
+}
+
 // RemoveService removes a service from the set.
 func (ss *ServiceSet) RemoveService(svc Service) {
 	ss.mu.Lock()

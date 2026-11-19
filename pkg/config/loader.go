@@ -278,7 +278,16 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	dl.updateTypeSpecificFields(svc, desc)
 
 	// Update common settings
+	oldAlias := svc.Record().Provides()
 	applyToService(svc, desc)
+	// The set looks services up by their provides alias as well; keep
+	// it in step, as AddService and ReplaceService do.
+	if alias := svc.Record().Provides(); alias != oldAlias {
+		dl.set.UnregisterAlias(oldAlias, svc)
+		if alias != "" {
+			dl.set.RegisterAlias(alias, svc)
+		}
+	}
 
 	// Update consumer-of relationship
 	if desc.ConsumerOf != "" && svc.Record().ConsumerFor() == nil {
@@ -389,39 +398,19 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLockFile(desc.LockFile)
 		s.SetNewSession(desc.NewSession)
 		s.SetCloseFDs(desc.CloseStdin, desc.CloseStdout, desc.CloseStderr)
-		if desc.StartTimeout > 0 {
-			s.SetStartTimeout(desc.StartTimeout)
-		}
-		if desc.StartDelay > 0 {
-			s.SetStartDelay(desc.StartDelay)
-		}
+		s.SetStartTimeout(desc.StartTimeout)
+		s.SetStartDelay(desc.StartDelay)
 		s.SetStartWhenIdle(desc.StartWhenIdle)
-		if desc.HookTimeout > 0 {
-			s.SetHookTimeout(desc.HookTimeout)
-		}
-		if desc.StopTimeout > 0 {
-			s.SetStopTimeout(desc.StopTimeout)
-		}
-		if desc.TimeoutAbortSec > 0 {
-			s.SetTimeoutAbortSec(desc.TimeoutAbortSec)
-		}
+		s.SetHookTimeout(desc.HookTimeout)
+		s.SetStopTimeout(desc.StopTimeout)
+		s.SetTimeoutAbortSec(desc.TimeoutAbortSec)
 		s.SetTimeoutStartFailureMode(desc.TimeoutStartFailureMode)
 		s.SetExitType(desc.ExitType)
-		if desc.RestartDelay > 0 {
-			s.SetRestartDelay(desc.RestartDelay)
-		}
-		if desc.RestartDelayStep > 0 || desc.RestartDelayCap > 0 {
-			s.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
-		}
-		if desc.RestartRandomizedDelay > 0 {
-			s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
-		}
-		if desc.RestartMaxDelay > 0 {
-			s.SetRestartMaxDelay(desc.RestartMaxDelay)
-		}
-		if desc.RestartInterval > 0 || desc.RestartLimitCountSet {
-			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
-		}
+		s.SetRestartDelay(desc.RestartDelay)
+		s.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
+		s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
+		s.SetRestartMaxDelay(desc.RestartMaxDelay)
+		s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		applyLogSettings(s, desc)
 		s.SetLogRotation(desc.LogMaxSize, desc.LogMaxFiles, desc.LogRotateTime)
 		s.SetLogMinFiles(desc.LogMinFiles)
@@ -438,12 +427,8 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetLogForward(desc.LogForwardUDP, desc.LogForwardFormat,
 			SyslogFacilityCode(desc.LogForwardFacility), desc.LogForwardTag)
 		s.SetAlertLog(desc.AlertFile, resolveAlertLevel(desc.AlertFile, desc.AlertLevel))
-		if len(desc.OutputLogger) > 0 {
-			s.SetOutputLogger(desc.OutputLogger)
-		}
-		if len(desc.ErrorLogger) > 0 {
-			s.SetErrorLogger(desc.ErrorLogger)
-		}
+		s.SetOutputLogger(desc.OutputLogger)
+		s.SetErrorLogger(desc.ErrorLogger)
 		// systemd NotifyAccess=none disables the readiness pipe
 		// entirely — pass fd=-1, name="" so the service ignores any
 		// ready-notification directive that was set. The other three
@@ -456,30 +441,18 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		} else {
 			s.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
 		}
-		if desc.WatchdogTimeout > 0 {
-			s.SetWatchdogTimeout(desc.WatchdogTimeout)
-		}
+		s.SetWatchdogTimeout(desc.WatchdogTimeout)
 		applyCron(s, desc)
-		if len(desc.HealthCheckCommand) > 0 {
-			s.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
-				desc.HealthCheckDelay, desc.HealthCheckMaxFail, desc.UnhealthyCommand)
-		}
-		if desc.SocketActivation == "on-demand" {
-			s.SetSocketOnDemand(true)
-		}
-		if desc.VTTYEnabled {
-			s.SetVTTY(true, desc.VTTYScrollback, dl.vttySockDir())
-		}
+		s.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
+			desc.HealthCheckDelay, desc.HealthCheckMaxFail, desc.UnhealthyCommand)
+		s.SetSocketOnDemand(desc.SocketActivation == "on-demand")
+		s.SetVTTY(desc.VTTYEnabled, desc.VTTYScrollback, dl.vttySockDir())
 	case *service.ScriptedService:
 		s.SetStartCommand(desc.Command)
 		s.SetStopCommand(desc.StopCommand)
 		s.SetWorkingDir(desc.WorkingDir)
-		if desc.StartTimeout > 0 {
-			s.SetStartTimeout(desc.StartTimeout)
-		}
-		if desc.StopTimeout > 0 {
-			s.SetStopTimeout(desc.StopTimeout)
-		}
+		s.SetStartTimeout(desc.StartTimeout)
+		s.SetStopTimeout(desc.StopTimeout)
 		applyLogSettings(s, desc)
 	case *service.BGProcessService:
 		s.SetCommand(desc.Command)
@@ -489,32 +462,16 @@ func (dl *DirLoader) updateTypeSpecificFields(svc service.Service, desc *Service
 		s.SetEnvFile(desc.EnvFile)
 		s.SetPIDFile(desc.PIDFile)
 		s.SetFollowPID(desc.FollowPID)
-		if desc.StartTimeout > 0 {
-			s.SetStartTimeout(desc.StartTimeout)
-		}
-		if desc.StopTimeout > 0 {
-			s.SetStopTimeout(desc.StopTimeout)
-		}
-		if desc.TimeoutAbortSec > 0 {
-			s.SetTimeoutAbortSec(desc.TimeoutAbortSec)
-		}
+		s.SetStartTimeout(desc.StartTimeout)
+		s.SetStopTimeout(desc.StopTimeout)
+		s.SetTimeoutAbortSec(desc.TimeoutAbortSec)
 		s.SetTimeoutStartFailureMode(desc.TimeoutStartFailureMode)
 		s.SetExitType(desc.ExitType)
-		if desc.RestartDelay > 0 {
-			s.SetRestartDelay(desc.RestartDelay)
-		}
-		if desc.RestartDelayStep > 0 || desc.RestartDelayCap > 0 {
-			s.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
-		}
-		if desc.RestartRandomizedDelay > 0 {
-			s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
-		}
-		if desc.RestartMaxDelay > 0 {
-			s.SetRestartMaxDelay(desc.RestartMaxDelay)
-		}
-		if desc.RestartInterval > 0 || desc.RestartLimitCountSet {
-			s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
-		}
+		s.SetRestartDelay(desc.RestartDelay)
+		s.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
+		s.SetRestartRandomizedDelay(desc.RestartRandomizedDelay)
+		s.SetRestartMaxDelay(desc.RestartMaxDelay)
+		s.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
 		applyLogSettings(s, desc)
 	}
 }
@@ -1354,150 +1311,26 @@ func (dl *DirLoader) applySiblingOverride(desc *ServiceDescription, name, basePa
 }
 
 func (dl *DirLoader) createService(name string, desc *ServiceDescription) service.Service {
+	var svc service.Service
 	switch desc.Type {
-	case service.TypeInternal:
-		svc := service.NewInternalService(dl.set, name)
-		applyCron(svc, desc)
-		return svc
 	case service.TypeProcess:
-		svc := service.NewProcessService(dl.set, name)
-		svc.SetCommand(desc.Command)
-		svc.SetArgv0(desc.Argv0)
-		svc.SetStopCommand(desc.StopCommand)
-		svc.SetFinishCommand(desc.FinishCommand)
-		svc.SetPreStartCommand(desc.PreStartCommand)
-		svc.SetPostStartCommand(desc.PostStartCommand)
-		rccReload := desc.ReadyCheckCommand
-		rciReload := desc.ReadyCheckInterval
-		if desc.BusName != "" && len(rccReload) == 0 && dbusSendAvailable() {
-			rccReload = dbusReadyCheckCommand(desc.BusName, desc.BusNameScope)
-			if rciReload == 0 {
-				rciReload = 100 * time.Millisecond
-			}
-		}
-		svc.SetReadyCheckCommand(rccReload, rciReload)
-		svc.SetPreStopHook(desc.PreStopHook)
-		svc.SetControlCommands(desc.ControlCommands)
-		svc.SetEnvDir(desc.EnvDir)
-		svc.SetWorkingDir(desc.WorkingDir)
-		svc.SetEnvFile(desc.EnvFile)
-		svc.SetEnvGenerator(desc.EnvGenerator)
-		svc.SetChroot(desc.Chroot)
-		svc.SetLockFile(desc.LockFile)
-		svc.SetNewSession(desc.NewSession)
-		svc.SetCloseFDs(desc.CloseStdin, desc.CloseStdout, desc.CloseStderr)
-		if desc.StartTimeout > 0 {
-			svc.SetStartTimeout(desc.StartTimeout)
-		}
-		if desc.StartDelay > 0 {
-			svc.SetStartDelay(desc.StartDelay)
-		}
-		svc.SetStartWhenIdle(desc.StartWhenIdle)
-		if desc.HookTimeout > 0 {
-			svc.SetHookTimeout(desc.HookTimeout)
-		}
-		if desc.StopTimeout > 0 {
-			svc.SetStopTimeout(desc.StopTimeout)
-		}
-		if desc.RestartDelay > 0 {
-			svc.SetRestartDelay(desc.RestartDelay)
-		}
-		if desc.RestartDelayStep > 0 || desc.RestartDelayCap > 0 {
-			svc.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
-		}
-		if desc.RestartInterval > 0 || desc.RestartLimitCountSet {
-			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
-		}
-		applyLogSettings(svc, desc)
-		svc.SetLogRotation(desc.LogMaxSize, desc.LogMaxFiles, desc.LogRotateTime)
-		svc.SetLogMinFiles(desc.LogMinFiles)
-		svc.SetLogProcessor(desc.LogProcessor)
-		svc.SetLogFilters(desc.LogInclude, desc.LogExclude)
-		svc.SetLogSelect(desc.LogSelect)
-		svc.SetLogRateLimit(desc.LogRateLimitInterval, desc.LogRateLimitBurst)
-		svc.SetLogLevelMax(desc.LogLevelMax)
-		svc.SetLogSanitize(desc.LogSanitizeChar, desc.LogSanitizeExtra)
-		svc.SetLogMaxLineLength(desc.LogMaxLineLength)
-		svc.SetLogTimestamp(desc.LogTimestamp)
-		svc.SetLogLinePrefix(desc.LogLinePrefix)
-		svc.SetLogReadBufferSize(desc.LogReadBufferSize)
-		svc.SetLogForward(desc.LogForwardUDP, desc.LogForwardFormat,
-			SyslogFacilityCode(desc.LogForwardFacility), desc.LogForwardTag)
-		svc.SetAlertLog(desc.AlertFile, resolveAlertLevel(desc.AlertFile, desc.AlertLevel))
-		if len(desc.OutputLogger) > 0 {
-			svc.SetOutputLogger(desc.OutputLogger)
-		}
-		if len(desc.ErrorLogger) > 0 {
-			svc.SetErrorLogger(desc.ErrorLogger)
-		}
-		if desc.ReadyNotifyFD >= 0 || desc.ReadyNotifyVar != "" {
-			svc.SetReadyNotification(desc.ReadyNotifyFD, desc.ReadyNotifyVar)
-		}
-		if desc.WatchdogTimeout > 0 {
-			svc.SetWatchdogTimeout(desc.WatchdogTimeout)
-		}
-		applyCron(svc, desc)
-		if len(desc.HealthCheckCommand) > 0 {
-			svc.SetHealthCheck(desc.HealthCheckCommand, desc.HealthCheckInterval,
-				desc.HealthCheckDelay, desc.HealthCheckMaxFail, desc.UnhealthyCommand)
-		}
-		if desc.SocketActivation == "on-demand" {
-			svc.SetSocketOnDemand(true)
-		}
-		if desc.VTTYEnabled {
-			svc.SetVTTY(true, desc.VTTYScrollback, dl.vttySockDir())
-		}
-		dl.applyRunAs(svc, desc)
-		dl.applySupplementaryGroups(svc, desc)
-		return svc
+		svc = service.NewProcessService(dl.set, name)
 	case service.TypeScripted:
-		svc := service.NewScriptedService(dl.set, name)
-		svc.SetStartCommand(desc.Command)
-		svc.SetStopCommand(desc.StopCommand)
-		svc.SetWorkingDir(desc.WorkingDir)
-		if desc.StartTimeout > 0 {
-			svc.SetStartTimeout(desc.StartTimeout)
-		}
-		if desc.StopTimeout > 0 {
-			svc.SetStopTimeout(desc.StopTimeout)
-		}
-		applyLogSettings(svc, desc)
-		dl.applyRunAs(svc, desc)
-		dl.applySupplementaryGroups(svc, desc)
-		return svc
+		svc = service.NewScriptedService(dl.set, name)
 	case service.TypeBGProcess:
-		svc := service.NewBGProcessService(dl.set, name)
-		svc.SetCommand(desc.Command)
-		svc.SetArgv0(desc.Argv0)
-		svc.SetStopCommand(desc.StopCommand)
-		svc.SetWorkingDir(desc.WorkingDir)
-		svc.SetEnvFile(desc.EnvFile)
-		svc.SetPIDFile(desc.PIDFile)
-		svc.SetFollowPID(desc.FollowPID)
-		if desc.StartTimeout > 0 {
-			svc.SetStartTimeout(desc.StartTimeout)
-		}
-		if desc.StopTimeout > 0 {
-			svc.SetStopTimeout(desc.StopTimeout)
-		}
-		if desc.RestartDelay > 0 {
-			svc.SetRestartDelay(desc.RestartDelay)
-		}
-		if desc.RestartDelayStep > 0 || desc.RestartDelayCap > 0 {
-			svc.SetRestartBackoff(desc.RestartDelayStep, desc.RestartDelayCap)
-		}
-		if desc.RestartInterval > 0 || desc.RestartLimitCountSet {
-			svc.SetRestartLimits(desc.RestartInterval, desc.RestartLimitCount)
-		}
-		applyLogSettings(svc, desc)
-		dl.applyRunAs(svc, desc)
-		dl.applySupplementaryGroups(svc, desc)
-		return svc
+		svc = service.NewBGProcessService(dl.set, name)
 	case service.TypeTriggered:
-		return service.NewTriggeredService(dl.set, name)
+		svc = service.NewTriggeredService(dl.set, name)
 	default:
-		return service.NewInternalService(dl.set, name)
+		svc = service.NewInternalService(dl.set, name)
 	}
+	// The settings go through the same function a reload uses. This
+	// used to be a second copy of it, which had drifted: timeout-abort-
+	// sec, timeout-start-failure-mode, exit-type, restart-randomized-
+	// delay, restart-max-delay and notify-access = none were applied
+	// only by a reload, so on a first load they did nothing.
+	dl.updateTypeSpecificFields(svc, desc)
+	return svc
 }
 
 // depKey names one dep by target-name + type; used to diff current
@@ -1803,12 +1636,12 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetDynamicUser(desc.DynamicUser)
 	rec.SetFDStoreMax(desc.FileDescriptorStoreMax)
 	rec.SetFDStorePreserve(desc.FileDescriptorStorePreserve)
-	if len(desc.ExtraCommands) > 0 {
-		rec.SetExtraCommands(desc.ExtraCommands)
-	}
-	if len(desc.ExtraStartedCommands) > 0 {
-		rec.SetExtraStartedCommands(desc.ExtraStartedCommands)
-	}
+	// Every setting below is applied whether or not the description
+	// names it, so a reload that drops one drops it from the service
+	// too; the zero value is what a fresh load leaves.
+	// TestReloadEqualsFreshLoad holds this.
+	rec.SetExtraCommands(desc.ExtraCommands)
+	rec.SetExtraStartedCommands(desc.ExtraStartedCommands)
 	rec.SetAutoRestart(desc.AutoRestart)
 	rec.SetSmoothRecovery(desc.SmoothRecovery)
 	rec.SetFailureConditions(desc.FailureConditions)
@@ -1823,53 +1656,32 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetFlags(desc.Flags)
 	rec.SetTermSignal(desc.TermSignal)
 	rec.SetReloadSignal(desc.ReloadSignal)
-	if desc.ChainTo != "" {
-		rec.SetChainTo(desc.ChainTo)
-	}
+	rec.SetChainTo(desc.ChainTo)
 	if desc.SocketPath != "" {
 		rec.SetSocketDetails(desc.SocketPath, desc.SocketPerms, desc.SocketUID, desc.SocketGID)
-		if len(desc.SocketPaths) > 0 {
-			rec.SetSocketPaths(desc.SocketPaths)
-		}
+		rec.SetSocketPaths(desc.SocketPaths)
+	} else {
+		rec.SetSocketDetails("", 0, 0, 0)
+		rec.SetSocketPaths(nil)
 	}
-	if desc.Provides != "" {
-		rec.SetProvides(desc.Provides)
-	}
-	if desc.EnableVia != "" {
-		rec.SetEnableVia(desc.EnableVia)
-	}
-	if desc.InittabID != "" || desc.InittabLine != "" {
-		rec.SetUtmpDetails(desc.InittabID, desc.InittabLine)
-	}
+	rec.SetProvides(desc.Provides)
+	rec.SetEnableVia(desc.EnableVia)
+	rec.SetUtmpDetails(desc.InittabID, desc.InittabLine)
 
 	// Process attributes
-	if desc.Nice != nil {
-		rec.SetNice(desc.Nice)
-	}
-	if desc.OOMScoreAdj != nil {
-		rec.SetOOMScoreAdj(desc.OOMScoreAdj)
-	}
-	if desc.Umask != nil {
-		rec.SetUmask(desc.Umask)
-	}
-	if desc.StartOnPathTrigger != 0 {
-		rec.SetStartOnPath(desc.StartOnPath, desc.StartOnPathTrigger)
-	}
-	if desc.AppArmorLoad != "" || desc.AppArmorSwitch != "" {
-		rec.SetAppArmor(desc.AppArmorLoad, desc.AppArmorSwitch)
-	}
-	if desc.Debug {
-		rec.SetDebug(true)
-	}
+	rec.SetNice(desc.Nice)
+	rec.SetOOMScoreAdj(desc.OOMScoreAdj)
+	rec.SetUmask(desc.Umask)
+	rec.SetStartOnPath(desc.StartOnPath, desc.StartOnPathTrigger)
+	rec.SetAppArmor(desc.AppArmorLoad, desc.AppArmorSwitch)
+	rec.SetDebug(desc.Debug)
 	if dirs := resolveServiceDirs(desc); len(dirs) > 0 {
 		rec.SetServiceDirs(dirs, desc.RuntimeDirPreserve)
+	} else {
+		rec.SetServiceDirs(nil, 0)
 	}
-	if desc.NoNewPrivs {
-		rec.SetNoNewPrivs(true)
-	}
-	if desc.CgroupPath != "" {
-		rec.SetCgroupPath(desc.CgroupPath)
-	}
+	rec.SetNoNewPrivs(desc.NoNewPrivs)
+	rec.SetCgroupPath(desc.CgroupPath)
 	// Outside the branch above on purpose: `slice` stands on its own.
 	// It used to be applied only alongside an explicit `cgroup`, so a
 	// service that set slice by itself was silently placed in the
@@ -1884,6 +1696,8 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	// time; ServiceRecord.applySteadyStateCgroup() retunes to the
 	// steady value when Started() fires.
 	var cgSettings []process.CgroupSetting
+	rec.SetSteadyAllowedCPUs("")
+	rec.SetSteadyAllowedMemoryNodes("")
 	for _, cs := range desc.CgroupSettings {
 		cgSettings = append(cgSettings, process.CgroupSetting{File: cs.File, Value: cs.Value})
 	}
@@ -1917,62 +1731,60 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 			File: "cpuset.mems", Value: desc.StartupAllowedMemoryNodes,
 		})
 	}
-	if len(cgSettings) > 0 {
-		rec.SetCgroupSettings(cgSettings)
-	}
+	rec.SetCgroupSettings(cgSettings)
+	ioClass, ioLevel := 0, 0
 	if desc.IOPrio != "" {
-		class, level := parseIOPrio(desc.IOPrio)
-		if class >= 0 {
-			rec.SetIOPrio(class, level)
+		if class, level := parseIOPrio(desc.IOPrio); class >= 0 {
+			ioClass, ioLevel = class, level
 		}
 	}
+	rec.SetIOPrio(ioClass, ioLevel)
 
 	// Resource limits
 	applyRlimits(rec, desc)
 
 	// Capabilities
+	// The capability lists were validated when the file was parsed, so
+	// a parse error cannot happen here; an empty list clears them.
+	var ambient, bounding []uintptr
 	if desc.Capabilities != "" {
-		caps, err := process.ParseCapabilities(desc.Capabilities)
-		if err == nil && len(caps) > 0 {
-			rec.SetAmbientCaps(caps)
-		}
+		ambient, _ = process.ParseCapabilities(desc.Capabilities)
 	}
 	if desc.CapabilityBoundingSet != "" {
-		caps, err := process.ParseCapabilities(desc.CapabilityBoundingSet)
-		if err == nil && len(caps) > 0 {
-			rec.SetBoundingCaps(caps)
-		}
+		bounding, _ = process.ParseCapabilities(desc.CapabilityBoundingSet)
 	}
+	rec.SetAmbientCaps(ambient)
+	rec.SetBoundingCaps(bounding)
+	var bits uint32
 	if desc.Securebits != "" {
-		bits, err := process.ParseSecurebits(desc.Securebits)
-		if err == nil && bits != 0 {
-			rec.SetSecurebits(bits)
-		}
+		bits, _ = process.ParseSecurebits(desc.Securebits)
 	}
-	if len(desc.CPUAffinity) > 0 {
-		rec.SetCPUAffinity(desc.CPUAffinity)
-	}
+	rec.SetSecurebits(bits)
+	rec.SetCPUAffinity(desc.CPUAffinity)
 
-	// Real-time scheduling
+	// Real-time scheduling. policySet=false keeps the inherited policy
+	// and makes the runner ignore the rest.
 	if desc.SchedPolicySet {
 		rec.SetSchedPolicy(desc.SchedPolicy, true)
 		rec.SetSchedPriority(desc.SchedPriority)
 		rec.SetSchedDeadlineParams(desc.SchedRuntime, desc.SchedDeadline, desc.SchedPeriod)
 		rec.SetSchedResetOnFork(desc.SchedResetOnFork)
+	} else {
+		rec.SetSchedPolicy(0, false)
+		rec.SetSchedPriority(0)
+		rec.SetSchedDeadlineParams(0, 0, 0)
+		rec.SetSchedResetOnFork(false)
 	}
 
 	// Memory locking + NUMA (applied via slinit-runner)
-	if desc.MemoryTHP != "" {
-		rec.SetMemoryTHP(desc.MemoryTHP)
-	}
-	if desc.MlockallFlags != 0 {
-		rec.SetMlockallFlags(desc.MlockallFlags)
-	}
+	rec.SetMemoryTHP(desc.MemoryTHP)
+	rec.SetMlockallFlags(desc.MlockallFlags)
 	if desc.NumaMempolicySet {
 		rec.SetNumaMempolicy(desc.NumaMempolicy, true)
-		if len(desc.NumaNodes) > 0 {
-			rec.SetNumaNodes(desc.NumaNodes)
-		}
+		rec.SetNumaNodes(desc.NumaNodes)
+	} else {
+		rec.SetNumaMempolicy(0, false)
+		rec.SetNumaNodes(nil)
 	}
 
 	// Namespace isolation (Linux clone flags)
@@ -2017,6 +1829,8 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	if sandbox.Active() {
 		cloneflags |= syscall.CLONE_NEWNS
 		rec.SetSandbox(sandbox)
+	} else {
+		rec.SetSandbox(service.SandboxConfig{})
 	}
 
 	// systemd-style seccomp-bpf filter. Recorded on the service
@@ -2030,6 +1844,8 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	}
 	if seccompCfg.Active() {
 		rec.SetSeccomp(seccompCfg)
+	} else {
+		rec.SetSeccomp(service.SeccompConfig{})
 	}
 
 	// systemd-style Restrict*/Protect* hardening cluster.
@@ -2086,13 +1902,14 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetExecSearchPath(desc.ExecSearchPath)
 	rec.SetStandardInput(desc.StandardInput, desc.StandardInputSet)
 	rec.SetStandardInputFile(desc.StandardInputFile)
+	var ofs []service.OpenFileRecord
 	if len(desc.OpenFiles) > 0 {
-		ofs := make([]service.OpenFileRecord, len(desc.OpenFiles))
+		ofs = make([]service.OpenFileRecord, len(desc.OpenFiles))
 		for i, f := range desc.OpenFiles {
 			ofs[i] = service.OpenFileRecord{Path: f.Path, FDName: f.FDName, Options: f.Options}
 		}
-		rec.SetOpenFiles(ofs)
 	}
+	rec.SetOpenFiles(ofs)
 	rec.SetImportCredentials(desc.ImportCredentials)
 	rec.SetNotifyAccess(desc.NotifyAccess, desc.NotifyAccessSet)
 	rec.SetSocketReusePort(desc.SocketReusePort)
@@ -2108,7 +1925,9 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	rec.SetTTYVHangup(desc.TTYVHangup)
 	rec.SetTTYVTDisallocate(desc.TTYVTDisallocate)
 	rec.SetTTYReset(desc.TTYReset)
-	if hardeningCfg.Active() {
+	if !hardeningCfg.Active() {
+		rec.SetHardening(service.HardeningConfig{})
+	} else {
 		rec.SetHardening(hardeningCfg)
 		// Three of the seven knobs need ro mount operations
 		// (protect-kernel-tunables → /proc/sys, protect-control-groups
@@ -2121,11 +1940,11 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 			cloneflags |= syscall.CLONE_NEWNS
 		}
 	}
-	if cloneflags != 0 {
-		rec.SetCloneflags(cloneflags)
-	}
+	rec.SetCloneflags(cloneflags)
 
 	// User namespace UID/GID mappings
+	rec.SetUidMappings(nil)
+	rec.SetGidMappings(nil)
 	if len(desc.NamespaceUidMap) > 0 {
 		maps := make([]syscall.SysProcIDMap, len(desc.NamespaceUidMap))
 		for i, m := range desc.NamespaceUidMap {
@@ -2326,10 +2145,12 @@ func resolveRunAs(spec string) (uid uint32, gid uint32, ok bool) {
 // starts (a user slinit-sysusers creates during boot exists by then),
 // and the start is refused if it still does not resolve.
 func (dl *DirLoader) applyRunAs(svc service.Service, desc *ServiceDescription) {
-	if desc.RunAs == "" {
-		return
+	// No run-as: back to slinit's own credentials. Returning early here
+	// left the previous user in place when a reload removed run-as.
+	uid, gid, ok := uint32(0), uint32(0), true
+	if desc.RunAs != "" {
+		uid, gid, ok = resolveRunAs(desc.RunAs)
 	}
-	uid, gid, ok := resolveRunAs(desc.RunAs)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "slinit: service %q: run-as=%q does not resolve yet; "+
 			"it is looked up again at start, which fails if it still does not\n",
@@ -2402,17 +2223,16 @@ func resolveSupplementaryGroups(svcName string, specs []string) []uint32 {
 }
 
 // applySupplementaryGroups resolves desc.SupplementaryGroups and
-// installs the GID list on the type-specific setter. No-op when the
-// list is empty. Only meaningful when run-as is also set; without a
+// installs the GID list on the type-specific setter. Only meaningful when run-as is also set; without a
 // UID drop the kernel keeps whatever groups the parent had (root's,
 // typically empty).
 func (dl *DirLoader) applySupplementaryGroups(svc service.Service, desc *ServiceDescription) {
-	if len(desc.SupplementaryGroups) == 0 {
-		return
-	}
-	gids := resolveSupplementaryGroups(svc.Name(), desc.SupplementaryGroups)
-	if len(gids) == 0 {
-		return
+	// Applied even when empty: a reload that drops a group must drop it
+	// from the service too (finit had the same bug, bf42811a: a group
+	// removed from the configuration lingered until reboot).
+	var gids []uint32
+	if len(desc.SupplementaryGroups) > 0 {
+		gids = resolveSupplementaryGroups(svc.Name(), desc.SupplementaryGroups)
 	}
 	switch s := svc.(type) {
 	case *service.ProcessService:
@@ -2508,7 +2328,12 @@ const (
 )
 
 // applyRlimits adds parsed resource limits to the service record.
+//
+// It starts from an empty list: AddRlimit appends, so on a reload the old
+// limits used to stay (a dropped rlimit kept applying) and a kept one was
+// added once more with every reload.
 func applyRlimits(rec *service.ServiceRecord, desc *ServiceDescription) {
+	rec.SetRlimits(nil)
 	if desc.RlimitNofile != nil {
 		rec.AddRlimit(process.Rlimit{Resource: rlimitNofile, Soft: desc.RlimitNofile[0], Hard: desc.RlimitNofile[1]})
 	}

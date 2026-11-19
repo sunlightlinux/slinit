@@ -21,6 +21,18 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
+// The defaults a service gets for a setting its description leaves out.
+// Exported so the config parser can start every description from them:
+// a setting that is absent then means the default, and one given as 0
+// means 0, on first load and on reload alike.
+const (
+	DefaultStopTimeout     = defaultStopTimeout
+	DefaultStartTimeout    = defaultStartTimeout
+	DefaultRestartDelay    = defaultRestartDelay
+	DefaultRestartInterval = defaultRestartInterval
+	DefaultMaxRestarts     = defaultMaxRestarts
+)
+
 const (
 	defaultStopTimeout     = 10 * time.Second
 	defaultStartTimeout    = 60 * time.Second
@@ -851,8 +863,23 @@ func (s *ProcessService) SetCronCalendar(
 }
 
 // SetHealthCheck configures the continuous health checker.
+//
+// An empty cmd removes the health check. A checker already running is
+// replaced, not left behind: on a reload of a started service the old
+// one used to keep running, unreachable, after the service stopped, and
+// the new one never started. It is stopped here and, when the service
+// is running, the new one takes over at once.
 func (s *ProcessService) SetHealthCheck(cmd []string, interval, delay time.Duration,
 	maxFailures int, unhealthyCmd []string) {
+	wasRunning := false
+	if old := s.healthChecker; old != nil {
+		wasRunning = old.running()
+		old.Stop()
+		s.healthChecker = nil
+	}
+	if len(cmd) == 0 {
+		return
+	}
 	onFail := func() {
 		// Not inline: the checker's Stop() waits for this goroutine
 		// and is called with queueMu held (BringDown), so taking the
@@ -861,6 +888,9 @@ func (s *ProcessService) SetHealthCheck(cmd []string, interval, delay time.Durat
 	}
 	s.healthChecker = NewHealthChecker(s, cmd, interval, delay, maxFailures, unhealthyCmd,
 		s.services.logger, onFail)
+	if wasRunning {
+		s.healthChecker.Start()
+	}
 }
 
 // startHealthCheckIfConfigured starts the health checker if configured.

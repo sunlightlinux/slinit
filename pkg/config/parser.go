@@ -784,20 +784,31 @@ type OpenFileSpec struct {
 // NewServiceDescription creates a ServiceDescription with default values.
 func NewServiceDescription(name string) *ServiceDescription {
 	return &ServiceDescription{
-		Name:          name,
-		Type:          service.TypeProcess,
-		TermSignal:    syscall.SIGTERM,
-		StopTimeout:   10 * time.Second,
-		AutoRestart:   service.RestartNever,
-		LogFilePerms:  0600,
-		LogFileUID:    -1,
-		LogFileGID:    -1,
-		LogLevelMax:   -1,
-		AlertLevel:    -1,
-		SocketPerms:   0600,
-		SocketUID:     -1,
-		SocketGID:     -1,
-		ReadyNotifyFD: -1,
+		Name:       name,
+		Type:       service.TypeProcess,
+		TermSignal: syscall.SIGTERM,
+		// The timing defaults live here, not only in the service
+		// constructors, so the loader can apply every one of them
+		// unconditionally: "absent" is then the default and an explicit
+		// 0 is 0. A `> 0` guard in the loader could tell neither apart
+		// from "unset", so `start-timeout = 0` never meant "wait
+		// forever" as documented, and a reload that dropped a setting
+		// kept the old value.
+		StopTimeout:       service.DefaultStopTimeout,
+		StartTimeout:      service.DefaultStartTimeout,
+		RestartDelay:      service.DefaultRestartDelay,
+		RestartInterval:   service.DefaultRestartInterval,
+		RestartLimitCount: service.DefaultMaxRestarts,
+		AutoRestart:       service.RestartNever,
+		LogFilePerms:      0600,
+		LogFileUID:        -1,
+		LogFileGID:        -1,
+		LogLevelMax:       -1,
+		AlertLevel:        -1,
+		SocketPerms:       0600,
+		SocketUID:         -1,
+		SocketGID:         -1,
+		ReadyNotifyFD:     -1,
 		// Default sched-reset-on-fork=yes is intentional: an RT
 		// service that fork()s a shell or build script must NOT pass
 		// FIFO priority to that child, or a runaway child can starve

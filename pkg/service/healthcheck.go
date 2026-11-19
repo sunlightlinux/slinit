@@ -72,6 +72,13 @@ func (hc *HealthChecker) Start() {
 }
 
 // Stop signals the health check loop to exit and waits for completion.
+// running reports whether the checker has been started and not stopped.
+func (hc *HealthChecker) running() bool {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	return hc.stopCh != nil
+}
+
 func (hc *HealthChecker) Stop() {
 	hc.mu.Lock()
 	if hc.stopCh == nil {

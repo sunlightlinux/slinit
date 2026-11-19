@@ -463,6 +463,13 @@ service name or rejected.
     type or (for **bgprocess**) the pid-file, or add a hard dependency
     that is not already **STARTED**.
 
+    Either way the service ends up configured exactly as a fresh load
+    of the new file would configure it: a setting removed from the file
+    goes back to its default (since 3.20.0). Before, a removed **run-as**,
+    **supplementary-groups**, capability, rlimit, seccomp or sandbox
+    setting, among others, stayed in force until slinit restarted.
+    Variables set with **setenv** are kept; **reset-env** clears them.
+
 **reload-all**
 :   Re-read every loaded service description from disk in one round
     trip. Services in transitional states (**STARTING** / **STOPPING**)

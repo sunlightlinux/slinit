@@ -215,3 +215,37 @@ func TestHealthCheckRestartsAndKeepsChecking(t *testing.T) {
 		t.Fatalf("saw %d distinct PIDs, want 3: the health check did not keep restarting the service", len(seen))
 	}
 }
+
+// Setting a health check on a service whose checker is running — what a
+// reload of a started service does — must replace the running checker,
+// not leave it behind. It used to keep running, unreachable, after the
+// service stopped, while the new one never started.
+func TestSetHealthCheckReplacesRunningChecker(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "hc-svc")
+	svc.SetHealthCheck([]string{"/bin/true"}, time.Hour, 0, 3, nil)
+	old := svc.healthChecker
+	old.Start()
+
+	svc.SetHealthCheck([]string{"/bin/true"}, time.Hour, 0, 5, nil)
+	if old.running() {
+		t.Error("the replaced checker is still running")
+	}
+	if svc.healthChecker == old || !svc.healthChecker.running() {
+		t.Error("the new checker did not take over on a running service")
+	}
+
+	// An empty command removes the health check, stopping it.
+	cur := svc.healthChecker
+	svc.SetHealthCheck(nil, 0, 0, 0, nil)
+	if cur.running() || svc.healthChecker != nil {
+		t.Error("an empty command did not remove the running checker")
+	}
+
+	// On a service whose checker is not running, the new one waits for
+	// the service to start, as before.
+	svc.SetHealthCheck([]string{"/bin/true"}, time.Hour, 0, 3, nil)
+	if svc.healthChecker.running() {
+		t.Error("a checker was started on a service that is not running")
+	}
+}

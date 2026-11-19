@@ -2457,10 +2457,13 @@ type = process
 command = /bin/true
 restart-limit-count = 42
 `, 42, true},
+		// Absent is the documented default (3), carried by the
+		// description itself so the loader can apply it unconditionally;
+		// it used to be 0 here and patched in by a guard in the loader.
 		{"never set", `
 type = process
 command = /bin/true
-`, 0, false},
+`, service.DefaultMaxRestarts, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

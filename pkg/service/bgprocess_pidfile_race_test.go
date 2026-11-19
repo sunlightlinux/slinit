@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -106,6 +107,15 @@ func TestBGProcessPIDFileWaitIsBounded(t *testing.T) {
 // Polling runs on its own goroutine while the service sits in STARTING. A
 // stop arriving in that window must win, and must not be overtaken by a
 // late pid file quietly completing the start behind it.
+//
+// Winning also means the late daemon is stopped, not merely left out of
+// the state: finit had exactly that bug (finit 35c313c2, "keep a stop of a
+// forking service waiting for its PID file"), where the stop held in the
+// state machine and the daemon that wrote its pid file afterwards ran on
+// unsupervised. slinit gets this right as dinit does, because the start
+// cannot be interrupted once the launcher is gone, so it completes and the
+// pending stop then signals the daemon; this test used to check only the
+// state, so it would not have noticed if that changed.
 func TestBGProcessStopDuringPIDFileWait(t *testing.T) {
 	set, _ := newTestSet()
 
@@ -130,5 +140,22 @@ func TestBGProcessStopDuringPIDFileWait(t *testing.T) {
 
 	if svc.State() == StateStarted {
 		t.Errorf("a late pid file completed the start after a stop was requested")
+	}
+
+	// The test owns the daemon, so it can reap it: a daemon slinit
+	// signalled is a zombie by now, one it forgot is still sleeping.
+	var ws syscall.WaitStatus
+	reaped := false
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if wp, _ := syscall.Wait4(pid, &ws, syscall.WNOHANG, nil); wp == pid {
+			reaped = true
+			break
+		}
+	}
+	if !reaped {
+		t.Fatalf("the daemon that wrote its pid file after the stop is still running (PID %d): the stop held in the state but the daemon was left unsupervised", pid)
+	}
+	if !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+		t.Errorf("late daemon ended with %v, want killed by SIGTERM from the stop", ws)
 	}
 }
