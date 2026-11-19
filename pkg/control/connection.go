@@ -872,27 +872,10 @@ func (c *Connection) handleShutdown(payload []byte) error {
 // The message tail is optional — a 5-byte payload from an older client
 // still parses, keeping wire compatibility with pre-message callers.
 func (c *Connection) handleScheduleShutdown(payload []byte) error {
-	if len(payload) < 5 {
+	shutType, delay, message, ok := DecodeScheduleShutdown(payload)
+	if !ok {
 		return c.writePacket(RplyBadReq, nil)
 	}
-
-	shutType := service.ShutdownType(payload[0])
-	delaySecs := uint32(payload[1])<<24 | uint32(payload[2])<<16 |
-		uint32(payload[3])<<8 | uint32(payload[4])
-	delay := time.Duration(delaySecs) * time.Second
-
-	// Optional trailing message. Guard against a truncated length
-	// header (extra byte after the fixed part with no msg_len) — treat
-	// as no message.
-	message := ""
-	if len(payload) >= 7 {
-		msgLen := int(payload[5]) | int(payload[6])<<8
-		start := 7
-		if msgLen > 0 && start+msgLen <= len(payload) {
-			message = string(payload[start : start+msgLen])
-		}
-	}
-
 	c.server.ScheduleShutdown(shutType, delay, message)
 	return c.writePacket(RplyACK, nil)
 }

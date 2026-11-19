@@ -24,6 +24,22 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- **`shutdown TIME [MESSAGE...]` and `shutdown -c`.** Under the name
+  `shutdown`, slinit-shutdown refused any time but now, and `-c` was an
+  unknown option; scheduling, the wall countdown and cancelling existed
+  only as `slinitctl shutdown`. The command now hands `+N`, `N` and
+  `HH:MM` to the same scheduler, with the message appended to the
+  warnings, and `-c` cancels. The time is parsed by one function shared
+  with slinitctl. From finit `20c422af`.
+- **A scheduled shutdown refuses new logins in its last five minutes**,
+  by creating `/run/nologin` for pam_nologin, as systemd-logind,
+  sysvinit's shutdown and finit do. It is removed when the shutdown is
+  cancelled or moved further away, and before a scheduled soft-reboot
+  runs, since `/run` survives one. A `/run/nologin` the administrator
+  created is left alone. System manager only.
+
 ### Security
 
 - **`reload` kept settings that the new file no longer had.** The loader

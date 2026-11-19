@@ -1878,6 +1878,12 @@ func main() {
 		ctrlServer.WallNoticeFunc = func(msg string) {
 			shutdown.Wall(msg, logger)
 		}
+		// A scheduled shutdown refuses new logins in its last five
+		// minutes through pam_nologin. Only the system manager owns
+		// /run/nologin; a user instance must not lock out the machine.
+		if isPID1 || systemMode {
+			ctrlServer.NologinPath = "/run/nologin"
+		}
 		// finit-parity: suspend hook wired unconditionally — writing
 		// /sys/power/state does not require PID 1 (a user manager
 		// on a laptop can suspend just as well) and the kernel

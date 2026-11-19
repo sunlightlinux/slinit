@@ -646,6 +646,10 @@ service name or rejected.
     the control socket.
 
     *time* is **+**\ *N* minutes or *HH:MM* to schedule one, or **now**.
+    A scheduled shutdown warns every terminal and, in its last five
+    minutes, refuses new logins through */run/nologin*, removed again
+    if it is cancelled (since 3.20.0). The **shutdown** command takes
+    the same *time*.
     How much of a hurry slinit is in comes in three steps:
 
     **shutdown** *kind*

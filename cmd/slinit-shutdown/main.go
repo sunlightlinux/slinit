@@ -54,6 +54,9 @@ func main() {
 		noSync      bool
 		noWall      bool
 		interactive bool
+		// shutdown(8): -c, and the operands (a time, then a message).
+		cancel   bool
+		operands []string
 	)
 
 	shutdownType := defaultShutdownType()
@@ -137,15 +140,12 @@ func main() {
 			shutdownType = service.ShutdownPoweroff
 		case execName == "shutdown" && arg == "-H":
 			shutdownType = service.ShutdownHalt
+		case execName == "shutdown" && arg == "-c":
+			cancel = true
 		case execName == "shutdown" && !strings.HasPrefix(arg, "-"):
-			// shutdown(8)'s operands: a time, then an optional wall message,
-			// which the daemon has its own text for. `shutdown -h now` and
-			// the acpid handler's `shutdown -P now` were refused as an
-			// unrecognized option, so neither did anything.
-			if err := checkShutdownTime(arg); err != nil {
-				fmt.Fprintf(os.Stderr, "%v\n", err)
-				os.Exit(1)
-			}
+			// shutdown(8)'s operands: a time, then an optional wall
+			// message. Everything from here on is operands.
+			operands = os.Args[i:]
 			i = len(os.Args)
 		default:
 			fmt.Fprintf(os.Stderr, "Unrecognized option: %s\n", arg)
@@ -188,6 +188,28 @@ func main() {
 	}
 	if noWall {
 		shutdown.SetWallEnabled(false)
+	}
+
+	// shutdown(8): a later time or -c goes to the daemon's scheduler,
+	// which walls the countdown and refuses logins in the last five
+	// minutes. "now" (or no time) keeps the path below.
+	if execName == "shutdown" {
+		delay, message, err := parseOperands(operands, time.Now())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
+			os.Exit(1)
+		}
+		if cancel || delay > 0 {
+			if forceMode || sysShutdown {
+				fmt.Fprintln(os.Stderr, "shutdown: -f/--system cannot be combined with a scheduled time or -c")
+				os.Exit(1)
+			}
+			if err := scheduleOrCancel(useCFD, shutdownType, delay, message, cancel); err != nil {
+				fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 	}
 
 	if forceMode {
@@ -284,6 +306,17 @@ func printUsage(execName string) {
                      (used by init itself, not for normal user reboots)
   --grace=DURATION   override the SIGTERM→SIGKILL grace period
 `, execName)
+	if execName == "shutdown" {
+		fmt.Fprint(os.Stderr, `
+shutdown [OPTIONS] [TIME [MESSAGE...]]
+  TIME               now (the default), +N or N minutes, or HH:MM; a later
+                     time is scheduled, warned about on every terminal, and
+                     refuses new logins in its last five minutes
+  MESSAGE            text added to the warnings
+  -c                 cancel a scheduled shutdown
+  -P, -H             power off, halt
+`)
+	}
 }
 
 func doSystemShutdown(shutdownType service.ShutdownType) {
@@ -372,15 +405,54 @@ func checkProtocolVersion(conn net.Conn) error {
 	return nil
 }
 
-// checkShutdownTime accepts shutdown(8)'s time operand when it means now. A
-// later time is refused rather than taken for now: going down at once when
-// someone asked for ten minutes is the one wrong answer.
-func checkShutdownTime(t string) error {
-	switch t {
-	case "now", "+0", "0":
-		return nil
+// parseOperands reads shutdown(8)'s operands: an optional time (see
+// control.ParseShutdownTime, shared with slinitctl shutdown), then the
+// words of a wall message. With no operands the time is now.
+func parseOperands(operands []string, now time.Time) (time.Duration, string, error) {
+	if len(operands) == 0 {
+		return 0, "", nil
 	}
-	return fmt.Errorf("shutdown: only the time \"now\" is supported, not %q; for a later time use: slinitctl shutdown --help", t)
+	delay, err := control.ParseShutdownTime(operands[0], now)
+	if err != nil {
+		return 0, "", err
+	}
+	return delay, strings.Join(operands[1:], " "), nil
+}
+
+// scheduleOrCancel asks the daemon to schedule a shutdown, or with
+// cancel to cancel the pending one.
+func scheduleOrCancel(useCFD bool, st service.ShutdownType, delay time.Duration, message string, cancel bool) error {
+	conn, err := connectToDaemon(useCFD)
+	if err != nil {
+		return fmt.Errorf("cannot connect to slinit: %w", err)
+	}
+	defer conn.Close()
+	if err := checkProtocolVersion(conn); err != nil {
+		return err
+	}
+	cmd, payload := control.CmdScheduleShutdown, control.EncodeScheduleShutdown(st, delay, message)
+	if cancel {
+		cmd, payload = control.CmdCancelShutdown, nil
+	}
+	if err := control.WritePacket(conn, cmd, payload); err != nil {
+		return err
+	}
+	rply, _, err := control.ReadPacket(conn)
+	if err != nil {
+		return err
+	}
+	switch {
+	case cancel && rply == control.RplyACK:
+		fmt.Println("Scheduled shutdown cancelled.")
+	case cancel && rply == control.RplyNAK:
+		fmt.Println("No shutdown is scheduled.")
+	case !cancel && rply == control.RplyACK:
+		fmt.Printf("Shutdown (%s) scheduled for %s; use 'shutdown -c' to cancel.\n",
+			shutdownVerb(st), time.Now().Add(delay).Format("Mon 2006-01-02 15:04"))
+	default:
+		return fmt.Errorf("slinit refused the request (reply %d)", rply)
+	}
+	return nil
 }
 
 // shutdownDashH is -h under the name shutdown: power off, unless a halt was

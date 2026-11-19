@@ -3175,20 +3175,7 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 	// The message tail is only appended when non-empty so pre-message
 	// slinitd instances still accept the packet (they treat the extra
 	// bytes as ignored padding).
-	secs := uint32(delay.Seconds())
-	payload := []byte{
-		uint8(st),
-		byte(secs >> 24), byte(secs >> 16), byte(secs >> 8), byte(secs),
-	}
-	if message != "" {
-		msgBytes := []byte(message)
-		if len(msgBytes) > 0xFFFF {
-			msgBytes = msgBytes[:0xFFFF]
-		}
-		payload = append(payload,
-			byte(len(msgBytes)&0xFF), byte((len(msgBytes)>>8)&0xFF))
-		payload = append(payload, msgBytes...)
-	}
+	payload := control.EncodeScheduleShutdown(st, delay, message)
 	if err := control.WritePacket(conn, control.CmdScheduleShutdown, payload); err != nil {
 		return err
 	}
@@ -3491,47 +3478,15 @@ func kexecKernelLoaded() bool {
 	return strings.TrimSpace(string(data)) == "1"
 }
 
-// parseShutdownTime parses a time argument into a duration.
-//
-//	"now"      → 0 (immediate)
-//	"+N"       → N minutes
-//	"HH:MM"    → delay until that time today (or tomorrow if past)
+// parseShutdownTime reads the time operand (see control.ParseShutdownTime,
+// which the shutdown command shares) and reports a bad one as a usage
+// error.
 func parseShutdownTime(s string) (time.Duration, error) {
-	if s == "now" || s == "" {
-		return 0, nil
+	d, err := control.ParseShutdownTime(s, time.Now())
+	if err != nil {
+		return 0, usagef("%v", err)
 	}
-
-	// +N minutes
-	if strings.HasPrefix(s, "+") {
-		mins, err := strconv.Atoi(s[1:])
-		if err != nil || mins < 0 {
-			return 0, usagef("invalid time: %s (use +N for minutes)", s)
-		}
-		return time.Duration(mins) * time.Minute, nil
-	}
-
-	// Plain number = minutes
-	if mins, err := strconv.Atoi(s); err == nil && mins >= 0 {
-		return time.Duration(mins) * time.Minute, nil
-	}
-
-	// HH:MM absolute time
-	parts := strings.SplitN(s, ":", 2)
-	if len(parts) == 2 {
-		h, err1 := strconv.Atoi(parts[0])
-		m, err2 := strconv.Atoi(parts[1])
-		if err1 == nil && err2 == nil && h >= 0 && h <= 23 && m >= 0 && m <= 59 {
-			now := time.Now()
-			target := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
-			if target.Before(now) {
-				// Target time already passed today — schedule for tomorrow.
-				target = target.Add(24 * time.Hour)
-			}
-			return target.Sub(now), nil
-		}
-	}
-
-	return 0, usagef("invalid time: %s (use 'now', '+N' for minutes, or 'HH:MM')", s)
+	return d, nil
 }
 
 func shutdownTypeToString(st service.ShutdownType) string {

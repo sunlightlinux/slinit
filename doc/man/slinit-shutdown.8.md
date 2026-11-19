@@ -141,9 +141,28 @@ If invoked as **slinit-shutdown** with no action flag, the default is
 
 Under the plain name **shutdown** the command also takes the syntax of
 **shutdown**(8): **-P** powers off, **-H** halts, and **-h** powers off unless
-a halt was already asked for (since 3.12.0; it halted before). The only time
-accepted is one meaning now (*now*, *+0*, *0*), and a message after it is
-ignored. Under every other name **-h** halts, as above.
+a halt was already asked for (since 3.12.0; it halted before). Under every
+other name **-h** halts, as above.
+
+**shutdown** [*options*] [*time* [*message*...]] (since 3.20.0)
+:   *time* is **now** (the default), **+**\ *N* or *N* minutes, or
+    *HH:MM* (today, or tomorrow once that time has passed), read as by
+    **slinitctl shutdown**. A time other than now is handed to slinit's
+    scheduler, which warns every terminal at once and again 5, 2 and 1
+    minutes before, with *message* appended, and refuses new logins
+    from five minutes before by creating */run/nologin* for
+    **pam_nologin**(8). The command returns once the shutdown is
+    scheduled. It cannot be combined with **-f** or **\--system**.
+    Before 3.20.0 only a time meaning now was accepted.
+
+**shutdown -c**
+:   Cancel the scheduled shutdown, which lets logins in again. Says so
+    when none was scheduled. **slinitctl shutdown \--status** shows the
+    pending one.
+
+*/run/nologin* is only removed if slinit created it: one an administrator
+put there stays. It is also removed before a scheduled soft-reboot runs,
+since */run* survives one.
 
 # ENVIRONMENT
 
@@ -157,12 +176,13 @@ ignored. Under every other name **-h** halts, as above.
 the process is killed during the shutdown it requested.
 
 **0**
-:   **--help**, **--wtmp-only**, or **--system -s** after the
-    userspace teardown has finished.
+:   **--help**, **--wtmp-only**, **--system -s** after the
+    userspace teardown has finished, or a **shutdown** *time* or **-c**
+    the daemon accepted.
 
 **1**
 :   Failed to connect to the daemon, the daemon refused the request,
-    an unknown option or invalid **--grace** value, the **-i** host
+    an unknown option, an invalid **--grace** value or *time*, the **-i** host
     name did not match, protocol version mismatch, or the **-f** /
     **--system** path returned instead of resetting the machine.
 

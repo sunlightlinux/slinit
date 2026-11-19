@@ -103,6 +103,17 @@ type Server struct {
 	scheduledDeadline  time.Time // zero means no scheduled shutdown
 	scheduledMessage   string
 
+	// NologinPath, when set, is created NologinLead before a scheduled
+	// shutdown (at once when the shutdown is closer than that), so
+	// pam_nologin refuses new logins, as systemd-logind, sysvinit's
+	// shutdown and finit do. It is removed when the shutdown is
+	// cancelled or replaced, and before a scheduled soft-reboot runs,
+	// since /run survives one. A file that was already there is the
+	// administrator's and is never removed. Empty disables it.
+	NologinPath  string
+	nologinTimer *time.Timer
+	nologinOwned bool
+
 	// PinStore, when Enabled(), records pin transitions to disk so a
 	// `stop --pin` on a service stays effective across a reboot. Nil
 	// (or a store built with an empty dir) is a valid no-op — every
@@ -335,6 +346,10 @@ func (s *Server) HandlePassCSFD(conn net.Conn) {
 	}()
 }
 
+// NologinLead is how long before a scheduled shutdown new logins are
+// refused: five minutes, as in systemd and sysvinit.
+const NologinLead = 5 * time.Minute
+
 // ScheduleShutdown schedules a shutdown to occur after the given delay.
 // If a shutdown is already scheduled, it is replaced. delay <= 0 triggers
 // an immediate shutdown. message is an operator-supplied blurb appended
@@ -364,6 +379,7 @@ func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration, 
 	if s.WallFunc != nil {
 		s.WallFunc(st, delay, false, message)
 	}
+	s.armNologinLocked(st, delay, message)
 
 	// LSB-shutdown-style reminder cadence: fire wall broadcasts at
 	// 5m/2m/1m before the deadline so operators (and their users) see
@@ -388,6 +404,11 @@ func (s *Server) ScheduleShutdown(st service.ShutdownType, delay time.Duration, 
 		s.scheduledDeadline = time.Time{}
 		s.scheduledTimer = nil
 		s.scheduledMessage = ""
+		if st == service.ShutdownSoftReboot {
+			// /run is kept across a soft-reboot; a nologin left in it
+			// would refuse every login on the system that comes up.
+			s.removeNologinLocked()
+		}
 		s.scheduledMu.Unlock()
 
 		s.logger.Notice("Scheduled shutdown (%s) executing now", shutdownTypeName(st))
@@ -411,6 +432,67 @@ func (s *Server) clearScheduledLocked() {
 		t.Stop()
 	}
 	s.scheduledReminders = nil
+	if s.nologinTimer != nil {
+		s.nologinTimer.Stop()
+		s.nologinTimer = nil
+	}
+	s.removeNologinLocked()
+}
+
+// armNologinLocked creates the nologin file now, or arms a timer for
+// NologinLead before the deadline. Caller holds scheduledMu.
+func (s *Server) armNologinLocked(st service.ShutdownType, delay time.Duration, message string) {
+	if s.NologinPath == "" {
+		return
+	}
+	deadline := s.scheduledDeadline
+	if delay <= NologinLead {
+		s.writeNologinLocked(st, deadline, message)
+		return
+	}
+	s.nologinTimer = time.AfterFunc(delay-NologinLead, func() {
+		s.scheduledMu.Lock()
+		defer s.scheduledMu.Unlock()
+		// A timer that fired as it was being stopped must not act for
+		// a shutdown that has since been cancelled or replaced.
+		if s.scheduledDeadline.Equal(deadline) && !deadline.IsZero() {
+			s.writeNologinLocked(st, deadline, message)
+		}
+	})
+}
+
+func (s *Server) writeNologinLocked(st service.ShutdownType, deadline time.Time, message string) {
+	f, err := os.OpenFile(s.NologinPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if !os.IsExist(err) {
+			s.logger.Error("Cannot create %s to refuse logins: %v", s.NologinPath, err)
+		}
+		return
+	}
+	text := fmt.Sprintf("The system is going down for %s at %s.\n",
+		shutdownTypeName(st), deadline.Format("Mon 2006-01-02 15:04:05 MST"))
+	if message != "" {
+		text += "\n" + message + "\n"
+	}
+	_, werr := f.WriteString(text)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		s.logger.Error("Writing %s: %v", s.NologinPath, werr)
+	}
+	s.nologinOwned = true
+	s.logger.Notice("New logins refused until the %s (%s)", shutdownTypeName(st), s.NologinPath)
+}
+
+func (s *Server) removeNologinLocked() {
+	if !s.nologinOwned {
+		return
+	}
+	s.nologinOwned = false
+	if err := os.Remove(s.NologinPath); err != nil && !os.IsNotExist(err) {
+		s.logger.Error("Cannot remove %s: %v", s.NologinPath, err)
+	}
 }
 
 // CancelShutdown cancels a pending scheduled shutdown.
