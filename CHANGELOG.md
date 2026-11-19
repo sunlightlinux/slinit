@@ -24,6 +24,20 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.20.0] — 2026-11-19
+
+**A minor, from reviewing finit up to 631baab7. Read Security first: a
+`reload` kept settings the new file no longer had, so removing `run-as`,
+`supplementary-groups`, capabilities or an rlimit kept those privileges
+until slinit restarted. A reload now leaves a service exactly as a fresh
+load would, and the first load and the reload share one code path,
+which also makes six directives that only worked after a reload work
+from boot. Changed lists what an existing config may notice: an
+explicit `start-timeout = 0` / `stop-timeout = 0` now waits forever, as
+documented. `shutdown` takes a time, a message and `-c`, and a scheduled
+shutdown refuses new logins in its last five minutes. The control
+protocol stays at version 7; dinit compatibility is unchanged.**
+
 ### Added
 
 - **`shutdown TIME [MESSAGE...]` and `shutdown -c`.** Under the name
