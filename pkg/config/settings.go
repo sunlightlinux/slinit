@@ -501,6 +501,30 @@ func IsKnownSetting(name string) bool {
 }
 
 // ValidOperator checks if the given operator is valid for the setting.
+// AssignOperator makes '=' and ':' interchangeable, as dinit does: its
+// parser takes either on every setting ("there is currently no functional
+// difference between either form of assignment", dinit-service(5)) and
+// only checks '+='. A setting that takes one of them takes the other as
+// that one, so `waits-for = x` reads as `waits-for: x` and `type: process`
+// as `type = process`. A setting that accepts both keeps the one written
+// (none of them reads the two differently).
+func AssignOperator(setting string, op OperatorType) OperatorType {
+	if op != OpEquals && op != OpColon {
+		return op
+	}
+	if ValidOperator(setting, op) {
+		return op
+	}
+	other := OpColon
+	if op == OpColon {
+		other = OpEquals
+	}
+	if ValidOperator(setting, other) {
+		return other
+	}
+	return op
+}
+
 func ValidOperator(setting string, op OperatorType) bool {
 	allowed, ok := KnownSettings[setting]
 	if ok {

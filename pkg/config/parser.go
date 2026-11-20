@@ -986,6 +986,7 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 			}
 		}
 
+		op = AssignOperator(setting, op)
 		if !ValidOperator(setting, op) {
 			expectedOp := "="
 			if KnownSettings[setting]&OpColon != 0 {

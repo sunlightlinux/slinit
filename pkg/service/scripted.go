@@ -178,8 +178,8 @@ func (s *ScriptedService) GetLogType() LogType { return s.logType }
 
 // BecomingInactive is called when the service won't restart. Cleans up pipe.
 func (s *ScriptedService) BecomingInactive() {
+	// The log-type=pipe pipe stays open (see ProcessService.BecomingInactive).
 	s.closeDoneCh()
-	s.CloseOutputPipe()
 }
 
 // closeDoneCh signals the monitoring goroutine to stop and resets the channel.

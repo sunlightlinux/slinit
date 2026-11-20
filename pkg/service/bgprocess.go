@@ -277,10 +277,10 @@ func (s *BGProcessService) nextRestartDelay() time.Duration {
 	return total
 }
 
-// BecomingInactive is called when the service won't restart. Cleans up pipe.
+// BecomingInactive is called when the service won't restart. The
+// log-type=pipe pipe stays open (see ProcessService.BecomingInactive).
 func (s *BGProcessService) BecomingInactive() {
 	s.closeDoneCh()
-	s.CloseOutputPipe()
 }
 
 // closeDoneCh signals the monitoring goroutine to stop and resets the channel.

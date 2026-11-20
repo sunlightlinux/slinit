@@ -38,14 +38,18 @@ extensions.
     ...); **+=** on any other setting is a parse error.
 
 **:**
-:   Required by the dependency keys (**depends-on**, **depends-ms**,
-    **waits-for**, **prepared-by**, their **.d** forms, **before**,
-    **after**), which reject **=** and **+=**: write
-    `depends-on: network` and repeat the line for more targets.
-    **bundle-of** and **consumer-of** accept both **=** and **:**.
+:   The conventional form for the dependency keys (**depends-on**,
+    **depends-ms**, **waits-for**, **prepared-by**, their **.d** forms,
+    **before**, **after**): write `depends-on: network` and repeat the
+    line for more targets.
 
-Each setting accepts only its own set of operators; any other is a
-parse error ("invalid operator, expected ...").
+**=** and **:** are interchangeable on every setting, as in dinit, whose
+**dinit-service**(5) says there is no functional difference between
+them: `waits-for = net` reads as `waits-for: net`, and `type: process`
+as `type = process` (since 3.21.0; before, the other one was a parse
+error). **+=** is accepted only by the settings
+listed above; on any other it is a parse error ("invalid operator,
+expected ...").
 
 ### Durations
 
@@ -2743,6 +2747,15 @@ Examples:
     this service's stdin. *service* must be a **process**,
     **bgprocess** or **scripted** service with **log-type**=*pipe*,
     and can have only one consumer. Accepts `:` or `=`.
+
+    The pipe belongs to *service* for as long as it is loaded, not to
+    one run of it: stopping and starting *service* does not close it,
+    so this service keeps reading across its restarts. Unloading
+    *service* while this one stays loaded hands the pipe to a
+    placeholder, and loading *service* again hands it back, as dinit
+    does (since 3.21.0; before, the pipe closed whenever *service*
+    stopped, so a consumer such as **cat** read end-of-file and exited,
+    and *service* could not be unloaded at all).
 
 ## TTY CLUSTER (console services)
 

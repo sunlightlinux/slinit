@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -174,18 +175,32 @@ unknown-setting = value
 	}
 }
 
-func TestParseInvalidOperator(t *testing.T) {
-	input := `
-type = process
-command = /usr/bin/myservice
-depends-on = syslog
-`
-	_, err := Parse(strings.NewReader(input), "myservice", "test-file")
-	if err == nil {
-		t.Fatal("expected error for invalid operator")
+// '=' and ':' are interchangeable on every setting, as in dinit, whose own
+// test files write `waits-for = consumer`. Only '+=' is checked.
+func TestParseAssignOperatorsInterchangeable(t *testing.T) {
+	colon, err := Parse(strings.NewReader("type = process\ncommand = /bin/true\ndepends-on: syslog\nwaits-for: net\n"), "a", "f")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "invalid operator") {
-		t.Errorf("expected 'invalid operator' error, got: %v", err)
+	equals, err := Parse(strings.NewReader("type: process\ncommand: /bin/true\ndepends-on = syslog\nwaits-for = net\n"), "a", "f")
+	if err != nil {
+		t.Fatalf("dinit-style '=' on a dependency or ':' on a value was refused: %v", err)
+	}
+	if !reflect.DeepEqual(colon.DependsOn, equals.DependsOn) || !reflect.DeepEqual(colon.WaitsFor, equals.WaitsFor) ||
+		colon.Type != equals.Type || !reflect.DeepEqual(colon.Command, equals.Command) {
+		t.Errorf("'=' and ':' parsed differently:\n%+v\n%+v", colon, equals)
+	}
+	// Repeated '=' on a dependency adds, as repeated ':' does.
+	two, err := Parse(strings.NewReader("type = internal\ndepends-on = a\ndepends-on = b\n"), "a", "f")
+	if err != nil || len(two.DependsOn) != 2 {
+		t.Errorf("repeated depends-on = : %v %v", two.DependsOn, err)
+	}
+}
+
+func TestParseInvalidOperator(t *testing.T) {
+	_, err := Parse(strings.NewReader("type = process\ncommand = /bin/true\ntype += internal\n"), "myservice", "test-file")
+	if err == nil || !strings.Contains(err.Error(), "invalid operator") {
+		t.Fatalf("'+=' on a single-valued setting: %v", err)
 	}
 }
 

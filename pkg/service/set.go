@@ -340,12 +340,45 @@ func (ss *ServiceSet) RemoveService(svc Service) {
 // every neighbour's slice, and both callers — the unload control handler
 // and the service-directory watcher's Disappeared callback — run on
 // goroutines that hold nothing. Nothing calls this from inside the lock.
+//
+// A producer whose log consumer stays loaded leaves a placeholder that
+// keeps the output pipe and the consumer link, so the consumer's input
+// survives and the producer, loaded again, takes both back (dinit's
+// unload_service). Otherwise the pipe is closed here. Unloading a
+// consumer whose producer is a placeholder removes that placeholder too:
+// nothing refers to it any more.
 func (ss *ServiceSet) UnloadService(svc Service) {
+	rec := svc.Record()
+	var ph *PlaceholderService
+	var orphan *PlaceholderService
+
 	ss.queueMu.Lock()
-	svc.Record().PrepareForUnload()
+	if consumer := rec.logConsumer; consumer != nil {
+		ph = NewPlaceholderService(ss, svc.Name())
+		r, w := rec.TransferOutputPipe()
+		ph.SetOutputPipeFDs(r, w)
+		ph.logConsumer = consumer
+		consumer.Record().consumerFor = ph
+		rec.logConsumer = nil
+	}
+	if p, ok := rec.consumerFor.(*PlaceholderService); ok {
+		orphan = p
+	}
+	rec.PrepareForUnload()
+	rec.CloseOutputPipe()
+	if orphan != nil {
+		orphan.CloseOutputPipe()
+	}
 	ss.processQueuesLocked()
 	ss.queueMu.Unlock()
+
 	ss.RemoveService(svc)
+	if orphan != nil {
+		ss.RemoveService(orphan)
+	}
+	if ph != nil {
+		ss.AddService(ph)
+	}
 	if ss.OnServiceUnloaded != nil {
 		ss.OnServiceUnloaded(svc)
 	}
@@ -357,6 +390,10 @@ func (ss *ServiceSet) ListServices() []Service {
 	defer ss.mu.RUnlock()
 	result := make([]Service, 0, len(ss.records))
 	for _, svc := range ss.records {
+		// A placeholder is not a loaded service (dinit's list skips it too).
+		if svc.Type() == TypePlaceholder {
+			continue
+		}
 		result = append(result, svc)
 	}
 	return result

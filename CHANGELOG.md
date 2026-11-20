@@ -24,6 +24,42 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Changed
+
+- **A `log-type = pipe` producer's pipe stays open across its stops**, as
+  in dinit, where it belongs to the service record. slinit closed it
+  whenever the producer stopped, so its `consumer-of` service read
+  end-of-file and, for a consumer such as `cat`, exited: everything the
+  producer wrote on its next start was lost. Found by porting dinit's
+  `log-via-pipe` test, whose first half (start/stop twice) failed.
+  - **Compat:** a consumer that relied on end-of-file to finish when its
+    producer stopped keeps running; stop it explicitly.
+- **`=` and `:` are interchangeable on every setting**, as dinit's parser
+  and dinit-service(5) have them ("no functional difference"). slinit
+  required `:` on the dependency keys and `=` elsewhere, so a dinit
+  service file with `waits-for = consumer` (dinit's own test files have
+  one) did not load. `+=` is still only accepted where it was.
+  - **Compat:** a file that failed to load for this reason now loads;
+    `slinit-check` no longer reports it.
+
+### Added
+
+- **A producer with a loaded log consumer can be unloaded**, as in dinit
+  (1e50862, b58775b, issue #600): a placeholder takes its output pipe
+  and the link to the consumer, so the consumer goes on reading, and
+  loading the producer again hands both back. `unload` refused such a
+  producer. The placeholder is not listed, and goes when the consumer is
+  unloaded; a producer that cannot feed a consumer (not `log-type =
+  pipe`) is refused while the placeholder holds its consumer.
+
+### Tests
+
+- dinit's `log-via-pipe` integration test, ported for scripted, process
+  and bgprocess producers (start/stop twice, then unload, start, stop
+  twice), plus the placeholder's survival of a failed load; each fix
+  mutation-checked. The same scenario passes end to end against a
+  user-mode slinit with dinit's exact service files.
+
 ## [3.20.0] — 2026-11-19
 
 **A minor, from reviewing finit up to 631baab7. Read Security first: a

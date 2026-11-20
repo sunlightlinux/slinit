@@ -1460,7 +1460,10 @@ func (s *ProcessService) BecomingInactive() {
 	s.disarmOnDemand()
 	s.closeDoneCh()
 	s.closeSocket()
-	s.CloseOutputPipe()
+	// The log-type=pipe pipe is NOT closed here: it lives as long as the
+	// record, as in dinit, so a consumer keeps reading across the
+	// producer's restarts instead of seeing EOF and exiting. It is closed
+	// when the service is unloaded (or handed to a placeholder).
 	s.stopLoggerCommands()
 	if s.vtty != nil {
 		s.vtty.Close()

@@ -3864,10 +3864,10 @@ func (sr *ServiceRecord) ClearDependencies() {
 // HasLoneRef returns true if this service has no significant references beyond
 // the given handleCount (control connection handles). A service can be unloaded
 // only if all its dependents are ordering-only (BEFORE/AFTER).
+//
+// A log consumer does not hold the service: UnloadService hands the pipe
+// and the link to a placeholder, as dinit's has_lone_ref allows.
 func (sr *ServiceRecord) HasLoneRef(handleCount int) bool {
-	if sr.logConsumer != nil {
-		return false
-	}
 	for _, dept := range sr.dependents {
 		if !dept.IsOnlyOrdering() {
 			return false

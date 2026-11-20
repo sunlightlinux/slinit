@@ -548,9 +548,12 @@ service name or rejected.
 
 **unload** *service*
 :   Drop *service* from the in-memory set. Only allowed when the
-    service is stopped, no loaded service depends on it other than
-    through **before**/**after** ordering, and it is not consuming
-    another service's log output.
+    service is stopped and no loaded service depends on it other than
+    through **before**/**after** ordering. A service whose log output
+    another loaded service consumes (**consumer-of**) may be unloaded
+    (since 3.21.0): a placeholder keeps its output pipe, so the consumer
+    goes on reading, and loading the service again takes it back. The
+    placeholder is not listed.
 
 **add-dep** *from* *kind* *to*, **add-dep** *kind* *from* *to*
 :   Add a dependency edge of *kind* (`depends-on`/`regular`,

@@ -1059,6 +1059,28 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// Create the service based on type
 	svc := dl.createService(name, desc)
 
+	// An unload of this service may have left a placeholder holding its
+	// log consumer and output pipe (see ServiceSet.UnloadService). The
+	// new record takes both over once it has loaded; until then, and if
+	// the load fails, the placeholder keeps them.
+	var ph service.Service
+	if p := dl.set.FindService(name, true); p != nil && p.Type() == service.TypePlaceholder {
+		ph = p
+		if consumer := p.Record().LogConsumer(); consumer != nil && !canFeedConsumer(svc) {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message: fmt.Sprintf("'%s' is consumer-of this service, so it must be process, bgprocess "+
+					"or scripted with log-type = pipe", consumer.Name()),
+			}
+		}
+	}
+	loaded := false
+	defer func() {
+		if ph != nil && !loaded && dl.set.FindService(name, true) == nil {
+			dl.set.AddService(ph)
+		}
+	}()
+
 	// Record the directory and modification time of the service description
 	recordSource(svc, desc, filePath)
 
@@ -1124,11 +1146,27 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// so the record's StartOnPath() and other config-time fields are
 	// readable. Recursive dependency loads each fire their own
 	// notification before this caller's, which is the desired order.
+	if ph != nil {
+		dl.transferConsumerOf(ph, svc)
+	}
+	loaded = true
+
 	if dl.set.OnServiceLoaded != nil {
 		dl.set.OnServiceLoaded(svc)
 	}
 
 	return svc, nil
+}
+
+// canFeedConsumer reports whether svc can be a log consumer's producer:
+// process, bgprocess or scripted, with log-type = pipe (setupConsumerOf's
+// rule).
+func canFeedConsumer(svc service.Service) bool {
+	switch svc.Type() {
+	case service.TypeProcess, service.TypeBGProcess, service.TypeScripted:
+		return svc.GetLogType() == service.LogToPipe
+	}
+	return false
 }
 
 func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, error) {
