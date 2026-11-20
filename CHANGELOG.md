@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.21.0] — 2026-11-20
+
+**A minor, from dinit 1da9c8f..fe7ace7 (issue #600). A `log-type = pipe`
+producer's pipe now outlives its stops, as in dinit: slinit closed it
+whenever the producer stopped, so a `consumer-of` service such as `cat`
+read end-of-file and exited, and the producer's next output was lost. A
+producer with a loaded consumer can now be unloaded, a placeholder
+keeping the pipe until it is loaded again, and `=` and `:` are
+interchangeable on every setting, so a dinit file with `waits-for =
+name` loads. Both changes are under Changed, because a setup could rely
+on the old behaviour. The control protocol stays at version 7.**
+
 ### Changed
 
 - **A `log-type = pipe` producer's pipe stays open across its stops**, as
