@@ -24,5 +24,8 @@
 # is the next command in this very line.
 type = scripted
 depends-on: system-init
+# Kept in a buffer, so `slinitctl catlog trigger-autofire` shows what
+# slinitctl said if a start fails.
+log-type = buffer
 command = /bin/sh -c "slinitctl --no-wait start trigger-test && slinitctl trigger trigger-test"
 stop-command = /bin/sh -c "slinitctl untrigger trigger-test; slinitctl stop trigger-test"
