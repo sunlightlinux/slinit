@@ -1,8 +1,8 @@
 # slinit companion tools
 
 Besides the daemon (`slinit`) and its control CLI (`slinitctl`), slinit
-ships 45 tools: 44 Go binaries and `slinit-resource`, a shell OCF
-resource agent. `go build ./...` builds the 44 Go ones.
+ships 49 tools: 48 Go binaries and `slinit-resource`, a shell OCF
+resource agent. `go build ./...` builds the 48 Go ones.
 
 Each tool has a man page under [doc/man](man), which is the
 authoritative reference. This document is an overview: what each tool
@@ -28,6 +28,7 @@ is for, followed by the invocations most worth knowing.
 | [`slinit-openrc-convert`](#slinit-openrc-convert) | Convert an OpenRC `init.d` script | [slinit-openrc-convert(8)](man/slinit-openrc-convert.8.md) |
 | [`slinit-runit-convert`](#slinit-runit-convert) | Convert a runit service directory | [slinit-runit-convert(8)](man/slinit-runit-convert.8.md) |
 | `slinit-sysvinit-convert` | Convert `/etc/inittab` | [slinit-sysvinit-convert(8)](man/slinit-sysvinit-convert.8.md) |
+| `slinit-immortal-convert` | Convert an immortal `run.yml` | [slinit-immortal-convert(8)](man/slinit-immortal-convert.8.md) |
 
 ### Journal
 
@@ -47,6 +48,7 @@ is for, followed by the invocations most worth knowing.
 | `slinit-watchdogd` | Runtime hardware-watchdog petting daemon | [slinit-watchdogd(8)](man/slinit-watchdogd.8.md) |
 | `slinit-mount` | autofs lazy-mount daemon | [slinit-mount(8)](man/slinit-mount.8.md) |
 | `slinit-seedrng` | Persist entropy across reboots (SeedRNG) | [slinit-seedrng(8)](man/slinit-seedrng.8.md) |
+| `slinit-inetd` | Run one instance of a program per connection on a socket slinit passes it (inetd `nowait`, `socket-accept`) | [slinit-inetd(8)](man/slinit-inetd.8.md) |
 
 ### systemd-compatible utilities
 

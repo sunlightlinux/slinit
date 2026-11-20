@@ -34,7 +34,7 @@ tag X regress boot time vs tag Y?"
 Requires: `qemu-system-x86_64`. Run from repo root:
 `./tests/performance/demo/cold-boot.sh`
 
-Four harnesses shipped:
+Five harnesses shipped:
 - `cold-boot.sh` — boot of the full demo service set; reports median and p95
 - `minimal-boot.sh` — single-service boot for parity-comparison with
   dinit / runit / s6 published numbers
@@ -42,6 +42,9 @@ Four harnesses shipped:
   fork+exec+wait cost
 - `pid1-footprint.sh` — PID-1 RSS + VmPeak after N-second idle wait,
   for a steady-state (post-GC-settle) reading
+- `softreboot-cycle.sh` — repeated `slinitctl shutdown softreboot now`
+  inside one QEMU boot, timing each round trip and checking that every
+  service comes back each time
 
 See [demo/README.md](demo/README.md) for the full comparison table
 and interpretation.

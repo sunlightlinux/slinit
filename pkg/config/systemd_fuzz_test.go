@@ -8,8 +8,8 @@ import (
 // parser. slinit-systemd-convert reads adversarial input (an
 // operator's imported /etc/systemd/system tree of unknown quality),
 // so a parser panic is a direct operator-facing crash. The converter
-// touches ~200 systemd directives with domain-specific value parsers
-// each (durations, sizes, cap sets, RestartForceExitStatus lists,
+// reads 96 systemd keys, many with a domain-specific value parser
+// (durations, sizes, cap sets, RestartForceExitStatus lists,
 // nested key=value substitutions inside quoted strings for
 // SystemCallFilter, etc.) — pretty much every non-trivial format
 // systemd supports has a code path here.

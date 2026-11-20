@@ -25,6 +25,17 @@ Thank you for your interest in contributing to slinit!
 7. Commit with a clear message
 8. Push to your fork and open a Pull Request
 
+### Proposing a Feature
+
+Check first whether one of slinit's upstreams already has it — dinit
+(the base: state machine, description format, `slinitctl` verbs), then
+systemd, runit, s6-linux-init, OpenRC, upstart, finit, launchd, immortal
+or sysvinit. If one does, match its name and semantics, and say where it
+comes from; admins moving in keep their muscle memory, and the
+behaviour is already worked out. A feature with no upstream analogue
+can still go in, but has to justify the surface it adds. The feature
+request template asks for the same.
+
 ### Code Style
 
 - Follow standard Go conventions (`gofmt`, `go vet`)
@@ -43,11 +54,11 @@ go test ./...
 
 ### Testing
 
-- **Unit tests**: `go test ./...` (~2670 tests across 88 Go dirs, 433 _test.go files)
-- **Functional tests**: `./tests/functional/run-tests.sh` (242 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
+- **Unit tests**: `go test ./...` (~2900 tests across 101 Go dirs, 494 _test.go files)
+- **Functional tests**: `./tests/functional/run-tests.sh` (248 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (218 SSH-driven cases against a live VM)
-- **Performance harnesses**: `./tests/performance/ssh/run.sh` (93 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
-- **Fuzz targets**: 43 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 16 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the four converters, the sysusers/tmpfiles/timedatectl/hostnamectl/killall5 parsers). `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
+- **Performance harnesses**: `./tests/performance/ssh/run.sh` (93 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint,softreboot-cycle}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
+- **Fuzz targets**: 45 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 18 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the runit, openrc, sysvinit and immortal converters, the sysusers/tmpfiles/killall5 parsers, `pkg/timedate`, `pkg/hostname`, `pkg/journal`, `pkg/process`, `pkg/config`). CI fuzzes each package listed in `.github/workflows/tests.yml`; `go test ./tools/stats` fails if one with a target is missing. `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
 - **Container**: `./tests/container/run.sh` (23 cases with slinit as real PID 1 under Docker or `CONTAINER_RUNTIME=podman`) + `./tests/container/soak.sh` (spawn+shutdown loop; `SOAK_BUDGET_SEC` bounds it by wall time)
 - **Kubernetes**: `./tests/k8s/run.sh` (10 cases against a local `kind` cluster)
 - Requires `qemu-system-x86_64` for functional tests, Docker for the container suite, `kind` + `kubectl` for the Kubernetes one
@@ -55,7 +66,7 @@ go test ./...
 
 ### Project Structure
 
-- `cmd/` - Entry points (45 directories: 44 Go binaries plus the
+- `cmd/` - Entry points (51 directories: 50 Go binaries plus the
   `slinit-resource` shell agent; run `ls cmd/` for the live
   list). Highlights: `slinit` (PID 1), `slinitctl` (control CLI),
   `slinit-runner` (post-fork hardening wrapper), `slinit-check` (config
@@ -70,17 +81,23 @@ go test ./...
   `slinit-logouthookd`, `slinit-svc-value`, `slinit-shell-var`,
   `slinit-einfo`, `slinit-fstabinfo`, `slinit-mountinfo`,
   `slinit-start-stop-daemon`, `slinit-supervise-daemon`,
-  `slinit-init-maker`, `slinit-resource`).
+  `slinit-init-maker`, `slinit-resource`), and the D-Bus settings
+  daemons with their CLIs (`slinit-timedated` / `slinit-timedatectl`,
+  `slinit-hostnamed` / `slinit-hostnamectl`, `slinit-localed` /
+  `slinit-localectl`).
 - `pkg/` - Core packages: `autofs`, `bootmode`, `catalog`, `checkpath`,
-  `config`, `control`, `dissect`, `einfo`, `eventloop`, `features`,
-  `fstab`, `hooks`, `journal`, `journalbin`, `journald`, `logging`,
-  `machine`, `metrics`, `mounts`, `network`, `pathwatch`, `persist`,
-  `platform`, `process`, `recovery`, `rng`, `seccomp`, `service`,
-  `shutdown`, `snapshot`, `svcdirwatch`, `switchroot`, `utmp`,
-  `watchdog` (34 total; run `ls pkg/` for the live list).
-- `internal/util/` - Path and parsing utilities
+  `config`, `control`, `dbusservice`, `dinitwire`, `dissect`, `einfo`,
+  `eventloop`, `features`, `fstab`, `hooks`, `hostname`, `journal`,
+  `journalbin`, `journald`, `locale`, `logging`, `machine`, `metrics`,
+  `mounts`, `mountwatch`, `network`, `pathwatch`, `persist`,
+  `platform`, `polkit`, `process`, `recovery`, `rng`, `rusage`,
+  `seccomp`, `service`, `shutdown`, `snapshot`, `svcdirwatch`,
+  `switchroot`, `timedate`, `utmp`, `watchdog` (42 total; run
+  `ls pkg/` for the live list).
+- `internal/` - `util` (path and parsing utilities), and test helpers:
+  `dbustest` (a private dbus-daemon), `iouringtest`
 - `completions/` - Shell completions (bash, zsh, fish)
-- `tests/functional/` - QEMU integration tests (242 cases)
+- `tests/functional/` - QEMU integration tests (248 cases)
 - `tests/acceptance/ssh/` - SSH-driven live-VM cases (218)
 - `tests/performance/` - performance harnesses (93 SSH + 5 QEMU harnesses + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (27)

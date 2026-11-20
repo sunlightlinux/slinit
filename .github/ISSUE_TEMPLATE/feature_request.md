@@ -35,7 +35,7 @@ implementation risk and preserves muscle memory for admins moving in:
 
 If the feature has no upstream analogue, say so — slinit is willing to
 ship native features, but the bar for surface-growth without upstream
-precedent is intentionally higher (see CONTRIBUTING.md).
+precedent is intentionally higher (see "Proposing a Feature" in CONTRIBUTING.md).
 
 ## Additional Context
 

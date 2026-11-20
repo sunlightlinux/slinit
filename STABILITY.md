@@ -21,8 +21,9 @@ Which versions receive fixes is covered separately, in
   version.** A directive that is going away is deprecated first, keeps
   working with a warning, and is removed no earlier than the next major.
 - **Service files are forward-compatible, not backward-compatible.** A
-  file that loads on 2.3.0 loads on every later 2.x. A file that uses a
-  directive introduced in 2.3.6 fails to load on 2.3.5 — see
+  file that loads on 3.2.0 loads on every later 3.x, as one that loaded
+  on 2.3.0 did on every later 2.x. A file that uses a directive
+  introduced in 3.0.7 fails to load on 3.0.6 — see
   [Service configuration](#service-configuration).
 - **Metric names are an interface.** A name served at `/metrics` is not
   removed or renamed within a major version, and keeps its type — see
@@ -66,14 +67,18 @@ by anything else that implements it (`pkg/control/protocol.go`).
 - `CPVersion` stays `7` and `MinCompatVersion` stays `1` until **v4.0.0**.
   This holds across 3.x as well.
 - Existing command codes and reply codes keep their numbers, payload
-  layout and meaning. Commands 0–28 and replies 50–79 are dinit's, and
-  stay wire-compatible with dinit's `cp_cmd` / `cp_rply` enums.
+  layout and meaning. Commands 0–28 and replies 50–79 are dinit's and
+  keep the numbers of dinit's `cp_cmd` / `cp_rply` enums. The packet
+  framing is slinit's own (dinit has no length prefix), so this is not
+  wire compatibility; `slinitctl` speaks dinit's framing when it finds
+  a dinit daemon (since 3.17.0).
 - New commands are added with new code numbers. A daemon that does not
   know a command answers `RplyBadReq`, so a newer client talking to an
   older daemon gets a clean error, not a hang or a misread reply.
-- Any 2.x `slinitctl` works against any 2.x daemon for the commands both
-  know. This has been true in practice since CPVersion reached 7; it is
-  now a promise.
+- Any `slinitctl` works against any daemon of the same major version for
+  the commands both know, and across 2.x and 3.x as well, since both
+  speak CPVersion 7. This has been true in practice since CPVersion
+  reached 7; it is now a promise.
 - When a command's shape has to change, it gets a *new* code and the old
   one keeps working. `CmdEnableServiceV7` (29) and `CmdRmDepV7` (30)
   sit beside the dinit originals this way.
@@ -107,7 +112,7 @@ and `:`), their accepted values, and what they do.
   configuration will run on. A test enforces it: a directive the parser
   accepts that is neither in the pre-2.4.2 baseline nor marked in the
   man page fails the build. Directives that predate the convention
-  carry no marker and are available in every 2.x release.
+  carry no marker and are available in 2.4.2 and every release after it.
 - The load directories (`/etc/slinit.d` and the others in `slinit(8)`)
   and the `@include`, `@include-opt` and `@meta` lines are stable in the
   same sense.
@@ -179,9 +184,13 @@ implementation detail.
 
 slinit implements some interfaces that another project defines:
 `org.freedesktop.login1` and `org.freedesktop.systemd1` on D-Bus
-(`slinit-logind`), the `/run/systemd/{sessions,users,seats}` records
-libelogind reads, the dinit protocol range above, and the OpenRC
-command shims (`rc-service`, `rc-update`, `rc-status`).
+(`slinit-logind`), `org.freedesktop.timedate1`, `hostname1` and
+`locale1` (`slinit-timedated`, `slinit-hostnamed`, `slinit-localed`,
+since 3.19.0) with systemd's polkit action ids, the
+`/run/systemd/{sessions,users,seats}` records libelogind reads, the
+dinit protocol range above, dinit's service file syntax where slinit
+claims it, and the OpenRC command shims (`rc-service`, `rc-update`,
+`rc-status`).
 
 For these, the upstream project's definition is the contract, not
 slinit's current behaviour. A change that brings slinit closer to

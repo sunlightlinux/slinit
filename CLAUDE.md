@@ -102,10 +102,10 @@ For multi-step tasks, state a brief plan:
 **Verification commands in slinit:**
 - `go build ./...` — full build, catches typos fast.
 - `go vet ./...` — catches misuse before tests.
-- `go test ./...` — ~2700 unit tests across the Go tree (36 pkg/ + tests + tools).
+- `go test ./...` — ~2900 unit tests across the Go tree (42 pkg/ + cmd/ + tests + tools).
 - `go test -race ./pkg/service/... ./pkg/control/...` — concurrency sanity
   check for the state machine & control server.
-- `./tests/functional/run-tests.sh` — 244 QEMU-based integration tests
+- `./tests/functional/run-tests.sh` — 248 QEMU-based integration tests
   (requires `qemu-system-x86_64`).
 - `./tests/acceptance/ssh/run.sh` — 218 SSH-driven cases against a live VM.
 - `./tests/performance/ssh/run.sh` — 93 SSH-driven perf cases (comprehensive
@@ -119,9 +119,11 @@ For multi-step tasks, state a brief plan:
   `kind` cluster.
 - `go test -fuzz=FuzzConfigParse -fuzztime=30s ./tests/fuzz/` — fuzz a
   single target. 45 repo-wide: 27 in `tests/fuzz/`, 18 beside the code
-  they exercise (converters, sysusers/tmpfiles/timedatectl/hostnamectl
-  parsers, the syslog parser, the fd-store glob, `pkg/service` state
-  machine), so `./tests/fuzz` alone is not all of them.
+  they exercise (converters, killall5, sysusers/tmpfiles, the
+  `pkg/timedate` and `pkg/hostname` parsers, the syslog parser, the
+  fd-store glob, `pkg/config`, `pkg/service` state machine), so
+  `./tests/fuzz` alone is not all of them. CI's fuzz matrix must list
+  every package holding one; `tools/stats/fuzzmatrix_test.go` checks it.
 - `./slinit-check <svc>` — offline config linter. Takes a service
   NAME, as dinit-check does (`-d <dir>` to search another directory);
   a path is looked up as a name and reported "not found".
@@ -151,10 +153,12 @@ Strong success criteria let you loop independently. Weak criteria
   from dinit.
 - ServiceSet is mutex-protected — concurrent control connections are
   normal.
-- Config parser accepts both `=` and `:` (`:` for dependency keys).
+- Config parser accepts `=` and `:` interchangeably on every setting, as
+  dinit does (`:` is the convention for dependency keys); only `+=` is
+  restricted to list-valued settings.
 
 ### Key files (first places to look)
-- `pkg/service/record.go` — state machine (~3800 LOC; `ExecuteTransition`
+- `pkg/service/record.go` — state machine (~3900 LOC; `ExecuteTransition`
   is the entry point to the transition half).
 - `pkg/service/types.go` — all enum types. When adding a new state or
   flag, this is where it goes.

@@ -469,10 +469,9 @@ skew the timing.
 
 ## Planned follow-ons
 
-- Start/stop throughput case using a `perf-throwaway` service.
-- `enable`/`disable` round-trip (creates + removes a symlink under
-  `all-services.d/`).
 - `slinit-journalctl -f` streaming lag under sustained emit rate
   (needs a `logger`-driven producer + timestamped consumer).
-- Concurrent-client scaling: N parallel `slinitctl status` from
-  different SSH sessions, measure per-request p95 vs N.
+
+Three earlier entries here now exist: start/stop throughput with a
+throwaway service (100, 460), the `enable`/`disable` round-trip (720)
+and concurrent-client scaling (060-062).

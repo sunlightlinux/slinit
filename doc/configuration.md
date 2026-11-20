@@ -32,8 +32,12 @@ no extension and no `[Section]` headers. Each line holds one setting:
 # Comments start with '#'
 key = value          # scalar setting
 command += --verbose # append to a list-valued setting
-depends-on: network  # dependency keys also accept ':' (dinit convention)
+depends-on: network  # ':' is the dinit convention for dependency keys
 ```
+
+`=` and `:` are interchangeable on every setting, as in dinit (since
+3.21.0; before, dependency keys took only `:` and the others only `=`).
+`+=` works only on list-valued settings.
 
 Files are searched in the service directories listed under
 [Default service directories](#default-service-directories); the first
@@ -152,6 +156,11 @@ type = process
 command = /usr/bin/process-data
 consumer-of: producer
 ```
+
+The pipe belongs to the producer for as long as it is loaded, so the
+consumer keeps reading across the producer's restarts; unloading the
+producer hands the pipe to a placeholder until it is loaded again (since
+3.21.0).
 
 ### Service template
 
@@ -293,12 +302,12 @@ accepted. List-valued settings accept `+=` to append.
 | Directive | Value | Description |
 |---|---|---|
 | `restart` | `yes` \| `no` \| `on-failure` | Automatic restart policy |
-| `restart-delay` | seconds | Delay before a restart |
+| `restart-delay` | seconds | Delay before a restart (default 0.2; 0 restarts at once) |
 | `start-when-idle` | bool | Wait for the other services to finish starting, at most 5 s (systemd `Type=idle`) |
-| `restart-limit-count` | integer | Maximum restarts within `restart-limit-interval` |
-| `restart-limit-interval` | seconds | Window over which restarts are counted |
-| `start-timeout` | seconds | Time allowed to reach *started* |
-| `stop-timeout` | seconds | Time between `term-signal` and SIGKILL |
+| `restart-limit-count` | integer | Maximum restarts within `restart-limit-interval` (default 3; 0 = unlimited) |
+| `restart-limit-interval` | seconds | Window over which restarts are counted (default 10) |
+| `start-timeout` | seconds | Time allowed to reach *started* (default 60; 0 waits forever) |
+| `stop-timeout` | seconds | Time between `term-signal` and SIGKILL (default 10; 0 waits forever) |
 | `term-signal` | signal | Signal used for a graceful stop |
 | `runtime-max-sec` | Go duration | Hard cap on time spent *started*; the service is stopped when it is reached |
 | `pre-start-command` | program [args…] | Runs before `command`; synchronous, a non-zero exit fails the start |

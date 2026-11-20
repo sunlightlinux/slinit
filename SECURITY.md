@@ -47,7 +47,14 @@ slinit runs as PID 1 (init system) with root privileges. Security-relevant areas
   fail-closed on missing LSM per **slinit-runner**(8))
 - Seccomp filter compilation and installation
   (`system-call-filter`, `restrict-*` hardening cluster,
-  `memory-deny-write-execute`)
+  `memory-deny-write-execute`, and `io-uring-filter`, which filters
+  io_uring requests like the system calls they stand for on Linux
+  7.0+)
+- D-Bus services that change system settings: `slinit-timedated`,
+  `slinit-hostnamed` and `slinit-localed` authorize every change
+  through polkit with systemd's action ids, and `slinit-logind`
+  checks each caller against the rules systemd-logind applies when
+  built without polkit
 - Signal handling and shutdown sequence
 - Credentials pipeline (tmpfs-backed `$CREDENTIALS_DIRECTORY`
   with mode 0400 files, ro-remount before hand-off)
@@ -67,3 +74,6 @@ with weaker protection than the operator declared:
   configured.
 - **memory-deny-write-execute** and **memory-ksm** fail-close
   on kernels older than 6.3 / 6.4 respectively.
+- `slinit-timedated`, `slinit-hostnamed` and `slinit-localed`
+  allow only root when polkitd is not on the bus, and refuse when
+  polkit cannot be asked: no answer is never read as yes.

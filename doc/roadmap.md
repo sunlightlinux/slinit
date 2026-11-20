@@ -42,15 +42,16 @@ have surfaced: the soft-reboot state loss fixed in v3.4.3 was invisible
 in the development VM, which passes slinit no positional arguments, and
 appeared only on an installed system that does.
 
-**`pam_slinit.so` slipped, and moved.** It was scheduled for 3.0.1. It
-is now its own repository,
+**`pam_slinit.so` slipped, moved, and shipped.** It was scheduled for
+3.0.1. It is its own repository,
 [slpam](https://github.com/sunlightlinux/slpam), written in C — a PAM
 module is a shared object dlopened into `login`, `sshd`, `gdm` and `su`,
-and a Go one would put the Go runtime inside every one of them. Its
-build and exported-symbol contract are settled; its session logic is
-not yet written. Until it ships *and* the distribution's package
-dependencies change, the elogind package stays installed even though
-its daemon is no longer used.
+and a Go one would put the Go runtime inside every one of them. It
+registers sessions with `slinit-logind` since slpam 1.10.0 (2026-11-13),
+and Sunlight's `pam-base` puts it on the login path in place of
+`pam_elogind`, so no elogind code runs at login. The elogind *package*
+stays installed for now: gnome-shell and xfce4 depend on it, and twelve
+packages link `libelogind`; rebuilding those is distribution work.
 
 ## Open now
 
@@ -79,6 +80,19 @@ has a record of what is known about it.
   Checked against seven injected state-machine defects, they catch six,
   three of which no ported case notices. None found a defect in the
   current code. The next useful ones are the restart and pin paths.
+- **A soft-reboot-only start failure, seen once.** After a real
+  `slinitctl shutdown softreboot now`, the demo's `trigger-autofire`
+  (a scripted service whose start command drives `slinitctl` against
+  the daemon) failed its start command. Three explanations were
+  measured and ruled out: the command itself in steady state, a
+  cold-boot race with the control socket, and the snapshot restore
+  outrunning the socket. What is left needs the re-exec, which only a
+  real PID 1 does; the next occurrence's `slinitctl catlog
+  trigger-autofire` will name the call that failed.
+- **`go test ./pkg/service/` leaves one `sleep 60` behind.** Some test
+  in that package starts one and does not reap it; it is the same
+  before and after 3.21.0. Harmless to the result, but a suite should
+  clean up after itself.
 
 ## Phase history
 

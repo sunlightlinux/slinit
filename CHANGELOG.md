@@ -24,6 +24,44 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Documentation
+
+A pass over every Markdown file, checked against the code rather than
+against the previous wording. What was wrong, beyond counts:
+
+- **slinit(8) said the control protocol is backwards-compatible with
+  dinit and that `--dinit-compat disable` lets slinitctl talk to a real
+  dinit.** Neither was true: the command numbers are dinit's, the packet
+  framing is not, and `--dinit-compat` never reached a dinit daemon.
+  slinitctl drives one since 3.17.0 by detecting it and speaking dinit's
+  own format; slinit(8), slinitctl(8)'s `--dinit-compat` entry (which
+  still said it could not) and STABILITY.md (which called the shared
+  numbers "wire-compatible") now say so.
+- **slinit-hostnamectl(1) and slinit-timedatectl(1) said there is no
+  D-Bus daemon for their settings**; slinit-hostnamed and
+  slinit-timedated have existed since 3.19.0 and use the same code.
+- **The roadmap said pam_slinit.so's session logic was not written**;
+  it shipped in slpam 1.10.0 and is on Sunlight's login path.
+- **The operator's guide said `stop` returns once accepted** (it waits
+  since 3.11.0) and **that `disable` stops the service** (only when
+  nothing else holds it up), and called `=` on `depends-on` valid
+  everywhere before it was (3.21.0). It now shows `shutdown +N` / `-c`,
+  and gives a `dbus-send` form where it assumed `loginctl`, which
+  comes from elogind or systemd and is absent on a system with neither.
+- **README claimed "roughly 250 systemd directives"**; the `.service`
+  reader takes 96 keys, and the README now says that.
+- slinit-service(5) now gives the default and the meaning of 0 for
+  `restart-limit-count`, and which releases ignored an explicit 0
+  timeout or restart delay; SECURITY.md covers the polkit-authorized
+  D-Bus daemons and `io-uring-filter`; STABILITY.md lists timedate1,
+  hostname1 and locale1 among the interfaces owned by other projects.
+- doc/tools.md lacked `slinit-immortal-convert` and `slinit-inetd`; the
+  functional suite's table lacked cases 231-248; the fuzz README put
+  five targets in packages they left and missed three others;
+  CONTRIBUTING.md had no section behind the feature-request template's
+  "see CONTRIBUTING.md"; EXAMPLES.md called logger methods that do not
+  exist.
+
 ## [3.21.0] — 2026-11-20
 
 **A minor, from dinit 1da9c8f..fe7ace7 (issue #600). A `log-type = pipe`

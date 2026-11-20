@@ -23,8 +23,10 @@ symlink is provided for systemd muscle memory.
 
 **timedatectl** may be used to query and change the system clock and
 its settings, matching the systemd **timedatectl**(1) CLI surface for
-local operations. Under slinit there is no D-Bus and no **timedated**:
-the utility reads and writes the on-disk sources of truth directly.
+local operations. It uses no D-Bus: it reads and writes the on-disk
+sources of truth directly, so it also works in a rescue shell. Desktops
+change the same settings over D-Bus through **slinit-timedated**(8),
+which uses this tool's code (since 3.19.0).
 
 Sources of truth:
 
@@ -191,11 +193,12 @@ Machine-readable output:
 
 # SEE ALSO
 
-**clock_settime**(2), **hwclock**(8), **tzset**(3), **tzfile**(5),
-**adjtime_config**(5), **systemd-analyze**(1)
+**slinit-timedated**(8), **clock_settime**(2), **hwclock**(8),
+**tzset**(3), **tzfile**(5), **adjtime_config**(5), **systemd-analyze**(1)
 
 # NOTES
 
 slinit-timedatectl is a byte-for-byte independent implementation of
 the systemd **timedatectl**(1) CLI, written in Go, with zero D-Bus
-dependency. It shares neither code nor state with **timedated**.
+dependency. It shares no code with systemd's **timedated**; it shares
+its code with **slinit-timedated**(8).

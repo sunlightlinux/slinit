@@ -4,7 +4,7 @@ Go native fuzz tests (`testing.F`) for slinit's input parsing surfaces.
 
 ## This directory is not all of them
 
-27 targets live here. Another 15 sit beside the code they exercise,
+27 targets live here. Another 18 sit beside the code they exercise,
 because a fuzz target for an unexported parser has to live in its own
 package:
 
@@ -18,11 +18,16 @@ package:
 | `cmd/slinit-killall5` | `FuzzParseStat` |
 | `cmd/slinit-sysusers` | `FuzzSysusersParseLine` |
 | `cmd/slinit-tmpfiles` | `FuzzTmpfilesParseLine` |
-| `cmd/slinit-timedatectl` | `FuzzReadZoneTab`, `FuzzValidateZone` |
-| `cmd/slinit-hostnamectl` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
+| `cmd/slinit-immortal-convert` | `FuzzParseImmortalYAML` |
+| `pkg/timedate` | `FuzzReadZoneTab`, `FuzzValidateZone` |
+| `pkg/hostname` | `FuzzDecodeValue`, `FuzzLoadMachineInfo`, `FuzzParseOSRelease` |
+| `pkg/journal` | `FuzzParseSyslog` |
+| `pkg/process` | `FuzzMatchFDName` |
 
-So `go test -fuzz=... ./tests/fuzz/` reaches roughly two thirds of the
-fuzzing surface. The authoritative list is:
+So `go test -fuzz=... ./tests/fuzz/` reaches about three fifths of the
+fuzzing surface. CI fuzzes every package in its matrix
+(`.github/workflows/tests.yml`), and `go test ./tools/stats` fails when
+a package holding a target is missing from it. The authoritative list is:
 
 ```bash
 grep -rl '^func Fuzz' --include='*_test.go' .
@@ -133,14 +138,17 @@ via `./tests/fuzz/`.
 
 | Package | Target | What it fuzzes |
 |---------|--------|----------------|
-| cmd/slinit-hostnamectl | FuzzDecodeValue | machine-info/os-release value decoder + round-trip through encodeValue |
-| cmd/slinit-hostnamectl | FuzzLoadMachineInfo | Full load → save → reload round-trip on /etc/machine-info |
-| cmd/slinit-hostnamectl | FuzzParseOSRelease | /etc/os-release parser |
-| cmd/slinit-timedatectl | FuzzReadZoneTab | /usr/share/zoneinfo/zone.tab enumeration; asserts no NUL / no path-escape zones surface to caller |
-| cmd/slinit-timedatectl | FuzzValidateZone | Zone-name validator (last line of defense before filepath.Join with zoneinfoDir) |
+| pkg/hostname | FuzzDecodeValue | machine-info/os-release value decoder + round-trip through the encoder |
+| pkg/hostname | FuzzLoadMachineInfo | Full load → save → reload round-trip on /etc/machine-info |
+| pkg/hostname | FuzzParseOSRelease | /etc/os-release parser |
+| pkg/timedate | FuzzReadZoneTab | /usr/share/zoneinfo/zone.tab enumeration; asserts no NUL / no path-escape zones surface to caller |
+| pkg/timedate | FuzzValidateZone | Zone-name validator (last line of defense before filepath.Join with the zoneinfo dir) |
+| pkg/journal | FuzzParseSyslog | syslog(3) datagrams PID 1 reads from /dev/log: priority, timestamp, `IDENT[PID]:` |
+| pkg/process | FuzzMatchFDName | fd-store name glob, linear-time `*` matching |
+| cmd/slinit-immortal-convert | FuzzParseImmortalYAML | immortal run.yml reader; must return, with an error if need be, on any input |
 | cmd/slinit-tmpfiles | FuzzTmpfilesParseLine | systemd-tmpfiles.d(5) directive lines |
 | cmd/slinit-sysusers | FuzzSysusersParseLine | systemd-sysusers.d(5) directive lines |
-| pkg/config | FuzzParseSystemdUnit | .service/.socket/.mount INI-shaped parser (~200 systemd directives, each with domain-specific value parsers) |
+| pkg/config | FuzzParseSystemdUnit | the `.service` unit reader: [Unit], [Service] and [Install], 96 keys, with their value parsers (durations, sizes, capability sets, exit-status lists, ...) |
 | cmd/slinit-runit-convert | FuzzAnalyzeRunScript | /etc/sv/`<svc>`/run shell script analyzer |
 | cmd/slinit-runit-convert | FuzzParseChpst | chpst argument parser (~15 short flags with optional args) |
 | cmd/slinit-openrc-convert | FuzzParseOpenrcScript | /etc/init.d/`<svc>` openrc-run script parser |
@@ -151,7 +159,7 @@ via `./tests/fuzz/`.
 Run per-package:
 ```bash
 go test -fuzz=FuzzParseSystemdUnit -fuzztime=30s ./pkg/config/
-go test -fuzz=FuzzDecodeValue -fuzztime=30s ./cmd/slinit-hostnamectl/
+go test -fuzz=FuzzDecodeValue -fuzztime=30s ./pkg/hostname/
 ```
 
 ## Crash corpus

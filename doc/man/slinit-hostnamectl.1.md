@@ -23,9 +23,10 @@ the same parser and behave identically.
 
 **hostnamectl** may be used to query and change the system hostname
 and related settings, matching the systemd **hostnamectl**(1) CLI
-surface for local operations. Under slinit there is no D-Bus and no
-**systemd-hostnamed**: the utility reads and writes the on-disk
-sources of truth directly.
+surface for local operations. It uses no D-Bus: it reads and writes
+the on-disk sources of truth directly, so it also works in a rescue
+shell. Desktops change the same settings over D-Bus through
+**slinit-hostnamed**(8), which uses this tool's code (since 3.19.0).
 
 Sources of truth:
 
@@ -133,7 +134,8 @@ runtime:
 
 **-H**, **\--host**=[*USER*@]*HOST*
 :   Operating on a remote host would require the D-Bus-over-SSH bridge
-    that systemd ships. slinit deliberately has no D-Bus dependency.
+    that systemd ships. slinit-hostnamectl deliberately has no D-Bus
+    dependency.
 
 **-M**, **\--machine**=*CONTAINER*
 :   Operating on a *systemd-nspawn* container requires the nspawn
@@ -187,11 +189,12 @@ Emit machine-readable JSON:
 
 # SEE ALSO
 
-**machine-info**(5), **hostname**(1), **hostname**(5),
-**sethostname**(2), **os-release**(5)
+**slinit-hostnamed**(8), **machine-info**(5), **hostname**(1),
+**hostname**(5), **sethostname**(2), **os-release**(5)
 
 # NOTES
 
 slinit-hostnamectl is a byte-for-byte independent implementation of
 the systemd **hostnamectl**(1) CLI, written in Go, with zero D-Bus
-dependency. It shares neither code nor state with **systemd-hostnamed**.
+dependency. It shares no code with systemd's **systemd-hostnamed**;
+it shares its code with **slinit-hostnamed**(8).

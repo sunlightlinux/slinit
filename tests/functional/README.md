@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (244 cases)
+# Run all tests (248 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -167,7 +167,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 57 | extra-commands | `extra-command-*` and `extra-started-command-*` custom actions |
 | 58 | healthcheck | `healthcheck-command` detects an unhealthy service |
 | 59 | smooth-recovery | Smooth recovery restarts without propagating failure to dependents |
-| 60 | service-env | `SLINIT_SERVICENAME` / `SLINIT_SERVICEDSCDIR` auto-injected per service |
+| 60 | umask | `SLINIT_SERVICENAME` / `SLINIT_SERVICEDSCDIR` auto-injected per service (the file name is historical; `umask` is case 71) |
 | 61 | options-flags | `options =` flags (kill-all-on-stop, signal-process-only) |
 | 62 | query-deps | `slinitctl dependents` / dependency graph query |
 | 63 | required-paths | `required-files` / `required-dirs` pre-start guards |
@@ -251,7 +251,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 141 | psi-pressure | `memory-pressure-watch = yes` keeps a `/sys/fs/cgroup/.../memory.pressure` fd open on slinit (PID 1); fd is released on stop |
 | 142 | condition-fraction | staged rollout gate: `TAG:0` skips (no PID), `TAG:100` starts (live PID) — bucket math is deterministic against `/etc/machine-id` |
 | 143 | condition-path-is-socket | `S_ISSOCK` check: `/run/slinit.socket` (real AF_UNIX) starts, `/etc/os-release` (regular file) skips |
-| 144 | condition-security=measured-os | no TPM in the QEMU VM → `condition-security = measured-os` fails and skips the service |
+| 144 | condition-measured-os | no TPM in the QEMU VM → `condition-security = measured-os` fails and skips the service |
 | 145 | minimum-uptime-sec | `slinit --help` surface: `--minimum-uptime-sec` flag documented with boot-loop context |
 | 146 | memory-thp | `memory-thp = never` routes through slinit-runner; child's `/proc/PID/status` THP_enabled=0 when the field is exposed (kernel ≥ 5.11) |
 | 147 | fd-store-preserve | `file-descriptor-store-preserve = yes\|no\|on-success` all parse and start; NOTIFY_SOCKET is exported to each child |
@@ -338,6 +338,24 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 228 | cron-persistent | `cron-persistent` catch-up from the on-disk last-run store; jitter and fixed jitter do not break the interval loop |
 | 229 | sigpwr-power-hook | `SIGPWR` + `/run/powerstatus` — the sysvinit UPS contract, which only a real PID 1 can prove |
 | 230 | path-activation-arm-storm | Several path triggers firing at arm time, during the load, do not stall the loader |
+| 231 | follow-pid | `follow-pid` adopts a process slinit did not start, from the pid its owner writes; stopping the service signals it, and a pid file that appears late is waited for |
+| 232 | stderr-rotation | `stderr-logfile-max-*` rotates the stderr file on its own policy, independently of the stdout one |
+| 233 | restart-on-success | `restart = on-success` keeps a service going while it exits 0 and stops at the first failure (launchd `KeepAlive{SuccessfulExit}`) |
+| 234 | standard-input-file | fd 0 reads from a file (launchd `StandardInPath`); a missing file fails the start instead of leaving an empty descriptor |
+| 235 | condition-network-online | `condition-network-online` agrees with the machine, in both directions |
+| 236 | socket-multicast-group | the multicast membership reaches the kernel, is absent without the directive, and is released on stop |
+| 237 | rusage | `slinitctl rusage` in its three scopes, end to end, with the numbers checked rather than only the exit status |
+| 238 | socket-accept-inetd | inetd `nowait`: a real TCP connection reaches a per-connection instance with the connected socket on stdio |
+| 239 | start-on-mount | a service starts when a filesystem is mounted, which inotify cannot see |
+| 240 | skipped-is-visible | a service skipped by an unmet `condition-*` is distinguishable from one that ran, though both read STARTED |
+| 241 | control-concurrency-storm | the mutating control verbs from many connections at once; PID 1 must survive |
+| 242 | stop-command-completion | a service does not report STOPPED while its stop-command is still running |
+| 243 | syslog-dev-log | PID 1 serves `/dev/log` into the journal for syslog(3) clients |
+| 244 | manager-securebits | `slinit --securebits` reaches every service through slinit-runner |
+| 245 | stop-restart-wait | `stop` and `restart` wait for the outcome, as `start` does |
+| 246 | start-when-idle | `start-when-idle` (systemd `Type=idle`) waits for the other starts, at most five seconds |
+| 247 | enable-disable-wait | `enable` waits for the start and `disable` for the stop, as dinitctl does; `disable` leaves up what something else requires |
+| 248 | read-write-paths | a path carved out of `protect-system = strict` is writable, probed from inside the service |
 
 ## How It Works
 

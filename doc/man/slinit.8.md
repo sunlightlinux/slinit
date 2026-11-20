@@ -20,19 +20,24 @@ model in Go, with additional features layered in from **runit**,
 (relevant service-manager subset — including a **journalctl**
 accepting all 28 short and 70 of 72 long options of systemd v262's,
 a **slinit-journald** binary log format with FSS
-sealing, and **slinit-logind**(8) for session and seat management;
+sealing, **slinit-logind**(8) for session and seat management, and
+**slinit-timedated**(8), **slinit-hostnamed**(8) and
+**slinit-localed**(8) for the settings GNOME's panels change;
 systemd's unit object model on D-Bus and the ecosystem daemons
 networkd/resolved/homed remain intentionally out of scope). The
-control protocol and service-description file format are
-backwards-compatible with dinit; the CmdRmDepV7 opcode + `slinitctl
---dinit-compat disable` path lets slinitctl talk to a real dinit
-daemon too.
+service-description format is dinit's. The control protocol keeps
+dinit's command and reply numbers but frames packets its own way, so
+the two daemons' clients are not interchangeable as such; **slinitctl**
+detects a dinit daemon when it connects and speaks dinit's own wire
+format to it (since 3.17.0).
 
 Migration is scripted rather than manual: **slinit-runit-convert**,
-**slinit-openrc-convert**, and **slinit-systemd-convert** port sv
-directories, init.d scripts, and .service units to slinit's
-key=value format with per-directive WARN/NOTE for anything that
-doesn't have a 1:1 mapping.
+**slinit-openrc-convert**, **slinit-systemd-convert**,
+**slinit-sysvinit-convert** and **slinit-immortal-convert** port sv
+directories, init.d scripts, .service units, */etc/inittab* and
+immortal run.yml files to slinit's key=value format with per-directive
+WARN/NOTE for anything that doesn't have a 1:1 mapping. systemd
+*.service* units can also be loaded directly, without converting.
 
 slinit can run in these modes:
 
@@ -958,7 +963,8 @@ Control and configuration:
 Shutdown and login:
 **slinit-shutdown**(8), **slinit-logind**(8),
 **slinit-logouthookd**(8), **slinit-getty**(8),
-**slinit-watchdogd**(8), **slinit-nuke**(8).
+**slinit-watchdogd**(8), **slinit-nuke**(8),
+**slinit-killall5**(8), **slinit-fstab-decode**(8).
 
 Journal:
 **slinit-journalctl**(8), **slinit-journald**(8),
@@ -971,8 +977,10 @@ System setup:
 **slinit-runner**(8), **slinit-cgtop**(8), **slinit-tmpfiles**(8),
 **slinit-sysusers**(8), **slinit-checkpath**(8), **slinit-mount**(8),
 **slinit-init-maker**(8), **slinit-seedrng**(8),
-**slinit-binfmt**(8), **slinit-sysctl**(8),
-**slinit-hostnamectl**(1), **slinit-timedatectl**(1).
+**slinit-binfmt**(8), **slinit-sysctl**(8), **slinit-inetd**(8),
+**slinit-hostnamectl**(1), **slinit-timedatectl**(1),
+**slinit-localectl**(1), **slinit-hostnamed**(8),
+**slinit-timedated**(8), **slinit-localed**(8).
 
 Compatibility with other init systems:
 **slinit-start-stop-daemon**(8), **slinit-supervise-daemon**(8),
@@ -983,7 +991,8 @@ Compatibility with other init systems:
 
 Migration from another init system:
 **slinit-runit-convert**(8), **slinit-openrc-convert**(8),
-**slinit-systemd-convert**(8).
+**slinit-systemd-convert**(8), **slinit-sysvinit-convert**(8),
+**slinit-immortal-convert**(8).
 
 ## AUTHORS
 

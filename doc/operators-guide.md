@@ -29,7 +29,8 @@ unit fail to load on any system that has no such service.
 
 **2. `slinitctl reload` is not `systemctl reload`.** slinit's `reload`
 re-reads the *service description* from disk — it is `systemctl
-daemon-reload` for one service. Telling a running daemon to reload its own
+daemon-reload` for one service, and leaves the service configured exactly
+as the file now says: a setting removed from it goes back to its default. Telling a running daemon to reload its own
 config is `slinitctl reload-signal`, and it needs a `reload-signal =`
 directive naming the signal to send.
 
@@ -54,7 +55,7 @@ column](#reading-the-state-column).
 | systemd | slinit | Notes |
 |---|---|---|
 | `systemctl start X` | `slinitctl start X` | blocks until the service settles; `--no-wait` to return immediately |
-| `systemctl stop X` | `slinitctl stop X` | returns once accepted; hard dependents stop too |
+| `systemctl stop X` | `slinitctl stop X` | blocks until it has stopped; `--no-wait` to return immediately; hard dependents stop too |
 | `systemctl restart X` | `slinitctl restart X` | |
 | `systemctl status X` | `slinitctl status X` | |
 | `systemctl cat X` | `slinitctl show X` | dumps effective config as `Key=Value`, not the file text |
@@ -62,7 +63,7 @@ column](#reading-the-state-column).
 | `systemctl is-active X` | `slinitctl is-started X` | prints the state; exit 0 only when started |
 | `systemctl is-failed X` | `slinitctl is-failed X` | |
 | `systemctl enable X` | `slinitctl enable X` | **also starts it** — see difference 3 |
-| `systemctl disable X` | `slinitctl disable X` | also stops it |
+| `systemctl disable X` | `slinitctl disable X` | removes the boot edge; stops it only if nothing else holds it up |
 | `systemctl daemon-reload` | `slinitctl reload-all` | |
 | `systemctl reload X` | `slinitctl reload-signal X` | needs `reload-signal =` on the service |
 | — | `slinitctl reload X` | re-read *this* service's description from disk |
@@ -74,6 +75,7 @@ column](#reading-the-state-column).
 | `systemd-analyze plot` | `slinitctl analyze plot` | SVG timeline on stdout; redirect it to a file |
 | `systemctl poweroff` / `reboot` | `slinitctl poweroff` / `reboot` | or `slinitctl shutdown <type>` |
 | `systemctl soft-reboot` | `slinitctl softreboot` | |
+| `shutdown -r +10 "msg"` / `shutdown -c` | the same | a later time is scheduled, warned about on every terminal and refuses logins in its last five minutes; also `slinitctl shutdown reboot +10` |
 | — | `slinitctl start-all` | start everything not already running; no systemd equivalent |
 
 `slinitctl --help` is the authoritative list; this table is the subset you
@@ -141,8 +143,9 @@ No dependency line on purpose. A hard dependency on a service that does
 not exist is fatal — the description will not load at all — and names
 like `network` exist on some systems and not others. Add
 `depends-on: <name>` once you have checked that `<name>` is really there,
-with `slinitctl list`. `depends-on` accepts `:` as well as `=`, the dinit
-convention for dependency keys; both work everywhere.
+with `slinitctl list`. `:` is the dinit convention for dependency keys;
+since 3.21.0 `=` works there too, as in dinit, and `:` on any other
+setting.
 
 Check it before you run it — the linter parses the file exactly as the
 daemon would:
@@ -341,7 +344,10 @@ file once at start-up. If a value does not parse it says so on stderr and
 keeps the default, so check the log rather than assuming it took.
 
 `loginctl show-manager` reports what it actually believes, which is the
-quickest way to tell a config that was read from one that was not. An
+quickest way to tell a config that was read from one that was not.
+`loginctl` comes with elogind or systemd; on a system with neither, ask
+the bus directly:
+`dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.DBus.Properties.GetAll string:org.freedesktop.login1.Manager`. An
 existing `/etc/elogind/logind.conf` is used when slinit's own file is
 absent, so a machine migrating off elogind needs no copying.
 
@@ -371,6 +377,8 @@ it. None means the suspend went around it.
 
 ```sh
 loginctl list-inhibitors
+# without loginctl:
+dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager.ListInhibitors
 ```
 
 A `block` lock on `sleep` refuses a suspend outright, and the error names

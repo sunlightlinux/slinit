@@ -119,9 +119,10 @@ service name or rejected.
 **\--dinit-compat**
 :   For **disable**: use the dinit-compatible request (remove the
     dependency, then delete the symlink client-side) instead of the
-    slinit-native single request. It does not reach a real **dinit**
-    daemon: the command numbers match dinit's, but slinit's packets carry a
-    length field that dinit's do not, so **slinitctl** cannot talk to one.
+    slinit-native single request, against a slinit daemon. It is not how
+    **slinitctl** talks to a **dinit** daemon: that is detected when it
+    connects, and dinit's own wire format is used then (see **dinit
+    daemons** above, since 3.17.0).
 
 **-h**, **\--help**
 :   Show usage and exit.

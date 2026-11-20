@@ -212,7 +212,7 @@ parser."
 +    p.svc.Args = cmd[1:]
 +    // Also validate the binary exists (saves time later).
 +    if _, err := exec.LookPath(p.svc.Command); err != nil {
-+        p.logger.Warnf("command %q not found in PATH", p.svc.Command)
++        p.logger.Warn("command %q not found in PATH", p.svc.Command)
 +    }
      return nil
  }
@@ -262,7 +262,7 @@ platform keywords."
 -     if platform.ShouldSkip(cfg.Keywords, s.platform) {
 -         return nil, nil
 +     if platform.ShouldSkip(cfg.Keywords, s.platform) {
-+         s.logger.Infof("skipping %s: keyword matches platform %s",
++         s.logger.Info("skipping %s: keyword matches platform %s",
 +             name, s.platform)
 +         return nil, ErrSkipped
       }
@@ -281,7 +281,7 @@ platform keywords."
 
 ```diff
      if platform.ShouldSkip(cfg.Keywords, s.platform) {
-+        s.logger.Infof("skipping %s: keyword matches platform %s",
++        s.logger.Info("skipping %s: keyword matches platform %s",
 +            name, s.platform)
          return nil, nil
      }
@@ -368,7 +368,7 @@ Plan:
 
 3. CLI: add `slinitctl graph <svc>` subcommand with plain-text output.
    Verify:
-   - Integration test (tests/functional/NN-graph.sh): boot VM, load
+   - Integration test (tests/functional/cases/NN-graph.sh): boot VM, load
      3-svc fixture, assert output matches fixture.
    - Completions updated (bash/zsh/fish).
 

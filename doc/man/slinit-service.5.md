@@ -650,11 +650,13 @@ error. Repeat the line for several targets.
 
 **stop-timeout**=*duration*
 :   How long to wait between **term-signal** and SIGKILL. Default *10*
-    seconds; *0* waits forever.
+    seconds; *0* waits forever (since 3.20.0; before, an explicit *0*
+    was ignored and the default applied).
 
 **start-timeout**=*duration*
 :   How long the service may take to reach *started*. Default *60*
-    seconds; *0* waits forever.
+    seconds; *0* waits forever (since 3.20.0; before, an explicit *0*
+    was ignored and the default applied).
 
 **start-delay**=*duration*
 :   (since 3.0.7) Wait this long before each start attempt's fork/exec.
@@ -710,7 +712,8 @@ error. Repeat the line for several targets.
     mechanism and hid the cause.
 
 **restart-delay**=*duration*
-:   Delay before a restart attempt. Default *0.2* seconds.
+:   Delay before a restart attempt. Default *0.2* seconds; *0*
+    restarts at once (since 3.20.0; before, an explicit *0* was ignored).
 
 **restart-delay-step**=*duration*
 :   If non-zero, delay grows by this step on each consecutive failure.
@@ -721,7 +724,9 @@ error. Repeat the line for several targets.
 **restart-limit-interval**=*duration*, **restart-limit-count**=*N*
 :   Rate-limit: more than *N* failures inside this window puts the
     service into the *failed* state. Defaults are *10* seconds and *3*
-    failures.
+    failures; a count of *0* means no limit. Each one keeps its default
+    when only the other is given (since 3.20.0; before, giving only the
+    interval set the count to *0*, so restarts were unlimited).
 
 **start-limit-action**=*none*|*reboot*|*poweroff*|*halt*|*exit*
 :   System-level action when the restart limit is exhausted. *none*

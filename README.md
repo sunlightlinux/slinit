@@ -25,10 +25,12 @@ UX aliases over the dependency graph — slinit does not carry a second
 state machine or config format to accommodate them.
 
 **Deliberately out of scope:** systemd's unit object model on D-Bus, and
-the ecosystem daemons (networkd, resolved, homed). What *is* implemented
-from that side is the service manager, a `journalctl` accepting all 28
-short and 70 of 72 long options of systemd v262's, with its own journal
-format, and `slinit-logind` for session and seat management.
+the ecosystem daemons a distribution already gets elsewhere (networkd,
+resolved, homed). What *is* implemented from that side is the service
+manager, a `journalctl` accepting all 28 short and 70 of 72 long options
+of systemd v262's, with its own journal format, `slinit-logind` for
+session and seat management, and the `timedate1`, `hostname1` and
+`locale1` daemons GNOME's settings panels call.
 
 > **New here, or coming from systemd?** Start with the
 > [operator's guide](doc/operators-guide.md): a systemctl ↔ slinitctl
@@ -38,7 +40,7 @@ format, and `slinit-logind` for session and seat management.
 ## Install
 
 ```bash
-go build ./...          # the daemon, slinitctl and 44 companion tools
+go build ./...          # the daemon, slinitctl and 48 companion tools
 make -C lib/slinit-mlock install   # libslinit-mlock.so, needed for `mlockall =`
 ```
 
@@ -50,7 +52,7 @@ Three binaries matter most:
 | `slinitctl` | The control CLI (around 90 verbs, aliases included) |
 | `slinit-runner` | Post-fork exec wrapper; **required** by any service using LSM, seccomp or `restrict-*` (and, with `libslinit-mlock.so` from `lib/slinit-mlock`, by `mlockall`) |
 
-The other 44 are linters, converters from other init systems, drop-in
+The other 48 are linters, converters from other init systems, drop-in
 clones of OpenRC and systemd utilities, the journal pipeline and the
 container helpers — see [doc/tools.md](doc/tools.md). Every binary has a
 man page under [doc/man](doc/man).
@@ -115,7 +117,9 @@ summarises them by topic.
 | **Control** | binary protocol over a Unix socket, goroutine per connection, push notifications for state and environment changes, runtime env and dependency edits, Prometheus metrics endpoint |
 | **PID 1 duties** | console setup, Ctrl+Alt+Del, child subreaper and orphan reaping, four degrees of shutdown haste, soft-reboot, kexec, `switch-root`, hardware watchdog, UPS power events, boot-failure recovery with an interactive rescue prompt |
 
-Roughly 250 systemd directives, every upstart stanza that fits a
+systemd `.service` units load directly (96 of their keys are read), and
+most of the sandbox, hardening, resource and timer directives mirror
+systemd's under kebab-case names. Every upstart stanza that fits a
 dependency graph (its event-driven `start on` / `stop on` model does
 not), and the runit, s6, OpenRC, finit, sysvinit, launchd and immortal
 feature sets are covered;
@@ -137,7 +141,7 @@ the provenance has been traced, which is about half of them so far.
 | **launchd** | `start-on-mount` (watches `/proc/self/mountinfo`, since inotify cannot see a mount), `socket-accept` (one instance per connection via `slinit-inetd`), `socket-multicast-group`, `standard-input-file`, `slinitctl rusage` |
 | **immortal** | a supervised `output-logger` (slinit holds the pipe, so a dying logger cannot SIGPIPE its service), `logfile` and `output-logger` together, `stderr-logfile`, `hook-timeout`, `start-delay`, `follow-pid`, `slinit-immortal-convert` |
 | **sysvinit** | `SIGPWR` power events, `slinit-killall5`, `slinit-fstab-decode`, `/etc/inittab` conversion |
-| **systemd** | The service-manager subset — start predicates, managed service directories, the sandbox/seccomp/protect clusters, credentials, timers, `journalctl` parity, `logind` |
+| **systemd** | The service-manager subset — start predicates, managed service directories, the sandbox/seccomp/protect clusters, credentials, timers, `journalctl` parity, `logind`, the `timedate1`/`hostname1`/`locale1` daemons and their `*ctl` tools |
 
 Two things are deferred by design rather than missing: finit's
 `org.finit` D-Bus control API (slinit stays Unix-socket-first) and a
@@ -309,7 +313,7 @@ it escalates the shutdown instead.
 |---|---|
 | [doc/operators-guide.md](doc/operators-guide.md) | Start here if you run systems: systemd mappings, first service, troubleshooting |
 | [doc/configuration.md](doc/configuration.md) | Service examples by shape, directive tables by topic, daemon flags |
-| [doc/tools.md](doc/tools.md) | Index of the 45 companion tools, with usage examples |
+| [doc/tools.md](doc/tools.md) | Index of the 49 companion tools, with usage examples |
 | [doc/features.md](doc/features.md) | Generated list of every accepted directive and opcode, by upstream |
 | [doc/roadmap.md](doc/roadmap.md) | Development history and what is planned |
 | [doc/man/](doc/man) | 52 man pages — one per binary, plus slinit-service(5) |
@@ -321,8 +325,8 @@ it escalates the shutdown instead.
 ## Testing
 
 ```bash
-go test ./...                             # ~2700 unit tests and benchmarks
-./tests/functional/run-tests.sh           # 244 cases, each in its own QEMU VM
+go test ./...                             # ~2900 unit tests and benchmarks
+./tests/functional/run-tests.sh           # 248 cases, each in its own QEMU VM
 ./tests/functional/selftest.sh            # checks the harness can still fail a case
 ./tests/container/run.sh                  # 23 cases with slinit as a container's PID 1
 go test -fuzz=FuzzConfigParse ./tests/fuzz
