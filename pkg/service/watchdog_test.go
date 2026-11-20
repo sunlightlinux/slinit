@@ -172,6 +172,19 @@ func TestWatchdogTriggersRestartOnFailure(t *testing.T) {
 	svc.SetRestartLimits(time.Minute, 5)
 	svc.SetRestartDelay(50 * time.Millisecond)
 	set.AddService(svc)
+	// The test returns as soon as the second start is seen, with that
+	// instance still running; without a stop its `sleep 60` outlived the
+	// test run (found by counting leftover processes after
+	// `go test ./pkg/service/`).
+	t.Cleanup(func() {
+		set.StopService(svc)
+		for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+			if svc.State() == StateStopped {
+				return
+			}
+		}
+		t.Errorf("service did not stop at cleanup: %v", svc.State())
+	})
 
 	begin := time.Now()
 	set.StartService(svc)

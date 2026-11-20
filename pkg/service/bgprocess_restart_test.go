@@ -47,6 +47,23 @@ func waitForState(t *testing.T, svc Service, want ServiceState, within time.Dura
 
 // waitForDaemonPID waits for the pidfile to name a pid other than `not`,
 // which is how a restart is recognised: a new daemon, not the old one.
+// stopBGTestService ends a restarting service at cleanup. It has to stop
+// the service, not kill its daemon: these services restart a killed
+// daemon (that is what the tests check), so a SIGKILL at cleanup started
+// one more `sleep 300` after the test had returned, and it outlived the
+// test run. A daemon still there after the stop is killed as a last
+// resort.
+func stopBGTestService(t *testing.T, set *ServiceSet, svc Service, pidFile string) {
+	t.Helper()
+	set.StopService(svc)
+	if got := waitForState(t, svc, StateStopped, 5*time.Second); got != StateStopped {
+		t.Errorf("service did not stop at cleanup: %v", got)
+	}
+	if p := waitForDaemonPID(t, pidFile, 0, 100*time.Millisecond); p > 0 && syscall.Kill(p, 0) == nil {
+		_ = syscall.Kill(p, syscall.SIGKILL)
+	}
+}
+
 func waitForDaemonPID(t *testing.T, pidFile string, not int, within time.Duration) int {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -87,11 +104,7 @@ func TestBGProcessRestartsOnFailureAfterDaemonKilled(t *testing.T) {
 	if first == 0 {
 		t.Fatal("no daemon pid in the pidfile")
 	}
-	t.Cleanup(func() {
-		if p := waitForDaemonPID(t, pidFile, 0, time.Second); p > 0 {
-			_ = syscall.Kill(p, syscall.SIGKILL)
-		}
-	})
+	t.Cleanup(func() { stopBGTestService(t, set, svc, pidFile) })
 
 	// The reported scenario, exactly: an external kill of the daemon.
 	if err := syscall.Kill(first, syscall.SIGKILL); err != nil {
@@ -133,11 +146,7 @@ func TestBGProcessRestartsAlwaysAfterDaemonKilled(t *testing.T) {
 	if first == 0 {
 		t.Fatal("no daemon pid in the pidfile")
 	}
-	t.Cleanup(func() {
-		if p := waitForDaemonPID(t, pidFile, 0, time.Second); p > 0 {
-			_ = syscall.Kill(p, syscall.SIGKILL)
-		}
-	})
+	t.Cleanup(func() { stopBGTestService(t, set, svc, pidFile) })
 
 	if err := syscall.Kill(first, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill daemon %d: %v", first, err)

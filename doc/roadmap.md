@@ -89,10 +89,6 @@ has a record of what is known about it.
   outrunning the socket. What is left needs the re-exec, which only a
   real PID 1 does; the next occurrence's `slinitctl catlog
   trigger-autofire` will name the call that failed.
-- **`go test ./pkg/service/` leaves one `sleep 60` behind.** Some test
-  in that package starts one and does not reap it; it is the same
-  before and after 3.21.0. Harmless to the result, but a suite should
-  clean up after itself.
 
 ## Phase history
 

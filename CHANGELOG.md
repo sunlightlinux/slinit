@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Tests
+
+- **The unit suite no longer leaves processes behind.** Two tests did:
+  `TestWatchdogTriggersRestartOnFailure` returned with its restarted
+  service still running a `sleep 60`, and the bgprocess restart tests
+  killed their daemon at cleanup, which the service under test then
+  restarted, as it is meant to, after the test had returned. Both now
+  stop the service. Found by comparing the user's processes before and
+  after `go test ./...`; nothing is left now.
+- Functional case `60-umask` is now `60-service-env`, which is what it
+  tests; `umask` is case 71.
+
 ### Documentation
 
 A pass over every Markdown file, checked against the code rather than

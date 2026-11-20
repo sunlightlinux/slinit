@@ -167,7 +167,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 57 | extra-commands | `extra-command-*` and `extra-started-command-*` custom actions |
 | 58 | healthcheck | `healthcheck-command` detects an unhealthy service |
 | 59 | smooth-recovery | Smooth recovery restarts without propagating failure to dependents |
-| 60 | umask | `SLINIT_SERVICENAME` / `SLINIT_SERVICEDSCDIR` auto-injected per service (the file name is historical; `umask` is case 71) |
+| 60 | service-env | `SLINIT_SERVICENAME` / `SLINIT_SERVICEDSCDIR` auto-injected per service |
 | 61 | options-flags | `options =` flags (kill-all-on-stop, signal-process-only) |
 | 62 | query-deps | `slinitctl dependents` / dependency graph query |
 | 63 | required-paths | `required-files` / `required-dirs` pre-start guards |
