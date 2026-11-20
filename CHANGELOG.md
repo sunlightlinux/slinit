@@ -24,6 +24,15 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.21.1] — 2026-11-20
+
+**No product code changed**: documentation, tests and the demo, as in
+v3.19.1. The binaries are v3.21.0's. Cut because the documentation was
+wrong in ways a reader would act on — it said slinitctl could not
+control a dinit daemon, that no D-Bus daemon serves hostname and time
+settings, and that `stop` returns before the service has stopped — and
+because the unit suite left processes running after it finished.
+
 ### Tests
 
 - **The unit suite no longer leaves processes behind.** Two tests did:
@@ -31,10 +40,16 @@ verified with `git tag -v`.
   service still running a `sleep 60`, and the bgprocess restart tests
   killed their daemon at cleanup, which the service under test then
   restarted, as it is meant to, after the test had returned. Both now
-  stop the service. Found by comparing the user's processes before and
-  after `go test ./...`; nothing is left now.
+  stop the service. Found by comparing the running processes before
+  and after `go test ./...`; nothing is left now.
 - Functional case `60-umask` is now `60-service-env`, which is what it
   tests; `umask` is case 71.
+- The demo's `trigger-autofire` keeps its output in a buffer, and
+  `tests/performance/demo/softreboot-cycle.sh` prints its status and log
+  to the console every generation. It failed its start once after a real
+  soft reboot, three causes have been ruled out, and what its own
+  `slinitctl` calls said is the evidence still missing; a failing cycle
+  now records it.
 
 ### Documentation
 
