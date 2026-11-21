@@ -26,12 +26,15 @@ verified with `git tag -v`.
 
 ## [3.21.2] — 2026-11-21
 
-**A patch with two fixes found on an installed Sunlight system running
+**A patch with three fixes found on an installed Sunlight system running
 GNOME.** GNOME's automatic date and time could not be switched on,
-because timedate1 did not see the packaged chronyd that was running, and
-the three settings daemons logged nowhere. A patch, not a minor: the only
-visible change is that what did not work now does; nothing could rely on
-a running chronyd being reported as absent. The control protocol stays at
+because timedate1 did not see the packaged chronyd that was running; the
+three settings daemons logged nowhere; and slinit-logind refused the
+inhibitor locks GNOME takes. A patch, not a minor: the only visible
+change is that what did not work now does. Nothing could rely on a
+running chronyd being reported as absent, and the inhibitor rules are
+the ones systemd-logind applies by default, which desktops are written
+against. The control protocol stays at
 version 7.
 
 ### Fixed
@@ -51,6 +54,17 @@ version 7.
   left no trace, and neither did a failed start. They now also log to
   syslog, which slinit serves into the journal:
   `slinit-journalctl -t slinit-timedated`.
+- **`slinit-logind` refused every inhibitor lock from a user.** Only root
+  could call `Inhibit`, so gnome-session logged "Failed to get delay
+  inhibitor: access denied" at each phase and could not lock the screen
+  before a suspend, and gsd-power could not take over the power key.
+  `Inhibit` now follows polkit's defaults for `login1.inhibit-*`, as the
+  power calls have since 3.15.0: delay locks on shutdown and sleep, and
+  idle blocks, are anyone's; block locks on shutdown and sleep and the
+  `handle-*` key locks need a local session of the caller's own. The
+  number of locks held is capped at 8192, as systemd's `InhibitorsMax`,
+  since each one costs slinit-logind a descriptor; past it the call fails
+  with `LimitsExceeded`.
 
 ## [3.21.1] — 2026-11-20
 

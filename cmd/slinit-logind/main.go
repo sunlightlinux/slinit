@@ -651,9 +651,7 @@ func (m *manager) CanSuspendThenHibernate(sender dbus.Sender) (string, *dbus.Err
 // used to attribute the lock to a uid and pid so `loginctl
 // list-inhibitors` names something an operator can act on.
 func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus.UnixFD, *dbus.Error) {
-	// Root only, as in systemd-logind without polkit: a lock can hold off
-	// a shutdown or sleep that root asked for.
-	if err := m.authorize(sender, noGoodUser, "Inhibit"); err != nil {
+	if err := m.mayInhibit(sender, what, mode); err != nil {
 		return -1, err
 	}
 	var uid, pid uint32
@@ -665,6 +663,10 @@ func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus
 	}
 
 	clientEnd, in, err := m.inhibitors.add(what, who, why, mode, uid, pid)
+	if errors.Is(err, errTooManyInhibitors) {
+		return -1, dbus.NewError("org.freedesktop.DBus.Error.LimitsExceeded",
+			[]interface{}{err.Error()})
+	}
 	if err != nil {
 		return 0, dbus.NewError("org.freedesktop.login1.Error.InvalidArguments",
 			[]interface{}{err.Error()})

@@ -176,8 +176,10 @@ sees *PrepareForSleep(true)*, then closes the descriptor to say it is
 done — which is why closure is detected per sleep rather than per
 session.
 
-Enforcement covers sleep and the key handlers below. *shutdown* and
-*idle* locks are recorded and reported but not yet enforced; **loginctl
+Enforcement covers sleep and the key handlers below, and a *block* lock
+on *shutdown* refuses a power-off or reboot asked for by a user other
+than root (see **Who may call what**). Otherwise *shutdown* and *idle*
+locks are recorded and reported but not enforced; **loginctl
 list-inhibitors** shows them.
 
 # CONFIGURATION
@@ -287,10 +289,23 @@ call is allowed from root, or from the user it is about, and refused with
 checked, and the D-Bus policy was the only barrier.
 
 Root only
-:   *Halt* and *HaltWithFlags*, *Inhibit*, *CreateSession* and
+:   *Halt* and *HaltWithFlags*, *CreateSession* and
     *CreateSessionWithPIDFD*, *LockSessions*,
     *UnlockSessions*, *TerminateSeat*, *SetUserLinger* (even for the
     caller's own uid), and writing the manager's properties.
+
+*Inhibit*, by the lock asked for (since 3.21.2; root only before)
+:   These are polkit's defaults for *org.freedesktop.login1.inhibit-\**.
+    A *delay* lock on *shutdown* or *sleep*, and a *block* lock on
+    *idle*, are open to anyone: a delay lock only buys its holder the
+    inhibit delay before the action goes ahead. A *block* lock on
+    *shutdown* or *sleep*, and any lock on a *handle-\** key, needs the
+    caller's process to be in a local session of its own, in the
+    foreground or not. A lock naming several classes needs what the
+    strictest of them needs. At most 8192 locks are held at once, as
+    systemd's *InhibitorsMax*; past that the call fails with
+    *org.freedesktop.DBus.Error.LimitsExceeded*. A user's block lock
+    refuses other users' power calls, never root's.
 
 Root, or the user of the active local session
 :   *PowerOff*, *Reboot*, *Suspend*, *Hibernate*, *HybridSleep*,

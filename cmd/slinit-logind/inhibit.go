@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -62,6 +63,14 @@ const fdSendGrace = 2 * time.Second
 // to have five seconds gets five seconds.
 const inhibitDelayMax = 5 * time.Second
 
+// inhibitorsMax caps the locks held at once, as systemd's InhibitorsMax
+// (8192) does. Each costs a pipe and a goroutine here, and anyone may
+// take a delay lock, so without a cap one user could run slinit-logind
+// out of descriptors.
+var inhibitorsMax = 8192
+
+var errTooManyInhibitors = errors.New("maximum number of inhibitors reached")
+
 type inhibitor struct {
 	ID   uint32
 	What string // colon-separated list, e.g. "sleep:idle"
@@ -118,6 +127,12 @@ func (r *inhibitRegistry) add(what, who, why, mode string, uid, pid uint32) (*os
 	}
 
 	r.mu.Lock()
+	if len(r.m) >= inhibitorsMax {
+		r.mu.Unlock()
+		ourEnd.Close()
+		clientEnd.Close()
+		return nil, nil, errTooManyInhibitors
+	}
 	r.next++
 	in := &inhibitor{
 		ID: r.next, What: what, Who: who, Why: why, Mode: mode,

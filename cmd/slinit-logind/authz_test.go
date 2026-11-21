@@ -128,8 +128,6 @@ func TestMethodsRefuseOtherUsers(t *testing.T) {
 	}
 	_, _, _, _, _, _, _, _, cerr := m.CreateSession(alice, 1000, 0, "", "", "", "", "", 0, "", "", false, "", "", nil)
 	refused["CreateSession"] = cerr
-	_, ierr := m.Inhibit(alice, "shutdown", "x", "y", "block")
-	refused["Inhibit"] = ierr
 	for name, err := range refused {
 		if !denied(err) {
 			t.Errorf("%s from a non-root caller: got %v, want AccessDenied", name, err)

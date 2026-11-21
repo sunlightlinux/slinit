@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -134,23 +135,9 @@ var (
 // a pid can be reused between the bus naming it and this lookup: with the
 // uid check, a reused pid can only land in a session of the same user.
 func (m *manager) callerActiveLocalSession(sender dbus.Sender, uid uint32) (string, string) {
-	pid, err := senderPID(m, sender)
-	if err != nil || pid == 0 {
-		return "", "caller pid unknown"
-	}
-	id := sessionOfPID(pid)
-	if id == "" {
-		return "", "caller is in no session"
-	}
-	var rec SessionRecord
-	if !readJSON(sessionFile(id), &rec) {
-		return "", "caller's session has no record"
-	}
-	if rec.UserID != uid {
-		return "", "caller's session belongs to another user"
-	}
-	if rec.Remote || rec.SeatID == "" {
-		return "", "caller's session is not local"
+	rec, why := m.callerLocalSession(sender, uid)
+	if rec == nil {
+		return "", why
 	}
 	// sessionIsActive calls a session with no VT active, which is right
 	// for what a desktop is shown and wrong for granting power: here the
@@ -163,6 +150,74 @@ func (m *manager) callerActiveLocalSession(sender dbus.Sender, uid uint32) (stri
 		return "", "caller's session is not in the foreground"
 	}
 	return rec.ID, ""
+}
+
+// callerLocalSession returns the session record of the calling process
+// when it is uid's own and local (it has a seat and is not remote),
+// whether or not it is in the foreground: polkit's allow_inactive. It
+// returns nil and the reason otherwise.
+func (m *manager) callerLocalSession(sender dbus.Sender, uid uint32) (*SessionRecord, string) {
+	pid, err := senderPID(m, sender)
+	if err != nil || pid == 0 {
+		return nil, "caller pid unknown"
+	}
+	id := sessionOfPID(pid)
+	if id == "" {
+		return nil, "caller is in no session"
+	}
+	var rec SessionRecord
+	if !readJSON(sessionFile(id), &rec) {
+		return nil, "caller's session has no record"
+	}
+	if rec.UserID != uid {
+		return nil, "caller's session belongs to another user"
+	}
+	if rec.Remote || rec.SeatID == "" {
+		return nil, "caller's session is not local"
+	}
+	return &rec, ""
+}
+
+// mayInhibit is polkit's default for org.freedesktop.login1.inhibit-*,
+// for a caller other than root:
+//
+//   - a delay lock on shutdown or sleep, and a block on idle, are
+//     allow_any = yes: anyone may take one. A delay lock only buys the
+//     holder inhibitDelayMax before the action goes ahead anyway.
+//   - a block on shutdown or sleep, and the handle-* key locks, are
+//     allow_inactive/allow_active = yes, allow_any no or auth_admin: the
+//     user of a local session, in the foreground or not, may take one.
+//
+// Root's own power calls are not held back by a user's block lock; it
+// refuses other users' power calls, as polkit's -ignore-inhibit rule does.
+// This used to be root only, so gnome-session could not take the delay
+// lock it locks the screen under before a suspend ("Failed to get delay
+// inhibitor: access denied"), nor gsd-power take over the power key.
+func (m *manager) mayInhibit(sender dbus.Sender, what, mode string) *dbus.Error {
+	uid, err := senderUID(m, sender)
+	if err != nil {
+		m.dbgf("Inhibit: refused %s, uid unknown: %v", sender, err)
+		return errAccessDenied("Inhibit: cannot identify the caller")
+	}
+	if uid == 0 {
+		return nil
+	}
+	needLocal := false
+	for _, tok := range strings.Split(what, ":") {
+		switch {
+		case tok == "idle", mode == "delay" && (tok == "shutdown" || tok == "sleep"):
+		default:
+			needLocal = true
+		}
+	}
+	if !needLocal {
+		return nil
+	}
+	if rec, why := m.callerLocalSession(sender, uid); rec == nil {
+		m.dbgf("Inhibit %s/%s: refused uid %d: %s", what, mode, uid, why)
+		return errAccessDenied("Inhibit: access denied")
+	}
+	return nil
 }
 
 // authorizeSessionOwner allows root and the user owning session id.
