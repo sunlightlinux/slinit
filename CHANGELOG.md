@@ -24,6 +24,15 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.21.4] — 2026-11-21
+
+**A patch: a shutdown hang with shared soft dependencies.** On an
+installed Sunlight system with GDM, every reboot took close to two
+minutes, because slinit waited out its 90-second emergency timeout. A
+patch, not a minor: only the hang goes, and a service now stops when the
+services that wanted it have stopped, which is what was meant all
+along. The control protocol stays at version 7.
+
 ### Fixed
 
 - **A shutdown could hang for 90 seconds when two services both waited
@@ -38,7 +47,7 @@ verified with `git tag -v`.
   The second require is now skipped when the dependency is already held.
   dinit has the same code but runs its propagation queue last-in
   first-out, which closes the window; slinit's queue is first-in
-  first-out.
+  first-out. On the GDM system, a reboot went from 113 seconds to 19.
 
 ## [3.21.3] — 2026-11-21
 
