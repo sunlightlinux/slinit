@@ -24,6 +24,16 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.21.2] — 2026-11-21
+
+**A patch with two fixes found on an installed Sunlight system running
+GNOME.** GNOME's automatic date and time could not be switched on,
+because timedate1 did not see the packaged chronyd that was running, and
+the three settings daemons logged nowhere. A patch, not a minor: the only
+visible change is that what did not work now does; nothing could rely on
+a running chronyd being reported as absent. The control protocol stays at
+version 7.
+
 ### Fixed
 
 - **`slinit-timedated` and `slinit-timedatectl` found no time-sync
