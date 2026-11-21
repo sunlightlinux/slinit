@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.22.0] — 2026-11-21
+
+**The rest of a shutdown reaches the journal, and clock changes stop
+misleading it.** Found on an installed Sunlight system with GNOME. A
+minor, not a patch: `options = stops-last` is a new setting, and a
+service file that uses it is refused by older slinit, so a package
+adding it to the log daemon has to require 3.22.0. The rest are fixes:
+a time zone change no longer moves the clock or leaves the hardware
+clock on local time, and `slinit-journalctl` orders boots as they
+happened whatever the clock said. The control protocol stays at
+version 7.
+
 ### Added
 
 - **`options = stops-last`, so the log daemon sees the whole
