@@ -24,6 +24,32 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-11-21
+
+**The first long-term-support release.** 3.x was the development line;
+by 3.22 slinit boots Sunlight on real hardware — an Intel NUC as well as
+the development VMs — with GNOME, and the last releases were fixes for
+what turned up there. 4.0 freezes that surface.
+
+**Nothing breaks.** 4.0.0 is 3.22.1 with the fixes and documentation
+below: no directive, option, command or flag is removed or changes
+meaning, the control protocol stays at version 7 (minimum compatible
+version 1), and every service file, script and `slinitctl` that works
+with 3.22 works with 4.0. Moving from 3.22 needs nothing but the
+upgrade. The major number marks the start of a support promise, not an
+incompatible change.
+
+**What long-term support means here** (STABILITY.md, "Long-term
+support"):
+
+- The 4.0 line takes bug and security fixes only — no new directive,
+  option, command, flag or subsystem, not even an additive one.
+- It is supported until six months after the next LTS line is
+  released.
+- New features resume in 4.1, starting with more of systemd's
+  service-manager surface, under the ordinary rules.
+- 3.x and older are no longer supported; SECURITY.md lists what is.
+
 ### Fixed
 
 - **`slinit-supports`, `doc/features.md` and the project statistics
