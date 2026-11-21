@@ -33,8 +33,11 @@ verified with `git tag -v`.
   only root can use; so on an Intel NUC with chronyd running and in
   sync, a user saw "no" and "chronyd (inactive)". The first is now the
   kernel's answer (`adjtimex`), as in systemd and in
-  `slinit-timedated`'s `NTPSynchronized`; the second reads "unknown"
-  when the state cannot be found out.
+  `slinit-timedated`'s `NTPSynchronized`; the second is asked of
+  `slinit-timedated` over the system bus when the control socket is out
+  of reach, as systemd's timedatectl asks timedated, and reads
+  "unknown" only if that fails too. `show` prints `NTP=yes` for such a
+  user now, where it said `no`.
 
 ## [3.22.0] — 2026-11-21
 

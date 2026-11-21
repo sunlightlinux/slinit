@@ -54,6 +54,13 @@ concurrent readers never observe an inconsistent state.
     default when no command is given. Two-column text table; empty
     fields are omitted. With **\--json** output is machine-readable.
 
+    "System clock synchronized" is the kernel's answer (**adjtimex**(2)),
+    as in systemd. Whether the NTP service runs is asked of slinit, whose
+    control socket is root's; for any other user it is read from
+    **slinit-timedated**(8)'s *NTP* property over the system bus
+    instead, and shown as *unknown* if that fails too (since 3.22.1;
+    before, a user saw "no" and "inactive" whatever the truth).
+
 **show**
 :   Emit the same fields as **KEY=VALUE** lines with timestamps in
     microseconds since the Unix epoch, matching the systemd

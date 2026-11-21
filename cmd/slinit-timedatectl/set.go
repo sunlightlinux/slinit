@@ -19,12 +19,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 
 	"github.com/sunlightlinux/slinit/pkg/timedate"
 )
@@ -225,10 +228,45 @@ func parseBool(s string) (bool, error) {
 // — set-ntp uses findNTPService for the same probe minus the running
 // check.
 func detectNTPService() (svc string, running, known bool) {
-	svc = timedate.FindNTPService()
+	svc = findNTPServiceFunc()
 	if svc == "" {
 		return "", false, true
 	}
-	running, known = timedate.ServiceState(svc)
+	running, known = serviceStateFunc(svc)
+	if !known {
+		// Without the control socket, ask slinit-timedated, which runs
+		// as root, the way systemd's timedatectl asks timedated: its
+		// NTP property is readable by anyone.
+		running, known = ntpOverBus()
+	}
 	return svc, running, known
+}
+
+// findNTPServiceFunc and serviceStateFunc are variables so tests need
+// neither the host's service directories nor a running slinit.
+var (
+	findNTPServiceFunc = timedate.FindNTPService
+	serviceStateFunc   = timedate.ServiceState
+)
+
+// ntpOverBus reads org.freedesktop.timedate1's NTP property, activating
+// slinit-timedated if need be. known is false when the bus or the
+// service cannot be reached. A variable so tests need no bus.
+var ntpOverBus = func() (running, known bool) {
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return false, false
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var v dbus.Variant
+	err = conn.Object("org.freedesktop.timedate1", "/org/freedesktop/timedate1").
+		CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0,
+			"org.freedesktop.timedate1", "NTP").Store(&v)
+	if err != nil {
+		return false, false
+	}
+	b, ok := v.Value().(bool)
+	return b, ok
 }
