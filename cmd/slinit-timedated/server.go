@@ -259,8 +259,27 @@ func (s *server) property(name string) (dbus.Variant, bool) {
 // setKernelTimezone tells the kernel the offset of the new local time
 // (settimeofday with only the timezone), which FAT timestamps and a
 // local-time RTC rely on; a failure is ignored, as timedated ignores it.
+//
+// The first settimeofday since boot that carries a non-zero timezone
+// makes the kernel assume the RTC keeps local time: it shifts the
+// running clock by the offset and from then on writes local time into
+// the RTC (persistent_clock_is_local, which chronyd's rtcsync then acts
+// on). systemd seals that at boot with a dummy call; slinit does not,
+// so the first time zone change of a boot — GNOME's Date & Time panel —
+// moved the clock back two hours on a Bucharest system and left the
+// next boot two hours ahead. A call with offset 0 first takes the
+// first-call slot without shifting anything; after it, the real
+// offset is only recorded. A local-time RTC is set up at boot by
+// hwclock --systz, never by a time zone change on a running system.
 func setKernelTimezone() {
 	_, off := time.Now().Zone()
-	tz := struct{ minuteswest, dsttime int32 }{int32(-off / 60), 0}
+	setKernelTZ(0)
+	setKernelTZ(int32(-off / 60))
+}
+
+// setKernelTZ is settimeofday(NULL, {minuteswest, 0}); a variable so the
+// order of the calls can be tested.
+var setKernelTZ = func(minuteswest int32) {
+	tz := struct{ minuteswest, dsttime int32 }{minuteswest, 0}
 	_, _, _ = syscall.Syscall(syscall.SYS_SETTIMEOFDAY, 0, uintptr(unsafe.Pointer(&tz)), 0)
 }

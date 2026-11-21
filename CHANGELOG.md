@@ -26,6 +26,19 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **Changing the time zone moved the clock and left the hardware clock
+  on local time.** `slinit-timedated` tells the kernel the new offset
+  with `settimeofday`, and the kernel treats the first such call of a
+  boot as the moment to adopt a local-time RTC: it shifts the running
+  clock by the offset and from then on writes local time into the RTC.
+  So the first time zone change of a boot — GNOME's Date & Time panel
+  — set the clock back two hours on a Bucharest system (chronyd then
+  stepped it forward), and the next boot started two hours ahead.
+  systemd seals that first call at boot; `slinit-timedated` now makes a
+  zero-offset call first, which takes the slot without shifting
+  anything. Checked on an installed system: a change to Europe/Berlin
+  and back moved the clock by an hour before, and not at all after.
+
 - **`slinit-journalctl` put a boot whose clock was stepped back out of
   place.** `--list-boots` ordered boots by their smallest wall-clock
   time, so a boot in which the time was set back — by hand, or by
