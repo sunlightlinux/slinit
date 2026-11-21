@@ -219,13 +219,16 @@ func parseBool(s string) (bool, error) {
 	return false, fmt.Errorf("invalid boolean %q (want yes/no, true/false, 1/0, on/off)", s)
 }
 
-// detectNTPService returns (name, running) for the first NTP-shaped
-// service present on the host. Used only by status output — set-ntp
-// uses findNTPService for the same probe minus the running check.
-func detectNTPService() (string, bool) {
-	svc := timedate.FindNTPService()
+// detectNTPService returns the first NTP-shaped service present on the
+// host, whether it is running, and whether that could be found out (not
+// without access to slinit's control socket). Used only by status output
+// — set-ntp uses findNTPService for the same probe minus the running
+// check.
+func detectNTPService() (svc string, running, known bool) {
+	svc = timedate.FindNTPService()
 	if svc == "" {
-		return "", false
+		return "", false, true
 	}
-	return svc, timedate.ServiceRunning(svc)
+	running, known = timedate.ServiceState(svc)
+	return svc, running, known
 }

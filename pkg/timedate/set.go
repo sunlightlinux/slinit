@@ -79,8 +79,22 @@ func FindNTPService() string {
 // non-zero exit is treated as "not running" — we don't want status
 // output to fail just because the daemon isn't up yet.
 func ServiceRunning(name string) bool {
-	cmd := exec.Command(SlinitctlBin, "is-started", name)
-	return cmd.Run() == nil
+	running, _ := ServiceState(name)
+	return running
+}
+
+// ServiceState is ServiceRunning that can also say it does not know.
+// slinitctl is-started exits 1 both for a service that is not started
+// and when it cannot reach slinit at all — the control socket is root's,
+// so for any other user it never can. Only in the first case does it
+// print the state, so no output means the answer is unknown, and a
+// caller should say so rather than report the service stopped.
+func ServiceState(name string) (running, known bool) {
+	out, err := exec.Command(SlinitctlBin, "is-started", name).Output()
+	if err == nil {
+		return true, true
+	}
+	return false, strings.TrimSpace(string(out)) != ""
 }
 
 // slinitctl invokes `slinitctl SUB NAME` and surfaces its output on

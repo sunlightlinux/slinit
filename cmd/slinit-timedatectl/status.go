@@ -59,23 +59,29 @@ func collectStatus() statusFields {
 		s.RTCTime = *rt
 		s.RTCTimeValid = true
 	}
-	svc, running := detectNTPService()
+	svc, running, known := detectNTPService()
 	if svc != "" {
 		s.NTPService = svc
 		s.NTPServiceRunning = running
 		s.CanNTP = true
-		if running {
+		switch {
+		case !known:
+			// A user without access to the control socket: saying
+			// "inactive" for a chronyd that runs was wrong.
+			s.NTP = "unknown"
+		case running:
 			s.NTP = "active"
-		} else {
+		default:
 			s.NTP = "inactive"
 		}
 	} else {
 		s.NTP = "n/a"
 	}
-	// slinit does not maintain a discipline-quality "sync" flag; we
-	// treat "NTP daemon running" as the best proxy — matches what
-	// operators expect when reading the field.
-	s.SystemClockSynchronized = s.NTPServiceRunning
+	// What the kernel says, as timedated's NTPSynchronized and
+	// systemd's timedatectl report it. It used to be "the NTP daemon
+	// runs", which read "no" for any user who could not ask slinit, and
+	// "yes" for a daemon that had not synchronized yet.
+	s.SystemClockSynchronized = ntpSynchronized()
 	return s
 }
 
@@ -149,3 +155,6 @@ func yesNo(b bool) string {
 	}
 	return "no"
 }
+
+// ntpSynchronized is timedate.NTPSynchronized; a variable for tests.
+var ntpSynchronized = timedate.NTPSynchronized

@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`slinit-timedatectl` said the clock was not synchronized, and the
+  NTP service inactive, for any user but root.** "System clock
+  synchronized" was whether the NTP daemon ran, not the kernel's
+  answer, and whether it ran comes from slinit's control socket, which
+  only root can use; so on an Intel NUC with chronyd running and in
+  sync, a user saw "no" and "chronyd (inactive)". The first is now the
+  kernel's answer (`adjtimex`), as in systemd and in
+  `slinit-timedated`'s `NTPSynchronized`; the second reads "unknown"
+  when the state cannot be found out.
+
 ## [3.22.0] — 2026-11-21
 
 **The rest of a shutdown reaches the journal, and clock changes stop

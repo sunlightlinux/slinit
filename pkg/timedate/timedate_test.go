@@ -189,3 +189,31 @@ func TestFindNTPServiceSearchesEveryServiceDir(t *testing.T) {
 		t.Errorf("preference order: FindNTPService = %q, want chronyd", got)
 	}
 }
+
+// slinitctl is-started exits 1 both for a stopped service and when it
+// cannot reach slinit (the socket is root's); only the first prints a
+// state. As a user, slinit-timedatectl said "chronyd (inactive)" on a
+// NUC where chronyd was running and in sync.
+func TestServiceStateTellsUnknownFromStopped(t *testing.T) {
+	dir := t.TempDir()
+	old := SlinitctlBin
+	t.Cleanup(func() { SlinitctlBin = old })
+	for _, c := range []struct {
+		name, script   string
+		running, known bool
+	}{
+		{"started", "echo STARTED; exit 0", true, true},
+		{"stopped", "echo STOPPED; exit 1", false, true},
+		{"no access", "echo 'slinitctl: Failed to connect to slinit at /run/slinit.socket: permission denied' >&2; exit 1", false, false},
+	} {
+		p := filepath.Join(dir, strings.ReplaceAll(c.name, " ", "-"))
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+c.script+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		SlinitctlBin = p
+		running, known := ServiceState("chronyd")
+		if running != c.running || known != c.known {
+			t.Errorf("%s: ServiceState = (%v, %v), want (%v, %v)", c.name, running, known, c.running, c.known)
+		}
+	}
+}
