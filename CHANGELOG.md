@@ -24,6 +24,13 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.22.1] — 2026-11-21
+
+**A patch: `slinit-timedatectl` misreported the clock for any user but
+root.** Found on an Intel NUC installed from 3.22.0. A patch, not a
+minor: only output that was wrong changes, and no setting or interface
+is added. The control protocol stays at version 7.
+
 ### Fixed
 
 - **`slinit-timedatectl` said the clock was not synchronized, and the
