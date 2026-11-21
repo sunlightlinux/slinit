@@ -2807,7 +2807,17 @@ func (sr *ServiceRecord) ReleaseDependencies() {
 func (sr *ServiceRecord) DoPropagation() {
 	if sr.propRequire {
 		for _, dep := range sr.dependsOn {
-			if !dep.IsOnlyOrdering() {
+			// A dependency already held is already counted. doStart's
+			// re-attach can take the hold first: when this service is
+			// STARTING and the dependency starts before this propagation
+			// runs, the dependency attaches its soft dependents itself.
+			// Requiring it again counted one dependent twice, and the
+			// extra count was never released, so at shutdown the
+			// dependency — and everything under it — never stopped
+			// (boot waits-for gdm and polkitd, gdm waits-for polkitd).
+			// dinit avoids the window by running its propagation queue
+			// LIFO; this queue is FIFO, so the check has to be here.
+			if !dep.IsOnlyOrdering() && !dep.HoldingAcq {
 				dep.To.Record().Require()
 				dep.HoldingAcq = true
 			}

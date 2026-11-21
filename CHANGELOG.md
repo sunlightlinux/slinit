@@ -24,6 +24,22 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A shutdown could hang for 90 seconds when two services both waited
+  for a third.** With `boot` waiting for `gdm` and `polkitd`, and `gdm`
+  itself `waits-for: polkitd` — a GDM install enabled through `boot.d`
+  — polkitd was counted as needed three times by two dependents. The
+  extra count was never released, so at shutdown polkitd, and logind,
+  dbus and early-setup beneath it, never got a stop, and slinit waited
+  out its 90-second emergency timeout before rebooting. A service that
+  started while a dependent was still starting attached that dependent
+  itself, and the dependent's own propagation then required it again.
+  The second require is now skipped when the dependency is already held.
+  dinit has the same code but runs its propagation queue last-in
+  first-out, which closes the window; slinit's queue is first-in
+  first-out.
+
 ## [3.21.3] — 2026-11-21
 
 **A patch: the D-Bus settings daemons had no `PATH`.** Found checking
