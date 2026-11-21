@@ -88,6 +88,26 @@ func (s *Service) OpenSyslog() {
 	}
 }
 
+// DefaultPath is systemd's default search path for the programs a service
+// runs, used when the environment gives none.
+const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// EnsurePath sets PATH to DefaultPath when it is unset or empty, and
+// reports whether it did. dbus-daemon's activation helper starts a
+// service with an emptied environment, so these daemons had no PATH and
+// every program they run by name failed: timedated could not ask
+// slinitctl whether chronyd ran (NTP read false, SetNTP failed, a manual
+// SetTime was not refused while chronyd kept time) nor run hwclock, and
+// localed could not run locale -a or loadkeys. A daemon's main calls it
+// before anything else.
+func EnsurePath() bool {
+	if os.Getenv("PATH") != "" {
+		return false
+	}
+	os.Setenv("PATH", DefaultPath)
+	return true
+}
+
 // Fatal reports a daemon's start-up failure on stderr and in syslog, for
 // the same reason as Logf, and exits 1.
 func Fatal(name string, err error) {

@@ -33,6 +33,7 @@ func main() {
 		"hostname used when /etc/hostname and os-release's DEFAULT_HOSTNAME name none")
 	flag.Parse()
 	hostname.FallbackHostname = *fallback
+	dbusservice.EnsurePath()
 	if err := run(*idle); err != nil {
 		dbusservice.Fatal("slinit-hostnamed", err)
 	}

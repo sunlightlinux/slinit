@@ -29,6 +29,7 @@ func main() {
 	}
 	idle := flag.Duration("exit-idle", 30*time.Second, "exit after this long without requests (0: never)")
 	flag.Parse()
+	dbusservice.EnsurePath()
 	if err := run(*idle); err != nil {
 		dbusservice.Fatal("slinit-localed", err)
 	}

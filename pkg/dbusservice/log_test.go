@@ -1,6 +1,10 @@
 package dbusservice
 
-import "testing"
+import (
+	"os"
+	"os/exec"
+	"testing"
+)
 
 type fakeSyslog struct{ lines []string }
 
@@ -18,4 +22,21 @@ func TestLogfReachesSyslog(t *testing.T) {
 	}
 	// Without OpenSyslog nothing is sent anywhere but stderr.
 	(&Service{Name: "slinit-test"}).Logf("no syslog")
+}
+
+// Bus activation hands the daemon no PATH, and then "slinitctl", "hwclock",
+// "locale" and "loadkeys" are not found by name. EnsurePath supplies the
+// default; a PATH that is set is left alone.
+func TestEnsurePath(t *testing.T) {
+	t.Setenv("PATH", "")
+	if !EnsurePath() || os.Getenv("PATH") != DefaultPath {
+		t.Fatalf("empty PATH: got %q", os.Getenv("PATH"))
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Errorf("sh not found with the default PATH: %v", err)
+	}
+	t.Setenv("PATH", "/opt/x/bin")
+	if EnsurePath() || os.Getenv("PATH") != "/opt/x/bin" {
+		t.Errorf("set PATH was changed to %q", os.Getenv("PATH"))
+	}
 }
