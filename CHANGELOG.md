@@ -24,6 +24,32 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [3.21.3] — 2026-11-21
+
+**A patch: the D-Bus settings daemons had no `PATH`.** Found checking
+v3.21.2 on a freshly installed Sunlight system with GNOME, where
+"Automatic Date & Time" still could not be switched on. 3.21.2's fix
+was right but had been checked with `slinit-timedatectl` from a shell,
+which has a `PATH`; the daemon started by D-Bus has none. A patch: only
+what did not work changes. The control protocol stays at version 7.
+
+### Fixed
+
+- **`slinit-timedated`, `slinit-localed` and `slinit-hostnamed` ran
+  every program by name with no `PATH`.** dbus-daemon's activation
+  helper starts them with an emptied environment, and Go has no default
+  search path, so each `slinitctl`, `hwclock`, `locale` and `loadkeys`
+  failed. timedated reported `NTP` false while chronyd ran, so GNOME
+  showed automatic time off, `SetNTP` failed, a manual `SetTime` was
+  not refused while chronyd kept the time (chronyd then logged a time
+  jump and lost sync), and the hardware clock was never written.
+  localed accepted any locale, installed or not, and did not load a new
+  console keymap. They now set systemd's default `PATH` when they start
+  without one. Checked on the installed system through D-Bus: `NTP`,
+  `CanNTP` and `NTPSynchronized` read true, `SetTime` is refused with
+  `AutomaticTimeSyncEnabled`, and `SetLocale` refuses a locale that is
+  not installed.
+
 ## [3.21.2] — 2026-11-21
 
 **A patch with three fixes found on an installed Sunlight system running
