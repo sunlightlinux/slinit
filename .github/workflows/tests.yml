@@ -28,7 +28,10 @@ name: Slinit tests
 on:
   pull_request:
   push:
-    branches: [main]
+    # main is where every fix lands first; lts/* takes the backports and
+    # release/* is where a long-term-support release is cut (since 4.0).
+    # All three must stay green, so all three are tested on push.
+    branches: [main, 'lts/**', 'release/**']
   workflow_dispatch:
 
 permissions:
