@@ -1950,3 +1950,36 @@ func TestRunQueryDashIRequiresUnit(t *testing.T) {
 		t.Errorf("-I + --invocation=: err=%v (want mutually exclusive)", runErr)
 	}
 }
+
+// A boot whose wall clock was stepped back two hours mid-boot, as on an
+// installed system where the time was set by hand: it must stay between
+// the boots before and after it. Its smallest wall-clock time is the
+// earliest of all, which used to make it the oldest boot, so
+// --list-boots showed it first and -b -1 picked another boot.
+func TestSortedBootsSteppedClock(t *testing.T) {
+	byID := map[string]*bootRange{}
+	s := int64(1e9)
+	for i := int64(0); i < 5; i++ {
+		aggregateBoot(byID, &journal.Event{BootID: "one", Ts: 1000*s + i*s, Mts: (i + 1) * s})
+	}
+	for i := int64(0); i < 6; i++ {
+		ts := 2000*s + i*s
+		if i == 2 || i == 3 {
+			ts -= 7200 * s
+		}
+		aggregateBoot(byID, &journal.Event{BootID: "two", Ts: ts, Mts: (i + 1) * s})
+	}
+	for i := int64(0); i < 3; i++ {
+		aggregateBoot(byID, &journal.Event{BootID: "three", Ts: 3000*s + i*s, Mts: (i + 1) * s})
+	}
+	var order []string
+	for _, r := range sortedBoots(byID) {
+		order = append(order, r.id)
+	}
+	if strings.Join(order, ",") != "one,two,three" {
+		t.Errorf("boot order = %v, want one, two, three", order)
+	}
+	if r := byID["two"]; r.first != 2000*s || r.last != 2005*s {
+		t.Errorf("stepped boot spans %d..%d, want its first and last entries %d..%d", r.first, r.last, 2000*s, 2005*s)
+	}
+}

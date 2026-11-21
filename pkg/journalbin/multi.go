@@ -68,20 +68,29 @@ func (m *MultiReader) Close() error {
 	return firstErr
 }
 
-// mergedEntry pairs an entry offset with its reader for merge-sort.
-// realtime is stashed inline so the sort doesn't re-read it per
-// comparison.
+// mergedEntry pairs an entry offset with its reader for merge-sort,
+// with the fields the sort compares stashed inline so it doesn't
+// re-read them per comparison.
 type mergedEntry struct {
-	realtime uint64
-	reader   *Reader
-	offset   uint64
+	realtime  uint64
+	monotonic uint64
+	boot      [16]byte
+	reader    *Reader
+	offset    uint64
 }
 
-// Iter emits every entry across every open reader in strictly
-// non-decreasing realtime order. Ties are broken by file open
-// order — a stable enough tiebreaker for operator eyes (two events
-// at the same microsecond in different files is rare and the
-// display order is arbitrary either way).
+// Iter emits every entry across every open reader, a boot at a time
+// in the order the boots started, and within a boot in monotonic
+// order. Ties are broken by file open order.
+//
+// The order used to be wall-clock time alone. The wall clock can step
+// back during a boot — chronyd correcting an RTC that ran ahead, or
+// someone setting the time — and the entries after such a step were
+// then shown before the boot they belong to, interleaved with an
+// earlier boot. A boot's start is the wall-clock time of its earliest
+// entry by monotonic time, which comes before any step; within a boot
+// the monotonic clock never goes back. systemd's journalctl orders
+// entries of one boot by monotonic time for the same reason.
 //
 // Loads every offset up-front (sort-in-memory). For typical
 // slinit-journal directories with a handful of files each holding
@@ -96,14 +105,35 @@ func (m *MultiReader) Iter(fn func(*journal.Event) bool) error {
 			return err
 		}
 		for _, off := range offs {
-			rt, err := r.entryRealtimeAt(off)
+			rt, mono, boot, err := r.entryKeyAt(off)
 			if err != nil {
 				return err
 			}
-			all = append(all, mergedEntry{realtime: rt, reader: r, offset: off})
+			all = append(all, mergedEntry{realtime: rt, monotonic: mono, boot: boot, reader: r, offset: off})
 		}
 	}
-	sort.SliceStable(all, func(i, j int) bool { return all[i].realtime < all[j].realtime })
+	// Each boot's start: the wall-clock time of its earliest entry.
+	type first struct{ mono, rt uint64 }
+	start := map[[16]byte]first{}
+	for _, e := range all {
+		if f, ok := start[e.boot]; !ok || e.monotonic < f.mono {
+			start[e.boot] = first{e.monotonic, e.realtime}
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		a, b := all[i], all[j]
+		if a.boot != b.boot {
+			sa, sb := start[a.boot].rt, start[b.boot].rt
+			if sa != sb {
+				return sa < sb
+			}
+			return string(a.boot[:]) < string(b.boot[:])
+		}
+		if a.monotonic != b.monotonic {
+			return a.monotonic < b.monotonic
+		}
+		return a.realtime < b.realtime
+	})
 
 	for _, me := range all {
 		evt, err := me.reader.ReadEntryAt(me.offset)

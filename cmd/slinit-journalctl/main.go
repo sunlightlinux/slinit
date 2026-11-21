@@ -2466,28 +2466,64 @@ func formatBytes(n int64) string {
 // ring buffer's view with the on-disk journals'.
 type bootRange struct {
 	id    string
-	first int64
-	last  int64
+	first int64 // wall-clock time of the boot's earliest entry
+	last  int64 // wall-clock time of its latest entry
+	// The same two entries' monotonic times, which pick them.
+	firstMts, lastMts int64
 }
 
 // aggregateBoot updates byID with e's contribution — extends an
 // existing window or creates a fresh one. Empty BootID entries are
 // dropped (nothing useful to plot on the timeline).
+//
+// "Earliest" and "latest" are by monotonic time, which never goes back
+// within a boot. They used to be the smallest and largest wall-clock
+// times, and a boot whose clock was stepped back — chronyd correcting
+// an RTC that ran ahead, or the time set by hand — then started before
+// the boots that came before it: --list-boots listed it out of place
+// and -b -1 picked another boot. An entry without a monotonic time
+// falls back to its wall-clock time.
 func aggregateBoot(byID map[string]*bootRange, e *journal.Event) {
 	if e.BootID == "" {
 		return
 	}
 	r, ok := byID[e.BootID]
 	if !ok {
-		byID[e.BootID] = &bootRange{id: e.BootID, first: e.Ts, last: e.Ts}
+		byID[e.BootID] = &bootRange{id: e.BootID, first: e.Ts, last: e.Ts, firstMts: e.Mts, lastMts: e.Mts}
 		return
 	}
-	if e.Ts < r.first {
-		r.first = e.Ts
+	if earlier(e.Mts, e.Ts, r.firstMts, r.first) {
+		r.first, r.firstMts = e.Ts, e.Mts
 	}
-	if e.Ts > r.last {
-		r.last = e.Ts
+	if earlier(r.lastMts, r.last, e.Mts, e.Ts) {
+		r.last, r.lastMts = e.Ts, e.Mts
 	}
+}
+
+// sortedBoots orders boots oldest first by when they started, the order
+// --list-boots prints and -b -N counts back through.
+func sortedBoots(byID map[string]*bootRange) []*bootRange {
+	sorted := make([]*bootRange, 0, len(byID))
+	for _, r := range byID {
+		sorted = append(sorted, r)
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].first != sorted[j].first {
+			return sorted[i].first < sorted[j].first
+		}
+		return sorted[i].id < sorted[j].id
+	})
+	return sorted
+}
+
+// earlier reports whether an entry at (mts, ts) came before one at
+// (otherMts, otherTs) in the same boot: by monotonic time when both
+// have one, by wall-clock time otherwise.
+func earlier(mts, ts, otherMts, otherTs int64) bool {
+	if mts > 0 && otherMts > 0 {
+		return mts < otherMts
+	}
+	return ts < otherTs
 }
 
 // listBootsJournalDirs lists the standard on-disk paths --list-boots
@@ -2555,12 +2591,7 @@ func runListBoots(conn net.Conn) error {
 	// 3. Sort by first_ts ascending so newest boot prints last —
 	// but with a NEGATIVE index so `journalctl --list-boots`
 	// convention holds (0 = current, -1 = previous, ...).
-	sorted := make([]*bootRange, 0, len(byID))
-	for _, r := range byID {
-		sorted = append(sorted, r)
-	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].first < sorted[j].first })
-
+	sorted := sortedBoots(byID)
 	for i, r := range sorted {
 		idx := i - (len(sorted) - 1)
 		fmt.Printf("%3d %s %s—%s\n",
@@ -2727,11 +2758,7 @@ func resolveBootSpec(conn net.Conn, opts *options) error {
 		}
 		// Sort by first_ts ascending, then index from newest.
 		// idx 0 = newest, -1 = second-newest, etc.
-		sorted := make([]*bootRange, 0, len(byID))
-		for _, r := range byID {
-			sorted = append(sorted, r)
-		}
-		sort.Slice(sorted, func(i, j int) bool { return sorted[i].first < sorted[j].first })
+		sorted := sortedBoots(byID)
 		wantIdx := len(sorted) - 1 + n // -1 → len-2, -2 → len-3, ...
 		if wantIdx < 0 || wantIdx >= len(sorted) {
 			return fmt.Errorf("-b %s: only %d boots recorded; requested index out of range", spec, len(sorted))

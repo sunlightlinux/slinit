@@ -149,6 +149,18 @@ func (r *Reader) entryRealtimeAt(off uint64) (uint64, error) {
 	return binary.LittleEndian.Uint64(buf[:]), nil
 }
 
+// entryKeyAt reads the realtime, monotonic and boot-id fields of the
+// ENTRY at `off`, which follow the 16-byte object header and the
+// 8-byte seqnum in that order.
+func (r *Reader) entryKeyAt(off uint64) (realtime, monotonic uint64, boot [16]byte, err error) {
+	var buf [8 + 8 + 16]byte
+	if _, err := r.f.ReadAt(buf[:], int64(off)+int64(ObjectHeaderSize+8)); err != nil {
+		return 0, 0, boot, fmt.Errorf("journalbin: read entry key at %d: %w", off, err)
+	}
+	copy(boot[:], buf[16:32])
+	return binary.LittleEndian.Uint64(buf[0:8]), binary.LittleEndian.Uint64(buf[8:16]), boot, nil
+}
+
 // ReadEntryAt is the public counterpart to readEntryAt — resolves
 // the ENTRY at `off` back into a journal.Event. Used by sd_journal
 // API callers that already have offsets from SeekRealtime /

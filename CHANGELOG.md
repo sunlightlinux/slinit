@@ -24,6 +24,21 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`slinit-journalctl` put a boot whose clock was stepped back out of
+  place.** `--list-boots` ordered boots by their smallest wall-clock
+  time, so a boot in which the time was set back — by hand, or by
+  chronyd correcting a hardware clock that ran ahead — was listed as
+  the oldest, and `-b -1` showed another boot. Reading the persistent
+  journal also merged entries by wall-clock time alone, so the entries
+  after such a step were shown before the boot they belong to. A boot
+  now starts at its earliest entry by monotonic time, which comes
+  before any step, and within a boot entries keep the monotonic order
+  they were written in, as systemd's journalctl does. Checked on an
+  installed system's journal where the clock had been set two hours
+  back: the boot moved from `-5` to `-1`.
+
 ## [3.21.4] — 2026-11-21
 
 **A patch: a shutdown hang with shared soft dependencies.** On an
