@@ -47,7 +47,11 @@ type ServiceSet struct {
 	aliases        map[string]Service // provides → service mapping
 	activeServices int
 	restartEnabled bool
-	shutdownType   ShutdownType
+	// stopsLast holds the services StopAllServices pinned because they
+	// are marked stops-last; they are released once everything else has
+	// stopped (releaseStopsLastLocked).
+	stopsLast    []Service
+	shutdownType ShutdownType
 
 	// queueMu protects the processing queues, console queue, and
 	// activeServices counter, plus service-state fields mutated during
@@ -475,11 +479,55 @@ func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 	defer ss.queueMu.Unlock()
 	ss.restartEnabled = false
 	ss.shutdownType = shutdownType
+	ss.stopsLast = nil
 	for _, svc := range snapshot {
+		rec := svc.Record()
+		if rec.Flags.StopsLast && svc.State() != StateStopped {
+			// Hold it, and through the pin its hard dependencies, until
+			// the rest are down. An operator's pin is dropped as for
+			// any other service, then replaced by this one.
+			svc.Unpin()
+			rec.PinStart()
+			svc.Stop(false)
+			ss.stopsLast = append(ss.stopsLast, svc)
+			continue
+		}
 		svc.Stop(false)
 		svc.Unpin()
 	}
 	ss.processQueuesLocked()
+}
+
+// releaseStopsLastLocked unpins the stops-last services once every
+// other service has stopped, so they and their dependencies stop in
+// turn. It reports whether it released anything. Caller holds queueMu.
+func (ss *ServiceSet) releaseStopsLastLocked() bool {
+	if len(ss.stopsLast) == 0 {
+		return false
+	}
+	held := map[Service]bool{}
+	for _, svc := range ss.stopsLast {
+		held[svc] = true
+	}
+	ss.mu.RLock()
+	for _, svc := range ss.records {
+		rec := svc.Record()
+		if held[svc] || rec.deptPinnedStarted {
+			continue
+		}
+		if rec.state.Load() != StateStopped {
+			ss.mu.RUnlock()
+			return false
+		}
+	}
+	ss.mu.RUnlock()
+	release := ss.stopsLast
+	ss.stopsLast = nil
+	for _, svc := range release {
+		svc.Unpin()
+		svc.Stop(false)
+	}
+	return true
 }
 
 // --- Queue management ---
@@ -513,6 +561,17 @@ func (ss *ServiceSet) ProcessQueues() {
 
 // processQueuesLocked is the core scheduling loop. Caller must hold queueMu.
 func (ss *ServiceSet) processQueuesLocked() {
+	for {
+		ss.drainQueuesLocked()
+		if !ss.releaseStopsLastLocked() {
+			return
+		}
+	}
+}
+
+// drainQueuesLocked runs the propagation and transition queues until
+// both are empty.
+func (ss *ServiceSet) drainQueuesLocked() {
 	for len(ss.propQueue) > 0 || len(ss.stopQueue) > 0 {
 		// Drain propagation queue using index to avoid reslicing overhead
 		pq := ss.propQueue

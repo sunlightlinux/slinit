@@ -182,6 +182,21 @@ before the daemon bound to its events socket are not lost.
 */run/slinit-journald.pid*
 :   Daemon PID file.
 
+*/run/slinit-journald.persisted*
+:   The boot and monotonic time of the last event made durable, with
+    the directory and format, rewritten after every fsync and on exit
+    (default namespace only; since 3.22.0). At the end of a shutdown,
+    once the daemon has stopped, slinit reads it and writes the events
+    of the same boot logged after that point — the last services
+    stopping, the final SIGTERM sweep — into
+    *shutdown-YYYYMMDD-HHMMSS-BOOT.journal* (or *.jsonl*) beside the
+    daemon's files, which **slinit-journalctl** reads with the rest. It
+    never writes into the daemon's own file, which may be sealed. With
+    no marker for the running boot nothing is written; after a daemon
+    crash a few events may be written twice, none lost. Give the
+    daemon's service **options = stops-last** (**slinit-service**(5)) so
+    it stops after the others.
+
 # EXAMPLES
 
 Standard install — persistent binary journal with FSS sealing:

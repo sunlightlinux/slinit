@@ -24,6 +24,22 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Added
+
+- **`options = stops-last`, so the log daemon sees the whole
+  shutdown.** At shutdown a stops-last service, and what it depends on,
+  keeps running until every other service has stopped, then stops in
+  turn. slinit-journald was stopped among the first — nothing depends
+  on it — so what the rest logged on their way down never reached the
+  disk. A slinit extension; dinit has no equivalent.
+- **PID 1 persists the end of the shutdown.** slinit-journald now
+  records, after each fsync and on exit, how far it has persisted
+  (`/run/slinit-journald.persisted`). After the final SIGTERM sweep,
+  slinit writes this boot's later events from its ring buffer into a
+  `shutdown-*.journal` file beside journald's, which
+  `slinit-journalctl` reads with the rest. Nothing is written without a
+  marker for the running boot.
+
 ### Fixed
 
 - **Changing the time zone moved the clock and left the hardware clock
@@ -39,18 +55,19 @@ verified with `git tag -v`.
   anything. Checked on an installed system: a change to Europe/Berlin
   and back moved the clock by an hour before, and not at all after.
 
-- **`slinit-journalctl` put a boot whose clock was stepped back out of
-  place.** `--list-boots` ordered boots by their smallest wall-clock
-  time, so a boot in which the time was set back — by hand, or by
-  chronyd correcting a hardware clock that ran ahead — was listed as
-  the oldest, and `-b -1` showed another boot. Reading the persistent
-  journal also merged entries by wall-clock time alone, so the entries
-  after such a step were shown before the boot they belong to. A boot
-  now starts at its earliest entry by monotonic time, which comes
-  before any step, and within a boot entries keep the monotonic order
-  they were written in, as systemd's journalctl does. Checked on an
-  installed system's journal where the clock had been set two hours
-  back: the boot moved from `-5` to `-1`.
+- **`slinit-journalctl` put a boot whose clock was wrong out of place.**
+  `--list-boots` ordered boots by their smallest wall-clock time, so a
+  boot in which the time was set back — by hand, by chronyd, or by a
+  time zone change (below) — was listed as the oldest, and `-b -1`
+  showed another boot; a boot that started with the clock ahead was
+  listed as the current one. Reading the persistent journal also merged
+  entries by wall-clock time alone, so entries after a step were shown
+  outside their boot. Boots are now ordered as they were written —
+  files in name order, each in write order, the live buffer last — and
+  within a boot entries keep their monotonic order, so no clock decides
+  either. Checked on an installed system's journal: a boot with the
+  clock set back moved from `-5` to its place, and one that started two
+  hours ahead from `0` to its place.
 
 ## [3.21.4] — 2026-11-21
 

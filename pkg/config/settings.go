@@ -555,6 +555,7 @@ var OptionFlags = map[string]string{
 	"skippable":           "Skippable",
 	"signal-process-only": "SignalProcessOnly",
 	"always-chain":        "AlwaysChain",
+	"stops-last":          "StopsLast",
 	"kill-all-on-stop":    "KillAllOnStop",
 	"unmask-intr":         "UnmaskIntr",
 	"starts-rwfs":         "RWReady",

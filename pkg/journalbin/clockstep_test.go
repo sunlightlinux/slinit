@@ -48,7 +48,17 @@ func TestMultiReaderOrdersSteppedBootByMonotonic(t *testing.T) {
 		}
 		return ts
 	})
-	write("three", b3, 3, func(i int) int64 { return base + 1200e9 + int64(i)*1e9 })
+	// A boot that starts with the clock two hours ahead (an RTC left on
+	// local time) and is set right during the boot.
+	b4 := "44444444444444444444444444444444"
+	write("ahead", b4, 4, func(i int) int64 {
+		ts := base + 1800e9 + int64(i)*1e9
+		if i < 2 {
+			ts += 7200e9
+		}
+		return ts
+	})
+	write("three", b3, 3, func(i int) int64 { return base + 2400e9 + int64(i)*1e9 })
 
 	mr, err := OpenDir(dir)
 	if err != nil {

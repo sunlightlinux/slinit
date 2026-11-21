@@ -26,6 +26,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/eventloop"
 	"github.com/sunlightlinux/slinit/pkg/hooks"
 	"github.com/sunlightlinux/slinit/pkg/journal"
+	"github.com/sunlightlinux/slinit/pkg/journald"
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/metrics"
 	"github.com/sunlightlinux/slinit/pkg/mountwatch"
@@ -554,6 +555,9 @@ func main() {
 		logger.Warn("Journal ID init failed: %v (events will still work with transient IDs)", err)
 	}
 	journalBuf := journal.NewEventBuffer(0)
+	shutdown.SetJournalTailPersister(func(logger *logging.Logger) {
+		persistJournalTail(journalBuf, logger)
+	})
 	journalEmitter := journal.NewEmitter(journalBuf, journal.SocketPath)
 	journal.SetGlobal(journalEmitter)
 	defer journalEmitter.Close()
@@ -3116,4 +3120,27 @@ func containerBootOutcome(ss *service.ServiceSet, bootNames []string) (int, bool
 		}
 	}
 	return 0, terminated
+}
+
+// persistJournalTail writes this boot's events that slinit-journald did
+// not persist into the journal directory, from the marker journald left
+// (journald.PersistedMarker). Without a marker for this boot it writes
+// nothing.
+func persistJournalTail(buf *journal.EventBuffer, logger *logging.Logger) {
+	m, err := journald.ReadPersistedMarker(journald.PersistedMarkerPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("Journal tail: %v", err)
+		}
+		return
+	}
+	events, _ := buf.Snapshot()
+	n, err := journald.WriteShutdownTail(m, events, journal.BootID(), journal.MachineID(), time.Now())
+	if err != nil {
+		logger.Warn("Journal tail: %v", err)
+		return
+	}
+	if n > 0 {
+		logger.Info("Journal tail: wrote %d event(s) logged after the journal daemon stopped", n)
+	}
 }

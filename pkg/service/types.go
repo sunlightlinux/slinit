@@ -575,8 +575,12 @@ type ServiceFlags struct {
 	Skippable          bool // Service can be skipped during boot
 	SignalProcessOnly  bool // Only signal the process, not the process group
 	AlwaysChain        bool // Always chain to the next service
-	KillAllOnStop      bool // Kill all processes in cgroup on stop
-	UnmaskIntr         bool // Unmask SIGINT when running on console
+	// StopsLast keeps the service, and what it hard-depends on, running
+	// through a shutdown until every other service has stopped — for a
+	// log daemon, so the rest of the shutdown is persisted.
+	StopsLast     bool
+	KillAllOnStop bool // Kill all processes in cgroup on stop
+	UnmaskIntr    bool // Unmask SIGINT when running on console
 	// NoBootMarker suppresses the "[ OK ] name" boot-console line
 	// when the service reaches STARTED. Meant for milestone-style
 	// internal services whose completion is implied by the tree

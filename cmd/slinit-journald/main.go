@@ -101,6 +101,38 @@ type guardedSink struct {
 	flushDelay time.Duration
 	flushOnce  sync.Once
 	flushLater *journald.DelayedFlush
+
+	// format is the storage format, and markerPath where the boot and
+	// monotonic time of the last durable event are recorded after each
+	// fsync and on Close, so PID 1 can persist the rest of a shutdown
+	// itself (journald.PersistedMarker). Empty markerPath disables it;
+	// only the default namespace writes one.
+	format     string
+	markerPath string
+	lastBoot   string
+	lastMts    int64
+}
+
+// markerPathFor is the persisted-event marker for a namespace: PID 1
+// only knows the default journal, so other namespaces write none.
+func markerPathFor(namespace string) string {
+	if namespace != "" {
+		return ""
+	}
+	return journald.PersistedMarkerPath
+}
+
+// notePersisted records the last event handed to the sink as durable.
+// Caller holds g.mu and has just synced the sink.
+func (g *guardedSink) notePersisted() {
+	if g.markerPath == "" || g.lastBoot == "" {
+		return
+	}
+	if err := journald.WritePersistedMarker(g.markerPath, journald.PersistedMarker{
+		BootID: g.lastBoot, Mts: g.lastMts, Dir: g.currentDir, Format: g.format,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-journald: persisted marker: %v\n", err)
+	}
 }
 
 func (g *guardedSink) Handle(evt *journal.Event) error {
@@ -113,6 +145,9 @@ func (g *guardedSink) Handle(evt *journal.Event) error {
 		evt.Namespace = g.namespace
 	}
 	err := g.inner.Handle(evt)
+	if err == nil && evt.BootID != "" {
+		g.lastBoot, g.lastMts = evt.BootID, evt.Mts
+	}
 	g.flushOnce.Do(func() {
 		delay := g.flushDelay
 		if delay == 0 {
@@ -134,7 +169,11 @@ func (g *guardedSink) Close() error {
 	if g.flushLater != nil {
 		g.flushLater.Stop()
 	}
-	return g.inner.Close()
+	err := g.inner.Close()
+	if err == nil {
+		g.notePersisted()
+	}
+	return err
 }
 
 // Flush = fsync active sink (SIGUSR1 handler → --sync client).
@@ -142,7 +181,10 @@ func (g *guardedSink) Flush() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if s, ok := g.inner.(interface{ Flush() error }); ok {
-		return s.Flush()
+		if err := s.Flush(); err != nil {
+			return err
+		}
+		g.notePersisted()
 	}
 	return nil
 }
@@ -347,6 +389,8 @@ Flags:
 				volatileDir: *volatileDir,
 				namespace:   *namespace,
 				factory:     jsonlFactory,
+				format:      "jsonl",
+				markerPath:  markerPathFor(*namespace),
 			}
 			sink = guarded
 			path := ""
@@ -404,6 +448,8 @@ Flags:
 				volatileDir: *volatileDir,
 				namespace:   *namespace,
 				factory:     binaryFactory,
+				format:      "binary",
+				markerPath:  markerPathFor(*namespace),
 			}
 			sink = guarded
 			sealMsg := "unsealed"

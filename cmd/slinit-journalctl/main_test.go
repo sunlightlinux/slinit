@@ -1969,6 +1969,14 @@ func TestSortedBootsSteppedClock(t *testing.T) {
 		}
 		aggregateBoot(byID, &journal.Event{BootID: "two", Ts: ts, Mts: (i + 1) * s})
 	}
+	// Started with the clock two hours ahead, set right during the boot.
+	for i := int64(0); i < 4; i++ {
+		ts := 2500*s + i*s
+		if i < 2 {
+			ts += 7200 * s
+		}
+		aggregateBoot(byID, &journal.Event{BootID: "ahead", Ts: ts, Mts: (i + 1) * s})
+	}
 	for i := int64(0); i < 3; i++ {
 		aggregateBoot(byID, &journal.Event{BootID: "three", Ts: 3000*s + i*s, Mts: (i + 1) * s})
 	}
@@ -1976,8 +1984,8 @@ func TestSortedBootsSteppedClock(t *testing.T) {
 	for _, r := range sortedBoots(byID) {
 		order = append(order, r.id)
 	}
-	if strings.Join(order, ",") != "one,two,three" {
-		t.Errorf("boot order = %v, want one, two, three", order)
+	if strings.Join(order, ",") != "one,two,ahead,three" {
+		t.Errorf("boot order = %v, want one, two, ahead, three", order)
 	}
 	if r := byID["two"]; r.first != 2000*s || r.last != 2005*s {
 		t.Errorf("stepped boot spans %d..%d, want its first and last entries %d..%d", r.first, r.last, 2000*s, 2005*s)

@@ -80,17 +80,18 @@ type mergedEntry struct {
 }
 
 // Iter emits every entry across every open reader, a boot at a time
-// in the order the boots started, and within a boot in monotonic
-// order. Ties are broken by file open order.
+// in the order the boots were written, and within a boot in monotonic
+// order. Ties are broken by file order.
 //
 // The order used to be wall-clock time alone. The wall clock can step
-// back during a boot — chronyd correcting an RTC that ran ahead, or
-// someone setting the time — and the entries after such a step were
-// then shown before the boot they belong to, interleaved with an
-// earlier boot. A boot's start is the wall-clock time of its earliest
-// entry by monotonic time, which comes before any step; within a boot
-// the monotonic clock never goes back. systemd's journalctl orders
-// entries of one boot by monotonic time for the same reason.
+// during a boot — chronyd correcting an RTC that ran ahead, or someone
+// setting the time — and a boot can start with it wrong, two hours
+// ahead after the RTC was left on local time. Entries were then shown
+// out of their boot, and a boot that started ahead sorted after every
+// later one. No clock decides the order now: boots rank by where they
+// first appear when the files are read in name order (dates, rotated
+// files before the current one) and each file in the order it was
+// written; within a boot the monotonic clock never goes back.
 //
 // Loads every offset up-front (sort-in-memory). For typical
 // slinit-journal directories with a handful of files each holding
@@ -112,22 +113,18 @@ func (m *MultiReader) Iter(fn func(*journal.Event) bool) error {
 			all = append(all, mergedEntry{realtime: rt, monotonic: mono, boot: boot, reader: r, offset: off})
 		}
 	}
-	// Each boot's start: the wall-clock time of its earliest entry.
-	type first struct{ mono, rt uint64 }
-	start := map[[16]byte]first{}
+	// Each boot ranks by where it first appears in write order; all is
+	// in that order, file by file.
+	rank := map[[16]byte]int{}
 	for _, e := range all {
-		if f, ok := start[e.boot]; !ok || e.monotonic < f.mono {
-			start[e.boot] = first{e.monotonic, e.realtime}
+		if _, ok := rank[e.boot]; !ok {
+			rank[e.boot] = len(rank)
 		}
 	}
 	sort.SliceStable(all, func(i, j int) bool {
 		a, b := all[i], all[j]
 		if a.boot != b.boot {
-			sa, sb := start[a.boot].rt, start[b.boot].rt
-			if sa != sb {
-				return sa < sb
-			}
-			return string(a.boot[:]) < string(b.boot[:])
+			return rank[a.boot] < rank[b.boot]
 		}
 		if a.monotonic != b.monotonic {
 			return a.monotonic < b.monotonic

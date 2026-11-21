@@ -2470,6 +2470,10 @@ type bootRange struct {
 	last  int64 // wall-clock time of its latest entry
 	// The same two entries' monotonic times, which pick them.
 	firstMts, lastMts int64
+	// rank is the order the boot first appeared in: sources are read
+	// on-disk first, in write order, then the live buffer, so it is the
+	// order the boots happened in whatever the clock said.
+	rank int
 }
 
 // aggregateBoot updates byID with e's contribution — extends an
@@ -2489,7 +2493,7 @@ func aggregateBoot(byID map[string]*bootRange, e *journal.Event) {
 	}
 	r, ok := byID[e.BootID]
 	if !ok {
-		byID[e.BootID] = &bootRange{id: e.BootID, first: e.Ts, last: e.Ts, firstMts: e.Mts, lastMts: e.Mts}
+		byID[e.BootID] = &bootRange{id: e.BootID, first: e.Ts, last: e.Ts, firstMts: e.Mts, lastMts: e.Mts, rank: len(byID)}
 		return
 	}
 	if earlier(e.Mts, e.Ts, r.firstMts, r.first) {
@@ -2500,19 +2504,16 @@ func aggregateBoot(byID map[string]*bootRange, e *journal.Event) {
 	}
 }
 
-// sortedBoots orders boots oldest first by when they started, the order
-// --list-boots prints and -b -N counts back through.
+// sortedBoots orders boots oldest first, the order --list-boots prints
+// and -b -N counts back through: the order they were written in, not
+// their wall-clock times, which a boot that started with the clock
+// ahead or stepped back would put out of place.
 func sortedBoots(byID map[string]*bootRange) []*bootRange {
 	sorted := make([]*bootRange, 0, len(byID))
 	for _, r := range byID {
 		sorted = append(sorted, r)
 	}
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].first != sorted[j].first {
-			return sorted[i].first < sorted[j].first
-		}
-		return sorted[i].id < sorted[j].id
-	})
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].rank < sorted[j].rank })
 	return sorted
 }
 
@@ -2562,9 +2563,6 @@ func runListBoots(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	for _, e := range events {
-		aggregateBoot(byID, e)
-	}
 
 	// 2. On-disk journals — walk each standard dir. Missing dirs
 	// are not an error (a container without journald has none);
@@ -2578,6 +2576,12 @@ func runListBoots(conn net.Conn) error {
 		if err := aggregateBootsFromDir(dir, byID); err != nil {
 			return fmt.Errorf("list-boots: %s: %w", dir, err)
 		}
+	}
+
+	// The live buffer last, so a boot only it knows — journald not
+	// running — ranks as the newest.
+	for _, e := range events {
+		aggregateBoot(byID, e)
 	}
 
 	if len(byID) == 0 {
@@ -2775,14 +2779,14 @@ func resolveBootSpec(conn net.Conn, opts *options) error {
 // a single BootID→bootRange map.
 func aggregateAllBoots(conn net.Conn) (map[string]*bootRange, error) {
 	byID := map[string]*bootRange{}
-	// Ring buffer via control socket.
+	// Ring buffer via control socket, read now, counted last (see
+	// runListBoots).
+	var live []*journal.Event
 	payload, err := json.Marshal(control.JournalQueryRequest{})
 	if err == nil {
 		if werr := control.WritePacket(conn, control.CmdJournalQuery, payload); werr == nil {
 			if events, cerr := collectStream(conn); cerr == nil {
-				for _, e := range events {
-					aggregateBoot(byID, e)
-				}
+				live = events
 			}
 		}
 	}
@@ -2794,6 +2798,9 @@ func aggregateAllBoots(conn net.Conn) (map[string]*bootRange, error) {
 		if err := aggregateBootsFromDir(dir, byID); err != nil {
 			return nil, err
 		}
+	}
+	for _, e := range live {
+		aggregateBoot(byID, e)
 	}
 	return byID, nil
 }

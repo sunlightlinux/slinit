@@ -2001,6 +2001,14 @@ mlockall       = current+future
     * **unmask-intr** — unblock SIGINT before exec.
     * **starts-rwfs** — this service marks the read-write filesystem as ready (boot bootstrap).
     * **starts-log** — this service marks the system logger as ready.
+    * **stops-last** — at shutdown, keep this service, and what it
+      **depends-on**, running until every other service has stopped,
+      then stop it (since 3.22.0). Meant for the log daemon: a service
+      nothing depends on is otherwise stopped among the first, and what
+      the rest log on their way down is never persisted. Only a whole
+      shutdown waits; **slinitctl stop** stops it at once. A service
+      that will not stop holds it, until the shutdown's emergency
+      timeout. A slinit extension; dinit has no equivalent.
     * **pass-cs-fd** — pass the slinit control-socket fd to the child via *SLINIT_CS_FD* (and *DINIT_CS_FD*).
     * **no-new-privs** — set the `no_new_privs` prctl bit on the child.
 

@@ -3527,6 +3527,8 @@ func applyOptions(desc *ServiceDescription, value string, append bool) error {
 			desc.Flags.SignalProcessOnly = true
 		case "always-chain":
 			desc.Flags.AlwaysChain = true
+		case "stops-last":
+			desc.Flags.StopsLast = true
 		case "kill-all-on-stop":
 			desc.Flags.KillAllOnStop = true
 		case "unmask-intr":

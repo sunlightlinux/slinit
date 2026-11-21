@@ -89,6 +89,15 @@ func SetFinalSleep(d time.Duration) { finalSleep = d }
 // disables the check.
 func SetMinimumUptime(d time.Duration) { minimumUptime = d }
 
+// persistJournalTail writes the part of this boot's journal that the
+// journal daemon did not persist — it stops before the shutdown ends.
+// nil when cmd/slinit has nothing to wire (no journal buffer).
+var persistJournalTail func(logger *logging.Logger)
+
+// SetJournalTailPersister installs the function Execute calls once every
+// other process is gone, while the filesystems are still writable.
+func SetJournalTailPersister(fn func(logger *logging.Logger)) { persistJournalTail = fn }
+
 // rebootDelay is finit-parity for the `reboot-delay = N` global
 // option: an operator-configurable pause after the shutdown-hook
 // completes but before the kernel reboot syscall fires. Zero
@@ -202,6 +211,13 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 
 	// Kill all remaining processes
 	KillAllProcesses(logger)
+
+	// Everything logged since the journal daemon stopped — the last
+	// services going down, the sweep above — exists only in our ring
+	// buffer. Write it out while the filesystems are still read-write.
+	if persistJournalTail != nil {
+		persistJournalTail(logger)
+	}
 
 	// Settle pause (s6-linux-init-maker -q): give journals and other
 	// flash-backed writers a beat to finish before umountall unwinds
