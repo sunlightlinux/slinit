@@ -621,6 +621,17 @@ boot-time clock guard (a compile-time floor plus a persistent
 timestamp file at */var/lib/slinit/clock*) to avoid running with a
 silently-reset RTC.
 
+A shutdown stops the services in dependency order, dependents before
+what they depend on. A service with **options = stops-last**
+(**slinit-service**(5)) — the log daemon — is held, with what it
+depends on, until every other service has stopped (since 3.22.0). If
+the services have not all stopped within **\--emergency-timeout**, the
+rest are killed. slinit then sends every remaining process SIGTERM and,
+after **\--shutdown-grace**, SIGKILL; writes the part of the journal
+logged after **slinit-journald**(8) stopped into a *shutdown-\*.journal*
+file beside its own (since 3.22.0); runs the shutdown hook, unmounts,
+syncs and makes the reboot, power-off, halt or kexec system call.
+
 In container mode (**-o**) the same supervision logic runs but
 shutdown is replaced with a clean process exit, leaving teardown to
 the container runtime.

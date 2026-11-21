@@ -7,6 +7,23 @@ Everything after that — v2.4 through the current release — is in
 record and is not duplicated here. [STABILITY.md](../STABILITY.md) is
 what slinit promises not to break.
 
+## 4.0: the first long-term-support release
+
+3.x was the development line. By 3.22 slinit covered what a distribution
+needs from an init: it boots Sunlight on real hardware (an Intel NUC as
+well as the development VMs) with GNOME, and the last releases were
+fixes for defects found there rather than new surface. 4.0 freezes that
+surface as the first long-term-support line, under the rules in
+[STABILITY.md](../STABILITY.md#long-term-support):
+
+- **4.0 breaks nothing.** It is 3.22 frozen: same protocol version
+  (CPVersion 7), same directives, same commands. Moving from 3.22 needs
+  no change to service files, scripts or clients.
+- **4.0.x takes bug and security fixes only**, and is supported until
+  six months after the next LTS line.
+- **Features resume in 4.1**, beginning with more of systemd's
+  service-manager surface.
+
 ## 3.0, and what has happened since
 
 3.0 shipped, and the current release is v3.22.1. The 3.0 list was six

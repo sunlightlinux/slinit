@@ -36,6 +36,10 @@ behaviour is already worked out. A feature with no upstream analogue
 can still go in, but has to justify the surface it adds. The feature
 request template asks for the same.
 
+A feature targets the next minor (4.1 and later). The 4.0 long-term-
+support line takes fixes only, so a pull request for it should be a bug
+or security fix — see [STABILITY.md](STABILITY.md#long-term-support).
+
 ### Code Style
 
 - Follow standard Go conventions (`gofmt`, `go vet`)

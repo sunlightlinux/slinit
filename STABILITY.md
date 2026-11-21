@@ -15,14 +15,19 @@ Which versions receive fixes is covered separately, in
 
 ## The short version
 
-- **The control protocol stays at `CPVersion=7` until v4.0.0.** New
-  commands can be added; existing ones do not change shape or meaning.
+- **4.0 is the first long-term-support line, and it breaks nothing.** A
+  service file, script or `slinitctl` that works with 3.22 works with
+  every 4.x. On the 4.0 line, patch releases carry fixes only — see
+  [Long-term support](#long-term-support).
+- **The control protocol stays at `CPVersion=7` throughout 4.x.** New
+  commands can be added in a minor; existing ones do not change shape or
+  meaning.
 - **Service directives are not removed or reinterpreted within a major
   version.** A directive that is going away is deprecated first, keeps
   working with a warning, and is removed no earlier than the next major.
 - **Service files are forward-compatible, not backward-compatible.** A
-  file that loads on 3.2.0 loads on every later 3.x, as one that loaded
-  on 2.3.0 did on every later 2.x. A file that uses a directive
+  file that loads on 3.2.0 loads on every later 3.x and every 4.x, as
+  one that loaded on 2.3.0 did on every later 2.x. A file that uses a directive
   introduced in 3.0.7 fails to load on 3.0.6 — see
   [Service configuration](#service-configuration).
 - **Metric names are an interface.** A name served at `/metrics` is not
@@ -41,9 +46,10 @@ not one of them.
 |---------|-------------|
 | **MAJOR** (`3.0.0`) | Incompatible changes to a stable surface: removing a deprecated directive, command or flag, or changing what an existing one does. Always listed under `Removed` or `Changed` in the CHANGELOG, with the migration. |
 | **MINOR** (`2.4.0`) | Everything a patch may contain, plus deprecations and new subsystems. |
-| **PATCH** (`2.3.7`) | Bug fixes, and *additive* changes: a new optional directive, a new control-protocol command, a new `slinitctl` subcommand or flag. Nothing that already works changes behaviour. |
+| **PATCH** (`2.3.7`) | Bug fixes, and *additive* changes: a new optional directive, a new control-protocol command, a new `slinitctl` subcommand or flag. Nothing that already works changes behaviour. On a long-term-support line (`4.0.x`), bug and security fixes only. |
 
-Additive changes are allowed in patch releases because slinit ships
+Outside a long-term-support line, additive changes are allowed in patch
+releases because slinit ships
 small, frequent releases and holding every new directive for a minor
 bump would hold back fixes that ride along with it. The cost is the one
 stated above: a service file that uses a new directive needs at least
@@ -64,8 +70,8 @@ it goes in a minor release rather than a patch.
 The binary protocol spoken over the control socket, by `slinitctl` and
 by anything else that implements it (`pkg/control/protocol.go`).
 
-- `CPVersion` stays `7` and `MinCompatVersion` stays `1` until **v4.0.0**.
-  This holds across 3.x as well.
+- `CPVersion` stays `7` and `MinCompatVersion` stays `1` throughout
+  **4.x**, as it did across 2.x and 3.x. 4.0.0 does not change it.
 - Existing command codes and reply codes keep their numbers, payload
   layout and meaning. Commands 0–28 and replies 50–79 are dinit's and
   keep the numbers of dinit's `cp_cmd` / `cp_rply` enums. The packet
@@ -76,8 +82,8 @@ by anything else that implements it (`pkg/control/protocol.go`).
   know a command answers `RplyBadReq`, so a newer client talking to an
   older daemon gets a clean error, not a hang or a misread reply.
 - Any `slinitctl` works against any daemon of the same major version for
-  the commands both know, and across 2.x and 3.x as well, since both
-  speak CPVersion 7. This has been true in practice since CPVersion
+  the commands both know, and across 2.x, 3.x and 4.x as well, since all
+  three speak CPVersion 7. This has been true in practice since CPVersion
   reached 7; it is now a promise.
 - When a command's shape has to change, it gets a *new* code and the old
   one keeps working. `CmdEnableServiceV7` (29) and `CmdRmDepV7` (30)
@@ -198,6 +204,29 @@ upstream is a fix, even if something had started depending on the
 difference. Such changes are still called out under `Changed` when they
 are visible, as the move from "every login1 session is always active"
 to activity following the foreground VT was.
+
+## Long-term support
+
+3.x was the development line: features arrived in minors and, as
+additive changes, in patches. **4.0 is the first long-term-support
+(LTS) release.** It is 3.22 frozen, not a break: nothing documented in
+3.22 changes, nothing is removed, and no protocol version moves, so
+moving from 3.22 to 4.0 needs no change to service files, scripts or
+clients.
+
+- **The 4.0 line (`4.0.x`) takes fixes only:** bug fixes and security
+  fixes. No new directive, option, command, flag or subsystem, not even
+  an additive one. The rules above for what a fix may change still
+  apply, the [Exceptions](#exceptions) included.
+- **New features resume in 4.1**, starting with more of systemd's
+  service-manager surface, under the ordinary rules for minor and patch
+  releases. A 4.1 release is not an LTS release.
+- **How long 4.0 is supported:** until the next LTS line is released,
+  and for six months after it, so there is always an overlap to move
+  over in. [SECURITY.md](SECURITY.md#supported-versions) lists the
+  lines that receive fixes.
+- **What 4.0 promises is what 3.22 documents.** Every commitment in
+  this file holds for the whole 4.x major, LTS line or not.
 
 ## Not covered
 

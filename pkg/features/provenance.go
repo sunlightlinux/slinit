@@ -232,6 +232,7 @@ var provenanceTable = []Feature{
 	{Name: "option:unmask-intr", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle},
 	{Name: "option:always-chain", Kind: KindOption, Source: SourceDinit, Category: CatDependency},
 	{Name: "option:kill-all-on-stop", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle},
+	{Name: "option:stops-last", Kind: KindOption, Source: SourceSlinit, Category: CatLifecycle, Notes: "keep running through a shutdown until every other service has stopped (log daemon)"},
 	{Name: "option:no-new-privs", Kind: KindOption, Source: SourceSystemd, Category: CatSandbox},
 	{Name: "option:signal-process-only", Kind: KindOption, Source: SourceDinit, Category: CatLifecycle},
 	{Name: "option:runs-on-console", Kind: KindOption, Source: SourceDinit, Category: CatServiceConfig, Notes: "getty-style — foreground the tty"},

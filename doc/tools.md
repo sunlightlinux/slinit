@@ -59,7 +59,7 @@ is for, followed by the invocations most worth knowing.
 | `slinit-sysctl` | Apply `sysctl.d` tunables | [slinit-sysctl(8)](man/slinit-sysctl.8.md) |
 | `slinit-binfmt` | Register `binfmt_misc` formats | [slinit-binfmt(8)](man/slinit-binfmt.8.md) |
 | `slinit-hostnamectl` | Query and set the hostname, without D-Bus | [slinit-hostnamectl(1)](man/slinit-hostnamectl.1.md) |
-| `slinit-timedatectl` | Query and set time and date, without D-Bus | [slinit-timedatectl(1)](man/slinit-timedatectl.1.md) |
+| `slinit-timedatectl` | Query and set time and date directly, without D-Bus; as a user it reads the NTP state from `slinit-timedated` over the bus | [slinit-timedatectl(1)](man/slinit-timedatectl.1.md) |
 | `slinit-timedated` | *org.freedesktop.timedate1* on the system bus, for GNOME's Date & Time panel; polkit-authorized | [slinit-timedated(8)](man/slinit-timedated.8.md) |
 | `slinit-hostnamed` | *org.freedesktop.hostname1* on the system bus, for GNOME's About panel, NetworkManager and bluetoothd; polkit-authorized | [slinit-hostnamed(8)](man/slinit-hostnamed.8.md) |
 | `slinit-localed` | *org.freedesktop.locale1* on the system bus, for GNOME's Region panel and the login screen's keyboard; polkit-authorized | [slinit-localed(8)](man/slinit-localed.8.md) |

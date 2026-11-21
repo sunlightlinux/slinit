@@ -99,7 +99,11 @@ Bus name *org.freedesktop.timedate1*, object
 **SetTimezone**(*s* timezone, *b* interactive)
 :   Point the system at an installed IANA zone. Setting the current zone
     again does nothing and asks nothing. With a local-time hardware
-    clock, the hardware clock is rewritten to the new local time.
+    clock, the hardware clock is rewritten to the new local time. The
+    kernel is told the new offset, after a zero-offset call that seals
+    its first-call clock warp, as systemd does at boot: before 3.22.0
+    the first change of a boot moved the clock by the offset and left
+    the hardware clock on local time.
 
 **SetLocalRTC**(*b* local_rtc, *b* fix_system, *b* interactive)
 :   Make the hardware clock keep local time or UTC. With *fix_system* the

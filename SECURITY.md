@@ -4,10 +4,13 @@
 
 | Version | Supported |
 |---|---|
-| 3.x | Yes |
-| 2.2.0 – 2.x | Yes |
-| 2.0.x, 2.1.x | Best-effort backports of critical fixes only |
-| < 2.0.0 | No — the 1.x line closed at v1.10.55; upgrade to a supported release |
+| 4.0.x (LTS) | Yes — bug and security fixes until six months after the next LTS line is released |
+| 4.1 and later | Yes — the newest minor, until the one after it |
+| 3.x | No — the development line closed at 3.22.x. Upgrade to 4.0, which changes nothing documented in 3.22 |
+| < 3.0.0 | No — 2.x and 1.x are closed; upgrade to 4.0 |
+
+[STABILITY.md](STABILITY.md#long-term-support) says what an LTS line
+takes: fixes only, never a new feature.
 
 This table says which versions receive fixes. What a fix is allowed to
 change — and what stays put between releases — is a separate question,

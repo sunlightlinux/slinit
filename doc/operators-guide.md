@@ -339,7 +339,8 @@ HandlePowerKey=poweroff
 HoldoffTimeoutSec=30
 ```
 
-Then restart the daemon: `slinitctl restart slinit-logind`. It reads the
+Then restart the daemon: `slinitctl restart logind` (the service is
+named `logind` in slinit-services; the binary is `slinit-logind`). It reads the
 file once at start-up. If a value does not parse it says so on stderr and
 keeps the default, so check the log rather than assuming it took.
 
@@ -456,6 +457,17 @@ goes to a per-service ring buffer instead — `slinitctl catlog X`. With
 A program that logs through syslog(3) — sudo, login, su, dhcpcd — is
 found by its name instead: `slinit-journalctl -t sudo`. slinit serves
 `/dev/log` itself when no syslog daemon does (`--syslog-socket`).
+
+### What happened during the last shutdown?
+
+`slinit-journalctl -b -1` shows the previous boot, and its last lines
+are the shutdown. The log daemon should run with `options = stops-last`
+(slinit-services sets it), so it records the other services going
+down; what comes after it stops — its own dependencies, the final
+SIGTERM sweep — slinit writes itself into a `shutdown-*.journal` file
+in the same directory, which `-b -1` shows as the boot's last entries.
+A shutdown that sat out the 90-second emergency timeout says which
+services it was waiting for there.
 
 ---
 

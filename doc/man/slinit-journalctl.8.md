@@ -100,6 +100,11 @@ live queries.
 :   List every boot ID the journal covers and exit. Walks the on-
     disk journals under */var/log/slinit-journal/* +
     */run/slinit-journal/* in addition to the ring buffer.
+    Boots are listed, and **-b -***N* counts back, in the order they
+    were written — files in name order, each in write order, the ring
+    buffer last — never by wall-clock time, so a boot whose clock was
+    set back, or started ahead, keeps its place; within a boot,
+    entries keep their monotonic order (since 3.22.0).
 
 **-b**, **--boot** [*ID*]
 :   Restrict output to a boot. Empty argument or **0** = current;
@@ -447,6 +452,11 @@ Query a rescue image:
 :   Persistent journal directory. The active file is named after the
     current date, *YYYY-MM-DD.journal* (binary) or *YYYY-MM-DD.jsonl*;
     rotated JSONL files are gzip-compressed (*\*.jsonl.gz*).
+
+*/var/log/slinit-journal/shutdown-YYYYMMDD-HHMMSS-BOOT.journal*
+:   The end of a boot's shutdown, logged after **slinit-journald**(8)
+    stopped, written there by slinit itself (since 3.22.0). Read with
+    the rest; **-b** shows it as the boot's last entries.
 
 */run/slinit-journal/*
 :   Volatile (tmpfs) journal directory used when the persistent one

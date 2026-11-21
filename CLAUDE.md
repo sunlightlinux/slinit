@@ -78,6 +78,10 @@ When your changes create orphans:
   ask. The control protocol (current CPVersion=7, MinCompatVersion=1) and
   config parser accept legacy forms on purpose. [STABILITY.md](STABILITY.md)
   is the written contract: what may change in a patch, minor or major.
+- **The 4.0 line is long-term support: fixes only.** No new directive,
+  option, command, flag or subsystem on 4.0.x, not even an additive one;
+  features go to the next minor (4.1+). See STABILITY.md's "Long-term
+  support".
 - **Don't introduce import cycles.** `pkg/service` cannot import
   `pkg/config` — env-file parsing lives in `pkg/process` for this reason.
 

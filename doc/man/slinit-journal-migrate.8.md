@@ -81,7 +81,7 @@ Spot-check the result, then swap it into place:
     slinit-journalctl --file=/var/log/slinit-journal.new/$(date -u +%F).journal -n 20
     mv /var/log/slinit-journal /var/log/slinit-journal.jsonl.bak
     mv /var/log/slinit-journal.new /var/log/slinit-journal
-    slinitctl restart slinit-journald
+    slinitctl restart journald
 
 # SEE ALSO
 

@@ -24,6 +24,37 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`slinit-supports`, `doc/features.md` and the project statistics
+  left out `options = stops-last`.** Options, unlike directives, are not
+  discovered from the parser; they are listed by hand in the feature
+  table, and 3.22.0 added the option to the parser only, so all three
+  said slinit had 13 options when it had 14. A test now fails when the
+  parser accepts an option the table does not list.
+
+### Documentation
+
+- **The 4.0 long-term-support policy is written down.** STABILITY.md
+  gains a "Long-term support" section: 4.0 is 3.22 frozen and breaks
+  nothing, the control protocol stays at version 7 throughout 4.x, the
+  4.0 line takes bug and security fixes only, and it is supported until
+  six months after the next LTS line. SECURITY.md's table follows it:
+  4.0.x and the newest 4.x minor are supported, 3.x and older are
+  closed. The roadmap, README, CONTRIBUTING, CLAUDE.md and the pull
+  request template say the same.
+- **slinit(8) describes the shutdown sequence**, including the
+  stops-last hold and the journal tail written after the kill sweep.
+  slinit-journalctl(8) says how boots are ordered and documents the
+  `shutdown-*.journal` files; slinit-timedated(8) says what SetTimezone
+  tells the kernel; the operator's guide has "What happened during the
+  last shutdown?".
+- **Two commands named a service after its binary.** The operator's
+  guide said `slinitctl restart slinit-logind` and slinit-journal-
+  migrate(8) `slinitctl restart slinit-journald`; slinit-services names
+  them `logind` and `journald`, so both failed. doc/tools.md no longer
+  says slinit-timedatectl never uses D-Bus.
+
 ## [3.22.1] — 2026-11-21
 
 **A patch: `slinit-timedatectl` misreported the clock for any user but
