@@ -65,11 +65,11 @@ func WriteRTCFromSystem(inLocal bool) error {
 // returns the first one that has a config file under /etc/slinit.d/.
 // Probe order matches likelihood on a slinit host.
 func FindNTPService() string {
-	for _, name := range []string{
-		"chronyd", "systemd-timesyncd", "ntpd", "openntpd", "sntp",
-	} {
-		if _, err := os.Stat(filepath.Join(SlinitConfDir, name)); err == nil {
-			return name
+	for _, name := range ntpServices {
+		for _, dir := range SlinitServiceDirs {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				return name
+			}
 		}
 	}
 	return ""
@@ -96,9 +96,19 @@ func slinitctl(subcmd, name string) error {
 // Overridable in tests / when running from a container-mode slinit
 // with a non-default socket path.
 var (
-	SlinitConfDir = "/etc/slinit.d"
-	SlinitctlBin  = "slinitctl"
+	// SlinitServiceDirs are where the system slinit looks for service
+	// descriptions, in its order (cmd/slinit's resolveServiceDirs; a test
+	// there keeps the two equal). Only /etc/slinit.d used to be searched,
+	// so a time-sync service a package ships in /lib/slinit.d — chronyd
+	// on Sunlight — was not found: CanNTP read false, `timedatectl` said
+	// "NTP service: n/a", and GNOME's automatic time could not be turned
+	// on, with chronyd running all along.
+	SlinitServiceDirs = []string{"/etc/slinit.d", "/run/slinit.d", "/usr/local/lib/slinit.d", "/lib/slinit.d"}
+	SlinitctlBin      = "slinitctl"
 )
+
+// ntpServices are the time-sync services recognised, in preference order.
+var ntpServices = []string{"chronyd", "systemd-timesyncd", "ntpd", "openntpd", "sntp"}
 
 // RCConfPath is the Void-style /etc/rc.conf. slinit-services' boot script
 // re-points /etc/localtime from its TIMEZONE= every boot, so a time zone
@@ -180,7 +190,8 @@ func SystemFromRTC(inLocal bool) error {
 func SetNTP(enable bool) error {
 	svc := FindNTPService()
 	if svc == "" {
-		return errors.New("no known time-sync service found under " + SlinitConfDir + " (chronyd, systemd-timesyncd, ntpd, openntpd, sntp)")
+		return fmt.Errorf("no known time-sync service (%s) in %s",
+			strings.Join(ntpServices, ", "), strings.Join(SlinitServiceDirs, ", "))
 	}
 	en, act := "enable", "start"
 	if !enable {

@@ -40,6 +40,10 @@ script uses its own fallback when */etc/hostname* is missing; setting
 It is started by D-Bus activation and exits after **-exit-idle** without
 requests (30 seconds by default; *0* keeps it running).
 
+What it changes, and why a start failed, is logged to syslog as well as
+stderr, since its stderr is dbus-daemon's and usually goes nowhere; read
+it with **slinit-journalctl -t slinit-hostnamed** (since 3.21.2).
+
 Hostnames are validated as systemd validates them: letters, digits, '-'
 and '.', at most 64 bytes, no empty label and no label starting or ending
 with '-'. That is a little different from **slinit-hostnamectl**, which

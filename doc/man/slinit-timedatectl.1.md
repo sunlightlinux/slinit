@@ -37,8 +37,10 @@ Sources of truth:
 - **/etc/adjtime** — line 3 records whether the RTC keeps UTC or
   local time (**UTC** or **LOCAL**); missing file defaults to UTC
 - **/dev/rtc** — hardware clock, read via the **RTC_RD_TIME** ioctl
-- **/etc/slinit.d/** — probed for the presence of a time-sync
-  service (chronyd, systemd-timesyncd, ntpd, openntpd, sntp)
+- **/etc/slinit.d/**, **/run/slinit.d/**, **/usr/local/lib/slinit.d/**,
+  **/lib/slinit.d/** — slinit's system service directories, probed for a
+  time-sync service (chronyd, systemd-timesyncd, ntpd, openntpd, sntp;
+  since 3.21.2, all four — before, only */etc/slinit.d/*)
 
 Setting the system time uses **clock_settime**(2) on
 **CLOCK_REALTIME** and requires **CAP_SYS_TIME**. Setting the
@@ -92,8 +94,8 @@ concurrent readers never observe an inconsistent state.
 
 **set-ntp** *BOOL*
 :   Enable or disable the local time-sync service. slinit-timedatectl
-    probes */etc/slinit.d/* for the first of *chronyd*,
-    *systemd-timesyncd*, *ntpd*, *openntpd*, *sntp*, then calls
+    looks in slinit's system service directories for the first of
+    *chronyd*, *systemd-timesyncd*, *ntpd*, *openntpd*, *sntp*, then calls
     **slinitctl enable / disable** and **start / stop** as
     appropriate. Absence of any known service yields a clear error.
 

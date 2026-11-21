@@ -38,6 +38,10 @@ and loads the new keymap at once with **loadkeys**(1).
 It is started by D-Bus activation and exits after **-exit-idle** without
 requests (30 seconds by default; *0* keeps it running).
 
+What it changes, and why a start failed, is logged to syslog as well as
+stderr, since its stderr is dbus-daemon's and usually goes nowhere; read
+it with **slinit-journalctl -t slinit-localed** (since 3.21.2).
+
 # CONVERSION
 
 With *convert* set, **SetVConsoleKeyboard** also sets the X11 layout and

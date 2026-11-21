@@ -2,8 +2,11 @@ package main
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/timedate"
 )
 
 // TestResolveServiceDirsUserModeXDGDedup exercises the dinit-parity
@@ -122,5 +125,16 @@ func TestResolveServiceDirsUserModeRuntimeDir(t *testing.T) {
 		if d == "/slinit.d" || strings.HasPrefix(d, "slinit.d") {
 			t.Errorf("unset XDG_RUNTIME_DIR produced %q", d)
 		}
+	}
+}
+
+// slinit-timedated and slinit-timedatectl look for the time-sync service
+// in timedate.SlinitServiceDirs, which has to be the list the system
+// daemon loads from. They used to search /etc/slinit.d alone and missed
+// a packaged chronyd; a copy of the list that drifts would bring that
+// back for whichever directory it lost.
+func TestTimedateSearchesTheSystemServiceDirs(t *testing.T) {
+	if got, want := timedate.SlinitServiceDirs, resolveServiceDirs("", true); !reflect.DeepEqual(got, want) {
+		t.Errorf("timedate.SlinitServiceDirs = %v, slinit's system dirs = %v", got, want)
 	}
 }

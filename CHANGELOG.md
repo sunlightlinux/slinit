@@ -24,6 +24,24 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`slinit-timedated` and `slinit-timedatectl` found no time-sync
+  service unless it was in `/etc/slinit.d`.** A packaged one lives in
+  `/lib/slinit.d`, as chronyd does on Sunlight, so `CanNTP` read false,
+  `timedatectl` said "NTP service: n/a", and GNOME's "Automatic Date &
+  Time" could not be switched on — with chronyd running and in sync. They
+  now search slinit's four system service directories, in its order; a
+  test keeps the list equal to the daemon's. Seen on an installed
+  Sunlight system with GNOME, where the panel then allowed setting the
+  clock by hand.
+- **`slinit-timedated`, `slinit-hostnamed` and `slinit-localed` logged
+  nowhere.** Started by D-Bus activation, their stderr is dbus-daemon's,
+  usually `/dev/null`, so a changed clock, time zone, host name or locale
+  left no trace, and neither did a failed start. They now also log to
+  syslog, which slinit serves into the journal:
+  `slinit-journalctl -t slinit-timedated`.
+
 ## [3.21.1] — 2026-11-20
 
 **No product code changed**: documentation, tests and the demo, as in

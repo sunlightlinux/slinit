@@ -161,3 +161,31 @@ func swap(p *string, v string) func() {
 	*p = v
 	return func() { *p = old }
 }
+
+// A time-sync service a package ships lives in /lib/slinit.d, not
+// /etc/slinit.d. Only the latter used to be searched, so on Sunlight
+// chronyd was never found and CanNTP read false while it ran.
+func TestFindNTPServiceSearchesEveryServiceDir(t *testing.T) {
+	etc, lib := t.TempDir(), t.TempDir()
+	old := SlinitServiceDirs
+	SlinitServiceDirs = []string{etc, lib}
+	t.Cleanup(func() { SlinitServiceDirs = old })
+
+	if got := FindNTPService(); got != "" {
+		t.Fatalf("empty dirs: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(lib, "chronyd"), []byte("type = process\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindNTPService(); got != "chronyd" {
+		t.Errorf("chronyd in a package directory: FindNTPService = %q", got)
+	}
+	// Preference order still holds across directories: chronyd wins over
+	// an ntpd found earlier in the search path.
+	if err := os.WriteFile(filepath.Join(etc, "ntpd"), []byte("type = process\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindNTPService(); got != "chronyd" {
+		t.Errorf("preference order: FindNTPService = %q, want chronyd", got)
+	}
+}

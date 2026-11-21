@@ -16,6 +16,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
+	"github.com/sunlightlinux/slinit/pkg/dbusservice"
 	"github.com/sunlightlinux/slinit/pkg/polkit"
 )
 
@@ -29,8 +30,7 @@ func main() {
 	idle := flag.Duration("exit-idle", 30*time.Second, "exit after this long without requests (0: never)")
 	flag.Parse()
 	if err := run(*idle); err != nil {
-		fmt.Fprintf(os.Stderr, "slinit-localed: %v\n", err)
-		os.Exit(1)
+		dbusservice.Fatal("slinit-localed", err)
 	}
 }
 
@@ -41,6 +41,7 @@ func run(idle time.Duration) error {
 	}
 	defer conn.Close()
 	s := newServer(conn, polkit.New(conn))
+	s.svc.OpenSyslog()
 	if err := s.svc.Export(s); err != nil {
 		return err
 	}

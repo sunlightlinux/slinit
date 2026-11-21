@@ -16,6 +16,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
+	"github.com/sunlightlinux/slinit/pkg/dbusservice"
 	"github.com/sunlightlinux/slinit/pkg/hostname"
 	"github.com/sunlightlinux/slinit/pkg/polkit"
 )
@@ -33,8 +34,7 @@ func main() {
 	flag.Parse()
 	hostname.FallbackHostname = *fallback
 	if err := run(*idle); err != nil {
-		fmt.Fprintf(os.Stderr, "slinit-hostnamed: %v\n", err)
-		os.Exit(1)
+		dbusservice.Fatal("slinit-hostnamed", err)
 	}
 }
 
@@ -45,6 +45,7 @@ func run(idle time.Duration) error {
 	}
 	defer conn.Close()
 	s := newServer(conn, polkit.New(conn))
+	s.svc.OpenSyslog()
 	if err := s.svc.Export(s); err != nil {
 		return err
 	}

@@ -25,9 +25,12 @@ the contract, not slinit's current behaviour — see **STABILITY.md**.
 It does the same work as **slinit-timedatectl**(1), with the same code:
 the time zone is the */etc/localtime* symlink (and */etc/timezone* where
 that file exists), the hardware clock's mode is line 3 of
-*/etc/adjtime*, and network time is the time-sync service under
-*/etc/slinit.d* (**chronyd**, **ntpd**, **openntpd**, **sntp** or
-**systemd-timesyncd**, the first one found). **slinit-timedatectl**
+*/etc/adjtime*, and network time is the first time-sync service found
+(**chronyd**, **systemd-timesyncd**, **ntpd**, **openntpd**, **sntp**)
+in slinit's system service directories, */etc/slinit.d*, */run/slinit.d*,
+*/usr/local/lib/slinit.d* and */lib/slinit.d* (since 3.21.2; before,
+only */etc/slinit.d* was searched, so a packaged **chronyd** was not
+found and *CanNTP* read false). **slinit-timedatectl**
 does not go through this service: it changes the files directly, so it
 also works without a bus.
 
@@ -41,6 +44,10 @@ It is started by D-Bus activation when a client first calls the name,
 and exits after **-exit-idle** without requests (30 seconds by default;
 *0* keeps it running). A request waiting for an administrator's password
 keeps it alive.
+
+What it changes, and why a start failed, is logged to syslog as well as
+stderr, since its stderr is dbus-daemon's and usually goes nowhere; read
+it with **slinit-journalctl -t slinit-timedated** (since 3.21.2).
 
 # OPTIONS
 

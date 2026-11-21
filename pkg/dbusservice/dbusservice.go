@@ -7,6 +7,7 @@ package dbusservice
 
 import (
 	"fmt"
+	"log/syslog"
 	"os"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,8 @@ type Service struct {
 
 	inflight atomic.Int32
 	lastUse  atomic.Int64
+
+	syslog infoWriter // set by OpenSyslog
 }
 
 func (s *Service) now() time.Time {
@@ -60,9 +63,40 @@ func (s *Service) Touch() func() {
 	}
 }
 
-// Logf writes a line to stderr, which slinit puts in the service's log.
+// Logf writes a line to stderr and, once OpenSyslog has been called, to
+// syslog. stderr alone is not enough: these daemons are started by D-Bus
+// activation, so their parent is dbus-daemon, whose stderr is usually
+// /dev/null, and every "Changed system time ..." line was lost. slinit
+// serves /dev/log into the journal, so syslog is where they can be read.
 func (s *Service) Logf(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, s.Name+": "+format+"\n", a...)
+	line := fmt.Sprintf(format, a...)
+	fmt.Fprintln(os.Stderr, s.Name+": "+line)
+	if s.syslog != nil {
+		_ = s.syslog.Info(line)
+	}
+}
+
+// infoWriter is the part of *syslog.Writer Logf uses.
+type infoWriter interface{ Info(string) error }
+
+// OpenSyslog makes Logf also write to syslog, tagged with the service
+// name. A daemon's main calls it; tests do not, so they do not write to
+// the host's log. Without /dev/log it does nothing.
+func (s *Service) OpenSyslog() {
+	if w, err := syslog.New(syslog.LOG_INFO|syslog.LOG_DAEMON, s.Name); err == nil {
+		s.syslog = w
+	}
+}
+
+// Fatal reports a daemon's start-up failure on stderr and in syslog, for
+// the same reason as Logf, and exits 1.
+func Fatal(name string, err error) {
+	fmt.Fprintf(os.Stderr, "%s: %v\n", name, err)
+	if w, serr := syslog.New(syslog.LOG_ERR|syslog.LOG_DAEMON, name); serr == nil {
+		_ = w.Err(err.Error())
+		w.Close()
+	}
+	os.Exit(1)
 }
 
 // Emit sends PropertiesChanged for names, with their current values, as
