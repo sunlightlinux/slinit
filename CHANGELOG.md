@@ -24,6 +24,17 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [4.0.1] — 2026-11-22
+
+**The first fix release on the 4.0 long-term-support line.** Plasma's
+Wayland session did not start on an installed Sunlight system: the
+compositor was refused the GPU's card node, and once it had failed, the
+session it had taken stayed taken for every restart. Both are gaps
+against what systemd-logind does and desktops rely on, so on the LTS
+line they count as fixes, not features (STABILITY.md: an interface owned
+by another project follows that project). Nothing documented in 4.0.0
+changes; the control protocol stays at version 7.
+
 ### Fixed
 
 - **A Wayland compositor that died left its session taken.**
