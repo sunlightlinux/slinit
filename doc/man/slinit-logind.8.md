@@ -79,7 +79,7 @@ The user of a seat's active session gets read and write on that seat's
 devices that udev tags **uaccess** — the GPU's card node, sound,
 cameras, optical drives, game controllers — through a POSIX ACL, and
 loses it when another session becomes active, as with systemd-logind
-and elogind (since 4.1.0). The devices are the nodes listed under
+and elogind (since 4.0.1). The devices are the nodes listed under
 */run/udev/tags/uaccess* whose *ID_SEAT* is the seat (*seat0* when
 unset). Root needs no entry and gets none; with nobody at the seat the
 nodes are back to their mode bits. A device plugged in later is left to
