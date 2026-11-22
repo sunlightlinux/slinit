@@ -873,6 +873,7 @@ func main() {
 
 	// The system instance owns the seat's devices (uaccess.go).
 	uaccessEnabled = true
+	vtHandling = true
 
 	// Ensure state dirs exist so PAM's later create-session writes
 	// don't have to race on mkdir.
@@ -950,6 +951,11 @@ func main() {
 	// across a slinit-logind restart. Without this loginctl show-session
 	// would 404 on the object path for sessions that PAM created before
 	// we came up.
+	// Listen for VT release requests before any session object is
+	// exported: TakeControl is what sets a VT to signal us.
+	if vtHandling {
+		m.startVTSignals()
+	}
 	m.rehydrateObjects()
 
 	// Lid and power-key watcher. A no-op unless something is configured,

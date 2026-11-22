@@ -36,6 +36,20 @@ verified with `git tag -v`.
   On Plasma the screen locker reset on each round, so the password being
   typed was discarded and unlocking seemed to fail. slinit-logind now
   passes `--no-coordination`, since it has already done the coordinating.
+- **"Switch User" from a Wayland session hung.** slinit-logind left a
+  controlled session's VT in whatever mode the display manager had put
+  it in, and never paused the session's devices. On Plasma under SDDM a
+  switch to the new greeter's VT waited for a release that never came,
+  and KWin kept DRM master. slinit-logind now holds the VT of a session
+  with a controller as systemd-logind does: on a switch away it drops
+  DRM master, revokes the input devices, tells the controller with
+  PauseDevice and lets the switch through; when the session comes back
+  to the front it resumes them and sends ResumeDevice with the
+  descriptor. Both signals go to the controller only, not to the whole
+  bus. A device taken by a session in the background is handed back
+  paused with `inactive` set, instead of taking DRM master from the
+  session in front. The VT goes back to text mode with automatic
+  switching when control is released.
 
 ## [4.0.1] — 2026-11-22
 
