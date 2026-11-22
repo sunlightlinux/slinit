@@ -872,10 +872,16 @@ func writeCompatSeat(id string, sessions []SessionRecord) {
 	fmt.Fprintf(&s, "CAN_MULTI_SESSION=1\n")
 	fmt.Fprintf(&s, "CAN_TTY=1\n")
 	fmt.Fprintf(&s, "CAN_GRAPHICAL=1\n")
+	active, hasActive := SessionRecord{}, false
+	if len(sessions) > 0 {
+		active, hasActive = activeSessionOnSeat(sessions, id)
+	}
+	// Give the seat's devices to whoever is at it (uaccess.go).
+	applySeatAccess(id, active.UserID, hasActive)
 	if len(sessions) > 0 {
 		// The session on the foreground VT; none when that VT has no
 		// session (a bare text console), as in elogind.
-		if active, ok := activeSessionOnSeat(sessions, id); ok {
+		if hasActive {
 			fmt.Fprintf(&s, "ACTIVE=%s\n", active.ID)
 			fmt.Fprintf(&s, "ACTIVE_UID=%d\n", active.UserID)
 		}

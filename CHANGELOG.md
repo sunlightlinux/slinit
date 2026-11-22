@@ -33,6 +33,19 @@ verified with `git tag -v`.
   came up. Control, and the devices handed out under it, are now
   released when the controller's bus connection goes, as systemd-logind
   does.
+- **The user at the screen got no access to the seat's devices.**
+  systemd-logind and elogind give the user of a seat's active session a
+  read/write ACL on the devices udev tags `uaccess` (GPU card node,
+  sound, cameras, optical drives, game controllers) and move it when the
+  active session changes; slinit-logind did not. X11 hides it, the X
+  server being root, but KWin opens the card node itself, so Plasma's
+  Wayland session went back to the login screen unless the user was in
+  the `video` group — which gives the card to that user even when
+  someone else is at the screen. slinit-logind now writes those ACLs
+  itself, for the system instance only. Checked on an installed system
+  with Plasma 6.7: the Wayland session starts with the user in no device
+  group, and the card, sound and cdrom nodes are read/write for that user
+  alone.
 - **slinit-logind's debug output now records TakeControl, TakeDevice and
   ReleaseDevice**, which it did not log at all.
 

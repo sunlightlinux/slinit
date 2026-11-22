@@ -73,6 +73,25 @@ session, and brings it back only when it observes its own session's
 permanently active never produces that transition, and the greeter
 comes back as a blank screen after logout.
 
+# DEVICE ACCESS
+
+The user of a seat's active session gets read and write on that seat's
+devices that udev tags **uaccess** — the GPU's card node, sound,
+cameras, optical drives, game controllers — through a POSIX ACL, and
+loses it when another session becomes active, as with systemd-logind
+and elogind (since 4.1.0). The devices are the nodes listed under
+*/run/udev/tags/uaccess* whose *ID_SEAT* is the seat (*seat0* when
+unset). Root needs no entry and gets none; with nobody at the seat the
+nodes are back to their mode bits. A device plugged in later is left to
+udev's own **uaccess** rule, such as elogind's, which reads the active
+user from */run/systemd/seats*.
+
+Before, nothing granted this. Under X11 it does not show, since the X
+server runs as root, but a Wayland compositor opens the card node
+itself: Plasma's Wayland session fell back to the login screen unless
+the user was put in the *video* group, which hands the card to that user
+whoever is at the screen.
+
 # SESSION CONTROL
 
 A session's controller — the compositor that called *TakeControl* —

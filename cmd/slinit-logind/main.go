@@ -871,6 +871,9 @@ func main() {
 		return
 	}
 
+	// The system instance owns the seat's devices (uaccess.go).
+	uaccessEnabled = true
+
 	// Ensure state dirs exist so PAM's later create-session writes
 	// don't have to race on mkdir.
 	for _, d := range []string{"sessions", "users", "seats", "inhibitors"} {
