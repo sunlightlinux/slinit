@@ -83,6 +83,26 @@ func errNotController() *dbus.Error {
 		[]any{"You are not in control of this session"})
 }
 
+// dropController releases control of every session whose controller is
+// the bus name that just went away, with the devices it was handed, and
+// returns their ids. systemd-logind does the same when the controller's
+// name leaves the bus (session_drop_controller): otherwise a compositor
+// that dies keeps the session "taken", and every compositor started
+// after it — KWin restarts itself — is refused with DeviceIsTaken.
+func dropController(name string) []string {
+	devicesMu.Lock()
+	defer devicesMu.Unlock()
+	var ids []string
+	for id, sd := range devices {
+		if sd.controlled && sd.controller == name {
+			closeSessionDevicesLocked(id)
+			delete(devices, id)
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // releaseControl drops every descriptor the session was handed and
 // releases DRM master with them, so the next compositor can claim it.
 func releaseControl(id string) {
@@ -181,5 +201,45 @@ func releaseDevice(id string, major, minor uint32) {
 	if f, ok := sd.files[key]; ok {
 		dropAndClose(f)
 		delete(sd.files, key)
+	}
+}
+
+// vanishedName returns the unique bus name a NameOwnerChanged signal
+// reports gone — a name with an old owner and no new one — or "".
+// Well-known names change hands; only a unique name leaving means its
+// connection, and so the process behind it, is gone.
+func vanishedName(sig *dbus.Signal) string {
+	if sig == nil || sig.Name != "org.freedesktop.DBus.NameOwnerChanged" || len(sig.Body) != 3 {
+		return ""
+	}
+	name, ok1 := sig.Body[0].(string)
+	newOwner, ok2 := sig.Body[2].(string)
+	if !ok1 || !ok2 || newOwner != "" || len(name) == 0 || name[0] != ':' {
+		return ""
+	}
+	return name
+}
+
+// watchControllers releases a session's control when its controller
+// leaves the bus. It runs for the life of the daemon.
+func (m *manager) watchControllers() {
+	if err := m.conn.AddMatchSignal(
+		dbus.WithMatchObjectPath("/org/freedesktop/DBus"),
+		dbus.WithMatchInterface("org.freedesktop.DBus"),
+		dbus.WithMatchMember("NameOwnerChanged"),
+	); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-logind: cannot watch bus names, a dead compositor will keep its session taken: %v\n", err)
+		return
+	}
+	ch := make(chan *dbus.Signal, 64)
+	m.conn.Signal(ch)
+	for sig := range ch {
+		name := vanishedName(sig)
+		if name == "" {
+			continue
+		}
+		for _, id := range dropController(name) {
+			m.dbgf("session %s: controller %s left the bus, control released", id, name)
+		}
 	}
 }
