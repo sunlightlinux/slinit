@@ -100,6 +100,21 @@ was handed, so the next compositor can take the session (since 4.0.1).
 Before, a compositor that died kept its session taken, and KWin, which
 restarts itself, was refused *DeviceIsTaken* every time after.
 
+While a session on a VT has a controller, the daemon holds that VT for
+it, as systemd-logind does (since 4.0.2): *VT_PROCESS* mode, graphics
+mode, and the console keyboard off, so keystrokes reach only the
+compositor. When the kernel asks to switch away, the session's devices
+are paused — DRM master dropped, input devices revoked — and the
+controller is told with *PauseDevice* before the switch is let through;
+when the session's VT comes back to the front they are resumed, a
+revoked input device reopened, and the controller sent *ResumeDevice*
+with the descriptor. Both signals go to the controller alone, never
+broadcast. A device taken while the session is in the background comes
+back paused, with *inactive* set. The VT is given back, in text mode
+with automatic switching, when control is released. Before this, a VT
+switch away from a Wayland session — a display manager's "Switch User"
+— could wait for good, and the session kept DRM master behind it.
+
 # SESSION LIFETIME
 
 A session ends when its leader process exits, which the daemon watches

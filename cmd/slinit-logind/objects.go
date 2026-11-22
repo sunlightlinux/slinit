@@ -631,6 +631,9 @@ func (s *sessionObject) TakeControl(sender dbus.Sender, force bool) *dbus.Error 
 	}
 	derr := takeControl(s.id, string(sender), force)
 	s.m.dbgf("session %s: TakeControl(force=%v) from %s: %v", s.id, force, sender, errText(derr))
+	if derr == nil && rec.SeatID != "" {
+		s.m.attachVT(s.id, string(sender), rec.VTNr, rec.UserID)
+	}
 	return derr
 }
 
@@ -667,9 +670,9 @@ func (s *sessionObject) ReleaseDevice(sender dbus.Sender, major, minor uint32) *
 }
 
 // PauseDeviceComplete is the client's acknowledgement of a PauseDevice
-// signal. We don't pause devices — that needs the VT-switch tracking
-// elogind does in logind-session-device.c — so there is nothing to
-// confirm, but the method has to exist or a compositor that acks
+// signal. Only "force" pauses are sent (vtcontrol.go), which are done
+// before the signal goes out and wait for no one, so there is nothing to
+// complete; but the method has to exist or a compositor that acks
 // unconditionally takes an UnknownMethod error mid-handover.
 func (s *sessionObject) PauseDeviceComplete(sender dbus.Sender, major, minor uint32) *dbus.Error {
 	if !isController(s.id, string(sender)) {

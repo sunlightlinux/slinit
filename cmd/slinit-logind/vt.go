@@ -188,6 +188,7 @@ func (m *manager) watchActiveVT() {
 			sessionMu.Lock()
 			m.refreshActiveLocked()
 			sessionMu.Unlock()
+			m.syncDevicesToVT()
 		}
 		for {
 			_, err := unix.Poll(fds, -1)

@@ -20,9 +20,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/godbus/dbus/v5"
+	"golang.org/x/sys/unix"
 )
 
 // devKey identifies a device by the major:minor pair the client asked
@@ -38,6 +40,23 @@ type sessionDevices struct {
 	controlled bool
 	controller string // bus name of the caller that took control
 	files      map[devKey]*os.File
+	// paused marks the devices whose access is suspended because the
+	// session is not in front: DRM master dropped, input revoked.
+	paused map[devKey]bool
+	// vtnr is the session's VT, 0 for none; vt is that VT, open while
+	// this daemon holds it for the controller (vtcontrol.go).
+	vtnr uint32
+	vt   *os.File
+}
+
+// devNote is a PauseDevice or ResumeDevice signal owed to a controller.
+// A resume carries a duplicate of the device's descriptor, so it stays
+// valid until sent even if the device is released in the meantime.
+type devNote struct {
+	session, controller string
+	member              string // "PauseDevice" or "ResumeDevice"
+	key                 devKey
+	fd                  *os.File
 }
 
 var (
@@ -120,6 +139,190 @@ func closeSessionDevicesLocked(id string) {
 	for key, f := range sd.files {
 		dropAndClose(f)
 		delete(sd.files, key)
+		delete(sd.paused, key)
+	}
+	if sd.vt != nil {
+		restoreVT(sd.vt, sd.vtnr)
+		sd.vt = nil
+	}
+}
+
+// attachVT records the session's VT against its controller and, on a
+// system with VTs, takes the VT for it. Failing to take it is logged, not
+// returned: systemd fails TakeControl, but a compositor that worked before
+// this daemon held VTs must not stop working because one cannot be held.
+func (m *manager) attachVT(id, controller string, vtnr, uid uint32) {
+	devicesMu.Lock()
+	defer devicesMu.Unlock()
+	sd := devices[id]
+	if sd == nil || !sd.controlled || sd.controller != controller {
+		return
+	}
+	sd.vtnr = vtnr
+	if !vtHandling || vtnr == 0 || sd.vt != nil {
+		return
+	}
+	f, err := prepareVT(vtnr, uid)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-logind: session %s: cannot take tty%d, VT switches will not pause its devices: %v\n", id, vtnr, err)
+		return
+	}
+	sd.vt = f
+	m.dbgf("session %s: holding tty%d for its controller", id, vtnr)
+}
+
+// isEvdevNode reports whether path is an input event node, whose access
+// is revoked while its session is in the background.
+func isEvdevNode(path string) bool {
+	return strings.HasPrefix(path, "/dev/input/event")
+}
+
+// eviocRevoke is EVIOCREVOKE, _IOW('E', 0x91, int): every later
+// operation on the descriptor fails, for good.
+const eviocRevoke = 0x40044591
+
+// pauseDevice suspends one device's access: a DRM node keeps its
+// descriptor but loses master, an input node is revoked. Other devices
+// have nothing to suspend.
+func pauseDevice(f *os.File) {
+	switch {
+	case isDRMNode(f.Name()):
+		_ = drmDropMaster(f.Fd())
+	case isEvdevNode(f.Name()):
+		_, _, _ = unix.Syscall(unix.SYS_IOCTL, f.Fd(), eviocRevoke, 0)
+	}
+}
+
+// pauseDevicesLocked pauses every device of the session not paused yet
+// and returns the PauseDevice signals owed. "force", as systemd sends on
+// a VT switch: the device is already paused, there is nothing to wait for.
+func pauseDevicesLocked(id string, sd *sessionDevices) []devNote {
+	var notes []devNote
+	for key, f := range sd.files {
+		if sd.paused[key] {
+			continue
+		}
+		pauseDevice(f)
+		if sd.paused == nil {
+			sd.paused = map[devKey]bool{}
+		}
+		sd.paused[key] = true
+		if sd.controlled {
+			notes = append(notes, devNote{session: id, controller: sd.controller, member: "PauseDevice", key: key})
+		}
+	}
+	return notes
+}
+
+// resumeDevicesLocked gives a session back the devices it was paused
+// out of and returns the ResumeDevice signals owed. A revoked input node
+// cannot be revived, so it is reopened and the new descriptor handed
+// over. A device that cannot be resumed — another holder still has DRM
+// master — stays paused for the next switch to retry.
+func resumeDevicesLocked(id string, sd *sessionDevices) []devNote {
+	var notes []devNote
+	for key, f := range sd.files {
+		if !sd.paused[key] {
+			continue
+		}
+		switch {
+		case isDRMNode(f.Name()):
+			if err := drmSetMaster(f.Fd()); err != nil {
+				continue
+			}
+		case isEvdevNode(f.Name()):
+			g, err := openDevice(f.Name())
+			if err != nil {
+				continue
+			}
+			_ = f.Close()
+			sd.files[key] = g
+			f = g
+		}
+		delete(sd.paused, key)
+		if !sd.controlled {
+			continue
+		}
+		dup, err := dupFile(f)
+		if err != nil {
+			continue
+		}
+		notes = append(notes, devNote{session: id, controller: sd.controller, member: "ResumeDevice", key: key, fd: dup})
+	}
+	return notes
+}
+
+func dupFile(f *os.File) (*os.File, error) {
+	fd, err := unix.FcntlInt(f.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), f.Name()), nil
+}
+
+// vtIsFront reports whether a session on vtnr is the one in front. As in
+// sessionIsActive, a session without a VT, or a seat whose foreground is
+// unknown, counts as in front.
+func vtIsFront(vtnr uint32) bool {
+	vt := currentVT.Load()
+	return vtnr == 0 || vt == 0 || vtnr == vt
+}
+
+// syncDevicesToVT pauses the devices of every session that is no longer
+// in front and resumes those of the one that now is — seat_set_active's
+// half of a VT switch. Called whenever the foreground VT changes.
+func (m *manager) syncDevicesToVT() {
+	devicesMu.Lock()
+	var notes []devNote
+	for id, sd := range devices {
+		if vtIsFront(sd.vtnr) {
+			notes = append(notes, resumeDevicesLocked(id, sd)...)
+		} else {
+			notes = append(notes, pauseDevicesLocked(id, sd)...)
+		}
+	}
+	devicesMu.Unlock()
+	m.sendDevNotes(notes)
+}
+
+// sendDevNoteFunc delivers one note; a variable so the tests can watch.
+var sendDevNoteFunc = (*manager).sendDevNote
+
+func (m *manager) sendDevNotes(notes []devNote) {
+	for _, n := range notes {
+		if err := sendDevNoteFunc(m, n); err != nil {
+			m.dbgf("session %s: %s %d:%d to %s: %v", n.session, n.member, n.key.major, n.key.minor, n.controller, err)
+		}
+		if n.fd != nil {
+			_ = n.fd.Close()
+		}
+	}
+}
+
+// sendDevNote emits the signal to the controller alone. A broadcast
+// would hand a resumed input descriptor — a keyboard — to every client
+// on the bus that listens for it.
+func (m *manager) sendDevNote(n devNote) error {
+	return m.conn.Send(devNoteMessage(n), nil).Err
+}
+
+func devNoteMessage(n devNote) *dbus.Message {
+	var body []any
+	if n.member == "ResumeDevice" {
+		body = []any{n.key.major, n.key.minor, dbus.UnixFD(n.fd.Fd())}
+	} else {
+		body = []any{n.key.major, n.key.minor, "force"}
+	}
+	return &dbus.Message{
+		Type: dbus.TypeSignal,
+		Headers: map[dbus.HeaderField]dbus.Variant{
+			dbus.FieldPath:        dbus.MakeVariant(sessionPath(n.session)),
+			dbus.FieldInterface:   dbus.MakeVariant(sessionIface),
+			dbus.FieldMember:      dbus.MakeVariant(n.member),
+			dbus.FieldDestination: dbus.MakeVariant(n.controller),
+			dbus.FieldSignature:   dbus.MakeVariant(dbus.SignatureOf(body...)),
+		},
+		Body: body,
 	}
 }
 
@@ -139,6 +342,10 @@ func dropAndClose(f *os.File) {
 // retain its own copy so it can drop master or revoke access on a VT
 // switch. The copy is registered against the session so ReleaseDevice
 // and ReleaseControl can close it.
+//
+// A session that is not in front gets its device paused from the start
+// and is told so with inactive=true, as in systemd: claiming DRM master
+// for it would take the screen from the session that is in front.
 func takeDevice(id string, major, minor uint32) (dbus.UnixFD, bool, *dbus.Error) {
 	path, err := devPathForMajorMinor(major, minor)
 	if err != nil {
@@ -162,13 +369,23 @@ func takeDevice(id string, major, minor uint32) (dbus.UnixFD, bool, *dbus.Error)
 	if existing, ok := sd.files[key]; ok {
 		// Re-take of a device we already hold: hand back the same
 		// descriptor rather than opening a second master-holding fd.
-		return dbus.UnixFD(existing.Fd()), false, nil
+		return dbus.UnixFD(existing.Fd()), sd.paused[key], nil
 	}
 
 	f, err := openDevice(path)
 	if err != nil {
 		return 0, false, dbus.NewError("org.freedesktop.login1.Error.DeviceOpenFailed",
 			[]any{path + ": " + err.Error()})
+	}
+
+	if !vtIsFront(sd.vtnr) {
+		pauseDevice(f)
+		if sd.paused == nil {
+			sd.paused = map[devKey]bool{}
+		}
+		sd.paused[key] = true
+		sd.files[key] = f
+		return dbus.UnixFD(f.Fd()), true, nil
 	}
 
 	if isDRMNode(path) {
@@ -201,6 +418,7 @@ func releaseDevice(id string, major, minor uint32) {
 	if f, ok := sd.files[key]; ok {
 		dropAndClose(f)
 		delete(sd.files, key)
+		delete(sd.paused, key)
 	}
 }
 
