@@ -50,7 +50,7 @@ func TestLidCloseSuspends(t *testing.T) {
 
 	w.handle(evSW, swLID, 1)
 
-	if got := calls(t, log); !strings.Contains(got, "suspend mem") {
+	if got := calls(t, log); !strings.Contains(got, "suspend --no-coordination mem") {
 		t.Errorf("lid close did not suspend; invocations: %q", got)
 	}
 }
@@ -90,7 +90,7 @@ func TestHoldoffSuppressesLidClose(t *testing.T) {
 	// Opening the lid means the machine is in use: the window clears.
 	w.handle(evSW, swLID, 0)
 	w.handle(evSW, swLID, 1)
-	if got := calls(t, log); !strings.Contains(got, "suspend mem") {
+	if got := calls(t, log); !strings.Contains(got, "suspend --no-coordination mem") {
 		t.Errorf("after a lid open the next close should act; got %q", got)
 	}
 }
@@ -123,12 +123,12 @@ func TestKeyCodesRouteToTheirActions(t *testing.T) {
 	w, log := watcherWithStub(t, cfg)
 
 	w.handle(evKey, keyPower, 1)
-	if got := calls(t, log); !strings.Contains(got, "suspend mem") {
+	if got := calls(t, log); !strings.Contains(got, "suspend --no-coordination mem") {
 		t.Errorf("power key did not act: %q", got)
 	}
 
 	w.handle(evKey, keySleep, 1)
-	if got := calls(t, log); !strings.Contains(got, "suspend disk") {
+	if got := calls(t, log); !strings.Contains(got, "suspend --no-coordination disk") {
 		t.Errorf("sleep key did not hibernate: %q", got)
 	}
 
@@ -176,7 +176,7 @@ func TestInhibitorBlocksLidAction(t *testing.T) {
 		return w.m.inhibitors.blockedBy("handle-lid-switch") == nil
 	})
 	w.handle(evSW, swLID, 1)
-	if got := calls(t, log); !strings.Contains(got, "suspend mem") {
+	if got := calls(t, log); !strings.Contains(got, "suspend --no-coordination mem") {
 		t.Errorf("after release the lid should act; got %q", got)
 	}
 }
@@ -194,7 +194,7 @@ func TestUnrelatedInhibitorDoesNotBlock(t *testing.T) {
 	defer client.Close()
 
 	w.handle(evSW, swLID, 1)
-	if got := calls(t, log); !strings.Contains(got, "suspend mem") {
+	if got := calls(t, log); !strings.Contains(got, "suspend --no-coordination mem") {
 		t.Errorf("a power-key lock must not block the lid; got %q", got)
 	}
 }

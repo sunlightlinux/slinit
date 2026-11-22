@@ -24,6 +24,19 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A suspend through login1 called itself over and over.** Since 2.5.1
+  slinit-logind asked PID 1 to sleep with `slinitctl suspend`, and
+  `slinitctl suspend` itself goes through login1 unless given
+  `--no-coordination` — so every suspend from a desktop menu, the sleep
+  key or the lid came back to slinit-logind, which announced
+  PrepareForSleep again, waited five seconds for the delay locks, and
+  called `slinitctl` again, for as long as the bus let the calls nest.
+  On Plasma the screen locker reset on each round, so the password being
+  typed was discarded and unlocking seemed to fail. slinit-logind now
+  passes `--no-coordination`, since it has already done the coordinating.
+
 ## [4.0.1] — 2026-11-22
 
 **The first fix release on the 4.0 long-term-support line.** Plasma's
