@@ -964,6 +964,7 @@ func main() {
 	// Session activity follows the foreground VT from here on. Started
 	// after ensureSeat so the first refresh has a seat to update.
 	go m.watchActiveVT()
+	go m.watchControllers()
 	// The self/auto session paths. gnome-shell's greeter has no
 	// XDG_SESSION_ID and reaches for .../session/auto to find itself.
 	m.registerSessionAliases()

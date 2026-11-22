@@ -626,9 +626,12 @@ func (s *sessionObject) TakeControl(sender dbus.Sender, force bool) *dbus.Error 
 	}
 	uid, err := senderUID(s.m, sender)
 	if err != nil || (uid != 0 && (force || uid != rec.UserID)) {
+		s.m.dbgf("session %s: TakeControl from %s refused: not the owner", s.id, sender)
 		return errAccessDenied("Only owner of session may take control")
 	}
-	return takeControl(s.id, string(sender), force)
+	derr := takeControl(s.id, string(sender), force)
+	s.m.dbgf("session %s: TakeControl(force=%v) from %s: %v", s.id, force, sender, errText(derr))
+	return derr
 }
 
 func (s *sessionObject) ReleaseControl(sender dbus.Sender) *dbus.Error {
@@ -646,9 +649,12 @@ func (s *sessionObject) ReleaseControl(sender dbus.Sender) *dbus.Error {
 // a descriptor it cannot modeset through. See device.go.
 func (s *sessionObject) TakeDevice(sender dbus.Sender, major, minor uint32) (dbus.UnixFD, bool, *dbus.Error) {
 	if !isController(s.id, string(sender)) {
+		s.m.dbgf("session %s: TakeDevice %d:%d from %s refused: not the controller", s.id, major, minor, sender)
 		return -1, false, errNotController()
 	}
-	return takeDevice(s.id, major, minor)
+	fd, inactive, derr := takeDevice(s.id, major, minor)
+	s.m.dbgf("session %s: TakeDevice %d:%d from %s: %v", s.id, major, minor, sender, errText(derr))
+	return fd, inactive, derr
 }
 
 func (s *sessionObject) ReleaseDevice(sender dbus.Sender, major, minor uint32) *dbus.Error {
@@ -656,6 +662,7 @@ func (s *sessionObject) ReleaseDevice(sender dbus.Sender, major, minor uint32) *
 		return errNotController()
 	}
 	releaseDevice(s.id, major, minor)
+	s.m.dbgf("session %s: ReleaseDevice %d:%d from %s", s.id, major, minor, sender)
 	return nil
 }
 
@@ -725,3 +732,11 @@ var (
 	_ = fmt.Sprintf
 	_ = strconv.Itoa
 )
+
+// errText is a D-Bus error's name for a debug line, or "ok".
+func errText(err *dbus.Error) string {
+	if err == nil {
+		return "ok"
+	}
+	return err.Name
+}

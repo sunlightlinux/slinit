@@ -73,6 +73,14 @@ session, and brings it back only when it observes its own session's
 permanently active never produces that transition, and the greeter
 comes back as a blank screen after logout.
 
+# SESSION CONTROL
+
+A session's controller — the compositor that called *TakeControl* —
+loses control when its connection leaves the bus, with every device it
+was handed, so the next compositor can take the session (since 4.0.1).
+Before, a compositor that died kept its session taken, and KWin, which
+restarts itself, was refused *DeviceIsTaken* every time after.
+
 # SESSION LIFETIME
 
 A session ends when its leader process exits, which the daemon watches

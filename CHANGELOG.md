@@ -24,6 +24,18 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Wayland compositor that died left its session taken.**
+  slinit-logind never released a session's control when the compositor
+  holding it left the bus, so every compositor started after it in that
+  session was refused `DeviceIsTaken` — KWin restarts itself and never
+  came up. Control, and the devices handed out under it, are now
+  released when the controller's bus connection goes, as systemd-logind
+  does.
+- **slinit-logind's debug output now records TakeControl, TakeDevice and
+  ReleaseDevice**, which it did not log at all.
+
 ## [4.0.0] — 2026-11-21
 
 **The first long-term-support release.** 3.x was the development line;
