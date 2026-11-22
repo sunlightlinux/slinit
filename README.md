@@ -6,7 +6,7 @@ dinit-compatible configuration format.
 
 | Project | Details |
 |---|---|
-| **Latest release** | v4.0.1 (long-term support) — see [CHANGELOG.md](CHANGELOG.md) |
+| **Latest release** | v4.0.2 (long-term support) — see [CHANGELOG.md](CHANGELOG.md) |
 | **Compatibility contract** | [STABILITY.md](STABILITY.md) — control protocol v7 (min-compat v1); 4.0 is the first long-term-support line, fixes only |
 | **Requires** | Go 1.25+ to build; Linux to run |
 | **License** | [Apache 2.0](LICENSE) |

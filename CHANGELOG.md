@@ -24,6 +24,16 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+## [4.0.2] — 2026-11-22
+
+**A fix release on the 4.0 long-term-support line.** Two more
+slinit-logind faults found by Plasma under SDDM on sl-demo1: a suspend
+left the lock screen rejecting the password, and "Switch User" froze the
+display. Both are fixes against systemd-logind's behaviour, whose
+interface slinit-logind implements. The control protocol stays at
+version 7, and nothing documented changes for a system without a
+Wayland desktop.
+
 ### Fixed
 
 - **A suspend through login1 called itself over and over.** Since 2.5.1
