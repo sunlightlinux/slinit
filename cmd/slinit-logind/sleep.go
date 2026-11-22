@@ -117,7 +117,13 @@ func suspendViaInit(state string) *dbus.Error {
 		bin = p
 	}
 
-	out, err := exec.Command(bin, "--system", "suspend", state).CombinedOutput()
+	// --no-coordination: this daemon has done the coordinating (the
+	// inhibitors, PrepareForSleep). Without it slinitctl routes the
+	// request back through login1 — to this daemon's Suspend, which calls
+	// slinitctl again, every five seconds, for as long as the bus lets the
+	// calls nest. slinitctl began routing through login1 in the same
+	// release (2.5.1) this call was written for the older direct default.
+	out, err := exec.Command(bin, "--system", "suspend", "--no-coordination", state).CombinedOutput()
 	if err != nil {
 		return dbus.NewError("org.freedesktop.login1.Error.SleepNotSupported",
 			[]interface{}{fmt.Sprintf("slinitctl suspend %s: %v: %s",

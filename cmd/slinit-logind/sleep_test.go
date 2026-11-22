@@ -70,11 +70,14 @@ func TestSleepRoutesThroughInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the control CLI was never invoked: %v", err)
 	}
-	got := string(data)
-	for _, want := range []string{"--system suspend mem", "--system suspend disk"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("missing %q in invocations:\n%s", want, got)
-		}
+	// Exactly these lines. Without --no-coordination, slinitctl hands
+	// the sleep back to this daemon's own Suspend method, which calls
+	// slinitctl again: on sl-demo1 a Plasma suspend recursed every five
+	// seconds, re-announcing PrepareForSleep each time, so the screen
+	// locker reset under the user's typing ("conversation failed").
+	want := "--system suspend --no-coordination mem\n--system suspend --no-coordination disk\n"
+	if got := string(data); got != want {
+		t.Errorf("invocations:\n%s\nwant:\n%s", got, want)
 	}
 }
 
