@@ -33,6 +33,15 @@ verified with `git tag -v`.
   blocked in `write(2)` once the pipe filled (shared logger), or wrote
   into a pipe whose read end had been closed (UDP forwarding). A longer
   line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **A stray option on the kernel command line panicked the kernel.**
+  As PID 1 slinit receives every boot parameter the kernel did not
+  consume, and parsed them with Go's exit-on-error flag handling, so an
+  unknown option (`-z`, `-h`) or one of slinit's own without its value
+  (sysvinit's emergency `-b` and auto `-a`) exited init: "Attempted to
+  kill init!". As dinit does while processing system arguments, PID 1
+  now reports and drops such words and boots; a value that fails to
+  parse is reported and the rest of the line skipped. Outside PID 1 a
+  bad option still stops slinit.
 - **`switch-root` could delete the new root's files.** The initramfs
   cleanup removed every top-level entry of the old root except the one
   named exactly like NEWROOT, without the device check its comment

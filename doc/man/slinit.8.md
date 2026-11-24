@@ -656,7 +656,10 @@ the kernel are passed to slinit as argv. To avoid surprising
 interactions with bootloader options like `auto`, slinit only treats
 "naked" tokens as service names when they are recognised (**single**
 maps to a *runlevel-single* service, if defined). Tokens prefixed
-with `--` are normal long options. Tokens of the form *KEY*=*VALUE*
+with `--` are normal long options. An option slinit does not know
+(sysvinit's `-z`, `-h`), or one of its own left without its value
+(sysvinit's `-b`, `-a`), is reported and ignored rather than ending
+PID 1. Tokens of the form *KEY*=*VALUE*
 that are not slinit options are exported into the service environment
 instead of being processed as arguments.
 

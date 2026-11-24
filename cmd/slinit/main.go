@@ -279,7 +279,7 @@ func main() {
 	flag.DurationVar(&emergencyTimeout, "emergency-timeout", 0,
 		"maximum time to wait for services to stop during shutdown before force-exit (default 90s; workloads with heavy docker/systemd-style teardown may need 3-5m)")
 
-	flag.Parse()
+	parseArgs(flag.CommandLine, os.Args[1:], os.Getpid() == 1)
 
 	if showVersion {
 		detected := platform.Detect()
