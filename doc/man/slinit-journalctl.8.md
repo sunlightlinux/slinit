@@ -196,7 +196,11 @@ live queries.
 
 **-l**, **--full**, **-a**, **--all**
 :   Accepted for parity; output is never truncated unless
-    **--no-full** is given.
+    **--no-full** is given. In the short and cat formats a message's
+    control characters (other than tab and newline), DEL, C1 controls
+    and invalid UTF-8 are shown as `\xNN` escapes, and in short formats
+    its continuation lines are indented to the message column;
+    **-a**/**--all** prints the control characters as logged.
 
 **-e**, **--pager-end**, **--no-pager**
 :   Accepted for parity; slinit never invokes a pager.

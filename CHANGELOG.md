@@ -126,6 +126,14 @@ verified with `git tag -v`.
   one of its dependencies changes later. The recalculation also checked
   for duplicates with a linear scan under the queue lock — 38 ms for a
   dependency added under a service with 8000 dependents, 1 ms now.
+- **A logged message could forge journal lines and drive the terminal.**
+  `slinit-journalctl`'s short formats and `-o cat` printed `MESSAGE`
+  raw, so a newline in it started what read as another entry with any
+  host, unit and PID, and an escape sequence (`\x1b[2J`) reached the
+  terminal. As in systemd, continuation lines are now indented to the
+  message column, and control characters other than tab and newline,
+  DEL, C1 controls and invalid UTF-8 are shown as `\xNN` unless
+  `-a`/`--all` is given. JSON and export output are unchanged.
 - **One line over 256 KiB on PID 1's stdout or stderr could hang PID 1.**
   The catch-all logger read its pipe with a `bufio.Scanner`, which stops
   for good at the first line longer than its 256 KiB limit: the drain

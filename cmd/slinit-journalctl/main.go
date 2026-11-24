@@ -29,6 +29,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sunlightlinux/slinit/pkg/catalog"
 	"github.com/sunlightlinux/slinit/pkg/control"
@@ -3443,6 +3444,7 @@ type renderOpts struct {
 	noHostname      bool
 	truncateNewline bool
 	noFull          bool
+	all             bool             // -a/--all: print messages with control characters as logged
 	outputFields    map[string]bool  // nil = all fields; non-empty = keep only these
 	catalog         *catalog.Catalog // non-nil when -x/--catalog is on; augments short output
 }
@@ -3455,6 +3457,7 @@ func buildRenderOpts(opts options) renderOpts {
 		noHostname:      opts.noHostname,
 		truncateNewline: opts.truncateNewline,
 		noFull:          opts.noFull,
+		all:             opts.allFields,
 	}
 	if len(opts.outputFields) > 0 {
 		ro.outputFields = make(map[string]bool, len(opts.outputFields))
@@ -3518,6 +3521,50 @@ func (ro renderOpts) truncateMsg(msg string) string {
 		}
 	}
 	return msg
+}
+
+// displayMsg makes a message safe to print after a prefix `indent`
+// columns wide. Whoever logged it chose its bytes: continuation lines
+// are indented to the message column, as systemd does, so a newline
+// cannot start what reads as another entry, and unless --all control
+// characters (other than tab and newline), DEL, C1 controls and
+// invalid UTF-8 are shown as \xNN escapes so they cannot drive the
+// terminal. A negative indent leaves newlines as they are (cat).
+func (ro renderOpts) displayMsg(msg string, indent int) string {
+	if !ro.all {
+		msg = escapeControls(msg)
+	}
+	if indent >= 0 && strings.Contains(msg, "\n") {
+		msg = strings.ReplaceAll(msg, "\n", "\n"+strings.Repeat(" ", indent))
+	}
+	return msg
+}
+
+// escapeControls is displayMsg's escaping. Plain ASCII text, the
+// common case, is returned as is.
+func escapeControls(s string) string {
+	plain := true
+	for i := 0; i < len(s) && plain; i++ {
+		c := s[i]
+		plain = (c >= 0x20 && c < 0x7f) || c == '\t' || c == '\n'
+	}
+	if plain {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if (r < 0x20 && r != '\t' && r != '\n') || (r >= 0x7f && r <= 0x9f) ||
+			(r == utf8.RuneError && size == 1) {
+			for _, c := range []byte(s[i : i+size]) {
+				fmt.Fprintf(&b, "\\x%02x", c)
+			}
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // render dispatches to the format-specific writer. Chosen over a
@@ -3652,21 +3699,18 @@ func renderShort(out io.Writer, e *journal.Event, tf timeFormat, ro renderOpts) 
 	case e.Pid > 0:
 		pidPart = fmt.Sprintf("[%d]", e.Pid)
 	}
-	msg := ro.truncateMsg(e.Msg)
+	var prefix string
 	if ro.noHostname {
-		if _, err := fmt.Fprintf(out, "%s %s%s: %s\n",
-			formatTime(e.Ts, tf, ro.utc), identOf(e), pidPart, msg); err != nil {
-			return err
+		prefix = fmt.Sprintf("%s %s%s: ", formatTime(e.Ts, tf, ro.utc), identOf(e), pidPart)
+	} else {
+		host := e.Hostname
+		if host == "" {
+			host = "-"
 		}
-		writeCatalogAugment(out, ro, e)
-		return nil
+		prefix = fmt.Sprintf("%s %s %s%s: ", formatTime(e.Ts, tf, ro.utc), host, identOf(e), pidPart)
 	}
-	host := e.Hostname
-	if host == "" {
-		host = "-"
-	}
-	if _, err := fmt.Fprintf(out, "%s %s %s%s: %s\n",
-		formatTime(e.Ts, tf, ro.utc), host, identOf(e), pidPart, msg); err != nil {
+	msg := ro.displayMsg(ro.truncateMsg(e.Msg), utf8.RuneCountInString(prefix))
+	if _, err := fmt.Fprintf(out, "%s%s\n", prefix, msg); err != nil {
 		return err
 	}
 	writeCatalogAugment(out, ro, e)
@@ -3707,7 +3751,7 @@ func targetPIDOf(e *journal.Event) int {
 // systemd's cat mode: the terminal-friendly form for feeding a pager
 // or grep pipeline that shouldn't see timestamps.
 func renderCat(out io.Writer, e *journal.Event, ro renderOpts) error {
-	_, err := fmt.Fprintln(out, ro.truncateMsg(e.Msg))
+	_, err := fmt.Fprintln(out, ro.displayMsg(ro.truncateMsg(e.Msg), -1))
 	return err
 }
 
@@ -3833,19 +3877,19 @@ func renderWithUnit(out io.Writer, e *journal.Event, ro renderOpts) error {
 	}
 	// Emit the same identifying prefix short would produce, then
 	// suffix it with "unit=NAME:" for disambiguation.
-	fmt.Fprintf(out, "%s unit=%s ", formatTime(e.Ts, timeShort, ro.utc), unit)
+	prefix := fmt.Sprintf("%s unit=%s ", formatTime(e.Ts, timeShort, ro.utc), unit)
 	// Now delegate the message + identifier/pid rendering to a
 	// pared-down inline path (can't call renderShort without
 	// double-timestamping).
 	ident := identOf(e)
 	pid := shortDisplayPID(e)
 	if pid > 0 {
-		fmt.Fprintf(out, "%s[%d]: ", ident, pid)
+		prefix += fmt.Sprintf("%s[%d]: ", ident, pid)
 	} else {
-		fmt.Fprintf(out, "%s: ", ident)
+		prefix += fmt.Sprintf("%s: ", ident)
 	}
-	msg := ro.truncateMsg(e.Msg)
-	if _, err := fmt.Fprintln(out, msg); err != nil {
+	msg := ro.displayMsg(ro.truncateMsg(e.Msg), utf8.RuneCountInString(prefix))
+	if _, err := fmt.Fprintf(out, "%s%s\n", prefix, msg); err != nil {
 		return err
 	}
 	return nil
