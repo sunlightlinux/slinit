@@ -298,6 +298,11 @@ func TestSamePathRegistrationsAreIndependent(t *testing.T) {
 	if err := w.Add(AnyMount, "b", reg("b")); err != nil {
 		t.Fatal(err)
 	}
+	// The first Add wakes the loop, which re-reads the table into
+	// w.known; doing that after newMount's delete below would hide the
+	// "new" mount. Let it happen first. The loop's own next pass is a
+	// pollInterval away, past the end of the test.
+	time.Sleep(100 * time.Millisecond)
 	newMount := func() {
 		w.mu.Lock()
 		delete(w.known, "/")
