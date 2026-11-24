@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -581,4 +582,61 @@ func TestSharedLogMux_BlockingModeUnaffected(t *testing.T) {
 	if mux.DropCount() != 0 {
 		t.Errorf("blocking mux DropCount should be 0, got %d", mux.DropCount())
 	}
+}
+
+// A restart while the old reader is blocked on a logger that reads
+// nothing must not wait for that reader, and must not let the new
+// instance's lines overtake what the old one already had in flight.
+func TestSharedLogMux_RestartDoesNotWaitForStalledReader(t *testing.T) {
+	mux, err := NewSharedLogMux()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		// Wake the logger up so a failing run can still tear down.
+		_ = mux.InputPipe().SetReadDeadline(time.Time{})
+		go func() { _, _ = io.Copy(io.Discard, mux.InputPipe()) }()
+		mux.Close()
+	}()
+
+	pipe1, _ := mux.AddProducer("svc")
+	line := strings.Repeat("x", 1000) + "\n"
+	go func() {
+		// More than the mux pipe holds: the reader ends up blocked in
+		// loggerW.Write, and this writer in pipe1.Write.
+		for i := 0; i < 200; i++ {
+			if _, err := io.WriteString(pipe1, "first "+line); err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(200 * time.Millisecond)
+
+	var pipe2 *os.File
+	el, ok := runWithin(2*time.Second, func() { pipe2, _ = mux.AddProducer("svc") })
+	if !ok {
+		t.Fatalf("AddProducer waited %v for a reader blocked on the logger", el.Round(time.Millisecond))
+	}
+	fmt.Fprintln(pipe2, "second run")
+	pipe2.Close()
+
+	// The logger wakes up: everything from the old instance comes first.
+	_ = mux.InputPipe().SetReadDeadline(time.Now().Add(5 * time.Second))
+	scanner := bufio.NewScanner(mux.InputPipe())
+	scanner.Buffer(make([]byte, 4096), 4096)
+	sawSecond := false
+	for scanner.Scan() {
+		l := scanner.Text()
+		if l == "[svc] second run" {
+			sawSecond = true
+			break
+		}
+		if !strings.HasPrefix(l, "[svc] first ") {
+			t.Fatalf("unexpected line %q", l)
+		}
+	}
+	if !sawSecond {
+		t.Fatalf("second run never arrived: %v", scanner.Err())
+	}
+	pipe1.Close()
 }

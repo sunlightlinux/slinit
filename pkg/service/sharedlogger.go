@@ -129,11 +129,19 @@ func (m *SharedLogMux) AddProducer(name string) (*os.File, error) {
 		return nil, fmt.Errorf("shared-logger: mux is closed")
 	}
 
-	// If producer already exists, stop old reader first
+	// If the producer already exists (a restart), retire the old reader
+	// without waiting for it. AddProducer runs from startProcess under
+	// queueMu, and with the logger stopped or hung the old reader sits
+	// in loggerW.Write until the logger reads again — PID 1 holds the
+	// pipe's read end, so the write never fails. Waiting here froze the
+	// whole state machine. The old reader exits on its own after that
+	// write; the new one waits for it before forwarding anything, so
+	// lines still reach the logger in order.
+	var prev chan struct{}
 	if old, ok := m.producers[name]; ok {
 		close(old.stopCh)
-		old.pipeR.Close() // unblock scanner.Scan()
-		<-old.doneCh
+		old.pipeR.Close() // unblock the reader's Read
+		prev = old.doneCh
 		// Don't close old.pipeW — it may still be in use by the old process
 	}
 
@@ -151,7 +159,17 @@ func (m *SharedLogMux) AddProducer(name string) (*os.File, error) {
 	}
 	m.producers[name] = p
 
-	go m.readProducer(p)
+	go func() {
+		if prev != nil {
+			select {
+			case <-prev:
+			case <-p.stopCh:
+				close(p.doneCh)
+				return
+			}
+		}
+		m.readProducer(p)
+	}()
 
 	return w, nil
 }

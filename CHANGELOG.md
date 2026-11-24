@@ -1072,6 +1072,16 @@ requires.
   blocked after 278 service starts). Messages now go to syslog from a
   goroutine of their own through a bounded queue; past it they are
   dropped, and the daemon is told how many when it reads again.
+- **A stalled shared logger froze PID 1 when one of its producers
+  restarted.** With the logger stopped (`kill -STOP`) or hung, the
+  producer's reader in slinit blocked writing into the full mux pipe —
+  slinit holds the pipe's read end, so the write never fails — and a
+  restart of the producer waited for that reader while holding the
+  service queue lock: the state machine, the control socket and child
+  reaping all stopped (measured: the second `start` never returned).
+  The old reader is now retired without waiting; the new instance
+  forwards nothing until the old one has finished its last write, so
+  lines still reach the logger in order.
 
 ## [4.0.2] — 2026-11-22
 
