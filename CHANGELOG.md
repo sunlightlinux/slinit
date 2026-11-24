@@ -279,6 +279,15 @@ verified with `git tag -v`.
   with "read-only file system", and the secret under it could still be
   read. Setup now clears any mount already at the path before mounting,
   and cleanup unmounts until none is left.
+- **One failed start could block a `lock-file` service until slinit
+  restarted.** A start that failed after the lock was taken — a missing
+  `standard-input-file`, an `open-file` that could not be opened, a
+  missing `slinit-runner` or `slinit-inetd`, a cgroup delegation error —
+  returned without closing the lock's descriptor, so its flock stayed
+  held and every later start failed "lock-file already locked"; the
+  credentials tmpfs and terminal descriptors leaked the same way. Only
+  a failure of the fork itself cleaned up. Every failure before the
+  child starts now releases what the start had acquired.
 
 ## [4.0.2] — 2026-11-22
 

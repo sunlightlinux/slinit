@@ -69,7 +69,28 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	if err != nil {
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
 	}
+
+	// Everything acquired from here until the child is started is
+	// released by undo if StartProcess returns without starting it.
+	// Only the cmd.Start failure used to clean up; every earlier
+	// return leaked, and a leaked lock-file descriptor kept its flock,
+	// so the next start failed "lock-file already locked" until slinit
+	// itself restarted.
+	var undo []func()
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i]()
+		}
+	}()
+
 	if credDir != "" {
+		// Roll back the credentials tmpfs so a failed start does not
+		// leave a populated /run/credentials/<svc>/ behind.
+		undo = append(undo, func() { _ = CleanupCredentials(params.ServiceName) })
 		// Add CREDENTIALS_DIRECTORY to env, building Env if needed.
 		if cap(params.Env) == 0 {
 			params.Env = []string{"CREDENTIALS_DIRECTORY=" + credDir}
@@ -253,6 +274,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			lockFD.Close()
 			return 0, nil, &ExecError{Stage: StageDoExec, Err: fmt.Errorf("lock-file already locked: %s", params.LockFile)}
 		}
+		undo = append(undo, func() { lockFD.Close() })
 		// lockFD stays open for the lifetime of the process (flock released on close)
 	}
 
@@ -262,6 +284,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		var err error
 		ptySlaveFd, err = os.OpenFile(params.PTYSlave, os.O_RDWR|syscall.O_NOCTTY, 0)
 		if err == nil {
+			undo = append(undo, func() { ptySlaveFd.Close() })
 			cmd.Stdin = ptySlaveFd
 			cmd.Stdout = ptySlaveFd
 			cmd.Stderr = ptySlaveFd
@@ -292,6 +315,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 		} else {
+			undo = append(undo, func() { consoleFd.Close() })
 			cmd.Stdin = consoleFd
 			cmd.Stdout = consoleFd
 			cmd.Stderr = consoleFd
@@ -409,12 +433,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	for _, of := range params.OpenFiles {
 		f, err := openConfiguredFile(of)
 		if err != nil {
-			// Clean up already-opened files before returning.
-			for _, prior := range openedForClose {
-				prior.Close()
-			}
 			return 0, nil, fmt.Errorf("open-file %q: %w", of.Path, err)
 		}
+		undo = append(undo, func() { f.Close() })
 		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 		openedForClose = append(openedForClose, f)
 		listenNames = append(listenNames, of.FDName)
@@ -471,6 +492,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 				return 0, nil, &ExecError{Stage: StageArrangeFDs, Err: err}
 			}
 			extraFdNullFiles = append(extraFdNullFiles, devNull)
+			undo = append(undo, func() { devNull.Close() })
 			cmd.ExtraFiles = append(cmd.ExtraFiles, devNull)
 		}
 		cmd.ExtraFiles = append(cmd.ExtraFiles, params.NotifyPipe)
@@ -566,28 +588,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		syscall.Umask(prevUmask)
 	}
 	if err != nil {
-		if ptySlaveFd != nil {
-			ptySlaveFd.Close()
-		}
-		if consoleFd != nil {
-			consoleFd.Close()
-		}
-		for _, f := range extraFdNullFiles {
-			f.Close()
-		}
-		for _, f := range openedForClose {
-			f.Close()
-		}
-		if lockFD != nil {
-			lockFD.Close()
-		}
-		// Roll back the credentials tmpfs so a failed start does not
-		// leave a populated /run/credentials/<svc>/ behind.
-		if credDir != "" {
-			_ = CleanupCredentials(params.ServiceName)
-		}
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
 	}
+	started = true
 
 	// Close our copy of PTY slave and console fd after fork
 	if ptySlaveFd != nil {
