@@ -196,3 +196,49 @@ func TestX32CallsAreKilled(t *testing.T) {
 		}
 	}
 }
+
+// TestForeignArchIsRefused: with system-call-architectures=native x86, an
+// i386 call used to be dispatched through the x86_64-numbered branches —
+// i386 mount (21) is x86_64 access, i386 getpid (20) is x86_64 writev —
+// so a denylist missed it and an allowlist admitted the wrong call. The
+// filter has no i386 table, so every i386 call now takes the filter's
+// refusal action, and the native calls are filtered as before.
+func TestForeignArchIsRefused(t *testing.T) {
+	if NativeArch() != "x86-64" {
+		t.Skip("i386 is foreign to an x86-64 build")
+	}
+	eperm := ErrnoAction(unix.EPERM)
+	compile := func(items ...string) []unix.SockFilter {
+		f, err := Build(items, ModeAllow, []string{"native", "x86"}, eperm, nil)
+		if err != nil {
+			t.Fatalf("Build %v: %v", items, err)
+		}
+		prog, err := Compile(f)
+		if err != nil {
+			t.Fatalf("Compile %v: %v", items, err)
+		}
+		return prog
+	}
+	deny, allow, none := compile("~@mount", "getpid"), compile("read"), compile()
+	for _, c := range []struct {
+		what string
+		prog []unix.SockFilter
+		arch uint32
+		nr   uint32
+		want Action
+	}{
+		{"~@mount: i386 mount(21)", deny, auditArchX86, 21, eperm},
+		{"~getpid: i386 getpid(20)", deny, auditArchX86, 20, eperm},
+		{"read allowlist: i386 restart_syscall(0)", allow, auditArchX86, 0, eperm},
+		{"no list: i386 read(3)", none, auditArchX86, 3, eperm},
+		{"~@mount: x86_64 mount", deny, auditArchX86_64, uint32(nrOf(t, "mount")), eperm},
+		{"~@mount: x86_64 access", deny, auditArchX86_64, uint32(nrOf(t, "access")), ActionAllow},
+		{"read allowlist: x86_64 read", allow, auditArchX86_64, uint32(nrOf(t, "read")), ActionAllow},
+		{"no list: x86_64 getppid", none, auditArchX86_64, uint32(nrOf(t, "getppid")), ActionAllow},
+		{"unlisted arm64", deny, auditArchARM64, 0, ActionKill},
+	} {
+		if got := runBPFArch(t, c.prog, c.arch, c.nr); got != c.want {
+			t.Errorf("%s -> %#x, want %#x", c.what, got, c.want)
+		}
+	}
+}

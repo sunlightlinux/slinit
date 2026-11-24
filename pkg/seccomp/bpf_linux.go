@@ -4,6 +4,7 @@ package seccomp
 
 import (
 	"fmt"
+	"slices"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -59,8 +60,9 @@ func x32Reject() []unix.SockFilter {
 // SECCOMP_SET_MODE_FILTER. The structure is:
 //
 //  1. Load arch (offset 4)
-//  2. Compare against each allowed arch; if any match, jump past the
-//     "arch reject" return.
+//  2. Compare against the native arch; if it matches and is allowed,
+//     jump to the nr load. Another allowed arch jumps to a RET of the
+//     filter's refusal action.
 //  3. RET KILL_PROCESS (the unconditional arch-reject).
 //  4. Load nr (offset 0).
 //  5. For each filtered syscall: if nr==N → RET ALLOW (allow mode) or
@@ -118,24 +120,54 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 		Code: bpfLD | bpfW | bpfABS, K: offsetArch,
 	})
 
-	// 2. For each accepted arch, compare and skip the arch-reject if
-	// it matches. The JF field jumps over the *next* arch compare; the
-	// JT field jumps far enough forward to skip the arch-reject RET.
+	// 2. Arch dispatch. The syscall branches below use native numbers,
+	// so only the native arch may reach them. Another accepted arch
+	// (system-call-architectures=native x86) has no table here: every
+	// call through it takes the filter's refusal action, failing
+	// closed. It used to be dispatched through the native branches,
+	// where its numbers mean other calls (i386 mount is x86_64
+	// access). Unlisted arches are killed.
 	archs := f.Archs
 	if len(archs) == 0 {
 		archs = []string{NativeArch()}
 	}
-	// Each arch compare is 1 insn, then 1 arch-reject RET. Total
-	// "header" length = len(archs) + 1. The Jt to "past the reject"
-	// from compare i is (len(archs)-i).
-	for i, arch := range archs {
+	nativeListed := false
+	var foreign []uint32
+	for _, arch := range archs {
 		n := archNumber(arch)
-		jt := uint8(len(archs) - i) // jump past archReject
+		if arch == NativeArch() {
+			nativeListed = true
+		} else if !slices.Contains(foreign, n) {
+			foreign = append(foreign, n)
+		}
+	}
+	refuse := 0
+	if len(foreign) > 0 {
+		refuse = 1
+	}
+	if nativeListed {
+		// Jump past the foreign compares, the arch reject and the
+		// refusal, onto the nr load.
 		prog = append(prog, unix.SockFilter{
-			Code: bpfJMP | bpfJEQ | bpfK, K: n, Jt: jt, Jf: 0,
+			Code: bpfJMP | bpfJEQ | bpfK, K: archNumber(NativeArch()),
+			Jt: uint8(len(foreign) + 1 + refuse), Jf: 0,
+		})
+	}
+	for i, n := range foreign {
+		// Jump past the remaining compares and the arch reject, onto
+		// the refusal.
+		prog = append(prog, unix.SockFilter{
+			Code: bpfJMP | bpfJEQ | bpfK, K: n, Jt: uint8(len(foreign) - i), Jf: 0,
 		})
 	}
 	prog = append(prog, retInsn(ActionKill)) // arch-reject
+	if refuse == 1 {
+		refuseAction := f.DefaultAction
+		if refuseAction == 0 {
+			refuseAction = ActionKill
+		}
+		prog = append(prog, retInsn(refuseAction))
+	}
 
 	// 3. Load nr into A; on x86-64, kill an x32 call, which would
 	// otherwise miss every branch below and take the deny-mode ALLOW.

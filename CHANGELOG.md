@@ -26,6 +26,17 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A second `system-call-architectures` entry was filtered with the
+  wrong numbers.** With `system-call-architectures = native x86`, an
+  i386 call was matched against the x86_64 syscall numbers, where it
+  means a different call: i386 `mount` (21) is x86_64 `access`, so
+  `system-call-filter = ~@mount` let it through, and an allowlist
+  admitted whatever its numbers happened to name. slinit has no i386
+  table, so a call through a listed foreign architecture now takes the
+  filter's refusal action (`system-call-error-number`, kill by default)
+  instead. Per-architecture filtering as systemd does it would need
+  per-architecture groups and the i386 `socketcall`/`ipc` multiplexers,
+  which is not a fix for an LTS release.
 - **An x32 syscall slipped past every seccomp deny rule.** An x32 call
   reports `AUDIT_ARCH_X86_64`, so it passed the architecture check, and
   its number is the x86_64 one with bit 30 set, so it matched no entry

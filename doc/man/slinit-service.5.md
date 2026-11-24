@@ -1428,7 +1428,15 @@ the internal **seccomp** package and installs it via the
 :   Architectures the filter accepts: *native* (default — the running
     arch), *x86-64* / *amd64*, *x86* / *i386*, *arm64* / *aarch64*,
     *arm*. Syscalls issued from any other architecture take the kill
-    action, mirroring systemd's **SystemCallArchitectures=**. Set
+    action, mirroring systemd's **SystemCallArchitectures=**. Unlike
+    systemd, which filters each listed architecture with that
+    architecture's own syscall numbers, slinit filters only the native
+    one: a call through another listed architecture (*x86* on an x86-64
+    host) is refused with the **system-call-error-number** action,
+    whatever **system-call-filter** says, so a 32-bit program cannot run
+    under the filter. Before 4.0.3 such a call was matched against the
+    native numbers, where it means a different call (i386 **mount** is
+    x86-64 **access**), so a denylist missed it. Set
     without **system-call-filter** — as is **system-call-log** or
     **system-call-error-number** — it refuses nothing else: every
     native syscall is allowed. Before 4.0.3 any of the three set alone
