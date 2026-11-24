@@ -26,6 +26,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A relative `waits-for.d` in an `@include`d fragment read the wrong
+  directory.** `depends-on.d`, `depends-ms.d`, `waits-for.d` and
+  `prepared-by.d` were always resolved against the main service file's
+  directory, so one written in a fragment, a conf.d overlay or a
+  `.override` file in another directory named a directory slinit never
+  read, and its dependencies were silently dropped. dinit resolves them
+  against the file that contains the setting; slinit now does too, and
+  `slinitctl enable` writes into that same directory. A setting in the
+  service file itself resolves as before.
 - **`slinit-check` did not look where slinit looks.** Its default
   system directories were `/etc`, `/usr/lib` and `/lib` `slinit.d`; the
   daemon's are `/etc`, `/run`, `/usr/local/lib` and `/lib`. A service in

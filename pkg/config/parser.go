@@ -773,6 +773,12 @@ type ServiceDescription struct {
 	TTYVHangup       bool
 	TTYVTDisallocate bool
 	TTYReset         bool
+
+	// mainFile is the service file Parse / ParseWithArg read; curFile
+	// the file whose lines are being applied (an @include'd fragment,
+	// a conf.d overlay, a .override). A relative depends-on.d and
+	// friends resolves against curFile's directory, like dinit.
+	mainFile, curFile string
 }
 
 // OpenFileSpec captures one open-file directive's parsed form.
@@ -848,6 +854,7 @@ func (e *ParseError) Error() string {
 //   - Value settings use '=' operator
 func Parse(r io.Reader, name string, fileName string) (*ServiceDescription, error) {
 	desc := NewServiceDescription(name)
+	desc.mainFile = fileName
 	return parseImpl(r, name, fileName, desc, 0, nil)
 }
 
@@ -856,6 +863,7 @@ func Parse(r io.Reader, name string, fileName string) (*ServiceDescription, erro
 // file and substitutes $1/${1} with the argument value.
 func ParseWithArg(r io.Reader, name string, fileName string, serviceArg string) (*ServiceDescription, error) {
 	desc := NewServiceDescription(name)
+	desc.mainFile = fileName
 	return parseImpl(r, name, fileName, desc, 0, &serviceArg)
 }
 
@@ -883,6 +891,10 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 			Message:     fmt.Sprintf("include nesting depth exceeds %d", maxIncludeDepth),
 		}
 	}
+
+	prevFile := desc.curFile
+	desc.curFile = fileName
+	defer func() { desc.curFile = prevFile }()
 
 	scanner := bufio.NewScanner(r)
 	lineNum := 0
@@ -1020,6 +1032,24 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 	resolveLogDestinations(desc)
 
 	return desc, nil
+}
+
+// dirDepPath resolves a relative depends-on.d / depends-ms.d /
+// waits-for.d / prepared-by.d against the directory of the file the
+// setting came from, as dinit does. A setting in the main service file
+// stays as written — the loader and enable resolve it against that
+// file's directory, as before. One from another file (@include
+// fragment, conf.d overlay, .override) used to be resolved against the
+// main file's directory too, so its directory was silently not read.
+func (desc *ServiceDescription) dirDepPath(dir string) string {
+	if dir == "" || filepath.IsAbs(dir) || desc.curFile == "" || desc.curFile == desc.mainFile {
+		return dir
+	}
+	p := filepath.Join(filepath.Dir(desc.curFile), dir)
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	return p
 }
 
 // resolveLogDestinations settles what happens when a service names both
@@ -1782,13 +1812,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.After = append(desc.After, depName)
 	case "depends-on.d":
-		desc.DependsOnD = append(desc.DependsOnD, expandEnvVars(value, serviceArg))
+		desc.DependsOnD = append(desc.DependsOnD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 	case "depends-ms.d":
-		desc.DependsMSD = append(desc.DependsMSD, expandEnvVars(value, serviceArg))
+		desc.DependsMSD = append(desc.DependsMSD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 	case "waits-for.d":
-		desc.WaitsForD = append(desc.WaitsForD, expandEnvVars(value, serviceArg))
+		desc.WaitsForD = append(desc.WaitsForD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 	case "prepared-by.d":
-		desc.PreparedByD = append(desc.PreparedByD, expandEnvVars(value, serviceArg))
+		desc.PreparedByD = append(desc.PreparedByD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 
 	// Pre-start fail-fast path checks (OpenRC-inspired)
 	case "required-files":

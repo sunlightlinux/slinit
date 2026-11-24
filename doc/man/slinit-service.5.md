@@ -495,8 +495,10 @@ error. Repeat the line for several targets.
 **depends-on.d**: *directory*, **depends-ms.d**: *directory*, **waits-for.d**: *directory*, **prepared-by.d**: *directory*
 :   Drop-in directories: every non-hidden, non-directory entry inside
     *directory* is treated as a dependency of the corresponding kind.
-    A relative *directory* is resolved against the service file's
-    directory; a missing directory is ignored.
+    A relative *directory* is resolved against the directory of the
+    file that contains the setting — the service file, or the
+    **@include**d fragment, conf.d overlay or **.override** file it
+    appears in (as dinit does); a missing directory is ignored.
 
 ## ACTIVATION
 
