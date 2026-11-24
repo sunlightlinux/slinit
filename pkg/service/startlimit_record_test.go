@@ -88,3 +88,42 @@ func TestStartLimiter_RestartWhileWaitingForSlot(t *testing.T) {
 		t.Errorf("b upCount=%d state=%v for one start, want 1 STARTED", up, st)
 	}
 }
+
+// An interrupted start (STARTING -> STOPPING via a stop, not a failure)
+// must give its slot back; it used to keep it, and every later start
+// waited behind a STOPPED service.
+func TestStartLimiter_InterruptedStartReleasesSlot(t *testing.T) {
+	set, a, b := startLimitedPair(t, time.Hour)
+	a.interruptible = true
+	set.StopService(a)
+	if a.State() != StateStopped {
+		t.Fatalf("a = %v after stop, want STOPPED", a.State())
+	}
+	if n := set.GetStartLimiter().TotalStarting(); n != 0 {
+		t.Errorf("limiter still counts %d starter(s) after a's start was interrupted", n)
+	}
+	set.StartService(b)
+	if b.State() != StateStarted {
+		t.Errorf("b = %v, want STARTED: the only slot is still held by stopped a", b.State())
+	}
+}
+
+// A starter past the slow threshold stops counting, so a waiter queued
+// behind it must be woken then, not only when some other starter ends.
+func TestStartLimiter_SlowStarterWakesWaiter(t *testing.T) {
+	set, _, b := startLimitedPair(t, 50*time.Millisecond)
+	set.StartService(b)
+	deadline := time.Now().Add(time.Second)
+	for {
+		set.queueMu.Lock()
+		st := b.State()
+		set.queueMu.Unlock()
+		if st == StateStarted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("b = %v 1s after a passed the 50ms slow threshold", st)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

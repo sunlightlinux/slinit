@@ -79,23 +79,20 @@ func TestStartLimiter_SlowThreshold(t *testing.T) {
 	}
 
 	// Before threshold, svc2 should wait
-	ok2, _ := sl.Acquire(svc2)
+	ok2, ch2 := sl.Acquire(svc2)
 	if ok2 {
 		t.Fatal("second service should wait before threshold")
 	}
 
-	// Wait for svc1 to become "slow"
-	time.Sleep(60 * time.Millisecond)
-
-	// Now svc1 is slow, so active count should be 0
-	if sl.ActiveCount() != 0 {
-		t.Errorf("expected 0 active (svc1 is slow), got %d", sl.ActiveCount())
-	}
-
-	// svc2 should now get a slot
-	ok2b, _ := sl.Acquire(svc2)
-	if !ok2b {
+	// Once svc1 turns "slow" it no longer counts, and svc2 is
+	// woken into its slot.
+	select {
+	case <-ch2:
+	case <-time.After(time.Second):
 		t.Fatal("second service should get slot after threshold")
+	}
+	if sl.ActiveCount() != 1 {
+		t.Errorf("expected 1 active (svc2; svc1 is slow), got %d", sl.ActiveCount())
 	}
 }
 
@@ -182,5 +179,31 @@ func TestStartLimiter_TotalStarting(t *testing.T) {
 	sl.Release(svcs[1])
 	if sl.TotalStarting() != 2 {
 		t.Errorf("expected 2 total starting, got %d", sl.TotalStarting())
+	}
+}
+
+// A free slot goes to the oldest waiter, not to whoever asks next.
+func TestStartLimiter_NewcomerQueuesBehindWaiters(t *testing.T) {
+	sl := NewStartLimiter(1, time.Hour)
+	set, _ := newTestSet()
+	blocker := NewInternalService(set, "blocker")
+	waiter := NewInternalService(set, "waiter")
+	newcomer := NewInternalService(set, "newcomer")
+
+	sl.Acquire(blocker)
+	_, ch := sl.Acquire(waiter)
+	// The slot frees with nobody woken yet, as when a starter turns slow
+	// between two timer ticks.
+	sl.mu.Lock()
+	delete(sl.starting, blocker)
+	sl.mu.Unlock()
+
+	if ok, _ := sl.Acquire(newcomer); ok {
+		t.Error("newcomer took the slot ahead of a queued waiter")
+	}
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Error("queued waiter not woken although a slot was free")
 	}
 }

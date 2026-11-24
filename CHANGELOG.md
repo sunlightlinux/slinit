@@ -101,6 +101,15 @@ verified with `git tag -v`.
   the console wait, since nothing has run yet — the woken waiter checks
   its wait is still current, and a withdrawn wait wakes its goroutine
   so it exits.
+- **An interrupted start kept its `--parallel-start-limit` slot for
+  good.** Only a completed or failed start gave the slot back; one
+  stopped while STARTING went STOPPED still holding it, and every later
+  start waited behind it. Such a start now releases its slot. A starter
+  past the slow threshold also stops counting as documented: waiters
+  used to be woken only when some start ended, so a slow one still held
+  them back while a newcomer could take the free slot ahead of them. A
+  timer now wakes the queue when the oldest starter turns slow, and a
+  newcomer queues behind those already waiting.
 - **A peer on the `--metrics-listen` port could make PID 1 buffer
   without limit.** The request line and headers were read with
   `bufio.Reader.ReadString`, which keeps appending until a newline, so a

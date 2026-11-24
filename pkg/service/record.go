@@ -3643,6 +3643,9 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 					sr.notifyListeners(EventStartCancelled)
 					return
 				}
+				// The start ends here, without Started or
+				// failedToStart: give its slot back.
+				sr.dropStartSlot()
 			} else if sr.waitingForConsole {
 				sr.services.UnqueueConsole(sr.self)
 				sr.waitingForConsole = false

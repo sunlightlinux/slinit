@@ -17,6 +17,7 @@ type StartLimiter struct {
 	starting  map[Service]time.Time // service → when it entered STARTING
 	fastCount int                   // cached count of non-slow starters
 	waiters   []startWaiter         // services waiting for a slot
+	slowTimer *time.Timer           // fires when the oldest starter turns slow
 }
 
 type startWaiter struct {
@@ -50,15 +51,18 @@ func (sl *StartLimiter) Acquire(svc Service) (bool, <-chan struct{}) {
 	defer sl.mu.Unlock()
 
 	sl.refreshFastCount()
-	if sl.fastCount < sl.maxConcurrent {
+	if sl.fastCount < sl.maxConcurrent && len(sl.waiters) == 0 {
 		sl.starting[svc] = time.Now()
 		sl.fastCount++
 		return true, nil
 	}
 
-	// No slot available — queue the service
+	// No slot available, or others are queued for one — queue the
+	// service behind them. wakeNext hands out any free slot in order
+	// and arms the slow-starter timer otherwise.
 	ch := make(chan struct{}, 1)
 	sl.waiters = append(sl.waiters, startWaiter{svc: svc, ch: ch})
+	sl.wakeNext()
 	return false, ch
 }
 
@@ -128,11 +132,14 @@ func (sl *StartLimiter) refreshFastCount() {
 }
 
 // wakeNext wakes the next waiting service if a slot is available.
-// Caller must hold sl.mu.
+// While waiters remain it keeps a timer armed for the moment the
+// oldest starter turns slow, since that frees a slot too and nothing
+// else would notice. Caller must hold sl.mu.
 func (sl *StartLimiter) wakeNext() {
 	for len(sl.waiters) > 0 {
 		sl.refreshFastCount()
 		if sl.fastCount >= sl.maxConcurrent {
+			sl.armSlowTimer()
 			return
 		}
 
@@ -142,6 +149,30 @@ func (sl *StartLimiter) wakeNext() {
 		sl.fastCount++
 		close(w.ch) // signal the waiter
 	}
+}
+
+// armSlowTimer schedules wakeNext for when the oldest fast starter
+// crosses the slow threshold. Caller must hold sl.mu.
+func (sl *StartLimiter) armSlowTimer() {
+	var oldest time.Time
+	for _, startTime := range sl.starting {
+		if oldest.IsZero() || startTime.Before(oldest) {
+			if time.Since(startTime) < sl.slowThreshold {
+				oldest = startTime
+			}
+		}
+	}
+	if oldest.IsZero() {
+		return
+	}
+	if sl.slowTimer != nil {
+		sl.slowTimer.Stop()
+	}
+	sl.slowTimer = time.AfterFunc(time.Until(oldest.Add(sl.slowThreshold)), func() {
+		sl.mu.Lock()
+		defer sl.mu.Unlock()
+		sl.wakeNext()
+	})
 }
 
 // TotalStarting returns the total number of services in the starting map
