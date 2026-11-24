@@ -126,6 +126,16 @@ verified with `git tag -v`.
   one of its dependencies changes later. The recalculation also checked
   for duplicates with a linear scan under the queue lock — 38 ms for a
   dependency added under a service with 8000 dependents, 1 ms now.
+- **Appending to a binary journal got slower the larger the file.**
+  The DATA hash table had a fixed 233 buckets and the dedup walk read
+  and allocated the payload of every node in a bucket's chain before
+  comparing hashes, so each append was linear in the file: 25 µs per
+  event while the file held 0–20k events, 243 µs at 100–120k. The walk
+  now compares the stored hash first, and a new file sizes its DATA
+  table from the rotation size the way systemd does (about 233k buckets
+  at the default 128 MiB). The count lives in the table object, so
+  older files reopen with the table they have. An append at 50k events
+  went from 112 µs to 6 µs in the new benchmark.
 - **Any local user could forge trusted fields in the binary journal.**
   `events.sock` is mode 0666, and `slinit-journald` stamped only
   `_pid`/`_uid`/`_gid`/`_comm`/`_exe`/`_cmdline` from the kernel: a

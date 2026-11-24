@@ -1,6 +1,8 @@
 package journalbin
 
 import (
+	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -437,5 +439,85 @@ func TestWriterDropsUnderscoreClientFields(t *testing.T) {
 	}
 	if got.Fields["OK"] != "1" {
 		t.Errorf("ordinary client field lost: %v", got.Fields)
+	}
+}
+
+// The dedup chain walk must compare the hash stored in each DATA header
+// before reading the payload: reading (and allocating) the payload of
+// every node in a 233-bucket chain made each append O(file size). The
+// payload of a node with another hash is made unreadable here, so only a
+// walk that touches it fails.
+func TestWriterChainWalkComparesHashFirst(t *testing.T) {
+	w, err := NewWriter(filepath.Join(t.TempDir(), "chain.journal"), testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	n, err := nBuckets(w.f, w.header.DataHashTableOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := []byte("MESSAGE=first")
+	var second []byte
+	for i := 0; second == nil; i++ {
+		p := []byte(fmt.Sprintf("MESSAGE=second-%d", i))
+		if Hash64(p)%uint64(n) == Hash64(first)%uint64(n) && Hash64(p) != Hash64(first) {
+			second = p
+		}
+	}
+	off, _, err := w.findOrInsertDataLocked(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Declare a size past EOF: reading this payload now fails.
+	st, err := w.f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size [8]byte
+	binary.LittleEndian.PutUint64(size[:], uint64(st.Size())+4096)
+	if _, err := w.f.WriteAt(size[:], int64(off)+8); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w.findOrInsertDataLocked(second); err != nil {
+		t.Fatalf("insert into the same bucket read a node whose hash differs: %v", err)
+	}
+}
+
+// A fresh file's DATA hash table is sized from the size it will rotate
+// at, and a reopened file keeps the table it was created with.
+func TestWriterSizesDataHashTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sized.journal")
+	w, err := NewWriterWithOptions(path, WriterOptions{BootID: testBootID, MaxSize: 128 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int((128 << 20) * 4 / 768 / 3)
+	if n, _ := nBuckets(w.f, w.header.DataHashTableOffset); n != want {
+		t.Errorf("DATA buckets = %d, want %d", n, want)
+	}
+	if n, _ := nBuckets(w.f, w.header.FieldHashTableOffset); n != DefaultHashTableBuckets {
+		t.Errorf("FIELD buckets = %d, want %d", n, DefaultHashTableBuckets)
+	}
+	if _, err := w.Append(&journal.Event{Ts: 1000, Msg: "a", Prio: journal.PriorityInfo}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	w, err = NewWriter(path, testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(&journal.Event{Ts: 2000, Msg: "a", Prio: journal.PriorityInfo}); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := nBuckets(w.f, w.header.DataHashTableOffset); n != want {
+		t.Errorf("reopened DATA buckets = %d, want %d", n, want)
+	}
+	if got := w.header.NData; got != 2 {
+		t.Errorf("NData = %d after a repeated event, want 2 (dedup across reopen)", got)
+	}
+	w.Close()
+	if DataHashTableBuckets(4096) != DefaultHashTableBuckets {
+		t.Errorf("small files must keep %d buckets", DefaultHashTableBuckets)
 	}
 }

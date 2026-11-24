@@ -91,6 +91,26 @@ type WriterOptions struct {
 	// written at every epoch boundary and on Close regardless of
 	// this counter.
 	TagEvery int
+
+	// MaxSize is the size the file will be rotated at, or zero when
+	// unknown. A fresh file's DATA hash table is sized from it the way
+	// systemd sizes its own (DataHashTableBuckets): every append walks
+	// one bucket's chain, so a table that stays at 233 buckets while
+	// the file grows makes appends linear in its size. The count is
+	// stored in the table object, which an existing file is reopened
+	// with, so files of either size read and append the same.
+	MaxSize int64
+}
+
+// DataHashTableBuckets is the DATA hash table size for a file that will
+// grow to maxSize bytes: systemd's max_size*4/768/3 (an average object
+// of 768 bytes at a 75% load factor), never below
+// DefaultHashTableBuckets.
+func DataHashTableBuckets(maxSize int64) int {
+	if n := maxSize * 4 / 768 / 3; n > DefaultHashTableBuckets {
+		return int(n)
+	}
+	return DefaultHashTableBuckets
 }
 
 // DefaultFSSTagEvery is the number of entries between forced TAG
@@ -170,7 +190,7 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 		//   [dataTableEnd..fieldTableEnd) FIELD_HASH_TABLE
 		// After that, objects (DATA/ENTRY/...) grow from tail.
 		dataTableStart := uint64(HeaderSize)
-		dataTableBytes, err := allocateHashTable(f, dataTableStart, ObjectDataHashTable, DefaultHashTableBuckets)
+		dataTableBytes, err := allocateHashTable(f, dataTableStart, ObjectDataHashTable, DataHashTableBuckets(opts.MaxSize))
 		if err != nil {
 			_ = f.Close()
 			return nil, err
@@ -603,7 +623,7 @@ func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) 
 	// terminate at end of chain).
 	cur := head
 	for cur != 0 {
-		curHash, next, curPayload, err := readDataHeader(w.f, cur)
+		curHash, next, curPayload, err := readDataHeader(w.f, cur, hash)
 		if err != nil {
 			return 0, 0, err
 		}

@@ -181,6 +181,7 @@ func (s *BinarySink) openCurrent() error {
 		MachineID: s.machineID,
 		FSSKey:    s.fssKey,
 		TagEvery:  s.tagEvery,
+		MaxSize:   s.maxSize,
 	})
 	if err != nil {
 		return err

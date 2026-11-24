@@ -81,10 +81,12 @@ func writeHashItem(f *os.File, tableStart uint64, b int, head, tail uint64) erro
 }
 
 // readDataHeader fetches the hash-chain metadata (hash + next_hash)
-// and the KEY=value payload for the DATA object at `off`. Used by
-// findOrInsertDataLocked when walking a bucket chain looking for a
-// dedup hit. Returns hash, next, payload.
-func readDataHeader(f *os.File, off uint64) (hash uint64, next uint64, payload []byte, err error) {
+// for the DATA object at `off`, and its KEY=value payload only when
+// the stored hash equals wantHash. Used by findOrInsertDataLocked when
+// walking a bucket chain looking for a dedup hit; reading every node's
+// payload made each append cost the whole chain. Returns hash, next,
+// payload.
+func readDataHeader(f *os.File, off, wantHash uint64) (hash uint64, next uint64, payload []byte, err error) {
 	var hdrBuf [dataPayloadStartOff]byte
 	if _, err := f.ReadAt(hdrBuf[:], int64(off)); err != nil {
 		return 0, 0, nil, fmt.Errorf("journalbin: read data hdr at %d: %w", off, err)
@@ -102,7 +104,7 @@ func readDataHeader(f *os.File, off uint64) (hash uint64, next uint64, payload [
 	hash = binary.LittleEndian.Uint64(hdrBuf[dataHashOffset : dataHashOffset+8])
 	next = binary.LittleEndian.Uint64(hdrBuf[dataNextHashOffset : dataNextHashOffset+8])
 	payloadLen := int(oh.Size) - dataFixedPart
-	if payloadLen == 0 {
+	if hash != wantHash || payloadLen == 0 {
 		return hash, next, nil, nil
 	}
 	payload = make([]byte, payloadLen)
