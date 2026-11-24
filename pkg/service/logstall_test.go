@@ -3,6 +3,7 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -133,4 +134,67 @@ func fileSize(path string) int64 {
 		return 0
 	}
 	return fi.Size()
+}
+
+// glibc's pututxline waits up to 10 s for a utmp lock any local user
+// can hold with a read-only open. The utmp write for a getty used to run
+// in startProcess under queueMu, so each start held it that long.
+func TestUtmpWriteDoesNotHoldQueueMu(t *testing.T) {
+	set, _ := newTestSet()
+	release := make(chan struct{})
+	defer close(release)
+	set.OnUtmpCreate = func(id, line, mode string, pid int) { <-release }
+	set.OnUtmpClear = func(id, line string) { <-release }
+
+	svc := NewProcessService(set, "getty")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	svc.SetUtmpDetails("tty1", "tty1")
+	set.AddService(svc)
+
+	el, ok := runWithin(2*time.Second, func() { set.StartService(svc) })
+	if !ok {
+		t.Fatalf("StartService waited %v on a blocked utmp write", el.Round(time.Millisecond))
+	}
+	if !queueMuFree(set, 2*time.Second) {
+		t.Fatal("queueMu held while the utmp write is blocked")
+	}
+	runWithin(5*time.Second, func() { set.StopService(svc) })
+}
+
+// The utmp writes are queued, so a clear must never overtake the create
+// for the same process — even when the create is slow and the process
+// exits at once.
+func TestUtmpClearNeverOvertakesCreate(t *testing.T) {
+	set, _ := newTestSet()
+	var mu sync.Mutex
+	var calls []string
+	cleared := make(chan struct{}, 8)
+	set.OnUtmpCreate = func(id, line, mode string, pid int) {
+		time.Sleep(200 * time.Millisecond)
+		mu.Lock()
+		calls = append(calls, "create")
+		mu.Unlock()
+	}
+	set.OnUtmpClear = func(id, line string) {
+		mu.Lock()
+		calls = append(calls, "clear")
+		mu.Unlock()
+		cleared <- struct{}{}
+	}
+
+	svc := NewProcessService(set, "getty")
+	svc.SetCommand([]string{"/bin/true"})
+	svc.SetUtmpDetails("tty1", "tty1")
+	set.AddService(svc)
+	set.StartService(svc)
+	select {
+	case <-cleared:
+	case <-time.After(5 * time.Second):
+		t.Fatal("utmp entry never cleared")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) < 2 || calls[0] != "create" || calls[1] != "clear" {
+		t.Fatalf("utmp writes out of order: %v", calls)
+	}
 }

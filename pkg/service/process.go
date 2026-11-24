@@ -2655,8 +2655,8 @@ func (s *ProcessService) startProcess() error {
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Create utmp entry if inittab-id or inittab-line is configured
-	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
-		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
+	if s.HasUtmp() {
+		s.services.utmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
 	}
 
 	// Start monitoring goroutine
@@ -2945,8 +2945,8 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	}
 
 	// Clear utmp entry
-	if s.HasUtmp() && s.services.OnUtmpClear != nil {
-		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	if s.HasUtmp() {
+		s.services.utmpClear(s.inittabID, s.inittabLine)
 	}
 
 	s.services.queueMu.Lock()

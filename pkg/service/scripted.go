@@ -381,8 +381,8 @@ func (s *ScriptedService) BringUp() bool {
 	s.startHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Create utmp entry for the start process
-	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
-		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
+	if s.HasUtmp() {
+		s.services.utmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
 	}
 
 	// Monitor the start command
@@ -524,8 +524,8 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	}
 
 	// Clear utmp entry
-	if s.HasUtmp() && s.services.OnUtmpClear != nil {
-		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	if s.HasUtmp() {
+		s.services.utmpClear(s.inittabID, s.inittabLine)
 	}
 
 	s.services.queueMu.Lock()

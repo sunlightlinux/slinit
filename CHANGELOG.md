@@ -1094,6 +1094,15 @@ requires.
   are dropped and logged once, and the logfile keeps every line. A
   restart now also stops the previous instance's logger, which used to
   be left running.
+- **Any local user could hold up every getty start for 10 seconds.**
+  The utmp entry for a service with `inittab-id`/`inittab-line` was
+  written while slinit held the service queue lock, and glibc waits up
+  to 10 s for a lock on utmp that anyone able to read the file can
+  take: with a reader holding it, each getty start froze the state
+  machine and the control socket for 10 s. The utmp clear at exit
+  stalled the service's monitor the same way. Both now run in order on
+  a goroutine of their own; a clear is still written after the create
+  for the same process.
 
 ## [4.0.2] — 2026-11-22
 

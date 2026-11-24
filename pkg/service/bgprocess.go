@@ -980,8 +980,8 @@ func (s *BGProcessService) finishPIDDiscoveryLocked(pid int) {
 	s.publishPID()
 
 	// Create utmp entry for the daemon process
-	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
-		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
+	if s.HasUtmp() {
+		s.services.utmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
 	}
 
 	s.cancelTimer()
@@ -1234,8 +1234,8 @@ func (s *BGProcessService) handleDaemonTermination() {
 	}
 
 	// Clear utmp entry
-	if s.HasUtmp() && s.services.OnUtmpClear != nil {
-		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	if s.HasUtmp() {
+		s.services.utmpClear(s.inittabID, s.inittabLine)
 	}
 
 	// The daemon was never our child, so there is no wait status for it —
