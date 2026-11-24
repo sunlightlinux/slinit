@@ -43,6 +43,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -292,6 +293,15 @@ func childMain() error {
 	}
 	_ = name
 
+	// Nothing the launcher inherited may reach the container: a host
+	// file or directory fd would outlive pivot_root. Marked
+	// close-on-exec rather than closed, since the Go runtime holds fds
+	// of its own until the exec. Done here, while the host /proc the
+	// fallback reads is still our root.
+	if err := cloexecFrom(3); err != nil {
+		return fmt.Errorf("mark inherited fds close-on-exec: %w", err)
+	}
+
 	// UTS: hostname (no-op if empty).
 	if hostname != "" {
 		if err := unix.Sethostname([]byte(hostname)); err != nil {
@@ -368,6 +378,30 @@ func childMain() error {
 		// bubbling up so the operator gets a concrete pointer.
 		hint := diagnoseExecFailure(initBin, err)
 		return fmt.Errorf("exec %s: %w%s", initBin, err, hint)
+	}
+	return nil
+}
+
+// cloexecFrom sets FD_CLOEXEC on every fd >= first: close_range(2)
+// with CLOSE_RANGE_CLOEXEC (Linux 5.11), else one fcntl per entry in
+// /proc/self/fd.
+func cloexecFrom(first int) error {
+	if unix.CloseRange(uint(first), ^uint(0), unix.CLOSE_RANGE_CLOEXEC) == nil {
+		return nil
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		fd, err := strconv.Atoi(e.Name())
+		if err != nil || fd < first {
+			continue
+		}
+		// EBADF: the fd ReadDir itself used, already closed.
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil && err != unix.EBADF {
+			return fmt.Errorf("fd %d: %w", fd, err)
+		}
 	}
 	return nil
 }

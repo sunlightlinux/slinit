@@ -63,6 +63,11 @@ verified with `git tag -v`.
   background child holds open: the caller waited for as long as that
   child lived. Output is now read for at most 2 s after the command
   exits, and its exit status is reported as before.
+- **A descriptor `slinit-nspawn` inherited reached the container.**
+  An fd the launcher was started with, without close-on-exec, passed
+  through to the container's init, so a host file or directory stayed
+  reachable from inside past `pivot_root`. Every fd above 2 is now
+  marked close-on-exec before the init is executed.
 - **`slinit-nspawn` followed the image's symlinks on the host.**
   Before `pivot_root` it created *ROOTFS*`/mnt/old-root` as root, so an
   image whose `/mnt` was an absolute symlink had directories created

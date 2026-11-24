@@ -96,3 +96,22 @@ exec "$NSPAWN" --name t2 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /
 		t.Errorf("container did not start: exit %d", code)
 	}
 }
+
+// TestLauncherFdsDoNotReachContainer: a descriptor the launcher
+// inherited without close-on-exec went through the re-exec and the
+// init exec into the container — a host file or directory reachable
+// from inside, past pivot_root.
+func TestLauncherFdsDoNotReachContainer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "host-secret"), []byte("HOST-SECRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+exec 7<"$DIR/host-secret"
+exec "$NSPAWN" --name t3 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c 'cat <&7'
+`)
+	t.Logf("output:\n%s", out)
+	if strings.Contains(out, "HOST-SECRET") {
+		t.Error("the container's init read a host file through a descriptor inherited from the launcher")
+	}
+}
