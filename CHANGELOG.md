@@ -569,6 +569,13 @@ verified with `git tag -v`.
   SIGTERM, SIGCONT and SIGHUP, and whatever is left 5 s later is
   SIGKILLed through the scope's `cgroup.kill`. Only the session's own
   cgroup is signalled, and the call does not wait out the 5 s.
+- **Two overlapping sleep requests to `slinit-logind` both ran.** A
+  `Suspend` (or any sleep call, or the lid) arriving while another sleep
+  was in flight went through the whole handshake as well: PID 1 was
+  asked to sleep twice in a row, and the first one's
+  `PrepareForSleep(false)` told lockers the sleep was over while the
+  second was still under way. As in systemd, the second is now refused
+  with `org.freedesktop.login1.OperationInProgress`.
 
 ## [4.0.2] — 2026-11-22
 

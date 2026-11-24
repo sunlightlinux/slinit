@@ -40,6 +40,12 @@ type sleepVerb struct {
 }
 
 // sleep runs the handshake for one sleep operation.
+//
+// One at a time: a request made while another sleep is in flight is
+// refused with OperationInProgress, as systemd-logind refuses it. Both
+// used to run, so two sleeps reached PID 1 back to back and the first
+// one's PrepareForSleep(false) was announced while the second was still
+// under way.
 func (m *manager) sleep(v sleepVerb) *dbus.Error {
 	if in := m.inhibitors.blockedBy("sleep"); in != nil {
 		return dbus.NewError("org.freedesktop.login1.Error.OperationInhibited",
@@ -47,6 +53,21 @@ func (m *manager) sleep(v sleepVerb) *dbus.Error {
 				"%s is inhibited by %q (pid %d, uid %d): %s",
 				v.method, in.Who, in.PID, in.UID, in.Why)})
 	}
+	m.mu.Lock()
+	busy := m.sleeping
+	m.sleeping = true
+	m.mu.Unlock()
+	if busy {
+		return dbus.NewError("org.freedesktop.login1.OperationInProgress",
+			[]interface{}{fmt.Sprintf(
+				"A sleep operation is already in progress, refusing requested %s operation.",
+				v.method)})
+	}
+	defer func() {
+		m.mu.Lock()
+		m.sleeping = false
+		m.mu.Unlock()
+	}()
 
 	m.announceSleep(true)
 	if m.inhibitors.waitForDelays("sleep", inhibitDelayMax) && m.debug {

@@ -203,6 +203,11 @@ sequence (since 2.5.1):
 5. *PrepareForSleep(false)* is emitted, whether the sleep succeeded or
    not, so a locker is never left believing one is still pending.
 
+One sleep runs at a time (since 4.0.3): a request made while another is
+in flight is refused with *org.freedesktop.login1.OperationInProgress*,
+as systemd-logind refuses it. Before, both ran, and the first one's
+*PrepareForSleep(false)* was announced while the second was under way.
+
 Step 4 matters beyond tidiness. There used to be three independent
 writers of */sys/power/state* — this daemon, its *Sleep* dispatcher, and
 **slinitctl suspend** — so which door a request came through decided

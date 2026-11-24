@@ -138,6 +138,10 @@ type manager struct {
 	// sleep handshake is in flight. Guarded by mu.
 	preparingForSleep bool
 
+	// sleeping is set while a sleep handshake runs, so another one asked
+	// for meanwhile is refused (sleep.go). Guarded by mu.
+	sleeping bool
+
 	// buttons is the lid/power-key configuration, read once at start.
 	// The Handle* properties report it, so it has to be reachable from
 	// the property getters as well as the watcher.
