@@ -1745,13 +1745,20 @@ func (sr *ServiceRecord) inheritedEnvFilter() func(string) bool {
 		drop[n] = struct{}{}
 	}
 	return func(name string) bool {
-		if passSet {
+		_, dropped := drop[name]
+		if dropped {
+			return false
+		}
+		// PATH stays unless unset by name: services relied on the
+		// manager's PATH with a narrow allow-list, and without it a
+		// shell falls back to a built-in default that may include ".".
+		// systemd's PassEnvironment= leaves the manager's PATH alone too.
+		if passSet && name != "PATH" {
 			if _, ok := allow[name]; !ok {
 				return false
 			}
 		}
-		_, dropped := drop[name]
-		return !dropped
+		return true
 	}
 }
 

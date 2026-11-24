@@ -403,7 +403,10 @@ what tells you the oldest slinit your configuration will run on. See
     afterwards). When set, only listed names are forwarded to the
     child. Empty value = drop
     everything. **SLINIT_SERVICENAME** and **SLINIT_SERVICEDSCDIR**
-    are always forwarded regardless (dinit-compat query env vars).
+    are always forwarded regardless (dinit-compat query env vars), and
+    so is the inherited **PATH**, as systemd's **PassEnvironment=**
+    leaves the manager's PATH alone; **unset-environment** can still
+    remove it.
     Repeatable via *+=*. Systemd **PassEnvironment=**.
 
 **unset-environment**=*NAME*...

@@ -64,8 +64,10 @@ verified with `git tag -v`.
   added (global, env-file, `setenv`): whatever the kernel or a login
   session had put in slinit's environment reached every service, so an
   `unset-environment` of an inherited name did nothing. They now filter
-  the inherited environment too. A service without either keeps
-  inheriting everything, as before.
+  the inherited environment too, except that the inherited `PATH` is
+  kept unless `unset-environment` names it, as systemd keeps the
+  manager's PATH under `PassEnvironment=`. A service without either
+  keeps inheriting everything, as before.
 - **A service name could load a description from outside the service
   directories.** Names may contain `/`, and anything may follow `@`;
   the name is joined onto each service, init.d, unit and overlay

@@ -52,3 +52,29 @@ func TestEnvFiltersApplyToTheInheritedEnvironment(t *testing.T) {
 		t.Errorf("no filter: child saw %q, want everything inherited as before", got)
 	}
 }
+
+// A narrow allow-list must not take the manager's PATH away: services
+// relied on it, and a shell without PATH falls back to a built-in one
+// that can include ".". Only unset-environment removes it.
+func TestPassEnvironmentKeepsInheritedPATH(t *testing.T) {
+	t.Setenv("PATH", "/slinit-test/bin:/usr/bin:/bin")
+	set, _ := newTestSet()
+	out := filepath.Join(t.TempDir(), "env")
+	p := NewProcessService(set, "p")
+	p.SetCommand([]string{"/bin/sh", "-c", "echo \"$PATH\" > " + out + "; exec /bin/sleep 30"})
+	p.Record().SetPassEnvironment([]string{"LANG"}, true)
+	set.AddService(p)
+	set.StartService(p)
+	defer set.StopService(p)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(out); err == nil && strings.HasSuffix(string(b), "\n") {
+			if got := strings.TrimSpace(string(b)); got != "/slinit-test/bin:/usr/bin:/bin" {
+				t.Errorf("PATH under pass-environment = %q, want the inherited one", got)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the service never wrote its PATH")
+}
