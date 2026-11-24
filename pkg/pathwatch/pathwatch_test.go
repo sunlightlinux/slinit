@@ -423,3 +423,67 @@ func TestTwoTriggersOneDirectoryMasks(t *testing.T) {
 		t.Errorf("directory trigger missed IN_DELETE after a second watch on the same inode")
 	}
 }
+
+// replaceFile writes data to path the way editors and package managers
+// do: a temporary file renamed over it.
+func replaceFile(t *testing.T, path, data string) {
+	t.Helper()
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestChangedFiresOnRenameOver: the watch sat on the file's inode, so
+// a file replaced by rename produced only IN_DELETE_SELF/IN_IGNORED on
+// the old inode — no fire, and the IGNORED cleared the watch, so the
+// trigger was dead from then on, Rearm or not.
+func TestChangedFiresOnRenameOver(t *testing.T) {
+	for _, trig := range []Trigger{TriggerChanged, TriggerModified} {
+		t.Run(trig.String(), func(t *testing.T) {
+			w := newWatcher(t)
+			path := filepath.Join(t.TempDir(), "config")
+			if err := os.WriteFile(path, []byte("a"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			var fired atomic.Int32
+			if err := w.Add(path, trig, func() { fired.Add(1) }); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			replaceFile(t, path, "b")
+			if !waitFire(t, &fired, 1, 2*time.Second) {
+				t.Fatalf("did not fire on rename-over")
+			}
+			if err := w.Rearm(path); err != nil {
+				t.Fatalf("Rearm: %v", err)
+			}
+			replaceFile(t, path, "c")
+			if !waitFire(t, &fired, 2, 2*time.Second) {
+				t.Fatalf("did not fire on a second rename-over after Rearm")
+			}
+			if err := w.Rearm(path); err != nil {
+				t.Fatalf("Rearm: %v", err)
+			}
+			if err := os.WriteFile(path, []byte("d"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if !waitFire(t, &fired, 3, 2*time.Second) {
+				t.Fatalf("did not fire on an in-place write to the replacement")
+			}
+			// A sibling's changes are not the watched file's.
+			if err := w.Rearm(path); err != nil {
+				t.Fatalf("Rearm: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(filepath.Dir(path), "other"), []byte("x"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(200 * time.Millisecond)
+			if n := fired.Load(); n != 3 {
+				t.Errorf("fired on a sibling file: %d", n)
+			}
+		})
+	}
+}

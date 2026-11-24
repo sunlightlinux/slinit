@@ -33,6 +33,14 @@ verified with `git tag -v`.
   blocked in `write(2)` once the pipe filled (shared logger), or wrote
   into a pipe whose read end had been closed (UDP forwarding). A longer
   line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **`start-on-path-changed` on a file died the first time the file was
+  replaced.** The watch sat on the file's inode, so a file replaced by
+  renaming a new one over it — the way editors and package managers
+  write files — produced only the old inode's removal: the service did
+  not start, the watch was gone, and the trigger never fired again. A
+  file is now watched through its directory, filtered by name, as
+  `start-on-path-exists` already was; the same holds for
+  `start-on-path-modified`.
 - **Two path triggers in one directory: only the last one fired.**
   inotify keeps one watch per inode, so a second `start-on-path-*`
   watch on the same directory got the same descriptor and replaced the

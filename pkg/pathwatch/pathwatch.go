@@ -67,6 +67,7 @@ type entry struct {
 	path    string // user-supplied absolute path
 	parent  string // parent dir being watched (for "appear" mode)
 	base    string // basename filter for parent-dir watches
+	byName  bool   // changed/modified on a file: parent watched, filtered by base
 	trigger Trigger
 	fn      func()
 
@@ -225,7 +226,14 @@ func (w *Watcher) arm(e *entry) error {
 		if e.trigger == TriggerModified {
 			mask |= unix.IN_MODIFY
 		}
-		_ = info
+		// A file is watched through its directory, filtered by name,
+		// as TriggerExists is. A watch on the file's own inode died
+		// when the file was replaced by rename — the way editors and
+		// package managers write — and saw only IN_DELETE_SELF.
+		e.byName = !info.IsDir()
+		if e.byName {
+			return w.addWatch(e, e.parent, mask)
+		}
 		return w.addWatch(e, e.path, mask)
 
 	case TriggerDirNotEmpty:
@@ -384,11 +392,17 @@ func (w *Watcher) eventMatches(e *entry, mask uint32, name string) bool {
 		// Watching parent dir for basename appearance.
 		return (mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0) && name == e.base
 	case TriggerChanged:
-		// Watching path directly. For directories, name is the child
-		// entry; for files, name is empty.
+		// A directory is watched directly and name is the child entry;
+		// a file is watched through its parent and name must be it.
+		if e.byName && name != e.base {
+			return false
+		}
 		return mask&(unix.IN_CLOSE_WRITE|unix.IN_CREATE|unix.IN_DELETE|
 			unix.IN_MOVED_TO|unix.IN_MOVED_FROM) != 0
 	case TriggerModified:
+		if e.byName && name != e.base {
+			return false
+		}
 		return mask&(unix.IN_CLOSE_WRITE|unix.IN_MODIFY|unix.IN_CREATE|unix.IN_DELETE|
 			unix.IN_MOVED_TO|unix.IN_MOVED_FROM) != 0
 	case TriggerDirNotEmpty:
