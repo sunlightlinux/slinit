@@ -30,6 +30,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // --- Data structures ---
@@ -73,6 +75,11 @@ type SystemdConfig struct {
 	rlimitAS     string
 
 	rlimitMemlock string
+
+	// CapabilityBoundingSet= and AmbientCapabilities=, folded across
+	// their assignments; emitted once the whole unit is read.
+	capBounding capFold
+	capAmbient  capFold
 
 	description string   // [Unit] Description=
 	mapped      []kvPair // directives translated 1:1, emitted in order
@@ -241,6 +248,19 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		case "Install":
 			warns = append(warns, applyInstallKey(cfg, key, val)...)
 		}
+	}
+	if cfg.capBounding.set {
+		switch cfg.capBounding.mask {
+		case allCaps:
+			// No limit, as systemd leaves the set alone.
+		case 0:
+			warns = append(warns, SystemdWarning{"WARN", "CapabilityBoundingSet= leaves no capability; slinit's capability-bounding-set cannot express an empty set — not applied"})
+		default:
+			cfg.mapped = append(cfg.mapped, kvPair{"capability-bounding-set", capNames(cfg.capBounding.mask)})
+		}
+	}
+	if cfg.capAmbient.mask != 0 {
+		cfg.mapped = append(cfg.mapped, kvPair{"capabilities", capNames(cfg.capAmbient.mask)})
 	}
 	return warns
 }
@@ -456,8 +476,51 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		cfg.rlimitAS = systemdRlimit(val, true)
 	case "LimitMEMLOCK":
 		cfg.rlimitMemlock = systemdRlimit(val, true)
-	case "CapabilityBoundingSet", "AmbientCapabilities":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s — map to slinit capabilities / ambient-caps directives manually", key, val)})
+	// The sandbox and capability directives below used to be dropped
+	// with a note although slinit implements each: a unit loaded
+	// directly ran without the confinement it declared.
+	case "CapabilityBoundingSet":
+		warns = append(warns, cfg.capBounding.apply(key, val, allCaps)...)
+	case "AmbientCapabilities":
+		warns = append(warns, cfg.capAmbient.apply(key, val, 0)...)
+	case "ReadOnlyPaths", "ReadWritePaths", "InaccessiblePaths":
+		slinitKey := map[string]string{
+			"ReadOnlyPaths":     "read-only-paths",
+			"ReadWritePaths":    "read-write-paths",
+			"InaccessiblePaths": "inaccessible-paths",
+		}[key]
+		// slinit hides a missing inaccessible path already; a missing
+		// read-only or read-write path fails the start.
+		paths, w := systemdPaths(key, val, key != "InaccessiblePaths")
+		warns = append(warns, w...)
+		cfg.setMappedList(slinitKey, val, paths)
+	case "BindReadOnlyPaths":
+		entries, w := systemdBindPaths(key, val)
+		warns = append(warns, w...)
+		cfg.setMappedList("bind-read-only-paths", val, entries)
+	case "TemporaryFileSystem":
+		entries, w := systemdTmpfs(key, val)
+		warns = append(warns, w...)
+		cfg.setMappedList("temporary-filesystem", val, entries)
+	case "ProtectProc":
+		switch v := strings.ToLower(trimQuotes(val)); v {
+		case "default", "noaccess", "invisible", "ptraceable":
+			cfg.mapped = append(cfg.mapped, kvPair{"protect-proc", v})
+		default:
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectProc=%s not recognised — not applied", val)})
+		}
+	case "ProcSubset":
+		switch v := strings.ToLower(trimQuotes(val)); v {
+		case "all", "pid":
+			cfg.mapped = append(cfg.mapped, kvPair{"proc-subset", v})
+		default:
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProcSubset=%s not recognised — not applied", val)})
+		}
+	case "PrivateNetwork":
+		if truthy(val) {
+			cfg.mapped = append(cfg.mapped, kvPair{"namespace-net", "yes"})
+			warns = append(warns, SystemdWarning{"NOTE", "PrivateNetwork=yes → namespace-net = yes; unlike systemd, slinit leaves the namespace's loopback interface down"})
+		}
 	// Hardening directives slinit implements as deliberate equivalents of
 	// systemd's, sharing the same value vocabulary — these translate
 	// rather than earning a "look it up yourself" note.
@@ -518,7 +581,7 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectHostname=%s — slinit's protect-hostname is yes/no only; set it by hand", val)})
 		}
 	// No slinit equivalent — these stay notes.
-	case "PrivateDevices", "PrivateNetwork", "PrivateUsers":
+	case "PrivateDevices", "PrivateUsers":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("hardening %s=%s — no slinit equivalent; review by hand", key, val)})
 	// Same directive, same value shape: a space-separated list of names
 	// created under /run, /var/lib and so on. Deferring these was not a
@@ -762,6 +825,201 @@ func systemdSeconds(v, inf string) string {
 		s += strings.TrimRight(fmt.Sprintf(".%06d", r), "0")
 	}
 	return s
+}
+
+// setMappedList records a list directive: systemd appends each
+// assignment to the list, and an empty one empties it.
+func (cfg *SystemdConfig) setMappedList(slinitKey, val string, entries []string) {
+	if strings.TrimSpace(trimQuotes(val)) == "" {
+		kept := cfg.mapped[:0]
+		for _, kv := range cfg.mapped {
+			if kv.key != slinitKey {
+				kept = append(kept, kv)
+			}
+		}
+		cfg.mapped = kept
+		return
+	}
+	if len(entries) > 0 {
+		cfg.mapped = append(cfg.mapped, kvPair{slinitKey, strings.Join(entries, " ")})
+	}
+}
+
+// systemdPath checks one path from a sandbox directive and strips its
+// "-" prefix (ignore the path if it does not exist). ok is false, with a
+// warning, for a form slinit has no equivalent of: "+" (relative to
+// RootDirectory=), a specifier (%h), an escape or a variable, a relative
+// path or one with "..". missingOK reports whether a "-" path that is
+// not there now must be left out, as slinit would fail the start on it.
+func systemdPath(key, p string, missingOK bool) (path string, ok bool, warns []SystemdWarning) {
+	path = p
+	ignore := false
+	for strings.HasPrefix(path, "-") || strings.HasPrefix(path, "+") {
+		if path[0] == '+' {
+			return "", false, []SystemdWarning{{"WARN", fmt.Sprintf("%s: %q is relative to RootDirectory=, which slinit cannot express — not applied", key, p)}}
+		}
+		ignore = true
+		path = path[1:]
+	}
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, "%\\$") ||
+		strings.Contains("/"+path+"/", "/../") {
+		return "", false, []SystemdWarning{{"WARN", fmt.Sprintf("%s: %q cannot be expressed in slinit — not applied", key, p)}}
+	}
+	if ignore && missingOK {
+		if _, err := os.Stat(path); err != nil {
+			return "", false, []SystemdWarning{{"NOTE", fmt.Sprintf("%s: %q does not exist — left out, as systemd would ignore it", key, p)}}
+		}
+	}
+	return path, true, nil
+}
+
+// systemdPaths maps a ReadOnlyPaths=-style list.
+func systemdPaths(key, val string, missingOK bool) ([]string, []SystemdWarning) {
+	var out []string
+	var warns []SystemdWarning
+	for _, word := range strings.Fields(val) {
+		p, ok, w := systemdPath(key, trimQuotes(word), missingOK)
+		warns = append(warns, w...)
+		if ok {
+			out = append(out, p)
+		}
+	}
+	return out, warns
+}
+
+// systemdBindPaths maps BindReadOnlyPaths= entries, "[-]src[:dst[:opts]]",
+// to slinit's "src:dst". slinit binds recursively, which is systemd's
+// rbind (the default); norbind has no slinit form.
+func systemdBindPaths(key, val string) ([]string, []SystemdWarning) {
+	var out []string
+	var warns []SystemdWarning
+	for _, word := range strings.Fields(val) {
+		parts := strings.Split(trimQuotes(word), ":")
+		if len(parts) > 3 || (len(parts) == 3 && parts[2] != "rbind") {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: %q — slinit binds recursively only — not applied", key, word)})
+			continue
+		}
+		src, ok, w := systemdPath(key, parts[0], true)
+		warns = append(warns, w...)
+		if !ok {
+			continue
+		}
+		dst := src
+		if len(parts) > 1 {
+			if dst, ok, w = systemdPath(key, parts[1], false); !ok {
+				warns = append(warns, w...)
+				continue
+			}
+		}
+		out = append(out, src+":"+dst)
+	}
+	return out, warns
+}
+
+// tmpfsMountFlags are TemporaryFileSystem= options that are mount flags
+// rather than tmpfs options, which slinit's temporary-filesystem passes
+// to tmpfs as they are; tmpfs refuses them. slinit's tmpfs is always
+// nosuid and nodev.
+var tmpfsMountFlags = map[string]bool{
+	"nosuid": true, "suid": true, "nodev": true, "dev": true,
+	"noexec": true, "exec": true, "nosymfollow": true, "symfollow": true,
+	"atime": true, "noatime": true, "diratime": true, "nodiratime": true,
+	"relatime": true, "norelatime": true, "strictatime": true, "nostrictatime": true,
+}
+
+// systemdTmpfs maps TemporaryFileSystem= entries, "path[:options]". The
+// mount flags are left out (with a warning for noexec and nosymfollow,
+// which slinit cannot apply), and systemd's default mode=0755 is made
+// explicit: a tmpfs's own default is 1777.
+func systemdTmpfs(key, val string) ([]string, []SystemdWarning) {
+	var out []string
+	var warns []SystemdWarning
+	for _, word := range strings.Fields(val) {
+		p, opts, _ := strings.Cut(trimQuotes(word), ":")
+		path, ok, w := systemdPath(key, p, false)
+		warns = append(warns, w...)
+		if !ok {
+			continue
+		}
+		var keep []string
+		mode := false
+		for _, o := range strings.Split(opts, ",") {
+			switch {
+			case o == "":
+			case tmpfsMountFlags[o]:
+				if o == "noexec" || o == "nosymfollow" {
+					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: %s on %s — slinit's tmpfs cannot be %s; mounted without it", key, o, path, o)})
+				}
+			default:
+				mode = mode || strings.HasPrefix(o, "mode=")
+				keep = append(keep, o)
+			}
+		}
+		if !mode {
+			keep = append(keep, "mode=0755")
+		}
+		out = append(out, path+":"+strings.Join(keep, ","))
+	}
+	return out, warns
+}
+
+// allCaps is every capability slinit knows, the bounding set systemd
+// starts from.
+const allCaps = uint64(1)<<(process.CapCheckpointRestore+1) - 1
+
+// capFold is a systemd capability set built up over its assignments.
+type capFold struct {
+	set  bool
+	mask uint64
+}
+
+// apply folds one assignment in as systemd's parse_capability_set does:
+// the first one (or one after the set was emptied) replaces initial, a
+// later one adds to it, or with ~ takes away; an empty one empties it.
+// An unknown name is ignored, as systemd ignores it.
+func (c *capFold) apply(key, val string, initial uint64) []SystemdWarning {
+	if !c.set {
+		c.set, c.mask = true, initial
+	}
+	v := strings.TrimSpace(trimQuotes(val))
+	if v == "" {
+		c.mask = 0
+		return nil
+	}
+	invert := strings.HasPrefix(v, "~")
+	var parsed uint64
+	var warns []SystemdWarning
+	for _, word := range strings.Fields(strings.TrimPrefix(v, "~")) {
+		n, err := process.ParseCapabilities(trimQuotes(word))
+		if err != nil || len(n) != 1 {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: unknown capability %q ignored", key, word)})
+			continue
+		}
+		parsed |= 1 << n[0]
+	}
+	switch {
+	case parsed == 0 || c.mask == initial:
+		c.mask = parsed
+		if invert {
+			c.mask = allCaps &^ parsed
+		}
+	case invert:
+		c.mask &^= parsed
+	default:
+		c.mask |= parsed
+	}
+	return warns
+}
+
+// capNames lists the capabilities in mask by name, lowest first.
+func capNames(mask uint64) string {
+	var names []string
+	for n := uintptr(0); n <= process.CapCheckpointRestore; n++ {
+		if mask&(1<<n) != 0 {
+			names = append(names, process.CapabilityName(n))
+		}
+	}
+	return strings.Join(names, " ")
 }
 
 func trimQuotes(s string) string {

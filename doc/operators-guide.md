@@ -111,12 +111,16 @@ the notes. The common ones:
 - **`ExecReload` dropped.** slinit's reload is signal-based; add
   `reload-signal = HUP` (or whichever signal the daemon wants) to a native
   description. A unit cannot express it.
-- **`PrivateDevices`, `PrivateNetwork`, `RestrictSUIDSGID` and a few
-  others** have no slinit equivalent and are reported so you know the
-  hardening is not there.
+- **`PrivateDevices`, `PrivateUsers` and a few others** have no slinit
+  equivalent and are reported so you know the hardening is not there;
+  so are the forms of the sandbox and capability directives slinit
+  cannot express (a `+` path, a `%` specifier, an empty
+  `CapabilityBoundingSet=`).
 
 Directives that *do* carry over include the `Protect*` / `Restrict*`
-cluster, `PrivateTmp`, `SystemCallFilter`, `RuntimeDirectory` and its
+cluster, `PrivateTmp`, `ReadOnlyPaths` and the other sandbox paths,
+`ProtectProc`, `PrivateNetwork`, `CapabilityBoundingSet`,
+`AmbientCapabilities`, `SystemCallFilter`, `RuntimeDirectory` and its
 siblings, `Nice`, `OOMScoreAdjust`, `User`/`Group`, `EnvironmentFile`,
 `PIDFile`, `Restart`, and the timeouts.
 

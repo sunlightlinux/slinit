@@ -333,9 +333,9 @@ section-aware INI parser handles `\`-line continuation. `Type=` maps as
 `no`/`yes`/`on-failure`, with ambiguous cases noted. `User` + `Group`
 merge into `run-as = user:group`. Hardening directives slinit
 implements under the same vocabulary (`PrivateTmp`, `ProtectSystem`,
-`ProtectHome`, `ProtectKernel*`, `SystemCallFilter`, …) are translated
-directly; the rest (`PrivateDevices`, `PrivateNetwork`,
-`RestrictSUIDSGID`, …) are reported. Dependency names lose their
+`ProtectHome`, `ProtectKernel*`, `SystemCallFilter`, `ReadOnlyPaths`,
+`PrivateNetwork`, `CapabilityBoundingSet`, …) are translated
+directly; the rest (`PrivateDevices`, `PrivateUsers`, …) are reported. Dependency names lose their
 `.service`, `.socket`, `.path`, `.mount`, `.timer`, `.swap` or `.device`
 suffix; references to `.target` units are dropped with a note. Timer /
 socket / path / mount / target unit files are rejected — those need

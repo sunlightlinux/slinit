@@ -782,6 +782,22 @@ verified with `git tag -v`.
   stayed in the bounding set of a service whose list leaves it out. It
   now goes up to the kernel's `/proc/sys/kernel/cap_last_cap`, falling
   back to 40 where that cannot be read.
+- **A systemd unit loaded directly ran without most of its sandbox.**
+  `ReadOnlyPaths=`, `ReadWritePaths=`, `InaccessiblePaths=`,
+  `BindReadOnlyPaths=`, `TemporaryFileSystem=`, `ProtectProc=`,
+  `ProcSubset=`, `PrivateNetwork=`, `CapabilityBoundingSet=` and
+  `AmbientCapabilities=` were dropped with a note, although slinit has
+  each, so the service started with the host's network, every path
+  writable and visible, and its full bounding set. They are now
+  translated (by `slinit-systemd-convert` too): a `-` path that does not
+  exist is left out, as systemd ignores it; `CapabilityBoundingSet=~…`
+  keeps every other capability, and repeated assignments add up as in
+  systemd; `TemporaryFileSystem=` gets systemd's `mode=0755`;
+  `PrivateNetwork=yes` becomes `namespace-net = yes`, whose loopback
+  interface, unlike systemd's, stays down. What slinit cannot express
+  stays out with a warning: a `+` path, a `%` specifier, a `norbind`
+  bind, `noexec` on a temporary file system, and an empty
+  `CapabilityBoundingSet=`.
 
 ## [4.0.2] — 2026-11-22
 

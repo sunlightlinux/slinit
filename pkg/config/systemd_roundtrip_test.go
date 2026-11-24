@@ -296,3 +296,114 @@ ExecStart=/bin/true
 		t.Errorf("dropped targets must be reported, got %d notes", noted)
 	}
 }
+
+// convertWarns is parseEmitted that also returns the conversion notes.
+func convertWarns(t *testing.T, unit string) (*ServiceDescription, []SystemdWarning) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "probe.service")
+	if err := os.WriteFile(path, []byte(unit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, warns, err := ConvertSystemdUnit(path)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	var buf bytes.Buffer
+	EmitSlinitFile(&buf, cfg)
+	desc, err := Parse(bytes.NewReader(buf.Bytes()), "probe", path)
+	if err != nil {
+		t.Fatalf("emitted file does not parse: %v\n--- emitted ---\n%s", err, buf.String())
+	}
+	return desc, warns
+}
+
+// These hardening directives have slinit equivalents but were dropped
+// with a note, so a unit loaded directly ran without the confinement it
+// declared: no read-only paths, no hidden paths, the host's network.
+func TestSystemdSandboxPathsAreTranslated(t *testing.T) {
+	there := t.TempDir()
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=/bin/true
+ReadOnlyPaths=/etc -`+there+` -/nonexistent/ro
+ReadWritePaths=-/nonexistent/rw /var/lib/probe
+InaccessiblePaths=-/nonexistent/hidden /boot
+ProtectProc=invisible
+ProcSubset=pid
+BindReadOnlyPaths=/etc/hosts:/run/hosts -/nonexistent/src:/x /usr:/opt/usr:rbind
+TemporaryFileSystem=/var/cache:ro
+PrivateNetwork=yes
+`)
+	check := func(name string, got, want []string) {
+		t.Helper()
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%s = %q; want %q", name, got, want)
+		}
+	}
+	check("read-only-paths", desc.ReadOnlyPaths, []string{"/etc", there})
+	check("read-write-paths", desc.ReadWritePaths, []string{"/var/lib/probe"})
+	check("inaccessible-paths", desc.InaccessiblePaths, []string{"/nonexistent/hidden", "/boot"})
+	check("bind-read-only-paths", desc.BindReadOnlyPaths, []string{"/etc/hosts:/run/hosts", "/usr:/opt/usr"})
+	check("temporary-filesystem", desc.TemporaryFileSystem, []string{"/var/cache:ro,mode=0755"})
+	if desc.ProtectProc != "invisible" || desc.ProcSubset != "pid" {
+		t.Errorf("protect-proc %q, proc-subset %q; want invisible, pid", desc.ProtectProc, desc.ProcSubset)
+	}
+	if !desc.NamespaceNet {
+		t.Error("PrivateNetwork=yes did not give the service a network namespace")
+	}
+	for _, w := range warns {
+		if w.Level == "WARN" {
+			t.Errorf("unexpected warning: %s", w.Msg)
+		}
+	}
+}
+
+// CapabilityBoundingSet= and AmbientCapabilities= fold their assignments
+// as systemd's parse_capability_set does: ~ removes from the full set.
+func TestSystemdCapabilitiesAreTranslated(t *testing.T) {
+	desc, _ := convertWarns(t, `[Service]
+ExecStart=/bin/true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_CHOWN
+CapabilityBoundingSet=CAP_SETUID
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+`)
+	if got := desc.CapabilityBoundingSet; got != "cap_chown cap_setuid cap_net_bind_service" {
+		t.Errorf("capability-bounding-set = %q", got)
+	}
+	if got := desc.Capabilities; got != "cap_net_bind_service" {
+		t.Errorf("capabilities = %q", got)
+	}
+
+	desc, _ = convertWarns(t, `[Service]
+ExecStart=/bin/true
+CapabilityBoundingSet=~CAP_SYS_ADMIN CAP_SYS_MODULE
+`)
+	kept := desc.CapabilityBoundingSet
+	if strings.Contains(kept, "cap_sys_admin") || strings.Contains(kept, "cap_sys_module") ||
+		!strings.Contains(kept, "cap_chown") || len(strings.Fields(kept)) != 39 {
+		t.Errorf("~CAP_SYS_ADMIN CAP_SYS_MODULE kept %q; want every other capability", kept)
+	}
+}
+
+// The forms slinit cannot express stay unmapped, and say so.
+func TestSystemdUnmappableSandboxFormsWarn(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=/bin/true
+ReadOnlyPaths=+/etc /var/%N
+BindReadOnlyPaths=/usr:/opt/usr:norbind
+CapabilityBoundingSet=
+ProtectProc=bogus
+`)
+	if len(desc.ReadOnlyPaths) != 0 || len(desc.BindReadOnlyPaths) != 0 ||
+		desc.CapabilityBoundingSet != "" || desc.ProtectProc != "" {
+		t.Errorf("an unmappable form was emitted: %+v", desc)
+	}
+	var n int
+	for _, w := range warns {
+		if w.Level == "WARN" {
+			n++
+		}
+	}
+	if n != 5 {
+		t.Errorf("got %d WARNs, want 5 (+path, %%specifier, norbind, empty bounding set, bogus protect-proc): %v", n, warns)
+	}
+}

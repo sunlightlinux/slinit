@@ -37,8 +37,19 @@ service directories (**RuntimeDirectory** and its siblings),
 **NoNewPrivileges**, **PrivateTmp**, **ProtectSystem**,
 **ProtectHome**, the **ProtectKernel\***, **ProtectClock** and
 **ProtectControlGroups** family, **SystemCallFilter**,
-**RestrictAddressFamilies** (allow-lists only) and
-**RestrictNamespaces** (**yes** / **no** only).
+**RestrictAddressFamilies** (allow-lists only),
+**RestrictNamespaces** (**yes** / **no** only) and, since 4.0.3,
+**ReadOnlyPaths**, **ReadWritePaths**, **InaccessiblePaths**,
+**BindReadOnlyPaths**, **TemporaryFileSystem**, **ProtectProc**,
+**ProcSubset**, **PrivateNetwork** (→ **namespace-net**; its loopback
+interface stays down), **CapabilityBoundingSet** (with **~**) and
+**AmbientCapabilities** (→ **capabilities**). A path with the **-**
+prefix that does not exist when the unit is converted is left out, as
+systemd would ignore it. What these cannot express is left out with a
+warning: a **+** path (relative to **RootDirectory**), a specifier such
+as **%h**, a **norbind** bind, the **noexec** option of a temporary
+file system, and a **CapabilityBoundingSet** that keeps no capability
+at all.
 
 Dependencies: **Requires** becomes **depends-on**; **Wants** and
 **After** become **waits-for**; references to **.target** units are
@@ -50,8 +61,7 @@ Not carried over, and reported: inline **Environment=** (slinit takes
 an **EnvironmentFile** only), **ExecReload** (slinit's reload is a
 signal — see **reload-signal**), **ExecStopPost**, **WatchdogSec**,
 **LoadCredential** / **SetCredential** / **ImportCredential**,
-**CapabilityBoundingSet** / **AmbientCapabilities**,
-**PrivateDevices**, **PrivateNetwork**, **RestrictSUIDSGID**, and any
+**PrivateDevices**, **PrivateUsers**, and any
 other key the converter does not know — **KillMode**,
 **RemainAfterExit** and **LimitNPROC** among them. Notes and warnings are printed only with
 **--verbose**.
