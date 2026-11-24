@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -17,17 +18,27 @@ import (
 // slinit-logind; who is "in" it comes from scopeProcs.
 const testScope = "/sys/fs/cgroup/slinit-logind-test-scope"
 
-// inScope makes scopeProcs report the given processes for testScope.
+// inScope makes scopeProcs report the given processes for testScope,
+// for as long as the test runs. terminateSession hands its follow-up
+// timer the scopeProcs it saw; that timer can fire after the test is
+// over and its helper reaped, when the pid may belong to someone else —
+// so once the test ends the fake reports nothing, and the late SIGKILL
+// reaches no one.
 func inScope(t *testing.T, pids ...int) {
 	t.Helper()
 	orig := scopeProcs
+	var live atomic.Bool
+	live.Store(true)
 	scopeProcs = func(scope string) []int {
-		if scope == testScope {
+		if scope == testScope && live.Load() {
 			return pids
 		}
 		return nil
 	}
-	t.Cleanup(func() { scopeProcs = orig })
+	t.Cleanup(func() {
+		live.Store(false)
+		scopeProcs = orig
+	})
 }
 
 // startInSession starts cmd and returns a channel closed once it has
