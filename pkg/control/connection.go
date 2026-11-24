@@ -188,7 +188,7 @@ func (c *Connection) allocHandle(svc service.Service) uint32 {
 	c.handlesMu.Unlock()
 	// Auto-subscribe as listener for service events
 	if !closing {
-		svc.Record().AddListener(c)
+		c.subscribe(svc)
 	}
 	return h
 }
@@ -220,7 +220,18 @@ func (c *Connection) swapService(old, new service.Service) {
 	c.handlesMu.Unlock()
 	if held {
 		old.Record().RemoveListener(c)
-		new.Record().AddListener(c)
+		c.subscribe(new)
+	}
+}
+
+// subscribe adds c as a listener of svc. close() may run between the
+// caller's check of c.closing and this call and take its snapshot of the
+// services to unsubscribe from without svc; so look again after adding,
+// and undo the subscription if close() has started.
+func (c *Connection) subscribe(svc service.Service) {
+	svc.Record().AddListener(c)
+	if c.isClosing() {
+		svc.Record().RemoveListener(c)
 	}
 }
 
