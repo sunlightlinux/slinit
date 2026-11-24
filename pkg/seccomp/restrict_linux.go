@@ -306,7 +306,8 @@ func CompileRestrictAddressFamilies(allowed []int) ([]unix.SockFilter, error) {
 // cannot read the fsname passed to mount(2), which is what systemd's
 // RestrictFileSystems= inspects through BPF-LSM; refusing the whole mount
 // surface is the most restrictive reading, matching what a deny-all
-// RestrictFileSystems=~ expects.
+// RestrictFileSystems=~ expects. The list is systemd's @mount without
+// chroot, which mounts nothing, plus open_tree.
 var fileSystemRules = []rule{
 	{syscall: "mount", action: errEPERM},
 	{syscall: "umount2", action: errEPERM},
@@ -316,6 +317,9 @@ var fileSystemRules = []rule{
 	{syscall: "fspick", action: errEPERM},
 	{syscall: "move_mount", action: errEPERM},
 	{syscall: "open_tree", action: errEPERM},
+	{syscall: "open_tree_attr", action: errEPERM},
+	{syscall: "mount_setattr", action: errEPERM},
+	{syscall: "pivot_root", action: errEPERM},
 }
 
 // CompileRestrictFileSystems builds the restrict-file-systems filter.

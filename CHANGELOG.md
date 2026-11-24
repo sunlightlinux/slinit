@@ -26,6 +26,12 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`restrict-file-systems` left `mount_setattr` open.** It refused
+  `mount` and the new mount API but not `mount_setattr`,
+  `open_tree_attr` or `pivot_root`, so a service with the privilege to
+  mount could still clear `MOUNT_ATTR_RDONLY` from a read-only mount
+  and write to it. The three are now refused with `EPERM` too, which
+  covers systemd's `@mount` group but `chroot`.
 - **A second `system-call-architectures` entry was filtered with the
   wrong numbers.** With `system-call-architectures = native x86`, an
   i386 call was matched against the x86_64 syscall numbers, where it

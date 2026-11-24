@@ -1581,7 +1581,11 @@ service's private mount namespace.
 **restrict-file-systems**=*yes*|*no*
 :   Deny the entire mount syscall family: **mount**(2),
     **umount2**(2), **fsopen**(2), **fsconfig**(2), **fsmount**(2),
-    **fspick**(2), **move_mount**(2), **open_tree**(2). Classic
+    **fspick**(2), **move_mount**(2), **open_tree**(2),
+    **open_tree_attr**(2), **mount_setattr**(2), **pivot_root**(2) —
+    systemd's *@mount* group but **chroot**(2). The last three were
+    missing before 4.0.3, so **mount_setattr** could make a read-only
+    mount writable. Classic
     seccomp-BPF cannot inspect the fsname string; the most-
     restrictive interpretation ships (deny all). systemd's
     fstype allow-list variant requires BPF-LSM.
