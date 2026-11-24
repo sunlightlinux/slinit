@@ -34,7 +34,7 @@ func TestStringListRejectsEmpty(t *testing.T) {
 	}
 }
 
-func TestParseSubmounts(t *testing.T) {
+func TestParseMountTree(t *testing.T) {
 	const mi = `22 1 0:20 / / rw,relatime - ext4 /dev/sda1 rw
 30 22 0:30 / /srv rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw
 31 30 0:31 / /srv/a\040b rw,noatime - tmpfs tmpfs rw
@@ -45,16 +45,32 @@ func TestParseSubmounts(t *testing.T) {
 36 30 0:36 / /srv/trig rw,relatime - autofs systemd-1 rw
 37 22 0:37 / /srvx rw - tmpfs tmpfs rw
 `
-	got := parseSubmounts(mi, "/srv")
+	got := parseMountTree(mi, "/srv")
 	want := []mountPoint{
+		{point: "/srv", flags: unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC | unix.MS_RELATIME},
 		{point: "/srv/a b", flags: unix.MS_NOATIME},
 		{point: "/srv/auto", ro: true, flags: unix.MS_NOSUID | unix.MS_STRICTATIME},
 		{point: "/srv/over", ro: true, flags: unix.MS_STRICTATIME},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("parseSubmounts(/srv) =\n%+v\nwant\n%+v", got, want)
+		t.Errorf("parseMountTree(/srv) =\n%+v\nwant\n%+v", got, want)
 	}
-	if n := len(parseSubmounts(mi, "/")); n != 5 {
-		t.Errorf("parseSubmounts(/) found %d mounts; want 5", n)
+	if n := len(parseMountTree(mi, "/")); n != 6 {
+		t.Errorf("parseMountTree(/) found %d mounts; want 6", n)
+	}
+	if got := parseMountTree(mi, "/nowhere"); len(got) != 0 {
+		t.Errorf("parseMountTree(/nowhere) = %+v; want nothing", got)
+	}
+}
+
+func TestParseMountOpts(t *testing.T) {
+	ro, flags := parseMountOpts("ro,nosuid,nodev,noexec,nodiratime,relatime,nosymfollow")
+	want := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC |
+		unix.MS_NODIRATIME | unix.MS_RELATIME | unix.MS_NOSYMFOLLOW)
+	if !ro || flags != want {
+		t.Errorf("got ro=%v flags=%#x; want ro=true flags=%#x", ro, flags, want)
+	}
+	if ro, _ := parseMountOpts("rw,relatime"); ro {
+		t.Error("rw read as ro")
 	}
 }

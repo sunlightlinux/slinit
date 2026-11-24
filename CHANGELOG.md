@@ -766,6 +766,16 @@ verified with `git tag -v`.
   `temporary-filesystem` and `protect-home = tmpfs` mounts; a
   `read-write-paths` or `bind-paths` entry makes writable again the
   mounts below it that the sandbox made read-only, and only those.
+- **A read-only sandbox mount lost its `noexec`, `nosuid` and `nodev`,
+  and failed to start in a user namespace.** The read-only remount
+  passed only `MS_RDONLY`, and a bind remount replaces a mount's flags:
+  a `noexec` tmpfs listed in `read-only-paths` (or under
+  `protect-system`, `protect-home = read-only`,
+  `bind-read-only-paths`, `protect-kernel-tunables`) became executable
+  in the service. Where those flags are locked — slinit in an
+  unprivileged container, below the user namespace that made the mount —
+  the kernel refused the remount with EPERM and the service did not
+  start. Each remount now repeats the mount's own flags.
 
 ## [4.0.2] — 2026-11-22
 

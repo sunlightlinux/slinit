@@ -400,20 +400,21 @@ var madeRO = map[string]bool{}
 // path it is given, so the submounts a recursive bind brings along stayed
 // writable until each got its own: /proc/sys/fs/binfmt_misc under
 // protect-kernel-tunables, /run/user/UID under protect-home=read-only.
+//
+// Each remount repeats the mount's own flags: a bind remount replaces
+// them, so MS_RDONLY alone cleared nosuid, nodev and noexec, and where
+// they are locked (a user namespace below the mount's) failed with EPERM.
 func remountTreeRO(top string, keep []string) error {
-	if err := unix.Mount("", top, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
-		return fmt.Errorf("remount-ro %s: %w", top, err)
-	}
-	subs, err := submounts(top)
+	tree, err := mountTree(top)
 	if err != nil {
 		return err
 	}
-	for _, m := range subs {
-		if underAny(m.point, keep) {
+	for i, m := range tree {
+		if i > 0 && underAny(m.point, keep) {
 			continue
 		}
-		err := unix.Mount("", m.point, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, "")
-		if err != nil && !hiddenMount(err) {
+		err := unix.Mount("", m.point, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY|m.flags, "")
+		if err != nil && (i == 0 || !hiddenMount(err)) {
 			return fmt.Errorf("remount-ro %s: %w", m.point, err)
 		}
 		if err == nil && !m.ro {
@@ -425,8 +426,9 @@ func remountTreeRO(top string, keep []string) error {
 
 // remountTreeRW makes dst, a recursive bind of src, writable: dst itself,
 // and every mount below it whose source remountTreeRO turned read-only.
+// The flags it had otherwise are kept, as remountTreeRO keeps them.
 func remountTreeRW(src, dst string) error {
-	subs, err := submounts(dst)
+	tree, err := mountTree(dst)
 	if err != nil {
 		return err
 	}
@@ -434,40 +436,16 @@ func remountTreeRW(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	realDst, err := filepath.EvalSymlinks(dst)
-	if err != nil {
-		return err
-	}
-	var st unix.Statfs_t
-	if err := unix.Statfs(dst, &st); err != nil {
-		return fmt.Errorf("statfs %s: %w", dst, err)
-	}
-	if err := unix.Mount("", dst, "", rwRemountFlags(uint64(st.Flags)), ""); err != nil {
-		return fmt.Errorf("remount-rw %s: %w", dst, err)
-	}
-	for _, m := range subs {
-		if !madeRO[filepath.Join(realSrc, strings.TrimPrefix(m.point, realDst))] {
+	for i, m := range tree {
+		if i > 0 && !madeRO[filepath.Join(realSrc, strings.TrimPrefix(m.point, tree[0].point))] {
 			continue
 		}
 		err := unix.Mount("", m.point, "", unix.MS_REMOUNT|unix.MS_BIND|m.flags, "")
-		if err != nil && !hiddenMount(err) {
+		if err != nil && (i == 0 || !hiddenMount(err)) {
 			return fmt.Errorf("remount-rw %s: %w", m.point, err)
 		}
 	}
 	return nil
-}
-
-// rwRemountFlags makes a bind writable and keeps the rest of what it had: a remount
-// replaces these flags, so leaving them out would drop nosuid or noexec.
-func rwRemountFlags(statFlags uint64) uintptr {
-	const keep = unix.ST_NOSUID | unix.ST_NODEV | unix.ST_NOEXEC |
-		unix.ST_NOATIME | unix.ST_NODIRATIME
-	flags := unix.MS_REMOUNT | unix.MS_BIND | uintptr(statFlags&uint64(keep))
-	// The one whose ST_ and MS_ values differ.
-	if statFlags&unix.ST_RELATIME != 0 {
-		flags |= unix.MS_RELATIME
-	}
-	return flags
 }
 
 // hiddenMount reports a remount that failed because the mount point is
@@ -487,11 +465,11 @@ type mountPoint struct {
 	flags uintptr
 }
 
-// submounts lists the mounts below top (not top itself) that can be
-// remounted, the topmost one for each path. An autofs mount is skipped:
-// remounting it would trigger it, and the mount it triggers is listed
-// on its own.
-func submounts(top string) ([]mountPoint, error) {
+// mountTree lists top, which must be a mount point, and the mounts below
+// it that can be remounted, the topmost one for each path. An autofs
+// mount is skipped: remounting it would trigger it, and the mount it
+// triggers is listed on its own.
+func mountTree(top string) ([]mountPoint, error) {
 	real, err := filepath.EvalSymlinks(top)
 	if err != nil {
 		return nil, err
@@ -500,16 +478,20 @@ func submounts(top string) ([]mountPoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseSubmounts(string(data), real), nil
+	tree := parseMountTree(string(data), real)
+	if len(tree) == 0 || tree[0].point != real {
+		return nil, fmt.Errorf("%s: not a mount point", top)
+	}
+	return tree, nil
 }
 
-// parseSubmounts is submounts on the text of a mountinfo file.
-func parseSubmounts(mountinfo, top string) []mountPoint {
+// parseMountTree is mountTree on the text of a mountinfo file, top first.
+func parseMountTree(mountinfo, top string) []mountPoint {
 	type entry struct {
 		mountPoint
 		autofs bool
 	}
-	var order []string
+	order := []string{top}
 	last := map[string]entry{}
 	for _, line := range strings.Split(mountinfo, "\n") {
 		f := strings.Fields(line)
@@ -524,10 +506,10 @@ func parseSubmounts(mountinfo, top string) []mountPoint {
 			continue
 		}
 		point := unescapeMountinfo(f[4])
-		if point == top || !underAny(point, []string{top}) {
+		if !underAny(point, []string{top}) {
 			continue
 		}
-		if _, ok := last[point]; !ok {
+		if _, ok := last[point]; !ok && point != top {
 			order = append(order, point)
 		}
 		// A later line for the same path is a mount on top of the
@@ -538,7 +520,7 @@ func parseSubmounts(mountinfo, top string) []mountPoint {
 	}
 	var out []mountPoint
 	for _, p := range order {
-		if e := last[p]; !e.autofs {
+		if e, ok := last[p]; ok && !e.autofs {
 			out = append(out, e.mountPoint)
 		}
 	}

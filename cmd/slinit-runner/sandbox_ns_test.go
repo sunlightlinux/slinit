@@ -147,3 +147,65 @@ mount -t tmpfs tmpfs "$BASE"`, false) {
 		wantRO(t, p, false)
 	}
 }
+
+// The read-only remount passed MS_RDONLY alone, and a bind remount
+// replaces the per-mount flags: a noexec, nosuid or nodev mount made
+// read-only lost them, so a script on a noexec tmpfs listed in
+// read-only-paths could be run.
+func TestReadOnlyPathKeepsMountFlags(t *testing.T) {
+	if !inMountNS(t, `mount -t tmpfs -o nosuid,nodev,noexec tmpfs "$BASE"
+mkdir "$BASE/sub"
+mount -t tmpfs -o nosuid,noexec,noatime tmpfs "$BASE/sub"`, false) {
+		return
+	}
+	base := os.Getenv("BASE")
+	if err := bindMount(base, base, true); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]int64{
+		base:          unix.ST_RDONLY | unix.ST_NOSUID | unix.ST_NODEV | unix.ST_NOEXEC,
+		base + "/sub": unix.ST_RDONLY | unix.ST_NOSUID | unix.ST_NOEXEC | unix.ST_NOATIME,
+	} {
+		if got := mountFlags(t, p); got&want != want {
+			t.Errorf("%s flags %#x; want %#x set", p, got, want)
+		}
+	}
+}
+
+// In a user namespace below the one that made a mount, as in an
+// unprivileged container, the kernel refuses a remount that would clear
+// its nosuid, nodev, noexec or atime flags: dropping them made every
+// read-only remount there fail with EPERM, and the service did not start.
+func TestReadOnlyPathLockedMountFlags(t *testing.T) {
+	if !inMountNS(t, `mount -t tmpfs -o nosuid,nodev,noexec tmpfs "$BASE"
+mkdir "$BASE/sub"
+mount -t tmpfs -o nosuid,nodev tmpfs "$BASE/sub"`, true) {
+		return
+	}
+	base := os.Getenv("BASE")
+	if err := remountRO(base); err != nil {
+		t.Fatal(err)
+	}
+	wantRO(t, base, true)
+	wantRO(t, base+"/sub", true)
+}
+
+// protect-kernel-tunables remounted /proc/sys read-only and left
+// /proc/sys/fs/binfmt_misc, a mount of its own, writable: the service
+// could register an interpreter for every binary on the system. In a
+// user namespace /proc's flags are locked, so this also needs the
+// remount to keep them.
+func TestProtectKernelTunablesCoversBinfmtMisc(t *testing.T) {
+	if !inMountNS(t, `mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true`, false) {
+		return
+	}
+	var st unix.Statfs_t
+	if unix.Statfs("/proc/sys/fs/binfmt_misc", &st) != nil || st.Type != 0x42494e4d {
+		t.Skip("binfmt_misc cannot be mounted here")
+	}
+	if err := remountROIfMount("/proc/sys"); err != nil {
+		t.Fatal(err)
+	}
+	wantRO(t, "/proc/sys", true)
+	wantRO(t, "/proc/sys/fs/binfmt_misc", true)
+}

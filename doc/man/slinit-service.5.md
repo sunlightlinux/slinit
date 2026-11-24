@@ -1334,8 +1334,9 @@ before exec'ing the service. The host filesystem is untouched.
 
 **read-only-paths**=*path*...
 :   Bind-mount each absolute path on top of itself and remount it
-    read-only inside the sandbox, with every mount below it.
-    Repeatable with `+=`. Paths must be
+    read-only inside the sandbox, with every mount below it. A mount's
+    *nosuid*, *nodev* and *noexec* stay as they were (until 4.0.3 the
+    remount cleared them). Repeatable with `+=`. Paths must be
     absolute and free of `..` components.
 
 **read-write-paths**=*path*...
