@@ -1,11 +1,11 @@
 #!/bin/sh
 # 208-slinit-systemd-convert — v2.1.4 systemd .service converter.
 # INI parser handles `\`-line continuation, Type/Restart/PIDFile
-# mapping, User+Group merge, and dep-suffix stripping of .service.
+# mapping, User+Group merge, and dep-suffix stripping of .service and
+# .socket (X.socket activates the X service).
 #
-# Every other unit type (.target, .socket, .mount, ...) is dropped, not
-# stripped. slinit has no
-# target concept, and turning After=network.target into a dependency on
+# Every other unit type (.target, .mount, .device, ...) is dropped, not
+# stripped. slinit has no target concept, and turning After=network.target into a dependency on
 # a service literally called "network" made units unloadable anywhere
 # that service does not exist — a missing dependency is fatal, and that
 # line is in nearly every unit a distribution ships.

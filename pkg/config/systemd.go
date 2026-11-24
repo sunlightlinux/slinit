@@ -87,6 +87,7 @@ type SystemdConfig struct {
 	depends     []string // depends-on: X
 	waitsFor    []string // waits-for: X
 	after       []string // after: X
+	aliases     []string // [Install] Alias= .service names, bare
 	conditions  []condDir
 	comments    []string
 }
@@ -271,6 +272,53 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 	if cfg.stopSignal != "" {
 		cfg.termSignal = cfg.stopSignal
 	}
+	warns = append(warns, dropAliasRefs(cfg)...)
+	return warns
+}
+
+// dropAliasRefs leaves out the dependencies naming one of the unit's own
+// aliases, which [Install] gives only after [Unit] has been read:
+// dbus-broker.service is Alias=dbus.service and Requires=dbus.socket,
+// its own socket, which would otherwise be a dependency on a "dbus"
+// service — itself, or nothing.
+func dropAliasRefs(cfg *SystemdConfig) []SystemdWarning {
+	if len(cfg.aliases) == 0 {
+		return nil
+	}
+	var warns []SystemdWarning
+	isAlias := func(n string) bool {
+		for _, a := range cfg.aliases {
+			if a == n {
+				return true
+			}
+		}
+		return false
+	}
+	filter := func(key string, refs []string) []string {
+		var out []string
+		for _, r := range refs {
+			if isAlias(r) {
+				warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+					"%s %s dropped — it names this service itself, through its Alias=", key, r)})
+				continue
+			}
+			out = append(out, r)
+		}
+		return out
+	}
+	cfg.depends = filter("depends-on:", cfg.depends)
+	cfg.waitsFor = filter("waits-for:", cfg.waitsFor)
+	cfg.after = filter("after:", cfg.after)
+	conds := cfg.conditions[:0]
+	for _, c := range cfg.conditions {
+		if c.name == "assert-service-started" && isAlias(c.value) {
+			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+				"Requisite on %s dropped — it names this service itself, through its Alias=", c.value)})
+			continue
+		}
+		conds = append(conds, c)
+	}
+	cfg.conditions = conds
 	return warns
 }
 
@@ -289,15 +337,15 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	case "After":
 		// Ordering only, as slinit's after: is. waits-for: also pulled
 		// the unit in and failed the load when it was not installed.
-		deps, targets := splitUnitRefs(val)
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		cfg.after = append(cfg.after, deps...)
-		warns = append(warns, noteDroppedTargets(key, targets)...)
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 	case "Before":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Unit `Before=%s` not mappable — invert on the target side", val)})
 	case "Requires":
-		deps, targets := splitUnitRefs(val)
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		cfg.depends = append(cfg.depends, deps...)
-		warns = append(warns, noteDroppedTargets(key, targets)...)
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 	case "Requisite":
 		// NOT the same directive as Requires=, though this used to map
 		// them to the same thing. Requires=B starts B alongside the
@@ -310,21 +358,21 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		// assert-service-started is the precondition form: it fails the
 		// start (as a dependency failure should) rather than skipping
 		// the service the way a condition- would.
-		deps, targets := splitUnitRefs(val)
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		for _, d := range deps {
 			cfg.conditions = append(cfg.conditions,
 				condDir{"assert-service-started", d})
 		}
-		warns = append(warns, noteDroppedTargets(key, targets)...)
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 		if len(deps) > 0 {
 			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
 				"Unit `Requisite=%s` mapped to assert-service-started — add `after:` "+
 					"if the two could be starting at the same moment", val)})
 		}
 	case "Wants":
-		deps, targets := splitUnitRefs(val)
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		cfg.waitsFor = append(cfg.waitsFor, deps...)
-		warns = append(warns, noteDroppedTargets(key, targets)...)
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 	case "Conflicts":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Unit `Conflicts=%s` — slinit has no negative dep; managed via stop-command / start-limit-action", val)})
 	case "OnFailure":
@@ -682,6 +730,11 @@ func applyInstallKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	case "WantedBy", "RequiredBy":
 		return []SystemdWarning{{"NOTE", fmt.Sprintf("[Install] %s=%s — on slinit, add to your boot service graph or run `slinitctl enable`", key, val)}}
 	case "Alias":
+		for _, a := range strings.Fields(val) {
+			if n, ok := strings.CutSuffix(a, ".service"); ok {
+				cfg.aliases = append(cfg.aliases, n)
+			}
+		}
 		return []SystemdWarning{{"NOTE", fmt.Sprintf("[Install] Alias=%s — slinit doesn't alias services; symlink %s → %s manually", val, val, cfg.svcName)}}
 	}
 	return nil
@@ -787,16 +840,28 @@ func killMainPID(cmd string) (string, bool) {
 }
 
 // splitTargets splits a whitespace-separated list of unit names and
-// returns the .service ones with the suffix stripped: slinit deps are on
-// bare names.
+// returns the ones that become slinit dependencies, as bare names.
 func splitTargets(v string) []string {
-	deps, _ := splitUnitRefs(v)
+	deps, _, _ := splitUnitRefs(v, "")
 	return deps
 }
 
+// systemdUnitTypes are the unit-name suffixes systemd knows.
+var systemdUnitTypes = []string{
+	".service", ".socket", ".target", ".device", ".mount", ".automount",
+	".swap", ".path", ".timer", ".slice", ".scope",
+}
+
 // splitUnitRefs splits a whitespace-separated list of unit names into
-// the .service units, as slinit service names, and the rest, which are
-// returned separately to be dropped.
+// the slinit service names they stand for, the references dropped
+// because they name no service, and the ones naming self, the unit
+// being converted.
+//
+// A .service is the service of that name. A .socket is too: X.socket
+// activates X.service unless it says otherwise, and slinit has no
+// socket units, so Requires=dm-event.socket means the dm-event service
+// must run — lvm2-monitor needs it. A name with no unit suffix is kept
+// as written, as it always was.
 //
 // slinit has no target concept at all: targets are systemd's grouping
 // and ordering abstraction, and the boot service graph covers the same
@@ -808,35 +873,57 @@ func splitTargets(v string) []string {
 // honest option; the operator adds depends-on: for a service that
 // actually exists on their system.
 //
-// The other unit types are no different: a .socket, .mount, .device,
-// .slice or .timer is not a service, and syslog.socket cut down to
-// "syslog" named the wrong thing, while an escaped device name
+// The other unit types are no different: a .mount, .device, .slice,
+// .path or .timer is not a service, and sysroot.mount cut down to
+// "sysroot" named something else, while an escaped device name
 // (dev-virtio\x2dports-...device) is not a valid service name at all,
-// so the unit did not load. Neither is a .service whose name slinit
-// cannot spell.
-func splitUnitRefs(v string) (deps []string, dropped []string) {
+// so the unit did not load. Neither is a name slinit cannot spell.
+//
+// A unit's own socket (avahi-daemon.service: Requires=avahi-daemon.socket)
+// maps to the unit itself; a service cannot depend on itself, so those
+// are returned apart, to be dropped with a note of their own.
+func splitUnitRefs(v, self string) (deps, dropped, selfRefs []string) {
 	for _, f := range strings.Fields(v) {
-		name, ok := strings.CutSuffix(f, ".service")
-		if !ok || ValidateServiceName(name) != nil {
-			dropped = append(dropped, f)
-			continue
+		name := f
+		for _, suf := range systemdUnitTypes {
+			if base, ok := strings.CutSuffix(f, suf); ok {
+				name = base
+				if suf != ".service" && suf != ".socket" {
+					name = ""
+				}
+				break
+			}
 		}
-		deps = append(deps, name)
+		switch {
+		case name == "" || ValidateServiceName(name) != nil:
+			dropped = append(dropped, f)
+		case self != "" && name == self:
+			selfRefs = append(selfRefs, f)
+		default:
+			deps = append(deps, name)
+		}
 	}
-	return deps, dropped
+	return deps, dropped, selfRefs
 }
 
-// noteDroppedTargets turns dropped non-service references into one note
-// per directive, so the ordering that was asked for is visible rather
-// than silently gone.
-func noteDroppedTargets(key string, targets []string) []SystemdWarning {
-	if len(targets) == 0 {
-		return nil
+// noteDroppedTargets turns dropped references into one note per
+// directive, so the ordering that was asked for is visible rather than
+// silently gone: refs that name no service, and self, refs that name
+// the unit itself.
+func noteDroppedTargets(key string, targets, self []string) []SystemdWarning {
+	var warns []SystemdWarning
+	if len(targets) > 0 {
+		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+			"%s=%s dropped — only .service and .socket units become slinit dependencies (slinit has no targets, mounts or devices as services); "+
+				"add `depends-on:`/`waits-for:` naming a real service if the ordering matters",
+			key, strings.Join(targets, " "))})
 	}
-	return []SystemdWarning{{"NOTE", fmt.Sprintf(
-		"%s=%s dropped — only .service units become slinit dependencies (slinit has no targets, sockets, mounts or devices as services); "+
-			"add `depends-on:`/`after:` naming a real service if the ordering matters",
-		key, strings.Join(targets, " "))}}
+	if len(self) > 0 {
+		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+			"%s=%s dropped — it names this service itself (a unit's own socket is the service in slinit)",
+			key, strings.Join(self, " "))})
+	}
+	return warns
 }
 
 // trimSec strips a trailing "s"/"sec"/"ms" unit — systemd allows

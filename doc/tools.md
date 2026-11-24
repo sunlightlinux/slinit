@@ -336,8 +336,10 @@ implements under the same vocabulary (`PrivateTmp`, `ProtectSystem`,
 `ProtectHome`, `ProtectKernel*`, `SystemCallFilter`, `ReadOnlyPaths`,
 `PrivateNetwork`, `CapabilityBoundingSet`, …) are translated
 directly; the rest (`PrivateDevices`, `PrivateUsers`, …) are reported. Dependency names lose their
-`.service`, `.socket`, `.path`, `.mount`, `.timer`, `.swap` or `.device`
-suffix; references to `.target` units are dropped with a note. Timer /
+`.service` or `.socket` suffix (a socket stands for the service it
+activates, and a unit's own socket is dropped); references to any other
+unit type — `.target`, `.mount`, `.device`, `.path`, `.timer` — are
+dropped with a note. Timer /
 socket / path / mount / target unit files are rejected — those need
 slinit-native equivalents, not mechanical translation.
 

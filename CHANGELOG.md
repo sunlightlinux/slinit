@@ -993,15 +993,19 @@ requires.
   `/opt/my` with the arguments `app/bin/run --name hello` and `world`.
   Exec lines now keep their quotes, which slinit's command parser
   groups words by just as systemd does.
-- **A systemd unit naming a `.device`, `.socket` or `.mount` could
-  not load.** Only `.target` references were dropped; the other unit
-  types had their suffix cut off (`Requires=syslog.socket` became a
-  dependency on the `syslog` service, a different thing) or, for a
+- **A systemd unit naming a `.device` or `.mount`, or its own socket,
+  loaded wrong or not at all.** Only `.target` references were dropped;
+  the other unit types had their suffix cut off (`sysroot.mount` became
+  a dependency on a `sysroot` service, a different thing) or, for a
   `.slice` or `.scope`, were copied as they were. An escaped device
   name is not a valid service name, so `qemu-guest-agent.service`
   (`After=dev-virtio\x2dports-org.qemu.guest_agent.0.device`) was
-  refused outright. Every reference that is not a `.service` is now
-  dropped with a note, as `.target` was.
+  refused outright. And a unit's own socket became a dependency on
+  itself (`avahi-daemon`, `dm-event`, `pcscd`: `Requires=` their
+  `.socket`). A `.socket` still stands for the service it activates
+  (`lvm2-monitor`'s `Requires=dm-event.socket` is `depends-on:
+  dm-event`), a reference to the unit itself is dropped with a note, and
+  every other unit type is dropped with a note, as `.target` was.
 - **Three systemd mappings were wrong.** `Group=` written before
   `User=` produced `run-as = user::group`, a group named `:group`;
   `Restart=on-success` became `restart = yes`, restarting a service

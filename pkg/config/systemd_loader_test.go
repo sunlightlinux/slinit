@@ -251,23 +251,22 @@ ExecStop='/opt/my app/bin/stop' now
 	}
 }
 
-// Only a .service reference names something slinit can depend on. The
-// other unit types were copied through with the suffix cut off, or
-// verbatim, so qemu-guest-agent.service (After= its virtio .device)
-// could not load: the escaped device name is no valid service name.
-// Like .target, they are left out with a note.
+// Only a .service or .socket reference names something slinit can
+// depend on. The other unit types were copied through with the suffix
+// cut off, or verbatim, so qemu-guest-agent.service (After= its virtio
+// .device) could not load: the escaped device name is no valid service
+// name. Like .target, they are left out with a note.
 func TestSystemdNonServiceRefsDropped(t *testing.T) {
 	root := t.TempDir()
 	units := filepath.Join(root, "systemd")
 	writeUnit(t, units, "ga.service", `[Unit]
 BindsTo=dev-virtio\x2dports-org.qemu.guest_agent.0.device
 After=dev-virtio\x2dports-org.qemu.guest_agent.0.device
-Requires=syslog.socket -.mount
+Requires=-.mount
 Wants=user.slice
 [Service]
 ExecStart=/usr/bin/qemu-ga
 `)
-	writeUnit(t, units, "syslog.service", "[Service]\nExecStart=/usr/bin/syslogd\n")
 	var got []string
 	OnSystemdUnitWarning = func(svc, path, level, msg string) {
 		got = append(got, level+": "+msg)
@@ -285,7 +284,7 @@ ExecStart=/usr/bin/qemu-ga
 	if deps := svc.Record().Dependencies(); len(deps) != 0 {
 		t.Errorf("dependencies on %v, want none", deps[0].To.Name())
 	}
-	for _, ref := range []string{"guest_agent.0.device", "syslog.socket", "-.mount", "user.slice"} {
+	for _, ref := range []string{"guest_agent.0.device", "-.mount", "user.slice"} {
 		found := false
 		for _, g := range got {
 			found = found || (strings.HasPrefix(g, "NOTE") && strings.Contains(g, ref))
@@ -293,6 +292,95 @@ ExecStart=/usr/bin/qemu-ga
 		if !found {
 			t.Errorf("no NOTE that %s was dropped: %v", ref, got)
 		}
+	}
+}
+
+// X.socket activates X.service, and slinit has no socket units, so a
+// reference to the socket is a dependency on the service: on 4.0.2
+// lvm2-monitor's Requires=dm-event.socket was depends-on: dm-event, and
+// dropping every non-.service reference lost that hard dependency (and
+// cups.socket, dbus.socket, syslog.socket elsewhere). A unit's own
+// socket names the unit itself — dm-event.service Requires= its socket —
+// and is dropped with a note, not made a dependency on itself. A
+// Requires= on a socket whose service does not exist still fails the
+// load, as a Requires= on a missing service does.
+func TestSystemdSocketRefIsItsService(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "lvm2-monitor.service", `[Unit]
+Requires=dm-event.socket
+After=dm-event.socket dm-event.service
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/lvm vgchange --monitor y
+`)
+	writeUnit(t, units, "dm-event.service", `[Unit]
+Requires=dm-event.socket
+After=dm-event.socket
+[Service]
+ExecStart=/usr/sbin/dmeventd -f
+`)
+	writeUnit(t, units, "dbus-broker.service", `[Unit]
+Requires=dbus.socket
+After=dbus.socket
+[Service]
+ExecStart=/usr/bin/dbus-broker-launch
+[Install]
+Alias=dbus.service
+`)
+	writeUnit(t, units, "needs-gone.service", `[Unit]
+Requires=gone.socket
+[Service]
+ExecStart=/bin/true
+`)
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, svc+" "+level+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("lvm2-monitor")
+	if err != nil {
+		t.Fatalf("load lvm2-monitor: %v", err)
+	}
+	hard := false
+	for _, d := range svc.Record().Dependencies() {
+		if d.To.Name() != "dm-event" {
+			t.Errorf("unexpected dependency on %q", d.To.Name())
+		}
+		hard = hard || d.DepType == service.DepRegular
+	}
+	if !hard {
+		t.Error("Requires=dm-event.socket did not become depends-on: dm-event")
+	}
+	ev := ss.FindService("dm-event", false)
+	if ev == nil {
+		t.Fatal("dm-event not loaded")
+	}
+	for _, d := range ev.Record().Dependencies() {
+		t.Errorf("dm-event depends on %q (%d); its own socket is itself", d.To.Name(), d.DepType)
+	}
+	noted := false
+	for _, g := range got {
+		noted = noted || (strings.HasPrefix(g, "dm-event NOTE") && strings.Contains(g, "dm-event.socket") && strings.Contains(g, "itself"))
+	}
+	if !noted {
+		t.Errorf("no NOTE that dm-event's own socket was dropped: %v", got)
+	}
+	// dbus.socket is dbus-broker's own, through Alias=dbus.service.
+	br, err := dl.LoadService("dbus-broker")
+	if err != nil {
+		t.Fatalf("load dbus-broker: %v", err)
+	}
+	for _, d := range br.Record().Dependencies() {
+		t.Errorf("dbus-broker depends on %q; dbus is its own alias", d.To.Name())
+	}
+	if _, err := dl.LoadService("needs-gone"); err == nil {
+		t.Error("Requires=gone.socket with no gone service loaded; a missing Requires= must fail")
 	}
 }
 
