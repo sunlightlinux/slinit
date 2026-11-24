@@ -112,6 +112,14 @@ verified with `git tag -v`.
   writable at boot, and for `D` the link could be planted between the
   wipe and the mkdir. The directory is now opened with `O_NOFOLLOW` and
   changed through the descriptor; a symlink is refused.
+- **`Z /path - - -` made a whole tree `0644` and root-owned.** For
+  `z`/`Z`, tmpfiles.d(5) reads a `-` or missing mode, user or group as
+  "leave it alone", but `slinit-tmpfiles` filled in the creation
+  defaults, so every directory below lost its search bit, every script
+  its execute bit, and the tree was handed to root. Those columns are
+  now left unchanged, and no `chown(-1, -1)` is issued (it alone clears
+  setuid on a file). A `d`/`D` with no mode also made a `0644`
+  directory; it now gets `0755`, as in tmpfiles.d(5).
 
 ## [4.0.2] — 2026-11-22
 

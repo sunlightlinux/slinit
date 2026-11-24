@@ -34,8 +34,10 @@ Each line is one directive:
     TYPE  PATH  MODE  UID  GID  AGE  ARG
 
 Fields may be double-quoted to contain spaces. Missing fields, or
-**-**, take the defaults: mode **0644** (for directories too), owner
-**root** (UID 0) and group GID 0. *UID* and *GID* may be numbers or
+**-**, take the defaults: mode **0755** for **d** and **D**, **0644**
+otherwise, owner **root** (UID 0) and group GID 0 — except for **z**
+and **Z**, where a missing or **-** mode, owner or group is left as it
+is. *UID* and *GID* may be numbers or
 names; names are looked up in */etc/passwd* and */etc/group* directly,
 and an unknown name makes the whole file fail to parse. *AGE* is
 accepted and ignored — no age-based cleanup is performed. Type
