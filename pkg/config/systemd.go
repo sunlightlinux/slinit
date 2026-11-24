@@ -57,6 +57,7 @@ type SystemdConfig struct {
 	postStart    string
 	runAs        string
 	envFile      string
+	stopSignal   string // from ExecStop=kill -s SIG $MAINPID; beats KillSignal=
 	workingDir   string
 	chroot       string
 	pidFile      string
@@ -267,6 +268,9 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 	if cfg.capAmbient.mask != 0 {
 		cfg.mapped = append(cfg.mapped, kvPair{"capabilities", capNames(cfg.capAmbient.mask)})
 	}
+	if cfg.stopSignal != "" {
+		cfg.termSignal = cfg.stopSignal
+	}
 	return warns
 }
 
@@ -383,10 +387,25 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		}
 		cfg.command = cmd
 		warns = append(warns, w...)
+		warns = append(warns, warnExecVars(key, cmd)...)
 	case "ExecStop":
 		cmd, w := stripExecPrefixes(val)
-		cfg.stopCommand = cmd
 		warns = append(warns, w...)
+		// slinit has no $MAINPID: it would expand to nothing. The usual
+		// `kill -s SIG $MAINPID` is what term-signal does; any other use
+		// cannot act on the right process.
+		if strings.Contains(cmd, "$MAINPID") || strings.Contains(cmd, "${MAINPID}") {
+			if sig, ok := killMainPID(cmd); ok {
+				cfg.stopSignal = sig
+				warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStop=%s → term-signal = %s", val, sig)})
+			} else {
+				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+					"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; slinit stops the service with its term-signal", val)})
+			}
+			break
+		}
+		cfg.stopCommand = cmd
+		warns = append(warns, warnExecVars(key, cmd)...)
 	case "ExecStartPre":
 		*preN++
 		if *preN > 1 {
@@ -395,6 +414,7 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			cmd, w := stripExecPrefixes(val)
 			cfg.preStart = cmd
 			warns = append(warns, w...)
+			warns = append(warns, warnExecVars(key, cmd)...)
 		}
 	case "ExecStartPost":
 		*postN++
@@ -404,6 +424,7 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			cmd, w := stripExecPrefixes(val)
 			cfg.postStart = cmd
 			warns = append(warns, w...)
+			warns = append(warns, warnExecVars(key, cmd)...)
 		}
 	case "ExecStopPost":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStopPost=%s — slinit has no equivalent; wire via finish-command manually", val)})
@@ -425,7 +446,14 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		cfg.chroot = val
 	case "EnvironmentFile":
 		// Systemd tolerates a leading "-" for optional; drop it.
-		cfg.envFile = strings.TrimPrefix(val, "-")
+		// systemd reads every file listed, later ones overriding; slinit
+		// reads one env-file. An empty value resets the list.
+		f := strings.TrimPrefix(val, "-")
+		if cfg.envFile != "" && f != "" {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"multiple EnvironmentFile= — slinit reads one env-file, keeping the last (dropped: %q); merge them by hand", cfg.envFile)})
+		}
+		cfg.envFile = f
 	case "Environment":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Environment=%s inline — slinit has env-file only; consolidate into a KEY=VAL file", val)})
 	case "PassEnvironment", "UnsetEnvironment":
@@ -690,6 +718,72 @@ func stripExecPrefixes(v string) (string, []SystemdWarning) {
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStart prefix %q stripped — behaviour not carried into slinit", string(c))})
 	}
 	return strings.TrimSpace(s), warns
+}
+
+// warnExecVars warns about the $VAR and ${VAR} references in an Exec
+// line. systemd substitutes them from Environment= and EnvironmentFile=
+// when it runs the command; slinit expands them when the file is
+// loaded, from slinit's own environment, so a variable the unit's
+// env-file sets comes out empty. $$ is a literal $ on both sides.
+func warnExecVars(key, cmd string) []SystemdWarning {
+	var refs []string
+	for i := 0; i < len(cmd); i++ {
+		if cmd[i] != '$' || i+1 >= len(cmd) {
+			continue
+		}
+		if cmd[i+1] == '$' {
+			i++
+			continue
+		}
+		j := i + 1
+		if cmd[j] == '{' {
+			if k := strings.IndexByte(cmd[j:], '}'); k >= 0 {
+				j += k + 1
+			}
+		} else {
+			for j < len(cmd) && (cmd[j] == '_' || cmd[j] >= 'A' && cmd[j] <= 'Z' ||
+				cmd[j] >= 'a' && cmd[j] <= 'z' || cmd[j] >= '0' && cmd[j] <= '9') {
+				j++
+			}
+		}
+		if j > i+1 {
+			refs = append(refs, cmd[i:j])
+		}
+		i = j - 1
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return []SystemdWarning{{"WARN", fmt.Sprintf(
+		"%s= uses %s — systemd takes these from the unit's environment when it runs the command; "+
+			"slinit expands them when the file is loaded, from its own environment, not the env-file, "+
+			"so they are likely empty — write the values in, or run the command through a shell script that reads the file",
+		key, strings.Join(refs, " "))}}
+}
+
+// killMainPID recognises `kill [-s SIG | -SIG] $MAINPID` and returns the
+// signal it sends (TERM if none is named), which slinit's term-signal
+// delivers to the main process the same way.
+func killMainPID(cmd string) (string, bool) {
+	f := strings.Fields(cmd)
+	if len(f) < 2 || filepath.Base(f[0]) != "kill" ||
+		(f[len(f)-1] != "$MAINPID" && f[len(f)-1] != "${MAINPID}") {
+		return "", false
+	}
+	sig := "TERM"
+	switch args := f[1 : len(f)-1]; {
+	case len(args) == 0:
+	case len(args) == 2 && (args[0] == "-s" || args[0] == "--signal"):
+		sig = args[1]
+	case len(args) == 1 && strings.HasPrefix(args[0], "-") && len(args[0]) > 1:
+		sig = args[0][1:]
+	default:
+		return "", false
+	}
+	if _, err := parseSignal(sig); err != nil {
+		return "", false
+	}
+	return sig, true
 }
 
 // splitTargets splits a whitespace-separated list of unit names and

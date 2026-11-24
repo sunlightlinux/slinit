@@ -58,6 +58,19 @@ command per service, so of several **ExecStart** lines (a oneshot) only
 the last is kept, with a warning naming the ones dropped; likewise only
 the first **ExecStartPre** and **ExecStartPost**.
 
+Variables in an **Exec** line are not what they are under systemd,
+which substitutes **$VAR** and **${VAR}** from the unit's
+**Environment** and **EnvironmentFile** when it runs the command:
+slinit expands them when the service file is loaded, from its own
+environment, so one the env-file sets comes out empty. Each such line
+is warned about (**$$** is a literal **$** on both sides). slinit reads
+a single **env-file**: of several **EnvironmentFile** lines the last is
+kept, with a warning. slinit has no **$MAINPID**: an **ExecStop** of
+the form **kill** [**-s** *SIG*] **$MAINPID** becomes
+**term-signal =** *SIG*, and any other **ExecStop** using it is
+dropped with a warning, leaving slinit to stop the service with its
+term-signal.
+
 Dependencies: **Requires** becomes **depends-on**, **Wants** becomes
 **waits-for** and **After** becomes **after** (ordering only, as in
 systemd). Only **.service** units become dependencies: a reference to

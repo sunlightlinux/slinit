@@ -906,6 +906,16 @@ verified with `git tag -v`.
   without a word. `User=`/`Group=` now combine in either order,
   `on-success` maps to itself, and the dropped `ExecStart=` lines are
   warned about, since slinit runs one command.
+- **A systemd unit's `$VAR`, `$MAINPID` and second `EnvironmentFile=`
+  were lost without a word.** systemd substitutes `$VAR` in an `Exec`
+  line from the unit's environment files when it runs the command;
+  slinit expands it when the file is loaded, from its own environment,
+  so `qemu-guest-agent.service`'s `${FILTER_RPC_ARGS}` became nothing.
+  That is now warned about. `ExecStop=kill -s SIG $MAINPID` (slinit has
+  no `$MAINPID`, so the kill had no PID) becomes `term-signal = SIG`;
+  any other `ExecStop=` using `$MAINPID` is dropped with a warning. A
+  second `EnvironmentFile=`, which replaced the first, is warned about
+  too: slinit reads one env-file.
 
 ## [4.0.2] — 2026-11-22
 

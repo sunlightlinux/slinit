@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -337,5 +338,64 @@ ExecStart=/usr/bin/second
 	}
 	if !found {
 		t.Errorf("no WARN that an ExecStart= was dropped: %v", got)
+	}
+}
+
+// What systemd substitutes into an Exec line and slinit cannot:
+//   - $VAR comes from Environment=/EnvironmentFile= in systemd; slinit
+//     expands it when the file is loaded, from its own environment, so
+//     ${FILTER_RPC_ARGS} from qemu-ga's env-file became nothing. Warned.
+//   - $MAINPID: slinit has none, so `kill -s HUP $MAINPID` lost its PID.
+//     That form is the term-signal; any other use drops the stop-command.
+//   - A second EnvironmentFile= replaced the first silently; slinit
+//     reads one. Warned.
+func TestSystemdExecSubstitutions(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "v.service", `[Service]
+EnvironmentFile=-/etc/a
+EnvironmentFile=-/etc/b
+ExecStart=/usr/bin/d $OPTS --x ${MORE} $$literal
+ExecStop=/bin/kill -s HUP $MAINPID
+KillSignal=INT
+`)
+	writeUnit(t, units, "w.service", `[Service]
+ExecStart=/usr/bin/w
+ExecStop=/usr/bin/wctl stop ${MAINPID}
+`)
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, level+": "+svc+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+	dl := NewDirLoader(service.NewServiceSet(&testConsumerLogger{}), []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	v, _, err := dl.findAndParse("v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.TermSignal != syscall.SIGHUP || len(v.StopCommand) != 0 {
+		t.Errorf("term-signal = %v, stop-command = %q; want SIGHUP and none", v.TermSignal, v.StopCommand)
+	}
+	w, _, err := dl.findAndParse("w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.StopCommand) != 0 {
+		t.Errorf("stop-command = %q, want it dropped: it has no PID to act on", w.StopCommand)
+	}
+	for _, want := range []string{"v: ExecStart", "$OPTS", "${MORE}", "/etc/a", "w: ExecStop"} {
+		found := false
+		for _, g := range got {
+			found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, want))
+		}
+		if !found {
+			t.Errorf("no WARN mentioning %q: %v", want, got)
+		}
+	}
+	for _, g := range got {
+		if strings.Contains(g, "literal") {
+			t.Errorf("$$ is a literal $ on both sides, not a variable: %s", g)
+		}
 	}
 }
