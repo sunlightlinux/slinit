@@ -63,6 +63,12 @@ verified with `git tag -v`.
   background child holds open: the caller waited for as long as that
   child lived. Output is now read for at most 2 s after the command
   exits, and its exit status is reported as before.
+- **A container that exited non-zero left its `slinit-nspawn`
+  registry entry behind.** The launcher exited with the container's
+  status straight from its wait, skipping the registry cleanup, so
+  `slinit-machinectl` went on listing the container. The entry is now
+  removed on every exit, and an init killed by a signal gives
+  128 + the signal number instead of 255.
 - **`autofs-type = direct` set up an indirect autofs mount.** The
   mount options never carried `direct`, and the kernel takes a mount
   without it as indirect, so a direct unit's mount point behaved as a

@@ -2,7 +2,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -41,5 +43,23 @@ func TestChildPayloadEnvEncodingRoundtrip(t *testing.T) {
 		if got[i] != want {
 			t.Errorf("arg[%d]: got %q, want %q", i, got[i], want)
 		}
+	}
+}
+
+// TestExitCodeSignaled: a container init killed by a signal reports
+// 128+signal, as a shell does — not ExitCode()'s -1, which os.Exit
+// turned into 255.
+func TestExitCodeSignaled(t *testing.T) {
+	err := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	ee, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("sh did not die: %v", err)
+	}
+	if got := exitCode(ee); got != 128+int(syscall.SIGTERM) {
+		t.Errorf("exitCode = %d, want %d", got, 128+int(syscall.SIGTERM))
+	}
+	err = exec.Command("sh", "-c", "exit 3").Run()
+	if ee, ok := err.(*exec.ExitError); !ok || exitCode(ee) != 3 {
+		t.Errorf("exit 3: exitCode = %v", err)
 	}
 }

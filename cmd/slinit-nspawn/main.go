@@ -89,9 +89,28 @@ func main() {
 		return
 	}
 	if err := parentMain(); err != nil {
+		var st exitStatus
+		if errors.As(err, &st) {
+			os.Exit(int(st))
+		}
 		fmt.Fprintf(os.Stderr, "slinit-nspawn: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// exitStatus carries the container's exit status out of runParent,
+// so that its deferred registry cleanup runs before main exits with it.
+type exitStatus int
+
+func (e exitStatus) Error() string { return fmt.Sprintf("container exited %d", int(e)) }
+
+// exitCode is the status a shell would report for ee: the exit code,
+// or 128+signal for a container init killed by a signal.
+func exitCode(ee *exec.ExitError) int {
+	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ee.ExitCode()
 }
 
 // parentMain parses flags, forks itself into new namespaces, writes
@@ -250,7 +269,7 @@ func runParent(p childPayload) error {
 	signal.Stop(sigCh)
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			os.Exit(ee.ExitCode())
+			return exitStatus(exitCode(ee))
 		}
 		return fmt.Errorf("wait: %w", err)
 	}

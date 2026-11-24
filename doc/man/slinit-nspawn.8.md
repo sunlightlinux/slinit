@@ -94,7 +94,9 @@ actually sees at exec time via **env-file** and related directives
 # EXIT STATUS
 
 **slinit-nspawn** waits for the container. Once the container's init
-has started, the exit status is the container's own.
+has started, the exit status is the container's own: its init's exit
+code, or 128 plus the signal number when the init was killed by a
+signal (since 4.0.3; it was 255).
 
 **1**
 :   Setup error before or during the launch: bad or missing flags
