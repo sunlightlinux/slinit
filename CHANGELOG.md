@@ -212,10 +212,11 @@ verified with `git tag -v`.
   replaced.** The watch sat on the file's inode, so a file replaced by
   renaming a new one over it — the way editors and package managers
   write files — produced only the old inode's removal: the service did
-  not start, the watch was gone, and the trigger never fired again. A
-  file is now watched through its directory, filtered by name, as
-  `start-on-path-exists` already was; the same holds for
-  `start-on-path-modified`.
+  not start, the watch was gone, and the trigger never fired again.
+  The file's directory is now also watched for the file's name being
+  created, renamed or removed (not for writes, so writes to other files
+  there do not wake slinit), and the replacement is watched once the
+  trigger re-arms; the same holds for `start-on-path-modified`.
 - **Two path triggers in one directory: only the last one fired.**
   inotify keeps one watch per inode, so a second `start-on-path-*`
   watch on the same directory got the same descriptor and replaced the

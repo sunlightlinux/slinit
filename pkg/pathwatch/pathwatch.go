@@ -67,12 +67,13 @@ type entry struct {
 	path    string // user-supplied absolute path
 	parent  string // parent dir being watched (for "appear" mode)
 	base    string // basename filter for parent-dir watches
-	byName  bool   // changed/modified on a file: parent watched, filtered by base
+	byName  bool   // changed/modified on a file: inode for writes, parent for base
 	trigger Trigger
 	fn      func()
 
 	// State protected by Watcher.mu.
 	wd       int32  // current inotify watch descriptor (-1 if none)
+	dirWd    int32  // byName: the parent directory's watch (-1 if none)
 	fired    bool   // one-shot: ignore further events until Rearm
 	watching string // path currently registered with inotify (parent or path itself)
 }
@@ -130,6 +131,7 @@ func (w *Watcher) Add(path string, trigger Trigger, fn func()) error {
 		trigger: trigger,
 		fn:      fn,
 		wd:      -1,
+		dirWd:   -1,
 	}
 
 	w.mu.Lock()
@@ -177,15 +179,25 @@ func (w *Watcher) Remove(path string) {
 	delete(w.entries, path)
 }
 
-// dropWatchLocked detaches e from its watch descriptor, removing the
-// inotify watch only when no other entry shares it. The kernel mask
-// keeps the bits e added; events no remaining entry wants are filtered
-// by eventMatches. Caller holds w.mu.
+// dropWatchLocked detaches e from its watch descriptors. Caller holds
+// w.mu.
 func (w *Watcher) dropWatchLocked(e *entry) {
-	if e.wd < 0 {
+	w.unlinkLocked(e, e.wd)
+	w.unlinkLocked(e, e.dirWd)
+	e.wd = -1
+	e.dirWd = -1
+	e.watching = ""
+}
+
+// unlinkLocked detaches e from wd, removing the inotify watch only when
+// no other entry shares it. The kernel mask keeps the bits e added;
+// events no remaining entry wants are filtered by eventMatches. Caller
+// holds w.mu.
+func (w *Watcher) unlinkLocked(e *entry, wd int32) {
+	if wd < 0 {
 		return
 	}
-	list := w.byWd[e.wd]
+	list := w.byWd[wd]
 	for i, other := range list {
 		if other == e {
 			list = append(list[:i:i], list[i+1:]...)
@@ -193,13 +205,11 @@ func (w *Watcher) dropWatchLocked(e *entry) {
 		}
 	}
 	if len(list) == 0 {
-		_, _ = unix.InotifyRmWatch(w.fd, uint32(e.wd))
-		delete(w.byWd, e.wd)
+		_, _ = unix.InotifyRmWatch(w.fd, uint32(wd))
+		delete(w.byWd, wd)
 	} else {
-		w.byWd[e.wd] = list
+		w.byWd[wd] = list
 	}
-	e.wd = -1
-	e.watching = ""
 }
 
 // arm installs the inotify watch appropriate for the entry's current
@@ -222,19 +232,28 @@ func (w *Watcher) arm(e *entry) error {
 		if err != nil {
 			return fmt.Errorf("%s requires existing path: %w", e.trigger, err)
 		}
-		mask := uint32(unix.IN_CLOSE_WRITE | unix.IN_CREATE | unix.IN_DELETE | unix.IN_MOVED_TO | unix.IN_MOVED_FROM)
+		writes := uint32(unix.IN_CLOSE_WRITE)
 		if e.trigger == TriggerModified {
-			mask |= unix.IN_MODIFY
+			writes |= unix.IN_MODIFY
 		}
-		// A file is watched through its directory, filtered by name,
-		// as TriggerExists is. A watch on the file's own inode died
-		// when the file was replaced by rename — the way editors and
-		// package managers write — and saw only IN_DELETE_SELF.
 		e.byName = !info.IsDir()
-		if e.byName {
-			return w.addWatch(e, e.parent, mask)
+		if !e.byName {
+			return w.addWatch(e, e.path, writes|unix.IN_CREATE|unix.IN_DELETE|unix.IN_MOVED_TO|unix.IN_MOVED_FROM)
 		}
-		return w.addWatch(e, e.path, mask)
+		// A file needs two watches. A watch on its inode alone died
+		// when the file was replaced by rename — the way editors and
+		// package managers write — and saw only IN_DELETE_SELF; a
+		// watch on its directory for writes woke PID 1 for every write
+		// to every file there (/run, /var/log). So the directory is
+		// watched for names only, filtered by basename, which sees a
+		// replacement or removal, and the inode for its writes. Firing
+		// on the replacement leads to Rearm, which watches the new
+		// inode.
+		if err := w.addWatchSlot(e, &e.dirWd, e.parent,
+			unix.IN_CREATE|unix.IN_DELETE|unix.IN_MOVED_TO|unix.IN_MOVED_FROM); err != nil {
+			return err
+		}
+		return w.addWatch(e, e.path, writes)
 
 	case TriggerDirNotEmpty:
 		info, err := os.Stat(e.path)
@@ -265,6 +284,12 @@ func (w *Watcher) arm(e *entry) error {
 // mask. Two triggers in one directory therefore share a wd, so the mask
 // is OR'd in and byWd keeps every entry on it.
 func (w *Watcher) addWatch(e *entry, target string, mask uint32) error {
+	return w.addWatchSlot(e, &e.wd, target, mask)
+}
+
+// addWatchSlot is addWatch for either of e's watches: slot is &e.wd or
+// &e.dirWd.
+func (w *Watcher) addWatchSlot(e *entry, slot *int32, target string, mask uint32) error {
 	wd, err := unix.InotifyAddWatch(w.fd, target, mask|unix.IN_MASK_ADD)
 	if err != nil {
 		return fmt.Errorf("inotify_add_watch %q: %w", target, err)
@@ -272,14 +297,16 @@ func (w *Watcher) addWatch(e *entry, target string, mask uint32) error {
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if e.wd == int32(wd) {
+	if *slot == int32(wd) {
 		return nil
 	}
 	// If another arm() raced us (unlikely — arm is serialized per entry by
 	// the caller flow), drop the duplicate.
-	w.dropWatchLocked(e)
-	e.wd = int32(wd)
-	e.watching = target
+	w.unlinkLocked(e, *slot)
+	*slot = int32(wd)
+	if slot == &e.wd {
+		e.watching = target
+	}
 	w.byWd[int32(wd)] = append(w.byWd[int32(wd)], e)
 	return nil
 }
@@ -357,8 +384,13 @@ func (w *Watcher) dispatch(buf []byte) {
 		// deleted, or InotifyRmWatch was called). Drop our record.
 		if raw.Mask&unix.IN_IGNORED != 0 {
 			for _, e := range list {
-				e.wd = -1
-				e.watching = ""
+				if e.wd == raw.Wd {
+					e.wd = -1
+					e.watching = ""
+				}
+				if e.dirWd == raw.Wd {
+					e.dirWd = -1
+				}
 			}
 			delete(w.byWd, raw.Wd)
 			w.mu.Unlock()
@@ -368,7 +400,7 @@ func (w *Watcher) dispatch(buf []byte) {
 
 		var matched []*entry
 		for _, e := range list {
-			if w.eventMatches(e, raw.Mask, name) {
+			if w.eventMatches(e, raw.Wd, raw.Mask, name) {
 				matched = append(matched, e)
 			}
 		}
@@ -381,9 +413,9 @@ func (w *Watcher) dispatch(buf []byte) {
 	}
 }
 
-// eventMatches decides whether `mask`/`name` on `e`'s current watch
+// eventMatches decides whether `mask`/`name` on watch `wd` of `e`
 // represents the configured trigger condition. Caller holds w.mu.
-func (w *Watcher) eventMatches(e *entry, mask uint32, name string) bool {
+func (w *Watcher) eventMatches(e *entry, wd int32, mask uint32, name string) bool {
 	if e.fired {
 		return false
 	}
@@ -391,19 +423,23 @@ func (w *Watcher) eventMatches(e *entry, mask uint32, name string) bool {
 	case TriggerExists:
 		// Watching parent dir for basename appearance.
 		return (mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0) && name == e.base
-	case TriggerChanged:
-		// A directory is watched directly and name is the child entry;
-		// a file is watched through its parent and name must be it.
-		if e.byName && name != e.base {
-			return false
+	case TriggerChanged, TriggerModified:
+		// A file's directory watch is for its name being created,
+		// replaced or removed; the directory may be shared with other
+		// triggers, so the name must be the file's.
+		if e.byName && wd == e.dirWd {
+			return name == e.base &&
+				mask&(unix.IN_CREATE|unix.IN_DELETE|unix.IN_MOVED_TO|unix.IN_MOVED_FROM) != 0
 		}
-		return mask&(unix.IN_CLOSE_WRITE|unix.IN_CREATE|unix.IN_DELETE|
-			unix.IN_MOVED_TO|unix.IN_MOVED_FROM) != 0
-	case TriggerModified:
-		if e.byName && name != e.base {
-			return false
+		// The file's inode, or a directory target and its entries.
+		writes := uint32(unix.IN_CLOSE_WRITE)
+		if e.trigger == TriggerModified {
+			writes |= unix.IN_MODIFY
 		}
-		return mask&(unix.IN_CLOSE_WRITE|unix.IN_MODIFY|unix.IN_CREATE|unix.IN_DELETE|
+		if e.byName {
+			return mask&writes != 0
+		}
+		return mask&(writes|unix.IN_CREATE|unix.IN_DELETE|
 			unix.IN_MOVED_TO|unix.IN_MOVED_FROM) != 0
 	case TriggerDirNotEmpty:
 		return mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0

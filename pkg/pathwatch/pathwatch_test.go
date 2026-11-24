@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // nullLogger drops all output.
@@ -485,5 +487,93 @@ func TestChangedFiresOnRenameOver(t *testing.T) {
 				t.Errorf("fired on a sibling file: %d", n)
 			}
 		})
+	}
+}
+
+// TestFileTriggerIgnoresSiblingWrites: a changed/modified trigger on a
+// file watched its directory for writes, so every write by any process
+// to any file in that directory (/var/log, /run) woke PID 1's inotify
+// loop, only to be filtered out by name. Writes to a sibling must not
+// queue an event at all; the watcher is not run, so whatever the kernel
+// queued is still there to see. Before the fix the inotify fd was
+// readable after the sibling writes, for both triggers.
+func TestFileTriggerIgnoresSiblingWrites(t *testing.T) {
+	for _, trig := range []Trigger{TriggerChanged, TriggerModified} {
+		t.Run(trig.String(), func(t *testing.T) {
+			w, err := New(testLogger{t})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { unix.Close(w.fd) })
+			dir := t.TempDir()
+			path, sibling := filepath.Join(dir, "config"), filepath.Join(dir, "busy.log")
+			for _, f := range []string{path, sibling} {
+				if err := os.WriteFile(f, []byte("a"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := w.Add(path, trig, func() {}); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			queued := func() bool {
+				fds := []unix.PollFd{{Fd: int32(w.fd), Events: unix.POLLIN}}
+				n, _ := unix.Poll(fds, 100)
+				return n > 0
+			}
+
+			f, err := os.OpenFile(sibling, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 100; i++ {
+				f.WriteString("line\n")
+			}
+			f.Close()
+			if queued() {
+				t.Errorf("writes to a sibling file queued inotify events")
+			}
+
+			// The harness can still see one: a write to the file itself.
+			if err := os.WriteFile(path, []byte("b"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if !queued() {
+				t.Errorf("a write to the watched file queued no event")
+			}
+		})
+	}
+}
+
+// TestFileTriggerSharesDirectoryWithExists: a changed trigger's
+// directory watch shares its wd with a path-exists trigger in the same
+// directory; each fires on its own name, and removing the exists
+// trigger leaves the changed trigger's directory watch in place.
+func TestFileTriggerSharesDirectoryWithExists(t *testing.T) {
+	w := newWatcher(t)
+	dir := t.TempDir()
+	path, later := filepath.Join(dir, "config"), filepath.Join(dir, "later")
+	if err := os.WriteFile(path, []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var changed, exists atomic.Int32
+	if err := w.Add(path, TriggerChanged, func() { changed.Add(1) }); err != nil {
+		t.Fatalf("Add config: %v", err)
+	}
+	if err := w.Add(later, TriggerExists, func() { exists.Add(1) }); err != nil {
+		t.Fatalf("Add later: %v", err)
+	}
+	if err := os.WriteFile(later, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &exists, 1, 2*time.Second) {
+		t.Errorf("exists trigger sharing the directory did not fire")
+	}
+	if changed.Load() != 0 {
+		t.Errorf("changed trigger fired on another name")
+	}
+	w.Remove(later)
+	replaceFile(t, path, "b")
+	if !waitFire(t, &changed, 1, 2*time.Second) {
+		t.Errorf("removing the exists trigger dropped the changed trigger's directory watch")
 	}
 }

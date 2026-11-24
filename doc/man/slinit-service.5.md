@@ -2195,10 +2195,10 @@ watch; the service remains startable via `slinitctl start`.
 **start-on-path-changed**=*path*
 :   Fire when *path* is written and closed (file) or has entries
     created/removed/renamed (directory). Uses **IN_CLOSE_WRITE** plus
-    directory mutation events. A file is watched through its parent
-    directory, so replacing it by renaming another file over it, or
-    removing it, also fires, and the trigger keeps working on the
-    replacement.
+    directory mutation events. A file's parent directory is also
+    watched for the file's name, so replacing it by renaming another
+    file over it, or removing it, also fires, and the trigger keeps
+    working on the replacement.
 
 **start-on-path-modified**=*path*
 :   Like **start-on-path-changed** but also fires on every write
