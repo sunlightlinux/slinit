@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **One long output line could wedge a service.** The shared logger
+  and the standalone `log-forward-udp` path read a service's output pipe
+  with `bufio.Scanner`, which stops for good on a line longer than its
+  64 KiB buffer. Nothing drained the pipe after that: the service
+  blocked in `write(2)` once the pipe filled (shared logger), or wrote
+  into a pipe whose read end had been closed (UDP forwarding). A longer
+  line is now passed on in 64 KiB pieces and reading goes on to EOF.
 - **A timer from one start attempt could act on the next.** The
   job-timeout, runtime-max, start-delay and start-when-idle timers check
   only the service's state when they fire. One that fired while the

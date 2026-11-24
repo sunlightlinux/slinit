@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -3518,15 +3517,15 @@ func (s *ProcessService) stopLoggerCommands() {
 // exec sets both to outputPipe.
 func (s *ProcessService) forwardOnlyLoop(pr *os.File, fw *SyslogForwarder) {
 	defer pr.Close()
-	// bufio.Scanner default token size (64 KB) is fine for syslog
-	// UDP (per RFC 3164 max 1024 bytes, RFC 5424 typical 8 KB); if
-	// a service emits a longer line it'll be split at 64 KB.
-	sc := bufio.NewScanner(pr)
-	buf := make([]byte, 0, 65536)
-	sc.Buffer(buf, 65536)
-	for sc.Scan() {
-		fw.Send(sc.Bytes())
-	}
+	// 64 KiB is ample for syslog over UDP (RFC 3164 max 1024 bytes,
+	// RFC 5424 typically 8 KB); a longer line goes in 64 KiB pieces.
+	// bufio.Scanner, used here before, stopped at such a line instead,
+	// and the deferred Close then left the service writing to a pipe
+	// with no reader.
+	readLines(pr, 64*1024, func(line []byte) bool {
+		fw.Send(line)
+		return true
+	})
 }
 
 // warnIfReloadSignalUnhandled says so when a service declares a

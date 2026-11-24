@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"sync"
@@ -243,21 +242,16 @@ func (m *SharedLogMux) Close() {
 func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 	defer close(p.doneCh)
 
-	scanner := bufio.NewScanner(p.pipeR)
-	// Use a reasonable max line size (64KB)
-	scanner.Buffer(make([]byte, 4096), 64*1024)
-
 	// Pre-build the prefix bytes once: "[name] "
 	prefix := []byte("[" + p.name + "] ")
 
-	for scanner.Scan() {
+	// Lines over 64 KiB go on in 64 KiB pieces (see readLines).
+	readLines(p.pipeR, 64*1024, func(lineBytes []byte) bool {
 		select {
 		case <-p.stopCh:
-			return
+			return false
 		default:
 		}
-
-		lineBytes := scanner.Bytes()
 
 		if m.queue != nil {
 			// Lossy path: coalesce prefix+line+nl into one buffer and
@@ -273,7 +267,7 @@ func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 			default:
 				m.dropCount.Add(1)
 			}
-			continue
+			return true
 		}
 
 		// Classic blocking path
@@ -287,11 +281,9 @@ func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 		}
 		m.writerMu.Unlock()
 
-		if err != nil {
-			// Logger pipe broken — stop silently
-			return
-		}
-	}
+		// Logger pipe broken — stop silently
+		return err == nil
+	})
 	// Pipe closed (producer exited) — goroutine exits naturally
 }
 
