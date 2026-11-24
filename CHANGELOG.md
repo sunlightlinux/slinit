@@ -580,6 +580,14 @@ verified with `git tag -v`.
   read from `logind.conf` and reported as `InhibitDelayMaxUSec`, but a
   sleep always waited the built-in 5 s for delay locks to clear. The
   configured value is now the cap; without one it is still 5 s.
+- **`slinit-logind`'s User objects never changed after the first
+  login.** `Sessions` and `Display` were computed when the user's first
+  session registered the object and never again, so a second login was
+  missing from them and a session that had logged out stayed listed;
+  `State` was always `active`, and `GID` reported the uid. All three
+  now follow the user's sessions as they come and go and as the
+  foreground VT moves (`online` when none of them is in front), and
+  `GID` is the primary group from the user's passwd entry.
 
 ## [4.0.2] — 2026-11-22
 

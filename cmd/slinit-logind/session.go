@@ -1287,11 +1287,15 @@ func ensureCgroup(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
+// passwdPath is the user database lookupUsername and lookupGID read; a
+// variable for the tests.
+var passwdPath = "/etc/passwd"
+
 func lookupUsername(uid uint32) string {
 	// Bare /etc/passwd read — avoids CGO dependency of os/user on
 	// glibc's nss. Falls back to "uid=N" when the mapping isn't
 	// resolvable (dynamic user, stale entry).
-	b, err := os.ReadFile("/etc/passwd")
+	b, err := os.ReadFile(passwdPath)
 	if err != nil {
 		return fmt.Sprintf("uid=%d", uid)
 	}
@@ -1306,6 +1310,27 @@ func lookupUsername(uid uint32) string {
 		}
 	}
 	return fmt.Sprintf("uid=%d", uid)
+}
+
+// lookupGID returns the uid's primary group from its passwd entry, read
+// the way lookupUsername reads the name. Without an entry it is the uid,
+// which is what User.GID always reported before.
+func lookupGID(uid uint32) uint32 {
+	b, err := os.ReadFile(passwdPath)
+	if err != nil {
+		return uid
+	}
+	uidStr := strconv.FormatUint(uint64(uid), 10)
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.SplitN(line, ":", 5)
+		if len(fields) < 4 || fields[2] != uidStr {
+			continue
+		}
+		if gid, err := strconv.ParseUint(fields[3], 10, 32); err == nil {
+			return uint32(gid)
+		}
+	}
+	return uid
 }
 
 // validSessionID reports whether id is safe to put in a filesystem

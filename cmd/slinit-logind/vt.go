@@ -114,6 +114,7 @@ func (m *manager) refreshActiveLocked() {
 	}
 	rewriteCompatAggregates()
 	m.refreshSeatProps(recs)
+	m.refreshUserProps(recs)
 }
 
 func (m *manager) setSessionPropIfChanged(id, name string, value any) {
@@ -151,6 +152,49 @@ func (m *manager) refreshSeatProps(recs []SessionRecord) {
 		setPropIfChanged(props, seatIface, "ActiveSession", active)
 		setPropIfChanged(props, seatIface, "Sessions", sessions)
 	}
+}
+
+// refreshUserProps updates User.Sessions, Display and State. They were
+// computed once, when the user's first session registered the object, so
+// a later login never appeared in Sessions and a logout never left it.
+// Display is the user's first session, as userTupleSession picks it.
+func (m *manager) refreshUserProps(recs []SessionRecord) {
+	m.mu.RLock()
+	users := make(map[uint32]*prop.Properties, len(m.userProps))
+	for uid, p := range m.userProps {
+		users[uid] = p
+	}
+	m.mu.RUnlock()
+
+	for uid, props := range users {
+		sessions := []SessionRef{}
+		display := SessionRef{ID: "", Path: dbus.ObjectPath("/")}
+		for _, r := range recs {
+			if r.UserID != uid {
+				continue
+			}
+			ref := SessionRef{ID: r.ID, Path: sessionPath(r.ID)}
+			if len(sessions) == 0 {
+				display = ref
+			}
+			sessions = append(sessions, ref)
+		}
+		setPropIfChanged(props, userIface, "Sessions", sessions)
+		setPropIfChanged(props, userIface, "Display", display)
+		setPropIfChanged(props, userIface, "State", userState(recs, uid))
+	}
+}
+
+// userState is User.State: "active" while one of the user's sessions is
+// in the foreground, "online" otherwise — the STATE the compat user
+// record carries.
+func userState(recs []SessionRecord, uid uint32) string {
+	for _, r := range recs {
+		if r.UserID == uid && sessionIsActive(r) {
+			return "active"
+		}
+	}
+	return "online"
 }
 
 func setPropIfChanged(props *prop.Properties, iface, name string, value any) {

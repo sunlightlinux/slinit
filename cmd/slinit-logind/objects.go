@@ -289,14 +289,14 @@ func (m *manager) registerUserObject(rec UserRecord) {
 	propsSpec := map[string]map[string]*prop.Prop{
 		userIface: {
 			"UID":         {Value: rec.UID, Emit: prop.EmitConst},
-			"GID":         {Value: rec.UID, Emit: prop.EmitConst},
+			"GID":         {Value: lookupGID(rec.UID), Emit: prop.EmitConst},
 			"Name":        {Value: rec.Name, Emit: prop.EmitConst},
 			"Timestamp":   {Value: uint64(0), Emit: prop.EmitConst},
 			"RuntimePath": {Value: rec.RuntimePath, Emit: prop.EmitConst},
 			"Service":     {Value: "", Emit: prop.EmitConst},
 			"Slice":       {Value: rec.Slice, Emit: prop.EmitConst},
 			"Display":     {Value: userTupleSession(rec.UID), Emit: prop.EmitTrue},
-			"State":       {Value: "active", Emit: prop.EmitTrue},
+			"State":       {Value: userState(loadSessionRecords(), rec.UID), Emit: prop.EmitTrue},
 			"Sessions":    {Value: m.userSessions(rec.UID), Emit: prop.EmitTrue},
 			"IdleHint":    {Value: false, Emit: prop.EmitTrue},
 			"Linger":      {Value: false, Emit: prop.EmitConst},
@@ -306,6 +306,14 @@ func (m *manager) registerUserObject(rec UserRecord) {
 	if err != nil {
 		return
 	}
+	// Kept so refreshUserProps can move Sessions / Display / State as
+	// the user's sessions come and go.
+	m.mu.Lock()
+	if m.userProps == nil {
+		m.userProps = map[uint32]*prop.Properties{}
+	}
+	m.userProps[rec.UID] = props
+	m.mu.Unlock()
 	m.exportPropsWrapper(path, props, userIface, "")
 	_ = m.conn.Export(uo, path, userIface)
 
@@ -329,6 +337,9 @@ func (m *manager) registerUserObject(rec UserRecord) {
 
 // unregisterUserObject.
 func (m *manager) unregisterUserObject(uid uint32) {
+	m.mu.Lock()
+	delete(m.userProps, uid)
+	m.mu.Unlock()
 	path := userPath(uid)
 	_ = m.conn.Export(nil, path, userIface)
 	_ = m.conn.Export(nil, path, "org.freedesktop.DBus.Properties")

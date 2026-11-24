@@ -134,6 +134,10 @@ type manager struct {
 	// with every session change and VT switch (see vt.go).
 	seatProps map[string]*prop.Properties
 
+	// userProps is the same for users: Sessions, Display and State move
+	// as the user's sessions come and go.
+	userProps map[uint32]*prop.Properties
+
 	// preparingForSleep backs the PreparingForSleep property while a
 	// sleep handshake is in flight. Guarded by mu.
 	preparingForSleep bool
