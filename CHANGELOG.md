@@ -34,6 +34,13 @@ verified with `git tag -v`.
   is now cut at 8 KiB (`431`), headers at 100, and at most 16 scrapes
   are served at once — the rest are closed on accept, because every
   open connection held one of PID 1's file descriptors.
+- **`slinit-inetd` stopped serving when it ran out of descriptors.**
+  Its accept loop meant to ride out `EMFILE`, but it only retried
+  errors Go calls timeouts, and `EMFILE`/`ENFILE`/`ENOBUFS`/`ENOMEM`
+  are not — so a burst of connections that filled the descriptor table
+  ended the listener for good. It now retries those with a backoff
+  (5 ms doubling to 1 s), and when every listener has really failed it
+  exits 1 instead of 0, so `restart = on-failure` restarts it.
 
 ## [4.0.2] — 2026-11-22
 
