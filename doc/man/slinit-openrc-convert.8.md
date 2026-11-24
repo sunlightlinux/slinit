@@ -26,14 +26,25 @@ Script variables are mapped as follows:
 | **command_user** | **run-as** |
 | **directory** | **working-dir** |
 | **chroot** | **chroot** |
-| **pidfile** | **pid-file** |
+| **pidfile** | **pid-file** (self-forking daemon only, see below) |
 | **stopsig** | **term-signal** |
 | **umask** | **umask** |
 | **respawn_delay**, **respawn_max**, **respawn_period** | **restart-delay**, **restart-limit-count**, **restart-limit-interval** |
 | **no_new_privs=yes** | **options = no-new-privs** |
-| **command_background=yes** | **type = bgprocess** (otherwise **process**) |
+| **command_background=yes** | **type = process** |
 | **description**, **name** | comments |
 | */etc/conf.d/NAME*, if it exists | **env-file** |
+
+The service type follows how OpenRC starts the daemon. With
+**command_background=yes** the daemon stays in the foreground and
+start-stop-daemon backgrounds it and writes the pidfile itself, so it
+becomes **type = process** and **pidfile** is left out: slinit tracks
+the PID without one. The same holds when **command_args_foreground** is
+set (it is appended to **command**) or **supervisor=supervise-daemon**.
+Otherwise start-stop-daemon expects the daemon to fork itself: with a
+**pidfile** it becomes **type = bgprocess** with **pid-file**; without
+one it stays **process** with a warning, as slinit cannot follow a
+daemon that forks without a pidfile.
 
 Generated services get **restart = yes**, since OpenRC respawns
 supervised daemons. In **depend()**, **need** becomes **depends-on**

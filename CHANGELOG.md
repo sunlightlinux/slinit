@@ -854,6 +854,16 @@ verified with `git tag -v`.
 - **`rc-status ""` panicked.** An empty argument was taken for a
   runlevel name and its first byte read to check for a flag, which
   panicked with "index out of range"; it is now a usage error (exit 2).
+- **`slinit-openrc-convert` had `command_background` backwards.** In
+  OpenRC, `command_background=yes` means the daemon stays in the
+  foreground and start-stop-daemon backgrounds it and writes the
+  pidfile; the converter made it a `bgprocess` waiting on that pidfile,
+  which nothing wrote, so the service sat in STARTING until its start
+  timed out. It is now `type = process` (as are daemons kept in the
+  foreground by `command_args_foreground` or `supervise-daemon`), and a
+  script with a `pidfile` but no `command_background` — a daemon that
+  forks itself — becomes the `bgprocess`. A script with neither is
+  converted to `process` with a warning.
 
 ## [4.0.2] — 2026-11-22
 

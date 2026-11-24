@@ -336,11 +336,6 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 	if v, ok := vars["no_new_privs"]; ok && (v == "yes" || v == "true" || v == "1") {
 		cfg.noNewPrivs = true
 	}
-	if v, ok := vars["command_background"]; ok && (v == "yes" || v == "true" || v == "1") {
-		// slinit's bgprocess type is the analog — the daemon forks
-		// itself into the background and writes a pidfile.
-		cfg.svcType = "bgprocess"
-	}
 	if v, ok := vars["description"]; ok {
 		cfg.comments = append(cfg.comments, "description: "+v)
 	}
@@ -387,6 +382,32 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		warns = append(warns, warning{"NOTE",
 			fmt.Sprintf("custom shell functions %v — wrapped via %s (requires the binary at runtime)",
 				customFuncs, wrapper)})
+	} else {
+		// command_background=yes is the opposite of a forking daemon: the
+		// daemon stays in the foreground and start-stop-daemon backgrounds
+		// it and writes the pidfile itself (openrc-run(8)) — a process to
+		// slinit, which tracks the PID with no pidfile. So is a daemon kept
+		// in the foreground by command_args_foreground or run under
+		// supervise-daemon. Otherwise start-stop-daemon expects the daemon
+		// to fork itself, which slinit follows through the pidfile.
+		bg := strings.ToLower(vars["command_background"])
+		foreground := bg == "yes" || bg == "true" || bg == "1" ||
+			vars["command_args_foreground"] != "" || vars["supervisor"] == "supervise-daemon"
+		switch {
+		case foreground:
+			if cfg.pidFile != "" {
+				warns = append(warns, warning{"NOTE", fmt.Sprintf(
+					"pidfile=%q left out: the daemon runs in the foreground and slinit tracks its PID itself", cfg.pidFile)})
+				cfg.pidFile = ""
+			}
+		case cfg.pidFile != "":
+			cfg.svcType = "bgprocess"
+		case cfg.command != "":
+			warns = append(warns, warning{"WARN", fmt.Sprintf(
+				"no command_background and no pidfile: start-stop-daemon expects %s to fork itself, "+
+					"which slinit cannot follow without a pid-file — make it run in the foreground, "+
+					"or set pid-file and type = bgprocess", cfg.command)})
+		}
 	}
 
 	// slinit applies chroot to type = process only and refuses to load

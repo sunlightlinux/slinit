@@ -21,6 +21,7 @@ description="Test daemon"
 command=/usr/sbin/testd
 command_args="--flag value"
 command_user=nobody
+command_background=yes
 pidfile=/run/testd.pid
 directory=/var/lib/testd
 chroot=/srv/chroot
@@ -48,8 +49,10 @@ depend() {
 	if cfg.runAs != "nobody" {
 		t.Errorf("runAs = %q, want nobody", cfg.runAs)
 	}
-	if cfg.pidFile != "/run/testd.pid" {
-		t.Errorf("pidFile = %q", cfg.pidFile)
+	// start-stop-daemon writes a command_background daemon's pidfile;
+	// slinit tracks the PID itself.
+	if cfg.pidFile != "" {
+		t.Errorf("pidFile = %q, want none for a command_background daemon", cfg.pidFile)
 	}
 	if cfg.workingDir != "/var/lib/testd" {
 		t.Errorf("workingDir = %q", cfg.workingDir)
@@ -268,7 +271,7 @@ func TestChrootOnNonProcessTypesStillLoads(t *testing.T) {
 	for _, tc := range []struct {
 		name, script, level string
 	}{
-		{"bgprocess", "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\npidfile=/run/d.pid\nchroot=/var/jail\n", "WARN"},
+		{"bgprocess", "#!/sbin/openrc-run\ncommand=/usr/sbin/d\npidfile=/run/d.pid\nchroot=/var/jail\n", "WARN"},
 		{"scripted", "#!/sbin/openrc-run\ncommand=/usr/sbin/d\nchroot=/var/jail\nstart() {\n\t:\n}\n", "NOTE"},
 	} {
 		cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
@@ -294,5 +297,69 @@ func TestChrootOnNonProcessTypesStillLoads(t *testing.T) {
 		if !found {
 			t.Errorf("%s: no %s about the chroot that was left out: %v", tc.name, tc.level, warns)
 		}
+	}
+}
+
+// loadConverted writes the converted file into a service directory and
+// loads it with the real loader, which is what an operator's slinit does.
+func loadConverted(t *testing.T, cfg *slinitConfig) (service.Service, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "d"), buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ss := service.NewServiceSet(nil)
+	dl := config.NewDirLoader(ss, []string{dir})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("d")
+	if err != nil {
+		t.Fatalf("converted file does not load: %v\n%s", err, buf.String())
+	}
+	return svc, buf.String()
+}
+
+// command_background=yes means the daemon stays in the foreground and
+// start-stop-daemon backgrounds it and writes the pidfile itself
+// (openrc-run(8)), so slinit supervises it as a process. Without it,
+// start-stop-daemon expects the daemon to fork itself: with a pidfile
+// that is a bgprocess. The two used to be the other way round, and a
+// command_background daemon sat in STARTING until its start timed out,
+// waiting for a pidfile nothing wrote.
+func TestCommandBackgroundIsAForegroundDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name, vars string
+		typ        service.ServiceType
+		pidFile    bool
+		warn       string
+	}{
+		{"command_background", "command_background=yes\npidfile=/run/d.pid\n", service.TypeProcess, false, ""},
+		{"self-forking", "pidfile=/run/d.pid\n", service.TypeBGProcess, true, ""},
+		{"foreground-args", "command_args_foreground=-f\npidfile=/run/d.pid\n", service.TypeProcess, false, ""},
+		{"supervise-daemon", "supervisor=supervise-daemon\npidfile=/run/d.pid\n", service.TypeProcess, false, ""},
+		{"no-pidfile", "", service.TypeProcess, false, "fork"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\n" + tc.vars
+			cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+			warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+			svc, out := loadConverted(t, cfg)
+			if svc.Type() != tc.typ {
+				t.Errorf("type = %v, want %v\n%s", svc.Type(), tc.typ, out)
+			}
+			if got := strings.Contains(out, "pid-file = /run/d.pid"); got != tc.pidFile {
+				t.Errorf("pid-file emitted = %v, want %v\n%s", got, tc.pidFile, out)
+			}
+			if tc.warn != "" {
+				found := false
+				for _, w := range warns {
+					found = found || (w.level == "WARN" && strings.Contains(w.msg, tc.warn))
+				}
+				if !found {
+					t.Errorf("no WARN mentioning %q: %v", tc.warn, warns)
+				}
+			}
+		})
 	}
 }
