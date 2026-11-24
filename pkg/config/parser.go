@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -1616,7 +1617,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid %s: %w", setting, err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		desc.CronInterval = d
 	case "cron-delay", "cron-on-active":
@@ -1629,7 +1632,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid %s: %w", setting, err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		desc.CronDelay = d
 	case "cron-on-error":
@@ -1673,7 +1678,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid cron-accuracy-sec: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("cron-accuracy-sec must be >= 0")
@@ -1694,7 +1701,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid healthcheck-interval: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		desc.HealthCheckInterval = d
 	case "healthcheck-delay":
@@ -1704,7 +1713,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid healthcheck-delay: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		desc.HealthCheckDelay = d
 	case "healthcheck-max-failures":
@@ -1834,7 +1845,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid job-timeout-sec: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("job-timeout-sec must be >= 0")
@@ -2068,7 +2081,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid restart-delay-step: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("restart-delay-step must be >= 0")
@@ -2081,7 +2096,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid restart-delay-cap: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("restart-delay-cap must be >= 0")
@@ -2103,7 +2120,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid restart-randomized-delay: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("restart-randomized-delay must be >= 0")
@@ -2390,7 +2409,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("watchdog-timeout: invalid duration %q", value)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d <= 0 {
 			return fmt.Errorf("watchdog-timeout must be > 0 (got %s)", d)
@@ -3640,6 +3661,26 @@ func parseDuration(value string) (time.Duration, error) {
 	}
 	if f < 0 {
 		return 0, fmt.Errorf("duration must be non-negative")
+	}
+	return secondsToDuration(f)
+}
+
+// secondsToDuration converts a number of seconds to a Duration, refusing
+// what a Duration cannot hold. ParseFloat accepts "nan", "inf" and
+// "1e300", and converting any of them — or anything past ~292 years —
+// gave math.MinInt64: a negative duration that passed every "< 0" check
+// already made, and that the service code then read as "no timeout" or
+// "outside the restart-limit interval". dinit's parse_timespec refuses
+// such values as too large.
+func secondsToDuration(f float64) (time.Duration, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("not a number of seconds")
+	}
+	if f < 0 {
+		return 0, fmt.Errorf("duration must be non-negative")
+	}
+	if f*float64(time.Second) >= math.MaxInt64 {
+		return 0, fmt.Errorf("too large")
 	}
 	return time.Duration(f * float64(time.Second)), nil
 }

@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A timeout of `inf`, `nan` or an enormous number turned into "no
+  timeout".** Durations are parsed as a decimal number of seconds, and
+  `inf`, `nan`, `1e300` or anything past about 292 years converted to
+  the most negative duration, which passed the non-negative check: a
+  `stop-timeout` stopped timing out, and a huge
+  `restart-limit-interval` let every restart through. Such values are
+  now refused at load, as dinit refuses them.
 - **A command that left a child in the background held its caller.**
   Commands slinit runs itself and reads the output of — `run-action`,
   env generators, the power (SIGPWR) hook, the OpenRC `depend` parser,
