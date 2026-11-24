@@ -46,11 +46,13 @@ const (
 //     "arch reject" return.
 //  3. RET KILL_PROCESS (the unconditional arch-reject).
 //  4. Load nr (offset 0).
-//  5. For each log syscall: if nr==N → RET LOG.
-//  6. For each filtered syscall: if nr==N → RET ALLOW (allow mode) or
+//  5. For each filtered syscall: if nr==N → RET ALLOW (allow mode) or
 //     RET <default> (deny mode).
-//  7. RET <default-action> (everything else): KILL in allow mode,
+//  6. RET <default-action> (everything else): KILL in allow mode,
 //     ALLOW in deny mode.
+//
+// f.LogSyscalls are not part of this program: CompileLog builds them
+// as a filter of their own.
 //
 // The function is intentionally straightforward (no jump optimisation)
 // because the BPF instruction limit (4096) and JT/JF range (255 each)
@@ -60,7 +62,6 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 		return nil, fmt.Errorf("nil filter")
 	}
 	syscalls := f.SortedSyscallNumbers()
-	logSyscalls := f.SortedLogNumbers()
 
 	// Compute the default action for the "non-allowed" side and the
 	// per-entry hit action.
@@ -83,7 +84,7 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 		return nil, fmt.Errorf("unknown filter mode %d", f.Mode)
 	}
 
-	prog := make([]unix.SockFilter, 0, 16+len(syscalls)+len(logSyscalls))
+	prog := make([]unix.SockFilter, 0, 16+len(syscalls))
 
 	// 1. Load arch into A.
 	prog = append(prog, unix.SockFilter{
@@ -114,19 +115,7 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 		Code: bpfLD | bpfW | bpfABS, K: offsetNR,
 	})
 
-	// 4. Log-only branches come first: a syscall in LogSyscalls always
-	// hits ActionLog regardless of the allow/deny mode below. The
-	// reasoning is "I want to see this called, then handle filtering
-	// separately"; reversing this order would let an allow-branch
-	// shadow the log entry silently.
-	for _, n := range logSyscalls {
-		prog = append(prog, unix.SockFilter{
-			Code: bpfJMP | bpfJEQ | bpfK, K: uint32(n), Jt: 0, Jf: 1,
-		})
-		prog = append(prog, retInsn(ActionLog))
-	}
-
-	// 5. Per-syscall branches for the main filter.
+	// 4. Per-syscall branches for the main filter.
 	for _, n := range syscalls {
 		prog = append(prog, unix.SockFilter{
 			Code: bpfJMP | bpfJEQ | bpfK, K: uint32(n), Jt: 0, Jf: 1,
@@ -134,9 +123,38 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 		prog = append(prog, retInsn(perEntryAction))
 	}
 
-	// 6. Trailing default action.
+	// 5. Trailing default action.
 	prog = append(prog, retInsn(defaultAction))
 
+	if len(prog) > 4096 {
+		return nil, fmt.Errorf("seccomp: program exceeds 4096 instructions (got %d)", len(prog))
+	}
+	return prog, nil
+}
+
+// CompileLog builds the system-call-log filter: a native syscall in
+// f.LogSyscalls returns SECCOMP_RET_LOG, everything else ALLOW. It is
+// installed as a filter of its own, as systemd installs SystemCallLog=
+// (exec-invoke.c, apply_syscall_log), so the kernel takes the most
+// restrictive answer of it and the main filter: LOG never overrides a
+// refusal. The log branches used to sit in front of the main filter's,
+// in one program, and a call that was both denied and logged ran. A
+// foreign-arch call is left to the main filter.
+func CompileLog(f *Filter) ([]unix.SockFilter, error) {
+	logSyscalls := f.SortedLogNumbers()
+	prog := []unix.SockFilter{
+		{Code: bpfLD | bpfW | bpfABS, K: offsetArch},
+		{Code: bpfJMP | bpfJEQ | bpfK, K: archNumber(NativeArch()), Jt: 1, Jf: 0},
+		retInsn(ActionAllow),
+		{Code: bpfLD | bpfW | bpfABS, K: offsetNR},
+	}
+	for _, n := range logSyscalls {
+		prog = append(prog, unix.SockFilter{
+			Code: bpfJMP | bpfJEQ | bpfK, K: uint32(n), Jt: 0, Jf: 1,
+		})
+		prog = append(prog, retInsn(ActionLog))
+	}
+	prog = append(prog, retInsn(ActionAllow))
 	if len(prog) > 4096 {
 		return nil, fmt.Errorf("seccomp: program exceeds 4096 instructions (got %d)", len(prog))
 	}

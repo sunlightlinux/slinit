@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`system-call-log` let a refused call run.** The log list was
+  compiled into the same seccomp program as `system-call-filter`, ahead
+  of it, and `SECCOMP_RET_LOG` executes the call: with
+  `system-call-filter = ~getppid` and `system-call-log = getppid`,
+  `getppid()` succeeded. It is now a filter of its own, as systemd
+  installs `SystemCallLog=`, so the kernel's most-restrictive rule keeps
+  the call refused, and the call is still logged.
 - **The boot debugger's menu could freeze or deadlock PID 1.** When the
   boot service reached STARTED, slinit stopped the Ctrl-B debugger from
   inside the service-event listener, which runs with the scheduling

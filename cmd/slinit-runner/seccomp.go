@@ -48,6 +48,19 @@ func installSeccomp(s seccompSpec) error {
 	if err := seccomp.EnsureNoNewPrivs(); err != nil {
 		return fmt.Errorf("seccomp prerequisite: %w", err)
 	}
+	// system-call-log is a filter of its own, as under systemd, so the
+	// kernel's most-restrictive rule keeps a logged call refused when
+	// the main filter refuses it. It goes in first: the main filter may
+	// refuse seccomp(2) itself.
+	if len(filter.LogSyscalls) > 0 {
+		logProg, err := seccomp.CompileLog(filter)
+		if err != nil {
+			return fmt.Errorf("seccomp log compile: %w", err)
+		}
+		if err := seccomp.Install(logProg); err != nil {
+			return fmt.Errorf("seccomp log install: %w", err)
+		}
+	}
 	if err := seccomp.Install(prog); err != nil {
 		return fmt.Errorf("seccomp install: %w", err)
 	}

@@ -1443,9 +1443,12 @@ the internal **seccomp** package and installs it via the
 
 **system-call-log**=*item*...
 :   Syscalls (names or *@group* tokens) that always trigger
-    **SECCOMP_RET_LOG** independent of the main filter. Useful for
-    observing a process before tightening the filter. Repeatable with
-    `+=`. Equivalent to systemd's **SystemCallLog=**.
+    **SECCOMP_RET_LOG**. Useful for observing a process before
+    tightening the filter. Repeatable with `+=`. Equivalent to systemd's
+    **SystemCallLog=**: the list is installed as a seccomp filter of its
+    own, so a call that **system-call-filter** refuses stays refused —
+    the kernel takes the most restrictive answer. Before 4.0.3 a listed
+    call ran even when the filter refused it.
 
 **io-uring-filter**=[**~**]*operation*...
 :   (since 3.18.0) Restricts the **io_uring**(7) operations the service

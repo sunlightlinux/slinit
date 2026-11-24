@@ -87,11 +87,13 @@ func TestCompileDenyModeFlipsDefault(t *testing.T) {
 	}
 }
 
-// TestCompileLogSyscallsEmitsLogReturn verifies a syscall on the log
-// list produces a SECCOMP_RET_LOG branch that takes precedence over
-// any later ALLOW branch.
-func TestCompileLogSyscallsEmitsLogReturn(t *testing.T) {
-	f, err := Build([]string{"read"}, ModeAllow, []string{"x86-64"}, ActionKill, []string{"openat"})
+// TestCompileLogIsItsOwnFilter: a logged syscall is still refused by the
+// main filter, and the log filter logs it and allows the rest. The log
+// branches used to sit in front of the main filter's, so a call both
+// denied and logged returned LOG — which runs it.
+func TestCompileLogIsItsOwnFilter(t *testing.T) {
+	eperm := ErrnoAction(unix.EPERM)
+	f, err := Build([]string{"~getppid"}, ModeAllow, nil, eperm, []string{"getppid"})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -99,15 +101,18 @@ func TestCompileLogSyscallsEmitsLogReturn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	var sawLog bool
-	for _, in := range prog {
-		if in.Code == bpfRET|bpfK && Action(in.K) == ActionLog {
-			sawLog = true
-			break
-		}
+	if got := runBPF(t, prog, nrOf(t, "getppid")); got != eperm {
+		t.Errorf("main filter: getppid -> %#x, want EPERM %#x", got, eperm)
 	}
-	if !sawLog {
-		t.Error("expected a SECCOMP_RET_LOG return in the program")
+	logProg, err := CompileLog(f)
+	if err != nil {
+		t.Fatalf("CompileLog: %v", err)
+	}
+	if got := runBPF(t, logProg, nrOf(t, "getppid")); got != ActionLog {
+		t.Errorf("log filter: getppid -> %#x, want LOG", got)
+	}
+	if got := runBPF(t, logProg, nrOf(t, "getpid")); got != ActionAllow {
+		t.Errorf("log filter: getpid -> %#x, want ALLOW", got)
 	}
 }
 

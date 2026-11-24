@@ -117,7 +117,7 @@ type Filter struct {
 	Syscalls      []string
 	Archs         []string // canonical arch names; empty means "current arch only"
 	DefaultAction Action   // action for the non-allowed side
-	LogSyscalls   []string // syscalls that always trigger SECCOMP_RET_LOG (orthogonal to Mode)
+	LogSyscalls   []string // syscalls logged with SECCOMP_RET_LOG by CompileLog's filter (orthogonal to Mode)
 }
 
 // Build converts a user-facing spec into a validated Filter. items is
@@ -180,8 +180,8 @@ func Build(items []string, mode Mode, archs []string, def Action, logList []stri
 		}
 	}
 	// Normalise the LogSyscalls list separately: groups expand, names
-	// stay. We don't pre-dedupe between the two — the compiler handles
-	// it (a log syscall takes precedence over an allow/deny branch).
+	// stay. They compile to a filter of their own (CompileLog), so a
+	// logged syscall is still allowed or refused by the main filter.
 	logOut, err := expandList(logList)
 	if err != nil {
 		return nil, fmt.Errorf("seccomp: log list: %w", err)
