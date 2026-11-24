@@ -97,3 +97,31 @@ func TestUntrustedClientCannotForgeTrustedFields(t *testing.T) {
 		t.Errorf("ordinary client field lost: %v", evt.Fields)
 	}
 }
+
+// events.sock had no rate limit: one local user could write the journal
+// as fast as the daemon stored it (222 MiB/s measured), and vacuum then
+// deleted everyone's history to make room. Unprivileged senders now get
+// /dev/log's per-UID limit; root (PID 1's relay) is never limited.
+func TestReceiverRateLimitsUnprivilegedSenders(t *testing.T) {
+	journal.InitIDs("testhost")
+	sink := &captureSink{}
+	r := &Receiver{sink: sink, limit: journal.NewUIDLimiter()}
+	uid := os.Getuid() + 1
+	if uid == 0 {
+		uid = 1
+	}
+	msg := []byte(`{"ts":1,"msg":"flood","prio":6}`)
+	for i := 0; i < 1000; i++ {
+		r.handle(msg, credOOB(4300, uid))
+	}
+	if n := sink.len(); n != journal.UIDRateLimit(uint32(uid)) {
+		t.Errorf("uid %d stored %d of 1000 messages in one window", uid, n)
+	}
+	before := sink.len()
+	for i := 0; i < 1500; i++ {
+		r.handle(msg, credOOB(1, 0))
+	}
+	if got := sink.len() - before; got != 1500 {
+		t.Errorf("root relay stored %d of 1500 messages: PID 1 must not be limited", got)
+	}
+}

@@ -126,6 +126,14 @@ verified with `git tag -v`.
   one of its dependencies changes later. The recalculation also checked
   for duplicates with a linear scan under the queue lock — 38 ms for a
   dependency added under a service with 8000 dependents, 1 ms now.
+- **One local user could flood the journal through `events.sock`.**
+  The socket is world-writable and had no rate limit: a single uid
+  wrote 222 MiB/s of journal, and vacuum then deleted everyone's history
+  to make room. Senders that are neither root nor the daemon's own user
+  now get the per-UID limit `/dev/log` already applies (200 messages per
+  10 s; the new test stored all 1000 of 1000 before), with a note in the
+  journal of how many were suppressed. Root, which PID 1 relays as, is
+  not limited.
 - **A logged message could forge journal lines and drive the terminal.**
   `slinit-journalctl`'s short formats and `-o cat` printed `MESSAGE`
   raw, so a newline in it started what read as another entry with any

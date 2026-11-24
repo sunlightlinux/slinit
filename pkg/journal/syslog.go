@@ -59,10 +59,7 @@ type SyslogReader struct {
 	done     chan struct{}
 
 	// Rate limiting, touched only by the read loop.
-	windowStart time.Time
-	counts      map[uint32]int
-	suppressed  map[uint32]int
-	now         func() time.Time
+	limit *UIDLimiter
 }
 
 // NewSyslogReader binds path as the syslog socket. A socket file nobody
@@ -113,13 +110,11 @@ func NewSyslogReader(emitter *Emitter, path string) (*SyslogReader, error) {
 		return fail(fmt.Errorf("journal: SO_PASSCRED on %s: %w", path, setErr))
 	}
 	return &SyslogReader{
-		emitter:    emitter,
-		conn:       conn,
-		self:       os.Getpid(),
-		done:       make(chan struct{}),
-		counts:     make(map[uint32]int),
-		suppressed: make(map[uint32]int),
-		now:        time.Now,
+		emitter: emitter,
+		conn:    conn,
+		self:    os.Getpid(),
+		done:    make(chan struct{}),
+		limit:   NewUIDLimiter(),
 	}, nil
 }
 
@@ -195,35 +190,72 @@ func (r *SyslogReader) handle(data, oob []byte) {
 // window in which some were suppressed emits one event saying how many,
 // so the gap in the log is visible instead of silent.
 func (r *SyslogReader) allow(uid uint32) bool {
-	now := r.now()
-	if now.Sub(r.windowStart) >= syslogRateWindow {
-		for u, n := range r.suppressed {
-			_ = r.emitter.Emit(&Event{
-				Msg: fmt.Sprintf("syslog: suppressed %d messages from uid %d in %s (limit %d)",
-					n, u, syslogRateWindow, rateLimitFor(u)),
-				Prio:             PriorityWarning,
-				SyslogIdentifier: "slinit",
-			})
-		}
-		r.windowStart = now
-		clear(r.counts)
-		clear(r.suppressed)
+	return r.limit.Allow(uid, func(u uint32, n int) {
+		_ = r.emitter.Emit(&Event{
+			Msg:              r.limit.Notice("syslog", u, n),
+			Prio:             PriorityWarning,
+			SyslogIdentifier: "slinit",
+		})
+	})
+}
+
+// UIDLimiter is the per-UID message rate limit of /dev/log (the
+// syslogRate* constants), also applied by slinit-journald to the
+// unprivileged senders on events.sock. Not safe for concurrent use: each
+// reader loop owns one.
+type UIDLimiter struct {
+	windowStart time.Time
+	counts      map[uint32]int
+	suppressed  map[uint32]int
+	now         func() time.Time
+}
+
+// NewUIDLimiter returns a limiter whose first window starts with the
+// first message.
+func NewUIDLimiter() *UIDLimiter {
+	return &UIDLimiter{
+		counts:     make(map[uint32]int),
+		suppressed: make(map[uint32]int),
+		now:        time.Now,
 	}
-	if _, seen := r.counts[uid]; !seen && len(r.counts) >= syslogMaxRateTracks {
+}
+
+// Allow reports whether one more message from uid fits in the current
+// window. When a new window starts, report is called once for each uid
+// that had messages suppressed in the one before, with their number.
+func (l *UIDLimiter) Allow(uid uint32, report func(uid uint32, n int)) bool {
+	now := l.now()
+	if now.Sub(l.windowStart) >= syslogRateWindow {
+		for u, n := range l.suppressed {
+			report(u, n)
+		}
+		l.windowStart = now
+		clear(l.counts)
+		clear(l.suppressed)
+	}
+	if _, seen := l.counts[uid]; !seen && len(l.counts) >= syslogMaxRateTracks {
 		// More distinct senders than the table holds in one window;
 		// treat the overflow as one more suppression.
-		r.suppressed[uid]++
+		l.suppressed[uid]++
 		return false
 	}
-	r.counts[uid]++
-	if r.counts[uid] > rateLimitFor(uid) {
-		r.suppressed[uid]++
+	l.counts[uid]++
+	if l.counts[uid] > UIDRateLimit(uid) {
+		l.suppressed[uid]++
 		return false
 	}
 	return true
 }
 
-func rateLimitFor(uid uint32) int {
+// Notice is the text of the event that reports n messages from uid
+// suppressed on source in one window.
+func (l *UIDLimiter) Notice(source string, uid uint32, n int) string {
+	return fmt.Sprintf("%s: suppressed %d messages from uid %d in %s (limit %d)",
+		source, n, uid, syslogRateWindow, UIDRateLimit(uid))
+}
+
+// UIDRateLimit is how many messages uid may send per window.
+func UIDRateLimit(uid uint32) int {
 	if uid == 0 {
 		return syslogRateRoot
 	}

@@ -58,6 +58,10 @@ type Receiver struct {
 
 	received atomic.Uint64 // total datagrams parsed successfully
 	dropped  atomic.Uint64 // parse/sink failures
+
+	// limit is /dev/log's per-UID rate limit, applied to senders that
+	// are neither root nor our own user. Touched only by the read loop.
+	limit *journal.UIDLimiter
 }
 
 // NewReceiver binds path as a SOCK_DGRAM Unix socket with SO_PASSCRED
@@ -109,6 +113,7 @@ func NewReceiver(path string, sink Sink) (*Receiver, error) {
 		sink:   sink,
 		conn:   conn,
 		stopCh: make(chan struct{}),
+		limit:  journal.NewUIDLimiter(),
 	}, nil
 }
 
@@ -196,22 +201,36 @@ func (r *Receiver) readLoop(ctx context.Context) {
 		if n == 0 {
 			continue
 		}
-		evt, err := journal.UnmarshalEvent(bodyBuf[:n])
-		if err != nil {
-			r.dropped.Add(1)
-			continue
-		}
-		stampFromSCM(evt, oobBuf[:oobn])
-		if err := evt.Validate(); err != nil {
-			r.dropped.Add(1)
-			continue
-		}
-		if err := r.sink.Handle(evt); err != nil {
-			r.dropped.Add(1)
-			continue
-		}
-		r.received.Add(1)
+		r.handle(bodyBuf[:n], oobBuf[:oobn])
 	}
+}
+
+// handle parses, stamps, checks and stores one datagram with its
+// ancillary data.
+//
+// The socket is 0666 and had no rate limit, so one local user could
+// fill the journal as fast as it is written and vacuum would delete
+// everyone's history to make room. Unprivileged senders get the limit
+// /dev/log applies; root, which PID 1 relays as, is never limited.
+func (r *Receiver) handle(data, oob []byte) {
+	evt, err := journal.UnmarshalEvent(data)
+	if err != nil {
+		r.dropped.Add(1)
+		return
+	}
+	if !stampFromSCM(evt, oob) && !r.limit.Allow(uint32(evt.Uid), r.reportSuppressed) {
+		r.dropped.Add(1)
+		return
+	}
+	if err := evt.Validate(); err != nil {
+		r.dropped.Add(1)
+		return
+	}
+	if err := r.sink.Handle(evt); err != nil {
+		r.dropped.Add(1)
+		return
+	}
+	r.received.Add(1)
 }
 
 // stampFromSCM overwrites the trusted metadata fields on evt using the
@@ -236,7 +255,9 @@ func (r *Receiver) readLoop(ctx context.Context) {
 // such a sender wrote may pass for the daemon's word: see
 // stampUntrusted. A datagram without credentials (SO_PASSCRED makes the
 // kernel always attach them) is treated the same way.
-func stampFromSCM(evt *journal.Event, oob []byte) {
+//
+// It reports whether the sender was trusted.
+func stampFromSCM(evt *journal.Event, oob []byte) bool {
 	var ucred *unix.Ucred
 	if cmsgs, err := unix.ParseSocketControlMessage(oob); err == nil {
 		for _, cm := range cmsgs {
@@ -252,19 +273,39 @@ func stampFromSCM(evt *journal.Event, oob []byte) {
 	trusted := ucred != nil && (ucred.Uid == 0 || int(ucred.Uid) == os.Getuid())
 	relayed := evt.Transport == journal.TransportKernel || evt.Transport == journal.TransportSyslog
 	if relayed && trusted {
-		return
+		return true
 	}
 	if !trusted {
 		stampUntrusted(evt)
 	}
 	if ucred == nil {
-		return
+		return false
 	}
 	evt.Pid = int(ucred.Pid)
 	evt.Uid = int(ucred.Uid)
 	evt.Gid = int(ucred.Gid)
 	if evt.Pid > 0 {
 		snapshotProc(evt)
+	}
+	return trusted
+}
+
+// reportSuppressed stores the note that n events from uid were dropped
+// by the rate limit, so the gap in the journal is visible.
+func (r *Receiver) reportSuppressed(uid uint32, n int) {
+	evt := &journal.Event{
+		Msg:              r.limit.Notice("events.sock", uid, n),
+		Prio:             journal.PriorityWarning,
+		SyslogIdentifier: "slinit-journald",
+		Transport:        journal.TransportDriver,
+		Pid:              os.Getpid(),
+		Uid:              os.Getuid(),
+		Gid:              os.Getgid(),
+	}
+	evt.Now()
+	evt.BootID, evt.MachineID, evt.Hostname = journal.CachedIDs()
+	if err := r.sink.Handle(evt); err != nil {
+		r.dropped.Add(1)
 	}
 }
 
