@@ -26,6 +26,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **An x32 syscall slipped past every seccomp deny rule.** An x32 call
+  reports `AUDIT_ARCH_X86_64`, so it passed the architecture check, and
+  its number is the x86_64 one with bit 30 set, so it matched no entry
+  and took a denylist's ALLOW: `mount` through x32 was allowed under
+  `system-call-filter = ~@mount`, as were `unshare(CLONE_NEWUSER)` under
+  `restrict-namespaces` and `socket(AF_INET)` under
+  `restrict-address-families`. Every filter now kills a call with that
+  bit set, as libseccomp and systemd do unless x32 is allowed. (Only a
+  kernel built with `CONFIG_X86_X32_ABI` accepts such calls.)
 - **`system-call-architectures = native` alone killed the service.**
   Set without a `system-call-filter` list — as were `system-call-log`
   and `system-call-error-number` — it compiled to an empty allowlist,

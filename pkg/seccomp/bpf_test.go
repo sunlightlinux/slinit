@@ -38,7 +38,8 @@ func TestCompileAllowMode(t *testing.T) {
 
 	// Per-syscall hit count: one ALLOW return per allowed syscall —
 	// read and write, plus the @default set every allowlist admits —
-	// and two KILL returns (the trailing default + arch reject).
+	// and two KILL returns (the trailing default + arch reject), three
+	// on x86-64, which also kills x32 calls.
 	var allowCount, killCount int
 	for _, in := range prog {
 		if in.Code != bpfRET|bpfK {
@@ -54,8 +55,8 @@ func TestCompileAllowMode(t *testing.T) {
 	if allowCount != len(f.Syscalls) {
 		t.Errorf("expected %d ALLOW returns (one per syscall), got %d", len(f.Syscalls), allowCount)
 	}
-	if killCount != 2 {
-		t.Errorf("expected 2 KILL returns (arch + default), got %d", killCount)
+	if want := 2 + x32Kills(); killCount != want {
+		t.Errorf("expected %d KILL returns (arch + default + x32), got %d", want, killCount)
 	}
 }
 
@@ -75,15 +76,15 @@ func TestCompileDenyModeFlipsDefault(t *testing.T) {
 		t.Errorf("deny mode trailing ret should be ALLOW, got 0x%x", last.K)
 	}
 	// The body now has one KILL (per-entry, for ptrace) plus one
-	// arch-reject KILL.
+	// arch-reject KILL, and on x86-64 the x32 one.
 	var killCount int
 	for _, in := range prog {
 		if in.Code == bpfRET|bpfK && Action(in.K) == ActionKill {
 			killCount++
 		}
 	}
-	if killCount != 2 {
-		t.Errorf("expected 2 KILL returns, got %d", killCount)
+	if want := 2 + x32Kills(); killCount != want {
+		t.Errorf("expected %d KILL returns, got %d", want, killCount)
 	}
 }
 
@@ -139,4 +140,59 @@ func TestCompileEmptyFilterStillValid(t *testing.T) {
 	// The SockFilter type comes from unix; make sure it's wired
 	// correctly so the build doesn't silently drop the import.
 	_ = unix.SockFilter{}
+}
+
+// x32Kills is the number of x32-reject KILL returns a program has.
+func x32Kills() int {
+	if NativeArch() == "x86-64" {
+		return 1
+	}
+	return 0
+}
+
+// TestX32CallsAreKilled: an x32 call reports AUDIT_ARCH_X86_64 with the
+// x86_64 number plus bit 30, so it passed the arch check and matched no
+// branch — taking a deny list's ALLOW. Every filter must kill it. The
+// host kernel may lack the x32 ABI, so this runs the compiled programs.
+func TestX32CallsAreKilled(t *testing.T) {
+	if NativeArch() != "x86-64" {
+		t.Skip("x32 is an x86-64 ABI")
+	}
+	x32 := func(name string) uint32 { return uint32(nrOf(t, name)) | x32SyscallBit }
+	eperm := ErrnoAction(unix.EPERM)
+	compile := func(items []string) []unix.SockFilter {
+		f, err := Build(items, ModeAllow, nil, eperm, nil)
+		if err != nil {
+			t.Fatalf("Build %v: %v", items, err)
+		}
+		prog, err := Compile(f)
+		if err != nil {
+			t.Fatalf("Compile %v: %v", items, err)
+		}
+		return prog
+	}
+	ns, err := CompileRestrictNamespaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	af, err := CompileRestrictAddressFamilies([]int{unix.AF_UNIX})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		what string
+		prog []unix.SockFilter
+		nr   uint32
+		args []uint64
+	}{
+		{"~@mount: mount", compile([]string{"~@mount"}), x32("mount"), nil},
+		{"read allowlist: read", compile([]string{"read"}), x32("read"), nil},
+		{"no list: getppid", compile(nil), x32("getppid"), nil},
+		{"restrict-namespaces: unshare(CLONE_NEWUSER)", ns, x32("unshare"), []uint64{unix.CLONE_NEWUSER}},
+		{"restrict-address-families: socket(AF_INET)", af, x32("socket"), []uint64{unix.AF_INET}},
+	} {
+		if got := runBPFArch(t, c.prog, auditArchX86_64, c.nr, c.args...); got != ActionKill {
+			t.Errorf("%s through x32 -> %#x, want KILL", c.what, got)
+		}
+	}
 }

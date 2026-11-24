@@ -22,6 +22,7 @@ const (
 	bpfK   = 0x00 // immediate operand
 
 	bpfJEQ = 0x10
+	bpfJGE = 0x30
 	bpfJA  = 0x00 // unconditional (used with bpfJMP+bpfK)
 )
 
@@ -37,6 +38,22 @@ const (
 	offsetNR   = 0
 	offsetArch = 4
 )
+
+// x32SyscallBit marks a syscall made through the x32 ABI. Such a call
+// reports AUDIT_ARCH_X86_64, so the arch check lets it through, and its
+// number is the x86_64 one with this bit set, so it matches none of the
+// x86_64 branches. libseccomp (and so systemd) refuses it unless x32 is
+// allowed; slinit does not allow x32.
+const x32SyscallBit = 0x40000000
+
+// x32Reject loads nothing: with nr in A, it kills a call whose number has
+// the x32 bit (or a higher one) set, and falls through otherwise.
+func x32Reject() []unix.SockFilter {
+	return []unix.SockFilter{
+		{Code: bpfJMP | bpfJGE | bpfK, K: x32SyscallBit, Jt: 0, Jf: 1},
+		retInsn(ActionKill),
+	}
+}
 
 // Compile turns a Filter into a cBPF program suitable for handing to
 // SECCOMP_SET_MODE_FILTER. The structure is:
@@ -120,10 +137,14 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 	}
 	prog = append(prog, retInsn(ActionKill)) // arch-reject
 
-	// 3. Load nr into A.
+	// 3. Load nr into A; on x86-64, kill an x32 call, which would
+	// otherwise miss every branch below and take the deny-mode ALLOW.
 	prog = append(prog, unix.SockFilter{
 		Code: bpfLD | bpfW | bpfABS, K: offsetNR,
 	})
+	if NativeArch() == "x86-64" {
+		prog = append(prog, x32Reject()...)
+	}
 
 	// 4. Per-syscall branches for the main filter.
 	for _, n := range syscalls {

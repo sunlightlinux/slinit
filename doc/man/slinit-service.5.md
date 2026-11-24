@@ -1433,6 +1433,10 @@ the internal **seccomp** package and installs it via the
     **system-call-error-number** — it refuses nothing else: every
     native syscall is allowed. Before 4.0.3 any of the three set alone
     refused every syscall, and the service died at its first one.
+    The x32 ABI is never accepted: on x86-64 an x32 call (number with
+    bit 30 set) is killed, as libseccomp does unless x32 is allowed.
+    Before 4.0.3 such a call passed the arch check and missed every
+    entry, so a denylist let it through.
 
 **system-call-error-number**=*kill*|*log*|*trap*|*errno-name*|*errno-number*
 :   Action for syscalls that do NOT match an allow entry (or DO match
@@ -1488,7 +1492,8 @@ caller is meant to fall back to an older call that can be checked
 process, which took down any program that probes and copes without the
 call — under **restrict-namespaces**, every threaded program, since
 glibc's **pthread_create**(3) tries **clone3** first. A syscall made
-through a foreign ABI (a 32-bit call on x86-64) is still killed.
+through a foreign ABI (a 32-bit or, since 4.0.3, an x32 call on x86-64)
+is still killed.
 **system-call-error-number** does not apply to these filters. The mount-based knobs (**protect-kernel-tunables**,
 **protect-control-groups**, **protect-kernel-logs**) additionally
 auto-imply *CLONE_NEWNS* so the operations are confined to the

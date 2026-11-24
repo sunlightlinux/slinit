@@ -19,9 +19,16 @@ import (
 // wrong jump offset changes the answer here just as it would in the kernel.
 func runBPF(t *testing.T, prog []unix.SockFilter, nr int, args ...uint64) Action {
 	t.Helper()
+	return runBPFArch(t, prog, archNumber(NativeArch()), uint32(nr), args...)
+}
+
+// runBPFArch is runBPF for a syscall made through the ABI arch (an
+// AUDIT_ARCH_* value) with the raw number nr.
+func runBPFArch(t *testing.T, prog []unix.SockFilter, arch, nr uint32, args ...uint64) Action {
+	t.Helper()
 	var data [64]byte // struct seccomp_data: nr, arch, ip, args[6]
-	binary.LittleEndian.PutUint32(data[0:], uint32(nr))
-	binary.LittleEndian.PutUint32(data[4:], archNumber(NativeArch()))
+	binary.LittleEndian.PutUint32(data[0:], nr)
+	binary.LittleEndian.PutUint32(data[4:], arch)
 	for i, a := range args {
 		binary.LittleEndian.PutUint64(data[16+8*i:], a)
 	}
@@ -38,6 +45,12 @@ func runBPF(t *testing.T, prog []unix.SockFilter, nr int, args ...uint64) Action
 			acc &= in.K
 		case bpfJMP | bpfJEQ | bpfK:
 			if acc == in.K {
+				pc += int(in.Jt)
+			} else {
+				pc += int(in.Jf)
+			}
+		case bpfJMP | bpfJGE | bpfK:
+			if acc >= in.K {
 				pc += int(in.Jt)
 			} else {
 				pc += int(in.Jf)

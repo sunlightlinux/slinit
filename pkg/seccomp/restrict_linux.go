@@ -59,16 +59,20 @@ func aluAnd(k uint32) unix.SockFilter {
 }
 
 // archHeader emits the standard arch-check prelude used by every
-// helper here: reject on wrong arch, then leave A pointing at nr for
-// the caller's per-syscall dispatch.
+// helper here: reject on wrong arch, and on x86-64 reject an x32 call,
+// then leave A pointing at nr for the caller's per-syscall dispatch.
 func archHeader() []unix.SockFilter {
-	return []unix.SockFilter{
+	prog := []unix.SockFilter{
 		loadArch(),
 		// If arch matches native, jump past the reject.
 		{Code: bpfJMP | bpfJEQ | bpfK, K: archNumber(NativeArch()), Jt: 1, Jf: 0},
 		retInsn(ActionKill),
 		loadNR(),
 	}
+	if NativeArch() == "x86-64" {
+		prog = append(prog, x32Reject()...)
+	}
+	return prog
 }
 
 // The Restrict*/Lock* filters below answer like systemd's
@@ -79,8 +83,8 @@ func archHeader() []unix.SockFilter {
 // any program that probes and copes: glibc's pthread_create tries clone3
 // first, so restrict-namespaces killed every threaded service.
 //
-// A foreign-architecture syscall still kills (archHeader): these filters
-// only describe the native ABI.
+// A foreign-architecture syscall still kills (archHeader), and so does an
+// x32 call on x86-64: these filters only describe the native ABI.
 
 // cond is one test on a syscall argument's low 32 bits: the bits in k are
 // set (bpfJSET), or the argument equals k (bpfJEQ).
