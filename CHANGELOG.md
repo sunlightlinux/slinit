@@ -1040,6 +1040,18 @@ requires.
   `dmesg` with the arguments `>` and `/var/log/dmesg.boot`; a field
   with a shell metacharacter now runs as `/bin/sh -c "exec …"`, which
   is what sysvinit and busybox do with it.
+- **A stopped console stopped PID 1.** Ctrl-S or Scroll Lock on a VT,
+  or XOFF on a serial line, stops a console taking output, and slinit
+  wrote its `[ OK ] name` lines with the scheduling lock held: to the
+  secondary consoles (`console=tty0 console=ttyS0`, or `--console-dup`)
+  directly, and through the catch-all pipe, whose drain blocked on the
+  console until the 64 KiB pipe filled. No service started or stopped
+  and `slinitctl` hung until the console was released. Measured: the
+  first `[ OK ]` line to a stopped secondary console never returned,
+  and with a stopped catch-all console PID 1 blocked after 3754 lines.
+  A console that takes no output for a second is now given up on: what
+  it misses is dropped, and when it takes output again it is told how
+  much. A console that takes its output gets exactly what it got before.
 
 ## [4.0.2] — 2026-11-22
 

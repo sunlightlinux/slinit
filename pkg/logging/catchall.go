@@ -22,6 +22,15 @@ const (
 	// catchAllMaxSize is the maximum size of the catch-all log before rotation.
 	// Keeps memory/disk bounded for long-running systems.
 	catchAllMaxSize = 1 * 1024 * 1024 // 1 MiB
+
+	// The console tee's queue: lines waiting for a console that is slower
+	// than the pipe, or stopped. Past either bound a line is dropped.
+	catchAllConsoleQueueLines = 1024
+	catchAllConsoleQueueBytes = 1 * 1024 * 1024
+
+	// catchAllConsoleFlushStall is how long the drain, at EOF, waits for a
+	// console that takes no line at all before leaving it behind.
+	catchAllConsoleFlushStall = time.Second
 )
 
 // CatchAllLogger captures all output written to stdout/stderr (fd 1 and 2)
@@ -55,6 +64,20 @@ type CatchAllLogger struct {
 	// serial line during runtime. Atomic access so drain() and the
 	// setter don't need to share a mutex.
 	consoleMuted atomic.Bool
+
+	// The console tee runs in a goroutine of its own, fed by the drain
+	// through consoleQ. The drain wrote to the console itself until a
+	// stopped console (Ctrl-S, Scroll Lock, XOFF) blocked it: the pipe
+	// filled behind it and PID 1 blocked writing its own stderr, with
+	// the scheduling lock held. consoleQueued is the bytes in consoleQ;
+	// consoleDropped, the lines dropped since one was last queued, is
+	// the drain's alone. consoleLines counts the lines written, so the
+	// drain can tell a slow console from a stopped one at EOF.
+	consoleQ       chan []byte
+	consoleQueued  atomic.Int64
+	consoleDropped uint64
+	consoleLines   atomic.Uint64
+	consoleDone    chan struct{}
 }
 
 // StartCatchAll sets up the catch-all logger. It:
@@ -151,6 +174,8 @@ const catchAllMaxLine = 256 * 1024
 // stderr.
 func (c *CatchAllLogger) drain() {
 	defer c.wg.Done()
+	c.startConsoleTee()
+	defer c.stopConsoleTee()
 
 	r := bufio.NewReaderSize(c.pipeR, 64*1024)
 	var (
@@ -202,7 +227,7 @@ func (c *CatchAllLogger) handleLine(line []byte, written *int64) {
 	// stream stays in /run/slinit/catch-all.log for post-hoc
 	// inspection.
 	if !c.consoleMuted.Load() {
-		fmt.Fprintf(c.console, "%s%s", line, c.consoleEOL)
+		c.toConsole(line)
 	}
 
 	// Write to persistent log file with timestamp.
@@ -220,6 +245,68 @@ func (c *CatchAllLogger) handleLine(line []byte, written *int64) {
 	}
 	if mute {
 		c.consoleMuted.Store(true)
+	}
+}
+
+// startConsoleTee starts the goroutine that writes queued lines to the
+// console.
+func (c *CatchAllLogger) startConsoleTee() {
+	c.consoleQ = make(chan []byte, catchAllConsoleQueueLines)
+	c.consoleDone = make(chan struct{})
+	go func() {
+		defer close(c.consoleDone)
+		for b := range c.consoleQ {
+			c.console.Write(b)
+			c.consoleQueued.Add(-int64(len(b)))
+			c.consoleLines.Add(1)
+		}
+	}()
+}
+
+// toConsole queues one line for the console, or drops it when the queue
+// is full. The first line queued after a drop is preceded by a line
+// saying how many were lost. On a console that keeps up, what it gets is
+// what the drain wrote to it directly before.
+func (c *CatchAllLogger) toConsole(line []byte) {
+	b := make([]byte, 0, len(line)+len(c.consoleEOL))
+	if c.consoleDropped > 0 {
+		b = fmt.Appendf(b, "slinit: the console was blocked; %d lines of output to it were dropped%s",
+			c.consoleDropped, c.consoleEOL)
+	}
+	b = append(b, line...)
+	b = append(b, c.consoleEOL...)
+	if c.consoleQueued.Add(int64(len(b))) > catchAllConsoleQueueBytes {
+		c.consoleQueued.Add(-int64(len(b)))
+		c.consoleDropped++
+		return
+	}
+	select {
+	case c.consoleQ <- b:
+		c.consoleDropped = 0
+	default:
+		c.consoleQueued.Add(-int64(len(b)))
+		c.consoleDropped++
+	}
+}
+
+// stopConsoleTee lets the console tee write what is queued, for as long
+// as the console keeps taking lines. A stopped one is left behind with
+// its goroutine: Stop, and soft reboot and exit behind it, used to wait
+// on it for as long as it stayed stopped.
+func (c *CatchAllLogger) stopConsoleTee() {
+	close(c.consoleQ)
+	last := c.consoleLines.Load()
+	for {
+		select {
+		case <-c.consoleDone:
+			return
+		case <-time.After(catchAllConsoleFlushStall):
+		}
+		n := c.consoleLines.Load()
+		if n == last {
+			return
+		}
+		last = n
 	}
 }
 

@@ -611,7 +611,9 @@ func main() {
 	// --log-file redirects the primary output to a file.
 	// Inspired by s6-linux-init-maker's -1 flag.
 	if consoleDup {
-		cons, err := os.OpenFile("/dev/console", os.O_WRONLY, 0)
+		// OpenConsole, not os.OpenFile: the copy is written under the
+		// scheduling lock, and a stopped console must not stop PID 1.
+		cons, err := logging.OpenConsole("/dev/console")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: --console-dup: %v (ignored)\n", err)
 		} else {
