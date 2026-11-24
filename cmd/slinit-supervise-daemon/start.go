@@ -161,7 +161,9 @@ func waitDescription(err error) string {
 }
 
 // readPIDFile parses PATH's integer contents. ok=false on missing or
-// malformed files, same shape as start-stop-daemon uses.
+// malformed files, same shape as start-stop-daemon uses. A file naming
+// PID 1 or this process is malformed too: --stop and --signal signal
+// what it names, and SIGTERM to PID 1 is a reboot under slinit.
 func readPIDFile(path string) (int, bool) {
 	buf, err := os.ReadFile(path)
 	if err != nil {
@@ -173,7 +175,7 @@ func readPIDFile(path string) (int, bool) {
 		return 0, false
 	}
 	n, err := strconv.Atoi(trimmed)
-	if err != nil || n <= 0 {
+	if err != nil || n <= 1 || n == os.Getpid() {
 		return 0, false
 	}
 	return n, true

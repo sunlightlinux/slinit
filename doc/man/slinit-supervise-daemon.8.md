@@ -66,7 +66,8 @@ daemon.
 **-p**, **--pidfile** *PATH*
 :   Path to the supervisor pidfile. Required for **--start**,
     **--stop**, and **--signal**. The daemon PID is written to
-    *PATH***.daemon**.
+    *PATH***.daemon**. A pidfile naming PID 1 or this process is
+    treated as malformed and never signalled.
 
 **-u**, **--user** *USER*[**:***GROUP*]
 :   Drop credentials before **exec**(2). The optional group shorthand

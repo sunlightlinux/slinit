@@ -33,6 +33,17 @@ verified with `git tag -v`.
   blocked in `write(2)` once the pipe filled (shared logger), or wrote
   into a pipe whose read end had been closed (UDP forwarding). A longer
   line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **`slinit-start-stop-daemon --stop --pidfile` signalled whatever
+  pid the file named, PID 1 included.** With only a pidfile to match
+  on, the pid it held was signalled unchecked: a pidfile naming PID 1
+  sent init SIGTERM — a reboot under slinit — and a pidfile in a
+  directory the daemon's user owns let that user pick any process for
+  root to signal. PID 1, the tool itself and its parent now never
+  match, and, as Debian's start-stop-daemon has done since dpkg
+  1.19.3, a world-writable pidfile is refused, as is — when it is the
+  only criterion — one owned by a user other than root or the caller,
+  or writable by another group. `slinit-supervise-daemon` likewise no
+  longer signals a pidfile naming PID 1 or itself.
 - **A stray option on the kernel command line panicked the kernel.**
   As PID 1 slinit receives every boot parameter the kernel did not
   consume, and parsed them with Go's exit-on-error flag handling, so an

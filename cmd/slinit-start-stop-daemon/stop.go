@@ -17,7 +17,7 @@ func cmdStop(opts Options) int {
 
 	pids, err := FindMatchingPIDs(crit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "scanning /proc: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		return exitInsufficientPri
 	}
 	if len(pids) == 0 {
@@ -104,7 +104,7 @@ func cmdStatus(opts Options) int {
 	}
 	pids, err := FindMatchingPIDs(crit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "scanning /proc: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		return exitInsufficientPri
 	}
 	if len(pids) > 0 {

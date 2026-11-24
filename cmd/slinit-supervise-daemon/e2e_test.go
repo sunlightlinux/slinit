@@ -271,3 +271,27 @@ func TestSupervisorIgnoresSIGHUPDuringBackoff(t *testing.T) {
 		t.Fatal("supervisor ignored SIGTERM during the respawn delay")
 	}
 }
+
+// TestCmdStopNeverSignalsInit: the pidfile is trusted as written, so
+// one naming PID 1 had --stop send init SIGTERM — a reboot under
+// slinit — and --signal send it whatever was asked. Neither init nor
+// this process may be read back as the supervisor or the daemon.
+func TestCmdStopNeverSignalsInit(t *testing.T) {
+	for _, pid := range []int{1, os.Getpid()} {
+		pidfile := filepath.Join(t.TempDir(), "svc.pid")
+		for _, p := range []string{pidfile, pidfile + ".daemon"} {
+			if err := os.WriteFile(p, []byte(strconv.Itoa(pid)+"\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got, ok := readPIDFile(pidfile); ok {
+			t.Errorf("pidfile holding %d read back as pid %d", pid, got)
+		}
+		if code := cmdStop(Options{PidFile: pidfile}); code != exitOK {
+			t.Errorf("cmdStop on pid %d: got %d, want %d (nothing to stop)", pid, code, exitOK)
+		}
+		if code := cmdSignal(Options{PidFile: pidfile, Signal: syscall.Signal(0)}); code == exitOK {
+			t.Errorf("cmdSignal on pid %d: signalled it", pid)
+		}
+	}
+}
