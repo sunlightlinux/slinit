@@ -356,3 +356,34 @@ func TestCaptureAccumulatesSoftReboots(t *testing.T) {
 		set = next
 	}
 }
+
+// Only setenv-global values are operator intent. Values the env-file
+// supplied (SetGlobalEnv at boot) must not be captured: the next
+// generation re-reads the env-file, and replaying the old values over
+// it reverted every edit made to that file before a soft reboot.
+func TestCaptureSkipsEnvFileValues(t *testing.T) {
+	g1 := newSet()
+	g1.SetGlobalEnv([]string{"HTTP_PROXY=old", "REMOVED=x"})
+	g1.GlobalSetEnv("OPERATOR", "1")
+	snap := snapshot.Capture(g1)
+	if !equalStrings(snap.GlobalEnv, []string{"OPERATOR=1"}) {
+		t.Errorf("snapshot GlobalEnv = %v, want [OPERATOR=1]", snap.GlobalEnv)
+	}
+
+	g2 := newSet()
+	g2.SetGlobalEnv([]string{"HTTP_PROXY=new"}) // the edited env-file
+	if _, err := snapshot.Restore(g2, snap, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := append([]string(nil), g2.GlobalEnv()...)
+	sort.Strings(got)
+	if want := []string{"HTTP_PROXY=new", "OPERATOR=1"}; !equalStrings(got, want) {
+		t.Errorf("generation 2 global env = %v, want %v", got, want)
+	}
+
+	// What the restore re-applied is still operator intent, so a second
+	// soft reboot carries it on.
+	if again := snapshot.Capture(g2); !equalStrings(again.GlobalEnv, []string{"OPERATOR=1"}) {
+		t.Errorf("second-generation snapshot GlobalEnv = %v, want [OPERATOR=1]", again.GlobalEnv)
+	}
+}

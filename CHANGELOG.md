@@ -41,6 +41,12 @@ verified with `git tag -v`.
   `ShutdownRemain` hold all run after that point, so a Ctrl+Alt+Del or
   a stray `kill -INT 1` there was `Attempted to kill init!`. As PID 1
   the signals now stay claimed until slinit is done.
+- **A soft reboot reverted edits to the env-file.** The soft-reboot
+  snapshot recorded the whole global environment, env-file values
+  included, and replayed it over the env-file the new generation had
+  just read, so a variable changed or removed in that file came back
+  with its old value. As `slinit(8)` documents, only values set with
+  `slinitctl setenv-global` are recorded now.
 - **Only one `start-on-mount` service per path ever fired.** The mount
   watcher kept a single registration per path, so when two services
   waited for the same mountpoint, or both set `start-on-mount = yes`,

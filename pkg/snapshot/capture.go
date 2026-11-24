@@ -8,7 +8,9 @@ import (
 
 // Capture walks the live ServiceSet and builds a Snapshot describing
 // the operator-visible intent: which services were activated, pinned,
-// or triggered, plus the global environment.
+// or triggered, plus the global variables set with setenv-global. The
+// env-file's values are left out: the next generation reads the file
+// again, and replaying the old values would revert any edit to it.
 //
 // Internal services and unloaded placeholders are skipped — they have
 // no meaningful "intent" the operator could have set; only loaded
@@ -23,7 +25,7 @@ func Capture(set *service.ServiceSet) *Snapshot {
 	snap := &Snapshot{
 		Version:   CurrentVersion,
 		WrittenAt: time.Now().UTC().Format(time.RFC3339),
-		GlobalEnv: append([]string(nil), set.GlobalEnv()...),
+		GlobalEnv: set.OperatorGlobalEnv(),
 		// Hand the kernel's boot duration forward: the generation about
 		// to start cannot measure it, because by then /proc/uptime
 		// counts the time this generation ran as well.

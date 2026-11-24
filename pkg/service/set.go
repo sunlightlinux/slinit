@@ -155,6 +155,11 @@ type ServiceSet struct {
 	globalEnvSnapV uint64         // version of cached snapshot
 	globalEnvIdx   map[string]int // key → index in globalEnv for O(1) lookup
 	envListeners   []EnvListener
+	// operatorEnv holds the keys set through GlobalSetEnv (setenv-global,
+	// or a snapshot restore replaying one), as opposed to those the
+	// env-file supplied: only these are operator intent to carry across
+	// a soft reboot.
+	operatorEnv map[string]struct{}
 
 	// Parallel start limiter (from --parallel-start-limit)
 	startLimiter *StartLimiter
@@ -872,6 +877,22 @@ func (ss *ServiceSet) GlobalEnv() []string {
 	return snap
 }
 
+// OperatorGlobalEnv returns, as KEY=VALUE, the global variables set
+// through GlobalSetEnv, leaving out those only the env-file supplied.
+func (ss *ServiceSet) OperatorGlobalEnv() []string {
+	ss.envMu.Lock()
+	defer ss.envMu.Unlock()
+	var out []string
+	for _, e := range ss.globalEnv {
+		if k, _, ok := strings.Cut(e, "="); ok {
+			if _, op := ss.operatorEnv[k]; op {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
 // GlobalSetEnv sets a global environment variable and notifies listeners.
 func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 	ss.envMu.Lock()
@@ -887,6 +908,10 @@ func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 		ss.globalEnvIdx[key] = len(ss.globalEnv)
 		ss.globalEnv = append(ss.globalEnv, varStr)
 	}
+	if ss.operatorEnv == nil {
+		ss.operatorEnv = make(map[string]struct{})
+	}
+	ss.operatorEnv[key] = struct{}{}
 	ss.globalEnvVer++
 	listeners := ss.copyEnvListeners()
 	ss.envMu.Unlock()
@@ -912,6 +937,7 @@ func (ss *ServiceSet) GlobalUnsetEnv(key string) {
 	}
 	ss.globalEnv = ss.globalEnv[:last]
 	delete(ss.globalEnvIdx, key)
+	delete(ss.operatorEnv, key)
 	ss.globalEnvVer++
 	listeners := ss.copyEnvListeners()
 	ss.envMu.Unlock()
