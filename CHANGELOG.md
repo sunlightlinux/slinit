@@ -1065,6 +1065,13 @@ requires.
   slinit itself restarted (measured: 100 events after the restart, 0
   delivered). A send that finds the socket gone now drops the connection
   and the next event dials the new one.
+- **A syslog daemon that stopped reading stopped slinit.** slinit's main
+  log went to `/dev/log` with no deadline, under the scheduling lock: in
+  container mode with the host's `/dev/log` mounted in, or when slinit
+  is not PID 1, a stalled daemon held it at the next message (measured:
+  blocked after 278 service starts). Messages now go to syslog from a
+  goroutine of their own through a bounded queue; past it they are
+  dropped, and the daemon is told how many when it reads again.
 
 ## [4.0.2] — 2026-11-22
 

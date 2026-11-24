@@ -131,6 +131,7 @@ type Logger struct {
 	level     Level
 	output    io.Writer
 	syslogW   *syslog.Writer
+	syslogQ   *syslogQueue
 	mainLevel Level // minimum level for main log (syslog/file); defaults to same as level
 
 	// consoleDup is an optional secondary writer that receives a copy of
@@ -363,24 +364,128 @@ func (l *Logger) mainLog(level Level, format string, args ...interface{}) {
 	l.logToSyslog(level, fmt.Sprintf(format, args...))
 }
 
+// newSyslog connects to the system log; a test points it elsewhere.
+var newSyslog = func() (*syslog.Writer, error) {
+	return syslog.New(syslog.LOG_DAEMON|syslog.LOG_NOTICE, "slinit")
+}
+
 // SetSyslog enables syslog output as the main log facility (like dinit's /dev/log).
 // Messages are sent to the daemon facility. Returns an error if the syslog
 // connection cannot be established; in that case the logger continues to work
 // with console output only.
 func (l *Logger) SetSyslog() error {
-	w, err := syslog.New(syslog.LOG_DAEMON|syslog.LOG_NOTICE, "slinit")
+	w, err := newSyslog()
 	if err != nil {
 		return err
 	}
 	l.syslogW = w
+	l.syslogQ = startSyslogQueue(w)
 	return nil
 }
 
-// CloseSyslog closes the syslog connection if one is open.
+// CloseSyslog closes the syslog connection if one is open, after passing
+// on what is queued for it, for as long as the daemon takes it.
 func (l *Logger) CloseSyslog() {
 	if l.syslogW != nil {
-		l.syslogW.Close()
+		if l.syslogQ.stop() {
+			l.syslogW.Close()
+		}
 		l.syslogW = nil
+		l.syslogQ = nil
+	}
+}
+
+// syslogQueueLen bounds the messages waiting for the syslog daemon.
+const syslogQueueLen = 1024
+
+// syslogFlushStall is how long CloseSyslog waits for a daemon that takes
+// no message at all.
+const syslogFlushStall = time.Second
+
+type syslogMsg struct {
+	level Level
+	msg   string
+}
+
+// syslogQueue passes messages to the syslog daemon from a goroutine of its
+// own. log/syslog writes with no deadline, and slinit logs with the
+// scheduling lock held, so a daemon that stopped reading /dev/log (one on
+// the host, in container mode; or slinit not run as PID 1) stopped slinit
+// at its next message. Past the queue's bound a message is dropped, and
+// the daemon is told how many were when it reads again. A daemon that
+// keeps up gets the same messages, in the same order.
+type syslogQueue struct {
+	w       *syslog.Writer
+	q       chan syslogMsg
+	quit    chan struct{}
+	done    chan struct{}
+	sent    atomic.Uint64
+	dropped atomic.Uint64
+}
+
+func startSyslogQueue(w *syslog.Writer) *syslogQueue {
+	sq := &syslogQueue{
+		w:    w,
+		q:    make(chan syslogMsg, syslogQueueLen),
+		quit: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	go sq.run()
+	return sq
+}
+
+func (sq *syslogQueue) put(level Level, msg string) {
+	select {
+	case sq.q <- syslogMsg{level, msg}:
+	default:
+		sq.dropped.Add(1)
+	}
+}
+
+func (sq *syslogQueue) run() {
+	defer close(sq.done)
+	for {
+		select {
+		case m := <-sq.q:
+			sq.write(m)
+		case <-sq.quit:
+			for {
+				select {
+				case m := <-sq.q:
+					sq.write(m)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+func (sq *syslogQueue) write(m syslogMsg) {
+	if n := sq.dropped.Swap(0); n > 0 {
+		sq.w.Warning(fmt.Sprintf("%d messages to syslog were dropped while it was not reading", n))
+	}
+	writeSyslog(sq.w, m.level, m.msg)
+	sq.sent.Add(1)
+}
+
+// stop lets the queue drain while the daemon keeps taking messages, and
+// reports whether it finished. One that has stopped is left behind with
+// its goroutine, which still holds the writer.
+func (sq *syslogQueue) stop() bool {
+	close(sq.quit)
+	last := sq.sent.Load()
+	for {
+		select {
+		case <-sq.done:
+			return true
+		case <-time.After(syslogFlushStall):
+		}
+		n := sq.sent.Load()
+		if n == last {
+			return false
+		}
+		last = n
 	}
 }
 
@@ -428,19 +533,25 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 }
 
 func (l *Logger) logToSyslog(level Level, msg string) {
+	if q := l.syslogQ; q != nil {
+		q.put(level, msg)
+	}
+}
+
+func writeSyslog(w *syslog.Writer, level Level, msg string) {
 	switch level {
 	case LevelDebug:
-		l.syslogW.Debug(msg)
+		w.Debug(msg)
 	case LevelInfo:
-		l.syslogW.Info(msg)
+		w.Info(msg)
 	case LevelNotice:
-		l.syslogW.Notice(msg)
+		w.Notice(msg)
 	case LevelWarn:
-		l.syslogW.Warning(msg)
+		w.Warning(msg)
 	case LevelError:
-		l.syslogW.Err(msg)
+		w.Err(msg)
 	default:
-		l.syslogW.Crit(msg)
+		w.Crit(msg)
 	}
 }
 
