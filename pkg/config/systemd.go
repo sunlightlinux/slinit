@@ -85,6 +85,7 @@ type SystemdConfig struct {
 	mapped      []kvPair // directives translated 1:1, emitted in order
 	depends     []string // depends-on: X
 	waitsFor    []string // waits-for: X
+	after       []string // after: X
 	conditions  []condDir
 	comments    []string
 }
@@ -278,8 +279,10 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	case "Documentation", "DefaultDependencies", "IgnoreOnIsolate", "RefuseManualStart", "RefuseManualStop":
 		// Informational or systemd-internal; skip silently.
 	case "After":
+		// Ordering only, as slinit's after: is. waits-for: also pulled
+		// the unit in and failed the load when it was not installed.
 		deps, targets := splitUnitRefs(val)
-		cfg.waitsFor = append(cfg.waitsFor, deps...)
+		cfg.after = append(cfg.after, deps...)
 		warns = append(warns, noteDroppedTargets(key, targets)...)
 	case "Before":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Unit `Before=%s` not mappable — invert on the target side", val)})
@@ -1176,6 +1179,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	for _, d := range c.waitsFor {
 		fmt.Fprintf(w, "waits-for: %s\n", d)
 	}
+	for _, d := range c.after {
+		fmt.Fprintf(w, "after: %s\n", d)
+	}
 }
 
 // --- Direct loading (no intermediate file) ---
@@ -1245,6 +1251,66 @@ func SystemdUnitToServiceDescription(unitPath, name string) (*ServiceDescription
 			unitPath, err, buf.String())
 	}
 	return desc, nil
+}
+
+// dropMissingSystemdRefs leaves out the after: and waits-for: names of a
+// unit loaded directly that resolve to nothing, with a note. They come
+// from After= and Wants=, which systemd ignores for a unit that is not
+// installed; slinit fails the load on a missing dependency of any kind,
+// so display-manager.service, which orders itself after ypbind.service,
+// could not load anywhere ypbind was not installed. Only the systemd
+// path does this: a native waits-for: on a missing service stays fatal.
+func (dl *DirLoader) dropMissingSystemdRefs(desc *ServiceDescription, name, unitPath string) {
+	keep := func(key string, refs []string) []string {
+		var out []string
+		for _, r := range refs {
+			if dl.descriptionExists(r) {
+				out = append(out, r)
+			} else if OnSystemdUnitWarning != nil {
+				OnSystemdUnitWarning(name, unitPath, "NOTE", fmt.Sprintf(
+					"%s %s left out: no such service or unit (systemd ignores it too)", key, r))
+			}
+		}
+		return out
+	}
+	desc.After = keep("after:", desc.After)
+	desc.WaitsFor = keep("waits-for:", desc.WaitsFor)
+}
+
+// descriptionExists reports whether findAndParse would find a
+// description for name — a loaded service, a service file, an init.d
+// script or a .service unit — without parsing it, which could recurse
+// through a unit that orders itself against this one.
+func (dl *DirLoader) descriptionExists(name string) bool {
+	if dl.set.FindService(name, false) != nil {
+		return true
+	}
+	names := []string{name}
+	if i := strings.IndexByte(name, '@'); i >= 0 {
+		names = append(names, name[:i])
+	}
+	for _, dir := range dl.dirs {
+		for _, n := range names {
+			if _, err := os.Stat(filepath.Join(dir, n)); err == nil {
+				return true
+			}
+		}
+	}
+	for _, dir := range dl.initDirs {
+		if IsInitDScript(filepath.Join(dir, name)) {
+			return true
+		}
+	}
+	unitName := name
+	if !strings.HasSuffix(unitName, ".service") {
+		unitName += ".service"
+	}
+	for _, dir := range dl.systemdDirs {
+		if IsSystemdUnit(filepath.Join(dir, unitName)) {
+			return true
+		}
+	}
+	return false
 }
 
 // expandSystemdSlice turns a systemd slice name into the path slinit's

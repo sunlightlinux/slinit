@@ -74,16 +74,20 @@ depend() {
 	if len(cfg.depends) != 1 || cfg.depends[0] != "localmount" {
 		t.Errorf("depends = %v, want [localmount]", cfg.depends)
 	}
-	// use net dns + after bootmisc → all waits-for
-	wantWaits := map[string]bool{"net": true, "dns": true, "bootmisc": true}
-	for _, w := range cfg.waitsFor {
-		if !wantWaits[w] {
-			t.Errorf("unexpected waits-for: %s", w)
-		}
-		delete(wantWaits, w)
+	// use net dns + after bootmisc: no script of those names beside
+	// this one, so each is left out with a note rather than emitted as
+	// a dependency slinit cannot load.
+	if len(cfg.after) != 0 || len(cfg.waitsFor) != 0 {
+		t.Errorf("after = %v, waits-for = %v, want both empty", cfg.after, cfg.waitsFor)
 	}
-	if len(wantWaits) != 0 {
-		t.Errorf("missing waits-for: %v", wantWaits)
+	for _, n := range []string{"use net", "use dns", "after bootmisc"} {
+		found := false
+		for _, w := range warns {
+			found = found || (w.level == "NOTE" && strings.Contains(w.msg, n))
+		}
+		if !found {
+			t.Errorf("no NOTE that `%s` was left out", n)
+		}
 	}
 
 	// before, provide, keyword should each generate warnings/notes
@@ -373,5 +377,52 @@ func TestNoNewPrivsLoads(t *testing.T) {
 	_, out := loadConverted(t, cfg)
 	if !strings.Contains(out, "options = no-new-privs") {
 		t.Errorf("no-new-privs not emitted as an option:\n%s", out)
+	}
+}
+
+// OpenRC's use and after only order against a service that is started
+// anyway, and want starts one that may fail; none fails the service
+// when the other is not installed, and net, logger or dns are virtual
+// names other scripts provide. Mapped to waits-for, `use net` made the
+// converted file fail to load. use/after are now after:, want is
+// waits-for:, and each is kept only when a script of that name sits
+// beside this one.
+func TestDependSoftReferencesLoad(t *testing.T) {
+	initd := t.TempDir()
+	for _, n := range []string{"bootmisc", "netmount", "localmount"} {
+		os.WriteFile(filepath.Join(initd, n), []byte("#!/sbin/openrc-run\n"), 0o755)
+	}
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\n" +
+		"depend() {\n\tneed localmount\n\tuse net logger\n\tafter bootmisc *\n\twant netmount\n}\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: filepath.Join(initd, "d")}
+	parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "d"), buf.Bytes(), 0o644)
+	for _, n := range []string{"bootmisc", "netmount", "localmount"} {
+		os.WriteFile(filepath.Join(dir, n), []byte("type = internal\n"), 0o644)
+	}
+	ss := service.NewServiceSet(nil)
+	dl := config.NewDirLoader(ss, []string{dir})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("d")
+	if err != nil {
+		t.Fatalf("converted file does not load: %v\n%s", err, buf.String())
+	}
+	want := map[string]service.DependencyType{
+		"localmount": service.DepRegular,
+		"bootmisc":   service.DepAfter,
+		"netmount":   service.DepWaitsFor,
+	}
+	for _, d := range svc.Record().Dependencies() {
+		if want[d.To.Name()] != d.DepType {
+			t.Errorf("dependency on %s is %v, want %v", d.To.Name(), d.DepType, want[d.To.Name()])
+		}
+		delete(want, d.To.Name())
+	}
+	if len(want) != 0 {
+		t.Errorf("missing dependencies %v\n%s", want, buf.String())
 	}
 }

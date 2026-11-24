@@ -51,9 +51,14 @@ as **%h**, a **norbind** bind, the **noexec** option of a temporary
 file system, and a **CapabilityBoundingSet** that keeps no capability
 at all.
 
-Dependencies: **Requires** becomes **depends-on**; **Wants** and
-**After** become **waits-for**; references to **.target** units are
-dropped with a note, since slinit has no targets. **Before** cannot be
+Dependencies: **Requires** becomes **depends-on**, **Wants** becomes
+**waits-for** and **After** becomes **after** (ordering only, as in
+systemd); references to **.target** units are dropped with a note,
+since slinit has no targets. slinit fails to load a service whose
+dependency of any kind does not exist, so each name written must exist
+as a slinit service (or a unit slinit can load) on the target system.
+A unit loaded directly is more forgiving, as systemd is: see
+**slinit**(8). **Before** cannot be
 mapped and is warned about; **WantedBy** / **RequiredBy** produce a
 note suggesting **slinitctl enable**.
 

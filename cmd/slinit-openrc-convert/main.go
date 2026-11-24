@@ -178,6 +178,7 @@ type slinitConfig struct {
 
 	depends  []string // → depends-on
 	waitsFor []string // → waits-for
+	after    []string // → after
 	comments []string
 }
 
@@ -434,13 +435,36 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 // parseDepend maps openrc dependency verbs onto slinit directives:
 //
 //	need X     → depends-on: X   (hard dep, must be running)
-//	use X      → waits-for: X    (soft; start if available)
-//	after X    → waits-for: X    (ordering only)
+//	want X     → waits-for: X    (soft; started, but may fail)
+//	use X      → after: X        (only orders against X if it is started)
+//	after X    → after: X        (ordering only)
 //	before X   → warn, not directly representable in slinit
 //	provide X  → warn, no direct equivalent
 //	keyword    → warn, runlevel gate
+//
+// slinit fails the load on any dependency it cannot find, where OpenRC
+// skips a use/want/after that is not installed and resolves virtual
+// names (net, logger, dns) through other scripts' provide. A soft
+// reference is kept only when a script of that name sits beside this
+// one, the directory being converted; the rest are left out with a
+// note. A need is kept either way, with a warning when it would not
+// resolve.
 func parseDepend(cfg *slinitConfig, body []string) []warning {
 	var warns []warning
+	exists := func(n string) bool {
+		fi, err := os.Stat(filepath.Join(filepath.Dir(cfg.scriptPath), n))
+		return err == nil && fi.Mode().IsRegular()
+	}
+	soft := func(verb string, names []string, into *[]string) {
+		for _, n := range names {
+			if exists(n) {
+				*into = append(*into, n)
+			} else {
+				warns = append(warns, warning{"NOTE", fmt.Sprintf(
+					"depend `%s %s` left out: no init.d script of that name beside this one (a virtual or uninstalled service)", verb, n)})
+			}
+		}
+	}
 	for _, ln := range body {
 		fields := strings.Fields(ln)
 		if len(fields) < 2 {
@@ -450,8 +474,16 @@ func parseDepend(cfg *slinitConfig, body []string) []warning {
 		switch verb {
 		case "need":
 			cfg.depends = append(cfg.depends, rest...)
+			for _, n := range rest {
+				if !exists(n) {
+					warns = append(warns, warning{"WARN", fmt.Sprintf(
+						"depend `need %s`: no init.d script of that name beside this one — the service will not load until a slinit service %q exists", n, n)})
+				}
+			}
+		case "want":
+			soft(verb, rest, &cfg.waitsFor)
 		case "use", "after":
-			cfg.waitsFor = append(cfg.waitsFor, rest...)
+			soft(verb, rest, &cfg.after)
 		case "before":
 			warns = append(warns, warning{"WARN", fmt.Sprintf("depend `before %v` not mappable — invert on the target side", rest)})
 		case "provide":
@@ -532,5 +564,8 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 	}
 	for _, d := range c.waitsFor {
 		fmt.Fprintf(w, "waits-for: %s\n", d)
+	}
+	for _, d := range c.after {
+		fmt.Fprintf(w, "after: %s\n", d)
 	}
 }

@@ -47,9 +47,17 @@ one it stays **process** with a warning, as slinit cannot follow a
 daemon that forks without a pidfile.
 
 Generated services get **restart = yes**, since OpenRC respawns
-supervised daemons. In **depend()**, **need** becomes **depends-on**
-and **use** / **after** become **waits-for**; **before**, **provide**
-and **keyword** cannot be mapped and produce a warning or note.
+supervised daemons. In **depend()**, **need** becomes **depends-on**,
+**want** becomes **waits-for**, and **use** / **after** become
+**after** (ordering only). slinit fails to load a service whose
+dependency does not exist, where OpenRC skips a missing **use**,
+**want** or **after** and resolves virtual names such as **net** or
+**logger** through other scripts' **provide**; so a **want**, **use**
+or **after** is kept only when a script of that name sits in the same
+directory as the one converted, and is otherwise left out with a note.
+A **need** is always kept, with a warning when no such script exists.
+**before**, **provide** and **keyword** cannot be mapped and produce a
+warning or note.
 Variables such as **required_files**, **required_dirs**,
 **start_stop_daemon_args**, **supervise_daemon_args**,
 **capabilities**, **output_log** and **extra_commands** are reported

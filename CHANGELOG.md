@@ -868,6 +868,20 @@ verified with `git tag -v`.
   `no_new_privs=yes`.** It emitted `no-new-privs = yes`, which slinit
   rejects as an unknown setting; it now writes `options = no-new-privs`,
   as its man page always said.
+- **A systemd unit's `After=` pulled the other unit in and failed the
+  load when it was missing.** `After=` was mapped to `waits-for:`, and
+  slinit fails a load on any dependency it cannot find, so a unit
+  ordered after one that is not installed could not run: 92 of 253 host
+  units failed to load directly (`display-manager.service`:
+  `After=ypbind.service`). `After=` is now `after:`, ordering only, and
+  a unit loaded directly leaves out, with a note, each `After=` and
+  `Wants=` naming a unit that does not exist — systemd ignores those
+  too; on the same host 3 of 253 now fail, each for a reason of its own.
+  `slinit-openrc-convert` had the same fault: `use net` became
+  `waits-for: net`, a virtual service no file provides. `use` and
+  `after` now become `after:`, `want` (previously ignored) `waits-for:`,
+  each kept only when a script of that name sits beside the converted
+  one; a `need` that would not resolve is warned about.
 
 ## [4.0.2] — 2026-11-22
 

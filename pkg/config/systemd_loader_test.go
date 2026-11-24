@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -168,5 +169,56 @@ PrivateNetwork=yes
 	}
 	if len(got) == 0 {
 		t.Error("PrivateNetwork has no slinit equivalent and must be reported, not dropped silently")
+	}
+}
+
+// systemd's After= orders and Wants= pulls in only what exists: a unit
+// naming one that is not installed still starts. Mapped to waits-for,
+// After= made every such reference fatal — 92 of 253 host units failed
+// to load (display-manager.service: After=ypbind.service). After= is
+// after:, and a reference to a unit that does not exist is left out
+// with a note.
+func TestSystemdOrderingOnMissingUnitsLoads(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "dm.service", `[Unit]
+After=ypbind.service peer.service
+Wants=gone.service peer.service
+[Service]
+ExecStart=/usr/bin/dm
+`)
+	writeUnit(t, units, "peer.service", "[Service]\nExecStart=/usr/bin/peer\n")
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, level+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("dm")
+	if err != nil {
+		t.Fatalf("unit with After=/Wants= on missing units does not load: %v", err)
+	}
+	deps := map[service.DependencyType]bool{}
+	for _, d := range svc.Record().Dependencies() {
+		if d.To.Name() != "peer" {
+			t.Errorf("unexpected dependency on %q", d.To.Name())
+		}
+		deps[d.DepType] = true
+	}
+	if !deps[service.DepAfter] || !deps[service.DepWaitsFor] || len(deps) != 2 {
+		t.Errorf("peer dependencies = %v, want after + waits-for", deps)
+	}
+	for _, missing := range []string{"ypbind", "gone"} {
+		found := false
+		for _, g := range got {
+			found = found || (strings.HasPrefix(g, "NOTE") && strings.Contains(g, missing))
+		}
+		if !found {
+			t.Errorf("no NOTE that %s was left out: %v", missing, got)
+		}
 	}
 }

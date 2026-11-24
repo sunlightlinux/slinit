@@ -265,7 +265,7 @@ ExecStart=/bin/true
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range append(cfg.waitsFor, cfg.depends...) {
+	for _, d := range append(append(cfg.waitsFor, cfg.after...), cfg.depends...) {
 		switch d {
 		case "network", "sysinit", "basic":
 			t.Errorf("target %q was turned into a service dependency", d)
@@ -273,7 +273,7 @@ ExecStart=/bin/true
 	}
 	// Real unit references must still come through.
 	var sawReal, sawAnother bool
-	for _, d := range cfg.waitsFor {
+	for _, d := range cfg.after {
 		if d == "real-dep" {
 			sawReal = true
 		}
@@ -284,7 +284,7 @@ ExecStart=/bin/true
 		}
 	}
 	if !sawReal || !sawAnother {
-		t.Errorf("real unit deps lost: waits-for=%v depends=%v", cfg.waitsFor, cfg.depends)
+		t.Errorf("real unit deps lost: after=%v depends=%v", cfg.after, cfg.depends)
 	}
 	var noted int
 	for _, w := range warns {

@@ -1299,6 +1299,7 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 						Message:     err.Error(),
 					}
 				}
+				dl.dropMissingSystemdRefs(desc, name, path)
 				return desc, path, nil
 			}
 		}
