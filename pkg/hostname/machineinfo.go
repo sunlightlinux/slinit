@@ -28,6 +28,7 @@ var MachineInfoPath = "/etc/machine-info"
 type MachineInfo struct {
 	lines []miLine
 	path  string // the file it was loaded from and is saved to
+	err   error  // a value Set refused, reported by Save
 }
 
 type miLine struct {
@@ -94,8 +95,16 @@ func (mi *MachineInfo) Get(key string) string {
 // set rewrites the first occurrence of KEY in-place; missing keys are
 // appended. Passing an empty value deletes the key (matches systemd's
 // "set to empty string clears" semantics).
+//
+// A value holding a control character other than a tab is refused: in a
+// line-oriented file it could add a second assignment. Save then reports
+// the refusal and writes nothing.
 func (mi *MachineInfo) Set(key, value string) {
 	key = strings.ToUpper(key)
+	if strings.IndexFunc(value, func(r rune) bool { return r != '\t' && (r < 0x20 || r == 0x7f) }) >= 0 {
+		mi.err = fmt.Errorf("%s: value contains a control character", key)
+		return
+	}
 	if value == "" {
 		mi.Delete(key)
 		return
@@ -129,6 +138,9 @@ func (mi *MachineInfo) Delete(key string) {
 // save writes the file back atomically (tmp + rename), creating parent
 // dirs if needed. Mode 0644 matches systemd's tmpfiles-installed default.
 func (mi *MachineInfo) Save() error {
+	if mi.err != nil {
+		return mi.err
+	}
 	path := mi.path
 	if path == "" {
 		path = MachineInfoPath

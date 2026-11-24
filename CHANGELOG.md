@@ -35,6 +35,14 @@ verified with `git tag -v`.
   waiter now gets a free console at once, as in dinit, and leaving the
   queue keeps the others in order. Acceptance case 187 no longer
   accepts a stuck STARTING as environmental.
+- **`slinit-localed` let a `LANGUAGE` value write other variables
+  into `/etc/locale.conf`.** `LANGUAGE` was the one variable
+  `SetLocale` did not validate, so `LANGUAGE=en\nLANG=/tmp/evil` was
+  written across two lines and read back as `LANG=/tmp/evil`. Each item
+  of its colon-separated list must now be a locale name, as systemd
+  validates every variable. As a safety net the env-file writer behind
+  `locale.conf`, `vconsole.conf` and `machine-info` refuses a value
+  holding a control character other than a tab, and writes nothing.
 - **`slinit-logind`'s `KillSession` with `who=leader` killed the whole
   session.** It wrote the scope's `cgroup.kill`, which is SIGKILL to
   every process, whatever signal was asked for, and any `who` other

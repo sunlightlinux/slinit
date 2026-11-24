@@ -71,6 +71,8 @@ Bus name *org.freedesktop.locale1*, object */org/freedesktop/locale1*.
 :   A single bare locale sets *LANG*; otherwise each item is *VAR=value*
     for one of *LANG*, *LANGUAGE* and the *LC_\** variables, each at most
     once. Every locale must be installed (as **locale -a** lists it).
+    *LANGUAGE* is a colon-separated list of locale names, which need not
+    be installed.
     Variables not given keep their value, and any equal to *LANG* is
     dropped, as systemd-localed merges them.
 

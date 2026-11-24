@@ -179,7 +179,15 @@ func ParseAssignments(items []string, installed func(string) bool) (map[string]s
 		if _, dup := out[name]; dup {
 			return nil, fmt.Errorf("Locale variable %s set twice, refusing.", name)
 		}
-		if val != "" && name != "LANGUAGE" {
+		if val != "" && name == "LANGUAGE" {
+			// A priority list of languages, not one locale: each
+			// item must be a locale name, none need be installed.
+			for _, l := range strings.Split(val, ":") {
+				if !ValidLocale(l) {
+					return nil, fmt.Errorf("Locale %s is not valid, refusing.", val)
+				}
+			}
+		} else if val != "" {
 			if !ValidLocale(val) {
 				return nil, fmt.Errorf("Locale %s is not valid, refusing.", val)
 			}
