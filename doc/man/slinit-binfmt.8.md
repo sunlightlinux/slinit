@@ -47,6 +47,8 @@ A spec has the shape:
 where the leading character (**:** by convention, but any single
 non-alnum byte works) becomes the field delimiter for the rest of
 the line. TYPE is **M** (magic bytes) or **E** (filename extension).
+NAME may not contain **/**, and may not be **status**, **register**,
+**.** or **..**; such a line makes its whole file fail to parse.
 See the kernel documentation for **binfmt_misc** for the full
 grammar and flag list.
 

@@ -126,6 +126,12 @@ verified with `git tag -v`.
   file kept its old mode with the new content in it. The mode is now
   set on the open descriptor, and the owner too — it was set by path
   after the close, when the path could name something else.
+- **A binfmt.d line named `status` unregistered every format.**
+  `slinit-binfmt` unregisters an existing format of the same name by
+  writing `-1` to `binfmt_misc/<name>`, and `binfmt_misc/status` reads
+  `-1` as "remove all" — so `:status:M::...` in any binfmt.d file wiped
+  qemu-user, Wine and every other handler at boot. The names `status`,
+  `register`, `.` and `..` are now a parse error.
 
 ## [4.0.2] — 2026-11-22
 
