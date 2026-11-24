@@ -26,6 +26,16 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A timer from one start attempt could act on the next.** The
+  job-timeout, runtime-max, start-delay and start-when-idle timers check
+  only the service's state when they fire. One that fired while the
+  scheduling lock was held across a stop and a new start — an
+  auto-restart, a `restart` — could no longer be recalled, and then
+  failed the new attempt at once (job-timeout), stopped the new run
+  (runtime-max), or launched the new attempt without its delay, after
+  which the new attempt's own timer launched a second process
+  (start-delay, start-when-idle). Each callback now acts only if it is
+  still the armed timer.
 - **`KillSession(leader)` could signal a process outside the session.**
   The session record keeps the leader as a bare pid; between the
   leader's exit and the reaper dropping the session the pid can be

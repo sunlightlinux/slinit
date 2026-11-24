@@ -951,9 +951,17 @@ func (sr *ServiceRecord) armRuntimeMaxTimer() {
 	svc := sr.self
 	set := sr.services
 	name := sr.serviceName
-	sr.runtimeMaxTimer = time.AfterFunc(d, func() {
+	var t *time.Timer
+	t = time.AfterFunc(d, func() {
 		set.queueMu.Lock()
 		defer set.queueMu.Unlock()
+		// Only the timer still armed is current: a callback that fired
+		// while queueMu was held across a stop and a new start (Stop
+		// returns false once the callback is running) belongs to the
+		// previous run, and would stop the new one.
+		if sr.runtimeMaxTimer != t {
+			return
+		}
 		// Re-check: the service may have already stopped (process
 		// exited on its own, operator stopped it) between the timer
 		// firing and us acquiring the lock. Stopping a STOPPED service
@@ -966,6 +974,7 @@ func (sr *ServiceRecord) armRuntimeMaxTimer() {
 		svc.Record().Stop(true)
 		set.processQueuesLocked()
 	})
+	sr.runtimeMaxTimer = t
 }
 
 // cancelRuntimeMaxTimer disarms the runtime cap timer if armed. Safe to
@@ -991,10 +1000,15 @@ func (sr *ServiceRecord) armJobTimeoutTimer() {
 	svc := sr.self
 	set := sr.services
 	name := sr.serviceName
-	sr.jobTimeoutTimer = time.AfterFunc(d, func() {
+	var t *time.Timer
+	t = time.AfterFunc(d, func() {
 		set.queueMu.Lock()
 		defer set.queueMu.Unlock()
-		if svc.State() != StateStarting {
+		// A callback that fired while queueMu was held across a stop and
+		// a restart belongs to the previous attempt: Stop cannot recall
+		// it once it runs, and the new attempt is STARTING too, so the
+		// state alone would fail it at once.
+		if sr.jobTimeoutTimer != t || svc.State() != StateStarting {
 			return
 		}
 		set.logger.Error("Service '%s': job-timeout-sec (%s) elapsed, failing start",
@@ -1005,6 +1019,7 @@ func (sr *ServiceRecord) armJobTimeoutTimer() {
 		rec.UnrecoverableStop()
 		set.processQueuesLocked()
 	})
+	sr.jobTimeoutTimer = t
 }
 
 // cancelJobTimeoutTimer disarms the job-timeout timer if armed.
