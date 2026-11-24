@@ -18,6 +18,10 @@ type DepDepthUpdater struct {
 	// snapshots of changed services and their original depths
 	changed   []depSnapshot
 	committed bool
+
+	snapped map[Service]bool // services with a snapshot in changed
+	queue   []Service        // services still to (re)calculate
+	queued  map[Service]bool // services in queue
 }
 
 type depSnapshot struct {
@@ -27,16 +31,32 @@ type depSnapshot struct {
 
 // AddPotentialUpdate queues a service for depth recalculation.
 func (u *DepDepthUpdater) AddPotentialUpdate(svc Service) {
-	u.changed = append(u.changed, depSnapshot{svc: svc, origDepth: svc.Record().DepDepth()})
+	if u.snapped == nil {
+		u.snapped = make(map[Service]bool)
+		u.queued = make(map[Service]bool)
+	}
+	if !u.snapped[svc] {
+		u.snapped[svc] = true
+		u.changed = append(u.changed, depSnapshot{svc: svc, origDepth: svc.Record().DepDepth()})
+	}
+	if !u.queued[svc] {
+		u.queued[svc] = true
+		u.queue = append(u.queue, svc)
+	}
 }
 
 // ProcessUpdates recalculates depths for all queued services and propagates
 // changes to their dependents (transitively). Returns an error if any service
 // exceeds MaxDepDepth; the caller should then call Rollback().
 func (u *DepDepthUpdater) ProcessUpdates() error {
-	// Process queue (may grow as we add dependents)
-	for i := 0; i < len(u.changed); i++ {
-		svc := u.changed[i].svc
+	// Process queue (may grow as we add dependents). A service already
+	// calculated is queued again when one of its dependencies changes
+	// later: in a diamond it can be reached through one path before the
+	// other has its new depth.
+	for len(u.queue) > 0 {
+		svc := u.queue[0]
+		u.queue = u.queue[1:]
+		delete(u.queued, svc)
 		rec := svc.Record()
 
 		newDepth := calcDepth(rec)
@@ -49,12 +69,7 @@ func (u *DepDepthUpdater) ProcessUpdates() error {
 			rec.SetDepDepth(newDepth)
 			// Queue all direct dependents for recalculation
 			for _, dept := range rec.Dependents() {
-				if !u.hasService(dept.From) {
-					u.changed = append(u.changed, depSnapshot{
-						svc:       dept.From,
-						origDepth: dept.From.Record().DepDepth(),
-					})
-				}
+				u.AddPotentialUpdate(dept.From)
 			}
 		}
 	}
@@ -65,6 +80,7 @@ func (u *DepDepthUpdater) ProcessUpdates() error {
 func (u *DepDepthUpdater) Commit() {
 	u.committed = true
 	u.changed = nil
+	u.snapped, u.queue, u.queued = nil, nil, nil
 }
 
 // Rollback restores all services to their original depths.
@@ -77,15 +93,7 @@ func (u *DepDepthUpdater) Rollback() {
 		snap.svc.Record().SetDepDepth(snap.origDepth)
 	}
 	u.changed = nil
-}
-
-func (u *DepDepthUpdater) hasService(svc Service) bool {
-	for _, snap := range u.changed {
-		if snap.svc == svc {
-			return true
-		}
-	}
-	return false
+	u.snapped, u.queue, u.queued = nil, nil, nil
 }
 
 // calcDepth computes a service's depth as max(dep.depth + 1) over all deps.

@@ -110,6 +110,15 @@ verified with `git tag -v`.
   them back while a newcomer could take the free slot ahead of them. A
   timer now wakes the queue when the oldest starter turns slow, and a
   newcomer queues behind those already waiting.
+- **A dependency could take the graph past the 32-level depth cap.**
+  Depths are recalculated through the dependents of whatever changed,
+  but each service only once: in a diamond (`a` on `b` and on `c`, `c`
+  on `b`) `a` was reached through `b` before `c` had its new depth, and
+  kept a stale one. A test chain gave `a` a true depth of 33 that was
+  accepted at a recorded 32. A service is now recalculated again when
+  one of its dependencies changes later. The recalculation also checked
+  for duplicates with a linear scan under the queue lock — 38 ms for a
+  dependency added under a service with 8000 dependents, 1 ms now.
 - **A peer on the `--metrics-listen` port could make PID 1 buffer
   without limit.** The request line and headers were read with
   `bufio.Reader.ReadString`, which keeps appending until a newline, so a
