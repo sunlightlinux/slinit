@@ -284,8 +284,17 @@ func (e *Emitter) publishToSocket(evt *Event) error {
 			e.congested.Store(true)
 		}
 	}
-	if err == nil {
+	switch {
+	case err == nil:
 		e.congested.Store(false)
+	case errors.Is(err, unix.ECONNREFUSED), errors.Is(err, unix.ENOTCONN),
+		errors.Is(err, unix.ENOENT), errors.Is(err, unix.EPIPE):
+		// The listener's socket is gone. When slinit-journald restarts
+		// it binds a new one at the same path, which this connection
+		// will never reach: every later event failed until PID 1
+		// restarted. Dial again on the next emit, which costs what an
+		// emit costs today while no listener is bound.
+		e.resetConn(conn)
 	}
 	return err
 }
@@ -332,11 +341,12 @@ func (e *Emitter) connect() (*net.UnixConn, error) {
 }
 
 // resetConn drops the cached socket, forcing the next Emit to dial
-// again. Called by the daemon when it observes a persistent write
-// failure (listener died and restarted).
-func (e *Emitter) resetConn() {
+// again. Called when a send finds the listener gone (it died, or was
+// restarted). conn is the connection that failed: one a concurrent emit
+// has already dialed in its place is left alone.
+func (e *Emitter) resetConn(conn *net.UnixConn) {
 	e.connMu.Lock()
-	if e.conn != nil {
+	if e.conn != nil && e.conn == conn {
 		_ = e.conn.Close()
 		e.conn = nil
 	}

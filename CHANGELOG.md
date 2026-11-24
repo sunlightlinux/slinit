@@ -1059,6 +1059,12 @@ requires.
   instead of 8 ms. After one timeout the socket now counts as congested
   and sends do not wait until one goes through again; the in-memory
   event ring keeps every event as before.
+- **After `slinit-journald` restarted, it got no more events from PID 1.**
+  slinit kept its connection to the daemon's old socket and never
+  dropped it, so every later event failed with `ECONNREFUSED` until
+  slinit itself restarted (measured: 100 events after the restart, 0
+  delivered). A send that finds the socket gone now drops the connection
+  and the next event dials the new one.
 
 ## [4.0.2] — 2026-11-22
 
