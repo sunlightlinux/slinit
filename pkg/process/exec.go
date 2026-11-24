@@ -793,46 +793,103 @@ func KillProcessGroup(pgid int) {
 // existing directory is left in place but its mode/owner are corrected.
 func ensureServiceDirs(dirs []ServiceDir, uid, gid uint32) error {
 	for _, d := range dirs {
-		if err := os.MkdirAll(d.Path, d.Mode); err != nil {
+		fd, err := openServiceDir(d.Path, d.Mode)
+		if err != nil {
 			return fmt.Errorf("service directory %s: %w", d.Path, err)
 		}
-		// MkdirAll short-circuits on an existing path via os.Stat,
-		// which FOLLOWS a symlink — measured: MkdirAll on a
-		// symlink-to-directory returns nil, and a Chmod on the same
-		// path then changes the target's mode. So without this check
-		// the correction below re-owned and re-moded whatever the link
-		// named, as root.
-		//
-		// That is reachable without any race. These names may have
-		// several components — parseServiceDirNames rejects absolute
-		// paths and '.'/'..' but permits "myapp/data" — and the first
-		// start chowns "myapp" to the service user, so on the next
-		// start the user owns the parent of the leaf and can leave a
-		// symlink standing there. Structurally the slinit-tmpfiles Z
-		// bug with MkdirAll in filepath.Walk's role.
-		//
-		// Refused rather than skipped, unlike tmpfiles. There,
-		// skipping is right because a symlink has no mode worth
-		// setting. Here the admin asked for a directory with a mode
-		// and an owner, and quietly not applying them would leave the
-		// service running against permissions nobody chose — the
-		// fail-open shape slinit rejected for confinement. A service
-		// directory slinit owns is not a place for a symlink; point
-		// the directory elsewhere, or bind-mount it.
-		if lst, err := os.Lstat(d.Path); err == nil && lst.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("service directory %s: is a symbolic link; "+
-				"refusing to chmod/chown its target", d.Path)
-		}
-		if err := os.Chmod(d.Path, d.Mode); err != nil {
+		// Mode and owner go through the descriptor, never the path.
+		// An Lstat-then-Chmod by path was what this used to do, and a
+		// service user who owns the parent of the leaf could swap the
+		// leaf for a symlink between the two calls (renameat2
+		// RENAME_EXCHANGE in a loop won within a few dozen starts),
+		// handing root's chmod/chown any file on the system.
+		err = unix.Fchmod(fd, uint32(d.Mode.Perm()))
+		if err != nil {
+			unix.Close(fd)
 			return fmt.Errorf("service directory %s: chmod: %w", d.Path, err)
 		}
 		if uid != 0 || gid != 0 {
-			if err := os.Chown(d.Path, int(uid), int(gid)); err != nil {
+			if err := unix.Fchown(fd, int(uid), int(gid)); err != nil {
+				unix.Close(fd)
 				return fmt.Errorf("service directory %s: chown: %w", d.Path, err)
 			}
 		}
+		unix.Close(fd)
 	}
 	return nil
+}
+
+// openServiceDir creates path one component at a time and returns a
+// descriptor for the leaf directory, never following a symlink that
+// someone other than root (or us) could have placed.
+//
+// os.MkdirAll short-circuits on an existing path via os.Stat, which
+// follows a symlink, and these names may have several components —
+// parseServiceDirNames rejects absolute paths and '.'/'..' but permits
+// "myapp/data" — so once a start has chowned "myapp" to the service
+// user, that user owns the parent of the leaf and can leave (or race
+// in) a symlink there. Refused rather than skipped: the admin asked for
+// a directory with a mode and an owner, and quietly not applying them
+// would leave the service running against permissions nobody chose.
+//
+// A symlink in an intermediate component is still followed when its
+// directory can only be written by root or by us (a /var/log that
+// points at another disk is legitimate); anywhere else it is refused.
+func openServiceDir(path string, mode os.FileMode) (int, error) {
+	start := "."
+	if filepath.IsAbs(path) {
+		start = "/"
+	}
+	fd, err := unix.Open(start, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	comps := strings.Split(strings.Trim(filepath.Clean(path), "/"), "/")
+	for i, c := range comps {
+		if c == "" || c == "." {
+			continue
+		}
+		last := i == len(comps)-1
+		nfd, err := unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err == unix.ENOENT {
+			if err = unix.Mkdirat(fd, c, uint32(mode.Perm())); err == nil || err == unix.EEXIST {
+				nfd, err = unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			}
+		}
+		if err != nil {
+			var st unix.Stat_t
+			if unix.Fstatat(fd, c, &st, unix.AT_SYMLINK_NOFOLLOW) == nil && st.Mode&unix.S_IFMT == unix.S_IFLNK {
+				if last || !onlyTrustedCanWrite(fd) {
+					unix.Close(fd)
+					return -1, fmt.Errorf("%s is a symbolic link; "+
+						"refusing to chmod/chown its target",
+						filepath.Join(append([]string{start}, comps[:i+1]...)...))
+				}
+				nfd, err = unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+			}
+		}
+		unix.Close(fd)
+		if err != nil {
+			return -1, err
+		}
+		fd = nfd
+	}
+	return fd, nil
+}
+
+// onlyTrustedCanWrite reports whether the directory open at dirfd can
+// have entries created or replaced only by root or by this process's
+// own user — i.e. whether a symlink found in it was put there by one
+// of them.
+func onlyTrustedCanWrite(dirfd int) bool {
+	var st unix.Stat_t
+	if unix.Fstat(dirfd, &st) != nil {
+		return false
+	}
+	if st.Uid != 0 && st.Uid != uint32(os.Geteuid()) {
+		return false
+	}
+	return st.Mode&0o022 == 0
 }
 
 // loadAppArmorProfile parses and replaces an AppArmor profile by

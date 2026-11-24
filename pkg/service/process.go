@@ -1409,13 +1409,7 @@ func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
 	unixListener.Close()
 
 	// Set permissions/ownership on Unix socket
-	if s.socketPerms != 0 {
-		if err := os.Chmod(path, os.FileMode(s.socketPerms)); err != nil {
-			fd.Close()
-			return nil, fmt.Errorf("chmod: %w", err)
-		}
-	}
-	if s.socketUID >= 0 || s.socketGID >= 0 {
+	if s.socketPerms != 0 || s.socketUID >= 0 || s.socketGID >= 0 {
 		uid, gid := s.socketUID, s.socketGID
 		if uid < 0 {
 			uid = -1
@@ -1423,13 +1417,55 @@ func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
 		if gid < 0 {
 			gid = -1
 		}
-		if err := os.Chown(path, uid, gid); err != nil {
+		if err := setSocketFileAttrs(path, s.socketPerms, uid, gid); err != nil {
 			fd.Close()
-			return nil, fmt.Errorf("chown: %w", err)
+			return nil, err
 		}
 	}
 
 	return fd, nil
+}
+
+// setSocketFileAttrs applies socket-permissions and socket-uid/gid to the
+// socket file just bound at path, without following a symlink.
+//
+// By path, a chmod/chown between bind and here followed whatever stood at
+// path by then, and the socket's directory is often one the service user
+// can write (its runtime-directory). Replacing the socket with a symlink
+// in that window handed root's chmod/chown any file on the system. The
+// name is pinned with O_PATH|O_NOFOLLOW and checked to be a socket; mode
+// and owner then go through that descriptor. A socket cannot be opened
+// for real, so the mode goes through fchmodat2(AT_EMPTY_PATH) where the
+// kernel has it (6.6+) and /proc/self/fd otherwise, as systemd does.
+func setSocketFileAttrs(path string, perms, uid, gid int) error {
+	pfd, err := unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("socket %s: %w", path, err)
+	}
+	defer unix.Close(pfd)
+	var st unix.Stat_t
+	if err := unix.Fstat(pfd, &st); err != nil {
+		return fmt.Errorf("socket %s: %w", path, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFSOCK {
+		return fmt.Errorf("socket %s: replaced by a non-socket after bind; "+
+			"refusing to chmod/chown it", path)
+	}
+	if perms != 0 {
+		err := unix.Fchmodat(pfd, "", uint32(perms), unix.AT_EMPTY_PATH)
+		if err == unix.EOPNOTSUPP || err == unix.ENOSYS || err == unix.EINVAL {
+			err = unix.Chmod("/proc/self/fd/"+strconv.Itoa(pfd), uint32(perms))
+		}
+		if err != nil {
+			return fmt.Errorf("chmod: %w", err)
+		}
+	}
+	if uid != -1 || gid != -1 {
+		if err := unix.Fchownat(pfd, "", uid, gid, unix.AT_EMPTY_PATH); err != nil {
+			return fmt.Errorf("chown: %w", err)
+		}
+	}
+	return nil
 }
 
 // closeSocket closes all activation sockets and removes Unix socket files.

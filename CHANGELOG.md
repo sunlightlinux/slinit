@@ -232,6 +232,19 @@ verified with `git tag -v`.
   follow sysctl.d(5): if the first separator is `.`, dots and slashes
   swap; if it is `/`, the key is used as is. `.` and `..` elements are
   refused explicitly, since a slashed key now keeps its dots.
+- **A service user could make PID 1 chmod/chown any file through a
+  service or socket directory.** For a nested `state-directory` such as
+  `myapp/data`, the service user owns `myapp`, and the leaf was checked
+  with `Lstat` and then chmod/chowned by path: swapping it for a symlink
+  in between (`renameat2` `RENAME_EXCHANGE` in a loop) re-moded the
+  target, 0600 to 0777, within a few hundred starts in the new test.
+  `socket-permissions`/`socket-uid`/`socket-gid` had the same window
+  between bind and chmod, in a directory that is often the service's own
+  runtime directory. Directories are now created and opened one
+  component at a time without following a symlink the service user
+  could have placed, and both mode and owner go through the descriptor;
+  the socket is pinned with `O_PATH|O_NOFOLLOW` and must still be a
+  socket.
 
 ## [4.0.2] — 2026-11-22
 

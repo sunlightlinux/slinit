@@ -4,7 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // A service directory that is a symlink must be refused, not followed.
@@ -74,5 +78,83 @@ func TestServiceDirStillCreatesAndCorrects(t *testing.T) {
 		t.Fatal(err)
 	} else if fi.Mode().Perm() != 0o700 {
 		t.Errorf("existing directory has mode %v; want it corrected to 0700", fi.Mode().Perm())
+	}
+}
+
+// The Lstat check alone was a time-of-check/time-of-use window: the
+// service user owns the parent of the leaf, so it can swap the leaf
+// directory for a symlink between the Lstat and the by-path Chmod.
+// Measured before the fix: the victim went 0600 -> 0777 within a few
+// dozen calls, with renameat2(RENAME_EXCHANGE) flipping the two names.
+func TestServiceDirRaceCannotRedirectChmod(t *testing.T) {
+	base := t.TempDir()
+	victim := filepath.Join(base, "victim") // stands in for /etc/shadow
+	if err := os.WriteFile(victim, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parent := filepath.Join(base, "myapp") // owned by the service user
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	leaf := filepath.Join(parent, "data")
+	if err := os.Mkdir(leaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alt := filepath.Join(parent, "alt")
+	if err := os.Symlink(victim, alt); err != nil {
+		t.Fatal(err)
+	}
+
+	var stop atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for !stop.Load() {
+			if err := unix.Renameat2(unix.AT_FDCWD, leaf, unix.AT_FDCWD, alt, unix.RENAME_EXCHANGE); err != nil {
+				return
+			}
+		}
+	}()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	calls := 0
+	for ; time.Now().Before(deadline); calls++ {
+		_ = ensureServiceDirs([]ServiceDir{{Path: leaf, Mode: 0o777}}, 0, 0)
+		if fi, _ := os.Stat(victim); fi.Mode().Perm() != 0o600 {
+			break
+		}
+	}
+	stop.Store(true)
+	<-done
+	fi, err := os.Stat(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("after %d calls the symlink target was re-moded to %v; want 0600 untouched",
+			calls, fi.Mode().Perm())
+	}
+}
+
+// A symlink in an intermediate component the service user controls is
+// refused too: for "myapp/data/x", whoever owns "myapp" could point
+// "data" anywhere, and MkdirAll + Chmod by path followed it.
+func TestServiceDirRefusesUntrustedIntermediateSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o777); err != nil { // writable by others
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "elsewhere")
+	if err := os.MkdirAll(filepath.Join(target, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "data")); err != nil {
+		t.Fatal(err)
+	}
+	err := ensureServiceDirs([]ServiceDir{{Path: filepath.Join(root, "data", "x"), Mode: 0o777}}, 0, 0)
+	if err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Errorf("want a symbolic-link refusal, got %v", err)
+	}
+	if fi, _ := os.Stat(filepath.Join(target, "x")); fi.Mode().Perm() != 0o700 {
+		t.Errorf("symlinked-through directory re-moded to %v; want 0700", fi.Mode().Perm())
 	}
 }
