@@ -48,6 +48,13 @@ verified with `git tag -v`.
   descriptors are freed. A test with a listener failing with `EMFILE`
   counted 60 million retries in 300 ms. Both now back off from 5 ms to
   1 s, as the control socket's loop already did.
+- **A shutdown broadcast could overwrite any file as root.** `wall`
+  takes each terminal from utmp's `ut_line`, which group utmp can write,
+  and its escape check kept a leading `..`: a line `../etc/passwd` made
+  PID 1 write the banner over the start of `/etc/passwd`. Inside `/dev`
+  a line could also name a disk. A line with a `..` element is now
+  refused, the open does not follow a symlink, and only a terminal
+  (TCGETS succeeds) is written to.
 
 ## [4.0.2] — 2026-11-22
 

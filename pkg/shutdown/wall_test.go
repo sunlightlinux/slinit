@@ -31,6 +31,7 @@ func fakeTTYs(t *testing.T, names ...string) map[string]string {
 	ttyDir = dir
 	ttyListFunc = func() []string { return names }
 	hostnameFunc = func() (string, error) { return "testhost", nil }
+	allowRegularTTYs(t)
 
 	paths := make(map[string]string, len(names))
 	for _, n := range names {
@@ -153,6 +154,75 @@ func TestWallPathEscapeDefense(t *testing.T) {
 	if _, err := os.Stat("/tmp/slinit-escape-test"); err == nil {
 		os.Remove("/tmp/slinit-escape-test")
 		t.Fatal("wall escaped ttyDir — wrote to /tmp/slinit-escape-test")
+	}
+}
+
+// allowRegularTTYs lets the tests stand regular files in for terminals.
+func allowRegularTTYs(t *testing.T) {
+	t.Helper()
+	orig := isTerminal
+	t.Cleanup(func() { isTerminal = orig })
+	isTerminal = func(*os.File) bool { return true }
+}
+
+// ut_line comes from utmp, which anything in group utmp can write. A
+// line that climbs out of /dev used to be kept — Clean leaves a leading
+// ".." alone and TrimLeft only strips "/" — so PID 1 overwrote the
+// start of the named file with the banner. The escape test above never
+// caught it: its target did not exist and wall does not create files.
+func TestWallDoesNotWriteOutsideTTYDir(t *testing.T) {
+	root := t.TempDir()
+	dev := filepath.Join(root, "dev")
+	etc := filepath.Join(root, "etc")
+	for _, d := range []string{dev, etc} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	passwd := filepath.Join(etc, "passwd")
+	const orig = "root:x:0:0:root:/root:/bin/sh\n"
+	if err := os.WriteFile(passwd, []byte(orig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeTTYs(t)
+	ttyDir = dev
+	ttyListFunc = func() []string { return []string{"../etc/passwd", "pts/../../etc/passwd"} }
+
+	Wall("going down", nil)
+
+	if got, _ := os.ReadFile(passwd); string(got) != orig {
+		t.Fatalf("wall wrote outside %s: passwd now begins %q", dev, got[:min(len(got), 40)])
+	}
+}
+
+// Inside /dev a line can still name a disk ("sda") or a symlink. Only a
+// terminal may receive the broadcast: writing the banner to the start
+// of a block device would destroy its partition table.
+func TestWallWritesOnlyToTerminals(t *testing.T) {
+	paths := fakeTTYs(t, "sda", "tty1")
+	isTerminal = func(f *os.File) bool { return filepath.Base(f.Name()) == "tty1" }
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(ttyDir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	isTerminal = func(f *os.File) bool { return true }
+	ttyListFunc = func() []string { return []string{"link"} }
+	Wall("x", nil)
+	if got := readFile(t, victim); got != "" {
+		t.Errorf("wall followed a symlink in ttyDir: %q", got)
+	}
+
+	isTerminal = func(f *os.File) bool { return filepath.Base(f.Name()) == "tty1" }
+	ttyListFunc = func() []string { return []string{"sda", "tty1"} }
+	Wall("x", nil)
+	if got := readFile(t, paths["sda"]); got != "" {
+		t.Errorf("wall wrote to a non-terminal: %q", got)
+	}
+	if got := readFile(t, paths["tty1"]); got == "" {
+		t.Error("wall skipped the terminal")
 	}
 }
 
