@@ -45,9 +45,7 @@ func Setup(unit *MountUnit) (*AutofsMount, error) {
 		return nil, fmt.Errorf("pipe2: %w", err)
 	}
 
-	// Build mount options string
-	opts := fmt.Sprintf("fd=%d,pgrp=%d,minproto=%d,maxproto=%d",
-		pipeFDs[1], os.Getpid(), MinProtoVersion, MaxProtoVersion)
+	opts := mountOptions(unit, pipeFDs[1], os.Getpid())
 
 	// Mount autofs filesystem
 	if err := unix.Mount("slinit-mount", unit.Where, "autofs", 0, opts); err != nil {
@@ -89,6 +87,17 @@ func Setup(unit *MountUnit) (*AutofsMount, error) {
 	am.pipeWR = -1
 
 	return am, nil
+}
+
+// mountOptions builds the autofs mount data string. The kernel sets
+// up an indirect mount unless told "direct" (fs/autofs/inode.c).
+func mountOptions(unit *MountUnit, pipeFD, pgrp int) string {
+	opts := fmt.Sprintf("fd=%d,pgrp=%d,minproto=%d,maxproto=%d",
+		pipeFD, pgrp, MinProtoVersion, MaxProtoVersion)
+	if unit.AutofsType == TypeDirect {
+		opts += ",direct"
+	}
+	return opts
 }
 
 // PipeFD returns the read-end pipe fd for epoll registration.
