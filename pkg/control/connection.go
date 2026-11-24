@@ -216,6 +216,23 @@ func (c *Connection) EnvEvent(varString string, override bool) {
 	c.writePacket(InfoEnvEvent, payload) //nolint: errcheck
 }
 
+// readIdleTimeout is how long serve waits for a packet before looking
+// at the server's context again. A variable for tests.
+var readIdleTimeout = 30 * time.Second
+
+// countingReader counts the bytes read through it, so serve can tell a
+// timeout between packets from one in the middle of a packet.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.n += n
+	return n, err
+}
+
 func (c *Connection) serve() {
 	defer c.close()
 
@@ -229,13 +246,20 @@ func (c *Connection) serve() {
 		// Set a read deadline so we periodically re-check ctx.Done
 		// instead of blocking indefinitely on a dead connection.
 		if tc, ok := c.conn.(interface{ SetReadDeadline(time.Time) error }); ok {
-			tc.SetReadDeadline(time.Now().Add(30 * time.Second))
+			tc.SetReadDeadline(time.Now().Add(readIdleTimeout))
 		}
 
-		cmd, payload, err := ReadPacket(c.conn)
+		cr := countingReader{r: c.conn}
+		cmd, payload, err := ReadPacket(&cr)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // deadline expired, loop back to check ctx
+			// A timeout between packets is idleness: loop back to check
+			// ctx. A timeout after part of a packet was read is not —
+			// the bytes consumed are gone, and carrying on would parse
+			// the rest of that packet as a new one (a wall-notice
+			// payload holding a shutdown command would run it). The
+			// stream can no longer be framed, so the connection ends.
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() && cr.n == 0 {
+				continue
 			}
 			if err != io.EOF {
 				c.server.logger.Debug("Control connection read error: %v", err)

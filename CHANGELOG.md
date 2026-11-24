@@ -63,6 +63,13 @@ verified with `git tag -v`.
   panic. `slinit-monitor` with two names, `add-dep` and `enable` all
   take a second handle while the first service can be changing state.
   The new test crashed 5 runs out of 5 in about 5 ms.
+- **A control client that stalled inside a packet had its payload run
+  as commands.** The control connection re-arms a 30 s read deadline to
+  look at the server's state, and treated every timeout as idleness —
+  including one after a packet's header had been read. The payload that
+  followed was then parsed as new packets: a wall-notice whose text
+  held the bytes of a shutdown command rebooted the machine in the new
+  test. A timeout after part of a packet now closes the connection.
 
 ## [4.0.2] — 2026-11-22
 
