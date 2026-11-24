@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A command that left a child in the background held its caller.**
+  Commands slinit runs itself and reads the output of — `run-action`,
+  env generators, the power (SIGPWR) hook, the OpenRC `depend` parser,
+  `apparmor_parser` — waited for EOF on their output pipe, which a
+  background child holds open: the caller waited for as long as that
+  child lived. Output is now read for at most 2 s after the command
+  exits, and its exit status is reported as before.
 - **A sleep hook could hold a suspend for ever.** As with the shutdown
   hook, the hook's output went to a pipe and `Wait` waited for EOF on
   it, so a hook that left anything running in the background held the
