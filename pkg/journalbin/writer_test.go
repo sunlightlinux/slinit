@@ -400,3 +400,42 @@ func TestDecodeUUIDHexRejectsBad(t *testing.T) {
 		t.Fatal("expected error for non-hex chars")
 	}
 }
+
+// A client field named like a trusted one must not reach the file:
+// the reader applies items in order, so a Fields["_PID"] written after
+// the kernel-attested _PID used to replace it. systemd's journald drops
+// client fields starting with '_' the same way.
+func TestWriterDropsUnderscoreClientFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "forge.journal")
+	w, err := NewWriter(path, testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(&journal.Event{
+		Ts: 1_000_000, Mts: 1_000_000, Msg: "m", Prio: journal.PriorityInfo,
+		Transport: journal.TransportNative, Pid: 4300, Uid: 1000, Comm: "evil",
+		BootID: testBootID,
+		Fields: map[string]string{"_PID": "1", "_UID": "0", "_COMM": "slinit", "_TRANSPORT": "driver", "OK": "1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var got *journal.Event
+	if err := r.Iter(func(e *journal.Event) bool { got = e; return false }); err != nil {
+		t.Fatal(err)
+	}
+	if got.Pid != 4300 || got.Uid != 1000 || got.Comm != "evil" || got.Transport != journal.TransportNative {
+		t.Errorf("client fields overrode trusted ones: pid %d uid %d comm %q transport %q",
+			got.Pid, got.Uid, got.Comm, got.Transport)
+	}
+	if got.Fields["OK"] != "1" {
+		t.Errorf("ordinary client field lost: %v", got.Fields)
+	}
+}

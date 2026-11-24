@@ -202,6 +202,10 @@ func (r *Receiver) readLoop(ctx context.Context) {
 			continue
 		}
 		stampFromSCM(evt, oobBuf[:oobn])
+		if err := evt.Validate(); err != nil {
+			r.dropped.Add(1)
+			continue
+		}
 		if err := r.sink.Handle(evt); err != nil {
 			r.dropped.Add(1)
 			continue
@@ -211,10 +215,7 @@ func (r *Receiver) readLoop(ctx context.Context) {
 }
 
 // stampFromSCM overwrites the trusted metadata fields on evt using the
-// SCM_CREDENTIALS ancillary buffer. When the buffer is empty (SO_PASSCRED
-// wasn't sent, or the client is on a non-Linux kernel) the values from
-// the emitter side stand — that's the in-process fanout case where the
-// emitter already stamped its own PID/UID/GID.
+// SCM_CREDENTIALS ancillary buffer.
 //
 // The /proc snapshot fields (_comm, _exe, _cmdline) are refreshed from
 // /proc/<pid>/ for external clients so stale rename-yourself games
@@ -230,35 +231,58 @@ func (r *Receiver) readLoop(ctx context.Context) {
 // SCM_CREDENTIALS anyway, so trusting them adds no forgery. Anyone else
 // is stamped from the kernel as before, and may not claim a relayed
 // transport: theirs becomes native.
+//
+// The socket is 0666, so "anyone else" is any local user, and nothing
+// such a sender wrote may pass for the daemon's word: see
+// stampUntrusted. A datagram without credentials (SO_PASSCRED makes the
+// kernel always attach them) is treated the same way.
 func stampFromSCM(evt *journal.Event, oob []byte) {
-	if len(oob) == 0 {
+	var ucred *unix.Ucred
+	if cmsgs, err := unix.ParseSocketControlMessage(oob); err == nil {
+		for _, cm := range cmsgs {
+			if cm.Header.Level != unix.SOL_SOCKET || cm.Header.Type != unix.SCM_CREDENTIALS {
+				continue
+			}
+			if len(cm.Data) < unix.SizeofUcred {
+				continue
+			}
+			ucred = castUcred(cm.Data)
+		}
+	}
+	trusted := ucred != nil && (ucred.Uid == 0 || int(ucred.Uid) == os.Getuid())
+	relayed := evt.Transport == journal.TransportKernel || evt.Transport == journal.TransportSyslog
+	if relayed && trusted {
 		return
 	}
-	cmsgs, err := unix.ParseSocketControlMessage(oob)
-	if err != nil {
+	if !trusted {
+		stampUntrusted(evt)
+	}
+	if ucred == nil {
 		return
 	}
-	for _, cm := range cmsgs {
-		if cm.Header.Level != unix.SOL_SOCKET || cm.Header.Type != unix.SCM_CREDENTIALS {
-			continue
-		}
-		if len(cm.Data) < unix.SizeofUcred {
-			continue
-		}
-		ucred := castUcred(cm.Data)
-		relayed := evt.Transport == journal.TransportKernel || evt.Transport == journal.TransportSyslog
-		trusted := ucred.Uid == 0 || int(ucred.Uid) == os.Getuid()
-		if relayed && trusted {
-			continue
-		}
-		if !trusted {
-			evt.Transport = journal.TransportNative
-		}
-		evt.Pid = int(ucred.Pid)
-		evt.Uid = int(ucred.Uid)
-		evt.Gid = int(ucred.Gid)
-		if evt.Pid > 0 {
-			snapshotProc(evt)
+	evt.Pid = int(ucred.Pid)
+	evt.Uid = int(ucred.Uid)
+	evt.Gid = int(ucred.Gid)
+	if evt.Pid > 0 {
+		snapshotProc(evt)
+	}
+}
+
+// stampUntrusted replaces everything an unprivileged sender could forge
+// with the receiver's own values: the trusted fields, its timestamps
+// (an mts in the future would land in the persisted marker and hide the
+// shutdown tail), the boot/machine IDs and hostname, the unit
+// (_SLINIT_UNIT, which -u matches), and client fields named like
+// trusted ones, which systemd's journald drops too.
+func stampUntrusted(evt *journal.Event) {
+	evt.StripTrusted()
+	evt.Transport = journal.TransportNative
+	evt.Unit = ""
+	evt.Now()
+	evt.BootID, evt.MachineID, evt.Hostname = journal.CachedIDs()
+	for k := range evt.Fields {
+		if strings.HasPrefix(k, "_") {
+			delete(evt.Fields, k)
 		}
 	}
 }

@@ -2,7 +2,9 @@ package journald
 
 import (
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -52,5 +54,46 @@ func TestUnprivilegedClientCannotClaimRelay(t *testing.T) {
 	}
 	if evt.Transport != journal.TransportNative {
 		t.Errorf("unprivileged client's transport = %q, want native: it may not pose as a relay", evt.Transport)
+	}
+}
+
+// events.sock is 0666, so any local user can send to it. Before the fix
+// the receiver stamped only pid/uid/gid/comm/exe/cmdline from the
+// kernel: a forged _boot_id/_machine_id/_hostname, ts/mts, unit and a
+// client field such as _PID went to disk as sent, and the binary reader
+// let the field override the kernel-attested _PID. A forged mts of
+// MaxInt64 also landed in the persisted marker and hid the shutdown tail.
+func TestUntrustedClientCannotForgeTrustedFields(t *testing.T) {
+	journal.InitIDs("testhost")
+	uid := os.Getuid() + 1
+	if uid == 0 {
+		uid = 1
+	}
+	evt := &journal.Event{
+		Ts: 1, Mts: 1<<63 - 1, Msg: "forged", Prio: journal.PriorityInfo,
+		Unit:   "sshd",
+		BootID: "00000000000000000000000000000000", MachineID: "11111111111111111111111111111111",
+		Hostname: "elsewhere", Exe: "/usr/sbin/sshd",
+		Fields: map[string]string{"_PID": "1", "_TRANSPORT": "driver", "_COMM": "slinit", "NOTE": "ok"},
+	}
+	before := time.Now().UnixNano()
+	stampFromSCM(evt, credOOB(4300, uid))
+
+	if evt.BootID != journal.BootID() || evt.MachineID != journal.MachineID() || evt.Hostname != journal.Hostname() {
+		t.Errorf("ids kept: boot %q machine %q host %q", evt.BootID, evt.MachineID, evt.Hostname)
+	}
+	if evt.Ts < before || evt.Mts == 1<<63-1 {
+		t.Errorf("timestamps kept: ts %d mts %d", evt.Ts, evt.Mts)
+	}
+	if evt.Unit != "" {
+		t.Errorf("unit %q kept: an unprivileged sender may not claim a service", evt.Unit)
+	}
+	for k := range evt.Fields {
+		if strings.HasPrefix(k, "_") {
+			t.Errorf("client field %s kept", k)
+		}
+	}
+	if evt.Fields["NOTE"] != "ok" {
+		t.Errorf("ordinary client field lost: %v", evt.Fields)
 	}
 }

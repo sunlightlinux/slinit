@@ -888,7 +888,12 @@ func eventFields(evt *journal.Event) [][]byte {
 	// Freeform client fields last. Order not guaranteed (Go map
 	// iteration randomness) — cursor comparisons don't depend on
 	// item order within an entry (xor_hash is order-invariant).
+	// '_' names are trusted and written above; a client's would
+	// replace them on read, so they are dropped, as systemd does.
 	for k, v := range evt.Fields {
+		if strings.HasPrefix(k, "_") {
+			continue
+		}
 		appendKV(k, v)
 	}
 	return fields

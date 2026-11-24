@@ -126,6 +126,19 @@ verified with `git tag -v`.
   one of its dependencies changes later. The recalculation also checked
   for duplicates with a linear scan under the queue lock — 38 ms for a
   dependency added under a service with 8000 dependents, 1 ms now.
+- **Any local user could forge trusted fields in the binary journal.**
+  `events.sock` is mode 0666, and `slinit-journald` stamped only
+  `_pid`/`_uid`/`_gid`/`_comm`/`_exe`/`_cmdline` from the kernel: a
+  sender's `_boot_id`, `_machine_id`, `_hostname`, `ts`/`mts`, `unit`
+  and client fields such as `_PID=1` or `_TRANSPORT=driver` went to disk
+  as sent, and the binary reader let the client `_PID` replace the
+  kernel-attested one. A forged `mts` also reached the persisted-event
+  marker and could suppress PID 1's shutdown tail. A sender that is
+  neither root nor the daemon's user now has those fields replaced by
+  the receiver's own (its `unit` cleared, so `-u` cannot be spoofed),
+  every event is validated (including the 64-field cap) before it is
+  stored, and the binary writer drops client fields starting with `_`,
+  as systemd-journald does.
 - **A peer on the `--metrics-listen` port could make PID 1 buffer
   without limit.** The request line and headers were read with
   `bufio.Reader.ReadString`, which keeps appending until a newline, so a

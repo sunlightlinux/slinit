@@ -203,6 +203,9 @@ func (e *Event) Validate() error {
 	if e.Ts == 0 {
 		return errors.New("journal: ts is required (call Now before Validate)")
 	}
+	if len(e.Fields) > MaxFields {
+		return fmt.Errorf("journal: %d fields (max %d)", len(e.Fields), MaxFields)
+	}
 	for k := range e.Fields {
 		if !IsValidFieldName(k) {
 			return fmt.Errorf("journal: invalid field name %q (must be [A-Z0-9_] and not start with _)", k)
