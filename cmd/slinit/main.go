@@ -2203,8 +2203,14 @@ func main() {
 // moment login prompts come up. sync.Once so Stop is idempotent
 // even if the listener sees multiple STARTED events (start-stop
 // cycles from a smooth-recovery service).
+//
+// Stop runs on its own goroutine. Listeners are called with the
+// scheduling lock held, and Stop waits for an open debugger menu to
+// close: run inline, it froze every start, stop and control command for
+// as long as the operator sat in the menu, and choosing [f] there
+// (ForceStopService, which needs that lock) deadlocked PID 1 for good.
 type debuggerStopOnStart struct {
-	dbg  *recovery.Debugger
+	dbg  interface{ Stop() }
 	once sync.Once
 }
 
@@ -2212,7 +2218,7 @@ func (l *debuggerStopOnStart) ServiceEvent(_ service.Service, event service.Serv
 	if event != service.EventStarted {
 		return
 	}
-	l.once.Do(l.dbg.Stop)
+	go l.once.Do(l.dbg.Stop)
 }
 
 // pathRearmListener re-arms a path-activation watch each time the

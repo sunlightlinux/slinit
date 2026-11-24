@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **The boot debugger's menu could freeze or deadlock PID 1.** When the
+  boot service reached STARTED, slinit stopped the Ctrl-B debugger from
+  inside the service-event listener, which runs with the scheduling
+  lock held; with the menu open, Stop waited for it to close. Every
+  start, stop and control command waited too, and choosing `[f]` in the
+  menu — which needs that lock — deadlocked PID 1 for good. The
+  debugger is now stopped outside the lock.
 - **A signal to PID 1 after the event loop ended panicked the kernel.**
   When its loop returned, slinit released the shutdown signals with
   `signal.Stop`, which hands them back to the Go runtime — whose action
