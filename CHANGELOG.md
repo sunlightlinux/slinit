@@ -35,6 +35,13 @@ verified with `git tag -v`.
   waiter now gets a free console at once, as in dinit, and leaving the
   queue keeps the others in order. Acceptance case 187 no longer
   accepts a stuck STARTING as environmental.
+- **A relative `SetTime` through `slinit-timedated` set the clock
+  behind by the time its polkit prompt took.** The new time was
+  computed before authorization, so moving the clock by 90 s with a
+  prompt answered after 40 s landed 40 s short. The request is now
+  checked again once authorized, as systemd re-runs the method: the
+  offset counts from then, and a time-sync service started meanwhile
+  refuses it.
 - **`slinit-localed` let a `LANGUAGE` value write other variables
   into `/etc/locale.conf`.** `LANGUAGE` was the one variable
   `SetLocale` did not validate, so `LANGUAGE=en\nLANG=/tmp/evil` was
