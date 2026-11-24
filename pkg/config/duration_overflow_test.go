@@ -39,3 +39,16 @@ func TestDurationsSaturateInsteadOfWrapping(t *testing.T) {
 		t.Errorf("restart-limit-interval = 1e10: %v, %v; want a positive interval", desc.RestartInterval, err)
 	}
 }
+
+// The ceiling must leave room for the service code to add two saturated
+// values — a restart delay and its step, or its jitter — without
+// wrapping negative. 1<<62 itself does not: doubled it is 1<<63.
+func TestSaturatedDurationsCanBeAddedTwice(t *testing.T) {
+	d, err := parseDuration("infinity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := d + d; sum < d {
+		t.Errorf("two saturated durations add to %v: the ceiling has no headroom", sum)
+	}
+}
