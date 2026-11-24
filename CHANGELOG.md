@@ -24,6 +24,17 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A peer on the `--metrics-listen` port could make PID 1 buffer
+  without limit.** The request line and headers were read with
+  `bufio.Reader.ReadString`, which keeps appending until a newline, so a
+  client that sent none was buffered in full: 256 MiB in 80 ms on
+  loopback in the new test, bounded only by the 10 s deadline. Each line
+  is now cut at 8 KiB (`431`), headers at 100, and at most 16 scrapes
+  are served at once — the rest are closed on accept, because every
+  open connection held one of PID 1's file descriptors.
+
 ## [4.0.2] — 2026-11-22
 
 **A fix release on the 4.0 long-term-support line.** Two more
