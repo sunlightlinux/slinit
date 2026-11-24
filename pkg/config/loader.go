@@ -2004,14 +2004,17 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		rec.SetHardening(service.HardeningConfig{})
 	} else {
 		rec.SetHardening(hardeningCfg)
-		// Three of the seven knobs need ro mount operations
-		// (protect-kernel-tunables → /proc/sys, protect-control-groups
-		// → /sys/fs/cgroup, protect-kernel-logs → /dev/kmsg). Auto-imply
+		// Four of the knobs need mount operations
+		// (protect-kernel-tunables → /proc/sys, /sys and other /proc
+		// knobs, protect-control-groups → /sys/fs/cgroup,
+		// protect-kernel-logs → /dev/kmsg and /proc/kmsg,
+		// protect-kernel-modules → /usr/lib/modules). Auto-imply
 		// CLONE_NEWNS so the runner has a private mount namespace
 		// to apply them in without touching the host fs.
 		if hardeningCfg.ProtectKernelTunables ||
 			hardeningCfg.ProtectControlGroups ||
-			hardeningCfg.ProtectKernelLogs {
+			hardeningCfg.ProtectKernelLogs ||
+			hardeningCfg.ProtectKernelModules {
 			cloneflags |= syscall.CLONE_NEWNS
 		}
 	}

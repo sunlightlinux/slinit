@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -208,4 +210,61 @@ func TestProtectKernelTunablesCoversBinfmtMisc(t *testing.T) {
 	}
 	wantRO(t, "/proc/sys", true)
 	wantRO(t, "/proc/sys/fs/binfmt_misc", true)
+}
+
+// protect-kernel-tunables, -modules, -logs and protect-clock only
+// filtered system calls (and made /proc/sys and /dev/kmsg safe), while
+// systemd's also make /sys and the rest of /proc's kernel knobs
+// read-only, hide /proc/kallsyms, /proc/kcore, /proc/kmsg and
+// /usr/lib/modules, and take CAP_SYS_MODULE, CAP_SYSLOG, CAP_SYS_TIME and
+// CAP_WAKE_ALARM out of the bounding set.
+func TestProtectKernelMatchesSystemd(t *testing.T) {
+	if !inMountNS(t, "", false) {
+		return
+	}
+	cgroupRO := mountFlags(t, "/sys/fs/cgroup")&unix.ST_RDONLY != 0
+	// The bounding set is per thread, as in the runner, which execs
+	// from the thread that dropped it; this one is discarded when the
+	// test returns still locked to it.
+	runtime.LockOSThread()
+	if err := applyHardening(hardeningSpec{
+		protectKernelTunables: true, protectKernelModules: true,
+		protectKernelLogs: true, protectClock: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/proc/sys", "/proc/sysrq-trigger", "/proc/irq", "/proc/bus", "/proc/fs", "/sys", "/sys/kernel/security"} {
+		if _, err := os.Stat(p); err == nil {
+			wantRO(t, p, true)
+		}
+	}
+	wantRO(t, "/sys/fs/cgroup", cgroupRO) // protect-control-groups' business
+	for _, p := range []string{"/proc/kallsyms", "/proc/kcore", "/proc/kmsg"} {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if b, err := os.ReadFile(p); err == nil && len(b) > 0 {
+			t.Errorf("%s readable: %d bytes", p, len(b))
+		}
+	}
+	if _, err := os.Stat("/usr/lib/modules"); err == nil {
+		if ents, err := os.ReadDir("/usr/lib/modules"); err == nil && len(ents) > 0 {
+			t.Errorf("/usr/lib/modules still lists %d entries", len(ents))
+		}
+	}
+	status, err := os.ReadFile("/proc/thread-self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bnd uint64
+	for _, line := range strings.Split(string(status), "\n") {
+		if v, ok := strings.CutPrefix(line, "CapBnd:"); ok {
+			bnd, _ = strconv.ParseUint(strings.TrimSpace(v), 16, 64)
+		}
+	}
+	for name, c := range map[string]uint{"CAP_SYS_MODULE": 16, "CAP_SYS_TIME": 25, "CAP_SYSLOG": 34, "CAP_WAKE_ALARM": 35} {
+		if bnd&(1<<c) != 0 {
+			t.Errorf("%s still in the bounding set (%#x)", name, bnd)
+		}
+	}
 }

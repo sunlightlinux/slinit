@@ -798,6 +798,22 @@ verified with `git tag -v`.
   stays out with a warning: a `+` path, a `%` specifier, a `norbind`
   bind, `noexec` on a temporary file system, and an empty
   `CapabilityBoundingSet=`.
+- **`protect-kernel-tunables`, `-modules`, `-logs` and `protect-clock`
+  did less than the systemd settings they claim to match.** They
+  filtered system calls and made `/proc/sys` read-only and `/dev/kmsg`
+  empty, while systemd also makes `/sys` and the other kernel knobs in
+  `/proc` (`/proc/sysrq-trigger`, `/proc/irq`, `/proc/bus`, `/proc/fs`
+  and the rest of its table) read-only, hides `/proc/kallsyms`,
+  `/proc/kcore`, `/proc/kmsg` and `/usr/lib/modules`, and takes
+  `CAP_SYS_MODULE`, `CAP_SYSLOG`, `CAP_SYS_TIME` and `CAP_WAKE_ALARM`
+  out of the bounding set: a service could still write
+  `/proc/sysrq-trigger` or `/sys`, or read the kernel's symbol table.
+  slinit now applies the same tables (skipping paths that do not
+  exist; `/sys/fs/cgroup` and `/sys/fs/selinux` keep their flags), and
+  `protect-kernel-modules` now gives the service a private mount
+  namespace too. Only `protect-clock`'s read-only RTC devices, which
+  systemd sets through the device cgroup controller, are not done; the
+  man page says so.
 
 ## [4.0.2] — 2026-11-22
 

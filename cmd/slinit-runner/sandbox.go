@@ -450,10 +450,13 @@ func remountTreeRW(src, dst string) error {
 
 // hiddenMount reports a remount that failed because the mount point is
 // no longer reachable at its path: a later mount on a parent covers it
-// (ENOENT, or EINVAL for a path that is now no mount point). The service
+// (ENOENT, or EINVAL for a path that is now no mount point), or a
+// directory above it does not let root in (EACCES: in a user namespace,
+// /sys/kernel/debug is mode 0700 and owned by a root that is not ours,
+// so /sys/kernel/debug/tracing below it cannot be reached). The service
 // cannot reach it either.
 func hiddenMount(err error) bool {
-	return err == unix.ENOENT || err == unix.EINVAL
+	return err == unix.ENOENT || err == unix.EINVAL || err == unix.EACCES
 }
 
 // mountPoint is one mount listed in /proc/self/mountinfo.

@@ -1515,29 +1515,40 @@ knows syscall numbers on x86-64 only: on another architecture a knob
 that installs a seccomp filter fails the start rather than run the
 service unprotected (since 4.0.3; before, the filter refused nothing).
 The mount-based knobs (**protect-kernel-tunables**,
-**protect-control-groups**, **protect-kernel-logs**) additionally
-auto-imply *CLONE_NEWNS* so the operations are confined to the
-service's private mount namespace.
+**protect-kernel-modules**, **protect-control-groups**,
+**protect-kernel-logs**) additionally auto-imply *CLONE_NEWNS* so the
+operations are confined to the service's private mount namespace. Paths
+these hide or make read-only that do not exist are skipped.
 
 **protect-kernel-tunables**=*yes*|*no*
-:   Read-only remount */proc/sys* and deny **_sysctl**(2), as systemd's
+:   Read-only remount */proc/sys*, */proc/sysrq-trigger*, */proc/irq*,
+    */proc/bus*, */proc/fs*, */proc/acpi*, */proc/apm*, */proc/asound*,
+    */proc/latency_stats*, */proc/mtrr*, */proc/scsi*,
+    */proc/timer_stats* and */sys* (with the mounts below them, except
+    */sys/fs/cgroup* and */sys/fs/selinux*), hide */proc/kallsyms* and
+    */proc/kcore*, and deny **_sysctl**(2), as systemd's
     **ProtectKernelTunables=** does, and also **iopl**(2),
     **ioperm**(2), **swapon**(2), **swapoff**(2), which systemd leaves
-    to **SystemCallFilter=**.
+    to **SystemCallFilter=**. Until 4.0.3 only */proc/sys* was made
+    read-only.
 
 **protect-kernel-modules**=*yes*|*no*
 :   Deny **init_module**(2), **finit_module**(2),
-    **delete_module**(2). Equivalent to systemd's
-    **ProtectKernelModules=**.
+    **delete_module**(2), hide */usr/lib/modules* and drop
+    *CAP_SYS_MODULE* from the bounding set (since 4.0.3). Equivalent to
+    systemd's **ProtectKernelModules=**.
 
 **protect-kernel-logs**=*yes*|*no*
-:   Deny **syslog**(2) and bind-mount */dev/null* over */dev/kmsg*.
-    Equivalent to systemd's **ProtectKernelLogs=**.
+:   Deny **syslog**(2), bind-mount */dev/null* over */dev/kmsg* and
+    */proc/kmsg*, and drop *CAP_SYSLOG* from the bounding set (the last
+    two since 4.0.3). Equivalent to systemd's **ProtectKernelLogs=**.
 
 **protect-clock**=*yes*|*no*
 :   Deny **clock_settime**(2), **clock_adjtime**(2),
-    **settimeofday**(2), **adjtimex**(2). Equivalent to systemd's
-    **ProtectClock=**.
+    **settimeofday**(2), **adjtimex**(2), and drop *CAP_SYS_TIME* and
+    *CAP_WAKE_ALARM* from the bounding set (since 4.0.3). systemd's
+    **ProtectClock=** also makes the RTC devices read-only through the
+    device cgroup controller, which slinit does not do.
 
 **protect-control-groups**=*yes*|*no*
 :   Read-only remount */sys/fs/cgroup*. Equivalent to systemd's

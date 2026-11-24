@@ -97,15 +97,49 @@ func (h hardeningSpec) active() bool {
 // mount namespace to apply its mount operation.
 func (h hardeningSpec) needsMountNS() bool {
 	return h.protectKernelTunables || h.protectControlGroups ||
-		h.protectKernelLogs
+		h.protectKernelLogs || h.protectKernelModules
+}
+
+// The paths systemd's ProtectKernelTunables= makes read-only or hides
+// (protect_kernel_tunables_proc_table and _sys_table in namespace.c).
+// Missing ones are skipped.
+var (
+	kernelTunablesReadOnly = []string{
+		"/proc/acpi", "/proc/apm", "/proc/asound", "/proc/bus", "/proc/fs",
+		"/proc/irq", "/proc/latency_stats", "/proc/mtrr", "/proc/scsi",
+		"/proc/sys", "/proc/sysrq-trigger", "/proc/timer_stats",
+	}
+	kernelTunablesHidden = []string{"/proc/kallsyms", "/proc/kcore"}
+	// /sys goes read-only with every mount below it but these, which
+	// keep what they have: the cgroup tree is protect-control-groups'
+	// business, and SELinux userspace writes to its filesystem.
+	sysKeepWritable = []string{"/sys/fs/cgroup", "/sys/fs/selinux"}
+)
+
+// hardeningBoundingDrops are the capabilities systemd takes out of the
+// bounding set for these knobs (unit_patch_contexts in unit.c): what
+// the call filter refuses, a capability must not grant some other way.
+func hardeningBoundingDrops(h hardeningSpec) []uintptr {
+	var out []uintptr
+	if h.protectKernelModules {
+		out = append(out, unix.CAP_SYS_MODULE)
+	}
+	if h.protectKernelLogs {
+		out = append(out, unix.CAP_SYSLOG)
+	}
+	if h.protectClock {
+		out = append(out, unix.CAP_SYS_TIME, unix.CAP_WAKE_ALARM)
+	}
+	return out
 }
 
 // applyHardening enforces the active Restrict*/Protect* knobs:
 //
-//  1. Mount operations on /proc/sys, /sys/fs/cgroup and /dev/kmsg are
-//     applied first; they require the runner to be in a private mount
-//     namespace (the loader auto-implies CLONE_NEWNS when any of these
-//     three knobs is active).
+//  1. Mount operations (/proc and /sys knobs, /sys/fs/cgroup, the kmsg
+//     files, /usr/lib/modules) are applied first, and the capabilities
+//     the knobs stand for leave the bounding set; the mounts require the
+//     runner to be in a private mount namespace (the loader auto-implies
+//     CLONE_NEWNS when any of these four knobs is active).
 //  2. A second seccomp filter is built containing the union of all
 //     denied syscalls and installed via seccomp(2). The kernel runs
 //     every loaded filter on each syscall and picks the most
@@ -129,12 +163,28 @@ func applyHardening(h hardeningSpec) error {
 	}
 
 	if h.protectKernelTunables {
-		// /proc/sys holds the kernel.* / vm.* / net.* sysctls. A
-		// service has no business writing to them; ro-remount keeps
-		// reads intact (the kernel exposes many useful read-only
-		// counters there) while blocking writes.
-		if err := remountROIfMount("/proc/sys"); err != nil {
+		// /proc/sys holds the kernel.* / vm.* / net.* sysctls, and
+		// /sys and the rest of these the other kernel knobs. A service
+		// has no business writing to them; ro-remount keeps reads
+		// intact (the kernel exposes many useful read-only counters
+		// there) while blocking writes.
+		for _, p := range kernelTunablesReadOnly {
+			if err := remountROIfMount(p); err != nil {
+				return fmt.Errorf("protect-kernel-tunables: %w", err)
+			}
+		}
+		if err := remountROIfMount("/sys", sysKeepWritable...); err != nil {
 			return fmt.Errorf("protect-kernel-tunables: %w", err)
+		}
+		for _, p := range kernelTunablesHidden {
+			if err := mountInaccessible(p); err != nil {
+				return fmt.Errorf("protect-kernel-tunables: %w", err)
+			}
+		}
+	}
+	if h.protectKernelModules {
+		if err := mountInaccessible("/usr/lib/modules"); err != nil {
+			return fmt.Errorf("protect-kernel-modules: %w", err)
 		}
 	}
 	if h.protectControlGroups {
@@ -150,6 +200,19 @@ func applyHardening(h hardeningSpec) error {
 			if err := unix.Mount("/dev/null", "/dev/kmsg", "", unix.MS_BIND, ""); err != nil {
 				return fmt.Errorf("protect-kernel-logs bind /dev/null over /dev/kmsg: %w", err)
 			}
+		}
+		if err := mountInaccessible("/proc/kmsg"); err != nil {
+			return fmt.Errorf("protect-kernel-logs: %w", err)
+		}
+	}
+
+	// EPERM is a runner without CAP_SETPCAP, as under a non-root slinit:
+	// it cannot hand the capabilities on either, as every one of these
+	// knobs sets no-new-privs below.
+	for _, c := range hardeningBoundingDrops(h) {
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, c, 0, 0, 0); err != nil &&
+			err != unix.EINVAL && err != unix.EPERM {
+			return fmt.Errorf("hardening PR_CAPBSET_DROP cap=%d: %w", c, err)
 		}
 	}
 
@@ -291,10 +354,11 @@ func collectDenyList(h hardeningSpec) []string {
 	return out
 }
 
-// remountROIfMount ro-remounts target, and every mount below it, when it
-// is already a mount point. The first bind is a no-op if it's already
-// mounted but ensures the kernel will accept the MS_REMOUNT flag below.
-func remountROIfMount(path string) error {
+// remountROIfMount ro-remounts target, and every mount below it but those
+// at or below keep. Paths that don't exist are skipped. The first bind
+// is a no-op if it's already mounted but ensures the kernel will accept
+// the MS_REMOUNT flag below.
+func remountROIfMount(path string, keep ...string) error {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -304,5 +368,5 @@ func remountROIfMount(path string) error {
 	if err := unix.Mount(path, path, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind %s: %w", path, err)
 	}
-	return remountTreeRO(path, nil)
+	return remountTreeRO(path, keep)
 }

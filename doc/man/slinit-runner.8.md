@@ -186,21 +186,26 @@ seccomp filter plus a small set of mount operations applied before
 **execve**.
 
 **\--protect-kernel-tunables**
-:   Block writes to `/proc/sys` and `iopl`/`ioperm`/`swapon`
-    syscalls. Mirrors systemd **ProtectKernelTunables=**.
+:   Block writes to `/proc/sys`, `/sys` and the other kernel knobs in
+    `/proc`, hide `/proc/kallsyms` and `/proc/kcore`, and block the
+    `iopl`/`ioperm`/`swapon` syscalls. Mirrors systemd
+    **ProtectKernelTunables=**.
 
 **\--protect-kernel-modules**
 :   Block **init_module**(2) / **finit_module**(2) /
-    **delete_module**(2). Mirrors **ProtectKernelModules=**.
+    **delete_module**(2), hide `/usr/lib/modules` and drop
+    *CAP_SYS_MODULE* from the bounding set. Mirrors
+    **ProtectKernelModules=**.
 
 **\--protect-kernel-logs**
-:   Block **syslog**(2) and hide `/dev/kmsg`. Mirrors
-    **ProtectKernelLogs=**.
+:   Block **syslog**(2), hide `/dev/kmsg` and `/proc/kmsg`, and drop
+    *CAP_SYSLOG* from the bounding set. Mirrors **ProtectKernelLogs=**.
 
 **\--protect-clock**
 :   Block **clock_settime**(2) / **adjtime**(3) /
-    **settimeofday**(2) / **adjtimex**(2). Mirrors
-    **ProtectClock=**.
+    **settimeofday**(2) / **adjtimex**(2) and drop *CAP_SYS_TIME* and
+    *CAP_WAKE_ALARM* from the bounding set. Mirrors **ProtectClock=**
+    but for its read-only RTC devices.
 
 **\--protect-control-groups**
 :   Remount `/sys/fs/cgroup` read-only. Mirrors
