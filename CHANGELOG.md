@@ -594,6 +594,9 @@ verified with `git tag -v`.
   handed `c1` again, overwriting the record of a session still running.
   The counter is now replaced through a temporary file and a rename,
   and an id whose session record exists is never handed out.
+- **`slinit-logind` reported `NCurrentInhibitors` as 0 whatever was
+  held.** It counted files in a state directory nothing writes; the
+  locks are kept in memory. It now counts the locks held.
 
 ## [4.0.2] — 2026-11-22
 

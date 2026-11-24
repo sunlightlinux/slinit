@@ -259,8 +259,9 @@ var managerPropSpec = []managerProp{
 
 	{Name: "InhibitorsMax", Sig: "t", Emit: "const",
 		Get: func(m *manager) any { return uint64(8192) }},
+	// The locks are held in memory (inhibit.go), not as state files.
 	{Name: "NCurrentInhibitors", Sig: "t", Emit: "false",
-		Get: func(m *manager) any { return countStateFiles("inhibitors") }},
+		Get: func(m *manager) any { return uint64(len(m.inhibitors.list())) }},
 	{Name: "SessionsMax", Sig: "t", Emit: "const",
 		Get: func(m *manager) any { return uint64(8192) }},
 	{Name: "NCurrentSessions", Sig: "t", Emit: "false",

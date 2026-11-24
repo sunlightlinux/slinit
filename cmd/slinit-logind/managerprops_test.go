@@ -252,3 +252,25 @@ func TestSleepOperations(t *testing.T) {
 		}
 	}
 }
+
+// NCurrentInhibitors counted files under the state directory's
+// inhibitors/, which nothing writes — the locks live in memory — so it
+// was always 0.
+func TestNCurrentInhibitorsCountsHeldLocks(t *testing.T) {
+	orig := stateRoot
+	stateRoot = t.TempDir()
+	t.Cleanup(func() { stateRoot = orig })
+	m := &manager{inhibitors: newInhibitRegistry()}
+	a := addDirect(t, m.inhibitors, "sleep", "delay")
+	defer a.Close()
+	b := addDirect(t, m.inhibitors, "shutdown:idle", "block")
+	defer b.Close()
+
+	v, err := (&managerProperties{m: m}).Get("", "NCurrentInhibitors")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.Value().(uint64); got != 2 {
+		t.Errorf("NCurrentInhibitors=%d with 2 locks held", got)
+	}
+}
