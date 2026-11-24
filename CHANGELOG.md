@@ -882,6 +882,13 @@ verified with `git tag -v`.
   `after` now become `after:`, `want` (previously ignored) `waits-for:`,
   each kept only when a script of that name sits beside the converted
   one; a `need` that would not resolve is warned about.
+- **A quoted `ExecStart=` path was split in the wrong places.** The
+  systemd mapping stripped a leading and trailing quote off every value,
+  which on an `Exec*=` line took them off the first and last word:
+  `ExecStart="/opt/my app/bin/run" --name "hello world"` ran
+  `/opt/my` with the arguments `app/bin/run --name hello` and `world`.
+  Exec lines now keep their quotes, which slinit's command parser
+  groups words by just as systemd does.
 
 ## [4.0.2] — 2026-11-22
 

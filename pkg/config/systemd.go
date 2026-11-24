@@ -237,8 +237,12 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		key := m[1]
 		val := strings.TrimSpace(m[2])
 		// Strip surrounding double quotes if present (single-quote
-		// isn't standard here but be tolerant).
-		val = trimQuotes(val)
+		// isn't standard here but be tolerant). Not on an Exec*= line:
+		// there quotes group words, as in slinit's command parser, and
+		// "/opt/my app/run" --name "a b" would lose the first and last.
+		if !strings.HasPrefix(key, "Exec") {
+			val = trimQuotes(val)
+		}
 
 		switch section {
 		case "Unit":

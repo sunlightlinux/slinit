@@ -222,3 +222,30 @@ ExecStart=/usr/bin/dm
 		}
 	}
 }
+
+// systemd quotes an Exec*= word the way slinit's command parser does.
+// Stripping the "outer" quotes off the whole value, as is right for
+// most keys, cut the first and last word's quotes instead: argv came
+// out as ["/opt/my" "app/bin/run --name hello" "world"].
+func TestSystemdExecQuotesKept(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "q.service", `[Service]
+ExecStart="/opt/my app/bin/run" --name "hello world"
+ExecStop='/opt/my app/bin/stop' now
+`)
+	dl := NewDirLoader(service.NewServiceSet(&testConsumerLogger{}), []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	desc, _, err := dl.findAndParse("q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/opt/my app/bin/run", "--name", "hello world"}
+	if strings.Join(desc.Command, "|") != strings.Join(want, "|") {
+		t.Errorf("command = %q, want %q", desc.Command, want)
+	}
+	want = []string{"/opt/my app/bin/stop", "now"}
+	if strings.Join(desc.StopCommand, "|") != strings.Join(want, "|") {
+		t.Errorf("stop-command = %q, want %q", desc.StopCommand, want)
+	}
+}
