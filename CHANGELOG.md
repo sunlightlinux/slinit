@@ -597,6 +597,15 @@ verified with `git tag -v`.
 - **`slinit-logind` reported `NCurrentInhibitors` as 0 whatever was
   held.** It counted files in a state directory nothing writes; the
   locks are kept in memory. It now counts the locks held.
+- **`slinit-logind` could send the wrong file in a `TakeDevice` or
+  `Inhibit` reply.** godbus sends a reply's descriptors by number after
+  the method has returned. `TakeDevice` returned the number of the
+  daemon's own copy of the device, which a concurrent `ReleaseDevice`,
+  or the controller leaving the bus, could close first; the kernel could
+  then reuse the number for another file and the compositor would be
+  handed that. `Inhibit` read the number of a file a timer closes,
+  which `go test -race` reported. Each reply now carries a duplicate of
+  its own, closed once the reply has had time to go out.
 
 ## [4.0.2] — 2026-11-22
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"golang.org/x/sys/unix"
 )
 
@@ -41,8 +42,8 @@ var inhibitWhats = map[string]struct{}{
 	"handle-reboot-key": {},
 }
 
-// fdSendGrace is how long our copy of the descriptor handed to the
-// client stays open after the method returns.
+// fdSendGrace is how long the descriptor in a method reply stays open
+// after the method returns (replyFD).
 //
 // godbus sends reply descriptors with syscall.UnixRights, taking the raw
 // numbers at send time and leaving ownership with us — sd-bus closes
@@ -54,8 +55,24 @@ var inhibitWhats = map[string]struct{}{
 // Closing too early would hand the client a descriptor that is already
 // at EOF, which releases the lock immediately — the behaviour this file
 // replaces, so the degenerate case is no worse than the status quo
-// rather than a hang.
-const fdSendGrace = 2 * time.Second
+// rather than a hang. A variable for the tests.
+var fdSendGrace = 2 * time.Second
+
+// replyFD returns a descriptor for a method reply: a duplicate of f's,
+// closed after fdSendGrace. The reply goes out by number after the
+// method has returned, so handing it f's own would let whoever closes f
+// meanwhile — a ReleaseDevice, a controller leaving the bus — close it
+// first, and the kernel could give that number to another file, which
+// would then be what the client receives. The duplicate belongs to the
+// reply alone. Call it while f cannot be closed under you.
+func replyFD(f *os.File) (dbus.UnixFD, error) {
+	fd, err := unix.FcntlInt(f.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	time.AfterFunc(fdSendGrace, func() { _ = unix.Close(fd) })
+	return dbus.UnixFD(fd), nil
+}
 
 // inhibitDelayMax caps how long a sleep waits for delay locks to clear.
 // systemd's InhibitDelayMaxSec default is 5s and screen lockers are
@@ -105,9 +122,9 @@ func newInhibitRegistry() *inhibitRegistry {
 	return &inhibitRegistry{m: map[uint32]*inhibitor{}}
 }
 
-// add registers a lock and returns the descriptor to hand the client.
-// The caller passes it straight back over D-Bus; this function owns
-// closing our own copy once the grace has elapsed.
+// add registers a lock and returns the client's end of its pipe, which
+// the caller owns: Inhibit hands a replyFD of it back over D-Bus and
+// closes it.
 func (r *inhibitRegistry) add(what, who, why, mode string, uid, pid uint32) (*os.File, *inhibitor, error) {
 	for _, tok := range strings.Split(what, ":") {
 		if tok == "" {
@@ -143,8 +160,6 @@ func (r *inhibitRegistry) add(what, who, why, mode string, uid, pid uint32) (*os
 
 	// Watch for the client letting go.
 	go r.waitRelease(in)
-	// And drop our copy of what the client now owns.
-	time.AfterFunc(fdSendGrace, func() { _ = clientEnd.Close() })
 
 	return clientEnd, in, nil
 }

@@ -337,11 +337,12 @@ func dropAndClose(f *os.File) {
 // descriptor to hand over the bus, together with the `inactive` flag
 // systemd's protocol carries.
 //
-// The returned *os.File stays open on our side on purpose: godbus dups
-// the descriptor when it marshals the reply, and logind is expected to
-// retain its own copy so it can drop master or revoke access on a VT
-// switch. The copy is registered against the session so ReleaseDevice
-// and ReleaseControl can close it.
+// The opened *os.File stays open on our side on purpose: logind is
+// expected to retain its own copy so it can drop master or revoke access
+// on a VT switch. The copy is registered against the session so
+// ReleaseDevice and ReleaseControl can close it. The reply carries a
+// replyFD of it, taken under devicesMu, so a ReleaseDevice that closes
+// ours before godbus has sent the reply cannot close the reply's too.
 //
 // A session that is not in front gets its device paused from the start
 // and is told so with inactive=true, as in systemd: claiming DRM master
@@ -368,12 +369,23 @@ func takeDevice(id string, major, minor uint32) (dbus.UnixFD, bool, *dbus.Error)
 	key := devKey{major, minor}
 	if existing, ok := sd.files[key]; ok {
 		// Re-take of a device we already hold: hand back the same
-		// descriptor rather than opening a second master-holding fd.
-		return dbus.UnixFD(existing.Fd()), sd.paused[key], nil
+		// open file rather than opening a second master-holding fd.
+		fd, err := replyFD(existing)
+		if err != nil {
+			return 0, false, dbus.NewError("org.freedesktop.login1.Error.DeviceOpenFailed",
+				[]any{path + ": " + err.Error()})
+		}
+		return fd, sd.paused[key], nil
 	}
 
 	f, err := openDevice(path)
 	if err != nil {
+		return 0, false, dbus.NewError("org.freedesktop.login1.Error.DeviceOpenFailed",
+			[]any{path + ": " + err.Error()})
+	}
+	fd, err := replyFD(f)
+	if err != nil {
+		_ = f.Close()
 		return 0, false, dbus.NewError("org.freedesktop.login1.Error.DeviceOpenFailed",
 			[]any{path + ": " + err.Error()})
 	}
@@ -385,7 +397,7 @@ func takeDevice(id string, major, minor uint32) (dbus.UnixFD, bool, *dbus.Error)
 		}
 		sd.paused[key] = true
 		sd.files[key] = f
-		return dbus.UnixFD(f.Fd()), true, nil
+		return fd, true, nil
 	}
 
 	if isDRMNode(path) {
@@ -401,7 +413,7 @@ func takeDevice(id string, major, minor uint32) (dbus.UnixFD, bool, *dbus.Error)
 	}
 
 	sd.files[key] = f
-	return dbus.UnixFD(f.Fd()), false, nil
+	return fd, false, nil
 }
 
 // releaseDevice closes our copy of one device, dropping DRM master with

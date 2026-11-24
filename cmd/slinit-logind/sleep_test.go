@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
-	"golang.org/x/sys/unix"
 )
 
 // stubSlinitctl installs a fake control CLI that records its arguments,
@@ -212,13 +211,8 @@ func TestSleepHonoursInhibitDelayMaxSec(t *testing.T) {
 	m.buttons.PowerKey = actionIgnore
 	m.buttons.InhibitDelayMax = 200 * time.Millisecond
 
-	// Held through a dup, as a client holds it: the registry closes its
-	// own copy of the client end after fdSendGrace.
-	fd, err := unix.Dup(int(addDirect(t, m.inhibitors, "sleep", "delay").Fd()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Close(fd)
+	client := addDirect(t, m.inhibitors, "sleep", "delay")
+	defer client.Close()
 	start := time.Now()
 	if err := m.sleep(sleepVerb{"Suspend", "mem"}); err != nil {
 		t.Fatal(err)

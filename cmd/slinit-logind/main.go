@@ -679,11 +679,19 @@ func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus
 		return 0, dbus.NewError("org.freedesktop.login1.Error.InvalidArguments",
 			[]interface{}{err.Error()})
 	}
+	// Our end goes now; the reply's copy, after the reply is out. Should
+	// the copy fail, no write end is left and the lock releases at once.
+	fd, ferr := replyFD(clientEnd)
+	_ = clientEnd.Close()
+	if ferr != nil {
+		return -1, dbus.NewError("org.freedesktop.DBus.Error.Failed",
+			[]interface{}{ferr.Error()})
+	}
 	if m.debug {
 		fmt.Fprintf(os.Stderr, "slinit-logind: inhibit %d %s mode=%s who=%q why=%q uid=%d pid=%d\n",
 			in.ID, in.What, in.Mode, in.Who, in.Why, in.UID, in.PID)
 	}
-	return dbus.UnixFD(clientEnd.Fd()), nil
+	return fd, nil
 }
 
 // buttonCfg returns the button configuration for the property getters.
