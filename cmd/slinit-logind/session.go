@@ -1024,15 +1024,76 @@ func (m *manager) sendSessionLock(id string, lock bool) {
 	_ = m.conn.Emit(sessionPath(id), sessionIface+"."+name)
 }
 
-// TerminateSession is Manager.TerminateSession — semantically the
-// same as ReleaseSession for our purposes (both tear the record
-// down). GDM's greeter and lightdm's session-switch button call
-// TerminateSession; without it the greeter switch-user hangs.
+// TerminateSession is Manager.TerminateSession: the session's processes
+// are killed and its records torn down (terminateSession). GDM's greeter
+// and lightdm's session-switch button call TerminateSession; without it
+// the greeter switch-user hangs.
 func (m *manager) TerminateSession(sender dbus.Sender, id string) *dbus.Error {
 	if err := m.authorizeSessionOwner(sender, id, "TerminateSession"); err != nil {
 		return err
 	}
+	return m.terminateSession(id)
+}
+
+// terminateGrace is how long a terminated session's processes have to
+// exit after SIGTERM and SIGHUP before what is left is SIGKILLed. A
+// variable for the tests.
+var terminateGrace = 5 * time.Second
+
+// terminateSession ends a session the way systemd's session_stop(force)
+// does, by stopping its scope: every process in it gets SIGTERM, SIGCONT
+// and SIGHUP (bash and friends ignore SIGTERM, which is why systemd sets
+// SendSIGHUP on session scopes), and whatever is still there after
+// terminateGrace is SIGKILLed. Then the records go, as in releaseSession.
+//
+// It used to be releaseSession alone: the records went and every process
+// of the session kept running, no longer tracked by anything — loginctl
+// terminate-user left the user's desktop up and running.
+//
+// Only pids read from the session's own cgroup.procs are signalled, and
+// the SIGKILL goes through the scope's cgroup.kill, so nothing outside
+// the scope is reached. The follow-up is asynchronous, so the bus handler
+// does not wait out the grace period.
+func (m *manager) terminateSession(id string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
+	var rec SessionRecord
+	if !readJSON(sessionFile(id), &rec) {
+		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
+			[]interface{}{id})
+	}
+	if scopeUnderCgroupFS(rec.Scope) {
+		for _, pid := range scopeProcs(rec.Scope) {
+			_ = killPID(pid, int32(unix.SIGTERM))
+			_ = killPID(pid, int32(unix.SIGCONT))
+			_ = killPID(pid, int32(unix.SIGHUP))
+		}
+		scope, procs := rec.Scope, scopeProcs
+		time.AfterFunc(terminateGrace, func() { killScope(scope, procs) })
+	}
 	return m.releaseSession(id)
+}
+
+// killScope SIGKILLs what is left in a terminated session's scope and
+// removes it. cgroup.kill (Linux 5.14) kills the whole tree at once,
+// including anything forked meanwhile; without it, each pid still listed
+// is killed, read again from procs rather than remembered: a pid seen
+// at SIGTERM time may since have been handed to another process. The
+// scope is opened without O_CREAT so a scope that has gone away is not
+// recreated as a plain file.
+func killScope(scope string, procs func(string) []int) {
+	f, err := os.OpenFile(scope+"/cgroup.kill", os.O_WRONLY, 0)
+	if err == nil {
+		_, err = f.WriteString("1")
+		f.Close()
+	}
+	if err != nil {
+		for _, pid := range procs(scope) {
+			_ = killPID(pid, int32(unix.SIGKILL))
+		}
+	}
+	_ = os.Remove(scope) // rmdir; EBUSY tolerated, as in releaseSession
 }
 
 // TerminateUser tears down every session owned by the uid then drops
@@ -1045,7 +1106,7 @@ func (m *manager) TerminateUser(sender dbus.Sender, uid uint32) *dbus.Error {
 	for _, f := range files {
 		var rec SessionRecord
 		if readJSON(f, &rec) && rec.UserID == uid {
-			_ = m.releaseSession(rec.ID)
+			_ = m.terminateSession(rec.ID)
 		}
 	}
 	return nil
@@ -1063,7 +1124,7 @@ func (m *manager) TerminateSeat(sender dbus.Sender, id string) *dbus.Error {
 	for _, f := range files {
 		var rec SessionRecord
 		if readJSON(f, &rec) && rec.SeatID == id {
-			_ = m.releaseSession(rec.ID)
+			_ = m.terminateSession(rec.ID)
 		}
 	}
 	return nil
@@ -1138,16 +1199,27 @@ func (m *manager) killSession(id, who string, sig int32) *dbus.Error {
 		return errBadSessionID(id)
 	}
 	// Full-tree kill: signal every PID in cgroup.procs.
-	if b, err := os.ReadFile(rec.Scope + "/cgroup.procs"); err == nil {
-		for _, line := range strings.Fields(string(b)) {
-			pid, err := strconv.Atoi(line)
-			if err != nil {
-				continue
-			}
-			_ = killPID(pid, sig)
-		}
+	for _, pid := range scopeProcs(rec.Scope) {
+		_ = killPID(pid, sig)
 	}
 	return nil
+}
+
+// scopeProcs lists the pids in a session's scope, from its cgroup.procs.
+// A variable because the tests cannot create a cgroup to put a process
+// in.
+var scopeProcs = func(scope string) []int {
+	b, err := os.ReadFile(scope + "/cgroup.procs")
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Fields(string(b)) {
+		if pid, err := strconv.Atoi(line); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 // --- helpers ---

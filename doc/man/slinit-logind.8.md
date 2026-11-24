@@ -131,6 +131,14 @@ leader by a pidfd instead of a pid, so a pid reused between the caller
 reading it and the daemon acting on it cannot make another process the
 leader.
 
+*TerminateSession*, *TerminateUser*, *TerminateSeat* and the user and
+seat objects' *Terminate* end the session's processes as well as the
+session, as systemd-logind stops the session's scope (since 4.0.3): every
+process in the session's cgroup is sent SIGTERM, SIGCONT and SIGHUP, and
+whatever is left five seconds later is SIGKILLed through the cgroup's
+*cgroup.kill*. Nothing outside the session's cgroup is signalled. Before,
+only the records were dropped and the processes kept running, untracked.
+
 *CreateSession* refuses with *org.freedesktop.login1.SessionBusy*, as
 systemd-logind does, when the leader already leads or runs inside a
 session (**su**(1) or **sudo**(8) from a session; **pam_slinit**(8) takes

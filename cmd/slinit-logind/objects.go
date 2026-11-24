@@ -697,9 +697,9 @@ func (u *userObject) Terminate(sender dbus.Sender) *dbus.Error {
 		return err
 	}
 	// Terminate every session owned by this UID. Iterate over a
-	// snapshot because ReleaseSession mutates the session file set.
+	// snapshot because terminateSession mutates the session file set.
 	for _, ref := range u.m.userSessions(u.uid) {
-		_ = u.m.releaseSession(ref.ID)
+		_ = u.m.terminateSession(ref.ID)
 	}
 	return nil
 }
@@ -723,7 +723,7 @@ func (s *seatObject) Terminate(sender dbus.Sender) *dbus.Error {
 		return err
 	}
 	for _, ref := range s.m.seatSessions(s.id) {
-		_ = s.m.releaseSession(ref.ID)
+		_ = s.m.terminateSession(ref.ID)
 	}
 	return nil
 }

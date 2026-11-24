@@ -559,6 +559,16 @@ verified with `git tag -v`.
   `slinit-openrc-convert` no longer writes a `chroot` it cannot apply:
   it warns that the bgprocess daemon will run outside the jail (a
   wrapped script leaves the chroot to openrc-run).
+  harmless, now say so on stderr and still load.
+- **`slinit-logind`'s `TerminateSession`, `TerminateUser` and
+  `TerminateSeat` killed nothing.** They, and the user and seat
+  objects' `Terminate`, only dropped the session's records: every
+  process of the session kept running, no longer tracked by anything,
+  so `loginctl terminate-user` left the user's desktop up. As systemd
+  stops the session's scope, each process in the scope now gets
+  SIGTERM, SIGCONT and SIGHUP, and whatever is left 5 s later is
+  SIGKILLed through the scope's `cgroup.kill`. Only the session's own
+  cgroup is signalled, and the call does not wait out the 5 s.
 
 ## [4.0.2] — 2026-11-22
 
