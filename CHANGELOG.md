@@ -49,7 +49,9 @@ verified with `git tag -v`.
   admitted whatever its numbers happened to name. slinit has no i386
   table, so a call through a listed foreign architecture now takes the
   filter's refusal action (`system-call-error-number`, kill by default)
-  instead. Per-architecture filtering as systemd does it would need
+  instead — when there is a filter list; with none, the listed arches
+  are simply allowed, as `system-call-architectures` alone means under
+  systemd. Per-architecture filtering as systemd does it would need
   per-architecture groups and the i386 `socketcall`/`ipc` multiplexers,
   which is not a fix for an LTS release.
 - **An x32 syscall slipped past every seccomp deny rule.** An x32 call
@@ -61,6 +63,8 @@ verified with `git tag -v`.
   `restrict-address-families`. Every filter now kills a call with that
   bit set, as libseccomp and systemd do unless x32 is allowed. (Only a
   kernel built with `CONFIG_X86_X32_ABI` accepts such calls.)
+  Syscall number -1 — what a tracer writes to cancel a call, answered
+  ENOSYS by the kernel — is not taken for x32.
 - **`system-call-architectures = native` alone killed the service.**
   Set without a `system-call-filter` list — as were `system-call-log`
   and `system-call-error-number` — it compiled to an empty allowlist,

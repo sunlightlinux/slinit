@@ -197,6 +197,55 @@ func TestX32CallsAreKilled(t *testing.T) {
 	}
 }
 
+// nr -1 is what a tracer writes to cancel a syscall (strace fault
+// injection, a debugger) and what probes use; the kernel answers it with
+// ENOSYS. As an unsigned number it is above the x32 bit, so the x32 kill
+// took it too and every filtered service died of SIGSYS under strace.
+// It must reach the filter's ordinary rules, as before the x32 check.
+func TestSyscallMinusOneIsNotTakenForX32(t *testing.T) {
+	if NativeArch() != "x86-64" {
+		t.Skip("x32 is an x86-64 ABI")
+	}
+	f, err := Build([]string{"~@mount"}, ModeAllow, nil, ErrnoAction(unix.EPERM), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := Compile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns, err := CompileRestrictNamespaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for what, p := range map[string][]unix.SockFilter{"~@mount": prog, "restrict-namespaces": ns} {
+		if got := runBPFArch(t, p, auditArchX86_64, 0xffffffff); got == ActionKill {
+			t.Errorf("%s: syscall(-1) -> KILL, want it passed to the kernel (ENOSYS)", what)
+		}
+	}
+}
+
+// system-call-architectures alone (no filter list) only says which
+// arches may call: an accepted foreign arch must not be refused then.
+// The foreign-arch refusal took the filter's action even with nothing to
+// filter, killing i386 calls the setting had just accepted.
+func TestForeignArchAllowedWithNoList(t *testing.T) {
+	if NativeArch() != "x86-64" {
+		t.Skip("i386 is the foreign arch tested on x86-64")
+	}
+	f, err := Build(nil, ModeAllow, []string{"native", "x86"}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog, err := Compile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runBPFArch(t, prog, auditArchX86, 20); got != ActionAllow {
+		t.Errorf("i386 getpid with no list -> %#x, want ALLOW", got)
+	}
+}
+
 // TestForeignArchIsRefused: with system-call-architectures=native x86, an
 // i386 call used to be dispatched through the x86_64-numbered branches —
 // i386 mount (21) is x86_64 access, i386 getpid (20) is x86_64 writev —
@@ -230,7 +279,7 @@ func TestForeignArchIsRefused(t *testing.T) {
 		{"~@mount: i386 mount(21)", deny, auditArchX86, 21, eperm},
 		{"~getpid: i386 getpid(20)", deny, auditArchX86, 20, eperm},
 		{"read allowlist: i386 restart_syscall(0)", allow, auditArchX86, 0, eperm},
-		{"no list: i386 read(3)", none, auditArchX86, 3, eperm},
+		{"no list: i386 read(3)", none, auditArchX86, 3, ActionAllow},
 		{"~@mount: x86_64 mount", deny, auditArchX86_64, uint32(nrOf(t, "mount")), eperm},
 		{"~@mount: x86_64 access", deny, auditArchX86_64, uint32(nrOf(t, "access")), ActionAllow},
 		{"read allowlist: x86_64 read", allow, auditArchX86_64, uint32(nrOf(t, "read")), ActionAllow},

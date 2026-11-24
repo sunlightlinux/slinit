@@ -49,8 +49,15 @@ const x32SyscallBit = 0x40000000
 
 // x32Reject loads nothing: with nr in A, it kills a call whose number has
 // the x32 bit (or a higher one) set, and falls through otherwise.
+//
+// nr -1 is let through first. It is not a call but what a tracer writes
+// to cancel one (strace fault injection, a debugger), and what probes
+// use; the kernel answers it with ENOSYS. Unsigned, it is above the x32
+// bit, so without this every filtered service died of SIGSYS under
+// strace -e inject.
 func x32Reject() []unix.SockFilter {
 	return []unix.SockFilter{
+		{Code: bpfJMP | bpfJEQ | bpfK, K: 0xffffffff, Jt: 2, Jf: 0},
 		{Code: bpfJMP | bpfJGE | bpfK, K: x32SyscallBit, Jt: 0, Jf: 1},
 		retInsn(ActionKill),
 	}
@@ -173,6 +180,12 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 		refuseAction := f.DefaultAction
 		if refuseAction == 0 {
 			refuseAction = ActionKill
+		}
+		// With no filter list nothing is being refused, natively or
+		// otherwise: system-call-architectures alone only limits which
+		// arches may call at all, as systemd installs it.
+		if len(syscalls) == 0 {
+			refuseAction = ActionAllow
 		}
 		prog = append(prog, retInsn(refuseAction))
 	}
