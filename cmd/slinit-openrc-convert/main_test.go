@@ -250,7 +250,7 @@ func TestEmitSlinitFile(t *testing.T) {
 		"pid-file = /run/testd.pid",
 		"term-signal = SIGHUP",
 		"umask = 022",
-		"no-new-privs = yes",
+		"options = no-new-privs",
 		"restart = yes",
 		"restart-delay = 5",
 		"depends-on: localmount",
@@ -361,5 +361,17 @@ func TestCommandBackgroundIsAForegroundDaemon(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// no_new_privs is an options member in slinit, not a setting of its
+// own: a converted file with `no-new-privs = yes` did not load.
+func TestNoNewPrivsLoads(t *testing.T) {
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\nno_new_privs=yes\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	_, out := loadConverted(t, cfg)
+	if !strings.Contains(out, "options = no-new-privs") {
+		t.Errorf("no-new-privs not emitted as an option:\n%s", out)
 	}
 }

@@ -512,7 +512,8 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 		fmt.Fprintf(w, "umask = %s\n", c.umask)
 	}
 	if c.noNewPrivs {
-		fmt.Fprintln(w, "no-new-privs = yes")
+		// An options member; `no-new-privs = yes` is an unknown setting.
+		fmt.Fprintln(w, "options = no-new-privs")
 	}
 	if c.restart != "" && c.svcType == "process" {
 		fmt.Fprintf(w, "restart = %s\n", c.restart)

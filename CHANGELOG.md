@@ -864,6 +864,10 @@ verified with `git tag -v`.
   script with a `pidfile` but no `command_background` — a daemon that
   forks itself — becomes the `bgprocess`. A script with neither is
   converted to `process` with a warning.
+- **`slinit-openrc-convert` wrote a file that did not load for
+  `no_new_privs=yes`.** It emitted `no-new-privs = yes`, which slinit
+  rejects as an unknown setting; it now writes `options = no-new-privs`,
+  as its man page always said.
 
 ## [4.0.2] — 2026-11-22
 
