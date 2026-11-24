@@ -104,13 +104,6 @@ verified with `git tag -v`.
   created again was never watched again. The watcher now rescans its
   directories after an overflow, and re-adds the watch on a removed
   directory once it exists again, rescanning it.
-- **A pinned-stopped service came back up after a reboot.** Pins from
-  `--persist-intent` and from the soft-reboot snapshot were replayed
-  after the boot services had been started, although `slinit(8)` says
-  the persisted ones go in before the boot cascade. A pinned-stopped
-  service in the boot graph was started first and then left running
-  with the stop pin set. Stop pins are now applied before the boot
-  services start.
 - **A soft reboot reverted edits to the env-file.** The soft-reboot
   snapshot recorded the whole global environment, env-file values
   included, and replayed it over the env-file the new generation had
