@@ -139,6 +139,12 @@ verified with `git tag -v`.
   the dependent then started without its hard dependency. The watcher
   now applies the same checks, under the lock the unload takes, and
   leaves the service loaded with a warning otherwise.
+- **Writing to the readiness fd a second time killed the service.**
+  Without a watchdog, slinit closed its end of the readiness pipe as soon
+  as the service was ready, so a later write — a daemon that reports
+  ready again after a reload, say — died of SIGPIPE. dinit keeps reading
+  the pipe until EOF; slinit now drains it too, and closes it when the
+  process exits or is stopped.
 - **A scripted service whose start once timed out could never start
   again.** The timeout set the stop reason to `timed-out`, and the
   start-command's exit handler read that reason to mean "this attempt

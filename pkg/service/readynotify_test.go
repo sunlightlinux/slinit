@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -237,4 +238,51 @@ func TestProcessServiceWithoutReadyNotification(t *testing.T) {
 	// Clean up
 	set.StopService(svc)
 	time.Sleep(500 * time.Millisecond)
+}
+
+// Writing to the readiness fd again after the ready line must not hurt
+// the service. Without a watchdog the read end was closed as soon as the
+// service was ready, so the next write killed it with SIGPIPE; dinit keeps
+// reading the pipe until EOF. Writing more than a pipe buffer holds also
+// proves the pipe is read, not merely left open — a pipe nobody reads
+// would block the writer for good.
+func TestReadyNotificationLaterWritesAreDrained(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "wrote-all")
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "ready-twice")
+	svc.SetCommand([]string{"/bin/sh", "-c", fmt.Sprintf(
+		"echo ready >&3; sleep 0.3; echo ready >&3; head -c 200000 /dev/zero >&3; touch %s; exec sleep 60",
+		marker)})
+	svc.SetReadyNotification(3, "")
+	set.AddService(svc)
+	set.StartService(svc)
+	if got := waitForState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		t.Fatalf("not started: %v", got)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	set.queueMu.Lock()
+	pid, es := svc.PID(), svc.GetExitStatus()
+	set.queueMu.Unlock()
+	if pid == 0 {
+		t.Errorf("service died writing to its readiness fd after ready (signal %v)", es.Signal())
+	} else if _, err := os.Stat(marker); err != nil {
+		t.Errorf("writes after ready never completed: the pipe is not being read")
+	}
+
+	set.StopService(svc)
+	if got := waitForState(t, svc, StateStopped, 3*time.Second); got != StateStopped {
+		t.Fatalf("not stopped: %v", got)
+	}
+	set.queueMu.Lock()
+	open := svc.readyPipeRead != nil
+	set.queueMu.Unlock()
+	if open {
+		t.Errorf("readiness pipe still open after the service stopped")
+	}
 }

@@ -2771,10 +2771,9 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 	// Nil the channel so we don't select on it again
 	s.readyCh = nil
 
-	// When a watchdog is configured we keep the pipe open after the
-	// initial readiness signal: subsequent writes act as keepalives.
-	// Without a watchdog the pipe is one-shot, mirroring dinit.
-	keepPipe := ready && s.HasWatchdog() &&
+	// After the readiness signal the pipe stays open and is still read
+	// (see keepReadingReadyPipe); otherwise it is done with.
+	keepPipe := ready &&
 		(s.state.Load() == StateStarting || s.state.Load() == StateStarted)
 	if !keepPipe {
 		s.closeReadyPipe()
@@ -2804,7 +2803,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 				s.startCronIfConfigured()
 				s.startHealthCheckIfConfigured()
 				if keepPipe {
-					s.startWatchdogWatcher()
+					s.keepReadingReadyPipe()
 				}
 			}
 			return
@@ -2825,7 +2824,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 			// which handleChildExit stopped with the old one.
 			s.cancelTimer()
 			if keepPipe {
-				s.startWatchdogWatcher()
+				s.keepReadingReadyPipe()
 			}
 			return
 		}
@@ -2842,7 +2841,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.startCronIfConfigured()
 		s.startHealthCheckIfConfigured()
 		if keepPipe {
-			s.startWatchdogWatcher()
+			s.keepReadingReadyPipe()
 		}
 		s.services.processQueuesLocked()
 	} else {
@@ -2853,6 +2852,33 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.failedToStart(false, false)
 		s.services.processQueuesLocked()
 	}
+}
+
+// keepReadingReadyPipe keeps reading the readiness pipe once the service
+// is ready: the watchdog does when one is configured, since later writes
+// are its keepalives; otherwise a goroutine drains the pipe to EOF.
+// Closing the read end instead killed a service that wrote to the fd a
+// second time with SIGPIPE. dinit keeps reading until EOF too
+// (ready_notify_watcher). The pipe is closed when the process exits or
+// is stopped (closeReadyPipe), which also ends the drain.
+//
+// Caller must hold queueMu.
+func (s *ProcessService) keepReadingReadyPipe() {
+	if s.readyPipeRead == nil {
+		return // ready-check-command: there is no pipe
+	}
+	if s.HasWatchdog() {
+		s.startWatchdogWatcher()
+		return
+	}
+	go func(pipe *os.File) {
+		buf := make([]byte, 128)
+		for {
+			if _, err := pipe.Read(buf); err != nil {
+				return
+			}
+		}
+	}(s.readyPipeRead)
 }
 
 // closeReadyPipe closes the read-end of the notification pipe if open.
