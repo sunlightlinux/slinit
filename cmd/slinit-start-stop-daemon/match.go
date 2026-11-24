@@ -81,6 +81,9 @@ func processMatches(pid int, m MatchCriteria) bool {
 		return false
 	}
 	exePath, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+	// A daemon whose binary an upgrade replaced reads "<path> (deleted)";
+	// it is still the daemon to stop, as OpenRC and Debian match it.
+	exePath = strings.TrimSuffix(exePath, " (deleted)")
 	if m.Exec != "" {
 		want := m.Exec
 		got := exePath

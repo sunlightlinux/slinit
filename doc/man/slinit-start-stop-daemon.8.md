@@ -48,7 +48,9 @@ At least one of **--exec**, **--pidfile**, or **--name** must be given.
 When multiple are provided, a process must satisfy **all** of them.
 
 **-x**, **--exec** *PATH*
-:   Match processes whose **/proc/PID/exe** symlink resolves to *PATH*.
+:   Match processes whose **/proc/PID/exe** symlink resolves to *PATH*,
+    including one still running a *PATH* since replaced or removed
+    (the link then reads "*PATH* (deleted)").
     Also names the binary to spawn on **--start**.
 
 **-p**, **--pidfile** *PATH*

@@ -192,3 +192,41 @@ func TestPidfileInsecure(t *testing.T) {
 		}
 	}
 }
+
+// TestExecMatchesDeletedBinary: after a package upgrade replaces the
+// binary, /proc/PID/exe of the running daemon reads "<path> (deleted)".
+// An exact compare found nothing: --stop left it running and --start
+// launched a second instance. OpenRC and Debian strip the suffix.
+func TestExecMatchesDeletedBinary(t *testing.T) {
+	src, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip(err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Skip(err)
+	}
+	bin := filepath.Join(t.TempDir(), "mydaemon")
+	if err := os.WriteFile(bin, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "30")
+	if err := cmd.Start(); err != nil {
+		t.Skip(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	pid := cmd.Process.Pid
+	if !processMatches(pid, MatchCriteria{Exec: bin, UID: -1}) {
+		t.Fatal("did not match the live binary")
+	}
+	if err := os.Remove(bin); err != nil {
+		t.Fatal(err)
+	}
+	if !processMatches(pid, MatchCriteria{Exec: bin, UID: -1}) {
+		exe, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+		t.Errorf("--exec %s did not match after the binary was replaced (exe=%q)", bin, exe)
+	}
+	if processMatches(pid, MatchCriteria{Exec: bin + "2", UID: -1}) {
+		t.Error("matched a different path")
+	}
+}

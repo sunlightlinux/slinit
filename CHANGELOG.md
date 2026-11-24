@@ -33,6 +33,12 @@ verified with `git tag -v`.
   blocked in `write(2)` once the pipe filled (shared logger), or wrote
   into a pipe whose read end had been closed (UDP forwarding). A longer
   line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **`slinit-start-stop-daemon --exec` lost a daemon once its binary was
+  upgraded.** It compared `/proc/PID/exe` with the path exactly, and
+  for a binary replaced on disk that link reads `<path> (deleted)`: a
+  `--stop` found nothing and left the old daemon running, and a
+  `--start` launched a second one. The suffix is now ignored, as
+  Debian's start-stop-daemon and OpenRC's exe matching do.
 - **`start-on-path-changed` on a file died the first time the file was
   replaced.** The watch sat on the file's inode, so a file replaced by
   renaming a new one over it — the way editors and package managers
