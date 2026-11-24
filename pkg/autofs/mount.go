@@ -21,6 +21,11 @@ type AutofsMount struct {
 
 	mounted map[string]time.Time // sub-mount name → mount time
 	mu      sync.Mutex
+
+	// expireMu is held by ExpireMulti, which runs off the event loop,
+	// for as long as it uses ioctlFD; Close takes it before closing
+	// the fd.
+	expireMu sync.Mutex
 }
 
 // Setup creates the autofs mount point.
@@ -124,7 +129,16 @@ func (am *AutofsMount) Fail(token uint32) error {
 // ExpireMulti triggers kernel-side expiry of idle sub-mounts.
 // Calls AUTOFS_IOC_EXPIRE_MULTI in a loop until EAGAIN.
 // Returns the number of entries expired.
+//
+// Each call blocks until the EXPIRE packet it queues has been answered
+// (Ready/Fail), so ExpireMulti must not run on the goroutine that
+// reads the pipe.
 func (am *AutofsMount) ExpireMulti() (int, error) {
+	am.expireMu.Lock()
+	defer am.expireMu.Unlock()
+	if am.ioctlFD < 0 {
+		return 0, nil // closed
+	}
 	expired := 0
 	for {
 		_, _, errno := unix.Syscall(unix.SYS_IOCTL,
@@ -186,11 +200,14 @@ func (am *AutofsMount) Close() error {
 		firstErr = fmt.Errorf("unmount %s: %w", am.mountpoint, err)
 	}
 
-	// Close file descriptors
+	// Close file descriptors. Catatonic mode above has failed any
+	// expire wait, so a running ExpireMulti lets go of ioctlFD soon.
+	am.expireMu.Lock()
 	if am.ioctlFD >= 0 {
 		unix.Close(am.ioctlFD)
 		am.ioctlFD = -1
 	}
+	am.expireMu.Unlock()
 	if am.pipeRD >= 0 {
 		unix.Close(am.pipeRD)
 		am.pipeRD = -1
@@ -205,9 +222,10 @@ func (am *AutofsMount) Close() error {
 
 // setTimeout sets the autofs idle timeout via ioctl.
 func (am *AutofsMount) setTimeout(secs uint64) error {
+	arg := uint(secs) // the kernel reads and writes back an unsigned long
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL,
 		uintptr(am.ioctlFD), AUTOFS_IOC_SETTIMEOUT,
-		uintptr(unsafe.Pointer(&secs)))
+		uintptr(unsafe.Pointer(&arg)))
 	if errno != 0 {
 		return errno
 	}

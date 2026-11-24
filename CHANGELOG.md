@@ -63,6 +63,13 @@ verified with `git tag -v`.
   background child holds open: the caller waited for as long as that
   child lived. Output is now read for at most 2 s after the command
   exits, and its exit status is reported as before.
+- **`slinit-mount` never unmounted an idle filesystem.** The expiry
+  sweep's ioctl number was wrong (`_IO` where the kernel defines
+  `_IOW(…, int)`), so every sweep failed and `timeout=` had no effect;
+  two unused ioctl numbers (`AUTOFS_IOC_PROTOVER`, `AUTOFS_IOC_EXPIRE`)
+  had the wrong sizes as well. The sweep now also runs off the event
+  loop: the kernel holds the ioctl until the daemon answers the expire
+  request it sends, and the loop is what reads that request.
 - **`slinit-journalctl --image` mounted an untrusted image with
   setuid binaries and device nodes usable.** The image was mounted
   `-o ro` only; it is now mounted `ro,nosuid,nodev,noexec`. With
