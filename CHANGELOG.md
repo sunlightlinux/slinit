@@ -181,9 +181,8 @@ verified with `git tag -v`.
   wait for it lasted until every holder of the pipe had closed it, so a
   child the hook left running held shutdown for as long as it lived,
   with no timer left at that stage to rescue it. The output is now
-  waited for at most 2 s after the hook exits, and a hook still running
-  after 90 s (the emergency timeout) is killed and taken as failed, so
-  slinit unmounts itself.
+  waited for at most 2 s after the hook exits. The hook itself is still
+  waited for until it exits, as dinit waits for it.
 - **`slinit-start-stop-daemon --stop` without `--retry` could wait
   forever.** The default schedule was the signal with no timeout,
   which the wait loop read as "until the process exits", so

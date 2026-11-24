@@ -908,28 +908,3 @@ func TestRunShutdownHookBackgroundChild(t *testing.T) {
 		t.Fatal("runShutdownHook still waiting on a pipe held by the hook's background child")
 	}
 }
-
-// TestRunShutdownHookTimeout: a hook that never exits is killed after
-// shutdownHookTimeout and reported failed, so slinit does its own
-// unmounting rather than waiting on it forever.
-func TestRunShutdownHookTimeout(t *testing.T) {
-	dir := t.TempDir()
-	hookPath := filepath.Join(dir, "shutdown-hook")
-	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexec sleep 60\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	origPaths, origTimeout := shutdownHookPaths, shutdownHookTimeout
-	shutdownHookPaths, shutdownHookTimeout = []string{hookPath}, 500*time.Millisecond
-	defer func() { shutdownHookPaths, shutdownHookTimeout = origPaths, origTimeout }()
-
-	done := make(chan bool, 1)
-	go func() { done <- runShutdownHook(service.ShutdownReboot, logging.New(logging.LevelDebug)) }()
-	select {
-	case ok := <-done:
-		if ok {
-			t.Error("a hook killed for running too long was reported successful")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("runShutdownHook did not bound a hook that never exits")
-	}
-}
