@@ -140,8 +140,8 @@ func TestTypeMapping(t *testing.T) {
 	}
 }
 
-// TestRestartMapping — systemd's five Restart= values map onto
-// slinit's three (yes/no/on-failure) with warnings on the ambiguous
+// TestRestartMapping — systemd's Restart= values map onto slinit's
+// four (yes/no/on-failure/on-success) with warnings on the ambiguous
 // cases.
 func TestRestartMapping(t *testing.T) {
 	cases := map[string]string{
@@ -150,7 +150,7 @@ func TestRestartMapping(t *testing.T) {
 		"on-failure":  "on-failure",
 		"on-abnormal": "on-failure",
 		"on-abort":    "on-failure",
-		"on-success":  "yes", // unusual, warns
+		"on-success":  "on-success",
 		"on-watchdog": "on-failure",
 	}
 	for restartVal, wantSlinit := range cases {

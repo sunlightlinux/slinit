@@ -1,6 +1,6 @@
 #!/bin/sh
 # 201-slinit-systemd-convert — v2.1.4 converter for .service units.
-# Covers the systemd → slinit Restart= mapping (5 values → 3) plus
+# Covers the systemd → slinit Restart= mapping (onto slinit's 4) plus
 # Type= dispatch (simple → process, forking → bgprocess, oneshot →
 # scripted) plus [Unit] After/Requires → after/depends-on.
 # The dep-name handling is the subtle one: .service is stripped to the

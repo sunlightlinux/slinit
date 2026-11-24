@@ -294,3 +294,48 @@ ExecStart=/usr/bin/qemu-ga
 		}
 	}
 }
+
+// User=, Group=, Restart=on-success and several ExecStart= lines, each
+// read through the real loader.
+//   - Group= before User= made run-as "user::group", a group named
+//     ":group"; systemd does not care about the order.
+//   - Restart=on-success became restart = yes, so a service that failed
+//     was restarted; slinit has had on-success since 3.x.
+//   - A oneshot runs every ExecStart= in turn; slinit runs one command,
+//     and the others were dropped without a word.
+func TestSystemdUserGroupRestartExecStart(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "o.service", `[Service]
+Type=oneshot
+Group=wheel
+User=nobody
+Restart=on-success
+ExecStart=/usr/bin/first
+ExecStart=/usr/bin/second
+`)
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, level+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+	dl := NewDirLoader(service.NewServiceSet(&testConsumerLogger{}), []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	desc, _, err := dl.findAndParse("o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc.RunAs != "nobody:wheel" {
+		t.Errorf("run-as = %q, want nobody:wheel", desc.RunAs)
+	}
+	if desc.AutoRestart != service.RestartOnSuccess {
+		t.Errorf("restart = %v, want on-success", desc.AutoRestart)
+	}
+	found := false
+	for _, g := range got {
+		found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, "ExecStart") && strings.Contains(g, "/usr/bin/first"))
+	}
+	if !found {
+		t.Errorf("no WARN that an ExecStart= was dropped: %v", got)
+	}
+}

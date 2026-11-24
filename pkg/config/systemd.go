@@ -372,7 +372,15 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Type=%s not recognised", val)})
 		}
 	case "ExecStart":
+		// A oneshot may list several, run in turn; slinit runs one
+		// command. The last is kept, so that an empty ExecStart=
+		// followed by a new one replaces it as in systemd.
 		cmd, w := stripExecPrefixes(val)
+		if cfg.command != "" && cmd != "" {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
+					"run the steps from one script if they all matter", cfg.command)})
+		}
 		cfg.command = cmd
 		warns = append(warns, w...)
 	case "ExecStop":
@@ -402,18 +410,15 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	case "ExecReload":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecReload=%s — slinit reload is signal-based; use reload-signal directive", val)})
 	case "User":
-		if cfg.runAs == "" {
-			cfg.runAs = val
+		// run-as is user[:group]; either key may come first.
+		if _, group, ok := strings.Cut(cfg.runAs, ":"); ok {
+			cfg.runAs = val + ":" + group
 		} else {
-			// User was set via Group first; assemble.
-			cfg.runAs = val + ":" + cfg.runAs
+			cfg.runAs = val
 		}
 	case "Group":
-		if cfg.runAs == "" {
-			cfg.runAs = ":" + val
-		} else if !strings.Contains(cfg.runAs, ":") {
-			cfg.runAs = cfg.runAs + ":" + val
-		}
+		user, _, _ := strings.Cut(cfg.runAs, ":")
+		cfg.runAs = user + ":" + val
 	case "WorkingDirectory":
 		cfg.workingDir = val
 	case "RootDirectory":
@@ -434,8 +439,7 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		case "on-failure", "on-abnormal", "on-abort":
 			cfg.restart = "on-failure"
 		case "on-success":
-			warns = append(warns, SystemdWarning{"NOTE", "Restart=on-success is unusual; treated as restart = yes"})
-			cfg.restart = "yes"
+			cfg.restart = "on-success"
 		case "on-watchdog":
 			warns = append(warns, SystemdWarning{"NOTE", "Restart=on-watchdog — slinit uses watchdog directives; map manually"})
 			cfg.restart = "on-failure"

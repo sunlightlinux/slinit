@@ -898,6 +898,14 @@ verified with `git tag -v`.
   (`After=dev-virtio\x2dports-org.qemu.guest_agent.0.device`) was
   refused outright. Every reference that is not a `.service` is now
   dropped with a note, as `.target` was.
+- **Three systemd mappings were wrong.** `Group=` written before
+  `User=` produced `run-as = user::group`, a group named `:group`;
+  `Restart=on-success` became `restart = yes`, restarting a service
+  that failed, although slinit has `restart = on-success`; and of a
+  oneshot's several `ExecStart=` lines all but the last were dropped
+  without a word. `User=`/`Group=` now combine in either order,
+  `on-success` maps to itself, and the dropped `ExecStart=` lines are
+  warned about, since slinit runs one command.
 
 ## [4.0.2] — 2026-11-22
 

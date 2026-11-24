@@ -51,6 +51,13 @@ as **%h**, a **norbind** bind, the **noexec** option of a temporary
 file system, and a **CapabilityBoundingSet** that keeps no capability
 at all.
 
+**Restart** keeps its meaning where slinit has it (**always** →
+**yes**, **on-success** → **on-success**; **on-failure**,
+**on-abnormal** and **on-abort** → **on-failure**). slinit runs one
+command per service, so of several **ExecStart** lines (a oneshot) only
+the last is kept, with a warning naming the ones dropped; likewise only
+the first **ExecStartPre** and **ExecStartPost**.
+
 Dependencies: **Requires** becomes **depends-on**, **Wants** becomes
 **waits-for** and **After** becomes **after** (ordering only, as in
 systemd). Only **.service** units become dependencies: a reference to
