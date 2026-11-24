@@ -113,7 +113,7 @@ func Verify(path string, key *FSSKey) (VerifyResult, error) {
 		if oh.Size < ObjectHeaderSize {
 			return res, fmt.Errorf("journalbin: verify: bad object size %d at %d", oh.Size, off)
 		}
-		if off+oh.Size > uint64(fileSize(f)) {
+		if fs := uint64(fileSize(f)); off > fs || oh.Size > fs-off {
 			return res, fmt.Errorf("journalbin: verify: obj at %d claims size past file end", off)
 		}
 		if oh.Type == ObjectEntry {

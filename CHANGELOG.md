@@ -126,6 +126,17 @@ verified with `git tag -v`.
   one of its dependencies changes later. The recalculation also checked
   for duplicates with a linear scan under the queue lock — 38 ms for a
   dependency added under a service with 8000 dependents, 1 ms now.
+- **A crafted binary journal could hang or exhaust memory in its
+  reader.** An ENTRY_ARRAY whose `next` pointed back at itself was
+  walked forever, growing the offset list until memory ran out; every
+  item of an ENTRY could name the same large DATA object, which was read
+  and copied once per item (62 items of a 256 KiB payload: 33 MB
+  allocated for a 275 KiB file; a 2 MiB file could demand 128 GiB); and
+  `Verify` checked an object's size as `off+size`, which wraps, so a
+  size of 2^64−1 aligned to zero and the walk never advanced. The array
+  chain must now move forward, a repeated item is read once, an entry's
+  payloads may not exceed the file, and `Verify` bounds sizes without
+  overflow. The fuzz corpus gains the self-referential seed.
 - **Appending to a binary journal got slower the larger the file.**
   The DATA hash table had a fixed 233 buckets and the dedup walk read
   and allocated the payload of every node in a bucket's chain before
