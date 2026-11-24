@@ -175,6 +175,9 @@ type ServiceRecord struct {
 	startExplicit       bool
 	waitingForStartSlot bool // waiting for start limiter slot
 
+	// The wait above: a woken waiter checks it is still this one.
+	startSlotCh <-chan struct{}
+
 	// Propagation flags
 	propRequire bool
 	propRelease bool
@@ -3106,14 +3109,22 @@ func (sr *ServiceRecord) allDepsStarted() {
 		ok, waitCh := limiter.Acquire(sr.self)
 		if !ok {
 			sr.waitingForStartSlot = true
+			sr.startSlotCh = waitCh
 			// Wait for slot in a goroutine to avoid blocking the queue
 			go func() {
 				<-waitCh
 				sr.services.queueMu.Lock()
+				defer sr.services.queueMu.Unlock()
+				// A stop (or a failure) withdrew this wait while we
+				// slept, and dropStartSlot settled the slot: the
+				// service is no longer the one that asked for it.
+				if !sr.waitingForStartSlot || sr.startSlotCh != waitCh {
+					return
+				}
 				sr.waitingForStartSlot = false
+				sr.startSlotCh = nil
 				sr.callBringUp()
 				sr.services.processQueuesLocked()
-				sr.services.queueMu.Unlock()
 			}()
 			return
 		}
@@ -3474,14 +3485,7 @@ func (sr *ServiceRecord) Stopped() {
 // failedToStart handles start failure.
 func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 	// Release start limiter slot or cancel waiting
-	if limiter := sr.services.GetStartLimiter(); limiter != nil {
-		if sr.waitingForStartSlot {
-			limiter.CancelWait(sr.self)
-			sr.waitingForStartSlot = false
-		} else {
-			limiter.Release(sr.self)
-		}
-	}
+	sr.dropStartSlot()
 
 	sr.desired.Store(StateStopped)
 
@@ -3631,7 +3635,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 
 	if sr.state.Load() != StateStarted {
 		if sr.state.Load() == StateStarting {
-			if !sr.waitingForDeps && !sr.waitingForConsole {
+			if !sr.waitingForDeps && !sr.waitingForConsole && !sr.waitingForStartSlot {
 				if !sr.self.CanInterruptStart() {
 					return
 				}
@@ -3642,6 +3646,10 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 			} else if sr.waitingForConsole {
 				sr.services.UnqueueConsole(sr.self)
 				sr.waitingForConsole = false
+			} else if sr.waitingForStartSlot {
+				// Nothing has been launched yet, so like the
+				// console wait it can always be interrupted.
+				sr.dropStartSlot()
 			}
 
 			sr.notifyListeners(EventStartCancelled)
@@ -3659,6 +3667,24 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 	if allDepsStopped {
 		sr.services.AddTransitionQueue(sr.self)
 	}
+}
+
+// dropStartSlot gives back what the start limiter holds for this
+// service: a queued wait is withdrawn (waking its goroutine, which then
+// sees the wait is gone), and a slot already granted is released.
+func (sr *ServiceRecord) dropStartSlot() {
+	limiter := sr.services.GetStartLimiter()
+	if limiter == nil {
+		return
+	}
+	if sr.waitingForStartSlot {
+		sr.waitingForStartSlot = false
+		sr.startSlotCh = nil
+		if limiter.CancelWait(sr.self) {
+			return
+		}
+	}
+	limiter.Release(sr.self)
 }
 
 func (sr *ServiceRecord) dependencyStarted() {

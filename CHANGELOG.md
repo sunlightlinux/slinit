@@ -91,6 +91,16 @@ verified with `git tag -v`.
   `NoSuchDevice`, and nothing to a session without a seat. A Wayland
   compositor takes the card and event nodes, so Plasma and GNOME are
   unaffected.
+- **A service stopped while waiting for a `--parallel-start-limit` slot
+  was started anyway.** Its waiter stayed queued, and when the slot
+  freed it brought the now STOPPED service up; the second
+  `ServiceInactive` left the active count at -1, so shutdown, which
+  waits for 0, sat out the emergency timeout. Each start/stop cycle
+  while waiting also parked a goroutine for good and added one more
+  bring-up. Stopping now withdraws the wait — it is interruptible like
+  the console wait, since nothing has run yet — the woken waiter checks
+  its wait is still current, and a withdrawn wait wakes its goroutine
+  so it exits.
 - **A peer on the `--metrics-listen` port could make PID 1 buffer
   without limit.** The request line and headers were read with
   `bufio.Reader.ReadString`, which keeps appending until a newline, so a

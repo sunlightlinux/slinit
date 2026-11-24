@@ -83,10 +83,13 @@ func (sl *StartLimiter) Release(svc Service) {
 }
 
 // CancelWait removes a service from the wait queue (e.g. if it was
-// stopped before getting a slot).
-func (sl *StartLimiter) CancelWait(svc Service) {
+// stopped before getting a slot) and closes its channel, so whatever
+// waits on it returns. It reports whether the service was still
+// queued; false means the slot was already granted and the caller
+// owns it, to be given back with Release.
+func (sl *StartLimiter) CancelWait(svc Service) bool {
 	if sl.maxConcurrent <= 0 {
-		return
+		return false
 	}
 
 	sl.mu.Lock()
@@ -95,9 +98,11 @@ func (sl *StartLimiter) CancelWait(svc Service) {
 	for i, w := range sl.waiters {
 		if w.svc == svc {
 			sl.waiters = append(sl.waiters[:i], sl.waiters[i+1:]...)
-			return
+			close(w.ch)
+			return true
 		}
 	}
+	return false
 }
 
 // ActiveCount returns the number of non-slow starting services.
