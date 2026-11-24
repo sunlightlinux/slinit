@@ -1597,6 +1597,14 @@ func main() {
 		logger.Notice("confirm-spawn: enabled — will prompt [y/n] before each service start")
 	}
 
+	// Stop pins from the restore snapshot and --persist-intent go in
+	// before the boot services start; the full replay of both runs after
+	// the boot loop, too late for a pinned-stopped service the boot
+	// graph would start.
+	if !rescueMode {
+		pinStopsBeforeBoot(serviceSet, restoreSnapPath, persist.NewPinStore(persistIntentDir))
+	}
+
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args).
 	// Wrapped in a retry loop so the rescue menu's "continue" action
 	// (operator dropped to shell, fixed a typo) can re-attempt without
@@ -1717,9 +1725,10 @@ func main() {
 	}
 
 	// Replay operator intent from a prior slinit instance if requested.
-	// Boot services are already activated by this point; snapshot adds
-	// additional intent (manual activations, pins, triggers, global env)
-	// that the boot graph alone cannot reconstruct.
+	// Boot services are already activated by this point (its stop pins
+	// were applied before them); snapshot adds additional intent (manual
+	// activations, pins, triggers, global env) that the boot graph alone
+	// cannot reconstruct.
 	if restoreSnapPath != "" {
 		applySnapshot(restoreSnapPath, serviceSet, logger)
 	}
@@ -1772,10 +1781,11 @@ func main() {
 		}
 	}
 
-	// Replay any persisted pins BEFORE the boot cascade runs so a
-	// service marked pinned-stopped never briefly comes up first.
-	// Errors from the store are logged; a broken file for one service
-	// doesn't gate the whole restore.
+	// Replay any persisted pins. The stop pins were already applied
+	// before the boot cascade (pinStopsBeforeBoot), so a service marked
+	// pinned-stopped never briefly comes up first. Errors from the
+	// store are logged; a broken file for one service doesn't gate the
+	// whole restore.
 	if intents, err := pinStore.Load(); err == nil {
 		for name, intent := range intents {
 			svc := serviceSet.FindService(name, false)

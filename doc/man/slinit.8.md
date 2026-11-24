@@ -233,9 +233,11 @@ long options may be written with one or two leading dashes.
     slinit instance. The snapshot records which services were
     explicitly activated, which were pinned (start or stop), which
     triggered services had been triggered, and the global environment
-    set via **slinitctl setenv-global**. After the boot graph is
-    activated, slinit re-applies that intent so manual state from the
-    previous session is preserved.
+    set via **slinitctl setenv-global**. Stop pins are applied before
+    the boot services start, so a pinned-stopped service never comes
+    up; after the boot graph is activated, slinit re-applies the rest
+    of that intent so manual state from the previous session is
+    preserved.
 
     The intended use is **soft-reboot**: when **slinitctl shutdown
     soft-reboot** runs, slinit drops a snapshot at
