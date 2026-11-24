@@ -1197,6 +1197,19 @@ func canFeedConsumer(svc service.Service) bool {
 }
 
 func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, error) {
+	// The name, argument included, is joined onto each service, init.d,
+	// unit and overlay directory below, and Join resolves ".." — so
+	// "a/../../tmp/x" or "x@/../../tmp/x" loaded a file from outside
+	// every one of them. ValidateServiceName permits '/' (and anything
+	// after '@'), so the check is here, where the paths are made.
+	for _, elem := range strings.Split(name, "/") {
+		if elem == ".." {
+			return nil, "", &ServiceLoadError{
+				ServiceName: name,
+				Message:     "service name must not contain a '..' path element",
+			}
+		}
+	}
 	// Extract service argument from name@argument pattern
 	baseName := name
 	var serviceArg *string

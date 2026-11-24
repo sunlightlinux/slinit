@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A service name could load a description from outside the service
+  directories.** Names may contain `/`, and anything may follow `@`;
+  the name is joined onto each service, init.d, unit and overlay
+  directory, and the join resolved `..`, so `a/../../tmp/x` or
+  `x@/../../tmp/x` loaded `/tmp/x`. A name with a `..` path element is
+  now refused. Only root (or a user instance's owner) can name a
+  service, so this hardens rather than closes a hole.
 - **A timeout of `inf`, `nan` or an enormous number turned into "no
   timeout".** Durations are parsed as a decimal number of seconds, and
   `inf`, `nan`, `1e300` or anything past about 292 years converted to
