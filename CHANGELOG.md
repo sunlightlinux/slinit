@@ -836,6 +836,13 @@ verified with `git tag -v`.
   the service's `reload-signal`, and fails, as OpenRC does for a script
   without `reload()`, when there is none. `slinitctl reload` still
   re-reads the description.
+- **`slinitctl run` re-interpreted `$` and backslashes in the command.**
+  It double-quoted each argument into the transient description but
+  escaped only `"`, so the parser expanded `$VAR` and took a backslash
+  as an escape: `run -- showargs 'a\b' 'HOME=$HOME'` ran `showargs ab
+  HOME=/home/…`. `$` is now written as `$$` and a backslash doubled,
+  so the service gets the arguments exactly as given; an argument
+  with a newline, which the file cannot hold, is refused.
 
 ## [4.0.2] — 2026-11-22
 

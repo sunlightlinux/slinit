@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -151,5 +152,21 @@ func TestBuildRunBodyParsesBack(t *testing.T) {
 	}
 	if desc.Slice != "my.slice" {
 		t.Errorf("slice = %q", desc.Slice)
+	}
+}
+
+// The service must get exactly the argv given to `run`: the description
+// file's command line expands $ and takes a backslash as an escape, so
+// `run -- showargs 'a\b' 'HOME=$HOME'` used to receive `ab` and the
+// caller's home directory.
+func TestBuildRunBodyArgvRoundTrips(t *testing.T) {
+	argv := []string{"/bin/showargs", `a\b`, "HOME=$HOME", "${X:-y}", "$1", "$$", `q"q`, "it's", "a b", `\`, `end\`}
+	body := buildRunBody("process", "", argv, "", "", "", "", nil)
+	desc, err := config.Parse(strings.NewReader(body), "svc", "test")
+	if err != nil {
+		t.Fatalf("parse: %v\n%s", err, body)
+	}
+	if !reflect.DeepEqual(desc.Command, argv) {
+		t.Errorf("command = %q\nwant      %q\nbody:\n%s", desc.Command, argv, body)
 	}
 }

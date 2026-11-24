@@ -256,6 +256,12 @@ service name or rejected.
     from the daemon's — **run** refuses and lists the directories it
     does search.
 
+    The service receives *COMMAND* and *ARGS* exactly as given: a
+    **$** or backslash in them is escaped in the description file,
+    not expanded (since 4.0.3 — before, *'HOME=$HOME'* arrived
+    expanded and *'a\\b'* as *ab*). An argument containing a newline
+    is refused, since the file cannot hold one.
+
     The transient service is started without waiting; **\--wait**
     and **\--collect** then poll its state. A failed start removes
     the description again.

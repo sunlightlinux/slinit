@@ -2574,9 +2574,11 @@ func shellSingleQuote(s string) string {
 // buildRunBody assembles the transient service description that
 // cmdRun writes into the runtime service dir. Kept as a pure helper so the
 // generated shape is unit-testable without touching the filesystem
-// or the control socket. Command tokens are minimally-quoted
-// (double-quote each, escape embedded double quotes) so dinit-style
-// whitespace tokenisation reunites them at parse time.
+// or the control socket. Each command token is double-quoted with
+// its backslashes and double quotes backslash-escaped and its $ doubled,
+// so the parser's $-expansion and escape handling give the service the
+// token exactly as given. A token cannot carry a newline (cmdRun
+// refuses one).
 //
 // envFilePath, when non-empty, becomes an `env-file =` reference —
 // the caller writes the KEY=VAL contents separately (cmdRun does
@@ -2591,7 +2593,7 @@ func buildRunBody(svcType, description string, cmdParts []string, slice, niceVal
 	body.WriteString("command =")
 	for _, p := range cmdParts {
 		body.WriteString(" \"")
-		body.WriteString(strings.ReplaceAll(p, `"`, `\"`))
+		body.WriteString(runArgEscaper.Replace(p))
 		body.WriteByte('"')
 	}
 	body.WriteByte('\n')
@@ -2616,6 +2618,10 @@ func buildRunBody(svcType, description string, cmdParts []string, slice, niceVal
 	}
 	return body.String()
 }
+
+// runArgEscaper undoes what the command line's parse would do to a
+// token: $VAR expansion ($$ is a literal $) and backslash escapes.
+var runArgEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$")
 
 // cmdRun spawns a transient one-shot service (systemd-run analogue).
 // Usage: slinitctl run [flags] -- COMMAND [ARGS...]
@@ -2779,6 +2785,11 @@ commandStart:
 	cmdParts := args[i:]
 	if len(cmdParts) == 0 {
 		return usagef("run: no command given (expected: slinitctl run [flags] -- CMD [ARGS...])")
+	}
+	for _, p := range cmdParts {
+		if strings.ContainsAny(p, "\n\x00") {
+			return usagef("run: command arguments must not contain a newline or NUL")
+		}
 	}
 	switch svcType {
 	case "process", "scripted":
