@@ -353,6 +353,11 @@ type ExecParams struct {
 	// $CREDENTIALS_DIRECTORY env var; the caller does not pre-set it.
 	ServiceName string
 	Credentials []CredentialSource
+	// ReuseCredentials marks an auxiliary command (a stop-command) run
+	// beside the service's main process: when the credentials tmpfs is
+	// already mounted it is used as it is, neither remounted nor torn
+	// down if this start fails. The main start owns setup and cleanup.
+	ReuseCredentials bool
 
 	// File-descriptor-store handoff (#14). StoredFDs are prepended to
 	// the LISTEN_FDS sequence so a restart sees the previous run's

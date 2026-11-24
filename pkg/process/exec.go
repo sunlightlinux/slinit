@@ -65,9 +65,24 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// A failure aborts the start — running without an expected
 	// credential is worse than not running, and secrets are by design
 	// the kind of input you must not silently degrade away from.
-	credDir, err := SetupCredentials(params.ServiceName, params.Credentials, params.RunAsUID, params.RunAsGID)
-	if err != nil {
-		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
+	//
+	// A stop-command runs while the main process still uses the
+	// directory: remounting it would swap the daemon's credentials out
+	// from under it, and the undo below would unmount and remove them
+	// all if the stop-command then failed to start. So it reuses a
+	// directory that is already mounted and leaves cleanup to the
+	// service's stop.
+	var credDir string
+	var err error
+	ownCreds := false
+	if len(params.Credentials) > 0 && params.ReuseCredentials && credentialsMounted(params.ServiceName) {
+		credDir = CredentialsDir(params.ServiceName)
+	} else {
+		credDir, err = SetupCredentials(params.ServiceName, params.Credentials, params.RunAsUID, params.RunAsGID)
+		if err != nil {
+			return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
+		}
+		ownCreds = credDir != ""
 	}
 
 	// Everything acquired from here until the child is started is
@@ -87,10 +102,12 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 	}()
 
-	if credDir != "" {
+	if ownCreds {
 		// Roll back the credentials tmpfs so a failed start does not
 		// leave a populated /run/credentials/<svc>/ behind.
 		undo = append(undo, func() { _ = CleanupCredentials(params.ServiceName) })
+	}
+	if credDir != "" {
 		// Add CREDENTIALS_DIRECTORY to env, building Env if needed.
 		if cap(params.Env) == 0 {
 			params.Env = []string{"CREDENTIALS_DIRECTORY=" + credDir}

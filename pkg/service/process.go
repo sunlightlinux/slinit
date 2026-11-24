@@ -1925,6 +1925,9 @@ func (s *ProcessService) execStopCommand() bool {
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
+	// Use the credentials the main command was started with; the
+	// service's stop removes them.
+	params.ReuseCredentials = true
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {

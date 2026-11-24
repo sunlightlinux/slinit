@@ -584,7 +584,9 @@ verified with `git tag -v`.
   `/run/credentials/<service>` while the first was still there.
   Cleanup unmounted only the top one, removing the files then failed
   with "read-only file system", and the secret under it could still be
-  read. Setup now clears any mount already at the path before mounting,
+  read. A stop-command now uses the credentials directory the running
+  main command has instead of mounting its own, setup clears any mount
+  still at the path (one left from before a re-exec) before mounting,
   and cleanup unmounts until none is left.
 - **One failed start could block a `lock-file` service until slinit
   restarted.** A start that failed after the lock was taken — a missing

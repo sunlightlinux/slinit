@@ -63,13 +63,13 @@ func SetupCredentials(serviceName string, sources []CredentialSource, uid, gid u
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("credentials mkdir %s: %w", dir, err)
 	}
-	// Fresh tmpfs each time, and only one. A stop-command is set up
-	// with the same credentials while the main command's mount is
-	// still there (as is a mount that lingered from before a re-exec);
-	// mounting on top stacked a second tmpfs, Cleanup took off only
-	// the top one, and the secrets under it stayed readable after the
-	// service stopped. So clear the path first. EPERM is left for the
-	// mount below to report.
+	// Fresh tmpfs each time, and only one. A mount can still be there
+	// (one that lingered from before a re-exec); mounting on top
+	// stacked a second tmpfs, Cleanup took off only the top one, and
+	// the secrets under it stayed readable after the service stopped.
+	// So clear the path first. EPERM is left for the mount below to
+	// report. (A stop-command does not come here while the main
+	// command's mount is up: it reuses that one, see ReuseCredentials.)
 	if err := unmountAll(dir); err != nil && err != unix.EPERM {
 		return "", fmt.Errorf("credentials umount %s: %w", dir, err)
 	}
@@ -154,6 +154,18 @@ func CleanupCredentials(serviceName string) error {
 		return fmt.Errorf("remove %s: %w", dir, err)
 	}
 	return nil
+}
+
+// credentialsMounted reports whether the service's credentials
+// directory is a mount point, i.e. SetupCredentials has run for it and
+// CleanupCredentials has not.
+func credentialsMounted(serviceName string) bool {
+	dir := CredentialsDir(serviceName)
+	var st, parent unix.Stat_t
+	if unix.Stat(dir, &st) != nil || unix.Stat(filepath.Dir(dir), &parent) != nil {
+		return false
+	}
+	return st.Dev != parent.Dev
 }
 
 // unmountAll takes every mount stacked at dir off it, until umount
