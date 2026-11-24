@@ -153,19 +153,28 @@ func appendExcept(prog []unix.SockFilter, nr int, r exceptRule) []unix.SockFilte
 }
 
 // compileRules builds one filter from rules and exceptRules. A syscall the
-// native table does not know is skipped: the legacy calls (open, chmod,
-// mkdir, creat, mknod) do not exist on arm64, and a call that does not
-// exist cannot be made. restrict_semantics_test checks that every name
-// resolves on amd64, so a misspelt name cannot fail open unnoticed there.
+// native table does not know fails the compile, unless absentSyscalls
+// lists it: a call that does not exist on this arch (the legacy open,
+// chmod, mkdir, creat, mknod on arm64) cannot be made. Unknown calls used
+// to be skipped, and on a build without a table every rule was, so each
+// filter allowed everything.
 func compileRules(rules []rule, excepts []exceptRule) ([]unix.SockFilter, error) {
 	prog := archHeader()
 	for _, r := range excepts {
-		if nr, ok := SyscallNumber(r.syscall); ok {
+		nr, ok, err := resolveRule(r.syscall)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			prog = appendExcept(prog, nr, r)
 		}
 	}
 	for _, r := range rules {
-		if nr, ok := SyscallNumber(r.syscall); ok {
+		nr, ok, err := resolveRule(r.syscall)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			prog = appendRule(prog, nr, r)
 		}
 	}
@@ -174,6 +183,18 @@ func compileRules(rules []rule, excepts []exceptRule) ([]unix.SockFilter, error)
 		return nil, fmt.Errorf("seccomp: program exceeds 4096 instructions (got %d)", len(prog))
 	}
 	return prog, nil
+}
+
+// resolveRule returns the native number of a rule's syscall; ok is false
+// for one absent on this arch, which needs no rule.
+func resolveRule(name string) (nr int, ok bool, err error) {
+	if nr, ok := SyscallNumber(name); ok {
+		return nr, true, nil
+	}
+	if absentSyscalls[name] {
+		return 0, false, nil
+	}
+	return 0, false, fmt.Errorf("seccomp: syscall %q unknown on %s, refusing to filter without it", name, NativeArch())
 }
 
 var (

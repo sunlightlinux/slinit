@@ -105,3 +105,28 @@ func TestCompileRestrictFileSystems(t *testing.T) {
 	}
 	assertValidBPF(t, "restrict-file-systems", prog)
 }
+
+// A rule whose syscall the native table cannot resolve must fail the
+// compile, not be skipped: on a build without a syscall table (every
+// arch but amd64) each restrict-* filter compiled to "allow all", and
+// the hardening deny list to an empty denylist, so the service ran
+// unprotected. Only a syscall listed as absent on this arch — one that
+// cannot be called at all — may be skipped.
+func TestUnresolvedSyscallFailsClosed(t *testing.T) {
+	const bogus = "no_such_syscall"
+	if _, err := compileRules([]rule{{syscall: bogus, action: errEPERM}}, nil); err == nil {
+		t.Error("compileRules accepted a rule it cannot resolve")
+	}
+	if _, err := compileRules(nil, []exceptRule{{syscall: bogus, mask: ^uint32(0), action: errEPERM}}); err == nil {
+		t.Error("compileRules accepted an except rule it cannot resolve")
+	}
+	if _, err := Compile(&Filter{Mode: ModeDeny, Syscalls: []string{bogus}, DefaultAction: errEPERM}); err == nil {
+		t.Error("Compile accepted a denylist entry it cannot resolve")
+	}
+
+	absentSyscalls[bogus] = true
+	defer delete(absentSyscalls, bogus)
+	if _, err := compileRules([]rule{{syscall: bogus, action: errEPERM}}, nil); err != nil {
+		t.Errorf("a syscall absent on this arch must be skipped: %v", err)
+	}
+}

@@ -180,8 +180,8 @@ func TestRestrictFileSystemsOnKernel(t *testing.T) {
 }
 
 // Every syscall a restrict-* rule names must resolve on amd64: an unknown
-// name is skipped (the legacy calls do not exist on arm64), so a typo here
-// would quietly leave that call open.
+// name fails the compile, so a typo here would refuse to start every
+// service using that knob.
 func TestRestrictRuleNamesResolve(t *testing.T) {
 	if NativeArch() != "x86-64" {
 		t.Skip("names checked against the amd64 table")

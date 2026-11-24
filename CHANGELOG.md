@@ -26,6 +26,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **On a non-x86-64 build the restrict-\*/protect-\* filters refused
+  nothing.** slinit has a syscall table for x86-64 only; elsewhere every
+  syscall name is unknown, and the filter compilers skipped a rule they
+  could not resolve — so each `restrict-*` filter compiled to "allow
+  everything" and the `protect-*` deny list to an empty one, and the
+  service ran unprotected without a word. A rule naming a syscall the
+  build cannot resolve now fails the compile, and the runner refuses to
+  start the service, unless the syscall is listed as absent on that
+  architecture.
 - **`restrict-file-systems` left `mount_setattr` open.** It refused
   `mount` and the new mount API but not `mount_setattr`,
   `open_tree_attr` or `pivot_root`, so a service with the privilege to

@@ -1502,7 +1502,11 @@ call — under **restrict-namespaces**, every threaded program, since
 glibc's **pthread_create**(3) tries **clone3** first. A syscall made
 through a foreign ABI (a 32-bit or, since 4.0.3, an x32 call on x86-64)
 is still killed.
-**system-call-error-number** does not apply to these filters. The mount-based knobs (**protect-kernel-tunables**,
+**system-call-error-number** does not apply to these filters. slinit
+knows syscall numbers on x86-64 only: on another architecture a knob
+that installs a seccomp filter fails the start rather than run the
+service unprotected (since 4.0.3; before, the filter refused nothing).
+The mount-based knobs (**protect-kernel-tunables**,
 **protect-control-groups**, **protect-kernel-logs**) additionally
 auto-imply *CLONE_NEWNS* so the operations are confined to the
 service's private mount namespace.

@@ -80,6 +80,14 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 	if f == nil {
 		return nil, fmt.Errorf("nil filter")
 	}
+	// Every entry must resolve: one skipped would leave a denied call
+	// allowed. Build checks names already, but the hardening and
+	// io_uring filters are built directly.
+	for _, name := range f.Syscalls {
+		if _, ok := SyscallNumber(name); !ok && !absentSyscalls[name] {
+			return nil, fmt.Errorf("seccomp: syscall %q unknown on %s, refusing to filter without it", name, NativeArch())
+		}
+	}
 	syscalls := f.SortedSyscallNumbers()
 
 	// Compute the default action for the "non-allowed" side and the
