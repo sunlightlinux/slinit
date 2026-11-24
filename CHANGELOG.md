@@ -271,6 +271,14 @@ verified with `git tag -v`.
   service without hardening got `groups=65534(nobody)`. The runner now
   always sets the supplementary groups, to an empty list when none are
   configured.
+- **Credentials stayed readable after a service stopped.** A
+  `stop-command` is set up with the same credentials as the main
+  command, so a second tmpfs was mounted over
+  `/run/credentials/<service>` while the first was still there.
+  Cleanup unmounted only the top one, removing the files then failed
+  with "read-only file system", and the secret under it could still be
+  read. Setup now clears any mount already at the path before mounting,
+  and cleanup unmounts until none is left.
 
 ## [4.0.2] — 2026-11-22
 
