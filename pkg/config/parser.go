@@ -3704,10 +3704,11 @@ func parseDuration(value string) (time.Duration, error) {
 // now saturate at the longest Duration, which is what "infinity" means
 // for a timeout or an interval; NaN means nothing and is refused.
 //
-// The ceiling is 1<<62 ns (about 146 years) rather than MaxInt64, so the
-// service code can still add two such values (a restart delay and its
-// step, or its jitter) without overflowing.
-const maxConfigDuration = time.Duration(1 << 62)
+// The ceiling is 1<<62 - 1 ns (about 146 years) rather than MaxInt64,
+// so the service code can still add two such values (a restart delay
+// and its step, or its jitter) without overflowing: 2*(1<<62 - 1) fits,
+// 2*(1<<62) does not.
+const maxConfigDuration = time.Duration(1<<62 - 1)
 
 func secondsToDuration(f float64) (time.Duration, error) {
 	if math.IsNaN(f) {
