@@ -3,8 +3,11 @@ package network
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 )
@@ -128,4 +131,53 @@ func TestRunIfup_FailurePropagates(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-zero-exit ifup to propagate error")
 	}
+}
+
+// TestRunIfup_BackgroundDHCPClientSurvives: busybox ifup starts
+// udhcpc in the background without redirecting its output. When
+// RunIfup returned, Wait had closed the pipe's read end, so the
+// client's next write (a lease renewal message) killed it with
+// SIGPIPE — the interface lost its address at the first renewal.
+func TestRunIfup_BackgroundDHCPClientSurvives(t *testing.T) {
+	dir := t.TempDir()
+	iface := filepath.Join(dir, "interfaces")
+	if err := os.WriteFile(iface, []byte("auto eth0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	renewed := filepath.Join(dir, "renewed")
+	pidFile := filepath.Join(dir, "client.pid")
+	stub := filepath.Join(dir, "ifup")
+	script := "#!/bin/sh\necho configuring\n" +
+		"(sleep 0.5; echo lease renewed; touch " + renewed + "; exec sleep 600) &\n" +
+		"echo $! > " + pidFile + "\nexit 0\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	origPath, origBins := interfacesPath, ifupBins
+	interfacesPath, ifupBins = iface, []string{stub}
+	defer func() { interfacesPath, ifupBins = origPath, origBins }()
+
+	logger := logging.New(logging.LevelDebug)
+	start := time.Now()
+	if err := RunIfup(true, logger); err != nil {
+		t.Fatalf("RunIfup: %v", err)
+	}
+	if el := time.Since(start); el > 400*time.Millisecond {
+		t.Errorf("RunIfup took %v: it should return when ifup exits", el)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(renewed); err == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("the background DHCP client died writing to the stdout ifup gave it")
 }

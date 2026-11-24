@@ -63,6 +63,12 @@ verified with `git tag -v`.
   background child holds open: the caller waited for as long as that
   child lived. Output is now read for at most 2 s after the command
   exits, and its exit status is reported as before.
+- **A DHCP client started by `ifup -a` died at its first lease
+  renewal.** The output of ifup was read through a pipe that was
+  closed as soon as ifup exited, so a client ifup left in the
+  background with that output (busybox `udhcpc`) was killed by SIGPIPE
+  the next time it wrote, and the interface lost its address. The
+  pipe is now read until the last process holding it closes it.
 - **A daemon started from rc.local held boot for five minutes, then
   was killed.** rc.local and the hook scripts read their output to EOF
   before waiting for the script, so a background child that inherited

@@ -129,17 +129,28 @@ func RunIfup(up bool, logger *logging.Logger) error {
 	ctx, cancel := context.WithTimeout(context.Background(), ifupTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, tool, args...)
-	stdout, err := cmd.StdoutPipe()
+	// Our own pipe, not StdoutPipe: Wait closes a StdoutPipe's read
+	// end as soon as ifup exits, and a DHCP client ifup left in the
+	// background with this stdout (busybox udhcpc) then dies of
+	// SIGPIPE at its next write — the first lease renewal. The read
+	// end stays open, drained by pipeLines, until every writer has
+	// closed it: one goroutine + fd per ifup call, living as long as
+	// the longest-lived child that kept the output.
+	r, w, err := os.Pipe()
 	if err != nil {
-		return fmt.Errorf("ifup: stdout pipe: %w", err)
+		return fmt.Errorf("ifup: output pipe: %w", err)
 	}
-	cmd.Stderr = cmd.Stdout // merge; ifupdown writes both channels
-	if err := cmd.Start(); err != nil {
+	cmd.Stdout = w
+	cmd.Stderr = w // merge; ifupdown writes both channels
+	err = cmd.Start()
+	w.Close() // the child holds its own copy
+	if err != nil {
+		r.Close()
 		return fmt.Errorf("ifup: start %s: %w", tool, err)
 	}
 	// finit-parity: log each output line prefixed "network:" so
 	// operators can grep the log stream.
-	go pipeLines(stdout, logger)
+	go pipeLines(r, logger)
 	logger.Info("network: running %s %v", tool, args)
 	if err := process.WaitAdhoc(cmd); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -181,10 +192,13 @@ func findIfdown() string {
 }
 
 // pipeLines reads r line-by-line and forwards each to the logger
-// with the "network:" prefix used by finit.
-func pipeLines(r io.Reader, logger *logging.Logger) {
+// with the "network:" prefix used by finit. It reads to EOF even past
+// a line too long for the scanner, so no writer meets a closed pipe.
+func pipeLines(r io.ReadCloser, logger *logging.Logger) {
+	defer r.Close()
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		logger.Info("network: %s", sc.Text())
 	}
+	io.Copy(io.Discard, r)
 }
