@@ -436,7 +436,10 @@ func analyzeRunScript(cfg *slinitConfig, script string) []warning {
 	if len(fields) > 0 && filepath.Base(fields[0]) == "chpst" {
 		warns = append(warns, parseChpst(cfg, fields[1:])...)
 	} else {
-		cfg.command = lastExec
+		// Written back from the words, not copied: slinit's command
+		// parser does not read shell quoting, so 'a\b' kept as written
+		// reached the daemon as ab.
+		cfg.command = joinCommand(fields)
 	}
 	return warns
 }

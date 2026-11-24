@@ -1031,13 +1031,15 @@ requires.
   in the wrong places.** The runit converter split the exec line
   shell-style to resolve a bare command name or peel `chpst`, then
   joined the words with plain spaces: `exec touch "/tmp/file with
-  space"` ran `touch` with three arguments. Words are now quoted back
-  for slinit (and a backslash in the exec line is read as the shell
-  reads it). The sysvinit converter copied a process field as it was,
-  so `/bin/dmesg > /var/log/dmesg.boot` ran `dmesg` with the arguments
-  `>` and `/var/log/dmesg.boot`; a field with a shell metacharacter now
-  runs as `/bin/sh -c "exec …"`, which is what sysvinit and busybox do
-  with it.
+  space"` ran `touch` with three arguments, and a line starting with an
+  absolute path was copied as written, which slinit's command parser
+  does not read as the shell does (`'a\b'` became `ab`). Words are now
+  quoted back for slinit in every case (and a backslash in the exec
+  line is read as the shell reads it). The sysvinit converter copied a
+  process field as it was, so `/bin/dmesg > /var/log/dmesg.boot` ran
+  `dmesg` with the arguments `>` and `/var/log/dmesg.boot`; a field
+  with a shell metacharacter now runs as `/bin/sh -c "exec …"`, which
+  is what sysvinit and busybox do with it.
 
 ## [4.0.2] — 2026-11-22
 

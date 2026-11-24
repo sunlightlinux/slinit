@@ -579,6 +579,10 @@ func TestQuotedExecArgsSurvive(t *testing.T) {
 	}{
 		{`exec touch "/tmp/file with space"`, []string{"/tmp/file with space"}},
 		{`exec chpst -u nobody /bin/echo 'a b' "c\"d" x`, []string{"a b", `c"d`, "x"}},
+		// An absolute path with no chpst was copied through as written,
+		// and slinit's parser does not read shell quotes the same way:
+		// 'a\b' reached the daemon as ab.
+		{`exec /usr/bin/true 'a\b' "c d" e\ f`, []string{`a\b`, "c d", "e f"}},
 	} {
 		dir := filepath.Join(t.TempDir(), "q")
 		os.MkdirAll(dir, 0o755)
