@@ -33,6 +33,14 @@ verified with `git tag -v`.
   blocked in `write(2)` once the pipe filled (shared logger), or wrote
   into a pipe whose read end had been closed (UDP forwarding). A longer
   line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **Two path triggers in one directory: only the last one fired.**
+  inotify keeps one watch per inode, so a second `start-on-path-*`
+  watch on the same directory got the same descriptor and replaced the
+  first one's event mask, and slinit's table kept only the last service
+  for it: the first never fired, and stopping either service's trigger
+  removed the watch the other still needed. Every service sharing a
+  watch now gets its events, the masks are combined, and the watch is
+  removed only when its last user goes.
 - **A shutdown hook that started a background process wedged
   shutdown.** The hook's output was collected through a pipe, and the
   wait for it lasted until every holder of the pipe had closed it, so a

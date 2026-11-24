@@ -82,8 +82,8 @@ type Watcher struct {
 	logger Logger
 
 	mu      sync.Mutex
-	entries map[string]*entry // path → entry (callers key by path)
-	byWd    map[int32]*entry  // wd → entry
+	entries map[string]*entry  // path → entry (callers key by path)
+	byWd    map[int32][]*entry // wd → entries sharing it (one wd per inode)
 
 	quit chan struct{}
 	done chan struct{}
@@ -100,7 +100,7 @@ func New(logger Logger) (*Watcher, error) {
 		fd:      fd,
 		logger:  logger,
 		entries: make(map[string]*entry),
-		byWd:    make(map[int32]*entry),
+		byWd:    make(map[int32][]*entry),
 		quit:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}, nil
@@ -159,12 +159,7 @@ func (w *Watcher) Rearm(path string) error {
 	}
 	e.fired = false
 	// Drop any old watch — arm() will install a fresh one matching current state.
-	if e.wd >= 0 {
-		_, _ = unix.InotifyRmWatch(w.fd, uint32(e.wd))
-		delete(w.byWd, e.wd)
-		e.wd = -1
-		e.watching = ""
-	}
+	w.dropWatchLocked(e)
 	w.mu.Unlock()
 	return w.arm(e)
 }
@@ -177,11 +172,33 @@ func (w *Watcher) Remove(path string) {
 	if !ok {
 		return
 	}
-	if e.wd >= 0 {
+	w.dropWatchLocked(e)
+	delete(w.entries, path)
+}
+
+// dropWatchLocked detaches e from its watch descriptor, removing the
+// inotify watch only when no other entry shares it. The kernel mask
+// keeps the bits e added; events no remaining entry wants are filtered
+// by eventMatches. Caller holds w.mu.
+func (w *Watcher) dropWatchLocked(e *entry) {
+	if e.wd < 0 {
+		return
+	}
+	list := w.byWd[e.wd]
+	for i, other := range list {
+		if other == e {
+			list = append(list[:i:i], list[i+1:]...)
+			break
+		}
+	}
+	if len(list) == 0 {
 		_, _ = unix.InotifyRmWatch(w.fd, uint32(e.wd))
 		delete(w.byWd, e.wd)
+	} else {
+		w.byWd[e.wd] = list
 	}
-	delete(w.entries, path)
+	e.wd = -1
+	e.watching = ""
 }
 
 // arm installs the inotify watch appropriate for the entry's current
@@ -234,23 +251,28 @@ func (w *Watcher) arm(e *entry) error {
 
 // addWatch installs an inotify watch on `target` with `mask` and records
 // the wd in the entry. target may be the path itself or its parent.
+//
+// inotify keeps one watch per inode: adding a watch on an inode already
+// watched returns the same wd, and without IN_MASK_ADD replaces its
+// mask. Two triggers in one directory therefore share a wd, so the mask
+// is OR'd in and byWd keeps every entry on it.
 func (w *Watcher) addWatch(e *entry, target string, mask uint32) error {
-	wd, err := unix.InotifyAddWatch(w.fd, target, mask)
+	wd, err := unix.InotifyAddWatch(w.fd, target, mask|unix.IN_MASK_ADD)
 	if err != nil {
 		return fmt.Errorf("inotify_add_watch %q: %w", target, err)
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if e.wd == int32(wd) {
+		return nil
+	}
 	// If another arm() raced us (unlikely — arm is serialized per entry by
 	// the caller flow), drop the duplicate.
-	if e.wd >= 0 && e.wd != int32(wd) {
-		_, _ = unix.InotifyRmWatch(w.fd, uint32(e.wd))
-		delete(w.byWd, e.wd)
-	}
+	w.dropWatchLocked(e)
 	e.wd = int32(wd)
 	e.watching = target
-	w.byWd[int32(wd)] = e
+	w.byWd[int32(wd)] = append(w.byWd[int32(wd)], e)
 	return nil
 }
 
@@ -321,28 +343,30 @@ func (w *Watcher) dispatch(buf []byte) {
 		}
 
 		w.mu.Lock()
-		e, ok := w.byWd[raw.Wd]
-		if !ok || e == nil {
-			w.mu.Unlock()
-			off = nameEnd
-			continue
-		}
+		list := w.byWd[raw.Wd]
 
 		// IN_IGNORED means the kernel removed the watch (target was
 		// deleted, or InotifyRmWatch was called). Drop our record.
 		if raw.Mask&unix.IN_IGNORED != 0 {
+			for _, e := range list {
+				e.wd = -1
+				e.watching = ""
+			}
 			delete(w.byWd, raw.Wd)
-			e.wd = -1
-			e.watching = ""
 			w.mu.Unlock()
 			off = nameEnd
 			continue
 		}
 
-		match := w.eventMatches(e, raw.Mask, name)
+		var matched []*entry
+		for _, e := range list {
+			if w.eventMatches(e, raw.Mask, name) {
+				matched = append(matched, e)
+			}
+		}
 		w.mu.Unlock()
 
-		if match {
+		for _, e := range matched {
 			w.fire(e)
 		}
 		off = nameEnd

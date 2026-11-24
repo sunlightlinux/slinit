@@ -357,3 +357,69 @@ func TestCloseIsIdempotent(t *testing.T) {
 	w.Close()
 	w.Close() // must not panic
 }
+
+// TestTwoTriggersInOneDirectory: inotify gives one watch descriptor
+// per inode, so two triggers watching the same directory share a wd.
+// byWd kept only the last entry, so the first trigger never fired, and
+// removing either one dropped the watch the other still needed.
+func TestTwoTriggersInOneDirectory(t *testing.T) {
+	w := newWatcher(t)
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	var firedA, firedB atomic.Int32
+	if err := w.Add(a, TriggerExists, func() { firedA.Add(1) }); err != nil {
+		t.Fatalf("Add a: %v", err)
+	}
+	if err := w.Add(b, TriggerExists, func() { firedB.Add(1) }); err != nil {
+		t.Fatalf("Add b: %v", err)
+	}
+	if err := os.WriteFile(a, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &firedA, 1, 2*time.Second) {
+		t.Errorf("first trigger in the directory did not fire")
+	}
+
+	// Remove b: a's re-armed watch on the same directory must survive.
+	if err := os.Remove(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Rearm(a); err != nil {
+		t.Fatalf("Rearm a: %v", err)
+	}
+	w.Remove(b)
+	if err := os.WriteFile(a, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &firedA, 2, 2*time.Second) {
+		t.Errorf("removing one trigger dropped the other's watch")
+	}
+	if firedB.Load() != 0 {
+		t.Errorf("removed trigger fired")
+	}
+}
+
+// TestTwoTriggersOneDirectoryMasks: a second watch on the same inode
+// replaced the first one's mask, so a directory-changed trigger lost
+// IN_DELETE once a path-exists trigger shared its directory.
+func TestTwoTriggersOneDirectoryMasks(t *testing.T) {
+	w := newWatcher(t)
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var changed, exists atomic.Int32
+	if err := w.Add(dir, TriggerChanged, func() { changed.Add(1) }); err != nil {
+		t.Fatalf("Add dir: %v", err)
+	}
+	if err := w.Add(filepath.Join(dir, "later"), TriggerExists, func() { exists.Add(1) }); err != nil {
+		t.Fatalf("Add later: %v", err)
+	}
+	if err := os.Remove(victim); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &changed, 1, 2*time.Second) {
+		t.Errorf("directory trigger missed IN_DELETE after a second watch on the same inode")
+	}
+}
