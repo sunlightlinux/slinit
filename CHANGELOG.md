@@ -26,6 +26,12 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A sleep hook could hold a suspend for ever.** As with the shutdown
+  hook, the hook's output went to a pipe and `Wait` waited for EOF on
+  it, so a hook that left anything running in the background held the
+  suspend for as long as that child lived, and a hook that hung held it
+  for good. The hook is now bounded the same way: 90 s for the hook, and
+  2 s for its output after it exits.
 - **One long output line could wedge a service.** The shared logger
   and the standalone `log-forward-udp` path read a service's output pipe
   with `bufio.Scanner`, which stops for good on a line longer than its

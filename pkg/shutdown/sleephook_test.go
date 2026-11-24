@@ -3,8 +3,13 @@ package shutdown
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/logging"
 )
 
 // withSleepHook installs an executable hook and points the lookup at it,
@@ -159,5 +164,43 @@ func TestSleepHookIgnoredWhenNotExecutable(t *testing.T) {
 
 	if err := Suspend("mem", nil); err != nil {
 		t.Fatalf("Suspend should ignore a non-executable hook, got: %v", err)
+	}
+}
+
+// A sleep hook runs on the suspend path, before the kernel is asked to
+// sleep. Its output went to a pipe, and Wait waits for EOF on it: a hook
+// that started anything in the background (a helper restarted for
+// resume, a `sleep 60 &`) kept the suspend waiting for as long as that
+// child lived, and a hook that hung kept it waiting for ever.
+func TestRunSleepHookBackgroundChildDoesNotWedge(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "child.pid")
+	withSleepHook(t, "echo pre\nsleep 60 &\necho $! > "+pidPath+"\nexit 0")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidPath); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	done := make(chan struct{})
+	go func() { runSleepHook("pre", "mem", logging.New(logging.LevelDebug)); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runSleepHook still waiting on a pipe held by the hook's background child")
+	}
+}
+
+func TestRunSleepHookIsBounded(t *testing.T) {
+	prev := sleepHookTimeout
+	sleepHookTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { sleepHookTimeout = prev })
+	withSleepHook(t, "exec sleep 60")
+	done := make(chan struct{})
+	go func() { runSleepHook("pre", "mem", logging.New(logging.LevelDebug)); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runSleepHook did not bound a hook that never exits")
 	}
 }

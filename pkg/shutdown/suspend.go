@@ -2,10 +2,13 @@ package shutdown
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -33,6 +36,10 @@ var suspendAllowedStates = map[string]struct{}{
 // convention is one hook, and a hook that needs to fan out to several
 // scripts can source a directory itself — which is what sunlight-os
 // already does for its shutdown hook.
+// sleepHookTimeout bounds one run of the sleep hook. The value is the
+// shutdown hook's; a var for tests.
+var sleepHookTimeout = EmergencyShutdownTimeout
+
 var sleepHookPaths = []string{
 	"/etc/slinit/sleep-hook",
 	"/lib/slinit/sleep-hook",
@@ -120,11 +127,24 @@ func runSleepHook(phase, state string, logger *logging.Logger) {
 		logger.Notice("Running sleep hook: %s %s %s %s", hookPath, phase, op, state)
 	}
 
-	cmd := exec.Command(hookPath, phase, op, state)
+	// Bounded as the shutdown hook is: the hook gets sleepHookTimeout,
+	// and WaitDelay stops a child it leaves running from holding the
+	// output pipe — Wait waits for EOF on it, so a background child
+	// otherwise held the suspend for as long as it lived.
+	ctx, cancel := context.WithTimeout(context.Background(), sleepHookTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, hookPath, phase, op, state)
+	cmd.WaitDelay = 2 * time.Second
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	err := process.RunAdhoc(cmd)
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The hook itself exited 0; only its output pipe outlived it.
+		err = nil
+	} else if ctx.Err() != nil {
+		err = fmt.Errorf("killed after %s: %w", sleepHookTimeout, err)
+	}
 
 	if logger != nil {
 		for _, line := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
