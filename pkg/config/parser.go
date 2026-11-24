@@ -3695,22 +3695,29 @@ func parseDuration(value string) (time.Duration, error) {
 	return secondsToDuration(f)
 }
 
-// secondsToDuration converts a number of seconds to a Duration, refusing
-// what a Duration cannot hold. ParseFloat accepts "nan", "inf" and
-// "1e300", and converting any of them — or anything past ~292 years —
-// gave math.MinInt64: a negative duration that passed every "< 0" check
-// already made, and that the service code then read as "no timeout" or
-// "outside the restart-limit interval". dinit's parse_timespec refuses
-// such values as too large.
+// secondsToDuration converts a number of seconds to a Duration.
+// ParseFloat accepts "nan", "inf"/"infinity" and "1e300", and converting
+// an infinity — or anything past ~292 years — gave math.MinInt64: a
+// negative duration that passed every "< 0" check already made and that
+// the service code then read as the opposite of what was written (a
+// huge restart-limit-interval let every restart through). Such values
+// now saturate at the longest Duration, which is what "infinity" means
+// for a timeout or an interval; NaN means nothing and is refused.
+//
+// The ceiling is 1<<62 ns (about 146 years) rather than MaxInt64, so the
+// service code can still add two such values (a restart delay and its
+// step, or its jitter) without overflowing.
+const maxConfigDuration = time.Duration(1 << 62)
+
 func secondsToDuration(f float64) (time.Duration, error) {
-	if math.IsNaN(f) || math.IsInf(f, 0) {
+	if math.IsNaN(f) {
 		return 0, fmt.Errorf("not a number of seconds")
 	}
 	if f < 0 {
 		return 0, fmt.Errorf("duration must be non-negative")
 	}
-	if f*float64(time.Second) >= math.MaxInt64 {
-		return 0, fmt.Errorf("too large")
+	if math.IsInf(f, 1) || f*float64(time.Second) >= float64(maxConfigDuration) {
+		return maxConfigDuration, nil
 	}
 	return time.Duration(f * float64(time.Second)), nil
 }

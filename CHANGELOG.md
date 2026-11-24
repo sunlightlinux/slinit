@@ -73,13 +73,14 @@ verified with `git tag -v`.
   `x@/../../tmp/x` loaded `/tmp/x`. A name with a `..` path element is
   now refused. Only root (or a user instance's owner) can name a
   service, so this hardens rather than closes a hole.
-- **A timeout of `inf`, `nan` or an enormous number turned into "no
-  timeout".** Durations are parsed as a decimal number of seconds, and
-  `inf`, `nan`, `1e300` or anything past about 292 years converted to
-  the most negative duration, which passed the non-negative check: a
-  `stop-timeout` stopped timing out, and a huge
-  `restart-limit-interval` let every restart through. Such values are
-  now refused at load, as dinit refuses them.
+- **`infinity` or an enormous number of seconds wrapped to a negative
+  duration.** Durations are parsed as a decimal number of seconds, and
+  `inf`, `infinity`, `1e300` or anything past about 292 years converted
+  to the most negative duration, which passed the non-negative check
+  and was then read as the opposite of what was written — a huge
+  `restart-limit-interval` let every restart through. Such values now
+  saturate at about 146 years, i.e. "as long as there is", and still
+  load as before; `nan` is refused.
 - **A command that left a child in the background held its caller.**
   Commands slinit runs itself and reads the output of — `run-action`,
   env generators, the power (SIGPWR) hook, the OpenRC `depend` parser,
