@@ -41,6 +41,13 @@ verified with `git tag -v`.
   ended the listener for good. It now retries those with a backoff
   (5 ms doubling to 1 s), and when every listener has really failed it
   exits 1 instead of 0, so `restart = on-failure` restarts it.
+- **A failing accept spun a CPU in PID 1.** The accept loop of a
+  service's virtual TTY (`vtty`) retried any error other than its own
+  Close immediately, and so did `slinit-logouthookd`'s, which also
+  logged each attempt; `EMFILE`, the usual cause, lasts until
+  descriptors are freed. A test with a listener failing with `EMFILE`
+  counted 60 million retries in 300 ms. Both now back off from 5 ms to
+  1 s, as the control socket's loop already did.
 
 ## [4.0.2] — 2026-11-22
 

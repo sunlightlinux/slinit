@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -450,5 +451,37 @@ func TestVirtualTTYCloseDoesNotStealNextPTY(t *testing.T) {
 		if !got {
 			t.Fatalf("iteration %d: the new pty's output never reached its scrollback — a closed VirtualTTY's reader took it", i)
 		}
+	}
+}
+
+// failingListener fails every Accept with err and counts the calls.
+type failingListener struct {
+	err   error
+	calls atomic.Int64
+}
+
+func (l *failingListener) Accept() (net.Conn, error) { l.calls.Add(1); return nil, l.err }
+func (l *failingListener) Close() error              { return nil }
+func (l *failingListener) Addr() net.Addr            { return &net.UnixAddr{Name: "test", Net: "unix"} }
+
+// The accept loop runs inside PID 1. When accept fails for want of a
+// descriptor — the state in which PID 1 can least afford it — retrying
+// at once spins a CPU for as long as the condition lasts.
+func TestVirtualTTYAcceptLoopBacksOffOnErrors(t *testing.T) {
+	ln := &failingListener{err: &net.OpError{Op: "accept", Net: "unix",
+		Err: os.NewSyscallError("accept4", syscall.EMFILE)}}
+	vt := &VirtualTTY{listener: ln, stopCh: make(chan struct{})}
+	done := make(chan struct{})
+	go func() { vt.acceptLoop(); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	close(vt.stopCh)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("acceptLoop did not return after stopCh closed")
+	}
+	// 5+10+20+40+80+160 ms of backoff fits six calls in 300 ms.
+	if n := ln.calls.Load(); n > 20 {
+		t.Errorf("Accept retried %d times in 300ms: a busy loop", n)
 	}
 }

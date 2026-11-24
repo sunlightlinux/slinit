@@ -389,17 +389,32 @@ func (vt *VirtualTTY) readLoop() {
 }
 
 // acceptLoop accepts client connections on the Unix socket.
+//
+// An accept error other than the Close that ends the loop is retried
+// with a backoff (5 ms doubling to 1 s), as the control socket's loop
+// does: this runs in PID 1, and the usual cause, EMFILE, lasts until
+// descriptors are freed — retrying at once would spin a CPU for that
+// whole time.
 func (vt *VirtualTTY) acceptLoop() {
+	var delay time.Duration
 	for {
 		conn, err := vt.listener.Accept()
 		if err != nil {
+			if delay == 0 {
+				delay = 5 * time.Millisecond
+			} else if delay *= 2; delay > time.Second {
+				delay = time.Second
+			}
+			t := time.NewTimer(delay)
 			select {
 			case <-vt.stopCh:
+				t.Stop()
 				return
-			default:
+			case <-t.C:
 				continue
 			}
 		}
+		delay = 0
 		vt.addClient(conn)
 	}
 }

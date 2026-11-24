@@ -35,6 +35,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -190,17 +191,27 @@ func (s *server) serve(l net.Listener) {
 	}
 
 	var wg sync.WaitGroup
+	var delay time.Duration
 	for {
 		conn, err := l.Accept()
 		if err != nil {
 			// A closed listener returns net.OpError with ErrClosed.
-			// Anything else is a real failure worth surfacing.
+			// Anything else is a real failure worth surfacing — and,
+			// since it is usually EMFILE, which lasts until descriptors
+			// are freed, worth waiting on rather than spinning on.
 			if isClosedErr(err) {
 				break
 			}
-			fmt.Fprintf(os.Stderr, "slinit-logouthookd: accept: %v\n", err)
+			if delay == 0 {
+				delay = 5 * time.Millisecond
+			} else if delay *= 2; delay > time.Second {
+				delay = time.Second
+			}
+			fmt.Fprintf(os.Stderr, "slinit-logouthookd: accept: %v; retrying in %v\n", err, delay)
+			time.Sleep(delay)
 			continue
 		}
+		delay = 0
 		if !s.add(conn) {
 			conn.Close()
 			continue
