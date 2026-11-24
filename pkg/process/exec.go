@@ -736,6 +736,12 @@ func SignalDaemonGroup(pid int, sig syscall.Signal, processOnly bool) error {
 	if pid <= 0 {
 		return nil
 	}
+	// PID 1 is never a service's daemon, and a signal to it is a
+	// shutdown request when it is us; getpgid(1) is 1, so the group
+	// branch below would even have sent kill(-1), every process.
+	if pid == 1 {
+		return fmt.Errorf("refusing to signal PID 1")
+	}
 	if processOnly {
 		return syscall.Kill(pid, sig)
 	}
@@ -750,6 +756,12 @@ func SignalDaemonGroup(pid int, sig syscall.Signal, processOnly bool) error {
 	// every service it started — a pid file is operator-supplied input,
 	// so this is a boundary worth checking.
 	if own, ownErr := syscall.Getpgid(0); ownErr == nil && pgid == own {
+		return syscall.Kill(pid, sig)
+	}
+	// Nor a group id that kill(2) reads as something else: a kernel
+	// thread reports pgid 0, and kill(0) is our own group, while
+	// kill(-1) is every process.
+	if pgid <= 1 {
 		return syscall.Kill(pid, sig)
 	}
 	return syscall.Kill(-pgid, sig)

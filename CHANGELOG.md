@@ -245,6 +245,15 @@ verified with `git tag -v`.
   could have placed, and both mode and owner go through the descriptor;
   the socket is pinned with `O_PATH|O_NOFOLLOW` and must still be a
   socket.
+- **A pid file could make a service stop signal PID 1 or slinit's own
+  process group.** Any pid that `kill(pid, 0)` accepted was adopted. A
+  file naming `1` made the stop send SIGTERM to PID 1 — a reboot request
+  when slinit is init — and naming a kernel thread such as `kthreadd`
+  made it signal group 0, which `kill(2)` reads as the caller's own
+  group: the new test's child received the signal it sent. A pid file
+  naming PID 1 or slinit itself is now refused, as systemd does, and the
+  daemon group is signalled only when its id is above 1; otherwise just
+  the pid is.
 
 ## [4.0.2] — 2026-11-22
 

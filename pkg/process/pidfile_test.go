@@ -2,17 +2,24 @@ package process
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
 )
 
 func TestReadPIDFileValid(t *testing.T) {
-	// Write our own PID to a temp file
+	// Write a live child's PID to a temp file (not our own: a pid file
+	// naming the service manager itself is refused).
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.pid")
 
-	myPID := os.Getpid()
+	child := exec.Command("sleep", "30")
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { child.Process.Kill(); child.Wait() }()
+	myPID := child.Process.Pid
 	if err := os.WriteFile(path, []byte(strconv.Itoa(myPID)+"\n"), 0644); err != nil {
 		t.Fatalf("failed to write PID file: %v", err)
 	}
