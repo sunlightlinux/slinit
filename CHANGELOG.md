@@ -41,6 +41,14 @@ verified with `git tag -v`.
   `ShutdownRemain` hold all run after that point, so a Ctrl+Alt+Del or
   a stray `kill -INT 1` there was `Attempted to kill init!`. As PID 1
   the signals now stay claimed until slinit is done.
+- **Removing a service file unloaded a service others depend on.**
+  With `--watch-services-dir`, a removed file unloaded its service as
+  soon as it was stopped. `slinitctl unload` also refuses while another
+  loaded service depends on it, or another client holds it; the watcher
+  skipped both checks, so the unload stripped the `depends-on` edge and
+  the dependent then started without its hard dependency. The watcher
+  now applies the same checks, under the lock the unload takes, and
+  leaves the service loaded with a warning otherwise.
 - **A relative `waits-for.d` in an `@include`d fragment read the wrong
   directory.** `depends-on.d`, `depends-ms.d`, `waits-for.d` and
   `prepared-by.d` were always resolved against the main service file's

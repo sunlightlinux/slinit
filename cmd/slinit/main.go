@@ -1424,17 +1424,22 @@ func main() {
 				}
 			},
 			Disappeared: func(name string) {
-				svc := serviceSet.FindService(name, false)
-				if svc == nil {
-					return
+				// The control server is created further down; until
+				// it exists no client can hold a handle.
+				held := func(svc service.Service) bool {
+					srv := watcherCtrlServer.Load()
+					return srv != nil && srv.HeldByClient(svc)
 				}
-				if svc.Record().State() != service.StateStopped {
+				switch unloadDisappeared(serviceSet, name, held) {
+				case dirUnloadRunning:
 					logger.Warn("svcdirwatch: '%s' file removed but service is running; leaving loaded",
 						name)
-					return
+				case dirUnloadReferenced:
+					logger.Warn("svcdirwatch: '%s' file removed but a dependent or client still holds it; leaving loaded",
+						name)
+				case dirUnloadDone:
+					logger.Info("svcdirwatch: '%s' disappeared, unloaded", name)
 				}
-				logger.Info("svcdirwatch: '%s' disappeared, unloading", name)
-				serviceSet.UnloadService(svc)
 			},
 			Modified: func(name string) {
 				logger.Info("svcdirwatch: '%s' modified (run `slinitctl reload %s` to apply)",
@@ -1745,6 +1750,7 @@ func main() {
 	// in use.
 	pinStore := persist.NewPinStore(persistIntentDir)
 	ctrlServer.Pins = pinStore
+	watcherCtrlServer.Store(ctrlServer)
 
 	if err := ctrlServer.Start(ctx); err != nil {
 		logger.Error("Failed to start control socket: %v", err)

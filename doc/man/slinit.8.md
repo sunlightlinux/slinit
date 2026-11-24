@@ -195,8 +195,10 @@ long options may be written with one or two leading dashes.
     surfaces the change via `slinitctl status`. Services are loaded
     but **not** auto-started (matches dinit's explicit-start model);
     the operator can then `slinitctl start <name>`. Unload happens
-    only when the service is *STOPPED* — running services are left
-    loaded with a warning. Editor artefacts (dotfiles, `~`, `.swp`,
+    only when **slinitctl unload** would be allowed: the service is
+    *STOPPED*, no loaded service depends on it other than by ordering
+    (**before**/**after**), and no control client holds a handle to
+    it — otherwise it is left loaded with a warning. Editor artefacts (dotfiles, `~`, `.swp`,
     `.tmp`, `.new`, `.bak`) and `.d` overlay dirs are ignored. A
     300 ms debounce window collapses rapid multi-event bursts (write
     + close + rename) into a single dispatch per file. Inspired by

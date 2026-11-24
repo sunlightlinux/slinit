@@ -353,11 +353,33 @@ func (ss *ServiceSet) RemoveService(svc Service) {
 // consumer whose producer is a placeholder removes that placeholder too:
 // nothing refers to it any more.
 func (ss *ServiceSet) UnloadService(svc Service) {
+	ss.unloadService(svc, nil)
+}
+
+// UnloadServiceIfLone unloads svc only if it is STOPPED and nothing but
+// ordering links refer to it (HasLoneRef), checked under the graph lock
+// that the unload itself takes, so no dependent can attach in between.
+// It reports whether the service was unloaded. This is the gate the
+// unload control command applies; a caller that skips it strips a hard
+// dependency from every dependent, which then starts without it.
+func (ss *ServiceSet) UnloadServiceIfLone(svc Service) bool {
+	return ss.unloadService(svc, func() bool {
+		return svc.State() == StateStopped && svc.Record().HasLoneRef(0)
+	})
+}
+
+// unloadService is UnloadService's body; when allowed is non-nil it is
+// asked, under queueMu, whether the unload may go ahead.
+func (ss *ServiceSet) unloadService(svc Service, allowed func() bool) bool {
 	rec := svc.Record()
 	var ph *PlaceholderService
 	var orphan *PlaceholderService
 
 	ss.queueMu.Lock()
+	if allowed != nil && !allowed() {
+		ss.queueMu.Unlock()
+		return false
+	}
 	if consumer := rec.logConsumer; consumer != nil {
 		ph = NewPlaceholderService(ss, svc.Name())
 		r, w := rec.TransferOutputPipe()
@@ -387,6 +409,7 @@ func (ss *ServiceSet) UnloadService(svc Service) {
 	if ss.OnServiceUnloaded != nil {
 		ss.OnServiceUnloaded(svc)
 	}
+	return true
 }
 
 // ListServices returns all loaded services.

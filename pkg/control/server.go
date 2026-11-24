@@ -352,6 +352,14 @@ func (s *Server) heldElsewhere(c *Connection, svc service.Service) bool {
 	return false
 }
 
+// HeldByClient reports whether any control connection holds a handle
+// to svc. Unloading a service a client holds leaves that client's
+// handle on a detached object (see handleUnloadService), so callers
+// outside this package that unload must check it too.
+func (s *Server) HeldByClient(svc service.Service) bool {
+	return s.heldElsewhere(nil, svc)
+}
+
 // replaceService moves every connection's handles from old to new,
 // after a reload replaced old in the set.
 func (s *Server) replaceService(old, new service.Service) {
