@@ -3560,6 +3560,13 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 		}
 	}
 
+	// A start that failed is over: STOPPING until the process, if any,
+	// is gone (dinit's failed_to_start). Left in STARTING, the process's
+	// exit was taken for another failed start and reported again.
+	if sr.state.Load() != StateStopped {
+		sr.state.Store(StateStopping)
+	}
+
 	sr.startFailed = true
 	sr.services.logger.ServiceFailed(sr.serviceName, depFailed)
 	sr.notifyListeners(EventFailedStart)

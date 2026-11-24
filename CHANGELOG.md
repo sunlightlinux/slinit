@@ -139,6 +139,21 @@ verified with `git tag -v`.
   the dependent then started without its hard dependency. The watcher
   now applies the same checks, under the lock the unload takes, and
   leaves the service loaded with a warning otherwise.
+- **An interrupted or timed-out start could hang for good, and failures
+  were reported two or three times.** A stop arriving while a process or
+  bgprocess service was STARTING sent SIGINT and left the service
+  STARTING with no stop-timeout, so a process that ignored SIGINT kept it
+  there forever; the start-timeout did the same, and a process that
+  closed its readiness fd without signalling, but kept running, left the
+  service STARTING with the process alive. dinit moves to STOPPING and
+  arms the stop-timeout, which escalates to SIGKILL, and brings down a
+  process whose readiness pipe closed; slinit now does the same. Because
+  a failed start now ends in STOPPING, the process's exit no longer
+  counts as another failed start: a timed-out start is reported once,
+  not three times, and a start cancelled by `slinitctl stop` is a normal
+  stop, not a failure. A smooth recovery whose new process never becomes
+  ready now fails the recovery, as in dinit, instead of failing a start
+  on a STARTED service.
 - **Writing to the readiness fd a second time killed the service.**
   Without a watchdog, slinit closed its end of the readiness pipe as soon
   as the service was ready, so a later write — a daemon that reports

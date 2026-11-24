@@ -2052,7 +2052,9 @@ func (s *ProcessService) waitingToLaunch() bool {
 	return s.startDelayT != nil || s.idleT != nil
 }
 
-// InterruptStart cancels the start by sending SIGINT to the process.
+// InterruptStart cancels the start by sending SIGINT to the process. With
+// a process to wait for it returns false, leaving the service STOPPING
+// (see stopInterruptedStart), as dinit's issue_start_interrupt does.
 func (s *ProcessService) InterruptStart() bool {
 	if s.waitingForDeps {
 		return true
@@ -2068,10 +2070,31 @@ func (s *ProcessService) InterruptStart() bool {
 			s.serviceName, s.pid)
 		process.SignalProcess(s.pid, syscall.SIGINT, s.Flags.SignalProcessOnly)
 		// Can't immediately transition; need to wait for process to die
+		s.stopInterruptedStart()
 		return false
 	}
 
 	return true
+}
+
+// stopInterruptedStart moves a start whose process has just been told to
+// give up — by a stop arriving while STARTING, or by the start-timeout —
+// to STOPPING with the stop-timeout armed, as dinit's
+// issue_start_interrupt does. The process's exit then ends the stop like
+// any other (handleChildExit), and a process that ignores the signal is
+// escalated by the stop-timeout like any other. Left in STARTING with no
+// timer, a process ignoring SIGINT held the service there for good, and
+// its exit was taken for a failed start: a cancelled start was reported
+// as a failure, a timed-out one three times.
+func (s *ProcessService) stopInterruptedStart() {
+	if s.stopTimeout > 0 {
+		s.armTimer(s.stopTimeout, timerStopTimeout)
+	} else {
+		s.cancelTimer()
+	}
+	s.state.Store(StateStopping)
+	// The service has left STARTING: give its start slot back.
+	s.dropStartSlot()
 }
 
 // CheckRestart checks if the service should auto-restart (rate limiting).
@@ -2850,6 +2873,10 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, false)
+		// The process may still be running — it closed the fd without
+		// exiting. Bring it down; its exit then ends the stop. As in
+		// dinit (ready_notify_watcher::fd_event).
+		s.BringDown()
 		s.services.processQueuesLocked()
 	}
 }
@@ -3184,6 +3211,16 @@ func (s *ProcessService) handleTimerExpired() {
 		// via timeout-start-failure-mode (terminate/abort/kill); default
 		// terminate = SIGINT to preserve the historical slinit behaviour.
 		if s.pid > 0 {
+			if s.state.Load() == StateStarted && !s.onDemandListening() {
+				// A smooth recovery whose new process never signalled
+				// ready. The service is STARTED, dependents and all, so
+				// this is the recovery failing, not a start: as in
+				// dinit (process_service::start_timed_out).
+				s.services.logger.Error("Service '%s': start timeout exceeded during smooth recovery",
+					s.serviceName)
+				s.handleRecoveryFailureLocked()
+				return
+			}
 			sig, label := s.startTimeoutSignal()
 			s.services.logger.Error("Service '%s': start timeout exceeded, sending %s",
 				s.serviceName, label)
@@ -3193,7 +3230,11 @@ func (s *ProcessService) handleTimerExpired() {
 				return
 			}
 			s.stopReason = ReasonTimedOut
-			s.failedToStart(false, false) // Don't immediately stop, wait for process
+			// STOPPING, and wait for the process to go (dinit's
+			// start_timed_out).
+			s.stopInterruptedStart()
+			s.failedToStart(false, false)
+			s.services.processQueuesLocked()
 		}
 
 	case timerStopTimeout:

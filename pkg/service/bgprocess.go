@@ -704,16 +704,36 @@ func (s *BGProcessService) CanInterruptStart() bool {
 	return s.launcherPID > 0
 }
 
-// InterruptStart cancels the start by sending SIGINT to the launcher.
+// InterruptStart cancels the start by sending SIGINT to the launcher. With
+// a launcher to wait for it returns false, leaving the service STOPPING
+// (see stopInterruptedStart), as dinit's issue_start_interrupt does.
 func (s *BGProcessService) InterruptStart() bool {
 	if s.waitingForDeps {
 		return true
 	}
 	if s.launcherPID > 0 {
 		process.SignalProcess(s.launcherPID, syscall.SIGINT, false)
+		s.stopInterruptedStart()
 		return false
 	}
 	return true
+}
+
+// stopInterruptedStart moves a start whose launcher has just been told to
+// give up — by a stop arriving while STARTING, or by the start-timeout —
+// to STOPPING with the stop-timeout armed, as dinit's
+// issue_start_interrupt does. The launcher's exit then ends the stop
+// (handleLauncherExit), and one that ignores the signal is killed by the
+// stop-timeout.
+func (s *BGProcessService) stopInterruptedStart() {
+	if s.stopTimeout > 0 {
+		s.armTimer(s.stopTimeout, bgTimerStopTimeout)
+	} else {
+		s.cancelTimer()
+	}
+	s.state.Store(StateStopping)
+	// The service has left STARTING: give its start slot back.
+	s.dropStartSlot()
 }
 
 // CheckRestart checks if the service should auto-restart (rate limiting).
@@ -813,6 +833,29 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		s.exitStatus.ExecFailed = true
 		s.exitStatus.ExecStage = uint8(exit.ExecErr.Stage)
 		s.exitStatus.ExecErrno = extractErrno(exit.ExecErr.Err)
+	}
+
+	if s.state.Load() == StateStopping {
+		// The start was interrupted or timed out, and the launcher is
+		// gone: the stop is over, and so is the start — whatever the
+		// launcher's status, the start has already been settled.
+		s.cancelTimer()
+		s.stopIssued = false
+		if exit.ExitedClean() && s.pidFile != "" {
+			// It forked the daemon before giving up. Adopt it only to
+			// bring it down; its end ends the stop.
+			if pid, result, _ := process.ReadPIDFile(s.pidFile); result == process.PIDResultOK {
+				s.daemonPID = pid
+				s.publishPID()
+				go s.monitorDaemon()
+				s.BringDown()
+				s.services.processQueuesLocked()
+				return
+			}
+		}
+		s.Stopped()
+		s.services.processQueuesLocked()
+		return
 	}
 
 	if exit.ExecErr != nil {
@@ -1244,15 +1287,29 @@ func (s *BGProcessService) handleTimerExpired() {
 			pid = s.daemonPID
 		}
 		if pid > 0 {
+			if s.state.Load() == StateStarted {
+				// A smooth recovery whose launcher overran: the service
+				// is STARTED, so the recovery failed, not a start.
+				s.services.logger.Error("Service '%s': start timeout exceeded during smooth recovery",
+					s.serviceName)
+				s.handleUnexpectedTerminationLocked()
+				return
+			}
 			s.services.logger.Error("Service '%s': start timeout exceeded, sending SIGINT",
 				s.serviceName)
 			process.SignalProcess(pid, syscall.SIGINT, false)
 			s.stopReason = ReasonTimedOut
+			s.stopInterruptedStart()
 			s.failedToStart(false, false)
+			s.services.processQueuesLocked()
 		}
 
 	case bgTimerStopTimeout:
 		pid := s.daemonPID
+		if pid <= 0 {
+			// Still the launcher: an interrupted start it ignored.
+			pid = s.launcherPID
+		}
 		if pid > 0 {
 			s.services.logger.Error("Service '%s': stop timeout exceeded, sending SIGKILL",
 				s.serviceName)
