@@ -30,7 +30,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"sync"
 	"syscall"
 	"time"
 
@@ -125,9 +124,9 @@ func runOne(point, path string, logger *logging.Logger) error {
 		"SLINIT_HOOK_POINT="+point,
 	)
 	// Put the child in its own process group so a cmd.Cancel can kill
-	// the whole group at timeout — otherwise a `sleep 5` orphan
-	// (parent shell dies, grand-child inherits the pipe fds) would
-	// keep the stdout pipe open past the deadline, wedging Wait.
+	// the whole group at timeout — the hung script's children with it.
+	// Cancel fires only on timeout: whatever a script that exited on
+	// its own left running is not touched.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -136,30 +135,15 @@ func runOne(point, path string, logger *logging.Logger) error {
 		}
 		return nil
 	}
-	// WaitDelay is the belt-and-suspenders bound. Even after the
-	// group is killed, Wait() waits for pipe I/O to drain; if a
-	// child mis-handles SIGKILL somehow (rare — SIGKILL is
-	// uncatchable — but a defensive limit costs nothing) close the
-	// pipes ourselves after 2 s and return.
 	cmd.WaitDelay = 2 * time.Second
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
 	logger.Info("hooks: running %s", path)
-	if err := cmd.Start(); err != nil {
+	drained, err := startLogged(cmd, "hook", point, path, logger)
+	if err != nil {
 		return err
 	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go pipeLines(&wg, stdout, "hook", point, path, logger)
-	go pipeLines(&wg, stderr, "hook", point, path, logger)
-	wg.Wait()
-	if err := process.WaitAdhoc(cmd); err != nil {
+	err = process.WaitAdhoc(cmd)
+	waitOutput(drained)
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("timeout after %v", perScriptTimeout)
 		}
@@ -179,16 +163,62 @@ func runOne(point, path string, logger *logging.Logger) error {
 	return nil
 }
 
+// outputGrace is how long a caller waits, after the script exits,
+// for its output to reach EOF so the lines are logged before the
+// "done" message. Only a background child still holding the pipe
+// makes the wait last this long.
+const outputGrace = 100 * time.Millisecond
+
+// startLogged starts cmd with stdout+stderr on one pipe whose read
+// end is drained, line by line into logger, until EOF — that is,
+// until every writer has closed it, including any background child
+// the script left running. The script's exit closes nothing under
+// such a child: a closed read end would SIGPIPE a daemon started from
+// rc.local on its next write. The drain goroutine (and the read fd)
+// therefore lives as long as the last holder of the pipe; one per
+// script run, so the cost is bounded by the number of scripts.
+//
+// The returned channel closes at EOF. The caller waits for the
+// script itself (process.WaitAdhoc), not for the pipe.
+func startLogged(cmd *exec.Cmd, kind, point, path string, logger *logging.Logger) (<-chan struct{}, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("output pipe: %w", err)
+	}
+	cmd.Stdout = w
+	cmd.Stderr = w
+	err = cmd.Start()
+	w.Close() // the child holds its own copy
+	if err != nil {
+		r.Close()
+		return nil, err
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pipeLines(r, kind, point, path, logger)
+	}()
+	return done, nil
+}
+
+// waitOutput gives the output pipe outputGrace to reach EOF.
+func waitOutput(drained <-chan struct{}) {
+	select {
+	case <-drained:
+	case <-time.After(outputGrace):
+	}
+}
+
 // pipeLines forwards every line r produces to `logger.Info` with a
 // prefix that names the point + script path, matching pkg/network's
-// existing pattern. The waitgroup lets runOne block on drain before
-// calling Wait() so no output is dropped when the child exits.
-func pipeLines(wg *sync.WaitGroup, r io.ReadCloser, kind, point, path string, logger *logging.Logger) {
-	defer wg.Done()
+// existing pattern. It reads to EOF even past a line too long for
+// the scanner, so no writer ever meets a closed pipe.
+func pipeLines(r io.ReadCloser, kind, point, path string, logger *logging.Logger) {
 	defer r.Close()
 	sc := bufio.NewScanner(r)
 	base := filepath.Base(path)
 	for sc.Scan() {
 		logger.Info("%s[%s/%s]: %s", kind, point, base, sc.Text())
 	}
+	io.Copy(io.Discard, r)
 }

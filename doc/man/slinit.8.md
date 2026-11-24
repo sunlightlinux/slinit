@@ -881,14 +881,17 @@ on the console:
     drop-ins fire first (name-sorted, matches Debian rc-local.
     service convention), then the monolithic */etc/rc.local*.
     Per-script 5-minute timeout, non-fatal failures logged, output
-    on the console. `SLINIT_HOOK_POINT=rc-local` in the env so a
+    on the console. A process the script starts in the background
+    (a daemon) is not waited for and is left running; its output
+    is still logged. `SLINIT_HOOK_POINT=rc-local` in the env so a
     shared script can branch on the invocation path.
 
 */etc/slinit/hooks.d/&lt;point&gt;/\**
 :   Operator-supplied scripts run at defined lifecycle points.
     Executable regular files only; ordered lexically by filename
     (`10-x` before `20-y`); one at a time; 30 s per-script timeout;
-    non-zero exit is logged but doesn't abort. `SLINIT_HOOK_POINT`
+    non-zero exit is logged but doesn't abort. A process a script
+    leaves in the background is not waited for. `SLINIT_HOOK_POINT`
     is set in the child environment. Recognised points:
     **system-up** (fires when the boot service reaches STARTED),
     **system-down** (fires at the top of shutdown, before teardown),

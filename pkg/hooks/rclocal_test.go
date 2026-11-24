@@ -1,8 +1,13 @@
 package hooks
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -178,4 +183,85 @@ func TestRunRcLocal_TimeoutKillsHang(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Errorf("elapsed=%v, timeout should have fired at 500ms", elapsed)
 	}
+}
+
+// TestRunRcLocal_BackgroundDaemonSurvives: rc.local's whole purpose
+// is to start things — `daemon &` then `exit 0`. The daemon inherits
+// the output pipe. Waiting for EOF on that pipe before waiting for
+// the script held boot for the full timeout, logged a failure, and
+// the timeout's group kill then took the daemon down with it.
+func TestRunRcLocal_BackgroundDaemonSurvives(t *testing.T) {
+	dir := t.TempDir()
+	rc := filepath.Join(dir, "rc.local")
+	pidFile := filepath.Join(dir, "daemon.pid")
+	late := filepath.Join(dir, "late")
+	// The daemon writes to the inherited stdout after rc.local has
+	// exited: a closed read end would SIGPIPE it before the touch.
+	script := "#!/bin/sh\necho before-exit\n" +
+		"(sleep 1; echo after-exit; touch " + late + "; exec sleep 600) &\n" +
+		"echo $! > " + pidFile + "\nexit 0\n"
+	if err := os.WriteFile(rc, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	orig1, orig2, origT := rcLocalPath, rcLocalDPath, rcLocalTimeout
+	rcLocalPath = rc
+	rcLocalDPath = filepath.Join(dir, "no-d")
+	SetRcLocalTimeout(2 * time.Second)
+	defer func() {
+		rcLocalPath, rcLocalDPath = orig1, orig2
+		SetRcLocalTimeout(origT)
+	}()
+
+	var out lockedBuffer
+	logger := logging.New(logging.LevelDebug)
+	logger.SetOutput(&out)
+	start := time.Now()
+	ran, failed := RunRcLocal(logger)
+	elapsed := time.Since(start)
+	t.Logf("ran=%d failed=%d elapsed=%v", ran, failed, elapsed)
+	if ran != 1 || failed != 0 {
+		t.Errorf("ran=%d failed=%d, want 1/0: the script exited 0", ran, failed)
+	}
+	if elapsed > time.Second {
+		t.Errorf("RunRcLocal took %v: it waited on the daemon's pipe, not the script", elapsed)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(late); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(late); err != nil {
+		t.Error("the daemon rc.local started did not survive writing to its stdout")
+	}
+	if !strings.Contains(out.String(), "before-exit") {
+		t.Errorf("output written before the script exited was not logged:\n%s", out.String())
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe for the logger's concurrent
+// writes from the output-draining goroutine.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

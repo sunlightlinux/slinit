@@ -2,7 +2,11 @@ package hooks
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -154,5 +158,57 @@ func TestRun_TimeoutKillsHang(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("Run took %v, timeout should have fired at 500ms", elapsed)
+	}
+}
+
+// TestRun_SetsidChildDoesNotBlock: a hook that starts a child in its
+// own session leaves that child holding the output pipe and outside
+// the process group the timeout kills. Draining the pipe before
+// waiting for the script blocked Run until the child exited — for a
+// daemon, forever — however short the timeout.
+func TestRun_SetsidChildDoesNotBlock(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid not installed")
+	}
+	dir := t.TempDir()
+	pointDir := filepath.Join(dir, "system-up")
+	_ = os.MkdirAll(pointDir, 0o755)
+	pidFile := filepath.Join(dir, "child.pid")
+	script := "#!/bin/sh\nsetsid sh -c 'echo $$ > " + pidFile + "; exec sleep 20' &\nsleep 0.2\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(pointDir, "10-bg"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	SetHooksDir(dir)
+	SetPerScriptTimeout(time.Second)
+	defer func() {
+		SetHooksDir("/etc/slinit/hooks.d")
+		SetPerScriptTimeout(30 * time.Second)
+	}()
+
+	logger := logging.New(logging.LevelDebug)
+	done := make(chan [2]int, 1)
+	start := time.Now()
+	go func() {
+		ran, failed := Run("system-up", logger)
+		done <- [2]int{ran, failed}
+	}()
+	select {
+	case r := <-done:
+		t.Logf("ran=%d failed=%d elapsed=%v", r[0], r[1], time.Since(start))
+		if r[0] != 1 || r[1] != 0 {
+			t.Errorf("ran=%d failed=%d, want 1/0: the hook exited 0", r[0], r[1])
+		}
+		if el := time.Since(start); el > 2*time.Second {
+			t.Errorf("Run took %v: it waited on the child's pipe, not the hook", el)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run still blocked on a pipe held by the hook's setsid child")
 	}
 }

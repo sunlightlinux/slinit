@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"sync"
 	"syscall"
 	"time"
 
@@ -117,10 +116,11 @@ func runRcLocalScript(path string, logger *logging.Logger) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path)
 	cmd.Env = append(os.Environ(), "SLINIT_HOOK_POINT=rc-local")
-	// Kill the whole process group on timeout so orphaned children
-	// (typical: `network-restart` scripts that background dhclient)
-	// don't hold the stdout pipe past the deadline. Matches
-	// pkg/hooks/runOne — see rationale there.
+	// Kill the whole process group on timeout, the hung script's
+	// children with it. A script that exits on its own is never
+	// killed: the daemons it started (typical: `network-restart`
+	// scripts that background dhclient) are rc.local's purpose.
+	// Matches pkg/hooks/runOne.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -129,24 +129,16 @@ func runRcLocalScript(path string, logger *logging.Logger) error {
 		return nil
 	}
 	cmd.WaitDelay = 2 * time.Second
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
 	logger.Info("rc.local: running %s", path)
-	if err := cmd.Start(); err != nil {
+	// Wait for the script, not for its output pipe: a daemon it
+	// started holds the pipe for as long as it runs. See startLogged.
+	drained, err := startLogged(cmd, "rc.local", "rc-local", path, logger)
+	if err != nil {
 		return err
 	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go pipeLines(&wg, stdout, "rc.local", "rc-local", path, logger)
-	go pipeLines(&wg, stderr, "rc.local", "rc-local", path, logger)
-	wg.Wait()
-	if err := process.WaitAdhoc(cmd); err != nil {
+	err = process.WaitAdhoc(cmd)
+	waitOutput(drained)
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("timeout after %v", rcLocalTimeout)
 		}

@@ -63,6 +63,16 @@ verified with `git tag -v`.
   background child holds open: the caller waited for as long as that
   child lived. Output is now read for at most 2 s after the command
   exits, and its exit status is reported as before.
+- **A daemon started from rc.local held boot for five minutes, then
+  was killed.** rc.local and the hook scripts read their output to EOF
+  before waiting for the script, so a background child that inherited
+  the output (`daemon &`) kept the wait going: rc.local was held for
+  its whole 5 min timeout, logged as failed, and the timeout's
+  process-group kill took the daemon down; a child in its own session
+  (`setsid … &`) held a hook until it exited, past any timeout. The
+  script is now waited for itself, a script that exits on its own has
+  nothing killed, and its output pipe is read until the last holder
+  closes it, so a daemon writing to it later is not killed by SIGPIPE.
 - **A sleep hook could hold a suspend for ever.** As with the shutdown
   hook, the hook's output went to a pipe and `Wait` waited for EOF on
   it, so a hook that left anything running in the background held the
