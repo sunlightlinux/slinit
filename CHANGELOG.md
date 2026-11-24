@@ -120,6 +120,12 @@ verified with `git tag -v`.
   now left unchanged, and no `chown(-1, -1)` is issued (it alone clears
   setuid on a file). A `d`/`D` with no mode also made a `0644`
   directory; it now gets `0755`, as in tmpfiles.d(5).
+- **`F /run/secret 0600` left an existing file world-readable.** For
+  `f` and `F` the mode was only the `open(2)` create mode: the umask
+  cut it on a new file (`0666` came out `0644`), and `F` on an existing
+  file kept its old mode with the new content in it. The mode is now
+  set on the open descriptor, and the owner too — it was set by path
+  after the close, when the path could name something else.
 
 ## [4.0.2] — 2026-11-22
 

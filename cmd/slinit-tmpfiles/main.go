@@ -404,10 +404,20 @@ func applyFile(e entry, force bool) error {
 			return err
 		}
 	}
-	if err := f.Close(); err != nil {
+	// Owner and mode through the descriptor, not the path, which may
+	// name something else by now. The create mode above went through
+	// the umask and an F on an existing file kept its old mode, so set
+	// the mode explicitly — raw, after the chown (see applyDir and
+	// chownChmod).
+	if err := f.Chown(e.uid, e.gid); err != nil {
+		f.Close()
 		return err
 	}
-	return os.Chown(e.path, e.uid, e.gid)
+	if err := syscall.Fchmod(int(f.Fd()), e.mode); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func applyDir(e entry, wipe bool) error {

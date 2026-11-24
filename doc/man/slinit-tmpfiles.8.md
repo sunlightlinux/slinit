@@ -58,7 +58,7 @@ Supported types:
 
 **F** *path* *mode* *uid* *gid* *age* *arg*
 :   Create the file, or truncate it to zero length if it exists, write
-    *arg* (if given), then set the owner.
+    *arg* (if given), then set its mode and owner.
 
 **d** *path* *mode* *uid* *gid* *age*
 :   Create the directory, and any missing parents, then set its mode

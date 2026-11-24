@@ -85,3 +85,31 @@ func TestChmodEntryKeepsSetuidOnAFile(t *testing.T) {
 		t.Errorf("z 04755 left the file at %#o", got)
 	}
 }
+
+// f and F leave the file at the entry's mode. The mode was only the
+// open(2) create mode, so the umask cut it on a new file, and F on an
+// existing file kept whatever mode it had — `F /run/secret 0600` left a
+// 0644 file readable by all, with the new content in it.
+func TestFileEntriesSetTheMode(t *testing.T) {
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
+	root := t.TempDir()
+
+	existing := filepath.Join(root, "secret")
+	if err := os.WriteFile(existing, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []entry{
+		{kind: "F", path: existing, mode: 0o600, uid: -1, gid: -1, arg: "token"},
+		{kind: "f", path: filepath.Join(root, "shared"), mode: 0o666, uid: -1, gid: -1},
+		{kind: "F", path: filepath.Join(root, "fresh"), mode: 0o664, uid: -1, gid: -1},
+		{kind: "f", path: filepath.Join(root, "helper"), mode: 0o4755, uid: -1, gid: -1},
+	} {
+		if err := apply(e); err != nil {
+			t.Fatalf("%s %s: apply: %v", e.kind, e.path, err)
+		}
+		if got := stMode(t, e.path); got != e.mode {
+			t.Errorf("%s %s %#o left the file at %#o", e.kind, filepath.Base(e.path), e.mode, got)
+		}
+	}
+}
