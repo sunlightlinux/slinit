@@ -97,6 +97,13 @@ func translate(argv []string) ([]string, error) {
 		out = []string{"pause", service}
 	case "continue":
 		out = []string{"continue", service}
+	case "reload":
+		// OpenRC's reload runs the script's reload(), which signals the
+		// daemon to re-read its own configuration, and fails when the
+		// script defines none. That is reload-signal, which fails the
+		// same way without a reload-signal stanza; `slinitctl reload`
+		// re-reads the service description and leaves the daemon alone.
+		out = []string{"reload-signal", service}
 	default:
 		out = []string{action, service}
 	}
@@ -201,7 +208,7 @@ Usage:
   rc-service -l|--list
   rc-service -r|--resolve <service>
 
-Actions: start, stop, restart, status, zap, pause, continue
+Actions: start, stop, restart, status, zap, pause, continue, reload
 Unrecognised actions are passed through to slinitctl as-is.
 
 The SLINITCTL environment variable overrides the slinitctl binary path.`

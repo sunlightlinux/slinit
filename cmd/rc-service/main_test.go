@@ -26,6 +26,9 @@ func TestTranslate_AllActionMappings(t *testing.T) {
 		"zap":      "release",
 		"pause":    "pause",
 		"continue": "continue",
+		// OpenRC's reload runs the script's reload(), which signals the
+		// daemon; `slinitctl reload` only re-reads the description.
+		"reload": "reload-signal",
 	}
 	for in, want := range cases {
 		out, err := translate([]string{"svc", in})
@@ -41,12 +44,12 @@ func TestTranslate_AllActionMappings(t *testing.T) {
 func TestTranslate_UnknownActionPassesThrough(t *testing.T) {
 	// An action we haven't mapped shouldn't be blocked — it should
 	// reach slinitctl which can then reject it with its own message.
-	out, err := translate([]string{"svc", "reload"})
+	out, err := translate([]string{"svc", "unpin"})
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
-	if len(out) != 2 || out[0] != "reload" || out[1] != "svc" {
-		t.Errorf("got %v, want [reload svc]", out)
+	if len(out) != 2 || out[0] != "unpin" || out[1] != "svc" {
+		t.Errorf("got %v, want [unpin svc]", out)
 	}
 }
 

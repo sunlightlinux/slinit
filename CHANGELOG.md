@@ -827,6 +827,15 @@ verified with `git tag -v`.
   always saw it running. It now exits as OpenRC's status does: 0
   started, 3 stopped, 4 stopping, 8 starting and 32 for a service that
   stopped on a failure (OpenRC's "crashed").
+- **`rc-service <service> reload` did not signal the daemon.** It was
+  passed through to `slinitctl reload`, which re-reads the slinit
+  service description and leaves the running process alone, and
+  reported success — while OpenRC's reload runs the script's
+  `reload()`, which tells the daemon to re-read its own configuration.
+  It now runs `slinitctl reload-signal`, sending the signal named by
+  the service's `reload-signal`, and fails, as OpenRC does for a script
+  without `reload()`, when there is none. `slinitctl reload` still
+  re-reads the description.
 
 ## [4.0.2] — 2026-11-22
 

@@ -51,6 +51,15 @@ The following OpenRC verbs are recognised and translated:
     still requires it. Pins are not cleared; use **slinitctl unpin**
     for that.
 
+**reload**
+:   Translated to **slinitctl reload-signal** *service*: the daemon is
+    sent the signal named by the service's **reload-signal** setting
+    (see **slinit-service**(5)), as OpenRC's **reload** runs the
+    script's **reload()**, which signals the daemon. Without a
+    **reload-signal** setting it fails, as OpenRC does for a script
+    with no **reload()**. To re-read the service description itself,
+    use **slinitctl reload** *service*.
+
 Any other action is passed through as **slinitctl** *action* *service*,
 so OpenRC verbs that have a same-named **slinitctl** subcommand keep
 working. Arguments after *action* are appended unchanged.
