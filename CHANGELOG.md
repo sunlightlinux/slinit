@@ -967,6 +967,11 @@ requires.
   event for one. `--collect` then left the transient unit loaded and its
   file on disk. Every command reply is now read past such events, which
   are kept for whatever waits on them.
+- **`slinitctl run --type scripted --collect` waited for ever.** A
+  scripted unit stays STARTED once its command has finished, and
+  `--collect` waits for STOPPED; the "unexpected reply" failure above
+  used to end the wait first. A finished scripted unit is now stopped,
+  then unloaded and its description removed.
 - **`slinitctl run` re-interpreted `$` and backslashes in the command.**
   It double-quoted each argument into the transient description but
   escaped only `"`, so the parser expanded `$VAR` and took a backslash

@@ -273,8 +273,9 @@ long options may be written with one or two leading dashes.
     X` stays effective across a reboot. One file per service is
     written atomically with contents `pinned-started` or
     `pinned-stopped`; `slinitctl unpin` removes the file. At boot the
-    daemon replays these intents BEFORE the boot cascade so a service
-    marked pinned-stopped never briefly comes up first. Empty
+    daemon replays these intents once the boot services have been
+    started: a pinned-stopped service that boot itself pulls in comes
+    up with boot and stays up, with the pin recorded. Empty
     (default) disables the feature — every hook site short-circuits
     so runtime cost is zero when unused. Recommended value:
     */var/lib/slinit/intent*. Inspired by s6-supervise's *wantup*/

@@ -1772,10 +1772,13 @@ func main() {
 		}
 	}
 
-	// Replay any persisted pins BEFORE the boot cascade runs so a
-	// service marked pinned-stopped never briefly comes up first.
-	// Errors from the store are logged; a broken file for one service
-	// doesn't gate the whole restore.
+	// Replay any persisted pins. This runs after the boot services
+	// were started, so a pinned-stopped service that boot pulled in has
+	// already come up and keeps running with the stop pin set; applying
+	// pins earlier would let a pin on something boot needs fail the
+	// boot (tried and reverted, a565515). Errors from the store are
+	// logged; a broken file for one service doesn't gate the whole
+	// restore.
 	if intents, err := pinStore.Load(); err == nil {
 		for name, intent := range intents {
 			svc := serviceSet.FindService(name, false)
