@@ -20,12 +20,12 @@ func TestStaleJobTimeoutDoesNotFailTheNextAttempt(t *testing.T) {
 	s := newTestSvc(t, set, "s")
 	s.autoStart = false
 	s.interruptible = true
-	s.SetJobTimeout(50 * time.Millisecond)
+	s.SetJobTimeout(300 * time.Millisecond)
 	set.AddService(s)
 	set.StartService(s)
 
 	set.queueMu.Lock()
-	time.Sleep(80 * time.Millisecond) // the timer fires and waits on queueMu
+	time.Sleep(400 * time.Millisecond) // the timer fires and waits on queueMu
 	s.Stop(true)
 	set.processQueuesLocked()
 	if s.State() != StateStopped {
@@ -36,15 +36,15 @@ func TestStaleJobTimeoutDoesNotFailTheNextAttempt(t *testing.T) {
 	set.processQueuesLocked()
 	set.queueMu.Unlock()
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	set.queueMu.Lock()
 	st, failed := s.State(), s.startFailed
 	set.queueMu.Unlock()
 	if st != StateStarting || failed {
-		t.Fatalf("10ms into attempt 2 (job-timeout 50ms): state=%v startFailed=%v — failed by attempt 1's timer", st, failed)
+		t.Fatalf("50ms into attempt 2 (job-timeout 300ms): state=%v startFailed=%v — failed by attempt 1's timer", st, failed)
 	}
 	// Its own timer still works.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	set.queueMu.Lock()
 	st = s.State()
 	set.queueMu.Unlock()
@@ -56,7 +56,7 @@ func TestStaleJobTimeoutDoesNotFailTheNextAttempt(t *testing.T) {
 func TestStaleRuntimeMaxDoesNotStopTheNextRun(t *testing.T) {
 	set, _ := newTestSet()
 	s := newTestSvc(t, set, "s")
-	s.SetRuntimeMax(50 * time.Millisecond)
+	s.SetRuntimeMax(300 * time.Millisecond)
 	set.AddService(s)
 	set.StartService(s)
 	if s.State() != StateStarted {
@@ -64,19 +64,19 @@ func TestStaleRuntimeMaxDoesNotStopTheNextRun(t *testing.T) {
 	}
 
 	set.queueMu.Lock()
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 	s.Stop(true)
 	set.processQueuesLocked()
 	s.Start()
 	set.processQueuesLocked()
 	set.queueMu.Unlock()
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	set.queueMu.Lock()
 	st := s.State()
 	set.queueMu.Unlock()
 	if st != StateStarted {
-		t.Fatalf("10ms into run 2 (runtime-max 50ms): state=%v — stopped by run 1's timer", st)
+		t.Fatalf("50ms into run 2 (runtime-max 300ms): state=%v — stopped by run 1's timer", st)
 	}
 }
 
@@ -89,19 +89,19 @@ func TestStaleStartDelayDoesNotLaunchTwice(t *testing.T) {
 	svc := NewProcessService(set, "late")
 	svc.SetCommand([]string{"/bin/sh", "-c", "echo $$ >> " + pidfile + "; exec sleep 30"})
 	svc.SetReadyNotification(3, "") // never ready: stays STARTING
-	svc.SetStartDelay(50 * time.Millisecond)
+	svc.SetStartDelay(300 * time.Millisecond)
 	set.AddService(svc)
 	set.StartService(svc)
 
 	set.queueMu.Lock()
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 	svc.Stop(true)
 	set.processQueuesLocked()
 	svc.Start()
 	set.processQueuesLocked()
 	set.queueMu.Unlock()
 
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(800 * time.Millisecond)
 	data, _ := os.ReadFile(pidfile)
 	pids := strings.Fields(string(data))
 	for _, p := range pids {
