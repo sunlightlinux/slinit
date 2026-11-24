@@ -26,6 +26,14 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`system-call-architectures = native` alone killed the service.**
+  Set without a `system-call-filter` list — as were `system-call-log`
+  and `system-call-error-number` — it compiled to an empty allowlist,
+  which refuses every syscall: the service died with SIGSYS at its
+  first one. The systemd unit converter maps
+  `SystemCallArchitectures=native`, common in units, so such a unit
+  could not run. No list now means no filter: the architecture check
+  still applies and every native syscall is allowed, as under systemd.
 - **`system-call-log` let a refused call run.** The log list was
   compiled into the same seccomp program as `system-call-filter`, ahead
   of it, and `SECCOMP_RET_LOG` executes the call: with

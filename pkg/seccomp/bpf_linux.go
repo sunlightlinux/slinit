@@ -74,6 +74,16 @@ func Compile(f *Filter) ([]unix.SockFilter, error) {
 		if defaultAction == 0 {
 			defaultAction = ActionKill
 		}
+		// No list is no filter: system-call-architectures,
+		// system-call-log or system-call-error-number set alone leave
+		// every native syscall allowed, as under systemd, which
+		// installs the arch check apart from SystemCallFilter=. An
+		// empty allowlist used to refuse every syscall, so
+		// system-call-architectures=native killed the service at its
+		// first call.
+		if len(syscalls) == 0 {
+			defaultAction = ActionAllow
+		}
 	case ModeDeny:
 		perEntryAction = f.DefaultAction
 		if perEntryAction == 0 {

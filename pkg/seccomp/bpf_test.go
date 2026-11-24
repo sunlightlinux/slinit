@@ -116,10 +116,10 @@ func TestCompileLogIsItsOwnFilter(t *testing.T) {
 	}
 }
 
-// TestCompileEmptyFilterStillValid verifies that even an empty
-// allow-list compiles to a coherent program (arch check + immediate
-// default action). Such a filter is effectively "kill on every
-// syscall" — an unusual but legal config.
+// TestCompileEmptyFilterStillValid verifies that an empty allow-list
+// compiles to a coherent program (arch check + immediate default action)
+// that allows every native syscall: no list is no filter, as when only
+// system-call-architectures is set. It used to refuse every syscall.
 func TestCompileEmptyFilterStillValid(t *testing.T) {
 	f := &Filter{
 		Mode:          ModeAllow,
@@ -132,6 +132,9 @@ func TestCompileEmptyFilterStillValid(t *testing.T) {
 	}
 	if len(prog) < 4 { // load-arch + 1 cmp + arch-ret + load-nr + default
 		t.Errorf("program too short: %d insns", len(prog))
+	}
+	if got := runBPF(t, prog, nrOf(t, "getppid")); got != ActionAllow {
+		t.Errorf("getppid -> %#x, want ALLOW", got)
 	}
 	// The SockFilter type comes from unix; make sure it's wired
 	// correctly so the build doesn't silently drop the import.

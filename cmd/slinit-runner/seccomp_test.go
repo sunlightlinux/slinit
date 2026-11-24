@@ -31,6 +31,12 @@ var seccompCases = map[string]struct {
 	// filter of its own.
 	"log-keeps-deny": {[]string{"--syscall-filter", "~getppid", "--syscall-action", "EPERM",
 		"--syscall-log", "getppid"}, unix.EPERM},
+	// Without a system-call-filter list there is nothing to refuse: the
+	// architecture check, the log list or the error number alone must
+	// not kill the service at its first system call.
+	"arch-alone":   {[]string{"--syscall-arch", "native"}, 0},
+	"log-alone":    {[]string{"--syscall-log", "getppid"}, 0},
+	"action-alone": {[]string{"--syscall-action", "EPERM"}, 0},
 }
 
 func init() {
@@ -71,3 +77,7 @@ func runSeccompCase(t *testing.T, c string) {
 }
 
 func TestRunnerSyscallLogKeepsDeny(t *testing.T) { runSeccompCase(t, "log-keeps-deny") }
+
+func TestRunnerSyscallArchAloneAllows(t *testing.T)   { runSeccompCase(t, "arch-alone") }
+func TestRunnerSyscallLogAloneAllows(t *testing.T)    { runSeccompCase(t, "log-alone") }
+func TestRunnerSyscallActionAloneAllows(t *testing.T) { runSeccompCase(t, "action-alone") }

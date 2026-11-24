@@ -1428,7 +1428,11 @@ the internal **seccomp** package and installs it via the
 :   Architectures the filter accepts: *native* (default — the running
     arch), *x86-64* / *amd64*, *x86* / *i386*, *arm64* / *aarch64*,
     *arm*. Syscalls issued from any other architecture take the kill
-    action, mirroring systemd's **SystemCallArchitectures=**.
+    action, mirroring systemd's **SystemCallArchitectures=**. Set
+    without **system-call-filter** — as is **system-call-log** or
+    **system-call-error-number** — it refuses nothing else: every
+    native syscall is allowed. Before 4.0.3 any of the three set alone
+    refused every syscall, and the service died at its first one.
 
 **system-call-error-number**=*kill*|*log*|*trap*|*errno-name*|*errno-number*
 :   Action for syscalls that do NOT match an allow entry (or DO match
