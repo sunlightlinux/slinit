@@ -108,9 +108,9 @@ func TestVTSwitchPausesAndResumes(t *testing.T) {
 // and flagged inactive; claiming DRM master for it would take the
 // screen from the session in front.
 func TestTakeDeviceInBackgroundIsInactive(t *testing.T) {
-	if _, err := devPathForMajorMinor(1, 3); err != nil {
-		t.Skipf("no /sys/dev entry for /dev/null: %v", err)
-	}
+	// /dev/null stands in for the device, posing as hidraw so it
+	// resolves; it has no master to claim and nothing to revoke.
+	fakeSysDev(t, 1, 3, "hidraw", "hidraw0", "null")
 	resetDevices()
 	t.Cleanup(resetDevices)
 	setVT(t, 3)

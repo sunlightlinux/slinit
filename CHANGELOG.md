@@ -35,6 +35,17 @@ verified with `git tag -v`.
   waiter now gets a free console at once, as in dinit, and leaving the
   queue keeps the others in order. Acceptance case 187 no longer
   accepts a stuck STARTING as environmental.
+- **`slinit-logind` handed any device to a session's owner.**
+  `TakeDevice` resolved its major:minor in `/sys/dev/char` and
+  `/sys/dev/block` and opened whatever it found read/write, so the
+  owner of any session — remote or seatless included — could call
+  `TakeControl` and then take `/dev/mem` (1:1) or `/dev/sda` (8:0): a
+  local root. It now hands out what systemd-logind does
+  (`session_device_verify`): character devices of subsystem `drm` named
+  `card*`, `input` named `event*` and `hidraw`, the rest refused with
+  `NoSuchDevice`, and nothing to a session without a seat. A Wayland
+  compositor takes the card and event nodes, so Plasma and GNOME are
+  unaffected.
 - **A peer on the `--metrics-listen` port could make PID 1 buffer
   without limit.** The request line and headers were read with
   `bufio.Reader.ReadString`, which keeps appending until a newline, so a

@@ -655,6 +655,15 @@ func (s *sessionObject) TakeDevice(sender dbus.Sender, major, minor uint32) (dbu
 		s.m.dbgf("session %s: TakeDevice %d:%d from %s refused: not the controller", s.id, major, minor, sender)
 		return -1, false, errNotController()
 	}
+	// The devices belong to a seat, and a session without one may have
+	// none of them: systemd refuses with EPERM, the device's seat not
+	// being the session's. A remote session's owner would otherwise
+	// take the console's keyboard and display.
+	var rec SessionRecord
+	if !readJSON(sessionFile(s.id), &rec) || rec.SeatID == "" {
+		s.m.dbgf("session %s: TakeDevice %d:%d from %s refused: session has no seat", s.id, major, minor, sender)
+		return -1, false, errAccessDenied("Session has no seat, it cannot take devices")
+	}
 	fd, inactive, derr := takeDevice(s.id, major, minor)
 	s.m.dbgf("session %s: TakeDevice %d:%d from %s: %v", s.id, major, minor, sender, errText(derr))
 	return fd, inactive, derr

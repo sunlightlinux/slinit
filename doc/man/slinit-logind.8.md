@@ -100,6 +100,13 @@ was handed, so the next compositor can take the session (since 4.0.1).
 Before, a compositor that died kept its session taken, and KWin, which
 restarts itself, was refused *DeviceIsTaken* every time after.
 
+*TakeDevice* hands out only what systemd-logind does: character devices
+of the *drm* subsystem named *card\**, *input* named *event\** and
+*hidraw*, and only to a session with a seat (since 4.0.3). Any other
+device is refused with *NoSuchDevice*, and a seatless session with
+*AccessDenied*. Before, any character or block device resolved, so a
+session's owner could be handed */dev/mem* or a disk open read/write.
+
 While a session on a VT has a controller, the daemon holds that VT for
 it, as systemd-logind does (since 4.0.2): *VT_PROCESS* mode, graphics
 mode, and the console keyboard off, so keystrokes reach only the
