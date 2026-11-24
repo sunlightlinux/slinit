@@ -106,8 +106,7 @@ func StartCatchAll(logPath string) (*CatchAllLogger, error) {
 	}
 
 	// Reassign os.Stdout and os.Stderr so Go's standard library uses the pipe.
-	os.Stdout = os.NewFile(1, "/dev/stdout")
-	os.Stderr = os.NewFile(2, "/dev/stderr")
+	renewStdio()
 
 	cal := &CatchAllLogger{
 		pipeR:      pr,
@@ -242,8 +241,7 @@ func (c *CatchAllLogger) ReattachStdoutErr() error {
 	if err := syscall.Dup2(int(c.pipeW.Fd()), 2); err != nil {
 		return fmt.Errorf("dup2 stderr: %w", err)
 	}
-	os.Stdout = os.NewFile(1, "/dev/stdout")
-	os.Stderr = os.NewFile(2, "/dev/stderr")
+	renewStdio()
 	return nil
 }
 
@@ -255,8 +253,7 @@ func (c *CatchAllLogger) Stop() {
 		// First restore fd 1/2 to console so further writes don't break.
 		syscall.Dup2(int(c.console.Fd()), 1)
 		syscall.Dup2(int(c.console.Fd()), 2)
-		os.Stdout = os.NewFile(1, "/dev/stdout")
-		os.Stderr = os.NewFile(2, "/dev/stderr")
+		renewStdio()
 
 		c.pipeW.Close()
 
@@ -269,4 +266,24 @@ func (c *CatchAllLogger) Stop() {
 		}
 		c.console.Close()
 	})
+}
+
+// retiredStdio holds every *os.File that os.Stdout or os.Stderr was
+// before renewStdio replaced it. They are never closed: each names fd 1
+// or 2, which stay in use, and an *os.File that becomes garbage closes
+// its descriptor when finalized. Dropping them let the next GC close
+// fd 1 and 2, under PID 1 the catch-all pipe.
+var (
+	retiredMu    sync.Mutex
+	retiredStdio []*os.File
+)
+
+// renewStdio points os.Stdout and os.Stderr at fresh *os.File values for
+// fd 1 and 2 after a dup2 onto them, keeping the old ones reachable.
+func renewStdio() {
+	retiredMu.Lock()
+	retiredStdio = append(retiredStdio, os.Stdout, os.Stderr)
+	retiredMu.Unlock()
+	os.Stdout = os.NewFile(1, "/dev/stdout")
+	os.Stderr = os.NewFile(2, "/dev/stderr")
 }

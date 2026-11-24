@@ -153,16 +153,15 @@ func TestCatchAllReattachAfterRedirect(t *testing.T) {
 		t.Fatalf("open side: %v", err)
 	}
 	defer side.Close()
-	origStdout := os.Stdout
-	origStderr := os.Stderr
 	if err := syscall.Dup2(int(side.Fd()), 1); err != nil {
 		t.Fatalf("dup2 stdout to side: %v", err)
 	}
 	if err := syscall.Dup2(int(side.Fd()), 2); err != nil {
 		t.Fatalf("dup2 stderr to side: %v", err)
 	}
-	os.Stdout = os.NewFile(1, "/dev/stdout")
-	os.Stderr = os.NewFile(2, "/dev/stderr")
+	// Through renewStdio, as setupConsole's caller would: a dropped
+	// *os.File for fd 1 or 2 closes it when the GC finalizes it.
+	renewStdio()
 
 	// At this point fd 1/2 bypass the catch-all pipe.
 	os.Stdout.WriteString("during-bypass\n")
@@ -176,10 +175,6 @@ func TestCatchAllReattachAfterRedirect(t *testing.T) {
 
 	// Drain.
 	time.Sleep(80 * time.Millisecond)
-
-	// Restore real stdio so test framework I/O still works after the test.
-	os.Stdout = origStdout
-	os.Stderr = origStderr
 
 	logBytes, err := os.ReadFile(logPath)
 	if err != nil {

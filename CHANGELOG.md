@@ -126,6 +126,15 @@ verified with `git tag -v`.
   one of its dependencies changes later. The recalculation also checked
   for duplicates with a linear scan under the queue lock — 38 ms for a
   dependency added under a service with 8000 dependents, 1 ms now.
+- **A garbage collection could close PID 1's stdout and stderr.** The
+  catch-all logger's start, `ReattachStdoutErr` and stop each pointed
+  `os.Stdout`/`os.Stderr` at a new `*os.File` for fd 1 and 2 and dropped
+  the old one, and Go closes a dropped file's descriptor when the GC
+  finalizes it — so the next collection could close fd 1 and 2, the
+  catch-all pipe, and let the next `open` reuse those numbers. The new
+  test saw both closed after start, reattach, stop and a GC; in this
+  package's own tests it silently took the test binary's output with it
+  (11 of 60 runs failed at `GOGC=50`). The replaced files are now kept.
 - **A crafted binary journal could hang or exhaust memory in its
   reader.** An ENTRY_ARRAY whose `next` pointed back at itself was
   walked forever, growing the offset list until memory ran out; every
