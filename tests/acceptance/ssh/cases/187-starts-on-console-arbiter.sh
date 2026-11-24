@@ -46,10 +46,10 @@ case "$_state" in
 STARTED)
     echo "OK: starts-on-console svc reached STARTED (arbiter released after ready)"
     ;;
-STARTING)
-    echo "  note: svc stuck in STARTING — this ceres install may not have a real console arbiter wired for SSH-remote runs; accepted as environmental"
-    ;;
 *)
+    # STARTING used to be accepted here as "environmental". It was
+    # not: nothing handed a free console to the first waiter, so every
+    # starts-on-console service stayed STARTING (fixed in 4.0.3).
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: starts-on-console svc in unexpected state '$_state'"
     ;;

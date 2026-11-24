@@ -26,6 +26,15 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`options = starts-on-console` never started.** The service queued
+  for the console, and the queue was only pulled when a service holding
+  the console released it — so with the console free, nothing ever
+  handed it over and the service stayed STARTING; a process service was
+  never forked. (The 3.1.6 `Known` note calling the console queue
+  vestigial was wrong: `queueForConsole` appends to it.) The first
+  waiter now gets a free console at once, as in dinit, and leaving the
+  queue keeps the others in order. Acceptance case 187 no longer
+  accepts a stuck STARTING as environmental.
 - **A peer on the `--metrics-listen` port could make PID 1 buffer
   without limit.** The request line and headers were read with
   `bufio.Reader.ReadString`, which keeps appending until a newline, so a

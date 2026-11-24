@@ -3787,6 +3787,7 @@ func (sr *ServiceRecord) queueForConsole() {
 
 func (sr *ServiceRecord) releaseConsole() {
 	sr.haveConsole = false
+	sr.services.consoleHeld = false
 	sr.services.PullConsoleQueue()
 }
 
@@ -3794,6 +3795,7 @@ func (sr *ServiceRecord) releaseConsole() {
 func (sr *ServiceRecord) AcquiredConsole() {
 	sr.waitingForConsole = false
 	sr.haveConsole = true
+	sr.services.consoleHeld = true
 
 	if sr.state.Load() != StateStarting {
 		sr.releaseConsole()

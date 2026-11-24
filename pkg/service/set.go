@@ -67,6 +67,7 @@ type ServiceSet struct {
 	propQueue    []Service // propagation queue
 	stopQueue    []Service // transition/stop queue
 	consoleQueue []Service // console access queue
+	consoleHeld  bool      // a service has the console (AcquiredConsole..releaseConsole)
 
 	// Service loader
 	loader ServiceLoader
@@ -597,8 +598,18 @@ func (ss *ServiceSet) drainQueuesLocked() {
 // --- Console queue ---
 
 // AppendConsoleQueue adds a service to the console wait queue.
+//
+// When the console is free and nobody else is waiting, the new waiter
+// gets it at once. Nothing else would hand it over: the queue is only
+// pulled when a holder releases the console, so a starts-on-console
+// service with no holder ahead of it stayed STARTING forever. dinit
+// does the same on the empty-to-non-empty step, once its own console
+// log has flushed — slinit's log does not hold the console.
 func (ss *ServiceSet) AppendConsoleQueue(svc Service) {
 	ss.consoleQueue = append(ss.consoleQueue, svc)
+	if len(ss.consoleQueue) == 1 && !ss.consoleHeld {
+		ss.PullConsoleQueue()
+	}
 }
 
 // PullConsoleQueue dispatches the next service waiting for the console.
@@ -611,12 +622,13 @@ func (ss *ServiceSet) PullConsoleQueue() {
 	front.Record().AcquiredConsole()
 }
 
-// UnqueueConsole removes a service from the console queue.
+// UnqueueConsole removes a service from the console queue, keeping
+// the others in the order they asked for it.
 func (ss *ServiceSet) UnqueueConsole(svc Service) {
 	for i, s := range ss.consoleQueue {
 		if s == svc {
 			last := len(ss.consoleQueue) - 1
-			ss.consoleQueue[i] = ss.consoleQueue[last]
+			copy(ss.consoleQueue[i:], ss.consoleQueue[i+1:])
 			ss.consoleQueue[last] = nil
 			ss.consoleQueue = ss.consoleQueue[:last]
 			return
