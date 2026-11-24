@@ -72,6 +72,14 @@ type Connection struct {
 	// this is defense-in-depth against perm/race mistakes and against
 	// fds passed in by less trustworthy parents.
 	peerAuthorized bool
+
+	// handlesMu guards handles and revHandles. Only this connection's
+	// goroutine writes them, but ServiceEvent reads revHandles from
+	// whatever goroutine drives the state machine, and close() may run
+	// from Server.Stop. Reads on the connection's own goroutine need no
+	// lock. Never hold it across AddListener/RemoveListener or a write:
+	// the state machine calls ServiceEvent with its own locks held.
+	handlesMu sync.RWMutex
 }
 
 func newConnection(server *Server, conn net.Conn) *Connection {
@@ -142,7 +150,13 @@ func (c *Connection) close() {
 		c.writeMu.Unlock()
 		// Unregister as listener from all unique services using revHandles
 		// (revHandles has one entry per unique service, no dedup needed)
+		c.handlesMu.RLock()
+		svcs := make([]service.Service, 0, len(c.revHandles))
 		for svc := range c.revHandles {
+			svcs = append(svcs, svc)
+		}
+		c.handlesMu.RUnlock()
+		for _, svc := range svcs {
 			svc.Record().RemoveListener(c)
 		}
 		// Unregister env listener
@@ -160,8 +174,10 @@ func (c *Connection) allocHandle(svc service.Service) uint32 {
 	}
 	h := c.nextHandle
 	c.nextHandle++
+	c.handlesMu.Lock()
 	c.handles[h] = svc
 	c.revHandles[svc] = h
+	c.handlesMu.Unlock()
 	// Auto-subscribe as listener for service events
 	svc.Record().AddListener(c)
 	return h
@@ -173,7 +189,9 @@ func (c *Connection) getService(handle uint32) service.Service {
 
 // findHandle returns the handle for a given service, or 0 and false if not found.
 func (c *Connection) findHandle(svc service.Service) (uint32, bool) {
+	c.handlesMu.RLock()
 	h, ok := c.revHandles[svc]
+	c.handlesMu.RUnlock()
 	return h, ok
 }
 
@@ -930,10 +948,12 @@ func (c *Connection) handleCloseHandle(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
+	c.handlesMu.Lock()
 	svc := c.handles[handle]
 	delete(c.handles, handle)
 
 	// Only remove listener if no other handle references this service
+	unlisten := false
 	if svc != nil {
 		if rh, ok := c.revHandles[svc]; ok && rh == handle {
 			// The reverse map pointed to this handle; find another or remove
@@ -947,10 +967,14 @@ func (c *Connection) handleCloseHandle(payload []byte) error {
 			}
 			if !found {
 				delete(c.revHandles, svc)
-				svc.Record().RemoveListener(c)
+				unlisten = true
 			}
 		}
 		// else: revHandles points to a different handle for this service, still referenced
+	}
+	c.handlesMu.Unlock()
+	if unlisten {
+		svc.Record().RemoveListener(c)
 	}
 	return c.writePacket(RplyACK, nil)
 }
@@ -1302,7 +1326,9 @@ func (c *Connection) handleReloadService(payload []byte) error {
 
 	// If service was replaced (type change), update handle mapping
 	if newSvc != svc {
+		c.handlesMu.Lock()
 		c.handles[handle] = newSvc
+		c.handlesMu.Unlock()
 	}
 
 	c.server.services.ProcessQueues()
@@ -1417,11 +1443,13 @@ func (c *Connection) handleReloadAll() error {
 		if newSvc != svc {
 			// Type change: swap any of THIS connection's handles
 			// pointing at the old object.
+			c.handlesMu.Lock()
 			if h, found := c.revHandles[svc]; found {
 				delete(c.revHandles, svc)
 				c.handles[h] = newSvc
 				c.revHandles[newSvc] = h
 			}
+			c.handlesMu.Unlock()
 		}
 	}
 
@@ -1469,12 +1497,14 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 	c.server.services.UnloadService(svc)
 
 	// Remove all handles pointing to this service
+	c.handlesMu.Lock()
 	for h, s := range c.handles {
 		if s == svc {
 			delete(c.handles, h)
 		}
 	}
 	delete(c.revHandles, svc)
+	c.handlesMu.Unlock()
 
 	return c.writePacket(RplyACK, nil)
 }

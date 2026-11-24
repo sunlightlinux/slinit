@@ -55,6 +55,14 @@ verified with `git tag -v`.
   a line could also name a disk. A line with a `..` element is now
   refused, the open does not follow a symlink, and only a terminal
   (TCGETS succeeds) is written to.
+- **A control client could crash PID 1 by taking a second handle.** A
+  connection's handle maps were written by the connection's goroutine
+  and read, through `ServiceEvent`, by whichever goroutine was changing
+  a service's state, with no lock between them: Go's unrecoverable
+  `concurrent map read and map write`, which in PID 1 is a kernel
+  panic. `slinit-monitor` with two names, `add-dep` and `enable` all
+  take a second handle while the first service can be changing state.
+  The new test crashed 5 runs out of 5 in about 5 ms.
 
 ## [4.0.2] — 2026-11-22
 
