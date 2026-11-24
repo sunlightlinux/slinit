@@ -73,3 +73,26 @@ exec "$NSPAWN" --name t1 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /
 		t.Errorf("stale registry entry %q left after the container exited", e.Name())
 	}
 }
+
+// TestPivotRootIgnoresImageSymlinks: the launcher created put_old as
+// ROOTFS/mnt/old-root with MkdirAll before pivot_root. An image whose
+// /mnt is an absolute symlink had that resolved against the HOST root,
+// so root created directories wherever the image pointed.
+func TestPivotRootIgnoresImageSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	host := filepath.Join(dir, "host-target")
+	if err := os.Mkdir(host, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+ln -s "$DIR/host-target" "$ROOTFS/mnt"
+exec "$NSPAWN" --name t2 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c 'exit 0'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if left, _ := os.ReadDir(host); len(left) != 0 {
+		t.Errorf("the image's /mnt symlink made the launcher create %v in a host directory", left)
+	}
+	if code != 0 {
+		t.Errorf("container did not start: exit %d", code)
+	}
+}

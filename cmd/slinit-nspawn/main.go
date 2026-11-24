@@ -310,25 +310,24 @@ func childMain() error {
 		return fmt.Errorf("bind rootfs onto itself: %w", err)
 	}
 
-	// pivot_root(newroot, put_old) with put_old under newroot so we
-	// can umount it once we're inside.
-	putOld := filepath.Join(rootfs, "mnt", "old-root")
-	if err := os.MkdirAll(putOld, 0o700); err != nil {
-		return fmt.Errorf("mkdir put_old: %w", err)
+	// pivot_root(".", ".") from inside the new root stacks the old
+	// root on top of it, and the umount below takes it off again. No
+	// put_old directory: creating one inside the image would follow
+	// the image's own symlinks (an absolute /mnt link) on the host.
+	if err := unix.Chdir(rootfs); err != nil {
+		return fmt.Errorf("chdir %s: %w", rootfs, err)
 	}
-	if err := unix.PivotRoot(rootfs, putOld); err != nil {
+	if err := unix.PivotRoot(".", "."); err != nil {
 		return fmt.Errorf("pivot_root: %w", err)
+	}
+	// Detach the old root. MNT_DETACH does a lazy unmount so any
+	// lingering handles from init setup don't block us.
+	if err := unix.Unmount(".", unix.MNT_DETACH); err != nil {
+		return fmt.Errorf("umount old root: %w", err)
 	}
 	if err := unix.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir /: %w", err)
 	}
-	// Detach the old root and drop the mount point. MNT_DETACH does
-	// a lazy unmount so any lingering handles from init setup don't
-	// block us.
-	if err := unix.Unmount("/mnt/old-root", unix.MNT_DETACH); err != nil {
-		return fmt.Errorf("umount old-root: %w", err)
-	}
-	_ = os.RemoveAll("/mnt/old-root")
 
 	// Standard virtual FS mounts.
 	type m struct {

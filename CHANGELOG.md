@@ -63,6 +63,12 @@ verified with `git tag -v`.
   background child holds open: the caller waited for as long as that
   child lived. Output is now read for at most 2 s after the command
   exits, and its exit status is reported as before.
+- **`slinit-nspawn` followed the image's symlinks on the host.**
+  Before `pivot_root` it created *ROOTFS*`/mnt/old-root` as root, so an
+  image whose `/mnt` was an absolute symlink had directories created
+  wherever on the host the link pointed (and then failed to start).
+  The old root is now pivoted onto the new one and unmounted, with no
+  directory created inside the image.
 - **A container that exited non-zero left its `slinit-nspawn`
   registry entry behind.** The launcher exited with the container's
   status straight from its wait, skipping the registry cleanup, so
