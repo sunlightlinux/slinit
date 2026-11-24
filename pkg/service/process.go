@@ -193,6 +193,12 @@ type ProcessService struct {
 	// the operator cancels the restart before it fires.
 	restartDelayTimer *time.Timer
 
+	// Timer that relaunches the process when a smooth recovery has to
+	// wait out restart-delay. Same reason as restartDelayTimer for not
+	// using processTimer: the recovery starts from handleChildExit, so
+	// monitorProcess has already returned and nothing would read it.
+	smoothRecovTimer *time.Timer
+
 	// State tracking
 	stopIssued       bool
 	doingSmoothRecov bool
@@ -317,7 +323,6 @@ const (
 	timerNone timerPurpose = iota
 	timerStartTimeout
 	timerStopTimeout
-	timerRestartDelay
 	// timerAbortTimeout: SIGABRT phase inserted between stop-timeout
 	// (SIGTERM) and the SIGKILL escalation. Wraps timeout-abort-sec.
 	timerAbortTimeout
@@ -600,7 +605,7 @@ func (s *ProcessService) SetRestartMaxDelay(d time.Duration) {
 // ScheduleRestartWithBackoff implements the Service interface hook that
 // Stopped() calls before it would otherwise invoke initiateStart() on the
 // willRestart path. If the process's last start was less than the next
-// effective restart-delay ago, arm timerRestartDelay for the remaining
+// effective restart-delay ago, arm restartDelayTimer for the remaining
 // duration, set pendingInitiateStart, and return true so Stopped()
 // skips its own initiateStart call. When the timer fires the handler
 // clears the flag and calls Record().initiateStart() itself, so the
@@ -1803,9 +1808,11 @@ func annotateHookTimeout(err error, ctx context.Context, timeout time.Duration) 
 // start, we fall back to sending the termination signal directly.
 func (s *ProcessService) BringDown() {
 	// A start-delay still counting down has nothing left to launch, nor
-	// has a start-when-idle wait.
+	// has a start-when-idle wait, nor a smooth recovery waiting out
+	// restart-delay.
 	s.cancelStartDelay()
 	s.cancelIdleWait()
+	s.cancelSmoothRecovery()
 	// Nor does a socket watcher still waiting for its first client.
 	s.disarmOnDemand()
 	// Stop health checker and cron runner if active
@@ -3082,7 +3089,46 @@ func (s *ProcessService) doSmoothRecovery() {
 	} else {
 		// Need to delay restart
 		delay := effectiveDelay - elapsed
-		s.armTimer(delay, timerRestartDelay)
+		var t *time.Timer
+		t = time.AfterFunc(delay, func() {
+			s.services.queueMu.Lock()
+			defer s.services.queueMu.Unlock()
+			s.fireSmoothRecoveryLocked(t)
+		})
+		s.smoothRecovTimer = t
+	}
+}
+
+// fireSmoothRecoveryLocked runs when the timer armed by doSmoothRecovery
+// fires. It acts only if t is still the armed timer and the service is
+// still STARTED with no process: a stop or a fresh start in the meantime
+// owns the service now. Caller must hold queueMu — t is read under it.
+func (s *ProcessService) fireSmoothRecoveryLocked(t *time.Timer) {
+	if s.smoothRecovTimer != t {
+		return
+	}
+	s.smoothRecovTimer = nil
+	if !s.doingSmoothRecov || s.state.Load() != StateStarted || s.pid > 0 {
+		s.doingSmoothRecov = false
+		return
+	}
+	s.doingSmoothRecov = false
+	if err := s.startProcess(); err != nil {
+		s.services.logger.Error("Service '%s': smooth recovery failed: %v",
+			s.serviceName, err)
+		s.handleRecoveryFailureLocked()
+		return
+	}
+	s.services.processQueuesLocked()
+}
+
+// cancelSmoothRecovery disarms a smooth-recovery relaunch still waiting
+// out restart-delay.
+func (s *ProcessService) cancelSmoothRecovery() {
+	if s.smoothRecovTimer != nil {
+		s.smoothRecovTimer.Stop()
+		s.smoothRecovTimer = nil
+		s.doingSmoothRecov = false
 	}
 }
 
@@ -3192,19 +3238,6 @@ func (s *ProcessService) handleTimerExpired() {
 		}
 		if s.stopPID > 0 {
 			process.SignalProcess(s.stopPID, syscall.SIGKILL, false)
-		}
-
-	case timerRestartDelay:
-		// Restart delay expired
-		if s.doingSmoothRecov {
-			if err := s.startProcess(); err != nil {
-				s.services.logger.Error("Service '%s': restart failed: %v",
-					s.serviceName, err)
-				s.doingSmoothRecov = false
-				s.handleUnexpectedTerminationLocked()
-			} else {
-				s.doingSmoothRecov = false
-			}
 		}
 	}
 }

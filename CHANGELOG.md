@@ -139,6 +139,14 @@ verified with `git tag -v`.
   the dependent then started without its hard dependency. The watcher
   now applies the same checks, under the lock the unload takes, and
   leaves the service loaded with a warning otherwise.
+- **A smooth recovery that had to wait out `restart-delay` never
+  relaunched.** When a `smooth-recovery` process or bgprocess service
+  crashed sooner than `restart-delay` after its last start, the wait for
+  the relaunch was armed on a timer that only the process monitor reads
+  — and the monitor had already returned with the dead process. The
+  service sat STARTED with no process for good, its dependents still
+  believing it was up. The relaunch now runs from its own timer, and a
+  stop during the wait calls it off.
 - **A relative `waits-for.d` in an `@include`d fragment read the wrong
   directory.** `depends-on.d`, `depends-ms.d`, `waits-for.d` and
   `prepared-by.d` were always resolved against the main service file's

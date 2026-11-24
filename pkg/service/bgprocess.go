@@ -109,6 +109,12 @@ type BGProcessService struct {
 	stopIssued       bool
 	doingSmoothRecov bool
 
+	// Timer that relaunches the daemon when a smooth recovery has to
+	// wait out restart-delay. An AfterFunc, not processTimer: the
+	// recovery starts from handleDaemonTermination, so monitorDaemon has
+	// already returned and nothing would read processTimer.
+	smoothRecovTimer *time.Timer
+
 	// Log output
 	logType      LogType
 	logBufMax    int
@@ -129,7 +135,6 @@ const (
 	bgTimerNone bgTimerPurpose = iota
 	bgTimerStartTimeout
 	bgTimerStopTimeout
-	bgTimerRestartDelay
 )
 
 // signalProcessOnly decides whether a stop signals just the process or its
@@ -537,6 +542,10 @@ func (s *BGProcessService) BringUp() bool {
 // BringDown stops the daemon process.
 // If a stop-command is configured, it is executed first.
 func (s *BGProcessService) BringDown() {
+	// A smooth recovery waiting out restart-delay has nothing left to
+	// launch.
+	s.cancelSmoothRecovery()
+
 	pid := s.daemonPID
 	if pid <= 0 {
 		pid = s.launcherPID
@@ -1177,7 +1186,45 @@ func (s *BGProcessService) doSmoothRecovery() {
 		}
 	} else {
 		delay := effectiveDelay - elapsed
-		s.armTimer(delay, bgTimerRestartDelay)
+		var t *time.Timer
+		t = time.AfterFunc(delay, func() {
+			s.services.queueMu.Lock()
+			defer s.services.queueMu.Unlock()
+			s.fireSmoothRecoveryLocked(t)
+		})
+		s.smoothRecovTimer = t
+	}
+}
+
+// fireSmoothRecoveryLocked runs when the timer armed by doSmoothRecovery
+// fires. It acts only if t is still the armed timer and the service is
+// still STARTED with no process: a stop or a fresh start in the meantime
+// owns the service now. Caller must hold queueMu — t is read under it.
+func (s *BGProcessService) fireSmoothRecoveryLocked(t *time.Timer) {
+	if s.smoothRecovTimer != t {
+		return
+	}
+	s.smoothRecovTimer = nil
+	if !s.doingSmoothRecov || s.state.Load() != StateStarted ||
+		s.launcherPID > 0 || s.daemonPID > 0 {
+		s.doingSmoothRecov = false
+		return
+	}
+	s.doingSmoothRecov = false
+	if !s.self.BringUp() {
+		s.handleUnexpectedTerminationLocked()
+		return
+	}
+	s.services.processQueuesLocked()
+}
+
+// cancelSmoothRecovery disarms a smooth-recovery relaunch still waiting
+// out restart-delay.
+func (s *BGProcessService) cancelSmoothRecovery() {
+	if s.smoothRecovTimer != nil {
+		s.smoothRecovTimer.Stop()
+		s.smoothRecovTimer = nil
+		s.doingSmoothRecov = false
 	}
 }
 
@@ -1219,16 +1266,6 @@ func (s *BGProcessService) handleTimerExpired() {
 			s.services.logger.Error("Service '%s': killing stop-command (pid %d)",
 				s.serviceName, s.stopPID)
 			process.SignalProcess(s.stopPID, syscall.SIGKILL, false)
-		}
-
-	case bgTimerRestartDelay:
-		if s.doingSmoothRecov {
-			if !s.self.BringUp() {
-				s.doingSmoothRecov = false
-				s.handleUnexpectedTerminationLocked()
-			} else {
-				s.doingSmoothRecov = false
-			}
 		}
 	}
 }
