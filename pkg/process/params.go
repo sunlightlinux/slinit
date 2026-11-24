@@ -95,10 +95,9 @@ type ExecParams struct {
 
 	// SupplementaryGIDs is the child's supplementary group set. Loaded
 	// from the service's supplementary-groups= directive after name
-	// resolution. Nil means "leave supplementary groups untouched"
-	// (the parent's set is inherited). An empty non-nil slice would
-	// clear the set, which we don't currently expose — treat nil and
-	// [] identically at the call site.
+	// resolution. Applied only with run-as; then nil and [] both mean
+	// "no supplementary groups" (the parent's set is cleared, by Go's
+	// syscall.Credential and by slinit-runner alike).
 	SupplementaryGIDs []uint32
 
 	// Signal to use for stopping the process (default SIGTERM).

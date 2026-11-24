@@ -263,6 +263,14 @@ verified with `git tag -v`.
   run with the service's run-as user, group and supplementary groups.
   `healthcheck-command`, `unhealthy-command`, `cron-command`,
   `pre-start-command` and `post-start-command` are unchanged.
+- **A hardened run-as service kept root's supplementary groups.** With
+  any directive that routes the start through `slinit-runner`
+  (`no-new-privs`, seccomp, capabilities, sandboxing…), the runner
+  skipped `setgroups` when no `supplementary-groups` was configured, so
+  the service ran as `groups=65534(nobody),0(root)`, where the same
+  service without hardening got `groups=65534(nobody)`. The runner now
+  always sets the supplementary groups, to an empty list when none are
+  configured.
 
 ## [4.0.2] — 2026-11-22
 
