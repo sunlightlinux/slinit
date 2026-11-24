@@ -821,6 +821,12 @@ verified with `git tag -v`.
   event for one. `--collect` then left the transient unit loaded and its
   file on disk. Every command reply is now read past such events, which
   are kept for whatever waits on them.
+- **`rc-service <service> status` exited 0 for a stopped service.** It
+  handed over to `slinitctl status`, which succeeds whatever the state,
+  so a script testing `rc-service foo status` to see whether foo runs
+  always saw it running. It now exits as OpenRC's status does: 0
+  started, 3 stopped, 4 stopping, 8 starting and 32 for a service that
+  stopped on a failure (OpenRC's "crashed").
 
 ## [4.0.2] — 2026-11-22
 

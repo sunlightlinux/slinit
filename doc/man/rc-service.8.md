@@ -36,6 +36,14 @@ The following OpenRC verbs are recognised and translated:
 **start**, **stop**, **restart**, **status**, **pause**, **continue**
 :   Mapped 1:1 to the same-named **slinitctl** subcommands.
 
+**status**
+:   Prints **slinitctl status** *service*, then exits as OpenRC's
+    status does: **0** started, **3** stopped, **4** stopping, **8**
+    starting, **32** stopped on a failure (OpenRC's "crashed"), taken
+    from **slinitctl is-failed**. slinit has no "inactive" state, so
+    **16** is never returned. A service that cannot be loaded returns
+    **slinitctl**'s own failure status.
+
 **zap**
 :   OpenRC's "force back to stopped regardless of current state".
     Translated to **slinitctl release** *service*, which removes the
@@ -82,7 +90,7 @@ working. Arguments after *action* are appended unchanged.
 # EXIT STATUS
 
 The exit status of the underlying **slinitctl** invocation is returned
-verbatim. Additionally:
+verbatim, except for **status** (see **ACTIONS**). Additionally:
 
 **127**
 :   **SLINITCTL** could not be located on **PATH**.
