@@ -41,6 +41,13 @@ verified with `git tag -v`.
   `ShutdownRemain` hold all run after that point, so a Ctrl+Alt+Del or
   a stray `kill -INT 1` there was `Attempted to kill init!`. As PID 1
   the signals now stay claimed until slinit is done.
+- **The services-dir watcher lost services without a word.** When more
+  files changed at once than the kernel's inotify queue holds
+  (`max_queued_events`, 16384 by default), the overflow was ignored:
+  16484 new files were reported as 8192. And a services-dir removed and
+  created again was never watched again. The watcher now rescans its
+  directories after an overflow, and re-adds the watch on a removed
+  directory once it exists again, rescanning it.
 - **A pinned-stopped service came back up after a reboot.** Pins from
   `--persist-intent` and from the soft-reboot snapshot were replayed
   after the boot services had been started, although `slinit(8)` says

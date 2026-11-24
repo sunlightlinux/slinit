@@ -476,3 +476,85 @@ func TestRemovingShadowedCopyIsNotDisappeared(t *testing.T) {
 		}
 	}
 }
+
+// More events than the kernel queues (max_queued_events) end in one
+// IN_Q_OVERFLOW and the rest are lost. The watcher must rescan, not go
+// on as if the events it got were all there were.
+func TestQueueOverflowRescans(t *testing.T) {
+	b, err := os.ReadFile("/proc/sys/fs/inotify/max_queued_events")
+	if err != nil {
+		t.Skipf("max_queued_events: %v", err)
+	}
+	var max int
+	fmt.Sscan(string(b), &max)
+	if max <= 0 || max > 100000 {
+		t.Skipf("max_queued_events = %d", max)
+	}
+	n := max + 100
+
+	dir := t.TempDir()
+	var mu sync.Mutex
+	appeared := map[string]bool{}
+	h := Handler{Appeared: func(name string) {
+		mu.Lock()
+		appeared[name] = true
+		mu.Unlock()
+	}}
+	w, err := New(testLogger{}, h, Options{DebounceInterval: 40 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing reads the queue yet, so it overflows.
+	for i := 0; i < n; i++ {
+		f, err := os.Create(filepath.Join(dir, fmt.Sprintf("s%d", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	go w.Run()
+	t.Cleanup(w.Close)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		got := len(appeared)
+		mu.Unlock()
+		if got == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d files created, %d reported Appeared", n, got)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A services-dir removed and created again must be watched again.
+func TestRecreatedDirIsWatchedAgain(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "d")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var r recorder
+	w := newTestWatcher(t, r.handler())
+	if err := w.AddDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	r.expect(1)
+	writeFile(t, filepath.Join(dir, "newsvc"), "x\n")
+	r.wait(t, 5*time.Second)
+	if got := r.snapshot(); len(got) != 1 || got[0] != "appeared:newsvc" {
+		t.Fatalf("want [appeared:newsvc], got %v", got)
+	}
+}
