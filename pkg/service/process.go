@@ -2775,7 +2775,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 	// initial readiness signal: subsequent writes act as keepalives.
 	// Without a watchdog the pipe is one-shot, mirroring dinit.
 	keepPipe := ready && s.HasWatchdog() &&
-		(s.state.Load() == StateStarting || s.onDemandListening())
+		(s.state.Load() == StateStarting || s.state.Load() == StateStarted)
 	if !keepPipe {
 		s.closeReadyPipe()
 	}
@@ -2785,8 +2785,8 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		// legitimate context is smooth recovery: doSmoothRecovery
 		// keeps state at StateStarted, calls startProcess which arms
 		// a fresh readyCh + start-timeout timer, and the new child
-		// re-signals readiness. A ready=true here is redundant but
-		// harmless (state is already the target). A ready=false —
+		// re-signals readiness. A ready=true here changes no state,
+		// but settles the new process's timers (below). A ready=false —
 		// child crashed before notifying, or closed the pipe without
 		// writing — means the recovered process is unhealthy and
 		// must be treated as an unexpected termination, else the
@@ -2817,8 +2817,19 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 			s.handleRecoveryFailureLocked()
 			return
 		}
-		// Any other combination (ready=true while STARTED, or state
-		// STOPPING/STOPPED) — nothing meaningful to do.
+		if ready && s.state.Load() == StateStarted {
+			// The recovered process is ready. The service is already
+			// STARTED, but what startProcess armed for this process
+			// still has to be settled: the start-timeout, which would
+			// otherwise fire on the healthy process, and the watchdog,
+			// which handleChildExit stopped with the old one.
+			s.cancelTimer()
+			if keepPipe {
+				s.startWatchdogWatcher()
+			}
+			return
+		}
+		// STOPPING/STOPPED — nothing meaningful to do.
 		return
 	}
 

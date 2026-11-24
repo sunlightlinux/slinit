@@ -139,6 +139,15 @@ verified with `git tag -v`.
   the dependent then started without its hard dependency. The watcher
   now applies the same checks, under the lock the unload takes, and
   leaves the service loaded with a warning otherwise.
+- **A smooth recovery of a ready-notification service left the new
+  process's start-timeout running.** The recovered process signals ready
+  while the service is already STARTED, and that signal was dropped as
+  meaningless. So the start-timeout armed for the new process was never
+  cancelled — it later sent SIGINT to the healthy process and failed a
+  STARTED service — the watchdog was never re-armed, and the readiness
+  pipe was closed, so the first keepalive killed the process with
+  SIGPIPE, over and over until the restart limit stopped the service.
+  The signal now settles the timer and re-arms the watchdog.
 - **A smooth recovery that had to wait out `restart-delay` never
   relaunched.** When a `smooth-recovery` process or bgprocess service
   crashed sooner than `restart-delay` after its last start, the wait for
