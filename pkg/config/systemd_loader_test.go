@@ -435,8 +435,12 @@ ExecStart=/usr/bin/second
 //   - $VAR comes from Environment=/EnvironmentFile= in systemd; slinit
 //     expands it when the file is loaded, from its own environment, so
 //     ${FILTER_RPC_ARGS} from qemu-ga's env-file became nothing. Warned.
-//   - $MAINPID: slinit has none, so `kill -s HUP $MAINPID` lost its PID.
-//     That form is the term-signal; any other use drops the stop-command.
+//   - $MAINPID: slinit has none, so `kill -s SIG $MAINPID` lost its PID.
+//     That form is the term-signal when SIG stops the daemon (TERM, INT,
+//     QUIT, KILL, or KillSignal='s own); a HUP or USR1 is a reload, and
+//     as term-signal it overrode KillSignal=, leaving the daemon running
+//     until stop-timeout and SIGKILL — dropped with a warning instead.
+//     Any other use drops the stop-command.
 //   - A second EnvironmentFile= replaced the first silently; slinit
 //     reads one. Warned.
 func TestSystemdExecSubstitutions(t *testing.T) {
@@ -448,6 +452,19 @@ EnvironmentFile=-/etc/b
 ExecStart=/usr/bin/d $OPTS --x ${MORE} $$literal
 ExecStop=/bin/kill -s HUP $MAINPID
 KillSignal=INT
+`)
+	writeUnit(t, units, "q.service", `[Service]
+ExecStart=/usr/bin/q
+ExecStop=/bin/kill -QUIT $MAINPID
+`)
+	writeUnit(t, units, "u.service", `[Service]
+ExecStart=/usr/bin/u
+ExecStop=/bin/kill -s USR1 ${MAINPID}
+`)
+	writeUnit(t, units, "k.service", `[Service]
+ExecStart=/usr/bin/k
+KillSignal=SIGUSR2
+ExecStop=/bin/kill -USR2 $MAINPID
 `)
 	writeUnit(t, units, "w.service", `[Service]
 ExecStart=/usr/bin/w
@@ -464,8 +481,21 @@ ExecStop=/usr/bin/wctl stop ${MAINPID}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.TermSignal != syscall.SIGHUP || len(v.StopCommand) != 0 {
-		t.Errorf("term-signal = %v, stop-command = %q; want SIGHUP and none", v.TermSignal, v.StopCommand)
+	if v.TermSignal != syscall.SIGINT || len(v.StopCommand) != 0 {
+		t.Errorf("term-signal = %v, stop-command = %q; want KillSignal's SIGINT and none: HUP does not stop", v.TermSignal, v.StopCommand)
+	}
+	for name, want := range map[string]syscall.Signal{
+		"q": syscall.SIGQUIT,
+		"u": syscall.SIGTERM, // the default: USR1 is no stop signal
+		"k": syscall.SIGUSR2, // KillSignal= names it, so it is the stop signal
+	} {
+		d, _, err := dl.findAndParse(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.TermSignal != want || len(d.StopCommand) != 0 {
+			t.Errorf("%s: term-signal = %v, stop-command = %q; want %v and none", name, d.TermSignal, d.StopCommand, want)
+		}
 	}
 	w, _, err := dl.findAndParse("w")
 	if err != nil {
@@ -474,7 +504,7 @@ ExecStop=/usr/bin/wctl stop ${MAINPID}
 	if len(w.StopCommand) != 0 {
 		t.Errorf("stop-command = %q, want it dropped: it has no PID to act on", w.StopCommand)
 	}
-	for _, want := range []string{"v: ExecStart", "$OPTS", "${MORE}", "/etc/a", "w: ExecStop"} {
+	for _, want := range []string{"v: ExecStart", "$OPTS", "${MORE}", "/etc/a", "w: ExecStop", "v: ExecStop", "u: ExecStop"} {
 		found := false
 		for _, g := range got {
 			found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, want))

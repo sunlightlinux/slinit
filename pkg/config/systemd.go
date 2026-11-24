@@ -30,6 +30,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
@@ -57,7 +58,8 @@ type SystemdConfig struct {
 	postStart    string
 	runAs        string
 	envFile      string
-	stopSignal   string // from ExecStop=kill -s SIG $MAINPID; beats KillSignal=
+	stopSignal   string // from ExecStop=kill -s SIG $MAINPID, if terminating
+	stopLine     string // that ExecStop= value, for the note
 	workingDir   string
 	chroot       string
 	pidFile      string
@@ -268,11 +270,40 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 	if cfg.capAmbient.mask != 0 {
 		cfg.mapped = append(cfg.mapped, kvPair{"capabilities", capNames(cfg.capAmbient.mask)})
 	}
-	if cfg.stopSignal != "" {
-		cfg.termSignal = cfg.stopSignal
-	}
+	warns = append(warns, applyStopSignal(cfg)...)
 	warns = append(warns, dropAliasRefs(cfg)...)
 	return warns
+}
+
+// applyStopSignal turns ExecStop=kill -s SIG $MAINPID into term-signal
+// when SIG stops the daemon: TERM, INT, QUIT, KILL, or the signal
+// KillSignal= already names. Many units send a reload or log-reopen
+// signal that way instead (kill -s HUP, USR1, USR2), and as term-signal
+// it would override KillSignal=: the daemon would take the HUP, keep
+// running until stop-timeout, and be SIGKILLed. Such an ExecStop= is
+// dropped with a warning and KillSignal= (or TERM) stops the service,
+// as on 4.0.2, where the kill without a PID failed and TERM followed.
+func applyStopSignal(cfg *SystemdConfig) []SystemdWarning {
+	if cfg.stopSignal == "" {
+		return nil
+	}
+	sig, err := parseSignal(cfg.stopSignal)
+	if err != nil {
+		return nil // killMainPID only returns parseable signals
+	}
+	ok := sig == syscall.SIGTERM || sig == syscall.SIGINT || sig == syscall.SIGQUIT || sig == syscall.SIGKILL
+	if !ok && cfg.termSignal != "" {
+		k, err := parseSignal(cfg.termSignal)
+		ok = err == nil && k == sig
+	}
+	if ok {
+		cfg.termSignal = cfg.stopSignal
+		return []SystemdWarning{{"NOTE", fmt.Sprintf("ExecStop=%s → term-signal = %s", cfg.stopLine, cfg.stopSignal)}}
+	}
+	return []SystemdWarning{{"WARN", fmt.Sprintf(
+		"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; %s does not stop a daemon as KillSignal= does, "+
+			"so it is not made the term-signal; slinit stops the service with its term-signal",
+		cfg.stopLine, cfg.stopSignal)}}
 }
 
 // dropAliasRefs leaves out the dependencies naming one of the unit's own
@@ -445,8 +476,8 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		// cannot act on the right process.
 		if strings.Contains(cmd, "$MAINPID") || strings.Contains(cmd, "${MAINPID}") {
 			if sig, ok := killMainPID(cmd); ok {
-				cfg.stopSignal = sig
-				warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStop=%s → term-signal = %s", val, sig)})
+				// Decided once KillSignal=, which may follow, is known.
+				cfg.stopSignal, cfg.stopLine = sig, val
 			} else {
 				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
 					"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; slinit stops the service with its term-signal", val)})

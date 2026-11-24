@@ -1019,8 +1019,12 @@ requires.
   slinit expands it when the file is loaded, from its own environment,
   so `qemu-guest-agent.service`'s `${FILTER_RPC_ARGS}` became nothing.
   That is now warned about. `ExecStop=kill -s SIG $MAINPID` (slinit has
-  no `$MAINPID`, so the kill had no PID) becomes `term-signal = SIG`;
-  any other `ExecStop=` using `$MAINPID` is dropped with a warning. A
+  no `$MAINPID`, so the kill had no PID) becomes `term-signal = SIG`
+  when SIG stops the daemon — `TERM`, `INT`, `QUIT`, `KILL` or the
+  signal `KillSignal=` names; a `HUP` or `USR1` sent that way is a
+  reload, and is dropped with a warning, leaving `KillSignal=` to stop
+  the service. Any other `ExecStop=` using `$MAINPID` is dropped with a
+  warning. A
   second `EnvironmentFile=`, which replaced the first, is warned about
   too: slinit reads one env-file.
 - **`slinit-runit-convert` and `slinit-sysvinit-convert` split commands

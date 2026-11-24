@@ -67,8 +67,11 @@ is warned about (**$$** is a literal **$** on both sides). slinit reads
 a single **env-file**: of several **EnvironmentFile** lines the last is
 kept, with a warning. slinit has no **$MAINPID**: an **ExecStop** of
 the form **kill** [**-s** *SIG*] **$MAINPID** becomes
-**term-signal =** *SIG*, and any other **ExecStop** using it is
-dropped with a warning, leaving slinit to stop the service with its
+**term-signal =** *SIG* when *SIG* is **TERM**, **INT**, **QUIT**,
+**KILL** or the signal **KillSignal** names (a **HUP** or **USR1** sent
+that way reloads the daemon rather than stopping it, and such an
+**ExecStop** is dropped with a warning), and any other **ExecStop**
+using it is dropped with a warning, leaving slinit to stop the service with its
 term-signal.
 
 Dependencies: **Requires** becomes **depends-on**; **Wants** and
