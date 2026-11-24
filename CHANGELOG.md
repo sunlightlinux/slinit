@@ -1052,6 +1052,13 @@ requires.
   A console that takes no output for a second is now given up on: what
   it misses is dropped, and when it takes output again it is told how
   much. A console that takes its output gets exactly what it got before.
+- **A stalled `slinit-journald` slowed every state transition.** Each
+  event went to the journal socket with a 10 ms deadline, under the
+  scheduling lock; once the daemon stopped reading, every transition
+  waited out that deadline. Measured: 1000 service starts took 8.4 s
+  instead of 8 ms. After one timeout the socket now counts as congested
+  and sends do not wait until one goes through again; the in-memory
+  event ring keeps every event as before.
 
 ## [4.0.2] — 2026-11-22
 

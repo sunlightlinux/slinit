@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // SocketPath is the Unix SOCK_DGRAM address at which slinit-journald
@@ -48,6 +50,15 @@ type Emitter struct {
 	// can detect a broken listener.
 	dropped atomic.Uint64
 	sent    atomic.Uint64
+
+	// congested is set when a send waited out its deadline: the listener
+	// has stopped reading (slinit-journald stopped, or its queue full).
+	// Events are emitted with the scheduling lock held, and waiting out
+	// the deadline on every one cost every state transition 10 ms for as
+	// long as the listener stayed stalled. While congested, a send is one
+	// non-blocking attempt; the first that goes through clears it. The
+	// ring buffer keeps the events either way.
+	congested atomic.Bool
 
 	// Live in-process subscribers. Every Emit fans a *pointer* to the
 	// event out to each subscriber's channel. When a channel is full
@@ -258,16 +269,43 @@ func (e *Emitter) publishToSocket(evt *Event) error {
 		return err
 	}
 
-	// SetWriteDeadline so a stuck listener can't block emit-side
-	// callers indefinitely. 10ms is generous for a local Unix
-	// socket write.
-	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
-
 	// One datagram per event. UDP-like semantics: the receiver either
 	// gets the whole packet or nothing, no partial writes to worry
 	// about.
-	_, err = conn.Write(data)
+	if e.congested.Load() {
+		err = sendNoWait(conn, data)
+	} else {
+		// SetWriteDeadline so a stuck listener can't block emit-side
+		// callers indefinitely. 10ms is generous for a local Unix
+		// socket write.
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
+		_, err = conn.Write(data)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			e.congested.Store(true)
+		}
+	}
+	if err == nil {
+		e.congested.Store(false)
+	}
 	return err
+}
+
+// sendNoWait makes one non-blocking attempt to send data on conn. A
+// deadline cannot do it: one already past fails the write without trying
+// it. Control runs the write without consulting the deadline, or waiting
+// for the socket, and leaves the deadline alone for a concurrent send.
+func sendNoWait(conn *net.UnixConn, data []byte) error {
+	rc, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var werr error
+	if err := rc.Control(func(fd uintptr) {
+		_, werr = unix.Write(int(fd), data)
+	}); err != nil {
+		return err
+	}
+	return werr
 }
 
 // connect returns the cached socket connection, dialing on first use
