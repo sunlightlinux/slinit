@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -312,5 +313,73 @@ func TestStartCatchAllDetectsATerminal(t *testing.T) {
 	defer ptmx.Close()
 	if _, err := unix.IoctlGetTermios(int(ptmx.Fd()), unix.TCGETS); err != nil {
 		t.Errorf("a pty does not read as a terminal: %v", err)
+	}
+}
+
+// A line longer than the scanner's 256 KiB cap made Scan return false:
+// the drain exited, nobody read the pipe again, and PID 1's next write
+// to its own stderr blocked forever once the pipe filled. Long lines are
+// now passed on in pieces and the drain keeps reading.
+func TestCatchAllSurvivesOverlongLine(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	consR, consW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read the console as it goes (the long line exceeds a pipe's
+	// buffer), counting the long line's bytes and keeping the tail.
+	type result struct {
+		ys   int
+		tail string
+	}
+	consOut := make(chan result, 1)
+	go func() {
+		var res result
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := consR.Read(buf)
+			res.ys += bytes.Count(buf[:n], []byte("y"))
+			res.tail += string(buf[max(0, n-32):n])
+			res.tail = res.tail[max(0, len(res.tail)-32):]
+			if err != nil {
+				consOut <- res
+				return
+			}
+		}
+	}()
+	c := &CatchAllLogger{pipeR: pr, pipeW: pw, console: consW, consoleEOL: "\n"}
+	c.wg.Add(1)
+	go c.drain()
+
+	long := bytes.Repeat([]byte("y"), catchAllMaxLine+1024)
+	long = append(long, '\n')
+	done := make(chan error, 1)
+	go func() {
+		_, err := pw.Write(long)
+		if err == nil {
+			_, err = pw.Write([]byte("the next line\n"))
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("write: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("writing after an overlong line blocked: the drain stopped reading")
+	}
+	pw.Close()
+	c.wg.Wait()
+	consW.Close()
+	got := <-consOut
+	if !strings.HasSuffix(got.tail, "\nthe next line\n") {
+		t.Errorf("console did not get the line after the long one (tail %q)", got.tail)
+	}
+	if got.ys != len(long)-1 {
+		t.Errorf("console got %d of the long line's %d bytes", got.ys, len(long)-1)
 	}
 }

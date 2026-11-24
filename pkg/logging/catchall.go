@@ -139,55 +139,87 @@ func StartCatchAll(logPath string) (*CatchAllLogger, error) {
 	return cal, nil
 }
 
+// catchAllMaxLine is the longest line the drain passes on in one piece
+// (Go stack traces are long); a longer one goes out in pieces this size.
+const catchAllMaxLine = 256 * 1024
+
 // drain reads lines from the pipe and writes them to console and log file.
+//
+// It reads until EOF whatever the lines look like. A bufio.Scanner gave
+// up on the first line over its limit, the drain returned, nobody read
+// the pipe again, and once it filled PID 1 blocked writing its own
+// stderr.
 func (c *CatchAllLogger) drain() {
 	defer c.wg.Done()
 
-	scanner := bufio.NewScanner(c.pipeR)
-	// Use a generous buffer for long lines (e.g. Go stack traces).
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-
-	var written int64
-
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		// The marker can land behind a child's unterminated output: what
-		// precedes it is still a line, and the mute applies after it.
-		mute := bytes.HasSuffix(line, []byte(muteMarker))
-		if mute {
-			line = line[:len(line)-len(muteMarker)]
-			if len(line) == 0 {
-				c.consoleMuted.Store(true)
-				continue
+	r := bufio.NewReaderSize(c.pipeR, 64*1024)
+	var (
+		written int64
+		pending []byte
+	)
+	for {
+		frag, err := r.ReadSlice('\n')
+		pending = append(pending, frag...)
+		switch {
+		case err == nil:
+			// A complete line: drop "\n" and a "\r" before it, as
+			// bufio.ScanLines did.
+			line := bytes.TrimSuffix(pending[:len(pending)-1], []byte("\r"))
+			c.handleLine(line, &written)
+			pending = pending[:0]
+		case err == bufio.ErrBufferFull:
+			if len(pending) >= catchAllMaxLine {
+				c.handleLine(pending, &written)
+				pending = pending[:0]
 			}
-		}
-		ts := time.Now().Format("2006-01-02T15:04:05.000")
-
-		// Write to console (original stdout) unless the operator (or
-		// cmd/slinit main) has muted the console tee — see
-		// SetConsoleMuted. File tee below always fires so the full
-		// stream stays in /run/slinit/catch-all.log for post-hoc
-		// inspection.
-		if !c.consoleMuted.Load() {
-			fmt.Fprintf(c.console, "%s%s", line, c.consoleEOL)
-		}
-
-		// Write to persistent log file with timestamp.
-		if c.logFile != nil {
-			n, _ := fmt.Fprintf(c.logFile, "%s %s\n", ts, line)
-			written += int64(n)
-
-			// Simple size-based rotation: truncate when too large.
-			if written > catchAllMaxSize {
-				c.logFile.Truncate(0)
-				c.logFile.Seek(0, io.SeekStart)
-				fmt.Fprintf(c.logFile, "%s [catch-all log rotated]\n", ts)
-				written = 0
+		default:
+			if len(pending) > 0 {
+				c.handleLine(pending, &written)
 			}
+			return
 		}
-		if mute {
+	}
+}
+
+// handleLine tees one line to the console and the log file. written is
+// the drain's running count of bytes in the log file.
+func (c *CatchAllLogger) handleLine(line []byte, written *int64) {
+	// The marker can land behind a child's unterminated output: what
+	// precedes it is still a line, and the mute applies after it.
+	mute := bytes.HasSuffix(line, []byte(muteMarker))
+	if mute {
+		line = line[:len(line)-len(muteMarker)]
+		if len(line) == 0 {
 			c.consoleMuted.Store(true)
+			return
 		}
+	}
+	ts := time.Now().Format("2006-01-02T15:04:05.000")
+
+	// Write to console (original stdout) unless the operator (or
+	// cmd/slinit main) has muted the console tee — see
+	// SetConsoleMuted. File tee below always fires so the full
+	// stream stays in /run/slinit/catch-all.log for post-hoc
+	// inspection.
+	if !c.consoleMuted.Load() {
+		fmt.Fprintf(c.console, "%s%s", line, c.consoleEOL)
+	}
+
+	// Write to persistent log file with timestamp.
+	if c.logFile != nil {
+		n, _ := fmt.Fprintf(c.logFile, "%s %s\n", ts, line)
+		*written += int64(n)
+
+		// Simple size-based rotation: truncate when too large.
+		if *written > catchAllMaxSize {
+			c.logFile.Truncate(0)
+			c.logFile.Seek(0, io.SeekStart)
+			fmt.Fprintf(c.logFile, "%s [catch-all log rotated]\n", ts)
+			*written = 0
+		}
+	}
+	if mute {
+		c.consoleMuted.Store(true)
 	}
 }
 

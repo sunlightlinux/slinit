@@ -126,6 +126,13 @@ verified with `git tag -v`.
   one of its dependencies changes later. The recalculation also checked
   for duplicates with a linear scan under the queue lock — 38 ms for a
   dependency added under a service with 8000 dependents, 1 ms now.
+- **One line over 256 KiB on PID 1's stdout or stderr could hang PID 1.**
+  The catch-all logger read its pipe with a `bufio.Scanner`, which stops
+  for good at the first line longer than its 256 KiB limit: the drain
+  returned, nothing read the pipe again, and once its 64 KiB filled the
+  next write to PID 1's own stderr blocked forever. The new test's write
+  after such a line was still blocked after 2 s. The drain now reads
+  until EOF and passes an overlong line on in 256 KiB pieces.
 - **A garbage collection could close PID 1's stdout and stderr.** The
   catch-all logger's start, `ReattachStdoutErr` and stop each pointed
   `os.Stdout`/`os.Stderr` at a new `*os.File` for fd 1 and 2 and dropped
