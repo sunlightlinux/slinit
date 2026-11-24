@@ -343,7 +343,7 @@ what tells you the oldest slinit your configuration will run on. See
 **lock-file**=*path*
 :   Acquire an exclusive flock on *path* before exec; fail if held.
     Useful for "only one instance ever" semantics. **type**=*process*
-    only; any other type refuses to load with it.
+    only; on any other type it is ignored, with a warning at load.
 
 **umask**=*octal*
 :   Initial umask for the service. Defaults to slinit's umask.

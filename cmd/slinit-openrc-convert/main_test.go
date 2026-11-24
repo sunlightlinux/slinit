@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // TestParseOpenrcScriptSimple covers the happy path — script only
@@ -252,6 +257,42 @@ func TestEmitSlinitFile(t *testing.T) {
 	for _, w := range want {
 		if !strings.Contains(out, w) {
 			t.Errorf("output missing %q\n---\n%s", w, out)
+		}
+	}
+}
+
+// slinit refuses chroot on any type but process (it would run the
+// service unjailed). A converted bgprocess or wrapped script must still
+// load: the chroot is left out, with a warning that says what that means.
+func TestChrootOnNonProcessTypesStillLoads(t *testing.T) {
+	for _, tc := range []struct {
+		name, script, level string
+	}{
+		{"bgprocess", "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\npidfile=/run/d.pid\nchroot=/var/jail\n", "WARN"},
+		{"scripted", "#!/sbin/openrc-run\ncommand=/usr/sbin/d\nchroot=/var/jail\nstart() {\n\t:\n}\n", "NOTE"},
+	} {
+		cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+		warns := parseOpenrcScript(cfg, tc.script, "/usr/sbin/openrc-run")
+		var buf bytes.Buffer
+		emitSlinitFile(&buf, cfg)
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "d"), buf.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ss := service.NewServiceSet(nil)
+		dl := config.NewDirLoader(ss, []string{dir})
+		ss.SetLoader(dl)
+		if _, err := dl.LoadService("d"); err != nil {
+			t.Errorf("%s: converted file does not load: %v\n%s", tc.name, err, buf.String())
+		}
+		found := false
+		for _, w := range warns {
+			if w.level == tc.level && strings.Contains(w.msg, "chroot") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: no %s about the chroot that was left out: %v", tc.name, tc.level, warns)
 		}
 	}
 }

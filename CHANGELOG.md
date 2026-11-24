@@ -550,11 +550,16 @@ verified with `git tag -v`.
   child starts now releases what the start had acquired.
 - **`chroot` was silently ignored outside `type = process`.** It, and
   `lock-file`, were applied only to process services, so a scripted or
-  bgprocess service configured into a jail ran outside it, and a "one
-  instance only" lock was never taken. Both now refuse to load on any
-  other type, naming the setting. `new-session` and
+  bgprocess service configured into a jail ran outside it. `chroot` now
+  refuses to load on any other type rather than run unjailed — a
+  service that loaded on 4.0.2 with it no longer does (this includes a
+  systemd unit loaded directly with `RootDirectory=` on `Type=forking`
+  or `oneshot`). `lock-file`, `new-session` and
   `close-stdin`/`close-stdout`/`close-stderr`, equally ignored there but
-  harmless, now say so on stderr and still load.
+  confining nothing, say so on stderr and still load.
+  `slinit-openrc-convert` no longer writes a `chroot` it cannot apply:
+  it warns that the bgprocess daemon will run outside the jail (a
+  wrapped script leaves the chroot to openrc-run).
 
 ## [4.0.2] — 2026-11-22
 

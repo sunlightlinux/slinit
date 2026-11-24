@@ -389,6 +389,24 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 				customFuncs, wrapper)})
 	}
 
+	// slinit applies chroot to type = process only and refuses to load
+	// it on any other type rather than run the service unjailed. Leave
+	// it out of the file, where it would stop the service loading, and
+	// say so: openrc-run applies it itself for a wrapped script, but a
+	// bgprocess daemon will run outside the jail.
+	if cfg.chroot != "" && cfg.svcType != "process" {
+		if cfg.svcType == "scripted" {
+			warns = append(warns, warning{"NOTE", fmt.Sprintf(
+				"chroot=%q left to %s (slinit's chroot applies to type = process only)", cfg.chroot, wrapper)})
+		} else {
+			warns = append(warns, warning{"WARN", fmt.Sprintf(
+				"chroot=%q not mapped: slinit's chroot applies to type = process only, "+
+					"so this %s service will run OUTSIDE the jail — review manually", cfg.chroot, cfg.svcType)})
+		}
+		cfg.comments = append(cfg.comments, "openrc chroot: "+cfg.chroot+" (not applied, see the converter's warning)")
+		cfg.chroot = ""
+	}
+
 	return warns
 }
 
