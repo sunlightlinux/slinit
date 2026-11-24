@@ -21,7 +21,7 @@ file, so nearly every key has a slinit directive behind it. The service
 name is taken from the file name without its extension, which is how
 **immortaldir** names services too.
 
-Keys that do **not** map are reported on stderr under **-verbose**
+Keys that do **not** map are reported on stderr as warnings, always,
 rather than dropped. A conversion that silently loses a line is worse
 than one that says what it could not do, so every recognised key either
 becomes a directive or appears in a note.
@@ -106,9 +106,9 @@ for one converter.
     filesystem. Only meaningful with **-output-dir**.
 
 **-verbose**
-:   Print the per-service conversion notes to stderr. Without it the
-    conversion is silent about what it could not map, so prefer it on
-    a first run.
+:   Also print the per-service conversion notes to stderr, about
+    mappings that did happen. Warnings about what could not be mapped
+    are printed without it.
 
 # EXAMPLES
 

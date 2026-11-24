@@ -75,8 +75,9 @@ Single-input mode writes to standard output. Batch mode
 (**--output-dir**) writes one file per input into *DIR*, named
 after the input basename.
 
-Warnings and notes about what was not mapped are printed only with
-**-verbose**.
+Warnings — something was dropped or will not behave as it did — are
+always printed on stderr; notes about mappings that did happen are
+printed only with **-verbose**.
 
 # FLAGS
 
@@ -101,8 +102,9 @@ Warnings and notes about what was not mapped are printed only with
     or *script* **stop**. Defaults to */usr/sbin/openrc-run*.
 
 **-verbose**
-:   Print per-service conversion notes to stderr — which OpenRC
-    directives were dropped, and which required the fallback wrapper.
+:   Also print the per-service conversion notes to stderr — which
+    OpenRC dependencies were left out, and which scripts required the
+    fallback wrapper. Warnings are printed without it.
 
 # EXAMPLES
 

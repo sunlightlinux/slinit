@@ -90,8 +90,12 @@ signal — see **reload-signal**), **ExecStopPost**, **WatchdogSec**,
 **LoadCredential** / **SetCredential** / **ImportCredential**,
 **PrivateDevices**, **PrivateUsers**, and any
 other key the converter does not know — **KillMode**,
-**RemainAfterExit** and **LimitNPROC** among them. Notes and warnings are printed only with
-**--verbose**.
+**RemainAfterExit** and **LimitNPROC** among them.
+
+Warnings — something was dropped or will not behave as it did — are
+always printed on stderr; notes about mappings that did happen, or
+about references dropped as expected (such as **.target** units), are
+printed only with **-verbose**.
 
 Single-input mode writes to standard output. Batch mode
 (**--output-dir**) writes one file per input into *DIR*, named
@@ -110,8 +114,9 @@ suffix stripped.
     stderr, without touching the filesystem.
 
 **-verbose**
-:   Print per-service conversion notes to stderr — dropped directives,
-    dropped target dependencies, and manual follow-ups.
+:   Also print the per-service conversion notes to stderr — dropped
+    target dependencies and manual follow-ups. Warnings are printed
+    without it.
 
 # EXAMPLES
 

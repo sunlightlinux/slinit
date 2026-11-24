@@ -47,7 +47,9 @@ service (if any) following the primary after a separator comment.
 Batch mode (**--output-dir**) writes one file per service into *DIR*,
 named after the svdir's basename (and *name*-log).
 
-Warnings and notes are printed only with **-verbose**.
+Warnings — something was dropped or will not behave as it did — are
+always printed on stderr; notes about mappings that did happen are
+printed only with **-verbose**.
 
 # FLAGS
 
@@ -67,9 +69,10 @@ Warnings and notes are printed only with **-verbose**.
     services to auto-start.
 
 **-verbose**
-:   Print per-service conversion notes to stderr — which runit files
-    and **chpst** options could not be mapped, and which dependencies
-    were inferred.
+:   Also print the per-service conversion notes to stderr — which
+    dependencies were inferred and which run scripts were wrapped.
+    Warnings, such as the **chpst** options that could not be mapped,
+    are printed without it.
 
 # EXAMPLES
 

@@ -927,6 +927,14 @@ verified with `git tag -v`.
   `>` and `/var/log/dmesg.boot`; a field with a shell metacharacter now
   runs as `/bin/sh -c "exec …"`, which is what sysvinit and busybox do
   with it.
+- **The systemd, runit and OpenRC converters said nothing about what
+  they lost unless asked.** Their warnings — a directive dropped, a
+  command that will not behave as it did — were printed only with
+  `--verbose`, so a plain conversion of a lossy file printed nothing.
+  Warnings are now always printed on stderr, as
+  `slinit-immortal-convert` already did; notes, about mappings that did
+  happen, still need `--verbose`. The immortal converter's man page,
+  which still said both needed it, is corrected too.
 
 ## [4.0.2] — 2026-11-22
 
