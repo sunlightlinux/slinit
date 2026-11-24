@@ -108,3 +108,11 @@ func TestRun_CurrentRunlevelReportsDefault(t *testing.T) {
 		t.Errorf("current runlevel = %q, want default", got)
 	}
 }
+
+// An empty argument is not a runlevel name; it used to index past the
+// end of the string and panic.
+func TestTranslate_EmptyArg(t *testing.T) {
+	if _, err := translate([]string{""}); err == nil {
+		t.Error(`translate([""]) should be a usage error`)
+	}
+}

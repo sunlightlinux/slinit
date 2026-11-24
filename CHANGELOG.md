@@ -851,6 +851,9 @@ verified with `git tag -v`.
   service or `--from` name that is not a valid service name or has a
   `..` path element, instance argument included, as the daemon's
   loader already does online.
+- **`rc-status ""` panicked.** An empty argument was taken for a
+  runlevel name and its first byte read to check for a flag, which
+  panicked with "index out of range"; it is now a usage error (exit 2).
 
 ## [4.0.2] — 2026-11-22
 

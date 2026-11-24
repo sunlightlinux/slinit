@@ -64,6 +64,9 @@ func translate(argv []string) ([]string, error) {
 		return []string{"list"}, nil
 	}
 
+	if argv[0] == "" {
+		return nil, fmt.Errorf("empty runlevel name")
+	}
 	if argv[0][0] == '-' {
 		return nil, fmt.Errorf("unknown flag %q", argv[0])
 	}
