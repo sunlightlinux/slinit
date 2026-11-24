@@ -70,6 +70,13 @@ verified with `git tag -v`.
   followed was then parsed as new packets: a wall-notice whose text
   held the bytes of a shutdown command rebooted the machine in the new
   test. A timeout after part of a packet now closes the connection.
+- **`catlog --clear` of a large log buffer lost the log and printed
+  nothing.** A reply is one packet of at most 65535 bytes, but
+  `log-buffer-size` has no upper bound and the file-log tail read 65536
+  bytes: the reply failed to send, the client saw the connection close,
+  and with `--clear` the buffer had already been emptied. The same held
+  for a `run-action` printing more than 64 KiB. These replies now carry
+  the newest output that fits.
 
 ## [4.0.2] — 2026-11-22
 

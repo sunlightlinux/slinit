@@ -1252,7 +1252,12 @@ func (c *Connection) handleCatLog(payload []byte) error {
 		} else {
 			data = logBuf.GetBuffer()
 		}
-		return c.writePacket(RplySvcLog, EncodeSvcLog(data))
+		// log-buffer-size has no upper bound, and the reply is one
+		// packet: send the newest output that fits. Anything older is
+		// dropped — with --clear the client asked for that — whereas
+		// an oversized reply failed to send at all, after --clear had
+		// already emptied the buffer.
+		return c.writePacket(RplySvcLog, EncodeSvcLog(lastBytes(data, maxSvcLogData)))
 
 	case service.LogToFile:
 		// --clear has no sensible semantic for a tail read; refuse.
@@ -1263,15 +1268,28 @@ func (c *Connection) handleCatLog(payload []byte) error {
 		if path == "" {
 			return c.writePacket(RplyNAK, nil)
 		}
-		data, err := readLogFileTail(path, 64*1024)
+		data, err := readLogFileTail(path, maxSvcLogData)
 		if err != nil {
 			return c.writePacket(RplyNAK, nil)
 		}
-		return c.writePacket(RplySvcLog, EncodeSvcLog(data))
+		// The file may have grown between Stat and the read.
+		return c.writePacket(RplySvcLog, EncodeSvcLog(lastBytes(data, maxSvcLogData)))
 
 	default:
 		return c.writePacket(RplyNAK, nil)
 	}
+}
+
+// maxSvcLogData is the most log a RplySvcLog can carry: one packet,
+// less EncodeSvcLog's flags byte and length.
+const maxSvcLogData = MaxPayloadSize - 5
+
+// lastBytes returns the last n bytes of b, or all of b if shorter.
+func lastBytes(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[len(b)-n:]
+	}
+	return b
 }
 
 // readLogFileTail returns the last `max` bytes of a file (or whole file if smaller).
@@ -2273,11 +2291,13 @@ func (c *Connection) handleRunAction(payload []byte) error {
 	if execErr != nil {
 		// Return NAK with the error message + any partial output
 		msg := fmt.Sprintf("action '%s' failed: %v\n%s", actionName, execErr, string(output))
-		return c.writePacket(RplyNAK, []byte(msg))
+		return c.writePacket(RplyNAK, lastBytes([]byte(msg), MaxPayloadSize))
 	}
 
 	// Return the output (may be empty for actions that produce none)
-	return c.writePacket(RplyActionOutput, output)
+	// One packet: the end of the output, where a failure is usually
+	// reported, rather than no reply at all.
+	return c.writePacket(RplyActionOutput, lastBytes(output, MaxPayloadSize))
 }
 
 // handleListActions returns the list of available extra-command actions.

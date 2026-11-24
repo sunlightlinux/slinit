@@ -417,7 +417,9 @@ service name or rejected.
 
 **catlog** [**\--clear**] *service*
 :   Print *service*'s in-memory log buffer. **\--clear** truncates the
-    buffer after printing.
+    buffer after printing. The reply is one protocol packet, so at most
+    the newest 65530 bytes are printed — of the buffer, or of the log
+    file for a service with **log-type** = *file*.
 
 **graph**
 :   Print the dependency graph of every loaded service as Graphviz DOT.
