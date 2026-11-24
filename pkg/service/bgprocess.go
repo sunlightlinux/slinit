@@ -109,6 +109,11 @@ type BGProcessService struct {
 	stopIssued       bool
 	doingSmoothRecov bool
 
+	// interruptedStopBy is when the stop-timeout armed by an interrupted
+	// start runs out (zero: no stop-timeout). It bounds the wait for the
+	// pid file of a daemon the launcher forked before giving up.
+	interruptedStopBy time.Time
+
 	// Timer that relaunches the daemon when a smooth recovery has to
 	// wait out restart-delay. An AfterFunc, not processTimer: the
 	// recovery starts from handleDaemonTermination, so monitorDaemon has
@@ -728,8 +733,10 @@ func (s *BGProcessService) InterruptStart() bool {
 func (s *BGProcessService) stopInterruptedStart() {
 	if s.stopTimeout > 0 {
 		s.armTimer(s.stopTimeout, bgTimerStopTimeout)
+		s.interruptedStopBy = time.Now().Add(s.stopTimeout)
 	} else {
 		s.cancelTimer()
+		s.interruptedStopBy = time.Time{}
 	}
 	s.state.Store(StateStopping)
 	// The service has left STARTING: give its start slot back.
@@ -841,16 +848,26 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		// launcher's status, the start has already been settled.
 		s.cancelTimer()
 		s.stopIssued = false
-		if exit.ExitedClean() && s.pidFile != "" {
-			// It forked the daemon before giving up. Adopt it only to
-			// bring it down; its end ends the stop.
-			if pid, result, _ := process.ReadPIDFile(s.pidFile); result == process.PIDResultOK {
-				s.daemonPID = pid
-				s.publishPID()
-				go s.monitorDaemon()
-				s.BringDown()
-				s.services.processQueuesLocked()
-				return
+		if exit.ExitedClean() {
+			// It may have forked the daemon before giving up. Look for
+			// it as a start would, and adopt it only to bring it down.
+			if s.pidFile != "" {
+				pid, result, err := process.ReadPIDFile(s.pidFile)
+				if result == process.PIDResultOK {
+					s.bringDownForkedDaemonLocked(pid)
+					return
+				}
+				if result == process.PIDResultFailed && pidFileStillComing(err) {
+					// Written after the launcher's exit, as on the
+					// start path (pollForPIDFile).
+					s.pollForForkedDaemon()
+					return
+				}
+			} else if s.Record().GuessMainPID() {
+				if pid, err := guessMainPIDFromCgroup(s.EffectiveCgroupPath()); err == nil {
+					s.bringDownForkedDaemonLocked(pid)
+					return
+				}
 			}
 		}
 		s.Stopped()
@@ -1076,6 +1093,65 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				continue
 			} else {
 				s.finishPIDDiscoveryLocked(pid)
+			}
+			s.services.queueMu.Unlock()
+			return
+		}
+	}()
+}
+
+// bringDownForkedDaemonLocked adopts the daemon an interrupted launcher
+// forked, only to bring it down: its end, seen by monitorDaemon, ends the
+// stop. Caller holds queueMu.
+func (s *BGProcessService) bringDownForkedDaemonLocked(pid int) {
+	s.daemonPID = pid
+	s.publishPID()
+	go s.monitorDaemon()
+	s.BringDown()
+	s.services.processQueuesLocked()
+}
+
+// pollForForkedDaemon is pollForPIDFile for a STOPPING service: the
+// launcher gave up on an interrupted start but may have forked the daemon
+// first, whose pid file is not written yet. Reading it once and calling
+// the stop done left that daemon running with nothing supervising it.
+// Wait for the file as a start would, but no longer than the stop-timeout
+// armed by the interrupt, so the stop cannot hang on a file that never
+// comes.
+func (s *BGProcessService) pollForForkedDaemon() {
+	deadline := s.startTimeout
+	if deadline <= 0 {
+		deadline = defaultStartTimeout
+	}
+	expiry := time.Now().Add(deadline)
+	if !s.interruptedStopBy.IsZero() && s.interruptedStopBy.Before(expiry) {
+		expiry = s.interruptedStopBy
+	}
+	pidFile := s.pidFile
+
+	go func() {
+		ticker := time.NewTicker(pidFilePollInterval)
+		defer ticker.Stop()
+		for {
+			<-ticker.C
+			if s.state.Load() != StateStopping {
+				return
+			}
+			pid, result, err := process.ReadPIDFile(pidFile)
+			if result == process.PIDResultFailed && pidFileStillComing(err) &&
+				time.Now().Before(expiry) {
+				continue
+			}
+
+			s.services.queueMu.Lock()
+			// Still this stop, and nothing adopted meanwhile.
+			if s.state.Load() == StateStopping && s.launcherPID == 0 && s.daemonPID == 0 {
+				if result == process.PIDResultOK {
+					s.bringDownForkedDaemonLocked(pid)
+				} else {
+					s.Stopped()
+					s.services.processQueuesLocked()
+				}
 			}
 			s.services.queueMu.Unlock()
 			return

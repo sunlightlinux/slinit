@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -286,5 +287,70 @@ func TestBGStopDuringStartIsNotAFailure(t *testing.T) {
 	}
 	if failures != 0 || isFailed {
 		t.Errorf("cancelled start: %d failure(s), IsFailed=%v; want none", failures, isFailed)
+	}
+}
+
+// A launcher that forks its daemon as it gives up on an interrupted start
+// leaves a daemon that writes its pid file only after the launcher has
+// exited — routinely, as the start path's pid-file poll notes. Reading the
+// file once at the launcher's exit missed it: the service went STOPPED and
+// the daemon kept running with nothing supervising it. The stop now waits
+// for the pid file as a start does, and brings the daemon down.
+func TestBGInterruptedStartBringsDownLateForkedDaemon(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "daemon.pid")
+	daemon := filepath.Join(dir, "daemon.sh")
+	if err := os.WriteFile(daemon, []byte("sleep 0.6\necho $$ > "+pidFile+"\nexec sleep 60\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	set, lg := newTestSet()
+	svc := NewBGProcessService(set, "bg-late-fork")
+	svc.SetCommand([]string{"/bin/sh", "-c",
+		"trap '/bin/sh " + daemon + " & exit 0' INT; while :; do sleep 0.05; done"})
+	svc.SetPIDFile(pidFile)
+	svc.SetStartTimeout(0)
+	svc.SetStopTimeout(3 * time.Second)
+	set.AddService(svc)
+	set.StartService(svc)
+	time.Sleep(200 * time.Millisecond)
+	set.StopService(svc)
+
+	pid := waitForDaemonPID(t, pidFile, 0, 3*time.Second)
+	if pid == 0 {
+		t.Fatal("the launcher's daemon never wrote its pid file")
+	}
+	defer killLeftover(pid)
+	got := waitForState(t, svc, StateStopped, 5*time.Second)
+	if got != StateStopped {
+		t.Fatalf("stop never completed: state %v", got)
+	}
+	alive := syscall.Kill(pid, 0) == nil && !procIsZombie(pid)
+	set.queueMu.Lock()
+	failures := len(lg.failed)
+	set.queueMu.Unlock()
+	if alive {
+		t.Errorf("service STOPPED but the daemon (pid %d) it forked is still running unsupervised", pid)
+	}
+	if failures != 0 {
+		t.Errorf("cancelled start: %d failure(s); want none", failures)
+	}
+}
+
+// The wait for that pid file is bounded by the stop-timeout: a launcher
+// that gives up without forking anything must not hold the stop for the
+// pid-file poll's full start deadline (60s with start-timeout 0).
+func TestBGInterruptedStartPIDFileWaitIsBounded(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewBGProcessService(set, "bg-no-fork")
+	svc.SetCommand([]string{"/bin/sh", "-c", "trap 'exit 0' INT; while :; do sleep 0.05; done"})
+	svc.SetPIDFile(filepath.Join(t.TempDir(), "never.pid"))
+	svc.SetStartTimeout(0)
+	svc.SetStopTimeout(1 * time.Second)
+	set.AddService(svc)
+	set.StartService(svc)
+	time.Sleep(200 * time.Millisecond)
+	set.StopService(svc)
+	if got := waitForState(t, svc, StateStopped, 3*time.Second); got != StateStopped {
+		t.Fatalf("stop still waiting for a pid file past the stop-timeout: state %v", got)
 	}
 }
