@@ -250,3 +250,98 @@ func TestCatchAllStopDoesNotWaitForAStoppedConsole(t *testing.T) {
 		t.Fatal("the drain waited for a stopped console without end")
 	}
 }
+
+// slowPipeConsole is a console read at bytesPerSec: a container runtime's
+// stdout, or a serial line. It returns the write end and a channel that
+// yields everything read once the write end is closed.
+func slowPipeConsole(t *testing.T, bytesPerSec int) (*os.File, <-chan []byte) {
+	t.Helper()
+	cr, cw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cr.Close(); cw.Close() })
+	got := make(chan []byte, 1)
+	go func() {
+		var all []byte
+		buf := make([]byte, 4096)
+		t0 := time.Now()
+		for {
+			m, err := cr.Read(buf)
+			all = append(all, buf[:m]...)
+			if err != nil {
+				got <- all
+				return
+			}
+			due := time.Duration(len(all)) * time.Second / time.Duration(bytesPerSec)
+			if d := due - time.Since(t0); d > 0 {
+				time.Sleep(d)
+			}
+		}
+	}()
+	return cw, got
+}
+
+// A working console slower than the workload's output - a container
+// runtime's stdout (docker logs), a serial line - is not a stopped one.
+// The console tee dropped every line past a full queue, so it lost most
+// of a burst; the drain now waits for a console that keeps taking lines,
+// as it did when it wrote to it itself, and the console gets every byte.
+func TestCatchAllSlowHealthyConsoleIsLossless(t *testing.T) {
+	cw, got := slowPipeConsole(t, 5_000_000)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &CatchAllLogger{pipeR: pr, pipeW: pw, console: cw, consoleEOL: "\n"}
+	c.wg.Add(1)
+	go c.drain()
+	var want bytes.Buffer
+	const lines = 50000
+	for i := 0; i < lines; i++ {
+		line := fmt.Sprintf("workload line %06d %s\n", i, strings.Repeat("x", 54))
+		want.WriteString(line)
+		io.WriteString(pw, line)
+	}
+	pw.Close()
+	c.wg.Wait()
+	cw.Close()
+	out := <-got
+	if !bytes.Equal(out, want.Bytes()) {
+		t.Errorf("a slow but working console got %d of %d lines (%d of %d bytes)",
+			bytes.Count(out, []byte{'\n'}), lines, len(out), want.Len())
+	}
+}
+
+// Stop - soft reboot, exit - waits for a slow console to write
+// what it is owed for at most catchAllConsoleFlushMax, however much was
+// queued for it.
+func TestCatchAllStopFlushIsBounded(t *testing.T) {
+	cw, _ := slowPipeConsole(t, 11_520) // 115200 baud
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &CatchAllLogger{pipeR: pr, pipeW: pw, console: cw, consoleEOL: "\n"}
+	c.wg.Add(1)
+	go c.drain()
+	wrote := make(chan struct{})
+	go func() {
+		// ~400 KB: about 35 s of output at this rate.
+		for i := 0; i < 5000; i++ {
+			fmt.Fprintf(pw, "shutdown line %05d %s\n", i, strings.Repeat("y", 60))
+		}
+		close(wrote)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	t0 := time.Now()
+	c.beginFlush()
+	<-wrote
+	pw.Close()
+	c.wg.Wait()
+	took := time.Since(t0)
+	t.Logf("Stop took %v", took.Round(time.Millisecond))
+	if took > catchAllConsoleFlushMax+time.Second {
+		t.Errorf("Stop waited %v for a slow console, past the %v bound", took, catchAllConsoleFlushMax)
+	}
+}

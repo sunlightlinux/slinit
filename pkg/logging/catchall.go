@@ -24,13 +24,23 @@ const (
 	catchAllMaxSize = 1 * 1024 * 1024 // 1 MiB
 
 	// The console tee's queue: lines waiting for a console that is slower
-	// than the pipe, or stopped. Past either bound a line is dropped.
+	// than the pipe, or stopped. When it is full the drain waits for the
+	// console, as it did when it wrote to it itself. The byte bound keeps
+	// what a slow console still has to write at Stop near what the pipe
+	// held before the queue existed (64 KiB), so the queue adds ~6 s at
+	// 115200 baud to a flush, not ~90 s.
 	catchAllConsoleQueueLines = 1024
-	catchAllConsoleQueueBytes = 1 * 1024 * 1024
+	catchAllConsoleQueueBytes = 64 * 1024
 
-	// catchAllConsoleFlushStall is how long the drain, at EOF, waits for a
-	// console that takes no line at all before leaving it behind.
+	// catchAllConsoleFlushStall is how long the drain waits for a console
+	// that takes no line at all before dropping lines for it. A slow but
+	// working console takes a line well within it.
 	catchAllConsoleFlushStall = time.Second
+
+	// catchAllConsoleFlushMax bounds how long Stop (soft reboot, exit)
+	// waits for a slow console to write what it is still owed; what it
+	// has not written by then is dropped.
+	catchAllConsoleFlushMax = 5 * time.Second
 )
 
 // CatchAllLogger captures all output written to stdout/stderr (fd 1 and 2)
@@ -69,15 +79,23 @@ type CatchAllLogger struct {
 	// through consoleQ. The drain wrote to the console itself until a
 	// stopped console (Ctrl-S, Scroll Lock, XOFF) blocked it: the pipe
 	// filled behind it and PID 1 blocked writing its own stderr, with
-	// the scheduling lock held. consoleQueued is the bytes in consoleQ;
-	// consoleDropped, the lines dropped since one was last queued, is
-	// the drain's alone. consoleLines counts the lines written, so the
-	// drain can tell a slow console from a stopped one at EOF.
+	// the scheduling lock held. consoleQueued is the bytes in consoleQ.
+	// consoleLines counts the lines written and consoleWrote is signalled
+	// after each, so the drain can tell a slow console, which it waits
+	// for, from a stopped one, which it drops lines for.
+	// consoleDropped (lines dropped since one was last queued),
+	// consoleStalled and stalledAt (consoleLines when the drain gave up
+	// waiting) are the drain's alone. flushBy, set by Stop, is the
+	// deadline (UnixNano) past which the drain no longer waits at all.
 	consoleQ       chan []byte
 	consoleQueued  atomic.Int64
 	consoleDropped uint64
+	consoleStalled bool
+	stalledAt      uint64
 	consoleLines   atomic.Uint64
+	consoleWrote   chan struct{}
 	consoleDone    chan struct{}
+	flushBy        atomic.Int64
 }
 
 // StartCatchAll sets up the catch-all logger. It:
@@ -252,6 +270,7 @@ func (c *CatchAllLogger) handleLine(line []byte, written *int64) {
 // console.
 func (c *CatchAllLogger) startConsoleTee() {
 	c.consoleQ = make(chan []byte, catchAllConsoleQueueLines)
+	c.consoleWrote = make(chan struct{}, 1)
 	c.consoleDone = make(chan struct{})
 	go func() {
 		defer close(c.consoleDone)
@@ -259,14 +278,22 @@ func (c *CatchAllLogger) startConsoleTee() {
 			c.console.Write(b)
 			c.consoleQueued.Add(-int64(len(b)))
 			c.consoleLines.Add(1)
+			select {
+			case c.consoleWrote <- struct{}{}:
+			default:
+			}
 		}
 	}()
 }
 
-// toConsole queues one line for the console, or drops it when the queue
-// is full. The first line queued after a drop is preceded by a line
-// saying how many were lost. On a console that keeps up, what it gets is
-// what the drain wrote to it directly before.
+// toConsole queues one line for the console. When the queue is full it
+// waits for the console to take lines, for as long as it keeps taking
+// them, and drops the line only once it has taken none for
+// catchAllConsoleFlushStall; after that, lines are dropped without
+// waiting until the console takes one again. The first line queued after
+// a drop is preceded by a line saying how many were lost. A console that
+// takes its output, however slowly, gets every line, as when the drain
+// wrote to it directly.
 func (c *CatchAllLogger) toConsole(line []byte) {
 	b := make([]byte, 0, len(line)+len(c.consoleEOL))
 	if c.consoleDropped > 0 {
@@ -275,32 +302,89 @@ func (c *CatchAllLogger) toConsole(line []byte) {
 	}
 	b = append(b, line...)
 	b = append(b, c.consoleEOL...)
-	if c.consoleQueued.Add(int64(len(b))) > catchAllConsoleQueueBytes {
-		c.consoleQueued.Add(-int64(len(b)))
+	if !c.waitForRoom(int64(len(b))) {
 		c.consoleDropped++
 		return
 	}
-	select {
-	case c.consoleQ <- b:
-		c.consoleDropped = 0
-	default:
-		c.consoleQueued.Add(-int64(len(b)))
-		c.consoleDropped++
+	// The drain is consoleQ's only sender and there is room: this does
+	// not block.
+	c.consoleQueued.Add(int64(len(b)))
+	c.consoleQ <- b
+	c.consoleDropped = 0
+}
+
+// full reports whether n more bytes would overfill the queue. A line
+// longer than the byte bound fits an empty queue.
+func (c *CatchAllLogger) full(n int64) bool {
+	if len(c.consoleQ) == cap(c.consoleQ) {
+		return true
 	}
+	q := c.consoleQueued.Load()
+	return q > 0 && q+n > catchAllConsoleQueueBytes
+}
+
+// waitForRoom waits until n bytes fit the queue, while the console keeps
+// taking lines; it reports false when the console has taken none for
+// catchAllConsoleFlushStall, or Stop's deadline has passed.
+func (c *CatchAllLogger) waitForRoom(n int64) bool {
+	if c.consoleStalled && c.consoleLines.Load() != c.stalledAt {
+		c.consoleStalled = false
+	}
+	if !c.full(n) {
+		return true
+	}
+	if c.consoleStalled {
+		return false
+	}
+	var timer *time.Timer
+	for c.full(n) {
+		wait := catchAllConsoleFlushStall
+		if by := c.flushBy.Load(); by != 0 {
+			left := time.Until(time.Unix(0, by))
+			if left <= 0 {
+				return false
+			}
+			wait = min(wait, left)
+		}
+		if timer == nil {
+			timer = time.NewTimer(wait)
+			defer timer.Stop()
+		} else {
+			timer.Reset(wait)
+		}
+		last := c.consoleLines.Load()
+		select {
+		case <-c.consoleWrote:
+		case <-timer.C:
+			if now := c.consoleLines.Load(); now == last {
+				c.consoleStalled, c.stalledAt = true, now
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // stopConsoleTee lets the console tee write what is queued, for as long
-// as the console keeps taking lines. A stopped one is left behind with
-// its goroutine: Stop, and soft reboot and exit behind it, used to wait
-// on it for as long as it stayed stopped.
+// as the console keeps taking lines and Stop's deadline allows. A
+// stopped one is left behind with its goroutine: Stop, and soft reboot
+// and exit behind it, used to wait on it for as long as it stayed
+// stopped.
 func (c *CatchAllLogger) stopConsoleTee() {
 	close(c.consoleQ)
 	last := c.consoleLines.Load()
 	for {
+		wait := catchAllConsoleFlushStall
+		if by := c.flushBy.Load(); by != 0 {
+			wait = min(wait, time.Until(time.Unix(0, by)))
+		}
+		if wait <= 0 {
+			return
+		}
 		select {
 		case <-c.consoleDone:
 			return
-		case <-time.After(catchAllConsoleFlushStall):
+		case <-time.After(wait):
 		}
 		n := c.consoleLines.Load()
 		if n == last {
@@ -308,6 +392,11 @@ func (c *CatchAllLogger) stopConsoleTee() {
 		}
 		last = n
 	}
+}
+
+// beginFlush starts Stop's bound on the wait for a slow console.
+func (c *CatchAllLogger) beginFlush() {
+	c.flushBy.Store(time.Now().Add(catchAllConsoleFlushMax).UnixNano())
 }
 
 // Console returns the original console writer. Use this for direct console
@@ -374,6 +463,7 @@ func (c *CatchAllLogger) Stop() {
 		syscall.Dup2(int(c.console.Fd()), 2)
 		renewStdio()
 
+		c.beginFlush()
 		c.pipeW.Close()
 
 		// Wait for drain to finish processing all buffered data.

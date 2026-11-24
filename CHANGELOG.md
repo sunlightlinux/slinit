@@ -1051,7 +1051,10 @@ requires.
   and with a stopped catch-all console PID 1 blocked after 3754 lines.
   A console that takes no output for a second is now given up on: what
   it misses is dropped, and when it takes output again it is told how
-  much. A console that takes its output gets exactly what it got before.
+  much. A console that takes its output, however slowly (a serial line,
+  a container runtime's stdout), gets exactly what it got before, with
+  the same back-pressure. At soft reboot and exit, slinit now
+  waits at most 5 s for a slow console to write what it is still owed.
 - **A stalled `slinit-journald` slowed every state transition.** Each
   event went to the journal socket with a 10 ms deadline, under the
   scheduling lock; once the daemon stopped reading, every transition
