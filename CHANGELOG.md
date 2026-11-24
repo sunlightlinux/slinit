@@ -132,6 +132,13 @@ verified with `git tag -v`.
   `-1` as "remove all" — so `:status:M::...` in any binfmt.d file wiped
   qemu-user, Wine and every other handler at boot. The names `status`,
   `register`, `.` and `..` are now a parse error.
+- **`slinit-sysctl` could not set a key for a VLAN interface.** Every
+  `.` in a key became `/`, so `net.ipv4.conf.eth0/100.rp_filter` and
+  `net/ipv4/conf/eth0.100/rp_filter` both went to
+  `net/ipv4/conf/eth0/100/rp_filter`, which does not exist. Keys now
+  follow sysctl.d(5): if the first separator is `.`, dots and slashes
+  swap; if it is `/`, the key is used as is. `.` and `..` elements are
+  refused explicitly, since a slashed key now keeps its dots.
 
 ## [4.0.2] — 2026-11-22
 

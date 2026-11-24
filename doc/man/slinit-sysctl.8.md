@@ -41,7 +41,11 @@ Each line is either blank, a comment (starts with **#** or **;**
 after any leading whitespace), or a **key = value** assignment.
 
 The **key** may use **.** or **/** as its separator; both forms
-resolve to the same **/proc/sys/…** path. A leading **-** on the key
+resolve to the same **/proc/sys/…** path. As in **sysctl.d**(5), if
+the first separator is **.**, dots and slashes are swapped; if it is
+**/**, the key is used as is. So a dot inside a name — the VLAN
+interface *eth0.100* — is written **net.ipv4.conf.eth0/100.rp_filter**
+or **net/ipv4/conf/eth0.100/rp_filter**. A leading **-** on the key
 marks the assignment as best-effort: a failed write (missing tunable,
 kernel refuses the value) is counted separately and does not fail
 the pass.
