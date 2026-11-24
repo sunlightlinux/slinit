@@ -33,6 +33,13 @@ verified with `git tag -v`.
   blocked in `write(2)` once the pipe filled (shared logger), or wrote
   into a pipe whose read end had been closed (UDP forwarding). A longer
   line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **`slinit-start-stop-daemon --stop` without `--retry` could wait
+  forever.** The default schedule was the signal with no timeout,
+  which the wait loop read as "until the process exits", so
+  `--stop --signal HUP` to make a daemon reload never returned. As in
+  OpenRC, the default is now the signal and up to 5 s for the process
+  to exit (exit status 4 if it does not), and with `--oknodo` the
+  signal is sent and the tool returns at once.
 - **`slinit-start-stop-daemon --stop --pidfile` signalled whatever
   pid the file named, PID 1 included.** With only a pidfile to match
   on, the pid it held was signalled unchecked: a pidfile naming PID 1

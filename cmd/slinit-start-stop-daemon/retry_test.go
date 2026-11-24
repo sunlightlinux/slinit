@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"syscall"
 	"testing"
 	"time"
@@ -93,5 +94,44 @@ func TestParseRetryErrors(t *testing.T) {
 		if _, err := ParseRetry(s, syscall.SIGTERM); err == nil {
 			t.Errorf("ParseRetry(%q) should have failed", s)
 		}
+	}
+}
+
+// TestStopWithoutRetry: --stop with no --retry built a single step with
+// Timeout 0, which waitExitProgress reads as "wait forever", so the
+// `--stop --signal HUP` reload idiom never returned. OpenRC's schedule
+// without --retry is the signal then 5 s, failing if the process is
+// still there; with --oknodo (or --test) it sends and returns.
+func TestStopWithoutRetry(t *testing.T) {
+	steps, err := buildSchedule(Options{Signal: syscall.SIGHUP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Signal != syscall.SIGHUP || steps[0].Timeout != 5*time.Second {
+		t.Errorf("schedule = %+v, want [{HUP 5s}]", steps)
+	}
+
+	// A process that survives SIGHUP, as a reloading daemon does.
+	cmd := exec.Command("sh", "-c", `trap "" HUP; exec sleep 30`)
+	if err := cmd.Start(); err != nil {
+		t.Skip(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	time.Sleep(100 * time.Millisecond) // let the trap be set
+
+	opts := Options{Signal: syscall.SIGHUP, OKnodo: true}
+	steps, err = buildSchedule(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- runSchedule(cmd.Process.Pid, steps, opts) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("--oknodo --signal HUP: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("--stop --signal HUP --oknodo still waiting for the process to exit")
 	}
 }

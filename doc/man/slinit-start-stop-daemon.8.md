@@ -218,6 +218,12 @@ child before **exec**(2) — a peer task cannot set them from outside.
     A trailing signal without timeout means "wait forever" for that
     step.
 
+    Without **--retry**, as in OpenRC, **--stop** sends **--signal**
+    and waits up to 5s for the process to exit, returning **4** if it
+    is still there; with **--oknodo** it sends the signal and returns
+    at once, which is the form for a reload signal
+    (**--stop --oknodo --signal HUP**).
+
 # COMMON OPTIONS
 
 **-t**, **--test**
