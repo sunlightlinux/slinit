@@ -1124,7 +1124,7 @@ func (m *manager) killSession(id, who string, sig int32) *dbus.Error {
 			return dbus.NewError("org.freedesktop.DBus.Error.Failed",
 				[]any{"session " + id + " has no leader"})
 		}
-		if err := killPID(int(rec.LeaderPID), sig); err != nil {
+		if err := killLeader(rec, sig); err != nil {
 			return dbus.NewError("org.freedesktop.DBus.Error.Failed",
 				[]any{fmt.Sprintf("kill leader %d: %v", rec.LeaderPID, err)})
 		}

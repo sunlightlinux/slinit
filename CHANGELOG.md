@@ -26,6 +26,13 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`KillSession(leader)` could signal a process outside the session.**
+  The session record keeps the leader as a bare pid; between the
+  leader's exit and the reaper dropping the session the pid can be
+  reused, and the session's owner could then have slinit-logind signal
+  whatever process got it. The leader is now pinned with a pidfd, must
+  still be in the session's cgroup scope, and is signalled through the
+  pidfd.
 - **`options = starts-on-console` never started.** The service queued
   for the console, and the queue was only pulled when a service holding
   the console released it — so with the console free, nothing ever

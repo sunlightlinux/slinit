@@ -71,8 +71,14 @@ func TestKillSessionLeaderSignalsOnlyTheLeader(t *testing.T) {
 		t.Skipf("cannot start sleep: %v", err)
 	}
 	defer cmd.Process.Kill()
+	// The leader must be found in the session's scope; the test's own
+	// cgroup stands in for it.
+	cg := procCgroup(uint32(cmd.Process.Pid))
+	if cg == "" || cg == "?" || cg == "/" {
+		t.Skipf("no usable unified cgroup for the helper (%q)", cg)
+	}
 	rec := SessionRecord{ID: "c1", UserID: 1000, SeatID: "seat0",
-		LeaderPID: uint32(cmd.Process.Pid), Scope: "/sys/fs/cgroup/slinit-test-none.scope"}
+		LeaderPID: uint32(cmd.Process.Pid), Scope: "/sys/fs/cgroup" + cg}
 	if err := writeJSONAtomic(sessionFile("c1"), rec); err != nil {
 		t.Fatal(err)
 	}
@@ -94,5 +100,33 @@ func TestKillSessionLeaderSignalsOnlyTheLeader(t *testing.T) {
 	}
 	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
 		t.Errorf("leader ended with %v, want killed by SIGTERM", cmd.ProcessState)
+	}
+}
+
+// The record keeps a bare pid. After the leader exits the pid can be
+// handed to another process; KillSession(leader) must not signal it.
+// Here the "leader" pid is a live process outside the session's scope,
+// as a recycled pid would be.
+func TestKillSessionLeaderRefusesAPidOutsideTheSession(t *testing.T) {
+	m := usersBus(t)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start sleep: %v", err)
+	}
+	defer cmd.Process.Kill()
+	rec := SessionRecord{ID: "c2", UserID: 1000, SeatID: "seat0",
+		LeaderPID: uint32(cmd.Process.Pid), Scope: "/sys/fs/cgroup/c2"}
+	if err := writeJSONAtomic(sessionFile("c2"), rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.killSession("c2", "leader", int32(syscall.SIGTERM)); err == nil {
+		t.Error("Kill(leader) signalled a pid that is not in the session's scope")
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+		t.Fatal("the process outside the session was killed")
+	case <-time.After(300 * time.Millisecond):
 	}
 }

@@ -62,6 +62,33 @@ func killPID(pid int, sig int32) error {
 	return unix.Kill(pid, unix.Signal(sig))
 }
 
+// killLeader sends sig to the session's leader, and only if the pid
+// still names a process of the session.
+//
+// The record holds a bare pid. Once the leader has exited — and before
+// the reaper drops the session — the kernel may hand that pid to
+// another process, and the session owner, who may call KillSession,
+// would have root signal it. So the process is pinned with a pidfd,
+// its cgroup is checked against the session's scope, and the signal
+// goes through the pidfd: if the pinned process has died in between,
+// the send fails instead of reaching whoever got the pid next. systemd
+// holds the leader as a pidref for the same reason.
+func killLeader(rec SessionRecord, sig int32) error {
+	if !scopeUnderCgroupFS(rec.Scope) {
+		return fmt.Errorf("session has no cgroup scope")
+	}
+	pidfd, err := unix.PidfdOpen(int(rec.LeaderPID), 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(pidfd)
+	want := strings.TrimPrefix(filepath.Clean(rec.Scope), "/sys/fs/cgroup")
+	if got := procCgroup(rec.LeaderPID); got != want {
+		return fmt.Errorf("pid %d is not in the session (cgroup %q)", rec.LeaderPID, got)
+	}
+	return unix.PidfdSendSignal(pidfd, unix.Signal(sig), nil, 0)
+}
+
 // sysRoot is where sysfs is mounted; a variable so the tests can build
 // a device tree of their own.
 var sysRoot = "/sys"
