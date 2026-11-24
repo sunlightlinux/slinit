@@ -70,7 +70,7 @@ func TestAddFiresImmediatelyForAnAlreadyMountedPath(t *testing.T) {
 	defer w.Close()
 
 	var fired bool
-	if err := w.Add("/", func() { fired = true }); err != nil {
+	if err := w.Add("/", "svc", func() { fired = true }); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if !fired {
@@ -87,7 +87,7 @@ func TestAddDoesNotFireForAnUnmountedPath(t *testing.T) {
 	defer w.Close()
 
 	var fired bool
-	if err := w.Add("/definitely-not-a-mountpoint-xyz", func() { fired = true }); err != nil {
+	if err := w.Add("/definitely-not-a-mountpoint-xyz", "svc", func() { fired = true }); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if fired {
@@ -105,7 +105,7 @@ func TestAddDoesNotFireForAnyMountOnArm(t *testing.T) {
 	defer w.Close()
 
 	var fired bool
-	if err := w.Add(AnyMount, func() { fired = true }); err != nil {
+	if err := w.Add(AnyMount, "svc", func() { fired = true }); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if fired {
@@ -121,7 +121,7 @@ func TestAddRejectsBadPaths(t *testing.T) {
 	defer w.Close()
 
 	for _, p := range []string{"", "relative/path", "mnt"} {
-		if err := w.Add(p, func() {}); err == nil {
+		if err := w.Add(p, "svc", func() {}); err == nil {
 			t.Errorf("Add(%q) was accepted", p)
 		}
 	}
@@ -138,12 +138,12 @@ func TestDispatchFiresOnlyForNewlyAppearedMounts(t *testing.T) {
 
 	var mu sync.Mutex
 	var hits []string
-	w.regs["/"] = &registration{path: "/", fn: func() {
+	w.regs["/"] = map[string]func(){"a": func() {
 		mu.Lock()
 		hits = append(hits, "root")
 		mu.Unlock()
 	}}
-	w.regs[AnyMount] = &registration{path: AnyMount, fn: func() {
+	w.regs[AnyMount] = map[string]func(){"b": func() {
 		mu.Lock()
 		hits = append(hits, "any")
 		mu.Unlock()
@@ -184,8 +184,8 @@ func TestRemoveStopsFiring(t *testing.T) {
 	defer w.Close()
 
 	var fired bool
-	w.regs["/"] = &registration{path: "/", fn: func() { fired = true }}
-	w.Remove("/")
+	w.regs["/"] = map[string]func(){"svc": func() { fired = true }}
+	w.Remove("/", "svc")
 	w.mu.Lock()
 	delete(w.known, "/")
 	w.mu.Unlock()
@@ -264,7 +264,7 @@ func TestRunCostsNothingUntilSomethingRegisters(t *testing.T) {
 	}
 
 	// Registering must start it.
-	if err := w.Add("/definitely-not-a-mountpoint-xyz", func() {}); err != nil {
+	if err := w.Add("/definitely-not-a-mountpoint-xyz", "svc", func() {}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	if !w.Watching() {
@@ -273,5 +273,53 @@ func TestRunCostsNothingUntilSomethingRegisters(t *testing.T) {
 	time.Sleep(2 * pollInterval)
 	if n := atomic.LoadInt32(&reads); n == 0 {
 		t.Error("Run performed no reads after a registration; the loop never started")
+	}
+}
+
+// Two services waiting for the same path (here the wildcard, which is
+// what `start-on-mount = yes` registers) must both fire, and unloading
+// one must leave the other armed. One registration per path made the
+// last Add win and a Remove drop both.
+func TestSamePathRegistrationsAreIndependent(t *testing.T) {
+	w, err := New(testLogger{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer w.Close()
+
+	var mu sync.Mutex
+	hits := map[string]int{}
+	reg := func(id string) func() {
+		return func() { mu.Lock(); hits[id]++; mu.Unlock() }
+	}
+	if err := w.Add(AnyMount, "a", reg("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Add(AnyMount, "b", reg("b")); err != nil {
+		t.Fatal(err)
+	}
+	newMount := func() {
+		w.mu.Lock()
+		delete(w.known, "/")
+		w.mu.Unlock()
+		w.dispatch()
+	}
+
+	newMount()
+	mu.Lock()
+	if hits["a"] != 1 || hits["b"] != 1 {
+		t.Errorf("one mount: a fired %d, b fired %d; want 1 each", hits["a"], hits["b"])
+	}
+	mu.Unlock()
+
+	w.Remove(AnyMount, "b")
+	newMount()
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["a"] != 2 {
+		t.Errorf("after removing b, a fired %d times in total, want 2", hits["a"])
+	}
+	if hits["b"] != 1 {
+		t.Errorf("removed b fired again: %d", hits["b"])
 	}
 }

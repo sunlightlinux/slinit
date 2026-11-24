@@ -46,11 +46,6 @@ type Logger interface {
 	Debug(format string, args ...interface{})
 }
 
-type registration struct {
-	path string
-	fn   func()
-}
-
 // Watcher multiplexes one /proc/self/mountinfo poll across many service
 // registrations.
 type Watcher struct {
@@ -79,8 +74,11 @@ type Watcher struct {
 	// for the idle-cost guarantee; nil in production.
 	onRead func()
 
+	// regs maps a path to its registrations, keyed by the registering
+	// service: several services may wait for the same path (or for
+	// AnyMount), and each must fire, and be removed, on its own.
 	mu    sync.Mutex
-	regs  map[string]*registration
+	regs  map[string]map[string]func()
 	known map[string]bool // mountpoints present at the last read
 }
 
@@ -96,7 +94,7 @@ func New(logger Logger) (*Watcher, error) {
 		stop:   make(chan struct{}),
 		wake:   make(chan struct{}),
 		done:   make(chan struct{}),
-		regs:   make(map[string]*registration),
+		regs:   make(map[string]map[string]func()),
 	}
 	// Seed the known set, so the first poll reports what changed rather
 	// than treating every filesystem already mounted at boot as news.
@@ -113,8 +111,9 @@ func New(logger Logger) (*Watcher, error) {
 	return w, nil
 }
 
-// Add registers fn to run when path becomes a mountpoint. path may be
-// AnyMount to fire on every mount.
+// Add registers fn, on behalf of id (the service's name), to run when
+// path becomes a mountpoint. path may be AnyMount to fire on every
+// mount. A second Add with the same path and id replaces the first.
 //
 // For a concrete path that is ALREADY mounted, fn fires immediately:
 // "start when /mnt/data is mounted" is a statement about the state the
@@ -122,7 +121,7 @@ func New(logger Logger) (*Watcher, error) {
 // otherwise wait for an unmount-remount cycle that never comes. The
 // AnyMount form does not fire on Add, because there is no "already" for
 // it — every mount is the event.
-func (w *Watcher) Add(path string, fn func()) error {
+func (w *Watcher) Add(path, id string, fn func()) error {
 	if path == "" {
 		return fmt.Errorf("empty mount path")
 	}
@@ -141,7 +140,10 @@ func (w *Watcher) Add(path string, fn func()) error {
 	}
 
 	w.mu.Lock()
-	w.regs[path] = &registration{path: path, fn: fn}
+	if w.regs[path] == nil {
+		w.regs[path] = make(map[string]func())
+	}
+	w.regs[path][id] = fn
 	w.mu.Unlock()
 
 	w.wakeOnce.Do(func() { close(w.wake) })
@@ -153,10 +155,14 @@ func (w *Watcher) Add(path string, fn func()) error {
 	return nil
 }
 
-// Remove drops a registration.
-func (w *Watcher) Remove(path string) {
+// Remove drops id's registration for path, leaving any other service's
+// registration for the same path in place.
+func (w *Watcher) Remove(path, id string) {
 	w.mu.Lock()
-	delete(w.regs, path)
+	delete(w.regs[path], id)
+	if len(w.regs[path]) == 0 {
+		delete(w.regs, path)
+	}
 	w.mu.Unlock()
 }
 
@@ -248,12 +254,12 @@ func (w *Watcher) dispatch() {
 	w.known = current
 	if len(appeared) > 0 {
 		for _, mp := range appeared {
-			if reg, ok := w.regs[mp]; ok {
-				fire = append(fire, reg.fn)
+			for _, fn := range w.regs[mp] {
+				fire = append(fire, fn)
 			}
 		}
-		if reg, ok := w.regs[AnyMount]; ok {
-			fire = append(fire, reg.fn)
+		for _, fn := range w.regs[AnyMount] {
+			fire = append(fire, fn)
 		}
 	}
 	w.mu.Unlock()

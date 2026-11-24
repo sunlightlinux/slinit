@@ -41,6 +41,11 @@ verified with `git tag -v`.
   `ShutdownRemain` hold all run after that point, so a Ctrl+Alt+Del or
   a stray `kill -INT 1` there was `Attempted to kill init!`. As PID 1
   the signals now stay claimed until slinit is done.
+- **Only one `start-on-mount` service per path ever fired.** The mount
+  watcher kept a single registration per path, so when two services
+  waited for the same mountpoint, or both set `start-on-mount = yes`,
+  only the one loaded last started; unloading either removed the
+  other's trigger too. Registrations are now kept per service.
 - **Saving a service file in vim could unload the service.** The
   services-dir watcher folded each burst of events by "removal wins",
   so vim's save (rename to `svc~`, write a fresh `svc`) or `rm` then

@@ -1372,7 +1372,7 @@ func main() {
 				return
 			}
 			s := svc
-			if err := mountWatcher.Add(mp, func() {
+			if err := mountWatcher.Add(mp, s.Name(), func() {
 				// On a goroutine for the same reason path activation
 				// does it: Add fires synchronously for an already
 				// mounted path, from inside OnServiceLoaded, which the
@@ -1394,7 +1394,7 @@ func main() {
 				prevUnloaded(svc)
 			}
 			if mp := svc.Record().StartOnMount(); mp != "" {
-				mountWatcher.Remove(mp)
+				mountWatcher.Remove(mp, svc.Name())
 			}
 		}
 	}
