@@ -1112,12 +1112,27 @@ func (m *manager) killSession(id, who string, sig int32) *dbus.Error {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
 			[]interface{}{id})
 	}
+	// As systemd: "leader" signals the leader alone, with the signal
+	// asked for; "all", or nothing, the whole session; anything else is
+	// refused rather than taken as "all".
+	switch who {
+	case "leader":
+		if rec.LeaderPID == 0 {
+			return dbus.NewError("org.freedesktop.DBus.Error.Failed",
+				[]any{"session " + id + " has no leader"})
+		}
+		if err := killPID(int(rec.LeaderPID), sig); err != nil {
+			return dbus.NewError("org.freedesktop.DBus.Error.Failed",
+				[]any{fmt.Sprintf("kill leader %d: %v", rec.LeaderPID, err)})
+		}
+		return nil
+	case "", "all":
+	default:
+		return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs",
+			[]any{fmt.Sprintf("Invalid kill parameter '%s'", who)})
+	}
 	if !scopeUnderCgroupFS(rec.Scope) {
 		return errBadSessionID(id)
-	}
-	if who == "leader" {
-		_ = writeInt(rec.Scope+"/cgroup.kill", 1) // fastest path on newer kernels
-		return nil
 	}
 	// Full-tree kill: signal every PID in cgroup.procs.
 	if b, err := os.ReadFile(rec.Scope + "/cgroup.procs"); err == nil {
@@ -1192,12 +1207,6 @@ func writeJSONAtomic(path string, v interface{}) error {
 
 func ensureCgroup(path string) error {
 	return os.MkdirAll(path, 0755)
-}
-
-// writeInt drops a decimal integer into a file — cgroup interface
-// files (cgroup.kill, cgroup.procs) take that shape.
-func writeInt(path string, v int) error {
-	return os.WriteFile(path, []byte(strconv.Itoa(v)), 0644)
 }
 
 func lookupUsername(uid uint32) string {

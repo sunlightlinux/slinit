@@ -35,6 +35,12 @@ verified with `git tag -v`.
   waiter now gets a free console at once, as in dinit, and leaving the
   queue keeps the others in order. Acceptance case 187 no longer
   accepts a stuck STARTING as environmental.
+- **`slinit-logind`'s `KillSession` with `who=leader` killed the whole
+  session.** It wrote the scope's `cgroup.kill`, which is SIGKILL to
+  every process, whatever signal was asked for, and any `who` other
+  than `leader` was taken as `all`. As in systemd, `leader` now sends
+  the requested signal to the leader alone, `all` (or empty) signals
+  the session, and anything else is refused with `InvalidArgs`.
 - **`slinit-logind` handed any device to a session's owner.**
   `TakeDevice` resolved its major:minor in `/sys/dev/char` and
   `/sys/dev/block` and opened whatever it found read/write, so the
