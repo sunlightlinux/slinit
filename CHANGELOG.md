@@ -77,6 +77,19 @@ verified with `git tag -v`.
   and with `--clear` the buffer had already been emptied. The same held
   for a `run-action` printing more than 64 KiB. These replies now carry
   the newest output that fits.
+- **`unload` detached a service another client still held.** Unload
+  checked only dependents, not whether another control connection had
+  the service open; dinit's `has_lone_ref` requires the unloading
+  connection to be the only one. The other client's handle then drove
+  an object outside the set — a start through it ran a service that
+  was in no list, could not be found and was not stopped at shutdown.
+  Unload is now refused (NAK) while another client holds the service.
+- **A reload that changed a service's type left other clients'
+  handles on the old object.** Only the reloading connection's handle
+  was moved, and not its event subscription, so `slinit-monitor` or any
+  other open client acted on a service no longer in the set and heard
+  nothing more about it. Every connection's handles and subscriptions
+  now move to the new object.
 
 ## [4.0.2] — 2026-11-22
 

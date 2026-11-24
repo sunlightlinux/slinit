@@ -73,12 +73,12 @@ type Connection struct {
 	// fds passed in by less trustworthy parents.
 	peerAuthorized bool
 
-	// handlesMu guards handles and revHandles. Only this connection's
-	// goroutine writes them, but ServiceEvent reads revHandles from
-	// whatever goroutine drives the state machine, and close() may run
-	// from Server.Stop. Reads on the connection's own goroutine need no
-	// lock. Never hold it across AddListener/RemoveListener or a write:
-	// the state machine calls ServiceEvent with its own locks held.
+	// handlesMu guards handles and revHandles. ServiceEvent reads them
+	// from whatever goroutine drives the state machine, close() may run
+	// from Server.Stop, and another connection's reload swaps a
+	// replaced service in them (swapService), so every access locks.
+	// Never hold it across AddListener/RemoveListener or a write: the
+	// state machine calls ServiceEvent with its own locks held.
 	handlesMu sync.RWMutex
 }
 
@@ -168,13 +168,14 @@ func (c *Connection) close() {
 }
 
 func (c *Connection) allocHandle(svc service.Service) uint32 {
+	c.handlesMu.Lock()
 	// O(1) check if this service already has a handle
 	if h, ok := c.revHandles[svc]; ok {
+		c.handlesMu.Unlock()
 		return h
 	}
 	h := c.nextHandle
 	c.nextHandle++
-	c.handlesMu.Lock()
 	c.handles[h] = svc
 	c.revHandles[svc] = h
 	c.handlesMu.Unlock()
@@ -184,7 +185,33 @@ func (c *Connection) allocHandle(svc service.Service) uint32 {
 }
 
 func (c *Connection) getService(handle uint32) service.Service {
+	c.handlesMu.RLock()
+	defer c.handlesMu.RUnlock()
 	return c.handles[handle]
+}
+
+// swapService points every handle this connection holds for old at
+// new, and moves its subscription with them. A reload that changes a
+// service's type replaces the object in the set; a handle left on the
+// old one would act on a service no longer in the set and never see
+// another event.
+func (c *Connection) swapService(old, new service.Service) {
+	c.handlesMu.Lock()
+	h, held := c.revHandles[old]
+	if held {
+		for hh, s := range c.handles {
+			if s == old {
+				c.handles[hh] = new
+			}
+		}
+		delete(c.revHandles, old)
+		c.revHandles[new] = h
+	}
+	c.handlesMu.Unlock()
+	if held {
+		old.Record().RemoveListener(c)
+		new.Record().AddListener(c)
+	}
 }
 
 // findHandle returns the handle for a given service, or 0 and false if not found.
@@ -1366,11 +1393,10 @@ func (c *Connection) handleReloadService(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	// If service was replaced (type change), update handle mapping
+	// If service was replaced (type change), move every connection's
+	// handles — this one's and any other client's — to the new object.
 	if newSvc != svc {
-		c.handlesMu.Lock()
-		c.handles[handle] = newSvc
-		c.handlesMu.Unlock()
+		c.server.replaceService(svc, newSvc)
 	}
 
 	c.server.services.ProcessQueues()
@@ -1483,15 +1509,9 @@ func (c *Connection) handleReloadAll() error {
 		ok++
 
 		if newSvc != svc {
-			// Type change: swap any of THIS connection's handles
-			// pointing at the old object.
-			c.handlesMu.Lock()
-			if h, found := c.revHandles[svc]; found {
-				delete(c.revHandles, svc)
-				c.handles[h] = newSvc
-				c.revHandles[newSvc] = h
-			}
-			c.handlesMu.Unlock()
+			// Type change: move every connection's handles pointing
+			// at the old object.
+			c.server.replaceService(svc, newSvc)
 		}
 	}
 
@@ -1521,14 +1541,25 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 
 	// Count how many handles in this connection point to the service
 	handleCount := 0
+	c.handlesMu.RLock()
 	for _, s := range c.handles {
 		if s == svc {
 			handleCount++
 		}
 	}
+	c.handlesMu.RUnlock()
 
 	// Check if service has only ordering dependents (no active non-ordering refs)
 	if !svc.Record().HasLoneRef(handleCount) {
+		return c.writePacket(RplyNAK, nil)
+	}
+
+	// Nor may another client hold a handle to it, as in dinit, where
+	// has_lone_ref requires this connection to be the only listener.
+	// Unloaded anyway, that client's handle kept the detached object:
+	// a start through it ran a service that was in no list, could not
+	// be found, and was not stopped at shutdown.
+	if c.server.heldElsewhere(c, svc) {
 		return c.writePacket(RplyNAK, nil)
 	}
 

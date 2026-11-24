@@ -327,6 +327,39 @@ func (s *Server) Reopen() error {
 	return nil
 }
 
+// connList returns the open connections.
+func (s *Server) connList() []*Connection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Connection, 0, len(s.conns))
+	for c := range s.conns {
+		out = append(out, c)
+	}
+	return out
+}
+
+// heldElsewhere reports whether a connection other than c holds a
+// handle to svc.
+func (s *Server) heldElsewhere(c *Connection, svc service.Service) bool {
+	for _, o := range s.connList() {
+		if o == c {
+			continue
+		}
+		if _, ok := o.findHandle(svc); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceService moves every connection's handles from old to new,
+// after a reload replaced old in the set.
+func (s *Server) replaceService(old, new service.Service) {
+	for _, c := range s.connList() {
+		c.swapService(old, new)
+	}
+}
+
 // HandlePassCSFD handles a pre-connected control socket (from pass-cs-fd).
 // It spawns a goroutine to serve commands on the connection, just like a
 // normal control client.

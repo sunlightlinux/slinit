@@ -557,6 +557,8 @@ service name or rejected.
     (since 3.21.0): a placeholder keeps its output pipe, so the consumer
     goes on reading, and loading the service again takes it back. The
     placeholder is not listed.
+    Also refused while another client — **slinit-monitor**(8), say —
+    holds the service open, as **dinitctl**(8) is (since 4.0.3).
 
 **add-dep** *from* *kind* *to*, **add-dep** *kind* *from* *to*
 :   Add a dependency edge of *kind* (`depends-on`/`regular`,
