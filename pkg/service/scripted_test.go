@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -216,5 +217,43 @@ func TestScriptedServiceWithDependency(t *testing.T) {
 	}
 	if dep.State() != StateStopped {
 		t.Errorf("dependency should be STOPPED, got %v", dep.State())
+	}
+}
+
+// A start that timed out left stopReason = timed-out behind, and the
+// start-command exit handler read that to mean "this attempt timed out":
+// every later start, however quick and successful, was failed as
+// "completed after timeout". One timeout and the service could never
+// start again.
+func TestScriptedTimeoutDoesNotPoisonLaterStarts(t *testing.T) {
+	set, _ := newTestSet()
+	slow := t.TempDir() + "/slow"
+	if err := os.WriteFile(slow, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewScriptedService(set, "sc-timeout")
+	// Slow while the flag file exists, instant success otherwise.
+	svc.SetStartCommand([]string{"/bin/sh", "-c", "[ -e " + slow + " ] && sleep 5; exit 0"})
+	svc.SetStartTimeout(300 * time.Millisecond)
+	set.AddService(svc)
+
+	set.StartService(svc)
+	if got := waitForState(t, svc, StateStopped, 3*time.Second); got != StateStopped {
+		t.Fatalf("slow start: state %v, want STOPPED after the timeout", got)
+	}
+	set.queueMu.Lock()
+	r := svc.StopReason()
+	set.queueMu.Unlock()
+	if r != ReasonTimedOut {
+		t.Errorf("slow start: stop reason %v, want timed-out", r)
+	}
+
+	os.Remove(slow)
+	set.StartService(svc)
+	if got := waitForState(t, svc, StateStarted, 2*time.Second); got != StateStarted {
+		set.queueMu.Lock()
+		r = svc.StopReason()
+		set.queueMu.Unlock()
+		t.Errorf("second, successful start: state %v (stop reason %v), want STARTED", got, r)
 	}
 }

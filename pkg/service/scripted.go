@@ -61,6 +61,11 @@ type ScriptedService struct {
 	// one, and `normal-exit` could never match.
 	exitStatus ExitStatus
 
+	// startTimedOut records that this start attempt's start-timeout
+	// fired. Per attempt, unlike stopReason, which outlives the attempt
+	// and must not decide how the next one ends. Cleared in BringUp.
+	startTimedOut bool
+
 	// Monitoring
 	doneCh        chan struct{}
 	timerUpdateCh chan struct{} // signaled when a new timer is armed
@@ -248,6 +253,7 @@ func (s *ScriptedService) BringUp() bool {
 	}
 
 	s.exitStatus = ExitStatus{}
+	s.startTimedOut = false
 
 	if err := s.Record().resolveDeferredRunAs(); err != nil {
 		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
@@ -542,7 +548,7 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	if exit.ExitedClean() {
 		// Start command succeeded — but if a timeout already fired,
 		// the service should still be treated as failed.
-		if s.stopReason == ReasonTimedOut {
+		if s.startTimedOut {
 			s.services.logger.Error("Service '%s': start command completed after timeout",
 				s.serviceName)
 			s.failedToStart(false, true)
@@ -560,7 +566,7 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 		}
 		s.services.logger.Error("Service '%s': start command failed (exit code: %d)",
 			s.serviceName, exitCode)
-		if s.stopReason != ReasonTimedOut {
+		if !s.startTimedOut {
 			s.stopReason = ReasonFailed
 		}
 		s.failedToStart(false, true)
@@ -621,6 +627,7 @@ func (s *ScriptedService) handleTimerExpired() {
 		// records the correct reason. If the process is already gone,
 		// transition to failed immediately.
 		s.stopReason = ReasonTimedOut
+		s.startTimedOut = true
 		if s.startPID <= 0 {
 			s.failedToStart(false, true)
 			s.services.processQueuesLocked()

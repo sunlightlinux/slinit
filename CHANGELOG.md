@@ -139,6 +139,12 @@ verified with `git tag -v`.
   the dependent then started without its hard dependency. The watcher
   now applies the same checks, under the lock the unload takes, and
   leaves the service loaded with a warning otherwise.
+- **A scripted service whose start once timed out could never start
+  again.** The timeout set the stop reason to `timed-out`, and the
+  start-command's exit handler read that reason to mean "this attempt
+  timed out", while nothing reset it: every later start, however quick
+  and successful, was failed as "start command completed after timeout".
+  The timeout is now recorded per attempt.
 - **A smooth recovery of a ready-notification service left the new
   process's start-timeout running.** The recovered process signals ready
   while the service is already STARTED, and that signal was dropped as
