@@ -2390,6 +2390,14 @@ func (s *ProcessService) startProcess() error {
 		// Spawn an external logger command and pipe stdout (+ stderr unless
 		// a separate error-logger is configured) to it. This is the
 		// OpenRC OUTPUT_LOGGER equivalent.
+		//
+		// Only BecomingInactive stopped the previous start's logger, so
+		// on an auto-restart it was overwritten here and left running,
+		// one more logger supervisor and process per restart.
+		if s.loggerSup != nil {
+			s.loggerSup.Stop()
+			s.loggerSup = nil
+		}
 		var err error
 		outputPipe, s.loggerSup, err = startLoggerSupervisor(
 			s.outputLogger, s.serviceName, "output-logger", s.services.logger,
@@ -2419,6 +2427,10 @@ func (s *ProcessService) startProcess() error {
 
 	// Optional separate error-logger: stderr goes to a different command.
 	if s.logType == LogToCommand && len(s.errorLogger) > 0 {
+		if s.errLoggerSup != nil { // as for the output-logger above
+			s.errLoggerSup.Stop()
+			s.errLoggerSup = nil
+		}
 		var err error
 		errorPipe, s.errLoggerSup, err = startLoggerSupervisor(
 			s.errorLogger, s.serviceName, "error-logger", s.services.logger,

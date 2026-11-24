@@ -1110,6 +1110,12 @@ requires.
   name is now resolved in the background, and lines are dropped until
   the lookup completes; a failed lookup is logged and disables the
   forwarding, as before. An IP address is still used at once.
+- **Each auto-restart of a `log-type = command` service left an
+  output-logger behind.** Every start spawned a new output-logger (and
+  error-logger) and overwrote the previous one's supervisor, which only
+  a stop for good shut down; after an auto-restart the old logger kept
+  running, one more per restart. The previous loggers are now stopped
+  before new ones start.
 
 ## [4.0.2] — 2026-11-22
 
