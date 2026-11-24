@@ -35,6 +35,13 @@ verified with `git tag -v`.
   waiter now gets a free console at once, as in dinit, and leaving the
   queue keeps the others in order. Acceptance case 187 no longer
   accepts a stuck STARTING as environmental.
+- **`slinit-logind` looked up `GetSession` and `ActivateSessionOnSeat`
+  ids as paths unchecked.** The id went straight into
+  `sessions/<id>.json`, so `../x` reached any `*.json` under the state
+  directory: any bus client could probe for files and, through
+  `ActivateSessionOnSeat`'s seat check, have one parsed as a session.
+  Both, and the alias objects' lookup, now refuse an id that is not a
+  plain session name, as the other session calls already did.
 - **A relative `SetTime` through `slinit-timedated` set the clock
   behind by the time its polkit prompt took.** The new time was
   computed before authorization, so moving the clock by 90 s with a

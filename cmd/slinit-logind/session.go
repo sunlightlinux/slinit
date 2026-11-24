@@ -947,6 +947,9 @@ func (m *manager) ActivateSession(id string) *dbus.Error {
 // ActivateSessionOnSeat is ActivateSession with the seat checked, as in
 // elogind: activating a session through a seat it is not on is refused.
 func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	var rec SessionRecord
 	if !readJSON(sessionFile(id), &rec) {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
@@ -1156,6 +1159,9 @@ func userFile(uid uint32) string {
 func fifoPath(id string) string { return filepath.Join(stateRoot, "sessions", id+".fifo") }
 
 func sessionExistsLocked(id string) bool {
+	if !validSessionID(id) {
+		return false
+	}
 	_, err := os.Stat(sessionFile(id))
 	return err == nil
 }
