@@ -98,6 +98,13 @@ verified with `git tag -v`.
   the same way, and set the owner after the mode, which clears
   setuid/setgid on a file. The raw mode now reaches `chmod(2)`, after
   the `chown(2)`.
+- **`slinit-checkpath -m 1777` made a directory without the sticky
+  bit.** The mode was masked to `0777` and passed to `os.Chmod`, which
+  knows the special bits only as `os.ModeSticky` and friends, so
+  `01000`/`02000`/`04000` never reached the inode — and an existing
+  `1777` directory sitting at `0777` was judged already correct. The
+  raw mode now goes to `chmod(2)` and is compared in full, and the owner
+  is changed first, since `chown(2)` clears setuid/setgid on a file.
 
 ## [4.0.2] — 2026-11-22
 

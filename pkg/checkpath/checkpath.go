@@ -145,20 +145,10 @@ func Apply(spec Spec) (Result, error) {
 		}
 	}
 
-	// Mode correction: honour exactly the caller's requested bits
-	// (permission bits only — never sticky/setuid unless asked).
-	if spec.Mode != 0 {
-		current := fileMode(st.Mode).Perm()
-		if current != (spec.Mode & os.ModePerm) {
-			if err := os.Chmod(inode, spec.Mode&os.ModePerm); err != nil {
-				return res, fmt.Errorf("checkpath: %s: chmod: %w", spec.Path, err)
-			}
-			res.ChMod = true
-		}
-	}
-
 	// Owner correction: only touch whichever of uid/gid the caller asked
-	// for (-1 means leave alone), and only when it differs.
+	// for (-1 means leave alone), and only when it differs. It comes
+	// before the mode because chown(2) clears setuid/setgid on a regular
+	// file; st is refreshed so the mode check sees what it left.
 	if spec.Owner.UID >= 0 || spec.Owner.GID >= 0 {
 		curUID, curGID := int(st.Uid), int(st.Gid)
 		wantUID, wantGID := spec.Owner.UID, spec.Owner.GID
@@ -173,6 +163,23 @@ func Apply(spec Spec) (Result, error) {
 				return res, fmt.Errorf("checkpath: %s: chown: %w", spec.Path, err)
 			}
 			res.ChOwn = true
+			if err := unix.Fstat(fd, &st); err != nil {
+				return res, fmt.Errorf("checkpath: %s: stat: %w", spec.Path, err)
+			}
+		}
+	}
+
+	// Mode correction: honour exactly the caller's requested bits,
+	// sticky/setgid/setuid included. Spec.Mode holds the raw octal value
+	// (ParseMode), so it goes to chmod(2) as is: os.Chmod only knows
+	// those bits as os.ModeSticky and friends and dropped 07000.
+	if spec.Mode != 0 {
+		want := uint32(spec.Mode) & 0o7777
+		if st.Mode&0o7777 != want {
+			if err := unix.Chmod(inode, want); err != nil {
+				return res, fmt.Errorf("checkpath: %s: chmod: %w", spec.Path, err)
+			}
+			res.ChMod = true
 		}
 	}
 
