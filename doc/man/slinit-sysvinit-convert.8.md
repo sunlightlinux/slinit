@@ -38,6 +38,11 @@ that looks right and does nothing.
 | **off** | **manual**=*yes* — kept for reference, never started |
 | **ondemand** | **manual**=*yes* — started by whatever should trigger it |
 
+A process field holding a shell metacharacter (any of
+``~`!$^&*()=|\{}[];"'<>?``) is one sysvinit and busybox hand to
+**/bin/sh -c** with **exec** in front of it, so it becomes that
+command, quoted for slinit; any other field is the command as written.
+
 The *id* column becomes **inittab-id**, and for a recognised getty the
 tty becomes **inittab-line**. Those are slinit's utmp bookkeeping
 directives, which is exactly what sysvinit does with that column, so

@@ -23,7 +23,7 @@ Each svdir becomes a **process** service with **restart = yes**,
 
 | runit | slinit |
 |---|---|
-| *run* | **command**: the daemon line of the script, with a bare command name resolved through **PATH** |
+| *run* | **command**: the daemon line of the script, with a bare command name resolved through **PATH** and its quoted arguments kept whole |
 | *finish* | **finish-command = /bin/sh** *svdir*/finish |
 | *check* | **ready-check-command = /bin/sh** *svdir*/check |
 | *down* | **manual = yes** |

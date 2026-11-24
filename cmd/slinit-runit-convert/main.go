@@ -456,7 +456,23 @@ func resolveBareCommand(s string) string {
 		return s
 	}
 	fields[0] = abs
-	return strings.Join(fields, " ")
+	return joinCommand(fields)
+}
+
+// joinCommand writes argv back as a slinit command line. A word with a
+// blank, a quote or a backslash in it is double-quoted, escaping " and
+// \, which slinit's command parser reads back as the same one word;
+// joined with bare spaces, `touch "/tmp/a b"` ran touch with two
+// arguments.
+func joinCommand(fields []string) string {
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		if strings.ContainsAny(f, " \t\"'\\") {
+			f = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(f) + `"`
+		}
+		out[i] = f
+	}
+	return strings.Join(out, " ")
 }
 
 // hasShellMetachars returns true if s contains characters that need
@@ -478,6 +494,14 @@ func shellFields(s string) []string {
 	inQuote := byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		// A backslash quotes the next character, except inside '...',
+		// and inside "..." only before " \ $ and `.
+		if c == '\\' && i+1 < len(s) && inQuote != '\'' &&
+			(inQuote == 0 || strings.IndexByte("\"\\$`", s[i+1]) >= 0) {
+			i++
+			cur.WriteByte(s[i])
+			continue
+		}
 		if inQuote != 0 {
 			if c == inQuote {
 				inQuote = 0
@@ -521,7 +545,7 @@ func parseChpst(cfg *slinitConfig, args []string) []warning {
 			if a == "--" {
 				i++
 			}
-			cfg.command = strings.Join(args[i:], " ")
+			cfg.command = joinCommand(args[i:])
 			return warns
 		}
 		// Multi-char flag like `-uUSER` or standalone `-P`.
