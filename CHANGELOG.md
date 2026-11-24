@@ -813,6 +813,14 @@ verified with `git tag -v`.
   namespace too. Only `protect-clock`'s read-only RTC devices, which
   systemd sets through the device cgroup controller, are not done; the
   man page says so.
+- **`slinitctl run --collect` and `run --type scripted --wait` always
+  failed with "unexpected reply: 101".** A handle the connection holds
+  reports its service's state changes unasked, and `run` re-loads the
+  unit it just started while that unit is changing state; loading a
+  service read the next packet as its reply, so it took the pushed
+  event for one. `--collect` then left the transient unit loaded and its
+  file on disk. Every command reply is now read past such events, which
+  are kept for whatever waits on them.
 
 ## [4.0.2] — 2026-11-22
 

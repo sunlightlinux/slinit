@@ -1314,7 +1314,7 @@ func loadServiceHandle(conn net.Conn, name string) (uint32, error) {
 		return 0, fmt.Errorf("write error: %w", err)
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return 0, fmt.Errorf("read error: %w", err)
 	}
@@ -1345,7 +1345,7 @@ func cmdList(conn net.Conn) error {
 	}
 
 	for {
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -3148,7 +3148,7 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		if err := control.WritePacket(conn, control.CmdShutdown, payload); err != nil {
 			return err
 		}
-		rply, _, err := control.ReadPacket(conn)
+		rply, _, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -3179,7 +3179,7 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdScheduleShutdown, payload); err != nil {
 		return err
 	}
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3207,7 +3207,7 @@ func sendWallNotice(conn net.Conn, msg string) error {
 	if err := control.WritePacket(conn, control.CmdWallNotice, payload); err != nil {
 		return err
 	}
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3246,7 +3246,7 @@ func cmdSwitchRoot(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdSwitchRoot, payload); err != nil {
 		return err
 	}
-	rply, rest, err := control.ReadPacket(conn)
+	rply, rest, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3291,7 +3291,7 @@ func cmdEdit(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, control.EncodeHandle(handle)); err != nil {
 		return err
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3386,7 +3386,7 @@ func cmdSuspend(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdSuspend, payload); err != nil {
 		return err
 	}
-	rply, reply, err := control.ReadPacket(conn)
+	rply, reply, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3412,7 +3412,7 @@ func cmdCancelShutdown(conn net.Conn) error {
 	if err := control.WritePacket(conn, control.CmdCancelShutdown, nil); err != nil {
 		return err
 	}
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3428,7 +3428,7 @@ func cmdQueryShutdown(conn net.Conn) error {
 	if err := control.WritePacket(conn, control.CmdQueryShutdown, nil); err != nil {
 		return err
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3731,7 +3731,7 @@ func cmdRunAction(conn net.Conn, svcName, actionName string) error {
 	if err := control.WritePacket(conn, control.CmdRunAction, payload); err != nil {
 		return err
 	}
-	rply, data, err := control.ReadPacket(conn)
+	rply, data, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3758,7 +3758,7 @@ func cmdListActions(conn net.Conn, svcName string) error {
 	if err := control.WritePacket(conn, control.CmdListActions, payload); err != nil {
 		return err
 	}
-	rply, data, err := control.ReadPacket(conn)
+	rply, data, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3780,7 +3780,7 @@ func cmdBootTime(conn net.Conn) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3949,7 +3949,7 @@ func cmdAnalyzePlot(conn net.Conn) error {
 	if err := control.WritePacket(conn, control.CmdBootTime, nil); err != nil {
 		return err
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3983,7 +3983,7 @@ func cmdAnalyzeCriticalChain(conn net.Conn, startSvc string) error {
 	if err := control.WritePacket(conn, control.CmdBootTime, nil); err != nil {
 		return err
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -4107,7 +4107,7 @@ func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
 	}
 	var entries []entry
 	for {
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -4129,7 +4129,7 @@ func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
 			control.EncodeServiceName(entries[i].name)); err != nil {
 			return nil, err
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -4152,7 +4152,7 @@ func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
 			control.EncodeHandle(e.handle)); err != nil {
 			return nil, err
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -4173,7 +4173,7 @@ func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
 				// when a dep was allocated after our Phase 1 list).
 				if err := control.WritePacket(conn, control.CmdQueryServiceName,
 					control.EncodeHandle(depHandle)); err == nil {
-					if rply2, payload2, err := control.ReadPacket(conn); err == nil &&
+					if rply2, payload2, err := readReply(conn); err == nil &&
 						rply2 == control.RplyServiceName {
 						depName, _, _ = control.DecodeServiceName(payload2)
 						handleNames[depHandle] = depName
@@ -4672,7 +4672,7 @@ func cmdSetEnvGlobal(conn net.Conn, kvPair string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -4689,7 +4689,7 @@ func cmdUnsetEnvGlobal(conn net.Conn, key string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -4705,7 +4705,7 @@ func cmdGetAllEnvGlobal(conn net.Conn) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -5337,7 +5337,7 @@ func cmdDependents(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -5369,7 +5369,7 @@ func cmdDependents(conn net.Conn, name string) error {
 			fmt.Printf("  handle=%d (name query failed)\n", depHandle)
 			continue
 		}
-		rply2, payload2, err := control.ReadPacket(conn)
+		rply2, payload2, err := readReply(conn)
 		if err != nil || rply2 != control.RplyServiceName {
 			fmt.Printf("  handle=%d\n", depHandle)
 			continue
@@ -5401,7 +5401,7 @@ func cmdGraph(conn net.Conn) error {
 
 	var entries []svcEntry
 	for {
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -5428,7 +5428,7 @@ func cmdGraph(conn net.Conn) error {
 		if err := control.WritePacket(conn, control.CmdFindService, namePayload); err != nil {
 			return err
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -5458,7 +5458,7 @@ func cmdGraph(conn net.Conn) error {
 		if err := control.WritePacket(conn, control.CmdQueryDependencies, control.EncodeHandle(e.handle)); err != nil {
 			return err
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -5482,7 +5482,7 @@ func cmdGraph(conn net.Conn) error {
 				if err := control.WritePacket(conn, control.CmdQueryServiceName, control.EncodeHandle(depHandle)); err != nil {
 					continue
 				}
-				rply2, payload2, err := control.ReadPacket(conn)
+				rply2, payload2, err := readReply(conn)
 				if err != nil || rply2 != control.RplyServiceName {
 					depName = fmt.Sprintf("handle_%d", depHandle)
 				} else {
@@ -5584,7 +5584,7 @@ func cmdQueryLoadMech(conn net.Conn) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -5657,7 +5657,7 @@ func cmdListServices5(conn net.Conn) error {
 	}
 
 	for {
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
