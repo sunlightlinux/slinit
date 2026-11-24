@@ -1,8 +1,11 @@
 package service
 
 import (
+	"context"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -197,4 +200,65 @@ func TestUtmpClearNeverOvertakesCreate(t *testing.T) {
 	if len(calls) < 2 || calls[0] != "create" || calls[1] != "clear" {
 		t.Fatalf("utmp writes out of order: %v", calls)
 	}
+}
+
+// A log-forward-udp destination naming a host used to be resolved in
+// startProcess under queueMu; with a resolver that does not answer that
+// held it for 10 s. The resolver here is a socket that never replies.
+func TestSyslogForwardHostNotResolvedUnderQueueMu(t *testing.T) {
+	silent, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	saved := syslogForwardResolver
+	syslogForwardResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "udp", silent.LocalAddr().String())
+		},
+	}
+	defer func() { syslogForwardResolver = saved }()
+
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "fwd")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	svc.SetLogForward("loghost.invalid:514", "", 3, "")
+	set.AddService(svc)
+
+	el, ok := runWithin(2*time.Second, func() { set.StartService(svc) })
+	if !ok {
+		t.Fatalf("StartService waited %v on the syslog-forward lookup", el.Round(time.Millisecond))
+	}
+	if !queueMuFree(set, 2*time.Second) {
+		t.Fatal("queueMu held during the syslog-forward lookup")
+	}
+	runWithin(5*time.Second, func() { set.StopService(svc) })
+}
+
+// A destination by host name still forwards once the lookup is done.
+func TestSyslogForwardHostResolvesInBackground(t *testing.T) {
+	rx, dest := listenUDP(t)
+	defer rx.Close()
+	_, port, _ := net.SplitHostPort(dest)
+	fw, err := NewSyslogForwarder(net.JoinHostPort("localhost", port), "rfc3164", 3, "app", "svc", &syslogTestLogger{})
+	if err != nil {
+		t.Fatalf("NewSyslogForwarder: %v", err)
+	}
+	defer fw.Close()
+
+	buf := make([]byte, 2048)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		fw.Send([]byte("hello\n"))
+		_ = rx.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		if n, err := rx.Read(buf); err == nil {
+			if !strings.HasSuffix(string(buf[:n]), "hello") {
+				t.Fatalf("unexpected packet %q", buf[:n])
+			}
+			return
+		}
+	}
+	t.Fatal("nothing forwarded to localhost within 5s")
 }

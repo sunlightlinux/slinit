@@ -1,9 +1,13 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,7 +22,12 @@ import (
 // so an operator watching the daemon log gets a signal without a
 // flood of the same message for every dropped line.
 type SyslogForwarder struct {
-	conn       *net.UDPConn
+	// conn is nil until a destination named by host has resolved;
+	// Send drops lines until then. closeMu orders the resolver's store
+	// against Close.
+	conn       atomic.Pointer[net.UDPConn]
+	closeMu    sync.Mutex
+	closed     bool
 	format     string // "rfc3164" or "rfc5424"
 	facility   int    // 0..23
 	tag        string // program name / app-name
@@ -39,24 +48,49 @@ type SyslogForwarder struct {
 // window without spamming a broken remote.
 const ForwardErrorReportInterval = 30 * time.Second
 
-// NewSyslogForwarder resolves dest, dials the UDP socket, and caches
-// the hostname/PID we need for RFC 3164/5424 framing. Returns an
-// error if dest doesn't resolve or the socket can't be created — the
-// caller should surface those at load time, before the service is
-// allowed to declare itself configured.
+// syslogForwardResolver resolves a destination given by host name.
+// A variable so tests can stand in a resolver that never answers.
+var syslogForwardResolver = net.DefaultResolver
+
+// syslogForwardResolveTimeout bounds the background lookup of a
+// destination given by host name.
+const syslogForwardResolveTimeout = 30 * time.Second
+
+// NewSyslogForwarder dials the UDP socket for dest and caches the
+// hostname/PID we need for RFC 3164/5424 framing. Returns an error if
+// dest is malformed or, for an IP literal, the socket can't be created.
+//
+// A dest naming a host is resolved in the background: this runs from
+// startProcess under queueMu, and a resolver that does not answer held
+// it for 10 s (glibc's default timeout times attempts). Lines sent
+// before the lookup completes are dropped; a failed lookup is logged
+// and leaves the forwarder disabled, as a failed resolve always did.
 func NewSyslogForwarder(dest, format string, facility int, tag, serviceName string,
 	logger interface {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
 	}) (*SyslogForwarder, error) {
 
-	udpAddr, err := net.ResolveUDPAddr("udp", dest)
+	addrHost, _, err := net.SplitHostPort(dest)
 	if err != nil {
 		return nil, fmt.Errorf("syslog-forward: resolve %q: %w", dest, err)
 	}
-	conn, err := net.DialUDP("udp", nil, udpAddr)
-	if err != nil {
-		return nil, fmt.Errorf("syslog-forward: dial %q: %w", dest, err)
+	var conn *net.UDPConn
+	literal := addrHost == ""
+	if !literal {
+		_, perr := netip.ParseAddr(addrHost)
+		literal = perr == nil
+	}
+	if literal {
+		// No DNS involved: resolve and dial here, as before.
+		udpAddr, err := net.ResolveUDPAddr("udp", dest)
+		if err != nil {
+			return nil, fmt.Errorf("syslog-forward: resolve %q: %w", dest, err)
+		}
+		conn, err = net.DialUDP("udp", nil, udpAddr)
+		if err != nil {
+			return nil, fmt.Errorf("syslog-forward: dial %q: %w", dest, err)
+		}
 	}
 	host, err := os.Hostname()
 	if err != nil || host == "" {
@@ -68,8 +102,7 @@ func NewSyslogForwarder(dest, format string, facility int, tag, serviceName stri
 	if format == "" {
 		format = "rfc3164"
 	}
-	return &SyslogForwarder{
-		conn:        conn,
+	f := &SyslogForwarder{
 		format:      format,
 		facility:    facility,
 		tag:         tag,
@@ -78,7 +111,65 @@ func NewSyslogForwarder(dest, format string, facility int, tag, serviceName stri
 		dest:        dest,
 		serviceName: serviceName,
 		logger:      logger,
-	}, nil
+	}
+	if conn != nil {
+		f.conn.Store(conn)
+	} else {
+		go f.resolveAndDial(syslogForwardResolver)
+	}
+	return f, nil
+}
+
+// resolveAndDial looks up a destination given by host name and dials
+// it, off the caller's goroutine.
+func (f *SyslogForwarder) resolveAndDial(r *net.Resolver) {
+	ctx, cancel := context.WithTimeout(context.Background(), syslogForwardResolveTimeout)
+	defer cancel()
+	c, err := f.dialByName(ctx, r)
+	if err != nil {
+		if f.logger != nil {
+			f.logger.Error("Service '%s': syslog-forward disabled (%v)", f.serviceName, err)
+		}
+		return
+	}
+	f.closeMu.Lock()
+	defer f.closeMu.Unlock()
+	if f.closed {
+		_ = c.Close()
+		return
+	}
+	f.conn.Store(c)
+}
+
+// dialByName resolves f.dest and dials it. Like net.ResolveUDPAddr, it
+// takes the first IPv4 address when there is one: UDP gives no
+// connection error to fall back on, so "localhost" must not land on an
+// unanswered ::1.
+func (f *SyslogForwarder) dialByName(ctx context.Context, r *net.Resolver) (*net.UDPConn, error) {
+	host, portName, _ := net.SplitHostPort(f.dest)
+	ips, err := r.LookupNetIP(ctx, "ip", host)
+	if err == nil && len(ips) == 0 {
+		err = fmt.Errorf("no addresses")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("syslog-forward: resolve %q: %w", f.dest, err)
+	}
+	port, err := r.LookupPort(ctx, "udp", portName)
+	if err != nil {
+		return nil, fmt.Errorf("syslog-forward: resolve %q: %w", f.dest, err)
+	}
+	ip := ips[0]
+	for _, a := range ips {
+		if a.Unmap().Is4() {
+			ip = a.Unmap()
+			break
+		}
+	}
+	conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip, uint16(port))))
+	if err != nil {
+		return nil, fmt.Errorf("syslog-forward: dial %q: %w", f.dest, err)
+	}
+	return conn, nil
 }
 
 // Send emits one log line as a syslog packet. The line is expected
@@ -88,7 +179,11 @@ func NewSyslogForwarder(dest, format string, facility int, tag, serviceName stri
 // path) so services that already speak partial syslog get their PRI
 // preserved end-to-end. Otherwise defaults to "info" (6).
 func (f *SyslogForwarder) Send(line []byte) {
-	if f == nil || f.conn == nil {
+	if f == nil {
+		return
+	}
+	conn := f.conn.Load()
+	if conn == nil {
 		return
 	}
 	content := line
@@ -106,7 +201,7 @@ func (f *SyslogForwarder) Send(line []byte) {
 		pkt = f.frameRFC3164(pri, now, content)
 	}
 
-	if _, err := f.conn.Write(pkt); err != nil {
+	if _, err := conn.Write(pkt); err != nil {
 		f.errCount++
 		if time.Since(f.lastErrLog) >= ForwardErrorReportInterval {
 			f.lastErrLog = time.Now()
@@ -155,9 +250,14 @@ func (f *SyslogForwarder) frameRFC5424(pri int, ts time.Time, msg []byte) []byte
 
 // Close releases the UDP socket. Safe to call multiple times.
 func (f *SyslogForwarder) Close() {
-	if f == nil || f.conn == nil {
+	if f == nil {
 		return
 	}
-	_ = f.conn.Close()
-	f.conn = nil
+	f.closeMu.Lock()
+	f.closed = true
+	conn := f.conn.Swap(nil)
+	f.closeMu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
 }
