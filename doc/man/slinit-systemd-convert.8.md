@@ -71,9 +71,10 @@ the form **kill** [**-s** *SIG*] **$MAINPID** becomes
 dropped with a warning, leaving slinit to stop the service with its
 term-signal.
 
-Dependencies: **Requires** becomes **depends-on**, **Wants** becomes
-**waits-for** and **After** becomes **after** (ordering only, as in
-systemd). Only **.service** and **.socket** references become
+Dependencies: **Requires** becomes **depends-on**; **Wants** and
+**After** become **waits-for** (so **After** also pulls the other
+service in, which systemd's does not; ordering-only **after** is
+planned for 4.1). Only **.service** and **.socket** references become
 dependencies, a socket as the service it activates
 (**Requires=dm-event.socket** is **depends-on: dm-event**); a unit's
 reference to itself, such as its own socket, is dropped with a note. A

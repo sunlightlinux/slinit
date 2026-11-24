@@ -86,7 +86,6 @@ type SystemdConfig struct {
 	mapped      []kvPair // directives translated 1:1, emitted in order
 	depends     []string // depends-on: X
 	waitsFor    []string // waits-for: X
-	after       []string // after: X
 	aliases     []string // [Install] Alias= .service names, bare
 	conditions  []condDir
 	comments    []string
@@ -308,7 +307,6 @@ func dropAliasRefs(cfg *SystemdConfig) []SystemdWarning {
 	}
 	cfg.depends = filter("depends-on:", cfg.depends)
 	cfg.waitsFor = filter("waits-for:", cfg.waitsFor)
-	cfg.after = filter("after:", cfg.after)
 	conds := cfg.conditions[:0]
 	for _, c := range cfg.conditions {
 		if c.name == "assert-service-started" && isAlias(c.value) {
@@ -335,10 +333,13 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	case "Documentation", "DefaultDependencies", "IgnoreOnIsolate", "RefuseManualStart", "RefuseManualStop":
 		// Informational or systemd-internal; skip silently.
 	case "After":
-		// Ordering only, as slinit's after: is. waits-for: also pulled
-		// the unit in and failed the load when it was not installed.
+		// waits-for:, as on 4.0.2: it orders and also pulls the unit in,
+		// which systemd's After= does not, but units installed on 4.0
+		// rely on that pull-in. after: (ordering only) is for 4.1. A
+		// unit loaded directly leaves out a missing one, as systemd
+		// ignores it: see dropMissingSystemdRefs.
 		deps, targets, self := splitUnitRefs(val, cfg.svcName)
-		cfg.after = append(cfg.after, deps...)
+		cfg.waitsFor = append(cfg.waitsFor, deps...)
 		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 	case "Before":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Unit `Before=%s` not mappable — invert on the target side", val)})
@@ -1368,9 +1369,6 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	for _, d := range c.waitsFor {
 		fmt.Fprintf(w, "waits-for: %s\n", d)
 	}
-	for _, d := range c.after {
-		fmt.Fprintf(w, "after: %s\n", d)
-	}
 }
 
 // --- Direct loading (no intermediate file) ---
@@ -1442,13 +1440,14 @@ func SystemdUnitToServiceDescription(unitPath, name string) (*ServiceDescription
 	return desc, nil
 }
 
-// dropMissingSystemdRefs leaves out the after: and waits-for: names of a
-// unit loaded directly that resolve to nothing, with a note. They come
-// from After= and Wants=, which systemd ignores for a unit that is not
+// dropMissingSystemdRefs leaves out the waits-for: names of a unit
+// loaded directly that resolve to nothing, with a note. They come from
+// After= and Wants=, which systemd ignores for a unit that is not
 // installed; slinit fails the load on a missing dependency of any kind,
 // so display-manager.service, which orders itself after ypbind.service,
 // could not load anywhere ypbind was not installed. Only the systemd
-// path does this: a native waits-for: on a missing service stays fatal.
+// path does this: a native waits-for: on a missing service stays fatal,
+// and so does a Requires= (depends-on:), as systemd fails that unit too.
 func (dl *DirLoader) dropMissingSystemdRefs(desc *ServiceDescription, name, unitPath string) {
 	keep := func(key string, refs []string) []string {
 		var out []string
@@ -1462,7 +1461,6 @@ func (dl *DirLoader) dropMissingSystemdRefs(desc *ServiceDescription, name, unit
 		}
 		return out
 	}
-	desc.After = keep("after:", desc.After)
 	desc.WaitsFor = keep("waits-for:", desc.WaitsFor)
 }
 

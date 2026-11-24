@@ -77,8 +77,8 @@ depend() {
 	// use net dns + after bootmisc: no script of those names beside
 	// this one, so each is left out with a note rather than emitted as
 	// a dependency slinit cannot load.
-	if len(cfg.after) != 0 || len(cfg.waitsFor) != 0 {
-		t.Errorf("after = %v, waits-for = %v, want both empty", cfg.after, cfg.waitsFor)
+	if len(cfg.waitsFor) != 0 {
+		t.Errorf("waits-for = %v, want empty", cfg.waitsFor)
 	}
 	for _, n := range []string{"use net", "use dns", "after bootmisc"} {
 		found := false
@@ -384,8 +384,9 @@ func TestNoNewPrivsLoads(t *testing.T) {
 // anyway, and want starts one that may fail; none fails the service
 // when the other is not installed, and net, logger or dns are virtual
 // names other scripts provide. Mapped to waits-for, `use net` made the
-// converted file fail to load. use/after are now after:, want is
-// waits-for:, and each is kept only when a script of that name sits
+// converted file fail to load. use, after and want are waits-for: — on
+// 4.0, as 4.0.2 mapped use/after, pulling the service in; ordering-only
+// after: is for 4.1 — each kept only when a script of that name sits
 // beside this one.
 func TestDependSoftReferencesLoad(t *testing.T) {
 	initd := t.TempDir()
@@ -413,7 +414,7 @@ func TestDependSoftReferencesLoad(t *testing.T) {
 	}
 	want := map[string]service.DependencyType{
 		"localmount": service.DepRegular,
-		"bootmisc":   service.DepAfter,
+		"bootmisc":   service.DepWaitsFor,
 		"netmount":   service.DepWaitsFor,
 	}
 	for _, d := range svc.Record().Dependencies() {

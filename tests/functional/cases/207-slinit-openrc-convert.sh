@@ -30,7 +30,7 @@ assert_contains "$_out" "command = /usr/sbin/testd --flag one" "simple: command 
 assert_contains "$_out" "run-as = nobody" "simple: run-as from command_user"
 assert_contains "$_out" "pid-file = /run/testd.pid" "simple: pidfile extracted"
 assert_contains "$_out" "depends-on: localmount" "simple: need → depends-on"
-assert_contains "$_out" "after: net" "simple: use → after"
+assert_contains "$_out" "waits-for: net" "simple: use → waits-for"
 assert_not_contains "$_out" "openrc-run" "simple: no runtime wrapper needed"
 
 # --- custom start() path ---

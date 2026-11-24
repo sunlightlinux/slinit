@@ -181,7 +181,6 @@ type slinitConfig struct {
 
 	depends  []string // → depends-on
 	waitsFor []string // → waits-for
-	after    []string // → after
 	comments []string
 }
 
@@ -439,8 +438,8 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 //
 //	need X     → depends-on: X   (hard dep, must be running)
 //	want X     → waits-for: X    (soft; started, but may fail)
-//	use X      → after: X        (only orders against X if it is started)
-//	after X    → after: X        (ordering only)
+//	use X      → waits-for: X    (as on 4.0.2; after:, ordering only, is for 4.1)
+//	after X    → waits-for: X    (likewise)
 //	before X   → warn, not directly representable in slinit
 //	provide X  → warn, no direct equivalent
 //	keyword    → warn, runlevel gate
@@ -486,7 +485,7 @@ func parseDepend(cfg *slinitConfig, body []string) []warning {
 		case "want":
 			soft(verb, rest, &cfg.waitsFor)
 		case "use", "after":
-			soft(verb, rest, &cfg.after)
+			soft(verb, rest, &cfg.waitsFor)
 		case "before":
 			warns = append(warns, warning{"WARN", fmt.Sprintf("depend `before %v` not mappable — invert on the target side", rest)})
 		case "provide":
@@ -567,8 +566,5 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 	}
 	for _, d := range c.waitsFor {
 		fmt.Fprintf(w, "waits-for: %s\n", d)
-	}
-	for _, d := range c.after {
-		fmt.Fprintf(w, "after: %s\n", d)
 	}
 }

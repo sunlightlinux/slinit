@@ -106,11 +106,11 @@ slinit-systemd-convert -verbose /etc/systemd/system/nginx.service
 It prints the slinit description on stdout and the notes on stderr. Read
 the notes. The common ones:
 
-- **`After=…​.target` dropped.** Add `depends-on:` or `after:` naming
-  a real service if the ordering matters. `After=` on a service becomes
-  `after:`, which orders only; a unit loaded directly leaves out an
-  `After=` or `Wants=` naming a unit that is not installed, as systemd
-  does.
+- **`After=…​.target` dropped.** Add `depends-on:` or `waits-for:`
+  naming a real service if the ordering matters. `After=` on a service
+  becomes `waits-for:`, as `Wants=` does; a unit loaded directly leaves
+  out an `After=` or `Wants=` naming a unit that is not installed, as
+  systemd does.
 - **`ExecReload` dropped.** slinit's reload is signal-based; add
   `reload-signal = HUP` (or whichever signal the daemon wants) to a native
   description. A unit cannot express it.

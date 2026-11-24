@@ -48,9 +48,8 @@ daemon that forks without a pidfile.
 
 Generated services get **restart = yes**, since OpenRC respawns
 supervised daemons. In **depend()**, **need** becomes **depends-on**,
-**want** becomes **waits-for**, and **use** / **after** become
-**after** (ordering only). slinit fails to load a service whose
-dependency does not exist, where OpenRC skips a missing **use**,
+and **want**, **use** and **after** become **waits-for**. slinit fails
+to load a service whose dependency does not exist, where OpenRC skips a missing **use**,
 **want** or **after** and resolves virtual names such as **net** or
 **logger** through other scripts' **provide**; so a **want**, **use**
 or **after** is kept only when a script of that name sits in the same

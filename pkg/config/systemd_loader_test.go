@@ -174,17 +174,19 @@ PrivateNetwork=yes
 }
 
 // systemd's After= orders and Wants= pulls in only what exists: a unit
-// naming one that is not installed still starts. Mapped to waits-for,
-// After= made every such reference fatal — 92 of 253 host units failed
-// to load (display-manager.service: After=ypbind.service). After= is
-// after:, and a reference to a unit that does not exist is left out
-// with a note.
+// naming one that is not installed still starts. slinit fails a load on
+// a missing dependency, so 92 of 253 host units failed to load directly
+// (display-manager.service: After=ypbind.service); a unit loaded
+// directly now leaves such a reference out with a note. After= that
+// does resolve stays waits-for:, pulling the unit in, as on 4.0.2 —
+// bolt relies on it for polkit, systemd-remount-fs for
+// systemd-fsck-root. Ordering-only after: is deferred to 4.1.
 func TestSystemdOrderingOnMissingUnitsLoads(t *testing.T) {
 	root := t.TempDir()
 	units := filepath.Join(root, "systemd")
 	writeUnit(t, units, "dm.service", `[Unit]
 After=ypbind.service peer.service
-Wants=gone.service peer.service
+Wants=gone.service
 [Service]
 ExecStart=/usr/bin/dm
 `)
@@ -210,8 +212,8 @@ ExecStart=/usr/bin/dm
 		}
 		deps[d.DepType] = true
 	}
-	if !deps[service.DepAfter] || !deps[service.DepWaitsFor] || len(deps) != 2 {
-		t.Errorf("peer dependencies = %v, want after + waits-for", deps)
+	if !deps[service.DepWaitsFor] || len(deps) != 1 {
+		t.Errorf("peer dependencies = %v, want waits-for only: After= pulls the unit in on 4.0", deps)
 	}
 	for _, missing := range []string{"ypbind", "gone"} {
 		found := false

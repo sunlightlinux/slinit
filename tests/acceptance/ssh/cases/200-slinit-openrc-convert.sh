@@ -32,7 +32,7 @@ _out=$(slinit-openrc-convert "$WORK/simple" 2>/dev/null)
 assert_contains "$_out" "command = /usr/sbin/simpled --flag value" "simple: direct command"
 assert_contains "$_out" "run-as = nobody" "simple: run-as extracted"
 assert_contains "$_out" "depends-on: localmount" "simple: need → depends-on"
-assert_contains "$_out" "after: net" "simple: use → after"
+assert_contains "$_out" "waits-for: net" "simple: use → waits-for"
 assert_not_contains "$_out" "openrc-run" "simple: no runtime wrapper needed"
 
 # --- Path 2: custom start() function ---------------------------------

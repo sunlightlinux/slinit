@@ -578,22 +578,6 @@ requires.
   converted to `process` with a warning.
   *Compat:* converting the same script again gives a different service
   type.
-- **A systemd unit's `After=` pulled the other unit in and failed the
-  load when it was missing.** `After=` was mapped to `waits-for:`, and
-  slinit fails a load on any dependency it cannot find, so a unit
-  ordered after one that is not installed could not run: 92 of 253 host
-  units failed to load directly (`display-manager.service`:
-  `After=ypbind.service`). `After=` is now `after:`, ordering only, and
-  a unit loaded directly leaves out, with a note, each `After=` and
-  `Wants=` naming a unit that does not exist — systemd ignores those
-  too; on the same host 3 of 253 now fail, each for a reason of its own.
-  `slinit-openrc-convert` had the same fault: `use net` became
-  `waits-for: net`, a virtual service no file provides. `use` and
-  `after` now become `after:`, `want` (previously ignored) `waits-for:`,
-  each kept only when a script of that name sits beside the converted
-  one; a `need` that would not resolve is warned about.
-  *Compat:* `After=` no longer starts the other unit; a unit that relied
-  on that needs `Wants=` or `Requires=`.
 - **The systemd, runit and OpenRC converters said nothing about what
   they lost unless asked.** Their warnings — a directive dropped, a
   command that will not behave as it did — were printed only with
@@ -993,6 +977,21 @@ requires.
   `/opt/my` with the arguments `app/bin/run --name hello` and `world`.
   Exec lines now keep their quotes, which slinit's command parser
   groups words by just as systemd does.
+- **A systemd unit ordered after a unit that is not installed failed
+  to load.** `After=` and `Wants=` become `waits-for:`, and slinit fails
+  a load on any dependency it cannot find, where systemd ignores an
+  `After=` or `Wants=` naming a unit that is not installed: 92 of 253
+  host units failed to load directly (`display-manager.service`:
+  `After=ypbind.service`). A unit loaded directly now leaves out, with a
+  note, each such reference that names no service, init.d script or
+  unit; one that does resolve is still `waits-for:`, pulling the other
+  service in as before, and a `Requires=` on a missing unit still fails,
+  as under systemd. `slinit-openrc-convert` had the same fault: `use
+  net` became `waits-for: net`, a virtual service no file provides.
+  `use`, `after` and `want` (previously ignored) now become
+  `waits-for:` only when a script of that name sits beside the
+  converted one, and are otherwise left out with a note; a `need` that
+  would not resolve is warned about.
 - **A systemd unit naming a `.device` or `.mount`, or its own socket,
   loaded wrong or not at all.** Only `.target` references were dropped;
   the other unit types had their suffix cut off (`sysroot.mount` became
