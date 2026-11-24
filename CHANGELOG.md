@@ -33,6 +33,14 @@ verified with `git tag -v`.
   blocked in `write(2)` once the pipe filled (shared logger), or wrote
   into a pipe whose read end had been closed (UDP forwarding). A longer
   line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **A shutdown hook that started a background process wedged
+  shutdown.** The hook's output was collected through a pipe, and the
+  wait for it lasted until every holder of the pipe had closed it, so a
+  child the hook left running held shutdown for as long as it lived,
+  with no timer left at that stage to rescue it. The output is now
+  waited for at most 2 s after the hook exits, and a hook still running
+  after 90 s (the emergency timeout) is killed and taken as failed, so
+  slinit unmounts itself.
 - **`slinit-start-stop-daemon --stop` without `--retry` could wait
   forever.** The default schedule was the signal with no timeout,
   which the wait loop read as "until the process exits", so

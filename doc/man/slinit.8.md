@@ -629,7 +629,9 @@ the services have not all stopped within **\--emergency-timeout**, the
 rest are killed. slinit then sends every remaining process SIGTERM and,
 after **\--shutdown-grace**, SIGKILL; writes the part of the journal
 logged after **slinit-journald**(8) stopped into a *shutdown-\*.journal*
-file beside its own (since 3.22.0); runs the shutdown hook, unmounts,
+file beside its own (since 3.22.0); runs the shutdown hook (killed,
+and taken as failed, if it has not exited within 90 s; a process it
+leaves running in the background is not waited for), unmounts,
 syncs and makes the reboot, power-off, halt or kexec system call.
 
 In container mode (**-o**) the same supervision logic runs but

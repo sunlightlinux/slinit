@@ -2,7 +2,9 @@ package shutdown
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -153,6 +155,10 @@ var (
 	runHookFunc        = runShutdownHook
 	logoutAllUsersFunc = utmp.LogoutAllUsers
 	logShutdownFunc    = utmp.LogShutdown
+
+	// shutdownHookTimeout bounds the shutdown hook, which runs when no
+	// other timer is left to rescue a wedged shutdown. A var for tests.
+	shutdownHookTimeout = EmergencyShutdownTimeout
 )
 
 // Execute performs the full shutdown sequence after all services have stopped.
@@ -629,12 +635,26 @@ func runShutdownHook(shutdownType service.ShutdownType, logger *logging.Logger) 
 	arg := shutdownTypeArg(shutdownType)
 	logger.Notice("Running shutdown hook: %s %s", hookPath, arg)
 
-	cmd := exec.Command(hookPath, arg)
+	// Bounded twice: the hook gets shutdownHookTimeout, and a child it
+	// leaves running cannot hold the output pipe open past its exit —
+	// without WaitDelay, Wait blocks until EOF, so a hook that starts
+	// anything in the background wedged shutdown for good.
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownHookTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, hookPath, arg)
+	cmd.WaitDelay = 2 * time.Second
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 
 	err := process.RunAdhoc(cmd)
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The hook itself exited 0; only its output pipe outlived it.
+		logger.Warn("Shutdown hook left a process holding its output open")
+		err = nil
+	} else if ctx.Err() != nil {
+		err = fmt.Errorf("killed after %s: %w", shutdownHookTimeout, err)
+	}
 
 	// Log any output from the hook
 	if output.Len() > 0 {

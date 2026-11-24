@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -869,5 +870,66 @@ func TestUserProcessesLeftNeedsToSeeItself(t *testing.T) {
 	getpidFunc = func() int { return 1 << 30 }
 	if !userProcessesLeft() {
 		t.Error("did not see itself, yet reported nothing left")
+	}
+}
+
+// TestRunShutdownHookBackgroundChild: a hook that leaves a child
+// running holds the output pipe open after it exits. Waiting for EOF
+// on it wedged shutdown for as long as the child lived — forever for
+// a daemon — with no timer left at that stage.
+func TestRunShutdownHookBackgroundChild(t *testing.T) {
+	dir := t.TempDir()
+	hookPath := filepath.Join(dir, "shutdown-hook")
+	pidPath := filepath.Join(dir, "child.pid")
+	script := "#!/bin/sh\necho cleaning up\nsleep 60 &\necho $! > " + pidPath + "\nexit 0\n"
+	if err := os.WriteFile(hookPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidPath); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+
+	origPaths := shutdownHookPaths
+	shutdownHookPaths = []string{hookPath}
+	defer func() { shutdownHookPaths = origPaths }()
+
+	done := make(chan bool, 1)
+	go func() { done <- runShutdownHook(service.ShutdownReboot, logging.New(logging.LevelDebug)) }()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Error("hook exited 0 but was reported failed")
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("runShutdownHook still waiting on a pipe held by the hook's background child")
+	}
+}
+
+// TestRunShutdownHookTimeout: a hook that never exits is killed after
+// shutdownHookTimeout and reported failed, so slinit does its own
+// unmounting rather than waiting on it forever.
+func TestRunShutdownHookTimeout(t *testing.T) {
+	dir := t.TempDir()
+	hookPath := filepath.Join(dir, "shutdown-hook")
+	if err := os.WriteFile(hookPath, []byte("#!/bin/sh\nexec sleep 60\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	origPaths, origTimeout := shutdownHookPaths, shutdownHookTimeout
+	shutdownHookPaths, shutdownHookTimeout = []string{hookPath}, 500*time.Millisecond
+	defer func() { shutdownHookPaths, shutdownHookTimeout = origPaths, origTimeout }()
+
+	done := make(chan bool, 1)
+	go func() { done <- runShutdownHook(service.ShutdownReboot, logging.New(logging.LevelDebug)) }()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("a hook killed for running too long was reported successful")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("runShutdownHook did not bound a hook that never exits")
 	}
 }

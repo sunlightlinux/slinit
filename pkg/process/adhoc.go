@@ -163,7 +163,9 @@ func waitAdhoc(cmd *exec.Cmd) error {
 		switch {
 		case err == nil:
 			waitDone <- result{nil, true}
-		case errors.As(err, &ee):
+		case errors.As(err, &ee), errors.Is(err, exec.ErrWaitDelay):
+			// ErrWaitDelay: the child was reaped and exited 0; only
+			// its I/O outlived cmd.WaitDelay.
 			waitDone <- result{err, true}
 		default:
 			// No status: either the reaper took the child (ECHILD) or
