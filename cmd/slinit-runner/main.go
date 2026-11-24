@@ -345,7 +345,7 @@ func run() error {
 
 	// Bounding-set narrowing. Must happen BEFORE the setresuid drop:
 	// PR_CAPBSET_DROP needs CAP_SETPCAP, which the kernel strips at the
-	// UID change. Iterate 0..40 (the kernel rejects out-of-range
+	// UID change. Iterate 0..cap_last_cap (the kernel rejects out-of-range
 	// numbers anyway) and drop any cap not on the keep list.
 	if len(boundingCaps) > 0 {
 		if err := narrowBoundingSet(boundingCaps); err != nil {

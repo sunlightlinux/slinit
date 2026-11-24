@@ -776,6 +776,12 @@ verified with `git tag -v`.
   unprivileged container, below the user namespace that made the mount —
   the kernel refused the remount with EPERM and the service did not
   start. Each remount now repeats the mount's own flags.
+- **`capability-bounding-set` could leave a newer kernel's capabilities
+  in.** `slinit-runner` dropped capabilities 0 to 40 whatever the
+  kernel knew, so one added after Linux 5.9's `CAP_CHECKPOINT_RESTORE`
+  stayed in the bounding set of a service whose list leaves it out. It
+  now goes up to the kernel's `/proc/sys/kernel/cap_last_cap`, falling
+  back to 40 where that cannot be read.
 
 ## [4.0.2] — 2026-11-22
 
