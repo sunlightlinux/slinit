@@ -63,6 +63,12 @@ verified with `git tag -v`.
   background child holds open: the caller waited for as long as that
   child lived. Output is now read for at most 2 s after the command
   exits, and its exit status is reported as before.
+- **`slinit-journalctl --image` mounted an untrusted image with
+  setuid binaries and device nodes usable.** The image was mounted
+  `-o ro` only; it is now mounted `ro,nosuid,nodev,noexec`. With
+  `--image-policy=strict`, refusing a LUKS/LVM/verity device also
+  left the loop device attached and the temporary mount point behind;
+  both are now cleaned up.
 - **A DHCP client started by `ifup -a` died at its first lease
   renewal.** The output of ifup was read through a pipe that was
   closed as soon as ifup exited, so a client ifup left in the

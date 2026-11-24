@@ -279,7 +279,8 @@ live queries.
 ## Disk image dissection (root)
 
 **--image=**\ *PATH*
-:   Attach the image via **losetup**(8), mount read-only, locate
+:   Attach the image via **losetup**(8), mount read-only with
+    *nosuid*, *nodev* and *noexec* (since 4.0.3), locate
     the journal directory (*var/log/slinit-journal* or
     *run/slinit-journal*), query it, detach on exit.
 
