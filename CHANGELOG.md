@@ -79,7 +79,9 @@ verified with `git tag -v`.
   `system-call-filter = ~getppid` and `system-call-log = getppid`,
   `getppid()` succeeded. It is now a filter of its own, as systemd
   installs `SystemCallLog=`, so the kernel's most-restrictive rule keeps
-  the call refused, and the call is still logged.
+  the call refused. A refused call is then reported as the main filter
+  reports it — a kill is audited, an errno return (with
+  `system-call-error-number`) is not — as under systemd.
 - **The boot debugger's menu could freeze or deadlock PID 1.** When the
   boot service reached STARTED, slinit stopped the Ctrl-B debugger from
   inside the service-event listener, which runs with the scheduling
