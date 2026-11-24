@@ -607,6 +607,12 @@ service name or rejected.
     an offline **enable** of a *src* that declares no **waits-for.d**
     is refused with an error instead.
 
+    Offline, *service* and *src* must be valid service names with no
+    **..** path element, instance argument included, as the daemon
+    requires online (since 4.0.3): the name becomes the symlink's path,
+    and an offline **disable ../../file** used to delete *file* outside
+    *dir*.
+
 [**\--from** *src*] **disable** *service*
 :   Inverse of **enable**: remove the edge and the symlink. That stops
     *service* if the edge was all that held it. If it was also started

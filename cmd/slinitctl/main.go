@@ -1107,6 +1107,23 @@ func offlineDesc(svcDir, name string) (*config.ServiceDescription, string, error
 	return nil, "", fmt.Errorf("service '%s' not found in %s", name, svcDir)
 }
 
+// validateEnableName checks a name offline enable or disable will turn
+// into a path: a valid service name, with no ".." element anywhere in it
+// (the instance argument included), so the link it names stays inside
+// the waits-for.d directory and the description inside the service dir.
+// Online, the daemon's loader (findAndParse) refuses the same names.
+func validateEnableName(name string) error {
+	if err := config.ValidateServiceName(name); err != nil {
+		return fmt.Errorf("invalid service name '%s': %w", name, err)
+	}
+	for _, elem := range strings.Split(name, "/") {
+		if elem == ".." {
+			return fmt.Errorf("invalid service name '%s': contains a '..' path element", name)
+		}
+	}
+	return nil
+}
+
 // offlineLinkPath returns the waits-for.d symlink path for enabling to
 // from from, matching the daemon's enable: from defaults to to's
 // @meta enable-via, then boot, and the link goes into from's first
@@ -1116,6 +1133,14 @@ func offlineDesc(svcDir, name string) (*config.ServiceDescription, string, error
 // For disable (needTarget false) a missing target file is tolerated,
 // so the link of a service whose file is already gone can be removed.
 func offlineLinkPath(svcDir, from, to string, needTarget bool) (string, string, error) {
+	if err := validateEnableName(to); err != nil {
+		return "", "", err
+	}
+	if from != "" {
+		if err := validateEnableName(from); err != nil {
+			return "", "", err
+		}
+	}
 	toDesc, _, err := offlineDesc(svcDir, to)
 	if err != nil && needTarget {
 		return "", "", err

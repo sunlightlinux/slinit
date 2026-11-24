@@ -843,6 +843,14 @@ verified with `git tag -v`.
   HOME=/home/…`. `$` is now written as `$$` and a backslash doubled,
   so the service gets the arguments exactly as given; an argument
   with a newline, which the file cannot hold, is refused.
+- **An offline `slinitctl disable` could delete a file outside the
+  service directory.** The offline enable and disable joined the name
+  to the waits-for.d path without checking it, so `slinitctl -o -d sd
+  disable ../../victim` removed `victim` beside `sd`, and enable could
+  plant a symlink anywhere. Offline enable and disable now refuse a
+  service or `--from` name that is not a valid service name or has a
+  `..` path element, instance argument included, as the daemon's
+  loader already does online.
 
 ## [4.0.2] — 2026-11-22
 
