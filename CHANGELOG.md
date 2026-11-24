@@ -288,6 +288,13 @@ verified with `git tag -v`.
   credentials tmpfs and terminal descriptors leaked the same way. Only
   a failure of the fork itself cleaned up. Every failure before the
   child starts now releases what the start had acquired.
+- **`chroot` was silently ignored outside `type = process`.** It, and
+  `lock-file`, were applied only to process services, so a scripted or
+  bgprocess service configured into a jail ran outside it, and a "one
+  instance only" lock was never taken. Both now refuse to load on any
+  other type, naming the setting. `new-session` and
+  `close-stdin`/`close-stdout`/`close-stderr`, equally ignored there but
+  harmless, now say so on stderr and still load.
 
 ## [4.0.2] — 2026-11-22
 

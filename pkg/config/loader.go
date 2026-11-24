@@ -851,6 +851,33 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: chroot and lock-file are implemented for type = process
+	// only. Every other type ignored them, so a scripted or bgprocess
+	// service configured into a jail ran outside it, and one meant to
+	// be "only one instance ever" took no lock — the configuration
+	// claimed a confinement and a guarantee that were not there. That
+	// fails closed now, as missing confinement does elsewhere.
+	if desc.Type != service.TypeProcess {
+		for _, d := range []struct{ name, val string }{
+			{"chroot", desc.Chroot}, {"lock-file", desc.LockFile},
+		} {
+			if d.val != "" {
+				return nil, &ServiceLoadError{
+					ServiceName: name,
+					Message: fmt.Sprintf("%s is only supported for type = process "+
+						"(type = %s would ignore it)", d.name, desc.Type),
+				}
+			}
+		}
+		// Harmless to ignore, so said rather than refused: a config
+		// that loads today keeps loading.
+		if desc.NewSession || desc.CloseStdin || desc.CloseStdout || desc.CloseStderr {
+			fmt.Fprintf(os.Stderr, "slinit: service %q: new-session/close-stdin/"+
+				"close-stdout/close-stderr are only supported for type = process; "+
+				"ignored for type = %s\n", name, desc.Type)
+		}
+	}
+
 	// Validate: watchdog-timeout piggybacks on the ready-notification pipe.
 	// Without one configured the service has no channel through which to
 	// send keepalives, so the watchdog would fire as soon as it armed.

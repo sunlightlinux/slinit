@@ -334,14 +334,16 @@ what tells you the oldest slinit your configuration will run on. See
     that needs a non-zero UID but doesn't merit a permanent account.
 
 **chroot**=*path*
-:   `chroot()` into *path* before exec.
+:   `chroot()` into *path* before exec. **type**=*process* only; any
+    other type refuses to load with it rather than run outside the jail.
 
 **new-session**=*yes*|*no*
 :   Place the service in a new POSIX session (`setsid`).
 
 **lock-file**=*path*
 :   Acquire an exclusive flock on *path* before exec; fail if held.
-    Useful for "only one instance ever" semantics.
+    Useful for "only one instance ever" semantics. **type**=*process*
+    only; any other type refuses to load with it.
 
 **umask**=*octal*
 :   Initial umask for the service. Defaults to slinit's umask.
