@@ -26,6 +26,14 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **A signal to PID 1 after the event loop ended panicked the kernel.**
+  When its loop returned, slinit released the shutdown signals with
+  `signal.Stop`, which hands them back to the Go runtime — whose action
+  for SIGINT, SIGTERM, SIGHUP and SIGQUIT is to exit. The final
+  shutdown sequence, a soft reboot's hooks and sweep, and a
+  `ShutdownRemain` hold all run after that point, so a Ctrl+Alt+Del or
+  a stray `kill -INT 1` there was `Attempted to kill init!`. As PID 1
+  the signals now stay claimed until slinit is done.
 - **A relative `waits-for.d` in an `@include`d fragment read the wrong
   directory.** `depends-on.d`, `depends-ms.d`, `waits-for.d` and
   `prepared-by.d` were always resolved against the main service file's
