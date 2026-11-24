@@ -1325,23 +1325,30 @@ before exec'ing the service. The host filesystem is untouched.
     */etc*. *strict* remounts the whole root */* read-only; only the
     paths listed in **read-write-paths**, plus whichever of */dev*,
     */proc*, */sys*, */run*, */tmp* and */var/tmp* are separate
-    mount points, stay writable (use **private-tmp** to guarantee a
-    writable */tmp*). *no* (default) disables the remount.
+    mount points (with the mounts below them), stay writable (use
+    **private-tmp** to guarantee a writable */tmp*), and so do the
+    **temporary-filesystem** and **protect-home**=*tmpfs* mounts. Every
+    mount below a read-only path is remounted read-only too (until
+    4.0.3, only the mount at the path was, so separate filesystems below
+    it stayed writable). *no* (default) disables the remount.
 
 **read-only-paths**=*path*...
 :   Bind-mount each absolute path on top of itself and remount it
-    read-only inside the sandbox. Repeatable with `+=`. Paths must be
+    read-only inside the sandbox, with every mount below it.
+    Repeatable with `+=`. Paths must be
     absolute and free of `..` components.
 
 **read-write-paths**=*path*...
 :   Punch a writable hole through **protect-system**=*strict* for the
     listed paths. Applied before **read-only-paths**, so a path
-    listed in both ends up read-only. Repeatable with `+=`.
+    listed in both ends up read-only. The mounts below the path that
+    the sandbox made read-only are writable again; one that was
+    read-only already stays so. Repeatable with `+=`.
 
 **protect-home**=*no*|*yes*|*read-only*|*tmpfs*
 :   Hide */home*, */root* and */run/user* from the service. *yes*
     over-mounts each with an inaccessible (mode 0000) tmpfs; *read-only*
-    ro-remounts them; *tmpfs* replaces them with empty per-service
+    ro-remounts them and every mount below them (*/run/user/<uid>*); *tmpfs* replaces them with empty per-service
     tmpfs. Equivalent to systemd's **ProtectHome=**.
 
 **inaccessible-paths**=*path*...

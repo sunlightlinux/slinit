@@ -291,9 +291,9 @@ func collectDenyList(h hardeningSpec) []string {
 	return out
 }
 
-// remountROIfMount ro-remounts target when it is already a mount
-// point. The first bind is a no-op if it's already mounted but ensures
-// the kernel will accept the MS_REMOUNT flag below.
+// remountROIfMount ro-remounts target, and every mount below it, when it
+// is already a mount point. The first bind is a no-op if it's already
+// mounted but ensures the kernel will accept the MS_REMOUNT flag below.
 func remountROIfMount(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
@@ -304,9 +304,5 @@ func remountROIfMount(path string) error {
 	if err := unix.Mount(path, path, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind %s: %w", path, err)
 	}
-	if err := unix.Mount("", path, "",
-		unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
-		return fmt.Errorf("remount-ro %s: %w", path, err)
-	}
-	return nil
+	return remountTreeRO(path, nil)
 }

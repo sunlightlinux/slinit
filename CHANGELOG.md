@@ -751,6 +751,21 @@ verified with `git tag -v`.
   handed that. `Inhibit` read the number of a file a timer closes,
   which `go test -race` reported. Each reply now carries a duplicate of
   its own, closed once the reply has had time to go out.
+- **Read-only sandbox mounts left every mount below them writable.**
+  `protect-system`, `protect-home = read-only`, `read-only-paths`,
+  `bind-read-only-paths` and `protect-kernel-tunables` bound the path
+  recursively but remounted read-only only the one mount at the path, so
+  the submounts the bind brought along stayed writable:
+  `/run/user/<uid>` under `protect-home = read-only`,
+  `/proc/sys/fs/binfmt_misc` under `protect-kernel-tunables` (where a
+  service could register an interpreter for every binary), and any
+  separate filesystem below `/` under `protect-system = strict`. Every
+  mount below the path is now remounted read-only too. Under `strict`
+  the mounts at or below `/dev`, `/proc`, `/sys`, `/run`, `/tmp` and
+  `/var/tmp` are left as they were, as documented, and so are the
+  `temporary-filesystem` and `protect-home = tmpfs` mounts; a
+  `read-write-paths` or `bind-paths` entry makes writable again the
+  mounts below it that the sandbox made read-only, and only those.
 
 ## [4.0.2] — 2026-11-22
 

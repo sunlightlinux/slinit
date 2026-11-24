@@ -119,7 +119,8 @@ and **\--syscall-filter** carries **system-call-filter**).
     **PrivateTmp=**.
 
 **\--protect-system**=*MODE*
-:   Remount system paths read-only. *MODE* is one of **yes**,
+:   Remount system paths, and the mounts below them, read-only.
+    *MODE* is one of **yes**,
     **full**, or **strict**. Mirrors systemd **ProtectSystem=**.
 
 **\--protect-home**=*MODE*
@@ -135,7 +136,8 @@ and **\--syscall-filter** carries **system-call-filter**).
     systemd **ProcSubset=**.
 
 **\--read-only-path**=*PATH*
-:   Bind-mount *PATH* read-only over itself. Repeatable.
+:   Bind-mount *PATH* read-only over itself, with every mount below
+    it. Repeatable.
 
 **\--read-write-path**=*PATH*
 :   Keep *PATH* writable even when **\--protect-system**=full/strict
