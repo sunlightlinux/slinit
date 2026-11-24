@@ -246,8 +246,10 @@ service name or rejected.
     - **\--wait** — block until STARTED (or STOPPED for scripted).
       60s cap.
     - **\--collect** — block until STOPPED, then unload + remove
-      the transient description + .env sidecar. No cap; Ctrl-C
-      is the escape hatch.
+      the transient description + .env sidecar. A scripted unit,
+      which stays STARTED after its command has finished, is stopped
+      at that point (since 4.0.3; before, it was waited for for ever).
+      No cap; Ctrl-C is the escape hatch.
 
     The directory is taken from what the daemon reports it searches
     (**service-dirs**), so the file always lands where the daemon will

@@ -2669,9 +2669,11 @@ var runArgEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$")
 //	                           kebab-case, not systemd CamelCase)
 //	  --wait                   block until STARTED (or STOPPED for
 //	                           scripted); 60s cap
-//	  --collect                block until STOPPED, then unload +
-//	                           remove the transient description; no
-//	                           cap (Ctrl-C is the escape hatch)
+//	  --collect                block until STOPPED (a scripted unit is
+//	                           stopped once its command has finished),
+//	                           then unload + remove the transient
+//	                           description; no cap (Ctrl-C is the
+//	                           escape hatch)
 //
 // Note on --user: use the global slinitctl `--user` / `-u` flag to
 // target the user service manager socket. `slinitctl --user run --`
@@ -2928,6 +2930,7 @@ commandStart:
 	// the CLI forever). --collect uses no cap because the caller
 	// explicitly asked to wait for exit; Ctrl-C is the escape hatch.
 	deadline := time.Now().Add(60 * time.Second)
+	stopIssued := false
 	for {
 		if !collect && time.Now().After(deadline) {
 			return fmt.Errorf("run: timed out waiting for '%s' to settle", unitName)
@@ -2942,7 +2945,16 @@ commandStart:
 				info("Transient unit '%s' STARTED.\n", unitName)
 				return nil
 			}
-			// --collect: keep polling until STOPPED.
+			// --collect: keep polling until STOPPED. A scripted unit
+			// reaches STARTED when its command has finished and stays
+			// there, so it never stops on its own: stop it once, as
+			// its run is over.
+			if svcType == "scripted" && !stopIssued {
+				if err := cmdStop(conn, unitName, false, false, false, true); err != nil {
+					return fmt.Errorf("run: --collect: stop '%s': %w", unitName, err)
+				}
+				stopIssued = true
+			}
 		case service.StateStopped:
 			if st.Flags&control.StatusFlagStartFailed != 0 {
 				if collect {
