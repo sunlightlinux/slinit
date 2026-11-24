@@ -62,6 +62,9 @@ func NewPinStore(dir string) *PinStore {
 // needed when writing.
 func (p *PinStore) Enabled() bool { return p != nil && p.dir != "" }
 
+// syncFile flushes f to disk. A variable so a test can see the calls.
+var syncFile = (*os.File).Sync
+
 // Set writes intent for the given service, replacing any prior file.
 // intent must be one of the IntentPinned* constants; any other value
 // is treated as a programming error and rejected.
@@ -82,16 +85,40 @@ func (p *PinStore) Set(name, intent string) error {
 	if err := os.MkdirAll(p.dir, 0755); err != nil {
 		return fmt.Errorf("persist: mkdir %s: %w", p.dir, err)
 	}
-	// Atomic write: temp file + rename so a crash mid-write can't
-	// leave a truncated intent that would be misparsed at boot.
+	// Atomic write: temp file + fsync + rename so a crash mid-write
+	// can't leave a truncated intent that would be misparsed at boot —
+	// without the fsync, a power cut can leave the renamed file empty
+	// and Load drops the pin. The directory is synced after so the
+	// rename itself survives. Same pattern as pkg/snapshot's Write.
 	path := filepath.Join(p.dir, name)
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(intent+"\n"), 0644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
 		return fmt.Errorf("persist: write %s: %w", tmp, err)
+	}
+	if _, err := f.WriteString(intent + "\n"); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("persist: write %s: %w", tmp, err)
+	}
+	if err := syncFile(f); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("persist: fsync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("persist: close %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("persist: rename %s: %w", tmp, err)
+	}
+	// Best effort: the intent is in place either way, and some
+	// filesystems refuse fsync on a directory.
+	if d, err := os.Open(p.dir); err == nil {
+		_ = syncFile(d)
+		d.Close()
 	}
 	return nil
 }

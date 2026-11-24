@@ -141,3 +141,38 @@ func TestPinStoreLoadIgnoresCorruptFiles(t *testing.T) {
 		t.Errorf("corrupt entry should have been skipped, got: %v", got["bad"])
 	}
 }
+
+// Set must make the intent durable: the temp file is fsynced before the
+// rename, else a power cut can leave the renamed file empty and Load
+// drops the pin; and the directory after it, else the rename itself
+// can be lost.
+func TestPinStoreSetSyncsBeforeAndAfterRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "db")
+
+	type call struct {
+		name        string
+		finalExists bool
+	}
+	var calls []call
+	orig := syncFile
+	syncFile = func(f *os.File) error {
+		_, err := os.Stat(path)
+		calls = append(calls, call{f.Name(), err == nil})
+		return orig(f)
+	}
+	t.Cleanup(func() { syncFile = orig })
+
+	if err := NewPinStore(dir).Set("db", IntentPinnedStopped); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("fsync calls = %+v, want the temp file then the directory", calls)
+	}
+	if calls[0].name != path+".tmp" || calls[0].finalExists {
+		t.Errorf("first fsync = %+v, want %s.tmp before the rename", calls[0], path)
+	}
+	if calls[1].name != dir || !calls[1].finalExists {
+		t.Errorf("second fsync = %+v, want %s after the rename", calls[1], dir)
+	}
+}

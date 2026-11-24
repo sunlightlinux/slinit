@@ -41,6 +41,12 @@ verified with `git tag -v`.
   `ShutdownRemain` hold all run after that point, so a Ctrl+Alt+Del or
   a stray `kill -INT 1` there was `Attempted to kill init!`. As PID 1
   the signals now stay claimed until slinit is done.
+- **A pin persisted just before a power cut could vanish.** With
+  `--persist-intent`, a pin's file was written to a temporary name and
+  renamed into place without an `fsync`, so after a power cut the file
+  could be there but empty, and the next boot silently dropped the pin.
+  The file is now synced before the rename and the directory after it,
+  as the soft-reboot snapshot already was.
 - **The services-dir watcher lost services without a word.** When more
   files changed at once than the kernel's inotify queue holds
   (`max_queued_events`, 16384 by default), the overflow was ignored:
