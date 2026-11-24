@@ -291,7 +291,8 @@ with it.
 :   How long a sleep waits for *delay* inhibitors to clear. Default 5,
     matching systemd, because lockers are written against that number.
     Timing out proceeds with the sleep: a locker that crashed holding a
-    lock must not keep a lid-shut laptop awake.
+    lock must not keep a lid-shut laptop awake. Until 4.0.3 the value was
+    reported as *InhibitDelayMaxUSec* but a sleep always waited 5.
 
 Both timeouts also accept a Go duration, so *1500ms* is not a parse
 error.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"golang.org/x/sys/unix"
 )
 
 // stubSlinitctl installs a fake control CLI that records its arguments,
@@ -198,5 +199,31 @@ func TestOverlappingSleepRefused(t *testing.T) {
 	}
 	if err == nil || err.Name != "org.freedesktop.login1.OperationInProgress" {
 		t.Errorf("second sleep returned %v, want org.freedesktop.login1.OperationInProgress", err)
+	}
+}
+
+// InhibitDelayMaxSec was parsed and reported as InhibitDelayMaxUSec, but
+// a sleep always waited the built-in 5 s for a delay lock that was not
+// released.
+func TestSleepHonoursInhibitDelayMaxSec(t *testing.T) {
+	stubSlinitctl(t, 0)
+	m := &manager{inhibitors: newInhibitRegistry()}
+	m.buttons = defaultButtonConfig()
+	m.buttons.PowerKey = actionIgnore
+	m.buttons.InhibitDelayMax = 200 * time.Millisecond
+
+	// Held through a dup, as a client holds it: the registry closes its
+	// own copy of the client end after fdSendGrace.
+	fd, err := unix.Dup(int(addDirect(t, m.inhibitors, "sleep", "delay").Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	start := time.Now()
+	if err := m.sleep(sleepVerb{"Suspend", "mem"}); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("InhibitDelayMaxSec=0.2 but the sleep waited %s for a held delay lock", took)
 	}
 }

@@ -576,6 +576,10 @@ verified with `git tag -v`.
   `PrepareForSleep(false)` told lockers the sleep was over while the
   second was still under way. As in systemd, the second is now refused
   with `org.freedesktop.login1.OperationInProgress`.
+- **`slinit-logind` ignored `InhibitDelayMaxSec`.** The setting was
+  read from `logind.conf` and reported as `InhibitDelayMaxUSec`, but a
+  sleep always waited the built-in 5 s for delay locks to clear. The
+  configured value is now the cap; without one it is still 5 s.
 
 ## [4.0.2] — 2026-11-22
 
