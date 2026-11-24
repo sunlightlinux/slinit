@@ -1724,6 +1724,37 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 	return sr.applyBucketDEnvFilters(env)
 }
 
+// inheritedEnvFilter applies pass-environment and unset-environment to
+// the environment the child inherits from slinit itself, which
+// slinit-service(5) says they filter too: the variables the kernel or a
+// login session gave slinit reached every service whatever its
+// allow-list said. Nil when neither is set, so the child inherits as
+// before.
+func (sr *ServiceRecord) inheritedEnvFilter() func(string) bool {
+	pass, passSet := sr.PassEnvironment()
+	unset := sr.UnsetEnvironment()
+	if !passSet && len(unset) == 0 {
+		return nil
+	}
+	allow := make(map[string]struct{}, len(pass))
+	for _, n := range pass {
+		allow[n] = struct{}{}
+	}
+	drop := make(map[string]struct{}, len(unset))
+	for _, n := range unset {
+		drop[n] = struct{}{}
+	}
+	return func(name string) bool {
+		if passSet {
+			if _, ok := allow[name]; !ok {
+				return false
+			}
+		}
+		_, dropped := drop[name]
+		return !dropped
+	}
+}
+
 // applyBucketDEnvFilters is the tail of every env-build path. Applies
 // systemd's PassEnvironment= / UnsetEnvironment= / ExecSearchPath=
 // semantics in that order:
@@ -2481,6 +2512,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	if sr.hardening.Active() {
 		params.NoNewPrivs = true
 	}
+
+	params.InheritEnv = sr.inheritedEnvFilter()
 
 	// Inject dinit-compatible query env vars
 	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)

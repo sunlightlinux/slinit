@@ -183,7 +183,16 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 
 	// Environment: cache os.Environ() once, reuse for all env additions
 	baseEnv := os.Environ()
-	if len(params.Env) > 0 {
+	if params.InheritEnv != nil {
+		kept := make([]string, 0, len(baseEnv))
+		for _, kv := range baseEnv {
+			if eq := strings.IndexByte(kv, '='); eq > 0 && params.InheritEnv(kv[:eq]) {
+				kept = append(kept, kv)
+			}
+		}
+		baseEnv = kept
+	}
+	if len(params.Env) > 0 || params.InheritEnv != nil {
 		cmd.Env = make([]string, 0, len(baseEnv)+len(params.Env)+3)
 		cmd.Env = append(cmd.Env, baseEnv...)
 		cmd.Env = append(cmd.Env, params.Env...)

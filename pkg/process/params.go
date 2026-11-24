@@ -89,6 +89,13 @@ type ExecParams struct {
 	// Env holds additional environment variables (key=value).
 	Env []string
 
+	// InheritEnv, when set, decides which of slinit's own environment
+	// variables the child inherits (by name); Env is added after it.
+	// Nil inherits all of them. pass-environment and unset-environment
+	// set it, since they are documented to apply to the inherited
+	// environment as well.
+	InheritEnv func(name string) bool
+
 	// RunAsUID/RunAsGID specify credentials to run as (0 means no change).
 	RunAsUID uint32
 	RunAsGID uint32

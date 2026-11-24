@@ -26,6 +26,14 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`pass-environment` and `unset-environment` let slinit's own
+  environment through.** slinit-service(5) says both apply to the
+  inherited environment, but they filtered only the variables slinit
+  added (global, env-file, `setenv`): whatever the kernel or a login
+  session had put in slinit's environment reached every service, so an
+  `unset-environment` of an inherited name did nothing. They now filter
+  the inherited environment too. A service without either keeps
+  inheriting everything, as before.
 - **A service name could load a description from outside the service
   directories.** Names may contain `/`, and anything may follow `@`;
   the name is joined onto each service, init.d, unit and overlay
