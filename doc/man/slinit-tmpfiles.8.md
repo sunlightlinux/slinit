@@ -60,7 +60,8 @@ Supported types:
 
 **d** *path* *mode* *uid* *gid* *age*
 :   Create the directory, and any missing parents, then set its mode
-    and owner (also when it already exists).
+    and owner (also when it already exists). If *path* is a symlink,
+    the entry fails and the link's target is left alone.
 
 **D** *path* *mode* *uid* *gid* *age*
 :   Remove the directory and everything in it, then create it as

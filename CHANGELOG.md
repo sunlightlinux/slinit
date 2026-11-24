@@ -105,6 +105,13 @@ verified with `git tag -v`.
   `1777` directory sitting at `0777` was judged already correct. The
   raw mode now goes to `chmod(2)` and is compared in full, and the owner
   is changed first, since `chown(2)` clears setuid/setgid on a file.
+- **A `d` or `D` entry on a symlink re-moded its target.** `MkdirAll`
+  accepts a symlink to a directory, and the chmod and chown that follow
+  went through it — so a link planted at a `d` path under `/tmp` (say
+  `/tmp/.X11-unix -> /etc`) had `slinit-tmpfiles` make `/etc` world
+  writable at boot, and for `D` the link could be planted between the
+  wipe and the mkdir. The directory is now opened with `O_NOFOLLOW` and
+  changed through the descriptor; a symlink is refused.
 
 ## [4.0.2] — 2026-11-22
 

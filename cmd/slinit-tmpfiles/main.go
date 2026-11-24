@@ -401,18 +401,39 @@ func applyFile(e entry, force bool) error {
 func applyDir(e entry, wipe bool) error {
 	if wipe {
 		os.RemoveAll(e.path)
+		if afterWipeHook != nil {
+			afterWipeHook()
+		}
 	}
 	if err := os.MkdirAll(e.path, os.FileMode(e.mode)); err != nil {
 		return err
 	}
-	// The mode goes in raw, through syscall: os.FileMode(e.mode) dropped
-	// 07000, which Go keeps as os.ModeSticky and friends, so a 1777
-	// directory lost its sticky bit.
-	if err := os.Chown(e.path, e.uid, e.gid); err != nil {
+	// MkdirAll is satisfied by a symlink to a directory, and a chmod or
+	// chown by path follows one: a link planted at a d path in /tmp
+	// (or between D's wipe and the mkdir) had root re-mode and re-own
+	// its target. Open the final component without following it and
+	// change the directory through the descriptor; a symlink there is
+	// refused, as systemd-tmpfiles refuses it.
+	fd, err := syscall.Open(e.path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if fi, lerr := os.Lstat(e.path); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to follow a symlink")
+		}
 		return err
 	}
-	return syscall.Chmod(e.path, e.mode)
+	defer syscall.Close(fd)
+	// The mode goes in raw: os.FileMode(e.mode) dropped 07000, which Go
+	// keeps as os.ModeSticky and friends, so a 1777 directory lost its
+	// sticky bit.
+	if err := syscall.Fchown(fd, e.uid, e.gid); err != nil {
+		return err
+	}
+	return syscall.Fchmod(fd, e.mode)
 }
+
+// afterWipeHook, when set, runs between D's wipe and its mkdir: tests
+// use it to plant a symlink in exactly that window.
+var afterWipeHook func()
 
 func applyLink(e entry) error {
 	if e.arg == "" {

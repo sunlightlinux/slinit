@@ -147,3 +147,41 @@ func TestWriteDoesNotWriteThroughASymlink(t *testing.T) {
 		t.Errorf("w on the symlink %s rewrote its target: %q", link, string(got))
 	}
 }
+
+// A d or D entry whose path is a symlink must not change the directory
+// it points at. os.MkdirAll succeeds on a symlink to a directory, and
+// the chmod and chown after it followed the link — so a link planted
+// at a d path under a world-writable /tmp (say /tmp/.X11-unix -> /etc)
+// had root make the target 1777 at boot. For D the link can also be
+// planted between the wipe and the mkdir.
+func TestDirDoesNotChmodThroughASymlink(t *testing.T) {
+	for _, kind := range []string{"d", "D"} {
+		root := t.TempDir()
+		victim := filepath.Join(root, "etc")
+		if err := os.Mkdir(victim, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(root, "x11")
+		if err := os.Symlink(victim, link); err != nil {
+			t.Fatal(err)
+		}
+		e := entry{kind: kind, path: link, mode: 0o777, uid: -1, gid: -1}
+		if kind == "D" {
+			// Re-plant the link in the wipe→mkdir window, as a racing
+			// attacker would; the hook runs right after RemoveAll.
+			afterWipeHook = func() { os.Symlink(victim, link) }
+		}
+		err := apply(e)
+		afterWipeHook = nil
+		if err == nil {
+			t.Errorf("%s on a symlink: no error, want a refusal", kind)
+		}
+		fi, err := os.Stat(victim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o755 {
+			t.Errorf("%s on a symlink changed its target %s from 0755 to %#o", kind, victim, fi.Mode().Perm())
+		}
+	}
+}
