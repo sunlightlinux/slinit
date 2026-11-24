@@ -588,6 +588,12 @@ verified with `git tag -v`.
   now follow the user's sessions as they come and go and as the
   foreground VT moves (`online` when none of them is in front), and
   `GID` is the primary group from the user's passwd entry.
+- **A full `/run` could make `slinit-logind` reuse a live session's
+  id.** The session-id counter was rewritten in place, so a write that
+  failed left it empty; it then read back as 0 and the next login was
+  handed `c1` again, overwriting the record of a session still running.
+  The counter is now replaced through a temporary file and a rename,
+  and an id whose session record exists is never handed out.
 
 ## [4.0.2] — 2026-11-22
 

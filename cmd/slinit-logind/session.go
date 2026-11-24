@@ -87,6 +87,12 @@ var sessionMu sync.Mutex
 // nextSessionID returns the next monotonically-increasing session id
 // in elogind's "c<N>" shape. Persisted across restarts via
 // /run/slinit-logind/next-session-id — a bare integer counter file.
+//
+// The counter is replaced through a temporary file and a rename, and an
+// id whose session record exists is skipped. It used to be rewritten in
+// place: a write that failed on a full /run left the file empty, that
+// read back as 0, and the next login was handed c1 again, whose record
+// CreateSession then overwrote while that session was still running.
 func nextSessionID() (string, error) {
 	path := filepath.Join(stateRoot, "next-session-id")
 	var n uint64
@@ -94,7 +100,15 @@ func nextSessionID() (string, error) {
 		n, _ = strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
 	}
 	n++
-	if err := os.WriteFile(path, []byte(strconv.FormatUint(n, 10)), 0644); err != nil {
+	for fileExists(sessionFile("c" + strconv.FormatUint(n, 10))) {
+		n++
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(n, 10)), 0644); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		return "", err
 	}
 	return "c" + strconv.FormatUint(n, 10), nil
