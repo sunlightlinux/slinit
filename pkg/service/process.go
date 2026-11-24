@@ -2287,6 +2287,14 @@ func (s *ProcessService) startProcess() error {
 			len(s.outputLogger) > 0 ||
 			s.stderrLogFile != "" ||
 			s.alertFile != "" {
+			// A restart replaces the previous instance's logger along
+			// with its rotator. Stop the old logger first: until now it
+			// was overwritten below and leaked, still blocking whatever
+			// the old rotator had queued for it.
+			if s.loggerSup != nil {
+				s.loggerSup.Stop()
+				s.loggerSup = nil
+			}
 			if s.logRotator != nil {
 				s.logRotator.Close()
 			}
@@ -2297,7 +2305,9 @@ func (s *ProcessService) startProcess() error {
 			// into the logger's stdin. Both destinations are honoured
 			// instead of one silently winning, and because slinit —
 			// not the service — writes to the logger, a sick logger
-			// cannot reach the service at all.
+			// cannot reach the service: the rotator queues lines for
+			// it and drops them when it falls behind, rather than
+			// blocking the logfile or the service.
 			var loggerSink io.Writer
 			if len(s.outputLogger) > 0 {
 				w, sup, lerr := startLoggerSupervisor(

@@ -1082,6 +1082,18 @@ requires.
   The old reader is now retired without waiting; the new instance
   forwards nothing until the old one has finished its last write, so
   lines still reach the logger in order.
+- **A stalled `output-logger` beside a `logfile` stopped the logfile and
+  froze PID 1 on the next restart.** slinit copied each line to the
+  logger from the same goroutine that writes the logfile, while holding
+  the rotator's lock; with the logger stopped, the logfile stopped
+  growing as soon as the 64 KiB pipe filled, and an auto-restart closed
+  the old rotator under the service queue lock, waiting for that write
+  forever (measured: the service stuck in STARTING, queue lock never
+  released). Lines for the logger now go through a queue of 1024 lines
+  that is never waited on: when the logger falls behind, lines for it
+  are dropped and logged once, and the logfile keeps every line. A
+  restart now also stops the previous instance's logger, which used to
+  be left running.
 
 ## [4.0.2] — 2026-11-22
 

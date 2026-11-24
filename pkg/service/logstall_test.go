@@ -1,6 +1,9 @@
 package service
 
 import (
+	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -72,4 +75,62 @@ func TestSharedLoggerStalledProducerRestartKeepsQueueMuFree(t *testing.T) {
 		t.Fatal("queueMu still held 2s after the producer restart")
 	}
 	runWithin(5*time.Second, func() { set.StopService(svc) })
+}
+
+// logfile + output-logger: slinit copies every line to the logger. With
+// the logger stopped, that copy blocked the rotator's reader (so the
+// logfile stopped growing) and the auto-restart's logRotator.Close()
+// waited for it under queueMu.
+func TestOutputLoggerStalledKeepsLogfileAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "svc.log")
+	loggerSh := filepath.Join(dir, "logger.sh")
+	writeExec(t, loggerSh, "#!/bin/sh\nkill -STOP $$\ncat >/dev/null\n")
+
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "rot")
+	svc.SetCommand([]string{"/bin/sh", "-c", "exec yes 0123456789012345678901234567890123456789"})
+	svc.SetLogType(LogToFile)
+	svc.SetLogFileDetails(logFile, 0o600, -1, -1)
+	svc.SetOutputLogger([]string{loggerSh})
+	svc.SetAutoRestart(RestartAlways)
+	svc.SetRestartDelay(50 * time.Millisecond)
+	set.AddService(svc)
+	set.StartService(svc)
+	defer runWithin(5*time.Second, func() { set.StopService(svc) })
+	if got := waitState(t, svc, StateStarted, 5*time.Second); got != StateStarted {
+		t.Fatalf("service did not start: %v", got)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	sz1 := fileSize(logFile)
+	time.Sleep(500 * time.Millisecond)
+	sz2 := fileSize(logFile)
+	if sz2 <= sz1 {
+		t.Errorf("logfile stopped growing with the output-logger stalled: %d -> %d bytes", sz1, sz2)
+	}
+
+	pid := svc.PID()
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := svc.PID(); p > 0 && p != pid && svc.State() == StateStarted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if p := svc.PID(); p <= 0 || p == pid {
+		t.Errorf("auto-restart did not happen within 5s: state=%v pid=%d", svc.State(), p)
+	}
+	if !queueMuFree(set, 2*time.Second) {
+		t.Fatal("queueMu held across the auto-restart of a service with a stalled output-logger")
+	}
+}
+
+func fileSize(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return fi.Size()
 }

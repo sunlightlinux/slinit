@@ -99,6 +99,14 @@ type LogRotator struct {
 	// rotator, and the rotator feeds the logger command's stdin. Nil
 	// when no second destination is configured.
 	sink io.Writer
+	// sinkQ feeds sinkWriter, which owns every write to sink. The
+	// reader only ever does a non-blocking send: a logger that stops
+	// reading must not stall the logfile, nor Close() — which runs
+	// under queueMu when the service restarts. A full queue drops the
+	// line for the sink only; sinkDropped counts drops since the last
+	// line that got through, and the first drop of a run is logged.
+	sinkQ       chan []byte
+	sinkDropped uint64
 
 	// s6-log-style priority alert channel. alertFilePath="" disables.
 	// When enabled, lines with syslog priority <= alertLevel are ALSO
@@ -266,7 +274,11 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 	if cfg.Forwarder != nil {
 		lr.forwarder = cfg.Forwarder
 	}
-	lr.sink = cfg.Sink
+	if cfg.Sink != nil {
+		lr.sink = cfg.Sink
+		lr.sinkQ = make(chan []byte, sinkQueueLines)
+		go sinkWriter(lr.sink, lr.sinkQ)
+	}
 	lr.alertFilePath = cfg.AlertFilePath
 	if cfg.AlertLevel < 0 || cfg.AlertFilePath == "" {
 		lr.alertLevel = -1
@@ -617,14 +629,26 @@ func (lr *LogRotator) processLine(line []byte) {
 		lr.forwarder.Send(out)
 	}
 
-	// Second destination, if any. Errors are deliberately dropped: the
-	// sink is a pipe to a logger command, that command is supervised
-	// and restarted elsewhere (loggersupervise.go), and the whole point
-	// of this design is that a sick log consumer cannot disturb the
-	// service's own logging. The file write below is the one that
-	// matters.
-	if lr.sink != nil {
-		_, _ = lr.sink.Write(out)
+	// Second destination, if any: handed to sinkWriter, never written
+	// here. The sink is a pipe to a logger command, and a logger that
+	// stops reading would otherwise block this goroutine — the logfile
+	// stops growing and Close() waits forever. The file write below is
+	// the one that matters; the sink loses lines instead.
+	if lr.sinkQ != nil {
+		select {
+		case lr.sinkQ <- append([]byte(nil), out...):
+			if lr.sinkDropped > 0 && lr.logger != nil {
+				lr.logger.Info("Service '%s': output-logger is reading again; %d lines were not passed to it",
+					lr.serviceName, lr.sinkDropped)
+			}
+			lr.sinkDropped = 0
+		default:
+			if lr.sinkDropped == 0 && lr.logger != nil {
+				lr.logger.Error("Service '%s': output-logger is not keeping up; dropping lines for it (the logfile keeps them)",
+					lr.serviceName)
+			}
+			lr.sinkDropped++
+		}
 	}
 
 	// Journal emit — mirror the accepted line into the structured
@@ -991,10 +1015,36 @@ func (lr *LogRotator) Close() {
 	if doneCh != nil && running {
 		<-doneCh
 	}
+	// The reader is gone, so nothing sends on sinkQ any more. Closing it
+	// lets sinkWriter finish on its own; it is not waited for, since its
+	// current write may be stuck on a logger that reads nothing.
+	lr.mu.Lock()
+	if lr.sinkQ != nil {
+		close(lr.sinkQ)
+		lr.sinkQ = nil
+	}
+	lr.mu.Unlock()
 	// Reader is drained; the UDP socket is exclusively ours to close.
 	if lr.forwarder != nil {
 		lr.forwarder.Close()
 		lr.forwarder = nil
+	}
+}
+
+// sinkQueueLines bounds the lines waiting for a slow sink, on top of
+// the 64 KiB the pipe to the logger holds itself.
+const sinkQueueLines = 1024
+
+// sinkWriter writes queued lines to sink until q is closed, then closes
+// sink if it can be closed, so the logger reading it sees EOF. Write
+// errors are dropped: the logger is supervised and restarted elsewhere
+// (loggersupervise.go).
+func sinkWriter(sink io.Writer, q <-chan []byte) {
+	for buf := range q {
+		_, _ = sink.Write(buf)
+	}
+	if c, ok := sink.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 
