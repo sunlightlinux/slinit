@@ -190,7 +190,11 @@ long options may be written with one or two leading dashes.
 **\--watch-services-dir**
 :   Opt-in: watch every **\--services-dir** with **inotify**(7) and
     auto-load a service when a new file appears (or is renamed in),
-    auto-unload it when the file is removed. Modified files are
+    auto-unload it when the file is removed and no other watched
+    directory still provides that name. What a burst of events
+    amounted to is judged from the directory once it settles, so a
+    file replaced in place (an editor's rename-and-write save, or
+    `rm` then `cp`) counts as modified, not removed. Modified files are
     logged; slinit's existing *(modified since loaded)* marker still
     surfaces the change via `slinitctl status`. Services are loaded
     but **not** auto-started (matches dinit's explicit-start model);

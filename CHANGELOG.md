@@ -41,6 +41,15 @@ verified with `git tag -v`.
   `ShutdownRemain` hold all run after that point, so a Ctrl+Alt+Del or
   a stray `kill -INT 1` there was `Attempted to kill init!`. As PID 1
   the signals now stay claimed until slinit is done.
+- **Saving a service file in vim could unload the service.** The
+  services-dir watcher folded each burst of events by "removal wins",
+  so vim's save (rename to `svc~`, write a fresh `svc`) or `rm` then
+  `cp` reported a file that was still there as removed, and nothing
+  reported it back. And since the handler gets only the name, removing
+  a shadowed copy in one directory unloaded the service another
+  directory still provided. The watcher now judges each burst from what
+  is on disk when it settles, and reports a removal only when no
+  watched directory provides the name any more.
 - **Removing a service file unloaded a service others depend on.**
   With `--watch-services-dir`, a removed file unloaded its service as
   soon as it was stopped. `slinitctl unload` also refuses while another

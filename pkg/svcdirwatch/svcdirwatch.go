@@ -48,7 +48,7 @@ type Handler struct {
 	Appeared func(name string)
 
 	// Disappeared fires when a service file is removed (or renamed
-	// out). Handler is expected to no-op if the service is currently
+	// out) and no watched directory still provides the name. Handler is expected to no-op if the service is currently
 	// running (only unload when STOPPED); UnloadService requires
 	// STOPPED state.
 	Disappeared func(name string)
@@ -69,19 +69,14 @@ type Options struct {
 	DebounceInterval time.Duration
 }
 
-// event kind carried through debounce.
-type kind uint8
-
-const (
-	kindAppeared kind = iota
-	kindDisappeared
-	kindModified
-)
-
-// pending is one debounced event awaiting dispatch.
+// pending is one debounced burst of events on a file awaiting dispatch.
+// What it dispatches is decided when it fires, from what is on disk
+// then, not from the events: an editor save is a rename-away and a
+// fresh write, and a burst read as "disappear wins" reported a file
+// that is still there as removed.
 type pending struct {
-	timer *time.Timer
-	last  kind
+	timer    *time.Timer
+	wasKnown bool // the file existed before the burst began
 }
 
 // Watcher multiplexes a single inotify fd across N services-dirs.
@@ -257,59 +252,21 @@ func (w *Watcher) dispatch(buf []byte) {
 			continue
 		}
 
-		k := key(dir, name)
-		var evk kind
-		switch {
-		case raw.Mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0:
-			// Both CREATE and MOVED_TO can arrive for a new file;
-			// CLOSE_WRITE will follow for CREATE, but MOVED_TO is a
-			// complete rename so no CLOSE_WRITE trails it. Decide by
-			// whether we've seen this name before.
-			if _, seen := w.known[k]; seen {
-				evk = kindModified
-			} else {
-				evk = kindAppeared
-				w.known[k] = struct{}{}
-			}
-		case raw.Mask&unix.IN_CLOSE_WRITE != 0:
-			// Second close after CREATE → still first appearance
-			// (CREATE already primed 'known'). For a name we hadn't
-			// seen at Add-time and hadn't been CREATE-tracked, this
-			// covers `cp foo /etc/slinit.d/svc` where CLOSE_WRITE
-			// arrives without a prior CREATE we processed
-			// (races between AddDir's snapshot and the first write).
-			if _, seen := w.known[k]; seen {
-				evk = kindModified
-			} else {
-				evk = kindAppeared
-				w.known[k] = struct{}{}
-			}
-		case raw.Mask&(unix.IN_DELETE|unix.IN_MOVED_FROM) != 0:
-			delete(w.known, k)
-			evk = kindDisappeared
-		default:
+		if raw.Mask&(unix.IN_CREATE|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE|
+			unix.IN_DELETE|unix.IN_MOVED_FROM) == 0 {
 			w.mu.Unlock()
 			continue
 		}
 
-		// Debounce: reset (or arm) the per-file timer with the
-		// latest event kind. Coalescing rules:
-		// - Appeared+Modified → Appeared (load implies fresh parse).
-		// - Appeared+Disappeared → Disappeared (final winner).
-		// - Modified+Modified   → Modified.
+		// Debounce: reset (or arm) the per-file timer; fire decides
+		// what the burst amounted to.
+		k := key(dir, name)
 		p, ok := w.pending[k]
 		if ok {
 			p.timer.Stop()
-			// Coalesce: disappear always wins; appeared beats modified.
-			if evk == kindDisappeared || p.last == kindDisappeared {
-				p.last = kindDisappeared
-			} else if p.last == kindAppeared || evk == kindAppeared {
-				p.last = kindAppeared
-			} else {
-				p.last = kindModified
-			}
 		} else {
-			p = &pending{last: evk}
+			_, was := w.known[k]
+			p = &pending{wasKnown: was}
 			w.pending[k] = p
 		}
 		dirCopy, nameCopy := dir, name
@@ -320,7 +277,12 @@ func (w *Watcher) dispatch(buf []byte) {
 	}
 }
 
-// fire runs a debounced pending event's callback, then clears it.
+// fire runs a debounced burst's callback, then clears it. The file
+// present now is Appeared if it was not there before the burst and
+// Modified if it was; a file absent now is Disappeared, unless another
+// watched directory still provides the name — the handler gets only
+// the name, and would unload the copy that is still there — in which
+// case the service's description changed: Modified.
 func (w *Watcher) fire(dir, name string) {
 	w.mu.Lock()
 	k := key(dir, name)
@@ -329,9 +291,26 @@ func (w *Watcher) fire(dir, name string) {
 		w.mu.Unlock()
 		return
 	}
-	evk := p.last
 	delete(w.pending, k)
 	handler := w.handler
+
+	var evk kind
+	if present(dir, name) {
+		w.known[k] = struct{}{}
+		evk = kindAppeared
+		if p.wasKnown {
+			evk = kindModified
+		}
+	} else {
+		delete(w.known, k)
+		evk = kindDisappeared
+		for _, d := range w.byWd {
+			if d != dir && present(d, name) {
+				evk = kindModified
+				break
+			}
+		}
+	}
 	w.mu.Unlock()
 
 	switch evk {
@@ -390,6 +369,21 @@ func isServiceFile(name string) bool {
 		return false
 	}
 	return true
+}
+
+// kind is what a debounced burst amounted to.
+type kind uint8
+
+const (
+	kindAppeared kind = iota
+	kindDisappeared
+	kindModified
+)
+
+// present reports whether dir holds a service file called name.
+func present(dir, name string) bool {
+	fi, err := os.Stat(filepath.Join(dir, name))
+	return err == nil && !fi.IsDir()
 }
 
 func key(dir, name string) string {
