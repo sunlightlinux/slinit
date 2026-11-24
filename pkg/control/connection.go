@@ -80,6 +80,11 @@ type Connection struct {
 	// Never hold it across AddListener/RemoveListener or a write: the
 	// state machine calls ServiceEvent with its own locks held.
 	handlesMu sync.RWMutex
+	// closing is set, under handlesMu, when close() starts. After it,
+	// nothing subscribes this connection to a service again: close()
+	// has taken its snapshot of the services to unsubscribe from, so a
+	// listener added later would outlive the connection.
+	closing bool
 }
 
 func newConnection(server *Server, conn net.Conn) *Connection {
@@ -150,12 +155,13 @@ func (c *Connection) close() {
 		c.writeMu.Unlock()
 		// Unregister as listener from all unique services using revHandles
 		// (revHandles has one entry per unique service, no dedup needed)
-		c.handlesMu.RLock()
+		c.handlesMu.Lock()
+		c.closing = true
 		svcs := make([]service.Service, 0, len(c.revHandles))
 		for svc := range c.revHandles {
 			svcs = append(svcs, svc)
 		}
-		c.handlesMu.RUnlock()
+		c.handlesMu.Unlock()
 		for _, svc := range svcs {
 			svc.Record().RemoveListener(c)
 		}
@@ -178,9 +184,12 @@ func (c *Connection) allocHandle(svc service.Service) uint32 {
 	c.nextHandle++
 	c.handles[h] = svc
 	c.revHandles[svc] = h
+	closing := c.closing
 	c.handlesMu.Unlock()
 	// Auto-subscribe as listener for service events
-	svc.Record().AddListener(c)
+	if !closing {
+		svc.Record().AddListener(c)
+	}
 	return h
 }
 
@@ -198,6 +207,7 @@ func (c *Connection) getService(handle uint32) service.Service {
 func (c *Connection) swapService(old, new service.Service) {
 	c.handlesMu.Lock()
 	h, held := c.revHandles[old]
+	held = held && !c.closing
 	if held {
 		for hh, s := range c.handles {
 			if s == old {
@@ -212,6 +222,13 @@ func (c *Connection) swapService(old, new service.Service) {
 		old.Record().RemoveListener(c)
 		new.Record().AddListener(c)
 	}
+}
+
+// isClosing reports whether close() has started.
+func (c *Connection) isClosing() bool {
+	c.handlesMu.RLock()
+	defer c.handlesMu.RUnlock()
+	return c.closing
 }
 
 // findHandle returns the handle for a given service, or 0 and false if not found.

@@ -129,3 +129,40 @@ func TestReloadTypeChangeMovesEveryClientsHandle(t *testing.T) {
 		t.Errorf("reloaded service state = %v, want STARTED", st)
 	}
 }
+
+// A connection in the middle of close() has already taken the list of
+// services to unsubscribe from. A reload that replaced a service at
+// that moment used to move its handle and subscribe it to the new
+// object, leaving a dead connection listening on that service for good;
+// and the closing connection still counted as holding the service, so
+// an unload by someone else was refused.
+func TestClosingConnectionIsNotResubscribed(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	old := service.NewInternalService(server.services, "x")
+	server.services.AddService(old)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	findHandle(t, conn, "x")
+
+	var c *Connection
+	for _, cc := range server.connList() {
+		if _, ok := cc.findHandle(old); ok {
+			c = cc
+		}
+	}
+	if c == nil {
+		t.Fatal("no server-side connection holds x")
+	}
+	c.close()
+
+	repl := service.NewInternalService(server.services, "x")
+	server.replaceService(old, repl)
+	if _, ok := c.findHandle(repl); ok {
+		t.Error("a closed connection's handle was moved to the new object (and subscribed to it)")
+	}
+	if server.heldElsewhere(nil, old) {
+		t.Error("a closed connection still counts as holding the service")
+	}
+}

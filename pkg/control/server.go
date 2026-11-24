@@ -345,7 +345,7 @@ func (s *Server) heldElsewhere(c *Connection, svc service.Service) bool {
 		if o == c {
 			continue
 		}
-		if _, ok := o.findHandle(svc); ok {
+		if _, ok := o.findHandle(svc); ok && !o.isClosing() {
 			return true
 		}
 	}
