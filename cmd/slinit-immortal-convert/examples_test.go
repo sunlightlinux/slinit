@@ -24,6 +24,14 @@ func TestVendoredImmortalExamplesConvertAndParse(t *testing.T) {
 		t.Skipf("no vendored examples: %v", err)
 	}
 
+	// The lookup runs on the converting machine, so which bare commands
+	// resolve depends on what that host has installed (iostat, for one,
+	// is often absent). Give the examples a PATH of stubs instead, so the
+	// test checks the conversion and not the host's package list. The
+	// not-found branch has its own test in main_test.go.
+	stubs := t.TempDir()
+	t.Setenv("PATH", stubs)
+
 	var checked int
 	for _, e := range ents {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".yml" {
@@ -45,6 +53,11 @@ func TestVendoredImmortalExamplesConvertAndParse(t *testing.T) {
 				t.Fatalf("parse: %v", err)
 			}
 			_ = warns
+			if f := strings.Fields(cfg.Cmd); len(f) > 0 && !strings.HasPrefix(f[0], "/") {
+				if err := os.WriteFile(filepath.Join(stubs, f[0]), []byte("#!/bin/sh\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			var buf bytes.Buffer
 			emitSlinitFile(&buf, cfg, name)
