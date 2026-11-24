@@ -33,6 +33,15 @@ verified with `git tag -v`.
   blocked in `write(2)` once the pipe filled (shared logger), or wrote
   into a pipe whose read end had been closed (UDP forwarding). A longer
   line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **`switch-root` could delete the new root's files.** The initramfs
+  cleanup removed every top-level entry of the old root except the one
+  named exactly like NEWROOT, without the device check its comment
+  promised. A nested NEWROOT such as `/mnt/root`, which the precheck
+  accepts, had `/mnt` removed recursively — and with it everything on
+  the real root. As util-linux and busybox `switch_root` do, the
+  cleanup now recurses and deletes only entries on the old root's
+  device, never descending into another mount, NEWROOT, or past an
+  ancestor of it.
 - **A timer from one start attempt could act on the next.** The
   job-timeout, runtime-max, start-delay and start-when-idle timers check
   only the service's state when they fire. One that fired while the
