@@ -254,6 +254,15 @@ verified with `git tag -v`.
   naming PID 1 or slinit itself is now refused, as systemd does, and the
   daemon group is signalled only when its id is above 1; otherwise just
   the pid is.
+- **`stop-command` ignored `run-as` for process and bgprocess
+  services.** It ran as root, as did `finish-command`, `pre-stop-hook`,
+  `control-command-*` and `ready-check-command`, while a scripted
+  service's stop script already ran as the user and systemd runs
+  `ExecStop=`, `ExecStopPost=`, `ExecReload=` and `ExecCondition=` as
+  `User=`. The new tests reported uid 0 for every one of them; they now
+  run with the service's run-as user, group and supplementary groups.
+  `healthcheck-command`, `unhealthy-command`, `cron-command`,
+  `pre-start-command` and `post-start-command` are unchanged.
 
 ## [4.0.2] — 2026-11-22
 

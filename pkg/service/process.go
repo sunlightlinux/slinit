@@ -1918,9 +1918,12 @@ func (s *ServiceRecord) logStopSignalFailure(err error) {
 // the main process if it is still alive.
 func (s *ProcessService) execStopCommand() bool {
 	params := process.ExecParams{
-		Command:    s.stopCommand,
-		WorkingDir: s.workingDir,
-		Env:        s.buildEnv(),
+		Command:           s.stopCommand,
+		WorkingDir:        s.workingDir,
+		Env:               s.buildEnv(),
+		RunAsUID:          s.effectiveRunAsUID(),
+		RunAsGID:          s.effectiveRunAsGID(),
+		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
 
@@ -3242,6 +3245,26 @@ func (s *ProcessService) getTimerChan() <-chan time.Time {
 	return nil
 }
 
+// applyRunAs gives an auxiliary command (finish-command, pre-stop-hook,
+// ready-check-command, control-command-*) the service's run-as user,
+// groups included, as the main command and stop-command get. They ran
+// as root, while systemd runs ExecStopPost=, ExecStop=, ExecReload= and
+// ExecCondition= as User=.
+func (s *ProcessService) applyRunAs(cmd *exec.Cmd) {
+	uid, gid := s.effectiveRunAsUID(), s.effectiveRunAsGID()
+	if uid == 0 && gid == 0 {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Credential = &syscall.Credential{
+		Uid:    uid,
+		Gid:    gid,
+		Groups: s.supplementaryGIDs,
+	}
+}
+
 // execFinishCommand runs the finish-command after a process exits.
 // It passes the exit code and signal number as arguments.
 // Runs synchronously with a timeout so it doesn't block forever.
@@ -3266,6 +3289,7 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	cmd := exec.CommandContext(ctx, s.finishCommand[0], args...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
+	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
 	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil && !isECHILDErr(err) {
@@ -3329,6 +3353,7 @@ func (s *ProcessService) runReadyCheckOnce() bool {
 	cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
+	s.applyRunAs(cmd)
 	return process.RunAdhoc(cmd) == nil
 }
 
@@ -3347,6 +3372,7 @@ func (s *ProcessService) execPreStopHook() {
 	cmd := exec.CommandContext(ctx, s.preStopHook[0], args...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
+	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
 	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
@@ -3370,6 +3396,7 @@ func (s *ProcessService) execControlCommand(sigName string, command []string) {
 	cmd := exec.CommandContext(ctx, command[0], args...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
+	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
 	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {

@@ -595,9 +595,12 @@ func (s *BGProcessService) BringDown() {
 // execStopCommand starts the stop-command process for BGProcessService.
 func (s *BGProcessService) execStopCommand() bool {
 	params := process.ExecParams{
-		Command:    s.stopCommand,
-		WorkingDir: s.workingDir,
-		Env:        s.buildEnv(),
+		Command:           s.stopCommand,
+		WorkingDir:        s.workingDir,
+		Env:               s.buildEnv(),
+		RunAsUID:          s.effectiveRunAsUID(),
+		RunAsGID:          s.effectiveRunAsGID(),
+		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
 
