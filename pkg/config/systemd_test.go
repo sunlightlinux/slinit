@@ -222,13 +222,13 @@ func TestMultiLineValue(t *testing.T) {
 	}
 }
 
-// TestSplitTargetsStripSuffixes — systemd deps carry .service /
-// .socket etc; slinit wants bare names. .target is different: slinit
-// has no target concept, so those references are dropped rather than
-// becoming a dependency on a service that does not exist.
+// TestSplitTargetsStripSuffixes — systemd deps carry .service; slinit
+// wants bare names. Every other unit type (.target, .socket, ...) is
+// dropped rather than becoming a dependency on a service that does not
+// exist, or on the wrong one: syslog.socket is not syslog.service.
 func TestSplitTargetsStripSuffixes(t *testing.T) {
-	got := splitTargets("network.target syslog.socket dbus.service")
-	want := []string{"syslog", "dbus"}
+	got := splitTargets("network.target syslog.socket dbus.service getty@tty1.service")
+	want := []string{"dbus", "getty@tty1"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

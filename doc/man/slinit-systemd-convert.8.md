@@ -53,8 +53,10 @@ at all.
 
 Dependencies: **Requires** becomes **depends-on**, **Wants** becomes
 **waits-for** and **After** becomes **after** (ordering only, as in
-systemd); references to **.target** units are dropped with a note,
-since slinit has no targets. slinit fails to load a service whose
+systemd). Only **.service** units become dependencies: a reference to
+a **.target**, **.socket**, **.mount**, **.device**, **.slice** or any
+other unit type is dropped with a note, since slinit has no such
+services (and **syslog.socket** is not **syslog.service**). slinit fails to load a service whose
 dependency of any kind does not exist, so each name written must exist
 as a slinit service (or a unit slinit can load) on the target system.
 A unit loaded directly is more forgiving, as systemd is: see

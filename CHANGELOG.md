@@ -889,6 +889,15 @@ verified with `git tag -v`.
   `/opt/my` with the arguments `app/bin/run --name hello` and `world`.
   Exec lines now keep their quotes, which slinit's command parser
   groups words by just as systemd does.
+- **A systemd unit naming a `.device`, `.socket` or `.mount` could
+  not load.** Only `.target` references were dropped; the other unit
+  types had their suffix cut off (`Requires=syslog.socket` became a
+  dependency on the `syslog` service, a different thing) or, for a
+  `.slice` or `.scope`, were copied as they were. An escaped device
+  name is not a valid service name, so `qemu-guest-agent.service`
+  (`After=dev-virtio\x2dports-org.qemu.guest_agent.0.device`) was
+  refused outright. Every reference that is not a `.service` is now
+  dropped with a note, as `.target` was.
 
 ## [4.0.2] — 2026-11-22
 

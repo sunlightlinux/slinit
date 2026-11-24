@@ -249,3 +249,48 @@ ExecStop='/opt/my app/bin/stop' now
 		t.Errorf("stop-command = %q, want %q", desc.StopCommand, want)
 	}
 }
+
+// Only a .service reference names something slinit can depend on. The
+// other unit types were copied through with the suffix cut off, or
+// verbatim, so qemu-guest-agent.service (After= its virtio .device)
+// could not load: the escaped device name is no valid service name.
+// Like .target, they are left out with a note.
+func TestSystemdNonServiceRefsDropped(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "ga.service", `[Unit]
+BindsTo=dev-virtio\x2dports-org.qemu.guest_agent.0.device
+After=dev-virtio\x2dports-org.qemu.guest_agent.0.device
+Requires=syslog.socket -.mount
+Wants=user.slice
+[Service]
+ExecStart=/usr/bin/qemu-ga
+`)
+	writeUnit(t, units, "syslog.service", "[Service]\nExecStart=/usr/bin/syslogd\n")
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, level+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("ga")
+	if err != nil {
+		t.Fatalf("unit referring to non-service units does not load: %v", err)
+	}
+	if deps := svc.Record().Dependencies(); len(deps) != 0 {
+		t.Errorf("dependencies on %v, want none", deps[0].To.Name())
+	}
+	for _, ref := range []string{"guest_agent.0.device", "syslog.socket", "-.mount", "user.slice"} {
+		found := false
+		for _, g := range got {
+			found = found || (strings.HasPrefix(g, "NOTE") && strings.Contains(g, ref))
+		}
+		if !found {
+			t.Errorf("no NOTE that %s was dropped: %v", ref, got)
+		}
+	}
+}

@@ -3,8 +3,9 @@
 # Covers the systemd → slinit Restart= mapping (5 values → 3) plus
 # Type= dispatch (simple → process, forking → bgprocess, oneshot →
 # scripted) plus [Unit] After/Requires → after/depends-on.
-# The dep-name suffix stripping (.service, .target, .socket, ...)
-# is the subtle one — bare names are what slinit expects.
+# The dep-name handling is the subtle one: .service is stripped to the
+# bare name slinit expects, every other unit type (.target, .socket,
+# ...) is dropped.
 
 WORK=/tmp/acc-201-systemd
 cleanup() { rm -rf "$WORK"; }

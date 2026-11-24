@@ -689,18 +689,16 @@ func stripExecPrefixes(v string) (string, []SystemdWarning) {
 }
 
 // splitTargets splits a whitespace-separated list of unit names and
-// normalises each by stripping the systemd unit-type suffix. slinit
-// deps are on bare names — the unit type is a systemd abstraction
-// (socket/path/mount/timer are all reified as their own slinit
-// mechanisms rather than as separate service files).
+// returns the .service ones with the suffix stripped: slinit deps are on
+// bare names.
 func splitTargets(v string) []string {
 	deps, _ := splitUnitRefs(v)
 	return deps
 }
 
 // splitUnitRefs splits a whitespace-separated list of unit names into
-// the ones that name a real unit and the .target references, which are
-// returned separately.
+// the .service units, as slinit service names, and the rest, which are
+// returned separately to be dropped.
 //
 // slinit has no target concept at all: targets are systemd's grouping
 // and ordering abstraction, and the boot service graph covers the same
@@ -711,33 +709,35 @@ func splitTargets(v string) []string {
 // nearly all of them. Dropping the reference and saying so is the only
 // honest option; the operator adds depends-on: for a service that
 // actually exists on their system.
-func splitUnitRefs(v string) (deps []string, targets []string) {
-	suffixes := []string{".service", ".socket", ".path", ".mount", ".timer", ".swap", ".device"}
+//
+// The other unit types are no different: a .socket, .mount, .device,
+// .slice or .timer is not a service, and syslog.socket cut down to
+// "syslog" named the wrong thing, while an escaped device name
+// (dev-virtio\x2dports-...device) is not a valid service name at all,
+// so the unit did not load. Neither is a .service whose name slinit
+// cannot spell.
+func splitUnitRefs(v string) (deps []string, dropped []string) {
 	for _, f := range strings.Fields(v) {
-		if strings.HasSuffix(f, ".target") {
-			targets = append(targets, f)
+		name, ok := strings.CutSuffix(f, ".service")
+		if !ok || ValidateServiceName(name) != nil {
+			dropped = append(dropped, f)
 			continue
 		}
-		for _, s := range suffixes {
-			if strings.HasSuffix(f, s) {
-				f = strings.TrimSuffix(f, s)
-				break
-			}
-		}
-		deps = append(deps, f)
+		deps = append(deps, name)
 	}
-	return deps, targets
+	return deps, dropped
 }
 
-// noteDroppedTargets turns dropped .target references into one note per
-// directive, so the ordering that was asked for is visible rather than
-// silently gone.
+// noteDroppedTargets turns dropped non-service references into one note
+// per directive, so the ordering that was asked for is visible rather
+// than silently gone.
 func noteDroppedTargets(key string, targets []string) []SystemdWarning {
 	if len(targets) == 0 {
 		return nil
 	}
 	return []SystemdWarning{{"NOTE", fmt.Sprintf(
-		"%s=%s dropped — slinit has no targets; add `depends-on:`/`waits-for:` naming a real service if the ordering matters",
+		"%s=%s dropped — only .service units become slinit dependencies (slinit has no targets, sockets, mounts or devices as services); "+
+			"add `depends-on:`/`after:` naming a real service if the ordering matters",
 		key, strings.Join(targets, " "))}}
 }
 
