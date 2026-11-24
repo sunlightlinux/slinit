@@ -405,10 +405,13 @@ func applyDir(e entry, wipe bool) error {
 	if err := os.MkdirAll(e.path, os.FileMode(e.mode)); err != nil {
 		return err
 	}
-	if err := os.Chmod(e.path, os.FileMode(e.mode)); err != nil {
+	// The mode goes in raw, through syscall: os.FileMode(e.mode) dropped
+	// 07000, which Go keeps as os.ModeSticky and friends, so a 1777
+	// directory lost its sticky bit.
+	if err := os.Chown(e.path, e.uid, e.gid); err != nil {
 		return err
 	}
-	return os.Chown(e.path, e.uid, e.gid)
+	return syscall.Chmod(e.path, e.mode)
 }
 
 func applyLink(e entry) error {
@@ -472,10 +475,12 @@ func applyChown(e entry, recursive bool) error {
 	if fi.Mode()&os.ModeSymlink != 0 {
 		return nil
 	}
-	if err := os.Chmod(e.path, os.FileMode(e.mode)); err != nil {
+	// Owner before mode: chown(2) clears setuid/setgid on a regular
+	// file, even with -1/-1. The mode goes in raw (see applyDir).
+	if err := os.Chown(e.path, e.uid, e.gid); err != nil {
 		return err
 	}
-	if err := os.Chown(e.path, e.uid, e.gid); err != nil {
+	if err := syscall.Chmod(e.path, e.mode); err != nil {
 		return err
 	}
 	if !recursive || !fi.IsDir() {
@@ -488,9 +493,9 @@ func applyChown(e entry, recursive bool) error {
 		if p == e.path || info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
-		if err := os.Chmod(p, os.FileMode(e.mode)); err != nil {
+		if err := os.Chown(p, e.uid, e.gid); err != nil {
 			return err
 		}
-		return os.Chown(p, e.uid, e.gid)
+		return syscall.Chmod(p, e.mode)
 	})
 }

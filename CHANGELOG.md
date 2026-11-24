@@ -90,6 +90,14 @@ verified with `git tag -v`.
   other open client acted on a service no longer in the set and heard
   nothing more about it. Every connection's handles and subscriptions
   now move to the new object.
+- **`slinit-tmpfiles` dropped the sticky, setgid and setuid bits.**
+  The mode column went to Go as `os.FileMode(mode)`, where `01000`,
+  `02000` and `04000` are not the special bits, so `d /var/tmp 1777`
+  made a world-writable directory without the sticky bit — and on an
+  existing `/var/tmp` stripped it again at every boot. `z`/`Z` lost them
+  the same way, and set the owner after the mode, which clears
+  setuid/setgid on a file. The raw mode now reaches `chmod(2)`, after
+  the `chown(2)`.
 
 ## [4.0.2] — 2026-11-22
 
