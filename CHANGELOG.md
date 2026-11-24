@@ -26,6 +26,14 @@ verified with `git tag -v`.
 
 ### Fixed
 
+- **`slinit-check` did not look where slinit looks.** Its default
+  system directories were `/etc`, `/usr/lib` and `/lib` `slinit.d`; the
+  daemon's are `/etc`, `/run`, `/usr/local/lib` and `/lib`. A service in
+  `/run/slinit.d` or `/usr/local/lib/slinit.d` was reported "not found",
+  and one in `/usr/lib/slinit.d`, which slinit never loads, was checked.
+  The user list also lacked `~/.config/slinit.d` beside a set
+  `XDG_CONFIG_HOME`, and `$XDG_RUNTIME_DIR/slinit.d`. Both lists now
+  match the daemon's.
 - **`pass-environment` and `unset-environment` let slinit's own
   environment through.** slinit-service(5) says both apply to the
   inherited environment, but they filtered only the variables slinit

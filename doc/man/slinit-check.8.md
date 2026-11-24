@@ -41,15 +41,16 @@ The linter performs four passes over the loaded service graph:
 
 **-s**, **--system**
 :   Use the default system service directories: */etc/slinit.d*,
-    */usr/lib/slinit.d*, */lib/slinit.d*. This is the default when no
-    explicit **-d** is given. Note that this list differs from the
-    daemon's own defaults (see **slinit**(8)); pass **-d** for each
-    directory, or use **--online**, to check exactly what the daemon
-    loads.
+    */run/slinit.d*, */usr/local/lib/slinit.d*, */lib/slinit.d* — the
+    daemon's own defaults, in its order (since 4.0.3; before, the list
+    was */etc/slinit.d*, */usr/lib/slinit.d*, */lib/slinit.d*). This is
+    the default when no explicit **-d** is given.
 
 **-u**, **--user**
-:   Use the default user service directories — *$XDG_CONFIG_HOME/slinit.d*
-    (or *~/.config/slinit.d* if XDG_CONFIG_HOME is unset), then the
+:   Use the default user service directories, as the daemon does —
+    *$XDG_CONFIG_HOME/slinit.d* and *~/.config/slinit.d* (one of them
+    when they are the same, or XDG_CONFIG_HOME is unset), then
+    *$XDG_RUNTIME_DIR/slinit.d* when that is set, then the
     system-wide user-mode dirs under */etc/slinit.d/user*,
     */usr/lib/slinit.d/user*, */usr/local/lib/slinit.d/user*.
 
