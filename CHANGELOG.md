@@ -651,6 +651,12 @@ requires.
 
 ### Fixed
 
+- **The first JSONL event after a crash was lost.** A crash in the
+  middle of a write leaves the file ending in part of a line, and the
+  restarted sink appended the next event to that fragment; readers skip
+  a line that does not parse, and the event went with it. The fragment
+  is now ended before anything is appended, so it stays a bad line of
+  its own.
 - **A start on a full disk kept the binary journal down for the rest of
   the day.** Creating the day's `.journal` file wrote its hash tables
   before its header, so a full disk left a 4096-byte file with no

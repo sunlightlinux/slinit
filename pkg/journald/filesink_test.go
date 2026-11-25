@@ -169,3 +169,53 @@ func countLines(t *testing.T, path string) int {
 	}
 	return strings.Count(string(b), "\n")
 }
+
+// After a crash mid-line the reopened sink appended straight onto the
+// fragment: the first new event became part of an unparseable line and
+// was lost to readers.
+func TestFileSinkReopenAfterTornTail(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFileSink(dir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Handle(journalEvent(1, "b"))
+	s.Handle(journalEvent(2, "b"))
+	s.Close()
+	p := s.CurrentPath()
+	b, _ := os.ReadFile(p)
+	if err := os.WriteFile(p, b[:len(b)-50], 0o640); err != nil { // torn tail
+		t.Fatal(err)
+	}
+	s2, err := NewFileSink(dir, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2.Handle(&journal.Event{Ts: time.Now().UnixNano(), Msg: "FIRST AFTER RESTART"})
+	s2.Handle(&journal.Event{Ts: time.Now().UnixNano(), Msg: "SECOND AFTER RESTART"})
+	s2.Close()
+
+	data, _ := os.ReadFile(p)
+	var msgs []string
+	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
+		if ev, err := journal.UnmarshalEvent([]byte(line)); err == nil {
+			msgs = append(msgs, ev.Msg)
+		}
+	}
+	want := []string{journalEvent(1, "b").Msg, "FIRST AFTER RESTART", "SECOND AFTER RESTART"}
+	if strings.Join(msgs, "|") != strings.Join(want, "|") {
+		t.Errorf("readable events = %q, want %q", msgs, want)
+	}
+	// The index points at the new events' real line starts.
+	r, err := OpenIdx(idxPath(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	for i := int64(0); i < r.Len(); i++ {
+		rec, _ := r.At(i)
+		if rec.Offset != 0 && data[rec.Offset-1] != '\n' {
+			t.Errorf("idx record %d points mid-line at %d", i, rec.Offset)
+		}
+	}
+}

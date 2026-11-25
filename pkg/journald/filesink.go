@@ -399,7 +399,8 @@ func (s *FileSink) Close() error {
 // a pre-existing file (daemon restart after crash).
 func (s *FileSink) openCurrent() error {
 	path := filepath.Join(s.dir, currentFileName(time.Now().UTC()))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+	// O_RDWR rather than O_WRONLY: the last byte is read below.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0640)
 	if err != nil {
 		return fmt.Errorf("journald: open %s: %w", path, err)
 	}
@@ -407,6 +408,27 @@ func (s *FileSink) openCurrent() error {
 	if err != nil {
 		_ = f.Close()
 		return fmt.Errorf("journald: stat %s: %w", path, err)
+	}
+	size := st.Size()
+	// A crash mid-write leaves the file ending in part of a line.
+	// Appending to it glued the first new event onto that fragment,
+	// and readers, which skip a line that does not parse, dropped the
+	// event with it. End the fragment first so it stays a bad line of
+	// its own.
+	if size > 0 {
+		last := make([]byte, 1)
+		if _, err := f.ReadAt(last, size-1); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("journald: read %s: %w", path, err)
+		}
+		if last[0] != '\n' {
+			if _, err := f.Write([]byte{'\n'}); err != nil {
+				_ = f.Truncate(size)
+				_ = f.Close()
+				return fmt.Errorf("journald: end torn line in %s: %w", path, err)
+			}
+			size++
+		}
 	}
 	idxF, err := os.OpenFile(idxPath(path), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
 	if err != nil {
@@ -426,8 +448,8 @@ func (s *FileSink) openCurrent() error {
 	s.bw = bufio.NewWriterSize(f, 64*1024)
 	s.curPath = path
 	s.idxF = idxF
-	s.totalWritten = st.Size()
-	s.durable = st.Size()
+	s.totalWritten = size
+	s.durable = size
 	s.idxDurable = idxSt.Size()
 	s.openedAt = s.now()
 	s.unflushed = 0
