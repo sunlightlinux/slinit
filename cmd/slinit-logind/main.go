@@ -1025,7 +1025,7 @@ func main() {
 	// complete their startup handshake. Fails soft: if the name is
 	// already owned (live systemd, another shim), we log and keep
 	// login1 running.
-	_ = registerSystemd1(conn, *debug)
+	_ = registerSystemd1(conn, *debug, true)
 
 	// Block on SIGTERM/SIGINT. Nothing else to do — dbus/v5 runs its
 	// own dispatch goroutine. A lost bus connection is an exit with an
