@@ -28,32 +28,42 @@ import (
 // a dashboard without inventing a metric per field.
 func Render(w io.Writer, ss *service.ServiceSet, version string) error {
 	var b strings.Builder
+	// Under the graph lock: the state machine writes the fields read
+	// here (start-failed, startup times, boot times) holding it. The
+	// document goes to w only after it is released, so a slow reader
+	// cannot hold up the state machine.
+	ss.WithGraphLock(func() { renderLocked(&b, ss, version) })
+	_, err := io.WriteString(w, b.String())
+	return err
+}
 
-	metric(&b, "slinit_build_info", "gauge",
+// renderLocked builds Render's document. Caller holds the graph lock.
+func renderLocked(b *strings.Builder, ss *service.ServiceSet, version string) {
+	metric(b, "slinit_build_info", "gauge",
 		"Always 1; the version is in the label.")
-	fmt.Fprintf(&b, "slinit_build_info{version=\"%s\"} 1\n", escape(version))
+	fmt.Fprintf(b, "slinit_build_info{version=\"%s\"} 1\n", escape(version))
 
 	// --- boot ---------------------------------------------------------
-	metric(&b, "slinit_boot_kernel_seconds", "gauge",
+	metric(b, "slinit_boot_kernel_seconds", "gauge",
 		"Time from power-on to slinit starting, as reported by the kernel.")
-	fmt.Fprintf(&b, "slinit_boot_kernel_seconds %s\n", secs(ss.KernelUptime()))
+	fmt.Fprintf(b, "slinit_boot_kernel_seconds %s\n", secs(ss.KernelUptime()))
 
 	ready := !ss.BootReadyTime().IsZero()
 	var userspace time.Duration
 	if ready && !ss.BootStartTime().IsZero() {
 		userspace = ss.BootReadyTime().Sub(ss.BootStartTime())
 	}
-	metric(&b, "slinit_boot_userspace_seconds", "gauge",
+	metric(b, "slinit_boot_userspace_seconds", "gauge",
 		"Time from slinit starting to the boot target being up; 0 until it is.")
-	fmt.Fprintf(&b, "slinit_boot_userspace_seconds %s\n", secs(userspace))
+	fmt.Fprintf(b, "slinit_boot_userspace_seconds %s\n", secs(userspace))
 
-	metric(&b, "slinit_boot_ready", "gauge",
+	metric(b, "slinit_boot_ready", "gauge",
 		"1 once the boot target has started, 0 before that.")
-	fmt.Fprintf(&b, "slinit_boot_ready %d\n", boolVal(ready))
+	fmt.Fprintf(b, "slinit_boot_ready %d\n", boolVal(ready))
 
 	// --- services, in aggregate ---------------------------------------
 	c := ss.CountByState()
-	metric(&b, "slinit_services", "gauge",
+	metric(b, "slinit_services", "gauge",
 		"Loaded services by state.")
 	for _, s := range []struct {
 		state string
@@ -65,7 +75,7 @@ func Render(w io.Writer, ss *service.ServiceSet, version string) error {
 		{"stopped", c.Stopped},
 		{"failed", c.Failed},
 	} {
-		fmt.Fprintf(&b, "slinit_services{state=%q} %d\n", s.state, s.n)
+		fmt.Fprintf(b, "slinit_services{state=%q} %d\n", s.state, s.n)
 	}
 
 	// --- services, one by one -----------------------------------------
@@ -79,45 +89,43 @@ func Render(w io.Writer, ss *service.ServiceSet, version string) error {
 	svcs := ss.ListServices()
 	sort.Slice(svcs, func(i, j int) bool { return svcs[i].Name() < svcs[j].Name() })
 
-	metric(&b, "slinit_service_up", "gauge",
+	metric(b, "slinit_service_up", "gauge",
 		"1 while the service is started, 0 otherwise.")
 	for _, svc := range svcs {
-		fmt.Fprintf(&b, "slinit_service_up{service=\"%s\"} %d\n",
+		fmt.Fprintf(b, "slinit_service_up{service=\"%s\"} %d\n",
 			escape(svc.Name()), boolVal(svc.State() == service.StateStarted))
 	}
 
-	metric(&b, "slinit_service_failed", "gauge",
+	metric(b, "slinit_service_failed", "gauge",
 		"1 while the service's last start attempt failed.")
 	for _, svc := range svcs {
-		fmt.Fprintf(&b, "slinit_service_failed{service=\"%s\"} %d\n",
+		fmt.Fprintf(b, "slinit_service_failed{service=\"%s\"} %d\n",
 			escape(svc.Name()), boolVal(svc.Record().DidStartFail()))
 	}
 
-	metric(&b, "slinit_service_startup_seconds", "gauge",
+	metric(b, "slinit_service_startup_seconds", "gauge",
 		"How long the service took to reach STARTED on its last start.")
 	for _, svc := range svcs {
-		fmt.Fprintf(&b, "slinit_service_startup_seconds{service=\"%s\"} %s\n",
+		fmt.Fprintf(b, "slinit_service_startup_seconds{service=\"%s\"} %s\n",
 			escape(svc.Name()), secs(svc.Record().StartupDuration()))
 	}
 
-	metric(&b, "slinit_service_restarts_total", "counter",
+	metric(b, "slinit_service_restarts_total", "counter",
 		"Supervisor-driven restarts of this service since slinit started.")
 	for _, svc := range svcs {
-		fmt.Fprintf(&b, "slinit_service_restarts_total{service=\"%s\"} %d\n",
+		fmt.Fprintf(b, "slinit_service_restarts_total{service=\"%s\"} %d\n",
 			escape(svc.Name()), svc.Record().RestartCount())
 	}
 
 	// --- daemon-wide counters -----------------------------------------
-	metric(&b, "slinit_restarts_total", "counter",
+	metric(b, "slinit_restarts_total", "counter",
 		"Supervisor-driven restarts across every service since slinit started.")
-	fmt.Fprintf(&b, "slinit_restarts_total %d\n", ss.RestartsTotal())
+	fmt.Fprintf(b, "slinit_restarts_total %d\n", ss.RestartsTotal())
 
-	metric(&b, "slinit_watchdog_restarts_total", "counter",
+	metric(b, "slinit_watchdog_restarts_total", "counter",
 		"Restarts caused by a service missing its watchdog deadline.")
-	fmt.Fprintf(&b, "slinit_watchdog_restarts_total %d\n", ss.WatchdogMisses())
+	fmt.Fprintf(b, "slinit_watchdog_restarts_total %d\n", ss.WatchdogMisses())
 
-	_, err := io.WriteString(w, b.String())
-	return err
 }
 
 // metric writes the HELP and TYPE lines a scraper reads before the

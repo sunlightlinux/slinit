@@ -118,3 +118,47 @@ func TestServiceCommandsHoldQueueLock(t *testing.T) {
 	wg.Wait()
 	set.UnpinService(a)
 }
+
+// Status, list, boot-time and show replies read fields the state machine
+// writes holding the queue lock (start-failed, stop reason, exit status,
+// startup times). The handlers encoded them from the connection
+// goroutine without it. Run under -race.
+func TestStatusRepliesHoldQueueLock(t *testing.T) {
+	server, sock := setupTestServer(t)
+	defer server.Stop()
+	set := server.services
+	a := service.NewInternalService(set, "a")
+	set.AddService(a)
+
+	conn := connectTest(t, sock)
+	defer conn.Close()
+	h := findHandle(t, conn, "a")
+
+	stop := make(chan struct{})
+	wg := churnServices(set, stop, a)
+	sendFor(t, 500*time.Millisecond, func() error {
+		for _, cmd := range []uint8{CmdServiceStatus, CmdServiceStatus5, CmdServiceStatus6, CmdServiceShow} {
+			if err := WritePacket(conn, cmd, EncodeHandle(h)); err != nil {
+				return err
+			}
+			readReply(t, conn)
+		}
+		if err := WritePacket(conn, CmdBootTime, nil); err != nil {
+			return err
+		}
+		readReply(t, conn)
+		for _, cmd := range []uint8{CmdListServices, CmdListServices5} {
+			if err := WritePacket(conn, cmd, nil); err != nil {
+				return err
+			}
+			for {
+				if rply, _ := readReply(t, conn); rply == RplyListDone {
+					break
+				}
+			}
+		}
+		return nil
+	})
+	close(stop)
+	wg.Wait()
+}

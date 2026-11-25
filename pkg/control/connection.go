@@ -906,10 +906,29 @@ func (c *Connection) handleReleaseService(payload []byte) error {
 	return c.writePacket(RplyACK, nil)
 }
 
+// encodeLocked runs enc on svc under the graph lock. A status encoding
+// reads fields the state machine writes holding that lock (start-failed,
+// stop reason, exit status); the packet is written after it is released,
+// so a slow client cannot hold up the state machine.
+func (c *Connection) encodeLocked(enc func(service.Service) []byte, svc service.Service) []byte {
+	var b []byte
+	c.server.services.WithGraphLock(func() { b = enc(svc) })
+	return b
+}
+
+// encodeAllLocked is encodeLocked for every loaded service.
+func (c *Connection) encodeAllLocked(enc func(service.Service) []byte) [][]byte {
+	var out [][]byte
+	c.server.services.WithGraphLock(func() {
+		for _, svc := range c.server.services.ListServices() {
+			out = append(out, enc(svc))
+		}
+	})
+	return out
+}
+
 func (c *Connection) handleListServices() error {
-	services := c.server.services.ListServices()
-	for _, svc := range services {
-		info := EncodeSvcInfo(svc)
+	for _, info := range c.encodeAllLocked(EncodeSvcInfo) {
 		if err := c.writePacket(RplySvcInfo, info); err != nil {
 			return err
 		}
@@ -928,14 +947,12 @@ func (c *Connection) handleServiceStatus(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	status := EncodeServiceStatus(svc)
+	status := c.encodeLocked(EncodeServiceStatus, svc)
 	return c.writePacket(RplyServiceStatus, status)
 }
 
 func (c *Connection) handleListServices5() error {
-	services := c.server.services.ListServices()
-	for _, svc := range services {
-		info := EncodeSvcInfo5(svc)
+	for _, info := range c.encodeAllLocked(EncodeSvcInfo5) {
 		if err := c.writePacket(RplySvcInfo, info); err != nil {
 			return err
 		}
@@ -954,7 +971,7 @@ func (c *Connection) handleServiceStatus5(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	status := EncodeServiceStatus5(svc)
+	status := c.encodeLocked(EncodeServiceStatus5, svc)
 	return c.writePacket(RplyServiceStatus, status)
 }
 
@@ -1265,6 +1282,17 @@ func (c *Connection) handleUnpinService(payload []byte) error {
 func (c *Connection) handleBootTime() error {
 	ss := c.server.services
 
+	// Under the graph lock: the state machine writes the boot times and
+	// each record's start times holding it.
+	var info BootTimeInfo
+	ss.WithGraphLock(func() { info = bootTimeLocked(ss) })
+
+	payload := EncodeBootTime(info)
+	return c.writePacket(RplyBootTime, payload)
+}
+
+// bootTimeLocked builds the boot-time reply. Caller holds the graph lock.
+func bootTimeLocked(ss *service.ServiceSet) BootTimeInfo {
 	info := BootTimeInfo{
 		KernelUptimeNs: int64(ss.KernelUptime()),
 		BootSvcName:    ss.BootServiceName(),
@@ -1301,9 +1329,7 @@ func (c *Connection) handleBootTime() error {
 		}
 		info.Services = append(info.Services, entry)
 	}
-
-	payload := EncodeBootTime(info)
-	return c.writePacket(RplyBootTime, payload)
+	return info
 }
 
 func (c *Connection) handleCatLog(payload []byte) error {
@@ -1795,7 +1821,7 @@ func (c *Connection) handleRmDep(payload []byte, v7 bool) error {
 		// dep_exists is always 0 after a successful remove; kept for
 		// wire compatibility with ENABLE_SERVICE_V7 so client code
 		// can share the status decoder.
-		status := EncodeServiceStatus6(to)
+		status := c.encodeLocked(EncodeServiceStatus6, to)
 		reply := make([]byte, 1+len(status))
 		copy(reply[1:], status)
 		return c.writePacket(RplyServiceStatus, reply)
@@ -1878,7 +1904,7 @@ func (c *Connection) handleEnableService(payload []byte, v7 bool) error {
 
 	if v7 {
 		// Wire: [RplyServiceStatus][dep_exists(1B)][status_v6(22B)]
-		status := EncodeServiceStatus6(svc)
+		status := c.encodeLocked(EncodeServiceStatus6, svc)
 		reply := make([]byte, 1+len(status))
 		if depExists {
 			reply[0] = 1
@@ -1949,7 +1975,7 @@ func (c *Connection) handleDisableService(payload []byte, v7 bool) error {
 	}
 
 	if v7 {
-		status := EncodeServiceStatus6(svc)
+		status := c.encodeLocked(EncodeServiceStatus6, svc)
 		reply := make([]byte, 1+len(status))
 		copy(reply[1:], status)
 		return c.writePacket(RplyServiceStatus, reply)
@@ -2287,7 +2313,7 @@ func (c *Connection) handleServiceStatus6(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
-	status := EncodeServiceStatus6(svc)
+	status := c.encodeLocked(EncodeServiceStatus6, svc)
 	return c.writePacket(RplyServiceStatus, status)
 }
 
@@ -2305,7 +2331,8 @@ func (c *Connection) handleServiceShow(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
-	body := service.RenderShow(svc)
+	var body string
+	c.server.services.WithGraphLock(func() { body = service.RenderShow(svc) })
 	if len(body) > MaxPayloadSize {
 		body = body[:MaxPayloadSize]
 	}

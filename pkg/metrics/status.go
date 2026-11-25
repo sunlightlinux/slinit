@@ -66,6 +66,15 @@ type StatusService struct {
 // so it can be tested without a socket, and so the document is one
 // function rather than scattered through response writing.
 func BuildStatus(ss *service.ServiceSet, version string, now time.Time) StatusDoc {
+	// Under the graph lock, as Render: the state machine writes the
+	// fields read here holding it.
+	var doc StatusDoc
+	ss.WithGraphLock(func() { doc = buildStatusLocked(ss, version, now) })
+	return doc
+}
+
+// buildStatusLocked is BuildStatus. Caller holds the graph lock.
+func buildStatusLocked(ss *service.ServiceSet, version string, now time.Time) StatusDoc {
 	doc := StatusDoc{
 		Version:   version,
 		BootReady: !ss.BootReadyTime().IsZero(),
