@@ -1,6 +1,7 @@
 package eventloop
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -106,5 +107,35 @@ func TestPanickingPreShutdownStillStopsServices(t *testing.T) {
 	defer el.cancelEmergencyTimer()
 	if !set.IsShuttingDown() {
 		t.Error("StopAllServices did not run after the hook panicked")
+	}
+}
+
+// After a remain PID 1 runs on with a new loop. The old one must not
+// leave its emergency timer or blocker reporter behind: the timer logged
+// a forced shutdown 90s into a system that was staying up. The shutdown
+// below takes the empty-set path, which returns Run through forceExitCh.
+func TestRunLeavesNoShutdownTimersBehind(t *testing.T) {
+	logger := logging.New(logging.LevelError)
+	el := New(service.NewServiceSet(logger), logger)
+	el.SetPID1Mode(true)
+
+	done := make(chan error, 1)
+	go func() { done <- el.Run(context.Background()) }()
+	el.InitiateShutdown(service.ShutdownRemain)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after a shutdown with nothing running")
+	}
+
+	el.mu.Lock()
+	defer el.mu.Unlock()
+	if el.emergencyTimer != nil {
+		el.emergencyTimer.Stop()
+		t.Error("the emergency timer outlived Run")
+	}
+	if el.shutdownReporterStop != nil {
+		close(el.shutdownReporterStop)
+		t.Error("the blocker reporter outlived Run")
 	}
 }

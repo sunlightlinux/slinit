@@ -1669,8 +1669,8 @@ func main() {
 			return
 		}
 		if st == service.ShutdownRemain {
-			// Nothing is running to stop, and handlePID1Shutdown would
-			// park PID 1 for good.
+			// Nothing is running to stop, and no event loop to
+			// remain in.
 			logger.Warn("Shutdown (remain) requested with no event loop running; ignored")
 			return
 		}
@@ -1747,6 +1747,9 @@ func main() {
 				// (services stop in ms) but a hard upper bound
 				// so a wedged service doesn't stall the switch.
 				time.Sleep(3 * time.Second)
+				// A remain keeps the watchdog fed now; the new
+				// init may not, and the exec drops the fd armed.
+				closeWatchdog(wd, logger)
 			})
 		}
 	}
@@ -1963,6 +1966,7 @@ func main() {
 	}
 
 	// Boot loop: runs the event loop, handles boot failures with recovery
+	remaining := false // a shutdown remain has stopped every service
 	for {
 		loop := eventloop.New(serviceSet, logger)
 
@@ -1981,8 +1985,9 @@ func main() {
 			loop.SetPID1Mode(true)
 		}
 		// Rescue/emergency loads no boot services, so the loop must not
-		// read an empty service set as a collapse.
-		loop.SetRescueMode(rescueMode)
+		// read an empty service set as a collapse. Nor, after a remain,
+		// is one.
+		loop.SetRescueMode(rescueMode || remaining)
 
 		// --emergency-timeout override. Zero passes through to the
 		// event loop's built-in default (90s); the setter handles the
@@ -2130,7 +2135,7 @@ func main() {
 		// request. Runs on the first (and only) iteration of the boot
 		// retry loop since rescueMode short-circuits the boot-services
 		// load block above.
-		if rescueMode {
+		if rescueMode && !remaining {
 			if kOpts.Mode == bootmode.Rescue {
 				mountLocalFsBestEffort(logger)
 			}
@@ -2145,7 +2150,9 @@ func main() {
 				// own recover.
 				defer shutdown.CrashRecovery(isPID1, containerMode)
 				runRescueShell(label, logger)
-				loop.InitiateShutdown(service.ShutdownReboot)
+				// Through the gate: after a remain, this loop is
+				// no longer the one running.
+				shutdownGate.Request(service.ShutdownReboot, 0)
 			}()
 		}
 
@@ -2242,9 +2249,15 @@ func main() {
 			break
 		}
 		if shutdownType != service.ShutdownNone {
-			watchdogForShutdown(wd, shutdownType, containerMode, logger)
+			if shutdownType != service.ShutdownRemain {
+				watchdogForShutdown(wd, shutdownType, containerMode, logger)
+			}
 			handlePID1Shutdown(shutdownType, cal, logger)
-			// handlePID1Shutdown does not return
+			// handlePID1Shutdown returns only for a remain: back to an
+			// event loop, as dinit does, with nothing running and the
+			// watchdog still fed.
+			remaining = true
+			continue
 		}
 
 		// Boot failure detected: all services stopped without shutdown
@@ -2399,7 +2412,8 @@ func (l *pathRearmListener) ServiceEvent(svc service.Service, event service.Serv
 
 // handlePID1Shutdown performs the appropriate system action after all services
 // have stopped when running as PID 1. Called only for explicit shutdowns
-// (shutdownType != ShutdownNone). This function does not return.
+// (shutdownType != ShutdownNone). This function does not return, except
+// for ShutdownRemain.
 func handlePID1Shutdown(shutdownType service.ShutdownType, cal *logging.CatchAllLogger, logger *logging.Logger) {
 	switch shutdownType {
 	case service.ShutdownSoftReboot:
@@ -2417,8 +2431,12 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, cal *logging.CatchAll
 		shutdown.Execute(shutdownType, logger)
 
 	case service.ShutdownRemain:
+		// Returns, for main to run an event loop again. Parked here,
+		// PID 1 stopped reaping orphans, its signals went to a channel
+		// nobody read, and a later shutdown request was held for
+		// good: the machine could only be reset.
 		logger.Notice("Shutdown type is REMAIN, staying up with no services")
-		shutdown.InfiniteHold()
+		logger.SetShutdownConsole(false)
 
 	default:
 		logger.Error("Unknown shutdown type: %s, halting", shutdownType)

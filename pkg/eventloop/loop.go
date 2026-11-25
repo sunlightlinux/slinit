@@ -224,6 +224,9 @@ func (el *EventLoop) Run(ctx context.Context) error {
 			} else {
 				el.logger.Error("Emergency shutdown timeout reached, forcing exit")
 			}
+			// The reporter and timer go with the loop: after a remain
+			// PID 1 runs on, and they would report into it for ever.
+			el.cancelEmergencyTimer()
 			return nil
 
 		case sig := <-el.sigCh:
@@ -530,7 +533,9 @@ func formatBlockingServices(active []service.ActiveServiceInfo) string {
 // which services are blocking shutdown.
 func (el *EventLoop) startShutdownReporter() {
 	stop := make(chan struct{})
+	el.mu.Lock()
 	el.shutdownReporterStop = stop
+	el.mu.Unlock()
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -547,6 +552,8 @@ func (el *EventLoop) startShutdownReporter() {
 
 // stopShutdownReporter stops the periodic shutdown reporter.
 func (el *EventLoop) stopShutdownReporter() {
+	el.mu.Lock()
+	defer el.mu.Unlock()
 	if el.shutdownReporterStop != nil {
 		close(el.shutdownReporterStop)
 		el.shutdownReporterStop = nil
@@ -655,6 +662,11 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	// timer fired before a single service had been asked to stop.
 	el.armEmergencyTimer()
 
+	// Start periodic reporting of blocking services. Before the stop,
+	// whose end can return Run at once: started after, it outlived the
+	// loop that should have stopped it.
+	el.startShutdownReporter()
+
 	el.services.StopAllServices(shutdownType)
 
 	// Empty-set fast path: rescue/emergency boots have no services
@@ -669,9 +681,6 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 		default:
 		}
 	}
-
-	// Start periodic reporting of blocking services
-	el.startShutdownReporter()
 }
 
 // runPreShutdown runs OnPreShutdown and waits for it at most as long as
