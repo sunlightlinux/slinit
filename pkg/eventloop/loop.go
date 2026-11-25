@@ -128,12 +128,41 @@ func New(services *service.ServiceSet, logger *logging.Logger) *EventLoop {
 // the set before the loop's channel lets go, leaving no gap; nothing
 // reads it, and signal delivery to a full channel is dropped, not
 // blocking. Children still get default dispositions, unlike with
-// signal.Ignore, which exec would pass on.
+// signal.Ignore, which exec would pass on. The fresh channel is kept in
+// heldSigCh so the next loop can let it go once it has claimed the set:
+// discarded, it stayed registered, one more per remain.
 func (el *EventLoop) releaseSignals() {
 	if el.isPID1 || os.Getpid() == 1 {
-		SetupEarlySignals()
+		ch := SetupEarlySignals()
+		heldSigMu.Lock()
+		prev := heldSigCh
+		heldSigCh = ch
+		heldSigMu.Unlock()
+		if prev != nil {
+			StopSignals(prev)
+		}
 	}
 	StopSignals(el.sigCh)
+}
+
+// heldSigCh is the channel releaseSignals claims the signals on between
+// two loops, guarded by heldSigMu. Package-level: each loop is a new
+// EventLoop.
+var (
+	heldSigMu sync.Mutex
+	heldSigCh chan os.Signal
+)
+
+// releaseHeldSignals lets go of the channel the previous loop left
+// holding the signals. Call it once this loop has claimed them.
+func releaseHeldSignals() {
+	heldSigMu.Lock()
+	ch := heldSigCh
+	heldSigCh = nil
+	heldSigMu.Unlock()
+	if ch != nil {
+		StopSignals(ch)
+	}
 }
 
 // SetPID1Mode enables PID 1 specific behavior:
@@ -204,7 +233,12 @@ func (el *EventLoop) Run(ctx context.Context) error {
 		// for it until now.
 		signal.Notify(el.sigCh, syscall.SIGCHLD)
 	}
+	releaseHeldSignals()
 	defer el.releaseSignals()
+	// An orphan that exited before SIGCHLD was claimed (during boot, or
+	// between the previous loop and this one after a remain) sent a
+	// signal nobody received: reap it now rather than at the next exit.
+	el.reapOrphans()
 	defer func() {
 		el.mu.Lock()
 		el.runExited = true
