@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -277,5 +278,98 @@ func TestDepAudit_ForceStopPinnedDependent(t *testing.T) {
 	}
 	if n := set.CountActiveServices(); n != 0 {
 		t.Errorf("CountActiveServices=%d", n)
+	}
+}
+
+// A (restart=always) dies while its hard dependent B is still STARTING,
+// waiting for a slow C. B has started nothing, so dinit leaves it alone
+// (stop_dependents skips a STARTING dependent that is fundamentally
+// stopped) and B starts once A is back and C is up. slinit force-stopped
+// B: its start was cancelled and its activation dropped for good.
+func TestDepAudit_DepCrashLeavesWaitingDependent(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B", "C")
+	a, b, c := sv[0], sv[1], sv[2]
+	a.SetAutoRestart(RestartAlways)
+	b.AddDep(a, DepRegular)
+	b.AddDep(c, DepRegular)
+	c.autoStart = false
+	set.StartService(b)
+	ev := &testListener{}
+	b.AddListener(ev)
+	crashSvc(set, a)
+	set.queueMu.Lock()
+	c.Started()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	if b.State() != StateStarted {
+		logSvcs(t, a, b, c)
+		t.Errorf("B never started after A's restart and C coming up: %v (events %v)", b.State(), ev.events)
+	}
+}
+
+func TestDepAudit_DepCrashLeavesWaitingDependentProcess(t *testing.T) {
+	set, _ := newTestSet()
+	a := NewProcessService(set, "A")
+	a.SetCommand([]string{"/bin/sleep", "60"})
+	a.SetAutoRestart(RestartAlways)
+	b := NewProcessService(set, "B")
+	b.SetCommand([]string{"/bin/sleep", "60"})
+	c := newTestSvc(t, set, "C")
+	c.autoStart = false
+	set.AddService(a)
+	set.AddService(b)
+	set.AddService(c)
+	b.AddDep(a, DepRegular)
+	b.AddDep(c, DepRegular)
+	t.Cleanup(func() {
+		set.StopService(b)
+		set.StopService(a)
+		waitState(t, a, StateStopped, 3*time.Second)
+		waitState(t, b, StateStopped, 3*time.Second)
+	})
+	set.StartService(b)
+	pa := waitForNewPID(set, a, 0, 2*time.Second)
+	if err := syscall.Kill(pa, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	waitForNewPID(set, a, pa, 3*time.Second)
+	set.queueMu.Lock()
+	c.Started()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	if st := waitState(t, b, StateStarted, 3*time.Second); st != StateStarted {
+		t.Errorf("B never started after A was killed and restarted: %v (desired %v)", st, b.desired.Load())
+	}
+}
+
+// The same guard on a restart (slinitctl restart, prepared-by): a hard
+// dependent still waiting for another dependency is not restarted.
+func TestDepAudit_RestartLeavesWaitingDependent(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B", "C")
+	a, b, c := sv[0], sv[1], sv[2]
+	b.AddDep(a, DepRegular)
+	b.AddDep(c, DepRegular)
+	c.autoStart = false
+	set.StartService(b)
+	ev := &testListener{}
+	b.AddListener(ev)
+	set.queueMu.Lock()
+	a.Restart()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	for _, e := range ev.events {
+		if e == EventStartCancelled {
+			t.Errorf("B's pending start was cancelled by a restart of A")
+		}
+	}
+	set.queueMu.Lock()
+	c.Started()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	if b.State() != StateStarted {
+		logSvcs(t, a, b, c)
+		t.Errorf("B: %v after C came up", b.State())
 	}
 }

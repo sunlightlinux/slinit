@@ -736,6 +736,15 @@ requires.
   (`<date>.<ns>.jsonl` with its `.idx`), so both boots are kept and read
   in the order they were written; the cross-device copy no longer
   truncates an existing file either.
+- **A dependency's crash or restart cancelled a dependent still waiting
+  to start.** When a `restart = always` dependency died, or was
+  restarted, while a hard dependent was STARTING but still waiting for
+  another, slower dependency, the dependent was force-stopped: its
+  start was cancelled, its activation dropped, and it never came up —
+  taking the restarted dependency down with it, as nothing required it
+  any more. Such a dependent has started nothing, so, as in dinit, it is
+  now left waiting and starts once its dependencies are up; a dependent
+  already stopping is likewise left to finish its stop.
 - **`slinitctl --force stop` did not stop a restart=always or pinned
   service.** The forced stop only marked the service and its dependents
   for a forced stop and left the service wanted: a `restart = always`
