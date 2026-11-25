@@ -1,10 +1,9 @@
 type = process
 depends-on: system-init
-# Log-pipeline filters + forwarder knobs. All are parse-only in this
-# fixture: log-forward-udp needs a UDP listener we don't have, and
-# log-level-max / log-sanitize / log-max-line-length observably affect
-# the log stream only on records matching their patterns. The point
-# is that the loader accepts every combination and the service starts.
+# Log-pipeline filters + forwarder knobs. log-level-max is observed:
+# the <5> line must reach the file and the <7> one must not. The
+# forwarder (no UDP listener here), log-sanitize, log-max-line-length and
+# log-read-buffer-size are parse coverage.
 logfile               = /tmp/185-filter.log
 log-level-max         = notice
 log-sanitize          = _
@@ -15,4 +14,4 @@ log-forward-udp       = 127.0.0.1:9999
 log-forward-format    = rfc5424
 log-forward-facility  = daemon
 log-forward-tag       = 185-filter
-command = /bin/sh -c "while true; do echo hello; sleep 1; done"
+command = /bin/sh -c "echo '<7>debug-line'; echo '<5>notice-line'; exec sleep 600"

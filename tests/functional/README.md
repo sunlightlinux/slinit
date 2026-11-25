@@ -292,7 +292,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 182 | kill-signal-cluster | kill-mode/final-kill/restart-kill/watchdog-signal/survive-final-kill parse; `slinitctl restart` delivers `restart-kill-signal` (SIGUSR1) while a plain stop delivers SIGTERM |
 | 183 | timeout-cluster | timeout cluster parses; stopping a SIGTERM-ignoring service takes timeout-sec (2 s) + timeout-abort-sec (1 s) and the SIGABRT phase is seen |
 | 184 | cgroup-expanded | memory-high/-low/-min + swap-max + cpu-max + io-weight + cpuset-cpus + cgroup-setting + startup-allowed-* land in cgroupfs (spot-checked via memory.high) |
-| 185 | log-pipeline-extras | logfile-permissions/uid/gid/rotate-time + log-forward-* + log-level-max + log-sanitize/-extra + log-line-prefix + log-max-line-length + log-read-buffer-size parse; mode 0640 verified on file |
+| 185 | log-pipeline-extras | logfile-permissions/uid/gid/rotate-time + log-forward-* + log-level-max + log-sanitize/-extra + log-line-prefix + log-max-line-length + log-read-buffer-size parse; mode 0640 on the file, `[svc] ` prefix on its lines, and log-level-max = notice keeps a <5> line and drops a <7> one |
 | 186 | service-dir-modes | runtime/state/cache/logs/configuration-directory each with -mode + -quota + -accounting; all 5 dirs created with requested mode |
 | 187 | notify-guess-exit-openfile | notify-access/guess-main-pid/exit-type parse; `open-file` hands the child an fd on the file |
 | 188 | pass-unset-env | pass-environment whitelist and unset-environment blacklist visible in child /proc/self/environ |

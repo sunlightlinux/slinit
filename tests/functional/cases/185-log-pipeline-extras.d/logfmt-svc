@@ -8,5 +8,5 @@ logfile-permissions  = 0640
 logfile-uid          = 0
 logfile-gid          = 0
 logfile-rotate-time  = 30
-log-line-prefix      = "[svc] "
+log-line-prefix      = [svc]
 command = /bin/sh -c "while true; do echo message; sleep 1; done"
