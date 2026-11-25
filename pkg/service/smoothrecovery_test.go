@@ -267,11 +267,33 @@ func TestBGSmoothRecoveryLatePIDFile(t *testing.T) {
 // pid to signal, the stop must wait for the file and bring that daemon
 // down, not report STOPPED and leave it running unsupervised.
 func TestBGSmoothRecoveryStopWhilePIDFilePending(t *testing.T) {
+	bgStopWhilePIDFilePending(t, false)
+}
+
+// TestBGSmoothRecoveryStopWhileStalePIDFile is the same stop with the dead
+// daemon's pid file still in place. The stop's own poll read that pid back,
+// saw it was not running and called the stop done at once, while the new
+// daemon went on to write its file and run unsupervised. A pid file naming
+// the daemon being replaced is stale, as pollForPIDFile already knew.
+func TestBGSmoothRecoveryStopWhileStalePIDFile(t *testing.T) {
+	bgStopWhilePIDFilePending(t, true)
+}
+
+// bgStopWhilePIDFilePending stops a smooth-recovering bgprocess while its
+// new daemon's pid file is pending, and checks that daemon does not outlive
+// the stop. With staleFile the launcher leaves the dead daemon's pid file
+// in place until the new one overwrites it.
+func bgStopWhilePIDFilePending(t *testing.T, staleFile bool) {
+	t.Helper()
 	set, _ := newTestSet()
 	pf := t.TempDir() + "/d.pid"
+	rm := "rm -f " + pf + "; "
+	if staleFile {
+		rm = ""
+	}
 	a := NewBGProcessService(set, "a")
 	a.SetCommand([]string{"/bin/sh", "-c",
-		"rm -f " + pf + "; sleep 60 & D=$!; ( sleep 0.5; echo $D > " + pf + " ) & exit 0"})
+		rm + "sleep 60 & D=$!; ( sleep 0.5; echo $D > " + pf + " ) & exit 0"})
 	a.SetPIDFile(pf)
 	a.SetSmoothRecovery(true)
 	set.AddService(a)
@@ -300,7 +322,7 @@ func TestBGSmoothRecoveryStopWhilePIDFilePending(t *testing.T) {
 	var d2 int
 	for deadline = time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
 		data, _ := os.ReadFile(pf)
-		if d2, _ = strconv.Atoi(strings.TrimSpace(string(data))); d2 > 0 {
+		if d2, _ = strconv.Atoi(strings.TrimSpace(string(data))); d2 > 0 && d2 != d1 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

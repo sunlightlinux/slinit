@@ -1266,7 +1266,12 @@ func (s *BGProcessService) bringDownForkedDaemonLocked(pid int) {
 // Wait for the file as a start would, but no longer than the stop-timeout
 // armed by the interrupt, so the stop cannot hang on a file that never
 // comes.
+//
+// A file that names the daemon which last died is the one it left behind,
+// not one the new daemon has written: keep waiting on it as on an absent
+// file (pollForPIDFile does the same in a smooth recovery).
 func (s *BGProcessService) pollForForkedDaemon() {
+	stalePID := s.lastDaemonPID
 	deadline := s.startTimeout
 	if deadline <= 0 {
 		deadline = defaultStartTimeout
@@ -1286,8 +1291,9 @@ func (s *BGProcessService) pollForForkedDaemon() {
 				return
 			}
 			pid, result, err := process.ReadPIDFile(pidFile)
-			if result == process.PIDResultFailed && pidFileStillComing(err) &&
-				time.Now().Before(expiry) {
+			pending := (result == process.PIDResultFailed && pidFileStillComing(err)) ||
+				(result == process.PIDResultTerminated && stalePID > 0 && pid == stalePID)
+			if pending && time.Now().Before(expiry) {
 				continue
 			}
 
