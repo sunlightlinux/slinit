@@ -33,6 +33,15 @@ requires.
 
 ### Security
 
+- **slinit-getty did not take its tty back from the previous session**:
+  a tty left owned by the last user, or a process of theirs holding it,
+  could read the next login. Before the prompt getty now makes it
+  root-owned (group tty, 0620) and hangs it up, as agetty does. It also
+  never got a controlling terminal when run as the man page showed:
+  services start as process-group leaders, which cannot create a
+  session. The examples now use `new-session = yes`, and getty warns
+  when it lacks a session.
+
 - **slinit-nspawn gave a container no isolation beyond namespaces.** It
   now gives it a fresh `/dev` (null, zero, full, random, urandom, tty, a
   private devpts, `/dev/shm`, and the console) on a rootfs mounted nodev,
