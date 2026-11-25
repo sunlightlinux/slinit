@@ -320,7 +320,7 @@ func TestLoaderRefusesChrootWithSandbox(t *testing.T) {
 		"private-tmp = yes", "protect-system = full", "protect-home = yes",
 		"read-only-paths = /etc", "inaccessible-paths = /etc/x",
 		"bind-paths = /srv/data", "protect-kernel-tunables = yes",
-		"protect-control-groups = yes",
+		"protect-control-groups = yes", "protect-hostname = yes",
 	} {
 		dir := t.TempDir()
 		writeNSServiceFile(t, dir, "jail", "type = process\ncommand = /bin/true\nchroot = /srv/jail\n"+opt+"\n")
@@ -335,7 +335,7 @@ func TestLoaderRefusesChrootWithSandbox(t *testing.T) {
 	// Seccomp-only hardening and protect-system = no still load.
 	dir := t.TempDir()
 	writeNSServiceFile(t, dir, "jail", "type = process\ncommand = /bin/true\nchroot = /srv/jail\n"+
-		"protect-system = no\nprotect-hostname = yes\noptions = no-new-privs\n")
+		"protect-system = no\nprotect-clock = yes\noptions = no-new-privs\n")
 	ss := service.NewServiceSet(&testServiceLogger{})
 	loader := NewDirLoader(ss, []string{dir})
 	ss.SetLoader(loader)

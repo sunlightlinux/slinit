@@ -97,7 +97,7 @@ func (h hardeningSpec) active() bool {
 // mount namespace to apply its mount operation.
 func (h hardeningSpec) needsMountNS() bool {
 	return h.protectKernelTunables || h.protectControlGroups ||
-		h.protectKernelLogs || h.protectKernelModules
+		h.protectKernelLogs || h.protectKernelModules || h.protectHostname
 }
 
 // The paths systemd's ProtectKernelTunables= makes read-only or hides
@@ -136,10 +136,11 @@ func hardeningBoundingDrops(h hardeningSpec) []uintptr {
 // applyHardening enforces the active Restrict*/Protect* knobs:
 //
 //  1. Mount operations (/proc and /sys knobs, /sys/fs/cgroup, the kmsg
-//     files, /usr/lib/modules) are applied first, and the capabilities
-//     the knobs stand for leave the bounding set; the mounts require the
-//     runner to be in a private mount namespace (the loader auto-implies
-//     CLONE_NEWNS when any of these four knobs is active).
+//     files, /usr/lib/modules, the hostname files) are applied first, and
+//     the capabilities the knobs stand for leave the bounding set; the
+//     mounts require the runner to be in a private mount namespace (the
+//     loader auto-implies CLONE_NEWNS when any of these five knobs is
+//     active).
 //  2. A second seccomp filter is built containing the union of all
 //     denied syscalls and installed via seccomp(2). The kernel runs
 //     every loaded filter on each syscall and picks the most
@@ -190,6 +191,16 @@ func applyHardening(h hardeningSpec) error {
 	if h.protectControlGroups {
 		if err := remountROIfMount("/sys/fs/cgroup"); err != nil {
 			return fmt.Errorf("protect-control-groups: %w", err)
+		}
+	}
+	if h.protectHostname {
+		// The sysctl files set the hostname without sethostname(2):
+		// systemd's ProtectHostname= makes both read-only
+		// (protect_hostname_yes_table in namespace.c).
+		for _, p := range []string{"/proc/sys/kernel/hostname", "/proc/sys/kernel/domainname"} {
+			if err := remountROIfMount(p); err != nil {
+				return fmt.Errorf("protect-hostname: %w", err)
+			}
 		}
 	}
 	if h.protectKernelLogs {

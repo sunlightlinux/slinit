@@ -340,8 +340,8 @@ what tells you the oldest slinit your configuration will run on. See
     It cannot be combined with the filesystem sandbox (**private-tmp**,
     **protect-system**, **protect-home**, the **\*-paths** options,
     **protect-proc**, **proc-subset**, **temporary-filesystem**) or with
-    **protect-kernel-tunables**, **-modules**, **-logs** and
-    **protect-control-groups**: those apply to the host's paths, not the
+    **protect-kernel-tunables**, **-modules**, **-logs**,
+    **protect-control-groups** and **protect-hostname**: those apply to the host's paths, not the
     jail's, and the service refuses to load. With a sandbox option set,
     the jail is entered by slinit-runner, after its own setup.
 
@@ -1567,8 +1567,10 @@ these hide or make read-only that do not exist are skipped.
     **ProtectControlGroups=**.
 
 **protect-hostname**=*yes*|*no*
-:   Deny **sethostname**(2), **setdomainname**(2). Equivalent to
-    systemd's **ProtectHostname=**.
+:   Deny **sethostname**(2), **setdomainname**(2), and make
+    */proc/sys/kernel/hostname* and */proc/sys/kernel/domainname*
+    read-only in a private mount namespace. Equivalent to systemd's
+    **ProtectHostname=**.
 
 **lock-personality**=*yes*|*no*
 :   Refuse changing the execution domain: a **personality**(2) call

@@ -692,7 +692,8 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		cfg.mapped = append(cfg.mapped, kvPair{"io-uring-filter", trimQuotes(val)})
 	case "ProtectHostname":
 		// systemd also has private[:name], a UTS namespace with its own
-		// hostname; slinit's protect-hostname only refuses the calls.
+		// hostname; slinit's protect-hostname refuses the calls and
+		// makes the hostname sysctl files read-only.
 		switch v := strings.ToLower(trimQuotes(val)); v {
 		case "yes", "no", "true", "false", "1", "0", "on", "off":
 			cfg.mapped = append(cfg.mapped, kvPair{"protect-hostname", boolWord(val)})

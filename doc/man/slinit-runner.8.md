@@ -212,7 +212,9 @@ seccomp filter plus a small set of mount operations applied before
     **ProtectControlGroups=**.
 
 **\--protect-hostname**
-:   Block **sethostname**(2) / **setdomainname**(2). Mirrors
+:   Block **sethostname**(2) / **setdomainname**(2) and remount
+    `/proc/sys/kernel/hostname` and `/proc/sys/kernel/domainname`
+    read-only. Mirrors
     **ProtectHostname=**.
 
 **\--lock-personality**

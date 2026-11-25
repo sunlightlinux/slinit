@@ -279,6 +279,21 @@ func TestProtectKernelTunablesCoversBinfmtMisc(t *testing.T) {
 	wantRO(t, "/proc/sys/fs/binfmt_misc", true)
 }
 
+// protect-hostname refused sethostname and setdomainname but left
+// /proc/sys/kernel/hostname and domainname writable, which set the same
+// names; systemd's ProtectHostname= makes both read-only.
+func TestProtectHostnameReadOnlySysctl(t *testing.T) {
+	if !inMountNS(t, "", false) {
+		return
+	}
+	runtime.LockOSThread() // the call filter is per thread; see below
+	if err := applyHardening(hardeningSpec{protectHostname: true}); err != nil {
+		t.Fatal(err)
+	}
+	wantRO(t, "/proc/sys/kernel/hostname", true)
+	wantRO(t, "/proc/sys/kernel/domainname", true)
+}
+
 // protect-kernel-tunables, -modules, -logs and protect-clock only
 // filtered system calls (and made /proc/sys and /dev/kmsg safe), while
 // systemd's also make /sys and the rest of /proc's kernel knobs

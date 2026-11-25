@@ -52,6 +52,7 @@ func chrootMountConflicts(desc *ServiceDescription) []string {
 	add(desc.ProtectKernelModules, "protect-kernel-modules")
 	add(desc.ProtectKernelLogs, "protect-kernel-logs")
 	add(desc.ProtectControlGroups, "protect-control-groups")
+	add(desc.ProtectHostname, "protect-hostname")
 	return opts
 }
 
@@ -2193,17 +2194,19 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		rec.SetHardening(service.HardeningConfig{})
 	} else {
 		rec.SetHardening(hardeningCfg)
-		// Four of the knobs need mount operations
+		// Five of the knobs need mount operations
 		// (protect-kernel-tunables → /proc/sys, /sys and other /proc
 		// knobs, protect-control-groups → /sys/fs/cgroup,
 		// protect-kernel-logs → /dev/kmsg and /proc/kmsg,
-		// protect-kernel-modules → /usr/lib/modules). Auto-imply
-		// CLONE_NEWNS so the runner has a private mount namespace
-		// to apply them in without touching the host fs.
+		// protect-kernel-modules → /usr/lib/modules,
+		// protect-hostname → /proc/sys/kernel/{host,domain}name).
+		// Auto-imply CLONE_NEWNS so the runner has a private mount
+		// namespace to apply them in without touching the host fs.
 		if hardeningCfg.ProtectKernelTunables ||
 			hardeningCfg.ProtectControlGroups ||
 			hardeningCfg.ProtectKernelLogs ||
-			hardeningCfg.ProtectKernelModules {
+			hardeningCfg.ProtectKernelModules ||
+			hardeningCfg.ProtectHostname {
 			cloneflags |= syscall.CLONE_NEWNS
 		}
 	}

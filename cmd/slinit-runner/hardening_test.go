@@ -57,6 +57,7 @@ func TestHardeningSpecNeedsMountNS(t *testing.T) {
 		{protectControlGroups: true},
 		{protectKernelLogs: true},
 		{protectKernelModules: true},
+		{protectHostname: true},
 	}
 	for _, s := range mountSpecs {
 		if !s.needsMountNS() {
@@ -65,7 +66,6 @@ func TestHardeningSpecNeedsMountNS(t *testing.T) {
 	}
 	seccompOnly := []hardeningSpec{
 		{protectClock: true},
-		{protectHostname: true},
 		{lockPersonality: true},
 	}
 	for _, s := range seccompOnly {

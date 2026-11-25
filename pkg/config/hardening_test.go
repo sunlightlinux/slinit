@@ -74,6 +74,23 @@ func TestHardeningFlowsToRecord(t *testing.T) {
 	}
 }
 
+// protect-hostname makes the hostname sysctl files read-only, as
+// systemd's ProtectHostname= does, which needs a mount namespace.
+func TestProtectHostnameImpliesMountNS(t *testing.T) {
+	dir := t.TempDir()
+	writeServiceFile(t, dir, "host", "type = process\ncommand = /bin/true\nprotect-hostname = yes\n")
+	ss := service.NewServiceSet(&testReloadLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	svc, err := loader.LoadService("host")
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if svc.Record().Cloneflags()&syscall.CLONE_NEWNS == 0 {
+		t.Errorf("CLONE_NEWNS not auto-implied by protect-hostname (cloneflags=0x%x)", svc.Record().Cloneflags())
+	}
+}
+
 // TestHardeningSeccompOnlyDoesNotForceNS verifies that the pure
 // seccomp knobs (no mount op) do NOT force a mount namespace.
 // Creating a NS unnecessarily would impose mount setup overhead on
@@ -82,7 +99,7 @@ func TestHardeningSeccompOnlyDoesNotForceNS(t *testing.T) {
 	dir := t.TempDir()
 	writeServiceFile(t, dir, "seccomp-only",
 		"type = process\ncommand = /bin/true\n"+
-			"protect-clock = yes\nprotect-hostname = yes\n"+
+			"protect-clock = yes\n"+
 			"lock-personality = yes\n")
 
 	ss := service.NewServiceSet(&testReloadLogger{})

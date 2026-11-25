@@ -301,9 +301,9 @@ func run() error {
 	// host's /tmp, /etc, /proc/sys... and leave the jail's alone. Until
 	// they resolve under the jail (as systemd's RootDirectory= does), the
 	// combination is refused here as well as at load.
-	if *chrootDir != "" && (spec.active() || (*pkTun || *pCG || *pkLog || *pkMod)) {
+	if *chrootDir != "" && (spec.active() || (*pkTun || *pCG || *pkLog || *pkMod || *pHost)) {
 		return fmt.Errorf("chroot cannot be combined with the filesystem sandbox or " +
-			"protect-kernel-*/protect-control-groups: they would apply to the host, not the jail")
+			"protect-kernel-*/protect-control-groups/protect-hostname: they would apply to the host, not the jail")
 	}
 	if spec.active() {
 		if err := applySandbox(spec); err != nil {
