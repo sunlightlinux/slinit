@@ -33,6 +33,16 @@ requires.
 
 ### Security
 
+- **A service's first children escaped its rlimits, nice, CPU affinity,
+  scheduling policy, ioprio and oom_score_adj.** slinit set them on the
+  child from outside after it had started, so whatever the service
+  forked in its first moments ran without them: in the VM a shell's
+  first `sleep` had `nofile` 1024 instead of the configured 123 and ran
+  SCHED_OTHER under a FIFO service. Such a service now runs through
+  slinit-runner, which waits at a start gate (a pipe slinit closes once
+  the attributes are set) before it does anything else. Without the
+  runner the old behaviour remains. Functional case 270.
+
 - **Descriptors a service stored with `FDSTORE=1` leaked into every
   later child of PID 1**, other services under other users included:
   the notify socket received them without close-on-exec.

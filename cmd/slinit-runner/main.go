@@ -209,6 +209,13 @@ func run() error {
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
+	// Start gate: slinit sets nice, rlimits, affinity, scheduling, ioprio
+	// and oom_score_adj on this process from outside, after the fork.
+	// Wait until it has (it closes the pipe's other end), so neither
+	// this setup nor the service runs a moment without them.
+	if err := waitStartGate(); err != nil {
+		return err
+	}
 	args := fs.Args()
 	if len(args) == 0 {
 		return fmt.Errorf("missing target command after flags")
@@ -528,6 +535,39 @@ func run() error {
 		return fmt.Errorf("exec %s: %w", args[0], err)
 	}
 	return nil // unreachable
+}
+
+// startGateEnv is process.StartGateEnv, repeated so the runner does not
+// link pkg/process; TestStartGateEnvMatches keeps the two equal.
+const startGateEnv = "SLINIT_RUNNER_START_GATE_FD"
+
+// waitStartGate reads the fd named by SLINIT_RUNNER_START_GATE_FD to
+// EOF, closes it, and removes the variable so the service never sees it.
+func waitStartGate() error {
+	v, ok := os.LookupEnv(startGateEnv)
+	if !ok {
+		return nil
+	}
+	os.Unsetenv(startGateEnv)
+	fd, err := strconv.Atoi(v)
+	if err != nil || fd < 3 {
+		return fmt.Errorf("%s=%q: not an inherited fd", startGateEnv, v)
+	}
+	var b [64]byte
+	for {
+		n, err := syscall.Read(fd, b[:])
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			syscall.Close(fd)
+			return fmt.Errorf("start gate: %w", err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+	return syscall.Close(fd)
 }
 
 // dropCredentials lowers the runner's UID/GID and re-raises ambient

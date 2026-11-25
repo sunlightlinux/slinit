@@ -151,7 +151,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	}
 
 	command := params.Command
-	wrapped := needsRunnerWrap(params) && params.RunnerPath != ""
+	// A service with attributes slinit sets from outside after the fork
+	// (nice, rlimits, affinity, scheduling, ioprio, oom_score_adj) also
+	// goes through the runner, which waits at a start gate until they
+	// are in place; see startGate below.
+	wrapped := (needsRunnerWrap(params) || hasPostForkAttrs(params)) && params.RunnerPath != ""
 
 	// Without the runner, everything it would have applied is silently
 	// skipped — and this used to be literally silent: no error, no log, a
@@ -233,7 +237,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// --run-as-uid/--run-as-gid/--ambient-cap flags so the runner does
 	// the drop after setup, keeping AmbientCaps preserved via
 	// PR_SET_KEEPCAPS + a fresh PR_CAP_AMBIENT_RAISE.
-	deferRunAsToRunner := needsRunnerWrap(params) && params.RunnerPath != "" &&
+	deferRunAsToRunner := wrapped &&
 		(params.RunAsUID != 0 || params.RunAsGID != 0)
 	if !deferRunAsToRunner && (params.RunAsUID != 0 || params.RunAsGID != 0) {
 		cmd.SysProcAttr.Credential = &syscall.Credential{
@@ -556,6 +560,38 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("DINIT_CS_FD=%d", csFD))
 	}
 
+	// Start gate. The attributes applyPostForkAttrs sets act on the
+	// child from outside, after cmd.Start, and the child is already
+	// running then: whatever a service forked in its first moments ran
+	// without them (a FIFO service's first child was SCHED_OTHER even
+	// with sched-reset-on-fork = no). The runner reads this pipe to EOF
+	// before anything else, and slinit closes the write end only once
+	// the attributes are set, so nothing of the service runs before.
+	// The fd number travels in the environment because the runner's
+	// argv is built before the extra fds are laid out; the runner
+	// removes it before its exec.
+	var gateW *os.File
+	if wrapped && hasPostForkAttrs(params) {
+		gateR, w, err := os.Pipe()
+		if err != nil {
+			return 0, nil, &ExecError{Stage: StageArrangeFDs, Err: err}
+		}
+		gateW = w
+		undo = append(undo, func() { gateR.Close(); w.Close() })
+		openedForClose = append(openedForClose, gateR)
+		cmd.ExtraFiles = append(cmd.ExtraFiles, gateR)
+		if cmd.Env == nil {
+			cmd.Env = make([]string, len(baseEnv), len(baseEnv)+1)
+			copy(cmd.Env, baseEnv)
+		}
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%d", StartGateEnv, 3+len(cmd.ExtraFiles)-1))
+	}
+	defer func() {
+		if gateW != nil {
+			gateW.Close()
+		}
+	}()
+
 	// Cgroup pre-attach: open the target cgroup as a directory fd and
 	// route fork through clone3+CLONE_INTO_CGROUP. Without this, the
 	// child shell could fork (e.g. setsid'd) grandchildren in the root
@@ -660,6 +696,11 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		for _, err := range errs {
 			fmt.Fprintf(os.Stderr, "slinit: pid %d: post-fork attr warning: %v\n", pid, err)
 		}
+	}
+	// Open the start gate: the runner may go on to exec the service.
+	if gateW != nil {
+		gateW.Close()
+		gateW = nil
 	}
 
 	exitCh := make(chan ChildExit, 1)
@@ -1012,6 +1053,17 @@ func runnerSecurityFeatures(p ExecParams) []string {
 		missing = append(missing, "securebits")
 	}
 	return missing
+}
+
+// StartGateEnv names the environment variable that tells slinit-runner
+// which fd to read to EOF before it does anything else.
+const StartGateEnv = "SLINIT_RUNNER_START_GATE_FD"
+
+// hasPostForkAttrs reports whether applyPostForkAttrs has a process
+// attribute to set on the child, from outside and after the fork.
+func hasPostForkAttrs(p ExecParams) bool {
+	return p.Nice != nil || p.OOMScoreAdj != nil || len(p.Rlimits) > 0 ||
+		p.IOPrioClass > 0 || len(p.CPUAffinity) > 0 || p.SchedPolicy != 0
 }
 
 // passesListenFDs reports whether the child gets LISTEN_FDS: sockets,
