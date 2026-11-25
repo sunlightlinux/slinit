@@ -1083,6 +1083,16 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// Create the service based on type
 	svc := dl.createService(name, desc)
 
+	// A service that IS a shared-logger sink records its lossy /
+	// queue-size on its own record; the loader reads them back when a
+	// producer registers via setupSharedLogger. Set before the
+	// dependencies load: a logger that depends on its producer, as a
+	// shared logger usually does, loads that producer from
+	// loadDependencies below, and the producer creates the mux from
+	// these two values. Set after, the mux was always the blocking one.
+	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
+	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
+
 	// An unload of this service may have left a placeholder holding its
 	// log consumer and output pipe (see ServiceSet.UnloadService). The
 	// new record takes both over once it has loaded; until then, and if
@@ -1148,11 +1158,6 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
-	// A service that IS a shared-logger sink records its lossy /
-	// queue-size on its own record; the loader reads them back when a
-	// producer registers via setupSharedLogger.
-	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
-	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
 	svc.Record().SetProfiles(desc.Profiles)
 	svc.Record().SetBundleMembers(desc.BundleMembers)
 

@@ -161,6 +161,32 @@ func TestSharedLoggerLoaderSetup(t *testing.T) {
 	}
 }
 
+// A shared logger usually depends on its producer, so loading the logger
+// loads the producer from its dependencies, and the producer creates the
+// mux. The logger's shared-logger-lossy used to be recorded only after
+// that, so the mux was always the blocking one.
+func TestSharedLoggerLossyWhenLoggerLoadsFirst(t *testing.T) {
+	dir := t.TempDir()
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+
+	writeConsumerServiceFile(t, dir, "app", "type = process\ncommand = /bin/app\nshared-logger = my-logger\n")
+	writeConsumerServiceFile(t, dir, "my-logger",
+		"type = process\ncommand = /bin/logd\ndepends-on: app\nshared-logger-lossy = yes\nshared-logger-queue-size = 16\n")
+
+	if _, err := loader.LoadService("my-logger"); err != nil {
+		t.Fatalf("load my-logger failed: %v", err)
+	}
+	mux := ss.GetSharedLogMux("my-logger")
+	if mux == nil {
+		t.Fatal("expected shared log mux for 'my-logger'")
+	}
+	if !mux.Lossy() {
+		t.Error("shared-logger-lossy = yes on the logger, but the mux blocks")
+	}
+}
+
 func TestSharedLoggerInvalidLogger(t *testing.T) {
 	dir := t.TempDir()
 	ss := service.NewServiceSet(&testConsumerLogger{})

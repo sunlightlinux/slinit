@@ -104,6 +104,9 @@ func NewSharedLogMuxWithOptions(opts SharedLogMuxOptions) (*SharedLogMux, error)
 	return m, nil
 }
 
+// Lossy reports whether the mux drops lines instead of blocking.
+func (m *SharedLogMux) Lossy() bool { return m.queue != nil }
+
 // DropCount reports the number of lines the lossy path has dropped
 // since construction. Callers use this for observability (metrics /
 // slinitctl status). Always 0 in classic blocking mode.

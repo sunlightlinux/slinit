@@ -210,7 +210,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 100 | log-max-line-length | svlogd -l analogue: overlong lines truncated to N + `+` overflow marker, still land in the log |
 | 101 | log-sanitize | svlogd -r/-R analogue: control bytes rewritten to the sanitize char before disk |
 | 102 | log-timestamp | svlogd -tt analogue: `log-timestamp = human` prepends `YYYY-MM-DD_HH:MM:SS.µs` |
-| 103 | shared-logger-lossy | `shared-logger-lossy = yes` + `shared-logger-queue-size` opt-in path; producer output still reaches the sink under backpressure |
+| 103 | shared-logger-lossy | `shared-logger-lossy = yes` on a logger that does not read for 4 s: the producer's 4000 lines do not block it, and only some reach the logger |
 | 104 | log-buffer-nmin | `log-buffer-size` + `logfile-min-files` parse cleanly and don't break rotator init |
 | 105 | wait-timeout | `-w SEC` / `--wait=SEC` caps how long slinitctl waits for a reply; non-integer / negative values fail flag-parse before touching the socket |
 | 106 | shutdown-flag-surface | `slinit-shutdown --help` lists every documented reboot(8)-compat flag (`--reboot`, `--halt`, `-r/-h/-p/-s/-k/-f`, `--force`, `--no-sync`, `--no-wtmp`, `--wtmp-only`, `--no-wall`, `--use-passed-cfd`, `--system`, `--grace=`) |

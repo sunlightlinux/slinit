@@ -691,6 +691,15 @@ requires.
 
 ### Fixed
 
+- **`shared-logger-lossy` had no effect on a logger that depends on its
+  producer**, which is how a shared logger is normally set up so that
+  its stdin is wired. Loading the logger loaded the producer first, and
+  the producer created the multiplexer before the logger's
+  `shared-logger-lossy` and `shared-logger-queue-size` were recorded,
+  so producers blocked on a slow logger instead of dropping lines.
+  Found by functional case 103, which set the two directives on the
+  producer, where they do nothing, and checked only that some lines
+  arrived.
 - **`success-action`, `failure-action` and `start-limit-action` froze
   the daemon.** The action was started from inside the service's stop
   handling, which holds the scheduling lock, and the shutdown it starts
