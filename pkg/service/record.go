@@ -3431,7 +3431,8 @@ func (sr *ServiceRecord) Stopped() {
 				sr.services.logger.Info(
 					"Service '%s': start-limit-action=%s — initiating system action",
 					sr.serviceName, act)
-				cb(act, sr.rebootArgument)
+				// Off the lock: see the OnSystemAction field.
+				go cb(act, sr.rebootArgument)
 			}
 		}
 	}
@@ -3532,7 +3533,8 @@ func (sr *ServiceRecord) Stopped() {
 			sr.services.logger.Info(
 				"Service '%s': %s-action=%s — initiating system action",
 				sr.serviceName, kind, action)
-			cb(action, sr.rebootArgument)
+			// Off the lock: see the OnSystemAction field.
+			go cb(action, sr.rebootArgument)
 		}
 	}
 

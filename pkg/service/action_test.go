@@ -1,7 +1,9 @@
 package service
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // --- ParseSystemAction / AsShutdownType ---
@@ -108,13 +110,13 @@ func TestChooseStoppedActionNoneOnOperatorStop(t *testing.T) {
 func TestOnSystemActionFiresOnFailure(t *testing.T) {
 	set, _ := newTestSet()
 
-	var (
-		gotAction SystemAction = ActionNone
-		gotArg    string
-	)
+	type call struct {
+		action SystemAction
+		arg    string
+	}
+	calls := make(chan call, 1)
 	set.OnSystemAction = func(a SystemAction, arg string) {
-		gotAction = a
-		gotArg = arg
+		calls <- call{a, arg}
 	}
 
 	svc := NewInternalService(set, "svc")
@@ -130,18 +132,58 @@ func TestOnSystemActionFiresOnFailure(t *testing.T) {
 	rec.Stopped()
 	set.ProcessQueues()
 
-	if gotAction != ActionPoweroff {
-		t.Errorf("expected ActionPoweroff, got %v", gotAction)
+	select {
+	case c := <-calls:
+		if c.action != ActionPoweroff {
+			t.Errorf("expected ActionPoweroff, got %v", c.action)
+		}
+		if c.arg != "kexec-config" {
+			t.Errorf("expected reboot arg, got %q", c.arg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnSystemAction never fired")
 	}
-	if gotArg != "kexec-config" {
-		t.Errorf("expected reboot arg, got %q", gotArg)
+}
+
+// Stopped() runs with queueMu held, and the shutdown the action starts
+// takes queueMu to stop every service. Called directly, the callback
+// deadlocked the daemon (any action; success-action=exit logged "Shutting down
+// slinit (remain)..." and nothing after it, not even on SIGTERM).
+func TestOnSystemActionCanStopAllServices(t *testing.T) {
+	set, _ := newTestSet()
+	done := make(chan struct{})
+	set.OnSystemAction = func(SystemAction, string) {
+		set.StopAllServices(ShutdownRemain)
+		close(done)
+	}
+
+	svc := NewInternalService(set, "svc")
+	set.AddService(svc)
+	svc.Record().SetFailureAction(ActionExit)
+
+	rec := svc.Record()
+	rec.startFailed = true
+	rec.stopReason = ReasonFailed
+	rec.desired.Store(StateStopped)
+	rec.state.Store(StateStarting)
+	// As the child-exit path calls it.
+	go func() {
+		set.queueMu.Lock()
+		rec.Stopped()
+		set.queueMu.Unlock()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failure-action deadlocked: StopAllServices never returned")
 	}
 }
 
 func TestOnSystemActionSilentOnOperatorStop(t *testing.T) {
 	set, _ := newTestSet()
-	fired := false
-	set.OnSystemAction = func(SystemAction, string) { fired = true }
+	var fired atomic.Bool
+	set.OnSystemAction = func(SystemAction, string) { fired.Store(true) }
 
 	svc := NewInternalService(set, "svc")
 	set.AddService(svc)
@@ -158,7 +200,8 @@ func TestOnSystemActionSilentOnOperatorStop(t *testing.T) {
 		t.Fatalf("setup: expected STOPPED, got %v", svc.State())
 	}
 
-	if fired {
+	time.Sleep(100 * time.Millisecond) // the callback runs on its own goroutine
+	if fired.Load() {
 		t.Errorf("OnSystemAction must NOT fire on operator-issued stop")
 	}
 }

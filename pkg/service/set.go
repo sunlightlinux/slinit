@@ -144,6 +144,12 @@ type ServiceSet struct {
 	// success-action triggers a system-level transition (reboot,
 	// poweroff, halt, supervisor exit). Keeping it a callback avoids
 	// pulling pkg/eventloop into pkg/service.
+	//
+	// It runs on its own goroutine. Stopped() is called with queueMu
+	// held, and the shutdown it starts takes queueMu to stop every
+	// service, so a direct call deadlocked the daemon: every
+	// success-action, failure-action and start-limit-action logged
+	// "Shutting down" and froze PID 1 there, SIGTERM included.
 	OnSystemAction func(action SystemAction, rebootArg string)
 
 	// Global daemon-level environment (from --env-file/-e)

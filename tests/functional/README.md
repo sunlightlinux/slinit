@@ -231,14 +231,14 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 121 | sched-reset-on-fork | RESET_ON_FORK bit surfaced (either explicit flag or policy+priority readback) |
 | 122 | securebits | `securebits = keep-caps,no-setuid-fixup` parses; child comes up |
 | 123 | normal-exit | `normal-exit = 42` with `restart = yes`: exit 42 runs once, a control exiting 41 is respawned |
-| 124 | success-action | `success-action = none` parses cleanly and svc reaches a terminal state |
+| 124 | success-action | two nested `slinit --user`: a clean exit with `success-action = exit` terminates its daemon, with `none` the daemon stays up |
 | 125 | mlockall | `mlockall = current+future` → service memory locked (`VmLck` > 0, via the `libslinit-mlock.so` preload) and `RLIMIT_MEMLOCK = unlimited` in `/proc/PID/limits` |
 | 126 | numa-mempolicy | `numa-mempolicy = bind` on node 0; SKIPs if CONFIG_NUMA is off |
 | 127 | state-directory-mode | `state-directory` + `state-directory-mode` creates `/var/lib/<svc>` with the requested mode |
 | 128 | cache-directory | `cache-directory` + `cache-directory-mode` (0710, not the 0755 default) at `/var/cache/<svc>` |
 | 129 | runtime-directory-preserve | `runtime-directory-preserve = yes` keeps `/run/<svc>/…` after stop |
 | 130 | namespace-cgroup | `namespace-cgroup = yes` puts the service in its own cgroup ns |
-| 131 | reboot-argument | parse-only smoke for `reboot-argument = recovery`; svc reaches a terminal state |
+| 131 | reboot-argument | nested `slinit --user`: the success action is handed `reboot-argument = recovery` (logged) and the daemon exits |
 | 132 | socket-permissions | `socket-permissions = 0640` sets the listener socket mode |
 | 133 | slinit-init-maker | `-dry-run` doesn't touch disk; real generation writes boot/system-init/getty-tty[N]/README; `-force` overwrites; slinit-check accepts the generated tree |
 | 134 | slinit-seedrng | fresh run writes seed.credit or seed.no-credit under `-seed-dir`; `-skip-credit` accepted; second run rotates the seed (sha256 changes) |

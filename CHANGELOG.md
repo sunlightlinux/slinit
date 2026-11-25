@@ -691,6 +691,16 @@ requires.
 
 ### Fixed
 
+- **`success-action`, `failure-action` and `start-limit-action` froze
+  the daemon.** The action was started from inside the service's stop
+  handling, which holds the scheduling lock, and the shutdown it starts
+  takes the same lock to stop every service. The daemon logged
+  "Shutting down slinit (...)" and stopped there: no service stopped,
+  the control socket answered nothing, SIGTERM was ignored, and as PID 1
+  a `failure-action = reboot` left the machine hung instead of
+  rebooting. The action now runs once the lock is released. Found by
+  functional case 124, which had been checking only that
+  `success-action = none` parsed.
 - **`restart-kill-signal` was never sent.** It was chosen only while the
   service was in an automatic restart, a state entered after the process
   has already exited by itself, when there is nothing left to signal; a
