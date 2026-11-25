@@ -43,13 +43,19 @@ type = internal
 EOF
 sleep 2
 
-_out=$(slinitctl --socket-path "$NEST_SOCK" start svcwatch-drop 2>&1)
-assert_not_contains "$_out" "not found" \
-    "auto-detected service is startable after being dropped"
-
+# list, not start: start loads a description from disk on demand, so a
+# start (followed by list) succeeded with or without the watcher. Only
+# the watcher puts a never-requested service in the list.
 _list=$(slinitctl --socket-path "$NEST_SOCK" list 2>&1)
 assert_contains "$_list" "svcwatch-drop" \
-    "list now shows svcwatch-drop after inotify pickup"
+    "watcher loaded svcwatch-drop without being asked"
+
+# Removing the file of a stopped service unloads it.
+rm -f "$NEST_SVCS/svcwatch-drop"
+sleep 2
+_list=$(slinitctl --socket-path "$NEST_SOCK" list 2>&1)
+assert_not_contains "$_list" "svcwatch-drop" \
+    "watcher unloaded svcwatch-drop after its file went away"
 
 kill "$NEST_PID" 2>/dev/null
 test_summary

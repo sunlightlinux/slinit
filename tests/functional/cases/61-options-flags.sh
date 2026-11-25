@@ -19,7 +19,12 @@ else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
 fi
 
-# Stop the service — kill-all-on-stop should kill the child too
+# Stop the service; the child must die with it. NB: this holds without
+# kill-all-on-stop too: a stop signals the process group and the
+# child's exit sweeps it, and kill-all-on-stop's extra work is a cgroup
+# sweep, while this VM mounts no cgroup filesystem at all. It is the
+# control for the signal-process-only half below, which is the half
+# that can fail.
 slinitctl --system stop killgrp-svc 2>&1
 sleep 3
 
@@ -49,8 +54,18 @@ fi
 slinitctl --system stop sigonly-svc 2>&1
 sleep 3
 
-# The child may still be alive briefly (orphaned, then reaped by init)
-# but the main process should be stopped
 assert_service_state "sigonly-svc" "STOPPED" "sigonly-svc is STOPPED"
+
+# signal-process-only: neither the stop signal nor the exit sweep goes
+# to the process group, so the child outlives the service. (The case
+# used to stop here, which held with or without the option.)
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ -n "$sigonly_child" ] && kill -0 "$sigonly_child" 2>/dev/null; then
+    echo "OK: sigonly child $sigonly_child survived the stop"
+else
+    echo "FAIL: sigonly child $sigonly_child was killed: the group was signalled"
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+fi
+[ -n "$sigonly_child" ] && kill "$sigonly_child" 2>/dev/null
 
 test_summary

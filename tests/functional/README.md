@@ -128,7 +128,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 18 | add-rm-dep | Runtime dependency add/remove |
 | 19 | unpin | Pin/unpin service state |
 | 20 | enable-disable | Enable/disable (waits-for dep management) |
-| 21 | shutdown | Shutdown command acceptance |
+| 21 | shutdown | `shutdown poweroff +10` is reported pending by `shutdown --status` and `shutdown -c` cancels it |
 | 22 | chain-to | Service chaining (chain-to directive) |
 | 23 | start-timeout | Start timeout handling |
 | 24 | working-dir | Working directory for service processes |
@@ -168,7 +168,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 58 | healthcheck | `healthcheck-command` detects an unhealthy service |
 | 59 | smooth-recovery | Smooth recovery restarts without propagating failure to dependents |
 | 60 | service-env | `SLINIT_SERVICENAME` / `SLINIT_SERVICEDSCDIR` auto-injected per service |
-| 61 | options-flags | `options =` flags (kill-all-on-stop, signal-process-only) |
+| 61 | options-flags | `options = signal-process-only`: a child outlives the service's stop; kill-all-on-stop's cgroup sweep is not observable here (no cgroup mounted), its half is the control |
 | 62 | query-deps | `slinitctl dependents` / dependency graph query |
 | 63 | required-paths | `required-files` / `required-dirs` pre-start guards |
 | 64 | stop-timeout | `stop-timeout` escalates to SIGKILL on timeout |
@@ -205,7 +205,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 95 | profile-subsystem | runsvchdir-analogue: `list-profiles`, `active-profile`, `activate-profile` (validate against loaded services, `-` deactivates, unknown profile NAKed) |
 | 96 | log-forward-udp | `log-forward-udp = host:port` sends producer stdout to a UDP listener framed per RFC 3164; self-tests the receiver on BusyBox and SKIPs if UDP is dropped |
 | 97 | sentinel-file-ipc | `--sentinel-dir` inotify path — chmod +x on `reboot` fires the handler + audit line + unlink; plain touch is ignored |
-| 98 | svcdirwatch | `--watch-services-dir` inotify auto-load: a service dropped into the dir becomes startable without an explicit reload-all |
+| 98 | svcdirwatch | `--watch-services-dir` inotify auto-load: a service dropped into the dir shows up in `list` without being requested, and is unloaded when its file is removed |
 | 99 | command-argv0 | override argv[0] presented to the child (chpst -b analogue); SKIPs on BusyBox where /bin/sleep dispatches on argv[0] |
 | 100 | log-max-line-length | svlogd -l analogue: overlong lines truncated to N + `+` overflow marker, still land in the log |
 | 101 | log-sanitize | svlogd -r/-R analogue: control bytes rewritten to the sanitize char before disk |
