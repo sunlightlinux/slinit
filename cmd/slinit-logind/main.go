@@ -665,7 +665,18 @@ func (m *manager) CanSuspendThenHibernate(sender dbus.Sender) (string, *dbus.Err
 // The sender argument is godbus's injection of the caller's bus name,
 // used to attribute the lock to a uid and pid so `loginctl
 // list-inhibitors` names something an operator can act on.
+//
+// Each string is refused past inhibitStringMax: a lock lives as long as
+// its holder wants, and anyone may take a delay lock, so who and why
+// were a way to park up to a bus message's worth of memory per lock in
+// the daemon.
 func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus.UnixFD, *dbus.Error) {
+	for _, s := range []string{what, who, why, mode} {
+		if len(s) > inhibitStringMax {
+			return -1, dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs",
+				[]any{fmt.Sprintf("Inhibit: argument longer than %d bytes", inhibitStringMax)})
+		}
+	}
 	if err := m.mayInhibit(sender, what, mode); err != nil {
 		return -1, err
 	}
