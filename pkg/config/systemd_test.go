@@ -176,10 +176,11 @@ func TestExecStartPrefixStripping(t *testing.T) {
 		{"+/usr/bin/foo", "/usr/bin/foo"},
 		{"!/usr/bin/foo", "/usr/bin/foo"},
 		{"-!/usr/bin/foo", "/usr/bin/foo"},
-		{"@/usr/bin/foo argv0", "/usr/bin/foo argv0"},
+		{"@/usr/bin/foo argv0", "/usr/bin/foo"},
+		{"@/usr/bin/foo argv0 --arg", "/usr/bin/foo --arg"},
 	}
 	for _, c := range cases {
-		got, _ := stripExecPrefixes(c.in)
+		got, _, _ := stripExecPrefixes(c.in)
 		if got != c.want {
 			t.Errorf("stripExecPrefixes(%q) = %q, want %q", c.in, got, c.want)
 		}

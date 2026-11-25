@@ -463,3 +463,49 @@ ProtectProc=bogus
 		t.Errorf("got %d WARNs, want 4 (+path, %%specifier, norbind, bogus protect-proc): %v", n, warns)
 	}
 }
+
+// ExecStart=@path argv0 args runs path with argv0 as argv[0]. Stripping
+// the @ alone left argv0 in the command, so it became argv[1] and every
+// argument moved one place.
+func TestSystemdExecArgv0Prefix(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=@/usr/sbin/daemon "my daemon" --flag x
+ExecStartPre=@/bin/prep prep-name -v
+`)
+	if got := strings.Join(desc.Command, "|"); got != "/usr/sbin/daemon|--flag|x" {
+		t.Errorf("command = %q; want /usr/sbin/daemon|--flag|x", got)
+	}
+	if desc.Argv0 != "my daemon" {
+		t.Errorf("argv0 = %q; want %q", desc.Argv0, "my daemon")
+	}
+	if got := strings.Join(desc.PreStartCommand, "|"); got != "/bin/prep|-v" {
+		t.Errorf("pre-start-command = %q; want /bin/prep|-v", got)
+	}
+	warned := false
+	for _, w := range warns {
+		if w.Level == "WARN" && strings.Contains(w.Msg, "prep-name") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("the dropped argv0 of ExecStartPre= was not a WARN: %v", warns)
+	}
+}
+
+// A scripted service takes no command-argv0, so a oneshot's @ argv[0]
+// is dropped with a warning rather than silently.
+func TestSystemdExecArgv0PrefixOneshot(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=@/bin/job job-name -x
+Type=oneshot
+`)
+	if got := strings.Join(desc.Command, "|"); got != "/bin/job|-x" {
+		t.Errorf("command = %q; want /bin/job|-x", got)
+	}
+	for _, w := range warns {
+		if w.Level == "WARN" && strings.Contains(w.Msg, "job-name") {
+			return
+		}
+	}
+	t.Errorf("the dropped argv0 of a oneshot was not a WARN: %v", warns)
+}

@@ -57,6 +57,7 @@ type SystemdConfig struct {
 
 	svcType      string // process | bgprocess | scripted
 	command      string
+	argv0        string // ExecStart=@path argv0 …
 	stopCommand  string
 	preStart     string // slinit takes one; multiples get warned
 	postStart    string
@@ -311,6 +312,11 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 	if cfg.capAmbient.mask != 0 {
 		cfg.mapped = append(cfg.mapped, kvPair{"capabilities", capNames(cfg.capAmbient.mask)})
 	}
+	if cfg.argv0 != "" && cfg.svcType == "scripted" {
+		// A scripted service takes no command-argv0.
+		warns = append(warns, warnArgv0("ExecStart", cfg.argv0)...)
+		cfg.argv0 = ""
+	}
 	warns = append(warns, applyStopSignal(cfg)...)
 	warns = append(warns, dropAliasRefs(cfg)...)
 	return warns
@@ -500,18 +506,19 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		// A oneshot may list several, run in turn; slinit runs one
 		// command. The last is kept, so that an empty ExecStart=
 		// followed by a new one replaces it as in systemd.
-		cmd, w := stripExecPrefixes(val)
+		cmd, argv0, w := stripExecPrefixes(val)
 		if cfg.command != "" && cmd != "" {
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
 				"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
 					"run the steps from one script if they all matter", cfg.command)})
 		}
-		cfg.command = cmd
+		cfg.command, cfg.argv0 = cmd, argv0
 		warns = append(warns, w...)
 		warns = append(warns, warnExecVars(key, cmd)...)
 	case "ExecStop":
-		cmd, w := stripExecPrefixes(val)
+		cmd, argv0, w := stripExecPrefixes(val)
 		warns = append(warns, w...)
+		warns = append(warns, warnArgv0(key, argv0)...)
 		// slinit has no $MAINPID: it would expand to nothing. The usual
 		// `kill -s SIG $MAINPID` is what term-signal does; any other use
 		// cannot act on the right process.
@@ -532,9 +539,10 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		if *preN > 1 {
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("multiple ExecStartPre= — slinit takes one pre-start-command, keeping the first (dropped: %q)", val)})
 		} else {
-			cmd, w := stripExecPrefixes(val)
+			cmd, argv0, w := stripExecPrefixes(val)
 			cfg.preStart = cmd
 			warns = append(warns, w...)
+			warns = append(warns, warnArgv0(key, argv0)...)
 			warns = append(warns, warnExecVars(key, cmd)...)
 		}
 	case "ExecStartPost":
@@ -542,9 +550,10 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		if *postN > 1 {
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("multiple ExecStartPost= — slinit takes one post-start-command, keeping the first (dropped: %q)", val)})
 		} else {
-			cmd, w := stripExecPrefixes(val)
+			cmd, argv0, w := stripExecPrefixes(val)
 			cfg.postStart = cmd
 			warns = append(warns, w...)
+			warns = append(warns, warnArgv0(key, argv0)...)
 			warns = append(warns, warnExecVars(key, cmd)...)
 		}
 	case "ExecStopPost":
@@ -847,10 +856,12 @@ func applyInstallKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 //     : (no environment substitution)
 //     @ (argv[0] alias — value is command; next token is displayed argv[0])
 //
-// Any prefix generates a NOTE so the operator knows a behavioural
+// Any prefix but @ generates a NOTE so the operator knows a behavioural
 // hint was in the original that isn't captured by slinit directives.
-func stripExecPrefixes(v string) (string, []SystemdWarning) {
-	var warns []SystemdWarning
+// With @, the word after the path is argv[0], not an argument: it is
+// cut from the command and returned, as stripping the @ alone made it
+// argv[1] and moved every argument one place.
+func stripExecPrefixes(v string) (cmd, argv0 string, warns []SystemdWarning) {
 	s := v
 	seen := map[byte]bool{}
 	for len(s) > 0 {
@@ -867,9 +878,49 @@ func stripExecPrefixes(v string) (string, []SystemdWarning) {
 		break
 	}
 	for c := range seen {
+		if c == '@' {
+			continue
+		}
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStart prefix %q stripped — behaviour not carried into slinit", string(c))})
 	}
-	return strings.TrimSpace(s), warns
+	if seen['@'] {
+		path, rest := cutExecWord(s)
+		var word string
+		word, rest = cutExecWord(rest)
+		s, argv0 = path+rest, trimQuotes(word)
+	}
+	return strings.TrimSpace(s), argv0, warns
+}
+
+// cutExecWord splits s after its first word, a quoted run counting as
+// part of the word as in slinit's command parser.
+func cutExecWord(s string) (word, rest string) {
+	s = strings.TrimLeft(s, " \t")
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == ' ' || c == '\t':
+			return s[:i], s[i:]
+		}
+	}
+	return s, ""
+}
+
+// warnArgv0 warns that the argv[0] an @ gave key's command is dropped:
+// slinit's command-argv0 applies to the main command of a process or
+// bgprocess service only.
+func warnArgv0(key, argv0 string) []SystemdWarning {
+	if argv0 == "" {
+		return nil
+	}
+	return []SystemdWarning{{"WARN", fmt.Sprintf(
+		"%s=@: argv[0] %q dropped — slinit sets argv[0] (command-argv0) only for the main command of a process or bgprocess service", key, argv0)}}
 }
 
 // warnExecVars warns about the $VAR and ${VAR} references in an Exec
@@ -1546,6 +1597,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	fmt.Fprintf(w, "type = %s\n", c.svcType)
 	if c.command != "" {
 		fmt.Fprintf(w, "command = %s\n", c.command)
+	}
+	if c.argv0 != "" {
+		fmt.Fprintf(w, "command-argv0 = %s\n", c.argv0)
 	}
 	if c.stopCommand != "" {
 		fmt.Fprintf(w, "stop-command = %s\n", c.stopCommand)
