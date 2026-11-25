@@ -736,6 +736,11 @@ requires.
   (`<date>.<ns>.jsonl` with its `.idx`), so both boots are kept and read
   in the order they were written; the cross-device copy no longer
   truncates an existing file either.
+- **`slinitctl rm-dep` could leave a service STARTING for good.**
+  Removing the dependency a starting service was waiting for dropped the
+  link but not the wait, so the service never re-checked its remaining
+  dependencies and never finished starting. It now goes on with the
+  dependencies it still has. (dinit has the same gap.)
 - **A dependency's crash or restart cancelled a dependent still waiting
   to start.** When a `restart = always` dependency died, or was
   restarted, while a hard dependent was STARTING but still waiting for

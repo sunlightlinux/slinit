@@ -373,3 +373,28 @@ func TestDepAudit_RestartLeavesWaitingDependent(t *testing.T) {
 		t.Errorf("B: %v after C came up", b.State())
 	}
 }
+
+// `slinitctl rm-dep B A` while B is STARTING and waiting for A: the
+// link B was waiting on is gone, so B goes on with the dependencies it
+// still has. B stayed STARTING for good (dinit's rm_dep shares this).
+func TestDepAudit_RmDepWhileWaitingOnIt(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B")
+	a, b := sv[0], sv[1]
+	b.AddDep(a, DepRegular)
+	a.autoStart = false
+	set.StartService(b)
+	if b.State() != StateStarting {
+		t.Fatalf("setup: B should wait for A, got %v", b.State())
+	}
+	set.RemoveDependency(b, a, DepRegular)
+	if b.State() != StateStarted {
+		logSvcs(t, a, b)
+		t.Errorf("B stuck %v after its only awaited dependency was removed", b.State())
+	}
+	// A's start is still in flight (and not interruptible), but no
+	// longer wanted.
+	if a.desired.Load() != StateStopped || a.Record().requiredBy != 0 {
+		t.Errorf("A, no longer required: desired %v requiredBy %d", a.desired.Load(), a.Record().requiredBy)
+	}
+}

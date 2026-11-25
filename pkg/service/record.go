@@ -3986,6 +3986,15 @@ func (sr *ServiceRecord) rmDepByIndex(i int) {
 	}
 
 	sr.dependsOn = append(sr.dependsOn[:i], sr.dependsOn[i+1:]...)
+
+	// A start waiting on this dependency has nothing left to wait for
+	// from it: let the start re-check the dependencies it still has,
+	// as stopDependents does when it breaks a soft link. dinit's
+	// rm_dep has the same gap.
+	if dep.WaitingOn {
+		dep.WaitingOn = false
+		sr.dependencyStarted()
+	}
 }
 
 // SetDependents replaces the dependents slice (used during reload to transfer dependents).
