@@ -33,6 +33,17 @@ requires.
 
 ### Security
 
+- **slinit-supervise-daemon signalled whatever pid its pidfile named.**
+  A world-writable or user-owned pidfile was trusted, so a service user
+  able to write it made root SIGTERM, SIGKILL or signal any process
+  through `--stop`/`--signal`. Pidfiles now pass the same trust check as
+  slinit-start-stop-daemon's (shared in pkg/process), and `--stop` only
+  signals a pid that is a supervise-daemon.
+- **slinit-inetd** gained `--max-per-source N` (default unlimited, as in
+  xinetd), so one remote host can be kept from holding every
+  `--max-concurrent` slot; its per-connection children no longer inherit
+  `LISTEN_FDS`/`LISTEN_PID`/`LISTEN_FDNAMES` meant for inetd.
+
 - **A reload skipped the checks a fresh load makes.** A `type = process`
   service with `chroot` reloaded as `type = scripted` was accepted and
   would have run outside the jail; `watchdog-timeout` without
@@ -766,6 +777,13 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **slinit-sysusers failed on `u NAME` when a group NAME existed**
+  (`g foo` followed by `u foo`): useradd tried to create the group again.
+  The existing group is reused, as systemd-sysusers does.
+- **One malformed fstab line, or a line over 64 KiB (a long overlay
+  entry in `/proc/mounts`), made the whole table unreadable.** Bad lines
+  are skipped, as util-linux does.
 
 - **A failed reload left the dependency graph half-applied.** A
   type-change reload refused over `consumer-of` had already moved the
