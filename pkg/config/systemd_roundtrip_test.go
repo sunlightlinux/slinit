@@ -199,52 +199,103 @@ IOUringFilter=~socket,connect
 			desc.RestrictSUIDSGID, desc.IOUringFilter, desc.SystemCallErrorNumber)
 	}
 
-	// systemd's ProtectHostname=private has no slinit counterpart: say
-	// so rather than emit something weaker.
+	// systemd's ProtectHostname=private has no slinit counterpart.
+	// Left out, the service could set the host's hostname; it becomes
+	// protect-hostname = yes, which is stricter, and says so.
 	os.WriteFile(path, []byte("[Service]\nExecStart=/bin/true\nProtectHostname=private\n"), 0o644)
 	cfg, warns, _ = ConvertSystemdUnit(path)
 	buf.Reset()
 	EmitSlinitFile(&buf, cfg)
-	if strings.Contains(buf.String(), "protect-hostname") {
-		t.Errorf("ProtectHostname=private emitted as a switch:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "protect-hostname = yes") {
+		t.Errorf("ProtectHostname=private not made protect-hostname = yes:\n%s", buf.String())
 	}
 	if len(warns) == 0 {
 		t.Error("ProtectHostname=private must warn")
 	}
 }
 
-// A deny-list cannot be expressed by an allow-list directive; converting
-// it anyway would invert the operator's intent, which is worse than
-// declining to convert it.
-func TestSystemdDenyListsAreNotSilentlyInverted(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "d.service")
-	os.WriteFile(path, []byte(`[Service]
+// A deny-list of address families and a list of namespace types were
+// dropped with a warning, so the service ran with no restriction at all.
+// The deny-list becomes the allow-list of every other family, and the
+// namespace list refuses every type, which is stricter.
+func TestSystemdDenyListsAreKept(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
 ExecStart=/bin/true
-RestrictAddressFamilies=~AF_PACKET
+RestrictAddressFamilies=~AF_PACKET AF_NETLINK
 RestrictNamespaces=net ipc
-`), 0o644)
-	cfg, warns, err := ConvertSystemdUnit(path)
-	if err != nil {
-		t.Fatalf("convert: %v", err)
+`)
+	if !desc.RestrictAFEnabled {
+		t.Fatal("RestrictAddressFamilies=~ dropped")
 	}
-	var buf bytes.Buffer
-	EmitSlinitFile(&buf, cfg)
-	out := buf.String()
-	if strings.Contains(out, "restrict-address-families") {
-		t.Errorf("a ~ deny-list was emitted as an allow-list:\n%s", out)
+	allowed := map[string]bool{}
+	for _, f := range desc.RestrictAddressFamilies {
+		allowed[f] = true
 	}
-	if strings.Contains(out, "restrict-namespaces") {
-		t.Errorf("a namespace-type list was emitted as a blanket switch:\n%s", out)
+	if allowed["17"] || allowed["16"] || !allowed["1"] || !allowed["2"] || !allowed["10"] {
+		t.Errorf("~AF_PACKET AF_NETLINK became %v; want every family but 16 and 17", desc.RestrictAddressFamilies)
 	}
-	var warned int
+	if !desc.RestrictNamespaces {
+		t.Error("RestrictNamespaces=net ipc dropped; want restrict-namespaces = yes")
+	}
+	var warned bool
 	for _, w := range warns {
-		if w.Level == "WARN" {
-			warned++
+		warned = warned || (w.Level == "WARN" && strings.Contains(w.Msg, "RestrictNamespaces"))
+	}
+	if !warned {
+		t.Error("RestrictNamespaces=<list> → yes must warn that it is stricter")
+	}
+}
+
+// RestrictAddressFamilies= folds its assignments as systemd's
+// parse_address_families does: a later line of the other kind takes
+// families away, an empty one resets, none allows nothing.
+func TestSystemdAddressFamiliesFold(t *testing.T) {
+	for _, c := range []struct {
+		unit string
+		want string // "" = directive not in force
+	}{
+		{"RestrictAddressFamilies=AF_UNIX AF_INET\nRestrictAddressFamilies=~AF_INET", "AF_UNIX"},
+		{"RestrictAddressFamilies=AF_UNIX\nRestrictAddressFamilies=AF_INET6", "AF_UNIX AF_INET6"},
+		{"RestrictAddressFamilies=AF_UNIX\nRestrictAddressFamilies=", ""},
+		{"RestrictAddressFamilies=none", "-"},
+	} {
+		desc, _ := convertWarns(t, "[Service]\nExecStart=/bin/true\n"+c.unit+"\n")
+		got := strings.Join(desc.RestrictAddressFamilies, " ")
+		switch {
+		case c.want == "" && desc.RestrictAFEnabled:
+			t.Errorf("%q: restriction in force (%q); want none", c.unit, got)
+		case c.want == "-" && (!desc.RestrictAFEnabled || got != ""):
+			t.Errorf("%q: enabled=%v families %q; want an empty allow-list", c.unit, desc.RestrictAFEnabled, got)
+		case c.want != "" && c.want != "-" && got != c.want:
+			t.Errorf("%q: families %q; want %q", c.unit, got, c.want)
 		}
 	}
-	if warned < 2 {
-		t.Errorf("both unconvertible directives should warn, got %d WARNs", warned)
+	// A deny-list naming a family slinit does not know cannot be
+	// inverted: the unit is refused.
+	path := filepath.Join(t.TempDir(), "u.service")
+	os.WriteFile(path, []byte("[Service]\nExecStart=/bin/true\nRestrictAddressFamilies=~AF_BOGUS\n"), 0o644)
+	if _, _, err := ConvertSystemdUnit(path); err == nil {
+		t.Error("~AF_BOGUS converted; want an error")
+	}
+}
+
+// Confinement slinit cannot express refuses the unit instead of running
+// it less confined than written: an empty CapabilityBoundingSet= kept
+// every capability, PrivateDevices=yes left every device.
+func TestSystemdUnexpressibleConfinementRefused(t *testing.T) {
+	for _, line := range []string{"CapabilityBoundingSet=", "CapabilityBoundingSet=~CAP_CHOWN\nCapabilityBoundingSet=", "PrivateDevices=yes"} {
+		path := filepath.Join(t.TempDir(), "u.service")
+		os.WriteFile(path, []byte("[Service]\nExecStart=/bin/true\n"+line+"\n"), 0o644)
+		if _, _, err := ConvertSystemdUnit(path); err == nil {
+			t.Errorf("%q converted; want an error", line)
+		}
+		if _, err := SystemdUnitToServiceDescription(path, "u"); err == nil {
+			t.Errorf("%q loaded; want an error", line)
+		}
+	}
+	// PrivateDevices=no asks for nothing.
+	if desc, _ := convertWarns(t, "[Service]\nExecStart=/bin/true\nPrivateDevices=no\n"); desc == nil {
+		t.Error("PrivateDevices=no refused")
 	}
 }
 
@@ -390,11 +441,10 @@ func TestSystemdUnmappableSandboxFormsWarn(t *testing.T) {
 ExecStart=/bin/true
 ReadOnlyPaths=+/etc /var/%N
 BindReadOnlyPaths=/usr:/opt/usr:norbind
-CapabilityBoundingSet=
 ProtectProc=bogus
 `)
 	if len(desc.ReadOnlyPaths) != 0 || len(desc.BindReadOnlyPaths) != 0 ||
-		desc.CapabilityBoundingSet != "" || desc.ProtectProc != "" {
+		desc.ProtectProc != "" {
 		t.Errorf("an unmappable form was emitted: %+v", desc)
 	}
 	var n int
@@ -403,7 +453,7 @@ ProtectProc=bogus
 			n++
 		}
 	}
-	if n != 5 {
-		t.Errorf("got %d WARNs, want 5 (+path, %%specifier, norbind, empty bounding set, bogus protect-proc): %v", n, warns)
+	if n != 4 {
+		t.Errorf("got %d WARNs, want 4 (+path, %%specifier, norbind, bogus protect-proc): %v", n, warns)
 	}
 }

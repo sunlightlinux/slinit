@@ -37,8 +37,11 @@ service directories (**RuntimeDirectory** and its siblings),
 **NoNewPrivileges**, **PrivateTmp**, **ProtectSystem**,
 **ProtectHome**, the **ProtectKernel\***, **ProtectClock** and
 **ProtectControlGroups** family, **SystemCallFilter**,
-**RestrictAddressFamilies** (allow-lists only),
-**RestrictNamespaces** (**yes** / **no** only) and, since 4.0.3,
+**RestrictAddressFamilies** (a **~** deny-list becomes the allow-list
+of every other family, by number), **RestrictNamespaces** (a list of
+namespace types becomes **yes**, which refuses them all, with a
+warning), **ProtectHostname** (**private** becomes **yes**, with a
+warning) and, since 4.0.3,
 **ReadOnlyPaths**, **ReadWritePaths**, **InaccessiblePaths**,
 **BindReadOnlyPaths**, **TemporaryFileSystem**, **ProtectProc**,
 **ProcSubset**, **PrivateNetwork** (→ **namespace-net**; its loopback
@@ -47,9 +50,14 @@ interface stays down), **CapabilityBoundingSet** (with **~**) and
 prefix that does not exist when the unit is converted is left out, as
 systemd would ignore it. What these cannot express is left out with a
 warning: a **+** path (relative to **RootDirectory**), a specifier such
-as **%h**, a **norbind** bind, the **noexec** option of a temporary
-file system, and a **CapabilityBoundingSet** that keeps no capability
-at all.
+as **%h**, a **norbind** bind and the **noexec** option of a temporary
+file system.
+
+Confinement slinit cannot express makes the conversion fail, and a unit
+loaded directly fail to load, rather than run less confined than the
+unit says: a **CapabilityBoundingSet** that keeps no capability at all,
+**PrivateDevices=yes**, and a **RestrictAddressFamilies=~** naming a
+family the converter does not know.
 
 **Restart** keeps its meaning where slinit has it (**always** →
 **yes**, **on-success** → **on-success**; **on-failure**,
@@ -96,7 +104,7 @@ Not carried over, and reported: inline **Environment=** (slinit takes
 an **EnvironmentFile** only), **ExecReload** (slinit's reload is a
 signal — see **reload-signal**), **ExecStopPost**, **WatchdogSec**,
 **LoadCredential** / **SetCredential** / **ImportCredential**,
-**PrivateDevices**, **PrivateUsers**, and any
+**PrivateUsers**, and any
 other key the converter does not know — **KillMode**,
 **RemainAfterExit** and **LimitNPROC** among them.
 

@@ -335,7 +335,9 @@ merge into `run-as = user:group`. Hardening directives slinit
 implements under the same vocabulary (`PrivateTmp`, `ProtectSystem`,
 `ProtectHome`, `ProtectKernel*`, `SystemCallFilter`, `ReadOnlyPaths`,
 `PrivateNetwork`, `CapabilityBoundingSet`, …) are translated
-directly; the rest (`PrivateDevices`, `PrivateUsers`, …) are reported. Dependency names lose their
+directly; the rest (`PrivateUsers`, …) are reported, and confinement
+slinit cannot express (`PrivateDevices=yes`, an empty
+`CapabilityBoundingSet=`) refuses the unit. Dependency names lose their
 `.service` or `.socket` suffix (a socket stands for the service it
 activates, and a unit's own socket is dropped); references to any other
 unit type — `.target`, `.mount`, `.device`, `.path`, `.timer` — are

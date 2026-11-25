@@ -59,8 +59,9 @@ RestartSec=2
 TimeoutStopSec=10
 
 # Hardening. slinit implements these as equivalents of systemd's and
-# translates them; PrivateDevices has no counterpart and is reported
-# as a note rather than silently dropped.
+# translates them. PrivateDevices=yes has no counterpart, and a unit
+# asking for it is refused rather than run with every device of the
+# host, so this unit leaves it out.
 PrivateTmp=yes
 ProtectSystem=full
 ProtectHome=yes
@@ -68,7 +69,6 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 NoNewPrivileges=yes
-PrivateDevices=yes
 
 [Install]
 WantedBy=multi-user.target

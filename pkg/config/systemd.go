@@ -28,11 +28,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
+	"golang.org/x/sys/unix"
 )
 
 // --- Data structures ---
@@ -83,6 +85,13 @@ type SystemdConfig struct {
 	// their assignments; emitted once the whole unit is read.
 	capBounding capFold
 	capAmbient  capFold
+
+	// RestrictAddressFamilies=, folded across its assignments.
+	addrFamilies afFold
+
+	// errs are confinement directives slinit cannot apply: the unit
+	// fails to convert rather than run less confined than it says.
+	errs []string
 
 	description string   // [Unit] Description=
 	mapped      []kvPair // directives translated 1:1, emitted in order
@@ -170,6 +179,9 @@ func ConvertSystemdUnit(path string) (*SystemdConfig, []SystemdWarning, error) {
 	}
 
 	warns := parseSystemdUnit(cfg, string(data))
+	if len(cfg.errs) > 0 {
+		return nil, nil, fmt.Errorf("%s", strings.Join(cfg.errs, "; "))
+	}
 	cfg.comments = append([]string{
 		fmt.Sprintf("Converted from systemd unit: %s", abs),
 		"Review the notes above before enabling.",
@@ -262,9 +274,21 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		case allCaps:
 			// No limit, as systemd leaves the set alone.
 		case 0:
-			warns = append(warns, SystemdWarning{"WARN", "CapabilityBoundingSet= leaves no capability; slinit's capability-bounding-set cannot express an empty set — not applied"})
+			cfg.errs = append(cfg.errs, "CapabilityBoundingSet= leaves no capability, and slinit's capability-bounding-set "+
+				"cannot express an empty set; the service would keep every capability")
 		default:
 			cfg.mapped = append(cfg.mapped, kvPair{"capability-bounding-set", capNames(cfg.capBounding.mask)})
+		}
+	}
+	if f := cfg.addrFamilies; f.set {
+		if f.allow {
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-address-families", strings.Join(f.fams, " ")})
+		} else if allowed, err := f.complement(); err != nil {
+			cfg.errs = append(cfg.errs, err.Error())
+		} else {
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-address-families", allowed})
+			warns = append(warns, SystemdWarning{"NOTE", "RestrictAddressFamilies=~" + strings.Join(f.fams, " ") +
+				" → restrict-address-families allowing every other family, by number"})
 		}
 	}
 	if cfg.capAmbient.mask != 0 {
@@ -655,23 +679,25 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		// no|yes|read-only|tmpfs on both sides.
 		cfg.mapped = append(cfg.mapped, kvPair{"protect-home", strings.ToLower(trimQuotes(val))})
 	case "RestrictNamespaces":
-		// systemd also accepts a list of namespace types to deny;
-		// slinit's directive is a blanket yes/no, so a list would
-		// silently become something stricter than asked for.
-		if v := strings.ToLower(trimQuotes(val)); v == "yes" || v == "no" || v == "true" || v == "false" {
+		// systemd also takes a list of namespace types to allow, or
+		// with ~ to refuse. slinit's restrict-namespaces refuses them
+		// all, which is the stricter reading of any list; leaving the
+		// list out ran the service with no restriction at all.
+		switch v := strings.ToLower(strings.TrimSpace(trimQuotes(val))); v {
+		case "yes", "no", "true", "false", "1", "0", "on", "off":
 			cfg.mapped = append(cfg.mapped, kvPair{"restrict-namespaces", boolWord(val)})
-		} else {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("RestrictNamespaces=%s lists namespace types; slinit's restrict-namespaces is all-or-nothing — set it by hand", val)})
+		case "", "~":
+			// Empty resets; ~ with nothing refuses nothing.
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-namespaces", "no"})
+		default:
+			cfg.mapped = append(cfg.mapped, kvPair{"restrict-namespaces", "yes"})
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("RestrictNamespaces=%s lists namespace types; "+
+				"slinit's restrict-namespaces refuses every type — set to yes, stricter than the unit asks", val)})
 		}
 	case "RestrictAddressFamilies":
-		// Same AF_* token list. systemd's leading ~ inverts to a
-		// deny-list; slinit's is an allow-list only, so inverting
-		// would reverse the operator's intent.
-		if strings.HasPrefix(strings.TrimSpace(val), "~") {
-			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("RestrictAddressFamilies=%s is a deny-list; slinit's restrict-address-families only allow-lists — invert it by hand", val)})
-		} else {
-			cfg.mapped = append(cfg.mapped, kvPair{"restrict-address-families", trimQuotes(val)})
-		}
+		// Same AF_* names. A ~ deny-list becomes the allow-list of
+		// every other family, once the whole unit is read.
+		cfg.addrFamilies.apply(val)
 	case "SystemCallFilter":
 		// Same grammar: syscall names, @groups, and a leading ~ on the
 		// first item to switch allow-list to deny-list.
@@ -693,15 +719,28 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	case "ProtectHostname":
 		// systemd also has private[:name], a UTS namespace with its own
 		// hostname; slinit's protect-hostname refuses the calls and
-		// makes the hostname sysctl files read-only.
-		switch v := strings.ToLower(trimQuotes(val)); v {
-		case "yes", "no", "true", "false", "1", "0", "on", "off":
+		// makes the hostname sysctl files read-only, which is stricter:
+		// the service cannot change even a hostname of its own. Left
+		// out, the service could change the host's.
+		switch v := strings.ToLower(trimQuotes(val)); {
+		case v == "yes" || v == "no" || v == "true" || v == "false" || v == "1" || v == "0" || v == "on" || v == "off":
 			cfg.mapped = append(cfg.mapped, kvPair{"protect-hostname", boolWord(val)})
+		case v == "private" || strings.HasPrefix(v, "private:"):
+			cfg.mapped = append(cfg.mapped, kvPair{"protect-hostname", "yes"})
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectHostname=%s → protect-hostname = yes; "+
+				"slinit has no private hostname, so the service cannot set one at all", val)})
 		default:
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectHostname=%s — slinit's protect-hostname is yes/no only; set it by hand", val)})
 		}
+	case "PrivateDevices":
+		// A private /dev slinit cannot build: refuse the unit rather
+		// than run it with every device of the host.
+		if truthy(val) {
+			cfg.errs = append(cfg.errs, "PrivateDevices=yes has no slinit equivalent; "+
+				"the service would see every device of the host")
+		}
 	// No slinit equivalent — these stay notes.
-	case "PrivateDevices", "PrivateUsers":
+	case "PrivateUsers":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("hardening %s=%s — no slinit equivalent; review by hand", key, val)})
 	// Same directive, same value shape: a space-separated list of names
 	// created under /run, /var/lib and so on. Deferring these was not a
@@ -1234,6 +1273,91 @@ func (c *capFold) apply(key, val string, initial uint64) []SystemdWarning {
 		c.mask |= parsed
 	}
 	return warns
+}
+
+// afFold is a systemd RestrictAddressFamilies= set built up over its
+// assignments, as parse_address_families does: the first assignment
+// (or the first after an empty one, or none) says allow or deny, a
+// later one of the same kind adds its families, one of the other kind
+// takes them away. none is an empty allow-list.
+type afFold struct {
+	set   bool     // the directive is in force
+	alloc bool     // systemd has its set: a later line keeps its kind
+	allow bool     // allow-list, else deny-list
+	fams  []string // canonical names ("AF_INET"), in order
+}
+
+func (f *afFold) apply(val string) {
+	v := strings.TrimSpace(trimQuotes(val))
+	switch v {
+	case "":
+		*f = afFold{}
+		return
+	case "none":
+		*f = afFold{set: true, allow: true}
+		return
+	}
+	invert := strings.HasPrefix(v, "~")
+	v = strings.TrimPrefix(v, "~")
+	if !f.alloc {
+		f.set, f.alloc, f.allow, f.fams = true, true, !invert, nil
+	}
+	for _, word := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		name := strings.ToUpper(word)
+		if !strings.HasPrefix(name, "AF_") {
+			name = "AF_" + name
+		}
+		i := slices.Index(f.fams, name)
+		switch {
+		case invert != f.allow && i < 0:
+			f.fams = append(f.fams, name)
+		case invert == f.allow && i >= 0:
+			f.fams = slices.Delete(f.fams, i, i+1)
+		}
+	}
+}
+
+// complement turns a deny-list into the allow-list of every other
+// family, as numbers. A family past AF_MAX is refused, where systemd's
+// deny-list would let socket(2) refuse it.
+func (f afFold) complement() (string, error) {
+	denied := map[int]bool{}
+	for _, name := range f.fams {
+		n, ok := addressFamilies[name]
+		if !ok {
+			return "", fmt.Errorf("RestrictAddressFamilies=~ names unknown family %s; "+
+				"the deny-list cannot be turned into an allow-list without it", name)
+		}
+		denied[n] = true
+	}
+	var allowed []string
+	for n := 1; n < unix.AF_MAX; n++ {
+		if !denied[n] {
+			allowed = append(allowed, strconv.Itoa(n))
+		}
+	}
+	return strings.Join(allowed, " "), nil
+}
+
+// addressFamilies maps the AF_* names systemd takes, upper-cased, onto
+// their numbers.
+var addressFamilies = map[string]int{
+	"AF_UNSPEC": unix.AF_UNSPEC, "AF_UNIX": unix.AF_UNIX, "AF_LOCAL": unix.AF_LOCAL,
+	"AF_INET": unix.AF_INET, "AF_AX25": unix.AF_AX25, "AF_IPX": unix.AF_IPX,
+	"AF_APPLETALK": unix.AF_APPLETALK, "AF_NETROM": unix.AF_NETROM, "AF_BRIDGE": unix.AF_BRIDGE,
+	"AF_ATMPVC": unix.AF_ATMPVC, "AF_X25": unix.AF_X25, "AF_INET6": unix.AF_INET6,
+	"AF_ROSE": unix.AF_ROSE, "AF_DECNET": unix.AF_DECnet, "AF_NETBEUI": unix.AF_NETBEUI,
+	"AF_SECURITY": unix.AF_SECURITY, "AF_KEY": unix.AF_KEY, "AF_NETLINK": unix.AF_NETLINK,
+	"AF_ROUTE": unix.AF_ROUTE, "AF_PACKET": unix.AF_PACKET, "AF_ASH": unix.AF_ASH,
+	"AF_ECONET": unix.AF_ECONET, "AF_ATMSVC": unix.AF_ATMSVC, "AF_RDS": unix.AF_RDS,
+	"AF_SNA": unix.AF_SNA, "AF_IRDA": unix.AF_IRDA, "AF_PPPOX": unix.AF_PPPOX,
+	"AF_WANPIPE": unix.AF_WANPIPE, "AF_LLC": unix.AF_LLC, "AF_IB": unix.AF_IB,
+	"AF_MPLS": unix.AF_MPLS, "AF_CAN": unix.AF_CAN, "AF_TIPC": unix.AF_TIPC,
+	"AF_BLUETOOTH": unix.AF_BLUETOOTH, "AF_IUCV": unix.AF_IUCV, "AF_RXRPC": unix.AF_RXRPC,
+	"AF_ISDN": unix.AF_ISDN, "AF_PHONET": unix.AF_PHONET, "AF_IEEE802154": unix.AF_IEEE802154,
+	"AF_CAIF": unix.AF_CAIF, "AF_ALG": unix.AF_ALG, "AF_NFC": unix.AF_NFC,
+	"AF_VSOCK": unix.AF_VSOCK, "AF_KCM": unix.AF_KCM, "AF_QIPCRTR": unix.AF_QIPCRTR,
+	"AF_SMC": unix.AF_SMC, "AF_XDP": unix.AF_XDP, "AF_MCTP": unix.AF_MCTP,
 }
 
 // capNames lists the capabilities in mask by name, lowest first.
