@@ -13,7 +13,7 @@ Brief description of the changes.
 
 - [ ] Unit tests pass (`go test ./...` — ~2900 tests)
 - [ ] Race check clean (`go test -race ./pkg/service/... ./pkg/control/...`)
-- [ ] Functional tests pass (`./tests/functional/run-tests.sh` — 266 QEMU cases; skip if no local qemu)
+- [ ] Functional tests pass (`./tests/functional/run-tests.sh` — 268 QEMU cases; skip if no local qemu)
 - [ ] Acceptance tests pass against a VM (`./tests/acceptance/ssh/run.sh` — 218 SSH cases; skip if no live target)
 - [ ] Fuzz targets exercised for touched parsers (`go test -fuzz=Fuzz... -fuzztime=30s ./tests/fuzz/`, or the package that holds the target — 18 live beside their code)
 - [ ] New tests added for new functionality (unit + at least one of functional/acceptance for user-facing changes)

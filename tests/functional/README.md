@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (266 cases)
+# Run all tests (268 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -374,6 +374,8 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 264 | tmpfiles-mode-and-symlink | slinit-tmpfiles keeps a mode's sticky bit and does not chmod through a symlink at a `d` path |
 | 265 | process-interrupted-start-escalates | an interrupted process start escalates to SIGKILL at stop-timeout; a closed readiness fd brings the process down |
 | 266 | seccomp-log-keeps-deny | a call refused by `system-call-filter` stays refused when `system-call-log` lists it too |
+| 267 | protect-home-submount | `protect-home = read-only` makes a filesystem mounted below `/home` read-only too |
+| 268 | pass-cs-fd-at-boot | `options = pass-cs-fd` works for a boot-started service (`slinitctl --use-passed-cfd`) |
 
 ## How It Works
 

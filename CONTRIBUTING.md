@@ -59,7 +59,7 @@ go test ./...
 ### Testing
 
 - **Unit tests**: `go test ./...` (~2900 tests across 101 Go dirs, 494 _test.go files)
-- **Functional tests**: `./tests/functional/run-tests.sh` (266 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
+- **Functional tests**: `./tests/functional/run-tests.sh` (268 QEMU-based cases). `SLINIT_NO_KVM=1` forces software emulation, which is how CI runs them — reach for it when a case passes here and fails on the runner.
 - **Acceptance tests**: `./tests/acceptance/ssh/run.sh` (218 SSH-driven cases against a live VM)
 - **Performance harnesses**: `./tests/performance/ssh/run.sh` (93 SSH-driven perf cases) + `./tests/performance/demo/{cold-boot,minimal-boot,fork-exec-throughput,pid1-footprint,softreboot-cycle}.sh` (QEMU boot benchmarks) + `./tests/performance/runtime/` (Go microbenchmarks)
 - **Fuzz targets**: 45 repo-wide — 27 under `tests/fuzz` (`go test -fuzz=FuzzConfigParse ./tests/fuzz`), 18 beside the code they exercise (`go test -fuzz=FuzzStateMachine ./pkg/service`, the runit, openrc, sysvinit and immortal converters, the sysusers/tmpfiles/killall5 parsers, `pkg/timedate`, `pkg/hostname`, `pkg/journal`, `pkg/process`, `pkg/config`). CI fuzzes each package listed in `.github/workflows/tests.yml`; `go test ./tools/stats` fails if one with a target is missing. `grep -rl '^func Fuzz' --include='*_test.go' .` finds them all
@@ -101,7 +101,7 @@ go test ./...
 - `internal/` - `util` (path and parsing utilities), and test helpers:
   `dbustest` (a private dbus-daemon), `iouringtest`
 - `completions/` - Shell completions (bash, zsh, fish)
-- `tests/functional/` - QEMU integration tests (266 cases)
+- `tests/functional/` - QEMU integration tests (268 cases)
 - `tests/acceptance/ssh/` - SSH-driven live-VM cases (218)
 - `tests/performance/` - performance harnesses (93 SSH + 5 QEMU harnesses + runtime microbenchmarks)
 - `tests/fuzz/` - Fuzz targets (27)
