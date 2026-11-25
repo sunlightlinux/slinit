@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,6 +56,10 @@ type ServiceSet struct {
 	// stopped (releaseStopsLastLocked).
 	stopsLast    []Service
 	shutdownType atomic.Uint32
+
+	// stopsLastBlocker is the service releaseStopsLastLocked last found
+	// still running; checked first on the next call. Under queueMu.
+	stopsLastBlocker Service
 
 	// queueMu protects the processing queues, console queue, and
 	// activeServices counter, plus service-state fields mutated during
@@ -592,7 +597,7 @@ func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 	// The type first: whoever sees the shutdown sees its type.
 	ss.shutdownType.Store(uint32(shutdownType))
 	ss.restartEnabled.Store(false)
-	ss.stopsLast = nil
+	ss.stopsLast, ss.stopsLastBlocker = nil, nil
 	for _, svc := range snapshot {
 		rec := svc.Record()
 		if rec.Flags.StopsLast && svc.State() != StateStopped {
@@ -614,9 +619,28 @@ func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 // releaseStopsLastLocked unpins the stops-last services once every
 // other service has stopped, so they and their dependencies stop in
 // turn. It reports whether it released anything. Caller holds queueMu.
+//
+// It runs on every queue pass of a shutdown, and the scan of every
+// record made that O(N^2) over the shutdown. So the service the last
+// scan stopped at is checked first: if it is still a record of the set,
+// not held, not dependency-pinned and not STOPPED, it is a record the
+// scan would stop at too, and the answer is the scan's (false). In
+// every other case the scan runs as before, so the result is always
+// the scan's.
 func (ss *ServiceSet) releaseStopsLastLocked() bool {
 	if len(ss.stopsLast) == 0 {
 		return false
+	}
+	if b := ss.stopsLastBlocker; b != nil {
+		rec := b.Record()
+		if !rec.deptPinnedStarted && rec.state.Load() != StateStopped && !slices.Contains(ss.stopsLast, b) {
+			ss.mu.RLock()
+			inSet := ss.records[b.Name()] == b
+			ss.mu.RUnlock()
+			if inSet {
+				return false
+			}
+		}
 	}
 	held := map[Service]bool{}
 	for _, svc := range ss.stopsLast {
@@ -630,12 +654,13 @@ func (ss *ServiceSet) releaseStopsLastLocked() bool {
 		}
 		if rec.state.Load() != StateStopped {
 			ss.mu.RUnlock()
+			ss.stopsLastBlocker = svc
 			return false
 		}
 	}
 	ss.mu.RUnlock()
 	release := ss.stopsLast
-	ss.stopsLast = nil
+	ss.stopsLast, ss.stopsLastBlocker = nil, nil
 	for _, svc := range release {
 		svc.Unpin()
 		svc.Stop(false)
