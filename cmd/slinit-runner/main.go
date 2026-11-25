@@ -207,7 +207,7 @@ func run() error {
 	chrootDir := fs.String("chroot", "",
 		"enter this directory with chroot(2) after the sandbox and hardening setup, before the credential drop")
 	chdirDir := fs.String("chdir", "",
-		"with --chroot, the working directory inside the jail (default /)")
+		"the service's working directory, entered after the credential drop (inside the jail with --chroot)")
 	argv0 := fs.String("argv0", "",
 		"override argv[0] presented to the exec'd target; default is args[0]")
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -391,15 +391,11 @@ func run() error {
 		if err := unix.Chroot(*chrootDir); err != nil {
 			return fmt.Errorf("chroot %s: %w", *chrootDir, err)
 		}
-		dir := *chdirDir
-		if dir == "" {
-			dir = "/"
+		// Never leave the working directory outside the jail; --chdir is
+		// applied after the credential drop below.
+		if err := unix.Chdir("/"); err != nil {
+			return fmt.Errorf("chdir / (in chroot %s): %w", *chrootDir, err)
 		}
-		if err := unix.Chdir(dir); err != nil {
-			return fmt.Errorf("chdir %s (in chroot %s): %w", dir, *chrootDir, err)
-		}
-	} else if *chdirDir != "" {
-		return fmt.Errorf("--chdir is only used with --chroot")
 	}
 
 	if len(boundingCaps) > 0 {
@@ -417,6 +413,16 @@ func run() error {
 	if *runAsUID >= 0 || *runAsGID >= 0 {
 		if err := dropCredentials(*runAsUID, *runAsGID, ambientCaps, suppGIDs); err != nil {
 			return err
+		}
+	}
+
+	// The working directory, entered as the service's user (after the
+	// drop, and inside the jail when there is one), as exec.Command does
+	// for a service slinit starts directly: a directory the user cannot
+	// enter fails the start instead of being entered as root.
+	if *chdirDir != "" {
+		if err := unix.Chdir(*chdirDir); err != nil {
+			return fmt.Errorf("chdir %s: %w", *chdirDir, err)
 		}
 	}
 

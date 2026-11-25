@@ -209,9 +209,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Args[0] = params.Argv0
 	}
 
-	// Working directory. With chroot under the runner, the runner
-	// changes into it after entering the jail (see wrapWithRunner).
-	if params.WorkingDir != "" && !(wrapped && params.Chroot != "") {
+	// Working directory. Under the runner, the runner changes into it
+	// after the credential drop (see wrapWithRunner).
+	if params.WorkingDir != "" && !wrapped {
 		cmd.Dir = params.WorkingDir
 	}
 
@@ -1346,13 +1346,14 @@ func wrapWithRunner(p ExecParams) []string {
 		args = append(args, "--listen-pid")
 	}
 	// chroot is entered by the runner, not at fork: a chroot at fork
-	// would make the kernel look the runner up inside the jail. The
-	// working directory goes with it, since it names a path in the jail.
+	// would make the kernel look the runner up inside the jail.
 	if p.Chroot != "" {
 		args = append(args, "--chroot="+p.Chroot)
-		if p.WorkingDir != "" {
-			args = append(args, "--chdir="+p.WorkingDir)
-		}
+	}
+	// The working directory too: the runner enters it after dropping to
+	// the service's user (and inside the jail), as a direct start does.
+	if p.WorkingDir != "" {
+		args = append(args, "--chdir="+p.WorkingDir)
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)

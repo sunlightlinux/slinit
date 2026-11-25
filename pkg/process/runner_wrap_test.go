@@ -200,12 +200,19 @@ func TestWrapWithRunnerChroot(t *testing.T) {
 			t.Errorf("--chdir emitted without a working-dir: %q", a)
 		}
 	}
+	// Without chroot the runner still enters working-dir itself, after
+	// dropping to the service's user.
 	p.Chroot = ""
 	p.WorkingDir = "/work"
+	sawChdir := false
 	for _, a := range wrapWithRunner(p) {
-		if strings.HasPrefix(a, "--chroot") || strings.HasPrefix(a, "--chdir") {
+		if strings.HasPrefix(a, "--chroot") {
 			t.Errorf("chroot flag emitted without chroot: %q", a)
 		}
+		sawChdir = sawChdir || a == "--chdir=/work"
+	}
+	if !sawChdir {
+		t.Error("--chdir missing for a wrapped service with working-dir")
 	}
 }
 
