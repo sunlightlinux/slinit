@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"syscall"
 	"testing"
 	"time"
@@ -207,5 +208,68 @@ func TestBgDaemonExitWhileWaitingForDependentsWaits(t *testing.T) {
 	mustReachState(t, a, StateStopped)
 	if n := set.CountActiveServices(); n != 0 {
 		t.Errorf("active services = %d after the stop, want 0", n)
+	}
+}
+
+// TestBgStopCommandOutlivesDaemon runs a bgprocess stop-command that kills
+// the daemon and then keeps working. The daemon's death made the service
+// STOPPED at once, while the stop-command was still cleaning up; and when
+// the stop-command finished it signalled whatever s.daemonPID was by then
+// — the daemon of the next start. dinit's bgproc_service calls stopped()
+// only if stop_pid == -1 (proc-service.cc), as ProcessService already does.
+func TestBgStopCommandOutlivesDaemon(t *testing.T) {
+	set, _ := newTestSet()
+	dir := t.TempDir()
+	pf := dir + "/d.pid"
+	done := dir + "/cleaned"
+	a := NewBGProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c", "sleep 60 & echo $! > " + pf + "; exit 0"})
+	a.SetPIDFile(pf)
+	a.SetStopCommand([]string{"/bin/sh", "-c",
+		"kill $(cat " + pf + "); sleep 1.5; touch " + done})
+	set.AddService(a)
+	defer func() {
+		set.StopAllServices(ShutdownHalt)
+		waitState(t, a, StateStopped, 5*time.Second)
+	}()
+
+	set.StartService(a)
+	mustReachState(t, a, StateStarted)
+	set.StopService(a)
+	mustReachState(t, a, StateStopped)
+	if _, err := os.Stat(done); err != nil {
+		t.Errorf("a STOPPED before its stop-command finished cleaning up")
+	}
+
+	set.StartService(a)
+	mustReachState(t, a, StateStarted)
+	d2 := lockedDaemonPID(set, a)
+	time.Sleep(2 * time.Second) // past the end of any stale stop-command
+	if syscall.Kill(d2, 0) != nil || procIsZombie(d2) {
+		t.Errorf("the new daemon %d was killed by the previous stop's stop-command", d2)
+	}
+	if st := a.State(); st != StateStarted {
+		t.Errorf("a = %v, want STARTED", st)
+	}
+}
+
+// TestBgStopCommandTimeoutAfterDaemonGone: once the daemon has died, the
+// stop waits for the stop-command, so a wedged stop-command must still be
+// bounded by stop-timeout (its timer died with the daemon monitor).
+func TestBgStopCommandTimeoutAfterDaemonGone(t *testing.T) {
+	set, _ := newTestSet()
+	pf := t.TempDir() + "/d.pid"
+	a := NewBGProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c", "sleep 60 & echo $! > " + pf + "; exit 0"})
+	a.SetPIDFile(pf)
+	a.SetStopCommand([]string{"/bin/sh", "-c", "kill $(cat " + pf + "); exec sleep 60"})
+	a.SetStopTimeout(2 * time.Second)
+	set.AddService(a)
+
+	set.StartService(a)
+	mustReachState(t, a, StateStarted)
+	set.StopService(a)
+	if got := waitState(t, a, StateStopped, 4*time.Second); got != StateStopped {
+		t.Errorf("a = %v 4s into a stop with stop-timeout 2s, want STOPPED", got)
 	}
 }

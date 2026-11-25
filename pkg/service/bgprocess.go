@@ -67,6 +67,11 @@ type BGProcessService struct {
 	exitStatus   ExitStatus
 	procHandle   process.ProcessHandle
 
+	// daemonGoneDuringStop records that the daemon died while the
+	// stop-command was still running, so the stop-command's completion
+	// is what finishes the transition to STOPPED.
+	daemonGoneDuringStop bool
+
 	// Timer for start/stop/restart timeouts
 	processTimer *time.Timer
 	timerPurpose bgTimerPurpose
@@ -652,20 +657,71 @@ func (s *BGProcessService) execStopCommand() bool {
 	s.stopPID = pid
 	s.services.logger.Info("Service '%s': stop-command started (pid %d)", s.serviceName, pid)
 
+	// The daemon this stop is for. When the stop-command finishes, only
+	// that process is signalled, and only while the service is still
+	// STOPPING with it: reading s.daemonPID then instead signalled
+	// whatever daemon had been started since, if the old one had died
+	// and the service had already been restarted.
+	target := s.daemonPID
+	if target <= 0 {
+		target = s.launcherPID
+	}
+
+	// Monitor the stop-command. It takes queueMu for the state it shares
+	// with the state machine (stopPID was written here with no lock), and
+	// signals outside it, as ProcessService.execStopCommand does.
 	go func() {
-		exit := <-exitCh
-		s.stopPID = 0
+		// The stop-command's own timeout: the stop-timeout armed by
+		// BringDown is read only by monitorDaemon, which returns when
+		// the daemon dies — the usual first act of a stop-command — and
+		// the stop then waits for this command to finish.
+		var timeoutCh <-chan time.Time
+		if s.stopTimeout > 0 {
+			t := time.NewTimer(s.stopTimeout)
+			defer t.Stop()
+			timeoutCh = t.C
+		}
+
+		var exit process.ChildExit
+		select {
+		case exit = <-exitCh:
+		case <-timeoutCh:
+			s.services.logger.Error(
+				"Service '%s': stop-command exceeded stop-timeout, killing (pid %d)",
+				s.serviceName, pid)
+			process.SignalProcess(pid, syscall.SIGKILL, false)
+			exit = <-exitCh
+		}
 		process.KillProcessGroup(exit.PID)
+
+		s.services.queueMu.Lock()
+		if s.stopPID == pid {
+			s.stopPID = 0
+		}
+		daemonGone := s.daemonGoneDuringStop
+		if daemonGone {
+			// The daemon died while this command ran, so its death
+			// could not finish the stop: finish it here.
+			s.daemonGoneDuringStop = false
+			if s.state.Load() == StateStopping {
+				s.stopIssued = false
+				s.Stopped()
+				s.services.processQueuesLocked()
+			}
+		}
+		current := s.daemonPID
+		if current <= 0 {
+			current = s.launcherPID
+		}
+		signal := !daemonGone && target > 0 && current == target &&
+			s.state.Load() == StateStopping
+		s.services.queueMu.Unlock()
 
 		if exit.Exited() && exit.Status.ExitStatus() == 0 {
 			s.services.logger.Info("Service '%s': stop-command completed successfully",
 				s.serviceName)
 			// Stop-command succeeded — now send term signal to daemon process
-			daemonPID := s.daemonPID
-			if daemonPID <= 0 {
-				daemonPID = s.launcherPID
-			}
-			if daemonPID > 0 {
+			if signal {
 				// SIGTERM, deliberately, and both branches below agree.
 				//
 				// This fell back to SIGKILL for a while (e96e761,
@@ -697,24 +753,20 @@ func (s *BGProcessService) execStopCommand() bool {
 					sig = syscall.SIGTERM
 				}
 				s.services.logger.Info("Service '%s': sending %s to the daemon group (pid %d)",
-					s.serviceName, signalName(sig), daemonPID)
-				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
+					s.serviceName, signalName(sig), target)
+				process.SignalDaemonGroup(target, sig, s.signalProcessOnly(target))
 			}
 		} else {
 			s.services.logger.Error("Service '%s': stop-command failed (%s)",
 				s.serviceName, exitDetail(exit))
-			daemonPID := s.daemonPID
-			if daemonPID <= 0 {
-				daemonPID = s.launcherPID
-			}
-			if daemonPID > 0 {
+			if signal {
 				sig := s.termSignal
 				if sig == 0 {
 					sig = syscall.SIGTERM
 				}
 				s.services.logger.Info("Service '%s': sending %s to the daemon group (pid %d)",
-					s.serviceName, signalName(sig), daemonPID)
-				process.SignalDaemonGroup(daemonPID, sig, s.signalProcessOnly(daemonPID))
+					s.serviceName, signalName(sig), target)
+				process.SignalDaemonGroup(target, sig, s.signalProcessOnly(target))
 			}
 		}
 	}()
@@ -1351,6 +1403,17 @@ func (s *BGProcessService) handleDaemonTermination() {
 
 	switch state {
 	case StateStopping:
+		// A stop-command still running is commonly still cleaning up
+		// after killing the daemon: its exit finishes the stop, as for
+		// ProcessService (dinit: stopped() only if stop_pid == -1).
+		if s.stopPID > 0 {
+			s.daemonGoneDuringStop = true
+			s.services.logger.Info(
+				"Service '%s': daemon gone, waiting for stop-command (pid %d)",
+				s.serviceName, s.stopPID)
+			s.services.processQueuesLocked()
+			return
+		}
 		// Waiting for a hard dependent: as for a process service, do
 		// not go STOPPED underneath it (see dispatchAfterExitLocked).
 		if s.waitingForDeps {
