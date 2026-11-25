@@ -277,7 +277,9 @@ type sinkFactory struct {
 	volatileDir string
 	vacuum      journald.VacuumOptions
 	fileOpts    journald.FileSinkOptions
-	compress    bool
+	compress    bool               // jsonl only
+	fssKey      *journalbin.FSSKey // binary only
+	tagEvery    int                // binary only
 }
 
 // vacuumHook prunes dir, the directory the sink was actually opened in;
@@ -309,6 +311,29 @@ func (f sinkFactory) jsonl(target string) (journald.Sink, string, error) {
 		return nil, "", degraded
 	}
 	return fs, actualDir, nil
+}
+
+// binary opens a BinarySink at target, or at the volatile dir when
+// target is unwritable, as jsonl does: a read-only or full /var at
+// start-up must not stop the journal.
+func (f sinkFactory) binary(target string) (journald.Sink, string, error) {
+	bs, actualDir, degraded := journald.OpenWithFallback(target, f.volatileDir, func(dir string) (*journald.BinarySink, error) {
+		return journald.NewBinarySink(journald.BinarySinkOptions{
+			Dir:         dir,
+			FsyncEvery:  f.fileOpts.FsyncEvery,
+			MaxSize:     f.fileOpts.MaxSize,
+			MaxAge:      f.fileOpts.MaxAge,
+			FSSKey:      f.fssKey,
+			TagEvery:    f.tagEvery,
+			BootID:      journal.BootID(),
+			MachineID:   journal.MachineID(),
+			RotatedHook: f.vacuumHook(dir),
+		})
+	})
+	if bs == nil {
+		return nil, "", degraded
+	}
+	return bs, actualDir, nil
 }
 
 // version is stamped at build time via `-X main.version=vX.Y.Z`.
@@ -453,27 +478,26 @@ Flags:
 				MaxAge:       *vacuumAge,
 				Suffixes:     []string{".journal"},
 			}
-			binaryFactory := func(target string) (journald.Sink, string, error) {
-				bs, err := journald.NewBinarySink(journald.BinarySinkOptions{
-					Dir:         target,
-					FsyncEvery:  *fsyncEvery,
-					MaxSize:     *maxSize,
-					MaxAge:      *maxAge,
-					FSSKey:      fssKey,
-					TagEvery:    *fssTagEvery,
-					BootID:      journal.BootID(),
-					MachineID:   journal.MachineID(),
-					RotatedHook: journald.VacuumingHook(target, binVacOpts),
-				})
-				if err != nil {
-					return nil, "", err
-				}
-				return bs, target, nil
-			}
+			binaryFactory := sinkFactory{
+				volatileDir: *volatileDir,
+				vacuum:      binVacOpts,
+				fileOpts: journald.FileSinkOptions{
+					FsyncEvery: *fsyncEvery,
+					MaxSize:    *maxSize,
+					MaxAge:     *maxAge,
+				},
+				fssKey:   fssKey,
+				tagEvery: *fssTagEvery,
+			}.binary
 			bs, actualDir, err := binaryFactory(*dir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-journald: binary sink: %v\n", err)
 				os.Exit(1)
+			}
+			if actualDir != *dir {
+				fmt.Fprintf(os.Stderr,
+					"slinit-journald: WARN primary %s unwritable, degraded to volatile %s (tmpfs)\n",
+					*dir, actualDir)
 			}
 			guarded = &guardedSink{
 				inner:       bs,
