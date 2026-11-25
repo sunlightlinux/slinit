@@ -193,3 +193,64 @@ func TestVacuumingHookViaFileSink(t *testing.T) {
 		t.Fatalf("vacuum did not enforce MaxFiles=2: %d .jsonl files left", jsonlCount)
 	}
 }
+
+// The daemon's JSONL wiring: compress then vacuum on every rotation.
+// Rotated files are all .jsonl.gz, and a vacuum matching only .jsonl kept
+// every one of them (6 kept with MaxFiles 2).
+func TestVacuumPrunesCompressedRotations(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFileSinkWithOptions(dir, FileSinkOptions{FsyncEvery: 1,
+		RotatedHook: ChainHooks(CompressingRotationHook(), VacuumingHook(dir, VacuumOptions{MaxFiles: 2}))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r := 0; r < 6; r++ {
+		s.Handle(journalEvent(r, "b"))
+		if err := s.Rotate(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	s.Close()
+	ents, _ := os.ReadDir(dir)
+	gz, idx := 0, 0
+	for _, e := range ents {
+		switch {
+		case strings.HasSuffix(e.Name(), ".jsonl.gz"):
+			gz++
+		case strings.HasSuffix(e.Name(), ".jsonl.idx") && e.Name() != filepath.Base(s.CurrentPath())+".idx":
+			idx++
+		}
+	}
+	if gz != 2 {
+		t.Errorf("rotated .jsonl.gz kept = %d, want 2", gz)
+	}
+	// A pruned .gz takes the .idx of the file it was made from.
+	if idx != 2 {
+		t.Errorf("rotated .idx kept = %d, want 2 (one per kept .gz)", idx)
+	}
+}
+
+// x.jsonl left next to x.jsonl.gz (its compression could not remove it)
+// is removed together with it and counted once.
+func TestVacuumUncompressedTwinCountedOnce(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().Add(-time.Hour)
+	for i, name := range []string{"a.1.jsonl", "a.1.jsonl.gz", "a.2.jsonl.gz", "a.3.jsonl.gz"} {
+		p := filepath.Join(dir, name)
+		os.WriteFile(p, []byte("x"), 0o644)
+		mt := old.Add(time.Duration(i) * time.Minute)
+		os.Chtimes(p, mt, mt)
+	}
+	n, err := Vacuum(dir, VacuumOptions{MaxFiles: 2})
+	if err != nil {
+		t.Fatalf("Vacuum: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("removed = %d, want 1 (the twin goes with it)", n)
+	}
+	left, _ := os.ReadDir(dir)
+	if len(left) != 2 {
+		t.Errorf("left = %v, want a.2 and a.3", left)
+	}
+}

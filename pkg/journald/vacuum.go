@@ -35,9 +35,10 @@ type VacuumOptions struct {
 	MaxTotalSize int64
 	MaxAge       time.Duration
 	// Suffixes limits the file extensions Vacuum considers. Empty
-	// selects [".jsonl"] for backward compatibility with the Phase 3
-	// callers. Binary journal callers pass [".journal"]; a bilingual
-	// tool that manages both wires [".jsonl", ".journal"].
+	// selects the JSONL layout, [".jsonl", ".jsonl.gz"]: rotated JSONL
+	// files are gzipped by default, and with ".jsonl" alone none of
+	// them was ever pruned. Binary journal callers pass [".journal"]; a
+	// bilingual tool that manages both wires all three.
 	Suffixes []string
 }
 
@@ -72,7 +73,7 @@ func Vacuum(dir string, opts VacuumOptions, excludePaths ...string) (removed int
 	}
 	suffixes := opts.Suffixes
 	if len(suffixes) == 0 {
-		suffixes = []string{".jsonl"}
+		suffixes = []string{".jsonl", ".jsonl.gz"}
 	}
 	var candidates []cand
 	for _, e := range entries {
@@ -116,6 +117,10 @@ func Vacuum(dir string, opts VacuumOptions, excludePaths ...string) (removed int
 	}
 	fileCount := len(candidates)
 	ageCutoff := time.Now().Add(-opts.MaxAge)
+	byPath := make(map[string]int, len(candidates))
+	for i, c := range candidates {
+		byPath[c.path] = i
+	}
 
 	var firstErr error
 	deleteOne := func(idx int) {
@@ -129,6 +134,14 @@ func Vacuum(dir string, opts VacuumOptions, excludePaths ...string) (removed int
 		removed++
 		fileCount--
 		totalSize -= c.size
+		// removeJournalFile also took x.jsonl.gz with x.jsonl (a
+		// compression whose original was not removed); if that was a
+		// candidate too, it is gone now.
+		if j, ok := byPath[c.path+compressedSuffix]; ok && candidates[j].path != "" {
+			fileCount--
+			totalSize -= candidates[j].size
+			candidates[j].path = ""
+		}
 	}
 
 	// Age sweep first — a very old file is unconditionally removed
@@ -187,10 +200,14 @@ func removeJournalFile(primaryPath string) error {
 	}
 	// jsonl+idx wrote alongside .jsonl in Phase 3c; binary+idx wrote
 	// alongside .journal in Phase B2b. idxPath appends ".idx" in both
-	// cases so the same helper suits both layouts.
-	_ = os.Remove(primaryPath + ".idx")
+	// cases so the same helper suits both layouts. A compressed file
+	// keeps the index of the file it was made from: x.jsonl.idx for
+	// x.jsonl.gz.
+	_ = os.Remove(idxPath(strings.TrimSuffix(primaryPath, compressedSuffix)))
 	// Compressed JSONL companion.
-	_ = os.Remove(primaryPath + ".gz")
+	if !isCompressed(primaryPath) {
+		_ = os.Remove(primaryPath + compressedSuffix)
+	}
 	return nil
 }
 

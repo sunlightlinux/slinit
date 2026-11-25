@@ -651,6 +651,13 @@ requires.
 
 ### Fixed
 
+- **The JSONL journal was never vacuumed.** With `--format=jsonl` and
+  `--compress` (the default) every rotated file is gzipped to
+  `.jsonl.gz`, and the vacuum after each rotation matched `.jsonl`
+  only, so `-vacuum-files`, `-vacuum-size` and `-vacuum-age` pruned
+  nothing: 6 rotated files were kept with `-vacuum-files=2`. Compressed
+  files are vacuumed now, each with the `.idx` of the file it was made
+  from.
 - **`slinit-journalctl --flush` destroyed the day's persistent journal.**
   A boot that started on the volatile journal wrote the same
   `<date>.jsonl` (or `.journal`) name an earlier boot that day had
