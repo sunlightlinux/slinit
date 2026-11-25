@@ -33,6 +33,24 @@ requires.
 
 ### Security
 
+- **`shutdown +N` with a large N powered the machine off at once**: the
+  minutes overflowed to a negative delay, which took the immediate path
+  (or wrapped to a few seconds on the wire). Delays that do not fit are
+  now an error, in `shutdown` and `slinitctl shutdown`.
+- **Any local user could move the journal to tmpfs**: slinit-journald's
+  admin socket was 0666 and did not check the sender, so an
+  unprivileged `relinquish-var` stopped persistent logging. It is 0600
+  and accepts root only. *Compat:* `slinit-journalctl --flush` and
+  `--relinquish-var` now need root.
+- **slinit-getty gave an unauthenticated root shell when login could not
+  run** (missing, or exec failing during an upgrade): it fell back to
+  `/bin/sh`. It now tries only sulogin, which authenticates, and
+  otherwise exits so the supervisor respawns it.
+- **slinit-watchdogd left the device armed with nobody feeding it** when
+  setting the timeout or the first keepalive failed, and panicked
+  (resetting the machine a second later) with `-t 1`. Setup errors now
+  disarm, and the timeout is bounded and read back from the driver.
+
 - **A crafted journal file made `slinit-journalctl` (root with
   `--image`) allocate gigabytes**: overlapping entry arrays turned 96 KB
   into 13.5 million offsets, and one large DATA object shared by many
@@ -875,6 +893,17 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **slinit-journald in volatile fallback pruned the wrong directory**, so
+  `/run` filled without limit; vacuum now follows the directory in use,
+  sized to that filesystem (10% max, 5% kept free, as systemd). The
+  default binary format now falls back to the volatile directory at
+  start-up too, instead of exiting when `/var` is read-only or full.
+- **`shutdown -k` kexec'd instead of only warning** (as sysvinit and
+  systemd's `shutdown -k` do), **`shutdown now -r` powered off**
+  (options after the time were taken as the message), and
+  `shutdown -c "reason"` failed with "invalid time".
+- **slinit-nuke died with its SSH session** before sending SIGKILL.
 
 - **systemd unit conversion:** `ExecStart=@path name args` shifted
   every argument (the argv0 alias became argv[1]); it now sets
