@@ -1011,7 +1011,8 @@ apply OS-level changes:
         log-select = -* +NOTICE +ERROR
 
 **log-buffer-size**=*N*
-:   Size in bytes of the in-memory log buffer.
+:   Size in bytes of the in-memory log buffer. At most 64 MiB
+    (67108864); a larger value is a load error.
 
 **logfile-permissions**=*octal*, **logfile-uid**=*N*, **logfile-gid**=*N*
 :   File mode and ownership of the log file (created if missing).
@@ -1178,8 +1179,8 @@ apply OS-level changes:
     The mux periodically emits a synthetic
     `[shared-logger] dropped N lines` heartbeat so the loss is
     visible in the log stream. **shared-logger-queue-size** tunes
-    the channel depth (default 1024 lines) — deeper smooths larger
-    bursts at the cost of more memory. First producer to register
+    the channel depth (default 1024 lines, at most 1048576) — deeper
+    smooths larger bursts at the cost of more memory. First producer to register
     wins the setting: the mux inherits its policy from the logger
     at construction time and does not re-tune on later joiners.
 

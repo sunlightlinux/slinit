@@ -844,6 +844,13 @@ func (e *ParseError) Error() string {
 	return fmt.Sprintf("service '%s': %s", e.ServiceName, e.Message)
 }
 
+// Upper bounds on sizes that are allocated in full when the service
+// starts: the log buffer's capacity and the shared logger's channel depth.
+const (
+	maxLogBufferSize         = 64 << 20
+	maxSharedLoggerQueueSize = 1 << 20
+)
+
 // Parse reads a dinit-compatible service description file.
 //
 // Format:
@@ -2209,6 +2216,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		if err != nil {
 			return fmt.Errorf("invalid buffer size: %w", err)
 		}
+		// Allocated whole when the service starts; a huge value panicked
+		// PID 1 there (makeslice: cap out of range).
+		if n > maxLogBufferSize {
+			return fmt.Errorf("log-buffer-size: %d exceeds the maximum of %d bytes", n, maxLogBufferSize)
+		}
 		desc.LogBufMax = n
 	case "logfile-permissions":
 		perms, err := strconv.ParseInt(value, 8, 32)
@@ -2588,6 +2600,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		n, err := strconv.Atoi(value)
 		if err != nil || n <= 0 {
 			return fmt.Errorf("shared-logger-queue-size: must be a positive integer (got %q)", value)
+		}
+		if n > maxSharedLoggerQueueSize {
+			return fmt.Errorf("shared-logger-queue-size: %d exceeds the maximum of %d", n, maxSharedLoggerQueueSize)
 		}
 		desc.SharedLoggerQueueSize = n
 

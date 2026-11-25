@@ -2248,6 +2248,30 @@ func TestParseSharedLoggerLossyRejectsInvalid(t *testing.T) {
 	}
 }
 
+// TestParseLogBufferSizesBounded: both sizes are allocated up front at
+// service start (make([]byte, 0, n) and make(chan []byte, n)). A huge value
+// loaded fine and then panicked PID 1 with "makeslice: cap out of range"
+// when the service started.
+func TestParseLogBufferSizesBounded(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		ok   bool
+	}{
+		{"log-buffer-size = 67108864", true},
+		{"log-buffer-size = 67108865", false},
+		{"log-buffer-size = 4611686018427387904", false},
+		{"shared-logger-queue-size = 1048576", true},
+		{"shared-logger-queue-size = 1048577", false},
+		{"shared-logger-queue-size = 4611686018427387904", false},
+	} {
+		input := "type = process\ncommand = /bin/true\n" + tc.line + "\n"
+		_, err := Parse(strings.NewReader(input), "svc", "test")
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", tc.line, err, tc.ok)
+		}
+	}
+}
+
 // TestParseLogSanitize exercises the svlogd -r / -R analogues.
 // log-sanitize sets the replacement char; log-sanitize-extra adds
 // bytes on top of the default control-char set. Both single-config
