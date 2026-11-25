@@ -160,6 +160,12 @@ other name **-h** halts, as above.
     when none was scheduled. **slinitctl shutdown \--status** shows the
     pending one.
 
+**shutdown -k** [*time* [*message*...]]
+:   Only warn: every terminal gets the notice a shutdown at *time*
+    would send, with *message* appended, and nothing is scheduled or
+    shut down, as in sysvinit and systemd. Under every other name **-k**
+    still kexecs. (Before this release **shutdown -k** started a kexec reboot at once.)
+
 */run/nologin* is only removed if slinit created it: one an administrator
 put there stays. It is also removed before a scheduled soft-reboot runs,
 since */run* survives one.

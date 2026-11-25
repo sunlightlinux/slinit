@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/shutdown"
 )
 
 // shutdown(8)'s operands: a time, then the words of a message. A later
@@ -48,5 +49,26 @@ func TestShutdownDashH(t *testing.T) {
 		if got := shutdownDashH(c.from); got != c.want {
 			t.Errorf("from %v: %v", c.from, got)
 		}
+	}
+}
+
+// shutdown -k only sends the warning, as in sysvinit and systemd; it
+// used to kexec. The other names keep -k as kexec.
+func TestDashKUnderShutdownOnlyWarns(t *testing.T) {
+	o, err := parseArgs("shutdown", []string{"-k", "+5", "maintenance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.warnOnly || o.shutdownType == service.ShutdownKexec {
+		t.Errorf("shutdown -k: warnOnly=%v type=%v, want a warning and no kexec", o.warnOnly, o.shutdownType)
+	}
+	for _, name := range []string{"slinit-shutdown", "slinit-reboot", "reboot"} {
+		o, err := parseArgs(name, []string{"-k"})
+		if err != nil || o.warnOnly || o.shutdownType != service.ShutdownKexec {
+			t.Errorf("%s -k: %+v %v, want kexec", name, o, err)
+		}
+	}
+	if s := shutdown.ShutdownNoticeText(service.ShutdownPoweroff, 5*time.Minute, "maintenance"); !strings.Contains(s, "power-off") || !strings.Contains(s, "maintenance") {
+		t.Errorf("warning text %q", s)
 	}
 }
