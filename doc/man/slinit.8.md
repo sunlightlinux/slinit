@@ -693,6 +693,7 @@ Recognised **slinit.**-prefixed selectors:
   **single** / **s** / **1** for sysvinit compat).
 * **slinit.debug-shell** — arm a persistent sulogin on a secondary VT.
 * **slinit.confirm-spawn** — prompt before each service is brought up.
+  A prompt left unanswered for 30 seconds starts the service.
 * **slinit.crash-shell** — drop to sulogin instead of exiting on PID-1
   panic.
 * **slinit.debug** — verbose console logging: debug level, with the

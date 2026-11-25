@@ -1606,7 +1606,7 @@ func main() {
 	// system mode — user-mode has no /dev/console concept. Skipped in
 	// rescue mode — no services will be spawned.
 	if isPID1 && systemMode && kOpts.ConfirmSpawn && !rescueMode {
-		serviceSet.OnConfirmSpawn = makeConfirmSpawnPrompt(logger)
+		serviceSet.OnConfirmSpawn = makeConfirmSpawnPrompt(logger, "/dev/console", confirmSpawnTimeout)
 		logger.Notice("confirm-spawn: enabled — will prompt [y/n] before each service start")
 	}
 
@@ -2384,24 +2384,34 @@ func handlePID1Shutdown(shutdownType service.ShutdownType, cal *logging.CatchAll
 	}
 }
 
+// confirmSpawnTimeout bounds the wait for an answer. The prompt runs in
+// BringUp with the scheduling lock held, so while it waits nothing else
+// starts or stops and no control command is answered; an unattended
+// console must not hold that for ever. systemd asks from the forked
+// child, outside its manager's loop, so it can wait without a limit;
+// slinit asks from inside its own, so it gives up and proceeds. 30s is
+// systemd's DEFAULT_CONFIRM_USEC, its wait for the terminal itself.
+const confirmSpawnTimeout = 30 * time.Second
+
 // makeConfirmSpawnPrompt returns a hook suitable for
-// ServiceSet.OnConfirmSpawn: opens /dev/console per prompt (avoids
-// holding a fd for the whole boot), writes a [y/n] question, reads one
-// keypress, returns true iff the operator does NOT press n/N. On any
-// error (console unopenable, read fails, etc.) auto-proceeds — the
-// operator asked for interactivity but a broken tty shouldn't wedge
-// the boot forever.
+// ServiceSet.OnConfirmSpawn: opens the console at path per prompt
+// (avoids holding a fd for the whole boot), writes a [y/n] question,
+// waits up to timeout for one keypress, returns true iff the operator
+// does NOT press n/N. No answer in time, or any error
+// (console unopenable, read fails, etc.), auto-proceeds — the operator
+// asked for interactivity but a broken or unattended tty shouldn't
+// wedge the boot forever.
 //
 // Cbreak mode: ICANON off so a single keypress dispatches (no Enter
 // required), ECHO kept on so the operator sees their y/n. TCIFLUSH
 // before the read drops stray input the operator may have accumulated
 // during a slow pre-start-command. Termios is captured + restored per
 // prompt so a failure mid-boot doesn't leave the tty in raw mode.
-func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
+func makeConfirmSpawnPrompt(logger *logging.Logger, path string, timeout time.Duration) func(name string) bool {
 	return func(name string) bool {
-		tty, err := os.OpenFile("/dev/console", os.O_RDWR, 0)
+		tty, err := os.OpenFile(path, os.O_RDWR, 0)
 		if err != nil {
-			logger.Warn("confirm-spawn: open /dev/console: %v; auto-proceeding for %q", err, name)
+			logger.Warn("confirm-spawn: open %s: %v; auto-proceeding for %q", path, err, name)
 			return true
 		}
 		defer tty.Close()
@@ -2425,8 +2435,13 @@ func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
 
 		fmt.Fprintf(tty, "\nconfirm-spawn: start service %q? [Y/n] ", name)
 		buf := make([]byte, 1)
-		n, err := tty.Read(buf)
+		n, err := readByteWithin(fd, buf, timeout)
 		fmt.Fprintln(tty) // cbreak swallows Enter, so print our own line-break
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			logger.Warn("confirm-spawn: no answer for %q within %v, starting it", name, timeout)
+			fmt.Fprintf(tty, "(no answer within %v, defaulting to yes)\n", timeout)
+			return true
+		}
 		if err != nil || n == 0 {
 			fmt.Fprintf(tty, "(no input, defaulting to yes)\n")
 			return true
@@ -2437,6 +2452,33 @@ func makeConfirmSpawnPrompt(logger *logging.Logger) func(name string) bool {
 			return false
 		}
 		return true
+	}
+}
+
+// readByteWithin reads into buf from fd, waiting at most timeout for
+// input; os.ErrDeadlineExceeded when nothing came. fd is the blocking
+// descriptor os.File.Fd hands out, so the wait is a poll, not a
+// deadline on the file.
+func readByteWithin(fd int, buf []byte, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	for {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return 0, os.ErrDeadlineExceeded
+		}
+		fds[0].Revents = 0
+		n, err := unix.Poll(fds, int(left.Milliseconds())+1)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if n == 0 {
+			continue // re-checks the deadline
+		}
+		return unix.Read(fd, buf)
 	}
 }
 
