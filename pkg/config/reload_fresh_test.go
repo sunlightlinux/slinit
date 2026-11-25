@@ -35,11 +35,6 @@ var typeLine = regexp.MustCompile(`^\s*type\s*=\s*(\S+)`)
 // making them equal, and a fresh record has its own.
 var runtimeFields = map[string]bool{
 	"serviceDir": true, // where the file was found; same dir here, kept for safety
-	// extraEnv mixes `slinitctl setenv` values with load-options'
-	// DINIT_SERVICE/USER/HOME. A reload cannot tell them apart, and
-	// clearing an operator's setenv on reload would be a regression, so
-	// a dropped load-option's variables stay until reset-env.
-	"extraEnv": true,
 }
 
 func minimalConfig(t service.ServiceType, src string) string {

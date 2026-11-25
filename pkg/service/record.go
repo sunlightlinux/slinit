@@ -285,6 +285,10 @@ type ServiceRecord struct {
 	// "concurrent map writes" fatal, which in PID 1 is a kernel panic.
 	envMu    sync.Mutex
 	extraEnv map[string]string
+	// loadEnv is what the loader last put in extraEnv from load-options,
+	// so a reload can drop what it no longer sets without touching a
+	// value `slinitctl setenv` has changed since.
+	loadEnv map[string]string
 
 	// Process attributes (applied post-fork)
 	nice           *int
@@ -1652,6 +1656,38 @@ func (sr *ServiceRecord) SetEnvVar(key, value string) {
 	sr.extraEnv[key] = value
 }
 
+// SetLoadEnv replaces the variables derived from load-options (USER,
+// HOME, DINIT_SERVICE and the rest): the ones the previous call set are
+// removed first, so a reload that drops an option or changes run-as does
+// not leave the old values behind. A variable whose value is no longer
+// the one the loader set was changed at runtime, and is left as it is.
+func (sr *ServiceRecord) SetLoadEnv(vars map[string]string) {
+	sr.envMu.Lock()
+	defer sr.envMu.Unlock()
+	changed := make(map[string]bool)
+	for k, v := range sr.loadEnv {
+		if cur, ok := sr.extraEnv[k]; !ok || cur != v {
+			changed[k] = true
+			continue
+		}
+		delete(sr.extraEnv, k)
+	}
+	sr.loadEnv = nil
+	for k, v := range vars {
+		if changed[k] {
+			continue
+		}
+		if sr.extraEnv == nil {
+			sr.extraEnv = make(map[string]string)
+		}
+		if sr.loadEnv == nil {
+			sr.loadEnv = make(map[string]string)
+		}
+		sr.extraEnv[k] = v
+		sr.loadEnv[k] = v
+	}
+}
+
 func (sr *ServiceRecord) UnsetEnvVar(key string) {
 	sr.envMu.Lock()
 	defer sr.envMu.Unlock()
@@ -1666,6 +1702,7 @@ func (sr *ServiceRecord) ResetEnv() {
 	sr.envMu.Lock()
 	defer sr.envMu.Unlock()
 	sr.extraEnv = nil
+	sr.loadEnv = nil
 }
 
 func (sr *ServiceRecord) GetAllEnv() map[string]string {
