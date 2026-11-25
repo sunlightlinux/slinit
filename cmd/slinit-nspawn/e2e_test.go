@@ -142,7 +142,7 @@ echo PTMX: $(readlink /dev/ptmx)'
 			t.Errorf("%s: a device node from the image is reachable in the container", bad)
 		}
 	}
-	if !strings.Contains(out, "DEV: fd full null ptmx pts random shm stderr stdin stdout tty urandom zero\n") {
+	if !strings.Contains(out, "DEV: console fd full null ptmx pts random shm stderr stdin stdout tty urandom zero\n") {
 		t.Error("/dev does not hold exactly the standard nodes, links and mount points")
 	}
 	if !strings.Contains(out, "NODES-WORK") {
@@ -283,5 +283,47 @@ exec "$NSPAWN" --name t9 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /
 	t.Logf("exit=%d output:\n%s", code, out)
 	if !strings.Contains(out, "SECCOMP 2") {
 		t.Error("the container's init runs without a seccomp filter")
+	}
+}
+
+// TestContainerConsole: the fresh /dev had no /dev/console, which slinit
+// as the container's PID 1 opens for its console log, emergency shell
+// and on-console services. It is now the terminal on stdin, which the
+// init also inherits, or /dev/null when stdin is not a terminal, as
+// under systemd-nspawn.
+func TestContainerConsole(t *testing.T) {
+	if _, err := exec.LookPath("script"); err != nil {
+		t.Skip("script not available to allocate a terminal")
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+cat >"$ROOTFS/probe" <<'PROBE'
+echo CON $(stat -c %t:%T /dev/console) IN $(stat -L -c %t:%T /proc/self/fd/0)
+echo VIA-CONSOLE >/dev/console && echo CONSOLE-WRITABLE
+PROBE
+echo "== pipe"
+"$NSPAWN" --name t10 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- /probe </dev/null
+echo "== tty"
+script -qec "$NSPAWN --name t11 --boot $ROOTFS --machine-dir $DIR/machines --init /bin/sh -- /probe" /dev/null </dev/null
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	pipe, tty, ok := strings.Cut(out, "== tty")
+	if !ok {
+		t.Fatal("the probe did not run")
+	}
+	if !strings.Contains(pipe, "CON 1:3 ") || !strings.Contains(pipe, "CONSOLE-WRITABLE") {
+		t.Error("with stdin not a terminal, /dev/console is not a working /dev/null")
+	}
+	var con, in string
+	for _, l := range strings.Split(tty, "\n") {
+		if f := strings.Fields(l); len(f) == 4 && f[0] == "CON" {
+			con, in = f[1], f[3]
+		}
+	}
+	if con == "" || con != in || con == "1:3" {
+		t.Errorf("with a terminal on stdin, /dev/console is %q, not that terminal %q", con, in)
+	}
+	if !strings.Contains(tty, "VIA-CONSOLE") {
+		t.Error("output written to /dev/console did not reach the terminal")
 	}
 }

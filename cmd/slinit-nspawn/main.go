@@ -11,7 +11,8 @@
 //     pivot_root inside the child. Standard virtual FS bind mounts:
 //     /proc (rw, private), /sys (ro, private, rebound), /dev (fresh
 //     nodev tmpfs with the standard nodes bound in from the host),
-//     /dev/pts (new instance), /dev/shm, /run and /tmp (tmpfs). The
+//     /dev/console the stdin terminal or /dev/null, /dev/pts (new
+//     instance), /dev/shm, /run and /tmp (tmpfs). The
 //     rootfs is nodev, not nosuid. /proc/sys and nspawn's other
 //     read-only /proc entries are read-only, its inaccessible ones
 //     are covered with /dev/null.
@@ -354,6 +355,10 @@ func childMain() error {
 	if err != nil {
 		return err
 	}
+	console, err := unix.OpenTree(unix.AT_FDCWD, consoleSource(), unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC)
+	if err != nil {
+		return fmt.Errorf("clone the console: %w", err)
+	}
 	// /proc and /sys too: inside a user namespace the kernel mounts
 	// them only while a full mount of the same kind is already visible
 	// (mount_too_revealing), and once the old root is gone there is none.
@@ -392,7 +397,7 @@ func childMain() error {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
-	if err := setupDev(nodes); err != nil {
+	if err := setupDev(nodes, console); err != nil {
 		return err
 	}
 	mounts := []m{
@@ -458,14 +463,35 @@ func cloneDevNodes() ([]int, error) {
 	return fds, nil
 }
 
+// consoleSource is what the container gets as /dev/console: the
+// terminal on stdin, which the init inherits, as systemd-nspawn binds
+// its console pty, or /dev/null when stdin is not a terminal, as in
+// nspawn's pipe and read-only modes. The terminal is named by the path
+// /proc gives for fd 0, taken only if it is still that same device.
+// Called before pivot_root: the path names a host file.
+func consoleSource() string {
+	if _, err := unix.IoctlGetTermios(0, unix.TCGETS); err != nil {
+		return "/dev/null"
+	}
+	p, err := os.Readlink("/proc/self/fd/0")
+	var fdSt, pathSt unix.Stat_t
+	if err != nil || unix.Fstat(0, &fdSt) != nil || unix.Stat(p, &pathSt) != nil ||
+		pathSt.Mode&unix.S_IFMT != unix.S_IFCHR || pathSt.Rdev != fdSt.Rdev {
+		fmt.Fprintf(os.Stderr, "slinit-nspawn (child): cannot find the terminal on stdin, /dev/console is /dev/null\n")
+		return "/dev/null"
+	}
+	return p
+}
+
 // setupDev gives the container a fresh /dev, as systemd-nspawn does:
-// a tmpfs holding only the devNodes binds, the /dev/fd and stdio links,
+// a tmpfs holding only the devNodes binds, console on /dev/console,
+// the /dev/fd and stdio links,
 // mount points for /dev/pts and /dev/shm, and /dev/ptmx pointing at
 // the container's own devpts. The image's /dev, and any device node in
 // it, is hidden underneath. The tmpfs is nodev, unlike nspawn's, which
 // mknods into it: with no device cgroup here, a node the container
 // creates must not open a host device.
-func setupDev(nodes []int) error {
+func setupDev(nodes []int, console int) error {
 	if err := unix.Mount("tmpfs", "/dev", "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_STRICTATIME, "mode=755"); err != nil {
 		return fmt.Errorf("mount /dev: %w", err)
 	}
@@ -479,6 +505,13 @@ func setupDev(nodes []int) error {
 		}
 		unix.Close(nodes[i])
 	}
+	if err := os.WriteFile("/dev/console", nil, 0o600); err != nil {
+		return fmt.Errorf("create /dev/console: %w", err)
+	}
+	if err := unix.MoveMount(console, "", unix.AT_FDCWD, "/dev/console", unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
+		return fmt.Errorf("bind /dev/console: %w", err)
+	}
+	unix.Close(console)
 	for _, d := range []string{"/dev/pts", "/dev/shm"} {
 		if err := os.Mkdir(d, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)

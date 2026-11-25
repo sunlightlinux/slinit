@@ -54,9 +54,19 @@ sets up no cgroup, so the mount flag stands in for it.
 image's own */dev*), as under **systemd-nspawn**(1). It holds only
 *null*, *zero*, *full*, *random*, *urandom* and *tty*, bind-mounted
 from the host; the */dev/fd*, */dev/stdin*, */dev/stdout* and
-*/dev/stderr* links; */dev/ptmx* pointing at *pts/ptmx*; and the mount
-points for */dev/pts* and */dev/shm*. There is no */dev/console*: the
-container's init keeps the terminal **slinit-nspawn** was started on.
+*/dev/stderr* links; */dev/ptmx* pointing at *pts/ptmx*; the mount
+points for */dev/pts* and */dev/shm*; and */dev/console*. The
+container's init keeps the terminal **slinit-nspawn** was started on as
+its standard input, and that terminal is bound onto */dev/console*;
+when standard input is not a terminal, */dev/console* is */dev/null*,
+as in **systemd-nspawn**(1)'s pipe and read-only console modes. There
+is no */dev/kmsg* (nor under **systemd-nspawn**(1)); **slinit**(8)
+skips its kernel log reader without it.
+
+An init that mounts **devtmpfs** on */dev* replaces all of this with
+the host's device nodes: **slinit**(8) does so when it runs as PID 1
+outside container mode. Start it with **--devtmpfs-path=** (empty) or
+**--container** inside **slinit-nspawn**.
 
 */proc/sys*, */proc/acpi*, */proc/apm*, */proc/asound*, */proc/bus*,
 */proc/fs*, */proc/irq* and */proc/scsi* are read-only, and
