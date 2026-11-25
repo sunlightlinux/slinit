@@ -1988,6 +1988,12 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 	// both are set, so the precedence is unchanged.
 	rec.SetSlice(desc.Slice)
 	rec.SetDelegate(desc.Delegate, desc.DelegateControllers)
+	if desc.Delegate && desc.CgroupPath == "" && desc.Slice == "" {
+		// Only a cgroup of the service's own can be handed over; the
+		// daemon's default one is shared with other services.
+		fmt.Fprintf(os.Stderr, "slinit: service %q: delegate = yes needs cgroup = or "+
+			"slice =; without one nothing is delegated\n", svc.Name())
+	}
 	// Cgroup settings: user-declared cgroup-setting entries + Bucket C
 	// cpuset-partition + startup-allowed-cpus/mems. The Startup values
 	// win over the steady-state cgroup-cpuset-cpus at cgroup creation

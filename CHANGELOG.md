@@ -33,6 +33,17 @@ requires.
 
 ### Security
 
+- **A service with no cgroup of its own acted on every service sharing
+  the daemon's default cgroup.** Its cgroup kill (`kill-mode =
+  control-group`, `kill-all-on-stop`, `oom-policy = kill`) signalled
+  every process there - stopping one converted unit could SIGKILL sshd
+  and the gettys - and `delegate = yes` chowned that shared cgroup to
+  the service's user, who could then move, freeze or limit root's
+  services. Kill, freeze, the OOM and pressure watchers, the
+  `exit-type = cgroup` drain wait, `guess-main-pid` and delegation now
+  act only on a cgroup the service has through `cgroup =` or `slice =`;
+  `delegate = yes` without one is reported at load.
+
 - **slinit-getty did not take its tty back from the previous session**:
   a tty left owned by the last user, or a process of theirs holding it,
   could read the next login. Before the prompt getty now makes it

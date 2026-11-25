@@ -2426,11 +2426,23 @@ var removeCgroupTreeFunc = process.RemoveCgroupTree
 // cgroups remain. That makes it safe to call unconditionally from
 // Stopped(), including on a service that failed to start and never had
 // a cgroup at all.
-func (sr *ServiceRecord) removeOwnCgroup() {
+// OwnCgroupPath is EffectiveCgroupPath when the service has a cgroup of
+// its own (cgroup or slice set), and "" when it only shares the daemon's
+// default one with every other such service. Anything that acts on the
+// cgroup as the service's - killing it, freezing it, watching it for OOM
+// or pressure, waiting for it to drain, guessing the main pid from it,
+// delegating it - must use this: on the shared cgroup it reached every
+// other service in it (kill-mode = control-group SIGKILLed sshd and the
+// gettys; delegate = yes chowned the common ancestor to the service user).
+func (sr *ServiceRecord) OwnCgroupPath() string {
 	if sr.cgroupPath == "" && sr.slice == "" {
-		return
+		return ""
 	}
-	path := sr.EffectiveCgroupPath()
+	return sr.EffectiveCgroupPath()
+}
+
+func (sr *ServiceRecord) removeOwnCgroup() {
+	path := sr.OwnCgroupPath()
 	if path == "" {
 		return
 	}
@@ -2468,7 +2480,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 	params.IOPrioLevel = sr.ioPrioLevel
 	params.CgroupPath = sr.EffectiveCgroupPath()
 	params.CgroupSettings = sr.cgroupSettings
-	params.Delegate = sr.delegate
+	// Only a cgroup of the service's own may be handed over.
+	params.Delegate = sr.delegate && sr.OwnCgroupPath() != ""
 	params.DelegateControllers = sr.delegateControllers
 	params.Rlimits = sr.rlimits
 	params.AmbientCaps = sr.ambientCaps

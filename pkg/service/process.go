@@ -1618,7 +1618,7 @@ func (s *ProcessService) waitCgroupThenDispatch(cgPath string, state ServiceStat
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 // Used when kill-all-on-stop is set to ensure the entire process tree is terminated.
 func (s *ProcessService) killCgroupTree(sig syscall.Signal) {
-	cgPath := s.EffectiveCgroupPath()
+	cgPath := s.OwnCgroupPath()
 	if cgPath == "" {
 		return
 	}
@@ -3047,7 +3047,7 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	// the immediate-failure path — a start-time failure is not
 	// "waiting for a healthy workload to finish".
 	if s.exitType == ExitTypeCgroup && state != StateStarting {
-		if cgPath := s.EffectiveCgroupPath(); cgPath != "" {
+		if cgPath := s.OwnCgroupPath(); cgPath != "" {
 			if populated, _ := readCgroupPopulated(cgPath); populated {
 				s.services.logger.Info(
 					"Service '%s': main pid exited, waiting for cgroup drain (exit-type=cgroup)",

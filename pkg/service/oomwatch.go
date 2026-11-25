@@ -34,7 +34,7 @@ func (sr *ServiceRecord) armOOMWatcher() {
 	if sr.oomPolicy == OOMContinue {
 		return
 	}
-	cgPath := sr.EffectiveCgroupPath()
+	cgPath := sr.OwnCgroupPath()
 	if cgPath == "" {
 		return
 	}

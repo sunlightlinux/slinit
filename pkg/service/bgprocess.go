@@ -190,7 +190,7 @@ func (s *BGProcessService) signalProcessOnly(pid int) bool {
 
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 func (s *BGProcessService) killCgroupTree(sig syscall.Signal) {
-	cgPath := s.EffectiveCgroupPath()
+	cgPath := s.OwnCgroupPath()
 	if cgPath == "" {
 		return
 	}
@@ -943,7 +943,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 					return
 				}
 			} else if s.Record().GuessMainPID() {
-				if pid, err := guessMainPIDFromCgroup(s.EffectiveCgroupPath()); err == nil {
+				if pid, err := guessMainPIDFromCgroup(s.OwnCgroupPath()); err == nil {
 					s.bringDownForkedDaemonLocked(pid)
 					return
 				}
@@ -1012,7 +1012,7 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 			return
 		}
 	} else if s.Record().GuessMainPID() {
-		pid, err = guessMainPIDFromCgroup(s.EffectiveCgroupPath())
+		pid, err = guessMainPIDFromCgroup(s.OwnCgroupPath())
 		if err != nil {
 			result = process.PIDResultFailed
 		} else {

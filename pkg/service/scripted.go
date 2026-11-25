@@ -107,7 +107,7 @@ func (s *ScriptedService) recordExit(exit process.ChildExit) {
 
 // killCgroupTree sends a signal to all processes in the service's cgroup.
 func (s *ScriptedService) killCgroupTree(sig syscall.Signal) {
-	cgPath := s.EffectiveCgroupPath()
+	cgPath := s.OwnCgroupPath()
 	if cgPath == "" {
 		return
 	}

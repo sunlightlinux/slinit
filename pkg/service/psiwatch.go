@@ -50,7 +50,7 @@ func (sr *ServiceRecord) armPSIWatcher() {
 	if !sr.psiMemWatch && !sr.psiCPUWatch && !sr.psiIOWatch {
 		return
 	}
-	cgPath := sr.EffectiveCgroupPath()
+	cgPath := sr.OwnCgroupPath()
 	if cgPath == "" {
 		return
 	}
