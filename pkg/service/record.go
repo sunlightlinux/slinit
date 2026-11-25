@@ -3097,6 +3097,15 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 		if dep.IsOnlyOrdering() && to.Record().state.Load() != StateStarting {
 			continue
 		}
+		// A soft link this service does not hold, and is not about to
+		// take (a fresh start's require is still queued), was broken
+		// when the dependency stopped: the dependency is not coming
+		// back for us, so waiting on it would never end. That is a
+		// restart of the same activation (auto-restart, restart-delay,
+		// a cancelled stop); a new start requires the dependency again.
+		if !dep.IsHard() && !dep.HoldingAcq && !sr.propRequire {
+			continue
+		}
 		if to.Record().state.Load() != StateStarted {
 			dep.WaitingOn = true
 			allStarted = false

@@ -398,3 +398,68 @@ func TestDepAudit_RmDepWhileWaitingOnIt(t *testing.T) {
 		t.Errorf("A, no longer required: desired %v requiredBy %d", a.desired.Load(), a.Record().requiredBy)
 	}
 }
+
+// B waits-for W; the operator stops W (B loses the link and keeps
+// running, as slinitctl(8) says), then B's process dies and B restarts.
+// The restart waited on the STOPPED W, which nothing would start: B
+// stayed STARTING for good. dinit's start_check_dependencies has the
+// same wait.
+func TestDepAudit_RestartAfterSoftDepStopped(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "W", "B")
+	w, b := sv[0], sv[1]
+	b.AddDep(w, DepWaitsFor)
+	b.SetAutoRestart(RestartAlways)
+	set.StartService(b)
+	set.StopService(w)
+	crashSvc(set, b)
+	if b.State() != StateStarted {
+		logSvcs(t, w, b)
+		t.Errorf("B %v after its auto-restart; waits-for W is STOPPED and nothing requires it", b.State())
+	}
+	if w.State() != StateStopped {
+		t.Errorf("the restart of B brought back W, which the operator stopped: %v", w.State())
+	}
+}
+
+func TestDepAudit_RestartAfterSoftDepStoppedProcess(t *testing.T) {
+	set, _ := newTestSet()
+	w := NewInternalService(set, "W")
+	b := NewProcessService(set, "B")
+	b.SetCommand([]string{"/bin/sleep", "60"})
+	b.SetAutoRestart(RestartAlways)
+	set.AddService(w)
+	set.AddService(b)
+	b.AddDep(w, DepWaitsFor)
+	t.Cleanup(func() { set.StopService(b); waitState(t, b, StateStopped, 3*time.Second) })
+	set.StartService(b)
+	p := waitForNewPID(set, b, 0, 2*time.Second)
+	set.StopService(w)
+	if err := syscall.Kill(p, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if np := waitForNewPID(set, b, p, 3*time.Second); np == 0 || np == p {
+		t.Errorf("B did not come back after SIGKILL: state %v", b.State())
+	}
+}
+
+// The guard above must not touch a fresh start: B still waits for a
+// waits-for dependency that is slow to start.
+func TestDepAudit_FreshStartWaitsForSoftDep(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "W", "B")
+	w, b := sv[0], sv[1]
+	b.AddDep(w, DepWaitsFor)
+	w.autoStart = false
+	set.StartService(b)
+	if b.State() != StateStarting || w.State() != StateStarting {
+		t.Fatalf("B should start W and wait for it: B=%v W=%v", b.State(), w.State())
+	}
+	set.queueMu.Lock()
+	w.Started()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	if b.State() != StateStarted {
+		t.Errorf("B %v after W started", b.State())
+	}
+}

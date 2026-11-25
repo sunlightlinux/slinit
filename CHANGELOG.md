@@ -736,6 +736,14 @@ requires.
   (`<date>.<ns>.jsonl` with its `.idx`), so both boots are kept and read
   in the order they were written; the cross-device copy no longer
   truncates an existing file either.
+- **A service restarting after its `waits-for` dependency was stopped
+  hung in STARTING.** Stopping a `waits-for` (or reached `depends-ms`)
+  dependency breaks the link and leaves the dependent running, as
+  documented; but when the dependent then restarted — its process died
+  under `restart = always`, or a restart-delay ran out — it waited for
+  the stopped dependency, which nothing was going to start, and never
+  came back. A soft dependency the service no longer holds is not waited
+  for on such a restart; a fresh start still starts it and waits for it.
 - **`slinitctl rm-dep` could leave a service STARTING for good.**
   Removing the dependency a starting service was waiting for dropped the
   link but not the wait, so the service never re-checked its remaining
