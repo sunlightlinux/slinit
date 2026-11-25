@@ -610,6 +610,16 @@ requires.
 
 ### Fixed
 
+- **Several control commands changed service state without the
+  scheduling lock.** `slinitctl release`, `trigger`/`untrigger`,
+  `stop --pin`, `once`, `reset-failed` and `restart` changed a service
+  from the connection's goroutine while the event loop could be changing
+  the same service and queues, and so did the pin and trigger replay of a
+  soft reboot's snapshot and of the persistent pin store at boot;
+  `go test -race` reported each. A trigger can complete a start and a
+  release can stop a service, so both reached the dependency and
+  propagation queues unlocked. They now go through ServiceSet wrappers
+  that take the lock and drain the queues, as `start` and `stop` did.
 - **`system-call-architectures = native` alone killed the service.**
   Set without a `system-call-filter` list — as were `system-call-log`
   and `system-call-error-number` — it compiled to an empty allowlist,

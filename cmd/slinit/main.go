@@ -1931,7 +1931,7 @@ func main() {
 				serviceSet.PinStartService(svc)
 				logger.Info("Persist: replayed pinned-started on %s", name)
 			case persist.IntentPinnedStopped:
-				svc.PinStop()
+				serviceSet.PinStopService(svc)
 				logger.Info("Persist: replayed pinned-stopped on %s", name)
 			}
 		}

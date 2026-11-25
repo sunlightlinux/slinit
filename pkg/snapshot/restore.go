@@ -19,8 +19,9 @@ type RestoreLogger interface {
 // and triggers, then re-activates services that were explicitly
 // started before the snapshot was written.
 //
-// It is safe to call before the event loop starts — no concurrent
-// state-machine work is expected at restore time. The caller is
+// It runs after boot has started services, whose exit and timer
+// handlers already run concurrently, so every state change goes through
+// the ServiceSet's locking wrappers. The caller is
 // responsible for having already loaded service descriptions (via
 // the loader) so Restore can resolve names; entries naming an unknown
 // service are logged and skipped rather than failing the whole boot.
@@ -96,7 +97,7 @@ func applyOne(set *service.ServiceSet, entry ServiceSnapshot, logger RestoreLogg
 	// Stop on a dep (see wedged-STOPPING fix).
 	switch {
 	case entry.PinnedStop:
-		svc.Record().PinStop()
+		set.PinStopService(svc)
 	case entry.PinnedStart:
 		set.PinStartService(svc)
 	}
@@ -105,7 +106,7 @@ func applyOne(set *service.ServiceSet, entry ServiceSnapshot, logger RestoreLogg
 	// stopped, so SetTrigger before Start works in either order.
 	if entry.Triggered {
 		if ts, ok := svc.(*service.TriggeredService); ok {
-			ts.SetTrigger(true)
+			set.SetTriggerService(ts, true)
 		}
 	}
 

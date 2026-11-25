@@ -588,7 +588,7 @@ func (c *Connection) handleResetFailed(payload []byte) error {
 	if len(payload) == 0 {
 		// --all: iterate every loaded service and clear the flag.
 		for _, svc := range c.server.services.ListServices() {
-			svc.Record().ResetFailed()
+			c.server.services.ResetFailedService(svc)
 		}
 		return c.writePacket(RplyACK, nil)
 	}
@@ -600,7 +600,7 @@ func (c *Connection) handleResetFailed(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
-	svc.Record().ResetFailed()
+	c.server.services.ResetFailedService(svc)
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -842,7 +842,7 @@ func (c *Connection) handleStopService(payload []byte) error {
 	c.server.services.MarkOperatorStop()
 
 	if flags&StopFlagRestarting != 0 {
-		svc.Record().MarkRestarting()
+		c.server.services.MarkRestartingService(svc)
 	}
 
 	if force {
@@ -851,7 +851,7 @@ func (c *Connection) handleStopService(payload []byte) error {
 		c.server.services.StopService(svc)
 	}
 	if pin {
-		svc.PinStop()
+		c.server.services.PinStopService(svc)
 		if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStopped); err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
 		}
@@ -893,8 +893,8 @@ func (c *Connection) handleReleaseService(payload []byte) error {
 		return err
 	}
 
-	svc.Stop(false) // release: remove explicit activation, stop only if unrequired
-	c.server.services.ProcessQueues()
+	// release: remove explicit activation, stop only if unrequired
+	c.server.services.ReleaseService(svc)
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -1094,8 +1094,7 @@ func (c *Connection) handleSetTrigger(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	triggered.SetTrigger(triggerVal)
-	c.server.services.ProcessQueues()
+	c.server.services.SetTriggerService(triggered, triggerVal)
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -1231,8 +1230,7 @@ func (c *Connection) handleOnceService(payload []byte) error {
 		return c.writePacket(RplyShuttingDown, nil)
 	}
 	// Start once: set auto-restart to never, then start
-	svc.Record().SetAutoRestart(service.RestartNever)
-	c.server.services.StartService(svc)
+	c.server.services.StartOnceService(svc)
 	return c.writePacket(RplyACK, nil)
 }
 

@@ -495,6 +495,63 @@ func (ss *ServiceSet) UnpinService(svc Service) {
 	ss.processQueuesLocked()
 }
 
+// The wrappers below give a caller outside the event loop — a control
+// connection, the boot-time pin replay, snapshot restore — the same
+// footing as StartService: the change is made under queueMu and what it
+// queued is drained before the lock is let go. Called bare, they raced
+// the event loop on the service's fields and on the queues themselves
+// (Stop reaches AddPropQueue; SetTrigger can run Started).
+
+// ReleaseService removes the service's explicit activation, stopping it
+// if nothing else requires it (`slinitctl release`).
+func (ss *ServiceSet) ReleaseService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Stop(false)
+	ss.processQueuesLocked()
+}
+
+// PinStopService pins the service in the stopped state.
+func (ss *ServiceSet) PinStopService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.PinStop()
+}
+
+// SetTriggerService sets or clears a triggered service's trigger; set
+// while the service is STARTING, it completes the start.
+func (ss *ServiceSet) SetTriggerService(svc *TriggeredService, triggered bool) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.SetTrigger(triggered)
+	ss.processQueuesLocked()
+}
+
+// ResetFailedService clears the service's failed flag.
+func (ss *ServiceSet) ResetFailedService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Record().ResetFailed()
+}
+
+// MarkRestartingService records that a start follows the coming stop
+// (see MarkRestarting).
+func (ss *ServiceSet) MarkRestartingService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Record().MarkRestarting()
+}
+
+// StartOnceService starts the service with auto-restart turned off
+// (`slinitctl once`).
+func (ss *ServiceSet) StartOnceService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Record().SetAutoRestart(RestartNever)
+	svc.Start()
+	ss.processQueuesLocked()
+}
+
 // StopAllServices stops all services (for shutdown).
 func (ss *ServiceSet) StopAllServices(shutdownType ShutdownType) {
 	// Snapshot services under read lock to avoid racing with concurrent
