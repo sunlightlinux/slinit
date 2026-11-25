@@ -33,6 +33,9 @@ const (
 	// caller should treat this as CollapseReboot (auto-reboot
 	// safety net for headless systems).
 	CollapseTimeout
+	// CollapseInterrupted: CollapseOptions.Interrupt fired before a
+	// key was read; the caller has something else to act on.
+	CollapseInterrupted
 )
 
 // String makes CollapseAction self-describing in log lines.
@@ -48,6 +51,8 @@ func (a CollapseAction) String() string {
 		return "recovery-svc"
 	case CollapseTimeout:
 		return "timeout(reboot)"
+	case CollapseInterrupted:
+		return "interrupted"
 	default:
 		return fmt.Sprintf("CollapseAction(%d)", int(a))
 	}
@@ -68,6 +73,9 @@ type CollapseOptions struct {
 	// so a caller with no logger simply gets an unmuted console.
 	PauseBootConsoleFn  func()
 	ResumeBootConsoleFn func()
+	// Interrupt, when it delivers, ends the wait for a key with
+	// CollapseInterrupted. Nil never fires.
+	Interrupt <-chan struct{}
 }
 
 // PresentCollapse displays the boot-collapse rescue menu on
@@ -108,17 +116,24 @@ func PresentCollapse(opts CollapseOptions) CollapseAction {
 	if opts.ResumeBootConsoleFn != nil {
 		defer opts.ResumeBootConsoleFn()
 	}
-	return presentCollapse(tty, tty, opts.Timeout)
+	return presentCollapseInterruptible(tty, tty, opts.Timeout, opts.Interrupt)
 }
 
 // presentCollapse is the testable core — takes explicit reader/
 // writer so tests can pipe mock console I/O without touching
 // /dev/console.
 func presentCollapse(r io.Reader, w io.Writer, timeout time.Duration) CollapseAction {
+	return presentCollapseInterruptible(r, w, timeout, nil)
+}
+
+func presentCollapseInterruptible(r io.Reader, w io.Writer, timeout time.Duration, interrupt <-chan struct{}) CollapseAction {
 	bx := newBox(w)
 	renderCollapseMenu(bx, timeout)
-	c, ok := readByteWithTimeout(r, bx, timeout, "reboot")
-	if !ok {
+	c, res := readByte(r, bx, timeout, "reboot", interrupt)
+	switch res {
+	case readInterrupted:
+		return CollapseInterrupted
+	case readTimedOut:
 		return CollapseTimeout
 	}
 	return collapseCharToAction(c)

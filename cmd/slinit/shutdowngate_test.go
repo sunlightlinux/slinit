@@ -57,3 +57,29 @@ func TestShutdownGateHandOverRace(t *testing.T) {
 		}
 	}
 }
+
+func TestShutdownGateWakeAndTake(t *testing.T) {
+	g := newShutdownGate(nil)
+	if _, _, ok := g.Take(); ok {
+		t.Fatal("Take on an empty gate returned a request")
+	}
+	g.Request(service.ShutdownPoweroff, 2)
+	select {
+	case <-g.Wake():
+	default:
+		t.Fatal("holding a request did not signal Wake")
+	}
+	g.Request(service.ShutdownReboot, 0) // second: logged, dropped
+	st, flags, ok := g.Take()
+	if !ok || st != service.ShutdownPoweroff || flags != 2 {
+		t.Fatalf("Take = %v %d %v, want poweroff 2 true", st, flags, ok)
+	}
+	select {
+	case <-g.Wake():
+		t.Fatal("Wake still signalled after Take")
+	default:
+	}
+	if _, _, ok := g.Take(); ok {
+		t.Fatal("request taken twice")
+	}
+}

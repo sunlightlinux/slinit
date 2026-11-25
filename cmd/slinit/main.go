@@ -1637,6 +1637,25 @@ func main() {
 	// afterwards: its connection goroutines read them without a lock.
 	shutdownGate := newShutdownGate(logger.Warn)
 	ctrlServer.ShutdownFunc = shutdownGate.Request
+	// The boot-failure menus run with no event loop and no services
+	// up: a request held while one is up is carried out here, as the
+	// menu's own reboot / poweroff choices are.
+	runHeldShutdown := func() {
+		st, flags, ok := shutdownGate.Take()
+		if !ok {
+			return
+		}
+		logger.Notice("Carrying out the shutdown (%s) requested over the control socket", st)
+		closeWatchdog(wd, logger)
+		switch routeShutdown(st, flags, isPID1, containerMode) {
+		case routeImmediate:
+			shutdown.ExecuteImmediate(st, logger)
+		case routeForce:
+			shutdown.ExecuteForce(st, logger)
+		default:
+			handlePID1Shutdown(st, cal, logger)
+		}
+	}
 	ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool, msg string) {
 		if cancelled {
 			shutdown.WallShutdownCancelled(st, logger)
@@ -1793,6 +1812,7 @@ func main() {
 			bootDebugger.Stop()
 			bootDebugger = nil
 		}
+		runHeldShutdown()
 		stopSigWatch := rebootOnSignalWhileBlocked(logger)
 		action := recovery.Present(recovery.Options{
 			Errors: append([]string{
@@ -1803,10 +1823,22 @@ func main() {
 			// unmuted log line lands inside its box.
 			PauseBootConsoleFn:  logger.PauseBootConsole,
 			ResumeBootConsoleFn: logger.ResumeBootConsole,
+			// A shutdown sent over the control socket while the
+			// menu is up. It was acknowledged and then dropped, and
+			// the menu's timeout rebooted: a poweroff became a
+			// reboot a minute later.
+			Interrupt: shutdownGate.Wake(),
 		})
 		stopSigWatch()
 		logger.Notice("Rescue menu chose: %s", action)
+		if action == recovery.ActionInterrupted || action == recovery.ActionTimeout {
+			runHeldShutdown()
+		}
 		switch action {
+		case recovery.ActionInterrupted:
+			// Not expected: only Take clears the wake. Retry, which
+			// comes back to the menu if loading still fails.
+			continue
 		case recovery.ActionRetry:
 			// Loop back — operator likely fixed a typo in a shell.
 			// Reset serviceSet? Only the last load errored; the
@@ -2195,13 +2227,24 @@ func main() {
 		// pkg/recovery. Distinct action set — no "drop to shell"
 		// here; instead 's' restarts the boot sequence and 'e'
 		// starts the recovery service.
+		runHeldShutdown()
 		stopCollapseSigWatch := rebootOnSignalWhileBlocked(logger)
 		collapseAction := recovery.PresentCollapse(recovery.CollapseOptions{
 			PauseBootConsoleFn:  logger.PauseBootConsole,
 			ResumeBootConsoleFn: logger.ResumeBootConsole,
+			Interrupt:           shutdownGate.Wake(),
 		})
 		stopCollapseSigWatch()
+		if collapseAction == recovery.CollapseInterrupted || collapseAction == recovery.CollapseTimeout {
+			runHeldShutdown()
+		}
 		switch collapseAction {
+		case recovery.CollapseInterrupted:
+			// Not expected: only Take clears the wake. Reboot, as
+			// on a timeout.
+			logger.Error("Collapse menu interrupted with no shutdown held, rebooting")
+			closeWatchdog(wd, logger)
+			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapseReboot:
 			logger.Notice("User chose reboot")
 			closeWatchdog(wd, logger)

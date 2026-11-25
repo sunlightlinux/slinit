@@ -299,3 +299,39 @@ func (r *eofThen) Read(p []byte) (int, error) {
 	}
 	return r.rest.Read(p)
 }
+
+// A shutdown requested over the control socket while the menu waits
+// for a key used to be ignored until the menu timed out and rebooted.
+// Options.Interrupt ends the wait at once.
+func TestPresentInterrupt(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	interrupt := make(chan struct{}, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		interrupt <- struct{}{}
+	}()
+	var out bytes.Buffer
+	start := time.Now()
+	got := present(pr, &out, Options{Timeout: 5 * time.Second, Interrupt: interrupt})
+	if got != ActionInterrupted {
+		t.Fatalf("got %v, want %v", got, ActionInterrupted)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("interrupt took %v to end the menu", d)
+	}
+}
+
+func TestPresentCollapseInterrupt(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	interrupt := make(chan struct{}, 1)
+	interrupt <- struct{}{}
+	var out bytes.Buffer
+	got := presentCollapseInterruptible(pr, &out, 5*time.Second, interrupt)
+	if got != CollapseInterrupted {
+		t.Fatalf("got %v, want %v", got, CollapseInterrupted)
+	}
+}

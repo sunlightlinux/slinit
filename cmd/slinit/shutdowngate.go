@@ -26,12 +26,15 @@ type shutdownGate struct {
 	held    bool
 	st      service.ShutdownType
 	flags   uint8
+	// wake is signalled when a request is held, for whoever waits
+	// without an event loop (the boot-failure menus) to Take it.
+	wake chan struct{}
 	// logf reports a request that is not acted on. May be nil.
 	logf func(format string, args ...any)
 }
 
 func newShutdownGate(logf func(format string, args ...any)) *shutdownGate {
-	return &shutdownGate{logf: logf}
+	return &shutdownGate{logf: logf, wake: make(chan struct{}, 1)}
 }
 
 // Request is the ShutdownFunc: forward to the event loop, or hold.
@@ -53,6 +56,27 @@ func (g *shutdownGate) Request(st service.ShutdownType, flags uint8) {
 		return
 	}
 	g.st, g.flags, g.held = st, flags, true
+	select {
+	case g.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Wake delivers after a request has been held. Pair it with Take.
+func (g *shutdownGate) Wake() <-chan struct{} { return g.wake }
+
+// Take removes and returns the held request, for a caller that has no
+// event loop to hand it to and carries it out itself.
+func (g *shutdownGate) Take() (service.ShutdownType, uint8, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	select {
+	case <-g.wake:
+	default:
+	}
+	held := g.held
+	g.held = false
+	return g.st, g.flags, held
 }
 
 // HandOver makes h the request handler and passes it a request held

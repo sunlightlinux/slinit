@@ -48,6 +48,10 @@ const (
 	// should treat this identically to ActionReboot (auto-reboot
 	// safety net for headless systems).
 	ActionTimeout
+	// ActionInterrupted: Options.Interrupt fired before a key was
+	// read; the caller has something else to act on (a shutdown
+	// requested over the control socket).
+	ActionInterrupted
 )
 
 // String makes Action self-describing in log lines.
@@ -61,6 +65,8 @@ func (a Action) String() string {
 		return "retry"
 	case ActionTimeout:
 		return "timeout(reboot)"
+	case ActionInterrupted:
+		return "interrupted"
 	default:
 		return fmt.Sprintf("Action(%d)", int(a))
 	}
@@ -91,6 +97,9 @@ type Options struct {
 	// so a caller with no logger simply gets an unmuted console.
 	PauseBootConsoleFn  func()
 	ResumeBootConsoleFn func()
+	// Interrupt, when it delivers, ends the wait for a key with
+	// ActionInterrupted. Nil never fires.
+	Interrupt <-chan struct{}
 
 	// tty is the console the caller opened — set by Present() and
 	// carried through so runShell can pause raw mode around the
@@ -189,9 +198,9 @@ func present(r io.Reader, w io.Writer, opts Options) Action {
 	b := newBox(w)
 	for {
 		renderMenu(b, opts)
-		action := readActionWithTimeout(r, b, opts.Timeout)
+		action := readAction(r, b, opts.Timeout, opts.Interrupt)
 		switch action {
-		case ActionReboot, ActionPoweroff, ActionRetry, ActionTimeout:
+		case ActionReboot, ActionPoweroff, ActionRetry, ActionTimeout, ActionInterrupted:
 			return action
 		}
 		// A shell action landed here; run the shell, then loop
@@ -227,12 +236,29 @@ func renderMenu(b *box, opts Options) {
 // reused by PresentCollapse without duplicating the goroutine +
 // countdown-tick logic.
 func readActionWithTimeout(r io.Reader, b *box, timeout time.Duration) Action {
-	c, ok := readByteWithTimeout(r, b, timeout, "reboot")
-	if !ok {
+	return readAction(r, b, timeout, nil)
+}
+
+// readAction is readActionWithTimeout that also ends on interrupt.
+func readAction(r io.Reader, b *box, timeout time.Duration, interrupt <-chan struct{}) Action {
+	c, res := readByte(r, b, timeout, "reboot", interrupt)
+	switch res {
+	case readInterrupted:
+		return ActionInterrupted
+	case readTimedOut:
 		return ActionTimeout
 	}
 	return charToAction(c)
 }
+
+// readResult is how a wait for a key ended.
+type readResult int
+
+const (
+	readGotByte readResult = iota
+	readTimedOut
+	readInterrupted
+)
 
 // readByteWithTimeout reads a single non-whitespace byte from r or
 // returns (0, false) if nothing arrives before timeout. Blocks up
@@ -258,6 +284,13 @@ func readActionWithTimeout(r io.Reader, b *box, timeout time.Duration) Action {
 // deadline on non-socket fds (/dev/console is a tty character
 // device, not a socket).
 func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string) (byte, bool) {
+	c, res := readByte(r, b, timeout, verb, nil)
+	return c, res == readGotByte
+}
+
+// readByte is readByteWithTimeout that also gives up when interrupt
+// delivers (a nil interrupt never does).
+func readByte(r io.Reader, b *box, timeout time.Duration, verb string, interrupt <-chan struct{}) (byte, readResult) {
 	inputCh := make(chan byte, 1)
 	errCh := make(chan error, 1)
 	done := make(chan struct{})
@@ -323,7 +356,7 @@ func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			clearPrompt()
-			return 0, false
+			return 0, readTimedOut
 		}
 		wait := time.Second
 		if remaining < wait {
@@ -332,15 +365,18 @@ func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string
 		select {
 		case b := <-inputCh:
 			clearPrompt()
-			return b, true
+			return b, readGotByte
 		case <-errCh:
 			clearPrompt()
-			return 0, false
+			return 0, readTimedOut
+		case <-interrupt:
+			clearPrompt()
+			return 0, readInterrupted
 		case <-time.After(wait):
 			secs := int(time.Until(deadline).Seconds())
 			if secs <= 0 {
 				clearPrompt()
-				return 0, false
+				return 0, readTimedOut
 			}
 			// \r returns cursor to start of the prompt line (which
 			// is what we're on after renderXxxMenu ended with

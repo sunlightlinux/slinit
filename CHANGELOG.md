@@ -1165,7 +1165,8 @@ requires.
   connection closed unserved, so its `slinitctl --use-passed-cfd`
   failed with "broken pipe". The control server is now listening
   before the boot services start, as in dinit; a shutdown requested
-  before the event loop is running is carried out once it is.
+  before the event loop is running is carried out once it is, or at
+  once if PID 1 is waiting in a boot-failure menu.
 - **With `--ready-fd`, nothing ran at the end of boot.** The readiness
   notifier replaced the end-of-boot handler instead of being chained to
   it, so with `--ready-fd` (`-F`) the hooks in

@@ -1,11 +1,17 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // The control server listens before the boot services are started, so
@@ -46,5 +52,62 @@ echo "slinit exited $?" >>"$D/trace"`)
 	}
 	if t.Failed() {
 		t.Logf("trace:\n%s\nslinit log:\n%s", trace, log)
+	}
+}
+
+// With no boot service to load, PID 1 waits in the rescue menu. A
+// poweroff sent over the control socket then was ACKed and dropped: the
+// menu stayed up and its timeout rebooted a minute later. It must be
+// carried out at once, as a poweroff.
+func TestShutdownDuringRescueMenu(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sd"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	// The menu needs a console it can open; give it a pty.
+	ptm, err := os.OpenFile("/dev/ptmx", os.O_RDWR, 0)
+	if err != nil {
+		t.Skipf("no pty: %v", err)
+	}
+	defer ptm.Close()
+	if err := unix.IoctlSetPointerInt(int(ptm.Fd()), unix.TIOCSPTLCK, 0); err != nil {
+		t.Skipf("unlock pty: %v", err)
+	}
+	n, err := unix.IoctlGetInt(int(ptm.Fd()), unix.TIOCGPTN)
+	if err != nil {
+		t.Skipf("pty number: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pts"), []byte(fmt.Sprintf("/dev/pts/%d", n)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	go io.Copy(io.Discard, ptm)
+	r := startNS(t, dir, `
+mount --bind "$(cat "$D/pts")" /dev/console && mount -t tmpfs none /run || exit 1
+exec "$B/slinit" -d "$D/sd" -p "$D/sock" --syslog-socket "" --no-watchdog --catch-all-log="$D/cal"
+`)
+	sock := filepath.Join(dir, "sock")
+	cal := filepath.Join(dir, "cal")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, _ := os.ReadFile(cal); strings.Contains(string(b), "entering rescue menu") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(500 * time.Millisecond) // into the menu's wait
+	out, err := exec.Command(filepath.Join(nsBinDir(t), "slinitctl"), "-p", sock, "poweroff").CombinedOutput()
+	if err != nil {
+		t.Fatalf("slinitctl poweroff: %v\n%s", err, out)
+	}
+	ended := r.wait(10 * time.Second)
+	log, _ := os.ReadFile(cal)
+	if !ended {
+		t.Fatalf("PID 1 still up 10s after an ACKed poweroff (%q)\ncatch-all log:\n%s", out, log)
+	}
+	// reboot(2) in a PID namespace ends its init with SIGINT for a
+	// halt or poweroff and SIGHUP for a reboot; unshare passes it on.
+	ws, _ := r.cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ws.Signaled() || ws.Signal() != syscall.SIGINT {
+		t.Errorf("namespace ended with %v, want SIGINT (poweroff)\ncatch-all log:\n%s", r.cmd.ProcessState, log)
 	}
 }
