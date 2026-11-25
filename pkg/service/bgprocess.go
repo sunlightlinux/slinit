@@ -772,6 +772,7 @@ func (s *BGProcessService) CheckRestart() bool {
 // the PID file and starts monitoring the daemon.
 func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 	for {
+		timer := s.getTimer()
 		select {
 		case exit, ok := <-exitCh:
 			if !ok {
@@ -780,8 +781,8 @@ func (s *BGProcessService) monitorLauncher(exitCh <-chan process.ChildExit) {
 			s.handleLauncherExit(exit)
 			return
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			continue
@@ -1176,6 +1177,7 @@ func (s *BGProcessService) monitorDaemon() {
 	defer ticker.Stop()
 
 	for {
+		timer := s.getTimer()
 		select {
 		case <-ticker.C:
 			if s.daemonPID <= 0 {
@@ -1202,8 +1204,8 @@ func (s *BGProcessService) monitorDaemon() {
 				}
 			}
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			continue
@@ -1349,9 +1351,16 @@ func (s *BGProcessService) cancelSmoothRecovery() {
 
 // handleTimerExpired processes a timer expiration.
 // Runs in a monitor goroutine; acquires queueMu.
-func (s *BGProcessService) handleTimerExpired() {
+func (s *BGProcessService) handleTimerExpired(timer *time.Timer) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
+
+	// A tick received just before a stop or restart re-armed the timer
+	// belongs to the timer it replaced: acting on it would give the new
+	// purpose its deadline early (a stop escalated to SIGKILL at once).
+	if timer != s.processTimer {
+		return
+	}
 
 	purpose := s.timerPurpose
 	s.timerPurpose = bgTimerNone
@@ -1432,13 +1441,12 @@ func (s *BGProcessService) cancelTimer() {
 	s.timerPurpose = bgTimerNone
 }
 
-func (s *BGProcessService) getTimerChan() <-chan time.Time {
+// getTimer returns the armed timer, or nil. The monitor hands it to
+// handleTimerExpired with its tick.
+func (s *BGProcessService) getTimer() *time.Timer {
 	s.services.queueMu.RLock()
 	defer s.services.queueMu.RUnlock()
-	if s.processTimer != nil {
-		return s.processTimer.C
-	}
-	return nil
+	return s.processTimer
 }
 
 // readProcStartTime reads field 22 (starttime) from /proc/PID/stat.

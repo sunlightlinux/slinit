@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -112,5 +113,94 @@ func TestStaleStartDelayDoesNotLaunchTwice(t *testing.T) {
 	set.StopService(svc)
 	if len(pids) != 1 {
 		t.Errorf("%d processes launched for one start: %v", len(pids), pids)
+	}
+}
+
+// The process timer is a time.Timer read by the monitor goroutine. A
+// start-timeout tick the monitor has already received, while it waits
+// for queueMu held across a stop, was handled with the purpose the stop
+// had just armed: the stop-timeout escalation ran at once and SIGKILLed
+// a service that had its whole stop-timeout still to go.
+
+// ignoresInt is a start that never signals ready and ignores the
+// SIGINT that cancels it, and the SIGTERM of a stop.
+var ignoresInt = []string{"/bin/sh", "-c", "trap '' TERM INT; while :; do sleep 0.05; done"}
+
+// stopsWithin waits up to d for svc to reach STOPPED.
+func stopsWithin(svc Service, d time.Duration) bool {
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if svc.State() == StateStopped {
+			return true
+		}
+	}
+	return false
+}
+
+func TestStaleStartTimeoutTickIsNotTheStopTimeout(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "slowstart")
+	svc.SetCommand(ignoresInt)
+	svc.SetReadyNotification(3, "")
+	svc.SetStartTimeout(300 * time.Millisecond)
+	svc.SetStopTimeout(3 * time.Second)
+	set.AddService(svc)
+	set.StartService(svc)
+	time.Sleep(100 * time.Millisecond)
+	defer func() { set.ForceStopService(svc); stopsWithin(svc, 4*time.Second) }()
+
+	set.queueMu.Lock()
+	time.Sleep(400 * time.Millisecond) // the monitor takes the tick and waits on queueMu
+	svc.Stop(true)
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+
+	if stopsWithin(svc, 1500*time.Millisecond) {
+		t.Error("stopped within 1.5s of the stop request: the stale start-timeout tick ran the stop-timeout escalation (stop-timeout is 3s)")
+	}
+}
+
+func TestScriptedStaleStartTimeoutTickIsNotTheStopTimeout(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewScriptedService(set, "slowstart")
+	svc.SetStartCommand(ignoresInt)
+	svc.Flags.StartInterruptible = true
+	svc.SetStartTimeout(300 * time.Millisecond)
+	svc.SetStopTimeout(3 * time.Second)
+	set.AddService(svc)
+	set.StartService(svc)
+	time.Sleep(100 * time.Millisecond)
+	defer func() { set.ForceStopService(svc); stopsWithin(svc, 4*time.Second) }()
+
+	set.queueMu.Lock()
+	time.Sleep(400 * time.Millisecond)
+	svc.Stop(true)
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+
+	if stopsWithin(svc, 1500*time.Millisecond) {
+		t.Error("stopped within 1.5s of the stop request: the stale start-timeout tick ran the stop-timeout escalation (stop-timeout is 3s)")
+	}
+}
+
+func TestBGProcessStaleStartTimeoutTickIsNotTheStopTimeout(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewBGProcessService(set, "slowstart")
+	svc.SetCommand(ignoresInt)
+	svc.SetPIDFile(filepath.Join(t.TempDir(), "never.pid"))
+	svc.SetStartTimeout(300 * time.Millisecond)
+	svc.SetStopTimeout(3 * time.Second)
+	set.AddService(svc)
+	set.StartService(svc)
+	time.Sleep(100 * time.Millisecond)
+	defer func() { set.ForceStopService(svc); stopsWithin(svc, 4*time.Second) }()
+
+	set.queueMu.Lock()
+	time.Sleep(400 * time.Millisecond)
+	svc.Stop(true)
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+
+	if stopsWithin(svc, 1500*time.Millisecond) {
+		t.Error("stopped within 1.5s of the stop request: the stale start-timeout tick ran the stop-timeout escalation (stop-timeout is 3s)")
 	}
 }

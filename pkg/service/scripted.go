@@ -500,6 +500,7 @@ func (s *ScriptedService) stopInterruptedStart() {
 
 func (s *ScriptedService) monitorStart(exitCh <-chan process.ChildExit) {
 	for {
+		timer := s.getTimer()
 		select {
 		case exit, ok := <-exitCh:
 			if !ok {
@@ -508,8 +509,8 @@ func (s *ScriptedService) monitorStart(exitCh <-chan process.ChildExit) {
 			s.handleStartExit(exit)
 			return
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			// Timer was armed; re-enter select to pick up new timer channel
@@ -523,6 +524,7 @@ func (s *ScriptedService) monitorStart(exitCh <-chan process.ChildExit) {
 
 func (s *ScriptedService) monitorStop(exitCh <-chan process.ChildExit) {
 	for {
+		timer := s.getTimer()
 		select {
 		case exit, ok := <-exitCh:
 			if !ok {
@@ -531,8 +533,8 @@ func (s *ScriptedService) monitorStop(exitCh <-chan process.ChildExit) {
 			s.handleStopExit(exit)
 			return
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			// Timer was armed; re-enter select to pick up new timer channel
@@ -671,9 +673,16 @@ func (s *ScriptedService) handleStopExit(exit process.ChildExit) {
 
 // handleTimerExpired processes a timer expiration. Runs in a monitor
 // goroutine; acquires queueMu.
-func (s *ScriptedService) handleTimerExpired() {
+func (s *ScriptedService) handleTimerExpired(timer *time.Timer) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
+
+	// A tick received just before a stop or restart re-armed the timer
+	// belongs to the timer it replaced: acting on it would give the new
+	// purpose its deadline early (a stop escalated to SIGKILL at once).
+	if timer != s.processTimer {
+		return
+	}
 
 	purpose := s.timerPurpose
 	s.timerPurpose = scriptedTimerNone
@@ -753,11 +762,10 @@ func (s *ScriptedService) cancelTimer() {
 	s.timerPurpose = scriptedTimerNone
 }
 
-func (s *ScriptedService) getTimerChan() <-chan time.Time {
+// getTimer returns the armed timer, or nil. The monitor hands it to
+// handleTimerExpired with its tick.
+func (s *ScriptedService) getTimer() *time.Timer {
 	s.services.queueMu.RLock()
 	defer s.services.queueMu.RUnlock()
-	if s.processTimer != nil {
-		return s.processTimer.C
-	}
-	return nil
+	return s.processTimer
 }

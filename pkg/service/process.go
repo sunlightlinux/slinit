@@ -2784,6 +2784,7 @@ func (s *ProcessService) watchReadyPipe(pipe *os.File, ch chan bool) {
 // readiness notification, or for timers to fire.
 func (s *ProcessService) monitorProcess(exitCh <-chan process.ChildExit) {
 	for {
+		timer := s.getTimer()
 		select {
 		case exit, ok := <-exitCh:
 			if !ok {
@@ -2798,8 +2799,8 @@ func (s *ProcessService) monitorProcess(exitCh <-chan process.ChildExit) {
 			}
 			s.handleReadyNotification(ready)
 
-		case <-s.getTimerChan():
-			s.handleTimerExpired()
+		case <-timerC(timer):
+			s.handleTimerExpired(timer)
 
 		case <-s.timerUpdateCh:
 			// Timer was armed from outside; re-enter select to pick up new timer channel
@@ -3229,9 +3230,16 @@ func (s *ProcessService) cancelSmoothRecovery() {
 
 // handleTimerExpired processes a timer expiration.
 // Runs in the monitorProcess goroutine; acquires queueMu.
-func (s *ProcessService) handleTimerExpired() {
+func (s *ProcessService) handleTimerExpired(timer *time.Timer) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
+
+	// A tick received just before a stop or restart re-armed the timer
+	// belongs to the timer it replaced: acting on it would give the new
+	// purpose its deadline early (a stop escalated to SIGKILL at once).
+	if timer != s.processTimer {
+		return
+	}
 
 	purpose := s.timerPurpose
 	s.timerPurpose = timerNone
@@ -3380,13 +3388,20 @@ func (s *ProcessService) cancelTimer() {
 	s.timerPurpose = timerNone
 }
 
-func (s *ProcessService) getTimerChan() <-chan time.Time {
+// getTimer returns the armed timer, or nil. The monitor hands it to
+// handleTimerExpired with its tick.
+func (s *ProcessService) getTimer() *time.Timer {
 	s.services.queueMu.RLock()
 	defer s.services.queueMu.RUnlock()
-	if s.processTimer != nil {
-		return s.processTimer.C
+	return s.processTimer
+}
+
+// timerC is t's channel, or nil, which never delivers, for no timer.
+func timerC(t *time.Timer) <-chan time.Time {
+	if t == nil {
+		return nil
 	}
-	return nil
+	return t.C
 }
 
 // applyRunAs gives an auxiliary command (finish-command, pre-stop-hook,
