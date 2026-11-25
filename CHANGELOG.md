@@ -33,6 +33,13 @@ requires.
 
 ### Security
 
+- **The shutdown sentinel directory was trusted whoever owned it**, and
+  a symlink there was followed: anyone able to write `--sentinel-dir`
+  could halt or reboot the machine. The directory must now be root's and
+  not group- or world-writable, and only a regular file owned by root
+  triggers. *Compat:* a looser existing directory disables the watcher
+  (logged as an error).
+
 - **Any local user could cut slinit-logind off the bus.** Descriptors
   sent with a D-Bus call were never closed, whatever the method, even
   for a rejected call; polkitd's own `GetUnitByPIDFD` on every
@@ -828,6 +835,24 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **Force-failing a service from the Ctrl-B boot debugger could freeze
+  PID 1 for good**, and an open debugger menu or shell froze every start,
+  stop and control command while a console service waited for it. The
+  force-fail runs off the lock, and a console service starting while the
+  menu is open no longer waits for the operator. Stopping the debugger
+  also no longer costs up to 200 ms under the service lock on every
+  default boot, and a timed-out menu no longer swallows the next key.
+- **Shutdown could hang for ever on a dead NFS or CIFS server**, with the
+  hardware watchdog already disarmed. Sync now gives up when writeback
+  stops making progress, as systemd's does; each unmount is bounded at
+  90 s and falls back to a lazy detach, and network filesystems are
+  unmounted with MNT_FORCE first.
+- **A long SIGPWR power hook stalled the event loop**: orphan reaping,
+  Ctrl+Alt+Del, SIGTERM and even a shutdown the hook itself asked for
+  waited for it. Hooks run on their own worker, one at a time.
+- **`systemd.confirm_spawn` could freeze the state machine** at the
+  first unanswered prompt; it now assumes yes after 30 s.
 
 - **slinit-sysusers failed on `u NAME` when a group NAME existed**
   (`g foo` followed by `u foo`): useradd tried to create the group again.
