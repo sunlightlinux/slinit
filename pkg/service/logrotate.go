@@ -228,12 +228,6 @@ func NewLogRotator(cfg LogRotatorConfig) (*LogRotator, error) {
 		rateBurst:    cfg.RateBurst,
 		levelMax:     cfg.LogLevelMax,
 	}
-	if lr.levelMax == 0 && cfg.LogLevelMax == 0 {
-		// Zero means "disabled" externally; internally we store -1 so
-		// 0 (emerg) remains a usable threshold for callers that
-		// explicitly request it via SetLogLevelMax.
-		lr.levelMax = -1
-	}
 	if cfg.RateInterval > 0 && cfg.RateBurst > 0 {
 		lr.rateTokens = float64(cfg.RateBurst)
 		lr.rateLastRefill = time.Now()

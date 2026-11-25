@@ -1192,3 +1192,33 @@ func TestLogRotatorRotateNoCollision(t *testing.T) {
 		t.Errorf("second rotated body: got %q want %q", secondBody, "second\n")
 	}
 }
+
+// log-level-max = emerg parses to 0, and "not set" is -1 from the parser
+// through ProcessService to here. NewLogRotator used to remap 0 to -1,
+// so asking for emerg only turned the filter off.
+func TestLogRotatorLevelMaxEmergFilters(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "svc.log")
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:    logPath,
+		FilePerms:   0600,
+		FileUID:     -1,
+		FileGID:     -1,
+		LogLevelMax: 0,
+		ServiceName: "test",
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	lr.processLine([]byte("<3>an error\n"))
+	lr.processLine([]byte("<0>an emergency\n"))
+	lr.mu.Lock()
+	if lr.file != nil {
+		lr.file.Close()
+	}
+	lr.mu.Unlock()
+
+	body, _ := os.ReadFile(logPath)
+	if want := "<0>an emergency\n"; string(body) != want {
+		t.Errorf("log:\n got %q\nwant %q", body, want)
+	}
+}
