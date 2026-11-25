@@ -1,0 +1,3 @@
+type = process
+command = /bin/sh -c "if touch /srv/zz255/p 2>/dev/null; then echo submount-writable > /run/255.result; else echo submount-readonly > /run/255.result; fi; exec sleep 60"
+protect-system = strict

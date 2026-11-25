@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "exec sleep 600"
+restart = yes
+restart-delay = 0.2
+waits-for: softdep

@@ -1,0 +1,4 @@
+type = scripted
+command = /bin/sh /run/250-start.sh
+start-timeout = 2
+stop-timeout = 0
