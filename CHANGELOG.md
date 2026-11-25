@@ -836,6 +836,25 @@ requires.
 
 ### Fixed
 
+- **Path and mount activation stayed on the configuration a service was
+  first loaded with.** A reload that changed `start-on-path-*` kept
+  watching the old path, unload then leaked that watch (and a later load
+  of the path failed "already registered"), and after a type-change
+  reload a trigger started the replaced record. Reload now moves the
+  watches, and triggers find the service by name.
+- **A path watch died silently** when its directory was removed and
+  recreated, or when the inotify queue overflowed; both are re-armed.
+  A path-activated service that kept failing was restarted in a tight
+  loop with no limit; triggers are now limited as systemd's path units
+  are (200 per 2 s), and the re-arm runs off the service lock.
+- **The path and service-directory watchers woke PID 1 five times a
+  second while idle**; they now sleep until there is something to do.
+- **`/metrics`, `/status` and the control socket's status and list
+  replies read service state without the lock** (data races under
+  `-race`); they are built under the graph lock. The metrics endpoint
+  gives a request 2 s instead of 10 s to arrive, so idle connections no
+  longer hold every slot.
+
 - **Force-failing a service from the Ctrl-B boot debugger could freeze
   PID 1 for good**, and an open debugger menu or shell froze every start,
   stop and control command while a console service waited for it. The
