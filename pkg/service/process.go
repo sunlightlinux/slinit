@@ -3098,6 +3098,20 @@ func (s *ProcessService) dispatchAfterExitLocked(state ServiceState, exit proces
 			s.services.processQueuesLocked()
 			return
 		}
+		// Still waiting for a hard dependent to stop: going STOPPED
+		// now would put this service down underneath it. Restart now
+		// if that is where the stop was heading — the dependents need
+		// not be waited for — and otherwise wait; BringDown, finding
+		// no process, finishes the stop once they are down. dinit's
+		// process_service::handle_exit_status does the same.
+		if s.waitingForDeps {
+			if s.desired.Load() == StateStarted && !s.pinnedStopped && !s.restartLimitExhausted {
+				s.stopReason = ReasonTerminated
+				s.Stopped()
+			}
+			s.services.processQueuesLocked()
+			return
+		}
 		s.stopIssued = false
 		s.Stopped()
 		s.services.processQueuesLocked()

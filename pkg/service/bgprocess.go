@@ -1255,6 +1255,16 @@ func (s *BGProcessService) handleDaemonTermination() {
 
 	switch state {
 	case StateStopping:
+		// Waiting for a hard dependent: as for a process service, do
+		// not go STOPPED underneath it (see dispatchAfterExitLocked).
+		if s.waitingForDeps {
+			if s.desired.Load() == StateStarted && !s.pinnedStopped && !s.restartLimitExhausted {
+				s.stopReason = ReasonTerminated
+				s.Stopped()
+			}
+			s.services.processQueuesLocked()
+			return
+		}
 		s.stopIssued = false
 		s.Stopped()
 		s.services.processQueuesLocked()

@@ -132,3 +132,80 @@ func TestBgDaemonCrashWithSlowHardDependentRestartsThroughStopped(t *testing.T) 
 		t.Errorf("a restart count = %d, want 1", n)
 	}
 }
+
+// TestExitWhileWaitingForDependentsWaits stops a service whose hard
+// dependent is slow to stop, and lets its process exit by itself while the
+// stop is waiting for that dependent. The service must not report STOPPED
+// underneath a dependent that is still running: dinit's
+// process_service::handle_exit_status calls stopped() only when
+// !waiting_for_deps, and otherwise leaves bring_down (pid gone) to finish
+// the stop once the dependents are down.
+func TestExitWhileWaitingForDependentsWaits(t *testing.T) {
+	set, _ := newTestSet()
+	a := NewProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sleep", "3600"})
+	set.AddService(a)
+
+	b := NewProcessService(set, "b")
+	b.SetCommand([]string{"/bin/sh", "-c", stubbornShell})
+	b.SetStopTimeout(1 * time.Second)
+	b.Record().AddDep(a, DepRegular)
+	set.AddService(b)
+
+	set.StartService(b)
+	mustReachState(t, b, StateStarted)
+	time.Sleep(200 * time.Millisecond) // let b's shell install its trap
+	set.StopService(a)
+	pid := lockedPID(set, a)
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill %d: %v", pid, err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if as, bs := a.State(), b.State(); as == StateStopped && bs != StateStopped {
+		t.Errorf("a reported STOPPED while its hard dependent b is still %v", bs)
+	}
+
+	mustReachState(t, b, StateStopped)
+	mustReachState(t, a, StateStopped)
+	if n := set.CountActiveServices(); n != 0 {
+		t.Errorf("active services = %d after the stop, want 0", n)
+	}
+}
+
+// TestBgDaemonExitWhileWaitingForDependentsWaits is the bgprocess side of
+// TestExitWhileWaitingForDependentsWaits: the daemon dying while the stop
+// waits for a hard dependent must not end the stop early either.
+func TestBgDaemonExitWhileWaitingForDependentsWaits(t *testing.T) {
+	set, _ := newTestSet()
+	pf := t.TempDir() + "/d.pid"
+	a := NewBGProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c", "sleep 3600 & echo $! > " + pf + "; exit 0"})
+	a.SetPIDFile(pf)
+	set.AddService(a)
+
+	b := NewProcessService(set, "b")
+	b.SetCommand([]string{"/bin/sh", "-c", stubbornShell})
+	b.SetStopTimeout(3 * time.Second)
+	b.Record().AddDep(a, DepRegular)
+	set.AddService(b)
+
+	set.StartService(b)
+	mustReachState(t, b, StateStarted)
+	time.Sleep(200 * time.Millisecond) // let b's shell install its trap
+	set.StopService(a)
+	d := lockedDaemonPID(set, a)
+	if err := syscall.Kill(d, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill %d: %v", d, err)
+	}
+	// The daemon monitor polls once a second; give it two polls.
+	time.Sleep(2 * time.Second)
+	if as, bs := a.State(), b.State(); as == StateStopped && bs != StateStopped {
+		t.Errorf("a reported STOPPED while its hard dependent b is still %v", bs)
+	}
+
+	mustReachState(t, b, StateStopped)
+	mustReachState(t, a, StateStopped)
+	if n := set.CountActiveServices(); n != 0 {
+		t.Errorf("active services = %d after the stop, want 0", n)
+	}
+}
