@@ -387,6 +387,11 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 	if cfg.capAmbient.mask != 0 {
 		cfg.mapped = append(cfg.mapped, kvPair{"capabilities", capNames(cfg.capAmbient.mask)})
 	}
+	if strings.HasPrefix(cfg.runAs, ":") {
+		// Group= without User= runs as root with that group, as in
+		// systemd; ":group" is a run-as slinit rejects.
+		cfg.runAs = "root" + cfg.runAs
+	}
 	if cfg.argv0 != "" && cfg.svcType == "scripted" {
 		// A scripted service takes no command-argv0.
 		warns = append(warns, warnArgv0("ExecStart", cfg.argv0)...)

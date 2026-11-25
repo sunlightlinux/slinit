@@ -610,3 +610,49 @@ func TestQuotedExecArgsSurvive(t *testing.T) {
 		}
 	}
 }
+
+// chpst -u user:group:group2... sets the gid to group and the groups to
+// every group listed. Copied whole into run-as, it was a spec
+// process.ResolveRunAs rejects, so the service never started.
+func TestChpstUserGroupList(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "g")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "run"), []byte("#!/bin/sh\nexec chpst -u foo:bar:audio:video /bin/echo x\n"), 0o755)
+	cfg, _, err := convertService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	desc, err := config.Parse(bytes.NewReader(buf.Bytes()), "g", "g")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	if desc.RunAs != "foo:bar" {
+		t.Errorf("run-as = %q; want foo:bar\n%s", desc.RunAs, buf.String())
+	}
+	if got := strings.Join(desc.SupplementaryGroups, " "); got != "audio video" {
+		t.Errorf("supplementary-groups = %q; want audio video\n%s", got, buf.String())
+	}
+}
+
+// chpst -b was emitted as "argv0 =", a setting slinit does not have, so
+// the converted file failed to load. slinit spells it command-argv0.
+func TestChpstArgv0Loads(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "b")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "run"), []byte("#!/bin/sh\nexec chpst -b shown /bin/echo x\n"), 0o755)
+	cfg, _, err := convertService(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	desc, err := config.Parse(bytes.NewReader(buf.Bytes()), "b", "b")
+	if err != nil {
+		t.Fatalf("converted file does not parse: %v\n%s", err, buf.String())
+	}
+	if desc.Argv0 != "shown" {
+		t.Errorf("argv0 = %q; want shown", desc.Argv0)
+	}
+}

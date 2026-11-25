@@ -578,3 +578,16 @@ SupplementaryGroups=
 		t.Errorf("an empty SupplementaryGroups= did not reset the list: %q", desc.SupplementaryGroups)
 	}
 }
+
+// Group= without User= runs the service as root with that group. It
+// became run-as = :wheel, which process.ResolveRunAs rejects ("no
+// user"), so the service never started.
+func TestSystemdGroupWithoutUser(t *testing.T) {
+	desc, _ := convertWarns(t, `[Service]
+ExecStart=/bin/true
+Group=wheel
+`)
+	if desc.RunAs != "root:wheel" {
+		t.Errorf("run-as = %q; want root:wheel", desc.RunAs)
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/sunlightlinux/slinit/pkg/config"
 	"github.com/sunlightlinux/slinit/pkg/control"
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"github.com/sunlightlinux/slinit/pkg/process"
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
@@ -267,6 +268,10 @@ func main() {
 
 		// Check namespace settings
 		e, w := checkNamespaceConfig(desc, name)
+		errors += e
+		warnings += w
+
+		e, w = checkRunAs(desc, name)
 		errors += e
 		warnings += w
 
@@ -763,6 +768,27 @@ func checkDepthLimits(services []service.Service) int {
 	}
 
 	return errors
+}
+
+// checkRunAs reports a run-as the service could not start with. One
+// with no user, or more than one group, never resolves: an error. A
+// user or group this host lacks may exist where the service runs: a
+// warning. Returns (errors, warnings).
+func checkRunAs(desc *config.ServiceDescription, name string) (int, int) {
+	if desc.RunAs == "" {
+		return 0, 0
+	}
+	user, group, _ := strings.Cut(desc.RunAs, ":")
+	if strings.TrimSpace(user) == "" || strings.Contains(group, ":") {
+		fmt.Fprintf(os.Stderr, "  ERROR [%s]: run-as %q is not user[:group] — the service cannot start "+
+			"(more groups go in supplementary-groups)\n", name, desc.RunAs)
+		return 1, 0
+	}
+	if _, _, err := process.ResolveRunAs(desc.RunAs); err != nil {
+		fmt.Fprintf(os.Stderr, "  WARNING [%s]: %v — the service cannot start until it resolves\n", name, err)
+		return 0, 1
+	}
+	return 0, 0
 }
 
 // checkNamespaceConfig validates namespace-related settings for consistency.

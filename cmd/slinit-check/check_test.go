@@ -258,3 +258,24 @@ func TestFindServiceDescPrefersFullNameOverBase(t *testing.T) {
 		t.Errorf("expected full-name file to win (command [/sbin/agetty console]), got %v", desc.Command)
 	}
 }
+
+// A run-as process.ResolveRunAs rejects means the service never starts;
+// slinit-check said nothing about it.
+func TestCheckRunAs(t *testing.T) {
+	for _, c := range []struct {
+		spec      string
+		errs, wns int
+	}{
+		{"", 0, 0},
+		{"root", 0, 0},
+		{"root:root", 0, 0},
+		{":wheel", 1, 0},
+		{"foo:bar:audio:video", 1, 0},
+		{"nosuchuser-slinit-check", 0, 1},
+	} {
+		e, w := checkRunAs(&config.ServiceDescription{RunAs: c.spec}, "test")
+		if e != c.errs || w != c.wns {
+			t.Errorf("run-as %q: errors=%d warnings=%d, want %d/%d", c.spec, e, w, c.errs, c.wns)
+		}
+	}
+}

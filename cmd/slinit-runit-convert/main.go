@@ -191,6 +191,7 @@ type slinitConfig struct {
 	command    string
 	argv0      string
 	runAs      string
+	supGroups  []string // chpst -u user:group:group2...
 	envFile    string
 	workingDir string
 	chroot     string
@@ -585,7 +586,20 @@ func parseChpst(cfg *slinitConfig, args []string) []warning {
 		}
 		switch flagChar {
 		case 'u':
-			cfg.runAs = val
+			// user[:group[:group...]]: the gid is the first group,
+			// the groups every group listed. run-as takes user:group
+			// only; a longer spec is one ResolveRunAs rejects, and the
+			// service never started.
+			parts := strings.Split(val, ":")
+			cfg.runAs = strings.Join(parts[:min(len(parts), 2)], ":")
+			cfg.supGroups = nil
+			if len(parts) > 2 {
+				cfg.supGroups = parts[2:]
+			}
+			if strings.HasPrefix(val, ":") {
+				warns = append(warns, warning{"WARN", fmt.Sprintf("chpst -u %s takes numeric ids without "+
+					"consulting /etc/passwd; slinit's run-as looks them up — rewrite it as user:group", val)})
+			}
 		case 'U':
 			// Sets USER/UID/GID env vars only, not real uid. No
 			// direct slinit equivalent; user can hand-craft an
@@ -677,10 +691,13 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 		fmt.Fprintf(w, "command = %s\n", c.command)
 	}
 	if c.argv0 != "" {
-		fmt.Fprintf(w, "argv0 = %s\n", c.argv0)
+		fmt.Fprintf(w, "command-argv0 = %s\n", c.argv0)
 	}
 	if c.runAs != "" {
 		fmt.Fprintf(w, "run-as = %s\n", c.runAs)
+	}
+	if len(c.supGroups) > 0 {
+		fmt.Fprintf(w, "supplementary-groups = %s\n", strings.Join(c.supGroups, " "))
 	}
 	if c.envFile != "" {
 		fmt.Fprintf(w, "env-file = %s\n", c.envFile)
