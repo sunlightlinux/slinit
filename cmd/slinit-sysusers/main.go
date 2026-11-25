@@ -234,16 +234,23 @@ func applyUser(e entry) error {
 	if _, err := exec.LookPath("useradd"); err != nil {
 		return fmt.Errorf("useradd(8) not in PATH — shadow-utils required")
 	}
-	return runCmd("useradd", userAddArgs(e)...)
+	return runCmd("useradd", userAddArgs(e, groupExists)...)
 }
 
-func userAddArgs(e entry) []string {
+// userAddArgs builds useradd's argv for e. groupExists is asked
+// whether a group named after the user is already there: with no
+// group given, useradd --system creates one of that name and exits 9
+// if it exists, where systemd-sysusers makes the user's primary group
+// the existing one — so `g foo` followed by `u foo` works there.
+func userAddArgs(e entry, groupExists func(string) bool) []string {
 	args := []string{"--system"}
 	if e.idOrGid != "" {
 		args = append(args, "--uid", e.idOrGid)
 	}
 	if e.gid != "" {
 		args = append(args, "--gid", e.gid)
+	} else if groupExists(e.name) {
+		args = append(args, "--gid", e.name)
 	}
 	if e.gecos != "" {
 		args = append(args, "--comment", strings.Trim(e.gecos, `"`))

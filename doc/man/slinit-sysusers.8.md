@@ -45,7 +45,9 @@ Directives:
     With the *uid*:*gid* form, *gid* (a number or a group name) becomes
     the user's primary group (**useradd --gid**); that group must
     already exist, so declare it with a **g** line in an earlier file
-    or earlier in the same file. Without *home* no home directory is
+    or earlier in the same file. Without *gid*, an existing group named
+    *name* becomes the primary group, as with **systemd-sysusers**;
+    otherwise **useradd** creates it. Without *home* no home directory is
     created; without *shell* the shell is */sbin/nologin*.
 
 **g** *name* *gid*

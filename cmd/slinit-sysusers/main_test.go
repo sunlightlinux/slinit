@@ -81,14 +81,36 @@ func TestParseLineUserUIDGID(t *testing.T) {
 
 func TestUserAddArgs(t *testing.T) {
 	e, _ := parseLine(`u httpd 400:web "Web" /var/www /bin/sh`)
-	got := strings.Join(userAddArgs(e), " ")
+	got := strings.Join(userAddArgs(e, noGroups), " ")
 	want := "--system --uid 400 --gid web --comment Web --home-dir /var/www --shell /bin/sh httpd"
 	if got != want {
 		t.Errorf("useradd args:\n got %q\nwant %q", got, want)
 	}
 	e, _ = parseLine(`u nobody -`)
-	got = strings.Join(userAddArgs(e), " ")
+	got = strings.Join(userAddArgs(e, noGroups), " ")
 	want = "--system --no-create-home --shell /sbin/nologin nobody"
+	if got != want {
+		t.Errorf("useradd args:\n got %q\nwant %q", got, want)
+	}
+}
+
+func noGroups(string) bool { return false }
+
+// TestUserAddArgsReusesExistingGroup: `g foo` then `u foo` made
+// useradd --system try to create group foo again and exit 9.
+// systemd-sysusers makes the existing group the user's primary one.
+func TestUserAddArgsReusesExistingGroup(t *testing.T) {
+	exists := func(name string) bool { return name == "foo" }
+	e, _ := parseLine(`u foo -`)
+	got := strings.Join(userAddArgs(e, exists), " ")
+	want := "--system --gid foo --no-create-home --shell /sbin/nologin foo"
+	if got != want {
+		t.Errorf("useradd args:\n got %q\nwant %q", got, want)
+	}
+	// An explicit group still wins.
+	e, _ = parseLine(`u foo 400:web`)
+	got = strings.Join(userAddArgs(e, exists), " ")
+	want = "--system --uid 400 --gid web --no-create-home --shell /sbin/nologin foo"
 	if got != want {
 		t.Errorf("useradd args:\n got %q\nwant %q", got, want)
 	}
