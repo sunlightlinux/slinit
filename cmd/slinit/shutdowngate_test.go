@@ -118,3 +118,43 @@ func TestShutdownGateReclaimWaitsForInFlight(t *testing.T) {
 		t.Fatal("Reclaim returned before the in-flight request was applied")
 	}
 }
+
+// A remain (stop every service, keep running) is only for an event
+// loop: held, it does not wake a boot-failure menu, a real shutdown
+// sent after it takes its place, and with no menu involved it is
+// handed over as before.
+func TestShutdownGateRemain(t *testing.T) {
+	g := newShutdownGate(nil)
+	if g.Ready() {
+		t.Fatal("Ready before any hand-over")
+	}
+	g.Request(service.ShutdownRemain, 0)
+	select {
+	case <-g.Wake():
+		t.Fatal("a held remain woke the menu")
+	default:
+	}
+	g.Request(service.ShutdownPoweroff, 0)
+	select {
+	case <-g.Wake():
+	default:
+		t.Fatal("a poweroff behind a held remain did not wake the menu")
+	}
+	if st, _, ok := g.Take(); !ok || st != service.ShutdownPoweroff {
+		t.Fatalf("Take = %v %v, want poweroff", st, ok)
+	}
+
+	g.Request(service.ShutdownRemain, 0)
+	var got []service.ShutdownType
+	g.HandOver(func(st service.ShutdownType, _ uint8) { got = append(got, st) })
+	if len(got) != 1 || got[0] != service.ShutdownRemain {
+		t.Fatalf("hand-over delivered %v, want [remain]", got)
+	}
+	if !g.Ready() {
+		t.Fatal("not Ready after hand-over")
+	}
+	g.Reclaim()
+	if g.Ready() {
+		t.Fatal("Ready after Reclaim")
+	}
+}

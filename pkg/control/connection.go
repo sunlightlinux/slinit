@@ -491,6 +491,11 @@ func (c *Connection) handleSwitchRoot(payload []byte) error {
 		return c.writePacket(RplyBadReq,
 			[]byte("switch-root not supported (slinit not running as PID 1 or hook not wired)"))
 	}
+	if c.server.SwitchRootReady != nil {
+		if err := c.server.SwitchRootReady(); err != nil {
+			return c.writePacket(RplyBadReq, []byte(err.Error()))
+		}
+	}
 	if err := c.writePacket(RplyACK, nil); err != nil {
 		return err
 	}

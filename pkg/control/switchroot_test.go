@@ -1,6 +1,7 @@
 package control
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -87,5 +88,35 @@ func TestDecodeSwitchRootPayload_MaxLen(t *testing.T) {
 	}
 	if gotInit != "" {
 		t.Errorf("newinit = %q, want empty", gotInit)
+	}
+}
+
+// A switch-root the daemon is not ready for is refused before the ACK,
+// with the reason, and the switch is not attempted: after the ACK the
+// client can no longer be told anything.
+func TestSwitchRootRefusedWhenNotReady(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	called := make(chan struct{}, 1)
+	server.SwitchRootReady = func() error { return errors.New("not ready") }
+	server.SwitchRootFunc = func(string, string) error {
+		called <- struct{}{}
+		return nil
+	}
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	payload := []byte{1, 0, '/', 0, 0}
+	if err := WritePacket(conn, CmdSwitchRoot, payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	rply, msg := readReply(t, conn)
+	if rply != RplyBadReq || !strings.Contains(string(msg), "not ready") {
+		t.Fatalf("reply = %d %q, want BadReq \"not ready\"", rply, msg)
+	}
+	select {
+	case <-called:
+		t.Fatal("switch attempted although the daemon was not ready")
+	default:
 	}
 }

@@ -1645,6 +1645,12 @@ func main() {
 		if !ok {
 			return
 		}
+		if st == service.ShutdownRemain {
+			// Nothing is running to stop, and handlePID1Shutdown would
+			// park PID 1 for good.
+			logger.Warn("Shutdown (remain) requested with no event loop running; ignored")
+			return
+		}
 		logger.Notice("Carrying out the shutdown (%s) requested over the control socket", st)
 		closeWatchdog(wd, logger)
 		switch routeShutdown(st, flags, isPID1, containerMode) {
@@ -1690,6 +1696,15 @@ func main() {
 	// supported" reply to the client instead of walking to the
 	// PID check). finit-parity: initctl switch_root NEWROOT [INIT].
 	if isPID1 {
+		// The switch stops the services through the event loop, which
+		// does not exist yet while the boot services are being started
+		// nor once it has returned (a boot-failure menu).
+		ctrlServer.SwitchRootReady = func() error {
+			if !shutdownGate.Ready() {
+				return errors.New("switch-root: not ready, no event loop is running (boot still starting, or boot failed)")
+			}
+			return nil
+		}
 		ctrlServer.SwitchRootFunc = func(newroot, newinit string) error {
 			resolved, err := switchroot.Precheck(newroot, newinit)
 			if err != nil {

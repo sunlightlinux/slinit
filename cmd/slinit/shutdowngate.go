@@ -60,7 +60,10 @@ func (g *shutdownGate) Request(st service.ShutdownType, flags uint8) {
 		return
 	}
 	defer g.mu.Unlock()
-	if g.held {
+	// A held remain gives way to a real shutdown: at a boot-failure
+	// menu it is dropped (see Take's callers), and a poweroff behind
+	// it would be dropped with it.
+	if g.held && !(g.st == service.ShutdownRemain && st != service.ShutdownRemain) {
 		// The client has its ACK either way; at least say which of
 		// the two will happen.
 		if g.logf != nil {
@@ -70,10 +73,22 @@ func (g *shutdownGate) Request(st service.ShutdownType, flags uint8) {
 		return
 	}
 	g.st, g.flags, g.held = st, flags, true
+	// A remain (stop every service, keep running) is for an event
+	// loop to carry out, not a menu: it does not wake one.
+	if st == service.ShutdownRemain {
+		return
+	}
 	select {
 	case g.wake <- struct{}{}:
 	default:
 	}
+}
+
+// Ready reports whether an event loop is taking requests.
+func (g *shutdownGate) Ready() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.handler != nil
 }
 
 // Wake delivers after a request has been held. Pair it with Take.

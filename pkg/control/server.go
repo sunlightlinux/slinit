@@ -88,6 +88,11 @@ type Server struct {
 	// pretend to support it).
 	SwitchRootFunc func(newroot, newinit string) error
 
+	// SwitchRootReady, when set, is asked before a CmdSwitchRoot is
+	// ACKed; a non-nil error is sent to the client as RplyBadReq and
+	// the switch is not attempted.
+	SwitchRootReady func() error
+
 	// SuspendFunc writes the requested power state to
 	// /sys/power/state. Blocks until wake (for "mem", "freeze",
 	// "standby") or failure. Nil hook = suspend disabled (returns
