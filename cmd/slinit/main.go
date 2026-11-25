@@ -1546,14 +1546,7 @@ func main() {
 				}
 				return snap
 			},
-			ForceFailFn: func(name string) error {
-				svc := serviceSet.FindService(name, false)
-				if svc == nil {
-					return fmt.Errorf("service %q not loaded", name)
-				}
-				serviceSet.ForceStopService(svc)
-				return nil
-			},
+			ForceFailFn: debuggerForceFail(serviceSet),
 			RebootFn: func() {
 				closeWatchdog(wd, logger)
 				shutdown.Execute(service.ShutdownReboot, logger)
@@ -2296,6 +2289,25 @@ func main() {
 
 	closeWatchdog(wd, logger)
 	logger.Info("slinit shutdown complete")
+}
+
+// debuggerForceFail is the boot debugger's [f] action. It runs on the
+// menu's goroutine, which holds the debugger's menu lock, and
+// ForceStopService needs the scheduling lock. A service that acquires
+// the console holds the scheduling lock while it detaches the debugger,
+// and that waits for the menu to close: so the stop is handed to its own
+// goroutine. Run inline, [f] deadlocked PID 1 for good, the menu waiting
+// for the scheduling lock and the scheduling lock waiting for the menu.
+// Only the lookup can fail, and that is all the menu reports.
+func debuggerForceFail(set *service.ServiceSet) func(name string) error {
+	return func(name string) error {
+		svc := set.FindService(name, false)
+		if svc == nil {
+			return fmt.Errorf("service %q not loaded", name)
+		}
+		go set.ForceStopService(svc)
+		return nil
+	}
 }
 
 // debuggerStopOnStart wraps recovery.Debugger.Stop into a
