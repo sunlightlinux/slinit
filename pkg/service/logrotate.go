@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -137,6 +138,11 @@ type LogRotator struct {
 		Info(string, ...interface{})
 		Error(string, ...interface{})
 	}
+
+	// journalPID/journalPIDStr cache getPID's last value as the
+	// SLINIT_TARGET_PID string of journal line events. Under mu.
+	journalPID    int
+	journalPIDStr string
 }
 
 // LogRotatorConfig holds configuration for a LogRotator.
@@ -594,6 +600,20 @@ func (lr *LogRotator) processLine(line []byte) {
 		out = lr.decorateLine(line)
 	}
 
+	// The journal emit runs after mu is released (defers run last-in
+	// first-out): it is a socket send, and it held up rotation and
+	// every other user of mu for each line. Only this rotator's reader
+	// goroutine calls processLine, so its lines still reach the journal
+	// in the order they reach the file.
+	emitLine := false
+	var emitLevel int
+	var emitPID string
+	defer func() {
+		if emitLine {
+			emitJournalLogLinePID(lr.serviceName, emitLevel, matchLine, emitPID)
+		}
+	}()
+
 	lr.mu.Lock()
 	defer lr.mu.Unlock()
 
@@ -663,7 +683,13 @@ func (lr *LogRotator) processLine(line []byte) {
 		if lr.getPID != nil {
 			pid = lr.getPID()
 		}
-		emitJournalLogLine(lr.serviceName, lineLevel, matchLine, pid)
+		if pid != lr.journalPID {
+			lr.journalPID, lr.journalPIDStr = pid, ""
+			if pid > 0 {
+				lr.journalPIDStr = strconv.Itoa(pid)
+			}
+		}
+		emitLine, emitLevel, emitPID = true, lineLevel, lr.journalPIDStr
 	}
 
 	n, err := lr.file.Write(out)

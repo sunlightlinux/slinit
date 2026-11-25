@@ -22,15 +22,28 @@ import (
 // (defaulting to _PID = the emitter, i.e. slinit itself, was
 // misleading — every event looked like it came from PID 1).
 func emitJournalLogLine(serviceName string, lineLevel int, matchLine []byte, servicePID int) {
+	pidStr := ""
+	if servicePID > 0 {
+		pidStr = strconv.Itoa(servicePID)
+	}
+	emitJournalLogLinePID(serviceName, lineLevel, matchLine, pidStr)
+}
+
+// emitJournalLogLinePID is emitJournalLogLine with the pid already
+// formatted ("" for none), for a caller that caches the string.
+func emitJournalLogLinePID(serviceName string, lineLevel int, matchLine []byte, pidStr string) {
+	if !journal.Enabled() {
+		return
+	}
 	evt := &journal.Event{
 		Unit:      serviceName,
 		Prio:      journal.Priority(lineLevel),
 		Transport: journal.TransportStdout,
 		Msg:       string(matchLine),
 	}
-	if servicePID > 0 {
+	if pidStr != "" {
 		evt.Fields = map[string]string{
-			"SLINIT_TARGET_PID": strconv.Itoa(servicePID),
+			"SLINIT_TARGET_PID": pidStr,
 		}
 	}
 	journal.Emit(evt)
