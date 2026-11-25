@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // MatchCriteria narrows the /proc scan when locating running processes.
@@ -167,7 +169,7 @@ func readTrustedPIDFile(path string, pidfileOnly bool) (int, error) {
 	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
 		return 0, err
 	}
-	if why := pidfileInsecure(&st, os.Getuid(), os.Getgid(), pidfileOnly); why != "" {
+	if why := process.PIDFileInsecure(&st, os.Getuid(), os.Getgid(), pidfileOnly); why != "" {
 		return 0, fmt.Errorf("%s pidfile %s is insecure", why, path)
 	}
 	data, err := io.ReadAll(f)
@@ -175,23 +177,6 @@ func readTrustedPIDFile(path string, pidfileOnly bool) (int, error) {
 		return 0, err
 	}
 	return parsePID(data), nil
-}
-
-// pidfileInsecure says why a pidfile cannot be trusted to name the
-// process to signal, or "" if it can. Whoever can write it picks the
-// pid: refused when world-writable, and — with nothing else matched —
-// when someone other than root or us owns it or, through a group
-// write bit, can write it.
-func pidfileInsecure(st *syscall.Stat_t, uid, gid int, pidfileOnly bool) string {
-	if st.Mode&0o002 != 0 {
-		return "matching on world-writable"
-	}
-	if pidfileOnly &&
-		((st.Uid != uint32(uid) && st.Uid != 0) ||
-			(st.Gid != uint32(gid) && st.Gid != 0 && st.Mode&0o020 != 0)) {
-		return "matching only on non-root"
-	}
-	return ""
 }
 
 // readPIDFile parses the first integer from a pidfile. Returns 0 with

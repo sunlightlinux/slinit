@@ -66,8 +66,14 @@ daemon.
 **-p**, **--pidfile** *PATH*
 :   Path to the supervisor pidfile. Required for **--start**,
     **--stop**, and **--signal**. The daemon PID is written to
-    *PATH***.daemon**. A pidfile naming PID 1 or this process is
-    treated as malformed and never signalled.
+    *PATH***.daemon**. A pidfile naming PID 1, this process or its
+    parent is treated as malformed and never signalled. Both files are
+    written by the supervisor, so before signalling what they name
+    **--stop** and **--signal** refuse one that is a symlink, is
+    world-writable, or is owned (or group-writable) by anyone but root
+    or the caller. **--stop** also signals the supervisor pid only
+    when it runs this same executable; a live pid that does not is
+    treated as a stale pidfile.
 
 **-u**, **--user** *USER*[**:***GROUP*]
 :   Drop credentials before **exec**(2). The optional group shorthand
@@ -197,8 +203,8 @@ skipped:
   (**--signal**)
 - **2**: syntax / bad usage
 - **4**: the supervisor could not be started or did not write its
-  pidfile in time, a signal could not be delivered, or the supervisor
-  survived **--stop**
+  pidfile in time, a signal could not be delivered, the supervisor
+  survived **--stop**, or a pidfile was refused as insecure
 - **5**: stale pidfile: the supervisor (**--stop**) or daemon
   (**--signal**) it names is gone. **--stop** removes the stale
   pidfiles.

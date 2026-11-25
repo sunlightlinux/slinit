@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -15,13 +16,24 @@ func cmdStop(opts Options) int {
 		fmt.Fprintln(os.Stderr, "--pidfile is required for --stop")
 		return exitBadUsage
 	}
-	pid, ok := readPIDFile(opts.PidFile)
-	if !ok {
+	pid, err := readTrustedPIDFile(opts.PidFile)
+	if errors.Is(err, errInsecurePIDFile) {
+		fmt.Fprintf(os.Stderr, "refusing to stop: %v\n", err)
+		return exitInsufficientPri
+	}
+	if err != nil {
 		// No pidfile: nothing to do. OpenRC treats this as success under
 		// the "if the pidfile is missing, service is stopped" convention.
 		return exitOK
 	}
-	if !processAlive(pid) {
+	// A live pid that is not a supervise-daemon is a reused pid, or a
+	// forged one: either way not ours to SIGTERM, and SIGKILL below.
+	super, err := isSupervisor(pid)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot verify supervisor pid=%d: %v\n", pid, err)
+		return exitInsufficientPri
+	}
+	if !processAlive(pid) || !super {
 		// Stale pidfile: report distinctly, matching Debian LSB code 5.
 		_ = os.Remove(opts.PidFile)
 		_ = os.Remove(opts.PidFile + ".daemon")
@@ -82,8 +94,12 @@ func cmdSignal(opts Options) int {
 		fmt.Fprintln(os.Stderr, "--pidfile is required for --signal")
 		return exitBadUsage
 	}
-	daemonPid, ok := readPIDFile(opts.PidFile + ".daemon")
-	if !ok {
+	daemonPid, err := readTrustedPIDFile(opts.PidFile + ".daemon")
+	if errors.Is(err, errInsecurePIDFile) {
+		fmt.Fprintf(os.Stderr, "refusing to signal: %v\n", err)
+		return exitInsufficientPri
+	}
+	if err != nil {
 		// Fall back to supervisor pidfile: if there's no .daemon
 		// file the daemon hasn't launched yet or the supervisor is
 		// external; not much we can do.

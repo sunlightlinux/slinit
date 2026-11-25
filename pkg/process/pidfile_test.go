@@ -111,3 +111,29 @@ func TestReadPIDFileFIFODoesNotBlock(t *testing.T) {
 		t.Fatal("ReadPIDFile blocked on a FIFO")
 	}
 }
+
+// TestPIDFileInsecure: matching on nothing but a pidfile someone
+// else owns lets that someone pick the pid we signal as root. As in
+// Debian's start-stop-daemon (dpkg 1.19.3), such a pidfile is only
+// trusted with another criterion to cross-check the process.
+func TestPIDFileInsecure(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		uid, gid, mode       uint32
+		pidfileOnly, wantBad bool
+	}{
+		{"root-owned 0644", 0, 0, 0o644, true, false},
+		{"own 0644", 1000, 1000, 0o644, true, false},
+		{"daemon-owned, pidfile only", 107, 0, 0o644, true, true},
+		{"daemon-owned, with --exec", 107, 0, 0o644, false, false},
+		{"group-writable foreign group", 0, 107, 0o664, true, true},
+		{"group-writable root group", 0, 0, 0o664, true, false},
+		{"world-writable, with --exec", 0, 0, 0o666, false, true},
+	} {
+		st := &syscall.Stat_t{Uid: tc.uid, Gid: tc.gid, Mode: syscall.S_IFREG | tc.mode}
+		bad := PIDFileInsecure(st, 1000, 1000, tc.pidfileOnly) != ""
+		if bad != tc.wantBad {
+			t.Errorf("%s: insecure=%v, want %v", tc.name, bad, tc.wantBad)
+		}
+	}
+}

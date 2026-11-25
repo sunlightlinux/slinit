@@ -103,3 +103,22 @@ func ReadPIDFile(path string) (int, PIDResult, error) {
 
 	return pid, PIDResultFailed, fmt.Errorf("checking process %d: %w", pid, err)
 }
+
+// PIDFileInsecure says why a pidfile cannot be trusted to name the
+// process to signal, or "" if it can. Whoever can write it picks the
+// pid: refused when world-writable, and — with nothing else matched —
+// when someone other than root or us owns it or, through a group
+// write bit, can write it. The checks are Debian start-stop-daemon's
+// (dpkg 1.19.3); st must come from an Fstat of the open file, so the
+// file checked is the file read.
+func PIDFileInsecure(st *syscall.Stat_t, uid, gid int, pidfileOnly bool) string {
+	if st.Mode&0o002 != 0 {
+		return "matching on world-writable"
+	}
+	if pidfileOnly &&
+		((st.Uid != uint32(uid) && st.Uid != 0) ||
+			(st.Gid != uint32(gid) && st.Gid != 0 && st.Mode&0o020 != 0)) {
+		return "matching only on non-root"
+	}
+	return ""
+}
