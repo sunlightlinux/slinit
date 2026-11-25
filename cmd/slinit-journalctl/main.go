@@ -1993,18 +1993,89 @@ func journalDir(opts options) string {
 	return dir
 }
 
-// currentJournalFiles enumerates the "live" file names under dir that
-// vacuum must NOT delete: today's <YYYY-MM-DD>.jsonl and .journal (the
-// convention both FileSink and BinarySink use for their current
-// writer). Returned paths are absolute so Vacuum's exclusion check
-// (path-equal) matches without further normalization.
+// currentJournalFiles names the files under dir that vacuum must NOT
+// delete because slinit-journald may be writing them. The daemon names
+// its active file after the date it OPENED it, <YYYY-MM-DD>.jsonl or
+// .journal, and rotates by age or size, not at midnight, so today's
+// date says nothing: from the first UTC midnight after the file was
+// opened until it rotates, today's name does not exist and the active
+// file looked rotated. Vacuum then deleted it, and the daemon wrote on
+// into an unlinked inode until its next rotation failed.
+//
+// Two signs mark a file as active. The newest file of each format still
+// carrying its plain date name (a rotated file is renamed to
+// <date>.<ns>), and every file in dir that a running slinit-journald
+// holds open — read from /proc, and skipped when /proc cannot be read.
+// Returned paths are joined to dir as given, which is how Vacuum
+// compares them.
 func currentJournalFiles(dir string) []string {
-	t := time.Now().UTC()
-	base := fmt.Sprintf("%04d-%02d-%02d", t.Year(), int(t.Month()), t.Day())
-	return []string{
-		filepath.Join(dir, base+".jsonl"),
-		filepath.Join(dir, base+".journal"),
+	var out []string
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, sfx := range []string{".jsonl", ".journal"} {
+			newest := ""
+			for _, e := range entries {
+				if name := e.Name(); isUnrotatedJournalName(name, sfx) && name > newest {
+					newest = name
+				}
+			}
+			if newest != "" {
+				out = append(out, filepath.Join(dir, newest))
+			}
+		}
 	}
+	return append(out, openJournalFiles("/proc", dir, "slinit-journald")...)
+}
+
+// isUnrotatedJournalName reports whether name is <YYYY-MM-DD><sfx>, the
+// name the sinks give the file they write to.
+func isUnrotatedJournalName(name, sfx string) bool {
+	date, ok := strings.CutSuffix(name, sfx)
+	if !ok {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", date)
+	return err == nil
+}
+
+// openJournalFiles returns the files directly under dir that a process
+// whose comm is comm holds open, joined to dir as given. procRoot is
+// /proc outside tests. Unreadable entries — another user's process, one
+// that exited mid-scan, no /proc at all — are skipped.
+func openJournalFiles(procRoot, dir, comm string) []string {
+	want := dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		want = abs
+	}
+	if real, err := filepath.EvalSymlinks(want); err == nil {
+		want = real
+	}
+	procs, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range procs {
+		if _, err := strconv.Atoi(p.Name()); err != nil {
+			continue
+		}
+		c, err := os.ReadFile(filepath.Join(procRoot, p.Name(), "comm"))
+		if err != nil || strings.TrimSpace(string(c)) != comm {
+			continue
+		}
+		fdDir := filepath.Join(procRoot, p.Name(), "fd")
+		fds, err := os.ReadDir(fdDir)
+		if err != nil {
+			continue
+		}
+		for _, fd := range fds {
+			target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+			if err != nil || filepath.Dir(target) != want {
+				continue
+			}
+			out = append(out, filepath.Join(dir, filepath.Base(target)))
+		}
+	}
+	return out
 }
 
 // --- Sprint 4: disk image dissection ---

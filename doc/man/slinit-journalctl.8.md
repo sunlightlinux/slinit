@@ -248,7 +248,11 @@ live queries.
 **--vacuum-size=**\ *SIZE*, **--vacuum-files=**\ *N*, **--vacuum-time=**\ *TIME*
 :   Prune rotated files until total on-disk ≤ *SIZE* (bytes with
     K/M/G/T suffix), or keep only the most recent *N* rotated files,
-    or drop files older than *TIME* (s/m/h/d/w/M/y).
+    or drop files older than *TIME* (s/m/h/d/w/M/y). The file
+    **slinit-journald**(8) is writing is never removed: the newest
+    file of each format that still has its plain *YYYY-MM-DD* name,
+    and any file a running **slinit-journald** holds open
+    (since 4.0.3).
 
 **--pid-file=**\ *PATH*
 :   Override the */run/slinit-journald.pid* lookup path used by
@@ -455,7 +459,9 @@ Query a rescue image:
 
 */var/log/slinit-journal/*
 :   Persistent journal directory. The active file is named after the
-    current date, *YYYY-MM-DD.journal* (binary) or *YYYY-MM-DD.jsonl*;
+    date it was opened, *YYYY-MM-DD.journal* (binary) or
+    *YYYY-MM-DD.jsonl*, and keeps that name until it is rotated, by
+    age or size, to *YYYY-MM-DD.<ns>.journal* or *.jsonl*;
     rotated JSONL files are gzip-compressed (*\*.jsonl.gz*).
 
 */var/log/slinit-journal/shutdown-YYYYMMDD-HHMMSS-BOOT.journal*

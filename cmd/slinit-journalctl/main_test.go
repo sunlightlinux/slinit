@@ -1401,24 +1401,6 @@ func TestReadDaemonPIDErrors(t *testing.T) {
 	}
 }
 
-// TestCurrentJournalFiles — list should include today's dated
-// jsonl+journal files under the given dir, absolute paths.
-func TestCurrentJournalFiles(t *testing.T) {
-	files := currentJournalFiles("/var/log/slinit-journal")
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files (jsonl + journal), got %d", len(files))
-	}
-	today := time.Now().UTC().Format("2006-01-02")
-	for _, f := range files {
-		if !strings.Contains(f, today) {
-			t.Errorf("expected today's date in %q", f)
-		}
-		if !strings.HasPrefix(f, "/var/log/slinit-journal/") {
-			t.Errorf("expected absolute path, got %q", f)
-		}
-	}
-}
-
 // TestParseArgsGroupC covers --setup-keys, --verify-key, --interval.
 func TestParseArgsGroupC(t *testing.T) {
 	o, err := parseArgs([]string{"--setup-keys", "--verify-key=abc123", "--interval=1h"})

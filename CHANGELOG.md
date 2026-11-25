@@ -1240,6 +1240,15 @@ requires.
 - **slinit.8 said `--run-mode=remount` re-mounts `/run` with safe
   options.** It detaches the existing `/run` and mounts a fresh, empty
   tmpfs in its place, which is what the page now says.
+- **`slinit-journalctl --vacuum-size`/`--vacuum-files` deleted the file
+  slinit-journald was writing.** Vacuum spared only the file named
+  after today's UTC date, but the daemon names its file after the day
+  it opened it and rotates it by age or size, not at midnight: from the
+  first midnight after it was opened, the active file looked rotated
+  (measured: `--vacuum-files=1` removed 2 files, the active one among
+  them), and the daemon went on writing into an unlinked file. The
+  newest file of each format that still has its plain date name, and
+  every file a running slinit-journald holds open, are now spared.
 
 ## [4.0.2] — 2026-11-22
 
