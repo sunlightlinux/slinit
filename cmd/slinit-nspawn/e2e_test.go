@@ -248,3 +248,22 @@ setpriv --inh-caps +sys_module,+sys_time "$NSPAWN" --name t6 --boot "$ROOTFS" --
 		t.Error("the init lost CAP_SYS_ADMIN, which a full init in the container needs")
 	}
 }
+
+// TestContainerCgroupNamespace: the container shared the host's cgroup
+// namespace, so /proc/self/cgroup, and a cgroup2 mount made inside,
+// showed the host's hierarchy and the container's place in it. With
+// CLONE_NEWCGROUP the container's own cgroup is its root.
+func TestContainerCgroupNamespace(t *testing.T) {
+	host, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil || strings.TrimSpace(string(host)) == "0::/" {
+		t.Skip("the test does not run below the cgroup root, nothing to tell apart")
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+exec "$NSPAWN" --name t8 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c 'sed "s/^/CGROUP /" /proc/self/cgroup'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "CGROUP 0::/\n") && !strings.HasSuffix(out, "CGROUP 0::/") {
+		t.Error("the container sees the host's cgroup hierarchy, not its own cgroup as the root")
+	}
+}

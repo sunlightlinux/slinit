@@ -5,8 +5,8 @@
 // slinit-journalctl -M and slinit-machinectl see it.
 //
 // What's inside:
-//   - Namespaces: CLONE_NEWPID, CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC
-//     always; CLONE_NEWNET optional via --private-network.
+//   - Namespaces: CLONE_NEWPID, CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC,
+//     CLONE_NEWCGROUP always; CLONE_NEWNET optional via --private-network.
 //   - Mount setup: mount --rbind rootfs → temp dir + MS_PRIVATE, then
 //     pivot_root inside the child. Standard virtual FS bind mounts:
 //     /proc (rw, private), /sys (ro, private, rebound), /dev (fresh
@@ -222,8 +222,10 @@ func runParent(p childPayload) error {
 		cmd.Env = append(cmd.Env, "_SLINIT_NSPAWN_PRIVATE_NET=1")
 	}
 
+	// CLONE_NEWCGROUP as systemd-nspawn: the container sees its own
+	// cgroup as the root, not the host's hierarchy and its place in it.
 	flagsUnshare := uintptr(unix.CLONE_NEWPID | unix.CLONE_NEWNS |
-		unix.CLONE_NEWUTS | unix.CLONE_NEWIPC)
+		unix.CLONE_NEWUTS | unix.CLONE_NEWIPC | unix.CLONE_NEWCGROUP)
 	if p.PrivateNet {
 		flagsUnshare |= unix.CLONE_NEWNET
 	}

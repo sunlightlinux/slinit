@@ -14,8 +14,9 @@ slinit-nspawn - launch a slinit container in a new set of Linux namespaces
 
 **slinit-nspawn** launches *ROOTFS* as a slinit container. It:
 
-1. Creates fresh **PID**, **mount**, **UTS**, and **IPC** namespaces
-   (optionally **network** too — see **--private-network**) for a child
+1. Creates fresh **PID**, **mount**, **UTS**, **IPC** and **cgroup**
+   (since 4.0.3) namespaces (optionally **network** too — see
+   **--private-network**) for a child
    process, and registers *NAME* → *child-PID* in
    */run/slinit/machines/* so **slinit-machinectl**(8) sees it and
    **slinit-journalctl -M** *NAME* can reach its journal.
@@ -81,6 +82,11 @@ CAP_MAC_ADMIN, CAP_IPC_LOCK and the rest, are dropped from the bounding
 and inheritable sets, so nothing in the container can regain them.
 With **--private-network** CAP_NET_ADMIN is kept as well, to configure
 the container's own network stack. There is no flag to retain more.
+
+In its own cgroup namespace (since 4.0.3), as under
+**systemd-nspawn**(1), the container sees the cgroup **slinit-nspawn**
+was started in as the root of the hierarchy, in */proc/self/cgroup* and
+in a cgroup2 file system it mounts, rather than the host's hierarchy.
 
 */proc* and */sys* are created before **pivot_root**(2), so that they
 also mount when **slinit-nspawn** itself runs inside a user namespace.
