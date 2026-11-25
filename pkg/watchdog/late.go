@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"errors"
+	"os"
 	"sync"
 	"time"
 )
@@ -148,4 +149,25 @@ func (l *Late) Close() error {
 		return nil
 	}
 	return l.feeder.Close()
+}
+
+// Handover is Close for the final shutdown of a reboot: it rules out
+// arming afterwards, but hands the armed device over (see
+// Feeder.Handover) instead of disarming it. With no device it returns
+// nil, nil.
+func (l *Late) Handover(timeout time.Duration) (*os.File, error) {
+	if l == nil {
+		return nil, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil, nil
+	}
+	l.closed = true
+	close(l.stop)
+	if l.feeder == nil {
+		return nil, nil
+	}
+	return l.feeder.Handover(timeout)
 }

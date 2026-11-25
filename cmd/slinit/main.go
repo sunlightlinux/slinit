@@ -1576,7 +1576,7 @@ func main() {
 			},
 			ForceFailFn: debuggerForceFail(serviceSet),
 			RebootFn: func() {
-				closeWatchdog(wd, logger)
+				watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 				shutdown.Execute(service.ShutdownReboot, logger)
 			},
 			PoweroffFn: func() {
@@ -1675,7 +1675,7 @@ func main() {
 			return
 		}
 		logger.Notice("Carrying out the shutdown (%s) requested over the control socket", st)
-		closeWatchdog(wd, logger)
+		watchdogForShutdown(wd, st, containerMode, logger)
 		switch routeShutdown(st, flags, isPID1, containerMode) {
 		case routeImmediate:
 			shutdown.ExecuteImmediate(st, logger)
@@ -1890,7 +1890,7 @@ func main() {
 		case recovery.ActionReboot, recovery.ActionTimeout:
 			fallthrough
 		default:
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 		// Unreachable — shutdown.Execute doesn't return on PID 1.
@@ -2156,13 +2156,13 @@ func main() {
 				// no unmount, and no sync either — whatever is still in
 				// the page cache is gone. The operator asked for it.
 				logger.Warn("Immediate shutdown requested (%s): no sync, unwritten data will be lost", st)
-				closeWatchdog(wd, logger)
+				watchdogForShutdown(wd, st, containerMode, logger)
 				shutdown.ExecuteImmediate(st, logger)
 			case routeForce:
 				// `--fast`: no teardown, no unmount — sync and the
 				// syscall, the same path `reboot -f` takes.
 				logger.Warn("Fast shutdown requested (%s): skipping service teardown", st)
-				closeWatchdog(wd, logger)
+				watchdogForShutdown(wd, st, containerMode, logger)
 				shutdown.ExecuteForce(st, logger)
 			case routeKill:
 				loop.InitiateShutdownKill(st)
@@ -2242,7 +2242,7 @@ func main() {
 			break
 		}
 		if shutdownType != service.ShutdownNone {
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, shutdownType, containerMode, logger)
 			handlePID1Shutdown(shutdownType, cal, logger)
 			// handlePID1Shutdown does not return
 		}
@@ -2258,7 +2258,7 @@ func main() {
 				continue // re-enter boot loop
 			}
 			logger.Error("Failed to start recovery service, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 
@@ -2284,11 +2284,11 @@ func main() {
 			// Not expected: only Take clears the wake. Reboot, as
 			// on a timeout.
 			logger.Error("Collapse menu interrupted with no shutdown held, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapseReboot:
 			logger.Notice("User chose reboot")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapseRecoverySvc:
 			logger.Notice("User chose recovery")
@@ -2297,7 +2297,7 @@ func main() {
 				continue
 			}
 			logger.Error("Failed to start recovery service, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapseRestartBoot:
 			logger.Notice("User chose restart boot sequence")
@@ -2306,7 +2306,7 @@ func main() {
 				continue
 			}
 			logger.Error("Failed to restart boot services, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapsePoweroff:
 			logger.Notice("User chose poweroff")
@@ -2314,7 +2314,7 @@ func main() {
 			shutdown.Execute(service.ShutdownPoweroff, logger)
 		case recovery.CollapseTimeout:
 			logger.Notice("No input within timeout, rebooting")
-			closeWatchdog(wd, logger)
+			watchdogForShutdown(wd, service.ShutdownReboot, containerMode, logger)
 			shutdown.Execute(service.ShutdownReboot, logger)
 		}
 	}
@@ -3232,6 +3232,35 @@ func closeWatchdog(wd *watchdog.Late, logger *logging.Logger) {
 	}
 	if err := wd.Close(); err != nil {
 		logger.Error("Watchdog close: %v", err)
+	}
+}
+
+// shutdownWatchdogTimeout is how long the hardware watchdog is left
+// armed, and unfed, for the final shutdown of a reboot: systemd's
+// RebootWatchdogSec default.
+const shutdownWatchdogTimeout = 10 * time.Minute
+
+// watchdogForShutdown is closeWatchdog for the final shutdown. A reboot
+// keeps the watchdog armed with shutdownWatchdogTimeout, so a hang in
+// the kill-all, an unmount or the sync resets the machine, which was
+// about to reset anyway, instead of holding it for ever. Every other
+// kind disarms it as before, as systemd does: a halted machine must
+// stay halted, and a kexec'd kernel or a soft-rebooted slinit may not
+// feed it. Nor does a container hand it over: its reboot ends the
+// container, not the machine the device would reset.
+func watchdogForShutdown(wd *watchdog.Late, st service.ShutdownType, containerMode bool, logger *logging.Logger) {
+	if st != service.ShutdownReboot || containerMode {
+		closeWatchdog(wd, logger)
+		return
+	}
+	f, err := wd.Handover(shutdownWatchdogTimeout)
+	if err != nil {
+		logger.Warn("Hardware watchdog disarmed for the shutdown: %v", err)
+		return
+	}
+	if f != nil {
+		shutdown.HoldWatchdog(f)
+		logger.Notice("Hardware watchdog left armed for %v to guard the rest of the shutdown", shutdownWatchdogTimeout)
 	}
 }
 

@@ -2,6 +2,8 @@ package shutdown
 
 import (
 	"errors"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -188,5 +190,42 @@ func TestExecute_WatchdogArmedOnReboot(t *testing.T) {
 	}
 	if !armed {
 		t.Error("WDIOC_SETTIMEOUT never fired despite flag=true + rebootType=Reboot")
+	}
+}
+
+// The runtime watchdog cmd/slinit hands over for a reboot is still
+// open, and the device is single-open: opening it again is EBUSY. The
+// reboot watchdog then arms the device it already holds.
+func TestArmWatchdogAndWait_ReusesHeldWatchdog(t *testing.T) {
+	origOpen, origIoctl, origSleep, origHeld := watchdogOpenFunc, watchdogIoctlFunc, sleepFunc, heldWatchdog
+	defer func() {
+		watchdogOpenFunc, watchdogIoctlFunc, sleepFunc, heldWatchdog = origOpen, origIoctl, origSleep, origHeld
+	}()
+
+	held, err := os.CreateTemp(t.TempDir(), "wd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	HoldWatchdog(held)
+	watchdogOpenFunc = func(string) (int, error) { return -1, syscall.EBUSY }
+	ioctlFd := -1
+	watchdogIoctlFunc = func(fd int, req uintptr, _ uintptr) error {
+		ioctlFd = fd
+		return nil
+	}
+	sleepFunc = func(time.Duration) {}
+
+	if err := armWatchdogAndWait(logging.New(logging.LevelError)); err != nil {
+		t.Fatalf("armWatchdogAndWait: %v", err)
+	}
+	if ioctlFd != int(held.Fd()) {
+		t.Errorf("armed fd %d, want the held watchdog's %d", ioctlFd, held.Fd())
+	}
+
+	// Any other open failure is still one.
+	watchdogOpenFunc = func(string) (int, error) { return -1, syscall.ENOENT }
+	if err := armWatchdogAndWait(logging.New(logging.LevelError)); err == nil {
+		t.Error("ENOENT with a held watchdog was not reported")
 	}
 }
