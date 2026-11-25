@@ -696,6 +696,13 @@ func (s *ScriptedService) handleTimerExpired() {
 			s.serviceName)
 		process.SignalProcess(s.startPID, syscall.SIGINT, false)
 		s.stopInterruptedStart()
+		if s.stopTimeout <= 0 {
+			// No stop-timeout to escalate on (0 means "never", as for
+			// an operator stop). A timed-out start must still end: 4.0.2
+			// killed it at the start-timeout, so give the command one
+			// more start-timeout to honour SIGINT, then SIGKILL.
+			s.armTimer(s.startTimeout, scriptedTimerStopTimeout)
+		}
 		s.failedToStart(false, false)
 		s.services.processQueuesLocked()
 

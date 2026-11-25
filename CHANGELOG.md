@@ -486,8 +486,9 @@ requires.
   slinit now does the same; the start is still reported failed once,
   with reason `timed-out`.
   *Compat:* a timed-out scripted start command gets SIGINT and up to
-  `stop-timeout` to exit before SIGKILL, and the stop command runs
-  after it unless it exits with a failure status.
+  `stop-timeout` to exit before SIGKILL (one more `start-timeout` when
+  `stop-timeout` is 0), and the stop command runs after it unless it
+  exits with a failure status.
 - **`slinit-check` did not look where slinit looks.** Its default
   system directories were `/etc`, `/usr/lib` and `/lib` `slinit.d`; the
   daemon's are `/etc`, `/run`, `/usr/local/lib` and `/lib`. A service in

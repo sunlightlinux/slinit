@@ -220,3 +220,23 @@ func TestScriptedStartTimeoutEscalatesAtStopTimeout(t *testing.T) {
 		t.Error("the stop command did not run after the start command was killed")
 	}
 }
+
+// With stop-timeout = 0 (as a converted TimeoutStopSec=0|infinity gives),
+// the interrupted start's escalation had no timer at all: a start command
+// that ignores SIGINT kept the service STOPPING for good — and with it a
+// system shutdown — where 4.0.2's start-timeout always ended in SIGKILL.
+// The start-timeout still bounds the command: the SIGKILL comes one more
+// start-timeout after the SIGINT.
+func TestScriptedStartTimeoutWithoutStopTimeoutStillKills(t *testing.T) {
+	set, _ := newTestSet()
+	svc, _, _ := newTimedScripted(t, set, "nostoptimeout", "trap '' INT; while :; do sleep 0.1; done")
+	svc.SetStopTimeout(0)
+	set.StartService(svc)
+	if got := waitForState(t, svc, StateStopped, 3*time.Second); got != StateStopped {
+		set.queueMu.Lock()
+		pid := svc.PID()
+		set.queueMu.Unlock()
+		killLeftover(pid)
+		t.Errorf("3s after a 300ms start-timeout with stop-timeout 0: %v, start command still alive", got)
+	}
+}
