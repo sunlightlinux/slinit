@@ -235,6 +235,7 @@ func (el *EventLoop) Run(ctx context.Context) error {
 	}
 	releaseHeldSignals()
 	defer el.releaseSignals()
+	defer el.stopPowerHooks()
 	// An orphan that exited before SIGCHLD was claimed (during boot, or
 	// between the previous loop and this one after a remain) sent a
 	// signal nobody received: reap it now rather than at the next exit.
@@ -623,7 +624,7 @@ func (el *EventLoop) isShuttingDown() bool {
 func (el *EventLoop) queuePowerHook() {
 	el.powerOnce.Do(func() {
 		el.powerPending = make(chan struct{}, 1)
-		go el.runPowerHooks()
+		go el.runPowerHooks(el.powerPending)
 	})
 	select {
 	case el.powerPending <- struct{}{}:
@@ -632,8 +633,8 @@ func (el *EventLoop) queuePowerHook() {
 	}
 }
 
-func (el *EventLoop) runPowerHooks() {
-	for range el.powerPending {
+func (el *EventLoop) runPowerHooks(pending <-chan struct{}) {
+	for range pending {
 		if el.isShuttingDown() {
 			// Same rule as a SIGPWR received during shutdown: leave
 			// the status file for a hook that may still be running.
@@ -642,6 +643,18 @@ func (el *EventLoop) runPowerHooks() {
 		}
 		state := el.powerHook(el.logger)
 		el.logger.Notice("Received SIGPWR, power status: %s", state)
+	}
+}
+
+// stopPowerHooks ends the SIGPWR worker with the loop, after any run it
+// is in. Called on the Run goroutine, the only one that queues a run, so
+// no send can race the close; one queued later finds no channel and is
+// dropped.
+func (el *EventLoop) stopPowerHooks() {
+	el.powerOnce.Do(func() {})
+	if el.powerPending != nil {
+		close(el.powerPending)
+		el.powerPending = nil
 	}
 }
 

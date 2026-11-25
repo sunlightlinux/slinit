@@ -3,6 +3,10 @@
 package eventloop
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -142,5 +146,49 @@ func TestSIGPWRHookDoesNotBlockTheLoop(t *testing.T) {
 	}
 	if overlap.Load() != 0 {
 		t.Error("two power hooks ran at once")
+	}
+}
+
+// The SIGPWR worker ranged over a channel nothing ever closed, so every
+// loop that saw a SIGPWR left one goroutine behind when Run returned: one
+// more per remain or boot-failure retry.
+func TestSIGPWRWorkerEndsWithRun(t *testing.T) {
+	logger := logging.New(logging.LevelError)
+	el := New(service.NewServiceSet(logger), logger)
+	el.sigCh = make(chan os.Signal, 4)
+	ran := make(chan struct{}, 1)
+	el.powerHook = func(*logging.Logger) shutdown.PowerState {
+		ran <- struct{}{}
+		return shutdown.PowerOK
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- el.Run(context.Background()) }()
+	el.sigCh <- syscall.SIGPWR
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the power hook never ran")
+	}
+	el.InitiateShutdown(service.ShutdownRemain)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+
+	// This loop's worker: the traceback prints the receiver first, and
+	// other tests leave workers of their own behind.
+	frame := fmt.Sprintf("runPowerHooks(%p", el)
+	buf := make([]byte, 1<<20)
+	for deadline := time.Now().Add(time.Second); ; {
+		n := runtime.Stack(buf, true)
+		if !strings.Contains(string(buf[:n]), frame) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the SIGPWR worker outlived Run")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
