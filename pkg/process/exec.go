@@ -898,7 +898,16 @@ func openServiceDir(path string, mode os.FileMode) (int, error) {
 		last := i == len(comps)-1
 		nfd, err := unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if err == unix.ENOENT {
-			if err = unix.Mkdirat(fd, c, uint32(mode.Perm())); err == nil || err == unix.EEXIST {
+			// Only the leaf gets the configured mode (and, in the
+			// caller, the owner). A missing parent is 0755 as in
+			// systemd: given the leaf's 0700 it was root's and
+			// closed, and a run-as service could not reach
+			// "myapp/data".
+			perm := uint32(0o755)
+			if last {
+				perm = uint32(mode.Perm())
+			}
+			if err = unix.Mkdirat(fd, c, perm); err == nil || err == unix.EEXIST {
 				nfd, err = unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 			}
 		}
