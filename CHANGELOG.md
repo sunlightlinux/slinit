@@ -461,6 +461,21 @@ requires.
   *Compat:* a start cancelled by a stop is no longer reported as a
   failure (`is-failed`), and a process that closes its readiness fd
   without signalling is stopped.
+- **Stopping a scripted service during its start was reported as a
+  failed start, and could reboot the machine.** For a
+  `start-interruptible` scripted service, a stop arriving while the start
+  command ran sent SIGINT and left the service STARTING: the command's
+  death was then taken for a failed start — `is-failed`, a FAILEDSTART
+  event, and the `failure-action` (measured: `reboot` on a plain
+  `slinitctl stop`) — the stop command never ran, and a start command
+  that ignored SIGINT kept the service STARTING for good. As in dinit,
+  the service now moves to STOPPING with the stop-timeout armed, which
+  kills a command that ignores the signal; when the command exits with a
+  failure status the service stops, and when it completes or dies of the
+  signal the stop command runs to clean up.
+  *Compat:* a cancelled scripted start is a normal stop, not a failure,
+  and the stop command now runs after a start command killed by the
+  cancellation.
 - **`slinit-check` did not look where slinit looks.** Its default
   system directories were `/etc`, `/usr/lib` and `/lib` `slinit.d`; the
   daemon's are `/etc`, `/run`, `/usr/local/lib` and `/lib`. A service in
