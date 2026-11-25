@@ -17,6 +17,7 @@ package main
 
 import (
 	"bufio"
+	"container/heap"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -1648,35 +1649,42 @@ func loadFileEvents(opts options) ([]*journal.Event, error) {
 // readJournalFile returns every entry of one journal file, binary or
 // JSONL (.gz decompressed), in the order it was written.
 func readJournalFile(path string) ([]*journal.Event, error) {
+	var events []*journal.Event
+	err := iterJournalFile(path, func(e *journal.Event) bool {
+		events = append(events, e)
+		return true
+	})
+	return events, err
+}
+
+// iterJournalFile calls fn with each entry of one journal file, binary
+// or JSONL (.gz decompressed), in the order it was written, until fn
+// returns false. Nothing is kept: the caller decides what to hold.
+func iterJournalFile(path string, fn func(*journal.Event) bool) error {
 	if isBinaryJournal(path) {
 		r, err := journalbin.OpenReader(path)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer r.Close()
-		var events []*journal.Event
-		err = r.Iter(func(e *journal.Event) bool {
-			events = append(events, e)
-			return true
-		})
-		return events, err
+		return r.Iter(fn)
 	}
 	var r io.ReadCloser
 	if strings.HasSuffix(path, ".gz") {
 		rc, err := journald.OpenCompressed(path)
 		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", path, err)
+			return fmt.Errorf("open %s: %w", path, err)
 		}
 		r = rc
 	} else {
 		f, err := os.Open(path)
 		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", path, err)
+			return fmt.Errorf("open %s: %w", path, err)
 		}
 		r = f
 	}
 	defer r.Close()
-	return readJSONLFile(r, journal.QueryFilter{MinPriority: -1}, 0)
+	return iterJSONL(r, fn)
 }
 
 // runHeaderDump prints metadata about a --file source: for a binary
@@ -1817,47 +1825,46 @@ func runFromDirectory(opts options) error {
 }
 
 // runFromFiles queries journal files (--file, --directory, --image) as
-// one journal. Every entry is read first and ordered the way
-// journalbin.MultiReader orders a directory: boots in the order they
-// first appear, files taken in name order and each in write order, and
-// within a boot by monotonic time. Only then are the selections
-// applied, once, across all files: -b (any spec, counted over the boots
-// these files hold), the filters, the cursor, -n and -r; --list-boots
-// lists the files' boots. Each file used to be queried on its own, so
-// -n 3 printed three entries per file, -r reversed each file, -b -1
-// printed every boot, --list-boots printed entries and a cursor was
-// ignored.
+// one journal. Entries are ordered the way journalbin.MultiReader
+// orders a directory: boots in the order they first appear, files taken
+// in name order and each in write order, and within a boot by monotonic
+// time. The selections apply once, across all files: -b (any spec,
+// counted over the boots these files hold), the filters, the cursor, -n
+// and -r; --list-boots lists the files' boots. Each file used to be
+// queried on its own, so -n 3 printed three entries per file, -r
+// reversed each file, -b -1 printed every boot, --list-boots printed
+// entries and a cursor was ignored.
+//
+// The files are streamed, and only matching entries are held: with -n,
+// only the last N of each boot. A first pass, which holds nothing,
+// lists the boots when -b, --list-boots or a cursor needs them. Reading
+// every entry first took 353 MB of memory for -n 3 over a 190 MB
+// journal, and would have taken some 7.5 GB at the default 4 GiB
+// journal size.
 func runFromFiles(files []string, opts options, out io.Writer) error {
-	var events []*journal.Event
-	for _, f := range files {
-		evs, err := readJournalFile(f)
-		if err != nil {
-			return fmt.Errorf("%s: %w", f, err)
+	// each calls fn with every entry of every file and its place in
+	// that order, the tiebreak between entries the order puts level.
+	each := func(fn func(seq int, e *journal.Event)) error {
+		seq := 0
+		for _, f := range files {
+			err := iterJournalFile(f, func(e *journal.Event) bool {
+				fn(seq, e)
+				seq++
+				return true
+			})
+			if err != nil {
+				return fmt.Errorf("%s: %w", f, err)
+			}
 		}
-		events = append(events, evs...)
-	}
-	byID := map[string]*bootRange{}
-	for _, e := range events {
-		aggregateBoot(byID, e)
-	}
-	sort.SliceStable(events, func(i, j int) bool {
-		a, b := events[i], events[j]
-		if a.BootID != b.BootID {
-			return bootRank(byID, a.BootID) < bootRank(byID, b.BootID)
-		}
-		return earlier(a.Mts, a.Ts, b.Mts, b.Ts)
-	})
-	boots := sortedBoots(byID)
-	if opts.listBoots {
-		printBoots(out, boots)
 		return nil
 	}
-	if opts.bootSet || opts.bootID != "" {
-		id, err := bootFromSpec(opts.bootID, boots)
-		if err != nil {
+	byID := map[string]*bootRange{}
+	if opts.listBoots {
+		if err := each(func(_ int, e *journal.Event) { aggregateBoot(byID, e) }); err != nil {
 			return err
 		}
-		opts.bootID = id
+		printBoots(out, sortedBoots(byID))
+		return nil
 	}
 
 	token, mode, err := resolveCursorInput(opts)
@@ -1866,42 +1873,129 @@ func runFromFiles(files []string, opts options, out io.Writer) error {
 	}
 	var cursorTs int64
 	var cursorBoot string
-	skipCursor := mode == cursorResume
 	if token != "" {
 		if cursorTs, cursorBoot, err = parseCursor(token); err != nil {
 			return err
 		}
+	}
+	// skipSeq is the entry a --cursor-file run ended on: the first at
+	// the cursor's time in its boot (see cursorMode).
+	skipSeq := -1
+	if opts.bootSet || opts.bootID != "" || token != "" {
+		var at *journal.Event
+		err := each(func(seq int, e *journal.Event) {
+			aggregateBoot(byID, e)
+			if mode == cursorResume && e.Ts == cursorTs && e.BootID == cursorBoot &&
+				(at == nil || earlier(e.Mts, e.Ts, at.Mts, at.Ts)) {
+				at, skipSeq = e, seq
+			}
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if opts.bootSet || opts.bootID != "" {
+		id, err := bootFromSpec(opts.bootID, sortedBoots(byID))
+		if err != nil {
+			return err
+		}
+		opts.bootID = id
+	}
+	if token != "" {
 		if _, ok := byID[cursorBoot]; !ok {
 			return fmt.Errorf("cursor: boot %s is not in the journal files", cursorBoot)
 		}
 	}
 
 	filter := buildRequest(opts).ToFilter()
-	kept := events[:0]
-	for _, e := range events {
+	tails := map[string]*entryTail{}
+	var kept []seqEntry
+	err = each(func(seq int, e *journal.Event) {
+		aggregateBoot(byID, e)
 		if token != "" {
 			// Past the cursor: a later boot, or later in its boot.
 			if e.BootID != cursorBoot {
 				if bootRank(byID, e.BootID) < byID[cursorBoot].rank {
-					continue
+					return
 				}
-			} else if e.Ts < cursorTs || (mode == cursorAfter && e.Ts == cursorTs) {
-				continue
-			} else if skipCursor && e.Ts == cursorTs {
-				// The entry the last --cursor-file run ended on.
-				skipCursor = false
-				continue
+			} else if e.Ts < cursorTs || (mode == cursorAfter && e.Ts == cursorTs) || seq == skipSeq {
+				return
 			}
 		}
-		if filter.Match(e) {
-			kept = append(kept, e)
+		if !filter.Match(e) {
+			return
 		}
+		if opts.limit <= 0 {
+			kept = append(kept, seqEntry{e, seq})
+			return
+		}
+		// The last N of the whole journal are the last N of its
+		// newest boots: N per boot is all that can be needed.
+		t := tails[e.BootID]
+		if t == nil {
+			t = &entryTail{}
+			tails[e.BootID] = t
+		}
+		heap.Push(t, seqEntry{e, seq})
+		if t.Len() > opts.limit {
+			heap.Pop(t)
+		}
+	})
+	if err != nil {
+		return err
 	}
-	events = kept
-	if opts.limit > 0 && len(events) > opts.limit {
-		events = events[len(events)-opts.limit:]
+	for _, t := range tails {
+		kept = append(kept, *t...)
+	}
+	sort.Slice(kept, func(i, j int) bool {
+		a, b := kept[i], kept[j]
+		if a.e.BootID != b.e.BootID {
+			return bootRank(byID, a.e.BootID) < bootRank(byID, b.e.BootID)
+		}
+		return a.before(b)
+	})
+	if opts.limit > 0 && len(kept) > opts.limit {
+		kept = kept[len(kept)-opts.limit:]
+	}
+	events := make([]*journal.Event, len(kept))
+	for i, k := range kept {
+		events[i] = k.e
 	}
 	return renderResult(out, opts, events)
+}
+
+// seqEntry is an entry and its place in the order the files were read.
+type seqEntry struct {
+	e   *journal.Event
+	seq int
+}
+
+// before orders two entries of one boot: by monotonic time, then in the
+// order they were read.
+func (a seqEntry) before(b seqEntry) bool {
+	if earlier(a.e.Mts, a.e.Ts, b.e.Mts, b.e.Ts) {
+		return true
+	}
+	if earlier(b.e.Mts, b.e.Ts, a.e.Mts, a.e.Ts) {
+		return false
+	}
+	return a.seq < b.seq
+}
+
+// entryTail is a min-heap of one boot's entries, earliest on top: the
+// latest N are what is left after popping down to N.
+type entryTail []seqEntry
+
+func (t entryTail) Len() int           { return len(t) }
+func (t entryTail) Less(i, j int) bool { return t[i].before(t[j]) }
+func (t entryTail) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
+func (t *entryTail) Push(x any)        { *t = append(*t, x.(seqEntry)) }
+func (t *entryTail) Pop() any {
+	old := *t
+	x := old[len(old)-1]
+	old[len(old)-1] = seqEntry{}
+	*t = old[:len(old)-1]
+	return x
 }
 
 // bootRank is the rank aggregateBoot gave id; entries without a boot
@@ -3193,13 +3287,33 @@ func runVerify(opts options) error {
 // (corruption tolerance — a rotated file with a trailing partial write
 // still returns everything up to the break).
 func readJSONLFile(r io.Reader, filter journal.QueryFilter, limit int) ([]*journal.Event, error) {
+	var kept []*journal.Event
+	err := iterJSONL(r, func(evt *journal.Event) bool {
+		if !filter.Match(evt) {
+			return true
+		}
+		kept = append(kept, evt)
+		if limit > 0 && len(kept) > limit {
+			// Drop from the head to keep only the most-recent limit
+			// matches, matching the server-side tail semantics.
+			kept = kept[1:]
+		}
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
+// iterJSONL calls fn with each event of a JSONL stream until fn returns
+// false. A line that does not parse is skipped.
+func iterJSONL(r io.Reader, fn func(*journal.Event) bool) error {
 	scanner := bufio.NewScanner(r)
 	// Journal events cap at 512 KiB (MaxEventSize); allow the scanner
 	// to read a full oversized line without the default 64 KiB cap
 	// truncating a legitimate large entry.
 	scanner.Buffer(make([]byte, 64*1024), journal.MaxEventSize+1024)
-
-	var kept []*journal.Event
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -3211,20 +3325,14 @@ func readJSONLFile(r io.Reader, filter journal.QueryFilter, limit int) ([]*journ
 			// than abort. The exit path can log a warning if it cares.
 			continue
 		}
-		if !filter.Match(evt) {
-			continue
-		}
-		kept = append(kept, evt)
-		if limit > 0 && len(kept) > limit {
-			// Drop from the head to keep only the most-recent limit
-			// matches, matching the server-side tail semantics.
-			kept = kept[1:]
+		if !fn(evt) {
+			return nil
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan: %w", err)
+		return fmt.Errorf("scan: %w", err)
 	}
-	return kept, nil
+	return nil
 }
 
 // runOneShot sends CmdJournalQuery, reads the full reply, optionally

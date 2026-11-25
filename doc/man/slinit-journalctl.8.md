@@ -34,12 +34,14 @@ Three query paths, chosen automatically or forced by flags:
   *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* / *\*.slj* file under a
   directory, recursively, as one journal.
 
-With **--file**, **--directory** and **--image**, every entry is read
-and put in journal order — boots in the order they were written, files
-taken in name order, then monotonic time within a boot — before
-anything is selected, so **-b**, the filters, the cursor options,
-**-n** and **-r** apply once across all the files, and
-**--list-boots** lists the boots the files hold (since 4.0.3).
+With **--file**, **--directory** and **--image**, the files are read as
+one journal, in journal order — boots in the order they were written,
+files taken in name order, then monotonic time within a boot — so
+**-b**, the filters, the cursor options, **-n** and **-r** apply once
+across all the files, and **--list-boots** lists the boots the files
+hold (since 4.0.3). Only the matching entries are held in memory, and
+with **-n** *N* only the last *N* of each boot; **-b**, **--list-boots**
+and the cursor options read the files twice, first for their boots.
 
 The daemon (**slinit-journald**(8)) does NOT need to be running for
 the live path — slinit itself owns the ring buffer that

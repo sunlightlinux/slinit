@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"os"
+	"runtime"
+	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -148,5 +153,122 @@ func TestFileQueryPicksBoot(t *testing.T) {
 	got, err := queryFiles(t, files[1:], options{bootSet: true, limit: 1})
 	if err != nil || got != "boot2 msg 4\n" {
 		t.Errorf("got %q, %v", got, err)
+	}
+}
+
+// writeJSONL writes events to a JSONL file at path.
+func writeJSONL(t *testing.T, path string, evs ...*journal.Event) {
+	t.Helper()
+	var b bytes.Buffer
+	for _, e := range evs {
+		line, err := e.MarshalJSONL()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, b.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDirectoryTailAcrossFilesAndBoots — -n keeps the last N of each
+// boot as the files are read, then merges them: one boot's entries
+// interleaved over two files come out in monotonic order, and a newest
+// boot with fewer than N matches is topped up from the one before.
+func TestDirectoryTailAcrossFilesAndBoots(t *testing.T) {
+	dir := t.TempDir()
+	ev := func(boot string, mts int, unit string) *journal.Event {
+		return &journal.Event{Ts: time.Now().UnixNano(), Mts: int64(mts) * 1e9, BootID: boot,
+			Unit: unit, Msg: fmt.Sprintf("%s %d", boot[:1], mts), Prio: 6}
+	}
+	writeJSONL(t, dir+"/a.jsonl", ev(testBoot1, 1, "x"), ev(testBoot1, 3, "x"), ev(testBoot1, 5, "x"),
+		ev(testBoot2, 2, "y"), ev(testBoot2, 4, "x"))
+	writeJSONL(t, dir+"/b.jsonl", ev(testBoot1, 2, "x"), ev(testBoot1, 4, "x"), ev(testBoot1, 6, "x"),
+		ev(testBoot2, 1, "x"), ev(testBoot2, 3, "y"))
+	files, err := journalFilesUnder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		opts options
+		want string
+	}{
+		{options{limit: 3}, "2 2\n2 3\n2 4\n"},
+		{options{limit: 4, units: []string{"x"}}, "1 5\n1 6\n2 1\n2 4\n"},
+		{options{limit: 3, reverse: true, units: []string{"x"}}, "2 4\n2 1\n1 6\n"},
+		{options{bootSet: true, bootID: "-1", limit: 4}, "1 3\n1 4\n1 5\n1 6\n"},
+		{options{units: []string{"y"}}, "2 2\n2 3\n"},
+	}
+	for _, c := range cases {
+		if got, err := queryFiles(t, files, c.opts); err != nil || got != c.want {
+			t.Errorf("%+v: got %q, %v; want %q", c.opts, got, err, c.want)
+		}
+	}
+}
+
+// TestDirectoryQueryHoldsOnlyTheTail — fd29fc9 read every entry of every
+// file into memory before selecting: -n 3 over a 190 MB journal took
+// 353 MB. Only the entries that can be printed are held now. The heap is
+// sampled while a -n 3 query reads ~12 MB of JSONL; holding it all puts
+// the peak far above the file size, the tail keeps it to a few MB.
+func TestDirectoryQueryHoldsOnlyTheTail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes a 12 MB journal")
+	}
+	dir := t.TempDir()
+	f, err := os.Create(dir + "/big.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := bufio.NewWriter(f)
+	pad := strings.Repeat("p", 200)
+	size := 0
+	for i := 0; size < 12<<20; i++ {
+		line, _ := (&journal.Event{Ts: int64(i + 1), Mts: int64(i + 1), BootID: testBoot1, Unit: "a.service",
+			Msg: fmt.Sprintf("m %d %s", i, pad), Prio: 6}).MarshalJSONL()
+		w.Write(line)
+		w.WriteByte('\n')
+		size += len(line) + 1
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	defer debug.SetGCPercent(debug.SetGCPercent(10))
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	base := ms.HeapAlloc
+	var peak atomic.Uint64
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var ms runtime.MemStats
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+			runtime.ReadMemStats(&ms)
+			if ms.HeapAlloc > peak.Load() {
+				peak.Store(ms.HeapAlloc)
+			}
+		}
+	}()
+	got, err := queryFiles(t, []string{dir + "/big.jsonl"}, options{limit: 3})
+	close(stop)
+	<-done
+	if err != nil || strings.Count(got, "\n") != 3 {
+		t.Fatalf("got %d lines, %v", strings.Count(got, "\n"), err)
+	}
+	grew := int64(peak.Load()) - int64(base)
+	t.Logf("heap grew %d KB reading %d KB", grew>>10, size>>10)
+	if grew > int64(size)/3 {
+		t.Errorf("heap grew %d KB reading a %d KB journal for -n 3; the entries were held", grew>>10, size>>10)
 	}
 }

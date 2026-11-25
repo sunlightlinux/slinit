@@ -644,7 +644,9 @@ requires.
   `--list-boots` orders boots (the order they were written, then
   monotonic time within a boot), and `-b`, the filters, the cursor
   options, `-n` and `-r` apply once across them; `-b` counts over the
-  boots the files hold, and a cursor is checked and applied.
+  boots the files hold, and a cursor is checked and applied. The files
+  are streamed: only matching entries are held, and with `-n` only the
+  last N of each boot.
   *Compat:* with these sources `-b` and `-b 0` select the newest boot
   in the files instead of printing every boot, and entries from
   several files come in journal order rather than file by file.
