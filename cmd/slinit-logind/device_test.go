@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -229,5 +230,64 @@ func TestDevPathForSessionDevices(t *testing.T) {
 		if c.want != "" && (err != nil || got != c.want) {
 			t.Errorf("%d:%d = %q, %v; want %s", c.major, c.minor, got, err, c.want)
 		}
+	}
+}
+
+// ioW is the kernel's _IOW(type, nr, int).
+func ioW(typ byte, nr uintptr) uintptr {
+	const iocWrite, sizeofInt = 1, 4
+	return iocWrite<<30 | sizeofInt<<16 | uintptr(typ)<<8 | nr
+}
+
+// A background session's hidraw node is revoked with HIDIOCREVOKE, as its
+// input nodes are with EVIOCREVOKE (systemd's session_device_stop); it
+// was left live. A card is not revoked (it loses master instead), nor is
+// anything else.
+func TestRevokeRequest(t *testing.T) {
+	for _, c := range []struct {
+		path string
+		req  uintptr
+	}{
+		{"/dev/hidraw0", ioW('H', 0x0D)},
+		{"/dev/input/event3", ioW('E', 0x91)},
+		{"/dev/dri/card0", 0},
+		{"/dev/null", 0},
+	} {
+		req, ok := revokeRequest(c.path)
+		if ok != (c.req != 0) || req != c.req {
+			t.Errorf("revokeRequest(%s) = %#x, %v; want %#x", c.path, req, ok, c.req)
+		}
+	}
+}
+
+// A revoked hidraw descriptor cannot be revived, so a resume reopens the
+// node; one that cannot be reopened stays paused. It used to be resumed
+// with the old descriptor.
+func TestHidrawResumeReopens(t *testing.T) {
+	resetDevices()
+	t.Cleanup(resetDevices)
+	notes := captureNotes(t)
+	null := openNull(t)
+	fd, err := syscall.Dup(int(null.Fd()))
+	null.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := os.NewFile(uintptr(fd), "/dev/hidraw-slinit-test-absent")
+	key := devKey{245, 0}
+	devicesMu.Lock()
+	devices["c1"] = &sessionDevices{controlled: true, controller: ":1.10", vtnr: 3,
+		files: map[devKey]*os.File{key: dev}, paused: map[devKey]bool{key: true}}
+	devicesMu.Unlock()
+
+	setVT(t, 3)
+	(&manager{}).syncDevicesToVT()
+	if len(*notes) != 0 {
+		t.Errorf("resumed a hidraw node that could not be reopened: %+v", *notes)
+	}
+	devicesMu.Lock()
+	defer devicesMu.Unlock()
+	if !devices["c1"].paused[key] {
+		t.Error("the hidraw node is no longer paused")
 	}
 }

@@ -177,19 +177,43 @@ func isEvdevNode(path string) bool {
 	return strings.HasPrefix(path, "/dev/input/event")
 }
 
-// eviocRevoke is EVIOCREVOKE, _IOW('E', 0x91, int): every later
+// isHidrawNode reports whether path is a hidraw node, revoked like an
+// input event node.
+func isHidrawNode(path string) bool {
+	return strings.HasPrefix(path, "/dev/hidraw")
+}
+
+// eviocRevoke is EVIOCREVOKE, _IOW('E', 0x91, int), and hidiocRevoke
+// HIDIOCREVOKE, _IOW('H', 0x0D, int) in linux/hidraw.h: every later
 // operation on the descriptor fails, for good.
-const eviocRevoke = 0x40044591
+const (
+	eviocRevoke  = 0x40044591
+	hidiocRevoke = 0x4004480d
+)
+
+// revokeRequest returns the ioctl that revokes a descriptor of path, for
+// the devices that are revoked rather than kept while paused.
+func revokeRequest(path string) (uintptr, bool) {
+	switch {
+	case isEvdevNode(path):
+		return eviocRevoke, true
+	case isHidrawNode(path):
+		return hidiocRevoke, true
+	}
+	return 0, false
+}
 
 // pauseDevice suspends one device's access: a DRM node keeps its
-// descriptor but loses master, an input node is revoked. Other devices
-// have nothing to suspend.
+// descriptor but loses master, an input or hidraw node is revoked, as
+// systemd's session_device_stop does. Other devices have nothing to
+// suspend. hidraw was left live, so a background session could go on
+// talking to a security key or a game pad while another user was in
+// front.
 func pauseDevice(f *os.File) {
-	switch {
-	case isDRMNode(f.Name()):
+	if isDRMNode(f.Name()) {
 		_ = drmDropMaster(f.Fd())
-	case isEvdevNode(f.Name()):
-		_, _, _ = unix.Syscall(unix.SYS_IOCTL, f.Fd(), eviocRevoke, 0)
+	} else if req, ok := revokeRequest(f.Name()); ok {
+		_, _, _ = unix.Syscall(unix.SYS_IOCTL, f.Fd(), req, 0)
 	}
 }
 
@@ -215,9 +239,9 @@ func pauseDevicesLocked(id string, sd *sessionDevices) []devNote {
 }
 
 // resumeDevicesLocked gives a session back the devices it was paused
-// out of and returns the ResumeDevice signals owed. A revoked input node
-// cannot be revived, so it is reopened and the new descriptor handed
-// over. A device that cannot be resumed — another holder still has DRM
+// out of and returns the ResumeDevice signals owed. A revoked input or
+// hidraw node cannot be revived, so it is reopened and the new
+// descriptor handed over. A device that cannot be resumed — another holder still has DRM
 // master — stays paused for the next switch to retry.
 func resumeDevicesLocked(id string, sd *sessionDevices) []devNote {
 	var notes []devNote
@@ -230,7 +254,7 @@ func resumeDevicesLocked(id string, sd *sessionDevices) []devNote {
 			if err := drmSetMaster(f.Fd()); err != nil {
 				continue
 			}
-		case isEvdevNode(f.Name()):
+		case isEvdevNode(f.Name()) || isHidrawNode(f.Name()):
 			g, err := openDevice(f.Name())
 			if err != nil {
 				continue
