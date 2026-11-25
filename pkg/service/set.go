@@ -124,12 +124,13 @@ type ServiceSet struct {
 
 	// OnConsoleAcquire fires from ProcessService.BringUp just before a
 	// service that has RunsOnConsole (or StartsOnConsole) opens
-	// /dev/console. Wired by main.go to recovery.Debugger.Stop so the
+	// /dev/console. Wired by main.go to recovery.Debugger.StopOrDefer so the
 	// boot debugger releases its raw-mode grip on the tty BEFORE the
 	// child inherits it — otherwise interactive shells (bash --login)
 	// capture our raw termios as their "original" and can't ever get
 	// echo back. Called at most once per process spawn; the callback
 	// itself must be idempotent because service restarts fire it again.
+	// It runs with the scheduling lock held, so it must not block.
 	OnConsoleAcquire func()
 
 	// OnConfirmSpawn fires from ProcessService.BringUp at the very start

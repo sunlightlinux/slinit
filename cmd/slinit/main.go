@@ -1575,8 +1575,10 @@ func main() {
 			// command). ServiceSet fires this from ProcessService.BringUp
 			// right before the child inherits /dev/console. Stop is
 			// idempotent, so restarts of the tty service (smooth-recovery)
-			// fire it again harmlessly.
-			serviceSet.OnConsoleAcquire = bootDebugger.Stop
+			// fire it again harmlessly. BringUp holds the scheduling
+			// lock, so an open menu is not waited for: StopOrDefer then
+			// detaches once the menu closes (see its doc for the cost).
+			serviceSet.OnConsoleAcquire = bootDebugger.StopOrDefer
 		}
 	}
 

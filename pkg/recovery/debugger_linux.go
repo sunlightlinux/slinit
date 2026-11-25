@@ -271,8 +271,45 @@ func (d *Debugger) Stop() {
 	// returns immediately; the wait matters only when a real menu
 	// is up.
 	d.menuMu.Lock()
-	d.menuMu.Unlock()
+	d.finishStop()
+}
+
+// StopOrDefer is Stop for a caller that must not wait on the operator:
+// ProcessService.BringUp calls it with the scheduling lock held, just
+// before a console service inherits /dev/console. With no menu open it
+// stops inline, so termios is back to the original before the child
+// captures it. With a menu open it returns at once and the stop runs on
+// its own goroutine once the menu closes: waiting inline froze every
+// start, stop and control command for as long as the operator read the
+// menu (each redraw allows 60s) or sat in its shell (no limit at all).
+//
+// The price, only when the operator has the menu open as the console
+// service starts: that service starts on a console still in the menu's
+// raw mode and shared with the menu's reader until the menu closes. A
+// login shell may then keep echo off; Stop puts the original mode back
+// afterwards only if nothing has changed it since.
+func (d *Debugger) StopOrDefer() {
+	if !d.running.Load() {
+		return
+	}
+	if !d.menuMu.TryLock() {
+		go d.Stop()
+		return
+	}
+	if !d.running.CompareAndSwap(true, false) {
+		d.menuMu.Unlock()
+		return
+	}
+	d.finishStop()
+}
+
+// finishStop is the rest of Stop. Called with menuMu held and running
+// already cleared; releases menuMu.
+func (d *Debugger) finishStop() {
+	// stopCh closes under menuMu, so a Ctrl-B that arrives from here
+	// on finds it closed and opens no menu.
 	close(d.stopCh)
+	d.menuMu.Unlock()
 	// Wake the reader through the eventfd and wait for it to leave
 	// before closing anything: closing the tty does not wake a parked
 	// poll(2), which left Stop waiting for the next poll tick (up to
@@ -372,6 +409,12 @@ func (d *Debugger) run(fd, wakeFd int) {
 		// interleave input, so we hold menuMu across the whole
 		// present-and-dispatch cycle.
 		d.menuMu.Lock()
+		select {
+		case <-d.stopCh:
+			d.menuMu.Unlock()
+			return
+		default:
+		}
 		action := d.presentMenu()
 		d.menuMu.Unlock()
 		d.dispatch(action)
