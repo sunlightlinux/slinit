@@ -123,8 +123,18 @@ func applySandbox(s sandboxSpec) error {
 		}
 	}
 
+	// A read-write-path below a read-only-path stays a writable hole in
+	// it: the deeper path wins, as in systemd. The read-only remount
+	// covers the submounts its recursive bind brings along, the
+	// read-write binds made just above among them, so they are kept.
 	for _, p := range s.readOnlyPaths {
-		if err := bindMount(p, p, true); err != nil {
+		var holes []string
+		for _, rw := range s.readWritePaths {
+			if rw != p && underAny(rw, []string{p}) {
+				holes = append(holes, rw)
+			}
+		}
+		if err := bindMount(p, p, true, holes...); err != nil {
 			return fmt.Errorf("read-only-path %q: %w", p, err)
 		}
 	}
@@ -378,7 +388,9 @@ func remountROExcept(path string, keep []string) error {
 // (the kernel ignores the rdonly flag on the initial bind). Recursive
 // (MS_REC) so a directory tree containing other mount points propagates
 // the visibility as the operator expects.
-func bindMount(src, dst string, ro bool) error {
+//
+// keep names mounts below dst that a read-only bind leaves as they are.
+func bindMount(src, dst string, ro bool, keep ...string) error {
 	if err := unix.Mount(src, dst, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind %s -> %s: %w", src, dst, err)
 	}
@@ -387,7 +399,7 @@ func bindMount(src, dst string, ro bool) error {
 		// read-only / a read-write path stayed read-only until said otherwise.
 		return remountTreeRW(src, dst)
 	}
-	return remountTreeRO(dst, nil)
+	return remountTreeRO(dst, keep)
 }
 
 // madeRO holds the mount points remountTreeRO turned read-only, so that

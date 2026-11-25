@@ -1,23 +1,30 @@
 #!/bin/sh
 # Test: log-include and log-exclude filter output written to logfile.
 # Validates: log-include regex, log-exclude regex, filtering pipeline.
+#
+# The service prints INFO/DEBUG/ERROR lines numbered 0, 1, 2, ...
+# include keeps INFO and ERROR; exclude drops odd-numbered ERROR lines.
+# (The exclude used to be ^DEBUG:, which the include had already
+# dropped, so removing it changed nothing.)
 
 wait_for_service "logfilt-svc" "STARTED" 10
+sleep 4
 
-# Wait for several rounds of output
-sleep 5
+log=/tmp/logfilt-svc.log
+count() { grep -c "$1" "$log" 2>/dev/null; }
 
-# Log file should contain INFO lines
-logcontent=$(cat /tmp/logfilt-svc.log 2>/dev/null)
-assert_contains "$logcontent" "INFO:" "log contains INFO lines"
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ "$(count '^INFO: message 3$')" = "1" ] && [ "$(count '^ERROR: problem 2$')" = "1" ]; then
+    echo "OK: INFO lines and even ERROR lines kept"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: expected 'INFO: message 3' and 'ERROR: problem 2' in the log:"
+    head -12 "$log" 2>/dev/null
+fi
 
-# Log file should contain ERROR lines
-assert_contains "$logcontent" "ERROR:" "log contains ERROR lines"
+assert_eq "$(count '^DEBUG:')" "0" "log-include dropped DEBUG lines"
+assert_eq "$(count '^ERROR: problem [13579]$')" "0" "log-exclude dropped odd ERROR lines"
 
-# Log file should NOT contain DEBUG lines (excluded)
-assert_not_contains "$logcontent" "DEBUG:" "log excludes DEBUG lines"
-
-# Service should still be running
 assert_service_state "logfilt-svc" "STARTED" "logfilt-svc is STARTED"
 
 test_summary

@@ -1,6 +1,10 @@
 type = process
-command = /bin/sh -c "i=0; while true; do echo \"INFO: message $i\"; echo \"DEBUG: noise $i\"; echo \"ERROR: problem $i\"; i=$((i+1)); sleep 1; done"
+# $$ keeps slinit from expanding $i itself when it reads the command.
+command = /bin/sh -c 'i=0; while true; do echo "INFO: message $$i"; echo "DEBUG: noise $$i"; echo "ERROR: problem $$i"; i=$$((i+1)); sleep 0.5; done'
 logfile = /tmp/logfilt-svc.log
+# include keeps INFO and ERROR (drops DEBUG); exclude then drops the odd
+# ERROR lines. The exclude must remove something the include let
+# through, or it cannot be told apart from no exclude at all.
 log-include = ^(INFO|ERROR):
-log-exclude = ^DEBUG:
+log-exclude = ^ERROR: problem [13579]$
 depends-on: system-init

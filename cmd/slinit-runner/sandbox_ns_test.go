@@ -150,6 +150,38 @@ mount -t tmpfs tmpfs "$BASE"`, false) {
 	}
 }
 
+// A read-write-path below a read-only-path is a hole in it, as in
+// systemd, where the deeper path wins. read-only-paths are applied after
+// read-write-paths, and once the read-only remount covered submounts it
+// turned the hole read-only too: read-only-paths=/etc with
+// read-write-paths=/etc/x left /etc/x read-only.
+func TestReadWritePathInsideReadOnlyPath(t *testing.T) {
+	if !inMountNS(t, `mount -t tmpfs tmpfs "$BASE"
+mkdir "$BASE/rw" "$BASE/ro" "$BASE/sub"
+mount -t tmpfs tmpfs "$BASE/sub"`, false) {
+		return
+	}
+	base := os.Getenv("BASE")
+	// "/" is listed too: a read-write path above the read-only one is
+	// not a hole in it and must not keep anything below it writable.
+	err := applySandbox(sandboxSpec{
+		readOnlyPaths:  []string{base},
+		readWritePaths: []string{"/", base + "/rw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRO(t, base, true)
+	wantRO(t, base+"/sub", true)
+	wantRO(t, base+"/rw", false)
+	if err := os.WriteFile(base+"/rw/f", nil, 0o600); err != nil {
+		t.Errorf("write in the read-write hole: %v", err)
+	}
+	if err := os.WriteFile(base+"/ro/f", nil, 0o600); err == nil {
+		t.Errorf("write beside the hole succeeded; %s should be read-only", base)
+	}
+}
+
 // The read-only remount passed MS_RDONLY alone, and a bind remount
 // replaces the per-mount flags: a noexec, nosuid or nodev mount made
 // read-only lost them, so a script on a noexec tmpfs listed in

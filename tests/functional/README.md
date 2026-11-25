@@ -154,7 +154,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 44 | chroot | Chroot filesystem isolation |
 | 45 | lock-file | Exclusive lock file (flock) for services |
 | 46 | log-rotation | Log file rotation by size with max-files limit |
-| 47 | log-filtering | Log include/exclude regex filtering |
+| 47 | log-filtering | log-include drops DEBUG, log-exclude then drops odd-numbered ERROR lines the include let through |
 | 48 | new-session | New session (setsid) for service process |
 | 49 | close-fds | Close stdin/stdout/stderr (redirect to /dev/null) |
 | 50 | nice-oom-ioprio | Nice value and OOM score adjustment |
@@ -185,7 +185,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 75 | apparmor | `apparmor-switch` fails closed when the AppArmor LSM is unavailable; plain services unaffected |
 | 76 | debug | `debug = yes` SIGSTOPs the runner pre-exec; service runs only after SIGCONT |
 | 77 | service-dirs | `runtime-directory`/`state-directory` created on start; runtime dir removed on stop, state dir persists |
-| 78 | sandbox | filesystem sandbox knobs (private-tmp, protect-system, protect-home) rewrite the child's mount namespace |
+| 78 | sandbox | filesystem sandbox knobs (private-tmp, protect-system, protect-home) rewrite the child's mount namespace; a `read-write-paths` hole under a read-only `/etc` stays writable |
 | 79 | sandbox-expansion | `${RUNTIME_DIR}`/`${STATE_DIR}` placeholders resolve in sandbox path lists |
 | 80 | seccomp | `system-call-filter` / `system-call-architectures` install a seccomp BPF filter that blocks the named syscalls |
 | 81 | hardening | Restrict*/Protect* cluster (protect-kernel-*, lock-personality, protect-hostname, protect-clock, protect-control-groups) applied via slinit-runner |
@@ -230,7 +230,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 120 | sched-deadline | SCHED_DEADLINE via `sched-runtime`/`sched-deadline`/`sched-period` |
 | 121 | sched-reset-on-fork | RESET_ON_FORK bit surfaced (either explicit flag or policy+priority readback) |
 | 122 | securebits | `securebits = keep-caps,no-setuid-fixup` parses; child comes up |
-| 123 | normal-exit | `normal-exit = 42` — scripted svc exiting 42 lands in STOPPED (not FAILED) |
+| 123 | normal-exit | `normal-exit = 42` with `restart = yes`: exit 42 runs once, a control exiting 41 is respawned |
 | 124 | success-action | `success-action = none` parses cleanly and svc reaches a terminal state |
 | 125 | mlockall | `mlockall = current+future` → service memory locked (`VmLck` > 0, via the `libslinit-mlock.so` preload) and `RLIMIT_MEMLOCK = unlimited` in `/proc/PID/limits` |
 | 126 | numa-mempolicy | `numa-mempolicy = bind` on node 0; SKIPs if CONFIG_NUMA is off |

@@ -364,7 +364,9 @@ requires.
   `/var/tmp` are left as they were, as documented, and so are the
   `temporary-filesystem` and `protect-home = tmpfs` mounts; a
   `read-write-paths` or `bind-paths` entry makes writable again the
-  mounts below it that the sandbox made read-only, and only those.
+  mounts below it that the sandbox made read-only, and only those. A
+  `read-write-paths` entry below a `read-only-paths` one stays a
+  writable hole in it, as in systemd, where the deeper path wins.
   *Compat:* under `protect-system`, `protect-home=read-only` and
   `read-only-paths`, separate filesystems below the path (a separate
   `/home`, `/var/...`, `/boot/efi`) are now read-only too; list them in
