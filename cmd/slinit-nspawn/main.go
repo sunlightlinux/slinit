@@ -15,6 +15,8 @@
 //     rootfs is nodev, not nosuid. /proc/sys and nspawn's other
 //     read-only /proc entries are read-only, its inaccessible ones
 //     are covered with /dev/null.
+//   - Capabilities: bounding set narrowed to systemd-nspawn's default
+//     retained set.
 //   - Init exec: default /sbin/slinit; override with --init=PATH.
 //     Argv beyond -- is passed through as init's args.
 //   - Registry: parent writes /run/slinit/machines/<name> post-fork,
@@ -47,6 +49,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -301,6 +304,10 @@ func childMain() error {
 	}
 	_ = name
 
+	// The bounding and inheritable sets are per thread: the thread that
+	// narrows them must be the one that execs the init.
+	runtime.LockOSThread()
+
 	// Nothing the launcher inherited may reach the container: a host
 	// file or directory fd would outlive pivot_root. Marked
 	// close-on-exec rather than closed, since the Go runtime holds fds
@@ -402,6 +409,10 @@ func childMain() error {
 		if err := protectProc(privateNet); err != nil {
 			return err
 		}
+	}
+
+	if err := dropCaps(privateNet); err != nil {
+		return err
 	}
 
 	// Exec the init. slinit expects PID 1 semantics; nothing to teach
@@ -542,6 +553,58 @@ func protectProc(privateNet bool) error {
 		if err := unix.Mount("/dev/null", p, "", unix.MS_BIND, ""); err != nil && err != unix.ENOENT {
 			return fmt.Errorf("mask %s: %w", p, err)
 		}
+	}
+	return nil
+}
+
+// retainedCaps is systemd-nspawn's default capability set (nspawn.c,
+// arg_caps_retain): what a full init needs inside the container,
+// CAP_SYS_ADMIN included. Everything else, CAP_SYS_MODULE, SYS_RAWIO,
+// SYS_TIME, MAC_ADMIN, NET_ADMIN and the rest, leaves the container.
+// As there, CAP_NET_ADMIN stays with a private network namespace, to
+// configure it.
+var retainedCaps = []uintptr{
+	unix.CAP_AUDIT_CONTROL, unix.CAP_AUDIT_WRITE, unix.CAP_CHOWN,
+	unix.CAP_DAC_OVERRIDE, unix.CAP_DAC_READ_SEARCH, unix.CAP_FOWNER,
+	unix.CAP_FSETID, unix.CAP_IPC_OWNER, unix.CAP_KILL, unix.CAP_LEASE,
+	unix.CAP_LINUX_IMMUTABLE, unix.CAP_MKNOD, unix.CAP_NET_BIND_SERVICE,
+	unix.CAP_NET_BROADCAST, unix.CAP_NET_RAW, unix.CAP_SETFCAP,
+	unix.CAP_SETGID, unix.CAP_SETPCAP, unix.CAP_SETUID, unix.CAP_SYS_ADMIN,
+	unix.CAP_SYS_BOOT, unix.CAP_SYS_CHROOT, unix.CAP_SYS_NICE,
+	unix.CAP_SYS_PTRACE, unix.CAP_SYS_RESOURCE, unix.CAP_SYS_TTY_CONFIG,
+}
+
+// dropCaps narrows the calling thread's bounding set to retainedCaps,
+// as systemd-nspawn's drop_capabilities does, so the init and all it
+// runs can never hold the others. The inheritable set is narrowed too:
+// an exec as root adds it to the permitted set, bounding set or not,
+// and ambient capabilities go with it.
+func dropCaps(privateNet bool) error {
+	var keep uint64
+	for _, c := range retainedCaps {
+		keep |= 1 << c
+	}
+	if privateNet {
+		keep |= 1 << unix.CAP_NET_ADMIN
+	}
+	// Past the kernel's last capability PR_CAPBSET_DROP is EINVAL.
+	for c := uintptr(0); c < 64; c++ {
+		if keep&(1<<c) != 0 {
+			continue
+		}
+		if err := unix.Prctl(unix.PR_CAPBSET_DROP, c, 0, 0, 0); err != nil && err != unix.EINVAL {
+			return fmt.Errorf("drop capability %d: %w", c, err)
+		}
+	}
+	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
+	var data [2]unix.CapUserData
+	if err := unix.Capget(&hdr, &data[0]); err != nil {
+		return fmt.Errorf("capget: %w", err)
+	}
+	data[0].Inheritable &= uint32(keep)
+	data[1].Inheritable &= uint32(keep >> 32)
+	if err := unix.Capset(&hdr, &data[0]); err != nil {
+		return fmt.Errorf("capset: %w", err)
 	}
 	return nil
 }

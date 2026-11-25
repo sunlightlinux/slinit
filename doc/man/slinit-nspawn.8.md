@@ -68,6 +68,20 @@ container's init keeps the terminal **slinit-nspawn** was started on.
 settings belong to the container's own network namespace. */sys* is
 read-only.
 
+The container's init runs with **systemd-nspawn**(1)'s default
+capability set (since 4.0.3; it had every capability): CAP_AUDIT_CONTROL,
+CAP_AUDIT_WRITE, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH,
+CAP_FOWNER, CAP_FSETID, CAP_IPC_OWNER, CAP_KILL, CAP_LEASE,
+CAP_LINUX_IMMUTABLE, CAP_MKNOD, CAP_NET_BIND_SERVICE, CAP_NET_BROADCAST,
+CAP_NET_RAW, CAP_SETFCAP, CAP_SETGID, CAP_SETPCAP, CAP_SETUID,
+CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_CHROOT, CAP_SYS_NICE,
+CAP_SYS_PTRACE, CAP_SYS_RESOURCE and CAP_SYS_TTY_CONFIG. The others,
+CAP_SYS_MODULE, CAP_SYS_RAWIO, CAP_SYS_TIME, CAP_NET_ADMIN,
+CAP_MAC_ADMIN, CAP_IPC_LOCK and the rest, are dropped from the bounding
+and inheritable sets, so nothing in the container can regain them.
+With **--private-network** CAP_NET_ADMIN is kept as well, to configure
+the container's own network stack. There is no flag to retain more.
+
 */proc* and */sys* are created before **pivot_root**(2), so that they
 also mount when **slinit-nspawn** itself runs inside a user namespace.
 

@@ -4,8 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // buildNspawn compiles slinit-nspawn for the end-to-end tests.
@@ -184,5 +187,64 @@ while read -r _ _ _ _ mp opts _; do case $mp in /proc/sys|/proc/bus|/proc/fs|/pr
 	}
 	if !strings.Contains(out, "NET-WRITABLE") {
 		t.Error("with --private-network the container's own net sysctls are not writable")
+	}
+}
+
+// TestContainerCapabilities: the container's init ran with every
+// capability: CAP_SYS_MODULE loads a kernel module, CAP_SYS_RAWIO
+// reads /dev/mem, and so on. Its bounding set is now systemd-nspawn's
+// default retained set, and no other capability reaches its permitted
+// set, not even through an inheritable set the launcher was started
+// with. With a private network CAP_NET_ADMIN stays, as under nspawn.
+func TestContainerCapabilities(t *testing.T) {
+	if _, err := exec.LookPath("setpriv"); err != nil {
+		t.Skip("setpriv not available")
+	}
+	// systemd-nspawn's arg_caps_retain default.
+	var nspawn uint64
+	for _, c := range []uint{
+		unix.CAP_AUDIT_CONTROL, unix.CAP_AUDIT_WRITE, unix.CAP_CHOWN,
+		unix.CAP_DAC_OVERRIDE, unix.CAP_DAC_READ_SEARCH, unix.CAP_FOWNER,
+		unix.CAP_FSETID, unix.CAP_IPC_OWNER, unix.CAP_KILL, unix.CAP_LEASE,
+		unix.CAP_LINUX_IMMUTABLE, unix.CAP_MKNOD, unix.CAP_NET_BIND_SERVICE,
+		unix.CAP_NET_BROADCAST, unix.CAP_NET_RAW, unix.CAP_SETFCAP,
+		unix.CAP_SETGID, unix.CAP_SETPCAP, unix.CAP_SETUID, unix.CAP_SYS_ADMIN,
+		unix.CAP_SYS_BOOT, unix.CAP_SYS_CHROOT, unix.CAP_SYS_NICE,
+		unix.CAP_SYS_PTRACE, unix.CAP_SYS_RESOURCE, unix.CAP_SYS_TTY_CONFIG,
+	} {
+		nspawn |= 1 << c
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+setpriv --inh-caps +sys_module,+sys_time "$NSPAWN" --name t6 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c 'grep ^Cap /proc/self/status'
+"$NSPAWN" --name t7 --boot "$ROOTFS" --machine-dir "$DIR/machines" --private-network --init /bin/sh -- -c 'sed -n "s/^CapBnd:/PrivateNetBnd:/p" /proc/self/status'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	caps := map[string]uint64{}
+	for _, l := range strings.Split(out, "\n") {
+		if f := strings.Fields(l); len(f) == 2 && strings.HasSuffix(f[0], ":") {
+			v, err := strconv.ParseUint(f[1], 16, 64)
+			if err != nil {
+				t.Fatalf("%q: %v", l, err)
+			}
+			caps[strings.TrimSuffix(f[0], ":")] = v
+		}
+	}
+	if len(caps) == 0 {
+		t.Fatal("no capability sets read from the container")
+	}
+	if caps["CapBnd"] != nspawn {
+		t.Errorf("CapBnd = %#x, want systemd-nspawn's %#x (extra %#x)", caps["CapBnd"], nspawn, caps["CapBnd"]&^nspawn)
+	}
+	for _, set := range []string{"CapPrm", "CapEff", "CapInh", "CapAmb"} {
+		if extra := caps[set] &^ nspawn; extra != 0 {
+			t.Errorf("%s holds %#x outside the retained set", set, extra)
+		}
+	}
+	if want := nspawn | 1<<unix.CAP_NET_ADMIN; caps["PrivateNetBnd"] != want {
+		t.Errorf("with --private-network CapBnd = %#x, want %#x", caps["PrivateNetBnd"], want)
+	}
+	if caps["CapEff"]&(1<<unix.CAP_SYS_ADMIN) == 0 {
+		t.Error("the init lost CAP_SYS_ADMIN, which a full init in the container needs")
 	}
 }
