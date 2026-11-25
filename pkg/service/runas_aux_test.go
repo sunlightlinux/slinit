@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -22,6 +23,18 @@ func inRootUserNS(t *testing.T) bool {
 	if os.Geteuid() == 0 {
 		if !idMapped("/proc/self/uid_map", 65534) || !idMapped("/proc/self/gid_map", 65534) {
 			t.Skip("uid/gid 65534 not mapped in this user namespace")
+		}
+		// Root in name only is possible: Ubuntu 24.04's
+		// apparmor_restrict_unprivileged_userns lets the namespace be
+		// created but grants no capabilities in it, so the switch to
+		// the run-as user fails and every command under test silently
+		// never runs. Probe the switch itself.
+		probe := exec.Command("/bin/true")
+		probe.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{Uid: 65534, Gid: 65534, Groups: []uint32{}},
+		}
+		if err := probe.Run(); err != nil {
+			t.Skipf("cannot switch to uid 65534 here (%v): a user namespace without capabilities", err)
 		}
 		return true
 	}

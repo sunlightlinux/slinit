@@ -22,6 +22,10 @@ import (
 // not. A killed child is the old behaviour, and fails the case.
 const restrictChildEnv = "SLINIT_TEST_RESTRICT_CASE"
 
+// restrictChildSkip is the child's exit status for "this environment
+// cannot run the case" (77, as the functional and container suites use).
+const restrictChildSkip = 77
+
 func init() {
 	c := os.Getenv(restrictChildEnv)
 	if c == "" {
@@ -94,6 +98,13 @@ func init() {
 		// every mount call works until the filter refuses it.
 		dir := os.Getenv("SLINIT_TEST_DIR")
 		if err := unix.Mount("tmpfs", dir, "tmpfs", 0, ""); err != nil {
+			if err == unix.EPERM || err == unix.EACCES {
+				// The namespace exists but grants no capabilities:
+				// Ubuntu 24.04's apparmor_restrict_unprivileged_userns
+				// does exactly that. Nothing to test here.
+				fmt.Fprintf(os.Stderr, "set-up mount: %v\n", err)
+				os.Exit(restrictChildSkip)
+			}
 			fail("set-up mount: %v", err)
 		}
 		if err := unix.Mount("", dir, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
@@ -140,6 +151,9 @@ func runRestrictChildAttr(t *testing.T, name string, attr *syscall.SysProcAttr, 
 		t.Skipf("%s: cannot start the child: %v", name, err)
 	}
 	if ee, ok := err.(*exec.ExitError); ok {
+		if ee.ExitCode() == restrictChildSkip {
+			t.Skipf("%s: the user namespace grants no capabilities here: %s", name, out)
+		}
 		if ws := ee.Sys().(syscall.WaitStatus); ws.Signaled() {
 			t.Fatalf("%s: child killed by %v — a refused call must fail, not kill", name, ws.Signal())
 		}

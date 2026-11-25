@@ -318,6 +318,14 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: Let user namespaces carry capabilities
+        # ubuntu-latest (24.04) sets apparmor_restrict_unprivileged_userns:
+        # unshare may create a user namespace, but what it runs there gets
+        # no capabilities, so every mount and uid switch the namespace
+        # tests make fails with EPERM. Those tests skip when that happens;
+        # lifting the restriction makes them run here instead.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Unit tests with the race detector
         # -timeout well under the job default: a lock-ordering mistake
         # deadlocks rather than failing, and a hung test that burns the
