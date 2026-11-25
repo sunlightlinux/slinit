@@ -337,6 +337,13 @@ what tells you the oldest slinit your configuration will run on. See
 **chroot**=*path*
 :   `chroot()` into *path* before exec. **type**=*process* only; any
     other type refuses to load with it rather than run outside the jail.
+    It cannot be combined with the filesystem sandbox (**private-tmp**,
+    **protect-system**, **protect-home**, the **\*-paths** options,
+    **protect-proc**, **proc-subset**, **temporary-filesystem**) or with
+    **protect-kernel-tunables**, **-modules**, **-logs** and
+    **protect-control-groups**: those apply to the host's paths, not the
+    jail's, and the service refuses to load. With a sandbox option set,
+    the jail is entered by slinit-runner, after its own setup.
 
 **new-session**=*yes*|*no*
 :   Place the service in a new POSIX session (`setsid`).

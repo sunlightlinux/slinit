@@ -28,6 +28,33 @@ var ErrServiceNotFound = errors.New("service description not found")
 // Default init.d directories to search as fallback.
 var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
 
+// chrootMountConflicts lists the options set in desc that slinit-runner
+// applies as mounts on host paths before it enters a chroot.
+func chrootMountConflicts(desc *ServiceDescription) []string {
+	var opts []string
+	add := func(on bool, name string) {
+		if on {
+			opts = append(opts, name)
+		}
+	}
+	add(desc.PrivateTmp, "private-tmp")
+	add(desc.ProtectSystem != "" && desc.ProtectSystem != "no", "protect-system")
+	add(desc.ProtectHome != "" && desc.ProtectHome != "no", "protect-home")
+	add(len(desc.ReadOnlyPaths) > 0, "read-only-paths")
+	add(len(desc.ReadWritePaths) > 0, "read-write-paths")
+	add(len(desc.InaccessiblePaths) > 0, "inaccessible-paths")
+	add(desc.ProtectProc != "" && desc.ProtectProc != "default", "protect-proc")
+	add(desc.ProcSubset != "" && desc.ProcSubset != "all", "proc-subset")
+	add(len(desc.BindPaths) > 0, "bind-paths")
+	add(len(desc.BindReadOnlyPaths) > 0, "bind-read-only-paths")
+	add(len(desc.TemporaryFileSystem) > 0, "temporary-filesystem")
+	add(desc.ProtectKernelTunables, "protect-kernel-tunables")
+	add(desc.ProtectKernelModules, "protect-kernel-modules")
+	add(desc.ProtectKernelLogs, "protect-kernel-logs")
+	add(desc.ProtectControlGroups, "protect-control-groups")
+	return opts
+}
+
 // EnableDefaultFallbackDirs turns on the init.d and systemd .service
 // fallbacks for those of DefaultInitDDirs and DefaultSystemdDirs that
 // exist, as PID 1 does. init.d scripts are auto-detected; systemd units
@@ -1067,6 +1094,21 @@ func (dl *DirLoader) validateDesc(name string, desc *ServiceDescription) error {
 			fmt.Fprintf(os.Stderr, "slinit: service %q: lock-file/new-session/close-stdin/"+
 				"close-stdout/close-stderr are only supported for type = process; "+
 				"ignored for type = %s\n", name, desc.Type)
+		}
+	}
+
+	// chroot is entered by slinit-runner after its filesystem sandbox and
+	// hardening mounts, which name host paths: combined, they would make
+	// the host's /tmp private and its /etc read-only and leave the jail's
+	// untouched. Refused until they resolve under the jail, as systemd's
+	// RootDirectory= does.
+	if desc.Chroot != "" {
+		if opts := chrootMountConflicts(desc); len(opts) > 0 {
+			return &ServiceLoadError{
+				ServiceName: name,
+				Message: fmt.Sprintf("chroot cannot be combined with %s: they would "+
+					"apply to the host, not the jail", strings.Join(opts, ", ")),
+			}
 		}
 	}
 

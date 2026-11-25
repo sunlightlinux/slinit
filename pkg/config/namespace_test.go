@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"strings"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
@@ -306,5 +307,39 @@ cgroup = /sys/fs/cgroup/isolated
 	}
 	if params.CgroupPath != "/sys/fs/cgroup/isolated" {
 		t.Errorf("CgroupPath = %q", params.CgroupPath)
+	}
+}
+
+// slinit-runner enters a chroot after its sandbox and hardening mounts,
+// which name host paths, so with chroot they protected the host and left
+// the jail open (private-tmp shared the jail's /tmp, protect-system left
+// the jail's /etc writable). The combination is refused until they
+// resolve under the jail.
+func TestLoaderRefusesChrootWithSandbox(t *testing.T) {
+	for _, opt := range []string{
+		"private-tmp = yes", "protect-system = full", "protect-home = yes",
+		"read-only-paths = /etc", "inaccessible-paths = /etc/x",
+		"bind-paths = /srv/data", "protect-kernel-tunables = yes",
+		"protect-control-groups = yes",
+	} {
+		dir := t.TempDir()
+		writeNSServiceFile(t, dir, "jail", "type = process\ncommand = /bin/true\nchroot = /srv/jail\n"+opt+"\n")
+		ss := service.NewServiceSet(&testServiceLogger{})
+		loader := NewDirLoader(ss, []string{dir})
+		ss.SetLoader(loader)
+		_, err := loader.LoadService("jail")
+		if err == nil || !strings.Contains(err.Error(), "chroot cannot be combined") {
+			t.Errorf("%s with chroot: err = %v, want the chroot refusal", opt, err)
+		}
+	}
+	// Seccomp-only hardening and protect-system = no still load.
+	dir := t.TempDir()
+	writeNSServiceFile(t, dir, "jail", "type = process\ncommand = /bin/true\nchroot = /srv/jail\n"+
+		"protect-system = no\nprotect-hostname = yes\noptions = no-new-privs\n")
+	ss := service.NewServiceSet(&testServiceLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	if _, err := loader.LoadService("jail"); err != nil {
+		t.Errorf("chroot with non-mount options: %v", err)
 	}
 }

@@ -33,6 +33,15 @@ requires.
 
 ### Security
 
+- **`chroot` with a filesystem sandbox or a mount-based protect-\*
+  option protected the host and left the jail open**: the runner applied
+  those mounts to host paths before entering the jail, so `private-tmp`
+  shared the jail's `/tmp` and `protect-system` left the jail's `/etc`
+  writable. The combination now refuses to load (and the runner refuses
+  it too) until those options resolve under the jail as systemd's
+  `RootDirectory=` does. *Compat:* such a service, including a systemd
+  unit with `RootDirectory=` and `ProtectSystem=`, no longer loads.
+
 - **slinit-tmpfiles and checkpath could be steered by a user's symlink
   or hard link into changing root's files.** Only the last path
   component was protected: a symlink in a parent directory made `d`
