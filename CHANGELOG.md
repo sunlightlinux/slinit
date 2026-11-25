@@ -33,6 +33,24 @@ requires.
 
 ### Security
 
+- **A crafted journal file made `slinit-journalctl` (root with
+  `--image`) allocate gigabytes**: overlapping entry arrays turned 96 KB
+  into 13.5 million offsets, and one large DATA object shared by many
+  entries was copied for each. Arrays may no longer overlap, the offset
+  count is bounded by the file size, and shared payloads are read once.
+- **`--verify` could be fooled by editing unsealed header fields**:
+  pointing the tail offset at the start made it check nothing while the
+  readers returned every (tampered) entry, and clearing the sealing flag
+  made it report "nothing to verify" with status 0. It now walks the
+  whole file, checks the header against what it walked, and fails an
+  unsealed file when a key is given.
+- **`journalctl --update-catalog --root DIR` overwrote host files** through
+  a symlink planted in the image; it now writes inside the root only.
+- **`journalctl -M` / `--image` followed container- and image-controlled
+  symlinks onto the host**, so a container could show the host's journal
+  as its own; paths are resolved inside the root (openat2
+  RESOLVE_IN_ROOT). Binary `.journal` files are now found there too.
+
 - **Several confinement options were weaker than written.**
   - `restrict-namespaces` still let a service make a new mount namespace
     through `unshare(UNSHARE_EMPTY_MNTNS)`, `open_tree(OPEN_TREE_CLONE)`
@@ -857,6 +875,17 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **systemd unit conversion:** `ExecStart=@path name args` shifted
+  every argument (the argv0 alias became argv[1]); it now sets
+  `command-argv0`. Specifiers (`%n %N %p %i %t %S %C %L %E %%`) passed
+  through literally and are now expanded, others warned about.
+  `SupplementaryGroups=` is mapped, `PrivateUsers=` is a visible warning,
+  and `Group=` without `User=` means root with that group.
+- **runit conversion:** `chpst -u user:grp:grp2` produced a `run-as` no
+  start could resolve, and `chpst -b` an unknown `argv0` setting; both
+  now convert to settings that load. slinit-check reports a `run-as`
+  that cannot be resolved.
 
 - **Every journal event's monotonic timestamp was about twice the
   uptime**, and jumped a second at each second boundary: the seconds were
