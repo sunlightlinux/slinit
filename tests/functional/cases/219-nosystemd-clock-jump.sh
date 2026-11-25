@@ -26,9 +26,18 @@ before_ticks=$(awk '{print $14 + $15}' /proc/1/stat 2>/dev/null)
 
 # Step the wall clock forward a year, then back. Both directions matter:
 # the upstream bug fired on the backwards step.
-date -s "+1 year" >/dev/null 2>&1
+#
+# Busybox date does not take relative dates: `date -s "+1 year"` exits 1
+# and leaves the clock alone, which is what this case used to do, so the
+# step it was written for never happened. `@epoch` is accepted; each step
+# is checked so a refused one fails here instead of passing vacuously.
+year0=$(date +%Y)
+date -s "@$(( $(date +%s) + 31536000 ))" >/dev/null 2>&1
+year1=$(date +%Y)
+assert_eq "$year1" "$((year0 + 1))" "wall clock stepped forward a year"
 sleep 2
-date -s "-1 year" >/dev/null 2>&1
+date -s "@$(( $(date +%s) - 31536000 ))" >/dev/null 2>&1
+assert_eq "$(date +%Y)" "$year0" "wall clock stepped back a year"
 sleep 2
 
 # PID 1 must still answer the control socket. This is the assertion

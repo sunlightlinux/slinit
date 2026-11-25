@@ -36,11 +36,10 @@ fi
 value=$(service_get_value listen_port)
 assert_eq "$value" "8443" "get returns stored value"
 
-# No trailing newline — matches OpenRC. Length must equal the raw
-# value (4 chars for "8443") plus zero for the newline the shell
-# capture added and would strip.
-raw=$(cat "${RC_SVCDIR}/options/${RC_SVCNAME}/listen_port")
-assert_eq "$raw" "8443" "raw file has no trailing newline"
+# No trailing newline — matches OpenRC. $(cat) would strip one, so
+# compare the byte count: 4 for "8443" and nothing else.
+raw_len=$(wc -c < "${RC_SVCDIR}/options/${RC_SVCNAME}/listen_port")
+assert_eq "$raw_len" "4" "raw file is 4 bytes: no trailing newline"
 
 # --- Miss → exit 1 ---
 

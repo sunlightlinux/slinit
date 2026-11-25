@@ -1,6 +1,6 @@
 type = process
 command = /bin/sh -c "echo '[stop-cmd-svc] running'; while true; do sleep 1; done"
-stop-command = /bin/sh -c "echo '[stop-cmd-svc] cleanup via stop-command'"
+stop-command = /bin/sh -c "echo stopped-by-command > /run/26-stop-marker"
 stop-timeout = 10
 log-type = buffer
 log-buffer-size = 4096

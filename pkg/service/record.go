@@ -1691,7 +1691,9 @@ func (sr *ServiceRecord) BuildEnvSlice() []string {
 func (sr *ServiceRecord) BuildFullEnv() []string {
 	globalEnv := sr.services.GlobalEnv()
 	extra := sr.BuildEnvSlice()
-	if len(globalEnv) == 0 && len(extra) == 0 {
+	// exec-search-path has to reach the child even when nothing else
+	// does: the early nil used to drop it, leaving PID 1's PATH.
+	if len(globalEnv) == 0 && len(extra) == 0 && sr.ExecSearchPath() == "" {
 		return nil
 	}
 	result := make([]string, 0, len(globalEnv)+len(extra))
@@ -1717,7 +1719,7 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 	}
 
 	totalCap := len(globalEnv) + len(fileEnv) + len(extra)
-	if totalCap == 0 {
+	if totalCap == 0 && sr.ExecSearchPath() == "" {
 		return nil
 	}
 	env := make([]string, 0, totalCap)

@@ -103,6 +103,26 @@ func TestApplyBucketDEnvFiltersExecSearchPath(t *testing.T) {
 	}
 }
 
+// TestExecSearchPathWithoutOtherEnv: a service with exec-search-path and
+// no other environment of its own still gets the PATH. Both builders used
+// to return nil before the filters ran whenever the global and per-service
+// env were empty, so the child inherited PID 1's PATH and the directive
+// did nothing on an ordinary service.
+func TestExecSearchPathWithoutOtherEnv(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "svc")
+	set.AddService(svc)
+	svc.Record().SetExecSearchPath("/opt/bin")
+	for name, env := range map[string][]string{
+		"BuildFullEnv":     svc.Record().BuildFullEnv(),
+		"BuildEnvWithFile": svc.Record().BuildEnvWithFile(""),
+	} {
+		if len(env) != 1 || env[0] != "PATH=/opt/bin" {
+			t.Errorf("%s = %v, want [PATH=/opt/bin]", name, env)
+		}
+	}
+}
+
 // TestGuessMainPIDFromCgroup: writes a synthetic cgroup.procs with a
 // couple of pids and confirms the lowest non-self pid is picked.
 // Uses a temp dir so no delegated cgroup is required.

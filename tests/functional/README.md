@@ -133,12 +133,12 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 23 | start-timeout | Start timeout handling |
 | 24 | working-dir | Working directory for service processes |
 | 25 | cpu-affinity | CPU pinning via sched_setaffinity, on a 2-CPU VM: the pinned service runs on CPU 1 only, an unpinned sibling on 0-1 |
-| 26 | stop-command | Stop-command execution before signal |
+| 26 | stop-command | Stop-command runs on stop (leaves a marker the case checks) |
 | 27 | consumer-of | Pipe logging (log-type=pipe + consumer-of) |
 | 28 | env-file | Environment file loading into service |
 | 29 | slinit-check | Offline and online config linter |
 | 30 | finish-command | Finish-command runs after process exit with args |
-| 31 | down-file | Down marker file prevents service auto-start |
+| 31 | down-file | Down marker file keeps a service pulled in by `waits-for` stopped; an explicit start overrides it |
 | 32 | pause-continue | Pause (SIGSTOP) and continue (SIGCONT) a service |
 | 33 | once | Start once without auto-restart |
 | 34 | env-dir | Runit-style env-dir (one file per variable) |
@@ -297,7 +297,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 187 | notify-guess-exit-openfile | notify-access + guess-main-pid + exit-type + open-file combo parses + starts |
 | 188 | pass-unset-env | pass-environment whitelist and unset-environment blacklist visible in child /proc/self/environ |
 | 189 | standard-input | standard-input-text and standard-input-data bytes reach child stdin (base64 decoded for -data) |
-| 190 | exec-condition-searchpath | exec-condition=/bin/true runs command; =/bin/false skips it; exec-search-path parses |
+| 190 | exec-condition-searchpath | exec-condition=/bin/true runs command; =/bin/false skips it; exec-search-path becomes the child's PATH |
 | 191 | import-credential | import-credential parses coexisting with set-credential; credentials tmpfs populated |
 | 192 | lsm-fail-closed | selinux-context and smack-process-label refuse to start when /sys/fs/selinux and /sys/fs/smackfs are absent (fail-closed contract) |
 | 193 | restart-misc | start-limit-action + restart-force-exit-status + restart-max-delay + restart-mode + runtime-randomized-extra coexist |
@@ -326,10 +326,10 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 216 | journalctl-group-a-bundle | `--fields` / `--header` / `--disk-usage` / `-F` / `--utc` / `--no-hostname` / `--output-fields` / `-g` in one bundled case (v2.1.6 Group A) |
 | 217 | journalctl-vacuum-flush | `--vacuum-files` direct on files (current-day preserved); `--flush` + `--relinquish-var` via spawned daemon + admin control socket (v2.1.10) |
 | 218 | journalctl-namespace | `--namespace` daemon + `--list-namespaces` enumeration + filter on synthetic JSONL (v2.1.11) |
-| 219 | nosystemd-clock-jump | systemd#1143 — a wall-clock step made PID 1 spin printing "Time has been changed"; slinit's boot-time clock guard must absorb the jump without flooding the console (v2.3.5) |
+| 219 | nosystemd-clock-jump | systemd#1143 — a wall-clock step made PID 1 spin printing "Time has been changed"; the wall clock is stepped a year forward and back (`date -s @epoch`; each step checked) and PID 1 must stay responsive, idle and not churn services (v2.3.5) |
 | 220 | nosystemd-dep-failure | systemd#1312 + #6478 — a service whose hard dependency failed must stay down rather than restart-loop, and `slinitctl start` must exit non-zero when the start ends in failure (v2.3.5) |
 | 221 | nosystemd-logout-survivors | Debian #825394 — nohup'd jobs, tmux and screen must survive their session ending; the most-cited systemd complaint from users who leave work running over ssh (v2.3.5) |
-| 222 | nosystemd-efivarfs-ro | systemd#2402 — efivarfs must be mounted read-only, so a careless recursive delete cannot wipe EFI variables and brick the firmware (v2.3.5) |
+| 222 | nosystemd-efivarfs-ro | systemd#2402 — efivarfs must be mounted read-only, so a careless recursive delete cannot wipe EFI variables and brick the firmware (v2.3.5); SKIPs without EFI firmware, which is the harness's SeaBIOS default |
 | 223 | nosystemd-journald-restart | systemd#6620 — restarting the journal daemon must not silence already-running services; slinit's events sit in PID 1's own ring, so no service writes into a closed pipe (v2.3.5) |
 | 224 | nosystemd-numeric-username | systemd#6237 — a `run-as` value naming an account like `0day` must resolve as a *name*, not be read as UID 0 and run as root (v2.3.5) |
 | 225 | pid1-signal-survival | Not from the nosystemd list: PID 1 must not die from a signal a local root can send it. Host-driven — the harness presses the real Ctrl+Alt+Del (v2.3.6) |

@@ -689,6 +689,13 @@ requires.
 
 ### Fixed
 
+- **`exec-search-path` did nothing on most services.** The PATH it sets
+  was applied only while building the service's own environment, and
+  that step returned early when the service had no environment of its
+  own (no `env-file`, no `setenv`, no global environment), which is
+  the usual case. The child then inherited PID 1's PATH. It now gets
+  the configured PATH either way. Found by functional case 190, which
+  had been checking only that the service started.
 - **The first JSONL event after a crash was lost.** A crash in the
   middle of a write leaves the file ending in part of a line, and the
   restarted sink appended the next event to that fragment; readers skip
