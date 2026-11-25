@@ -3,6 +3,7 @@
 package eventloop
 
 import (
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -60,15 +61,34 @@ func TestSIGPWRDoesNotShutDown(t *testing.T) {
 // While a shutdown is already running, SIGPWR must not consume the status
 // file: the hook may still be mid-flight and there is nothing left to
 // decide anyway.
+//
+// The shutdown state is set the way initiateShutdown sets it:
+// isShuttingDown reads shutdownSignals, not shutdownInitiated. The hook
+// is a stand-in so a failure cannot consume a real /run/powerstatus.
 func TestSIGPWRIgnoredWhileShuttingDown(t *testing.T) {
 	logger := logging.New(logging.LevelDebug)
+	var buf strings.Builder
+	logger.SetOutput(&buf)
 	set := service.NewServiceSet(logger)
 	el := New(set, logger)
 	el.SetPID1Mode(true)
+	var runs atomic.Int32
+	el.powerHook = func(*logging.Logger) shutdown.PowerState {
+		runs.Add(1)
+		return shutdown.PowerFailing
+	}
 	el.shutdownInitiated = true
+	el.shutdownSignals.Store(1)
 
 	if el.handleSignal(syscall.SIGPWR) {
 		t.Error("handleSignal(SIGPWR) returned true during shutdown")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := runs.Load(); n != 0 {
+		t.Errorf("power hook ran %d times during shutdown, want 0", n)
+	}
+	if !strings.Contains(buf.String(), "Received SIGPWR while shutting down, ignoring") {
+		t.Errorf("SIGPWR was not ignored at the signal; log:\n%s", buf.String())
 	}
 }
 
