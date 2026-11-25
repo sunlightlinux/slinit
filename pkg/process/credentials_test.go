@@ -1,6 +1,8 @@
 package process
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -59,5 +61,38 @@ func TestCredentialNameRejectsNul(t *testing.T) {
 	err := validateCredentialName("ab\x00cd")
 	if err == nil || !strings.Contains(err.Error(), "invalid character") {
 		t.Errorf("expected invalid-character error, got %v", err)
+	}
+}
+
+// The credentials root must be traversable by a run-as service, or it
+// cannot reach its own $CREDENTIALS_DIRECTORY: creating the service
+// directory with MkdirAll(dir, 0700) made the root 0700 too. A root an
+// older version left 0700 is repaired.
+func TestMakeCredentialsDirRootTraversable(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		root := filepath.Join(t.TempDir(), "credentials")
+		if stale {
+			if err := os.Mkdir(root, 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dir := filepath.Join(root, "svc")
+		if err := makeCredentialsDir(root, dir); err != nil {
+			t.Fatalf("stale=%v: %v", stale, err)
+		}
+		st, err := os.Stat(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm()&0011 != 0011 {
+			t.Errorf("stale=%v: credentials root mode %v, others cannot traverse it", stale, st.Mode().Perm())
+		}
+		st, err = os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0700 {
+			t.Errorf("stale=%v: service dir mode %v, want 0700", stale, st.Mode().Perm())
+		}
 	}
 }

@@ -60,8 +60,8 @@ func SetupCredentials(serviceName string, sources []CredentialSource, uid, gid u
 		return "", nil
 	}
 	dir := CredentialsDir(serviceName)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("credentials mkdir %s: %w", dir, err)
+	if err := makeCredentialsDir(credentialsRoot, dir); err != nil {
+		return "", err
 	}
 	// Fresh tmpfs each time, and only one. A mount can still be there
 	// (one that lingered from before a re-exec); mounting on top
@@ -133,6 +133,33 @@ func SetupCredentials(serviceName string, sources []CredentialSource, uid, gid u
 		return "", fmt.Errorf("credentials remount ro %s: %w", dir, err)
 	}
 	return dir, nil
+}
+
+// makeCredentialsDir creates dir under root. The root is 0755 like
+// systemd's: MkdirAll(dir, 0700) made it 0700 root, and a run-as
+// service could then not traverse into its own $CREDENTIALS_DIRECTORY.
+// A root left 0700 by an older slinit (/run survives a re-exec) is
+// opened up the same way. The per-service directory itself stays 0700
+// (the tmpfs mounted on it sets its mode anyway).
+func makeCredentialsDir(root, dir string) error {
+	if err := os.MkdirAll(root, 0755); err != nil {
+		return fmt.Errorf("credentials mkdir %s: %w", root, err)
+	}
+	fi, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("credentials stat %s: %w", root, err)
+	}
+	if fi.IsDir() && fi.Mode().Perm()&0011 != 0011 {
+		if err := os.Chmod(root, 0755); err != nil {
+			return fmt.Errorf("credentials chmod %s: %w", root, err)
+		}
+	}
+	// MkdirAll: a service name may hold a '/' (a description in a
+	// subdirectory), and the directory may already exist.
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("credentials mkdir %s: %w", dir, err)
+	}
+	return nil
 }
 
 // CleanupCredentials undoes SetupCredentials: umount the tmpfs and
