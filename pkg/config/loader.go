@@ -52,6 +52,11 @@ func chrootMountConflicts(desc *ServiceDescription) []string {
 	add(desc.ProtectKernelModules, "protect-kernel-modules")
 	add(desc.ProtectKernelLogs, "protect-kernel-logs")
 	add(desc.ProtectControlGroups, "protect-control-groups")
+	// Not mounts, but read through /proc and /sys after the chroot, so
+	// the jail would decide whether the transition happens.
+	add(desc.AppArmorSwitch != "", "apparmor-switch")
+	add(desc.SELinuxContext != "", "selinux-context")
+	add(desc.SMACKProcessLabel != "", "smack-process-label")
 	add(desc.ProtectHostname, "protect-hostname")
 	return opts
 }

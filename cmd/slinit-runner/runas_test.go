@@ -25,3 +25,23 @@ func TestLastCapFollowsKernel(t *testing.T) {
 		t.Errorf("lastCap() = %d without cap_last_cap; want the fallback 40", got)
 	}
 }
+
+// The runner reads cap_last_cap before it enters a chroot: read after,
+// a jail the service can write decides it, and a planted 0 left the
+// bounding set unnarrowed.
+func TestLastCapPrimedBeforeChroot(t *testing.T) {
+	saved, savedVal, savedSet := capLastCapFile, lastCapPrimed, lastCapIsPrimed
+	defer func() { capLastCapFile, lastCapPrimed, lastCapIsPrimed = saved, savedVal, savedSet }()
+	capLastCapFile = filepath.Join(t.TempDir(), "cap_last_cap")
+	if err := os.WriteFile(capLastCapFile, []byte("41\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	primeLastCap()
+	// What a jail would plant after the chroot.
+	if err := os.WriteFile(capLastCapFile, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastCap(); got != 41 {
+		t.Errorf("lastCap = %d after a later change, want the primed 41", got)
+	}
+}

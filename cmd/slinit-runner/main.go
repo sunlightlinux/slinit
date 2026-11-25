@@ -302,6 +302,12 @@ func run() error {
 	// host's /tmp, /etc, /proc/sys... and leave the jail's alone. Until
 	// they resolve under the jail (as systemd's RootDirectory= does), the
 	// combination is refused here as well as at load.
+	if *chrootDir != "" && (*apparmor != "" || *selinuxContext != "" || *smackLabel != "") {
+		// The LSM transitions check /sys and write /proc/self/attr after
+		// the chroot, so the jail would decide whether they happen.
+		return fmt.Errorf("chroot cannot be combined with an AppArmor, SELinux or " +
+			"SMACK label: the transition would be judged inside the jail")
+	}
 	if *chrootDir != "" && (spec.active() || (*pkTun || *pCG || *pkLog || *pkMod || *pHost)) {
 		return fmt.Errorf("chroot cannot be combined with the filesystem sandbox or " +
 			"protect-kernel-*/protect-control-groups/protect-hostname: they would apply to the host, not the jail")
@@ -376,6 +382,9 @@ func run() error {
 	// before the bounding-set narrowing and the credential drop, which
 	// would take CAP_SYS_CHROOT away.
 	if *chrootDir != "" {
+		// Everything read from /proc or /sys after this point would come
+		// from the jail; read what is needed now.
+		primeLastCap()
 		if err := unix.Chroot(*chrootDir); err != nil {
 			return fmt.Errorf("chroot %s: %w", *chrootDir, err)
 		}

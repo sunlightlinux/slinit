@@ -320,7 +320,8 @@ func TestLoaderRefusesChrootWithSandbox(t *testing.T) {
 		"private-tmp = yes", "protect-system = full", "protect-home = yes",
 		"read-only-paths = /etc", "inaccessible-paths = /etc/x",
 		"bind-paths = /srv/data", "protect-kernel-tunables = yes",
-		"protect-control-groups = yes", "protect-hostname = yes",
+		"protect-control-groups = yes", "selinux-context = system_u:system_r:foo_t:s0",
+		"apparmor-switch = strict", "protect-hostname = yes",
 	} {
 		dir := t.TempDir()
 		writeNSServiceFile(t, dir, "jail", "type = process\ncommand = /bin/true\nchroot = /srv/jail\n"+opt+"\n")
