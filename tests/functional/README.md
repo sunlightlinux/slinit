@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (248 cases)
+# Run all tests (261 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -356,6 +356,19 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 246 | start-when-idle | `start-when-idle` (systemd `Type=idle`) waits for the other starts, at most five seconds |
 | 247 | enable-disable-wait | `enable` waits for the start and `disable` for the stop, as dinitctl does; `disable` leaves up what something else requires |
 | 248 | read-write-paths | a path carved out of `protect-system = strict` is writable, probed from inside the service |
+| 249 | scripted-interrupted-start | a stop cancels a start-interruptible scripted start: the stop command runs and it is not a failure |
+| 250 | scripted-timeout-no-stop-timeout | a timed-out scripted start command ignoring SIGINT is still killed with `stop-timeout = 0` |
+| 251 | stop-command-run-as | the `stop-command` of a `run-as` service runs as that user |
+| 252 | rm-dep-while-waiting | `rm-dep` of the dependency a service waits on lets it start |
+| 253 | waits-for-restart-after-dep-stop | a `waits-for` dependency the operator stopped does not block the dependent's auto-restart |
+| 254 | pidfile-pid1-refused | a `pid-file` naming PID 1 is refused (a stop used to SIGTERM init) |
+| 255 | protect-system-submount | `protect-system = strict` makes a filesystem mounted below `/` read-only too |
+| 256 | unload-held-by-monitor | `unload` is refused while slinit-monitor holds the service |
+| 257 | name-dotdot-refused | a service name with a `..` path element cannot load a file outside the service directories |
+| 258 | infinity-timeouts | `start-timeout`/`stop-timeout = infinity` load and mean no limit |
+| 259 | protect-system-keeps-mount-flags | the read-only remount keeps a mount's own `noexec`/`nosuid`/`nodev` |
+| 260 | protect-kernel-tunables-sys-ro | `protect-kernel-tunables` makes `/sys` read-only in the service |
+| 261 | chroot-non-process-refused | `chroot` on a scripted service is refused at load instead of being ignored |
 
 ## How It Works
 

@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh -c "exec sleep 600"
+start-timeout = infinity
+stop-timeout = infinity
+restart-delay = 1
