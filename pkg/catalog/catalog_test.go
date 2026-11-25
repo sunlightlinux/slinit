@@ -153,3 +153,27 @@ Body one.
 		t.Errorf("round-trip lost entries: %d", c2.Len())
 	}
 }
+
+// SaveCompiled wrote through os.Create(path+".tmp"), which follows a
+// symlink planted there: run as root over an image, it overwrote
+// whatever host file the link named.
+func TestSaveCompiledDoesNotFollowTmpSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(dir, "catalog.compiled")
+	if err := os.Symlink(victim, cache+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := New().SaveCompiled(cache); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Fatalf("the symlinked temp file's target was overwritten: %q", b)
+	}
+	if _, err := LoadCompiled(cache); err != nil {
+		t.Fatal(err)
+	}
+}

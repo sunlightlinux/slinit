@@ -2563,10 +2563,13 @@ func runUpdateCatalog(opts options, out io.Writer) error {
 		return err
 	}
 	cachePath := catalogCachePath(opts)
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-		return err
+	if opts.root != "" {
+		// The image's symlinks resolve inside it, never on the host.
+		err = c.SaveCompiledInRoot(opts.root, catalogCachePath(options{}))
+	} else if err = os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
+		err = c.SaveCompiled(cachePath)
 	}
-	if err := c.SaveCompiled(cachePath); err != nil {
+	if err != nil {
 		return err
 	}
 	if !opts.quiet {
