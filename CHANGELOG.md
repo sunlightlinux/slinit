@@ -1123,8 +1123,9 @@ requires.
   output-logger behind.** Every start spawned a new output-logger (and
   error-logger) and overwrote the previous one's supervisor, which only
   a stop for good shut down; after an auto-restart the old logger kept
-  running, one more per restart. The previous loggers are now stopped
-  before new ones start.
+  running, one more per restart. The previous loggers are now retired
+  when new ones start: each still gets what its instance wrote last,
+  then exits at the end of its input or is stopped a second later.
 
 ## [4.0.2] — 2026-11-22
 

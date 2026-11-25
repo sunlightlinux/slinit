@@ -59,3 +59,33 @@ func TestOutputLoggerNotLeakedAcrossRestarts(t *testing.T) {
 		t.Errorf("%d output-logger processes alive after restarts, want 1", n)
 	}
 }
+
+// A restart used to kill the previous instance's output-logger at once,
+// before it had read what that instance wrote last — often the line
+// saying why it died. The logger here only starts reading after 300 ms,
+// longer than the restart delay.
+func TestOutputLoggerGetsDyingInstanceLines(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out")
+	set, _ := newTestSet()
+	p := NewProcessService(set, "dying")
+	p.SetCommand([]string{"/bin/sh", "-c", "echo last-words; exit 1"})
+	p.SetLogType(LogToCommand)
+	p.SetOutputLogger([]string{"/bin/sh", "-c", "sleep 0.3; exec cat >>" + out})
+	p.SetRestartDelay(50 * time.Millisecond)
+	p.Record().SetAutoRestart(RestartAlways)
+	set.AddService(p)
+	set.StartService(p)
+	t.Cleanup(func() {
+		set.StopService(p)
+		time.Sleep(200 * time.Millisecond)
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, _ := os.ReadFile(out); strings.Contains(string(b), "last-words") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no output-logger got the line of an instance that was restarted")
+}

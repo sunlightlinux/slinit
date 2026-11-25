@@ -2396,9 +2396,11 @@ func (s *ProcessService) startProcess() error {
 		//
 		// Only BecomingInactive stopped the previous start's logger, so
 		// on an auto-restart it was overwritten here and left running,
-		// one more logger supervisor and process per restart.
+		// one more logger supervisor and process per restart. It is
+		// retired rather than killed, so that it still gets the last
+		// lines the previous instance wrote.
 		if s.loggerSup != nil {
-			s.loggerSup.Stop()
+			s.loggerSup.retire(loggerRetireGrace)
 			s.loggerSup = nil
 		}
 		var err error
@@ -2431,7 +2433,7 @@ func (s *ProcessService) startProcess() error {
 	// Optional separate error-logger: stderr goes to a different command.
 	if s.logType == LogToCommand && len(s.errorLogger) > 0 {
 		if s.errLoggerSup != nil { // as for the output-logger above
-			s.errLoggerSup.Stop()
+			s.errLoggerSup.retire(loggerRetireGrace)
 			s.errLoggerSup = nil
 		}
 		var err error

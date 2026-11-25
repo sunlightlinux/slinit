@@ -68,6 +68,7 @@ type loggerSupervisor struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	stopped bool
+	retired bool // see retire: no more restarts, Stop follows
 
 	done chan struct{}
 }
@@ -132,7 +133,8 @@ func (ls *loggerSupervisor) supervise() {
 			// instead of ECHILD.
 			waitErr := process.WaitAdhoc(cmd)
 			if ls.isStopped() {
-				// We killed it on purpose; nothing to report.
+				// We killed it on purpose, or it was retired and
+				// read to EOF; nothing to report.
 				return
 			}
 			if ls.running != nil && !ls.running() {
@@ -191,10 +193,36 @@ func (ls *loggerSupervisor) setCurrent(cmd *exec.Cmd) {
 	ls.cmd = cmd
 }
 
+// isStopped reports whether the supervisor must not restart the logger.
 func (ls *loggerSupervisor) isStopped() bool {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
-	return ls.stopped
+	return ls.stopped || ls.retired
+}
+
+// loggerRetireGrace bounds how long a retired logger may keep reading
+// before it is stopped.
+const loggerRetireGrace = time.Second
+
+// retire stops the logger of a service instance that has been replaced,
+// without waiting for it. The instance is gone, so the logger reaches
+// EOF once it has read what the instance wrote last — often the line
+// saying why it died. It is given grace to do so and stopped after it,
+// or as soon as it exits. Stopping it at once lost those lines; waiting
+// for it here would hold queueMu on a logger that may never read.
+func (ls *loggerSupervisor) retire(grace time.Duration) {
+	ls.mu.Lock()
+	ls.retired = true
+	ls.mu.Unlock()
+	go func() {
+		t := time.NewTimer(grace)
+		defer t.Stop()
+		select {
+		case <-ls.done:
+		case <-t.C:
+		}
+		ls.Stop()
+	}()
 }
 
 // drain reads and discards whatever the service writes, so a service
