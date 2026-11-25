@@ -3,11 +3,14 @@
 package eventloop
 
 import (
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
+	"github.com/sunlightlinux/slinit/pkg/shutdown"
 )
 
 // SIGPWR has to be claimed or it is never seen. Unlike the shutdown set
@@ -66,5 +69,58 @@ func TestSIGPWRIgnoredWhileShuttingDown(t *testing.T) {
 
 	if el.handleSignal(syscall.SIGPWR) {
 		t.Error("handleSignal(SIGPWR) returned true during shutdown")
+	}
+}
+
+// The power hook is the operator's program and may take as long as it
+// likes. Run on the event loop goroutine it stalled orphan reaping,
+// Ctrl+Alt+Del and SIGTERM, and even the `slinitctl poweroff` the hook
+// itself sends. It runs on its own goroutine now, one run at a time, and
+// SIGPWRs that arrive meanwhile collapse into one more run.
+func TestSIGPWRHookDoesNotBlockTheLoop(t *testing.T) {
+	release := make(chan struct{})
+	var running, runs, overlap atomic.Int32
+	logger := logging.New(logging.LevelError)
+	el := New(service.NewServiceSet(logger), logger)
+	el.SetPID1Mode(true)
+	el.powerHook = func(*logging.Logger) shutdown.PowerState {
+		if running.Add(1) > 1 {
+			overlap.Store(1)
+		}
+		runs.Add(1)
+		<-release
+		running.Add(-1)
+		return shutdown.PowerFailing
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		el.handleSignal(syscall.SIGPWR)
+		for running.Load() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		// Two more while the first run is still going.
+		el.handleSignal(syscall.SIGPWR)
+		el.handleSignal(syscall.SIGPWR)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("handleSignal(SIGPWR) waited for the power hook")
+	}
+
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for runs.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := runs.Load(); n != 2 {
+		t.Errorf("hook ran %d times, want 2: the one running and one for the signals that came meanwhile", n)
+	}
+	if overlap.Load() != 0 {
+		t.Error("two power hooks ran at once")
 	}
 }

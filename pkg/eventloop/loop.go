@@ -55,6 +55,14 @@ type EventLoop struct {
 	// collapse — see checkInactive.
 	isRescue bool
 
+	// SIGPWR work: at most one power hook run queued behind the one
+	// running. See queuePowerHook.
+	powerOnce    sync.Once
+	powerPending chan struct{}
+	// powerHook is shutdown.HandlePowerSignal; a field so tests can
+	// stand in a slow hook.
+	powerHook func(*logging.Logger) shutdown.PowerState
+
 	// Channel for forcing event loop exit (emergency timeout)
 	forceExitCh chan struct{}
 
@@ -99,6 +107,7 @@ func New(services *service.ServiceSet, logger *logging.Logger) *EventLoop {
 		services:    services,
 		logger:      logger,
 		forceExitCh: make(chan struct{}, 1),
+		powerHook:   shutdown.HandlePowerSignal,
 	}
 }
 
@@ -320,8 +329,7 @@ func (el *EventLoop) handleSignal(sig os.Signal) bool {
 			el.logger.Info("Received SIGPWR while shutting down, ignoring")
 			return false
 		}
-		state := shutdown.HandlePowerSignal(el.logger)
-		el.logger.Notice("Received SIGPWR, power status: %s", state)
+		el.queuePowerHook()
 		return false
 	}
 
@@ -545,6 +553,38 @@ func (el *EventLoop) stopShutdownReporter() {
 // isShuttingDown returns the current shutdown state (lock-free).
 func (el *EventLoop) isShuttingDown() bool {
 	return el.shutdownSignals.Load() > 0
+}
+
+// queuePowerHook hands a SIGPWR to the power-hook goroutine. The hook is
+// the operator's program and may run for minutes: on this goroutine it
+// stalled orphan reaping, Ctrl+Alt+Del, SIGTERM and even the shutdown
+// the hook itself asks for. Runs never overlap. A SIGPWR that arrives
+// while one runs queues one more run, which reads the status file when
+// it starts; further ones collapse into it, as the kernel collapses a
+// repeated pending signal, so nothing the UPS daemon wrote is lost.
+func (el *EventLoop) queuePowerHook() {
+	el.powerOnce.Do(func() {
+		el.powerPending = make(chan struct{}, 1)
+		go el.runPowerHooks()
+	})
+	select {
+	case el.powerPending <- struct{}{}:
+	default:
+		el.logger.Info("Received SIGPWR while a power hook run is already queued, collapsing into it")
+	}
+}
+
+func (el *EventLoop) runPowerHooks() {
+	for range el.powerPending {
+		if el.isShuttingDown() {
+			// Same rule as a SIGPWR received during shutdown: leave
+			// the status file for a hook that may still be running.
+			el.logger.Info("SIGPWR queued before shutdown began, ignoring")
+			continue
+		}
+		state := el.powerHook(el.logger)
+		el.logger.Notice("Received SIGPWR, power status: %s", state)
+	}
 }
 
 // InitiateShutdown triggers a shutdown from outside the event loop

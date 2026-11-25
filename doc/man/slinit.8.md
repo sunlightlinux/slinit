@@ -778,6 +778,12 @@ line inside the hook settles it:
         ok)      logger -t ups "mains restored" ;;
     esac
 
+The hook runs beside the event loop, so a slow hook delays nothing
+else, including a shutdown it asks for. Hooks never run two at a time:
+a *SIGPWR* that arrives while the hook runs makes it run once more
+afterwards, reading the status file then, and any further ones before
+that run starts are folded into it.
+
 A hook that is absent, not executable, or exits non-zero is logged and
 otherwise ignored — by the time it runs the power event has already
 happened and there is nothing left to abort. A *SIGPWR* that arrives
