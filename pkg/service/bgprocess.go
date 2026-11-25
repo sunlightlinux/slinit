@@ -129,6 +129,11 @@ type BGProcessService struct {
 	// a daemon relaunched by smooth recovery: the service is STARTED
 	// then, not STARTING, and has no pid to track until the file comes.
 	recoveryPoll bool
+	// recoveryPollGen tells recovery polls apart: each one armed takes
+	// the next, and only the poll holding the current one acts. A poll
+	// left over from an earlier recovery sees recoveryPoll set again by
+	// a later one, and would otherwise act on its behalf.
+	recoveryPollGen uint64
 
 	// lastDaemonPID is the daemon that last died while tracked. A smooth
 	// recovery that reads it back from the pid file is reading the file
@@ -1152,15 +1157,19 @@ func pidFileStillComing(err error) bool {
 // recoveryPoll marks that case. Caller holds queueMu.
 func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 	pollState := StateStarting
+	var gen uint64
 	if s.state.Load() == StateStarted {
 		pollState = StateStarted
 		s.recoveryPoll = true
+		s.recoveryPollGen++
+		gen = s.recoveryPollGen
 	}
 	// polling reports, under queueMu, whether this poll still owns the
 	// service: a stop or a failure elsewhere means there is nothing left
-	// to finish.
+	// to finish, and a later recovery's poll owns it instead.
 	polling := func() bool {
-		return s.state.Load() == pollState && (pollState == StateStarting || s.recoveryPoll)
+		return s.state.Load() == pollState &&
+			(pollState == StateStarting || (s.recoveryPoll && s.recoveryPollGen == gen))
 	}
 	deadline := s.startTimeout
 	if deadline <= 0 {

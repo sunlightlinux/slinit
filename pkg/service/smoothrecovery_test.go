@@ -1,7 +1,10 @@
 package service
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -456,4 +459,71 @@ func TestBGSmoothRecoveryNewDaemonAlreadyDead(t *testing.T) {
 	if st := b.State(); st != StateStarted {
 		t.Errorf("hard dependent b = %v, want STARTED", st)
 	}
+}
+
+// TestBGStaleRecoveryPollStandsDown arms a smooth recovery's pid-file poll,
+// ends it elsewhere, and arms the next recovery's poll before the first has
+// woken. The first poll checked only that recoveryPoll was set, which the
+// second had set again, so it went on to adopt what its file named on the
+// newer recovery's behalf, and the two could both finish the discovery:
+// two monitorDaemon goroutines for one service. Each poll now owns a
+// generation of its own. The polls watch different files here so the
+// stale one is the only one that can act.
+func TestBGStaleRecoveryPollStandsDown(t *testing.T) {
+	set, _ := newTestSet()
+	dir := t.TempDir()
+	stalePF, currentPF := dir+"/old.pid", dir+"/new.pid"
+	a := NewBGProcessService(set, "a")
+	a.SetCommand([]string{"/bin/true"})
+	a.SetPIDFile(currentPF)
+	set.AddService(a)
+
+	daemon := exec.Command("/bin/sleep", "60")
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() {
+		daemon.Process.Kill()
+		daemon.Wait()
+	}()
+	pid := []byte(strconv.Itoa(daemon.Process.Pid) + "\n")
+
+	// A STARTED service with no tracked pid: a smooth recovery's launcher
+	// has exited and its daemon's pid file is pending.
+	set.queueMu.Lock()
+	a.state.Store(StateStarted)
+	a.pollForPIDFile(stalePF, nil) // the first recovery's poll
+	a.recoveryPoll = false         // ended elsewhere
+	a.pollForPIDFile(currentPF, nil)
+	set.queueMu.Unlock()
+
+	if err := os.WriteFile(stalePF, pid, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * pidFilePollInterval)
+	set.queueMu.Lock()
+	adopted, pending := a.daemonPID, a.recoveryPoll
+	set.queueMu.Unlock()
+	if adopted != 0 || !pending {
+		t.Errorf("a stale recovery poll acted for the current one (adopted pid %d, current poll still pending: %v)",
+			adopted, pending)
+	}
+
+	// The current poll still finishes, and only once.
+	if err := os.WriteFile(currentPF, pid, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * pidFilePollInterval)
+	if got := lockedDaemonPID(set, a); got != daemon.Process.Pid {
+		t.Errorf("a tracks pid %d, want %d", got, daemon.Process.Pid)
+	}
+	frame := fmt.Sprintf("monitorDaemon(%p", a)
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	if got := strings.Count(string(buf[:n]), frame); got != 1 {
+		t.Errorf("%d monitorDaemon goroutines for one daemon, want 1", got)
+	}
+
+	set.StopService(a)
+	mustReachState(t, a, StateStopped)
 }
