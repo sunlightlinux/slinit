@@ -858,6 +858,27 @@ requires.
 
 ### Fixed
 
+- **Every journal event's monotonic timestamp was about twice the
+  uptime**, and jumped a second at each second boundary: the seconds were
+  counted twice. `-o short-monotonic`, the binary journal's monotonic
+  fields and `__MONOTONIC_TIMESTAMP` showed it.
+- **Performance, measured on the hot paths:**
+  - a state transition's journal emit no longer makes three credential
+    syscalls and a raw clock syscall per event, nor probes the journald
+    socket on every event while it is absent: start/stop of 1000
+    services took 3.58 ms and now 1.55 ms without slinit-journald
+    (8.27 → 6.71 ms with it);
+  - a service's output line is emitted to the journal outside the
+    rotator's lock, with no allocation when no journal is set up;
+  - `slinitctl list` sends the reply in a few writes instead of one per
+    service (1000 services: 816 → 122 µs end to end), and a service
+    event goes to each subscriber in one write instead of two;
+  - the exit router no longer scans its whole pending table for every
+    orphan it reaps (15 µs → 160 ns at the table cap);
+  - a shutdown with a `stops-last` service no longer rescans every
+    service on each queue pass, and a service with many dependencies no
+    longer rescans them from the start each time one comes up.
+
 - **Slow `system-down` hooks or `ifdown` used up the shutdown budget**
   before any service was told to stop, so every service was then
   force-killed. The emergency timer is now armed after the pre-shutdown
