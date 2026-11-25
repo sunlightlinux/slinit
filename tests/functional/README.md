@@ -215,7 +215,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 105 | wait-timeout | `-w SEC` / `--wait=SEC` caps how long slinitctl waits for a reply; non-integer / negative values fail flag-parse before touching the socket |
 | 106 | shutdown-flag-surface | `slinit-shutdown --help` lists every documented reboot(8)-compat flag (`--reboot`, `--halt`, `-r/-h/-p/-s/-k/-f`, `--force`, `--no-sync`, `--no-wtmp`, `--wtmp-only`, `--no-wall`, `--use-passed-cfd`, `--system`, `--grace=`) |
 | 107 | status-file-namecap | `slinitctl status` prints a `File:` line; mtime bump after load surfaces `(modified since loaded)`; `.`-prefix names rejected at load |
-| 108 | openrc-depend-ordering | `depend() { after other }` in an init.d script maps to advisory ordering (`AfterOptional`), not a hard dep — both services load and start via init.d auto-detect |
+| 108 | openrc-depend-ordering | `depend() { after other }` in an init.d script is advisory ordering: starting B alone leaves A stopped (the scripts ship in `.d/initd/` so the fallback is enabled at boot) |
 | 109 | kexec-preflight | `slinitctl shutdown kexec` warns when `/sys/kernel/kexec_loaded == 0`; nested `slinit --user` isolates the shutdown so the host isn't affected |
 | 110 | enable-v7-status | protocol v7 `CmdEnableServiceV7` returns the target's status in the same round-trip; distinguishes "enabled" from "already enabled" |
 | 111 | protect-kernel-modules | blocks `init_module`/`finit_module`/`delete_module` via seccomp; probe: modprobe from inside the guarded service |

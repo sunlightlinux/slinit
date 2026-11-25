@@ -1,0 +1,7 @@
+#!/sbin/openrc-run
+depend() {
+    after test-oorca
+}
+start() {
+    return 0
+}

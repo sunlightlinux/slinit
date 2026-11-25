@@ -2,6 +2,11 @@
 # Test: OpenRC init.d depend() { after other } maps to advisory
 # ordering (AfterOptional), not a hard dep: starting B alone must
 # leave A stopped. Both services load via the init.d auto-detect path.
+#
+# slinit enables the init.d fallback only when /etc/init.d exists at
+# boot, and the base VM has none, so this case skipped on every run.
+# It now ships both scripts in its .d/initd/, which creates the
+# directory before boot.
 
 INITD=/etc/init.d
 SVC_A="test-oorca"
