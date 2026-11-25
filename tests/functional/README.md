@@ -225,10 +225,10 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 115 | protect-hostname | blocks `sethostname`/`setdomainname`; host hostname untouched |
 | 116 | lock-personality | blocks `personality(2)` via seccomp; child alive under mode-2 filter |
 | 117 | namespace-net-ipc | service runs in distinct net + IPC namespaces from PID 1 (inode ids differ) |
-| 118 | sched-policy | `sched-policy = fifo` → SCHED_FIFO via chrt -p (SKIP if chrt missing) |
-| 119 | sched-priority | `sched-policy = rr` + `sched-priority = 42` → SCHED_RR / prio 42 |
-| 120 | sched-deadline | SCHED_DEADLINE via `sched-runtime`/`sched-deadline`/`sched-period` |
-| 121 | sched-reset-on-fork | RESET_ON_FORK bit surfaced (either explicit flag or policy+priority readback) |
+| 118 | sched-policy | `sched-policy = fifo` → policy 1, priority 10 in /proc/PID/stat |
+| 119 | sched-priority | `sched-policy = rr` + `sched-priority = 42` → policy 2, priority 42 in /proc/PID/stat |
+| 120 | sched-deadline | `sched-runtime`/`sched-deadline`/`sched-period` → policy 6 in /proc/PID/stat |
+| 121 | sched-reset-on-fork | the FIFO service's child, forked after the policy is set, is SCHED_OTHER |
 | 122 | securebits | `securebits = keep-caps,no-setuid-fixup` parses; child comes up |
 | 123 | normal-exit | `normal-exit = 42` with `restart = yes`: exit 42 runs once, a control exiting 41 is respawned |
 | 124 | success-action | two nested `slinit --user`: a clean exit with `success-action = exit` terminates its daemon, with `none` the daemon stays up |
