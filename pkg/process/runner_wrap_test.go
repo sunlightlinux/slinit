@@ -1,7 +1,10 @@
 package process
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -170,5 +173,74 @@ func TestWrapWithRunnerSecurebits(t *testing.T) {
 	missing := runnerSecurityFeatures(p)
 	if len(missing) != 1 || missing[0] != "securebits" {
 		t.Errorf("runnerSecurityFeatures = %v, want [securebits]", missing)
+	}
+}
+
+// chroot is handed to the runner rather than applied at fork. A chroot
+// at fork made the kernel resolve the runner's own path inside the
+// jail: the service failed to start, or ran whatever the jail held at
+// that path, as root and unconfined.
+func TestWrapWithRunnerChroot(t *testing.T) {
+	p := ExecParams{
+		RunnerPath: "/sbin/slinit-runner",
+		Command:    []string{"/bin/sh"},
+		NoNewPrivs: true,
+		Chroot:     "/srv/jail",
+		WorkingDir: "/work",
+	}
+	argv := wrapWithRunner(p)
+	want := []string{"--chroot=/srv/jail", "--chdir=/work", "--", "/bin/sh"}
+	if got := argv[len(argv)-len(want):]; !reflect.DeepEqual(got, want) {
+		t.Errorf("argv tail = %q, want %q", got, want)
+	}
+
+	p.WorkingDir = ""
+	for _, a := range wrapWithRunner(p) {
+		if strings.HasPrefix(a, "--chdir") {
+			t.Errorf("--chdir emitted without a working-dir: %q", a)
+		}
+	}
+	p.Chroot = ""
+	p.WorkingDir = "/work"
+	for _, a := range wrapWithRunner(p) {
+		if strings.HasPrefix(a, "--chroot") || strings.HasPrefix(a, "--chdir") {
+			t.Errorf("chroot flag emitted without chroot: %q", a)
+		}
+	}
+}
+
+// End to end through StartProcess with a stand-in runner that records
+// its arguments. With the chroot applied at fork, this unprivileged
+// test could not even start it (chroot needs CAP_SYS_CHROOT); as root,
+// the kernel would have looked the runner up inside the jail.
+func TestStartProcessChrootGoesToRunner(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "args")
+	runner := filepath.Join(dir, "runner")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + out + "\n"
+	if err := os.WriteFile(runner, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jail := t.TempDir()
+
+	_, ch, err := StartProcess(ExecParams{
+		RunnerPath: runner,
+		Command:    []string{"/bin/true"},
+		NoNewPrivs: true,
+		Chroot:     jail,
+		WorkingDir: "/work",
+	})
+	if err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+	<-ch
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("the runner did not run: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(b)), "\n")
+	want := []string{"--chroot=" + jail, "--chdir=/work", "--", "/bin/true"}
+	if tail := got[len(got)-len(want):]; !reflect.DeepEqual(tail, want) {
+		t.Errorf("runner args tail = %q, want %q", tail, want)
 	}
 }

@@ -376,6 +376,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 266 | seccomp-log-keeps-deny | a call refused by `system-call-filter` stays refused when `system-call-log` lists it too |
 | 267 | protect-home-submount | `protect-home = read-only` makes a filesystem mounted below `/home` read-only too |
 | 268 | pass-cs-fd-at-boot | `options = pass-cs-fd` works for a boot-started service (`slinitctl --use-passed-cfd`) |
+| 269 | chroot-runner | `chroot` + `no-new-privs`: a runner planted inside the jail never runs; the service runs jailed with NoNewPrivs and `working-dir` resolved in the jail |
 
 ## How It Works
 

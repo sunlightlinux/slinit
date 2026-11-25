@@ -33,6 +33,16 @@ requires.
 
 ### Security
 
+- **`chroot` combined with any runner feature ran the jail's binary as
+  root, unconfined.** slinit applied the chroot at fork and then exec'd
+  slinit-runner, so the kernel looked the runner up inside the jail. A
+  jail without one made the service fail to start; a jail that held a
+  file at that path had it run as root, before the credential drop and
+  with none of the seccomp, no-new-privs or sandbox the service asked
+  for. The runner now enters the jail itself (`--chroot`, `--chdir` for
+  `working-dir`), after its sandbox setup and before dropping
+  privileges. Functional case 269.
+
 - **On a non-x86-64 build the restrict-\*/protect-\* filters refused
   nothing.** slinit has a syscall table for x86-64 only; elsewhere every
   syscall name is unknown, and the filter compilers skipped a rule they

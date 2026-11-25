@@ -198,6 +198,10 @@ func run() error {
 		"set PR_SET_NO_NEW_PRIVS before exec; mirrors dinit's options=no-new-privs (run-child-proc.cc:470)")
 	securebits := fs.Int("securebits", -1,
 		"PR_SET_SECUREBITS bitmask to apply before exec; -1 = leave untouched")
+	chrootDir := fs.String("chroot", "",
+		"enter this directory with chroot(2) after the sandbox and hardening setup, before the credential drop")
+	chdirDir := fs.String("chdir", "",
+		"with --chroot, the working directory inside the jail (default /)")
 	argv0 := fs.String("argv0", "",
 		"override argv[0] presented to the exec'd target; default is args[0]")
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -347,6 +351,26 @@ func run() error {
 	// PR_CAPBSET_DROP needs CAP_SETPCAP, which the kernel strips at the
 	// UID change. Iterate 0..cap_last_cap (the kernel rejects out-of-range
 	// numbers anyway) and drop any cap not on the keep list.
+	// chroot: slinit leaves it to the runner, since a chroot at fork
+	// would have made the kernel look this binary up inside the jail.
+	// After the sandbox and hardening mounts, which name host paths;
+	// before the bounding-set narrowing and the credential drop, which
+	// would take CAP_SYS_CHROOT away.
+	if *chrootDir != "" {
+		if err := unix.Chroot(*chrootDir); err != nil {
+			return fmt.Errorf("chroot %s: %w", *chrootDir, err)
+		}
+		dir := *chdirDir
+		if dir == "" {
+			dir = "/"
+		}
+		if err := unix.Chdir(dir); err != nil {
+			return fmt.Errorf("chdir %s (in chroot %s): %w", dir, *chrootDir, err)
+		}
+	} else if *chdirDir != "" {
+		return fmt.Errorf("--chdir is only used with --chroot")
+	}
+
 	if len(boundingCaps) > 0 {
 		if err := narrowBoundingSet(boundingCaps); err != nil {
 			return err

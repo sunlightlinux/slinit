@@ -193,8 +193,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.Args[0] = params.Argv0
 	}
 
-	// Working directory
-	if params.WorkingDir != "" {
+	// Working directory. With chroot under the runner, the runner
+	// changes into it after entering the jail (see wrapWithRunner).
+	if params.WorkingDir != "" && !(wrapped && params.Chroot != "") {
 		cmd.Dir = params.WorkingDir
 	}
 
@@ -250,8 +251,12 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		cmd.SysProcAttr.AmbientCaps = params.AmbientCaps
 	}
 
-	// Chroot support
-	if params.Chroot != "" {
+	// Chroot support. Under the runner it is the runner that enters the
+	// jail: chrooting at fork made the kernel resolve the runner's own
+	// path inside the jail, so the service either failed to start or ran
+	// whatever binary the jail held at that path, as root and with none
+	// of the confinement it asked for.
+	if params.Chroot != "" && !wrapped {
 		cmd.SysProcAttr.Chroot = params.Chroot
 	}
 
@@ -1242,6 +1247,15 @@ func wrapWithRunner(p ExecParams) []string {
 	// argv[0] override survives the runner's own exec via --argv0.
 	if p.Argv0 != "" {
 		args = append(args, "--argv0="+p.Argv0)
+	}
+	// chroot is entered by the runner, not at fork: a chroot at fork
+	// would make the kernel look the runner up inside the jail. The
+	// working directory goes with it, since it names a path in the jail.
+	if p.Chroot != "" {
+		args = append(args, "--chroot="+p.Chroot)
+		if p.WorkingDir != "" {
+			args = append(args, "--chdir="+p.WorkingDir)
+		}
 	}
 	args = append(args, "--")
 	args = append(args, p.Command...)
