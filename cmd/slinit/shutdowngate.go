@@ -115,6 +115,12 @@ func (g *shutdownGate) HandOver(h func(service.ShutdownType, uint8)) {
 	g.handler = h
 	held, st, flags := g.held, g.st, g.flags
 	g.held = false
+	// The request is passed on here; a wake left behind would
+	// interrupt a later menu with nothing held.
+	select {
+	case <-g.wake:
+	default:
+	}
 	g.mu.Unlock()
 	if held {
 		h(st, flags)

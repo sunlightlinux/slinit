@@ -2,6 +2,7 @@ package control
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -56,5 +57,53 @@ func TestShutdownFlagsReachTheDaemon(t *testing.T) {
 				t.Errorf("flags = %#x, want %#x", gotFlags, tc.want)
 			}
 		})
+	}
+}
+
+// A shutdown type outside remain..kexec is refused, not ACKed: PID 1's
+// shutdown path takes anything it does not know as a halt, so a raw
+// client's None or stray byte held at a boot-failure menu halted the
+// machine. Every valid type, kexec and softreboot included, still goes
+// through, and a scheduled shutdown is checked the same way.
+func TestShutdownTypeValidated(t *testing.T) {
+	for _, b := range []uint8{uint8(service.ShutdownNone), uint8(service.ShutdownKexec) + 1, 0xff} {
+		server, sockPath := setupTestServer(t)
+		called := false
+		server.ShutdownFunc = func(service.ShutdownType, uint8) { called = true }
+		conn := connectTest(t, sockPath)
+		if err := WritePacket(conn, CmdShutdown, []byte{b}); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if rply, _ := readReply(t, conn); rply != RplyBadReq {
+			t.Errorf("type %d: reply = %d, want BadReq", b, rply)
+		}
+		conn.Close()
+		server.Stop()
+		if called {
+			t.Errorf("type %d reached ShutdownFunc", b)
+		}
+		if _, _, _, ok := DecodeScheduleShutdown([]byte{b, 0, 0, 0, 60}); ok {
+			t.Errorf("scheduled shutdown of type %d decoded as valid", b)
+		}
+	}
+	for st := service.ShutdownRemain; st <= service.ShutdownKexec; st++ {
+		server, sockPath := setupTestServer(t)
+		got := make(chan service.ShutdownType, 1)
+		server.ShutdownFunc = func(s service.ShutdownType, _ uint8) { got <- s }
+		conn := connectTest(t, sockPath)
+		if err := WritePacket(conn, CmdShutdown, []byte{uint8(st)}); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if rply, _ := readReply(t, conn); rply != RplyACK {
+			t.Errorf("%v: reply = %d, want ACK", st, rply)
+		}
+		if s := <-got; s != st {
+			t.Errorf("%v delivered as %v", st, s)
+		}
+		conn.Close()
+		server.Stop()
+		if _, _, _, ok := DecodeScheduleShutdown(EncodeScheduleShutdown(st, time.Minute, "")); !ok {
+			t.Errorf("scheduled %v refused", st)
+		}
 	}
 }

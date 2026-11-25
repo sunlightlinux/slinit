@@ -956,6 +956,9 @@ func (c *Connection) handleShutdown(payload []byte) error {
 	}
 
 	shutType := service.ShutdownType(payload[0])
+	if !validShutdownType(shutType) {
+		return c.writePacket(RplyBadReq, nil)
+	}
 	// Optional flags byte: absent from every pre-flags client, and from
 	// the SysV shims, both of which mean the graceful teardown.
 	var flags uint8
@@ -966,6 +969,14 @@ func (c *Connection) handleShutdown(payload []byte) error {
 		c.server.ShutdownFunc(shutType, flags)
 	}
 	return c.writePacket(RplyACK, nil)
+}
+
+// validShutdownType reports whether st is one a client may ask for:
+// remain through kexec. None is "no shutdown requested", and a byte
+// past kexec names nothing; either would reach PID 1's shutdown path
+// and be taken there as a halt.
+func validShutdownType(st service.ShutdownType) bool {
+	return st >= service.ShutdownRemain && st <= service.ShutdownKexec
 }
 
 // handleScheduleShutdown schedules a delayed shutdown.

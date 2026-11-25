@@ -158,3 +158,17 @@ func TestShutdownGateRemain(t *testing.T) {
 		t.Fatal("Ready after Reclaim")
 	}
 }
+
+// HandOver passes a held request on; the wake it raised must go with it,
+// or a later boot-failure menu is interrupted with nothing to carry out
+// (the collapse menu then reboots).
+func TestShutdownGateHandOverClearsWake(t *testing.T) {
+	g := newShutdownGate(nil)
+	g.Request(service.ShutdownPoweroff, 0)
+	g.HandOver(func(service.ShutdownType, uint8) {})
+	select {
+	case <-g.Wake():
+		t.Fatal("wake still signalled after HandOver passed the request on")
+	default:
+	}
+}
