@@ -38,7 +38,10 @@ plus-shutdown WDT lifecycle a real embedded deployment needs.
     *WDIOC_SETTIMEOUT* at startup. Kernel drivers typically
     cap this at 60-127 s depending on the specific peripheral;
     an out-of-range value is rejected by the kernel with
-    *EINVAL*. Default 60 s.
+    *EINVAL*. Must be between 2 and 2147483647; anything else is a
+    usage error (exit 2). The driver may round the value; the
+    interval is derived from the timeout it reports back.
+    Default 60 s.
 
 **-i** *INTERVAL_SEC*
 :   Petting interval in seconds. Zero (default) computes
@@ -46,7 +49,11 @@ plus-shutdown WDT lifecycle a real embedded deployment needs.
     window closes. Values below 5 s are clamped up to 5;
     values greater than or equal to *TIMEOUT_SEC* are clamped
     down to *TIMEOUT_SEC - 1* to guarantee at least one pet
-    per window.
+    per window, and never below 1 s.
+
+If setting the timeout or the first pet fails, the *V* magic-close
+byte is written before the device is closed, so the watchdog the open
+armed is disarmed rather than left to reset the machine.
 
 **-v**
 :   Verbose mode — logs every *WDIOC_KEEPALIVE* call at Info

@@ -27,6 +27,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -92,31 +93,62 @@ func main() {
 	}
 	flag.Parse()
 
-	if *timeoutSec < 1 {
-		fmt.Fprintln(os.Stderr, "slinit-watchdogd: timeout must be >= 1s")
+	if err := checkTimeout(*timeoutSec); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-watchdogd: %v\n", err)
 		os.Exit(2)
 	}
-	pettingInterval := *intervalSec
-	if pettingInterval <= 0 {
-		pettingInterval = *timeoutSec / 2
-	}
-	if pettingInterval < minIntervalSec {
-		pettingInterval = minIntervalSec
-	}
-	if pettingInterval >= *timeoutSec {
-		// Clamp to timeout-1 so the WDT never fires between two
-		// consecutive pets — an interval >= timeout races the
-		// hardware reset and defeats the entire point.
-		pettingInterval = *timeoutSec - 1
-	}
 
-	if err := run(*device, *timeoutSec, pettingInterval, *verbose); err != nil {
+	if err := run(*device, *timeoutSec, *intervalSec, *verbose); err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-watchdogd: %v\n", err)
 		os.Exit(1)
 	}
 }
 
+// checkTimeout accepts a timeout of at least 2 s, so a pet fits inside
+// the window, that also fits the driver's int argument (int32 used to
+// truncate a larger one).
+func checkTimeout(timeoutSec int) error {
+	if timeoutSec < 2 || timeoutSec > math.MaxInt32 {
+		return fmt.Errorf("timeout must be between 2 and %d seconds", math.MaxInt32)
+	}
+	return nil
+}
+
+// computeInterval is the petting interval for the driver's actual
+// timeout: the requested one (0 = half the timeout), at least
+// minIntervalSec, below the timeout so a pet lands in every window, and
+// never under 1 s (a zero interval made time.NewTicker panic with the
+// device armed).
+func computeInterval(timeoutSec, intervalSec int) int {
+	iv := intervalSec
+	if iv <= 0 {
+		iv = timeoutSec / 2
+	}
+	if iv < minIntervalSec {
+		iv = minIntervalSec
+	}
+	if iv >= timeoutSec {
+		// Clamp to timeout-1 so the WDT never fires between two
+		// consecutive pets — an interval >= timeout races the
+		// hardware reset and defeats the entire point.
+		iv = timeoutSec - 1
+	}
+	return max(iv, 1)
+}
+
+// disarm writes the magic "V" and closes the device, so a setup error
+// after the open (which armed the WDT) does not leave it counting down
+// with nobody to pet it.
+func disarm(fd int) {
+	if _, err := syscall.Write(fd, []byte{magicCloseByte}); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-watchdogd: magic-close write: %v\n", err)
+	}
+	_ = syscall.Close(fd)
+}
+
 // run opens the WDT, sets the timeout, and enters the pet loop.
+// intervalSec is the requested petting interval (0 = derive it); the
+// one used is derived from the timeout the driver actually set.
 // Returns on SIGTERM / SIGINT (graceful disarm) or SIGPWR
 // (handover to an external watchdogd — WDT stays armed).
 func run(device string, timeoutSec, intervalSec int, verbose bool) error {
@@ -130,14 +162,21 @@ func run(device string, timeoutSec, intervalSec int, verbose bool) error {
 	// Set the timeout upfront. Kernel drivers accept an int
 	// argument; the pointer must survive the ioctl call, which
 	// it does because Go doesn't move stack values under ioctl.
+	// The driver writes back the timeout it actually set, which it
+	// may have rounded to what the hardware supports.
 	timeoutArg := int32(timeoutSec)
 	if err := ioctl(fd, wdiocSetTimeout, unsafe.Pointer(&timeoutArg)); err != nil {
-		_ = syscall.Close(fd)
+		disarm(fd)
 		return fmt.Errorf("WDIOC_SETTIMEOUT(%d): %w", timeoutSec, err)
 	}
+	actual := int(timeoutArg)
+	if actual < 1 {
+		actual = timeoutSec
+	}
+	intervalSec = computeInterval(actual, intervalSec)
 
 	fmt.Fprintf(os.Stderr, "slinit-watchdogd: armed %s (timeout=%ds, interval=%ds)\n",
-		device, timeoutSec, intervalSec)
+		device, actual, intervalSec)
 
 	// Signal wiring.
 	sigCh := make(chan os.Signal, 1)
@@ -150,7 +189,7 @@ func run(device string, timeoutSec, intervalSec int, verbose bool) error {
 	// tick doesn't sail past the initial timeout window when
 	// timeoutSec is small and the daemon starts under load.
 	if err := pet(fd); err != nil {
-		_ = syscall.Close(fd)
+		disarm(fd)
 		return fmt.Errorf("initial WDIOC_KEEPALIVE: %w", err)
 	}
 	if verbose {
@@ -179,10 +218,7 @@ func run(device string, timeoutSec, intervalSec int, verbose bool) error {
 				// Driver disarms; system does NOT reset. Slinit
 				// itself, if wanting a WDT-driven reset, calls
 				// pkg/shutdown/armWatchdogAndWait separately.
-				if _, werr := syscall.Write(fd, []byte{magicCloseByte}); werr != nil {
-					fmt.Fprintf(os.Stderr, "slinit-watchdogd: magic-close write: %v\n", werr)
-				}
-				_ = syscall.Close(fd)
+				disarm(fd)
 				fmt.Fprintf(os.Stderr, "slinit-watchdogd: exiting on %s (WDT disarmed)\n", sig)
 				return nil
 
@@ -203,10 +239,11 @@ func run(device string, timeoutSec, intervalSec int, verbose bool) error {
 				// runtime. Useful for operator scripts that
 				// tighten / loosen the reset window without
 				// restarting the daemon.
-				if err := ioctl(fd, wdiocSetTimeout, unsafe.Pointer(&timeoutArg)); err != nil {
+				rearm := int32(timeoutSec)
+				if err := ioctl(fd, wdiocSetTimeout, unsafe.Pointer(&rearm)); err != nil {
 					fmt.Fprintf(os.Stderr, "slinit-watchdogd: SIGHUP re-arm: %v\n", err)
 				} else {
-					fmt.Fprintf(os.Stderr, "slinit-watchdogd: SIGHUP: timeout re-armed at %ds\n", timeoutSec)
+					fmt.Fprintf(os.Stderr, "slinit-watchdogd: SIGHUP: timeout re-armed at %ds\n", rearm)
 				}
 			}
 		}

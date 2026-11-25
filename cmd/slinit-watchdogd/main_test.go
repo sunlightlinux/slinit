@@ -1,6 +1,9 @@
 package main
 
 import (
+	"math"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -34,9 +37,8 @@ func TestIoctlConstants(t *testing.T) {
 	}
 }
 
-// TestIntervalClamping walks the argument-normalization logic that
-// main() applies before entering run(). Pulled into a helper +
-// checked here so the +/-1 edge cases don't rot silently.
+// TestIntervalClamping walks the interval run() derives from the
+// driver's timeout, so the +/-1 edge cases don't rot silently.
 func TestIntervalClamping(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -49,6 +51,8 @@ func TestIntervalClamping(t *testing.T) {
 		{"interval == timeout clamps to t-1", 30, 30, 29},
 		{"interval > timeout clamps to t-1", 30, 60, 29},
 		{"small timeout + tiny interval", 10, 1, minIntervalSec},
+		{"driver set 1s: never a zero ticker", 1, 0, 1},
+		{"2s timeout", 2, 0, 1},
 	}
 	for _, c := range cases {
 		got := computeInterval(c.timeoutSec, c.iv)
@@ -59,25 +63,6 @@ func TestIntervalClamping(t *testing.T) {
 	}
 }
 
-// computeInterval mirrors main()'s inline logic so it's testable
-// without spinning up the full daemon. Kept in the _test.go file
-// to avoid growing the binary surface; main() open-codes the same
-// clamping (cheap enough that duplication is fine — the
-// TestIntervalClamping cases keep the two in sync).
-func computeInterval(timeoutSec, intervalSec int) int {
-	iv := intervalSec
-	if iv <= 0 {
-		iv = timeoutSec / 2
-	}
-	if iv < minIntervalSec {
-		iv = minIntervalSec
-	}
-	if iv >= timeoutSec {
-		iv = timeoutSec - 1
-	}
-	return iv
-}
-
 // TestMagicCloseByte ensures the sentinel value is 'V' — the
 // Linux watchdog API's documented "please disarm on close" byte.
 // A silent change here would break shutdown-graceful semantics
@@ -85,5 +70,41 @@ func computeInterval(timeoutSec, intervalSec int) int {
 func TestMagicCloseByte(t *testing.T) {
 	if magicCloseByte != 'V' {
 		t.Errorf("magicCloseByte = %q, want 'V' (Linux watchdog-api.rst)", rune(magicCloseByte))
+	}
+}
+
+// -t 1 left no room for an interval (NewTicker(0) panicked with the
+// device armed) and a value past int32 was truncated for the driver.
+func TestCheckTimeout(t *testing.T) {
+	for _, bad := range []int{-1, 0, 1, math.MaxInt32 + 1} {
+		if checkTimeout(bad) == nil {
+			t.Errorf("timeout %d accepted", bad)
+		}
+	}
+	for _, ok := range []int{2, 60, math.MaxInt32} {
+		if err := checkTimeout(ok); err != nil {
+			t.Errorf("timeout %d: %v", ok, err)
+		}
+	}
+}
+
+// Opening the device arms the watchdog, so a setup failure after the
+// open must write the magic "V" before closing or the machine resets
+// with nobody petting it. A regular file stands in for the device: its
+// WDIOC_SETTIMEOUT fails with ENOTTY.
+func TestSetupFailureDisarms(t *testing.T) {
+	dev := filepath.Join(t.TempDir(), "watchdog")
+	if err := os.WriteFile(dev, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(dev, 60, 0, false); err == nil {
+		t.Fatal("run on a non-watchdog succeeded")
+	}
+	got, err := os.ReadFile(dev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "V" {
+		t.Errorf("device got %q, want the magic close V", got)
 	}
 }
