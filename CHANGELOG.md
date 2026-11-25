@@ -33,6 +33,13 @@ requires.
 
 ### Security
 
+- **A global `setenv` whose name held `=` crashed PID 1.** The global
+  environment index is keyed by the text before the first `=`, so after
+  an unset moved the entry, the next set of that name indexed past the
+  slice; nothing recovers a panic there. Names that are empty or hold
+  `=` or NUL, and values holding NUL, are now refused with BADREQ (a NUL
+  also made every later service start fail with EINVAL).
+
 - **`chroot` combined with any runner feature ran the jail's binary as
   root, unconfined.** slinit applied the chroot at fork and then exec'd
   slinit-runner, so the kernel looked the runner up inside the jail. A

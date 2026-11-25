@@ -1629,6 +1629,11 @@ func (c *Connection) handleSetEnv(payload []byte) error {
 	if err != nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
+	// A key with '=' used to crash PID 1 (see GlobalSetEnv); NUL in
+	// either half made every later service start fail.
+	if !service.ValidEnvAssignment(key, value) {
+		return c.writePacket(RplyBadReq, nil)
+	}
 
 	if handle == 0 {
 		// Global environment

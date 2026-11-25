@@ -966,8 +966,24 @@ func (ss *ServiceSet) OperatorGlobalEnv() []string {
 	return out
 }
 
+// ValidEnvAssignment reports whether key=value can go into a process
+// environment: a non-empty key without '=' or NUL, a value without NUL.
+// A key holding '=' cannot be told apart from its value once joined,
+// and a NUL makes every later exec fail with EINVAL.
+func ValidEnvAssignment(key, value string) bool {
+	return key != "" && !strings.ContainsAny(key, "=\x00") &&
+		!strings.ContainsRune(value, 0)
+}
+
 // GlobalSetEnv sets a global environment variable and notifies listeners.
+// An assignment ValidEnvAssignment refuses is ignored: the index below
+// is keyed by the text before the first '=', so a key containing one
+// left it pointing past the slice, and the next set of that key indexed
+// out of range in PID 1.
 func (ss *ServiceSet) GlobalSetEnv(key, value string) {
+	if !ValidEnvAssignment(key, value) {
+		return
+	}
 	ss.envMu.Lock()
 	varStr := key + "=" + value
 	override := false

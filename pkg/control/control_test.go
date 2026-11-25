@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1918,5 +1919,44 @@ func TestQueryDependenciesEmpty(t *testing.T) {
 	count := binary.LittleEndian.Uint32(payload)
 	if count != 0 {
 		t.Errorf("expected 0 dependencies, got %d", count)
+	}
+}
+
+// A global setenv whose key holds '=' crashed PID 1: the env index is
+// keyed by the text before the first '=', so after an unset moved the
+// entry, the next set of that key indexed past the slice. Keys and
+// values that cannot be a process environment entry are now refused.
+func TestSetEnvRejectsUnusableAssignments(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	send := func(key, val string, unset bool) uint8 {
+		t.Helper()
+		if err := WritePacket(conn, CmdSetEnv, EncodeSetEnv(0, key, val, unset)); err != nil {
+			t.Fatal(err)
+		}
+		r, _ := readReply(t, conn)
+		return r
+	}
+	if r := send("X", "1", false); r != RplyACK {
+		t.Fatalf("setenv X=1: reply %d, want ACK", r)
+	}
+	for _, kv := range [][2]string{{"A=B", "C"}, {"", "v"}, {"K\x00", "v"}, {"K", "v\x00w"}} {
+		if r := send(kv[0], kv[1], false); r != RplyBadReq {
+			t.Errorf("setenv %q=%q: reply %d, want BADREQ", kv[0], kv[1], r)
+		}
+	}
+	// The sequence that used to panic.
+	send("X", "", true)
+	send("A=B", "D", false)
+	if r := send("Y", "2", false); r != RplyACK {
+		t.Fatalf("setenv Y=2 after the rejected keys: reply %d", r)
+	}
+	for _, e := range server.services.GlobalEnv() {
+		if strings.HasPrefix(e, "A=") || strings.HasPrefix(e, "=") || strings.ContainsRune(e, 0) {
+			t.Errorf("unusable entry reached the global env: %q", e)
+		}
 	}
 }
