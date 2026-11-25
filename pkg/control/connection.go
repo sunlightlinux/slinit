@@ -2375,12 +2375,19 @@ func (c *Connection) handleRunAction(payload []byte) error {
 	rec := svc.Record()
 	cmd, ok := rec.LookupExtraCommand(actionName)
 	if !ok {
-		return c.writePacket(RplyNAK, []byte("unknown action: "+actionName))
+		return c.writePacket(RplyNAK, lastBytes([]byte("unknown action: "+actionName), MaxPayloadSize))
 	}
 
 	// Execute the action command synchronously and capture output.
+	// Only the tail is kept: the reply carries at most one packet of
+	// it, and CombinedOutputAdhoc buffered all of it, so an action that
+	// printed without end (`yes`) grew PID 1's memory without end.
 	execCmd := exec.Command(cmd[0], cmd[1:]...)
-	output, execErr := process.CombinedOutputAdhoc(execCmd)
+	tail := &tailBuffer{max: MaxPayloadSize}
+	execCmd.Stdout = tail
+	execCmd.Stderr = tail
+	execErr := process.RunAdhoc(execCmd)
+	output := tail.buf
 	if execErr != nil {
 		// Return NAK with the error message + any partial output
 		msg := fmt.Sprintf("action '%s' failed: %v\n%s", actionName, execErr, string(output))
@@ -2391,6 +2398,25 @@ func (c *Connection) handleRunAction(payload []byte) error {
 	// One packet: the end of the output, where a failure is usually
 	// reported, rather than no reply at all.
 	return c.writePacket(RplyActionOutput, lastBytes(output, MaxPayloadSize))
+}
+
+// tailBuffer is an io.Writer that keeps only the last max bytes written,
+// in amortised O(1) memory per byte.
+type tailBuffer struct {
+	buf []byte
+	max int
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) > t.max {
+		p = p[len(p)-t.max:]
+	}
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > 2*t.max {
+		t.buf = append(t.buf[:0], t.buf[len(t.buf)-t.max:]...)
+	}
+	return n, nil
 }
 
 // handleListActions returns the list of available extra-command actions.

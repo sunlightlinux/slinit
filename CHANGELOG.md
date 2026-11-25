@@ -720,6 +720,11 @@ requires.
 
 ### Fixed
 
+- **`slinitctl action` buffered all of an action's output in PID 1**
+  before keeping the tail it replies with, so an action that printed
+  without end grew PID 1's memory without end (64 MiB of output cost
+  256 MiB). Only the tail is kept now.
+
 - **A control client that stalled past the write deadline was left
   hanging for ever.** The timed-out connection was only marked closed;
   the socket stayed open, so a `slinit-journalctl -f | less` scrolled

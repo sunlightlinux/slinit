@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -121,5 +123,59 @@ func TestRunActionLargeOutputFitsInAPacket(t *testing.T) {
 	}
 	if rply != RplyActionOutput || !bytes.HasSuffix(out, []byte("END\n")) {
 		t.Errorf("rply = %d, %d bytes; want the output's tail", rply, len(out))
+	}
+}
+
+// run-action buffered the whole output before keeping its tail, so an
+// action that printed without end grew PID 1's memory without end. Only
+// the tail is kept now: 64 MiB of output must not cost 64 MiB.
+func TestRunActionKeepsOnlyTheTail(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+	svc := service.NewProcessService(server.services, "a")
+	svc.Record().SetExtraCommands(map[string][]string{
+		"flood": {"/bin/sh", "-c", "head -c 67108864 /dev/zero; echo END"},
+	})
+	server.services.AddService(svc)
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+	if err := WritePacket(conn, CmdLoadService, EncodeServiceName("a")); err != nil {
+		t.Fatal(err)
+	}
+	_, p, err := ReadPacket(conn)
+	if err != nil || len(p) < 5 {
+		t.Fatalf("load: %v", err)
+	}
+	h := binary.LittleEndian.Uint32(p[1:5])
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if err := WritePacket(conn, CmdRunAction, append(EncodeHandle(h), EncodeServiceName("flood")...)); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	rply, out, err := ReadPacket(conn)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatalf("run-action: no reply: %v", err)
+	}
+	if rply != RplyActionOutput || !bytes.HasSuffix(out, []byte("END\n")) {
+		t.Errorf("rply = %d, %d bytes; want the output's tail", rply, len(out))
+	}
+	if grew := after.TotalAlloc - before.TotalAlloc; grew > 16<<20 {
+		t.Errorf("server allocated %d MiB for 64 MiB of action output", grew>>20)
+	}
+}
+
+func TestTailBufferKeepsLastBytes(t *testing.T) {
+	tb := &tailBuffer{max: 4}
+	for _, s := range []string{"ab", "cdefg", "h", "", "ijklmnop"} {
+		tb.Write([]byte(s))
+	}
+	if got := string(lastBytes(tb.buf, 4)); got != "mnop" {
+		t.Errorf("tail = %q, want mnop", got)
+	}
+	if len(tb.buf) > 8 {
+		t.Errorf("buffer holds %d bytes, max 2*4", len(tb.buf))
 	}
 }
