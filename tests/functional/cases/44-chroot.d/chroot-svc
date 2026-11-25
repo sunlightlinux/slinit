@@ -1,4 +1,9 @@
 type = process
-command = /bin/sh -c "echo chroot-ok > /tmp/chroot-result; while true; do sleep 60; done"
-chroot = /
+# Not pulled in by boot: the case script builds /run/chroot-root first
+# and then starts this service by hand. Every path in the command is
+# resolved INSIDE the chroot — /chroot-marker and /chroot-result live
+# under /run/chroot-root on the host. Absolute /bin/sleep because the
+# minimal root has no PATH lookup to rely on.
+command = /bin/sh -c "echo chroot-ok > /chroot-result; cat /chroot-marker > /chroot-saw 2>&1; while true; do /bin/sleep 60; done"
+chroot = /run/chroot-root
 depends-on: system-init

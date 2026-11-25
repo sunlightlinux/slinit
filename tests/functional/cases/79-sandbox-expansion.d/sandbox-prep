@@ -1,5 +1,7 @@
 type = scripted
 depends-on: system-init
-# Pre-create host dirs for bind-paths (the bind source must exist).
-command = /bin/sh -c "mkdir -p /var/tmp/sandbox-ext-rw"
+# Pre-create host dirs for bind-paths (the bind source must exist), and
+# put a marker in /opt: inaccessible-paths has to hide something real,
+# an empty /opt looks the same hidden or not.
+command = /bin/sh -c "mkdir -p /var/tmp/sandbox-ext-rw /opt; echo marker > /opt/sandbox-ext-marker"
 stop-command = /bin/true

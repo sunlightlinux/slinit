@@ -3,7 +3,16 @@
 # Validates:
 #   - @system-service group is broad enough that an ordinary shell
 #     service starts and runs normally;
-#   - a denylist on ptrace actually blocks it (strace receives EPERM).
+#   - a denylist on mount actually blocks it: the root service's
+#     `mount -t tmpfs` is refused with EPERM and no tmpfs named
+#     seccomp-probe reaches /proc/mounts.
+#
+# This used to probe ptrace with strace, which the guest does not ship,
+# so it reported a "soft skip" on every run and tested nothing. mount is
+# probeable with busybox alone, and the service is root with full caps,
+# so without the filter the mount succeeds and this case fails.
+# (busybox mount turns EPERM into "permission denied (are you root?)";
+# the probe accepts that or the plain strerror text.)
 
 wait_for_service "seccomp-allowed" "STARTED" 15
 wait_for_service "seccomp-blocked" "STARTED" 15
@@ -13,23 +22,29 @@ wait_for_service "seccomp-blocked" "STARTED" 15
 [ -f /tmp/seccomp-allowed-marker ] && allowed=yes || allowed=no
 assert_eq "$allowed" "yes" "@system-service allows ordinary shell to run"
 
-# The blocked service's witness reports whether ptrace was rejected.
-# "strace-unavailable" is treated as a soft skip (no probe binary);
-# "ptrace-allowed" means our filter failed.
+# The body runs after STARTED for a type=process service — give it a
+# moment to write its witness.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s /tmp/seccomp-blocked-result ] && break
+    sleep 0.5
+done
+
 result=$(cat /tmp/seccomp-blocked-result 2>/dev/null)
-case "$result" in
-ptrace-blocked)
-	assert_eq "ptrace-blocked" "ptrace-blocked" "denylist on ptrace returns EPERM"
-	;;
-strace-unavailable)
-	echo "  note: strace not available in test VM — denylist EPERM path not exercised"
-	;;
-ptrace-allowed)
-	assert_eq "$result" "ptrace-blocked" "denylist on ptrace must return EPERM"
-	;;
+err=$(cat /run/seccomp-mount-err 2>/dev/null)
+echo "  diag: result='$result' mount stderr='$err'"
+assert_eq "$result" "mount-refused" "denylist on mount refuses mount(2)"
+
+_TESTS_RUN=$((_TESTS_RUN + 1))
+case "$err" in
+*"not permitted"*|*"ermission denied"*)
+    echo "OK: mount refused with EPERM, not some other error" ;;
 *)
-	assert_eq "$result" "ptrace-blocked" "unexpected probe result: $result"
-	;;
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: mount refusal was not EPERM: '$err'" ;;
 esac
+
+# The authoritative check: nothing got mounted, whatever the probe said.
+_mounted=$(grep -c ' /run/seccomp-mnt ' /proc/mounts)
+assert_eq "${_mounted:-0}" "0" "no seccomp-probe tmpfs reached /proc/mounts"
 
 test_summary

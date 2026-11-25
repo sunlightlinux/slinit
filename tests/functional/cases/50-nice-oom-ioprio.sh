@@ -25,15 +25,12 @@ assert_eq "$oom_adj" "500" "nice-svc oom_score_adj = 500"
 # Get PID for oom-svc
 pid_oom=$(slinitctl --system status oom-svc 2>/dev/null | grep 'PID:' | awk '{print $2}')
 
-# Check nice value (should be -5, requires root)
-_TESTS_RUN=$((_TESTS_RUN + 1))
+# Check nice value (should be -5). Negative nice needs root, and slinit
+# is PID 1 running as root in the guest, so there is no excuse: this
+# used to print OK for any value, which made the negative-nice path
+# untested.
 nice_val2=$(cat /proc/$pid_oom/stat 2>/dev/null | awk '{print $19}')
-if [ "$nice_val2" = "-5" ]; then
-    echo "OK: oom-svc nice value = -5"
-else
-    # Negative nice requires root — may be 0 if not root
-    echo "OK: oom-svc nice value = $nice_val2 (negative nice may require root)"
-fi
+assert_eq "$nice_val2" "-5" "oom-svc nice value = -5"
 
 # Check oom_score_adj (should be -100)
 oom_adj2=$(cat /proc/$pid_oom/oom_score_adj 2>/dev/null)

@@ -50,12 +50,20 @@ echo "INFO: PID 1 starttime before: $_pid1_start_before"
 
 # Targets for the dependency churn. Loaded up front so the churn is
 # about the graph, not about loading.
+#
+# There is no `load` verb: `slinitctl load X` was a usage error (exit 2)
+# that never reached the daemon, so neither this loop nor workers 5-6
+# loaded anything — the DirLoader churn this case claims was never
+# driven. `status X` sends CmdLoadService, which loads the description
+# from disk, so it is the load. Each worker 5-6 counts how many of its
+# loads succeeded and the case requires that to be non-zero.
 for i in 1 2 3 4; do
     cat > /etc/slinit.d/storm-target-$i <<EOF
 type = internal
 EOF
-    slinitctl --system load storm-target-$i > /dev/null 2>&1
+    slinitctl --system status storm-target-$i > /dev/null 2>&1
 done
+rm -f /run/241-loads-5 /run/241-loads-6
 
 _end=$(( $(date +%s) + STORM_SECS ))
 
@@ -95,14 +103,18 @@ done
 for w in 5 6; do
     (
         n=0
+        loaded=0
         while [ "$(date +%s)" -lt "$_end" ]; do
             n=$((n + 1))
             svc="storm-churn-${w}-${n}"
             printf 'type = scripted\ncommand = /bin/true\nmanual = yes\n' > "/etc/slinit.d/$svc"
-            slinitctl --system load "$svc" > /dev/null 2>&1
+            if slinitctl --system status "$svc" > /dev/null 2>&1; then
+                loaded=$((loaded + 1))
+            fi
             slinitctl --system unload "$svc" > /dev/null 2>&1
             rm -f "/etc/slinit.d/$svc"
         done
+        echo "$loaded" > /run/241-loads-$w
     ) &
 done
 
@@ -160,6 +172,20 @@ if [ "${_fatal:-0}" -eq 0 ]; then
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: $_fatal runtime-fatal lines found"
+fi
+
+# Workers 5-6 must actually have loaded services — otherwise the
+# DirLoader churn above was a loop of failed requests.
+_loads5=$(cat /run/241-loads-5 2>/dev/null)
+_loads6=$(cat /run/241-loads-6 2>/dev/null)
+_loads=$(( ${_loads5:-0} + ${_loads6:-0} ))
+echo "INFO: services loaded by workers 5-6: ${_loads5:-?} + ${_loads6:-?}"
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ "$_loads" -gt 0 ]; then
+    echo "OK: the load/unload churn loaded $_loads services"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: workers 5-6 loaded nothing — the churn never reached the loader"
 fi
 
 # The storm must not have left the graph wedged: boot still resolves and
