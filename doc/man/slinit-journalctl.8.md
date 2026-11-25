@@ -134,8 +134,10 @@ live queries.
 :   Resume strictly after *TOKEN* (exclusive).
 
 **--cursor-file=**\ *FILE*
-:   Load cursor from *FILE* at start, persist updated cursor at end.
-    Useful for polling loops.
+:   Start after the cursor stored in *FILE* (exclusive, like
+    **--after-cursor**; since 4.0.3), and store the cursor of the last
+    entry shown there at the end. A missing *FILE* starts from the
+    beginning. Useful for polling loops.
 
 **--show-cursor**
 :   Print a `-- cursor: s=..;b=..` line after output.

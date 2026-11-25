@@ -1236,7 +1236,7 @@ func TestResolveCursorInputPriority(t *testing.T) {
 		t.Errorf("cursor should beat cursor-file: tok=%q mode=%v err=%v", tok, mode, err)
 	}
 	tok, mode, err = resolveCursorInput(options{cursorFile: tmp})
-	if err != nil || tok != "s=42;b=fromfile" || mode != cursorInclusive {
+	if err != nil || tok != "s=42;b=fromfile" || mode != cursorAfter {
 		t.Errorf("cursor-file only: tok=%q mode=%v err=%v", tok, mode, err)
 	}
 	// Missing cursor-file is treated as "no prior cursor" — bootstrap OK.

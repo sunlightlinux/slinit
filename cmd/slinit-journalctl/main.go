@@ -3232,7 +3232,7 @@ func runOneShot(conn net.Conn, opts options) error {
 	// non-empty value wins so the semantics stay predictable):
 	//   1. --after-cursor  → strictly after (Since = ts + 1)
 	//   2. --cursor        → at or after   (Since = ts)   [systemd -c semantics]
-	//   3. --cursor-file   → same as --cursor but read from FILE
+	//   3. --cursor-file   → same as --after-cursor but read from FILE
 	cursorToken, cursorMode, err := resolveCursorInput(opts)
 	if err != nil {
 		return err
@@ -3324,9 +3324,10 @@ func renderResult(out io.Writer, opts options, events []*journal.Event) error {
 }
 
 // cursorMode discriminates inclusive (--cursor) vs exclusive
-// (--after-cursor) positioning. --cursor-file inherits inclusive
-// since it stores the last emitted cursor which the operator wants
-// to re-emit only if the daemon rolled back (unlikely).
+// (--after-cursor) positioning. --cursor-file is exclusive: the file
+// holds the cursor of the last entry already shown, so the next run
+// starts after it, as journalctl(1) does. It used to be inclusive and
+// every run printed that entry again.
 type cursorMode int
 
 const (
@@ -3356,7 +3357,7 @@ func resolveCursorInput(opts options) (string, cursorMode, error) {
 			}
 			return "", cursorInclusive, fmt.Errorf("read cursor-file %s: %w", opts.cursorFile, err)
 		}
-		return strings.TrimSpace(string(data)), cursorInclusive, nil
+		return strings.TrimSpace(string(data)), cursorAfter, nil
 	}
 	return "", cursorInclusive, nil
 }

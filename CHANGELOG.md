@@ -1262,6 +1262,11 @@ requires.
   them), and the daemon went on writing into an unlinked file. The
   newest file of each format that still has its plain date name, and
   every file a running slinit-journald holds open, are now spared.
+- **`slinit-journalctl --cursor-file` printed the last entry again on
+  every run.** The file holds the cursor of the last entry already
+  shown, but the next run started *at* it rather than after it
+  (measured: a second run with nothing new printed one entry). It now
+  starts after it, as journalctl(1) does.
 
 ## [4.0.2] — 2026-11-22
 
