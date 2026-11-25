@@ -154,3 +154,69 @@ func TestScriptedCancelledStartFiresNoFailureAction(t *testing.T) {
 		t.Errorf("an operator stop of a starting service fired %v", fired)
 	}
 }
+
+// newTimedScripted returns a scripted service running start with a 300ms
+// start-timeout, whose stop command creates the returned marker file.
+func newTimedScripted(t *testing.T, set *ServiceSet, name, start string) (*ScriptedService, *eventRecorder, string) {
+	marker := filepath.Join(t.TempDir(), "stopped")
+	svc := NewScriptedService(set, name)
+	svc.SetStartCommand([]string{"/bin/sh", "-c", start})
+	svc.SetStopCommand([]string{"/bin/sh", "-c", "touch " + marker})
+	svc.SetStartTimeout(300 * time.Millisecond)
+	rec := &eventRecorder{}
+	svc.AddListener(rec)
+	set.AddService(svc)
+	return svc, rec, marker
+}
+
+// The start-timeout interrupts the start as a stop would (dinit's
+// start_timed_out): SIGINT, STOPPING, and the stop command once the
+// command dies of the signal, with the start failed once, reason
+// timed-out. It used to SIGKILL at once and skip the stop command.
+func TestScriptedStartTimeoutRunsStopCommand(t *testing.T) {
+	set, lg := newTestSet()
+	svc, rec, marker := newTimedScripted(t, set, "sc-timeout-clean", "exec sleep 60")
+	set.StartService(svc)
+	got := waitForState(t, svc, StateStopped, 3*time.Second)
+	o := readScripted(set, lg, svc, rec, marker)
+	if got != StateStopped {
+		killLeftover(o.pid)
+		t.Fatalf("state %v, want STOPPED", got)
+	}
+	if o.failures != 1 || o.failedEv != 1 || !o.isFailed || o.reason != ReasonTimedOut {
+		t.Errorf("timed-out start: %d failure(s), %d FAILEDSTART, IsFailed=%v, reason=%v; want one, timed-out",
+			o.failures, o.failedEv, o.isFailed, o.reason)
+	}
+	if !o.stopCmdRn {
+		t.Error("the stop command did not run after the start-timeout")
+	}
+}
+
+// SIGKILL waits for the stop-timeout: a start command that ignores the
+// SIGINT is still alive, the service STOPPING, between the two timeouts,
+// and killed once the stop-timeout expires.
+func TestScriptedStartTimeoutEscalatesAtStopTimeout(t *testing.T) {
+	set, lg := newTestSet()
+	svc, rec, marker := newTimedScripted(t, set, "sc-timeout-ignore",
+		"trap '' INT; while :; do sleep 0.1; done")
+	svc.SetStopTimeout(1 * time.Second)
+	set.StartService(svc)
+	time.Sleep(700 * time.Millisecond)
+	mid := readScripted(set, lg, svc, rec, marker)
+	if mid.state != StateStopping || mid.pid <= 0 {
+		t.Errorf("between the timeouts: state %v pid %d, want STOPPING with the command alive",
+			mid.state, mid.pid)
+	}
+	got := waitForState(t, svc, StateStopped, 5*time.Second)
+	o := readScripted(set, lg, svc, rec, marker)
+	if got != StateStopped {
+		killLeftover(o.pid)
+		t.Fatalf("state %v, want STOPPED after the stop-timeout", got)
+	}
+	if o.failures != 1 || o.reason != ReasonTimedOut {
+		t.Errorf("timed-out start: %d failure(s), reason %v; want one, timed-out", o.failures, o.reason)
+	}
+	if !o.stopCmdRn {
+		t.Error("the stop command did not run after the start command was killed")
+	}
+}

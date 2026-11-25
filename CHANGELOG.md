@@ -476,6 +476,18 @@ requires.
   *Compat:* a cancelled scripted start is a normal stop, not a failure,
   and the stop command now runs after a start command killed by the
   cancellation.
+- **A scripted start-timeout killed the start command outright and
+  skipped the stop command.** The start-timeout of a scripted service
+  sent SIGKILL at once and failed the start without running the stop
+  command, so whatever the start command had set up was left behind.
+  dinit interrupts the start as a stop would: SIGINT, STOPPING with the
+  stop-timeout armed, SIGKILL only when that expires, and the stop
+  command once the start command has died of the signal or completed.
+  slinit now does the same; the start is still reported failed once,
+  with reason `timed-out`.
+  *Compat:* a timed-out scripted start command gets SIGINT and up to
+  `stop-timeout` to exit before SIGKILL, and the stop command runs
+  after it unless it exits with a failure status.
 - **`slinit-check` did not look where slinit looks.** Its default
   system directories were `/etc`, `/usr/lib` and `/lib` `slinit.d`; the
   daemon's are `/etc`, `/run`, `/usr/local/lib` and `/lib`. A service in

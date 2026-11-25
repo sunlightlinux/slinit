@@ -67,7 +67,7 @@ type ScriptedService struct {
 	startTimedOut bool
 
 	// interruptingStart records that the start command was told to give
-	// up by a stop, so that its exit, in
+	// up — by a stop or by the start-timeout — so that its exit, in
 	// STOPPING, ends the cancelled start rather than a stop command (as
 	// dinit's scripted_service::interrupting_start).
 	interruptingStart bool
@@ -479,7 +479,8 @@ func (s *ScriptedService) InterruptStart() bool {
 }
 
 // stopInterruptedStart moves a start whose command has just been told to
-// give up by a stop arriving while STARTING to STOPPING with the stop-timeout armed, as dinit's
+// give up — by a stop arriving while STARTING, or by the start-timeout —
+// to STOPPING with the stop-timeout armed, as dinit's
 // issue_start_interrupt does. The command's exit then ends the start
 // (handleStartExit), and one that ignores the signal is killed by the
 // stop-timeout. Left in STARTING, a cancelled start was reported as a
@@ -679,20 +680,24 @@ func (s *ScriptedService) handleTimerExpired() {
 
 	switch purpose {
 	case scriptedTimerStartTimeout:
-		if s.startPID > 0 {
-			s.services.logger.Error("Service '%s': start command timeout, sending SIGKILL",
-				s.serviceName)
-			process.SignalProcess(s.startPID, 9, false) // SIGKILL
-		}
-		// Mark as timed out so that handleStartExit (or immediate stop)
-		// records the correct reason. If the process is already gone,
-		// transition to failed immediately.
 		s.stopReason = ReasonTimedOut
 		s.startTimedOut = true
 		if s.startPID <= 0 {
 			s.failedToStart(false, true)
 			s.services.processQueuesLocked()
+			return
 		}
+		// Cancel the start as a stop would, then fail it: STOPPING with
+		// the stop-timeout armed, the command's exit ending the start
+		// and, if it died of the signal, running the stop command
+		// (dinit's start_timed_out). The SIGKILL is left to the
+		// stop-timeout, for a command that ignores SIGINT.
+		s.services.logger.Error("Service '%s': start command timeout, sending SIGINT",
+			s.serviceName)
+		process.SignalProcess(s.startPID, syscall.SIGINT, false)
+		s.stopInterruptedStart()
+		s.failedToStart(false, false)
+		s.services.processQueuesLocked()
 
 	case scriptedTimerStopTimeout:
 		if s.stopPID > 0 {
