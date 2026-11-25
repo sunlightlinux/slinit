@@ -612,7 +612,8 @@ func (lr *LogRotator) processLine(line []byte) {
 	// Runs on the read goroutine — the send is non-blocking and any
 	// UDP-level failure is coalesced into a periodic warning inside
 	// the forwarder itself, so a downed remote never stalls the
-	// local write.
+	// local write. The first line of a destination named by host
+	// waits here for its lookup, so the pipe holds the lines behind it.
 	if lr.forwarder != nil {
 		lr.forwarder.Send(out)
 	}
@@ -977,6 +978,10 @@ func (lr *LogRotator) runProcessor(rotatedFile string) {
 
 // Close stops the reader and cleans up resources.
 func (lr *LogRotator) Close() {
+	// The reader may be inside the forwarder's first-line lookup of a
+	// host name, holding lr.mu; Close runs under queueMu on a restart
+	// and must not wait for a resolver that does not answer.
+	lr.forwarder.abortLookup()
 	if lr.pipeW != nil {
 		lr.pipeW.Close()
 		lr.pipeW = nil

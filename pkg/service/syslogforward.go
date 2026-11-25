@@ -22,12 +22,20 @@ import (
 // so an operator watching the daemon log gets a signal without a
 // flood of the same message for every dropped line.
 type SyslogForwarder struct {
-	// conn is nil until a destination named by host has resolved;
-	// Send drops lines until then. closeMu orders the resolver's store
-	// against Close.
-	conn       atomic.Pointer[net.UDPConn]
-	closeMu    sync.Mutex
-	closed     bool
+	// conn is nil until a destination named by host has resolved.
+	// lookupPending says the lookup is still to be done: the first Send
+	// does it, on the goroutine that reads the service's output, and
+	// only that goroutine reads or clears it. Close cancels lookupCtx,
+	// so a lookup in progress gives up; closeMu orders the store of
+	// the dialled conn against Close.
+	conn          atomic.Pointer[net.UDPConn]
+	lookupPending bool
+	resolver      *net.Resolver // syslogForwardResolver when created
+	lookupCtx     context.Context
+	cancelLookup  context.CancelFunc
+	closeMu       sync.Mutex
+	closed        bool
+
 	format     string // "rfc3164" or "rfc5424"
 	facility   int    // 0..23
 	tag        string // program name / app-name
@@ -52,19 +60,21 @@ const ForwardErrorReportInterval = 30 * time.Second
 // A variable so tests can stand in a resolver that never answers.
 var syslogForwardResolver = net.DefaultResolver
 
-// syslogForwardResolveTimeout bounds the background lookup of a
-// destination given by host name.
+// syslogForwardResolveTimeout bounds the lookup of a destination
+// given by host name.
 const syslogForwardResolveTimeout = 30 * time.Second
 
 // NewSyslogForwarder dials the UDP socket for dest and caches the
 // hostname/PID we need for RFC 3164/5424 framing. Returns an error if
 // dest is malformed or, for an IP literal, the socket can't be created.
 //
-// A dest naming a host is resolved in the background: this runs from
+// A dest naming a host is not resolved here: this runs from
 // startProcess under queueMu, and a resolver that does not answer held
-// it for 10 s (glibc's default timeout times attempts). Lines sent
-// before the lookup completes are dropped; a failed lookup is logged
-// and leaves the forwarder disabled, as a failed resolve always did.
+// it for 10 s (glibc's default timeout times attempts). The first Send
+// resolves it instead, blocking the goroutine that reads the service's
+// output, so the service's pipe holds its lines meanwhile and none is
+// lost. A failed lookup is logged and leaves the forwarder disabled,
+// as a failed resolve always did.
 func NewSyslogForwarder(dest, format string, facility int, tag, serviceName string,
 	logger interface {
 		Info(string, ...interface{})
@@ -115,15 +125,17 @@ func NewSyslogForwarder(dest, format string, facility int, tag, serviceName stri
 	if conn != nil {
 		f.conn.Store(conn)
 	} else {
-		go f.resolveAndDial(syslogForwardResolver)
+		f.lookupPending = true
+		f.resolver = syslogForwardResolver
+		f.lookupCtx, f.cancelLookup = context.WithCancel(context.Background())
 	}
 	return f, nil
 }
 
 // resolveAndDial looks up a destination given by host name and dials
-// it, off the caller's goroutine.
+// it. Called by the first Send; Close or abortLookup make it give up.
 func (f *SyslogForwarder) resolveAndDial(r *net.Resolver) {
-	ctx, cancel := context.WithTimeout(context.Background(), syslogForwardResolveTimeout)
+	ctx, cancel := context.WithTimeout(f.lookupCtx, syslogForwardResolveTimeout)
 	defer cancel()
 	c, err := f.dialByName(ctx, r)
 	if err != nil {
@@ -184,7 +196,14 @@ func (f *SyslogForwarder) Send(line []byte) {
 	}
 	conn := f.conn.Load()
 	if conn == nil {
-		return
+		if !f.lookupPending {
+			return
+		}
+		f.lookupPending = false
+		f.resolveAndDial(f.resolver)
+		if conn = f.conn.Load(); conn == nil {
+			return
+		}
 	}
 	content := line
 	if len(content) > 0 && content[len(content)-1] == '\n' {
@@ -248,11 +267,20 @@ func (f *SyslogForwarder) frameRFC5424(pri int, ts time.Time, msg []byte) []byte
 	return out
 }
 
+// abortLookup makes a lookup in progress in Send give up. For a caller
+// about to wait, under queueMu, for the goroutine that calls Send.
+func (f *SyslogForwarder) abortLookup() {
+	if f != nil && f.cancelLookup != nil {
+		f.cancelLookup()
+	}
+}
+
 // Close releases the UDP socket. Safe to call multiple times.
 func (f *SyslogForwarder) Close() {
 	if f == nil {
 		return
 	}
+	f.abortLookup()
 	f.closeMu.Lock()
 	f.closed = true
 	conn := f.conn.Swap(nil)

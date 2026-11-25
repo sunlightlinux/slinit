@@ -356,8 +356,10 @@ func TestSyslogForwardHostNotResolvedUnderQueueMu(t *testing.T) {
 	runWithin(5*time.Second, func() { set.StopService(svc) })
 }
 
-// A destination by host name still forwards once the lookup is done.
-func TestSyslogForwardHostResolvesInBackground(t *testing.T) {
+// A destination by host name gets the very first line: the lookup is
+// done by that first Send, not in the background while lines are
+// dropped (the first line never arrived, measured).
+func TestSyslogForwardHostGetsFirstLine(t *testing.T) {
 	rx, dest := listenUDP(t)
 	defer rx.Close()
 	_, port, _ := net.SplitHostPort(dest)
@@ -367,17 +369,67 @@ func TestSyslogForwardHostResolvesInBackground(t *testing.T) {
 	}
 	defer fw.Close()
 
+	fw.Send([]byte("first line\n"))
 	buf := make([]byte, 2048)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		fw.Send([]byte("hello\n"))
-		_ = rx.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-		if n, err := rx.Read(buf); err == nil {
-			if !strings.HasSuffix(string(buf[:n]), "hello") {
-				t.Fatalf("unexpected packet %q", buf[:n])
-			}
-			return
-		}
+	_ = rx.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := rx.Read(buf)
+	if err != nil {
+		t.Fatalf("first line never arrived: %v", err)
 	}
-	t.Fatal("nothing forwarded to localhost within 5s")
+	if !strings.HasSuffix(string(buf[:n]), "first line") {
+		t.Fatalf("unexpected packet %q", buf[:n])
+	}
+}
+
+// The first line's lookup runs on the rotator's reader. A restart closes
+// the old rotator under queueMu and waits for that reader, so a resolver
+// that does not answer must not hold the restart for the lookup timeout.
+func TestSyslogForwardLookupDoesNotHoldRestart(t *testing.T) {
+	silent, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	saved := syslogForwardResolver
+	syslogForwardResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "udp", silent.LocalAddr().String())
+		},
+	}
+	defer func() { syslogForwardResolver = saved }()
+
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "fwd")
+	svc.SetCommand([]string{"/bin/sh", "-c", "echo hi; exec sleep 60"})
+	svc.SetLogType(LogToFile)
+	svc.SetLogFileDetails(filepath.Join(dir, "fwd.log"), 0o600, -1, -1)
+	svc.SetLogForward("loghost.invalid:514", "", 3, "")
+	svc.SetAutoRestart(RestartAlways)
+	svc.SetRestartDelay(50 * time.Millisecond)
+	set.AddService(svc)
+	set.StartService(svc)
+	defer runWithin(5*time.Second, func() { set.StopService(svc) })
+	if got := waitState(t, svc, StateStarted, 5*time.Second); got != StateStarted {
+		t.Fatalf("service did not start: %v", got)
+	}
+	time.Sleep(200 * time.Millisecond) // the reader is in the lookup now
+
+	pid := svc.PID()
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if p := svc.PID(); p > 0 && p != pid && svc.State() == StateStarted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if p := svc.PID(); p <= 0 || p == pid {
+		t.Errorf("auto-restart did not happen within 3s: state=%v pid=%d", svc.State(), p)
+	}
+	if !queueMuFree(set, time.Second) {
+		t.Fatal("queueMu held across the restart while the first line's lookup hangs")
+	}
 }

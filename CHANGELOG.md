@@ -1114,9 +1114,11 @@ requires.
   locked.** Each start of such a service resolved the name in DNS while
   holding the lock, so a resolver that did not answer froze the state
   machine and the control socket for 10 s per start (measured). A host
-  name is now resolved in the background, and lines are dropped until
-  the lookup completes; a failed lookup is logged and disables the
-  forwarding, as before. An IP address is still used at once.
+  name is now resolved when the service prints its first line, by the
+  goroutine that reads its output and not under the lock, so that line
+  and the ones after it still reach the remote; a failed lookup is
+  logged and disables the forwarding, as before. An IP address is still
+  used at once.
 - **Each auto-restart of a `log-type = command` service left an
   output-logger behind.** Every start spawned a new output-logger (and
   error-logger) and overwrote the previous one's supervisor, which only
