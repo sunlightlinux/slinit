@@ -33,6 +33,19 @@ requires.
 
 ### Security
 
+- **slinit-nspawn gave a container no isolation beyond namespaces.** It
+  now gives it a fresh `/dev` (null, zero, full, random, urandom, tty, a
+  private devpts, `/dev/shm`, and the console) on a rootfs mounted nodev,
+  makes `/proc/sys` and the kernel-facing `/proc` entries read-only and
+  masks kallsyms/kcore/keys/sysrq-trigger/timer_list, narrows the
+  capability bounding set to systemd-nspawn's default, adds a cgroup
+  namespace, and installs systemd-nspawn's seccomp deny-list. *Compat:*
+  a container that relied on its image's device nodes, wrote sysctls, or
+  needed CAP_SYS_TIME/MODULE/RAWIO/NET_ADMIN (host network) or mlock no
+  longer gets them; 32-bit binaries are refused by the filter; an init
+  in the container should not mount devtmpfs (`--devtmpfs-path=`).
+  Untrusted images still need a user namespace, which is not provided.
+
 - **`shutdown +N` with a large N powered the machine off at once**: the
   minutes overflowed to a negative delay, which took the immediate path
   (or wrapped to a few seconds on the wire). Delays that do not fit are
@@ -893,6 +906,21 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **Process and bgprocess services diverged from dinit in ways that
+  left the wrong state:**
+  - a crash while a hard dependent was still stopping relaunched the
+    process at once, past its `restart-delay`, and the relaunch was then
+    stopped again; it now restarts through `Stopped()` as dinit does;
+  - a process that exited by itself while its service waited for
+    dependents to stop went STOPPED under a running hard dependent;
+  - a bgprocess smooth recovery whose daemon wrote its pid file late was
+    left STARTED with no tracked pid (the daemon then survived shutdown),
+    and a failed smooth recovery left the hard dependents STARTED and
+    orphaned the new daemon;
+  - a bgprocess whose daemon died while its `stop-command` still ran went
+    STOPPED early, and that stop-command later sent SIGTERM to the next
+    daemon started (a data race on the stop pid as well).
 
 - **slinit-journald in volatile fallback pruned the wrong directory**, so
   `/run` filled without limit; vacuum now follows the directory in use,
