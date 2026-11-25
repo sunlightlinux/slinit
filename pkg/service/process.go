@@ -992,7 +992,7 @@ func (s *ProcessService) watchdogLoop(pipe *os.File, timeout time.Duration,
 			s.services.logger.Error("Service '%s': watchdog timeout (%v) — restarting",
 				s.serviceName, timeout)
 			s.services.NoteWatchdogMiss()
-			s.fireWatchdogStop()
+			s.fireWatchdogStop(stop)
 			return
 		default:
 			// EOF or other read error. The service either died (in
@@ -1003,7 +1003,7 @@ func (s *ProcessService) watchdogLoop(pipe *os.File, timeout time.Duration,
 			s.services.logger.Error("Service '%s': watchdog pipe lost (%v) — restarting",
 				s.serviceName, err)
 			s.services.NoteWatchdogMiss()
-			s.fireWatchdogStop()
+			s.fireWatchdogStop(stop)
 			return
 		}
 	}
@@ -1061,9 +1061,17 @@ func isDeadlineExceeded(err error) bool {
 // pass the result as withRestart so doStop preserves desired and skips
 // the Release path. Once SIGTERM kills the child, handleChildExit →
 // Stopped() sees desired==Started and calls initiateStart().
-func (s *ProcessService) fireWatchdogStop() {
+//
+// stop identifies the watcher that fired. One cancelled while this
+// waited for queueMu — its child exited, or the service was stopped and
+// maybe started again — has nothing left to stop.
+func (s *ProcessService) fireWatchdogStop(stop chan struct{}) {
 	s.services.queueMu.Lock()
 	defer s.services.queueMu.Unlock()
+
+	if s.watchdogStop != stop {
+		return
+	}
 
 	sig := s.Record().WatchdogSignal()
 	if sig == 0 {

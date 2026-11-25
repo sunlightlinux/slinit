@@ -39,13 +39,15 @@ func (sr *ServiceRecord) armOOMWatcher() {
 		return
 	}
 	stop := make(chan struct{})
-	sr.oomWatch = &oomWatcher{stop: stop}
+	watch := &oomWatcher{stop: stop}
+	sr.oomWatch = watch
 
 	policy := sr.oomPolicy
 	svc := sr.self
 	set := sr.services
 	name := sr.serviceName
 	eventsPath := cgPath + "/memory.events"
+	interval := oomPollInterval
 
 	// Read the baseline so we only act on increments from now on.
 	// A read failure here (cgroup not yet populated, missing file)
@@ -53,7 +55,7 @@ func (sr *ServiceRecord) armOOMWatcher() {
 	baseline := readOOMCounters(eventsPath)
 
 	go func() {
-		ticker := time.NewTicker(oomPollInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -66,9 +68,10 @@ func (sr *ServiceRecord) armOOMWatcher() {
 				continue
 			}
 			set.queueMu.Lock()
-			// Re-check state under lock: the service may have stopped
-			// between the event fire and us acquiring the lock.
-			if svc.State() != StateStarted {
+			// Re-check under lock: the service may have stopped between
+			// the event fire and us acquiring the lock, and been started
+			// again with a watcher of its own.
+			if sr.oomWatch != watch || svc.State() != StateStarted {
 				set.queueMu.Unlock()
 				return
 			}

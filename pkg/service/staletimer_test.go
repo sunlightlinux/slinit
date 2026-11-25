@@ -204,3 +204,70 @@ func TestBGProcessStaleStartTimeoutTickIsNotTheStopTimeout(t *testing.T) {
 		t.Error("stopped within 1.5s of the stop request: the stale start-timeout tick ran the stop-timeout escalation (stop-timeout is 3s)")
 	}
 }
+
+// A watchdog expiry already waiting on queueMu when its watcher is
+// cancelled — as handleChildExit and BringDown do before a restart —
+// stopped the service all the same, the next instance included.
+func TestStaleWatchdogFireAfterCancelDoesNotStop(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "wd")
+	svc.SetCommand([]string{"/bin/sh", "-c", "echo r >&3; exec sleep 60"})
+	svc.SetReadyNotification(3, "")
+	svc.SetWatchdogTimeout(300 * time.Millisecond)
+	svc.SetStartTimeout(2 * time.Second)
+	set.AddService(svc)
+	set.StartService(svc)
+	for end := time.Now().Add(2 * time.Second); svc.State() != StateStarted && time.Now().Before(end); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if svc.State() != StateStarted {
+		t.Fatalf("setup: %v, want STARTED", svc.State())
+	}
+	defer func() { set.ForceStopService(svc); stopsWithin(svc, 2*time.Second) }()
+
+	set.queueMu.Lock()
+	time.Sleep(600 * time.Millisecond) // the deadline passes; the watcher waits on queueMu
+	svc.stopWatchdogWatcherLocked()
+	set.queueMu.Unlock()
+
+	time.Sleep(300 * time.Millisecond)
+	if st := svc.State(); st != StateStarted {
+		t.Errorf("state %v after the watcher was cancelled: the stale watchdog fire stopped the service", st)
+	}
+}
+
+// The same for the OOM watcher: an OOM kill seen by the watcher of an
+// instance stopped and started again while it waited on queueMu stopped
+// the new instance.
+func TestStaleOOMWatcherDoesNotStopTheNextRun(t *testing.T) {
+	restore := setOOMPollIntervalForTesting(30 * time.Millisecond)
+	defer restore()
+
+	set, _ := newTestSet()
+	svc := NewInternalService(set, "oom")
+	set.AddService(svc)
+	cgDir := t.TempDir()
+	eventsPath := filepath.Join(cgDir, "memory.events")
+	writeMemoryEvents(t, eventsPath, 0, 0)
+	svc.Record().SetCgroupPath(cgDir)
+	svc.Record().SetOOMPolicy(OOMStop)
+	set.StartService(svc)
+
+	set.queueMu.Lock()
+	writeMemoryEvents(t, eventsPath, 1, 0)
+	time.Sleep(200 * time.Millisecond) // the watcher sees it and waits on queueMu
+	svc.Stop(true)
+	set.processQueuesLocked()
+	if svc.State() != StateStopped {
+		set.queueMu.Unlock()
+		t.Fatalf("not stopped: %v", svc.State())
+	}
+	svc.Start()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+
+	time.Sleep(200 * time.Millisecond)
+	if st := svc.State(); st != StateStarted {
+		t.Errorf("state %v: the first run's OOM watcher stopped the next run", st)
+	}
+}
