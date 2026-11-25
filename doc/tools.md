@@ -470,7 +470,7 @@ handling are exactly `slinitctl`'s.
 rc-service nginx start
 rc-service nginx stop
 rc-service nginx status
-rc-service --exists nginx     # → slinitctl is-started nginx
+rc-service --exists nginx     # → slinitctl query-name nginx (output discarded)
 rc-service --list             # → slinitctl list
 
 # rc-update — runlevel membership (modelled as runlevel-<name> services)

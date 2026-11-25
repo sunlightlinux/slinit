@@ -67,9 +67,11 @@ working. Arguments after *action* are appended unchanged.
 # OPTIONS
 
 **-e**, **--exists** *service*
-:   Translates to **slinitctl is-started** *service*. Exit status 0
-    means the service exists and is started; nonzero means it is
-    not currently running (or does not exist on disk).
+:   Runs **slinitctl query-name** *service* with its output
+    discarded. Exit status 0 means the service exists (it resolves
+    and loads), whatever its state; nonzero means it could not be
+    found or loaded. Nothing is printed on standard output, as with
+    OpenRC.
 
 **-l**, **--list**
 :   Translates to **slinitctl list**.
