@@ -220,24 +220,15 @@ func mountEarlyFS(logger *logging.Logger) {
 		logger.Debug("Skipping devtmpfs mount (path disabled)")
 	}
 
-	// Mount proc on /proc
-	os.MkdirAll("/proc", 0555)
-	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
-		logger.Debug("Mount proc: %v (non-fatal)", err)
-	} else {
-		logger.Debug("Mounted proc on /proc")
-	}
+	// Mount proc on /proc, unless it is there already: a second procfs
+	// stacks on the first (one more per boot and per soft reboot) and
+	// does not have the options, hidepid included, set on it.
+	mountUnlessType("proc", "/proc", unix.PROC_SUPER_MAGIC, logger)
 
 	// Mount sysfs on /sys so cgroup writes, /sys/class/net enumeration,
 	// and the securityfs mount below have a parent to hang off. Kernel
-	// initramfs may already have this — the mount is a no-op with EBUSY
-	// in that case, which we swallow at debug level.
-	os.MkdirAll("/sys", 0555)
-	if err := syscall.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil {
-		logger.Debug("Mount sysfs: %v (non-fatal, likely already mounted)", err)
-	} else {
-		logger.Debug("Mounted sysfs on /sys")
-	}
+	// initramfs may already have this.
+	mountUnlessType("sysfs", "/sys", unix.SYSFS_MAGIC, logger)
 
 	// Mount securityfs on /sys/kernel/security so LSM state is
 	// observable at runtime. Required for AppArmor apparmor-switch=
@@ -279,6 +270,22 @@ func mountEarlyFS(logger *logging.Logger) {
 		} else {
 			logger.Debug("Kernel env-store: wrote %d entries to %s", n, kernelEnvStoreDest)
 		}
+	}
+}
+
+// mountUnlessType mounts fstype on target unless a filesystem of that
+// type (by statfs magic) is mounted there already.
+func mountUnlessType(fstype, target string, magic int64, logger *logging.Logger) {
+	os.MkdirAll(target, 0555)
+	var st unix.Statfs_t
+	if unix.Statfs(target, &st) == nil && int64(st.Type) == magic {
+		logger.Debug("%s already on %s", fstype, target)
+		return
+	}
+	if err := syscall.Mount(fstype, target, fstype, 0, ""); err != nil {
+		logger.Debug("Mount %s on %s: %v (non-fatal)", fstype, target, err)
+	} else {
+		logger.Debug("Mounted %s on %s", fstype, target)
 	}
 }
 

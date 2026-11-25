@@ -432,6 +432,14 @@ requires.
   service or `--from` name that is not a valid service name or has a
   `..` path element, instance argument included, as the daemon's
   loader already does online.
+- **PID 1 stacked a new `/proc` on every boot, dropping `hidepid`.**
+  slinit mounted proc on `/proc` without looking whether it was there
+  already, so each boot from an initramfs that mounts it, and each soft
+  reboot, added another procfs on top (3, 4, 5, 6 measured), and the one
+  every process saw had none of the options set on the first —
+  `hidepid=invisible` included, so other users' processes became
+  visible again. `/proc` and `/sys` are now mounted only when no
+  filesystem of that type is mounted there.
 
 ### Changed
 

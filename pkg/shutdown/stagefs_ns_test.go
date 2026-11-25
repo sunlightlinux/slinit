@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/logging"
+	"golang.org/x/sys/unix"
 )
 
-// inPrivateNS re-runs the calling test as root of a new user, PID and
-// mount namespace, where it may mount. It returns true in the re-run,
+// inPrivateNS re-runs the calling test as root of a new user, PID,
+// mount and network namespace, where it may mount. It returns true in the re-run,
 // where the test goes on, and false in the caller, which then returns.
 func inPrivateNS(t *testing.T) bool {
 	t.Helper()
@@ -24,10 +25,10 @@ func inPrivateNS(t *testing.T) bool {
 	if _, err := exec.LookPath("unshare"); err != nil {
 		t.Skip("unshare not available")
 	}
-	if exec.Command("unshare", "-Urpfm", "--mount-proc", "true").Run() != nil {
-		t.Skip("unshare -Urpfm not permitted here")
+	if exec.Command("unshare", "-Urpfmn", "--mount-proc", "true").Run() != nil {
+		t.Skip("unshare -Urpfmn not permitted here")
 	}
-	cmd := exec.Command("unshare", "-Urpfm", "--mount-proc",
+	cmd := exec.Command("unshare", "-Urpfmn", "--mount-proc",
 		os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v", "-test.count=1")
 	cmd.Env = append(os.Environ(), "SLINIT_TEST_PRIVATENS=1")
 	out, err := cmd.CombinedOutput()
@@ -109,5 +110,40 @@ func TestStageRunModes(t *testing.T) {
 	if !hasMarker(p) || countMounts(t, p) != 1 {
 		t.Errorf("keep: marker kept = %v, mounts = %d; want true, 1",
 			hasMarker(p), countMounts(t, p))
+	}
+}
+
+// /proc was mounted at every boot without looking: each boot, and each
+// soft reboot, stacked another procfs (3, 4, 5, 6 measured), and the one
+// on top lacked the hidepid set on the first. /sys likewise.
+func TestMountUnlessTypeDoesNotStack(t *testing.T) {
+	if !inPrivateNS(t) {
+		return
+	}
+	logger := logging.New(logging.LevelError)
+	for _, fs := range []struct {
+		fstype, path string
+		magic        int64
+	}{
+		{"proc", "/proc", unix.PROC_SUPER_MAGIC},
+		{"sysfs", "/sys", unix.SYSFS_MAGIC},
+	} {
+		before := countMounts(t, fs.path)
+		mountUnlessType(fs.fstype, fs.path, fs.magic, logger)
+		if got := countMounts(t, fs.path); got != before {
+			t.Errorf("%s: %d mounts on %s after, %d before", fs.fstype, got, fs.path, before)
+		}
+	}
+
+	base := t.TempDir()
+	if out, err := exec.Command("mount", "-t", "tmpfs", "none", base).CombinedOutput(); err != nil {
+		t.Fatalf("mount tmpfs %s: %v\n%s", base, err, out)
+	}
+	t.Cleanup(func() { exec.Command("umount", "-l", base).Run() })
+	p := filepath.Join(base, "proc")
+	mountUnlessType("proc", p, unix.PROC_SUPER_MAGIC, logger)
+	mountUnlessType("proc", p, unix.PROC_SUPER_MAGIC, logger)
+	if got := countMounts(t, p); got != 1 {
+		t.Errorf("proc on a plain directory, twice: %d mounts; want 1", got)
 	}
 }

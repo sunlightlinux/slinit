@@ -54,3 +54,24 @@ exec "$B/slinit" -d "$D/sd" -p "$D/sock" --syslog-socket "" --no-watchdog`)
 		t.Errorf("boot service read %q from the initramfs's /run; want initramfs-state", got)
 	}
 }
+
+// As PID 1, slinit mounted proc on /proc without looking, stacking a
+// new procfs on the one there (and another per soft reboot), so the
+// hidepid set on the first stopped applying to anything.
+func TestPID1KeepsMountedProc(t *testing.T) {
+	dir := t.TempDir()
+	writeService(t, dir, "boot", `
+type = process
+command = /bin/sh -c "grep -c ' /proc ' /proc/self/mountinfo > `+dir+`/out.tmp; grep ' /proc ' /proc/self/mountinfo | tail -n 1 >> `+dir+`/out.tmp; mv `+dir+`/out.tmp `+dir+`/out; exec sleep 100"
+`)
+	startNS(t, dir, `
+mount -o remount,hidepid=invisible /proc
+grep -c ' /proc ' /proc/self/mountinfo > "$D/before"
+exec "$B/slinit" -d "$D/sd" -p "$D/sock" --syslog-socket "" --no-watchdog`)
+	out := waitFile(t, filepath.Join(dir, "out"), 15*time.Second)
+	before, _ := os.ReadFile(filepath.Join(dir, "before"))
+	lines := strings.SplitN(out, "\n", 2)
+	if len(lines) < 2 || lines[0] != strings.TrimSpace(string(before)) || !strings.Contains(lines[1], "hidepid=invisible") {
+		t.Errorf("/proc mounts before slinit: %s; seen by a service:\n%s", strings.TrimSpace(string(before)), out)
+	}
+}
