@@ -39,15 +39,19 @@ _out=$(slinit-journalctl -u invsvc --list-invocations 2>&1)
 _lines=$(echo "$_out" | grep -cE '^[a-f0-9]{32}')
 assert_eq "$_lines" "2" "--list-invocations reports 2 rows"
 
-# --invocation=<first> narrows to only that lifecycle's events.
-_out=$(slinit-journalctl -u invsvc --invocation="$_id1" -o cat 2>&1)
+# --invocation=<first> narrows to only that lifecycle's events: some
+# rows, all carrying the first ID, fewer than unfiltered. (Counting
+# lines of the output used to pass on an ignored flag, or on an error.)
+_all=$(slinit-journalctl -u invsvc -o json 2>/dev/null | grep -c '"SLINIT_INVOCATION_ID"')
+_sel=$(slinit-journalctl -u invsvc --invocation="$_id1" -o json 2>/dev/null)
+_n=$(echo "$_sel" | grep -c '"SLINIT_INVOCATION_ID"')
+_other=$(echo "$_sel" | grep -oE '"SLINIT_INVOCATION_ID":"[a-f0-9]+"' | grep -vc "$_id1")
 _TESTS_RUN=$((_TESTS_RUN + 1))
-_n=$(echo "$_out" | wc -l)
-if [ "$_n" -ge 1 ]; then
-    echo "OK: --invocation=$_id1 returned $_n line(s) from first lifecycle"
+if [ "$_n" -ge 1 ] && [ "$_other" = 0 ] && [ "$_n" -lt "$_all" ]; then
+    echo "OK: --invocation=$_id1 returned $_n of $_all event(s), all from the first lifecycle"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: --invocation filter returned empty"
+    echo "FAIL: --invocation filter: $_n of $_all event(s), $_other from another invocation"
 fi
 
 test_summary

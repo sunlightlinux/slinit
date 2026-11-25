@@ -27,15 +27,20 @@ _id_event=$(slinit-journalctl -o json -n 1 2>&1 \
 assert_eq "$_id_list" "$_id_event" "--list-boots boot ID matches event's _boot_id"
 
 # Systemd shortcut: `-b` bare / `--boot` / `-b0` all point at
-# current boot. All three should succeed and return events.
+# current boot. Each must exit 0 and return events of this boot only.
+# (stderr is kept out of the count: an "unknown flag" message used to
+# count as a returned line.)
 for _flag in '-b' '--boot' '-b0'; do
+    _ids=$(slinit-journalctl $_flag -n 3 -o json 2>/dev/null)
+    _rc=$?
+    _n=$(echo "$_ids" | grep -c '"_boot_id"')
+    _other=$(echo "$_ids" | grep -oE '"_boot_id":"[a-f0-9]+"' | grep -vc "\"$_id_list\"")
     _TESTS_RUN=$((_TESTS_RUN + 1))
-    _n=$(slinit-journalctl $_flag -n 3 2>&1 | wc -l)
-    if [ "$_n" -ge 1 ]; then
-        echo "OK: $_flag returned $_n line(s)"
+    if [ "$_rc" = 0 ] && [ "$_n" -ge 1 ] && [ "$_other" = 0 ]; then
+        echo "OK: $_flag returned $_n event(s) of boot $_id_list"
     else
         _TESTS_FAILED=$((_TESTS_FAILED + 1))
-        echo "FAIL: $_flag returned empty output"
+        echo "FAIL: $_flag rc=$_rc events=$_n from-other-boots=$_other"
     fi
 done
 

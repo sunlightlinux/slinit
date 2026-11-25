@@ -160,7 +160,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 50 | nice-oom-ioprio | Nice value and OOM score adjustment |
 | 51 | clock-guard | Boot with the RTC at 2010: the guard moves the clock forward to the seeded `/var/lib/slinit/clock` stamp (not the 2024 floor, not host time) and rewrites the file |
 | 52 | catch-all-logger | Early-boot catch-all logger captures stdout/stderr to `/run/slinit/catch-all.log` |
-| 53 | restart-backoff | Restart-delay step + cap apply progressive backoff between restarts |
+| 53 | restart-backoff | Restart-delay step + cap: gaps between attempts measured from `/proc/uptime` grow 0.3 → 0.9 → 1.5 s and hold at the 1.5 s cap |
 | 54 | overlay-config | `conf.d/` overlay overrides values in the base service description |
 | 55 | service-template | Service templates with `@argument` substitution (`$1`) |
 | 56 | rlimits | rlimit-* values are applied to the service process |
