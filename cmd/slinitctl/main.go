@@ -3237,7 +3237,10 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 	// The message tail is only appended when non-empty so pre-message
 	// slinitd instances still accept the packet (they treat the extra
 	// bytes as ignored padding).
-	payload := control.EncodeScheduleShutdown(st, delay, message)
+	payload, err := control.EncodeScheduleShutdown(st, delay, message)
+	if err != nil {
+		return err
+	}
 	if err := control.WritePacket(conn, control.CmdScheduleShutdown, payload); err != nil {
 		return err
 	}

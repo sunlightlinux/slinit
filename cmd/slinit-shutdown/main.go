@@ -430,9 +430,12 @@ func scheduleOrCancel(useCFD bool, st service.ShutdownType, delay time.Duration,
 	if err := checkProtocolVersion(conn); err != nil {
 		return err
 	}
-	cmd, payload := control.CmdScheduleShutdown, control.EncodeScheduleShutdown(st, delay, message)
-	if cancel {
-		cmd, payload = control.CmdCancelShutdown, nil
+	cmd, payload := control.CmdCancelShutdown, []byte(nil)
+	if !cancel {
+		cmd = control.CmdScheduleShutdown
+		if payload, err = control.EncodeScheduleShutdown(st, delay, message); err != nil {
+			return err
+		}
 	}
 	if err := control.WritePacket(conn, cmd, payload); err != nil {
 		return err

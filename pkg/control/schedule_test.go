@@ -13,7 +13,11 @@ import (
 
 func TestScheduleShutdownPayloadRoundTrip(t *testing.T) {
 	for _, msg := range []string{"", "kernel update"} {
-		st, d, m, ok := DecodeScheduleShutdown(EncodeScheduleShutdown(service.ShutdownReboot, 7*time.Minute, msg))
+		payload, err := EncodeScheduleShutdown(service.ShutdownReboot, 7*time.Minute, msg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, d, m, ok := DecodeScheduleShutdown(payload)
 		if !ok || st != service.ShutdownReboot || d != 7*time.Minute || m != msg {
 			t.Errorf("round trip of %q: %v %v %q %v", msg, st, d, m, ok)
 		}
@@ -30,6 +34,33 @@ func TestParseShutdownTimeHHMM(t *testing.T) {
 	}
 	if d, _ := ParseShutdownTime("06:00", now); d != 7*time.Hour+45*time.Minute {
 		t.Errorf("tomorrow: %v", d)
+	}
+}
+
+// A delay too large for the wire's 32-bit seconds field used to
+// overflow time.Duration (negative: "now") or wrap the field (+71582789
+// minutes became 44 seconds). Both are errors now, at parse and encode.
+func TestShutdownTimeOutOfRange(t *testing.T) {
+	now := time.Now()
+	for _, s := range []string{"+153722868", "+71582789", "71582789", "+9223372036854775807"} {
+		if d, err := ParseShutdownTime(s, now); err == nil {
+			t.Errorf("%s parsed as %v, want an error", s, d)
+		}
+	}
+	if d, err := ParseShutdownTime("+71582788", now); err != nil || d != 71582788*time.Minute {
+		t.Errorf("+71582788 (largest that fits): %v %v", d, err)
+	}
+	for _, d := range []time.Duration{-time.Second, MaxShutdownDelay + time.Second} {
+		if _, err := EncodeScheduleShutdown(service.ShutdownPoweroff, d, ""); err == nil {
+			t.Errorf("encode of %v accepted", d)
+		}
+	}
+	payload, err := EncodeScheduleShutdown(service.ShutdownPoweroff, MaxShutdownDelay, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, d, _, _ := DecodeScheduleShutdown(payload); d != MaxShutdownDelay {
+		t.Errorf("max delay round-tripped as %v", d)
 	}
 }
 

@@ -102,7 +102,8 @@ func TestShutdownTypeValidated(t *testing.T) {
 		}
 		conn.Close()
 		server.Stop()
-		if _, _, _, ok := DecodeScheduleShutdown(EncodeScheduleShutdown(st, time.Minute, "")); !ok {
+		payload, _ := EncodeScheduleShutdown(st, time.Minute, "")
+		if _, _, _, ok := DecodeScheduleShutdown(payload); !ok {
 			t.Errorf("scheduled %v refused", st)
 		}
 	}

@@ -2,12 +2,37 @@ package control
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
+
+// MaxShutdownDelay is the longest delay CmdScheduleShutdown can carry:
+// its wire field is a 32-bit count of seconds.
+const MaxShutdownDelay = time.Duration(math.MaxUint32) * time.Second
+
+// checkShutdownDelay refuses a delay the wire field cannot carry. A
+// negative or wrapped delay would otherwise read as "now" or as a few
+// seconds, turning a far-off shutdown into an immediate one.
+func checkShutdownDelay(d time.Duration) error {
+	if d < 0 || d > MaxShutdownDelay {
+		return fmt.Errorf("shutdown delay %v out of range (0 to %v)", d, MaxShutdownDelay)
+	}
+	return nil
+}
+
+// minutesDelay turns a count of minutes into a delay, refusing one too
+// large for the wire (which also keeps the multiplication from
+// overflowing).
+func minutesDelay(s string, mins int) (time.Duration, error) {
+	if mins > int(MaxShutdownDelay/time.Minute) {
+		return 0, fmt.Errorf("invalid time: %s (at most %d minutes)", s, int(MaxShutdownDelay/time.Minute))
+	}
+	return time.Duration(mins) * time.Minute, nil
+}
 
 // ParseShutdownTime reads shutdown(8)'s time operand: "now" (or empty),
 // "+N" or a bare "N" minutes, or "HH:MM" — today, or tomorrow when that
@@ -21,10 +46,10 @@ func ParseShutdownTime(s string, now time.Time) (time.Duration, error) {
 		if err != nil || mins < 0 {
 			return 0, fmt.Errorf("invalid time: %s (use +N for minutes)", s)
 		}
-		return time.Duration(mins) * time.Minute, nil
+		return minutesDelay(s, mins)
 	}
 	if mins, err := strconv.Atoi(s); err == nil && mins >= 0 {
-		return time.Duration(mins) * time.Minute, nil
+		return minutesDelay(s, mins)
 	}
 	if parts := strings.SplitN(s, ":", 2); len(parts) == 2 {
 		h, err1 := strconv.Atoi(parts[0])
@@ -45,8 +70,12 @@ func ParseShutdownTime(s string, now time.Time) (time.Duration, error) {
 //	[type(1)] [delay_secs(4, big-endian)] [msg_len(2, LE)] [msg_bytes...]
 //
 // The message tail is only appended when non-empty, so a daemon from
-// before messages existed still accepts the packet.
-func EncodeScheduleShutdown(st service.ShutdownType, delay time.Duration, message string) []byte {
+// before messages existed still accepts the packet. A delay outside
+// 0..MaxShutdownDelay is an error rather than a wrapped count.
+func EncodeScheduleShutdown(st service.ShutdownType, delay time.Duration, message string) ([]byte, error) {
+	if err := checkShutdownDelay(delay); err != nil {
+		return nil, err
+	}
 	secs := uint32(delay / time.Second)
 	payload := []byte{
 		uint8(st),
@@ -60,7 +89,7 @@ func EncodeScheduleShutdown(st service.ShutdownType, delay time.Duration, messag
 		payload = append(payload, byte(len(msg)&0xFF), byte((len(msg)>>8)&0xFF))
 		payload = append(payload, msg...)
 	}
-	return payload
+	return payload, nil
 }
 
 // DecodeScheduleShutdown is EncodeScheduleShutdown's inverse. ok is false
