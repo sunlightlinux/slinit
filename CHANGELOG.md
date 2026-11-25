@@ -1275,6 +1275,14 @@ requires.
   `-f --after-cursor` with the newest entry's cursor printed all 20
   buffered entries instead of none). Both now apply as they do without
   `-f`.
+- **`slinit-journalctl -o export` split an entry at a newline in a
+  value.** Every field was written as `KEY=value`, so a multi-line
+  `MESSAGE` ended the entry at its blank line and its later lines were
+  read as fields of their own (measured: two entries parsed as four,
+  with a `CUSTOM_KEY` taken from the message text). A value holding a
+  control character or invalid UTF-8 is now written in the export
+  format's binary form, as systemd does: the key, a newline, a
+  little-endian 64-bit length, the value, a newline.
 
 ## [4.0.2] — 2026-11-22
 

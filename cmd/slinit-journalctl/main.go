@@ -17,6 +17,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4088,11 +4089,38 @@ func shortDisplayPID(e *journal.Event) int {
 // writeExportField writes "KEY=value\n" only when value is non-empty.
 // systemd's export format allows empty-value lines (KEY=) but slinit's
 // convention (matching renderVerbose) is to skip them for readability.
+//
+// A value holding a newline or another control character, or invalid
+// UTF-8, is written in the export format's binary form: the key, a
+// newline, the value's length as a little-endian 64-bit integer, the
+// value, a newline. Written as KEY=value, a multi-line MESSAGE split
+// the entry, and its later lines were read as fields of their own.
 func writeExportField(out io.Writer, key, value string) {
 	if value == "" {
 		return
 	}
+	if !exportPrintable(value) {
+		var n [8]byte
+		binary.LittleEndian.PutUint64(n[:], uint64(len(value)))
+		fmt.Fprintf(out, "%s\n%s%s\n", key, n[:], value)
+		return
+	}
 	fmt.Fprintf(out, "%s=%s\n", key, value)
+}
+
+// exportPrintable reports whether value can be written as KEY=value in
+// the export format: valid UTF-8 with no C0 or C1 control character or
+// DEL, as systemd decides.
+func exportPrintable(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return false
+		}
+	}
+	return true
 }
 
 // writeExportFieldFiltered is the --output-fields-aware sibling of

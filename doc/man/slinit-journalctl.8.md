@@ -191,7 +191,10 @@ live queries.
     - **json-seq** — RFC 7464 record-separator framed
     - **verbose** — multi-line dump of every field
     - **export** — systemd export format (KEY=value lines, blank
-      between events)
+      between events); a value with a newline or another control
+      character, or invalid UTF-8, is written in the format's binary
+      form — the key, a newline, its length as a little-endian 64-bit
+      integer, the value, a newline (since 4.0.3)
 
 **--output-fields=**\ *A*,*B*,*C*
 :   Restrict verbose/export/JSON output to the named field keys.
