@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
@@ -1368,6 +1369,11 @@ func cmdList(conn net.Conn) error {
 	if err := control.WritePacket(conn, control.CmdListServices, nil); err != nil {
 		return err
 	}
+	// The reply is one packet per service, which ReadPacket takes in two
+	// reads each: read the stream through a buffer. Bytes it reads past
+	// RplyListDone are dropped with it, and nothing reads conn after a
+	// list.
+	conn = bufferedConn{conn, bufio.NewReaderSize(conn, 64<<10)}
 
 	for {
 		rply, payload, err := readReply(conn)
@@ -1395,6 +1401,14 @@ func cmdList(conn net.Conn) error {
 	}
 	return nil
 }
+
+// bufferedConn is a net.Conn whose reads go through r.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 // formatIndicator renders the dinit-style 8-char service state indicator.
 //

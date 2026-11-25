@@ -155,6 +155,39 @@ func (c *Connection) writePacket(pktType uint8, payload []byte) error {
 	return err
 }
 
+// writeChunk bounds one write of writePackets, each with its own
+// writeDeadline, as one packet's write had.
+const writeChunk = 64 << 10
+
+// writePackets writes buf, a run of packets framed by appendPacket, as
+// writePacket writes one: under one hold of writeMu, so no other
+// packet lands between them, and closing the connection on any failed
+// write. It writes in chunks of at most writeChunk, each with a fresh
+// writeDeadline, so a client reading a long reply gets the time per
+// chunk that it used to get per packet.
+func (c *Connection) writePackets(buf []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.closed {
+		return errConnClosed
+	}
+	tc, _ := c.conn.(interface{ SetWriteDeadline(time.Time) error })
+	for len(buf) > 0 {
+		chunk := buf[:min(len(buf), writeChunk)]
+		if tc != nil {
+			_ = tc.SetWriteDeadline(time.Now().Add(writeDeadline))
+		}
+		if _, err := c.conn.Write(chunk); err != nil {
+			// As in writePacket: the stream can no longer be framed.
+			c.closed = true
+			_ = c.conn.Close()
+			return err
+		}
+		buf = buf[len(chunk):]
+	}
+	return nil
+}
+
 func (c *Connection) close() {
 	c.closeOnce.Do(func() {
 		c.writeMu.Lock()
@@ -928,12 +961,28 @@ func (c *Connection) encodeAllLocked(enc func(service.Service) []byte) [][]byte 
 }
 
 func (c *Connection) handleListServices() error {
-	for _, info := range c.encodeAllLocked(EncodeSvcInfo) {
-		if err := c.writePacket(RplySvcInfo, info); err != nil {
-			return err
+	return c.writeServiceList(EncodeSvcInfo)
+}
+
+// writeServiceList replies to a list command: one RplySvcInfo per
+// service, encoded by encode under the graph lock, then RplyListDone.
+// The packets go out in as few writes as writePackets needs rather than
+// one write each, which made a list of 1000 services cost 1000 system
+// calls.
+func (c *Connection) writeServiceList(encode func(service.Service) []byte) error {
+	var buf []byte
+	for _, info := range c.encodeAllLocked(encode) {
+		if len(info) > MaxPayloadSize {
+			// A name too long to frame: send what precedes it, then
+			// fail as writePacket always has (closing the connection).
+			if err := c.writePackets(buf); err != nil {
+				return err
+			}
+			return c.writePacket(RplySvcInfo, info)
 		}
+		buf = appendPacket(buf, RplySvcInfo, info)
 	}
-	return c.writePacket(RplyListDone, nil)
+	return c.writePackets(appendPacket(buf, RplyListDone, nil))
 }
 
 func (c *Connection) handleServiceStatus(payload []byte) error {
@@ -952,12 +1001,7 @@ func (c *Connection) handleServiceStatus(payload []byte) error {
 }
 
 func (c *Connection) handleListServices5() error {
-	for _, info := range c.encodeAllLocked(EncodeSvcInfo5) {
-		if err := c.writePacket(RplySvcInfo, info); err != nil {
-			return err
-		}
-	}
-	return c.writePacket(RplyListDone, nil)
+	return c.writeServiceList(EncodeSvcInfo5)
 }
 
 func (c *Connection) handleServiceStatus5(payload []byte) error {

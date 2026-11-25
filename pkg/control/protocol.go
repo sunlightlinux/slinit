@@ -394,6 +394,13 @@ func WritePacket(w io.Writer, pktType uint8, payload []byte) error {
 	return nil
 }
 
+// appendPacket appends one packet, framed as WritePacket frames it, to
+// dst. The caller checks len(payload) <= MaxPayloadSize.
+func appendPacket(dst []byte, pktType uint8, payload []byte) []byte {
+	dst = append(dst, pktType, byte(len(payload)), byte(len(payload)>>8))
+	return append(dst, payload...)
+}
+
 // ReadPacket reads a packet: [type(1)][payloadLen(2)][payload(N)].
 func ReadPacket(r io.Reader) (pktType uint8, payload []byte, err error) {
 	var hdr [3]byte
