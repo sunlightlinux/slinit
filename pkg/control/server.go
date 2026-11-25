@@ -208,6 +208,12 @@ func (s *Server) Stop() error {
 	if s.listener != nil {
 		err = s.listener.Close()
 	}
+	// Remove the socket file now, not after the connections below have
+	// finished: a caller that bounds Stop (exitFlushed) gives up on a
+	// connection stuck in a hook, and the file must not outlive that.
+	// net's UnixListener unlinks on Close as well; this does not rely
+	// on it.
+	os.Remove(s.sockPath)
 
 	// Collect connections under lock, close outside to avoid holding lock during I/O
 	s.mu.Lock()
@@ -221,9 +227,6 @@ func (s *Server) Stop() error {
 	}
 
 	s.wg.Wait()
-
-	// Clean up socket file
-	os.Remove(s.sockPath)
 
 	s.logger.Info("Control socket stopped")
 	return err
