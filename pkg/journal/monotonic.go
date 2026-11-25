@@ -22,5 +22,5 @@ func monotonicNanos() int64 {
 		// never observes a zero Mts.
 		return time.Now().UnixNano()
 	}
-	return ts.Sec*int64(time.Second) + ts.Nano()
+	return ts.Nano()
 }

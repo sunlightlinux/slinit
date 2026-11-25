@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestPriorityString(t *testing.T) {
@@ -273,5 +275,24 @@ func TestOmitEmpty(t *testing.T) {
 		if strings.Contains(got, f) {
 			t.Errorf("output %q should not include zero-valued %q", got, f)
 		}
+	}
+}
+
+// monotonicNanos added the seconds twice (ts.Sec*1e9 + ts.Nano(), and
+// Nano already counts them), so Mts ran at double the uptime and jumped
+// a second at every second: wrong in -o short-monotonic, in the binary
+// journal's monotonic field and in __MONOTONIC_TIMESTAMP exports.
+func TestMonotonicNanosIsClockMonotonic(t *testing.T) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		t.Skip(err)
+	}
+	before := ts.Nano()
+	got := monotonicNanos()
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		t.Skip(err)
+	}
+	if after := ts.Nano(); got < before || got > after {
+		t.Fatalf("monotonicNanos() = %d, CLOCK_MONOTONIC read %d then %d", got, before, after)
 	}
 }
