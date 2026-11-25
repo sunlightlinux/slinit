@@ -730,6 +730,14 @@ requires.
 
 ### Fixed
 
+- **Socket-activated services never got `LISTEN_PID`**, so
+  libsystemd's `sd_listen_fds()` returned 0 and the daemon ignored the
+  socket slinit passed it (and then failed to bind the port itself). The
+  variable has to be the service's own pid, known only after the fork;
+  a service given `LISTEN_FDS` (sockets, stored fds, `open-file`) now
+  runs through slinit-runner, which exports its own pid, kept across
+  exec. Functional case 37 checks it.
+
 - **A `run-as` service could not read its own credentials**:
   `/run/credentials` was created 0700 root, so `$CREDENTIALS_DIRECTORY`
   below it was out of reach. It is 0755 now, and a 0700 one left by an

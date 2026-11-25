@@ -1,5 +1,5 @@
 type = process
-command = /bin/sh -c 'echo LISTEN_FDS=$$LISTEN_FDS > /tmp/sock-result; sleep 60'
+command = /bin/sh -c 'echo LISTEN_FDS=$$LISTEN_FDS > /tmp/sock-result; echo $$LISTEN_PID $$$$ > /tmp/sock-pid; exec sleep 60'
 socket-listen = /tmp/sock-svc.sock
 socket-permissions = 0666
 log-type = buffer

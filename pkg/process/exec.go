@@ -176,7 +176,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		}
 		fmt.Fprintf(os.Stderr,
 			"slinit: %s: slinit-runner not found — mlockall/NUMA/THP/debug "+
-				"options were skipped; the service starts without them\n",
+				"options and LISTEN_PID were skipped; the service starts without them\n",
 			params.ServiceName)
 	}
 
@@ -489,7 +489,8 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			}
 			cmd.Env = append(cmd.Env, "LISTEN_FDNAMES="+strings.Join(listenNames, ":"))
 		}
-		// LISTEN_PID will be set after cmd.Start() (see below)
+		// LISTEN_PID is exported by slinit-runner (--listen-pid), which
+		// is the only code that runs as the service's pid before exec.
 	}
 
 	// $NOTIFY_SOCKET for sd_notify FDSTORE=1 messages.
@@ -1013,8 +1014,22 @@ func runnerSecurityFeatures(p ExecParams) []string {
 	return missing
 }
 
+// passesListenFDs reports whether the child gets LISTEN_FDS: sockets,
+// stored fds or OpenFile= entries.
+func passesListenFDs(p ExecParams) bool {
+	if p.SocketFD != nil || len(p.OpenFiles) > 0 {
+		return true
+	}
+	for _, e := range p.StoredFDs {
+		if e.File != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func needsRunnerWrap(p ExecParams) bool {
-	return p.MlockallFlags != 0 || p.NumaMempolicySet ||
+	return passesListenFDs(p) || p.MlockallFlags != 0 || p.NumaMempolicySet ||
 		p.AppArmorProfile != "" || p.SELinuxContext != "" ||
 		p.SMACKProcessLabel != "" ||
 		p.DebugStop || p.MemoryTHP != "" ||
@@ -1257,7 +1272,13 @@ func wrapWithRunner(p ExecParams) []string {
 	if p.Argv0 != "" {
 		args = append(args, "--argv0="+p.Argv0)
 	}
-	// chroot is entered by the runner, not at fork: a chroot at fork
+	// LISTEN_PID must be the service's own pid, which exists only after
+	// the fork, so the runner exports it just before its exec (its pid
+	// is the service's). sd_listen_fds() ignores LISTEN_FDS without it.
+	if passesListenFDs(p) {
+		args = append(args, "--listen-pid")
+	}
+		// chroot is entered by the runner, not at fork: a chroot at fork
 	// would make the kernel look the runner up inside the jail. The
 	// working directory goes with it, since it names a path in the jail.
 	if p.Chroot != "" {

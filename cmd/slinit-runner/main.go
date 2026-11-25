@@ -198,6 +198,8 @@ func run() error {
 		"set PR_SET_NO_NEW_PRIVS before exec; mirrors dinit's options=no-new-privs (run-child-proc.cc:470)")
 	securebits := fs.Int("securebits", -1,
 		"PR_SET_SECUREBITS bitmask to apply before exec; -1 = leave untouched")
+	listenPID := fs.Bool("listen-pid", false,
+		"export LISTEN_PID=<own pid> before exec, for socket-activated services (sd_listen_fds)")
 	chrootDir := fs.String("chroot", "",
 		"enter this directory with chroot(2) after the sandbox and hardening setup, before the credential drop")
 	chdirDir := fs.String("chdir", "",
@@ -474,6 +476,15 @@ func run() error {
 		}
 		if err := setPreloadEnv(mlockLib, *mlockall); err != nil {
 			return fmt.Errorf("mlockall: %w", err)
+		}
+	}
+
+	// LISTEN_PID names the process the LISTEN_FDS are for. Only this
+	// process knows the pid the service will run as (exec keeps it),
+	// which is why slinit leaves it to the runner.
+	if *listenPID {
+		if err := os.Setenv("LISTEN_PID", strconv.Itoa(os.Getpid())); err != nil {
+			return fmt.Errorf("LISTEN_PID: %w", err)
 		}
 	}
 
