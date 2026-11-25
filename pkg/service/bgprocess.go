@@ -1278,8 +1278,11 @@ func (s *BGProcessService) handleUnexpectedTerminationLocked() {
 	s.doStop(false)
 	s.services.processQueuesLocked()
 
-	if s.state.Load() == StateStopping && s.desired.Load() == StateStarted && !s.IsStartPinned() {
-		s.initiateStart()
+	// Waiting for a hard dependent: restart through Stopped(), as dinit
+	// does (see ProcessService.handleTerminationLocked).
+	if s.state.Load() == StateStopping && s.waitingForDeps &&
+		s.desired.Load() == StateStarted && !s.pinnedStopped && !s.restartLimitExhausted {
+		s.Stopped()
 		s.services.processQueuesLocked()
 	}
 }

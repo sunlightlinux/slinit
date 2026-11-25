@@ -3156,10 +3156,17 @@ func (s *ProcessService) handleTerminationLocked(reason StoppedReason) {
 	s.doStop(false)
 	s.services.processQueuesLocked()
 
-	// If after processing queues we're still stopping and desired is STARTED,
-	// the restart will be handled by the state machine
-	if s.state.Load() == StateStopping && s.desired.Load() == StateStarted && !s.IsStartPinned() {
-		s.initiateStart()
+	// Still STOPPING: waiting for a hard dependent to stop. A restart
+	// need not wait for it — dinit's handle_unexpected_termination calls
+	// stopped() here, which "will restart us". Going through Stopped()
+	// rather than initiateStart() clears forceStop (else the relaunch is
+	// stopped again at once), counts the restart and applies
+	// restart-delay. Only when Stopped() will restart: otherwise it
+	// would go STOPPED under a running dependent, and BringDown finishes
+	// the stop once the dependents are down.
+	if s.state.Load() == StateStopping && s.waitingForDeps &&
+		s.desired.Load() == StateStarted && !s.pinnedStopped && !s.restartLimitExhausted {
+		s.Stopped()
 		s.services.processQueuesLocked()
 	}
 }

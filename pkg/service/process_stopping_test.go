@@ -1,0 +1,134 @@
+package service
+
+import (
+	"syscall"
+	"testing"
+	"time"
+)
+
+// stubbornShell ignores the polite stop signals, so a service running it
+// stays STOPPING until its stop-timeout escalates to SIGKILL.
+const stubbornShell = "trap '' TERM INT; while :; do sleep 0.05; done"
+
+// TestCrashWithSlowHardDependentRestartsThroughStopped kills a restart=always
+// service while a hard dependent of it takes its time to stop. The service is
+// left STOPPING and waiting for that dependent; dinit's
+// handle_unexpected_termination (proc-service.cc) calls stopped() here, which
+// "will restart us": force_stop is cleared, the restart is counted, and
+// bring_up honours restart-delay. Calling initiateStart directly skipped all
+// three, so the relaunch came at once and was stopped again by the stale
+// forceStop.
+func TestCrashWithSlowHardDependentRestartsThroughStopped(t *testing.T) {
+	set, _ := newTestSet()
+	a := NewProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sleep", "3600"})
+	a.SetAutoRestart(RestartAlways)
+	a.SetRestartDelay(2 * time.Second)
+	set.AddService(a)
+
+	b := NewProcessService(set, "b")
+	b.SetCommand([]string{"/bin/sh", "-c", stubbornShell})
+	b.SetStopTimeout(1 * time.Second)
+	b.Record().AddDep(a, DepRegular)
+	set.AddService(b)
+	defer func() {
+		set.StopAllServices(ShutdownHalt)
+		waitState(t, b, StateStopped, 5*time.Second)
+		waitState(t, a, StateStopped, 5*time.Second)
+	}()
+
+	set.StartService(a)
+	set.StartService(b)
+	mustReachState(t, b, StateStarted)
+	mustReachState(t, a, StateStarted)
+	time.Sleep(200 * time.Millisecond) // let b's shell install its trap
+	pid1 := lockedPID(set, a)
+	if err := syscall.Kill(pid1, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill %d: %v", pid1, err)
+	}
+
+	killed := time.Now()
+	var relaunched time.Duration
+	for time.Since(killed) < 5*time.Second {
+		if p := lockedPID(set, a); p > 0 && p != pid1 {
+			relaunched = time.Since(killed)
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if relaunched == 0 {
+		t.Fatalf("a was never relaunched; state %v", a.State())
+	}
+	if relaunched < 1500*time.Millisecond {
+		t.Errorf("a relaunched %v after the crash, inside its 2s restart-delay", relaunched)
+	}
+
+	mustReachState(t, a, StateStarted)
+	// b has no restart of its own: the crash takes it down for good.
+	mustReachState(t, b, StateStopped)
+	// Settled: the relaunched process must not have been stopped again.
+	time.Sleep(300 * time.Millisecond)
+	if st := a.State(); st != StateStarted {
+		t.Errorf("a = %v after its restart, want STARTED", st)
+	}
+	if p := lockedPID(set, a); p <= 0 || syscall.Kill(p, 0) != nil {
+		t.Errorf("a has no live process after its restart (pid %d)", p)
+	}
+	if n := a.RestartCount(); n != 1 {
+		t.Errorf("a restart count = %d, want 1", n)
+	}
+}
+
+// lockedDaemonPID reads a bgprocess's daemon pid under queueMu.
+func lockedDaemonPID(set *ServiceSet, s *BGProcessService) int {
+	set.queueMu.RLock()
+	defer set.queueMu.RUnlock()
+	return s.daemonPID
+}
+
+// TestBgDaemonCrashWithSlowHardDependentRestartsThroughStopped is the
+// bgprocess side of TestCrashWithSlowHardDependentRestartsThroughStopped:
+// restarting with initiateStart left forceStop set, so the relaunched
+// daemon was brought down again as soon as it started.
+func TestBgDaemonCrashWithSlowHardDependentRestartsThroughStopped(t *testing.T) {
+	set, _ := newTestSet()
+	pf := t.TempDir() + "/d.pid"
+	a := NewBGProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c", "sleep 3600 & echo $! > " + pf + "; exit 0"})
+	a.SetPIDFile(pf)
+	a.SetAutoRestart(RestartAlways)
+	set.AddService(a)
+
+	b := NewProcessService(set, "b")
+	b.SetCommand([]string{"/bin/sh", "-c", stubbornShell})
+	b.SetStopTimeout(1 * time.Second)
+	b.Record().AddDep(a, DepRegular)
+	set.AddService(b)
+	defer func() {
+		set.StopAllServices(ShutdownHalt)
+		waitState(t, b, StateStopped, 5*time.Second)
+		waitState(t, a, StateStopped, 5*time.Second)
+	}()
+
+	set.StartService(a)
+	set.StartService(b)
+	mustReachState(t, b, StateStarted)
+	mustReachState(t, a, StateStarted)
+	time.Sleep(200 * time.Millisecond) // let b's shell install its trap
+	d1 := lockedDaemonPID(set, a)
+	if err := syscall.Kill(d1, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill %d: %v", d1, err)
+	}
+
+	mustReachState(t, b, StateStopped)
+	time.Sleep(500 * time.Millisecond)
+	if st := a.State(); st != StateStarted {
+		t.Errorf("a = %v after its restart, want STARTED", st)
+	}
+	if d := lockedDaemonPID(set, a); d <= 0 || d == d1 || syscall.Kill(d, 0) != nil {
+		t.Errorf("a has no live new daemon after its restart (pid %d, old %d)", d, d1)
+	}
+	if n := a.RestartCount(); n != 1 {
+		t.Errorf("a restart count = %d, want 1", n)
+	}
+}
