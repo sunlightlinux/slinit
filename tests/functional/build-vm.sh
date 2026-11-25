@@ -72,6 +72,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-supervise-daemon" ./cmd/slinit-supervise-daemon
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-fstabinfo" ./cmd/slinit-fstabinfo
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-mountinfo" ./cmd/slinit-mountinfo
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-getty" ./cmd/slinit-getty
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-einfo" ./cmd/slinit-einfo
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o "${BUILD_DIR}/slinit-shell-var" ./cmd/slinit-shell-var
 # slinit-shutdown: needed for the reboot(8) flag-surface test and any
@@ -207,6 +208,7 @@ install -m 755 "${BUILD_DIR}/slinit-start-stop-daemon" "${ROOTFS_DIR}/usr/bin/sl
 install -m 755 "${BUILD_DIR}/slinit-supervise-daemon" "${ROOTFS_DIR}/usr/bin/slinit-supervise-daemon"
 install -m 755 "${BUILD_DIR}/slinit-fstabinfo" "${ROOTFS_DIR}/usr/bin/slinit-fstabinfo"
 install -m 755 "${BUILD_DIR}/slinit-mountinfo" "${ROOTFS_DIR}/usr/bin/slinit-mountinfo"
+install -m 755 "${BUILD_DIR}/slinit-getty" "${ROOTFS_DIR}/sbin/slinit-getty"
 install -m 755 "${BUILD_DIR}/slinit-einfo" "${ROOTFS_DIR}/usr/bin/slinit-einfo"
 install -m 755 "${BUILD_DIR}/slinit-shell-var" "${ROOTFS_DIR}/usr/bin/slinit-shell-var"
 install -m 755 "${BUILD_DIR}/slinit-shutdown" "${ROOTFS_DIR}/usr/bin/slinit-shutdown"

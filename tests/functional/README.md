@@ -378,6 +378,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 268 | pass-cs-fd-at-boot | `options = pass-cs-fd` works for a boot-started service (`slinitctl --use-passed-cfd`) |
 | 269 | chroot-runner | `chroot` + `no-new-privs`: a runner planted inside the jail never runs; the service runs jailed with NoNewPrivs and `working-dir` resolved in the jail |
 | 270 | postfork-attrs-first-child | a FIFO service's at-once forked child is FIFO 20 (reset-on-fork = no) and has its `rlimit-nofile`: the runner waits at a start gate until slinit has set them |
+| 271 | getty-reclaims-tty | slinit-getty (with `new-session = yes`) takes a stale tty back: root-owned, mode 0620/0600, vhangup survived, tty2 its controlling terminal |
 
 ## How It Works
 

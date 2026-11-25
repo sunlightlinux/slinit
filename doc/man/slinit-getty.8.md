@@ -119,6 +119,7 @@ Serial console on ttyS0 at 115200 baud, as the service description
 */etc/slinit.d/tty-serial*:
 
     type = process
+    new-session = yes
     command = /sbin/slinit-getty ttyS0 115200 vt100
     restart = yes
     restart-limit-count = 0
@@ -127,9 +128,16 @@ Virtual terminal on tty1, as */etc/slinit.d/tty-vt1* (no baud rate
 needed on a VT):
 
     type = process
+    new-session = yes
     command = /sbin/slinit-getty tty1
     restart = yes
     restart-limit-count = 0
+
+**new-session = yes** matters: slinit otherwise starts a service as a
+process-group leader, which cannot create a session, so the tty cannot
+become the controlling terminal of slinit-getty and of the login it
+runs (no job control, no Ctrl-C to the shell's foreground job).
+slinit-getty warns when it finds itself in that situation.
 
 # EXIT STATUS
 

@@ -126,7 +126,16 @@ func run(ttyArg, baud, term string, passEnv bool) error {
 	// was in. Best-effort — if we already own a fresh session
 	// (spawned via Setsid at fork), setsid returns EPERM which is
 	// fine.
-	_, _ = syscall.Setsid()
+	if _, err := syscall.Setsid(); err != nil {
+		// EPERM when already a session leader is fine. A process-group
+		// leader that is not one (a service without new-session = yes)
+		// cannot take a session, so the tty will not become the
+		// controlling terminal of getty or of the login it runs.
+		if sid, _ := unix.Getsid(0); sid != os.Getpid() {
+			fmt.Fprintf(os.Stderr, "slinit-getty: cannot start a session (%v): %s will not "+
+				"be the controlling terminal; run this service with new-session = yes\n", err, ttyPath)
+		}
+	}
 
 	// Open the tty for reading + writing. O_NOCTTY delays the
 	// controlling-terminal assignment so we can decide when to
