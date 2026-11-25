@@ -93,7 +93,8 @@ type nsRun struct {
 	done   chan struct{}
 }
 
-func startNS(t *testing.T, dir, script string) *nsRun {
+// startNS starts script in a new namespace; extra become its fds 3 on.
+func startNS(t *testing.T, dir, script string, extra ...*os.File) *nsRun {
 	t.Helper()
 	bin := nsBinDir(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -103,6 +104,7 @@ func startNS(t *testing.T, dir, script string) *nsRun {
 	r.cmd.Env = append(os.Environ(), "B="+bin, "D="+dir)
 	r.cmd.Stdout = &r.stdout
 	r.cmd.Stderr = &r.stderr
+	r.cmd.ExtraFiles = extra
 	if err := r.cmd.Start(); err != nil {
 		cancel()
 		t.Fatalf("start namespace: %v", err)

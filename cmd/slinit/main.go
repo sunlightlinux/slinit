@@ -1605,13 +1605,59 @@ func main() {
 		logger.Notice("confirm-spawn: enabled — will prompt [y/n] before each service start")
 	}
 
+	// Start control socket server. Before the boot services, as dinit
+	// does: --ready-fd reports the socket as soon as the boot service
+	// is up, which an internal one is at once, and a boot service may
+	// use slinitctl itself.
+	ctx := context.Background()
+	ctrlServer := control.NewServer(serviceSet, sock, logger)
+
+	// Wire pin-intent persistence when the operator opted in with
+	// --persist-intent. Empty dir means "disabled" and every hook
+	// site short-circuits — no runtime cost when the feature isn't
+	// in use.
+	pinStore := persist.NewPinStore(persistIntentDir)
+	ctrlServer.Pins = pinStore
+	watcherCtrlServer.Store(ctrlServer)
+
+	// The event loop a shutdown is handed to is set up after the boot
+	// services are started. A request arriving before that is held
+	// and handed over then, rather than acknowledged and dropped.
+	var heldShutdown struct {
+		sync.Mutex
+		st    service.ShutdownType
+		flags uint8
+		held  bool
+	}
+	ctrlServer.ShutdownFunc = func(st service.ShutdownType, flags uint8) {
+		heldShutdown.Lock()
+		defer heldShutdown.Unlock()
+		if !heldShutdown.held {
+			heldShutdown.st, heldShutdown.flags, heldShutdown.held = st, flags, true
+		}
+	}
+
+	if err := ctrlServer.Start(ctx); err != nil {
+		logger.Error("Failed to start control socket: %v", err)
+		// Non-fatal: continue without control socket
+	} else {
+		defer ctrlServer.Stop()
+	}
+
+	// Wire pass-cs-fd: when a service creates a socketpair, the server end
+	// becomes a control connection handled by the control server. Before
+	// the boot services start, or theirs is closed unserved.
+	serviceSet.OnPassCSFD = func(conn net.Conn) {
+		ctrlServer.HandlePassCSFD(conn)
+	}
+
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args).
 	// Wrapped in a retry loop so the rescue menu's "continue" action
 	// (operator dropped to shell, fixed a typo) can re-attempt without
 	// re-execing slinit — see recovery.Present.
 	//
 	// Skipped in rescue/emergency mode — those paths spawn the rescue
-	// shell after ctrlServer.Start below and don't touch the service
+	// shell below and don't touch the service
 	// graph. Nothing to load or restart.
 	var startedAny bool
 	var loadErrors []string
@@ -1748,25 +1794,6 @@ func main() {
 		defer stopStallWatch()
 	}
 
-	// Start control socket server
-	ctx := context.Background()
-	ctrlServer := control.NewServer(serviceSet, sock, logger)
-
-	// Wire pin-intent persistence when the operator opted in with
-	// --persist-intent. Empty dir means "disabled" and every hook
-	// site short-circuits — no runtime cost when the feature isn't
-	// in use.
-	pinStore := persist.NewPinStore(persistIntentDir)
-	ctrlServer.Pins = pinStore
-	watcherCtrlServer.Store(ctrlServer)
-
-	if err := ctrlServer.Start(ctx); err != nil {
-		logger.Error("Failed to start control socket: %v", err)
-		// Non-fatal: continue without control socket
-	} else {
-		defer ctrlServer.Stop()
-	}
-
 	// --metrics-listen: a Prometheus endpoint, off unless asked for.
 	// Non-fatal on failure — an address already in use is a reason to
 	// lose the metrics, not the boot.
@@ -1806,12 +1833,6 @@ func main() {
 		}
 	} else {
 		logger.Warn("Persist: failed to load pin intents: %v", err)
-	}
-
-	// Wire pass-cs-fd: when a service creates a socketpair, the server end
-	// becomes a control connection handled by the control server.
-	serviceSet.OnPassCSFD = func(conn net.Conn) {
-		ctrlServer.HandlePassCSFD(conn)
 	}
 
 	// Boot loop: runs the event loop, handles boot failures with recovery
@@ -2075,6 +2096,14 @@ func main() {
 				runRescueShell(label, logger)
 				loop.InitiateShutdown(service.ShutdownReboot)
 			}()
+		}
+
+		heldShutdown.Lock()
+		held, heldType, heldFlags := heldShutdown.held, heldShutdown.st, heldShutdown.flags
+		heldShutdown.held = false
+		heldShutdown.Unlock()
+		if held {
+			ctrlServer.ShutdownFunc(heldType, heldFlags)
 		}
 
 		if err := loop.Run(ctx); err != nil {

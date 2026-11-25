@@ -1147,6 +1147,17 @@ requires.
   nothing), and it pointed its stdout and stderr at `/dev/console`,
   so the runtime's log stream got none of its output. Both are now
   done only by a PID 1 that is not in container mode.
+- **`--ready-fd` reported the control socket before it existed, and
+  `pass-cs-fd` did not work for a service started at boot.** The boot
+  services were started before the control server: an internal boot
+  service reached STARTED, and the readiness notification went out,
+  while the socket was not there yet (measured: a connect at the
+  moment of the notification failed with "no such file or
+  directory"), and a boot service with `options = pass-cs-fd` had its
+  connection closed unserved, so its `slinitctl --use-passed-cfd`
+  failed with "broken pipe". The control server is now listening
+  before the boot services start, as in dinit; a shutdown requested
+  before the event loop is running is carried out once it is.
 
 ## [4.0.2] — 2026-11-22
 
