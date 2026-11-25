@@ -186,7 +186,7 @@ func (r *Receiver) readLoop(ctx context.Context) {
 			recvErr error
 		)
 		ctlErr := rawConn.Read(func(fd uintptr) bool {
-			n, oobn, _, _, recvErr = unix.Recvmsg(int(fd), bodyBuf, oobBuf, 0)
+			n, oobn, _, _, recvErr = unix.Recvmsg(int(fd), bodyBuf, oobBuf, unix.MSG_CMSG_CLOEXEC)
 			if recvErr == unix.EAGAIN || recvErr == unix.EWOULDBLOCK {
 				// Netpoller will call us back when data arrives.
 				return false

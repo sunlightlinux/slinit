@@ -115,7 +115,7 @@ func (l *NotifySocketListener) readLoop(handler NotifySocketHandler) {
 			recvErr error
 		)
 		ctlErr := rawConn.Read(func(fd uintptr) bool {
-			n, oobn, _, _, recvErr = unix.Recvmsg(int(fd), bodyBuf, oobBuf, 0)
+			n, oobn, _, _, recvErr = unix.Recvmsg(int(fd), bodyBuf, oobBuf, unix.MSG_CMSG_CLOEXEC)
 			// Net.UnixConn puts the underlying fd in non-blocking mode
 			// so it can integrate with the netpoller. When there is no
 			// datagram queued Recvmsg returns EAGAIN; tell the runtime
