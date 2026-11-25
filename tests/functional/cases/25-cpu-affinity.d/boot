@@ -1,4 +1,5 @@
 type = internal
 depends-on: system-init
 waits-for: cpu-test
+waits-for: cpu-free
 waits-for: test-runner

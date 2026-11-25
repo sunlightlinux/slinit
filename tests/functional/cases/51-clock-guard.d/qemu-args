@@ -1,0 +1,2 @@
+# Boot with the RTC far in the past, as a board with a dead CMOS battery does.
+-rtc base=2010-01-01T00:00:00

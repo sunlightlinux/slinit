@@ -132,7 +132,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 22 | chain-to | Service chaining (chain-to directive) |
 | 23 | start-timeout | Start timeout handling |
 | 24 | working-dir | Working directory for service processes |
-| 25 | cpu-affinity | CPU pinning via sched_setaffinity |
+| 25 | cpu-affinity | CPU pinning via sched_setaffinity, on a 2-CPU VM: the pinned service runs on CPU 1 only, an unpinned sibling on 0-1 |
 | 26 | stop-command | Stop-command execution before signal |
 | 27 | consumer-of | Pipe logging (log-type=pipe + consumer-of) |
 | 28 | env-file | Environment file loading into service |
@@ -158,7 +158,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 48 | new-session | New session (setsid) for service process |
 | 49 | close-fds | Close stdin/stdout/stderr (redirect to /dev/null) |
 | 50 | nice-oom-ioprio | Nice value and OOM score adjustment |
-| 51 | clock-guard | Boot-time clock protection (floor + timestamp file) |
+| 51 | clock-guard | Boot with the RTC at 2010: the guard moves the clock forward to the seeded `/var/lib/slinit/clock` stamp (not the 2024 floor, not host time) and rewrites the file |
 | 52 | catch-all-logger | Early-boot catch-all logger captures stdout/stderr to `/run/slinit/catch-all.log` |
 | 53 | restart-backoff | Restart-delay step + cap apply progressive backoff between restarts |
 | 54 | overlay-config | `conf.d/` overlay overrides values in the base service description |
@@ -430,6 +430,15 @@ test_summary
 Tests that need custom services can include a `.d/` directory alongside the
 `.sh` file (e.g., `05-dependencies.d/` contains service files loaded into
 `/etc/slinit.d/` for that test).
+
+A few names inside the `.d/` directory are not services:
+
+- `initd/` goes to `/etc/init.d/`, `systemd/` to `/etc/systemd/system/`.
+- `rootfs/` is laid over the guest root as-is, for files a case needs
+  outside `/etc` (51 seeds `/var/lib/slinit/clock`).
+- `qemu-args` holds extra QEMU options, whitespace-separated, `#` lines
+  ignored. 25 asks for `-smp 2` so an affinity mask can be wrong; 51 for
+  `-rtc base=2010-01-01T00:00:00` so the clock guard has something to fix.
 
 ## Debugging
 
