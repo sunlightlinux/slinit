@@ -39,6 +39,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -519,6 +520,20 @@ func run() error {
 	// before the service ever ran. The install also sets
 	// PR_SET_NO_NEW_PRIVS, so a service run as another user can still
 	// install it without CAP_SYS_ADMIN.
+	// A bare command name is looked up in the service's PATH, as
+	// execvp does for dinit and exec.Command does for a service slinit
+	// starts directly. Here, after the chroot and the credential drop,
+	// so it is found inside the jail and as the service's user; before
+	// the seccomp filters, which may refuse the stat calls.
+	execPath := args[0]
+	if !strings.Contains(execPath, "/") {
+		resolved, err := exec.LookPath(execPath)
+		if err != nil {
+			return fmt.Errorf("exec %s: %w", execPath, err)
+		}
+		execPath = resolved
+	}
+
 	// io_uring filters first: the system call filter below may refuse
 	// io_uring_register(), which registering them needs.
 	if err := applyIOUring(ioUringSpec{
@@ -540,8 +555,8 @@ func run() error {
 	}); err != nil {
 		return err
 	}
-	if err := syscall.Exec(args[0], execArgv, os.Environ()); err != nil {
-		return fmt.Errorf("exec %s: %w", args[0], err)
+	if err := syscall.Exec(execPath, execArgv, os.Environ()); err != nil {
+		return fmt.Errorf("exec %s: %w", execPath, err)
 	}
 	return nil // unreachable
 }

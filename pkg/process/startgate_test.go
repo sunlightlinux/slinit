@@ -60,3 +60,36 @@ func TestPostForkAttrsReachTheFirstChild(t *testing.T) {
 		}
 	}
 }
+
+// A bare command name worked for a service slinit started directly
+// (exec.Command looks it up in PATH) and failed once the same service
+// went through the runner for nice/rlimits/sockets: the runner called
+// execve with the bare name. It now looks it up as execvp does.
+func TestRunnerResolvesBareCommandName(t *testing.T) {
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go toolchain not in PATH")
+	}
+	dir := t.TempDir()
+	runner := filepath.Join(dir, "slinit-runner")
+	build := exec.Command(gobin, "build", "-o", runner, "../../cmd/slinit-runner")
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build runner: %v\n%s", err, out)
+	}
+	out := filepath.Join(dir, "out")
+	nice := 5
+	_, ch, err := StartProcess(ExecParams{
+		RunnerPath: runner,
+		Nice:       &nice,
+		Command:    []string{"sh", "-c", "echo $0 > " + out},
+	})
+	if err != nil {
+		t.Fatalf("StartProcess: %v", err)
+	}
+	exit := <-ch
+	b, _ := os.ReadFile(out)
+	if got := strings.TrimSpace(string(b)); got != "sh" {
+		t.Errorf("service did not run with argv[0] sh (exit %v, wrote %q)", exit.Status, got)
+	}
+}

@@ -140,3 +140,26 @@ func TestOpenParentRejectsNoName(t *testing.T) {
 		}
 	}
 }
+
+// A trailing slash ("d /var/lib/xkb/" in tmpfiles.d) split into Dir
+// "/var/lib/xkb" and Base "xkb", so the entry became /var/lib/xkb/xkb.
+func TestOpenParentTrailingSlash(t *testing.T) {
+	dir := t.TempDir()
+	fd, name, err := MkdirParent(filepath.Join(dir, "x")+"/", 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if name != "x" {
+		t.Fatalf("name = %q, want x", name)
+	}
+	if err := unix.Mkdirat(fd, name, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "x", "x")); err == nil {
+		t.Error("created x/x for a path with a trailing slash")
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "x")); err != nil || !fi.IsDir() {
+		t.Errorf("x not created where asked: %v", err)
+	}
+}

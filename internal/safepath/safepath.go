@@ -62,6 +62,10 @@ func MkdirParent(path string, perm uint32) (int, string, error) {
 }
 
 func openParent(path string, create bool, perm uint32) (int, string, error) {
+	// Clean first: for "/var/lib/xkb/" Base is "xkb" but Dir is
+	// "/var/lib/xkb", so the entry was created as /var/lib/xkb/xkb.
+	// tmpfiles.d lines with a trailing slash are common.
+	path = filepath.Clean(path)
 	name := filepath.Base(path)
 	if name == "/" || name == "." || name == ".." {
 		return -1, "", &os.PathError{Op: "open parent", Path: path, Err: unix.EINVAL}
