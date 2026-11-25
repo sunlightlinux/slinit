@@ -89,6 +89,10 @@ path.
     would make the helper treat whatever file descriptor 3 happens to be
     as a listener.
 
+None of **LISTEN_FDS**, **LISTEN_PID** or **LISTEN_FDNAMES** is passed
+on to *PROGRAM*: it gets a connected socket on its standard input,
+output and error, not the listeners they describe.
+
 ## EXIT STATUS
 
 Non-zero on a configuration or setup error: no **LISTEN_FDS**, a

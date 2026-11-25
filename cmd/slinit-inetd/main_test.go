@@ -378,3 +378,36 @@ func TestSourceLimiter(t *testing.T) {
 		t.Error("release did not free a slot")
 	}
 }
+
+// TestEndToEndChildHasNoListenEnv: the per-connection child gets a
+// connected socket on stdio, not slinit's listeners, so LISTEN_FDS,
+// LISTEN_PID and LISTEN_FDNAMES must not reach it.
+func TestEndToEndChildHasNoListenEnv(t *testing.T) {
+	bin := buildHelper(t)
+	t.Setenv("LISTEN_FDNAMES", "web")
+	addr, _ := startHelper(t, bin, "--quiet", "--", "/bin/sh", "-c",
+		`echo "${LISTEN_FDS-unset} ${LISTEN_PID-unset} ${LISTEN_FDNAMES-unset}"`)
+
+	var conn net.Conn
+	var err error
+	for i := 0; i < 50; i++ {
+		conn, err = net.Dial("tcp", addr)
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got := strings.TrimSpace(string(buf[:n])); got != "unset unset unset" {
+		t.Errorf("child saw LISTEN_FDS LISTEN_PID LISTEN_FDNAMES = %q, want all unset", got)
+	}
+}

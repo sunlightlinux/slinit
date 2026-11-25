@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -293,6 +294,7 @@ func handle(conn net.Conn, argv []string, quiet bool) error {
 	defer f.Close()
 
 	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = childEnv(os.Environ())
 	cmd.Stdin = f
 	cmd.Stdout = f
 	cmd.Stderr = f
@@ -300,6 +302,23 @@ func handle(conn net.Conn, argv []string, quiet bool) error {
 		return fmt.Errorf("starting %s: %w", argv[0], err)
 	}
 	return cmd.Wait()
+}
+
+// childEnv is env without the socket-activation variables. They
+// describe the listeners slinit passed us, not the connection the
+// child gets on stdio; left in, a child that speaks the protocol (or
+// a library acting on it) would take fd 3 for a listener, and
+// LISTEN_PID's check cannot save it once a wrapper sits in between.
+func childEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "LISTEN_FDS=") || strings.HasPrefix(kv, "LISTEN_PID=") ||
+			strings.HasPrefix(kv, "LISTEN_FDNAMES=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // connFile returns the connection's fd as a file. net.Conn has no such
