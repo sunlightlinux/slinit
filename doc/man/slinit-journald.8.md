@@ -108,8 +108,9 @@ before the daemon bound to its events socket are not lost.
     Default */run/slinit/events.sock*.
 
 **-admin-socket** *PATH*
-:   UNIX SOCK_DGRAM admin control socket, mode 0666. Accepts the
-    commands **flush** (sent by **slinit-journalctl --flush**) and
+:   UNIX SOCK_DGRAM admin control socket, mode 0600; commands from
+    any uid other than root (or journald's own) are refused and logged.
+    Accepts the commands **flush** (sent by **slinit-journalctl --flush**) and
     **relinquish-var** (sent by **--relinquish-var**, and by
     **--smart-relinquish-var** when */var* is a separate mount);
     **smart-relinquish** is accepted as an alias. Default */run/slinit-journald.ctl*;

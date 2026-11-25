@@ -594,31 +594,25 @@ Flags:
 // Unrecognised commands are logged and ignored. The socket is
 // removed on daemon exit via the caller's defer.
 func runAdminSocket(path string, g *guardedSink) {
-	// Best-effort unlink any leftover from a previous run.
-	_ = os.Remove(path)
-	addr, err := net.ResolveUnixAddr("unixgram", path)
+	conn, err := listenAdminSocket(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "slinit-journald: admin socket resolve %s: %v\n", path, err)
-		return
-	}
-	conn, err := net.ListenUnixgram("unixgram", addr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "slinit-journald: admin socket bind %s: %v\n", path, err)
+		fmt.Fprintf(os.Stderr, "slinit-journald: %v\n", err)
 		return
 	}
 	defer conn.Close()
-	// Loosen perms so a non-root operator running `slinit-journalctl
-	// --flush` can send commands. Datagram content is trusted by
-	// design — same trust boundary as SIGUSR1/2 via kill().
-	_ = os.Chmod(path, 0o666)
 	fmt.Fprintf(os.Stderr, "slinit-journald: admin socket listening on %s\n", path)
 
 	buf := make([]byte, 128)
+	oob := make([]byte, syscall.CmsgSpace(syscall.SizeofUcred))
 	for {
-		n, _, err := conn.ReadFrom(buf)
+		n, uid, err := readAdminDatagram(conn, buf, oob)
 		if err != nil {
 			// Socket closed on shutdown — exit quietly.
 			return
+		}
+		if !adminSenderAllowed(uid) {
+			fmt.Fprintf(os.Stderr, "slinit-journald: admin: refused command from uid %d\n", uid)
+			continue
 		}
 		cmd := strings.TrimSpace(string(buf[:n]))
 		switch cmd {
@@ -638,6 +632,69 @@ func runAdminSocket(path string, g *guardedSink) {
 			fmt.Fprintf(os.Stderr, "slinit-journald: admin: unknown command %q\n", cmd)
 		}
 	}
+}
+
+// listenAdminSocket binds the admin socket readable and writable by its
+// owner only, with SO_PASSCRED on so every command carries its sender's
+// credentials. Both flush and relinquish-var move the journal between
+// /var and tmpfs, so only root may send them: these are the commands
+// journalctl --flush and --relinquish-var send, and systemd-journald
+// takes them from root alone.
+func listenAdminSocket(path string) (*net.UnixConn, error) {
+	// Best-effort unlink any leftover from a previous run.
+	_ = os.Remove(path)
+	addr, err := net.ResolveUnixAddr("unixgram", path)
+	if err != nil {
+		return nil, fmt.Errorf("admin socket resolve %s: %w", path, err)
+	}
+	conn, err := net.ListenUnixgram("unixgram", addr)
+	if err != nil {
+		return nil, fmt.Errorf("admin socket bind %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("admin socket chmod %s: %w", path, err)
+	}
+	rc, err := conn.SyscallConn()
+	if err == nil {
+		cerr := rc.Control(func(fd uintptr) {
+			err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_PASSCRED, 1)
+		})
+		if cerr != nil {
+			err = cerr
+		}
+	}
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("admin socket SO_PASSCRED %s: %w", path, err)
+	}
+	return conn, nil
+}
+
+// readAdminDatagram reads one command and the uid the kernel stamped on
+// it. A datagram without credentials is an error, never a pass.
+func readAdminDatagram(conn *net.UnixConn, buf, oob []byte) (int, uint32, error) {
+	for {
+		n, oobn, _, _, err := conn.ReadMsgUnix(buf, oob)
+		if err != nil {
+			return 0, 0, err
+		}
+		msgs, err := syscall.ParseSocketControlMessage(oob[:oobn])
+		if err == nil {
+			for i := range msgs {
+				if cred, err := syscall.ParseUnixCredentials(&msgs[i]); err == nil {
+					return n, cred.Uid, nil
+				}
+			}
+		}
+		fmt.Fprintln(os.Stderr, "slinit-journald: admin: dropped a command without credentials")
+	}
+}
+
+// adminSenderAllowed: root, or the uid journald itself runs as (which
+// already owns the journal files).
+func adminSenderAllowed(uid uint32) bool {
+	return uid == 0 || uid == uint32(os.Geteuid())
 }
 
 func replayBacklog(sockPath string, sink journald.Sink) (int, error) {
