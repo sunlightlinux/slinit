@@ -1808,6 +1808,37 @@ func TestPinnedStartedReply(t *testing.T) {
 	}
 }
 
+// `slinitctl --force stop` stops a service pinned started, as
+// slinitctl(8) documents. It used to ACK and leave the service STARTED.
+func TestForceStopPinnedStarted(t *testing.T) {
+	server, sockPath := setupTestServer(t)
+	defer server.Stop()
+
+	svc := service.NewInternalService(server.services, "pinforce-svc")
+	server.services.AddService(svc)
+
+	conn := connectTest(t, sockPath)
+	defer conn.Close()
+
+	handle := findHandle(t, conn, "pinforce-svc")
+	startPayload := make([]byte, 5)
+	binary.LittleEndian.PutUint32(startPayload, handle)
+	startPayload[4] = 0x01 // pin
+	WritePacket(conn, CmdStartService, startPayload)
+	readReply(t, conn) // ACK
+
+	stopPayload := make([]byte, 5)
+	binary.LittleEndian.PutUint32(stopPayload, handle)
+	stopPayload[4] = 0x02 // force
+	WritePacket(conn, CmdStopService, stopPayload)
+	if rply, _ := readReply(t, conn); rply != RplyACK {
+		t.Fatalf("force stop: expected ACK (%d), got %d", RplyACK, rply)
+	}
+	if st := svc.State(); st != service.StateStopped {
+		t.Errorf("force stop of a pinned-started service left it %v", st)
+	}
+}
+
 func TestQueryDependencies(t *testing.T) {
 	server, sockPath := setupTestServer(t)
 	defer server.Stop()

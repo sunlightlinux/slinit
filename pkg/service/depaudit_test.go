@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 // Regression tests from the dependency-graph audit: each one reproduced a
@@ -177,5 +178,104 @@ func TestDepAudit_FailedForcedStopMarksDependentDepFailed(t *testing.T) {
 	if b.State() != StateStopped || b.StopReason() != ReasonDepFailed {
 		logSvcs(t, a, b)
 		t.Errorf("B: state %v reason %v; want STOPPED dependency-failed", b.State(), b.StopReason())
+	}
+}
+
+// `slinitctl --force stop A` must stop A. ForceStopService only called
+// ForcedStop, which leaves A's desired state STARTED, so a
+// restart=always A, or A held by a restart=always dependent, came
+// straight back. dinit's control.cc stops with stop(true) and then
+// forced_stop().
+func TestDepAudit_ForceStopWithRestartAlwaysDependent(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B")
+	a, b := sv[0], sv[1]
+	b.AddDep(a, DepRegular)
+	b.SetAutoRestart(RestartAlways)
+	set.StartService(a)
+	set.StartService(b)
+	set.ForceStopService(a)
+	if a.State() != StateStopped || b.State() != StateStopped {
+		logSvcs(t, a, b)
+		t.Fatalf("--force stop A: A=%v B=%v; want both STOPPED", a.State(), b.State())
+	}
+	// Nothing failed: the operator asked for the stop.
+	if b.IsFailed() {
+		t.Errorf("B reports reason %v after A was stopped on request", b.StopReason())
+	}
+	if n := set.CountActiveServices(); n != 0 {
+		t.Errorf("CountActiveServices=%d after both stopped", n)
+	}
+}
+
+func TestDepAudit_ForceStopRestartAlwaysSelf(t *testing.T) {
+	set, _ := newTestSet()
+	a := addTestSvcs(t, set, "A")[0]
+	a.SetAutoRestart(RestartAlways)
+	set.StartService(a)
+	set.ForceStopService(a)
+	if a.State() != StateStopped {
+		t.Errorf("--force stop of restart=always A: %v (BringUp count %d)", a.State(), a.upCount)
+	}
+}
+
+func TestDepAudit_ForceStopRestartAlwaysProcess(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "p")
+	svc.SetCommand([]string{"/bin/sleep", "60"})
+	svc.SetAutoRestart(RestartAlways)
+	set.AddService(svc)
+	set.StartService(svc)
+	waitForNewPID(set, svc, 0, 2*time.Second)
+	t.Cleanup(func() { set.StopService(svc); waitState(t, svc, StateStopped, 3*time.Second) })
+	set.ForceStopService(svc)
+	if st := waitState(t, svc, StateStopped, 3*time.Second); st != StateStopped {
+		t.Fatalf("--force stop of a restart=always process: %v", st)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if st := svc.State(); st != StateStopped {
+		t.Errorf("restarted after --force stop: %v (restarts %d)", st, svc.RestartCount())
+	}
+}
+
+// slinitctl(8): --force stops the service "even when it is pinned
+// started", and dependents are force-stopped "pins and all".
+func TestDepAudit_ForceStopPinnedStarted(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B")
+	a, b := sv[0], sv[1]
+	b.AddDep(a, DepRegular)
+	set.StartService(b)
+	set.PinStartService(a)
+	set.ForceStopService(a)
+	if a.State() != StateStopped || b.State() != StateStopped {
+		logSvcs(t, a, b)
+		t.Fatalf("--force stop of pinned A: A=%v B=%v", a.State(), b.State())
+	}
+	if a.IsStartPinned() {
+		t.Errorf("A still start-pinned after --force stop")
+	}
+}
+
+func TestDepAudit_ForceStopPinnedDependent(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B", "C")
+	a, b, c := sv[0], sv[1], sv[2]
+	b.AddDep(a, DepRegular)
+	c.AddDep(b, DepRegular)
+	set.StartService(c)
+	set.PinStartService(c) // A and B inherit the pin
+	set.ForceStopService(a)
+	if a.State() != StateStopped || b.State() != StateStopped || c.State() != StateStopped {
+		logSvcs(t, a, b, c)
+		t.Fatalf("--force stop A under pinned C: A=%v B=%v C=%v", a.State(), b.State(), c.State())
+	}
+	for _, s := range sv {
+		if s.IsStartPinned() {
+			t.Errorf("%s still start-pinned", s.Name())
+		}
+	}
+	if n := set.CountActiveServices(); n != 0 {
+		t.Errorf("CountActiveServices=%d", n)
 	}
 }

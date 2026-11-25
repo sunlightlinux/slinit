@@ -736,6 +736,18 @@ requires.
   (`<date>.<ns>.jsonl` with its `.idx`), so both boots are kept and read
   in the order they were written; the cross-device copy no longer
   truncates an existing file either.
+- **`slinitctl --force stop` did not stop a restart=always or pinned
+  service.** The forced stop only marked the service and its dependents
+  for a forced stop and left the service wanted: a `restart = always`
+  service, or one held by a `restart = always` dependent, came straight
+  back, and a service pinned started stayed STARTED although
+  slinitctl(8) says `--force` stops it "even when it is pinned started".
+  It now stops the service the way a plain stop does and then forces
+  it, as dinit's stop command does (`stop(true)`, then
+  `forced_stop()`), after clearing the start pins of the service and of
+  the hard dependents that go down with it, as the man page promises.
+  A pin saved for the next boot is not touched; `slinitctl unpin`
+  still clears that.
 - **`slinitctl --force stop` could mark a service failed that had not
   failed.** When a forced stop reached a dependency whose own target was
   STOPPED, every hard dependent was given the `dependency-failed` reason,
