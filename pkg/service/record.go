@@ -168,6 +168,12 @@ type ServiceRecord struct {
 	deptPinnedStarted bool
 	markedDown        bool // 'down' file exists — don't auto-start
 
+	// depsStartedFrom is where checkDepsStarted resumes: every edge in
+	// dependsOn[:depsStartedFrom] has WaitingOn false. Anything that
+	// sets WaitingOn on one of our edges, or removes an edge, resets it
+	// to 0 (appending keeps it valid). Under queueMu.
+	depsStartedFrom int
+
 	// Waiting flags
 	waitingForDeps      bool
 	waitingForConsole   bool
@@ -3142,6 +3148,7 @@ func (sr *ServiceRecord) initiateStart() {
 
 func (sr *ServiceRecord) startCheckDependencies() bool {
 	allStarted := true
+	sr.depsStartedFrom = 0
 
 	for _, dep := range sr.dependsOn {
 		to := dep.To
@@ -3177,6 +3184,7 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 			from := dept.From.Record()
 			if from.state.Load() == StateStarting && from.waitingForDeps {
 				dept.WaitingOn = true
+				from.depsStartedFrom = 0
 			}
 		}
 	}
@@ -3184,9 +3192,13 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 	return allStarted
 }
 
+// checkDepsStarted reports whether no dependency is still waited on.
+// It resumes where the last call stopped (depsStartedFrom): rescanning
+// from the first edge made a start waiting on N dependencies that come
+// up in order cost O(N^2).
 func (sr *ServiceRecord) checkDepsStarted() bool {
-	for _, dep := range sr.dependsOn {
-		if dep.WaitingOn {
+	for ; sr.depsStartedFrom < len(sr.dependsOn); sr.depsStartedFrom++ {
+		if sr.dependsOn[sr.depsStartedFrom].WaitingOn {
 			return false
 		}
 	}
@@ -4044,6 +4056,7 @@ func (sr *ServiceRecord) rmDepByIndex(i int) {
 	}
 
 	sr.dependsOn = append(sr.dependsOn[:i], sr.dependsOn[i+1:]...)
+	sr.depsStartedFrom = 0
 
 	// A start waiting on this dependency has nothing left to wait for
 	// from it: let the start re-check the dependencies it still has,
@@ -4063,6 +4076,7 @@ func (sr *ServiceRecord) SetDependents(deps []*ServiceDep) {
 // ClearDependencies removes all dependencies without updating the target's dependents.
 func (sr *ServiceRecord) ClearDependencies() {
 	sr.dependsOn = nil
+	sr.depsStartedFrom = 0
 }
 
 // HasLoneRef returns true if this service has no significant references beyond
@@ -4103,6 +4117,7 @@ func (sr *ServiceRecord) PrepareForUnload() {
 		}
 	}
 	sr.dependsOn = nil
+	sr.depsStartedFrom = 0
 
 	// Remove ourselves from each dependent's dependsOn list
 	for _, dept := range sr.dependents {
@@ -4110,6 +4125,7 @@ func (sr *ServiceRecord) PrepareForUnload() {
 		for j, d := range fromRec.dependsOn {
 			if d == dept {
 				fromRec.dependsOn = append(fromRec.dependsOn[:j], fromRec.dependsOn[j+1:]...)
+				fromRec.depsStartedFrom = 0
 				break
 			}
 		}
