@@ -460,46 +460,12 @@ func (ss *ServiceSet) StopService(svc Service) {
 	ss.processQueuesLocked()
 }
 
-// ForceStopService stops a service and all its hard dependents (the
-// `slinitctl --force stop` path). As slinitctl(8) documents, the stop
-// goes through even when the service, or a hard dependent stopping with
-// it, is pinned started: those start pins are cleared first. Then, as
-// dinit's control.cc does for a stop, stop(true) followed by
-// forced_stop(): without the stop(true) the target stayed STARTED, so
-// a restart=always service (or one held by a restart=always dependent)
-// simply came back.
+// ForceStopService force-stops a service and all its dependents.
 func (ss *ServiceSet) ForceStopService(svc Service) {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
-	if unpinForForcedStop(svc, map[Service]bool{}) {
-		// Settle the inherited pins before the stop looks at them.
-		ss.processQueuesLocked()
-	}
-	svc.Stop(true)
 	svc.Record().ForcedStop()
 	ss.processQueuesLocked()
-}
-
-// unpinForForcedStop clears the start pin of svc and of every service
-// that depends on it, directly or not, through a hard dependency. It
-// reports whether any pin was cleared. Caller holds queueMu.
-func unpinForForcedStop(svc Service, seen map[Service]bool) bool {
-	if seen[svc] {
-		return false
-	}
-	seen[svc] = true
-	rec := svc.Record()
-	cleared := false
-	for _, dept := range rec.dependents {
-		if dept.IsHard() && unpinForForcedStop(dept.From, seen) {
-			cleared = true
-		}
-	}
-	if rec.pinnedStarted {
-		rec.Unpin()
-		cleared = true
-	}
-	return cleared
 }
 
 // PinStartService pins the service in started state and drains the

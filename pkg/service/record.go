@@ -3844,22 +3844,20 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 						depFrom.stopReason = ReasonNormal
 					}
 					depFrom.UnrecoverableStop()
-				} else if depFrom.desired.Load() == StateStarted &&
-					depFrom.state.Load() != StateStopping &&
-					(depFrom.state.Load() != StateStarting || !depFrom.IsFundamentallyStopped()) {
+				} else {
 					// The path a dying dependency takes: its desired
 					// state is still STARTED here. dependency-fails is
-					// decided on this branch in dinit too. As in dinit,
-					// a dependent already stopping keeps its stop (and
-					// the reason it is stopping for), and one still
-					// waiting for its dependencies has not started
-					// anything: it is left to wait for this service to
-					// come back rather than have its start cancelled.
+					// decided on this branch in dinit too.
 					if depFrom.failureConditions.Dependency {
 						if depFailure {
 							depFrom.stopReason = ReasonDepFailed
 							depFrom.depRestartDenied = depRestartDenied
-						} else {
+						} else if depFrom.stopReason != ReasonDepFailed ||
+							depFrom.state.Load() != StateStopping {
+							// A dependent still stopping for this failure
+							// keeps it. A restart that outruns the dependent
+							// brings this service here a second time, its
+							// exit status gone, looking like a clean stop.
 							depFrom.stopReason = ReasonNormal
 						}
 					}
@@ -3878,12 +3876,7 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 						depFrom.propStop = true
 						sr.services.AddPropQueue(dept.From)
 					}
-				} else if restartDeps && depFrom.state.Load() != StateStopping &&
-					depFrom.desired.Load() == StateStarted &&
-					(depFrom.state.Load() != StateStarting || !depFrom.IsFundamentallyStopped()) {
-					// Same guard as the forced stop above (dinit puts
-					// restart_deps under it): a dependent still waiting
-					// for its dependencies is not restarted.
+				} else if restartDeps && dept.From.Record().state.Load() != StateStopping {
 					depFrom.stopReason = ReasonDepRestart
 					depFrom.inUserRestart = true
 					depFrom.propStop = true

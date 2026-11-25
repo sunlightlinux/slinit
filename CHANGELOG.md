@@ -749,27 +749,6 @@ requires.
   link but not the wait, so the service never re-checked its remaining
   dependencies and never finished starting. It now goes on with the
   dependencies it still has. (dinit has the same gap.)
-- **A dependency's crash or restart cancelled a dependent still waiting
-  to start.** When a `restart = always` dependency died, or was
-  restarted, while a hard dependent was STARTING but still waiting for
-  another, slower dependency, the dependent was force-stopped: its
-  start was cancelled, its activation dropped, and it never came up —
-  taking the restarted dependency down with it, as nothing required it
-  any more. Such a dependent has started nothing, so, as in dinit, it is
-  now left waiting and starts once its dependencies are up; a dependent
-  already stopping is likewise left to finish its stop.
-- **`slinitctl --force stop` did not stop a restart=always or pinned
-  service.** The forced stop only marked the service and its dependents
-  for a forced stop and left the service wanted: a `restart = always`
-  service, or one held by a `restart = always` dependent, came straight
-  back, and a service pinned started stayed STARTED although
-  slinitctl(8) says `--force` stops it "even when it is pinned started".
-  It now stops the service the way a plain stop does and then forces
-  it, as dinit's stop command does (`stop(true)`, then
-  `forced_stop()`), after clearing the start pins of the service and of
-  the hard dependents that go down with it, as the man page promises.
-  A pin saved for the next boot is not touched; `slinitctl unpin`
-  still clears that.
 - **`slinitctl --force stop` could mark a service failed that had not
   failed.** When a forced stop reached a dependency whose own target was
   STOPPED, every hard dependent was given the `dependency-failed` reason,
