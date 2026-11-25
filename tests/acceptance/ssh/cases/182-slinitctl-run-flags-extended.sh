@@ -25,12 +25,14 @@ slinitctl --system run \
     --setenv RUN_MARKER=hello-run-flags \
     --property nice=10 \
     -- \
-    /bin/sh -c 'echo "$$RUN_MARKER" > '"$MARK" >/dev/null 2>&1
-# NOTE: $$ (not $) — slinitctl writes the payload verbatim into the
-# transient svc description, and slinit's config parser pre-expands
-# $VAR at load time (would collapse RUN_MARKER to empty). $$RUN_MARKER
-# survives that pass and reaches the runtime shell as $RUN_MARKER,
-# which the env-file provides.
+    /bin/sh -c 'echo "$RUN_MARKER" > '"$MARK" >/dev/null 2>&1
+# NOTE: a plain $ — slinitctl run now writes each `$` into the transient
+# description as `$$` (and doubles backslashes), so the command reaches
+# the service exactly as given and the runtime shell expands
+# $RUN_MARKER from the --setenv value. Before that fix the payload was
+# written verbatim and the parser's load-time expansion forced callers
+# to write $$RUN_MARKER; passed today, that arrives as the shell's
+# `$$` (its PID) followed by "RUN_MARKER".
 
 # Poll for the marker.
 _e=0

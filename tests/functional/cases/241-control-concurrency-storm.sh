@@ -28,6 +28,15 @@
 # that almost never overlap inside the daemon. Process spawn dominates;
 # contention is microscopic.
 #
+# (That twelve-second run had a harness fault of its own: workers 1-2
+# called `setenv KEY=V` and `unsetenv KEY`, which take a service name
+# first, so every call was a usage error that never reached the daemon;
+# worker 8's `reset-failed` lacked `--all` and its `stop
+# --ignore-unstarted` put a global flag after the verb, both usage
+# errors too. They now send setenv-global/unsetenv-global,
+# `reset-failed --all` and `--ignore-unstarted stop`. The conclusion
+# above was not re-measured with them.)
+#
 # The real guards are Go-level, where contention can be manufactured
 # where it actually happens: pkg/service/globalenv_race_test.go,
 # env_race_test.go, depgraph_race_test.go and
@@ -59,8 +68,8 @@ for w in 1 2; do
         n=0
         while [ "$(date +%s)" -lt "$_end" ]; do
             n=$((n + 1))
-            slinitctl --system setenv "STORM_${w}_$((n % 8))=v$n" > /dev/null 2>&1
-            slinitctl --system unsetenv "STORM_${w}_$(((n + 3) % 8))" > /dev/null 2>&1
+            slinitctl --system setenv-global "STORM_${w}_$((n % 8))=v$n" > /dev/null 2>&1
+            slinitctl --system unsetenv-global "STORM_${w}_$(((n + 3) % 8))" > /dev/null 2>&1
             slinitctl --system getallenv-global > /dev/null 2>&1
         done
     ) &
@@ -110,9 +119,9 @@ done
 # 8: the rest of the mutating surface.
 (
     while [ "$(date +%s)" -lt "$_end" ]; do
-        slinitctl --system reset-failed > /dev/null 2>&1
+        slinitctl --system reset-failed --all > /dev/null 2>&1
         slinitctl --system start storm-target-1 > /dev/null 2>&1
-        slinitctl --system stop --ignore-unstarted storm-target-1 > /dev/null 2>&1
+        slinitctl --system --ignore-unstarted stop storm-target-1 > /dev/null 2>&1
         slinitctl --system boot-time > /dev/null 2>&1
     done
 ) &

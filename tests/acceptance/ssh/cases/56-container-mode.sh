@@ -73,7 +73,16 @@ fi
 # --- Probe 1: list shows the leaf, NOT a system-wide service -------
 # (the leaf belongs to the nested slinit; PID 1's `boot` should NOT
 # appear in the nested registry — confirms socket isolation.)
-_list=$(slinitctl --socket-path "$SOCKET" list 2>&1)
+# The control socket listens before the boot services are loaded, so the
+# socket alone does not mean the leaf is in the registry yet: poll.
+_e=0
+while :; do
+    _list=$(slinitctl --socket-path "$SOCKET" list 2>&1)
+    case "$_list" in *"$TEST_SVC"*) break ;; esac
+    [ "$_e" -ge 10 ] && break
+    sleep 0.5
+    _e=$((_e + 1))
+done
 _TESTS_RUN=$((_TESTS_RUN + 1))
 case "$_list" in
     *"$TEST_SVC"*)
