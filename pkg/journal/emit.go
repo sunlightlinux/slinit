@@ -51,14 +51,16 @@ type Emitter struct {
 	dropped atomic.Uint64
 	sent    atomic.Uint64
 
-	// congested is set when a send waited out its deadline: the listener
-	// has stopped reading (slinit-journald stopped, or its queue full).
+	// stalledSince is when (UnixNano) a send first waited out its
+	// deadline since one last went through; 0 while sends go through.
 	// Events are emitted with the scheduling lock held, and waiting out
 	// the deadline on every one cost every state transition 10 ms for as
-	// long as the listener stayed stalled. While congested, a send is one
-	// non-blocking attempt; the first that goes through clears it. The
-	// ring buffer keeps the events either way.
-	congested atomic.Bool
+	// long as a stopped listener (slinit-journald stopped) stayed
+	// stopped. A send waits as it always did while the listener has
+	// taken something within emitStallWindow - it pauses to fsync or
+	// rotate - and after that is one non-blocking attempt until one goes
+	// through. The ring buffer keeps the events either way.
+	stalledSince atomic.Int64
 
 	// Live in-process subscribers. Every Emit fans a *pointer* to the
 	// event out to each subscriber's channel. When a channel is full
@@ -253,6 +255,14 @@ func (e *Emitter) stampTrusted(evt *Event) {
 	evt.Hostname = Hostname()
 }
 
+// emitSendTimeout is how long one send waits for the listener;
+// emitStallWindow, how long the listener may take nothing before sends
+// stop waiting for it.
+const (
+	emitSendTimeout = 10 * time.Millisecond
+	emitStallWindow = 100 * time.Millisecond
+)
+
 // publishToSocket attempts to send the event as a JSONL datagram.
 // Returns nil on success, an error on marshal failure or socket-write
 // failure. A "no such file or directory" or "connection refused"
@@ -272,21 +282,28 @@ func (e *Emitter) publishToSocket(evt *Event) error {
 	// One datagram per event. UDP-like semantics: the receiver either
 	// gets the whole packet or nothing, no partial writes to worry
 	// about.
-	if e.congested.Load() {
+	now := time.Now()
+	deadline := now.Add(emitSendTimeout)
+	if since := e.stalledSince.Load(); since != 0 {
+		if end := time.Unix(0, since).Add(emitStallWindow); end.Before(deadline) {
+			deadline = end
+		}
+	}
+	if !deadline.After(now) {
 		err = sendNoWait(conn, data)
 	} else {
 		// SetWriteDeadline so a stuck listener can't block emit-side
 		// callers indefinitely. 10ms is generous for a local Unix
 		// socket write.
-		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
+		_ = conn.SetWriteDeadline(deadline)
 		_, err = conn.Write(data)
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			e.congested.Store(true)
+			e.stalledSince.CompareAndSwap(0, now.UnixNano())
 		}
 	}
 	switch {
 	case err == nil:
-		e.congested.Store(false)
+		e.stalledSince.Store(0)
 	case errors.Is(err, unix.ECONNREFUSED), errors.Is(err, unix.ENOTCONN),
 		errors.Is(err, unix.ENOENT), errors.Is(err, unix.EPIPE):
 		// The listener's socket is gone. When slinit-journald restarts

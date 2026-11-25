@@ -1059,9 +1059,10 @@ requires.
   event went to the journal socket with a 10 ms deadline, under the
   scheduling lock; once the daemon stopped reading, every transition
   waited out that deadline. Measured: 1000 service starts took 8.4 s
-  instead of 8 ms. After one timeout the socket now counts as congested
-  and sends do not wait until one goes through again; the in-memory
-  event ring keeps every event as before.
+  instead of 8 ms. Once the daemon has taken nothing for 100 ms, sends
+  no longer wait until one goes through again (1000 starts: 0.1 s); a
+  daemon that only pauses (fsync, rotation) is waited for as before.
+  The in-memory event ring keeps every event as before.
 - **After `slinit-journald` restarted, it got no more events from PID 1.**
   slinit kept its connection to the daemon's old socket and never
   dropped it, so every later event failed with `ECONNREFUSED` until

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -34,8 +35,8 @@ func listenUnixgram(t *testing.T, path string) *net.UnixConn {
 // Every state transition emits an event with the scheduling lock held.
 // Once slinit-journald stopped reading, each send waited out its 10 ms
 // deadline, so every transition cost 10 ms of the lock for as long as
-// journald stayed stalled. After one timeout the socket counts as
-// congested and sends do not wait until one goes through again.
+// journald stayed stalled. Once the listener has taken nothing for
+// emitStallWindow, sends do not wait until one goes through again.
 func TestEmitStalledListenerDoesNotSlowEmit(t *testing.T) {
 	initIDsForStallTest(t)
 	p := filepath.Join(t.TempDir(), "events.sock")
@@ -72,6 +73,49 @@ func TestEmitStalledListenerDoesNotSlowEmit(t *testing.T) {
 	}
 	if ev := string(buf[:n]); !strings.Contains(ev, "after the stall") {
 		t.Errorf("the listener got %q", ev)
+	}
+}
+
+// A listener that keeps reading but pauses now and then - slinit-journald
+// fsyncing or rotating its file - is not a stalled one. After one send
+// timed out during such a pause, every later send made one non-waiting
+// attempt until one got through, so a burst lost most of its events, and
+// journald replays the ring only when it starts. A send now waits as it
+// always did until the listener has taken nothing for emitStallWindow.
+func TestEmitBrieflyPausingListenerLosesNothingNew(t *testing.T) {
+	initIDsForStallTest(t)
+	p := filepath.Join(t.TempDir(), "events.sock")
+	ln := listenUnixgram(t, p)
+	e := NewEmitter(NewEventBuffer(MinBufferCap), p)
+	defer e.Close()
+	var got atomic.Int64
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			if _, err := ln.Read(buf); err != nil {
+				return
+			}
+			if got.Add(1)%1000 == 0 {
+				time.Sleep(30 * time.Millisecond)
+			}
+		}
+	}()
+	const events = 5000
+	t0 := time.Now()
+	for i := 0; i < events; i++ {
+		e.Emit(&Event{Msg: fmt.Sprintf("event %d", i)})
+	}
+	took := time.Since(t0)
+	sent, dropped := e.Stats()
+	for deadline := time.Now().Add(2 * time.Second); got.Load() < int64(sent) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Logf("%d emits took %v; the listener got %d (sent=%d dropped=%d)",
+		events, took.Round(time.Millisecond), got.Load(), sent, dropped)
+	// Each pause can cost a few events, as it always could: a send still
+	// gives up after 10 ms.
+	if n := got.Load(); n < events-50 {
+		t.Errorf("a listener pausing 30 ms every 1000 events got %d of %d", n, events)
 	}
 }
 
