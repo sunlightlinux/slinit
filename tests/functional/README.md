@@ -300,7 +300,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 190 | exec-condition-searchpath | exec-condition=/bin/true runs command; =/bin/false skips it; exec-search-path becomes the child's PATH |
 | 191 | import-credential | `import-credential = my-secret-*` copies the two matching credentials from a seeded `/etc/credstore` (content intact) and not the third; set-credential alongside |
 | 192 | lsm-fail-closed | selinux-context and smack-process-label refuse to start when /sys/fs/selinux and /sys/fs/smackfs are absent (fail-closed contract) |
-| 193 | restart-misc | start-limit-action + restart-force-exit-status + restart-max-delay + restart-mode + runtime-randomized-extra coexist |
+| 193 | restart-misc | restart-policy tail parses; `restart-force-exit-status = 42 43` restarts a service that exits 42 although `restart = no` |
 | 194 | skarnet-niches | alert-file + alert-level + options=pass-cs-fd + utmp-mode all parse and coexist |
 | 195 | options-cluster-a | options=unmask-intr,skippable,start-interruptible round-trip through parser |
 | 196 | options-cluster-b | `options = runs-on-console`: the service's stdout is `/dev/console`, a control's is not |
