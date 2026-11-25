@@ -1,0 +1,59 @@
+package main
+
+import (
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/service"
+)
+
+func TestShutdownGateHoldsUntilHandOver(t *testing.T) {
+	var warned int
+	g := newShutdownGate(func(string, ...any) { warned++ })
+	g.Request(service.ShutdownPoweroff, 1)
+	g.Request(service.ShutdownReboot, 0)
+	if warned != 1 {
+		t.Errorf("second held request: %d warnings, want 1", warned)
+	}
+	var got []service.ShutdownType
+	var gotFlags uint8
+	g.HandOver(func(st service.ShutdownType, flags uint8) { got = append(got, st); gotFlags = flags })
+	if len(got) != 1 || got[0] != service.ShutdownPoweroff || gotFlags != 1 {
+		t.Fatalf("hand-over delivered %v flags %d, want [poweroff] flags 1", got, gotFlags)
+	}
+	g.Request(service.ShutdownHalt, 0)
+	if len(got) != 2 || got[1] != service.ShutdownHalt {
+		t.Fatalf("after hand-over: %v, want the request forwarded", got)
+	}
+	g.Reclaim()
+	g.Request(service.ShutdownReboot, 0)
+	if len(got) != 2 {
+		t.Fatalf("after Reclaim the request went to the old handler: %v", got)
+	}
+	g.HandOver(func(st service.ShutdownType, _ uint8) { got = append(got, st) })
+	if len(got) != 3 || got[2] != service.ShutdownReboot {
+		t.Fatalf("held across Reclaim: %v, want reboot handed to the next handler", got)
+	}
+}
+
+// A request racing the hand-over is either held and passed on by
+// HandOver, or forwarded by Request; never held after the hand-over
+// has looked, which is how one ACKed request used to be lost.
+func TestShutdownGateHandOverRace(t *testing.T) {
+	for i := 0; i < 2000; i++ {
+		g := newShutdownGate(nil)
+		var calls atomic.Int32
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			g.Request(service.ShutdownPoweroff, 0)
+		}()
+		g.HandOver(func(service.ShutdownType, uint8) { calls.Add(1) })
+		wg.Wait()
+		if n := calls.Load(); n != 1 {
+			t.Fatalf("iteration %d: request delivered %d times, want 1", i, n)
+		}
+	}
+}

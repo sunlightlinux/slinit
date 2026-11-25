@@ -1632,21 +1632,67 @@ func main() {
 
 	// The event loop a shutdown is handed to is set up after the boot
 	// services are started. A request arriving before that is held
-	// and handed over then, rather than acknowledged and dropped.
-	var heldShutdown struct {
-		sync.Mutex
-		st    service.ShutdownType
-		flags uint8
-		held  bool
-	}
-	ctrlServer.ShutdownFunc = func(st service.ShutdownType, flags uint8) {
-		heldShutdown.Lock()
-		defer heldShutdown.Unlock()
-		if !heldShutdown.held {
-			heldShutdown.st, heldShutdown.flags, heldShutdown.held = st, flags, true
+	// and handed over then, rather than acknowledged and dropped. Every
+	// hook the server calls is set here, before Start, and not changed
+	// afterwards: its connection goroutines read them without a lock.
+	shutdownGate := newShutdownGate(logger.Warn)
+	ctrlServer.ShutdownFunc = shutdownGate.Request
+	ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool, msg string) {
+		if cancelled {
+			shutdown.WallShutdownCancelled(st, logger)
+			return
 		}
+		shutdown.WallShutdownNoticeMsg(st, delay, msg, logger)
+	}
+	ctrlServer.WallReminderFunc = func(st service.ShutdownType, remaining time.Duration, msg string) {
+		shutdown.WallShutdownReminder(st, remaining, msg, logger)
+	}
+	ctrlServer.WallNoticeFunc = func(msg string) {
+		shutdown.Wall(msg, logger)
+	}
+	// A scheduled shutdown refuses new logins in its last five
+	// minutes through pam_nologin. Only the system manager owns
+	// /run/nologin; a user instance must not lock out the machine.
+	if isPID1 || systemMode {
+		ctrlServer.NologinPath = "/run/nologin"
+	}
+	// finit-parity: suspend hook wired unconditionally — writing
+	// /sys/power/state does not require PID 1 (a user manager
+	// on a laptop can suspend just as well) and the kernel
+	// rejects the write when the caller lacks CAP_SYS_ADMIN.
+	ctrlServer.SuspendFunc = func(state string) error {
+		logger.Notice("suspend: writing %q to /sys/power/state", state)
+		return shutdown.Suspend(state, logger)
 	}
 
+	// switch-root wire-up. Only enabled when slinit runs as PID 1
+	// (the switchroot package rejects non-PID-1 callers anyway,
+	// but leaving the hook nil here surfaces a cleaner "not
+	// supported" reply to the client instead of walking to the
+	// PID check). finit-parity: initctl switch_root NEWROOT [INIT].
+	if isPID1 {
+		ctrlServer.SwitchRootFunc = func(newroot, newinit string) error {
+			resolved, err := switchroot.Precheck(newroot, newinit)
+			if err != nil {
+				logger.Error("switch-root: precheck: %v", err)
+				return err
+			}
+			return switchroot.Do(newroot, resolved, logger, func() {
+				// Stop-services hook: reuse the existing shutdown
+				// path's service teardown so the ordering is
+				// identical to a normal shutdown, minus the
+				// reboot(2) call. ShutdownRemain stops every
+				// service and clears the state machine without
+				// triggering a reboot.
+				shutdownGate.Request(service.ShutdownRemain, 0)
+				// Give the state machine a beat to walk the
+				// stop cascade. 3s is far past a typical stop
+				// (services stop in ms) but a hard upper bound
+				// so a wedged service doesn't stall the switch.
+				time.Sleep(3 * time.Second)
+			})
+		}
+	}
 	if err := ctrlServer.Start(ctx); err != nil {
 		logger.Error("Failed to start control socket: %v", err)
 		// Non-fatal: continue without control socket
@@ -1872,28 +1918,6 @@ func main() {
 		// fallback so we don't hard-code the default twice.
 		loop.SetEmergencyTimeout(emergencyTimeout)
 
-		ctrlServer.ShutdownFunc = func(st service.ShutdownType, flags uint8) {
-			switch routeShutdown(st, flags, isPID1, containerMode) {
-			case routeImmediate:
-				// `--superfast`: straight to the syscall. No teardown,
-				// no unmount, and no sync either — whatever is still in
-				// the page cache is gone. The operator asked for it.
-				logger.Warn("Immediate shutdown requested (%s): no sync, unwritten data will be lost", st)
-				closeWatchdog(wd, logger)
-				shutdown.ExecuteImmediate(st, logger)
-			case routeForce:
-				// `--fast`: no teardown, no unmount — sync and the
-				// syscall, the same path `reboot -f` takes.
-				logger.Warn("Fast shutdown requested (%s): skipping service teardown", st)
-				closeWatchdog(wd, logger)
-				shutdown.ExecuteForce(st, logger)
-			case routeKill:
-				loop.InitiateShutdownKill(st)
-			default:
-				loop.InitiateShutdown(st)
-			}
-		}
-
 		// Per-service failure-action / success-action: route the
 		// requested system action through the same shutdown path
 		// operators trigger from slinitctl. ActionExit terminates
@@ -1916,62 +1940,6 @@ func main() {
 				return
 			}
 			loop.InitiateShutdown(act.AsShutdownType())
-		}
-		ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool, msg string) {
-			if cancelled {
-				shutdown.WallShutdownCancelled(st, logger)
-				return
-			}
-			shutdown.WallShutdownNoticeMsg(st, delay, msg, logger)
-		}
-		ctrlServer.WallReminderFunc = func(st service.ShutdownType, remaining time.Duration, msg string) {
-			shutdown.WallShutdownReminder(st, remaining, msg, logger)
-		}
-		ctrlServer.WallNoticeFunc = func(msg string) {
-			shutdown.Wall(msg, logger)
-		}
-		// A scheduled shutdown refuses new logins in its last five
-		// minutes through pam_nologin. Only the system manager owns
-		// /run/nologin; a user instance must not lock out the machine.
-		if isPID1 || systemMode {
-			ctrlServer.NologinPath = "/run/nologin"
-		}
-		// finit-parity: suspend hook wired unconditionally — writing
-		// /sys/power/state does not require PID 1 (a user manager
-		// on a laptop can suspend just as well) and the kernel
-		// rejects the write when the caller lacks CAP_SYS_ADMIN.
-		ctrlServer.SuspendFunc = func(state string) error {
-			logger.Notice("suspend: writing %q to /sys/power/state", state)
-			return shutdown.Suspend(state, logger)
-		}
-
-		// switch-root wire-up. Only enabled when slinit runs as PID 1
-		// (the switchroot package rejects non-PID-1 callers anyway,
-		// but leaving the hook nil here surfaces a cleaner "not
-		// supported" reply to the client instead of walking to the
-		// PID check). finit-parity: initctl switch_root NEWROOT [INIT].
-		if isPID1 {
-			ctrlServer.SwitchRootFunc = func(newroot, newinit string) error {
-				resolved, err := switchroot.Precheck(newroot, newinit)
-				if err != nil {
-					logger.Error("switch-root: precheck: %v", err)
-					return err
-				}
-				return switchroot.Do(newroot, resolved, logger, func() {
-					// Stop-services hook: reuse the existing shutdown
-					// path's service teardown so the ordering is
-					// identical to a normal shutdown, minus the
-					// reboot(2) call. loop.InitiateShutdown(Remain)
-					// stops every service and clears the state
-					// machine without triggering a reboot.
-					loop.InitiateShutdown(service.ShutdownRemain)
-					// Give the state machine a beat to walk the
-					// stop cascade. 3s is far past a typical stop
-					// (services stop in ms) but a hard upper bound
-					// so a wedged service doesn't stall the switch.
-					time.Sleep(3 * time.Second)
-				})
-			}
 		}
 		loop.OnReopenSocket = func() {
 			if err := ctrlServer.Reopen(); err != nil {
@@ -2108,13 +2076,27 @@ func main() {
 			}()
 		}
 
-		heldShutdown.Lock()
-		held, heldType, heldFlags := heldShutdown.held, heldShutdown.st, heldShutdown.flags
-		heldShutdown.held = false
-		heldShutdown.Unlock()
-		if held {
-			ctrlServer.ShutdownFunc(heldType, heldFlags)
-		}
+		shutdownGate.HandOver(func(st service.ShutdownType, flags uint8) {
+			switch routeShutdown(st, flags, isPID1, containerMode) {
+			case routeImmediate:
+				// `--superfast`: straight to the syscall. No teardown,
+				// no unmount, and no sync either — whatever is still in
+				// the page cache is gone. The operator asked for it.
+				logger.Warn("Immediate shutdown requested (%s): no sync, unwritten data will be lost", st)
+				closeWatchdog(wd, logger)
+				shutdown.ExecuteImmediate(st, logger)
+			case routeForce:
+				// `--fast`: no teardown, no unmount — sync and the
+				// syscall, the same path `reboot -f` takes.
+				logger.Warn("Fast shutdown requested (%s): skipping service teardown", st)
+				closeWatchdog(wd, logger)
+				shutdown.ExecuteForce(st, logger)
+			case routeKill:
+				loop.InitiateShutdownKill(st)
+			default:
+				loop.InitiateShutdown(st)
+			}
+		})
 
 		if err := loop.Run(ctx); err != nil {
 			if err == context.Canceled {
@@ -2123,6 +2105,10 @@ func main() {
 				logger.Error("Event loop error: %v", err)
 			}
 		}
+		// This loop is done. Until the next one, and while a menu below
+		// is up, a request is held instead of sent where nothing reads
+		// it.
+		shutdownGate.Reclaim()
 
 		if sentinelWatcher != nil {
 			sentinelWatcher.Close()
