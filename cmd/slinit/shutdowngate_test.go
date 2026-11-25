@@ -4,6 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
 )
@@ -81,5 +82,39 @@ func TestShutdownGateWakeAndTake(t *testing.T) {
 	}
 	if _, _, ok := g.Take(); ok {
 		t.Fatal("request taken twice")
+	}
+}
+
+// A request that loaded the handler just before the event loop returned
+// is still being applied when main calls Reclaim. Reclaim must wait for
+// it: main reads the loop's shutdown type right after, and a poweroff
+// that lands later was missed, so the collapse menu came up and its
+// timeout rebooted.
+func TestShutdownGateReclaimWaitsForInFlight(t *testing.T) {
+	g := newShutdownGate(nil)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var applied atomic.Bool
+	g.HandOver(func(service.ShutdownType, uint8) {
+		close(entered)
+		<-release
+		applied.Store(true)
+	})
+	go g.Request(service.ShutdownPoweroff, 0)
+	<-entered
+	reclaimed := make(chan struct{})
+	go func() {
+		g.Reclaim()
+		close(reclaimed)
+	}()
+	select {
+	case <-reclaimed:
+		t.Fatal("Reclaim returned while a handler call was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-reclaimed
+	if !applied.Load() {
+		t.Fatal("Reclaim returned before the in-flight request was applied")
 	}
 }

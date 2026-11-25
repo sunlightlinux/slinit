@@ -31,17 +31,31 @@ type shutdownGate struct {
 	wake chan struct{}
 	// logf reports a request that is not acted on. May be nil.
 	logf func(format string, args ...any)
+	// inFlight counts handler calls made outside the lock and not
+	// yet returned; idle is broadcast when it drops to zero.
+	inFlight int
+	idle     *sync.Cond
 }
 
 func newShutdownGate(logf func(format string, args ...any)) *shutdownGate {
-	return &shutdownGate{logf: logf, wake: make(chan struct{}, 1)}
+	g := &shutdownGate{logf: logf, wake: make(chan struct{}, 1)}
+	g.idle = sync.NewCond(&g.mu)
+	return g
 }
 
 // Request is the ShutdownFunc: forward to the event loop, or hold.
 func (g *shutdownGate) Request(st service.ShutdownType, flags uint8) {
 	g.mu.Lock()
 	if h := g.handler; h != nil {
+		g.inFlight++
 		g.mu.Unlock()
+		defer func() {
+			g.mu.Lock()
+			if g.inFlight--; g.inFlight == 0 {
+				g.idle.Broadcast()
+			}
+			g.mu.Unlock()
+		}()
 		h(st, flags)
 		return
 	}
@@ -93,9 +107,15 @@ func (g *shutdownGate) HandOver(h func(service.ShutdownType, uint8)) {
 }
 
 // Reclaim goes back to holding requests: the event loop has returned,
-// and a request sent to it now would be acknowledged and dropped.
+// and a request sent to it now would be acknowledged and dropped. It
+// waits for a handler call already under way, so that once it returns
+// whatever that call did to the loop is in place for main to read
+// (GetShutdownType), rather than landing after main has looked.
 func (g *shutdownGate) Reclaim() {
 	g.mu.Lock()
 	g.handler = nil
+	for g.inFlight > 0 {
+		g.idle.Wait()
+	}
 	g.mu.Unlock()
 }
