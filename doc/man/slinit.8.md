@@ -292,7 +292,7 @@ long options may be written with one or two leading dashes.
 
 **\--run-mode** *mode*
 :   How */run* is staged at boot: *mount* (mount a fresh tmpfs,
-    unless */run* is already a mountpoint),
+    unless */run* is already a mounted tmpfs),
     *remount* (detach the existing one and mount a fresh, empty
     tmpfs in its place) or *keep* (leave it as-is). Default *mount*.
 

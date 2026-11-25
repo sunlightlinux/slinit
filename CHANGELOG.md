@@ -600,8 +600,10 @@ requires.
   already mounted.** `--run-mode=mount`, the default, is documented as
   leaving an existing `/run` mountpoint alone, but mounted over it
   anyway, hiding what the initramfs left there (the udev database,
-  cryptsetup state). It now keeps a `/run` that is already a
-  mountpoint; `--run-mode=remount` still gives an empty one.
+  cryptsetup state). It now keeps a `/run` that is already a mounted
+  tmpfs or ramfs (a mount root by statx, not merely a different device
+  number, which every btrfs subvolume has); `--run-mode=remount` still
+  gives an empty one.
   *Compat:* booted from an initramfs that mounts `/run`, the system
   keeps the initramfs's `/run` and its contents and mount options; use
   `--run-mode=remount` for the old fresh tmpfs.

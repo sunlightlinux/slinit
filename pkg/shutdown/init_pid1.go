@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -24,8 +25,8 @@ type RunMode int
 
 const (
 	// RunModeMount (default) mounts a fresh tmpfs on /run. If /run is
-	// already a mountpoint this is a no-op so we don't shadow an
-	// existing tmpfs the initramfs or a previous boot left behind.
+	// already a mounted tmpfs (or ramfs) this is a no-op so we don't
+	// shadow the one the initramfs or a previous boot left behind.
 	RunModeMount RunMode = iota
 
 	// RunModeRemount unmounts /run if it's already a tmpfs and mounts
@@ -326,11 +327,11 @@ func stageRunAt(runPath string, mode RunMode, logger *logging.Logger) {
 			logger.Debug("Unmount %s before remount: %v (non-fatal)", runPath, err)
 		}
 	case RunModeMount:
-		// Already a mountpoint: the initramfs's /run (udev database,
-		// cryptsetup state) or the one a previous boot left. A fresh
-		// tmpfs over it hid every file in it.
-		if isMountpoint(runPath) {
-			logger.Debug("%s is already a mountpoint, leaving it", runPath)
+		// Already a mounted tmpfs: the initramfs's /run (udev
+		// database, cryptsetup state) or the one a previous boot left.
+		// A fresh tmpfs over it hid every file in it.
+		if defaultRunProbe.keepMountedRun(runPath) {
+			logger.Debug("%s is already a mounted tmpfs, leaving it", runPath)
 			return
 		}
 	}
@@ -344,15 +345,80 @@ func stageRunAt(runPath string, mode RunMode, logger *logging.Logger) {
 	}
 }
 
-// isMountpoint reports whether path is the root of a mount other than
-// its parent's, by device number. A bind mount of a directory of the
-// same filesystem is not seen, which does not matter for /run.
-func isMountpoint(path string) bool {
-	var st, parent unix.Stat_t
-	if unix.Lstat(path, &st) != nil || unix.Lstat(path+"/..", &parent) != nil {
+// runProbe asks the kernel what keepMountedRun needs to know; a test
+// substitutes its own answers.
+type runProbe struct {
+	// mountRoot reports whether path is the root of a mount, or an
+	// error when the kernel cannot say (statx before Linux 5.8).
+	mountRoot func(path string) (bool, error)
+	// inMountinfo reports whether path is a mount point listed in
+	// /proc/self/mountinfo.
+	inMountinfo func(path string) bool
+	// fsMagic is the filesystem type of path, as statfs(2) gives it.
+	fsMagic func(path string) (int64, error)
+}
+
+var defaultRunProbe = runProbe{
+	mountRoot:   statxMountRoot,
+	inMountinfo: inSelfMountinfo,
+	fsMagic: func(path string) (int64, error) {
+		var sfs unix.Statfs_t
+		if err := unix.Statfs(path, &sfs); err != nil {
+			return 0, err
+		}
+		return int64(sfs.Type), nil
+	},
+}
+
+// keepMountedRun reports whether path is a mounted tmpfs (or ramfs) to
+// leave as it is instead of mounting a fresh one over it.
+//
+// A different st_dev from the parent's is not a mount: every btrfs
+// subvolume has a device number of its own, so a /run that was a plain
+// directory on its own subvolume was taken for a mount and left on
+// disk, its contents surviving reboots. Whether path is a mount root is
+// asked of statx, with mountinfo where statx cannot say, and only a
+// memory filesystem is kept.
+func (p runProbe) keepMountedRun(path string) bool {
+	root, err := p.mountRoot(path)
+	if err != nil {
+		root = p.inMountinfo(path)
+	}
+	if !root {
 		return false
 	}
-	return st.Dev != parent.Dev
+	magic, err := p.fsMagic(path)
+	return err == nil && (magic == unix.TMPFS_MAGIC || magic == unix.RAMFS_MAGIC)
+}
+
+// statxMountRoot asks statx for STATX_ATTR_MOUNT_ROOT (Linux 5.8).
+func statxMountRoot(path string) (bool, error) {
+	var stx unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, path, unix.AT_SYMLINK_NOFOLLOW, unix.STATX_BASIC_STATS, &stx); err != nil {
+		return false, err
+	}
+	if stx.Attributes_mask&unix.STATX_ATTR_MOUNT_ROOT == 0 {
+		return false, fmt.Errorf("statx %s: kernel does not report STATX_ATTR_MOUNT_ROOT", path)
+	}
+	return stx.Attributes&unix.STATX_ATTR_MOUNT_ROOT != 0, nil
+}
+
+// inSelfMountinfo reports whether path is a mount point in
+// /proc/self/mountinfo. False when /proc is not mounted yet, which
+// mounts a tmpfs over /run as before keeping one was possible.
+func inSelfMountinfo(path string) bool {
+	b, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		// Field 5 is the mount point, with space, tab, newline and
+		// backslash octal-escaped; /run has none of them.
+		if f := strings.Fields(line); len(f) > 4 && f[4] == path {
+			return true
+		}
+	}
+	return false
 }
 
 // snapshotKernelCmdline copies /proc/cmdline into dest so services can
