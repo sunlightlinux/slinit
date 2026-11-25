@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (261 cases)
+# Run all tests (263 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -369,6 +369,8 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 259 | protect-system-keeps-mount-flags | the read-only remount keeps a mount's own `noexec`/`nosuid`/`nodev` |
 | 260 | protect-kernel-tunables-sys-ro | `protect-kernel-tunables` makes `/sys` read-only in the service |
 | 261 | chroot-non-process-refused | `chroot` on a scripted service is refused at load instead of being ignored |
+| 262 | journal-vacuum-keeps-active-file | `slinit-journalctl --vacuum-*` keeps the file slinit-journald opened on an earlier day |
+| 263 | journal-flush-keeps-persistent | `--flush` moves the volatile journal in without overwriting the persistent same-day file |
 
 ## How It Works
 
