@@ -1330,7 +1330,7 @@ func wrapWithRunner(p ExecParams) []string {
 	if passesListenFDs(p) {
 		args = append(args, "--listen-pid")
 	}
-		// chroot is entered by the runner, not at fork: a chroot at fork
+	// chroot is entered by the runner, not at fork: a chroot at fork
 	// would make the kernel look the runner up inside the jail. The
 	// working directory goes with it, since it names a path in the jail.
 	if p.Chroot != "" {
