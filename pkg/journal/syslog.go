@@ -315,9 +315,7 @@ func ParseSyslog(data []byte) *Event {
 	if s == "" {
 		return nil
 	}
-	if len(s) > MaxMessageLen {
-		s = s[:MaxMessageLen]
-	}
+	s = truncateMsg(s, MaxMessageLen)
 	return &Event{Msg: s, Prio: prio, SyslogIdentifier: ident}
 }
 

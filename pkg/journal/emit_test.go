@@ -5,9 +5,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // emitterFixture returns a fresh emitter wired to a temp socket + a
@@ -271,5 +273,40 @@ func TestGlobalEmitWorksWhenSet(t *testing.T) {
 	events, _ := fx.buffer.Snapshot()
 	if len(events) != 1 || events[0].Msg != "via-global" {
 		t.Errorf("global emit lost message: %+v", events)
+	}
+}
+
+// A service log line reaches Emit at whatever size the service wrote it.
+// MaxMessageLen was enforced only in ParseSyslog, so the ring kept
+// messages of any size in each of its slots. Emit must truncate, and on
+// a rune boundary.
+func TestEmitTruncatesOversizedMessage(t *testing.T) {
+	resetIDsForTest()
+	if err := InitIDs("test-host"); err != nil {
+		t.Skipf("InitIDs failed: %v", err)
+	}
+	defer resetIDsForTest()
+
+	buf := NewEventBuffer(MinBufferCap)
+	em := NewEmitter(buf, filepath.Join(t.TempDir(), "nobody-listens.sock"))
+	defer em.Close()
+
+	// "é" is two bytes; MaxMessageLen is even, so an odd prefix puts a
+	// rune across the cut.
+	msg := "x" + strings.Repeat("é", 2<<20)
+	_ = em.Emit(&Event{Msg: msg})
+	events, _ := buf.Snapshot()
+	if len(events) != 1 {
+		t.Fatalf("got %d events in the ring, want 1", len(events))
+	}
+	got := events[0].Msg
+	if len(got) > MaxMessageLen {
+		t.Fatalf("stored msg is %d bytes, want <= %d", len(got), MaxMessageLen)
+	}
+	if len(got) < MaxMessageLen-utf8.UTFMax {
+		t.Errorf("stored msg is %d bytes, truncated more than needed", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Error("truncation split a UTF-8 rune")
 	}
 }

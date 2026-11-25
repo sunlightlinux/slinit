@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Priority mirrors syslog(3) severity levels. Lower is more urgent.
@@ -337,4 +338,17 @@ func (e *Event) ClientAssertUntrusted() error {
 		}
 	}
 	return nil
+}
+
+// truncateMsg cuts s to at most max bytes, backing off to a rune
+// boundary so the cut does not leave half a UTF-8 sequence behind.
+func truncateMsg(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && cut > max-utf8.UTFMax && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

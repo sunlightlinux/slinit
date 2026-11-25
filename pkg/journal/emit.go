@@ -135,6 +135,12 @@ func (e *Emitter) Emit(evt *Event) error {
 		evt.Prio = PriorityInfo
 	}
 
+	// Bound the message before it reaches the ring. MaxMessageLen used
+	// to be enforced only on /dev/log, so a service log line of any
+	// size was kept in a buffer slot, then refused by MarshalJSONL after
+	// a full marshal.
+	evt.Msg = truncateMsg(evt.Msg, MaxMessageLen)
+
 	if err := evt.Validate(); err != nil {
 		e.dropped.Add(1)
 		return fmt.Errorf("journal: emit: %w", err)
