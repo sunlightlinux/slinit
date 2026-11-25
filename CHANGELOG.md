@@ -605,17 +605,6 @@ requires.
   *Compat:* booted from an initramfs that mounts `/run`, the system
   keeps the initramfs's `/run` and its contents and mount options; use
   `--run-mode=remount` for the old fresh tmpfs.
-- **`!clear` and `!unset` in the global env-file left the inherited
-  environment alone.** They only removed variables the file itself had
-  set, so a service still inherited `FOO` after `!unset FOO`, and
-  everything slinit was started with after `!clear` (measured), though
-  slinit.8 says the directives are honoured and in dinit `!clear` drops
-  the inherited environment. Both now apply to the environment slinit
-  inherited, and so to every service's; `!clear` keeps `PATH`, which
-  only `!unset PATH` removes. A service's own `env-file` is unchanged.
-  *Compat:* a global env-file using `!clear` or `!unset` now takes
-  those variables from services too (`HOME`, `TERM` and the rest after
-  `!clear`); `!import` brings one back.
 
 ### Fixed
 

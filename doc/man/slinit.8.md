@@ -157,10 +157,7 @@ long options may be written with one or two leading dashes.
 **-e** *file*, **\--env-file** *file*
 :   Read initial environment from *file* (one *KEY*=*VALUE* per line).
     Lines starting with `#` are comments. The special directives
-    `!clear`, `!unset VAR...` and `!import VAR...` are honoured;
-    `!clear` and `!unset` also remove variables from the environment
-    slinit inherited, and so from every service's, except that
-    `!clear` keeps **PATH** (`!unset PATH` removes it).
+    `!clear`, `!unset VAR...` and `!import VAR...` are honoured.
     Without this option */etc/slinit/environment* (or
     */etc/dinit/environment*) is read if it exists. A *file* that
     cannot be read is fatal in user mode; a system instance logs the
