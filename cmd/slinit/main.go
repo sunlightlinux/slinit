@@ -1319,13 +1319,20 @@ func main() {
 		go pathWatcher.Run()
 		defer pathWatcher.Close()
 
+		// The rearm listener each loaded record carries, so the unloaded
+		// hook can take it off again: a reload reports the record
+		// unloaded and then loaded, and a second listener would re-arm
+		// the watch twice per stop.
+		var pathRearmsMu sync.Mutex
+		pathRearms := make(map[service.Service]*pathRearmListener)
+
 		serviceSet.OnServiceLoaded = func(svc service.Service) {
 			path, trig := svc.Record().StartOnPath()
 			if path == "" || trig == 0 {
 				return
 			}
 			kind := pathwatch.Trigger(trig)
-			s := svc
+			name := svc.Name()
 			if err := pathWatcher.Add(path, kind, func() {
 				// The whole body goes on a goroutine, not just the
 				// start. pathwatch calls fire() -> fn() synchronously,
@@ -1345,21 +1352,36 @@ func main() {
 				//     slow here stops events being read at all, so a
 				//     later trigger is simply never seen.
 				go func() {
+					// By name: a reload that changes the type replaces
+					// the record this watch was added for.
+					s := serviceSet.FindService(name, false)
+					if s == nil {
+						return
+					}
 					logger.Info("Service '%s': path activation fired (%s on %s)",
-						s.Name(), kind, path)
+						name, kind, path)
 					serviceSet.StartService(s)
 				}()
 			}); err != nil {
-				logger.Warn("Service '%s': %s disabled: %v", s.Name(), kind, err)
+				logger.Warn("Service '%s': %s disabled: %v", name, kind, err)
 				return
 			}
-			s.Record().AddListener(&pathRearmListener{
-				watcher: pathWatcher, path: path, logger: logger,
-			})
+			l := &pathRearmListener{watcher: pathWatcher, path: path, logger: logger}
+			svc.Record().AddListener(l)
+			pathRearmsMu.Lock()
+			pathRearms[svc] = l
+			pathRearmsMu.Unlock()
 		}
 		serviceSet.OnServiceUnloaded = func(svc service.Service) {
 			if path, _ := svc.Record().StartOnPath(); path != "" {
 				pathWatcher.Remove(path)
+			}
+			pathRearmsMu.Lock()
+			l := pathRearms[svc]
+			delete(pathRearms, svc)
+			pathRearmsMu.Unlock()
+			if l != nil {
+				svc.Record().RemoveListener(l)
 			}
 		}
 	}
@@ -1389,20 +1411,26 @@ func main() {
 			if mp == "" {
 				return
 			}
-			s := svc
-			if err := mountWatcher.Add(mp, s.Name(), func() {
+			name := svc.Name()
+			if err := mountWatcher.Add(mp, name, func() {
 				// On a goroutine for the same reason path activation
 				// does it: Add fires synchronously for an already
 				// mounted path, from inside OnServiceLoaded, which the
 				// loader calls holding the dependency-graph lock that
 				// StartService also takes.
 				go func() {
+					// By name, as path activation does: a reload may
+					// have replaced the record.
+					s := serviceSet.FindService(name, false)
+					if s == nil {
+						return
+					}
 					logger.Info("Service '%s': mount activation fired (%s)",
-						s.Name(), mp)
+						name, mp)
 					serviceSet.StartService(s)
 				}()
 			}); err != nil {
-				logger.Warn("Service '%s': start-on-mount disabled: %v", s.Name(), err)
+				logger.Warn("Service '%s': start-on-mount disabled: %v", name, err)
 			}
 		}
 

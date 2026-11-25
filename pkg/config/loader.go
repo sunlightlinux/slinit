@@ -298,8 +298,16 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 		// Remove old deps
 		dl.removeDependencies(svc)
 
-		// Replace in set
+		// Replace in set. The watches the hooks keep move with it: the
+		// old record is reported unloaded and the new one loaded, or a
+		// path trigger went on starting the record no longer in the set.
+		if dl.set.OnServiceUnloaded != nil {
+			dl.set.OnServiceUnloaded(svc)
+		}
 		dl.set.ReplaceService(svc, newSvc)
+		if dl.set.OnServiceLoaded != nil {
+			dl.set.OnServiceLoaded(newSvc)
+		}
 
 		return newSvc, nil
 	}
@@ -392,6 +400,13 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 		return nil, err
 	}
 
+	// Nothing below can fail. The hooks see the old configuration
+	// unloaded and the new one loaded, so a watch on a changed
+	// start-on-path-* or start-on-mount follows it.
+	if dl.set.OnServiceUnloaded != nil {
+		dl.set.OnServiceUnloaded(svc)
+	}
+
 	// Update type-specific fields (command, timeouts, etc.)
 	dl.updateTypeSpecificFields(svc, desc)
 
@@ -417,6 +432,10 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	svc.Record().SetProfiles(desc.Profiles)
 	svc.Record().SetBundleMembers(desc.BundleMembers)
 	recordModTime(svc, filePath)
+
+	if dl.set.OnServiceLoaded != nil {
+		dl.set.OnServiceLoaded(svc)
+	}
 
 	return svc, nil
 }

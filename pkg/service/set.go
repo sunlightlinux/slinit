@@ -116,7 +116,10 @@ type ServiceSet struct {
 
 	// Path-activation hooks. The loader invokes OnServiceLoaded after a
 	// service description has been fully applied (so StartOnPath is
-	// readable); OnServiceUnloaded fires from UnloadService. Both are
+	// readable); OnServiceUnloaded fires from UnloadService. A reload
+	// calls OnServiceUnloaded with the old record and configuration and
+	// then OnServiceLoaded with the new ones (the same record when it is
+	// updated in place), and neither when it fails. Both are
 	// wired by main.go to a pkg/pathwatch.Watcher. Keeping them as
 	// callbacks avoids importing pkg/pathwatch from pkg/service.
 	OnServiceLoaded   func(svc Service)
