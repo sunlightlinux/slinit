@@ -162,3 +162,68 @@ func TestEmitReconnectsAfterListenerRestart(t *testing.T) {
 		t.Errorf("the restarted listener's first event is %q", ev)
 	}
 }
+
+// With no listener bound, every Emit dialed the socket again (and
+// marshalled the event first): about 5.7 us and 7 allocations per event,
+// against some 245 ns for the ring push alone, on every state transition
+// of a system not running slinit-journald. After a failed dial the
+// emitter does not dial again for emitRedialBackoff, unless the socket
+// file it found missing has since appeared.
+func TestEmitBacksOffDialWithoutListener(t *testing.T) {
+	initIDsForStallTest(t)
+	p := filepath.Join(t.TempDir(), "events.sock")
+	e := NewEmitter(nil, p)
+	defer e.Close()
+
+	// No socket file: the second emit returns the first dial's error
+	// rather than dialing again, which would make a new one.
+	err1 := e.Emit(&Event{Msg: "nobody there"})
+	if err1 == nil {
+		t.Fatal("emit with no listener reported success")
+	}
+	if err2 := e.Emit(&Event{Msg: "still nobody"}); err2 != err1 {
+		t.Errorf("emit inside the backoff dialed again: %v", err2)
+	}
+
+	// slinit-journald binding the path ends the wait at once.
+	ln := listenUnixgram(t, p)
+	buf := make([]byte, 64*1024)
+	if err := e.Emit(&Event{Msg: "journald is up"}); err != nil {
+		t.Fatalf("emit after the socket appeared: %v", err)
+	}
+	ln.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := ln.Read(buf); err != nil {
+		t.Fatalf("listener got nothing after it bound: %v", err)
+	}
+
+	// A stale socket file nobody answers on (ECONNREFUSED) is not
+	// redialed until the backoff has passed.
+	e.Close()
+	ln.Close()
+	if err := e.Emit(&Event{Msg: "refused"}); err == nil {
+		t.Fatal("emit to a closed listener reported success")
+	}
+	os.Remove(p)
+	ln = listenUnixgram(t, p)
+	if err := e.Emit(&Event{Msg: "inside the backoff"}); err == nil {
+		t.Error("emit inside the backoff dialed the socket")
+	}
+	ln.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if n, err := ln.Read(buf); err == nil {
+		t.Fatalf("emit inside the backoff reached the listener: %q", buf[:n])
+	}
+	e.connMu.Lock()
+	e.dialRetryAt = time.Time{}
+	e.connMu.Unlock()
+	if err := e.Emit(&Event{Msg: "after the backoff"}); err != nil {
+		t.Fatalf("emit after the backoff: %v", err)
+	}
+	ln.SetReadDeadline(time.Now().Add(time.Second))
+	n, err := ln.Read(buf)
+	if err != nil {
+		t.Fatalf("listener got nothing after the backoff: %v", err)
+	}
+	if !strings.Contains(string(buf[:n]), "after the backoff") {
+		t.Errorf("listener got %q", buf[:n])
+	}
+}
