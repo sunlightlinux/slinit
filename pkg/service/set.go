@@ -98,8 +98,18 @@ type ServiceSet struct {
 	OnUtmpCreate func(id, line, mode string, pid int)
 	OnUtmpClear  func(id, line string)
 	utmpQ        utmpQueue
-	OnRWReady    func() // called when starts-rwfs service reaches STARTED
-	OnBootReady  func() // called when boot service reaches STARTED (for --ready-fd)
+	OnRWReady    func() // called when starts-rwfs service reaches STARTED; runs on utmpQ
+	// OnBootReady is called once, when the boot service reaches
+	// STARTED: the --ready-fd notification, the watchdog grace, the
+	// console mute, the system-up hooks, ifup and rc.local.
+	//
+	// It runs on its own goroutine. Started() is called with queueMu
+	// held, and the hooks and rc.local run for minutes at worst and may
+	// call slinitctl, which needs queueMu: a direct call froze the state
+	// machine for as long, and an rc.local `slinitctl start` deadlocked
+	// until the rc.local timeout. Nothing in it has to happen before the
+	// next queue pass.
+	OnBootReady func()
 
 	// Path-activation hooks. The loader invokes OnServiceLoaded after a
 	// service description has been fully applied (so StartOnPath is

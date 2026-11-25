@@ -3282,8 +3282,9 @@ func (sr *ServiceRecord) Started() {
 	// Auto-detect boot service reaching STARTED
 	if sr.services.bootServiceName != "" && sr.serviceName == sr.services.bootServiceName && sr.services.bootReadyTime.IsZero() {
 		sr.services.bootReadyTime = time.Now()
-		if sr.services.OnBootReady != nil {
-			sr.services.OnBootReady()
+		if cb := sr.services.OnBootReady; cb != nil {
+			// Off the lock: see the OnBootReady field.
+			go cb()
 		}
 	}
 
@@ -3291,8 +3292,10 @@ func (sr *ServiceRecord) Started() {
 	if sr.Flags.RWReady && !sr.services.RWReady() {
 		sr.services.SetRWReady()
 		sr.services.logger.Info("Filesystem is now read-write (service '%s')", sr.serviceName)
-		if sr.services.OnRWReady != nil {
-			sr.services.OnRWReady()
+		if f := sr.services.OnRWReady; f != nil {
+			// The utmp/wtmp boot record: queued with the other utmp
+			// writes, off queueMu (utmpqueue.go).
+			sr.services.utmpQ.push(f)
 		}
 	}
 	if sr.Flags.LogReady && !sr.services.LogReady() {

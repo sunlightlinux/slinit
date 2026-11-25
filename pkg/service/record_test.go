@@ -5,6 +5,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
@@ -665,21 +666,92 @@ func TestBootReadyCallback(t *testing.T) {
 	set, _ := newTestSet()
 	set.SetBootServiceName("boot")
 
-	called := false
+	called := make(chan struct{})
 	set.OnBootReady = func() {
-		called = true
+		close(called)
 	}
 
 	svc := NewInternalService(set, "boot")
 	set.AddService(svc)
 	set.StartService(svc)
 
-	if !called {
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
 		t.Error("OnBootReady callback should have been called")
 	}
 	if set.BootReadyTime().IsZero() {
 		t.Error("bootReadyTime should be set")
 	}
+}
+
+// The boot-ready callback runs the system-up hooks, ifup and rc.local,
+// for minutes at worst. A `slinitctl start` from rc.local needs queueMu,
+// so the callback must not run under it: it waited out the rc.local
+// timeout, and a slow ifup froze every other service meanwhile.
+func TestBootReadyCallbackRunsOffQueueMu(t *testing.T) {
+	set, _ := newTestSet()
+	boot := NewInternalService(set, "boot")
+	other := NewInternalService(set, "other")
+	set.AddService(boot)
+	set.AddService(other)
+	set.SetBootServiceName("boot")
+
+	result := make(chan bool, 1)
+	set.OnBootReady = func() {
+		done := make(chan struct{})
+		go func() { set.StartService(other); close(done) }()
+		select {
+		case <-done:
+			result <- true
+		case <-time.After(time.Second):
+			result <- false
+		}
+	}
+	set.StartService(boot)
+
+	select {
+	case ok := <-result:
+		if !ok {
+			t.Error("a StartService from the boot-ready callback blocked >1s: the callback runs under queueMu")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnBootReady was not called")
+	}
+	if other.State() != StateStarted {
+		t.Errorf("other: %v, want STARTED", other.State())
+	}
+}
+
+// The starts-rwfs callback writes the utmp/wtmp boot record, which can
+// wait up to 10 s for the utmp lock; it must not hold up the start.
+func TestRWReadyCallbackRunsOffQueueMu(t *testing.T) {
+	set, _ := newTestSet()
+	rw := NewInternalService(set, "rw")
+	rw.Flags.RWReady = true
+	set.AddService(rw)
+
+	release := make(chan struct{})
+	ran := make(chan struct{})
+	set.OnRWReady = func() {
+		<-release
+		close(ran)
+	}
+	started := make(chan struct{})
+	go func() { set.StartService(rw); close(started) }()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Error("StartService blocked >1s on the starts-rwfs callback")
+	}
+	close(release)
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnRWReady was not called")
+	}
+	<-started
 }
 
 func TestReadyFDDefault(t *testing.T) {
