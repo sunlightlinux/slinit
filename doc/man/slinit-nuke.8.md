@@ -48,6 +48,11 @@ coordinate with slinit. For orderly shutdowns use
 than PID 1 and the caller itself. Run as root, that is the whole of
 userspace; run as another user, only that user's processes.
 
+Before the first signal **slinit-nuke** ignores *SIGHUP*, *SIGTERM* and
+*SIGPIPE*, so it survives its own terminal going away (an SSH session
+whose **sshd** the *SIGTERM* round just killed) and still sends the
+*SIGKILL* round.
+
 The signals are best-effort. **ESRCH** ("no processes matched") is
 silently ignored — it is a valid outcome (the only userspace process
 left could be **slinit-nuke** itself, and that is fine).
