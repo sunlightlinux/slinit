@@ -691,6 +691,15 @@ requires.
 
 ### Fixed
 
+- **`slinit-journalctl -k` was empty when PID 1 started without a
+  mounted `/dev`.** The kernel-log reader opened `/dev/kmsg` before
+  PID 1 mounted devtmpfs, so on a boot straight from an initramfs (or a
+  kernel that does not mount devtmpfs itself) the open failed, the
+  reader was skipped without a word, and no kernel message reached the
+  journal for the whole boot. It is now started again once `/dev` is
+  mounted; it replays the kernel buffer from the start, so nothing is
+  lost. Found by functional case 203, which used to accept an empty
+  `-k`.
 - **`slinitctl reset-failed` left the service failed.** It cleared the
   start-failed flag, but `is-failed` also reads why the service stopped,
   and a failed start or a failing exit leaves that reason behind; so

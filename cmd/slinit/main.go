@@ -572,10 +572,29 @@ func main() {
 	// keeps working either way. Started before service loading so
 	// early-boot kernel messages land in the same journal stream
 	// operators query via `slinit-journalctl -k`.
-	if kmsgReader, err := journal.NewKmsgReader(journalEmitter); err == nil {
-		go kmsgReader.Run(context.Background())
-		defer kmsgReader.Stop()
+	//
+	// /dev may not be mounted yet: InitPID1 mounts devtmpfs further down,
+	// and a boot straight from an initramfs has no /dev/kmsg before that.
+	// The open then failed and the reader never ran for the whole boot,
+	// so `-k` was empty. startKmsg is tried here and again after
+	// InitPID1/InitContainer; the reader replays the kernel ring buffer
+	// from its start, so the later start loses nothing.
+	var kmsgReader *journal.KmsgReader
+	startKmsg := func() {
+		if kmsgReader != nil {
+			return
+		}
+		if r, err := journal.NewKmsgReader(journalEmitter); err == nil {
+			kmsgReader = r
+			go r.Run(context.Background())
+		}
 	}
+	startKmsg()
+	defer func() {
+		if kmsgReader != nil {
+			kmsgReader.Stop()
+		}
+	}()
 
 	// Redirect log output to file (--log-file/-l).
 	//
@@ -739,11 +758,13 @@ func main() {
 		if err := shutdown.InitContainer(logger); err != nil {
 			logger.Error("Container initialization warning: %v", err)
 		}
+		startKmsg()
 	} else if isPID1 {
 		logger.Notice("slinit starting as PID 1 (init system mode)")
 		if err := shutdown.InitPID1(logger); err != nil {
 			logger.Error("PID 1 initialization warning: %v", err)
 		}
+		startKmsg() // /dev is mounted now
 		// finit-parity: bring loopback up at very early boot so
 		// daemons that bind to 127.0.0.1 (postgresql / redis /
 		// dbus on systems configured to use the unix-abstract

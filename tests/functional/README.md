@@ -298,7 +298,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 188 | pass-unset-env | pass-environment whitelist and unset-environment blacklist visible in child /proc/self/environ |
 | 189 | standard-input | standard-input-text and standard-input-data bytes reach child stdin (base64 decoded for -data) |
 | 190 | exec-condition-searchpath | exec-condition=/bin/true runs command; =/bin/false skips it; exec-search-path becomes the child's PATH |
-| 191 | import-credential | import-credential parses coexisting with set-credential; credentials tmpfs populated |
+| 191 | import-credential | `import-credential = my-secret-*` copies the two matching credentials from a seeded `/etc/credstore` (content intact) and not the third; set-credential alongside |
 | 192 | lsm-fail-closed | selinux-context and smack-process-label refuse to start when /sys/fs/selinux and /sys/fs/smackfs are absent (fail-closed contract) |
 | 193 | restart-misc | start-limit-action + restart-force-exit-status + restart-max-delay + restart-mode + runtime-randomized-extra coexist |
 | 194 | skarnet-niches | alert-file + alert-level + options=pass-cs-fd + utmp-mode all parse and coexist |
@@ -310,7 +310,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 200 | seccomp-arch-log-mdwe | system-call-architectures + system-call-log + memory-deny-write-execute stack on top of @system-service filter; Seccomp mode 2 confirmed |
 | 201 | misc-coverage | cron-persistent + cron-randomized-delay + socket-uid/-gid + bind-read-only-paths + keyword non-match |
 | 202 | journalctl-list-boots | `--list-boots` enumeration + `-b` shortcut (bare / `-b0` / `--boot`); boot ID matches event's `_boot_id` field (v2.1.0) |
-| 203 | journalctl-kernel-events | `-k`/`--dmesg` returns bare-prefix `kernel:` lines with no [PID] bracket (v2.1.0 render rule); JSON has `unit=kernel` + `_transport=kernel` |
+| 203 | journalctl-kernel-events | `-k`/`--dmesg` returns kernel lines (must not be empty: slinit starts with no `/dev` in this VM), as bare-prefix `kernel:` lines with no [PID] bracket (v2.1.0 render rule); JSON has `unit=kernel` + `_transport=kernel` |
 | 204 | slinit-supports | self-introspection CLI: `--list-directives` / `--list-opcodes` / `--list-all` + name lookup + non-zero exit on unknown (v2.1.0) |
 | 205 | slinitctl-analyze | analyze `time`/`blame`/`critical-chain`/`dot` with live impls; `plot` is a documented not-implemented stub (v2.1.2) |
 | 206 | slinit-runit-convert | log companion path (v2.1.5): `-log` file with `consumer-of` + `log-type = pipe` on primary; `working-dir` defaults to sv dir |
