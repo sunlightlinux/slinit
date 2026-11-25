@@ -2024,3 +2024,33 @@ func TestRenderShortCatNeutraliseMessage(t *testing.T) {
 		t.Errorf("--all cat: %q", got)
 	}
 }
+
+// --verify of a file that is not sealed checked nothing and exited 0, so
+// clearing the unsealed sealed flag turned any tampering into a pass.
+func TestRunVerifyFailsUnsealedFile(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := dir + "/journal-key"
+	key, err := journalbin.NewFSSKey(0, 60_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := journalbin.SaveFSSKey(keyPath, key); err != nil {
+		t.Fatal(err)
+	}
+	path := dir + "/plain.journal"
+	w, err := journalbin.NewWriter(path, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(&journal.Event{Ts: 1000, Msg: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	stdout := os.Stdout
+	os.Stdout, _ = os.Open(os.DevNull)
+	err = runVerify(options{sourceFile: path, fssKeyPath: keyPath})
+	os.Stdout = stdout
+	if err == nil {
+		t.Fatal("--verify of an unsealed file succeeded")
+	}
+}

@@ -63,7 +63,8 @@ func TestVerifyCleanFileNoTampering(t *testing.T) {
 
 func TestVerifyUnsealedFileShortcircuits(t *testing.T) {
 	// A regular (unsealed) file — Verify should report
-	// SealingEnabled=false and not fail.
+	// SealingEnabled=false without an error, and not OK: nothing in
+	// it was checked.
 	path := filepath.Join(t.TempDir(), "plain.journal")
 	w, err := NewWriter(path, testBootID, testMachineID)
 	if err != nil {
@@ -80,8 +81,8 @@ func TestVerifyUnsealedFileShortcircuits(t *testing.T) {
 	if res.SealingEnabled {
 		t.Fatal("unsealed file must not report SealingEnabled")
 	}
-	if !res.OK() {
-		t.Fatal("unsealed file must trivially pass Verify")
+	if res.OK() {
+		t.Fatal("unsealed file must not pass Verify")
 	}
 	if res.TagsChecked != 0 {
 		t.Errorf("TagsChecked = %d, want 0", res.TagsChecked)

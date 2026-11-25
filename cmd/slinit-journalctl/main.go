@@ -3252,9 +3252,14 @@ func runVerify(opts options) error {
 	if err != nil {
 		return err
 	}
+	// A key was supplied, so the file is meant to be sealed. The flag
+	// saying it is lives in the unsealed header; clearing it made this a
+	// pass with nothing checked. systemd's journalctl still checks an
+	// unsealed file's structure and passes it; here --verify checks
+	// seals only, so a file without them fails.
 	if !res.SealingEnabled {
-		fmt.Printf("%s: FSS not enabled on this file (nothing to verify)\n", opts.sourceFile)
-		return nil
+		fmt.Printf("%s: FAIL: FSS not enabled on this file, nothing could be verified\n", opts.sourceFile)
+		return errors.New("verify: file is not sealed")
 	}
 	if res.OK() {
 		fmt.Printf("%s: OK (%d tags verified, %d entries sealed)\n",
@@ -3280,6 +3285,13 @@ func runVerify(opts options) error {
 			opts.sourceFile, res.HiddenEntries, res.TagsChecked)
 		return fmt.Errorf("verify: %d sealed entries hidden from the entry-array chain",
 			res.HiddenEntries)
+	}
+	if res.ForeignEntries > 0 {
+		fmt.Printf("%s: TAMPER DETECTED: the entry-array chain names %d offsets that "+
+			"are not ENTRY objects of the file (%d tags verified)\n",
+			opts.sourceFile, res.ForeignEntries, res.TagsChecked)
+		return fmt.Errorf("verify: %d foreign entries in the entry-array chain",
+			res.ForeignEntries)
 	}
 	fmt.Printf("%s: TAMPER DETECTED at tag offset %d (seqnum %d, %d prior tags OK)\n",
 		opts.sourceFile, res.FirstBadTagOffset, res.FirstBadTagSeqnum, res.TagsChecked)

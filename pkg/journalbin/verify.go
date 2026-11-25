@@ -10,7 +10,8 @@ import (
 type VerifyResult struct {
 	// SealingEnabled is true when the file was written with FSS
 	// (CompatFlagSealed set). If false, Verify short-circuits with
-	// no error — nothing to check.
+	// no error, and the result is not OK: the flag is unsealed, and
+	// clearing it must not turn a verify into a pass.
 	SealingEnabled bool
 	// TagsChecked is the number of TAG objects successfully verified.
 	TagsChecked int
@@ -39,6 +40,11 @@ type VerifyResult struct {
 	// it (appendEntryOffsetLocked runs before writeSealTagLocked), so a
 	// sealed entry that is unreachable is tampering, not a write race.
 	HiddenEntries int
+	// ForeignEntries is how many offsets the ENTRY_ARRAY chain names
+	// that the object walk did not find as an ENTRY: a forged ENTRY
+	// carried inside a sealed payload, say. EntryOffsets, and so
+	// MultiReader and SeekRealtime, would return them.
+	ForeignEntries int
 	// UnsealedTailBytes is how many bytes sit between the last verified
 	// TAG and the tail object. Nothing seals them — a journald killed
 	// before its closing TAG leaves such a tail — so they are
@@ -46,11 +52,12 @@ type VerifyResult struct {
 	UnsealedTailBytes uint64
 }
 
-// OK returns true when the file is sealing-disabled OR every TAG
-// verified cleanly AND no sealed entry has been hidden from the
-// ENTRY_ARRAY chain.
+// OK returns true when the file is sealed, every TAG verified cleanly,
+// no sealed entry has been hidden from the ENTRY_ARRAY chain and the
+// chain names nothing but the file's ENTRY objects.
 func (v VerifyResult) OK() bool {
-	return v.FirstBadTagOffset == 0 && v.HiddenEntries == 0
+	return v.SealingEnabled && v.FirstBadTagOffset == 0 && v.HiddenEntries == 0 &&
+		v.ForeignEntries == 0
 }
 
 // Verify walks the TAG chain of a journal file, recomputing each
@@ -65,8 +72,17 @@ func (v VerifyResult) OK() bool {
 // journald daemon.
 //
 // Returns an error only for I/O or format failures (missing file,
-// corrupt header, TAG object shorter than expected). A clean-verify
-// or a first-bad-tag both surface via VerifyResult, not err.
+// corrupt header, TAG object shorter than expected, a header whose
+// tail offset or object counts disagree with the objects). A
+// clean-verify or a first-bad-tag both surface via VerifyResult, not
+// err.
+//
+// The walk covers the whole file, as the readers do. It used to stop
+// at the header's TailObjectOffset, which no TAG seals: pointing it at
+// the header made Verify check nothing and pass while the readers
+// returned every entry, tampered ones included. Like systemd's
+// journal-verify, the tail offset and the object and entry counts
+// must then agree with what the walk found.
 func Verify(path string, key *FSSKey) (VerifyResult, error) {
 	if key == nil {
 		return VerifyResult{}, fmt.Errorf("journalbin: verify needs an FSS key")
@@ -101,7 +117,10 @@ func Verify(path string, key *FSSKey) (VerifyResult, error) {
 	// Entries seen since prevTagEnd; promoted to sealedEntries when the
 	// TAG covering them verifies.
 	var pendingEntries, sealedEntries []uint64
-	for off < h.TailObjectOffset {
+	walked := map[uint64]struct{}{}
+	var nObjects, nEntries uint64
+	fs := uint64(fileSize(f))
+	for off < fs {
 		var ohBuf [ObjectHeaderSize]byte
 		if _, err := f.ReadAt(ohBuf[:], int64(off)); err != nil {
 			return res, fmt.Errorf("journalbin: verify read obj hdr at %d: %w", off, err)
@@ -113,10 +132,13 @@ func Verify(path string, key *FSSKey) (VerifyResult, error) {
 		if oh.Size < ObjectHeaderSize {
 			return res, fmt.Errorf("journalbin: verify: bad object size %d at %d", oh.Size, off)
 		}
-		if fs := uint64(fileSize(f)); off > fs || oh.Size > fs-off {
+		if oh.Size > fs-off {
 			return res, fmt.Errorf("journalbin: verify: obj at %d claims size past file end", off)
 		}
+		nObjects++
 		if oh.Type == ObjectEntry {
+			nEntries++
+			walked[off] = struct{}{}
 			pendingEntries = append(pendingEntries, off)
 		}
 		if oh.Type == ObjectTag {
@@ -156,31 +178,45 @@ func Verify(path string, key *FSSKey) (VerifyResult, error) {
 		off += AlignUp(oh.Size)
 	}
 
+	// The header is not sealed; it must describe the objects found.
+	if h.TailObjectOffset != off {
+		return res, fmt.Errorf("journalbin: verify: tail object offset %d is not the end of the last object %d",
+			h.TailObjectOffset, off)
+	}
+	if h.NObjects != nObjects {
+		return res, fmt.Errorf("journalbin: verify: header counts %d objects, file holds %d", h.NObjects, nObjects)
+	}
+	if h.NEntries != nEntries {
+		return res, fmt.Errorf("journalbin: verify: header counts %d entries, file holds %d", h.NEntries, nEntries)
+	}
+
 	// Anything after the last verified TAG is sealed by nothing. Say how
 	// much rather than leaving a clean verdict to imply it was checked.
-	if h.TailObjectOffset > prevTagEnd {
-		res.UnsealedTailBytes = h.TailObjectOffset - prevTagEnd
+	if off > prevTagEnd {
+		res.UnsealedTailBytes = off - prevTagEnd
 	}
 
 	// Reconcile the two enumeration paths. A sealed ENTRY that the
 	// array chain cannot reach has been unlinked by someone editing
-	// metadata the HMAC does not cover.
+	// metadata the HMAC does not cover; an offset the chain names that
+	// is no ENTRY of the walk was linked in the same way.
 	res.EntriesSealed = len(sealedEntries)
-	if res.EntriesSealed > 0 {
-		reachable := make(map[uint64]struct{}, res.EntriesSealed)
-		if err := walkEntryOffsets(f, h.EntryArrayOffset, func(eo uint64) bool {
-			reachable[eo] = struct{}{}
-			return true
-		}); err != nil {
-			// A broken array chain is itself a finding, but it is a
-			// decode failure rather than a silent omission, so it goes
-			// back as an error the caller already surfaces.
-			return res, fmt.Errorf("journalbin: verify walk entry arrays: %w", err)
+	reachable := make(map[uint64]struct{}, res.EntriesSealed)
+	if err := walkEntryOffsets(f, h.EntryArrayOffset, func(eo uint64) bool {
+		reachable[eo] = struct{}{}
+		if _, ok := walked[eo]; !ok {
+			res.ForeignEntries++
 		}
-		for _, eo := range sealedEntries {
-			if _, ok := reachable[eo]; !ok {
-				res.HiddenEntries++
-			}
+		return true
+	}); err != nil {
+		// A broken array chain is itself a finding, but it is a
+		// decode failure rather than a silent omission, so it goes
+		// back as an error the caller already surfaces.
+		return res, fmt.Errorf("journalbin: verify walk entry arrays: %w", err)
+	}
+	for _, eo := range sealedEntries {
+		if _, ok := reachable[eo]; !ok {
+			res.HiddenEntries++
 		}
 	}
 	return res, nil
