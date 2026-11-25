@@ -485,3 +485,67 @@ func TestVirtualTTYAcceptLoopBacksOffOnErrors(t *testing.T) {
 		t.Errorf("Accept retried %d times in 300ms: a busy loop", n)
 	}
 }
+
+// A client dropped while its scrollback is still being written must not
+// wedge the accept loop or Close. removeClient waits for the client's
+// input forwarder to close done, and addClient used to start that
+// forwarder only after the scrollback write succeeded: a client that
+// never read made the write time out, removeClient then waited on a done
+// channel nothing would ever close, and the accept loop was dead for good
+// (as was Close, which waits on every client's done too).
+func TestVirtualTTY_ScrollbackTimeoutDoesNotHangAccept(t *testing.T) {
+	restore := vttyWriteDeadline
+	vttyWriteDeadline = 100 * time.Millisecond
+	defer func() { vttyWriteDeadline = restore }()
+
+	// Scrollback far larger than any unix socket buffer, so a client that
+	// never reads makes the scrollback write time out.
+	const size = 4 << 20
+	vt, _, err := OpenVirtualTTY("scrollback-hang-svc", size, t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenVirtualTTY failed: %v", err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			go vt.Close()
+		}
+	}()
+	vt.mu.Lock()
+	vt.ringWrite([]byte(strings.Repeat("s", size)))
+	vt.mu.Unlock()
+
+	stuck, err := net.Dial("unix", vt.SocketPath())
+	if err != nil {
+		t.Fatalf("stuck client connect failed: %v", err)
+	}
+	defer stuck.Close()
+	waitForClients(t, vt, 1)
+	waitForClients(t, vt, 0)
+
+	// A second attach must still be served: it reads the whole scrollback.
+	fresh, err := net.Dial("unix", vt.SocketPath())
+	if err != nil {
+		t.Fatalf("second client connect failed: %v", err)
+	}
+	defer fresh.Close()
+	_ = fresh.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64*1024)
+	got := 0
+	for got < size {
+		n, err := fresh.Read(buf)
+		got += n
+		if err != nil {
+			t.Fatalf("accept loop is hung: second client read %d of %d scrollback bytes: %v", got, size, err)
+		}
+	}
+
+	closeDone := make(chan struct{})
+	go func() { vt.Close(); close(closeDone) }()
+	select {
+	case <-closeDone:
+		closed = true
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
