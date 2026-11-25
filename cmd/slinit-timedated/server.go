@@ -36,7 +36,7 @@ type machine struct {
 	ntpRunning    func(svc string) bool
 	setNTP        func(bool) error
 	ntpSynced     func() bool
-	kernelTZ      func()
+	kernelTZ      func(*time.Location)
 	now           func() time.Time
 }
 
@@ -66,6 +66,10 @@ type server struct {
 	svc *dbusservice.Service
 	pk  *polkit.Checker
 	m   machine
+	// loc is the time zone last set, for the log line of a later SetTime;
+	// nil until then. Guarded by mu. time.Local is never changed: every
+	// goroutine reads it, so assigning it was a data race.
+	loc *time.Location
 }
 
 // newServer wires the object to its D-Bus scaffolding.
@@ -112,10 +116,12 @@ func (s *server) SetTimezone(sender dbus.Sender, zone string, interactive bool) 
 	if err := timedate.SetTimezone(zone); err != nil {
 		return dbusservice.Failed("Failed to set time zone: %v", err)
 	}
-	if loc, err := time.LoadLocation(zone); err == nil {
-		time.Local = loc // our own tzset()
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		loc = time.Local
 	}
-	s.m.kernelTZ()
+	s.loc = loc
+	s.m.kernelTZ(loc)
 	if timedate.RTCInLocal() {
 		// The RTC holds local time, which just changed meaning.
 		if err := s.m.rtcFromSystem(true); err != nil {
@@ -161,14 +167,16 @@ func (s *server) SetLocalRTC(sender dbus.Sender, localRTC, fixSystem, interactiv
 // SetTime sets the system clock, absolutely or relative to now, in
 // microseconds.
 //
-// The request is checked before polkit is asked and again once it has
-// answered, as systemd re-runs the method after an asynchronous
-// authorization: a prompt takes as long as the user does, so a relative
-// time is counted from when the clock is set, not from when it was asked
-// for, and NTP started in the meantime refuses it.
+// The arguments are checked before polkit is asked and the request again
+// once it has answered, as systemd re-runs the method after an
+// asynchronous authorization: a prompt takes as long as the user does, so
+// a relative time is counted from when the clock is set, not from when it
+// was asked for, and NTP started in the meantime refuses it. Whether NTP
+// runs is asked of slinitctl only once polkit has said yes, so a caller
+// who may not set the time cannot make the daemon run it.
 func (s *server) SetTime(sender dbus.Sender, usec int64, relative, interactive bool) *dbus.Error {
 	defer s.svc.Touch()()
-	if t, err := s.setTimeTarget(usec, relative); err != nil || t.IsZero() {
+	if t, err := timeTarget(s.m.now(), usec, relative); err != nil || t.IsZero() {
 		return err
 	}
 	if err := s.pk.Authorize(sender, iface+".set-time", nil, interactive); err != nil {
@@ -186,7 +194,11 @@ func (s *server) SetTime(sender dbus.Sender, usec int64, relative, interactive b
 	if err := s.m.rtcFromSystem(timedate.RTCInLocal()); err != nil {
 		s.svc.Logf("failed to sync time to hardware clock, ignoring: %v", err)
 	}
-	s.svc.Logf("Changed local time to %s", t.Local().Format("Mon 2006-01-02 15:04:05 MST"))
+	loc := s.loc
+	if loc == nil {
+		loc = time.Local
+	}
+	s.svc.Logf("Changed local time to %s", t.In(loc).Format("Mon 2006-01-02 15:04:05 MST"))
 	return nil
 }
 
@@ -196,6 +208,11 @@ func (s *server) setTimeTarget(usec int64, relative bool) (time.Time, *dbus.Erro
 	if svc := s.m.findNTP(); svc != "" && s.m.ntpRunning(svc) {
 		return time.Time{}, dbus.NewError(iface+".AutomaticTimeSyncEnabled", []any{"Automatic time synchronization is enabled"})
 	}
+	return timeTarget(s.m.now(), usec, relative)
+}
+
+// timeTarget checks SetTime's arguments alone, relative to now.
+func timeTarget(now time.Time, usec int64, relative bool) (time.Time, *dbus.Error) {
 	if !relative && usec <= 0 {
 		return time.Time{}, dbusservice.InvalidArgs("Invalid absolute time")
 	}
@@ -204,7 +221,6 @@ func (s *server) setTimeTarget(usec int64, relative bool) (time.Time, *dbus.Erro
 	}
 	var t time.Time
 	if relative {
-		now := s.m.now()
 		nowUsec := now.UnixMicro()
 		if (usec > 0 && nowUsec > math.MaxInt64-usec) || (usec < 0 && nowUsec < math.MinInt64-usec) {
 			return time.Time{}, dbusservice.InvalidArgs("Time value overflow")
@@ -290,8 +306,8 @@ func (s *server) property(name string) (dbus.Variant, bool) {
 // first-call slot without shifting anything; after it, the real
 // offset is only recorded. A local-time RTC is set up at boot by
 // hwclock --systz, never by a time zone change on a running system.
-func setKernelTimezone() {
-	_, off := time.Now().Zone()
+func setKernelTimezone(loc *time.Location) {
+	_, off := time.Now().In(loc).Zone()
 	setKernelTZ(0)
 	setKernelTZ(int32(-off / 60))
 }

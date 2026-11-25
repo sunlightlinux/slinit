@@ -92,7 +92,7 @@ func newWorld(t *testing.T) *world {
 		ntpRunning:    func(string) bool { return w.ntpOn },
 		setNTP:        func(b bool) error { w.ntpSet = append(w.ntpSet, b); w.ntpOn = b; return nil },
 		ntpSynced:     func() bool { return true },
-		kernelTZ:      func() {},
+		kernelTZ:      func(*time.Location) {},
 		now:           func() time.Time { return now },
 	},
 	)
@@ -175,6 +175,7 @@ func TestSetTime(t *testing.T) {
 		t.Errorf("with NTP running: %q", got)
 	}
 	w.ntpOn = false
+	w.asked = nil
 	for _, c := range []struct {
 		usec     int64
 		relative bool
@@ -229,6 +230,56 @@ func TestSetTimeRelativeCountsFromAfterAuthorization(t *testing.T) {
 	w.onAsk = func() { w.ntpOn = true }
 	if got := errName(w.s.SetTime(":1.9", 90*1e6, true, true)); got != "org.freedesktop.timedate1.AutomaticTimeSyncEnabled" {
 		t.Errorf("NTP started during the prompt: %q, want AutomaticTimeSyncEnabled", got)
+	}
+}
+
+// Whether NTP runs is asked of slinitctl, a process the daemon starts;
+// it was asked before polkit, so a caller who may not set the time could
+// make the daemon run it at will. It is now asked once polkit says yes.
+func TestSetTimeAsksPolkitBeforeSlinitctl(t *testing.T) {
+	w := newWorld(t)
+	w.ntpSvc, w.allow = "chronyd", false
+	probes := 0
+	w.s.m.ntpRunning = func(string) bool { probes++; return w.ntpOn }
+	if got := errName(w.s.SetTime(":1.9", 90*1e6, true, true)); got != "org.freedesktop.DBus.Error.AccessDenied" {
+		t.Errorf("refused by polkit: %q, want AccessDenied", got)
+	}
+	if probes != 0 {
+		t.Errorf("slinitctl asked %d times for a caller polkit refused", probes)
+	}
+	w.allow = true
+	if err := w.s.SetTime(":1.9", 90*1e6, true, true); err != nil || probes != 1 {
+		t.Errorf("allowed: err %v, slinitctl asked %d times, want once", err, probes)
+	}
+}
+
+// time.Local was assigned on every time zone change while every other
+// goroutine reads it (time.Now does): a data race, found by -race.
+func TestSetTimezoneLeavesTimeLocal(t *testing.T) {
+	w := newWorld(t)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = time.Now().String()
+			}
+		}
+	}()
+	before := time.Local
+	for _, zone := range []string{"Europe/Paris", "Europe/Bucharest", "Europe/Paris"} {
+		if err := w.s.SetTimezone(":1.9", zone, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	<-done
+	if time.Local != before {
+		t.Error("SetTimezone changed time.Local")
 	}
 }
 
