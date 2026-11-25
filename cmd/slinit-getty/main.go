@@ -17,7 +17,9 @@
 //	         Optional; defaults to whatever the caller set.
 //
 // Flow:
-//  1. Open TTY as new controlling terminal (setsid + TIOCSCTTY).
+//  1. Open TTY as new controlling terminal (setsid + TIOCSCTTY),
+//     reclaimed as agetty does: root:tty 0620 (0600 with no tty
+//     group), then vhangup(2) and a fresh open.
 //  2. dup2 into fd 0/1/2.
 //  3. Configure termios for canonical line input with echo.
 //  4. Render /etc/issue with the classic backslash escapes.
@@ -38,6 +40,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"os/user"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -132,6 +137,17 @@ func run(ttyArg, baud, term string, passEnv bool) error {
 		return fmt.Errorf("open %s: %w", ttyPath, err)
 	}
 
+	// Reclaim the tty from its previous user, as agetty does: root
+	// owns it again, and a vhangup revokes every descriptor a process
+	// left from the last session still holds, so nothing of theirs can
+	// read the next login.
+	if err := reclaimTTY(fd, ttyGroup()); err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-getty: reclaim %s: %v\n", ttyPath, err)
+	}
+	if fd, err = hangupAndReopen(fd, ttyPath); err != nil {
+		return fmt.Errorf("reopen %s after vhangup: %w", ttyPath, err)
+	}
+
 	// Wire the tty as fd 0/1/2 for both this process AND the
 	// eventual login exec. dup2 leaves the source fd open; close it
 	// only when it's not one of 0/1/2 already.
@@ -218,6 +234,57 @@ func execLogin(name string, passEnv bool, execve func(string, []string, []string
 		return fmt.Errorf("cannot run login (%v) nor %s: %w", loginErr, sulogin, err)
 	}
 	return nil
+}
+
+// ttyGroup is the gid of the tty group, or 0 when there is none.
+func ttyGroup() int {
+	g, err := user.LookupGroup("tty")
+	if err != nil {
+		return 0
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return 0
+	}
+	return gid
+}
+
+// ttyMode is agetty's: 0620 when a tty group can write(1) to the user,
+// 0600 when there is none.
+func ttyMode(gid int) uint32 {
+	if gid != 0 {
+		return 0o620
+	}
+	return 0o600
+}
+
+// reclaimTTY gives the tty back to root and the tty group before the
+// prompt, as agetty does: the last session's login made it the user's.
+func reclaimTTY(fd, gid int) error {
+	if err := unix.Fchown(fd, 0, gid); err != nil {
+		return fmt.Errorf("fchown: %w", err)
+	}
+	if err := unix.Fchmod(fd, ttyMode(gid)); err != nil {
+		return fmt.Errorf("fchmod: %w", err)
+	}
+	return nil
+}
+
+// hangupAndReopen makes fd's tty our controlling terminal, hangs it up
+// with vhangup(2) so every other descriptor on it goes dead, and opens
+// it afresh. vhangup sends SIGHUP to our own session too, so SIGHUP is
+// ignored around it and restored before login inherits it. Without
+// the privilege for vhangup the tty is kept as it is.
+func hangupAndReopen(fd int, ttyPath string) (int, error) {
+	_ = unix.IoctlSetInt(fd, unix.TIOCSCTTY, 1)
+	signal.Ignore(syscall.SIGHUP)
+	defer signal.Reset(syscall.SIGHUP)
+	if _, _, errno := unix.Syscall(unix.SYS_VHANGUP, 0, 0, 0); errno != 0 {
+		fmt.Fprintf(os.Stderr, "slinit-getty: vhangup %s: %v\n", ttyPath, errno)
+		return fd, nil
+	}
+	_ = syscall.Close(fd)
+	return syscall.Open(ttyPath, syscall.O_RDWR|syscall.O_NOCTTY, 0)
 }
 
 // configureTermios sets canonical + echo mode on fd, and if `baud`

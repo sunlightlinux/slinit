@@ -24,8 +24,14 @@ supporting the classic getty argument shape (any existing
 
 1. **setsid**(2) — leave the calling session so the tty becomes
    an unclaimed controlling terminal.
-2. Open *TTY* as *O_RDWR|O_NOCTTY* and **dup2**(2) it as fd
-   0/1/2.
+2. Open *TTY* as *O_RDWR|O_NOCTTY* and reclaim it from the previous
+   session, as **agetty**(8) does: **fchown**(2) to root and the *tty*
+   group, **fchmod**(2) to 0620 (0600 when there is no *tty* group),
+   then **vhangup**(2), which revokes every descriptor a leftover
+   process of the last user still holds, and open it again. *SIGHUP*
+   is ignored around the hangup so it does not end slinit-getty itself.
+   Failures (not root, read-only */dev*) are reported on stderr and the
+   prompt still appears. Then **dup2**(2) it as fd 0/1/2.
 3. **ioctl**(2) *TIOCSCTTY* to claim it as the process's
    controlling terminal (`force=1` to steal from a prior owner
    like slinit's own **setctty**).

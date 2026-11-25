@@ -3,9 +3,12 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestExpandIssue_Basic: no escapes = passthrough. Regression
@@ -178,5 +181,59 @@ func TestLoginExecFailureExits(t *testing.T) {
 	}
 	if len(ran) != 1 || ran[0] != login {
 		t.Errorf("executed %v, want only %s", ran, login)
+	}
+}
+
+// agetty's modes: the tty group may write to the user's terminal
+// (write(1), wall), nobody else may; without a tty group, owner only.
+func TestTTYMode(t *testing.T) {
+	if m := ttyMode(5); m != 0o620 {
+		t.Errorf("with a tty group: %o, want 620", m)
+	}
+	if m := ttyMode(0); m != 0o600 {
+		t.Errorf("without a tty group: %o, want 600", m)
+	}
+}
+
+// A tty the last session's login gave to its user goes back to root
+// before the next prompt. Needs root to chown; skipped otherwise.
+func TestReclaimTTY(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root to chown a tty")
+	}
+	ptmx, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Skipf("no pty: %v", err)
+	}
+	defer unix.Close(ptmx)
+	if err := unix.IoctlSetPointerInt(ptmx, unix.TIOCSPTLCK, 0); err != nil {
+		t.Fatal(err)
+	}
+	n, err := unix.IoctlGetInt(ptmx, unix.TIOCGPTN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slave := "/dev/pts/" + strconv.Itoa(n)
+	fd, err := unix.Open(slave, unix.O_RDWR|unix.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	// As a previous login would have left it.
+	if err := unix.Fchown(fd, 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Fchmod(fd, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := reclaimTTY(fd, 5); err != nil {
+		t.Fatal(err)
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Uid != 0 || st.Gid != 5 || st.Mode&0o777 != 0o620 {
+		t.Errorf("%s: uid %d gid %d mode %o, want 0 5 620", slave, st.Uid, st.Gid, st.Mode&0o777)
 	}
 }
