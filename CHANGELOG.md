@@ -33,6 +33,17 @@ requires.
 
 ### Security
 
+- **Any local user could pin about 256 MiB in PID 1 through
+  `/dev/log`.** The rate limit counts messages, and each 64 KiB datagram
+  was kept in the 4096-slot journal ring. Messages from non-root senders
+  are now cut to 8 KiB.
+- **Service output could make PID 1's memory grow without bound.** A
+  log line of any size went into the journal ring (the 256 KiB message
+  cap applied only to `/dev/log`), and a service writing without
+  newlines grew the log rotator's line buffer for as long as it wrote
+  when `log-max-line-length` was unset. Messages are cut to 256 KiB in
+  the ring, and the rotator passes an over-long line on in pieces.
+
 - **A service's first children escaped its rlimits, nice, CPU affinity,
   scheduling policy, ioprio and oom_score_adj.** slinit set them on the
   child from outside after it had started, so whatever the service
@@ -739,6 +750,19 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **`slinitctl attach` could stop accepting clients for a service, and
+  the service's console then blocked.** A client dropped while its
+  scrollback was still being sent left the drop waiting for an input
+  forwarder that had not started yet: the accept loop, or the output
+  pump and then the vtty's Close, waited for ever. This is the cause
+  of the long-open "vtty Close hang" CI flake. The forwarder now starts
+  before the client is visible.
+- **`log-level-max = emerg` turned the filter off** instead of keeping
+  only emergencies.
+- **Every journal event dialed `events.sock` when slinit-journald was
+  not running**, 20 times the cost of storing the event. A failed dial
+  is now retried after a second, or as soon as the socket file appears.
 
 - **Socket-activated services never got `LISTEN_PID`**, so
   libsystemd's `sd_listen_fds()` returned 0 and the daemon ignored the
