@@ -130,3 +130,52 @@ func TestDepAudit_RandomChurnShutsDownClean(t *testing.T) {
 		}
 	}
 }
+
+// A dependent the operator had already stopped cleanly keeps its reason
+// when its dependency is force-stopped afterwards. stopDependents marked
+// every hard dependent DEPFAILED on a forced stop, STOPPED ones too, so
+// `slinitctl is-failed B` turned true after `--force stop A`. dinit
+// skips a STOPPED dependent outright.
+func TestDepAudit_ForceStopKeepsStoppedDependentReason(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B")
+	a, b := sv[0], sv[1]
+	b.AddDep(a, DepRegular)
+	set.StartService(a)
+	set.StartService(b)
+	set.StopService(b)
+	if b.IsFailed() {
+		t.Fatalf("setup: B failed after a plain stop (reason %v)", b.StopReason())
+	}
+	set.ForceStopService(a)
+	if b.IsFailed() || b.StopReason() != ReasonNormal {
+		logSvcs(t, a, b)
+		t.Errorf("cleanly stopped B now reports reason %v, is-failed=%v", b.StopReason(), b.IsFailed())
+	}
+}
+
+// The other half of dinit's is_dept_failure: a dependency forced down
+// because its start failed (job-timeout-sec) takes its dependents down
+// as DEPFAILED.
+func TestDepAudit_FailedForcedStopMarksDependentDepFailed(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B")
+	a, b := sv[0], sv[1]
+	b.AddDep(a, DepRegular)
+	a.autoStart = false
+	set.StartService(b)
+	if b.State() != StateStarting {
+		t.Fatalf("setup: B should wait for A, got %v", b.State())
+	}
+	// What the job-timeout timer does.
+	set.queueMu.Lock()
+	a.stopReason = ReasonTimedOut
+	a.startFailed = true
+	a.UnrecoverableStop()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	if b.State() != StateStopped || b.StopReason() != ReasonDepFailed {
+		logSvcs(t, a, b)
+		t.Errorf("B: state %v reason %v; want STOPPED dependency-failed", b.State(), b.StopReason())
+	}
+}

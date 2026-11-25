@@ -736,6 +736,14 @@ requires.
   (`<date>.<ns>.jsonl` with its `.idx`), so both boots are kept and read
   in the order they were written; the cross-device copy no longer
   truncates an existing file either.
+- **`slinitctl --force stop` could mark a service failed that had not
+  failed.** When a forced stop reached a dependency whose own target was
+  STOPPED, every hard dependent was given the `dependency-failed` reason,
+  including one the operator had already stopped cleanly — so
+  `slinitctl is-failed` turned true for it — and including dependents of
+  a dependency that was itself stopped on request. As in dinit, a
+  dependent already STOPPED is left alone, and the others stop as
+  `dependency-failed` only when the dependency's own stop was a failure.
 - **Shutdown could wait the emergency timeout with every service
   stopped.** The scheduler ran one pass over the propagation queue and
   then a transition, so a release queued during that pass waited until

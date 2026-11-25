@@ -3816,9 +3816,24 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 				allStopped = false
 			}
 
+			// A dependent that is already STOPPED has nothing to stop
+			// and keeps the reason it stopped for (dinit: continue).
+			// One parked on a restart-delay timer is still active and
+			// still has to learn it is not wanted any more.
+			if depFrom.state.Load() == StateStopped && !depFrom.restartPending {
+				continue
+			}
+
 			if sr.forceStop {
 				if sr.desired.Load() == StateStopped {
-					depFrom.stopReason = ReasonDepFailed
+					// The dependent stops for this service's reason: it
+					// failed only if this service did (dinit's
+					// is_dept_failure).
+					if sr.stopIsFailure() {
+						depFrom.stopReason = ReasonDepFailed
+					} else {
+						depFrom.stopReason = ReasonNormal
+					}
 					depFrom.UnrecoverableStop()
 				} else {
 					// The path a dying dependency takes: its desired
