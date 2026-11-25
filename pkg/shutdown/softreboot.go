@@ -97,6 +97,10 @@ func SoftReboot(logger *logging.Logger, cal *logging.CatchAllLogger) error {
 	// only things meant to cross the boundary are handed over
 	// explicitly, like the fd store, or left on a filesystem, like the
 	// snapshot below.
+	// The main log reaches syslog through a queue; flush it while the
+	// syslog daemon is still alive — the sweep below kills it, and the
+	// exec would drop whatever is left. Bounded; a no-op without syslog.
+	logger.CloseSyslog()
 	KillAllProcesses(logger)
 
 	// The exec would drop the utmp clears still queued for the services
@@ -113,10 +117,6 @@ func SoftReboot(logger *logging.Logger, cal *logging.CatchAllLogger) error {
 	argv := softRebootArgv(os.Args, snapshot.SoftRebootPath)
 
 	logger.Notice("Re-executing %s", execPath)
-	// The main log reaches syslog through a queue now; the exec would
-	// drop what is still in it — the last lines of this generation.
-	// CloseSyslog flushes it, bounded, and is a no-op without syslog.
-	logger.CloseSyslog()
 
 	// Re-exec slinit with the same arguments and environment.
 	// syscall.Exec replaces the current process image entirely.
