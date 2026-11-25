@@ -2289,8 +2289,10 @@ func (s *ProcessService) startProcess() error {
 			s.alertFile != "" {
 			// A restart replaces the previous instance's logger along
 			// with its rotator. Stop the old logger first: until now it
-			// was overwritten below and leaked, still blocking whatever
-			// the old rotator had queued for it.
+			// was overwritten below and leaked. Stopping it closes the
+			// pipe's read end, so a rotator write blocked on a logger
+			// that reads nothing fails with EPIPE, and Close() below —
+			// under queueMu — does not wait on that logger.
 			if s.loggerSup != nil {
 				s.loggerSup.Stop()
 				s.loggerSup = nil
@@ -2304,10 +2306,11 @@ func (s *ProcessService) startProcess() error {
 			// the rotator, and the rotator copies each accepted line
 			// into the logger's stdin. Both destinations are honoured
 			// instead of one silently winning, and because slinit —
-			// not the service — writes to the logger, a sick logger
-			// cannot reach the service: the rotator queues lines for
-			// it and drops them when it falls behind, rather than
-			// blocking the logfile or the service.
+			// not the service — writes to the logger, a logger that
+			// exits cannot kill the service with SIGPIPE. One that
+			// stops reading holds up the logfile and, once the pipe
+			// fills, the service, as a full pipe would: lines are
+			// never dropped for a logger that is merely slow.
 			var loggerSink io.Writer
 			if len(s.outputLogger) > 0 {
 				w, sup, lerr := startLoggerSupervisor(

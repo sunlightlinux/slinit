@@ -1,10 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -82,10 +85,14 @@ func TestSharedLoggerStalledProducerRestartKeepsQueueMuFree(t *testing.T) {
 }
 
 // logfile + output-logger: slinit copies every line to the logger. With
-// the logger stopped, that copy blocked the rotator's reader (so the
-// logfile stopped growing) and the auto-restart's logRotator.Close()
-// waited for it under queueMu.
-func TestOutputLoggerStalledKeepsLogfileAndRestart(t *testing.T) {
+// the logger stopped, that copy blocks the rotator's reader, and the
+// auto-restart's logRotator.Close() waited for it under queueMu. The
+// logfile stopping while the logger is stopped is the service's own
+// backpressure, as on 4.0.2, and is not checked here: lines are never
+// dropped for a logger that is merely slow (see
+// TestOutputLoggerSlowGetsEveryLine). What must hold is that the
+// restart happens and queueMu stays free.
+func TestOutputLoggerStalledKeepsRestartAndQueueMu(t *testing.T) {
 	dir := t.TempDir()
 	logFile := filepath.Join(dir, "svc.log")
 	loggerSh := filepath.Join(dir, "logger.sh")
@@ -106,12 +113,9 @@ func TestOutputLoggerStalledKeepsLogfileAndRestart(t *testing.T) {
 		t.Fatalf("service did not start: %v", got)
 	}
 
-	time.Sleep(500 * time.Millisecond)
-	sz1 := fileSize(logFile)
-	time.Sleep(500 * time.Millisecond)
-	sz2 := fileSize(logFile)
-	if sz2 <= sz1 {
-		t.Errorf("logfile stopped growing with the output-logger stalled: %d -> %d bytes", sz1, sz2)
+	time.Sleep(500 * time.Millisecond) // the logger's pipe is full by now
+	if fileSize(logFile) == 0 {
+		t.Fatal("nothing reached the logfile")
 	}
 
 	pid := svc.PID()
@@ -129,6 +133,121 @@ func TestOutputLoggerStalledKeepsLogfileAndRestart(t *testing.T) {
 	if !queueMuFree(set, 2*time.Second) {
 		t.Fatal("queueMu held across the auto-restart of a service with a stalled output-logger")
 	}
+}
+
+// A healthy output-logger that reads at about 1 MB/s, beside a
+// logfile, while the service writes a 2 MB burst: the logger must get
+// every byte, as it did on 4.0.2. A lossy queue in front of the logger
+// passed it about 180 KB (measured) and dropped the rest.
+func TestOutputLoggerSlowGetsEveryLine(t *testing.T) {
+	const lines, lineLen = 20000, 100
+	dir := t.TempDir()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got := make(chan int, 1)
+	go func() { // the logger: about 1 byte per microsecond
+		n := 0
+		buf := make([]byte, 65536)
+		t0 := time.Now()
+		for {
+			m, err := r.Read(buf)
+			n += m
+			if err != nil {
+				got <- n
+				return
+			}
+			if d := time.Duration(n)*time.Microsecond - time.Since(t0); d > 0 {
+				time.Sleep(d)
+			}
+		}
+	}()
+	lr, err := NewLogRotator(LogRotatorConfig{FilePath: filepath.Join(dir, "log"),
+		FilePerms: 0o644, FileUID: -1, FileGID: -1, Sink: w, LogLevelMax: -1, ServiceName: "burst"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw0, err := lr.CreatePipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd, err := syscall.Dup(int(pw0.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw := os.NewFile(uintptr(fd), "service-stdout")
+	lr.CloseWriteEnd()
+	lr.StartReader()
+	line := append(bytes.Repeat([]byte("a"), lineLen-1), '\n')
+	for i := 0; i < lines; i++ {
+		if _, err := pw.Write(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pw.Close()
+	// Let the reader reach EOF: Close() itself does not drain the pipe.
+	lr.mu.Lock()
+	done := lr.doneCh
+	lr.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("rotator did not reach EOF within 10s")
+	}
+	lr.Close()
+	w.Close() // the rotator does not own the sink
+	if n := <-got; n != lines*lineLen {
+		t.Errorf("a healthy 1 MB/s output-logger got %d of %d bytes", n, lines*lineLen)
+	}
+	if sz := fileSize(filepath.Join(dir, "log")); sz != lines*lineLen {
+		t.Errorf("logfile has %d of %d bytes", sz, lines*lineLen)
+	}
+}
+
+// Starting, stopping and unloading services with logfile + output-logger
+// must leave nothing running behind them. A writer goroutine per rotator
+// that only Close() ended was left for every service stopped for good
+// (the rotator is closed only on a restart): 100 services left 100
+// goroutines and 100 pipe descriptors (measured).
+func TestOutputLoggerBesideLogfileLeavesNoGoroutine(t *testing.T) {
+	dir := t.TempDir()
+	set, _ := newTestSet()
+	base := runtime.NumGoroutine()
+	var svcs []*ProcessService
+	for i := 0; i < 100; i++ {
+		s := NewProcessService(set, fmt.Sprintf("s%d", i))
+		s.SetCommand([]string{"/bin/sh", "-c", "echo hi; exec sleep 100"})
+		s.SetLogType(LogToFile)
+		s.SetLogFileDetails(filepath.Join(dir, fmt.Sprintf("s%d.log", i)), 0o600, -1, -1)
+		s.SetOutputLogger([]string{"/bin/cat"})
+		set.AddService(s)
+		svcs = append(svcs, s)
+	}
+	for _, s := range svcs {
+		set.StartService(s)
+	}
+	for _, s := range svcs {
+		waitState(t, s, StateStarted, 5*time.Second)
+	}
+	for _, s := range svcs {
+		set.StopService(s)
+	}
+	for _, s := range svcs {
+		waitState(t, s, StateStopped, 5*time.Second)
+	}
+	for _, s := range svcs {
+		set.UnloadService(s)
+	}
+	var n int
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if n = runtime.NumGoroutine(); n <= base+5 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("%d goroutines after start/stop/unload of 100 services, %d before", n, base)
 }
 
 func fileSize(path string) int64 {

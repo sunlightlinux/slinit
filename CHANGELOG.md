@@ -1090,18 +1090,17 @@ requires.
   The old reader is now retired without waiting; the new instance
   forwards nothing until the old one has finished its last write, so
   lines still reach the logger in order.
-- **A stalled `output-logger` beside a `logfile` stopped the logfile and
-  froze PID 1 on the next restart.** slinit copied each line to the
-  logger from the same goroutine that writes the logfile, while holding
-  the rotator's lock; with the logger stopped, the logfile stopped
-  growing as soon as the 64 KiB pipe filled, and an auto-restart closed
-  the old rotator under the service queue lock, waiting for that write
-  forever (measured: the service stuck in STARTING, queue lock never
-  released). Lines for the logger now go through a queue of 1024 lines
-  that is never waited on: when the logger falls behind, lines for it
-  are dropped and logged once, and the logfile keeps every line. A
-  restart now also stops the previous instance's logger, which used to
-  be left running.
+- **A stalled `output-logger` beside a `logfile` froze PID 1 on the
+  next restart.** slinit copies each line to the logger from the
+  goroutine that writes the logfile; with the logger stopped, that copy
+  blocks once the 64 KiB pipe fills, and an auto-restart closed the old
+  rotator under the service queue lock, waiting for that write forever
+  (measured: the service stuck in STARTING, queue lock never released).
+  A restart now stops the previous instance's logger first — it used to
+  be left running — which makes the blocked write fail, so the restart
+  goes through. A logger that stops reading still holds up the logfile
+  and then the service, as a full pipe would; a slow but healthy logger
+  still gets every line.
 - **Any local user could hold up every getty start for 10 seconds.**
   The utmp entry for a service with `inittab-id`/`inittab-line` was
   written while slinit held the service queue lock, and glibc waits up
