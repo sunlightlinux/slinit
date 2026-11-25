@@ -1,0 +1,7 @@
+type = scripted
+# The base system-init plus a cgroup2 mount: the default VM leaves
+# /sys/fs/cgroup unmounted, which made this case SKIP on every run.
+# The root delegates the controllers, as the host init would; slinit
+# itself only enables them one level up.
+command = /bin/sh -c "mount -t proc proc /proc 2>/dev/null; mount -t sysfs sysfs /sys 2>/dev/null; mount -t devtmpfs devtmpfs /dev 2>/dev/null; mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null; mkdir -p /run; mount -t cgroup2 cgroup2 /sys/fs/cgroup; for c in memory; do echo +$$c > /sys/fs/cgroup/cgroup.subtree_control; done"
+stop-command = /bin/true

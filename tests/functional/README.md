@@ -287,7 +287,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 177 | tty-cluster | Full TTY cluster (tty-path + columns/rows/vhangup/vt-disallocate/reset) — setupTTY opens /dev/tty1, wires stdin, applies knobs |
 | 178 | restrict-cluster | Full restrict-* cluster (realtime/namespaces/suidsgid/file-systems/address-families) stacks and installs cleanly; child sees Seccomp: 2 |
 | 179 | dbus-cluster | bus-name / bus-policy / bus-name-scope parse under the dbus-optional design (no dbus daemon in VM) |
-| 180 | psi-cpu-io-pressure | cpu-pressure-watch / io-pressure-watch arm a trigger: PID 1 holds the cgroup's cpu.pressure and io.pressure open (SKIPs while the VM kernel lacks PSI) |
+| 180 | psi-cpu-io-pressure | cpu-pressure-watch / io-pressure-watch arm a trigger: PID 1 holds the cgroup's cpu.pressure and io.pressure open |
 | 181 | path-activation-full | start-on-path-changed / -path-modified / -directory-not-empty each fire via pathwatch (uses /etc/slinit.d/-anchored markers) |
 | 182 | kill-signal-cluster | kill-mode/final-kill/restart-kill/watchdog-signal/survive-final-kill parse; `slinitctl restart` delivers `restart-kill-signal` (SIGUSR1) while a plain stop delivers SIGTERM |
 | 183 | timeout-cluster | timeout cluster parses; stopping a SIGTERM-ignoring service takes timeout-sec (2 s) + timeout-abort-sec (1 s) and the SIGABRT phase is seen |
@@ -439,6 +439,12 @@ A few names inside the `.d/` directory are not services:
 - `qemu-args` holds extra QEMU options, whitespace-separated, `#` lines
   ignored. 25 asks for `-smp 2` so an affinity mask can be wrong; 51 for
   `-rtc base=2010-01-01T00:00:00` so the clock guard has something to fix.
+- `kernel-args` holds extra kernel command-line words, appended to the
+  default line, `#` lines ignored. 141 and 180 ask for `psi=1`: the VM
+  kernel builds PSI but leaves it off.
+- `system-init` replaces the base one. The cgroup cases (135, 141, 160,
+  164, 180, 184, 199, 221) use it to mount cgroup2 and delegate
+  controllers at the root, which the base VM does not do.
 
 ## Debugging
 
