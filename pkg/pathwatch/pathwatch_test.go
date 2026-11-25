@@ -709,3 +709,59 @@ func TestQueueOverflowRearms(t *testing.T) {
 		t.Fatalf("fired %d times after a queue overflow, want 1", fired.Load())
 	}
 }
+
+// rearmLoop re-arms path n times, as pathRearmListener does after each
+// stop of a service that fails while its condition still holds.
+func rearmLoop(t *testing.T, w *Watcher, path string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := w.Rearm(path); err != nil {
+			t.Fatalf("Rearm: %v", err)
+		}
+	}
+}
+
+// TestTriggerLimit: each Rearm of a condition that still holds fires
+// again at once, so a failing path-activated service was forked by PID 1
+// in a tight loop. Like a systemd path unit, an entry stops firing after
+// triggerLimitBurst fires within triggerLimitInterval.
+func TestTriggerLimit(t *testing.T) {
+	w := newWatcher(t)
+	path := filepath.Join(t.TempDir(), "marker")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int32
+	if err := w.Add(path, TriggerExists, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	rearmLoop(t, w, path, 300)
+	if got := fired.Load(); got != 200 {
+		t.Fatalf("fired %d times in a burst, want the limit of 200", got)
+	}
+}
+
+// TestTriggerLimitReset: once the limit is hit the entry stays down
+// through Rearm until ResetLimit (the service started by other means).
+func TestTriggerLimitReset(t *testing.T) {
+	w := newWatcher(t)
+	path := filepath.Join(t.TempDir(), "marker")
+	if err := os.WriteFile(path, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int32
+	if err := w.Add(path, TriggerExists, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	rearmLoop(t, w, path, 250)
+	before := fired.Load()
+	rearmLoop(t, w, path, 1)
+	if fired.Load() != before {
+		t.Fatal("a limited entry fired on Rearm")
+	}
+	w.ResetLimit(path)
+	rearmLoop(t, w, path, 1)
+	if fired.Load() != before+1 {
+		t.Fatal("Rearm after ResetLimit did not fire")
+	}
+}

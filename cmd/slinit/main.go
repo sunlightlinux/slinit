@@ -1342,12 +1342,12 @@ func main() {
 				//     OnServiceLoaded hook, for a trigger whose
 				//     condition already holds (a non-empty directory on
 				//     every boot). The load now holds the graph lock.
-				//   * Rearm(), from pathRearmListener.ServiceEvent,
-				//     which the state machine calls under the same lock
-				//     in the process-exit handler. StartService takes
-				//     that lock, so a direct call self-deadlocks the
-				//     moment the trigger path still exists when the
-				//     service stops.
+				//   * Rearm(), from pathRearmListener.ServiceEvent's
+				//     goroutine. It ran under the state machine's lock
+				//     once, and a direct StartService self-deadlocked
+				//     the moment the trigger path still existed when
+				//     the service stopped; nothing should rely on
+				//     where Rearm runs.
 				//   * dispatch(), on the inotify read loop. Anything
 				//     slow here stops events being read at all, so a
 				//     later trigger is simply never seen.
@@ -2375,11 +2375,23 @@ type pathRearmListener struct {
 }
 
 func (l *pathRearmListener) ServiceEvent(svc service.Service, event service.ServiceEvent) {
-	if event != service.EventStopped {
-		return
-	}
-	if err := l.watcher.Rearm(l.path); err != nil {
-		l.logger.Warn("Service '%s': path watch re-arm failed: %v", svc.Name(), err)
+	switch event {
+	case service.EventStarted:
+		// A start the watch did not make (the operator's, or a
+		// dependent's) lifts a trigger limit; one it made cannot
+		// follow a refused fire. Lock only, no I/O.
+		l.watcher.ResetLimit(l.path)
+	case service.EventStopped:
+		// Rearm stats, reads and watches the path, and this runs under
+		// the state machine's lock: a path on a hung NFS or FUSE mount
+		// froze every start and stop. Order does not matter: a stale
+		// Rearm at worst fires a start of a running service, a no-op.
+		name := svc.Name()
+		go func() {
+			if err := l.watcher.Rearm(l.path); err != nil {
+				l.logger.Warn("Service '%s': path watch re-arm failed: %v", name, err)
+			}
+		}()
 	}
 }
 

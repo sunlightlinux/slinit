@@ -77,8 +77,22 @@ type entry struct {
 	dirWd    int32  // byName: the parent directory's watch (-1 if none)
 	fired    bool   // one-shot: ignore further events until Rearm
 	lost     bool   // the kernel dropped a watch before firing; Run re-arms
+
+	// Trigger rate limit (systemd's TriggerLimitIntervalSec/Burst).
+	limitStart time.Time // start of the current interval
+	limitCount int       // fires in it
+	limited    bool      // limit hit: Rearm leaves the entry fired
 	watching string // path currently registered with inotify (parent or path itself)
 }
+
+// The trigger rate limit, systemd's defaults for a path unit
+// (TriggerLimitIntervalSec=2s, TriggerLimitBurst=200). A service that
+// fails while its condition still holds is re-armed and fired again at
+// once; without a limit PID 1 forks it in a tight loop.
+const (
+	triggerLimitInterval = 2 * time.Second
+	triggerLimitBurst    = 200
+)
 
 // Watcher multiplexes a single inotify fd across many service registrations.
 type Watcher struct {
@@ -171,12 +185,29 @@ func (w *Watcher) Rearm(path string) error {
 		w.mu.Unlock()
 		return nil // already armed
 	}
+	if e.limited {
+		w.mu.Unlock()
+		return nil // trigger limit hit; ResetLimit or a reload lifts it
+	}
 	e.fired = false
 	e.lost = false
 	// Drop any old watch — arm() will install a fresh one matching current state.
 	w.dropWatchLocked(e)
 	w.mu.Unlock()
 	return w.arm(e)
+}
+
+// ResetLimit lifts a trigger limit hit on path, so the next Rearm arms
+// it again. Called when the service is started by other means. It does
+// no I/O and is a no-op unless the limit was hit.
+func (w *Watcher) ResetLimit(path string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if e, ok := w.entries[path]; ok && e.limited {
+		e.limited = false
+		e.limitStart = time.Time{}
+		e.limitCount = 0
+	}
 }
 
 // Remove cancels a registration and drops its inotify watch.
@@ -334,6 +365,19 @@ func (w *Watcher) fire(e *entry) {
 		return
 	}
 	e.fired = true
+	now := time.Now()
+	if now.Sub(e.limitStart) > triggerLimitInterval {
+		e.limitStart = now
+		e.limitCount = 0
+	}
+	if e.limitCount >= triggerLimitBurst {
+		e.limited = true
+		w.mu.Unlock()
+		w.logger.Warn("pathwatch: %s %q: trigger limit hit (%d in %v), refusing further activation until the service is started or reloaded",
+			e.trigger, e.path, triggerLimitBurst, triggerLimitInterval)
+		return
+	}
+	e.limitCount++
 	fn := e.fn
 	w.mu.Unlock()
 	if fn != nil {
