@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (265 cases)
+# Run all tests (266 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -373,6 +373,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 263 | journal-flush-keeps-persistent | `--flush` moves the volatile journal in without overwriting the persistent same-day file |
 | 264 | tmpfiles-mode-and-symlink | slinit-tmpfiles keeps a mode's sticky bit and does not chmod through a symlink at a `d` path |
 | 265 | process-interrupted-start-escalates | an interrupted process start escalates to SIGKILL at stop-timeout; a closed readiness fd brings the process down |
+| 266 | seccomp-log-keeps-deny | a call refused by `system-call-filter` stays refused when `system-call-log` lists it too |
 
 ## How It Works
 

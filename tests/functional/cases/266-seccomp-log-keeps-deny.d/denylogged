@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh /run/266-probe.sh logged
+system-call-filter = ~mkdir mkdirat
+system-call-error-number = EPERM
+system-call-log = mkdir mkdirat
