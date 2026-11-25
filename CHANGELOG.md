@@ -1184,6 +1184,14 @@ requires.
   watchdog's boot-ready and the muting of the boot console were all
   skipped (measured: a system-up hook did not run). The notification is
   now sent after them.
+- **The rescue and boot-collapse menus looped forever on a console
+  that only returns EOF.** An EOF is how a Ctrl-D on an empty line
+  reaches the menu, so each was taken for "continue": on a hung-up
+  console, or `/dev/null` bound on `/dev/console`, the boot was
+  retried, failed and the menu presented again at once, without end
+  (measured: 3542 menus and 800 KB of log in 2 s), and the 60 s
+  auto-reboot never came. One EOF is still a Ctrl-D; another with no
+  key read since is ignored and the menu waits out its timeout.
 
 ## [4.0.2] — 2026-11-22
 

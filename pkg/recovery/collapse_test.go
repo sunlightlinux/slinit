@@ -68,6 +68,7 @@ func TestPresentCollapseIntegrationRestart(t *testing.T) {
 // "continue booting" analog of the load-fail Ctrl-D). Regression
 // guard mirroring TestReadActionWithTimeoutEOFIsRetry.
 func TestPresentCollapseCtrlDMapsToRestart(t *testing.T) {
+	consoleEOFSpent.Store(false)
 	pr, pw := io.Pipe()
 	go func() {
 		pw.Close() // EOF → readByteWithTimeout synthesizes 0x04

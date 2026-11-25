@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -250,24 +251,44 @@ func readActionWithTimeout(r io.Reader, b *box, timeout time.Duration) Action {
 // side (PresentCollapse maps 0x04 to CollapseRestartBoot which is
 // its analog of "continue trying to boot").
 //
+// Only one EOF is taken for Ctrl-D until a byte is read: see
+// consoleEOFSpent.
+//
 // Uses a goroutine + channel because os.File.Read has no native
 // deadline on non-socket fds (/dev/console is a tty character
 // device, not a socket).
 func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string) (byte, bool) {
 	inputCh := make(chan byte, 1)
 	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		br := bufio.NewReader(r)
 		for {
 			b, err := br.ReadByte()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					inputCh <- 0x04
-					return
+					if !consoleEOFSpent.Swap(true) {
+						inputCh <- 0x04
+						return
+					}
+					// EOF again with no byte since: a console that
+					// only ever says EOF (hung up, /dev/null), not
+					// an operator. Taken for Ctrl-D each time, it
+					// ran retry → menu → retry forever, and the
+					// auto-reboot never came. Keep listening, at a
+					// walk, for a real key until the menu times out.
+					select {
+					case <-done:
+						return
+					case <-time.After(eofPollInterval):
+					}
+					continue
 				}
 				errCh <- err
 				return
 			}
+			consoleEOFSpent.Store(false)
 			// Skip whitespace (line noise, trailing \n from a
 			// previous line-buffered input, etc). Operator can
 			// type either `r` or `r<Enter>` — both work.
@@ -332,6 +353,16 @@ func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string
 		}
 	}
 }
+
+// consoleEOFSpent is set when an EOF has been taken for Ctrl-D and
+// cleared by the next byte read, whitespace included. It outlives one
+// menu because the retry an EOF asks for presents the next menu on a
+// freshly opened console.
+var consoleEOFSpent atomic.Bool
+
+// eofPollInterval paces the reads of a console that keeps returning
+// EOF.
+const eofPollInterval = 100 * time.Millisecond
 
 // charToAction maps the operator's single-char input to an Action.
 // Both literal letters (r/p/s/c) and Ctrl-shortcuts (Ctrl-B for
