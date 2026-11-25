@@ -100,9 +100,23 @@ counter_of() {
         tail -n 1 "$f" 2>/dev/null | sed -n 's/^chatty-line-\([0-9]*\).*/\1/p'
     done | sort -n | tail -1
 }
-n_before=$(counter_of)
+# One pass of counter_of can come back empty: the glob is expanded, then at
+# several rotations a second the rotated files it named are pruned before
+# tail reads them, and the live file has just been emptied. That read as
+# "the producer went silent" while the counter had gone 171490 -> 694181
+# (a full-suite run, 2026-11-25). Retry until a pass yields a number.
+counter_now() {
+    _c=""
+    _k=0
+    while [ -z "$_c" ] && [ "$_k" -lt 50 ]; do
+        _c=$(counter_of)
+        _k=$((_k + 1))
+    done
+    echo "$_c"
+}
+n_before=$(counter_now)
 sleep 3
-n_after=$(counter_of)
+n_after=$(counter_now)
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ -n "$n_before" ] && [ -n "$n_after" ] && [ "$n_after" -gt "$n_before" ]; then

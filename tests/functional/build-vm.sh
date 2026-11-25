@@ -146,6 +146,9 @@ server {
 }
 NGINXCONF
 
+# slinit enables the init.d fallback only for directories present at boot;
+# without one, 108-openrc-depend-ordering could only ever skip.
+mkdir -p "${ROOTFS_DIR}/etc/init.d"
 install -m 755 "${BUILD_DIR}/slinit" "${ROOTFS_DIR}/sbin/slinit"
 install -m 755 "${BUILD_DIR}/slinitctl" "${ROOTFS_DIR}/usr/bin/slinitctl"
 install -m 755 "${BUILD_DIR}/slinit-check" "${ROOTFS_DIR}/usr/bin/slinit-check"
