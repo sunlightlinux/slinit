@@ -122,14 +122,25 @@ func readEntryArray(f *os.File, arrayOff uint64) (next uint64, items []uint64, e
 	return next, items, nil
 }
 
+// minEntryObjectSize is the smallest ENTRY a writer produces: the
+// object header plus seqnum, realtime, monotonic, boot id and xor hash,
+// with no items.
+const minEntryObjectSize = ObjectHeaderSize + 8 + 8 + 8 + 16 + 8
+
 // walkEntryOffsets calls fn once per non-zero entry offset in the
 // chain starting at rootOff. Stops when fn returns false or the
 // chain ends. rootOff == 0 walks nothing.
 //
 // The writer only appends, so each array's next lies past it. A next
 // that does not is refused: a self-referential chain was walked
-// forever, growing its caller's slice until memory ran out.
+// forever, growing its caller's slice until memory ran out. Nor may
+// the next array start inside this one: arrays 24 bytes apart re-read
+// each other's headers as offsets, and 96 KB of file yielded 13.5M of
+// them. A file cannot hold more entries than fit in it, so a chain
+// yielding more is refused too.
 func walkEntryOffsets(f *os.File, rootOff uint64, fn func(uint64) bool) error {
+	limit := uint64(fileSize(f)) / minEntryObjectSize
+	var seen uint64
 	cur := rootOff
 	for cur != 0 {
 		next, items, err := readEntryArray(f, cur)
@@ -143,12 +154,16 @@ func walkEntryOffsets(f *os.File, rootOff uint64, fn func(uint64) bool) error {
 				// there's a next array the loop below continues.
 				break
 			}
+			if seen++; seen > limit {
+				return fmt.Errorf("journalbin: ENTRY_ARRAY chain lists more entries than the file can hold (%d): %w",
+					limit, ErrObjectBounds)
+			}
 			if !fn(e) {
 				return nil
 			}
 		}
-		if next != 0 && next <= cur {
-			return fmt.Errorf("journalbin: ENTRY_ARRAY at %d links back to %d", cur, next)
+		if next != 0 && next < cur+AlignUp(entryArraySizeFor(len(items))) {
+			return fmt.Errorf("journalbin: ENTRY_ARRAY at %d links back or into itself at %d", cur, next)
 		}
 		cur = next
 	}

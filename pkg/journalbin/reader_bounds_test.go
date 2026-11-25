@@ -344,3 +344,47 @@ func TestVerifyRejectsWrappingObjectSize(t *testing.T) {
 		t.Fatal("Verify of an object with a wrapping size did not terminate")
 	}
 }
+
+// ENTRY_ARRAYs only had to chain forward. Arrays 24 bytes apart overlap,
+// so each re-reads its successors' headers as entry offsets: 96 KB of
+// file yielded 13.5M offsets and 817 MiB. The chain may not overlap now,
+// and no file yields more offsets than it could hold entries.
+func TestEntryOffsetsOverlappingArraysBounded(t *testing.T) {
+	const n = 4000
+	const start = HeaderSize
+	end := uint64(start + 24*n + 8192)
+	buf := make([]byte, end)
+	h := NewHeader()
+	h.EntryArrayOffset = start
+	h.TailObjectOffset = end
+	if err := h.EncodeInto(buf); err != nil {
+		t.Fatal(err)
+	}
+	for i := uint64(start + 24*n); i < end; i++ {
+		buf[i] = 0x5a
+	}
+	for k := uint64(0); k < n; k++ {
+		off := start + 24*k
+		size := min(maxEntryArrayObjectSize, end-off)
+		next := off + 24
+		if k == n-1 {
+			next = 0
+		}
+		buf[off] = byte(ObjectEntryArray)
+		binary.LittleEndian.PutUint64(buf[off+8:], size)
+		binary.LittleEndian.PutUint64(buf[off+16:], next)
+	}
+	path := filepath.Join(t.TempDir(), "overlap.journal")
+	if err := os.WriteFile(path, buf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	offs, _ := r.EntryOffsets()
+	if limit := end / (ObjectHeaderSize + 8 + 8 + 8 + 16 + 8); uint64(len(offs)) > limit {
+		t.Fatalf("a %d-byte file yielded %d entry offsets (at most %d entries fit)", end, len(offs), limit)
+	}
+}

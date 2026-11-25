@@ -255,7 +255,7 @@ func (r *Reader) Iter(fn func(*journal.Event) bool) error {
 // offset and re-parses the KEY=value payload back into
 // journal.Event fields.
 func (r *Reader) readEntryAt(off, size uint64) (*journal.Event, error) {
-	if size < ObjectHeaderSize+8+8+8+16+8 {
+	if size < minEntryObjectSize {
 		return nil, fmt.Errorf("journalbin: entry at %d size %d too small for fixed part", off, size)
 	}
 	body := make([]byte, size)
