@@ -20,7 +20,8 @@ import (
 // at 87da7901bb): a call is allowed from root, or from its "good user" — the
 // owner of the session or the user it acts on — and denied otherwise. A few
 // calls carry their own rule (TakeControl, the device calls, ReleaseSession,
-// the VT switches); they say so where they are.
+// the VT switches); they say so where they are. The VT switches alone ask
+// polkit as well (mayChvt).
 
 // noGoodUser marks a call only root may make.
 const noGoodUser int64 = -1
@@ -93,6 +94,50 @@ func (m *manager) mayPower(sender dbus.Sender, what string) *dbus.Error {
 	if id, why := m.callerActiveLocalSession(sender, uid); id == "" {
 		m.dbgf("%s: refused uid %d: %s", what, uid, why)
 		return errAccessDenied("%s: access denied", what)
+	}
+	return nil
+}
+
+// chvtAction is polkit's action for switching VTs.
+const chvtAction = "org.freedesktop.login1.chvt"
+
+// mayChvt is the rule for the calls that switch the VT of seat:
+// ActivateSession, ActivateSessionOnSeat, Session.Activate,
+// Seat.ActivateSession and Seat.SwitchTo. systemd checks polkit's
+// org.freedesktop.login1.chvt for each, whose default is allow_active =
+// yes and auth_admin_keep otherwise. They used to be open to anyone, so
+// an ssh user could flip the console, or bring their own inactive local
+// session to the front and so gain the active session's power rights.
+//
+// Root may. So may the user of the session in the foreground of seat,
+// judged as mayPower judges it, which is who switches VTs on a desktop:
+// GDM's daemon runs as root, and the compositor and the greeter run in
+// the active session. Anyone else is polkit's to decide, without
+// interaction; without polkitd the answer is no.
+func (m *manager) mayChvt(sender dbus.Sender, seat, what string) *dbus.Error {
+	uid, err := senderUID(m, sender)
+	if err != nil {
+		m.dbgf("%s: refused %s, uid unknown: %v", what, sender, err)
+		return errAccessDenied("%s: cannot identify the caller", what)
+	}
+	if uid == 0 {
+		return nil
+	}
+	id, why := m.callerActiveLocalSession(sender, uid)
+	if id != "" {
+		var rec SessionRecord
+		if readJSON(sessionFile(id), &rec) && rec.SeatID == seat {
+			return nil
+		}
+		why = "caller's session is on another seat"
+	}
+	if m.polkit == nil {
+		m.dbgf("%s: refused uid %d: %s", what, uid, why)
+		return errAccessDenied("%s: access denied", what)
+	}
+	if err := m.polkit.Authorize(sender, chvtAction, nil, false); err != nil {
+		m.dbgf("%s: refused uid %d: %s, and polkit: %s", what, uid, why, err.Name)
+		return err
 	}
 	return nil
 }

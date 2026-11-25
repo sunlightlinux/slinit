@@ -47,6 +47,7 @@ import (
 	"github.com/godbus/dbus/v5/prop"
 
 	"github.com/sunlightlinux/slinit/pkg/dbusservice"
+	"github.com/sunlightlinux/slinit/pkg/polkit"
 )
 
 const (
@@ -157,6 +158,10 @@ type manager struct {
 	// m.mu: a delay wait holds the registry for seconds while the
 	// manager keeps answering property reads.
 	inhibitors *inhibitRegistry
+
+	// polkit decides the VT switches the rules in mayChvt do not allow;
+	// nil refuses them.
+	polkit *polkit.Checker
 
 	// debug mirrors the --debug flag. Session setup is the one place
 	// where a post-mortem is useless: the gdm/gnome fork chain we are
@@ -938,7 +943,7 @@ func main() {
 	}
 	defer conn.Close()
 
-	m := &manager{conn: conn, debug: *debug, inhibitors: newInhibitRegistry()}
+	m := &manager{conn: conn, debug: *debug, inhibitors: newInhibitRegistry(), polkit: polkit.New(conn)}
 
 	// Button/lid configuration is read before anything is exported, so
 	// the Handle* properties answer with the real settings from the very

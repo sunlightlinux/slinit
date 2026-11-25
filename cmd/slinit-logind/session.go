@@ -959,7 +959,8 @@ func fileExists(path string) bool {
 //
 // This is what GDM calls when a user session ends and it re-uses the
 // running greeter, via ActivateSessionOnSeat. It used to be a no-op.
-func (m *manager) ActivateSession(id string) *dbus.Error {
+// The caller must pass mayChvt.
+func (m *manager) ActivateSession(sender dbus.Sender, id string) *dbus.Error {
 	if !validSessionID(id) {
 		return errBadSessionID(id)
 	}
@@ -968,12 +969,15 @@ func (m *manager) ActivateSession(id string) *dbus.Error {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
 			[]interface{}{id})
 	}
+	if err := m.mayChvt(sender, rec.SeatID, "ActivateSession"); err != nil {
+		return err
+	}
 	return activateSession(rec)
 }
 
 // ActivateSessionOnSeat is ActivateSession with the seat checked, as in
 // elogind: activating a session through a seat it is not on is refused.
-func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
+func (m *manager) ActivateSessionOnSeat(sender dbus.Sender, id, seat string) *dbus.Error {
 	if !validSessionID(id) {
 		return errBadSessionID(id)
 	}
@@ -985,6 +989,9 @@ func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
 	if seat != "" && rec.SeatID != seat {
 		return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs",
 			[]interface{}{fmt.Sprintf("session %s is not on seat %s", id, seat)})
+	}
+	if err := m.mayChvt(sender, rec.SeatID, "ActivateSessionOnSeat"); err != nil {
+		return err
 	}
 	return activateSession(rec)
 }
