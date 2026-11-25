@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/journalbin"
@@ -248,4 +249,114 @@ func countBinaryEntries(t *testing.T, dir string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// A start on a full disk left the day's file with hash tables and no
+// header (4096 bytes); every later start failed with "bad magic" and
+// the daemon exited for the rest of the UTC day.
+func TestBinarySinkStartsAfterFailedCreate(t *testing.T) {
+	dir := t.TempDir()
+	restore := limitFileSize(t, 4096)
+	if _, err := NewBinarySink(BinarySinkOptions{Dir: dir}); err == nil {
+		t.Fatal("create on a full disk succeeded; the test proves nothing")
+	}
+	restore()
+	s, err := NewBinarySink(BinarySinkOptions{Dir: dir, FsyncEvery: 1})
+	if err != nil {
+		t.Fatalf("start after space came back: %v", err)
+	}
+	if err := s.Handle(journalEvent(1, "")); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if n := countBinaryEntries(t, dir); n != 1 {
+		t.Errorf("%d entries, want 1", n)
+	}
+}
+
+// The same file left by an older writer: kept under a .corrupt name, not
+// deleted, and a new file started.
+func TestBinarySinkMovesHeaderlessFileAside(t *testing.T) {
+	for name, junk := range map[string][]byte{
+		"zeroes": make([]byte, 4096),
+		"short":  []byte("SLJR"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, binaryCurrentFileName(time.Now().UTC()))
+			if err := os.WriteFile(path, junk, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			s, err := NewBinarySink(BinarySinkOptions{Dir: dir, FsyncEvery: 1})
+			if err != nil {
+				t.Fatalf("start with a headerless day file: %v", err)
+			}
+			if err := s.Handle(journalEvent(1, "")); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+			kept, _ := filepath.Glob(path + ".*.corrupt")
+			if len(kept) != 1 {
+				t.Fatalf("headerless file not kept aside: %v", kept)
+			}
+			if b, _ := os.ReadFile(kept[0]); !bytes.Equal(b, junk) {
+				t.Errorf("kept file changed")
+			}
+			// Readers do not trip over it.
+			if n := countBinaryEntries(t, dir); n != 1 {
+				t.Errorf("%d entries, want 1", n)
+			}
+		})
+	}
+}
+
+// A file with a valid magic that this version cannot read (a newer
+// format) is not set aside.
+func TestBinarySinkLeavesUnreadableJournalAlone(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, binaryCurrentFileName(time.Now().UTC()))
+	hdr := make([]byte, journalbin.HeaderSize)
+	copy(hdr, journalbin.Magic[:])
+	hdr[12] = 0x80 // an incompat flag this version does not know
+	if err := os.WriteFile(path, hdr, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewBinarySink(BinarySinkOptions{Dir: dir}); err == nil {
+		t.Fatal("opened a journal with unknown incompat flags")
+	}
+	if b, _ := os.ReadFile(path); !bytes.Equal(b, hdr) {
+		t.Error("unreadable journal was moved or changed")
+	}
+	if kept, _ := filepath.Glob(path + ".*.corrupt"); len(kept) != 0 {
+		t.Errorf("set aside: %v", kept)
+	}
+}
+
+// A rotation on a full disk: the new file cannot be created. Once space
+// is back the sink resumes, where it used to stay closed.
+func TestBinarySinkRecoversAfterFailedReopen(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewBinarySink(BinarySinkOptions{Dir: dir, FsyncEvery: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.Handle(journalEvent(1, ""))
+	restore := limitFileSize(t, 4096)
+	if err := s.Rotate(); err == nil {
+		t.Fatal("rotation on a full disk succeeded; the test proves nothing")
+	}
+	restore()
+	s.mu.Lock()
+	s.retryAt = time.Time{} // skip the 1 s wait before the next attempt
+	s.mu.Unlock()
+	for i := 0; i < 5; i++ {
+		if err := s.Handle(journalEvent(10+i, "")); err != nil {
+			t.Fatalf("event after space came back: %v", err)
+		}
+	}
+	s.Close()
+	if n := countBinaryEntries(t, dir); n != 6 {
+		t.Errorf("%d entries, want 6", n)
+	}
 }

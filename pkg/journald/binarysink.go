@@ -1,7 +1,9 @@
 package journald
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -185,13 +187,31 @@ func (s *BinarySink) Close() error {
 func (s *BinarySink) openCurrent() error {
 	name := binaryCurrentFileName(time.Now().UTC())
 	path := filepath.Join(s.dir, name)
-	w, err := journalbin.NewWriterWithOptions(path, journalbin.WriterOptions{
-		BootID:    s.bootID,
-		MachineID: s.machineID,
-		FSSKey:    s.fssKey,
-		TagEvery:  s.tagEvery,
-		MaxSize:   s.maxSize,
-	})
+	open := func() (*journalbin.Writer, error) {
+		return journalbin.NewWriterWithOptions(path, journalbin.WriterOptions{
+			BootID:    s.bootID,
+			MachineID: s.machineID,
+			FSSKey:    s.fssKey,
+			TagEvery:  s.tagEvery,
+			MaxSize:   s.maxSize,
+		})
+	}
+	w, err := open()
+	if err != nil && noJournalHeader(err) {
+		// A file with no journal header where today's file belongs
+		// (a create cut short by a full disk, by an older writer)
+		// made every start fail with "bad magic", and the daemon
+		// exited for the rest of the UTC day. It is kept, under a
+		// name no reader or vacuum takes for a journal, and a new
+		// file started.
+		aside := fmt.Sprintf("%s.%d.corrupt", path, time.Now().UnixNano())
+		if rerr := os.Rename(path, aside); rerr != nil {
+			return fmt.Errorf("%w (moving it aside: %v)", err, rerr)
+		}
+		fmt.Fprintf(os.Stderr, "slinit-journald: %s has no journal header (%v); kept as %s, starting a new file\n",
+			path, err, filepath.Base(aside))
+		w, err = open()
+	}
 	if err != nil {
 		return err
 	}
@@ -214,6 +234,16 @@ func (s *BinarySink) reopenLocked() error {
 	}
 	s.retryAt = now.Add(reopenInterval)
 	return s.openCurrent()
+}
+
+// noJournalHeader reports whether NewWriter failed because the file at
+// the path is not a journal at all: shorter than a header, or without
+// the magic. A header it cannot read for another reason (a newer
+// format's incompat flags, an I/O error) is not that, and the file is
+// left alone.
+func noJournalHeader(err error) bool {
+	return errors.Is(err, journalbin.ErrBadMagic) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // maybeRotateLocked checks the size + age triggers and rotates if

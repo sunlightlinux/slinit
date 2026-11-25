@@ -143,6 +143,8 @@ func NewWriter(path, bootID, machineID string) (*Writer, error) {
 // TAG to find its end offset, so an interrupted writer can resume
 // sealing cleanly.
 func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
+	_, statErr := os.Lstat(path)
+	created := errors.Is(statErr, os.ErrNotExist)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0640)
 	if err != nil {
 		return nil, fmt.Errorf("journalbin: open %s: %w", path, err)
@@ -162,16 +164,30 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 	if st.Size() == 0 {
 		// Fresh file — mint header, allocate the two hash tables
 		// right after it, then persist.
+		//
+		// A failure part way (a full disk) used to leave the hash
+		// tables written and no header, a file every later open
+		// rejected with "bad magic". Nothing of the caller's is in it
+		// yet, so it goes back to how it was: removed if this call
+		// created it, empty otherwise.
+		abandon := func() {
+			if created {
+				_ = os.Remove(path)
+			} else {
+				_ = f.Truncate(0)
+			}
+			_ = f.Close()
+		}
 		hdr := NewHeader()
 		hdr.HeaderSize = HeaderSize
 		hdr.HeadEntrySeqnum = 0
 		hdr.TailEntrySeqnum = 0
 		if err := fillUUID(hdr.FileID[:]); err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		if err := fillUUID(hdr.SeqnumID[:]); err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		if err := decodeUUIDHex(opts.BootID, hdr.BootID[:]); err != nil {
@@ -192,13 +208,13 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 		dataTableStart := uint64(HeaderSize)
 		dataTableBytes, err := allocateHashTable(f, dataTableStart, ObjectDataHashTable, DataHashTableBuckets(opts.MaxSize))
 		if err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		fieldTableStart := dataTableStart + dataTableBytes
 		fieldTableBytes, err := allocateHashTable(f, fieldTableStart, ObjectFieldHashTable, DefaultHashTableBuckets)
 		if err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		hdr.DataHashTableOffset = dataTableStart
@@ -211,7 +227,7 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 
 		w.header = *hdr
 		if err := w.writeHeaderLocked(); err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		w.nextSeqnum = 1

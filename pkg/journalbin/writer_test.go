@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/journal"
@@ -519,5 +521,45 @@ func TestWriterSizesDataHashTable(t *testing.T) {
 	w.Close()
 	if DataHashTableBuckets(4096) != DefaultHashTableBuckets {
 		t.Errorf("small files must keep %d buckets", DefaultHashTableBuckets)
+	}
+}
+
+// A create cut short by a full disk left hash tables and no header, a
+// file every later open rejected with "bad magic". It now leaves nothing.
+func TestNewWriterFailedCreateLeavesNoFile(t *testing.T) {
+	signal.Ignore(syscall.SIGXFSZ)
+	defer signal.Reset(syscall.SIGXFSZ)
+	var old syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &old); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "j.journal")
+	empty := filepath.Join(t.TempDir(), "e.journal")
+	if err := os.WriteFile(empty, nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 4096, Max: old.Max}); err != nil {
+		t.Skipf("cannot lower RLIMIT_FSIZE: %v", err)
+	}
+	_, err1 := NewWriter(path, "", "")
+	_, err2 := NewWriter(empty, "", "")
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &old); err != nil {
+		t.Fatal(err)
+	}
+	if err1 == nil || err2 == nil {
+		t.Fatalf("create on a full disk succeeded (%v, %v); the test proves nothing", err1, err2)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("file created by the failed call left behind: %v", err)
+	}
+	if fi, err := os.Stat(empty); err != nil || fi.Size() != 0 {
+		t.Errorf("existing empty file not left empty: %v", err)
+	}
+	for _, p := range []string{path, empty} {
+		w, err := NewWriter(p, "", "")
+		if err != nil {
+			t.Fatalf("open after space came back: %v", err)
+		}
+		w.Close()
 	}
 }

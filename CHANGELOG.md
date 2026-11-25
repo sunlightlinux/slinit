@@ -651,6 +651,15 @@ requires.
 
 ### Fixed
 
+- **A start on a full disk kept the binary journal down for the rest of
+  the day.** Creating the day's `.journal` file wrote its hash tables
+  before its header, so a full disk left a 4096-byte file with no
+  header; every later start of `slinit-journald` failed with "bad
+  magic" and exited until the next UTC day's file name. A failed create
+  now removes what it wrote, and a day file found without a journal
+  header is kept as `<name>.<ns>.corrupt` (never deleted, and not read
+  as a journal) and a new file started. A file with a valid header this
+  version cannot read is left alone, as before.
 - **The journal stopped for good after one failed write.** In the
   JSONL sink a write that failed on a full disk kept failing every
   later event, and every flush and rotation, after space came back
