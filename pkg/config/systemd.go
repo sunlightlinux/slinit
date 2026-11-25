@@ -758,11 +758,13 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectHostname=%s — slinit's protect-hostname is yes/no only; set it by hand", val)})
 		}
 	case "PrivateDevices":
-		// A private /dev slinit cannot build: refuse the unit rather
-		// than run it with every device of the host.
+		// slinit cannot build a private /dev. Refusing the unit, as is
+		// done for an empty CapabilityBoundingSet=, would stop a great
+		// many upstream units from loading at all, so for now this is a
+		// loud warning; whether it should refuse is an open decision.
 		if truthy(val) {
-			cfg.errs = append(cfg.errs, "PrivateDevices=yes has no slinit equivalent; "+
-				"the service would see every device of the host")
+			warns = append(warns, SystemdWarning{"WARN", "PrivateDevices=yes has no slinit " +
+				"equivalent: the service sees every device of the host"})
 		}
 	// No slinit equivalent — these stay notes.
 	case "PrivateUsers":
