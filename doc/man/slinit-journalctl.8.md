@@ -172,7 +172,11 @@ live queries.
     them, or the last *N* with **-n** *N* — then stream new events as
     they arrive (Ctrl-C to stop). **-n** counts after the filters, and
     **-c**, **--after-cursor** and **--cursor-file** position the
-    first part as they do a plain query (since 4.0.3). **-r** is
+    first part as they do a plain query (since 4.0.3). The cursor
+    reaches the daemon as a start time, which it applies to the new
+    events as well, as it does **--since**: an event stamped before the
+    cursor's time (after the clock was stepped back) is not shown.
+    **--cursor-file** is read but not updated in this mode. **-r** is
     ignored in this mode.
 
 **-r**, **--reverse**

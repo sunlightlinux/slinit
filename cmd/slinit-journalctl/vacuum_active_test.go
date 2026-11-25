@@ -98,3 +98,28 @@ func TestOpenJournalFilesFindsHeldFile(t *testing.T) {
 		t.Errorf("unreadable proc root returned %q", got)
 	}
 }
+
+// TestCurrentJournalFilesAsksProc — currentJournalFiles protects what a
+// running slinit-journald holds open, not only the dated names: the test
+// process takes the daemon's name for the call and holds a file whose
+// name says nothing about being active.
+func TestCurrentJournalFilesAsksProc(t *testing.T) {
+	saved, err := os.ReadFile("/proc/self/comm")
+	if err != nil {
+		t.Skip("no /proc")
+	}
+	if err := os.WriteFile("/proc/self/comm", []byte("slinit-journald"), 0); err != nil {
+		t.Skipf("cannot rename the test process: %v", err)
+	}
+	defer os.WriteFile("/proc/self/comm", saved, 0)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "odd-name.journal")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if got := currentJournalFiles(dir); !slices.Contains(got, p) {
+		t.Fatalf("currentJournalFiles = %q, want it to contain the held %q", got, p)
+	}
+}

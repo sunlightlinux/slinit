@@ -650,6 +650,42 @@ requires.
   *Compat:* with these sources `-b` and `-b 0` select the newest boot
   in the files instead of printing every boot, and entries from
   several files come in journal order rather than file by file.
+- **`slinit-journalctl --cursor-file` printed the last entry again on
+  every run.** The file holds the cursor of the last entry already
+  shown, but the next run started *at* it rather than after it
+  (measured: a second run with nothing new printed one entry). It now
+  starts after it, as journalctl(1) does, and keeps the entries that
+  share its time (a binary journal keeps microseconds): the first entry
+  at that time, the one already shown, is skipped, not the time.
+  *Compat:* a run no longer prints the entry the file names, so each
+  poll prints one entry fewer; when the previous run ended on several
+  entries of one time, those after the first are printed again.
+- **`slinit-journalctl -f` ignored `-n` with a filter, and ignored the
+  cursor options.** With `-t`, `-T`, `-g`, `--invocation` or
+  `--namespace`, the buffered entries printed before following were
+  not limited by `-n` (measured: `-f -n 3 -t sshd` printed 10), and
+  `-c`/`--after-cursor`/`--cursor-file` were not applied (measured:
+  `-f --after-cursor` with the newest entry's cursor printed all 20
+  buffered entries instead of none). Both now apply as they do without
+  `-f`.
+  *Compat:* `-f -n N` with one of those filters prints at most N
+  buffered entries, and a cursor option now positions the buffered
+  part. The cursor reaches the daemon as a start time, which it also
+  applies to new events, as with `--since`: one stamped before it (the
+  clock stepped back) is not shown. `-f` reads `--cursor-file` but does
+  not update it.
+- **`slinit-journalctl -o export` split an entry at a newline in a
+  value.** Every field was written as `KEY=value`, so a multi-line
+  `MESSAGE` ended the entry at its blank line and its later lines were
+  read as fields of their own (measured: two entries parsed as four,
+  with a `CUSTOM_KEY` taken from the message text). A value holding a
+  control character or invalid UTF-8 is now written in the export
+  format's binary form, as systemd does: the key, a newline, a
+  little-endian 64-bit length, the value, a newline.
+  *Compat:* `-o export` output for such a value changes from the raw
+  text to the binary form, which readers of the export format such
+  as systemd-journal-remote expect; a script that read export output
+  as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
 
@@ -1311,29 +1347,6 @@ requires.
   them), and the daemon went on writing into an unlinked file. The
   newest file of each format that still has its plain date name, and
   every file a running slinit-journald holds open, are now spared.
-- **`slinit-journalctl --cursor-file` printed the last entry again on
-  every run.** The file holds the cursor of the last entry already
-  shown, but the next run started *at* it rather than after it
-  (measured: a second run with nothing new printed one entry). It now
-  starts after it, as journalctl(1) does, and keeps the entries that
-  share its time (a binary journal keeps microseconds): the first entry
-  at that time, the one already shown, is skipped, not the time.
-- **`slinit-journalctl -f` ignored `-n` with a filter, and ignored the
-  cursor options.** With `-t`, `-T`, `-g`, `--invocation` or
-  `--namespace`, the buffered entries printed before following were
-  not limited by `-n` (measured: `-f -n 3 -t sshd` printed 10), and
-  `-c`/`--after-cursor`/`--cursor-file` were not applied (measured:
-  `-f --after-cursor` with the newest entry's cursor printed all 20
-  buffered entries instead of none). Both now apply as they do without
-  `-f`.
-- **`slinit-journalctl -o export` split an entry at a newline in a
-  value.** Every field was written as `KEY=value`, so a multi-line
-  `MESSAGE` ended the entry at its blank line and its later lines were
-  read as fields of their own (measured: two entries parsed as four,
-  with a `CUSTOM_KEY` taken from the message text). A value holding a
-  control character or invalid UTF-8 is now written in the export
-  format's binary form, as systemd does: the key, a newline, a
-  little-endian 64-bit length, the value, a newline.
 
 ## [4.0.2] — 2026-11-22
 
