@@ -25,6 +25,11 @@ import (
 // infinite recursion from circular includes.
 const maxIncludeDepth = 10
 
+// maxIncludes caps the @include files one description reads in total.
+// The depth cap alone still let each file include the next several
+// times, which grows as k^depth.
+const maxIncludes = 256
+
 // IDMapping represents a user/group ID mapping for user namespaces.
 // Format: ContainerID:HostID:Size (e.g., "0:1000:65536").
 type IDMapping struct {
@@ -779,6 +784,9 @@ type ServiceDescription struct {
 	// a conf.d overlay, a .override). A relative depends-on.d and
 	// friends resolves against curFile's directory, like dinit.
 	mainFile, curFile string
+
+	// includes counts the @include files read, against maxIncludes.
+	includes int
 }
 
 // OpenFileSpec captures one open-file directive's parsed form.
@@ -1126,6 +1134,16 @@ func handleInclude(line, name, fileName string, lineNum int, desc *ServiceDescri
 	if !filepath.IsAbs(incPath) {
 		dir := filepath.Dir(fileName)
 		incPath = filepath.Join(dir, incPath)
+	}
+
+	desc.includes++
+	if desc.includes > maxIncludes {
+		return &ParseError{
+			ServiceName: name,
+			FileName:    fileName,
+			Line:        lineNum,
+			Message:     fmt.Sprintf("more than %d includes", maxIncludes),
+		}
 	}
 
 	f, err := os.Open(incPath)

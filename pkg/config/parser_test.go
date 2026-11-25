@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"syscall"
@@ -1259,6 +1261,38 @@ func TestIncludeNested(t *testing.T) {
 	}
 	if desc.Description != "deep" {
 		t.Errorf("expected 'deep', got %q", desc.Description)
+	}
+}
+
+// TestIncludeFileBudget: depth is capped, but each file may include the
+// next several times, so the work grows as k^depth (k=4 took about a
+// second, under the loader lock). The total number of includes is capped.
+func TestIncludeFileBudget(t *testing.T) {
+	dir := t.TempDir()
+	// Level i includes level i+1 three times: 3+9+...+729 = 1092 includes.
+	os.WriteFile(filepath.Join(dir, "l6.conf"), []byte("description = leaf\n"), 0644)
+	for i := 5; i >= 0; i-- {
+		next := fmt.Sprintf("@include l%d.conf\n", i+1)
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("l%d.conf", i)), []byte(strings.Repeat(next, 3)), 0644)
+	}
+	mainPath := filepath.Join(dir, "svc")
+	parse := func(content string) error {
+		os.WriteFile(mainPath, []byte(content), 0644)
+		f, err := os.Open(mainPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		_, err = Parse(f, "svc", mainPath)
+		return err
+	}
+
+	if err := parse("type = internal\n@include l0.conf\n"); err == nil || !strings.Contains(err.Error(), "includes") {
+		t.Fatalf("1092 includes: err = %v, want the include budget error", err)
+	}
+	// 1 + 3 + 9 + 27 + 81 = 121 includes stays within it.
+	if err := parse("type = internal\n@include l2.conf\n"); err != nil {
+		t.Fatalf("121 includes: %v", err)
 	}
 }
 

@@ -67,7 +67,8 @@ a unit. **ready-check-interval**, **runtime-max-sec** and the
 **@include** *path*
 :   Inline another file at this point. Relative paths are resolved
     against the directory of the file containing the directive. Up
-    to 10 levels of nesting are allowed.
+    to 10 levels of nesting are allowed, and at most 256 includes in
+    all for one description.
 
 **@include-opt** *path*
 :   Like **@include**, but missing files are silently ignored rather
