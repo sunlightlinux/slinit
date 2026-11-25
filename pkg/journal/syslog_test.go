@@ -181,6 +181,36 @@ func TestSyslogReaderDropsOwnMessages(t *testing.T) {
 	}
 }
 
+// /dev/log is writable by every local user and a datagram may carry 64
+// KiB: at its rate limit one user could fill all 4096 ring slots with
+// 64 KiB messages, about 256 MiB held in PID 1. Non-root messages are
+// cut to syslogMaxNonRootMessage; root keeps MaxMessageLen.
+func TestSyslogReaderCapsNonRootMessageSize(t *testing.T) {
+	InitIDs("testhost")
+	buf := NewEventBuffer(8)
+	r := &SyslogReader{
+		emitter: NewEmitter(buf, "/dev/null-nope"),
+		limit:   NewUIDLimiter(),
+	}
+	cred := func(uid uint32) []byte {
+		return unix.UnixCredentials(&unix.Ucred{Pid: 4243, Uid: uid, Gid: uid})
+	}
+	big := []byte("big: " + strings.Repeat("x", syslogMaxDatagram-5))
+	r.handle(big, cred(1000))
+	r.handle(big, cred(0))
+
+	evs, _ := buf.Snapshot()
+	if len(evs) != 2 {
+		t.Fatalf("got %d events, want 2", len(evs))
+	}
+	if n := len(evs[0].Msg); n > syslogMaxNonRootMessage {
+		t.Errorf("uid 1000 message kept at %d bytes, want <= %d", n, syslogMaxNonRootMessage)
+	}
+	if n := len(evs[1].Msg); n != syslogMaxDatagram-5 {
+		t.Errorf("root message kept at %d bytes, want all %d", n, syslogMaxDatagram-5)
+	}
+}
+
 func TestSyslogReaderRateLimit(t *testing.T) {
 	InitIDs("testhost")
 	buf := NewEventBuffer(4096)

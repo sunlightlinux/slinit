@@ -323,7 +323,8 @@ long options may be written with one or two leading dashes.
     with no syslog daemon. Default */dev/log*. Empty disables. The
     sender's pid, uid and gid come from the kernel, not from the
     message; each uid may send 1000 (root) or 200 (others) messages
-    per 10 seconds, and a note says how many were dropped. A syslog
+    per 10 seconds, and a note says how many were dropped. A message
+    from a non-root sender is cut to 8 KiB. A syslog
     daemon already serving *path* keeps it, and one started later as a
     service takes it over, as they unlink the path before binding.
 
