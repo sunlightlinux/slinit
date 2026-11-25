@@ -33,6 +33,13 @@ requires.
 
 ### Security
 
+- **A reload skipped the checks a fresh load makes.** A `type = process`
+  service with `chroot` reloaded as `type = scripted` was accepted and
+  would have run outside the jail; `watchdog-timeout` without
+  `ready-notification`, the sched/NUMA/stdin/socket/follow-pid rules,
+  `log-select` and `alert-level` were unchecked too. Load and reload now
+  share one validation step.
+
 - **A service description could crash or stall PID 1 at load or start.**
   `log-buffer-size` and `shared-logger-queue-size` had no upper bound
   (`log-buffer-size = 4611686018427387904` panicked PID 1 in makeslice
@@ -759,6 +766,15 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **A failed reload left the dependency graph half-applied.** A
+  type-change reload refused over `consumer-of` had already moved the
+  dependents to a record no longer in the set; it also never checked for
+  a dependency cycle. Every step that can fail now runs before an edge
+  moves. A bundle (`bundle-of`) reloaded into an empty `type = process`
+  when stopped and could never be reloaded when started; and a reload
+  that changed `run-as` or `load-options` kept the old `USER`, `HOME`
+  and `DINIT_*` values.
 
 - **slinit-check reported systemd units and init.d scripts PID 1 loads
   as "not found"**: it did not enable the fallbacks the daemon enables.
