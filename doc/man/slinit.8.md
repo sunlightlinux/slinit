@@ -296,8 +296,8 @@ long options may be written with one or two leading dashes.
 **\--run-mode** *mode*
 :   How */run* is staged at boot: *mount* (mount a fresh tmpfs,
     unless */run* is already a mountpoint),
-    *remount* (re-mount the existing one with safe options) or *keep*
-    (leave it as-is). Default *mount*.
+    *remount* (detach the existing one and mount a fresh, empty
+    tmpfs in its place) or *keep* (leave it as-is). Default *mount*.
 
 **\--devtmpfs-path** *path*
 :   Mount *devtmpfs* at *path* during PID-1 init. Default */dev*.

@@ -1192,6 +1192,9 @@ requires.
   (measured: 3542 menus and 800 KB of log in 2 s), and the 60 s
   auto-reboot never came. One EOF is still a Ctrl-D; another with no
   key read since is ignored and the menu waits out its timeout.
+- **slinit.8 said `--run-mode=remount` re-mounts `/run` with safe
+  options.** It detaches the existing `/run` and mounts a fresh, empty
+  tmpfs in its place, which is what the page now says.
 
 ## [4.0.2] — 2026-11-22
 
