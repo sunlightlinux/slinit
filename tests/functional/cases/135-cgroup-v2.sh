@@ -69,8 +69,10 @@ _check_knob pids.max      "25"        "pids.max = 25"
 _check_knob cpu.weight    "200"       "cpu.weight = 200"
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ -s "$CG_ROOT/cgroup.procs" ]; then
-    echo "OK: cgroup.procs has member(s): $(wc -l <"$CG_ROOT/cgroup.procs")"
+# Not [ -s ]: cgroupfs files report size 0 whatever they hold.
+_procs=$(cat "$CG_ROOT/cgroup.procs" 2>/dev/null)
+if [ -n "$_procs" ]; then
+    echo "OK: cgroup.procs has member(s): $(echo "$_procs" | wc -l)"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: cgroup.procs is empty"

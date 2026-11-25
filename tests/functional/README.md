@@ -287,11 +287,11 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 177 | tty-cluster | Full TTY cluster (tty-path + columns/rows/vhangup/vt-disallocate/reset) — setupTTY opens /dev/tty1, wires stdin, applies knobs |
 | 178 | restrict-cluster | Full restrict-* cluster (realtime/namespaces/suidsgid/file-systems/address-families) stacks and installs cleanly; child sees Seccomp: 2 |
 | 179 | dbus-cluster | bus-name / bus-policy / bus-name-scope parse under the dbus-optional design (no dbus daemon in VM) |
-| 180 | psi-cpu-io-pressure | cpu-pressure-watch/threshold + io-pressure-watch/threshold parse + service starts |
+| 180 | psi-cpu-io-pressure | cpu-pressure-watch / io-pressure-watch arm a trigger: PID 1 holds the cgroup's cpu.pressure and io.pressure open (SKIPs while the VM kernel lacks PSI) |
 | 181 | path-activation-full | start-on-path-changed / -path-modified / -directory-not-empty each fire via pathwatch (uses /etc/slinit.d/-anchored markers) |
 | 182 | kill-signal-cluster | kill-mode/final-kill/restart-kill/watchdog-signal/survive-final-kill parse; `slinitctl restart` delivers `restart-kill-signal` (SIGUSR1) while a plain stop delivers SIGTERM |
 | 183 | timeout-cluster | timeout cluster parses; stopping a SIGTERM-ignoring service takes timeout-sec (2 s) + timeout-abort-sec (1 s) and the SIGABRT phase is seen |
-| 184 | cgroup-expanded | memory-high/-low/-min + swap-max + cpu-max + io-weight + cpuset-cpus + cgroup-setting + startup-allowed-* land in cgroupfs (spot-checked via memory.high) |
+| 184 | cgroup-expanded | memory-high/-low/-min, swap-max, cpu-max, io-weight (where the kernel has it), cpuset-cpus and cgroup-setting each read back from the service's cgroup; the case mounts cgroup2 itself |
 | 185 | log-pipeline-extras | logfile-permissions/uid/gid/rotate-time + log-forward-* + log-level-max + log-sanitize/-extra + log-line-prefix + log-max-line-length + log-read-buffer-size parse; mode 0640 on the file, `[svc] ` prefix on its lines, and log-level-max = notice keeps a <5> line and drops a <7> one |
 | 186 | service-dir-modes | runtime/state/cache/logs/configuration-directory each with -mode + -quota + -accounting; all 5 dirs created with requested mode |
 | 187 | notify-guess-exit-openfile | notify-access/guess-main-pid/exit-type parse; `open-file` hands the child an fd on the file |
@@ -306,7 +306,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 196 | options-cluster-b | `options = runs-on-console`: the service's stdout is `/dev/console`, a control's is not |
 | 197 | starts-rwfs-log | options=starts-rwfs,starts-log with ready-notification=pipefd:3 promote to STARTED on readiness byte |
 | 198 | bucket-b-legacy | Bucket B legacy cluster parses; coredump-filter 0x3f, timer-slack-nsec 120000 and personality x86 read back from `/proc/PID` (values chosen to differ from the kernel defaults) |
-| 199 | cgroup-cpuset-hugetlb | cgroup-cpuset-mems + cgroup-hugetlb + cpuset-partition parse; kernels without hugetlb controller fail-open |
+| 199 | cgroup-cpuset-hugetlb | cpuset.mems, cpuset.cpus.partition and hugetlb.2MB.max (a byte limit) read back from the service's cgroup; the case mounts cgroup2 itself |
 | 200 | seccomp-arch-log-mdwe | system-call-architectures + system-call-log + memory-deny-write-execute stack on top of @system-service filter; Seccomp mode 2 confirmed |
 | 201 | misc-coverage | cron-persistent + cron-randomized-delay + socket-uid/-gid + bind-read-only-paths + keyword non-match |
 | 202 | journalctl-list-boots | `--list-boots` enumeration + `-b` shortcut (bare / `-b0` / `--boot`); boot ID matches event's `_boot_id` field (v2.1.0) |

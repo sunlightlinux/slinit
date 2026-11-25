@@ -5,7 +5,7 @@ depends-on: system-init
 # cgroup-cpu-weight). Everything here needs the corresponding
 # controller enabled — memory, cpu, io, cpuset — which is standard
 # on Alpine's linux-virt kernel.
-cgroup              = /slinit/184-cg
+cgroup              = /sys/fs/cgroup/slinit/184-cg
 cgroup-memory-high  = 128M
 cgroup-memory-low   = 32M
 cgroup-memory-min   = 16M

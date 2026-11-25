@@ -1721,7 +1721,10 @@ kernel stacks filters and takes the most restrictive result.
 :   cpuset.cpus, cpuset.mems.
 
 **cgroup-hugetlb**=*size N*
-:   hugetlb.\<size\>.max — e.g. `cgroup-hugetlb=2MB 4`.
+:   hugetlb.\<size\>.max. *N* is written as given and the kernel
+    reads it as a byte limit (suffixes K, M, G accepted), rounded down
+    to whole pages; it is not a page count. `cgroup-hugetlb=2MB 8M`
+    allows four 2 MB pages, while `2MB 4` allows none.
 
 **cgroup-setting**=*file value*
 :   Generic write to any controller knob: *file* is the basename

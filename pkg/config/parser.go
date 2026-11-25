@@ -3272,10 +3272,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "cgroup-cpuset-mems":
 		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"cpuset.mems", value})
 	case "cgroup-hugetlb":
-		// Format: "size value" e.g. "2MB 4" → hugetlb.2MB.max = 4
+		// Format: "size value" e.g. "2MB 8M" → hugetlb.2MB.max = 8M. The
+		// kernel reads the value as bytes, not pages.
 		parts := strings.SplitN(value, " ", 2)
 		if len(parts) != 2 {
-			return fmt.Errorf("cgroup-hugetlb requires 'size value' (e.g., '2MB 4')")
+			return fmt.Errorf("cgroup-hugetlb requires 'size value' (e.g., '2MB 8M')")
 		}
 		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{
 			"hugetlb." + strings.TrimSpace(parts[0]) + ".max",
