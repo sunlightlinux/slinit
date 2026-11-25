@@ -33,6 +33,16 @@ requires.
 
 ### Security
 
+- **Descriptors a service stored with `FDSTORE=1` leaked into every
+  later child of PID 1**, other services under other users included:
+  the notify socket received them without close-on-exec.
+- **A FIFO at a service's `pid-file` path froze PID 1**: the pid file
+  was opened blocking, under the service-set lock, so every start, stop
+  and control command waited for a writer. It is now opened
+  non-blocking and only a regular file is read. `open-file` (OpenFile=)
+  targets are opened non-blocking too, and handed to the service in
+  blocking mode.
+
 - **`slinitctl catlog` on a file log could exhaust PID 1's memory or
   hang.** The log tail was read with `os.Open` and `io.ReadAll`: a log
   path pointing at `/dev/zero` was read until PID 1 ran out of memory,
@@ -719,6 +729,14 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **A `run-as` service could not read its own credentials**:
+  `/run/credentials` was created 0700 root, so `$CREDENTIALS_DIRECTORY`
+  below it was out of reach. It is 0755 now, and a 0700 one left by an
+  older slinit is opened up.
+- **Missing parents of a service directory got the leaf's mode**, so
+  `state-directory = myapp/data` with 0700 left `myapp` closed to the
+  service's user. Parents are created 0755, as systemd does.
 
 - **`slinitctl action` buffered all of an action's output in PID 1**
   before keeping the tail it replies with, so an action that printed
