@@ -651,6 +651,15 @@ requires.
 
 ### Fixed
 
+- **`slinit-journalctl --flush` destroyed the day's persistent journal.**
+  A boot that started on the volatile journal wrote the same
+  `<date>.jsonl` (or `.journal`) name an earlier boot that day had
+  persisted, and the flush renamed the volatile file over it: the
+  earlier boot's 3 lines for the day became 0. The file already in the
+  persistent directory is now rotated aside first, under a rotated name
+  (`<date>.<ns>.jsonl` with its `.idx`), so both boots are kept and read
+  in the order they were written; the cross-device copy no longer
+  truncates an existing file either.
 - **Triggering a service queued for a start slot stalled later starts.**
   With `--parallel-start-limit`, `slinitctl trigger` on a triggered
   service still waiting for a slot started it at once, past the limit,
