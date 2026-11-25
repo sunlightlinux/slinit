@@ -9,8 +9,10 @@
 //     always; CLONE_NEWNET optional via --private-network.
 //   - Mount setup: mount --rbind rootfs → temp dir + MS_PRIVATE, then
 //     pivot_root inside the child. Standard virtual FS bind mounts:
-//     /proc (rw, private), /sys (ro, private, rebound), /dev
-//     (ro-rbind from host), /dev/pts (new, private), /run (tmpfs).
+//     /proc (rw, private), /sys (ro, private, rebound), /dev (fresh
+//     nodev tmpfs with the standard nodes bound in from the host),
+//     /dev/pts (new instance), /dev/shm, /run and /tmp (tmpfs). The
+//     rootfs is nodev, not nosuid.
 //   - Init exec: default /sbin/slinit; override with --init=PATH.
 //     Argv beyond -- is passed through as init's args.
 //   - Registry: parent writes /run/slinit/machines/<name> post-fork,
@@ -319,6 +321,21 @@ func childMain() error {
 	if err := unix.Mount(rootfs, rootfs, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind rootfs onto itself: %w", err)
 	}
+	// nodev on the whole tree, so a device node shipped in the image is
+	// unusable. systemd-nspawn leaves the root dev and closes devices
+	// with the scope's DevicePolicy=closed instead; slinit-nspawn sets up
+	// no device cgroup, so the mount flag is what stands in for it. Not
+	// nosuid: the container's setuid binaries must keep working.
+	if err := unix.MountSetattr(unix.AT_FDCWD, rootfs, unix.AT_RECURSIVE,
+		&unix.MountAttr{Attr_set: unix.MOUNT_ATTR_NODEV}); err != nil {
+		return fmt.Errorf("rootfs nodev: %w", err)
+	}
+	// The device nodes the container's /dev gets, taken while the host
+	// /dev is still reachable.
+	nodes, err := cloneDevNodes()
+	if err != nil {
+		return err
+	}
 
 	// pivot_root(".", ".") from inside the new root stacks the old
 	// root on top of it, and the umount below takes it off again. No
@@ -347,15 +364,19 @@ func childMain() error {
 	}
 	// Create dirs first (idempotent) — some minimal rootfs don't ship
 	// /proc /sys /dev/pts.
-	for _, d := range []string{"/proc", "/sys", "/dev", "/dev/pts", "/run", "/tmp"} {
+	for _, d := range []string{"/proc", "/sys", "/dev", "/run", "/tmp"} {
 		if err := os.MkdirAll(d, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
+	if err := setupDev(nodes); err != nil {
+		return err
+	}
 	mounts := []m{
 		{"proc", "/proc", "proc", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, ""},
 		{"sysfs", "/sys", "sysfs", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_RDONLY, ""},
-		{"devpts", "/dev/pts", "devpts", unix.MS_NOSUID | unix.MS_NOEXEC, "gid=5,mode=620,ptmxmode=666"},
+		{"devpts", "/dev/pts", "devpts", unix.MS_NOSUID | unix.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=620,gid=5"},
+		{"tmpfs", "/dev/shm", "tmpfs", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, "mode=1777"},
 		{"tmpfs", "/run", "tmpfs", unix.MS_NOSUID | unix.MS_NODEV, "mode=755"},
 		{"tmpfs", "/tmp", "tmpfs", unix.MS_NOSUID | unix.MS_NODEV, "mode=1777"},
 	}
@@ -378,6 +399,67 @@ func childMain() error {
 		// bubbling up so the operator gets a concrete pointer.
 		hint := diagnoseExecFailure(initBin, err)
 		return fmt.Errorf("exec %s: %w%s", initBin, err, hint)
+	}
+	return nil
+}
+
+// devNodes are the host device nodes a container's /dev gets: the
+// required set of systemd-nspawn's copy_devnodes.
+var devNodes = []string{"null", "zero", "full", "random", "urandom", "tty"}
+
+// cloneDevNodes takes a detached bind mount of each host /dev node in
+// devNodes, for setupDev to attach once the host is out of reach.
+// systemd-nspawn mknods them and bind-mounts only where mknod is
+// refused; a bind always works, in a user namespace too, and keeps
+// working on a nodev /dev.
+func cloneDevNodes() ([]int, error) {
+	fds := make([]int, len(devNodes))
+	for i, n := range devNodes {
+		fd, err := unix.OpenTree(unix.AT_FDCWD, "/dev/"+n, unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC)
+		if err != nil {
+			return nil, fmt.Errorf("clone /dev/%s: %w", n, err)
+		}
+		fds[i] = fd
+	}
+	return fds, nil
+}
+
+// setupDev gives the container a fresh /dev, as systemd-nspawn does:
+// a tmpfs holding only the devNodes binds, the /dev/fd and stdio links,
+// mount points for /dev/pts and /dev/shm, and /dev/ptmx pointing at
+// the container's own devpts. The image's /dev, and any device node in
+// it, is hidden underneath. The tmpfs is nodev, unlike nspawn's, which
+// mknods into it: with no device cgroup here, a node the container
+// creates must not open a host device.
+func setupDev(nodes []int) error {
+	if err := unix.Mount("tmpfs", "/dev", "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_STRICTATIME, "mode=755"); err != nil {
+		return fmt.Errorf("mount /dev: %w", err)
+	}
+	for i, n := range devNodes {
+		p := "/dev/" + n
+		if err := os.WriteFile(p, nil, 0o666); err != nil {
+			return fmt.Errorf("create %s: %w", p, err)
+		}
+		if err := unix.MoveMount(nodes[i], "", unix.AT_FDCWD, p, unix.MOVE_MOUNT_F_EMPTY_PATH); err != nil {
+			return fmt.Errorf("bind %s: %w", p, err)
+		}
+		unix.Close(nodes[i])
+	}
+	for _, d := range []string{"/dev/pts", "/dev/shm"} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", d, err)
+		}
+	}
+	for _, l := range [][2]string{
+		{"/proc/self/fd", "/dev/fd"},
+		{"/proc/self/fd/0", "/dev/stdin"},
+		{"/proc/self/fd/1", "/dev/stdout"},
+		{"/proc/self/fd/2", "/dev/stderr"},
+		{"pts/ptmx", "/dev/ptmx"},
+	} {
+		if err := os.Symlink(l[0], l[1]); err != nil {
+			return fmt.Errorf("symlink %s: %w", l[1], err)
+		}
 	}
 	return nil
 }

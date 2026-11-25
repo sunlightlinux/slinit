@@ -21,9 +21,10 @@ slinit-nspawn - launch a slinit container in a new set of Linux namespaces
    **slinit-journalctl -M** *NAME* can reach its journal.
 2. In the child: sets the hostname, **pivot_root**(2)s into *ROOTFS* so
    the container sees it as **/**, and mounts a fresh */proc*, a
-   read-only */sys*, *devpts* on */dev/pts*, and tmpfs on */run* and
-   */tmp*. */dev* itself is not populated: the rootfs must provide its
-   device nodes. A mount that fails is reported and skipped.
+   read-only */sys*, a new tmpfs on */dev*, a new *devpts* instance on
+   */dev/pts*, and tmpfs on */dev/shm*, */run* and */tmp*. A mount that
+   fails is reported and skipped, except */dev* and its device nodes.
+   See **ISOLATION**.
 3. **exec**(2)s */sbin/slinit* (or **--init=**\ *PATH*) as PID 1 inside
    the new PID namespace.
 4. Stays in the foreground: SIGTERM and SIGINT are forwarded to the
@@ -39,6 +40,22 @@ namespaced process.
 
 Must be run as root (effective UID 0); this is checked before anything
 is created.
+
+# ISOLATION
+
+The rootfs is mounted **nodev** (since 4.0.3), recursively, so a device
+node shipped in the image cannot be opened. It is not **nosuid**: the
+container's setuid binaries work. **systemd-nspawn**(1) leaves the root
+**dev** and closes devices with a device cgroup instead; **slinit-nspawn**
+sets up no cgroup, so the mount flag stands in for it.
+
+*/dev* is a fresh **nodev** tmpfs (since 4.0.3; it used to be the
+image's own */dev*), as under **systemd-nspawn**(1). It holds only
+*null*, *zero*, *full*, *random*, *urandom* and *tty*, bind-mounted
+from the host; the */dev/fd*, */dev/stdin*, */dev/stdout* and
+*/dev/stderr* links; */dev/ptmx* pointing at *pts/ptmx*; and the mount
+points for */dev/pts* and */dev/shm*. There is no */dev/console*: the
+container's init keeps the terminal **slinit-nspawn** was started on.
 
 # FLAGS
 

@@ -115,3 +115,36 @@ exec "$NSPAWN" --name t3 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /
 		t.Error("the container's init read a host file through a descriptor inherited from the launcher")
 	}
 }
+
+// TestContainerDevIsFresh: the container's /dev was the image's own,
+// and the rootfs was bound without nodev, so a device node shipped in
+// the image opened the host device it named. /dev is now a fresh
+// tmpfs holding only the standard nodes, and the rootfs is nodev.
+func TestContainerDevIsFresh(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines" "$ROOTFS/dev"
+: > "$ROOTFS/dev/evil"; mount --bind /dev/null "$ROOTFS/dev/evil"
+: > "$ROOTFS/evil"; mount --bind /dev/null "$ROOTFS/evil"
+exec "$NSPAWN" --name t4 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c '
+echo DEV: $(cd /dev && echo *)
+[ -e /dev/evil ] && echo IMAGE-DEV-VISIBLE
+(echo x >/evil) 2>/dev/null && echo IMAGE-NODE-OPENS
+echo x >/dev/null && head -c1 /dev/urandom >/dev/null && echo NODES-WORK
+echo PTMX: $(readlink /dev/ptmx)'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	for _, bad := range []string{"IMAGE-DEV-VISIBLE", "IMAGE-NODE-OPENS"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("%s: a device node from the image is reachable in the container", bad)
+		}
+	}
+	if !strings.Contains(out, "DEV: fd full null ptmx pts random shm stderr stdin stdout tty urandom zero\n") {
+		t.Error("/dev does not hold exactly the standard nodes, links and mount points")
+	}
+	if !strings.Contains(out, "NODES-WORK") {
+		t.Error("the container's /dev/null and /dev/urandom do not work")
+	}
+	if !strings.Contains(out, "PTMX: pts/ptmx") {
+		t.Error("/dev/ptmx does not point at the container's devpts")
+	}
+}
