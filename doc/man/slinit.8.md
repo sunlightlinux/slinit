@@ -216,6 +216,11 @@ long options may be written with one or two leading dashes.
     without the executable bit is treated as staged-but-unarmed —
     the operator can prepare it in advance and flip `chmod +x` when
     the trigger should fire (this matches **runit**(8)'s workflow).
+    Only a regular file owned by root fires; a symlink or a file
+    owned by anyone else is logged and ignored. *dir* is created
+    mode 0700 when missing; an existing one must be a real directory
+    (not a symlink) owned by root and not writable by group or
+    others, or the watcher is disabled with an error.
     Every trigger logs an audit line with the file owner's UID and
     mtime before the file is unlinked, so a compliance regime that
     requires forensic evidence of who requested a system state

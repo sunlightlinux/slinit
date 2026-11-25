@@ -243,3 +243,91 @@ func TestSentinelCloseIsIdempotent(t *testing.T) {
 	// unconditionally; assert only that a single Close works.
 	_ = sw
 }
+
+// The tests run unprivileged, so "root" is whoever runs them. The ones
+// below that need a different owner set sentinelOwnerUID themselves.
+func init() { sentinelOwnerUID = uint32(os.Getuid()) }
+
+func withSentinelOwner(t *testing.T, uid uint32) {
+	t.Helper()
+	orig := sentinelOwnerUID
+	sentinelOwnerUID = uid
+	t.Cleanup(func() { sentinelOwnerUID = orig })
+}
+
+// A sentinel file shuts the machine down, so whoever can create one in
+// the directory can. MkdirAll(0700) protected only a directory it had to
+// create: one that already existed was used whatever its owner or mode.
+func TestSentinelRefusesAWritableDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if sw, err := NewSentinelWatcher(dir, &stubLogger{}, SentinelHandler{}); err == nil {
+		sw.Close()
+		t.Fatal("a world-writable sentinel dir was accepted")
+	}
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if sw, err := NewSentinelWatcher(dir, &stubLogger{}, SentinelHandler{}); err == nil {
+		sw.Close()
+		t.Fatal("a group-writable sentinel dir was accepted")
+	}
+}
+
+func TestSentinelRefusesADirNotOwnedByRoot(t *testing.T) {
+	dir := t.TempDir()
+	withSentinelOwner(t, uint32(os.Getuid())+1)
+	if sw, err := NewSentinelWatcher(dir, &stubLogger{}, SentinelHandler{}); err == nil {
+		sw.Close()
+		t.Fatal("a sentinel dir owned by someone else was accepted")
+	}
+}
+
+func TestSentinelRefusesASymlinkedDir(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if sw, err := NewSentinelWatcher(link, &stubLogger{}, SentinelHandler{}); err == nil {
+		sw.Close()
+		t.Fatal("a symlink was accepted as the sentinel dir")
+	}
+}
+
+// check used os.Stat, which follows a symlink: a "reboot" link to any
+// executable on the system fired. And it never looked at the owner.
+func TestSentinelIgnoresSymlinksAndForeignFiles(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "anything")
+	if err := os.WriteFile(target, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "reboot")); err != nil {
+		t.Fatal(err)
+	}
+	fired := false
+	sw, err := NewSentinelWatcher(dir, &stubLogger{}, SentinelHandler{
+		OnShutdown: func(SentinelAction, SentinelAudit) { fired = true },
+	})
+	if err != nil {
+		t.Fatalf("NewSentinelWatcher: %v", err)
+	}
+	defer sw.Close()
+
+	sw.InitialScan()
+	if fired {
+		t.Fatal("a symlinked sentinel fired")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "poweroff"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withSentinelOwner(t, uint32(os.Getuid())+1)
+	sw.InitialScan()
+	if fired {
+		t.Fatal("a sentinel file not owned by root fired")
+	}
+}

@@ -2082,7 +2082,7 @@ func main() {
 				},
 			})
 			if err != nil {
-				logger.Warn("sentinel: disabled (%v)", err)
+				logger.Error("sentinel: disabled (%v)", err)
 			} else {
 				sw.InitialScan()
 				go sw.Run()
