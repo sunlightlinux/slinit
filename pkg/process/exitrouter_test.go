@@ -1,6 +1,7 @@
 package process
 
 import (
+	"math/rand"
 	"sync"
 	"syscall"
 	"testing"
@@ -170,7 +171,9 @@ func TestPendingExpires(t *testing.T) {
 
 	// Age it past the TTL, then let the next Route prune.
 	r.mu.Lock()
-	r.pending[9001] = pendingExit{at: time.Now().Add(-2 * pendingTTL)}
+	p := r.pending[9001]
+	p.at = time.Now().Add(-2 * pendingTTL)
+	r.pending[9001] = p
 	r.mu.Unlock()
 
 	r.Route(9002, syscall.WaitStatus(1<<8))
@@ -252,5 +255,82 @@ func TestFastExitKeepsItsStatusUnderAHotReaper(t *testing.T) {
 	}
 	if lost > 0 {
 		t.Errorf("%d of %d starts lost the real exit code", lost, n)
+	}
+}
+
+// Pruning used to scan the whole pending table for expired entries and,
+// at the cap, for the oldest one, on every orphan Route. It now pops
+// from a queue kept in insertion order. This drives random Routes,
+// Registers and Unregisters (claims, pid reuse, the cap) against a model
+// of the old rule and checks the same statuses are held afterwards.
+// (Expiry is covered by TestPendingExpires; within this test nothing is
+// a second old.)
+func TestPendingMatchesScanModel(t *testing.T) {
+	r := NewExitRouter()
+	rng := rand.New(rand.NewSource(1))
+	model := map[int]int{} // pid -> insertion tick; the oldest is evicted at the cap
+	registered := map[int]bool{}
+	tick := 0
+	for i := 0; i < 50000; i++ {
+		pid := 1 + rng.Intn(3000)
+		switch op := rng.Intn(10); {
+		case op < 7:
+			wasRegistered := registered[pid]
+			if got := r.Route(pid, syscall.WaitStatus(pid<<8)); got != wasRegistered {
+				t.Fatalf("op %d: Route(%d) = %v, registered %v", i, pid, got, wasRegistered)
+			}
+			if wasRegistered {
+				delete(registered, pid)
+			} else {
+				for len(model) >= pendingMax {
+					oldPID, old := 0, tick+1
+					for p, at := range model {
+						if at < old {
+							oldPID, old = p, at
+						}
+					}
+					delete(model, oldPID)
+				}
+				tick++
+				model[pid] = tick
+			}
+		case op < 9:
+			ch := r.Register(pid)
+			if _, ok := model[pid]; ok {
+				delete(model, pid)
+				select {
+				case st := <-ch:
+					if st != syscall.WaitStatus(pid<<8) {
+						t.Fatalf("op %d: Register(%d) got status %v", i, pid, st)
+					}
+				default:
+					t.Fatalf("op %d: Register(%d) found no pending status", i, pid)
+				}
+				r.Unregister(pid)
+			} else {
+				select {
+				case st := <-ch:
+					t.Fatalf("op %d: Register(%d) got status %v the model does not hold", i, pid, st)
+				default:
+				}
+				registered[pid] = true
+			}
+		default:
+			r.Unregister(pid)
+			delete(registered, pid)
+		}
+		if r.PendingLen() != len(model) {
+			t.Fatalf("op %d: pending = %d, model %d", i, r.PendingLen(), len(model))
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for pid := range model {
+		if _, ok := r.pending[pid]; !ok {
+			t.Errorf("pid %d held by the model, not by the router", pid)
+		}
+	}
+	if len(r.pendingOrder) > 2*pendingMax+1 {
+		t.Errorf("pendingOrder holds %d refs for %d entries", len(r.pendingOrder), len(r.pending))
 	}
 }
