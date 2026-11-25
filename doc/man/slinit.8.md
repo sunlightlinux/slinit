@@ -914,7 +914,11 @@ on the console:
     on the console. A process the script starts in the background
     (a daemon) is not waited for and is left running; its output
     is still logged. `SLINIT_HOOK_POINT=rc-local` in the env so a
-    shared script can branch on the invocation path.
+    shared script can branch on the invocation path. A script, or
+    the *rc.local.d* directory, that is not owned by root or is
+    writable by group or others is skipped with a warning (a
+    symlinked *rc.local.d* is refused; */etc/rc.local* may be a
+    symlink, and its target is checked).
 
 */etc/slinit/hooks.d/&lt;point&gt;/\**
 :   Operator-supplied scripts run at defined lifecycle points.
@@ -922,7 +926,10 @@ on the console:
     (`10-x` before `20-y`); one at a time; 30 s per-script timeout;
     non-zero exit is logged but doesn't abort. A process a script
     leaves in the background is not waited for. `SLINIT_HOOK_POINT`
-    is set in the child environment. Recognised points:
+    is set in the child environment. The point directory and each
+    script must be owned by root and not writable by group or
+    others, as sudo and cron require; anything else (a symlinked
+    directory included) is skipped with a warning. Recognised points:
     **system-up** (fires when the boot service reaches STARTED),
     **system-down** (fires at the top of shutdown, before teardown),
     **switch-root** (fires at the top of switch-root, before
