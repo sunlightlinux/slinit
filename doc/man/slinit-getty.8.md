@@ -95,11 +95,17 @@ verbatim so operator-authored ANSI sequences survive.
 # LOGIN BINARY FALLBACK
 
 If none of */bin/login*, */sbin/login*, */usr/bin/login* exist
-or are executable, slinit-getty logs an error and drops to a
-rescue shell — */sbin/sulogin* → */bin/sulogin* → */bin/sh*.
-Matches finit's fallback chain (`_PATH_LOGIN → _PATH_SULOGIN →
-_PATH_BSHELL`). An operator without a proper login binary still
-gets an interactive prompt instead of a boot-time hang.
+or are executable, or the **execve** of the one found fails (for
+example *ETXTBSY* while a package upgrade replaces it, or *ENOMEM*),
+slinit-getty logs why and runs **sulogin**(8) — */sbin/sulogin* →
+*/bin/sulogin* → */usr/sbin/sulogin* — which asks for the root
+password. With no sulogin either it exits with status 1, so its
+supervisor respawns it.
+
+finit's chain ends in */bin/sh* (`_PATH_LOGIN → _PATH_SULOGIN →
+_PATH_BSHELL`), and so did slinit-getty's before this release: a
+login that failed to exec gave whoever was at the terminal a root
+shell without a password. There is no option to bring that back.
 
 # EXAMPLES
 
@@ -122,14 +128,14 @@ needed on a VT):
 # EXIT STATUS
 
 **0**
-:   **execve** of the login binary or rescue shell succeeded
+:   **execve** of the login binary or of sulogin succeeded
     (this process was replaced — exit status is that of the
     successor).
 
 **1**
 :   No *TTY* argument, the terminal could not be opened or
     duplicated, reading the username failed (for example end of file),
-    or neither a login binary nor a rescue shell could be executed.
+    or neither a login binary nor sulogin could be executed.
 
 **2**
 :   Unknown option.

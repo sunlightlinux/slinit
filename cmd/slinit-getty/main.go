@@ -26,10 +26,11 @@
 //
 // Fallback chain if /bin/login is missing:
 //
-//	/sbin/login → /usr/bin/login → /bin/sh (interactive rescue).
+//	/sbin/login → /usr/bin/login → sulogin → exit 1.
 //
-// Same shape as finit's getty.c fallback so an operator without
-// a proper login binary still gets a shell, not a boot-time hang.
+// finit's getty.c ends the chain with /bin/sh; slinit-getty stops at
+// sulogin, which asks for the root password, and otherwise exits so
+// the supervisor respawns it.
 package main
 
 import (
@@ -63,12 +64,13 @@ var loginPathCandidates = []string{
 	"/usr/bin/login",
 }
 
-// rescueShellCandidates fire when no login binary is present. The
-// operator gets an interactive shell instead of a boot-time hang.
+// rescueShellCandidates run when login cannot. Only sulogin, which
+// authenticates: finit's last resort, a plain /bin/sh, gave anyone at
+// the terminal a root shell whenever login failed to exec.
 var rescueShellCandidates = []string{
 	"/sbin/sulogin",
 	"/bin/sulogin",
-	"/bin/sh",
+	"/usr/sbin/sulogin",
 }
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -181,28 +183,41 @@ func run(ttyArg, baud, term string, passEnv bool) error {
 		os.Setenv("TERM", term)
 	}
 
-	// exec /bin/login. Fallback chain if the binary is missing.
-	// argv[0] = login (POSIX-standard invocation name).
-	loginBin := firstExisting(loginPathCandidates)
-	if loginBin != "" {
+	return execLogin(name, passEnv, syscall.Exec)
+}
+
+// execLogin replaces getty with login(1) for name. When no login binary
+// exists or its exec fails (ETXTBSY mid-upgrade, ENOMEM), it runs
+// sulogin, which asks for the root password, and otherwise returns an
+// error so getty exits and its supervisor respawns it. It never starts
+// a shell without authentication: that handed whoever sat at the
+// terminal a root shell.
+func execLogin(name string, passEnv bool, execve func(string, []string, []string) error) error {
+	loginErr := fmt.Errorf("none of %v found", loginPathCandidates)
+	if loginBin := firstExisting(loginPathCandidates); loginBin != "" {
+		// argv[0] = login (POSIX-standard invocation name).
 		argv := []string{"login"}
 		if passEnv {
 			argv = append(argv, "-p")
 		}
 		argv = append(argv, "--", name)
-		if err := syscall.Exec(loginBin, argv, os.Environ()); err != nil {
-			// Exec failed — fall through to rescue shell.
-			fmt.Fprintf(os.Stderr, "slinit-getty: exec %s: %v (falling back)\n", loginBin, err)
+		err := execve(loginBin, argv, os.Environ())
+		if err == nil {
+			return nil // only a stand-in execve returns on success
 		}
+		loginErr = fmt.Errorf("exec %s: %w", loginBin, err)
 	}
+	fmt.Fprintf(os.Stderr, "slinit-getty: cannot run login: %v\n", loginErr)
 
-	rescue := firstExisting(rescueShellCandidates)
-	if rescue == "" {
-		return fmt.Errorf("no login binary and no rescue shell found (tried %v, %v)",
-			loginPathCandidates, rescueShellCandidates)
+	sulogin := firstExisting(rescueShellCandidates)
+	if sulogin == "" {
+		return fmt.Errorf("cannot run login (%v) and no sulogin found (tried %v)", loginErr, rescueShellCandidates)
 	}
-	fmt.Fprintf(os.Stderr, "slinit-getty: no /bin/login, dropping to %s\n", rescue)
-	return syscall.Exec(rescue, []string{rescue}, os.Environ())
+	fmt.Fprintf(os.Stderr, "slinit-getty: running %s instead\n", sulogin)
+	if err := execve(sulogin, []string{sulogin}, os.Environ()); err != nil {
+		return fmt.Errorf("cannot run login (%v) nor %s: %w", loginErr, sulogin, err)
+	}
+	return nil
 }
 
 // configureTermios sets canonical + echo mode on fd, and if `baud`

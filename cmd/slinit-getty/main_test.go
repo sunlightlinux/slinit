@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -141,5 +142,41 @@ func TestUnixString_NoNUL(t *testing.T) {
 	got := unixString(buf)
 	if got != "abc" {
 		t.Errorf("unixString(no NUL): got %q, want %q", got, "abc")
+	}
+}
+
+// When login cannot run, getty must not fall back to a shell that asks
+// for nothing: only sulogin, which authenticates, may stand in.
+func TestRescueIsOnlySulogin(t *testing.T) {
+	for _, p := range rescueShellCandidates {
+		if filepath.Base(p) != "sulogin" {
+			t.Errorf("rescue candidate %s does not authenticate", p)
+		}
+	}
+}
+
+// A login whose exec fails (ETXTBSY during an upgrade) with no sulogin
+// present makes getty return an error, so it exits and is respawned,
+// and nothing else is executed.
+func TestLoginExecFailureExits(t *testing.T) {
+	login := filepath.Join(t.TempDir(), "login")
+	if err := os.WriteFile(login, []byte("#!/bin/false\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldLogin, oldRescue := loginPathCandidates, rescueShellCandidates
+	t.Cleanup(func() { loginPathCandidates, rescueShellCandidates = oldLogin, oldRescue })
+	loginPathCandidates = []string{login}
+	rescueShellCandidates = []string{filepath.Join(t.TempDir(), "sulogin")}
+
+	var ran []string
+	err := execLogin("root", false, func(path string, _ []string, _ []string) error {
+		ran = append(ran, path)
+		return syscall.ETXTBSY
+	})
+	if err == nil || !strings.Contains(err.Error(), "text file busy") {
+		t.Errorf("err %v, want the exec failure", err)
+	}
+	if len(ran) != 1 || ran[0] != login {
+		t.Errorf("executed %v, want only %s", ran, login)
 	}
 }
