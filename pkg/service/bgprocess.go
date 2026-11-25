@@ -125,6 +125,11 @@ type BGProcessService struct {
 	// then, not STARTING, and has no pid to track until the file comes.
 	recoveryPoll bool
 
+	// lastDaemonPID is the daemon that last died while tracked. A smooth
+	// recovery that reads it back from the pid file is reading the file
+	// that daemon left behind, not one the new daemon has written.
+	lastDaemonPID int
+
 	// Log output
 	logType      LogType
 	logBufMax    int
@@ -895,6 +900,10 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 	if exit.ExecErr != nil {
 		s.services.logger.Error("Service '%s': launcher exec failed: %v",
 			s.serviceName, exit.ExecErr)
+		if s.state.Load() == StateStarted {
+			s.failSmoothRecoveryLocked()
+			return
+		}
 		s.cancelTimer()
 		s.stopReason = ReasonExecFailed
 		s.state.Store(StateStopping)
@@ -910,6 +919,10 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		}
 		s.services.logger.Error("Service '%s': launcher exited with code %d",
 			s.serviceName, exitCode)
+		if s.state.Load() == StateStarted {
+			s.failSmoothRecoveryLocked()
+			return
+		}
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, true)
@@ -954,6 +967,16 @@ func (s *BGProcessService) handleLauncherExit(exit process.ChildExit) {
 		return
 	}
 
+	if result == process.PIDResultTerminated && s.state.Load() == StateStarted {
+		if pid == s.lastDaemonPID {
+			// The file the dead daemon left: wait for the new one's.
+			s.pollForPIDFile(s.pidFile, fmt.Errorf(
+				"pid file still names the daemon being replaced (PID %d)", pid))
+		} else {
+			s.recoveredDaemonDiedLocked(pid)
+		}
+		return
+	}
 	if result == process.PIDResultTerminated {
 		s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
 		return
@@ -1015,10 +1038,42 @@ func (s *BGProcessService) finishPIDDiscoveryLocked(pid int) {
 func (s *BGProcessService) failPIDDiscoveryLocked(err error) {
 	s.recoveryPoll = false
 	s.services.logger.Error("Service '%s': %v", s.serviceName, err)
+	if s.state.Load() == StateStarted {
+		s.failSmoothRecoveryLocked()
+		return
+	}
 	s.cancelTimer()
 	s.stopReason = ReasonFailed
 	s.failedToStart(false, true)
 	s.services.processQueuesLocked()
+}
+
+// failSmoothRecoveryLocked ends a smooth recovery that could not bring a
+// daemon back: its launcher failed, or its pid file could not be read.
+// The service is STARTED, so this is not a failed start — failedToStart
+// would leave its hard dependents STARTED on top of nothing. As dinit's
+// hard_failure does, stop it and its dependents for good. Caller holds
+// queueMu.
+func (s *BGProcessService) failSmoothRecoveryLocked() {
+	s.recoveryPoll = false
+	s.cancelTimer()
+	s.stopReason = ReasonFailed
+	s.UnrecoverableStop()
+	s.services.processQueuesLocked()
+}
+
+// recoveredDaemonDiedLocked handles a smooth recovery whose pid file names
+// a new daemon that is no longer running: it died as soon as it started.
+// That is a daemon death like any other (dinit: goto begin in
+// bgproc_service::handle_exit_status). Caller holds queueMu.
+func (s *BGProcessService) recoveredDaemonDiedLocked(pid int) {
+	s.recoveryPoll = false
+	s.cancelTimer()
+	s.services.logger.Error("Service '%s': daemon process %d terminated",
+		s.serviceName, pid)
+	s.exitStatus = ExitStatus{Vanished: true}
+	s.lastDaemonPID = pid
+	s.daemonDiedLocked()
 }
 
 // pidFileStillComing reports whether a failed read looks like a daemon
@@ -1109,12 +1164,14 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				s.services.queueMu.Unlock()
 				return
 			}
-			if result == process.PIDResultTerminated && s.followPID == "" {
-				s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
-			} else if result == process.PIDResultTerminated {
-				// Following: the file is stale, or names a process that
-				// has not started yet. Keep waiting rather than failing
-				// on somebody else's leftover file.
+			// Following, the file is stale or names a process that has
+			// not started yet; in a smooth recovery it may still be the
+			// one the dead daemon left.
+			stale := result == process.PIDResultTerminated &&
+				(s.followPID != "" || (pollState == StateStarted && pid == s.lastDaemonPID))
+			switch {
+			case stale:
+				// Keep waiting rather than failing on a leftover file.
 				if time.Now().After(expiry) {
 					if polling() {
 						s.failPIDDiscoveryLocked(fmt.Errorf(
@@ -1126,7 +1183,11 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				}
 				s.services.queueMu.Unlock()
 				continue
-			} else {
+			case result == process.PIDResultTerminated && pollState == StateStarted:
+				s.recoveredDaemonDiedLocked(pid)
+			case result == process.PIDResultTerminated:
+				s.failPIDDiscoveryLocked(fmt.Errorf("daemon (PID %d) already terminated", pid))
+			default:
 				s.finishPIDDiscoveryLocked(pid)
 			}
 			s.services.queueMu.Unlock()
@@ -1283,6 +1344,7 @@ func (s *BGProcessService) handleDaemonTermination() {
 	// is actually true.
 	s.exitStatus = ExitStatus{Vanished: true}
 
+	s.lastDaemonPID = s.daemonPID
 	s.daemonPID = 0
 	s.publishPID()
 	s.cancelTimer()
@@ -1304,12 +1366,19 @@ func (s *BGProcessService) handleDaemonTermination() {
 		s.services.processQueuesLocked()
 
 	case StateStarted:
-		if s.smoothRecovery && s.CheckRestart() {
-			s.doingSmoothRecov = true
-			s.doSmoothRecovery()
-		} else {
-			s.handleUnexpectedTerminationLocked()
-		}
+		s.daemonDiedLocked()
+	}
+}
+
+// daemonDiedLocked handles the death of a STARTED service's daemon: a
+// smooth recovery where allowed, otherwise an unexpected termination.
+// Caller must hold queueMu.
+func (s *BGProcessService) daemonDiedLocked() {
+	if s.smoothRecovery && s.CheckRestart() {
+		s.doingSmoothRecov = true
+		s.doSmoothRecovery()
+	} else {
+		s.handleUnexpectedTerminationLocked()
 	}
 }
 
