@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/journal"
 )
 
 // TestLogRotatorSanitizeInPlaceDefault verifies the built-in
@@ -1220,5 +1222,73 @@ func TestLogRotatorLevelMaxEmergFilters(t *testing.T) {
 	body, _ := os.ReadFile(logPath)
 	if want := "<0>an emergency\n"; string(body) != want {
 		t.Errorf("log:\n got %q\nwant %q", body, want)
+	}
+}
+
+// pieceSink records the largest single line the rotator hands its sink.
+type pieceSink struct {
+	mu  sync.Mutex
+	max int
+}
+
+func (s *pieceSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	if len(p) > s.max {
+		s.max = len(p)
+	}
+	s.mu.Unlock()
+	return len(p), nil
+}
+
+// Output with no newline used to accumulate in readLoop's line buffer
+// for as long as it kept coming when log-max-line-length was not set,
+// which is the default: a service writing a few MiB without '\n' held
+// all of it in PID 1, and none of it reached the file until a newline
+// or EOF. It must go out in pieces of at most journal.MaxMessageLen
+// while the pipe is still open.
+func TestLogRotatorReadLoopCapsUnterminatedOutput(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "svc.log")
+	sink := &pieceSink{}
+	lr, err := NewLogRotator(LogRotatorConfig{
+		FilePath:    logPath,
+		FilePerms:   0600,
+		FileUID:     -1,
+		FileGID:     -1,
+		ServiceName: "t",
+		LogLevelMax: -1,
+		Sink:        sink,
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	w, err := lr.CreatePipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	lr.StartReader()
+
+	const total = 4 << 20
+	wrote := make(chan error, 1)
+	go func() {
+		_, err := w.Write(bytes.Repeat([]byte("x"), total))
+		wrote <- err
+	}()
+	if err := <-wrote; err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// The pipe is still open and no newline has been seen: all but the
+	// last piece must already be in the file.
+	waitForLogFile(t, logPath, total-journal.MaxMessageLen)
+	w.Close()
+	got := waitForLogFile(t, logPath, total)
+	lr.Close()
+
+	if len(got) != total || bytes.Count(got, []byte("x")) != total {
+		t.Errorf("logfile holds %d bytes, want %d bytes of 'x'", len(got), total)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if sink.max > journal.MaxMessageLen {
+		t.Errorf("largest piece was %d bytes, want <= %d", sink.max, journal.MaxMessageLen)
 	}
 }

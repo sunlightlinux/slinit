@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sunlightlinux/slinit/pkg/journal"
 	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
@@ -24,6 +25,13 @@ import (
 // Matches the historical hardcoded value; large enough to consume a
 // typical burst of structured log lines in one Read() syscall.
 const defaultReadBufferSize = 4096
+
+// rotatorMaxLine bounds the line readLoop buffers when log-max-line-length
+// is not set; a longer line goes out in pieces this size. Without it,
+// output that never contains a newline grew the line buffer for as long
+// as the service kept writing, all of it held in PID 1. The journal's own
+// message cap, so a piece is never cut again on its way there.
+const rotatorMaxLine = journal.MaxMessageLen
 
 // LogRotator manages logfile writing with rotation, filtering, and post-rotate processing.
 // Inspired by runit's svlogd but using dinit-compatible config keys.
@@ -420,6 +428,22 @@ func (lr *LogRotator) readLoop(pipeR *os.File, doneCh chan struct{}) {
 				}
 
 				idx := bytes.IndexByte(data, '\n')
+				if lr.maxLineLen <= 0 {
+					// No log-max-line-length: pass an over-long line
+					// on in pieces of rotatorMaxLine bytes, as
+					// readLines does, rather than buffering it whole.
+					end := len(data)
+					if idx >= 0 {
+						end = idx
+					}
+					if room := rotatorMaxLine - len(lineBuf); end > room {
+						lineBuf = append(lineBuf, data[:room]...)
+						lr.processLine(lineBuf)
+						lineBuf = lineBuf[:0]
+						data = data[room:]
+						continue
+					}
+				}
 				if idx >= 0 {
 					lineBuf = append(lineBuf, data[:idx+1]...)
 					lr.processLine(lr.capLine(lineBuf))
