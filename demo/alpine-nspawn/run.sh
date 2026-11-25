@@ -33,4 +33,7 @@ NAME="${NAME:-alpine-demo}"
 echo "→ launching container '${NAME}' from ${ROOTFS}"
 echo "→ query from host with: slinit-journalctl -M ${NAME} -u ticker -f"
 echo ""
-exec "${NSPAWN}" --name "${NAME}" --boot "${ROOTFS}" -- --system
+# --devtmpfs-path= : slinit-nspawn hands the container a fresh /dev with
+# only the safe nodes and the console; slinit as PID 1 would otherwise
+# mount the host's devtmpfs over it, with every host device node.
+exec "${NSPAWN}" --name "${NAME}" --boot "${ROOTFS}" -- --system --devtmpfs-path=
