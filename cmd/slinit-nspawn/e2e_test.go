@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -265,5 +266,22 @@ exec "$NSPAWN" --name t8 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /
 	t.Logf("exit=%d output:\n%s", code, out)
 	if !strings.Contains(out, "CGROUP 0::/\n") && !strings.HasSuffix(out, "CGROUP 0::/") {
 		t.Error("the container sees the host's cgroup hierarchy, not its own cgroup as the root")
+	}
+}
+
+// TestContainerSeccomp: the container's init ran with no seccomp
+// filter. It now runs under one (see TestSeccompDenies for what it
+// refuses).
+func TestContainerSeccomp(t *testing.T) {
+	if runtime.GOARCH != "amd64" {
+		t.Skip("pkg/seccomp has a system call table for amd64 only")
+	}
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+exec "$NSPAWN" --name t9 --boot "$ROOTFS" --machine-dir "$DIR/machines" --init /bin/sh -- -c 'sed -n "s/^Seccomp:[[:space:]]*/SECCOMP /p" /proc/self/status'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "SECCOMP 2") {
+		t.Error("the container's init runs without a seccomp filter")
 	}
 }

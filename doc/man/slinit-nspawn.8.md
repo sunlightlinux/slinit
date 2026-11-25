@@ -83,6 +83,21 @@ and inheritable sets, so nothing in the container can regain them.
 With **--private-network** CAP_NET_ADMIN is kept as well, to configure
 the container's own network stack. There is no flag to retain more.
 
+A seccomp filter (since 4.0.3) refuses with EPERM the system calls
+**systemd-nspawn**(1)'s filter leaves out: **kexec_load**(2) and
+**kexec_file_load**, **open_by_handle_at**(2), **perf_event_open**(2),
+**fanotify_init**(2), **quotactl**(2), **lookup_dcookie**, **nfsservctl**,
+**modify_ldt**(2), the protection-key and swap calls, the obsolete
+ones, and the clock, module, raw I/O, **mlock**(2), **acct**(2),
+**syslog**(2) and **bpf**(2) calls nspawn allows only with a capability
+the container does not keep. Everything else is allowed. The filter
+knows only the native architecture: a system call made through another
+one, such as by a 32-bit x86 binary, kills the process. Where
+**slinit-nspawn** has no system call table for the architecture (it
+has one for x86-64 only) the container runs without a filter and a
+warning is printed. **no_new_privs** is not set, as under
+**systemd-nspawn**(1): the container's setuid binaries must work.
+
 In its own cgroup namespace (since 4.0.3), as under
 **systemd-nspawn**(1), the container sees the cgroup **slinit-nspawn**
 was started in as the root of the hierarchy, in */proc/self/cgroup* and
@@ -90,6 +105,15 @@ in a cgroup2 file system it mounts, rather than the host's hierarchy.
 
 */proc* and */sys* are created before **pivot_root**(2), so that they
 also mount when **slinit-nspawn** itself runs inside a user namespace.
+
+There is no user namespace. Root in the container is root on the host,
+holding CAP_SYS_ADMIN: it can remount the read-only and **nodev** file
+systems above, unmount what covers */proc*, and mount a fresh */proc*.
+These protections keep a well-behaved container, and processes in it
+without CAP_SYS_ADMIN, away from the host; they do not contain a
+hostile root, as they do not under **systemd-nspawn**(1) without
+**-U**. Do not boot an untrusted image with **slinit-nspawn**: that
+needs a user namespace, which it does not provide.
 
 # FLAGS
 

@@ -1,11 +1,19 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/sunlightlinux/slinit/pkg/seccomp"
 )
 
 // TestReexecEnvSentinel — the sentinel string is load-bearing (dispatch
@@ -61,5 +69,80 @@ func TestExitCodeSignaled(t *testing.T) {
 	err = exec.Command("sh", "-c", "exit 3").Run()
 	if ee, ok := err.(*exec.ExitError); !ok || exitCode(ee) != 3 {
 		t.Errorf("exit 3: exitCode = %v", err)
+	}
+}
+
+// TestSeccompDenies: the container ran with no seccomp filter, so the
+// calls systemd-nspawn filters out went through. The filter is
+// installed in a child test process, which probes calls that work
+// unprivileged: mlock (@memlock) and modify_ldt (@cpu-emulation).
+// Each is tried before the install, so the probe can tell the filter
+// apart from a refusal for other reasons.
+func TestSeccompDenies(t *testing.T) {
+	if os.Getenv("_NSPAWN_SECCOMP_HELPER") != "" {
+		runtime.LockOSThread()
+		buf := make([]byte, 4096)
+		probe := func(tag string) {
+			fmt.Printf("%s mlock %v\n", tag, unix.Mlock(buf))
+			_ = unix.Munlock(buf)
+			_, _, e := unix.Syscall(unix.SYS_MODIFY_LDT, 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+			fmt.Printf("%s modify_ldt %v\n", tag, e)
+		}
+		probe("before")
+		if err := seccomp.EnsureNoNewPrivs(); err != nil {
+			fmt.Println("nnp:", err)
+			os.Exit(1)
+		}
+		if err := installSeccomp(); err != nil {
+			fmt.Println("install:", err)
+			os.Exit(1)
+		}
+		probe("after")
+		os.Exit(0)
+	}
+	if runtime.GOARCH != "amd64" {
+		t.Skip("pkg/seccomp has a system call table for amd64 only")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSeccompDenies$")
+	cmd.Env = append(os.Environ(), "_NSPAWN_SECCOMP_HELPER=1")
+	out, err := cmd.CombinedOutput()
+	t.Logf("helper:\n%s", out)
+	if err != nil {
+		t.Fatalf("helper: %v", err)
+	}
+	for _, call := range []string{"mlock", "modify_ldt"} {
+		if !strings.Contains(string(out), "before "+call+" <nil>\n") &&
+			!strings.Contains(string(out), "before "+call+" errno 0\n") {
+			t.Logf("%s fails without the filter here, cannot probe it", call)
+			continue
+		}
+		if !strings.Contains(string(out), "after "+call+" operation not permitted\n") {
+			t.Errorf("%s is not refused with EPERM under the container's filter", call)
+		}
+	}
+}
+
+// TestSeccompDenyListCoversNspawn: the calls that reach past the
+// container even without the capabilities it drops must be in the
+// filter: kexec_load (CAP_SYS_BOOT is kept) and open_by_handle_at
+// (CAP_DAC_READ_SEARCH is kept), and the module, raw I/O and clock
+// calls systemd-nspawn also filters.
+func TestSeccompDenyListCoversNspawn(t *testing.T) {
+	if runtime.GOARCH != "amd64" {
+		t.Skip("pkg/seccomp has a system call table for amd64 only")
+	}
+	f, err := seccomp.Build(seccompDeny, seccomp.ModeDeny, nil, seccomp.ErrnoAction(unix.EPERM), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seccomp.Compile(f); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range []string{"kexec_load", "kexec_file_load", "open_by_handle_at",
+		"init_module", "finit_module", "delete_module", "iopl", "ioperm",
+		"settimeofday", "clock_settime", "swapon", "bpf", "perf_event_open"} {
+		if !slices.Contains(f.Syscalls, call) {
+			t.Errorf("%s is not in the container's seccomp deny list", call)
+		}
 	}
 }

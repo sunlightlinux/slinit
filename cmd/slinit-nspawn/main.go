@@ -17,6 +17,8 @@
 //     are covered with /dev/null.
 //   - Capabilities: bounding set narrowed to systemd-nspawn's default
 //     retained set.
+//   - Seccomp: the system calls systemd-nspawn's filter leaves out
+//     fail with EPERM; other architectures' system calls are killed.
 //   - Init exec: default /sbin/slinit; override with --init=PATH.
 //     Argv beyond -- is passed through as init's args.
 //   - Registry: parent writes /run/slinit/machines/<name> post-fork,
@@ -57,6 +59,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sunlightlinux/slinit/pkg/machine"
+	"github.com/sunlightlinux/slinit/pkg/seccomp"
 )
 
 // reexecEnv marks the child re-exec that runs after pivot_root. The
@@ -416,6 +419,9 @@ func childMain() error {
 	if err := dropCaps(privateNet); err != nil {
 		return err
 	}
+	if err := installSeccomp(); err != nil {
+		return err
+	}
 
 	// Exec the init. slinit expects PID 1 semantics; nothing to teach
 	// it about our namespaces since it always is one.
@@ -609,6 +615,46 @@ func dropCaps(privateNet bool) error {
 		return fmt.Errorf("capset: %w", err)
 	}
 	return nil
+}
+
+// seccompDeny is what systemd-nspawn's system call filter
+// (nspawn-seccomp.c) does not let through: the calls it excludes
+// outright, quotactl_fd as quotactl's twin, and the groups and calls it
+// admits only with a capability the container does not keep
+// (CAP_SYS_TIME, SYS_MODULE, SYS_RAWIO, IPC_LOCK, SYS_PACCT, SYSLOG,
+// BPF). nspawn allow-lists; this denies the same calls and leaves the
+// rest alone. Most need a capability the container lacks anyway, but
+// kexec_load needs only CAP_SYS_BOOT and open_by_handle_at only
+// CAP_DAC_READ_SEARCH, both kept, and either reaches past the
+// container: a new kernel for the host, any host file by handle.
+var seccompDeny = []string{
+	"@cpu-emulation", "@obsolete", "@pkey", "@swap",
+	"fanotify_init", "fanotify_mark", "kexec_file_load", "kexec_load",
+	"lookup_dcookie", "nfsservctl", "open_by_handle_at", "perf_event_open",
+	"quotactl", "quotactl_fd",
+	"@clock", "@module", "@raw-io", "@memlock", "acct", "syslog", "bpf",
+}
+
+// installSeccomp installs the seccompDeny filter on the calling thread,
+// which must be the one that execs the init. The filter only knows the
+// native architecture: a call through another (a 32-bit binary in the
+// container) kills the process rather than slipping past it. Where
+// pkg/seccomp has no system call table for this architecture the
+// container runs unfiltered, with a warning.
+func installSeccomp() error {
+	if _, ok := seccomp.SyscallNumber("kexec_load"); !ok {
+		fmt.Fprintf(os.Stderr, "slinit-nspawn (child): no system call table for %s, running without a seccomp filter\n", seccomp.NativeArch())
+		return nil
+	}
+	f, err := seccomp.Build(seccompDeny, seccomp.ModeDeny, nil, seccomp.ErrnoAction(unix.EPERM), nil)
+	if err != nil {
+		return err
+	}
+	prog, err := seccomp.Compile(f)
+	if err != nil {
+		return err
+	}
+	return seccomp.Install(prog)
 }
 
 // cloexecFrom sets FD_CLOEXEC on every fd >= first: close_range(2)
