@@ -148,3 +148,41 @@ echo PTMX: $(readlink /dev/ptmx)'
 		t.Error("/dev/ptmx does not point at the container's devpts")
 	}
 }
+
+// TestContainerProcProtected: the container's /proc was fully
+// writable, /proc/sys included, where kernel.core_pattern runs a
+// program as host root. /proc/sys and the other hardware and tunable
+// directories are now read-only, and kcore, keys, kallsyms,
+// sysrq-trigger and timer_list are covered, as under systemd-nspawn.
+// With a private network the container's own net sysctls stay
+// writable. The IPC namespace belongs to the test's user namespace,
+// so kernel.msgmax is writable unless the mount is read-only.
+func TestContainerProcProtected(t *testing.T) {
+	dir := t.TempDir()
+	out, code := runInUserns(t, dir, `mkdir -p "$DIR/machines"
+exec "$NSPAWN" --name t5 --boot "$ROOTFS" --machine-dir "$DIR/machines" --private-network --init /bin/sh -- -c '
+[ -r /proc/self/status ] && echo PROC-MOUNTED
+(cat /proc/sys/kernel/msgmax >/proc/sys/kernel/msgmax) 2>/dev/null && echo SYS-WRITABLE
+(echo 1 >/proc/sys/net/ipv4/ip_forward) 2>/dev/null && echo NET-WRITABLE
+for f in kcore keys kallsyms sysrq-trigger timer_list; do [ -c /proc/$f ] || echo UNMASKED:$f; done
+while read -r _ _ _ _ mp opts _; do case $mp in /proc/sys|/proc/bus|/proc/fs|/proc/irq|/sys) echo "MNT $mp ${opts%%,*}";; esac; done </proc/self/mountinfo'
+`)
+	t.Logf("exit=%d output:\n%s", code, out)
+	if !strings.Contains(out, "PROC-MOUNTED") {
+		t.Fatal("/proc is not mounted in the container")
+	}
+	if strings.Contains(out, "SYS-WRITABLE") {
+		t.Error("/proc/sys is writable in the container")
+	}
+	if strings.Contains(out, "UNMASKED") {
+		t.Error("a /proc entry systemd-nspawn makes inaccessible is reachable")
+	}
+	for _, mp := range []string{"/proc/sys", "/proc/bus", "/proc/fs", "/proc/irq", "/sys"} {
+		if !strings.Contains(out, "MNT "+mp+" ro\n") && !strings.HasSuffix(out, "MNT "+mp+" ro") {
+			t.Errorf("%s is not mounted read-only", mp)
+		}
+	}
+	if !strings.Contains(out, "NET-WRITABLE") {
+		t.Error("with --private-network the container's own net sysctls are not writable")
+	}
+}

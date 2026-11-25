@@ -57,6 +57,20 @@ from the host; the */dev/fd*, */dev/stdin*, */dev/stdout* and
 points for */dev/pts* and */dev/shm*. There is no */dev/console*: the
 container's init keeps the terminal **slinit-nspawn** was started on.
 
+*/proc/sys*, */proc/acpi*, */proc/apm*, */proc/asound*, */proc/bus*,
+*/proc/fs*, */proc/irq* and */proc/scsi* are read-only, and
+*/proc/kallsyms*, */proc/kcore*, */proc/keys*, */proc/sysrq-trigger* and
+*/proc/timer_list* are covered with */dev/null* (since 4.0.3), as
+**systemd-nspawn**(1) makes them read-only and inaccessible: a writable
+*/proc/sys* let the container set host-wide tunables such as
+*kernel.core_pattern*, which runs a program as host root. With
+**--private-network**, */proc/sys/net* stays writable, since those
+settings belong to the container's own network namespace. */sys* is
+read-only.
+
+*/proc* and */sys* are created before **pivot_root**(2), so that they
+also mount when **slinit-nspawn** itself runs inside a user namespace.
+
 # FLAGS
 
 **--name** *NAME*
@@ -102,8 +116,9 @@ container's init keeps the terminal **slinit-nspawn** was started on.
 The container's init inherits the environment **slinit-nspawn** was
 started with, plus the internal variables **_SLINIT_NSPAWN_CHILD**,
 **_SLINIT_NSPAWN_NAME**, **_SLINIT_NSPAWN_ROOTFS**,
-**_SLINIT_NSPAWN_INIT**, **_SLINIT_NSPAWN_HOSTNAME** and
-**_SLINIT_NSPAWN_INIT_ARGS** that carry the launch parameters into the
+**_SLINIT_NSPAWN_INIT**, **_SLINIT_NSPAWN_HOSTNAME**,
+**_SLINIT_NSPAWN_INIT_ARGS** and, with **--private-network**,
+**_SLINIT_NSPAWN_PRIVATE_NET** that carry the launch parameters into the
 child. The container's own service files control what each service
 actually sees at exec time via **env-file** and related directives
 (see **slinit-service**(5)).

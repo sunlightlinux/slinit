@@ -12,7 +12,9 @@
 //     /proc (rw, private), /sys (ro, private, rebound), /dev (fresh
 //     nodev tmpfs with the standard nodes bound in from the host),
 //     /dev/pts (new instance), /dev/shm, /run and /tmp (tmpfs). The
-//     rootfs is nodev, not nosuid.
+//     rootfs is nodev, not nosuid. /proc/sys and nspawn's other
+//     read-only /proc entries are read-only, its inaccessible ones
+//     are covered with /dev/null.
 //   - Init exec: default /sbin/slinit; override with --init=PATH.
 //     Argv beyond -- is passed through as init's args.
 //   - Registry: parent writes /run/slinit/machines/<name> post-fork,
@@ -213,6 +215,9 @@ func runParent(p childPayload) error {
 		"_SLINIT_NSPAWN_HOSTNAME="+p.Hostname,
 		"_SLINIT_NSPAWN_INIT_ARGS="+strings.Join(p.InitArgs, "\x1f"),
 	)
+	if p.PrivateNet {
+		cmd.Env = append(cmd.Env, "_SLINIT_NSPAWN_PRIVATE_NET=1")
+	}
 
 	flagsUnshare := uintptr(unix.CLONE_NEWPID | unix.CLONE_NEWNS |
 		unix.CLONE_NEWUTS | unix.CLONE_NEWIPC)
@@ -287,6 +292,7 @@ func childMain() error {
 	initBin := os.Getenv("_SLINIT_NSPAWN_INIT")
 	hostname := os.Getenv("_SLINIT_NSPAWN_HOSTNAME")
 	rawArgs := os.Getenv("_SLINIT_NSPAWN_INIT_ARGS")
+	privateNet := os.Getenv("_SLINIT_NSPAWN_PRIVATE_NET") != ""
 	var initArgs []string
 	if rawArgs != "" {
 		// US (0x1f) separator — envs are C strings so NUL is unusable,
@@ -336,6 +342,11 @@ func childMain() error {
 	if err != nil {
 		return err
 	}
+	// /proc and /sys too: inside a user namespace the kernel mounts
+	// them only while a full mount of the same kind is already visible
+	// (mount_too_revealing), and once the old root is gone there is none.
+	proc, procErr := newMount("proc", unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV)
+	sys, sysErr := newMount("sysfs", unix.MOUNT_ATTR_RDONLY|unix.MOUNT_ATTR_NOSUID|unix.MOUNT_ATTR_NOEXEC|unix.MOUNT_ATTR_NODEV)
 
 	// pivot_root(".", ".") from inside the new root stacks the old
 	// root on top of it, and the umount below takes it off again. No
@@ -373,8 +384,6 @@ func childMain() error {
 		return err
 	}
 	mounts := []m{
-		{"proc", "/proc", "proc", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, ""},
-		{"sysfs", "/sys", "sysfs", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_RDONLY, ""},
 		{"devpts", "/dev/pts", "devpts", unix.MS_NOSUID | unix.MS_NOEXEC, "newinstance,ptmxmode=0666,mode=620,gid=5"},
 		{"tmpfs", "/dev/shm", "tmpfs", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, "mode=1777"},
 		{"tmpfs", "/run", "tmpfs", unix.MS_NOSUID | unix.MS_NODEV, "mode=755"},
@@ -382,10 +391,16 @@ func childMain() error {
 	}
 	for _, mnt := range mounts {
 		if err := unix.Mount(mnt.src, mnt.dst, mnt.fstype, mnt.flags, mnt.data); err != nil {
-			// Non-fatal for /sys and /tmp — some kernels or rootfs
+			// Non-fatal — some kernels or rootfs
 			// setups (e.g. an existing devtmpfs bind on /dev) refuse
 			// remounts. Warn to stderr.
 			fmt.Fprintf(os.Stderr, "slinit-nspawn (child): mount %s: %v\n", mnt.dst, err)
+		}
+	}
+	attach(sys, sysErr, "/sys")
+	if attach(proc, procErr, "/proc") {
+		if err := protectProc(privateNet); err != nil {
+			return err
 		}
 	}
 
@@ -459,6 +474,73 @@ func setupDev(nodes []int) error {
 	} {
 		if err := os.Symlink(l[0], l[1]); err != nil {
 			return fmt.Errorf("symlink %s: %w", l[1], err)
+		}
+	}
+	return nil
+}
+
+// newMount creates a detached mount of a new fstype instance, for the
+// caller's namespaces, with the MOUNT_ATTR_* flags attr.
+func newMount(fstype string, attr int) (int, error) {
+	fsfd, err := unix.Fsopen(fstype, unix.FSOPEN_CLOEXEC)
+	if err != nil {
+		return -1, err
+	}
+	defer unix.Close(fsfd)
+	if err := unix.FsconfigCreate(fsfd); err != nil {
+		return -1, err
+	}
+	return unix.Fsmount(fsfd, unix.FSMOUNT_CLOEXEC, attr)
+}
+
+// attach moves the newMount result fd onto dst. A failure, of either,
+// is reported and skipped, as for the other mounts.
+func attach(fd int, err error, dst string) bool {
+	if err == nil {
+		err = unix.MoveMount(fd, "", unix.AT_FDCWD, dst, unix.MOVE_MOUNT_F_EMPTY_PATH)
+		unix.Close(fd)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "slinit-nspawn (child): mount %s: %v\n", dst, err)
+		return false
+	}
+	return true
+}
+
+// procReadOnly and procMasked are systemd-nspawn's read-only and
+// inaccessible /proc entries (nspawn-mount.c, mount_all): /proc/sys
+// holds host-wide tunables such as kernel.core_pattern, which runs a
+// program as host root; the others expose hardware tunables or kernel
+// internals.
+var (
+	procReadOnly = []string{"/proc/sys", "/proc/acpi", "/proc/apm", "/proc/asound",
+		"/proc/bus", "/proc/fs", "/proc/irq", "/proc/scsi"}
+	procMasked = []string{"/proc/kallsyms", "/proc/kcore", "/proc/keys",
+		"/proc/sysrq-trigger", "/proc/timer_list"}
+)
+
+// protectProc makes procReadOnly read-only and covers procMasked with
+// /dev/null. With a private network namespace /proc/sys/net stays
+// writable, as under systemd-nspawn: its sysctls are the container's
+// own. It is bound over the /proc/sys bind, which the read-only
+// remount then leaves alone. An entry this kernel lacks is skipped.
+func protectProc(privateNet bool) error {
+	for _, p := range procReadOnly {
+		err := unix.Mount(p, p, "", unix.MS_BIND, "")
+		if err == nil && p == "/proc/sys" && privateNet {
+			err = unix.Mount("/proc/sys/net", "/proc/sys/net", "", unix.MS_BIND, "")
+		}
+		if err == nil {
+			err = unix.Mount("", p, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|
+				unix.MS_NOSUID|unix.MS_NOEXEC|unix.MS_NODEV, "")
+		}
+		if err != nil && err != unix.ENOENT {
+			return fmt.Errorf("make %s read-only: %w", p, err)
+		}
+	}
+	for _, p := range procMasked {
+		if err := unix.Mount("/dev/null", p, "", unix.MS_BIND, ""); err != nil && err != unix.ENOENT {
+			return fmt.Errorf("mask %s: %w", p, err)
 		}
 	}
 	return nil
