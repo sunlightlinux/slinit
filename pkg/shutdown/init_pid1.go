@@ -302,10 +302,15 @@ func StageRun(logger *logging.Logger) {
 // mountRunTmpfs stages /run according to the runMode global. See
 // RunMode for the individual modes.
 func mountRunTmpfs(logger *logging.Logger) {
-	const runPath = "/run"
-	switch runMode {
+	stageRunAt("/run", runMode, logger)
+}
+
+// stageRunAt does mountRunTmpfs's work on runPath, so a test can point
+// it at a directory of its own.
+func stageRunAt(runPath string, mode RunMode, logger *logging.Logger) {
+	switch mode {
 	case RunModeKeep:
-		logger.Debug("Run mode: keep — leaving /run untouched")
+		logger.Debug("Run mode: keep — leaving %s untouched", runPath)
 		return
 	case RunModeRemount:
 		// Best-effort unmount first. MNT_DETACH so we don't block on a
@@ -313,17 +318,34 @@ func mountRunTmpfs(logger *logging.Logger) {
 		if err := unix.Unmount(runPath, unix.MNT_DETACH); err != nil && !os.IsNotExist(err) {
 			logger.Debug("Unmount %s before remount: %v (non-fatal)", runPath, err)
 		}
-		fallthrough
 	case RunModeMount:
-		os.MkdirAll(runPath, 0755)
-		// mode=0755,nosuid,nodev matches systemd and s6-linux-init.
-		const flags = syscall.MS_NOSUID | syscall.MS_NODEV
-		if err := syscall.Mount("tmpfs", runPath, "tmpfs", flags, "mode=0755"); err != nil {
-			logger.Debug("Mount tmpfs on %s: %v (non-fatal)", runPath, err)
-		} else {
-			logger.Debug("Mounted tmpfs on %s", runPath)
+		// Already a mountpoint: the initramfs's /run (udev database,
+		// cryptsetup state) or the one a previous boot left. A fresh
+		// tmpfs over it hid every file in it.
+		if isMountpoint(runPath) {
+			logger.Debug("%s is already a mountpoint, leaving it", runPath)
+			return
 		}
 	}
+	os.MkdirAll(runPath, 0755)
+	// mode=0755,nosuid,nodev matches systemd and s6-linux-init.
+	const flags = syscall.MS_NOSUID | syscall.MS_NODEV
+	if err := syscall.Mount("tmpfs", runPath, "tmpfs", flags, "mode=0755"); err != nil {
+		logger.Debug("Mount tmpfs on %s: %v (non-fatal)", runPath, err)
+	} else {
+		logger.Debug("Mounted tmpfs on %s", runPath)
+	}
+}
+
+// isMountpoint reports whether path is the root of a mount other than
+// its parent's, by device number. A bind mount of a directory of the
+// same filesystem is not seen, which does not matter for /run.
+func isMountpoint(path string) bool {
+	var st, parent unix.Stat_t
+	if unix.Lstat(path, &st) != nil || unix.Lstat(path+"/..", &parent) != nil {
+		return false
+	}
+	return st.Dev != parent.Dev
 }
 
 // snapshotKernelCmdline copies /proc/cmdline into dest so services can

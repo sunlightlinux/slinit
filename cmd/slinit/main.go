@@ -343,7 +343,11 @@ func main() {
 	// is idempotent, so InitPID1's own call below is a no-op.
 	var cal *logging.CatchAllLogger
 	if (isPID1 || containerMode) && !noCatchAll {
-		if isPID1 {
+		// Not in container mode, where slinit is PID 1 of its
+		// namespace too: /run is the runtime's (Docker's and
+		// Kubernetes's /run/secrets, podman's /run/.containerenv),
+		// and fd 1/2 are the runtime's log stream, not a console.
+		if isPID1 && !containerMode {
 			if rm, err := shutdown.ParseRunMode(runMode); err == nil {
 				shutdown.SetRunMode(rm)
 			}

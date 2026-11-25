@@ -240,10 +240,9 @@ long options may be written with one or two leading dashes.
     The intended use is **soft-reboot**: when **slinitctl shutdown
     soft-reboot** runs, slinit drops a snapshot at
     */run/slinit/soft-reboot-snapshot.json* and re-execs itself with
-    this flag *and* **\--run-mode=keep** appended (the latter is
-    mandatory — the default *mount* mode would stack a fresh tmpfs
-    over /run and hide the snapshot before the new daemon could read
-    it). Operators upgrading the slinit binary on a long-running
+    this flag *and* **\--run-mode=keep** appended (the latter so
+    that */run*, which holds the snapshot, is left as it is).
+    Operators upgrading the slinit binary on a long-running
     system therefore keep their service activations across the
     restart.
 
@@ -292,7 +291,8 @@ long options may be written with one or two leading dashes.
 ### PID 1 environment
 
 **\--run-mode** *mode*
-:   How */run* is staged at boot: *mount* (mount a fresh tmpfs),
+:   How */run* is staged at boot: *mount* (mount a fresh tmpfs,
+    unless */run* is already a mountpoint),
     *remount* (re-mount the existing one with safe options) or *keep*
     (leave it as-is). Default *mount*.
 

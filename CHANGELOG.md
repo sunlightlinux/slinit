@@ -588,6 +588,15 @@ requires.
   which still said both needed it, is corrected too.
   *Compat:* WARN lines print by default; NOTE lines still need
   `--verbose`.
+- **As PID 1, slinit mounted a fresh tmpfs over a `/run` that was
+  already mounted.** `--run-mode=mount`, the default, is documented as
+  leaving an existing `/run` mountpoint alone, but mounted over it
+  anyway, hiding what the initramfs left there (the udev database,
+  cryptsetup state). It now keeps a `/run` that is already a
+  mountpoint; `--run-mode=remount` still gives an empty one.
+  *Compat:* booted from an initramfs that mounts `/run`, the system
+  keeps the initramfs's `/run` and its contents and mount options; use
+  `--run-mode=remount` for the old fresh tmpfs.
 
 ### Fixed
 
@@ -1129,6 +1138,15 @@ requires.
   running, one more per restart. The previous loggers are now retired
   when new ones start: each still gets what its instance wrote last,
   then exits at the end of its input or is stopped a second later.
+- **In container mode slinit hid the runtime's `/run` and its own
+  output.** A container's slinit is PID 1 of its namespace, and was
+  taken for the machine's init: with `CAP_SYS_ADMIN` it mounted a
+  fresh tmpfs on `/run`, hiding Docker's and Kubernetes's
+  `/run/secrets` and podman's `/run/.containerenv` from every service
+  (measured: a service reading `/run/secrets/db_password` found
+  nothing), and it pointed its stdout and stderr at `/dev/console`,
+  so the runtime's log stream got none of its output. Both are now
+  done only by a PID 1 that is not in container mode.
 
 ## [4.0.2] — 2026-11-22
 
