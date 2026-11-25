@@ -610,3 +610,65 @@ func TestCloseWakesRun(t *testing.T) {
 		t.Errorf("%d Closes took %v; Close did not wake Run", n, d)
 	}
 }
+
+// TestExistsSurvivesParentRecreate: removing the watched directory makes
+// the kernel drop the watch (IN_IGNORED). The entry was left with no
+// watch and no log, and never fired again even once the directory and
+// the file were back. Run now re-arms it.
+func TestExistsSurvivesParentRecreate(t *testing.T) {
+	w := newWatcher(t)
+	sub := filepath.Join(t.TempDir(), "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int32
+	if err := w.Add(filepath.Join(sub, "marker"), TriggerExists, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.Remove(sub); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // let Run see IN_IGNORED
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "marker"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &fired, 1, 3*time.Second) {
+		t.Fatal("exists trigger did not fire after its directory was recreated")
+	}
+}
+
+// TestDirNotEmptySurvivesRecreate: as above for the watched directory
+// itself, recreated empty and filled afterwards, so the fire has to come
+// from the new watch rather than from the re-arm's own check.
+func TestDirNotEmptySurvivesRecreate(t *testing.T) {
+	w := newWatcher(t)
+	sub := filepath.Join(t.TempDir(), "queue")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var fired atomic.Int32
+	if err := w.Add(sub, TriggerDirNotEmpty, func() { fired.Add(1) }); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := os.Remove(sub); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Wait out a re-arm pass, so the entry is armed on the empty dir.
+	time.Sleep(2 * time.Second)
+	if fired.Load() != 0 {
+		t.Fatal("fired on an empty directory")
+	}
+	if err := os.WriteFile(filepath.Join(sub, "job"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &fired, 1, 2*time.Second) {
+		t.Fatal("directory-not-empty did not fire after the directory was recreated")
+	}
+}

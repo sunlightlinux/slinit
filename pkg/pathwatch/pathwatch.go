@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -75,6 +76,7 @@ type entry struct {
 	wd       int32  // current inotify watch descriptor (-1 if none)
 	dirWd    int32  // byName: the parent directory's watch (-1 if none)
 	fired    bool   // one-shot: ignore further events until Rearm
+	lost     bool   // the kernel dropped a watch before firing; Run re-arms
 	watching string // path currently registered with inotify (parent or path itself)
 }
 
@@ -87,6 +89,8 @@ type Watcher struct {
 	mu      sync.Mutex
 	entries map[string]*entry  // path → entry (callers key by path)
 	byWd    map[int32][]*entry // wd → entries sharing it (one wd per inode)
+
+	lastRearm time.Time // last rearmLost pass
 
 	quit chan struct{}
 	done chan struct{}
@@ -168,6 +172,7 @@ func (w *Watcher) Rearm(path string) error {
 		return nil // already armed
 	}
 	e.fired = false
+	e.lost = false
 	// Drop any old watch — arm() will install a fresh one matching current state.
 	w.dropWatchLocked(e)
 	w.mu.Unlock()
@@ -342,7 +347,7 @@ func (w *Watcher) Run() {
 	defer close(w.done)
 	var buf [16 * 1024]byte
 	for {
-		n, err := readWithPoll(w.fd, w.wakeFd, buf[:])
+		n, err := readWithPoll(w.fd, w.wakeFd, buf[:], w.pollTimeout())
 		if err != nil {
 			if errors.Is(err, errQuit) {
 				return
@@ -354,6 +359,60 @@ func (w *Watcher) Run() {
 			return
 		}
 		w.dispatch(buf[:n])
+		w.rearmLost()
+	}
+}
+
+// rearmInterval is how often Run retries arming an entry whose watch
+// the kernel dropped.
+const rearmInterval = time.Second
+
+// pollTimeout is Run's poll timeout in ms: rearmInterval while an entry
+// is lost, otherwise none.
+func (w *Watcher) pollTimeout() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, e := range w.entries {
+		if e.lost && !e.fired {
+			return int(rearmInterval / time.Millisecond)
+		}
+	}
+	return -1
+}
+
+// rearmLost arms again each unfired entry whose watch the kernel dropped
+// (its directory was removed). Until the directory is back arm fails and
+// the entry stays lost; once it is, arm fires at once if the condition
+// already holds, so a file created before the retry is not missed.
+func (w *Watcher) rearmLost() {
+	w.mu.Lock()
+	if time.Since(w.lastRearm) < rearmInterval {
+		w.mu.Unlock()
+		return
+	}
+	var lost []*entry
+	for _, e := range w.entries {
+		if e.lost && !e.fired {
+			e.lost = false
+			w.dropWatchLocked(e)
+			lost = append(lost, e)
+		}
+	}
+	if len(lost) > 0 {
+		w.lastRearm = time.Now()
+	}
+	w.mu.Unlock()
+
+	for _, e := range lost {
+		if err := w.arm(e); err != nil {
+			w.mu.Lock()
+			if w.entries[e.path] == e && !e.fired {
+				e.lost = true
+			}
+			w.mu.Unlock()
+			continue
+		}
+		w.logger.Info("pathwatch: %s %q is watched again", e.trigger, e.path)
 	}
 }
 
@@ -383,8 +442,11 @@ func (w *Watcher) dispatch(buf []byte) {
 		list := w.byWd[raw.Wd]
 
 		// IN_IGNORED means the kernel removed the watch (target was
-		// deleted, or InotifyRmWatch was called). Drop our record.
+		// deleted, or InotifyRmWatch was called). Drop our record. An
+		// entry still waiting to fire would never fire again: Run
+		// re-arms it once its directory is back.
 		if raw.Mask&unix.IN_IGNORED != 0 {
+			var lost []*entry
 			for _, e := range list {
 				if e.wd == raw.Wd {
 					e.wd = -1
@@ -393,9 +455,17 @@ func (w *Watcher) dispatch(buf []byte) {
 				if e.dirWd == raw.Wd {
 					e.dirWd = -1
 				}
+				if !e.fired && !e.lost {
+					e.lost = true
+					lost = append(lost, e)
+				}
 			}
 			delete(w.byWd, raw.Wd)
 			w.mu.Unlock()
+			for _, e := range lost {
+				w.logger.Warn("pathwatch: %s %q lost its watch (directory removed?), retrying every %v",
+					e.trigger, e.path, rearmInterval)
+			}
 			off = nameEnd
 			continue
 		}
@@ -471,20 +541,24 @@ func (w *Watcher) Close() {
 var errQuit = errors.New("pathwatch: quit")
 
 // readWithPoll reads from fd, returning errQuit once wakeFd is
-// signalled. It sleeps in poll with no timeout: an idle watcher costs
-// PID 1 no wakeups.
-func readWithPoll(fd, wakeFd int, buf []byte) (int, error) {
+// signalled. A poll timeout (timeout ms) returns (0, nil); Run passes -1
+// unless an entry waits to be re-armed, so an idle watcher costs PID 1
+// no wakeups.
+func readWithPoll(fd, wakeFd int, buf []byte, timeout int) (int, error) {
 	for {
 		fds := []unix.PollFd{
 			{Fd: int32(fd), Events: unix.POLLIN},
 			{Fd: int32(wakeFd), Events: unix.POLLIN},
 		}
-		_, err := unix.Poll(fds, -1)
+		ready, err := unix.Poll(fds, timeout)
 		if err != nil {
 			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
 			return 0, err
+		}
+		if ready == 0 {
+			return 0, nil
 		}
 		if fds[1].Revents != 0 {
 			return 0, errQuit
