@@ -1,15 +1,16 @@
 type = process
 depends-on: system-init
-# Timeout cluster — systemd-adjacent knobs stacked on one service:
-#   timeout-sec                = generic start+stop cap (both bounds
-#                                default to this if not overridden)
-#   timeout-abort-sec          = per-signal grace inside the SIGABRT
-#                                escalation path
-#   timeout-start-failure-mode = what to do on start timeout: terminate
-#                                (default) or abort
-#   timeout-stop-failure-mode  = same, for stop timeouts
-timeout-sec                = 5
-timeout-abort-sec          = 2
+# Timeout cluster: systemd-adjacent knobs stacked on one service.
+#   timeout-sec                = start and stop timeout together
+#   timeout-abort-sec          = SIGABRT phase between the stop timeout
+#                                and SIGKILL
+#   timeout-start-failure-mode = terminate (default)
+#   timeout-stop-failure-mode  = terminate (default), which keeps the
+#                                SIGABRT phase
+# The process ignores SIGTERM and records SIGABRT, so a stop takes
+# timeout-sec + timeout-abort-sec and leaves a marker.
+timeout-sec                = 2
+timeout-abort-sec          = 1
 timeout-start-failure-mode = terminate
 timeout-stop-failure-mode  = terminate
-command = /bin/sh -c "exec sleep 600"
+command = /bin/sh -c "trap '' TERM; trap 'echo abrt >> /run/183-abrt' ABRT; while :; do sleep 0.2; done"

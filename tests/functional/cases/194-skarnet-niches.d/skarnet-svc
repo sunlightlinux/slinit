@@ -1,15 +1,15 @@
 type = process
 depends-on: system-init
-# Directives inspired by skarnet/runit/utmpd niches — small features
-# with narrow use cases (embedded / init-heavy setups):
-#   alert-file    = target for one-line status messages
-#   alert-level   = minimum severity that reaches alert-file
-#   pass-cs-fd    = pass a control-socket fd to the child
-#   utmp-mode     = extra bookkeeping mode for UTMPX entries
+# Directives inspired by skarnet/runit/utmpd niches:
+#   alert-file  = second sink that mirrors high-severity lines
+#   alert-level = threshold for it; "err" (3), not the default "warn"
+#                 (4), so the <4> line below tells the two apart
+#   pass-cs-fd  = control-socket fd to the child (observed in case 268)
+#   utmp-mode   = utmp bookkeeping mode (parse coverage only)
+log-type    = file
+logfile     = /tmp/194-main.log
 alert-file  = /tmp/194-alert.log
-alert-level = warn
-# pass-cs-fd is a Flags option (options = pass-cs-fd), NOT a
-# standalone directive — passes a control-socket fd to the child.
-options   = pass-cs-fd
+alert-level = err
+options     = pass-cs-fd
 utmp-mode   = login
-command = /bin/sh -c "exec sleep 600"
+command = /bin/sh -c "echo '<3>disk on fire'; echo '<4>disk warm'; echo '<6>disk fine'; exec sleep 600"

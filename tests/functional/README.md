@@ -290,7 +290,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 180 | psi-cpu-io-pressure | cpu-pressure-watch/threshold + io-pressure-watch/threshold parse + service starts |
 | 181 | path-activation-full | start-on-path-changed / -path-modified / -directory-not-empty each fire via pathwatch (uses /etc/slinit.d/-anchored markers) |
 | 182 | kill-signal-cluster | kill-mode/final-kill/restart-kill/watchdog-signal/survive-final-kill parse; `slinitctl restart` delivers `restart-kill-signal` (SIGUSR1) while a plain stop delivers SIGTERM |
-| 183 | timeout-cluster | timeout-sec + timeout-abort-sec + timeout-start-failure-mode + timeout-stop-failure-mode parse |
+| 183 | timeout-cluster | timeout cluster parses; stopping a SIGTERM-ignoring service takes timeout-sec (2 s) + timeout-abort-sec (1 s) and the SIGABRT phase is seen |
 | 184 | cgroup-expanded | memory-high/-low/-min + swap-max + cpu-max + io-weight + cpuset-cpus + cgroup-setting + startup-allowed-* land in cgroupfs (spot-checked via memory.high) |
 | 185 | log-pipeline-extras | logfile-permissions/uid/gid/rotate-time + log-forward-* + log-level-max + log-sanitize/-extra + log-line-prefix + log-max-line-length + log-read-buffer-size parse; mode 0640 verified on file |
 | 186 | service-dir-modes | runtime/state/cache/logs/configuration-directory each with -mode + -quota + -accounting; all 5 dirs created with requested mode |
@@ -301,8 +301,8 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 191 | import-credential | `import-credential = my-secret-*` copies the two matching credentials from a seeded `/etc/credstore` (content intact) and not the third; set-credential alongside |
 | 192 | lsm-fail-closed | selinux-context and smack-process-label refuse to start when /sys/fs/selinux and /sys/fs/smackfs are absent (fail-closed contract) |
 | 193 | restart-misc | restart-policy tail parses; `restart-force-exit-status = 42 43` restarts a service that exits 42 although `restart = no` |
-| 194 | skarnet-niches | alert-file + alert-level + options=pass-cs-fd + utmp-mode all parse and coexist |
-| 195 | options-cluster-a | options=unmask-intr,skippable,start-interruptible round-trip through parser |
+| 194 | skarnet-niches | alert-file + alert-level + pass-cs-fd + utmp-mode parse; alert-level=err routes only the <3> line to the alert file, the main log gets all three |
+| 195 | options-cluster-a | options=unmask-intr,skippable,start-interruptible parse; unmask-intr + runs-on-console gives the service a controlling terminal (tty_nr != 0) |
 | 196 | options-cluster-b | `options = runs-on-console`: the service's stdout is `/dev/console`, a control's is not |
 | 197 | starts-rwfs-log | options=starts-rwfs,starts-log with ready-notification=pipefd:3 promote to STARTED on readiness byte |
 | 198 | bucket-b-legacy | Bucket B legacy cluster parses; coredump-filter 0x3f, timer-slack-nsec 120000 and personality x86 read back from `/proc/PID` (values chosen to differ from the kernel defaults) |
