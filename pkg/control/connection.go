@@ -164,6 +164,7 @@ func (c *Connection) close() {
 		// (revHandles has one entry per unique service, no dedup needed)
 		c.handlesMu.Lock()
 		c.closing = true
+		listenEnv := c.listenEnv
 		svcs := make([]service.Service, 0, len(c.revHandles))
 		for svc := range c.revHandles {
 			svcs = append(svcs, svc)
@@ -173,7 +174,7 @@ func (c *Connection) close() {
 			svc.Record().RemoveListener(c)
 		}
 		// Unregister env listener
-		if c.listenEnv {
+		if listenEnv {
 			c.server.services.RemoveEnvListener(c)
 		}
 		c.conn.Close()
@@ -2348,10 +2349,17 @@ func (c *Connection) handleServiceRusage(payload []byte) error {
 }
 
 func (c *Connection) handleListenEnv() error {
-	if !c.listenEnv {
+	// Under handlesMu, like the closing flag close() sets: close() runs
+	// on the Stop goroutine too, so a plain read of listenEnv there
+	// raced with this write, and a listener added after close() had
+	// looked stayed registered on a dead connection.
+	c.handlesMu.Lock()
+	add := !c.listenEnv && !c.closing
+	if add {
 		c.listenEnv = true
 		c.server.services.AddEnvListener(c)
 	}
+	c.handlesMu.Unlock()
 	return c.writePacket(RplyACK, nil)
 }
 
