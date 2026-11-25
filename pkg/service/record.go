@@ -1603,6 +1603,11 @@ func (sr *ServiceRecord) IsStartPinned() bool { return sr.pinnedStarted || sr.de
 func (sr *ServiceRecord) IsStopPinned() bool  { return sr.pinnedStopped }
 func (sr *ServiceRecord) DidStartFail() bool  { return sr.startFailed }
 
+// IsExplicitlyStartPinned reports a start pin set on this service itself,
+// leaving out one inherited from a pinned dependent (deptPinnedStarted),
+// which lasts only as long as that dependent's pin.
+func (sr *ServiceRecord) IsExplicitlyStartPinned() bool { return sr.pinnedStarted }
+
 // RestartCount reports how many times the supervisor has restarted this
 // service since slinit started. Never decreases.
 func (sr *ServiceRecord) RestartCount() uint64 { return sr.restarts.Load() }

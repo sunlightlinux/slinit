@@ -637,6 +637,13 @@ requires.
 
 ### Fixed
 
+- **A soft reboot turned a dependency's inherited pin into its own.**
+  A start pin holds the pinned service's hard dependencies up, but only
+  for as long as that pin lasts. The soft-reboot snapshot recorded the
+  dependencies as pinned in their own right, so after the soft reboot
+  `slinitctl unpin` and `stop` of the dependent left them running and
+  pinned, where before it they stopped. Only a service's own pin is
+  recorded now; the inherited one comes back with the dependent's.
 - **Several control commands changed service state without the
   scheduling lock.** `slinitctl release`, `trigger`/`untrigger`,
   `stop --pin`, `once`, `reset-failed` and `restart` changed a service

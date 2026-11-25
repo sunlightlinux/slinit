@@ -52,7 +52,10 @@ func captureOne(svc service.Service) *ServiceSnapshot {
 	rec := svc.Record()
 
 	activated := rec.IsMarkedActive()
-	pinStart := rec.IsStartPinned()
+	// Only the operator's own pin: one inherited from a pinned dependent
+	// comes back when the dependent's pin is restored, and recorded as
+	// explicit it would outlive that pin after the soft reboot.
+	pinStart := rec.IsExplicitlyStartPinned()
 	pinStop := rec.IsStopPinned()
 
 	triggered := false
