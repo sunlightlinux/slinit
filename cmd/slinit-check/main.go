@@ -145,8 +145,7 @@ func main() {
 
 	logger := logging.New(logging.LevelInfo)
 	set := service.NewServiceSet(logger)
-	loader := config.NewDirLoader(set, dirs)
-	set.SetLoader(loader)
+	loader := newCheckLoader(set, dirs)
 
 	var errors int
 	var warnings int
@@ -349,6 +348,17 @@ func main() {
 // Returns (errors, warnings). Note: producer is referenced by name (not
 // pointer) in every error path — a non-existing producer must not
 // trigger a nil-pointer deref.
+// newCheckLoader builds the loader the checks run against. It enables
+// the init.d and systemd fallbacks as PID 1 does: without them, a
+// depends-on naming a systemd unit or an init.d script was reported as
+// "service description not found" although the daemon loads it.
+func newCheckLoader(set *service.ServiceSet, dirs []string) *config.DirLoader {
+	loader := config.NewDirLoader(set, dirs)
+	loader.EnableDefaultFallbackDirs()
+	set.SetLoader(loader)
+	return loader
+}
+
 func checkConsumerOf(dirs []string, svcName, producerName string) (int, int) {
 	prodDesc, _ := findServiceDesc(dirs, producerName)
 	if prodDesc == nil {

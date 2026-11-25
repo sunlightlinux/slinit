@@ -28,6 +28,33 @@ var ErrServiceNotFound = errors.New("service description not found")
 // Default init.d directories to search as fallback.
 var DefaultInitDDirs = []string{"/etc/init.d", "/etc/rc.d"}
 
+// EnableDefaultFallbackDirs turns on the init.d and systemd .service
+// fallbacks for those of DefaultInitDDirs and DefaultSystemdDirs that
+// exist, as PID 1 does. init.d scripts are auto-detected; systemd units
+// are searched last, after native descriptions and init.d scripts, and
+// only for a name something already asked for: a unit directory is never
+// enumerated, so nothing is pulled into the boot graph just by being
+// installed. slinit-check calls it too, so it judges a configuration as
+// the daemon's loader will.
+func (dl *DirLoader) EnableDefaultFallbackDirs() {
+	if d := existingDirs(DefaultInitDDirs); len(d) > 0 {
+		dl.SetInitDDirs(d)
+	}
+	if d := existingDirs(DefaultSystemdDirs); len(d) > 0 {
+		dl.SetSystemdDirs(d)
+	}
+}
+
+func existingDirs(dirs []string) []string {
+	var out []string
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // DirLoader loads service descriptions from one or more directories.
 //
 // The `loading` map and `curDepth` counter are per-instance mutable

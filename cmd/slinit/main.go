@@ -1300,30 +1300,9 @@ func main() {
 		}
 	}
 
-	// Enable init.d fallback (auto-detect SysV init scripts)
-	var initDDirs []string
-	for _, d := range config.DefaultInitDDirs {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			initDDirs = append(initDDirs, d)
-		}
-	}
-	if len(initDDirs) > 0 {
-		loader.SetInitDDirs(initDDirs)
-	}
-
-	// Enable systemd .service fallback. Searched last, after native
-	// descriptions and init.d scripts, and only for a name something
-	// already asked for — a unit directory is never enumerated, so
-	// nothing is pulled into the boot graph just by being installed.
-	var systemdDirs []string
-	for _, d := range config.DefaultSystemdDirs {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			systemdDirs = append(systemdDirs, d)
-		}
-	}
-	if len(systemdDirs) > 0 {
-		loader.SetSystemdDirs(systemdDirs)
-	}
+	// init.d and systemd .service fallbacks (slinit-check sets up the
+	// same, so it judges a configuration as this loader will).
+	loader.EnableDefaultFallbackDirs()
 
 	serviceSet.SetLoader(loader)
 
