@@ -1336,7 +1336,7 @@ before exec'ing the service. The host filesystem is untouched.
     */proc*, */sys*, */run*, */tmp* and */var/tmp* are separate
     mount points (with the mounts below them), stay writable (use
     **private-tmp** to guarantee a writable */tmp*), and so do the
-    **temporary-filesystem** and **protect-home**=*tmpfs* mounts. Every
+    **temporary-filesystem** mounts. Every
     mount below a read-only path is remounted read-only too (until
     4.0.3, only the mount at the path was, so separate filesystems below
     it stayed writable). *no* (default) disables the remount.
@@ -1361,8 +1361,8 @@ before exec'ing the service. The host filesystem is untouched.
 **protect-home**=*no*|*yes*|*read-only*|*tmpfs*
 :   Hide */home*, */root* and */run/user* from the service. *yes*
     over-mounts each with an inaccessible (mode 0000) tmpfs; *read-only*
-    ro-remounts them and every mount below them (*/run/user/<uid>*); *tmpfs* replaces them with empty per-service
-    tmpfs. Equivalent to systemd's **ProtectHome=**.
+    ro-remounts them and every mount below them (*/run/user/<uid>*); *tmpfs* replaces them with empty read-only
+    tmpfs (mode 0755, */root* 0700). Equivalent to systemd's **ProtectHome=**.
 
 **inaccessible-paths**=*path*...
 :   Hide each absolute path behind an empty inaccessible mount (an

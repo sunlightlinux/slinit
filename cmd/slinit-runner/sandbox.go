@@ -92,9 +92,6 @@ func applySandbox(s sandboxSpec) error {
 		path, _, _ := strings.Cut(entry, ":")
 		keep = append(keep, path)
 	}
-	if s.protectHome == "tmpfs" {
-		keep = append(keep, "/home", "/root", "/run/user")
-	}
 	if err := applyProtectSystem(s.protectSystem, keep); err != nil {
 		return err
 	}
@@ -167,7 +164,8 @@ func applySandbox(s sandboxSpec) error {
 // applyProtectHome hides /home, /root and /run/user according to mode:
 //   - "yes"       → over-mount with an empty inaccessible tmpfs
 //   - "read-only" → ro remount via bind
-//   - "tmpfs"     → fresh empty per-service tmpfs
+//   - "tmpfs"     → fresh empty read-only tmpfs, mode 0755 (/root 0700),
+//     as systemd's protect_home_tmpfs_table mounts them
 //
 // Paths that don't exist are silently skipped (minimal containers may
 // legitimately lack /root or /run/user).
@@ -193,8 +191,12 @@ func applyProtectHome(mode string) error {
 				return fmt.Errorf("protect-home %s: %w", t, err)
 			}
 		case "tmpfs":
+			mode := "mode=0755"
+			if t == "/root" {
+				mode = "mode=0700"
+			}
 			if err := unix.Mount("tmpfs", t, "tmpfs",
-				unix.MS_NOSUID|unix.MS_NODEV, "mode=0755"); err != nil {
+				unix.MS_NOSUID|unix.MS_NODEV|unix.MS_RDONLY, mode); err != nil {
 				return fmt.Errorf("protect-home tmpfs %s: %w", t, err)
 			}
 		default:

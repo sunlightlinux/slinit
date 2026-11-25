@@ -113,6 +113,29 @@ mount -t tmpfs tmpfs /run/user/1000`, false) {
 	}
 }
 
+// protect-home=tmpfs mounted writable tmpfs over /home, /root and
+// /run/user, kept writable under protect-system: a service could fill
+// them, or leave files there for itself. systemd mounts them read-only,
+// /root with mode 0700.
+func TestProtectHomeTmpfsReadOnly(t *testing.T) {
+	if !inMountNS(t, `mount -t tmpfs tmpfs /home
+mount -t tmpfs tmpfs /run
+mkdir /run/user`, false) {
+		return
+	}
+	if err := applySandbox(sandboxSpec{protectHome: "tmpfs", protectSystem: "strict"}); err != nil {
+		t.Fatal(err)
+	}
+	for p, mode := range map[string]os.FileMode{"/home": 0o755, "/root": 0o700, "/run/user": 0o755} {
+		wantRO(t, p, true)
+		if st, err := os.Stat(p); err != nil {
+			t.Error(err)
+		} else if st.Mode().Perm() != mode {
+			t.Errorf("%s mode %v; want %v", p, st.Mode().Perm(), mode)
+		}
+	}
+}
+
 // protect-system=strict made / read-only and nothing mounted below it;
 // the documented exceptions (/dev, /proc, /sys, /run, /tmp, /var/tmp)
 // must stay writable, and so must a read-write-path's submounts.
