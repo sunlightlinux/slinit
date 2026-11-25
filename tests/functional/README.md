@@ -289,12 +289,12 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 179 | dbus-cluster | bus-name / bus-policy / bus-name-scope parse under the dbus-optional design (no dbus daemon in VM) |
 | 180 | psi-cpu-io-pressure | cpu-pressure-watch/threshold + io-pressure-watch/threshold parse + service starts |
 | 181 | path-activation-full | start-on-path-changed / -path-modified / -directory-not-empty each fire via pathwatch (uses /etc/slinit.d/-anchored markers) |
-| 182 | kill-signal-cluster | kill-mode + final-kill-signal + restart-kill-signal + watchdog-signal + survive-final-kill-signal coexist |
+| 182 | kill-signal-cluster | kill-mode/final-kill/restart-kill/watchdog-signal/survive-final-kill parse; `slinitctl restart` delivers `restart-kill-signal` (SIGUSR1) while a plain stop delivers SIGTERM |
 | 183 | timeout-cluster | timeout-sec + timeout-abort-sec + timeout-start-failure-mode + timeout-stop-failure-mode parse |
 | 184 | cgroup-expanded | memory-high/-low/-min + swap-max + cpu-max + io-weight + cpuset-cpus + cgroup-setting + startup-allowed-* land in cgroupfs (spot-checked via memory.high) |
 | 185 | log-pipeline-extras | logfile-permissions/uid/gid/rotate-time + log-forward-* + log-level-max + log-sanitize/-extra + log-line-prefix + log-max-line-length + log-read-buffer-size parse; mode 0640 verified on file |
 | 186 | service-dir-modes | runtime/state/cache/logs/configuration-directory each with -mode + -quota + -accounting; all 5 dirs created with requested mode |
-| 187 | notify-guess-exit-openfile | notify-access + guess-main-pid + exit-type + open-file combo parses + starts |
+| 187 | notify-guess-exit-openfile | notify-access/guess-main-pid/exit-type parse; `open-file` hands the child an fd on the file |
 | 188 | pass-unset-env | pass-environment whitelist and unset-environment blacklist visible in child /proc/self/environ |
 | 189 | standard-input | standard-input-text and standard-input-data bytes reach child stdin (base64 decoded for -data) |
 | 190 | exec-condition-searchpath | exec-condition=/bin/true runs command; =/bin/false skips it; exec-search-path becomes the child's PATH |
@@ -303,9 +303,9 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 193 | restart-misc | start-limit-action + restart-force-exit-status + restart-max-delay + restart-mode + runtime-randomized-extra coexist |
 | 194 | skarnet-niches | alert-file + alert-level + options=pass-cs-fd + utmp-mode all parse and coexist |
 | 195 | options-cluster-a | options=unmask-intr,skippable,start-interruptible round-trip through parser |
-| 196 | options-cluster-b | options=runs-on-console attaches console to STARTED svc (starts-on-console covered in acceptance) |
+| 196 | options-cluster-b | `options = runs-on-console`: the service's stdout is `/dev/console`, a control's is not |
 | 197 | starts-rwfs-log | options=starts-rwfs,starts-log with ready-notification=pipefd:3 promote to STARTED on readiness byte |
-| 198 | bucket-b-legacy | coredump-filter + ignore-sigpipe + memory-ksm + personality + remove-ipc + timer-slack-nsec coexist |
+| 198 | bucket-b-legacy | Bucket B legacy cluster parses; coredump-filter 0x3f, timer-slack-nsec 120000 and personality x86 read back from `/proc/PID` (values chosen to differ from the kernel defaults) |
 | 199 | cgroup-cpuset-hugetlb | cgroup-cpuset-mems + cgroup-hugetlb + cpuset-partition parse; kernels without hugetlb controller fail-open |
 | 200 | seccomp-arch-log-mdwe | system-call-architectures + system-call-log + memory-deny-write-execute stack on top of @system-service filter; Seccomp mode 2 confirmed |
 | 201 | misc-coverage | cron-persistent + cron-randomized-delay + socket-uid/-gid + bind-read-only-paths + keyword non-match |

@@ -516,7 +516,11 @@ func (s *ProcessService) pickStopSignal() syscall.Signal {
 		s.pendingStopSignal = 0
 		return sig
 	}
-	if s.Record().InAutoRestart() {
+	// A restart the operator asked for (slinitctl restart) counts too;
+	// it is the case restart-kill-signal exists for. InAutoRestart alone
+	// is set only after the process has exited by itself, when there is
+	// nothing left to signal, so the directive never took effect.
+	if s.Record().InAutoRestart() || s.Record().IsRestarting() {
 		if sig := s.Record().RestartKillSignal(); sig != 0 {
 			return sig
 		}

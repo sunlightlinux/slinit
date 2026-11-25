@@ -2,12 +2,18 @@ type = process
 depends-on: system-init
 # Bucket B legacy hardening / process-attribute niches — small
 # directives from the systemd analysis triage marked as legacy but
-# still supported. All six coexist on one svc; the loader must accept
-# every one and the child still reaches STARTED.
-coredump-filter    = 0x33
+# still supported. All six coexist on one svc.
+#
+# The values are chosen to differ from the kernel's defaults so each one
+# that /proc exposes can be seen to have been applied: coredump_filter
+# defaults to 0x33 (0x23 on this VM's kernel) and timerslack_ns to 50000, which is what this file
+# used to set; personality x86 is PER_LINUX32 (0x0008), not PER_LINUX.
+# memory-ksm, ignore-sigpipe and remove-ipc have no /proc readback that
+# tells them apart from the default here; they are parse coverage only.
+coredump-filter    = 0x3f
 ignore-sigpipe     = yes
 memory-ksm         = no
-personality        = x86-64
+personality        = x86
 remove-ipc         = yes
-timer-slack-nsec   = 50000
+timer-slack-nsec   = 120000
 command = /bin/sh -c "exec sleep 600"

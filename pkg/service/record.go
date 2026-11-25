@@ -1599,6 +1599,10 @@ func (sr *ServiceRecord) IsMarkedActive() bool { return sr.startExplicit }
 // MarkRestarting says the coming stop is the first half of a restart.
 func (sr *ServiceRecord) MarkRestarting() { sr.restarting = true }
 
+// IsRestarting reports whether the current stop is the first half of a
+// restart a client asked for (MarkRestarting).
+func (sr *ServiceRecord) IsRestarting() bool { return sr.restarting }
+
 func (sr *ServiceRecord) IsStartPinned() bool { return sr.pinnedStarted || sr.deptPinnedStarted }
 func (sr *ServiceRecord) IsStopPinned() bool  { return sr.pinnedStopped }
 func (sr *ServiceRecord) DidStartFail() bool  { return sr.startFailed }

@@ -6,17 +6,17 @@ depends-on: system-init
 #   final-kill-signal   = SIGKILL       → the escalation signal (default)
 #   restart-kill-signal = SIGUSR1       → used specifically for restart
 #                                         transitions (vs plain stop)
-#   watchdog-signal     = SIGABRT       → sent when watchdog-timeout expires
+#   watchdog-signal     = SIGUSR2       → sent when watchdog-timeout expires
 #   survive-final-kill-signal = no      → svc will not be re-registered if
 #                                         it survives the final kill
 #
-# Coverage is parse + start: behavioral verification of each signal
-# would require killing the svc mid-lifecycle and observing which
-# signal landed, which is fiddly and slow in QEMU. The stack-and-run
-# smoke is enough to prove the parser wires every directive.
+# restart-kill-signal is observed: the body records which signal ended
+# it, USR1 on a restart and TERM on a stop. The rest are parse coverage
+# (no cgroup in this VM, no watchdog armed). `sleep & wait` keeps the
+# traps responsive; $$ keeps slinit from expanding $! itself.
 kill-mode                 = mixed
 final-kill-signal         = SIGKILL
 restart-kill-signal       = SIGUSR1
 watchdog-signal           = SIGUSR2
 survive-final-kill-signal = no
-command = /bin/sh -c "exec sleep 600"
+command = /bin/sh -c "trap 'echo USR1 >> /run/182-sig; exit 0' USR1; trap 'echo TERM >> /run/182-sig; exit 0' TERM; while :; do sleep 1 & wait $$!; done"

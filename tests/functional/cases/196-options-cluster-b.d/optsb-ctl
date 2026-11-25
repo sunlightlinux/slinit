@@ -1,0 +1,4 @@
+type = process
+depends-on: system-init
+# Control: the same service without runs-on-console.
+command = /bin/sh -c "exec sleep 600"

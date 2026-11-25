@@ -841,7 +841,7 @@ func (c *Connection) handleStopService(payload []byte) error {
 	// a boot failure.
 	c.server.services.MarkOperatorStop()
 
-	if flags&StopFlagRestarting != 0 {
+	if flags&StopFlagRestarting != 0 || restart {
 		c.server.services.MarkRestartingService(svc)
 	}
 

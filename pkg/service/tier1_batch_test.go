@@ -1,6 +1,7 @@
 package service
 
 import (
+	"syscall"
 	"testing"
 	"time"
 )
@@ -233,5 +234,25 @@ func TestStartLimitActionDefault(t *testing.T) {
 	rec.SetStartLimitAction(ActionReboot)
 	if rec.StartLimitAction() != ActionReboot {
 		t.Errorf("SetStartLimitAction did not stick: got %v", rec.StartLimitAction())
+	}
+}
+
+// TestRestartKillSignalOnOperatorRestart: a stop that is the first half
+// of `slinitctl restart` sends restart-kill-signal; a plain stop sends
+// the term signal. The restart signal used to be chosen only while
+// InAutoRestart was set, which happens after the process has already
+// exited by itself, so a restart never sent it.
+func TestRestartKillSignalOnOperatorRestart(t *testing.T) {
+	set, _ := newTestSet()
+	svc := NewProcessService(set, "rks")
+	set.AddService(svc)
+	svc.Record().SetRestartKillSignal(syscall.SIGUSR1)
+
+	if got := svc.pickStopSignal(); got != syscall.SIGTERM {
+		t.Errorf("plain stop: signal %v, want SIGTERM", got)
+	}
+	svc.Record().MarkRestarting()
+	if got := svc.pickStopSignal(); got != syscall.SIGUSR1 {
+		t.Errorf("restart: signal %v, want SIGUSR1", got)
 	}
 }

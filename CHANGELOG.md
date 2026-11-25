@@ -691,6 +691,16 @@ requires.
 
 ### Fixed
 
+- **`restart-kill-signal` was never sent.** It was chosen only while the
+  service was in an automatic restart, a state entered after the process
+  has already exited by itself, when there is nothing left to signal; a
+  `slinitctl restart` stopped the service with the term signal. A stop
+  that is the first half of a restart (from `slinitctl restart`, or a
+  stop request carrying the restart flag) now sends
+  `restart-kill-signal`, as systemd's `RestartKillSignal=` does for a
+  restart job; a plain stop still sends the term signal. Found by
+  functional case 182, which had been checking only that the service
+  started.
 - **`slinit-journalctl -k` was empty when PID 1 started without a
   mounted `/dev`.** The kernel-log reader opened `/dev/kmsg` before
   PID 1 mounted devtmpfs, so on a boot straight from an initramfs (or a
