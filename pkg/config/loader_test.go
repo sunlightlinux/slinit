@@ -264,3 +264,29 @@ func TestLoadAllowsBeforeAfterPair(t *testing.T) {
 		t.Fatalf("LoadService(a): %v", err)
 	}
 }
+
+// The load-time cycle check kept a service marked "loading" while it
+// set up shared-logger and consumer-of, which load the other service.
+// A logger that depends on its producer, the usual shared-logger setup,
+// then failed as a cycle and the producer did not load.
+func TestLoadSharedLoggerAndConsumerAreNotCycles(t *testing.T) {
+	dir := t.TempDir()
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	loader := NewDirLoader(ss, []string{dir})
+	ss.SetLoader(loader)
+	writeConsumerServiceFile(t, dir, "app", "type = process\ncommand = /bin/app\nshared-logger = my-logger\n")
+	writeConsumerServiceFile(t, dir, "my-logger", "type = process\ncommand = /bin/logd\ndepends-on: app\n")
+	if _, err := loader.LoadService("app"); err != nil {
+		t.Errorf("app with a logger that depends on it: %v", err)
+	}
+
+	dir2 := t.TempDir()
+	ss2 := service.NewServiceSet(&testConsumerLogger{})
+	loader2 := NewDirLoader(ss2, []string{dir2})
+	ss2.SetLoader(loader2)
+	writeConsumerServiceFile(t, dir2, "app", "type = process\ncommand = /bin/app\nlog-type = pipe\nwaits-for: app-log\n")
+	writeConsumerServiceFile(t, dir2, "app-log", "type = process\ncommand = /bin/logd\nconsumer-of = app\n")
+	if _, err := loader2.LoadService("app-log"); err != nil {
+		t.Errorf("consumer whose producer waits for it: %v", err)
+	}
+}

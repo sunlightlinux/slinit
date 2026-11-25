@@ -267,6 +267,9 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 		if err != nil {
 			return nil, err
 		}
+		// As in loadServiceImpl: the shared-logger and consumer-of
+		// lookups below are not dependencies and must not see a cycle.
+		delete(dl.loading, svc.Name())
 
 		if desc.SharedLogger != "" {
 			if err := dl.setupSharedLogger(newSvc, desc); err != nil {
@@ -955,6 +958,12 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		dl.set.RemoveService(svc)
 		return nil, err
 	}
+	// The dependencies are in: this service is no longer "loading" for
+	// the cycle check. consumer-of and shared-logger below load the
+	// other service, which commonly depends on or waits for this one
+	// (a logger depends on its producer); those links are not
+	// dependencies, and keeping the mark made them a false cycle.
+	delete(dl.loading, name)
 
 	// Calculate dependency depth
 	svc.Record().SetDepDepth(calcServiceDepth(svc))
