@@ -33,6 +33,33 @@ requires.
 
 ### Security
 
+- **Any local user could cut slinit-logind off the bus.** Descriptors
+  sent with a D-Bus call were never closed, whatever the method, even
+  for a rejected call; polkitd's own `GetUnitByPIDFD` on every
+  authorization check leaked one. At the fd limit godbus dropped the
+  connection and logind idled without its bus name until reboot. Every
+  D-Bus daemon (logind, hostnamed, timedated, localed) now closes the
+  descriptors of a call once its reply is sent, and exits when its bus
+  connection is lost so its supervisor restarts it. A call whose body
+  holds an array of descriptors is still dropped by godbus with them
+  (an upstream limit).
+- **slinit-logind:** hidraw devices are revoked when their session
+  leaves the foreground, as systemd does (a background session could
+  read the active user's HID input or FIDO key); a non-root
+  `ReleaseSession` must name the caller's own session (it was
+  authorized by pid alone); VT switches (`ActivateSession`, `SwitchTo`,
+  ...) are allowed to root and to the user of the seat's active local
+  session, and are otherwise asked of polkit as
+  `org.freedesktop.login1.chvt` (anyone could switch the console, or
+  activate their own background session and gain its power rights);
+  on the system bus the systemd1 stub answers only `GetUnitByPID*` to
+  non-root callers and bounds the unit objects it exports; `Inhibit`
+  strings over 4 KiB are refused. *Compat:* a VT switch from ssh or a
+  background session now needs polkit's consent.
+- **slinit-timedated** asks polkit before running anything for a
+  `SetTime` caller, and no longer assigns `time.Local` from a handler
+  (a data race).
+
 - **`chroot` with a filesystem sandbox or a mount-based protect-\*
   option protected the host and left the jail open**: the runner applied
   those mounts to host paths before entering the jail, so `private-tmp`
