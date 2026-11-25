@@ -113,6 +113,10 @@ func SoftReboot(logger *logging.Logger, cal *logging.CatchAllLogger) error {
 	argv := softRebootArgv(os.Args, snapshot.SoftRebootPath)
 
 	logger.Notice("Re-executing %s", execPath)
+	// The main log reaches syslog through a queue now; the exec would
+	// drop what is still in it — the last lines of this generation.
+	// CloseSyslog flushes it, bounded, and is a no-op without syslog.
+	logger.CloseSyslog()
 
 	// Re-exec slinit with the same arguments and environment.
 	// syscall.Exec replaces the current process image entirely.
