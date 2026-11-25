@@ -542,3 +542,39 @@ ReadWritePaths=%L/%N %C/%N %E/%N
 	}
 	t.Errorf("an unexpanded %%h was not a WARN: %v", warns)
 }
+
+// SupplementaryGroups= was reported "not mapped" although slinit has
+// supplementary-groups, and PrivateUsers=, lost confinement, was a NOTE
+// that slinit-systemd-convert hides without --verbose.
+func TestSystemdSupplementaryGroupsAndPrivateUsers(t *testing.T) {
+	desc, warns := convertWarns(t, `[Service]
+ExecStart=/bin/true
+SupplementaryGroups=audio video
+SupplementaryGroups=input
+PrivateUsers=yes
+`)
+	if got := strings.Join(desc.SupplementaryGroups, " "); got != "audio video input" {
+		t.Errorf("supplementary-groups = %q; want audio video input", got)
+	}
+	var privUsers bool
+	for _, w := range warns {
+		if strings.Contains(w.Msg, "SupplementaryGroups") {
+			t.Errorf("SupplementaryGroups= still reported: %v", w)
+		}
+		if w.Level == "WARN" && strings.Contains(w.Msg, "PrivateUsers") {
+			privUsers = true
+		}
+	}
+	if !privUsers {
+		t.Errorf("PrivateUsers=yes is not a WARN: %v", warns)
+	}
+
+	desc, _ = convertWarns(t, `[Service]
+ExecStart=/bin/true
+SupplementaryGroups=audio
+SupplementaryGroups=
+`)
+	if len(desc.SupplementaryGroups) != 0 {
+		t.Errorf("an empty SupplementaryGroups= did not reset the list: %q", desc.SupplementaryGroups)
+	}
+}

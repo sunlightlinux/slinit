@@ -62,6 +62,7 @@ type SystemdConfig struct {
 	preStart     string // slinit takes one; multiples get warned
 	postStart    string
 	runAs        string
+	supGroups    []string // SupplementaryGroups=
 	envFile      string
 	stopSignal   string // from ExecStop=kill -s SIG $MAINPID, if terminating
 	stopLine     string // that ExecStop= value, for the note
@@ -644,6 +645,13 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 	case "Group":
 		user, _, _ := strings.Cut(cfg.runAs, ":")
 		cfg.runAs = user + ":" + val
+	case "SupplementaryGroups":
+		// A list; assignments add to it, an empty one resets it.
+		if g := strings.Fields(val); len(g) > 0 {
+			cfg.supGroups = append(cfg.supGroups, g...)
+		} else {
+			cfg.supGroups = nil
+		}
 	case "WorkingDirectory":
 		cfg.workingDir = val
 	case "RootDirectory":
@@ -849,9 +857,17 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"WARN", "PrivateDevices=yes has no slinit " +
 				"equivalent: the service sees every device of the host"})
 		}
-	// No slinit equivalent — these stay notes.
+	// No slinit equivalent. A WARN, not a NOTE, which the converter
+	// hides without --verbose: the service runs with less confinement
+	// than the unit asks for.
 	case "PrivateUsers":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("hardening %s=%s — no slinit equivalent; review by hand", key, val)})
+		// Besides yes/no, it takes self, identity and full.
+		switch strings.ToLower(trimQuotes(val)) {
+		case "", "no", "false", "0", "off":
+		default:
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("hardening %s=%s has no slinit equivalent: "+
+				"the service runs in the host's user namespace", key, val)})
+		}
 	// Same directive, same value shape: a space-separated list of names
 	// created under /run, /var/lib and so on. Deferring these was not a
 	// missing feature, and it mattered: a unit with RuntimeDirectory=
@@ -1686,6 +1702,9 @@ func EmitSlinitFile(w io.Writer, c *SystemdConfig) {
 	}
 	if c.runAs != "" {
 		fmt.Fprintf(w, "run-as = %s\n", c.runAs)
+	}
+	if len(c.supGroups) > 0 {
+		fmt.Fprintf(w, "supplementary-groups = %s\n", strings.Join(c.supGroups, " "))
 	}
 	if c.envFile != "" {
 		fmt.Fprintf(w, "env-file = %s\n", c.envFile)
