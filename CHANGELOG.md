@@ -1074,8 +1074,12 @@ requires.
   container mode with the host's `/dev/log` mounted in, or when slinit
   is not PID 1, a stalled daemon held it at the next message (measured:
   blocked after 278 service starts). Messages now go to syslog from a
-  goroutine of their own through a bounded queue; past it they are
-  dropped, and the daemon is told how many when it reads again.
+  goroutine of their own through a bounded queue. A daemon that keeps
+  reading, however slowly, is waited for as before and gets every
+  message; once it has taken nothing for a second, messages are dropped
+  until it reads again, and it is then told how many. On exit slinit
+  waits at most 2 s for the queue to drain, including on the error
+  exits that used to skip it.
 - **A stalled shared logger froze PID 1 when one of its producers
   restarted.** With the logger stopped (`kill -STOP`) or hung, the
   producer's reader in slinit blocked writing into the full mux pipe —

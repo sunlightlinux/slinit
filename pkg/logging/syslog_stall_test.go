@@ -94,3 +94,91 @@ func TestMainSyslogStalledDaemonDoesNotBlock(t *testing.T) {
 	// Not deferred: before the fix, Close waited on the stuck write.
 	l.CloseSyslog()
 }
+
+// slowSyslogDaemon reads datagrams at path, sleeping perMsg after each,
+// and counts the messages naming a service.
+func slowSyslogDaemon(t *testing.T, path string, perMsg time.Duration) (*atomic.Int64, *atomic.Bool) {
+	t.Helper()
+	ln, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var got atomic.Int64
+	var toldDrops atomic.Bool
+	go func() {
+		buf := make([]byte, 64*1024)
+		for {
+			n, err := ln.Read(buf)
+			if err != nil {
+				return
+			}
+			if strings.Contains(string(buf[:n]), "svc-") {
+				got.Add(1)
+			}
+			if strings.Contains(string(buf[:n]), "dropped") {
+				toldDrops.Store(true)
+			}
+			time.Sleep(perMsg)
+		}
+	}()
+	return &got, &toldDrops
+}
+
+// A syslog daemon slower than a burst of messages is not a stalled one.
+// The queue dropped every message past its bound, where a direct write
+// waited for the daemon; it now waits for a daemon that keeps reading,
+// and drops only after a second in which it takes nothing.
+func TestMainSyslogSlowDaemonIsLossless(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "log")
+	// About 1000 messages a second.
+	got, toldDrops := slowSyslogDaemon(t, p, 500*time.Microsecond)
+	syslogAt(t, p)
+	l := New(LevelInfo)
+	l.SetOutput(io.Discard)
+	if err := l.SetSyslog(); err != nil {
+		t.Fatalf("SetSyslog: %v", err)
+	}
+	const n = 3000
+	for i := 0; i < n; i++ {
+		l.ServiceStarted(fmt.Sprintf("svc-%04d", i))
+	}
+	l.CloseSyslog()
+	for deadline := time.Now().Add(2 * time.Second); got.Load() < n && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got.Load() != n || toldDrops.Load() {
+		t.Errorf("a slow but working syslog daemon got %d of %d messages (told of drops: %v)",
+			got.Load(), n, toldDrops.Load())
+	}
+}
+
+// CloseSyslog passes on what is queued to a slow daemon, for a bounded
+// time.
+func TestCloseSyslogIsBounded(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "log")
+	got, _ := slowSyslogDaemon(t, p, 3*time.Millisecond)
+	syslogAt(t, p)
+	l := New(LevelInfo)
+	l.SetOutput(io.Discard)
+	if err := l.SetSyslog(); err != nil {
+		t.Fatalf("SetSyslog: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		// ~6 s of messages at this rate: the queue and the socket fill,
+		// and some 4 s of them are still queued at CloseSyslog.
+		for i := 0; i < 2000; i++ {
+			l.ServiceStarted(fmt.Sprintf("svc-%04d", i))
+		}
+		close(done)
+	}()
+	<-done
+	t0 := time.Now()
+	l.CloseSyslog()
+	took := time.Since(t0)
+	t.Logf("CloseSyslog took %v; the daemon got %d", took.Round(time.Millisecond), got.Load())
+	if took > syslogFlushMax+time.Second {
+		t.Errorf("CloseSyslog waited %v for a slow daemon, past the %v bound", took, syslogFlushMax)
+	}
+}

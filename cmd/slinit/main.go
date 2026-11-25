@@ -604,6 +604,7 @@ func main() {
 			logger.Debug("syslog not available: %v", err)
 		} else {
 			defer logger.CloseSyslog()
+			exitSyslog = logger
 		}
 	}
 
@@ -3080,6 +3081,10 @@ func waitForFDClose(n int) error {
 	}
 }
 
+// exitSyslog is the logger whose syslog connection exitFlushed closes,
+// once main has opened one.
+var exitSyslog *logging.Logger
+
 // exitFlushed drains the catch-all logger, then exits.
 //
 // os.Exit skips main's deferred cal.Stop(), and the catch-all tees
@@ -3092,7 +3097,15 @@ func waitForFDClose(n int) error {
 // Bounded: Stop waits for EOF on the pipe, and an orphan that inherited
 // stdout keeps the pipe open. By the time the wait gives up, what slinit
 // wrote has been drained anyway; only the EOF is missing.
+//
+// The main log's syslog queue is flushed first, for the same reason: it
+// is closed by a deferred CloseSyslog that os.Exit skips too, so the
+// messages explaining the exit never reached the syslog daemon.
+// CloseSyslog bounds its own wait.
 func exitFlushed(cal *logging.CatchAllLogger, code int) {
+	if exitSyslog != nil {
+		exitSyslog.CloseSyslog()
+	}
 	if cal != nil {
 		done := make(chan struct{})
 		go func() {

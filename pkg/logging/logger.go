@@ -384,7 +384,8 @@ func (l *Logger) SetSyslog() error {
 }
 
 // CloseSyslog closes the syslog connection if one is open, after passing
-// on what is queued for it, for as long as the daemon takes it.
+// on what is queued for it, for as long as the daemon takes it and at
+// most syslogFlushMax.
 func (l *Logger) CloseSyslog() {
 	if l.syslogW != nil {
 		if l.syslogQ.stop() {
@@ -398,9 +399,13 @@ func (l *Logger) CloseSyslog() {
 // syslogQueueLen bounds the messages waiting for the syslog daemon.
 const syslogQueueLen = 1024
 
-// syslogFlushStall is how long CloseSyslog waits for a daemon that takes
-// no message at all.
+// syslogFlushStall is how long a message waits for room in the queue,
+// and CloseSyslog for the queue to drain, while the daemon takes no
+// message at all. A daemon that is reading takes one well within it.
 const syslogFlushStall = time.Second
+
+// syslogFlushMax bounds how long CloseSyslog waits for a slow daemon.
+const syslogFlushMax = 2 * time.Second
 
 type syslogMsg struct {
 	level Level
@@ -411,9 +416,13 @@ type syslogMsg struct {
 // own. log/syslog writes with no deadline, and slinit logs with the
 // scheduling lock held, so a daemon that stopped reading /dev/log (one on
 // the host, in container mode; or slinit not run as PID 1) stopped slinit
-// at its next message. Past the queue's bound a message is dropped, and
-// the daemon is told how many were when it reads again. A daemon that
-// keeps up gets the same messages, in the same order.
+// at its next message. When the queue is full a message waits for room
+// while the daemon keeps taking messages, as a direct write did; it is
+// dropped only once the daemon has taken none for syslogFlushStall, and
+// after that messages are dropped without waiting until it takes one
+// again. The daemon is told how many were dropped when it reads again. A
+// daemon that takes its messages, however slowly, gets the same ones, in
+// the same order.
 type syslogQueue struct {
 	w       *syslog.Writer
 	q       chan syslogMsg
@@ -421,6 +430,12 @@ type syslogQueue struct {
 	done    chan struct{}
 	sent    atomic.Uint64
 	dropped atomic.Uint64
+
+	// stalled is set when a message gave up waiting for room; stalledAt
+	// is sent at that moment, so the first message the daemon takes
+	// after it clears it.
+	stalled   atomic.Bool
+	stalledAt atomic.Uint64
 }
 
 func startSyslogQueue(w *syslog.Writer) *syslogQueue {
@@ -435,10 +450,35 @@ func startSyslogQueue(w *syslog.Writer) *syslogQueue {
 }
 
 func (sq *syslogQueue) put(level Level, msg string) {
+	m := syslogMsg{level, msg}
 	select {
-	case sq.q <- syslogMsg{level, msg}:
+	case sq.q <- m:
+		return
 	default:
-		sq.dropped.Add(1)
+	}
+	if sq.stalled.Load() {
+		if sq.sent.Load() == sq.stalledAt.Load() {
+			sq.dropped.Add(1)
+			return
+		}
+		sq.stalled.Store(false)
+	}
+	timer := time.NewTimer(syslogFlushStall)
+	defer timer.Stop()
+	for {
+		last := sq.sent.Load()
+		select {
+		case sq.q <- m:
+			return
+		case <-timer.C:
+		}
+		if now := sq.sent.Load(); now == last {
+			sq.stalledAt.Store(now)
+			sq.stalled.Store(true)
+			sq.dropped.Add(1)
+			return
+		}
+		timer.Reset(syslogFlushStall)
 	}
 }
 
@@ -469,17 +509,23 @@ func (sq *syslogQueue) write(m syslogMsg) {
 	sq.sent.Add(1)
 }
 
-// stop lets the queue drain while the daemon keeps taking messages, and
-// reports whether it finished. One that has stopped is left behind with
-// its goroutine, which still holds the writer.
+// stop lets the queue drain while the daemon keeps taking messages, for
+// at most syslogFlushMax, and reports whether it finished. A daemon that
+// has stopped, or is too slow, is left behind with the goroutine, which
+// still holds the writer.
 func (sq *syslogQueue) stop() bool {
 	close(sq.quit)
 	last := sq.sent.Load()
+	end := time.Now().Add(syslogFlushMax)
 	for {
+		wait := min(syslogFlushStall, time.Until(end))
+		if wait <= 0 {
+			return false
+		}
 		select {
 		case <-sq.done:
 			return true
-		case <-time.After(syslogFlushStall):
+		case <-time.After(wait):
 		}
 		n := sq.sent.Load()
 		if n == last {
