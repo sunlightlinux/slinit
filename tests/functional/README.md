@@ -249,7 +249,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 139 | persist-intent | slinit-shutdown `--persist-intent` writes /run/slinit/shutdown.intent |
 | 140 | supplementary-groups | numeric GID resolver installs `Groups: 27 100 500` on the child's /proc/PID/status; guarded by run-as = 65534:65534 |
 | 141 | psi-pressure | `memory-pressure-watch = yes` keeps a `/sys/fs/cgroup/.../memory.pressure` fd open on slinit (PID 1); fd is released on stop |
-| 142 | condition-fraction | staged rollout gate: `TAG:0` skips (no PID), `TAG:100` starts (live PID) — bucket math is deterministic against `/etc/machine-id` |
+| 142 | condition-fraction | staged rollout gate: `TAG:0` skips, `TAG:100` runs; with a seeded `/etc/machine-id` the bucket is 46.22%, so `stage1:46` skips and `stage1:47` runs |
 | 143 | condition-path-is-socket | `S_ISSOCK` check: `/run/slinit.socket` (real AF_UNIX) starts, `/etc/os-release` (regular file) skips |
 | 144 | condition-measured-os | no TPM in the QEMU VM → `condition-security = measured-os` fails and skips the service |
 | 145 | minimum-uptime-sec | `slinit --help` surface: `--minimum-uptime-sec` flag documented with boot-loop context |

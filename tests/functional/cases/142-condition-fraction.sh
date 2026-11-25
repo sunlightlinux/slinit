@@ -5,8 +5,11 @@
 #                 reaches STARTED but no process runs (skipped).
 #   PERCENT=100 → bucket < 100 always holds → condition succeeds →
 #                 service starts normally with a live PID.
-# Machine-id is stable in the test VM, so both outcomes are
-# deterministic regardless of host.
+# 0 and 100 do not depend on the machine-id at all, so the case seeds
+# /etc/machine-id (rootfs/) and adds two services either side of the
+# bucket that id gives tag "stage1": 46.22%. stage1:46 must skip and
+# stage1:47 must run, which only holds if the bucket is really hashed
+# from the id. (The VM had no machine-id, so the case always skipped.)
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
 if [ ! -s /etc/machine-id ]; then
@@ -40,6 +43,29 @@ if [ -n "$_pid_hundred" ] && [ "$_pid_hundred" != "0" ] && [ "$_pid_hundred" != 
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: frac-hundred (100%) has no live PID (got '$_pid_hundred')"
+fi
+
+has_pid() {
+    _p=$(slinitctl --system status "$1" 2>/dev/null | awk '/PID:/ { print $2; exit }')
+    [ -n "$_p" ] && [ "$_p" != "0" ] && [ "$_p" != "-" ] && [ -d "/proc/$_p" ]
+}
+wait_for_service "frac-below" "STARTED" 10
+wait_for_service "frac-above" "STARTED" 10
+
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if has_pid frac-below; then
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: frac-below (stage1:46) runs; the bucket is 46.22"
+else
+    echo "OK: frac-below (stage1:46) skipped"
+fi
+
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if has_pid frac-above; then
+    echo "OK: frac-above (stage1:47) runs"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: frac-above (stage1:47) did not run; the bucket is 46.22"
 fi
 
 test_summary

@@ -1,0 +1,7 @@
+type = process
+depends-on: system-init
+# With the machine-id seeded by this case, FNV-1a(id, "stage1") puts
+# the bucket at 46.22%, so 46% must not match and 47% must.
+condition-fraction = stage1:47
+command = /bin/sh -c 'while :; do sleep 60; done'
+restart = no
