@@ -212,7 +212,11 @@ SVC
 
     # Create the overlay cpio and concatenate with base
     local overlay_cpio="${test_dir}/overlay.cpio.gz"
-    (cd "${overlay_dir}" && find . | cpio -o -H newc 2>/dev/null | gzip) > "${overlay_cpio}"
+    # -R 0:0 as for the base image: the overlay's "." entry otherwise
+    # makes the guest's / owned by the uid that built it, which a real
+    # system never has, and slinit-tmpfiles' safe path resolution
+    # rightly refuses to step from a user's / into root's /tmp.
+    (cd "${overlay_dir}" && find . | cpio -o -H newc -R 0:0 2>/dev/null | gzip) > "${overlay_cpio}"
 
     # Concatenate base + overlay (cpio archives are appendable)
     cat "${OUTPUT_DIR}/initramfs-base.cpio.gz" "${overlay_cpio}" > "${test_dir}/initramfs.cpio.gz"
