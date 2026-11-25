@@ -2033,6 +2033,18 @@ func main() {
 		// slinit binary picks this up via --restore-from-snapshot
 		// (appended to argv inside SoftReboot below).
 		loop.OnPreShutdown = func(st service.ShutdownType) {
+			// Snapshot first: the loop stops waiting for this callback
+			// after the emergency timeout, and a snapshot taken after
+			// that would record services half torn down.
+			if st == service.ShutdownSoftReboot {
+				snap := snapshot.Capture(serviceSet)
+				if err := snapshot.Write(snapshot.SoftRebootPath, snap); err != nil {
+					logger.Error("Soft-reboot snapshot write failed: %v", err)
+				} else {
+					logger.Info("Soft-reboot snapshot saved to %s (%d service intents, %d global env vars)",
+						snapshot.SoftRebootPath, len(snap.Services), len(snap.GlobalEnv))
+				}
+			}
 			// finit-parity system-down hook: fires BEFORE the state-
 			// machine teardown, so scripts see the system in a
 			// coherent "still up" state (services running,
@@ -2056,16 +2068,6 @@ func main() {
 			// (fires before the "Shutting down slinit" WARN), so by
 			// now the console tee is already back on.
 			logger.SetShutdownConsole(true)
-			if st != service.ShutdownSoftReboot {
-				return
-			}
-			snap := snapshot.Capture(serviceSet)
-			if err := snapshot.Write(snapshot.SoftRebootPath, snap); err != nil {
-				logger.Error("Soft-reboot snapshot write failed: %v", err)
-				return
-			}
-			logger.Info("Soft-reboot snapshot saved to %s (%d service intents, %d global env vars)",
-				snapshot.SoftRebootPath, len(snap.Services), len(snap.GlobalEnv))
 		}
 
 		// /etc/slinit/shutdown.allow access control: only engage when

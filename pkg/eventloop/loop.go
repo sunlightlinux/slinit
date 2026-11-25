@@ -88,7 +88,10 @@ type EventLoop struct {
 	// its activation/pin/trigger state. main.go wires this to capture
 	// a snapshot for soft-reboot — by the time StopAllServices returns
 	// the operator-visible state is gone. Returning is best-effort:
-	// errors are logged by the callback and shutdown continues.
+	// errors are logged by the callback and shutdown continues. It runs
+	// on its own goroutine and is waited for at most the emergency
+	// timeout (see runPreShutdown), so time-critical work belongs at
+	// its start.
 	OnPreShutdown func(shutdownType service.ShutdownType)
 
 	// OnShutdownAnnounce fires at the very TOP of initiateShutdown,
@@ -96,7 +99,7 @@ type EventLoop struct {
 	// wires this to unmute the catch-all console tee so the WARN +
 	// subsequent teardown output is visible on /dev/console again.
 	// Distinct from OnPreShutdown, which fires later — after the
-	// WARN and after emergency timers are armed. Best-effort;
+	// WARN and before the emergency timer is armed. Best-effort;
 	// panics are recovered by the caller's outer defer.
 	OnShutdownAnnounce func()
 }
@@ -635,33 +638,22 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 	// the whole point of the announcement.
 	el.logger.Warn("Shutting down slinit (%s)...", shutdownType)
 
-	// Start emergency timeout with a cancellable timer.
-	// Capture immutable refs to avoid racing on el fields after mutex release.
-	// services is captured too so the callback can enumerate blockers
-	// without touching el fields the timer isn't holding a lock on.
-	logger := el.logger
-	forceExitCh := el.forceExitCh
-	services := el.services
-	timeout := el.effectiveEmergencyTimeout()
-	el.emergencyTimer = time.AfterFunc(timeout, func() {
-		blocking := formatBlockingServices(services.GetActiveServiceInfo())
-		logger.Error("Services did not stop within %v, forcing shutdown%s",
-			timeout, blocking)
-		select {
-		case forceExitCh <- struct{}{}:
-		default:
-		}
-	})
-	// Release mutex before calling StopAllServices to avoid potential
-	// deadlock if service state changes try to signal back to the event loop.
+	// Release mutex before calling OnPreShutdown and StopAllServices to
+	// avoid potential deadlock if service state changes try to signal
+	// back to the event loop.
 	el.mu.Unlock()
 
-	// Capture operator state (snapshot) while services still hold it.
-	// StopAllServices clears activation/pin/trigger as it tears down,
-	// so this hook must run first.
-	if el.OnPreShutdown != nil {
-		el.OnPreShutdown(shutdownType)
-	}
+	// Capture operator state (snapshot) and run the system-down work
+	// while services still hold their state. StopAllServices clears
+	// activation/pin/trigger as it tears down, so this hook must run
+	// first. It is bounded: see runPreShutdown.
+	el.runPreShutdown(shutdownType)
+
+	// The emergency timer guards the stop phase only. Armed before the
+	// pre-shutdown work, slow system-down hooks or ifdown spent the
+	// whole budget while every service was still running, and the
+	// timer fired before a single service had been asked to stop.
+	el.armEmergencyTimer()
 
 	el.services.StopAllServices(shutdownType)
 
@@ -680,6 +672,67 @@ func (el *EventLoop) initiateShutdown(shutdownType service.ShutdownType) {
 
 	// Start periodic reporting of blocking services
 	el.startShutdownReporter()
+}
+
+// runPreShutdown runs OnPreShutdown and waits for it at most as long as
+// the emergency timeout, the budget the stop phase gets too. It runs
+// operator hooks (30s each, any number of them) and ifdown (90s), so
+// unbounded it could hold the shutdown for as long as they liked.
+// When it overruns, services are stopped anyway and the work carries
+// on beside the stop; anything it left running is swept with the rest
+// at the end of the shutdown.
+func (el *EventLoop) runPreShutdown(shutdownType service.ShutdownType) {
+	if el.OnPreShutdown == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// A panic on its own goroutine would take PID 1 down
+		// mid-shutdown; the stop goes on without it instead.
+		defer func() {
+			if r := recover(); r != nil {
+				el.logger.Error("Pre-shutdown hook panicked: %v", r)
+			}
+		}()
+		el.OnPreShutdown(shutdownType)
+	}()
+	limit := el.effectiveEmergencyTimeout()
+	t := time.NewTimer(limit)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		el.logger.Warn("Pre-shutdown hooks still running after %v, stopping services anyway", limit)
+	}
+}
+
+// armEmergencyTimer starts the emergency timeout for the stop phase.
+// A repeated shutdown signal during the pre-shutdown work has already
+// armed the shorter escalated timer; that one stays.
+func (el *EventLoop) armEmergencyTimer() {
+	el.mu.Lock()
+	defer el.mu.Unlock()
+	if el.emergencyTimer != nil {
+		return
+	}
+	// Capture immutable refs to avoid racing on el fields from the
+	// timer goroutine. services is captured too so the callback can
+	// enumerate blockers without touching el fields the timer isn't
+	// holding a lock on.
+	logger := el.logger
+	forceExitCh := el.forceExitCh
+	services := el.services
+	timeout := el.effectiveEmergencyTimeout()
+	el.emergencyTimer = time.AfterFunc(timeout, func() {
+		blocking := formatBlockingServices(services.GetActiveServiceInfo())
+		logger.Error("Services did not stop within %v, forcing shutdown%s",
+			timeout, blocking)
+		select {
+		case forceExitCh <- struct{}{}:
+		default:
+		}
+	})
 }
 
 // cancelEmergencyTimer stops the emergency timer if it's running.
