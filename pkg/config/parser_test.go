@@ -259,6 +259,28 @@ term-signal = 15`, ""},
 	}
 }
 
+// TestParseSignalNamesAndRange: the name table held 9 signals, so SIGABRT
+// (watchdog-signal's documented default), SIGWINCH and SIGPWR were refused,
+// while any integer was taken as a signal, -9 and 4096 included.
+func TestParseSignalNamesAndRange(t *testing.T) {
+	for in, want := range map[string]syscall.Signal{
+		"SIGABRT": syscall.SIGABRT, "abrt": syscall.SIGABRT,
+		"SIGWINCH": syscall.SIGWINCH, "winch": syscall.SIGWINCH,
+		"SIGPWR": syscall.SIGPWR, "sigterm": syscall.SIGTERM,
+		"HUP": syscall.SIGHUP, "15": syscall.SIGTERM, "64": 64,
+		"none": 0, "0": 0,
+	} {
+		if got, err := parseSignal(in); err != nil || got != want {
+			t.Errorf("parseSignal(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"-9", "65", "4096", "SIGBOGUS", "SIG", ""} {
+		if got, err := parseSignal(in); err == nil {
+			t.Errorf("parseSignal(%q) = %v, want an error", in, got)
+		}
+	}
+}
+
 // TestParseStopsigAlias verifies that the OpenRC-flavoured "stopsig" name
 // and the dinit-flavoured "termsignal" name both resolve to TermSignal,
 // alongside the canonical "term-signal". Callers migrating from OpenRC

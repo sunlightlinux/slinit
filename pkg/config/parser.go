@@ -4178,7 +4178,6 @@ func parseNonColonOp(expr string) (varName string, op byte, operand string, ok b
 	return "", 0, "", false
 }
 
-// signalNames maps signal names (uppercase) to their syscall values.
 // isValidDBusName does a permissive syntax check for a well-known
 // D-Bus bus name (dot-separated segments; each segment starts with a
 // letter or underscore; subsequent chars are letters, digits,
@@ -4283,41 +4282,28 @@ func parseByteSize(s string) (int64, error) {
 	return n * mult, nil
 }
 
-// Package-level to avoid re-allocating on every parseSignal call.
-var signalNames = map[string]syscall.Signal{
-	"SIGHUP":  syscall.SIGHUP,
-	"SIGINT":  syscall.SIGINT,
-	"SIGQUIT": syscall.SIGQUIT,
-	"SIGKILL": syscall.SIGKILL,
-	"SIGTERM": syscall.SIGTERM,
-	"SIGUSR1": syscall.SIGUSR1,
-	"SIGUSR2": syscall.SIGUSR2,
-	"SIGSTOP": syscall.SIGSTOP,
-	"SIGCONT": syscall.SIGCONT,
-	"HUP":     syscall.SIGHUP,
-	"INT":     syscall.SIGINT,
-	"QUIT":    syscall.SIGQUIT,
-	"KILL":    syscall.SIGKILL,
-	"TERM":    syscall.SIGTERM,
-	"USR1":    syscall.SIGUSR1,
-	"USR2":    syscall.SIGUSR2,
-	"STOP":    syscall.SIGSTOP,
-	"CONT":    syscall.SIGCONT,
-}
-
-// parseSignal parses a signal name or number.
+// parseSignal parses a signal name or number. Names are any the kernel
+// has, with or without the SIG prefix, in any case; numbers must be
+// 1..64, the range rt_sigaction takes. 0 means none, as it always has.
 func parseSignal(value string) (syscall.Signal, error) {
 	if strings.EqualFold(value, "none") {
 		return 0, nil
 	}
 
-	if sig, ok := signalNames[strings.ToUpper(value)]; ok {
+	name := strings.ToUpper(value)
+	if !strings.HasPrefix(name, "SIG") {
+		name = "SIG" + name
+	}
+	if sig := unix.SignalNum(name); sig != 0 {
 		return sig, nil
 	}
 
 	n, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("unknown signal: %s", value)
+	}
+	if n < 0 || n > 64 {
+		return 0, fmt.Errorf("signal number %d out of range [1,64]", n)
 	}
 	return syscall.Signal(n), nil
 }
