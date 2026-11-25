@@ -3,8 +3,10 @@ package journal
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -282,17 +284,47 @@ func TestOmitEmpty(t *testing.T) {
 // Nano already counts them), so Mts ran at double the uptime and jumped
 // a second at every second: wrong in -o short-monotonic, in the binary
 // journal's monotonic field and in __MONOTONIC_TIMESTAMP exports.
-func TestMonotonicNanosIsClockMonotonic(t *testing.T) {
+//
+// Mts now comes from the runtime's monotonic clock (CLOCK_MONOTONIC on
+// Linux) added to one raw reading, without a system call per event; it
+// must still read CLOCK_MONOTONIC, also after time has passed.
+func TestEventNowMtsIsClockMonotonic(t *testing.T) {
 	var ts unix.Timespec
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
-		t.Skip(err)
+	raw := func() int64 {
+		if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+			t.Skip(err)
+		}
+		return ts.Nano()
 	}
-	before := ts.Nano()
-	got := monotonicNanos()
-	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
-		t.Skip(err)
+	check := func() {
+		t.Helper()
+		before := raw()
+		var ev Event
+		ev.Now()
+		after := raw()
+		// The base reading is the midpoint of two raw ones taken a
+		// few hundred nanoseconds apart, so it may be off by half that.
+		const slack = int64(50 * time.Microsecond)
+		if ev.Mts < before-slack || ev.Mts > after+slack {
+			t.Fatalf("Mts %d, CLOCK_MONOTONIC read %d then %d", ev.Mts, before, after)
+		}
 	}
-	if after := ts.Nano(); got < before || got > after {
-		t.Fatalf("monotonicNanos() = %d, CLOCK_MONOTONIC read %d then %d", got, before, after)
+	for i := 0; i < 1000; i++ {
+		check()
+	}
+	time.Sleep(20 * time.Millisecond)
+	check()
+}
+
+// The emitter's own identity is read once at NewEmitter; it must be
+// this process's.
+func TestStampTrustedUsesProcessIdentity(t *testing.T) {
+	initIDsForStallTest(t)
+	e := NewEmitter(nil, "")
+	ev := &Event{Msg: "x"}
+	e.stampTrusted(ev)
+	if ev.Pid != os.Getpid() || ev.Uid != os.Getuid() || ev.Gid != os.Getgid() {
+		t.Errorf("stamped pid/uid/gid %d/%d/%d, want %d/%d/%d",
+			ev.Pid, ev.Uid, ev.Gid, os.Getpid(), os.Getuid(), os.Getgid())
 	}
 }

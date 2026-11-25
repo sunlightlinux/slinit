@@ -186,10 +186,7 @@ type Event struct {
 func (e *Event) Now() {
 	now := time.Now()
 	e.Ts = now.UnixNano()
-	// Use monotonic component of time.Now if available (Go stamps it
-	// on time values that never crossed the JSON boundary). We can't
-	// extract it directly, so approximate with unix.ClockGettime.
-	e.Mts = monotonicNanos()
+	e.Mts = monotonicAt(now)
 }
 
 // Validate returns an error if the event violates the schema:

@@ -47,6 +47,17 @@ type Emitter struct {
 	dialErr     error
 	dialRetryAt time.Time
 
+	// probedAt is when connect last checked, inside the backoff, for
+	// the socket file a dial found missing. Under connMu.
+	probedAt time.Time
+
+	// pid, uid and gid are this process's identity, stamped on every
+	// event it emits itself. Read once: they cannot change under the
+	// emitter (PID 1 never changes its credentials, and a re-exec
+	// starts with a new Emitter), and three system calls per event
+	// were a fifth of an emit's cost.
+	pid, uid, gid int
+
 	// socketPath is the target address. Configurable so tests can
 	// point at a fixture socket without touching /run/slinit.
 	socketPath string
@@ -95,6 +106,9 @@ func NewEmitter(buf *EventBuffer, socketPath string) *Emitter {
 		buffer:     buf,
 		socketPath: socketPath,
 		subs:       make(map[*subscription]struct{}),
+		pid:        os.Getpid(),
+		uid:        os.Getuid(),
+		gid:        os.Getgid(),
 	}
 }
 
@@ -252,9 +266,9 @@ func (e *Emitter) stampTrusted(evt *Event) {
 	// from SCM_CREDENTIALS. Stamping ours would claim PID 1 wrote what
 	// sudo did.
 	if evt.Transport != TransportKernel && evt.Transport != TransportSyslog {
-		evt.Pid = os.Getpid()
-		evt.Uid = os.Getuid()
-		evt.Gid = os.Getgid()
+		evt.Pid = e.pid
+		evt.Uid = e.uid
+		evt.Gid = e.gid
 	}
 
 	// Boot ID + machine ID + hostname always come from the cache
@@ -352,6 +366,12 @@ func sendNoWait(conn *net.UnixConn, data []byte) error {
 // times the ring push itself; the ring keeps the events meanwhile.
 const emitRedialBackoff = time.Second
 
+// emitProbeInterval is how often, inside the backoff, connect checks
+// whether the socket file a dial found missing has appeared. Checking
+// on every emit cost an access(2) per state transition on a system
+// without slinit-journald.
+const emitProbeInterval = 50 * time.Millisecond
+
 // connect returns the cached socket connection, dialing on first use
 // and after ECONNREFUSED / ENOENT (journald not yet up, or was
 // restarted), at most once per emitRedialBackoff while the dial keeps
@@ -369,8 +389,13 @@ func (e *Emitter) connect() (*net.UnixConn, error) {
 		// Inside the backoff, but a socket file that has appeared is
 		// slinit-journald having just bound it: dial at once, or the
 		// events between its backlog replay and our next dial would
-		// never reach its disk. Checking costs a syscall, not a dial.
-		if !errors.Is(e.dialErr, unix.ENOENT) || unix.Access(e.socketPath, unix.F_OK) != nil {
+		// never reach its disk. Checking costs a syscall, not a dial,
+		// and is done at most once per emitProbeInterval.
+		if !errors.Is(e.dialErr, unix.ENOENT) || now.Sub(e.probedAt) < emitProbeInterval {
+			return nil, e.dialErr
+		}
+		e.probedAt = now
+		if unix.Access(e.socketPath, unix.F_OK) != nil {
 			return nil, e.dialErr
 		}
 	}
@@ -381,7 +406,7 @@ func (e *Emitter) connect() (*net.UnixConn, error) {
 	conn, err := net.DialUnix("unixgram", nil, addr)
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ECONNREFUSED) {
-			e.dialErr, e.dialRetryAt = err, now.Add(emitRedialBackoff)
+			e.dialErr, e.dialRetryAt, e.probedAt = err, now.Add(emitRedialBackoff), now
 		}
 		return nil, err
 	}
@@ -465,6 +490,14 @@ func Emit(evt *Event) {
 		return
 	}
 	_ = e.Emit(evt)
+}
+
+// Enabled reports whether a process-wide emitter is installed, so a
+// caller can skip building an event Emit would discard.
+func Enabled() bool {
+	globalMu.RLock()
+	defer globalMu.RUnlock()
+	return global != nil
 }
 
 // Buffer exposes the emitter's in-process ring buffer so external

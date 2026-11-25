@@ -185,9 +185,13 @@ func TestEmitBacksOffDialWithoutListener(t *testing.T) {
 		t.Errorf("emit inside the backoff dialed again: %v", err2)
 	}
 
-	// slinit-journald binding the path ends the wait at once.
+	// slinit-journald binding the path ends the wait at the next probe
+	// (at most emitProbeInterval later; wound back here).
 	ln := listenUnixgram(t, p)
 	buf := make([]byte, 64*1024)
+	e.connMu.Lock()
+	e.probedAt = time.Time{}
+	e.connMu.Unlock()
 	if err := e.Emit(&Event{Msg: "journald is up"}); err != nil {
 		t.Fatalf("emit after the socket appeared: %v", err)
 	}
@@ -224,6 +228,55 @@ func TestEmitBacksOffDialWithoutListener(t *testing.T) {
 		t.Fatalf("listener got nothing after the backoff: %v", err)
 	}
 	if !strings.Contains(string(buf[:n]), "after the backoff") {
+		t.Errorf("listener got %q", buf[:n])
+	}
+}
+
+// Inside the backoff after an ENOENT dial, every emit used to call
+// access(2) on the socket path to see whether slinit-journald had bound
+// it. The check now runs at most once per emitProbeInterval: a socket
+// that appears is dialed at the first emit after the interval, not
+// before it.
+func TestEmitProbesForSocketAtMostOncePerInterval(t *testing.T) {
+	initIDsForStallTest(t)
+	p := filepath.Join(t.TempDir(), "events.sock")
+	e := NewEmitter(nil, p)
+	defer e.Close()
+
+	err1 := e.Emit(&Event{Msg: "nobody there"})
+	if err1 == nil {
+		t.Fatal("emit with no listener reported success")
+	}
+	e.connMu.Lock()
+	probed := e.probedAt
+	e.connMu.Unlock()
+	if probed.IsZero() {
+		t.Fatal("a failed dial did not count as a probe")
+	}
+
+	// The socket appears inside the interval: not looked for yet.
+	ln := listenUnixgram(t, p)
+	e.connMu.Lock()
+	e.probedAt = time.Now()
+	e.connMu.Unlock()
+	if err := e.Emit(&Event{Msg: "inside the interval"}); err != err1 {
+		t.Fatalf("emit inside the probe interval looked for the socket: %v", err)
+	}
+
+	// Once the interval has passed, the next emit finds and dials it.
+	e.connMu.Lock()
+	e.probedAt = time.Now().Add(-emitProbeInterval)
+	e.connMu.Unlock()
+	if err := e.Emit(&Event{Msg: "after the interval"}); err != nil {
+		t.Fatalf("emit after the probe interval: %v", err)
+	}
+	buf := make([]byte, 64*1024)
+	ln.SetReadDeadline(time.Now().Add(time.Second))
+	n, err := ln.Read(buf)
+	if err != nil {
+		t.Fatalf("listener got nothing after the interval: %v", err)
+	}
+	if !strings.Contains(string(buf[:n]), "after the interval") {
 		t.Errorf("listener got %q", buf[:n])
 	}
 }

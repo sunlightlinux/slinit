@@ -52,6 +52,11 @@ func emitJournalLogLine(serviceName string, lineLevel int, matchLine []byte, ser
 // query tools can distinguish "slinit said X happened" from
 // "service's own stdout said Y" (Transport=stdout).
 func (sr *ServiceRecord) emitJournalStateEvent(event ServiceEvent) {
+	// Building the event is most of its cost, and it runs under queueMu
+	// on every transition: skip it when Emit would discard it.
+	if !journal.Enabled() {
+		return
+	}
 	prio := journal.PriorityInfo
 	switch event {
 	case EventFailedStart:
@@ -73,13 +78,13 @@ func (sr *ServiceRecord) emitJournalStateEvent(event ServiceEvent) {
 	// process (Process/Scripted/BGProcess with pid > 0). Internal
 	// services and services in STOPPED report -1/0 and we skip the
 	// field so short renderers don't display a misleading [-1] or [0]
-	// bracket. Look up via ServiceSet since ServiceRecord.PID() is a
-	// base -1; overrides live on the concrete Service types.
-	if sr.services != nil {
-		if svc := sr.services.FindService(sr.serviceName, false); svc != nil {
-			if pid := svc.PID(); pid > 0 {
-				fields["SLINIT_TARGET_PID"] = strconv.Itoa(pid)
-			}
+	// bracket. Ask sr.self since ServiceRecord.PID() is a base -1;
+	// overrides live on the concrete Service types. (This used to look
+	// the name up in the ServiceSet under its lock, which finds sr.self
+	// for every record in the set.)
+	if sr.self != nil {
+		if pid := sr.self.PID(); pid > 0 {
+			fields["SLINIT_TARGET_PID"] = strconv.Itoa(pid)
 		}
 	}
 
