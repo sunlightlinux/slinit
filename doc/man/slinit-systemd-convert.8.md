@@ -36,7 +36,10 @@ service directories (**RuntimeDirectory** and its siblings),
 **Slice**, **Delegate**, the **Condition\*** keys slinit has,
 **NoNewPrivileges**, **PrivateTmp**, **ProtectSystem**,
 **ProtectHome**, the **ProtectKernel\***, **ProtectClock** and
-**ProtectControlGroups** family, **SystemCallFilter**,
+**ProtectControlGroups** family, **SystemCallFilter** (several lines
+merge as in systemd; when an allow-list is followed by a **~** line,
+or the other way round, the groups are expanded into one list of
+syscall names),
 **RestrictAddressFamilies** (a **~** deny-list becomes the allow-list
 of every other family, by number), **RestrictNamespaces** (a list of
 namespace types becomes **yes**, which refuses them all, with a

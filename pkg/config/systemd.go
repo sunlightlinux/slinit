@@ -29,11 +29,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/sunlightlinux/slinit/pkg/process"
+	"github.com/sunlightlinux/slinit/pkg/seccomp"
 	"golang.org/x/sys/unix"
 )
 
@@ -88,6 +90,10 @@ type SystemdConfig struct {
 
 	// RestrictAddressFamilies=, folded across its assignments.
 	addrFamilies afFold
+
+	// SystemCallFilter= lines since the last empty one, merged once the
+	// whole unit is read.
+	syscallLines []syscallLine
 
 	// errs are confinement directives slinit cannot apply: the unit
 	// fails to convert rather than run less confined than it says.
@@ -289,6 +295,17 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 			cfg.mapped = append(cfg.mapped, kvPair{"restrict-address-families", allowed})
 			warns = append(warns, SystemdWarning{"NOTE", "RestrictAddressFamilies=~" + strings.Join(f.fams, " ") +
 				" → restrict-address-families allowing every other family, by number"})
+		}
+	}
+	if len(cfg.syscallLines) > 0 {
+		v, note, err := mergeSyscallFilter(cfg.syscallLines)
+		if err != nil {
+			cfg.errs = append(cfg.errs, err.Error())
+		} else {
+			cfg.mapped = append(cfg.mapped, kvPair{"system-call-filter", v})
+			if note != "" {
+				warns = append(warns, SystemdWarning{"NOTE", note})
+			}
 		}
 	}
 	if cfg.capAmbient.mask != 0 {
@@ -700,8 +717,16 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		cfg.addrFamilies.apply(val)
 	case "SystemCallFilter":
 		// Same grammar: syscall names, @groups, and a leading ~ on the
-		// first item to switch allow-list to deny-list.
-		cfg.mapped = append(cfg.mapped, kvPair{"system-call-filter", trimQuotes(val)})
+		// first item to switch allow-list to deny-list. Lines are
+		// merged once the unit is read (mergeSyscallFilter).
+		v := strings.TrimSpace(trimQuotes(val))
+		if v == "" {
+			cfg.syscallLines = nil
+			break
+		}
+		invert := strings.HasPrefix(v, "~")
+		cfg.syscallLines = append(cfg.syscallLines, syscallLine{invert,
+			strings.FieldsFunc(strings.TrimPrefix(v, "~"), func(r rune) bool { return r == ',' || r == ' ' || r == '\t' })})
 	// The rest of the seccomp family has the same value shape on both
 	// sides. These used to be dropped with a "no slinit equivalent"
 	// note, or a "not recognised" warning, while slinit implements each:
@@ -1273,6 +1298,80 @@ func (c *capFold) apply(key, val string, initial uint64) []SystemdWarning {
 		c.mask |= parsed
 	}
 	return warns
+}
+
+// syscallLine is one SystemCallFilter= assignment.
+type syscallLine struct {
+	invert bool
+	items  []string
+}
+
+// mergeSyscallFilter turns a unit's SystemCallFilter= lines into one
+// system-call-filter value, as systemd's config_parse_syscall_filter
+// merges them: the first line says allow-list or (with ~) deny-list, a
+// later line of the same kind adds to it, one of the other kind takes
+// away. Lines of one kind join as they are. Mixed ones — the common
+//
+//	SystemCallFilter=@system-service
+//	SystemCallFilter=~@privileged @resources
+//
+// — have no slinit form with groups (slinit takes ~ on the first item
+// only), so the groups are expanded and the resulting set listed by
+// name. An allow-list always admits @default in both; one that takes
+// some of @default away cannot be written, and is an error.
+func mergeSyscallFilter(lines []syscallLine) (value, note string, err error) {
+	allow := !lines[0].invert
+	mixed := false
+	var all []string
+	for _, l := range lines {
+		mixed = mixed || l.invert == allow
+		all = append(all, l.items...)
+	}
+	if !mixed {
+		if allow {
+			return strings.Join(all, " "), "", nil
+		}
+		return "~" + strings.Join(all, " "), "", nil
+	}
+	expand := func(item string) []string {
+		if names, ok := seccomp.ExpandGroup(item); ok {
+			return names
+		}
+		return []string{item}
+	}
+	set := map[string]bool{}
+	if allow {
+		for _, n := range expand("@default") {
+			set[n] = true
+		}
+	}
+	for _, l := range lines {
+		for _, item := range l.items {
+			for _, n := range expand(item) {
+				set[n] = l.invert != allow
+			}
+		}
+	}
+	if allow {
+		for _, n := range expand("@default") {
+			if !set[n] {
+				return "", "", fmt.Errorf("SystemCallFilter= takes %s out of an allow-list, which always admits "+
+					"@default in slinit; the service would be allowed it", n)
+			}
+		}
+	}
+	var names []string
+	for n, in := range set {
+		if in {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	value = strings.Join(names, " ")
+	if !allow {
+		value = "~" + value
+	}
+	return value, "SystemCallFilter= lines that add and take away are merged into one list of syscall names", nil
 }
 
 // afFold is a systemd RestrictAddressFamilies= set built up over its
