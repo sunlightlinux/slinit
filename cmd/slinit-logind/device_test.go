@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -122,6 +124,110 @@ func TestIsDRMNode(t *testing.T) {
 	} {
 		if got := isDRMNode(path); got != want {
 			t.Errorf("isDRMNode(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+// TakeDevice used to resolve any char or block device and open it O_RDWR
+// for the session's controller: an ordinary desktop user got /dev/mem,
+// /dev/sda and every other node in /sys/dev. systemd-logind hands out
+// character devices of the drm (card*), input (event*) and hidraw
+// subsystems only (session_device_verify); anything else is ENODEV.
+func TestTakeDeviceRefusesNonSessionDevices(t *testing.T) {
+	resetDevices()
+	defer resetDevices()
+
+	// 1:3 is /dev/null and 1:1 /dev/mem, subsystem mem, on every Linux
+	// system; 7:0 is /dev/vcs as a char device and loop0 as a block one.
+	for _, d := range []devKey{{1, 3}, {1, 1}, {7, 0}} {
+		if p, err := devPathForMajorMinor(d.major, d.minor); err == nil {
+			t.Errorf("devPathForMajorMinor(%d, %d) = %s, want refused", d.major, d.minor, p)
+		}
+	}
+	if _, _, err := takeDevice("c1", 1, 3); err == nil {
+		t.Error("TakeDevice(1, 3) handed out /dev/null, want NoSuchDevice")
+	}
+}
+
+// A session without a seat owns no devices: systemd refuses with EPERM
+// because the device's seat is not the session's (session_device_verify).
+// A remote or seatless session's owner could otherwise take the local
+// console's keyboard and display.
+func TestTakeDeviceRefusesSeatlessSession(t *testing.T) {
+	m := usersBus(t)
+	resetDevices()
+	defer resetDevices()
+	if err := writeJSONAtomic(sessionFile("c1"), SessionRecord{ID: "c1", UserID: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	so := &sessionObject{m: m, id: "c1"}
+	if err := so.TakeControl(alice, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := so.TakeDevice(alice, 13, 64); !denied(err) {
+		t.Errorf("TakeDevice on a seatless session: %v, want AccessDenied", err)
+	}
+}
+
+// fakeSysDev adds char device major:minor to a sysfs tree of the test's
+// own, laid out as the kernel does: /sys/dev/char/M:m links to the
+// device's directory, whose subsystem link names its class.
+func fakeSysDev(t *testing.T, major, minor uint32, subsystem, name, devname string) {
+	t.Helper()
+	if sysRoot == "/sys" {
+		orig := sysRoot
+		sysRoot = t.TempDir()
+		t.Cleanup(func() { sysRoot = orig })
+	}
+	dir := filepath.Join(sysRoot, "devices", "virtual", subsystem, name)
+	class := filepath.Join(sysRoot, "class", subsystem)
+	for _, d := range []string{dir, class, filepath.Join(sysRoot, "dev", "char")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	uevent := fmt.Sprintf("MAJOR=%d\nMINOR=%d\nDEVNAME=%s\n", major, minor, devname)
+	if err := os.WriteFile(filepath.Join(dir, "uevent"), []byte(uevent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(class, filepath.Join(dir, "subsystem")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dir, filepath.Join(sysRoot, "dev", "char", fmt.Sprintf("%d:%d", major, minor))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// What a compositor asks for still resolves: the card, input event
+// nodes, hidraw. A drm render node, an input mouse node and any other
+// class do not, as in systemd's detect_device_type.
+func TestDevPathForSessionDevices(t *testing.T) {
+	fakeSysDev(t, 226, 0, "drm", "card0", "dri/card0")
+	fakeSysDev(t, 226, 128, "drm", "renderD128", "dri/renderD128")
+	fakeSysDev(t, 13, 64, "input", "event0", "input/event0")
+	fakeSysDev(t, 13, 32, "input", "mouse0", "input/mouse0")
+	fakeSysDev(t, 245, 0, "hidraw", "hidraw0", "hidraw0")
+	fakeSysDev(t, 1, 1, "mem", "mem", "mem")
+	fakeSysDev(t, 4, 1, "tty", "tty1", "tty1")
+	for _, c := range []struct {
+		major, minor uint32
+		want         string
+	}{
+		{226, 0, "/dev/dri/card0"},
+		{13, 64, "/dev/input/event0"},
+		{245, 0, "/dev/hidraw0"},
+		{226, 128, ""},
+		{13, 32, ""},
+		{1, 1, ""},
+		{4, 1, ""},
+		{8, 0, ""}, // not a char device at all
+	} {
+		got, err := devPathForMajorMinor(c.major, c.minor)
+		if c.want == "" && err == nil {
+			t.Errorf("%d:%d resolved to %s, want refused", c.major, c.minor, got)
+		}
+		if c.want != "" && (err != nil || got != c.want) {
+			t.Errorf("%d:%d = %q, %v; want %s", c.major, c.minor, got, err, c.want)
 		}
 	}
 }

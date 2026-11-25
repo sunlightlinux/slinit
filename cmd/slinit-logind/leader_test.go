@@ -2,6 +2,7 @@ package main
 
 import (
 	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 
@@ -56,5 +57,76 @@ func TestWaitForPidExitDeadPid(t *testing.T) {
 		// A recycled pid would make this flaky, but the window is one
 		// exec wide and the kernel hands out pids sequentially.
 		t.Skipf("pid %d not reported as gone (%v) — likely recycled", pid, err)
+	}
+}
+
+// Kill(who="leader") used to write cgroup.kill — SIGKILL to the whole
+// session, whatever signal was asked for — and any other who was taken
+// as "all". systemd signals the leader alone with the signal given, and
+// refuses a who that is neither "leader" nor "all" (bus_session_method_kill).
+func TestKillSessionLeaderSignalsOnlyTheLeader(t *testing.T) {
+	m := usersBus(t)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start sleep: %v", err)
+	}
+	defer cmd.Process.Kill()
+	// The leader must be found in the session's scope; the test's own
+	// cgroup stands in for it.
+	cg := procCgroup(uint32(cmd.Process.Pid))
+	if cg == "" || cg == "?" || cg == "/" {
+		t.Skipf("no usable unified cgroup for the helper (%q)", cg)
+	}
+	rec := SessionRecord{ID: "c1", UserID: 1000, SeatID: "seat0",
+		LeaderPID: uint32(cmd.Process.Pid), Scope: "/sys/fs/cgroup" + cg}
+	if err := writeJSONAtomic(sessionFile("c1"), rec); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, who := range []string{"bogus", "cgroup", "Leader"} {
+		if err := m.killSession("c1", who, int32(syscall.SIGTERM)); err == nil || err.Name != "org.freedesktop.DBus.Error.InvalidArgs" {
+			t.Errorf("Kill(who=%q): %v, want InvalidArgs", who, err)
+		}
+	}
+	if err := m.killSession("c1", "leader", int32(syscall.SIGTERM)); err != nil {
+		t.Fatalf("Kill(leader, SIGTERM): %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Kill(leader, SIGTERM) did not signal the leader")
+	}
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+		t.Errorf("leader ended with %v, want killed by SIGTERM", cmd.ProcessState)
+	}
+}
+
+// The record keeps a bare pid. After the leader exits the pid can be
+// handed to another process; KillSession(leader) must not signal it.
+// Here the "leader" pid is a live process outside the session's scope,
+// as a recycled pid would be.
+func TestKillSessionLeaderRefusesAPidOutsideTheSession(t *testing.T) {
+	m := usersBus(t)
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start sleep: %v", err)
+	}
+	defer cmd.Process.Kill()
+	rec := SessionRecord{ID: "c2", UserID: 1000, SeatID: "seat0",
+		LeaderPID: uint32(cmd.Process.Pid), Scope: "/sys/fs/cgroup/c2"}
+	if err := writeJSONAtomic(sessionFile("c2"), rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.killSession("c2", "leader", int32(syscall.SIGTERM)); err == nil {
+		t.Error("Kill(leader) signalled a pid that is not in the session's scope")
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+		t.Fatal("the process outside the session was killed")
+	case <-time.After(300 * time.Millisecond):
 	}
 }

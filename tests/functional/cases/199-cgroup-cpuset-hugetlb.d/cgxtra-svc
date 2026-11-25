@@ -2,11 +2,9 @@ type = process
 depends-on: system-init
 # Cgroup extras not covered by 184: cpuset-mems (NUMA), hugetlb
 # (huge-page limits), and cpuset-partition (root/member).
-# hugetlb is a soft check: not all kernels expose the hugetlb
-# controller in cgroup v2. Slinit best-efforts the write; a warning
-# in the logs is fine, STARTED is what we assert.
-cgroup             = /slinit/199-cg
+# hugetlb is checked only where the kernel has the controller.
+cgroup             = /sys/fs/cgroup/slinit/199-cg
 cgroup-cpuset-mems = 0
-cgroup-hugetlb     = 2M 4
-cpuset-partition   = member
+cgroup-hugetlb     = 2MB 8M
+cpuset-partition   = root
 command = /bin/sh -c "exec sleep 600"

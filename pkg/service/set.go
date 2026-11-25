@@ -67,6 +67,7 @@ type ServiceSet struct {
 	propQueue    []Service // propagation queue
 	stopQueue    []Service // transition/stop queue
 	consoleQueue []Service // console access queue
+	consoleHeld  bool      // a service has the console (AcquiredConsole..releaseConsole)
 
 	// Service loader
 	loader ServiceLoader
@@ -93,8 +94,10 @@ type ServiceSet struct {
 
 	// UTMP callbacks — wired by main.go to utmp package functions.
 	// Keeping these as callbacks avoids a cgo dependency in the service package.
+	// They run on utmpQ's goroutine, never under queueMu (utmpqueue.go).
 	OnUtmpCreate func(id, line, mode string, pid int)
 	OnUtmpClear  func(id, line string)
+	utmpQ        utmpQueue
 	OnRWReady    func() // called when starts-rwfs service reaches STARTED
 	OnBootReady  func() // called when boot service reaches STARTED (for --ready-fd)
 
@@ -141,6 +144,12 @@ type ServiceSet struct {
 	// success-action triggers a system-level transition (reboot,
 	// poweroff, halt, supervisor exit). Keeping it a callback avoids
 	// pulling pkg/eventloop into pkg/service.
+	//
+	// It runs on its own goroutine. Stopped() is called with queueMu
+	// held, and the shutdown it starts takes queueMu to stop every
+	// service, so a direct call deadlocked the daemon: every
+	// success-action, failure-action and start-limit-action logged
+	// "Shutting down" and froze PID 1 there, SIGTERM included.
 	OnSystemAction func(action SystemAction, rebootArg string)
 
 	// Global daemon-level environment (from --env-file/-e)
@@ -154,6 +163,11 @@ type ServiceSet struct {
 	globalEnvSnapV uint64         // version of cached snapshot
 	globalEnvIdx   map[string]int // key → index in globalEnv for O(1) lookup
 	envListeners   []EnvListener
+	// operatorEnv holds the keys set through GlobalSetEnv (setenv-global,
+	// or a snapshot restore replaying one), as opposed to those the
+	// env-file supplied: only these are operator intent to carry across
+	// a soft reboot.
+	operatorEnv map[string]struct{}
 
 	// Parallel start limiter (from --parallel-start-limit)
 	startLimiter *StartLimiter
@@ -352,11 +366,33 @@ func (ss *ServiceSet) RemoveService(svc Service) {
 // consumer whose producer is a placeholder removes that placeholder too:
 // nothing refers to it any more.
 func (ss *ServiceSet) UnloadService(svc Service) {
+	ss.unloadService(svc, nil)
+}
+
+// UnloadServiceIfLone unloads svc only if it is STOPPED and nothing but
+// ordering links refer to it (HasLoneRef), checked under the graph lock
+// that the unload itself takes, so no dependent can attach in between.
+// It reports whether the service was unloaded. This is the gate the
+// unload control command applies; a caller that skips it strips a hard
+// dependency from every dependent, which then starts without it.
+func (ss *ServiceSet) UnloadServiceIfLone(svc Service) bool {
+	return ss.unloadService(svc, func() bool {
+		return svc.State() == StateStopped && svc.Record().HasLoneRef(0)
+	})
+}
+
+// unloadService is UnloadService's body; when allowed is non-nil it is
+// asked, under queueMu, whether the unload may go ahead.
+func (ss *ServiceSet) unloadService(svc Service, allowed func() bool) bool {
 	rec := svc.Record()
 	var ph *PlaceholderService
 	var orphan *PlaceholderService
 
 	ss.queueMu.Lock()
+	if allowed != nil && !allowed() {
+		ss.queueMu.Unlock()
+		return false
+	}
 	if consumer := rec.logConsumer; consumer != nil {
 		ph = NewPlaceholderService(ss, svc.Name())
 		r, w := rec.TransferOutputPipe()
@@ -386,6 +422,7 @@ func (ss *ServiceSet) UnloadService(svc Service) {
 	if ss.OnServiceUnloaded != nil {
 		ss.OnServiceUnloaded(svc)
 	}
+	return true
 }
 
 // ListServices returns all loaded services.
@@ -461,6 +498,63 @@ func (ss *ServiceSet) UnpinService(svc Service) {
 	ss.queueMu.Lock()
 	defer ss.queueMu.Unlock()
 	svc.Unpin()
+	ss.processQueuesLocked()
+}
+
+// The wrappers below give a caller outside the event loop — a control
+// connection, the boot-time pin replay, snapshot restore — the same
+// footing as StartService: the change is made under queueMu and what it
+// queued is drained before the lock is let go. Called bare, they raced
+// the event loop on the service's fields and on the queues themselves
+// (Stop reaches AddPropQueue; SetTrigger can run Started).
+
+// ReleaseService removes the service's explicit activation, stopping it
+// if nothing else requires it (`slinitctl release`).
+func (ss *ServiceSet) ReleaseService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Stop(false)
+	ss.processQueuesLocked()
+}
+
+// PinStopService pins the service in the stopped state.
+func (ss *ServiceSet) PinStopService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.PinStop()
+}
+
+// SetTriggerService sets or clears a triggered service's trigger; set
+// while the service is STARTING, it completes the start.
+func (ss *ServiceSet) SetTriggerService(svc *TriggeredService, triggered bool) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.SetTrigger(triggered)
+	ss.processQueuesLocked()
+}
+
+// ResetFailedService clears the service's failed flag.
+func (ss *ServiceSet) ResetFailedService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Record().ResetFailed()
+}
+
+// MarkRestartingService records that a start follows the coming stop
+// (see MarkRestarting).
+func (ss *ServiceSet) MarkRestartingService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Record().MarkRestarting()
+}
+
+// StartOnceService starts the service with auto-restart turned off
+// (`slinitctl once`).
+func (ss *ServiceSet) StartOnceService(svc Service) {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+	svc.Record().SetAutoRestart(RestartNever)
+	svc.Start()
 	ss.processQueuesLocked()
 }
 
@@ -573,14 +667,22 @@ func (ss *ServiceSet) processQueuesLocked() {
 // both are empty.
 func (ss *ServiceSet) drainQueuesLocked() {
 	for len(ss.propQueue) > 0 || len(ss.stopQueue) > 0 {
-		// Drain propagation queue using index to avoid reslicing overhead
-		pq := ss.propQueue
-		ss.propQueue = nil
-		for i := range pq {
-			svc := pq[i]
-			pq[i] = nil // allow GC
-			svc.Record().InPropQueue = false
-			svc.Record().DoPropagation()
+		// Drain the propagation queue until it is empty, including
+		// whatever the propagations themselves queue, before running a
+		// transition — dinit's process_queues() does the same (inner
+		// while over prop_queue). One pass over a snapshot let a
+		// transition run while a release was still queued: the
+		// dependency reached STOPPED still counted as required, and the
+		// later release found it STOPPED and never uncounted it.
+		for len(ss.propQueue) > 0 {
+			pq := ss.propQueue
+			ss.propQueue = nil
+			for i := range pq {
+				svc := pq[i]
+				pq[i] = nil // allow GC
+				svc.Record().InPropQueue = false
+				svc.Record().DoPropagation()
+			}
 		}
 
 		if len(ss.stopQueue) > 0 {
@@ -597,8 +699,18 @@ func (ss *ServiceSet) drainQueuesLocked() {
 // --- Console queue ---
 
 // AppendConsoleQueue adds a service to the console wait queue.
+//
+// When the console is free and nobody else is waiting, the new waiter
+// gets it at once. Nothing else would hand it over: the queue is only
+// pulled when a holder releases the console, so a starts-on-console
+// service with no holder ahead of it stayed STARTING forever. dinit
+// does the same on the empty-to-non-empty step, once its own console
+// log has flushed — slinit's log does not hold the console.
 func (ss *ServiceSet) AppendConsoleQueue(svc Service) {
 	ss.consoleQueue = append(ss.consoleQueue, svc)
+	if len(ss.consoleQueue) == 1 && !ss.consoleHeld {
+		ss.PullConsoleQueue()
+	}
 }
 
 // PullConsoleQueue dispatches the next service waiting for the console.
@@ -611,12 +723,13 @@ func (ss *ServiceSet) PullConsoleQueue() {
 	front.Record().AcquiredConsole()
 }
 
-// UnqueueConsole removes a service from the console queue.
+// UnqueueConsole removes a service from the console queue, keeping
+// the others in the order they asked for it.
 func (ss *ServiceSet) UnqueueConsole(svc Service) {
 	for i, s := range ss.consoleQueue {
 		if s == svc {
 			last := len(ss.consoleQueue) - 1
-			ss.consoleQueue[i] = ss.consoleQueue[last]
+			copy(ss.consoleQueue[i:], ss.consoleQueue[i+1:])
 			ss.consoleQueue[last] = nil
 			ss.consoleQueue = ss.consoleQueue[:last]
 			return
@@ -837,6 +950,22 @@ func (ss *ServiceSet) GlobalEnv() []string {
 	return snap
 }
 
+// OperatorGlobalEnv returns, as KEY=VALUE, the global variables set
+// through GlobalSetEnv, leaving out those only the env-file supplied.
+func (ss *ServiceSet) OperatorGlobalEnv() []string {
+	ss.envMu.Lock()
+	defer ss.envMu.Unlock()
+	var out []string
+	for _, e := range ss.globalEnv {
+		if k, _, ok := strings.Cut(e, "="); ok {
+			if _, op := ss.operatorEnv[k]; op {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
 // GlobalSetEnv sets a global environment variable and notifies listeners.
 func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 	ss.envMu.Lock()
@@ -852,6 +981,10 @@ func (ss *ServiceSet) GlobalSetEnv(key, value string) {
 		ss.globalEnvIdx[key] = len(ss.globalEnv)
 		ss.globalEnv = append(ss.globalEnv, varStr)
 	}
+	if ss.operatorEnv == nil {
+		ss.operatorEnv = make(map[string]struct{})
+	}
+	ss.operatorEnv[key] = struct{}{}
 	ss.globalEnvVer++
 	listeners := ss.copyEnvListeners()
 	ss.envMu.Unlock()
@@ -877,6 +1010,7 @@ func (ss *ServiceSet) GlobalUnsetEnv(key string) {
 	}
 	ss.globalEnv = ss.globalEnv[:last]
 	delete(ss.globalEnvIdx, key)
+	delete(ss.operatorEnv, key)
 	ss.globalEnvVer++
 	listeners := ss.copyEnvListeners()
 	ss.envMu.Unlock()

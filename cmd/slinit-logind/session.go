@@ -87,6 +87,12 @@ var sessionMu sync.Mutex
 // nextSessionID returns the next monotonically-increasing session id
 // in elogind's "c<N>" shape. Persisted across restarts via
 // /run/slinit-logind/next-session-id — a bare integer counter file.
+//
+// The counter is replaced through a temporary file and a rename, and an
+// id whose session record exists is skipped. It used to be rewritten in
+// place: a write that failed on a full /run left the file empty, that
+// read back as 0, and the next login was handed c1 again, whose record
+// CreateSession then overwrote while that session was still running.
 func nextSessionID() (string, error) {
 	path := filepath.Join(stateRoot, "next-session-id")
 	var n uint64
@@ -94,7 +100,15 @@ func nextSessionID() (string, error) {
 		n, _ = strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
 	}
 	n++
-	if err := os.WriteFile(path, []byte(strconv.FormatUint(n, 10)), 0644); err != nil {
+	for fileExists(sessionFile("c" + strconv.FormatUint(n, 10))) {
+		n++
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(n, 10)), 0644); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		return "", err
 	}
 	return "c" + strconv.FormatUint(n, 10), nil
@@ -947,6 +961,9 @@ func (m *manager) ActivateSession(id string) *dbus.Error {
 // ActivateSessionOnSeat is ActivateSession with the seat checked, as in
 // elogind: activating a session through a seat it is not on is refused.
 func (m *manager) ActivateSessionOnSeat(id, seat string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
 	var rec SessionRecord
 	if !readJSON(sessionFile(id), &rec) {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
@@ -1021,15 +1038,76 @@ func (m *manager) sendSessionLock(id string, lock bool) {
 	_ = m.conn.Emit(sessionPath(id), sessionIface+"."+name)
 }
 
-// TerminateSession is Manager.TerminateSession — semantically the
-// same as ReleaseSession for our purposes (both tear the record
-// down). GDM's greeter and lightdm's session-switch button call
-// TerminateSession; without it the greeter switch-user hangs.
+// TerminateSession is Manager.TerminateSession: the session's processes
+// are killed and its records torn down (terminateSession). GDM's greeter
+// and lightdm's session-switch button call TerminateSession; without it
+// the greeter switch-user hangs.
 func (m *manager) TerminateSession(sender dbus.Sender, id string) *dbus.Error {
 	if err := m.authorizeSessionOwner(sender, id, "TerminateSession"); err != nil {
 		return err
 	}
+	return m.terminateSession(id)
+}
+
+// terminateGrace is how long a terminated session's processes have to
+// exit after SIGTERM and SIGHUP before what is left is SIGKILLed. A
+// variable for the tests.
+var terminateGrace = 5 * time.Second
+
+// terminateSession ends a session the way systemd's session_stop(force)
+// does, by stopping its scope: every process in it gets SIGTERM, SIGCONT
+// and SIGHUP (bash and friends ignore SIGTERM, which is why systemd sets
+// SendSIGHUP on session scopes), and whatever is still there after
+// terminateGrace is SIGKILLed. Then the records go, as in releaseSession.
+//
+// It used to be releaseSession alone: the records went and every process
+// of the session kept running, no longer tracked by anything — loginctl
+// terminate-user left the user's desktop up and running.
+//
+// Only pids read from the session's own cgroup.procs are signalled, and
+// the SIGKILL goes through the scope's cgroup.kill, so nothing outside
+// the scope is reached. The follow-up is asynchronous, so the bus handler
+// does not wait out the grace period.
+func (m *manager) terminateSession(id string) *dbus.Error {
+	if !validSessionID(id) {
+		return errBadSessionID(id)
+	}
+	var rec SessionRecord
+	if !readJSON(sessionFile(id), &rec) {
+		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
+			[]interface{}{id})
+	}
+	if scopeUnderCgroupFS(rec.Scope) {
+		for _, pid := range scopeProcs(rec.Scope) {
+			_ = killPID(pid, int32(unix.SIGTERM))
+			_ = killPID(pid, int32(unix.SIGCONT))
+			_ = killPID(pid, int32(unix.SIGHUP))
+		}
+		scope, procs := rec.Scope, scopeProcs
+		time.AfterFunc(terminateGrace, func() { killScope(scope, procs) })
+	}
 	return m.releaseSession(id)
+}
+
+// killScope SIGKILLs what is left in a terminated session's scope and
+// removes it. cgroup.kill (Linux 5.14) kills the whole tree at once,
+// including anything forked meanwhile; without it, each pid still listed
+// is killed, read again from procs rather than remembered: a pid seen
+// at SIGTERM time may since have been handed to another process. The
+// scope is opened without O_CREAT so a scope that has gone away is not
+// recreated as a plain file.
+func killScope(scope string, procs func(string) []int) {
+	f, err := os.OpenFile(scope+"/cgroup.kill", os.O_WRONLY, 0)
+	if err == nil {
+		_, err = f.WriteString("1")
+		f.Close()
+	}
+	if err != nil {
+		for _, pid := range procs(scope) {
+			_ = killPID(pid, int32(unix.SIGKILL))
+		}
+	}
+	_ = os.Remove(scope) // rmdir; EBUSY tolerated, as in releaseSession
 }
 
 // TerminateUser tears down every session owned by the uid then drops
@@ -1042,7 +1120,7 @@ func (m *manager) TerminateUser(sender dbus.Sender, uid uint32) *dbus.Error {
 	for _, f := range files {
 		var rec SessionRecord
 		if readJSON(f, &rec) && rec.UserID == uid {
-			_ = m.releaseSession(rec.ID)
+			_ = m.terminateSession(rec.ID)
 		}
 	}
 	return nil
@@ -1060,7 +1138,7 @@ func (m *manager) TerminateSeat(sender dbus.Sender, id string) *dbus.Error {
 	for _, f := range files {
 		var rec SessionRecord
 		if readJSON(f, &rec) && rec.SeatID == id {
-			_ = m.releaseSession(rec.ID)
+			_ = m.terminateSession(rec.ID)
 		}
 	}
 	return nil
@@ -1112,24 +1190,50 @@ func (m *manager) killSession(id, who string, sig int32) *dbus.Error {
 		return dbus.NewError("org.freedesktop.login1.Error.NoSuchSession",
 			[]interface{}{id})
 	}
+	// As systemd: "leader" signals the leader alone, with the signal
+	// asked for; "all", or nothing, the whole session; anything else is
+	// refused rather than taken as "all".
+	switch who {
+	case "leader":
+		if rec.LeaderPID == 0 {
+			return dbus.NewError("org.freedesktop.DBus.Error.Failed",
+				[]any{"session " + id + " has no leader"})
+		}
+		if err := killLeader(rec, sig); err != nil {
+			return dbus.NewError("org.freedesktop.DBus.Error.Failed",
+				[]any{fmt.Sprintf("kill leader %d: %v", rec.LeaderPID, err)})
+		}
+		return nil
+	case "", "all":
+	default:
+		return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs",
+			[]any{fmt.Sprintf("Invalid kill parameter '%s'", who)})
+	}
 	if !scopeUnderCgroupFS(rec.Scope) {
 		return errBadSessionID(id)
 	}
-	if who == "leader" {
-		_ = writeInt(rec.Scope+"/cgroup.kill", 1) // fastest path on newer kernels
-		return nil
-	}
 	// Full-tree kill: signal every PID in cgroup.procs.
-	if b, err := os.ReadFile(rec.Scope + "/cgroup.procs"); err == nil {
-		for _, line := range strings.Fields(string(b)) {
-			pid, err := strconv.Atoi(line)
-			if err != nil {
-				continue
-			}
-			_ = killPID(pid, sig)
-		}
+	for _, pid := range scopeProcs(rec.Scope) {
+		_ = killPID(pid, sig)
 	}
 	return nil
+}
+
+// scopeProcs lists the pids in a session's scope, from its cgroup.procs.
+// A variable because the tests cannot create a cgroup to put a process
+// in.
+var scopeProcs = func(scope string) []int {
+	b, err := os.ReadFile(scope + "/cgroup.procs")
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Fields(string(b)) {
+		if pid, err := strconv.Atoi(line); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 // --- helpers ---
@@ -1141,6 +1245,9 @@ func userFile(uid uint32) string {
 func fifoPath(id string) string { return filepath.Join(stateRoot, "sessions", id+".fifo") }
 
 func sessionExistsLocked(id string) bool {
+	if !validSessionID(id) {
+		return false
+	}
 	_, err := os.Stat(sessionFile(id))
 	return err == nil
 }
@@ -1194,17 +1301,15 @@ func ensureCgroup(path string) error {
 	return os.MkdirAll(path, 0755)
 }
 
-// writeInt drops a decimal integer into a file — cgroup interface
-// files (cgroup.kill, cgroup.procs) take that shape.
-func writeInt(path string, v int) error {
-	return os.WriteFile(path, []byte(strconv.Itoa(v)), 0644)
-}
+// passwdPath is the user database lookupUsername and lookupGID read; a
+// variable for the tests.
+var passwdPath = "/etc/passwd"
 
 func lookupUsername(uid uint32) string {
 	// Bare /etc/passwd read — avoids CGO dependency of os/user on
 	// glibc's nss. Falls back to "uid=N" when the mapping isn't
 	// resolvable (dynamic user, stale entry).
-	b, err := os.ReadFile("/etc/passwd")
+	b, err := os.ReadFile(passwdPath)
 	if err != nil {
 		return fmt.Sprintf("uid=%d", uid)
 	}
@@ -1219,6 +1324,27 @@ func lookupUsername(uid uint32) string {
 		}
 	}
 	return fmt.Sprintf("uid=%d", uid)
+}
+
+// lookupGID returns the uid's primary group from its passwd entry, read
+// the way lookupUsername reads the name. Without an entry it is the uid,
+// which is what User.GID always reported before.
+func lookupGID(uid uint32) uint32 {
+	b, err := os.ReadFile(passwdPath)
+	if err != nil {
+		return uid
+	}
+	uidStr := strconv.FormatUint(uint64(uid), 10)
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.SplitN(line, ":", 5)
+		if len(fields) < 4 || fields[2] != uidStr {
+			continue
+		}
+		if gid, err := strconv.ParseUint(fields[3], 10, 32); err == nil {
+			return uint32(gid)
+		}
+	}
+	return uid
 }
 
 // validSessionID reports whether id is safe to put in a filesystem

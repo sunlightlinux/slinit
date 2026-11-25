@@ -1,10 +1,10 @@
 type = process
 depends-on: system-init
-# options-flags cluster A — behavioral flags on the Flags struct that
-# don't need a target syscall to prove they parse correctly:
-#   unmask-intr        — child inherits SIGINT unmasked
-#   skippable          — the boot graph is allowed to proceed past this
-#                        svc even if it fails/skips
-#   start-interruptible — allow slinitctl stop during STARTING
-options = unmask-intr skippable start-interruptible
+# options-flags cluster A:
+#   unmask-intr         — with runs-on-console, the console becomes the
+#                         child's controlling terminal, so ^C reaches it
+#   skippable           — parse coverage (scripted-only semantics)
+#   start-interruptible — parse coverage; observed on a scripted
+#                         service in case 249
+options = runs-on-console unmask-intr skippable start-interruptible
 command = /bin/sh -c "exec sleep 600"

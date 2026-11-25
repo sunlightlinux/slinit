@@ -28,6 +28,15 @@
 # that almost never overlap inside the daemon. Process spawn dominates;
 # contention is microscopic.
 #
+# (That twelve-second run had a harness fault of its own: workers 1-2
+# called `setenv KEY=V` and `unsetenv KEY`, which take a service name
+# first, so every call was a usage error that never reached the daemon;
+# worker 8's `reset-failed` lacked `--all` and its `stop
+# --ignore-unstarted` put a global flag after the verb, both usage
+# errors too. They now send setenv-global/unsetenv-global,
+# `reset-failed --all` and `--ignore-unstarted stop`. The conclusion
+# above was not re-measured with them.)
+#
 # The real guards are Go-level, where contention can be manufactured
 # where it actually happens: pkg/service/globalenv_race_test.go,
 # env_race_test.go, depgraph_race_test.go and
@@ -41,12 +50,20 @@ echo "INFO: PID 1 starttime before: $_pid1_start_before"
 
 # Targets for the dependency churn. Loaded up front so the churn is
 # about the graph, not about loading.
+#
+# There is no `load` verb: `slinitctl load X` was a usage error (exit 2)
+# that never reached the daemon, so neither this loop nor workers 5-6
+# loaded anything — the DirLoader churn this case claims was never
+# driven. `status X` sends CmdLoadService, which loads the description
+# from disk, so it is the load. Each worker 5-6 counts how many of its
+# loads succeeded and the case requires that to be non-zero.
 for i in 1 2 3 4; do
     cat > /etc/slinit.d/storm-target-$i <<EOF
 type = internal
 EOF
-    slinitctl --system load storm-target-$i > /dev/null 2>&1
+    slinitctl --system status storm-target-$i > /dev/null 2>&1
 done
+rm -f /run/241-loads-5 /run/241-loads-6
 
 _end=$(( $(date +%s) + STORM_SECS ))
 
@@ -59,8 +76,8 @@ for w in 1 2; do
         n=0
         while [ "$(date +%s)" -lt "$_end" ]; do
             n=$((n + 1))
-            slinitctl --system setenv "STORM_${w}_$((n % 8))=v$n" > /dev/null 2>&1
-            slinitctl --system unsetenv "STORM_${w}_$(((n + 3) % 8))" > /dev/null 2>&1
+            slinitctl --system setenv-global "STORM_${w}_$((n % 8))=v$n" > /dev/null 2>&1
+            slinitctl --system unsetenv-global "STORM_${w}_$(((n + 3) % 8))" > /dev/null 2>&1
             slinitctl --system getallenv-global > /dev/null 2>&1
         done
     ) &
@@ -86,14 +103,18 @@ done
 for w in 5 6; do
     (
         n=0
+        loaded=0
         while [ "$(date +%s)" -lt "$_end" ]; do
             n=$((n + 1))
             svc="storm-churn-${w}-${n}"
             printf 'type = scripted\ncommand = /bin/true\nmanual = yes\n' > "/etc/slinit.d/$svc"
-            slinitctl --system load "$svc" > /dev/null 2>&1
+            if slinitctl --system status "$svc" > /dev/null 2>&1; then
+                loaded=$((loaded + 1))
+            fi
             slinitctl --system unload "$svc" > /dev/null 2>&1
             rm -f "/etc/slinit.d/$svc"
         done
+        echo "$loaded" > /run/241-loads-$w
     ) &
 done
 
@@ -110,9 +131,9 @@ done
 # 8: the rest of the mutating surface.
 (
     while [ "$(date +%s)" -lt "$_end" ]; do
-        slinitctl --system reset-failed > /dev/null 2>&1
+        slinitctl --system reset-failed --all > /dev/null 2>&1
         slinitctl --system start storm-target-1 > /dev/null 2>&1
-        slinitctl --system stop --ignore-unstarted storm-target-1 > /dev/null 2>&1
+        slinitctl --system --ignore-unstarted stop storm-target-1 > /dev/null 2>&1
         slinitctl --system boot-time > /dev/null 2>&1
     done
 ) &
@@ -151,6 +172,20 @@ if [ "${_fatal:-0}" -eq 0 ]; then
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: $_fatal runtime-fatal lines found"
+fi
+
+# Workers 5-6 must actually have loaded services — otherwise the
+# DirLoader churn above was a loop of failed requests.
+_loads5=$(cat /run/241-loads-5 2>/dev/null)
+_loads6=$(cat /run/241-loads-6 2>/dev/null)
+_loads=$(( ${_loads5:-0} + ${_loads6:-0} ))
+echo "INFO: services loaded by workers 5-6: ${_loads5:-?} + ${_loads6:-?}"
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ "$_loads" -gt 0 ]; then
+    echo "OK: the load/unload churn loaded $_loads services"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: workers 5-6 loaded nothing — the churn never reached the loader"
 fi
 
 # The storm must not have left the graph wedged: boot still resolves and

@@ -1,0 +1,7 @@
+#!/sbin/openrc-run
+depend() {
+    :
+}
+start() {
+    return 0
+}

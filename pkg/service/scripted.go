@@ -61,6 +61,17 @@ type ScriptedService struct {
 	// one, and `normal-exit` could never match.
 	exitStatus ExitStatus
 
+	// startTimedOut records that this start attempt's start-timeout
+	// fired. Per attempt, unlike stopReason, which outlives the attempt
+	// and must not decide how the next one ends. Cleared in BringUp.
+	startTimedOut bool
+
+	// interruptingStart records that the start command was told to give
+	// up — by a stop or by the start-timeout — so that its exit, in
+	// STOPPING, ends the cancelled start rather than a stop command (as
+	// dinit's scripted_service::interrupting_start).
+	interruptingStart bool
+
 	// Monitoring
 	doneCh        chan struct{}
 	timerUpdateCh chan struct{} // signaled when a new timer is armed
@@ -248,6 +259,8 @@ func (s *ScriptedService) BringUp() bool {
 	}
 
 	s.exitStatus = ExitStatus{}
+	s.startTimedOut = false
+	s.interruptingStart = false
 
 	if err := s.Record().resolveDeferredRunAs(); err != nil {
 		s.services.logger.Error("Service '%s': %v", s.serviceName, err)
@@ -375,8 +388,8 @@ func (s *ScriptedService) BringUp() bool {
 	s.startHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Create utmp entry for the start process
-	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
-		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
+	if s.HasUtmp() {
+		s.services.utmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
 	}
 
 	// Monitor the start command
@@ -410,6 +423,9 @@ func (s *ScriptedService) BringDown() {
 		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
+	// Use the credentials the main command was started with; the
+	// service's stop removes them.
+	params.ReuseCredentials = true
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
@@ -443,18 +459,43 @@ func (s *ScriptedService) CanInterruptStart() bool {
 	return s.Flags.StartInterruptible
 }
 
-// InterruptStart sends SIGINT to the start command.
+// InterruptStart sends SIGINT to the start command. With a command to
+// wait for it returns false, leaving the service STOPPING (see
+// stopInterruptedStart), as dinit's issue_start_interrupt does.
 func (s *ScriptedService) InterruptStart() bool {
 	if s.waitingForDeps {
 		return true
 	}
 
 	if s.startPID > 0 && s.Flags.StartInterruptible {
-		process.SignalProcess(s.startPID, 2, false) // SIGINT
-		return false                                // Wait for it to die
+		s.services.logger.Info("Service '%s': interrupting start (SIGINT to %d)",
+			s.serviceName, s.startPID)
+		process.SignalProcess(s.startPID, syscall.SIGINT, false)
+		s.stopInterruptedStart()
+		return false // Wait for it to die
 	}
 
 	return s.startPID <= 0
+}
+
+// stopInterruptedStart moves a start whose command has just been told to
+// give up — by a stop arriving while STARTING, or by the start-timeout —
+// to STOPPING with the stop-timeout armed, as dinit's
+// issue_start_interrupt does. The command's exit then ends the start
+// (handleStartExit), and one that ignores the signal is killed by the
+// stop-timeout. Left in STARTING, a cancelled start was reported as a
+// failure when the command died of the SIGINT, the stop command never
+// ran, and a command ignoring SIGINT held the service there for good.
+func (s *ScriptedService) stopInterruptedStart() {
+	s.interruptingStart = true
+	if s.stopTimeout > 0 {
+		s.armTimer(s.stopTimeout, scriptedTimerStopTimeout)
+	} else {
+		s.cancelTimer()
+	}
+	s.state.Store(StateStopping)
+	// The service has left STARTING: give its start slot back.
+	s.dropStartSlot()
 }
 
 func (s *ScriptedService) monitorStart(exitCh <-chan process.ChildExit) {
@@ -515,8 +556,8 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	}
 
 	// Clear utmp entry
-	if s.HasUtmp() && s.services.OnUtmpClear != nil {
-		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	if s.HasUtmp() {
+		s.services.utmpClear(s.inittabID, s.inittabLine)
 	}
 
 	s.services.queueMu.Lock()
@@ -526,6 +567,12 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	s.startHandle.Clear()
 	s.cancelTimer()
 	s.recordExit(exit)
+
+	if s.interruptingStart && s.state.Load() == StateStopping {
+		s.endInterruptedStart(exit)
+		s.services.processQueuesLocked()
+		return
+	}
 
 	if exit.ExecErr != nil {
 		s.services.logger.Error("Service '%s': start command exec failed: %v",
@@ -539,7 +586,7 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 	if exit.ExitedClean() {
 		// Start command succeeded — but if a timeout already fired,
 		// the service should still be treated as failed.
-		if s.stopReason == ReasonTimedOut {
+		if s.startTimedOut {
 			s.services.logger.Error("Service '%s': start command completed after timeout",
 				s.serviceName)
 			s.failedToStart(false, true)
@@ -557,11 +604,35 @@ func (s *ScriptedService) handleStartExit(exit process.ChildExit) {
 		}
 		s.services.logger.Error("Service '%s': start command failed (exit code: %d)",
 			s.serviceName, exitCode)
-		if s.stopReason != ReasonTimedOut {
+		if !s.startTimedOut {
 			s.stopReason = ReasonFailed
 		}
 		s.failedToStart(false, true)
 		s.services.processQueuesLocked()
+	}
+}
+
+// endInterruptedStart finishes a start that was interrupted, once its
+// command has exited. As in dinit's scripted_service::handle_exit_status:
+// a command that exited with a failure status is taken to need no
+// cleanup, and the service is stopped; one that completed, or died of
+// the signal, may have set something up, so the stop command runs.
+// Caller holds queueMu.
+func (s *ScriptedService) endInterruptedStart(exit process.ChildExit) {
+	s.interruptingStart = false
+	switch {
+	case exit.ExecErr != nil:
+		s.Stopped()
+	case exit.Exited() && exit.Status.ExitStatus() != 0:
+		s.services.logger.Info("Service '%s': start cancelled; exit code %d",
+			s.serviceName, exit.Status.ExitStatus())
+		s.Stopped()
+	default:
+		if exit.Signaled() {
+			s.services.logger.Info("Service '%s': start cancelled from signal %d",
+				s.serviceName, int(exit.Status.Signal()))
+		}
+		s.BringDown()
 	}
 }
 
@@ -609,25 +680,42 @@ func (s *ScriptedService) handleTimerExpired() {
 
 	switch purpose {
 	case scriptedTimerStartTimeout:
-		if s.startPID > 0 {
-			s.services.logger.Error("Service '%s': start command timeout, sending SIGKILL",
-				s.serviceName)
-			process.SignalProcess(s.startPID, 9, false) // SIGKILL
-		}
-		// Mark as timed out so that handleStartExit (or immediate stop)
-		// records the correct reason. If the process is already gone,
-		// transition to failed immediately.
 		s.stopReason = ReasonTimedOut
+		s.startTimedOut = true
 		if s.startPID <= 0 {
 			s.failedToStart(false, true)
 			s.services.processQueuesLocked()
+			return
 		}
+		// Cancel the start as a stop would, then fail it: STOPPING with
+		// the stop-timeout armed, the command's exit ending the start
+		// and, if it died of the signal, running the stop command
+		// (dinit's start_timed_out). The SIGKILL is left to the
+		// stop-timeout, for a command that ignores SIGINT.
+		s.services.logger.Error("Service '%s': start command timeout, sending SIGINT",
+			s.serviceName)
+		process.SignalProcess(s.startPID, syscall.SIGINT, false)
+		s.stopInterruptedStart()
+		if s.stopTimeout <= 0 {
+			// No stop-timeout to escalate on (0 means "never", as for
+			// an operator stop). A timed-out start must still end: 4.0.2
+			// killed it at the start-timeout, so give the command one
+			// more start-timeout to honour SIGINT, then SIGKILL.
+			s.armTimer(s.startTimeout, scriptedTimerStopTimeout)
+		}
+		s.failedToStart(false, false)
+		s.services.processQueuesLocked()
 
 	case scriptedTimerStopTimeout:
 		if s.stopPID > 0 {
 			s.services.logger.Error("Service '%s': stop command timeout, sending SIGKILL",
 				s.serviceName)
 			process.SignalProcess(s.stopPID, 9, false) // SIGKILL
+		} else if s.startPID > 0 {
+			// Still the start command: an interrupted start it ignored.
+			s.services.logger.Error("Service '%s': interrupted start command still running at stop timeout, sending SIGKILL",
+				s.serviceName)
+			process.SignalProcess(s.startPID, syscall.SIGKILL, false)
 		}
 		// Kill entire cgroup tree on SIGKILL escalation
 		if s.Flags.KillAllOnStop {

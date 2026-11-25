@@ -77,14 +77,34 @@ func parseLine(line string) (spec, error) {
 	if strings.ContainsAny(rawKey, "*?") {
 		return spec{}, fmt.Errorf("wildcards not supported: %q", rawKey)
 	}
-	// Kernel accepts either dotted or slashed keys; normalise to
-	// slashes so we can Join onto /proc/sys directly.
-	slashed := strings.ReplaceAll(rawKey, ".", "/")
+	// Normalise to slashes so we can Join onto /proc/sys directly, as
+	// sysctl.d(5) does: if the first separator is '.', dots and slashes
+	// swap (net.ipv4.conf.eth0/100.rp_filter names the VLAN eth0.100);
+	// if it is '/', the key is used as is, dots included.
+	slashed := rawKey
+	if i := strings.IndexAny(rawKey, "./"); i >= 0 && rawKey[i] == '.' {
+		slashed = strings.Map(func(r rune) rune {
+			switch r {
+			case '.':
+				return '/'
+			case '/':
+				return '.'
+			}
+			return r
+		}, rawKey)
+	}
 	if strings.HasPrefix(slashed, "/") {
 		return spec{}, fmt.Errorf("key cannot start with '/': %q", rawKey)
 	}
 	if strings.Contains(slashed, "//") {
 		return spec{}, fmt.Errorf("key cannot contain empty segments: %q", rawKey)
+	}
+	// Dots now survive in a slashed key, so "." and ".." must be
+	// refused as elements: they would leave /proc/sys.
+	for _, el := range strings.Split(slashed, "/") {
+		if el == "." || el == ".." {
+			return spec{}, fmt.Errorf("key cannot contain %q elements: %q", el, rawKey)
+		}
 	}
 	return spec{
 		key:          slashed,

@@ -9,16 +9,12 @@ import (
 // DEPFAILED there sends an operator looking for a failure that never
 // happened.
 //
-// slinit already gets this right, and the test exists to keep it that
-// way. dinit did not: its stop_dependents() hardcoded DEPFAILED, with
-// its own "FIXME is it really though?" beside it, until 9dd8343
-// (2026-10-17) replaced it with the parent's reason propagated. slinit
-// has the same hardcoded line, but measurably never reaches it — a
-// probe inserted on that branch printed nothing for this scenario,
-// because `desired` is not yet STOPPED when stopDependents runs. The
-// dependent's NORMAL therefore comes from the field's zero value
-// rather than from a decision, which is exactly the kind of agreement
-// that breaks silently later.
+// dinit's stop_dependents() hardcoded DEPFAILED here, with its own
+// "FIXME is it really though?" beside it, until 9dd8343 (2026-10-17)
+// replaced it with the parent's reason propagated (is_dept_failure).
+// slinit had the same hardcoded line; it now picks NORMAL or DEPFAILED
+// from the dependency's own stop reason as dinit does, and skips a
+// dependent that is already STOPPED.
 func TestForceStopOfDependencyLeavesDependentStoppedNormally(t *testing.T) {
 	set, _ := newTestSet()
 

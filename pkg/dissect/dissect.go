@@ -48,6 +48,10 @@ var JournalSubpaths = []string{
 	"var/log/journal", // read systemd journals too when we can
 }
 
+// geteuid is os.Geteuid; a var so tests can run Attach against stub
+// tools without root.
+var geteuid = os.Geteuid
+
 // Attach opens the image at path, sets up a read-only loop device
 // (with partition scanning enabled), mounts the first filesystem
 // containing a recognised journal directory, and returns the
@@ -60,7 +64,7 @@ var JournalSubpaths = []string{
 // The caller MUST invoke the returned Detach on every exit path
 // (success or error return of the query) to release the loop device.
 func Attach(path string, policy *Policy) (mountDir, journalDir string, detach func() error, err error) {
-	if os.Geteuid() != 0 {
+	if geteuid() != 0 {
 		return "", "", nil, errors.New("dissect: --image requires root (loop + mount syscalls)")
 	}
 	info, err := os.Stat(path)
@@ -106,6 +110,8 @@ func Attach(path string, policy *Policy) (mountDir, journalDir string, detach fu
 		// Skip encrypted / LVM / verity holders when policy is strict.
 		if policy != nil && policy.Strict {
 			if kind, err := probeDeviceKind(dev); err == nil && kind != "" {
+				_ = os.Remove(tmpMount)
+				_ = detachLoop()
 				return "", "", nil, fmt.Errorf(
 					"dissect: --image-policy=strict refuses %s device %s (LUKS/LVM/verity unsupported by slinit dissect)",
 					kind, dev)
@@ -155,11 +161,13 @@ func loopPartitions(loopDev string) ([]string, error) {
 	return parts, nil
 }
 
-// mountRO calls mount(8) with -o ro. Filesystem type is auto-
+// mountRO calls mount(8) with -o ro,nosuid,nodev,noexec: the image
+// is untrusted, so neither a setuid binary nor a device node on it
+// may be usable through the mount. Filesystem type is auto-
 // detected — mount tries every /proc/filesystems entry the kernel
 // knows about. Returns nil on success, wrapped error otherwise.
 func mountRO(dev, mountpoint string) error {
-	cmd := exec.Command("mount", "-o", "ro", dev, mountpoint)
+	cmd := exec.Command("mount", "-o", "ro,nosuid,nodev,noexec", dev, mountpoint)
 	if out, err := process.CombinedOutputAdhoc(cmd); err != nil {
 		return fmt.Errorf("mount %s → %s: %v (%s)", dev, mountpoint, err, strings.TrimSpace(string(out)))
 	}

@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"syscall"
 )
 
 // OpenSecondaryConsoles opens every enabled kernel console listed in
@@ -32,7 +31,9 @@ func OpenSecondaryConsoles() (io.Writer, []io.Closer) {
 		if name == "" {
 			continue
 		}
-		f, err := os.OpenFile("/dev/"+name, os.O_WRONLY|syscall.O_NOCTTY, 0)
+		// OpenConsole: the mirror is written under the scheduling lock,
+		// and a stopped console must not hold PID 1 up.
+		f, err := OpenConsole("/dev/" + name)
 		if err != nil {
 			continue
 		}

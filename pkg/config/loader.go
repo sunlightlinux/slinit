@@ -851,6 +851,30 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
+	// Validate: chroot is implemented for type = process only. Every
+	// other type ignored it, so a scripted or bgprocess service
+	// configured into a jail ran outside it — a confinement the
+	// configuration claimed and did not have. That fails closed now, as
+	// missing confinement does elsewhere.
+	if desc.Type != service.TypeProcess {
+		if desc.Chroot != "" {
+			return nil, &ServiceLoadError{
+				ServiceName: name,
+				Message: fmt.Sprintf("chroot is only supported for type = process "+
+					"(type = %s would run outside the jail)", desc.Type),
+			}
+		}
+		// The rest are ignored on other types too, but nothing is
+		// confined by them, so a config that loads today keeps loading
+		// and is told: lock-file's one-instance guarantee does not
+		// hold there.
+		if desc.LockFile != "" || desc.NewSession || desc.CloseStdin || desc.CloseStdout || desc.CloseStderr {
+			fmt.Fprintf(os.Stderr, "slinit: service %q: lock-file/new-session/close-stdin/"+
+				"close-stdout/close-stderr are only supported for type = process; "+
+				"ignored for type = %s\n", name, desc.Type)
+		}
+	}
+
 	// Validate: watchdog-timeout piggybacks on the ready-notification pipe.
 	// Without one configured the service has no channel through which to
 	// send keepalives, so the watchdog would fire as soon as it armed.
@@ -1059,6 +1083,16 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 	// Create the service based on type
 	svc := dl.createService(name, desc)
 
+	// A service that IS a shared-logger sink records its lossy /
+	// queue-size on its own record; the loader reads them back when a
+	// producer registers via setupSharedLogger. Set before the
+	// dependencies load: a logger that depends on its producer, as a
+	// shared logger usually does, loads that producer from
+	// loadDependencies below, and the producer creates the mux from
+	// these two values. Set after, the mux was always the blocking one.
+	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
+	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
+
 	// An unload of this service may have left a placeholder holding its
 	// log consumer and output pipe (see ServiceSet.UnloadService). The
 	// new record takes both over once it has loaded; until then, and if
@@ -1124,11 +1158,6 @@ func (dl *DirLoader) loadServiceImpl(name string, depth int) (service.Service, e
 		}
 	}
 
-	// A service that IS a shared-logger sink records its lossy /
-	// queue-size on its own record; the loader reads them back when a
-	// producer registers via setupSharedLogger.
-	svc.Record().SetSharedLoggerLossy(desc.SharedLoggerLossy)
-	svc.Record().SetSharedLoggerQueueSize(desc.SharedLoggerQueueSize)
 	svc.Record().SetProfiles(desc.Profiles)
 	svc.Record().SetBundleMembers(desc.BundleMembers)
 
@@ -1170,6 +1199,19 @@ func canFeedConsumer(svc service.Service) bool {
 }
 
 func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, error) {
+	// The name, argument included, is joined onto each service, init.d,
+	// unit and overlay directory below, and Join resolves ".." — so
+	// "a/../../tmp/x" or "x@/../../tmp/x" loaded a file from outside
+	// every one of them. ValidateServiceName permits '/' (and anything
+	// after '@'), so the check is here, where the paths are made.
+	for _, elem := range strings.Split(name, "/") {
+		if elem == ".." {
+			return nil, "", &ServiceLoadError{
+				ServiceName: name,
+				Message:     "service name must not contain a '..' path element",
+			}
+		}
+	}
 	// Extract service argument from name@argument pattern
 	baseName := name
 	var serviceArg *string
@@ -1262,6 +1304,7 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 						Message:     err.Error(),
 					}
 				}
+				dl.dropMissingSystemdRefs(desc, name, path)
 				return desc, path, nil
 			}
 		}
@@ -1967,14 +2010,17 @@ func applyToService(svc service.Service, desc *ServiceDescription) {
 		rec.SetHardening(service.HardeningConfig{})
 	} else {
 		rec.SetHardening(hardeningCfg)
-		// Three of the seven knobs need ro mount operations
-		// (protect-kernel-tunables → /proc/sys, protect-control-groups
-		// → /sys/fs/cgroup, protect-kernel-logs → /dev/kmsg). Auto-imply
+		// Four of the knobs need mount operations
+		// (protect-kernel-tunables → /proc/sys, /sys and other /proc
+		// knobs, protect-control-groups → /sys/fs/cgroup,
+		// protect-kernel-logs → /dev/kmsg and /proc/kmsg,
+		// protect-kernel-modules → /usr/lib/modules). Auto-imply
 		// CLONE_NEWNS so the runner has a private mount namespace
 		// to apply them in without touching the host fs.
 		if hardeningCfg.ProtectKernelTunables ||
 			hardeningCfg.ProtectControlGroups ||
-			hardeningCfg.ProtectKernelLogs {
+			hardeningCfg.ProtectKernelLogs ||
+			hardeningCfg.ProtectKernelModules {
 			cloneflags |= syscall.CLONE_NEWNS
 		}
 	}

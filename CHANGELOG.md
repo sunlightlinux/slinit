@@ -24,6 +24,1415 @@ verified with `git tag -v`.
 
 ## [Unreleased]
 
+Fixes found by an audit of the whole tree: PID 1 crash and hang paths,
+seccomp and sandbox bypasses, a local root through slinit-logind,
+journal forgery, and many lifecycle and converter faults. Several
+security fixes change behaviour a working setup could notice; each such
+entry carries a *Compat* note saying what differs, as STABILITY.md
+requires.
+
+### Security
+
+- **On a non-x86-64 build the restrict-\*/protect-\* filters refused
+  nothing.** slinit has a syscall table for x86-64 only; elsewhere every
+  syscall name is unknown, and the filter compilers skipped a rule they
+  could not resolve — so each `restrict-*` filter compiled to "allow
+  everything" and the `protect-*` deny list to an empty one, and the
+  service ran unprotected without a word. A rule naming a syscall the
+  build cannot resolve now fails the compile, and the runner refuses to
+  start the service, unless the syscall is listed as absent on that
+  architecture.
+  *Compat:* a build for another architecture refuses to start a service
+  using `system-call-filter`, a `restrict-*`/`protect-*` knob or
+  `io-uring-filter`, instead of running it unprotected. Release builds
+  are x86-64 only.
+- **`restrict-file-systems` left `mount_setattr` open.** It refused
+  `mount` and the new mount API but not `mount_setattr`,
+  `open_tree_attr` or `pivot_root`, so a service with the privilege to
+  mount could still clear `MOUNT_ATTR_RDONLY` from a read-only mount
+  and write to it. The three are now refused with `EPERM` too, which
+  covers systemd's `@mount` group but `chroot`.
+- **A second `system-call-architectures` entry was filtered with the
+  wrong numbers.** With `system-call-architectures = native x86`, an
+  i386 call was matched against the x86_64 syscall numbers, where it
+  means a different call: i386 `mount` (21) is x86_64 `access`, so
+  `system-call-filter = ~@mount` let it through, and an allowlist
+  admitted whatever its numbers happened to name. slinit has no i386
+  table, so a call through a listed foreign architecture now takes the
+  filter's refusal action (`system-call-error-number`, kill by default)
+  instead — when there is a filter list; with none, the listed arches
+  are simply allowed, as `system-call-architectures` alone means under
+  systemd. Per-architecture filtering as systemd does it would need
+  per-architecture groups and the i386 `socketcall`/`ipc` multiplexers,
+  which is not a fix for an LTS release.
+  *Compat:* with a filter list, calls through a listed foreign
+  architecture (e.g. `x86`) are refused; 32-bit programs no longer run
+  under such a filter.
+- **An x32 syscall slipped past every seccomp deny rule.** An x32 call
+  reports `AUDIT_ARCH_X86_64`, so it passed the architecture check, and
+  its number is the x86_64 one with bit 30 set, so it matched no entry
+  and took a denylist's ALLOW: `mount` through x32 was allowed under
+  `system-call-filter = ~@mount`, as were `unshare(CLONE_NEWUSER)` under
+  `restrict-namespaces` and `socket(AF_INET)` under
+  `restrict-address-families`. Every filter now kills a call with that
+  bit set, as libseccomp and systemd do unless x32 is allowed. (Only a
+  kernel built with `CONFIG_X86_X32_ABI` accepts such calls.)
+  Syscall number -1 — what a tracer writes to cancel a call, answered
+  ENOSYS by the kernel — is not taken for x32.
+  *Compat:* x32 calls are killed under every filter.
+- **`system-call-log` let a refused call run.** The log list was
+  compiled into the same seccomp program as `system-call-filter`, ahead
+  of it, and `SECCOMP_RET_LOG` executes the call: with
+  `system-call-filter = ~getppid` and `system-call-log = getppid`,
+  `getppid()` succeeded. It is now a filter of its own, as systemd
+  installs `SystemCallLog=`, so the kernel's most-restrictive rule keeps
+  the call refused. A refused call is then reported as the main filter
+  reports it — a kill is audited, an errno return (with
+  `system-call-error-number`) is not — as under systemd.
+- **`pass-environment` and `unset-environment` let slinit's own
+  environment through.** slinit-service(5) says both apply to the
+  inherited environment, but they filtered only the variables slinit
+  added (global, env-file, `setenv`): whatever the kernel or a login
+  session had put in slinit's environment reached every service, so an
+  `unset-environment` of an inherited name did nothing. They now filter
+  the inherited environment too, except that the inherited `PATH` is
+  kept unless `unset-environment` names it, as systemd keeps the
+  manager's PATH under `PassEnvironment=`. A service without either
+  keeps inheriting everything, as before.
+  *Compat:* with `pass-environment`, inherited variables other than
+  `PATH` (e.g. `HOME`, `TERM`, `LANG`) are no longer passed unless
+  listed.
+- **A service name could load a description from outside the service
+  directories.** Names may contain `/`, and anything may follow `@`;
+  the name is joined onto each service, init.d, unit and overlay
+  directory, and the join resolved `..`, so `a/../../tmp/x` or
+  `x@/../../tmp/x` loaded `/tmp/x`. A name with a `..` path element is
+  now refused. Only root (or a user instance's owner) can name a
+  service, so this hardens rather than closes a hole.
+  *Compat:* a service name with a `..` path element is refused.
+- **A descriptor `slinit-nspawn` inherited reached the container.**
+  An fd the launcher was started with, without close-on-exec, passed
+  through to the container's init, so a host file or directory stayed
+  reachable from inside past `pivot_root`. Every fd above 2 is now
+  marked close-on-exec before the init is executed.
+- **`slinit-nspawn` followed the image's symlinks on the host.**
+  Before `pivot_root` it created *ROOTFS*`/mnt/old-root` as root, so an
+  image whose `/mnt` was an absolute symlink had directories created
+  wherever on the host the link pointed (and then failed to start).
+  The old root is now pivoted onto the new one and unmounted, with no
+  directory created inside the image.
+- **`slinit-journalctl --image` mounted an untrusted image with
+  setuid binaries and device nodes usable.** The image was mounted
+  `-o ro` only; it is now mounted `ro,nosuid,nodev,noexec`. With
+  `--image-policy=strict`, refusing a LUKS/LVM/verity device also
+  left the loop device attached and the temporary mount point behind;
+  both are now cleaned up.
+  *Compat:* the image is mounted `nosuid,nodev,noexec`.
+- **`slinit-start-stop-daemon --stop --pidfile` signalled whatever
+  pid the file named, PID 1 included.** With only a pidfile to match
+  on, the pid it held was signalled unchecked: a pidfile naming PID 1
+  sent init SIGTERM — a reboot under slinit — and a pidfile in a
+  directory the daemon's user owns let that user pick any process for
+  root to signal. PID 1, the tool itself and its parent now never
+  match, and, as Debian's start-stop-daemon has done since dpkg
+  1.19.3, a world-writable pidfile is refused, as is — when it is the
+  only criterion — one owned by a user other than root or the caller,
+  or writable by another group. `slinit-supervise-daemon` likewise no
+  longer signals a pidfile naming PID 1 or itself.
+  *Compat:* `--stop --pidfile` alone refuses a pid file not owned by
+  root (or the caller), or writable by others; add `--exec`, `--name` or
+  `--user`.
+- **`KillSession(leader)` could signal a process outside the session.**
+  The session record keeps the leader as a bare pid; between the
+  leader's exit and the reaper dropping the session the pid can be
+  reused, and the session's owner could then have slinit-logind signal
+  whatever process got it. The leader is now pinned with a pidfd, must
+  still be in the session's cgroup scope, and is signalled through the
+  pidfd.
+- **`slinit-logind` looked up `GetSession` and `ActivateSessionOnSeat`
+  ids as paths unchecked.** The id went straight into
+  `sessions/<id>.json`, so `../x` reached any `*.json` under the state
+  directory: any bus client could probe for files and, through
+  `ActivateSessionOnSeat`'s seat check, have one parsed as a session.
+  Both, and the alias objects' lookup, now refuse an id that is not a
+  plain session name, as the other session calls already did.
+- **`slinit-localed` let a `LANGUAGE` value write other variables
+  into `/etc/locale.conf`.** `LANGUAGE` was the one variable
+  `SetLocale` did not validate, so `LANGUAGE=en\nLANG=/tmp/evil` was
+  written across two lines and read back as `LANG=/tmp/evil`. Each item
+  of its colon-separated list must now be a locale name, as systemd
+  validates every variable. As a safety net the env-file writer behind
+  `locale.conf`, `vconsole.conf` and `machine-info` refuses a value
+  holding a control character other than a tab, and writes nothing.
+  *Compat:* a `LANGUAGE` item must be a valid locale name.
+- **`slinit-logind` handed any device to a session's owner.**
+  `TakeDevice` resolved its major:minor in `/sys/dev/char` and
+  `/sys/dev/block` and opened whatever it found read/write, so the
+  owner of any session — remote or seatless included — could call
+  `TakeControl` and then take `/dev/mem` (1:1) or `/dev/sda` (8:0): a
+  local root. It now hands out what systemd-logind does
+  (`session_device_verify`): character devices of subsystem `drm` named
+  `card*`, `input` named `event*` and `hidraw`, the rest refused with
+  `NoSuchDevice`, and nothing to a session without a seat. A Wayland
+  compositor takes the card and event nodes, so Plasma and GNOME are
+  unaffected.
+  *Compat:* `TakeDevice` hands out only drm card, input event and hidraw
+  nodes, and only to a session with a seat.
+- **One local user could flood the journal through `events.sock`.**
+  The socket is world-writable and had no rate limit: a single uid
+  wrote 222 MiB/s of journal, and vacuum then deleted everyone's history
+  to make room. Senders that are neither root nor the daemon's own user
+  now get the per-UID limit `/dev/log` already applies (200 messages per
+  10 s; the new test stored all 1000 of 1000 before), with a note in the
+  journal of how many were suppressed. Root, which PID 1 relays as, is
+  not limited.
+  *Compat:* non-root senders on `events.sock` are rate-limited as on
+  `/dev/log`.
+- **A logged message could forge journal lines and drive the terminal.**
+  `slinit-journalctl`'s short formats and `-o cat` printed `MESSAGE`
+  raw, so a newline in it started what read as another entry with any
+  host, unit and PID, and an escape sequence (`\x1b[2J`) reached the
+  terminal. As in systemd, continuation lines are now indented to the
+  message column, and control characters other than tab and newline,
+  DEL, C1 controls and invalid UTF-8 are shown as `\xNN` unless
+  `-a`/`--all` is given. JSON and export output are unchanged.
+  *Compat:* short and cat output escape control characters unless `--all`.
+- **A crafted binary journal could hang or exhaust memory in its
+  reader.** An ENTRY_ARRAY whose `next` pointed back at itself was
+  walked forever, growing the offset list until memory ran out; every
+  item of an ENTRY could name the same large DATA object, which was read
+  and copied once per item (62 items of a 256 KiB payload: 33 MB
+  allocated for a 275 KiB file; a 2 MiB file could demand 128 GiB); and
+  `Verify` checked an object's size as `off+size`, which wraps, so a
+  size of 2^64−1 aligned to zero and the walk never advanced. The array
+  chain must now move forward, a repeated item is read once, an entry's
+  payloads may not exceed the file, and `Verify` bounds sizes without
+  overflow. The fuzz corpus gains the self-referential seed.
+- **Any local user could forge trusted fields in the binary journal.**
+  `events.sock` is mode 0666, and `slinit-journald` stamped only
+  `_pid`/`_uid`/`_gid`/`_comm`/`_exe`/`_cmdline` from the kernel: a
+  sender's `_boot_id`, `_machine_id`, `_hostname`, `ts`/`mts`, `unit`
+  and client fields such as `_PID=1` or `_TRANSPORT=driver` went to disk
+  as sent, and the binary reader let the client `_PID` replace the
+  kernel-attested one. A forged `mts` also reached the persisted-event
+  marker and could suppress PID 1's shutdown tail. A sender that is
+  neither root nor the daemon's user now has those fields replaced by
+  the receiver's own (its `unit` cleared, so `-u` cannot be spoofed),
+  every event is validated (including the 64-field cap) before it is
+  stored, and the binary writer drops client fields starting with `_`,
+  as systemd-journald does.
+  *Compat:* an unprivileged sender's `_`-prefixed fields, timestamps,
+  boot/machine id, hostname and unit are replaced by the receiver's.
+- **A peer on the `--metrics-listen` port could make PID 1 buffer
+  without limit.** The request line and headers were read with
+  `bufio.Reader.ReadString`, which keeps appending until a newline, so a
+  client that sent none was buffered in full: 256 MiB in 80 ms on
+  loopback in the new test, bounded only by the 10 s deadline. Each line
+  is now cut at 8 KiB (`431`), headers at 100, and at most 16 scrapes
+  are served at once — the rest are closed on accept, because every
+  open connection held one of PID 1's file descriptors.
+  *Compat:* at most 16 scrapes are served at once.
+- **A shutdown broadcast could overwrite any file as root.** `wall`
+  takes each terminal from utmp's `ut_line`, which group utmp can write,
+  and its escape check kept a leading `..`: a line `../etc/passwd` made
+  PID 1 write the banner over the start of `/etc/passwd`. Inside `/dev`
+  a line could also name a disk. A line with a `..` element is now
+  refused, the open does not follow a symlink, and only a terminal
+  (TCGETS succeeds) is written to.
+- **`slinit-tmpfiles` dropped the sticky, setgid and setuid bits.**
+  The mode column went to Go as `os.FileMode(mode)`, where `01000`,
+  `02000` and `04000` are not the special bits, so `d /var/tmp 1777`
+  made a world-writable directory without the sticky bit — and on an
+  existing `/var/tmp` stripped it again at every boot. `z`/`Z` lost them
+  the same way, and set the owner after the mode, which clears
+  setuid/setgid on a file. The raw mode now reaches `chmod(2)`, after
+  the `chown(2)`.
+- **`slinit-checkpath -m 1777` made a directory without the sticky
+  bit.** The mode was masked to `0777` and passed to `os.Chmod`, which
+  knows the special bits only as `os.ModeSticky` and friends, so
+  `01000`/`02000`/`04000` never reached the inode — and an existing
+  `1777` directory sitting at `0777` was judged already correct. The
+  raw mode now goes to `chmod(2)` and is compared in full, and the owner
+  is changed first, since `chown(2)` clears setuid/setgid on a file.
+  *Compat:* `-m` is now compared on all 07777 bits, so it also clears a
+  setgid bit a directory inherited, as OpenRC's checkpath does.
+- **A `d` or `D` entry on a symlink re-moded its target.** `MkdirAll`
+  accepts a symlink to a directory, and the chmod and chown that follow
+  went through it — so a link planted at a `d` path under `/tmp` (say
+  `/tmp/.X11-unix -> /etc`) had `slinit-tmpfiles` make `/etc` world
+  writable at boot, and for `D` the link could be planted between the
+  wipe and the mkdir. The directory is now opened with `O_NOFOLLOW` and
+  changed through the descriptor; a symlink is refused.
+  *Compat:* a `d`/`D` line whose path is a symlink fails instead of
+  following it.
+- **`F /run/secret 0600` left an existing file world-readable.** For
+  `f` and `F` the mode was only the `open(2)` create mode: the umask
+  cut it on a new file (`0666` came out `0644`), and `F` on an existing
+  file kept its old mode with the new content in it. The mode is now
+  set on the open descriptor, and the owner too — it was set by path
+  after the close, when the path could name something else.
+- **A service user could make PID 1 chmod/chown any file through a
+  service or socket directory.** For a nested `state-directory` such as
+  `myapp/data`, the service user owns `myapp`, and the leaf was checked
+  with `Lstat` and then chmod/chowned by path: swapping it for a symlink
+  in between (`renameat2` `RENAME_EXCHANGE` in a loop) re-moded the
+  target, 0600 to 0777, within a few hundred starts in the new test.
+  `socket-permissions`/`socket-uid`/`socket-gid` had the same window
+  between bind and chmod, in a directory that is often the service's own
+  runtime directory. Directories are now created and opened one
+  component at a time without following a symlink the service user
+  could have placed, and both mode and owner go through the descriptor;
+  the socket is pinned with `O_PATH|O_NOFOLLOW` and must still be a
+  socket.
+  *Compat:* a symlink in a service directory path is followed only where
+  root (or slinit's user) alone can write.
+- **A pid file could make a service stop signal PID 1 or slinit's own
+  process group.** Any pid that `kill(pid, 0)` accepted was adopted. A
+  file naming `1` made the stop send SIGTERM to PID 1 — a reboot request
+  when slinit is init — and naming a kernel thread such as `kthreadd`
+  made it signal group 0, which `kill(2)` reads as the caller's own
+  group: the new test's child received the signal it sent. A pid file
+  naming PID 1 or slinit itself is now refused, as systemd does, and the
+  daemon group is signalled only when its id is above 1; otherwise just
+  the pid is.
+  *Compat:* a pid file naming PID 1 or slinit itself is refused.
+- **`stop-command` ignored `run-as` for process and bgprocess
+  services.** It ran as root, as did `finish-command`, `pre-stop-hook`,
+  `control-command-*` and `ready-check-command`, while a scripted
+  service's stop script already ran as the user and systemd runs
+  `ExecStop=`, `ExecStopPost=`, `ExecReload=` and `ExecCondition=` as
+  `User=`. The new tests reported uid 0 for every one of them; they now
+  run with the service's run-as user, group and supplementary groups.
+  `healthcheck-command`, `unhealthy-command`, `cron-command`,
+  `pre-start-command` and `post-start-command` are unchanged.
+  *Compat:* `stop-command`, `finish-command`, `pre-stop-hook`,
+  `control-command-*` and `ready-check-command` of a `run-as` service
+  now run as that user; one that needed root must be moved into a
+  separate root service.
+- **A hardened run-as service kept root's supplementary groups.** With
+  any directive that routes the start through `slinit-runner`
+  (`no-new-privs`, seccomp, capabilities, sandboxing…), the runner
+  skipped `setgroups` when no `supplementary-groups` was configured, so
+  the service ran as `groups=65534(nobody),0(root)`, where the same
+  service without hardening got `groups=65534(nobody)`. The runner now
+  always sets the supplementary groups, to an empty list when none are
+  configured.
+- **Credentials stayed readable after a service stopped.** A
+  `stop-command` is set up with the same credentials as the main
+  command, so a second tmpfs was mounted over
+  `/run/credentials/<service>` while the first was still there.
+  Cleanup unmounted only the top one, removing the files then failed
+  with "read-only file system", and the secret under it could still be
+  read. A stop-command now uses the credentials directory the running
+  main command has instead of mounting its own, setup clears any mount
+  still at the path (one left from before a re-exec) before mounting,
+  and cleanup unmounts until none is left.
+- **`chroot` was silently ignored outside `type = process`.** It, and
+  `lock-file`, were applied only to process services, so a scripted or
+  bgprocess service configured into a jail ran outside it. `chroot` now
+  refuses to load on any other type rather than run unjailed — a
+  service that loaded on 4.0.2 with it no longer does (this includes a
+  systemd unit loaded directly with `RootDirectory=` on `Type=forking`
+  or `oneshot`). `lock-file`, `new-session` and
+  `close-stdin`/`close-stdout`/`close-stderr`, equally ignored there but
+  confining nothing, say so on stderr and still load.
+  `slinit-openrc-convert` no longer writes a `chroot` it cannot apply:
+  it warns that the bgprocess daemon will run outside the jail (a
+  wrapped script leaves the chroot to openrc-run).
+  harmless, now say so on stderr and still load.
+  *Compat:* `chroot` on a type other than `process` now fails the load.
+- **`slinit-logind` could send the wrong file in a `TakeDevice` or
+  `Inhibit` reply.** godbus sends a reply's descriptors by number after
+  the method has returned. `TakeDevice` returned the number of the
+  daemon's own copy of the device, which a concurrent `ReleaseDevice`,
+  or the controller leaving the bus, could close first; the kernel could
+  then reuse the number for another file and the compositor would be
+  handed that. `Inhibit` read the number of a file a timer closes,
+  which `go test -race` reported. Each reply now carries a duplicate of
+  its own, closed once the reply has had time to go out.
+- **Read-only sandbox mounts left every mount below them writable.**
+  `protect-system`, `protect-home = read-only`, `read-only-paths`,
+  `bind-read-only-paths` and `protect-kernel-tunables` bound the path
+  recursively but remounted read-only only the one mount at the path, so
+  the submounts the bind brought along stayed writable:
+  `/run/user/<uid>` under `protect-home = read-only`,
+  `/proc/sys/fs/binfmt_misc` under `protect-kernel-tunables` (where a
+  service could register an interpreter for every binary), and any
+  separate filesystem below `/` under `protect-system = strict`. Every
+  mount below the path is now remounted read-only too. Under `strict`
+  the mounts at or below `/dev`, `/proc`, `/sys`, `/run`, `/tmp` and
+  `/var/tmp` are left as they were, as documented, and so are the
+  `temporary-filesystem` and `protect-home = tmpfs` mounts; a
+  `read-write-paths` or `bind-paths` entry makes writable again the
+  mounts below it that the sandbox made read-only, and only those. A
+  `read-write-paths` entry below a `read-only-paths` one stays a
+  writable hole in it, as in systemd, where the deeper path wins.
+  *Compat:* under `protect-system`, `protect-home=read-only` and
+  `read-only-paths`, separate filesystems below the path (a separate
+  `/home`, `/var/...`, `/boot/efi`) are now read-only too; list them in
+  `read-write-paths` if the service writes there.
+- **A read-only sandbox mount lost its `noexec`, `nosuid` and `nodev`,
+  and failed to start in a user namespace.** The read-only remount
+  passed only `MS_RDONLY`, and a bind remount replaces a mount's flags:
+  a `noexec` tmpfs listed in `read-only-paths` (or under
+  `protect-system`, `protect-home = read-only`,
+  `bind-read-only-paths`, `protect-kernel-tunables`) became executable
+  in the service. Where those flags are locked — slinit in an
+  unprivileged container, below the user namespace that made the mount —
+  the kernel refused the remount with EPERM and the service did not
+  start. Each remount now repeats the mount's own flags.
+- **`capability-bounding-set` could leave a newer kernel's capabilities
+  in.** `slinit-runner` dropped capabilities 0 to 40 whatever the
+  kernel knew, so one added after Linux 5.9's `CAP_CHECKPOINT_RESTORE`
+  stayed in the bounding set of a service whose list leaves it out. It
+  now goes up to the kernel's `/proc/sys/kernel/cap_last_cap`, falling
+  back to 40 where that cannot be read.
+- **A systemd unit loaded directly ran without most of its sandbox.**
+  `ReadOnlyPaths=`, `ReadWritePaths=`, `InaccessiblePaths=`,
+  `BindReadOnlyPaths=`, `TemporaryFileSystem=`, `ProtectProc=`,
+  `ProcSubset=`, `PrivateNetwork=`, `CapabilityBoundingSet=` and
+  `AmbientCapabilities=` were dropped with a note, although slinit has
+  each, so the service started with the host's network, every path
+  writable and visible, and its full bounding set. They are now
+  translated (by `slinit-systemd-convert` too): a `-` path that does not
+  exist is left out, as systemd ignores it; `CapabilityBoundingSet=~…`
+  keeps every other capability, and repeated assignments add up as in
+  systemd; `TemporaryFileSystem=` gets systemd's `mode=0755`;
+  `PrivateNetwork=yes` becomes `namespace-net = yes`, whose loopback
+  interface, unlike systemd's, stays down. What slinit cannot express
+  stays out with a warning: a `+` path, a `%` specifier, a `norbind`
+  bind, `noexec` on a temporary file system, and an empty
+  `CapabilityBoundingSet=`.
+  *Compat:* a unit loaded directly now gets its `ReadOnlyPaths=`,
+  `InaccessiblePaths=`, `PrivateNetwork=` (loopback down), capability
+  sets and the rest.
+- **`protect-kernel-tunables`, `-modules`, `-logs` and `protect-clock`
+  did less than the systemd settings they claim to match.** They
+  filtered system calls and made `/proc/sys` read-only and `/dev/kmsg`
+  empty, while systemd also makes `/sys` and the other kernel knobs in
+  `/proc` (`/proc/sysrq-trigger`, `/proc/irq`, `/proc/bus`, `/proc/fs`
+  and the rest of its table) read-only, hides `/proc/kallsyms`,
+  `/proc/kcore`, `/proc/kmsg` and `/usr/lib/modules`, and takes
+  `CAP_SYS_MODULE`, `CAP_SYSLOG`, `CAP_SYS_TIME` and `CAP_WAKE_ALARM`
+  out of the bounding set: a service could still write
+  `/proc/sysrq-trigger` or `/sys`, or read the kernel's symbol table.
+  slinit now applies the same tables (skipping paths that do not
+  exist; `/sys/fs/cgroup` and `/sys/fs/selinux` keep their flags), and
+  `protect-kernel-modules` now gives the service a private mount
+  namespace too. Only `protect-clock`'s read-only RTC devices, which
+  systemd sets through the device cgroup controller, are not done; the
+  man page says so.
+  *Compat:* `protect-kernel-tunables` makes `/sys`, `/proc/irq`,
+  `/proc/bus` and more read-only; `protect-kernel-modules` implies a
+  private mount namespace; the four knobs drop their capabilities from
+  the bounding set.
+- **An offline `slinitctl disable` could delete a file outside the
+  service directory.** The offline enable and disable joined the name
+  to the waits-for.d path without checking it, so `slinitctl -o -d sd
+  disable ../../victim` removed `victim` beside `sd`, and enable could
+  plant a symlink anywhere. Offline enable and disable now refuse a
+  service or `--from` name that is not a valid service name or has a
+  `..` path element, instance argument included, as the daemon's
+  loader already does online.
+- **PID 1 stacked a new `/proc` on every boot, dropping `hidepid`.**
+  slinit mounted proc on `/proc` without looking whether it was there
+  already, so each boot from an initramfs that mounts it, and each soft
+  reboot, added another procfs on top (3, 4, 5, 6 measured), and the one
+  every process saw had none of the options set on the first —
+  `hidepid=invisible` included, so other users' processes became
+  visible again. `/proc` and `/sys` are now mounted only when no
+  filesystem of that type is mounted there.
+
+### Changed
+
+- **An interrupted or timed-out start could hang for good, and failures
+  were reported two or three times.** A stop arriving while a process or
+  bgprocess service was STARTING sent SIGINT and left the service
+  STARTING with no stop-timeout, so a process that ignored SIGINT kept it
+  there forever; the start-timeout did the same, and a process that
+  closed its readiness fd without signalling, but kept running, left the
+  service STARTING with the process alive. dinit moves to STOPPING and
+  arms the stop-timeout, which escalates to SIGKILL, and brings down a
+  process whose readiness pipe closed; slinit now does the same. Because
+  a failed start now ends in STOPPING, the process's exit no longer
+  counts as another failed start: a timed-out start is reported once,
+  not three times, and a start cancelled by `slinitctl stop` is a normal
+  stop, not a failure. A smooth recovery whose new process never becomes
+  ready now fails the recovery, as in dinit, instead of failing a start
+  on a STARTED service.
+  *Compat:* a start cancelled by a stop is no longer reported as a
+  failure (`is-failed`), and a process that closes its readiness fd
+  without signalling is stopped.
+- **Stopping a scripted service during its start was reported as a
+  failed start, and could reboot the machine.** For a
+  `start-interruptible` scripted service, a stop arriving while the start
+  command ran sent SIGINT and left the service STARTING: the command's
+  death was then taken for a failed start — `is-failed`, a FAILEDSTART
+  event, and the `failure-action` (measured: `reboot` on a plain
+  `slinitctl stop`) — the stop command never ran, and a start command
+  that ignored SIGINT kept the service STARTING for good. As in dinit,
+  the service now moves to STOPPING with the stop-timeout armed, which
+  kills a command that ignores the signal; when the command exits with a
+  failure status the service stops, and when it completes or dies of the
+  signal the stop command runs to clean up.
+  *Compat:* a cancelled scripted start is a normal stop, not a failure,
+  and the stop command now runs after a start command killed by the
+  cancellation.
+- **A scripted start-timeout killed the start command outright and
+  skipped the stop command.** The start-timeout of a scripted service
+  sent SIGKILL at once and failed the start without running the stop
+  command, so whatever the start command had set up was left behind.
+  dinit interrupts the start as a stop would: SIGINT, STOPPING with the
+  stop-timeout armed, SIGKILL only when that expires, and the stop
+  command once the start command has died of the signal or completed.
+  slinit now does the same; the start is still reported failed once,
+  with reason `timed-out`.
+  *Compat:* a timed-out scripted start command gets SIGINT and up to
+  `stop-timeout` to exit before SIGKILL (one more `start-timeout` when
+  `stop-timeout` is 0), and the stop command runs after it unless it
+  exits with a failure status.
+- **`slinit-check` did not look where slinit looks.** Its default
+  system directories were `/etc`, `/usr/lib` and `/lib` `slinit.d`; the
+  daemon's are `/etc`, `/run`, `/usr/local/lib` and `/lib`. A service in
+  `/run/slinit.d` or `/usr/local/lib/slinit.d` was reported "not found",
+  and one in `/usr/lib/slinit.d`, which slinit never loads, was checked.
+  The user list also lacked `~/.config/slinit.d` beside a set
+  `XDG_CONFIG_HOME`, and `$XDG_RUNTIME_DIR/slinit.d`. Both lists now
+  match the daemon's.
+- **`infinity` or an enormous number of seconds wrapped to a negative
+  duration.** Durations are parsed as a decimal number of seconds, and
+  `inf`, `infinity`, `1e300` or anything past about 292 years converted
+  to the most negative duration, which passed the non-negative check
+  and was then read as the opposite of what was written — a huge
+  `restart-limit-interval` let every restart through. Such values now
+  saturate at about 146 years, i.e. "as long as there is", and still
+  load as before; `nan` is refused.
+  *Compat:* `restart-delay = infinity` now means never restart (it meant
+  restart at once), and `restart-limit-interval = infinity` limits
+  restarts over the whole run (it meant no limit).
+- **`start-on-path-changed` on a file died the first time the file was
+  replaced.** The watch sat on the file's inode, so a file replaced by
+  renaming a new one over it — the way editors and package managers
+  write files — produced only the old inode's removal: the service did
+  not start, the watch was gone, and the trigger never fired again.
+  The file's directory is now also watched for the file's name being
+  created, renamed or removed (not for writes, so writes to other files
+  there do not wake slinit), and the replacement is watched once the
+  trigger re-arms; the same holds for `start-on-path-modified`.
+  *Compat:* removing the file also fires the trigger.
+- **`slinit-start-stop-daemon --stop` without `--retry` could wait
+  forever.** The default schedule was the signal with no timeout,
+  which the wait loop read as "until the process exits", so
+  `--stop --signal HUP` to make a daemon reload never returned. As in
+  OpenRC, the default is now the signal and up to 5 s for the process
+  to exit (exit status 4 if it does not), and with `--oknodo` the
+  signal is sent and the tool returns at once.
+  *Compat:* without `--retry`, `--stop` waits 5 s and fails if the
+  process is still there; use `--oknodo --signal HUP` to send a reload
+  signal.
+- **`unload` detached a service another client still held.** Unload
+  checked only dependents, not whether another control connection had
+  the service open; dinit's `has_lone_ref` requires the unloading
+  connection to be the only one. The other client's handle then drove
+  an object outside the set — a start through it ran a service that
+  was in no list, could not be found and was not stopped at shutdown.
+  Unload is now refused (NAK) while another client holds the service.
+  *Compat:* `unload` is refused while another client (slinit-monitor, a
+  waiting slinit-mount) holds the service.
+- **`Z /path - - -` made a whole tree `0644` and root-owned.** For
+  `z`/`Z`, tmpfiles.d(5) reads a `-` or missing mode, user or group as
+  "leave it alone", but `slinit-tmpfiles` filled in the creation
+  defaults, so every directory below lost its search bit, every script
+  its execute bit, and the tree was handed to root. Those columns are
+  now left unchanged, and no `chown(-1, -1)` is issued (it alone clears
+  setuid on a file). A `d`/`D` with no mode also made a `0644`
+  directory; it now gets `0755`, as in tmpfiles.d(5).
+  *Compat:* a `d`/`D` line with `-` as its mode now creates the
+  directory 0755 (it was 0644).
+- **A binfmt.d line named `status` unregistered every format.**
+  `slinit-binfmt` unregisters an existing format of the same name by
+  writing `-1` to `binfmt_misc/<name>`, and `binfmt_misc/status` reads
+  `-1` as "remove all" — so `:status:M::...` in any binfmt.d file wiped
+  qemu-user, Wine and every other handler at boot. The names `status`,
+  `register`, `.` and `..` are now a parse error.
+  *Compat:* the names `status`, `register`, `.` and `..` are refused.
+- **`slinit-sysctl` could not set a key for a VLAN interface.** Every
+  `.` in a key became `/`, so `net.ipv4.conf.eth0/100.rp_filter` and
+  `net/ipv4/conf/eth0.100/rp_filter` both went to
+  `net/ipv4/conf/eth0/100/rp_filter`, which does not exist. Keys now
+  follow sysctl.d(5): if the first separator is `.`, dots and slashes
+  swap; if it is `/`, the key is used as is. `.` and `..` elements are
+  refused explicitly, since a slashed key now keeps its dots.
+  *Compat:* a key whose first separator is `/` is used as written.
+- **`slinit-logind`'s `TerminateSession`, `TerminateUser` and
+  `TerminateSeat` killed nothing.** They, and the user and seat
+  objects' `Terminate`, only dropped the session's records: every
+  process of the session kept running, no longer tracked by anything,
+  so `loginctl terminate-user` left the user's desktop up. As systemd
+  stops the session's scope, each process in the scope now gets
+  SIGTERM, SIGCONT and SIGHUP, and whatever is left 5 s later is
+  SIGKILLed through the scope's `cgroup.kill`. Only the session's own
+  cgroup is signalled, and the call does not wait out the 5 s.
+  *Compat:* terminating a session SIGTERMs, then SIGKILLs, the processes
+  of its scope.
+- **`slinit-logind`'s User objects never changed after the first
+  login.** `Sessions` and `Display` were computed when the user's first
+  session registered the object and never again, so a second login was
+  missing from them and a session that had logged out stayed listed;
+  `State` was always `active`, and `GID` reported the uid. All three
+  now follow the user's sessions as they come and go and as the
+  foreground VT moves (`online` when none of them is in front), and
+  `GID` is the primary group from the user's passwd entry.
+  *Compat:* `User.State` is `online` when none of the user's sessions is
+  in the foreground.
+- **`rc-service <service> status` exited 0 for a stopped service.** It
+  handed over to `slinitctl status`, which succeeds whatever the state,
+  so a script testing `rc-service foo status` to see whether foo runs
+  always saw it running. It now exits as OpenRC's status does: 0
+  started, 3 stopped, 4 stopping, 8 starting and 32 for a service that
+  stopped on a failure (OpenRC's "crashed").
+  *Compat:* `rc-service status` exits 3 for a stopped service, as OpenRC
+  does.
+- **`rc-service <service> reload` did not signal the daemon.** It was
+  passed through to `slinitctl reload`, which re-reads the slinit
+  service description and leaves the running process alone, and
+  reported success — while OpenRC's reload runs the script's
+  `reload()`, which tells the daemon to re-read its own configuration.
+  It now runs `slinitctl reload-signal`, sending the signal named by
+  the service's `reload-signal`, and fails, as OpenRC does for a script
+  without `reload()`, when there is none. `slinitctl reload` still
+  re-reads the description.
+  *Compat:* `rc-service reload` sends the configured `reload-signal` and
+  fails without one; `slinitctl reload` still re-reads the description.
+- **`slinit-openrc-convert` had `command_background` backwards.** In
+  OpenRC, `command_background=yes` means the daemon stays in the
+  foreground and start-stop-daemon backgrounds it and writes the
+  pidfile; the converter made it a `bgprocess` waiting on that pidfile,
+  which nothing wrote, so the service sat in STARTING until its start
+  timed out. It is now `type = process` (as are daemons kept in the
+  foreground by `command_args_foreground` or `supervise-daemon`), and a
+  script with a `pidfile` but no `command_background` — a daemon that
+  forks itself — becomes the `bgprocess`. A script with neither is
+  converted to `process` with a warning.
+  *Compat:* converting the same script again gives a different service
+  type.
+- **The systemd, runit and OpenRC converters said nothing about what
+  they lost unless asked.** Their warnings — a directive dropped, a
+  command that will not behave as it did — were printed only with
+  `--verbose`, so a plain conversion of a lossy file printed nothing.
+  Warnings are now always printed on stderr, as
+  `slinit-immortal-convert` already did; notes, about mappings that did
+  happen, still need `--verbose`. The immortal converter's man page,
+  which still said both needed it, is corrected too.
+  *Compat:* WARN lines print by default; NOTE lines still need
+  `--verbose`.
+- **As PID 1, slinit mounted a fresh tmpfs over a `/run` that was
+  already mounted.** `--run-mode=mount`, the default, is documented as
+  leaving an existing `/run` mountpoint alone, but mounted over it
+  anyway, hiding what the initramfs left there (the udev database,
+  cryptsetup state). It now keeps a `/run` that is already a mounted
+  tmpfs or ramfs (a mount root by statx, not merely a different device
+  number, which every btrfs subvolume has); `--run-mode=remount` still
+  gives an empty one.
+  *Compat:* booted from an initramfs that mounts `/run`, the system
+  keeps the initramfs's `/run` and its contents and mount options; use
+  `--run-mode=remount` for the old fresh tmpfs.
+- **`slinit-journalctl --directory` and `--image` queried each file on
+  its own, and `--file` ignored boots and cursors.** `-n 3` printed
+  three entries per file, `-r` reversed each file in turn, `-b -1` and
+  `-b 0` printed every boot, `--list-boots` printed entries instead of
+  boots, a malformed cursor was silently ignored and `--show-cursor`
+  printed nothing. The files are now read as one journal, ordered as
+  `--list-boots` orders boots (the order they were written, then
+  monotonic time within a boot), and `-b`, the filters, the cursor
+  options, `-n` and `-r` apply once across them; `-b` counts over the
+  boots the files hold, and a cursor is checked and applied. The files
+  are streamed: only matching entries are held, and with `-n` only the
+  last N of each boot.
+  *Compat:* with these sources `-b` and `-b 0` select the newest boot
+  in the files instead of printing every boot, and entries from
+  several files come in journal order rather than file by file.
+- **`slinit-journalctl --cursor-file` printed the last entry again on
+  every run.** The file holds the cursor of the last entry already
+  shown, but the next run started *at* it rather than after it
+  (measured: a second run with nothing new printed one entry). It now
+  starts after it, as journalctl(1) does, and keeps the entries that
+  share its time (a binary journal keeps microseconds): the first entry
+  at that time, the one already shown, is skipped, not the time.
+  *Compat:* a run no longer prints the entry the file names, so each
+  poll prints one entry fewer; when the previous run ended on several
+  entries of one time, those after the first are printed again.
+- **`slinit-journalctl -f` ignored `-n` with a filter, and ignored the
+  cursor options.** With `-t`, `-T`, `-g`, `--invocation` or
+  `--namespace`, the buffered entries printed before following were
+  not limited by `-n` (measured: `-f -n 3 -t sshd` printed 10), and
+  `-c`/`--after-cursor`/`--cursor-file` were not applied (measured:
+  `-f --after-cursor` with the newest entry's cursor printed all 20
+  buffered entries instead of none). Both now apply as they do without
+  `-f`.
+  *Compat:* `-f -n N` with one of those filters prints at most N
+  buffered entries, and a cursor option now positions the buffered
+  part. The cursor reaches the daemon as a start time, which it also
+  applies to new events, as with `--since`: one stamped before it (the
+  clock stepped back) is not shown. `-f` reads `--cursor-file` but does
+  not update it.
+- **`slinit-journalctl -o export` split an entry at a newline in a
+  value.** Every field was written as `KEY=value`, so a multi-line
+  `MESSAGE` ended the entry at its blank line and its later lines were
+  read as fields of their own (measured: two entries parsed as four,
+  with a `CUSTOM_KEY` taken from the message text). A value holding a
+  control character or invalid UTF-8 is now written in the export
+  format's binary form, as systemd does: the key, a newline, a
+  little-endian 64-bit length, the value, a newline.
+  *Compat:* `-o export` output for such a value changes from the raw
+  text to the binary form, which readers of the export format such
+  as systemd-journal-remote expect; a script that read export output
+  as plain lines sees the length-prefixed form for those fields.
+
+### Fixed
+
+- **`shared-logger-lossy` had no effect on a logger that depends on its
+  producer**, which is how a shared logger is normally set up so that
+  its stdin is wired. Loading the logger loaded the producer first, and
+  the producer created the multiplexer before the logger's
+  `shared-logger-lossy` and `shared-logger-queue-size` were recorded,
+  so producers blocked on a slow logger instead of dropping lines.
+  Found by functional case 103, which set the two directives on the
+  producer, where they do nothing, and checked only that some lines
+  arrived.
+- **`success-action`, `failure-action` and `start-limit-action` froze
+  the daemon.** The action was started from inside the service's stop
+  handling, which holds the scheduling lock, and the shutdown it starts
+  takes the same lock to stop every service. The daemon logged
+  "Shutting down slinit (...)" and stopped there: no service stopped,
+  the control socket answered nothing, SIGTERM was ignored, and as PID 1
+  a `failure-action = reboot` left the machine hung instead of
+  rebooting. The action now runs once the lock is released. Found by
+  functional case 124, which had been checking only that
+  `success-action = none` parsed.
+- **`restart-kill-signal` was never sent.** It was chosen only while the
+  service was in an automatic restart, a state entered after the process
+  has already exited by itself, when there is nothing left to signal; a
+  `slinitctl restart` stopped the service with the term signal. A stop
+  that is the first half of a restart (from `slinitctl restart`, or a
+  stop request carrying the restart flag) now sends
+  `restart-kill-signal`, as systemd's `RestartKillSignal=` does for a
+  restart job; a plain stop still sends the term signal. Found by
+  functional case 182, which had been checking only that the service
+  started.
+- **`slinit-journalctl -k` was empty when PID 1 started without a
+  mounted `/dev`.** The kernel-log reader opened `/dev/kmsg` before
+  PID 1 mounted devtmpfs, so on a boot straight from an initramfs (or a
+  kernel that does not mount devtmpfs itself) the open failed, the
+  reader was skipped without a word, and no kernel message reached the
+  journal for the whole boot. It is now started again once `/dev` is
+  mounted; it replays the kernel buffer from the start, so nothing is
+  lost. Found by functional case 203, which used to accept an empty
+  `-k`.
+- **`slinitctl reset-failed` left the service failed.** It cleared the
+  start-failed flag, but `is-failed` also reads why the service stopped,
+  and a failed start or a failing exit leaves that reason behind; so
+  `is-failed` kept answering "failed" after the reset, for a missing
+  binary and a non-zero exit alike. A reset now also returns a stopped
+  service's stop reason to a normal stop (its exit status is kept and
+  still shown by `status`). Found by functional case 158, which had
+  been checking only the CLI's confirmation text.
+- **`exec-search-path` did nothing on most services.** The PATH it sets
+  was applied only while building the service's own environment, and
+  that step returned early when the service had no environment of its
+  own (no `env-file`, no `setenv`, no global environment), which is
+  the usual case. The child then inherited PID 1's PATH. It now gets
+  the configured PATH either way. Found by functional case 190, which
+  had been checking only that the service started.
+- **The first JSONL event after a crash was lost.** A crash in the
+  middle of a write leaves the file ending in part of a line, and the
+  restarted sink appended the next event to that fragment; readers skip
+  a line that does not parse, and the event went with it. The fragment
+  is now ended before anything is appended, so it stays a bad line of
+  its own.
+- **A start on a full disk kept the binary journal down for the rest of
+  the day.** Creating the day's `.journal` file wrote its hash tables
+  before its header, so a full disk left a 4096-byte file with no
+  header; every later start of `slinit-journald` failed with "bad
+  magic" and exited until the next UTC day's file name. A failed create
+  now removes what it wrote, and a day file found without a journal
+  header is kept as `<name>.<ns>.corrupt` (never deleted, and not read
+  as a journal) and a new file started. A file with a valid header this
+  version cannot read is left alone, as before.
+- **The journal stopped for good after one failed write.** In the
+  JSONL sink a write that failed on a full disk kept failing every
+  later event, and every flush and rotation, after space came back
+  (0 of 10 written), and left a partial line at the end of the file.
+  The binary sink (the default) lost its file when a rotation could not
+  rename or create one, and refused every event after it with
+  "binary sink closed". Both kept that state until `slinit-journald`
+  restarted. A failed write or fsync now drops and counts only the
+  events that did not reach the file whole, cutting it back to the last
+  complete line it holds (an fsync error after complete writes cuts
+  nothing), and a sink without a file reopens one on a later event, at
+  most once a second, or on `--rotate`. A rotation that failed is not
+  tried again for a second, and does not count the event that triggered
+  it, which was written, as a write error. The binary sink also starts a new file when the one
+  it writes is removed under it, instead of writing into the removed
+  file.
+- **The JSONL journal was never vacuumed.** With `--format=jsonl` and
+  `--compress` (the default) every rotated file is gzipped to
+  `.jsonl.gz`, and the vacuum after each rotation matched `.jsonl`
+  only, so `-vacuum-files`, `-vacuum-size` and `-vacuum-age` pruned
+  nothing: 6 rotated files were kept with `-vacuum-files=2`. Compressed
+  files are vacuumed now, each with the `.idx` of the file it was made
+  from.
+- **`slinit-journalctl --flush` destroyed the day's persistent journal.**
+  A boot that started on the volatile journal wrote the same
+  `<date>.jsonl` (or `.journal`) name an earlier boot that day had
+  persisted, and the flush renamed the volatile file over it: the
+  earlier boot's 3 lines for the day became 0. The file already in the
+  persistent directory is now rotated aside first, under a rotated name
+  (`<date>.<ns>.jsonl` with its `.idx`), so both boots are kept and read
+  in the order they were written; the cross-device copy no longer
+  truncates an existing file either.
+- **A service restarting after its `waits-for` dependency was stopped
+  hung in STARTING.** Stopping a `waits-for` (or reached `depends-ms`)
+  dependency breaks the link and leaves the dependent running, as
+  documented; but when the dependent then restarted — its process died
+  under `restart = always`, or a restart-delay ran out — it waited for
+  the stopped dependency, which nothing was going to start, and never
+  came back. A soft dependency the service no longer holds is not waited
+  for on such a restart; a fresh start still starts it and waits for it.
+- **`slinitctl rm-dep` could leave a service STARTING for good.**
+  Removing the dependency a starting service was waiting for dropped the
+  link but not the wait, so the service never re-checked its remaining
+  dependencies and never finished starting. It now goes on with the
+  dependencies it still has. (dinit has the same gap.)
+- **`slinitctl --force stop` could mark a service failed that had not
+  failed.** When a forced stop reached a dependency whose own target was
+  STOPPED, every hard dependent was given the `dependency-failed` reason,
+  including one the operator had already stopped cleanly — so
+  `slinitctl is-failed` turned true for it — and including dependents of
+  a dependency that was itself stopped on request. As in dinit, a
+  dependent already STOPPED is left alone, and the others stop as
+  `dependency-failed` only when the dependency's own stop was a failure.
+- **Shutdown could wait the emergency timeout with every service
+  stopped.** The scheduler ran one pass over the propagation queue and
+  then a transition, so a release queued during that pass waited until
+  after the transition: a dependency could reach STOPPED still counted
+  as required, and the release that came later found it STOPPED and
+  never took it off the active count. After a crash restart in a
+  dependency chain, `CountActiveServices` stayed above zero with nothing
+  running and shutdown waited out its timeout. The propagation queue is
+  now drained completely before each transition, as dinit does.
+- **Triggering a service queued for a start slot stalled later starts.**
+  With `--parallel-start-limit`, `slinitctl trigger` on a triggered
+  service still waiting for a slot started it at once, past the limit,
+  and when the slot later came the service took it and never gave it
+  back: every later start waited for the slow-start threshold. The
+  trigger now latches until the slot (or the console) is granted, as it
+  does while dependencies are starting, and a slot granted to a service
+  that is no longer starting is released at once.
+- **A soft reboot turned a dependency's inherited pin into its own.**
+  A start pin holds the pinned service's hard dependencies up, but only
+  for as long as that pin lasts. The soft-reboot snapshot recorded the
+  dependencies as pinned in their own right, so after the soft reboot
+  `slinitctl unpin` and `stop` of the dependent left them running and
+  pinned, where before it they stopped. Only a service's own pin is
+  recorded now; the inherited one comes back with the dependent's.
+- **Several control commands changed service state without the
+  scheduling lock.** `slinitctl release`, `trigger`/`untrigger`,
+  `stop --pin`, `once`, `reset-failed` and `restart` changed a service
+  from the connection's goroutine while the event loop could be changing
+  the same service and queues, and so did the pin and trigger replay of a
+  soft reboot's snapshot and of the persistent pin store at boot;
+  `go test -race` reported each. A trigger can complete a start and a
+  release can stop a service, so both reached the dependency and
+  propagation queues unlocked. They now go through ServiceSet wrappers
+  that take the lock and drain the queues, as `start` and `stop` did.
+- **`system-call-architectures = native` alone killed the service.**
+  Set without a `system-call-filter` list — as were `system-call-log`
+  and `system-call-error-number` — it compiled to an empty allowlist,
+  which refuses every syscall: the service died with SIGSYS at its
+  first one. The systemd unit converter maps
+  `SystemCallArchitectures=native`, common in units, so such a unit
+  could not run. No list now means no filter: the architecture check
+  still applies and every native syscall is allowed, as under systemd.
+- **The boot debugger's menu could freeze or deadlock PID 1.** When the
+  boot service reached STARTED, slinit stopped the Ctrl-B debugger from
+  inside the service-event listener, which runs with the scheduling
+  lock held; with the menu open, Stop waited for it to close. Every
+  start, stop and control command waited too, and choosing `[f]` in the
+  menu — which needs that lock — deadlocked PID 1 for good. The
+  debugger is now stopped outside the lock.
+- **A signal to PID 1 after the event loop ended panicked the kernel.**
+  When its loop returned, slinit released the shutdown signals with
+  `signal.Stop`, which hands them back to the Go runtime — whose action
+  for SIGINT, SIGTERM, SIGHUP and SIGQUIT is to exit. The final
+  shutdown sequence, a soft reboot's hooks and sweep, and a
+  `ShutdownRemain` hold all run after that point, so a Ctrl+Alt+Del or
+  a stray `kill -INT 1` there was `Attempted to kill init!`. As PID 1
+  the signals now stay claimed until slinit is done.
+- **A pin persisted just before a power cut could vanish.** With
+  `--persist-intent`, a pin's file was written to a temporary name and
+  renamed into place without an `fsync`, so after a power cut the file
+  could be there but empty, and the next boot silently dropped the pin.
+  The file is now synced before the rename and the directory after it,
+  as the soft-reboot snapshot already was.
+- **The services-dir watcher lost services without a word.** When more
+  files changed at once than the kernel's inotify queue holds
+  (`max_queued_events`, 16384 by default), the overflow was ignored:
+  16484 new files were reported as 8192. And a services-dir removed and
+  created again was never watched again. The watcher now rescans its
+  directories after an overflow, and re-adds the watch on a removed
+  directory once it exists again, rescanning it.
+- **A soft reboot reverted edits to the env-file.** The soft-reboot
+  snapshot recorded the whole global environment, env-file values
+  included, and replayed it over the env-file the new generation had
+  just read, so a variable changed or removed in that file came back
+  with its old value. As `slinit(8)` documents, only values set with
+  `slinitctl setenv-global` are recorded now.
+- **Only one `start-on-mount` service per path ever fired.** The mount
+  watcher kept a single registration per path, so when two services
+  waited for the same mountpoint, or both set `start-on-mount = yes`,
+  only the one loaded last started; unloading either removed the
+  other's trigger too. Registrations are now kept per service.
+- **Saving a service file in vim could unload the service.** The
+  services-dir watcher folded each burst of events by "removal wins",
+  so vim's save (rename to `svc~`, write a fresh `svc`) or `rm` then
+  `cp` reported a file that was still there as removed, and nothing
+  reported it back. And since the handler gets only the name, removing
+  a shadowed copy in one directory unloaded the service another
+  directory still provided. The watcher now judges each burst from what
+  is on disk when it settles, and reports a removal only when no
+  watched directory provides the name any more.
+- **Removing a service file unloaded a service others depend on.**
+  With `--watch-services-dir`, a removed file unloaded its service as
+  soon as it was stopped. `slinitctl unload` also refuses while another
+  loaded service depends on it, or another client holds it; the watcher
+  skipped both checks, so the unload stripped the `depends-on` edge and
+  the dependent then started without its hard dependency. The watcher
+  now applies the same checks, under the lock the unload takes, and
+  leaves the service loaded with a warning otherwise.
+- **Writing to the readiness fd a second time killed the service.**
+  Without a watchdog, slinit closed its end of the readiness pipe as soon
+  as the service was ready, so a later write — a daemon that reports
+  ready again after a reload, say — died of SIGPIPE. dinit keeps reading
+  the pipe until EOF; slinit now drains it too, and closes it when the
+  process exits or is stopped.
+- **A scripted service whose start once timed out could never start
+  again.** The timeout set the stop reason to `timed-out`, and the
+  start-command's exit handler read that reason to mean "this attempt
+  timed out", while nothing reset it: every later start, however quick
+  and successful, was failed as "start command completed after timeout".
+  The timeout is now recorded per attempt.
+- **A smooth recovery of a ready-notification service left the new
+  process's start-timeout running.** The recovered process signals ready
+  while the service is already STARTED, and that signal was dropped as
+  meaningless. So the start-timeout armed for the new process was never
+  cancelled — it later sent SIGINT to the healthy process and failed a
+  STARTED service — the watchdog was never re-armed, and the readiness
+  pipe was closed, so the first keepalive killed the process with
+  SIGPIPE, over and over until the restart limit stopped the service.
+  The signal now settles the timer and re-arms the watchdog.
+- **A smooth recovery that had to wait out `restart-delay` never
+  relaunched.** When a `smooth-recovery` process or bgprocess service
+  crashed sooner than `restart-delay` after its last start, the wait for
+  the relaunch was armed on a timer that only the process monitor reads
+  — and the monitor had already returned with the dead process. The
+  service sat STARTED with no process for good, its dependents still
+  believing it was up. The relaunch now runs from its own timer, and a
+  stop during the wait calls it off.
+- **A relative `waits-for.d` in an `@include`d fragment read the wrong
+  directory.** `depends-on.d`, `depends-ms.d`, `waits-for.d` and
+  `prepared-by.d` were always resolved against the main service file's
+  directory, so one written in a fragment, a conf.d overlay or a
+  `.override` file in another directory named a directory slinit never
+  read, and its dependencies were silently dropped. dinit resolves them
+  against the file that contains the setting; slinit now does too, and
+  `slinitctl enable` writes into that same directory. A setting in the
+  service file itself resolves as before.
+- **A command that left a child in the background held its caller.**
+  Commands slinit runs itself and reads the output of — `run-action`,
+  env generators, the power (SIGPWR) hook, the OpenRC `depend` parser,
+  `apparmor_parser` — waited for EOF on their output pipe, which a
+  background child holds open: the caller waited for as long as that
+  child lived. Output is now read for at most 2 s after the command
+  exits, and its exit status is reported as before.
+- **A container that exited non-zero left its `slinit-nspawn`
+  registry entry behind.** The launcher exited with the container's
+  status straight from its wait, skipping the registry cleanup, so
+  `slinit-machinectl` went on listing the container. The entry is now
+  removed on every exit, and an init killed by a signal gives
+  128 + the signal number instead of 255.
+- **`autofs-type = direct` set up an indirect autofs mount.** The
+  mount options never carried `direct`, and the kernel takes a mount
+  without it as indirect, so a direct unit's mount point behaved as a
+  directory of keys instead of triggering its own mount. `direct` is
+  now passed.
+- **`slinit-mount` never unmounted an idle filesystem.** The expiry
+  sweep's ioctl number was wrong (`_IO` where the kernel defines
+  `_IOW(…, int)`), so every sweep failed and `timeout=` had no effect;
+  two unused ioctl numbers (`AUTOFS_IOC_PROTOVER`, `AUTOFS_IOC_EXPIRE`)
+  had the wrong sizes as well. The sweep now also runs off the event
+  loop: the kernel holds the ioctl until the daemon answers the expire
+  request it sends, and the loop is what reads that request.
+- **A DHCP client started by `ifup -a` died at its first lease
+  renewal.** The output of ifup was read through a pipe that was
+  closed as soon as ifup exited, so a client ifup left in the
+  background with that output (busybox `udhcpc`) was killed by SIGPIPE
+  the next time it wrote, and the interface lost its address. The
+  pipe is now read until the last process holding it closes it.
+- **A daemon started from rc.local held boot for five minutes, then
+  was killed.** rc.local and the hook scripts read their output to EOF
+  before waiting for the script, so a background child that inherited
+  the output (`daemon &`) kept the wait going: rc.local was held for
+  its whole 5 min timeout, logged as failed, and the timeout's
+  process-group kill took the daemon down; a child in its own session
+  (`setsid … &`) held a hook until it exited, past any timeout. The
+  script is now waited for itself, a script that exits on its own has
+  nothing killed, and its output pipe is read until the last holder
+  closes it, so a daemon writing to it later is not killed by SIGPIPE.
+- **A sleep hook could hold a suspend for ever.** As with the shutdown
+  hook, the hook's output went to a pipe and `Wait` waited for EOF on
+  it, so a hook that left anything running in the background held the
+  suspend for as long as that child lived, and a hook that hung held it
+  for good. The hook is now bounded the same way: 90 s for the hook, and
+  2 s for its output after it exits.
+- **One long output line could wedge a service.** The shared logger
+  and the standalone `log-forward-udp` path read a service's output pipe
+  with `bufio.Scanner`, which stops for good on a line longer than its
+  64 KiB buffer. Nothing drained the pipe after that: the service
+  blocked in `write(2)` once the pipe filled (shared logger), or wrote
+  into a pipe whose read end had been closed (UDP forwarding). A longer
+  line is now passed on in 64 KiB pieces and reading goes on to EOF.
+- **`slinit-start-stop-daemon --exec` lost a daemon once its binary was
+  upgraded.** It compared `/proc/PID/exe` with the path exactly, and
+  for a binary replaced on disk that link reads `<path> (deleted)`: a
+  `--stop` found nothing and left the old daemon running, and a
+  `--start` launched a second one. The suffix is now ignored, as
+  Debian's start-stop-daemon and OpenRC's exe matching do.
+- **Two path triggers in one directory: only the last one fired.**
+  inotify keeps one watch per inode, so a second `start-on-path-*`
+  watch on the same directory got the same descriptor and replaced the
+  first one's event mask, and slinit's table kept only the last service
+  for it: the first never fired, and stopping either service's trigger
+  removed the watch the other still needed. Every service sharing a
+  watch now gets its events, the masks are combined, and the watch is
+  removed only when its last user goes.
+- **A shutdown hook that started a background process wedged
+  shutdown.** The hook's output was collected through a pipe, and the
+  wait for it lasted until every holder of the pipe had closed it, so a
+  child the hook left running held shutdown for as long as it lived,
+  with no timer left at that stage to rescue it. The output is now
+  waited for at most 2 s after the hook exits. The hook itself is still
+  waited for until it exits, as dinit waits for it.
+- **A stray option on the kernel command line panicked the kernel.**
+  As PID 1 slinit receives every boot parameter the kernel did not
+  consume, and parsed them with Go's exit-on-error flag handling, so an
+  unknown option (`-z`, `-h`) or one of slinit's own without its value
+  (sysvinit's emergency `-b` and auto `-a`) exited init: "Attempted to
+  kill init!". As dinit does while processing system arguments, PID 1
+  now reports and drops such words and boots; a value that fails to
+  parse is reported and the rest of the line skipped. Outside PID 1 a
+  bad option still stops slinit.
+- **`switch-root` could delete the new root's files.** The initramfs
+  cleanup removed every top-level entry of the old root except the one
+  named exactly like NEWROOT, without the device check its comment
+  promised. A nested NEWROOT such as `/mnt/root`, which the precheck
+  accepts, had `/mnt` removed recursively — and with it everything on
+  the real root. As util-linux and busybox `switch_root` do, the
+  cleanup now recurses and deletes only entries on the old root's
+  device, never descending into another mount, NEWROOT, or past an
+  ancestor of it.
+- **A timer from one start attempt could act on the next.** The
+  job-timeout, runtime-max, start-delay and start-when-idle timers check
+  only the service's state when they fire. One that fired while the
+  scheduling lock was held across a stop and a new start — an
+  auto-restart, a `restart` — could no longer be recalled, and then
+  failed the new attempt at once (job-timeout), stopped the new run
+  (runtime-max), or launched the new attempt without its delay, after
+  which the new attempt's own timer launched a second process
+  (start-delay, start-when-idle). Each callback now acts only if it is
+  still the armed timer.
+- **`options = starts-on-console` never started.** The service queued
+  for the console, and the queue was only pulled when a service holding
+  the console released it — so with the console free, nothing ever
+  handed it over and the service stayed STARTING; a process service was
+  never forked. (The 3.1.6 `Known` note calling the console queue
+  vestigial was wrong: `queueForConsole` appends to it.) The first
+  waiter now gets a free console at once, as in dinit, and leaving the
+  queue keeps the others in order. Acceptance case 187 no longer
+  accepts a stuck STARTING as environmental.
+- **A relative `SetTime` through `slinit-timedated` set the clock
+  behind by the time its polkit prompt took.** The new time was
+  computed before authorization, so moving the clock by 90 s with a
+  prompt answered after 40 s landed 40 s short. The request is now
+  checked again once authorized, as systemd re-runs the method: the
+  offset counts from then, and a time-sync service started meanwhile
+  refuses it.
+- **`slinit-logind`'s `KillSession` with `who=leader` killed the whole
+  session.** It wrote the scope's `cgroup.kill`, which is SIGKILL to
+  every process, whatever signal was asked for, and any `who` other
+  than `leader` was taken as `all`. As in systemd, `leader` now sends
+  the requested signal to the leader alone, `all` (or empty) signals
+  the session, and anything else is refused with `InvalidArgs`.
+- **A service stopped while waiting for a `--parallel-start-limit` slot
+  was started anyway.** Its waiter stayed queued, and when the slot
+  freed it brought the now STOPPED service up; the second
+  `ServiceInactive` left the active count at -1, so shutdown, which
+  waits for 0, sat out the emergency timeout. Each start/stop cycle
+  while waiting also parked a goroutine for good and added one more
+  bring-up. Stopping now withdraws the wait — it is interruptible like
+  the console wait, since nothing has run yet — the woken waiter checks
+  its wait is still current, and a withdrawn wait wakes its goroutine
+  so it exits.
+- **An interrupted start kept its `--parallel-start-limit` slot for
+  good.** Only a completed or failed start gave the slot back; one
+  stopped while STARTING went STOPPED still holding it, and every later
+  start waited behind it. Such a start now releases its slot. A starter
+  past the slow threshold also stops counting as documented: waiters
+  used to be woken only when some start ended, so a slow one still held
+  them back while a newcomer could take the free slot ahead of them. A
+  timer now wakes the queue when the oldest starter turns slow, and a
+  newcomer queues behind those already waiting.
+- **A dependency could take the graph past the 32-level depth cap.**
+  Depths are recalculated through the dependents of whatever changed,
+  but each service only once: in a diamond (`a` on `b` and on `c`, `c`
+  on `b`) `a` was reached through `b` before `c` had its new depth, and
+  kept a stale one. A test chain gave `a` a true depth of 33 that was
+  accepted at a recorded 32. A service is now recalculated again when
+  one of its dependencies changes later. The recalculation also checked
+  for duplicates with a linear scan under the queue lock — 38 ms for a
+  dependency added under a service with 8000 dependents, 1 ms now.
+- **One line over 256 KiB on PID 1's stdout or stderr could hang PID 1.**
+  The catch-all logger read its pipe with a `bufio.Scanner`, which stops
+  for good at the first line longer than its 256 KiB limit: the drain
+  returned, nothing read the pipe again, and once its 64 KiB filled the
+  next write to PID 1's own stderr blocked forever. The new test's write
+  after such a line was still blocked after 2 s. The drain now reads
+  until EOF and passes an overlong line on in 256 KiB pieces.
+- **A garbage collection could close PID 1's stdout and stderr.** The
+  catch-all logger's start, `ReattachStdoutErr` and stop each pointed
+  `os.Stdout`/`os.Stderr` at a new `*os.File` for fd 1 and 2 and dropped
+  the old one, and Go closes a dropped file's descriptor when the GC
+  finalizes it — so the next collection could close fd 1 and 2, the
+  catch-all pipe, and let the next `open` reuse those numbers. The new
+  test saw both closed after start, reattach, stop and a GC; in this
+  package's own tests it silently took the test binary's output with it
+  (11 of 60 runs failed at `GOGC=50`). The replaced files are now kept.
+- **Appending to a binary journal got slower the larger the file.**
+  The DATA hash table had a fixed 233 buckets and the dedup walk read
+  and allocated the payload of every node in a bucket's chain before
+  comparing hashes, so each append was linear in the file: 25 µs per
+  event while the file held 0–20k events, 243 µs at 100–120k. The walk
+  now compares the stored hash first, and a new file sizes its DATA
+  table from the rotation size the way systemd does (about 233k buckets
+  at the default 128 MiB). The count lives in the table object, so
+  older files reopen with the table they have. An append at 50k events
+  went from 112 µs to 6 µs in the new benchmark.
+- **`slinit-inetd` stopped serving when it ran out of descriptors.**
+  Its accept loop meant to ride out `EMFILE`, but it only retried
+  errors Go calls timeouts, and `EMFILE`/`ENFILE`/`ENOBUFS`/`ENOMEM`
+  are not — so a burst of connections that filled the descriptor table
+  ended the listener for good. It now retries those with a backoff
+  (5 ms doubling to 1 s), and when every listener has really failed it
+  exits 1 instead of 0, so `restart = on-failure` restarts it.
+- **A failing accept spun a CPU in PID 1.** The accept loop of a
+  service's virtual TTY (`vtty`) retried any error other than its own
+  Close immediately, and so did `slinit-logouthookd`'s, which also
+  logged each attempt; `EMFILE`, the usual cause, lasts until
+  descriptors are freed. A test with a listener failing with `EMFILE`
+  counted 60 million retries in 300 ms. Both now back off from 5 ms to
+  1 s, as the control socket's loop already did.
+- **A control client could crash PID 1 by taking a second handle.** A
+  connection's handle maps were written by the connection's goroutine
+  and read, through `ServiceEvent`, by whichever goroutine was changing
+  a service's state, with no lock between them: Go's unrecoverable
+  `concurrent map read and map write`, which in PID 1 is a kernel
+  panic. `slinit-monitor` with two names, `add-dep` and `enable` all
+  take a second handle while the first service can be changing state.
+  The new test crashed 5 runs out of 5 in about 5 ms.
+- **A control client that stalled inside a packet had its payload run
+  as commands.** The control connection re-arms a 30 s read deadline to
+  look at the server's state, and treated every timeout as idleness —
+  including one after a packet's header had been read. The payload that
+  followed was then parsed as new packets: a wall-notice whose text
+  held the bytes of a shutdown command rebooted the machine in the new
+  test. A timeout after part of a packet now closes the connection.
+- **`catlog --clear` of a large log buffer lost the log and printed
+  nothing.** A reply is one packet of at most 65535 bytes, but
+  `log-buffer-size` has no upper bound and the file-log tail read 65536
+  bytes: the reply failed to send, the client saw the connection close,
+  and with `--clear` the buffer had already been emptied. The same held
+  for a `run-action` printing more than 64 KiB. These replies now carry
+  the newest output that fits.
+- **A reload that changed a service's type left other clients'
+  handles on the old object.** Only the reloading connection's handle
+  was moved, and not its event subscription, so `slinit-monitor` or any
+  other open client acted on a service no longer in the set and heard
+  nothing more about it. Every connection's handles and subscriptions
+  now move to the new object.
+- **One failed start could block a `lock-file` service until slinit
+  restarted.** A start that failed after the lock was taken — a missing
+  `standard-input-file`, an `open-file` that could not be opened, a
+  missing `slinit-runner` or `slinit-inetd`, a cgroup delegation error —
+  returned without closing the lock's descriptor, so its flock stayed
+  held and every later start failed "lock-file already locked"; the
+  credentials tmpfs and terminal descriptors leaked the same way. Only
+  a failure of the fork itself cleaned up. Every failure before the
+  child starts now releases what the start had acquired.
+- **Two overlapping sleep requests to `slinit-logind` both ran.** A
+  `Suspend` (or any sleep call, or the lid) arriving while another sleep
+  was in flight went through the whole handshake as well: PID 1 was
+  asked to sleep twice in a row, and the first one's
+  `PrepareForSleep(false)` told lockers the sleep was over while the
+  second was still under way. As in systemd, the second is now refused
+  with `org.freedesktop.login1.OperationInProgress`.
+- **`slinit-logind` ignored `InhibitDelayMaxSec`.** The setting was
+  read from `logind.conf` and reported as `InhibitDelayMaxUSec`, but a
+  sleep always waited the built-in 5 s for delay locks to clear. The
+  configured value is now the cap; without one it is still 5 s.
+- **A full `/run` could make `slinit-logind` reuse a live session's
+  id.** The session-id counter was rewritten in place, so a write that
+  failed left it empty; it then read back as 0 and the next login was
+  handed `c1` again, overwriting the record of a session still running.
+  The counter is now replaced through a temporary file and a rename,
+  and an id whose session record exists is never handed out.
+- **`slinit-logind` reported `NCurrentInhibitors` as 0 whatever was
+  held.** It counted files in a state directory nothing writes; the
+  locks are kept in memory. It now counts the locks held.
+- **`slinitctl run --collect` and `run --type scripted --wait` always
+  failed with "unexpected reply: 101".** A handle the connection holds
+  reports its service's state changes unasked, and `run` re-loads the
+  unit it just started while that unit is changing state; loading a
+  service read the next packet as its reply, so it took the pushed
+  event for one. `--collect` then left the transient unit loaded and its
+  file on disk. Every command reply is now read past such events, which
+  are kept for whatever waits on them.
+- **`slinitctl run --type scripted --collect` waited for ever.** A
+  scripted unit stays STARTED once its command has finished, and
+  `--collect` waits for STOPPED; the "unexpected reply" failure above
+  used to end the wait first. A finished scripted unit is now stopped,
+  then unloaded and its description removed.
+- **`slinitctl run` re-interpreted `$` and backslashes in the command.**
+  It double-quoted each argument into the transient description but
+  escaped only `"`, so the parser expanded `$VAR` and took a backslash
+  as an escape: `run -- showargs 'a\b' 'HOME=$HOME'` ran `showargs ab
+  HOME=/home/…`. `$` is now written as `$$` and a backslash doubled,
+  so the service gets the arguments exactly as given; an argument
+  with a newline, which the file cannot hold, is refused.
+- **`rc-status ""` panicked.** An empty argument was taken for a
+  runlevel name and its first byte read to check for a flag, which
+  panicked with "index out of range"; it is now a usage error (exit 2).
+- **`slinit-openrc-convert` wrote a file that did not load for
+  `no_new_privs=yes`.** It emitted `no-new-privs = yes`, which slinit
+  rejects as an unknown setting; it now writes `options = no-new-privs`,
+  as its man page always said.
+- **A quoted `ExecStart=` path was split in the wrong places.** The
+  systemd mapping stripped a leading and trailing quote off every value,
+  which on an `Exec*=` line took them off the first and last word:
+  `ExecStart="/opt/my app/bin/run" --name "hello world"` ran
+  `/opt/my` with the arguments `app/bin/run --name hello` and `world`.
+  Exec lines now keep their quotes, which slinit's command parser
+  groups words by just as systemd does.
+- **A systemd unit ordered after a unit that is not installed failed
+  to load.** `After=` and `Wants=` become `waits-for:`, and slinit fails
+  a load on any dependency it cannot find, where systemd ignores an
+  `After=` or `Wants=` naming a unit that is not installed: 92 of 253
+  host units failed to load directly (`display-manager.service`:
+  `After=ypbind.service`). A unit loaded directly now leaves out, with a
+  note, each such reference that names no service, init.d script or
+  unit; one that does resolve is still `waits-for:`, pulling the other
+  service in as before, and a `Requires=` on a missing unit still fails,
+  as under systemd. `slinit-openrc-convert` had the same fault: `use
+  net` became `waits-for: net`, a virtual service no file provides.
+  `use`, `after` and `want` (previously ignored) now become
+  `waits-for:` only when a script of that name sits beside the
+  converted one, and are otherwise left out with a note; a `need` that
+  would not resolve is warned about.
+- **A systemd unit naming a `.device` or `.mount`, or its own socket,
+  loaded wrong or not at all.** Only `.target` references were dropped;
+  the other unit types had their suffix cut off (`sysroot.mount` became
+  a dependency on a `sysroot` service, a different thing) or, for a
+  `.slice` or `.scope`, were copied as they were. An escaped device
+  name is not a valid service name, so `qemu-guest-agent.service`
+  (`After=dev-virtio\x2dports-org.qemu.guest_agent.0.device`) was
+  refused outright. And a unit's own socket became a dependency on
+  itself (`avahi-daemon`, `dm-event`, `pcscd`: `Requires=` their
+  `.socket`). A `.socket` still stands for the service it activates
+  (`lvm2-monitor`'s `Requires=dm-event.socket` is `depends-on:
+  dm-event`), a reference to the unit itself is dropped with a note, and
+  every other unit type is dropped with a note, as `.target` was.
+- **Three systemd mappings were wrong.** `Group=` written before
+  `User=` produced `run-as = user::group`, a group named `:group`;
+  `Restart=on-success` became `restart = yes`, restarting a service
+  that failed, although slinit has `restart = on-success`; and of a
+  oneshot's several `ExecStart=` lines all but the last were dropped
+  without a word. `User=`/`Group=` now combine in either order,
+  `on-success` maps to itself, and the dropped `ExecStart=` lines are
+  warned about, since slinit runs one command.
+- **A systemd unit's `$VAR`, `$MAINPID` and second `EnvironmentFile=`
+  were lost without a word.** systemd substitutes `$VAR` in an `Exec`
+  line from the unit's environment files when it runs the command;
+  slinit expands it when the file is loaded, from its own environment,
+  so `qemu-guest-agent.service`'s `${FILTER_RPC_ARGS}` became nothing.
+  That is now warned about. `ExecStop=kill -s SIG $MAINPID` (slinit has
+  no `$MAINPID`, so the kill had no PID) becomes `term-signal = SIG`
+  when SIG stops the daemon — `TERM`, `INT`, `QUIT`, `KILL` or the
+  signal `KillSignal=` names; a `HUP` or `USR1` sent that way is a
+  reload, and is dropped with a warning, leaving `KillSignal=` to stop
+  the service. Any other `ExecStop=` using `$MAINPID` is dropped with a
+  warning. A
+  second `EnvironmentFile=`, which replaced the first, is warned about
+  too: slinit reads one env-file.
+- **`slinit-runit-convert` and `slinit-sysvinit-convert` split commands
+  in the wrong places.** The runit converter split the exec line
+  shell-style to resolve a bare command name or peel `chpst`, then
+  joined the words with plain spaces: `exec touch "/tmp/file with
+  space"` ran `touch` with three arguments, and a line starting with an
+  absolute path was copied as written, which slinit's command parser
+  does not read as the shell does (`'a\b'` became `ab`). Words are now
+  quoted back for slinit in every case (and a backslash in the exec
+  line is read as the shell reads it). The sysvinit converter copied a
+  process field as it was, so `/bin/dmesg > /var/log/dmesg.boot` ran
+  `dmesg` with the arguments `>` and `/var/log/dmesg.boot`; a field
+  with a shell metacharacter now runs as `/bin/sh -c "exec …"`, which
+  is what sysvinit and busybox do with it.
+- **A stopped console stopped PID 1.** Ctrl-S or Scroll Lock on a VT,
+  or XOFF on a serial line, stops a console taking output, and slinit
+  wrote its `[ OK ] name` lines with the scheduling lock held: to the
+  secondary consoles (`console=tty0 console=ttyS0`, or `--console-dup`)
+  directly, and through the catch-all pipe, whose drain blocked on the
+  console until the 64 KiB pipe filled. No service started or stopped
+  and `slinitctl` hung until the console was released. Measured: the
+  first `[ OK ]` line to a stopped secondary console never returned,
+  and with a stopped catch-all console PID 1 blocked after 3754 lines.
+  A console that takes no output for a second is now given up on: what
+  it misses is dropped, and when it takes output again it is told how
+  much. A console that takes its output, however slowly (a serial line,
+  a container runtime's stdout), gets exactly what it got before, with
+  the same back-pressure. At soft reboot and exit, slinit now
+  waits at most 5 s for a slow console to write what it is still owed.
+- **A stalled `slinit-journald` slowed every state transition.** Each
+  event went to the journal socket with a 10 ms deadline, under the
+  scheduling lock; once the daemon stopped reading, every transition
+  waited out that deadline. Measured: 1000 service starts took 8.4 s
+  instead of 8 ms. Once the daemon has taken nothing for 100 ms, sends
+  no longer wait until one goes through again (1000 starts: 0.1 s); a
+  daemon that only pauses (fsync, rotation) is waited for as before.
+  The in-memory event ring keeps every event as before.
+- **After `slinit-journald` restarted, it got no more events from PID 1.**
+  slinit kept its connection to the daemon's old socket and never
+  dropped it, so every later event failed with `ECONNREFUSED` until
+  slinit itself restarted (measured: 100 events after the restart, 0
+  delivered). A send that finds the socket gone now drops the connection
+  and the next event dials the new one.
+- **A syslog daemon that stopped reading stopped slinit.** slinit's main
+  log went to `/dev/log` with no deadline, under the scheduling lock: in
+  container mode with the host's `/dev/log` mounted in, or when slinit
+  is not PID 1, a stalled daemon held it at the next message (measured:
+  blocked after 278 service starts). Messages now go to syslog from a
+  goroutine of their own through a bounded queue. A daemon that keeps
+  reading, however slowly, is waited for as before and gets every
+  message; once it has taken nothing for a second, messages are dropped
+  until it reads again, and it is then told how many. On exit slinit
+  waits at most 2 s for the queue to drain, including on the error
+  exits that used to skip it.
+- **A stalled shared logger froze PID 1 when one of its producers
+  restarted.** With the logger stopped (`kill -STOP`) or hung, the
+  producer's reader in slinit blocked writing into the full mux pipe —
+  slinit holds the pipe's read end, so the write never fails — and a
+  restart of the producer waited for that reader while holding the
+  service queue lock: the state machine, the control socket and child
+  reaping all stopped (measured: the second `start` never returned).
+  The old reader is now retired without waiting; the new instance
+  forwards nothing until the old one has finished its last write, so
+  lines still reach the logger in order.
+- **A stalled `output-logger` beside a `logfile` froze PID 1 on the
+  next restart.** slinit copies each line to the logger from the
+  goroutine that writes the logfile; with the logger stopped, that copy
+  blocks once the 64 KiB pipe fills, and an auto-restart closed the old
+  rotator under the service queue lock, waiting for that write forever
+  (measured: the service stuck in STARTING, queue lock never released).
+  A restart now stops the previous instance's logger first — it used to
+  be left running — which makes the blocked write fail, so the restart
+  goes through. A logger that stops reading still holds up the logfile
+  and then the service, as a full pipe would; a slow but healthy logger
+  still gets every line.
+- **Any local user could hold up every getty start for 10 seconds.**
+  The utmp entry for a service with `inittab-id`/`inittab-line` was
+  written while slinit held the service queue lock, and glibc waits up
+  to 10 s for a lock on utmp that anyone able to read the file can
+  take: with a reader holding it, each getty start froze the state
+  machine and the control socket for 10 s. The utmp clear at exit
+  stalled the service's monitor the same way. Both now run in order on
+  a goroutine of their own; a clear is still written after the create
+  for the same process. A shutdown waits for the queued writes, for up
+  to 5 s, before it writes its own utmp/wtmp records, and a soft reboot
+  before its exec, so the clears of the services it stopped are not
+  written after the shutdown record or lost.
+- **A `log-forward-udp` host name was looked up with the service queue
+  locked.** Each start of such a service resolved the name in DNS while
+  holding the lock, so a resolver that did not answer froze the state
+  machine and the control socket for 10 s per start (measured). A host
+  name is now resolved when the service prints its first line, by the
+  goroutine that reads its output and not under the lock, so that line
+  and the ones after it still reach the remote; a failed lookup is
+  logged and disables the forwarding, as before. An IP address is still
+  used at once.
+- **Each auto-restart of a `log-type = command` service left an
+  output-logger behind.** Every start spawned a new output-logger (and
+  error-logger) and overwrote the previous one's supervisor, which only
+  a stop for good shut down; after an auto-restart the old logger kept
+  running, one more per restart. The previous loggers are now retired
+  when new ones start: each still gets what its instance wrote last,
+  then exits at the end of its input or is stopped a second later.
+- **In container mode slinit hid the runtime's `/run` and its own
+  output.** A container's slinit is PID 1 of its namespace, and was
+  taken for the machine's init: with `CAP_SYS_ADMIN` it mounted a
+  fresh tmpfs on `/run`, hiding Docker's and Kubernetes's
+  `/run/secrets` and podman's `/run/.containerenv` from every service
+  (measured: a service reading `/run/secrets/db_password` found
+  nothing), and it pointed its stdout and stderr at `/dev/console`,
+  so the runtime's log stream got none of its output. Both are now
+  done only by a PID 1 that is not in container mode.
+- **`--ready-fd` reported the control socket before it existed, and
+  `pass-cs-fd` did not work for a service started at boot.** The boot
+  services were started before the control server: an internal boot
+  service reached STARTED, and the readiness notification went out,
+  while the socket was not there yet (measured: a connect at the
+  moment of the notification failed with "no such file or
+  directory"), and a boot service with `options = pass-cs-fd` had its
+  connection closed unserved, so its `slinitctl --use-passed-cfd`
+  failed with "broken pipe". The control server is now listening
+  before the boot services start, as in dinit; a shutdown requested
+  before the event loop is running is carried out once it is, or at
+  once if PID 1 is waiting in a boot-failure menu.
+- **With `--ready-fd`, nothing ran at the end of boot.** The readiness
+  notifier replaced the end-of-boot handler instead of being chained to
+  it, so with `--ready-fd` (`-F`) the hooks in
+  `/etc/slinit/hooks.d/system-up`, `ifup -a`, `/etc/rc.local`, the
+  watchdog's boot-ready and the muting of the boot console were all
+  skipped (measured: a system-up hook did not run). The notification is
+  now sent after them.
+- **The rescue and boot-collapse menus looped forever on a console
+  that only returns EOF.** An EOF is how a Ctrl-D on an empty line
+  reaches the menu, so each was taken for "continue": on a hung-up
+  console, or `/dev/null` bound on `/dev/console`, the boot was
+  retried, failed and the menu presented again at once, without end
+  (measured: 3542 menus and 800 KB of log in 2 s), and the 60 s
+  auto-reboot never came. One EOF is still a Ctrl-D; another with no
+  key read since is ignored and the menu waits out its timeout.
+- **slinit.8 said `--run-mode=remount` re-mounts `/run` with safe
+  options.** It detaches the existing `/run` and mounts a fresh, empty
+  tmpfs in its place, which is what the page now says.
+- **`slinit-journalctl --vacuum-size`/`--vacuum-files` deleted the file
+  slinit-journald was writing.** Vacuum spared only the file named
+  after today's UTC date, but the daemon names its file after the day
+  it opened it and rotates it by age or size, not at midnight: from the
+  first midnight after it was opened, the active file looked rotated
+  (measured: `--vacuum-files=1` removed 2 files, the active one among
+  them), and the daemon went on writing into an unlinked file. The
+  newest file of each format that still has its plain date name, and
+  every file a running slinit-journald holds open, are now spared.
+
 ## [4.0.2] — 2026-11-22
 
 **A fix release on the 4.0 long-term-support line.** Two more

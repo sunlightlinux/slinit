@@ -22,6 +22,10 @@ import (
 // not. A killed child is the old behaviour, and fails the case.
 const restrictChildEnv = "SLINIT_TEST_RESTRICT_CASE"
 
+// restrictChildSkip is the child's exit status for "this environment
+// cannot run the case" (77, as the functional and container suites use).
+const restrictChildSkip = 77
+
 func init() {
 	c := os.Getenv(restrictChildEnv)
 	if c == "" {
@@ -89,6 +93,33 @@ func init() {
 		_, _, e := unix.Syscall6(unix.SYS_OPENAT2, uintptr(atFDCWD),
 			uintptr(unsafe.Pointer(path)), uintptr(unsafe.Pointer(&how)), unsafe.Sizeof(how), 0, 0)
 		want("openat2", e, unix.ENOSYS)
+	case "file-systems":
+		// Run as root of a user and mount namespace of its own, where
+		// every mount call works until the filter refuses it.
+		dir := os.Getenv("SLINIT_TEST_DIR")
+		if err := unix.Mount("tmpfs", dir, "tmpfs", 0, ""); err != nil {
+			if err == unix.EPERM || err == unix.EACCES {
+				// The namespace exists but grants no capabilities:
+				// Ubuntu 24.04's apparmor_restrict_unprivileged_userns
+				// does exactly that. Nothing to test here.
+				fmt.Fprintf(os.Stderr, "set-up mount: %v\n", err)
+				os.Exit(restrictChildSkip)
+			}
+			fail("set-up mount: %v", err)
+		}
+		if err := unix.Mount("", dir, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
+			fail("set-up remount ro: %v", err)
+		}
+		install(CompileRestrictFileSystems())
+		want("mount(MS_REMOUNT)", errnoOf(unix.Mount("", dir, "", unix.MS_REMOUNT|unix.MS_BIND, "")), unix.EPERM)
+		attr := unix.MountAttr{Attr_clr: unix.MOUNT_ATTR_RDONLY}
+		want("mount_setattr(clear RDONLY)", errnoOf(unix.MountSetattr(-1, dir, 0, &attr)), unix.EPERM)
+		atFDCWD := unix.AT_FDCWD
+		path, _ := unix.BytePtrFromString(dir)
+		_, _, e := unix.Syscall6(unix.SYS_OPEN_TREE_ATTR, uintptr(atFDCWD),
+			uintptr(unsafe.Pointer(path)), unix.OPEN_TREE_CLONE, uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
+		want("open_tree_attr(OPEN_TREE_CLONE)", e, unix.EPERM)
+		want("pivot_root", errnoOf(unix.PivotRoot(dir, dir)), unix.EPERM)
 	default:
 		fail("unknown case %q", c)
 	}
@@ -104,13 +135,25 @@ func errnoOf(err error) unix.Errno {
 
 func runRestrictChild(t *testing.T, name string, env ...string) {
 	t.Helper()
+	runRestrictChildAttr(t, name, nil, env...)
+}
+
+func runRestrictChildAttr(t *testing.T, name string, attr *syscall.SysProcAttr, env ...string) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	cmd.Env = append(append(os.Environ(), restrictChildEnv+"="+name), env...)
+	cmd.SysProcAttr = attr
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return
 	}
+	if attr != nil && cmd.Process == nil {
+		t.Skipf("%s: cannot start the child: %v", name, err)
+	}
 	if ee, ok := err.(*exec.ExitError); ok {
+		if ee.ExitCode() == restrictChildSkip {
+			t.Skipf("%s: the user namespace grants no capabilities here: %s", name, out)
+		}
 		if ws := ee.Sys().(syscall.WaitStatus); ws.Signaled() {
 			t.Fatalf("%s: child killed by %v — a refused call must fail, not kill", name, ws.Signal())
 		}
@@ -139,9 +182,20 @@ func TestRestrictSUIDSGIDOnKernel(t *testing.T) {
 	}
 }
 
+// restrict-file-systems must refuse every call that mounts or changes a
+// mount. mount_setattr, open_tree_attr and pivot_root were missing, so
+// mount_setattr could clear MS_RDONLY from a read-only mount.
+func TestRestrictFileSystemsOnKernel(t *testing.T) {
+	runRestrictChildAttr(t, "file-systems", &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+	}, "SLINIT_TEST_DIR="+t.TempDir())
+}
+
 // Every syscall a restrict-* rule names must resolve on amd64: an unknown
-// name is skipped (the legacy calls do not exist on arm64), so a typo here
-// would quietly leave that call open.
+// name fails the compile, so a typo here would refuse to start every
+// service using that knob.
 func TestRestrictRuleNamesResolve(t *testing.T) {
 	if NativeArch() != "x86-64" {
 		t.Skip("names checked against the amd64 table")
@@ -159,6 +213,21 @@ func TestRestrictRuleNamesResolve(t *testing.T) {
 	for _, n := range names {
 		if _, ok := SyscallNumber(n); !ok {
 			t.Errorf("syscall %q does not resolve", n)
+		}
+	}
+}
+
+// restrict-file-systems covers systemd's @mount group (but chroot, which
+// mounts nothing): a mount call systemd adds to the group and the list
+// lacks would be left open, as mount_setattr was.
+func TestRestrictFileSystemsCoversMountGroup(t *testing.T) {
+	have := map[string]bool{}
+	for _, r := range fileSystemRules {
+		have[r.syscall] = true
+	}
+	for _, n := range syscallGroups["@mount"] {
+		if n != "chroot" && !have[n] {
+			t.Errorf("@mount member %q is not refused by restrict-file-systems", n)
 		}
 	}
 }

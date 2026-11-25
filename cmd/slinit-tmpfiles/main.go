@@ -50,6 +50,9 @@ type entry struct {
 	gid   int
 	arg   string
 	force bool // '!' modifier (only-at-boot); we treat as always-apply
+	// keepMode: z/Z with no Mode — leave the mode as it is. uid and gid
+	// say the same with -1.
+	keepMode bool
 }
 
 // version is set at build time with -ldflags "-X main.version=vX.Y.Z".
@@ -177,12 +180,21 @@ func parseLine(line string) (entry, error) {
 		return entry{}, fmt.Errorf("empty type after modifier trim")
 	}
 	e.path = fields[1]
+	// tmpfiles.d(5): a missing or "-" Mode is 0755 for a directory, and
+	// for z/Z a missing or "-" Mode, User or Group leaves that alone.
+	switch e.kind {
+	case "d", "D":
+		e.mode = 0755
+	case "z", "Z":
+		e.keepMode, e.uid, e.gid = true, -1, -1
+	}
 	if len(fields) > 2 && fields[2] != "-" {
 		m, err := strconv.ParseUint(fields[2], 8, 32)
 		if err != nil {
 			return entry{}, fmt.Errorf("mode %q: %w", fields[2], err)
 		}
 		e.mode = uint32(m)
+		e.keepMode = false
 	}
 	if len(fields) > 3 && fields[3] != "-" {
 		u, err := lookupUID(fields[3])
@@ -392,24 +404,58 @@ func applyFile(e entry, force bool) error {
 			return err
 		}
 	}
-	if err := f.Close(); err != nil {
+	// Owner and mode through the descriptor, not the path, which may
+	// name something else by now. The create mode above went through
+	// the umask and an F on an existing file kept its old mode, so set
+	// the mode explicitly — raw, after the chown (see applyDir and
+	// chownChmod).
+	if err := f.Chown(e.uid, e.gid); err != nil {
+		f.Close()
 		return err
 	}
-	return os.Chown(e.path, e.uid, e.gid)
+	if err := syscall.Fchmod(int(f.Fd()), e.mode); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func applyDir(e entry, wipe bool) error {
 	if wipe {
 		os.RemoveAll(e.path)
+		if afterWipeHook != nil {
+			afterWipeHook()
+		}
 	}
 	if err := os.MkdirAll(e.path, os.FileMode(e.mode)); err != nil {
 		return err
 	}
-	if err := os.Chmod(e.path, os.FileMode(e.mode)); err != nil {
+	// MkdirAll is satisfied by a symlink to a directory, and a chmod or
+	// chown by path follows one: a link planted at a d path in /tmp
+	// (or between D's wipe and the mkdir) had root re-mode and re-own
+	// its target. Open the final component without following it and
+	// change the directory through the descriptor; a symlink there is
+	// refused, as systemd-tmpfiles refuses it.
+	fd, err := syscall.Open(e.path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if fi, lerr := os.Lstat(e.path); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to follow a symlink")
+		}
 		return err
 	}
-	return os.Chown(e.path, e.uid, e.gid)
+	defer syscall.Close(fd)
+	// The mode goes in raw: os.FileMode(e.mode) dropped 07000, which Go
+	// keeps as os.ModeSticky and friends, so a 1777 directory lost its
+	// sticky bit.
+	if err := syscall.Fchown(fd, e.uid, e.gid); err != nil {
+		return err
+	}
+	return syscall.Fchmod(fd, e.mode)
 }
+
+// afterWipeHook, when set, runs between D's wipe and its mkdir: tests
+// use it to plant a symlink in exactly that window.
+var afterWipeHook func()
 
 func applyLink(e entry) error {
 	if e.arg == "" {
@@ -472,10 +518,7 @@ func applyChown(e entry, recursive bool) error {
 	if fi.Mode()&os.ModeSymlink != 0 {
 		return nil
 	}
-	if err := os.Chmod(e.path, os.FileMode(e.mode)); err != nil {
-		return err
-	}
-	if err := os.Chown(e.path, e.uid, e.gid); err != nil {
+	if err := chownChmod(e.path, e); err != nil {
 		return err
 	}
 	if !recursive || !fi.IsDir() {
@@ -488,9 +531,22 @@ func applyChown(e entry, recursive bool) error {
 		if p == e.path || info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
-		if err := os.Chmod(p, os.FileMode(e.mode)); err != nil {
+		return chownChmod(p, e)
+	})
+}
+
+// chownChmod gives path e's owner, then e's mode, skipping whichever e
+// leaves alone. Owner before mode, and no chown at all for -1/-1:
+// chown(2) clears setuid/setgid on a regular file, even with -1/-1. The
+// mode goes in raw (see applyDir).
+func chownChmod(path string, e entry) error {
+	if e.uid >= 0 || e.gid >= 0 {
+		if err := os.Chown(path, e.uid, e.gid); err != nil {
 			return err
 		}
-		return os.Chown(p, e.uid, e.gid)
-	})
+	}
+	if e.keepMode {
+		return nil
+	}
+	return syscall.Chmod(path, e.mode)
 }

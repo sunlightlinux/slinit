@@ -346,10 +346,13 @@ Flags:
 		_ = hostname
 		switch *format {
 		case "jsonl":
+			// .jsonl.gz: with --compress (the default) every rotated
+			// file is gzipped, and a sweep of .jsonl alone pruned none.
 			vacOpts := journald.VacuumOptions{
 				MaxFiles:     *maxFiles,
 				MaxTotalSize: *maxTotalSize,
 				MaxAge:       *vacuumAge,
+				Suffixes:     []string{".jsonl", ".jsonl.gz"},
 			}
 			// factory closure: called at initial open and at each
 			// SIGRTMIN swap to build a sink for the requested dir.

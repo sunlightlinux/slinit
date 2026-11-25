@@ -1,0 +1,5 @@
+type = process
+command = /bin/sh /run/265-ignore-int.sh
+ready-notification = pipefd:3
+start-timeout = 60
+stop-timeout = 1

@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestTranslate_ServiceStart(t *testing.T) {
 	out, err := translate([]string{"nginx", "start"})
@@ -21,6 +26,9 @@ func TestTranslate_AllActionMappings(t *testing.T) {
 		"zap":      "release",
 		"pause":    "pause",
 		"continue": "continue",
+		// OpenRC's reload runs the script's reload(), which signals the
+		// daemon; `slinitctl reload` only re-reads the description.
+		"reload": "reload-signal",
 	}
 	for in, want := range cases {
 		out, err := translate([]string{"svc", in})
@@ -36,12 +44,12 @@ func TestTranslate_AllActionMappings(t *testing.T) {
 func TestTranslate_UnknownActionPassesThrough(t *testing.T) {
 	// An action we haven't mapped shouldn't be blocked — it should
 	// reach slinitctl which can then reject it with its own message.
-	out, err := translate([]string{"svc", "reload"})
+	out, err := translate([]string{"svc", "unpin"})
 	if err != nil {
 		t.Fatalf("translate: %v", err)
 	}
-	if len(out) != 2 || out[0] != "reload" || out[1] != "svc" {
-		t.Errorf("got %v, want [reload svc]", out)
+	if len(out) != 2 || out[0] != "unpin" || out[1] != "svc" {
+		t.Errorf("got %v, want [unpin svc]", out)
 	}
 }
 
@@ -108,5 +116,34 @@ func TestTranslate_TrailingArgsPreserved(t *testing.T) {
 	// [start svc --flag]
 	if len(out) != 3 || out[0] != "start" || out[1] != "svc" || out[2] != "--flag" {
 		t.Errorf("got %v, want [start svc --flag]", out)
+	}
+}
+
+// OpenRC's status exits with the state, not with success: scripts test
+// `rc-service foo status` to see whether foo runs. A stopped service
+// used to exit 0 because slinitctl status succeeds for any state.
+func TestStatusExitCodeFollowsState(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "slinitctl")
+	script := "#!/bin/sh\ncase $1 in\nstatus) echo \"Service: $2\";;\nis-failed) echo \"$RCSVC_STATE\";;\nesac\n"
+	if err := os.WriteFile(stub, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	origBin, origExec := slinitctlBin, execFunc
+	t.Cleanup(func() { slinitctlBin, execFunc = origBin, origExec })
+	slinitctlBin = stub
+	execFunc = func(string, []string, []string) error { return errors.New("exec'd") }
+
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	for state, want := range map[string]int{
+		"STARTED": 0, "STOPPED": 3, "STOPPING": 4, "STARTING": 8, "FAILED": 32,
+	} {
+		t.Setenv("RCSVC_STATE", state)
+		if got := run([]string{"svc", "status"}, devnull, devnull); got != want {
+			t.Errorf("status of a %s service exits %d, want %d", state, got, want)
+		}
 	}
 }

@@ -48,7 +48,7 @@ type Handler struct {
 	Appeared func(name string)
 
 	// Disappeared fires when a service file is removed (or renamed
-	// out). Handler is expected to no-op if the service is currently
+	// out) and no watched directory still provides the name. Handler is expected to no-op if the service is currently
 	// running (only unload when STOPPED); UnloadService requires
 	// STOPPED state.
 	Disappeared func(name string)
@@ -69,19 +69,14 @@ type Options struct {
 	DebounceInterval time.Duration
 }
 
-// event kind carried through debounce.
-type kind uint8
-
-const (
-	kindAppeared kind = iota
-	kindDisappeared
-	kindModified
-)
-
-// pending is one debounced event awaiting dispatch.
+// pending is one debounced burst of events on a file awaiting dispatch.
+// What it dispatches is decided when it fires, from what is on disk
+// then, not from the events: an editor save is a rename-away and a
+// fresh write, and a burst read as "disappear wins" reported a file
+// that is still there as removed.
 type pending struct {
-	timer *time.Timer
-	last  kind
+	timer    *time.Timer
+	wasKnown bool // the file existed before the burst began
 }
 
 // Watcher multiplexes a single inotify fd across N services-dirs.
@@ -95,8 +90,13 @@ type Watcher struct {
 	byWd    map[int32]string    // inotify wd → dir path
 	pending map[string]*pending // "dir/name" key → debounced event
 	known   map[string]struct{} // "dir/name" for files present at Add()
-	quit    chan struct{}
-	done    chan struct{}
+	// lost holds the dirs whose watch the kernel dropped (the dir was
+	// removed); Run re-adds them every rewatchInterval, so one that is
+	// created again is watched again.
+	lost        map[string]struct{}
+	lastRewatch time.Time
+	quit        chan struct{}
+	done        chan struct{}
 }
 
 // New creates a Watcher with its own inotify fd. The caller must
@@ -118,6 +118,7 @@ func New(logger Logger, handler Handler, opts Options) (*Watcher, error) {
 		byWd:    make(map[int32]string),
 		pending: make(map[string]*pending),
 		known:   make(map[string]struct{}),
+		lost:    make(map[string]struct{}),
 		quit:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}, nil
@@ -139,18 +140,9 @@ func (w *Watcher) AddDir(dir string) error {
 		return fmt.Errorf("%q is not a directory", dir)
 	}
 
-	// Watch for names entering / leaving. IN_MODIFY isn't strictly
-	// needed for the appear/disappear game — IN_CLOSE_WRITE covers
-	// the "editor closed the file" case for both new and existing
-	// files, and IN_MOVED_TO / IN_MOVED_FROM cover atomic rename.
-	// IN_DELETE_SELF lets us react if someone rms the entire dir.
-	mask := uint32(unix.IN_CREATE | unix.IN_CLOSE_WRITE |
-		unix.IN_MOVED_TO | unix.IN_MOVED_FROM |
-		unix.IN_DELETE | unix.IN_DELETE_SELF |
-		unix.IN_EXCL_UNLINK)
-	wd, err := unix.InotifyAddWatch(w.fd, dir, mask)
+	wd, err := w.addWatch(dir)
 	if err != nil {
-		return fmt.Errorf("inotify_add_watch %q: %w", dir, err)
+		return err
 	}
 
 	w.mu.Lock()
@@ -170,6 +162,93 @@ func (w *Watcher) AddDir(dir string) error {
 	}
 	w.mu.Unlock()
 	return nil
+}
+
+// addWatch adds the inotify watch for dir.
+func (w *Watcher) addWatch(dir string) (int, error) {
+	// Watch for names entering / leaving. IN_MODIFY isn't strictly
+	// needed for the appear/disappear game — IN_CLOSE_WRITE covers
+	// the "editor closed the file" case for both new and existing
+	// files, and IN_MOVED_TO / IN_MOVED_FROM cover atomic rename.
+	// IN_DELETE_SELF lets us react if someone rms the entire dir.
+	mask := uint32(unix.IN_CREATE | unix.IN_CLOSE_WRITE |
+		unix.IN_MOVED_TO | unix.IN_MOVED_FROM |
+		unix.IN_DELETE | unix.IN_DELETE_SELF |
+		unix.IN_EXCL_UNLINK | unix.IN_ONLYDIR)
+	wd, err := unix.InotifyAddWatch(w.fd, dir, mask)
+	if err != nil {
+		return 0, fmt.Errorf("inotify_add_watch %q: %w", dir, err)
+	}
+	return wd, nil
+}
+
+// rewatchInterval is how often Run retries the watch on a removed dir.
+const rewatchInterval = time.Second
+
+// rewatchLost re-adds the watch on each removed dir that exists again,
+// and rescans it: files created before the watch was back sent no event.
+func (w *Watcher) rewatchLost() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.lost) == 0 || time.Since(w.lastRewatch) < rewatchInterval {
+		return
+	}
+	w.lastRewatch = time.Now()
+	for dir := range w.lost {
+		wd, err := w.addWatch(dir)
+		if err != nil {
+			continue
+		}
+		delete(w.lost, dir)
+		w.byWd[int32(wd)] = dir
+		w.logger.Info("svcdirwatch: services-dir %q is back, watching it again", dir)
+		w.rescanLocked(dir)
+	}
+}
+
+// rescanLocked compares dir with what the watcher believes is in it and
+// schedules a burst for every name that differs; fire works out which
+// event each one is. Used when events were lost. Caller holds w.mu.
+func (w *Watcher) rescanLocked(dir string) {
+	entries, _ := os.ReadDir(dir)
+	onDisk := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		if !isServiceFile(name) || e.IsDir() {
+			continue
+		}
+		onDisk[name] = struct{}{}
+		if _, ok := w.known[key(dir, name)]; !ok {
+			w.scheduleLocked(dir, name)
+		}
+	}
+	prefix := dir + "/"
+	for k := range w.known {
+		name, ok := strings.CutPrefix(k, prefix)
+		if !ok || strings.Contains(name, "/") {
+			continue
+		}
+		if _, ok := onDisk[name]; !ok {
+			w.scheduleLocked(dir, name)
+		}
+	}
+}
+
+// scheduleLocked arms (or re-arms) the debounce timer for dir/name.
+// Caller holds w.mu.
+func (w *Watcher) scheduleLocked(dir, name string) {
+	k := key(dir, name)
+	p, ok := w.pending[k]
+	if ok {
+		p.timer.Stop()
+	} else {
+		_, was := w.known[k]
+		p = &pending{wasKnown: was}
+		w.pending[k] = p
+	}
+	p.timer = time.AfterFunc(w.opts.DebounceInterval, func() {
+		w.fire(dir, name)
+	})
 }
 
 // Run reads inotify events in a loop and dispatches to the handler.
@@ -195,6 +274,7 @@ func (w *Watcher) Run() {
 			return
 		}
 		w.dispatch(buf[:n])
+		w.rewatchLost()
 	}
 }
 
@@ -221,6 +301,18 @@ func (w *Watcher) dispatch(buf []byte) {
 		off = nameEnd
 
 		w.mu.Lock()
+		// The kernel's queue filled and events were dropped: what was
+		// read says nothing about what is in the dirs now, so compare
+		// every dir with what is known.
+		if raw.Mask&unix.IN_Q_OVERFLOW != 0 {
+			w.logger.Warn("svcdirwatch: inotify queue overflowed, rescanning")
+			for _, d := range w.byWd {
+				w.rescanLocked(d)
+			}
+			w.mu.Unlock()
+			continue
+		}
+
 		dir, ok := w.byWd[raw.Wd]
 		if !ok {
 			w.mu.Unlock()
@@ -231,6 +323,7 @@ func (w *Watcher) dispatch(buf []byte) {
 		if raw.Mask&unix.IN_DELETE_SELF != 0 {
 			w.logger.Warn("svcdirwatch: services-dir %q was removed", dir)
 			delete(w.byWd, raw.Wd)
+			w.lost[dir] = struct{}{}
 			w.mu.Unlock()
 			continue
 		}
@@ -238,6 +331,7 @@ func (w *Watcher) dispatch(buf []byte) {
 		// IN_IGNORED means kernel dropped the watch.
 		if raw.Mask&unix.IN_IGNORED != 0 {
 			delete(w.byWd, raw.Wd)
+			w.lost[dir] = struct{}{}
 			w.mu.Unlock()
 			continue
 		}
@@ -257,70 +351,25 @@ func (w *Watcher) dispatch(buf []byte) {
 			continue
 		}
 
-		k := key(dir, name)
-		var evk kind
-		switch {
-		case raw.Mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0:
-			// Both CREATE and MOVED_TO can arrive for a new file;
-			// CLOSE_WRITE will follow for CREATE, but MOVED_TO is a
-			// complete rename so no CLOSE_WRITE trails it. Decide by
-			// whether we've seen this name before.
-			if _, seen := w.known[k]; seen {
-				evk = kindModified
-			} else {
-				evk = kindAppeared
-				w.known[k] = struct{}{}
-			}
-		case raw.Mask&unix.IN_CLOSE_WRITE != 0:
-			// Second close after CREATE → still first appearance
-			// (CREATE already primed 'known'). For a name we hadn't
-			// seen at Add-time and hadn't been CREATE-tracked, this
-			// covers `cp foo /etc/slinit.d/svc` where CLOSE_WRITE
-			// arrives without a prior CREATE we processed
-			// (races between AddDir's snapshot and the first write).
-			if _, seen := w.known[k]; seen {
-				evk = kindModified
-			} else {
-				evk = kindAppeared
-				w.known[k] = struct{}{}
-			}
-		case raw.Mask&(unix.IN_DELETE|unix.IN_MOVED_FROM) != 0:
-			delete(w.known, k)
-			evk = kindDisappeared
-		default:
+		if raw.Mask&(unix.IN_CREATE|unix.IN_MOVED_TO|unix.IN_CLOSE_WRITE|
+			unix.IN_DELETE|unix.IN_MOVED_FROM) == 0 {
 			w.mu.Unlock()
 			continue
 		}
 
-		// Debounce: reset (or arm) the per-file timer with the
-		// latest event kind. Coalescing rules:
-		// - Appeared+Modified → Appeared (load implies fresh parse).
-		// - Appeared+Disappeared → Disappeared (final winner).
-		// - Modified+Modified   → Modified.
-		p, ok := w.pending[k]
-		if ok {
-			p.timer.Stop()
-			// Coalesce: disappear always wins; appeared beats modified.
-			if evk == kindDisappeared || p.last == kindDisappeared {
-				p.last = kindDisappeared
-			} else if p.last == kindAppeared || evk == kindAppeared {
-				p.last = kindAppeared
-			} else {
-				p.last = kindModified
-			}
-		} else {
-			p = &pending{last: evk}
-			w.pending[k] = p
-		}
-		dirCopy, nameCopy := dir, name
-		p.timer = time.AfterFunc(w.opts.DebounceInterval, func() {
-			w.fire(dirCopy, nameCopy)
-		})
+		// Debounce: reset (or arm) the per-file timer; fire decides
+		// what the burst amounted to.
+		w.scheduleLocked(dir, name)
 		w.mu.Unlock()
 	}
 }
 
-// fire runs a debounced pending event's callback, then clears it.
+// fire runs a debounced burst's callback, then clears it. The file
+// present now is Appeared if it was not there before the burst and
+// Modified if it was; a file absent now is Disappeared, unless another
+// watched directory still provides the name — the handler gets only
+// the name, and would unload the copy that is still there — in which
+// case the service's description changed: Modified.
 func (w *Watcher) fire(dir, name string) {
 	w.mu.Lock()
 	k := key(dir, name)
@@ -329,9 +378,26 @@ func (w *Watcher) fire(dir, name string) {
 		w.mu.Unlock()
 		return
 	}
-	evk := p.last
 	delete(w.pending, k)
 	handler := w.handler
+
+	var evk kind
+	if present(dir, name) {
+		w.known[k] = struct{}{}
+		evk = kindAppeared
+		if p.wasKnown {
+			evk = kindModified
+		}
+	} else {
+		delete(w.known, k)
+		evk = kindDisappeared
+		for _, d := range w.byWd {
+			if d != dir && present(d, name) {
+				evk = kindModified
+				break
+			}
+		}
+	}
 	w.mu.Unlock()
 
 	switch evk {
@@ -392,6 +458,21 @@ func isServiceFile(name string) bool {
 	return true
 }
 
+// kind is what a debounced burst amounted to.
+type kind uint8
+
+const (
+	kindAppeared kind = iota
+	kindDisappeared
+	kindModified
+)
+
+// present reports whether dir holds a service file called name.
+func present(dir, name string) bool {
+	fi, err := os.Stat(filepath.Join(dir, name))
+	return err == nil && !fi.IsDir()
+}
+
 func key(dir, name string) string {
 	return dir + "/" + name
 }
@@ -400,6 +481,7 @@ func key(dir, name string) string {
 var errQuit = errors.New("svcdirwatch: quit")
 
 // readWithPoll reads from fd, returning errQuit if quit closes first.
+// A poll timeout returns (0, nil), so Run gets to retry lost dirs.
 func readWithPoll(fd int, buf []byte, quit <-chan struct{}) (int, error) {
 	for {
 		select {
@@ -408,12 +490,15 @@ func readWithPoll(fd int, buf []byte, quit <-chan struct{}) (int, error) {
 		default:
 		}
 		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-		_, err := unix.Poll(fds, 200)
+		ready, err := unix.Poll(fds, 200)
 		if err != nil {
 			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
 			return 0, err
+		}
+		if ready == 0 {
+			return 0, nil
 		}
 		if fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) == 0 {
 			continue

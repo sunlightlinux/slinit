@@ -68,6 +68,8 @@ func FuzzJournalBinaryOpenReader(f *testing.F) {
 	f.Add([]byte("garbage"))
 	// Seed 4: valid header, arena starts too early.
 	f.Add(makeCorruptedHeader(f))
+	// Seed 5: one entry whose ENTRY_ARRAY's next points at itself.
+	f.Add(makeCyclicEntryArray(f))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		path := filepath.Join(t.TempDir(), "j")
@@ -148,5 +150,20 @@ func makeCorruptedHeader(f *testing.F) []byte {
 	out := append([]byte(nil), base...)
 	// arena_size is at bytes 96..104. Flip a bit.
 	out[96] ^= 0x01
+	return out
+}
+
+// makeCyclicEntryArray points the single ENTRY_ARRAY of a one-entry
+// journal back at itself: the walk used to loop forever, growing its
+// result until memory ran out.
+func makeCyclicEntryArray(f *testing.F) []byte {
+	f.Helper()
+	b := makeSingleEntryJournal(f)
+	h, err := journalbin.DecodeHeader(b)
+	if err != nil || h.EntryArrayOffset == 0 || uint64(len(b)) < h.EntryArrayOffset+journalbin.ObjectHeaderSize+8 {
+		return b
+	}
+	out := append([]byte(nil), b...)
+	binary.LittleEndian.PutUint64(out[h.EntryArrayOffset+journalbin.ObjectHeaderSize:], h.EntryArrayOffset)
 	return out
 }

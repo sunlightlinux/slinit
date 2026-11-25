@@ -98,6 +98,28 @@ var persistJournalTail func(logger *logging.Logger)
 // other process is gone, while the filesystems are still writable.
 func SetJournalTailPersister(fn func(logger *logging.Logger)) { persistJournalTail = fn }
 
+// flushUtmp waits, at most the given time, for utmp writes the service
+// set still has queued (the clears of the services the shutdown just
+// stopped) and reports whether they finished. nil when cmd/slinit has
+// nothing to wire.
+var flushUtmp func(timeout time.Duration) bool
+
+// utmpFlushTimeout bounds flushUtmp: a utmp write waits up to 10 s for a
+// lock any local reader can hold, and the shutdown must not wait on that.
+const utmpFlushTimeout = 5 * time.Second
+
+// SetUtmpFlusher installs flushUtmp.
+func SetUtmpFlusher(fn func(timeout time.Duration) bool) { flushUtmp = fn }
+
+// flushQueuedUtmp lets the queued utmp writes land before the shutdown's
+// own utmp/wtmp records, and before the reboot or exec that would lose
+// them.
+func flushQueuedUtmp(logger *logging.Logger) {
+	if flushUtmp != nil && !flushUtmp(utmpFlushTimeout) {
+		logger.Warn("utmp writes still queued after %v; going on without them", utmpFlushTimeout)
+	}
+}
+
 // rebootDelay is finit-parity for the `reboot-delay = N` global
 // option: an operator-configurable pause after the shutdown-hook
 // completes but before the kernel reboot syscall fires. Zero
@@ -202,6 +224,7 @@ func Execute(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// this before KillAllProcesses means the utmp/wtmp files are still
 	// on a writable filesystem and no logger has been torn down.
 	// Gated by wtmpEnabled (systemd's -d / --no-wtmp on reboot(8)).
+	flushQueuedUtmp(logger)
 	if wtmpEnabled {
 		if n := logoutAllUsersFunc(); n > 0 {
 			logger.Info("Logged out %d active session(s)", n)
@@ -338,6 +361,7 @@ func ExecuteForce(shutdownType service.ShutdownType, logger *logging.Logger) {
 	// utmp/wtmp shutdown record (respects --no-wtmp via SetWtmpEnabled).
 	// systemd only writes when its own systemd-update-utmp is absent;
 	// slinit has no such helper, so we always write unless -d.
+	flushQueuedUtmp(logger)
 	if wtmpEnabled {
 		if n := logoutAllUsersFunc(); n > 0 {
 			logger.Info("Logged out %d active session(s)", n)
@@ -629,12 +653,23 @@ func runShutdownHook(shutdownType service.ShutdownType, logger *logging.Logger) 
 	arg := shutdownTypeArg(shutdownType)
 	logger.Notice("Running shutdown hook: %s %s", hookPath, arg)
 
+	// Wait for the hook to exit, not for its output pipe: without
+	// WaitDelay, Wait blocks until EOF, so a hook that started anything
+	// in the background wedged shutdown for good. The hook itself is
+	// given as long as it takes, as dinit gives it — it may be an fsck
+	// or a backup, and killing it mid-write is the worse failure.
 	cmd := exec.Command(hookPath, arg)
+	cmd.WaitDelay = 2 * time.Second
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 
 	err := process.RunAdhoc(cmd)
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The hook itself exited 0; only its output pipe outlived it.
+		logger.Warn("Shutdown hook left a process holding its output open")
+		err = nil
+	}
 
 	// Log any output from the hook
 	if output.Len() > 0 {

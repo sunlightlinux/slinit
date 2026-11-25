@@ -125,6 +125,10 @@ func readEntryArray(f *os.File, arrayOff uint64) (next uint64, items []uint64, e
 // walkEntryOffsets calls fn once per non-zero entry offset in the
 // chain starting at rootOff. Stops when fn returns false or the
 // chain ends. rootOff == 0 walks nothing.
+//
+// The writer only appends, so each array's next lies past it. A next
+// that does not is refused: a self-referential chain was walked
+// forever, growing its caller's slice until memory ran out.
 func walkEntryOffsets(f *os.File, rootOff uint64, fn func(uint64) bool) error {
 	cur := rootOff
 	for cur != 0 {
@@ -142,6 +146,9 @@ func walkEntryOffsets(f *os.File, rootOff uint64, fn func(uint64) bool) error {
 			if !fn(e) {
 				return nil
 			}
+		}
+		if next != 0 && next <= cur {
+			return fmt.Errorf("journalbin: ENTRY_ARRAY at %d links back to %d", cur, next)
 		}
 		cur = next
 	}

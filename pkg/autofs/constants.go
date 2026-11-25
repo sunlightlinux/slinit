@@ -21,23 +21,25 @@ const (
 	iocMagic = 0x93
 )
 
-// Autofs ioctl commands.
+// Autofs ioctl commands, as include/uapi/linux/auto_fs.h defines them.
 // Computed using standard Linux ioctl encoding:
 //
 //	_IO(type, nr)           = (type<<8 | nr)
 //	_IOR(type, nr, size)    = (2<<30 | size<<16 | type<<8 | nr)
 //	_IOW(type, nr, size)    = (1<<30 | size<<16 | type<<8 | nr)
+//
+// size is the C type's: int is 4 bytes, unsigned long is pointer-sized.
 var (
-	// Size of an int/pointer for ioctl encoding (platform-dependent).
-	ioctlIntSize = uint32(unsafe.Sizeof(int(0)))
+	// Size of a C int for ioctl encoding.
+	ioctlIntSize = uint32(unsafe.Sizeof(int32(0)))
 
 	AUTOFS_IOC_READY        = uintptr(iocMagic<<8 | 0x60)                                                         // _IO(0x93, 0x60)
 	AUTOFS_IOC_FAIL         = uintptr(iocMagic<<8 | 0x61)                                                         // _IO(0x93, 0x61)
 	AUTOFS_IOC_CATATONIC    = uintptr(iocMagic<<8 | 0x62)                                                         // _IO(0x93, 0x62)
 	AUTOFS_IOC_PROTOVER     = uintptr(2<<30 | uint32(ioctlIntSize)<<16 | iocMagic<<8 | 0x63)                      // _IOR(0x93, 0x63, int)
-	AUTOFS_IOC_SETTIMEOUT   = uintptr(3<<30 | uint32(unsafe.Sizeof(uint64(0)))<<16 | iocMagic<<8 | 0x64)          // _IOWR(0x93, 0x64, ulong)
-	AUTOFS_IOC_EXPIRE       = uintptr(2<<30 | uint32(unsafe.Sizeof(AutofsExpireArgs{}))<<16 | iocMagic<<8 | 0x65) // _IOR(0x93, 0x65, autofs_expire)
-	AUTOFS_IOC_EXPIRE_MULTI = uintptr(iocMagic<<8 | 0x66)                                                         // _IOW(0x93, 0x66, int) -- but arg is 0/flags, use _IO
+	AUTOFS_IOC_SETTIMEOUT   = uintptr(3<<30 | uint32(unsafe.Sizeof(uint(0)))<<16 | iocMagic<<8 | 0x64)            // _IOWR(0x93, 0x64, ulong)
+	AUTOFS_IOC_EXPIRE       = uintptr(2<<30 | uint32(unsafe.Sizeof(AutofsExpireArgs{}))<<16 | iocMagic<<8 | 0x65) // _IOR(0x93, 0x65, autofs_packet_expire)
+	AUTOFS_IOC_EXPIRE_MULTI = uintptr(1<<30 | uint32(ioctlIntSize)<<16 | iocMagic<<8 | 0x66)                      // _IOW(0x93, 0x66, int)
 )
 
 // Packet types in autofs v5.
@@ -65,10 +67,13 @@ const (
 	ExpForced    = 0x04
 )
 
-// AutofsExpireArgs is used with AUTOFS_IOC_EXPIRE.
+// AutofsExpireArgs is used with AUTOFS_IOC_EXPIRE: the kernel's
+// struct autofs_packet_expire, header included.
 type AutofsExpireArgs struct {
-	Len  uint32
-	Name [256]byte
+	ProtoVersion int32
+	Type         int32
+	Len          int32
+	Name         [256]byte
 }
 
 // V5Packet represents an autofs v5 kernel notification packet.

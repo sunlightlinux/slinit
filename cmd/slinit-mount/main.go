@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,6 +57,35 @@ type daemon struct {
 	readyFD      int            // eventfd that wakes the loop for ready; -1 if none
 	dial         dialFunc
 	retry        time.Duration
+	expire       func(*autofs.AutofsMount) (int, error) // ExpireMulti; a field for tests
+	sweeping     atomic.Bool                            // an expiry sweep is running
+}
+
+// startExpirySweep runs one expiry sweep over the active mounts in its
+// own goroutine. AUTOFS_IOC_EXPIRE_MULTI does not return until the
+// daemon has answered the EXPIRE packet it queues, and the event loop
+// is what reads that packet: run on the loop, a sweep would wait on
+// itself. One sweep at a time; a tick that finds one running is
+// skipped. A mount closed under a running sweep is safe: Close goes
+// catatonic first, which fails the kernel's wait, then waits for
+// ExpireMulti to let go of the fd.
+func (d *daemon) startExpirySweep() {
+	if !d.sweeping.CompareAndSwap(false, true) {
+		return
+	}
+	mounts := slices.Clone(d.activeMounts)
+	go func() {
+		defer d.sweeping.Store(false)
+		for _, am := range mounts {
+			expired, err := d.expire(am)
+			if err != nil {
+				d.logger.Printf("expire sweep on %s: %v", am.Mountpoint(), err)
+			}
+			if expired > 0 && d.cfg.verbose {
+				d.logger.Printf("expired %d entries on %s", expired, am.Mountpoint())
+			}
+		}
+	}()
 }
 
 // mountUnitKey returns the identity key for a mount unit (its Where path).
@@ -278,6 +308,7 @@ func main() {
 		readyFD: readyFD,
 		dial:    dialControl(resolveSocketPath(cfg.socketPath)),
 		retry:   controlRetryInterval,
+		expire:  (*autofs.AutofsMount).ExpireMulti,
 	}
 
 	// Set up autofs mounts (or start waiting) and register pipe fds
@@ -359,15 +390,7 @@ func main() {
 				var tbuf [8]byte
 				unix.Read(timerFD, tbuf[:])
 
-				for _, am := range d.activeMounts {
-					expired, err := am.ExpireMulti()
-					if err != nil {
-						logger.Printf("expire sweep on %s: %v", am.Mountpoint(), err)
-					}
-					if expired > 0 && cfg.verbose {
-						logger.Printf("expired %d entries on %s", expired, am.Mountpoint())
-					}
-				}
+				d.startExpirySweep()
 				continue
 			}
 

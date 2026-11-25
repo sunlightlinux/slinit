@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // A session id becomes part of a filesystem path, and it arrives as a
 // raw D-Bus string from a caller this daemon does not authenticate —
@@ -56,5 +59,26 @@ func TestScopeMustBeUnderCgroupFS(t *testing.T) {
 		if !scopeUnderCgroupFS(s) {
 			t.Errorf("scopeUnderCgroupFS(%q) = false; CreateSession builds exactly this shape", s)
 		}
+	}
+}
+
+// GetSession, ActivateSessionOnSeat and the alias objects' lookup took the
+// id verbatim into a path, so "../x" read stateRoot/x.json: anyone on the
+// bus could probe for, and have parsed as a session, any *.json file. They
+// must refuse such an id as no session at all.
+func TestSessionLookupsRefuseUnsafeIDs(t *testing.T) {
+	m := usersBus(t)
+	if err := writeJSONAtomic(filepath.Join(stateRoot, "planted.json"), SessionRecord{ID: "planted", SeatID: "seat0"}); err != nil {
+		t.Fatal(err)
+	}
+	const id = "../planted"
+	if p, err := m.GetSession(alice, id); err == nil || err.Name != "org.freedesktop.login1.Error.NoSuchSession" {
+		t.Errorf("GetSession(%q) = %s, %v; want NoSuchSession", id, p, err)
+	}
+	if err := m.ActivateSessionOnSeat(id, "seat9"); err == nil || err.Name != "org.freedesktop.login1.Error.NoSuchSession" {
+		t.Errorf("ActivateSessionOnSeat(%q): %v, want NoSuchSession", id, err)
+	}
+	if _, ok := m.resolveAlias(alice, id); ok {
+		t.Errorf("resolveAlias(%q) found a session", id)
 	}
 }

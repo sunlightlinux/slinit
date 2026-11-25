@@ -91,6 +91,26 @@ type WriterOptions struct {
 	// written at every epoch boundary and on Close regardless of
 	// this counter.
 	TagEvery int
+
+	// MaxSize is the size the file will be rotated at, or zero when
+	// unknown. A fresh file's DATA hash table is sized from it the way
+	// systemd sizes its own (DataHashTableBuckets): every append walks
+	// one bucket's chain, so a table that stays at 233 buckets while
+	// the file grows makes appends linear in its size. The count is
+	// stored in the table object, which an existing file is reopened
+	// with, so files of either size read and append the same.
+	MaxSize int64
+}
+
+// DataHashTableBuckets is the DATA hash table size for a file that will
+// grow to maxSize bytes: systemd's max_size*4/768/3 (an average object
+// of 768 bytes at a 75% load factor), never below
+// DefaultHashTableBuckets.
+func DataHashTableBuckets(maxSize int64) int {
+	if n := maxSize * 4 / 768 / 3; n > DefaultHashTableBuckets {
+		return int(n)
+	}
+	return DefaultHashTableBuckets
 }
 
 // DefaultFSSTagEvery is the number of entries between forced TAG
@@ -123,6 +143,8 @@ func NewWriter(path, bootID, machineID string) (*Writer, error) {
 // TAG to find its end offset, so an interrupted writer can resume
 // sealing cleanly.
 func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
+	_, statErr := os.Lstat(path)
+	created := errors.Is(statErr, os.ErrNotExist)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0640)
 	if err != nil {
 		return nil, fmt.Errorf("journalbin: open %s: %w", path, err)
@@ -142,16 +164,30 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 	if st.Size() == 0 {
 		// Fresh file — mint header, allocate the two hash tables
 		// right after it, then persist.
+		//
+		// A failure part way (a full disk) used to leave the hash
+		// tables written and no header, a file every later open
+		// rejected with "bad magic". Nothing of the caller's is in it
+		// yet, so it goes back to how it was: removed if this call
+		// created it, empty otherwise.
+		abandon := func() {
+			if created {
+				_ = os.Remove(path)
+			} else {
+				_ = f.Truncate(0)
+			}
+			_ = f.Close()
+		}
 		hdr := NewHeader()
 		hdr.HeaderSize = HeaderSize
 		hdr.HeadEntrySeqnum = 0
 		hdr.TailEntrySeqnum = 0
 		if err := fillUUID(hdr.FileID[:]); err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		if err := fillUUID(hdr.SeqnumID[:]); err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		if err := decodeUUIDHex(opts.BootID, hdr.BootID[:]); err != nil {
@@ -170,15 +206,15 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 		//   [dataTableEnd..fieldTableEnd) FIELD_HASH_TABLE
 		// After that, objects (DATA/ENTRY/...) grow from tail.
 		dataTableStart := uint64(HeaderSize)
-		dataTableBytes, err := allocateHashTable(f, dataTableStart, ObjectDataHashTable, DefaultHashTableBuckets)
+		dataTableBytes, err := allocateHashTable(f, dataTableStart, ObjectDataHashTable, DataHashTableBuckets(opts.MaxSize))
 		if err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		fieldTableStart := dataTableStart + dataTableBytes
 		fieldTableBytes, err := allocateHashTable(f, fieldTableStart, ObjectFieldHashTable, DefaultHashTableBuckets)
 		if err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		hdr.DataHashTableOffset = dataTableStart
@@ -191,7 +227,7 @@ func NewWriterWithOptions(path string, opts WriterOptions) (*Writer, error) {
 
 		w.header = *hdr
 		if err := w.writeHeaderLocked(); err != nil {
-			_ = f.Close()
+			abandon()
 			return nil, err
 		}
 		w.nextSeqnum = 1
@@ -603,7 +639,7 @@ func (w *Writer) findOrInsertDataLocked(payload []byte) (uint64, uint64, error) 
 	// terminate at end of chain).
 	cur := head
 	for cur != 0 {
-		curHash, next, curPayload, err := readDataHeader(w.f, cur)
+		curHash, next, curPayload, err := readDataHeader(w.f, cur, hash)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -888,7 +924,12 @@ func eventFields(evt *journal.Event) [][]byte {
 	// Freeform client fields last. Order not guaranteed (Go map
 	// iteration randomness) — cursor comparisons don't depend on
 	// item order within an entry (xor_hash is order-invariant).
+	// '_' names are trusted and written above; a client's would
+	// replace them on read, so they are dropped, as systemd does.
 	for k, v := range evt.Fields {
+		if strings.HasPrefix(k, "_") {
+			continue
+		}
 		appendKV(k, v)
 	}
 	return fields

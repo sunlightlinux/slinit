@@ -102,6 +102,24 @@ func New(services *service.ServiceSet, logger *logging.Logger) *EventLoop {
 	}
 }
 
+// releaseSignals ends the loop's claim on its signals. As PID 1 the
+// claimed set must stay claimed: signal.Stop hands a signal back to the
+// Go runtime, whose disposition for SIGINT, SIGTERM, SIGHUP and SIGQUIT
+// is to exit — and Run returns well before slinit is done (the final
+// shutdown sequence, a soft reboot's hooks and sweep, a ShutdownRemain
+// hold that lasts for ever). A Ctrl+Alt+Del or a stray `kill -INT 1` in
+// that window was `Attempted to kill init!`. So a fresh channel claims
+// the set before the loop's channel lets go, leaving no gap; nothing
+// reads it, and signal delivery to a full channel is dropped, not
+// blocking. Children still get default dispositions, unlike with
+// signal.Ignore, which exec would pass on.
+func (el *EventLoop) releaseSignals() {
+	if el.isPID1 || os.Getpid() == 1 {
+		SetupEarlySignals()
+	}
+	StopSignals(el.sigCh)
+}
+
 // SetPID1Mode enables PID 1 specific behavior:
 // - Boot failure detection when all services stop without explicit shutdown
 // - Orphan process reaping on SIGCHLD
@@ -170,7 +188,7 @@ func (el *EventLoop) Run(ctx context.Context) error {
 		// for it until now.
 		signal.Notify(el.sigCh, syscall.SIGCHLD)
 	}
-	defer StopSignals(el.sigCh)
+	defer el.releaseSignals()
 
 	el.logger.Info("slinit event loop started (PID %d)", os.Getpid())
 

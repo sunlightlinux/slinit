@@ -7,16 +7,16 @@
 # "rm -rf /sys/firmware/efi/efivars bricks your laptop" class.
 # https://github.com/systemd/systemd/issues/2402
 #
-# slinit must not mount efivarfs read-write. On a VM without EFI the
-# mount is simply absent, which satisfies the property trivially — the
-# test records which case it saw so the result is never ambiguous.
+# slinit must not mount efivarfs read-write.
+
+# The harness boots with SeaBIOS, not OVMF, so there is normally no EFI
+# here. That used to count as an OK, which made the case a pass that
+# could not fail; it is a SKIP: nothing about efivarfs was observed.
+if [ ! -d /sys/firmware/efi ]; then
+    skip_case "no EFI firmware in this VM (SeaBIOS boot) — efivarfs not observable"
+fi
 
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ ! -d /sys/firmware/efi ]; then
-    echo "OK: no EFI firmware in this VM — efivarfs cannot be mounted rw"
-    test_summary
-    return 0 2>/dev/null || exit 0
-fi
 
 mnt=$(awk '$2 == "/sys/firmware/efi/efivars" {print $4}' /proc/self/mounts 2>/dev/null | head -1)
 if [ -z "$mnt" ]; then

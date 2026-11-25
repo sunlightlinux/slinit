@@ -91,7 +91,8 @@ Bus name *org.freedesktop.timedate1*, object
 
 **SetTime**(*x* usec_utc, *b* relative, *b* interactive)
 :   Set the system clock to *usec_utc* microseconds since the epoch, or
-    move it by that much when *relative* is true; the hardware clock
+    move it by that much when *relative* is true, counted from when an
+    authorization prompt has been answered; the hardware clock
     follows. Refused with *org.freedesktop.timedate1.AutomaticTimeSyncEnabled*
     while the time-sync service runs, and with *InvalidArgs* for a time
     before this release (a clock that far back is certainly wrong).

@@ -34,8 +34,10 @@ Each line is one directive:
     TYPE  PATH  MODE  UID  GID  AGE  ARG
 
 Fields may be double-quoted to contain spaces. Missing fields, or
-**-**, take the defaults: mode **0644** (for directories too), owner
-**root** (UID 0) and group GID 0. *UID* and *GID* may be numbers or
+**-**, take the defaults: mode **0755** for **d** and **D**, **0644**
+otherwise, owner **root** (UID 0) and group GID 0 — except for **z**
+and **Z**, where a missing or **-** mode, owner or group is left as it
+is. *UID* and *GID* may be numbers or
 names; names are looked up in */etc/passwd* and */etc/group* directly,
 and an unknown name makes the whole file fail to parse. *AGE* is
 accepted and ignored — no age-based cleanup is performed. Type
@@ -56,11 +58,12 @@ Supported types:
 
 **F** *path* *mode* *uid* *gid* *age* *arg*
 :   Create the file, or truncate it to zero length if it exists, write
-    *arg* (if given), then set the owner.
+    *arg* (if given), then set its mode and owner.
 
 **d** *path* *mode* *uid* *gid* *age*
 :   Create the directory, and any missing parents, then set its mode
-    and owner (also when it already exists).
+    and owner (also when it already exists). If *path* is a symlink,
+    the entry fails and the link's target is left alone.
 
 **D** *path* *mode* *uid* *gid* *age*
 :   Remove the directory and everything in it, then create it as

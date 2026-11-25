@@ -289,15 +289,31 @@ func (r *Reader) readEntryAt(off, size uint64) (*journal.Event, error) {
 		BootID: encodeUUIDHex(bootID[:]),
 	}
 	// Recompute xor_hash for integrity check.
+	//
+	// Every item may name the same large DATA object, and reading it
+	// once per item let a 2 MiB file demand 128 GiB. A repeated item
+	// is applied once, and the distinct payloads of one entry, which a
+	// writer never overlaps, may not add up to more than the file.
 	var xorCheck uint64
+	applied := make(map[uint64]struct{}, nItems)
+	budget := r.fileSize
 	for k := 0; k < nItems; k++ {
 		dataOff := binary.LittleEndian.Uint64(itemsBytes[k*16 : k*16+8])
 		itemHash := binary.LittleEndian.Uint64(itemsBytes[k*16+8 : k*16+16])
 		xorCheck ^= itemHash
+		if _, ok := applied[dataOff]; ok {
+			continue
+		}
+		applied[dataOff] = struct{}{}
 		payload, err := r.readDataPayloadAt(dataOff)
 		if err != nil {
 			return nil, err
 		}
+		if uint64(len(payload)) > budget {
+			return nil, fmt.Errorf("journalbin: entry at %d: DATA payloads exceed the file size: %w",
+				off, ErrObjectBounds)
+		}
+		budget -= uint64(len(payload))
 		applyKV(evt, payload)
 	}
 	if xorCheck != xorHash {

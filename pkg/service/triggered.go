@@ -55,10 +55,14 @@ func (s *TriggeredService) InterruptStart() bool {
 }
 
 // SetTrigger sets or clears the trigger. When set to true and the service
-// is in STARTING state with deps satisfied, the service transitions to STARTED.
+// is in STARTING state with nothing left to wait for, the service
+// transitions to STARTED. While it still waits — for its dependencies,
+// the console or a start slot — the trigger only latches, and BringUp
+// completes the start when the wait is over.
 func (s *TriggeredService) SetTrigger(triggered bool) {
 	s.isTriggered = triggered
-	if s.isTriggered && s.state.Load() == StateStarting && !s.waitingForDeps {
+	if s.isTriggered && s.state.Load() == StateStarting &&
+		!s.waitingForDeps && !s.waitingForConsole && !s.waitingForStartSlot {
 		s.Started()
 	}
 }

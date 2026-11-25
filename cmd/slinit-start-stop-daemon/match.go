@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,16 +25,23 @@ type MatchCriteria struct {
 // non-empty criterion. When PidFile is set and readable, the search is
 // confined to that PID; a stale pidfile (PID missing or fails criteria)
 // yields nil, nil (caller decides between "not running" and "stale").
+// A pidfile that anyone but root (or us) could have written is refused
+// with an error, as Debian's start-stop-daemon refuses it.
+//
+// Init, this process and its parent never match: a pidfile naming
+// PID 1 would otherwise have it signalled (SIGTERM is a reboot under
+// slinit), and a --name scan could catch the script calling us.
 func FindMatchingPIDs(m MatchCriteria) ([]int, error) {
+	self, parent := os.Getpid(), os.Getppid()
 	if m.PidFile != "" {
-		pid, err := readPIDFile(m.PidFile)
+		pid, err := readTrustedPIDFile(m.PidFile, m.Exec == "" && m.Name == "" && m.UID < 0)
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		if pid <= 0 {
+		if pid <= 1 || pid == self || pid == parent {
 			return nil, nil
 		}
 		if !processMatches(pid, m) {
@@ -45,7 +54,6 @@ func FindMatchingPIDs(m MatchCriteria) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	self := os.Getpid()
 	var out []int
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -55,7 +63,7 @@ func FindMatchingPIDs(m MatchCriteria) ([]int, error) {
 		if err != nil {
 			continue
 		}
-		if pid == self {
+		if pid == 1 || pid == self || pid == parent {
 			continue
 		}
 		if processMatches(pid, m) {
@@ -73,6 +81,9 @@ func processMatches(pid int, m MatchCriteria) bool {
 		return false
 	}
 	exePath, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+	// A daemon whose binary an upgrade replaced reads "<path> (deleted)";
+	// it is still the daemon to stop, as OpenRC and Debian match it.
+	exePath = strings.TrimSuffix(exePath, " (deleted)")
 	if m.Exec != "" {
 		want := m.Exec
 		got := exePath
@@ -142,6 +153,47 @@ func isInterpreter(path string) bool {
 	return false
 }
 
+// readTrustedPIDFile is readPIDFile for a pidfile whose pid we are
+// about to signal, checked as Debian's start-stop-daemon checks it
+// (dpkg 1.19.3) on the open file. pidfileOnly says nothing else will
+// cross-check the process the file names.
+func readTrustedPIDFile(path string, pidfileOnly bool) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		return 0, err
+	}
+	if why := pidfileInsecure(&st, os.Getuid(), os.Getgid(), pidfileOnly); why != "" {
+		return 0, fmt.Errorf("%s pidfile %s is insecure", why, path)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return 0, err
+	}
+	return parsePID(data), nil
+}
+
+// pidfileInsecure says why a pidfile cannot be trusted to name the
+// process to signal, or "" if it can. Whoever can write it picks the
+// pid: refused when world-writable, and — with nothing else matched —
+// when someone other than root or us owns it or, through a group
+// write bit, can write it.
+func pidfileInsecure(st *syscall.Stat_t, uid, gid int, pidfileOnly bool) string {
+	if st.Mode&0o002 != 0 {
+		return "matching on world-writable"
+	}
+	if pidfileOnly &&
+		((st.Uid != uint32(uid) && st.Uid != 0) ||
+			(st.Gid != uint32(gid) && st.Gid != 0 && st.Mode&0o020 != 0)) {
+		return "matching only on non-root"
+	}
+	return ""
+}
+
 // readPIDFile parses the first integer from a pidfile. Returns 0 with
 // nil error when the file exists but is empty or malformed — caller
 // treats that as "not running" (dinit/OpenRC behaviour).
@@ -150,15 +202,19 @@ func readPIDFile(path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return parsePID(data), nil
+}
+
+func parsePID(data []byte) int {
 	line := strings.TrimSpace(strings.SplitN(string(data), "\n", 2)[0])
 	if line == "" {
-		return 0, nil
+		return 0
 	}
 	pid, err := strconv.Atoi(line)
 	if err != nil || pid <= 0 {
-		return 0, nil
+		return 0
 	}
-	return pid, nil
+	return pid
 }
 
 // writePIDFile writes pid to path, refusing to follow a symlink.

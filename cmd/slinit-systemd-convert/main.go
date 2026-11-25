@@ -49,7 +49,7 @@ func main() {
 	)
 	flag.StringVar(&outputDir, "output-dir", "", "batch mode: write one slinit file per input into DIR")
 	flag.BoolVar(&dryRun, "dry-run", false, "print what would be written without touching the filesystem")
-	flag.BoolVar(&verbose, "verbose", false, "print per-service conversion notes to stderr")
+	flag.BoolVar(&verbose, "verbose", false, "also print conversion notes to stderr (warnings are always printed)")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `slinit-systemd-convert — port a systemd .service unit to a slinit service file
 
@@ -113,8 +113,11 @@ Flags:
 			}
 		}
 
-		if verbose {
-			for _, w := range warns {
+		// WARN is printed always, as slinit-immortal-convert does; NOTE
+		// needs --verbose. A warning that has to be asked for is not a
+		// warning: a plain conversion that lost something said nothing.
+		for _, w := range warns {
+			if w.Level == "WARN" || verbose {
 				fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", w.Level, name, w.Msg)
 			}
 		}

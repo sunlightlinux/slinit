@@ -75,3 +75,19 @@ func TestParseFilePropagatesLineNo(t *testing.T) {
 		t.Errorf("err missing line 4: %v", err)
 	}
 }
+
+// A spec named after binfmt_misc's own control files must be refused.
+// registerSpec first unregisters an existing entry of the same name by
+// writing -1 to binfmt_misc/<name>, and binfmt_misc/status takes -1 as
+// "remove every registered format": one stray `:status:...` line in a
+// binfmt.d file wiped all handlers (qemu-user, Wine, ...) at boot.
+// "." and ".." name the directory and its parent; the kernel refuses
+// them as names too.
+func TestParseNameRejectsReservedNames(t *testing.T) {
+	for _, name := range []string{"status", "register", ".", ".."} {
+		in := ":" + name + ":M::\\x7fELF::/usr/bin/qemu:F"
+		if _, err := parseName(in); err == nil {
+			t.Errorf("parseName(%q): accepted the reserved name %q", in, name)
+		}
+	}
+}

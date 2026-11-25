@@ -30,6 +30,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
+
+	"github.com/sunlightlinux/slinit/pkg/process"
 )
 
 // --- Data structures ---
@@ -55,6 +58,8 @@ type SystemdConfig struct {
 	postStart    string
 	runAs        string
 	envFile      string
+	stopSignal   string // from ExecStop=kill -s SIG $MAINPID, if terminating
+	stopLine     string // that ExecStop= value, for the note
 	workingDir   string
 	chroot       string
 	pidFile      string
@@ -74,10 +79,16 @@ type SystemdConfig struct {
 
 	rlimitMemlock string
 
+	// CapabilityBoundingSet= and AmbientCapabilities=, folded across
+	// their assignments; emitted once the whole unit is read.
+	capBounding capFold
+	capAmbient  capFold
+
 	description string   // [Unit] Description=
 	mapped      []kvPair // directives translated 1:1, emitted in order
 	depends     []string // depends-on: X
 	waitsFor    []string // waits-for: X
+	aliases     []string // [Install] Alias= .service names, bare
 	conditions  []condDir
 	comments    []string
 }
@@ -229,8 +240,12 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 		key := m[1]
 		val := strings.TrimSpace(m[2])
 		// Strip surrounding double quotes if present (single-quote
-		// isn't standard here but be tolerant).
-		val = trimQuotes(val)
+		// isn't standard here but be tolerant). Not on an Exec*= line:
+		// there quotes group words, as in slinit's command parser, and
+		// "/opt/my app/run" --name "a b" would lose the first and last.
+		if !strings.HasPrefix(key, "Exec") {
+			val = trimQuotes(val)
+		}
 
 		switch section {
 		case "Unit":
@@ -242,6 +257,97 @@ func parseSystemdUnit(cfg *SystemdConfig, content string) []SystemdWarning {
 			warns = append(warns, applyInstallKey(cfg, key, val)...)
 		}
 	}
+	if cfg.capBounding.set {
+		switch cfg.capBounding.mask {
+		case allCaps:
+			// No limit, as systemd leaves the set alone.
+		case 0:
+			warns = append(warns, SystemdWarning{"WARN", "CapabilityBoundingSet= leaves no capability; slinit's capability-bounding-set cannot express an empty set — not applied"})
+		default:
+			cfg.mapped = append(cfg.mapped, kvPair{"capability-bounding-set", capNames(cfg.capBounding.mask)})
+		}
+	}
+	if cfg.capAmbient.mask != 0 {
+		cfg.mapped = append(cfg.mapped, kvPair{"capabilities", capNames(cfg.capAmbient.mask)})
+	}
+	warns = append(warns, applyStopSignal(cfg)...)
+	warns = append(warns, dropAliasRefs(cfg)...)
+	return warns
+}
+
+// applyStopSignal turns ExecStop=kill -s SIG $MAINPID into term-signal
+// when SIG stops the daemon: TERM, INT, QUIT, KILL, or the signal
+// KillSignal= already names. Many units send a reload or log-reopen
+// signal that way instead (kill -s HUP, USR1, USR2), and as term-signal
+// it would override KillSignal=: the daemon would take the HUP, keep
+// running until stop-timeout, and be SIGKILLed. Such an ExecStop= is
+// dropped with a warning and KillSignal= (or TERM) stops the service,
+// as on 4.0.2, where the kill without a PID failed and TERM followed.
+func applyStopSignal(cfg *SystemdConfig) []SystemdWarning {
+	if cfg.stopSignal == "" {
+		return nil
+	}
+	sig, err := parseSignal(cfg.stopSignal)
+	if err != nil {
+		return nil // killMainPID only returns parseable signals
+	}
+	ok := sig == syscall.SIGTERM || sig == syscall.SIGINT || sig == syscall.SIGQUIT || sig == syscall.SIGKILL
+	if !ok && cfg.termSignal != "" {
+		k, err := parseSignal(cfg.termSignal)
+		ok = err == nil && k == sig
+	}
+	if ok {
+		cfg.termSignal = cfg.stopSignal
+		return []SystemdWarning{{"NOTE", fmt.Sprintf("ExecStop=%s → term-signal = %s", cfg.stopLine, cfg.stopSignal)}}
+	}
+	return []SystemdWarning{{"WARN", fmt.Sprintf(
+		"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; %s does not stop a daemon as KillSignal= does, "+
+			"so it is not made the term-signal; slinit stops the service with its term-signal",
+		cfg.stopLine, cfg.stopSignal)}}
+}
+
+// dropAliasRefs leaves out the dependencies naming one of the unit's own
+// aliases, which [Install] gives only after [Unit] has been read:
+// dbus-broker.service is Alias=dbus.service and Requires=dbus.socket,
+// its own socket, which would otherwise be a dependency on a "dbus"
+// service — itself, or nothing.
+func dropAliasRefs(cfg *SystemdConfig) []SystemdWarning {
+	if len(cfg.aliases) == 0 {
+		return nil
+	}
+	var warns []SystemdWarning
+	isAlias := func(n string) bool {
+		for _, a := range cfg.aliases {
+			if a == n {
+				return true
+			}
+		}
+		return false
+	}
+	filter := func(key string, refs []string) []string {
+		var out []string
+		for _, r := range refs {
+			if isAlias(r) {
+				warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+					"%s %s dropped — it names this service itself, through its Alias=", key, r)})
+				continue
+			}
+			out = append(out, r)
+		}
+		return out
+	}
+	cfg.depends = filter("depends-on:", cfg.depends)
+	cfg.waitsFor = filter("waits-for:", cfg.waitsFor)
+	conds := cfg.conditions[:0]
+	for _, c := range cfg.conditions {
+		if c.name == "assert-service-started" && isAlias(c.value) {
+			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+				"Requisite on %s dropped — it names this service itself, through its Alias=", c.value)})
+			continue
+		}
+		conds = append(conds, c)
+	}
+	cfg.conditions = conds
 	return warns
 }
 
@@ -258,15 +364,20 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	case "Documentation", "DefaultDependencies", "IgnoreOnIsolate", "RefuseManualStart", "RefuseManualStop":
 		// Informational or systemd-internal; skip silently.
 	case "After":
-		deps, targets := splitUnitRefs(val)
+		// waits-for:, as on 4.0.2: it orders and also pulls the unit in,
+		// which systemd's After= does not, but units installed on 4.0
+		// rely on that pull-in. after: (ordering only) is for 4.1. A
+		// unit loaded directly leaves out a missing one, as systemd
+		// ignores it: see dropMissingSystemdRefs.
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		cfg.waitsFor = append(cfg.waitsFor, deps...)
-		warns = append(warns, noteDroppedTargets(key, targets)...)
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 	case "Before":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Unit `Before=%s` not mappable — invert on the target side", val)})
 	case "Requires":
-		deps, targets := splitUnitRefs(val)
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		cfg.depends = append(cfg.depends, deps...)
-		warns = append(warns, noteDroppedTargets(key, targets)...)
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 	case "Requisite":
 		// NOT the same directive as Requires=, though this used to map
 		// them to the same thing. Requires=B starts B alongside the
@@ -279,21 +390,21 @@ func applyUnitKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 		// assert-service-started is the precondition form: it fails the
 		// start (as a dependency failure should) rather than skipping
 		// the service the way a condition- would.
-		deps, targets := splitUnitRefs(val)
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		for _, d := range deps {
 			cfg.conditions = append(cfg.conditions,
 				condDir{"assert-service-started", d})
 		}
-		warns = append(warns, noteDroppedTargets(key, targets)...)
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 		if len(deps) > 0 {
 			warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
 				"Unit `Requisite=%s` mapped to assert-service-started — add `after:` "+
 					"if the two could be starting at the same moment", val)})
 		}
 	case "Wants":
-		deps, targets := splitUnitRefs(val)
+		deps, targets, self := splitUnitRefs(val, cfg.svcName)
 		cfg.waitsFor = append(cfg.waitsFor, deps...)
-		warns = append(warns, noteDroppedTargets(key, targets)...)
+		warns = append(warns, noteDroppedTargets(key, targets, self)...)
 	case "Conflicts":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("Unit `Conflicts=%s` — slinit has no negative dep; managed via stop-command / start-limit-action", val)})
 	case "OnFailure":
@@ -345,13 +456,36 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Type=%s not recognised", val)})
 		}
 	case "ExecStart":
+		// A oneshot may list several, run in turn; slinit runs one
+		// command. The last is kept, so that an empty ExecStart=
+		// followed by a new one replaces it as in systemd.
 		cmd, w := stripExecPrefixes(val)
+		if cfg.command != "" && cmd != "" {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"multiple ExecStart= — slinit runs one command, keeping the last (dropped: %q); "+
+					"run the steps from one script if they all matter", cfg.command)})
+		}
 		cfg.command = cmd
 		warns = append(warns, w...)
+		warns = append(warns, warnExecVars(key, cmd)...)
 	case "ExecStop":
 		cmd, w := stripExecPrefixes(val)
-		cfg.stopCommand = cmd
 		warns = append(warns, w...)
+		// slinit has no $MAINPID: it would expand to nothing. The usual
+		// `kill -s SIG $MAINPID` is what term-signal does; any other use
+		// cannot act on the right process.
+		if strings.Contains(cmd, "$MAINPID") || strings.Contains(cmd, "${MAINPID}") {
+			if sig, ok := killMainPID(cmd); ok {
+				// Decided once KillSignal=, which may follow, is known.
+				cfg.stopSignal, cfg.stopLine = sig, val
+			} else {
+				warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+					"ExecStop=%s uses $MAINPID, which slinit does not provide — dropped; slinit stops the service with its term-signal", val)})
+			}
+			break
+		}
+		cfg.stopCommand = cmd
+		warns = append(warns, warnExecVars(key, cmd)...)
 	case "ExecStartPre":
 		*preN++
 		if *preN > 1 {
@@ -360,6 +494,7 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			cmd, w := stripExecPrefixes(val)
 			cfg.preStart = cmd
 			warns = append(warns, w...)
+			warns = append(warns, warnExecVars(key, cmd)...)
 		}
 	case "ExecStartPost":
 		*postN++
@@ -369,31 +504,36 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			cmd, w := stripExecPrefixes(val)
 			cfg.postStart = cmd
 			warns = append(warns, w...)
+			warns = append(warns, warnExecVars(key, cmd)...)
 		}
 	case "ExecStopPost":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecStopPost=%s — slinit has no equivalent; wire via finish-command manually", val)})
 	case "ExecReload":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("ExecReload=%s — slinit reload is signal-based; use reload-signal directive", val)})
 	case "User":
-		if cfg.runAs == "" {
-			cfg.runAs = val
+		// run-as is user[:group]; either key may come first.
+		if _, group, ok := strings.Cut(cfg.runAs, ":"); ok {
+			cfg.runAs = val + ":" + group
 		} else {
-			// User was set via Group first; assemble.
-			cfg.runAs = val + ":" + cfg.runAs
+			cfg.runAs = val
 		}
 	case "Group":
-		if cfg.runAs == "" {
-			cfg.runAs = ":" + val
-		} else if !strings.Contains(cfg.runAs, ":") {
-			cfg.runAs = cfg.runAs + ":" + val
-		}
+		user, _, _ := strings.Cut(cfg.runAs, ":")
+		cfg.runAs = user + ":" + val
 	case "WorkingDirectory":
 		cfg.workingDir = val
 	case "RootDirectory":
 		cfg.chroot = val
 	case "EnvironmentFile":
 		// Systemd tolerates a leading "-" for optional; drop it.
-		cfg.envFile = strings.TrimPrefix(val, "-")
+		// systemd reads every file listed, later ones overriding; slinit
+		// reads one env-file. An empty value resets the list.
+		f := strings.TrimPrefix(val, "-")
+		if cfg.envFile != "" && f != "" {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf(
+				"multiple EnvironmentFile= — slinit reads one env-file, keeping the last (dropped: %q); merge them by hand", cfg.envFile)})
+		}
+		cfg.envFile = f
 	case "Environment":
 		warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("Environment=%s inline — slinit has env-file only; consolidate into a KEY=VAL file", val)})
 	case "PassEnvironment", "UnsetEnvironment":
@@ -407,8 +547,7 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		case "on-failure", "on-abnormal", "on-abort":
 			cfg.restart = "on-failure"
 		case "on-success":
-			warns = append(warns, SystemdWarning{"NOTE", "Restart=on-success is unusual; treated as restart = yes"})
-			cfg.restart = "yes"
+			cfg.restart = "on-success"
 		case "on-watchdog":
 			warns = append(warns, SystemdWarning{"NOTE", "Restart=on-watchdog — slinit uses watchdog directives; map manually"})
 			cfg.restart = "on-failure"
@@ -456,8 +595,51 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 		cfg.rlimitAS = systemdRlimit(val, true)
 	case "LimitMEMLOCK":
 		cfg.rlimitMemlock = systemdRlimit(val, true)
-	case "CapabilityBoundingSet", "AmbientCapabilities":
-		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("%s=%s — map to slinit capabilities / ambient-caps directives manually", key, val)})
+	// The sandbox and capability directives below used to be dropped
+	// with a note although slinit implements each: a unit loaded
+	// directly ran without the confinement it declared.
+	case "CapabilityBoundingSet":
+		warns = append(warns, cfg.capBounding.apply(key, val, allCaps)...)
+	case "AmbientCapabilities":
+		warns = append(warns, cfg.capAmbient.apply(key, val, 0)...)
+	case "ReadOnlyPaths", "ReadWritePaths", "InaccessiblePaths":
+		slinitKey := map[string]string{
+			"ReadOnlyPaths":     "read-only-paths",
+			"ReadWritePaths":    "read-write-paths",
+			"InaccessiblePaths": "inaccessible-paths",
+		}[key]
+		// slinit hides a missing inaccessible path already; a missing
+		// read-only or read-write path fails the start.
+		paths, w := systemdPaths(key, val, key != "InaccessiblePaths")
+		warns = append(warns, w...)
+		cfg.setMappedList(slinitKey, val, paths)
+	case "BindReadOnlyPaths":
+		entries, w := systemdBindPaths(key, val)
+		warns = append(warns, w...)
+		cfg.setMappedList("bind-read-only-paths", val, entries)
+	case "TemporaryFileSystem":
+		entries, w := systemdTmpfs(key, val)
+		warns = append(warns, w...)
+		cfg.setMappedList("temporary-filesystem", val, entries)
+	case "ProtectProc":
+		switch v := strings.ToLower(trimQuotes(val)); v {
+		case "default", "noaccess", "invisible", "ptraceable":
+			cfg.mapped = append(cfg.mapped, kvPair{"protect-proc", v})
+		default:
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectProc=%s not recognised — not applied", val)})
+		}
+	case "ProcSubset":
+		switch v := strings.ToLower(trimQuotes(val)); v {
+		case "all", "pid":
+			cfg.mapped = append(cfg.mapped, kvPair{"proc-subset", v})
+		default:
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProcSubset=%s not recognised — not applied", val)})
+		}
+	case "PrivateNetwork":
+		if truthy(val) {
+			cfg.mapped = append(cfg.mapped, kvPair{"namespace-net", "yes"})
+			warns = append(warns, SystemdWarning{"NOTE", "PrivateNetwork=yes → namespace-net = yes; unlike systemd, slinit leaves the namespace's loopback interface down"})
+		}
 	// Hardening directives slinit implements as deliberate equivalents of
 	// systemd's, sharing the same value vocabulary — these translate
 	// rather than earning a "look it up yourself" note.
@@ -518,7 +700,7 @@ func applyServiceKey(cfg *SystemdConfig, key, val string, preN, postN *int) []Sy
 			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("ProtectHostname=%s — slinit's protect-hostname is yes/no only; set it by hand", val)})
 		}
 	// No slinit equivalent — these stay notes.
-	case "PrivateDevices", "PrivateNetwork", "PrivateUsers":
+	case "PrivateDevices", "PrivateUsers":
 		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf("hardening %s=%s — no slinit equivalent; review by hand", key, val)})
 	// Same directive, same value shape: a space-separated list of names
 	// created under /run, /var/lib and so on. Deferring these was not a
@@ -580,6 +762,11 @@ func applyInstallKey(cfg *SystemdConfig, key, val string) []SystemdWarning {
 	case "WantedBy", "RequiredBy":
 		return []SystemdWarning{{"NOTE", fmt.Sprintf("[Install] %s=%s — on slinit, add to your boot service graph or run `slinitctl enable`", key, val)}}
 	case "Alias":
+		for _, a := range strings.Fields(val) {
+			if n, ok := strings.CutSuffix(a, ".service"); ok {
+				cfg.aliases = append(cfg.aliases, n)
+			}
+		}
 		return []SystemdWarning{{"NOTE", fmt.Sprintf("[Install] Alias=%s — slinit doesn't alias services; symlink %s → %s manually", val, val, cfg.svcName)}}
 	}
 	return nil
@@ -618,19 +805,95 @@ func stripExecPrefixes(v string) (string, []SystemdWarning) {
 	return strings.TrimSpace(s), warns
 }
 
+// warnExecVars warns about the $VAR and ${VAR} references in an Exec
+// line. systemd substitutes them from Environment= and EnvironmentFile=
+// when it runs the command; slinit expands them when the file is
+// loaded, from slinit's own environment, so a variable the unit's
+// env-file sets comes out empty. $$ is a literal $ on both sides.
+func warnExecVars(key, cmd string) []SystemdWarning {
+	var refs []string
+	for i := 0; i < len(cmd); i++ {
+		if cmd[i] != '$' || i+1 >= len(cmd) {
+			continue
+		}
+		if cmd[i+1] == '$' {
+			i++
+			continue
+		}
+		j := i + 1
+		if cmd[j] == '{' {
+			if k := strings.IndexByte(cmd[j:], '}'); k >= 0 {
+				j += k + 1
+			}
+		} else {
+			for j < len(cmd) && (cmd[j] == '_' || cmd[j] >= 'A' && cmd[j] <= 'Z' ||
+				cmd[j] >= 'a' && cmd[j] <= 'z' || cmd[j] >= '0' && cmd[j] <= '9') {
+				j++
+			}
+		}
+		if j > i+1 {
+			refs = append(refs, cmd[i:j])
+		}
+		i = j - 1
+	}
+	if len(refs) == 0 {
+		return nil
+	}
+	return []SystemdWarning{{"WARN", fmt.Sprintf(
+		"%s= uses %s — systemd takes these from the unit's environment when it runs the command; "+
+			"slinit expands them when the file is loaded, from its own environment, not the env-file, "+
+			"so they are likely empty — write the values in, or run the command through a shell script that reads the file",
+		key, strings.Join(refs, " "))}}
+}
+
+// killMainPID recognises `kill [-s SIG | -SIG] $MAINPID` and returns the
+// signal it sends (TERM if none is named), which slinit's term-signal
+// delivers to the main process the same way.
+func killMainPID(cmd string) (string, bool) {
+	f := strings.Fields(cmd)
+	if len(f) < 2 || filepath.Base(f[0]) != "kill" ||
+		(f[len(f)-1] != "$MAINPID" && f[len(f)-1] != "${MAINPID}") {
+		return "", false
+	}
+	sig := "TERM"
+	switch args := f[1 : len(f)-1]; {
+	case len(args) == 0:
+	case len(args) == 2 && (args[0] == "-s" || args[0] == "--signal"):
+		sig = args[1]
+	case len(args) == 1 && strings.HasPrefix(args[0], "-") && len(args[0]) > 1:
+		sig = args[0][1:]
+	default:
+		return "", false
+	}
+	if _, err := parseSignal(sig); err != nil {
+		return "", false
+	}
+	return sig, true
+}
+
 // splitTargets splits a whitespace-separated list of unit names and
-// normalises each by stripping the systemd unit-type suffix. slinit
-// deps are on bare names — the unit type is a systemd abstraction
-// (socket/path/mount/timer are all reified as their own slinit
-// mechanisms rather than as separate service files).
+// returns the ones that become slinit dependencies, as bare names.
 func splitTargets(v string) []string {
-	deps, _ := splitUnitRefs(v)
+	deps, _, _ := splitUnitRefs(v, "")
 	return deps
 }
 
+// systemdUnitTypes are the unit-name suffixes systemd knows.
+var systemdUnitTypes = []string{
+	".service", ".socket", ".target", ".device", ".mount", ".automount",
+	".swap", ".path", ".timer", ".slice", ".scope",
+}
+
 // splitUnitRefs splits a whitespace-separated list of unit names into
-// the ones that name a real unit and the .target references, which are
-// returned separately.
+// the slinit service names they stand for, the references dropped
+// because they name no service, and the ones naming self, the unit
+// being converted.
+//
+// A .service is the service of that name. A .socket is too: X.socket
+// activates X.service unless it says otherwise, and slinit has no
+// socket units, so Requires=dm-event.socket means the dm-event service
+// must run — lvm2-monitor needs it. A name with no unit suffix is kept
+// as written, as it always was.
 //
 // slinit has no target concept at all: targets are systemd's grouping
 // and ordering abstraction, and the boot service graph covers the same
@@ -641,34 +904,58 @@ func splitTargets(v string) []string {
 // nearly all of them. Dropping the reference and saying so is the only
 // honest option; the operator adds depends-on: for a service that
 // actually exists on their system.
-func splitUnitRefs(v string) (deps []string, targets []string) {
-	suffixes := []string{".service", ".socket", ".path", ".mount", ".timer", ".swap", ".device"}
+//
+// The other unit types are no different: a .mount, .device, .slice,
+// .path or .timer is not a service, and sysroot.mount cut down to
+// "sysroot" named something else, while an escaped device name
+// (dev-virtio\x2dports-...device) is not a valid service name at all,
+// so the unit did not load. Neither is a name slinit cannot spell.
+//
+// A unit's own socket (avahi-daemon.service: Requires=avahi-daemon.socket)
+// maps to the unit itself; a service cannot depend on itself, so those
+// are returned apart, to be dropped with a note of their own.
+func splitUnitRefs(v, self string) (deps, dropped, selfRefs []string) {
 	for _, f := range strings.Fields(v) {
-		if strings.HasSuffix(f, ".target") {
-			targets = append(targets, f)
-			continue
-		}
-		for _, s := range suffixes {
-			if strings.HasSuffix(f, s) {
-				f = strings.TrimSuffix(f, s)
+		name := f
+		for _, suf := range systemdUnitTypes {
+			if base, ok := strings.CutSuffix(f, suf); ok {
+				name = base
+				if suf != ".service" && suf != ".socket" {
+					name = ""
+				}
 				break
 			}
 		}
-		deps = append(deps, f)
+		switch {
+		case name == "" || ValidateServiceName(name) != nil:
+			dropped = append(dropped, f)
+		case self != "" && name == self:
+			selfRefs = append(selfRefs, f)
+		default:
+			deps = append(deps, name)
+		}
 	}
-	return deps, targets
+	return deps, dropped, selfRefs
 }
 
-// noteDroppedTargets turns dropped .target references into one note per
+// noteDroppedTargets turns dropped references into one note per
 // directive, so the ordering that was asked for is visible rather than
-// silently gone.
-func noteDroppedTargets(key string, targets []string) []SystemdWarning {
-	if len(targets) == 0 {
-		return nil
+// silently gone: refs that name no service, and self, refs that name
+// the unit itself.
+func noteDroppedTargets(key string, targets, self []string) []SystemdWarning {
+	var warns []SystemdWarning
+	if len(targets) > 0 {
+		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+			"%s=%s dropped — only .service and .socket units become slinit dependencies (slinit has no targets, mounts or devices as services); "+
+				"add `depends-on:`/`waits-for:` naming a real service if the ordering matters",
+			key, strings.Join(targets, " "))})
 	}
-	return []SystemdWarning{{"NOTE", fmt.Sprintf(
-		"%s=%s dropped — slinit has no targets; add `depends-on:`/`waits-for:` naming a real service if the ordering matters",
-		key, strings.Join(targets, " "))}}
+	if len(self) > 0 {
+		warns = append(warns, SystemdWarning{"NOTE", fmt.Sprintf(
+			"%s=%s dropped — it names this service itself (a unit's own socket is the service in slinit)",
+			key, strings.Join(self, " "))})
+	}
+	return warns
 }
 
 // trimSec strips a trailing "s"/"sec"/"ms" unit — systemd allows
@@ -762,6 +1049,201 @@ func systemdSeconds(v, inf string) string {
 		s += strings.TrimRight(fmt.Sprintf(".%06d", r), "0")
 	}
 	return s
+}
+
+// setMappedList records a list directive: systemd appends each
+// assignment to the list, and an empty one empties it.
+func (cfg *SystemdConfig) setMappedList(slinitKey, val string, entries []string) {
+	if strings.TrimSpace(trimQuotes(val)) == "" {
+		kept := cfg.mapped[:0]
+		for _, kv := range cfg.mapped {
+			if kv.key != slinitKey {
+				kept = append(kept, kv)
+			}
+		}
+		cfg.mapped = kept
+		return
+	}
+	if len(entries) > 0 {
+		cfg.mapped = append(cfg.mapped, kvPair{slinitKey, strings.Join(entries, " ")})
+	}
+}
+
+// systemdPath checks one path from a sandbox directive and strips its
+// "-" prefix (ignore the path if it does not exist). ok is false, with a
+// warning, for a form slinit has no equivalent of: "+" (relative to
+// RootDirectory=), a specifier (%h), an escape or a variable, a relative
+// path or one with "..". missingOK reports whether a "-" path that is
+// not there now must be left out, as slinit would fail the start on it.
+func systemdPath(key, p string, missingOK bool) (path string, ok bool, warns []SystemdWarning) {
+	path = p
+	ignore := false
+	for strings.HasPrefix(path, "-") || strings.HasPrefix(path, "+") {
+		if path[0] == '+' {
+			return "", false, []SystemdWarning{{"WARN", fmt.Sprintf("%s: %q is relative to RootDirectory=, which slinit cannot express — not applied", key, p)}}
+		}
+		ignore = true
+		path = path[1:]
+	}
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, "%\\$") ||
+		strings.Contains("/"+path+"/", "/../") {
+		return "", false, []SystemdWarning{{"WARN", fmt.Sprintf("%s: %q cannot be expressed in slinit — not applied", key, p)}}
+	}
+	if ignore && missingOK {
+		if _, err := os.Stat(path); err != nil {
+			return "", false, []SystemdWarning{{"NOTE", fmt.Sprintf("%s: %q does not exist — left out, as systemd would ignore it", key, p)}}
+		}
+	}
+	return path, true, nil
+}
+
+// systemdPaths maps a ReadOnlyPaths=-style list.
+func systemdPaths(key, val string, missingOK bool) ([]string, []SystemdWarning) {
+	var out []string
+	var warns []SystemdWarning
+	for _, word := range strings.Fields(val) {
+		p, ok, w := systemdPath(key, trimQuotes(word), missingOK)
+		warns = append(warns, w...)
+		if ok {
+			out = append(out, p)
+		}
+	}
+	return out, warns
+}
+
+// systemdBindPaths maps BindReadOnlyPaths= entries, "[-]src[:dst[:opts]]",
+// to slinit's "src:dst". slinit binds recursively, which is systemd's
+// rbind (the default); norbind has no slinit form.
+func systemdBindPaths(key, val string) ([]string, []SystemdWarning) {
+	var out []string
+	var warns []SystemdWarning
+	for _, word := range strings.Fields(val) {
+		parts := strings.Split(trimQuotes(word), ":")
+		if len(parts) > 3 || (len(parts) == 3 && parts[2] != "rbind") {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: %q — slinit binds recursively only — not applied", key, word)})
+			continue
+		}
+		src, ok, w := systemdPath(key, parts[0], true)
+		warns = append(warns, w...)
+		if !ok {
+			continue
+		}
+		dst := src
+		if len(parts) > 1 {
+			if dst, ok, w = systemdPath(key, parts[1], false); !ok {
+				warns = append(warns, w...)
+				continue
+			}
+		}
+		out = append(out, src+":"+dst)
+	}
+	return out, warns
+}
+
+// tmpfsMountFlags are TemporaryFileSystem= options that are mount flags
+// rather than tmpfs options, which slinit's temporary-filesystem passes
+// to tmpfs as they are; tmpfs refuses them. slinit's tmpfs is always
+// nosuid and nodev.
+var tmpfsMountFlags = map[string]bool{
+	"nosuid": true, "suid": true, "nodev": true, "dev": true,
+	"noexec": true, "exec": true, "nosymfollow": true, "symfollow": true,
+	"atime": true, "noatime": true, "diratime": true, "nodiratime": true,
+	"relatime": true, "norelatime": true, "strictatime": true, "nostrictatime": true,
+}
+
+// systemdTmpfs maps TemporaryFileSystem= entries, "path[:options]". The
+// mount flags are left out (with a warning for noexec and nosymfollow,
+// which slinit cannot apply), and systemd's default mode=0755 is made
+// explicit: a tmpfs's own default is 1777.
+func systemdTmpfs(key, val string) ([]string, []SystemdWarning) {
+	var out []string
+	var warns []SystemdWarning
+	for _, word := range strings.Fields(val) {
+		p, opts, _ := strings.Cut(trimQuotes(word), ":")
+		path, ok, w := systemdPath(key, p, false)
+		warns = append(warns, w...)
+		if !ok {
+			continue
+		}
+		var keep []string
+		mode := false
+		for _, o := range strings.Split(opts, ",") {
+			switch {
+			case o == "":
+			case tmpfsMountFlags[o]:
+				if o == "noexec" || o == "nosymfollow" {
+					warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: %s on %s — slinit's tmpfs cannot be %s; mounted without it", key, o, path, o)})
+				}
+			default:
+				mode = mode || strings.HasPrefix(o, "mode=")
+				keep = append(keep, o)
+			}
+		}
+		if !mode {
+			keep = append(keep, "mode=0755")
+		}
+		out = append(out, path+":"+strings.Join(keep, ","))
+	}
+	return out, warns
+}
+
+// allCaps is every capability slinit knows, the bounding set systemd
+// starts from.
+const allCaps = uint64(1)<<(process.CapCheckpointRestore+1) - 1
+
+// capFold is a systemd capability set built up over its assignments.
+type capFold struct {
+	set  bool
+	mask uint64
+}
+
+// apply folds one assignment in as systemd's parse_capability_set does:
+// the first one (or one after the set was emptied) replaces initial, a
+// later one adds to it, or with ~ takes away; an empty one empties it.
+// An unknown name is ignored, as systemd ignores it.
+func (c *capFold) apply(key, val string, initial uint64) []SystemdWarning {
+	if !c.set {
+		c.set, c.mask = true, initial
+	}
+	v := strings.TrimSpace(trimQuotes(val))
+	if v == "" {
+		c.mask = 0
+		return nil
+	}
+	invert := strings.HasPrefix(v, "~")
+	var parsed uint64
+	var warns []SystemdWarning
+	for _, word := range strings.Fields(strings.TrimPrefix(v, "~")) {
+		n, err := process.ParseCapabilities(trimQuotes(word))
+		if err != nil || len(n) != 1 {
+			warns = append(warns, SystemdWarning{"WARN", fmt.Sprintf("%s: unknown capability %q ignored", key, word)})
+			continue
+		}
+		parsed |= 1 << n[0]
+	}
+	switch {
+	case parsed == 0 || c.mask == initial:
+		c.mask = parsed
+		if invert {
+			c.mask = allCaps &^ parsed
+		}
+	case invert:
+		c.mask &^= parsed
+	default:
+		c.mask |= parsed
+	}
+	return warns
+}
+
+// capNames lists the capabilities in mask by name, lowest first.
+func capNames(mask uint64) string {
+	var names []string
+	for n := uintptr(0); n <= process.CapCheckpointRestore; n++ {
+		if mask&(1<<n) != 0 {
+			names = append(names, process.CapabilityName(n))
+		}
+	}
+	return strings.Join(names, " ")
 }
 
 func trimQuotes(s string) string {
@@ -987,6 +1469,66 @@ func SystemdUnitToServiceDescription(unitPath, name string) (*ServiceDescription
 			unitPath, err, buf.String())
 	}
 	return desc, nil
+}
+
+// dropMissingSystemdRefs leaves out the waits-for: names of a unit
+// loaded directly that resolve to nothing, with a note. They come from
+// After= and Wants=, which systemd ignores for a unit that is not
+// installed; slinit fails the load on a missing dependency of any kind,
+// so display-manager.service, which orders itself after ypbind.service,
+// could not load anywhere ypbind was not installed. Only the systemd
+// path does this: a native waits-for: on a missing service stays fatal,
+// and so does a Requires= (depends-on:), as systemd fails that unit too.
+func (dl *DirLoader) dropMissingSystemdRefs(desc *ServiceDescription, name, unitPath string) {
+	keep := func(key string, refs []string) []string {
+		var out []string
+		for _, r := range refs {
+			if dl.descriptionExists(r) {
+				out = append(out, r)
+			} else if OnSystemdUnitWarning != nil {
+				OnSystemdUnitWarning(name, unitPath, "NOTE", fmt.Sprintf(
+					"%s %s left out: no such service or unit (systemd ignores it too)", key, r))
+			}
+		}
+		return out
+	}
+	desc.WaitsFor = keep("waits-for:", desc.WaitsFor)
+}
+
+// descriptionExists reports whether findAndParse would find a
+// description for name — a loaded service, a service file, an init.d
+// script or a .service unit — without parsing it, which could recurse
+// through a unit that orders itself against this one.
+func (dl *DirLoader) descriptionExists(name string) bool {
+	if dl.set.FindService(name, false) != nil {
+		return true
+	}
+	names := []string{name}
+	if i := strings.IndexByte(name, '@'); i >= 0 {
+		names = append(names, name[:i])
+	}
+	for _, dir := range dl.dirs {
+		for _, n := range names {
+			if _, err := os.Stat(filepath.Join(dir, n)); err == nil {
+				return true
+			}
+		}
+	}
+	for _, dir := range dl.initDirs {
+		if IsInitDScript(filepath.Join(dir, name)) {
+			return true
+		}
+	}
+	unitName := name
+	if !strings.HasSuffix(unitName, ".service") {
+		unitName += ".service"
+	}
+	for _, dir := range dl.systemdDirs {
+		if IsSystemdUnit(filepath.Join(dir, unitName)) {
+			return true
+		}
+	}
+	return false
 }
 
 // expandSystemdSlice turns a systemd slice name into the path slinit's

@@ -147,3 +147,45 @@ func TestOfflineDisableAfterTargetRemoved(t *testing.T) {
 		t.Errorf("dangling link left behind: %v", err)
 	}
 }
+
+// The name becomes a path under the source's waits-for.d, so one that
+// climbs out with .. made `-o disable ../../victim` delete a file
+// outside the service directory, and enable plant a link there.
+func TestOfflineRefusesNameOutsideServiceDir(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sd")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeSvc(t, dir, "boot", "type = internal\nwaits-for.d: boot.d\n")
+	writeSvc(t, root, "victim", "type = internal\n")
+	victim := filepath.Join(root, "victim")
+
+	for _, name := range []string{"../victim", "boot.d/../../victim", "x@a/../../../victim"} {
+		if err := offlineDisable(dir, "", name); err == nil {
+			t.Errorf("disable %q: no error", name)
+		}
+		if _, err := os.Stat(victim); err != nil {
+			t.Fatalf("disable %q removed %s", name, victim)
+		}
+		if err := offlineEnable(dir, "", name); err == nil {
+			t.Errorf("enable %q: no error", name)
+		}
+	}
+	if err := offlineEnable(dir, "../victim", "boot"); err == nil {
+		t.Error("enable --from ../victim: no error")
+	}
+}
+
+func TestValidateEnableName(t *testing.T) {
+	for _, ok := range []string{"nginx", "getty@tty1", "a.b", "svc@x..y"} {
+		if err := validateEnableName(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"", "../x", "a/../b", "svc@a/../../x", "svc@a/..", ".hidden"} {
+		if err := validateEnableName(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

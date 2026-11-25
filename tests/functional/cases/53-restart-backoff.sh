@@ -1,47 +1,43 @@
 #!/bin/sh
 # Test: restart backoff with progressive delay.
 # Validates: restart-delay-step, restart-delay-cap, increasing delay between restarts.
+#
+# Gaps are measured from /proc/uptime in hundredths of a second. With
+# whole-second `date +%s` stamps and "gap2 >= gap1", a constant delay
+# (no step) and an uncapped one both passed.
 
 wait_for_service "backoff-svc" "STARTED" 10 || true
+sleep 8
 
-# Wait for several restart cycles:
-# restart 1: delay=1s, restart 2: delay=2s, restart 3: delay=3s (cap), restart 4: delay=3s
-sleep 15
-
-# Read timestamps of each restart attempt
 lines=$(wc -l < /tmp/backoff-times 2>/dev/null || echo 0)
-assert_eq "$([ "$lines" -ge 3 ] && echo yes || echo no)" "yes" \
-    "at least 3 restart attempts recorded (got $lines)"
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ "$lines" -ge 6 ]; then
+    echo "OK: $lines attempts recorded"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: only $lines attempts recorded, need 6"
+    test_summary
+fi
 
-# Verify delays are increasing: gap between attempt 1->2 should be < gap 2->3
-if [ "$lines" -ge 3 ]; then
-    t1=$(sed -n '1p' /tmp/backoff-times)
-    t2=$(sed -n '2p' /tmp/backoff-times)
-    t3=$(sed -n '3p' /tmp/backoff-times)
+# gap N in milliseconds (gap 1 = attempt 2 - attempt 1).
+gap() { awk -v n="$1" 'NR == n { a = $1 } NR == n + 1 { printf "%d", ($1 - a) * 1000 }' /tmp/backoff-times; }
+g1=$(gap 1); g2=$(gap 2); g3=$(gap 3); g4=$(gap 4); g5=$(gap 5)
+echo "INFO: gaps (ms): $g1 $g2 $g3 $g4 $g5 — expected about 300 900 1500 1500 1500"
 
-    gap1=$((t2 - t1))
-    gap2=$((t3 - t2))
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ "$((g2 - g1))" -ge 400 ] && [ "$((g3 - g2))" -ge 400 ]; then
+    echo "OK: each delay grew by about the step (0.6s)"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: delays did not grow by the step: $g1 $g2 $g3"
+fi
 
-    _TESTS_RUN=$((_TESTS_RUN + 1))
-    if [ "$gap2" -ge "$gap1" ]; then
-        echo "OK: delay increased: gap1=${gap1}s, gap2=${gap2}s"
-    else
-        echo "FAIL: delay did not increase: gap1=${gap1}s, gap2=${gap2}s"
-        _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    fi
-
-    # Verify cap: gap should not exceed cap (3s) + tolerance (2s for scheduling)
-    if [ "$lines" -ge 4 ]; then
-        t4=$(sed -n '4p' /tmp/backoff-times)
-        gap3=$((t4 - t3))
-        _TESTS_RUN=$((_TESTS_RUN + 1))
-        if [ "$gap3" -le 6 ]; then
-            echo "OK: delay capped: gap3=${gap3}s <= 6s (cap=3 + tolerance)"
-        else
-            echo "FAIL: delay exceeded cap: gap3=${gap3}s > 6s"
-            _TESTS_FAILED=$((_TESTS_FAILED + 1))
-        fi
-    fi
+_TESTS_RUN=$((_TESTS_RUN + 1))
+if [ "$g4" -ge 1200 ] && [ "$g4" -le 1800 ] && [ "$g5" -le 1800 ]; then
+    echo "OK: delay held at the 1.5s cap ($g4, $g5)"
+else
+    _TESTS_FAILED=$((_TESTS_FAILED + 1))
+    echo "FAIL: delay not held at the 1.5s cap: $g4 $g5"
 fi
 
 test_summary

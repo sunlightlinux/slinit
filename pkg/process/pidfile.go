@@ -68,6 +68,14 @@ func ReadPIDFile(path string) (int, PIDResult, error) {
 	if pid <= 0 {
 		return 0, PIDResultFailed, fmt.Errorf("invalid PID value: %d", pid)
 	}
+	// Init and slinit itself are never a service's daemon, and the pid
+	// read here is what stop signals: a file naming 1 (or us) would turn
+	// a service stop into a SIGTERM to PID 1, which is a reboot request.
+	// systemd refuses the same two.
+	if pid == 1 || pid == os.Getpid() {
+		return 0, PIDResultFailed, fmt.Errorf("refusing PID %d from PID file: "+
+			"it is init or the service manager itself", pid)
+	}
 
 	// Check if process exists
 	err = syscall.Kill(pid, 0)

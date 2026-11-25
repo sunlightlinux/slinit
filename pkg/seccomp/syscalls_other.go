@@ -3,11 +3,10 @@
 package seccomp
 
 // Stub syscall table for non-Linux-amd64 builds. The full lookup table
-// lives in syscalls_linux_amd64.go; on other arches the parser still
-// needs SyscallNumber to compile but the runner refuses to install a
-// filter (Install returns ErrUnsupportedArch). Keeping the table empty
-// makes "unknown syscall" the parse-time error, which is the safer
-// failure mode — better to refuse the config than to silently drop it.
+// lives in zsyscalls_linux_amd64.go; on other arches it is empty, so the
+// parser refuses every syscall name and the filter compilers refuse
+// every rule (see absentSyscalls): the runner fails the start rather
+// than run a service without the protection it asked for.
 var syscallNumbers = map[string]int{}
 
 // SyscallNumber on non-target arches always reports "unknown" so the
@@ -19,3 +18,8 @@ func SyscallNumber(name string) (int, bool) {
 }
 
 func allSyscalls() map[string]int { return syscallNumbers }
+
+// absentSyscalls lists the syscalls a filter rule may name that do not
+// exist on this arch, so cannot be called and need no rule. Empty
+// without a table: nothing is known to be absent.
+var absentSyscalls = map[string]bool{}

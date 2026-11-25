@@ -190,13 +190,19 @@ long options may be written with one or two leading dashes.
 **\--watch-services-dir**
 :   Opt-in: watch every **\--services-dir** with **inotify**(7) and
     auto-load a service when a new file appears (or is renamed in),
-    auto-unload it when the file is removed. Modified files are
+    auto-unload it when the file is removed and no other watched
+    directory still provides that name. What a burst of events
+    amounted to is judged from the directory once it settles, so a
+    file replaced in place (an editor's rename-and-write save, or
+    `rm` then `cp`) counts as modified, not removed. Modified files are
     logged; slinit's existing *(modified since loaded)* marker still
     surfaces the change via `slinitctl status`. Services are loaded
     but **not** auto-started (matches dinit's explicit-start model);
     the operator can then `slinitctl start <name>`. Unload happens
-    only when the service is *STOPPED* — running services are left
-    loaded with a warning. Editor artefacts (dotfiles, `~`, `.swp`,
+    only when **slinitctl unload** would be allowed: the service is
+    *STOPPED*, no loaded service depends on it other than by ordering
+    (**before**/**after**), and no control client holds a handle to
+    it — otherwise it is left loaded with a warning. Editor artefacts (dotfiles, `~`, `.swp`,
     `.tmp`, `.new`, `.bak`) and `.d` overlay dirs are ignored. A
     300 ms debounce window collapses rapid multi-event bursts (write
     + close + rename) into a single dispatch per file. Inspired by
@@ -234,10 +240,9 @@ long options may be written with one or two leading dashes.
     The intended use is **soft-reboot**: when **slinitctl shutdown
     soft-reboot** runs, slinit drops a snapshot at
     */run/slinit/soft-reboot-snapshot.json* and re-execs itself with
-    this flag *and* **\--run-mode=keep** appended (the latter is
-    mandatory — the default *mount* mode would stack a fresh tmpfs
-    over /run and hide the snapshot before the new daemon could read
-    it). Operators upgrading the slinit binary on a long-running
+    this flag *and* **\--run-mode=keep** appended (the latter so
+    that */run*, which holds the snapshot, is left as it is).
+    Operators upgrading the slinit binary on a long-running
     system therefore keep their service activations across the
     restart.
 
@@ -267,8 +272,9 @@ long options may be written with one or two leading dashes.
     X` stays effective across a reboot. One file per service is
     written atomically with contents `pinned-started` or
     `pinned-stopped`; `slinitctl unpin` removes the file. At boot the
-    daemon replays these intents BEFORE the boot cascade so a service
-    marked pinned-stopped never briefly comes up first. Empty
+    daemon replays these intents once the boot services have been
+    started: a pinned-stopped service that boot itself pulls in comes
+    up with boot and stays up, with the pin recorded. Empty
     (default) disables the feature — every hook site short-circuits
     so runtime cost is zero when unused. Recommended value:
     */var/lib/slinit/intent*. Inspired by s6-supervise's *wantup*/
@@ -285,9 +291,10 @@ long options may be written with one or two leading dashes.
 ### PID 1 environment
 
 **\--run-mode** *mode*
-:   How */run* is staged at boot: *mount* (mount a fresh tmpfs),
-    *remount* (re-mount the existing one with safe options) or *keep*
-    (leave it as-is). Default *mount*.
+:   How */run* is staged at boot: *mount* (mount a fresh tmpfs,
+    unless */run* is already a mounted tmpfs),
+    *remount* (detach the existing one and mount a fresh, empty
+    tmpfs in its place) or *keep* (leave it as-is). Default *mount*.
 
 **\--devtmpfs-path** *path*
 :   Mount *devtmpfs* at *path* during PID-1 init. Default */dev*.
@@ -604,6 +611,13 @@ facilities — **cron=**, path-activation directives, the boot service
 graph — and translating them mechanically would produce a service
 that starts and does the wrong thing.
 
+A unit's **After=** and **Wants=** become **waits-for:**. systemd
+ignores either for a unit that is not installed, where slinit fails
+the load on any missing dependency, so a directly loaded unit leaves
+out each one that names no service, init.d script or unit, and logs a
+note saying so. **Requires=** on a missing unit still fails, as
+it does under systemd.
+
 Directives with no slinit equivalent are reported to the log at
 warning level rather than dropped silently, naming the unit and the
 directive. Use **slinit-systemd-convert**(8) to see the same notes on
@@ -629,7 +643,9 @@ the services have not all stopped within **\--emergency-timeout**, the
 rest are killed. slinit then sends every remaining process SIGTERM and,
 after **\--shutdown-grace**, SIGKILL; writes the part of the journal
 logged after **slinit-journald**(8) stopped into a *shutdown-\*.journal*
-file beside its own (since 3.22.0); runs the shutdown hook, unmounts,
+file beside its own (since 3.22.0); runs the shutdown hook (waited for until it
+exits; a process it leaves running in the background is not waited
+for), unmounts,
 syncs and makes the reboot, power-off, halt or kexec system call.
 
 In container mode (**-o**) the same supervision logic runs but
@@ -656,7 +672,10 @@ the kernel are passed to slinit as argv. To avoid surprising
 interactions with bootloader options like `auto`, slinit only treats
 "naked" tokens as service names when they are recognised (**single**
 maps to a *runlevel-single* service, if defined). Tokens prefixed
-with `--` are normal long options. Tokens of the form *KEY*=*VALUE*
+with `--` are normal long options. An option slinit does not know
+(sysvinit's `-z`, `-h`), or one of its own left without its value
+(sysvinit's `-b`, `-a`), is reported and ignored rather than ending
+PID 1. Tokens of the form *KEY*=*VALUE*
 that are not slinit options are exported into the service environment
 instead of being processed as arguments.
 
@@ -876,14 +895,17 @@ on the console:
     drop-ins fire first (name-sorted, matches Debian rc-local.
     service convention), then the monolithic */etc/rc.local*.
     Per-script 5-minute timeout, non-fatal failures logged, output
-    on the console. `SLINIT_HOOK_POINT=rc-local` in the env so a
+    on the console. A process the script starts in the background
+    (a daemon) is not waited for and is left running; its output
+    is still logged. `SLINIT_HOOK_POINT=rc-local` in the env so a
     shared script can branch on the invocation path.
 
 */etc/slinit/hooks.d/&lt;point&gt;/\**
 :   Operator-supplied scripts run at defined lifecycle points.
     Executable regular files only; ordered lexically by filename
     (`10-x` before `20-y`); one at a time; 30 s per-script timeout;
-    non-zero exit is logged but doesn't abort. `SLINIT_HOOK_POINT`
+    non-zero exit is logged but doesn't abort. A process a script
+    leaves in the background is not waited for. `SLINIT_HOOK_POINT`
     is set in the child environment. Recognised points:
     **system-up** (fires when the boot service reaches STARTED),
     **system-down** (fires at the top of shutdown, before teardown),

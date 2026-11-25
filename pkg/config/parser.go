@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -772,6 +773,12 @@ type ServiceDescription struct {
 	TTYVHangup       bool
 	TTYVTDisallocate bool
 	TTYReset         bool
+
+	// mainFile is the service file Parse / ParseWithArg read; curFile
+	// the file whose lines are being applied (an @include'd fragment,
+	// a conf.d overlay, a .override). A relative depends-on.d and
+	// friends resolves against curFile's directory, like dinit.
+	mainFile, curFile string
 }
 
 // OpenFileSpec captures one open-file directive's parsed form.
@@ -847,6 +854,7 @@ func (e *ParseError) Error() string {
 //   - Value settings use '=' operator
 func Parse(r io.Reader, name string, fileName string) (*ServiceDescription, error) {
 	desc := NewServiceDescription(name)
+	desc.mainFile = fileName
 	return parseImpl(r, name, fileName, desc, 0, nil)
 }
 
@@ -855,6 +863,7 @@ func Parse(r io.Reader, name string, fileName string) (*ServiceDescription, erro
 // file and substitutes $1/${1} with the argument value.
 func ParseWithArg(r io.Reader, name string, fileName string, serviceArg string) (*ServiceDescription, error) {
 	desc := NewServiceDescription(name)
+	desc.mainFile = fileName
 	return parseImpl(r, name, fileName, desc, 0, &serviceArg)
 }
 
@@ -882,6 +891,10 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 			Message:     fmt.Sprintf("include nesting depth exceeds %d", maxIncludeDepth),
 		}
 	}
+
+	prevFile := desc.curFile
+	desc.curFile = fileName
+	defer func() { desc.curFile = prevFile }()
 
 	scanner := bufio.NewScanner(r)
 	lineNum := 0
@@ -1019,6 +1032,24 @@ func parseImpl(r io.Reader, name string, fileName string, desc *ServiceDescripti
 	resolveLogDestinations(desc)
 
 	return desc, nil
+}
+
+// dirDepPath resolves a relative depends-on.d / depends-ms.d /
+// waits-for.d / prepared-by.d against the directory of the file the
+// setting came from, as dinit does. A setting in the main service file
+// stays as written — the loader and enable resolve it against that
+// file's directory, as before. One from another file (@include
+// fragment, conf.d overlay, .override) used to be resolved against the
+// main file's directory too, so its directory was silently not read.
+func (desc *ServiceDescription) dirDepPath(dir string) string {
+	if dir == "" || filepath.IsAbs(dir) || desc.curFile == "" || desc.curFile == desc.mainFile {
+		return dir
+	}
+	p := filepath.Join(filepath.Dir(desc.curFile), dir)
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	return p
 }
 
 // resolveLogDestinations settles what happens when a service names both
@@ -1616,7 +1647,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid %s: %w", setting, err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		desc.CronInterval = d
 	case "cron-delay", "cron-on-active":
@@ -1629,7 +1662,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid %s: %w", setting, err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		desc.CronDelay = d
 	case "cron-on-error":
@@ -1673,7 +1708,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid cron-accuracy-sec: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("cron-accuracy-sec must be >= 0")
@@ -1694,7 +1731,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid healthcheck-interval: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		desc.HealthCheckInterval = d
 	case "healthcheck-delay":
@@ -1704,7 +1743,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid healthcheck-delay: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		desc.HealthCheckDelay = d
 	case "healthcheck-max-failures":
@@ -1771,13 +1812,13 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 		}
 		desc.After = append(desc.After, depName)
 	case "depends-on.d":
-		desc.DependsOnD = append(desc.DependsOnD, expandEnvVars(value, serviceArg))
+		desc.DependsOnD = append(desc.DependsOnD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 	case "depends-ms.d":
-		desc.DependsMSD = append(desc.DependsMSD, expandEnvVars(value, serviceArg))
+		desc.DependsMSD = append(desc.DependsMSD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 	case "waits-for.d":
-		desc.WaitsForD = append(desc.WaitsForD, expandEnvVars(value, serviceArg))
+		desc.WaitsForD = append(desc.WaitsForD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 	case "prepared-by.d":
-		desc.PreparedByD = append(desc.PreparedByD, expandEnvVars(value, serviceArg))
+		desc.PreparedByD = append(desc.PreparedByD, desc.dirDepPath(expandEnvVars(value, serviceArg)))
 
 	// Pre-start fail-fast path checks (OpenRC-inspired)
 	case "required-files":
@@ -1834,7 +1875,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid job-timeout-sec: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("job-timeout-sec must be >= 0")
@@ -2068,7 +2111,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid restart-delay-step: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("restart-delay-step must be >= 0")
@@ -2081,7 +2126,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid restart-delay-cap: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("restart-delay-cap must be >= 0")
@@ -2103,7 +2150,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("invalid restart-randomized-delay: %w", err)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d < 0 {
 			return fmt.Errorf("restart-randomized-delay must be >= 0")
@@ -2390,7 +2439,9 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 			if err2 != nil {
 				return fmt.Errorf("watchdog-timeout: invalid duration %q", value)
 			}
-			d = time.Duration(secs * float64(time.Second))
+			if d, err2 = secondsToDuration(secs); err2 != nil {
+				return fmt.Errorf("invalid duration %q: %w", value, err2)
+			}
 		}
 		if d <= 0 {
 			return fmt.Errorf("watchdog-timeout must be > 0 (got %s)", d)
@@ -3221,10 +3272,11 @@ func applySetting(desc *ServiceDescription, setting, value string, op OperatorTy
 	case "cgroup-cpuset-mems":
 		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{"cpuset.mems", value})
 	case "cgroup-hugetlb":
-		// Format: "size value" e.g. "2MB 4" → hugetlb.2MB.max = 4
+		// Format: "size value" e.g. "2MB 8M" → hugetlb.2MB.max = 8M. The
+		// kernel reads the value as bytes, not pages.
 		parts := strings.SplitN(value, " ", 2)
 		if len(parts) != 2 {
-			return fmt.Errorf("cgroup-hugetlb requires 'size value' (e.g., '2MB 4')")
+			return fmt.Errorf("cgroup-hugetlb requires 'size value' (e.g., '2MB 8M')")
 		}
 		desc.CgroupSettings = append(desc.CgroupSettings, CgroupSetting{
 			"hugetlb." + strings.TrimSpace(parts[0]) + ".max",
@@ -3640,6 +3692,34 @@ func parseDuration(value string) (time.Duration, error) {
 	}
 	if f < 0 {
 		return 0, fmt.Errorf("duration must be non-negative")
+	}
+	return secondsToDuration(f)
+}
+
+// secondsToDuration converts a number of seconds to a Duration.
+// ParseFloat accepts "nan", "inf"/"infinity" and "1e300", and converting
+// an infinity — or anything past ~292 years — gave math.MinInt64: a
+// negative duration that passed every "< 0" check already made and that
+// the service code then read as the opposite of what was written (a
+// huge restart-limit-interval let every restart through). Such values
+// now saturate at the longest Duration, which is what "infinity" means
+// for a timeout or an interval; NaN means nothing and is refused.
+//
+// The ceiling is 1<<62 - 1 ns (about 146 years) rather than MaxInt64,
+// so the service code can still add two such values (a restart delay
+// and its step, or its jitter) without overflowing: 2*(1<<62 - 1) fits,
+// 2*(1<<62) does not.
+const maxConfigDuration = time.Duration(1<<62 - 1)
+
+func secondsToDuration(f float64) (time.Duration, error) {
+	if math.IsNaN(f) {
+		return 0, fmt.Errorf("not a number of seconds")
+	}
+	if f < 0 {
+		return 0, fmt.Errorf("duration must be non-negative")
+	}
+	if math.IsInf(f, 1) || f*float64(time.Second) >= float64(maxConfigDuration) {
+		return maxConfigDuration, nil
 	}
 	return time.Duration(f * float64(time.Second)), nil
 }

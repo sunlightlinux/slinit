@@ -435,6 +435,19 @@ func serviceFor(e entry, d dialect) (name, body string, notes []string) {
 
 	tty, isGetty := gettyTTY(command)
 
+	// sysvinit and busybox both hand a process field holding one of
+	// these to /bin/sh -c "exec <field>"; slinit execs a command
+	// directly, so a `>` or `$HOME` there would reach the program as a
+	// literal argument. Spell out the shell they would have used. In
+	// slinit's command quoting \ and " are escaped, and $ doubled: slinit
+	// expands $VAR in a command when it loads the file.
+	if strings.ContainsAny(command, "~`!$^&*()=|\\{}[];\"'<>?") {
+		command = `/bin/sh -c "` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `$$`).Replace("exec "+command) + `"`
+		notes = append(notes, fmt.Sprintf(
+			"line %d: the command has shell metacharacters — run as /bin/sh -c \"exec …\", as init would.",
+			e.line))
+	}
+
 	switch e.action {
 	case "respawn", "askfirst":
 		b.WriteString("type = process\n")

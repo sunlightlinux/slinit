@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -39,10 +41,10 @@ func narrowBoundingSet(keepRaw []string) error {
 		}
 		keep[uintptr(n)] = true
 	}
-	// 40 covers every cap defined as of Linux 5.x — PR_CAPBSET_DROP on
-	// numbers outside the supported range simply returns EINVAL, so a
-	// fixed upper bound is safe.
-	for cap := uintptr(0); cap <= 40; cap++ {
+	// PR_CAPBSET_DROP on numbers outside the supported range simply
+	// returns EINVAL.
+	last := lastCap()
+	for cap := uintptr(0); cap <= last; cap++ {
 		if keep[cap] {
 			continue
 		}
@@ -52,6 +54,24 @@ func narrowBoundingSet(keepRaw []string) error {
 		}
 	}
 	return nil
+}
+
+// capLastCapFile is where the kernel reports its highest capability.
+var capLastCapFile = "/proc/sys/kernel/cap_last_cap"
+
+// lastCap is the highest capability the kernel knows. Where /proc cannot
+// tell, 40 (CAP_CHECKPOINT_RESTORE, the last as of Linux 5.9) is used: a
+// fixed bound left any capability a newer kernel adds in the bounding set.
+func lastCap() uintptr {
+	b, err := os.ReadFile(capLastCapFile)
+	if err != nil {
+		return 40
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 8)
+	if err != nil {
+		return 40
+	}
+	return uintptr(n)
 }
 
 // capRaiseInheritable adds capNum to the calling thread's Inheritable

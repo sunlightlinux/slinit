@@ -160,32 +160,22 @@ func (s *server) SetLocalRTC(sender dbus.Sender, localRTC, fixSystem, interactiv
 
 // SetTime sets the system clock, absolutely or relative to now, in
 // microseconds.
+//
+// The request is checked before polkit is asked and again once it has
+// answered, as systemd re-runs the method after an asynchronous
+// authorization: a prompt takes as long as the user does, so a relative
+// time is counted from when the clock is set, not from when it was asked
+// for, and NTP started in the meantime refuses it.
 func (s *server) SetTime(sender dbus.Sender, usec int64, relative, interactive bool) *dbus.Error {
 	defer s.svc.Touch()()
-	if svc := s.m.findNTP(); svc != "" && s.m.ntpRunning(svc) {
-		return dbus.NewError(iface+".AutomaticTimeSyncEnabled", []any{"Automatic time synchronization is enabled"})
-	}
-	if !relative && usec <= 0 {
-		return dbusservice.InvalidArgs("Invalid absolute time")
-	}
-	if relative && usec == 0 {
-		return nil
-	}
-	var t time.Time
-	if relative {
-		now := s.m.now()
-		nowUsec := now.UnixMicro()
-		if (usec > 0 && nowUsec > math.MaxInt64-usec) || (usec < 0 && nowUsec < math.MinInt64-usec) {
-			return dbusservice.InvalidArgs("Time value overflow")
-		}
-		t = time.UnixMicro(nowUsec + usec)
-	} else {
-		t = time.UnixMicro(usec)
-	}
-	if t.Before(timeFloor) {
-		return dbusservice.InvalidArgs("Requested to set the clock to time before build time, refusing.")
+	if t, err := s.setTimeTarget(usec, relative); err != nil || t.IsZero() {
+		return err
 	}
 	if err := s.pk.Authorize(sender, iface+".set-time", nil, interactive); err != nil {
+		return err
+	}
+	t, err := s.setTimeTarget(usec, relative)
+	if err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -198,6 +188,35 @@ func (s *server) SetTime(sender dbus.Sender, usec int64, relative, interactive b
 	}
 	s.svc.Logf("Changed local time to %s", t.Local().Format("Mon 2006-01-02 15:04:05 MST"))
 	return nil
+}
+
+// setTimeTarget checks a SetTime request and returns the time to set,
+// the zero time for a relative change of nothing.
+func (s *server) setTimeTarget(usec int64, relative bool) (time.Time, *dbus.Error) {
+	if svc := s.m.findNTP(); svc != "" && s.m.ntpRunning(svc) {
+		return time.Time{}, dbus.NewError(iface+".AutomaticTimeSyncEnabled", []any{"Automatic time synchronization is enabled"})
+	}
+	if !relative && usec <= 0 {
+		return time.Time{}, dbusservice.InvalidArgs("Invalid absolute time")
+	}
+	if relative && usec == 0 {
+		return time.Time{}, nil
+	}
+	var t time.Time
+	if relative {
+		now := s.m.now()
+		nowUsec := now.UnixMicro()
+		if (usec > 0 && nowUsec > math.MaxInt64-usec) || (usec < 0 && nowUsec < math.MinInt64-usec) {
+			return time.Time{}, dbusservice.InvalidArgs("Time value overflow")
+		}
+		t = time.UnixMicro(nowUsec + usec)
+	} else {
+		t = time.UnixMicro(usec)
+	}
+	if t.Before(timeFloor) {
+		return time.Time{}, dbusservice.InvalidArgs("Requested to set the clock to time before build time, refusing.")
+	}
+	return t, nil
 }
 
 // SetNTP turns the time-sync service on or off.

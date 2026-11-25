@@ -88,6 +88,11 @@ type Server struct {
 	// pretend to support it).
 	SwitchRootFunc func(newroot, newinit string) error
 
+	// SwitchRootReady, when set, is asked before a CmdSwitchRoot is
+	// ACKed; a non-nil error is sent to the client as RplyBadReq and
+	// the switch is not attempted.
+	SwitchRootReady func() error
+
 	// SuspendFunc writes the requested power state to
 	// /sys/power/state. Blocks until wake (for "mem", "freeze",
 	// "standby") or failure. Nil hook = suspend disabled (returns
@@ -203,6 +208,12 @@ func (s *Server) Stop() error {
 	if s.listener != nil {
 		err = s.listener.Close()
 	}
+	// Remove the socket file now, not after the connections below have
+	// finished: a caller that bounds Stop (exitFlushed) gives up on a
+	// connection stuck in a hook, and the file must not outlive that.
+	// net's UnixListener unlinks on Close as well; this does not rely
+	// on it.
+	os.Remove(s.sockPath)
 
 	// Collect connections under lock, close outside to avoid holding lock during I/O
 	s.mu.Lock()
@@ -216,9 +227,6 @@ func (s *Server) Stop() error {
 	}
 
 	s.wg.Wait()
-
-	// Clean up socket file
-	os.Remove(s.sockPath)
 
 	s.logger.Info("Control socket stopped")
 	return err
@@ -325,6 +333,47 @@ func (s *Server) Reopen() error {
 
 	s.logger.Info("Control socket re-opened on %s", s.sockPath)
 	return nil
+}
+
+// connList returns the open connections.
+func (s *Server) connList() []*Connection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Connection, 0, len(s.conns))
+	for c := range s.conns {
+		out = append(out, c)
+	}
+	return out
+}
+
+// heldElsewhere reports whether a connection other than c holds a
+// handle to svc.
+func (s *Server) heldElsewhere(c *Connection, svc service.Service) bool {
+	for _, o := range s.connList() {
+		if o == c {
+			continue
+		}
+		if _, ok := o.findHandle(svc); ok && !o.isClosing() {
+			return true
+		}
+	}
+	return false
+}
+
+// HeldByClient reports whether any control connection holds a handle
+// to svc. Unloading a service a client holds leaves that client's
+// handle on a detached object (see handleUnloadService), so callers
+// outside this package that unload must check it too.
+func (s *Server) HeldByClient(svc service.Service) bool {
+	return s.heldElsewhere(nil, svc)
+}
+
+// replaceService moves every connection's handles from old to new,
+// after a reload replaced old in the set.
+func (s *Server) replaceService(old, new service.Service) {
+	for _, c := range s.connList() {
+		c.swapService(old, new)
+	}
 }
 
 // HandlePassCSFD handles a pre-connected control socket (from pass-cs-fd).

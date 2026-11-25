@@ -504,7 +504,7 @@ A summary of every option, grouped by topic;
 | `--sentinel-dir` | Watch for runit-compatible sentinel files (`stopit`, `reboot`, `poweroff`) | |
 | `--banner` | Boot banner printed to the console; empty disables it | `slinit booting...` |
 | `--umask` | Initial umask, octal | `0022` |
-| `--run-mode` | How `/run` is staged: `mount` (fresh tmpfs), `remount` (unmount and mount), `keep` (untouched) | `mount` |
+| `--run-mode` | How `/run` is staged: `mount` (fresh tmpfs, unless `/run` is already a mounted tmpfs), `remount` (unmount and mount), `keep` (untouched) | `mount` |
 | `--devtmpfs-path` | Mount devtmpfs here; empty disables | `/dev` |
 | `--securebits` | Secure bits every service gets on top of its own `securebits` (systemd's manager `SecureBits=`); applied through slinit-runner | |
 | `--syslog-socket` | In system mode, serve this syslog socket into the journal (`_transport` syslog); empty disables. A syslog daemon already on it keeps it | `/dev/log` |

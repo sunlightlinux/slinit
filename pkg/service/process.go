@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -194,6 +193,12 @@ type ProcessService struct {
 	// the operator cancels the restart before it fires.
 	restartDelayTimer *time.Timer
 
+	// Timer that relaunches the process when a smooth recovery has to
+	// wait out restart-delay. Same reason as restartDelayTimer for not
+	// using processTimer: the recovery starts from handleChildExit, so
+	// monitorProcess has already returned and nothing would read it.
+	smoothRecovTimer *time.Timer
+
 	// State tracking
 	stopIssued       bool
 	doingSmoothRecov bool
@@ -318,7 +323,6 @@ const (
 	timerNone timerPurpose = iota
 	timerStartTimeout
 	timerStopTimeout
-	timerRestartDelay
 	// timerAbortTimeout: SIGABRT phase inserted between stop-timeout
 	// (SIGTERM) and the SIGKILL escalation. Wraps timeout-abort-sec.
 	timerAbortTimeout
@@ -512,7 +516,11 @@ func (s *ProcessService) pickStopSignal() syscall.Signal {
 		s.pendingStopSignal = 0
 		return sig
 	}
-	if s.Record().InAutoRestart() {
+	// A restart the operator asked for (slinitctl restart) counts too;
+	// it is the case restart-kill-signal exists for. InAutoRestart alone
+	// is set only after the process has exited by itself, when there is
+	// nothing left to signal, so the directive never took effect.
+	if s.Record().InAutoRestart() || s.Record().IsRestarting() {
 		if sig := s.Record().RestartKillSignal(); sig != 0 {
 			return sig
 		}
@@ -601,7 +609,7 @@ func (s *ProcessService) SetRestartMaxDelay(d time.Duration) {
 // ScheduleRestartWithBackoff implements the Service interface hook that
 // Stopped() calls before it would otherwise invoke initiateStart() on the
 // willRestart path. If the process's last start was less than the next
-// effective restart-delay ago, arm timerRestartDelay for the remaining
+// effective restart-delay ago, arm restartDelayTimer for the remaining
 // duration, set pendingInitiateStart, and return true so Stopped()
 // skips its own initiateStart call. When the timer fires the handler
 // clears the flag and calls Record().initiateStart() itself, so the
@@ -1409,13 +1417,7 @@ func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
 	unixListener.Close()
 
 	// Set permissions/ownership on Unix socket
-	if s.socketPerms != 0 {
-		if err := os.Chmod(path, os.FileMode(s.socketPerms)); err != nil {
-			fd.Close()
-			return nil, fmt.Errorf("chmod: %w", err)
-		}
-	}
-	if s.socketUID >= 0 || s.socketGID >= 0 {
+	if s.socketPerms != 0 || s.socketUID >= 0 || s.socketGID >= 0 {
 		uid, gid := s.socketUID, s.socketGID
 		if uid < 0 {
 			uid = -1
@@ -1423,13 +1425,55 @@ func (s *ProcessService) openOneSocket(path string) (*os.File, error) {
 		if gid < 0 {
 			gid = -1
 		}
-		if err := os.Chown(path, uid, gid); err != nil {
+		if err := setSocketFileAttrs(path, s.socketPerms, uid, gid); err != nil {
 			fd.Close()
-			return nil, fmt.Errorf("chown: %w", err)
+			return nil, err
 		}
 	}
 
 	return fd, nil
+}
+
+// setSocketFileAttrs applies socket-permissions and socket-uid/gid to the
+// socket file just bound at path, without following a symlink.
+//
+// By path, a chmod/chown between bind and here followed whatever stood at
+// path by then, and the socket's directory is often one the service user
+// can write (its runtime-directory). Replacing the socket with a symlink
+// in that window handed root's chmod/chown any file on the system. The
+// name is pinned with O_PATH|O_NOFOLLOW and checked to be a socket; mode
+// and owner then go through that descriptor. A socket cannot be opened
+// for real, so the mode goes through fchmodat2(AT_EMPTY_PATH) where the
+// kernel has it (6.6+) and /proc/self/fd otherwise, as systemd does.
+func setSocketFileAttrs(path string, perms, uid, gid int) error {
+	pfd, err := unix.Open(path, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("socket %s: %w", path, err)
+	}
+	defer unix.Close(pfd)
+	var st unix.Stat_t
+	if err := unix.Fstat(pfd, &st); err != nil {
+		return fmt.Errorf("socket %s: %w", path, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFSOCK {
+		return fmt.Errorf("socket %s: replaced by a non-socket after bind; "+
+			"refusing to chmod/chown it", path)
+	}
+	if perms != 0 {
+		err := unix.Fchmodat(pfd, "", uint32(perms), unix.AT_EMPTY_PATH)
+		if err == unix.EOPNOTSUPP || err == unix.ENOSYS || err == unix.EINVAL {
+			err = unix.Chmod("/proc/self/fd/"+strconv.Itoa(pfd), uint32(perms))
+		}
+		if err != nil {
+			return fmt.Errorf("chmod: %w", err)
+		}
+	}
+	if uid != -1 || gid != -1 {
+		if err := unix.Fchownat(pfd, "", uid, gid, unix.AT_EMPTY_PATH); err != nil {
+			return fmt.Errorf("chown: %w", err)
+		}
+	}
+	return nil
 }
 
 // closeSocket closes all activation sockets and removes Unix socket files.
@@ -1768,9 +1812,11 @@ func annotateHookTimeout(err error, ctx context.Context, timeout time.Duration) 
 // start, we fall back to sending the termination signal directly.
 func (s *ProcessService) BringDown() {
 	// A start-delay still counting down has nothing left to launch, nor
-	// has a start-when-idle wait.
+	// has a start-when-idle wait, nor a smooth recovery waiting out
+	// restart-delay.
 	s.cancelStartDelay()
 	s.cancelIdleWait()
+	s.cancelSmoothRecovery()
 	// Nor does a socket watcher still waiting for its first client.
 	s.disarmOnDemand()
 	// Stop health checker and cron runner if active
@@ -1882,11 +1928,17 @@ func (s *ServiceRecord) logStopSignalFailure(err error) {
 // the main process if it is still alive.
 func (s *ProcessService) execStopCommand() bool {
 	params := process.ExecParams{
-		Command:    s.stopCommand,
-		WorkingDir: s.workingDir,
-		Env:        s.buildEnv(),
+		Command:           s.stopCommand,
+		WorkingDir:        s.workingDir,
+		Env:               s.buildEnv(),
+		RunAsUID:          s.effectiveRunAsUID(),
+		RunAsGID:          s.effectiveRunAsGID(),
+		SupplementaryGIDs: s.supplementaryGIDs,
 	}
 	s.Record().ApplyProcessAttrs(&params)
+	// Use the credentials the main command was started with; the
+	// service's stop removes them.
+	params.ReuseCredentials = true
 
 	pid, exitCh, err := process.StartProcess(params)
 	if err != nil {
@@ -2004,7 +2056,9 @@ func (s *ProcessService) waitingToLaunch() bool {
 	return s.startDelayT != nil || s.idleT != nil
 }
 
-// InterruptStart cancels the start by sending SIGINT to the process.
+// InterruptStart cancels the start by sending SIGINT to the process. With
+// a process to wait for it returns false, leaving the service STOPPING
+// (see stopInterruptedStart), as dinit's issue_start_interrupt does.
 func (s *ProcessService) InterruptStart() bool {
 	if s.waitingForDeps {
 		return true
@@ -2020,10 +2074,31 @@ func (s *ProcessService) InterruptStart() bool {
 			s.serviceName, s.pid)
 		process.SignalProcess(s.pid, syscall.SIGINT, s.Flags.SignalProcessOnly)
 		// Can't immediately transition; need to wait for process to die
+		s.stopInterruptedStart()
 		return false
 	}
 
 	return true
+}
+
+// stopInterruptedStart moves a start whose process has just been told to
+// give up — by a stop arriving while STARTING, or by the start-timeout —
+// to STOPPING with the stop-timeout armed, as dinit's
+// issue_start_interrupt does. The process's exit then ends the stop like
+// any other (handleChildExit), and a process that ignores the signal is
+// escalated by the stop-timeout like any other. Left in STARTING with no
+// timer, a process ignoring SIGINT held the service there for good, and
+// its exit was taken for a failed start: a cancelled start was reported
+// as a failure, a timed-out one three times.
+func (s *ProcessService) stopInterruptedStart() {
+	if s.stopTimeout > 0 {
+		s.armTimer(s.stopTimeout, timerStopTimeout)
+	} else {
+		s.cancelTimer()
+	}
+	s.state.Store(StateStopping)
+	// The service has left STARTING: give its start slot back.
+	s.dropStartSlot()
 }
 
 // CheckRestart checks if the service should auto-restart (rate limiting).
@@ -2216,6 +2291,16 @@ func (s *ProcessService) startProcess() error {
 			len(s.outputLogger) > 0 ||
 			s.stderrLogFile != "" ||
 			s.alertFile != "" {
+			// A restart replaces the previous instance's logger along
+			// with its rotator. Stop the old logger first: until now it
+			// was overwritten below and leaked. Stopping it closes the
+			// pipe's read end, so a rotator write blocked on a logger
+			// that reads nothing fails with EPIPE, and Close() below —
+			// under queueMu — does not wait on that logger.
+			if s.loggerSup != nil {
+				s.loggerSup.Stop()
+				s.loggerSup = nil
+			}
 			if s.logRotator != nil {
 				s.logRotator.Close()
 			}
@@ -2225,8 +2310,11 @@ func (s *ProcessService) startProcess() error {
 			// the rotator, and the rotator copies each accepted line
 			// into the logger's stdin. Both destinations are honoured
 			// instead of one silently winning, and because slinit —
-			// not the service — writes to the logger, a sick logger
-			// cannot reach the service at all.
+			// not the service — writes to the logger, a logger that
+			// exits cannot kill the service with SIGPIPE. One that
+			// stops reading holds up the logfile and, once the pipe
+			// fills, the service, as a full pipe would: lines are
+			// never dropped for a logger that is merely slow.
 			var loggerSink io.Writer
 			if len(s.outputLogger) > 0 {
 				w, sup, lerr := startLoggerSupervisor(
@@ -2309,6 +2397,16 @@ func (s *ProcessService) startProcess() error {
 		// Spawn an external logger command and pipe stdout (+ stderr unless
 		// a separate error-logger is configured) to it. This is the
 		// OpenRC OUTPUT_LOGGER equivalent.
+		//
+		// Only BecomingInactive stopped the previous start's logger, so
+		// on an auto-restart it was overwritten here and left running,
+		// one more logger supervisor and process per restart. It is
+		// retired rather than killed, so that it still gets the last
+		// lines the previous instance wrote.
+		if s.loggerSup != nil {
+			s.loggerSup.retire(loggerRetireGrace)
+			s.loggerSup = nil
+		}
 		var err error
 		outputPipe, s.loggerSup, err = startLoggerSupervisor(
 			s.outputLogger, s.serviceName, "output-logger", s.services.logger,
@@ -2338,6 +2436,10 @@ func (s *ProcessService) startProcess() error {
 
 	// Optional separate error-logger: stderr goes to a different command.
 	if s.logType == LogToCommand && len(s.errorLogger) > 0 {
+		if s.errLoggerSup != nil { // as for the output-logger above
+			s.errLoggerSup.retire(loggerRetireGrace)
+			s.errLoggerSup = nil
+		}
 		var err error
 		errorPipe, s.errLoggerSup, err = startLoggerSupervisor(
 			s.errorLogger, s.serviceName, "error-logger", s.services.logger,
@@ -2574,8 +2676,8 @@ func (s *ProcessService) startProcess() error {
 	s.procHandle = process.ProcessHandle{PID: pid, ExitCh: exitCh}
 
 	// Create utmp entry if inittab-id or inittab-line is configured
-	if s.HasUtmp() && s.services.OnUtmpCreate != nil {
-		s.services.OnUtmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
+	if s.HasUtmp() {
+		s.services.utmpCreate(s.inittabID, s.inittabLine, s.Record().UtmpMode(), pid)
 	}
 
 	// Start monitoring goroutine
@@ -2723,11 +2825,10 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 	// Nil the channel so we don't select on it again
 	s.readyCh = nil
 
-	// When a watchdog is configured we keep the pipe open after the
-	// initial readiness signal: subsequent writes act as keepalives.
-	// Without a watchdog the pipe is one-shot, mirroring dinit.
-	keepPipe := ready && s.HasWatchdog() &&
-		(s.state.Load() == StateStarting || s.onDemandListening())
+	// After the readiness signal the pipe stays open and is still read
+	// (see keepReadingReadyPipe); otherwise it is done with.
+	keepPipe := ready &&
+		(s.state.Load() == StateStarting || s.state.Load() == StateStarted)
 	if !keepPipe {
 		s.closeReadyPipe()
 	}
@@ -2737,8 +2838,8 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		// legitimate context is smooth recovery: doSmoothRecovery
 		// keeps state at StateStarted, calls startProcess which arms
 		// a fresh readyCh + start-timeout timer, and the new child
-		// re-signals readiness. A ready=true here is redundant but
-		// harmless (state is already the target). A ready=false —
+		// re-signals readiness. A ready=true here changes no state,
+		// but settles the new process's timers (below). A ready=false —
 		// child crashed before notifying, or closed the pipe without
 		// writing — means the recovered process is unhealthy and
 		// must be treated as an unexpected termination, else the
@@ -2756,7 +2857,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 				s.startCronIfConfigured()
 				s.startHealthCheckIfConfigured()
 				if keepPipe {
-					s.startWatchdogWatcher()
+					s.keepReadingReadyPipe()
 				}
 			}
 			return
@@ -2769,8 +2870,19 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 			s.handleRecoveryFailureLocked()
 			return
 		}
-		// Any other combination (ready=true while STARTED, or state
-		// STOPPING/STOPPED) — nothing meaningful to do.
+		if ready && s.state.Load() == StateStarted {
+			// The recovered process is ready. The service is already
+			// STARTED, but what startProcess armed for this process
+			// still has to be settled: the start-timeout, which would
+			// otherwise fire on the healthy process, and the watchdog,
+			// which handleChildExit stopped with the old one.
+			s.cancelTimer()
+			if keepPipe {
+				s.keepReadingReadyPipe()
+			}
+			return
+		}
+		// STOPPING/STOPPED — nothing meaningful to do.
 		return
 	}
 
@@ -2783,7 +2895,7 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.startCronIfConfigured()
 		s.startHealthCheckIfConfigured()
 		if keepPipe {
-			s.startWatchdogWatcher()
+			s.keepReadingReadyPipe()
 		}
 		s.services.processQueuesLocked()
 	} else {
@@ -2792,8 +2904,39 @@ func (s *ProcessService) handleReadyNotification(ready bool) {
 		s.cancelTimer()
 		s.stopReason = ReasonFailed
 		s.failedToStart(false, false)
+		// The process may still be running — it closed the fd without
+		// exiting. Bring it down; its exit then ends the stop. As in
+		// dinit (ready_notify_watcher::fd_event).
+		s.BringDown()
 		s.services.processQueuesLocked()
 	}
+}
+
+// keepReadingReadyPipe keeps reading the readiness pipe once the service
+// is ready: the watchdog does when one is configured, since later writes
+// are its keepalives; otherwise a goroutine drains the pipe to EOF.
+// Closing the read end instead killed a service that wrote to the fd a
+// second time with SIGPIPE. dinit keeps reading until EOF too
+// (ready_notify_watcher). The pipe is closed when the process exits or
+// is stopped (closeReadyPipe), which also ends the drain.
+//
+// Caller must hold queueMu.
+func (s *ProcessService) keepReadingReadyPipe() {
+	if s.readyPipeRead == nil {
+		return // ready-check-command: there is no pipe
+	}
+	if s.HasWatchdog() {
+		s.startWatchdogWatcher()
+		return
+	}
+	go func(pipe *os.File) {
+		buf := make([]byte, 128)
+		for {
+			if _, err := pipe.Read(buf); err != nil {
+				return
+			}
+		}
+	}(s.readyPipeRead)
 }
 
 // closeReadyPipe closes the read-end of the notification pipe if open.
@@ -2823,8 +2966,8 @@ func (s *ProcessService) handleChildExit(exit process.ChildExit) {
 	}
 
 	// Clear utmp entry
-	if s.HasUtmp() && s.services.OnUtmpClear != nil {
-		s.services.OnUtmpClear(s.inittabID, s.inittabLine)
+	if s.HasUtmp() {
+		s.services.utmpClear(s.inittabID, s.inittabLine)
 	}
 
 	s.services.queueMu.Lock()
@@ -3041,7 +3184,46 @@ func (s *ProcessService) doSmoothRecovery() {
 	} else {
 		// Need to delay restart
 		delay := effectiveDelay - elapsed
-		s.armTimer(delay, timerRestartDelay)
+		var t *time.Timer
+		t = time.AfterFunc(delay, func() {
+			s.services.queueMu.Lock()
+			defer s.services.queueMu.Unlock()
+			s.fireSmoothRecoveryLocked(t)
+		})
+		s.smoothRecovTimer = t
+	}
+}
+
+// fireSmoothRecoveryLocked runs when the timer armed by doSmoothRecovery
+// fires. It acts only if t is still the armed timer and the service is
+// still STARTED with no process: a stop or a fresh start in the meantime
+// owns the service now. Caller must hold queueMu — t is read under it.
+func (s *ProcessService) fireSmoothRecoveryLocked(t *time.Timer) {
+	if s.smoothRecovTimer != t {
+		return
+	}
+	s.smoothRecovTimer = nil
+	if !s.doingSmoothRecov || s.state.Load() != StateStarted || s.pid > 0 {
+		s.doingSmoothRecov = false
+		return
+	}
+	s.doingSmoothRecov = false
+	if err := s.startProcess(); err != nil {
+		s.services.logger.Error("Service '%s': smooth recovery failed: %v",
+			s.serviceName, err)
+		s.handleRecoveryFailureLocked()
+		return
+	}
+	s.services.processQueuesLocked()
+}
+
+// cancelSmoothRecovery disarms a smooth-recovery relaunch still waiting
+// out restart-delay.
+func (s *ProcessService) cancelSmoothRecovery() {
+	if s.smoothRecovTimer != nil {
+		s.smoothRecovTimer.Stop()
+		s.smoothRecovTimer = nil
+		s.doingSmoothRecov = false
 	}
 }
 
@@ -3060,6 +3242,16 @@ func (s *ProcessService) handleTimerExpired() {
 		// via timeout-start-failure-mode (terminate/abort/kill); default
 		// terminate = SIGINT to preserve the historical slinit behaviour.
 		if s.pid > 0 {
+			if s.state.Load() == StateStarted && !s.onDemandListening() {
+				// A smooth recovery whose new process never signalled
+				// ready. The service is STARTED, dependents and all, so
+				// this is the recovery failing, not a start: as in
+				// dinit (process_service::start_timed_out).
+				s.services.logger.Error("Service '%s': start timeout exceeded during smooth recovery",
+					s.serviceName)
+				s.handleRecoveryFailureLocked()
+				return
+			}
 			sig, label := s.startTimeoutSignal()
 			s.services.logger.Error("Service '%s': start timeout exceeded, sending %s",
 				s.serviceName, label)
@@ -3069,7 +3261,11 @@ func (s *ProcessService) handleTimerExpired() {
 				return
 			}
 			s.stopReason = ReasonTimedOut
-			s.failedToStart(false, false) // Don't immediately stop, wait for process
+			// STOPPING, and wait for the process to go (dinit's
+			// start_timed_out).
+			s.stopInterruptedStart()
+			s.failedToStart(false, false)
+			s.services.processQueuesLocked()
 		}
 
 	case timerStopTimeout:
@@ -3152,19 +3348,6 @@ func (s *ProcessService) handleTimerExpired() {
 		if s.stopPID > 0 {
 			process.SignalProcess(s.stopPID, syscall.SIGKILL, false)
 		}
-
-	case timerRestartDelay:
-		// Restart delay expired
-		if s.doingSmoothRecov {
-			if err := s.startProcess(); err != nil {
-				s.services.logger.Error("Service '%s': restart failed: %v",
-					s.serviceName, err)
-				s.doingSmoothRecov = false
-				s.handleUnexpectedTerminationLocked()
-			} else {
-				s.doingSmoothRecov = false
-			}
-		}
 	}
 }
 
@@ -3206,6 +3389,26 @@ func (s *ProcessService) getTimerChan() <-chan time.Time {
 	return nil
 }
 
+// applyRunAs gives an auxiliary command (finish-command, pre-stop-hook,
+// ready-check-command, control-command-*) the service's run-as user,
+// groups included, as the main command and stop-command get. They ran
+// as root, while systemd runs ExecStopPost=, ExecStop=, ExecReload= and
+// ExecCondition= as User=.
+func (s *ProcessService) applyRunAs(cmd *exec.Cmd) {
+	uid, gid := s.effectiveRunAsUID(), s.effectiveRunAsGID()
+	if uid == 0 && gid == 0 {
+		return
+	}
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Credential = &syscall.Credential{
+		Uid:    uid,
+		Gid:    gid,
+		Groups: s.supplementaryGIDs,
+	}
+}
+
 // execFinishCommand runs the finish-command after a process exits.
 // It passes the exit code and signal number as arguments.
 // Runs synchronously with a timeout so it doesn't block forever.
@@ -3230,6 +3433,7 @@ func (s *ProcessService) execFinishCommand(exit process.ChildExit) {
 	cmd := exec.CommandContext(ctx, s.finishCommand[0], args...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
+	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running finish-command", s.serviceName)
 	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil && !isECHILDErr(err) {
@@ -3293,6 +3497,7 @@ func (s *ProcessService) runReadyCheckOnce() bool {
 	cmd := exec.Command(s.readyCheckCommand[0], s.readyCheckCommand[1:]...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
+	s.applyRunAs(cmd)
 	return process.RunAdhoc(cmd) == nil
 }
 
@@ -3311,6 +3516,7 @@ func (s *ProcessService) execPreStopHook() {
 	cmd := exec.CommandContext(ctx, s.preStopHook[0], args...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
+	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running pre-stop-hook", s.serviceName)
 	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
@@ -3334,6 +3540,7 @@ func (s *ProcessService) execControlCommand(sigName string, command []string) {
 	cmd := exec.CommandContext(ctx, command[0], args...)
 	cmd.Dir = s.workingDir
 	cmd.Env = s.buildEnv()
+	s.applyRunAs(cmd)
 
 	s.services.logger.Info("Service '%s': running control-command-%s", s.serviceName, sigName)
 	if err := annotateHookTimeout(process.RunAdhoc(cmd), ctx, timeout); err != nil {
@@ -3455,15 +3662,15 @@ func (s *ProcessService) stopLoggerCommands() {
 // exec sets both to outputPipe.
 func (s *ProcessService) forwardOnlyLoop(pr *os.File, fw *SyslogForwarder) {
 	defer pr.Close()
-	// bufio.Scanner default token size (64 KB) is fine for syslog
-	// UDP (per RFC 3164 max 1024 bytes, RFC 5424 typical 8 KB); if
-	// a service emits a longer line it'll be split at 64 KB.
-	sc := bufio.NewScanner(pr)
-	buf := make([]byte, 0, 65536)
-	sc.Buffer(buf, 65536)
-	for sc.Scan() {
-		fw.Send(sc.Bytes())
-	}
+	// 64 KiB is ample for syslog over UDP (RFC 3164 max 1024 bytes,
+	// RFC 5424 typically 8 KB); a longer line goes in 64 KiB pieces.
+	// bufio.Scanner, used here before, stopped at such a line instead,
+	// and the deferred Close then left the service writing to a pipe
+	// with no reader.
+	readLines(pr, 64*1024, func(line []byte) bool {
+		fw.Send(line)
+		return true
+	})
 }
 
 // warnIfReloadSignalUnhandled says so when a service declares a

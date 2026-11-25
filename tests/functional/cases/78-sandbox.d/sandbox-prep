@@ -5,8 +5,7 @@ depends-on: system-init
 # inside the sandbox can't help — its mkdir runs in the namespace
 # after the mount layout is already set.
 #
-# Path is under /run (not /var/tmp) because the sandbox-svc enables
-# private-tmp, which replaces /var/tmp with a fresh tmpfs and would
-# hide anything mkdir'd here.
-command = /bin/sh -c "mkdir -p /run/sandbox-rw"
+# The hole sits under /etc, which sandbox-svc makes read-only, so the
+# write only works through read-write-paths.
+command = /bin/sh -c "mkdir -p /etc/sandbox-rw"
 stop-command = /bin/true

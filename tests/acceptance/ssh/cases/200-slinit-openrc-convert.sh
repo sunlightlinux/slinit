@@ -25,6 +25,8 @@ depend() {
 }
 EOF
 chmod +x "$WORK/simple"
+# `use net` is kept only when a script of that name sits beside it.
+printf '#!/sbin/openrc-run\n' > "$WORK/net"
 
 _out=$(slinit-openrc-convert "$WORK/simple" 2>/dev/null)
 assert_contains "$_out" "command = /usr/sbin/simpled --flag value" "simple: direct command"

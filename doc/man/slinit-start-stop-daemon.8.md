@@ -48,13 +48,23 @@ At least one of **--exec**, **--pidfile**, or **--name** must be given.
 When multiple are provided, a process must satisfy **all** of them.
 
 **-x**, **--exec** *PATH*
-:   Match processes whose **/proc/PID/exe** symlink resolves to *PATH*.
+:   Match processes whose **/proc/PID/exe** symlink resolves to *PATH*,
+    including one still running a *PATH* since replaced or removed
+    (the link then reads "*PATH* (deleted)").
     Also names the binary to spawn on **--start**.
 
 **-p**, **--pidfile** *PATH*
 :   Read PID from *PATH*. When set on **--start**, combine with
     **--make-pidfile** to write it after fork. Empty/malformed files
     are treated as "not running".
+
+    Whoever can write the pidfile chooses what gets signalled, so, as
+    in Debian's start-stop-daemon, a world-writable pidfile is refused,
+    and when **--pidfile** is the only match criterion so is one owned
+    by a user other than root or the caller, or writable by another
+    group. Add **--exec**, **--name** or **--user** to match a
+    daemon-owned pidfile. A pidfile naming PID 1, this process or its
+    parent never matches; nor do those processes in a **/proc** scan.
 
 **-n**, **--name** *NAME*
 :   Match against **/proc/PID/comm** (the kernel task name, truncated
@@ -210,6 +220,12 @@ child before **exec**(2) — a peer task cannot set them from outside.
     A trailing signal without timeout means "wait forever" for that
     step.
 
+    Without **--retry**, as in OpenRC, **--stop** sends **--signal**
+    and waits up to 5s for the process to exit, returning **4** if it
+    is still there; with **--oknodo** it sends the signal and returns
+    at once, which is the form for a reload signal
+    (**--stop --oknodo --signal HUP**).
+
 # COMMON OPTIONS
 
 **-t**, **--test**
@@ -236,7 +252,8 @@ child before **exec**(2) — a peer task cannot set them from outside.
   not running, but the **--pidfile** exists.
 - **2**: syntax / bad usage
 - **3**: **--status**: not running and no pidfile.
-- **4**: **/proc** could not be scanned, the spawn failed, or **--stop**
+- **4**: **/proc** could not be scanned, the **--pidfile** was refused
+  as insecure, the spawn failed, or **--stop**
   could not signal a process or it did not exit within the last
   **--retry** step.
 - **5**: **--stop** found nothing to stop but the **--pidfile** exists

@@ -345,7 +345,7 @@ func run() error {
 
 	// Bounding-set narrowing. Must happen BEFORE the setresuid drop:
 	// PR_CAPBSET_DROP needs CAP_SETPCAP, which the kernel strips at the
-	// UID change. Iterate 0..40 (the kernel rejects out-of-range
+	// UID change. Iterate 0..cap_last_cap (the kernel rejects out-of-range
 	// numbers anyway) and drop any cap not on the keep list.
 	if len(boundingCaps) > 0 {
 		if err := narrowBoundingSet(boundingCaps); err != nil {
@@ -505,20 +505,19 @@ func dropCredentials(uid, gid int, ambient []string, supp []string) error {
 		return fmt.Errorf("PR_SET_KEEPCAPS: %w", err)
 	}
 	// Supplementary groups: install BEFORE setresgid/setresuid so we
-	// still have CAP_SETGID. Empty list means the caller didn't set
-	// the directive, so leave whatever the parent had (typically none).
-	if len(supp) > 0 {
-		gids := make([]int, 0, len(supp))
-		for _, s := range supp {
-			g, err := strconv.Atoi(s)
-			if err != nil || g < 0 {
-				return fmt.Errorf("supp-gid %q: not a non-negative integer", s)
-			}
-			gids = append(gids, g)
+	// still have CAP_SETGID. Always, even with none configured: the
+	// runner inherits slinit's groups (root's, under PID 1), and the
+	// direct path, Go's syscall.Credential, clears them too.
+	gids := make([]int, 0, len(supp))
+	for _, s := range supp {
+		g, err := strconv.Atoi(s)
+		if err != nil || g < 0 {
+			return fmt.Errorf("supp-gid %q: not a non-negative integer", s)
 		}
-		if err := unix.Setgroups(gids); err != nil {
-			return fmt.Errorf("setgroups(%v): %w", gids, err)
-		}
+		gids = append(gids, g)
+	}
+	if err := unix.Setgroups(gids); err != nil {
+		return fmt.Errorf("setgroups(%v): %w", gids, err)
 	}
 	if gid >= 0 {
 		if err := unix.Setresgid(gid, gid, gid); err != nil {

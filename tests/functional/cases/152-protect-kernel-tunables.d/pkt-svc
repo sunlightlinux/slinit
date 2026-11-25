@@ -25,11 +25,17 @@ fi
 # before hitting
 # ENOENT. busybox `swapoff` may not be built in; fall back to a
 # marker "no-swapoff" when the tool is missing.
+#
+# Only EPERM counts as denied. Without the filter swapoff fails too —
+# with ENOENT — so "it failed" alone proved nothing: any other error is
+# reported as "other" and the case fails on it.
 if command -v swapoff >/dev/null 2>&1; then
-    if swapoff /nonexistent-swap-target 2>/dev/null; then
+    if swapoff /nonexistent-swap-target 2>/var/tmp/pkt-out/swap-err; then
         _swap=allowed
-    else
+    elif grep -q 'not permitted' /var/tmp/pkt-out/swap-err; then
         _swap=denied
+    else
+        _swap=other
     fi
 else
     _swap=no-swapoff

@@ -59,16 +59,20 @@ func aluAnd(k uint32) unix.SockFilter {
 }
 
 // archHeader emits the standard arch-check prelude used by every
-// helper here: reject on wrong arch, then leave A pointing at nr for
-// the caller's per-syscall dispatch.
+// helper here: reject on wrong arch, and on x86-64 reject an x32 call,
+// then leave A pointing at nr for the caller's per-syscall dispatch.
 func archHeader() []unix.SockFilter {
-	return []unix.SockFilter{
+	prog := []unix.SockFilter{
 		loadArch(),
 		// If arch matches native, jump past the reject.
 		{Code: bpfJMP | bpfJEQ | bpfK, K: archNumber(NativeArch()), Jt: 1, Jf: 0},
 		retInsn(ActionKill),
 		loadNR(),
 	}
+	if NativeArch() == "x86-64" {
+		prog = append(prog, x32Reject()...)
+	}
+	return prog
 }
 
 // The Restrict*/Lock* filters below answer like systemd's
@@ -79,8 +83,8 @@ func archHeader() []unix.SockFilter {
 // any program that probes and copes: glibc's pthread_create tries clone3
 // first, so restrict-namespaces killed every threaded service.
 //
-// A foreign-architecture syscall still kills (archHeader): these filters
-// only describe the native ABI.
+// A foreign-architecture syscall still kills (archHeader), and so does an
+// x32 call on x86-64: these filters only describe the native ABI.
 
 // cond is one test on a syscall argument's low 32 bits: the bits in k are
 // set (bpfJSET), or the argument equals k (bpfJEQ).
@@ -149,19 +153,28 @@ func appendExcept(prog []unix.SockFilter, nr int, r exceptRule) []unix.SockFilte
 }
 
 // compileRules builds one filter from rules and exceptRules. A syscall the
-// native table does not know is skipped: the legacy calls (open, chmod,
-// mkdir, creat, mknod) do not exist on arm64, and a call that does not
-// exist cannot be made. restrict_semantics_test checks that every name
-// resolves on amd64, so a misspelt name cannot fail open unnoticed there.
+// native table does not know fails the compile, unless absentSyscalls
+// lists it: a call that does not exist on this arch (the legacy open,
+// chmod, mkdir, creat, mknod on arm64) cannot be made. Unknown calls used
+// to be skipped, and on a build without a table every rule was, so each
+// filter allowed everything.
 func compileRules(rules []rule, excepts []exceptRule) ([]unix.SockFilter, error) {
 	prog := archHeader()
 	for _, r := range excepts {
-		if nr, ok := SyscallNumber(r.syscall); ok {
+		nr, ok, err := resolveRule(r.syscall)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			prog = appendExcept(prog, nr, r)
 		}
 	}
 	for _, r := range rules {
-		if nr, ok := SyscallNumber(r.syscall); ok {
+		nr, ok, err := resolveRule(r.syscall)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			prog = appendRule(prog, nr, r)
 		}
 	}
@@ -170,6 +183,18 @@ func compileRules(rules []rule, excepts []exceptRule) ([]unix.SockFilter, error)
 		return nil, fmt.Errorf("seccomp: program exceeds 4096 instructions (got %d)", len(prog))
 	}
 	return prog, nil
+}
+
+// resolveRule returns the native number of a rule's syscall; ok is false
+// for one absent on this arch, which needs no rule.
+func resolveRule(name string) (nr int, ok bool, err error) {
+	if nr, ok := SyscallNumber(name); ok {
+		return nr, true, nil
+	}
+	if absentSyscalls[name] {
+		return 0, false, nil
+	}
+	return 0, false, fmt.Errorf("seccomp: syscall %q unknown on %s, refusing to filter without it", name, NativeArch())
 }
 
 var (
@@ -302,7 +327,8 @@ func CompileRestrictAddressFamilies(allowed []int) ([]unix.SockFilter, error) {
 // cannot read the fsname passed to mount(2), which is what systemd's
 // RestrictFileSystems= inspects through BPF-LSM; refusing the whole mount
 // surface is the most restrictive reading, matching what a deny-all
-// RestrictFileSystems=~ expects.
+// RestrictFileSystems=~ expects. The list is systemd's @mount without
+// chroot, which mounts nothing, plus open_tree.
 var fileSystemRules = []rule{
 	{syscall: "mount", action: errEPERM},
 	{syscall: "umount2", action: errEPERM},
@@ -312,6 +338,9 @@ var fileSystemRules = []rule{
 	{syscall: "fspick", action: errEPERM},
 	{syscall: "move_mount", action: errEPERM},
 	{syscall: "open_tree", action: errEPERM},
+	{syscall: "open_tree_attr", action: errEPERM},
+	{syscall: "mount_setattr", action: errEPERM},
+	{syscall: "pivot_root", action: errEPERM},
 }
 
 // CompileRestrictFileSystems builds the restrict-file-systems filter.

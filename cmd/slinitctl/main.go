@@ -1107,6 +1107,23 @@ func offlineDesc(svcDir, name string) (*config.ServiceDescription, string, error
 	return nil, "", fmt.Errorf("service '%s' not found in %s", name, svcDir)
 }
 
+// validateEnableName checks a name offline enable or disable will turn
+// into a path: a valid service name, with no ".." element anywhere in it
+// (the instance argument included), so the link it names stays inside
+// the waits-for.d directory and the description inside the service dir.
+// Online, the daemon's loader (findAndParse) refuses the same names.
+func validateEnableName(name string) error {
+	if err := config.ValidateServiceName(name); err != nil {
+		return fmt.Errorf("invalid service name '%s': %w", name, err)
+	}
+	for _, elem := range strings.Split(name, "/") {
+		if elem == ".." {
+			return fmt.Errorf("invalid service name '%s': contains a '..' path element", name)
+		}
+	}
+	return nil
+}
+
 // offlineLinkPath returns the waits-for.d symlink path for enabling to
 // from from, matching the daemon's enable: from defaults to to's
 // @meta enable-via, then boot, and the link goes into from's first
@@ -1116,6 +1133,14 @@ func offlineDesc(svcDir, name string) (*config.ServiceDescription, string, error
 // For disable (needTarget false) a missing target file is tolerated,
 // so the link of a service whose file is already gone can be removed.
 func offlineLinkPath(svcDir, from, to string, needTarget bool) (string, string, error) {
+	if err := validateEnableName(to); err != nil {
+		return "", "", err
+	}
+	if from != "" {
+		if err := validateEnableName(from); err != nil {
+			return "", "", err
+		}
+	}
 	toDesc, _, err := offlineDesc(svcDir, to)
 	if err != nil && needTarget {
 		return "", "", err
@@ -1314,7 +1339,7 @@ func loadServiceHandle(conn net.Conn, name string) (uint32, error) {
 		return 0, fmt.Errorf("write error: %w", err)
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return 0, fmt.Errorf("read error: %w", err)
 	}
@@ -1345,7 +1370,7 @@ func cmdList(conn net.Conn) error {
 	}
 
 	for {
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -2574,9 +2599,11 @@ func shellSingleQuote(s string) string {
 // buildRunBody assembles the transient service description that
 // cmdRun writes into the runtime service dir. Kept as a pure helper so the
 // generated shape is unit-testable without touching the filesystem
-// or the control socket. Command tokens are minimally-quoted
-// (double-quote each, escape embedded double quotes) so dinit-style
-// whitespace tokenisation reunites them at parse time.
+// or the control socket. Each command token is double-quoted with
+// its backslashes and double quotes backslash-escaped and its $ doubled,
+// so the parser's $-expansion and escape handling give the service the
+// token exactly as given. A token cannot carry a newline (cmdRun
+// refuses one).
 //
 // envFilePath, when non-empty, becomes an `env-file =` reference —
 // the caller writes the KEY=VAL contents separately (cmdRun does
@@ -2591,7 +2618,7 @@ func buildRunBody(svcType, description string, cmdParts []string, slice, niceVal
 	body.WriteString("command =")
 	for _, p := range cmdParts {
 		body.WriteString(" \"")
-		body.WriteString(strings.ReplaceAll(p, `"`, `\"`))
+		body.WriteString(runArgEscaper.Replace(p))
 		body.WriteByte('"')
 	}
 	body.WriteByte('\n')
@@ -2617,6 +2644,10 @@ func buildRunBody(svcType, description string, cmdParts []string, slice, niceVal
 	return body.String()
 }
 
+// runArgEscaper undoes what the command line's parse would do to a
+// token: $VAR expansion ($$ is a literal $) and backslash escapes.
+var runArgEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", "$$")
+
 // cmdRun spawns a transient one-shot service (systemd-run analogue).
 // Usage: slinitctl run [flags] -- COMMAND [ARGS...]
 //
@@ -2638,9 +2669,11 @@ func buildRunBody(svcType, description string, cmdParts []string, slice, niceVal
 //	                           kebab-case, not systemd CamelCase)
 //	  --wait                   block until STARTED (or STOPPED for
 //	                           scripted); 60s cap
-//	  --collect                block until STOPPED, then unload +
-//	                           remove the transient description; no
-//	                           cap (Ctrl-C is the escape hatch)
+//	  --collect                block until STOPPED (a scripted unit is
+//	                           stopped once its command has finished),
+//	                           then unload + remove the transient
+//	                           description; no cap (Ctrl-C is the
+//	                           escape hatch)
 //
 // Note on --user: use the global slinitctl `--user` / `-u` flag to
 // target the user service manager socket. `slinitctl --user run --`
@@ -2780,6 +2813,11 @@ commandStart:
 	if len(cmdParts) == 0 {
 		return usagef("run: no command given (expected: slinitctl run [flags] -- CMD [ARGS...])")
 	}
+	for _, p := range cmdParts {
+		if strings.ContainsAny(p, "\n\x00") {
+			return usagef("run: command arguments must not contain a newline or NUL")
+		}
+	}
 	switch svcType {
 	case "process", "scripted":
 		// Accepted types for a transient one-shot. bgprocess needs a
@@ -2892,6 +2930,7 @@ commandStart:
 	// the CLI forever). --collect uses no cap because the caller
 	// explicitly asked to wait for exit; Ctrl-C is the escape hatch.
 	deadline := time.Now().Add(60 * time.Second)
+	stopIssued := false
 	for {
 		if !collect && time.Now().After(deadline) {
 			return fmt.Errorf("run: timed out waiting for '%s' to settle", unitName)
@@ -2906,7 +2945,16 @@ commandStart:
 				info("Transient unit '%s' STARTED.\n", unitName)
 				return nil
 			}
-			// --collect: keep polling until STOPPED.
+			// --collect: keep polling until STOPPED. A scripted unit
+			// reaches STARTED when its command has finished and stays
+			// there, so it never stops on its own: stop it once, as
+			// its run is over.
+			if svcType == "scripted" && !stopIssued {
+				if err := cmdStop(conn, unitName, false, false, false, true); err != nil {
+					return fmt.Errorf("run: --collect: stop '%s': %w", unitName, err)
+				}
+				stopIssued = true
+			}
 		case service.StateStopped:
 			if st.Flags&control.StatusFlagStartFailed != 0 {
 				if collect {
@@ -3148,7 +3196,7 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 		if err := control.WritePacket(conn, control.CmdShutdown, payload); err != nil {
 			return err
 		}
-		rply, _, err := control.ReadPacket(conn)
+		rply, _, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -3179,7 +3227,7 @@ func cmdShutdownDispatch(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdScheduleShutdown, payload); err != nil {
 		return err
 	}
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3207,7 +3255,7 @@ func sendWallNotice(conn net.Conn, msg string) error {
 	if err := control.WritePacket(conn, control.CmdWallNotice, payload); err != nil {
 		return err
 	}
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3246,7 +3294,7 @@ func cmdSwitchRoot(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdSwitchRoot, payload); err != nil {
 		return err
 	}
-	rply, rest, err := control.ReadPacket(conn)
+	rply, rest, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3291,7 +3339,7 @@ func cmdEdit(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdQueryServiceDscDir, control.EncodeHandle(handle)); err != nil {
 		return err
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3386,7 +3434,7 @@ func cmdSuspend(conn net.Conn, args []string) error {
 	if err := control.WritePacket(conn, control.CmdSuspend, payload); err != nil {
 		return err
 	}
-	rply, reply, err := control.ReadPacket(conn)
+	rply, reply, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3412,7 +3460,7 @@ func cmdCancelShutdown(conn net.Conn) error {
 	if err := control.WritePacket(conn, control.CmdCancelShutdown, nil); err != nil {
 		return err
 	}
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3428,7 +3476,7 @@ func cmdQueryShutdown(conn net.Conn) error {
 	if err := control.WritePacket(conn, control.CmdQueryShutdown, nil); err != nil {
 		return err
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3731,7 +3779,7 @@ func cmdRunAction(conn net.Conn, svcName, actionName string) error {
 	if err := control.WritePacket(conn, control.CmdRunAction, payload); err != nil {
 		return err
 	}
-	rply, data, err := control.ReadPacket(conn)
+	rply, data, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3758,7 +3806,7 @@ func cmdListActions(conn net.Conn, svcName string) error {
 	if err := control.WritePacket(conn, control.CmdListActions, payload); err != nil {
 		return err
 	}
-	rply, data, err := control.ReadPacket(conn)
+	rply, data, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3780,7 +3828,7 @@ func cmdBootTime(conn net.Conn) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3949,7 +3997,7 @@ func cmdAnalyzePlot(conn net.Conn) error {
 	if err := control.WritePacket(conn, control.CmdBootTime, nil); err != nil {
 		return err
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -3983,7 +4031,7 @@ func cmdAnalyzeCriticalChain(conn net.Conn, startSvc string) error {
 	if err := control.WritePacket(conn, control.CmdBootTime, nil); err != nil {
 		return err
 	}
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -4107,7 +4155,7 @@ func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
 	}
 	var entries []entry
 	for {
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -4129,7 +4177,7 @@ func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
 			control.EncodeServiceName(entries[i].name)); err != nil {
 			return nil, err
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -4152,7 +4200,7 @@ func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
 			control.EncodeHandle(e.handle)); err != nil {
 			return nil, err
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return nil, err
 		}
@@ -4173,7 +4221,7 @@ func fetchDepGraph(conn net.Conn) (map[string][]string, error) {
 				// when a dep was allocated after our Phase 1 list).
 				if err := control.WritePacket(conn, control.CmdQueryServiceName,
 					control.EncodeHandle(depHandle)); err == nil {
-					if rply2, payload2, err := control.ReadPacket(conn); err == nil &&
+					if rply2, payload2, err := readReply(conn); err == nil &&
 						rply2 == control.RplyServiceName {
 						depName, _, _ = control.DecodeServiceName(payload2)
 						handleNames[depHandle] = depName
@@ -4672,7 +4720,7 @@ func cmdSetEnvGlobal(conn net.Conn, kvPair string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -4689,7 +4737,7 @@ func cmdUnsetEnvGlobal(conn net.Conn, key string) error {
 		return err
 	}
 
-	rply, _, err := control.ReadPacket(conn)
+	rply, _, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -4705,7 +4753,7 @@ func cmdGetAllEnvGlobal(conn net.Conn) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -5337,7 +5385,7 @@ func cmdDependents(conn net.Conn, name string) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -5369,7 +5417,7 @@ func cmdDependents(conn net.Conn, name string) error {
 			fmt.Printf("  handle=%d (name query failed)\n", depHandle)
 			continue
 		}
-		rply2, payload2, err := control.ReadPacket(conn)
+		rply2, payload2, err := readReply(conn)
 		if err != nil || rply2 != control.RplyServiceName {
 			fmt.Printf("  handle=%d\n", depHandle)
 			continue
@@ -5401,7 +5449,7 @@ func cmdGraph(conn net.Conn) error {
 
 	var entries []svcEntry
 	for {
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -5428,7 +5476,7 @@ func cmdGraph(conn net.Conn) error {
 		if err := control.WritePacket(conn, control.CmdFindService, namePayload); err != nil {
 			return err
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -5458,7 +5506,7 @@ func cmdGraph(conn net.Conn) error {
 		if err := control.WritePacket(conn, control.CmdQueryDependencies, control.EncodeHandle(e.handle)); err != nil {
 			return err
 		}
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}
@@ -5482,7 +5530,7 @@ func cmdGraph(conn net.Conn) error {
 				if err := control.WritePacket(conn, control.CmdQueryServiceName, control.EncodeHandle(depHandle)); err != nil {
 					continue
 				}
-				rply2, payload2, err := control.ReadPacket(conn)
+				rply2, payload2, err := readReply(conn)
 				if err != nil || rply2 != control.RplyServiceName {
 					depName = fmt.Sprintf("handle_%d", depHandle)
 				} else {
@@ -5584,7 +5632,7 @@ func cmdQueryLoadMech(conn net.Conn) error {
 		return err
 	}
 
-	rply, payload, err := control.ReadPacket(conn)
+	rply, payload, err := readReply(conn)
 	if err != nil {
 		return err
 	}
@@ -5657,7 +5705,7 @@ func cmdListServices5(conn net.Conn) error {
 	}
 
 	for {
-		rply, payload, err := control.ReadPacket(conn)
+		rply, payload, err := readReply(conn)
 		if err != nil {
 			return err
 		}

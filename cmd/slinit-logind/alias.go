@@ -40,7 +40,7 @@ func (m *manager) resolveAlias(sender dbus.Sender, name string) (SessionRecord, 
 	case "self", "auto":
 	default:
 		var rec SessionRecord
-		return rec, readJSON(sessionFile(name), &rec)
+		return rec, validSessionID(name) && readJSON(sessionFile(name), &rec)
 	}
 
 	pid, err := m.callerPID(string(sender))

@@ -57,6 +57,35 @@ func TestMachineInfo_RoundTrip(t *testing.T) {
 	}
 }
 
+// A value is one line: a control character in one would let a caller
+// write a second assignment, or a line the parser reads differently, into
+// the file. Set records the refusal and Save reports it, writing nothing.
+func TestMachineInfo_RefusesControlCharacters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(path, []byte("A=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"x\nB=2", "x\rB=2", "x\x1b[2J", "x\x7f"} {
+		mi, err := LoadEnvFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mi.Set("A", v)
+		if err := mi.Save(); err == nil {
+			t.Errorf("Save after Set(A, %q) succeeded", v)
+		}
+		if b, _ := os.ReadFile(path); string(b) != "A=1\n" {
+			t.Errorf("Set(A, %q) wrote:\n%s", v, b)
+			os.WriteFile(path, []byte("A=1\n"), 0o644)
+		}
+	}
+	mi, _ := LoadEnvFile(path)
+	mi.Set("A", "tab\tis fine")
+	if err := mi.Save(); err != nil {
+		t.Errorf("a tab refused: %v", err)
+	}
+}
+
 func TestMachineInfo_DeleteViaEmptySet(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "machine-info")

@@ -17,3 +17,8 @@ func SyscallNumber(name string) (int, bool) {
 // allSyscalls returns the full known syscall name → number map. Used by
 // tests to enumerate; production callers go through SyscallNumber.
 func allSyscalls() map[string]int { return syscallNumbers }
+
+// absentSyscalls lists the syscalls a filter rule may name that do not
+// exist on this arch, so cannot be called and need no rule. x86_64 has
+// every syscall the rules name.
+var absentSyscalls = map[string]bool{}

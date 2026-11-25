@@ -26,19 +26,37 @@ Script variables are mapped as follows:
 | **command_user** | **run-as** |
 | **directory** | **working-dir** |
 | **chroot** | **chroot** |
-| **pidfile** | **pid-file** |
+| **pidfile** | **pid-file** (self-forking daemon only, see below) |
 | **stopsig** | **term-signal** |
 | **umask** | **umask** |
 | **respawn_delay**, **respawn_max**, **respawn_period** | **restart-delay**, **restart-limit-count**, **restart-limit-interval** |
 | **no_new_privs=yes** | **options = no-new-privs** |
-| **command_background=yes** | **type = bgprocess** (otherwise **process**) |
+| **command_background=yes** | **type = process** |
 | **description**, **name** | comments |
 | */etc/conf.d/NAME*, if it exists | **env-file** |
 
+The service type follows how OpenRC starts the daemon. With
+**command_background=yes** the daemon stays in the foreground and
+start-stop-daemon backgrounds it and writes the pidfile itself, so it
+becomes **type = process** and **pidfile** is left out: slinit tracks
+the PID without one. The same holds when **command_args_foreground** is
+set (it is appended to **command**) or **supervisor=supervise-daemon**.
+Otherwise start-stop-daemon expects the daemon to fork itself: with a
+**pidfile** it becomes **type = bgprocess** with **pid-file**; without
+one it stays **process** with a warning, as slinit cannot follow a
+daemon that forks without a pidfile.
+
 Generated services get **restart = yes**, since OpenRC respawns
-supervised daemons. In **depend()**, **need** becomes **depends-on**
-and **use** / **after** become **waits-for**; **before**, **provide**
-and **keyword** cannot be mapped and produce a warning or note.
+supervised daemons. In **depend()**, **need** becomes **depends-on**,
+and **want**, **use** and **after** become **waits-for**. slinit fails
+to load a service whose dependency does not exist, where OpenRC skips a missing **use**,
+**want** or **after** and resolves virtual names such as **net** or
+**logger** through other scripts' **provide**; so a **want**, **use**
+or **after** is kept only when a script of that name sits in the same
+directory as the one converted, and is otherwise left out with a note.
+A **need** is always kept, with a warning when no such script exists.
+**before**, **provide** and **keyword** cannot be mapped and produce a
+warning or note.
 Variables such as **required_files**, **required_dirs**,
 **start_stop_daemon_args**, **supervise_daemon_args**,
 **capabilities**, **output_log** and **extra_commands** are reported
@@ -56,8 +74,9 @@ Single-input mode writes to standard output. Batch mode
 (**--output-dir**) writes one file per input into *DIR*, named
 after the input basename.
 
-Warnings and notes about what was not mapped are printed only with
-**-verbose**.
+Warnings — something was dropped or will not behave as it did — are
+always printed on stderr; notes about mappings that did happen are
+printed only with **-verbose**.
 
 # FLAGS
 
@@ -82,8 +101,9 @@ Warnings and notes about what was not mapped are printed only with
     or *script* **stop**. Defaults to */usr/sbin/openrc-run*.
 
 **-verbose**
-:   Print per-service conversion notes to stderr — which OpenRC
-    directives were dropped, and which required the fallback wrapper.
+:   Also print the per-service conversion notes to stderr — which
+    OpenRC dependencies were left out, and which scripts required the
+    fallback wrapper. Warnings are printed without it.
 
 # EXAMPLES
 

@@ -1,0 +1,3 @@
+type = process
+command = /bin/sh /run/259-probe.sh
+protect-system = strict

@@ -18,7 +18,7 @@ func cmdStart(opts Options) int {
 	// Guard: don't start if a matching process already runs.
 	pids, err := FindMatchingPIDs(crit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "scanning /proc: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		return exitInsufficientPri
 	}
 	if len(pids) > 0 {

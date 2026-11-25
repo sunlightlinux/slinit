@@ -1,8 +1,12 @@
 package journalbin
 
 import (
+	"encoding/binary"
+	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/journal"
@@ -398,5 +402,164 @@ func TestDecodeUUIDHexRejectsBad(t *testing.T) {
 	}
 	if err := decodeUUIDHex("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", out[:]); err == nil {
 		t.Fatal("expected error for non-hex chars")
+	}
+}
+
+// A client field named like a trusted one must not reach the file:
+// the reader applies items in order, so a Fields["_PID"] written after
+// the kernel-attested _PID used to replace it. systemd's journald drops
+// client fields starting with '_' the same way.
+func TestWriterDropsUnderscoreClientFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "forge.journal")
+	w, err := NewWriter(path, testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(&journal.Event{
+		Ts: 1_000_000, Mts: 1_000_000, Msg: "m", Prio: journal.PriorityInfo,
+		Transport: journal.TransportNative, Pid: 4300, Uid: 1000, Comm: "evil",
+		BootID: testBootID,
+		Fields: map[string]string{"_PID": "1", "_UID": "0", "_COMM": "slinit", "_TRANSPORT": "driver", "OK": "1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var got *journal.Event
+	if err := r.Iter(func(e *journal.Event) bool { got = e; return false }); err != nil {
+		t.Fatal(err)
+	}
+	if got.Pid != 4300 || got.Uid != 1000 || got.Comm != "evil" || got.Transport != journal.TransportNative {
+		t.Errorf("client fields overrode trusted ones: pid %d uid %d comm %q transport %q",
+			got.Pid, got.Uid, got.Comm, got.Transport)
+	}
+	if got.Fields["OK"] != "1" {
+		t.Errorf("ordinary client field lost: %v", got.Fields)
+	}
+}
+
+// The dedup chain walk must compare the hash stored in each DATA header
+// before reading the payload: reading (and allocating) the payload of
+// every node in a 233-bucket chain made each append O(file size). The
+// payload of a node with another hash is made unreadable here, so only a
+// walk that touches it fails.
+func TestWriterChainWalkComparesHashFirst(t *testing.T) {
+	w, err := NewWriter(filepath.Join(t.TempDir(), "chain.journal"), testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	n, err := nBuckets(w.f, w.header.DataHashTableOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := []byte("MESSAGE=first")
+	var second []byte
+	for i := 0; second == nil; i++ {
+		p := []byte(fmt.Sprintf("MESSAGE=second-%d", i))
+		if Hash64(p)%uint64(n) == Hash64(first)%uint64(n) && Hash64(p) != Hash64(first) {
+			second = p
+		}
+	}
+	off, _, err := w.findOrInsertDataLocked(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Declare a size past EOF: reading this payload now fails.
+	st, err := w.f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size [8]byte
+	binary.LittleEndian.PutUint64(size[:], uint64(st.Size())+4096)
+	if _, err := w.f.WriteAt(size[:], int64(off)+8); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w.findOrInsertDataLocked(second); err != nil {
+		t.Fatalf("insert into the same bucket read a node whose hash differs: %v", err)
+	}
+}
+
+// A fresh file's DATA hash table is sized from the size it will rotate
+// at, and a reopened file keeps the table it was created with.
+func TestWriterSizesDataHashTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sized.journal")
+	w, err := NewWriterWithOptions(path, WriterOptions{BootID: testBootID, MaxSize: 128 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int((128 << 20) * 4 / 768 / 3)
+	if n, _ := nBuckets(w.f, w.header.DataHashTableOffset); n != want {
+		t.Errorf("DATA buckets = %d, want %d", n, want)
+	}
+	if n, _ := nBuckets(w.f, w.header.FieldHashTableOffset); n != DefaultHashTableBuckets {
+		t.Errorf("FIELD buckets = %d, want %d", n, DefaultHashTableBuckets)
+	}
+	if _, err := w.Append(&journal.Event{Ts: 1000, Msg: "a", Prio: journal.PriorityInfo}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	w, err = NewWriter(path, testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(&journal.Event{Ts: 2000, Msg: "a", Prio: journal.PriorityInfo}); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := nBuckets(w.f, w.header.DataHashTableOffset); n != want {
+		t.Errorf("reopened DATA buckets = %d, want %d", n, want)
+	}
+	if got := w.header.NData; got != 2 {
+		t.Errorf("NData = %d after a repeated event, want 2 (dedup across reopen)", got)
+	}
+	w.Close()
+	if DataHashTableBuckets(4096) != DefaultHashTableBuckets {
+		t.Errorf("small files must keep %d buckets", DefaultHashTableBuckets)
+	}
+}
+
+// A create cut short by a full disk left hash tables and no header, a
+// file every later open rejected with "bad magic". It now leaves nothing.
+func TestNewWriterFailedCreateLeavesNoFile(t *testing.T) {
+	signal.Ignore(syscall.SIGXFSZ)
+	defer signal.Reset(syscall.SIGXFSZ)
+	var old syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &old); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "j.journal")
+	empty := filepath.Join(t.TempDir(), "e.journal")
+	if err := os.WriteFile(empty, nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: 4096, Max: old.Max}); err != nil {
+		t.Skipf("cannot lower RLIMIT_FSIZE: %v", err)
+	}
+	_, err1 := NewWriter(path, "", "")
+	_, err2 := NewWriter(empty, "", "")
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &old); err != nil {
+		t.Fatal(err)
+	}
+	if err1 == nil || err2 == nil {
+		t.Fatalf("create on a full disk succeeded (%v, %v); the test proves nothing", err1, err2)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("file created by the failed call left behind: %v", err)
+	}
+	if fi, err := os.Stat(empty); err != nil || fi.Size() != 0 {
+		t.Errorf("existing empty file not left empty: %v", err)
+	}
+	for _, p := range []string{path, empty} {
+		w, err := NewWriter(p, "", "")
+		if err != nil {
+			t.Fatalf("open after space came back: %v", err)
+		}
+		w.Close()
 	}
 }

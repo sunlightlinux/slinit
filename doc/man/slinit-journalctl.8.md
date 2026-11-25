@@ -30,9 +30,18 @@ Three query paths, chosen automatically or forced by flags:
   **RplyJournalDone**. Also the path **--follow** takes.
 - **File** (**-i** / **--file**) — read one specific journal file
   (binary or JSONL; magic-detected; **.gz** auto-decompressed).
-- **Directory** (**-D** / **--directory**) — iterate every
+- **Directory** (**-D** / **--directory**) — read every
   *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* / *\*.slj* file under a
-  directory, recursively.
+  directory, recursively, as one journal.
+
+With **--file**, **--directory** and **--image**, the files are read as
+one journal, in journal order — boots in the order they were written,
+files taken in name order, then monotonic time within a boot — so
+**-b**, the filters, the cursor options, **-n** and **-r** apply once
+across all the files, and **--list-boots** lists the boots the files
+hold (since 4.0.3). Only the matching entries are held in memory, and
+with **-n** *N* only the last *N* of each boot; **-b**, **--list-boots**
+and the cursor options read the files twice, first for their boots.
 
 The daemon (**slinit-journald**(8)) does NOT need to be running for
 the live path — slinit itself owns the ring buffer that
@@ -109,7 +118,9 @@ live queries.
 **-b**, **--boot** [*ID*]
 :   Restrict output to a boot. Empty argument or **0** = current;
     **-N** = *N*-th prior boot; **+N** = *N*-th after the oldest;
-    full 32-hex ID also accepted.
+    full 32-hex ID also accepted. With **--file**, **--directory** or
+    **--image**, the empty argument and **0** are the newest boot in
+    the files and **-N** counts back from it; **+N** is refused.
 
 **--this-boot**
 :   Accepted for parity and ignored. The live path only holds the
@@ -125,8 +136,14 @@ live queries.
 :   Resume strictly after *TOKEN* (exclusive).
 
 **--cursor-file=**\ *FILE*
-:   Load cursor from *FILE* at start, persist updated cursor at end.
-    Useful for polling loops.
+:   Start after the entry whose cursor is stored in *FILE* (since
+    4.0.3), and store the cursor of the last entry shown there at the
+    end. A missing *FILE* starts from the beginning. Useful for polling
+    loops. Entries that share the stored cursor's time are kept: a
+    cursor names only a time and a boot, so the first entry at that
+    time is taken for the one already shown and skipped. When the
+    previous run ended on several entries of one time, the next run
+    prints those after the first of them again; it never skips one.
 
 **--show-cursor**
 :   Print a `-- cursor: s=..;b=..` line after output.
@@ -138,8 +155,9 @@ live queries.
     **.gz** auto-decompress).
 
 **-D**, **--directory=**\ *DIR*
-:   Iterate every *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* /
-    *\*.slj* file under *DIR*, recursively, in walk order.
+:   Read every *\*.jsonl* / *\*.jsonl.gz* / *\*.journal* /
+    *\*.slj* file under *DIR*, recursively, as one journal (see
+    **DESCRIPTION**).
 
 **--root=**\ *PATH*
 :   Prefix applied to filesystem paths: the **--directory** (or the
@@ -150,7 +168,15 @@ live queries.
 ## Follow mode
 
 **-f**, **--follow**
-:   Stream new events as they arrive (Ctrl-C to stop). **-r** is
+:   Print the matching events still in the ring buffer — all of
+    them, or the last *N* with **-n** *N* — then stream new events as
+    they arrive (Ctrl-C to stop). **-n** counts after the filters, and
+    **-c**, **--after-cursor** and **--cursor-file** position the
+    first part as they do a plain query (since 4.0.3). The cursor
+    reaches the daemon as a start time, which it applies to the new
+    events as well, as it does **--since**: an event stamped before the
+    cursor's time (after the clock was stepped back) is not shown.
+    **--cursor-file** is read but not updated in this mode. **-r** is
     ignored in this mode.
 
 **-r**, **--reverse**
@@ -175,7 +201,10 @@ live queries.
     - **json-seq** — RFC 7464 record-separator framed
     - **verbose** — multi-line dump of every field
     - **export** — systemd export format (KEY=value lines, blank
-      between events)
+      between events); a value with a newline or another control
+      character, or invalid UTF-8, is written in the format's binary
+      form — the key, a newline, its length as a little-endian 64-bit
+      integer, the value, a newline (since 4.0.3)
 
 **--output-fields=**\ *A*,*B*,*C*
 :   Restrict verbose/export/JSON output to the named field keys.
@@ -196,7 +225,11 @@ live queries.
 
 **-l**, **--full**, **-a**, **--all**
 :   Accepted for parity; output is never truncated unless
-    **--no-full** is given.
+    **--no-full** is given. In the short and cat formats a message's
+    control characters (other than tab and newline), DEL, C1 controls
+    and invalid UTF-8 are shown as `\xNN` escapes, and in short formats
+    its continuation lines are indented to the message column;
+    **-a**/**--all** prints the control characters as logged.
 
 **-e**, **--pager-end**, **--no-pager**
 :   Accepted for parity; slinit never invokes a pager.
@@ -244,7 +277,11 @@ live queries.
 **--vacuum-size=**\ *SIZE*, **--vacuum-files=**\ *N*, **--vacuum-time=**\ *TIME*
 :   Prune rotated files until total on-disk ≤ *SIZE* (bytes with
     K/M/G/T suffix), or keep only the most recent *N* rotated files,
-    or drop files older than *TIME* (s/m/h/d/w/M/y).
+    or drop files older than *TIME* (s/m/h/d/w/M/y). The file
+    **slinit-journald**(8) is writing is never removed: the newest
+    file of each format that still has its plain *YYYY-MM-DD* name,
+    and any file a running **slinit-journald** holds open
+    (since 4.0.3).
 
 **--pid-file=**\ *PATH*
 :   Override the */run/slinit-journald.pid* lookup path used by
@@ -275,7 +312,8 @@ live queries.
 ## Disk image dissection (root)
 
 **--image=**\ *PATH*
-:   Attach the image via **losetup**(8), mount read-only, locate
+:   Attach the image via **losetup**(8), mount read-only with
+    *nosuid*, *nodev* and *noexec* (since 4.0.3), locate
     the journal directory (*var/log/slinit-journal* or
     *run/slinit-journal*), query it, detach on exit.
 
@@ -450,7 +488,9 @@ Query a rescue image:
 
 */var/log/slinit-journal/*
 :   Persistent journal directory. The active file is named after the
-    current date, *YYYY-MM-DD.journal* (binary) or *YYYY-MM-DD.jsonl*;
+    date it was opened, *YYYY-MM-DD.journal* (binary) or
+    *YYYY-MM-DD.jsonl*, and keeps that name until it is rotated, by
+    age or size, to *YYYY-MM-DD.<ns>.journal* or *.jsonl*;
     rotated JSONL files are gzip-compressed (*\*.jsonl.gz*).
 
 */var/log/slinit-journal/shutdown-YYYYMMDD-HHMMSS-BOOT.journal*

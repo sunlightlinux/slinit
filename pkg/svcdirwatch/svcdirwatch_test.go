@@ -259,7 +259,7 @@ func TestCreateThenDeleteCoalescesToDisappeared(t *testing.T) {
 		t.Fatalf("AddDir: %v", err)
 	}
 	// Expect ONE final event: disappeared. Create-then-delete inside
-	// the debounce window collapses; disappear always wins.
+	// the debounce window collapses; the file is gone when it fires.
 	r.expect(1)
 	path := filepath.Join(dir, "svc-g")
 	writeFile(t, path, "x")
@@ -387,5 +387,174 @@ func TestIsServiceFile(t *testing.T) {
 		if got := isServiceFile(tc.name); got != tc.want {
 			t.Errorf("isServiceFile(%q) = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// settle waits out the debounce and returns everything dispatched.
+func settle(r *recorder, d time.Duration) []string {
+	time.Sleep(d)
+	return r.snapshot()
+}
+
+// vim's default save (writebackup, backupcopy=auto) renames the file
+// to svc~ and writes a fresh svc. The file never stops existing as far
+// as the operator is concerned: that is a modification, not a removal.
+func TestVimSaveIsModifiedNotDisappeared(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "svc")
+	writeFile(t, p, "type = internal\n")
+	var r recorder
+	w, err := New(testLogger{}, r.handler(), Options{DebounceInterval: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go w.Run()
+	t.Cleanup(w.Close)
+	if err := w.AddDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(p, p+"~"); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, p, "type = internal\n# edited\n")
+	if err := os.Remove(p + "~"); err != nil {
+		t.Fatal(err)
+	}
+	got := settle(&r, 400*time.Millisecond)
+	if len(got) != 1 || got[0] != "modified:svc" {
+		t.Fatalf("want [modified:svc], got %v", got)
+	}
+}
+
+// `rm svc; cp new svc` inside the debounce window: same as above.
+func TestRemoveThenRecreateIsModified(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "svc")
+	writeFile(t, p, "a\n")
+	var r recorder
+	w, err := New(testLogger{}, r.handler(), Options{DebounceInterval: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go w.Run()
+	t.Cleanup(w.Close)
+	if err := w.AddDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, p, "b\n")
+	got := settle(&r, 400*time.Millisecond)
+	if len(got) != 1 || got[0] != "modified:svc" {
+		t.Fatalf("want [modified:svc], got %v", got)
+	}
+}
+
+// The handler only gets the name, so removing one copy of a service
+// that another watched directory still provides must not report it
+// gone: the handler would unload the copy that is still there.
+func TestRemovingShadowedCopyIsNotDisappeared(t *testing.T) {
+	d1 := t.TempDir()
+	d2 := t.TempDir()
+	writeFile(t, filepath.Join(d1, "svc"), "x\n")
+	writeFile(t, filepath.Join(d2, "svc"), "x\n")
+	var r recorder
+	w := newTestWatcher(t, r.handler())
+	if err := w.AddDir(d1); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddDir(d2); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(d2, "svc")); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range settle(&r, 300*time.Millisecond) {
+		if ev == "disappeared:svc" {
+			t.Fatalf("got disappeared:svc while %s still provides it", d1)
+		}
+	}
+}
+
+// More events than the kernel queues (max_queued_events) end in one
+// IN_Q_OVERFLOW and the rest are lost. The watcher must rescan, not go
+// on as if the events it got were all there were.
+func TestQueueOverflowRescans(t *testing.T) {
+	b, err := os.ReadFile("/proc/sys/fs/inotify/max_queued_events")
+	if err != nil {
+		t.Skipf("max_queued_events: %v", err)
+	}
+	var max int
+	fmt.Sscan(string(b), &max)
+	if max <= 0 || max > 100000 {
+		t.Skipf("max_queued_events = %d", max)
+	}
+	n := max + 100
+
+	dir := t.TempDir()
+	var mu sync.Mutex
+	appeared := map[string]bool{}
+	h := Handler{Appeared: func(name string) {
+		mu.Lock()
+		appeared[name] = true
+		mu.Unlock()
+	}}
+	w, err := New(testLogger{}, h, Options{DebounceInterval: 40 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.AddDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing reads the queue yet, so it overflows.
+	for i := 0; i < n; i++ {
+		f, err := os.Create(filepath.Join(dir, fmt.Sprintf("s%d", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	go w.Run()
+	t.Cleanup(w.Close)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		got := len(appeared)
+		mu.Unlock()
+		if got == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d files created, %d reported Appeared", n, got)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A services-dir removed and created again must be watched again.
+func TestRecreatedDirIsWatchedAgain(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "d")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var r recorder
+	w := newTestWatcher(t, r.handler())
+	if err := w.AddDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	r.expect(1)
+	writeFile(t, filepath.Join(dir, "newsvc"), "x\n")
+	r.wait(t, 5*time.Second)
+	if got := r.snapshot(); len(got) != 1 || got[0] != "appeared:newsvc" {
+		t.Fatalf("want [appeared:newsvc], got %v", got)
 	}
 }

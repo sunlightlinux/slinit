@@ -16,6 +16,10 @@ type Step struct {
 	Timeout time.Duration
 }
 
+// noWait as a Step's Timeout sends the signal without waiting for the
+// process to exit.
+const noWait time.Duration = -1
+
 // ParseRetry accepts either an integer (seconds, treated as the
 // classic "SIGTERM/N/SIGKILL/N" schedule) or a slash-separated
 // spec like "SIGTERM/30/SIGKILL/5". Signal tokens may be with or

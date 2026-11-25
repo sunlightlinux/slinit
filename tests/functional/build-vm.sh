@@ -21,7 +21,7 @@ PACKAGES_URL="${ALPINE_MIRROR}/v${ALPINE_VERSION}/main/${ALPINE_ARCH}"
 # pcre_free_study: symbol not found" and exit 127, which slinit reports
 # as a plain failed start. The 3.23 build does link pcre2, so this pin
 # has to be rechecked against `.PKGINFO` whenever ALPINE_VERSION moves.
-NGINX_PKG="nginx-1.26.3-r3.apk"
+NGINX_PKG="nginx-1.26.3-r4.apk"
 PCRE_PKG="pcre-8.45-r3.apk"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -146,6 +146,9 @@ server {
 }
 NGINXCONF
 
+# slinit enables the init.d fallback only for directories present at boot;
+# without one, 108-openrc-depend-ordering could only ever skip.
+mkdir -p "${ROOTFS_DIR}/etc/init.d"
 install -m 755 "${BUILD_DIR}/slinit" "${ROOTFS_DIR}/sbin/slinit"
 install -m 755 "${BUILD_DIR}/slinitctl" "${ROOTFS_DIR}/usr/bin/slinitctl"
 install -m 755 "${BUILD_DIR}/slinit-check" "${ROOTFS_DIR}/usr/bin/slinit-check"

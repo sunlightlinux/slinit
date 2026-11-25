@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -24,8 +25,8 @@ type RunMode int
 
 const (
 	// RunModeMount (default) mounts a fresh tmpfs on /run. If /run is
-	// already a mountpoint this is a no-op so we don't shadow an
-	// existing tmpfs the initramfs or a previous boot left behind.
+	// already a mounted tmpfs (or ramfs) this is a no-op so we don't
+	// shadow the one the initramfs or a previous boot left behind.
 	RunModeMount RunMode = iota
 
 	// RunModeRemount unmounts /run if it's already a tmpfs and mounts
@@ -220,24 +221,15 @@ func mountEarlyFS(logger *logging.Logger) {
 		logger.Debug("Skipping devtmpfs mount (path disabled)")
 	}
 
-	// Mount proc on /proc
-	os.MkdirAll("/proc", 0555)
-	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
-		logger.Debug("Mount proc: %v (non-fatal)", err)
-	} else {
-		logger.Debug("Mounted proc on /proc")
-	}
+	// Mount proc on /proc, unless it is there already: a second procfs
+	// stacks on the first (one more per boot and per soft reboot) and
+	// does not have the options, hidepid included, set on it.
+	mountUnlessType("proc", "/proc", unix.PROC_SUPER_MAGIC, logger)
 
 	// Mount sysfs on /sys so cgroup writes, /sys/class/net enumeration,
 	// and the securityfs mount below have a parent to hang off. Kernel
-	// initramfs may already have this — the mount is a no-op with EBUSY
-	// in that case, which we swallow at debug level.
-	os.MkdirAll("/sys", 0555)
-	if err := syscall.Mount("sysfs", "/sys", "sysfs", 0, ""); err != nil {
-		logger.Debug("Mount sysfs: %v (non-fatal, likely already mounted)", err)
-	} else {
-		logger.Debug("Mounted sysfs on /sys")
-	}
+	// initramfs may already have this.
+	mountUnlessType("sysfs", "/sys", unix.SYSFS_MAGIC, logger)
 
 	// Mount securityfs on /sys/kernel/security so LSM state is
 	// observable at runtime. Required for AppArmor apparmor-switch=
@@ -282,6 +274,22 @@ func mountEarlyFS(logger *logging.Logger) {
 	}
 }
 
+// mountUnlessType mounts fstype on target unless a filesystem of that
+// type (by statfs magic) is mounted there already.
+func mountUnlessType(fstype, target string, magic int64, logger *logging.Logger) {
+	os.MkdirAll(target, 0555)
+	var st unix.Statfs_t
+	if unix.Statfs(target, &st) == nil && int64(st.Type) == magic {
+		logger.Debug("%s already on %s", fstype, target)
+		return
+	}
+	if err := syscall.Mount(fstype, target, fstype, 0, ""); err != nil {
+		logger.Debug("Mount %s on %s: %v (non-fatal)", fstype, target, err)
+	} else {
+		logger.Debug("Mounted %s on %s", fstype, target)
+	}
+}
+
 // runStaged ensures mountRunTmpfs runs exactly once per process. This
 // lets callers stage /run early (e.g. before StartCatchAll, so the
 // catch-all log file lives on the final tmpfs and isn't buried under
@@ -302,10 +310,15 @@ func StageRun(logger *logging.Logger) {
 // mountRunTmpfs stages /run according to the runMode global. See
 // RunMode for the individual modes.
 func mountRunTmpfs(logger *logging.Logger) {
-	const runPath = "/run"
-	switch runMode {
+	stageRunAt("/run", runMode, logger)
+}
+
+// stageRunAt does mountRunTmpfs's work on runPath, so a test can point
+// it at a directory of its own.
+func stageRunAt(runPath string, mode RunMode, logger *logging.Logger) {
+	switch mode {
 	case RunModeKeep:
-		logger.Debug("Run mode: keep — leaving /run untouched")
+		logger.Debug("Run mode: keep — leaving %s untouched", runPath)
 		return
 	case RunModeRemount:
 		// Best-effort unmount first. MNT_DETACH so we don't block on a
@@ -313,17 +326,99 @@ func mountRunTmpfs(logger *logging.Logger) {
 		if err := unix.Unmount(runPath, unix.MNT_DETACH); err != nil && !os.IsNotExist(err) {
 			logger.Debug("Unmount %s before remount: %v (non-fatal)", runPath, err)
 		}
-		fallthrough
 	case RunModeMount:
-		os.MkdirAll(runPath, 0755)
-		// mode=0755,nosuid,nodev matches systemd and s6-linux-init.
-		const flags = syscall.MS_NOSUID | syscall.MS_NODEV
-		if err := syscall.Mount("tmpfs", runPath, "tmpfs", flags, "mode=0755"); err != nil {
-			logger.Debug("Mount tmpfs on %s: %v (non-fatal)", runPath, err)
-		} else {
-			logger.Debug("Mounted tmpfs on %s", runPath)
+		// Already a mounted tmpfs: the initramfs's /run (udev
+		// database, cryptsetup state) or the one a previous boot left.
+		// A fresh tmpfs over it hid every file in it.
+		if defaultRunProbe.keepMountedRun(runPath) {
+			logger.Debug("%s is already a mounted tmpfs, leaving it", runPath)
+			return
 		}
 	}
+	os.MkdirAll(runPath, 0755)
+	// mode=0755,nosuid,nodev matches systemd and s6-linux-init.
+	const flags = syscall.MS_NOSUID | syscall.MS_NODEV
+	if err := syscall.Mount("tmpfs", runPath, "tmpfs", flags, "mode=0755"); err != nil {
+		logger.Debug("Mount tmpfs on %s: %v (non-fatal)", runPath, err)
+	} else {
+		logger.Debug("Mounted tmpfs on %s", runPath)
+	}
+}
+
+// runProbe asks the kernel what keepMountedRun needs to know; a test
+// substitutes its own answers.
+type runProbe struct {
+	// mountRoot reports whether path is the root of a mount, or an
+	// error when the kernel cannot say (statx before Linux 5.8).
+	mountRoot func(path string) (bool, error)
+	// inMountinfo reports whether path is a mount point listed in
+	// /proc/self/mountinfo.
+	inMountinfo func(path string) bool
+	// fsMagic is the filesystem type of path, as statfs(2) gives it.
+	fsMagic func(path string) (int64, error)
+}
+
+var defaultRunProbe = runProbe{
+	mountRoot:   statxMountRoot,
+	inMountinfo: inSelfMountinfo,
+	fsMagic: func(path string) (int64, error) {
+		var sfs unix.Statfs_t
+		if err := unix.Statfs(path, &sfs); err != nil {
+			return 0, err
+		}
+		return int64(sfs.Type), nil
+	},
+}
+
+// keepMountedRun reports whether path is a mounted tmpfs (or ramfs) to
+// leave as it is instead of mounting a fresh one over it.
+//
+// A different st_dev from the parent's is not a mount: every btrfs
+// subvolume has a device number of its own, so a /run that was a plain
+// directory on its own subvolume was taken for a mount and left on
+// disk, its contents surviving reboots. Whether path is a mount root is
+// asked of statx, with mountinfo where statx cannot say, and only a
+// memory filesystem is kept.
+func (p runProbe) keepMountedRun(path string) bool {
+	root, err := p.mountRoot(path)
+	if err != nil {
+		root = p.inMountinfo(path)
+	}
+	if !root {
+		return false
+	}
+	magic, err := p.fsMagic(path)
+	return err == nil && (magic == unix.TMPFS_MAGIC || magic == unix.RAMFS_MAGIC)
+}
+
+// statxMountRoot asks statx for STATX_ATTR_MOUNT_ROOT (Linux 5.8).
+func statxMountRoot(path string) (bool, error) {
+	var stx unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, path, unix.AT_SYMLINK_NOFOLLOW, unix.STATX_BASIC_STATS, &stx); err != nil {
+		return false, err
+	}
+	if stx.Attributes_mask&unix.STATX_ATTR_MOUNT_ROOT == 0 {
+		return false, fmt.Errorf("statx %s: kernel does not report STATX_ATTR_MOUNT_ROOT", path)
+	}
+	return stx.Attributes&unix.STATX_ATTR_MOUNT_ROOT != 0, nil
+}
+
+// inSelfMountinfo reports whether path is a mount point in
+// /proc/self/mountinfo. False when /proc is not mounted yet, which
+// mounts a tmpfs over /run as before keeping one was possible.
+func inSelfMountinfo(path string) bool {
+	b, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		// Field 5 is the mount point, with space, tab, newline and
+		// backslash octal-escaped; /run has none of them.
+		if f := strings.Fields(line); len(f) > 4 && f[4] == path {
+			return true
+		}
+	}
+	return false
 }
 
 // snapshotKernelCmdline copies /proc/cmdline into dest so services can

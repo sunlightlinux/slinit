@@ -43,6 +43,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -89,9 +90,28 @@ func main() {
 		return
 	}
 	if err := parentMain(); err != nil {
+		var st exitStatus
+		if errors.As(err, &st) {
+			os.Exit(int(st))
+		}
 		fmt.Fprintf(os.Stderr, "slinit-nspawn: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// exitStatus carries the container's exit status out of runParent,
+// so that its deferred registry cleanup runs before main exits with it.
+type exitStatus int
+
+func (e exitStatus) Error() string { return fmt.Sprintf("container exited %d", int(e)) }
+
+// exitCode is the status a shell would report for ee: the exit code,
+// or 128+signal for a container init killed by a signal.
+func exitCode(ee *exec.ExitError) int {
+	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return ee.ExitCode()
 }
 
 // parentMain parses flags, forks itself into new namespaces, writes
@@ -250,7 +270,7 @@ func runParent(p childPayload) error {
 	signal.Stop(sigCh)
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			os.Exit(ee.ExitCode())
+			return exitStatus(exitCode(ee))
 		}
 		return fmt.Errorf("wait: %w", err)
 	}
@@ -273,6 +293,15 @@ func childMain() error {
 	}
 	_ = name
 
+	// Nothing the launcher inherited may reach the container: a host
+	// file or directory fd would outlive pivot_root. Marked
+	// close-on-exec rather than closed, since the Go runtime holds fds
+	// of its own until the exec. Done here, while the host /proc the
+	// fallback reads is still our root.
+	if err := cloexecFrom(3); err != nil {
+		return fmt.Errorf("mark inherited fds close-on-exec: %w", err)
+	}
+
 	// UTS: hostname (no-op if empty).
 	if hostname != "" {
 		if err := unix.Sethostname([]byte(hostname)); err != nil {
@@ -291,25 +320,24 @@ func childMain() error {
 		return fmt.Errorf("bind rootfs onto itself: %w", err)
 	}
 
-	// pivot_root(newroot, put_old) with put_old under newroot so we
-	// can umount it once we're inside.
-	putOld := filepath.Join(rootfs, "mnt", "old-root")
-	if err := os.MkdirAll(putOld, 0o700); err != nil {
-		return fmt.Errorf("mkdir put_old: %w", err)
+	// pivot_root(".", ".") from inside the new root stacks the old
+	// root on top of it, and the umount below takes it off again. No
+	// put_old directory: creating one inside the image would follow
+	// the image's own symlinks (an absolute /mnt link) on the host.
+	if err := unix.Chdir(rootfs); err != nil {
+		return fmt.Errorf("chdir %s: %w", rootfs, err)
 	}
-	if err := unix.PivotRoot(rootfs, putOld); err != nil {
+	if err := unix.PivotRoot(".", "."); err != nil {
 		return fmt.Errorf("pivot_root: %w", err)
+	}
+	// Detach the old root. MNT_DETACH does a lazy unmount so any
+	// lingering handles from init setup don't block us.
+	if err := unix.Unmount(".", unix.MNT_DETACH); err != nil {
+		return fmt.Errorf("umount old root: %w", err)
 	}
 	if err := unix.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir /: %w", err)
 	}
-	// Detach the old root and drop the mount point. MNT_DETACH does
-	// a lazy unmount so any lingering handles from init setup don't
-	// block us.
-	if err := unix.Unmount("/mnt/old-root", unix.MNT_DETACH); err != nil {
-		return fmt.Errorf("umount old-root: %w", err)
-	}
-	_ = os.RemoveAll("/mnt/old-root")
 
 	// Standard virtual FS mounts.
 	type m struct {
@@ -350,6 +378,30 @@ func childMain() error {
 		// bubbling up so the operator gets a concrete pointer.
 		hint := diagnoseExecFailure(initBin, err)
 		return fmt.Errorf("exec %s: %w%s", initBin, err, hint)
+	}
+	return nil
+}
+
+// cloexecFrom sets FD_CLOEXEC on every fd >= first: close_range(2)
+// with CLOSE_RANGE_CLOEXEC (Linux 5.11), else one fcntl per entry in
+// /proc/self/fd.
+func cloexecFrom(first int) error {
+	if unix.CloseRange(uint(first), ^uint(0), unix.CLOSE_RANGE_CLOEXEC) == nil {
+		return nil
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		fd, err := strconv.Atoi(e.Name())
+		if err != nil || fd < first {
+			continue
+		}
+		// EBADF: the fd ReadDir itself used, already closed.
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil && err != unix.EBADF {
+			return fmt.Errorf("fd %d: %w", fd, err)
+		}
 	}
 	return nil
 }

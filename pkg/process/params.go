@@ -89,16 +89,22 @@ type ExecParams struct {
 	// Env holds additional environment variables (key=value).
 	Env []string
 
+	// InheritEnv, when set, decides which of slinit's own environment
+	// variables the child inherits (by name); Env is added after it.
+	// Nil inherits all of them. pass-environment and unset-environment
+	// set it, since they are documented to apply to the inherited
+	// environment as well.
+	InheritEnv func(name string) bool
+
 	// RunAsUID/RunAsGID specify credentials to run as (0 means no change).
 	RunAsUID uint32
 	RunAsGID uint32
 
 	// SupplementaryGIDs is the child's supplementary group set. Loaded
 	// from the service's supplementary-groups= directive after name
-	// resolution. Nil means "leave supplementary groups untouched"
-	// (the parent's set is inherited). An empty non-nil slice would
-	// clear the set, which we don't currently expose — treat nil and
-	// [] identically at the call site.
+	// resolution. Applied only with run-as; then nil and [] both mean
+	// "no supplementary groups" (the parent's set is cleared, by Go's
+	// syscall.Credential and by slinit-runner alike).
 	SupplementaryGIDs []uint32
 
 	// Signal to use for stopping the process (default SIGTERM).
@@ -347,6 +353,11 @@ type ExecParams struct {
 	// $CREDENTIALS_DIRECTORY env var; the caller does not pre-set it.
 	ServiceName string
 	Credentials []CredentialSource
+	// ReuseCredentials marks an auxiliary command (a stop-command) run
+	// beside the service's main process: when the credentials tmpfs is
+	// already mounted it is used as it is, neither remounted nor torn
+	// down if this start fails. The main start owns setup and cleanup.
+	ReuseCredentials bool
 
 	// File-descriptor-store handoff (#14). StoredFDs are prepended to
 	// the LISTEN_FDS sequence so a restart sees the previous run's

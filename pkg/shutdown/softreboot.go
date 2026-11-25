@@ -97,7 +97,15 @@ func SoftReboot(logger *logging.Logger, cal *logging.CatchAllLogger) error {
 	// only things meant to cross the boundary are handed over
 	// explicitly, like the fd store, or left on a filesystem, like the
 	// snapshot below.
+	// The main log reaches syslog through a queue; flush it while the
+	// syslog daemon is still alive — the sweep below kills it, and the
+	// exec would drop whatever is left. Bounded; a no-op without syslog.
+	logger.CloseSyslog()
 	KillAllProcesses(logger)
+
+	// The exec would drop the utmp clears still queued for the services
+	// just stopped, leaving their entries behind in the next generation.
+	flushQueuedUtmp(logger)
 
 	// Sync filesystems to flush any pending writes before re-exec.
 	syncFunc()

@@ -77,6 +77,7 @@ func TestReadActionWithTimeoutSkipsWhitespace(t *testing.T) {
 // exactly the failure mode reported the first time this was tested
 // against real QEMU. Regression guard.
 func TestReadActionWithTimeoutEOFIsRetry(t *testing.T) {
+	consoleEOFSpent.Store(false)
 	pr, pw := io.Pipe()
 	go func() {
 		// Close without writing → readers see io.EOF, which is
@@ -243,5 +244,94 @@ func TestActionStringRoundtrip(t *testing.T) {
 			t.Errorf("Actions %v and %v both stringify to %q", prev, a, s)
 		}
 		seen[s] = a
+	}
+}
+
+// A console that only ever returns EOF (hung up, or /dev/null bound on
+// /dev/console) had every EOF taken for Ctrl-D: retry, the boot failed
+// again, a new menu read EOF at once, and so on — about 700 KB of log
+// in 4 s and no auto-reboot. One EOF is still a Ctrl-D; another with no
+// byte read in between waits for the timeout. A byte, even the newline
+// after a Ctrl-D, makes the next EOF a Ctrl-D again.
+func TestReadActionWithTimeoutRepeatedEOFTimesOut(t *testing.T) {
+	consoleEOFSpent.Store(false)
+	t.Cleanup(func() { consoleEOFSpent.Store(false) })
+	var out bytes.Buffer
+	read := func(r io.Reader) (Action, time.Duration) {
+		start := time.Now()
+		a := readActionWithTimeout(r, newBox(&out), 400*time.Millisecond)
+		return a, time.Since(start)
+	}
+
+	if got, _ := read(strings.NewReader("")); got != ActionRetry {
+		t.Fatalf("first EOF: %v; want ActionRetry", got)
+	}
+	for i := 0; i < 2; i++ {
+		got, took := read(strings.NewReader(""))
+		if got != ActionTimeout || took < 350*time.Millisecond {
+			t.Fatalf("EOF again with no byte since: %v after %v; want ActionTimeout after the 400ms timeout", got, took)
+		}
+	}
+
+	// A key still answers the menu while EOFs are being ignored.
+	if got, _ := read(&eofThen{n: 3, rest: strings.NewReader("r")}); got != ActionReboot {
+		t.Fatalf("key after ignored EOFs: %v; want ActionReboot", got)
+	}
+	// That key re-arms Ctrl-D, as does a newline.
+	if got, _ := read(strings.NewReader("")); got != ActionRetry {
+		t.Fatalf("EOF after a key: %v; want ActionRetry", got)
+	}
+	if got, _ := read(strings.NewReader("\n")); got != ActionRetry {
+		t.Fatalf("newline then EOF: %v; want ActionRetry", got)
+	}
+}
+
+// eofThen returns io.EOF n times, then reads from rest.
+type eofThen struct {
+	n    int
+	rest io.Reader
+}
+
+func (r *eofThen) Read(p []byte) (int, error) {
+	if r.n > 0 {
+		r.n--
+		return 0, io.EOF
+	}
+	return r.rest.Read(p)
+}
+
+// A shutdown requested over the control socket while the menu waits
+// for a key used to be ignored until the menu timed out and rebooted.
+// Options.Interrupt ends the wait at once.
+func TestPresentInterrupt(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	interrupt := make(chan struct{}, 1)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		interrupt <- struct{}{}
+	}()
+	var out bytes.Buffer
+	start := time.Now()
+	got := present(pr, &out, Options{Timeout: 5 * time.Second, Interrupt: interrupt})
+	if got != ActionInterrupted {
+		t.Fatalf("got %v, want %v", got, ActionInterrupted)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("interrupt took %v to end the menu", d)
+	}
+}
+
+func TestPresentCollapseInterrupt(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	interrupt := make(chan struct{}, 1)
+	interrupt <- struct{}{}
+	var out bytes.Buffer
+	got := presentCollapseInterruptible(pr, &out, 5*time.Second, interrupt)
+	if got != CollapseInterrupted {
+		t.Fatalf("got %v, want %v", got, CollapseInterrupted)
 	}
 }

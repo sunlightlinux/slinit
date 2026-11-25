@@ -1,0 +1,273 @@
+package service
+
+import (
+	"fmt"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// Regression tests from the dependency-graph audit: each one reproduced a
+// divergence from dinit's state machine (or a bug dinit shares) before
+// its fix.
+
+// logSvcs logs the dependency-relevant state of each service.
+func logSvcs(t *testing.T, ss ...*testSvc) {
+	t.Helper()
+	for _, s := range ss {
+		r := s.Record()
+		t.Logf("%s: state=%v desired=%v requiredBy=%d explicit=%v reason=%v isFailed=%v",
+			s.Name(), s.State(), r.desired.Load(), r.requiredBy, r.startExplicit, r.stopReason, r.IsFailed())
+	}
+}
+
+// crashSvc does what ProcessService.handleTerminationLocked does when a
+// STARTED service's process dies on its own.
+func crashSvc(set *ServiceSet, s *testSvc) {
+	set.queueMu.Lock()
+	defer set.queueMu.Unlock()
+	if s.State() != StateStarted {
+		return
+	}
+	s.stopReason = ReasonTerminated
+	s.forceStop = true
+	s.doStop(false)
+	set.processQueuesLocked()
+}
+
+// A crash restart queues releases while transitions are pending. The
+// propagation queue must be drained completely before the next
+// transition (dinit process_queues), or a dependency reaches STOPPED
+// still counted required and the later release never uncounts it:
+// every service STOPPED, but CountActiveServices stays above 0 and
+// shutdown waits for the emergency timeout.
+func TestDepAudit_ActiveCountAfterCrashRestart(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "W", "B", "D")
+	a, w, b, d := sv[0], sv[1], sv[2], sv[3]
+	b.AddDep(a, DepRegular)
+	b.AddDep(w, DepWaitsFor)
+	d.AddDep(b, DepRegular)
+	d.SetAutoRestart(RestartAlways)
+	set.StartService(d)
+	set.StopService(w) // operator stops the waits-for dependency
+	crashSvc(set, b)   // B dies; B restarts, D (restart=always) with it
+	set.StopService(a)
+	set.StopAllServices(ShutdownHalt)
+	if n := set.CountActiveServices(); n != 0 {
+		logSvcs(t, a, w, b, d)
+		t.Errorf("all services stopped, but CountActiveServices=%d (shutdown waits for 0)", n)
+	}
+}
+
+// Random dependency graphs (every dependency type, some restart=always)
+// driven by random start/stop/release/force-stop/wake/restart/crash
+// operations, then a full shutdown: every service must end STOPPED,
+// unrequired, and uncounted. Deterministic seeds; a few seconds even
+// under -race.
+func TestDepAudit_RandomChurnShutsDownClean(t *testing.T) {
+	types := []DependencyType{DepRegular, DepWaitsFor, DepMilestone, DepAfter, DepBefore, DepPreparedBy}
+	seeds := 20000
+	if testing.Short() {
+		seeds = 2000
+	}
+	fails := 0
+	for seed := 0; seed < seeds && fails < 5; seed++ {
+		r := uint64(seed)*6364136223846793005 + 1442695040888963407
+		rnd := func(n int) int {
+			r = r*6364136223846793005 + 1442695040888963407
+			return int((r >> 33) % uint64(n))
+		}
+		set, _ := newTestSet()
+		sv := addTestSvcs(t, set, "s0", "s1", "s2", "s3", "s4")
+		var log []string
+		for i := 1; i < len(sv); i++ {
+			for j := 0; j < i; j++ {
+				if rnd(2) == 0 {
+					dt := types[rnd(len(types))]
+					sv[i].AddDep(sv[j], dt)
+					log = append(log, fmt.Sprintf("%s->%s:%v", sv[i].Name(), sv[j].Name(), dt))
+				}
+			}
+			if rnd(3) == 0 {
+				sv[i].SetAutoRestart(RestartAlways)
+				log = append(log, sv[i].Name()+":always")
+			}
+		}
+		for k := 0; k < 12; k++ {
+			s := sv[rnd(len(sv))]
+			op := rnd(8)
+			log = append(log, fmt.Sprintf("op%d(%s)", op, s.Name()))
+			switch op {
+			case 0, 6:
+				set.StartService(s)
+			case 1:
+				set.StopService(s)
+			case 2:
+				set.ReleaseService(s)
+			case 3:
+				set.ForceStopService(s)
+			case 4:
+				set.WakeService(s)
+			case 5:
+				set.queueMu.Lock()
+				s.Restart()
+				set.processQueuesLocked()
+				set.queueMu.Unlock()
+			case 7:
+				crashSvc(set, s)
+			}
+		}
+		set.StopAllServices(ShutdownHalt)
+		bad := set.CountActiveServices() != 0
+		for _, s := range sv {
+			if s.State() != StateStopped || s.Record().requiredBy != 0 {
+				bad = true
+			}
+		}
+		if bad {
+			fails++
+			t.Errorf("seed %d: %v (active=%d)", seed, log, set.CountActiveServices())
+			logSvcs(t, sv...)
+		}
+	}
+}
+
+// A dependent the operator had already stopped cleanly keeps its reason
+// when its dependency is force-stopped afterwards. stopDependents marked
+// every hard dependent DEPFAILED on a forced stop, STOPPED ones too, so
+// `slinitctl is-failed B` turned true after `--force stop A`. dinit
+// skips a STOPPED dependent outright.
+func TestDepAudit_ForceStopKeepsStoppedDependentReason(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B")
+	a, b := sv[0], sv[1]
+	b.AddDep(a, DepRegular)
+	set.StartService(a)
+	set.StartService(b)
+	set.StopService(b)
+	if b.IsFailed() {
+		t.Fatalf("setup: B failed after a plain stop (reason %v)", b.StopReason())
+	}
+	set.ForceStopService(a)
+	if b.IsFailed() || b.StopReason() != ReasonNormal {
+		logSvcs(t, a, b)
+		t.Errorf("cleanly stopped B now reports reason %v, is-failed=%v", b.StopReason(), b.IsFailed())
+	}
+}
+
+// The other half of dinit's is_dept_failure: a dependency forced down
+// because its start failed (job-timeout-sec) takes its dependents down
+// as DEPFAILED.
+func TestDepAudit_FailedForcedStopMarksDependentDepFailed(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B")
+	a, b := sv[0], sv[1]
+	b.AddDep(a, DepRegular)
+	a.autoStart = false
+	set.StartService(b)
+	if b.State() != StateStarting {
+		t.Fatalf("setup: B should wait for A, got %v", b.State())
+	}
+	// What the job-timeout timer does.
+	set.queueMu.Lock()
+	a.stopReason = ReasonTimedOut
+	a.startFailed = true
+	a.UnrecoverableStop()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	if b.State() != StateStopped || b.StopReason() != ReasonDepFailed {
+		logSvcs(t, a, b)
+		t.Errorf("B: state %v reason %v; want STOPPED dependency-failed", b.State(), b.StopReason())
+	}
+}
+
+// `slinitctl rm-dep B A` while B is STARTING and waiting for A: the
+// link B was waiting on is gone, so B goes on with the dependencies it
+// still has. B stayed STARTING for good (dinit's rm_dep shares this).
+func TestDepAudit_RmDepWhileWaitingOnIt(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "A", "B")
+	a, b := sv[0], sv[1]
+	b.AddDep(a, DepRegular)
+	a.autoStart = false
+	set.StartService(b)
+	if b.State() != StateStarting {
+		t.Fatalf("setup: B should wait for A, got %v", b.State())
+	}
+	set.RemoveDependency(b, a, DepRegular)
+	if b.State() != StateStarted {
+		logSvcs(t, a, b)
+		t.Errorf("B stuck %v after its only awaited dependency was removed", b.State())
+	}
+	// A's start is still in flight (and not interruptible), but no
+	// longer wanted.
+	if a.desired.Load() != StateStopped || a.Record().requiredBy != 0 {
+		t.Errorf("A, no longer required: desired %v requiredBy %d", a.desired.Load(), a.Record().requiredBy)
+	}
+}
+
+// B waits-for W; the operator stops W (B loses the link and keeps
+// running, as slinitctl(8) says), then B's process dies and B restarts.
+// The restart waited on the STOPPED W, which nothing would start: B
+// stayed STARTING for good. dinit's start_check_dependencies has the
+// same wait.
+func TestDepAudit_RestartAfterSoftDepStopped(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "W", "B")
+	w, b := sv[0], sv[1]
+	b.AddDep(w, DepWaitsFor)
+	b.SetAutoRestart(RestartAlways)
+	set.StartService(b)
+	set.StopService(w)
+	crashSvc(set, b)
+	if b.State() != StateStarted {
+		logSvcs(t, w, b)
+		t.Errorf("B %v after its auto-restart; waits-for W is STOPPED and nothing requires it", b.State())
+	}
+	if w.State() != StateStopped {
+		t.Errorf("the restart of B brought back W, which the operator stopped: %v", w.State())
+	}
+}
+
+func TestDepAudit_RestartAfterSoftDepStoppedProcess(t *testing.T) {
+	set, _ := newTestSet()
+	w := NewInternalService(set, "W")
+	b := NewProcessService(set, "B")
+	b.SetCommand([]string{"/bin/sleep", "60"})
+	b.SetAutoRestart(RestartAlways)
+	set.AddService(w)
+	set.AddService(b)
+	b.AddDep(w, DepWaitsFor)
+	t.Cleanup(func() { set.StopService(b); waitState(t, b, StateStopped, 3*time.Second) })
+	set.StartService(b)
+	p := waitForNewPID(set, b, 0, 2*time.Second)
+	set.StopService(w)
+	if err := syscall.Kill(p, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if np := waitForNewPID(set, b, p, 3*time.Second); np == 0 || np == p {
+		t.Errorf("B did not come back after SIGKILL: state %v", b.State())
+	}
+}
+
+// The guard above must not touch a fresh start: B still waits for a
+// waits-for dependency that is slow to start.
+func TestDepAudit_FreshStartWaitsForSoftDep(t *testing.T) {
+	set, _ := newTestSet()
+	sv := addTestSvcs(t, set, "W", "B")
+	w, b := sv[0], sv[1]
+	b.AddDep(w, DepWaitsFor)
+	w.autoStart = false
+	set.StartService(b)
+	if b.State() != StateStarting || w.State() != StateStarting {
+		t.Fatalf("B should start W and wait for it: B=%v W=%v", b.State(), w.State())
+	}
+	set.queueMu.Lock()
+	w.Started()
+	set.processQueuesLocked()
+	set.queueMu.Unlock()
+	if b.State() != StateStarted {
+		t.Errorf("B %v after W started", b.State())
+	}
+}

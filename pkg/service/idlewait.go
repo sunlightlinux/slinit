@@ -30,25 +30,37 @@ func (s *ProcessService) idleWaitTimer(launch func()) bool {
 		s.serviceName)
 
 	deadline := time.Now().Add(idleMaxWait)
-	var poll func()
-	poll = func() {
-		s.services.queueMu.Lock()
-		defer s.services.queueMu.Unlock()
-		// A stop may have moved the service on while we waited: only a
-		// service still STARTING and still waiting is ours to launch.
-		if s.idleT == nil || s.state.Load() != StateStarting {
+	// Each poll is armed with its own timer and acts only while that
+	// timer is still s.idleT. A poll that fired while queueMu was held
+	// across a stop and a new start belongs to the old wait: s.idleT is
+	// then nil or the new wait's timer, and launching would skip the new
+	// wait and fork a second process when it ends.
+	var arm func()
+	arm = func() {
+		var t *time.Timer
+		t = time.AfterFunc(idlePoll, func() {
+			s.services.queueMu.Lock()
+			defer s.services.queueMu.Unlock()
+			if s.idleT != t {
+				return
+			}
+			// A stop may have moved the service on while we waited: only
+			// a service still STARTING is ours to launch.
+			if s.state.Load() != StateStarting {
+				s.idleT = nil
+				return
+			}
+			if s.services.othersStarting(s) && time.Now().Before(deadline) {
+				arm()
+				return
+			}
 			s.idleT = nil
-			return
-		}
-		if s.services.othersStarting(s) && time.Now().Before(deadline) {
-			s.idleT = time.AfterFunc(idlePoll, poll)
-			return
-		}
-		s.idleT = nil
-		launch()
-		s.services.processQueuesLocked()
+			launch()
+			s.services.processQueuesLocked()
+		})
+		s.idleT = t
 	}
-	s.idleT = time.AfterFunc(idlePoll, poll)
+	arm()
 	return true
 }
 

@@ -31,9 +31,12 @@ rm -f /etc/slinit.d/test-sif "$OUT"
 
 # A missing file must fail the start. This is the half that keeps a
 # misconfigured service from looking healthy.
+#
+# The command must outlive the check: /bin/cat on the default /dev/null
+# stdin exits at once, so it was STOPPED with or without the directive.
 cat > /etc/slinit.d/test-sif-missing <<'EOF'
 type = process
-command = /bin/cat
+command = /bin/sleep 600
 standard-input-file = /run/definitely-absent-sif
 restart = no
 EOF
@@ -43,6 +46,7 @@ _state=$(slinitctl --system status test-sif-missing 2>/dev/null | awk '/^ *State
 echo "INFO: state with a missing input file: $_state"
 assert_eq "$_state" "STOPPED" "a missing standard-input-file failed the start"
 
+slinitctl --system --ignore-unstarted stop test-sif-missing 2>/dev/null
 slinitctl --system unload test-sif-missing 2>/dev/null
 rm -f /etc/slinit.d/test-sif-missing "$IN"
 

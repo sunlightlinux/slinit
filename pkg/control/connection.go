@@ -72,6 +72,19 @@ type Connection struct {
 	// this is defense-in-depth against perm/race mistakes and against
 	// fds passed in by less trustworthy parents.
 	peerAuthorized bool
+
+	// handlesMu guards handles and revHandles. ServiceEvent reads them
+	// from whatever goroutine drives the state machine, close() may run
+	// from Server.Stop, and another connection's reload swaps a
+	// replaced service in them (swapService), so every access locks.
+	// Never hold it across AddListener/RemoveListener or a write: the
+	// state machine calls ServiceEvent with its own locks held.
+	handlesMu sync.RWMutex
+	// closing is set, under handlesMu, when close() starts. After it,
+	// nothing subscribes this connection to a service again: close()
+	// has taken its snapshot of the services to unsubscribe from, so a
+	// listener added later would outlive the connection.
+	closing bool
 }
 
 func newConnection(server *Server, conn net.Conn) *Connection {
@@ -142,7 +155,14 @@ func (c *Connection) close() {
 		c.writeMu.Unlock()
 		// Unregister as listener from all unique services using revHandles
 		// (revHandles has one entry per unique service, no dedup needed)
+		c.handlesMu.Lock()
+		c.closing = true
+		svcs := make([]service.Service, 0, len(c.revHandles))
 		for svc := range c.revHandles {
+			svcs = append(svcs, svc)
+		}
+		c.handlesMu.Unlock()
+		for _, svc := range svcs {
 			svc.Record().RemoveListener(c)
 		}
 		// Unregister env listener
@@ -154,26 +174,79 @@ func (c *Connection) close() {
 }
 
 func (c *Connection) allocHandle(svc service.Service) uint32 {
+	c.handlesMu.Lock()
 	// O(1) check if this service already has a handle
 	if h, ok := c.revHandles[svc]; ok {
+		c.handlesMu.Unlock()
 		return h
 	}
 	h := c.nextHandle
 	c.nextHandle++
 	c.handles[h] = svc
 	c.revHandles[svc] = h
+	closing := c.closing
+	c.handlesMu.Unlock()
 	// Auto-subscribe as listener for service events
-	svc.Record().AddListener(c)
+	if !closing {
+		c.subscribe(svc)
+	}
 	return h
 }
 
 func (c *Connection) getService(handle uint32) service.Service {
+	c.handlesMu.RLock()
+	defer c.handlesMu.RUnlock()
 	return c.handles[handle]
+}
+
+// swapService points every handle this connection holds for old at
+// new, and moves its subscription with them. A reload that changes a
+// service's type replaces the object in the set; a handle left on the
+// old one would act on a service no longer in the set and never see
+// another event.
+func (c *Connection) swapService(old, new service.Service) {
+	c.handlesMu.Lock()
+	h, held := c.revHandles[old]
+	held = held && !c.closing
+	if held {
+		for hh, s := range c.handles {
+			if s == old {
+				c.handles[hh] = new
+			}
+		}
+		delete(c.revHandles, old)
+		c.revHandles[new] = h
+	}
+	c.handlesMu.Unlock()
+	if held {
+		old.Record().RemoveListener(c)
+		c.subscribe(new)
+	}
+}
+
+// subscribe adds c as a listener of svc. close() may run between the
+// caller's check of c.closing and this call and take its snapshot of the
+// services to unsubscribe from without svc; so look again after adding,
+// and undo the subscription if close() has started.
+func (c *Connection) subscribe(svc service.Service) {
+	svc.Record().AddListener(c)
+	if c.isClosing() {
+		svc.Record().RemoveListener(c)
+	}
+}
+
+// isClosing reports whether close() has started.
+func (c *Connection) isClosing() bool {
+	c.handlesMu.RLock()
+	defer c.handlesMu.RUnlock()
+	return c.closing
 }
 
 // findHandle returns the handle for a given service, or 0 and false if not found.
 func (c *Connection) findHandle(svc service.Service) (uint32, bool) {
+	c.handlesMu.RLock()
 	h, ok := c.revHandles[svc]
+	c.handlesMu.RUnlock()
 	return h, ok
 }
 
@@ -198,6 +271,23 @@ func (c *Connection) EnvEvent(varString string, override bool) {
 	c.writePacket(InfoEnvEvent, payload) //nolint: errcheck
 }
 
+// readIdleTimeout is how long serve waits for a packet before looking
+// at the server's context again. A variable for tests.
+var readIdleTimeout = 30 * time.Second
+
+// countingReader counts the bytes read through it, so serve can tell a
+// timeout between packets from one in the middle of a packet.
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.n += n
+	return n, err
+}
+
 func (c *Connection) serve() {
 	defer c.close()
 
@@ -211,13 +301,20 @@ func (c *Connection) serve() {
 		// Set a read deadline so we periodically re-check ctx.Done
 		// instead of blocking indefinitely on a dead connection.
 		if tc, ok := c.conn.(interface{ SetReadDeadline(time.Time) error }); ok {
-			tc.SetReadDeadline(time.Now().Add(30 * time.Second))
+			tc.SetReadDeadline(time.Now().Add(readIdleTimeout))
 		}
 
-		cmd, payload, err := ReadPacket(c.conn)
+		cr := countingReader{r: c.conn}
+		cmd, payload, err := ReadPacket(&cr)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // deadline expired, loop back to check ctx
+			// A timeout between packets is idleness: loop back to check
+			// ctx. A timeout after part of a packet was read is not —
+			// the bytes consumed are gone, and carrying on would parse
+			// the rest of that packet as a new one (a wall-notice
+			// payload holding a shutdown command would run it). The
+			// stream can no longer be framed, so the connection ends.
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() && cr.n == 0 {
+				continue
 			}
 			if err != io.EOF {
 				c.server.logger.Debug("Control connection read error: %v", err)
@@ -394,6 +491,11 @@ func (c *Connection) handleSwitchRoot(payload []byte) error {
 		return c.writePacket(RplyBadReq,
 			[]byte("switch-root not supported (slinit not running as PID 1 or hook not wired)"))
 	}
+	if c.server.SwitchRootReady != nil {
+		if err := c.server.SwitchRootReady(); err != nil {
+			return c.writePacket(RplyBadReq, []byte(err.Error()))
+		}
+	}
 	if err := c.writePacket(RplyACK, nil); err != nil {
 		return err
 	}
@@ -486,7 +588,7 @@ func (c *Connection) handleResetFailed(payload []byte) error {
 	if len(payload) == 0 {
 		// --all: iterate every loaded service and clear the flag.
 		for _, svc := range c.server.services.ListServices() {
-			svc.Record().ResetFailed()
+			c.server.services.ResetFailedService(svc)
 		}
 		return c.writePacket(RplyACK, nil)
 	}
@@ -498,7 +600,7 @@ func (c *Connection) handleResetFailed(payload []byte) error {
 	if svc == nil {
 		return c.writePacket(RplyBadReq, nil)
 	}
-	svc.Record().ResetFailed()
+	c.server.services.ResetFailedService(svc)
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -739,8 +841,8 @@ func (c *Connection) handleStopService(payload []byte) error {
 	// a boot failure.
 	c.server.services.MarkOperatorStop()
 
-	if flags&StopFlagRestarting != 0 {
-		svc.Record().MarkRestarting()
+	if flags&StopFlagRestarting != 0 || restart {
+		c.server.services.MarkRestartingService(svc)
 	}
 
 	if force {
@@ -749,7 +851,7 @@ func (c *Connection) handleStopService(payload []byte) error {
 		c.server.services.StopService(svc)
 	}
 	if pin {
-		svc.PinStop()
+		c.server.services.PinStopService(svc)
 		if err := c.server.Pins.Set(svc.Name(), persist.IntentPinnedStopped); err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: %v\n", err)
 		}
@@ -791,8 +893,8 @@ func (c *Connection) handleReleaseService(payload []byte) error {
 		return err
 	}
 
-	svc.Stop(false) // release: remove explicit activation, stop only if unrequired
-	c.server.services.ProcessQueues()
+	// release: remove explicit activation, stop only if unrequired
+	c.server.services.ReleaseService(svc)
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -854,6 +956,9 @@ func (c *Connection) handleShutdown(payload []byte) error {
 	}
 
 	shutType := service.ShutdownType(payload[0])
+	if !validShutdownType(shutType) {
+		return c.writePacket(RplyBadReq, nil)
+	}
 	// Optional flags byte: absent from every pre-flags client, and from
 	// the SysV shims, both of which mean the graceful teardown.
 	var flags uint8
@@ -864,6 +969,14 @@ func (c *Connection) handleShutdown(payload []byte) error {
 		c.server.ShutdownFunc(shutType, flags)
 	}
 	return c.writePacket(RplyACK, nil)
+}
+
+// validShutdownType reports whether st is one a client may ask for:
+// remain through kexec. None is "no shutdown requested", and a byte
+// past kexec names nothing; either would reach PID 1's shutdown path
+// and be taken there as a halt.
+func validShutdownType(st service.ShutdownType) bool {
+	return st >= service.ShutdownRemain && st <= service.ShutdownKexec
 }
 
 // handleScheduleShutdown schedules a delayed shutdown.
@@ -930,10 +1043,12 @@ func (c *Connection) handleCloseHandle(payload []byte) error {
 		return c.writePacket(RplyBadReq, nil)
 	}
 
+	c.handlesMu.Lock()
 	svc := c.handles[handle]
 	delete(c.handles, handle)
 
 	// Only remove listener if no other handle references this service
+	unlisten := false
 	if svc != nil {
 		if rh, ok := c.revHandles[svc]; ok && rh == handle {
 			// The reverse map pointed to this handle; find another or remove
@@ -947,10 +1062,14 @@ func (c *Connection) handleCloseHandle(payload []byte) error {
 			}
 			if !found {
 				delete(c.revHandles, svc)
-				svc.Record().RemoveListener(c)
+				unlisten = true
 			}
 		}
 		// else: revHandles points to a different handle for this service, still referenced
+	}
+	c.handlesMu.Unlock()
+	if unlisten {
+		svc.Record().RemoveListener(c)
 	}
 	return c.writePacket(RplyACK, nil)
 }
@@ -975,8 +1094,7 @@ func (c *Connection) handleSetTrigger(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	triggered.SetTrigger(triggerVal)
-	c.server.services.ProcessQueues()
+	c.server.services.SetTriggerService(triggered, triggerVal)
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -1112,8 +1230,7 @@ func (c *Connection) handleOnceService(payload []byte) error {
 		return c.writePacket(RplyShuttingDown, nil)
 	}
 	// Start once: set auto-restart to never, then start
-	svc.Record().SetAutoRestart(service.RestartNever)
-	c.server.services.StartService(svc)
+	c.server.services.StartOnceService(svc)
 	return c.writePacket(RplyACK, nil)
 }
 
@@ -1204,7 +1321,12 @@ func (c *Connection) handleCatLog(payload []byte) error {
 		} else {
 			data = logBuf.GetBuffer()
 		}
-		return c.writePacket(RplySvcLog, EncodeSvcLog(data))
+		// log-buffer-size has no upper bound, and the reply is one
+		// packet: send the newest output that fits. Anything older is
+		// dropped — with --clear the client asked for that — whereas
+		// an oversized reply failed to send at all, after --clear had
+		// already emptied the buffer.
+		return c.writePacket(RplySvcLog, EncodeSvcLog(lastBytes(data, maxSvcLogData)))
 
 	case service.LogToFile:
 		// --clear has no sensible semantic for a tail read; refuse.
@@ -1215,15 +1337,28 @@ func (c *Connection) handleCatLog(payload []byte) error {
 		if path == "" {
 			return c.writePacket(RplyNAK, nil)
 		}
-		data, err := readLogFileTail(path, 64*1024)
+		data, err := readLogFileTail(path, maxSvcLogData)
 		if err != nil {
 			return c.writePacket(RplyNAK, nil)
 		}
-		return c.writePacket(RplySvcLog, EncodeSvcLog(data))
+		// The file may have grown between Stat and the read.
+		return c.writePacket(RplySvcLog, EncodeSvcLog(lastBytes(data, maxSvcLogData)))
 
 	default:
 		return c.writePacket(RplyNAK, nil)
 	}
+}
+
+// maxSvcLogData is the most log a RplySvcLog can carry: one packet,
+// less EncodeSvcLog's flags byte and length.
+const maxSvcLogData = MaxPayloadSize - 5
+
+// lastBytes returns the last n bytes of b, or all of b if shorter.
+func lastBytes(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[len(b)-n:]
+	}
+	return b
 }
 
 // readLogFileTail returns the last `max` bytes of a file (or whole file if smaller).
@@ -1300,9 +1435,10 @@ func (c *Connection) handleReloadService(payload []byte) error {
 		return c.writePacket(RplyNAK, nil)
 	}
 
-	// If service was replaced (type change), update handle mapping
+	// If service was replaced (type change), move every connection's
+	// handles — this one's and any other client's — to the new object.
 	if newSvc != svc {
-		c.handles[handle] = newSvc
+		c.server.replaceService(svc, newSvc)
 	}
 
 	c.server.services.ProcessQueues()
@@ -1415,13 +1551,9 @@ func (c *Connection) handleReloadAll() error {
 		ok++
 
 		if newSvc != svc {
-			// Type change: swap any of THIS connection's handles
-			// pointing at the old object.
-			if h, found := c.revHandles[svc]; found {
-				delete(c.revHandles, svc)
-				c.handles[h] = newSvc
-				c.revHandles[newSvc] = h
-			}
+			// Type change: move every connection's handles pointing
+			// at the old object.
+			c.server.replaceService(svc, newSvc)
 		}
 	}
 
@@ -1451,14 +1583,25 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 
 	// Count how many handles in this connection point to the service
 	handleCount := 0
+	c.handlesMu.RLock()
 	for _, s := range c.handles {
 		if s == svc {
 			handleCount++
 		}
 	}
+	c.handlesMu.RUnlock()
 
 	// Check if service has only ordering dependents (no active non-ordering refs)
 	if !svc.Record().HasLoneRef(handleCount) {
+		return c.writePacket(RplyNAK, nil)
+	}
+
+	// Nor may another client hold a handle to it, as in dinit, where
+	// has_lone_ref requires this connection to be the only listener.
+	// Unloaded anyway, that client's handle kept the detached object:
+	// a start through it ran a service that was in no list, could not
+	// be found, and was not stopped at shutdown.
+	if c.server.heldElsewhere(c, svc) {
 		return c.writePacket(RplyNAK, nil)
 	}
 
@@ -1469,12 +1612,14 @@ func (c *Connection) handleUnloadService(payload []byte) error {
 	c.server.services.UnloadService(svc)
 
 	// Remove all handles pointing to this service
+	c.handlesMu.Lock()
 	for h, s := range c.handles {
 		if s == svc {
 			delete(c.handles, h)
 		}
 	}
 	delete(c.revHandles, svc)
+	c.handlesMu.Unlock()
 
 	return c.writePacket(RplyACK, nil)
 }
@@ -2219,11 +2364,13 @@ func (c *Connection) handleRunAction(payload []byte) error {
 	if execErr != nil {
 		// Return NAK with the error message + any partial output
 		msg := fmt.Sprintf("action '%s' failed: %v\n%s", actionName, execErr, string(output))
-		return c.writePacket(RplyNAK, []byte(msg))
+		return c.writePacket(RplyNAK, lastBytes([]byte(msg), MaxPayloadSize))
 	}
 
 	// Return the output (may be empty for actions that produce none)
-	return c.writePacket(RplyActionOutput, output)
+	// One packet: the end of the output, where a failure is usually
+	// reported, rather than no reply at all.
+	return c.writePacket(RplyActionOutput, lastBytes(output, MaxPayloadSize))
 }
 
 // handleListActions returns the list of available extra-command actions.

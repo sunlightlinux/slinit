@@ -279,7 +279,7 @@ func main() {
 	flag.DurationVar(&emergencyTimeout, "emergency-timeout", 0,
 		"maximum time to wait for services to stop during shutdown before force-exit (default 90s; workloads with heavy docker/systemd-style teardown may need 3-5m)")
 
-	flag.Parse()
+	parseArgs(flag.CommandLine, os.Args[1:], os.Getpid() == 1)
 
 	if showVersion {
 		detected := platform.Detect()
@@ -343,7 +343,11 @@ func main() {
 	// is idempotent, so InitPID1's own call below is a no-op.
 	var cal *logging.CatchAllLogger
 	if (isPID1 || containerMode) && !noCatchAll {
-		if isPID1 {
+		// Not in container mode, where slinit is PID 1 of its
+		// namespace too: /run is the runtime's (Docker's and
+		// Kubernetes's /run/secrets, podman's /run/.containerenv),
+		// and fd 1/2 are the runtime's log stream, not a console.
+		if isPID1 && !containerMode {
 			if rm, err := shutdown.ParseRunMode(runMode); err == nil {
 				shutdown.SetRunMode(rm)
 			}
@@ -568,10 +572,29 @@ func main() {
 	// keeps working either way. Started before service loading so
 	// early-boot kernel messages land in the same journal stream
 	// operators query via `slinit-journalctl -k`.
-	if kmsgReader, err := journal.NewKmsgReader(journalEmitter); err == nil {
-		go kmsgReader.Run(context.Background())
-		defer kmsgReader.Stop()
+	//
+	// /dev may not be mounted yet: InitPID1 mounts devtmpfs further down,
+	// and a boot straight from an initramfs has no /dev/kmsg before that.
+	// The open then failed and the reader never ran for the whole boot,
+	// so `-k` was empty. startKmsg is tried here and again after
+	// InitPID1/InitContainer; the reader replays the kernel ring buffer
+	// from its start, so the later start loses nothing.
+	var kmsgReader *journal.KmsgReader
+	startKmsg := func() {
+		if kmsgReader != nil {
+			return
+		}
+		if r, err := journal.NewKmsgReader(journalEmitter); err == nil {
+			kmsgReader = r
+			go r.Run(context.Background())
+		}
 	}
+	startKmsg()
+	defer func() {
+		if kmsgReader != nil {
+			kmsgReader.Stop()
+		}
+	}()
 
 	// Redirect log output to file (--log-file/-l).
 	//
@@ -604,6 +627,7 @@ func main() {
 			logger.Debug("syslog not available: %v", err)
 		} else {
 			defer logger.CloseSyslog()
+			exitSyslog = logger
 		}
 	}
 
@@ -611,7 +635,9 @@ func main() {
 	// --log-file redirects the primary output to a file.
 	// Inspired by s6-linux-init-maker's -1 flag.
 	if consoleDup {
-		cons, err := os.OpenFile("/dev/console", os.O_WRONLY, 0)
+		// OpenConsole, not os.OpenFile: the copy is written under the
+		// scheduling lock, and a stopped console must not stop PID 1.
+		cons, err := logging.OpenConsole("/dev/console")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "slinit: --console-dup: %v (ignored)\n", err)
 		} else {
@@ -732,11 +758,13 @@ func main() {
 		if err := shutdown.InitContainer(logger); err != nil {
 			logger.Error("Container initialization warning: %v", err)
 		}
+		startKmsg()
 	} else if isPID1 {
 		logger.Notice("slinit starting as PID 1 (init system mode)")
 		if err := shutdown.InitPID1(logger); err != nil {
 			logger.Error("PID 1 initialization warning: %v", err)
 		}
+		startKmsg() // /dev is mounted now
 		// finit-parity: bring loopback up at very early boot so
 		// daemons that bind to 127.0.0.1 (postgresql / redis /
 		// dbus on systems configured to use the unix-abstract
@@ -976,6 +1004,7 @@ func main() {
 	serviceSet.OnUtmpClear = func(id, line string) {
 		utmp.ClearEntry(id, line)
 	}
+	shutdown.SetUtmpFlusher(serviceSet.FlushUtmp)
 	serviceSet.OnRWReady = func() {
 		if utmp.LogBoot() {
 			logger.Info("Boot time logged to utmp/wtmp")
@@ -1183,6 +1212,13 @@ func main() {
 			}
 			serviceSet.SetReadyFD(readyFD)
 			readySock := sock // capture resolved socket path
+			// Chained with the system-up wrapper above (watchdog,
+			// console mute, hooks, ifup, rc.local), which replacing
+			// it would switch off. The notification goes first: dinit
+			// reports readiness when boot is STARTED, and the hooks,
+			// ifup and rc.local can take minutes; the control socket
+			// already listens by now.
+			prev := serviceSet.OnBootReady
 			serviceSet.OnBootReady = func() {
 				f := os.NewFile(uintptr(readyFD), "ready-fd")
 				// Write socket path + null terminator (dinit compat)
@@ -1191,6 +1227,9 @@ func main() {
 				}
 				f.Close()
 				logger.Info("Readiness notification sent on fd %d (socket: %s)", readyFD, readySock)
+				if prev != nil {
+					prev()
+				}
 			}
 		}
 	}
@@ -1372,7 +1411,7 @@ func main() {
 				return
 			}
 			s := svc
-			if err := mountWatcher.Add(mp, func() {
+			if err := mountWatcher.Add(mp, s.Name(), func() {
 				// On a goroutine for the same reason path activation
 				// does it: Add fires synchronously for an already
 				// mounted path, from inside OnServiceLoaded, which the
@@ -1394,7 +1433,7 @@ func main() {
 				prevUnloaded(svc)
 			}
 			if mp := svc.Record().StartOnMount(); mp != "" {
-				mountWatcher.Remove(mp)
+				mountWatcher.Remove(mp, svc.Name())
 			}
 		}
 	}
@@ -1424,17 +1463,22 @@ func main() {
 				}
 			},
 			Disappeared: func(name string) {
-				svc := serviceSet.FindService(name, false)
-				if svc == nil {
-					return
+				// The control server is created further down; until
+				// it exists no client can hold a handle.
+				held := func(svc service.Service) bool {
+					srv := watcherCtrlServer.Load()
+					return srv != nil && srv.HeldByClient(svc)
 				}
-				if svc.Record().State() != service.StateStopped {
+				switch unloadDisappeared(serviceSet, name, held) {
+				case dirUnloadRunning:
 					logger.Warn("svcdirwatch: '%s' file removed but service is running; leaving loaded",
 						name)
-					return
+				case dirUnloadReferenced:
+					logger.Warn("svcdirwatch: '%s' file removed but a dependent or client still holds it; leaving loaded",
+						name)
+				case dirUnloadDone:
+					logger.Info("svcdirwatch: '%s' disappeared, unloaded", name)
 				}
-				logger.Info("svcdirwatch: '%s' disappeared, unloading", name)
-				serviceSet.UnloadService(svc)
 			},
 			Modified: func(name string) {
 				logger.Info("svcdirwatch: '%s' modified (run `slinitctl reload %s` to apply)",
@@ -1592,13 +1636,140 @@ func main() {
 		logger.Notice("confirm-spawn: enabled — will prompt [y/n] before each service start")
 	}
 
+	// Start control socket server. Before the boot services, as dinit
+	// does: --ready-fd reports the socket as soon as the boot service
+	// is up, which an internal one is at once, and a boot service may
+	// use slinitctl itself.
+	ctx := context.Background()
+	ctrlServer := control.NewServer(serviceSet, sock, logger)
+
+	// Wire pin-intent persistence when the operator opted in with
+	// --persist-intent. Empty dir means "disabled" and every hook
+	// site short-circuits — no runtime cost when the feature isn't
+	// in use.
+	pinStore := persist.NewPinStore(persistIntentDir)
+	ctrlServer.Pins = pinStore
+	watcherCtrlServer.Store(ctrlServer)
+
+	// The event loop a shutdown is handed to is set up after the boot
+	// services are started. A request arriving before that is held
+	// and handed over then, rather than acknowledged and dropped. Every
+	// hook the server calls is set here, before Start, and not changed
+	// afterwards: its connection goroutines read them without a lock.
+	shutdownGate := newShutdownGate(logger.Warn)
+	ctrlServer.ShutdownFunc = shutdownGate.Request
+	// The boot-failure menus run with no event loop and no services
+	// up: a request held while one is up is carried out here, as the
+	// menu's own reboot / poweroff choices are.
+	runHeldShutdown := func() {
+		st, flags, ok := shutdownGate.Take()
+		if !ok {
+			return
+		}
+		if st == service.ShutdownRemain {
+			// Nothing is running to stop, and handlePID1Shutdown would
+			// park PID 1 for good.
+			logger.Warn("Shutdown (remain) requested with no event loop running; ignored")
+			return
+		}
+		logger.Notice("Carrying out the shutdown (%s) requested over the control socket", st)
+		closeWatchdog(wd, logger)
+		switch routeShutdown(st, flags, isPID1, containerMode) {
+		case routeImmediate:
+			shutdown.ExecuteImmediate(st, logger)
+		case routeForce:
+			shutdown.ExecuteForce(st, logger)
+		default:
+			handlePID1Shutdown(st, cal, logger)
+		}
+	}
+	ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool, msg string) {
+		if cancelled {
+			shutdown.WallShutdownCancelled(st, logger)
+			return
+		}
+		shutdown.WallShutdownNoticeMsg(st, delay, msg, logger)
+	}
+	ctrlServer.WallReminderFunc = func(st service.ShutdownType, remaining time.Duration, msg string) {
+		shutdown.WallShutdownReminder(st, remaining, msg, logger)
+	}
+	ctrlServer.WallNoticeFunc = func(msg string) {
+		shutdown.Wall(msg, logger)
+	}
+	// A scheduled shutdown refuses new logins in its last five
+	// minutes through pam_nologin. Only the system manager owns
+	// /run/nologin; a user instance must not lock out the machine.
+	if isPID1 || systemMode {
+		ctrlServer.NologinPath = "/run/nologin"
+	}
+	// finit-parity: suspend hook wired unconditionally — writing
+	// /sys/power/state does not require PID 1 (a user manager
+	// on a laptop can suspend just as well) and the kernel
+	// rejects the write when the caller lacks CAP_SYS_ADMIN.
+	ctrlServer.SuspendFunc = func(state string) error {
+		logger.Notice("suspend: writing %q to /sys/power/state", state)
+		return shutdown.Suspend(state, logger)
+	}
+
+	// switch-root wire-up. Only enabled when slinit runs as PID 1
+	// (the switchroot package rejects non-PID-1 callers anyway,
+	// but leaving the hook nil here surfaces a cleaner "not
+	// supported" reply to the client instead of walking to the
+	// PID check). finit-parity: initctl switch_root NEWROOT [INIT].
+	if isPID1 {
+		// The switch stops the services through the event loop, which
+		// does not exist yet while the boot services are being started
+		// nor once it has returned (a boot-failure menu).
+		ctrlServer.SwitchRootReady = func() error {
+			if !shutdownGate.Ready() {
+				return errors.New("switch-root: not ready, no event loop is running (boot still starting, or boot failed)")
+			}
+			return nil
+		}
+		ctrlServer.SwitchRootFunc = func(newroot, newinit string) error {
+			resolved, err := switchroot.Precheck(newroot, newinit)
+			if err != nil {
+				logger.Error("switch-root: precheck: %v", err)
+				return err
+			}
+			return switchroot.Do(newroot, resolved, logger, func() {
+				// Stop-services hook: reuse the existing shutdown
+				// path's service teardown so the ordering is
+				// identical to a normal shutdown, minus the
+				// reboot(2) call. ShutdownRemain stops every
+				// service and clears the state machine without
+				// triggering a reboot.
+				shutdownGate.Request(service.ShutdownRemain, 0)
+				// Give the state machine a beat to walk the
+				// stop cascade. 3s is far past a typical stop
+				// (services stop in ms) but a hard upper bound
+				// so a wedged service doesn't stall the switch.
+				time.Sleep(3 * time.Second)
+			})
+		}
+	}
+	if err := ctrlServer.Start(ctx); err != nil {
+		logger.Error("Failed to start control socket: %v", err)
+		// Non-fatal: continue without control socket
+	} else {
+		defer ctrlServer.Stop()
+		exitCtrlServer = ctrlServer
+	}
+
+	// Wire pass-cs-fd: when a service creates a socketpair, the server end
+	// becomes a control connection handled by the control server. Before
+	// the boot services start, or theirs is closed unserved.
+	serviceSet.OnPassCSFD = func(conn net.Conn) {
+		ctrlServer.HandlePassCSFD(conn)
+	}
+
 	// Load and start boot services (-t svc1 -t svc2 ... or positional args).
 	// Wrapped in a retry loop so the rescue menu's "continue" action
 	// (operator dropped to shell, fixed a typo) can re-attempt without
 	// re-execing slinit — see recovery.Present.
 	//
 	// Skipped in rescue/emergency mode — those paths spawn the rescue
-	// shell after ctrlServer.Start below and don't touch the service
+	// shell below and don't touch the service
 	// graph. Nothing to load or restart.
 	var startedAny bool
 	var loadErrors []string
@@ -1678,6 +1849,7 @@ func main() {
 			bootDebugger.Stop()
 			bootDebugger = nil
 		}
+		runHeldShutdown()
 		stopSigWatch := rebootOnSignalWhileBlocked(logger)
 		action := recovery.Present(recovery.Options{
 			Errors: append([]string{
@@ -1688,10 +1860,22 @@ func main() {
 			// unmuted log line lands inside its box.
 			PauseBootConsoleFn:  logger.PauseBootConsole,
 			ResumeBootConsoleFn: logger.ResumeBootConsole,
+			// A shutdown sent over the control socket while the
+			// menu is up. It was acknowledged and then dropped, and
+			// the menu's timeout rebooted: a poweroff became a
+			// reboot a minute later.
+			Interrupt: shutdownGate.Wake(),
 		})
 		stopSigWatch()
 		logger.Notice("Rescue menu chose: %s", action)
+		if action == recovery.ActionInterrupted || action == recovery.ActionTimeout {
+			runHeldShutdown()
+		}
 		switch action {
+		case recovery.ActionInterrupted:
+			// Not expected: only Take clears the wake. Retry, which
+			// comes back to the menu if loading still fails.
+			continue
 		case recovery.ActionRetry:
 			// Loop back — operator likely fixed a typo in a shell.
 			// Reset serviceSet? Only the last load errored; the
@@ -1735,24 +1919,6 @@ func main() {
 		defer stopStallWatch()
 	}
 
-	// Start control socket server
-	ctx := context.Background()
-	ctrlServer := control.NewServer(serviceSet, sock, logger)
-
-	// Wire pin-intent persistence when the operator opted in with
-	// --persist-intent. Empty dir means "disabled" and every hook
-	// site short-circuits — no runtime cost when the feature isn't
-	// in use.
-	pinStore := persist.NewPinStore(persistIntentDir)
-	ctrlServer.Pins = pinStore
-
-	if err := ctrlServer.Start(ctx); err != nil {
-		logger.Error("Failed to start control socket: %v", err)
-		// Non-fatal: continue without control socket
-	} else {
-		defer ctrlServer.Stop()
-	}
-
 	// --metrics-listen: a Prometheus endpoint, off unless asked for.
 	// Non-fatal on failure — an address already in use is a reason to
 	// lose the metrics, not the boot.
@@ -1766,10 +1932,13 @@ func main() {
 		}
 	}
 
-	// Replay any persisted pins BEFORE the boot cascade runs so a
-	// service marked pinned-stopped never briefly comes up first.
-	// Errors from the store are logged; a broken file for one service
-	// doesn't gate the whole restore.
+	// Replay any persisted pins. This runs after the boot services
+	// were started, so a pinned-stopped service that boot pulled in has
+	// already come up and keeps running with the stop pin set; applying
+	// pins earlier would let a pin on something boot needs fail the
+	// boot (tried and reverted, a565515). Errors from the store are
+	// logged; a broken file for one service doesn't gate the whole
+	// restore.
 	if intents, err := pinStore.Load(); err == nil {
 		for name, intent := range intents {
 			svc := serviceSet.FindService(name, false)
@@ -1783,18 +1952,12 @@ func main() {
 				serviceSet.PinStartService(svc)
 				logger.Info("Persist: replayed pinned-started on %s", name)
 			case persist.IntentPinnedStopped:
-				svc.PinStop()
+				serviceSet.PinStopService(svc)
 				logger.Info("Persist: replayed pinned-stopped on %s", name)
 			}
 		}
 	} else {
 		logger.Warn("Persist: failed to load pin intents: %v", err)
-	}
-
-	// Wire pass-cs-fd: when a service creates a socketpair, the server end
-	// becomes a control connection handled by the control server.
-	serviceSet.OnPassCSFD = func(conn net.Conn) {
-		ctrlServer.HandlePassCSFD(conn)
 	}
 
 	// Boot loop: runs the event loop, handles boot failures with recovery
@@ -1824,28 +1987,6 @@ func main() {
 		// fallback so we don't hard-code the default twice.
 		loop.SetEmergencyTimeout(emergencyTimeout)
 
-		ctrlServer.ShutdownFunc = func(st service.ShutdownType, flags uint8) {
-			switch routeShutdown(st, flags, isPID1, containerMode) {
-			case routeImmediate:
-				// `--superfast`: straight to the syscall. No teardown,
-				// no unmount, and no sync either — whatever is still in
-				// the page cache is gone. The operator asked for it.
-				logger.Warn("Immediate shutdown requested (%s): no sync, unwritten data will be lost", st)
-				closeWatchdog(wd, logger)
-				shutdown.ExecuteImmediate(st, logger)
-			case routeForce:
-				// `--fast`: no teardown, no unmount — sync and the
-				// syscall, the same path `reboot -f` takes.
-				logger.Warn("Fast shutdown requested (%s): skipping service teardown", st)
-				closeWatchdog(wd, logger)
-				shutdown.ExecuteForce(st, logger)
-			case routeKill:
-				loop.InitiateShutdownKill(st)
-			default:
-				loop.InitiateShutdown(st)
-			}
-		}
-
 		// Per-service failure-action / success-action: route the
 		// requested system action through the same shutdown path
 		// operators trigger from slinitctl. ActionExit terminates
@@ -1868,62 +2009,6 @@ func main() {
 				return
 			}
 			loop.InitiateShutdown(act.AsShutdownType())
-		}
-		ctrlServer.WallFunc = func(st service.ShutdownType, delay time.Duration, cancelled bool, msg string) {
-			if cancelled {
-				shutdown.WallShutdownCancelled(st, logger)
-				return
-			}
-			shutdown.WallShutdownNoticeMsg(st, delay, msg, logger)
-		}
-		ctrlServer.WallReminderFunc = func(st service.ShutdownType, remaining time.Duration, msg string) {
-			shutdown.WallShutdownReminder(st, remaining, msg, logger)
-		}
-		ctrlServer.WallNoticeFunc = func(msg string) {
-			shutdown.Wall(msg, logger)
-		}
-		// A scheduled shutdown refuses new logins in its last five
-		// minutes through pam_nologin. Only the system manager owns
-		// /run/nologin; a user instance must not lock out the machine.
-		if isPID1 || systemMode {
-			ctrlServer.NologinPath = "/run/nologin"
-		}
-		// finit-parity: suspend hook wired unconditionally — writing
-		// /sys/power/state does not require PID 1 (a user manager
-		// on a laptop can suspend just as well) and the kernel
-		// rejects the write when the caller lacks CAP_SYS_ADMIN.
-		ctrlServer.SuspendFunc = func(state string) error {
-			logger.Notice("suspend: writing %q to /sys/power/state", state)
-			return shutdown.Suspend(state, logger)
-		}
-
-		// switch-root wire-up. Only enabled when slinit runs as PID 1
-		// (the switchroot package rejects non-PID-1 callers anyway,
-		// but leaving the hook nil here surfaces a cleaner "not
-		// supported" reply to the client instead of walking to the
-		// PID check). finit-parity: initctl switch_root NEWROOT [INIT].
-		if isPID1 {
-			ctrlServer.SwitchRootFunc = func(newroot, newinit string) error {
-				resolved, err := switchroot.Precheck(newroot, newinit)
-				if err != nil {
-					logger.Error("switch-root: precheck: %v", err)
-					return err
-				}
-				return switchroot.Do(newroot, resolved, logger, func() {
-					// Stop-services hook: reuse the existing shutdown
-					// path's service teardown so the ordering is
-					// identical to a normal shutdown, minus the
-					// reboot(2) call. loop.InitiateShutdown(Remain)
-					// stops every service and clears the state
-					// machine without triggering a reboot.
-					loop.InitiateShutdown(service.ShutdownRemain)
-					// Give the state machine a beat to walk the
-					// stop cascade. 3s is far past a typical stop
-					// (services stop in ms) but a hard upper bound
-					// so a wedged service doesn't stall the switch.
-					time.Sleep(3 * time.Second)
-				})
-			}
 		}
 		loop.OnReopenSocket = func() {
 			if err := ctrlServer.Reopen(); err != nil {
@@ -2060,6 +2145,28 @@ func main() {
 			}()
 		}
 
+		shutdownGate.HandOver(func(st service.ShutdownType, flags uint8) {
+			switch routeShutdown(st, flags, isPID1, containerMode) {
+			case routeImmediate:
+				// `--superfast`: straight to the syscall. No teardown,
+				// no unmount, and no sync either — whatever is still in
+				// the page cache is gone. The operator asked for it.
+				logger.Warn("Immediate shutdown requested (%s): no sync, unwritten data will be lost", st)
+				closeWatchdog(wd, logger)
+				shutdown.ExecuteImmediate(st, logger)
+			case routeForce:
+				// `--fast`: no teardown, no unmount — sync and the
+				// syscall, the same path `reboot -f` takes.
+				logger.Warn("Fast shutdown requested (%s): skipping service teardown", st)
+				closeWatchdog(wd, logger)
+				shutdown.ExecuteForce(st, logger)
+			case routeKill:
+				loop.InitiateShutdownKill(st)
+			default:
+				loop.InitiateShutdown(st)
+			}
+		})
+
 		if err := loop.Run(ctx); err != nil {
 			if err == context.Canceled {
 				logger.Info("Event loop cancelled")
@@ -2067,6 +2174,10 @@ func main() {
 				logger.Error("Event loop error: %v", err)
 			}
 		}
+		// This loop is done. Until the next one, and while a menu below
+		// is up, a request is held instead of sent where nothing reads
+		// it.
+		shutdownGate.Reclaim()
 
 		if sentinelWatcher != nil {
 			sentinelWatcher.Close()
@@ -2153,13 +2264,24 @@ func main() {
 		// pkg/recovery. Distinct action set — no "drop to shell"
 		// here; instead 's' restarts the boot sequence and 'e'
 		// starts the recovery service.
+		runHeldShutdown()
 		stopCollapseSigWatch := rebootOnSignalWhileBlocked(logger)
 		collapseAction := recovery.PresentCollapse(recovery.CollapseOptions{
 			PauseBootConsoleFn:  logger.PauseBootConsole,
 			ResumeBootConsoleFn: logger.ResumeBootConsole,
+			Interrupt:           shutdownGate.Wake(),
 		})
 		stopCollapseSigWatch()
+		if collapseAction == recovery.CollapseInterrupted || collapseAction == recovery.CollapseTimeout {
+			runHeldShutdown()
+		}
 		switch collapseAction {
+		case recovery.CollapseInterrupted:
+			// Not expected: only Take clears the wake. Reboot, as
+			// on a timeout.
+			logger.Error("Collapse menu interrupted with no shutdown held, rebooting")
+			closeWatchdog(wd, logger)
+			shutdown.Execute(service.ShutdownReboot, logger)
 		case recovery.CollapseReboot:
 			logger.Notice("User chose reboot")
 			closeWatchdog(wd, logger)
@@ -2203,8 +2325,14 @@ func main() {
 // moment login prompts come up. sync.Once so Stop is idempotent
 // even if the listener sees multiple STARTED events (start-stop
 // cycles from a smooth-recovery service).
+//
+// Stop runs on its own goroutine. Listeners are called with the
+// scheduling lock held, and Stop waits for an open debugger menu to
+// close: run inline, it froze every start, stop and control command for
+// as long as the operator sat in the menu, and choosing [f] there
+// (ForceStopService, which needs that lock) deadlocked PID 1 for good.
 type debuggerStopOnStart struct {
-	dbg  *recovery.Debugger
+	dbg  interface{ Stop() }
 	once sync.Once
 }
 
@@ -2212,7 +2340,7 @@ func (l *debuggerStopOnStart) ServiceEvent(_ service.Service, event service.Serv
 	if event != service.EventStarted {
 		return
 	}
-	l.once.Do(l.dbg.Stop)
+	go l.once.Do(l.dbg.Stop)
 }
 
 // pathRearmListener re-arms a path-activation watch each time the
@@ -3063,6 +3191,14 @@ func waitForFDClose(n int) error {
 	}
 }
 
+// exitSyslog is the logger whose syslog connection exitFlushed closes,
+// once main has opened one.
+var exitSyslog *logging.Logger
+
+// exitCtrlServer is the control server exitFlushed stops, once main has
+// started one.
+var exitCtrlServer *control.Server
+
 // exitFlushed drains the catch-all logger, then exits.
 //
 // os.Exit skips main's deferred cal.Stop(), and the catch-all tees
@@ -3075,7 +3211,32 @@ func waitForFDClose(n int) error {
 // Bounded: Stop waits for EOF on the pipe, and an orphan that inherited
 // stdout keeps the pipe open. By the time the wait gives up, what slinit
 // wrote has been drained anyway; only the EOF is missing.
+//
+// The main log's syslog queue is flushed first, for the same reason: it
+// is closed by a deferred CloseSyslog that os.Exit skips too, so the
+// messages explaining the exit never reached the syslog daemon.
+// CloseSyslog bounds its own wait.
+//
+// The control server is stopped too, which removes its socket file:
+// the deferred Stop is skipped as well, and a user or container
+// instance exiting because no boot service loaded left the socket
+// behind. Bounded like the catch-all, as Stop waits for its
+// connections.
 func exitFlushed(cal *logging.CatchAllLogger, code int) {
+	if exitSyslog != nil {
+		exitSyslog.CloseSyslog()
+	}
+	if exitCtrlServer != nil {
+		done := make(chan struct{})
+		go func() {
+			exitCtrlServer.Stop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	}
 	if cal != nil {
 		done := make(chan struct{})
 		go func() {

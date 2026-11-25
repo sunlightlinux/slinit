@@ -110,6 +110,11 @@ jobs:
           echo "built $(ls bin | wc -l) binaries"
           ls -la bin
 
+      - name: Let user namespaces carry capabilities
+        # As in tests.yml: ubuntu-latest's apparmor_restrict_unprivileged_userns
+        # leaves the namespace tests without capabilities.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Unit tests with the race detector
         working-directory: slinit
         run: go test -race -count=1 ./...

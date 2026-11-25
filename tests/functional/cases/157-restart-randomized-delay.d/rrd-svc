@@ -1,6 +1,11 @@
 type = process
 depends-on: system-init
+# Each attempt records its start (uptime, 1/100 s) and fails, so the
+# service restarts. The delay is 0.1 s plus a random 0-0.4 s; without the
+# jitter every gap is 0.1 s.
 restart-delay = 0.1
-restart-randomized-delay = 200ms
-command = /bin/sh -c 'while :; do sleep 60; done'
-restart = no
+restart-randomized-delay = 400ms
+command = /bin/sh -c "cut -d' ' -f1 /proc/uptime >> /tmp/157-times; exit 1"
+restart = on-failure
+restart-limit-count = 30
+restart-limit-interval = 60

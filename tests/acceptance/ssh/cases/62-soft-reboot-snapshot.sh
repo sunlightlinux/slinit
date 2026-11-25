@@ -5,8 +5,11 @@
 # rebooting the kernel. The outgoing daemon writes its intent (activated
 # services, pins, triggers, global env) to /run/slinit/soft-reboot-snapshot.json
 # in OnPreShutdown; the new daemon, started by syscall.Exec, picks it up
-# via --restore-from-snapshot=<path> and re-applies the intent before the
-# control socket opens.
+# via --restore-from-snapshot=<path> and re-applies the intent once the
+# boot services are started. Since the control socket now listens before
+# boot (as in dinit), the socket appearing no longer means the restore
+# has run: the case waits for the snapshot file to be consumed (slinit
+# removes it once the restore is done) before probing.
 #
 # Testing the full softreboot loop in-place would re-exec the live PID 1
 # and racey-up the suite. Instead we exercise the *restore* half end-to-end
@@ -85,8 +88,8 @@ EOF
 
 # --run-mode=keep tells the daemon NOT to re-stage /run (we are already
 # in a live system; restaging would hide the snapshot file the parent
-# wrote there). --restore-from-snapshot=<path> drives applySnapshot
-# before the control socket goes up so reads always see post-restore state.
+# wrote there). --restore-from-snapshot=<path> drives applySnapshot after
+# the boot services start — after the control socket is listening.
 nohup slinit -o -m -p "$SOCKET" -d "$SVCDIR" -t boot \
     --restore-from-snapshot="$SNAP" --run-mode=keep \
     >"$LOG" 2>&1 &
@@ -109,6 +112,14 @@ else
     test_summary
     exit 1
 fi
+
+# The socket is up before the restore runs; wait for applySnapshot to
+# consume (remove) the snapshot, which it does only after a restore.
+_e=0
+while [ "$_e" -lt 10 ] && [ -e "$SNAP" ]; do
+    sleep 0.5
+    _e=$((_e + 1))
+done
 
 # --- Probe 1: global env replayed from snapshot ---------------------
 _env=$(slinitctl --socket-path "$SOCKET" getallenv-global 2>&1)

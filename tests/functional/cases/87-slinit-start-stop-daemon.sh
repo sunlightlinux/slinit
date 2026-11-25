@@ -51,13 +51,16 @@ else
 fi
 
 # --status must exit 0 while the daemon is running and print the pid.
+# (The exit code is captured at once: it used to be read after an
+# arithmetic assignment, whose own status is always 0.)
 out=$(slinit-start-stop-daemon --status --pidfile "$PIDFILE" 2>&1)
+rc=$?
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ "$?" = "0" ]; then
+if [ "$rc" = "0" ]; then
     echo "OK: --status exit 0 while running"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: --status rc=$? out=$out"
+    echo "FAIL: --status rc=$rc out=$out"
 fi
 
 # ---------------------------------------------------------------

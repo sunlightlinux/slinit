@@ -289,14 +289,14 @@ func (m *manager) registerUserObject(rec UserRecord) {
 	propsSpec := map[string]map[string]*prop.Prop{
 		userIface: {
 			"UID":         {Value: rec.UID, Emit: prop.EmitConst},
-			"GID":         {Value: rec.UID, Emit: prop.EmitConst},
+			"GID":         {Value: lookupGID(rec.UID), Emit: prop.EmitConst},
 			"Name":        {Value: rec.Name, Emit: prop.EmitConst},
 			"Timestamp":   {Value: uint64(0), Emit: prop.EmitConst},
 			"RuntimePath": {Value: rec.RuntimePath, Emit: prop.EmitConst},
 			"Service":     {Value: "", Emit: prop.EmitConst},
 			"Slice":       {Value: rec.Slice, Emit: prop.EmitConst},
 			"Display":     {Value: userTupleSession(rec.UID), Emit: prop.EmitTrue},
-			"State":       {Value: "active", Emit: prop.EmitTrue},
+			"State":       {Value: userState(loadSessionRecords(), rec.UID), Emit: prop.EmitTrue},
 			"Sessions":    {Value: m.userSessions(rec.UID), Emit: prop.EmitTrue},
 			"IdleHint":    {Value: false, Emit: prop.EmitTrue},
 			"Linger":      {Value: false, Emit: prop.EmitConst},
@@ -306,6 +306,14 @@ func (m *manager) registerUserObject(rec UserRecord) {
 	if err != nil {
 		return
 	}
+	// Kept so refreshUserProps can move Sessions / Display / State as
+	// the user's sessions come and go.
+	m.mu.Lock()
+	if m.userProps == nil {
+		m.userProps = map[uint32]*prop.Properties{}
+	}
+	m.userProps[rec.UID] = props
+	m.mu.Unlock()
 	m.exportPropsWrapper(path, props, userIface, "")
 	_ = m.conn.Export(uo, path, userIface)
 
@@ -329,6 +337,9 @@ func (m *manager) registerUserObject(rec UserRecord) {
 
 // unregisterUserObject.
 func (m *manager) unregisterUserObject(uid uint32) {
+	m.mu.Lock()
+	delete(m.userProps, uid)
+	m.mu.Unlock()
 	path := userPath(uid)
 	_ = m.conn.Export(nil, path, userIface)
 	_ = m.conn.Export(nil, path, "org.freedesktop.DBus.Properties")
@@ -655,6 +666,15 @@ func (s *sessionObject) TakeDevice(sender dbus.Sender, major, minor uint32) (dbu
 		s.m.dbgf("session %s: TakeDevice %d:%d from %s refused: not the controller", s.id, major, minor, sender)
 		return -1, false, errNotController()
 	}
+	// The devices belong to a seat, and a session without one may have
+	// none of them: systemd refuses with EPERM, the device's seat not
+	// being the session's. A remote session's owner would otherwise
+	// take the console's keyboard and display.
+	var rec SessionRecord
+	if !readJSON(sessionFile(s.id), &rec) || rec.SeatID == "" {
+		s.m.dbgf("session %s: TakeDevice %d:%d from %s refused: session has no seat", s.id, major, minor, sender)
+		return -1, false, errAccessDenied("Session has no seat, it cannot take devices")
+	}
 	fd, inactive, derr := takeDevice(s.id, major, minor)
 	s.m.dbgf("session %s: TakeDevice %d:%d from %s: %v", s.id, major, minor, sender, errText(derr))
 	return fd, inactive, derr
@@ -688,9 +708,9 @@ func (u *userObject) Terminate(sender dbus.Sender) *dbus.Error {
 		return err
 	}
 	// Terminate every session owned by this UID. Iterate over a
-	// snapshot because ReleaseSession mutates the session file set.
+	// snapshot because terminateSession mutates the session file set.
 	for _, ref := range u.m.userSessions(u.uid) {
-		_ = u.m.releaseSession(ref.ID)
+		_ = u.m.terminateSession(ref.ID)
 	}
 	return nil
 }
@@ -714,7 +734,7 @@ func (s *seatObject) Terminate(sender dbus.Sender) *dbus.Error {
 		return err
 	}
 	for _, ref := range s.m.seatSessions(s.id) {
-		_ = s.m.releaseSession(ref.ID)
+		_ = s.m.terminateSession(ref.ID)
 	}
 	return nil
 }

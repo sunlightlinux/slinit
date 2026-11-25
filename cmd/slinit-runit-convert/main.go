@@ -46,7 +46,7 @@ func main() {
 	)
 	flag.StringVar(&outputDir, "output-dir", "", "batch mode: write one slinit file per input into DIR (default: stdout single file)")
 	flag.BoolVar(&dryRun, "dry-run", false, "print what would be written without touching the filesystem")
-	flag.BoolVar(&verbose, "verbose", false, "print per-service conversion notes to stderr")
+	flag.BoolVar(&verbose, "verbose", false, "also print conversion notes to stderr (warnings are always printed)")
 	flag.BoolVar(&enableMap, "enable-map", false, "check /var/service/<name> symlink and suggest `slinitctl enable` for enabled runit svcs")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `slinit-runit-convert — port a runit service directory to a slinit service file
@@ -135,8 +135,11 @@ Flags:
 			}
 		}
 
-		if verbose {
-			for _, w := range warns {
+		// WARN is printed always, as slinit-immortal-convert does; NOTE
+		// needs --verbose. A warning that has to be asked for is not a
+		// warning: a plain conversion that lost something said nothing.
+		for _, w := range warns {
+			if w.level == "WARN" || verbose {
 				fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", w.level, name, w.msg)
 			}
 		}
@@ -433,7 +436,10 @@ func analyzeRunScript(cfg *slinitConfig, script string) []warning {
 	if len(fields) > 0 && filepath.Base(fields[0]) == "chpst" {
 		warns = append(warns, parseChpst(cfg, fields[1:])...)
 	} else {
-		cfg.command = lastExec
+		// Written back from the words, not copied: slinit's command
+		// parser does not read shell quoting, so 'a\b' kept as written
+		// reached the daemon as ab.
+		cfg.command = joinCommand(fields)
 	}
 	return warns
 }
@@ -456,7 +462,23 @@ func resolveBareCommand(s string) string {
 		return s
 	}
 	fields[0] = abs
-	return strings.Join(fields, " ")
+	return joinCommand(fields)
+}
+
+// joinCommand writes argv back as a slinit command line. A word with a
+// blank, a quote or a backslash in it is double-quoted, escaping " and
+// \, which slinit's command parser reads back as the same one word;
+// joined with bare spaces, `touch "/tmp/a b"` ran touch with two
+// arguments.
+func joinCommand(fields []string) string {
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		if strings.ContainsAny(f, " \t\"'\\") {
+			f = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(f) + `"`
+		}
+		out[i] = f
+	}
+	return strings.Join(out, " ")
 }
 
 // hasShellMetachars returns true if s contains characters that need
@@ -478,6 +500,14 @@ func shellFields(s string) []string {
 	inQuote := byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		// A backslash quotes the next character, except inside '...',
+		// and inside "..." only before " \ $ and `.
+		if c == '\\' && i+1 < len(s) && inQuote != '\'' &&
+			(inQuote == 0 || strings.IndexByte("\"\\$`", s[i+1]) >= 0) {
+			i++
+			cur.WriteByte(s[i])
+			continue
+		}
 		if inQuote != 0 {
 			if c == inQuote {
 				inQuote = 0
@@ -521,7 +551,7 @@ func parseChpst(cfg *slinitConfig, args []string) []warning {
 			if a == "--" {
 				i++
 			}
-			cfg.command = strings.Join(args[i:], " ")
+			cfg.command = joinCommand(args[i:])
 			return warns
 		}
 		// Multi-char flag like `-uUSER` or standalone `-P`.

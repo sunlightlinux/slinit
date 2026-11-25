@@ -97,6 +97,17 @@ var capNames = map[string]uintptr{
 	"cap_checkpoint_restore": CapCheckpointRestore,
 }
 
+// CapabilityName returns the cap_* name of capability n, or "" for a
+// number this table does not know.
+func CapabilityName(n uintptr) string {
+	for name, v := range capNames {
+		if v == n {
+			return name
+		}
+	}
+	return ""
+}
+
 // ParseCapabilities parses a comma/space-separated list of capability names
 // into a slice of capability numbers suitable for SysProcAttr.AmbientCaps.
 // Names are case-insensitive, with or without the "cap_" prefix.

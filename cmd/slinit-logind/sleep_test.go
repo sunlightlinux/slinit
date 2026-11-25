@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
 // stubSlinitctl installs a fake control CLI that records its arguments,
@@ -145,5 +147,77 @@ func TestPreparingForSleepClearsOnFailure(t *testing.T) {
 	}
 	if m.preparingForSleepNow() {
 		t.Error("PreparingForSleep stuck true after a failed sleep")
+	}
+}
+
+// A second sleep asked for while one is in flight used to run too: two
+// suspends reached PID 1, and the first one's PrepareForSleep(false) was
+// announced while the second was still under way. systemd refuses it
+// with OperationInProgress.
+func TestOverlappingSleepRefused(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "slinitctl")
+	log := filepath.Join(dir, "args")
+	release := filepath.Join(dir, "release")
+	body := "#!/bin/sh\necho \"$@\" >> " + log + "\nwhile [ ! -e " + release + " ]; do sleep 0.01; done\n"
+	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := slinitctlSuspendPath
+	slinitctlSuspendPath = bin
+	t.Cleanup(func() { slinitctlSuspendPath = prev })
+
+	m := &manager{inhibitors: newInhibitRegistry()}
+	first := make(chan *dbus.Error, 1)
+	go func() { first <- m.sleep(sleepVerb{"Suspend", "mem"}) }()
+	waitUntil(t, 5*time.Second, "the first suspend to reach PID 1", func() bool {
+		b, _ := os.ReadFile(log)
+		return len(b) > 0
+	})
+
+	second := make(chan *dbus.Error, 1)
+	go func() { second <- m.sleep(sleepVerb{"Hibernate", "disk"}) }()
+	// Refused at once; a second sleep that runs blocks in the stub, so
+	// give it a moment to get there before sampling.
+	time.Sleep(200 * time.Millisecond)
+	preparing := m.preparingForSleepNow()
+	if err := os.WriteFile(release, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-first; err != nil {
+		t.Fatalf("first sleep: %v", err)
+	}
+	err := <-second
+
+	b, _ := os.ReadFile(log)
+	if n := strings.Count(string(b), "\n"); n != 1 {
+		t.Errorf("%d sleeps reached PID 1 for overlapping requests: %q", n, b)
+	}
+	if !preparing {
+		t.Error("PreparingForSleep went false while the first sleep was still in flight")
+	}
+	if err == nil || err.Name != "org.freedesktop.login1.OperationInProgress" {
+		t.Errorf("second sleep returned %v, want org.freedesktop.login1.OperationInProgress", err)
+	}
+}
+
+// InhibitDelayMaxSec was parsed and reported as InhibitDelayMaxUSec, but
+// a sleep always waited the built-in 5 s for a delay lock that was not
+// released.
+func TestSleepHonoursInhibitDelayMaxSec(t *testing.T) {
+	stubSlinitctl(t, 0)
+	m := &manager{inhibitors: newInhibitRegistry()}
+	m.buttons = defaultButtonConfig()
+	m.buttons.PowerKey = actionIgnore
+	m.buttons.InhibitDelayMax = 200 * time.Millisecond
+
+	client := addDirect(t, m.inhibitors, "sleep", "delay")
+	defer client.Close()
+	start := time.Now()
+	if err := m.sleep(sleepVerb{"Suspend", "mem"}); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("InhibitDelayMaxSec=0.2 but the sleep waited %s for a held delay lock", took)
 	}
 }

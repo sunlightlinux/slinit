@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -47,6 +48,10 @@ const (
 	// should treat this identically to ActionReboot (auto-reboot
 	// safety net for headless systems).
 	ActionTimeout
+	// ActionInterrupted: Options.Interrupt fired before a key was
+	// read; the caller has something else to act on (a shutdown
+	// requested over the control socket).
+	ActionInterrupted
 )
 
 // String makes Action self-describing in log lines.
@@ -60,6 +65,8 @@ func (a Action) String() string {
 		return "retry"
 	case ActionTimeout:
 		return "timeout(reboot)"
+	case ActionInterrupted:
+		return "interrupted"
 	default:
 		return fmt.Sprintf("Action(%d)", int(a))
 	}
@@ -90,6 +97,9 @@ type Options struct {
 	// so a caller with no logger simply gets an unmuted console.
 	PauseBootConsoleFn  func()
 	ResumeBootConsoleFn func()
+	// Interrupt, when it delivers, ends the wait for a key with
+	// ActionInterrupted. Nil never fires.
+	Interrupt <-chan struct{}
 
 	// tty is the console the caller opened — set by Present() and
 	// carried through so runShell can pause raw mode around the
@@ -188,9 +198,9 @@ func present(r io.Reader, w io.Writer, opts Options) Action {
 	b := newBox(w)
 	for {
 		renderMenu(b, opts)
-		action := readActionWithTimeout(r, b, opts.Timeout)
+		action := readAction(r, b, opts.Timeout, opts.Interrupt)
 		switch action {
-		case ActionReboot, ActionPoweroff, ActionRetry, ActionTimeout:
+		case ActionReboot, ActionPoweroff, ActionRetry, ActionTimeout, ActionInterrupted:
 			return action
 		}
 		// A shell action landed here; run the shell, then loop
@@ -226,12 +236,29 @@ func renderMenu(b *box, opts Options) {
 // reused by PresentCollapse without duplicating the goroutine +
 // countdown-tick logic.
 func readActionWithTimeout(r io.Reader, b *box, timeout time.Duration) Action {
-	c, ok := readByteWithTimeout(r, b, timeout, "reboot")
-	if !ok {
+	return readAction(r, b, timeout, nil)
+}
+
+// readAction is readActionWithTimeout that also ends on interrupt.
+func readAction(r io.Reader, b *box, timeout time.Duration, interrupt <-chan struct{}) Action {
+	c, res := readByte(r, b, timeout, "reboot", interrupt)
+	switch res {
+	case readInterrupted:
+		return ActionInterrupted
+	case readTimedOut:
 		return ActionTimeout
 	}
 	return charToAction(c)
 }
+
+// readResult is how a wait for a key ended.
+type readResult int
+
+const (
+	readGotByte readResult = iota
+	readTimedOut
+	readInterrupted
+)
 
 // readByteWithTimeout reads a single non-whitespace byte from r or
 // returns (0, false) if nothing arrives before timeout. Blocks up
@@ -250,24 +277,51 @@ func readActionWithTimeout(r io.Reader, b *box, timeout time.Duration) Action {
 // side (PresentCollapse maps 0x04 to CollapseRestartBoot which is
 // its analog of "continue trying to boot").
 //
+// Only one EOF is taken for Ctrl-D until a byte is read: see
+// consoleEOFSpent.
+//
 // Uses a goroutine + channel because os.File.Read has no native
 // deadline on non-socket fds (/dev/console is a tty character
 // device, not a socket).
 func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string) (byte, bool) {
+	c, res := readByte(r, b, timeout, verb, nil)
+	return c, res == readGotByte
+}
+
+// readByte is readByteWithTimeout that also gives up when interrupt
+// delivers (a nil interrupt never does).
+func readByte(r io.Reader, b *box, timeout time.Duration, verb string, interrupt <-chan struct{}) (byte, readResult) {
 	inputCh := make(chan byte, 1)
 	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		br := bufio.NewReader(r)
 		for {
 			b, err := br.ReadByte()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					inputCh <- 0x04
-					return
+					if !consoleEOFSpent.Swap(true) {
+						inputCh <- 0x04
+						return
+					}
+					// EOF again with no byte since: a console that
+					// only ever says EOF (hung up, /dev/null), not
+					// an operator. Taken for Ctrl-D each time, it
+					// ran retry → menu → retry forever, and the
+					// auto-reboot never came. Keep listening, at a
+					// walk, for a real key until the menu times out.
+					select {
+					case <-done:
+						return
+					case <-time.After(eofPollInterval):
+					}
+					continue
 				}
 				errCh <- err
 				return
 			}
+			consoleEOFSpent.Store(false)
 			// Skip whitespace (line noise, trailing \n from a
 			// previous line-buffered input, etc). Operator can
 			// type either `r` or `r<Enter>` — both work.
@@ -302,7 +356,7 @@ func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			clearPrompt()
-			return 0, false
+			return 0, readTimedOut
 		}
 		wait := time.Second
 		if remaining < wait {
@@ -311,15 +365,18 @@ func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string
 		select {
 		case b := <-inputCh:
 			clearPrompt()
-			return b, true
+			return b, readGotByte
 		case <-errCh:
 			clearPrompt()
-			return 0, false
+			return 0, readTimedOut
+		case <-interrupt:
+			clearPrompt()
+			return 0, readInterrupted
 		case <-time.After(wait):
 			secs := int(time.Until(deadline).Seconds())
 			if secs <= 0 {
 				clearPrompt()
-				return 0, false
+				return 0, readTimedOut
 			}
 			// \r returns cursor to start of the prompt line (which
 			// is what we're on after renderXxxMenu ended with
@@ -332,6 +389,16 @@ func readByteWithTimeout(r io.Reader, b *box, timeout time.Duration, verb string
 		}
 	}
 }
+
+// consoleEOFSpent is set when an EOF has been taken for Ctrl-D and
+// cleared by the next byte read, whitespace included. It outlives one
+// menu because the retry an EOF asks for presents the next menu on a
+// freshly opened console.
+var consoleEOFSpent atomic.Bool
+
+// eofPollInterval paces the reads of a console that keeps returning
+// EOF.
+const eofPollInterval = 100 * time.Millisecond
 
 // charToAction maps the operator's single-char input to an Action.
 // Both literal letters (r/p/s/c) and Ctrl-shortcuts (Ctrl-B for

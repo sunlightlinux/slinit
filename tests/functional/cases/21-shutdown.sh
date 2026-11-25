@@ -1,22 +1,27 @@
 #!/bin/sh
-# Test: shutdown command is accepted via control socket.
-# Validates: the shutdown protocol path works.
+# Test: the shutdown command reaches the daemon over the control socket.
+# Validates: schedule, query and cancel of a shutdown.
 #
-# We cannot actually call "shutdown poweroff" because it would kill the
-# VM before guest-runner writes results. Instead we verify the command
-# is reachable by passing an invalid shutdown type.
+# An immediate shutdown would power the VM off before guest-runner
+# writes results, so the case schedules one ten minutes out, checks the
+# daemon reports it pending, and cancels it. (It used to pass an
+# invalid type and look for "unknown shutdown type", which slinitctl
+# prints itself before it ever connects.)
 
-# Verify boot is up
 wait_for_service "boot" "STARTED" 10
-assert_service_state "boot" "STARTED" "boot is STARTED"
 
-# Verify services are running
-list=$(slinitctl --system list 2>&1)
-assert_contains "$list" "boot" "boot in service list"
+out=$(slinitctl --system shutdown --status 2>&1)
+assert_contains "$out" "No shutdown is scheduled" "nothing pending at start"
 
-# Call shutdown with an invalid type to prove the command path works
-# without actually shutting down the VM
-output=$(slinitctl --system shutdown invalid-type 2>&1 || true)
-assert_contains "$output" "unknown shutdown type" "shutdown command reachable"
+slinitctl --system shutdown poweroff +10 >/dev/null 2>&1
+out=$(slinitctl --system shutdown --status 2>&1)
+echo "INFO: after scheduling: $out"
+assert_contains "$out" "Shutdown (poweroff) scheduled" "daemon reports the scheduled poweroff"
+
+slinitctl --system shutdown -c >/dev/null 2>&1
+out=$(slinitctl --system shutdown --status 2>&1)
+assert_contains "$out" "No shutdown is scheduled" "cancel cleared it"
+
+assert_service_state "boot" "STARTED" "boot still STARTED"
 
 test_summary

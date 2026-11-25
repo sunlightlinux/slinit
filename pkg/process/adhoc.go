@@ -96,14 +96,33 @@ func RunAdhoc(cmd *exec.Cmd) error {
 // must get it this way: reading cmd.Process while Start sets it is a
 // data race.
 func RunAdhocStarted(cmd *exec.Cmd, started func(pid int)) error {
+	// When Stdout or Stderr is not a file, os/exec copies it through a
+	// pipe and Wait waits for EOF on that pipe — which a child the
+	// command leaves in the background holds open. A hook, an action
+	// or a generator that ran `daemon &` kept the caller waiting for as
+	// long as the daemon lived. Bound that wait unless the caller chose
+	// its own WaitDelay; the command's own exit status is unaffected.
+	defaultDelay := cmd.WaitDelay == 0
+	if defaultDelay {
+		cmd.WaitDelay = AdhocOutputDelay
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	if started != nil {
 		started(cmd.Process.Pid)
 	}
-	return waitAdhoc(cmd)
+	err := waitAdhoc(cmd)
+	if defaultDelay && errors.Is(err, exec.ErrWaitDelay) {
+		// The command exited 0; only its output outlived it.
+		return nil
+	}
+	return err
 }
+
+// AdhocOutputDelay is how long RunAdhoc and its kin keep reading a
+// command's output after it exits, by default. A var for tests.
+var AdhocOutputDelay = 2 * time.Second
 
 // OutputAdhoc is cmd.Output() with the same guard. cmd.Stdout must be
 // nil, as with Output().
@@ -163,7 +182,9 @@ func waitAdhoc(cmd *exec.Cmd) error {
 		switch {
 		case err == nil:
 			waitDone <- result{nil, true}
-		case errors.As(err, &ee):
+		case errors.As(err, &ee), errors.Is(err, exec.ErrWaitDelay):
+			// ErrWaitDelay: the child was reaped and exited 0; only
+			// its I/O outlived cmd.WaitDelay.
 			waitDone <- result{err, true}
 		default:
 			// No status: either the reaper took the child (ECHILD) or

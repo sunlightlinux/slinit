@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // nullLogger drops all output.
@@ -356,4 +358,222 @@ func TestCloseIsIdempotent(t *testing.T) {
 	go w.Run()
 	w.Close()
 	w.Close() // must not panic
+}
+
+// TestTwoTriggersInOneDirectory: inotify gives one watch descriptor
+// per inode, so two triggers watching the same directory share a wd.
+// byWd kept only the last entry, so the first trigger never fired, and
+// removing either one dropped the watch the other still needed.
+func TestTwoTriggersInOneDirectory(t *testing.T) {
+	w := newWatcher(t)
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	var firedA, firedB atomic.Int32
+	if err := w.Add(a, TriggerExists, func() { firedA.Add(1) }); err != nil {
+		t.Fatalf("Add a: %v", err)
+	}
+	if err := w.Add(b, TriggerExists, func() { firedB.Add(1) }); err != nil {
+		t.Fatalf("Add b: %v", err)
+	}
+	if err := os.WriteFile(a, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &firedA, 1, 2*time.Second) {
+		t.Errorf("first trigger in the directory did not fire")
+	}
+
+	// Remove b: a's re-armed watch on the same directory must survive.
+	if err := os.Remove(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Rearm(a); err != nil {
+		t.Fatalf("Rearm a: %v", err)
+	}
+	w.Remove(b)
+	if err := os.WriteFile(a, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &firedA, 2, 2*time.Second) {
+		t.Errorf("removing one trigger dropped the other's watch")
+	}
+	if firedB.Load() != 0 {
+		t.Errorf("removed trigger fired")
+	}
+}
+
+// TestTwoTriggersOneDirectoryMasks: a second watch on the same inode
+// replaced the first one's mask, so a directory-changed trigger lost
+// IN_DELETE once a path-exists trigger shared its directory.
+func TestTwoTriggersOneDirectoryMasks(t *testing.T) {
+	w := newWatcher(t)
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var changed, exists atomic.Int32
+	if err := w.Add(dir, TriggerChanged, func() { changed.Add(1) }); err != nil {
+		t.Fatalf("Add dir: %v", err)
+	}
+	if err := w.Add(filepath.Join(dir, "later"), TriggerExists, func() { exists.Add(1) }); err != nil {
+		t.Fatalf("Add later: %v", err)
+	}
+	if err := os.Remove(victim); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &changed, 1, 2*time.Second) {
+		t.Errorf("directory trigger missed IN_DELETE after a second watch on the same inode")
+	}
+}
+
+// replaceFile writes data to path the way editors and package managers
+// do: a temporary file renamed over it.
+func replaceFile(t *testing.T, path, data string) {
+	t.Helper()
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestChangedFiresOnRenameOver: the watch sat on the file's inode, so
+// a file replaced by rename produced only IN_DELETE_SELF/IN_IGNORED on
+// the old inode — no fire, and the IGNORED cleared the watch, so the
+// trigger was dead from then on, Rearm or not.
+func TestChangedFiresOnRenameOver(t *testing.T) {
+	for _, trig := range []Trigger{TriggerChanged, TriggerModified} {
+		t.Run(trig.String(), func(t *testing.T) {
+			w := newWatcher(t)
+			path := filepath.Join(t.TempDir(), "config")
+			if err := os.WriteFile(path, []byte("a"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			var fired atomic.Int32
+			if err := w.Add(path, trig, func() { fired.Add(1) }); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			replaceFile(t, path, "b")
+			if !waitFire(t, &fired, 1, 2*time.Second) {
+				t.Fatalf("did not fire on rename-over")
+			}
+			if err := w.Rearm(path); err != nil {
+				t.Fatalf("Rearm: %v", err)
+			}
+			replaceFile(t, path, "c")
+			if !waitFire(t, &fired, 2, 2*time.Second) {
+				t.Fatalf("did not fire on a second rename-over after Rearm")
+			}
+			if err := w.Rearm(path); err != nil {
+				t.Fatalf("Rearm: %v", err)
+			}
+			if err := os.WriteFile(path, []byte("d"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if !waitFire(t, &fired, 3, 2*time.Second) {
+				t.Fatalf("did not fire on an in-place write to the replacement")
+			}
+			// A sibling's changes are not the watched file's.
+			if err := w.Rearm(path); err != nil {
+				t.Fatalf("Rearm: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(filepath.Dir(path), "other"), []byte("x"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(200 * time.Millisecond)
+			if n := fired.Load(); n != 3 {
+				t.Errorf("fired on a sibling file: %d", n)
+			}
+		})
+	}
+}
+
+// TestFileTriggerIgnoresSiblingWrites: a changed/modified trigger on a
+// file watched its directory for writes, so every write by any process
+// to any file in that directory (/var/log, /run) woke PID 1's inotify
+// loop, only to be filtered out by name. Writes to a sibling must not
+// queue an event at all; the watcher is not run, so whatever the kernel
+// queued is still there to see. Before the fix the inotify fd was
+// readable after the sibling writes, for both triggers.
+func TestFileTriggerIgnoresSiblingWrites(t *testing.T) {
+	for _, trig := range []Trigger{TriggerChanged, TriggerModified} {
+		t.Run(trig.String(), func(t *testing.T) {
+			w, err := New(testLogger{t})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { unix.Close(w.fd) })
+			dir := t.TempDir()
+			path, sibling := filepath.Join(dir, "config"), filepath.Join(dir, "busy.log")
+			for _, f := range []string{path, sibling} {
+				if err := os.WriteFile(f, []byte("a"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := w.Add(path, trig, func() {}); err != nil {
+				t.Fatalf("Add: %v", err)
+			}
+			queued := func() bool {
+				fds := []unix.PollFd{{Fd: int32(w.fd), Events: unix.POLLIN}}
+				n, _ := unix.Poll(fds, 100)
+				return n > 0
+			}
+
+			f, err := os.OpenFile(sibling, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 100; i++ {
+				f.WriteString("line\n")
+			}
+			f.Close()
+			if queued() {
+				t.Errorf("writes to a sibling file queued inotify events")
+			}
+
+			// The harness can still see one: a write to the file itself.
+			if err := os.WriteFile(path, []byte("b"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if !queued() {
+				t.Errorf("a write to the watched file queued no event")
+			}
+		})
+	}
+}
+
+// TestFileTriggerSharesDirectoryWithExists: a changed trigger's
+// directory watch shares its wd with a path-exists trigger in the same
+// directory; each fires on its own name, and removing the exists
+// trigger leaves the changed trigger's directory watch in place.
+func TestFileTriggerSharesDirectoryWithExists(t *testing.T) {
+	w := newWatcher(t)
+	dir := t.TempDir()
+	path, later := filepath.Join(dir, "config"), filepath.Join(dir, "later")
+	if err := os.WriteFile(path, []byte("a"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var changed, exists atomic.Int32
+	if err := w.Add(path, TriggerChanged, func() { changed.Add(1) }); err != nil {
+		t.Fatalf("Add config: %v", err)
+	}
+	if err := w.Add(later, TriggerExists, func() { exists.Add(1) }); err != nil {
+		t.Fatalf("Add later: %v", err)
+	}
+	if err := os.WriteFile(later, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFire(t, &exists, 1, 2*time.Second) {
+		t.Errorf("exists trigger sharing the directory did not fire")
+	}
+	if changed.Load() != 0 {
+		t.Errorf("changed trigger fired on another name")
+	}
+	w.Remove(later)
+	replaceFile(t, path, "b")
+	if !waitFire(t, &changed, 1, 2*time.Second) {
+		t.Errorf("removing the exists trigger dropped the changed trigger's directory watch")
+	}
 }

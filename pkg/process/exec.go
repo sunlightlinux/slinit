@@ -65,9 +65,47 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	// A failure aborts the start — running without an expected
 	// credential is worse than not running, and secrets are by design
 	// the kind of input you must not silently degrade away from.
-	credDir, err := SetupCredentials(params.ServiceName, params.Credentials, params.RunAsUID, params.RunAsGID)
-	if err != nil {
-		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
+	//
+	// A stop-command runs while the main process still uses the
+	// directory: remounting it would swap the daemon's credentials out
+	// from under it, and the undo below would unmount and remove them
+	// all if the stop-command then failed to start. So it reuses a
+	// directory that is already mounted and leaves cleanup to the
+	// service's stop.
+	var credDir string
+	var err error
+	ownCreds := false
+	if len(params.Credentials) > 0 && params.ReuseCredentials && credentialsMounted(params.ServiceName) {
+		credDir = CredentialsDir(params.ServiceName)
+	} else {
+		credDir, err = SetupCredentials(params.ServiceName, params.Credentials, params.RunAsUID, params.RunAsGID)
+		if err != nil {
+			return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
+		}
+		ownCreds = credDir != ""
+	}
+
+	// Everything acquired from here until the child is started is
+	// released by undo if StartProcess returns without starting it.
+	// Only the cmd.Start failure used to clean up; every earlier
+	// return leaked, and a leaked lock-file descriptor kept its flock,
+	// so the next start failed "lock-file already locked" until slinit
+	// itself restarted.
+	var undo []func()
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		for i := len(undo) - 1; i >= 0; i-- {
+			undo[i]()
+		}
+	}()
+
+	if ownCreds {
+		// Roll back the credentials tmpfs so a failed start does not
+		// leave a populated /run/credentials/<svc>/ behind.
+		undo = append(undo, func() { _ = CleanupCredentials(params.ServiceName) })
 	}
 	if credDir != "" {
 		// Add CREDENTIALS_DIRECTORY to env, building Env if needed.
@@ -162,7 +200,16 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 
 	// Environment: cache os.Environ() once, reuse for all env additions
 	baseEnv := os.Environ()
-	if len(params.Env) > 0 {
+	if params.InheritEnv != nil {
+		kept := make([]string, 0, len(baseEnv))
+		for _, kv := range baseEnv {
+			if eq := strings.IndexByte(kv, '='); eq > 0 && params.InheritEnv(kv[:eq]) {
+				kept = append(kept, kv)
+			}
+		}
+		baseEnv = kept
+	}
+	if len(params.Env) > 0 || params.InheritEnv != nil {
 		cmd.Env = make([]string, 0, len(baseEnv)+len(params.Env)+3)
 		cmd.Env = append(cmd.Env, baseEnv...)
 		cmd.Env = append(cmd.Env, params.Env...)
@@ -253,6 +300,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			lockFD.Close()
 			return 0, nil, &ExecError{Stage: StageDoExec, Err: fmt.Errorf("lock-file already locked: %s", params.LockFile)}
 		}
+		undo = append(undo, func() { lockFD.Close() })
 		// lockFD stays open for the lifetime of the process (flock released on close)
 	}
 
@@ -262,6 +310,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		var err error
 		ptySlaveFd, err = os.OpenFile(params.PTYSlave, os.O_RDWR|syscall.O_NOCTTY, 0)
 		if err == nil {
+			undo = append(undo, func() { ptySlaveFd.Close() })
 			cmd.Stdin = ptySlaveFd
 			cmd.Stdout = ptySlaveFd
 			cmd.Stderr = ptySlaveFd
@@ -292,6 +341,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 		} else {
+			undo = append(undo, func() { consoleFd.Close() })
 			cmd.Stdin = consoleFd
 			cmd.Stdout = consoleFd
 			cmd.Stderr = consoleFd
@@ -409,12 +459,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 	for _, of := range params.OpenFiles {
 		f, err := openConfiguredFile(of)
 		if err != nil {
-			// Clean up already-opened files before returning.
-			for _, prior := range openedForClose {
-				prior.Close()
-			}
 			return 0, nil, fmt.Errorf("open-file %q: %w", of.Path, err)
 		}
+		undo = append(undo, func() { f.Close() })
 		cmd.ExtraFiles = append(cmd.ExtraFiles, f)
 		openedForClose = append(openedForClose, f)
 		listenNames = append(listenNames, of.FDName)
@@ -471,6 +518,7 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 				return 0, nil, &ExecError{Stage: StageArrangeFDs, Err: err}
 			}
 			extraFdNullFiles = append(extraFdNullFiles, devNull)
+			undo = append(undo, func() { devNull.Close() })
 			cmd.ExtraFiles = append(cmd.ExtraFiles, devNull)
 		}
 		cmd.ExtraFiles = append(cmd.ExtraFiles, params.NotifyPipe)
@@ -566,28 +614,9 @@ func StartProcess(params ExecParams) (int, <-chan ChildExit, error) {
 		syscall.Umask(prevUmask)
 	}
 	if err != nil {
-		if ptySlaveFd != nil {
-			ptySlaveFd.Close()
-		}
-		if consoleFd != nil {
-			consoleFd.Close()
-		}
-		for _, f := range extraFdNullFiles {
-			f.Close()
-		}
-		for _, f := range openedForClose {
-			f.Close()
-		}
-		if lockFD != nil {
-			lockFD.Close()
-		}
-		// Roll back the credentials tmpfs so a failed start does not
-		// leave a populated /run/credentials/<svc>/ behind.
-		if credDir != "" {
-			_ = CleanupCredentials(params.ServiceName)
-		}
 		return 0, nil, &ExecError{Stage: StageDoExec, Err: err}
 	}
+	started = true
 
 	// Close our copy of PTY slave and console fd after fork
 	if ptySlaveFd != nil {
@@ -736,6 +765,12 @@ func SignalDaemonGroup(pid int, sig syscall.Signal, processOnly bool) error {
 	if pid <= 0 {
 		return nil
 	}
+	// PID 1 is never a service's daemon, and a signal to it is a
+	// shutdown request when it is us; getpgid(1) is 1, so the group
+	// branch below would even have sent kill(-1), every process.
+	if pid == 1 {
+		return fmt.Errorf("refusing to signal PID 1")
+	}
 	if processOnly {
 		return syscall.Kill(pid, sig)
 	}
@@ -750,6 +785,12 @@ func SignalDaemonGroup(pid int, sig syscall.Signal, processOnly bool) error {
 	// every service it started — a pid file is operator-supplied input,
 	// so this is a boundary worth checking.
 	if own, ownErr := syscall.Getpgid(0); ownErr == nil && pgid == own {
+		return syscall.Kill(pid, sig)
+	}
+	// Nor a group id that kill(2) reads as something else: a kernel
+	// thread reports pgid 0, and kill(0) is our own group, while
+	// kill(-1) is every process.
+	if pgid <= 1 {
 		return syscall.Kill(pid, sig)
 	}
 	return syscall.Kill(-pgid, sig)
@@ -793,46 +834,103 @@ func KillProcessGroup(pgid int) {
 // existing directory is left in place but its mode/owner are corrected.
 func ensureServiceDirs(dirs []ServiceDir, uid, gid uint32) error {
 	for _, d := range dirs {
-		if err := os.MkdirAll(d.Path, d.Mode); err != nil {
+		fd, err := openServiceDir(d.Path, d.Mode)
+		if err != nil {
 			return fmt.Errorf("service directory %s: %w", d.Path, err)
 		}
-		// MkdirAll short-circuits on an existing path via os.Stat,
-		// which FOLLOWS a symlink — measured: MkdirAll on a
-		// symlink-to-directory returns nil, and a Chmod on the same
-		// path then changes the target's mode. So without this check
-		// the correction below re-owned and re-moded whatever the link
-		// named, as root.
-		//
-		// That is reachable without any race. These names may have
-		// several components — parseServiceDirNames rejects absolute
-		// paths and '.'/'..' but permits "myapp/data" — and the first
-		// start chowns "myapp" to the service user, so on the next
-		// start the user owns the parent of the leaf and can leave a
-		// symlink standing there. Structurally the slinit-tmpfiles Z
-		// bug with MkdirAll in filepath.Walk's role.
-		//
-		// Refused rather than skipped, unlike tmpfiles. There,
-		// skipping is right because a symlink has no mode worth
-		// setting. Here the admin asked for a directory with a mode
-		// and an owner, and quietly not applying them would leave the
-		// service running against permissions nobody chose — the
-		// fail-open shape slinit rejected for confinement. A service
-		// directory slinit owns is not a place for a symlink; point
-		// the directory elsewhere, or bind-mount it.
-		if lst, err := os.Lstat(d.Path); err == nil && lst.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("service directory %s: is a symbolic link; "+
-				"refusing to chmod/chown its target", d.Path)
-		}
-		if err := os.Chmod(d.Path, d.Mode); err != nil {
+		// Mode and owner go through the descriptor, never the path.
+		// An Lstat-then-Chmod by path was what this used to do, and a
+		// service user who owns the parent of the leaf could swap the
+		// leaf for a symlink between the two calls (renameat2
+		// RENAME_EXCHANGE in a loop won within a few dozen starts),
+		// handing root's chmod/chown any file on the system.
+		err = unix.Fchmod(fd, uint32(d.Mode.Perm()))
+		if err != nil {
+			unix.Close(fd)
 			return fmt.Errorf("service directory %s: chmod: %w", d.Path, err)
 		}
 		if uid != 0 || gid != 0 {
-			if err := os.Chown(d.Path, int(uid), int(gid)); err != nil {
+			if err := unix.Fchown(fd, int(uid), int(gid)); err != nil {
+				unix.Close(fd)
 				return fmt.Errorf("service directory %s: chown: %w", d.Path, err)
 			}
 		}
+		unix.Close(fd)
 	}
 	return nil
+}
+
+// openServiceDir creates path one component at a time and returns a
+// descriptor for the leaf directory, never following a symlink that
+// someone other than root (or us) could have placed.
+//
+// os.MkdirAll short-circuits on an existing path via os.Stat, which
+// follows a symlink, and these names may have several components —
+// parseServiceDirNames rejects absolute paths and '.'/'..' but permits
+// "myapp/data" — so once a start has chowned "myapp" to the service
+// user, that user owns the parent of the leaf and can leave (or race
+// in) a symlink there. Refused rather than skipped: the admin asked for
+// a directory with a mode and an owner, and quietly not applying them
+// would leave the service running against permissions nobody chose.
+//
+// A symlink in an intermediate component is still followed when its
+// directory can only be written by root or by us (a /var/log that
+// points at another disk is legitimate); anywhere else it is refused.
+func openServiceDir(path string, mode os.FileMode) (int, error) {
+	start := "."
+	if filepath.IsAbs(path) {
+		start = "/"
+	}
+	fd, err := unix.Open(start, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	comps := strings.Split(strings.Trim(filepath.Clean(path), "/"), "/")
+	for i, c := range comps {
+		if c == "" || c == "." {
+			continue
+		}
+		last := i == len(comps)-1
+		nfd, err := unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err == unix.ENOENT {
+			if err = unix.Mkdirat(fd, c, uint32(mode.Perm())); err == nil || err == unix.EEXIST {
+				nfd, err = unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			}
+		}
+		if err != nil {
+			var st unix.Stat_t
+			if unix.Fstatat(fd, c, &st, unix.AT_SYMLINK_NOFOLLOW) == nil && st.Mode&unix.S_IFMT == unix.S_IFLNK {
+				if last || !onlyTrustedCanWrite(fd) {
+					unix.Close(fd)
+					return -1, fmt.Errorf("%s is a symbolic link; "+
+						"refusing to chmod/chown its target",
+						filepath.Join(append([]string{start}, comps[:i+1]...)...))
+				}
+				nfd, err = unix.Openat(fd, c, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+			}
+		}
+		unix.Close(fd)
+		if err != nil {
+			return -1, err
+		}
+		fd = nfd
+	}
+	return fd, nil
+}
+
+// onlyTrustedCanWrite reports whether the directory open at dirfd can
+// have entries created or replaced only by root or by this process's
+// own user — i.e. whether a symlink found in it was put there by one
+// of them.
+func onlyTrustedCanWrite(dirfd int) bool {
+	var st unix.Stat_t
+	if unix.Fstat(dirfd, &st) != nil {
+		return false
+	}
+	if st.Uid != 0 && st.Uid != uint32(os.Geteuid()) {
+		return false
+	}
+	return st.Mode&0o022 == 0
 }
 
 // loadAppArmorProfile parses and replaces an AppArmor profile by

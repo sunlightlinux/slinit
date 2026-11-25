@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,27 +62,77 @@ func killPID(pid int, sig int32) error {
 	return unix.Kill(pid, unix.Signal(sig))
 }
 
-// devPathForMajorMinor returns the /dev path for a character or block
-// device identified by major:minor. Used by Session.TakeDevice to
-// resolve the compositor's request (typically DRM 226:0 for the
-// primary card + input devices) into a filesystem path.
+// killLeader sends sig to the session's leader, and only if the pid
+// still names a process of the session.
 //
-// Reads /sys/dev/{char,block}/<major>:<minor>/uevent for the DEVNAME
-// entry — the canonical map exposed by udev + kernel.
+// The record holds a bare pid. Once the leader has exited — and before
+// the reaper drops the session — the kernel may hand that pid to
+// another process, and the session owner, who may call KillSession,
+// would have root signal it. So the process is pinned with a pidfd,
+// its cgroup is checked against the session's scope, and the signal
+// goes through the pidfd: if the pinned process has died in between,
+// the send fails instead of reaching whoever got the pid next. systemd
+// holds the leader as a pidref for the same reason.
+func killLeader(rec SessionRecord, sig int32) error {
+	if !scopeUnderCgroupFS(rec.Scope) {
+		return fmt.Errorf("session has no cgroup scope")
+	}
+	pidfd, err := unix.PidfdOpen(int(rec.LeaderPID), 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(pidfd)
+	want := strings.TrimPrefix(filepath.Clean(rec.Scope), "/sys/fs/cgroup")
+	if got := procCgroup(rec.LeaderPID); got != want {
+		return fmt.Errorf("pid %d is not in the session (cgroup %q)", rec.LeaderPID, got)
+	}
+	return unix.PidfdSendSignal(pidfd, unix.Signal(sig), nil, 0)
+}
+
+// sysRoot is where sysfs is mounted; a variable so the tests can build
+// a device tree of their own.
+var sysRoot = "/sys"
+
+// devPathForMajorMinor returns the /dev path for a character device
+// identified by major:minor. Used by Session.TakeDevice to resolve the
+// compositor's request (typically DRM 226:0 for the primary card + input
+// devices) into a filesystem path.
+//
+// Only the devices a session may be handed resolve, as in systemd's
+// session_device_verify: character devices of subsystem drm named
+// card*, input named event* and hidraw named hidraw*. Anything else is
+// an error, or a session's owner could ask for /dev/mem or a disk and be
+// handed it open read/write.
+//
+// Reads /sys/dev/char/<major>:<minor>/uevent for the DEVNAME entry —
+// the canonical map exposed by udev + kernel.
 func devPathForMajorMinor(major, minor uint32) (string, error) {
-	for _, kind := range []string{"char", "block"} {
-		p := fmt.Sprintf("/sys/dev/%s/%d:%d/uevent", kind, major, minor)
-		b, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(b), "\n") {
-			if strings.HasPrefix(line, "DEVNAME=") {
-				return "/dev/" + strings.TrimPrefix(line, "DEVNAME="), nil
-			}
+	dir, err := filepath.EvalSymlinks(fmt.Sprintf("%s/dev/char/%d:%d", sysRoot, major, minor))
+	if err != nil {
+		return "", fmt.Errorf("character device %d:%d not found in /sys/dev/char", major, minor)
+	}
+	sub, err := filepath.EvalSymlinks(filepath.Join(dir, "subsystem"))
+	if err != nil {
+		return "", fmt.Errorf("device %d:%d has no subsystem", major, minor)
+	}
+	subsystem, name := filepath.Base(sub), filepath.Base(dir)
+	switch {
+	case subsystem == "drm" && strings.HasPrefix(name, "card"),
+		subsystem == "input" && strings.HasPrefix(name, "event"),
+		subsystem == "hidraw" && strings.HasPrefix(name, "hidraw"):
+	default:
+		return "", fmt.Errorf("device %d:%d (%s %s) is not a session device", major, minor, subsystem, name)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "uevent"))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "DEVNAME=") {
+			return "/dev/" + strings.TrimPrefix(line, "DEVNAME="), nil
 		}
 	}
-	return "", fmt.Errorf("device %d:%d not found in /sys/dev", major, minor)
+	return "", fmt.Errorf("device %d:%d has no device node", major, minor)
 }
 
 // openDevice opens a device node the way logind does before handing it

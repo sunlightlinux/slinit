@@ -1,4 +1,6 @@
 type = process
-command = /bin/sh -c "while true; do sleep 1; done"
+# Every start leaves one line in /run/220.starts, so the case can count
+# starts across the whole run instead of reading one status snapshot.
+command = /bin/sh -c "echo started >> /run/220.starts; while true; do sleep 1; done"
 depends-on: depfail-base
 restart = true

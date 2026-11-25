@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // SocketPath is the Unix SOCK_DGRAM address at which slinit-journald
@@ -48,6 +50,17 @@ type Emitter struct {
 	// can detect a broken listener.
 	dropped atomic.Uint64
 	sent    atomic.Uint64
+
+	// stalledSince is when (UnixNano) a send first waited out its
+	// deadline since one last went through; 0 while sends go through.
+	// Events are emitted with the scheduling lock held, and waiting out
+	// the deadline on every one cost every state transition 10 ms for as
+	// long as a stopped listener (slinit-journald stopped) stayed
+	// stopped. A send waits as it always did while the listener has
+	// taken something within emitStallWindow - it pauses to fsync or
+	// rotate - and after that is one non-blocking attempt until one goes
+	// through. The ring buffer keeps the events either way.
+	stalledSince atomic.Int64
 
 	// Live in-process subscribers. Every Emit fans a *pointer* to the
 	// event out to each subscriber's channel. When a channel is full
@@ -242,6 +255,14 @@ func (e *Emitter) stampTrusted(evt *Event) {
 	evt.Hostname = Hostname()
 }
 
+// emitSendTimeout is how long one send waits for the listener;
+// emitStallWindow, how long the listener may take nothing before sends
+// stop waiting for it.
+const (
+	emitSendTimeout = 10 * time.Millisecond
+	emitStallWindow = 100 * time.Millisecond
+)
+
 // publishToSocket attempts to send the event as a JSONL datagram.
 // Returns nil on success, an error on marshal failure or socket-write
 // failure. A "no such file or directory" or "connection refused"
@@ -258,16 +279,59 @@ func (e *Emitter) publishToSocket(evt *Event) error {
 		return err
 	}
 
-	// SetWriteDeadline so a stuck listener can't block emit-side
-	// callers indefinitely. 10ms is generous for a local Unix
-	// socket write.
-	_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Millisecond))
-
 	// One datagram per event. UDP-like semantics: the receiver either
 	// gets the whole packet or nothing, no partial writes to worry
 	// about.
-	_, err = conn.Write(data)
+	now := time.Now()
+	deadline := now.Add(emitSendTimeout)
+	if since := e.stalledSince.Load(); since != 0 {
+		if end := time.Unix(0, since).Add(emitStallWindow); end.Before(deadline) {
+			deadline = end
+		}
+	}
+	if !deadline.After(now) {
+		err = sendNoWait(conn, data)
+	} else {
+		// SetWriteDeadline so a stuck listener can't block emit-side
+		// callers indefinitely. 10ms is generous for a local Unix
+		// socket write.
+		_ = conn.SetWriteDeadline(deadline)
+		_, err = conn.Write(data)
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			e.stalledSince.CompareAndSwap(0, now.UnixNano())
+		}
+	}
+	switch {
+	case err == nil:
+		e.stalledSince.Store(0)
+	case errors.Is(err, unix.ECONNREFUSED), errors.Is(err, unix.ENOTCONN),
+		errors.Is(err, unix.ENOENT), errors.Is(err, unix.EPIPE):
+		// The listener's socket is gone. When slinit-journald restarts
+		// it binds a new one at the same path, which this connection
+		// will never reach: every later event failed until PID 1
+		// restarted. Dial again on the next emit, which costs what an
+		// emit costs today while no listener is bound.
+		e.resetConn(conn)
+	}
 	return err
+}
+
+// sendNoWait makes one non-blocking attempt to send data on conn. A
+// deadline cannot do it: one already past fails the write without trying
+// it. Control runs the write without consulting the deadline, or waiting
+// for the socket, and leaves the deadline alone for a concurrent send.
+func sendNoWait(conn *net.UnixConn, data []byte) error {
+	rc, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var werr error
+	if err := rc.Control(func(fd uintptr) {
+		_, werr = unix.Write(int(fd), data)
+	}); err != nil {
+		return err
+	}
+	return werr
 }
 
 // connect returns the cached socket connection, dialing on first use
@@ -294,11 +358,12 @@ func (e *Emitter) connect() (*net.UnixConn, error) {
 }
 
 // resetConn drops the cached socket, forcing the next Emit to dial
-// again. Called by the daemon when it observes a persistent write
-// failure (listener died and restarted).
-func (e *Emitter) resetConn() {
+// again. Called when a send finds the listener gone (it died, or was
+// restarted). conn is the connection that failed: one a concurrent emit
+// has already dialed in its place is left alone.
+func (e *Emitter) resetConn(conn *net.UnixConn) {
 	e.connMu.Lock()
-	if e.conn != nil {
+	if e.conn != nil && e.conn == conn {
 		_ = e.conn.Close()
 		e.conn = nil
 	}

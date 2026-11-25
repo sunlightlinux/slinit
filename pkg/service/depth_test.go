@@ -1,6 +1,9 @@
 package service
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 type depTestLogger struct{}
 
@@ -125,6 +128,52 @@ func TestDepDepthUpdaterMaxExceeded(t *testing.T) {
 		t.Fatal("expected error for exceeding MaxDepDepth")
 	}
 	updater.Rollback()
+}
+
+// In a diamond (a -> b, a -> c -> b) a is reached through b before c
+// has its new depth; a must be recomputed once c changes, or its depth
+// stays short and the MaxDepDepth check can be walked past.
+func TestDepDepthUpdaterDiamond(t *testing.T) {
+	set := newDepTestSet()
+	mk := func(n string) Service {
+		s := NewInternalService(set, n)
+		set.AddService(s)
+		return s
+	}
+	b, a, c := mk("b"), mk("a"), mk("c")
+	for _, d := range [][2]Service{{a, b}, {c, b}, {a, c}} {
+		if err := set.AddDependency(d[0], d[1], DepRegular); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A chain of 10 under b: b=10, c=11, a=12.
+	prev := mk("d0")
+	for i := 1; i < 10; i++ {
+		s := mk(fmt.Sprintf("d%d", i))
+		if err := set.AddDependency(s, prev, DepRegular); err != nil {
+			t.Fatal(err)
+		}
+		prev = s
+	}
+	if err := set.AddDependency(b, prev, DepRegular); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.Record().DepDepth(); got != 12 {
+		t.Errorf("a depth %d, want 12 (b=%d c=%d)", got, b.Record().DepDepth(), c.Record().DepDepth())
+	}
+
+	// Lengthening b's chain so a would sit at 33 must be refused.
+	for i := 10; i < 31; i++ {
+		s := mk(fmt.Sprintf("d%d", i))
+		if err := set.AddDependency(s, prev, DepRegular); err != nil {
+			t.Fatal(err)
+		}
+		prev = s
+	}
+	if err := set.AddDependency(b, prev, DepRegular); err == nil {
+		t.Errorf("dependency accepted with a at depth %d, past MaxDepDepth=%d",
+			a.Record().DepDepth(), MaxDepDepth)
+	}
 }
 
 func TestCheckCircularDep(t *testing.T) {

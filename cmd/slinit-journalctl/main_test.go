@@ -1236,7 +1236,7 @@ func TestResolveCursorInputPriority(t *testing.T) {
 		t.Errorf("cursor should beat cursor-file: tok=%q mode=%v err=%v", tok, mode, err)
 	}
 	tok, mode, err = resolveCursorInput(options{cursorFile: tmp})
-	if err != nil || tok != "s=42;b=fromfile" || mode != cursorInclusive {
+	if err != nil || tok != "s=42;b=fromfile" || mode != cursorResume {
 		t.Errorf("cursor-file only: tok=%q mode=%v err=%v", tok, mode, err)
 	}
 	// Missing cursor-file is treated as "no prior cursor" — bootstrap OK.
@@ -1398,24 +1398,6 @@ func TestReadDaemonPIDErrors(t *testing.T) {
 	}
 	if _, err := readDaemonPID(tmp); err == nil {
 		t.Error("expected error for stale pid")
-	}
-}
-
-// TestCurrentJournalFiles — list should include today's dated
-// jsonl+journal files under the given dir, absolute paths.
-func TestCurrentJournalFiles(t *testing.T) {
-	files := currentJournalFiles("/var/log/slinit-journal")
-	if len(files) != 2 {
-		t.Fatalf("expected 2 files (jsonl + journal), got %d", len(files))
-	}
-	today := time.Now().UTC().Format("2006-01-02")
-	for _, f := range files {
-		if !strings.Contains(f, today) {
-			t.Errorf("expected today's date in %q", f)
-		}
-		if !strings.HasPrefix(f, "/var/log/slinit-journal/") {
-			t.Errorf("expected absolute path, got %q", f)
-		}
 	}
 }
 
@@ -1989,5 +1971,56 @@ func TestSortedBootsSteppedClock(t *testing.T) {
 	}
 	if r := byID["two"]; r.first != 2000*s || r.last != 2005*s {
 		t.Errorf("stepped boot spans %d..%d, want its first and last entries %d..%d", r.first, r.last, 2000*s, 2005*s)
+	}
+}
+
+// A message is written by whoever logged it, and was printed raw: a
+// newline in it started what looked like a separate entry from any
+// host and unit, and an escape sequence reached the terminal. Like
+// systemd, continuation lines are indented to the message column and,
+// unless --all, control characters are shown escaped.
+func TestRenderShortCatNeutraliseMessage(t *testing.T) {
+	forged := "first\nMay 01 00:00:00 ceres sshd[1]: forged\x1b[2J\x07\tend\x9b"
+	e := mkEvent()
+	e.Msg = forged
+
+	for _, f := range []outputFormat{fmtShort, fmtShortISO, fmtShortMonotonic, fmtWithUnit} {
+		var buf bytes.Buffer
+		if err := render(&buf, f, e, renderOpts{}); err != nil {
+			t.Fatal(err)
+		}
+		got := buf.String()
+		lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("format %v: %d lines: %q", f, len(lines), got)
+		}
+		col := strings.Index(lines[0], "first")
+		if col < 0 || lines[1] != strings.Repeat(" ", col)+`May 01 00:00:00 ceres sshd[1]: forged\x1b[2J\x07`+"\tend"+`\x9b` {
+			t.Errorf("format %v: continuation not indented to column %d / not escaped: %q", f, col, got)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := render(&buf, fmtCat, e, renderOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); strings.ContainsAny(got, "\x1b\x07") || !strings.Contains(got, `forged\x1b[2J\x07`+"\tend") {
+		t.Errorf("cat: control characters not escaped: %q", got)
+	}
+
+	// --all prints the message as logged (continuation still indented).
+	buf.Reset()
+	if err := render(&buf, fmtShort, e, buildRenderOpts(options{allFields: true})); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); !strings.Contains(got, "forged\x1b[2J\x07\tend\x9b") {
+		t.Errorf("--all: message not raw: %q", got)
+	}
+	buf.Reset()
+	if err := render(&buf, fmtCat, e, buildRenderOpts(options{allFields: true})); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != forged+"\n" {
+		t.Errorf("--all cat: %q", got)
 	}
 }

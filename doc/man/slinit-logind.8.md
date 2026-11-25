@@ -100,6 +100,13 @@ was handed, so the next compositor can take the session (since 4.0.1).
 Before, a compositor that died kept its session taken, and KWin, which
 restarts itself, was refused *DeviceIsTaken* every time after.
 
+*TakeDevice* hands out only what systemd-logind does: character devices
+of the *drm* subsystem named *card\**, *input* named *event\** and
+*hidraw*, and only to a session with a seat (since 4.0.3). Any other
+device is refused with *NoSuchDevice*, and a seatless session with
+*AccessDenied*. Before, any character or block device resolved, so a
+session's owner could be handed */dev/mem* or a disk open read/write.
+
 While a session on a VT has a controller, the daemon holds that VT for
 it, as systemd-logind does (since 4.0.2): *VT_PROCESS* mode, graphics
 mode, and the console keyboard off, so keystrokes reach only the
@@ -123,6 +130,14 @@ systemd-logind has worked since v258. *CreateSessionWithPIDFD* names the
 leader by a pidfd instead of a pid, so a pid reused between the caller
 reading it and the daemon acting on it cannot make another process the
 leader.
+
+*TerminateSession*, *TerminateUser*, *TerminateSeat* and the user and
+seat objects' *Terminate* end the session's processes as well as the
+session, as systemd-logind stops the session's scope (since 4.0.3): every
+process in the session's cgroup is sent SIGTERM, SIGCONT and SIGHUP, and
+whatever is left five seconds later is SIGKILLed through the cgroup's
+*cgroup.kill*. Nothing outside the session's cgroup is signalled. Before,
+only the records were dropped and the processes kept running, untracked.
 
 *CreateSession* refuses with *org.freedesktop.login1.SessionBusy*, as
 systemd-logind does, when the leader already leads or runs inside a
@@ -187,6 +202,11 @@ sequence (since 2.5.1):
    see **slinit**(8);
 5. *PrepareForSleep(false)* is emitted, whether the sleep succeeded or
    not, so a locker is never left believing one is still pending.
+
+One sleep runs at a time (since 4.0.3): a request made while another is
+in flight is refused with *org.freedesktop.login1.OperationInProgress*,
+as systemd-logind refuses it. Before, both ran, and the first one's
+*PrepareForSleep(false)* was announced while the second was under way.
 
 Step 4 matters beyond tidiness. There used to be three independent
 writers of */sys/power/state* — this daemon, its *Sleep* dispatcher, and
@@ -271,7 +291,8 @@ with it.
 :   How long a sleep waits for *delay* inhibitors to clear. Default 5,
     matching systemd, because lockers are written against that number.
     Timing out proceeds with the sleep: a locker that crashed holding a
-    lock must not keep a lid-shut laptop awake.
+    lock must not keep a lid-shut laptop awake. Until 4.0.3 the value was
+    reported as *InhibitDelayMaxUSec* but a sleep always waited 5.
 
 Both timeouts also accept a Go duration, so *1500ms* is not a parse
 error.

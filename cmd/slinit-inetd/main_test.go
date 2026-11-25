@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -237,5 +238,49 @@ func TestEndToEndDoesNotLeakDescriptors(t *testing.T) {
 		t.Errorf("fd count grew from %d to %d across 25 connections — "+
 			"the parent is not closing its copy of the accepted socket",
 			before, after)
+	}
+}
+
+// scriptedListener returns the errors it is given, in order, then
+// net.ErrClosed so serve ends.
+type scriptedListener struct {
+	errs  []error
+	calls int
+}
+
+func (l *scriptedListener) Accept() (net.Conn, error) {
+	l.calls++
+	if len(l.errs) == 0 {
+		return nil, net.ErrClosed
+	}
+	err := l.errs[0]
+	l.errs = l.errs[1:]
+	return nil, err
+}
+func (l *scriptedListener) Close() error   { return nil }
+func (l *scriptedListener) Addr() net.Addr { return &net.UnixAddr{Name: "test", Net: "unix"} }
+
+// Running out of descriptors is the moment a busy inetd most needs to
+// keep its listener: the handlers finishing will free them. accept(2)
+// reports it as EMFILE (or ENFILE, ENOBUFS, ENOMEM), which Go does not
+// call a timeout, so serve has to recognise it itself and retry.
+func TestServeKeepsAcceptingAfterResourceErrors(t *testing.T) {
+	for _, errno := range []syscall.Errno{syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.ENOMEM} {
+		ln := &scriptedListener{errs: []error{
+			&net.OpError{Op: "accept", Net: "tcp", Err: os.NewSyscallError("accept4", errno)},
+		}}
+		done := make(chan struct{})
+		go func() {
+			serve(ln, []string{"/bin/true"}, make(chan struct{}, 1), true)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%v: serve did not return after the listener closed", errno)
+		}
+		if ln.calls != 2 {
+			t.Errorf("%v: Accept called %d times, want 2 — serve gave up on the listener", errno, ln.calls)
+		}
 	}
 }

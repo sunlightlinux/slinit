@@ -1,7 +1,6 @@
 package shutdown
 
 import (
-	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -38,13 +37,17 @@ func TestSoftRebootRestoresConsoleFDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dup stderr: %v", err)
 	}
-	origStdout, origStderr := os.Stdout, os.Stderr
+	// os.Stdout and os.Stderr are not put back: the catch-all replaced
+	// them with *os.File values for fd 1 and 2, and dropping those lets
+	// the GC finalize them, which closes fd 1 and 2 under the test
+	// binary. The next file opened then took fd 1, and -count=2 died
+	// with its output gone. The originals are kept by the catch-all and
+	// name the same fds, which the Dup2s below restore.
 	t.Cleanup(func() {
 		syscall.Dup2(savedOut, 1)
 		syscall.Dup2(savedErr, 2)
 		syscall.Close(savedOut)
 		syscall.Close(savedErr)
-		os.Stdout, os.Stderr = origStdout, origStderr
 	})
 
 	consoleDev, consoleIno := fdIdentity(t, 1)

@@ -131,6 +131,7 @@ type Logger struct {
 	level     Level
 	output    io.Writer
 	syslogW   *syslog.Writer
+	syslogQ   *syslogQueue
 	mainLevel Level // minimum level for main log (syslog/file); defaults to same as level
 
 	// consoleDup is an optional secondary writer that receives a copy of
@@ -363,24 +364,174 @@ func (l *Logger) mainLog(level Level, format string, args ...interface{}) {
 	l.logToSyslog(level, fmt.Sprintf(format, args...))
 }
 
+// newSyslog connects to the system log; a test points it elsewhere.
+var newSyslog = func() (*syslog.Writer, error) {
+	return syslog.New(syslog.LOG_DAEMON|syslog.LOG_NOTICE, "slinit")
+}
+
 // SetSyslog enables syslog output as the main log facility (like dinit's /dev/log).
 // Messages are sent to the daemon facility. Returns an error if the syslog
 // connection cannot be established; in that case the logger continues to work
 // with console output only.
 func (l *Logger) SetSyslog() error {
-	w, err := syslog.New(syslog.LOG_DAEMON|syslog.LOG_NOTICE, "slinit")
+	w, err := newSyslog()
 	if err != nil {
 		return err
 	}
 	l.syslogW = w
+	l.syslogQ = startSyslogQueue(w)
 	return nil
 }
 
-// CloseSyslog closes the syslog connection if one is open.
+// CloseSyslog closes the syslog connection if one is open, after passing
+// on what is queued for it, for as long as the daemon takes it and at
+// most syslogFlushMax.
 func (l *Logger) CloseSyslog() {
 	if l.syslogW != nil {
-		l.syslogW.Close()
+		if l.syslogQ.stop() {
+			l.syslogW.Close()
+		}
 		l.syslogW = nil
+		l.syslogQ = nil
+	}
+}
+
+// syslogQueueLen bounds the messages waiting for the syslog daemon.
+const syslogQueueLen = 1024
+
+// syslogFlushStall is how long a message waits for room in the queue,
+// and CloseSyslog for the queue to drain, while the daemon takes no
+// message at all. A daemon that is reading takes one well within it.
+const syslogFlushStall = time.Second
+
+// syslogFlushMax bounds how long CloseSyslog waits for a slow daemon.
+const syslogFlushMax = 2 * time.Second
+
+type syslogMsg struct {
+	level Level
+	msg   string
+}
+
+// syslogQueue passes messages to the syslog daemon from a goroutine of its
+// own. log/syslog writes with no deadline, and slinit logs with the
+// scheduling lock held, so a daemon that stopped reading /dev/log (one on
+// the host, in container mode; or slinit not run as PID 1) stopped slinit
+// at its next message. When the queue is full a message waits for room
+// while the daemon keeps taking messages, as a direct write did; it is
+// dropped only once the daemon has taken none for syslogFlushStall, and
+// after that messages are dropped without waiting until it takes one
+// again. The daemon is told how many were dropped when it reads again. A
+// daemon that takes its messages, however slowly, gets the same ones, in
+// the same order.
+type syslogQueue struct {
+	w       *syslog.Writer
+	q       chan syslogMsg
+	quit    chan struct{}
+	done    chan struct{}
+	sent    atomic.Uint64
+	dropped atomic.Uint64
+
+	// stalled is set when a message gave up waiting for room; stalledAt
+	// is sent at that moment, so the first message the daemon takes
+	// after it clears it.
+	stalled   atomic.Bool
+	stalledAt atomic.Uint64
+}
+
+func startSyslogQueue(w *syslog.Writer) *syslogQueue {
+	sq := &syslogQueue{
+		w:    w,
+		q:    make(chan syslogMsg, syslogQueueLen),
+		quit: make(chan struct{}),
+		done: make(chan struct{}),
+	}
+	go sq.run()
+	return sq
+}
+
+func (sq *syslogQueue) put(level Level, msg string) {
+	m := syslogMsg{level, msg}
+	select {
+	case sq.q <- m:
+		return
+	default:
+	}
+	if sq.stalled.Load() {
+		if sq.sent.Load() == sq.stalledAt.Load() {
+			sq.dropped.Add(1)
+			return
+		}
+		sq.stalled.Store(false)
+	}
+	timer := time.NewTimer(syslogFlushStall)
+	defer timer.Stop()
+	for {
+		last := sq.sent.Load()
+		select {
+		case sq.q <- m:
+			return
+		case <-timer.C:
+		}
+		if now := sq.sent.Load(); now == last {
+			sq.stalledAt.Store(now)
+			sq.stalled.Store(true)
+			sq.dropped.Add(1)
+			return
+		}
+		timer.Reset(syslogFlushStall)
+	}
+}
+
+func (sq *syslogQueue) run() {
+	defer close(sq.done)
+	for {
+		select {
+		case m := <-sq.q:
+			sq.write(m)
+		case <-sq.quit:
+			for {
+				select {
+				case m := <-sq.q:
+					sq.write(m)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+func (sq *syslogQueue) write(m syslogMsg) {
+	if n := sq.dropped.Swap(0); n > 0 {
+		sq.w.Warning(fmt.Sprintf("%d messages to syslog were dropped while it was not reading", n))
+	}
+	writeSyslog(sq.w, m.level, m.msg)
+	sq.sent.Add(1)
+}
+
+// stop lets the queue drain while the daemon keeps taking messages, for
+// at most syslogFlushMax, and reports whether it finished. A daemon that
+// has stopped, or is too slow, is left behind with the goroutine, which
+// still holds the writer.
+func (sq *syslogQueue) stop() bool {
+	close(sq.quit)
+	last := sq.sent.Load()
+	end := time.Now().Add(syslogFlushMax)
+	for {
+		wait := min(syslogFlushStall, time.Until(end))
+		if wait <= 0 {
+			return false
+		}
+		select {
+		case <-sq.done:
+			return true
+		case <-time.After(wait):
+		}
+		n := sq.sent.Load()
+		if n == last {
+			return false
+		}
+		last = n
 	}
 }
 
@@ -428,19 +579,25 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 }
 
 func (l *Logger) logToSyslog(level Level, msg string) {
+	if q := l.syslogQ; q != nil {
+		q.put(level, msg)
+	}
+}
+
+func writeSyslog(w *syslog.Writer, level Level, msg string) {
 	switch level {
 	case LevelDebug:
-		l.syslogW.Debug(msg)
+		w.Debug(msg)
 	case LevelInfo:
-		l.syslogW.Info(msg)
+		w.Info(msg)
 	case LevelNotice:
-		l.syslogW.Notice(msg)
+		w.Notice(msg)
 	case LevelWarn:
-		l.syslogW.Warning(msg)
+		w.Warning(msg)
 	case LevelError:
-		l.syslogW.Err(msg)
+		w.Err(msg)
 	default:
-		l.syslogW.Crit(msg)
+		w.Crit(msg)
 	}
 }
 

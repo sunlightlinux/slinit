@@ -334,14 +334,16 @@ what tells you the oldest slinit your configuration will run on. See
     that needs a non-zero UID but doesn't merit a permanent account.
 
 **chroot**=*path*
-:   `chroot()` into *path* before exec.
+:   `chroot()` into *path* before exec. **type**=*process* only; any
+    other type refuses to load with it rather than run outside the jail.
 
 **new-session**=*yes*|*no*
 :   Place the service in a new POSIX session (`setsid`).
 
 **lock-file**=*path*
 :   Acquire an exclusive flock on *path* before exec; fail if held.
-    Useful for "only one instance ever" semantics.
+    Useful for "only one instance ever" semantics. **type**=*process*
+    only; on any other type it is ignored, with a warning at load.
 
 **umask**=*octal*
 :   Initial umask for the service. Defaults to slinit's umask.
@@ -401,7 +403,10 @@ what tells you the oldest slinit your configuration will run on. See
     afterwards). When set, only listed names are forwarded to the
     child. Empty value = drop
     everything. **SLINIT_SERVICENAME** and **SLINIT_SERVICEDSCDIR**
-    are always forwarded regardless (dinit-compat query env vars).
+    are always forwarded regardless (dinit-compat query env vars), and
+    so is the inherited **PATH**, as systemd's **PassEnvironment=**
+    leaves the manager's PATH alone; **unset-environment** can still
+    remove it.
     Repeatable via *+=*. Systemd **PassEnvironment=**.
 
 **unset-environment**=*NAME*...
@@ -493,8 +498,10 @@ error. Repeat the line for several targets.
 **depends-on.d**: *directory*, **depends-ms.d**: *directory*, **waits-for.d**: *directory*, **prepared-by.d**: *directory*
 :   Drop-in directories: every non-hidden, non-directory entry inside
     *directory* is treated as a dependency of the corresponding kind.
-    A relative *directory* is resolved against the service file's
-    directory; a missing directory is ignored.
+    A relative *directory* is resolved against the directory of the
+    file that contains the setting — the service file, or the
+    **@include**d fragment, conf.d overlay or **.override** file it
+    appears in (as dinit does); a missing directory is ignored.
 
 ## ACTIVATION
 
@@ -1318,23 +1325,31 @@ before exec'ing the service. The host filesystem is untouched.
     */etc*. *strict* remounts the whole root */* read-only; only the
     paths listed in **read-write-paths**, plus whichever of */dev*,
     */proc*, */sys*, */run*, */tmp* and */var/tmp* are separate
-    mount points, stay writable (use **private-tmp** to guarantee a
-    writable */tmp*). *no* (default) disables the remount.
+    mount points (with the mounts below them), stay writable (use
+    **private-tmp** to guarantee a writable */tmp*), and so do the
+    **temporary-filesystem** and **protect-home**=*tmpfs* mounts. Every
+    mount below a read-only path is remounted read-only too (until
+    4.0.3, only the mount at the path was, so separate filesystems below
+    it stayed writable). *no* (default) disables the remount.
 
 **read-only-paths**=*path*...
 :   Bind-mount each absolute path on top of itself and remount it
-    read-only inside the sandbox. Repeatable with `+=`. Paths must be
+    read-only inside the sandbox, with every mount below it. A mount's
+    *nosuid*, *nodev* and *noexec* stay as they were (until 4.0.3 the
+    remount cleared them). Repeatable with `+=`. Paths must be
     absolute and free of `..` components.
 
 **read-write-paths**=*path*...
 :   Punch a writable hole through **protect-system**=*strict* for the
     listed paths. Applied before **read-only-paths**, so a path
-    listed in both ends up read-only. Repeatable with `+=`.
+    listed in both ends up read-only. The mounts below the path that
+    the sandbox made read-only are writable again; one that was
+    read-only already stays so. Repeatable with `+=`.
 
 **protect-home**=*no*|*yes*|*read-only*|*tmpfs*
 :   Hide */home*, */root* and */run/user* from the service. *yes*
     over-mounts each with an inaccessible (mode 0000) tmpfs; *read-only*
-    ro-remounts them; *tmpfs* replaces them with empty per-service
+    ro-remounts them and every mount below them (*/run/user/<uid>*); *tmpfs* replaces them with empty per-service
     tmpfs. Equivalent to systemd's **ProtectHome=**.
 
 **inaccessible-paths**=*path*...
@@ -1421,7 +1436,23 @@ the internal **seccomp** package and installs it via the
 :   Architectures the filter accepts: *native* (default — the running
     arch), *x86-64* / *amd64*, *x86* / *i386*, *arm64* / *aarch64*,
     *arm*. Syscalls issued from any other architecture take the kill
-    action, mirroring systemd's **SystemCallArchitectures=**.
+    action, mirroring systemd's **SystemCallArchitectures=**. Unlike
+    systemd, which filters each listed architecture with that
+    architecture's own syscall numbers, slinit filters only the native
+    one: a call through another listed architecture (*x86* on an x86-64
+    host) is refused with the **system-call-error-number** action,
+    whatever **system-call-filter** says, so a 32-bit program cannot run
+    under the filter. Before 4.0.3 such a call was matched against the
+    native numbers, where it means a different call (i386 **mount** is
+    x86-64 **access**), so a denylist missed it. Set
+    without **system-call-filter** — as is **system-call-log** or
+    **system-call-error-number** — it refuses nothing else: every
+    native syscall is allowed. Before 4.0.3 any of the three set alone
+    refused every syscall, and the service died at its first one.
+    The x32 ABI is never accepted: on x86-64 an x32 call (number with
+    bit 30 set) is killed, as libseccomp does unless x32 is allowed.
+    Before 4.0.3 such a call passed the arch check and missed every
+    entry, so a denylist let it through.
 
 **system-call-error-number**=*kill*|*log*|*trap*|*errno-name*|*errno-number*
 :   Action for syscalls that do NOT match an allow entry (or DO match
@@ -1436,9 +1467,12 @@ the internal **seccomp** package and installs it via the
 
 **system-call-log**=*item*...
 :   Syscalls (names or *@group* tokens) that always trigger
-    **SECCOMP_RET_LOG** independent of the main filter. Useful for
-    observing a process before tightening the filter. Repeatable with
-    `+=`. Equivalent to systemd's **SystemCallLog=**.
+    **SECCOMP_RET_LOG**. Useful for observing a process before
+    tightening the filter. Repeatable with `+=`. Equivalent to systemd's
+    **SystemCallLog=**: the list is installed as a seccomp filter of its
+    own, so a call that **system-call-filter** refuses stays refused —
+    the kernel takes the most restrictive answer. Before 4.0.3 a listed
+    call ran even when the filter refused it.
 
 **io-uring-filter**=[**~**]*operation*...
 :   (since 3.18.0) Restricts the **io_uring**(7) operations the service
@@ -1474,31 +1508,47 @@ caller is meant to fall back to an older call that can be checked
 process, which took down any program that probes and copes without the
 call — under **restrict-namespaces**, every threaded program, since
 glibc's **pthread_create**(3) tries **clone3** first. A syscall made
-through a foreign ABI (a 32-bit call on x86-64) is still killed.
-**system-call-error-number** does not apply to these filters. The mount-based knobs (**protect-kernel-tunables**,
-**protect-control-groups**, **protect-kernel-logs**) additionally
-auto-imply *CLONE_NEWNS* so the operations are confined to the
-service's private mount namespace.
+through a foreign ABI (a 32-bit or, since 4.0.3, an x32 call on x86-64)
+is still killed.
+**system-call-error-number** does not apply to these filters. slinit
+knows syscall numbers on x86-64 only: on another architecture a knob
+that installs a seccomp filter fails the start rather than run the
+service unprotected (since 4.0.3; before, the filter refused nothing).
+The mount-based knobs (**protect-kernel-tunables**,
+**protect-kernel-modules**, **protect-control-groups**,
+**protect-kernel-logs**) additionally auto-imply *CLONE_NEWNS* so the
+operations are confined to the service's private mount namespace. Paths
+these hide or make read-only that do not exist are skipped.
 
 **protect-kernel-tunables**=*yes*|*no*
-:   Read-only remount */proc/sys* and deny **_sysctl**(2), as systemd's
+:   Read-only remount */proc/sys*, */proc/sysrq-trigger*, */proc/irq*,
+    */proc/bus*, */proc/fs*, */proc/acpi*, */proc/apm*, */proc/asound*,
+    */proc/latency_stats*, */proc/mtrr*, */proc/scsi*,
+    */proc/timer_stats* and */sys* (with the mounts below them, except
+    */sys/fs/cgroup* and */sys/fs/selinux*), hide */proc/kallsyms* and
+    */proc/kcore*, and deny **_sysctl**(2), as systemd's
     **ProtectKernelTunables=** does, and also **iopl**(2),
     **ioperm**(2), **swapon**(2), **swapoff**(2), which systemd leaves
-    to **SystemCallFilter=**.
+    to **SystemCallFilter=**. Until 4.0.3 only */proc/sys* was made
+    read-only.
 
 **protect-kernel-modules**=*yes*|*no*
 :   Deny **init_module**(2), **finit_module**(2),
-    **delete_module**(2). Equivalent to systemd's
-    **ProtectKernelModules=**.
+    **delete_module**(2), hide */usr/lib/modules* and drop
+    *CAP_SYS_MODULE* from the bounding set (since 4.0.3). Equivalent to
+    systemd's **ProtectKernelModules=**.
 
 **protect-kernel-logs**=*yes*|*no*
-:   Deny **syslog**(2) and bind-mount */dev/null* over */dev/kmsg*.
-    Equivalent to systemd's **ProtectKernelLogs=**.
+:   Deny **syslog**(2), bind-mount */dev/null* over */dev/kmsg* and
+    */proc/kmsg*, and drop *CAP_SYSLOG* from the bounding set (the last
+    two since 4.0.3). Equivalent to systemd's **ProtectKernelLogs=**.
 
 **protect-clock**=*yes*|*no*
 :   Deny **clock_settime**(2), **clock_adjtime**(2),
-    **settimeofday**(2), **adjtimex**(2). Equivalent to systemd's
-    **ProtectClock=**.
+    **settimeofday**(2), **adjtimex**(2), and drop *CAP_SYS_TIME* and
+    *CAP_WAKE_ALARM* from the bounding set (since 4.0.3). systemd's
+    **ProtectClock=** also makes the RTC devices read-only through the
+    device cgroup controller, which slinit does not do.
 
 **protect-control-groups**=*yes*|*no*
 :   Read-only remount */sys/fs/cgroup*. Equivalent to systemd's
@@ -1554,7 +1604,11 @@ service's private mount namespace.
 **restrict-file-systems**=*yes*|*no*
 :   Deny the entire mount syscall family: **mount**(2),
     **umount2**(2), **fsopen**(2), **fsconfig**(2), **fsmount**(2),
-    **fspick**(2), **move_mount**(2), **open_tree**(2). Classic
+    **fspick**(2), **move_mount**(2), **open_tree**(2),
+    **open_tree_attr**(2), **mount_setattr**(2), **pivot_root**(2) —
+    systemd's *@mount* group but **chroot**(2). The last three were
+    missing before 4.0.3, so **mount_setattr** could make a read-only
+    mount writable. Classic
     seccomp-BPF cannot inspect the fsname string; the most-
     restrictive interpretation ships (deny all). systemd's
     fstype allow-list variant requires BPF-LSM.
@@ -1667,7 +1721,10 @@ kernel stacks filters and takes the most restrictive result.
 :   cpuset.cpus, cpuset.mems.
 
 **cgroup-hugetlb**=*size N*
-:   hugetlb.\<size\>.max — e.g. `cgroup-hugetlb=2MB 4`.
+:   hugetlb.\<size\>.max. *N* is written as given and the kernel
+    reads it as a byte limit (suffixes K, M, G accepted), rounded down
+    to whole pages; it is not a page count. `cgroup-hugetlb=2MB 8M`
+    allows four 2 MB pages, while `2MB 4` allows none.
 
 **cgroup-setting**=*file value*
 :   Generic write to any controller knob: *file* is the basename
@@ -2188,7 +2245,10 @@ watch; the service remains startable via `slinitctl start`.
 **start-on-path-changed**=*path*
 :   Fire when *path* is written and closed (file) or has entries
     created/removed/renamed (directory). Uses **IN_CLOSE_WRITE** plus
-    directory mutation events.
+    directory mutation events. A file's parent directory is also
+    watched for the file's name, so replacing it by renaming another
+    file over it, or removing it, also fires, and the trigger keeps
+    working on the replacement.
 
 **start-on-path-modified**=*path*
 :   Like **start-on-path-changed** but also fires on every write

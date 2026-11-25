@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"sync"
@@ -105,6 +104,9 @@ func NewSharedLogMuxWithOptions(opts SharedLogMuxOptions) (*SharedLogMux, error)
 	return m, nil
 }
 
+// Lossy reports whether the mux drops lines instead of blocking.
+func (m *SharedLogMux) Lossy() bool { return m.queue != nil }
+
 // DropCount reports the number of lines the lossy path has dropped
 // since construction. Callers use this for observability (metrics /
 // slinitctl status). Always 0 in classic blocking mode.
@@ -130,11 +132,19 @@ func (m *SharedLogMux) AddProducer(name string) (*os.File, error) {
 		return nil, fmt.Errorf("shared-logger: mux is closed")
 	}
 
-	// If producer already exists, stop old reader first
+	// If the producer already exists (a restart), retire the old reader
+	// without waiting for it. AddProducer runs from startProcess under
+	// queueMu, and with the logger stopped or hung the old reader sits
+	// in loggerW.Write until the logger reads again — PID 1 holds the
+	// pipe's read end, so the write never fails. Waiting here froze the
+	// whole state machine. The old reader exits on its own after that
+	// write; the new one waits for it before forwarding anything, so
+	// lines still reach the logger in order.
+	var prev chan struct{}
 	if old, ok := m.producers[name]; ok {
 		close(old.stopCh)
-		old.pipeR.Close() // unblock scanner.Scan()
-		<-old.doneCh
+		old.pipeR.Close() // unblock the reader's Read
+		prev = old.doneCh
 		// Don't close old.pipeW — it may still be in use by the old process
 	}
 
@@ -152,7 +162,17 @@ func (m *SharedLogMux) AddProducer(name string) (*os.File, error) {
 	}
 	m.producers[name] = p
 
-	go m.readProducer(p)
+	go func() {
+		if prev != nil {
+			select {
+			case <-prev:
+			case <-p.stopCh:
+				close(p.doneCh)
+				return
+			}
+		}
+		m.readProducer(p)
+	}()
 
 	return w, nil
 }
@@ -243,21 +263,16 @@ func (m *SharedLogMux) Close() {
 func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 	defer close(p.doneCh)
 
-	scanner := bufio.NewScanner(p.pipeR)
-	// Use a reasonable max line size (64KB)
-	scanner.Buffer(make([]byte, 4096), 64*1024)
-
 	// Pre-build the prefix bytes once: "[name] "
 	prefix := []byte("[" + p.name + "] ")
 
-	for scanner.Scan() {
+	// Lines over 64 KiB go on in 64 KiB pieces (see readLines).
+	readLines(p.pipeR, 64*1024, func(lineBytes []byte) bool {
 		select {
 		case <-p.stopCh:
-			return
+			return false
 		default:
 		}
-
-		lineBytes := scanner.Bytes()
 
 		if m.queue != nil {
 			// Lossy path: coalesce prefix+line+nl into one buffer and
@@ -273,7 +288,7 @@ func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 			default:
 				m.dropCount.Add(1)
 			}
-			continue
+			return true
 		}
 
 		// Classic blocking path
@@ -287,11 +302,9 @@ func (m *SharedLogMux) readProducer(p *sharedLogProducer) {
 		}
 		m.writerMu.Unlock()
 
-		if err != nil {
-			// Logger pipe broken — stop silently
-			return
-		}
-	}
+		// Logger pipe broken — stop silently
+		return err == nil
+	})
 	// Pipe closed (producer exited) — goroutine exits naturally
 }
 

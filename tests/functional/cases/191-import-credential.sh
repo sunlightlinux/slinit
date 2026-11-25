@@ -1,26 +1,22 @@
 #!/bin/sh
-# Test: import-credential parses + service starts.
-# Validates: the directive is accepted by the loader; the credentials
-# tmpfs is populated with whatever slinit could resolve (fallback here
-# is set-credential which we know lands). Behavioral verification of
-# a daemon that actually has credentials to pass through belongs in
-# an acceptance test with a real credential source.
+# Test: import-credential copies the matching credentials from the system
+# credential store into $CREDENTIALS_DIRECTORY, and only those.
+#
+# rootfs/ seeds /etc/credstore with my-secret-a, my-secret-b and
+# other-x; the service imports my-secret-*. (The case used to have an
+# empty store and check only the set-credential entry, which is there
+# with or without import-credential.)
 
 wait_for_service "importcred-svc" "STARTED" 10
-assert_service_state "importcred-svc" "STARTED" "import-credential parses + svc starts"
-
 sleep 1
 
-# Verify the credentials dir was set up with at least the fallback
-# set-credential entry; import-credential should be an additive no-op
-# when the source has no matches.
-_TESTS_RUN=$((_TESTS_RUN + 1))
-if grep -q '^fallback$' /tmp/191-creds 2>/dev/null; then
-    echo "OK: credentials tmpfs contains the set-credential entry"
-else
-    _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: credentials tmpfs does not contain 'fallback' — set-credential missing?"
-    cat /tmp/191-creds 2>/dev/null | sed 's/^/    /'
-fi
+has() { grep -qx "$1" /tmp/191-creds 2>/dev/null && echo yes || echo no; }
+
+echo "INFO: credentials directory: $(tr '\n' ' ' < /tmp/191-creds 2>/dev/null)"
+assert_eq "$(has my-secret-a)" "yes" "my-secret-a imported"
+assert_eq "$(has my-secret-b)" "yes" "my-secret-b imported"
+assert_eq "$(has other-x)" "no" "other-x (no match) not imported"
+assert_eq "$(has fallback)" "yes" "set-credential entry alongside the imports"
+assert_eq "$(cat /tmp/191-secret-a 2>/dev/null)" "alpha" "imported credential has the store's content"
 
 test_summary

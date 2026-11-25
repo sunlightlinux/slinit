@@ -135,6 +135,16 @@ func Hostname() string {
 	return idCache.hostname
 }
 
+// CachedIDs returns the boot ID, machine ID and hostname InitIDs
+// resolved, or empty strings when it never succeeded. For slinit-journald,
+// which keeps running when InitIDs fails and must not panic on a client's
+// datagram.
+func CachedIDs() (boot, machine, hostname string) {
+	idCache.mu.RLock()
+	defer idCache.mu.RUnlock()
+	return idCache.boot, idCache.machine, idCache.hostname
+}
+
 // resolveBootID first tries to read an existing BootIDPath (in case
 // slinit was restarted in-place via soft-reboot or exec-reload
 // without a real reboot); if absent, generates a fresh 128-bit ID

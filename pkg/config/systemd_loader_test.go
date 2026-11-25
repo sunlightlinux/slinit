@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/service"
@@ -168,5 +170,352 @@ PrivateNetwork=yes
 	}
 	if len(got) == 0 {
 		t.Error("PrivateNetwork has no slinit equivalent and must be reported, not dropped silently")
+	}
+}
+
+// systemd's After= orders and Wants= pulls in only what exists: a unit
+// naming one that is not installed still starts. slinit fails a load on
+// a missing dependency, so 92 of 253 host units failed to load directly
+// (display-manager.service: After=ypbind.service); a unit loaded
+// directly now leaves such a reference out with a note. After= that
+// does resolve stays waits-for:, pulling the unit in, as on 4.0.2 —
+// bolt relies on it for polkit, systemd-remount-fs for
+// systemd-fsck-root. Ordering-only after: is deferred to 4.1.
+func TestSystemdOrderingOnMissingUnitsLoads(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "dm.service", `[Unit]
+After=ypbind.service peer.service
+Wants=gone.service
+[Service]
+ExecStart=/usr/bin/dm
+`)
+	writeUnit(t, units, "peer.service", "[Service]\nExecStart=/usr/bin/peer\n")
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, level+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("dm")
+	if err != nil {
+		t.Fatalf("unit with After=/Wants= on missing units does not load: %v", err)
+	}
+	deps := map[service.DependencyType]bool{}
+	for _, d := range svc.Record().Dependencies() {
+		if d.To.Name() != "peer" {
+			t.Errorf("unexpected dependency on %q", d.To.Name())
+		}
+		deps[d.DepType] = true
+	}
+	if !deps[service.DepWaitsFor] || len(deps) != 1 {
+		t.Errorf("peer dependencies = %v, want waits-for only: After= pulls the unit in on 4.0", deps)
+	}
+	for _, missing := range []string{"ypbind", "gone"} {
+		found := false
+		for _, g := range got {
+			found = found || (strings.HasPrefix(g, "NOTE") && strings.Contains(g, missing))
+		}
+		if !found {
+			t.Errorf("no NOTE that %s was left out: %v", missing, got)
+		}
+	}
+}
+
+// systemd quotes an Exec*= word the way slinit's command parser does.
+// Stripping the "outer" quotes off the whole value, as is right for
+// most keys, cut the first and last word's quotes instead: argv came
+// out as ["/opt/my" "app/bin/run --name hello" "world"].
+func TestSystemdExecQuotesKept(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "q.service", `[Service]
+ExecStart="/opt/my app/bin/run" --name "hello world"
+ExecStop='/opt/my app/bin/stop' now
+`)
+	dl := NewDirLoader(service.NewServiceSet(&testConsumerLogger{}), []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	desc, _, err := dl.findAndParse("q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/opt/my app/bin/run", "--name", "hello world"}
+	if strings.Join(desc.Command, "|") != strings.Join(want, "|") {
+		t.Errorf("command = %q, want %q", desc.Command, want)
+	}
+	want = []string{"/opt/my app/bin/stop", "now"}
+	if strings.Join(desc.StopCommand, "|") != strings.Join(want, "|") {
+		t.Errorf("stop-command = %q, want %q", desc.StopCommand, want)
+	}
+}
+
+// Only a .service or .socket reference names something slinit can
+// depend on. The other unit types were copied through with the suffix
+// cut off, or verbatim, so qemu-guest-agent.service (After= its virtio
+// .device) could not load: the escaped device name is no valid service
+// name. Like .target, they are left out with a note.
+func TestSystemdNonServiceRefsDropped(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "ga.service", `[Unit]
+BindsTo=dev-virtio\x2dports-org.qemu.guest_agent.0.device
+After=dev-virtio\x2dports-org.qemu.guest_agent.0.device
+Requires=-.mount
+Wants=user.slice
+[Service]
+ExecStart=/usr/bin/qemu-ga
+`)
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, level+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("ga")
+	if err != nil {
+		t.Fatalf("unit referring to non-service units does not load: %v", err)
+	}
+	if deps := svc.Record().Dependencies(); len(deps) != 0 {
+		t.Errorf("dependencies on %v, want none", deps[0].To.Name())
+	}
+	for _, ref := range []string{"guest_agent.0.device", "-.mount", "user.slice"} {
+		found := false
+		for _, g := range got {
+			found = found || (strings.HasPrefix(g, "NOTE") && strings.Contains(g, ref))
+		}
+		if !found {
+			t.Errorf("no NOTE that %s was dropped: %v", ref, got)
+		}
+	}
+}
+
+// X.socket activates X.service, and slinit has no socket units, so a
+// reference to the socket is a dependency on the service: on 4.0.2
+// lvm2-monitor's Requires=dm-event.socket was depends-on: dm-event, and
+// dropping every non-.service reference lost that hard dependency (and
+// cups.socket, dbus.socket, syslog.socket elsewhere). A unit's own
+// socket names the unit itself — dm-event.service Requires= its socket —
+// and is dropped with a note, not made a dependency on itself. A
+// Requires= on a socket whose service does not exist still fails the
+// load, as a Requires= on a missing service does.
+func TestSystemdSocketRefIsItsService(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "lvm2-monitor.service", `[Unit]
+Requires=dm-event.socket
+After=dm-event.socket dm-event.service
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/lvm vgchange --monitor y
+`)
+	writeUnit(t, units, "dm-event.service", `[Unit]
+Requires=dm-event.socket
+After=dm-event.socket
+[Service]
+ExecStart=/usr/sbin/dmeventd -f
+`)
+	writeUnit(t, units, "dbus-broker.service", `[Unit]
+Requires=dbus.socket
+After=dbus.socket
+[Service]
+ExecStart=/usr/bin/dbus-broker-launch
+[Install]
+Alias=dbus.service
+`)
+	writeUnit(t, units, "needs-gone.service", `[Unit]
+Requires=gone.socket
+[Service]
+ExecStart=/bin/true
+`)
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, svc+" "+level+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+
+	ss := service.NewServiceSet(&testConsumerLogger{})
+	dl := NewDirLoader(ss, []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("lvm2-monitor")
+	if err != nil {
+		t.Fatalf("load lvm2-monitor: %v", err)
+	}
+	hard := false
+	for _, d := range svc.Record().Dependencies() {
+		if d.To.Name() != "dm-event" {
+			t.Errorf("unexpected dependency on %q", d.To.Name())
+		}
+		hard = hard || d.DepType == service.DepRegular
+	}
+	if !hard {
+		t.Error("Requires=dm-event.socket did not become depends-on: dm-event")
+	}
+	ev := ss.FindService("dm-event", false)
+	if ev == nil {
+		t.Fatal("dm-event not loaded")
+	}
+	for _, d := range ev.Record().Dependencies() {
+		t.Errorf("dm-event depends on %q (%d); its own socket is itself", d.To.Name(), d.DepType)
+	}
+	noted := false
+	for _, g := range got {
+		noted = noted || (strings.HasPrefix(g, "dm-event NOTE") && strings.Contains(g, "dm-event.socket") && strings.Contains(g, "itself"))
+	}
+	if !noted {
+		t.Errorf("no NOTE that dm-event's own socket was dropped: %v", got)
+	}
+	// dbus.socket is dbus-broker's own, through Alias=dbus.service.
+	br, err := dl.LoadService("dbus-broker")
+	if err != nil {
+		t.Fatalf("load dbus-broker: %v", err)
+	}
+	for _, d := range br.Record().Dependencies() {
+		t.Errorf("dbus-broker depends on %q; dbus is its own alias", d.To.Name())
+	}
+	if _, err := dl.LoadService("needs-gone"); err == nil {
+		t.Error("Requires=gone.socket with no gone service loaded; a missing Requires= must fail")
+	}
+}
+
+// User=, Group=, Restart=on-success and several ExecStart= lines, each
+// read through the real loader.
+//   - Group= before User= made run-as "user::group", a group named
+//     ":group"; systemd does not care about the order.
+//   - Restart=on-success became restart = yes, so a service that failed
+//     was restarted; slinit has had on-success since 3.x.
+//   - A oneshot runs every ExecStart= in turn; slinit runs one command,
+//     and the others were dropped without a word.
+func TestSystemdUserGroupRestartExecStart(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "o.service", `[Service]
+Type=oneshot
+Group=wheel
+User=nobody
+Restart=on-success
+ExecStart=/usr/bin/first
+ExecStart=/usr/bin/second
+`)
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, level+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+	dl := NewDirLoader(service.NewServiceSet(&testConsumerLogger{}), []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	desc, _, err := dl.findAndParse("o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc.RunAs != "nobody:wheel" {
+		t.Errorf("run-as = %q, want nobody:wheel", desc.RunAs)
+	}
+	if desc.AutoRestart != service.RestartOnSuccess {
+		t.Errorf("restart = %v, want on-success", desc.AutoRestart)
+	}
+	found := false
+	for _, g := range got {
+		found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, "ExecStart") && strings.Contains(g, "/usr/bin/first"))
+	}
+	if !found {
+		t.Errorf("no WARN that an ExecStart= was dropped: %v", got)
+	}
+}
+
+// What systemd substitutes into an Exec line and slinit cannot:
+//   - $VAR comes from Environment=/EnvironmentFile= in systemd; slinit
+//     expands it when the file is loaded, from its own environment, so
+//     ${FILTER_RPC_ARGS} from qemu-ga's env-file became nothing. Warned.
+//   - $MAINPID: slinit has none, so `kill -s SIG $MAINPID` lost its PID.
+//     That form is the term-signal when SIG stops the daemon (TERM, INT,
+//     QUIT, KILL, or KillSignal='s own); a HUP or USR1 is a reload, and
+//     as term-signal it overrode KillSignal=, leaving the daemon running
+//     until stop-timeout and SIGKILL — dropped with a warning instead.
+//     Any other use drops the stop-command.
+//   - A second EnvironmentFile= replaced the first silently; slinit
+//     reads one. Warned.
+func TestSystemdExecSubstitutions(t *testing.T) {
+	root := t.TempDir()
+	units := filepath.Join(root, "systemd")
+	writeUnit(t, units, "v.service", `[Service]
+EnvironmentFile=-/etc/a
+EnvironmentFile=-/etc/b
+ExecStart=/usr/bin/d $OPTS --x ${MORE} $$literal
+ExecStop=/bin/kill -s HUP $MAINPID
+KillSignal=INT
+`)
+	writeUnit(t, units, "q.service", `[Service]
+ExecStart=/usr/bin/q
+ExecStop=/bin/kill -QUIT $MAINPID
+`)
+	writeUnit(t, units, "u.service", `[Service]
+ExecStart=/usr/bin/u
+ExecStop=/bin/kill -s USR1 ${MAINPID}
+`)
+	writeUnit(t, units, "k.service", `[Service]
+ExecStart=/usr/bin/k
+KillSignal=SIGUSR2
+ExecStop=/bin/kill -USR2 $MAINPID
+`)
+	writeUnit(t, units, "w.service", `[Service]
+ExecStart=/usr/bin/w
+ExecStop=/usr/bin/wctl stop ${MAINPID}
+`)
+	var got []string
+	OnSystemdUnitWarning = func(svc, path, level, msg string) {
+		got = append(got, level+": "+svc+": "+msg)
+	}
+	t.Cleanup(func() { OnSystemdUnitWarning = nil })
+	dl := NewDirLoader(service.NewServiceSet(&testConsumerLogger{}), []string{filepath.Join(root, "slinit.d")})
+	dl.SetSystemdDirs([]string{units})
+	v, _, err := dl.findAndParse("v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.TermSignal != syscall.SIGINT || len(v.StopCommand) != 0 {
+		t.Errorf("term-signal = %v, stop-command = %q; want KillSignal's SIGINT and none: HUP does not stop", v.TermSignal, v.StopCommand)
+	}
+	for name, want := range map[string]syscall.Signal{
+		"q": syscall.SIGQUIT,
+		"u": syscall.SIGTERM, // the default: USR1 is no stop signal
+		"k": syscall.SIGUSR2, // KillSignal= names it, so it is the stop signal
+	} {
+		d, _, err := dl.findAndParse(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.TermSignal != want || len(d.StopCommand) != 0 {
+			t.Errorf("%s: term-signal = %v, stop-command = %q; want %v and none", name, d.TermSignal, d.StopCommand, want)
+		}
+	}
+	w, _, err := dl.findAndParse("w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.StopCommand) != 0 {
+		t.Errorf("stop-command = %q, want it dropped: it has no PID to act on", w.StopCommand)
+	}
+	for _, want := range []string{"v: ExecStart", "$OPTS", "${MORE}", "/etc/a", "w: ExecStop", "v: ExecStop", "u: ExecStop"} {
+		found := false
+		for _, g := range got {
+			found = found || (strings.HasPrefix(g, "WARN") && strings.Contains(g, want))
+		}
+		if !found {
+			t.Errorf("no WARN mentioning %q: %v", want, got)
+		}
+	}
+	for _, g := range got {
+		if strings.Contains(g, "literal") {
+			t.Errorf("$$ is a literal $ on both sides, not a variable: %s", g)
+		}
 	}
 }

@@ -8,46 +8,33 @@
 
 wait_for_service "boot" "STARTED" 15
 
-# -k must succeed (exit 0) even if the QEMU guest's early kmsg
-# stream hasn't populated by the time this runs. On real hardware
-# the buffer always has boot lines; on a tiny cached-kernel VM
-# it may be empty. Both paths must run cleanly without erroring.
+# -k must succeed and return kernel lines: slinit reads /dev/kmsg from
+# the start of boot, and the kernel always logs during boot, so an empty
+# result means the kmsg reader did not run. (Empty output used to count
+# as OK, which made every check below pass without a kernel line.)
+_out=$(slinit-journalctl -k -n 10 2>/dev/null)
+_rc=$?
+_n=$(echo "$_out" | grep -c .)
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if _out=$(slinit-journalctl -k -n 10 2>&1); then
-    echo "OK: -k succeeded (returned $(echo "$_out" | wc -l) line(s))"
+if [ "$_rc" = 0 ] && [ "$_n" -ge 1 ]; then
+    echo "OK: -k returned $_n kernel line(s)"
 else
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: -k errored"
-    echo "$_out"
+    echo "FAIL: -k rc=$_rc returned $_n line(s)"
 fi
 
-# If ANY kernel line surfaced, it must obey the v2.1.0 render
-# rules: unit=kernel (via bare 'kernel:' prefix, not
-# 'kernel[N]:'). Conditional so a silent kmsg doesn't fail us.
+# Kernel lines render as bare 'kernel:', not 'kernel[N]:'.
 _TESTS_RUN=$((_TESTS_RUN + 1))
-if [ -z "$_out" ]; then
-    echo "OK: no kernel lines surfaced (empty kmsg, no bracket rule to check)"
-elif echo "$_out" | grep -qE 'kernel\[[0-9]+\]:'; then
+if echo "$_out" | grep -qE 'kernel\[[0-9]+\]:'; then
     _TESTS_FAILED=$((_TESTS_FAILED + 1))
     echo "FAIL: kernel line shows [PID] bracket (should be bare 'kernel:')"
     echo "$_out" | grep -E 'kernel\[[0-9]+\]' | head -1
 else
-    echo "OK: kernel lines have no [PID] bracket (or empty)"
+    echo "OK: kernel lines have no [PID] bracket"
 fi
 
-# JSON payload check gated on kernel lines being present.
-_json=$(slinit-journalctl -k -o json -n 1 2>&1 | head -1)
-_TESTS_RUN=$((_TESTS_RUN + 1))
-if [ -z "$_json" ]; then
-    echo "OK: no JSON kernel event (empty kmsg — skip render-shape check)"
-else
-    if echo "$_json" | grep -q '"unit":"kernel"'; then
-        echo "OK: JSON kernel event has unit=kernel"
-    else
-        _TESTS_FAILED=$((_TESTS_FAILED + 1))
-        echo "FAIL: JSON kernel event missing unit=kernel: $_json"
-    fi
-fi
+_json=$(slinit-journalctl -k -o json -n 1 2>/dev/null | head -1)
+assert_contains "$_json" '"unit":"kernel"' "JSON kernel event has unit=kernel"
 
 # --dmesg long form must at least succeed.
 _TESTS_RUN=$((_TESTS_RUN + 1))

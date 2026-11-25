@@ -3,9 +3,15 @@ package journalbin
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/sunlightlinux/slinit/pkg/journal"
 )
 
 // TestReaderRejectsOversizedDataObject exercises the class of
@@ -185,5 +191,156 @@ func TestReaderRejectsOffsetPastEOF(t *testing.T) {
 		t.Fatalf("ReadEntryAt(past-EOF): want error, got nil")
 	} else if !errors.Is(err, ErrObjectBounds) {
 		t.Fatalf("ReadEntryAt(past-EOF): want ErrObjectBounds, got %v", err)
+	}
+}
+
+// An ENTRY_ARRAY whose next offset points back at itself used to be
+// walked forever, appending the same entries until memory ran out.
+func TestWalkEntryOffsetsRejectsCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cycle.journal")
+	w, err := NewWriter(path, testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(&journal.Event{Ts: 1000, Msg: "m", Prio: journal.PriorityInfo}); err != nil {
+		t.Fatal(err)
+	}
+	arr := w.header.EntryArrayOffset
+	w.Close()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var next [8]byte
+	binary.LittleEndian.PutUint64(next[:], arr)
+	if _, err := f.WriteAt(next[:], int64(arr)+ObjectHeaderSize); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.EntryOffsets()
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("self-referential entry array walked without error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("walk of a self-referential entry array did not terminate")
+	}
+}
+
+// Every item of one ENTRY can name the same large DATA object. The
+// reader read and allocated that payload once per item, so a 2 MiB file
+// could demand 128 GiB; an entry may now read no more payload than the
+// file holds, and a repeated item is read once.
+func TestReaderEntryPayloadsBoundedByFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "amp.journal")
+	w, err := NewWriter(path, testBootID, testMachineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("x", 256<<10)
+	fields := map[string]string{}
+	for i := 0; i < 60; i++ {
+		fields[fmt.Sprintf("F%d", i)] = "v"
+	}
+	entryOff, err := w.Append(&journal.Event{Ts: 1000, Msg: big, Prio: journal.PriorityInfo, Fields: fields})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hdr [ObjectHeaderSize]byte
+	if _, err := f.ReadAt(hdr[:], int64(entryOff)); err != nil {
+		t.Fatal(err)
+	}
+	oh, _ := DecodeObjectHeader(hdr[:])
+	itemsStart := int64(entryOff) + ObjectHeaderSize + 8 + 8 + 8 + 16 + 8
+	nItems := (int64(entryOff) + int64(oh.Size) - itemsStart) / 16
+	// Find the MESSAGE item (the large one) and point every item at it.
+	items := make([]byte, nItems*16)
+	if _, err := f.ReadAt(items, itemsStart); err != nil {
+		t.Fatal(err)
+	}
+	var bigOff uint64
+	var largest uint64
+	for k := int64(0); k < nItems; k++ {
+		off := binary.LittleEndian.Uint64(items[k*16:])
+		var dh [ObjectHeaderSize]byte
+		f.ReadAt(dh[:], int64(off))
+		d, _ := DecodeObjectHeader(dh[:])
+		if d.Size > largest {
+			largest, bigOff = d.Size, off
+		}
+	}
+	for k := int64(0); k < nItems; k++ {
+		binary.LittleEndian.PutUint64(items[k*16:], bigOff)
+	}
+	if _, err := f.WriteAt(items, itemsStart); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.Stat()
+	f.Close()
+
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, _ = r.ReadEntryAt(entryOff)
+	runtime.ReadMemStats(&after)
+	if got := after.TotalAlloc - before.TotalAlloc; got > 2*uint64(st.Size()) {
+		t.Fatalf("one entry of a %d-byte file allocated %d bytes (%d items x %d-byte payload)",
+			st.Size(), got, nItems, largest)
+	}
+}
+
+// Verify checked off+size against the file end, which wraps: a size of
+// 2^64-1 passed and aligned up to zero, so the walk never advanced.
+func TestVerifyRejectsWrappingObjectSize(t *testing.T) {
+	path, key := buildSealedJournal(t, t.TempDir(), 3, 2)
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := r.Header().FieldHashTableOffset + r.Header().FieldHashTableSize
+	r.Close()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size [8]byte
+	binary.LittleEndian.PutUint64(size[:], ^uint64(0))
+	if _, err := f.WriteAt(size[:], int64(first)+8); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	done := make(chan error, 1)
+	go func() {
+		_, err := Verify(path, key)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("object with a wrapping size verified without error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Verify of an object with a wrapping size did not terminate")
 	}
 }

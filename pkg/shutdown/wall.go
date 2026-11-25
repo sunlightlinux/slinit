@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/sunlightlinux/slinit/pkg/logging"
 	"github.com/sunlightlinux/slinit/pkg/service"
 	"github.com/sunlightlinux/slinit/pkg/utmp"
@@ -127,16 +129,35 @@ func Wall(msg string, logger *logging.Logger) {
 	}
 }
 
+// isTerminal reports whether f is a terminal. A variable so tests can
+// stand regular files in for TTYs.
+var isTerminal = func(f *os.File) bool {
+	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
+	return err == nil
+}
+
 func writeToTTY(line, payload string, logger *logging.Logger) {
-	// Defend against absolute paths or escape attempts from a tampered utmp.
+	// ut_line comes from utmp, which group utmp can write, so it is
+	// untrusted. It must name something under ttyDir: Clean keeps a
+	// leading "..", so any ".." element is refused outright rather than
+	// resolved — "../etc/passwd" used to reach /etc/passwd.
 	clean := strings.TrimLeft(filepath.Clean(line), "/")
 	if clean == "" || clean == "." {
 		return
 	}
+	for _, elem := range strings.Split(clean, "/") {
+		if elem == ".." {
+			if logger != nil {
+				logger.Debug("Wall: refusing utmp line %q", line)
+			}
+			return
+		}
+	}
 	path := filepath.Join(ttyDir, clean)
 
 	// O_NONBLOCK so a stuck TTY (no carrier) cannot block shutdown.
-	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	// O_NOFOLLOW so a symlink planted in place of a tty is not followed.
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if logger != nil {
 			logger.Debug("Wall: open %s: %v", path, err)
@@ -144,6 +165,15 @@ func writeToTTY(line, payload string, logger *logging.Logger) {
 		return
 	}
 	defer f.Close()
+
+	// Even inside /dev a line can name a disk: only a terminal gets the
+	// banner, or "sda" in utmp would overwrite a partition table.
+	if !isTerminal(f) {
+		if logger != nil {
+			logger.Debug("Wall: %s is not a terminal", path)
+		}
+		return
+	}
 
 	// Best-effort write; ignore short writes and EAGAIN.
 	if _, err := f.WriteString(payload); err != nil && logger != nil {

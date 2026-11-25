@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // TestParseOpenrcScriptSimple covers the happy path — script only
@@ -16,6 +21,7 @@ description="Test daemon"
 command=/usr/sbin/testd
 command_args="--flag value"
 command_user=nobody
+command_background=yes
 pidfile=/run/testd.pid
 directory=/var/lib/testd
 chroot=/srv/chroot
@@ -43,8 +49,10 @@ depend() {
 	if cfg.runAs != "nobody" {
 		t.Errorf("runAs = %q, want nobody", cfg.runAs)
 	}
-	if cfg.pidFile != "/run/testd.pid" {
-		t.Errorf("pidFile = %q", cfg.pidFile)
+	// start-stop-daemon writes a command_background daemon's pidfile;
+	// slinit tracks the PID itself.
+	if cfg.pidFile != "" {
+		t.Errorf("pidFile = %q, want none for a command_background daemon", cfg.pidFile)
 	}
 	if cfg.workingDir != "/var/lib/testd" {
 		t.Errorf("workingDir = %q", cfg.workingDir)
@@ -66,16 +74,20 @@ depend() {
 	if len(cfg.depends) != 1 || cfg.depends[0] != "localmount" {
 		t.Errorf("depends = %v, want [localmount]", cfg.depends)
 	}
-	// use net dns + after bootmisc → all waits-for
-	wantWaits := map[string]bool{"net": true, "dns": true, "bootmisc": true}
-	for _, w := range cfg.waitsFor {
-		if !wantWaits[w] {
-			t.Errorf("unexpected waits-for: %s", w)
-		}
-		delete(wantWaits, w)
+	// use net dns + after bootmisc: no script of those names beside
+	// this one, so each is left out with a note rather than emitted as
+	// a dependency slinit cannot load.
+	if len(cfg.waitsFor) != 0 {
+		t.Errorf("waits-for = %v, want empty", cfg.waitsFor)
 	}
-	if len(wantWaits) != 0 {
-		t.Errorf("missing waits-for: %v", wantWaits)
+	for _, n := range []string{"use net", "use dns", "after bootmisc"} {
+		found := false
+		for _, w := range warns {
+			found = found || (w.level == "NOTE" && strings.Contains(w.msg, n))
+		}
+		if !found {
+			t.Errorf("no NOTE that `%s` was left out", n)
+		}
 	}
 
 	// before, provide, keyword should each generate warnings/notes
@@ -242,7 +254,7 @@ func TestEmitSlinitFile(t *testing.T) {
 		"pid-file = /run/testd.pid",
 		"term-signal = SIGHUP",
 		"umask = 022",
-		"no-new-privs = yes",
+		"options = no-new-privs",
 		"restart = yes",
 		"restart-delay = 5",
 		"depends-on: localmount",
@@ -253,5 +265,165 @@ func TestEmitSlinitFile(t *testing.T) {
 		if !strings.Contains(out, w) {
 			t.Errorf("output missing %q\n---\n%s", w, out)
 		}
+	}
+}
+
+// slinit refuses chroot on any type but process (it would run the
+// service unjailed). A converted bgprocess or wrapped script must still
+// load: the chroot is left out, with a warning that says what that means.
+func TestChrootOnNonProcessTypesStillLoads(t *testing.T) {
+	for _, tc := range []struct {
+		name, script, level string
+	}{
+		{"bgprocess", "#!/sbin/openrc-run\ncommand=/usr/sbin/d\npidfile=/run/d.pid\nchroot=/var/jail\n", "WARN"},
+		{"scripted", "#!/sbin/openrc-run\ncommand=/usr/sbin/d\nchroot=/var/jail\nstart() {\n\t:\n}\n", "NOTE"},
+	} {
+		cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+		warns := parseOpenrcScript(cfg, tc.script, "/usr/sbin/openrc-run")
+		var buf bytes.Buffer
+		emitSlinitFile(&buf, cfg)
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "d"), buf.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ss := service.NewServiceSet(nil)
+		dl := config.NewDirLoader(ss, []string{dir})
+		ss.SetLoader(dl)
+		if _, err := dl.LoadService("d"); err != nil {
+			t.Errorf("%s: converted file does not load: %v\n%s", tc.name, err, buf.String())
+		}
+		found := false
+		for _, w := range warns {
+			if w.level == tc.level && strings.Contains(w.msg, "chroot") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: no %s about the chroot that was left out: %v", tc.name, tc.level, warns)
+		}
+	}
+}
+
+// loadConverted writes the converted file into a service directory and
+// loads it with the real loader, which is what an operator's slinit does.
+func loadConverted(t *testing.T, cfg *slinitConfig) (service.Service, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "d"), buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ss := service.NewServiceSet(nil)
+	dl := config.NewDirLoader(ss, []string{dir})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("d")
+	if err != nil {
+		t.Fatalf("converted file does not load: %v\n%s", err, buf.String())
+	}
+	return svc, buf.String()
+}
+
+// command_background=yes means the daemon stays in the foreground and
+// start-stop-daemon backgrounds it and writes the pidfile itself
+// (openrc-run(8)), so slinit supervises it as a process. Without it,
+// start-stop-daemon expects the daemon to fork itself: with a pidfile
+// that is a bgprocess. The two used to be the other way round, and a
+// command_background daemon sat in STARTING until its start timed out,
+// waiting for a pidfile nothing wrote.
+func TestCommandBackgroundIsAForegroundDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name, vars string
+		typ        service.ServiceType
+		pidFile    bool
+		warn       string
+	}{
+		{"command_background", "command_background=yes\npidfile=/run/d.pid\n", service.TypeProcess, false, ""},
+		{"self-forking", "pidfile=/run/d.pid\n", service.TypeBGProcess, true, ""},
+		{"foreground-args", "command_args_foreground=-f\npidfile=/run/d.pid\n", service.TypeProcess, false, ""},
+		{"supervise-daemon", "supervisor=supervise-daemon\npidfile=/run/d.pid\n", service.TypeProcess, false, ""},
+		{"no-pidfile", "", service.TypeProcess, false, "fork"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\n" + tc.vars
+			cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+			warns := parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+			svc, out := loadConverted(t, cfg)
+			if svc.Type() != tc.typ {
+				t.Errorf("type = %v, want %v\n%s", svc.Type(), tc.typ, out)
+			}
+			if got := strings.Contains(out, "pid-file = /run/d.pid"); got != tc.pidFile {
+				t.Errorf("pid-file emitted = %v, want %v\n%s", got, tc.pidFile, out)
+			}
+			if tc.warn != "" {
+				found := false
+				for _, w := range warns {
+					found = found || (w.level == "WARN" && strings.Contains(w.msg, tc.warn))
+				}
+				if !found {
+					t.Errorf("no WARN mentioning %q: %v", tc.warn, warns)
+				}
+			}
+		})
+	}
+}
+
+// no_new_privs is an options member in slinit, not a setting of its
+// own: a converted file with `no-new-privs = yes` did not load.
+func TestNoNewPrivsLoads(t *testing.T) {
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\nno_new_privs=yes\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: "/etc/init.d/d"}
+	parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+	_, out := loadConverted(t, cfg)
+	if !strings.Contains(out, "options = no-new-privs") {
+		t.Errorf("no-new-privs not emitted as an option:\n%s", out)
+	}
+}
+
+// OpenRC's use and after only order against a service that is started
+// anyway, and want starts one that may fail; none fails the service
+// when the other is not installed, and net, logger or dns are virtual
+// names other scripts provide. Mapped to waits-for, `use net` made the
+// converted file fail to load. use, after and want are waits-for: — on
+// 4.0, as 4.0.2 mapped use/after, pulling the service in; ordering-only
+// after: is for 4.1 — each kept only when a script of that name sits
+// beside this one.
+func TestDependSoftReferencesLoad(t *testing.T) {
+	initd := t.TempDir()
+	for _, n := range []string{"bootmisc", "netmount", "localmount"} {
+		os.WriteFile(filepath.Join(initd, n), []byte("#!/sbin/openrc-run\n"), 0o755)
+	}
+	script := "#!/sbin/openrc-run\ncommand=/usr/sbin/d\ncommand_background=yes\n" +
+		"depend() {\n\tneed localmount\n\tuse net logger\n\tafter bootmisc *\n\twant netmount\n}\n"
+	cfg := &slinitConfig{svcType: "process", restart: "yes", scriptPath: filepath.Join(initd, "d")}
+	parseOpenrcScript(cfg, script, "/usr/sbin/openrc-run")
+
+	var buf bytes.Buffer
+	emitSlinitFile(&buf, cfg)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "d"), buf.Bytes(), 0o644)
+	for _, n := range []string{"bootmisc", "netmount", "localmount"} {
+		os.WriteFile(filepath.Join(dir, n), []byte("type = internal\n"), 0o644)
+	}
+	ss := service.NewServiceSet(nil)
+	dl := config.NewDirLoader(ss, []string{dir})
+	ss.SetLoader(dl)
+	svc, err := dl.LoadService("d")
+	if err != nil {
+		t.Fatalf("converted file does not load: %v\n%s", err, buf.String())
+	}
+	want := map[string]service.DependencyType{
+		"localmount": service.DepRegular,
+		"bootmisc":   service.DepWaitsFor,
+		"netmount":   service.DepWaitsFor,
+	}
+	for _, d := range svc.Record().Dependencies() {
+		if want[d.To.Name()] != d.DepType {
+			t.Errorf("dependency on %s is %v, want %v", d.To.Name(), d.DepType, want[d.To.Name()])
+		}
+		delete(want, d.To.Name())
+	}
+	if len(want) != 0 {
+		t.Errorf("missing dependencies %v\n%s", want, buf.String())
 	}
 }

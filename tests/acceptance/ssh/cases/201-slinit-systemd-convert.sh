@@ -1,10 +1,11 @@
 #!/bin/sh
 # 201-slinit-systemd-convert — v2.1.4 converter for .service units.
-# Covers the systemd → slinit Restart= mapping (5 values → 3) plus
+# Covers the systemd → slinit Restart= mapping (onto slinit's 4) plus
 # Type= dispatch (simple → process, forking → bgprocess, oneshot →
 # scripted) plus [Unit] After/Requires → waits-for/depends-on.
-# The dep-name suffix stripping (.service, .target, .socket, ...)
-# is the subtle one — bare names are what slinit expects.
+# The dep-name handling is the subtle one: .service and .socket are
+# stripped to the bare service name slinit expects, every other unit
+# type (.target, .mount, ...) is dropped.
 
 WORK=/tmp/acc-201-systemd
 cleanup() { rm -rf "$WORK"; }

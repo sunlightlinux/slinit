@@ -30,6 +30,7 @@ type world struct {
 	ntpSet    []bool
 	ntpSvc    string
 	ntpOn     bool
+	onAsk     func() // runs while polkit is "prompting"
 }
 
 func copyZone(t *testing.T, dir, name string) {
@@ -77,6 +78,9 @@ func newWorld(t *testing.T) *world {
 		Check: func(_ dbus.Sender, action string, d map[string]string, _ bool) (bool, bool, error) {
 			w.asked = append(w.asked, action)
 			w.details = append(w.details, d)
+			if w.onAsk != nil {
+				w.onAsk()
+			}
 			return w.allow, !w.allow, nil
 		},
 	}, machine{
@@ -200,6 +204,31 @@ func TestSetTime(t *testing.T) {
 	}
 	if w.asked[0] != "org.freedesktop.timedate1.set-time" {
 		t.Errorf("asked %v", w.asked)
+	}
+}
+
+// A relative SetTime was computed from the clock before polkit was asked,
+// and a prompt can take as long as the user does: the clock was then set
+// behind by the time spent answering. systemd re-runs the method once
+// authorized, so the offset applies to the time it is set at, and NTP
+// switched on meanwhile refuses it.
+func TestSetTimeRelativeCountsFromAfterAuthorization(t *testing.T) {
+	w := newWorld(t)
+	clock := time.Date(2027, 3, 1, 12, 0, 0, 0, time.UTC)
+	w.s.m.now = func() time.Time { return clock }
+	w.onAsk = func() { clock = clock.Add(40 * time.Second) }
+	if err := w.s.SetTime(":1.9", 90*1e6, true, true); err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2027, 3, 1, 12, 2, 10, 0, time.UTC)
+	if len(w.setTime) != 1 || !w.setTime[0].Equal(want) {
+		t.Errorf("clock set to %v, want %v (90s after the prompt was answered)", w.setTime, want)
+	}
+
+	w.ntpSvc = "chronyd"
+	w.onAsk = func() { w.ntpOn = true }
+	if got := errName(w.s.SetTime(":1.9", 90*1e6, true, true)); got != "org.freedesktop.timedate1.AutomaticTimeSyncEnabled" {
+		t.Errorf("NTP started during the prompt: %q, want AutomaticTimeSyncEnabled", got)
 	}
 }
 

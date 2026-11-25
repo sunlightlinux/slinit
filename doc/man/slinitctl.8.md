@@ -246,8 +246,10 @@ service name or rejected.
     - **\--wait** — block until STARTED (or STOPPED for scripted).
       60s cap.
     - **\--collect** — block until STOPPED, then unload + remove
-      the transient description + .env sidecar. No cap; Ctrl-C
-      is the escape hatch.
+      the transient description + .env sidecar. A scripted unit,
+      which stays STARTED after its command has finished, is stopped
+      at that point (since 4.0.3; before, it was waited for for ever).
+      No cap; Ctrl-C is the escape hatch.
 
     The directory is taken from what the daemon reports it searches
     (**service-dirs**), so the file always lands where the daemon will
@@ -255,6 +257,12 @@ service name or rejected.
     own **\--services-dir**, or this client's *XDG_RUNTIME_DIR* differs
     from the daemon's — **run** refuses and lists the directories it
     does search.
+
+    The service receives *COMMAND* and *ARGS* exactly as given: a
+    **$** or backslash in them is escaped in the description file,
+    not expanded (since 4.0.3 — before, *'HOME=$HOME'* arrived
+    expanded and *'a\\b'* as *ab*). An argument containing a newline
+    is refused, since the file cannot hold one.
 
     The transient service is started without waiting; **\--wait**
     and **\--collect** then poll its state. A failed start removes
@@ -417,7 +425,9 @@ service name or rejected.
 
 **catlog** [**\--clear**] *service*
 :   Print *service*'s in-memory log buffer. **\--clear** truncates the
-    buffer after printing.
+    buffer after printing. The reply is one protocol packet, so at most
+    the newest 65530 bytes are printed — of the buffer, or of the log
+    file for a service with **log-type** = *file*.
 
 **graph**
 :   Print the dependency graph of every loaded service as Graphviz DOT.
@@ -555,6 +565,8 @@ service name or rejected.
     (since 3.21.0): a placeholder keeps its output pipe, so the consumer
     goes on reading, and loading the service again takes it back. The
     placeholder is not listed.
+    Also refused while another client — **slinit-monitor**(8), say —
+    holds the service open, as **dinitctl**(8) is (since 4.0.3).
 
 **add-dep** *from* *kind* *to*, **add-dep** *kind* *from* *to*
 :   Add a dependency edge of *kind* (`depends-on`/`regular`,
@@ -596,6 +608,12 @@ service name or rejected.
     there. Since the daemon's fallback directory would never be read,
     an offline **enable** of a *src* that declares no **waits-for.d**
     is refused with an error instead.
+
+    Offline, *service* and *src* must be valid service names with no
+    **..** path element, instance argument included, as the daemon
+    requires online (since 4.0.3): the name becomes the symlink's path,
+    and an offline **disable ../../file** used to delete *file* outside
+    *dir*.
 
 [**\--from** *src*] **disable** *service*
 :   Inverse of **enable**: remove the edge and the symlink. That stops

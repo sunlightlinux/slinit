@@ -6,7 +6,7 @@
 #      NOT run (marker absent). Skipped short-circuits to STARTED in
 #      slinit, so `is-started` still returns 0, but the body of the
 #      service is bypassed.
-#   3. exec-search-path parses and doesn't break command resolution.
+#   3. exec-search-path replaces the child's PATH.
 
 wait_for_service "ec-pass-svc" "STARTED" 10
 wait_for_service "esp-svc" "STARTED" 10
@@ -30,12 +30,10 @@ else
     echo "FAIL: main command ran despite exec-condition = /bin/false"
 fi
 
-_TESTS_RUN=$((_TESTS_RUN + 1))
-if [ -f /tmp/190-esp-ran ]; then
-    echo "OK: exec-search-path did not break command resolution"
-else
-    _TESTS_FAILED=$((_TESTS_FAILED + 1))
-    echo "FAIL: /tmp/190-esp-ran missing — exec-search-path broke resolution"
-fi
+# The child used to touch a marker, which it did whether or not the
+# directive did anything: the command is an absolute path, so no search
+# path is ever consulted. What the directive actually changes is PATH.
+assert_eq "$(cat /tmp/190-esp-path 2>/dev/null)" "/nonexistent:/bin" \
+    "exec-search-path became the child's PATH"
 
 test_summary

@@ -1,0 +1,4 @@
+type = process
+command = /bin/sh -c "slinitctl --use-passed-cfd list > /run/268.tmp 2>&1; echo rc=$$? >> /run/268.tmp; mv /run/268.tmp /run/268.out; exec sleep 600"
+options = pass-cs-fd
+depends-on: system-init

@@ -161,11 +161,9 @@ func TestSyslogReaderDropsOwnMessages(t *testing.T) {
 	InitIDs("testhost")
 	buf := NewEventBuffer(8)
 	r := &SyslogReader{
-		emitter:    NewEmitter(buf, "/dev/null-nope"),
-		self:       4242,
-		counts:     map[uint32]int{},
-		suppressed: map[uint32]int{},
-		now:        time.Now,
+		emitter: NewEmitter(buf, "/dev/null-nope"),
+		self:    4242,
+		limit:   NewUIDLimiter(),
 	}
 	cred := func(pid int32) []byte {
 		return unix.UnixCredentials(&unix.Ucred{Pid: pid, Uid: 0, Gid: 0})
@@ -187,12 +185,11 @@ func TestSyslogReaderRateLimit(t *testing.T) {
 	InitIDs("testhost")
 	buf := NewEventBuffer(4096)
 	r := &SyslogReader{
-		emitter:    NewEmitter(buf, "/dev/null-nope"),
-		counts:     map[uint32]int{},
-		suppressed: map[uint32]int{},
+		emitter: NewEmitter(buf, "/dev/null-nope"),
+		limit:   NewUIDLimiter(),
 	}
 	now := time.Unix(1000, 0)
-	r.now = func() time.Time { return now }
+	r.limit.now = func() time.Time { return now }
 
 	allowed := 0
 	for i := 0; i < syslogRateNonRoot+50; i++ {

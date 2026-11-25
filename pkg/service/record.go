@@ -175,6 +175,9 @@ type ServiceRecord struct {
 	startExplicit       bool
 	waitingForStartSlot bool // waiting for start limiter slot
 
+	// The wait above: a woken waiter checks it is still this one.
+	startSlotCh <-chan struct{}
+
 	// Propagation flags
 	propRequire bool
 	propRelease bool
@@ -951,9 +954,17 @@ func (sr *ServiceRecord) armRuntimeMaxTimer() {
 	svc := sr.self
 	set := sr.services
 	name := sr.serviceName
-	sr.runtimeMaxTimer = time.AfterFunc(d, func() {
+	var t *time.Timer
+	t = time.AfterFunc(d, func() {
 		set.queueMu.Lock()
 		defer set.queueMu.Unlock()
+		// Only the timer still armed is current: a callback that fired
+		// while queueMu was held across a stop and a new start (Stop
+		// returns false once the callback is running) belongs to the
+		// previous run, and would stop the new one.
+		if sr.runtimeMaxTimer != t {
+			return
+		}
 		// Re-check: the service may have already stopped (process
 		// exited on its own, operator stopped it) between the timer
 		// firing and us acquiring the lock. Stopping a STOPPED service
@@ -966,6 +977,7 @@ func (sr *ServiceRecord) armRuntimeMaxTimer() {
 		svc.Record().Stop(true)
 		set.processQueuesLocked()
 	})
+	sr.runtimeMaxTimer = t
 }
 
 // cancelRuntimeMaxTimer disarms the runtime cap timer if armed. Safe to
@@ -991,10 +1003,15 @@ func (sr *ServiceRecord) armJobTimeoutTimer() {
 	svc := sr.self
 	set := sr.services
 	name := sr.serviceName
-	sr.jobTimeoutTimer = time.AfterFunc(d, func() {
+	var t *time.Timer
+	t = time.AfterFunc(d, func() {
 		set.queueMu.Lock()
 		defer set.queueMu.Unlock()
-		if svc.State() != StateStarting {
+		// A callback that fired while queueMu was held across a stop and
+		// a restart belongs to the previous attempt: Stop cannot recall
+		// it once it runs, and the new attempt is STARTING too, so the
+		// state alone would fail it at once.
+		if sr.jobTimeoutTimer != t || svc.State() != StateStarting {
 			return
 		}
 		set.logger.Error("Service '%s': job-timeout-sec (%s) elapsed, failing start",
@@ -1005,6 +1022,7 @@ func (sr *ServiceRecord) armJobTimeoutTimer() {
 		rec.UnrecoverableStop()
 		set.processQueuesLocked()
 	})
+	sr.jobTimeoutTimer = t
 }
 
 // cancelJobTimeoutTimer disarms the job-timeout timer if armed.
@@ -1581,9 +1599,18 @@ func (sr *ServiceRecord) IsMarkedActive() bool { return sr.startExplicit }
 // MarkRestarting says the coming stop is the first half of a restart.
 func (sr *ServiceRecord) MarkRestarting() { sr.restarting = true }
 
+// IsRestarting reports whether the current stop is the first half of a
+// restart a client asked for (MarkRestarting).
+func (sr *ServiceRecord) IsRestarting() bool { return sr.restarting }
+
 func (sr *ServiceRecord) IsStartPinned() bool { return sr.pinnedStarted || sr.deptPinnedStarted }
 func (sr *ServiceRecord) IsStopPinned() bool  { return sr.pinnedStopped }
 func (sr *ServiceRecord) DidStartFail() bool  { return sr.startFailed }
+
+// IsExplicitlyStartPinned reports a start pin set on this service itself,
+// leaving out one inherited from a pinned dependent (deptPinnedStarted),
+// which lasts only as long as that dependent's pin.
+func (sr *ServiceRecord) IsExplicitlyStartPinned() bool { return sr.pinnedStarted }
 
 // RestartCount reports how many times the supervisor has restarted this
 // service since slinit started. Never decreases.
@@ -1600,6 +1627,14 @@ func (sr *ServiceRecord) GetFailureConditions() FailureConditions { return sr.fa
 // `systemctl reset-failed`. No-op on a service that isn't marked failed.
 func (sr *ServiceRecord) ResetFailed() {
 	sr.startFailed = false
+	// IsFailed also reads the stop reason, which a failed start or a
+	// failing exit leaves at Failed/ExecFailed/TimedOut/Terminated.
+	// Clearing only the flag left is-failed answering "failed" after a
+	// reset, for every kind of failure. A stopped service's reason goes
+	// back to a normal stop; its exit status is kept for status.
+	if sr.state.Load() == StateStopped && sr.stopIsFailure() {
+		sr.stopReason = ReasonNormal
+	}
 }
 func (sr *ServiceRecord) WasStartSkipped() bool   { return sr.startSkipped }
 func (sr *ServiceRecord) IsLoading() bool         { return sr.isLoading }
@@ -1668,7 +1703,9 @@ func (sr *ServiceRecord) BuildEnvSlice() []string {
 func (sr *ServiceRecord) BuildFullEnv() []string {
 	globalEnv := sr.services.GlobalEnv()
 	extra := sr.BuildEnvSlice()
-	if len(globalEnv) == 0 && len(extra) == 0 {
+	// exec-search-path has to reach the child even when nothing else
+	// does: the early nil used to drop it, leaving PID 1's PATH.
+	if len(globalEnv) == 0 && len(extra) == 0 && sr.ExecSearchPath() == "" {
 		return nil
 	}
 	result := make([]string, 0, len(globalEnv)+len(extra))
@@ -1694,7 +1731,7 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 	}
 
 	totalCap := len(globalEnv) + len(fileEnv) + len(extra)
-	if totalCap == 0 {
+	if totalCap == 0 && sr.ExecSearchPath() == "" {
 		return nil
 	}
 	env := make([]string, 0, totalCap)
@@ -1704,6 +1741,44 @@ func (sr *ServiceRecord) BuildEnvWithFile(envFile string) []string {
 	}
 	env = append(env, extra...)
 	return sr.applyBucketDEnvFilters(env)
+}
+
+// inheritedEnvFilter applies pass-environment and unset-environment to
+// the environment the child inherits from slinit itself, which
+// slinit-service(5) says they filter too: the variables the kernel or a
+// login session gave slinit reached every service whatever its
+// allow-list said. Nil when neither is set, so the child inherits as
+// before.
+func (sr *ServiceRecord) inheritedEnvFilter() func(string) bool {
+	pass, passSet := sr.PassEnvironment()
+	unset := sr.UnsetEnvironment()
+	if !passSet && len(unset) == 0 {
+		return nil
+	}
+	allow := make(map[string]struct{}, len(pass))
+	for _, n := range pass {
+		allow[n] = struct{}{}
+	}
+	drop := make(map[string]struct{}, len(unset))
+	for _, n := range unset {
+		drop[n] = struct{}{}
+	}
+	return func(name string) bool {
+		_, dropped := drop[name]
+		if dropped {
+			return false
+		}
+		// PATH stays unless unset by name: services relied on the
+		// manager's PATH with a narrow allow-list, and without it a
+		// shell falls back to a built-in default that may include ".".
+		// systemd's PassEnvironment= leaves the manager's PATH alone too.
+		if passSet && name != "PATH" {
+			if _, ok := allow[name]; !ok {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 // applyBucketDEnvFilters is the tail of every env-build path. Applies
@@ -2464,6 +2539,8 @@ func (sr *ServiceRecord) ApplyProcessAttrs(params *process.ExecParams) {
 		params.NoNewPrivs = true
 	}
 
+	params.InheritEnv = sr.inheritedEnvFilter()
+
 	// Inject dinit-compatible query env vars
 	params.Env = append(params.Env, "SLINIT_SERVICENAME="+sr.serviceName)
 	if sr.serviceDir != "" {
@@ -3034,6 +3111,15 @@ func (sr *ServiceRecord) startCheckDependencies() bool {
 		if dep.IsOnlyOrdering() && to.Record().state.Load() != StateStarting {
 			continue
 		}
+		// A soft link this service does not hold, and is not about to
+		// take (a fresh start's require is still queued), was broken
+		// when the dependency stopped: the dependency is not coming
+		// back for us, so waiting on it would never end. That is a
+		// restart of the same activation (auto-restart, restart-delay,
+		// a cancelled stop); a new start requires the dependency again.
+		if !dep.IsHard() && !dep.HoldingAcq && !sr.propRequire {
+			continue
+		}
 		if to.Record().state.Load() != StateStarted {
 			dep.WaitingOn = true
 			allStarted = false
@@ -3091,14 +3177,29 @@ func (sr *ServiceRecord) allDepsStarted() {
 		ok, waitCh := limiter.Acquire(sr.self)
 		if !ok {
 			sr.waitingForStartSlot = true
+			sr.startSlotCh = waitCh
 			// Wait for slot in a goroutine to avoid blocking the queue
 			go func() {
 				<-waitCh
 				sr.services.queueMu.Lock()
+				defer sr.services.queueMu.Unlock()
+				// A stop (or a failure) withdrew this wait while we
+				// slept, and dropStartSlot settled the slot: the
+				// service is no longer the one that asked for it.
+				if !sr.waitingForStartSlot || sr.startSlotCh != waitCh {
+					return
+				}
 				sr.waitingForStartSlot = false
+				sr.startSlotCh = nil
+				if sr.state.Load() != StateStarting {
+					// The start ended some other way while queued: the
+					// slot just granted is not needed, so give it back
+					// rather than hold it until the slow threshold.
+					sr.services.GetStartLimiter().Release(sr.self)
+					return
+				}
 				sr.callBringUp()
 				sr.services.processQueuesLocked()
-				sr.services.queueMu.Unlock()
 			}()
 			return
 		}
@@ -3330,7 +3431,8 @@ func (sr *ServiceRecord) Stopped() {
 				sr.services.logger.Info(
 					"Service '%s': start-limit-action=%s — initiating system action",
 					sr.serviceName, act)
-				cb(act, sr.rebootArgument)
+				// Off the lock: see the OnSystemAction field.
+				go cb(act, sr.rebootArgument)
 			}
 		}
 	}
@@ -3431,7 +3533,8 @@ func (sr *ServiceRecord) Stopped() {
 			sr.services.logger.Info(
 				"Service '%s': %s-action=%s — initiating system action",
 				sr.serviceName, kind, action)
-			cb(action, sr.rebootArgument)
+			// Off the lock: see the OnSystemAction field.
+			go cb(action, sr.rebootArgument)
 		}
 	}
 
@@ -3459,14 +3562,7 @@ func (sr *ServiceRecord) Stopped() {
 // failedToStart handles start failure.
 func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 	// Release start limiter slot or cancel waiting
-	if limiter := sr.services.GetStartLimiter(); limiter != nil {
-		if sr.waitingForStartSlot {
-			limiter.CancelWait(sr.self)
-			sr.waitingForStartSlot = false
-		} else {
-			limiter.Release(sr.self)
-		}
-	}
+	sr.dropStartSlot()
 
 	sr.desired.Store(StateStopped)
 
@@ -3499,6 +3595,13 @@ func (sr *ServiceRecord) failedToStart(depFailed bool, immediateStop bool) {
 			dept.HoldingAcq = false
 			sr.Release(false)
 		}
+	}
+
+	// A start that failed is over: STOPPING until the process, if any,
+	// is gone (dinit's failed_to_start). Left in STARTING, the process's
+	// exit was taken for another failed start and reported again.
+	if sr.state.Load() != StateStopped {
+		sr.state.Store(StateStopping)
 	}
 
 	sr.startFailed = true
@@ -3616,7 +3719,7 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 
 	if sr.state.Load() != StateStarted {
 		if sr.state.Load() == StateStarting {
-			if !sr.waitingForDeps && !sr.waitingForConsole {
+			if !sr.waitingForDeps && !sr.waitingForConsole && !sr.waitingForStartSlot {
 				if !sr.self.CanInterruptStart() {
 					return
 				}
@@ -3624,9 +3727,16 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 					sr.notifyListeners(EventStartCancelled)
 					return
 				}
+				// The start ends here, without Started or
+				// failedToStart: give its slot back.
+				sr.dropStartSlot()
 			} else if sr.waitingForConsole {
 				sr.services.UnqueueConsole(sr.self)
 				sr.waitingForConsole = false
+			} else if sr.waitingForStartSlot {
+				// Nothing has been launched yet, so like the
+				// console wait it can always be interrupted.
+				sr.dropStartSlot()
 			}
 
 			sr.notifyListeners(EventStartCancelled)
@@ -3644,6 +3754,24 @@ func (sr *ServiceRecord) doStop(withRestart bool) {
 	if allDepsStopped {
 		sr.services.AddTransitionQueue(sr.self)
 	}
+}
+
+// dropStartSlot gives back what the start limiter holds for this
+// service: a queued wait is withdrawn (waking its goroutine, which then
+// sees the wait is gone), and a slot already granted is released.
+func (sr *ServiceRecord) dropStartSlot() {
+	limiter := sr.services.GetStartLimiter()
+	if limiter == nil {
+		return
+	}
+	if sr.waitingForStartSlot {
+		sr.waitingForStartSlot = false
+		sr.startSlotCh = nil
+		if limiter.CancelWait(sr.self) {
+			return
+		}
+	}
+	limiter.Release(sr.self)
 }
 
 func (sr *ServiceRecord) dependencyStarted() {
@@ -3713,9 +3841,24 @@ func (sr *ServiceRecord) stopDependents(forRestart bool, restartDeps bool) bool 
 				allStopped = false
 			}
 
+			// A dependent that is already STOPPED has nothing to stop
+			// and keeps the reason it stopped for (dinit: continue).
+			// One parked on a restart-delay timer is still active and
+			// still has to learn it is not wanted any more.
+			if depFrom.state.Load() == StateStopped && !depFrom.restartPending {
+				continue
+			}
+
 			if sr.forceStop {
 				if sr.desired.Load() == StateStopped {
-					depFrom.stopReason = ReasonDepFailed
+					// The dependent stops for this service's reason: it
+					// failed only if this service did (dinit's
+					// is_dept_failure).
+					if sr.stopIsFailure() {
+						depFrom.stopReason = ReasonDepFailed
+					} else {
+						depFrom.stopReason = ReasonNormal
+					}
 					depFrom.UnrecoverableStop()
 				} else {
 					// The path a dying dependency takes: its desired
@@ -3787,6 +3930,7 @@ func (sr *ServiceRecord) queueForConsole() {
 
 func (sr *ServiceRecord) releaseConsole() {
 	sr.haveConsole = false
+	sr.services.consoleHeld = false
 	sr.services.PullConsoleQueue()
 }
 
@@ -3794,6 +3938,7 @@ func (sr *ServiceRecord) releaseConsole() {
 func (sr *ServiceRecord) AcquiredConsole() {
 	sr.waitingForConsole = false
 	sr.haveConsole = true
+	sr.services.consoleHeld = true
 
 	if sr.state.Load() != StateStarting {
 		sr.releaseConsole()
@@ -3859,6 +4004,15 @@ func (sr *ServiceRecord) rmDepByIndex(i int) {
 	}
 
 	sr.dependsOn = append(sr.dependsOn[:i], sr.dependsOn[i+1:]...)
+
+	// A start waiting on this dependency has nothing left to wait for
+	// from it: let the start re-check the dependencies it still has,
+	// as stopDependents does when it breaks a soft link. dinit's
+	// rm_dep has the same gap.
+	if dep.WaitingOn {
+		dep.WaitingOn = false
+		sr.dependencyStarted()
+	}
 }
 
 // SetDependents replaces the dependents slice (used during reload to transfer dependents).

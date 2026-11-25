@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // TestHasShellMetachars covers the guard that decides between an
@@ -561,5 +564,49 @@ func TestConvertServiceSvCheckAutoWaitsFor(t *testing.T) {
 	// Still falls back to wrap so the runtime sv check keeps firing.
 	if !strings.HasPrefix(cfg.command, "/bin/sh ") {
 		t.Errorf("command = %q, want /bin/sh wrap (sv check is gating logic)", cfg.command)
+	}
+}
+
+// A quoted argument in the exec line is one argument. The bare-name
+// lookup and the chpst peel both split the line shell-style and joined
+// the words back with spaces, so `exec touch "/tmp/file with space"`
+// ran touch with three arguments. Each converted file is loaded with
+// the real loader and its argv read back.
+func TestQuotedExecArgsSurvive(t *testing.T) {
+	for _, tc := range []struct {
+		run  string
+		args []string
+	}{
+		{`exec touch "/tmp/file with space"`, []string{"/tmp/file with space"}},
+		{`exec chpst -u nobody /bin/echo 'a b' "c\"d" x`, []string{"a b", `c"d`, "x"}},
+		// An absolute path with no chpst was copied through as written,
+		// and slinit's parser does not read shell quotes the same way:
+		// 'a\b' reached the daemon as ab.
+		{`exec /usr/bin/true 'a\b' "c d" e\ f`, []string{`a\b`, "c d", "e f"}},
+	} {
+		dir := filepath.Join(t.TempDir(), "q")
+		os.MkdirAll(dir, 0o755)
+		os.WriteFile(filepath.Join(dir, "run"), []byte("#!/bin/sh\n"+tc.run+"\n"), 0o755)
+		cfg, _, err := convertService(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		emitSlinitFile(&buf, cfg)
+		svcDir := t.TempDir()
+		os.WriteFile(filepath.Join(svcDir, "q"), buf.Bytes(), 0o644)
+		ss := service.NewServiceSet(nil)
+		dl := config.NewDirLoader(ss, []string{svcDir})
+		ss.SetLoader(dl)
+		if _, err := dl.LoadService("q"); err != nil {
+			t.Fatalf("%s: converted file does not load: %v\n%s", tc.run, err, buf.String())
+		}
+		desc, err := config.Parse(bytes.NewReader(buf.Bytes()), "q", "q")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(desc.Command) < 1 || !reflect.DeepEqual(desc.Command[1:], tc.args) {
+			t.Errorf("%s: argv = %q, want args %q\n%s", tc.run, desc.Command, tc.args, buf.String())
+		}
 	}
 }

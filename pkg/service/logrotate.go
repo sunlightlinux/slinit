@@ -612,17 +612,19 @@ func (lr *LogRotator) processLine(line []byte) {
 	// Runs on the read goroutine — the send is non-blocking and any
 	// UDP-level failure is coalesced into a periodic warning inside
 	// the forwarder itself, so a downed remote never stalls the
-	// local write.
+	// local write. The first line of a destination named by host
+	// waits here for its lookup, so the pipe holds the lines behind it.
 	if lr.forwarder != nil {
 		lr.forwarder.Send(out)
 	}
 
 	// Second destination, if any. Errors are deliberately dropped: the
 	// sink is a pipe to a logger command, that command is supervised
-	// and restarted elsewhere (loggersupervise.go), and the whole point
-	// of this design is that a sick log consumer cannot disturb the
-	// service's own logging. The file write below is the one that
-	// matters.
+	// and restarted elsewhere (loggersupervise.go). The write blocks
+	// while the logger is behind, so a slow logger gets every line and
+	// a stopped one holds up this reader — the service's backpressure,
+	// as on 4.0.2. A restart stops the old logger before Close() so
+	// that a blocked write fails with EPIPE instead of holding queueMu.
 	if lr.sink != nil {
 		_, _ = lr.sink.Write(out)
 	}
@@ -976,6 +978,18 @@ func (lr *LogRotator) runProcessor(rotatedFile string) {
 
 // Close stops the reader and cleans up resources.
 func (lr *LogRotator) Close() {
+	// The reader may be inside the forwarder's first-line lookup of a
+	// host name, holding lr.mu; Close runs under queueMu on a restart
+	// and must not wait for a resolver that does not answer.
+	lr.forwarder.abortLookup()
+	// The reader may also be blocked writing to the output-logger,
+	// holding lr.mu: a logger that stopped reading (a wrapper's child
+	// that survived it, or one that called setsid) keeps that write
+	// waiting for good. Cut it off so the reader can finish; the line
+	// is lost to the logger only — the logfile already has it.
+	if d, ok := lr.sink.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = d.SetWriteDeadline(time.Now())
+	}
 	if lr.pipeW != nil {
 		lr.pipeW.Close()
 		lr.pipeW = nil
@@ -990,6 +1004,11 @@ func (lr *LogRotator) Close() {
 	lr.mu.Unlock()
 	if doneCh != nil && running {
 		<-doneCh
+	}
+	// The reader is done with the sink: close our write end, so the
+	// output-logger sees EOF rather than only being killed.
+	if c, ok := lr.sink.(io.Closer); ok {
+		_ = c.Close()
 	}
 	// Reader is drained; the UDP socket is exclusively ours to close.
 	if lr.forwarder != nil {

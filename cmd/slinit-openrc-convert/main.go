@@ -55,7 +55,7 @@ func main() {
 	)
 	flag.StringVar(&outputDir, "output-dir", "", "batch mode: write one slinit file per input into DIR")
 	flag.BoolVar(&dryRun, "dry-run", false, "print what would be written without touching the filesystem")
-	flag.BoolVar(&verbose, "verbose", false, "print per-service conversion notes to stderr")
+	flag.BoolVar(&verbose, "verbose", false, "also print conversion notes to stderr (warnings are always printed)")
 	flag.BoolVar(&enableMap, "enable-map", false, "suggest `slinitctl enable` for scripts symlinked from /etc/runlevels/*")
 	flag.StringVar(&wrapperCmd, "wrapper", "/usr/sbin/openrc-run",
 		"invocation prefix for the fallback (custom start/stop) path; must run the init.d script when appended with `<script> start`")
@@ -119,8 +119,11 @@ Flags:
 			}
 		}
 
-		if verbose {
-			for _, w := range warns {
+		// WARN is printed always, as slinit-immortal-convert does; NOTE
+		// needs --verbose. A warning that has to be asked for is not a
+		// warning: a plain conversion that lost something said nothing.
+		for _, w := range warns {
+			if w.level == "WARN" || verbose {
 				fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", w.level, name, w.msg)
 			}
 		}
@@ -336,11 +339,6 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 	if v, ok := vars["no_new_privs"]; ok && (v == "yes" || v == "true" || v == "1") {
 		cfg.noNewPrivs = true
 	}
-	if v, ok := vars["command_background"]; ok && (v == "yes" || v == "true" || v == "1") {
-		// slinit's bgprocess type is the analog — the daemon forks
-		// itself into the background and writes a pidfile.
-		cfg.svcType = "bgprocess"
-	}
 	if v, ok := vars["description"]; ok {
 		cfg.comments = append(cfg.comments, "description: "+v)
 	}
@@ -387,6 +385,50 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 		warns = append(warns, warning{"NOTE",
 			fmt.Sprintf("custom shell functions %v — wrapped via %s (requires the binary at runtime)",
 				customFuncs, wrapper)})
+	} else {
+		// command_background=yes is the opposite of a forking daemon: the
+		// daemon stays in the foreground and start-stop-daemon backgrounds
+		// it and writes the pidfile itself (openrc-run(8)) — a process to
+		// slinit, which tracks the PID with no pidfile. So is a daemon kept
+		// in the foreground by command_args_foreground or run under
+		// supervise-daemon. Otherwise start-stop-daemon expects the daemon
+		// to fork itself, which slinit follows through the pidfile.
+		bg := strings.ToLower(vars["command_background"])
+		foreground := bg == "yes" || bg == "true" || bg == "1" ||
+			vars["command_args_foreground"] != "" || vars["supervisor"] == "supervise-daemon"
+		switch {
+		case foreground:
+			if cfg.pidFile != "" {
+				warns = append(warns, warning{"NOTE", fmt.Sprintf(
+					"pidfile=%q left out: the daemon runs in the foreground and slinit tracks its PID itself", cfg.pidFile)})
+				cfg.pidFile = ""
+			}
+		case cfg.pidFile != "":
+			cfg.svcType = "bgprocess"
+		case cfg.command != "":
+			warns = append(warns, warning{"WARN", fmt.Sprintf(
+				"no command_background and no pidfile: start-stop-daemon expects %s to fork itself, "+
+					"which slinit cannot follow without a pid-file — make it run in the foreground, "+
+					"or set pid-file and type = bgprocess", cfg.command)})
+		}
+	}
+
+	// slinit applies chroot to type = process only and refuses to load
+	// it on any other type rather than run the service unjailed. Leave
+	// it out of the file, where it would stop the service loading, and
+	// say so: openrc-run applies it itself for a wrapped script, but a
+	// bgprocess daemon will run outside the jail.
+	if cfg.chroot != "" && cfg.svcType != "process" {
+		if cfg.svcType == "scripted" {
+			warns = append(warns, warning{"NOTE", fmt.Sprintf(
+				"chroot=%q left to %s (slinit's chroot applies to type = process only)", cfg.chroot, wrapper)})
+		} else {
+			warns = append(warns, warning{"WARN", fmt.Sprintf(
+				"chroot=%q not mapped: slinit's chroot applies to type = process only, "+
+					"so this %s service will run OUTSIDE the jail — review manually", cfg.chroot, cfg.svcType)})
+		}
+		cfg.comments = append(cfg.comments, "openrc chroot: "+cfg.chroot+" (not applied, see the converter's warning)")
+		cfg.chroot = ""
 	}
 
 	return warns
@@ -395,13 +437,36 @@ func parseOpenrcScript(cfg *slinitConfig, script, wrapper string) []warning {
 // parseDepend maps openrc dependency verbs onto slinit directives:
 //
 //	need X     → depends-on: X   (hard dep, must be running)
-//	use X      → waits-for: X    (soft; start if available)
-//	after X    → waits-for: X    (ordering only)
+//	want X     → waits-for: X    (soft; started, but may fail)
+//	use X      → waits-for: X    (as on 4.0.2; after:, ordering only, is for 4.1)
+//	after X    → waits-for: X    (likewise)
 //	before X   → warn, not directly representable in slinit
 //	provide X  → warn, no direct equivalent
 //	keyword    → warn, runlevel gate
+//
+// slinit fails the load on any dependency it cannot find, where OpenRC
+// skips a use/want/after that is not installed and resolves virtual
+// names (net, logger, dns) through other scripts' provide. A soft
+// reference is kept only when a script of that name sits beside this
+// one, the directory being converted; the rest are left out with a
+// note. A need is kept either way, with a warning when it would not
+// resolve.
 func parseDepend(cfg *slinitConfig, body []string) []warning {
 	var warns []warning
+	exists := func(n string) bool {
+		fi, err := os.Stat(filepath.Join(filepath.Dir(cfg.scriptPath), n))
+		return err == nil && fi.Mode().IsRegular()
+	}
+	soft := func(verb string, names []string, into *[]string) {
+		for _, n := range names {
+			if exists(n) {
+				*into = append(*into, n)
+			} else {
+				warns = append(warns, warning{"NOTE", fmt.Sprintf(
+					"depend `%s %s` left out: no init.d script of that name beside this one (a virtual or uninstalled service)", verb, n)})
+			}
+		}
+	}
 	for _, ln := range body {
 		fields := strings.Fields(ln)
 		if len(fields) < 2 {
@@ -411,8 +476,16 @@ func parseDepend(cfg *slinitConfig, body []string) []warning {
 		switch verb {
 		case "need":
 			cfg.depends = append(cfg.depends, rest...)
+			for _, n := range rest {
+				if !exists(n) {
+					warns = append(warns, warning{"WARN", fmt.Sprintf(
+						"depend `need %s`: no init.d script of that name beside this one — the service will not load until a slinit service %q exists", n, n)})
+				}
+			}
+		case "want":
+			soft(verb, rest, &cfg.waitsFor)
 		case "use", "after":
-			cfg.waitsFor = append(cfg.waitsFor, rest...)
+			soft(verb, rest, &cfg.waitsFor)
 		case "before":
 			warns = append(warns, warning{"WARN", fmt.Sprintf("depend `before %v` not mappable — invert on the target side", rest)})
 		case "provide":
@@ -473,7 +546,8 @@ func emitSlinitFile(w io.Writer, c *slinitConfig) {
 		fmt.Fprintf(w, "umask = %s\n", c.umask)
 	}
 	if c.noNewPrivs {
-		fmt.Fprintln(w, "no-new-privs = yes")
+		// An options member; `no-new-privs = yes` is an unknown setting.
+		fmt.Fprintln(w, "options = no-new-privs")
 	}
 	if c.restart != "" && c.svcType == "process" {
 		fmt.Fprintf(w, "restart = %s\n", c.restart)

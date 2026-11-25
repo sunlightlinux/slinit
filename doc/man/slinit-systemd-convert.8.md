@@ -37,12 +37,58 @@ service directories (**RuntimeDirectory** and its siblings),
 **NoNewPrivileges**, **PrivateTmp**, **ProtectSystem**,
 **ProtectHome**, the **ProtectKernel\***, **ProtectClock** and
 **ProtectControlGroups** family, **SystemCallFilter**,
-**RestrictAddressFamilies** (allow-lists only) and
-**RestrictNamespaces** (**yes** / **no** only).
+**RestrictAddressFamilies** (allow-lists only),
+**RestrictNamespaces** (**yes** / **no** only) and, since 4.0.3,
+**ReadOnlyPaths**, **ReadWritePaths**, **InaccessiblePaths**,
+**BindReadOnlyPaths**, **TemporaryFileSystem**, **ProtectProc**,
+**ProcSubset**, **PrivateNetwork** (→ **namespace-net**; its loopback
+interface stays down), **CapabilityBoundingSet** (with **~**) and
+**AmbientCapabilities** (→ **capabilities**). A path with the **-**
+prefix that does not exist when the unit is converted is left out, as
+systemd would ignore it. What these cannot express is left out with a
+warning: a **+** path (relative to **RootDirectory**), a specifier such
+as **%h**, a **norbind** bind, the **noexec** option of a temporary
+file system, and a **CapabilityBoundingSet** that keeps no capability
+at all.
+
+**Restart** keeps its meaning where slinit has it (**always** →
+**yes**, **on-success** → **on-success**; **on-failure**,
+**on-abnormal** and **on-abort** → **on-failure**). slinit runs one
+command per service, so of several **ExecStart** lines (a oneshot) only
+the last is kept, with a warning naming the ones dropped; likewise only
+the first **ExecStartPre** and **ExecStartPost**.
+
+Variables in an **Exec** line are not what they are under systemd,
+which substitutes **$VAR** and **${VAR}** from the unit's
+**Environment** and **EnvironmentFile** when it runs the command:
+slinit expands them when the service file is loaded, from its own
+environment, so one the env-file sets comes out empty. Each such line
+is warned about (**$$** is a literal **$** on both sides). slinit reads
+a single **env-file**: of several **EnvironmentFile** lines the last is
+kept, with a warning. slinit has no **$MAINPID**: an **ExecStop** of
+the form **kill** [**-s** *SIG*] **$MAINPID** becomes
+**term-signal =** *SIG* when *SIG* is **TERM**, **INT**, **QUIT**,
+**KILL** or the signal **KillSignal** names (a **HUP** or **USR1** sent
+that way reloads the daemon rather than stopping it, and such an
+**ExecStop** is dropped with a warning), and any other **ExecStop**
+using it is dropped with a warning, leaving slinit to stop the service with its
+term-signal.
 
 Dependencies: **Requires** becomes **depends-on**; **Wants** and
-**After** become **waits-for**; references to **.target** units are
-dropped with a note, since slinit has no targets. **Before** cannot be
+**After** become **waits-for** (so **After** also pulls the other
+service in, which systemd's does not; ordering-only **after** is
+planned for 4.1). Only **.service** and **.socket** references become
+dependencies, a socket as the service it activates
+(**Requires=dm-event.socket** is **depends-on: dm-event**); a unit's
+reference to itself, such as its own socket, is dropped with a note. A
+reference to a **.target**, **.mount**, **.device**, **.slice**,
+**.path**, **.timer** or any other unit type is dropped with a note,
+since slinit has no such services (and **sysroot.mount** is no
+**sysroot** service). slinit fails to load a service whose
+dependency of any kind does not exist, so each name written must exist
+as a slinit service (or a unit slinit can load) on the target system.
+A unit loaded directly is more forgiving, as systemd is: see
+**slinit**(8). **Before** cannot be
 mapped and is warned about; **WantedBy** / **RequiredBy** produce a
 note suggesting **slinitctl enable**.
 
@@ -50,11 +96,14 @@ Not carried over, and reported: inline **Environment=** (slinit takes
 an **EnvironmentFile** only), **ExecReload** (slinit's reload is a
 signal — see **reload-signal**), **ExecStopPost**, **WatchdogSec**,
 **LoadCredential** / **SetCredential** / **ImportCredential**,
-**CapabilityBoundingSet** / **AmbientCapabilities**,
-**PrivateDevices**, **PrivateNetwork**, **RestrictSUIDSGID**, and any
+**PrivateDevices**, **PrivateUsers**, and any
 other key the converter does not know — **KillMode**,
-**RemainAfterExit** and **LimitNPROC** among them. Notes and warnings are printed only with
-**--verbose**.
+**RemainAfterExit** and **LimitNPROC** among them.
+
+Warnings — something was dropped or will not behave as it did — are
+always printed on stderr; notes about mappings that did happen, or
+about references dropped as expected (such as **.target** units), are
+printed only with **-verbose**.
 
 Single-input mode writes to standard output. Batch mode
 (**--output-dir**) writes one file per input into *DIR*, named
@@ -73,8 +122,9 @@ suffix stripped.
     stderr, without touching the filesystem.
 
 **-verbose**
-:   Print per-service conversion notes to stderr — dropped directives,
-    dropped target dependencies, and manual follow-ups.
+:   Also print the per-service conversion notes to stderr — dropped
+    target dependencies and manual follow-ups. Warnings are printed
+    without it.
 
 # EXAMPLES
 

@@ -64,13 +64,16 @@ func EncodeScheduleShutdown(st service.ShutdownType, delay time.Duration, messag
 }
 
 // DecodeScheduleShutdown is EncodeScheduleShutdown's inverse. ok is false
-// for a payload too short to carry the fixed part; a truncated message
-// reads as none.
+// for a payload too short to carry the fixed part or naming no valid
+// shutdown type; a truncated message reads as none.
 func DecodeScheduleShutdown(payload []byte) (st service.ShutdownType, delay time.Duration, message string, ok bool) {
 	if len(payload) < 5 {
 		return 0, 0, "", false
 	}
 	st = service.ShutdownType(payload[0])
+	if !validShutdownType(st) {
+		return 0, 0, "", false
+	}
 	secs := uint32(payload[1])<<24 | uint32(payload[2])<<16 | uint32(payload[3])<<8 | uint32(payload[4])
 	delay = time.Duration(secs) * time.Second
 	if len(payload) >= 7 {

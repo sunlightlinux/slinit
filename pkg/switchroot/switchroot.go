@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -359,22 +360,49 @@ func defaultRemoveOldRoot(logger *logging.Logger, newroot string) {
 	if sfs.Type != ramfsMagic && sfs.Type != tmpfsMagic {
 		return
 	}
-	// Walk / and remove entries that are NOT part of newroot's
-	// subtree and that live on the same device as /. Extremely
-	// conservative to avoid deleting something bind-mounted from
-	// elsewhere.
-	entries, err := os.ReadDir("/")
-	if err != nil {
-		logger.Warn("switch-root: cleanup: readdir /: %v", err)
+	// Remove the old root's own files the way util-linux and busybox
+	// switch_root do: recurse from /, lstat every entry, and only
+	// touch entries on the same device as / . Anything else is a
+	// mount (newroot itself, or a mount left under the old root) and
+	// is never descended into. A nested newroot such as /mnt/root
+	// keeps its ancestors' directories, which cannot be rmdir'd while
+	// they hold it anyway.
+	var rootSt unix.Stat_t
+	if err := unix.Lstat("/", &rootSt); err != nil {
+		logger.Warn("switch-root: cleanup: stat /: %v", err)
 		return
 	}
-	skipRel, _ := filepath.Rel("/", newroot)
+	removeSameDev(logger, "/", rootSt.Dev, filepath.Clean(newroot))
+}
+
+// removeSameDev deletes the contents of dir that live on device dev,
+// recursing into same-device directories only.
+func removeSameDev(logger *logging.Logger, dir string, dev uint64, newroot string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		logger.Info("switch-root: cleanup: readdir %s: %v", dir, err)
+		return
+	}
 	for _, e := range entries {
-		if e.Name() == skipRel {
+		p := filepath.Join(dir, e.Name())
+		if p == newroot {
 			continue
 		}
-		p := filepath.Join("/", e.Name())
-		if err := os.RemoveAll(p); err != nil {
+		var st unix.Stat_t
+		if err := unix.Lstat(p, &st); err != nil || st.Dev != dev {
+			continue
+		}
+		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+			if err := unix.Unlink(p); err != nil {
+				logger.Info("switch-root: cleanup: %s: %v", p, err)
+			}
+			continue
+		}
+		removeSameDev(logger, p, dev, newroot)
+		if strings.HasPrefix(newroot, p+"/") {
+			continue // an ancestor of newroot
+		}
+		if err := unix.Rmdir(p); err != nil {
 			logger.Info("switch-root: cleanup: %s: %v", p, err)
 		}
 	}

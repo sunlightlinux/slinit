@@ -2,8 +2,10 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 )
 
@@ -116,5 +118,115 @@ func TestFindMatchingPIDsMissingPidFile(t *testing.T) {
 	}
 	if len(pids) != 0 {
 		t.Errorf("missing pidfile should yield no matches, got %v", pids)
+	}
+}
+
+// TestFindMatchingPIDsNeverMatchesInit: with only --pidfile, whatever
+// pid the file held was signalled — PID 1 included, where SIGTERM is
+// a reboot under slinit. Neither init nor the caller's own process
+// tree (our pid, our parent) may ever be a match.
+func TestFindMatchingPIDsNeverMatchesInit(t *testing.T) {
+	for _, pid := range []int{1, os.Getpid(), os.Getppid()} {
+		path := filepath.Join(t.TempDir(), "svc.pid")
+		if err := os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(path, 0o644) // umask-proof
+		got, err := FindMatchingPIDs(MatchCriteria{PidFile: path, UID: -1})
+		if err != nil {
+			t.Fatalf("pid %d: %v", pid, err)
+		}
+		if len(got) != 0 {
+			t.Errorf("pidfile holding %d matched %v", pid, got)
+		}
+	}
+}
+
+// TestFindMatchingPIDsRefusesWorldWritablePidfile: anyone could
+// write a world-writable pidfile and choose what we signal. Debian's
+// start-stop-daemon refuses it ("matching on world-writable pidfile
+// is insecure"); so do we.
+func TestFindMatchingPIDsRefusesWorldWritablePidfile(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Skip(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	path := filepath.Join(t.TempDir(), "svc.pid")
+	if err := os.WriteFile(path, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := FindMatchingPIDs(MatchCriteria{PidFile: path, UID: -1}); err != nil || len(got) != 1 {
+		t.Fatalf("0644 pidfile: got %v, %v; want the sleep pid", got, err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := FindMatchingPIDs(MatchCriteria{PidFile: path, UID: -1}); err == nil {
+		t.Errorf("world-writable pidfile accepted: matched %v", got)
+	}
+}
+
+// TestPidfileInsecure: matching on nothing but a pidfile someone
+// else owns lets that someone pick the pid we signal as root. As in
+// Debian's start-stop-daemon (dpkg 1.19.3), such a pidfile is only
+// trusted with another criterion to cross-check the process.
+func TestPidfileInsecure(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		uid, gid, mode       uint32
+		pidfileOnly, wantBad bool
+	}{
+		{"root-owned 0644", 0, 0, 0o644, true, false},
+		{"own 0644", 1000, 1000, 0o644, true, false},
+		{"daemon-owned, pidfile only", 107, 0, 0o644, true, true},
+		{"daemon-owned, with --exec", 107, 0, 0o644, false, false},
+		{"group-writable foreign group", 0, 107, 0o664, true, true},
+		{"group-writable root group", 0, 0, 0o664, true, false},
+		{"world-writable, with --exec", 0, 0, 0o666, false, true},
+	} {
+		st := &syscall.Stat_t{Uid: tc.uid, Gid: tc.gid, Mode: syscall.S_IFREG | tc.mode}
+		bad := pidfileInsecure(st, 1000, 1000, tc.pidfileOnly) != ""
+		if bad != tc.wantBad {
+			t.Errorf("%s: insecure=%v, want %v", tc.name, bad, tc.wantBad)
+		}
+	}
+}
+
+// TestExecMatchesDeletedBinary: after a package upgrade replaces the
+// binary, /proc/PID/exe of the running daemon reads "<path> (deleted)".
+// An exact compare found nothing: --stop left it running and --start
+// launched a second instance. OpenRC and Debian strip the suffix.
+func TestExecMatchesDeletedBinary(t *testing.T) {
+	src, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip(err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Skip(err)
+	}
+	bin := filepath.Join(t.TempDir(), "mydaemon")
+	if err := os.WriteFile(bin, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "30")
+	if err := cmd.Start(); err != nil {
+		t.Skip(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	pid := cmd.Process.Pid
+	if !processMatches(pid, MatchCriteria{Exec: bin, UID: -1}) {
+		t.Fatal("did not match the live binary")
+	}
+	if err := os.Remove(bin); err != nil {
+		t.Fatal(err)
+	}
+	if !processMatches(pid, MatchCriteria{Exec: bin, UID: -1}) {
+		exe, _ := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+		t.Errorf("--exec %s did not match after the binary was replaced (exe=%q)", bin, exe)
+	}
+	if processMatches(pid, MatchCriteria{Exec: bin + "2", UID: -1}) {
+		t.Error("matched a different path")
 	}
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -83,7 +85,17 @@ func applySandbox(s sandboxSpec) error {
 		}
 	}
 
-	if err := applyProtectSystem(s.protectSystem, s.readWritePaths); err != nil {
+	// The writable mounts made above stay writable under protect-system,
+	// as systemd keeps them.
+	var keep []string
+	for _, entry := range s.temporaryFilesystem {
+		path, _, _ := strings.Cut(entry, ":")
+		keep = append(keep, path)
+	}
+	if s.protectHome == "tmpfs" {
+		keep = append(keep, "/home", "/root", "/run/user")
+	}
+	if err := applyProtectSystem(s.protectSystem, keep); err != nil {
 		return err
 	}
 
@@ -111,8 +123,18 @@ func applySandbox(s sandboxSpec) error {
 		}
 	}
 
+	// A read-write-path below a read-only-path stays a writable hole in
+	// it: the deeper path wins, as in systemd. The read-only remount
+	// covers the submounts its recursive bind brings along, the
+	// read-write binds made just above among them, so they are kept.
 	for _, p := range s.readOnlyPaths {
-		if err := bindMount(p, p, true); err != nil {
+		var holes []string
+		for _, rw := range s.readWritePaths {
+			if rw != p && underAny(rw, []string{p}) {
+				holes = append(holes, rw)
+			}
+		}
+		if err := bindMount(p, p, true, holes...); err != nil {
 			return fmt.Errorf("read-only-path %q: %w", p, err)
 		}
 	}
@@ -289,21 +311,22 @@ func mountPrivateTmpfs(target string) error {
 }
 
 // applyProtectSystem ro-remounts the system paths matching the requested
-// level. "yes" → /usr,/boot,/efi; "full" adds /etc; "strict" makes the
-// whole rootfs ro except for the standard writable mountpoints and any
-// caller-supplied read-write-paths (which are bind-mounted writable
-// after this returns).
+// level, with every mount below them. "yes" → /usr,/boot,/efi; "full"
+// adds /etc; "strict" makes the whole rootfs ro except for the standard
+// writable mountpoints and any caller-supplied read-write-paths (which
+// are bind-mounted writable after this returns). Mounts at or below keep
+// are left as they are.
 //
 // remountRO is silent for paths that don't exist — minimal containers
 // often lack /boot or /efi and that should not fail the start.
-func applyProtectSystem(level string, rwPaths []string) error {
+func applyProtectSystem(level string, keep []string) error {
 	switch level {
 	case "":
 		return nil
 	case "yes":
-		return remountROAll([]string{"/usr", "/boot", "/efi"})
+		return remountROAll([]string{"/usr", "/boot", "/efi"}, keep)
 	case "full":
-		return remountROAll([]string{"/usr", "/boot", "/efi", "/etc"})
+		return remountROAll([]string{"/usr", "/boot", "/efi", "/etc"}, keep)
 	case "strict":
 		// "strict" means ro everywhere except the carve-outs systemd
 		// keeps writable by default (devices, kernel interfaces,
@@ -313,27 +336,35 @@ func applyProtectSystem(level string, rwPaths []string) error {
 		// back through. /dev, /proc, /sys and /run stay writable, being
 		// separate mounts. /tmp and /var/tmp do only where they are too: on
 		// a system without a tmpfs there they go read-only with /.
-		return remountRO("/")
+		keep = append([]string{"/dev", "/proc", "/sys", "/run", "/tmp", "/var/tmp"}, keep...)
+		return remountROExcept("/", keep)
 	default:
 		return fmt.Errorf("unknown protect-system level %q", level)
 	}
 }
 
-func remountROAll(paths []string) error {
+func remountROAll(paths, keep []string) error {
 	for _, p := range paths {
-		if err := remountRO(p); err != nil {
+		if err := remountROExcept(p, keep); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// remountRO marks an existing mount point as read-only. For a path that
-// isn't already a mount point we first bind it onto itself so the kernel
-// will accept the MS_REMOUNT (the remount-with-MS_RDONLY flag only
-// applies to mount points). Paths that don't exist are silently skipped:
-// minimal rootfs may legitimately lack /boot or /efi.
+// remountRO marks an existing mount point as read-only, and every mount
+// below it. For a path that isn't already a mount point we first bind it
+// onto itself so the kernel will accept the MS_REMOUNT (the
+// remount-with-MS_RDONLY flag only applies to mount points). Paths that
+// don't exist are silently skipped: minimal rootfs may legitimately lack
+// /boot or /efi.
 func remountRO(path string) error {
+	return remountROExcept(path, nil)
+}
+
+// remountROExcept is remountRO leaving the mounts at or below keep as
+// they are.
+func remountROExcept(path string, keep []string) error {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -346,9 +377,8 @@ func remountRO(path string) error {
 	if err := unix.Mount(path, path, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("protect-system bind %s: %w", path, err)
 	}
-	if err := unix.Mount("", path, "",
-		unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
-		return fmt.Errorf("protect-system remount-ro %s: %w", path, err)
+	if err := remountTreeRO(path, keep); err != nil {
+		return fmt.Errorf("protect-system %w", err)
 	}
 	return nil
 }
@@ -358,40 +388,222 @@ func remountRO(path string) error {
 // (the kernel ignores the rdonly flag on the initial bind). Recursive
 // (MS_REC) so a directory tree containing other mount points propagates
 // the visibility as the operator expects.
-func bindMount(src, dst string, ro bool) error {
+//
+// keep names mounts below dst that a read-only bind leaves as they are.
+func bindMount(src, dst string, ro bool, keep ...string) error {
 	if err := unix.Mount(src, dst, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind %s -> %s: %w", src, dst, err)
 	}
 	if !ro {
 		// A bind inherits the flags of the mount it comes from, so under a
 		// read-only / a read-write path stayed read-only until said otherwise.
-		var st unix.Statfs_t
-		if err := unix.Statfs(dst, &st); err != nil {
-			return fmt.Errorf("statfs %s: %w", dst, err)
-		}
-		if err := unix.Mount("", dst, "", rwRemountFlags(uint64(st.Flags)), ""); err != nil {
-			return fmt.Errorf("remount-rw %s: %w", dst, err)
-		}
-		return nil
+		return remountTreeRW(src, dst)
 	}
-	if err := unix.Mount("", dst, "",
-		unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY, ""); err != nil {
-		return fmt.Errorf("remount-ro %s: %w", dst, err)
+	return remountTreeRO(dst, keep)
+}
+
+// madeRO holds the mount points remountTreeRO turned read-only, so that
+// a writable bind made later turns back exactly those and leaves read-only
+// what was read-only before the sandbox.
+var madeRO = map[string]bool{}
+
+// remountTreeRO turns top read-only and with it every mount below top
+// that is not at or below keep. A remount acts on the one mount at the
+// path it is given, so the submounts a recursive bind brings along stayed
+// writable until each got its own: /proc/sys/fs/binfmt_misc under
+// protect-kernel-tunables, /run/user/UID under protect-home=read-only.
+//
+// Each remount repeats the mount's own flags: a bind remount replaces
+// them, so MS_RDONLY alone cleared nosuid, nodev and noexec, and where
+// they are locked (a user namespace below the mount's) failed with EPERM.
+func remountTreeRO(top string, keep []string) error {
+	tree, err := mountTree(top)
+	if err != nil {
+		return err
+	}
+	for i, m := range tree {
+		if i > 0 && underAny(m.point, keep) {
+			continue
+		}
+		err := unix.Mount("", m.point, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY|m.flags, "")
+		if err != nil && (i == 0 || !hiddenMount(err)) {
+			return fmt.Errorf("remount-ro %s: %w", m.point, err)
+		}
+		if err == nil && !m.ro {
+			madeRO[m.point] = true
+		}
 	}
 	return nil
 }
 
-// rwRemountFlags makes a bind writable and keeps the rest of what it had: a remount
-// replaces these flags, so leaving them out would drop nosuid or noexec.
-func rwRemountFlags(statFlags uint64) uintptr {
-	const keep = unix.ST_NOSUID | unix.ST_NODEV | unix.ST_NOEXEC |
-		unix.ST_NOATIME | unix.ST_NODIRATIME
-	flags := unix.MS_REMOUNT | unix.MS_BIND | uintptr(statFlags&uint64(keep))
-	// The one whose ST_ and MS_ values differ.
-	if statFlags&unix.ST_RELATIME != 0 {
-		flags |= unix.MS_RELATIME
+// remountTreeRW makes dst, a recursive bind of src, writable: dst itself,
+// and every mount below it whose source remountTreeRO turned read-only.
+// The flags it had otherwise are kept, as remountTreeRO keeps them.
+func remountTreeRW(src, dst string) error {
+	tree, err := mountTree(dst)
+	if err != nil {
+		return err
 	}
-	return flags
+	realSrc, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	for i, m := range tree {
+		if i > 0 && !madeRO[filepath.Join(realSrc, strings.TrimPrefix(m.point, tree[0].point))] {
+			continue
+		}
+		err := unix.Mount("", m.point, "", unix.MS_REMOUNT|unix.MS_BIND|m.flags, "")
+		if err != nil && (i == 0 || !hiddenMount(err)) {
+			return fmt.Errorf("remount-rw %s: %w", m.point, err)
+		}
+	}
+	return nil
+}
+
+// hiddenMount reports a remount that failed because the mount point is
+// no longer reachable at its path: a later mount on a parent covers it
+// (ENOENT, or EINVAL for a path that is now no mount point), or a
+// directory above it does not let root in (EACCES: in a user namespace,
+// /sys/kernel/debug is mode 0700 and owned by a root that is not ours,
+// so /sys/kernel/debug/tracing below it cannot be reached). The service
+// cannot reach it either.
+func hiddenMount(err error) bool {
+	return err == unix.ENOENT || err == unix.EINVAL || err == unix.EACCES
+}
+
+// mountPoint is one mount listed in /proc/self/mountinfo.
+type mountPoint struct {
+	point string
+	ro    bool
+	// flags are the per-mount flags a bind remount must repeat to keep
+	// them, MS_RDONLY aside.
+	flags uintptr
+}
+
+// mountTree lists top, which must be a mount point, and the mounts below
+// it that can be remounted, the topmost one for each path. An autofs
+// mount is skipped: remounting it would trigger it, and the mount it
+// triggers is listed on its own.
+func mountTree(top string) ([]mountPoint, error) {
+	real, err := filepath.EvalSymlinks(top)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return nil, err
+	}
+	tree := parseMountTree(string(data), real)
+	if len(tree) == 0 || tree[0].point != real {
+		return nil, fmt.Errorf("%s: not a mount point", top)
+	}
+	return tree, nil
+}
+
+// parseMountTree is mountTree on the text of a mountinfo file, top first.
+func parseMountTree(mountinfo, top string) []mountPoint {
+	type entry struct {
+		mountPoint
+		autofs bool
+	}
+	order := []string{top}
+	last := map[string]entry{}
+	for _, line := range strings.Split(mountinfo, "\n") {
+		f := strings.Fields(line)
+		sep := -1
+		for i := 6; i < len(f); i++ {
+			if f[i] == "-" {
+				sep = i
+				break
+			}
+		}
+		if sep < 0 || sep+1 >= len(f) {
+			continue
+		}
+		point := unescapeMountinfo(f[4])
+		if !underAny(point, []string{top}) {
+			continue
+		}
+		if _, ok := last[point]; !ok && point != top {
+			order = append(order, point)
+		}
+		// A later line for the same path is a mount on top of the
+		// earlier one, which is the one a remount of the path reaches.
+		e := entry{mountPoint: mountPoint{point: point}, autofs: f[sep+1] == "autofs"}
+		e.ro, e.flags = parseMountOpts(f[5])
+		last[point] = e
+	}
+	var out []mountPoint
+	for _, p := range order {
+		if e, ok := last[p]; ok && !e.autofs {
+			out = append(out, e.mountPoint)
+		}
+	}
+	return out
+}
+
+// parseMountOpts reads a mountinfo per-mount option list ("rw,nosuid,
+// relatime").
+func parseMountOpts(opts string) (ro bool, flags uintptr) {
+	atime := false
+	for _, o := range strings.Split(opts, ",") {
+		switch o {
+		case "ro":
+			ro = true
+		case "nosuid":
+			flags |= unix.MS_NOSUID
+		case "nodev":
+			flags |= unix.MS_NODEV
+		case "noexec":
+			flags |= unix.MS_NOEXEC
+		case "nosymfollow":
+			flags |= unix.MS_NOSYMFOLLOW
+		case "nodiratime":
+			flags |= unix.MS_NODIRATIME
+		case "noatime":
+			flags |= unix.MS_NOATIME
+			atime = true
+		case "relatime":
+			flags |= unix.MS_RELATIME
+			atime = true
+		}
+	}
+	// Neither listed is strictatime; left out, the remount would make it
+	// relatime.
+	if !atime {
+		flags |= unix.MS_STRICTATIME
+	}
+	return ro, flags
+}
+
+// underAny reports whether path is one of dirs or lies below one.
+func underAny(path string, dirs []string) bool {
+	for _, d := range dirs {
+		if d == "/" || path == d || strings.HasPrefix(path, strings.TrimSuffix(d, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// unescapeMountinfo reverses the octal escapes the kernel writes for a
+// space, tab, newline or backslash in a mountinfo path.
+func unescapeMountinfo(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // stringList implements flag.Value for repeated string args. The runner

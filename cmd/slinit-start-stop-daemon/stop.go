@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 func cmdStop(opts Options) int {
@@ -17,7 +18,7 @@ func cmdStop(opts Options) int {
 
 	pids, err := FindMatchingPIDs(crit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "scanning /proc: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		return exitInsufficientPri
 	}
 	if len(pids) == 0 {
@@ -62,8 +63,13 @@ func cmdStop(opts Options) int {
 
 func buildSchedule(opts Options) ([]Step, error) {
 	if opts.Retry == "" {
-		// Debian default: single --signal, no timeout.
-		return []Step{{Signal: opts.Signal, Timeout: 0}}, nil
+		// OpenRC's default schedule: the signal, then up to 5 s for
+		// the process to go. With --oknodo, as OpenRC's schedule "0",
+		// send it and return. A zero Timeout means "wait forever".
+		if opts.OKnodo {
+			return []Step{{Signal: opts.Signal, Timeout: noWait}}, nil
+		}
+		return []Step{{Signal: opts.Signal, Timeout: 5 * time.Second}}, nil
 	}
 	return ParseRetry(opts.Retry, opts.Signal)
 }
@@ -83,6 +89,9 @@ func runSchedule(pid int, schedule []Step, opts Options) error {
 				}
 				return fmt.Errorf("kill(%s): %w", signalName(step.Signal), err)
 			}
+		}
+		if step.Timeout == noWait {
+			return nil
 		}
 		if !waitExitProgress(pid, step.Timeout, opts.Progress) {
 			// Timed out; move to next step. Last step timing out is a fail.
@@ -104,7 +113,7 @@ func cmdStatus(opts Options) int {
 	}
 	pids, err := FindMatchingPIDs(crit)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "scanning /proc: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		return exitInsufficientPri
 	}
 	if len(pids) > 0 {

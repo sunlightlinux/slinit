@@ -17,6 +17,8 @@ package main
 
 import (
 	"bufio"
+	"container/heap"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +31,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sunlightlinux/slinit/pkg/catalog"
 	"github.com/sunlightlinux/slinit/pkg/control"
@@ -1632,38 +1635,56 @@ func extractField(e *journal.Event, name string) string {
 // the filtered event slice for callers that want to project or count
 // rather than render.
 func loadFileEvents(opts options) ([]*journal.Event, error) {
+	all, err := readJournalFile(opts.sourceFile)
 	filter := buildRequest(opts).ToFilter()
-	if isBinaryJournal(opts.sourceFile) {
-		r, err := journalbin.OpenReader(opts.sourceFile)
+	var events []*journal.Event
+	for _, e := range all {
+		if filter.Match(e) {
+			events = append(events, e)
+		}
+	}
+	return events, err
+}
+
+// readJournalFile returns every entry of one journal file, binary or
+// JSONL (.gz decompressed), in the order it was written.
+func readJournalFile(path string) ([]*journal.Event, error) {
+	var events []*journal.Event
+	err := iterJournalFile(path, func(e *journal.Event) bool {
+		events = append(events, e)
+		return true
+	})
+	return events, err
+}
+
+// iterJournalFile calls fn with each entry of one journal file, binary
+// or JSONL (.gz decompressed), in the order it was written, until fn
+// returns false. Nothing is kept: the caller decides what to hold.
+func iterJournalFile(path string, fn func(*journal.Event) bool) error {
+	if isBinaryJournal(path) {
+		r, err := journalbin.OpenReader(path)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer r.Close()
-		var events []*journal.Event
-		err = r.Iter(func(e *journal.Event) bool {
-			if filter.Match(e) {
-				events = append(events, e)
-			}
-			return true
-		})
-		return events, err
+		return r.Iter(fn)
 	}
 	var r io.ReadCloser
-	if strings.HasSuffix(opts.sourceFile, ".gz") {
-		rc, err := journald.OpenCompressed(opts.sourceFile)
+	if strings.HasSuffix(path, ".gz") {
+		rc, err := journald.OpenCompressed(path)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("open %s: %w", path, err)
 		}
 		r = rc
 	} else {
-		f, err := os.Open(opts.sourceFile)
+		f, err := os.Open(path)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("open %s: %w", path, err)
 		}
 		r = f
 	}
 	defer r.Close()
-	return readJSONLFile(r, filter, 0)
+	return iterJSONL(r, fn)
 }
 
 // runHeaderDump prints metadata about a --file source: for a binary
@@ -1783,10 +1804,8 @@ func runDiskUsage(opts options, out io.Writer) error {
 }
 
 // runFromDirectory walks opts.directory (honoring --root prefix if
-// set) collecting every plausible journal file and delegates to the
-// existing runFromFile-style logic per file. Renders straight to
-// stdout in walk order — deterministic per filesystem, which is what
-// scripts want when piped into grep / awk.
+// set) collecting every plausible journal file, and queries them as
+// one journal: see runFromFiles.
 func runFromDirectory(opts options) error {
 	dir := opts.directory
 	if opts.root != "" {
@@ -1802,17 +1821,213 @@ func runFromDirectory(opts options) error {
 		}
 		return nil
 	}
-	// Delegate per-file to the existing single-file renderer by
-	// mutating a shallow-copy of opts. Filter matching stays consistent
-	// because both paths derive from buildRequest → ToFilter.
-	for _, f := range files {
-		perFile := opts
-		perFile.sourceFile = f
-		if err := runFromFile(perFile); err != nil {
-			return fmt.Errorf("%s: %w", f, err)
+	return runFromFiles(files, opts, os.Stdout)
+}
+
+// runFromFiles queries journal files (--file, --directory, --image) as
+// one journal. Entries are ordered the way journalbin.MultiReader
+// orders a directory: boots in the order they first appear, files taken
+// in name order and each in write order, and within a boot by monotonic
+// time. The selections apply once, across all files: -b (any spec,
+// counted over the boots these files hold), the filters, the cursor, -n
+// and -r; --list-boots lists the files' boots. Each file used to be
+// queried on its own, so -n 3 printed three entries per file, -r
+// reversed each file, -b -1 printed every boot, --list-boots printed
+// entries and a cursor was ignored.
+//
+// The files are streamed, and only matching entries are held: with -n,
+// only the last N of each boot. A first pass, which holds nothing,
+// lists the boots when -b, --list-boots or a cursor needs them. Reading
+// every entry first took 353 MB of memory for -n 3 over a 190 MB
+// journal, and would have taken some 7.5 GB at the default 4 GiB
+// journal size.
+func runFromFiles(files []string, opts options, out io.Writer) error {
+	// each calls fn with every entry of every file and its place in
+	// that order, the tiebreak between entries the order puts level.
+	each := func(fn func(seq int, e *journal.Event)) error {
+		seq := 0
+		for _, f := range files {
+			err := iterJournalFile(f, func(e *journal.Event) bool {
+				fn(seq, e)
+				seq++
+				return true
+			})
+			if err != nil {
+				return fmt.Errorf("%s: %w", f, err)
+			}
+		}
+		return nil
+	}
+	byID := map[string]*bootRange{}
+	if opts.listBoots {
+		if err := each(func(_ int, e *journal.Event) { aggregateBoot(byID, e) }); err != nil {
+			return err
+		}
+		printBoots(out, sortedBoots(byID))
+		return nil
+	}
+
+	token, mode, err := resolveCursorInput(opts)
+	if err != nil {
+		return err
+	}
+	var cursorTs int64
+	var cursorBoot string
+	if token != "" {
+		if cursorTs, cursorBoot, err = parseCursor(token); err != nil {
+			return err
 		}
 	}
-	return nil
+	// skipSeq is the entry a --cursor-file run ended on: the first at
+	// the cursor's time in its boot (see cursorMode).
+	skipSeq := -1
+	if opts.bootSet || opts.bootID != "" || token != "" {
+		var at *journal.Event
+		err := each(func(seq int, e *journal.Event) {
+			aggregateBoot(byID, e)
+			if mode == cursorResume && e.Ts == cursorTs && e.BootID == cursorBoot &&
+				(at == nil || earlier(e.Mts, e.Ts, at.Mts, at.Ts)) {
+				at, skipSeq = e, seq
+			}
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if opts.bootSet || opts.bootID != "" {
+		id, err := bootFromSpec(opts.bootID, sortedBoots(byID))
+		if err != nil {
+			return err
+		}
+		opts.bootID = id
+	}
+	if token != "" {
+		if _, ok := byID[cursorBoot]; !ok {
+			return fmt.Errorf("cursor: boot %s is not in the journal files", cursorBoot)
+		}
+	}
+
+	filter := buildRequest(opts).ToFilter()
+	tails := map[string]*entryTail{}
+	var kept []seqEntry
+	err = each(func(seq int, e *journal.Event) {
+		aggregateBoot(byID, e)
+		if token != "" {
+			// Past the cursor: a later boot, or later in its boot.
+			if e.BootID != cursorBoot {
+				if bootRank(byID, e.BootID) < byID[cursorBoot].rank {
+					return
+				}
+			} else if e.Ts < cursorTs || (mode == cursorAfter && e.Ts == cursorTs) || seq == skipSeq {
+				return
+			}
+		}
+		if !filter.Match(e) {
+			return
+		}
+		if opts.limit <= 0 {
+			kept = append(kept, seqEntry{e, seq})
+			return
+		}
+		// The last N of the whole journal are the last N of its
+		// newest boots: N per boot is all that can be needed.
+		t := tails[e.BootID]
+		if t == nil {
+			t = &entryTail{}
+			tails[e.BootID] = t
+		}
+		heap.Push(t, seqEntry{e, seq})
+		if t.Len() > opts.limit {
+			heap.Pop(t)
+		}
+	})
+	if err != nil {
+		return err
+	}
+	for _, t := range tails {
+		kept = append(kept, *t...)
+	}
+	sort.Slice(kept, func(i, j int) bool {
+		a, b := kept[i], kept[j]
+		if a.e.BootID != b.e.BootID {
+			return bootRank(byID, a.e.BootID) < bootRank(byID, b.e.BootID)
+		}
+		return a.before(b)
+	})
+	if opts.limit > 0 && len(kept) > opts.limit {
+		kept = kept[len(kept)-opts.limit:]
+	}
+	events := make([]*journal.Event, len(kept))
+	for i, k := range kept {
+		events[i] = k.e
+	}
+	return renderResult(out, opts, events)
+}
+
+// seqEntry is an entry and its place in the order the files were read.
+type seqEntry struct {
+	e   *journal.Event
+	seq int
+}
+
+// before orders two entries of one boot: by monotonic time, then in the
+// order they were read.
+func (a seqEntry) before(b seqEntry) bool {
+	if earlier(a.e.Mts, a.e.Ts, b.e.Mts, b.e.Ts) {
+		return true
+	}
+	if earlier(b.e.Mts, b.e.Ts, a.e.Mts, a.e.Ts) {
+		return false
+	}
+	return a.seq < b.seq
+}
+
+// entryTail is a min-heap of one boot's entries, earliest on top: the
+// latest N are what is left after popping down to N.
+type entryTail []seqEntry
+
+func (t entryTail) Len() int           { return len(t) }
+func (t entryTail) Less(i, j int) bool { return t[i].before(t[j]) }
+func (t entryTail) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
+func (t *entryTail) Push(x any)        { *t = append(*t, x.(seqEntry)) }
+func (t *entryTail) Pop() any {
+	old := *t
+	x := old[len(old)-1]
+	old[len(old)-1] = seqEntry{}
+	*t = old[:len(old)-1]
+	return x
+}
+
+// bootRank is the rank aggregateBoot gave id; entries without a boot
+// ID come first.
+func bootRank(byID map[string]*bootRange, id string) int {
+	if r, ok := byID[id]; ok {
+		return r.rank
+	}
+	return -1
+}
+
+// bootFromSpec resolves a -b spec against boots, oldest first: "" and
+// "0" are the newest boot, -N the N-th before it, a 32-hex ID itself.
+func bootFromSpec(spec string, boots []*bootRange) (string, error) {
+	if len(spec) == 32 && isAllHex(spec) {
+		return spec, nil
+	}
+	n := 0
+	if spec != "" {
+		var err error
+		if n, err = strconv.Atoi(spec); err != nil || n > 0 || (n == 0 && spec != "0") {
+			return "", fmt.Errorf("-b %s: not a recognised spec for journal files (expected empty, 0, -N, or 32-hex ID)", spec)
+		}
+	}
+	if len(boots) == 0 {
+		return "", fmt.Errorf("-b %s: no boots in the journal files", spec)
+	}
+	idx := len(boots) - 1 + n
+	if idx < 0 {
+		return "", fmt.Errorf("-b %s: only %d boots recorded; requested index out of range", spec, len(boots))
+	}
+	return boots[idx].id, nil
 }
 
 // journalFilesUnder walks dir and returns every path with a .jsonl,
@@ -1992,18 +2207,89 @@ func journalDir(opts options) string {
 	return dir
 }
 
-// currentJournalFiles enumerates the "live" file names under dir that
-// vacuum must NOT delete: today's <YYYY-MM-DD>.jsonl and .journal (the
-// convention both FileSink and BinarySink use for their current
-// writer). Returned paths are absolute so Vacuum's exclusion check
-// (path-equal) matches without further normalization.
+// currentJournalFiles names the files under dir that vacuum must NOT
+// delete because slinit-journald may be writing them. The daemon names
+// its active file after the date it OPENED it, <YYYY-MM-DD>.jsonl or
+// .journal, and rotates by age or size, not at midnight, so today's
+// date says nothing: from the first UTC midnight after the file was
+// opened until it rotates, today's name does not exist and the active
+// file looked rotated. Vacuum then deleted it, and the daemon wrote on
+// into an unlinked inode until its next rotation failed.
+//
+// Two signs mark a file as active. The newest file of each format still
+// carrying its plain date name (a rotated file is renamed to
+// <date>.<ns>), and every file in dir that a running slinit-journald
+// holds open — read from /proc, and skipped when /proc cannot be read.
+// Returned paths are joined to dir as given, which is how Vacuum
+// compares them.
 func currentJournalFiles(dir string) []string {
-	t := time.Now().UTC()
-	base := fmt.Sprintf("%04d-%02d-%02d", t.Year(), int(t.Month()), t.Day())
-	return []string{
-		filepath.Join(dir, base+".jsonl"),
-		filepath.Join(dir, base+".journal"),
+	var out []string
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, sfx := range []string{".jsonl", ".journal"} {
+			newest := ""
+			for _, e := range entries {
+				if name := e.Name(); isUnrotatedJournalName(name, sfx) && name > newest {
+					newest = name
+				}
+			}
+			if newest != "" {
+				out = append(out, filepath.Join(dir, newest))
+			}
+		}
 	}
+	return append(out, openJournalFiles("/proc", dir, "slinit-journald")...)
+}
+
+// isUnrotatedJournalName reports whether name is <YYYY-MM-DD><sfx>, the
+// name the sinks give the file they write to.
+func isUnrotatedJournalName(name, sfx string) bool {
+	date, ok := strings.CutSuffix(name, sfx)
+	if !ok {
+		return false
+	}
+	_, err := time.Parse("2006-01-02", date)
+	return err == nil
+}
+
+// openJournalFiles returns the files directly under dir that a process
+// whose comm is comm holds open, joined to dir as given. procRoot is
+// /proc outside tests. Unreadable entries — another user's process, one
+// that exited mid-scan, no /proc at all — are skipped.
+func openJournalFiles(procRoot, dir, comm string) []string {
+	want := dir
+	if abs, err := filepath.Abs(dir); err == nil {
+		want = abs
+	}
+	if real, err := filepath.EvalSymlinks(want); err == nil {
+		want = real
+	}
+	procs, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, p := range procs {
+		if _, err := strconv.Atoi(p.Name()); err != nil {
+			continue
+		}
+		c, err := os.ReadFile(filepath.Join(procRoot, p.Name(), "comm"))
+		if err != nil || strings.TrimSpace(string(c)) != comm {
+			continue
+		}
+		fdDir := filepath.Join(procRoot, p.Name(), "fd")
+		fds, err := os.ReadDir(fdDir)
+		if err != nil {
+			continue
+		}
+		for _, fd := range fds {
+			target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+			if err != nil || filepath.Dir(target) != want {
+				continue
+			}
+			out = append(out, filepath.Join(dir, filepath.Base(target)))
+		}
+	}
+	return out
 }
 
 // --- Sprint 4: disk image dissection ---
@@ -2595,16 +2881,21 @@ func runListBoots(conn net.Conn) error {
 	// 3. Sort by first_ts ascending so newest boot prints last —
 	// but with a NEGATIVE index so `journalctl --list-boots`
 	// convention holds (0 = current, -1 = previous, ...).
-	sorted := sortedBoots(byID)
+	printBoots(os.Stdout, sortedBoots(byID))
+	return nil
+}
+
+// printBoots prints boots, oldest first, numbered back from 0 for the
+// newest.
+func printBoots(out io.Writer, sorted []*bootRange) {
 	for i, r := range sorted {
 		idx := i - (len(sorted) - 1)
-		fmt.Printf("%3d %s %s—%s\n",
+		fmt.Fprintf(out, "%3d %s %s—%s\n",
 			idx, r.id,
 			time.Unix(0, r.first).Format(time.RFC3339),
 			time.Unix(0, r.last).Format(time.RFC3339),
 		)
 	}
-	return nil
 }
 
 // aggregateBootsFromDir walks every journal file under dir and folds
@@ -2915,44 +3206,7 @@ func runFromFile(opts options) error {
 	if opts.verify {
 		return runVerify(opts)
 	}
-	// Peek at magic to route.
-	if isBinaryJournal(opts.sourceFile) {
-		return runFromBinaryFile(opts)
-	}
-	var r io.ReadCloser
-	if strings.HasSuffix(opts.sourceFile, ".gz") {
-		rc, err := journald.OpenCompressed(opts.sourceFile)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", opts.sourceFile, err)
-		}
-		r = rc
-	} else {
-		f, err := os.Open(opts.sourceFile)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", opts.sourceFile, err)
-		}
-		r = f
-	}
-	defer r.Close()
-
-	filter := buildRequest(opts).ToFilter()
-	events, err := readJSONLFile(r, filter, opts.limit)
-	if err != nil {
-		return err
-	}
-	if opts.reverse {
-		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-			events[i], events[j] = events[j], events[i]
-		}
-	}
-	ro := buildRenderOpts(opts)
-	out := os.Stdout
-	for _, evt := range events {
-		if err := render(out, opts.format, evt, ro); err != nil {
-			return fmt.Errorf("render: %w", err)
-		}
-	}
-	return nil
+	return runFromFiles([]string{opts.sourceFile}, opts, os.Stdout)
 }
 
 // isBinaryJournal peeks the first 8 bytes of path and reports whether
@@ -2970,47 +3224,6 @@ func isBinaryJournal(path string) bool {
 		return false
 	}
 	return buf == journalbin.Magic
-}
-
-// runFromBinaryFile opens the file via journalbin.OpenReader (which
-// validates magic + incompat flags), applies the CLI filter, and
-// renders survivors. Reuses buildRequest().ToFilter() so filter
-// semantics match every other path.
-func runFromBinaryFile(opts options) error {
-	r, err := journalbin.OpenReader(opts.sourceFile)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	filter := buildRequest(opts).ToFilter()
-	var events []*journal.Event
-	err = r.Iter(func(e *journal.Event) bool {
-		if !filter.Match(e) {
-			return true
-		}
-		events = append(events, e)
-		if opts.limit > 0 && len(events) > opts.limit {
-			events = events[1:]
-		}
-		return true
-	})
-	if err != nil {
-		return err
-	}
-	if opts.reverse {
-		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
-			events[i], events[j] = events[j], events[i]
-		}
-	}
-	ro := buildRenderOpts(opts)
-	out := os.Stdout
-	for _, evt := range events {
-		if err := render(out, opts.format, evt, ro); err != nil {
-			return fmt.Errorf("render: %w", err)
-		}
-	}
-	return nil
 }
 
 // runVerify walks the FSS TAG chain of the binary journal at
@@ -3074,13 +3287,33 @@ func runVerify(opts options) error {
 // (corruption tolerance — a rotated file with a trailing partial write
 // still returns everything up to the break).
 func readJSONLFile(r io.Reader, filter journal.QueryFilter, limit int) ([]*journal.Event, error) {
+	var kept []*journal.Event
+	err := iterJSONL(r, func(evt *journal.Event) bool {
+		if !filter.Match(evt) {
+			return true
+		}
+		kept = append(kept, evt)
+		if limit > 0 && len(kept) > limit {
+			// Drop from the head to keep only the most-recent limit
+			// matches, matching the server-side tail semantics.
+			kept = kept[1:]
+		}
+		return true
+	})
+	if err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
+// iterJSONL calls fn with each event of a JSONL stream until fn returns
+// false. A line that does not parse is skipped.
+func iterJSONL(r io.Reader, fn func(*journal.Event) bool) error {
 	scanner := bufio.NewScanner(r)
 	// Journal events cap at 512 KiB (MaxEventSize); allow the scanner
 	// to read a full oversized line without the default 64 KiB cap
 	// truncating a legitimate large entry.
 	scanner.Buffer(make([]byte, 64*1024), journal.MaxEventSize+1024)
-
-	var kept []*journal.Event
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -3092,20 +3325,14 @@ func readJSONLFile(r io.Reader, filter journal.QueryFilter, limit int) ([]*journ
 			// than abort. The exit path can log a warning if it cares.
 			continue
 		}
-		if !filter.Match(evt) {
-			continue
-		}
-		kept = append(kept, evt)
-		if limit > 0 && len(kept) > limit {
-			// Drop from the head to keep only the most-recent limit
-			// matches, matching the server-side tail semantics.
-			kept = kept[1:]
+		if !fn(evt) {
+			return nil
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan: %w", err)
+		return fmt.Errorf("scan: %w", err)
 	}
-	return kept, nil
+	return nil
 }
 
 // runOneShot sends CmdJournalQuery, reads the full reply, optionally
@@ -3119,24 +3346,17 @@ func runOneShot(conn net.Conn, opts options) error {
 	// non-empty value wins so the semantics stay predictable):
 	//   1. --after-cursor  → strictly after (Since = ts + 1)
 	//   2. --cursor        → at or after   (Since = ts)   [systemd -c semantics]
-	//   3. --cursor-file   → same as --cursor but read from FILE
-	cursorToken, cursorMode, err := resolveCursorInput(opts)
+	//   3. --cursor-file   → after the entry it names, read from FILE
+	pos, err := applyCursor(&req, opts)
 	if err != nil {
 		return err
 	}
-	var wantBoot string
-	if cursorToken != "" {
-		ts, boot, err := parseCursor(cursorToken)
-		if err != nil {
-			return err
-		}
-		wantBoot = boot
-		switch cursorMode {
-		case cursorAfter:
-			req.Since = ts + 1
-		default:
-			req.Since = ts
-		}
+	wantBoot := pos.boot
+	if pos.skip {
+		// The cursor's entry is dropped below; a daemon-side -n
+		// could have cut it off and kept one the operator has not
+		// seen in its place.
+		req.Limit = 0
 	}
 
 	payload, err := json.Marshal(req)
@@ -3155,6 +3375,9 @@ func runOneShot(conn net.Conn, opts options) error {
 	// correctness regardless of daemon vintage. Same code path also
 	// makes --file / --directory results consistent with socket ones.
 	events = clientSideFilter(events, req)
+	if pos.skip {
+		events = dropCursorEntry(events, pos)
+	}
 	// Apply -n client-side when the daemon was told Limit=0 (see
 	// wireLimitFor). Trims the most recent N matches, matching the
 	// tail semantics the daemon would have applied itself.
@@ -3165,13 +3388,18 @@ func runOneShot(conn net.Conn, opts options) error {
 		return fmt.Errorf("cursor: boot changed (was %s, now %s); position is meaningless in the new boot",
 			wantBoot, events[0].BootID)
 	}
+	return renderResult(os.Stdout, opts, events)
+}
+
+// renderResult prints the selected events, reversed for -r, then the
+// --show-cursor line and the --cursor-file update.
+func renderResult(out io.Writer, opts options, events []*journal.Event) error {
 	if opts.reverse {
 		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
 			events[i], events[j] = events[j], events[i]
 		}
 	}
 	ro := buildRenderOpts(opts)
-	out := os.Stdout
 	for _, evt := range events {
 		if err := render(out, opts.format, evt, ro); err != nil {
 			return fmt.Errorf("render: %w", err)
@@ -3205,15 +3433,63 @@ func runOneShot(conn net.Conn, opts options) error {
 	return nil
 }
 
+// cursorPos is the position a cursor option names: its time and boot,
+// and whether the entry at it is to be dropped (--cursor-file).
+type cursorPos struct {
+	ts   int64
+	boot string
+	skip bool
+}
+
+// applyCursor positions req at the cursor opts carry, if any, and
+// returns the position.
+func applyCursor(req *control.JournalQueryRequest, opts options) (cursorPos, error) {
+	token, mode, err := resolveCursorInput(opts)
+	if err != nil || token == "" {
+		return cursorPos{}, err
+	}
+	ts, boot, err := parseCursor(token)
+	if err != nil {
+		return cursorPos{}, err
+	}
+	if mode == cursorAfter {
+		req.Since = ts + 1
+	} else {
+		req.Since = ts
+	}
+	return cursorPos{ts: ts, boot: boot, skip: mode == cursorResume}, nil
+}
+
+// dropCursorEntry removes the first event at the cursor's time and boot:
+// the entry the previous --cursor-file run printed last.
+func dropCursorEntry(events []*journal.Event, pos cursorPos) []*journal.Event {
+	for i, e := range events {
+		if e.Ts == pos.ts && e.BootID == pos.boot {
+			return append(events[:i:i], events[i+1:]...)
+		}
+	}
+	return events
+}
+
 // cursorMode discriminates inclusive (--cursor) vs exclusive
-// (--after-cursor) positioning. --cursor-file inherits inclusive
-// since it stores the last emitted cursor which the operator wants
-// to re-emit only if the daemon rolled back (unlikely).
+// (--after-cursor) positioning, and --cursor-file's resume.
+//
+// The file holds the cursor of the last entry already shown, so the
+// next run starts after it, as journalctl(1) does; it used to start at
+// it, and every run printed that entry again. "After" cannot be "later
+// than its time": entries share a time (a binary journal keeps
+// microseconds), and an entry written in the same microsecond after the
+// run was never shown. A cursor names only a time and a boot, so the
+// query takes the time inclusively and drops the first entry at it.
+// When a run printed several entries of one time, the next prints those
+// after the first again: a repeat, where starting past the time lost
+// entries.
 type cursorMode int
 
 const (
 	cursorInclusive cursorMode = iota
 	cursorAfter
+	cursorResume
 )
 
 // resolveCursorInput picks the effective cursor token + mode from
@@ -3238,7 +3514,7 @@ func resolveCursorInput(opts options) (string, cursorMode, error) {
 			}
 			return "", cursorInclusive, fmt.Errorf("read cursor-file %s: %w", opts.cursorFile, err)
 		}
-		return strings.TrimSpace(string(data)), cursorInclusive, nil
+		return strings.TrimSpace(string(data)), cursorResume, nil
 	}
 	return "", cursorInclusive, nil
 }
@@ -3260,8 +3536,23 @@ func writeCursorFile(path, token string) error {
 // on Ctrl-C via the closed stdin/socket path). -r is ignored under -f
 // because reversing an infinite stream would require buffering
 // forever.
+//
+// The daemon sends the matching buffered entries first, at most Limit
+// of them, then new ones. Limit is always the operator's -n here: the
+// daemon applies every filter before its limit, and the client cannot
+// trim the backlog itself, since nothing marks where it ends.
+// wireLimitFor's 0 for client-side filters made -f -n 3 -t sshd print
+// every buffered sshd entry. The cursor options position the backlog
+// as they do a one-shot query; they used to be ignored. With
+// --cursor-file the first entry is dropped when it is the cursor's own
+// (see cursorMode); the cursor file is read, not updated.
 func runFollow(conn net.Conn, opts options) error {
 	req := buildRequest(opts)
+	req.Limit = opts.limit
+	pos, err := applyCursor(&req, opts)
+	if err != nil {
+		return err
+	}
 	payload, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -3284,6 +3575,12 @@ func runFollow(conn net.Conn, opts options) error {
 			evt, decodeErr := journal.UnmarshalEvent(body)
 			if decodeErr != nil {
 				return fmt.Errorf("decode entry: %w", decodeErr)
+			}
+			if pos.skip {
+				pos.skip = false
+				if evt.Ts == pos.ts && evt.BootID == pos.boot {
+					continue
+				}
 			}
 			if err := render(out, opts.format, evt, ro); err != nil {
 				return fmt.Errorf("render: %w", err)
@@ -3443,6 +3740,7 @@ type renderOpts struct {
 	noHostname      bool
 	truncateNewline bool
 	noFull          bool
+	all             bool             // -a/--all: print messages with control characters as logged
 	outputFields    map[string]bool  // nil = all fields; non-empty = keep only these
 	catalog         *catalog.Catalog // non-nil when -x/--catalog is on; augments short output
 }
@@ -3455,6 +3753,7 @@ func buildRenderOpts(opts options) renderOpts {
 		noHostname:      opts.noHostname,
 		truncateNewline: opts.truncateNewline,
 		noFull:          opts.noFull,
+		all:             opts.allFields,
 	}
 	if len(opts.outputFields) > 0 {
 		ro.outputFields = make(map[string]bool, len(opts.outputFields))
@@ -3518,6 +3817,50 @@ func (ro renderOpts) truncateMsg(msg string) string {
 		}
 	}
 	return msg
+}
+
+// displayMsg makes a message safe to print after a prefix `indent`
+// columns wide. Whoever logged it chose its bytes: continuation lines
+// are indented to the message column, as systemd does, so a newline
+// cannot start what reads as another entry, and unless --all control
+// characters (other than tab and newline), DEL, C1 controls and
+// invalid UTF-8 are shown as \xNN escapes so they cannot drive the
+// terminal. A negative indent leaves newlines as they are (cat).
+func (ro renderOpts) displayMsg(msg string, indent int) string {
+	if !ro.all {
+		msg = escapeControls(msg)
+	}
+	if indent >= 0 && strings.Contains(msg, "\n") {
+		msg = strings.ReplaceAll(msg, "\n", "\n"+strings.Repeat(" ", indent))
+	}
+	return msg
+}
+
+// escapeControls is displayMsg's escaping. Plain ASCII text, the
+// common case, is returned as is.
+func escapeControls(s string) string {
+	plain := true
+	for i := 0; i < len(s) && plain; i++ {
+		c := s[i]
+		plain = (c >= 0x20 && c < 0x7f) || c == '\t' || c == '\n'
+	}
+	if plain {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if (r < 0x20 && r != '\t' && r != '\n') || (r >= 0x7f && r <= 0x9f) ||
+			(r == utf8.RuneError && size == 1) {
+			for _, c := range []byte(s[i : i+size]) {
+				fmt.Fprintf(&b, "\\x%02x", c)
+			}
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // render dispatches to the format-specific writer. Chosen over a
@@ -3652,21 +3995,18 @@ func renderShort(out io.Writer, e *journal.Event, tf timeFormat, ro renderOpts) 
 	case e.Pid > 0:
 		pidPart = fmt.Sprintf("[%d]", e.Pid)
 	}
-	msg := ro.truncateMsg(e.Msg)
+	var prefix string
 	if ro.noHostname {
-		if _, err := fmt.Fprintf(out, "%s %s%s: %s\n",
-			formatTime(e.Ts, tf, ro.utc), identOf(e), pidPart, msg); err != nil {
-			return err
+		prefix = fmt.Sprintf("%s %s%s: ", formatTime(e.Ts, tf, ro.utc), identOf(e), pidPart)
+	} else {
+		host := e.Hostname
+		if host == "" {
+			host = "-"
 		}
-		writeCatalogAugment(out, ro, e)
-		return nil
+		prefix = fmt.Sprintf("%s %s %s%s: ", formatTime(e.Ts, tf, ro.utc), host, identOf(e), pidPart)
 	}
-	host := e.Hostname
-	if host == "" {
-		host = "-"
-	}
-	if _, err := fmt.Fprintf(out, "%s %s %s%s: %s\n",
-		formatTime(e.Ts, tf, ro.utc), host, identOf(e), pidPart, msg); err != nil {
+	msg := ro.displayMsg(ro.truncateMsg(e.Msg), utf8.RuneCountInString(prefix))
+	if _, err := fmt.Fprintf(out, "%s%s\n", prefix, msg); err != nil {
 		return err
 	}
 	writeCatalogAugment(out, ro, e)
@@ -3707,7 +4047,7 @@ func targetPIDOf(e *journal.Event) int {
 // systemd's cat mode: the terminal-friendly form for feeding a pager
 // or grep pipeline that shouldn't see timestamps.
 func renderCat(out io.Writer, e *journal.Event, ro renderOpts) error {
-	_, err := fmt.Fprintln(out, ro.truncateMsg(e.Msg))
+	_, err := fmt.Fprintln(out, ro.displayMsg(ro.truncateMsg(e.Msg), -1))
 	return err
 }
 
@@ -3833,19 +4173,19 @@ func renderWithUnit(out io.Writer, e *journal.Event, ro renderOpts) error {
 	}
 	// Emit the same identifying prefix short would produce, then
 	// suffix it with "unit=NAME:" for disambiguation.
-	fmt.Fprintf(out, "%s unit=%s ", formatTime(e.Ts, timeShort, ro.utc), unit)
+	prefix := fmt.Sprintf("%s unit=%s ", formatTime(e.Ts, timeShort, ro.utc), unit)
 	// Now delegate the message + identifier/pid rendering to a
 	// pared-down inline path (can't call renderShort without
 	// double-timestamping).
 	ident := identOf(e)
 	pid := shortDisplayPID(e)
 	if pid > 0 {
-		fmt.Fprintf(out, "%s[%d]: ", ident, pid)
+		prefix += fmt.Sprintf("%s[%d]: ", ident, pid)
 	} else {
-		fmt.Fprintf(out, "%s: ", ident)
+		prefix += fmt.Sprintf("%s: ", ident)
 	}
-	msg := ro.truncateMsg(e.Msg)
-	if _, err := fmt.Fprintln(out, msg); err != nil {
+	msg := ro.displayMsg(ro.truncateMsg(e.Msg), utf8.RuneCountInString(prefix))
+	if _, err := fmt.Fprintf(out, "%s%s\n", prefix, msg); err != nil {
 		return err
 	}
 	return nil
@@ -3909,11 +4249,38 @@ func shortDisplayPID(e *journal.Event) int {
 // writeExportField writes "KEY=value\n" only when value is non-empty.
 // systemd's export format allows empty-value lines (KEY=) but slinit's
 // convention (matching renderVerbose) is to skip them for readability.
+//
+// A value holding a newline or another control character, or invalid
+// UTF-8, is written in the export format's binary form: the key, a
+// newline, the value's length as a little-endian 64-bit integer, the
+// value, a newline. Written as KEY=value, a multi-line MESSAGE split
+// the entry, and its later lines were read as fields of their own.
 func writeExportField(out io.Writer, key, value string) {
 	if value == "" {
 		return
 	}
+	if !exportPrintable(value) {
+		var n [8]byte
+		binary.LittleEndian.PutUint64(n[:], uint64(len(value)))
+		fmt.Fprintf(out, "%s\n%s%s\n", key, n[:], value)
+		return
+	}
 	fmt.Fprintf(out, "%s=%s\n", key, value)
+}
+
+// exportPrintable reports whether value can be written as KEY=value in
+// the export format: valid UTF-8 with no C0 or C1 control character or
+// DEL, as systemd decides.
+func exportPrintable(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return false
+		}
+	}
+	return true
 }
 
 // writeExportFieldFiltered is the --output-fields-aware sibling of

@@ -1,0 +1,4 @@
+type = bgprocess
+command = /bin/sh -c "echo 1 > /run/254.pid"
+pid-file = /run/254.pid
+start-timeout = 5

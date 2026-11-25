@@ -1,9 +1,13 @@
 #!/bin/sh
-# Test: sched-policy = fifo sets SCHED_FIFO; verify via chrt -p.
+# Test: sched-policy = fifo sets SCHED_FIFO; read from /proc/PID/stat.
+# (It used chrt, which the VM lacks, so it skipped on every run.)
 
-if ! command -v chrt >/dev/null 2>&1; then
-    skip_case "chrt not on target (util-linux not installed)"
-fi
+# policy and rt_priority from /proc/PID/stat (fields 41 and 40),
+# counted after the ")" that ends the command name. 0 = SCHED_OTHER,
+# 1 = FIFO, 2 = RR, 6 = DEADLINE.
+sched_of() {
+    sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $39, $38 }'
+}
 
 SVC="test-schedp"
 
@@ -20,12 +24,7 @@ wait_for_service "$SVC" STARTED 10
 assert_service_state "$SVC" "STARTED" "service reached STARTED"
 
 _pid=$(slinitctl --system status "$SVC" 2>/dev/null | awk '/PID:/ { print $2; exit }')
-_pol=$(chrt -p "$_pid" 2>&1 | awk -F': ' '/scheduling policy/ { print $2 }')
 
-_TESTS_RUN=$((_TESTS_RUN + 1))
-case "$_pol" in
-    SCHED_FIFO*) echo "OK: policy=$_pol" ;;
-    *) _TESTS_FAILED=$((_TESTS_FAILED + 1)); echo "FAIL: expected SCHED_FIFO got '$_pol'" ;;
-esac
+assert_eq "$(sched_of "$_pid")" "1 10" "policy FIFO (1), priority 10"
 
 test_summary

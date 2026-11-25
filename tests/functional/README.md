@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (248 cases)
+# Run all tests (268 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -128,17 +128,17 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 18 | add-rm-dep | Runtime dependency add/remove |
 | 19 | unpin | Pin/unpin service state |
 | 20 | enable-disable | Enable/disable (waits-for dep management) |
-| 21 | shutdown | Shutdown command acceptance |
+| 21 | shutdown | `shutdown poweroff +10` is reported pending by `shutdown --status` and `shutdown -c` cancels it |
 | 22 | chain-to | Service chaining (chain-to directive) |
 | 23 | start-timeout | Start timeout handling |
 | 24 | working-dir | Working directory for service processes |
-| 25 | cpu-affinity | CPU pinning via sched_setaffinity |
-| 26 | stop-command | Stop-command execution before signal |
+| 25 | cpu-affinity | CPU pinning via sched_setaffinity, on a 2-CPU VM: the pinned service runs on CPU 1 only, an unpinned sibling on 0-1 |
+| 26 | stop-command | Stop-command runs on stop (leaves a marker the case checks) |
 | 27 | consumer-of | Pipe logging (log-type=pipe + consumer-of) |
 | 28 | env-file | Environment file loading into service |
 | 29 | slinit-check | Offline and online config linter |
 | 30 | finish-command | Finish-command runs after process exit with args |
-| 31 | down-file | Down marker file prevents service auto-start |
+| 31 | down-file | Down marker file keeps a service pulled in by `waits-for` stopped; an explicit start overrides it |
 | 32 | pause-continue | Pause (SIGSTOP) and continue (SIGCONT) a service |
 | 33 | once | Start once without auto-restart |
 | 34 | env-dir | Runit-style env-dir (one file per variable) |
@@ -146,7 +146,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 36 | initd-autodetect | /etc/init.d auto-detect with LSB headers |
 | 37 | socket-activation | Socket listen, LISTEN_FDS env, socket file |
 | 38 | cron-task | Cron-like periodic task execution |
-| 39 | start-limiter | Soft parallel start limit (all services start) |
+| 39 | start-limiter | A nested `slinit --user --parallel-start-limit 2` starts four 1.5 s scripted services; at most 2 are starting at any moment and all four finish |
 | 40 | shared-logger | Multi-service shared logger (SharedLogMux) |
 | 41 | namespace | PID/user namespace isolation with UID/GID mapping |
 | 42 | pre-stop-hook | Pre-stop hook runs before service stop |
@@ -154,13 +154,13 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 44 | chroot | Chroot filesystem isolation |
 | 45 | lock-file | Exclusive lock file (flock) for services |
 | 46 | log-rotation | Log file rotation by size with max-files limit |
-| 47 | log-filtering | Log include/exclude regex filtering |
+| 47 | log-filtering | log-include drops DEBUG, log-exclude then drops odd-numbered ERROR lines the include let through |
 | 48 | new-session | New session (setsid) for service process |
 | 49 | close-fds | Close stdin/stdout/stderr (redirect to /dev/null) |
 | 50 | nice-oom-ioprio | Nice value and OOM score adjustment |
-| 51 | clock-guard | Boot-time clock protection (floor + timestamp file) |
+| 51 | clock-guard | Boot with the RTC at 2010: the guard moves the clock forward to the seeded `/var/lib/slinit/clock` stamp (not the 2024 floor, not host time) and rewrites the file |
 | 52 | catch-all-logger | Early-boot catch-all logger captures stdout/stderr to `/run/slinit/catch-all.log` |
-| 53 | restart-backoff | Restart-delay step + cap apply progressive backoff between restarts |
+| 53 | restart-backoff | Restart-delay step + cap: gaps between attempts measured from `/proc/uptime` grow 0.3 → 0.9 → 1.5 s and hold at the 1.5 s cap |
 | 54 | overlay-config | `conf.d/` overlay overrides values in the base service description |
 | 55 | service-template | Service templates with `@argument` substitution (`$1`) |
 | 56 | rlimits | rlimit-* values are applied to the service process |
@@ -168,14 +168,14 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 58 | healthcheck | `healthcheck-command` detects an unhealthy service |
 | 59 | smooth-recovery | Smooth recovery restarts without propagating failure to dependents |
 | 60 | service-env | `SLINIT_SERVICENAME` / `SLINIT_SERVICEDSCDIR` auto-injected per service |
-| 61 | options-flags | `options =` flags (kill-all-on-stop, signal-process-only) |
+| 61 | options-flags | `options = signal-process-only`: a child outlives the service's stop; kill-all-on-stop's cgroup sweep is not observable here (no cgroup mounted), its half is the control |
 | 62 | query-deps | `slinitctl dependents` / dependency graph query |
 | 63 | required-paths | `required-files` / `required-dirs` pre-start guards |
 | 64 | stop-timeout | `stop-timeout` escalates to SIGKILL on timeout |
 | 65 | term-signal | `term-signal` sends a custom signal instead of SIGTERM on stop |
 | 66 | bgprocess | bgprocess service type reads PID from a `pid-file` |
 | 67 | watchdog | `watchdog-timeout` kills + restarts unresponsive service |
-| 68 | load-options | `load-options` `export-passwd-vars` / `export-service-name` |
+| 68 | load-options | `load-options` `export-passwd-vars` (USER, HOME=/root, SHELL from passwd) / `export-service-name` |
 | 69 | restart-limit | `restart-limit-count` puts service into FAILED after too many restarts |
 | 70 | include-directive | `@include` inlines another file into the service definition |
 | 71 | umask | `umask =` sets the file-creation mask for the service process |
@@ -185,7 +185,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 75 | apparmor | `apparmor-switch` fails closed when the AppArmor LSM is unavailable; plain services unaffected |
 | 76 | debug | `debug = yes` SIGSTOPs the runner pre-exec; service runs only after SIGCONT |
 | 77 | service-dirs | `runtime-directory`/`state-directory` created on start; runtime dir removed on stop, state dir persists |
-| 78 | sandbox | filesystem sandbox knobs (private-tmp, protect-system, protect-home) rewrite the child's mount namespace |
+| 78 | sandbox | filesystem sandbox knobs (private-tmp, protect-system, protect-home) rewrite the child's mount namespace; a `read-write-paths` hole under a read-only `/etc` stays writable |
 | 79 | sandbox-expansion | `${RUNTIME_DIR}`/`${STATE_DIR}` placeholders resolve in sandbox path lists |
 | 80 | seccomp | `system-call-filter` / `system-call-architectures` install a seccomp BPF filter that blocks the named syscalls |
 | 81 | hardening | Restrict*/Protect* cluster (protect-kernel-*, lock-personality, protect-hostname, protect-clock, protect-control-groups) applied via slinit-runner |
@@ -205,17 +205,17 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 95 | profile-subsystem | runsvchdir-analogue: `list-profiles`, `active-profile`, `activate-profile` (validate against loaded services, `-` deactivates, unknown profile NAKed) |
 | 96 | log-forward-udp | `log-forward-udp = host:port` sends producer stdout to a UDP listener framed per RFC 3164; self-tests the receiver on BusyBox and SKIPs if UDP is dropped |
 | 97 | sentinel-file-ipc | `--sentinel-dir` inotify path — chmod +x on `reboot` fires the handler + audit line + unlink; plain touch is ignored |
-| 98 | svcdirwatch | `--watch-services-dir` inotify auto-load: a service dropped into the dir becomes startable without an explicit reload-all |
+| 98 | svcdirwatch | `--watch-services-dir` inotify auto-load: a service dropped into the dir shows up in `list` without being requested, and is unloaded when its file is removed |
 | 99 | command-argv0 | override argv[0] presented to the child (chpst -b analogue); SKIPs on BusyBox where /bin/sleep dispatches on argv[0] |
 | 100 | log-max-line-length | svlogd -l analogue: overlong lines truncated to N + `+` overflow marker, still land in the log |
 | 101 | log-sanitize | svlogd -r/-R analogue: control bytes rewritten to the sanitize char before disk |
 | 102 | log-timestamp | svlogd -tt analogue: `log-timestamp = human` prepends `YYYY-MM-DD_HH:MM:SS.µs` |
-| 103 | shared-logger-lossy | `shared-logger-lossy = yes` + `shared-logger-queue-size` opt-in path; producer output still reaches the sink under backpressure |
-| 104 | log-buffer-nmin | `log-buffer-size` + `logfile-min-files` parse cleanly and don't break rotator init |
+| 103 | shared-logger-lossy | `shared-logger-lossy = yes` on a logger that does not read for 4 s: the producer's 4000 lines do not block it, and only some reach the logger |
+| 104 | log-buffer-nmin | logfile on a 64 KiB tmpfs filled by ~100 KB of output: with `logfile-min-files = 1` old files are pruned on ENOSPC and the last line is still written |
 | 105 | wait-timeout | `-w SEC` / `--wait=SEC` caps how long slinitctl waits for a reply; non-integer / negative values fail flag-parse before touching the socket |
 | 106 | shutdown-flag-surface | `slinit-shutdown --help` lists every documented reboot(8)-compat flag (`--reboot`, `--halt`, `-r/-h/-p/-s/-k/-f`, `--force`, `--no-sync`, `--no-wtmp`, `--wtmp-only`, `--no-wall`, `--use-passed-cfd`, `--system`, `--grace=`) |
 | 107 | status-file-namecap | `slinitctl status` prints a `File:` line; mtime bump after load surfaces `(modified since loaded)`; `.`-prefix names rejected at load |
-| 108 | openrc-depend-ordering | `depend() { after other }` in an init.d script maps to advisory ordering (`AfterOptional`), not a hard dep — both services load and start via init.d auto-detect |
+| 108 | openrc-depend-ordering | `depend() { after other }` in an init.d script is advisory ordering: starting B alone leaves A stopped (the scripts ship in `.d/initd/` so the fallback is enabled at boot) |
 | 109 | kexec-preflight | `slinitctl shutdown kexec` warns when `/sys/kernel/kexec_loaded == 0`; nested `slinit --user` isolates the shutdown so the host isn't affected |
 | 110 | enable-v7-status | protocol v7 `CmdEnableServiceV7` returns the target's status in the same round-trip; distinguishes "enabled" from "already enabled" |
 | 111 | protect-kernel-modules | blocks `init_module`/`finit_module`/`delete_module` via seccomp; probe: modprobe from inside the guarded service |
@@ -225,20 +225,20 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 115 | protect-hostname | blocks `sethostname`/`setdomainname`; host hostname untouched |
 | 116 | lock-personality | blocks `personality(2)` via seccomp; child alive under mode-2 filter |
 | 117 | namespace-net-ipc | service runs in distinct net + IPC namespaces from PID 1 (inode ids differ) |
-| 118 | sched-policy | `sched-policy = fifo` → SCHED_FIFO via chrt -p (SKIP if chrt missing) |
-| 119 | sched-priority | `sched-policy = rr` + `sched-priority = 42` → SCHED_RR / prio 42 |
-| 120 | sched-deadline | SCHED_DEADLINE via `sched-runtime`/`sched-deadline`/`sched-period` |
-| 121 | sched-reset-on-fork | RESET_ON_FORK bit surfaced (either explicit flag or policy+priority readback) |
+| 118 | sched-policy | `sched-policy = fifo` → policy 1, priority 10 in /proc/PID/stat |
+| 119 | sched-priority | `sched-policy = rr` + `sched-priority = 42` → policy 2, priority 42 in /proc/PID/stat |
+| 120 | sched-deadline | `sched-runtime`/`sched-deadline`/`sched-period` → policy 6 in /proc/PID/stat |
+| 121 | sched-reset-on-fork | the FIFO service's child, forked after the policy is set, is SCHED_OTHER |
 | 122 | securebits | `securebits = keep-caps,no-setuid-fixup` parses; child comes up |
-| 123 | normal-exit | `normal-exit = 42` — scripted svc exiting 42 lands in STOPPED (not FAILED) |
-| 124 | success-action | `success-action = none` parses cleanly and svc reaches a terminal state |
+| 123 | normal-exit | `normal-exit = 42` with `restart = yes`: exit 42 runs once, a control exiting 41 is respawned |
+| 124 | success-action | two nested `slinit --user`: a clean exit with `success-action = exit` terminates its daemon, with `none` the daemon stays up |
 | 125 | mlockall | `mlockall = current+future` → service memory locked (`VmLck` > 0, via the `libslinit-mlock.so` preload) and `RLIMIT_MEMLOCK = unlimited` in `/proc/PID/limits` |
 | 126 | numa-mempolicy | `numa-mempolicy = bind` on node 0; SKIPs if CONFIG_NUMA is off |
 | 127 | state-directory-mode | `state-directory` + `state-directory-mode` creates `/var/lib/<svc>` with the requested mode |
-| 128 | cache-directory | `cache-directory` + `cache-directory-mode` at `/var/cache/<svc>` |
+| 128 | cache-directory | `cache-directory` + `cache-directory-mode` (0710, not the 0755 default) at `/var/cache/<svc>` |
 | 129 | runtime-directory-preserve | `runtime-directory-preserve = yes` keeps `/run/<svc>/…` after stop |
 | 130 | namespace-cgroup | `namespace-cgroup = yes` puts the service in its own cgroup ns |
-| 131 | reboot-argument | parse-only smoke for `reboot-argument = recovery`; svc reaches a terminal state |
+| 131 | reboot-argument | nested `slinit --user`: the success action is handed `reboot-argument = recovery` (logged) and the daemon exits |
 | 132 | socket-permissions | `socket-permissions = 0640` sets the listener socket mode |
 | 133 | slinit-init-maker | `-dry-run` doesn't touch disk; real generation writes boot/system-init/getty-tty[N]/README; `-force` overwrites; slinit-check accepts the generated tree |
 | 134 | slinit-seedrng | fresh run writes seed.credit or seed.no-credit under `-seed-dir`; `-skip-credit` accepted; second run rotates the seed (sha256 changes) |
@@ -249,7 +249,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 139 | persist-intent | slinit-shutdown `--persist-intent` writes /run/slinit/shutdown.intent |
 | 140 | supplementary-groups | numeric GID resolver installs `Groups: 27 100 500` on the child's /proc/PID/status; guarded by run-as = 65534:65534 |
 | 141 | psi-pressure | `memory-pressure-watch = yes` keeps a `/sys/fs/cgroup/.../memory.pressure` fd open on slinit (PID 1); fd is released on stop |
-| 142 | condition-fraction | staged rollout gate: `TAG:0` skips (no PID), `TAG:100` starts (live PID) — bucket math is deterministic against `/etc/machine-id` |
+| 142 | condition-fraction | staged rollout gate: `TAG:0` skips, `TAG:100` runs; with a seeded `/etc/machine-id` the bucket is 46.22%, so `stage1:46` skips and `stage1:47` runs |
 | 143 | condition-path-is-socket | `S_ISSOCK` check: `/run/slinit.socket` (real AF_UNIX) starts, `/etc/os-release` (regular file) skips |
 | 144 | condition-measured-os | no TPM in the QEMU VM → `condition-security = measured-os` fails and skips the service |
 | 145 | minimum-uptime-sec | `slinit --help` surface: `--minimum-uptime-sec` flag documented with boot-loop context |
@@ -264,8 +264,8 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 154 | proc-subset=pid | `/proc/uptime`, `/proc/meminfo` disappear inside the service's mount ns; PID dirs remain; host `/proc/uptime` unaffected |
 | 155 | condition-measured-uki | Predicate skips when the boot wasn't measured via UKI + TPM PCR 4/5/7; asserts on measured host |
 | 156 | refuse-manual-start-stop | `refuse-manual-start` blocks a direct `slinitctl start` once stopped; `refuse-manual-stop` blocks a direct stop while running; `--force` overrides the stop |
-| 157 | restart-randomized-delay | `restart-randomized-delay` parses and does not wedge the start path |
-| 158 | reset-failed | `slinitctl reset-failed` clears the internal start-failed flag |
+| 157 | restart-randomized-delay | A failing service restarts with 0.1 s + random 0–0.4 s: every gap stays in range and the gaps vary (without the jitter they are all 0.1 s) |
+| 158 | reset-failed | `slinitctl reset-failed` (by name and `--all`) makes `is-failed` say no for a missing binary and for a non-zero scripted exit |
 | 159 | stop-when-unneeded | `stop-when-unneeded` stops a helper once its last dependent is gone |
 | 160 | freeze-thaw | `slinitctl freeze/thaw` toggles cgroup v2 `cgroup.freeze`; atomic vs SIGSTOP for whole subtree |
 | 161 | cron-accuracy-sec | Cron fires are coalesced into buckets of the configured accuracy for RTC wakeup batching |
@@ -287,30 +287,30 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 177 | tty-cluster | Full TTY cluster (tty-path + columns/rows/vhangup/vt-disallocate/reset) — setupTTY opens /dev/tty1, wires stdin, applies knobs |
 | 178 | restrict-cluster | Full restrict-* cluster (realtime/namespaces/suidsgid/file-systems/address-families) stacks and installs cleanly; child sees Seccomp: 2 |
 | 179 | dbus-cluster | bus-name / bus-policy / bus-name-scope parse under the dbus-optional design (no dbus daemon in VM) |
-| 180 | psi-cpu-io-pressure | cpu-pressure-watch/threshold + io-pressure-watch/threshold parse + service starts |
+| 180 | psi-cpu-io-pressure | cpu-pressure-watch / io-pressure-watch arm a trigger: PID 1 holds the cgroup's cpu.pressure and io.pressure open |
 | 181 | path-activation-full | start-on-path-changed / -path-modified / -directory-not-empty each fire via pathwatch (uses /etc/slinit.d/-anchored markers) |
-| 182 | kill-signal-cluster | kill-mode + final-kill-signal + restart-kill-signal + watchdog-signal + survive-final-kill-signal coexist |
-| 183 | timeout-cluster | timeout-sec + timeout-abort-sec + timeout-start-failure-mode + timeout-stop-failure-mode parse |
-| 184 | cgroup-expanded | memory-high/-low/-min + swap-max + cpu-max + io-weight + cpuset-cpus + cgroup-setting + startup-allowed-* land in cgroupfs (spot-checked via memory.high) |
-| 185 | log-pipeline-extras | logfile-permissions/uid/gid/rotate-time + log-forward-* + log-level-max + log-sanitize/-extra + log-line-prefix + log-max-line-length + log-read-buffer-size parse; mode 0640 verified on file |
+| 182 | kill-signal-cluster | kill-mode/final-kill/restart-kill/watchdog-signal/survive-final-kill parse; `slinitctl restart` delivers `restart-kill-signal` (SIGUSR1) while a plain stop delivers SIGTERM |
+| 183 | timeout-cluster | timeout cluster parses; stopping a SIGTERM-ignoring service takes timeout-sec (2 s) + timeout-abort-sec (1 s) and the SIGABRT phase is seen |
+| 184 | cgroup-expanded | memory-high/-low/-min, swap-max, cpu-max, io-weight (where the kernel has it), cpuset-cpus and cgroup-setting each read back from the service's cgroup; the case mounts cgroup2 itself |
+| 185 | log-pipeline-extras | logfile-permissions/uid/gid/rotate-time + log-forward-* + log-level-max + log-sanitize/-extra + log-line-prefix + log-max-line-length + log-read-buffer-size parse; mode 0640 on the file, `[svc] ` prefix on its lines, and log-level-max = notice keeps a <5> line and drops a <7> one |
 | 186 | service-dir-modes | runtime/state/cache/logs/configuration-directory each with -mode + -quota + -accounting; all 5 dirs created with requested mode |
-| 187 | notify-guess-exit-openfile | notify-access + guess-main-pid + exit-type + open-file combo parses + starts |
+| 187 | notify-guess-exit-openfile | notify-access/guess-main-pid/exit-type parse; `open-file` hands the child an fd on the file |
 | 188 | pass-unset-env | pass-environment whitelist and unset-environment blacklist visible in child /proc/self/environ |
 | 189 | standard-input | standard-input-text and standard-input-data bytes reach child stdin (base64 decoded for -data) |
-| 190 | exec-condition-searchpath | exec-condition=/bin/true runs command; =/bin/false skips it; exec-search-path parses |
-| 191 | import-credential | import-credential parses coexisting with set-credential; credentials tmpfs populated |
+| 190 | exec-condition-searchpath | exec-condition=/bin/true runs command; =/bin/false skips it; exec-search-path becomes the child's PATH |
+| 191 | import-credential | `import-credential = my-secret-*` copies the two matching credentials from a seeded `/etc/credstore` (content intact) and not the third; set-credential alongside |
 | 192 | lsm-fail-closed | selinux-context and smack-process-label refuse to start when /sys/fs/selinux and /sys/fs/smackfs are absent (fail-closed contract) |
-| 193 | restart-misc | start-limit-action + restart-force-exit-status + restart-max-delay + restart-mode + runtime-randomized-extra coexist |
-| 194 | skarnet-niches | alert-file + alert-level + options=pass-cs-fd + utmp-mode all parse and coexist |
-| 195 | options-cluster-a | options=unmask-intr,skippable,start-interruptible round-trip through parser |
-| 196 | options-cluster-b | options=runs-on-console attaches console to STARTED svc (starts-on-console covered in acceptance) |
+| 193 | restart-misc | restart-policy tail parses; `restart-force-exit-status = 42 43` restarts a service that exits 42 although `restart = no` |
+| 194 | skarnet-niches | alert-file + alert-level + pass-cs-fd + utmp-mode parse; alert-level=err routes only the <3> line to the alert file, the main log gets all three |
+| 195 | options-cluster-a | options=unmask-intr,skippable,start-interruptible parse; unmask-intr + runs-on-console gives the service a controlling terminal (tty_nr != 0) |
+| 196 | options-cluster-b | `options = runs-on-console`: the service's stdout is `/dev/console`, a control's is not |
 | 197 | starts-rwfs-log | options=starts-rwfs,starts-log with ready-notification=pipefd:3 promote to STARTED on readiness byte |
-| 198 | bucket-b-legacy | coredump-filter + ignore-sigpipe + memory-ksm + personality + remove-ipc + timer-slack-nsec coexist |
-| 199 | cgroup-cpuset-hugetlb | cgroup-cpuset-mems + cgroup-hugetlb + cpuset-partition parse; kernels without hugetlb controller fail-open |
+| 198 | bucket-b-legacy | Bucket B legacy cluster parses; coredump-filter 0x3f, timer-slack-nsec 120000 and personality x86 read back from `/proc/PID` (values chosen to differ from the kernel defaults) |
+| 199 | cgroup-cpuset-hugetlb | cpuset.mems, cpuset.cpus.partition and hugetlb.2MB.max (a byte limit) read back from the service's cgroup; the case mounts cgroup2 itself |
 | 200 | seccomp-arch-log-mdwe | system-call-architectures + system-call-log + memory-deny-write-execute stack on top of @system-service filter; Seccomp mode 2 confirmed |
 | 201 | misc-coverage | cron-persistent + cron-randomized-delay + socket-uid/-gid + bind-read-only-paths + keyword non-match |
 | 202 | journalctl-list-boots | `--list-boots` enumeration + `-b` shortcut (bare / `-b0` / `--boot`); boot ID matches event's `_boot_id` field (v2.1.0) |
-| 203 | journalctl-kernel-events | `-k`/`--dmesg` returns bare-prefix `kernel:` lines with no [PID] bracket (v2.1.0 render rule); JSON has `unit=kernel` + `_transport=kernel` |
+| 203 | journalctl-kernel-events | `-k`/`--dmesg` returns kernel lines (must not be empty: slinit starts with no `/dev` in this VM), as bare-prefix `kernel:` lines with no [PID] bracket (v2.1.0 render rule); JSON has `unit=kernel` + `_transport=kernel` |
 | 204 | slinit-supports | self-introspection CLI: `--list-directives` / `--list-opcodes` / `--list-all` + name lookup + non-zero exit on unknown (v2.1.0) |
 | 205 | slinitctl-analyze | analyze `time`/`blame`/`critical-chain`/`dot` with live impls; `plot` is a documented not-implemented stub (v2.1.2) |
 | 206 | slinit-runit-convert | log companion path (v2.1.5): `-log` file with `consumer-of` + `log-type = pipe` on primary; `working-dir` defaults to sv dir |
@@ -326,10 +326,10 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 216 | journalctl-group-a-bundle | `--fields` / `--header` / `--disk-usage` / `-F` / `--utc` / `--no-hostname` / `--output-fields` / `-g` in one bundled case (v2.1.6 Group A) |
 | 217 | journalctl-vacuum-flush | `--vacuum-files` direct on files (current-day preserved); `--flush` + `--relinquish-var` via spawned daemon + admin control socket (v2.1.10) |
 | 218 | journalctl-namespace | `--namespace` daemon + `--list-namespaces` enumeration + filter on synthetic JSONL (v2.1.11) |
-| 219 | nosystemd-clock-jump | systemd#1143 — a wall-clock step made PID 1 spin printing "Time has been changed"; slinit's boot-time clock guard must absorb the jump without flooding the console (v2.3.5) |
+| 219 | nosystemd-clock-jump | systemd#1143 — a wall-clock step made PID 1 spin printing "Time has been changed"; the wall clock is stepped a year forward and back (`date -s @epoch`; each step checked) and PID 1 must stay responsive, idle and not churn services (v2.3.5) |
 | 220 | nosystemd-dep-failure | systemd#1312 + #6478 — a service whose hard dependency failed must stay down rather than restart-loop, and `slinitctl start` must exit non-zero when the start ends in failure (v2.3.5) |
 | 221 | nosystemd-logout-survivors | Debian #825394 — nohup'd jobs, tmux and screen must survive their session ending; the most-cited systemd complaint from users who leave work running over ssh (v2.3.5) |
-| 222 | nosystemd-efivarfs-ro | systemd#2402 — efivarfs must be mounted read-only, so a careless recursive delete cannot wipe EFI variables and brick the firmware (v2.3.5) |
+| 222 | nosystemd-efivarfs-ro | systemd#2402 — efivarfs must be mounted read-only, so a careless recursive delete cannot wipe EFI variables and brick the firmware (v2.3.5); SKIPs without EFI firmware, which is the harness's SeaBIOS default |
 | 223 | nosystemd-journald-restart | systemd#6620 — restarting the journal daemon must not silence already-running services; slinit's events sit in PID 1's own ring, so no service writes into a closed pipe (v2.3.5) |
 | 224 | nosystemd-numeric-username | systemd#6237 — a `run-as` value naming an account like `0day` must resolve as a *name*, not be read as UID 0 and run as root (v2.3.5) |
 | 225 | pid1-signal-survival | Not from the nosystemd list: PID 1 must not die from a signal a local root can send it. Host-driven — the harness presses the real Ctrl+Alt+Del (v2.3.6) |
@@ -356,6 +356,26 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 246 | start-when-idle | `start-when-idle` (systemd `Type=idle`) waits for the other starts, at most five seconds |
 | 247 | enable-disable-wait | `enable` waits for the start and `disable` for the stop, as dinitctl does; `disable` leaves up what something else requires |
 | 248 | read-write-paths | a path carved out of `protect-system = strict` is writable, probed from inside the service |
+| 249 | scripted-interrupted-start | a stop cancels a start-interruptible scripted start: the stop command runs and it is not a failure |
+| 250 | scripted-timeout-no-stop-timeout | a timed-out scripted start command ignoring SIGINT is still killed with `stop-timeout = 0` |
+| 251 | stop-command-run-as | the `stop-command` of a `run-as` service runs as that user |
+| 252 | rm-dep-while-waiting | `rm-dep` of the dependency a service waits on lets it start |
+| 253 | waits-for-restart-after-dep-stop | a `waits-for` dependency the operator stopped does not block the dependent's auto-restart |
+| 254 | pidfile-pid1-refused | a `pid-file` naming PID 1 is refused (a stop used to SIGTERM init) |
+| 255 | protect-system-submount | `protect-system = strict` makes a filesystem mounted below `/` read-only too |
+| 256 | unload-held-by-monitor | `unload` is refused while slinit-monitor holds the service |
+| 257 | name-dotdot-refused | a service name with a `..` path element cannot load a file outside the service directories |
+| 258 | infinity-timeouts | `start-timeout`/`stop-timeout = infinity` load and mean no limit |
+| 259 | protect-system-keeps-mount-flags | the read-only remount keeps a mount's own `noexec`/`nosuid`/`nodev` |
+| 260 | protect-kernel-tunables-sys-ro | `protect-kernel-tunables` makes `/sys` read-only in the service |
+| 261 | chroot-non-process-refused | `chroot` on a scripted service is refused at load instead of being ignored |
+| 262 | journal-vacuum-keeps-active-file | `slinit-journalctl --vacuum-*` keeps the file slinit-journald opened on an earlier day |
+| 263 | journal-flush-keeps-persistent | `--flush` moves the volatile journal in without overwriting the persistent same-day file |
+| 264 | tmpfiles-mode-and-symlink | slinit-tmpfiles keeps a mode's sticky bit and does not chmod through a symlink at a `d` path |
+| 265 | process-interrupted-start-escalates | an interrupted process start escalates to SIGKILL at stop-timeout; a closed readiness fd brings the process down |
+| 266 | seccomp-log-keeps-deny | a call refused by `system-call-filter` stays refused when `system-call-log` lists it too |
+| 267 | protect-home-submount | `protect-home = read-only` makes a filesystem mounted below `/home` read-only too |
+| 268 | pass-cs-fd-at-boot | `options = pass-cs-fd` works for a boot-started service (`slinitctl --use-passed-cfd`) |
 
 ## How It Works
 
@@ -410,6 +430,21 @@ test_summary
 Tests that need custom services can include a `.d/` directory alongside the
 `.sh` file (e.g., `05-dependencies.d/` contains service files loaded into
 `/etc/slinit.d/` for that test).
+
+A few names inside the `.d/` directory are not services:
+
+- `initd/` goes to `/etc/init.d/`, `systemd/` to `/etc/systemd/system/`.
+- `rootfs/` is laid over the guest root as-is, for files a case needs
+  outside `/etc` (51 seeds `/var/lib/slinit/clock`).
+- `qemu-args` holds extra QEMU options, whitespace-separated, `#` lines
+  ignored. 25 asks for `-smp 2` so an affinity mask can be wrong; 51 for
+  `-rtc base=2010-01-01T00:00:00` so the clock guard has something to fix.
+- `kernel-args` holds extra kernel command-line words, appended to the
+  default line, `#` lines ignored. 141 and 180 ask for `psi=1`: the VM
+  kernel builds PSI but leaves it off.
+- `system-init` replaces the base one. The cgroup cases (135, 141, 160,
+  164, 180, 184, 199, 221) use it to mount cgroup2 and delegate
+  controllers at the root, which the base VM does not do.
 
 ## Debugging
 

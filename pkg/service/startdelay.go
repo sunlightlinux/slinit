@@ -42,9 +42,17 @@ func (s *ProcessService) startDelayTimer(launch func()) bool {
 	if s.startDelayT != nil {
 		s.startDelayT.Stop()
 	}
-	s.startDelayT = time.AfterFunc(s.startDelay, func() {
+	var t *time.Timer
+	t = time.AfterFunc(s.startDelay, func() {
 		s.services.queueMu.Lock()
 		defer s.services.queueMu.Unlock()
+		// Only the armed timer is current. One that fired while queueMu
+		// was held across a stop and a new start is the old attempt's:
+		// launching from it skipped the new attempt's delay, and the new
+		// attempt's own timer then launched a second process.
+		if s.startDelayT != t {
+			return
+		}
 		s.startDelayT = nil
 		// A stop (or anything else) may have moved the service on while
 		// we waited. Only a service still STARTING is ours to launch.
@@ -54,6 +62,7 @@ func (s *ProcessService) startDelayTimer(launch func()) bool {
 		launch()
 		s.services.processQueuesLocked()
 	})
+	s.startDelayT = t
 	return true
 }
 

@@ -1,4 +1,5 @@
 type = internal
 depends-on: system-init
 waits-for: optsb-svc
+waits-for: optsb-ctl
 waits-for: test-runner

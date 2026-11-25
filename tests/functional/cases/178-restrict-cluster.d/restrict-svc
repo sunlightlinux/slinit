@@ -7,9 +7,14 @@ depends-on: system-init
 # kernel returns EPERM on the covered syscalls but leaves everything
 # else running. If any of the filters fail to compile or install,
 # slinit-runner exits non-zero and the service never starts.
+#
+# One filter is also probed behaviourally: restrict-suidsgid must make
+# `chmod 4755` fail with EPERM. The body records chmod's rc and stderr
+# under /run, and the case checks the file never got the setuid bit.
+# $$ is slinit's escape for a runtime shell $.
 restrict-realtime         = yes
 restrict-namespaces       = yes
 restrict-suidsgid         = yes
 restrict-file-systems     = yes
 restrict-address-families = AF_UNIX AF_INET
-command = /bin/sh -c "grep Seccomp: /proc/self/status > /tmp/178-seccomp 2>&1; exec sleep 600"
+command = /bin/sh -c "grep Seccomp: /proc/self/status > /tmp/178-seccomp 2>&1; echo x > /run/178-suid; chmod 4755 /run/178-suid 2>/run/178-chmod-err; echo rc=$$? > /run/178-chmod-rc; exec sleep 600"

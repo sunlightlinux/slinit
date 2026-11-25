@@ -211,3 +211,27 @@ func TestSafeX11(t *testing.T) {
 		}
 	}
 }
+
+// LANGUAGE was the one variable not validated, so a newline in it wrote a
+// second assignment into locale.conf: LANGUAGE=en\nLANG=/tmp/evil came
+// back as LANG=/tmp/evil. systemd validates every variable. LANGUAGE is a
+// colon-separated priority list, so each item must be a locale name; it
+// need not be installed ("de" never is).
+func TestLanguageIsValidated(t *testing.T) {
+	scratch(t)
+	for _, ok := range []string{"LANGUAGE=de_DE:de:en", "LANGUAGE=en", "LANGUAGE="} {
+		if _, err := ParseAssignments([]string{ok}, LocaleInstalled); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"LANGUAGE=en\nLANG=/tmp/evil", "LANGUAGE=../../x", "LANGUAGE=de::en", "LANGUAGE=en\r"} {
+		m, err := ParseAssignments([]string{bad}, LocaleInstalled)
+		if err == nil {
+			t.Errorf("%q accepted", bad)
+			if WriteLocale(m) == nil {
+				got, _ := ReadLocale()
+				t.Errorf("  and locale.conf now reads %v", LocaleEnv(got))
+			}
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -280,5 +281,44 @@ func TestShutdownEndsSessionsThatAreStillOpen(t *testing.T) {
 	case id := <-cleared:
 		t.Fatalf("utmp record for %q was cleared on daemon shutdown, but that session is still live", id)
 	default:
+	}
+}
+
+type failingListener struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls++
+	return nil, l.err
+}
+func (l *failingListener) Close() error   { return nil }
+func (l *failingListener) Addr() net.Addr { return &net.UnixAddr{Name: "test", Net: "unix"} }
+
+// An accept error that is not a closed listener (EMFILE, say) used to
+// be retried at once, spinning a CPU and writing a log line per spin
+// until the condition passed.
+func TestServeBacksOffOnAcceptErrors(t *testing.T) {
+	ln := &failingListener{err: &net.OpError{Op: "accept", Net: "unix",
+		Err: os.NewSyscallError("accept4", syscall.EMFILE)}}
+	s := newServer()
+	done := make(chan struct{})
+	go func() { s.serve(ln); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	ln.mu.Lock()
+	ln.err = &net.OpError{Op: "accept", Net: "unix", Err: net.ErrClosed}
+	n := ln.calls
+	ln.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return once the listener closed")
+	}
+	if n > 20 {
+		t.Errorf("Accept retried %d times in 300ms: a busy loop", n)
 	}
 }

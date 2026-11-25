@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // listenFDsStart is the first fd passed by the sd_listen_fds protocol,
@@ -93,6 +94,11 @@ func main() {
 		}(ln)
 	}
 	wg.Wait()
+	// Every listener has failed. That is never the normal way out —
+	// the sockets are ours until slinit stops us with a signal — so
+	// exit non-zero for the service's restart policy to see it, rather
+	// than 0, which `restart = on-failure` would take as a clean stop.
+	os.Exit(1)
 }
 
 // inheritedListeners turns the fds slinit passed into listeners.
@@ -146,19 +152,32 @@ func inheritedListeners() ([]net.Listener, error) {
 
 // serve accepts in a loop, running one instance of argv per connection.
 func serve(ln net.Listener, argv []string, sem chan struct{}, quiet bool) {
+	var backoff time.Duration
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			// A temporary error (EMFILE, ECONNABORTED) must not end the
 			// loop: the listener is still good and dropping out would
-			// take the service down over one refused connection.
+			// take the service down over one refused connection. Go
+			// retries ECONNABORTED itself; running out of descriptors
+			// or memory reaches here, and is not a "timeout", so it is
+			// matched by errno. Back off as net/http does, so a full
+			// descriptor table is not spun on while handlers drain it.
 			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
+			if (errors.As(err, &ne) && ne.Timeout()) || isResourceExhaustion(err) {
+				if backoff == 0 {
+					backoff = 5 * time.Millisecond
+				} else if backoff *= 2; backoff > time.Second {
+					backoff = time.Second
+				}
+				fmt.Fprintf(os.Stderr, "slinit-inetd: accept: %v; retrying in %v\n", err, backoff)
+				time.Sleep(backoff)
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "slinit-inetd: accept: %v\n", err)
 			return
 		}
+		backoff = 0
 		sem <- struct{}{}
 		go func(conn net.Conn) {
 			defer func() { <-sem }()
@@ -167,6 +186,14 @@ func serve(ln net.Listener, argv []string, sem chan struct{}, quiet bool) {
 			}
 		}(conn)
 	}
+}
+
+// isResourceExhaustion reports whether accept failed for want of a
+// descriptor or of kernel memory — conditions that pass once handlers
+// exit, unlike a closed or broken listener.
+func isResourceExhaustion(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM)
 }
 
 // handle runs one instance of argv with conn on stdin, stdout and

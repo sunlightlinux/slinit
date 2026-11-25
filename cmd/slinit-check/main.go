@@ -468,20 +468,34 @@ func readEnvFile(path string) ([]string, error) {
 	return result, nil
 }
 
+// defaultSystemDirs and defaultUserDirs are the directories the daemon
+// searches (cmd/slinit resolveServiceDirs), in its order. They had
+// drifted: the linter searched /usr/lib/slinit.d, which the daemon never
+// loads from, and missed /run/slinit.d and /usr/local/lib/slinit.d, so a
+// service there was reported "not found" — or a different file than the
+// one slinit would run was checked.
 func defaultSystemDirs() []string {
-	return []string{"/etc/slinit.d", "/usr/lib/slinit.d", "/lib/slinit.d"}
+	return []string{"/etc/slinit.d", "/run/slinit.d", "/usr/local/lib/slinit.d", "/lib/slinit.d"}
 }
 
 func defaultUserDirs() []string {
 	dirs := []string{}
+	home := os.Getenv("HOME")
+	if home == "" {
+		home = "~"
+	}
+	defaultUserDir := filepath.Join(home, ".config", "slinit.d")
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		dirs = append(dirs, filepath.Join(xdg, "slinit.d"))
-	} else {
-		home := os.Getenv("HOME")
-		if home == "" {
-			home = "~"
+		xdgDir := filepath.Join(xdg, "slinit.d")
+		dirs = append(dirs, xdgDir)
+		if xdgDir != defaultUserDir {
+			dirs = append(dirs, defaultUserDir)
 		}
-		dirs = append(dirs, filepath.Join(home, ".config", "slinit.d"))
+	} else {
+		dirs = append(dirs, defaultUserDir)
+	}
+	if rt := os.Getenv("XDG_RUNTIME_DIR"); rt != "" {
+		dirs = append(dirs, filepath.Join(rt, "slinit.d"))
 	}
 	dirs = append(dirs,
 		"/etc/slinit.d/user",

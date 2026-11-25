@@ -140,8 +140,8 @@ func TestTypeMapping(t *testing.T) {
 	}
 }
 
-// TestRestartMapping — systemd's five Restart= values map onto
-// slinit's three (yes/no/on-failure) with warnings on the ambiguous
+// TestRestartMapping — systemd's Restart= values map onto slinit's
+// four (yes/no/on-failure/on-success) with warnings on the ambiguous
 // cases.
 func TestRestartMapping(t *testing.T) {
 	cases := map[string]string{
@@ -150,7 +150,7 @@ func TestRestartMapping(t *testing.T) {
 		"on-failure":  "on-failure",
 		"on-abnormal": "on-failure",
 		"on-abort":    "on-failure",
-		"on-success":  "yes", // unusual, warns
+		"on-success":  "on-success",
 		"on-watchdog": "on-failure",
 	}
 	for restartVal, wantSlinit := range cases {
@@ -222,13 +222,14 @@ func TestMultiLineValue(t *testing.T) {
 	}
 }
 
-// TestSplitTargetsStripSuffixes — systemd deps carry .service /
-// .socket etc; slinit wants bare names. .target is different: slinit
-// has no target concept, so those references are dropped rather than
-// becoming a dependency on a service that does not exist.
+// TestSplitTargetsStripSuffixes — systemd deps carry .service; slinit
+// wants bare names. X.socket activates X.service, so it is the X
+// service too. Every other unit type (.target, .mount, ...) is dropped
+// rather than becoming a dependency on a service that does not exist,
+// or on the wrong one: sysroot.mount is no sysroot service.
 func TestSplitTargetsStripSuffixes(t *testing.T) {
-	got := splitTargets("network.target syslog.socket dbus.service")
-	want := []string{"syslog", "dbus"}
+	got := splitTargets("network.target syslog.socket dbus.service getty@tty1.service sysroot.mount fstrim.timer")
+	want := []string{"syslog", "dbus", "getty@tty1"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

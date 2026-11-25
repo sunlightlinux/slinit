@@ -92,3 +92,40 @@ func TestParseFilePropagatesLineNoInError(t *testing.T) {
 		t.Errorf("err missing 'fx:2': %v", err)
 	}
 }
+
+// A key whose first separator is '.' has dots and slashes swapped; one
+// whose first separator is '/' is used as is (sysctl.d(5)). That is how
+// an interface name with a dot is written — eth0.100, a VLAN: the
+// dotted key spells it eth0/100, the slashed key spells it eth0.100.
+// Every '.' was turned into '/', so both forms ended up at
+// net/ipv4/conf/eth0/100/rp_filter, which does not exist.
+func TestParseLineDotInInterfaceName(t *testing.T) {
+	for _, in := range []string{
+		"net.ipv4.conf.eth0/100.rp_filter = 0",
+		"net/ipv4/conf/eth0.100/rp_filter = 0",
+	} {
+		got, err := parseLine(in)
+		if err != nil {
+			t.Errorf("parseLine(%q): %v", in, err)
+			continue
+		}
+		if want := "net/ipv4/conf/eth0.100/rp_filter"; got.key != want {
+			t.Errorf("parseLine(%q).key = %q, want %q", in, got.key, want)
+		}
+	}
+}
+
+// A slashed key keeps its dots, so a "." or ".." element must not
+// get through to the path joined onto /proc/sys.
+func TestParseLineRejectsDotElements(t *testing.T) {
+	for _, in := range []string{
+		"net/../../etc/passwd = x",
+		"kernel/./hostname = x",
+		"kernel/.. = x",
+		"net./..x = 1",
+	} {
+		if s, err := parseLine(in); err == nil {
+			t.Errorf("parseLine(%q): accepted, key %q", in, s.key)
+		}
+	}
+}

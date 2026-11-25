@@ -74,5 +74,12 @@ func parseName(line string) (string, error) {
 	if strings.ContainsAny(name, "/\x00") {
 		return "", fmt.Errorf("name %q contains illegal characters", name)
 	}
+	// The name becomes binfmt_misc/<name>, which registerSpec writes -1
+	// to: as "status" that removes every format. "register" is the
+	// other control file; "." and ".." the kernel refuses itself.
+	switch name {
+	case "status", "register", ".", "..":
+		return "", fmt.Errorf("name %q is reserved", name)
+	}
 	return name, nil
 }

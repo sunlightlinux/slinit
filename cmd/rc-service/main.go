@@ -4,7 +4,8 @@
 // the older `--list`, `--resolve`, `--exists` forms, and translates
 // them into the equivalent slinitctl invocation. Exit codes follow
 // slinitctl — they are close enough to OpenRC's for all common
-// automation (0 = success, nonzero = failure). The point of this
+// automation (0 = success, nonzero = failure) — except status, which
+// exits with the service's state as OpenRC's does. The point of this
 // binary is to let scripts and admins that type `rc-service nginx
 // restart` keep working without rewriting anything.
 package main
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -95,6 +97,13 @@ func translate(argv []string) ([]string, error) {
 		out = []string{"pause", service}
 	case "continue":
 		out = []string{"continue", service}
+	case "reload":
+		// OpenRC's reload runs the script's reload(), which signals the
+		// daemon to re-read its own configuration, and fails when the
+		// script defines none. That is reload-signal, which fails the
+		// same way without a reload-signal stanza; `slinitctl reload`
+		// re-reads the service description and leaves the daemon alone.
+		out = []string{"reload-signal", service}
 	default:
 		out = []string{action, service}
 	}
@@ -136,6 +145,10 @@ func run(argv []string, stdout, stderr *os.File) int {
 		bin = resolved
 	}
 
+	if len(argv) == 2 && argv[1] == "status" {
+		return runStatus(bin, argv[0], stdout, stderr)
+	}
+
 	argvOut := append([]string{bin}, out...)
 	if err := execFunc(bin, argvOut, os.Environ()); err != nil {
 		fmt.Fprintf(stderr, "rc-service: exec %s: %v\n", bin, err)
@@ -143,6 +156,45 @@ func run(argv []string, stdout, stderr *os.File) int {
 	}
 	// syscall.Exec only returns on failure.
 	return 0
+}
+
+// runStatus prints `slinitctl status` and then exits as OpenRC's
+// status does: with the service's state, not with success, since
+// scripts branch on it. The state comes from `slinitctl is-failed`,
+// which prints FAILED for a service that stopped on a failure and the
+// plain state otherwise; its own exit status is not the answer here.
+func runStatus(bin, service string, stdout, stderr *os.File) int {
+	cmd := exec.Command(bin, "status", service)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode()
+		}
+		fmt.Fprintf(stderr, "rc-service: %s: %v\n", bin, err)
+		return 1
+	}
+	cmd = exec.Command(bin, "is-failed", service)
+	cmd.Stderr = stderr
+	state, _ := cmd.Output()
+	return openrcStatusCode(strings.TrimSpace(string(state)))
+}
+
+// openrcStatusCode maps the state slinitctl prints to the exit status
+// of OpenRC's _status (openrc-run.sh). slinit has no "inactive" (16).
+func openrcStatusCode(state string) int {
+	switch state {
+	case "STARTED":
+		return 0
+	case "STOPPED":
+		return 3
+	case "STOPPING":
+		return 4
+	case "STARTING":
+		return 8
+	case "FAILED":
+		return 32 // OpenRC: crashed
+	}
+	return 1
 }
 
 // isAbsPath avoids importing path/filepath for a single byte check.
@@ -156,7 +208,7 @@ Usage:
   rc-service -l|--list
   rc-service -r|--resolve <service>
 
-Actions: start, stop, restart, status, zap, pause, continue
+Actions: start, stop, restart, status, zap, pause, continue, reload
 Unrecognised actions are passed through to slinitctl as-is.
 
 The SLINITCTL environment variable overrides the slinitctl binary path.`

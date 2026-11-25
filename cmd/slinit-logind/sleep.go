@@ -19,7 +19,7 @@ import (
 //
 //  1. refuse outright if a block lock covers "sleep";
 //  2. announce PrepareForSleep(true), which is what makes lockers lock;
-//  3. wait for delay locks to clear, bounded by inhibitDelayMax;
+//  3. wait for delay locks to clear, bounded by InhibitDelayMaxSec;
 //  4. ask PID 1 to do it, so the sleep hook brackets the kernel write in
 //     the one place that write happens;
 //  5. announce PrepareForSleep(false) once the kernel has returned,
@@ -40,6 +40,12 @@ type sleepVerb struct {
 }
 
 // sleep runs the handshake for one sleep operation.
+//
+// One at a time: a request made while another sleep is in flight is
+// refused with OperationInProgress, as systemd-logind refuses it. Both
+// used to run, so two sleeps reached PID 1 back to back and the first
+// one's PrepareForSleep(false) was announced while the second was still
+// under way.
 func (m *manager) sleep(v sleepVerb) *dbus.Error {
 	if in := m.inhibitors.blockedBy("sleep"); in != nil {
 		return dbus.NewError("org.freedesktop.login1.Error.OperationInhibited",
@@ -47,13 +53,30 @@ func (m *manager) sleep(v sleepVerb) *dbus.Error {
 				"%s is inhibited by %q (pid %d, uid %d): %s",
 				v.method, in.Who, in.PID, in.UID, in.Why)})
 	}
+	m.mu.Lock()
+	busy := m.sleeping
+	m.sleeping = true
+	m.mu.Unlock()
+	if busy {
+		return dbus.NewError("org.freedesktop.login1.OperationInProgress",
+			[]interface{}{fmt.Sprintf(
+				"A sleep operation is already in progress, refusing requested %s operation.",
+				v.method)})
+	}
+	defer func() {
+		m.mu.Lock()
+		m.sleeping = false
+		m.mu.Unlock()
+	}()
 
 	m.announceSleep(true)
-	if m.inhibitors.waitForDelays("sleep", inhibitDelayMax) && m.debug {
+	// InhibitDelayMaxSec, or inhibitDelayMax when logind.conf has none.
+	delayMax := m.buttonCfg().InhibitDelayMax
+	if m.inhibitors.waitForDelays("sleep", delayMax) && m.debug {
 		// Proceeding anyway is the right call: a locker that crashed
 		// holding a delay lock must not keep a lid-shut laptop awake.
 		fmt.Fprintf(os.Stderr, "slinit-logind: delay inhibitors still held after %s; "+
-			"proceeding with %s\n", inhibitDelayMax, v.method)
+			"proceeding with %s\n", delayMax, v.method)
 	}
 
 	err := suspendViaInit(v.state)

@@ -63,10 +63,16 @@ func SetupCredentials(serviceName string, sources []CredentialSource, uid, gid u
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("credentials mkdir %s: %w", dir, err)
 	}
-	// Fresh tmpfs each time. If a prior mount lingered (daemon crash),
-	// the new MS_NOSUID|MS_NODEV|MS_NOEXEC mount stacks on top — the
-	// kernel keeps the old one but the service only sees the new one.
-	// Cleanup below umounts everything at the same path.
+	// Fresh tmpfs each time, and only one. A mount can still be there
+	// (one that lingered from before a re-exec); mounting on top
+	// stacked a second tmpfs, Cleanup took off only the top one, and
+	// the secrets under it stayed readable after the service stopped.
+	// So clear the path first. EPERM is left for the mount below to
+	// report. (A stop-command does not come here while the main
+	// command's mount is up: it reuses that one, see ReuseCredentials.)
+	if err := unmountAll(dir); err != nil && err != unix.EPERM {
+		return "", fmt.Errorf("credentials umount %s: %w", dir, err)
+	}
 	mountOpts := "size=1M,mode=0700"
 	if err := unix.Mount("tmpfs", dir, "tmpfs",
 		unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, mountOpts); err != nil {
@@ -141,17 +147,43 @@ func CleanupCredentials(serviceName string) error {
 		}
 		return err
 	}
-	// MNT_DETACH lets us umount even if a child still has a fd open
-	// (the mount stays alive until that fd closes, but the path is
-	// freed for new mounts).
-	if err := unix.Unmount(dir, unix.MNT_DETACH); err != nil &&
-		err != unix.EINVAL && err != unix.ENOENT {
+	if err := unmountAll(dir); err != nil {
 		return fmt.Errorf("umount %s: %w", dir, err)
 	}
 	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove %s: %w", dir, err)
 	}
 	return nil
+}
+
+// credentialsMounted reports whether the service's credentials
+// directory is a mount point, i.e. SetupCredentials has run for it and
+// CleanupCredentials has not.
+func credentialsMounted(serviceName string) bool {
+	dir := CredentialsDir(serviceName)
+	var st, parent unix.Stat_t
+	if unix.Stat(dir, &st) != nil || unix.Stat(filepath.Dir(dir), &parent) != nil {
+		return false
+	}
+	return st.Dev != parent.Dev
+}
+
+// unmountAll takes every mount stacked at dir off it, until umount
+// reports there is none (EINVAL) or no path (ENOENT). MNT_DETACH lets
+// us umount even if a child still has a fd open (the mount stays alive
+// until that fd closes, but the path is freed for new mounts). Bounded,
+// so a path that never stops being a mount point cannot spin PID 1.
+func unmountAll(dir string) error {
+	for i := 0; i < 64; i++ {
+		err := unix.Unmount(dir, unix.MNT_DETACH)
+		if err == unix.EINVAL || err == unix.ENOENT {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("still a mount point after 64 umounts")
 }
 
 // validateCredentialName rejects names that would let a service write

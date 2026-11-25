@@ -186,6 +186,30 @@ SVC
         rm -rf "${overlay_dir}/etc/slinit.d/systemd" 2>/dev/null || true
     fi
 
+    # Files a case needs outside /etc: rootfs/ in the .d dir is laid over
+    # the guest root as-is (51 seeds /var/lib/slinit/clock this way).
+    if [ -d "${services_dir}/rootfs" ]; then
+        cp -a "${services_dir}/rootfs"/. "${overlay_dir}/" 2>/dev/null || true
+        rm -rf "${overlay_dir}/etc/slinit.d/rootfs" 2>/dev/null || true
+    fi
+
+    # Extra QEMU options for a case that needs different hardware: a
+    # second CPU for an affinity mask that can be wrong, a stale RTC for
+    # the clock guard. One word per option, whitespace-separated.
+    local extra_qemu_args=""
+    if [ -f "${services_dir}/qemu-args" ]; then
+        extra_qemu_args=$(grep -v '^#' "${services_dir}/qemu-args")
+        rm -f "${overlay_dir}/etc/slinit.d/qemu-args"
+    fi
+
+    # Extra kernel command-line words, appended to the default line:
+    # psi=1 for a kernel that builds PSI but leaves it off by default.
+    local extra_kernel_args=""
+    if [ -f "${services_dir}/kernel-args" ]; then
+        extra_kernel_args=$(grep -v '^#' "${services_dir}/kernel-args" | tr '\n' ' ')
+        rm -f "${overlay_dir}/etc/slinit.d/kernel-args"
+    fi
+
     # Create the overlay cpio and concatenate with base
     local overlay_cpio="${test_dir}/overlay.cpio.gz"
     (cd "${overlay_dir}" && find . | cpio -o -H newc 2>/dev/null | gzip) > "${overlay_cpio}"
@@ -215,8 +239,9 @@ SVC
         ${kvm_args} \
         -kernel "${OUTPUT_DIR}/vmlinuz-virt" \
         -initrd "${test_dir}/initramfs.cpio.gz" \
-        -append "console=ttyS0 rdinit=/sbin/init loglevel=3 quiet" \
+        -append "console=ttyS0 rdinit=/sbin/init loglevel=3 quiet ${extra_kernel_args}" \
         -m 256 \
+        ${extra_qemu_args} \
         -nographic \
         -no-reboot \
         -serial file:"${console_log}" \

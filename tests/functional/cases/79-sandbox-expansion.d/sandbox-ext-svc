@@ -6,7 +6,7 @@ inaccessible-paths = /opt
 temporary-filesystem = /run/svc-scratch:size=4m,mode=0700
 bind-paths = /var/tmp/sandbox-ext-rw
 # Probe script:
-#  - /opt should appear empty (inaccessible-paths)
+#  - /opt must not show sandbox-prep's marker (inaccessible-paths)
 #  - /home should be a fresh tmpfs (protect-home=tmpfs)
 #  - /run/svc-scratch should be a writable tmpfs (temporary-filesystem)
 #  - /var/tmp/sandbox-ext-rw should be visible on host (bind-paths)
@@ -15,9 +15,7 @@ bind-paths = /var/tmp/sandbox-ext-rw
 # expansion leaves them alone and the shell sees a single '$'.
 script
 set -e
-ls /opt > /tmp/opt-list 2>/dev/null || true
-opt_count=$$(ls /opt 2>/dev/null | wc -l)
-if [ "$$opt_count" = "0" ]; then opt=hidden; else opt=visible; fi
+if [ -e /opt/sandbox-ext-marker ]; then opt=visible; else opt=hidden; fi
 if echo home-probe > /home/home-probe 2>/dev/null && [ -f /home/home-probe ]; then
     home=writable
 else

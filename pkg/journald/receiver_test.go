@@ -2,6 +2,9 @@ package journald
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -187,5 +190,54 @@ func TestReceiverStatsCountDrops(t *testing.T) {
 func TestStdoutSinkClose(t *testing.T) {
 	if err := (StdoutSink{}).Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The receiver must check what it reads: an event over MaxFields, or with
+// an out-of-range priority, used to go straight to the sink.
+func TestReceiverDropsInvalidEvents(t *testing.T) {
+	journal.InitIDs("testhost")
+	sink := &captureSink{}
+	recv, err := NewReceiver(tmpSocketPath(t), sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	recv.Run(ctx)
+
+	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: recv.Path(), Net: "unixgram"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	many := map[string]string{}
+	for i := 0; i <= journal.MaxFields; i++ {
+		many[fmt.Sprintf("F%d", i)] = "x"
+	}
+	for _, e := range []*journal.Event{
+		{Ts: 1, Prio: 99, Msg: "bad prio"},
+		{Ts: 1, Prio: journal.PriorityInfo, Msg: "too many", Fields: many},
+		{Ts: 1, Prio: journal.PriorityInfo, Msg: "good"},
+	} {
+		b, _ := json.Marshal(e)
+		if _, err := conn.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if r, d := recv.Stats(); r+d >= 3 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	recv.Stop()
+	if sink.len() != 1 || sink.events[0].Msg != "good" {
+		var msgs []string
+		for _, e := range sink.events {
+			msgs = append(msgs, e.Msg)
+		}
+		t.Fatalf("sink got %q, want only the valid event", msgs)
 	}
 }

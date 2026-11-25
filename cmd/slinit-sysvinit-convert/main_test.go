@@ -1,10 +1,14 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/sunlightlinux/slinit/pkg/config"
+	"github.com/sunlightlinux/slinit/pkg/service"
 )
 
 // The one test that matters most: everything this converter emits has to
@@ -346,5 +350,53 @@ func TestBusyboxShutdownAndRestartAreReported(t *testing.T) {
 	}
 	if !strings.Contains(joined, "soft-reboot") {
 		t.Errorf("restart was not pointed at soft-reboot: %v", res.notes)
+	}
+}
+
+// sysvinit (and busybox) run a process field holding a shell
+// metacharacter as /bin/sh -c "exec <field>". Copied into command = as
+// it was, `/bin/dmesg > /var/log/dmesg.boot` ran dmesg with the
+// arguments ">" and "/var/log/dmesg.boot". Each file is loaded with the
+// real loader and its argv read back.
+func TestShellProcessFieldRunsThroughSh(t *testing.T) {
+	const inittab = `lg:2345:once:/bin/dmesg > /var/log/dmesg.boot
+ec:2345:once:/bin/echo "$HOME" 'a b' back\slash
+pl:2345:once:/usr/sbin/plain --flag
+`
+	entries, errs := parseInittab(strings.NewReader(inittab))
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	res := convert(entries, dialectSysv)
+	want := map[string][]string{
+		"dmesg-lg": {"/bin/sh", "-c", "exec /bin/dmesg > /var/log/dmesg.boot"},
+		"echo-ec":  {"/bin/sh", "-c", `exec /bin/echo "$HOME" 'a b' back\slash`},
+		"plain-pl": {"/usr/sbin/plain", "--flag"},
+	}
+	dir := t.TempDir()
+	for name, body := range res.services {
+		os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644)
+	}
+	// What the once entries are ordered after; the boot graph has it.
+	os.WriteFile(filepath.Join(dir, "system-init"), []byte("type = internal\n"), 0o644)
+	ss := service.NewServiceSet(nil)
+	dl := config.NewDirLoader(ss, []string{dir})
+	ss.SetLoader(dl)
+	for name, argv := range want {
+		body, ok := res.services[name]
+		if !ok {
+			t.Fatalf("no service %q in %v", name, keys(res.services))
+		}
+		if _, err := dl.LoadService(name); err != nil {
+			t.Errorf("%s does not load: %v\n%s", name, err, body)
+			continue
+		}
+		desc, err := config.Parse(strings.NewReader(body), name, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(desc.Command, argv) {
+			t.Errorf("%s: argv = %q, want %q\n%s", name, desc.Command, argv, body)
+		}
 	}
 }

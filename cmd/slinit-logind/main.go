@@ -134,9 +134,17 @@ type manager struct {
 	// with every session change and VT switch (see vt.go).
 	seatProps map[string]*prop.Properties
 
+	// userProps is the same for users: Sessions, Display and State move
+	// as the user's sessions come and go.
+	userProps map[uint32]*prop.Properties
+
 	// preparingForSleep backs the PreparingForSleep property while a
 	// sleep handshake is in flight. Guarded by mu.
 	preparingForSleep bool
+
+	// sleeping is set while a sleep handshake runs, so another one asked
+	// for meanwhile is refused (sleep.go). Guarded by mu.
+	sleeping bool
 
 	// buttons is the lid/power-key configuration, read once at start.
 	// The Handle* properties report it, so it has to be reachable from
@@ -671,11 +679,19 @@ func (m *manager) Inhibit(sender dbus.Sender, what, who, why, mode string) (dbus
 		return 0, dbus.NewError("org.freedesktop.login1.Error.InvalidArguments",
 			[]interface{}{err.Error()})
 	}
+	// Our end goes now; the reply's copy, after the reply is out. Should
+	// the copy fail, no write end is left and the lock releases at once.
+	fd, ferr := replyFD(clientEnd)
+	_ = clientEnd.Close()
+	if ferr != nil {
+		return -1, dbus.NewError("org.freedesktop.DBus.Error.Failed",
+			[]interface{}{ferr.Error()})
+	}
 	if m.debug {
 		fmt.Fprintf(os.Stderr, "slinit-logind: inhibit %d %s mode=%s who=%q why=%q uid=%d pid=%d\n",
 			in.ID, in.What, in.Mode, in.Who, in.Why, in.UID, in.PID)
 	}
-	return dbus.UnixFD(clientEnd.Fd()), nil
+	return fd, nil
 }
 
 // buttonCfg returns the button configuration for the property getters.

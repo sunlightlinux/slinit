@@ -463,3 +463,20 @@ directory-mode = zzz
 		t.Fatal("expected error for invalid directory-mode")
 	}
 }
+
+// TestMountOptionsType: the kernel sets up an indirect mount unless
+// the data string says "direct" (fs/autofs/inode.c), so a
+// type=direct unit got an indirect mount.
+func TestMountOptionsType(t *testing.T) {
+	for _, c := range []struct {
+		typ  string
+		want string
+	}{
+		{TypeIndirect, "fd=7,pgrp=42,minproto=5,maxproto=5"},
+		{TypeDirect, "fd=7,pgrp=42,minproto=5,maxproto=5,direct"},
+	} {
+		if got := mountOptions(&MountUnit{AutofsType: c.typ}, 7, 42); got != c.want {
+			t.Errorf("%s: mount options %q, want %q", c.typ, got, c.want)
+		}
+	}
+}
