@@ -99,6 +99,10 @@ func SoftReboot(logger *logging.Logger, cal *logging.CatchAllLogger) error {
 	// snapshot below.
 	KillAllProcesses(logger)
 
+	// The exec would drop the utmp clears still queued for the services
+	// just stopped, leaving their entries behind in the next generation.
+	flushQueuedUtmp(logger)
+
 	// Sync filesystems to flush any pending writes before re-exec.
 	syncFunc()
 

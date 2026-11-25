@@ -1109,7 +1109,10 @@ requires.
   machine and the control socket for 10 s. The utmp clear at exit
   stalled the service's monitor the same way. Both now run in order on
   a goroutine of their own; a clear is still written after the create
-  for the same process.
+  for the same process. A shutdown waits for the queued writes, for up
+  to 5 s, before it writes its own utmp/wtmp records, and a soft reboot
+  before its exec, so the clears of the services it stopped are not
+  written after the shutdown record or lost.
 - **A `log-forward-udp` host name was looked up with the service queue
   locked.** Each start of such a service resolved the name in DNS while
   holding the lock, so a resolver that did not answer froze the state

@@ -1,6 +1,9 @@
 package service
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // utmp/wtmp writes run on one goroutine, in the order they were asked
 // for, never on the caller's. The create happens in startProcess under
@@ -49,6 +52,29 @@ func (q *utmpQueue) run() {
 		q.mu.Unlock()
 		job()
 	}
+}
+
+// flush waits until every job queued before it has run, or for timeout,
+// and reports whether they all ran.
+func (q *utmpQueue) flush(timeout time.Duration) bool {
+	done := make(chan struct{})
+	q.push(func() { close(done) })
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+// FlushUtmp waits, at most timeout, for the utmp writes still queued and
+// reports whether they all finished. The shutdown calls it before its own
+// utmp/wtmp records and before the reboot or the soft-reboot exec, which
+// would otherwise overtake or lose the clears of the services it stopped.
+func (ss *ServiceSet) FlushUtmp(timeout time.Duration) bool {
+	return ss.utmpQ.flush(timeout)
 }
 
 // utmpCreate queues OnUtmpCreate. Callers check HasUtmp first.

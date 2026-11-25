@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -392,6 +393,13 @@ func TestRunShutdownHookSlinitWinsOverDinit(t *testing.T) {
 // SetSyncEnabled / SetWtmpEnabled tests below.
 func runExecuteWithMocks(t *testing.T) (syncRan, wtmpRan bool) {
 	t.Helper()
+	return runExecuteWithMocksHook(t, nil)
+}
+
+// runExecuteWithMocksHook is runExecuteWithMocks with hook run after the
+// mocks are in place, to replace some of them.
+func runExecuteWithMocksHook(t *testing.T, hook func()) (syncRan, wtmpRan bool) {
+	t.Helper()
 	origKill, origSync, origReboot, origHook := killFunc, syncFunc, rebootFunc, runHookFunc
 	origLogout, origLogshut, origGrace := logoutAllUsersFunc, logShutdownFunc, killGracePeriod
 	killFunc = func(int, syscall.Signal) error { return syscall.ESRCH }
@@ -405,6 +413,9 @@ func runExecuteWithMocks(t *testing.T) (syncRan, wtmpRan bool) {
 		killFunc, syncFunc, rebootFunc, runHookFunc = origKill, origSync, origReboot, origHook
 		logoutAllUsersFunc, logShutdownFunc, killGracePeriod = origLogout, origLogshut, origGrace
 	}()
+	if hook != nil {
+		hook()
+	}
 
 	done := make(chan struct{})
 	go func() {
@@ -906,5 +917,45 @@ func TestRunShutdownHookBackgroundChild(t *testing.T) {
 		}
 	case <-time.After(4 * time.Second):
 		t.Fatal("runShutdownHook still waiting on a pipe held by the hook's background child")
+	}
+}
+
+// The service set writes utmp clears on a queue of its own. Execute must
+// let them land before it marks the remaining sessions closed and writes
+// the shutdown record; they used to land after it, or not at all.
+func TestExecuteFlushesQueuedUtmpFirst(t *testing.T) {
+	origFlush, origWtmp := flushUtmp, wtmpEnabled
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	SetUtmpFlusher(func(time.Duration) bool { note("flush"); return true })
+	wtmpEnabled = true
+	defer func() { flushUtmp, wtmpEnabled = origFlush, origWtmp }()
+
+	runExecuteWithMocksHook(t, func() {
+		logoutAllUsersFunc = func() int { note("logout"); return 0 }
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) < 2 || order[0] != "flush" || order[1] != "logout" {
+		t.Fatalf("utmp order = %v, want the queued writes flushed before the logout", order)
+	}
+}
+
+// A soft reboot execs the next generation: queued utmp clears must be
+// written before that, or they are lost with this process image.
+func TestSoftRebootFlushesQueuedUtmp(t *testing.T) {
+	origSync, origExec, origFlush := syncFunc, execFunc, flushUtmp
+	var flushed, flushedBeforeExec bool
+	syncFunc = func() {}
+	SetUtmpFlusher(func(time.Duration) bool { flushed = true; return true })
+	execFunc = func(string, []string, []string) error { flushedBeforeExec = flushed; return nil }
+	t.Cleanup(func() { syncFunc, execFunc, flushUtmp = origSync, origExec, origFlush })
+
+	if err := SoftReboot(testLogger(), nil); err != nil {
+		t.Fatalf("SoftReboot: %v", err)
+	}
+	if !flushedBeforeExec {
+		t.Fatal("queued utmp writes were not flushed before the soft-reboot exec")
 	}
 }

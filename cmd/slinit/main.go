@@ -979,6 +979,7 @@ func main() {
 	serviceSet.OnUtmpClear = func(id, line string) {
 		utmp.ClearEntry(id, line)
 	}
+	shutdown.SetUtmpFlusher(serviceSet.FlushUtmp)
 	serviceSet.OnRWReady = func() {
 		if utmp.LogBoot() {
 			logger.Info("Boot time logged to utmp/wtmp")

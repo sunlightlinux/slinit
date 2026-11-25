@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -318,6 +319,43 @@ func TestUtmpClearNeverOvertakesCreate(t *testing.T) {
 	defer mu.Unlock()
 	if len(calls) < 2 || calls[0] != "create" || calls[1] != "clear" {
 		t.Fatalf("utmp writes out of order: %v", calls)
+	}
+}
+
+// The utmp writes are queued, and shutdown writes its own utmp/wtmp
+// records and then reboots or execs: a clear still queued then landed
+// after the shutdown record, or never. FlushUtmp lets it land first,
+// and gives up after its timeout on a write that is stuck.
+func TestUtmpFlushWaitsForQueuedClears(t *testing.T) {
+	set, _ := newTestSet()
+	var cleared atomic.Bool
+	release := make(chan struct{})
+	set.OnUtmpClear = func(id, line string) {
+		if id == "stuck" {
+			<-release
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+		cleared.Store(true)
+	}
+
+	set.utmpClear("tty1", "tty1")
+	if !set.FlushUtmp(5 * time.Second) {
+		t.Fatal("FlushUtmp timed out on a 200 ms clear")
+	}
+	if !cleared.Load() {
+		t.Fatal("FlushUtmp returned before the queued clear was written")
+	}
+
+	set.utmpClear("stuck", "tty2")
+	defer close(release)
+	el, ok := runWithin(2*time.Second, func() {
+		if set.FlushUtmp(100 * time.Millisecond) {
+			t.Error("FlushUtmp reported a stuck clear as written")
+		}
+	})
+	if !ok {
+		t.Fatalf("FlushUtmp waited %v on a stuck clear, past its 100 ms timeout", el.Round(time.Millisecond))
 	}
 }
 
