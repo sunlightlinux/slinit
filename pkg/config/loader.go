@@ -1528,6 +1528,9 @@ func (dl *DirLoader) resolveDependencies(svc service.Service, desc *ServiceDescr
 				return nil, fmt.Errorf("loading dependency '%s' for service '%s': %w",
 					depName, svc.Name(), err)
 			}
+			if err := dl.checkLoadingCycle(svc, depSvc, spec.depType); err != nil {
+				return nil, err
+			}
 			out = append(out, resolvedDep{depSvc, spec.depType})
 		}
 	}
@@ -1558,6 +1561,24 @@ func (dl *DirLoader) resolveDependencies(svc service.Service, desc *ServiceDescr
 	}
 
 	return out, nil
+}
+
+// checkLoadingCycle refuses a dependency on a service that is still being
+// loaded further up this load: the edge would close a cycle. A service is
+// in the set before its dependencies load, so loadServiceLocked hands the
+// half-loaded one back instead of reaching loadServiceImpl's check; a
+// cycle used to load, and once started, every service on it sat in
+// STARTING waiting for the next. As in dinit, every type that waits for
+// its target counts. before and after only order, and a pair of them
+// naming each other is how one ordering is written from both ends.
+func (dl *DirLoader) checkLoadingCycle(svc, dep service.Service, depType service.DependencyType) error {
+	if depType == service.DepBefore || depType == service.DepAfter || !dl.loading[dep.Name()] {
+		return nil
+	}
+	return &ServiceLoadError{
+		ServiceName: svc.Name(),
+		Message:     fmt.Sprintf("cyclic dependency on '%s'", dep.Name()),
+	}
 }
 
 func (dl *DirLoader) loadDependencies(svc service.Service, desc *ServiceDescription, filePath string) error {
@@ -1603,6 +1624,9 @@ func (dl *DirLoader) resolveDepsFromDir(svc service.Service, dir string, depType
 			}
 			return nil, fmt.Errorf("loading dependency '%s' from directory '%s': %w",
 				depName, dir, err)
+		}
+		if err := dl.checkLoadingCycle(svc, depSvc, depType); err != nil {
+			return nil, err
 		}
 		out = append(out, resolvedDep{depSvc, depType})
 	}
