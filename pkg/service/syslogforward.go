@@ -139,7 +139,8 @@ func (f *SyslogForwarder) resolveAndDial(r *net.Resolver) {
 	defer cancel()
 	c, err := f.dialByName(ctx, r)
 	if err != nil {
-		if f.logger != nil {
+		// Cancelled by Close (a restart or a stop): nothing failed.
+		if f.logger != nil && f.lookupCtx.Err() == nil {
 			f.logger.Error("Service '%s': syslog-forward disabled (%v)", f.serviceName, err)
 		}
 		return
