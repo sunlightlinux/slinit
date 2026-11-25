@@ -33,6 +33,14 @@ requires.
 
 ### Security
 
+- **Hook scripts ran as root whoever owned them.** Anything executable
+  under `/etc/slinit/hooks.d/<point>/`, `/etc/rc.local.d/` or
+  `/etc/rc.local` ran; a directory or script left group- or
+  world-writable gave a local user root at the next boot or shutdown.
+  Scripts and directories not owned by root or writable by group or
+  others are now skipped with a warning, and a symlinked hook directory
+  is refused.
+
 - **A service with no cgroup of its own acted on every service sharing
   the daemon's default cgroup.** Its cgroup kill (`kill-mode =
   control-group`, `kill-all-on-stop`, `oom-policy = kill`) signalled
@@ -926,6 +934,13 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **`rc-service --exists` said a stopped service did not exist** (and
+  printed its state); like OpenRC's, it now succeeds silently whenever
+  the service resolves.
+- **A persisted pin for a service named `*.tmp` was lost at boot.**
+- **The utmp walks (shutdown wall, `shutdown.allow`) could restart or
+  miss entries** while the utmp writer ran; they are serialized.
 
 - **Process and bgprocess services diverged from dinit in ways that
   left the wrong state:**
