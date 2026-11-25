@@ -555,14 +555,26 @@ func (m *manager) CreateSession(
 // ReleaseSession is for the session itself (pam_slinit at logout, from
 // inside it) or root. systemd-logind refuses any other caller with the
 // same error.
+//
+// The caller's session is found by its pid, which can be reused between
+// the bus naming it and the lookup; systemd asks for a pidfd instead. So
+// the session must also be the caller's user's own: a reused pid can then
+// only release a session of the same user.
 func (m *manager) ReleaseSession(sender dbus.Sender, id string) *dbus.Error {
 	if err := m.authorize(sender, noGoodUser, "ReleaseSession"); err != nil {
-		own, ok := m.resolveAlias(sender, "self")
-		if !ok || own.ID != id {
+		own, ok := callerOwnSession(m, sender)
+		uid, uerr := senderUID(m, sender)
+		if !ok || own.ID != id || uerr != nil || own.UserID != uid {
 			return errAccessDenied("Refused to release session, since it doesn't match the one of the client")
 		}
 	}
 	return m.releaseSession(id)
+}
+
+// callerOwnSession is the session of the calling process; a variable so
+// tests can stand in for the bus daemon and /proc.
+var callerOwnSession = func(m *manager, sender dbus.Sender) (SessionRecord, bool) {
+	return m.resolveAlias(sender, "self")
 }
 
 // releaseSession is ReleaseSession without the check, for slinit-logind's
