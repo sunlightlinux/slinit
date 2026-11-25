@@ -120,6 +120,11 @@ type BGProcessService struct {
 	// already returned and nothing would read processTimer.
 	smoothRecovTimer *time.Timer
 
+	// recoveryPoll is set while pollForPIDFile waits for the pid file of
+	// a daemon relaunched by smooth recovery: the service is STARTED
+	// then, not STARTING, and has no pid to track until the file comes.
+	recoveryPoll bool
+
 	// Log output
 	logType      LogType
 	logBufMax    int
@@ -555,6 +560,17 @@ func (s *BGProcessService) BringDown() {
 	if pid <= 0 {
 		pid = s.launcherPID
 	}
+	if pid <= 0 && s.recoveryPoll {
+		// A smooth recovery's launcher has exited but its daemon has
+		// not written the pid file yet. Stopping now would leave that
+		// daemon running unsupervised: wait for it as the stop of an
+		// interrupted start does, and bring it down.
+		s.recoveryPoll = false
+		s.cancelTimer()
+		s.interruptedStopBy = time.Time{}
+		s.pollForForkedDaemon()
+		return
+	}
 	if pid <= 0 {
 		s.cancelTimer()
 		s.Stopped()
@@ -977,6 +993,7 @@ func (s *BGProcessService) adoptFollowedPID() bool {
 // PID is known. Shared by the immediate read and the polling path so the
 // two cannot drift apart. Caller holds queueMu.
 func (s *BGProcessService) finishPIDDiscoveryLocked(pid int) {
+	s.recoveryPoll = false
 	s.daemonPID = pid
 	s.publishPID()
 
@@ -996,6 +1013,7 @@ func (s *BGProcessService) finishPIDDiscoveryLocked(pid int) {
 // failPIDDiscoveryLocked aborts the start when the daemon's PID cannot be
 // established. Caller holds queueMu.
 func (s *BGProcessService) failPIDDiscoveryLocked(err error) {
+	s.recoveryPoll = false
 	s.services.logger.Error("Service '%s': %v", s.serviceName, err)
 	s.cancelTimer()
 	s.stopReason = ReasonFailed
@@ -1020,7 +1038,23 @@ func pidFileStillComing(err error) bool {
 // (bgTimerStartTimeout reads launcherPID, then daemonPID), and here both
 // are zero — the launcher has exited and the daemon is not identified yet.
 // Relying on it would leave the service wedged in STARTING forever.
+//
+// A smooth recovery reaches here too, with the service STARTED: the
+// relaunched daemon writes its pid file late just as a first start's
+// does, and until it is read the service tracks no process at all.
+// recoveryPoll marks that case. Caller holds queueMu.
 func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
+	pollState := StateStarting
+	if s.state.Load() == StateStarted {
+		pollState = StateStarted
+		s.recoveryPoll = true
+	}
+	// polling reports, under queueMu, whether this poll still owns the
+	// service: a stop or a failure elsewhere means there is nothing left
+	// to finish.
+	polling := func() bool {
+		return s.state.Load() == pollState && (pollState == StateStarting || s.recoveryPoll)
+	}
 	deadline := s.startTimeout
 	if deadline <= 0 {
 		// start-timeout=0 means "no timeout" for the launcher, but a pid
@@ -1041,7 +1075,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 			// Cheap unlocked pre-check: a stop or a failure elsewhere
 			// means there is nothing left to finish. Re-checked under
 			// the lock before acting on it.
-			if s.state.Load() != StateStarting {
+			if s.state.Load() != pollState {
 				return
 			}
 
@@ -1052,7 +1086,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 					// Present but unparseable: that will not fix itself,
 					// so fail now rather than sit out the whole deadline.
 					s.services.queueMu.Lock()
-					if s.state.Load() == StateStarting {
+					if polling() {
 						s.failPIDDiscoveryLocked(fmt.Errorf("failed to discover daemon pid: %w", err))
 					}
 					s.services.queueMu.Unlock()
@@ -1060,7 +1094,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				}
 				if time.Now().After(expiry) {
 					s.services.queueMu.Lock()
-					if s.state.Load() == StateStarting {
+					if polling() {
 						s.failPIDDiscoveryLocked(fmt.Errorf(
 							"failed to discover daemon pid within %s: %w", deadline, lastErr))
 					}
@@ -1071,7 +1105,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 			}
 
 			s.services.queueMu.Lock()
-			if s.state.Load() != StateStarting {
+			if !polling() {
 				s.services.queueMu.Unlock()
 				return
 			}
@@ -1082,7 +1116,7 @@ func (s *BGProcessService) pollForPIDFile(pidFile string, firstErr error) {
 				// has not started yet. Keep waiting rather than failing
 				// on somebody else's leftover file.
 				if time.Now().After(expiry) {
-					if s.state.Load() == StateStarting {
+					if polling() {
 						s.failPIDDiscoveryLocked(fmt.Errorf(
 							"pid file %s still names a process that is not running (PID %d) after %s",
 							pidFile, pid, deadline))

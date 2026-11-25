@@ -1,6 +1,9 @@
 package service
 
 import (
+	"os"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -180,5 +183,134 @@ func TestSmoothRecoveryRearmsWatchdog(t *testing.T) {
 	if second == 0 || pid != second || !armed || svc.State() != StateStarted {
 		t.Errorf("after recovery: pid %d -> %d (now %d), watchdog armed=%v, state=%v, last exit signal=%v",
 			first, second, pid, armed, svc.State(), es.Signal())
+	}
+}
+
+// bgSmoothRecoveryScenario starts a smooth-recovery bgprocess "a" whose
+// launcher leaves the pid file to its daemon, written 300ms after the
+// launcher exits, with an internal service "b" depending on it. It kills
+// the daemon and returns once the recovery has had time to settle, with
+// the daemon pid it killed. With staleFile the launcher leaves the dead
+// daemon's pid file in place until the new one overwrites it.
+func bgSmoothRecoveryScenario(t *testing.T, staleFile bool) (set *ServiceSet, a *BGProcessService, b *InternalService, pf string, d1 int) {
+	t.Helper()
+	set, _ = newTestSet()
+	pf = t.TempDir() + "/d.pid"
+	rm := "rm -f " + pf + "; "
+	if staleFile {
+		rm = ""
+	}
+	a = NewBGProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c",
+		rm + "sleep 60 & D=$!; ( sleep 0.3; echo $D > " + pf + " ) & exit 0"})
+	a.SetPIDFile(pf)
+	a.SetAutoRestart(RestartAlways)
+	a.SetSmoothRecovery(true)
+	set.AddService(a)
+	b = NewInternalService(set, "b")
+	b.Record().AddDep(a, DepRegular)
+	set.AddService(b)
+
+	set.StartService(b)
+	mustReachState(t, b, StateStarted)
+	d1 = lockedDaemonPID(set, a)
+	if err := syscall.Kill(d1, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill %d: %v", d1, err)
+	}
+	// One daemon poll (1s) to notice, 300ms for the new pid file.
+	time.Sleep(2500 * time.Millisecond)
+	return set, a, b, pf, d1
+}
+
+// checkRecoveredDaemon asserts that a smooth recovery left "a" STARTED and
+// supervising the daemon its pid file names, and that the shutdown which
+// follows takes that daemon down.
+func checkRecoveredDaemon(t *testing.T, set *ServiceSet, a *BGProcessService, b *InternalService, pf string, d1 int) {
+	t.Helper()
+	data, _ := os.ReadFile(pf)
+	d2, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	if d2 <= 0 || d2 == d1 {
+		t.Fatalf("pid file never named a new daemon: %q", data)
+	}
+	defer syscall.Kill(d2, syscall.SIGKILL)
+	if st := a.State(); st != StateStarted {
+		t.Errorf("a = %v after smooth recovery, want STARTED", st)
+	}
+	if st := b.State(); st != StateStarted {
+		t.Errorf("hard dependent b = %v after smooth recovery, want STARTED", st)
+	}
+	if got := lockedDaemonPID(set, a); got != d2 {
+		t.Errorf("a tracks daemon pid %d, want the recovered daemon %d", got, d2)
+	}
+
+	set.StopAllServices(ShutdownHalt)
+	mustReachState(t, a, StateStopped)
+	time.Sleep(200 * time.Millisecond)
+	if syscall.Kill(d2, 0) == nil && !procIsZombie(d2) {
+		t.Errorf("recovered daemon %d survived the shutdown", d2)
+	}
+}
+
+// TestBGSmoothRecoveryLatePIDFile: the relaunched daemon writes its pid
+// file after its launcher has exited, as forking daemons routinely do. The
+// poll that waits for it gave up at once because the service was STARTED,
+// not STARTING, leaving the service STARTED with no tracked pid and the new
+// daemon outliving the shutdown. dinit re-reads the pid file in the STARTED
+// branch of bgproc_service::handle_exit_status (proc-service.cc).
+func TestBGSmoothRecoveryLatePIDFile(t *testing.T) {
+	set, a, b, pf, d1 := bgSmoothRecoveryScenario(t, false)
+	checkRecoveredDaemon(t, set, a, b, pf, d1)
+}
+
+// TestBGSmoothRecoveryStopWhilePIDFilePending stops the service while a
+// smooth recovery is still waiting for its new daemon's pid file. With no
+// pid to signal, the stop must wait for the file and bring that daemon
+// down, not report STOPPED and leave it running unsupervised.
+func TestBGSmoothRecoveryStopWhilePIDFilePending(t *testing.T) {
+	set, _ := newTestSet()
+	pf := t.TempDir() + "/d.pid"
+	a := NewBGProcessService(set, "a")
+	a.SetCommand([]string{"/bin/sh", "-c",
+		"rm -f " + pf + "; sleep 60 & D=$!; ( sleep 0.5; echo $D > " + pf + " ) & exit 0"})
+	a.SetPIDFile(pf)
+	a.SetSmoothRecovery(true)
+	set.AddService(a)
+	set.StartService(a)
+	mustReachState(t, a, StateStarted)
+	d1 := lockedDaemonPID(set, a)
+	if err := syscall.Kill(d1, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill %d: %v", d1, err)
+	}
+
+	pending := func() bool {
+		set.queueMu.RLock()
+		defer set.queueMu.RUnlock()
+		return a.recoveryPoll
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !pending() {
+		if time.Now().After(deadline) {
+			t.Fatalf("smooth recovery never waited for the pid file (a=%v)", a.State())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	set.StopService(a)
+	mustReachState(t, a, StateStopped)
+
+	var d2 int
+	for deadline = time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		data, _ := os.ReadFile(pf)
+		if d2, _ = strconv.Atoi(strings.TrimSpace(string(data))); d2 > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if d2 <= 0 || d2 == d1 {
+		t.Fatalf("pid file never named a new daemon (read %d)", d2)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if syscall.Kill(d2, 0) == nil && !procIsZombie(d2) {
+		syscall.Kill(d2, syscall.SIGKILL)
+		t.Errorf("recovered daemon %d outlived the stop", d2)
 	}
 }
