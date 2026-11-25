@@ -129,3 +129,39 @@ func splitPackets(t *testing.T, b []byte) []string {
 	}
 	return pkts
 }
+
+// A service event goes to a subscribed connection as the v5 packet then
+// the v4 one, as before, but in one write instead of two. Over net.Pipe
+// one Read returns at most one Write's bytes, so a single read seeing
+// both packets shows they went out together.
+func TestServiceEventIsOneWrite(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	c := &Connection{
+		conn:       serverConn,
+		handles:    make(map[uint32]service.Service),
+		revHandles: make(map[service.Service]uint32),
+		nextHandle: 1,
+	}
+	ss := service.NewServiceSet(&testLogger{})
+	svc := service.NewInternalService(ss, "evt")
+	ss.AddService(svc)
+	c.handles[7] = svc
+	c.revHandles[svc] = 7
+
+	var want bytes.Buffer
+	WritePacket(&want, InfoServiceEvent5, EncodeServiceEvent5(7, uint8(service.EventStarted), svc))
+	WritePacket(&want, InfoServiceEvent, EncodeServiceEvent(7, uint8(service.EventStarted), svc))
+
+	go c.ServiceEvent(svc, service.EventStarted)
+	got := make([]byte, 2*want.Len())
+	clientConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	n, err := clientConn.Read(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got[:n], want.Bytes()) {
+		t.Errorf("one read got % x\nwant both packets % x", got[:n], want.Bytes())
+	}
+}

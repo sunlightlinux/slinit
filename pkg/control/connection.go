@@ -298,11 +298,13 @@ func (c *Connection) ServiceEvent(svc service.Service, event service.ServiceEven
 	if !ok {
 		return
 	}
-	// Send v5 event first, then v4 for backwards compatibility
-	payload5 := EncodeServiceEvent5(handle, uint8(event), svc)
-	c.writePacket(InfoServiceEvent5, payload5) //nolint: errcheck
-	payload := EncodeServiceEvent(handle, uint8(event), svc)
-	c.writePacket(InfoServiceEvent, payload) //nolint: errcheck
+	// Send v5 event first, then v4 for backwards compatibility. Both
+	// go out in one write: this runs under queueMu, once per subscribed
+	// connection per transition.
+	buf := make([]byte, 0, 2*3+19+17)
+	buf = appendPacket(buf, InfoServiceEvent5, EncodeServiceEvent5(handle, uint8(event), svc))
+	buf = appendPacket(buf, InfoServiceEvent, EncodeServiceEvent(handle, uint8(event), svc))
+	c.writePackets(buf) //nolint: errcheck
 }
 
 // EnvEvent implements service.EnvListener.
