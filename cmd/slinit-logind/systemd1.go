@@ -49,6 +49,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
+
+	"github.com/sunlightlinux/slinit/pkg/dbusservice"
 )
 
 const (
@@ -252,6 +254,10 @@ func (s *systemd1Manager) GetUnitByPID(pid uint32) (dbus.ObjectPath, *dbus.Error
 // it polkitd takes an UnknownMethod error on every authorisation check
 // before falling back — answering NoSuchUnit sends it down the same
 // fallback path as GetUnitByPID, without the error.
+//
+// The pidfd is closed by the connection once the reply is sent
+// (dbusservice.CloseReceivedFDs); it used to be closed by nothing, so
+// every polkit check leaked a descriptor.
 func (s *systemd1Manager) GetUnitByPIDFD(pidfd dbus.UnixFD) (dbus.ObjectPath, *dbus.Error) {
 	s.dbg("GetUnitByPIDFD(fd=%d) -> NoSuchUnit", int(pidfd))
 	return "", dbus.NewError(
@@ -840,7 +846,7 @@ func registerSystemd1(conn *dbus.Conn, debug bool) *systemd1Manager {
 // per-user, dbus-daemon --session ships an `<allow own="*"/>`
 // default for the owner-user context).
 func userMain(debug bool) {
-	conn, err := dbus.ConnectSessionBus()
+	conn, err := dbus.ConnectSessionBus(dbusservice.CloseReceivedFDs()...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-logind --user: connect session bus: %v\n", err)
 		os.Exit(1)
@@ -857,5 +863,10 @@ func userMain(debug bool) {
 	// logout / DM stop), so we exit cleanly along with the session.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	<-sig
+	select {
+	case <-sig:
+	case <-conn.Context().Done():
+		fmt.Fprintln(os.Stderr, "slinit-logind --user: lost the session bus connection")
+		os.Exit(1)
+	}
 }

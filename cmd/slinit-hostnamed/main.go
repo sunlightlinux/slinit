@@ -40,7 +40,7 @@ func main() {
 }
 
 func run(idle time.Duration) error {
-	conn, err := dbus.ConnectSystemBus()
+	conn, err := dbus.ConnectSystemBus(dbusservice.CloseReceivedFDs()...)
 	if err != nil {
 		return fmt.Errorf("connect to the system bus: %w", err)
 	}
@@ -53,6 +53,5 @@ func run(idle time.Duration) error {
 	if err := s.svc.Claim(busName); err != nil {
 		return err
 	}
-	s.svc.WaitIdle(idle)
-	return nil
+	return s.svc.WaitIdle(idle)
 }

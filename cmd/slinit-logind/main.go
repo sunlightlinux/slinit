@@ -45,6 +45,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
+
+	"github.com/sunlightlinux/slinit/pkg/dbusservice"
 )
 
 const (
@@ -929,7 +931,7 @@ func main() {
 	}
 	_ = os.Mkdir("/run/systemd/inaccessible/dir", 0000)
 
-	conn, err := dbus.ConnectSystemBus()
+	conn, err := dbus.ConnectSystemBus(dbusservice.CloseReceivedFDs()...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "slinit-logind: connect system bus: %v\n", err)
 		os.Exit(1)
@@ -1021,8 +1023,15 @@ func main() {
 	_ = registerSystemd1(conn, *debug)
 
 	// Block on SIGTERM/SIGINT. Nothing else to do — dbus/v5 runs its
-	// own dispatch goroutine.
+	// own dispatch goroutine. A lost bus connection is an exit with an
+	// error, so the supervisor starts us again: staying up without it
+	// left the machine with no login1 until a reboot.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	<-sig
+	select {
+	case <-sig:
+	case <-conn.Context().Done():
+		fmt.Fprintln(os.Stderr, "slinit-logind: lost the system bus connection")
+		os.Exit(1)
+	}
 }

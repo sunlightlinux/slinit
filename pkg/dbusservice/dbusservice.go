@@ -6,6 +6,7 @@
 package dbusservice
 
 import (
+	"errors"
 	"fmt"
 	"log/syslog"
 	"os"
@@ -230,17 +231,27 @@ func (s *Service) Claim(busName string) error {
 	return nil
 }
 
-// WaitIdle returns once no request has been in flight for idle; with idle
-// zero it never returns.
-func (s *Service) WaitIdle(idle time.Duration) {
-	if idle <= 0 {
-		select {}
+// WaitIdle returns nil once no request has been in flight for idle; with
+// idle zero it returns only when the bus connection is lost. Losing it
+// is an error, so the daemon exits non-zero and is started again rather
+// than staying up with nothing on the bus.
+func (s *Service) WaitIdle(idle time.Duration) error {
+	lost := s.Conn.Context().Done()
+	var tick <-chan time.Time
+	if idle > 0 {
+		t := time.NewTicker(idle / 4)
+		defer t.Stop()
+		tick = t.C
 	}
 	for {
-		time.Sleep(idle / 4)
+		select {
+		case <-lost:
+			return errors.New("lost the bus connection")
+		case <-tick:
+		}
 		last := time.Unix(0, s.lastUse.Load())
 		if s.inflight.Load() == 0 && time.Since(last) >= idle {
-			return
+			return nil
 		}
 	}
 }

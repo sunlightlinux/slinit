@@ -62,15 +62,19 @@ func TestCreateSessionWithPIDFDRefuses(t *testing.T) {
 		if err != nil {
 			t.Skipf("no pidfd_open: %v", err)
 		}
+		defer unix.Close(fd)
 		_, _, _, _, _, _, _, _, derr := m.CreateSessionWithPIDFD(sender, 1000, dbus.UnixFD(fd),
 			"login", "tty", "user", "", "seat0", 1, "tty1", "", false, "", "", flags, nil)
 		return derr, fdOpen(fd)
 	}
-	if err, open := call(alice, 0, child.Process.Pid); !denied(err) || open {
-		t.Errorf("non-root: err %v, fd still open %v; want AccessDenied and the fd closed", err, open)
+	// The method leaves the pidfd open: the connection closes it once the
+	// reply is sent (TestReceivedPidfdsAreClosed), and a second close could
+	// hit a descriptor that has since taken the number.
+	if err, open := call(alice, 0, child.Process.Pid); !denied(err) || !open {
+		t.Errorf("non-root: err %v, fd still open %v; want AccessDenied and the fd left open", err, open)
 	}
-	if err, open := call(root, 1, child.Process.Pid); err == nil || err.Name != "org.freedesktop.DBus.Error.InvalidArgs" || open {
-		t.Errorf("flags=1: err %v, fd still open %v; want InvalidArgs and the fd closed", err, open)
+	if err, open := call(root, 1, child.Process.Pid); err == nil || err.Name != "org.freedesktop.DBus.Error.InvalidArgs" || !open {
+		t.Errorf("flags=1: err %v, fd still open %v; want InvalidArgs and the fd left open", err, open)
 	}
 	// The pidfd names this process, which is logind itself here.
 	if err, _ := call(root, 0, os.Getpid()); err == nil || err.Name != "org.freedesktop.DBus.Error.InvalidArgs" {

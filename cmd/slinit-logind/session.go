@@ -196,8 +196,9 @@ func (m *manager) CreateSessionWithPIDFD(
 	flags uint64,
 	properties []Property,
 ) (string, dbus.ObjectPath, string, dbus.UnixFD, uint32, string, uint32, bool, *dbus.Error) {
-	// The fd is ours once godbus has received it, whatever happens next.
-	defer unix.Close(int(pidfd))
+	// The connection closes pidfd once the reply is sent
+	// (dbusservice.CloseReceivedFDs); closing it here as well could close
+	// a descriptor that has since taken its number.
 	if err := m.authorize(sender, noGoodUser, "CreateSessionWithPIDFD"); err != nil {
 		return "", "", "", -1, 0, "", 0, false, err
 	}
