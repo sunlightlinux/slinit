@@ -673,10 +673,13 @@ requires.
   The binary sink (the default) lost its file when a rotation could not
   rename or create one, and refused every event after it with
   "binary sink closed". Both kept that state until `slinit-journald`
-  restarted. A failed write now drops and counts only the events it
-  lost, cutting the file back to its last complete line, and a sink
-  without a file reopens one on a later event, at most once a second,
-  or on `--rotate`. The binary sink also starts a new file when the one
+  restarted. A failed write or fsync now drops and counts only the
+  events that did not reach the file whole, cutting it back to the last
+  complete line it holds (an fsync error after complete writes cuts
+  nothing), and a sink without a file reopens one on a later event, at
+  most once a second, or on `--rotate`. A rotation that failed is not
+  tried again for a second, and does not count the event that triggered
+  it, which was written, as a write error. The binary sink also starts a new file when the one
   it writes is removed under it, instead of writing into the removed
   file.
 - **The JSONL journal was never vacuumed.** With `--format=jsonl` and

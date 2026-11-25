@@ -88,11 +88,15 @@ type FileSink struct {
 	// these offsets, which become file offsets on the next Flush.
 	totalWritten int64
 
-	// durable / idxDurable are the jsonl and idx sizes known to be
-	// complete on disk. A failed write is cut back to them, so a full
-	// disk leaves no partial line behind.
+	// durable / idxDurable are the jsonl and idx sizes known to end on
+	// a whole line / record. A failed write is cut back no further than
+	// the last whole line it left (discardLocked), so a full disk leaves
+	// no partial line behind and loses no line that reached the file.
 	durable    int64
 	idxDurable int64
+
+	// fsync is (*os.File).Sync; tests replace it to fail.
+	fsync func(*os.File) error
 
 	// closed is set by Close: only then is a missing file final. A file
 	// lost to a failed rotation or reopen is reopened by a later event,
@@ -165,6 +169,7 @@ func NewFileSinkWithOptions(dir string, opts FileSinkOptions) (*FileSink, error)
 		maxAge:      opts.MaxAge,
 		rotatedHook: opts.RotatedHook,
 		now:         time.Now,
+		fsync:       (*os.File).Sync,
 	}
 	if err := s.openCurrent(); err != nil {
 		return nil, err
@@ -234,8 +239,9 @@ func (s *FileSink) Handle(evt *journal.Event) error {
 		}
 	}
 	if s.shouldRotateLocked() {
+		// The event is in the file whatever the rotation did, and a
+		// flush that lost events has counted them: not a write error.
 		if err := s.rotateLocked(); err != nil {
-			s.writeErrs.Add(1)
 			return err
 		}
 	}
@@ -278,6 +284,9 @@ func (s *FileSink) rotateLocked() error {
 		return nil
 	}
 	if err := s.flushLocked(); err != nil {
+		// Without the wait every later event ran the flush and its
+		// fsyncs again, only to fail the same way.
+		s.retryAt = s.now().Add(reopenInterval)
 		return err
 	}
 	oldPath := s.curPath
@@ -477,7 +486,7 @@ func (s *FileSink) flushLocked() error {
 		s.discardLocked()
 		return err
 	}
-	if err := s.f.Sync(); err != nil {
+	if err := s.fsync(s.f); err != nil {
 		s.discardLocked()
 		return err
 	}
@@ -493,7 +502,7 @@ func (s *FileSink) flushLocked() error {
 			_ = s.idxF.Truncate(s.idxDurable)
 			return err
 		}
-		if err := s.idxF.Sync(); err != nil {
+		if err := s.fsync(s.idxF); err != nil {
 			_ = s.idxF.Truncate(s.idxDurable)
 			return err
 		}
@@ -503,29 +512,49 @@ func (s *FileSink) flushLocked() error {
 	return nil
 }
 
-// discardLocked recovers from a failed jsonl write. bufio.Writer keeps
-// its first error and fails every later Write and Flush with it, so the
-// sink used to stay broken after a full disk had room again (and so did
-// Rotate, which flushes first), with a partial line left at the end of
-// the file. The buffered events are dropped and counted as write
-// errors, the file is cut back to its last complete line, and the
-// writer starts clean, so the next event is a fresh attempt. Caller
-// holds s.mu.
+// discardLocked recovers from a failed jsonl write or fsync. bufio.Writer
+// keeps its first error and fails every later Write and Flush with it,
+// so the sink used to stay broken after a full disk had room again (and
+// so did Rotate, which flushes first), with a partial line left at the
+// end of the file. The file is cut back to the last whole line it holds,
+// the events past it are dropped and counted as write errors, and the
+// writer starts clean, so the next event is a fresh attempt. Events that
+// reached the file whole are kept, even when the fsync after them failed:
+// cutting back to the last successful fsync deleted a batch that was
+// written in full. Caller holds s.mu.
 func (s *FileSink) discardLocked() {
-	if lost := uint64(s.unflushed); lost > 0 {
+	size := int64(-1)
+	keepTo := s.durable
+	if st, err := s.f.Stat(); err == nil {
+		size = st.Size()
+		keepTo = lastLineEnd(size, s.durable, s.totalWritten, s.pendingIdx)
+	}
+	var lost uint64
+	keep := s.pendingIdx[:0]
+	for _, rec := range s.pendingIdx {
+		if rec.Offset < keepTo {
+			// A whole line in the file, or one already durable
+			// whose idx write failed: indexed by the next flush.
+			keep = append(keep, rec)
+		} else {
+			lost++
+		}
+	}
+	if lost > 0 {
 		s.written.Add(^(lost - 1))
 		s.writeErrs.Add(lost)
 	}
 	s.unflushed = 0
-	keep := s.pendingIdx[:0]
-	for _, rec := range s.pendingIdx {
-		if rec.Offset < s.durable {
-			keep = append(keep, rec)
-		}
-	}
 	s.pendingIdx = keep
-	s.totalWritten = s.durable
-	if err := s.f.Truncate(s.durable); err != nil {
+	s.totalWritten = keepTo
+	s.durable = keepTo
+	if size == keepTo {
+		// Every byte in the file is a whole line (an fsync failed
+		// after complete writes): nothing to cut.
+		s.bw.Reset(s.f)
+		return
+	}
+	if err := s.f.Truncate(keepTo); err != nil {
 		// Cannot cut the partial line off: let go of the file and
 		// reopen it later, which starts on a fresh line.
 		_ = s.f.Close()
@@ -537,6 +566,26 @@ func (s *FileSink) discardLocked() {
 		return
 	}
 	s.bw.Reset(s.f)
+}
+
+// lastLineEnd returns the largest line boundary at or below size: the
+// durable size, the start of a pending (not yet fsynced) line, or the
+// end of the last one, totalWritten. Pending records are in offset
+// order; those below durable belong to lines already durable.
+func lastLineEnd(size, durable, totalWritten int64, pending []IdxRecord) int64 {
+	if totalWritten <= size {
+		return totalWritten
+	}
+	end := durable
+	for _, rec := range pending {
+		if rec.Offset > size {
+			break
+		}
+		if rec.Offset > end {
+			end = rec.Offset
+		}
+	}
+	return end
 }
 
 // reopenLocked opens the current file again for a sink that lost it to

@@ -360,3 +360,224 @@ func TestBinarySinkRecoversAfterFailedReopen(t *testing.T) {
 		t.Errorf("%d entries, want 6", n)
 	}
 }
+
+// checkIdxMatches fails the test unless the idx of the jsonl at path has
+// one record per line, each pointing at the start of its line.
+func checkIdxMatches(t *testing.T, path string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var starts []int64
+	for off := 0; off < len(b); {
+		starts = append(starts, int64(off))
+		n := bytes.IndexByte(b[off:], '\n')
+		if n < 0 {
+			break
+		}
+		off += n + 1
+	}
+	r, err := OpenIdx(idxPath(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.Len() != int64(len(starts)) {
+		t.Fatalf("idx has %d records for %d lines", r.Len(), len(starts))
+	}
+	for i := range starts {
+		rec, err := r.At(int64(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.Offset != starts[i] {
+			t.Errorf("idx record %d points at %d, line starts at %d", i, rec.Offset, starts[i])
+		}
+	}
+}
+
+// A batch cut short by a full disk was truncated back to the last fsync,
+// deleting the events that reached the file whole: 32 events, a 1000-byte
+// limit and FsyncEvery 32 kept 0 lines where 3 had been written in full.
+func TestFileSinkShortWriteKeepsWholeLines(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFileSinkWithOptions(dir, FileSinkOptions{FsyncEvery: 32, MaxSize: 1 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const limit = 1000
+	whole, size := 0, 0
+	evs := make([]*journal.Event, 32)
+	for i := range evs {
+		evs[i] = journalEvent(i, "b")
+		b, _ := json.Marshal(evs[i])
+		if size += len(b) + 1; size <= limit {
+			whole++
+		}
+	}
+	restore := limitFileSize(t, limit)
+	for _, ev := range evs {
+		s.Handle(ev)
+	}
+	restore()
+	written, errs := s.Stats()
+	if written != uint64(whole) || errs != uint64(32-whole) {
+		t.Errorf("written %d, errors %d; want %d and %d", written, errs, whole, 32-whole)
+	}
+	// The sink carries on, and the idx indexes the kept lines and the
+	// new ones, not the events that were dropped.
+	for i := 100; i < 103; i++ {
+		if err := s.Handle(journalEvent(i, "b")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	if n := checkJSONLFiles(t, dir); n != whole+3 {
+		t.Errorf("%d lines on disk, want %d", n, whole+3)
+	}
+	checkIdxMatches(t, s.CurrentPath())
+}
+
+// An fsync error after the batch was written in full truncated the whole
+// batch away; nothing in the file is partial, so nothing is cut.
+func TestFileSinkFsyncErrorKeepsWrittenEvents(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFileSinkWithOptions(dir, FileSinkOptions{FsyncEvery: 4, MaxSize: 1 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	failed := false
+	s.fsync = func(f *os.File) error {
+		if !failed && strings.HasSuffix(f.Name(), ".jsonl") {
+			failed = true
+			return syscall.EIO
+		}
+		return f.Sync()
+	}
+	for i := 0; i < 4; i++ {
+		s.Handle(journalEvent(i, "b"))
+	}
+	if !failed {
+		t.Fatal("fsync never ran; the test proves nothing")
+	}
+	if w, e := s.Stats(); w != 4 || e != 0 {
+		t.Errorf("written %d, errors %d; want 4 and 0", w, e)
+	}
+	for i := 4; i < 8; i++ {
+		if err := s.Handle(journalEvent(i, "b")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Close()
+	if n := checkJSONLFiles(t, dir); n != 8 {
+		t.Errorf("%d lines on disk, want 8", n)
+	}
+	checkIdxMatches(t, s.CurrentPath())
+}
+
+// A failed idx write is cut back to the last whole record: a partial one
+// left behind shifted every record after it.
+func TestFileSinkIdxWriteErrorCutsBack(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := filepath.Join(dir, currentFileName(time.Now().UTC()))
+	if err := os.WriteFile(jsonl, nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// An idx larger than the lines will be, so the idx crosses the
+	// limit first, half a record past it.
+	const pre = 250 * IdxRecordSize
+	if err := os.WriteFile(idxPath(jsonl), make([]byte, pre), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewFileSinkWithOptions(dir, FileSinkOptions{FsyncEvery: 1, MaxSize: 1 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	restore := limitFileSize(t, pre+IdxRecordSize/2)
+	if err := s.Handle(journalEvent(1, "b")); err == nil {
+		t.Fatal("idx write past the limit succeeded; the test proves nothing")
+	}
+	restore()
+	if st, _ := os.Stat(idxPath(jsonl)); st.Size() != pre {
+		t.Errorf("idx is %d bytes after the failed write, want %d", st.Size(), pre)
+	}
+	if err := s.Handle(journalEvent(2, "b")); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if st, _ := os.Stat(idxPath(jsonl)); st.Size() != pre+2*IdxRecordSize {
+		t.Errorf("idx is %d bytes, want %d (both events indexed once)", st.Size(), pre+2*IdxRecordSize)
+	}
+	if w, e := s.Stats(); w != 2 || e != 0 {
+		t.Errorf("written %d, errors %d; want 2 and 0", w, e)
+	}
+}
+
+// A rotation whose flush failed (here the idx fsync) ran again on every
+// event, each one paying the flush and its fsyncs, and counted events
+// that were written as write errors.
+func TestFileSinkFailedRotationFlushWaits(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFileSinkWithOptions(dir, FileSinkOptions{FsyncEvery: 100, MaxSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	syncs := 0
+	s.fsync = func(f *os.File) error {
+		syncs++
+		if strings.HasSuffix(f.Name(), ".idx") {
+			return syscall.EIO
+		}
+		return f.Sync()
+	}
+	if err := s.Handle(journalEvent(0, "b")); err == nil {
+		t.Fatal("rotation with a failing idx fsync succeeded; the test proves nothing")
+	}
+	first := syncs
+	for i := 1; i < 5; i++ {
+		if err := s.Handle(journalEvent(i, "b")); err != nil {
+			t.Errorf("event %d within a second of the failed rotation: %v", i, err)
+		}
+	}
+	if syncs != first {
+		t.Errorf("%d fsyncs after the failed rotation, want none until the retry", syncs-first)
+	}
+	if w, e := s.Stats(); w != 5 || e != 0 {
+		t.Errorf("written %d, errors %d; want 5 and 0", w, e)
+	}
+	s.fsync = (*os.File).Sync
+	now = now.Add(reopenInterval)
+	if err := s.Handle(journalEvent(5, "b")); err != nil {
+		t.Fatal(err)
+	}
+	if s.Rotations() != 1 {
+		t.Errorf("%d rotations once the wait was over, want 1", s.Rotations())
+	}
+}
+
+// An automatic rotation that failed was attempted again by every event
+// (closing and reopening the writer each time) instead of once a second.
+func TestBinarySinkFailedRotationWaits(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewBinarySink(BinarySinkOptions{Dir: dir, FsyncEvery: 1, MaxSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	unwritableDir(t, dir)
+	if err := s.Handle(journalEvent(0, "")); err == nil {
+		t.Fatal("rotation in an unwritable dir succeeded; the test proves nothing")
+	}
+	for i := 1; i < 4; i++ {
+		if err := s.Handle(journalEvent(i, "")); err != nil {
+			t.Errorf("event %d within a second of the failed rotation: %v", i, err)
+		}
+	}
+}
