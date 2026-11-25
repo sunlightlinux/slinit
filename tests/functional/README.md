@@ -8,7 +8,7 @@ script inside the guest via a virtio-serial channel, and validates the output.
 ## Usage
 
 ```bash
-# Run all tests (263 cases)
+# Run all tests (265 cases)
 ./tests/functional/run-tests.sh
 
 # Run a single test
@@ -371,6 +371,8 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 261 | chroot-non-process-refused | `chroot` on a scripted service is refused at load instead of being ignored |
 | 262 | journal-vacuum-keeps-active-file | `slinit-journalctl --vacuum-*` keeps the file slinit-journald opened on an earlier day |
 | 263 | journal-flush-keeps-persistent | `--flush` moves the volatile journal in without overwriting the persistent same-day file |
+| 264 | tmpfiles-mode-and-symlink | slinit-tmpfiles keeps a mode's sticky bit and does not chmod through a symlink at a `d` path |
+| 265 | process-interrupted-start-escalates | an interrupted process start escalates to SIGKILL at stop-timeout; a closed readiness fd brings the process down |
 
 ## How It Works
 
