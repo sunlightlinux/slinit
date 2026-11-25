@@ -1,44 +1,28 @@
 #!/bin/sh
-# Test: slinitctl reset-failed clears the internal startFailed flag.
-# The observable side is the CLI's own confirmation output — is-failed
-# considers a service failed if either startFailed OR the last exit
-# was non-zero, and reset-failed only touches the flag (matching
-# systemd semantics), so a stopped-with-exit-7 service remains
-# "failed" for is-failed until it's re-started successfully. We check
-# the CLI plumbing and the reset --all path here.
-_e=0
-while [ "$_e" -lt 10 ]; do
-    case "$(svc_state rf-fail-svc)" in
-        FAILED|STOPPED) break ;;
-    esac
-    sleep 1; _e=$((_e + 1))
-done
+# Test: slinitctl reset-failed makes is-failed stop reporting a failure.
+#
+# Two kinds of failed start: a process whose binary does not exist and a
+# scripted service that exits 3. Each must be is-failed before the reset
+# and not after it. The case used to check only the CLI's own
+# confirmation text, which slinitctl prints for any loaded service, and
+# reset-failed in fact changed nothing is-failed could see.
 
-# By-name reset must succeed with a success message.
+failed_rc() { slinitctl --system is-failed "$1" >/dev/null 2>&1; echo $?; }
+
+wait_for_service "rf-fail-svc" "STOPPED" 10
+slinitctl --system start rf-exit-svc >/dev/null 2>&1
+
+assert_eq "$(failed_rc rf-fail-svc)" "0" "missing binary: is-failed before reset"
+assert_eq "$(failed_rc rf-exit-svc)" "0" "exit 3: is-failed before reset"
+
 _out=$(slinitctl --system reset-failed rf-fail-svc 2>&1)
-_TESTS_RUN=$((_TESTS_RUN + 1))
-case "$_out" in
-    *"Reset failed state on 'rf-fail-svc'"*)
-        echo "OK: reset-failed by-name succeeded"
-        ;;
-    *)
-        _TESTS_FAILED=$((_TESTS_FAILED + 1))
-        echo "FAIL: reset-failed by-name: '$_out'"
-        ;;
-esac
+assert_contains "$_out" "Reset failed state on 'rf-fail-svc'" "reset-failed by name confirmed"
+assert_eq "$(failed_rc rf-fail-svc)" "1" "missing binary: not failed after reset"
+assert_eq "$(failed_rc rf-exit-svc)" "0" "by-name reset left the other service failed"
 
-# --all form must also succeed.
 _out=$(slinitctl --system reset-failed --all 2>&1)
-_TESTS_RUN=$((_TESTS_RUN + 1))
-case "$_out" in
-    *"Reset failed state on all services"*)
-        echo "OK: reset-failed --all succeeded"
-        ;;
-    *)
-        _TESTS_FAILED=$((_TESTS_FAILED + 1))
-        echo "FAIL: reset-failed --all: '$_out'"
-        ;;
-esac
+assert_contains "$_out" "Reset failed state on all services" "reset-failed --all confirmed"
+assert_eq "$(failed_rc rf-exit-svc)" "1" "exit 3: not failed after reset --all"
 
 # Missing argument must be an error, not a silent no-op.
 if slinitctl --system reset-failed >/dev/null 2>&1; then

@@ -1,0 +1,3 @@
+type = scripted
+# Exits non-zero: a failed scripted start.
+command = /bin/sh -c "exit 3"

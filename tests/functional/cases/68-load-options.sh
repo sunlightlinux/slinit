@@ -12,8 +12,13 @@ result=$(cat /tmp/loadopt-result 2>/dev/null)
 # export-passwd-vars should set USER from run-as
 assert_contains "$result" "USER=root" "USER exported from run-as"
 
-# export-passwd-vars should set HOME
-assert_contains "$result" "HOME=" "HOME exported from run-as"
+# export-passwd-vars should set HOME and SHELL from root's passwd entry.
+# A bare "HOME=" used to pass on the HOME=/ the kernel hands PID 1, which
+# every child inherits; /root and SHELL come only from the passwd lookup.
+_home=$(echo "$result" | grep '^HOME=')
+assert_eq "$_home" "HOME=/root" "HOME exported from run-as"
+_shell=$(echo "$result" | grep -c '^SHELL=')
+assert_eq "$_shell" "1" "SHELL exported from run-as"
 
 # export-service-name should set DINIT_SERVICENAME (dinit compat)
 assert_contains "$result" "DINIT_SERVICENAME=loadopt-svc" "DINIT_SERVICENAME exported"

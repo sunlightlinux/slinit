@@ -167,6 +167,28 @@ func TestResetFailedClearsFlag(t *testing.T) {
 	}
 }
 
+// TestResetFailedClearsIsFailed: after reset-failed, is-failed says no,
+// whatever kind of failure stopped the service. Clearing startFailed
+// alone left the stop reason behind, and IsFailed reads that too.
+func TestResetFailedClearsIsFailed(t *testing.T) {
+	for _, reason := range []StoppedReason{ReasonFailed, ReasonExecFailed, ReasonTimedOut, ReasonDepFailed} {
+		set, _ := newTestSet()
+		svc := NewInternalService(set, "rf")
+		set.AddService(svc)
+		rec := svc.Record()
+		rec.state.Store(StateStopped)
+		rec.stopReason = reason
+		rec.startFailed = true
+		if !rec.IsFailed() {
+			t.Fatalf("%v: precondition: IsFailed should be true", reason)
+		}
+		rec.ResetFailed()
+		if rec.IsFailed() {
+			t.Errorf("%v: IsFailed still true after ResetFailed", reason)
+		}
+	}
+}
+
 // TestRefusesManualStartStopDefault verifies both flags default to
 // false so existing services keep behaving exactly as before.
 func TestRefusesManualStartStopDefault(t *testing.T) {

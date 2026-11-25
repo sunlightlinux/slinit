@@ -175,7 +175,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 65 | term-signal | `term-signal` sends a custom signal instead of SIGTERM on stop |
 | 66 | bgprocess | bgprocess service type reads PID from a `pid-file` |
 | 67 | watchdog | `watchdog-timeout` kills + restarts unresponsive service |
-| 68 | load-options | `load-options` `export-passwd-vars` / `export-service-name` |
+| 68 | load-options | `load-options` `export-passwd-vars` (USER, HOME=/root, SHELL from passwd) / `export-service-name` |
 | 69 | restart-limit | `restart-limit-count` puts service into FAILED after too many restarts |
 | 70 | include-directive | `@include` inlines another file into the service definition |
 | 71 | umask | `umask =` sets the file-creation mask for the service process |
@@ -235,7 +235,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 125 | mlockall | `mlockall = current+future` → service memory locked (`VmLck` > 0, via the `libslinit-mlock.so` preload) and `RLIMIT_MEMLOCK = unlimited` in `/proc/PID/limits` |
 | 126 | numa-mempolicy | `numa-mempolicy = bind` on node 0; SKIPs if CONFIG_NUMA is off |
 | 127 | state-directory-mode | `state-directory` + `state-directory-mode` creates `/var/lib/<svc>` with the requested mode |
-| 128 | cache-directory | `cache-directory` + `cache-directory-mode` at `/var/cache/<svc>` |
+| 128 | cache-directory | `cache-directory` + `cache-directory-mode` (0710, not the 0755 default) at `/var/cache/<svc>` |
 | 129 | runtime-directory-preserve | `runtime-directory-preserve = yes` keeps `/run/<svc>/…` after stop |
 | 130 | namespace-cgroup | `namespace-cgroup = yes` puts the service in its own cgroup ns |
 | 131 | reboot-argument | parse-only smoke for `reboot-argument = recovery`; svc reaches a terminal state |
@@ -265,7 +265,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 155 | condition-measured-uki | Predicate skips when the boot wasn't measured via UKI + TPM PCR 4/5/7; asserts on measured host |
 | 156 | refuse-manual-start-stop | `refuse-manual-start` blocks a direct `slinitctl start` once stopped; `refuse-manual-stop` blocks a direct stop while running; `--force` overrides the stop |
 | 157 | restart-randomized-delay | `restart-randomized-delay` parses and does not wedge the start path |
-| 158 | reset-failed | `slinitctl reset-failed` clears the internal start-failed flag |
+| 158 | reset-failed | `slinitctl reset-failed` (by name and `--all`) makes `is-failed` say no for a missing binary and for a non-zero scripted exit |
 | 159 | stop-when-unneeded | `stop-when-unneeded` stops a helper once its last dependent is gone |
 | 160 | freeze-thaw | `slinitctl freeze/thaw` toggles cgroup v2 `cgroup.freeze`; atomic vs SIGSTOP for whole subtree |
 | 161 | cron-accuracy-sec | Cron fires are coalesced into buckets of the configured accuracy for RTC wakeup batching |

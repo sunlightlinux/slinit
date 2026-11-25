@@ -8,7 +8,7 @@ DIR="/var/cache/$SVC"
 cat > "/etc/slinit.d/$SVC" <<EOF
 type = process
 cache-directory = $SVC
-cache-directory-mode = 0755
+cache-directory-mode = 0710
 command = /bin/sh -c 'while :; do sleep 60; done'
 restart = no
 EOF
@@ -26,6 +26,6 @@ else
 fi
 
 _mode=$(stat -c '%a' "$DIR" 2>/dev/null)
-assert_eq "$_mode" "755" "cache-directory mode = 755"
+assert_eq "$_mode" "710" "cache-directory mode = 710 (the default is 755)"
 
 test_summary

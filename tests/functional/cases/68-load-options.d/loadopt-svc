@@ -1,5 +1,8 @@
 type = process
-command = /bin/sh -c "cat /proc/self/environ | tr '\0' '\n' > /tmp/loadopt-result; while true; do sleep 60; done"
+# env prints one variable per line. (This used to be
+# `tr '\0' '\n'` on /proc/self/environ, but command = eats the
+# backslashes, so the file came out as one line.)
+command = /bin/sh -c "env > /tmp/loadopt-result; while true; do sleep 60; done"
 run-as = root
 load-options = export-passwd-vars export-service-name
 depends-on: system-init

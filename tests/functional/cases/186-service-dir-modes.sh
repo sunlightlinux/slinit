@@ -29,9 +29,9 @@ check_dir() {
 }
 
 check_dir "runtime-directory" /run/186-run 750
-check_dir "state-directory"   /var/lib/186-state 755
+check_dir "state-directory"   /var/lib/186-state 710
 check_dir "cache-directory"   /var/cache/186-cache 700
-check_dir "logs-directory"    /var/log/186-logs 755
+check_dir "logs-directory"    /var/log/186-logs 750
 check_dir "configuration-directory" /etc/186-conf 700
 
 test_summary

@@ -1,4 +1,5 @@
 type = process
 depends-on: system-init
-command = /bin/sh -c 'exit 7'
+# The binary does not exist: the start fails.
+command = /nonexistent/158-binary
 restart = no

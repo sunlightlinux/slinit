@@ -689,6 +689,14 @@ requires.
 
 ### Fixed
 
+- **`slinitctl reset-failed` left the service failed.** It cleared the
+  start-failed flag, but `is-failed` also reads why the service stopped,
+  and a failed start or a failing exit leaves that reason behind; so
+  `is-failed` kept answering "failed" after the reset, for a missing
+  binary and a non-zero exit alike. A reset now also returns a stopped
+  service's stop reason to a normal stop (its exit status is kept and
+  still shown by `status`). Found by functional case 158, which had
+  been checking only the CLI's confirmation text.
 - **`exec-search-path` did nothing on most services.** The PATH it sets
   was applied only while building the service's own environment, and
   that step returned early when the service had no environment of its

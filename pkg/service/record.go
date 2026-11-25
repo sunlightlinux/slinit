@@ -1623,6 +1623,14 @@ func (sr *ServiceRecord) GetFailureConditions() FailureConditions { return sr.fa
 // `systemctl reset-failed`. No-op on a service that isn't marked failed.
 func (sr *ServiceRecord) ResetFailed() {
 	sr.startFailed = false
+	// IsFailed also reads the stop reason, which a failed start or a
+	// failing exit leaves at Failed/ExecFailed/TimedOut/Terminated.
+	// Clearing only the flag left is-failed answering "failed" after a
+	// reset, for every kind of failure. A stopped service's reason goes
+	// back to a normal stop; its exit status is kept for status.
+	if sr.state.Load() == StateStopped && sr.stopIsFailure() {
+		sr.stopReason = ReasonNormal
+	}
 }
 func (sr *ServiceRecord) WasStartSkipped() bool   { return sr.startSkipped }
 func (sr *ServiceRecord) IsLoading() bool         { return sr.isLoading }
