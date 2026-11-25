@@ -558,3 +558,37 @@ func TestRecreatedDirIsWatchedAgain(t *testing.T) {
 		t.Fatalf("want [appeared:newsvc], got %v", got)
 	}
 }
+
+// TestCloseWakesRun: Run sleeps in poll with no timeout while no dir is
+// lost and Close wakes it through an eventfd, then closes the fds once
+// Run has returned. Run used to poll every 200ms only to notice Close,
+// and Close closed the inotify fd under it, so Close took up to 200ms and
+// Run could poll a reused fd number.
+func TestCloseWakesRun(t *testing.T) {
+	const n = 10
+	var ws []*Watcher
+	for i := 0; i < n; i++ {
+		w, err := New(testLogger{}, Handler{}, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.AddDir(t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		go w.Run()
+		ws = append(ws, w)
+	}
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	for _, w := range ws {
+		w.Close()
+		select {
+		case <-w.done:
+		default:
+			t.Fatal("Close returned before Run exited")
+		}
+	}
+	if d := time.Since(start); d > 150*time.Millisecond {
+		t.Errorf("%d Closes took %v; Close did not wake Run", n, d)
+	}
+}

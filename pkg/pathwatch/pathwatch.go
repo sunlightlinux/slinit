@@ -81,6 +81,7 @@ type entry struct {
 // Watcher multiplexes a single inotify fd across many service registrations.
 type Watcher struct {
 	fd     int
+	wakeFd int // eventfd Close writes to, so Run's poll needs no timeout
 	logger Logger
 
 	mu      sync.Mutex
@@ -98,8 +99,14 @@ func New(logger Logger) (*Watcher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inotify_init1: %w", err)
 	}
+	wakeFd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		unix.Close(fd)
+		return nil, fmt.Errorf("eventfd: %w", err)
+	}
 	return &Watcher{
 		fd:      fd,
+		wakeFd:  wakeFd,
 		logger:  logger,
 		entries: make(map[string]*entry),
 		byWd:    make(map[int32][]*entry),
@@ -335,12 +342,7 @@ func (w *Watcher) Run() {
 	defer close(w.done)
 	var buf [16 * 1024]byte
 	for {
-		select {
-		case <-w.quit:
-			return
-		default:
-		}
-		n, err := readWithPoll(w.fd, buf[:], w.quit)
+		n, err := readWithPoll(w.fd, w.wakeFd, buf[:])
 		if err != nil {
 			if errors.Is(err, errQuit) {
 				return
@@ -456,31 +458,36 @@ func (w *Watcher) Close() {
 	default:
 		close(w.quit)
 	}
-	// Closing the fd unblocks readWithPoll's poll syscall.
-	_ = unix.Close(w.fd)
+	// Wake Run's poll. The fds are closed only once Run has returned:
+	// closed under it, Run could poll or read a number the process had
+	// already reused for another file.
+	_, _ = unix.Write(w.wakeFd, []byte{1, 0, 0, 0, 0, 0, 0, 0})
 	<-w.done
+	_ = unix.Close(w.fd)
+	_ = unix.Close(w.wakeFd)
 }
 
-// errQuit is a sentinel from readWithPoll when quit was signalled.
+// errQuit is a sentinel from readWithPoll when Close woke it.
 var errQuit = errors.New("pathwatch: quit")
 
-// readWithPoll reads from fd, returning errQuit if quit closes first.
-// Uses ppoll to avoid a busy loop and to react to Close() promptly.
-func readWithPoll(fd int, buf []byte, quit <-chan struct{}) (int, error) {
+// readWithPoll reads from fd, returning errQuit once wakeFd is
+// signalled. It sleeps in poll with no timeout: an idle watcher costs
+// PID 1 no wakeups.
+func readWithPoll(fd, wakeFd int, buf []byte) (int, error) {
 	for {
-		select {
-		case <-quit:
-			return 0, errQuit
-		default:
+		fds := []unix.PollFd{
+			{Fd: int32(fd), Events: unix.POLLIN},
+			{Fd: int32(wakeFd), Events: unix.POLLIN},
 		}
-		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-		// 200ms timeout so we re-check quit periodically even if fd is silent.
-		_, err := unix.Poll(fds, 200)
+		_, err := unix.Poll(fds, -1)
 		if err != nil {
 			if errors.Is(err, syscall.EINTR) {
 				continue
 			}
 			return 0, err
+		}
+		if fds[1].Revents != 0 {
+			return 0, errQuit
 		}
 		if fds[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) == 0 {
 			continue
@@ -489,9 +496,6 @@ func readWithPoll(fd int, buf []byte, quit <-chan struct{}) (int, error) {
 		if err != nil {
 			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
 				continue
-			}
-			if errors.Is(err, syscall.EBADF) {
-				return 0, errQuit
 			}
 			return 0, err
 		}
