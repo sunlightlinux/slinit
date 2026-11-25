@@ -1717,6 +1717,7 @@ func main() {
 		// Non-fatal: continue without control socket
 	} else {
 		defer ctrlServer.Stop()
+		exitCtrlServer = ctrlServer
 	}
 
 	// Wire pass-cs-fd: when a service creates a socketpair, the server end
@@ -3158,6 +3159,10 @@ func waitForFDClose(n int) error {
 // once main has opened one.
 var exitSyslog *logging.Logger
 
+// exitCtrlServer is the control server exitFlushed stops, once main has
+// started one.
+var exitCtrlServer *control.Server
+
 // exitFlushed drains the catch-all logger, then exits.
 //
 // os.Exit skips main's deferred cal.Stop(), and the catch-all tees
@@ -3175,9 +3180,26 @@ var exitSyslog *logging.Logger
 // is closed by a deferred CloseSyslog that os.Exit skips too, so the
 // messages explaining the exit never reached the syslog daemon.
 // CloseSyslog bounds its own wait.
+//
+// The control server is stopped too, which removes its socket file:
+// the deferred Stop is skipped as well, and a user or container
+// instance exiting because no boot service loaded left the socket
+// behind. Bounded like the catch-all, as Stop waits for its
+// connections.
 func exitFlushed(cal *logging.CatchAllLogger, code int) {
 	if exitSyslog != nil {
 		exitSyslog.CloseSyslog()
+	}
+	if exitCtrlServer != nil {
+		done := make(chan struct{})
+		go func() {
+			exitCtrlServer.Stop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
 	}
 	if cal != nil {
 		done := make(chan struct{})

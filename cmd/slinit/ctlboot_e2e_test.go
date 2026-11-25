@@ -116,3 +116,29 @@ wait`, wr)
 		t.Errorf("system-up hook did not run after the notification")
 	}
 }
+
+// With the control server started before the boot services, a user or
+// container instance that exits because no boot service loads left its
+// socket file behind: os.Exit skips the deferred Stop that removes it.
+func TestNoBootServiceRemovesSocket(t *testing.T) {
+	for _, mode := range []string{"-u", "-o"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, "sd"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			r := startNS(t, dir, `"$B/slinit" `+mode+` -d "$D/sd" -p "$D/sock" >"$D/log" 2>&1; echo "rc=$?" >"$D/rc"`)
+			if !r.wait(15 * time.Second) {
+				t.Fatal("slinit did not exit with no boot service")
+			}
+			rc, _ := os.ReadFile(filepath.Join(dir, "rc"))
+			if !strings.Contains(string(rc), "rc=1") {
+				log, _ := os.ReadFile(filepath.Join(dir, "log"))
+				t.Fatalf("exit: %s, want rc=1\n%s", rc, log)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, "sock")); err == nil {
+				t.Errorf("control socket left behind after exiting with no boot service")
+			}
+		})
+	}
+}
