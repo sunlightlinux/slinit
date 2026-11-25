@@ -33,6 +33,15 @@ requires.
 
 ### Security
 
+- **A service description could crash or stall PID 1 at load or start.**
+  `log-buffer-size` and `shared-logger-queue-size` had no upper bound
+  (`log-buffer-size = 4611686018427387904` panicked PID 1 in makeslice
+  when the service started); they are now capped at 64 MiB and 1<<20
+  entries. Byte sizes that overflow int64 are refused instead of
+  wrapping negative. `@include` files that include the next one several
+  times grew exponentially under the loader lock (about a second at four
+  per level); a description now reads at most 256 included files.
+
 - **Any local user could pin about 256 MiB in PID 1 through
   `/dev/log`.** The rate limit counts messages, and each 64 KiB datagram
   was kept in the 4096-slot journal ring. Messages from non-root senders
@@ -750,6 +759,50 @@ requires.
   as plain lines sees the length-prefixed form for those fields.
 
 ### Fixed
+
+- **slinit-check reported systemd units and init.d scripts PID 1 loads
+  as "not found"**: it did not enable the fallbacks the daemon enables.
+- **slinit-journald parsed every datagram before rate-limiting its
+  sender**, so a local user over the limit still cost a full JSON decode
+  per message. Untrusted senders are limited first.
+
+- **A dependency cycle loaded without error and then hung.** `a:
+  depends-on: b` with `b: depends-on: a` loaded, and both services sat
+  in STARTING for ever once started; a cycle reachable from `boot` hung
+  the boot. The loader's cycle check could never fire, because a service
+  is in the set before its dependencies load. Every dependency that
+  waits for its target (depends-on, depends-ms, waits-for, prepared-by,
+  and their `.d` forms) now refuses a cycle at load, as dinit does;
+  `before`/`after` pairs still load. *Compat:* a configuration with such
+  a cycle now fails to load instead of hanging.
+- **Signal names other than nine were refused, and any number was
+  accepted.** `watchdog-signal = SIGABRT` (documented as the default),
+  SIGWINCH, SIGPWR and others failed to parse, so systemd units with
+  `KillSignal=SIGWINCH` could not load; `term-signal = -9` or `4096`
+  loaded and failed at stop time. Every kernel signal name now resolves,
+  with or without `SIG`, and numbers are limited to 0..64.
+- **A masked systemd unit was loaded anyway.** A `foo.service` linked to
+  `/dev/null` in `/etc/systemd/system` was skipped and the search went on
+  to `/usr/lib/systemd/system`; an empty unit file was loaded as an
+  empty service. Both now mean masked: the unit is not loadable, and a
+  `Wants=` naming it is dropped, as in systemd.
+- **The system-up hooks, ifup and rc.local ran with the service-set lock
+  held.** An rc.local that ran `slinitctl start` deadlocked until its
+  5-minute timeout, and a slow ifup froze every start, stop and exit for
+  up to 90 seconds. They now run off the lock; the utmp boot record goes
+  through the utmp queue.
+- **A stopped service could be SIGKILLed at once instead of getting its
+  stop timeout.** A start-timeout tick received just before a stop
+  re-armed the timer was handled with the new timer's purpose; the
+  mirror case interrupted a restarted instance's start. Process,
+  scripted and bgprocess services ignore a tick from a replaced timer.
+- **A watchdog or OOM watcher of a finished run could stop the next
+  run** when it fired just as the process exited and was restarted.
+- **Stopping a service waited for its in-flight health check with the
+  lock held**, freezing the state machine for up to the check interval
+  plus the unhealthy-command timeout; the check is now cancelled. A
+  health checker that reached its failure threshold as the process
+  restarted no longer stays disabled for every later instance.
 
 - **`slinitctl attach` could stop accepting clients for a service, and
   the service's console then blocked.** A client dropped while its
