@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
@@ -170,6 +171,10 @@ type Debugger struct {
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 	tty       *os.File
+	// wakeFd is an eventfd in the reader's poll set. Stop writes to it
+	// so the reader wakes at once; closing the tty does not wake a
+	// poll(2) already parked on it.
+	wakeFd int
 	// termios is the ORIGINAL termios captured by Start, so Stop
 	// (and the shell-fork detour in runShell) can restore it.
 	// Guarded by termiosMu because runShell re-captures on
@@ -215,7 +220,15 @@ func (d *Debugger) Start() error {
 		close(d.doneCh)
 		return fmt.Errorf("open console %q: %w", d.opts.ConsolePath, err)
 	}
+	wakeFd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		tty.Close()
+		d.running.Store(false)
+		close(d.doneCh)
+		return fmt.Errorf("eventfd: %w", err)
+	}
 	d.tty = tty
+	d.wakeFd = wakeFd
 	orig := setRawMode(tty)
 	d.termiosMu.Lock()
 	d.termios = orig
@@ -226,7 +239,7 @@ func (d *Debugger) Start() error {
 	// a Stop() landing in the window before the goroutine got that far
 	// was a data race, and a lost race means polling a descriptor number
 	// that has since been reused by something else.
-	go d.run(int(tty.Fd()))
+	go d.run(int(tty.Fd()), wakeFd)
 	if d.opts.Logger != nil {
 		d.opts.Logger.Info("Boot debugger active on %s (press Ctrl-B for menu)", d.opts.ConsolePath)
 	}
@@ -260,13 +273,20 @@ func (d *Debugger) Stop() {
 	d.menuMu.Lock()
 	d.menuMu.Unlock()
 	close(d.stopCh)
-	// Closing the tty fd unblocks the goroutine's ReadByte via
-	// EBADF/EIO — the standard way to unstick a blocking read on
-	// a file with no deadline support.
+	// Wake the reader through the eventfd and wait for it to leave
+	// before closing anything: closing the tty does not wake a parked
+	// poll(2), which left Stop waiting for the next poll tick (up to
+	// 200ms, under the scheduling lock, on every boot), and a reader
+	// still running after the close could poll or read a descriptor
+	// number that had since been reused.
+	var one [8]byte
+	binary.NativeEndian.PutUint64(one[:], 1)
+	_, _ = unix.Write(d.wakeFd, one[:])
+	<-d.doneCh
 	if d.tty != nil {
 		d.tty.Close()
 	}
-	<-d.doneCh
+	unix.Close(d.wakeFd)
 	// Restore termios AFTER goroutine exit. termios is per-tty
 	// kernel state (not per-fd), so we re-open the console just
 	// for the ioctl — the goroutine's fd is closed and calling
@@ -296,40 +316,40 @@ func (d *Debugger) Stop() {
 // trigger anything, and letting bytes accumulate on getty would
 // break the eventual login flow (mitigated by Stop before getty).
 //
-// Poll-with-timeout instead of a naked ReadByte because Linux does
-// not unblock a pending tty read when the fd is Close()'d from
-// another goroutine — the driver keeps the reader parked in the
-// wait queue independently of which fd initiated the read. Without
-// this loop Stop() would hang until the operator pressed a key.
+// Poll instead of a naked ReadByte because Linux does not unblock a
+// pending tty read when the fd is Close()'d from another goroutine —
+// the driver keeps the reader parked in the wait queue independently
+// of which fd initiated the read. Stop wakes the poll through wakeFd
+// instead, and closes the tty only once this loop has returned.
 // fd is passed in rather than read from d.tty: see the comment at the
 // `go d.run(...)` call site.
-func (d *Debugger) run(fd int) {
+func (d *Debugger) run(fd, wakeFd int) {
 	defer close(d.doneCh)
 	buf := make([]byte, 1)
-	pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	pollFds := []unix.PollFd{
+		{Fd: int32(fd), Events: unix.POLLIN},
+		{Fd: int32(wakeFd), Events: unix.POLLIN},
+	}
 	for {
 		select {
 		case <-d.stopCh:
 			return
 		default:
 		}
-		// 200ms is small enough that Stop responds snappily (the
-		// wait sits inside main.go's boot loop and blocks the tty
-		// service start), but large enough that we don't burn CPU
-		// during the seconds-long service startup window.
 		pollFds[0].Revents = 0
-		n, err := unix.Poll(pollFds, 200)
+		pollFds[1].Revents = 0
+		_, err := unix.Poll(pollFds, -1)
 		if err != nil {
 			if err == unix.EINTR {
 				continue
 			}
 			return
 		}
-		if n == 0 {
-			continue // timeout, re-check stopCh
+		if pollFds[1].Revents != 0 {
+			return // Stop
 		}
 		if pollFds[0].Revents&(unix.POLLHUP|unix.POLLNVAL|unix.POLLERR) != 0 {
-			return // fd went away (Stop closed it) or errored
+			return // console hung up or errored
 		}
 		if pollFds[0].Revents&unix.POLLIN == 0 {
 			continue
