@@ -51,6 +51,8 @@ func main() {
 	}
 	maxConc := flag.Int("max-concurrent", 64,
 		"maximum simultaneous connection handlers; further connections wait")
+	maxPerSource := flag.Int("max-per-source", 0,
+		"maximum simultaneous connections from one remote IP; further ones are closed (0 = unlimited)")
 	quiet := flag.Bool("quiet", false, "do not log accepted connections")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr,
@@ -72,6 +74,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "slinit-inetd: --max-concurrent must be at least 1")
 		os.Exit(2)
 	}
+	if *maxPerSource < 0 {
+		fmt.Fprintln(os.Stderr, "slinit-inetd: --max-per-source must not be negative")
+		os.Exit(2)
+	}
 
 	listeners, err := inheritedListeners()
 	if err != nil {
@@ -84,13 +90,20 @@ func main() {
 	// an unbounded fork storm from one port is a denial of service that
 	// takes the whole machine, not just the service.
 	sem := make(chan struct{}, *maxConc)
+	// The semaphore alone lets one remote host take every slot with
+	// idle connections and lock everyone else out. Off by default, as
+	// xinetd's per_source is, so existing setups see no change.
+	var perSource *sourceLimiter
+	if *maxPerSource > 0 {
+		perSource = newSourceLimiter(*maxPerSource)
+	}
 
 	var wg sync.WaitGroup
 	for _, ln := range listeners {
 		wg.Add(1)
 		go func(ln net.Listener) {
 			defer wg.Done()
-			serve(ln, argv, sem, *quiet)
+			serve(ln, argv, sem, perSource, *quiet)
 		}(ln)
 	}
 	wg.Wait()
@@ -151,7 +164,9 @@ func inheritedListeners() ([]net.Listener, error) {
 }
 
 // serve accepts in a loop, running one instance of argv per connection.
-func serve(ln net.Listener, argv []string, sem chan struct{}, quiet bool) {
+// A connection from a source already at its perSource limit is closed
+// at once; a nil perSource means no per-source limit.
+func serve(ln net.Listener, argv []string, sem chan struct{}, perSource *sourceLimiter, quiet bool) {
 	var backoff time.Duration
 	for {
 		conn, err := ln.Accept()
@@ -178,14 +193,73 @@ func serve(ln net.Listener, argv []string, sem chan struct{}, quiet bool) {
 			return
 		}
 		backoff = 0
+		src := sourceOf(conn)
+		if !perSource.acquire(src) {
+			if !quiet {
+				fmt.Fprintf(os.Stderr, "slinit-inetd: connection from %s refused: "+
+					"too many from %s\n", conn.RemoteAddr(), src)
+			}
+			conn.Close()
+			continue
+		}
 		sem <- struct{}{}
 		go func(conn net.Conn) {
 			defer func() { <-sem }()
+			defer perSource.release(src)
 			if err := handle(conn, argv, quiet); err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-inetd: %v\n", err)
 			}
 		}(conn)
 	}
+}
+
+// sourceLimiter counts live connections per remote IP. Its methods
+// are safe on a nil receiver, which limits nothing.
+type sourceLimiter struct {
+	max  int
+	mu   sync.Mutex
+	live map[string]int
+}
+
+func newSourceLimiter(max int) *sourceLimiter {
+	return &sourceLimiter{max: max, live: make(map[string]int)}
+}
+
+// acquire takes a slot for src, or reports false if src already holds
+// max. An empty src (a peer with no IP, such as a unix socket client)
+// is not limited.
+func (l *sourceLimiter) acquire(src string) bool {
+	if l == nil || src == "" {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.live[src] >= l.max {
+		return false
+	}
+	l.live[src]++
+	return true
+}
+
+// release gives back a slot acquire took.
+func (l *sourceLimiter) release(src string) {
+	if l == nil || src == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.live[src]--; l.live[src] <= 0 {
+		delete(l.live, src)
+	}
+}
+
+// sourceOf names the remote IP a connection comes from, or "" when it
+// has none.
+func sourceOf(conn net.Conn) string {
+	if a, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		return a.IP.String()
+	}
+	return ""
 }
 
 // isResourceExhaustion reports whether accept failed for want of a

@@ -271,7 +271,7 @@ func TestServeKeepsAcceptingAfterResourceErrors(t *testing.T) {
 		}}
 		done := make(chan struct{})
 		go func() {
-			serve(ln, []string{"/bin/true"}, make(chan struct{}, 1), true)
+			serve(ln, []string{"/bin/true"}, make(chan struct{}, 1), nil, true)
 			close(done)
 		}()
 		select {
@@ -282,5 +282,99 @@ func TestServeKeepsAcceptingAfterResourceErrors(t *testing.T) {
 		if ln.calls != 2 {
 			t.Errorf("%v: Accept called %d times, want 2 — serve gave up on the listener", errno, ln.calls)
 		}
+	}
+}
+
+// TestEndToEndMaxPerSource: --max-concurrent alone let one remote host
+// hold every slot with idle connections. With --max-per-source 1 a
+// second connection from the same IP is closed at once while the
+// first is still being served.
+func TestEndToEndMaxPerSource(t *testing.T) {
+	bin := buildHelper(t)
+	addr, _ := startHelper(t, bin, "--quiet", "--max-per-source", "1", "--", "/bin/cat")
+
+	dial := func() net.Conn {
+		t.Helper()
+		var conn net.Conn
+		var err error
+		for i := 0; i < 50; i++ {
+			conn, err = net.Dial("tcp", addr)
+			if err == nil {
+				return conn
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("dial: %v", err)
+		return nil
+	}
+	echo := func(conn net.Conn) error {
+		if _, err := conn.Write([]byte("ping\n")); err != nil {
+			return err
+		}
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 16)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return err
+		}
+		if got := string(buf[:n]); got != "ping\n" {
+			return fmt.Errorf("echo = %q", got)
+		}
+		return nil
+	}
+
+	first := dial()
+	defer first.Close()
+	if err := echo(first); err != nil {
+		t.Fatalf("first connection: %v", err)
+	}
+	second := dial()
+	defer second.Close()
+	if err := echo(second); err == nil {
+		t.Error("a second connection from the same source was served past --max-per-source 1")
+	}
+	// The first holds its slot still; closing it frees the source.
+	if err := echo(first); err != nil {
+		t.Errorf("first connection after the refusal: %v", err)
+	}
+	first.Close()
+	var err error
+	for i := 0; i < 50; i++ {
+		third := dial()
+		err = echo(third)
+		third.Close()
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Errorf("the source's slot was not released: %v", err)
+	}
+}
+
+func TestSourceLimiter(t *testing.T) {
+	var unlimited *sourceLimiter
+	for i := 0; i < 3; i++ {
+		if !unlimited.acquire("10.0.0.1") {
+			t.Fatal("a nil limiter limited")
+		}
+	}
+	l := newSourceLimiter(2)
+	if !l.acquire("10.0.0.1") || !l.acquire("10.0.0.1") {
+		t.Fatal("refused under the limit")
+	}
+	if l.acquire("10.0.0.1") {
+		t.Error("third from one source accepted at limit 2")
+	}
+	if !l.acquire("10.0.0.2") {
+		t.Error("another source refused")
+	}
+	if !l.acquire("") || !l.acquire("") || !l.acquire("") {
+		t.Error("a source with no IP was limited")
+	}
+	l.release("10.0.0.1")
+	if !l.acquire("10.0.0.1") {
+		t.Error("release did not free a slot")
 	}
 }

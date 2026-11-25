@@ -9,7 +9,8 @@ connection, with the connected socket on stdio (inetd `nowait`)
 
 ## SYNOPSIS
 
-**slinit-inetd** [**\--max-concurrent** *N*] [**\--quiet**] **\--**
+**slinit-inetd** [**\--max-concurrent** *N*] [**\--max-per-source** *N*]
+[**\--quiet**] **\--**
 *PROGRAM* [*ARGS*...]
 
 ## DESCRIPTION
@@ -55,6 +56,18 @@ path.
     connection is a denial of service that costs the whole machine, not
     just the service. Raise it for a genuinely concurrent workload;
     there is no way to disable it.
+
+**\--max-per-source** *N*
+:   Maximum number of connections from one remote IP address being
+    handled, or waiting for a slot, at once. A connection past it is
+    closed as soon as it is accepted. Default 0, meaning no limit, as
+    **xinetd**'s *per_source* defaults to unlimited.
+
+    **\--max-concurrent** alone lets a single host hold every slot
+    with idle connections and lock every other client out; set this
+    below it for a service reachable from untrusted hosts. Clients
+    without an IP address, such as those of a **unix:** listener, are
+    not counted.
 
 **\--quiet**
 :   Do not log accepted connections. By default each one is logged with
