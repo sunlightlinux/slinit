@@ -4277,6 +4277,9 @@ func parseByteSize(s string) (int64, error) {
 	if n < 0 {
 		return 0, fmt.Errorf("byte-size negative")
 	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("byte-size too large")
+	}
 	return n * mult, nil
 }
 

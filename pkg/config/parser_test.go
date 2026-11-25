@@ -222,6 +222,19 @@ command = /usr/bin/myservice "hello world" --flag
 	}
 }
 
+// TestParseByteSizeOverflow: 8388608T is 2^63 bytes, and n * mult wrapped
+// it negative instead of failing.
+func TestParseByteSizeOverflow(t *testing.T) {
+	if n, err := parseByteSize("8388607T"); err != nil || n != 8388607<<40 {
+		t.Errorf("parseByteSize(8388607T) = %d, %v", n, err)
+	}
+	for _, s := range []string{"8388608T", "9223372036854775807K", "9007199254740992M"} {
+		if n, err := parseByteSize(s); err == nil {
+			t.Errorf("parseByteSize(%s) = %d, want an overflow error", s, n)
+		}
+	}
+}
+
 func TestParseSignal(t *testing.T) {
 	tests := []struct {
 		input    string
