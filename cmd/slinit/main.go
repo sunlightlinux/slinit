@@ -1018,7 +1018,7 @@ func main() {
 		}
 	}
 	if effectiveEnvFile != "" {
-		fileEnv, err := process.ReadEnvFile(effectiveEnvFile)
+		fileEnv, clearInherited, unsetInherited, err := process.ReadEnvFileInherited(effectiveEnvFile)
 		if err != nil {
 			// Implicit fallback: quietly skip on error (operator
 			// didn't ask for this file explicitly). Explicit --env-file:
@@ -1032,6 +1032,21 @@ func main() {
 				exitFlushed(cal, 1)
 			}
 		} else {
+			// !clear and !unset apply to the environment slinit
+			// inherited as well, which every service inherits in
+			// turn, as in dinit. PATH survives !clear, as it does
+			// pass-environment: slinit and the services' shells
+			// look programs up with it. !unset PATH removes it.
+			if clearInherited {
+				path, hasPath := os.LookupEnv("PATH")
+				os.Clearenv()
+				if hasPath {
+					os.Setenv("PATH", path)
+				}
+			}
+			for _, name := range unsetInherited {
+				os.Unsetenv(name)
+			}
 			env := make([]string, 0, len(fileEnv))
 			for k, v := range fileEnv {
 				env = append(env, k+"="+v)

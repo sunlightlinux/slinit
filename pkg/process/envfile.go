@@ -27,9 +27,23 @@ func ReadEnvFile(path string) (map[string]string, error) {
 // origEnv is the original environment before any env-file processing.
 // If nil, os.Environ() is used as fallback for !import.
 func ReadEnvFileWithOrigEnv(path string, origEnv []string) (map[string]string, error) {
+	env, _, _, err := readEnvFile(path, origEnv)
+	return env, err
+}
+
+// ReadEnvFileInherited is ReadEnvFile for an environment that is
+// inherited too, as slinit's global env-file is: it also reports whether
+// !clear appeared, which drops the inherited environment, and the names
+// given to !unset after the last !clear, which drop those inherited
+// variables.
+func ReadEnvFileInherited(path string) (env map[string]string, clearInherited bool, unsetInherited []string, err error) {
+	return readEnvFile(path, nil)
+}
+
+func readEnvFile(path string, origEnv []string) (map[string]string, bool, []string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open env-file: %w", err)
+		return nil, false, nil, fmt.Errorf("open env-file: %w", err)
 	}
 	defer f.Close()
 
@@ -45,6 +59,8 @@ func ReadEnvFileWithOrigEnv(path string, origEnv []string) (map[string]string, e
 	}
 
 	env := make(map[string]string)
+	var cleared bool
+	var unset []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -62,11 +78,13 @@ func ReadEnvFileWithOrigEnv(path string, origEnv []string) (map[string]string, e
 			case "!clear":
 				// Clear all previously set variables
 				env = make(map[string]string)
+				cleared, unset = true, nil
 			case "!unset":
 				// Unset specific variables
 				for _, varName := range fields[1:] {
 					delete(env, varName)
 				}
+				unset = append(unset, fields[1:]...)
 			case "!import":
 				// Import specific variables from original environment
 				for _, varName := range fields[1:] {
@@ -89,9 +107,9 @@ func ReadEnvFileWithOrigEnv(path string, origEnv []string) (map[string]string, e
 		env[key] = value
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read env-file: %w", err)
+		return nil, false, nil, fmt.Errorf("read env-file: %w", err)
 	}
-	return env, nil
+	return env, cleared, unset, nil
 }
 
 // ReadEnvDir reads environment variables from a directory (runit envdir style).

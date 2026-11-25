@@ -3,6 +3,7 @@ package process
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -120,5 +121,37 @@ func TestEnvFileImport(t *testing.T) {
 	}
 	if _, ok := env["OTHER"]; ok {
 		t.Error("OTHER should not be imported")
+	}
+}
+
+// slinit's global env-file applies !clear and !unset to the environment
+// it inherited, so the reader has to say which were given: !unset names
+// before a !clear are subsumed by it, those after it still count.
+func TestReadEnvFileInherited(t *testing.T) {
+	dir := t.TempDir()
+	for _, c := range []struct {
+		content string
+		clear   bool
+		unset   []string
+	}{
+		{"X=1\n", false, nil},
+		{"!unset FOO BAR\nX=1\n", false, []string{"FOO", "BAR"}},
+		{"!unset FOO\n!clear\nX=1\n", true, nil},
+		{"!clear\n!unset PATH\n", true, []string{"PATH"}},
+	} {
+		path := filepath.Join(dir, "env")
+		if err := os.WriteFile(path, []byte(c.content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		env, clear, unset, err := ReadEnvFileInherited(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if clear != c.clear || strings.Join(unset, " ") != strings.Join(c.unset, " ") {
+			t.Errorf("%q: clear %v, unset %q; want %v, %q", c.content, clear, unset, c.clear, c.unset)
+		}
+		if strings.Contains(c.content, "X=1") && env["X"] != "1" {
+			t.Errorf("%q: X = %q; want 1", c.content, env["X"])
+		}
 	}
 }
