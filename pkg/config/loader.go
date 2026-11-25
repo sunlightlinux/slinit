@@ -1296,6 +1296,13 @@ func (dl *DirLoader) findAndParse(name string) (*ServiceDescription, string, err
 		}
 		for _, dir := range dl.systemdDirs {
 			path := filepath.Join(dir, unitName)
+			if systemdUnitMasked(path) {
+				return nil, "", &ServiceLoadError{
+					ServiceName: name,
+					Message:     fmt.Sprintf("systemd unit %s is masked", path),
+					Err:         ErrServiceNotFound,
+				}
+			}
 			if IsSystemdUnit(path) {
 				desc, err := SystemdUnitToServiceDescription(path, name)
 				if err != nil {

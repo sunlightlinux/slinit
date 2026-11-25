@@ -593,7 +593,10 @@ SysV/LSB init scripts under the *init.d* directories, then systemd
 *.service* units under */etc/systemd/system*,
 */run/systemd/system*, */usr/lib/systemd/system* and
 */lib/systemd/system*, searched in that order so an administrator's
-override in */etc* beats the packaged unit.
+override in */etc* beats the packaged unit. A unit masked the way
+**systemctl mask** does it, a symlink to */dev/null* or an empty file,
+ends the search: the name does not load, and a *Wants=* naming it is
+left out.
 
 Both fallbacks resolve a name that something already asked for. A
 directory is never enumerated, so installing a package that ships

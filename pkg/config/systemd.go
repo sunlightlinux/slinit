@@ -1435,6 +1435,21 @@ func IsSystemdUnit(path string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
+// systemdUnitMasked reports whether path masks its unit, as systemctl
+// mask does: a symlink to /dev/null, or an empty file. A mask ends the
+// search; the unit is not loaded from any later directory.
+func systemdUnitMasked(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if fi.Mode().IsRegular() {
+		return fi.Size() == 0
+	}
+	null, err := os.Stat("/dev/null")
+	return err == nil && os.SameFile(fi, null)
+}
+
 // SystemdUnitToServiceDescription reads a .service unit and returns the
 // description slinit would run, without writing anything to disk.
 //
@@ -1524,7 +1539,11 @@ func (dl *DirLoader) descriptionExists(name string) bool {
 		unitName += ".service"
 	}
 	for _, dir := range dl.systemdDirs {
-		if IsSystemdUnit(filepath.Join(dir, unitName)) {
+		p := filepath.Join(dir, unitName)
+		if systemdUnitMasked(p) {
+			return false
+		}
+		if IsSystemdUnit(p) {
 			return true
 		}
 	}
