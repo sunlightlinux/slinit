@@ -56,3 +56,31 @@ options = pass-cs-fd
 		t.Errorf("slinitctl --use-passed-cfd in a boot service:\n%s", out)
 	}
 }
+
+// With --ready-fd, the readiness notifier replaced the system-up
+// handler instead of chaining to it: the watchdog's boot-ready, the
+// console mute, hooks.d/system-up, ifup -a and rc.local never ran.
+func TestReadyFDKeepsSystemUpHooks(t *testing.T) {
+	dir := t.TempDir()
+	writeService(t, dir, "boot", "type = internal\n")
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	startNS(t, dir, `
+mount -t tmpfs none /run && mount -t tmpfs none /etc && mkdir -p /etc/slinit/hooks.d/system-up
+printf '#!/bin/sh\necho hook-ran > "$D/hook.out"\n' > /etc/slinit/hooks.d/system-up/10-mark
+chmod +x /etc/slinit/hooks.d/system-up/10-mark
+"$B/slinit" -m -d "$D/sd" -p "$D/sock" --syslog-socket "" -F 3 >"$D/log" 2>&1 &
+wait`, wr)
+	wr.Close()
+	rd.SetReadDeadline(time.Now().Add(15 * time.Second))
+	if _, err := rd.Read(make([]byte, 256)); err != nil {
+		t.Fatalf("no ready notification: %v", err)
+	}
+	if got := strings.TrimSpace(waitFile(t, filepath.Join(dir, "hook.out"), 3*time.Second)); got != "hook-ran" {
+		log, _ := os.ReadFile(filepath.Join(dir, "log"))
+		t.Errorf("system-up hook did not run with --ready-fd\nslinit log:\n%s", log)
+	}
+}

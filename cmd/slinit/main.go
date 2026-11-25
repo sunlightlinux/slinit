@@ -1191,7 +1191,14 @@ func main() {
 			}
 			serviceSet.SetReadyFD(readyFD)
 			readySock := sock // capture resolved socket path
+			// Chained after the system-up wrapper above (watchdog,
+			// console mute, hooks, ifup, rc.local), which replacing
+			// it would switch off.
+			prev := serviceSet.OnBootReady
 			serviceSet.OnBootReady = func() {
+				if prev != nil {
+					prev()
+				}
 				f := os.NewFile(uintptr(readyFD), "ready-fd")
 				// Write socket path + null terminator (dinit compat)
 				if _, err := f.Write(append([]byte(readySock), 0)); err != nil {
