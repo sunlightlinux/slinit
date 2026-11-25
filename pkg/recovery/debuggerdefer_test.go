@@ -156,3 +156,47 @@ func TestConsoleAcquireStopsInlineWithNoMenu(t *testing.T) {
 		t.Errorf("lflag = %#x when StopOrDefer returned, want %#x", got, before)
 	}
 }
+
+// A menu that times out must not leave its reader behind. The leftover
+// reader took the operator's next key and dropped it, so the Ctrl-B
+// after a timed-out menu opened nothing (and once the debugger had
+// stopped, it was the first key typed at the login prompt that went).
+func TestDebugMenuTimeoutLeavesNoReaderBehind(t *testing.T) {
+	master, path, _ := ptyPair(t)
+	var opened sync.WaitGroup
+	opened.Add(2)
+	var menus int32
+	var mu sync.Mutex
+	d := NewDebugger(DebuggerOptions{
+		ConsolePath: path,
+		Timeout:     200 * time.Millisecond,
+		StatusFn: func() StatusSnapshot {
+			mu.Lock()
+			menus++
+			if menus <= 2 {
+				opened.Done()
+			}
+			mu.Unlock()
+			return StatusSnapshot{}
+		},
+	})
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer d.Stop()
+
+	master.Write([]byte{0x02})
+	time.Sleep(600 * time.Millisecond) // the menu opens and times out
+	master.Write([]byte{0x02})
+
+	done := make(chan struct{})
+	go func() {
+		opened.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the second Ctrl-B opened no menu: the timed-out menu's reader swallowed it")
+	}
+}
