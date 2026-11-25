@@ -1384,6 +1384,22 @@ func main() {
 				svc.Record().RemoveListener(l)
 			}
 		}
+		// A type-change reload with the watch unchanged keeps it armed
+		// (the trigger finds the service by name); only the rearm
+		// listener moves to the new record.
+		serviceSet.OnServiceReplaced = func(oldSvc, newSvc service.Service) {
+			pathRearmsMu.Lock()
+			l := pathRearms[oldSvc]
+			delete(pathRearms, oldSvc)
+			if l != nil {
+				pathRearms[newSvc] = l
+			}
+			pathRearmsMu.Unlock()
+			if l != nil {
+				oldSvc.Record().RemoveListener(l)
+				newSvc.Record().AddListener(l)
+			}
+		}
 	}
 
 	// Mount-based activation: start a service when a filesystem is

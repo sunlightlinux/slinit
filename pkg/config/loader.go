@@ -310,12 +310,19 @@ func (dl *DirLoader) reloadStopped(svc service.Service, desc *ServiceDescription
 		// Replace in set. The watches the hooks keep move with it: the
 		// old record is reported unloaded and the new one loaded, or a
 		// path trigger went on starting the record no longer in the set.
-		if dl.set.OnServiceUnloaded != nil {
+		// With the watches unchanged it is only reported replaced:
+		// loading re-arms them, and a watch whose condition already
+		// holds fires on arm, starting a service the operator stopped.
+		changed := activationChanged(svc, desc)
+		if changed && dl.set.OnServiceUnloaded != nil {
 			dl.set.OnServiceUnloaded(svc)
 		}
 		dl.set.ReplaceService(svc, newSvc)
-		if dl.set.OnServiceLoaded != nil {
+		switch {
+		case changed && dl.set.OnServiceLoaded != nil:
 			dl.set.OnServiceLoaded(newSvc)
+		case !changed && dl.set.OnServiceReplaced != nil:
+			dl.set.OnServiceReplaced(svc, newSvc)
 		}
 
 		return newSvc, nil
@@ -411,8 +418,11 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 
 	// Nothing below can fail. The hooks see the old configuration
 	// unloaded and the new one loaded, so a watch on a changed
-	// start-on-path-* or start-on-mount follows it.
-	if dl.set.OnServiceUnloaded != nil {
+	// start-on-path-* or start-on-mount follows it. Only a changed one:
+	// loading re-arms the watch, and one whose condition already holds
+	// fires on arm, so an unchanged reload started a stopped service.
+	changed := activationChanged(svc, desc)
+	if changed && dl.set.OnServiceUnloaded != nil {
 		dl.set.OnServiceUnloaded(svc)
 	}
 
@@ -442,11 +452,20 @@ func (dl *DirLoader) updateInPlace(svc service.Service, desc *ServiceDescription
 	svc.Record().SetBundleMembers(desc.BundleMembers)
 	recordModTime(svc, filePath)
 
-	if dl.set.OnServiceLoaded != nil {
+	if changed && dl.set.OnServiceLoaded != nil {
 		dl.set.OnServiceLoaded(svc)
 	}
 
 	return svc, nil
+}
+
+// activationChanged reports whether desc changes what the
+// OnServiceLoaded / OnServiceUnloaded hooks wire for svc: its
+// start-on-path-* and start-on-mount watches.
+func activationChanged(svc service.Service, desc *ServiceDescription) bool {
+	path, trigger := svc.Record().StartOnPath()
+	return path != desc.StartOnPath || trigger != desc.StartOnPathTrigger ||
+		svc.Record().StartOnMount() != desc.StartOnMount
 }
 
 // cronTarget is a service type that can carry a cron task.

@@ -124,11 +124,16 @@ type ServiceSet struct {
 	// readable); OnServiceUnloaded fires from UnloadService. A reload
 	// calls OnServiceUnloaded with the old record and configuration and
 	// then OnServiceLoaded with the new ones (the same record when it is
-	// updated in place), and neither when it fails. Both are
-	// wired by main.go to a pkg/pathwatch.Watcher. Keeping them as
-	// callbacks avoids importing pkg/pathwatch from pkg/service.
+	// updated in place), and neither when it fails or leaves the
+	// start-on-path-* and start-on-mount settings unchanged: loading
+	// re-arms a watch, which fires at once when its condition holds. A
+	// reload that replaces the record (a type change) with those settings
+	// unchanged calls OnServiceReplaced instead. All are wired by main.go
+	// to a pkg/pathwatch.Watcher and a pkg/mountwatch.Watcher. Keeping
+	// them as callbacks avoids importing those packages from pkg/service.
 	OnServiceLoaded   func(svc Service)
 	OnServiceUnloaded func(svc Service)
+	OnServiceReplaced func(oldSvc, newSvc Service)
 
 	// OnConsoleAcquire fires from ProcessService.BringUp just before a
 	// service that has RunsOnConsole (or StartsOnConsole) opens
