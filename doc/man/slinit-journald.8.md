@@ -52,7 +52,10 @@ before the daemon bound to its events socket are not lost.
     applies to **-format=jsonl** only; with **-format=binary** an
     unwritable **-dir** is fatal. Set it to the empty string to disable
     the fallback. **slinit-journalctl --flush** moves a volatile journal
-    to **-dir** once it is writable.
+    to **-dir** once it is writable. In this directory the size cap is
+    further limited to 10% of its filesystem (1 MiB to 4 GiB) and the
+    oldest files are pruned to keep 5% of it free (at most 4 GiB), as
+    systemd-journald's RuntimeMaxUse= and RuntimeKeepFree= defaults.
 
 **-format** *FORMAT*
 :   Storage format: **binary** (Phase B, default) or **jsonl**

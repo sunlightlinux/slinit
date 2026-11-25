@@ -254,3 +254,58 @@ func TestVacuumUncompressedTwinCountedOnce(t *testing.T) {
 		t.Errorf("left = %v, want a.2 and a.3", left)
 	}
 }
+
+// fakeFS stands in a filesystem of the given size and free space for
+// the duration of a test.
+func fakeFS(t *testing.T, size, avail int64) {
+	t.Helper()
+	old := statfsSize
+	statfsSize = func(string) (int64, int64, error) { return size, avail, nil }
+	t.Cleanup(func() { statfsSize = old })
+}
+
+// The volatile journal's caps follow the tmpfs it lives on, as
+// systemd's RuntimeMaxUse= (10%, 1 MiB..4 GiB) and RuntimeKeepFree=
+// (5%, at most 4 GiB) defaults do; a 4 GiB cap meant for /var let it
+// fill /run.
+func TestRuntimeVacuumOptionsScaleToFS(t *testing.T) {
+	base := VacuumOptions{MaxFiles: 100, MaxTotalSize: DefaultMaxTotalSize}
+	fakeFS(t, 200<<20, 0)
+	o := RuntimeVacuumOptions("/run/x", base)
+	if o.MaxTotalSize != 20<<20 || o.KeepFree != 10<<20 || o.MaxFiles != 100 {
+		t.Errorf("200 MiB fs: %+v", o)
+	}
+	fakeFS(t, 1<<40, 0)
+	if o := RuntimeVacuumOptions("/run/x", base); o.MaxTotalSize != 4<<30 || o.KeepFree != 4<<30 {
+		t.Errorf("1 TiB fs: %+v", o)
+	}
+	fakeFS(t, 4<<20, 0)
+	if o := RuntimeVacuumOptions("/run/x", base); o.MaxTotalSize != 1<<20 {
+		t.Errorf("4 MiB fs: max use %d, want the 1 MiB floor", o.MaxTotalSize)
+	}
+	// An operator's smaller cap stands.
+	fakeFS(t, 200<<20, 0)
+	if o := RuntimeVacuumOptions("/run/x", VacuumOptions{MaxTotalSize: 1 << 20}); o.MaxTotalSize != 1<<20 {
+		t.Errorf("smaller configured cap raised to %d", o.MaxTotalSize)
+	}
+}
+
+// KeepFree removes the oldest files until the filesystem has that much
+// room, even under every other cap.
+func TestVacuumKeepFree(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		writeFake(t, filepath.Join(dir, "f"+string(rune('a'+i))+".jsonl"), 100, now.Add(time.Duration(i-10)*time.Minute))
+	}
+	fakeFS(t, 1<<20, 50)
+	removed, err := Vacuum(dir, VacuumOptions{KeepFree: 250})
+	if err != nil || removed != 2 {
+		t.Fatalf("removed %d (%v), want 2", removed, err)
+	}
+	for _, name := range []string{"fa.jsonl", "fb.jsonl"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("oldest %s kept", name)
+		}
+	}
+}

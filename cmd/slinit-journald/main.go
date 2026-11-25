@@ -271,6 +271,46 @@ func (g *guardedSink) CurrentDir() string {
 	return g.currentDir
 }
 
+// sinkFactory builds the sink for a journal directory from the flags,
+// at startup and at each flush / relinquish swap.
+type sinkFactory struct {
+	volatileDir string
+	vacuum      journald.VacuumOptions
+	fileOpts    journald.FileSinkOptions
+	compress    bool
+}
+
+// vacuumHook prunes dir, the directory the sink was actually opened in;
+// the volatile one gets caps scaled to its filesystem, as systemd's
+// RuntimeMaxUse= and RuntimeKeepFree= are.
+func (f sinkFactory) vacuumHook(dir string) func(string, string) {
+	opts := f.vacuum
+	if dir == f.volatileDir {
+		opts = journald.RuntimeVacuumOptions(dir, opts)
+	}
+	return journald.VacuumingHook(dir, opts)
+}
+
+// jsonl opens a FileSink at target, or at the volatile dir when target
+// is unwritable. The third return is nil on a degraded open; the
+// caller compares the returned dir with target to tell.
+func (f sinkFactory) jsonl(target string) (journald.Sink, string, error) {
+	fs, actualDir, degraded := journald.OpenWithFallback(target, f.volatileDir, func(dir string) (*journald.FileSink, error) {
+		var hooks []func(string, string)
+		if f.compress {
+			hooks = append(hooks, journald.CompressingRotationHook())
+		}
+		hooks = append(hooks, f.vacuumHook(dir))
+		opts := f.fileOpts
+		opts.RotatedHook = journald.ChainHooks(hooks...)
+		return journald.NewFileSinkWithOptions(dir, opts)
+	})
+	if fs == nil {
+		return nil, "", degraded
+	}
+	return fs, actualDir, nil
+}
+
 // version is stamped at build time via `-X main.version=vX.Y.Z`.
 var version = "dev"
 
@@ -354,27 +394,18 @@ Flags:
 				MaxAge:       *vacuumAge,
 				Suffixes:     []string{".jsonl", ".jsonl.gz"},
 			}
-			// factory closure: called at initial open and at each
-			// SIGRTMIN swap to build a sink for the requested dir.
-			// The hook chain uses the target dir so vacuum after a
-			// swap prunes files under the NEW location, not the old.
-			jsonlFactory := func(target string) (journald.Sink, string, error) {
-				var hooks []func(string, string)
-				if *compress {
-					hooks = append(hooks, journald.CompressingRotationHook())
-				}
-				hooks = append(hooks, journald.VacuumingHook(target, vacOpts))
-				fs, actualDir, degraded := journald.OpenFileSinkWithFallback(target, *volatileDir, journald.FileSinkOptions{
-					FsyncEvery:  *fsyncEvery,
-					MaxSize:     *maxSize,
-					MaxAge:      *maxAge,
-					RotatedHook: journald.ChainHooks(hooks...),
-				})
-				if fs == nil {
-					return nil, "", degraded
-				}
-				return fs, actualDir, nil
-			}
+			// factory: called at initial open and at each flush /
+			// relinquish swap to build a sink for the requested dir.
+			jsonlFactory := sinkFactory{
+				volatileDir: *volatileDir,
+				vacuum:      vacOpts,
+				fileOpts: journald.FileSinkOptions{
+					FsyncEvery: *fsyncEvery,
+					MaxSize:    *maxSize,
+					MaxAge:     *maxAge,
+				},
+				compress: *compress,
+			}.jsonl
 			fs, actualDir, err := jsonlFactory(*dir)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "slinit-journald: %v\n", err)

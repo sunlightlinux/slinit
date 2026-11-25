@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -40,6 +41,49 @@ type VacuumOptions struct {
 	// them was ever pruned. Binary journal callers pass [".journal"]; a
 	// bilingual tool that manages both wires all three.
 	Suffixes []string
+	// KeepFree, when positive, prunes further (oldest first) until the
+	// filesystem holding dir has at least this many bytes available.
+	KeepFree int64
+}
+
+// Bounds systemd puts on the caps it derives from a filesystem's size
+// (journal_default_metrics in sd-journal/journal-file.c).
+const (
+	runtimeMaxUseLower   int64 = 1 << 20 // MAX_USE_LOWER
+	runtimeMaxUseUpper   int64 = 4 << 30 // MAX_USE_UPPER
+	runtimeKeepFreeUpper int64 = 4 << 30 // KEEP_FREE_UPPER
+	runtimeKeepFreeNoFS  int64 = 1 << 20 // DEFAULT_KEEP_FREE
+)
+
+// statfsSize reports a filesystem's total and available bytes. A
+// variable so tests can stand in a small filesystem.
+var statfsSize = func(dir string) (size, avail int64, err error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, 0, err
+	}
+	return int64(st.Blocks) * st.Frsize, int64(st.Bavail) * st.Frsize, nil
+}
+
+// RuntimeVacuumOptions scales opts to the filesystem holding dir, for
+// the volatile journal on tmpfs: the total size is capped at 10% of the
+// filesystem (between 1 MiB and 4 GiB) and 5% of it is kept free (at
+// most 4 GiB). These are systemd's RuntimeMaxUse= and RuntimeKeepFree=
+// defaults as journal_default_metrics computes them; a static cap sized
+// for /var would let the journal fill /run.
+func RuntimeVacuumOptions(dir string, opts VacuumOptions) VacuumOptions {
+	maxUse, keepFree := runtimeMaxUseLower, runtimeKeepFreeNoFS
+	if size, _, err := statfsSize(dir); err == nil && size > 0 {
+		maxUse = min(max(size/10, runtimeMaxUseLower), runtimeMaxUseUpper)
+		keepFree = min(size/20, runtimeKeepFreeUpper)
+	}
+	if opts.MaxTotalSize <= 0 || opts.MaxTotalSize > maxUse {
+		opts.MaxTotalSize = maxUse
+	}
+	if opts.KeepFree < keepFree {
+		opts.KeepFree = keepFree
+	}
+	return opts
 }
 
 // Vacuum enumerates .jsonl files under dir, sorts them oldest-first
@@ -183,6 +227,22 @@ func Vacuum(dir string, opts VacuumOptions, excludePaths ...string) (removed int
 			}
 			deleteOne(i)
 			candidates[i].path = ""
+		}
+	}
+	// Free-space sweep: each removal frees about its size.
+	if opts.KeepFree > 0 {
+		if _, avail, serr := statfsSize(dir); serr == nil {
+			before := totalSize
+			for i := range candidates {
+				if candidates[i].path == "" {
+					continue
+				}
+				if avail+(before-totalSize) >= opts.KeepFree {
+					break
+				}
+				deleteOne(i)
+				candidates[i].path = ""
+			}
 		}
 	}
 	return removed, firstErr
