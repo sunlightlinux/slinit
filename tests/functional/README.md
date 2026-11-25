@@ -146,7 +146,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 36 | initd-autodetect | /etc/init.d auto-detect with LSB headers |
 | 37 | socket-activation | Socket listen, LISTEN_FDS env, socket file |
 | 38 | cron-task | Cron-like periodic task execution |
-| 39 | start-limiter | Soft parallel start limit (all services start) |
+| 39 | start-limiter | A nested `slinit --user --parallel-start-limit 2` starts four 1.5 s scripted services; at most 2 are starting at any moment and all four finish |
 | 40 | shared-logger | Multi-service shared logger (SharedLogMux) |
 | 41 | namespace | PID/user namespace isolation with UID/GID mapping |
 | 42 | pre-stop-hook | Pre-stop hook runs before service stop |
@@ -264,7 +264,7 @@ green shards. Run it yourself after touching anything in `lib/`.
 | 154 | proc-subset=pid | `/proc/uptime`, `/proc/meminfo` disappear inside the service's mount ns; PID dirs remain; host `/proc/uptime` unaffected |
 | 155 | condition-measured-uki | Predicate skips when the boot wasn't measured via UKI + TPM PCR 4/5/7; asserts on measured host |
 | 156 | refuse-manual-start-stop | `refuse-manual-start` blocks a direct `slinitctl start` once stopped; `refuse-manual-stop` blocks a direct stop while running; `--force` overrides the stop |
-| 157 | restart-randomized-delay | `restart-randomized-delay` parses and does not wedge the start path |
+| 157 | restart-randomized-delay | A failing service restarts with 0.1 s + random 0–0.4 s: every gap stays in range and the gaps vary (without the jitter they are all 0.1 s) |
 | 158 | reset-failed | `slinitctl reset-failed` (by name and `--all`) makes `is-failed` say no for a missing binary and for a non-zero scripted exit |
 | 159 | stop-when-unneeded | `stop-when-unneeded` stops a helper once its last dependent is gone |
 | 160 | freeze-thaw | `slinitctl freeze/thaw` toggles cgroup v2 `cgroup.freeze`; atomic vs SIGSTOP for whole subtree |
