@@ -182,6 +182,41 @@ mount -t tmpfs tmpfs "$BASE/sub"`, false) {
 	}
 }
 
+// A read-write-path turned back every mount below it that any directive
+// had made read-only: protect-home=read-only with read-write-paths=/run
+// left /run/user/1000 writable, and a bind-read-only-path below a
+// read-write-path became writable. In systemd the deeper path wins, and
+// of two on the same path the read-only one.
+func TestReadWritePathKeepsDeeperReadOnly(t *testing.T) {
+	if _, err := os.Stat("/mnt"); err != nil {
+		t.Skip("no /mnt to mount a fixture on")
+	}
+	if !inMountNS(t, `mount -t tmpfs tmpfs /run
+mkdir -p /run/user/1000
+mount -t tmpfs tmpfs /run/user/1000
+mount -t tmpfs tmpfs /home
+mkdir /home/alice
+mount -t tmpfs tmpfs /mnt
+mkdir -p /mnt/src /mnt/app/conf`, false) {
+		return
+	}
+	err := applySandbox(sandboxSpec{
+		protectHome:    "read-only",
+		bindROPaths:    []string{"/mnt/src:/mnt/app/conf"},
+		readWritePaths: []string{"/run", "/mnt/app", "/home", "/home/alice"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRO(t, "/run", false)
+	wantRO(t, "/run/user", true)
+	wantRO(t, "/run/user/1000", true)
+	wantRO(t, "/mnt/app", false)
+	wantRO(t, "/mnt/app/conf", true)
+	wantRO(t, "/home", true)        // same path: read-only wins
+	wantRO(t, "/home/alice", false) // deeper: read-write wins
+}
+
 // The read-only remount passed MS_RDONLY alone, and a bind remount
 // replaces the per-mount flags: a noexec, nosuid or nodev mount made
 // read-only lost them, so a script on a noexec tmpfs listed in

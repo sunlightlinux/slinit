@@ -1353,7 +1353,10 @@ before exec'ing the service. The host filesystem is untouched.
     listed paths. Applied before **read-only-paths**, so a path
     listed in both ends up read-only. The mounts below the path that
     the sandbox made read-only are writable again; one that was
-    read-only already stays so. Repeatable with `+=`.
+    read-only already stays so, and so does a **protect-home**=*read-only*
+    target or a **bind-read-only-paths** destination at or below the
+    path: as in systemd, the deeper path wins, and of two on one path
+    the read-only one. Repeatable with `+=`.
 
 **protect-home**=*no*|*yes*|*read-only*|*tmpfs*
 :   Hide */home*, */root* and */run/user* from the service. *yes*

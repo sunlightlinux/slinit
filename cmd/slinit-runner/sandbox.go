@@ -117,8 +117,22 @@ func applySandbox(s sandboxSpec) error {
 		}
 	}
 
+	// A read-write-path above a read-only mount another directive made
+	// leaves it read-only, and so does one on the same path: in systemd
+	// the deeper path wins, and of two on one path the read-only one.
+	// The writable bind turned back every mount below it that was made
+	// read-only, so read-write-paths=/run made /run/user/UID writable
+	// under protect-home=read-only.
+	var pinned []string
+	if s.protectHome == "read-only" {
+		pinned = append(pinned, "/home", "/root", "/run/user")
+	}
+	for _, entry := range s.bindROPaths {
+		_, dst, _ := strings.Cut(entry, ":")
+		pinned = append(pinned, dst)
+	}
 	for _, p := range s.readWritePaths {
-		if err := bindMount(p, p, false); err != nil {
+		if err := bindMount(p, p, false, pinned...); err != nil {
 			return fmt.Errorf("read-write-path %q: %w", p, err)
 		}
 	}
@@ -389,7 +403,9 @@ func remountROExcept(path string, keep []string) error {
 // (MS_REC) so a directory tree containing other mount points propagates
 // the visibility as the operator expects.
 //
-// keep names mounts below dst that a read-only bind leaves as they are.
+// keep names mounts below dst that a read-only bind leaves as they are;
+// for a writable bind it names read-only mounts, at or below dst, that
+// stay read-only.
 func bindMount(src, dst string, ro bool, keep ...string) error {
 	if err := unix.Mount(src, dst, "", unix.MS_BIND|unix.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind %s -> %s: %w", src, dst, err)
@@ -397,7 +413,7 @@ func bindMount(src, dst string, ro bool, keep ...string) error {
 	if !ro {
 		// A bind inherits the flags of the mount it comes from, so under a
 		// read-only / a read-write path stayed read-only until said otherwise.
-		return remountTreeRW(src, dst)
+		return remountTreeRW(src, dst, keep)
 	}
 	return remountTreeRO(dst, keep)
 }
@@ -438,8 +454,10 @@ func remountTreeRO(top string, keep []string) error {
 
 // remountTreeRW makes dst, a recursive bind of src, writable: dst itself,
 // and every mount below it whose source remountTreeRO turned read-only.
-// The flags it had otherwise are kept, as remountTreeRO keeps them.
-func remountTreeRW(src, dst string) error {
+// Mounts at or below a keep path that is at or below dst are left
+// read-only. The flags it had otherwise are kept, as remountTreeRO keeps
+// them.
+func remountTreeRW(src, dst string, keep []string) error {
 	tree, err := mountTree(dst)
 	if err != nil {
 		return err
@@ -448,7 +466,16 @@ func remountTreeRW(src, dst string) error {
 	if err != nil {
 		return err
 	}
+	var pinned []string
+	for _, k := range keep {
+		if real, err := filepath.EvalSymlinks(k); err == nil && underAny(real, []string{tree[0].point}) {
+			pinned = append(pinned, real)
+		}
+	}
 	for i, m := range tree {
+		if underAny(m.point, pinned) {
+			continue
+		}
 		if i > 0 && !madeRO[filepath.Join(realSrc, strings.TrimPrefix(m.point, tree[0].point))] {
 			continue
 		}
