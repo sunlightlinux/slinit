@@ -95,7 +95,7 @@ func main() {
 	// which walls the countdown and refuses logins in the last five
 	// minutes. "now" (or no time) keeps the path below.
 	if execName == "shutdown" {
-		delay, message, err := parseOperands(o.operands, time.Now())
+		delay, message, err := parseOperands(o.operands, o.cancel, time.Now())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
 			os.Exit(1)
@@ -276,11 +276,14 @@ func parseArgs(execName string, args []string) (options, error) {
 			o.shutdownType = service.ShutdownHalt
 		case execName == "shutdown" && arg == "-c":
 			o.cancel = true
+		case execName == "shutdown" && arg == "--":
+			o.operands = append(o.operands, args[i+1:]...)
+			i = len(args)
 		case execName == "shutdown" && !strings.HasPrefix(arg, "-"):
 			// shutdown(8)'s operands: a time, then an optional wall
-			// message. Everything from here on is operands.
-			o.operands = args[i:]
-			i = len(args)
+			// message. Options may follow them, as getopt permutes
+			// (shutdown now -r reboots); -- ends the options.
+			o.operands = append(o.operands, arg)
 		default:
 			return o, fmt.Errorf("Unrecognized option: %s", arg)
 		}
@@ -437,10 +440,14 @@ func checkProtocolVersion(conn net.Conn) error {
 
 // parseOperands reads shutdown(8)'s operands: an optional time (see
 // control.ParseShutdownTime, shared with slinitctl shutdown), then the
-// words of a wall message. With no operands the time is now.
-func parseOperands(operands []string, now time.Time) (time.Duration, string, error) {
+// words of a wall message. With no operands the time is now. Under -c
+// there is no time: every operand is the message, as in systemd.
+func parseOperands(operands []string, cancel bool, now time.Time) (time.Duration, string, error) {
 	if len(operands) == 0 {
 		return 0, "", nil
+	}
+	if cancel {
+		return 0, strings.Join(operands, " "), nil
 	}
 	delay, err := control.ParseShutdownTime(operands[0], now)
 	if err != nil {
